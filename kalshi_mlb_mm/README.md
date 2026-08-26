@@ -399,11 +399,20 @@ nothing was deferred. Regression tests:
 `test_discovery_pass_constant_connections_for_in_scope_rfqs` (O(1)
 connections) and `test_staggered_landings_quote_on_next_tick_not_deadline`
 (quote fires on the 2-book partial, never at the flight deadline).
-Multi-game RFQs enqueue one job per game; jobs run on up to 4 concurrent
-daemon threads (issue #50 — previously strictly serial) while the #40
-pacing invariant still holds: a per-book gate keeps at most ONE pricing
-call in flight per book, so concurrent jobs pipeline per book instead of
-bursting into a rate limit. A background structure-warming pass
+Multi-game RFQs enqueue one job per game; jobs run on up to
+`ON_DEMAND_MAX_CONCURRENT_JOBS` concurrent daemon threads (issue #50 —
+previously strictly serial) while the #40 pacing invariant still holds in
+its per-book form: a per-book gate keeps at most
+`ON_DEMAND_CONCURRENCY_<BOOK>` pricing calls in flight for that book, so
+concurrent jobs pipeline per book instead of bursting into a rate limit.
+Issue #101 made that width per-book — one lane for every book capped
+throughput near the SECOND-fastest book's serial rate (measured 0.94
+quotable combos/sec) — so books that tolerate parallel calls get more
+lanes while **Novig stays at 1** (it 403s at ~26 rapid calls, #40).
+Rollback to pre-#101 behaviour is config-only: set every
+`ON_DEMAND_CONCURRENCY_<BOOK>` to 1 **and restart the bot** — widths are
+read at import and frozen into each book's gate the first time it is used,
+so an export alone changes nothing in a running process. A background structure-warming pass
 (`STRUCTURE_WARM_SEC`) keeps every book's events/structure caches and
 Caesars' WAF token hot so the live fetch never pays cold discovery. A result may
 back a NEW quote only within `QUOTE_FRESH_SEC` (15s, module constant) of
@@ -467,7 +476,8 @@ oracles).
 quotes"**: unresolvable leg → book drops; incomplete partition → Route B →
 drop; sanity/Fréchet/consensus failure → no quote; worker death → lazy
 restart, meanwhile skip; RFQ flood → queue grows, late landings, expired
-RFQs go unquoted (pacing = one on-demand combo in flight per book).
+RFQs go unquoted (pacing = at most `ON_DEMAND_CONCURRENCY_<BOOK>`
+on-demand combos in flight per book).
 
 **Observability**: research events `on_demand_requested` (once per fetch
 flight), `on_demand_result` (once per landing — with incremental landings
@@ -660,7 +670,9 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `STRUCTURE_WARM_BUDGET_SEC` | `360.0` | #81: wall budget for one warming pass (pre-#81 warming rode the sweep's per-book deadline, which the live env had raised to 360 — this keeps that proven value). A book still running at the budget is dropped with a warming-path timeout health row |
 | `STRUCTURE_WARM_SEC` | `120` | Structure-only warming cadence (issue #50): every book's events/structure TTL caches + Caesars' WAF token are re-warmed with ZERO pricing calls, so an RFQ never pays cold-structure discovery. Keep under `STRUCTURE_TTL_SEC` (180) and the CZR token TTL (240) |
 | `FLIGHT_HORIZON_HOURS` | `6` | Fly flights only when every game in the combo starts within this many hours — books price SGP combos near game time, so far-out flights waste fetches on guaranteed too_few_books. 0 disables |
-| `ON_DEMAND_MAX_CONCURRENT_JOBS` | `16` | Concurrent pricing jobs in the on-demand engine (was hard-coded 4, which capped throughput at ~50 combos/min vs ~170/min option-B demand). Per-book pressure unchanged at any value — per-book gates still serialize to one call in flight per book |
+| `ON_DEMAND_MAX_CONCURRENT_JOBS` | `16` | Concurrent pricing jobs in the on-demand engine (was hard-coded 4, which capped throughput at ~50 combos/min vs ~170/min option-B demand). Per-book pressure is bounded SEPARATELY by `ON_DEMAND_CONCURRENCY_<BOOK>`, so more jobs only keep each book's lanes full, never widen a book |
+| `ON_DEMAND_CONCURRENCY_<BOOK>` | `fanduel` 3, `draftkings` 3, `betmgm` 2, `prophetx` 1, `novig` 1, `caesars` 1 | #101: concurrent on-demand pricing calls allowed per book. **Novig must stay 1** (403s at ~26 rapid calls, #40); ProphetX stays 1 pending #91; Caesars stays 1 because it only came back from its #90 WAF block on 2026-08-25 and is unmeasured under parallel calls. Clamped to >= 1 — a 0 would deadlock the flight, not skip the book. Watch pushback with the per-book 403/429 query in `kalshi_common/fetch_health_queries.sql`. **Read at import and frozen into each book's gate on first use, so a change needs a bot restart** — during a rate-limit incident, edit and restart, don't just export. Any value above the shipped default is logged as a WARNING at startup. Rollback: set all to 1 |
+| `ON_DEMAND_CONCURRENCY_FALLBACK` | `1` | #101: lanes for a book not in the map — a new/unmeasured book is never widened by accident |
 | `ON_DEMAND_DEADLINE_SEC` | `10.0` | Per-book wall budget for LIVE (on-demand) pricing fetches (issue #50). A book still running at the cap is dropped; the fast books' results land. Sized so warm Novig (p95 ~9s) barely fits |
 | `SURFACE_ENABLED` | `false` | Leg surface (#96). Ships dark — the ingest loop runs standalone, nothing reads it until #98 |
 | `SURFACE_BOOKS_STRUCTURE` | `fanduel,betmgm,novig,caesars` | Books on the structure route (one fetch per game, rungs resolve locally). DK has no structure odds; PX 403s at `events` |

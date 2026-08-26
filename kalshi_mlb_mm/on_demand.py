@@ -77,15 +77,17 @@ class _Flight:
 # concurrent daemon threads (config knob, 2026-08-11: 4 slots capped combo
 # throughput at ~50/min while option-B door survivors arrive at ~170/min —
 # a job holds its slot for the full flight, including the slow books).
-# Raising jobs does NOT raise per-book pressure: the per-book gates below
-# still serialize to ONE pricing call in flight per book — more jobs just
-# keep every book's serial lane full instead of idle.
+# Per-book pressure is bounded SEPARATELY by config.book_concurrency
+# (#101): each book's gate below admits that many pricing calls at once,
+# so more jobs keep every book's lanes full instead of idle — they never
+# widen a book past its own limit.
 _MAX_CONCURRENT_JOBS = 4   # fallback when config is absent (tests)
 
 
 class OnDemandEngine:
     def __init__(self, service, now_fn=time.monotonic, autostart: bool = True,
-                 max_concurrent_jobs: int | None = None):
+                 max_concurrent_jobs: int | None = None,
+                 book_concurrency: dict[str, int] | None = None):
         self._service = service
         self._now = now_fn
         self._autostart = autostart
@@ -106,11 +108,13 @@ class OnDemandEngine:
         # Caps concurrent jobs; acquired by the dispatcher, released by the
         # job thread — the dispatcher blocks (backpressure) at the cap.
         self._job_slots = threading.Semaphore(max_concurrent_jobs)
-        # Issue #40 pacing invariant: ONE on-demand pricing call in flight
-        # per book, even with concurrent jobs (Novig 403s at ~26 rapid
-        # calls; a 3-job burst of 8-cell partitions would blow past it).
-        # Jobs therefore pipeline per book while their other books run
-        # freely. Lazily created; guarded by self._lock.
+        # Issue #40 pacing invariant, widened per book by #101: a book's
+        # gate admits config.book_concurrency(book) pricing calls at once,
+        # NOT an unbounded burst. Novig stays at 1 (it 403s at ~26 rapid
+        # calls); faster books that tolerate parallelism get more lanes so
+        # a 2-book quorum is not pinned to the second-fastest book's
+        # serial rate. Lazily created; guarded by self._lock.
+        self._book_concurrency = dict(book_concurrency or {})
         self._book_gates: dict[str, threading.Semaphore] = {}
 
     # ------------------------------------------------------------- #
@@ -391,15 +395,32 @@ class OnDemandEngine:
             pool.shutdown(wait=False, cancel_futures=True)
         self._finish(hash_, results, dropped_books=dropped)
 
+    def _book_lanes(self, book) -> int:
+        """Concurrent pricing calls allowed for this book (#101).
+
+        Injected map wins (tests), then config, then one lane — an unknown
+        book is never widened by accident.
+        """
+        if book in self._book_concurrency:
+            return max(1, int(self._book_concurrency[book]))
+        try:
+            from kalshi_mlb_mm import config as _config
+            return _config.book_concurrency(book)
+        except (ImportError, AttributeError):
+            return 1
+
     def _book_gate(self, book) -> threading.Semaphore:
+        # Width is resolved BEFORE the lock: _book_lanes imports config, and
+        # importing under self._lock would nest the import lock inside it.
+        lanes = self._book_lanes(book)
         with self._lock:
             gate = self._book_gates.get(book)
             if gate is None:
-                gate = self._book_gates[book] = threading.Semaphore(1)
+                gate = self._book_gates[book] = threading.Semaphore(lanes)
             return gate
 
     def _price_book_safe(self, book, game, legs, deadline=None):
-        """One book's pricing call, gated to one-in-flight per book (#40).
+        """One book's pricing call, gated per book (#40, widened by #101).
 
         The gate wait is bounded by the job's deadline: a thread that
         cannot acquire in time returns None instead of firing a wire call
