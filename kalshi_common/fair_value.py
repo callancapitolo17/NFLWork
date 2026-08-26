@@ -162,6 +162,49 @@ def devig_two_way(dec_a, dec_b) -> tuple[float, float] | None:
     return float(fa), float(fb)
 
 
+# Feed-integrity envelope for a single book's two-way rung (issue #96). A
+# plausible single-book two-way market prices between ~0.5% and ~20% vig;
+# outside that the pair is not a coherent two-way quote (one side stale, a
+# mis-parsed price, a book quoting a different line under the same key).
+TWO_WAY_OVERROUND_MIN = 1.005
+TWO_WAY_OVERROUND_MAX = 1.20
+
+
+def two_way_fair(dec_chosen, dec_opposite, *,
+                 band_min: float = TWO_WAY_OVERROUND_MIN,
+                 band_max: float = TWO_WAY_OVERROUND_MAX):
+    """Devig ONE book's two-way rung. -> (fair, None) or (None, reason).
+
+    reason is "crossed" (implied sum < 1 — arithmetically not a two-way
+    market, one side refreshed while the other was stale), "overround" (sum
+    outside the vig envelope), or "bad_price" (non-finite / <= 1.0 decimal).
+
+    The gate runs BEFORE the devig on purpose: ``devig_two_way`` clips and
+    solves ANY input, so a poisoned pair comes back as a plausible-but-wrong
+    fair rather than an error. Precedent: ``unabated_edge.pricing.
+    overround_reject`` and the #73 feed-integrity gate.
+
+    Prefer this over ``devig_partition([a, b], 1)`` for a lone two-way rung:
+    that budgets overround per LEG for 2^N partition cells and admits sums
+    down to exactly 1.0, which is a crossed market by another name.
+    """
+    try:
+        a, b = float(dec_chosen), float(dec_opposite)
+    except (TypeError, ValueError):
+        return None, "bad_price"
+    if not (math.isfinite(a) and math.isfinite(b)) or a <= 1.0 or b <= 1.0:
+        return None, "bad_price"
+    overround = 1.0 / a + 1.0 / b
+    if overround < 1.0:
+        return None, "crossed"
+    if not (band_min <= overround <= band_max):
+        return None, "overround"
+    devigged = devig_two_way(a, b)
+    if devigged is None:
+        return None, "bad_price"
+    return devigged[0], None
+
+
 def fair_by_correlation_transfer(sgp_decimal, singles) -> float | None:
     """Route B: book-implied correlation transfer for one SGP price.
 

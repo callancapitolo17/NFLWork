@@ -12,16 +12,19 @@ as the game start).
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 from kalshi_common import auth_client
-from kalshi_common.leg_types import _MLB_CODE_TO_TEAM, _parse_event_suffix
+from kalshi_common.leg_types import (_ET, _MLB_CODE_TO_TEAM,
+                                     _parse_event_suffix,
+                                     parse_suffix_start_utc)
 
 log = logging.getLogger(__name__)
 
-_ET = ZoneInfo("America/New_York")
-_MONTHS = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
-           "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
+# parse_suffix_start_utc moved to kalshi_common.leg_types (the maker's leg
+# surface keys games on the same suffix). Re-exported so this module's public
+# surface is unchanged.
+__all__ = ["RfiGame", "parse_suffix_start_utc", "parse_market",
+           "drop_doubleheaders", "fetch_open_rfi_games"]
 
 
 @dataclass(frozen=True)
@@ -34,22 +37,6 @@ class RfiGame:
     yes_bid_cents: int | None
     yes_ask_cents: int | None
     status: str
-
-
-def parse_suffix_start_utc(suffix: str) -> datetime | None:
-    """YYMMMDDHHMM prefix (US/Eastern) -> naive-UTC datetime, or None."""
-    if len(suffix) < 11:
-        return None
-    try:
-        year = 2000 + int(suffix[0:2])
-        month = _MONTHS[suffix[2:5].upper()]
-        day = int(suffix[5:7])
-        hour = int(suffix[7:9])
-        minute = int(suffix[9:11])
-        local = datetime(year, month, day, hour, minute, tzinfo=_ET)
-    except (KeyError, ValueError):
-        return None
-    return local.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _cents(market: dict, key: str) -> int | None:
