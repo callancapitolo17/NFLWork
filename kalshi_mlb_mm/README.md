@@ -102,6 +102,10 @@ REST-polling daemon, single process. Eight timed sub-loops:
 | Target-line refresh | 300s | #81: Kalshi MVE enumeration + Odds API schedule → `mlb_target_lines` (game resolution, tipoff gating and warming read it). **Zero book requests** |
 | Coverage summary | 300s | #81: drain the service's per-book on-demand outcome tally into an `on_demand_coverage` research event — the record of which books actually answer live fetches |
 
+Plus, since #96, the **leg-surface ingest** — its own threads on their own
+cadences, currently shipped dark (`SURFACE_ENABLED=false`) and runnable
+standalone. See "Leg surface" below.
+
 There is **no background SGP sweep** (#81 deleted #57's demoted remnant): the
 maker's only book traffic is on-demand flights triggered by live RFQs plus
 the structure-warming pass. `sgp_fetch_health` proves it — post-#81 rows
@@ -158,6 +162,185 @@ bid        = (p − margin_pts) − maker_fee,  floored to the $0.001 grid
 - Margin components (`sigma_pts`, `floor_pts`, `roi_pts_*`, `margin_pts_*`, `n_games`) are logged in the research firehose `quote_priced` payload — `quote_decisions` columns are unchanged.
 
 Interplay of the two tickets: **moderate** dispersion widens the margin (#19); dispersion **past `SIGMA_Z_MAX`** kills the quote (#20). One uncertainty number drives both.
+
+## Leg surface (epic #94, issue #96) — cached single-leg book fairs
+
+**Status: shipped dark.** `SURFACE_ENABLED=false`; the ingest loop runs and
+writes its DB but nothing reads it yet. #98 wires the router to it (cross-game
+only), #99 adds the staleness gate. Until then the quote path is unchanged —
+every combo still prices live.
+
+**Why.** The live path does network I/O per RFQ, so its work scales with RFQ
+count (~140k/day) instead of game count (~15/day). Measured 2026-08-19:
+219,724 book requests served, 138,791 RFQs stranded in `on_demand_pending`,
+**0 quotes.** Cross-game combos are 93% of RFQ flow and 90% of distinct-combo
+fetch demand, and they are pure multiplication — different games are
+independent. Caching their single legs removes that demand entirely.
+**Same-game combos are NOT in scope** and keep the live on-demand path: their
+legs are correlated, so the price has to come from the book's own SGP endpoint.
+
+### Run it
+
+```bash
+# From the main repo root. Ingest only — no RFQ discovery, no quoting, no orders.
+kalshi_mlb_mm/venv/bin/python -m kalshi_mlb_mm.leg_surface
+kalshi_mlb_mm/venv/bin/python -m kalshi_mlb_mm.leg_surface --minutes 60   # bounded run
+```
+
+### Shape
+
+Two decoupled loops. Ingest refreshes book prices on **our** schedule; the
+quote path (#98) will read local state.
+
+| Thread | Cadence | Job |
+|---|---|---|
+| Slate | 300s | Kalshi MVE enumeration → in-window games + their full leg ladder. **Zero book requests** |
+| `betmgm` / `novig` / `caesars` / `fanduel` structure | 20s | One structure fetch per game, then every rung resolves locally |
+| `fanduel` singles | 45s | Whole-slate scrape for FG/F5 **totals** only |
+| `draftkings` singles | 60s | Whole-slate scrape, all markets |
+| Maintenance | 30s | Prune `surface_refresh_log` to its retention window |
+
+Each worker has its own clock, so a slow book never drags a fast one — DK's
+slate scrape is ~21s while BetMGM's structure pass is ~7s — and every row
+carries its own `built_at`.
+
+### Identity: keyed on the Kalshi suffix, never on team names
+
+Surface rows key on the **Kalshi event-ticker suffix** (`26AUG252138CLELAA`),
+not the Odds API `game_id` in `mlb_target_lines`. That table's resolution path
+(`enumerate_kalshi_targets` → `_resolve_game_for_legs`) matches on team names
+alone with `LIMIT 1`, which collapses a doubleheader onto one row and picks
+whichever. #95 hit exactly that on FanDuel's two `PHI @ SEA` rows and got fairs
+off by **0.05–0.11 in probability** — a wrong number, not a decline. The suffix
+encodes date, ET first pitch and both team codes, so it is unique per
+doubleheader game, and it is what `CanonicalLeg.game_id` already carries.
+
+Every book-side match is on canonical teams **plus** start time within
+`SURFACE_START_TOLERANCE_MIN`, and **two candidates inside tolerance fail
+closed** (`n_game_ambiguous`) rather than picking the closest.
+
+Legs are produced by `legset.parse_leg` on synthetic leg dicts — the same
+function the quote path parses real RFQ legs with — so the surface cannot
+disagree with the router about what a leg means (F5-winner → ±0.5 F5 spread,
+RFI → I1 total at 0.5, home-perspective spread signs).
+
+### Routes are exclusive per (book, market_type, period)
+
+| book | route | why |
+|---|---|---|
+| betmgm, novig, caesars | structure, all markets | #95 coverage: 21/21, 20/21 and 8/21 leg-instances |
+| fanduel | structure for ml/spread and **all** I1; **singles** for FG/F5 totals | FD's SGP structure carries exactly ONE total line per period (its own main); its singles scraper has the full ladder |
+| draftkings | **singles**, all markets | 21/21 `no_structure_odds`, and its `calculateBets` host 403s every set size (2026-08-25) |
+| prophetx | **off** | 403 at the `events` stage on the first request of a session, 21/21 — an access problem (#91), not coverage |
+
+The FanDuel split keys on `(market_type, period)`, **not** `market_type`: an I1
+leg IS a total leg, and neither singles scraper emits single-inning markets
+(`_SINGLE_INNING_RE`). Keying on market type alone silently removed FD from I1,
+the thinnest row on the surface.
+
+Exclusive ownership is read from one place (`SurfaceIngest.singles_markets`) by
+both routes, so a surface key can never be written twice. The first live run
+wrote 44 duplicate keys before this was enforced.
+
+The ingest calls the scrapers' `collect_singles_rows`, **never**
+`scrape_singles`: the latter does a `CREATE OR REPLACE` of the production
+`dk_odds` / `fd_odds` snapshot that MLB.R and the dashboard read, and the
+maker's cadence has no business becoming the dashboard's refresh rate. Reading
+those DuckDBs instead was also rejected — neither scraper has a cron and both
+files were last written 2026-08-17.
+
+### Devig: two-way, gated before the devig
+
+Each rung is devigged two-way on the line the book posted, via
+`kalshi_common.fair_value.two_way_fair`. The envelope check runs on the RAW
+implied sum **before** the devig, because `devig_two_way` clips and solves any
+input — a poisoned pair would otherwise come back as a plausible-but-wrong fair
+rather than an error:
+
+- sum < 1.0 → `crossed` (one side refreshed while the other was stale)
+- outside `[1.005, 1.20]` → `overround`
+- one side missing → `one_sided`
+
+All three are **excluded and counted**, never haircut. The Route-B vig fallback
+is deliberately not reused: it is calibrated for cancelling a combo's
+compounded margin, and applied to a lone leg it invents a number where
+declining costs quorum nothing (#95: 4–5 books price a typical leg).
+
+**Absence is not failure.** #95 measured ladders legitimately shrinking far from
+first pitch — DK went from ~14 spread lines/game to exactly 1 at T−15h, and
+BetMGM posted no F5 or YRFI markets at all for next-day games. `n_unresolved` is
+therefore an expected, time-of-day-dependent count and does **not** feed the
+#37 book-health alerter. Only transport failures do.
+
+A pass where **every** game transport-failed publishes nothing and keeps the
+book's previous rows, so a wobble cannot blank a book — the rows age out under
+#99's gate instead, which is a decline an operator can count. A book that
+answers and simply stops offering a rung DOES lose it: publication replaces the
+slice rather than merging, so a dead rung can never rest at its last price.
+
+### Cost — read this before changing the cadence
+
+The epic's cost note ("~6 requests per cycle") reads a whole-book pull as one
+request. It is **one fetch per game**. On a 15-game slate:
+
+| cadence | book HTTP req/sec (4 structure books) | req/day |
+|---|---|---|
+| 5s | ~12–24 | 1.0–2.1 M |
+| **20s (default)** | **~3–6** | **260–520 k** |
+| 60s | ~1–2 | 86–170 k |
+
+For scale, the congested on-demand path served 219,724 requests on 2026-08-19
+and ProphetX 403s on sight. 20s is **provisional**: `surface_refresh_log`
+records achieved cadence and per-book failure counts, and #99 sets the real
+number alongside the age gate. `SURFACE_MAX_REQ_PER_SEC_PER_BOOK` (2.0) stretches
+a pass rather than firing it, so a mistuned cadence cannot become a
+self-inflicted 403.
+
+**DraftKings will not satisfy a 30s age gate.** Its slate scrape alone is
+~21–28s, so DK rows are routinely 30–90s old. Under a uniform 30s
+`SURFACE_MAX_AGE_SEC` the surface is effectively FD/MGM/NV/CZR — which still
+clears `MIN_AGREEING_BOOKS=2` on every FG/F5 leg (#95: 3–4 books structure-only).
+That is survivable, but it is a decision for #99, not a discovery.
+
+### Surface DB
+
+Own sibling file, **own write lock**: `kalshi_mlb_mm/kalshi_mlb_mm_surface.duckdb`.
+Deliberately not the market DB, which the pricing path reads.
+
+| table | contents |
+|---|---|
+| `mlb_leg_surface` | current state, one row per (book, leg): `fair_prob`, the raw prices behind it, `route`, `built_at` |
+| `surface_refresh_log` | one row per (book, pass): duration, games/rungs/legs, and the six exclusion counts as columns |
+| `mlb_surface_slate` | current slate + leg counts, for debugging a book that priced nothing |
+
+`built_at` is the time the **book payload** was fetched, not when the row was
+devigged or written — one structure fetch stamps every leg it served, so #99's
+age gate reads the price's true age.
+
+`mlb_leg_surface` has **no PRIMARY KEY**: DuckDB PKs reject NULL and `line` is
+legitimately NULL for moneyline (NULL, not a sentinel — the established ml×total
+convention). Uniqueness is structural instead — each flush DELETEs one
+(book, route) slice and re-inserts that slice's in-memory dict.
+
+The quote path will read the in-memory `LegSurface`, never this file: a DuckDB
+open costs ~17ms and has caused three separate incidents when done per item in
+a hot loop.
+
+### Measured on the first live runs (2026-08-26, 14-game slate)
+
+| book | route | pass duration | legs | achieved cadence |
+|---|---|---|---|---|
+| betmgm | structure | 6.9s | 800 | 20.0s |
+| novig | structure | 6.9s | 676 | 20.0s |
+| fanduel | structure | 6.8s | 436 | 20.0s |
+| caesars | structure | 6.9–16.5s | 0–144 | 20.0s |
+| draftkings | singles | 21.2s | 636 | 60.0s |
+| fanduel | singles | 2.1s | 476 | 45.0s |
+
+Books per leg across the whole surface: 564 legs at 4 books, 164 at 3, 86 at 2,
+60 at 1. So ~93% of legs clear `MIN_AGREEING_BOOKS=2`. Zero `crossed` and zero
+`overround` exclusions on live data, consistent with #95's zero devig
+rejections in 126 structure probes — the envelope is a guard, not a filter.
 
 ## On-demand pricing (Phase 2)
 
@@ -479,6 +662,20 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `FLIGHT_HORIZON_HOURS` | `6` | Fly flights only when every game in the combo starts within this many hours — books price SGP combos near game time, so far-out flights waste fetches on guaranteed too_few_books. 0 disables |
 | `ON_DEMAND_MAX_CONCURRENT_JOBS` | `16` | Concurrent pricing jobs in the on-demand engine (was hard-coded 4, which capped throughput at ~50 combos/min vs ~170/min option-B demand). Per-book pressure unchanged at any value — per-book gates still serialize to one call in flight per book |
 | `ON_DEMAND_DEADLINE_SEC` | `10.0` | Per-book wall budget for LIVE (on-demand) pricing fetches (issue #50). A book still running at the cap is dropped; the fast books' results land. Sized so warm Novig (p95 ~9s) barely fits |
+| `SURFACE_ENABLED` | `false` | Leg surface (#96). Ships dark — the ingest loop runs standalone, nothing reads it until #98 |
+| `SURFACE_BOOKS_STRUCTURE` | `fanduel,betmgm,novig,caesars` | Books on the structure route (one fetch per game, rungs resolve locally). DK has no structure odds; PX 403s at `events` |
+| `SURFACE_BOOKS_SINGLES` | `draftkings,fanduel` | Books on the singles-scraper route (whole slate per pass) |
+| `SURFACE_CADENCE_DEFAULT_SEC` | `20` | Structure-book refresh cadence. **A pass is one fetch PER GAME**, so this is ~3–6 book req/sec on a 15-game slate; 5s would be ~1–2 M/day. Provisional — #99 sets it with the age gate |
+| `SURFACE_CADENCE_DRAFTKINGS_SEC` | `60` | DK singles cadence. Its slate scrape alone is ~21–28s, so DK rows are 30–90s old and will not satisfy a 30s age gate |
+| `SURFACE_CADENCE_FANDUEL_SINGLES_SEC` | `45` | FD singles cadence (FG/F5 totals only; ~2–3s per pass) |
+| `SURFACE_MAX_REQ_PER_SEC_PER_BOOK` | `2.0` | Ceiling on a structure book's per-game fetch rate. Stretches a pass rather than firing it, so a mistuned cadence cannot become a self-inflicted 403 |
+| `SURFACE_SLATE_REFRESH_SEC` | `300` | Kalshi slate + leg-ladder discovery cadence. Zero book requests |
+| `SURFACE_GAME_MAX_HOURS` | `12` | Ignore games further out than this. 48 KXMLBGAME events are open at once (~3 days), and #95 measured books posting main lines only that far ahead |
+| `SURFACE_GAME_MIN_MINUTES` | `5` | Ignore games inside the tipoff-cancel window (matches `TIPOFF_CANCEL_MIN`) — prices we would never quote on |
+| `SURFACE_OVERROUND_MIN` / `SURFACE_OVERROUND_MAX` | `1.005` / `1.20` | Two-way devig envelope on a rung's RAW implied sum, checked BEFORE the devig. Outside it the rung is excluded and counted, never devigged |
+| `SURFACE_START_TOLERANCE_MIN` | `30` | Singles-route game matching: canonical teams PLUS start time within this window. Two candidates inside it fail closed — teams alone silently returns the wrong game of a doubleheader |
+| `SURFACE_DB_FLUSH_SEC` | `30` | Maintenance-thread cadence (refresh-log prune) |
+| `SURFACE_LOG_RETENTION_HOURS` | `24` | `surface_refresh_log` retention. It is the only unbounded surface table (~1 row per book per pass) |
 
 ## Defense hierarchy (stale-quote / adverse-selection risk)
 

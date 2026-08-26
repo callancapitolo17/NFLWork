@@ -17,6 +17,7 @@
 
 ATTACH 'kalshi_mlb_mm.duckdb'          AS state    (READ_ONLY);
 ATTACH 'kalshi_mlb_mm_research.duckdb' AS research (READ_ONLY);
+ATTACH 'kalshi_mlb_mm_surface.duckdb'  AS surface  (READ_ONLY);
 
 -- ---------------------------------------------------------------------------
 -- 1) FIRST-FILL VERIFICATION — what fields did Kalshi actually return?
@@ -216,5 +217,93 @@ SELECT CAST(window_end AS DATE)  AS day,
        ROUND(COUNT(*) * 1.0 / SUM(COUNT(*)) OVER (
            PARTITION BY CAST(window_end AS DATE)), 3) AS share_of_day
 FROM state.quote_expiry_outcomes
+GROUP BY 1, 2
+ORDER BY 1, 2;
+
+
+-- ---------------------------------------------------------------------------
+-- 12) LEG SURFACE: ACHIEVED CADENCE per book (issue #96 acceptance).
+--     "built_at freshness for each book stays within its target cadence" is
+--     really two numbers: how long a pass TAKES and how often it STARTS. A
+--     pass that overruns its cadence pushes every row past #99's age gate, so
+--     compare med_gap against SURFACE_CADENCE_*_SEC and med_dur against it.
+--     A gap far BELOW the cadence means the sleep is broken, not that the
+--     book is fast — that bug shipped once (Event.wait on a set flag).
+-- ---------------------------------------------------------------------------
+SELECT book,
+       route,
+       COUNT(*)                         AS passes,
+       ROUND(MEDIAN(duration_sec), 1)   AS med_dur_sec,
+       ROUND(MEDIAN(gap), 1)            AS med_gap_sec,
+       ROUND(MIN(gap), 1)               AS min_gap_sec,
+       ROUND(MAX(duration_sec), 1)      AS worst_dur_sec
+FROM (SELECT book, route, duration_sec,
+             epoch(started_at - LAG(started_at) OVER (
+                 PARTITION BY book, route ORDER BY started_at)) AS gap
+      FROM surface.surface_refresh_log)
+GROUP BY 1, 2
+ORDER BY 1, 2;
+
+-- ---------------------------------------------------------------------------
+-- 13) LEG SURFACE: EXCLUSIONS BY REASON per book. crossed/overround should be
+--     ~0 (they are feed-integrity guards, not filters). unresolved is EXPECTED
+--     and time-of-day dependent — books shrink their ladders far from first
+--     pitch — so it is not a health signal. A non-zero game_ambiguous means a
+--     doubleheader was declined fail-closed, which is the correct outcome and
+--     worth knowing about.
+-- ---------------------------------------------------------------------------
+SELECT book,
+       route,
+       SUM(rungs_priced)      AS priced,
+       SUM(n_crossed)         AS crossed,
+       SUM(n_overround)       AS overround,
+       SUM(n_one_sided)       AS one_sided,
+       SUM(n_unresolved)      AS unresolved,
+       SUM(n_game_unmatched)  AS game_unmatched,
+       SUM(n_game_ambiguous)  AS game_ambiguous,
+       COUNT(*) FILTER (WHERE error_class IS NOT NULL) AS failed_passes
+FROM surface.surface_refresh_log
+GROUP BY 1, 2
+ORDER BY 1, 2;
+
+-- ---------------------------------------------------------------------------
+-- 14) LEG SURFACE: BOOKS PER LEG — the quorum question. #98 needs
+--     MIN_AGREEING_BOOKS (2) per leg, so the mass at n_books = 1 is the share
+--     of legs that will decline no matter how fresh the surface is.
+-- ---------------------------------------------------------------------------
+SELECT n_books, COUNT(*) AS legs
+FROM (SELECT game_id, period, market_type, line, side,
+             COUNT(DISTINCT book) AS n_books
+      FROM surface.mlb_leg_surface
+      GROUP BY ALL)
+GROUP BY 1
+ORDER BY 1;
+
+-- ---------------------------------------------------------------------------
+-- 15) LEG SURFACE: DUPLICATE KEYS — must be zero (issue #96 acceptance).
+--     Uniqueness is structural (each flush replaces one (book, route) slice)
+--     rather than a constraint, because `line` is legitimately NULL for
+--     moneyline and DuckDB PRIMARY KEYs reject NULL. This is the check that
+--     caught FanDuel's two routes both pricing its FG totals.
+-- ---------------------------------------------------------------------------
+SELECT book, game_id, period, market_type, line, side, COUNT(*) AS rows_
+FROM surface.mlb_leg_surface
+GROUP BY ALL
+HAVING COUNT(*) > 1
+ORDER BY 1, 2;
+
+-- ---------------------------------------------------------------------------
+-- 16) LEG SURFACE: ROW AGE right now, per book. This is exactly what #99's
+--     SURFACE_MAX_AGE_SEC gate will see. DraftKings is expected to sit at
+--     30-90s (its slate scrape alone is ~21-28s), so a 30s gate silently
+--     removes it from consensus.
+-- ---------------------------------------------------------------------------
+SELECT book,
+       route,
+       COUNT(*)                                       AS legs,
+       COUNT(DISTINCT game_id)                        AS games,
+       ROUND(MEDIAN(epoch(now() - built_at)), 1)      AS med_age_sec,
+       ROUND(MAX(epoch(now() - built_at)), 1)         AS max_age_sec
+FROM surface.mlb_leg_surface
 GROUP BY 1, 2
 ORDER BY 1, 2;

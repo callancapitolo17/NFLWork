@@ -52,7 +52,7 @@ class TestStructurePass:
     def test_one_fetch_serves_the_whole_ladder(self):
         # The cost model of the whole epic: work is O(games), not O(legs).
         service = FakeService(odds={0: (1.91, 1.91), 1: (1.91, 1.91)})
-        rows, _counts, priced = structure.run_pass(
+        rows, _counts, priced, _dark = structure.run_pass(
             "betmgm", service, [make_game()], band_min=1.005, band_max=1.20,
             max_req_per_sec=0)
         assert len(service.calls) == 1
@@ -63,7 +63,7 @@ class TestStructurePass:
         # resolve one at a time. If that ever regressed, this test goes to
         # zero rows instead of two.
         service = FakeService(odds={0: (1.91, 1.91), 1: (1.91, 1.91)})
-        rows, counts, _ = structure.run_pass(
+        rows, counts, _priced, _dark = structure.run_pass(
             "betmgm", service, [make_game()], band_min=1.005, band_max=1.20,
             max_req_per_sec=0)
         assert len(rows) == 2
@@ -72,7 +72,7 @@ class TestStructurePass:
     def test_one_resolved_leg_devigs_against_its_opposite_price(self):
         # The book resolved only the OVER leg but published both prices.
         service = FakeService(odds={0: (1.91, 1.91)})
-        rows, counts, _ = structure.run_pass(
+        rows, counts, _priced, _dark = structure.run_pass(
             "betmgm", service, [make_game()], band_min=1.005, band_max=1.20,
             max_req_per_sec=0)
         assert {r.side for r in rows} == {"over", "under"}
@@ -80,14 +80,14 @@ class TestStructurePass:
 
     def test_a_genuinely_one_sided_rung_is_excluded(self):
         service = FakeService(odds={0: (1.91, None)})
-        rows, counts, _ = structure.run_pass(
+        rows, counts, _priced, _dark = structure.run_pass(
             "betmgm", service, [make_game()], band_min=1.005, band_max=1.20,
             max_req_per_sec=0)
         assert rows == [] and counts.one_sided == 1
 
     def test_rows_carry_the_structure_fetch_time(self):
         service = FakeService(odds={0: (1.91, 1.91)})
-        rows, _, _ = structure.run_pass(
+        rows, _counts, _priced, _dark = structure.run_pass(
             "betmgm", service, [make_game()], band_min=1.005, band_max=1.20,
             max_req_per_sec=0)
         assert all(r.built_at == FETCHED_AT for r in rows)
@@ -98,10 +98,11 @@ class TestStructurePass:
         # Charging it per rung would make one dark book look like a coverage
         # collapse across every line in the slate.
         service = FakeService(outcome=outcome)
-        rows, counts, priced = structure.run_pass(
+        rows, counts, priced, dark = structure.run_pass(
             "betmgm", service, [make_game()], band_min=1.005, band_max=1.20,
             max_req_per_sec=0)
         assert rows == [] and priced == 0
+        assert dark == (1 if outcome == "transport_error" else 0)
         assert counts.game_unmatched == 1 and counts.unresolved == 0
 
 
@@ -203,3 +204,155 @@ def test_slate_refresh_keeps_the_previous_slate_on_an_empty_result(
                         lambda **kw: [])
     assert ingest.refresh_slate() == 0
     assert len(ingest.current_slate()) == 1
+
+
+def test_worker_honours_its_cadence(tmp_path, monkeypatch):
+    """Regression: the first live run had every worker spinning at full speed.
+
+    ``threading.Event.wait()`` returns IMMEDIATELY when the event is set, so
+    sleeping on a set "running" flag is a no-op — FanDuel's 45s singles scrape
+    was firing every 2.5s, i.e. ~18x the intended book traffic. The loop
+    sleeps on a STOP event (clear while running) instead.
+    """
+    import threading
+    import time
+
+    from kalshi_mlb_mm import config
+    monkeypatch.setattr(config, "SURFACE_DB", tmp_path / "surface.duckdb")
+    db.init_database()
+
+    ingest = SurfaceIngest(service=FakeService())
+    ingest._slate = [make_game()]
+    ingest._slate_ready.set()
+    starts = []
+    monkeypatch.setattr(ingest, "structure_pass",
+                        lambda book: starts.append(time.monotonic()))
+
+    ingest._stop.clear()
+    worker = threading.Thread(
+        target=ingest._book_loop, args=("betmgm", "structure", 0.25),
+        daemon=True)
+    worker.start()
+    time.sleep(1.0)
+    ingest._stop.set()
+    worker.join(timeout=2)
+
+    assert len(starts) <= 6            # a spinning loop lands in the hundreds
+    gaps = [b - a for a, b in zip(starts, starts[1:])]
+    assert all(gap >= 0.2 for gap in gaps), gaps
+
+
+class TestRouteOwnershipIsExclusive:
+    """Regression: the first live run wrote 44 duplicate keys.
+
+    FanDuel's structure route was pricing its FG totals even though its
+    singles route owns them, so the same surface key landed from two slices —
+    duplicate rows in the mirror, and a coin flip between two prices in
+    memory. Ownership is now read from ONE place by both routes.
+    """
+
+    def make_game(self):
+        gid = "26AUG252138CLELAA"
+        return SurfaceGame(
+            gid, "Los Angeles Angels", "Cleveland Guardians",
+            datetime(2026, 8, 26, 1, 38),
+            (CanonicalLeg(gid, "total", 8.5, "over"),
+             CanonicalLeg(gid, "total", 8.5, "under"),
+             CanonicalLeg(gid, "spread", -1.5, "home"),
+             CanonicalLeg(gid, "spread", -1.5, "away")))
+
+    def test_structure_route_skips_rungs_the_singles_route_owns(self):
+        service = FakeService(odds={i: (1.91, 1.91) for i in range(4)})
+        rows, counts, _priced, _dark = structure.run_pass(
+            "fanduel", service, [self.make_game()],
+            skip_markets={("total", "FG")}, band_min=1.005, band_max=1.20,
+            max_req_per_sec=0)
+        assert {r.market_type for r in rows} == {"spread"}
+        # Skipped, not missed: this route was never asked for those rungs.
+        assert counts.unresolved == 0
+
+    def test_fanduel_is_the_only_book_with_a_split(self):
+        ingest = SurfaceIngest()
+        assert ingest.singles_markets("fanduel") == {("total", "FG"),
+                                                     ("total", "F5")}
+        # BetMGM runs structure only, so it must skip nothing.
+        assert ingest.singles_markets("betmgm") == set()
+
+    def test_both_fanduel_routes_together_write_no_duplicate_key(
+            self, tmp_path, monkeypatch):
+        """The end-to-end form of the bug: run BOTH FD routes, check the
+        mirror. This is the query that caught it on live data."""
+        from kalshi_mlb_mm import config
+        from kalshi_mlb_mm.leg_surface import singles as singles_mod
+        monkeypatch.setattr(config, "SURFACE_DB", tmp_path / "surface.duckdb")
+        db.init_database()
+
+        game = self.make_game()
+        ingest = SurfaceIngest(
+            service=FakeService(odds={i: (1.91, 1.91) for i in range(4)}),
+            books_structure=("fanduel",), books_singles=("fanduel",))
+        ingest._slate = [game]
+        monkeypatch.setattr(singles_mod, "_scrape", lambda book: [{
+            "game_id": "fd1", "game_start_time": game.start_utc,
+            "home_team": game.home_team, "away_team": game.away_team,
+            "period": "FG", "fetch_time": datetime.now(timezone.utc),
+            "total": 8.5, "over_price": -110, "under_price": -110,
+            "home_ml": None, "away_ml": None, "home_spread": -1.5,
+            "home_spread_price": -110, "away_spread": 1.5,
+            "away_spread_price": -110}])
+
+        ingest.structure_pass("fanduel")
+        ingest.singles_pass("fanduel")
+        with db.connect(read_only=True) as con:
+            dupes = con.execute(
+                "SELECT COUNT(*) FROM (SELECT book, game_id, period, "
+                "market_type, line, side FROM mlb_leg_surface "
+                "GROUP BY ALL HAVING COUNT(*) > 1)").fetchone()[0]
+        assert dupes == 0
+        # And the split actually happened: spreads from structure, totals
+        # from singles, one row each.
+        leg_total = CanonicalLeg(game.game_id, "total", 8.5, "over")
+        leg_spread = CanonicalLeg(game.game_id, "spread", -1.5, "home")
+        assert ingest.surface.get("fanduel", leg_total).route == "singles"
+        assert ingest.surface.get("fanduel", leg_spread).route == "structure"
+
+
+def test_a_fully_dark_book_keeps_its_previous_rows(tmp_path, monkeypatch):
+    """Regression: a Caesars transport blip blanked its whole slice.
+
+    Every game transport-failed, which is not an exception, so the pass
+    "succeeded" with zero rows and published an empty slice — losing a book
+    instantly on a wobble. A dark pass now publishes nothing and the rows age
+    out under #99's gate instead, which is a countable decline.
+    """
+    from kalshi_mlb_mm import config
+    monkeypatch.setattr(config, "SURFACE_DB", tmp_path / "surface.duckdb")
+    db.init_database()
+    ingest = SurfaceIngest(service=FakeService(odds={0: (1.91, 1.91)}),
+                           books_structure=("caesars",), books_singles=())
+    ingest._slate = [make_game()]
+    ingest.structure_pass("caesars")
+    assert ingest.surface.row_count() == 2
+
+    ingest._service = FakeService(outcome="transport_error")
+    result = ingest.structure_pass("caesars")
+    assert result.error_class == "book_dark"
+    assert ingest.surface.row_count() == 2
+
+
+def test_a_book_that_simply_stops_offering_a_rung_does_lose_it(tmp_path,
+                                                               monkeypatch):
+    # The mirror image of the test above: 'no_event' is the book answering,
+    # so its rows MUST clear rather than rest at their last price forever.
+    from kalshi_mlb_mm import config
+    monkeypatch.setattr(config, "SURFACE_DB", tmp_path / "surface.duckdb")
+    db.init_database()
+    ingest = SurfaceIngest(service=FakeService(odds={0: (1.91, 1.91)}),
+                           books_structure=("betmgm",), books_singles=())
+    ingest._slate = [make_game()]
+    ingest.structure_pass("betmgm")
+
+    ingest._service = FakeService(outcome="no_event")
+    result = ingest.structure_pass("betmgm")
+    assert result.error_class is None
+    assert ingest.surface.row_count() == 0

@@ -70,7 +70,12 @@ class SurfaceIngest:
         self._slate: list = []
         self._slate_lock = threading.Lock()
         self._slate_ready = threading.Event()
-        self._running = threading.Event()
+        # A STOP event, not a "running" one: threading.Event.wait() returns
+        # immediately when the event is SET, so sleeping on a set "running"
+        # flag makes every worker spin at full speed and ignore its cadence
+        # entirely (caught in the first live run — FanDuel's 45s singles
+        # scrape was firing every 2.5s).
+        self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
 
     # ---------------------------------------------------------------- #
@@ -125,11 +130,19 @@ class SurfaceIngest:
         error_class = None
         rows, counts, games_priced = [], ExclusionCounts(), 0
         try:
-            rows, counts, games_priced = structure.run_pass(
+            rows, counts, games_priced, dark = structure.run_pass(
                 book, self._ensure_service(), games,
+                skip_markets=self.singles_markets(book),
                 band_min=config.SURFACE_OVERROUND_MIN,
                 band_max=config.SURFACE_OVERROUND_MAX,
                 max_req_per_sec=config.SURFACE_MAX_REQ_PER_SEC_PER_BOOK)
+            if games_priced == 0 and dark > 0:
+                # Every game transport-failed: the book is dark, not empty.
+                # Publishing an empty slice would blank its prices on a blip
+                # (Caesars did exactly this in the first live run). Marking
+                # the pass failed keeps the previous rows so #99's age gate
+                # decides, which is a decline an operator can count.
+                error_class = "book_dark"
         except Exception as e:
             # A worker must survive anything one book does. The pass lands in
             # the log with its error_class and the book keeps its previous
@@ -147,8 +160,7 @@ class SurfaceIngest:
         rows, counts, games_priced = [], ExclusionCounts(), 0
         try:
             rows, counts, games_priced = singles.run_pass(
-                book, games,
-                owned_markets=set(config.SURFACE_SINGLES_MARKETS.get(book, ())),
+                book, games, owned_markets=self.singles_markets(book),
                 band_min=config.SURFACE_OVERROUND_MIN,
                 band_max=config.SURFACE_OVERROUND_MAX,
                 tolerance_min=config.SURFACE_START_TOLERANCE_MIN)
@@ -157,6 +169,17 @@ class SurfaceIngest:
             log.error("surface %s singles pass failed: %s", book, e)
         return self._finish(book, singles.ROUTE, started_at, t0, games,
                             rows, counts, games_priced, error_class)
+
+    def singles_markets(self, book: str) -> set:
+        """(market_type, period) pairs this book's SINGLES route owns.
+
+        Read by BOTH routes — the singles route to know what to price, the
+        structure route to know what to leave alone — so ownership can never
+        drift between them and write one key twice.
+        """
+        if book not in self._books_singles:
+            return set()
+        return set(config.SURFACE_SINGLES_MARKETS.get(book, ()))
 
     def _finish(self, book, route, started_at, t0, games, rows, counts,
                 games_priced, error_class) -> PassResult:
@@ -195,18 +218,18 @@ class SurfaceIngest:
     # threads
     # ---------------------------------------------------------------- #
     def _slate_loop(self):
-        while self._running.is_set():
+        while not self._stop.is_set():
             try:
                 self.refresh_slate()
             except Exception as e:
                 log.error("surface slate refresh failed: %s", e)
-            self._running.wait(config.SURFACE_SLATE_REFRESH_SEC)
+            self._stop.wait(config.SURFACE_SLATE_REFRESH_SEC)
 
     def _book_loop(self, book: str, route: str, cadence_sec: float):
         # Every worker waits for the first slate: a pass over an empty slate
         # would publish an empty slice and log a misleading zero.
         self._slate_ready.wait()
-        while self._running.is_set():
+        while not self._stop.is_set():
             t0 = time.monotonic()
             if route == structure.ROUTE:
                 self.structure_pass(book)
@@ -216,12 +239,12 @@ class SurfaceIngest:
             # cadence (DK's 28.4s slate scrape against a 60s cadence, or any
             # book having a slow minute) starts the next one immediately
             # rather than piling up.
-            self._running.wait(max(0.0, cadence_sec - (time.monotonic() - t0)))
+            self._stop.wait(max(0.0, cadence_sec - (time.monotonic() - t0)))
 
     def _maintenance_loop(self):
-        while self._running.is_set():
-            self._running.wait(config.SURFACE_DB_FLUSH_SEC)
-            if not self._running.is_set():
+        while not self._stop.is_set():
+            self._stop.wait(config.SURFACE_DB_FLUSH_SEC)
+            if self._stop.is_set():
                 return
             try:
                 dropped = db.prune_refresh_log(
@@ -243,7 +266,7 @@ class SurfaceIngest:
 
     def start(self) -> None:
         db.init_database()
-        self._running.set()
+        self._stop.clear()
         self._spawn("surface-slate", self._slate_loop)
         for book, route, cadence in self.worker_specs():
             self._spawn(f"surface-{book}-{route}", self._book_loop,
@@ -257,7 +280,7 @@ class SurfaceIngest:
         self._threads.append(t)
 
     def stop(self, timeout_sec: float = 10.0) -> None:
-        self._running.clear()
+        self._stop.set()
         self._slate_ready.set()      # release any worker still waiting
         for t in self._threads:
             t.join(timeout=timeout_sec)

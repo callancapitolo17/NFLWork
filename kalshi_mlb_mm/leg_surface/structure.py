@@ -47,9 +47,15 @@ def _decimals_for_rung(rung_legs, leg_index, odds) -> dict:
     return decimals
 
 
-def price_game(book: str, service, game, *, band_min: float,
+def price_game(book: str, service, game, *, skip_markets, band_min: float,
                band_max: float) -> tuple[list, ExclusionCounts, str]:
     """One (book, game): fetch structure once, devig every rung.
+
+    ``skip_markets`` are the (market_type, period) pairs this book's SINGLES
+    route owns — FanDuel's FG/F5 totals. Pricing them here too would write
+    the same surface key from two routes: duplicate rows in the mirror, and
+    in memory a coin flip between two slices. Skipped rungs are NOT counted
+    as misses; this route was never asked for them.
 
     Returns (rows, counts, outcome). ``outcome`` is the StructureLegOdds
     outcome, so a dark book ('transport_error', 'no_event') is never
@@ -69,7 +75,9 @@ def price_game(book: str, service, game, *, band_min: float,
         return [], counts, result.outcome
 
     rows = []
-    for rung_legs in rungs(legs).values():
+    for (period, market_type, _line), rung_legs in rungs(legs).items():
+        if (market_type, period) in skip_markets:
+            continue
         decimals = _decimals_for_rung(rung_legs, leg_index, result.odds)
         outcome = devig_rung(book=book, route=ROUTE, game=game,
                              legs=rung_legs, decimals=decimals,
@@ -82,9 +90,12 @@ def price_game(book: str, service, game, *, band_min: float,
     return rows, counts, "ok"
 
 
-def run_pass(book: str, service, games, *, band_min: float, band_max: float,
-             max_req_per_sec: float) -> tuple[list, ExclusionCounts, int]:
-    """One book's pass over the slate. Returns (rows, counts, games_priced).
+def run_pass(book: str, service, games, *, skip_markets=(),
+             band_min: float, band_max: float, max_req_per_sec: float
+             ) -> tuple[list, ExclusionCounts, int, int]:
+    """One book's pass over the slate.
+
+    Returns (rows, counts, games_priced, transport_failures).
 
     ``max_req_per_sec`` paces the per-game fetches. A whole-book pull is one
     fetch PER GAME — not the one request the epic's cost note reads it as —
@@ -94,6 +105,8 @@ def run_pass(book: str, service, games, *, band_min: float, band_max: float,
     rows: list = []
     counts = ExclusionCounts()
     games_priced = 0
+    transport_failures = 0
+    skip_markets = set(skip_markets)
     min_gap_sec = (1.0 / max_req_per_sec) if max_req_per_sec > 0 else 0.0
     next_allowed = time.monotonic()
     for game in games:
@@ -102,12 +115,14 @@ def run_pass(book: str, service, games, *, band_min: float, band_max: float,
             time.sleep(wait)
         next_allowed = time.monotonic() + min_gap_sec
         game_rows, game_counts, outcome = price_game(
-            book, service, game, band_min=band_min, band_max=band_max)
+            book, service, game, skip_markets=skip_markets,
+            band_min=band_min, band_max=band_max)
         counts.add(game_counts)
         if game_rows:
             games_priced += 1
             rows.extend(game_rows)
         elif outcome in ("transport_error", "error"):
+            transport_failures += 1
             log.warning("surface %s: %s failed on %s", book, outcome,
                         game.game_id)
-    return rows, counts, games_priced
+    return rows, counts, games_priced, transport_failures

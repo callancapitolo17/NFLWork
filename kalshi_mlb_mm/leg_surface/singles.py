@@ -24,7 +24,9 @@ Neither scraper emits single-inning markets (``_SINGLE_INNING_RE`` in DK's
 from __future__ import annotations
 
 import logging
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from mlb_sgp._shared import american_to_decimal
 
@@ -39,8 +41,26 @@ ROUTE = "singles"
 _SUPPORTED_PERIODS = ("FG", "F5")
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _ensure_scraper_path() -> None:
+    """Make the scrapers' top-level imports resolvable.
+
+    They import their clients by bare name (``from dk_client import ...``),
+    which only works with ``mlb_sgp/`` itself on sys.path — true for CLI runs
+    (cwd=mlb_sgp/) but not for a bot at the repo root. SGPService does the
+    same insert for the structure route; this route never builds one, so it
+    cannot rely on that having happened.
+    """
+    for path in (_REPO_ROOT / "mlb_sgp", _REPO_ROOT / "Answer Keys"):
+        if str(path) not in sys.path:
+            sys.path.insert(0, str(path))
+
+
 def _scrape(book: str) -> list[dict]:
     """One book's whole-slate singles rows, no production DB write."""
+    _ensure_scraper_path()
     if book == "draftkings":
         from scraper_draftkings_singles import collect_singles_rows
     elif book == "fanduel":
