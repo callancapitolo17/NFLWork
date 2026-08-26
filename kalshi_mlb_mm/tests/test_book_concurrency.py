@@ -131,3 +131,29 @@ def test_rollback_to_all_ones_restores_pre_101_behaviour(monkeypatch):
         assert config.book_concurrency(book) == 1
     peak = _run_flood(("fanduel", "draftkings"), book_concurrency=None)
     assert all(v == 1 for v in peak.values()), peak
+
+
+# --------------------------------------------------------------------- #
+# Env overrides must be loud (pre-merge review finding)                  #
+# --------------------------------------------------------------------- #
+
+def test_shipped_defaults_are_not_reported_as_widened():
+    """A clean install announces nothing — the warning must mean something."""
+    assert config.widened_books() == {}
+
+
+def test_env_widening_a_book_is_reported(monkeypatch):
+    """`ON_DEMAND_CONCURRENCY_NOVIG=3` silently re-opening #40 is exactly
+    what this catches: config carries 'MUST remain 1' only as a comment,
+    so the override has to announce itself at startup."""
+    monkeypatch.setattr(config, "ON_DEMAND_BOOK_CONCURRENCY",
+                        {**config.ON_DEMAND_BOOK_CONCURRENCY, "novig": 3})
+    assert config.widened_books() == {"novig": (1, 3)}
+
+
+def test_narrowing_a_book_is_not_reported(monkeypatch):
+    """The rollback direction is safe and must stay quiet, or operators
+    learn to ignore the warning."""
+    monkeypatch.setattr(config, "ON_DEMAND_BOOK_CONCURRENCY",
+                        {b: 1 for b in config.ON_DEMAND_BOOK_CONCURRENCY})
+    assert config.widened_books() == {}

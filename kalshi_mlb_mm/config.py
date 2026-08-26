@@ -326,6 +326,21 @@ def book_concurrency(book: str) -> int:
         book, ON_DEMAND_BOOK_CONCURRENCY_FALLBACK))
 
 
+def widened_books() -> dict[str, tuple[int, int]]:
+    """Books an env override raised ABOVE their shipped default (#101).
+
+    Returns {book: (default, effective)}. The shipped defaults are the
+    reviewed, rate-limit-safe values; a .env that raises one must never be
+    silent — Novig above all, since its single lane IS the #40 guard. Pure
+    data: main logs this at startup, after logging is configured (this
+    module is imported long before setup_logging runs, so a warning
+    emitted here would go nowhere).
+    """
+    return {book: (default, effective)
+            for book, default in _BOOK_CONCURRENCY_DEFAULTS.items()
+            if (effective := book_concurrency(book)) > default}
+
+
 # Only fly flights for combos whose games ALL start within this many hours.
 # Books post/price SGP combos close to game time — far-out flights come back
 # too_few_books (2026-08-11: 14k fetches in 30 min, zero priceable, mostly
