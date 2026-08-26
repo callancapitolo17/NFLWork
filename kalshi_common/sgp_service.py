@@ -168,10 +168,26 @@ class SGPService:
         # engine drops any book still running past this and lands the fast
         # books' results. #45 will cap the client timeouts underneath.
         on_demand_deadline_sec: float = 10.0,
+        # kalshi_rfi (2026-08-25): structure-cache TTL for THIS instance.
+        # Default = the shared constant, so the MM/taker SGP pipeline is
+        # untouched. The RFI bot passes 0.0: its fair IS structure odds
+        # (see single_leg_structure_fair), so every fetch must hit the wire
+        # — a cached structure would silently serve stale odds as "live".
+        structure_ttl_sec: float = STRUCTURE_TTL_SEC,
+        # Opt-in n==1 fast path: price a lone leg straight from the
+        # structure's two-sided odds (exact 2-cell devig, zero SGP price
+        # calls — several books refuse 1-selection price sets). Default
+        # False: the MM/taker keep their exact pre-existing behavior for
+        # 1-leg sets (wire price calls or clean decline). Only enable
+        # together with a structure_ttl_sec small enough that structure
+        # odds are as fresh as your quote cadence requires.
+        single_leg_structure_fair: bool = False,
     ):
         self.books = tuple(books)
         self.per_book_deadline_sec = per_book_deadline_sec
         self.on_demand_deadline_sec = on_demand_deadline_sec
+        self.structure_ttl_sec = structure_ttl_sec
+        self.single_leg_structure_fair = single_leg_structure_fair
         self.min_refresh_sec = dict(min_refresh_sec or {})
         self._runners = runners
         self._on_demand_hooks = on_demand_hooks
@@ -591,12 +607,12 @@ class SGPService:
             from mlb_sgp.dk_client import DraftKingsClient
             st.client = DraftKingsClient()
             st.caches = {"events": TTLCache(EVENTS_TTL_SEC),
-                         "structure": TTLCache(STRUCTURE_TTL_SEC)}
+                         "structure": TTLCache(self.structure_ttl_sec)}
         elif book == "fanduel":
             from mlb_sgp.fd_client import FanDuelClient
             st.client = FanDuelClient()
             st.caches = {"events": TTLCache(EVENTS_TTL_SEC),
-                         "structure": TTLCache(STRUCTURE_TTL_SEC)}
+                         "structure": TTLCache(self.structure_ttl_sec)}
         elif book == "prophetx":
             from mlb_sgp.prophetx_client import ProphetXClient
             st.client = ProphetXClient()
@@ -813,6 +829,33 @@ class SGPService:
             if not resolved:
                 return None                      # a chosen side is missing
             counters.bump("legs_resolved", len(resolved))
+
+            # Opt-in n == 1 fast path (single_leg_structure_fair, default
+            # OFF so the MM/taker SGP pipeline is untouched): a lone leg IS
+            # its single market, so where the structure carries both sides'
+            # odds the exact 2-cell devig needs ZERO price calls — several
+            # books' SGP price endpoints refuse 1-selection sets
+            # (live-verified DK/Novig/MGM 2026-08-25, kalshi_rfi smoke).
+            # devig_partition (not devig_two_way) so the [1.0, 1.25]
+            # overround gate rejects crossed/degenerate pairs — a gate
+            # failure (or a book without structure odds, e.g. DK) falls
+            # through to the normal routes. Structure odds are only as
+            # fresh as this instance's structure_ttl_sec — the enabling
+            # caller owns that trade-off (kalshi_rfi passes 0.0: every
+            # call re-fetches, so the fair is genuinely live).
+            if len(legs) == 1 and self.single_leg_structure_fair:
+                from kalshi_common import fair_value as _fv
+                r0 = resolved[0]
+                if (r0.single_decimal is not None
+                        and r0.opposite_decimal is not None):
+                    fair = _fv.devig_partition(
+                        [r0.single_decimal, r0.opposite_decimal], 1)
+                    if fair is not None:
+                        return OnDemandBookResult(
+                            book=book, fair=fair, route="single_two_way",
+                            n_cells_priced=0,
+                            latency_sec=time.monotonic() - t0,
+                            counters=counters.snapshot())
 
             def _price(refs):
                 # Counted here rather than inside the book modules so one
@@ -1052,12 +1095,12 @@ class SGPService:
     # _fd_fetchers caches; PX/NV/MGM/CZR get equivalents here).           #
     # ------------------------------------------------------------------ #
 
-    @staticmethod
-    def _structure_caches(st: _BookState):
+    def _structure_caches(self, st: _BookState):
         """The (events, structure) TTL caches, created on first use for the
         books whose refresh path doesn't build them (PX/NV/MGM/CZR)."""
         ev = st.caches.setdefault("events", TTLCache(EVENTS_TTL_SEC))
-        struct = st.caches.setdefault("structure", TTLCache(STRUCTURE_TTL_SEC))
+        struct = st.caches.setdefault(
+            "structure", TTLCache(self.structure_ttl_sec))
         return ev, struct
 
     def _book_on_demand_hooks(self, book: str, *,

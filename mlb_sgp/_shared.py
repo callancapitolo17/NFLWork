@@ -959,7 +959,10 @@ class OnDemandBookResult:
     """One book's on-demand fair for one same-game leg set."""
     book: str
     fair: float
-    route: str              # "partition" | "transfer"
+    route: str              # "partition" | "transfer" | "single_two_way"
+                            # (single_two_way only from services opting in to
+                            # SGPService(single_leg_structure_fair=True) —
+                            # kalshi_rfi; never the MM/taker pipeline)
     n_cells_priced: int
     latency_sec: float
     # transfer_fair - partition_fair, computed only where both routes came
