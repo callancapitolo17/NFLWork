@@ -467,3 +467,30 @@ add that arm.
    `_resolve_game_for_legs` — a live doubleheader wrong-number risk in the
    maker. The surface routes around it; the maker still has it.
 3. **ProphetX 403** (#91) — upside only, not a blocker.
+
+---
+
+## 12. What changed during implementation (2026-08-26)
+
+This file is the pre-implementation proposal. Where the shipped code differs,
+the code and `kalshi_mlb_mm/README.md` are authoritative.
+
+- **`SURFACE_ENABLED` was dropped.** Nothing read it, so it described a switch
+  that did not exist. The loop is dark because nothing in the maker imports
+  `kalshi_mlb_mm.leg_surface` — provable from the diff. #98 adds the wiring and
+  the switch that wiring needs.
+- **`SURFACE_DB_FLUSH_SEC` → `SURFACE_MAINTENANCE_SEC`.** The mirror is written
+  per pass, not on a timer; the knob only paces the refresh-log prune.
+- **Store slices are keyed `(book, route)`, read back by book.** §4.1's route
+  split means FanDuel publishes through both routes, and each publish replaces
+  its slice — one shared slice would have each FD pass erase the other's rows.
+  Reads collapse to the book so FD counts once toward `MIN_AGREEING_BOOKS`.
+- **A new public seam, `SGPService.structure_leg_odds`**, does one structure
+  fetch per (book, game) and resolves each leg locally. §4.2 described the
+  behaviour; it needed a method rather than reaching into the private hooks.
+- **Three bugs the live runs found** — worker cadence (`Event.wait` on a set
+  flag), duplicate keys (structure route ignoring singles-route ownership), and
+  a transport blip blanking a book — plus a service-construction race found in
+  the pre-merge review. All four have regression tests.
+- **Files**: `structure.py` and `singles.py` as separate route modules, plus
+  `devig.py`; the spec's single `ingest.py` split three ways.
