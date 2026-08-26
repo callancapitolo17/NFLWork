@@ -9,9 +9,10 @@ discount. We never quote NO and never cross the spread.
 ## How it prices
 
 A `KXMLBRFI` market is exactly a 1st-inning total at 0.5 (issue #87). Each
-game's fair P(YRFI) comes from a **live** fetch at the 4 books with working
-period-aware I1 hooks — DraftKings, FanDuel, BetMGM, Novig — through the
-shared `SGPService.price_on_demand` on a single `CanonicalLeg(..., "I1")`.
+game's fair P(YRFI) comes from a **live** fetch at the 5 books with working
+period-aware I1 hooks — DraftKings, FanDuel, BetMGM, Novig, Caesars —
+through the shared `SGPService.price_on_demand` on a single
+`CanonicalLeg(..., "I1")`.
 A lone leg takes the **opt-in** n==1 fast path added for this bot (exact
 2-cell probit devig of the structure's own odds via `devig_partition`, so
 crossed/degenerate pairs fail the [1.0, 1.25] overround gate; zero SGP price
@@ -19,9 +20,13 @@ calls). The fast path is enabled per `SGPService` instance
 (`single_leg_structure_fair=True`) and this bot pairs it with
 `structure_ttl_sec=0.0` so **every fair refresh re-fetches the book's odds
 from the wire** — never the structure TTL cache. Both knobs default off/420s,
-so the MM/taker SGP pipeline is completely unaffected. DK lacks structure
-odds and its SGP endpoint refuses 1-selection sets, so in practice ~3 books
-price (live-verified 2026-08-25: FD/MGM/Novig priced, σ_z 0.052).
+so the MM/taker SGP pipeline is completely unaffected. DK never contributes:
+its SGP structure carries selection ids but no odds, so the n==1 fast path
+cannot run there, and its fallback price route is dead too — both documented
+`calculateBets` paths returned Akamai 403 on 2026-08-25 (issue #39
+recurring; DK's READ endpoints stay green, so only pricing is blocked).
+In practice **4 books price**: FD/MGM/Novig/CZR (live-verified 2026-08-25
+over 6 games — Caesars priced 6/6, four-book σ_z 0.017–0.030).
 
 Consensus gate mirrors the MM's issue #20 semantics: ≥ `RFI_MIN_BOOKS` (2)
 books and sample stddev of probit-transformed fairs ≤ `RFI_SIGMA_Z_MAX`
@@ -104,7 +109,9 @@ selection), realized YRFI rate vs. consensus (calibration), reason counts
 ## Troubleshooting
 
 - `consensus DECLINED books=1` — only one book priced. DK declining is
-  normal (see above); check FD/MGM/Novig auth/board if others drop.
+  normal (see above); check FD/MGM/Novig/CZR auth/board if others drop.
+  Caesars needs a freshly minted AWS-WAF token; a mint failure shows as a
+  clean per-cycle decline, and the other three still reach quorum.
 - No games quoted — check the horizon (`RFI_QUOTE_HORIZON_HOURS`, 12h) and
   that markets are `active`; the bot skips games > 1h past start.
 - `RFI_MODE=live requires RFI_LIVE_ACK=1` — the dead-man switch, on purpose.

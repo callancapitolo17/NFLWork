@@ -1316,8 +1316,8 @@ class SGPService:
                         markets, event.home_team, event.away_team)
                 parsed = struct_cache.get_or_fetch(
                     ("mgm_markets", event.event_id), _fetch, miss_cb=miss_cb)
-                # parse_markets already keys by period ("FG"/"F5") — pass
-                # both buckets through; resolve_legs picks per leg (#85).
+                # parse_markets already keys by period ("FG"/"F5"/"I1") —
+                # pass every bucket through; resolve_legs picks per leg (#85).
                 return parsed or None
 
             return {"match_event": match_event,
@@ -1349,8 +1349,8 @@ class SGPService:
                     return mod.parse_markets(ev) if ev else None
                 parsed = struct_cache.get_or_fetch(
                     ("czr_event", event.event_id), _fetch, miss_cb=miss_cb)
-                # parse_markets already keys by period ("FG"/"F5") — pass
-                # both buckets through; resolve_legs picks per leg (#85).
+                # parse_markets already keys by period ("FG"/"F5"/"I1") —
+                # pass every bucket through; resolve_legs picks per leg (#85).
                 return parsed or None
 
             return {"match_event": match_event,

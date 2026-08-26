@@ -20,8 +20,10 @@ resolvers already pick buckets generically by ``leg.period``):
 - PX ``_OD_MARKET_NAMES``: ``("total","I1") -> "1st Inning Total Runs"``
   (listed live 2026-08-13; board carried no priced lines, so resolution
   declines cleanly until PX carries liquidity — same posture as F5).
-- CZR: deliberately NO "I1" bucket (name recon blocked by a WAF auth outage
-  2026-08-13) — resolve declines the whole book cleanly.
+- CZR ``parse_markets``: ``"Any Run In 1st Inning?"`` (Yes/No, live-verified
+  2026-08-25 on 17 of 17 listed events) maps Yes->over / No->under at 0.5.
+  Caesars types BOTH selections "generic", so the sides are matched by NAME —
+  every other CZR market is matched on ``selection.type``.
 """
 import sys
 from pathlib import Path
@@ -322,14 +324,78 @@ def test_px_i1_leg_declines_cleanly_when_market_absent():
 
 
 # ---------------------------------------------------------------------------
-# Caesars — deliberately unmapped (WAF outage blocked name recon 2026-08-13)
+# Caesars — "Any Run In 1st Inning?" Yes/No at the fixed 0.5 line
 # ---------------------------------------------------------------------------
 
-def test_czr_i1_leg_declines_cleanly_without_i1_bucket():
-    from mlb_sgp.caesars import resolve_legs
-    structure = {
-        "FG": {"spreads": {}, "totals": {}, "moneyline": None},
-        "F5": {"spreads": {}, "totals": {}, "moneyline": None},
-        # no "I1" key — parse_markets does not emit one
+def _czr_event_stub():
+    """Live shapes 2026-08-25 (PIT@SD). Names are pipe-wrapped, and the YRFI
+    selections are typed "generic" — unlike the FG total's over/under."""
+    return {
+        "id": "czr-evt", "competitionId": "czr-comp",
+        "keyMarketGroups": [{"markets": [
+            {"id": "m-yrfi", "name": "|Any Run In 1st Inning?|", "line": None,
+             "selections": [
+                 {"id": "s-yes", "type": "generic", "name": "|Yes|",
+                  "price": {"d": 2.2}},
+                 {"id": "s-no", "type": "generic", "name": "|No|",
+                  "price": {"d": 1.66667}},
+             ]},
+            # Other 1st-N-innings markets live in the same tree and must NOT
+            # land in the I1 bucket (live 2026-08-25).
+            {"id": "m-i3", "name": "|1st 3 Innings Total Runs|", "line": 2.5,
+             "selections": [
+                 {"id": "s-i3o", "type": "over", "name": "|Over|",
+                  "price": {"d": 2.2}},
+                 {"id": "s-i3u", "type": "under", "name": "|Under|",
+                  "price": {"d": 1.66667}},
+             ]},
+            {"id": "m-fg", "name": "|Total Runs|", "line": 8.5,
+             "selections": [
+                 {"id": "s-fgo", "type": "over", "name": "|Over|",
+                  "price": {"d": 1.91}},
+                 {"id": "s-fgu", "type": "under", "name": "|Under|",
+                  "price": {"d": 1.91}},
+             ]},
+        ]}],
     }
+
+
+def test_czr_parse_markets_builds_i1_totals_from_yrfi():
+    from mlb_sgp.caesars import parse_markets
+    out = parse_markets(_czr_event_stub())
+    i1 = out.get("I1")
+    assert i1 is not None, "parse_markets must emit an 'I1' bucket"
+    bucket = i1["totals"].get(0.5)
+    assert bucket is not None
+    assert bucket["over"]["selectionId"] == "s-yes"
+    assert bucket["under"]["selectionId"] == "s-no"
+    # The YRFI market carries no `line`; the leg must still be built.
+    assert bucket["over"]["line"] is None
+    # FG regression + no leakage between periods.
+    assert out["FG"]["totals"].get(8.5) is not None
+    assert 0.5 not in out["FG"]["totals"]
+    assert 2.5 not in i1["totals"], "1st 3 Innings must not land in I1"
+
+
+def test_czr_resolve_i1_leg():
+    from mlb_sgp.caesars import parse_markets, resolve_legs
+    structure = parse_markets(_czr_event_stub())
+    out = resolve_legs(structure, [I1_UNDER], HOME, AWAY)
+    assert out is not None
+    assert out[0].ref["selectionId"] == "s-no"
+    assert out[0].opposite_ref["selectionId"] == "s-yes"
+    # Two-sided decimals are what the n==1 structure fast path devigs.
+    assert out[0].single_decimal == 1.66667
+    assert out[0].opposite_decimal == 2.2
+
+
+def test_czr_i1_leg_declines_cleanly_when_book_omits_the_market():
+    """A game whose tree carries no YRFI market must decline the whole book,
+    not resolve a half-built leg."""
+    from mlb_sgp.caesars import parse_markets, resolve_legs
+    event = _czr_event_stub()
+    event["keyMarketGroups"][0]["markets"] = [
+        m for m in event["keyMarketGroups"][0]["markets"] if m["id"] != "m-yrfi"]
+    structure = parse_markets(event)
+    assert structure["I1"]["totals"] == {}
     assert resolve_legs(structure, [I1_OVER], HOME, AWAY) is None
