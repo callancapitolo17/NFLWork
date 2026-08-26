@@ -91,13 +91,6 @@ class LegSurface:
             self._by_slice[(book, route)] = slice_
         return len(slice_)
 
-    def drop(self, book: str, route: str | None = None) -> None:
-        """Forget one slice, or every slice of a book (worker shutdown)."""
-        with self._lock:
-            for key in [k for k in self._by_slice
-                        if k[0] == book and (route is None or k[1] == route)]:
-                self._by_slice.pop(key, None)
-
     def get(self, book: str, leg: CanonicalLeg) -> SurfaceRow | None:
         return self.book_fairs(leg).get(book)
 
@@ -122,16 +115,6 @@ class LegSurface:
                 if current is None or row.built_at > current.built_at:
                     out[book] = row
         return out
-
-    def snapshot(self) -> list[SurfaceRow]:
-        """Every row, for the DuckDB mirror and the acceptance queries."""
-        with self._lock:
-            return [r for slice_ in self._by_slice.values()
-                    for r in slice_.values()]
-
-    def books(self) -> list[str]:
-        with self._lock:
-            return sorted({book for book, _route in self._by_slice})
 
     def row_count(self) -> int:
         with self._lock:

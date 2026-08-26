@@ -103,8 +103,8 @@ REST-polling daemon, single process. Eight timed sub-loops:
 | Coverage summary | 300s | #81: drain the service's per-book on-demand outcome tally into an `on_demand_coverage` research event — the record of which books actually answer live fetches |
 
 Plus, since #96, the **leg-surface ingest** — its own threads on their own
-cadences, currently shipped dark (`SURFACE_ENABLED=false`) and runnable
-standalone. See "Leg surface" below.
+cadences, currently shipped dark (nothing in the maker imports it) and
+runnable standalone. See "Leg surface" below.
 
 There is **no background SGP sweep** (#81 deleted #57's demoted remnant): the
 maker's only book traffic is on-demand flights triggered by live RFQs plus
@@ -165,8 +165,9 @@ Interplay of the two tickets: **moderate** dispersion widens the margin (#19); d
 
 ## Leg surface (epic #94, issue #96) — cached single-leg book fairs
 
-**Status: shipped dark.** `SURFACE_ENABLED=false`; the ingest loop runs and
-writes its DB but nothing reads it yet. #98 wires the router to it (cross-game
+**Status: shipped dark — by construction, not by a flag.** Nothing in the
+maker imports `kalshi_mlb_mm.leg_surface`, so the loop runs only when started
+standalone. #98 wires the router to it (cross-game
 only), #99 adds the staleness gate. Until then the quote path is unchanged —
 every combo still prices live.
 
@@ -674,7 +675,6 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `ON_DEMAND_CONCURRENCY_<BOOK>` | `fanduel` 3, `draftkings` 3, `betmgm` 2, `prophetx` 1, `novig` 1, `caesars` 1 | #101: concurrent on-demand pricing calls allowed per book. **Novig must stay 1** (403s at ~26 rapid calls, #40); ProphetX stays 1 pending #91; Caesars stays 1 because it only came back from its #90 WAF block on 2026-08-25 and is unmeasured under parallel calls. Clamped to >= 1 — a 0 would deadlock the flight, not skip the book. Watch pushback with the per-book 403/429 query in `kalshi_common/fetch_health_queries.sql`. **Read at import and frozen into each book's gate on first use, so a change needs a bot restart** — during a rate-limit incident, edit and restart, don't just export. Any value above the shipped default is logged as a WARNING at startup. Rollback: set all to 1 |
 | `ON_DEMAND_CONCURRENCY_FALLBACK` | `1` | #101: lanes for a book not in the map — a new/unmeasured book is never widened by accident |
 | `ON_DEMAND_DEADLINE_SEC` | `10.0` | Per-book wall budget for LIVE (on-demand) pricing fetches (issue #50). A book still running at the cap is dropped; the fast books' results land. Sized so warm Novig (p95 ~9s) barely fits |
-| `SURFACE_ENABLED` | `false` | Leg surface (#96). Ships dark — the ingest loop runs standalone, nothing reads it until #98 |
 | `SURFACE_BOOKS_STRUCTURE` | `fanduel,betmgm,novig,caesars` | Books on the structure route (one fetch per game, rungs resolve locally). DK has no structure odds; PX 403s at `events` |
 | `SURFACE_BOOKS_SINGLES` | `draftkings,fanduel` | Books on the singles-scraper route (whole slate per pass) |
 | `SURFACE_CADENCE_DEFAULT_SEC` | `20` | Structure-book refresh cadence. **A pass is one fetch PER GAME**, so this is ~3–6 book req/sec on a 15-game slate; 5s would be ~1–2 M/day. Provisional — #99 sets it with the age gate |
@@ -686,7 +686,7 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `SURFACE_GAME_MIN_MINUTES` | `5` | Ignore games inside the tipoff-cancel window (matches `TIPOFF_CANCEL_MIN`) — prices we would never quote on |
 | `SURFACE_OVERROUND_MIN` / `SURFACE_OVERROUND_MAX` | `1.005` / `1.20` | Two-way devig envelope on a rung's RAW implied sum, checked BEFORE the devig. Outside it the rung is excluded and counted, never devigged |
 | `SURFACE_START_TOLERANCE_MIN` | `30` | Singles-route game matching: canonical teams PLUS start time within this window. Two candidates inside it fail closed — teams alone silently returns the wrong game of a doubleheader |
-| `SURFACE_DB_FLUSH_SEC` | `30` | Maintenance-thread cadence (refresh-log prune) |
+| `SURFACE_MAINTENANCE_SEC` | `30` | Housekeeping-thread cadence (refresh-log prune). The mirror itself is written per pass, not on a timer |
 | `SURFACE_LOG_RETENTION_HOURS` | `24` | `surface_refresh_log` retention. It is the only unbounded surface table (~1 row per book per pass) |
 
 ## Defense hierarchy (stale-quote / adverse-selection risk)

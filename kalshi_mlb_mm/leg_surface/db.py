@@ -198,10 +198,10 @@ def prune_refresh_log(retention_hours: float) -> int:
     cadence)."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=retention_hours)
     with connect() as con:
-        before = con.execute(
-            "SELECT COUNT(*) FROM surface_refresh_log").fetchone()[0]
-        con.execute("DELETE FROM surface_refresh_log WHERE started_at < ?",
-                    [cutoff])
-        after = con.execute(
-            "SELECT COUNT(*) FROM surface_refresh_log").fetchone()[0]
-    return before - after
+        # DuckDB returns the deleted row count from DELETE, so this stays one
+        # statement — a pair of COUNT(*)s to report a delta would scan the
+        # whole table twice on every housekeeping tick.
+        row = con.execute(
+            "DELETE FROM surface_refresh_log WHERE started_at < ?",
+            [cutoff]).fetchone()
+    return int(row[0]) if row else 0

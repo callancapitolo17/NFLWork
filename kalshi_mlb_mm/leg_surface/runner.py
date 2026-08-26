@@ -61,6 +61,11 @@ class SurfaceIngest:
         self.surface = surface or LegSurface()
         self._service = service
         self._owns_service = service is None
+        # Four structure workers wake together on the first slate, so a bare
+        # `if self._service is None: build()` builds FOUR services — three of
+        # them orphaned with their per-book HTTP clients never closed, and
+        # which one wins decided by whichever thread assigns last.
+        self._service_lock = threading.Lock()
         self._books_structure = tuple(
             books_structure if books_structure is not None
             else config.SURFACE_BOOKS_STRUCTURE)
@@ -111,17 +116,29 @@ class SurfaceIngest:
     def _ensure_service(self):
         if self._service is not None:
             return self._service
+        with self._service_lock:
+            if self._service is None:
+                self._service = self._build_service()
+        return self._service
+
+    def _build_service(self):
+        """A SECOND, PRIVATE SGPService — never the maker's.
+
+        structure_ttl_sec == the cadence: the structure IS the odds on this
+        route, so a cache older than one pass would serve a stale price as a
+        fresh one (the mistake kalshi_rfi avoids by passing 0.0). Sharing the
+        maker's service would push that requirement onto the same-game
+        on-demand path, whose 420s structure cache holds selection IDs and is
+        correct as it is.
+
+        health_db_path=None: no writes to the market DB the pricing path
+        reads — surface_refresh_log is this loop's observability.
+        """
         from kalshi_common.sgp_service import SGPService
-        # structure_ttl_sec == the cadence: the structure IS the odds on this
-        # route, so a cache older than one pass would serve a stale price as
-        # a fresh one (the mistake kalshi_rfi avoids by passing 0.0).
-        # health_db_path=None: no writes to the market DB the pricing path
-        # reads — the refresh log is this loop's observability.
-        self._service = SGPService(
+        return SGPService(
             books=self._books_structure, health_db_path=None,
             structure_ttl_sec=config.SURFACE_CADENCE_DEFAULT_SEC,
             single_leg_structure_fair=True)
-        return self._service
 
     def structure_pass(self, book: str) -> PassResult:
         started_at = datetime.now(timezone.utc)
@@ -243,7 +260,7 @@ class SurfaceIngest:
 
     def _maintenance_loop(self):
         while not self._stop.is_set():
-            self._stop.wait(config.SURFACE_DB_FLUSH_SEC)
+            self._stop.wait(config.SURFACE_MAINTENANCE_SEC)
             if self._stop.is_set():
                 return
             try:

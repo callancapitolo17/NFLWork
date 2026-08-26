@@ -405,9 +405,11 @@ MLB_SGP_DIR = Path(_get("MLB_SGP_DIR", str(PROJECT_ROOT / "mlb_sgp")))
 SURFACE_DB = PKG_DIR / "kalshi_mlb_mm_surface.duckdb"
 # Own sibling DB, own write lock: the market DB is read by the pricing path
 # and a 20s-cadence writer has no business contending with it.
-SURFACE_ENABLED = _get_bool("SURFACE_ENABLED", "false")
-# #96 ships the ingest loop dark and standalone-runnable; #98 wires the
-# router to it and flips this on.
+# #96 ships the ingest loop DARK by construction: nothing in the maker
+# imports kalshi_mlb_mm.leg_surface, so it only runs when started standalone
+# (`python -m kalshi_mlb_mm.leg_surface`). #98 adds the wiring and, with it,
+# whatever switch that wiring needs — an unread flag here would just be a lie
+# about what turns the loop on.
 
 # Route assignment, per #95's coverage matrix. Exactly ONE route is
 # authoritative per (book, market_type, period), so a surface key can never
@@ -480,8 +482,10 @@ SURFACE_START_TOLERANCE_MIN = float(_get("SURFACE_START_TOLERANCE_MIN", "30"))
 
 # The quote path reads the in-memory store; DuckDB is the durable mirror for
 # research, the monitor and #96's acceptance. Never the quote path's read —
-# a connect costs ~17ms and has caused three incidents in hot loops.
-SURFACE_DB_FLUSH_SEC = float(_get("SURFACE_DB_FLUSH_SEC", "30"))
+# a connect costs ~17ms and has caused three incidents in hot loops. The
+# mirror is written per PASS, not on a timer; this is the housekeeping
+# thread's cadence (refresh-log prune).
+SURFACE_MAINTENANCE_SEC = float(_get("SURFACE_MAINTENANCE_SEC", "30"))
 SURFACE_LOG_RETENTION_HOURS = float(_get("SURFACE_LOG_RETENTION_HOURS", "24"))
 
 NOTIFY_WEBHOOK_URL = _get("NOTIFY_WEBHOOK_URL")

@@ -17,6 +17,9 @@
 
 ATTACH 'kalshi_mlb_mm.duckdb'          AS state    (READ_ONLY);
 ATTACH 'kalshi_mlb_mm_research.duckdb' AS research (READ_ONLY);
+-- The surface DB only exists once the leg-surface ingest (#96) has run at
+-- least once. If you have never run it, comment this line out along with
+-- queries 12-16 — a READ_ONLY ATTACH of a missing file aborts the script.
 ATTACH 'kalshi_mlb_mm_surface.duckdb'  AS surface  (READ_ONLY);
 
 -- ---------------------------------------------------------------------------

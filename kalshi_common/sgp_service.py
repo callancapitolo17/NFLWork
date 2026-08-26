@@ -113,7 +113,6 @@ class StructureLegOdds:
     book: str
     fetched_at: object          # datetime, aware UTC
     odds: dict                  # leg index -> (decimal, opposite_decimal|None)
-    n_legs_requested: int
     outcome: str = "ok"
     error_class: str | None = None
 
@@ -769,14 +768,12 @@ class SGPService:
         """
         if book not in self._state or not legs:
             return StructureLegOdds(book=book, fetched_at=None, odds={},
-                                    n_legs_requested=len(legs or []),
                                     outcome="out_of_scope")
         for l in legs:
             period = getattr(l, "period", "FG")
             if (period not in ON_DEMAND_PERIODS
                     or (period == "F5" and l.market_type == "ml")):
                 return StructureLegOdds(book=book, fetched_at=None, odds={},
-                                        n_legs_requested=len(legs),
                                         outcome="out_of_scope")
         t0 = time.monotonic()
         verdict = _Verdict()
@@ -804,7 +801,6 @@ class SGPService:
 
         def _empty(outcome, error_class=None):
             return StructureLegOdds(book=book, fetched_at=None, odds={},
-                                    n_legs_requested=len(legs),
                                     outcome=outcome, error_class=error_class)
         try:
             hooks = (self._on_demand_hooks or {}).get(book)
@@ -833,7 +829,7 @@ class SGPService:
                 odds[i] = (r0.single_decimal, r0.opposite_decimal)
             counters.bump("legs_resolved", len(odds))
             return StructureLegOdds(book=book, fetched_at=fetched_at,
-                                    odds=odds, n_legs_requested=len(legs))
+                                    odds=odds)
         except BookTransportError as e:
             counters.bump("transport_errors")
             log.error("sgp_service: %s surface TRANSPORT FAILURE stage=%s "

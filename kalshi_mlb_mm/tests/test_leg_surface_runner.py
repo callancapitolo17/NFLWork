@@ -44,8 +44,7 @@ class FakeService:
         self.calls.append((book, game.game_id, len(legs)))
         return StructureLegOdds(
             book=book, fetched_at=FETCHED_AT if self.outcome == "ok" else None,
-            odds=dict(self.odds), n_legs_requested=len(legs),
-            outcome=self.outcome)
+            odds=dict(self.odds), outcome=self.outcome)
 
 
 class TestStructurePass:
@@ -356,3 +355,47 @@ def test_a_book_that_simply_stops_offering_a_rung_does_lose_it(tmp_path,
     result = ingest.structure_pass("betmgm")
     assert result.error_class is None
     assert ingest.surface.row_count() == 0
+
+
+def test_concurrent_workers_share_one_sgp_service(tmp_path, monkeypatch):
+    """Four structure workers wake together on the first slate.
+
+    A bare `if self._service is None: build()` builds FOUR services — three
+    orphaned with their per-book HTTP clients never closed, and which one wins
+    decided by whichever thread assigns last. Double-checked under a lock.
+    """
+    import threading
+
+    from kalshi_mlb_mm import config
+    monkeypatch.setattr(config, "SURFACE_DB", tmp_path / "surface.duckdb")
+    db.init_database()
+
+    import time as _time
+
+    built = []
+    barrier = threading.Barrier(4)
+    ingest = SurfaceIngest(books_structure=("fanduel", "betmgm", "novig",
+                                            "caesars"), books_singles=())
+
+    def slow_build():
+        # Widen the window a real SGPService construction opens (six HTTP
+        # clients) so an unlocked check-then-build would reliably lose.
+        _time.sleep(0.05)
+        service = FakeService()
+        built.append(service)
+        return service
+
+    def racer():
+        barrier.wait(timeout=5)      # all four enter _ensure_service together
+        ingest._ensure_service()
+
+    monkeypatch.setattr(ingest, "_build_service", slow_build)
+    threads = [threading.Thread(target=racer) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    # The barrier proves all four raced; the lock proves only one built.
+    assert len(built) == 1
+    assert ingest._service is built[0]

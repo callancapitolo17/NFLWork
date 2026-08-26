@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from kalshi_common import auth_client, legset
 from kalshi_common.leg_types import (_MLB_CODE_TO_TEAM, _parse_event_suffix,
@@ -179,7 +179,3 @@ def rungs(legs) -> dict:
     for leg in legs:
         out.setdefault((leg.period, leg.market_type, leg.line), []).append(leg)
     return out
-
-
-def next_refresh_at(now: datetime, seconds: float) -> datetime:
-    return now + timedelta(seconds=seconds)
