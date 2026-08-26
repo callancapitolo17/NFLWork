@@ -42,6 +42,13 @@ BOOK_NAME = "caesars"
 SOURCE_LABEL = "caesars_direct"
 SANITY_MULT_RATIO = 1.5
 CZR_TARGET_PARALLELISM = 3   # gentle — the WAF rate-limits aggressive hits
+# 1st-inning YRFI market (issue #87), live-verified 2026-08-25: present on
+# 17 of 17 listed MLB events. Its Yes/No selections ARE the two sides of a
+# 0.5-run 1st-inning total (Yes = over, No = under), so an RFI leg prices
+# with no tie modeling. Caesars types BOTH selections "generic" — unlike
+# every other market here, the sides are told apart by NAME, not by `type`.
+_I1_YRFI = "any run in 1st inning?"
+_I1_TOTAL_LINE = 0.5
 
 
 def _leg(sel: dict, market: dict, event_id: str, competition_id: str,
@@ -72,6 +79,12 @@ def _leg(sel: dict, market: dict, event_id: str, competition_id: str,
     }
 
 
+def _norm_name(name: str) -> str:
+    """Caesars wraps every market/selection name in pipes ("|Over|") and pads
+    them — normalize once so exact-match lookups are safe."""
+    return " ".join((name or "").replace("|", " ").split()).lower()
+
+
 def _classify(name: str) -> tuple[str, str] | None:
     """(period, kind) for the game run-line / total-runs market, else None.
 
@@ -80,11 +93,13 @@ def _classify(name: str) -> tuple[str, str] | None:
     player props ("Jacob Wilson - Total Bases"), team totals ("Home Total
     Runs", "Colorado Rockies Total Runs"), other periods ("1st 7 Innings Total
     Runs"), and in-play variants ("Total Runs Live"). Only the canonical
-    full-game and 1st-5-innings run-line/total-runs markets (main + alternate)
-    qualify. Names are matched after stripping pipes/whitespace, lowercased.
+    full-game and 1st-5-innings run-line/total-runs markets (main + alternate),
+    plus the 1st-inning YRFI market, qualify. Names are matched after stripping
+    pipes/whitespace, lowercased.
     """
-    low = (name or "").replace("|", " ").strip().lower()
-    low = " ".join(low.split())  # collapse internal whitespace
+    low = _norm_name(name)
+    if low == _I1_YRFI:
+        return ("I1", "yrfi")
     fg_spread = {"run line", "alternate run line"}
     fg_total = {"total runs", "alternate total runs"}
     # Moneyline (for ML×total combos). ML_TOTAL_FAMILY is FG-only, so only the
@@ -121,10 +136,14 @@ def parse_markets(event: dict) -> dict:
 
     Returns {"FG": {"spreads": {home_line: {"home": leg, "away": leg}},
                     "totals":  {line: {"over": leg, "under": leg}}},
-             "F5": {...}}  where each leg is a /bets/details leg dict.
+             "F5": {...},
+             "I1": {...}}  where each leg is a /bets/details leg dict. The
+    I1 bucket holds exactly one total, 0.5, built from the YRFI Yes/No
+    market (issue #87) — Caesars posts no other 1st-inning run market.
     """
     out = {"FG": {"spreads": {}, "totals": {}, "moneyline": None},
-           "F5": {"spreads": {}, "totals": {}, "moneyline": None}}
+           "F5": {"spreads": {}, "totals": {}, "moneyline": None},
+           "I1": {"spreads": {}, "totals": {}, "moneyline": None}}
     eid = event.get("id")
     cid = event.get("competitionId")
     for grp in event.get("keyMarketGroups", []) or []:
@@ -146,6 +165,21 @@ def parse_markets(event: dict) -> dict:
                     out[period]["moneyline"] = {
                         "home": _leg(home, m, eid, cid),
                         "away": _leg(away, m, eid, cid),
+                    }
+                continue
+            if kind == "yrfi":
+                # Yes/No -> over/under at the fixed 0.5 line (issue #87).
+                # Matched on selection NAME because Caesars types both sides
+                # "generic"; the market itself carries no `line`, so this
+                # must resolve before the line guard below.
+                yes = next((s for s in sels
+                            if _norm_name(s.get("name")) == "yes"), None)
+                no = next((s for s in sels
+                           if _norm_name(s.get("name")) == "no"), None)
+                if yes and no:
+                    out[period]["totals"][_I1_TOTAL_LINE] = {
+                        "over": _leg(yes, m, eid, cid),
+                        "under": _leg(no, m, eid, cid),
                     }
                 continue
             line = m.get("line")
@@ -480,7 +514,8 @@ def resolve_legs(structure: dict, legs: list, home_team: str,
     {"FG": {"spreads": {home_line: {"home": leg, "away": leg}},
             "totals":  {line: {"over": leg, "under": leg}},
             "moneyline": {"home": leg, "away": leg} | None},
-     "F5": { ... same shape ... }}.
+     "F5": { ... same shape ... },
+     "I1": { ... same shape; totals holds only 0.5 ... }}.
     Each leg resolves from its `leg.period` bucket; a missing/None bucket
     fails the whole book (never a cross-period price).
 
