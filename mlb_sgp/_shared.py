@@ -884,8 +884,14 @@ class TTLCache:
 
     Thread-safe for the lock around store access; concurrent misses on
     the same key may both fetch (last write wins) — acceptable for
-    idempotent GETs, and in practice each book's structure fetches run
-    single-threaded (the hoisting phase of price_sgps).
+    idempotent GETs.
+
+    Since #101 a book may run several on-demand pricing calls at once, so
+    concurrent misses on ONE key are now reachable: N cold flights for the
+    same game can each fire the same structure GET. Bounded and rare — the
+    120s STRUCTURE_WARM_SEC pass keeps these keys warm, so on-demand
+    flights normally hit — but it is why a book's lane count is a
+    rate-limit decision, not just a latency one.
     """
 
     def __init__(self, ttl_sec: float, now_fn=time.monotonic):

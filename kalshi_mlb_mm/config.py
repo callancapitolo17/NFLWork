@@ -270,9 +270,62 @@ ON_DEMAND_DEADLINE_SEC = float(_get("ON_DEMAND_DEADLINE_SEC", "10.0"))
 # Concurrent pricing jobs in the on-demand engine. 4 capped throughput at
 # ~50 combos/min (a job holds its slot for the whole flight) while option-B
 # door survivors arrive at ~170/min — RFQs with 10s lifetimes expired in
-# the queue. Per-book pressure is UNCHANGED at any value: the engine's
-# per-book gates serialize to one pricing call in flight per book.
+# the queue. Per-book pressure is bounded separately by
+# ON_DEMAND_BOOK_CONCURRENCY below; raising jobs alone only keeps each
+# book's lanes full instead of idle.
 ON_DEMAND_MAX_CONCURRENT_JOBS = int(_get("ON_DEMAND_MAX_CONCURRENT_JOBS", "16"))
+
+# Issue #101: max concurrent on-demand PRICING calls per book.
+#
+# Issue #40 pinned every book to one in-flight call because Novig 403s at
+# ~26 rapid calls. That also capped total throughput near the SECOND-fastest
+# book's serial rate — a 2-book quorum waits on it — measured at ~0.94
+# combos/sec on 2026-08-17 (DraftKings median 1.06s). Once cross-game combos
+# price from the cached leg surface (epic #94), the live path serves
+# same-game only: 0.15 combos/sec median but 2.8/sec at the busiest minute,
+# which one lane per book cannot absorb.
+#
+# Books that tolerate parallel calls get more lanes. NOVIG MUST STAY AT 1 —
+# raising it re-opens the exact failure #40 was added for. ProphetX stays
+# conservative pending #91 (74,901 events:403 lifetime); Caesars is
+# WAF-blocked anyway (#90).
+#
+# ROLLBACK to pre-#101 behaviour: set every value below to 1, or export
+# ON_DEMAND_CONCURRENCY_<BOOK>=1 for the offending book. Config only — no
+# code change, no redeploy of logic.
+#
+# Watch for pushback with the rate-limit query in
+# kalshi_common/fetch_health_queries.sql: error_class already carries the
+# status code (e.g. "BookTransportError:events:403"), so no new telemetry
+# is needed to see a book complaining.
+_BOOK_CONCURRENCY_DEFAULTS = {
+    "fanduel": 3,
+    "draftkings": 3,
+    "betmgm": 2,
+    "prophetx": 1,
+    "novig": 1,     # MUST remain 1 — see #40
+    "caesars": 1,
+}
+# Unknown/new books fail safe to one lane until measured.
+ON_DEMAND_BOOK_CONCURRENCY_FALLBACK = int(
+    _get("ON_DEMAND_CONCURRENCY_FALLBACK", "1"))
+ON_DEMAND_BOOK_CONCURRENCY = {
+    book: int(_get(f"ON_DEMAND_CONCURRENCY_{book.upper()}", str(default)))
+    for book, default in _BOOK_CONCURRENCY_DEFAULTS.items()
+}
+
+
+def book_concurrency(book: str) -> int:
+    """Lanes for one book's on-demand pricing calls (#101).
+
+    Never returns < 1: a zero would deadlock the flight rather than skip
+    the book, and 'skip this book' is expressed by the deadline-bounded
+    gate acquire in OnDemandEngine._price_book_safe, not by the width.
+    """
+    return max(1, ON_DEMAND_BOOK_CONCURRENCY.get(
+        book, ON_DEMAND_BOOK_CONCURRENCY_FALLBACK))
+
+
 # Only fly flights for combos whose games ALL start within this many hours.
 # Books post/price SGP combos close to game time — far-out flights come back
 # too_few_books (2026-08-11: 14k fetches in 30 min, zero priceable, mostly
