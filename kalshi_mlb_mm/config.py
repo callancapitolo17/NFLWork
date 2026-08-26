@@ -325,6 +325,93 @@ NOVIG_VIG_FALLBACK = float(_get("NOVIG_VIG_FALLBACK", "0.05"))
 
 # Paths
 MLB_SGP_DIR = Path(_get("MLB_SGP_DIR", str(PROJECT_ROOT / "mlb_sgp")))
+# ---------------------------------------------------------------- #
+# Leg surface (epic #94, issue #96) — cached single-leg book fairs so
+# CROSS-GAME combos price with zero network I/O in the quote path.
+# Same-game combos are untouched and keep the live on-demand path.
+# ---------------------------------------------------------------- #
+SURFACE_DB = PKG_DIR / "kalshi_mlb_mm_surface.duckdb"
+# Own sibling DB, own write lock: the market DB is read by the pricing path
+# and a 20s-cadence writer has no business contending with it.
+SURFACE_ENABLED = _get_bool("SURFACE_ENABLED", "false")
+# #96 ships the ingest loop dark and standalone-runnable; #98 wires the
+# router to it and flips this on.
+
+# Route assignment, per #95's coverage matrix. Exactly ONE route is
+# authoritative per (book, market_type, period), so a surface key can never
+# be written by two sources.
+#   draftkings — singles only: 21/21 no_structure_odds, and its
+#     calculateBets host 403s every set size (verified 2026-08-25).
+#   fanduel    — structure for ml/spread and ALL of I1, singles for FG/F5
+#     totals: FD's SGP structure carries exactly ONE total line per period
+#     (its own main) while its singles scraper has the full ladder. The
+#     split keys on (market_type, period), NOT market_type — an I1 leg IS a
+#     total leg, and neither singles scraper emits I1 rows at all.
+#   prophetx   — off: 403 at the events stage on the first request of a
+#     session, 21/21. An access problem (#91), not a coverage one.
+SURFACE_BOOKS_STRUCTURE = tuple(
+    b.strip() for b in _get("SURFACE_BOOKS_STRUCTURE",
+                            "fanduel,betmgm,novig,caesars").split(",")
+    if b.strip())
+SURFACE_BOOKS_SINGLES = tuple(
+    b.strip() for b in _get("SURFACE_BOOKS_SINGLES",
+                            "draftkings,fanduel").split(",") if b.strip())
+# (market_type, period) pairs a singles-route book owns. Anything not listed
+# falls to that book's structure route; a book absent from
+# SURFACE_BOOKS_STRUCTURE simply has no other route.
+SURFACE_SINGLES_MARKETS = {
+    "draftkings": (("ml", "FG"), ("spread", "FG"), ("total", "FG"),
+                   ("ml", "F5"), ("spread", "F5"), ("total", "F5")),
+    "fanduel": (("total", "FG"), ("total", "F5")),
+}
+
+# Slate discovery: Kalshi API only, zero book requests.
+SURFACE_SLATE_REFRESH_SEC = int(_get("SURFACE_SLATE_REFRESH_SEC", "300"))
+# 48 KXMLBGAME events are open at once (~3 days out, measured 2026-08-25).
+# Ingesting all of them triples book cost for games where #95 measured books
+# posting main lines only. 12h covers the day's slate.
+SURFACE_GAME_MAX_HOURS = float(_get("SURFACE_GAME_MAX_HOURS", "12"))
+SURFACE_GAME_MIN_MINUTES = float(_get("SURFACE_GAME_MIN_MINUTES",
+                                      str(TIPOFF_CANCEL_MIN)))
+
+# Per-book refresh cadence. A whole-book pull is one fetch PER GAME, not one
+# request — on a 15-game slate the four structure books cost ~3-6 book HTTP
+# req/sec at 20s (~260-520k/day). For scale, the congested on-demand path
+# served 219,724 requests on 2026-08-19 and ProphetX 403s on sight, so a 5s
+# cadence would be 5-10x that volume permanently. 20s is provisional: the
+# refresh log records achieved cadence, and #99 sets it alongside the age
+# gate from that data.
+SURFACE_CADENCE_DEFAULT_SEC = float(_get("SURFACE_CADENCE_DEFAULT_SEC", "20"))
+# The singles route scrapes a whole slate per pass (#95 medians: DK 28.4s,
+# FD 13.2s), so its cadence is set by the scrape, not chosen freely. DK rows
+# are consequently 30-90s old and will NOT satisfy a 30s age gate in #99 —
+# the surface is FD/MGM/NV/CZR under one, which still clears
+# MIN_AGREEING_BOOKS=2 on every FG/F5 leg.
+SURFACE_CADENCE_SINGLES_SEC = {
+    "draftkings": float(_get("SURFACE_CADENCE_DRAFTKINGS_SEC", "60")),
+    "fanduel": float(_get("SURFACE_CADENCE_FANDUEL_SINGLES_SEC", "45")),
+}
+# Hard ceiling on a structure book's game fetches per second. A pass that
+# would exceed it is stretched, not fired — a mistuned cadence must not be
+# able to become a self-inflicted 403.
+SURFACE_MAX_REQ_PER_SEC_PER_BOOK = float(
+    _get("SURFACE_MAX_REQ_PER_SEC_PER_BOOK", "2.0"))
+
+# Two-way devig envelope on a rung's RAW implied sum, checked before devig.
+SURFACE_OVERROUND_MIN = float(_get("SURFACE_OVERROUND_MIN", "1.005"))
+SURFACE_OVERROUND_MAX = float(_get("SURFACE_OVERROUND_MAX", "1.20"))
+# Singles-route game matching: canonical teams PLUS start time within this
+# tolerance. Teams alone silently returns the wrong game of a doubleheader
+# (#95 hit exactly this with FD's two PHI @ SEA rows) — a wrong number, not
+# a decline.
+SURFACE_START_TOLERANCE_MIN = float(_get("SURFACE_START_TOLERANCE_MIN", "30"))
+
+# The quote path reads the in-memory store; DuckDB is the durable mirror for
+# research, the monitor and #96's acceptance. Never the quote path's read —
+# a connect costs ~17ms and has caused three incidents in hot loops.
+SURFACE_DB_FLUSH_SEC = float(_get("SURFACE_DB_FLUSH_SEC", "30"))
+SURFACE_LOG_RETENTION_HOURS = float(_get("SURFACE_LOG_RETENTION_HOURS", "24"))
+
 NOTIFY_WEBHOOK_URL = _get("NOTIFY_WEBHOOK_URL")
 
 # Logging

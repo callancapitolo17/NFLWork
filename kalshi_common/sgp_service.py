@@ -91,6 +91,33 @@ class _BookRun:
     counters: object | None          # FetchCountersSnapshot | None
 
 
+@dataclass(frozen=True)
+class StructureLegOdds:
+    """One book's two-sided single odds for many legs of ONE game (issue #96).
+
+    ``odds`` maps a leg's index in the requested list to
+    ``(chosen_decimal, opposite_decimal)``; a leg the book does not offer is
+    absent, and a leg it one-sides has ``opposite_decimal is None``. The
+    caller devigs — this carries prices only.
+
+    ``fetched_at`` is stamped when the STRUCTURE landed, not per leg, because
+    every leg here was read out of that one payload. A leg surface's staleness
+    gate has to see the price's true age, not the age of the local dict
+    lookup that served it.
+
+    ``outcome`` names WHY ``odds`` is empty, so a whole-book outage never
+    reads as "the book listed no rungs": 'ok' | 'no_event' (book doesn't list
+    the game) | 'no_structure' | 'out_of_scope' (period guard) |
+    'transport_error' | 'error'.
+    """
+    book: str
+    fetched_at: object          # datetime, aware UTC
+    odds: dict                  # leg index -> (decimal, opposite_decimal|None)
+    n_legs_requested: int
+    outcome: str = "ok"
+    error_class: str | None = None
+
+
 class _Verdict:
     """Why an on-demand fetch produced no price (issue #38).
 
@@ -712,6 +739,113 @@ class SGPService:
     # curl session across a thread pool, so this matches existing          #
     # practice; a cross-lock would stall the feed ~30-75s per sweep).      #
     # ------------------------------------------------------------------ #
+
+    def structure_leg_odds(self, book: str, game, legs):
+        """One book's structure fetch -> two-sided odds for MANY single legs.
+
+        The leg surface's read primitive (issue #96). ONE wire flight per
+        (book, game) — ``match_event`` + ``build_structure`` — then each leg
+        resolves out of that payload locally, at ~0.00s and with ZERO SGP
+        price calls (#95 measured exactly this: 0.31-0.42s cold per game,
+        then free per leg).
+
+        Legs resolve ONE AT A TIME on purpose. ``resolve_legs`` is
+        all-or-nothing across the list it is handed, so passing all ~36 rungs
+        together would let a single missing alt line unprice the whole game.
+
+        ALWAYS returns a ``StructureLegOdds``; ``outcome`` says why ``odds``
+        is empty when it is. That distinction is load-bearing for the surface:
+        "this book is dark" and "this book offers none of these alt rungs" are
+        the same empty dict but completely different operationally, and #95
+        showed rungs legitimately vanish far from first pitch. Never raises: a
+        transport failure feeds the same 3-strike client-reinit path as
+        refresh() and on-demand, so all three share one recovery.
+
+        Does NOT price combos and never calls the price hook, so it is
+        unaffected by a book whose price endpoint is blocked (DraftKings'
+        calculateBets 403s every set size as of 2026-08-25) — but DK carries
+        no structure odds at all, so DK returns empty ``odds`` here and the
+        surface routes it through its singles scraper instead.
+        """
+        if book not in self._state or not legs:
+            return StructureLegOdds(book=book, fetched_at=None, odds={},
+                                    n_legs_requested=len(legs or []),
+                                    outcome="out_of_scope")
+        for l in legs:
+            period = getattr(l, "period", "FG")
+            if (period not in ON_DEMAND_PERIODS
+                    or (period == "F5" and l.market_type == "ml")):
+                return StructureLegOdds(book=book, fetched_at=None, odds={},
+                                        n_legs_requested=len(legs),
+                                        outcome="out_of_scope")
+        t0 = time.monotonic()
+        verdict = _Verdict()
+        with fetch_counters(book, "surface", log,
+                            level=logging.DEBUG) as counters:
+            result = self._structure_leg_odds(book, game, legs, counters,
+                                              verdict)
+            snapshot = counters.snapshot()
+            health_outcome = "ok" if result.outcome == "ok" else verdict.outcome
+            self.health.record(
+                book=book, path="surface", outcome=health_outcome,
+                rows_or_prices=len(result.odds),
+                duration_sec=time.monotonic() - t0,
+                error_class=verdict.error_class,
+                counters=snapshot,
+                cache_state=("cold" if snapshot.structure_fetches > 0
+                             else "warm"))
+            self._observe_book_health(book, "surface", health_outcome,
+                                      verdict.error_class)
+            return result
+
+    def _structure_leg_odds(self, book, game, legs, counters, verdict):
+        import datetime as _dt
+        st = self._state[book]
+
+        def _empty(outcome, error_class=None):
+            return StructureLegOdds(book=book, fetched_at=None, odds={},
+                                    n_legs_requested=len(legs),
+                                    outcome=outcome, error_class=error_class)
+        try:
+            hooks = (self._on_demand_hooks or {}).get(book)
+            if hooks is None:
+                self._ensure_client(book)
+                hooks = self._book_on_demand_hooks(book, counters=counters)
+            event = hooks["match_event"](st.client, game)
+            if event is None:
+                return _empty("no_event")        # book doesn't list the game
+            counters.bump("events_seen")
+            counters.bump("events_matched")
+            structure = hooks["build_structure"](st.client, event, game)
+            if structure is None:
+                return _empty("no_structure")
+            fetched_at = _dt.datetime.now(_dt.timezone.utc)
+            counters.bump("legs_attempted", len(legs))
+            odds = {}
+            for i, leg in enumerate(legs):
+                resolved = hooks["resolve"](structure, [leg],
+                                            game.home_team, game.away_team)
+                if not resolved:
+                    continue                     # book doesn't offer this rung
+                r0 = resolved[0]
+                if r0.single_decimal is None:
+                    continue                     # structure carries no odds (DK)
+                odds[i] = (r0.single_decimal, r0.opposite_decimal)
+            counters.bump("legs_resolved", len(odds))
+            return StructureLegOdds(book=book, fetched_at=fetched_at,
+                                    odds=odds, n_legs_requested=len(legs))
+        except BookTransportError as e:
+            counters.bump("transport_errors")
+            log.error("sgp_service: %s surface TRANSPORT FAILURE stage=%s "
+                      "status=%s: %s", book, e.stage, e.status_code, e)
+            verdict.set("transport_error", transport_error_class(e))
+            self._book_done(book, None)
+            return _empty("transport_error", transport_error_class(e))
+        except Exception as e:
+            counters.record_parse_failure("surface", log, e)
+            verdict.set("error", type(e).__name__)
+            self._book_done(book, None)
+            return _empty("error", type(e).__name__)
 
     def price_on_demand(self, book: str, game, legs):
         """Price one same-game leg set at one book. Never raises.
