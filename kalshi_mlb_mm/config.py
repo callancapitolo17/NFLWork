@@ -287,8 +287,12 @@ ON_DEMAND_MAX_CONCURRENT_JOBS = int(_get("ON_DEMAND_MAX_CONCURRENT_JOBS", "16"))
 #
 # Books that tolerate parallel calls get more lanes. NOVIG MUST STAY AT 1 —
 # raising it re-opens the exact failure #40 was added for. ProphetX stays
-# conservative pending #91 (74,901 events:403 lifetime); Caesars is
-# WAF-blocked anyway (#90).
+# conservative pending #91 (74,901 events:403 lifetime). Caesars stays at 1
+# because it is freshly back: #90 had it written off as WAF-dead until the
+# 2026-08-25 recon re-mapped it (17/17 events, now a 4th book on RFI legs
+# and reachable from the maker's on_demand path). Its behaviour under
+# parallel calls has never been measured, and a book that just came back
+# from a WAF block is the last one to burst.
 #
 # ROLLBACK to pre-#101 behaviour: set every value below to 1, or export
 # ON_DEMAND_CONCURRENCY_<BOOK>=1 for the offending book. Config only — no

@@ -93,10 +93,14 @@ KALSHI_JUMP_CENTS = float(_get("RFI_KALSHI_JUMP_CENTS", "3"))
 # Book consensus gate (same semantics as kalshi_mlb_mm issue #20).
 MIN_BOOKS = int(_get("RFI_MIN_BOOKS", "2"))
 SIGMA_Z_MAX = float(_get("RFI_SIGMA_Z_MAX", "0.07"))
-# The 4 books with working period-aware I1 hooks (issue #87). PX declines
-# cleanly but costs wire calls; CZR is unmapped — both deliberately absent.
-BOOKS = tuple(b.strip() for b in _get(
-    "RFI_BOOKS", "draftkings,fanduel,betmgm,novig").split(",") if b.strip())
+# The 5 books with working period-aware I1 hooks (issue #87; Caesars mapped
+# 2026-08-25 off its "Any Run In 1st Inning?" Yes/No market). ProphetX is
+# name-mapped but has never carried a priced I1 line, and 403s at the event
+# stage as of 2026-08-25 — it declines cleanly but costs wire calls, so it
+# stays deliberately absent.
+_DEFAULT_BOOKS = "draftkings,fanduel,betmgm,novig,caesars"
+BOOKS = tuple(b.strip() for b in _get("RFI_BOOKS", _DEFAULT_BOOKS).split(",")
+              if b.strip())
 
 # Logging
 LOG_PATH = Path(_get("RFI_LOG_PATH", str(PKG_DIR / "bot.log")))

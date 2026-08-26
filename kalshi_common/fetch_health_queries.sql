@@ -209,10 +209,13 @@ ORDER BY day DESC, path;
 -- whose reject_pct climbs after its lanes were widened must be put straight
 -- back to 1 via ON_DEMAND_CONCURRENCY_<BOOK>=1 (config only, no code change).
 --
--- Known pre-existing baselines (lifetime, as of 2026-08-26): caesars is
--- WAF-blocked (#90) and prophetx carries ~75k events:403 (#91). Neither is
--- caused by concurrency; compare each book against ITSELF over time, never
--- against the other books.
+-- Known pre-existing baselines (lifetime, as of 2026-08-26): prophetx
+-- carries ~75k events:403 (#91), and caesars carries a long #90 WAF-block
+-- history that ENDED 2026-08-25 when it was re-mapped — so CZR's lifetime
+-- reject_pct is dominated by dead history and says nothing about today.
+-- Neither baseline is caused by concurrency: compare each book against
+-- ITSELF over time (and for caesars, only since 2026-08-25), never against
+-- the other books.
 SELECT
     date_trunc('day', fetched_at)                             AS day,
     book,
