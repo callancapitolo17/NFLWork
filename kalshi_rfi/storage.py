@@ -136,6 +136,21 @@ def load_recent_fills(con, hours: float = 48.0) -> list[tuple]:
         return []
 
 
+def load_recent_placed_orders(con, hours: float = 48.0) -> list[tuple]:
+    """(order_id, ticker) for recent live 'place' rows — startup rebuild of
+    the order→ticker map, so fills on a PREVIOUS run's orders still
+    attribute (poll_fills skips any order_id it doesn't know)."""
+    try:
+        return con.execute(
+            "SELECT DISTINCT order_id, ticker FROM orders "
+            "WHERE action = 'place' AND mode = 'live' "
+            "AND order_id IS NOT NULL "
+            "AND ts >= now() - (? * INTERVAL 1 HOUR)", [hours]).fetchall()
+    except duckdb.Error as e:
+        log.error("storage: recent-orders load failed: %s", e)
+        return []
+
+
 def load_settled_tickers(con) -> set:
     try:
         return {r[0] for r in con.execute(

@@ -17,6 +17,34 @@ class QuoteDecision:
     count: int | None = None
 
 
+def kalshi_book_moved(ref_bid: int | None, ref_ask: int | None,
+                      now_bid: int | None, now_ask: int | None,
+                      our_price_cents: int | None,
+                      jump_cents: float) -> str | None:
+    """Reason string if Kalshi's book moved enough to distrust our fair,
+    else None.
+
+    Sides compare separately — a MID hides ask moves behind our own resting
+    bid, which pins the bid side whenever we are best bid (adversarial
+    review finding 6: the mid version needed a 6c ask move and fired
+    spuriously off our own placement). A current best bid equal to our own
+    resting price carries no outside information and is ignored; 0 and 100
+    are empty-side sentinels, not prices.
+    """
+    def _norm(v):
+        return None if v is None or v <= 0 or v >= 100 else v
+
+    rb, ra = _norm(ref_bid), _norm(ref_ask)
+    nb, na = _norm(now_bid), _norm(now_ask)
+    if ra is not None and na is not None and abs(na - ra) >= jump_cents:
+        return "ask_jump"
+    if our_price_cents is not None and nb == our_price_cents:
+        nb = None
+    if rb is not None and nb is not None and abs(nb - rb) >= jump_cents:
+        return "bid_jump"
+    return None
+
+
 def desired_price_cents(fair_yes: float, yes_ask_cents: int | None,
                         margin_cents: int, min_edge_cents: float) -> tuple[int | None, str]:
     """The YES bid we want resting, or (None, reason).

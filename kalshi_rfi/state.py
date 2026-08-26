@@ -111,11 +111,15 @@ class RfiState:
                 + self.resting_cost_usd(exclude_ticker))
 
     def hydrate_from_db(self, con):
-        """Startup restore of filled exposure from the fills table, so a
-        restart cannot forget today's fills (per-game + daily caps) or lose
-        unsettled fills from settlement matching. Resting orders are NOT
-        restored — the live orphan sweep cancels them instead."""
+        """Startup restore from the DB, so a restart cannot forget filled
+        exposure (per-game + daily caps), lose unsettled fills from
+        settlement matching, or orphan fills that landed on a PREVIOUS
+        run's orders while the daemon was down. Resting orders are NOT
+        restored — the live orphan sweep cancels them instead, but their
+        order_id→ticker map IS restored so their fills still attribute."""
         self.settled |= storage.load_settled_tickers(con)
+        for order_id, ticker in storage.load_recent_placed_orders(con):
+            self.our_orders.setdefault(order_id, ticker)
         for trade_id, ticker, price_cents, count, ts in \
                 storage.load_recent_fills(con):
             if trade_id in self._done_trades:
@@ -125,17 +129,26 @@ class RfiState:
                 ts = ts.replace(tzinfo=datetime.timezone.utc)
             self.fills.setdefault(ticker, []).append(
                 (float(count), int(price_cents), trading_day(ts)))
-        if self.fills:
-            log.info("hydrated %d fills across %d tickers from DB",
+        if self.fills or self.our_orders:
+            log.info("hydrated %d fills / %d prior orders from DB",
                      sum(len(v) for v in self.fills.values()),
-                     len(self.fills))
+                     len(self.our_orders))
+
+
+FIRST_FILL_POLL_BACKFILL_SEC = 24 * 3600   # cover an overnight restart gap
 
 
 def poll_fills(state: RfiState, con, now: datetime.datetime) -> int:
-    """Ingest new fills on our orders. Returns the number ingested."""
-    min_ts = state._fills_min_ts or int(now.timestamp()) - 3600
-    status, body, _ = auth_client.api(
-        "GET", f"/portfolio/fills?limit=100&min_ts={min_ts}")
+    """Ingest new fills on our orders. Returns the number ingested.
+    Never raises: a network failure is a skipped poll, not a dead daemon."""
+    min_ts = (state._fills_min_ts
+              or int(now.timestamp()) - FIRST_FILL_POLL_BACKFILL_SEC)
+    try:
+        status, body, _ = auth_client.api(
+            "GET", f"/portfolio/fills?limit=100&min_ts={min_ts}")
+    except Exception as e:
+        log.warning("poll_fills network failure: %s", e)
+        return 0
     if status != 200 or not isinstance(body, dict):
         log.warning("poll_fills failed: status=%s", status)
         return 0
@@ -170,7 +183,12 @@ def poll_fills(state: RfiState, con, now: datetime.datetime) -> int:
 
 
 def poll_settlements(state: RfiState, con):
-    status, body, _ = auth_client.api("GET", "/portfolio/settlements?limit=100")
+    try:
+        status, body, _ = auth_client.api(
+            "GET", "/portfolio/settlements?limit=100")
+    except Exception as e:
+        log.warning("poll_settlements network failure: %s", e)
+        return
     if status != 200 or not isinstance(body, dict):
         return
     for s in body.get("settlements") or []:
@@ -187,9 +205,17 @@ def poll_settlements(state: RfiState, con):
 
 def sweep_orphan_orders(state: RfiState, gateway) -> int:
     """Cancel in-series resting orders Kalshi knows about but we don't —
-    left by a previous run or a POST that errored after landing."""
-    status, body, _ = auth_client.api(
-        "GET", "/portfolio/orders?status=resting&limit=1000")
+    left by a previous run or a POST that errored after landing. Runs at
+    startup AND every ORPHAN_SWEEP_SEC (finding 2: a lost place-response
+    orphan must not rest until an operator restart). NOTE: this cancels ANY
+    of the account's KXMLBRFI orders, including manually placed ones — the
+    bot owns the series while it runs (documented in README)."""
+    try:
+        status, body, _ = auth_client.api(
+            "GET", "/portfolio/orders?status=resting&limit=1000")
+    except Exception as e:
+        log.warning("orphan sweep network failure: %s", e)
+        return 0
     if status != 200 or not isinstance(body, dict):
         log.warning("orphan sweep: orders fetch failed status=%s", status)
         return 0

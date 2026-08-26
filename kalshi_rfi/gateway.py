@@ -5,11 +5,18 @@ endpoint, same dead-man switch contract. Kept local rather than imported so
 the two live bots stay decoupled (and this one can only ever place YES bids).
 """
 import logging
+import urllib.error
 from abc import ABC, abstractmethod
 
 from kalshi_common import auth_client
 
 log = logging.getLogger(__name__)
+
+# auth_client.api catches only HTTPError; connection resets, DNS failures,
+# and timeouts raise through (adversarial review finding 2). The gateway is
+# the containment boundary: a network exception must degrade to "this call
+# failed", never crash the trading loop or the shutdown cancel sweep.
+NETWORK_ERRORS = (urllib.error.URLError, OSError, TimeoutError)
 
 
 class OrderGateway(ABC):
@@ -50,7 +57,16 @@ class LiveGateway(OrderGateway):
                 "time_in_force": "good_till_canceled",
                 "self_trade_prevention_type": "taker_at_cross",
                 "client_order_id": client_order_id}
-        status, resp, _ = auth_client.api("POST", "/portfolio/events/orders", body)
+        try:
+            status, resp, _ = auth_client.api(
+                "POST", "/portfolio/events/orders", body)
+        except NETWORK_ERRORS as e:
+            # The POST may have landed despite the lost response — that
+            # orphan is invisible to local state, which is exactly what the
+            # periodic orphan sweep (ORPHAN_SWEEP_SEC) exists to cancel.
+            log.error("place NETWORK FAILURE %s bid %dc x%d: %s",
+                      ticker, price_cents, count, e)
+            return None
         if status not in (200, 201) or not isinstance(resp, dict):
             log.warning("place failed %s bid %dc x%d: status=%s resp=%s",
                         ticker, price_cents, count, status, resp)
@@ -58,8 +74,20 @@ class LiveGateway(OrderGateway):
         return resp.get("order_id") or (resp.get("order") or {}).get("order_id")
 
     def cancel(self, order_id):
-        status, _, _ = auth_client.api(
-            "DELETE", f"/portfolio/events/orders/{order_id}")
+        try:
+            status, _, _ = auth_client.api(
+                "DELETE", f"/portfolio/events/orders/{order_id}")
+        except NETWORK_ERRORS as e:
+            log.error("cancel NETWORK FAILURE %s: %s", order_id, e)
+            return False
+        if status == 404:
+            # Explicit 404 = the order is already gone (filled out, expired,
+            # or auto-cancelled on market close). Treating it as failure
+            # wedges the ticker with a phantom resting entry forever — the
+            # exact MM phantom-open-quotes bug (resolved 2026-08-12).
+            log.info("cancel %s: already gone (404) — treating as cancelled",
+                     order_id)
+            return True
         if status not in (200, 204):
             log.warning("cancel failed %s: status=%s", order_id, status)
             return False

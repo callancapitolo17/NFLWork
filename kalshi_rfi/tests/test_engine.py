@@ -4,7 +4,8 @@ import math
 import pytest
 
 from kalshi_common.ev_calc import maker_fee_per_contract
-from kalshi_rfi.engine import decide, desired_price_cents, size_contracts
+from kalshi_rfi.engine import (decide, desired_price_cents,
+                               kalshi_book_moved, size_contracts)
 
 MARGIN = 3
 MIN_EDGE = 2.0
@@ -64,6 +65,34 @@ class TestSize:
 
     def test_no_negative_counts(self):
         assert size_contracts(41, 10.0, 12.0, 100.0) == 0
+
+
+class TestKalshiBookMoved:
+    def test_ask_jump_trips_at_threshold(self):
+        assert kalshi_book_moved(38, 46, 38, 43, None, 3) == "ask_jump"
+        assert kalshi_book_moved(38, 46, 38, 44, None, 3) is None
+
+    def test_own_placement_never_self_triggers(self):
+        # ref cached pre-placement (bid 30/ask 46); we place 41 and become
+        # best bid — the old mid version fired a spurious jump here.
+        assert kalshi_book_moved(30, 46, 41, 46, 41, 3) is None
+
+    def test_outside_bid_move_still_trips_while_we_rest(self):
+        # someone else's bid appears at 35 vs ref 30 (ours rests at 41...
+        # no — ours at 28, best bid 35 is not ours): outside information.
+        assert kalshi_book_moved(30, 46, 35, 46, 28, 3) == "bid_jump"
+
+    def test_bid_pinned_by_us_but_ask_collapse_trips_at_3c(self):
+        # We are best bid (pinning the bid side); the ask collapsing 3c
+        # must trip — the mid version needed 6c (finding 6).
+        assert kalshi_book_moved(41, 46, 41, 43, 41, 3) == "ask_jump"
+
+    def test_empty_sides_are_not_prices(self):
+        # bid 0 = no bid; ask 100 = no ask. Neither side comparable, but
+        # the other side stays armed.
+        assert kalshi_book_moved(0, 46, 0, 43, None, 3) == "ask_jump"
+        assert kalshi_book_moved(38, 100, 35, 100, None, 3) == "bid_jump"
+        assert kalshi_book_moved(0, 100, 0, 100, None, 3) is None
 
 
 class TestDecide:

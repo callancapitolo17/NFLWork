@@ -62,15 +62,28 @@ DAILY_ROLL_HOUR_ET = float(_get("RFI_DAILY_ROLL_HOUR_ET", "6"))
 # Cadence
 CYCLE_SEC = float(_get("RFI_CYCLE_SEC", "30"))
 # Book consensus TTL: refresh faster near first pitch (lineup-news window).
+# Near-window 60s (was 120s): fetches are genuinely live since the
+# structure_ttl_sec=0 fix, so the extra cadence buys real staleness cuts
+# in the exact window where news pick-offs happen.
 FAIR_REFRESH_FAR_SEC = float(_get("RFI_FAIR_REFRESH_FAR_SEC", "300"))
-FAIR_REFRESH_NEAR_SEC = float(_get("RFI_FAIR_REFRESH_NEAR_SEC", "120"))
+FAIR_REFRESH_NEAR_SEC = float(_get("RFI_FAIR_REFRESH_NEAR_SEC", "60"))
 NEAR_WINDOW_MIN = float(_get("RFI_NEAR_WINDOW_MIN", "60"))
 SETTLEMENT_POLL_SEC = float(_get("RFI_SETTLEMENT_POLL_SEC", "600"))
+# Live mode: re-run the orphan-order sweep on this cadence, not just at
+# startup — a place POST whose response was lost leaves a resting order
+# only Kalshi knows about (adversarial review finding 2).
+ORPHAN_SWEEP_SEC = float(_get("RFI_ORPHAN_SWEEP_SEC", "300"))
+# One live 4-book fair fetch's wall budget; books still running past it
+# count as not-priced this refresh (finding 8: one hung book must never
+# freeze quote management for every other game).
+FAIR_FETCH_WALL_SEC = float(_get("RFI_FAIR_FETCH_WALL_SEC", "15"))
 
 # Quote window: only games starting within this horizon; pull quotes this
-# many seconds before first pitch (stale-fair risk peaks at lineup lock).
+# many seconds before first pitch. 600s (was 120s): late scratches land
+# T-10min to T-2min and books' derivative markets lag them — the sharpest
+# pick-off window is not worth the marginal fill volume.
 QUOTE_HORIZON_HOURS = float(_get("RFI_QUOTE_HORIZON_HOURS", "12"))
-PULL_BEFORE_START_SEC = float(_get("RFI_PULL_BEFORE_START_SEC", "120"))
+PULL_BEFORE_START_SEC = float(_get("RFI_PULL_BEFORE_START_SEC", "600"))
 
 # Between fair refreshes, Kalshi's own market is the cheap movement guard:
 # a mid move ≥ this many cents since our fair was computed cancels the quote

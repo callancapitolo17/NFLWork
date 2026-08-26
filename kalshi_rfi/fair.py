@@ -10,7 +10,7 @@ books via the shared per-book clients (no DB writes).
 """
 import logging
 import statistics
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -66,10 +66,19 @@ class FairService:
         self._service = service or SGPService(
             books=config.BOOKS, health_db_path=None,
             structure_ttl_sec=0.0, single_leg_structure_fair=True)
-        self._pool = ThreadPoolExecutor(max_workers=len(config.BOOKS))
+        # 2x books: a hung flight keeps its worker until the client's own
+        # timeout fires — headroom so one bad book can't starve the pool
+        # (finding 8; a saturated pool degrades to fewer books → the gate
+        # declines, never to a frozen loop).
+        self._pool = ThreadPoolExecutor(max_workers=2 * len(config.BOOKS))
 
     def fetch(self, game: RfiGame) -> FairResult | None:
-        """Live 4-book fetch for one game. None if the gate declines."""
+        """Live 4-book fetch for one game. None if the gate declines.
+
+        Wall-bounded: books still running past FAIR_FETCH_WALL_SEC count as
+        not-priced this refresh — a hung book endpoint must never freeze the
+        main loop (pull deadlines, jump guards, and fill polls all live on
+        the cycle this call blocks)."""
         leg = CanonicalLeg(game.suffix, "total", 0.5, "over", "I1")
         ref = GameRef(game_id=game.suffix, home_team=game.home_team,
                       away_team=game.away_team,
@@ -79,7 +88,19 @@ class FairService:
             res = self._service.price_on_demand(book, ref, [leg])
             return book, (res.fair if res is not None else None)
 
-        book_fairs = dict(self._pool.map(one, config.BOOKS))
+        futures = {self._pool.submit(one, b): b for b in config.BOOKS}
+        book_fairs: dict = {}
+        done, not_done = wait(futures, timeout=config.FAIR_FETCH_WALL_SEC)
+        for fut in done:
+            try:
+                book, fair = fut.result()
+            except Exception as e:
+                log.warning("fair: %s flight raised: %s", futures[fut], e)
+                continue
+            book_fairs[book] = fair
+        if not_done:
+            log.warning("fair: %s wall timeout — dropped %s",
+                        game.ticker, sorted(futures[f] for f in not_done))
         gated = consensus(book_fairs)
         priced = {b: f for b, f in book_fairs.items() if f is not None}
         if gated is None:

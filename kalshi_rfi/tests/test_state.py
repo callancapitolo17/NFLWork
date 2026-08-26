@@ -58,6 +58,22 @@ class TestHydration:
         assert st.daily_filled_cost_usd(now) == pytest.approx(13.0)
         assert "tr1" in st._done_trades                     # no re-ingest
 
+    def test_restart_restores_prior_run_order_map(self, tmp_path):
+        # A fill on a PREVIOUS run's order must still attribute after a
+        # restart: poll_fills skips unknown order_ids, so our_orders is
+        # rebuilt from the persisted 'place' rows (live mode only).
+        db = tmp_path / "t.duckdb"
+        con = storage.connect(db)
+        storage.log_order(con, T1, "prior-oid", "place", 40, 25, "live", "ok")
+        storage.log_order(con, T2, None, "place", 41, 25, "live",
+                          "place_failed")            # no order id → skipped
+        storage.log_order(con, T2, "shadow-1", "place", 41, 25, "shadow",
+                          "ok")                      # shadow → skipped
+        st = RfiState()
+        st.hydrate_from_db(con)
+        con.close()
+        assert st.our_orders == {"prior-oid": T1}
+
     def test_hydration_is_idempotent(self, tmp_path):
         db = tmp_path / "t.duckdb"
         con = storage.connect(db)
