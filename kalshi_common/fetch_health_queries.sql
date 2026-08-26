@@ -195,3 +195,37 @@ SELECT
 FROM sgp_fetch_health
 GROUP BY day, path
 ORDER BY day DESC, path;
+
+
+-- ---------------------------------------------------------------------------
+-- #101 rate-limit watch: per-book rejection rate, before vs after widening
+-- the per-book concurrency gates.
+--
+-- error_class already carries the HTTP status (e.g.
+-- "BookTransportError:events:403"), so raising ON_DEMAND_BOOK_CONCURRENCY
+-- needs NO new telemetry — a book pushing back shows up here immediately.
+--
+-- Read this DAILY for the first week after any concurrency change. A book
+-- whose reject_pct climbs after its lanes were widened must be put straight
+-- back to 1 via ON_DEMAND_CONCURRENCY_<BOOK>=1 (config only, no code change).
+--
+-- Known pre-existing baselines (lifetime, as of 2026-08-26): prophetx
+-- carries ~75k events:403 (#91), and caesars carries a long #90 WAF-block
+-- history that ENDED 2026-08-25 when it was re-mapped — so CZR's lifetime
+-- reject_pct is dominated by dead history and says nothing about today.
+-- Neither baseline is caused by concurrency: compare each book against
+-- ITSELF over time (and for caesars, only since 2026-08-25), never against
+-- the other books.
+SELECT
+    date_trunc('day', fetched_at)                             AS day,
+    book,
+    count(*)                                                  AS attempts,
+    sum(CASE WHEN error_class LIKE '%:403' THEN 1 ELSE 0 END) AS rejects_403,
+    sum(CASE WHEN error_class LIKE '%:429' THEN 1 ELSE 0 END) AS rejects_429,
+    round(100.0 * sum(CASE WHEN error_class LIKE '%:403'
+                             OR error_class LIKE '%:429'
+                           THEN 1 ELSE 0 END) / count(*), 2)  AS reject_pct
+FROM sgp_fetch_health
+WHERE path = 'on_demand'
+GROUP BY day, book
+ORDER BY day DESC, reject_pct DESC;

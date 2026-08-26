@@ -2243,6 +2243,16 @@ def main_loop(dry_run: bool):
     # the bot-wide kill file remains the emergency stop.
     global _ENGINE
     from kalshi_mlb_mm.on_demand import OnDemandEngine
+    # #101: per-book lane counts are read from config at import and frozen
+    # into each book's gate on first use, so this is the only moment they
+    # are announced. A .env that widened a book past its reviewed default
+    # must be loud — one lane on Novig IS the #40 guard.
+    for book, (default, effective) in config.widened_books().items():
+        log.warning(
+            "on-demand concurrency: %s widened %d -> %d lanes by env "
+            "override%s", book, default, effective,
+            "  *** NOVIG ABOVE 1 LANE RE-OPENS #40 (403s at ~26 rapid "
+            "calls) ***" if book == "novig" else "")
     _ENGINE = OnDemandEngine(sgp_service)
     # Synchronous warm-up: populate mlb_target_lines before the loop starts
     # (game resolution, tipoff gating and the first warming pass all read

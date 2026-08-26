@@ -300,9 +300,14 @@ def test_multi_game_jobs_drain_concurrently_not_serially():
 
 
 def test_per_book_calls_never_overlap_across_jobs():
-    """#40 pacing invariant survives concurrent jobs: at most ONE
-    on-demand pricing call in flight per book, ever (Novig 403s under
-    bursts — the gate is what makes concurrent jobs rate-limit-safe)."""
+    """#40 pacing invariant survives concurrent jobs: a book pinned to ONE
+    lane never has two on-demand pricing calls in flight (Novig 403s under
+    bursts — the gate is what makes concurrent jobs rate-limit-safe).
+
+    #101 made the width per-book, so the width is pinned here explicitly:
+    this test is about the GATE serializing, not about which books the
+    shipped config happens to widen. Per-book widths — and Novig staying
+    at 1 under the real config — live in test_book_concurrency.py."""
     class TrackingService(FakeService):
         def __init__(self, **kw):
             super().__init__(**kw)
@@ -323,7 +328,8 @@ def test_per_book_calls_never_overlap_across_jobs():
 
     svc = TrackingService()
     svc.on_demand_deadline_sec = 5.0
-    eng = OnDemandEngine(svc)
+    eng = OnDemandEngine(svc, book_concurrency={"draftkings": 1,
+                                                "fanduel": 1})
     hashes = []
     for i in range(3):
         legs = _legs()[:2] + [legset.CanonicalLeg(EVT, "total",
