@@ -399,8 +399,27 @@ def fetch_merged_markets_and_runners(
 def scrape_singles(verbose: bool = False) -> int:
     """Scrape all MLB events from FD and atomically write singles to DuckDB.
 
-    Per-game isolation: a single event's API failure does NOT tank the scrape.
+    Side effect: CREATE OR REPLACE of fd_odds/fd.duckdb::mlb_odds (MLB.R and
+    the dashboard read it). Callers that want the rows WITHOUT that write use
+    ``collect_singles_rows``.
+
     Returns the total number of rows written.
+    """
+    rows = collect_singles_rows(verbose=verbose)
+    write_to_duckdb(rows)
+    logger.info("fd_singles: wrote %d rows", len(rows))
+    return len(rows)
+
+
+def collect_singles_rows(verbose: bool = False) -> list[dict[str, Any]]:
+    """Scrape all MLB events from FD and return the wide rows. NO DB write.
+
+    The pure half of ``scrape_singles``, split out for the maker's leg surface
+    (issue #96), which needs FD's full total ladder every cycle — FD's SGP
+    structure carries only its own main total line — but must not rewrite the
+    production fd_odds snapshot on its own cadence.
+
+    Per-game isolation: a single event's API failure does NOT tank the scrape.
     """
     client = FanDuelClient(verbose=verbose)
     events = client.list_events()
@@ -454,10 +473,9 @@ def scrape_singles(verbose: bool = False) -> int:
                 "%d runners seen, 0 parsed (FD format drift likely: every "
                 "name failed the line regex)", mt, s["seen"])
 
-    write_to_duckdb(all_rows)
-    logger.info("fd_singles: wrote %d rows (%d events failed)",
+    logger.info("fd_singles: collected %d rows (%d events failed)",
                 len(all_rows), len(failed))
-    return len(all_rows)
+    return all_rows
 
 
 def write_to_duckdb(rows: list[dict]) -> None:

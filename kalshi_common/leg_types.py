@@ -5,6 +5,8 @@ fair_value.TotalLeg instances, and extracts canonical spread / total line
 values from a legs list.
 """
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from kalshi_common import fair_value
 
@@ -35,6 +37,36 @@ _MLB_CODE_TO_TEAM = {
     "TEX": "Texas Rangers", "TOR": "Toronto Blue Jays",
     "WAS": "Washington Nationals", "WSH": "Washington Nationals",
 }
+
+
+_ET = ZoneInfo("America/New_York")
+_SUFFIX_MONTHS = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+                  "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
+
+
+def parse_suffix_start_utc(suffix: str) -> datetime | None:
+    """KXMLB* event-suffix YYMMMDDHHMM prefix (US/Eastern) -> naive-UTC, or None.
+
+    The suffix is the ONLY reliable first-pitch source on a Kalshi market:
+    ``close_time`` is first pitch + 72h (see the kalshi_close_time_not_start
+    note). Naive UTC matches the ``GameRef.commence_time`` convention the
+    per-book ``match_events`` helpers bucket on.
+
+    Lives here rather than in a bot package because both ``kalshi_rfi`` and the
+    maker's leg surface key games on it; ``kalshi_rfi.discovery`` re-exports it.
+    """
+    if len(suffix) < 11:
+        return None
+    try:
+        year = 2000 + int(suffix[0:2])
+        month = _SUFFIX_MONTHS[suffix[2:5].upper()]
+        day = int(suffix[5:7])
+        hour = int(suffix[7:9])
+        minute = int(suffix[9:11])
+        local = datetime(year, month, day, hour, minute, tzinfo=_ET)
+    except (KeyError, ValueError):
+        return None
+    return local.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _parse_event_suffix(suffix: str) -> tuple[str | None, str | None]:
