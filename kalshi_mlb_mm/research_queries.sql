@@ -310,3 +310,69 @@ SELECT book,
 FROM surface.mlb_leg_surface
 GROUP BY 1, 2
 ORDER BY 1, 2;
+
+-- ---------------------------------------------------------------------------
+-- 17) #98 ROUTING SPLIT — how many quotes came from the surface vs the live
+--     engine, and how many were MIXED. This is the throughput claim: a
+--     surface-only quote cost zero book requests. Cross-check against the
+--     book_requests_per_day query in kalshi_common/fetch_health_queries.sql —
+--     post-#98, on_demand rows should track the same-game half only.
+-- ---------------------------------------------------------------------------
+SELECT CASE
+         WHEN json_extract_string(payload, 'surface_games') IS NULL
+           THEN 'live_only'
+         WHEN json_extract_string(payload, 'live_games') IS NULL
+           THEN 'surface_only'
+         ELSE 'mixed'
+       END                                            AS pricing_source,
+       COUNT(*)                                       AS quotes,
+       ROUND(AVG(CAST(json_extract_string(payload, 'blended_fair')
+                      AS DOUBLE)), 4)                 AS avg_fair
+FROM research.events
+WHERE event_type = 'quote_priced'
+GROUP BY 1
+ORDER BY 2 DESC;
+
+-- ---------------------------------------------------------------------------
+-- 18) #99'S THRESHOLD QUERY — the age of the surface rows that ACTUALLY
+--     backed a quote, per book. Query 16 shows what the surface holds; this
+--     shows what got USED, which is what SURFACE_MAX_AGE_SEC must tolerate.
+--     Read the percentiles per book: a gate below a book's p95 silently
+--     removes that book from consensus rather than declining loudly.
+-- ---------------------------------------------------------------------------
+WITH used AS (
+    SELECT e.ts,
+           game.key                                        AS leg_set_hash,
+           bk.key                                          AS book,
+           CAST(json_extract_string(bk.value, 'age_sec') AS DOUBLE) AS age_sec,
+           json_extract_string(bk.value, 'route')          AS route
+    FROM research.events                                    AS e,
+         LATERAL json_each(json_extract(e.payload, '$.surface_games')) AS game,
+         LATERAL json_each(json_extract(game.value, '$.books'))        AS bk
+    WHERE e.event_type = 'quote_priced'
+      AND json_extract_string(e.payload, 'surface_games') IS NOT NULL
+)
+SELECT book,
+       route,
+       COUNT(*)                          AS legs_used,
+       ROUND(MEDIAN(age_sec), 1)         AS p50_age_sec,
+       ROUND(QUANTILE_CONT(age_sec, 0.95), 1) AS p95_age_sec,
+       ROUND(MAX(age_sec), 1)            AS max_age_sec
+FROM used
+GROUP BY 1, 2
+ORDER BY 5 DESC;
+
+-- ---------------------------------------------------------------------------
+-- 19) #98 DECLINE ATTRIBUTION — a thin CACHED surface vs a thin LIVE fetch.
+--     These are the same #20 gate on different inputs, and they call for
+--     opposite fixes: surface_* points at ingest coverage or cadence,
+--     live_*/on_demand_* at book latency or the on-demand path.
+-- ---------------------------------------------------------------------------
+SELECT reason, COUNT(*) AS n
+FROM state.quote_decisions
+WHERE reason IN ('surface_too_few_books', 'surface_dispersion',
+                 'live_too_few_books', 'consensus_dispersion',
+                 'live_fetch_timeout', 'on_demand_pending')
+  AND observed_at >= now() - INTERVAL 24 HOUR
+GROUP BY 1
+ORDER BY 2 DESC;
