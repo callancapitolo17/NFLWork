@@ -80,6 +80,13 @@ _VOID_HALT_ACTIVE = False  # N12: track prior void-rate halt state for edge-trig
 # Phase 2 on-demand pricing: engine constructed in main_loop (None in tests /
 # before startup — every use is None-guarded, failing safe to "don't quote").
 _ENGINE = None
+# Leg surface (epic #94, issue #98): the in-memory store the quote path reads
+# for CROSS-GAME single-leg groups, and the ingest loop that fills it. Both are
+# constructed in main_loop (None in tests / before startup / when
+# SURFACE_ENABLED is off — every use is None-guarded and falls back to the live
+# on-demand path, which is pre-#98 behaviour).
+_SURFACE = None
+_SURFACE_INGEST = None
 _OD_RESULT_EMITTED = {}  # leg_set_hash -> landed_at of last on_demand_result emit
 # Confirm-window budget for the confirm-tick live re-fetch: the ~30s Kalshi
 # confirm window minus the poll gap and a buffer for the confirm API call.
@@ -465,6 +472,64 @@ def _open_quote_exposure_by_game(exclude_rfq_id: str | None = None):
     return snapshot.open_exposure_by_game(exclude_rfq_id)
 
 
+def _surface_fairs(game_legs: list) -> dict:
+    """{book: devigged fair} for a ONE-leg game group, from the IN-MEMORY leg
+    surface (issue #98). The `surface_fairs` callable the router consumes.
+
+    Reads `LegSurface`, never `kalshi_mlb_mm_surface.duckdb`: a DuckDB open
+    costs ~17ms and per-item opens in a hot loop have caused three separate
+    incidents. The DuckDB file is a research/observability mirror only.
+
+    FanDuel publishes through TWO routes (structure for ml/spread/I1, singles
+    for FG/F5 totals); `book_fairs` already collapses them to one "fanduel"
+    key, and that is deliberate — two routes at one book are ONE opinion, and
+    counting them twice would let FanDuel satisfy MIN_AGREEING_BOOKS alone.
+
+    Rows of ANY age: #99 owns the staleness gate, and dropping stale rows here
+    would make its decline counts unreadable. Fail-safe: {} on any error, which
+    reads as "no book priced this leg" and declines the combo.
+    """
+    try:
+        if _SURFACE is None or len(game_legs) != 1:
+            return {}
+        return {book: row.fair_prob
+                for book, row in _SURFACE.book_fairs(game_legs[0]).items()}
+    except Exception:
+        return {}
+
+
+def _surface_lookup():
+    """The router's `surface_fairs` argument, or None when the surface is off.
+
+    None is #98's off switch end-to-end: the router then routes single-leg
+    groups to the live on-demand engine exactly as it did before this ticket.
+    """
+    if not config.SURFACE_ENABLED or _SURFACE is None:
+        return None
+    return _surface_fairs
+
+
+def _surface_refreshed_since(game_legs: list, since) -> bool:
+    """True iff >= MIN_AGREEING_BOOKS books hold a surface row for this leg
+    built AFTER `since` (issue #98's heir to #57's post-fill targeted refetch).
+
+    A surface-routed game has no flight to wait on, so the equivalent of "the
+    books were re-asked after the pick-off" is "enough books have since
+    published a NEWER price". The threshold is MIN_AGREEING_BOOKS rather than
+    1 because that is the count the quote gate needs anyway — a single
+    refreshed book could not re-price the combo. Fail-CLOSED: any error keeps
+    the combo cooled, matching `_post_fill_live_refresh_landed`.
+    """
+    try:
+        if _SURFACE is None or not game_legs:
+            return False
+        rows = _SURFACE.book_fairs(game_legs[0])
+        refreshed = sum(1 for row in rows.values() if row.built_at > since)
+        return refreshed >= max(config.MIN_AGREEING_BOOKS, 2)
+    except Exception:
+        return False
+
+
 def _post_fill_live_refresh_landed(by_game: dict, filled_at) -> bool:
     """True iff EVERY game leg set of the combo has a COMPLETED on-demand
     flight with >=1 book fair that landed AFTER `filled_at` (P-7 issue #21,
@@ -482,12 +547,21 @@ def _post_fill_live_refresh_landed(by_game: dict, filled_at) -> bool:
     combo cooled — a stale re-quote is worse than a skipped one.
     """
     try:
-        if filled_at is None or _ENGINE is None:
+        if filled_at is None:
             return False
+        surface_lookup = _surface_lookup()
         now_utc = datetime.now(timezone.utc)
         filled_cmp = (filled_at if filled_at.tzinfo is not None
                       else filled_at.astimezone())
         for gl in by_game.values():
+            # #98: a surface-routed game never had a flight, so its refresh
+            # proof is "enough books published a NEWER row" instead.
+            if surface_lookup is not None and router.routes_to_surface(gl):
+                if not _surface_refreshed_since(gl, filled_cmp):
+                    return False
+                continue
+            if _ENGINE is None:
+                return False
             age = _ENGINE.completed_fetch_age_sec(legset.leg_set_hash(gl))
             if age is None:
                 return False
@@ -511,7 +585,13 @@ def _ensure_post_fill_fetches(rfq_id, ticker, by_game: dict) -> None:
     try:
         if _ENGINE is None:
             return
+        surface_lookup = _surface_lookup()
         for gl in by_game.values():
+            # #98: nothing to queue for a surface-routed game — the ingest
+            # loop is already refreshing that leg on its own cadence, and
+            # _surface_refreshed_since is what clears its cooldown.
+            if surface_lookup is not None and router.routes_to_surface(gl):
+                continue
             gid = _resolve_game_for_legs(gl)
             gref = _game_ref(gid) if gid is not None else None
             if gref is None:
@@ -694,8 +774,15 @@ def _live_games_detail(by_game):
     try:
         if _ENGINE is None:
             return None
+        surface_lookup = _surface_lookup()
         out = {}
         for gl in by_game.values():
+            # #98: the two traces must PARTITION the combo — a surface-priced
+            # game is excluded here even if the engine happens to still hold a
+            # result for its leg set (a leftover from an earlier tick), because
+            # that result did not price this quote.
+            if surface_lookup is not None and router.routes_to_surface(gl):
+                continue
             h = legset.leg_set_hash(gl)
             res = _ENGINE.lookup_results(h)
             if not res:
@@ -708,6 +795,37 @@ def _live_games_detail(by_game):
                 books={b: dict(fair=r.fair, route=r.route,
                                latency_sec=r.latency_sec)
                        for b, r in res.items()})
+        return out or None
+    except Exception:
+        return None
+
+
+def _surface_games_detail(by_game):
+    """Per-game LEG-SURFACE trace for quote_priced (issue #98), the sibling of
+    `_live_games_detail` above.
+
+    {hash: {market_type, period, books: {book: {fair, route, age_sec}}}} for
+    every SURFACE-priced game; None when nothing was. `age_sec` is the age of
+    the row that actually backed the quote, and it is the whole point of this
+    event: until #99 lands there is no age gate, so this trace is how an
+    operator (and #99's threshold-setting query) sees what a quote rested on.
+    Fail-safe: research decoration only, never raises into the tick."""
+    try:
+        if _surface_lookup() is None:
+            return None
+        now_utc = datetime.now(timezone.utc)
+        out = {}
+        for gl in by_game.values():
+            if not router.routes_to_surface(gl):
+                continue
+            rows = _SURFACE.book_fairs(gl[0])
+            if not rows:
+                continue
+            out[legset.leg_set_hash(gl)] = dict(
+                market_type=gl[0].market_type, period=gl[0].period,
+                books={b: dict(fair=r.fair_prob, route=r.route,
+                               age_sec=(now_utc - r.built_at).total_seconds())
+                       for b, r in rows.items()})
         return out or None
     except Exception:
         return None
@@ -1051,6 +1169,10 @@ def _discovery_tick(source, gateway, dry_run):
     game_exposure_rows = _today_fills_by_game()
     scope_fetches_this_tick = 0
     scope_fetches_deferred = 0
+    # #98: resolved ONCE per pass — it is a config flag plus a None check, and
+    # every RFQ in the pass must route the same way (a mid-pass flip would
+    # queue a fetch for a game the pricer then read off the surface).
+    surface_lookup = _surface_lookup()
     # Per-pass write buffers + one bulk seen-lookup (2026-08-10 incident,
     # round 2): on the ~1GB state DB every connection close pays a full
     # CHECKPOINT (~0.5s — confirmed by stack sampling), so the old
@@ -1297,6 +1419,15 @@ def _discovery_tick(source, gateway, dry_run):
             od_pending = False
             od_timed_out = False
             for gl, od_gid in zip(by_game.values(), game_ids_list):
+                # #98: a CROSS-GAME combo's single-leg group prices from the
+                # cached leg surface, so it queues no flight and waits on
+                # nothing — this `continue` IS the "zero outbound book
+                # requests" acceptance criterion. A surface MISS is not a live
+                # fallback: that book is simply absent from the leg's
+                # book_fairs and drops out of consensus, because falling back
+                # would reintroduce the per-RFQ traffic this ticket removes.
+                if surface_lookup is not None and router.routes_to_surface(gl):
+                    continue
                 if _ENGINE is None:
                     od_pending = True          # engine absent -> fail-safe skip
                     continue
@@ -1334,12 +1465,17 @@ def _discovery_tick(source, gateway, dry_run):
             fair_detail, gate_reason = router.combo_fair_detail(
                 legs, None, _resolve_game_for_legs,
                 config.MIN_AGREEING_BOOKS, config.SIGMA_Z_MAX,
-                on_demand_fairs=od_lookup, live_routing=True)
+                on_demand_fairs=od_lookup, live_routing=True,
+                surface_fairs=surface_lookup)
             blended = fair_detail.fair if fair_detail is not None else None
             book_med = blended  # single consensus fair; book_med == blended
             if blended is None or not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
+                # #98 adds the two "surface_" variants: same gate, cached
+                # input. Kept distinct so the monitor can separate "the cached
+                # surface was thin/split" from "the live fetch was".
                 skip_reason = (gate_reason if fair_detail is None and gate_reason
-                               in ("too_few_books", "consensus_dispersion")
+                               in ("too_few_books", "consensus_dispersion",
+                                   "surface_too_few_books", "surface_dispersion")
                                else "no_fair")
                 if skip_reason == "too_few_books":
                     # "The live fetch answered too thin" — named so the monitor
@@ -1351,7 +1487,7 @@ def _discovery_tick(source, gateway, dry_run):
                 # too_few_books deliberately does NOT pull: a set that merely
                 # thinned was not contradicted, and the risk sweep's drift and
                 # constituent-jump breakers still cover the resting quote.
-                if (skip_reason == "consensus_dispersion"
+                if (skip_reason in ("consensus_dispersion", "surface_dispersion")
                         and _pull_quorum_quote(gateway, rid, ticker, game_id,
                                                snapshot)):
                     continue
@@ -1473,7 +1609,8 @@ def _discovery_tick(source, gateway, dry_run):
                                        roi_pts_yes=q.roi_pts_yes, roi_pts_no=q.roi_pts_no,
                                        margin_pts_yes=q.margin_pts_yes,
                                        margin_pts_no=q.margin_pts_no,
-                                       live_games=_live_games_detail(by_game)))
+                                       live_games=_live_games_detail(by_game),
+                                       surface_games=_surface_games_detail(by_game)))
             if dry_run:
                 _decide("dry_run_quote", rfq_id=rid, ticker=ticker, game_id=game_id,
                               model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
@@ -1684,10 +1821,19 @@ def _confirm_tick(gateway, dry_run):
             # on "failed fetch ⇒ stale lookup" alone would confirm on a
             # previously-fetched number.
             refetch_ok = True
+            surface_lookup = _surface_lookup()
             if _ENGINE is not None and canon_c:
                 for gl in legset.partition_by_game(canon_c).values():
-                    # #54: EVERY sub-combo re-fetches — the quote's fair came
-                    # from the engine, whose result has aged out by accept
+                    # #98: a surface-routed game has no flight to re-fetch —
+                    # the ingest loop keeps its rows current and combo_fair
+                    # below re-reads them. Skipped BEFORE game resolution so a
+                    # missing mlb_target_lines row cannot void a fill we can
+                    # still price (the surface never needed that id).
+                    if (surface_lookup is not None
+                            and router.routes_to_surface(gl)):
+                        continue
+                    # #54: EVERY live sub-combo re-fetches — the quote's fair
+                    # came from the engine, whose result has aged out by accept
                     # time; the cache must not stand in.
                     gid_c = _resolve_game_for_legs(gl)
                     gref = _game_ref(gid_c) if gid_c else None
@@ -1703,7 +1849,8 @@ def _confirm_tick(gateway, dry_run):
             cur_fair = router.combo_fair(legs, None, _resolve_game_for_legs,
                                          config.MIN_AGREEING_BOOKS, config.SIGMA_Z_MAX,
                                          on_demand_fairs=od_lookup,
-                                         live_routing=True)
+                                         live_routing=True,
+                                         surface_fairs=surface_lookup)
             if cur_fair is None or not refetch_ok:
                 _log_decision("voided_no_fresh_books", rfq_id=rid, quote_id=qid, ticker=ticker,
                               game_id=game_id)
@@ -1983,7 +2130,8 @@ def _current_consensus_fair(legs_json: str | None) -> float | None:
                                  config.SIGMA_Z_MAX,
                                  on_demand_fairs=(_ENGINE.lookup
                                                   if _ENGINE is not None else None),
-                                 live_routing=True)
+                                 live_routing=True,
+                                 surface_fairs=_surface_lookup())
     except Exception:
         return None
 
@@ -2254,6 +2402,22 @@ def main_loop(dry_run: bool):
             "  *** NOVIG ABOVE 1 LANE RE-OPENS #40 (403s at ~26 rapid "
             "calls) ***" if book == "novig" else "")
     _ENGINE = OnDemandEngine(sgp_service)
+    # Leg surface (epic #94, issue #98): its own ingest threads and its own
+    # PRIVATE SGPService — never sgp_service above, whose 420s structure cache
+    # is correct for the same-game on-demand path and must not inherit the
+    # surface's freshness requirement. Started here so rows exist before the
+    # first discovery pass; a cold surface simply declines cross-game combos
+    # (surface_too_few_books) for the first cadence rather than falling back
+    # to live fetches.
+    global _SURFACE, _SURFACE_INGEST
+    if config.SURFACE_ENABLED:
+        from kalshi_mlb_mm.leg_surface.runner import SurfaceIngest
+        _SURFACE_INGEST = SurfaceIngest()
+        _SURFACE = _SURFACE_INGEST.surface
+        _SURFACE_INGEST.start()
+    else:
+        log.warning("SURFACE_ENABLED=false — cross-game single legs route to "
+                    "the live on-demand engine (pre-#98 behaviour)")
     # Synchronous warm-up: populate mlb_target_lines before the loop starts
     # (game resolution, tipoff gating and the first warming pass all read
     # it). #81: ZERO book requests here — the maker's book traffic is now
@@ -2379,6 +2543,15 @@ def main_loop(dry_run: bool):
                         [datetime.now(timezone.utc), qid])
             except Exception:
                 pass
+        # #98: stop the ingest AFTER the quote-cancel sweep. stop() joins 7
+        # worker threads at up to 10s each, and a wedged book worker must
+        # never be able to delay cancelling live risk — the surface's own
+        # traffic is read-only book scraping and is harmless in the meantime.
+        if _SURFACE_INGEST is not None:
+            try:
+                _SURFACE_INGEST.stop()
+            except Exception as e:
+                log.warning("surface ingest stop failed: %s", e)
         # #81: drain the partial coverage window into the buffer, then the
         # buffer to disk — otherwise up to COVERAGE_SUMMARY_SEC of per-book
         # outcomes die with the process.

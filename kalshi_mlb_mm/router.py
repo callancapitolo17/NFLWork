@@ -5,6 +5,11 @@ the SGP odds DataFrame, the per-game resolver, and consensus params in.
 Same-game shapes beyond the two 2-leg grids return None here (Phase 2 prices
 them on-demand). Cross-game = product of per-game consensus fairs (independence).
 
+Issue #98 adds ONE new input: a game contributing exactly one leg (only
+possible inside a cross-game combo) prices from the cached leg surface via the
+injected `surface_fairs` lookup — zero network I/O. Same-game groups are
+untouched and keep the live on-demand path. See `routes_to_surface` below.
+
 Consensus (issue #20) is a z-space dispersion gate: fair = median of ALL
 books, quoted only when the sample stddev of the book fairs in probit space
 is <= sigma_z_max. No outlier removal — a dissenting book is as likely the
@@ -24,6 +29,34 @@ from kalshi_common.leg_types import SPREAD_TOTAL_FAMILY, ML_TOTAL_FAMILY
 # Devig outputs live strictly inside (0,1); the clip only guards norm.ppf
 # against a pathological 0/1 input reaching +-inf.
 _PPF_CLIP = 1e-6
+
+# Issue #98: the ONE sub-combo route the cached leg surface may price. A game
+# contributing exactly one leg is, by construction, part of a CROSS-GAME combo
+# (lone single-leg RFQs are out of scope at main._priceable), and cross-game
+# legs are independent — pure multiplication. Same-game legs are correlated
+# and keep the live on-demand SGP path, unchanged.
+SURFACE_ROUTE = "single"
+
+# Surface-routed gate declines get their own names so an operator can tell
+# "the cached surface was thin" from "the live fetch answered thin" without
+# reading legs. Same gate, same thresholds — only the input differs.
+_SURFACE_GATE_REASON = {"too_few_books": "surface_too_few_books",
+                        "consensus_dispersion": "surface_dispersion"}
+
+
+def routes_to_surface(game_legs: list[legset.CanonicalLeg]) -> bool:
+    """True iff this game's legs price from the leg surface (issue #98).
+
+    THE single definition of "this game costs no network". Read by the pricer
+    below AND by the discovery tick's on-demand feed block, so the code that
+    queues fetches and the code that prices can never disagree about which
+    games need one.
+
+    classify_subcombo runs the F5-TIE, duplicate-market and #86 contradiction
+    guards BEFORE its n == 1 branch, so an unpriceable lone leg never reaches
+    the surface.
+    """
+    return legset.classify_subcombo(game_legs) == SURFACE_ROUTE
 
 
 @dataclass(frozen=True)
@@ -174,7 +207,8 @@ def consensus_detail(book_fairs: dict[str, float], min_books: int,
 def subcombo_consensus(game_id, game_legs, sgp_df, min_books: int,
                        sigma_z_max: float,
                        on_demand_fairs=None, *,
-                       live_routing: bool = False) -> tuple["Consensus | None", str]:
+                       live_routing: bool = False,
+                       surface_fairs=None) -> tuple["Consensus | None", str]:
     """Price one game's sub-combo: route via classify_subcombo -> grid/single
     book fairs -> dispersion-gate consensus. Returns (Consensus | None, reason).
 
@@ -188,10 +222,27 @@ def subcombo_consensus(game_id, game_legs, sgp_df, min_books: int,
     consulted; without a lookup the route fails closed ("unpriceable"), it
     never falls back to the cache. classify_subcombo still gates scope
     (duplicate-market combos stay unpriceable).
+
+    surface_fairs (issue #98): optional pure lookup, game_legs -> {book: fair},
+    injected by main (the in-memory LegSurface read). When supplied, a
+    SURFACE_ROUTE game prices from it with ZERO network I/O and never touches
+    on_demand_fairs. A book missing that leg is simply absent from the dict and
+    excluded from consensus — there is deliberately NO live fallback, because a
+    fallback would reintroduce exactly the per-RFQ book traffic #98 removes.
+    Default None reproduces pre-#98 routing exactly (single legs live-fetch),
+    which is this ticket's rollback.
     """
     route = legset.classify_subcombo(game_legs)
     if live_routing:
-        if route == "unpriceable" or on_demand_fairs is None:
+        if route == "unpriceable":
+            return None, "unpriceable"
+        if surface_fairs is not None and route == SURFACE_ROUTE:
+            cons, reason = consensus(surface_fairs(game_legs) or {},
+                                     min_books, sigma_z_max)
+            if cons is None:
+                return None, _SURFACE_GATE_REASON.get(reason, reason)
+            return cons, reason
+        if on_demand_fairs is None:
             return None, "unpriceable"
         book_fairs = on_demand_fairs(legset.leg_set_hash(game_legs)) or {}
         return consensus(book_fairs, min_books, sigma_z_max)
@@ -223,12 +274,14 @@ class ComboFair:
 def combo_fair_detail(legs: list[dict], sgp_df, resolve_game, min_books: int,
                       sigma_z_max: float,
                       on_demand_fairs=None, *,
-                      live_routing: bool = False) -> tuple["ComboFair | None", str]:
+                      live_routing: bool = False,
+                      surface_fairs=None) -> tuple["ComboFair | None", str]:
     """Full RFQ: parse -> partition by game -> per-game consensus -> multiply.
 
     Returns (ComboFair | None, reason); reason is "ok" or the first failing
-    game's gate reason ("too_few_books" / "consensus_dispersion") or a
-    routing failure ("unparseable" / "unresolved_game" / "unpriceable").
+    game's gate reason ("too_few_books" / "consensus_dispersion", or their
+    "surface_" variants) or a routing failure ("unparseable" /
+    "unresolved_game" / "unpriceable").
 
     Combo sigma: for a product of independent per-game estimates, relative
     variances add (same rule as R's sqrt(sum((s/x)^2)) error propagation):
@@ -242,13 +295,25 @@ def combo_fair_detail(legs: list[dict], sgp_df, resolve_game, min_books: int,
     n_games = 0
     min_n_books = None
     for _game_key, game_legs in legset.partition_by_game(canon).items():
-        game_id = resolve_game(game_legs)
-        if game_id is None:
-            return None, "unresolved_game"
+        # #98: a surface-routed game is keyed on CanonicalLeg.game_id (the
+        # Kalshi event-ticker suffix the legs already carry), so resolve_game
+        # — which maps to the Odds API id in mlb_target_lines — has no
+        # consumer here and would only add a false "unresolved_game" decline
+        # whenever that table lags. Live-routed games resolve exactly as
+        # before; the discovery tick's own no_game gate (which feeds the
+        # per-game exposure cap and tipoff) is untouched either way.
+        surface_routed = (live_routing and surface_fairs is not None
+                          and routes_to_surface(game_legs))
+        game_id = None
+        if not surface_routed:
+            game_id = resolve_game(game_legs)
+            if game_id is None:
+                return None, "unresolved_game"
         cons, reason = subcombo_consensus(game_id, game_legs, sgp_df,
                                           min_books, sigma_z_max,
                                           on_demand_fairs=on_demand_fairs,
-                                          live_routing=live_routing)
+                                          live_routing=live_routing,
+                                          surface_fairs=surface_fairs)
         if cons is None:
             return None, reason
         if cons.fair <= 0.0:
@@ -265,11 +330,12 @@ def combo_fair_detail(legs: list[dict], sgp_df, resolve_game, min_books: int,
 
 def combo_fair(legs: list[dict], sgp_df, resolve_game, min_books: int,
                sigma_z_max: float, on_demand_fairs=None, *,
-               live_routing: bool = False) -> float | None:
+               live_routing: bool = False, surface_fairs=None) -> float | None:
     """Fair-only wrapper for call sites that don't need sigma/n_games
     (confirm last-look drift check, risk-sweep drift check)."""
     detail, _reason = combo_fair_detail(legs, sgp_df, resolve_game, min_books,
                                         sigma_z_max,
                                         on_demand_fairs=on_demand_fairs,
-                                        live_routing=live_routing)
+                                        live_routing=live_routing,
+                                        surface_fairs=surface_fairs)
     return detail.fair if detail is not None else None

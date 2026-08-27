@@ -163,13 +163,12 @@ bid        = (p − margin_pts) − maker_fee,  floored to the $0.001 grid
 
 Interplay of the two tickets: **moderate** dispersion widens the margin (#19); dispersion **past `SIGMA_Z_MAX`** kills the quote (#20). One uncertainty number drives both.
 
-## Leg surface (epic #94, issue #96) — cached single-leg book fairs
+## Leg surface (epic #94, issues #96, #98) — cached single-leg book fairs
 
-**Status: shipped dark — by construction, not by a flag.** Nothing in the
-maker imports `kalshi_mlb_mm.leg_surface`, so the loop runs only when started
-standalone. #98 wires the router to it (cross-game
-only), #99 adds the staleness gate. Until then the quote path is unchanged —
-every combo still prices live.
+**Status: LIVE for cross-game combos** (`SURFACE_ENABLED=true`, default). #96
+shipped the ingest loop; #98 wired the router to it. #99 still owes the
+staleness gate — see the caveat under "Quote path" below. Same-game combos are
+untouched and price live, exactly as before.
 
 **Why.** The live path does network I/O per RFQ, so its work scales with RFQ
 count (~140k/day) instead of game count (~15/day). Measured 2026-08-19:
@@ -180,6 +179,90 @@ independent. Caching their single legs removes that demand entirely.
 **Same-game combos are NOT in scope** and keep the live on-demand path: their
 legs are correlated, so the price has to come from the book's own SGP endpoint.
 
+### Quote path (issue #98) — which games cost network
+
+`main_loop` constructs and starts a `SurfaceIngest` when `SURFACE_ENABLED` is
+true, and injects `main._surface_fairs` into the router as `surface_fairs`.
+Routing is then one rule, `router.routes_to_surface` — read by BOTH the pricer
+and the discovery tick's fetch-queuing block, so the code that spends requests
+and the code that prices can never disagree:
+
+| a game's legs in the combo | route | book requests |
+|---|---|---|
+| **exactly 1** (only possible inside a cross-game combo) | leg surface | **zero** |
+| 2-leg grid (spread×total, ml×total) | live on-demand SGP | as before |
+| `on_demand` (3-leg, F5 mix, RFI mix, …) | live on-demand SGP | as before |
+| `unpriceable` | decline | none |
+
+That predicate is exactly `classify_subcombo(...) == "single"`, which already
+runs the F5-TIE, duplicate-market and #86 contradiction guards **before** its
+`n == 1` branch — so an unpriceable lone leg never reaches the surface. Lone
+single-leg RFQs stay out of scope at `_priceable`, which is why "1 leg for this
+game" and "part of a cross-game combo" are the same test.
+
+Everything downstream of the fair is unchanged: the #20 dispersion gate, the
+#23 Fréchet/singles sanity check, the #19 margin, the constituent-jump breaker,
+tipoff, exposure caps and the confirm last look all run identically — only
+where the per-game number came from differs. Cross-game fairs still **multiply**
+per game.
+
+Four consequences worth knowing:
+
+- **A surface miss is not a live fallback.** A book that lacks the leg is
+  simply absent from `book_fairs` and drops out of consensus; too few books
+  declines `surface_too_few_books`. Falling back would reintroduce exactly the
+  per-RFQ book traffic the epic removes.
+- **`resolve_game` is skipped for surface groups.** The surface keys on
+  `CanonicalLeg.game_id` (the Kalshi suffix) and the live path keys on
+  `leg_set_hash`, so under live routing the resolved `mlb_target_lines` id has
+  no consumer — resolving it would only add a false `unresolved_game` decline.
+  The discovery tick's own `no_game` gate is untouched: it feeds the per-game
+  exposure cap, the tipoff gate and the `fill_games` ledger, which are risk
+  gates, not pricing ones.
+- **Confirm and cooldown adapt, they do not relax.** The confirm last look has
+  no flight to re-fetch for a surface combo, so it re-prices off the surface's
+  current rows (still fail-closed: no fair ⇒ void). The post-fill cooldown's
+  "the books were re-asked after the pick-off" condition becomes
+  "≥ `MIN_AGREEING_BOOKS` books published a row with `built_at` **after** the
+  fill" (`_surface_refreshed_since`), fail-closed on any error.
+- **The quote path reads the in-memory `LegSurface`, never
+  `kalshi_mlb_mm_surface.duckdb`.** A DuckDB open costs ~17ms and per-item
+  opens in a hot loop have caused three incidents; the file is a research
+  mirror only.
+
+**Caveat until #99: rows of ANY age can back a quote.** `book_fairs` returns
+whatever is published, and a failed ingest pass deliberately publishes nothing
+(keeping the book's previous rows) so a wobble cannot blank a live book — which
+means a book that goes dark holds its last prices. There is no age gate yet.
+Every `quote_priced` event therefore carries a `surface_games` trace —
+`{leg_set_hash: {market_type, period, books: {book: {fair, route, age_sec}}}}`
+— recording the age of each row that actually backed the quote. That is the
+distribution #99 sets `SURFACE_MAX_AGE_SEC` from. `live_games` now excludes
+surface-priced games, so the two traces partition the combo exactly.
+
+**Rollback:** `SURFACE_ENABLED=false`. No ingest threads start, `surface_fairs`
+is `None`, and single-leg groups route back to the live on-demand engine —
+byte-for-byte pre-#98 behaviour. Config only; no code change.
+
+**Cold start:** the surface is empty for the first cadence after boot, so
+cross-game combos decline `surface_too_few_books` for ~20–60s rather than
+falling back to live fetches.
+
+**Window alignment (do not break this).** The surface's slate window must stay
+a SUPERSET of the games the maker will quote, or cross-game combos silently
+lose their fairs:
+
+| bound | maker quotes | surface ingests |
+|---|---|---|
+| near | `TIPOFF_CANCEL_MIN` = 5 min to first pitch | `SURFACE_GAME_MIN_MINUTES`, which **defaults to `TIPOFF_CANCEL_MIN`** |
+| far | `FLIGHT_HORIZON_HOURS` = 6h | `SURFACE_GAME_MAX_HOURS` = 12h |
+
+Raising `FLIGHT_HORIZON_HOURS` above `SURFACE_GAME_MAX_HOURS` would create a
+band of games the maker tries to quote and the surface has never fetched. The
+2026-08-27 live run confirmed the alignment holds today: every zero-book
+surface lookup was a game already in progress — one the tipoff gate rejects
+before pricing anyway — and **no lookup missed on a key the surface held**.
+
 ### Run it
 
 ```bash
@@ -187,6 +270,9 @@ legs are correlated, so the price has to come from the book's own SGP endpoint.
 kalshi_mlb_mm/venv/bin/python -m kalshi_mlb_mm.leg_surface
 kalshi_mlb_mm/venv/bin/python -m kalshi_mlb_mm.leg_surface --minutes 60   # bounded run
 ```
+
+The maker starts the same loop itself; run it standalone to populate or inspect
+the surface without starting the bot.
 
 ### Shape
 

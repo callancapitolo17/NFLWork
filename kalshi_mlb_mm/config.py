@@ -405,11 +405,21 @@ MLB_SGP_DIR = Path(_get("MLB_SGP_DIR", str(PROJECT_ROOT / "mlb_sgp")))
 SURFACE_DB = PKG_DIR / "kalshi_mlb_mm_surface.duckdb"
 # Own sibling DB, own write lock: the market DB is read by the pricing path
 # and a 20s-cadence writer has no business contending with it.
-# #96 ships the ingest loop DARK by construction: nothing in the maker
-# imports kalshi_mlb_mm.leg_surface, so it only runs when started standalone
-# (`python -m kalshi_mlb_mm.leg_surface`). #98 adds the wiring and, with it,
-# whatever switch that wiring needs — an unread flag here would just be a lie
-# about what turns the loop on.
+
+# #98's switch. True: main_loop runs the ingest loop AND the router prices a
+# CROSS-GAME combo's single-leg groups from the in-memory surface (zero
+# network). False: no ingest threads and single-leg groups route back to the
+# live on-demand engine — byte-for-byte pre-#98 behaviour, which is the
+# rollback for this ticket. Same-game combos are unaffected either way.
+#
+# Caveat until #99: the surface serves rows of ANY age. A book whose ingest
+# pass fails publishes nothing and keeps its previous rows (deliberate — an
+# empty slice would blank a live book on a blip), so a book that goes dark
+# holds its last prices until it recovers. #99 adds SURFACE_MAX_AGE_SEC; the
+# `surface_games` research trace on every quote_priced carries the per-book
+# row ages that set it. Enabled by user decision 2026-08-27 with the bot not
+# running.
+SURFACE_ENABLED = _get_bool("SURFACE_ENABLED", "true")
 
 # Route assignment, per #95's coverage matrix. Exactly ONE route is
 # authoritative per (book, market_type, period), so a surface key can never
