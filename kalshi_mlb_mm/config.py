@@ -412,14 +412,71 @@ SURFACE_DB = PKG_DIR / "kalshi_mlb_mm_surface.duckdb"
 # live on-demand engine — byte-for-byte pre-#98 behaviour, which is the
 # rollback for this ticket. Same-game combos are unaffected either way.
 #
-# Caveat until #99: the surface serves rows of ANY age. A book whose ingest
-# pass fails publishes nothing and keeps its previous rows (deliberate — an
-# empty slice would blank a live book on a blip), so a book that goes dark
-# holds its last prices until it recovers. #99 adds SURFACE_MAX_AGE_SEC; the
-# `surface_games` research trace on every quote_priced carries the per-book
-# row ages that set it. Enabled by user decision 2026-08-27 with the bot not
-# running.
+# A book whose ingest pass fails publishes nothing and keeps its previous rows
+# (deliberate — an empty slice would blank a live book on a blip), so a book
+# that goes dark holds its last prices until it recovers. SURFACE_MAX_AGE_SEC
+# below is what turns that into a countable decline. Enabled by user decision
+# 2026-08-27 with the bot not running.
 SURFACE_ENABLED = _get_bool("SURFACE_ENABLED", "true")
+
+# ---- Staleness gate (issue #99) ---------------------------------------- #
+# A quote may only use surface rows YOUNGER than this. 30s by user decision
+# 2026-08-25, reaffirmed on #99: it is a backstop against refresh failure, not
+# the refresh rate. Measured row ages that actually backed quotes (#98's live
+# run, research_queries.sql query 18): the three structure books sit at p50
+# 7-8s / p95 19s / max 20.6s on a 20s cadence and clear this comfortably;
+# DRAFTKINGS DOES NOT, and cannot at any cadence — its slate scrape alone is
+# 21-28s, so its rows are 30-90s old. DK is therefore excluded from surface
+# consensus by design; main._warn_structurally_excluded_books() logs a startup
+# WARNING naming every such book so the removal is loud, and the periodic
+# `surface_age_summary` event counts used-vs-excluded per book.
+#
+# The gate lives ABOVE the store (main._SurfaceAgeGate), never inside
+# LegSurface.book_fairs: a store that silently dropped stale rows would make
+# the decline counts unreadable. Rows excluded here produce `surface_stale`,
+# deliberately a DIFFERENT reason from `surface_too_few_books` (no book
+# published the leg at all) and `surface_dispersion` (fresh books disagree).
+#
+# <= 0 disables the age bound entirely — byte-for-byte pre-#99 behaviour, and
+# this ticket's rollback. Config only, no code change.
+SURFACE_MAX_AGE_SEC = float(_get("SURFACE_MAX_AGE_SEC", "30"))
+
+# ---- Pre-quote constituent freshness veto (issue #99) ------------------- #
+# Kalshi's own constituent single-leg markets are the fastest-moving,
+# book-independent staleness signal we have, and #17/#23 already snapshot them
+# at quote time. If Kalshi moved AFTER the surface row was built, the book's
+# cached number is stale by construction — refuse to quote on it.
+#
+# Costs ZERO extra Kalshi API calls: constituent_tape.ConstituentTape only
+# REMEMBERS reads the bot already makes (the #17 quote snapshot, the confirm
+# re-read, the #23 risk-sweep poll) so a past price exists to compare against.
+# No baseline in the tape => no signal => fail-open and counted, the same
+# contract that makes an unreadable ticker safe in singles.jumped_tickers.
+#
+# The veto is combo-level: by the time current Kalshi prices exist the fair has
+# already run the margin / size / exposure / hysteresis chain, so refusing one
+# book's row would mean re-running all of it. Declining the whole combo is
+# fail-closed and cheap — the age gate has already bounded the oldest backing
+# row to SURFACE_MAX_AGE_SEC. Reason: `surface_constituent_moved`.
+SURFACE_CONSTITUENT_VETO_ENABLED = _get_bool(
+    "SURFACE_CONSTITUENT_VETO_ENABLED", "true")
+# Same units as CONSTITUENT_JUMP_THRESHOLD (|delta| of the devigged P(YES) of
+# the leg's own Kalshi market) and defaulted to the same number, so one knob
+# tunes both unless they need splitting. They may diverge later: #23's cancels
+# a resting quote, this one only declines a new one, which is cheaper — the
+# `surface_constituent_check` event records every delta so the split can be
+# made from data rather than taste.
+SURFACE_CONSTITUENT_MOVE_THRESHOLD = float(
+    _get("SURFACE_CONSTITUENT_MOVE_THRESHOLD",
+         str(CONSTITUENT_JUMP_THRESHOLD)))
+# How long the tape remembers a ticker's price. It only needs to reach back
+# past the oldest row the age gate will admit; the margin covers a book whose
+# pass overran and a leg quoted so rarely that its last observation predates
+# that. Bounded per ticker too (CONSTITUENT_TAPE_MAX_POINTS) so a long-lived
+# process cannot grow it without limit.
+CONSTITUENT_TAPE_RETENTION_SEC = float(
+    _get("CONSTITUENT_TAPE_RETENTION_SEC", "180"))
+CONSTITUENT_TAPE_MAX_POINTS = int(_get("CONSTITUENT_TAPE_MAX_POINTS", "64"))
 
 # Route assignment, per #95's coverage matrix. Exactly ONE route is
 # authoritative per (book, market_type, period), so a surface key can never
@@ -472,15 +529,22 @@ SURFACE_GAME_MIN_MINUTES = float(_get("SURFACE_GAME_MIN_MINUTES",
 # request — on a 15-game slate the four structure books cost ~3-6 book HTTP
 # req/sec at 20s (~260-520k/day). For scale, the congested on-demand path
 # served 219,724 requests on 2026-08-19 and ProphetX 403s on sight, so a 5s
-# cadence would be 5-10x that volume permanently. 20s is provisional: the
-# refresh log records achieved cadence, and #99 sets it alongside the age
-# gate from that data.
+# cadence would be 5-10x that volume permanently.
+#
+# #99 DECISION: 20s STAYS. Against SURFACE_MAX_AGE_SEC=30 the structure books
+# measured p95 19s / max 20.6s, i.e. ~10s of headroom; one skipped pass lands a
+# book at ~40s and drops it for a single cycle, which three structure books
+# absorb without falling under MIN_AGREEING_BOOKS=2. Tightening to 15s costs
+# +33% requests (~350-690k/day) to buy 5s of headroom nothing yet shows we
+# need. The periodic `surface_age_summary` used-vs-excluded counts are the
+# instrument that would justify revisiting it.
 SURFACE_CADENCE_DEFAULT_SEC = float(_get("SURFACE_CADENCE_DEFAULT_SEC", "20"))
 # The singles route scrapes a whole slate per pass (#95 medians: DK 28.4s,
 # FD 13.2s), so its cadence is set by the scrape, not chosen freely. DK rows
-# are consequently 30-90s old and will NOT satisfy a 30s age gate in #99 —
-# the surface is FD/MGM/NV/CZR under one, which still clears
-# MIN_AGREEING_BOOKS=2 on every FG/F5 leg.
+# are consequently 30-90s old and do NOT satisfy the 30s age gate (#99) at any
+# cadence — the surface is FD/MGM/NV under it, which still clears
+# MIN_AGREEING_BOOKS=2 on every FG/F5 leg. That exclusion is deliberate and
+# LOUD, not silent: see SURFACE_MAX_AGE_SEC.
 SURFACE_CADENCE_SINGLES_SEC = {
     "draftkings": float(_get("SURFACE_CADENCE_DRAFTKINGS_SEC", "60")),
     "fanduel": float(_get("SURFACE_CADENCE_FANDUEL_SINGLES_SEC", "45")),

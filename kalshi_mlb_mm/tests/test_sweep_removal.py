@@ -137,6 +137,9 @@ def test_coverage_summary_tick_emits_and_drains(monkeypatch):
     main._coverage_summary_tick(sgp_service=svc)
 
     assert svc.coverage.calls == 1
+    # #99: the tick also drains the leg surface's age tally, so filter for the
+    # event under test rather than counting everything it emits.
+    emitted = [e for e in emitted if e[0] == "on_demand_coverage"]
     assert len(emitted) == 1
     event, kw = emitted[0]
     assert event == "on_demand_coverage"
