@@ -23,6 +23,16 @@ log = logging.getLogger(__name__)
 
 ROUTE = "structure"
 
+# Consecutive per-game transport failures before the pass abandons the slate.
+# A book whose auth/events stage is down fails EVERY game, and because
+# TTLCache does not cache exceptions its events entry never populates — so
+# without this the pass re-runs the whole auth+events sequence once per game.
+# Observed live 2026-08-26: Caesars minting a fresh AWS-WAF token 14 times per
+# pass, three passes a minute, at a book that was already 403ing us. The
+# README's own ProphetX note is what that turns into. 3 in a row is a dead
+# book; one blip mid-slate is not.
+MAX_CONSECUTIVE_TRANSPORT_FAILURES = 3
+
 
 def _decimals_for_rung(rung_legs, leg_index, odds) -> dict:
     """side -> decimal for one rung, from ``StructureLegOdds.odds``.
@@ -67,6 +77,18 @@ def price_game(book: str, service, game, *, skip_markets, band_min: float,
     # slate deduped legs, so the map is 1:1.
     leg_index = {leg: i for i, leg in enumerate(legs)}
     result = service.structure_leg_odds(book, game.game_ref(), legs)
+    if result.outcome == "ok" and result.payload_from_cache:
+        # fetched_at would be the time of THIS CALL, not of the payload, so
+        # every row would claim a freshness it does not have — up to the
+        # service's structure_ttl_sec of fabricated age, straight into #99's
+        # staleness gate. The surface builds its service with
+        # structure_ttl_sec=0.0 so this cannot happen; this is the guard that
+        # makes raising that knob fail LOUDLY instead of silently.
+        log.error("surface %s: %s served from the structure cache — refusing "
+                  "to stamp built_at on a payload of unknown age", book,
+                  game.game_id)
+        counts.game_unmatched += 1
+        return [], counts, "stale_cache"
     if result.outcome != "ok":
         # Whole-game miss. Charged once as game_unmatched, not once per rung:
         # inflating it by the ladder size would make one dark book look like
@@ -106,10 +128,11 @@ def run_pass(book: str, service, games, *, skip_markets=(),
     counts = ExclusionCounts()
     games_priced = 0
     transport_failures = 0
+    consecutive_failures = 0
     skip_markets = set(skip_markets)
     min_gap_sec = (1.0 / max_req_per_sec) if max_req_per_sec > 0 else 0.0
     next_allowed = time.monotonic()
-    for game in games:
+    for i, game in enumerate(games):
         wait = next_allowed - time.monotonic()
         if wait > 0:
             time.sleep(wait)
@@ -121,8 +144,21 @@ def run_pass(book: str, service, games, *, skip_markets=(),
         if game_rows:
             games_priced += 1
             rows.extend(game_rows)
-        elif outcome in ("transport_error", "error"):
+        if outcome in ("transport_error", "error", "stale_cache"):
             transport_failures += 1
+            consecutive_failures += 1
             log.warning("surface %s: %s failed on %s", book, outcome,
                         game.game_id)
+        else:
+            consecutive_failures = 0
+        if consecutive_failures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES:
+            skipped = len(games) - (i + 1)
+            if skipped > 0:
+                # Counted, not silently dropped: they were in scope and
+                # produced nothing, which is what game_unmatched means.
+                counts.game_unmatched += skipped
+            log.warning("surface %s: %d consecutive transport failures — "
+                        "abandoning the pass, %d games not attempted",
+                        book, consecutive_failures, skipped)
+            break
     return rows, counts, games_priced, transport_failures

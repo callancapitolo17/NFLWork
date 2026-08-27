@@ -187,14 +187,28 @@ def price_game(book: str, game, book_rows: list[dict], *, owned_markets,
 
 def run_pass(book: str, games, *, owned_markets, band_min: float,
              band_max: float, tolerance_min: float
-             ) -> tuple[list, ExclusionCounts, int]:
+             ) -> tuple[list, ExclusionCounts, bool]:
     """One book's pass: scrape the whole slate once, then match per game.
 
-    ``built_at`` is the scrape's own fetch_time, so every row carries the age
-    of the payload it came from rather than the age of the local match.
+    Returns (rows, counts, games_priced, book_is_dark).
+
+    ``built_at`` is the scrape's own fetch_time — stamped once before the
+    scraper's event loop — so every row carries the age of the payload it came
+    from rather than the age of the local match. That start-of-scrape stamp
+    makes rows look up to one scrape-duration OLDER than they are, which is
+    the safe direction for a staleness gate.
     """
     scraped = _scrape(book)
-    built_at = _as_utc(scraped[0].get("fetch_time")) if scraped else None
+    if not scraped:
+        # NOT "the book listed no games": an empty scrape is almost always a
+        # transient failure (DK's own write_to_duckdb says so, and refuses to
+        # overwrite its production snapshot on one). Reporting it as a normal
+        # empty pass would publish an empty slice and blank the book, losing
+        # every price it had on a single blip.
+        log.warning("surface %s: empty scrape — treating the book as dark",
+                    book)
+        return [], ExclusionCounts(), 0, True
+    built_at = _as_utc(scraped[0].get("fetch_time"))
     built_at = built_at or datetime.now(timezone.utc)
     rows: list = []
     counts = ExclusionCounts()
@@ -212,4 +226,4 @@ def run_pass(book: str, games, *, owned_markets, band_min: float,
         if game_rows:
             games_priced += 1
             rows.extend(game_rows)
-    return rows, counts, games_priced
+    return rows, counts, games_priced, False

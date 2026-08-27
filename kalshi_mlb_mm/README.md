@@ -275,9 +275,20 @@ therefore an expected, time-of-day-dependent count and does **not** feed the
 
 A pass where **every** game transport-failed publishes nothing and keeps the
 book's previous rows, so a wobble cannot blank a book — the rows age out under
-#99's gate instead, which is a decline an operator can count. A book that
-answers and simply stops offering a rung DOES lose it: publication replaces the
-slice rather than merging, so a dead rung can never rest at its last price.
+#99's gate instead, which is a decline an operator can count. The singles route
+applies the same rule to an **empty scrape**, which is almost always a
+transient failure (DK's own `write_to_duckdb` refuses to overwrite its
+production snapshot on one). A book that answers and simply stops offering a
+rung DOES lose it: publication replaces the slice rather than merging, so a
+dead rung can never rest at its last price.
+
+A structure pass **abandons the slate after 3 consecutive transport
+failures**. A book down at its auth/events stage fails every game, and
+`TTLCache` does not cache exceptions, so its events entry never populates —
+without the cutoff the pass re-runs the whole auth+events sequence once per
+game. Measured 2026-08-26: Caesars minting a fresh AWS-WAF token 14 times per
+pass, three passes a minute, at a book that was already 403ing us. Games not
+attempted are still counted (`n_game_unmatched`), never silently dropped.
 
 ### Cost — read this before changing the cadence
 
@@ -317,6 +328,21 @@ Deliberately not the market DB, which the pricing path reads.
 `built_at` is the time the **book payload** was fetched, not when the row was
 devigged or written — one structure fetch stamps every leg it served, so #99's
 age gate reads the price's true age.
+
+That invariant is enforced, not assumed. The surface's service is built with
+`structure_ttl_sec=0.0` (as `kalshi_rfi` does), so every `build_structure`
+hits the wire and `built_at` IS the fetch time; on this route the structure
+*is* the odds, and any cache hit would stamp a payload of unknown age as
+fresh. It costs nothing — the events cache keeps its own separate 900s TTL,
+and the surface calls `build_structure` exactly once per (book, game) per
+pass, which is the one-fetch-per-game the cost table above already assumes.
+`structure.price_game` additionally **refuses** a payload the service reports
+as cache-served (`payload_from_cache`), so raising that knob fails loudly
+instead of quietly fabricating up to a TTL of freshness.
+
+On the singles route `built_at` is the scrape's `fetch_time`, stamped once
+before the scraper's event loop — so rows read up to one scrape-duration
+*older* than they are, which is the safe direction for a staleness gate.
 
 `mlb_leg_surface` has **no PRIMARY KEY**: DuckDB PKs reject NULL and `line` is
 legitimately NULL for moneyline (NULL, not a sentinel — the established ml×total

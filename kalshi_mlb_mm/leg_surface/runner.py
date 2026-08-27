@@ -124,12 +124,23 @@ class SurfaceIngest:
     def _build_service(self):
         """A SECOND, PRIVATE SGPService — never the maker's.
 
-        structure_ttl_sec == the cadence: the structure IS the odds on this
-        route, so a cache older than one pass would serve a stale price as a
-        fresh one (the mistake kalshi_rfi avoids by passing 0.0). Sharing the
-        maker's service would push that requirement onto the same-game
-        on-demand path, whose 420s structure cache holds selection IDs and is
-        correct as it is.
+        structure_ttl_sec=0.0, exactly as kalshi_rfi does: on this route the
+        structure IS the odds, and ``built_at`` is stamped when
+        ``build_structure`` returns — so ANY cache hit stamps a payload of
+        unknown age as fresh, feeding #99's staleness gate a number it made
+        up. A non-zero TTL was the shipped default and would have fabricated
+        up to 20s of freshness on roughly half of all rungs.
+
+        This costs nothing: the EVENTS cache is separate and keeps its own
+        900s TTL, and the surface calls ``build_structure`` exactly once per
+        (book, game) per pass — which is the one-fetch-per-game the README's
+        cost table already assumes. ``structure.price_game`` refuses a cached
+        payload outright, so raising this knob fails loudly rather than
+        silently.
+
+        Sharing the maker's service would push that requirement onto the
+        same-game on-demand path, whose 420s structure cache holds selection
+        IDs and is correct as it is.
 
         health_db_path=None: no writes to the market DB the pricing path
         reads — surface_refresh_log is this loop's observability.
@@ -137,8 +148,7 @@ class SurfaceIngest:
         from kalshi_common.sgp_service import SGPService
         return SGPService(
             books=self._books_structure, health_db_path=None,
-            structure_ttl_sec=config.SURFACE_CADENCE_DEFAULT_SEC,
-            single_leg_structure_fair=True)
+            structure_ttl_sec=0.0, single_leg_structure_fair=True)
 
     def structure_pass(self, book: str) -> PassResult:
         started_at = datetime.now(timezone.utc)
@@ -176,11 +186,17 @@ class SurfaceIngest:
         error_class = None
         rows, counts, games_priced = [], ExclusionCounts(), 0
         try:
-            rows, counts, games_priced = singles.run_pass(
+            rows, counts, games_priced, dark = singles.run_pass(
                 book, games, owned_markets=self.singles_markets(book),
                 band_min=config.SURFACE_OVERROUND_MIN,
                 band_max=config.SURFACE_OVERROUND_MAX,
                 tolerance_min=config.SURFACE_START_TOLERANCE_MIN)
+            if dark:
+                # Same rule as the structure route: a book that answered with
+                # nothing is dark, not empty. DK's own write_to_duckdb refuses
+                # to overwrite its production snapshot on an empty scrape for
+                # exactly this reason ("almost always a transient failure").
+                error_class = "book_dark"
         except Exception as e:
             error_class = type(e).__name__
             log.error("surface %s singles pass failed: %s", book, e)

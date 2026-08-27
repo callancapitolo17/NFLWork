@@ -494,3 +494,12 @@ the code and `kalshi_mlb_mm/README.md` are authoritative.
   the pre-merge review. All four have regression tests.
 - **Files**: `structure.py` and `singles.py` as separate route modules, plus
   `devig.py`; the spec's single `ingest.py` split three ways.
+- **§4.2's `structure_ttl_sec=<cadence>` was wrong and shipped as a bug.** On
+  this route the structure IS the odds, so a cache hit stamps `built_at` with
+  the time of the lookup rather than of the payload — up to a full TTL of
+  invented freshness, fed straight into #99's staleness gate. The service now
+  uses `structure_ttl_sec=0.0` (the `kalshi_rfi` precedent), and
+  `structure.price_game` refuses any payload the service reports as
+  cache-served so the knob cannot be raised silently. Cost is unchanged: the
+  events cache is separate at 900s, and the surface already called
+  `build_structure` once per (book, game) per pass.

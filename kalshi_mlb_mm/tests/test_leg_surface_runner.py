@@ -399,3 +399,101 @@ def test_concurrent_workers_share_one_sgp_service(tmp_path, monkeypatch):
     # The barrier proves all four raced; the lock proves only one built.
     assert len(built) == 1
     assert ingest._service is built[0]
+
+
+class TestFreshnessIsNotFabricated:
+    """Review finding 1: `built_at` claimed a freshness the price did not have.
+
+    `structure_leg_odds` stamps `fetched_at = now()` after `build_structure`
+    returns, but `build_structure` is served by a TTL cache. At the shipped
+    20s TTL — equal to the cadence — roughly half of all rungs would have been
+    stamped with up to 20s of invented freshness, and #99's staleness gate is
+    built on exactly that field.
+    """
+
+    def test_the_surface_service_never_caches_structure(self):
+        ingest = SurfaceIngest(books_structure=("betmgm",), books_singles=())
+        built = {}
+
+        class Recorder:
+            def __init__(self, **kw):
+                built.update(kw)
+
+        import kalshi_common.sgp_service as svc_mod
+        original = svc_mod.SGPService
+        svc_mod.SGPService = Recorder
+        try:
+            ingest._build_service()
+        finally:
+            svc_mod.SGPService = original
+        # 0.0 == every build_structure hits the wire, so fetched_at IS the
+        # payload's age. Any other value reintroduces the bug.
+        assert built["structure_ttl_sec"] == 0.0
+        assert built["single_leg_structure_fair"] is True
+        assert built["health_db_path"] is None
+
+    def test_a_cached_payload_is_refused_rather_than_stamped_fresh(self):
+        # The guard that makes raising the TTL fail LOUDLY. Without it a
+        # cache hit publishes rows whose built_at is the time of the lookup.
+        class CachedService:
+            def structure_leg_odds(self, book, game, legs):
+                return StructureLegOdds(
+                    book=book, fetched_at=FETCHED_AT,
+                    odds={0: (1.91, 1.91)}, outcome="ok",
+                    payload_from_cache=True)
+
+        rows, counts, priced, dark = structure.run_pass(
+            "betmgm", CachedService(), [make_game()], band_min=1.005,
+            band_max=1.20, max_req_per_sec=0)
+        assert rows == [] and priced == 0
+        assert counts.game_unmatched == 1
+        # Counted as dark, so a whole pass of these publishes NOTHING rather
+        # than blanking the book with rows it refused to trust.
+        assert dark == 1
+
+    def test_a_fresh_payload_is_still_priced(self):
+        service = FakeService(odds={0: (1.91, 1.91)})
+        rows, _counts, priced, dark = structure.run_pass(
+            "betmgm", service, [make_game()], band_min=1.005, band_max=1.20,
+            max_req_per_sec=0)
+        assert len(rows) == 2 and priced == 1 and dark == 0
+
+
+class TestDeadBookDoesNotGetHammered:
+    """Review finding 3: a book down at the auth/events stage was retried
+    once per game — TTLCache does not cache exceptions, so its events entry
+    never populates. Observed live: Caesars minting a fresh AWS-WAF token 14
+    times per pass, three passes a minute, at a book already 403ing us."""
+
+    def test_the_pass_abandons_the_slate_after_three_failures(self):
+        service = FakeService(outcome="transport_error")
+        games = [make_game() for _ in range(14)]
+        rows, counts, priced, dark = structure.run_pass(
+            "caesars", service, games, band_min=1.005, band_max=1.20,
+            max_req_per_sec=0)
+        assert rows == [] and priced == 0
+        # Three attempts, not fourteen.
+        assert len(service.calls) == structure.MAX_CONSECUTIVE_TRANSPORT_FAILURES
+        # The eleven games never attempted are still ACCOUNTED for.
+        assert counts.game_unmatched == 14
+
+    def test_one_blip_mid_slate_does_not_abandon_the_pass(self):
+        class Flaky:
+            def __init__(self):
+                self.calls = 0
+
+            def structure_leg_odds(self, book, game, legs):
+                self.calls += 1
+                if self.calls == 2:
+                    return StructureLegOdds(book=book, fetched_at=None,
+                                            odds={}, outcome="transport_error")
+                return StructureLegOdds(book=book, fetched_at=FETCHED_AT,
+                                        odds={0: (1.91, 1.91)}, outcome="ok")
+
+        service = Flaky()
+        games = [make_game() for _ in range(5)]
+        _rows, _counts, priced, _dark = structure.run_pass(
+            "betmgm", service, games, band_min=1.005, band_max=1.20,
+            max_req_per_sec=0)
+        assert service.calls == 5      # all five attempted
+        assert priced == 4

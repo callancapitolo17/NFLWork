@@ -14,7 +14,7 @@ import logging
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from kalshi_common.sgp_health import (FetchHealthRecorder,
@@ -109,12 +109,21 @@ class StructureLegOdds:
     reads as "the book listed no rungs": 'ok' | 'no_event' (book doesn't list
     the game) | 'no_structure' | 'out_of_scope' (period guard) |
     'transport_error' | 'error'.
+
+    ``payload_from_cache`` is True when NOTHING hit the wire — every
+    events/structure read was served by a TTL cache. ``fetched_at`` is then
+    the time of THIS CALL, not of the payload, and can overstate freshness by
+    up to the instance's ``structure_ttl_sec``. A caller that stamps a
+    staleness timestamp from ``fetched_at`` must refuse a cached payload; the
+    leg surface does exactly that, so the invariant is enforced by code
+    rather than by a TTL knob configured in another file.
     """
     book: str
     fetched_at: object          # datetime, aware UTC
     odds: dict                  # leg index -> (decimal, opposite_decimal|None)
     outcome: str = "ok"
     error_class: str | None = None
+    payload_from_cache: bool = False
 
 
 class _Verdict:
@@ -782,6 +791,11 @@ class SGPService:
             result = self._structure_leg_odds(book, game, legs, counters,
                                               verdict)
             snapshot = counters.snapshot()
+            if result.outcome == "ok" and snapshot.structure_fetches == 0:
+                # Same signal the health row's cold/warm tag uses. Recorded on
+                # the RESULT too, because only the caller knows whether it is
+                # about to treat fetched_at as the payload's age.
+                result = replace(result, payload_from_cache=True)
             health_outcome = "ok" if result.outcome == "ok" else verdict.outcome
             self.health.record(
                 book=book, path="surface", outcome=health_outcome,

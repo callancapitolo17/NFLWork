@@ -59,15 +59,43 @@ class SurfaceGame:
                        away_team=self.away_team, commence_time=self.start_utc)
 
 
+# Kalshi caps a page at 200; MLB lists ~42-48 open game events at once, so
+# one page normally suffices. It is paginated anyway because the failure mode
+# of not doing so is SILENT: a page-sized response drops the overflow, the
+# 12h window filter runs afterwards, and a busy Saturday with doubleheaders
+# would quietly lose games we are supposed to be quoting.
+_EVENTS_PAGE_LIMIT = 200
+_EVENTS_MAX_PAGES = 10
+
+
 def _fetch_open_game_events() -> list[str]:
-    """Open KXMLBGAME event tickers, or [] on any API failure."""
-    status, body, _ = auth_client.api(
-        "GET", "/events?series_ticker=KXMLBGAME&status=open&limit=50")
-    if status != 200 or not isinstance(body, dict):
-        log.warning("surface slate: events fetch failed status=%s", status)
-        return []
-    return [str(e.get("event_ticker", "")) for e in body.get("events", [])
-            if str(e.get("event_ticker", "")).startswith("KXMLBGAME-")]
+    """Every open KXMLBGAME event ticker, or [] on any API failure.
+
+    Fails closed on a partial read: a page error returns [] rather than a
+    truncated slate, because ``refresh_slate`` keeps the previous slate on an
+    empty result but would happily adopt a short one.
+    """
+    tickers: list[str] = []
+    cursor = ""
+    for page in range(_EVENTS_MAX_PAGES):
+        query = ("/events?series_ticker=KXMLBGAME&status=open"
+                 f"&limit={_EVENTS_PAGE_LIMIT}")
+        if cursor:
+            query += f"&cursor={cursor}"
+        status, body, _ = auth_client.api("GET", query)
+        if status != 200 or not isinstance(body, dict):
+            log.warning("surface slate: events fetch failed status=%s "
+                        "(page %d)", status, page)
+            return []
+        tickers.extend(
+            str(e.get("event_ticker", "")) for e in body.get("events", [])
+            if str(e.get("event_ticker", "")).startswith("KXMLBGAME-"))
+        cursor = str(body.get("cursor") or "")
+        if not cursor:
+            return tickers
+    log.warning("surface slate: stopped at %d pages with a cursor still open "
+                "— slate may be short", _EVENTS_MAX_PAGES)
+    return tickers
 
 
 def _fetch_series_tickers(series: str, suffix: str) -> list[str]:

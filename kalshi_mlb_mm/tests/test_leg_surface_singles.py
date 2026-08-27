@@ -178,3 +178,66 @@ class TestRouteOwnership:
         from kalshi_mlb_mm import config
         for markets in config.SURFACE_SINGLES_MARKETS.values():
             assert all(period != "I1" for _mt, period in markets)
+
+
+class TestEmptyScrapeIsDarkNotEmpty:
+    """Review finding 2: an empty scrape published an empty slice and blanked
+    the book.
+
+    This is the same failure already guarded on the structure route, and the
+    production scraper documents the reason itself — DK's `write_to_duckdb`
+    refuses to overwrite its snapshot on an empty scrape because that is
+    "almost always a transient failure".
+    """
+
+    def test_an_empty_scrape_reports_the_book_dark(self, monkeypatch):
+        monkeypatch.setattr(singles, "_scrape", lambda book: [])
+        rows, counts, priced, dark = singles.run_pass(
+            "draftkings", [GAME], owned_markets={("total", "FG")},
+            band_min=1.005, band_max=1.20, tolerance_min=30)
+        assert dark is True
+        assert rows == [] and priced == 0
+        # NOT charged as a per-game miss: the book never answered at all, so
+        # attributing it to the slate would misread as a coverage collapse.
+        assert counts.game_unmatched == 0
+
+    def test_a_dark_scrape_keeps_the_previous_rows(self, tmp_path,
+                                                   monkeypatch):
+        from kalshi_common.legset import CanonicalLeg
+        from kalshi_mlb_mm import config
+        from kalshi_mlb_mm.leg_surface import db
+        from kalshi_mlb_mm.leg_surface.runner import SurfaceIngest
+
+        monkeypatch.setattr(config, "SURFACE_DB", tmp_path / "surface.duckdb")
+        db.init_database()
+
+        game = SurfaceGame(GAME.game_id, GAME.home_team, GAME.away_team,
+                           TONIGHT,
+                           (CanonicalLeg(GAME.game_id, "total", 8.5, "over"),
+                            CanonicalLeg(GAME.game_id, "total", 8.5, "under")))
+        ingest = SurfaceIngest(books_structure=(), books_singles=("draftkings",))
+        ingest._slate = [game]
+
+        monkeypatch.setattr(singles, "_scrape", lambda book: [
+            row("dk1", TONIGHT, total=8.5, over_price=-110,
+                under_price=-110)])
+        ingest.singles_pass("draftkings")
+        assert ingest.surface.row_count() == 2
+
+        monkeypatch.setattr(singles, "_scrape", lambda book: [])
+        result = ingest.singles_pass("draftkings")
+        assert result.error_class == "book_dark"
+        assert ingest.surface.row_count() == 2      # not blanked
+
+    def test_a_real_scrape_that_matches_no_games_still_publishes(self,
+                                                                monkeypatch):
+        # The mirror image: the book ANSWERED, it just does not list this
+        # game. Those rows must clear rather than rest at their last price.
+        monkeypatch.setattr(singles, "_scrape", lambda book: [
+            row("other", TONIGHT, home_team="Boston Red Sox", total=8.5,
+                over_price=-110, under_price=-110)])
+        _rows, counts, priced, dark = singles.run_pass(
+            "draftkings", [GAME], owned_markets={("total", "FG")},
+            band_min=1.005, band_max=1.20, tolerance_min=30)
+        assert dark is False and priced == 0
+        assert counts.game_unmatched == 1

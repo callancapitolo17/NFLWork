@@ -111,3 +111,61 @@ def test_rungs_keep_periods_apart():
 def test_dedupe_keeps_one_row_per_distinct_leg():
     leg = CanonicalLeg("G", "spread", -1.5, "home")
     assert slate._dedupe_legs([leg, leg]) == (leg,)
+
+
+class TestEventPagination:
+    """Review finding 4: the events listing was a single `limit=50` call with
+    no pagination.
+
+    42-48 KXMLBGAME events are open at once, so it worked — with eight games
+    of headroom. The failure mode past that is SILENT: the overflow is
+    dropped, and the 12h window filter runs afterwards, so a busy Saturday
+    with doubleheaders would quietly lose games we should be quoting.
+    """
+
+    def _api(self, pages):
+        calls = []
+
+        def api(_method, query):
+            calls.append(query)
+            return 200, pages[len(calls) - 1], None
+
+        return api, calls
+
+    def test_follows_the_cursor_across_pages(self, monkeypatch):
+        pages = [
+            {"events": [{"event_ticker": "KXMLBGAME-A"}], "cursor": "c1"},
+            {"events": [{"event_ticker": "KXMLBGAME-B"}], "cursor": ""},
+        ]
+        api, calls = self._api(pages)
+        monkeypatch.setattr(slate.auth_client, "api", api)
+        assert slate._fetch_open_game_events() == ["KXMLBGAME-A",
+                                                   "KXMLBGAME-B"]
+        assert "cursor=c1" in calls[1]
+
+    def test_stops_when_the_cursor_empties(self, monkeypatch):
+        api, calls = self._api([{"events": [], "cursor": ""}])
+        monkeypatch.setattr(slate.auth_client, "api", api)
+        slate._fetch_open_game_events()
+        assert len(calls) == 1
+
+    def test_a_failed_page_returns_nothing_rather_than_a_short_slate(
+            self, monkeypatch):
+        # Fail CLOSED: refresh_slate keeps the previous slate on an empty
+        # result, but would happily adopt a truncated one and drop every game
+        # the failed page carried.
+        def api(_method, query):
+            if "cursor=" in query:
+                return 500, None, None
+            return 200, {"events": [{"event_ticker": "KXMLBGAME-A"}],
+                         "cursor": "c1"}, None
+
+        monkeypatch.setattr(slate.auth_client, "api", api)
+        assert slate._fetch_open_game_events() == []
+
+    def test_non_game_series_tickers_are_ignored(self, monkeypatch):
+        api, _calls = self._api([{"events": [{"event_ticker": "KXMLBGAME-A"},
+                                             {"event_ticker": "KXNFLGAME-B"}],
+                                  "cursor": ""}])
+        monkeypatch.setattr(slate.auth_client, "api", api)
+        assert slate._fetch_open_game_events() == ["KXMLBGAME-A"]
