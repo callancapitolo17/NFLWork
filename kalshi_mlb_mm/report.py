@@ -357,18 +357,48 @@ def _age_dist(ages: list[float]) -> dict:
             "max": max(ages) if ages else None}
 
 
+def _payload_game_ages(payload: dict) -> tuple[list, list]:
+    """(live ages, surface ages) for one quote_priced payload, seconds.
+
+    Two traces since #98 and they PARTITION the combo: `live_games` carries
+    one fetch age per on-demand game, `surface_games` carries a per-BOOK row
+    age per surface-priced game (collapsed here to that game's OLDEST input,
+    which is the honest "how stale was the data behind this leg"). Reading
+    only `live_games` would count every cross-game quote as an engine hiccup —
+    21 of 24 in the first live run.
+    """
+    live, surface = [], []
+    for detail in (payload.get("live_games") or {}).values():
+        age = detail.get("age_sec")
+        if age is not None:
+            live.append(float(age))
+    for detail in (payload.get("surface_games") or {}).values():
+        book_ages = [float(b["age_sec"])
+                     for b in (detail.get("books") or {}).values()
+                     if b.get("age_sec") is not None]
+        if book_ages:
+            surface.append(max(book_ages))
+    return live, surface
+
+
 def staleness_stats(research_db: str, since: datetime) -> dict:
     """Book-data age at quote time + quote age at accept time (seconds).
 
-    Quote-time age is EXACT since #54/#81: every quote_priced event carries
-    a `live_games` trace ({hash: {age_sec, ...}} per sub-fetch); a quote's
-    data age is the max over its sub-fetches. A quote_priced without the
-    trace (engine hiccup — the trace is fail-safe decoration) counts as
-    unknown. Accept-time age is confirm_singles_check.quote_age_sec.
+    Quote-time age is EXACT since #54/#81: every quote_priced event carries a
+    per-game trace, and a quote's data age is the max over its games. Since
+    #98 there are TWO traces — `live_games` for on-demand games and
+    `surface_games` for leg-surface games — reported combined AND separately,
+    because the distributions differ by an order of magnitude (a live fetch
+    lands in ~1-2s; a surface row is as old as its book's ingest cadence, up
+    to ~50s for DraftKings) and averaging them would hide exactly the number
+    #99's age gate has to be set from. A quote_priced with NEITHER trace
+    (fail-safe decoration missed) counts as unknown. Accept-time age is
+    confirm_singles_check.quote_age_sec.
     """
     import json
 
     out = {"quote_age": _age_dist([]), "quote_age_unknown": 0,
+           "quote_age_live": _age_dist([]), "quote_age_surface": _age_dist([]),
            "accept_age": _age_dist([]), "unavailable": None}
 
     quotes = _read(research_db,
@@ -385,22 +415,25 @@ def staleness_stats(research_db: str, since: datetime) -> dict:
         out["unavailable"] = _unavailable_note(confirms, "research")
         return out
 
-    quote_ages = []
+    quote_ages, live_ages, surface_ages = [], [], []
     for (payload_str,) in quotes:
-        ages = []
+        live, surface = [], []
         try:
-            live_games = (json.loads(payload_str) or {}).get("live_games")
-            for detail in (live_games or {}).values():
-                age = detail.get("age_sec")
-                if age is not None:
-                    ages.append(float(age))
-        except (TypeError, ValueError):
+            live, surface = _payload_game_ages(json.loads(payload_str) or {})
+        except (TypeError, ValueError, AttributeError, KeyError):
             pass
+        ages = live + surface
         if ages:
             quote_ages.append(max(ages))
+            if live:
+                live_ages.append(max(live))
+            if surface:
+                surface_ages.append(max(surface))
         else:
             out["quote_age_unknown"] += 1
     out["quote_age"] = _age_dist(quote_ages)
+    out["quote_age_live"] = _age_dist(live_ages)
+    out["quote_age_surface"] = _age_dist(surface_ages)
 
     accept_ages = []
     for (payload_str,) in confirms:
@@ -428,14 +461,25 @@ def _render_staleness(stats: dict) -> str:
         "| age (s) | n | p50 | p90 | p95 | max |",
         "|---|---:|---:|---:|---:|---:|",
         _render_age_row("book data at quote", stats["quote_age"]),
+    ]
+    # #98: split the combined row when both pricing sources are present —
+    # a live fetch and a cached surface row differ by an order of magnitude,
+    # and the surface row is what #99's age gate has to tolerate.
+    if stats["quote_age_live"]["n"] and stats["quote_age_surface"]["n"]:
+        lines.append(_render_age_row("  ...from live fetch",
+                                     stats["quote_age_live"]))
+        lines.append(_render_age_row("  ...from leg surface",
+                                     stats["quote_age_surface"]))
+    lines += [
         _render_age_row("quote at accept", stats["accept_age"]),
         "",
-        "_Quote-time age = max sub-fetch age from the quote's live_games "
-        "trace (exact — every quote is priced from a post-RFQ fetch)._",
+        "_Quote-time age = the OLDEST per-game input behind the quote, from "
+        "its live_games (post-RFQ fetch) and surface_games (leg-surface row) "
+        "traces._",
     ]
     if stats["quote_age_unknown"]:
-        lines.append(f"_{stats['quote_age_unknown']} quotes carried no "
-                     "live_games trace (engine hiccup)._")
+        lines.append(f"_{stats['quote_age_unknown']} quotes carried neither "
+                     "trace (decoration missed)._")
     return "\n".join(lines)
 
 

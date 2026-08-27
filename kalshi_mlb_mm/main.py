@@ -2531,14 +2531,6 @@ def main_loop(dry_run: bool):
         # quote-cancel sweep doesn't race reconnect attempts and their logs.
         if hasattr(source, "stop"):
             source.stop()
-        # #98: stop the ingest threads BEFORE the quote-cancel sweep — that
-        # sweep re-prices nothing, but leaving book workers running through
-        # shutdown would keep HTTP in flight past the last quote.
-        if _SURFACE_INGEST is not None:
-            try:
-                _SURFACE_INGEST.stop()
-            except Exception as e:
-                log.warning("surface ingest stop failed: %s", e)
         with db.connect(read_only=True) as con:
             live = [r[0] for r in con.execute(
                 "SELECT quote_id FROM live_quotes WHERE status='open'").fetchall()]
@@ -2551,6 +2543,15 @@ def main_loop(dry_run: bool):
                         [datetime.now(timezone.utc), qid])
             except Exception:
                 pass
+        # #98: stop the ingest AFTER the quote-cancel sweep. stop() joins 7
+        # worker threads at up to 10s each, and a wedged book worker must
+        # never be able to delay cancelling live risk — the surface's own
+        # traffic is read-only book scraping and is harmless in the meantime.
+        if _SURFACE_INGEST is not None:
+            try:
+                _SURFACE_INGEST.stop()
+            except Exception as e:
+                log.warning("surface ingest stop failed: %s", e)
         # #81: drain the partial coverage window into the buffer, then the
         # buffer to disk — otherwise up to COVERAGE_SUMMARY_SEC of per-book
         # outcomes die with the process.

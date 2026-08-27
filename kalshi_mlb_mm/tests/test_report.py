@@ -281,7 +281,7 @@ def test_staleness_stats(monkeypatch, tmp_path):
     _insert_event(research, "quote_priced", t0 + timedelta(seconds=150),
                   {"blended_fair": 0.6,
                    "live_games": {"h1": {"age_sec": 30.0}}})
-    # engine hiccup — no live_games trace: unknown age, not a crash
+    # neither trace — decoration missed: unknown age, not a crash
     _insert_event(research, "quote_priced", t0 - timedelta(seconds=10),
                   {"blended_fair": 0.7})
     _insert_event(research, "confirm_singles_check",
@@ -296,6 +296,46 @@ def test_staleness_stats(monkeypatch, tmp_path):
     assert stats["accept_age"]["n"] == 2
     assert stats["accept_age"]["p50"] == pytest.approx(25.0)
     assert stats["accept_age"]["max"] == pytest.approx(45.0)
+
+
+def test_staleness_counts_surface_priced_quotes(monkeypatch, tmp_path):
+    """#98: a cross-game quote carries surface_games and NO live_games. Read
+    only live_games and 21 of the first live run's 24 quotes would have been
+    written off as an engine hiccup — the surface row age IS the staleness
+    number, and it is the one #99 sets its gate from."""
+    from kalshi_mlb_mm import report
+    state, research = _setup_dbs(monkeypatch, tmp_path)
+    t0 = NOW - timedelta(hours=3)
+
+    # Surface-only quote: per-game age is the OLDEST book row behind it.
+    _insert_event(research, "quote_priced", t0 + timedelta(seconds=30),
+                  {"blended_fair": 0.3,
+                   "live_games": None,
+                   "surface_games": {
+                       "h1": {"market_type": "total", "period": "FG",
+                              "books": {"draftkings": {"age_sec": 48.0},
+                                        "fanduel": {"age_sec": 6.0}}},
+                       "h2": {"market_type": "ml", "period": "FG",
+                              "books": {"betmgm": {"age_sec": 12.0}}}}})
+    # Mixed quote: both traces, combined age is the max across both.
+    _insert_event(research, "quote_priced", t0 + timedelta(seconds=60),
+                  {"blended_fair": 0.2,
+                   "live_games": {"h3": {"age_sec": 2.0}},
+                   "surface_games": {
+                       "h4": {"books": {"novig": {"age_sec": 20.0}}}}})
+
+    stats = report.staleness_stats(research, NOW - timedelta(days=7))
+    assert stats["quote_age_unknown"] == 0, \
+        "a surface-priced quote is not an engine hiccup"
+    assert stats["quote_age"]["n"] == 2
+    assert stats["quote_age"]["max"] == pytest.approx(48.0)
+    # The two sources are reported apart: they differ by an order of magnitude.
+    assert stats["quote_age_live"]["n"] == 1
+    assert stats["quote_age_live"]["max"] == pytest.approx(2.0)
+    assert stats["quote_age_surface"]["n"] == 2
+    assert stats["quote_age_surface"]["max"] == pytest.approx(48.0)
+    rendered = report._render_staleness(stats)
+    assert "from leg surface" in rendered and "from live fetch" in rendered
 
 
 def test_staleness_empty(monkeypatch, tmp_path):
