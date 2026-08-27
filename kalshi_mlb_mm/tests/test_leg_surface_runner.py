@@ -497,3 +497,24 @@ class TestDeadBookDoesNotGetHammered:
             max_req_per_sec=0)
         assert service.calls == 5      # all five attempted
         assert priced == 4
+
+
+def test_caesars_is_not_on_the_surface_by_default():
+    """#90's audit recommendation, enforced.
+
+    Caesars is behind a CloudFront/AWS-WAF RATE-BASED rule: it prices at 100%
+    overnight at <=130 req/hr and 0% all day, and the audit's finding is that
+    our own retry volume holds the block open. Putting it on a 20s cadence
+    would add ~1,600 doomed rate-counted requests/hour — funding the block
+    that keeps it dark — for a book that returned ZERO legs in every live run.
+
+    This is a harm call, not a coverage call: #95 measured CZR alive for
+    single legs (8/21). It stays env-overridable for when #90's follow-up
+    changes egress.
+    """
+    from kalshi_mlb_mm import config
+    assert "caesars" not in config.SURFACE_BOOKS_STRUCTURE
+    assert "caesars" not in config.SURFACE_BOOKS_SINGLES
+    assert "prophetx" not in config.SURFACE_BOOKS_STRUCTURE
+    # The books that remain still clear the quorum the #20 gate needs.
+    assert len(config.SURFACE_BOOKS_STRUCTURE) >= config.MIN_AGREEING_BOOKS

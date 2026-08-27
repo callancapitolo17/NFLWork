@@ -503,3 +503,10 @@ the code and `kalshi_mlb_mm/README.md` are authoritative.
   cache-served so the knob cannot be raised silently. Cost is unchanged: the
   events cache is separate at 900s, and the surface already called
   `build_structure` once per (book, game) per pass.
+
+- **Caesars was dropped from the structure route** after the fact. §4.1 put it
+  on coverage grounds (#95: 8/21 leg-instances) without weighing #90's audit,
+  which recommends taking CZR off the request path entirely: it is behind a
+  rate-based WAF rule that our own retry volume holds open. A 20s cadence
+  would have added ~1,600 doomed requests/hour to that loop for a book that
+  returned zero legs in every live run.

@@ -229,9 +229,10 @@ RFI → I1 total at 0.5, home-perspective spread signs).
 
 | book | route | why |
 |---|---|---|
-| betmgm, novig, caesars | structure, all markets | #95 coverage: 21/21, 20/21 and 8/21 leg-instances |
+| betmgm, novig | structure, all markets | #95 coverage: 21/21 and 20/21 leg-instances |
 | fanduel | structure for ml/spread and **all** I1; **singles** for FG/F5 totals | FD's SGP structure carries exactly ONE total line per period (its own main); its singles scraper has the full ladder |
 | draftkings | **singles**, all markets | 21/21 `no_structure_odds`, and its `calculateBets` host 403s every set size (2026-08-25) |
+| caesars | **off** | #90's audit recommendation. Not a coverage call — #95 measured CZR alive for single legs (8/21) — a **harm** call: CZR is behind a CloudFront/AWS-WAF *rate-based* rule (100% overnight at ≤130 req/hr, 0% all day) and #90 found our own retries hold the block open. A 20s cadence adds ~1,600 doomed requests/hour, funding the block, for a book that returned **zero** legs in every live run. Env-overridable |
 | prophetx | **off** | 403 at the `events` stage on the first request of a session, 21/21 — an access problem (#91), not coverage |
 
 The FanDuel split keys on `(market_type, period)`, **not** `market_type`: an I1
@@ -359,10 +360,13 @@ a hot loop.
 |---|---|---|---|---|
 | betmgm | structure | 6.9s | 800 | 20.0s |
 | novig | structure | 6.9s | 676 | 20.0s |
-| fanduel | structure | 6.8s | 436 | 20.0s |
-| caesars | structure | 6.9–16.5s | 0–144 | 20.0s |
-| draftkings | singles | 21.2s | 636 | 60.0s |
+| fanduel | structure | 6.8s | 392 | 20.0s |
+| draftkings | singles | 21.2s | 634 | 60.0s |
 | fanduel | singles | 2.1s | 476 | 45.0s |
+
+Caesars appears in none of these because it is off (see the route table). It
+was measured before being disabled: 0 legs on 2026-08-27, and 0–144 legs on
+2026-08-26, failing at WAF-token minting on every pass.
 
 Books per leg across the whole surface: 564 legs at 4 books, 164 at 3, 86 at 2,
 60 at 1. So ~93% of legs clear `MIN_AGREEING_BOOKS=2`. Zero `crossed` and zero

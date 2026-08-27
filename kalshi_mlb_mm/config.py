@@ -421,11 +421,21 @@ SURFACE_DB = PKG_DIR / "kalshi_mlb_mm_surface.duckdb"
 #     (its own main) while its singles scraper has the full ladder. The
 #     split keys on (market_type, period), NOT market_type — an I1 leg IS a
 #     total leg, and neither singles scraper emits I1 rows at all.
+#   caesars    — OFF, implementing the #90 audit's recommendation. This is
+#     NOT a coverage call: #95 measured CZR alive for single legs (8/21). It
+#     is a HARM call. CZR sits behind a CloudFront/AWS-WAF *rate-based* rule
+#     that we trip with our own request velocity — it prices at 100%
+#     overnight at <=130 req/hr and 0% all day — and #90's finding is that
+#     our own retries hold the block open (~1,260+ doomed rate-counted
+#     GETs/hr). A 20s surface cadence would add ~1,600/hr of exactly that
+#     traffic, funding the block that keeps the book dark, for a book that
+#     returned ZERO legs in every live run on 2026-08-26/27. Re-enable via
+#     env only if #90's follow-up changes egress.
 #   prophetx   — off: 403 at the events stage on the first request of a
 #     session, 21/21. An access problem (#91), not a coverage one.
 SURFACE_BOOKS_STRUCTURE = tuple(
     b.strip() for b in _get("SURFACE_BOOKS_STRUCTURE",
-                            "fanduel,betmgm,novig,caesars").split(",")
+                            "fanduel,betmgm,novig").split(",")
     if b.strip())
 SURFACE_BOOKS_SINGLES = tuple(
     b.strip() for b in _get("SURFACE_BOOKS_SINGLES",
