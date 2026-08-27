@@ -210,9 +210,11 @@ def _warn_structurally_excluded_books() -> None:
     indistinguishable from a broken book. This line is the announcement; the
     periodic `surface_age_summary` is the running count.
 
-    Keyed on (book, route), not book: FanDuel runs BOTH routes on different
-    cadences (structure 20s for ml/spread/I1, singles 45s for FG/F5 totals),
-    and naming the book alone would implicate a route that clears the gate."""
+    Keyed on (book, route), not book: FanDuel runs BOTH routes and they can be
+    tuned separately (structure for ml/spread/I1, singles for FG/F5 totals —
+    #99 lowered the latter 45s -> 20s precisely because this check flagged
+    it), so naming the book alone would implicate a route that clears the
+    gate."""
     if not config.SURFACE_ENABLED or config.SURFACE_MAX_AGE_SEC <= 0:
         return
     routes = [(book, "singles",
@@ -233,7 +235,6 @@ def _warn_structurally_excluded_books() -> None:
             "surface_age_summary for the realised share",
             book, route, cadence, config.SURFACE_MAX_AGE_SEC,
             100.0 * stale_share)
-
 
 
 def _consensus_filter(book_fairs: dict[str, float]) -> dict[str, float]:
@@ -655,7 +656,15 @@ class _SurfaceAgeGate:
 
 def _tally_surface_ages(used: dict, excluded: dict) -> None:
     """Accumulate the per-book used/excluded counts the periodic
-    `surface_age_summary` drains. Never raises into the pricing path."""
+    `surface_age_summary` drains.
+
+    Counts EVERY gated read, not only the quote path — the confirm last look
+    and the risk sweep's drift check build gates too. That is deliberate: the
+    summary answers "is this book's data arriving fresh enough to use", which
+    is one question wherever it is asked, and the extra samples come from the
+    same surface at the same cadence. Read it as a ratio, not as a quote count.
+
+    Never raises into the pricing path."""
     try:
         for book in used:
             _SURFACE_AGE_TALLY.setdefault(
@@ -1931,20 +1940,11 @@ def _discovery_tick(source, gateway, dry_run):
                 _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                               reason="no_leg_snapshot")
                 continue
-            # #23 item 3: correlation sanity against Kalshi's live singles. The leg
-            # snapshot we just fetched for #17's veto IS the marginal anchor, so
-            # this costs ZERO extra API calls. Independent of the #20 gate: that
-            # one asks whether the books agree with EACH OTHER, this asks whether
-            # their consensus is consistent with the real-time single-leg prices —
-            # tightly-agreeing books can still be jointly wrong. Degenerate books
-            # (yes_ask=100, empty, crossed) yield no marginals: we log the miss and
-            # quote on book consensus alone, exactly as before this ticket, rather
-            # than declining on missing information.
             # #99 guard 2: the leg surface's pre-quote constituent freshness
-            # veto. Placed on the same snapshot as #23's corr_sanity, and for
+            # veto, on the same snapshot #23's corr_sanity uses below and for
             # the same reason — it is already fetched, so both gates are free.
             # Recorded into the tape FIRST so this read becomes a baseline for
-            # the next RFQ that touches these legs even if we decline below.
+            # the next RFQ that touches these legs even if we decline here.
             _CONSTITUENT_TAPE.record(leg_snapshot, datetime.now(timezone.utc))
             surface_verdicts = _surface_constituent_verdicts(
                 surface_gate, leg_snapshot, legs)
@@ -1968,6 +1968,15 @@ def _discovery_tick(source, gateway, dry_run):
                               reason="surface_constituent_moved",
                               book=book_med, blended=blended)
                 continue
+            # #23 item 3: correlation sanity against Kalshi's live singles. The leg
+            # snapshot we fetched for #17's veto IS the marginal anchor, so this
+            # costs ZERO extra API calls. Independent of the #20 gate: that one
+            # asks whether the books agree with EACH OTHER, this asks whether
+            # their consensus is consistent with the real-time single-leg prices —
+            # tightly-agreeing books can still be jointly wrong. Degenerate books
+            # (yes_ask=100, empty, crossed) yield no marginals: we log the miss and
+            # quote on book consensus alone, exactly as before this ticket, rather
+            # than declining on missing information.
             marginals = singles.marginals_for_legs(leg_snapshot, legs)
             sanity = singles.corr_sanity(blended, marginals,
                                          config.CORR_PREMIUM_MIN,
