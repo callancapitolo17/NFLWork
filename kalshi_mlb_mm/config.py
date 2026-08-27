@@ -539,15 +539,26 @@ SURFACE_GAME_MIN_MINUTES = float(_get("SURFACE_GAME_MIN_MINUTES",
 # need. The periodic `surface_age_summary` used-vs-excluded counts are the
 # instrument that would justify revisiting it.
 SURFACE_CADENCE_DEFAULT_SEC = float(_get("SURFACE_CADENCE_DEFAULT_SEC", "20"))
-# The singles route scrapes a whole slate per pass (#95 medians: DK 28.4s,
-# FD 13.2s), so its cadence is set by the scrape, not chosen freely. DK rows
-# are consequently 30-90s old and do NOT satisfy the 30s age gate (#99) at any
-# cadence — the surface is FD/MGM/NV under it, which still clears
-# MIN_AGREEING_BOOKS=2 on every FG/F5 leg. That exclusion is deliberate and
-# LOUD, not silent: see SURFACE_MAX_AGE_SEC.
+# The singles route scrapes a whole slate per pass, so its cadence is bounded
+# below by the scrape (#95 medians: DK 28.4s, FD 13.2s; measured again
+# 2026-08-27 on a 5-game slate: DK 9.0s, FD 2.6s).
+#
+# DRAFTKINGS stays at 60s. Its rows are 30-90s old and cannot satisfy the 30s
+# age gate (#99) at ANY cadence, so a faster cadence would buy nothing; the
+# exclusion is deliberate and announced (see SURFACE_MAX_AGE_SEC).
+#
+# FANDUEL was lowered 45s -> 20s by #99, matching the structure cadence. At 45s
+# its rows sat past a 30s gate for a third of every cycle, and FD is one of
+# only THREE books that price FG/F5 totals at all — measured on the live
+# 2026-08-27 surface, dropping FD's singles slice took FG totals from 100
+# priceable leg keys (2 at the bare quorum) to 98 with 98 AT THE QUORUM FLOOR,
+# and F5 totals from 54 priceable to 30. Cost is ~17 event requests per pass:
+# ~23 -> ~51 FD req/min (~33k -> ~73k/day) against the 260-520k/day the
+# structure routes already spend, at the book that tolerates the most
+# concurrency (3 on-demand lanes). Rollback is setting it back to 45.
 SURFACE_CADENCE_SINGLES_SEC = {
     "draftkings": float(_get("SURFACE_CADENCE_DRAFTKINGS_SEC", "60")),
-    "fanduel": float(_get("SURFACE_CADENCE_FANDUEL_SINGLES_SEC", "45")),
+    "fanduel": float(_get("SURFACE_CADENCE_FANDUEL_SINGLES_SEC", "20")),
 }
 # Hard ceiling on a structure book's game fetches per second. A pass that
 # would exceed it is stretched, not fired — a mistuned cadence must not be

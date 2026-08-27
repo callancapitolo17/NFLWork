@@ -315,9 +315,9 @@ behaviour) and `SURFACE_CONSTITUENT_VETO_ENABLED=false`.
 DK's slate scrape alone is 21–28s, so its rows are 30–90s old; **no cadence
 lets it clear a 30s gate.** Under `SURFACE_MAX_AGE_SEC=30` the surface is
 FD/MGM/NV, which still clears `MIN_AGREEING_BOOKS=2` on every FG/F5 leg (#95:
-3–4 books structure-only). FanDuel's **singles** route (45s cadence, FG/F5
-totals only) is past the gate for at least a third of every cycle for the same
-reason; its structure route (20s) is unaffected.
+3–4 books structure-only). FanDuel's **singles** route was lowered to 20s by
+#99 for exactly this reason (see the cadence section) and now clears the gate;
+at its old 45s it was past the gate for a third of every cycle.
 
 An intended removal nobody announces is indistinguishable from a broken book,
 so it is announced three ways:
@@ -372,7 +372,7 @@ quote path (#98) will read local state.
 |---|---|---|
 | Slate | 300s | Kalshi MVE enumeration → in-window games + their full leg ladder. **Zero book requests** |
 | `betmgm` / `novig` / `caesars` / `fanduel` structure | 20s | One structure fetch per game, then every rung resolves locally |
-| `fanduel` singles | 45s | Whole-slate scrape for FG/F5 **totals** only |
+| `fanduel` singles | 20s | Whole-slate scrape for FG/F5 **totals** only (was 45s until #99) |
 | `draftkings` singles | 60s | Whole-slate scrape, all markets |
 | Maintenance | 30s | Prune `surface_refresh_log` to its retention window |
 
@@ -494,11 +494,21 @@ the instrument that would justify revisiting it.
 **DraftKings does not satisfy the 30s age gate, at any cadence.** Its slate
 scrape alone is ~21–28s, so DK rows are routinely 30–90s old. The surface is
 effectively FD/MGM/NV under the gate — which still clears
-`MIN_AGREEING_BOOKS=2` on every FG/F5 leg (#95: 3–4 books structure-only).
-FanDuel's singles route (45s, FG/F5 totals only) is past the gate for at least
-a third of every cycle for the same reason. Both exclusions are announced at
-startup and counted per window — see "DraftKings is excluded by the age gate"
-above.
+`MIN_AGREEING_BOOKS=2` on every FG/F5 leg (#95: 3–4 books structure-only). The
+exclusion is announced at startup and counted per window — see "DraftKings is
+excluded by the age gate" above.
+
+**FanDuel's singles cadence dropped 45s → 20s in #99**, matching the structure
+route. FD is one of only **three** books that price FG/F5 totals at all, and at
+45s its rows sat past a 30s gate for a third of every cycle. Measured on the
+live 2026-08-27 surface, dropping FD's singles slice takes FG totals from 100
+priceable leg keys (2 at the bare quorum) to 98 **with 98 at the quorum floor**,
+and F5 totals from 54 priceable to 30 — i.e. nearly every FG total would have
+been priced by MGM + Novig alone a third of the time, on the noisiest possible
+σ plus `QUORUM_MARGIN_ADDON`. Cost: ~17 event requests per pass, ~23 → ~51 FD
+req/min (~33 k → ~73 k/day) against the 260–520 k/day the structure routes
+already spend, at the book that tolerates the most concurrency. Rollback:
+`SURFACE_CADENCE_FANDUEL_SINGLES_SEC=45`.
 
 ### Surface DB
 
@@ -898,7 +908,7 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `CONSTITUENT_TAPE_RETENTION_SEC` / `CONSTITUENT_TAPE_MAX_POINTS` | `180` / `64` | How far back, and how many points per ticker, the constituent tape remembers. It only has to reach past the oldest row the age gate admits |
 | `SURFACE_CADENCE_DEFAULT_SEC` | `20` | Structure-book refresh cadence. **A pass is one fetch PER GAME**, so this is ~3–6 book req/sec on a 15-game slate; 5s would be ~1–2 M/day. #99 kept it at 20s: p95 row age 19s against the 30s gate is ~10s of headroom |
 | `SURFACE_CADENCE_DRAFTKINGS_SEC` | `60` | DK singles cadence. Its slate scrape alone is ~21–28s, so DK rows are 30–90s old and cannot satisfy the 30s age gate at any cadence — excluded by design, warned at startup |
-| `SURFACE_CADENCE_FANDUEL_SINGLES_SEC` | `45` | FD singles cadence (FG/F5 totals only; ~2–3s per pass). Above `SURFACE_MAX_AGE_SEC`, so this route is past the gate for at least a third of every cycle — warned at startup |
+| `SURFACE_CADENCE_FANDUEL_SINGLES_SEC` | `20` | FD singles cadence (FG/F5 totals only; ~2.6s per pass, ~17 event requests). Lowered from 45s by #99: FD is one of only three books pricing FG/F5 totals, and at 45s its rows were past the 30s gate a third of every cycle, which put ~every FG total leg at the bare quorum. Rollback: `45` |
 | `SURFACE_MAX_REQ_PER_SEC_PER_BOOK` | `2.0` | Ceiling on a structure book's per-game fetch rate. Stretches a pass rather than firing it, so a mistuned cadence cannot become a self-inflicted 403 |
 | `SURFACE_SLATE_REFRESH_SEC` | `300` | Kalshi slate + leg-ladder discovery cadence. Zero book requests |
 | `SURFACE_GAME_MAX_HOURS` | `12` | Ignore games further out than this. 48 KXMLBGAME events are open at once (~3 days), and #95 measured books posting main lines only that far ahead |

@@ -400,3 +400,107 @@ def test_a_stale_book_elsewhere_does_not_mislabel_a_thin_game(monkeypatch,
     main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
 
     assert _last_decision(db) == ("skipped", "surface_too_few_books")
+
+
+# --------------------------------------------------------------------------- #
+# The confirm last look — the fill moment, the strictest place                 #
+# --------------------------------------------------------------------------- #
+
+def _confirm_setup(monkeypatch, tmp_path, db_name, surface):
+    """An OPEN, ACCEPTED quote on a CROSS-GAME combo whose legs the surface
+    prices. Mirrors test_confirm_singles_veto._setup; the fresh Kalshi read is
+    identical to the snapshot so #17's own veto passes and the surface gate is
+    what the test actually exercises."""
+    import importlib
+    import json
+    import kalshi_mlb_mm.config as cfg
+    import kalshi_mlb_mm.db as db
+    from kalshi_common import auth_client
+    from kalshi_mlb_mm import main
+    from kalshi_mlb_mm.tests.test_surface_routing import GREF
+
+    monkeypatch.setattr(cfg, "DB_PATH", tmp_path / db_name)
+    monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
+    importlib.reload(db)
+    db.init_database()
+    monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
+    monkeypatch.setattr(main, "_game_ref", lambda gid: GREF)
+    monkeypatch.setattr(main, "_ENGINE", None)
+    monkeypatch.setattr(main, "_SURFACE", surface)
+    monkeypatch.setattr(cfg, "SURFACE_ENABLED", True)
+    snapshot = _snapshot(CROSS_LEGS, 0.40, 0.42)
+    monkeypatch.setattr(main, "_leg_market_prices", lambda legs: snapshot)
+    now = datetime.now(timezone.utc)
+    with db.connect() as con:
+        con.execute(
+            "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, "
+            "game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, "
+            "status, submitted_at, closed_at, leg_prices_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ["q-x", "r-x", "COMBO-X", "game1", 0.28, 0.68, None, 0.308,
+             0.308, "open", now, None, json.dumps(snapshot)])
+        con.execute(
+            "INSERT OR REPLACE INTO seen_rfqs (rfq_id, market_ticker, in_scope, "
+            "game_id, legs_json, first_seen_at, last_decision, creator_id) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            ["r-x", "COMBO-X", True, "game1", json.dumps(CROSS_LEGS), now,
+             "quoted", ""])
+    monkeypatch.setattr(auth_client, "api",
+                        lambda *a, **k: (200, {"quote": {"status": "accepted",
+                                                         "accepted_side": "yes",
+                                                         "contracts": 1}}, None))
+    return main, db
+
+
+class _MustNotConfirmGW:
+    def confirm(self, qid):
+        raise AssertionError("a stale surface must void, never confirm")
+
+    def cancel(self, qid):
+        return True
+
+
+def _confirm_outcome(db):
+    with db.connect(read_only=True) as con:
+        status = con.execute(
+            "SELECT status FROM live_quotes WHERE quote_id='q-x'").fetchone()[0]
+        decision = con.execute(
+            "SELECT decision FROM quote_decisions WHERE quote_id='q-x' "
+            "ORDER BY observed_at DESC LIMIT 1").fetchone()[0]
+        fills = con.execute("SELECT COUNT(*) FROM fills").fetchone()[0]
+    return status, decision, fills
+
+
+def test_confirm_voids_on_a_stale_surface(monkeypatch, tmp_path):
+    """A surface combo has no flight to re-fetch, so row age is its ENTIRE
+    freshness proof at the fill moment. Confirming a fill off a 90s row would
+    leave the last look weaker than the quote gate that preceded it."""
+    main, db = _confirm_setup(monkeypatch, tmp_path, "cf1.duckdb",
+                              _surface_for(CROSS_LEGS, built_at=_fresh(90)))
+    main._confirm_tick(_MustNotConfirmGW(), dry_run=False)
+
+    assert _confirm_outcome(db) == ("voided", "voided_surface_stale", 0)
+
+
+def test_confirm_proceeds_on_a_fresh_surface(monkeypatch, tmp_path):
+    """The control: identical setup, rows inside the gate. Without this the
+    test above would pass on a confirm path that never works at all."""
+    main, db = _confirm_setup(monkeypatch, tmp_path, "cf2.duckdb",
+                              _surface_for(CROSS_LEGS, built_at=_fresh(5)))
+    gw = _ConfirmGW()
+    main._confirm_tick(gw, dry_run=False)
+
+    _status, decision, _fills = _confirm_outcome(db)
+    assert decision != "voided_surface_stale"
+
+
+class _ConfirmGW:
+    def __init__(self):
+        self.confirmed = []
+
+    def confirm(self, qid):
+        self.confirmed.append(qid)
+        return True
+
+    def cancel(self, qid):
+        return True
