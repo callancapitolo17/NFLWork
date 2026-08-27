@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 from kalshi_common import auth_client, legset
 from kalshi_common.leg_types import (_MLB_CODE_TO_TEAM, _parse_event_suffix,
@@ -81,7 +82,11 @@ def _fetch_open_game_events() -> list[str]:
         query = ("/events?series_ticker=KXMLBGAME&status=open"
                  f"&limit={_EVENTS_PAGE_LIMIT}")
         if cursor:
-            query += f"&cursor={cursor}"
+            # Percent-encoded even though Kalshi's cursors are URL-safe
+            # base64 today (verified 2026-08-27): a raw '+' in a query string
+            # decodes as a space, which would silently restart pagination at
+            # the head and loop over page one forever.
+            query += f"&cursor={quote(cursor, safe='')}"
         status, body, _ = auth_client.api("GET", query)
         if status != 200 or not isinstance(body, dict):
             log.warning("surface slate: events fetch failed status=%s "

@@ -163,6 +163,32 @@ class TestEventPagination:
         monkeypatch.setattr(slate.auth_client, "api", api)
         assert slate._fetch_open_game_events() == []
 
+    def test_the_cursor_is_percent_encoded(self, monkeypatch):
+        # Kalshi's cursors are URL-safe base64 today, but a raw '+' decodes as
+        # a space and would restart pagination at the head — an infinite loop
+        # over page one, capped only by _EVENTS_MAX_PAGES.
+        pages = [
+            {"events": [{"event_ticker": "KXMLBGAME-A"}], "cursor": "a+b/c="},
+            {"events": [{"event_ticker": "KXMLBGAME-B"}], "cursor": ""},
+        ]
+        api, calls = self._api(pages)
+        monkeypatch.setattr(slate.auth_client, "api", api)
+        slate._fetch_open_game_events()
+        assert "cursor=a%2Bb%2Fc%3D" in calls[1]
+
+    def test_a_stuck_cursor_cannot_loop_forever(self, monkeypatch):
+        calls = []
+
+        def api(_method, query):
+            calls.append(query)
+            return 200, {"events": [{"event_ticker": "KXMLBGAME-A"}],
+                         "cursor": "never-empties"}, None
+
+        monkeypatch.setattr(slate.auth_client, "api", api)
+        tickers = slate._fetch_open_game_events()
+        assert len(calls) == slate._EVENTS_MAX_PAGES
+        assert len(tickers) == slate._EVENTS_MAX_PAGES
+
     def test_non_game_series_tickers_are_ignored(self, monkeypatch):
         api, _calls = self._api([{"events": [{"event_ticker": "KXMLBGAME-A"},
                                              {"event_ticker": "KXNFLGAME-B"}],
