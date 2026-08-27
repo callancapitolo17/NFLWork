@@ -297,7 +297,7 @@ this to `on_demand` when every quote is live-priced; config, not code).
 | `sportsbook-nash.../league/leagueSubcategory/v1/markets` | None | List MLB events |
 | `sportsbook-nash.../event/eventSubcategory/v1/markets` | None | Main market IDs per game |
 | `sportsbook-nash.../parlays/v1/sgp/events/{id}` | curl_cffi | **All selection IDs** (2MB response) |
-| `gaming-us-nj.../en/api/wager/v1/calculateBets` | curl_cffi | **SGP pricing** (POST, returns trueOdds) — note the `/en/`, see below |
+| `gaming-us-nj.../en/api/wager/v1/calculateBets` | curl_cffi | **SGP pricing** (POST, returns trueOdds) — **BLOCKED since ~2026-08-20**, see § DraftKings price host |
 | `sportsbook-nash.../sgp/dkusnj/sportsdata/v2/sgp` | Full Akamai | SGP pricing (DK frontend only — **inaccessible** via REST) |
 
 ### Why curl_cffi?
@@ -335,6 +335,106 @@ move is re-reading `dkBetSlip.js` for the current route, **not** bumping
 curl_cffi (which is shared by all 6 books).
 
 **Things that DON'T work:** direct HTTP requests, page.evaluate(fetch()), cookie transfer from browser to requests, Playwright stealth plugins. All tested extensively.
+
+## DraftKings price host — blocked since ~2026-08-20 (issue #102)
+
+**Status: DK contributes nothing to SAME-GAME combo pricing.** Its read
+endpoints are green and unaffected — event listing, market metadata, selection
+IDs and the singles scraper all work, so DK still feeds the leg surface
+(epic #94) and therefore all CROSS-GAME pricing. Only `calculateBets` is dead.
+
+### What is blocked
+
+`POST */api/wager/v1/calculateBets` answers `403 AkamaiGHost` for every set
+size — n=1 and n=2 alike. It is **not** a 1-selection refusal; that claim was
+wrong wherever it appeared and was corrected in this ticket.
+
+Probed 2026-08-27 through the real production path (`init_session` -> warmed
+session with 8 cookies -> live event -> real selection IDs), never a
+hand-rolled empty body:
+
+| request | result |
+|---|---|
+| `POST gaming-us-nj/en/api/wager/v1/calculateBets` | 403 AkamaiGHost |
+| `POST gaming-us-nj/api/wager/v1/calculateBets` | 403 AkamaiGHost |
+| `POST gaming-us-wv/api/wager/v1/calculateBets` | 403 AkamaiGHost |
+| `POST gaming-us-wv/...` + full betslip headers | 403 AkamaiGHost |
+| `POST /en/api/wager/v1/somethingelse` | 404 nginx (origin reachable) |
+| `GET /en/api/wager/v1/calculateBets` | 404 nginx (origin reachable) |
+
+The host is not blocked and POST is not blocked. Akamai matches METHOD x
+path-suffix, which is why issue #39's `/en/` locale trick no longer helps —
+that technique is permanently dead, not merely re-blocked.
+
+### Why it is NOT a request-form problem — do not go looking for a new route
+
+Two independent findings close that line of inquiry:
+
+1. **`dkBetSlip.js` 2633.4.1 was re-read (2026-08-27).** It builds this exact
+   path — `${wagerBaseApiHost}${localePrefix}api/wager/v1/calculateBets`, with
+   English mapping to an empty prefix — on `wagerBaseApiHost =
+   gaming-us-wv.draftkings.com`. The only wager routes it knows are
+   `calculateBets`, `placeBets`, `getPurchases`, `acceptPurchase`,
+   `declinePurchase`. There is no GraphQL or `/v2` pricing service to move to.
+2. **DK's own betslip fails identically from this machine.** Driving the real
+   site in real Chrome, clicking two legs of one MLB game produced three
+   "Oops-something didn't load right" errors, an empty bet slip, and six
+   `net::ERR_FAILED` on `POST gaming-us-wv/api/wager/v1/calculateBets`
+   (a 403 with no CORS headers surfaces to the page as a network failure).
+   `_abck` never left its unvalidated `~-1~` state.
+
+A logged-out retail customer on this connection cannot price a bet on
+DraftKings. Our request shape already matches DK's own.
+
+### Most likely cause: egress reputation, from our own volume
+
+`sgp_fetch_health` shows DK healthy with **zero** `price:403` right up to
+2026-08-19, the last day the maker ran, and the successful price calls we
+drew from it ramped ~6x in four days:
+
+| date | on-demand fetches | prices returned |
+|---|---|---|
+| 2026-08-15 | 14,709 | 7,289 |
+| 2026-08-16 | 30,802 | 13,828 |
+| 2026-08-17 | 9,182 | 9,170 |
+| 2026-08-18 | 21,910 | 23,692 |
+| 2026-08-19 | 37,533 | **42,460** |
+
+~50k `calculateBets` POSTs in one day from one residential IP, followed by a
+block confined to exactly that method and path. This is the same shape as
+Caesars (#90) and ProphetX (#91): a volume-triggered reputation rule, not a
+global product change — DK would not ship a betslip broken for every US web
+customer and leave it broken for eight days.
+
+**This is inferred, not proven.** The one clean confirmation is unrun: repeat
+the probe from a different egress (phone hotspot / VPN, ~10 minutes). A 200
+elsewhere confirms IP scoping; a 403 elsewhere means a global rule after all
+and re-opens the question. Do that before any further work here.
+
+### What NOT to do
+
+- **Do not bump `curl_cffi impersonate=`.** Ruled out experimentally in #39
+  against this same endpoint, and curl_cffi is shared by all six books.
+- **Do not brute-force the endpoint.** #90's finding is that our own retry
+  volume is what holds a reputation block OPEN. `BLOCKED_PRICE_STATUSES` in
+  `draftkings.py` deliberately does not retry a 403.
+- **Do not chase a new request form.** See above.
+
+### Diagnostic fix that did land (issue #102)
+
+`draftkings.price_selection_set` is the only book's price hook that issues its
+own HTTP request inline; every other book delegates to a client that runs the
+response through `check_response`. It classified nothing — `if
+resp.status_code != 200: return None` collapsed a 422 non-combinable and a 403
+blockade into the same silent `None`.
+
+Consequence on the next restart: `transport_errors == 0` and
+`prices_returned == 0`, which is exactly the `prices_empty` tripwire's firing
+condition — and that tripwire means "the PARSER went silent". A blocked DK
+would have pointed the next fixer at DK's parser. A 403/429 is now counted as
+a transport error (still not re-raised, matching `caesars`/`novig`), so
+`sgp_fetch_health` distinguishes a dead endpoint from unpriceable combos.
+Pinned by `mlb_sgp/tests/test_dk_on_demand_price_status.py`.
 
 ## Selection ID Format
 

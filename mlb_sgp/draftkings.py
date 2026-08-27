@@ -70,6 +70,15 @@ BOOK_NAME = "draftkings"
 SOURCE_LABEL = "draftkings_direct"
 SOURCE_LABEL_FALLBACK = "draftkings_interpolated"
 
+# calculateBets answers non-200 for two unrelated reasons, and collapsing them
+# is what made issue #102 invisible for eight days: 422 is DK declining THIS
+# combo (normal — most cross-market pairs decline that way), while 403/429 is
+# DK refusing US. Only the second is a transport verdict. Every other book
+# reaches this judgement inside its client via ``check_response``; DK is the
+# one book whose price hook issues its own request, so it must classify here
+# or the ``prices_empty`` tripwire blames the parser for a dead endpoint.
+BLOCKED_PRICE_STATUSES = frozenset({403, 429})
+
 # Target-level parallelism. Env-overridable for ops tuning without a
 # code edit; the shipped default comes from the Phase-0 probe
 # (mlb_sgp/probe_concurrency.py). Total in-flight DK requests is
@@ -776,6 +785,11 @@ def price_selection_set(client, refs, *,
 
     Returns the decimal ``trueOdds`` float, or None on 422 /
     combinabilityRestrictions / any failure (never raises).
+
+    A ``BLOCKED_PRICE_STATUSES`` response is still None to the caller, but it
+    is COUNTED as a transport error first (issue #102) — that count is the
+    only thing separating "DK is blocked" from "DK won't build these combos"
+    in ``sgp_fetch_health``.
     """
     try:
         from scraper_draftkings_sgp import DK_CALCULATE_BETS_URL
@@ -792,6 +806,12 @@ def price_selection_set(client, refs, *,
                 "oddsStyle": "american",
             }, headers={"Content-Type": "application/json"}, timeout=10),
             profile=RETRY_LIVE, book=BOOK_NAME, stage="price")
+        if resp.status_code in BLOCKED_PRICE_STATUSES:
+            # Counted by the handler below, not re-raised: one blocked call
+            # must not abort the flight (matches caesars/novig).
+            raise BookTransportError(
+                BOOK_NAME, "price", status_code=resp.status_code,
+                detail=(getattr(resp, "text", "") or "")[:200])
         if resp.status_code != 200:
             return None                          # 422 (non-combinable) et al.
         data = resp.json()
