@@ -163,12 +163,12 @@ bid        = (p − margin_pts) − maker_fee,  floored to the $0.001 grid
 
 Interplay of the two tickets: **moderate** dispersion widens the margin (#19); dispersion **past `SIGMA_Z_MAX`** kills the quote (#20). One uncertainty number drives both.
 
-## Leg surface (epic #94, issues #96, #98) — cached single-leg book fairs
+## Leg surface (epic #94, issues #96, #98, #99) — cached single-leg book fairs
 
 **Status: LIVE for cross-game combos** (`SURFACE_ENABLED=true`, default). #96
-shipped the ingest loop; #98 wired the router to it. #99 still owes the
-staleness gate — see the caveat under "Quote path" below. Same-game combos are
-untouched and price live, exactly as before.
+shipped the ingest loop, #98 wired the router to it, and #99 added the two
+freshness guards below. Same-game combos are untouched and price live, exactly
+as before.
 
 **Why.** The live path does network I/O per RFQ, so its work scales with RFQ
 count (~140k/day) instead of game count (~15/day). Measured 2026-08-19:
@@ -182,7 +182,9 @@ legs are correlated, so the price has to come from the book's own SGP endpoint.
 ### Quote path (issue #98) — which games cost network
 
 `main_loop` constructs and starts a `SurfaceIngest` when `SURFACE_ENABLED` is
-true, and injects `main._surface_fairs` into the router as `surface_fairs`.
+true, and each pricing attempt injects a fresh `main._SurfaceAgeGate` into the
+router as `surface_fairs` (#99 — it is callable exactly like #98's plain
+lookup, but age-bounded and self-recording).
 Routing is then one rule, `router.routes_to_surface` — read by BOTH the pricer
 and the discovery tick's fetch-queuing block, so the code that spends requests
 and the code that prices can never disagree:
@@ -230,19 +232,106 @@ Four consequences worth knowing:
   opens in a hot loop have caused three incidents; the file is a research
   mirror only.
 
-**Caveat until #99: rows of ANY age can back a quote.** `book_fairs` returns
-whatever is published, and a failed ingest pass deliberately publishes nothing
-(keeping the book's previous rows) so a wobble cannot blank a live book — which
-means a book that goes dark holds its last prices. There is no age gate yet.
-Every `quote_priced` event therefore carries a `surface_games` trace —
-`{leg_set_hash: {market_type, period, books: {book: {fair, route, age_sec}}}}`
-— recording the age of each row that actually backed the quote. That is the
-distribution #99 sets `SURFACE_MAX_AGE_SEC` from. `live_games` now excludes
-surface-priced games, so the two traces partition the combo exactly.
+Every `quote_priced` event carries a `surface_games` trace —
+`{leg_set_hash: {market_type, period, books: {book: {fair, route, age_sec}},
+excluded_by_age, oldest_used_age_sec}}` — read straight off the gate that
+priced the quote (a re-read would race the ingest threads and could name rows
+that never backed it). `live_games` excludes surface-priced games, so the two
+traces partition the combo exactly.
 
 **Rollback:** `SURFACE_ENABLED=false`. No ingest threads start, `surface_fairs`
 is `None`, and single-leg groups route back to the live on-demand engine —
 byte-for-byte pre-#98 behaviour. Config only; no code change.
+
+### Freshness: the two guards (issue #99)
+
+A failed ingest pass deliberately publishes **nothing** and keeps the book's
+previous rows, so a wobble cannot blank a live book (see "Absence is not
+failure"). The direct consequence is that a book which goes **dark holds its
+last prices forever**. These two guards are what turn that into a countable
+decline instead of a bad quote.
+
+**Guard 1 — the age gate.** A quote may only use rows younger than
+`SURFACE_MAX_AGE_SEC` (**30s**, user decision 2026-08-25). It lives in
+`main._SurfaceAgeGate`, ABOVE the store — `LegSurface.book_fairs` still returns
+rows of any age on purpose, because a store that dropped them silently would
+make the decline counts unreadable. One gate per pricing attempt, so `now` and
+the records belong to a single RFQ.
+
+Three declines, because they call for opposite fixes:
+
+| what happened | reason | where to look |
+|---|---|---|
+| no book published this leg | `surface_too_few_books` | ingest coverage matrix (`config.py`) |
+| rows existed, all too old | **`surface_stale`** | ingest cadence, or a book gone dark |
+| enough fresh rows, they disagree | `surface_dispersion` | the books, not us |
+
+Attribution keys on *"did the gate leave a group under `MIN_AGREEING_BOOKS`"*,
+not *"did it drop anything"* — a cross-game combo can lose a stale book on one
+game and still price, while a **different** game is thin for want of coverage,
+and blaming staleness there would send an operator to the wrong knob.
+
+The gate applies at the discovery tick, at the **confirm last look** (the fill
+moment, the strictest place — a surface combo has no flight to re-fetch, so
+row age is its entire freshness proof; new void reason `voided_surface_stale`)
+and in the risk sweep's drift check (a stale row would invent or suppress a
+cancel; gated, the check simply goes quiet and the constituent-jump and tipoff
+breakers still cover the resting quote). It deliberately does **not** apply to
+the post-fill cooldown, whose `_surface_refreshed_since` already demands
+`built_at` **after** the fill — strictly stronger in the direction that
+matters, and if those rows later go stale the quote path declines anyway.
+
+**Guard 2 — the pre-quote constituent freshness veto.** Kalshi's own
+constituent single-leg market for the very same leg trades in real time. If it
+moved **after** `built_at`, the book's cached number is stale by construction,
+however young its clock says it is — this is the case the age gate cannot see.
+
+It costs **zero extra Kalshi calls**: `constituent_tape.ConstituentTape` only
+*remembers* the reads the bot already makes — #17's quote-time snapshot, the
+confirm last look's re-read, and #23's 10s risk-sweep poll — so a past price is
+available to compare against. Per surface-routed group, the baseline is the
+tape's newest observation at or before the **oldest row that backed that
+group's consensus** (the weak link), and the verdict is
+`|Δ devigged P(YES)| > SURFACE_CONSTITUENT_MOVE_THRESHOLD` (0.03, inherited
+from #23). Sign is irrelevant, exactly as in `jumped_tickers`.
+
+- **No baseline ⇒ fail OPEN and count it** (`no_baseline` in the
+  `surface_constituent_check` event). Same contract that makes an unreadable
+  ticker safe in `jumped_tickers`; failing closed would decline every combo on
+  a cold process.
+- **Combo-level, not per-row.** By the veto point the fair has already run the
+  margin / size-gate / exposure-cap / hysteresis chain, so refusing one book's
+  row would mean re-running all of it — for a case the age gate has already
+  bounded to 30s. Reason: `surface_constituent_moved`.
+- **Not repeated at confirm.** #17's `singles_moved` already voids on ANY
+  one-tick move of ANY leg since the quote snapshot, which is strictly
+  stricter.
+
+**Rollbacks, config only:** `SURFACE_MAX_AGE_SEC=0` (no age bound — pre-#99
+behaviour) and `SURFACE_CONSTITUENT_VETO_ENABLED=false`.
+
+### DraftKings is excluded by the age gate — deliberately, and loudly
+
+DK's slate scrape alone is 21–28s, so its rows are 30–90s old; **no cadence
+lets it clear a 30s gate.** Under `SURFACE_MAX_AGE_SEC=30` the surface is
+FD/MGM/NV, which still clears `MIN_AGREEING_BOOKS=2` on every FG/F5 leg (#95:
+3–4 books structure-only). FanDuel's **singles** route (45s cadence, FG/F5
+totals only) is past the gate for at least a third of every cycle for the same
+reason; its structure route (20s) is unaffected.
+
+An intended removal nobody announces is indistinguishable from a broken book,
+so it is announced three ways:
+
+1. a **startup WARNING** naming every `(book, route)` whose cadence reaches
+   `SURFACE_MAX_AGE_SEC` (`main._warn_structurally_excluded_books`);
+2. the periodic **`surface_age_summary`** research event + INFO log every
+   `COVERAGE_SUMMARY_SEC`, counting used vs excluded per book — the same shape
+   as #81's `on_demand_coverage`, and rendered by `report.py` §3b;
+3. per quote, the `excluded_by_age` key in the `surface_games` trace.
+
+Query 20 in `research_queries.sql` is the standing view; query 18 (ages of
+rows that were USED) and query 21 (the veto's verdict/delta mix) are its
+companions.
 
 **Cold start:** the surface is empty for the first cadence after boot, so
 cross-game combos decline `surface_too_few_books` for ~20–60s rather than
@@ -362,7 +451,8 @@ therefore an expected, time-of-day-dependent count and does **not** feed the
 
 A pass where **every** game transport-failed publishes nothing and keeps the
 book's previous rows, so a wobble cannot blank a book — the rows age out under
-#99's gate instead, which is a decline an operator can count. The singles route
+#99's age gate instead (`surface_stale`), which is a decline an operator can
+count. The singles route
 applies the same rule to an **empty scrape**, which is almost always a
 transient failure (DK's own `write_to_duckdb` refuses to overwrite its
 production snapshot on one). A book that answers and simply stops offering a
@@ -389,17 +479,26 @@ request. It is **one fetch per game**. On a 15-game slate:
 | 60s | ~1–2 | 86–170 k |
 
 For scale, the congested on-demand path served 219,724 requests on 2026-08-19
-and ProphetX 403s on sight. 20s is **provisional**: `surface_refresh_log`
-records achieved cadence and per-book failure counts, and #99 sets the real
-number alongside the age gate. `SURFACE_MAX_REQ_PER_SEC_PER_BOOK` (2.0) stretches
+and ProphetX 403s on sight. `SURFACE_MAX_REQ_PER_SEC_PER_BOOK` (2.0) stretches
 a pass rather than firing it, so a mistuned cadence cannot become a
 self-inflicted 403.
 
-**DraftKings will not satisfy a 30s age gate.** Its slate scrape alone is
-~21–28s, so DK rows are routinely 30–90s old. Under a uniform 30s
-`SURFACE_MAX_AGE_SEC` the surface is effectively FD/MGM/NV/CZR — which still
-clears `MIN_AGREEING_BOOKS=2` on every FG/F5 leg (#95: 3–4 books structure-only).
-That is survivable, but it is a decision for #99, not a discovery.
+**#99 decision: 20s stays.** Against `SURFACE_MAX_AGE_SEC=30` the structure
+books measured p50 7–8s / p95 19s / max 20.6s — about 10s of headroom. One
+skipped pass lands a book at ~40s and drops it for a single cycle, which three
+structure books absorb without falling under `MIN_AGREEING_BOOKS=2`. Tightening
+to 15s costs +33% requests (~350–690 k/day) to buy 5s of headroom nothing yet
+shows we need; the `surface_age_summary` used-vs-excluded counts (query 20) are
+the instrument that would justify revisiting it.
+
+**DraftKings does not satisfy the 30s age gate, at any cadence.** Its slate
+scrape alone is ~21–28s, so DK rows are routinely 30–90s old. The surface is
+effectively FD/MGM/NV under the gate — which still clears
+`MIN_AGREEING_BOOKS=2` on every FG/F5 leg (#95: 3–4 books structure-only).
+FanDuel's singles route (45s, FG/F5 totals only) is past the gate for at least
+a third of every cycle for the same reason. Both exclusions are announced at
+startup and counted per window — see "DraftKings is excluded by the age gate"
+above.
 
 ### Surface DB
 
@@ -793,9 +892,13 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `ON_DEMAND_DEADLINE_SEC` | `10.0` | Per-book wall budget for LIVE (on-demand) pricing fetches (issue #50). A book still running at the cap is dropped; the fast books' results land. Sized so warm Novig (p95 ~9s) barely fits |
 | `SURFACE_BOOKS_STRUCTURE` | `fanduel,betmgm,novig,caesars` | Books on the structure route (one fetch per game, rungs resolve locally). DK has no structure odds; PX 403s at `events` |
 | `SURFACE_BOOKS_SINGLES` | `draftkings,fanduel` | Books on the singles-scraper route (whole slate per pass) |
-| `SURFACE_CADENCE_DEFAULT_SEC` | `20` | Structure-book refresh cadence. **A pass is one fetch PER GAME**, so this is ~3–6 book req/sec on a 15-game slate; 5s would be ~1–2 M/day. Provisional — #99 sets it with the age gate |
-| `SURFACE_CADENCE_DRAFTKINGS_SEC` | `60` | DK singles cadence. Its slate scrape alone is ~21–28s, so DK rows are 30–90s old and will not satisfy a 30s age gate |
-| `SURFACE_CADENCE_FANDUEL_SINGLES_SEC` | `45` | FD singles cadence (FG/F5 totals only; ~2–3s per pass) |
+| `SURFACE_MAX_AGE_SEC` | `30` | **#99 age gate.** A quote may only use surface rows younger than this; older ones are excluded per book and, if that leaves a group under `MIN_AGREEING_BOOKS`, the combo declines `surface_stale`. Applied at the discovery tick, the confirm last look (`voided_surface_stale`) and the risk-sweep drift check. `0` disables the bound entirely = pre-#99 behaviour (the rollback) |
+| `SURFACE_CONSTITUENT_VETO_ENABLED` | `true` | **#99 guard 2.** Refuse to quote a surface combo when Kalshi's own constituent single moved after the backing row was built (`surface_constituent_moved`). Zero extra Kalshi calls — it reads a baseline out of the tape fed by reads already made. `false` is the rollback |
+| `SURFACE_CONSTITUENT_MOVE_THRESHOLD` | = `CONSTITUENT_JUMP_THRESHOLD` (`0.03`) | Move size that trips guard 2, in devigged P(YES) points. Defaulted to #23's number so one knob tunes both; query 21 records every delta if they need splitting |
+| `CONSTITUENT_TAPE_RETENTION_SEC` / `CONSTITUENT_TAPE_MAX_POINTS` | `180` / `64` | How far back, and how many points per ticker, the constituent tape remembers. It only has to reach past the oldest row the age gate admits |
+| `SURFACE_CADENCE_DEFAULT_SEC` | `20` | Structure-book refresh cadence. **A pass is one fetch PER GAME**, so this is ~3–6 book req/sec on a 15-game slate; 5s would be ~1–2 M/day. #99 kept it at 20s: p95 row age 19s against the 30s gate is ~10s of headroom |
+| `SURFACE_CADENCE_DRAFTKINGS_SEC` | `60` | DK singles cadence. Its slate scrape alone is ~21–28s, so DK rows are 30–90s old and cannot satisfy the 30s age gate at any cadence — excluded by design, warned at startup |
+| `SURFACE_CADENCE_FANDUEL_SINGLES_SEC` | `45` | FD singles cadence (FG/F5 totals only; ~2–3s per pass). Above `SURFACE_MAX_AGE_SEC`, so this route is past the gate for at least a third of every cycle — warned at startup |
 | `SURFACE_MAX_REQ_PER_SEC_PER_BOOK` | `2.0` | Ceiling on a structure book's per-game fetch rate. Stretches a pass rather than firing it, so a mistuned cadence cannot become a self-inflicted 403 |
 | `SURFACE_SLATE_REFRESH_SEC` | `300` | Kalshi slate + leg-ladder discovery cadence. Zero book requests |
 | `SURFACE_GAME_MAX_HOURS` | `12` | Ignore games further out than this. 48 KXMLBGAME events are open at once (~3 days), and #95 measured books posting main lines only that far ahead |

@@ -366,6 +366,12 @@ def _payload_game_ages(payload: dict) -> tuple[list, list]:
     which is the honest "how stale was the data behind this leg"). Reading
     only `live_games` would count every cross-game quote as an engine hiccup —
     21 of 24 in the first live run.
+
+    `surface_games.books` lists only the rows the #99 age gate ADMITTED, so
+    every surface age here is by construction <= SURFACE_MAX_AGE_SEC. Rows the
+    gate refused ride in the sibling `excluded_by_age` key and are counted by
+    `surface_age_exclusions` below, not folded into this distribution — a
+    refused row did not back the quote.
     """
     live, surface = [], []
     for detail in (payload.get("live_games") or {}).values():
@@ -391,8 +397,8 @@ def staleness_stats(research_db: str, since: datetime) -> dict:
     because the distributions differ by an order of magnitude (a live fetch
     lands in ~1-2s; a surface row is as old as its book's ingest cadence, up
     to ~50s for DraftKings) and averaging them would hide exactly the number
-    #99's age gate has to be set from. A quote_priced with NEITHER trace
-    (fail-safe decoration missed) counts as unknown. Accept-time age is
+    #99's age gate is set from. A quote_priced with NEITHER trace (fail-safe
+    decoration missed) counts as unknown. Accept-time age is
     confirm_singles_check.quote_age_sec.
     """
     import json
@@ -444,6 +450,61 @@ def staleness_stats(research_db: str, since: datetime) -> dict:
             accept_ages.append(float(age))
     out["accept_age"] = _age_dist(accept_ages)
     return out
+
+
+def surface_age_exclusions(research_db: str, since: datetime) -> dict:
+    """Per-book leg-surface rows USED vs REFUSED by the #99 age gate.
+
+    The staleness table above only shows what priced a quote, so on its own it
+    cannot distinguish a book that is fresh from one that has been silently
+    ageing out of consensus entirely. That is exactly the DraftKings case
+    (60s cadence, 21-28s scrape, 30s gate): expected, deliberate, and useless
+    unless it is a number someone can read. Any OTHER book climbing here means
+    the ingest cadence and SURFACE_MAX_AGE_SEC have fallen out of step.
+
+    Reads the periodic `surface_age_summary` events, which are cumulative per
+    window and therefore summed, not diffed.
+    """
+    import json
+
+    out = {"books": {}, "unavailable": None}
+    rows = _read(research_db,
+                 "SELECT payload FROM events "
+                 "WHERE event_type = 'surface_age_summary' AND ts >= ?",
+                 [since])
+    if not _usable(rows):
+        out["unavailable"] = _unavailable_note(rows, "research")
+        return out
+    for (payload_str,) in rows:
+        try:
+            books = (json.loads(payload_str) or {}).get("books") or {}
+        except (TypeError, ValueError):
+            continue
+        for book, counts in books.items():
+            tally = out["books"].setdefault(book, {"used": 0, "excluded": 0})
+            tally["used"] += int(counts.get("used") or 0)
+            tally["excluded"] += int(counts.get("excluded_by_age") or 0)
+    return out
+
+
+def _render_surface_exclusions(stats: dict) -> str:
+    if stats["unavailable"]:
+        return stats["unavailable"]
+    if not stats["books"]:
+        return "_no leg-surface reads in window._"
+    lines = ["| book | legs used | refused (too old) | % refused |",
+             "|---|---:|---:|---:|"]
+    for book, t in sorted(stats["books"].items(),
+                          key=lambda kv: -kv[1]["excluded"]):
+        total = t["used"] + t["excluded"]
+        pct = (100.0 * t["excluded"] / total) if total else 0.0
+        lines.append(f"| {book} | {t['used']} | {t['excluded']} | {pct:.1f}% |")
+    lines += ["",
+              "_Rows older than `SURFACE_MAX_AGE_SEC` never back a quote. "
+              "DraftKings at ~100% is BY DESIGN — its slate scrape alone is "
+              "21-28s against a 30s gate. Any other book climbing here means "
+              "its ingest cadence and the age gate have fallen out of step._"]
+    return "\n".join(lines)
 
 
 def _render_age_row(label: str, dist: dict) -> str:
@@ -839,6 +900,10 @@ def build_report(state_db: str, research_db: str,
         "## 3. Staleness (7d)",
         "",
         _render_staleness(staleness_stats(research_db, d7)),
+        "",
+        "### 3b. Leg-surface rows refused by the age gate (7d)",
+        "",
+        _render_surface_exclusions(surface_age_exclusions(research_db, d7)),
         "",
         "## 4. Demand curve (7d)",
         "",
