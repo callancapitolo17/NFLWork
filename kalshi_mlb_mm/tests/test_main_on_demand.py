@@ -69,7 +69,7 @@ def _setup(monkeypatch, tmp_path, engine, db_name):
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     monkeypatch.setattr(main, "_today_fills_by_game", lambda: [])
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
-    monkeypatch.setattr(main, "_commence_time", lambda gid: None)
+    monkeypatch.setattr(main, "_first_pitch_utc", lambda gl: None)
     monkeypatch.setattr(main, "_game_ref", lambda gid: GREF)
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
     monkeypatch.setattr(main, "_ENGINE", engine)

@@ -1,25 +1,31 @@
-"""Doubleheader identity across the two ways a game gets resolved.
+"""Game identity when the team pair is not unique.
 
-Kalshi appends G1/G2 to both games of a doubleheader
-(KXMLBGAME-26SEP041410DETCLEG1 / ...1915DETCLEG2, live 2026-09-01). Teaching
-the suffix parser that grammar un-drops those games, which is the point — but
-it also un-drops them for the OLDER resolvers that match on team names alone.
-Those must keep declining: a doubleheader is exactly the case where
-``WHERE home_team=? AND away_team=? LIMIT 1`` returns the wrong game, and #95
-measured the resulting fairs off by 0.05-0.11.
+Two Kalshi events can carry the same team pair: a doubleheader's two games
+(Kalshi appends G1/G2 — KXMLBGAME-26SEP041410DETCLEG1 / ...1915DETCLEG2, live
+2026-09-01) share it on the SAME day, and a series' consecutive games share it
+a day apart. The Odds API ``events`` endpoint returns a multi-day window, so
+both shapes are in ``mlb_target_lines`` at once.
 
-So the invariant this file pins is a split one:
-  * leg-surface identity (full suffix)  -> both games priceable, kept apart
-  * team-name resolution                -> both games declined
+``WHERE home_team=? AND away_team=? LIMIT 1`` answers either with whichever row
+DuckDB hands back first — a wrong game, which #95 measured at 0.05-0.11 in
+probability. So the pair NARROWS and the event suffix's own first pitch
+IDENTIFIES, with ambiguity failing closed.
+
+The invariant this file pins:
+  * each game of a pair -> its OWN Odds-API id, never its twin's
+  * two rows still indistinguishable inside the tolerance -> decline
+  * leg-surface identity (full suffix) -> unchanged, still keeps them apart
 """
+from datetime import datetime
+
 import pytest
 
 from kalshi_common import legset
-from kalshi_common.leg_types import game_number_from_suffix
 
-G1 = "26SEP041410DETCLEG1"
-G2 = "26SEP041915DETCLEG2"
+G1 = "26SEP041410DETCLEG1"      # 14:10 ET -> 18:10 UTC
+G2 = "26SEP041915DETCLEG2"      # 19:15 ET -> 23:15 UTC
 PLAIN = "26AUG271910MILNYM"
+SINGLE = "26SEP051410DETCLE"    # same pairing, no doubleheader
 
 
 def _total_leg(suffix: str):
@@ -28,50 +34,96 @@ def _total_leg(suffix: str):
                              "side": "yes"})
 
 
-SINGLE = "26SEP051410DETCLE"     # same pairing, no doubleheader
+def _market_db(tmp_path, monkeypatch, rows):
+    """A MARKET_DB holding the given (game_id, home, away, commence_utc) rows.
 
-
-@pytest.fixture
-def target_lines_db(tmp_path, monkeypatch):
-    """A MARKET_DB holding exactly one DET @ CLE row.
-
-    The positive control matters more than the negative one: without it the
-    doubleheader assertions would pass on an absent database and prove
-    nothing.
+    commence_time is NAIVE UTC here because that is what write_target_lines
+    stores — the comparison only works if both sides agree on that.
     """
     import duckdb
 
     from kalshi_mlb_mm import config, main
     path = tmp_path / "market.duckdb"
     con = duckdb.connect(str(path))
-    con.execute("CREATE TABLE mlb_target_lines "
-                "(game_id VARCHAR, home_team VARCHAR, away_team VARCHAR)")
-    con.execute("INSERT INTO mlb_target_lines VALUES "
-                "('odds-api-id', 'Cleveland Guardians', 'Detroit Tigers')")
+    con.execute("CREATE TABLE mlb_target_lines (game_id VARCHAR, "
+                "home_team VARCHAR, away_team VARCHAR, commence_time TIMESTAMP)")
+    for row in rows:
+        con.execute("INSERT INTO mlb_target_lines VALUES (?, ?, ?, ?)", list(row))
     con.close()
     monkeypatch.setattr(config, "MARKET_DB", path)
+    main._RESOLVE_CACHE.clear()
     return main
 
 
-class TestTeamNameResolutionFailsClosed:
-    def test_an_ordinary_game_still_resolves(self, target_lines_db):
-        main = target_lines_db
+CLE, DET = "Cleveland Guardians", "Detroit Tigers"
+
+
+@pytest.fixture
+def doubleheader_db(tmp_path, monkeypatch):
+    return _market_db(tmp_path, monkeypatch, [
+        ("dh-game-1", CLE, DET, datetime(2026, 9, 4, 18, 10)),
+        ("dh-game-2", CLE, DET, datetime(2026, 9, 4, 23, 15)),
+    ])
+
+
+class TestStartTimeResolution:
+    def test_an_ordinary_game_still_resolves(self, tmp_path, monkeypatch):
+        main = _market_db(tmp_path, monkeypatch, [
+            ("odds-api-id", CLE, DET, datetime(2026, 9, 5, 18, 10))])
         assert (main._resolve_game_for_legs_uncached([_total_leg(SINGLE)])
                 == "odds-api-id")
 
-    def test_a_doubleheader_leg_resolves_to_no_game(self, target_lines_db):
-        # Both games match that same single row on teams alone, so LIMIT 1
-        # would hand each of them the other's line. Decline instead.
-        main = target_lines_db
-        assert main._resolve_game_for_legs_uncached([_total_leg(G1)]) is None
-        assert main._resolve_game_for_legs_uncached([_total_leg(G2)]) is None
+    def test_each_doubleheader_game_resolves_to_its_own_id(self,
+                                                           doubleheader_db):
+        # The whole point: NOT the same id, and each one its own — this is what
+        # unblocks quoting a combo that touches a doubleheader.
+        main = doubleheader_db
+        assert main._resolve_game_for_legs_uncached([_total_leg(G1)]) == "dh-game-1"
+        assert main._resolve_game_for_legs_uncached([_total_leg(G2)]) == "dh-game-2"
 
-    def test_the_guard_is_the_game_number_not_a_parse_failure(self):
-        # The codes DO parse now; the decline is a deliberate risk gate, so it
-        # must key on the marker rather than on _parse_event_suffix failing.
-        from kalshi_common.leg_types import _parse_event_suffix
-        assert _parse_event_suffix(G1) == ("DET", "CLE")
-        assert game_number_from_suffix(G1) == 1
+    def test_the_two_games_never_share_an_id(self, doubleheader_db):
+        main = doubleheader_db
+        first = main._resolve_game_for_legs_uncached([_total_leg(G1)])
+        second = main._resolve_game_for_legs_uncached([_total_leg(G2)])
+        assert first is not None and second is not None and first != second
+
+    def test_a_next_day_series_game_does_not_steal_the_id(self, tmp_path,
+                                                          monkeypatch):
+        """The live 2026-09-01 shape: same pair, one day apart.
+
+        Resolving tonight's Kalshi event to tomorrow's row is a wrong game_id
+        under the exposure ledgers AND a first pitch ~24h late under the
+        tipoff gate.
+        """
+        main = _market_db(tmp_path, monkeypatch, [
+            ("tonight", CLE, DET, datetime(2026, 9, 5, 18, 10)),
+            ("tomorrow", CLE, DET, datetime(2026, 9, 6, 18, 10)),
+        ])
+        assert (main._resolve_game_for_legs_uncached([_total_leg(SINGLE)])
+                == "tonight")
+
+    def test_indistinguishable_rows_fail_closed(self, tmp_path, monkeypatch):
+        main = _market_db(tmp_path, monkeypatch, [
+            ("a", CLE, DET, datetime(2026, 9, 4, 18, 10)),
+            ("b", CLE, DET, datetime(2026, 9, 4, 18, 25)),
+        ])
+        assert main._resolve_game_for_legs_uncached([_total_leg(G1)]) is None
+
+    def test_a_game_the_schedule_does_not_carry_declines(self,
+                                                         doubleheader_db):
+        # Absent is a decline, not a nearest-neighbour match.
+        main = doubleheader_db
+        assert main._resolve_game_for_legs_uncached([_total_leg(PLAIN)]) is None
+
+    def test_the_cache_keeps_the_two_games_apart(self, doubleheader_db):
+        # _RESOLVE_CACHE keys on CanonicalLeg.game_id, which KEEPS the G1/G2
+        # marker — if it did not, the first lookup would poison the second.
+        main = doubleheader_db
+        assert main._resolve_game_for_legs([_total_leg(G1)]) == "dh-game-1"
+        assert main._resolve_game_for_legs([_total_leg(G2)]) == "dh-game-2"
+
+    def test_leg_surface_identity_still_separates_them(self):
+        assert _total_leg(G1).game_id != _total_leg(G2).game_id
 
 
 class TestRfiDoubleheaderExclusion:
@@ -83,8 +135,8 @@ class TestRfiDoubleheaderExclusion:
     def _game(self, suffix, **kw):
         from kalshi_rfi.discovery import RfiGame, parse_suffix_start_utc
         return RfiGame(ticker=f"KXMLBRFI-{suffix}", suffix=suffix,
-                       home_team="Cleveland Guardians",
-                       away_team="Detroit Tigers",
+                       home_team=CLE,
+                       away_team=DET,
                        commence_utc=parse_suffix_start_utc(suffix),
                        yes_bid_cents=40, yes_ask_cents=45, status="open",
                        **kw)
@@ -101,3 +153,43 @@ class TestRfiDoubleheaderExclusion:
         from kalshi_rfi.discovery import drop_doubleheaders
         kept = drop_doubleheaders([self._game(PLAIN)])
         assert [g.suffix for g in kept] == [PLAIN]
+
+
+class TestAmbiguityIsWarnedOnce:
+    """Resolution FAILURES are deliberately not cached (a transient DB lock
+    must not stick until the next refresh), so the warning needs its own
+    guard — the discovery tick re-enters every open RFQ every 2s, and evening
+    peak runs ~100 RFQs/min."""
+
+    def test_repeated_ambiguous_lookups_warn_once(self, tmp_path, monkeypatch,
+                                                  caplog):
+        import logging
+        main = _market_db(tmp_path, monkeypatch, [
+            ("a", CLE, DET, datetime(2026, 9, 4, 18, 10)),
+            ("b", CLE, DET, datetime(2026, 9, 4, 18, 25)),
+        ])
+        main._AMBIGUOUS_WARNED.clear()
+        with caplog.at_level(logging.WARNING, logger="kalshi_mlb_mm"):
+            for _ in range(5):
+                assert main._resolve_game_for_legs_uncached(
+                    [_total_leg(G1)]) is None
+        warnings = [r for r in caplog.records
+                    if "resolve_game_ambiguous" in r.getMessage()]
+        assert len(warnings) == 1
+        main._AMBIGUOUS_WARNED.clear()
+
+    def test_a_target_line_refresh_re_arms_the_warning(self, tmp_path,
+                                                       monkeypatch):
+        # The ambiguity may be gone after the refresh; if it is not, the next
+        # cycle says so again rather than going quiet forever.
+        from kalshi_common import sgp_runner
+        main = _market_db(tmp_path, monkeypatch, [
+            ("a", CLE, DET, datetime(2026, 9, 4, 18, 10)),
+            ("b", CLE, DET, datetime(2026, 9, 4, 18, 25)),
+        ])
+        main._AMBIGUOUS_WARNED.clear()
+        main._resolve_game_for_legs_uncached([_total_leg(G1)])
+        assert main._AMBIGUOUS_WARNED
+        monkeypatch.setattr(sgp_runner, "target_line_cycle", lambda **kw: [])
+        main._target_line_tick()
+        assert main._AMBIGUOUS_WARNED == set()

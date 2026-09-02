@@ -16,7 +16,8 @@ import duckdb
 
 from kalshi_common import auth_client
 from kalshi_common.leg_types import (_MLB_CODE_TO_TEAM, _parse_event_suffix,
-                                     game_number_from_suffix)
+                                     parse_suffix_start_utc,
+                                     unique_game_by_start)
 from mlb_sgp._shared import TargetLine
 from kalshi_common.sgp_service import SGPService  # noqa: F401  (re-export)
 
@@ -123,11 +124,18 @@ def _fetch_kalshi_total_lines(suffix: str) -> list[float]:
     return out
 
 
-def _fetch_schedule_from_odds_api() -> dict[tuple, dict]:
-    """Fetch today's MLB events from the Odds API.
+def _fetch_schedule_from_odds_api() -> list[dict]:
+    """Fetch the Odds API's MLB event window.
 
-    Returns dict keyed by (home_team, away_team) tuple →
-    {game_id, home_team, away_team, commence_time}.
+    Returns a LIST of {game_id, home_team, away_team, commence_time} — one per
+    event, never collapsed. It used to return a dict keyed on
+    (home_team, away_team), which is not an identity: the endpoint returns a
+    MULTI-DAY window, so consecutive games of one series collide (2026-09-01
+    live: 25 events -> 15 dict rows, 10 games silently lost), and both games of
+    a doubleheader collide on the same day. Last-write-wins then handed the
+    Kalshi event for TONIGHT's game tomorrow's game_id and commence_time — a
+    wrong id under the exposure ledgers and a first pitch ~24h late under the
+    tipoff gate. Callers disambiguate with leg_types.unique_game_by_start.
 
     Decouples bot from the dashboard's mlb.duckdb (R-locked) for schedule.
     ODDS_API_KEY is read from env first, falling back to ~/.Renviron (R's
@@ -153,7 +161,7 @@ def _fetch_schedule_from_odds_api() -> dict[tuple, dict]:
     if not key:
         print("  _fetch_schedule: ODDS_API_KEY not set (env or ~/.Renviron)",
               flush=True)
-        return {}
+        return []
 
     url = f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events?apiKey={key}"
     try:
@@ -161,9 +169,9 @@ def _fetch_schedule_from_odds_api() -> dict[tuple, dict]:
             events = json.loads(resp.read().decode())
     except Exception as e:
         print(f"  _fetch_schedule: Odds API call failed — {e}", flush=True)
-        return {}
+        return []
 
-    out: dict[tuple, dict] = {}
+    out: list[dict] = []
     for e in events:
         game_id = e.get("id")
         home = e.get("home_team")
@@ -177,10 +185,23 @@ def _fetch_schedule_from_odds_api() -> dict[tuple, dict]:
             ct = _dt.fromisoformat(normalized) if normalized else None
         except Exception:
             ct = None
-        out[(home, away)] = {
+        out.append({
             "game_id": game_id, "home_team": home, "away_team": away,
             "commence_time": ct,
-        }
+        })
+    return out
+
+
+def _schedule_by_team_pair(schedule: list[dict]) -> dict[tuple, list[dict]]:
+    """Odds API events -> {(home_team, away_team): [event, ...]}.
+
+    A LIST per pair, not one event: the pair is a narrowing filter, not a key
+    (see _fetch_schedule_from_odds_api). The caller picks among them by start
+    time.
+    """
+    out: dict[tuple, list[dict]] = {}
+    for row in schedule:
+        out.setdefault((row["home_team"], row["away_team"]), []).append(row)
     return out
 
 
@@ -196,29 +217,34 @@ def enumerate_kalshi_targets(both_teams: bool = False) -> list[TargetLine]:
         print("  enumerate: 0 kalshi events", flush=True)
         return []
     schedule = _fetch_schedule_from_odds_api()
+    schedule_by_pair = _schedule_by_team_pair(schedule)
     print(f"  enumerate: {len(events)} kalshi events, {len(schedule)} schedule rows",
           flush=True)
     targets: list[TargetLine] = []
     matched_games = 0
+    unmatched_reasons: dict[str, int] = {}
     for ev in events:
         event_ticker = ev.get("event_ticker", "")
         if not event_ticker.startswith("KXMLBGAME-"):
             continue
         suffix = event_ticker.replace("KXMLBGAME-", "")
-        # mlb_target_lines is keyed on the Odds-API game_id resolved from the
-        # team pair below, so a doubleheader's two suffixes would both claim
-        # the same schedule row. Skip them (pre-existing behaviour, explicit
-        # since the suffix parser learned the G1/G2 grammar).
-        if game_number_from_suffix(suffix) is not None:
-            continue
         away_code, home_code = _parse_event_suffix(suffix)
         if away_code is None or home_code is None:
             continue
         home_team = _MLB_CODE_TO_TEAM.get(home_code)
         away_team = _MLB_CODE_TO_TEAM.get(away_code)
-        sched = schedule.get((home_team, away_team))
-        if not sched:
+        # The team pair is not an identity — a series' consecutive games and a
+        # doubleheader's two games both share it. Disambiguate on the Kalshi
+        # suffix's own first pitch, which is per-event and exact, and fail
+        # closed when two schedule rows are still in range.
+        starts_by_game = {row["game_id"]: row["commence_time"]
+                          for row in schedule_by_pair.get((home_team, away_team), ())}
+        game_id, reason = unique_game_by_start(
+            parse_suffix_start_utc(suffix), list(starts_by_game.items()))
+        if game_id is None:
+            unmatched_reasons[reason] = unmatched_reasons.get(reason, 0) + 1
             continue
+        commence_time = starts_by_game[game_id]
         matched_games += 1
         spreads = _fetch_kalshi_spread_lines(
             suffix, home_code=home_code, both_teams=both_teams)
@@ -228,13 +254,13 @@ def enumerate_kalshi_targets(both_teams: bool = False) -> list[TargetLine]:
         for spread, _who in spreads:
             for total in totals:
                 targets.append(TargetLine(
-                    game_id=sched["game_id"],
+                    game_id=game_id,
                     home_team=home_team, away_team=away_team,
-                    commence_time=sched["commence_time"],
+                    commence_time=commence_time,
                     period="FG", spread=spread, total=total,
                 ))
-    print(f"  enumerate: matched_games={matched_games} → {len(targets)} target lines",
-          flush=True)
+    print(f"  enumerate: matched_games={matched_games} → {len(targets)} target lines"
+          f" (unmatched: {unmatched_reasons or 'none'})", flush=True)
     return targets
 
 

@@ -112,7 +112,7 @@ def test_discovery_pass_constant_connections_for_in_scope_rfqs(monkeypatch, tmp_
                    for i in range(n_rfqs)}
     monkeypatch.setattr(main, "_SCOPE_CACHE", scope_cache)
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
-    monkeypatch.setattr(main, "_commence_time", lambda gid: None)
+    monkeypatch.setattr(main, "_first_pitch_utc", lambda gl: None)
     monkeypatch.setattr(main, "_game_ref", lambda gid: object())
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
     monkeypatch.setattr(cfg, "FLIGHT_HORIZON_HOURS", 0)
@@ -371,35 +371,48 @@ def test_coverage_tick_emits_rfq_ingestion_summary(monkeypatch):
     assert payload["mirror_size"] == 2
 
 
-def test_commence_time_naive_utc_normalized(monkeypatch, tmp_path):
-    """2026-08-11 bug: mlb_target_lines stores commence_time as NAIVE UTC,
-    but risk._now_matching treats naive datetimes as LOCAL — every tipoff
-    looked ~7h later than reality, the gate never fired, and in-play games
-    generated live-flight traffic all day. _commence_time must return an
-    AWARE UTC datetime so tipoff_ok compares real instants."""
+def test_first_pitch_from_suffix_is_aware_utc():
+    """2026-08-11 bug, now guarded at the source of the clock itself.
+
+    risk._now_matching treats a NAIVE datetime as LOCAL (the R pipeline's
+    convention), so a naive first pitch made every tipoff look ~7h later than
+    reality — the gate never fired and in-play games generated live-flight
+    traffic all day. parse_suffix_start_utc returns naive UTC, so
+    _first_pitch_utc must attach the timezone before the gate sees it.
+    """
     from datetime import datetime, timedelta, timezone
-    import duckdb as ddb
-    import kalshi_mlb_mm.config as cfg
+    from zoneinfo import ZoneInfo
+
+    from kalshi_common import legset
     from kalshi_mlb_mm import main, risk
 
-    market_db = tmp_path / "market.duckdb"
-    con = ddb.connect(str(market_db))
-    con.execute("CREATE TABLE mlb_target_lines (game_id VARCHAR, "
-                "commence_time TIMESTAMP)")
-    # A game that started 2h ago (UTC instant), written naive — the bug
-    # shape. timedelta, NOT hour arithmetic: (hour - 2) % 24 wraps forward
-    # across midnight UTC and inverts the premise for two hours a day.
-    started_2h_ago = (datetime.now(timezone.utc) - timedelta(hours=2)
-                      ).replace(tzinfo=None)
-    con.execute("INSERT INTO mlb_target_lines VALUES ('g1', ?)",
-                [started_2h_ago])
-    con.close()
-    monkeypatch.setattr(cfg, "MARKET_DB", market_db)
-    main._COMMENCE_CACHE.clear()
+    # A game that started 2h ago, written the way Kalshi writes a ticker.
+    # timedelta, NOT hour arithmetic: (hour - 2) % 24 wraps forward across
+    # midnight and inverts the premise for two hours a day.
+    started = datetime.now(timezone.utc) - timedelta(hours=2)
+    et = started.astimezone(ZoneInfo("America/New_York"))
+    months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+              "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+    suffix = (f"{et.year % 100:02d}{months[et.month - 1]}{et.day:02d}"
+              f"{et.hour:02d}{et.minute:02d}NYYBOS")
+    leg = legset.parse_leg({"event_ticker": f"KXMLBTOTAL-{suffix}",
+                            "market_ticker": f"KXMLBTOTAL-{suffix}-9",
+                            "side": "yes"})
 
-    ct = main._commence_time("g1")
+    ct = main._first_pitch_utc([leg])
     assert ct is not None and ct.tzinfo is not None, \
-        "commence_time must come back timezone-aware (UTC)"
+        "first pitch must come back timezone-aware (UTC)"
+    assert abs((ct - started).total_seconds()) < 61
     assert not risk.tipoff_ok(ct, cancel_min=10), \
         "a game 2h past first pitch must FAIL the tipoff gate"
-    main._COMMENCE_CACHE.clear()
+
+
+def test_first_pitch_from_an_unparseable_suffix_is_none():
+    """None is fail-safe at every call site (skip / cancel), never fail open."""
+    from kalshi_mlb_mm import main
+
+    class _Leg:
+        game_id = "not-a-suffix"
+
+    assert main._first_pitch_utc([_Leg()]) is None
+    assert main._first_pitch_utc([]) is None

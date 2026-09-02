@@ -76,15 +76,15 @@ def test_target_line_tick_refreshes_and_invalidates_caches(monkeypatch):
     calls = []
     monkeypatch.setattr(sgp_runner, "target_line_cycle",
                         lambda **kw: calls.append(kw) or [])
-    monkeypatch.setitem(main._COMMENCE_CACHE, "g-old", None)
     monkeypatch.setitem(main._RESOLVE_CACHE, "h-old", "g-old")
+    monkeypatch.setitem(main._GAME_REF_CACHE, "g-old", object())
 
     main._target_line_tick()
 
     assert len(calls) == 1
     assert calls[0]["both_teams"] is True     # away-margin tickers need both
-    assert main._COMMENCE_CACHE == {}
     assert main._RESOLVE_CACHE == {}
+    assert main._GAME_REF_CACHE == {}
 
 
 def test_target_line_tick_invalidates_even_on_enumeration_failure(monkeypatch):
@@ -98,11 +98,11 @@ def test_target_line_tick_invalidates_even_on_enumeration_failure(monkeypatch):
         raise RuntimeError("kalshi api down")
 
     monkeypatch.setattr(sgp_runner, "target_line_cycle", boom)
-    monkeypatch.setitem(main._COMMENCE_CACHE, "g-old", None)
+    monkeypatch.setitem(main._RESOLVE_CACHE, "h-old", "g-old")
 
     with pytest.raises(RuntimeError):
         main._target_line_tick()
-    assert main._COMMENCE_CACHE == {}
+    assert main._RESOLVE_CACHE == {}
 
 
 # --------------------------------------------------------------------------- #

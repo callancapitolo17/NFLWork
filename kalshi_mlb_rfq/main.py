@@ -29,7 +29,7 @@ from kalshi_mlb_rfq.log_setup import setup_logging
 from kalshi_common.leg_types import (
     _MLB_CODE_TO_TEAM, _parse_event_suffix, _home_code_from_event_ticker,
     _leg_dict_to_typed, _spread_line_from_legs, _total_line_from_legs,
-    game_number_from_suffix,
+    parse_suffix_start_utc, unique_game_by_start,
 )
 
 log = logging.getLogger("kalshi_mlb_rfq")
@@ -1611,14 +1611,24 @@ def _kalshi_last_price(market_ticker: str) -> float:
         return 0.0
 
 
-def _resolve_game_id(home_code: str, away_code: str) -> str | None:
-    """Map Kalshi 3-letter codes to game_id via in-memory mlb_parlay_lines cache."""
+def _resolve_game_id(home_code: str, away_code: str,
+                     kalshi_start: datetime | None) -> str | None:
+    """Map a Kalshi event to its game_id via the in-memory parlay-lines cache.
+
+    The team pair NARROWS; the event suffix's own first pitch IDENTIFIES. Two
+    consecutive games of a series both sit inside the 24h horizon, and both
+    games of a doubleheader sit inside it on the same day, so returning the
+    first team-pair hit returned an arbitrary one of them. Ambiguity inside
+    the tolerance declines (fail closed) — a wrong game is the one failure
+    that costs real money (#95).
+    """
     home = _MLB_CODE_TO_TEAM.get(home_code)
     away = _MLB_CODE_TO_TEAM.get(away_code)
     if not home or not away:
         return None
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(hours=24)
+    candidates = []
     for game_id, row in _PARLAY_LINES_CACHE.items():
         if row["home_team"] != home or row["away_team"] != away:
             continue
@@ -1628,8 +1638,12 @@ def _resolve_game_id(home_code: str, away_code: str) -> str | None:
         if ct.tzinfo is None:
             ct = ct.replace(tzinfo=timezone.utc)
         if now < ct < horizon:
-            return game_id
-    return None
+            candidates.append((game_id, ct))
+    game_id, reason = unique_game_by_start(kalshi_start, candidates)
+    if game_id is None and reason == "ambiguous":
+        log.warning("[resolve_game_ambiguous] %s@%s candidates=%d — declining",
+                    away, home, len(candidates))
+    return game_id
 
 
 def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandidate],
@@ -1656,11 +1670,6 @@ def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandida
         if not event_ticker.startswith("KXMLBGAME-"):
             continue
         suffix = event_ticker.replace("KXMLBGAME-", "")
-        # _resolve_game_id below matches on the team pair alone, which cannot
-        # tell a doubleheader's two games apart. Skip both (pre-existing
-        # behaviour, explicit since the suffix parser learned G1/G2).
-        if game_number_from_suffix(suffix) is not None:
-            continue
         away_code, home_code = _parse_event_suffix(suffix)
         if away_code is None or home_code is None:
             continue
@@ -1670,7 +1679,8 @@ def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandida
         if not avail_spreads or not avail_totals:
             continue
 
-        game_id = _resolve_game_id(home_code, away_code)
+        game_id = _resolve_game_id(home_code, away_code,
+                                   parse_suffix_start_utc(suffix))
         if game_id is None:
             continue
 

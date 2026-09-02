@@ -132,7 +132,7 @@ def _env(monkeypatch, tmp_path, db_name, *, engine,
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     monkeypatch.setattr(main, "_today_fills_by_game", lambda: [])
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
-    monkeypatch.setattr(main, "_commence_time", lambda gid: None)
+    monkeypatch.setattr(main, "_first_pitch_utc", lambda gl: None)
     monkeypatch.setattr(main, "_game_ref", lambda gid: GREF)
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
     monkeypatch.setattr(main, "_ENGINE", engine)
@@ -336,8 +336,8 @@ def _sweep_env(monkeypatch, tmp_path, db_name, *, current):
     db.init_database()
     monkeypatch.setattr(main, "_ENGINE", None)
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
-    monkeypatch.setattr(main, "_commence_time",
-                        lambda gid: datetime(2099, 1, 1, tzinfo=timezone.utc))
+    monkeypatch.setattr(main, "_first_pitch_utc",
+                        lambda gl: datetime(2099, 1, 1, tzinfo=timezone.utc))
     polled = []
 
     def fake_poll(tickers, budget_sec=None):
