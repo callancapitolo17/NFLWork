@@ -366,59 +366,44 @@ The host is not blocked and POST is not blocked. Akamai matches METHOD x
 path-suffix, which is why issue #39's `/en/` locale trick no longer helps —
 that technique is permanently dead, not merely re-blocked.
 
-### Why it is NOT a request-form problem — do not go looking for a new route
+### What the cause is NOT (each disproven directly, 2026-08-27)
 
-Two independent findings close that line of inquiry:
+- **NOT the request form.** `dkBetSlip.js` 2633.4.1 builds this exact path on
+  `wagerBaseApiHost = gaming-us-wv`, and knows only `calculateBets`,
+  `placeBets`, `getPurchases`, `acceptPurchase`, `declinePurchase`. There is
+  no GraphQL or `/v2` pricing service to move to. Confirmed from the other
+  direction: some probes returned **422** (non-combinable) rather than 403 —
+  the origin accepting and understanding our exact body.
+- **NOT our egress.** A normal browser on the same wifi, logged out, prices a
+  user-built 2-leg SGP (MLB and CFB both verified by the repo owner). Any
+  claim that the IP is banned is wrong; do not buy a proxy on that theory.
+- **NOT authentication.** The working browser case was logged OUT.
+- **NOT the Akamai `_abck` sensor cookie.** An automated Chrome whose `_abck`
+  stayed unvalidated for 90s still saw DK's own betslip price 4/4 calls.
 
-1. **`dkBetSlip.js` 2633.4.1 was re-read (2026-08-27).** It builds this exact
-   path — `${wagerBaseApiHost}${localePrefix}api/wager/v1/calculateBets`, with
-   English mapping to an empty prefix — on `wagerBaseApiHost =
-   gaming-us-wv.draftkings.com`. The only wager routes it knows are
-   `calculateBets`, `placeBets`, `getPurchases`, `acceptPurchase`,
-   `declinePurchase`. There is no GraphQL or `/v2` pricing service to move to.
-2. **DK's own betslip fails identically from this machine.** Driving the real
-   site in real Chrome, clicking two legs of one MLB game produced three
-   "Oops-something didn't load right" errors, an empty bet slip, and six
-   `net::ERR_FAILED` on `POST gaming-us-wv/api/wager/v1/calculateBets`
-   (a 403 with no CORS headers surfaces to the page as a network failure).
-   `_abck` never left its unvalidated `~-1~` state.
+### What the cause IS: unidentified — and the probing was not clean
 
-A logged-out retail customer on this connection cannot price a bet on
-DraftKings. Our request shape already matches DK's own.
+Four probe configurations gave four different answers in one afternoon:
 
-### Most likely cause: egress reputation, from our own volume
-
-`sgp_fetch_health` shows DK healthy with **zero** `price:403` right up to
-2026-08-19, the last day the maker ran, and the successful price calls we
-drew from it ramped ~6x in four days:
-
-| date | on-demand fetches | prices returned |
+| client | warmed on sportsbook page | result |
 |---|---|---|
-| 2026-08-15 | 14,709 | 7,289 |
-| 2026-08-16 | 30,802 | 13,828 |
-| 2026-08-17 | 9,182 | 9,170 |
-| 2026-08-18 | 21,910 | 23,692 |
-| 2026-08-19 | 37,533 | **42,460** |
+| DK's own betslip, headed Chrome | yes | 4/4 **200** |
+| in-page fetch, headed Chrome | yes | 6/6 **422** (origin reached) |
+| in-page fetch, headed Chrome | no | 12/12 403 |
+| in-page fetch, headless Chrome | no | 15/15 403 |
 
-~50k `calculateBets` POSTs in one day from one residential IP, followed by a
-block confined to exactly that method and path. This is the same shape as
-Caesars (#90) and ProphetX (#91): a volume-triggered reputation rule, not a
-global product change — DK would not ship a betslip broken for every US web
-customer and leave it broken for eight days.
+More than one variable moved between runs, so none of it attributes cleanly.
+Candidate factors still live: client TLS/HTTP2 fingerprint (`curl_cffi`'s
+Chrome impersonation vs a real Chrome), session warming on
+`sportsbook.draftkings.com` before touching the wager host, and an adaptive
+rate component.
 
-**This is inferred, not proven.** The one clean confirmation is unrun: repeat
-the probe from a different egress (phone hotspot / VPN, ~10 minutes). A 200
-elsewhere confirms IP scoping; a 403 elsewhere means a global rule after all
-and re-opens the question. Do that before any further work here.
-
-### What NOT to do
-
-- **Do not bump `curl_cffi impersonate=`.** Ruled out experimentally in #39
-  against this same endpoint, and curl_cffi is shared by all six books.
-- **Do not brute-force the endpoint.** #90's finding is that our own retry
-  volume is what holds a reputation block OPEN. `BLOCKED_PRICE_STATUSES` in
-  `draftkings.py` deliberately does not retry a 403.
-- **Do not chase a new request form.** See above.
+**A warning for whoever picks this up.** ~56 calls were made to this endpoint
+in one afternoon, and the LATER runs failed more than the earlier ones. That
+is the issue #90 Caesars pattern — our own probe volume holding a block open —
+so some of the instability above may be self-inflicted. Before probing again:
+let the endpoint rest, change ONE variable per run, and keep each run to a
+handful of calls. Do not repeat an afternoon of 56.
 
 ### Diagnostic fix that did land (issue #102)
 
