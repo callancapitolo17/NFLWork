@@ -48,15 +48,31 @@ books and sample stddev of probit-transformed fairs ≤ `RFI_SIGMA_Z_MAX`
    bid side; a mid-based guard both self-triggered on placement and needed
    a 6¢ ask move). Residual blind spot: depth evaporating *below* our bid
    is invisible at top-of-book.
-4. Desired bid = `floor(fair·100) − RFI_MARGIN_CENTS` (3¢), clamped below
+4. Desired bid = `floor(fair·100) − RFI_MARGIN_CENTS`, clamped below
    the ask (always maker), refused unless post-maker-fee edge ≥
    `RFI_MIN_EDGE_CENTS` (2¢).
 5. Size: worst case of a YES bid = its cost, capped at
-   `RFI_PER_GAME_CAP_USD` ($10) per game and `RFI_DAILY_CAP_USD` ($100)
-   per ET trading day (fills + all resting orders; settled fills still
-   count against the day). Replacements re-poll fills post-cancel and
-   re-size, and a same-price order downsizes when headroom shrank — a fill
-   landing mid-cycle can never double-commit the cap.
+   `RFI_PER_GAME_CAP_USD` per game and `RFI_DAILY_CAP_USD` per ET trading
+   day (fills + all resting orders; settled fills still count against the
+   day). Three layers, because one fill poll is not enough:
+   - **every** placement re-polls fills and re-sizes first — fresh quotes
+     included. (This is where the cap broke on 2026-08-27: an order that
+     filled *completely* is dropped from state, so the next cycle took the
+     fresh-quote path, which re-polled only when replacing an order. One
+     game took 5 fills / 45 contracts (~$24) in ~60s against a $5 cap.)
+     The extra poll is throttled to one per 2s across the slate — a
+     seconds-old poll still closes the bug; the stale one was a full cycle
+     old.
+   - a **hard backstop** immediately before the wire (`main._fit_to_caps`)
+     refuses or shrinks any order that would push the game's — or the
+     day's — worst case past its cap, counting unsettled fills *and* every
+     order resting on that game. It re-reads state and does not trust the
+     count the engine sized at the top of the cycle.
+   - a **post-fill cooldown** (`RFI_POST_FILL_COOLDOWN_SEC`, 60s) stands
+     the game down after each fill. At a 1¢ margin the jump guard
+     cancels/refetches every ~30s, so without it a filling game re-quotes
+     into its own fill faster than the caps can see it.
+   A same-price order still downsizes when headroom shrank.
 6. Cancel on: consensus decline, edge gone, caps, market gone/suspended,
    and unconditionally at first pitch − `RFI_PULL_BEFORE_START_SEC`
    (600s — late scratches land T−10min to T−2min and books lag them; that
@@ -67,17 +83,57 @@ books and sample stddev of probit-transformed fairs ≤ `RFI_SIGMA_Z_MAX`
 7. Doubleheaders are fail-closed excluded (book event-matchers key on team
    names and can pick the wrong game of a same-day pair).
 
-Fills/settlements/orphans follow the unabated_edge maker pattern: Kalshi is
+## Order tracking and reconciliation
+
+Resting orders are keyed by **order id**, not ticker. A ticker-keyed map
+dropped the first order id the moment a second order landed on the same
+game, orphaning a live order from every cancel, cap and sweep by
+construction (observed 2026-08-27). The bot still intends exactly one order
+per game; more than one means state drifted, and `_cancel` pulls all of
+them.
+
+Because local tracking demonstrably drifts, **every cycle** diffs Kalshi's
+`/portfolio/orders?status=resting` against local state
+(`state.reconcile_resting_orders`, replacing the old startup-plus-300s
+orphan sweep):
+
+- an in-series order resting on Kalshi that we don't track is cancelled
+  (the bot owns KXMLBRFI while it runs — see the warning below);
+- a locally-tracked order Kalshi isn't resting is dropped (a placement
+  younger than 5s is left alone: the listing can lag the POST);
+- matched orders take Kalshi's remaining count and exchange shard, so caps
+  size against reality and later cancels route correctly.
+
+A failed listing fetch holds all local state — an empty listing must never
+read as "everything is gone".
+
+### Exchange sharding
+
+Kalshi split its exchange into shards around 2026-08-24 and MLB lives on
+`exchange_index` **3** (NFL/NBA are still 0). The index is read from each
+market payload and threaded through placement (a body field — it also skips
+the auto-routing lookup) and cancellation (a query param). It is never
+hardcoded: markets can move shards, and other series are elsewhere.
+
+This matters because `DELETE /portfolio/events/orders/{id}` carries no
+ticker in its path — unrouted, it hits shard 0 and returns 404 for a
+baseball order. Combined with the "explicit 404 = already gone" rule
+(added for the MM phantom-open-quotes bug), the bot believed every cancel
+succeeded and left 13 real orders resting while shutdown reported clean.
+A 404 is now **verified** against the resting listing before it is
+believed: still resting → the cancel failed and local state is held;
+verifiably absent → treated as cancelled; listing unavailable → fails
+closed and retries next cycle.
+
+Fills/settlements follow the unabated_edge maker pattern: Kalshi is
 the source of truth (`/portfolio/fills` each cycle with a 24h first-poll
-backfill, `/portfolio/settlements` each 600s, orphan-order cancel sweep at
-startup AND every `RFI_ORPHAN_SWEEP_SEC` (300s) — a place POST whose
-response was lost leaves an order only Kalshi knows about). Restart
+backfill, `/portfolio/settlements` each 600s). Restart
 hydration rebuilds filled exposure and the prior run's order→ticker map
 from the DB, so fills that landed while the daemon was down still attribute.
 A transient network failure anywhere in a cycle holds all state and retries
 next cycle — it never crashes the daemon.
 
-**The bot owns the KXMLBRFI series while running**: the orphan sweep
+**The bot owns the KXMLBRFI series while running**: reconciliation
 cancels ANY of the account's resting orders in the series, including
 manually placed ones. Don't hand-trade KXMLBRFI on the same account while
 the bot is live.

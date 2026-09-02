@@ -37,6 +37,7 @@ class RfiGame:
     yes_bid_cents: int | None
     yes_ask_cents: int | None
     status: str
+    exchange_index: int | None = None   # Kalshi shard; None = let it auto-route
 
 
 def _cents(market: dict, key: str) -> int | None:
@@ -50,6 +51,17 @@ def _cents(market: dict, key: str) -> int | None:
         except (TypeError, ValueError):
             return None
     v = market.get(key)
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _exchange_index(market: dict) -> int | None:
+    """Kalshi's exchange shard for this market (sharding announced
+    2026-08-24: baseball is 3, NFL/NBA are still 0). Read it, never assume
+    it — order cancels must target the right shard or they 404 (bug 2)."""
+    v = market.get("exchange_index")
     try:
         return int(v) if v is not None else None
     except (TypeError, ValueError):
@@ -75,7 +87,8 @@ def parse_market(market: dict) -> RfiGame | None:
                    commence_utc=commence,
                    yes_bid_cents=_cents(market, "yes_bid"),
                    yes_ask_cents=_cents(market, "yes_ask"),
-                   status=str(market.get("status", "")))
+                   status=str(market.get("status", "")),
+                   exchange_index=_exchange_index(market))
 
 
 def drop_doubleheaders(games: list[RfiGame]) -> list[RfiGame]:

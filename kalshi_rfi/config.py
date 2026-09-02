@@ -69,10 +69,10 @@ FAIR_REFRESH_FAR_SEC = float(_get("RFI_FAIR_REFRESH_FAR_SEC", "300"))
 FAIR_REFRESH_NEAR_SEC = float(_get("RFI_FAIR_REFRESH_NEAR_SEC", "60"))
 NEAR_WINDOW_MIN = float(_get("RFI_NEAR_WINDOW_MIN", "60"))
 SETTLEMENT_POLL_SEC = float(_get("RFI_SETTLEMENT_POLL_SEC", "600"))
-# Live mode: re-run the orphan-order sweep on this cadence, not just at
-# startup — a place POST whose response was lost leaves a resting order
-# only Kalshi knows about (adversarial review finding 2).
-ORPHAN_SWEEP_SEC = float(_get("RFI_ORPHAN_SWEEP_SEC", "300"))
+# Stand down on a game for this long after each fill. At a 1c margin the
+# Kalshi jump guard re-quotes every ~30s, which took one game to 5 fills /
+# 45 contracts in 60 seconds against a $5 cap (bug 1, observed 2026-08-27).
+POST_FILL_COOLDOWN_SEC = float(_get("RFI_POST_FILL_COOLDOWN_SEC", "60"))
 # One live 4-book fair fetch's wall budget; books still running past it
 # count as not-priced this refresh (finding 8: one hung book must never
 # freeze quote management for every other game).
