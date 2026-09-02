@@ -10,7 +10,7 @@ The full quantitative reference — market-efficiency concepts, EV/Kelly/Poisson
 
 ## Claude Code Configuration
 
-**Two accounts:** This machine runs two Claude Code accounts. The **personal** account's config root is `~/.claude-personal/`; the **work** account uses `~/.claude/`. Personal workflow preferences (style, learning approach, review formats) belong in `~/.claude-personal/CLAUDE.md`; project rules stay here in `NFLWork/CLAUDE.md`. When unsure which global config to edit, ask which account is active — don't assume `~/.claude/CLAUDE.md` just because it's loaded.
+**Two config roots:** `~/.claude/` is the default and is what Claude Code desktop and a bare `claude` use. `~/.claude-personal/` is only active in a terminal started with the `claude-personal` alias (`CLAUDE_CONFIG_DIR=~/.claude-personal`). Both `CLAUDE.md` files are identical and kept in sync by hand. Project rules stay here in `NFLWork/CLAUDE.md`. Check `$CLAUDE_CONFIG_DIR` before editing a global config.
 
 **Automated hooks** (`.claude/settings.json` + scripts in `.claude/hooks/`):
 - *Scraper edit reminder* (PostToolUse) — editing a scraper file reminds you to run `tests/timezone_parity_test.py` and keep `game_start_time` TIMESTAMPTZ UTC.
