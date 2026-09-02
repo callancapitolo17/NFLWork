@@ -201,10 +201,11 @@ mlb_triple_play.R (standalone pricer)
     on the scraper's `game_start_time` column (TIMESTAMPTZ UTC on every
     book since the 2026-05-22 standardization — no per-book date parsers
     any more) and drops rows where the game started more than 5 minutes
-    ago. If the column is missing it warns `skipping past-game filter` and
-    returns everything — treat that warning as a broken pipeline, not
-    noise (2026-09-01: ~100 of 110 Wagerzon rows were a two-month-old
-    slate). A new scraper must write `game_start_time TIMESTAMPTZ` UTC and
+    ago. A table without the column is a pre-migration snapshot (the
+    scraper rebuilds it on its next run), so the gate fails CLOSED: it
+    warns `no game_start_time column` and returns zero rows. Never make
+    that branch fail open — 2026-09-01 the gate was silently skipping and
+    ~100 of 110 Wagerzon rows were a two-month-old slate. A new scraper must write `game_start_time TIMESTAMPTZ` UTC and
     wire `.drop_past_games()` into its `get_*_odds()` helper. Regression
     test: `tests/test_drop_past_games.R`.
 

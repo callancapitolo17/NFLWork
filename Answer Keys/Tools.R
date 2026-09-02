@@ -3806,15 +3806,21 @@ get_bookmaker_odds <- function(
 # TIMESTAMPTZ UTC (timezone standardization, 2026-05-22) — DuckDB hands it to
 # R as POSIXct; a character ISO 8601 string is accepted too. Rows whose
 # game_start_time is NA are dropped and counted. Canonicalizes the column's
-# tzone to UTC on the returned frame. Warns loudly if the column is missing
-# (filter cannot run — stale snapshots would leak, see CLAUDE.md pitfall #11)
-# or if every row is a past game (book will be invisible on dashboard).
+# tzone to UTC on the returned frame. Warns loudly if every row is a past
+# game (book will be invisible on dashboard).
+#
+# A table WITHOUT game_start_time is a pre-migration snapshot (every scraper
+# drops and rebuilds such a table on its next run), so its rows are by
+# definition older than 2026-05-22 — fail CLOSED and return zero rows rather
+# than let a whole stale slate through (CLAUDE.md pitfall #11; the
+# game_date/game_time-era filter used to catch these, so returning them
+# unfiltered would be a regression).
 .drop_past_games <- function(raw, source_label = "?") {
   if (is.null(raw) || nrow(raw) == 0) return(raw)
   if (!"game_start_time" %in% names(raw)) {
-    warning(sprintf("[%s] no game_start_time column — skipping past-game filter; stale rows will leak",
-                    source_label))
-    return(raw)
+    warning(sprintf("[%s] no game_start_time column (pre-migration table) — dropping all %d rows; re-run the scraper",
+                    source_label, nrow(raw)))
+    return(raw[0, , drop = FALSE])
   }
   gst <- raw$game_start_time
   if (is.character(gst)) {

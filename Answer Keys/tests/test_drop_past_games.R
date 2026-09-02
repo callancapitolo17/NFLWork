@@ -71,12 +71,13 @@ test_that("all-past frame warns that the book will be invisible and returns 0 ro
   expect_equal(nrow(out), 0)
 })
 
-test_that("missing game_start_time column warns and returns the frame unfiltered", {
+test_that("missing game_start_time column (pre-migration table) fails closed: warns, returns 0 rows", {
   raw <- data.frame(home_team = "H1", game_date = "06/28", game_time = "19:05",
                     stringsAsFactors = FALSE)
   expect_warning(out <- .drop_past_games(raw, source_label = "test"),
                  "no game_start_time column")
-  expect_equal(nrow(out), 1)
+  expect_equal(nrow(out), 0)
+  expect_equal(names(out), names(raw))
 })
 
 test_that("empty and NULL inputs pass through", {
