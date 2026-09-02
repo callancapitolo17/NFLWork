@@ -576,39 +576,18 @@ test_that("alt-total bet finds 'totals' and 'alternate_totals' candidates", {
 })
 
 # =============================================================================
-# Past-game filter helpers (T5)
+# Past-game filter (T5) — full coverage lives in tests/test_drop_past_games.R
 # =============================================================================
 
-test_that(".parse_iso_game_dt parses DK/FD ISO strings", {
+test_that(".drop_past_games filters by game_start_time, not by fetch time", {
   source("../Tools.R", local = TRUE)
-  out <- .parse_iso_game_dt(c("2026-05-19", "2026-05-19"),
-                            c("2026-05-19T20:10:00.0000000Z",
-                              "2026-05-19T23:46:00.000Z"))
-  expect_equal(format(out[1], "%Y-%m-%d %H:%M %Z", tz = "UTC"),
-               "2026-05-19 20:10 UTC")
-})
-
-test_that(".parse_wz_game_dt parses Eastern wall-clock with year inference", {
-  source("../Tools.R", local = TRUE)
-  # Use a date close to today to avoid year-rollover ambiguity
-  today_md <- format(Sys.time(), "%m/%d", tz = "America/New_York")
-  out <- .parse_wz_game_dt(today_md, "19:05")
-  expect_true(!is.na(out))
-  expect_equal(format(out, "%H:%M", tz = "America/New_York"), "19:05")
-})
-
-test_that(".drop_past_games filters by game start, not by fetch time", {
-  source("../Tools.R", local = TRUE)
-  # Use a relative future time so the test stays exercised regardless of when
-  # it runs (was previously hardcoded to 2026-05-19T20:10:00Z which expired).
-  future_iso <- format(Sys.time() + 86400, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+  now <- Sys.time()
   raw <- tibble(
-    game_date = c("2026-05-19", "2020-01-01"),
-    game_time = c(future_iso, "2020-01-01T20:10:00Z"),
+    game_start_time = as.POSIXct(c(now + 86400, now - 365 * 86400), tz = "UTC"),
     home_team = c("A", "B"), away_team = c("C", "D"),
-    fetch_time = Sys.time()   # both rows have a fresh fetch_time
+    fetch_time = now   # both rows have a fresh fetch_time
   )
-  out <- .drop_past_games(raw, .parse_iso_game_dt, source_label = "test")
+  out <- .drop_past_games(raw, source_label = "test")
   expect_equal(nrow(out), 1)
   expect_equal(out$home_team, "A")
   expect_true("game_start_time" %in% names(out))

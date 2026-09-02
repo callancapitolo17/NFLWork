@@ -3233,7 +3233,7 @@ get_wagerzon_odds <- function(
 
   # Read raw data
   raw_odds <- dbGetQuery(con, sprintf("SELECT * FROM %s", table_name))
-  raw_odds <- .drop_past_games(raw_odds, .parse_wz_game_dt, source_label = "wz")
+  raw_odds <- .drop_past_games(raw_odds, source_label = "wz")
 
   if (nrow(raw_odds) == 0) {
     warning("No odds found in Wagerzon database.")
@@ -3390,7 +3390,7 @@ get_hoop88_odds <- function(
   }
 
   raw_odds <- dbGetQuery(con, sprintf("SELECT * FROM %s", table_name))
-  raw_odds <- .drop_past_games(raw_odds, .parse_wz_game_dt, source_label = "hoop88")
+  raw_odds <- .drop_past_games(raw_odds, source_label = "hoop88")
 
   if (nrow(raw_odds) == 0) {
     warning("No odds found in Hoop88 database.")
@@ -3532,7 +3532,7 @@ get_bfa_odds <- function(
   }
 
   raw_odds <- dbGetQuery(con, sprintf("SELECT * FROM %s", table_name))
-  raw_odds <- .drop_past_games(raw_odds, .parse_bfa_game_dt, source_label = "bfa")
+  raw_odds <- .drop_past_games(raw_odds, source_label = "bfa")
 
   if (nrow(raw_odds) == 0) {
     warning("No odds found in BFA database.")
@@ -3668,7 +3668,7 @@ get_bookmaker_odds <- function(
   }
 
   raw_odds <- dbGetQuery(con, sprintf("SELECT * FROM %s", table_name))
-  raw_odds <- .drop_past_games(raw_odds, .parse_wz_game_dt, source_label = "bkm")
+  raw_odds <- .drop_past_games(raw_odds, source_label = "bkm")
 
   if (nrow(raw_odds) == 0) {
     warning("No odds found in Bookmaker database.")
@@ -3798,86 +3798,44 @@ get_bookmaker_odds <- function(
 }
 
 # ---------------------------------------------------------------------------
-# Past-game filter helpers
+# Past-game filter
 # ---------------------------------------------------------------------------
 
-# Parse DK/FD ISO 8601 UTC strings (e.g. "2026-05-19T20:10:00.0000000Z").
-# date_str is ignored — all information is in time_str.
-.parse_iso_game_dt <- function(date_str, time_str) {
-  if (length(time_str) == 0) return(as.POSIXct(character(), tz = "UTC"))
-  lubridate::ymd_hms(time_str, tz = "UTC", quiet = TRUE)
-}
-
-# Parse Wagerzon / Bookmaker / Hoop88 / BFA naive Eastern wall-clock:
-# game_date "MM/DD", game_time "HH:MM". Year inferred from Sys.time();
-# if the resulting datetime is more than 180 days in the past, roll forward
-# one year (handles Dec 31 -> Jan 1 season boundary). Returns POSIXct in UTC.
-.parse_wz_game_dt <- function(date_str, time_str) {
-  if (length(date_str) == 0) return(as.POSIXct(character(), tz = "UTC"))
-  yr <- format(Sys.time(), "%Y")
-  combined <- sprintf("%s/%s %s", yr, date_str, time_str)
-  out <- as.POSIXct(combined, format = "%Y/%m/%d %H:%M", tz = "America/New_York")
-  bump <- !is.na(out) & (Sys.time() - out) > as.difftime(180, units = "days")
-  if (any(bump, na.rm = TRUE)) {
-    combined[bump] <- sprintf("%s/%s %s", as.integer(yr) + 1L,
-                              date_str[bump], time_str[bump])
-    out[bump] <- as.POSIXct(combined[bump], format = "%Y/%m/%d %H:%M",
-                            tz = "America/New_York")
-  }
-  attr(out, "tzone") <- "UTC"  # canonicalize to UTC for downstream
-  out
-}
-
-# Parse Bet105 UTC wall-clock: game_date "MM/DD", game_time "HH:MM" interpreted
-# as UTC. Same year-inference + rollover logic as .parse_wz_game_dt.
-.parse_bet105_game_dt <- function(date_str, time_str) {
-  if (length(date_str) == 0) return(as.POSIXct(character(), tz = "UTC"))
-  yr <- format(Sys.time(), "%Y")
-  combined <- sprintf("%s/%s %s", yr, date_str, time_str)
-  out <- as.POSIXct(combined, format = "%Y/%m/%d %H:%M", tz = "UTC")
-  bump <- !is.na(out) & (Sys.time() - out) > as.difftime(180, units = "days")
-  if (any(bump, na.rm = TRUE)) {
-    combined[bump] <- sprintf("%s/%s %s", as.integer(yr) + 1L,
-                              date_str[bump], time_str[bump])
-    out[bump] <- as.POSIXct(combined[bump], format = "%Y/%m/%d %H:%M", tz = "UTC")
-  }
-  out
-}
-
-
-# Parse BFA dates: game_date "YYYY-MM-DD", game_time "HH:MM:SS" interpreted as
-# UTC. The scraper stores both fields explicitly so no year inference is needed.
-.parse_bfa_game_dt <- function(date_str, time_str) {
-  if (length(date_str) == 0) return(as.POSIXct(character(), tz = "UTC"))
-  combined <- paste0(date_str, "T", time_str, "Z")
-  lubridate::ymd_hms(combined, tz = "UTC", quiet = TRUE)
-}
-
 # Drop rows where the game has already started (5-min grace for first-pitch
-# flicker). Attaches a `game_start_time` POSIXct UTC column to the returned
-# frame. Logs a warning if all rows are past games (book will be invisible on
-# dashboard) or if game_time parsing fails on any row.
-.drop_past_games <- function(raw, parser, source_label = "?") {
+# flicker). Keys on `game_start_time`, which every per-book scraper writes as
+# TIMESTAMPTZ UTC (timezone standardization, 2026-05-22) — DuckDB hands it to
+# R as POSIXct; a character ISO 8601 string is accepted too. Rows whose
+# game_start_time is NA are dropped and counted. Canonicalizes the column's
+# tzone to UTC on the returned frame. Warns loudly if the column is missing
+# (filter cannot run — stale snapshots would leak, see CLAUDE.md pitfall #11)
+# or if every row is a past game (book will be invisible on dashboard).
+.drop_past_games <- function(raw, source_label = "?") {
   if (is.null(raw) || nrow(raw) == 0) return(raw)
-  if (!all(c("game_date", "game_time") %in% names(raw))) {
-    warning(sprintf("[%s] no game_date/game_time columns — skipping past-game filter",
+  if (!"game_start_time" %in% names(raw)) {
+    warning(sprintf("[%s] no game_start_time column — skipping past-game filter; stale rows will leak",
                     source_label))
     return(raw)
   }
-  gst <- parser(raw$game_date, raw$game_time)
+  gst <- raw$game_start_time
+  if (is.character(gst)) {
+    gst <- lubridate::ymd_hms(gst, tz = "UTC", quiet = TRUE)
+  }
+  if (!inherits(gst, "POSIXct")) {
+    stop(sprintf("[%s] game_start_time must be POSIXct or ISO 8601 character, got %s",
+                 source_label, paste(class(gst), collapse = "/")))
+  }
+  attr(gst, "tzone") <- "UTC"
   if (any(is.na(gst))) {
-    n_bad <- sum(is.na(gst))
-    warning(sprintf("[%s] %d/%d rows failed game_time parsing — dropping them",
-                    source_label, n_bad, nrow(raw)))
+    warning(sprintf("[%s] %d/%d rows have NA game_start_time — dropping them",
+                    source_label, sum(is.na(gst)), nrow(raw)))
   }
   cutoff <- Sys.time() - as.difftime(5, units = "mins")
   keep <- !is.na(gst) & gst > cutoff
-  if (any(!keep, na.rm = TRUE) && !any(keep, na.rm = TRUE)) {
-    warning(sprintf("[%s] all %d rows are past games (or unparseable) — book will be invisible on dashboard",
+  if (any(!keep) && !any(keep)) {
+    warning(sprintf("[%s] all %d rows are past games (or NA) — book will be invisible on dashboard",
                     source_label, nrow(raw)))
-  } else if (any(!keep, na.rm = TRUE)) {
-    cat(sprintf("[%s] dropping %d past-game / unparseable rows\n",
-                source_label, sum(!keep)))
+  } else if (any(!keep)) {
+    cat(sprintf("[%s] dropping %d past-game / NA rows\n", source_label, sum(!keep)))
   }
   raw$game_start_time <- gst
   raw[keep, , drop = FALSE]
@@ -3906,7 +3864,7 @@ get_dk_odds <- function(
   }
 
   raw_odds <- dbGetQuery(con, sprintf("SELECT * FROM %s", table_name))
-  raw_odds <- .drop_past_games(raw_odds, .parse_iso_game_dt, source_label = "dk")
+  raw_odds <- .drop_past_games(raw_odds, source_label = "dk")
 
   if (nrow(raw_odds) == 0) {
     warning("No odds found in DraftKings database.")
@@ -4032,7 +3990,7 @@ get_fd_odds <- function(
   }
 
   raw_odds <- dbGetQuery(con, sprintf("SELECT * FROM %s", table_name))
-  raw_odds <- .drop_past_games(raw_odds, .parse_iso_game_dt, source_label = "fd")
+  raw_odds <- .drop_past_games(raw_odds, source_label = "fd")
 
   if (nrow(raw_odds) == 0) {
     warning("No odds found in FanDuel database.")
@@ -4156,7 +4114,7 @@ get_bet105_odds <- function(
   }
 
   raw_odds <- dbGetQuery(con, sprintf("SELECT * FROM %s", table_name))
-  raw_odds <- .drop_past_games(raw_odds, .parse_bet105_game_dt, source_label = "bet105")
+  raw_odds <- .drop_past_games(raw_odds, source_label = "bet105")
 
   if (nrow(raw_odds) == 0) {
     warning("No odds found in Bet105 database.")

@@ -194,16 +194,19 @@ mlb_triple_play.R (standalone pricer)
     to the book's period WINNER market (`h2h` 2-way, or `h2h_3way` collapsed
     to DNB) instead of a run line. `h2h` and `h2h_3way` ARE unioned in
     `.related_market_types`. See "Pick'em → moneyline" below.
-11. **Per-book `game_time` formats vary** — DK/FD store ISO 8601 UTC strings
-    in `game_time` (`game_date` is also ISO); WZ/Hoop88/BKM use naive Eastern
-    wall-clock (`MM/DD` + `HH:MM`, year inferred at parse time); BFA uses
-    `YYYY-MM-DD` + `HH:MM:SS` UTC; Bet105 uses `MM/DD` + `HH:MM` UTC with date
-    rollover. `Tools.R::.drop_past_games()` is the canonical gate — it calls
-    the right parser per book (`.parse_iso_game_dt` / `.parse_wz_game_dt` /
-    `.parse_bfa_game_dt` / `.parse_bet105_game_dt`) and drops rows where the
-    game has already started (5-min grace). If you add a new scraper, write
-    a per-book parser and wire it into the matching `get_*_odds()` helper or
-    yesterday's snapshot will leak into today's pills via the team-name join.
+11. **Stale snapshots leak through the team-name join** — every per-book
+    scraper DB keeps yesterday's (or last month's) slate until the next
+    scrape overwrites it, and the odds screen joins book rows to bets by
+    team name. `Tools.R::.drop_past_games()` is the canonical gate: it keys
+    on the scraper's `game_start_time` column (TIMESTAMPTZ UTC on every
+    book since the 2026-05-22 standardization — no per-book date parsers
+    any more) and drops rows where the game started more than 5 minutes
+    ago. If the column is missing it warns `skipping past-game filter` and
+    returns everything — treat that warning as a broken pipeline, not
+    noise (2026-09-01: ~100 of 110 Wagerzon rows were a two-month-old
+    slate). A new scraper must write `game_start_time TIMESTAMPTZ` UTC and
+    wire `.drop_past_games()` into its `get_*_odds()` helper. Regression
+    test: `tests/test_drop_past_games.R`.
 
 ## Known model biases
 
@@ -351,9 +354,9 @@ for the design spec.
    passes the wide frame to `create_bets_table()` which renders cards.
 4. Old `create_bets_table_legacy()` is preserved as a fallback if the
    new table is missing (first deploy after merge).
-5. Each `get_*_odds()` helper in `Tools.R` parses its scraper's
-   `(game_date, game_time)` and drops rows where the game has already
-   started (5-min grace, via `.drop_past_games()`). This prevents
+5. Each `get_*_odds()` helper in `Tools.R` reads its scraper's
+   `game_start_time` (TIMESTAMPTZ UTC) and drops rows where the game has
+   already started (5-min grace, via `.drop_past_games()`). This prevents
    yesterday's stale snapshot from being silently re-tagged with today's
    `game_id` via the team-name join. Every row in `mlb_bets_book_prices`
    also carries `game_start_time TIMESTAMPTZ` (copied from the bet's
