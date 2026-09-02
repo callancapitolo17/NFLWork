@@ -503,3 +503,31 @@ def test_health_empty(monkeypatch, tmp_path):
     stats = report.health_stats(state, research, NOW - timedelta(days=7))
     assert stats["void_rate"] is None
     assert stats["phantom_fills"] == 0
+
+
+def test_surface_age_exclusions_sums_windows(tmp_path):
+    """#99: surface_age_summary rows are cumulative per window, so the report
+    SUMS them. Diffing (the on_demand_coverage habit) would report ~zero."""
+    import json
+    from datetime import datetime, timedelta, timezone
+    import duckdb
+    from kalshi_mlb_mm import report
+
+    db_path = tmp_path / "res.duckdb"
+    now = datetime.now(timezone.utc)
+    con = duckdb.connect(str(db_path))
+    con.execute("CREATE TABLE events (ts TIMESTAMPTZ, event_type VARCHAR, "
+                "payload VARCHAR)")
+    for i in range(2):
+        con.execute("INSERT INTO events VALUES (?, ?, ?)",
+                    [now - timedelta(minutes=i), "surface_age_summary",
+                     json.dumps({"books": {
+                         "draftkings": {"used": 0, "excluded_by_age": 10},
+                         "betmgm": {"used": 40, "excluded_by_age": 0}}})])
+    con.close()
+
+    stats = report.surface_age_exclusions(str(db_path), now - timedelta(hours=1))
+    assert stats["books"]["draftkings"] == {"used": 0, "excluded": 20}
+    assert stats["books"]["betmgm"] == {"used": 80, "excluded": 0}
+    rendered = report._render_surface_exclusions(stats)
+    assert "draftkings" in rendered and "100.0%" in rendered

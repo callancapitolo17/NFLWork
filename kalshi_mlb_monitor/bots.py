@@ -121,6 +121,13 @@ REASON_GLOSS = {
     "unpriceable": "Quote pricing failed",
     "skipped_creator_halt": "Per-creator fill halt active",
     "circuit_breaker": "Book moved past the circuit-breaker threshold — quotes pulled",
+    # ---- leg surface (epic #94). These four are the same #20 consensus gate
+    # and one new veto on CACHED single-leg fairs, and they point at four
+    # DIFFERENT fixes, which is the whole reason they are separate codes.
+    "surface_too_few_books": "Cached leg surface: too few books hold this leg — ingest coverage",
+    "surface_stale": "Cached leg surface: rows too old for the age gate — ingest cadence, or a book gone dark",
+    "surface_dispersion": "Cached leg surface: the fresh books disagree past the dispersion gate",
+    "surface_constituent_moved": "Kalshi's own single moved after the cached row was built — refused to quote on it",
     "quoted": "Quote submitted",
     "skipped": "Did not quote this RFQ",
     # ---- taker decisions ----
@@ -145,6 +152,7 @@ REASON_GLOSS = {
     "voided_last_look": "Accepted then voided — fair drifted past tolerance",
     "voided_no_legs": "Accepted then voided — leg data missing on confirm",
     "voided_no_fresh_books": "Accepted then voided — no fresh books to re-price",
+    "voided_surface_stale": "Accepted then voided — cached leg-surface rows past the age gate",
     "voided_blend_failed": "Accepted then voided — blend recompute failed",
     "halted_high_void_rate": "Void rate too high — quoting halted",
 }

@@ -296,10 +296,10 @@ HAVING COUNT(*) > 1
 ORDER BY 1, 2;
 
 -- ---------------------------------------------------------------------------
--- 16) LEG SURFACE: ROW AGE right now, per book. This is exactly what #99's
---     SURFACE_MAX_AGE_SEC gate will see. DraftKings is expected to sit at
---     30-90s (its slate scrape alone is ~21-28s), so a 30s gate silently
---     removes it from consensus.
+-- 16) LEG SURFACE: ROW AGE right now, per book. This is exactly what the
+--     SURFACE_MAX_AGE_SEC gate (#99) sees. DraftKings is expected to sit at
+--     30-90s (its slate scrape alone is ~21-28s), so the 30s gate removes it
+--     from consensus — deliberately, and counted in query 20.
 -- ---------------------------------------------------------------------------
 SELECT book,
        route,
@@ -334,11 +334,13 @@ GROUP BY 1
 ORDER BY 2 DESC;
 
 -- ---------------------------------------------------------------------------
--- 18) #99'S THRESHOLD QUERY — the age of the surface rows that ACTUALLY
---     backed a quote, per book. Query 16 shows what the surface holds; this
---     shows what got USED, which is what SURFACE_MAX_AGE_SEC must tolerate.
---     Read the percentiles per book: a gate below a book's p95 silently
---     removes that book from consensus rather than declining loudly.
+-- 18) THE THRESHOLD QUERY (#99) — the age of the surface rows that ACTUALLY
+--     backed a quote, per book. Query 16 shows what the surface HOLDS, this
+--     shows what got USED, and query 20 shows what the gate REFUSED.
+--     Re-read the percentiles per book before changing SURFACE_MAX_AGE_SEC or
+--     any ingest cadence: a gate below a book's p95 removes that book from
+--     consensus most of the time. Post-#99 every age here is by construction
+--     <= SURFACE_MAX_AGE_SEC.
 -- ---------------------------------------------------------------------------
 WITH used AS (
     SELECT e.ts,
@@ -363,16 +365,84 @@ GROUP BY 1, 2
 ORDER BY 5 DESC;
 
 -- ---------------------------------------------------------------------------
--- 19) #98 DECLINE ATTRIBUTION — a thin CACHED surface vs a thin LIVE fetch.
---     These are the same #20 gate on different inputs, and they call for
---     opposite fixes: surface_* points at ingest coverage or cadence,
---     live_*/on_demand_* at book latency or the on-demand path.
+-- 19) #98/#99 DECLINE ATTRIBUTION — a thin CACHED surface vs a thin LIVE
+--     fetch, and WHY the surface was thin. These are the same #20 gate on
+--     different inputs and they call for opposite fixes:
+--       surface_too_few_books    -> ingest COVERAGE (the matrix in config.py)
+--       surface_stale            -> ingest CADENCE, or a book gone dark (#99)
+--       surface_dispersion       -> the fresh books genuinely disagree
+--       surface_constituent_moved-> Kalshi moved after the row was built (#99)
+--       live_* / on_demand_*     -> book latency or the on-demand path
 -- ---------------------------------------------------------------------------
 SELECT reason, COUNT(*) AS n
 FROM state.quote_decisions
-WHERE reason IN ('surface_too_few_books', 'surface_dispersion',
+WHERE reason IN ('surface_too_few_books', 'surface_stale',
+                 'surface_dispersion', 'surface_constituent_moved',
                  'live_too_few_books', 'consensus_dispersion',
                  'live_fetch_timeout', 'on_demand_pending')
   AND observed_at >= now() - INTERVAL 24 HOUR
+GROUP BY 1
+ORDER BY 2 DESC;
+
+-- ---------------------------------------------------------------------------
+-- 20) #99 AGE-GATE EXCLUSIONS, per book. The companion to query 18: that one
+--     measures the rows that PRICED a quote, this one measures the rows the
+--     gate refused. DraftKings is EXPECTED at ~100% excluded (its slate
+--     scrape alone is 21-28s against a 30s gate) and that is by design —
+--     announced by a startup WARNING and counted here. ANY OTHER BOOK
+--     drifting up is the signal that the ingest cadence and
+--     SURFACE_MAX_AGE_SEC have fallen out of step.
+--     Rows are cumulative-per-window; sum them, do not diff them.
+-- ---------------------------------------------------------------------------
+WITH windows AS (
+    SELECT bk.key                                             AS book,
+           CAST(json_extract_string(bk.value, 'used') AS BIGINT)    AS used,
+           CAST(json_extract_string(bk.value, 'excluded_by_age')
+                AS BIGINT)                                    AS excluded
+    FROM research.events                                       AS e,
+         LATERAL json_each(json_extract(e.payload, '$.books'))  AS bk
+    WHERE e.event_type = 'surface_age_summary'
+      AND e.ts >= now() - INTERVAL 24 HOUR
+)
+SELECT book,
+       SUM(used)                                              AS legs_used,
+       SUM(excluded)                                          AS legs_excluded,
+       ROUND(100.0 * SUM(excluded)
+             / NULLIF(SUM(used) + SUM(excluded), 0), 1)       AS pct_excluded
+FROM windows
+GROUP BY 1
+ORDER BY 4 DESC;
+
+-- ---------------------------------------------------------------------------
+-- 21) #99 CONSTITUENT VETO — is the second guard earning its place, and is
+--     SURFACE_CONSTITUENT_MOVE_THRESHOLD (0.03, inherited from #23) right?
+--     Read three things:
+--       * the verdict mix — a large `no_baseline` share means the tape is not
+--         seeing these legs often enough for the veto to bite at all;
+--       * the delta percentiles among 'ok' verdicts — if p95 sits far below
+--         the threshold the guard is nearly inert and could tighten;
+--       * `moved` volume — this is edge we are declining to quote, so it
+--         should be a small minority, not the common case.
+-- ---------------------------------------------------------------------------
+WITH legs AS (
+    SELECT json_extract_string(l.value, 'verdict')                  AS verdict,
+           CAST(json_extract_string(l.value, 'delta') AS DOUBLE)     AS delta,
+           CAST(json_extract_string(l.value, 'oldest_row_age_sec')
+                AS DOUBLE)                                          AS row_age_sec,
+           CAST(json_extract_string(l.value, 'baseline_age_sec')
+                AS DOUBLE)                                          AS baseline_age_sec
+    FROM research.events                                            AS e,
+         LATERAL json_each(json_extract(e.payload, '$.legs'))       AS l
+    WHERE e.event_type = 'surface_constituent_check'
+      AND e.ts >= now() - INTERVAL 24 HOUR
+)
+SELECT verdict,
+       COUNT(*)                                       AS n,
+       ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct,
+       ROUND(MEDIAN(delta), 4)                        AS p50_delta,
+       ROUND(QUANTILE_CONT(delta, 0.95), 4)           AS p95_delta,
+       ROUND(MEDIAN(row_age_sec), 1)                  AS p50_row_age_sec,
+       ROUND(MEDIAN(baseline_age_sec), 1)             AS p50_baseline_lead_sec
+FROM legs
 GROUP BY 1
 ORDER BY 2 DESC;

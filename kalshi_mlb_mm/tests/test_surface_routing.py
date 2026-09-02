@@ -191,9 +191,11 @@ def test_cross_game_prices_from_surface_with_zero_book_requests(monkeypatch,
 
 
 def test_cross_game_quote_records_surface_row_ages(monkeypatch, tmp_path):
-    # #99 sets SURFACE_MAX_AGE_SEC from this trace, and until it exists the
-    # ages are the only record of what a quote actually rested on.
-    built = datetime.now(timezone.utc) - timedelta(seconds=42)
+    # The trace records the age of the rows that actually backed the quote —
+    # research_queries.sql query 18 reads it, and #99's age gate is set from
+    # that distribution. 12s: comfortably inside SURFACE_MAX_AGE_SEC (30s), so
+    # this test measures the trace, not the gate (that is test_surface_age_gate).
+    built = datetime.now(timezone.utc) - timedelta(seconds=12)
     eng = FakeEngine(fairs=None)
     main, db, emitted = _setup(
         monkeypatch, tmp_path, eng, "surf2.duckdb", CROSS_LEGS,
@@ -206,7 +208,9 @@ def test_cross_game_quote_records_surface_row_ages(monkeypatch, tmp_path):
     for game in surface_games.values():
         assert set(game["books"]) == set(SURFACE_FAIRS)
         for book in game["books"].values():
-            assert book["age_sec"] == pytest.approx(42, abs=5)
+            assert book["age_sec"] == pytest.approx(12, abs=5)
+        assert game["excluded_by_age"] is None, "nothing was stale here"
+        assert game["oldest_used_age_sec"] == pytest.approx(12, abs=5)
     # live_games stays untouched — report.py reads it.
     assert payload["live_games"] is None
 

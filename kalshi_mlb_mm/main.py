@@ -23,6 +23,7 @@ import statistics
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import duckdb
@@ -46,6 +47,9 @@ from kalshi_mlb_mm.quote_gateway import RestQuoteGateway
 # (main._leg_market_prices, main._singles_moved) keep working unchanged.
 from kalshi_mlb_mm.singles import leg_market_prices as _leg_market_prices
 from kalshi_mlb_mm.singles import singles_moved as _singles_moved
+# #99: remembers the constituent reads above so the leg surface's pre-quote
+# freshness veto has a PAST Kalshi price to compare against. Costs no calls.
+from kalshi_mlb_mm.constituent_tape import ConstituentTape
 
 log = logging.getLogger("kalshi_mlb_mm")
 
@@ -87,6 +91,18 @@ _ENGINE = None
 # on-demand path, which is pre-#98 behaviour).
 _SURFACE = None
 _SURFACE_INGEST = None
+# #99 guard 2: the tape is fed by the three Kalshi constituent reads the bot
+# ALREADY makes (#17's quote snapshot, the confirm re-read, #23's risk-sweep
+# poll). Module-level and never reconstructed, so a leg observed while pricing
+# one RFQ is a usable baseline for the next — which is what makes the veto
+# affordable at zero extra API calls.
+_CONSTITUENT_TAPE = ConstituentTape(config.CONSTITUENT_TAPE_RETENTION_SEC,
+                                    config.CONSTITUENT_TAPE_MAX_POINTS)
+# #99 guard 1 observability: per-book {"used": n, "excluded_by_age": n} since
+# the last `surface_age_summary` emit. A book quietly ageing out of consensus
+# (DraftKings, structurally) must be a number an operator can read, not an
+# absence. Drained by _coverage_summary_tick, like the on-demand tally.
+_SURFACE_AGE_TALLY: dict[str, dict[str, int]] = {}
 _OD_RESULT_EMITTED = {}  # leg_set_hash -> landed_at of last on_demand_result emit
 # Confirm-window budget for the confirm-tick live re-fetch: the ~30s Kalshi
 # confirm window minus the poll gap and a buffer for the confirm API call.
@@ -140,12 +156,85 @@ def _coverage_summary_tick(*, sgp_service, rfq_source=None):
                           kept_total=getattr(rfq_source, "ingestion_kept", None),
                           mirror_size=len(rfq_source.poll()),
                           window_sec=config.COVERAGE_SUMMARY_SEC))
+    _surface_age_summary_tick()
     snapshot = sgp_service.coverage.snapshot_and_reset()
     if not snapshot:
         return
     research.emit("on_demand_coverage",
                   payload=dict(books=snapshot,
                                window_sec=config.COVERAGE_SUMMARY_SEC))
+
+
+def _surface_age_summary_tick() -> None:
+    """Drain the per-book used/excluded-by-age tally into one
+    `surface_age_summary` research event + an INFO log line (issue #99).
+
+    A book quietly ageing out of consensus must be a NUMBER, not an absence.
+    DraftKings is expected to sit at ~100% excluded — its slate scrape alone is
+    21-28s against a 30s gate — and that is a deliberate, announced exclusion
+    (see the startup warning in `_warn_structurally_excluded_books`), not a
+    silent removal. Any OTHER book drifting up is the signal that the ingest
+    cadence and `SURFACE_MAX_AGE_SEC` have fallen out of step.
+
+    An idle window emits nothing: zero surface reads is the normal state on an
+    empty slate, not a staleness fact. Analysts diff consecutive rows for
+    rates, exactly as with `on_demand_coverage`."""
+    if not _SURFACE_AGE_TALLY:
+        return
+    books = {b: dict(counts) for b, counts in _SURFACE_AGE_TALLY.items()}
+    _SURFACE_AGE_TALLY.clear()
+    excluded = {b: c for b, c in books.items() if c["excluded_by_age"]}
+    if excluded:
+        log.info("[surface_age] excluded-by-age over %ds: %s (max_age=%.0fs)",
+                 config.COVERAGE_SUMMARY_SEC,
+                 ", ".join(f"{b} {c['excluded_by_age']}/"
+                           f"{c['excluded_by_age'] + c['used']}"
+                           for b, c in sorted(excluded.items())),
+                 config.SURFACE_MAX_AGE_SEC)
+    research.emit("surface_age_summary",
+                  payload=dict(books=books,
+                               max_age_sec=config.SURFACE_MAX_AGE_SEC,
+                               window_sec=config.COVERAGE_SUMMARY_SEC))
+
+
+def _warn_structurally_excluded_books() -> None:
+    """Log a startup WARNING for every surface (book, route) whose CADENCE
+    alone already reaches `SURFACE_MAX_AGE_SEC` (issue #99).
+
+    Such a route's rows are older than the bound for the tail of EVERY cycle —
+    at least (cadence - max_age) / cadence of the time, and in practice more,
+    because a row's age starts at the pass duration, not at zero. So the book
+    silently drops out of surface consensus on a schedule. DraftKings singles
+    (60s cadence, 21-28s scrape, 30s gate) is effectively excluded outright,
+    and that is intended — but an intended removal nobody announces is
+    indistinguishable from a broken book. This line is the announcement; the
+    periodic `surface_age_summary` is the running count.
+
+    Keyed on (book, route), not book: FanDuel runs BOTH routes and they can be
+    tuned separately (structure for ml/spread/I1, singles for FG/F5 totals —
+    #99 lowered the latter 45s -> 20s precisely because this check flagged
+    it), so naming the book alone would implicate a route that clears the
+    gate."""
+    if not config.SURFACE_ENABLED or config.SURFACE_MAX_AGE_SEC <= 0:
+        return
+    routes = [(book, "singles",
+               config.SURFACE_CADENCE_SINGLES_SEC.get(
+                   book, config.SURFACE_CADENCE_DEFAULT_SEC))
+              for book in config.SURFACE_BOOKS_SINGLES]
+    routes += [(book, "structure", config.SURFACE_CADENCE_DEFAULT_SEC)
+               for book in config.SURFACE_BOOKS_STRUCTURE]
+    for book, route, cadence in routes:
+        if cadence < config.SURFACE_MAX_AGE_SEC:
+            continue
+        stale_share = (cadence - config.SURFACE_MAX_AGE_SEC) / cadence
+        log.warning(
+            "leg surface: %s/%s cadence %.0fs >= SURFACE_MAX_AGE_SEC %.0fs — "
+            "its rows are past the age gate for at least %.0f%% of every "
+            "cycle, so this route drops out of surface consensus on a "
+            "schedule. Deliberate for draftkings/singles; check "
+            "surface_age_summary for the realised share",
+            book, route, cadence, config.SURFACE_MAX_AGE_SEC,
+            100.0 * stale_share)
 
 
 def _consensus_filter(book_fairs: dict[str, float]) -> dict[str, float]:
@@ -472,41 +561,139 @@ def _open_quote_exposure_by_game(exclude_rfq_id: str | None = None):
     return snapshot.open_exposure_by_game(exclude_rfq_id)
 
 
-def _surface_fairs(game_legs: list) -> dict:
-    """{book: devigged fair} for a ONE-leg game group, from the IN-MEMORY leg
-    surface (issue #98). The `surface_fairs` callable the router consumes.
+@dataclass
+class _SurfaceGroupRead:
+    """What the age gate saw for ONE surface-routed game group."""
+    leg: object                          # the group's CanonicalLeg
+    used: dict                           # book -> (SurfaceRow, age_sec)
+    excluded_by_age: dict                # book -> age_sec
+    oldest_used_built_at: object = None  # aware UTC, or None when nothing used
+
+
+class _SurfaceAgeGate:
+    """Age-gated `surface_fairs` lookup for ONE pricing attempt (issue #99).
+
+    The router calls this exactly like #98's plain lookup — it is callable and
+    returns `{book: fair}` — but it admits only rows YOUNGER than
+    `max_age_sec`, and it RECORDS what it dropped so the caller can tell the
+    three different failures apart:
+
+        no row at all      -> surface_too_few_books   (#98)
+        rows, all too old  -> surface_stale           (#99, this class)
+        fresh rows, split  -> surface_dispersion      (#98)
+
+    Why here and not in `LegSurface.book_fairs`: the store deliberately serves
+    rows of ANY age. A store that silently dropped stale ones would make those
+    counts unreadable — the caller could no longer tell a book that never
+    published the leg from one that went dark holding its last price. Same
+    reason #98 did not filter there.
+
+    Why one gate per pricing attempt: `now` and the records must belong to ONE
+    RFQ, or the exclusion attribution behind a decline is a blend of several.
+
+    `max_age_sec <= 0` disables the age bound entirely — byte-for-byte pre-#99
+    behaviour, and this ticket's rollback.
+
+    FanDuel publishes through TWO routes (structure for ml/spread/I1, singles
+    for FG/F5 totals); `book_fairs` collapses them to one "fanduel" key
+    deliberately — two routes at one book are ONE opinion, and counting them
+    twice would let FanDuel satisfy MIN_AGREEING_BOOKS alone. The gate ages
+    whichever row that collapse returned (the fresher of the two).
 
     Reads `LegSurface`, never `kalshi_mlb_mm_surface.duckdb`: a DuckDB open
     costs ~17ms and per-item opens in a hot loop have caused three separate
     incidents. The DuckDB file is a research/observability mirror only.
 
-    FanDuel publishes through TWO routes (structure for ml/spread/I1, singles
-    for FG/F5 totals); `book_fairs` already collapses them to one "fanduel"
-    key, and that is deliberate — two routes at one book are ONE opinion, and
-    counting them twice would let FanDuel satisfy MIN_AGREEING_BOOKS alone.
-
-    Rows of ANY age: #99 owns the staleness gate, and dropping stale rows here
-    would make its decline counts unreadable. Fail-safe: {} on any error, which
-    reads as "no book priced this leg" and declines the combo.
+    Fail-safe: {} on any error, which reads as "no book priced this leg" and
+    declines the combo.
     """
-    try:
-        if _SURFACE is None or len(game_legs) != 1:
+
+    def __init__(self, surface, max_age_sec: float, now_utc):
+        self._surface = surface
+        self._max_age_sec = float(max_age_sec)
+        self._now = now_utc
+        self.groups: dict = {}          # leg_set_hash -> _SurfaceGroupRead
+
+    def __call__(self, game_legs: list) -> dict:
+        try:
+            if self._surface is None or len(game_legs) != 1:
+                return {}
+            rows = self._surface.book_fairs(game_legs[0])
+            used, excluded, oldest = {}, {}, None
+            for book, row in rows.items():
+                age_sec = (self._now - row.built_at).total_seconds()
+                if self._max_age_sec > 0.0 and age_sec > self._max_age_sec:
+                    excluded[book] = age_sec
+                    continue
+                used[book] = (row, age_sec)
+                if oldest is None or row.built_at < oldest:
+                    oldest = row.built_at
+            self.groups[legset.leg_set_hash(game_legs)] = _SurfaceGroupRead(
+                leg=game_legs[0], used=used, excluded_by_age=excluded,
+                oldest_used_built_at=oldest)
+            _tally_surface_ages(used, excluded)
+            return {book: row.fair_prob for book, (row, _age) in used.items()}
+        except Exception:
             return {}
-        return {book: row.fair_prob
-                for book, row in _SURFACE.book_fairs(game_legs[0]).items()}
+
+    @property
+    def starved_by_age(self) -> bool:
+        """Did the age gate leave some group UNDER the book floor?
+
+        This — not "did it drop anything" — is what separates `surface_stale`
+        from `surface_too_few_books`. A cross-game combo can perfectly well
+        have one game lose a stale book and still price, while a DIFFERENT
+        game is thin for want of coverage; blaming staleness there would send
+        an operator to the cadence when the fix is the ingest matrix.
+
+        Exact rather than a re-read: the counts were recorded by the very
+        call that produced the gate reason.
+        """
+        floor = max(config.MIN_AGREEING_BOOKS, 2)
+        return any(g.excluded_by_age and len(g.used) < floor
+                   for g in self.groups.values())
+
+
+def _tally_surface_ages(used: dict, excluded: dict) -> None:
+    """Accumulate the per-book used/excluded counts the periodic
+    `surface_age_summary` drains.
+
+    Counts EVERY gated read, not only the quote path — the confirm last look
+    and the risk sweep's drift check build gates too. That is deliberate: the
+    summary answers "is this book's data arriving fresh enough to use", which
+    is one question wherever it is asked, and the extra samples come from the
+    same surface at the same cadence. Read it as a ratio, not as a quote count.
+
+    Never raises into the pricing path."""
+    try:
+        for book in used:
+            _SURFACE_AGE_TALLY.setdefault(
+                book, {"used": 0, "excluded_by_age": 0})["used"] += 1
+        for book in excluded:
+            _SURFACE_AGE_TALLY.setdefault(
+                book, {"used": 0, "excluded_by_age": 0})["excluded_by_age"] += 1
     except Exception:
-        return {}
+        pass
 
 
-def _surface_lookup():
-    """The router's `surface_fairs` argument, or None when the surface is off.
+def _surface_enabled() -> bool:
+    """Is the leg surface routing this process's cross-game single legs?
 
-    None is #98's off switch end-to-end: the router then routes single-leg
-    groups to the live on-demand engine exactly as it did before this ticket.
+    #98's off switch end-to-end: False routes single-leg groups back to the
+    live on-demand engine exactly as before that ticket. Read by every site
+    that only needs the yes/no (fetch queuing, cooldown, research traces);
+    pricing sites build a `_SurfaceAgeGate` instead.
     """
-    if not config.SURFACE_ENABLED or _SURFACE is None:
+    return bool(config.SURFACE_ENABLED and _SURFACE is not None)
+
+
+def _surface_age_gate(now_utc=None):
+    """A fresh `_SurfaceAgeGate` for one pricing attempt, or None when the
+    surface is off (which is the router's pre-#98 routing)."""
+    if not _surface_enabled():
         return None
-    return _surface_fairs
+    return _SurfaceAgeGate(_SURFACE, config.SURFACE_MAX_AGE_SEC,
+                           now_utc or datetime.now(timezone.utc))
 
 
 def _surface_refreshed_since(game_legs: list, since) -> bool:
@@ -549,14 +736,14 @@ def _post_fill_live_refresh_landed(by_game: dict, filled_at) -> bool:
     try:
         if filled_at is None:
             return False
-        surface_lookup = _surface_lookup()
+        surface_on = _surface_enabled()
         now_utc = datetime.now(timezone.utc)
         filled_cmp = (filled_at if filled_at.tzinfo is not None
                       else filled_at.astimezone())
         for gl in by_game.values():
             # #98: a surface-routed game never had a flight, so its refresh
             # proof is "enough books published a NEWER row" instead.
-            if surface_lookup is not None and router.routes_to_surface(gl):
+            if surface_on and router.routes_to_surface(gl):
                 if not _surface_refreshed_since(gl, filled_cmp):
                     return False
                 continue
@@ -585,12 +772,12 @@ def _ensure_post_fill_fetches(rfq_id, ticker, by_game: dict) -> None:
     try:
         if _ENGINE is None:
             return
-        surface_lookup = _surface_lookup()
+        surface_on = _surface_enabled()
         for gl in by_game.values():
             # #98: nothing to queue for a surface-routed game — the ingest
             # loop is already refreshing that leg on its own cadence, and
             # _surface_refreshed_since is what clears its cooldown.
-            if surface_lookup is not None and router.routes_to_surface(gl):
+            if surface_on and router.routes_to_surface(gl):
                 continue
             gid = _resolve_game_for_legs(gl)
             gref = _game_ref(gid) if gid is not None else None
@@ -774,14 +961,14 @@ def _live_games_detail(by_game):
     try:
         if _ENGINE is None:
             return None
-        surface_lookup = _surface_lookup()
+        surface_on = _surface_enabled()
         out = {}
         for gl in by_game.values():
             # #98: the two traces must PARTITION the combo — a surface-priced
             # game is excluded here even if the engine happens to still hold a
             # result for its leg set (a leftover from an earlier tick), because
             # that result did not price this quote.
-            if surface_lookup is not None and router.routes_to_surface(gl):
+            if surface_on and router.routes_to_surface(gl):
                 continue
             h = legset.leg_set_hash(gl)
             res = _ENGINE.lookup_results(h)
@@ -800,35 +987,139 @@ def _live_games_detail(by_game):
         return None
 
 
-def _surface_games_detail(by_game):
+def _surface_games_detail(surface_gate):
     """Per-game LEG-SURFACE trace for quote_priced (issue #98), the sibling of
     `_live_games_detail` above.
 
-    {hash: {market_type, period, books: {book: {fair, route, age_sec}}}} for
-    every SURFACE-priced game; None when nothing was. `age_sec` is the age of
-    the row that actually backed the quote, and it is the whole point of this
-    event: until #99 lands there is no age gate, so this trace is how an
-    operator (and #99's threshold-setting query) sees what a quote rested on.
+    {hash: {market_type, period, books: {book: {fair, route, age_sec}},
+            excluded_by_age: {book: age_sec}, oldest_used_age_sec}} for every
+    SURFACE-priced game; None when nothing was.
+
+    Read straight off the age gate that PRICED the quote rather than re-reading
+    the store (#99): a re-read races the ingest threads, so the trace could
+    name rows that never backed this quote. `books` therefore lists exactly
+    what was USED — keeping research_queries.sql query 18 (the age percentiles
+    of rows that actually priced something) measuring the same thing it did
+    under #98 — and `excluded_by_age` is the sibling key that makes a book
+    ageing out COUNTABLE instead of merely absent.
+
     Fail-safe: research decoration only, never raises into the tick."""
     try:
-        if _surface_lookup() is None:
+        if surface_gate is None or not surface_gate.groups:
             return None
-        now_utc = datetime.now(timezone.utc)
         out = {}
-        for gl in by_game.values():
-            if not router.routes_to_surface(gl):
+        for leg_set_hash, group in surface_gate.groups.items():
+            if not group.used and not group.excluded_by_age:
                 continue
-            rows = _SURFACE.book_fairs(gl[0])
-            if not rows:
-                continue
-            out[legset.leg_set_hash(gl)] = dict(
-                market_type=gl[0].market_type, period=gl[0].period,
-                books={b: dict(fair=r.fair_prob, route=r.route,
-                               age_sec=(now_utc - r.built_at).total_seconds())
-                       for b, r in rows.items()})
+            out[leg_set_hash] = dict(
+                market_type=group.leg.market_type, period=group.leg.period,
+                books={b: dict(fair=row.fair_prob, route=row.route,
+                               age_sec=age)
+                       for b, (row, age) in group.used.items()},
+                excluded_by_age=group.excluded_by_age or None,
+                oldest_used_age_sec=(max((age for _r, age
+                                          in group.used.values()),
+                                         default=None)))
         return out or None
     except Exception:
         return None
+
+
+def _leg_ticker_map(legs: list[dict]) -> dict:
+    """{CanonicalLeg: kalshi market_ticker} for the legs of one RFQ.
+
+    `CanonicalLeg` deliberately does not carry the ticker — it is the pricing
+    identity of a leg, and #86 re-encodes an F5-winner leg into a spread leg
+    whose ticker is not its own. The constituent veto needs the round trip
+    back, so it is rebuilt here by parsing each raw leg on its own, exactly as
+    `legset.parse_legs` does collectively.
+
+    Pure. Unparseable legs are simply absent (the veto then has no ticker for
+    that group and records `unreadable`)."""
+    out = {}
+    for leg in legs or []:
+        canon = legset.parse_leg(leg)
+        ticker = str((leg or {}).get("market_ticker") or "")
+        if canon is not None and ticker:
+            out.setdefault(canon, ticker)
+    return out
+
+
+def _surface_constituent_verdicts(surface_gate, leg_snapshot,
+                                  legs: list[dict]) -> list[dict]:
+    """Per surface-routed group: did KALSHI move since the surface row was
+    built? (issue #99 guard 2)
+
+    Our books' cached fairs are only as good as the market they were built
+    against. Kalshi's own constituent single-leg market for the very same leg
+    trades in real time and is the ONE book-independent signal we have, so a
+    constituent that moved after `built_at` means the cached number is stale
+    by construction — regardless of how fresh the row's clock says it is.
+
+    `leg_snapshot` is #17's quote-time read (already fetched — this costs no
+    API calls) and the baseline comes from `_CONSTITUENT_TAPE`, which only
+    remembers reads the bot already made.
+
+    The comparison instant is the OLDEST row that BACKED the group's
+    consensus: the veto asks whether any input we used predates the market's
+    last move, and the oldest row is the weak link.
+
+    Sign is irrelevant, exactly as in `singles.jumped_tickers`:
+    |delta P(YES)| == |delta P(NO)|, so the leg's own side never enters.
+
+    Returns one dict per group; verdict is one of
+        "ok"          — Kalshi moved less than the threshold
+        "moved"       — VETO
+        "no_baseline" — the tape never saw this ticker that far back
+        "unreadable"  — no ticker, or a degenerate Kalshi book on either side
+    Pure apart from reading the module tape. Never raises."""
+    verdicts = []
+    try:
+        if surface_gate is None or not surface_gate.groups or not leg_snapshot:
+            return verdicts
+        tickers = _leg_ticker_map(legs)
+        for leg_set_hash, group in surface_gate.groups.items():
+            if not group.used or group.oldest_used_built_at is None:
+                continue          # nothing priced this group; no quote to veto
+            oldest = group.oldest_used_built_at
+            row_age = max(age for _row, age in group.used.values())
+            entry = dict(leg_set_hash=leg_set_hash,
+                         market_type=group.leg.market_type,
+                         period=group.leg.period,
+                         oldest_row_age_sec=row_age,
+                         ticker=tickers.get(group.leg),
+                         p_now=None, p_baseline=None, delta=None,
+                         baseline_age_sec=None, verdict="unreadable")
+            verdicts.append(entry)
+            ticker = entry["ticker"]
+            if not ticker:
+                continue
+            raw = leg_snapshot.get(ticker)
+            p_now = (singles.devigged_yes(raw.get("yes_bid"), raw.get("yes_ask"))
+                     if isinstance(raw, dict) else None)
+            if p_now is None:
+                continue
+            entry["p_now"] = p_now
+            baseline = _CONSTITUENT_TAPE.price_at_or_before(ticker, oldest)
+            if baseline is None:
+                # No signal, NOT "no move" — fail OPEN and count it, the same
+                # contract that makes an unreadable ticker safe in
+                # jumped_tickers. Failing closed here would decline every
+                # combo whose legs the tape has not seen yet, which on a cold
+                # process is all of them.
+                entry["verdict"] = "no_baseline"
+                continue
+            p_base, observed_at = baseline
+            entry["p_baseline"] = p_base
+            entry["baseline_age_sec"] = (oldest - observed_at).total_seconds()
+            entry["delta"] = abs(p_now - p_base)
+            entry["verdict"] = (
+                "moved"
+                if entry["delta"] > config.SURFACE_CONSTITUENT_MOVE_THRESHOLD
+                else "ok")
+    except Exception:
+        log.warning("[surface_constituent_check_failed] — treating as no signal")
+    return verdicts
 
 
 def _on_demand_fill_info(canon):
@@ -1171,8 +1462,11 @@ def _discovery_tick(source, gateway, dry_run):
     scope_fetches_deferred = 0
     # #98: resolved ONCE per pass — it is a config flag plus a None check, and
     # every RFQ in the pass must route the same way (a mid-pass flip would
-    # queue a fetch for a game the pricer then read off the surface).
-    surface_lookup = _surface_lookup()
+    # queue a fetch for a game the pricer then read off the surface). #99's
+    # AGE gate is a separate, PER-RFQ object (_surface_age_gate below): the
+    # routing decision must be pass-stable, but the ages behind one quote must
+    # not be blended with another RFQ's.
+    surface_on = _surface_enabled()
     # Per-pass write buffers + one bulk seen-lookup (2026-08-10 incident,
     # round 2): on the ~1GB state DB every connection close pays a full
     # CHECKPOINT (~0.5s — confirmed by stack sampling), so the old
@@ -1426,7 +1720,7 @@ def _discovery_tick(source, gateway, dry_run):
                 # fallback: that book is simply absent from the leg's
                 # book_fairs and drops out of consensus, because falling back
                 # would reintroduce the per-RFQ traffic this ticket removes.
-                if surface_lookup is not None and router.routes_to_surface(gl):
+                if surface_on and router.routes_to_surface(gl):
                     continue
                 if _ENGINE is None:
                     od_pending = True          # engine absent -> fail-safe skip
@@ -1462,11 +1756,19 @@ def _discovery_tick(source, gateway, dry_run):
             # skip reasons (#20) so the report can tell "not enough books" from
             # "books disagree" — everything else stays "no_fair".
             od_lookup = _ENGINE.lookup if _ENGINE is not None else None
+            # #99: one age gate per RFQ. It is the router's surface_fairs
+            # argument AND the record of which rows it admitted — the decline
+            # reason, the quote_priced trace and the constituent veto all read
+            # it back, so they describe the same rows that priced the quote.
+            # now, not the pass's start clock: a time-boxed pass runs for
+            # seconds, and dating ages from its start would UNDER-state them
+            # and let rows through the gate.
+            surface_gate = _surface_age_gate() if surface_on else None
             fair_detail, gate_reason = router.combo_fair_detail(
                 legs, None, _resolve_game_for_legs,
                 config.MIN_AGREEING_BOOKS, config.SIGMA_Z_MAX,
                 on_demand_fairs=od_lookup, live_routing=True,
-                surface_fairs=surface_lookup)
+                surface_fairs=surface_gate)
             blended = fair_detail.fair if fair_detail is not None else None
             book_med = blended  # single consensus fair; book_med == blended
             if blended is None or not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
@@ -1481,6 +1783,17 @@ def _discovery_tick(source, gateway, dry_run):
                     # "The live fetch answered too thin" — named so the monitor
                     # separates a thin live slate from the pre-#54 cache era.
                     skip_reason = "live_too_few_books"
+                if (skip_reason == "surface_too_few_books"
+                        and surface_gate is not None
+                        and surface_gate.starved_by_age):
+                    # #99: rows EXISTED, the age gate dropped them. Naming this
+                    # apart is the whole point of the gate — "no book ever
+                    # published this leg" (coverage) and "a book went dark and
+                    # is resting on its last price" (staleness) call for
+                    # opposite fixes, and #98's single reason could not tell
+                    # them apart. Exact, not a re-read: the gate recorded the
+                    # exclusion during the very call that returned this reason.
+                    skip_reason = "surface_stale"
                 # #55: a dispersion bust doesn't just block a NEW quote — it
                 # pulls the RESTING one this RFQ may already have (a straggler
                 # book just contradicted the thinner quorum that priced it).
@@ -1610,7 +1923,7 @@ def _discovery_tick(source, gateway, dry_run):
                                        margin_pts_yes=q.margin_pts_yes,
                                        margin_pts_no=q.margin_pts_no,
                                        live_games=_live_games_detail(by_game),
-                                       surface_games=_surface_games_detail(by_game)))
+                                       surface_games=_surface_games_detail(surface_gate)))
             if dry_run:
                 _decide("dry_run_quote", rfq_id=rid, ticker=ticker, game_id=game_id,
                               model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
@@ -1627,10 +1940,38 @@ def _discovery_tick(source, gateway, dry_run):
                 _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                               reason="no_leg_snapshot")
                 continue
+            # #99 guard 2: the leg surface's pre-quote constituent freshness
+            # veto, on the same snapshot #23's corr_sanity uses below and for
+            # the same reason — it is already fetched, so both gates are free.
+            # Recorded into the tape FIRST so this read becomes a baseline for
+            # the next RFQ that touches these legs even if we decline here.
+            _CONSTITUENT_TAPE.record(leg_snapshot, datetime.now(timezone.utc))
+            surface_verdicts = _surface_constituent_verdicts(
+                surface_gate, leg_snapshot, legs)
+            if surface_verdicts:
+                research.emit("surface_constituent_check", rfq_id=rid,
+                              ticker=ticker,
+                              payload=dict(
+                                  game_id=game_id,
+                                  threshold=config.SURFACE_CONSTITUENT_MOVE_THRESHOLD,
+                                  enabled=config.SURFACE_CONSTITUENT_VETO_ENABLED,
+                                  legs=surface_verdicts))
+            if (config.SURFACE_CONSTITUENT_VETO_ENABLED
+                    and any(v["verdict"] == "moved" for v in surface_verdicts)):
+                # Kalshi moved after the surface row was built, so the book's
+                # cached number is stale no matter what its clock says. Whole
+                # combo, not the single row: by here the fair has already run
+                # the margin / size / exposure / hysteresis chain, and
+                # re-pricing on the survivors would mean re-running all of it
+                # for a case the age gate has already bounded to 30s.
+                _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              reason="surface_constituent_moved",
+                              book=book_med, blended=blended)
+                continue
             # #23 item 3: correlation sanity against Kalshi's live singles. The leg
-            # snapshot we just fetched for #17's veto IS the marginal anchor, so
-            # this costs ZERO extra API calls. Independent of the #20 gate: that
-            # one asks whether the books agree with EACH OTHER, this asks whether
+            # snapshot we fetched for #17's veto IS the marginal anchor, so this
+            # costs ZERO extra API calls. Independent of the #20 gate: that one
+            # asks whether the books agree with EACH OTHER, this asks whether
             # their consensus is consistent with the real-time single-leg prices —
             # tightly-agreeing books can still be jointly wrong. Degenerate books
             # (yes_ask=100, empty, crossed) yield no marginals: we log the miss and
@@ -1790,6 +2131,10 @@ def _confirm_tick(gateway, dry_run):
             except (TypeError, ValueError):
                 snapshot = None
             fresh_leg_prices = _leg_market_prices(legs)
+            # #99: this read is already paid for — remember it so the next
+            # RFQ's freshness veto has a baseline. The tape never calls Kalshi.
+            _CONSTITUENT_TAPE.record(fresh_leg_prices,
+                                     datetime.now(timezone.utc))
             singles_moved = (snapshot is None or fresh_leg_prices is None
                              or _singles_moved(snapshot, fresh_leg_prices))
             # Firehose: quote age at accept + snapshot-vs-fresh per-leg odds.
@@ -1821,7 +2166,7 @@ def _confirm_tick(gateway, dry_run):
             # on "failed fetch ⇒ stale lookup" alone would confirm on a
             # previously-fetched number.
             refetch_ok = True
-            surface_lookup = _surface_lookup()
+            surface_on = _surface_enabled()
             if _ENGINE is not None and canon_c:
                 for gl in legset.partition_by_game(canon_c).values():
                     # #98: a surface-routed game has no flight to re-fetch —
@@ -1829,8 +2174,7 @@ def _confirm_tick(gateway, dry_run):
                     # below re-reads them. Skipped BEFORE game resolution so a
                     # missing mlb_target_lines row cannot void a fill we can
                     # still price (the surface never needed that id).
-                    if (surface_lookup is not None
-                            and router.routes_to_surface(gl)):
+                    if surface_on and router.routes_to_surface(gl):
                         continue
                     # #54: EVERY live sub-combo re-fetches — the quote's fair
                     # came from the engine, whose result has aged out by accept
@@ -1846,13 +2190,29 @@ def _confirm_tick(gateway, dry_run):
                     refetch_ok = _ENGINE.refetch_now(refetch_jobs,
                                                      CONFIRM_REFETCH_BUDGET_SEC)
             od_lookup = _ENGINE.lookup if _ENGINE is not None else None
+            # #99: the age gate applies HERE TOO — this is the fill moment,
+            # the strictest place in the bot. A surface combo has no flight to
+            # re-fetch, so its whole freshness proof is the rows' age; letting
+            # a stale row confirm a fill would leave the last look weaker than
+            # the quote gate that preceded it.
+            surface_gate = _surface_age_gate()
             cur_fair = router.combo_fair(legs, None, _resolve_game_for_legs,
                                          config.MIN_AGREEING_BOOKS, config.SIGMA_Z_MAX,
                                          on_demand_fairs=od_lookup,
                                          live_routing=True,
-                                         surface_fairs=surface_lookup)
+                                         surface_fairs=surface_gate)
             if cur_fair is None or not refetch_ok:
-                _log_decision("voided_no_fresh_books", rfq_id=rid, quote_id=qid, ticker=ticker,
+                # Split out of voided_no_fresh_books (#99): a surface combo
+                # that lost its rows to the age gate points at ingest cadence,
+                # not at a book that failed to answer a live re-fetch. The
+                # monitor reads its reason vocabulary from data, so a new
+                # label costs nothing there.
+                void_reason = ("voided_surface_stale"
+                               if (cur_fair is None and refetch_ok
+                                   and surface_gate is not None
+                                   and surface_gate.starved_by_age)
+                               else "voided_no_fresh_books")
+                _log_decision(void_reason, rfq_id=rid, quote_id=qid, ticker=ticker,
                               game_id=game_id)
                 with db.connect() as con:
                     con.execute(
@@ -2131,7 +2491,15 @@ def _current_consensus_fair(legs_json: str | None) -> float | None:
                                  on_demand_fairs=(_ENGINE.lookup
                                                   if _ENGINE is not None else None),
                                  live_routing=True,
-                                 surface_fairs=_surface_lookup())
+                                 # #99: age-gated like every other pricing
+                                 # site. A stale row would produce a FAKE
+                                 # drift number here — either inventing a
+                                 # cancel or, worse, suppressing a real one.
+                                 # Gated, the drift check simply goes quiet on
+                                 # a stale surface (None = no signal), and the
+                                 # constituent-jump and tipoff breakers still
+                                 # cover the resting quote.
+                                 surface_fairs=_surface_age_gate())
     except Exception:
         return None
 
@@ -2265,6 +2633,10 @@ def _risk_sweep_tick(gateway, *, book_health=None):
         poll_order = _rotated_poll_order(_open_quote_constituent_tickers(live))
         current_prices = singles.fetch_market_prices(
             poll_order, budget_sec=config.CONSTITUENT_POLL_BUDGET_SEC)
+        # #99: the third and widest feed of the constituent tape — this poll
+        # covers every resting quote's legs every RISK_SWEEP_SEC, so it keeps
+        # baselines alive for combos the discovery tick is no longer re-pricing.
+        _CONSTITUENT_TAPE.record(current_prices, datetime.now(timezone.utc))
         # Advance past what we actually got, so the next sweep starts where
         # this one ran out of budget (approximate: failed reads are not
         # counted, which just re-polls them sooner).
@@ -2415,6 +2787,7 @@ def main_loop(dry_run: bool):
         _SURFACE_INGEST = SurfaceIngest()
         _SURFACE = _SURFACE_INGEST.surface
         _SURFACE_INGEST.start()
+        _warn_structurally_excluded_books()
     else:
         log.warning("SURFACE_ENABLED=false — cross-game single legs route to "
                     "the live on-demand engine (pre-#98 behaviour)")

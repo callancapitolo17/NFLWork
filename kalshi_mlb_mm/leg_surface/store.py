@@ -83,8 +83,8 @@ class LegSurface:
 
         REPLACE, not merge: a rung a book stopped posting must disappear
         rather than linger at its last price forever. Staleness is then only
-        ever a `built_at` question, which #99's age gate can answer — a
-        merged slice would hide a dead rung behind a fresh-looking neighbour.
+        ever a `built_at` question, which #99's age gate answers — a merged
+        slice would hide a dead rung behind a fresh-looking neighbour.
         """
         slice_ = {r.key: r for r in rows}
         with self._lock:
@@ -97,9 +97,12 @@ class LegSurface:
     def book_fairs(self, leg: CanonicalLeg) -> dict[str, SurfaceRow]:
         """Every BOOK that has this leg, one row each.
 
-        Rows of ANY age, deliberately: #99's age gate and #20's dispersion
-        gate live above this, and a store that silently dropped stale rows
-        would make their decline counts unreadable.
+        Rows of ANY age, deliberately: #99's age gate
+        (`main._SurfaceAgeGate`) and #20's dispersion gate both live ABOVE
+        this, and a store that silently dropped stale rows would make their
+        decline counts unreadable — a caller could no longer tell a book that
+        never published the leg (`surface_too_few_books`) from one that went
+        dark holding its last price (`surface_stale`).
         """
         k = surface_key(leg)
         out: dict[str, SurfaceRow] = {}
