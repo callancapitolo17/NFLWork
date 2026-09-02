@@ -33,6 +33,7 @@ from kalshi_common import auth_client, legset, sgp_runner
 from kalshi_common.ev_calc import maker_fee_per_contract
 from kalshi_common.leg_types import (
     _parse_event_suffix,
+    game_number_from_suffix,
     _MLB_CODE_TO_TEAM,
 )
 from kalshi_mlb_mm import (config, db, expiry_outcome, notify, pricing,
@@ -831,6 +832,14 @@ def _resolve_game_for_legs_uncached(game_legs: list) -> str | None:
         # returning None, so a future ticker shape can't silently unprice a game.
         suffix = game_legs[0].game_id.rsplit("-", 1)[-1]
         if not suffix:
+            return None
+        # A doubleheader suffix (…G1/…G2) parses to the same team pair as its
+        # twin, and the lookup below is WHERE home=? AND away=? LIMIT 1 — it
+        # would return whichever game DuckDB hands back first. Decline instead;
+        # a same-game combo on a doubleheader is worth losing, a wrong game is
+        # not (#95). Cross-game combos are unaffected: they price off the leg
+        # surface, which keys on the full suffix and never comes through here.
+        if game_number_from_suffix(suffix) is not None:
             return None
         away_code, home_code = _parse_event_suffix(suffix)
         if not away_code or not home_code:

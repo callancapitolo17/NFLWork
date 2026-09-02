@@ -29,6 +29,7 @@ from kalshi_mlb_rfq.log_setup import setup_logging
 from kalshi_common.leg_types import (
     _MLB_CODE_TO_TEAM, _parse_event_suffix, _home_code_from_event_ticker,
     _leg_dict_to_typed, _spread_line_from_legs, _total_line_from_legs,
+    game_number_from_suffix,
 )
 
 log = logging.getLogger("kalshi_mlb_rfq")
@@ -1655,6 +1656,11 @@ def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandida
         if not event_ticker.startswith("KXMLBGAME-"):
             continue
         suffix = event_ticker.replace("KXMLBGAME-", "")
+        # _resolve_game_id below matches on the team pair alone, which cannot
+        # tell a doubleheader's two games apart. Skip both (pre-existing
+        # behaviour, explicit since the suffix parser learned G1/G2).
+        if game_number_from_suffix(suffix) is not None:
+            continue
         away_code, home_code = _parse_event_suffix(suffix)
         if away_code is None or home_code is None:
             continue

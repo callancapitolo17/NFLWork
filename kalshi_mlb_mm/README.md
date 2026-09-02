@@ -391,9 +391,31 @@ off by **0.05–0.11 in probability** — a wrong number, not a decline. The suf
 encodes date, ET first pitch and both team codes, so it is unique per
 doubleheader game, and it is what `CanonicalLeg.game_id` already carries.
 
+Kalshi additionally marks a doubleheader by appending **`G1` / `G2`** to both
+games' suffixes (`26SEP041410DETCLEG1`, `26SEP041915DETCLEG2` — live
+2026-09-01). `leg_types._parse_event_suffix` strips that marker before probing
+the team codes, and `leg_types.game_number_from_suffix` reads it back. The
+marker stays part of the **identity** (`game_id_of` keeps the whole suffix), so
+the two games never collapse onto one surface key. Before this was parsed the
+slate logged `unparseable event` and dropped **both** games of every
+doubleheader — the surface could not price the case it was built for — and
+every spread/moneyline leg on those events failed to resolve its home code, so
+a home margin line was typed with the away sign.
+
+The older team-name resolvers cannot disambiguate a pair, so they now decline
+explicitly on a non-`None` game number instead of by accident:
+`_resolve_game_for_legs` (maker), `enumerate_kalshi_targets`
+(`mlb_target_lines`), the taker's game enumeration, and `kalshi_rfi`'s
+`drop_doubleheaders` — which gained the marker as a second signal alongside its
+same-ET-day count, so a pair whose first game already delisted is still
+dropped.
+
 Every book-side match is on canonical teams **plus** start time within
 `SURFACE_START_TOLERANCE_MIN`, and **two candidates inside tolerance fail
-closed** (`n_game_ambiguous`) rather than picking the closest.
+closed** (`n_game_ambiguous`) rather than picking the closest. That is what
+prices a doubleheader correctly once the slate carries it: the structure
+route's per-book `match_events` buckets on UTC date+hour, and the singles
+route compares the suffix-derived first pitch directly.
 
 Legs are produced by `legset.parse_leg` on synthetic leg dicts — the same
 function the quote path parses real RFQ legs with — so the surface cannot

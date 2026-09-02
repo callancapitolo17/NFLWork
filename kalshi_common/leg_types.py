@@ -4,6 +4,7 @@ Converts raw Kalshi market-ticker dicts to typed fair_value.SpreadLeg /
 fair_value.TotalLeg instances, and extracts canonical spread / total line
 values from a legs list.
 """
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -69,15 +70,49 @@ def parse_suffix_start_utc(suffix: str) -> datetime | None:
     return local.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+# Doubleheader marker: Kalshi appends G1/G2 to BOTH games' event suffixes
+# (live 2026-09-01: KXMLBGAME-26SEP041410DETCLEG1 and ...1915DETCLEG2). Team
+# codes are letters only, so a trailing "G<digits>" can never be part of one.
+_GAME_NUMBER_RE = re.compile(r"G(\d+)$")
+
+
+def split_game_number(suffix: str) -> tuple[str, int | None]:
+    """A KXMLB* event suffix -> (suffix without the G-marker, game number).
+
+    Returns (suffix, None) for the ordinary single-game grammar. The game
+    number is NOT part of the team block, but it IS part of the game's
+    identity — ``legset.game_id_of`` keeps the whole suffix, so the two games
+    of a doubleheader stay distinct keys everywhere downstream.
+    """
+    match = _GAME_NUMBER_RE.search(suffix)
+    if not match:
+        return suffix, None
+    return suffix[:match.start()], int(match.group(1))
+
+
+def game_number_from_suffix(suffix: str) -> int | None:
+    """The doubleheader game number in an event suffix, or None.
+
+    Callers that resolve a game by TEAM NAMES must fail closed on a non-None
+    result: two games share the team pair, and a ``LIMIT 1`` lookup returns
+    whichever row comes first — a wrong number, not a decline (#95 measured
+    fairs off by 0.05-0.11 from exactly this).
+    """
+    return split_game_number(suffix)[1]
+
+
 def _parse_event_suffix(suffix: str) -> tuple[str | None, str | None]:
     """Split a KXMLB* event suffix into (away_code, home_code).
 
-    Format: YYMMMDDHHMM{AwayCode}{HomeCode}. Date prefix is fixed at 11 chars.
-    Each team code is 2 or 3 letters (KC/SF/SD/TB/AZ are 2-letter; the rest
-    are 3-letter). Probes 3- then 2-letter home splits and returns the first
-    where both codes are valid in _MLB_CODE_TO_TEAM. Returns (None, None) if
-    no split matches — caller drops the event.
+    Format: YYMMMDDHHMM{AwayCode}{HomeCode}, optionally followed by a
+    doubleheader marker G1/G2 (stripped here — see split_game_number). Date
+    prefix is fixed at 11 chars. Each team code is 2 or 3 letters (KC/SF/SD/
+    TB/AZ are 2-letter; the rest are 3-letter). Probes 3- then 2-letter home
+    splits and returns the first where both codes are valid in
+    _MLB_CODE_TO_TEAM. Returns (None, None) if no split matches — caller
+    drops the event.
     """
+    suffix, _game_number = split_game_number(suffix)
     if len(suffix) < 11 + 4:  # date prefix + at least 2+2 team chars
         return None, None
     team_block = suffix[11:]

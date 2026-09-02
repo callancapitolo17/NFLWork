@@ -49,3 +49,29 @@ def test_home_code_from_event_ticker_2letter_home():
 
 def test_home_code_from_event_ticker_3letter_home():
     assert main._home_code_from_event_ticker("KXMLBSPREAD-26APR292140KCATH") == "ATH"
+
+
+def test_parse_doubleheader_game_1():
+    """Kalshi appends G1/G2 to both games of a doubleheader.
+
+    Live 2026-09-01: KXMLBGAME-26SEP041410DETCLEG1. The old fixed grammar
+    read 'EG1' / 'G1' as the home code and rejected the event entirely.
+    """
+    assert main._parse_event_suffix("26SEP041410DETCLEG1") == ("DET", "CLE")
+
+
+def test_parse_doubleheader_game_2():
+    assert main._parse_event_suffix("26SEP041915DETCLEG2") == ("DET", "CLE")
+
+
+def test_parse_doubleheader_with_2letter_home():
+    # KC @ SD game 2 — the marker is stripped before the 3-then-2 home probe,
+    # so it cannot steal characters from a short home code.
+    assert main._parse_event_suffix("26SEP042140KCSDG2") == ("KC", "SD")
+
+
+def test_home_code_from_doubleheader_event_ticker():
+    """Regression: an unparseable home code made every spread leg type as the
+    AWAY team, so CLE -3.5 was stored as +3.5 — a wrong line, not a decline."""
+    assert main._home_code_from_event_ticker(
+        "KXMLBSPREAD-26SEP041410DETCLEG1") == "CLE"

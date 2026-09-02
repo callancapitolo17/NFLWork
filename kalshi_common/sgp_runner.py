@@ -15,7 +15,8 @@ from typing import Iterable, Mapping
 import duckdb
 
 from kalshi_common import auth_client
-from kalshi_common.leg_types import _MLB_CODE_TO_TEAM, _parse_event_suffix
+from kalshi_common.leg_types import (_MLB_CODE_TO_TEAM, _parse_event_suffix,
+                                     game_number_from_suffix)
 from mlb_sgp._shared import TargetLine
 from kalshi_common.sgp_service import SGPService  # noqa: F401  (re-export)
 
@@ -204,6 +205,12 @@ def enumerate_kalshi_targets(both_teams: bool = False) -> list[TargetLine]:
         if not event_ticker.startswith("KXMLBGAME-"):
             continue
         suffix = event_ticker.replace("KXMLBGAME-", "")
+        # mlb_target_lines is keyed on the Odds-API game_id resolved from the
+        # team pair below, so a doubleheader's two suffixes would both claim
+        # the same schedule row. Skip them (pre-existing behaviour, explicit
+        # since the suffix parser learned the G1/G2 grammar).
+        if game_number_from_suffix(suffix) is not None:
+            continue
         away_code, home_code = _parse_event_suffix(suffix)
         if away_code is None or home_code is None:
             continue
