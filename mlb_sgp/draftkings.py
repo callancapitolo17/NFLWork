@@ -53,6 +53,7 @@ adapts to the real signatures:
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -78,6 +79,62 @@ SOURCE_LABEL_FALLBACK = "draftkings_interpolated"
 # one book whose price hook issues its own request, so it must classify here
 # or the ``prices_empty`` tripwire blames the parser for a dead endpoint.
 BLOCKED_PRICE_STATUSES = frozenset({403, 429})
+
+# Which transport makes DK's price call (issue #102).
+#   "http"    — curl_cffi straight to calculateBets. Today's behavior, and
+#               BLOCKED since ~2026-08-20: Akamai fingerprints the client
+#               below the HTTP layer, so it 403s regardless of headers.
+#   "sidecar" — POST to dk_price_sidecar (a real, non-headless Chrome that
+#               makes DK's own call, one at a time). See dk_price_sidecar/.
+# Default "http" so nothing changes until the sidecar is running and the
+# operator flips this. Rollback is unsetting it.
+DK_PRICE_TRANSPORT = os.environ.get("DK_PRICE_TRANSPORT", "http")
+DK_SIDECAR_URL = os.environ.get("DK_SIDECAR_URL", "http://127.0.0.1:8095")
+# The sidecar serializes calls ~1s apart, so a 4-cell partition queued behind
+# another flight can legitimately take several seconds.
+DK_SIDECAR_TIMEOUT_SEC = float(os.environ.get("DK_SIDECAR_TIMEOUT_SEC", "10"))
+
+
+def _sidecar_post(refs, *, timeout: float) -> tuple[int, dict]:
+    """One POST to the sidecar. Returns (http_status, body). Raises
+    ``BookTransportError`` when the sidecar itself is unreachable — a down
+    sidecar is a dead DK, and must be counted as one.
+
+    Plain urllib on loopback: no fingerprint concerns here, and no new
+    dependency for the bots.
+    """
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(
+        DK_SIDECAR_URL.rstrip("/") + "/price",
+        data=json.dumps({"selections": list(refs)}).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as e:            # 4xx/5xx still carry a body
+        try:
+            body = json.loads(e.read() or b"{}")
+        except ValueError:
+            body = {}
+        return e.code, body
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise BookTransportError(BOOK_NAME, "price", cause=e,
+                                 detail=f"dk_price_sidecar unreachable at {DK_SIDECAR_URL}") from e
+
+
+def _price_via_sidecar(refs) -> float | None:
+    """Price ``refs`` through the sidecar. Same contract as the HTTP path:
+    float on a priced set, None on a decline, BookTransportError when DK (or
+    the sidecar) is refusing us rather than this combo."""
+    status, body = _sidecar_post(refs, timeout=DK_SIDECAR_TIMEOUT_SEC)
+    if status in BLOCKED_PRICE_STATUSES or status >= 500:
+        raise BookTransportError(BOOK_NAME, "price", status_code=status,
+                                 detail=str(body.get("error", ""))[:200])
+    if status != 200:
+        return None                              # 422 non-combinable et al.
+    true_odds = body.get("true_odds")
+    return float(true_odds) if true_odds else None
 
 # Target-level parallelism. Env-overridable for ops tuning without a
 # code edit; the shipped default comes from the Phase-0 probe
@@ -786,12 +843,17 @@ def price_selection_set(client, refs, *,
     Returns the decimal ``trueOdds`` float, or None on 422 /
     combinabilityRestrictions / any failure (never raises).
 
+    ``DK_PRICE_TRANSPORT=sidecar`` routes the call through dk_price_sidecar
+    instead of curl_cffi (issue #102); the contract below is identical.
+
     A ``BLOCKED_PRICE_STATUSES`` response is still None to the caller, but it
     is COUNTED as a transport error first (issue #102) — that count is the
     only thing separating "DK is blocked" from "DK won't build these combos"
     in ``sgp_fetch_health``.
     """
     try:
+        if DK_PRICE_TRANSPORT == "sidecar":
+            return _price_via_sidecar(refs)
         from scraper_draftkings_sgp import DK_CALCULATE_BETS_URL
         # RETRY_LIVE: this is the on-demand quote path — one fast retry, and
         # a 4xx (422 non-combinable) still resolves on the first attempt.
