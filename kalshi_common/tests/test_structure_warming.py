@@ -24,8 +24,12 @@ import pytest
 from kalshi_common.sgp_service import SGPService
 from mlb_sgp._shared import BookTransportError, GameRef, TargetLine
 
+# Dated to match test_on_demand_cache_state's shared MGM fixture: the real
+# match_event hooks verify the book Event's clock against the game's, and an
+# undated game is a decline. The seam tests below stub match_event entirely.
 GAME = GameRef(game_id="g1", home_team="Boston Red Sox",
-               away_team="New York Yankees", commence_time=None)
+               away_team="New York Yankees",
+               commence_time=datetime(2026, 9, 4, 23, 10))
 GAME2 = GameRef(game_id="g2", home_team="Chicago Cubs",
                 away_team="St. Louis Cardinals", commence_time=None)
 

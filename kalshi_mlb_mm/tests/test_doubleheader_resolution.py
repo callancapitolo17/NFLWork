@@ -16,7 +16,7 @@ The invariant this file pins:
   * two rows still indistinguishable inside the tolerance -> decline
   * leg-surface identity (full suffix) -> unchanged, still keeps them apart
 """
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -193,3 +193,103 @@ class TestAmbiguityIsWarnedOnce:
         monkeypatch.setattr(sgp_runner, "target_line_cycle", lambda **kw: [])
         main._target_line_tick()
         assert main._AMBIGUOUS_WARNED == set()
+
+
+class TestTipoffGateFailsClosedOnAnyUnreadableClock:
+    """Fix from the pre-merge review: the discovery tick used to drop None
+    clocks and take min() of the rest, so a 2-game combo passed on its OTHER
+    game's clock. The sweep's _quote_first_pitches already failed closed;
+    the tick now does too."""
+
+    def test_quote_first_pitches_is_none_if_any_game_is_unreadable(self):
+        import json
+        from kalshi_mlb_mm import main
+        legs = [{"event_ticker": f"KXMLBTOTAL-{G1}",
+                 "market_ticker": f"KXMLBTOTAL-{G1}-9", "side": "yes"},
+                {"event_ticker": "KXMLBTOTAL-garbage",
+                 "market_ticker": "KXMLBTOTAL-garbage-9", "side": "yes"}]
+        assert main._quote_first_pitches(json.dumps(legs)) is None
+
+    def test_quote_first_pitches_reads_both_games(self):
+        import json
+        from kalshi_mlb_mm import main
+        legs = [{"event_ticker": f"KXMLBTOTAL-{G1}",
+                 "market_ticker": f"KXMLBTOTAL-{G1}-9", "side": "yes"},
+                {"event_ticker": f"KXMLBTOTAL-{PLAIN}",
+                 "market_ticker": f"KXMLBTOTAL-{PLAIN}-9", "side": "yes"}]
+        starts = main._quote_first_pitches(json.dumps(legs))
+        assert starts is not None and len(starts) == 2
+        assert all(s.tzinfo is not None for s in starts)
+
+
+class TestDiscoveryTickTipoffFailsClosed:
+    """The tick used to take min() of the clocks it COULD read, so a 2-game
+    combo passed on its other game's clock. Now any unreadable clock skips."""
+
+    _EVT_A = f"KXMLBGAME-{PLAIN}"
+    _EVT_B = f"KXMLBGAME-{G1}"
+    _LEGS = [{"market_ticker": f"KXMLBTOTAL-{PLAIN}-9",
+              "event_ticker": f"KXMLBTOTAL-{PLAIN}", "side": "yes"},
+             {"market_ticker": f"KXMLBTOTAL-{G1}-9",
+              "event_ticker": f"KXMLBTOTAL-{G1}", "side": "yes"}]
+
+    def _setup(self, monkeypatch, tmp_path, first_pitch):
+        import importlib
+        import kalshi_mlb_mm.config as cfg
+        import kalshi_mlb_mm.db as db
+        import kalshi_mlb_mm.risk as risk
+        import kalshi_mlb_mm.router as router_mod
+        from kalshi_mlb_mm import main
+        from kalshi_mlb_mm.tests.conftest import FakeLiveEngine
+
+        monkeypatch.setattr(cfg, "DB_PATH", tmp_path / "tick.duckdb")
+        monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
+        importlib.reload(db)
+        db.init_database()
+        # tipoff_ok is waved through: the point is that the gate must never
+        # REACH it with a clock it could not read.
+        monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
+        monkeypatch.setattr(router_mod, "combo_fair_detail",
+                            lambda *a, **k: (router_mod.ComboFair(0.55, 0.0, 1), "ok"))
+        monkeypatch.setattr(main, "_first_pitch_utc", first_pitch)
+        monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
+        monkeypatch.setattr(main, "_SCOPE_CACHE",
+                            {"COMBO-XG": (True, "gA", self._LEGS)})
+        monkeypatch.setattr(main, "_resolve_game_for_legs",
+                            lambda gl: {PLAIN: "gA", G1: "gB"}.get(gl[0].game_id))
+        monkeypatch.setattr(main, "_leg_market_prices",
+                            lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
+        monkeypatch.setattr(main, "_ENGINE", FakeLiveEngine())
+        return main
+
+    class _GW:
+        def __init__(self):
+            self.submits = []
+
+        def submit_quote(self, *a):
+            self.submits.append(a)
+            return "qid-new"
+
+    class _Src:
+        def poll(self):
+            return [{"id": "r-xg", "market_ticker": "COMBO-XG", "contracts": 1}]
+
+        def get_market(self, t):
+            return {}
+
+    def test_one_unreadable_clock_skips_the_whole_combo(self, monkeypatch,
+                                                        tmp_path):
+        soon = datetime.now(timezone.utc) + timedelta(hours=1)
+        main = self._setup(monkeypatch, tmp_path,
+                           lambda gl: soon if gl[0].game_id == PLAIN else None)
+        gw = self._GW()
+        main._discovery_tick(self._Src(), gw, dry_run=False)
+        assert gw.submits == [], "a combo with an unreadable clock was quoted"
+
+    def test_both_clocks_readable_still_quotes(self, monkeypatch, tmp_path):
+        # Control: the same harness quotes when every clock reads.
+        soon = datetime.now(timezone.utc) + timedelta(hours=1)
+        main = self._setup(monkeypatch, tmp_path, lambda gl: soon)
+        gw = self._GW()
+        main._discovery_tick(self._Src(), gw, dry_run=False)
+        assert len(gw.submits) == 1

@@ -56,7 +56,8 @@ def _cooldown_env(monkeypatch, tmp_path, db_name, *, completed_age,
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
     monkeypatch.setattr(router_mod, "combo_fair_detail",
                         lambda *a, **k: (router_mod.ComboFair(fair_now, 0.0, 1), "ok"))
-    monkeypatch.setattr(main, "_first_pitch_utc", lambda gl: None)
+    monkeypatch.setattr(main, "_first_pitch_utc",
+                        lambda gl: main.datetime.now(main.timezone.utc) + main.timedelta(hours=1))
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
     monkeypatch.setattr(main, "_SCOPE_CACHE", {_TICKER: (True, _GAME, _LEGS)})
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: _GAME)

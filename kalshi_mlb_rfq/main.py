@@ -56,6 +56,9 @@ _POSITIONS_API_FAIL_COUNT = 0
 _SAMPLES_CACHE: dict[str, pd.DataFrame] = {}              # game_id → samples df
 _SGP_ODDS_CACHE: pd.DataFrame | None = None                # full mlb_sgp_odds (last hour, FG period)
 _PARLAY_LINES_CACHE: dict[str, dict] = {}                  # game_id → {home, away, commence_time}
+_AMBIGUOUS_WARNED: set = set()                             # (away, home) pairs already
+                                                           # warned about — cleared with
+                                                           # the parlay-lines cache
 _SAMPLES_META_GENERATED_AT: datetime | None = None
 _CACHE_LOADED_AT: datetime | None = None
 
@@ -213,6 +216,9 @@ def _refresh_caches(retries: int = 5) -> bool:
         with _CACHE_LOCK:
             _SAMPLES_CACHE = samples_by_game
             _PARLAY_LINES_CACHE = parlay_lines
+            # Re-arm the ambiguity warning: the new schedule may have resolved
+            # it, and if it has not the next cycle says so again.
+            _AMBIGUOUS_WARNED.clear()
             _SAMPLES_META_GENERATED_AT = generated_at
             _CACHE_LOADED_AT = datetime.now(timezone.utc)
 
@@ -1640,7 +1646,12 @@ def _resolve_game_id(home_code: str, away_code: str,
         if now < ct < horizon:
             candidates.append((game_id, ct))
     game_id, reason = unique_game_by_start(kalshi_start, candidates)
-    if game_id is None and reason == "ambiguous":
+    if (game_id is None and reason == "ambiguous"
+            and (away, home) not in _AMBIGUOUS_WARNED):
+        # _enumerate_and_score_all_games runs every RFQ_REFRESH_SEC, so an
+        # unconditional warning is ~2,880 lines/day for one stuck pair. Same
+        # guard the maker uses; the cache clears with the parlay-lines cache.
+        _AMBIGUOUS_WARNED.add((away, home))
         log.warning("[resolve_game_ambiguous] %s@%s candidates=%d — declining",
                     away, home, len(candidates))
     return game_id

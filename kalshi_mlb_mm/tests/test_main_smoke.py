@@ -70,7 +70,8 @@ def test_discovery_dedup_no_resubmit_when_price_unchanged(monkeypatch, tmp_path)
     # router.combo_fair replaces _book_fairs + blended_fair in the live path.
     monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.55, 0.0, 1), "ok"))
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
-    monkeypatch.setattr(main, "_first_pitch_utc", lambda gl: None)
+    monkeypatch.setattr(main, "_first_pitch_utc",
+                        lambda gl: main.datetime.now(main.timezone.utc) + main.timedelta(hours=1))
     # Make tipoff_ok pass (commence_time is None → normally fails; override).
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
 
@@ -247,7 +248,8 @@ def test_risk_sweep_cancels_on_drift_since_quote(monkeypatch, tmp_path):
     db.init_database()
 
     # a book frame exists (inert since #57) and tipoff is far away.
-    monkeypatch.setattr(main, "_first_pitch_utc", lambda gl: None)
+    monkeypatch.setattr(main, "_first_pitch_utc",
+                        lambda gl: main.datetime.now(main.timezone.utc) + main.timedelta(hours=1))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
     # B1 fix: the sweep now re-derives the combo's games from legs_json and
     # fail-safe cancels on an unresolvable game — resolve to a real id so this
@@ -857,7 +859,8 @@ def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
     # Per-combo cap runs after pricing — mock router so pricing produces a valid fair.
     import kalshi_mlb_mm.router as router_mod
     monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.55, 0.0, 1), "ok"))
-    monkeypatch.setattr(main, "_first_pitch_utc", lambda gl: None)
+    monkeypatch.setattr(main, "_first_pitch_utc",
+                        lambda gl: main.datetime.now(main.timezone.utc) + main.timedelta(hours=1))
 
     _evt = "KXMLBGAME-25JUN271905TEXLAA"
     legs = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",

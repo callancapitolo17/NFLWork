@@ -1689,7 +1689,15 @@ def _discovery_tick(source, gateway, dry_run):
             # and per-pass rows at that rate is the DB bloat the 08-11 prune
             # removed (pass-summary log + rfq_ingestion_summary carry it).
             commence_times = [_first_pitch_utc(gl) for gl in by_game.values()]
-            earliest_ct = min((ct for ct in commence_times if ct is not None), default=None)
+            # Fail closed on ANY unreadable clock, the same contract
+            # _quote_first_pitches gives the sweep. Dropping the Nones and
+            # taking min() of the rest would quietly turn "earliest first
+            # pitch across ALL games" into "earliest of the games we could
+            # read", and pass a combo on its other game's clock.
+            if not commence_times or any(ct is None for ct in commence_times):
+                tipoff_skipped += 1
+                continue
+            earliest_ct = min(commence_times)
             if not risk.tipoff_ok(earliest_ct, config.TIPOFF_CANCEL_MIN):
                 tipoff_skipped += 1
                 continue
@@ -1698,9 +1706,8 @@ def _discovery_tick(source, gateway, dry_run):
             # too_few_books after 6 wasted fetches. Skip (counter only)
             # until every game is inside the horizon. 0 disables.
             if config.FLIGHT_HORIZON_HOURS > 0:
-                latest_ct = max((ct for ct in commence_times if ct is not None),
-                                default=None)
-                if latest_ct is not None and (
+                latest_ct = max(commence_times)   # no None survives the gate above
+                if (
                         (latest_ct - now_utc).total_seconds()
                         > config.FLIGHT_HORIZON_HOURS * 3600):
                     horizon_skipped += 1

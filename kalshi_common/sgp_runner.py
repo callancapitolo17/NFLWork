@@ -5,6 +5,7 @@ spawns scraper subprocesses, and returns priced rows — callers wire results
 into their own cache.
 """
 from __future__ import annotations
+import logging
 import os
 import subprocess
 import time
@@ -20,6 +21,13 @@ from kalshi_common.leg_types import (_MLB_CODE_TO_TEAM, _parse_event_suffix,
                                      unique_game_by_start)
 from mlb_sgp._shared import TargetLine
 from kalshi_common.sgp_service import SGPService  # noqa: F401  (re-export)
+
+# This module is otherwise print()-based (it predates the bots' logging), but a
+# game DROPPED from the schedule match is a risk-relevant silent failure: the
+# game leaves mlb_target_lines, resting quotes on it cancel unresolvable_game,
+# and it stays unquotable. stdout is not captured in bot.log, so that one
+# signal goes through logging.
+log = logging.getLogger(__name__)
 
 
 def should_scrape(last_fetch_time: datetime | None,
@@ -261,6 +269,20 @@ def enumerate_kalshi_targets(both_teams: bool = False) -> list[TargetLine]:
                 ))
     print(f"  enumerate: matched_games={matched_games} → {len(targets)} target lines"
           f" (unmatched: {unmatched_reasons or 'none'})", flush=True)
+    if unmatched_reasons:
+        # The three reasons need OPPOSITE fixes, so they are counted apart:
+        #   unmatched       the Odds API does not carry this game, or the two
+        #                   feeds' first pitches disagree by more than the
+        #                   tolerance (a rescheduled game the Kalshi ticker
+        #                   cannot restate)
+        #   ambiguous       two schedule rows are indistinguishable
+        #   no_kalshi_start the suffix date grammar did not parse — if this is
+        #                   EVERY game, Kalshi changed the ticker format and
+        #                   the table is about to be emptied
+        log.warning("[schedule_match] matched=%d dropped=%d %s",
+                    matched_games, sum(unmatched_reasons.values()),
+                    " ".join(f"{k}={v}" for k, v in
+                             sorted(unmatched_reasons.items())))
     return targets
 
 

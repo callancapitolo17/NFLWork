@@ -279,7 +279,8 @@ def _setup(monkeypatch, tmp_path, engine, db_name, legs=GRID_LEGS):
     monkeypatch.setattr(
         main, "_resolve_game_for_legs",
         lambda gl: "game1" if gl[0].game_id == "25JUN271905TEXLAA" else "gB")
-    monkeypatch.setattr(main, "_first_pitch_utc", lambda gl: None)
+    monkeypatch.setattr(main, "_first_pitch_utc",
+                        lambda gl: main.datetime.now(main.timezone.utc) + main.timedelta(hours=1))
     monkeypatch.setattr(
         main, "_game_ref", lambda gid: GREF if gid == "game1" else GREF_B)
     monkeypatch.setattr(main, "_leg_market_prices",

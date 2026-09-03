@@ -37,7 +37,8 @@ def _setup(monkeypatch, tmp_path, db_name, candidate_ticker, candidate_game):
 
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
     monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.55, 0.0, 1), "ok"))
-    monkeypatch.setattr(main, "_first_pitch_utc", lambda gl: None)
+    monkeypatch.setattr(main, "_first_pitch_utc",
+                        lambda gl: main.datetime.now(main.timezone.utc) + main.timedelta(hours=1))
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
     monkeypatch.setattr(main, "_SCOPE_CACHE",
                         {candidate_ticker: (True, candidate_game, _LEGS)})

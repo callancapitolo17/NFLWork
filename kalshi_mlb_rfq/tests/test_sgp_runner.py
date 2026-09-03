@@ -545,3 +545,53 @@ def test_book_modules_covers_all_default_service_books():
     from kalshi_common.sgp_service import DEFAULT_BOOKS
     missing = [b for b in DEFAULT_BOOKS if b not in sgp_runner._BOOK_MODULES]
     assert not missing, f"_BOOK_MODULES missing default books: {missing}"
+
+
+def test_enumerate_logs_a_dropped_game_to_bot_log(monkeypatch, caplog):
+    """Pre-merge review fix: sgp_runner is print()-based and stdout is not in
+    bot.log, so a game silently leaving the schedule match had no record an
+    operator could find. The drop now goes through logging, per reason."""
+    import logging
+    from datetime import datetime, timezone
+    from kalshi_common import sgp_runner
+
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events", lambda: [
+        {"event_ticker": "KXMLBGAME-26SEP041410DETCLEG1"},   # unmatched
+        {"event_ticker": "KXMLBGAME-26SEP041810MILCIN"},     # matched
+    ])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_spread_lines",
+                        lambda suffix, **kw: [(-1.5, "home")])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines",
+                        lambda suffix: [8.5])
+    monkeypatch.setattr(sgp_runner, "_fetch_schedule_from_odds_api", lambda: [
+        {"game_id": "cin", "home_team": "Cincinnati Reds",
+         "away_team": "Milwaukee Brewers",
+         "commence_time": datetime(2026, 9, 4, 22, 10, tzinfo=timezone.utc)},
+    ])
+    with caplog.at_level(logging.WARNING, logger="kalshi_common.sgp_runner"):
+        targets = sgp_runner.enumerate_kalshi_targets()
+    assert [t.game_id for t in targets] == ["cin"]
+    lines = [r.getMessage() for r in caplog.records
+             if "schedule_match" in r.getMessage()]
+    assert lines == ["[schedule_match] matched=1 dropped=1 unmatched=1"]
+
+
+def test_enumerate_is_quiet_when_every_game_matches(monkeypatch, caplog):
+    import logging
+    from datetime import datetime, timezone
+    from kalshi_common import sgp_runner
+
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events",
+                        lambda: [{"event_ticker": "KXMLBGAME-26SEP041810MILCIN"}])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_spread_lines",
+                        lambda suffix, **kw: [(-1.5, "home")])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines",
+                        lambda suffix: [8.5])
+    monkeypatch.setattr(sgp_runner, "_fetch_schedule_from_odds_api", lambda: [
+        {"game_id": "cin", "home_team": "Cincinnati Reds",
+         "away_team": "Milwaukee Brewers",
+         "commence_time": datetime(2026, 9, 4, 22, 10, tzinfo=timezone.utc)},
+    ])
+    with caplog.at_level(logging.WARNING, logger="kalshi_common.sgp_runner"):
+        sgp_runner.enumerate_kalshi_targets()
+    assert not [r for r in caplog.records if "schedule_match" in r.getMessage()]

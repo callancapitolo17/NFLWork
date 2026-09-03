@@ -127,3 +127,27 @@ class TestResolveGameIdPicksTheRightGame:
             ("only", datetime(2026, 9, 4, 18, 10, tzinfo=timezone.utc))])
         self._now(monkeypatch, datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc))
         assert main._resolve_game_id("CLE", "DET", None) is None
+
+    def test_ambiguity_warns_once_until_the_cache_refreshes(self, monkeypatch,
+                                                            caplog):
+        """Pre-merge review fix: enumeration runs every RFQ_REFRESH_SEC, so an
+        unconditional warning was ~2,880 lines/day for one stuck pair."""
+        import logging
+        self._cache(monkeypatch, [
+            ("a", datetime(2026, 9, 4, 18, 10, tzinfo=timezone.utc)),
+            ("b", datetime(2026, 9, 4, 18, 25, tzinfo=timezone.utc)),
+        ])
+        self._now(monkeypatch, datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc))
+        main._AMBIGUOUS_WARNED.clear()
+        start = main.parse_suffix_start_utc("26SEP041410DETCLEG1")
+        with caplog.at_level(logging.WARNING, logger="kalshi_mlb_rfq"):
+            for _ in range(5):
+                assert main._resolve_game_id("CLE", "DET", start) is None
+        assert sum("resolve_game_ambiguous" in r.getMessage()
+                   for r in caplog.records) == 1
+        # A cache refresh re-arms it.
+        main._AMBIGUOUS_WARNED.clear()
+        with caplog.at_level(logging.WARNING, logger="kalshi_mlb_rfq"):
+            main._resolve_game_id("CLE", "DET", start)
+        assert sum("resolve_game_ambiguous" in r.getMessage()
+                   for r in caplog.records) == 2

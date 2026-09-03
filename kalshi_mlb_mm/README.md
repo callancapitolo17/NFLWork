@@ -439,20 +439,58 @@ with it to within the 30-minute match tolerance — too loose to sit under a
 `TIPOFF_CANCEL_MIN` = 5 gate. Reading the suffix keeps the gate exact, costs no
 DB read (so `_COMMENCE_CACHE` is gone with `_commence_time`), and works for
 games the Odds API has not listed yet. Both the discovery tick and the risk
-sweep read it, the sweep through `_quote_first_pitches`, whose `None` is
-fail-safe → cancel exactly like `_quote_game_ids`.
+sweep read it with the SAME contract: **any unreadable clock fails closed** —
+the sweep through `_quote_first_pitches` (`None` → cancel, exactly like
+`_quote_game_ids`), the tick by skipping the RFQ. The tick used to drop the
+`None`s and take `min()` of the rest, which would have passed a cross-game
+combo on its *other* game's clock; it never fired only because the `no_game`
+gate happened to run first.
+
+**Observability of the decline.** `sgp_runner` is `print()`-based and stdout
+is not in `bot.log`, so a game dropped by the schedule match was invisible. It
+now logs `[schedule_match] matched=N dropped=M unmatched=.. ambiguous=..
+no_kalshi_start=..` at WARNING (only when something dropped). The three reasons
+need opposite fixes: `unmatched` = the Odds API does not carry the game or the
+two feeds' first pitches disagree by more than the tolerance (a rescheduled
+game the Kalshi ticker cannot restate); `ambiguous` = two schedule rows
+indistinguishable; `no_kalshi_start` = the suffix date grammar did not parse —
+if that is EVERY game, Kalshi changed the ticker format and the table is about
+to be emptied by the next `write_target_lines` (unconditional `DELETE` +
+insert), which cancels every resting quote `unresolvable_game` within ~300s.
+The maker and taker each warn once per ambiguous game (`_AMBIGUOUS_WARNED`,
+re-armed on their cache refresh) — resolution failures are deliberately not
+cached, so an unconditional warning was ~one line per RFQ per tick.
 
 One caveat this does not remove: the payoff depends on the **Odds API listing
 both games** of the doubleheader. If it lists one, the unmatched game declines
 (fail closed) — the risk gates need an Odds-API id, even though the leg surface
 itself does not.
 
-Every book-side match is on canonical teams **plus** start time within
-`SURFACE_START_TOLERANCE_MIN`, and **two candidates inside tolerance fail
-closed** (`n_game_ambiguous`) rather than picking the closest. That is what
-prices a doubleheader correctly once the slate carries it: the structure
-route's per-book `match_events` buckets on UTC date+hour, and the singles
-route compares the suffix-derived first pitch directly.
+Book-side matching is fail-closed on BOTH routes, but by different mechanisms,
+and the structure route only became so at the pre-merge review of this change:
+
+* **Singles route** (`singles.match_book_game`): canonical teams **plus** start
+  time within `SURFACE_START_TOLERANCE_MIN`, and **two candidates inside
+  tolerance fail closed** (`n_game_ambiguous`) rather than picking the closest.
+* **Structure route** goes through the legacy per-book `match_events` helpers
+  (`mlb_sgp/scraper_*_sgp.py`, `betmgm.py`, `caesars.py`), and those are NOT
+  fail-closed on their own: every one of them **skips its UTC-hour guard when
+  either side lacks a start time and falls back to matching on teams alone**
+  ("backward compat" in FanDuel's; "one side lacks a timestamp — accept" in
+  MGM's), and the bot's hooks then took `matched[0]` — the first hit, never the
+  unique one. The dashboard scrapers need that fallback, so the guard lives at
+  the **bot's boundary** in `kalshi_common/sgp_service.py`, applied to all six
+  `match_event` hooks: `_sole_book_event` (DK/FD/PX/NV — the helper is fed a
+  single-game dict, so **more than one matched book event is ambiguous** →
+  `book_event_ambiguous`, declined) and `_sole_dated_book_event` (MGM/CZR —
+  their matcher keys on OUR game id, so a second book event *overwrites* the
+  first and a count cannot see it; instead the returned Event's **own
+  `start_time` must agree with the game's within
+  `SCHEDULE_START_TOLERANCE_MIN`**, and a missing or unparseable start is a
+  decline — `book_event_undated` / `book_event_wrong_start`). Measured
+  2026-09-02: 17/17 live MGM events carry `start_time`, clocks within ~6 min of
+  ours. Both guards are no-ops for a book that lists the game once with a
+  clock, and a decline just drops that book from the leg's consensus.
 
 Legs are produced by `legset.parse_leg` on synthetic leg dicts — the same
 function the quote path parses real RFQ legs with — so the surface cannot

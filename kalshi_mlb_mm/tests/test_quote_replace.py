@@ -36,7 +36,8 @@ def _replace_env(monkeypatch, tmp_path, db_name):
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
     monkeypatch.setattr(main, "_leg_market_prices",
                         lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
-    monkeypatch.setattr(main, "_first_pitch_utc", lambda gl: None)
+    monkeypatch.setattr(main, "_first_pitch_utc",
+                        lambda gl: main.datetime.now(main.timezone.utc) + main.timedelta(hours=1))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-1": (True, "game1", _LEGS)})
     # #54 live-only: pricing requires a live engine result for every game.
