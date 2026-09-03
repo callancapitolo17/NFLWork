@@ -423,9 +423,15 @@ home -1.5 + Over 7.5 -> `YourBet trueOdds=7.5 display=+650`):
 
 What this is NOT: no Akamai sensor is forged, no fingerprint is spoofed. It
 is a real browser making the same request DK's own page makes, at a human
-cadence. The cost is operational: a **visible Chrome window must stay
-resident** on the machine running the maker for the whole slate — headless
-is exactly what the rule detects.
+cadence. The cost is operational: a **real (non-headless) Chrome process
+must stay resident** for the whole slate. It does NOT have to be visible —
+verified 2026-09-02 with the window **minimized** via CDP
+`Browser.setWindowBounds {windowState: "minimized"}` (3/3 real prices) and
+mostly off-screen (3/3). "Headed" is a process mode, not a screen
+requirement: the rule detects headless mode, not window visibility. On a
+Linux host the equivalent is headed Chrome under `Xvfb`. The first fetch on
+a fresh page throws deterministically (no response reaches the network
+layer); the second succeeds — treat it as a warm-up, not a failure.
 
 Ruled out along the way, each by a controlled run: the egress IP (an
 ordinary browser prices from the same wifi), authentication (working case
