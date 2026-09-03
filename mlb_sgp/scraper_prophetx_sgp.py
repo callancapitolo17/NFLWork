@@ -725,7 +725,7 @@ def main():
         sys.path.insert(0, str(_REPO_ROOT))
 
     from mlb_sgp import db
-    from mlb_sgp._shared import load_target_lines
+    from mlb_sgp._shared import load_target_lines, teams_by_game_id
 
     db_path = str(db.MLB_DB)
     db.ensure_table(db_path)
@@ -776,7 +776,8 @@ def main():
             db.clear_source("prophetx_interpolated", db_path=db_path)
             cleared = True
         if rows:
-            db.upsert_priced_rows(rows, db_path=db_path)
+            db.upsert_priced_rows(rows, db_path=db_path,
+                                  teams_by_game_id=teams_by_game_id(targets))
             total += len(rows)
         logger.info("PX shim: batch %d — %d rows (total %d)",
                     i // batch_size + 1, len(rows), total)

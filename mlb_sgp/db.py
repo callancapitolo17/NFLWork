@@ -67,7 +67,9 @@ CREATE TABLE IF NOT EXISTS mlb_sgp_odds (
     fetch_time    TIMESTAMP,
     source        VARCHAR,
     spread_line   DOUBLE,
-    total_line    DOUBLE
+    total_line    DOUBLE,
+    home_team     VARCHAR,
+    away_team     VARCHAR
 );
 """
 
@@ -77,6 +79,11 @@ CREATE TABLE IF NOT EXISTS mlb_sgp_odds (
 _MIGRATIONS = [
     "ALTER TABLE mlb_sgp_odds ADD COLUMN IF NOT EXISTS spread_line DOUBLE",
     "ALTER TABLE mlb_sgp_odds ADD COLUMN IF NOT EXISTS total_line DOUBLE",
+    # Issue #103 Phase 1: the dashboard's correlated-parlay join keys on the
+    # team pair, not the Odds API game_id. Rows written before this migration
+    # keep NULL teams and are ignored by that join.
+    "ALTER TABLE mlb_sgp_odds ADD COLUMN IF NOT EXISTS home_team VARCHAR",
+    "ALTER TABLE mlb_sgp_odds ADD COLUMN IF NOT EXISTS away_team VARCHAR",
 ]
 
 
@@ -156,9 +163,22 @@ def upsert_sgp_odds(rows: list[dict], db_path: str = None):
         con.close()
 
 
-def upsert_priced_rows(rows: list["PricedRow"], db_path: str = None) -> None:
+def upsert_priced_rows(
+    rows: list["PricedRow"],
+    db_path: str = None,
+    *,
+    teams_by_game_id: dict[str, tuple[str, str]],
+) -> None:
     """Insert PricedRow objects, replacing any existing row with the same
     (game_id, combo, period, spread_line, total_line, bookmaker, source) key.
+
+    `teams_by_game_id` maps every row's game_id to its (home_team, away_team)
+    — build it with `_shared.teams_by_game_id(targets)` from the same target
+    list the rows were priced from. The pair is stored on each row so the
+    dashboard join is independent of what `game_id` contains (issue #103).
+    A row whose game_id is missing from the map raises ValueError before
+    anything is written: a NULL team pair would silently drop that game
+    from the dashboard blend.
 
     Empty `rows` is a no-op.
 
@@ -172,6 +192,13 @@ def upsert_priced_rows(rows: list["PricedRow"], db_path: str = None) -> None:
     """
     if not rows:
         return
+
+    missing_game_ids = sorted({r.game_id for r in rows} - set(teams_by_game_id))
+    if missing_game_ids:
+        raise ValueError(
+            "upsert_priced_rows: no (home_team, away_team) for game_id(s) "
+            f"{missing_game_ids} — pass teams_by_game_id built from the same "
+            "targets these rows were priced from")
 
     db_path = db_path or str(MLB_DB)
     con = _connect_with_retry(db_path)
@@ -212,18 +239,19 @@ def upsert_priced_rows(rows: list["PricedRow"], db_path: str = None) -> None:
         """, flat)
 
         # Batch insert
-        ins_placeholders = ",".join(["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"] * len(rows))
+        ins_placeholders = ",".join(["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"] * len(rows))
         values = []
         for r in rows:
+            home_team, away_team = teams_by_game_id[r.game_id]
             values.extend([
                 r.game_id, r.combo, r.period, r.bookmaker,
                 r.sgp_decimal, r.sgp_american, r.fetch_time, r.source,
-                r.spread_line, r.total_line,
+                r.spread_line, r.total_line, home_team, away_team,
             ])
         con.execute(f"""
             INSERT INTO mlb_sgp_odds
                 (game_id, combo, period, bookmaker, sgp_decimal, sgp_american,
-                 fetch_time, source, spread_line, total_line)
+                 fetch_time, source, spread_line, total_line, home_team, away_team)
             VALUES {ins_placeholders}
         """, values)
     finally:

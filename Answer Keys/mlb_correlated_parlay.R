@@ -36,7 +36,10 @@ suppressPackageStartupMessages({
 }
 setwd(.script_dir)
 source("Tools.R")
-set_nflwork_root(derive_repo_root())  # so the SGP scrapers below run from this repo
+# Pass the resolved script path: after setwd() a relative --file= path no longer
+# resolves, and derive_repo_root() would fall back to ~/NFLWork — running main's
+# scrapers from a worktree. So the SGP scrapers below run from THIS repo.
+set_nflwork_root(derive_repo_root(file.path(.script_dir, "mlb_correlated_parlay.R")))
 
 # =============================================================================
 # CONFIG
@@ -59,6 +62,9 @@ NOVIG_SGP_VIG_DEFAULT <- 1.10      # Novig: leg prices sourced from DK, correlat
 BETMGM_SGP_VIG_DEFAULT <- 1.13     # BetMGM Angstrom: measured 4-corner overround 1.12-1.18
                                     # in live probes. Start at 1.13; re-tune from logged vig.
 CAESARS_SGP_VIG_DEFAULT <- 1.10    # Caesars ZeroFlucs. Start at 1.10; re-tune from logged vig.
+SGP_ODDS_MAX_AGE_MIN <- 30         # mlb_sgp_odds rows older than this are not blended.
+                                    # Every SGP scraper keeps its last rows when a cycle
+                                    # fails, so the table carries dead slates (issue #103).
 MLB_DB <- "mlb.duckdb"
 # Bot- and dashboard-facing tables live in a separate DB to avoid lock contention
 # with the long write window on mlb.duckdb. Mirrors the CBB pattern.
@@ -556,7 +562,8 @@ sgp_con <- dbConnect(duckdb(), dbdir = MLB_MM_DB, read_only = TRUE)
 
 sgp_odds <- tryCatch({
   dbGetQuery(sgp_con, "
-    SELECT game_id, combo, sgp_decimal, sgp_american, source
+    SELECT game_id, combo, sgp_decimal, sgp_american, source,
+           home_team, away_team, fetch_time
     FROM mlb_sgp_odds
     WHERE source LIKE 'draftkings_%'
        OR source LIKE 'fanduel_%'
@@ -568,6 +575,62 @@ sgp_odds <- tryCatch({
 }, error = function(e) data.frame())
 
 dbDisconnect(sgp_con)
+
+# Issue #103 Phase 1: the blend joins SGP rows to a game on the TEAM PAIR
+# (game_key = "home_team | away_team"), not on game_id. game_id is whatever
+# the scrapers were handed (Odds API id today, Kalshi suffix later) and the R
+# side must not care. The team names are the ones this script wrote to
+# mlb_parlay_lines above, which the scrapers copy onto every row, so the two
+# sides agree by construction.
+#
+# Expected columns: game_id, combo, sgp_decimal, sgp_american, source,
+#                   home_team, away_team, fetch_time
+filter_sgp_odds_for_blend <- function(sgp_odds, max_age_min = SGP_ODDS_MAX_AGE_MIN) {
+  empty <- tibble(game_id = character(), combo = character(), sgp_decimal = double(),
+                  sgp_american = integer(), source = character(), game_key = character())
+  if (nrow(sgp_odds) == 0) return(empty)
+
+  # Rows written before the home_team/away_team migration carry NULL teams and
+  # cannot be joined. Not an error — they age out on the next scrape.
+  no_team_pair <- is.na(sgp_odds$home_team) | is.na(sgp_odds$away_team)
+  if (any(no_team_pair)) {
+    cat(sprintf("  Dropping %d SGP rows with no team pair (written before the #103 migration)\n",
+                sum(no_team_pair)))
+  }
+  sgp_odds <- sgp_odds[!no_team_pair, ]
+
+  # Freshness. fetch_time is a naive TIMESTAMP holding LOCAL wall clock (the
+  # scrapers stamp UTC, DuckDB casts it through the session time zone on
+  # write), so re-parse it as local before comparing to Sys.time() — the same
+  # pattern check_mlb_samples_fresh uses for mlb_samples_meta. Without this a
+  # June ProphetX row for the same matchup would join to tonight's game.
+  fetched_at <- as.POSIXct(format(sgp_odds$fetch_time), tz = Sys.timezone())
+  age_min <- as.numeric(difftime(Sys.time(), fetched_at, units = "mins"))
+  stale <- is.na(age_min) | age_min > max_age_min
+  if (any(stale)) {
+    cat(sprintf("  Dropping %d SGP rows older than %d min\n", sum(stale), max_age_min))
+  }
+  sgp_odds <- sgp_odds[!stale, ]
+  if (nrow(sgp_odds) == 0) return(empty)
+
+  sgp_odds$game_key <- paste(sgp_odds$home_team, sgp_odds$away_team, sep = " | ")
+
+  # Fail closed on a doubleheader: one team pair with two game_ids among the
+  # fresh rows. A row cannot say which game it priced, so blend neither game.
+  game_ids_per_key <- tapply(sgp_odds$game_id, sgp_odds$game_key,
+                             function(ids) length(unique(ids)))
+  ambiguous_keys <- names(game_ids_per_key)[game_ids_per_key > 1]
+  if (length(ambiguous_keys) > 0) {
+    warning(sprintf("SGP blend skipped for %d matchup(s) with more than one game_id (doubleheader?): %s",
+                    length(ambiguous_keys), paste(ambiguous_keys, collapse = "; ")),
+            call. = FALSE, immediate. = TRUE)
+    sgp_odds <- sgp_odds[!(sgp_odds$game_key %in% ambiguous_keys), ]
+  }
+
+  sgp_odds[, c("game_id", "combo", "sgp_decimal", "sgp_american", "source", "game_key")]
+}
+
+sgp_odds <- filter_sgp_odds_for_blend(sgp_odds)
 
 dk_sgp  <- sgp_odds[startsWith(sgp_odds$source, "draftkings_"), ]
 fd_sgp  <- sgp_odds[startsWith(sgp_odds$source, "fanduel_"), ]
@@ -589,67 +652,67 @@ if (nrow(dk_sgp) == 0 && nrow(fd_sgp) == 0 && nrow(px_sgp) == 0 && nrow(nv_sgp) 
 # When a game has all 4 combos, we use the measured vig (more accurate than a
 # constant, especially for FD whose vig is bimodal at ~13% and ~21%).
 # Falls back to the default constant when <4 combos are available.
-# Group by (game_id, period) not just game_id — FG and F5 are separate
+# Group by (game_key, period) not just game_key — FG and F5 are separate
 # partitions with independent vig. Summing across both would ~double the vig.
 # Period is inferred from combo name: "F5 " prefix = F5, else FG.
 dk_vig_lookup <- if (nrow(dk_sgp) > 0) {
   dk_sgp %>%
     mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
-    group_by(game_id, period) %>%
+    group_by(game_key, period) %>%
     summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
     mutate(vig = ifelse(n >= 4, vig, DK_SGP_VIG_DEFAULT))
 } else {
-  tibble(game_id = character(), period = character(), n = integer(), vig = double())
+  tibble(game_key = character(), period = character(), n = integer(), vig = double())
 }
 
 fd_vig_lookup <- if (nrow(fd_sgp) > 0) {
   fd_sgp %>%
     mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
-    group_by(game_id, period) %>%
+    group_by(game_key, period) %>%
     summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
     mutate(vig = ifelse(n >= 4, vig, FD_SGP_VIG_DEFAULT))
 } else {
-  tibble(game_id = character(), period = character(), n = integer(), vig = double())
+  tibble(game_key = character(), period = character(), n = integer(), vig = double())
 }
 
 px_vig_lookup <- if (nrow(px_sgp) > 0) {
   px_sgp %>%
     mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
-    group_by(game_id, period) %>%
+    group_by(game_key, period) %>%
     summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
     mutate(vig = ifelse(n >= 4, vig, PROPHETX_SGP_VIG_DEFAULT))
 } else {
-  tibble(game_id = character(), period = character(), n = integer(), vig = double())
+  tibble(game_key = character(), period = character(), n = integer(), vig = double())
 }
 
 nv_vig_lookup <- if (nrow(nv_sgp) > 0) {
   nv_sgp %>%
     mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
-    group_by(game_id, period) %>%
+    group_by(game_key, period) %>%
     summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
     mutate(vig = ifelse(n >= 4, vig, NOVIG_SGP_VIG_DEFAULT))
 } else {
-  tibble(game_id = character(), period = character(), n = integer(), vig = double())
+  tibble(game_key = character(), period = character(), n = integer(), vig = double())
 }
 
 bmg_vig_lookup <- if (nrow(bmg_sgp) > 0) {
   bmg_sgp %>%
     mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
-    group_by(game_id, period) %>%
+    group_by(game_key, period) %>%
     summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
     mutate(vig = ifelse(n >= 4, vig, BETMGM_SGP_VIG_DEFAULT))
 } else {
-  tibble(game_id = character(), period = character(), n = integer(), vig = double())
+  tibble(game_key = character(), period = character(), n = integer(), vig = double())
 }
 
 czr_vig_lookup <- if (nrow(czr_sgp) > 0) {
   czr_sgp %>%
     mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
-    group_by(game_id, period) %>%
+    group_by(game_key, period) %>%
     summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
     mutate(vig = ifelse(n >= 4, vig, CAESARS_SGP_VIG_DEFAULT))
 } else {
-  tibble(game_id = character(), period = character(), n = integer(), vig = double())
+  tibble(game_key = character(), period = character(), n = integer(), vig = double())
 }
 
 # =============================================================================
@@ -669,6 +732,9 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
   for (i in seq_len(nrow(wz_matched))) {
     row <- wz_matched[i, ]
     game_id <- row$id
+    # Join key for the scraped SGP rows — same names this script wrote to
+    # mlb_parlay_lines, which the scrapers copy onto every row (issue #103).
+    game_key <- paste(row$home_team, row$away_team, sep = " | ")
 
     samp <- samples_list[[game_id]]
     if (is.null(samp)) {
@@ -751,8 +817,8 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
       combo_period <- if (grepl("^F5 ", combo_name)) "F5" else "FG"
 
       # DK
-      dk_row <- dk_sgp[dk_sgp$game_id == game_id & dk_sgp$combo == combo_name, ]
-      dk_vig_row <- dk_vig_lookup[dk_vig_lookup$game_id == game_id & dk_vig_lookup$period == combo_period, ]
+      dk_row <- dk_sgp[dk_sgp$game_key == game_key & dk_sgp$combo == combo_name, ]
+      dk_vig_row <- dk_vig_lookup[dk_vig_lookup$game_key == game_key & dk_vig_lookup$period == combo_period, ]
       dk_vig_used <- if (nrow(dk_vig_row) > 0) dk_vig_row$vig[1] else DK_SGP_VIG_DEFAULT
       if (nrow(dk_row) > 0 && !is.na(dk_row$sgp_decimal[1]) && dk_row$sgp_decimal[1] > 0) {
         dk_fair_prob <- (1 / dk_row$sgp_decimal[1]) / dk_vig_used
@@ -762,8 +828,8 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
       }
 
       # FD
-      fd_row <- fd_sgp[fd_sgp$game_id == game_id & fd_sgp$combo == combo_name, ]
-      fd_vig_row <- fd_vig_lookup[fd_vig_lookup$game_id == game_id & fd_vig_lookup$period == combo_period, ]
+      fd_row <- fd_sgp[fd_sgp$game_key == game_key & fd_sgp$combo == combo_name, ]
+      fd_vig_row <- fd_vig_lookup[fd_vig_lookup$game_key == game_key & fd_vig_lookup$period == combo_period, ]
       fd_vig_used <- if (nrow(fd_vig_row) > 0) fd_vig_row$vig[1] else FD_SGP_VIG_DEFAULT
       if (nrow(fd_row) > 0 && !is.na(fd_row$sgp_decimal[1]) && fd_row$sgp_decimal[1] > 0) {
         fd_fair_prob <- (1 / fd_row$sgp_decimal[1]) / fd_vig_used
@@ -773,8 +839,8 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
       }
 
       # PX (ProphetX) — P2P exchange, RFQ-priced
-      px_row <- px_sgp[px_sgp$game_id == game_id & px_sgp$combo == combo_name, ]
-      px_vig_row <- px_vig_lookup[px_vig_lookup$game_id == game_id & px_vig_lookup$period == combo_period, ]
+      px_row <- px_sgp[px_sgp$game_key == game_key & px_sgp$combo == combo_name, ]
+      px_vig_row <- px_vig_lookup[px_vig_lookup$game_key == game_key & px_vig_lookup$period == combo_period, ]
       px_vig_used <- if (nrow(px_vig_row) > 0) px_vig_row$vig[1] else PROPHETX_SGP_VIG_DEFAULT
       if (nrow(px_row) > 0 && !is.na(px_row$sgp_decimal[1]) && px_row$sgp_decimal[1] > 0) {
         px_fair_prob <- (1 / px_row$sgp_decimal[1]) / px_vig_used
@@ -784,8 +850,8 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
       }
 
       # NV (Novig) — DK leg prices + Novig's own correlation model
-      nv_row <- nv_sgp[nv_sgp$game_id == game_id & nv_sgp$combo == combo_name, ]
-      nv_vig_row <- nv_vig_lookup[nv_vig_lookup$game_id == game_id & nv_vig_lookup$period == combo_period, ]
+      nv_row <- nv_sgp[nv_sgp$game_key == game_key & nv_sgp$combo == combo_name, ]
+      nv_vig_row <- nv_vig_lookup[nv_vig_lookup$game_key == game_key & nv_vig_lookup$period == combo_period, ]
       nv_vig_used <- if (nrow(nv_vig_row) > 0) nv_vig_row$vig[1] else NOVIG_SGP_VIG_DEFAULT
       if (nrow(nv_row) > 0 && !is.na(nv_row$sgp_decimal[1]) && nv_row$sgp_decimal[1] > 0) {
         nv_fair_prob <- (1 / nv_row$sgp_decimal[1]) / nv_vig_used
@@ -795,8 +861,8 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
       }
 
       # BMG (BetMGM) — Angstrom correlated bet-builder price
-      bmg_row <- bmg_sgp[bmg_sgp$game_id == game_id & bmg_sgp$combo == combo_name, ]
-      bmg_vig_row <- bmg_vig_lookup[bmg_vig_lookup$game_id == game_id & bmg_vig_lookup$period == combo_period, ]
+      bmg_row <- bmg_sgp[bmg_sgp$game_key == game_key & bmg_sgp$combo == combo_name, ]
+      bmg_vig_row <- bmg_vig_lookup[bmg_vig_lookup$game_key == game_key & bmg_vig_lookup$period == combo_period, ]
       bmg_vig_used <- if (nrow(bmg_vig_row) > 0) bmg_vig_row$vig[1] else BETMGM_SGP_VIG_DEFAULT
       if (nrow(bmg_row) > 0 && !is.na(bmg_row$sgp_decimal[1]) && bmg_row$sgp_decimal[1] > 0) {
         bmg_fair_prob <- (1 / bmg_row$sgp_decimal[1]) / bmg_vig_used
@@ -806,8 +872,8 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
       }
 
       # CZR (Caesars) — ZeroFlucs correlated SGP price
-      czr_row <- czr_sgp[czr_sgp$game_id == game_id & czr_sgp$combo == combo_name, ]
-      czr_vig_row <- czr_vig_lookup[czr_vig_lookup$game_id == game_id & czr_vig_lookup$period == combo_period, ]
+      czr_row <- czr_sgp[czr_sgp$game_key == game_key & czr_sgp$combo == combo_name, ]
+      czr_vig_row <- czr_vig_lookup[czr_vig_lookup$game_key == game_key & czr_vig_lookup$period == combo_period, ]
       czr_vig_used <- if (nrow(czr_vig_row) > 0) czr_vig_row$vig[1] else CAESARS_SGP_VIG_DEFAULT
       if (nrow(czr_row) > 0 && !is.na(czr_row$sgp_decimal[1]) && czr_row$sgp_decimal[1] > 0) {
         czr_fair_prob <- (1 / czr_row$sgp_decimal[1]) / czr_vig_used

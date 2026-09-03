@@ -128,7 +128,8 @@ def _seed_rows(db_path, source):
                     spread_line=-1.5, total_line=8.5, bookmaker="DraftKings",
                     source=source, sgp_decimal=3.5, sgp_american=250,
                     fetch_time=CT)
-    sgp_db.upsert_priced_rows([row], db_path=db_path)
+    sgp_db.upsert_priced_rows([row], db_path=db_path,
+                              teams_by_game_id={"g1": ("H", "A")})
 
 
 def _count_rows(db_path, source):

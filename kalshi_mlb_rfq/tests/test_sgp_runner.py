@@ -441,7 +441,8 @@ def test_sgp_cycle_service_path_writes_rows_and_preserves_failed_books(
                        period="FG", spread_line=-1.5, total_line=9.5,
                        bookmaker="fanduel", source="fanduel_direct",
                        sgp_decimal=8.88, sgp_american=788, fetch_time=ct)
-    sgp_db.upsert_priced_rows([stale_dk, old_fd], db_path=db_path)
+    sgp_db.upsert_priced_rows([stale_dk, old_fd], db_path=db_path,
+                              teams_by_game_id={"gOLD": ("H", "A")})
 
     fresh_dk = PricedRow(game_id="g1", combo="Home Spread + Over",
                          period="FG", spread_line=-1.5, total_line=8.5,
@@ -492,7 +493,8 @@ def test_sgp_cycle_service_path_skipped_book_rows_untouched(tmp_path, monkeypatc
                        spread_line=-1.5, total_line=8.5, bookmaker="prophetx",
                        source="prophetx_direct", sgp_decimal=3.3,
                        sgp_american=230, fetch_time=ct)
-    sgp_db.upsert_priced_rows([px_row], db_path=db_path)
+    sgp_db.upsert_priced_rows([px_row], db_path=db_path,
+                              teams_by_game_id={"g1": ("H", "A")})
 
     class FakeService:
         def refresh(self, targets):
