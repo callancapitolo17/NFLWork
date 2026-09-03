@@ -23,8 +23,20 @@ suppressPackageStartupMessages({
   library(lubridate)
 })
 
-setwd("~/NFLWork/Answer Keys")
+# Resolve cwd from the script location so a worktree copy stays self-contained.
+# This script lives at <root>/Answer Keys/mlb_correlated_parlay.R, so its own dir
+# IS the Answer Keys dir. On main this is identical to ~/NFLWork/Answer Keys.
+.args <- commandArgs(trailingOnly = FALSE)
+.file_arg <- grep("^--file=", .args, value = TRUE)
+.script_dir <- if (length(.file_arg) > 0) {
+  .raw <- gsub("~\\+~", " ", sub("^--file=", "", .file_arg[1]))
+  normalizePath(dirname(.raw), mustWork = FALSE)
+} else {
+  normalizePath("~/NFLWork/Answer Keys", mustWork = FALSE)
+}
+setwd(.script_dir)
 source("Tools.R")
+set_nflwork_root(derive_repo_root())  # so the SGP scrapers below run from this repo
 
 # =============================================================================
 # CONFIG
@@ -461,8 +473,14 @@ tryCatch({
 # to price on DraftKings and FanDuel.
 
 cat("Refreshing SGP odds (DK + FD + PX + NV + BetMGM + Caesars) in parallel...\n")
-sgp_scraper_dir <- file.path(path.expand("~"), "NFLWork", "mlb_sgp")
+# Scraper *scripts* come from this repo so their db.py resolves this repo's
+# mlb_mm.duckdb (a worktree must never write main's). The venv is gitignored
+# and only exists on main, so fall back to it for the interpreter alone.
+sgp_scraper_dir <- file.path(nflwork_root(), "mlb_sgp")
 sgp_venv_python <- file.path(sgp_scraper_dir, "venv", "bin", "python")
+if (!file.exists(sgp_venv_python)) {
+  sgp_venv_python <- file.path(path.expand("~"), "NFLWork", "mlb_sgp", "venv", "bin", "python")
+}
 sgp_log_dir     <- file.path(sgp_scraper_dir, "logs")
 dir.create(sgp_log_dir, showWarnings = FALSE, recursive = TRUE)
 
