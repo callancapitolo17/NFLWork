@@ -983,7 +983,10 @@ class SGPService:
             # its single market, so where the structure carries both sides'
             # odds the exact 2-cell devig needs ZERO price calls — several
             # books' SGP price endpoints refuse 1-selection sets
-            # (live-verified DK/Novig/MGM 2026-08-25, kalshi_rfi smoke).
+            # (live-verified Novig/MGM 2026-08-25, kalshi_rfi smoke). DK is
+            # NOT one of them: its calculateBets 403s every set size, n=1 and
+            # n=2 alike (issue #102). DK falls through this path for the
+            # unrelated reason below — its structure carries no odds.
             # devig_partition (not devig_two_way) so the [1.0, 1.25]
             # overround gate rejects crossed/degenerate pairs — a gate
             # failure (or a book without structure odds, e.g. DK) falls
