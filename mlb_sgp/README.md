@@ -436,8 +436,11 @@ layer); the second succeeds — treat it as a warm-up, not a failure.
 Ruled out along the way, each by a controlled run: the egress IP (an
 ordinary browser prices from the same wifi), authentication (working case
 was logged out), the `_abck` sensor cookie (unvalidated for 90s and still
-200), locale prefixing, both wager hosts, the request body shape, and a
-`curl_cffi` upgrade. A proxy would have bought nothing.
+200), locale prefixing, both wager hosts, the request body shape, a
+`curl_cffi` upgrade, and every other fingerprint library tried on 2026-09-02
+(`primp` chrome_146, `rnet` Chrome137/136, `tls_client` chrome_120 — three
+different TLS stacks, all 403 with controls stable). A proxy would have
+bought nothing, and so would swapping the imitation library.
 
 ### The fix that shipped: `dk_price_sidecar/` (issue #102)
 
