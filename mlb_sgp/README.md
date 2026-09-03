@@ -381,29 +381,57 @@ that technique is permanently dead, not merely re-blocked.
 - **NOT the Akamai `_abck` sensor cookie.** An automated Chrome whose `_abck`
   stayed unvalidated for 90s still saw DK's own betslip price 4/4 calls.
 
-### What the cause IS: unidentified — and the probing was not clean
+### What the cause IS — confirmed 2026-09-02 by controlled runs
 
-Four probe configurations gave four different answers in one afternoon:
+Akamai gates `POST */api/wager/v1/calculateBets` on **two things together**:
 
-| client | warmed on sportsbook page | result |
-|---|---|---|
-| DK's own betslip, headed Chrome | yes | 4/4 **200** |
-| in-page fetch, headed Chrome | yes | 6/6 **422** (origin reached) |
-| in-page fetch, headed Chrome | no | 12/12 403 |
-| in-page fetch, headless Chrome | no | 15/15 403 |
+1. **Client fingerprint.** A real Chrome passes; `curl_cffi` does not, even
+   with a byte-for-byte replica of DK's own request — identical headers,
+   host, path, warmed cookies. Every impersonation profile from `chrome131`
+   through `chrome150` (curl_cffi 0.14.0 and 0.16.3) returned 403 with the
+   control stable at both ends of each run. **Headless Chrome also fails**
+   (0/3, twice). The gate is at the TLS/HTTP2 layer, below anything a header
+   can fix.
+2. **Burst shape.** In the SAME headed Chrome with the SAME recipe:
+   4 concurrent calls per flight -> 2/40; sequential with ~1.5s spacing ->
+   6/6 and then 4/4. Issue #93's concurrent partition cells were the burst
+   that drew the rule in the first place.
 
-More than one variable moved between runs, so none of it attributes cleanly.
-Candidate factors still live: client TLS/HTTP2 fingerprint (`curl_cffi`'s
-Chrome impersonation vs a real Chrome), session warming on
-`sportsbook.draftkings.com` before touching the wager host, and an adaptive
-rate component.
+Working recipe, measured end to end on a pregame game (Yankees @ Angels,
+home -1.5 + Over 7.5 -> `YourBet trueOdds=7.5 display=+650`):
 
-**A warning for whoever picks this up.** ~56 calls were made to this endpoint
-in one afternoon, and the LATER runs failed more than the earlier ones. That
-is the issue #90 Caesars pattern — our own probe volume holding a block open —
-so some of the instability above may be self-inflicted. Before probing again:
-let the endpoint rest, change ONE variable per run, and keep each run to a
-handful of calls. Do not repeat an afternoon of 56.
+- real Chrome, **headed**, a persistent profile with
+  `--disable-blink-features=AutomationControlled` and `--enable-automation`
+  removed
+- page loaded on `https://sportsbook.draftkings.com/leagues/baseball/mlb`
+  (the request must originate cross-site from the sportsbook origin)
+- in-page `fetch` to `https://gaming-us-wv.draftkings.com/api/wager/v1/calculateBets`
+  (`wagerBaseApiHost` from DK's own config; bare path, no `/en/`) with
+  `credentials: "include"` and DK's betslip header set: `accept`,
+  `clienttype: Website`, `x-api-features: {"EnableFullSGPDrivenFlow":true}`,
+  `x-client-name: web`, `x-client-feature: betslip`, `x-client-page`,
+  `x-client-version`, `x-client-widget-name: betslip`,
+  `x-client-widget-version`, `x-request-client-timestamp`
+- **sequential** calls, ~1.5s apart — never `Promise.all` the cells
+- our existing production body (`selectionsForYourBet` + `yourBetGroup: 0`)
+  is accepted unchanged; DK's UI also sends a `selections`-only form, and
+  both return the `YourBet` bet
+- the first fetch on a fresh page can throw once (no response reaches the
+  network layer); one retry resolves it
+- ~0.2-0.7s per call, so a 2-leg partition (4 cells, serial) is ~3s —
+  inside the 8-10s flight budget
+
+What this is NOT: no Akamai sensor is forged, no fingerprint is spoofed. It
+is a real browser making the same request DK's own page makes, at a human
+cadence. The cost is operational: a **visible Chrome window must stay
+resident** on the machine running the maker for the whole slate — headless
+is exactly what the rule detects.
+
+Ruled out along the way, each by a controlled run: the egress IP (an
+ordinary browser prices from the same wifi), authentication (working case
+was logged out), the `_abck` sensor cookie (unvalidated for 90s and still
+200), locale prefixing, both wager hosts, the request body shape, and a
+`curl_cffi` upgrade. A proxy would have bought nothing.
 
 ### Diagnostic fix that did land (issue #102)
 
