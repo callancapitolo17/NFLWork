@@ -18,6 +18,7 @@ The real-hooks test uses BetMGM with a fake client — the same monkeypatch
 pattern as test_sgp_service_counters.py::test_real_hooks_thread_counters...
 """
 import inspect
+from datetime import datetime
 from types import SimpleNamespace
 
 import duckdb
@@ -29,8 +30,12 @@ from kalshi_common.sgp_service import SGPService
 from mlb_sgp._shared import GameRef, ResolvedLeg, TTLCache
 
 EVT = "KXMLBGAME-26AUG05NYYBOS"
+# Dated, because the bot's match_event boundary now verifies the matched
+# book Event's own start time against the game's (an undated game or event is
+# a DECLINE, never a team-only accept — the doubleheader hole, #95).
 GAME = GameRef(game_id="g1", home_team="Boston Red Sox",
-               away_team="New York Yankees", commence_time=None)
+               away_team="New York Yankees",
+               commence_time=datetime(2026, 9, 4, 23, 10))
 
 # Four joint fairs summing to 1.0 with a uniform 1.2 overround (2-leg Route A).
 CELL_FAIRS = [0.40, 0.20, 0.25, 0.15]
@@ -127,7 +132,8 @@ def _patched_mgm_service(monkeypatch, db_path):
     st.client = FakeMGMClient()
     monkeypatch.setattr(svc, "_ensure_client", lambda b: st)
     ev = SimpleNamespace(event_id="F1", home_team="Boston Red Sox",
-                         away_team="New York Yankees")
+                         away_team="New York Yankees",
+                         start_time="2026-09-04T23:10:00Z")
     monkeypatch.setattr(mod, "_match_events",
                         lambda events, targets: {GAME.game_id: ev})
     monkeypatch.setattr(mod, "parse_markets",

@@ -33,6 +33,8 @@ from kalshi_common import auth_client, legset, sgp_runner
 from kalshi_common.ev_calc import maker_fee_per_contract
 from kalshi_common.leg_types import (
     _parse_event_suffix,
+    parse_suffix_start_utc,
+    unique_game_by_start,
     _MLB_CODE_TO_TEAM,
 )
 from kalshi_mlb_mm import (config, db, expiry_outcome, notify, pricing,
@@ -261,66 +263,28 @@ def _consensus_filter(book_fairs: dict[str, float]) -> dict[str, float]:
     return dict(book_fairs)
 
 
-# O-1 fix (issue #18): _commence_time and _resolve_game_for_legs used to open
-# a fresh read-only DuckDB connection per RFQ per 2s tick (lock churn against
-# the scraper's writes and the monitor's readers). Game→game_id resolution and
-# commence times are static per slate, so cache them in memory and invalidate
-# on every SGP refresh (each scrape cycle + startup warm-up). Lookup FAILURES
-# (None) are never cached — a transient DB lock must not stick until the next
-# refresh (the risk sweep fail-safe cancels on None).
-_COMMENCE_CACHE: dict = {}       # game_id -> commence_time
-_RESOLVE_CACHE: dict = {}        # event_ticker -> game_id
+# O-1 fix (issue #18): _resolve_game_for_legs used to open a fresh read-only
+# DuckDB connection per RFQ per 2s tick (lock churn against the scraper's
+# writes and the monitor's readers). Game→game_id resolution is static per
+# slate, so cache it in memory and invalidate on every target-line refresh
+# (each cycle + startup warm-up). Lookup FAILURES (None) are never cached — a
+# transient DB lock must not stick until the next refresh (the risk sweep
+# fail-safe cancels on None). Tipoff needs no cache: _first_pitch_utc parses
+# the ticker suffix and touches no database.
+_RESOLVE_CACHE: dict = {}        # game code (event suffix) -> game_id
+_AMBIGUOUS_WARNED: set = set()   # game codes already warned about — resolution
+                                 # FAILURES are deliberately not cached, so
+                                 # without this an ambiguous game would warn on
+                                 # every RFQ of every 2s tick
 _GAME_REF_CACHE: dict = {}       # game_id -> GameRef (issue #89: was an
                                  # uncached MARKET_DB open per pending
                                  # sub-combo per tick)
 
 
 def _invalidate_game_caches():
-    _COMMENCE_CACHE.clear()
     _RESOLVE_CACHE.clear()
     _GAME_REF_CACHE.clear()
-
-
-def _commence_time(game_id):
-    if game_id in _COMMENCE_CACHE:
-        return _COMMENCE_CACHE[game_id]
-    ct = _commence_time_uncached(game_id)
-    if ct is not None:
-        _COMMENCE_CACHE[game_id] = ct
-    return ct
-
-
-def _commence_time_uncached(game_id):
-    # read from mlb_target_lines (written by sgp_runner) for tipoff gating
-    if not config.MARKET_DB.exists():
-        return None
-    try:
-        con = duckdb.connect(str(config.MARKET_DB), read_only=True)
-    except duckdb.IOException:
-        return None
-    try:
-        row = con.execute(
-            "SELECT commence_time FROM mlb_target_lines WHERE game_id=? LIMIT 1",
-            [game_id]).fetchone()
-        if not row or row[0] is None:
-            return None
-        ct = row[0]
-        # 2026-08-11 bug: mlb_target_lines stores commence_time as a NAIVE
-        # TIMESTAMP whose instants are UTC (sgp_runner writes Odds API
-        # commence_time), but risk._now_matching treats naive datetimes as
-        # LOCAL (a contract for the R pipeline's naive-local columns). The
-        # mismatch made every tipoff look ~7h later than reality — the gate
-        # never fired and in-play games generated live-flight traffic all
-        # day. Attach UTC here so the comparison is aware-vs-aware.
-        # Durable fix (column -> TIMESTAMPTZ in sgp_runner) is tracked
-        # separately; it touches the taker's copy of the table too.
-        if ct.tzinfo is None:
-            ct = ct.replace(tzinfo=timezone.utc)
-        return ct
-    except duckdb.CatalogException:
-        return None
-    finally:
-        con.close()
+    _AMBIGUOUS_WARNED.clear()
 
 
 def _today_fills():
@@ -801,6 +765,29 @@ def _ensure_post_fill_fetches(rfq_id, ticker, by_game: dict) -> None:
         log.warning("[post_fill_fetch_failed] ticker=%s", ticker)
 
 
+def _first_pitch_utc(game_legs: list) -> datetime | None:
+    """First pitch for ONE game's legs, read from the Kalshi event suffix.
+
+    The suffix is the authoritative first pitch on a Kalshi market — the whole
+    reason parse_suffix_start_utc exists (close_time is first pitch + 72h).
+    The tipoff gate used to read mlb_target_lines.commence_time instead, i.e.
+    the ODDS API's clock reached through a game_id, which now only has to
+    agree with the suffix to within SCHEDULE_START_TOLERANCE_MIN — a 30min
+    band under a TIPOFF_CANCEL_MIN=5 gate. Reading the suffix keeps the gate
+    exact, and makes it independent of whether the Odds API carries the game
+    at all.
+
+    Returned tz-AWARE: risk._now_matching treats a naive datetime as LOCAL
+    (the R pipeline's convention), and the 2026-08-11 bug was exactly that
+    mismatch making every tipoff look hours late.
+    """
+    if not game_legs:
+        return None
+    suffix = game_legs[0].game_id.rsplit("-", 1)[-1]
+    start = parse_suffix_start_utc(suffix) if suffix else None
+    return start.replace(tzinfo=timezone.utc) if start is not None else None
+
+
 def _resolve_game_for_legs(game_legs: list) -> str | None:
     """Cached wrapper (O-1) — keyed by the game code; failures (None)
     are not cached; invalidated on SGP refresh."""
@@ -821,8 +808,18 @@ def _resolve_game_for_legs_uncached(game_legs: list) -> str | None:
     game_legs[0].game_id is the family-independent GAME CODE shared by all legs
     of that game (issue #71 — it used to be the whole event ticker, which
     differs per market family). Parses it with _parse_event_suffix +
-    _MLB_CODE_TO_TEAM and looks up mlb_target_lines. Fail-safe: returns None on
-    any error — never raises.
+    _MLB_CODE_TO_TEAM and looks up mlb_target_lines.
+
+    The team pair narrows; the suffix's own first pitch IDENTIFIES. Both games
+    of a doubleheader carry the same pair on the same day, and a series' two
+    consecutive games carry it a day apart, so the old
+    "WHERE home=? AND away=? LIMIT 1" answered with whichever row DuckDB handed
+    back first. Two rows still inside the tolerance decline (fail closed) —
+    losing a same-game combo is cheap, a wrong game is not (#95 measured fairs
+    off by 0.05-0.11). Cross-game combos never come through here at all: their
+    single-leg groups price off the leg surface, which keys on the full suffix.
+
+    Fail-safe: returns None on any error — never raises.
     """
     try:
         if not game_legs:
@@ -831,6 +828,9 @@ def _resolve_game_for_legs_uncached(game_legs: list) -> str | None:
         # returning None, so a future ticker shape can't silently unprice a game.
         suffix = game_legs[0].game_id.rsplit("-", 1)[-1]
         if not suffix:
+            return None
+        kalshi_start = parse_suffix_start_utc(suffix)
+        if kalshi_start is None:
             return None
         away_code, home_code = _parse_event_suffix(suffix)
         if not away_code or not home_code:
@@ -844,15 +844,22 @@ def _resolve_game_for_legs_uncached(game_legs: list) -> str | None:
         except (duckdb.IOException, duckdb.CatalogException):
             return None
         try:
-            row = con.execute(
-                "SELECT game_id FROM mlb_target_lines "
-                "WHERE home_team=? AND away_team=? LIMIT 1",
-                [home_name, away_name]).fetchone()
-            return row[0] if row else None
+            candidates = con.execute(
+                "SELECT DISTINCT game_id, commence_time FROM mlb_target_lines "
+                "WHERE home_team=? AND away_team=?",
+                [home_name, away_name]).fetchall()
         except (duckdb.IOException, duckdb.CatalogException):
             return None
         finally:
             con.close()
+        game_id, reason = unique_game_by_start(kalshi_start, candidates)
+        if (game_id is None and reason == "ambiguous"
+                and suffix not in _AMBIGUOUS_WARNED):
+            _AMBIGUOUS_WARNED.add(suffix)
+            log.warning("[resolve_game_ambiguous] suffix=%s teams=%s@%s "
+                        "candidates=%d — declining until the next target-line "
+                        "refresh", suffix, away_name, home_name, len(candidates))
+        return game_id
     except Exception:
         return None
 
@@ -1681,8 +1688,16 @@ def _discovery_tick(source, gateway, dry_run):
             # decision row — in-play RFQ flow runs ~100/min at evening peak
             # and per-pass rows at that rate is the DB bloat the 08-11 prune
             # removed (pass-summary log + rfq_ingestion_summary carry it).
-            commence_times = [_commence_time(gid) for gid in game_ids_list]
-            earliest_ct = min((ct for ct in commence_times if ct is not None), default=None)
+            commence_times = [_first_pitch_utc(gl) for gl in by_game.values()]
+            # Fail closed on ANY unreadable clock, the same contract
+            # _quote_first_pitches gives the sweep. Dropping the Nones and
+            # taking min() of the rest would quietly turn "earliest first
+            # pitch across ALL games" into "earliest of the games we could
+            # read", and pass a combo on its other game's clock.
+            if not commence_times or any(ct is None for ct in commence_times):
+                tipoff_skipped += 1
+                continue
+            earliest_ct = min(commence_times)
             if not risk.tipoff_ok(earliest_ct, config.TIPOFF_CANCEL_MIN):
                 tipoff_skipped += 1
                 continue
@@ -1691,9 +1706,8 @@ def _discovery_tick(source, gateway, dry_run):
             # too_few_books after 6 wasted fetches. Skip (counter only)
             # until every game is inside the horizon. 0 disables.
             if config.FLIGHT_HORIZON_HOURS > 0:
-                latest_ct = max((ct for ct in commence_times if ct is not None),
-                                default=None)
-                if latest_ct is not None and (
+                latest_ct = max(commence_times)   # no None survives the gate above
+                if (
                         (latest_ct - now_utc).total_seconds()
                         > config.FLIGHT_HORIZON_HOURS * 3600):
                     horizon_skipped += 1
@@ -2471,6 +2485,30 @@ def _quote_game_ids(legs_json: str | None) -> list[str] | None:
         return None
 
 
+def _quote_first_pitches(legs_json: str | None) -> list | None:
+    """First pitch for EVERY game a resting quote touches, or None.
+
+    Sibling of _quote_game_ids and read the same way: None is fail-safe →
+    cancel, never fail open. Separate from _quote_game_ids because the two
+    answer different questions off the same legs — the id is for the exposure
+    ledgers, the clock is for the tipoff gate — and only the clock can be
+    served without the Odds API.
+    """
+    if not legs_json:
+        return None
+    try:
+        canon = legset.parse_legs(json.loads(legs_json))
+        if not canon:
+            return None
+        starts = [_first_pitch_utc(gl)
+                  for gl in legset.partition_by_game(canon).values()]
+        if any(ct is None for ct in starts):
+            return None
+        return starts
+    except Exception:
+        return None
+
+
 def _current_consensus_fair(legs_json: str | None) -> float | None:
     """Current book-consensus fair for a resting quote's combo, or None.
 
@@ -2657,16 +2695,13 @@ def _risk_sweep_tick(gateway, *, book_health=None):
             # combo's games, not just the primary game_id column. Any game we
             # can't resolve or clock we can't read → cancel (fail-safe).
             gids = _quote_game_ids(legs_json)
-            if gids is None:
+            commence_times = _quote_first_pitches(legs_json)
+            if gids is None or commence_times is None:
                 cancel, cancel_reason = True, "unresolvable_game"
             else:
-                commence_times = [_commence_time(gid) for gid in gids]
-                if any(ct is None for ct in commence_times):
-                    cancel, cancel_reason = True, "unresolvable_game"
-                else:
-                    earliest_ct = min(commence_times)
-                    if not risk.tipoff_ok(earliest_ct, config.TIPOFF_CANCEL_MIN):
-                        cancel, cancel_reason = True, "tipoff"
+                earliest_ct = min(commence_times)
+                if not risk.tipoff_ok(earliest_ct, config.TIPOFF_CANCEL_MIN):
+                    cancel, cancel_reason = True, "tipoff"
         if not cancel and jumped_games:
             # #23 item 2: a constituent single moved past the threshold since
             # this quote was placed. Evaluated BEFORE the book-drift check

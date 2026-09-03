@@ -67,8 +67,10 @@ def _setup(monkeypatch, tmp_path, db_name, *, current, quotes=None,
     db.init_database()
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
     monkeypatch.setattr(main, "_ENGINE", None)
-    monkeypatch.setattr(main, "_commence_time",
-                        lambda gid: datetime(2099, 1, 1, tzinfo=timezone.utc))
+    # Tipoff reads the Kalshi suffix now; these fixtures carry past dates, so
+    # pin the clock far out to keep the jump breaker the only thing under test.
+    monkeypatch.setattr(main, "_first_pitch_utc",
+                        lambda gl: datetime(2099, 1, 1, tzinfo=timezone.utc))
     monkeypatch.setattr(cfg, "CONSTITUENT_JUMP_THRESHOLD", 0.03)
     # current=None leaves the real fetch in place (for the API-bound test).
     if current is not None:

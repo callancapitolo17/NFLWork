@@ -11,8 +11,9 @@ Why the surface enumerates its own slate instead of reading
 doubleheader onto one row and pick whichever — a wrong number, not a decline
 (#95 hit the identical trap on FanDuel's two PHI @ SEA rows). The Kalshi
 event-ticker suffix encodes date, ET first pitch and both team codes, is
-unique per doubleheader game, and is exactly what ``CanonicalLeg.game_id``
-carries, so #98's lookup needs no translation layer.
+unique per doubleheader game (which Kalshi additionally marks with a trailing
+G1/G2 — see ``leg_types.split_game_number``), and is exactly what
+``CanonicalLeg.game_id`` carries, so #98's lookup needs no translation layer.
 
 Legs are built by handing synthetic ``{event_ticker, market_ticker, side}``
 dicts to ``legset.parse_leg`` — the SAME function the quote path parses real
@@ -45,6 +46,8 @@ LEG_SERIES = ("KXMLBGAME", "KXMLBSPREAD", "KXMLBTOTAL",
 class SurfaceGame:
     """One in-window game and every leg the surface prices for it."""
     game_id: str              # Kalshi event-ticker suffix, e.g. 26AUG252138CLELAA
+                              # (a doubleheader keeps its G1/G2: the two games
+                              # must never collapse onto one surface key)
     home_team: str            # Odds-API canonical name
     away_team: str
     start_utc: datetime       # naive UTC first pitch (GameRef convention)

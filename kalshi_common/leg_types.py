@@ -4,6 +4,7 @@ Converts raw Kalshi market-ticker dicts to typed fair_value.SpreadLeg /
 fair_value.TotalLeg instances, and extracts canonical spread / total line
 values from a legs list.
 """
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -69,15 +70,115 @@ def parse_suffix_start_utc(suffix: str) -> datetime | None:
     return local.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+# Doubleheader marker: Kalshi appends G1/G2 to BOTH games' event suffixes
+# (live 2026-09-01: KXMLBGAME-26SEP041410DETCLEG1 and ...1915DETCLEG2). Team
+# codes are letters only, so a trailing "G<digits>" can never be part of one.
+_GAME_NUMBER_RE = re.compile(r"G(\d+)$")
+
+
+def split_game_number(suffix: str) -> tuple[str, int | None]:
+    """A KXMLB* event suffix -> (suffix without the G-marker, game number).
+
+    Returns (suffix, None) for the ordinary single-game grammar. The game
+    number is NOT part of the team block, but it IS part of the game's
+    identity — ``legset.game_id_of`` keeps the whole suffix, so the two games
+    of a doubleheader stay distinct keys everywhere downstream.
+    """
+    match = _GAME_NUMBER_RE.search(suffix)
+    if not match:
+        return suffix, None
+    return suffix[:match.start()], int(match.group(1))
+
+
+def game_number_from_suffix(suffix: str) -> int | None:
+    """The doubleheader game number in an event suffix, or None.
+
+    A non-None result means the team pair alone CANNOT identify the game —
+    two Kalshi events share it. Resolvers that key on team names must
+    disambiguate with ``unique_game_by_start`` (start time, fail closed) or
+    drop the pair outright (``kalshi_rfi.discovery.drop_doubleheaders``).
+    Answering such a lookup with ``LIMIT 1`` returns whichever row comes
+    first — a wrong number, not a decline (#95 measured fairs off by
+    0.05-0.11 from exactly this).
+    """
+    return split_game_number(suffix)[1]
+
+
+# Kalshi's suffix minute and the Odds API's commence_time disagree by ~1
+# minute on the same game (live 2026-09-01: suffix 26SEP012210STLLAD = 22:10
+# ET vs Odds API 2026-09-02T02:11Z), so the match needs a tolerance. 30min is
+# the leg surface's SURFACE_START_TOLERANCE_MIN — far wider than that skew and
+# far narrower than any real doubleheader gap (2026-09-04 DET@CLE: 14:10 and
+# 19:15, 5h apart).
+SCHEDULE_START_TOLERANCE_MIN = 30.0
+
+
+def as_naive_utc(dt: datetime | None) -> datetime | None:
+    """Any datetime -> naive UTC, the convention every start time is compared in.
+
+    ``parse_suffix_start_utc`` and ``mlb_target_lines.commence_time`` are
+    already naive UTC; the Odds API's ``commence_time`` is tz-aware. Comparing
+    the two raw raises TypeError, which a fail-safe ``except`` would swallow
+    into a silent decline.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def unique_game_by_start(kalshi_start: datetime | None,
+                         candidates: list[tuple],
+                         *,
+                         tolerance_min: float = SCHEDULE_START_TOLERANCE_MIN,
+                         ) -> tuple[object | None, str]:
+    """Pick the ONE candidate game whose start matches a Kalshi event's.
+
+    Inputs: the Kalshi event's first pitch (``parse_suffix_start_utc``) and
+    ``candidates`` as ``(game_id, start_time)`` pairs already filtered to the
+    event's team pair. Returns ``(game_id, "")`` on a unique match, else
+    ``(None, reason)`` where reason is ``no_kalshi_start`` / ``unmatched`` /
+    ``ambiguous``.
+
+    AMBIGUITY FAILS CLOSED, the same rule as
+    ``leg_surface.singles.match_book_game``. The team pair alone is not an
+    identity: the Odds API ``events`` endpoint returns a multi-day window, so
+    consecutive games of one series share it (10 of 25 events on 2026-09-01),
+    and both games of a doubleheader share it on the SAME day. Answering
+    either with an arbitrary row is the one failure a maker must never have.
+    """
+    kalshi_start = as_naive_utc(kalshi_start)
+    if kalshi_start is None:
+        return None, "no_kalshi_start"
+    tolerance_sec = tolerance_min * 60.0
+    matched: dict = {}
+    for game_id, start in candidates:
+        start = as_naive_utc(start)
+        if start is None or game_id is None:
+            continue
+        if abs((start - kalshi_start).total_seconds()) > tolerance_sec:
+            continue
+        matched[game_id] = start
+    if not matched:
+        return None, "unmatched"
+    if len(matched) > 1:
+        return None, "ambiguous"
+    return next(iter(matched)), ""
+
+
 def _parse_event_suffix(suffix: str) -> tuple[str | None, str | None]:
     """Split a KXMLB* event suffix into (away_code, home_code).
 
-    Format: YYMMMDDHHMM{AwayCode}{HomeCode}. Date prefix is fixed at 11 chars.
-    Each team code is 2 or 3 letters (KC/SF/SD/TB/AZ are 2-letter; the rest
-    are 3-letter). Probes 3- then 2-letter home splits and returns the first
-    where both codes are valid in _MLB_CODE_TO_TEAM. Returns (None, None) if
-    no split matches — caller drops the event.
+    Format: YYMMMDDHHMM{AwayCode}{HomeCode}, optionally followed by a
+    doubleheader marker G1/G2 (stripped here — see split_game_number). Date
+    prefix is fixed at 11 chars. Each team code is 2 or 3 letters (KC/SF/SD/
+    TB/AZ are 2-letter; the rest are 3-letter). Probes 3- then 2-letter home
+    splits and returns the first where both codes are valid in
+    _MLB_CODE_TO_TEAM. Returns (None, None) if no split matches — caller
+    drops the event.
     """
+    suffix, _game_number = split_game_number(suffix)
     if len(suffix) < 11 + 4:  # date prefix + at least 2+2 team chars
         return None, None
     team_block = suffix[11:]
