@@ -436,20 +436,13 @@ layer); the second succeeds — treat it as a warm-up, not a failure.
 Ruled out along the way, each by a controlled run: the egress IP (an
 ordinary browser prices from the same wifi), authentication (working case
 was logged out), the `_abck` sensor cookie (unvalidated for 90s and still
-200), locale prefixing, both wager hosts, the request body shape, and a
-`curl_cffi` upgrade. A proxy would have bought nothing.
+200), locale prefixing, both wager hosts, the request body shape, a
+`curl_cffi` upgrade, and every other fingerprint library tried on 2026-09-02
+(`primp` chrome_146, `rnet` Chrome137/136, `tls_client` chrome_120 — three
+different TLS stacks, all 403 with controls stable). A proxy would have
+bought nothing, and so would swapping the imitation library.
 
-### The fix that shipped: `dk_price_sidecar/` (issue #102)
-
-A local service that owns a real, minimized Chrome and makes DK's own
-`calculateBets` call one at a time; the bots reach it with plain HTTP on
-loopback. `DK_PRICE_TRANSPORT=sidecar` routes
-`draftkings.price_selection_set` through it (default `http` = the old,
-blocked path; rollback is unsetting it). Verified end to end through the
-maker's real hook: `true_odds=7.75` 4/4, ~1.4s per call, ~5.6s per 4-cell
-partition. See `dk_price_sidecar/README.md`.
-
-### Diagnostic fix that also landed (issue #102)
+### Diagnostic fix that did land (issue #102)
 
 `draftkings.price_selection_set` is the only book's price hook that issues its
 own HTTP request inline; every other book delegates to a client that runs the
