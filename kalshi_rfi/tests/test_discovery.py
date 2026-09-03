@@ -46,6 +46,14 @@ class TestParseMarket:
     def test_unknown_team_code_rejected(self):
         assert parse_market(_market("KXMLBRFI-26AUG262105XXXYYY")) is None
 
+    def test_exchange_index_is_read_from_the_payload(self):
+        # Sharding (2026-08-24): baseball is 3 today, NFL is 0 — cancels
+        # must target the market's own shard, so read it, never assume it.
+        m = _market("KXMLBRFI-26AUG262105MINATH")
+        assert parse_market(m).exchange_index is None
+        assert parse_market({**m, "exchange_index": 3}).exchange_index == 3
+        assert parse_market({**m, "exchange_index": "x"}).exchange_index is None
+
 
 class TestDoubleheaders:
     def test_same_day_pair_dropped(self):

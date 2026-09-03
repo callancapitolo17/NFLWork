@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from kalshi_common import auth_client
 from kalshi_common.leg_types import (_ET, _MLB_CODE_TO_TEAM,
                                      _parse_event_suffix,
+                                     game_number_from_suffix,
                                      parse_suffix_start_utc)
 
 log = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ class RfiGame:
     yes_bid_cents: int | None
     yes_ask_cents: int | None
     status: str
+    exchange_index: int | None = None   # Kalshi shard; None = let it auto-route
 
 
 def _cents(market: dict, key: str) -> int | None:
@@ -50,6 +52,17 @@ def _cents(market: dict, key: str) -> int | None:
         except (TypeError, ValueError):
             return None
     v = market.get(key)
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _exchange_index(market: dict) -> int | None:
+    """Kalshi's exchange shard for this market (sharding announced
+    2026-08-24: baseball is 3, NFL/NBA are still 0). Read it, never assume
+    it — order cancels must target the right shard or they 404 (bug 2)."""
+    v = market.get("exchange_index")
     try:
         return int(v) if v is not None else None
     except (TypeError, ValueError):
@@ -75,7 +88,8 @@ def parse_market(market: dict) -> RfiGame | None:
                    commence_utc=commence,
                    yes_bid_cents=_cents(market, "yes_bid"),
                    yes_ask_cents=_cents(market, "yes_ask"),
-                   status=str(market.get("status", "")))
+                   status=str(market.get("status", "")),
+                   exchange_index=_exchange_index(market))
 
 
 def drop_doubleheaders(games: list[RfiGame]) -> list[RfiGame]:
@@ -84,6 +98,11 @@ def drop_doubleheaders(games: list[RfiGame]) -> list[RfiGame]:
     Two open RFI markets for the same team pair on the same ET date mean a
     doubleheader; the books' event matchers key on team names and can pick
     the wrong game of the pair, so neither game is quoted.
+
+    Two independent signals, because each covers the other's blind spot: the
+    suffix's own G1/G2 marker catches a doubleheader even when only ONE of its
+    games is still listed (the other already started), and the same-day count
+    catches a doubleheader Kalshi listed without the marker.
     """
     def day_key(g: RfiGame):
         et_date = (g.commence_utc.replace(tzinfo=timezone.utc)
@@ -93,8 +112,13 @@ def drop_doubleheaders(games: list[RfiGame]) -> list[RfiGame]:
     counts: dict = {}
     for g in games:
         counts[day_key(g)] = counts.get(day_key(g), 0) + 1
-    kept = [g for g in games if counts[day_key(g)] == 1]
-    dropped = [g.ticker for g in games if counts[day_key(g)] > 1]
+
+    def is_doubleheader(g: RfiGame) -> bool:
+        return (game_number_from_suffix(g.suffix) is not None
+                or counts[day_key(g)] > 1)
+
+    kept = [g for g in games if not is_doubleheader(g)]
+    dropped = [g.ticker for g in games if is_doubleheader(g)]
     if dropped:
         log.info("discovery: doubleheader fail-closed, dropped %s", dropped)
     return kept

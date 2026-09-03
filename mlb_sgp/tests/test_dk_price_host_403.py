@@ -6,14 +6,19 @@ Two distinct defects, both pinned here.
    ``gaming-us-nj.draftkings.com``. On 2026-06-24 an Akamai edge rule started
    denying ``POST /api/wager/v1/calculateBets`` — events and structure stayed
    green (200, full selection lists) while every price call died, so DK's rows
-   went from ~18k/day to zero. The rule matches that path EXACTLY; DK's own
+   went from ~18k/day to zero. The rule matched that path EXACTLY; DK's own
    betslip builds the URL as ``{locale}/api/wager/v1/calculateBets`` (English
-   maps to an empty prefix), and the origin still routes the ``/en/`` form,
-   which the WAF rule does not cover. Verified live 2026-07-30:
+   maps to an empty prefix), and the origin still routed the ``/en/`` form,
+   which the WAF rule did not cover. Verified live 2026-07-30:
        POST /api/wager/v1/calculateBets     -> 403 AkamaiGHost "Access Denied"
        POST /en/api/wager/v1/calculateBets  -> 200 correlated SGP price
-   The URL constant is therefore load-bearing, and the ``/en/`` segment must
-   never be "tidied away".
+
+   SUPERSEDED BY ISSUE #102 (2026-08-27): the rule now matches POST x path
+   SUFFIX, so BOTH forms 403 and locale prefixing is dead as a technique.
+   These tests are kept as a CHANGE DETECTOR, not as a claim that ``/en/``
+   still works — pinning the constant is what makes a future edit to it a
+   deliberate, reviewed act rather than a silent one. See
+   ``mlb_sgp/README.md`` § DraftKings price host for the current status.
 
 2. THE DIAGNOSIS COST. ``calculate_sgp`` swallows a non-200 into ``None``, so
    the status never reached ``PriceCallTally``'s all-failed verdict. The

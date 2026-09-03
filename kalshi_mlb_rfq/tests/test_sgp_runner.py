@@ -77,15 +77,16 @@ def test_enumerate_kalshi_targets_returns_target_lines(monkeypatch):
                          lambda suffix, **kw: [(-1.5, "home"), (-2.5, "home")])
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines",
                          lambda suffix: [8.5, 9.5])
-    ct = datetime(2026, 5, 13, 23, 0, tzinfo=timezone.utc)
-    fake_schedule = {
-        ("New York Yankees", "Boston Red Sox"): {
-            "game_id": "g1",
-            "home_team": "New York Yankees",
-            "away_team": "Boston Red Sox",
-            "commence_time": ct,
-        }
-    }
+    # 23:00 ET on the suffix's date, which is what the ticker above means.
+    # The Odds API reports UTC, so the two only line up through the ET
+    # conversion parse_suffix_start_utc does.
+    ct = datetime(2026, 5, 14, 3, 0, tzinfo=timezone.utc)
+    fake_schedule = [{
+        "game_id": "g1",
+        "home_team": "New York Yankees",
+        "away_team": "Boston Red Sox",
+        "commence_time": ct,
+    }]
     monkeypatch.setattr(sgp_runner, "_fetch_schedule_from_odds_api",
                          lambda: fake_schedule)
 
@@ -113,17 +114,141 @@ def test_enumerate_kalshi_targets_skips_unknown_team_codes(monkeypatch):
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_spread_lines",
                          lambda suffix: [(-1.5, "home")])
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines", lambda suffix: [8.5])
-    monkeypatch.setattr(sgp_runner, "_fetch_schedule_from_odds_api", lambda: {})
+    monkeypatch.setattr(sgp_runner, "_fetch_schedule_from_odds_api", lambda: [])
     assert sgp_runner.enumerate_kalshi_targets() == []
 
 
 def test_fetch_schedule_from_odds_api_handles_missing_key(monkeypatch, tmp_path):
-    """When ODDS_API_KEY is unset (env + ~/.Renviron absent), returns {}."""
+    """When ODDS_API_KEY is unset (env + ~/.Renviron absent), returns []."""
     from kalshi_common import sgp_runner
     monkeypatch.delenv("ODDS_API_KEY", raising=False)
     # Point HOME to a tmp dir with no .Renviron so the fallback finds nothing.
     monkeypatch.setenv("HOME", str(tmp_path))
-    assert sgp_runner._fetch_schedule_from_odds_api() == {}
+    assert sgp_runner._fetch_schedule_from_odds_api() == []
+
+
+def test_fetch_schedule_keeps_every_event_of_a_repeated_team_pair(monkeypatch,
+                                                                  tmp_path):
+    """The Odds API window spans days, so a series repeats its team pair.
+
+    This is the regression that made the old (home, away)-keyed dict lose
+    10 of 25 events live on 2026-09-01 and hand the Kalshi event for
+    TONIGHT's game tomorrow's game_id and commence_time.
+    """
+    import json
+    from kalshi_common import sgp_runner
+
+    monkeypatch.setenv("ODDS_API_KEY", "test-key")
+    payload = json.dumps([
+        {"id": "tonight", "home_team": "Los Angeles Dodgers",
+         "away_team": "St. Louis Cardinals",
+         "commence_time": "2026-09-02T02:11:00Z"},
+        {"id": "tomorrow", "home_team": "Los Angeles Dodgers",
+         "away_team": "St. Louis Cardinals",
+         "commence_time": "2026-09-03T02:11:00Z"},
+    ]).encode()
+
+    class _Resp:
+        def read(self):
+            return payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    # _fetch_schedule_from_odds_api imports urllib.request inside the body.
+    import urllib.request as _ur
+    monkeypatch.setattr(_ur, "urlopen", lambda url, timeout=10: _Resp())
+
+    rows = sgp_runner._fetch_schedule_from_odds_api()
+    assert [r["game_id"] for r in rows] == ["tonight", "tomorrow"]
+
+
+def test_enumerate_picks_the_game_whose_start_matches_the_suffix(monkeypatch):
+    """Two games of one series share a team pair; the suffix start picks one.
+
+    Live on 2026-09-01 the Kalshi event was 26SEP012210STLLAD (tonight) while
+    the collapsed schedule dict held tomorrow's row — a wrong game_id under
+    the exposure ledgers and a first pitch ~24h late under the tipoff gate.
+    """
+    from datetime import datetime, timezone
+    from kalshi_common import sgp_runner
+
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events",
+                        lambda: [{"event_ticker": "KXMLBGAME-26SEP012210STLLAD"}])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_spread_lines",
+                        lambda suffix, **kw: [(-1.5, "home")])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines",
+                        lambda suffix: [8.5])
+    monkeypatch.setattr(sgp_runner, "_fetch_schedule_from_odds_api", lambda: [
+        {"game_id": "tonight", "home_team": "Los Angeles Dodgers",
+         "away_team": "St. Louis Cardinals",
+         "commence_time": datetime(2026, 9, 2, 2, 11, tzinfo=timezone.utc)},
+        {"game_id": "tomorrow", "home_team": "Los Angeles Dodgers",
+         "away_team": "St. Louis Cardinals",
+         "commence_time": datetime(2026, 9, 3, 2, 11, tzinfo=timezone.utc)},
+    ])
+
+    targets = sgp_runner.enumerate_kalshi_targets()
+    assert [t.game_id for t in targets] == ["tonight"]
+
+
+def test_enumerate_prices_both_games_of_a_doubleheader(monkeypatch):
+    """Both suffixes carry the same pair on the same day — starts split them.
+
+    Kalshi appends G1/G2 (26SEP041410DETCLEG1 / ...1915DETCLEG2, live
+    2026-09-01) and enumerate used to skip both, so mlb_target_lines never
+    held them and the maker could never quote a doubleheader.
+    """
+    from datetime import datetime, timezone
+    from kalshi_common import sgp_runner
+
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events", lambda: [
+        {"event_ticker": "KXMLBGAME-26SEP041410DETCLEG1"},
+        {"event_ticker": "KXMLBGAME-26SEP041915DETCLEG2"},
+    ])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_spread_lines",
+                        lambda suffix, **kw: [(-1.5, "home")])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines",
+                        lambda suffix: [8.5])
+    monkeypatch.setattr(sgp_runner, "_fetch_schedule_from_odds_api", lambda: [
+        {"game_id": "dh-game-1", "home_team": "Cleveland Guardians",
+         "away_team": "Detroit Tigers",
+         "commence_time": datetime(2026, 9, 4, 18, 10, tzinfo=timezone.utc)},
+        {"game_id": "dh-game-2", "home_team": "Cleveland Guardians",
+         "away_team": "Detroit Tigers",
+         "commence_time": datetime(2026, 9, 4, 23, 15, tzinfo=timezone.utc)},
+    ])
+
+    targets = sgp_runner.enumerate_kalshi_targets()
+    assert [t.game_id for t in targets] == ["dh-game-1", "dh-game-2"]
+
+
+def test_enumerate_declines_when_two_schedule_rows_are_indistinguishable(
+        monkeypatch):
+    """Ambiguity fails closed — a decline is cheap, a wrong game is not."""
+    from datetime import datetime, timezone
+    from kalshi_common import sgp_runner
+
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events",
+                        lambda: [{"event_ticker": "KXMLBGAME-26SEP041410DETCLEG1"}])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_spread_lines",
+                        lambda suffix, **kw: [(-1.5, "home")])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines",
+                        lambda suffix: [8.5])
+    # A suspended-and-resumed pair the feed lists minutes apart: neither row
+    # is distinguishable inside the tolerance.
+    monkeypatch.setattr(sgp_runner, "_fetch_schedule_from_odds_api", lambda: [
+        {"game_id": "a", "home_team": "Cleveland Guardians",
+         "away_team": "Detroit Tigers",
+         "commence_time": datetime(2026, 9, 4, 18, 10, tzinfo=timezone.utc)},
+        {"game_id": "b", "home_team": "Cleveland Guardians",
+         "away_team": "Detroit Tigers",
+         "commence_time": datetime(2026, 9, 4, 18, 25, tzinfo=timezone.utc)},
+    ])
+    assert sgp_runner.enumerate_kalshi_targets() == []
 
 
 def test_write_target_lines_atomic_replace(tmp_path):
@@ -420,3 +545,53 @@ def test_book_modules_covers_all_default_service_books():
     from kalshi_common.sgp_service import DEFAULT_BOOKS
     missing = [b for b in DEFAULT_BOOKS if b not in sgp_runner._BOOK_MODULES]
     assert not missing, f"_BOOK_MODULES missing default books: {missing}"
+
+
+def test_enumerate_logs_a_dropped_game_to_bot_log(monkeypatch, caplog):
+    """Pre-merge review fix: sgp_runner is print()-based and stdout is not in
+    bot.log, so a game silently leaving the schedule match had no record an
+    operator could find. The drop now goes through logging, per reason."""
+    import logging
+    from datetime import datetime, timezone
+    from kalshi_common import sgp_runner
+
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events", lambda: [
+        {"event_ticker": "KXMLBGAME-26SEP041410DETCLEG1"},   # unmatched
+        {"event_ticker": "KXMLBGAME-26SEP041810MILCIN"},     # matched
+    ])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_spread_lines",
+                        lambda suffix, **kw: [(-1.5, "home")])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines",
+                        lambda suffix: [8.5])
+    monkeypatch.setattr(sgp_runner, "_fetch_schedule_from_odds_api", lambda: [
+        {"game_id": "cin", "home_team": "Cincinnati Reds",
+         "away_team": "Milwaukee Brewers",
+         "commence_time": datetime(2026, 9, 4, 22, 10, tzinfo=timezone.utc)},
+    ])
+    with caplog.at_level(logging.WARNING, logger="kalshi_common.sgp_runner"):
+        targets = sgp_runner.enumerate_kalshi_targets()
+    assert [t.game_id for t in targets] == ["cin"]
+    lines = [r.getMessage() for r in caplog.records
+             if "schedule_match" in r.getMessage()]
+    assert lines == ["[schedule_match] matched=1 dropped=1 unmatched=1"]
+
+
+def test_enumerate_is_quiet_when_every_game_matches(monkeypatch, caplog):
+    import logging
+    from datetime import datetime, timezone
+    from kalshi_common import sgp_runner
+
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events",
+                        lambda: [{"event_ticker": "KXMLBGAME-26SEP041810MILCIN"}])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_spread_lines",
+                        lambda suffix, **kw: [(-1.5, "home")])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines",
+                        lambda suffix: [8.5])
+    monkeypatch.setattr(sgp_runner, "_fetch_schedule_from_odds_api", lambda: [
+        {"game_id": "cin", "home_team": "Cincinnati Reds",
+         "away_team": "Milwaukee Brewers",
+         "commence_time": datetime(2026, 9, 4, 22, 10, tzinfo=timezone.utc)},
+    ])
+    with caplog.at_level(logging.WARNING, logger="kalshi_common.sgp_runner"):
+        sgp_runner.enumerate_kalshi_targets()
+    assert not [r for r in caplog.records if "schedule_match" in r.getMessage()]

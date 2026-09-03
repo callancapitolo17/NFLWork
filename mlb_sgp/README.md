@@ -297,7 +297,7 @@ this to `on_demand` when every quote is live-priced; config, not code).
 | `sportsbook-nash.../league/leagueSubcategory/v1/markets` | None | List MLB events |
 | `sportsbook-nash.../event/eventSubcategory/v1/markets` | None | Main market IDs per game |
 | `sportsbook-nash.../parlays/v1/sgp/events/{id}` | curl_cffi | **All selection IDs** (2MB response) |
-| `gaming-us-nj.../en/api/wager/v1/calculateBets` | curl_cffi | **SGP pricing** (POST, returns trueOdds) — note the `/en/`, see below |
+| `gaming-us-nj.../en/api/wager/v1/calculateBets` | curl_cffi | **SGP pricing** (POST, returns trueOdds) — **BLOCKED since ~2026-08-20**, see § DraftKings price host |
 | `sportsbook-nash.../sgp/dkusnj/sportsdata/v2/sgp` | Full Akamai | SGP pricing (DK frontend only — **inaccessible** via REST) |
 
 ### Why curl_cffi?
@@ -335,6 +335,135 @@ move is re-reading `dkBetSlip.js` for the current route, **not** bumping
 curl_cffi (which is shared by all 6 books).
 
 **Things that DON'T work:** direct HTTP requests, page.evaluate(fetch()), cookie transfer from browser to requests, Playwright stealth plugins. All tested extensively.
+
+## DraftKings price host — blocked since ~2026-08-20 (issue #102)
+
+**Status: DK contributes nothing to SAME-GAME combo pricing.** Its read
+endpoints are green and unaffected — event listing, market metadata, selection
+IDs and the singles scraper all work, so DK still feeds the leg surface
+(epic #94) and therefore all CROSS-GAME pricing. Only `calculateBets` is dead.
+
+### What is blocked
+
+`POST */api/wager/v1/calculateBets` answers `403 AkamaiGHost` for every set
+size — n=1 and n=2 alike. It is **not** a 1-selection refusal; that claim was
+wrong wherever it appeared and was corrected in this ticket.
+
+Probed 2026-08-27 through the real production path (`init_session` -> warmed
+session with 8 cookies -> live event -> real selection IDs), never a
+hand-rolled empty body:
+
+| request | result |
+|---|---|
+| `POST gaming-us-nj/en/api/wager/v1/calculateBets` | 403 AkamaiGHost |
+| `POST gaming-us-nj/api/wager/v1/calculateBets` | 403 AkamaiGHost |
+| `POST gaming-us-wv/api/wager/v1/calculateBets` | 403 AkamaiGHost |
+| `POST gaming-us-wv/...` + full betslip headers | 403 AkamaiGHost |
+| `POST /en/api/wager/v1/somethingelse` | 404 nginx (origin reachable) |
+| `GET /en/api/wager/v1/calculateBets` | 404 nginx (origin reachable) |
+
+The host is not blocked and POST is not blocked. Akamai matches METHOD x
+path-suffix, which is why issue #39's `/en/` locale trick no longer helps —
+that technique is permanently dead, not merely re-blocked.
+
+### What the cause is NOT (each disproven directly, 2026-08-27)
+
+- **NOT the request form.** `dkBetSlip.js` 2633.4.1 builds this exact path on
+  `wagerBaseApiHost = gaming-us-wv`, and knows only `calculateBets`,
+  `placeBets`, `getPurchases`, `acceptPurchase`, `declinePurchase`. There is
+  no GraphQL or `/v2` pricing service to move to. Confirmed from the other
+  direction: some probes returned **422** (non-combinable) rather than 403 —
+  the origin accepting and understanding our exact body.
+- **NOT our egress.** A normal browser on the same wifi, logged out, prices a
+  user-built 2-leg SGP (MLB and CFB both verified by the repo owner). Any
+  claim that the IP is banned is wrong; do not buy a proxy on that theory.
+- **NOT authentication.** The working browser case was logged OUT.
+- **NOT the Akamai `_abck` sensor cookie.** An automated Chrome whose `_abck`
+  stayed unvalidated for 90s still saw DK's own betslip price 4/4 calls.
+
+### What the cause IS — confirmed 2026-09-02 by controlled runs
+
+Akamai gates `POST */api/wager/v1/calculateBets` on **two things together**:
+
+1. **Client fingerprint.** A real Chrome passes; `curl_cffi` does not, even
+   with a byte-for-byte replica of DK's own request — identical headers,
+   host, path, warmed cookies. Every impersonation profile from `chrome131`
+   through `chrome150` (curl_cffi 0.14.0 and 0.16.3) returned 403 with the
+   control stable at both ends of each run. **Headless Chrome also fails**
+   (0/3, twice). The gate is at the TLS/HTTP2 layer, below anything a header
+   can fix.
+2. **Burst shape.** In the SAME headed Chrome with the SAME recipe:
+   4 concurrent calls per flight -> 2/40; sequential with ~1.5s spacing ->
+   6/6 and then 4/4. Issue #93's concurrent partition cells were the burst
+   that drew the rule in the first place.
+
+Working recipe, measured end to end on a pregame game (Yankees @ Angels,
+home -1.5 + Over 7.5 -> `YourBet trueOdds=7.5 display=+650`):
+
+- real Chrome, **headed**, a persistent profile with
+  `--disable-blink-features=AutomationControlled` and `--enable-automation`
+  removed
+- page loaded on `https://sportsbook.draftkings.com/leagues/baseball/mlb`
+  (the request must originate cross-site from the sportsbook origin)
+- in-page `fetch` to `https://gaming-us-wv.draftkings.com/api/wager/v1/calculateBets`
+  (`wagerBaseApiHost` from DK's own config; bare path, no `/en/`) with
+  `credentials: "include"` and DK's betslip header set: `accept`,
+  `clienttype: Website`, `x-api-features: {"EnableFullSGPDrivenFlow":true}`,
+  `x-client-name: web`, `x-client-feature: betslip`, `x-client-page`,
+  `x-client-version`, `x-client-widget-name: betslip`,
+  `x-client-widget-version`, `x-request-client-timestamp`
+- **sequential** calls, ~1.5s apart — never `Promise.all` the cells
+- our existing production body (`selectionsForYourBet` + `yourBetGroup: 0`)
+  is accepted unchanged; DK's UI also sends a `selections`-only form, and
+  both return the `YourBet` bet
+- the first fetch on a fresh page can throw once (no response reaches the
+  network layer); one retry resolves it
+- ~0.2-0.7s per call, so a 2-leg partition (4 cells, serial) is ~3s —
+  inside the 8-10s flight budget
+
+What this is NOT: no Akamai sensor is forged, no fingerprint is spoofed. It
+is a real browser making the same request DK's own page makes, at a human
+cadence. The cost is operational: a **real (non-headless) Chrome process
+must stay resident** for the whole slate. It does NOT have to be visible —
+verified 2026-09-02 with the window **minimized** via CDP
+`Browser.setWindowBounds {windowState: "minimized"}` (3/3 real prices) and
+mostly off-screen (3/3). "Headed" is a process mode, not a screen
+requirement: the rule detects headless mode, not window visibility. On a
+Linux host the equivalent is headed Chrome under `Xvfb`. The first fetch on
+a fresh page throws deterministically (no response reaches the network
+layer); the second succeeds — treat it as a warm-up, not a failure.
+
+Ruled out along the way, each by a controlled run: the egress IP (an
+ordinary browser prices from the same wifi), authentication (working case
+was logged out), the `_abck` sensor cookie (unvalidated for 90s and still
+200), locale prefixing, both wager hosts, the request body shape, and a
+`curl_cffi` upgrade. A proxy would have bought nothing.
+
+### The fix that shipped: `dk_price_sidecar/` (issue #102)
+
+A local service that owns a real, minimized Chrome and makes DK's own
+`calculateBets` call one at a time; the bots reach it with plain HTTP on
+loopback. `DK_PRICE_TRANSPORT=sidecar` routes
+`draftkings.price_selection_set` through it (default `http` = the old,
+blocked path; rollback is unsetting it). Verified end to end through the
+maker's real hook: `true_odds=7.75` 4/4, ~1.4s per call, ~5.6s per 4-cell
+partition. See `dk_price_sidecar/README.md`.
+
+### Diagnostic fix that also landed (issue #102)
+
+`draftkings.price_selection_set` is the only book's price hook that issues its
+own HTTP request inline; every other book delegates to a client that runs the
+response through `check_response`. It classified nothing — `if
+resp.status_code != 200: return None` collapsed a 422 non-combinable and a 403
+blockade into the same silent `None`.
+
+Consequence on the next restart: `transport_errors == 0` and
+`prices_returned == 0`, which is exactly the `prices_empty` tripwire's firing
+condition — and that tripwire means "the PARSER went silent". A blocked DK
+would have pointed the next fixer at DK's parser. A 403/429 is now counted as
+a transport error (still not re-raised, matching `caesars`/`novig`), so
+`sgp_fetch_health` distinguishes a dead endpoint from unpriceable combos.
+Pinned by `mlb_sgp/tests/test_dk_on_demand_price_status.py`.
 
 ## Selection ID Format
 

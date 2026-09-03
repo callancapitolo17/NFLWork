@@ -15,7 +15,11 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
+
+from kalshi_common.leg_types import (SCHEDULE_START_TOLERANCE_MIN,
+                                     as_naive_utc)
 
 from kalshi_common.sgp_health import (FetchHealthRecorder,
                                       OnDemandCoverageCounter,
@@ -979,7 +983,10 @@ class SGPService:
             # its single market, so where the structure carries both sides'
             # odds the exact 2-cell devig needs ZERO price calls — several
             # books' SGP price endpoints refuse 1-selection sets
-            # (live-verified DK/Novig/MGM 2026-08-25, kalshi_rfi smoke).
+            # (live-verified Novig/MGM 2026-08-25, kalshi_rfi smoke). DK is
+            # NOT one of them: its calculateBets 403s every set size, n=1 and
+            # n=2 alike (issue #102). DK falls through this path for the
+            # unrelated reason below — its structure carries no odds.
             # devig_partition (not devig_two_way) so the [1.0, 1.25]
             # overround gate rejects crossed/degenerate pairs — a gate
             # failure (or a book without structure odds, e.g. DK) falls
@@ -1271,7 +1278,7 @@ class SGPService:
                 import scraper_draftkings_sgp as legacy
                 events = f["fetch_dk_events"](client.session)
                 matched = legacy.match_events(events, _od_parlay_lines(game))
-                return matched[0] if matched else None
+                return _sole_book_event(matched, book=book, game=game)
 
             def build_structure(client, event, game):
                 eid = event["dk_event_id"]
@@ -1303,7 +1310,7 @@ class SGPService:
                 import scraper_fanduel_sgp as legacy
                 events = f["fetch_fd_events"](client.session)
                 matched = legacy.match_events(events, _od_parlay_lines(game))
-                return matched[0] if matched else None
+                return _sole_book_event(matched, book=book, game=game)
 
             def build_structure(client, event, game):
                 runners = f["fetch_event_runners"](
@@ -1346,7 +1353,7 @@ class SGPService:
                     for e in events
                 ]
                 matched = legacy.match_events(px_events, _od_parlay_lines(game))
-                return matched[0] if matched else None
+                return _sole_book_event(matched, book=book, game=game)
 
             def build_structure(client, event, game):
                 from scraper_prophetx_sgp import _verify_competitor_ids
@@ -1398,7 +1405,7 @@ class SGPService:
                     for e in events
                 ]
                 matched = legacy.match_events(nv_events, _od_parlay_lines(game))
-                return matched[0] if matched else None
+                return _sole_book_event(matched, book=book, game=game)
 
             def build_structure(client, event, game):
                 from scraper_novig_sgp import fetch_event_legs
@@ -1449,7 +1456,7 @@ class SGPService:
                     "mgm_events", lambda: client.list_events(profile=RETRY_LIVE),
                     miss_cb=miss_cb)
                 matched = mod._match_events(events, [_od_target(game)])
-                return matched.get(game.game_id)
+                return _sole_dated_book_event(matched, book=book, game=game)
 
             def build_structure(client, event, game):
                 def _fetch():
@@ -1485,7 +1492,7 @@ class SGPService:
                     "czr_events", lambda: client.list_events(RETRY_LIVE),
                     miss_cb=miss_cb)
                 matched = mod._match_events(events, [_od_target(game)])
-                return matched.get(game.game_id)
+                return _sole_dated_book_event(matched, book=book, game=game)
 
             def build_structure(client, event, game):
                 def _fetch():
@@ -1512,6 +1519,79 @@ class SGPService:
 # ---------------------------------------------------------------------- #
 # Module helpers: GameRef -> the two event-match input shapes             #
 # ---------------------------------------------------------------------- #
+
+def _sole_book_event(matched: list, *, book: str, game):
+    """The ONE book event that matched this game, or None if it is not unique.
+
+    ``_od_parlay_lines`` hands the legacy ``match_events`` helpers a
+    SINGLE-game dict, so a book that lists our game once yields exactly one
+    entry. TWO entries mean the book listed two events for the same team pair
+    and the helper could not tell them apart: DK/FD/PX/NV all SKIP their
+    UTC-hour guard when either side lacks a start time and fall back to
+    matching on TEAMS ALONE (scraper_fanduel_sgp.py's "backward compat"
+    branch), and the caller then took ``matched[0]`` — the FIRST hit, not the
+    unique one.
+
+    On a doubleheader that silently prices game 2's ladder under game 1's key,
+    the 0.05-0.11 probability error #95 measured. Doubleheaders only started
+    reaching these matchers when the slate learned the G1/G2 grammar, so this
+    guard ships with them. Fail closed: the leg just has one fewer book, which
+    the #20 consensus gate already handles.
+    """
+    if not matched:
+        return None
+    if len(matched) > 1:
+        log.warning("[book_event_ambiguous] book=%s game=%s matched=%d "
+                    "book events for one team pair — declining",
+                    book, getattr(game, "game_id", "?"), len(matched))
+        return None
+    return matched[0]
+
+
+def _sole_dated_book_event(matched: dict, *, book: str, game):
+    """MGM/CZR variant: the matched Event, only if its own clock agrees.
+
+    ``_match_events`` returns a dict keyed on OUR game_id, so a second book
+    event for the same team pair OVERWRITES the first instead of appearing as
+    a second entry — the count ``_sole_book_event`` relies on cannot see it.
+    Both matchers also accept a team-only match when either side lacks a start
+    time (betmgm.py: "one side lacks a timestamp — accept").
+
+    Verifying the returned Event's OWN start time against the game's closes
+    both holes with one rule, and a MISSING start time is a decline rather
+    than an accept. Measured 2026-09-02: 17/17 live MGM events carry
+    start_time, and the books' clocks sit within ~6 min of ours (MGM had
+    MIL @ CHC at 23:35Z vs our 23:40Z), well inside the tolerance.
+    """
+    event = matched.get(game.game_id)
+    if event is None:
+        return None
+    event_start = as_naive_utc(_parse_book_start(getattr(event, "start_time", None)))
+    game_start = as_naive_utc(getattr(game, "commence_time", None))
+    if event_start is None or game_start is None:
+        log.warning("[book_event_undated] book=%s game=%s — declining rather "
+                    "than accepting a team-only match", book, game.game_id)
+        return None
+    drift_sec = abs((event_start - game_start).total_seconds())
+    if drift_sec > SCHEDULE_START_TOLERANCE_MIN * 60.0:
+        log.warning("[book_event_wrong_start] book=%s game=%s drift=%.0fmin "
+                    "— declining", book, game.game_id, drift_sec / 60.0)
+        return None
+    return event
+
+
+def _parse_book_start(raw):
+    """A book Event.start_time (ISO string or datetime) -> datetime or None."""
+    if raw is None or isinstance(raw, datetime):
+        return raw
+    try:
+        text = str(raw).strip()
+        if not text:
+            return None
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
 
 def _od_parlay_lines(game) -> dict:
     """GameRef -> the legacy parlay-lines dict the DK/FD/PX/NV

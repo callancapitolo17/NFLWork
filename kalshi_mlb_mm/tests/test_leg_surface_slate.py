@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from kalshi_common import leg_types, legset
 from kalshi_common.legset import CanonicalLeg
 from kalshi_mlb_mm.leg_surface import slate
 
@@ -195,3 +196,80 @@ class TestEventPagination:
                                   "cursor": ""}])
         monkeypatch.setattr(slate.auth_client, "api", api)
         assert slate._fetch_open_game_events() == ["KXMLBGAME-A"]
+
+
+class TestDoubleheaders:
+    """Kalshi appends G1/G2 to BOTH games of a doubleheader
+    (KXMLBGAME-26SEP041410DETCLEG1 / ...1915DETCLEG2, live 2026-09-01).
+
+    The suffix parser rejected that grammar, so the slate logged
+    "unparseable event" and dropped both games — the surface could never price
+    the exact case it was built for. Epic #94 keys rows on the event-ticker
+    suffix BECAUSE the team-name path picks the wrong game of a pair (#95:
+    fairs off by 0.05-0.11).
+    """
+    G1 = "26SEP041410DETCLEG1"     # DET @ CLE, game 1
+    G2 = "26SEP041915DETCLEG2"     # DET @ CLE, game 2
+    PLAIN = "26AUG271910MILNYM"    # MIL @ NYM, no doubleheader
+
+    def test_both_games_parse_to_the_same_team_pair(self):
+        assert leg_types._parse_event_suffix(self.G1) == ("DET", "CLE")
+        assert leg_types._parse_event_suffix(self.G2) == ("DET", "CLE")
+
+    def test_plain_suffix_is_unchanged(self):
+        assert leg_types._parse_event_suffix(self.PLAIN) == ("MIL", "NYM")
+        assert leg_types.game_number_from_suffix(self.PLAIN) is None
+
+    def test_the_game_number_is_readable_on_its_own(self):
+        # The team-name resolvers fail closed on this; they cannot tell the
+        # two games apart and a LIMIT 1 lookup would answer with either.
+        assert leg_types.game_number_from_suffix(self.G1) == 1
+        assert leg_types.game_number_from_suffix(self.G2) == 2
+
+    def test_first_pitch_still_comes_from_the_date_prefix(self):
+        # 14:10 and 19:15 ET on 2026-09-04 -> distinct UTC times, which is
+        # what makes the books' date+hour event matchers pick the right game.
+        assert (leg_types.parse_suffix_start_utc(self.G1)
+                == datetime(2026, 9, 4, 18, 10))
+        assert (leg_types.parse_suffix_start_utc(self.G2)
+                == datetime(2026, 9, 4, 23, 15))
+
+    def test_game_id_stays_distinct_per_game(self):
+        # If the marker were stripped from the IDENTITY the two games would
+        # collide into one surface key and the second would overwrite the
+        # first's prices.
+        assert (legset.game_id_of(f"KXMLBGAME-{self.G1}")
+                != legset.game_id_of(f"KXMLBGAME-{self.G2}"))
+
+    def test_slate_game_id_is_what_a_parsed_leg_carries(self):
+        # The router looks rows up by CanonicalLeg.game_id. If the slate keyed
+        # its rows on anything else the surface would be silently empty.
+        legs = slate.legs_for_market("KXMLBTOTAL", self.G1,
+                                     f"KXMLBTOTAL-{self.G1}-9")
+        assert legs
+        assert {l.game_id for l in legs} == {self.G1}
+        assert self.G1 == legset.game_id_of(f"KXMLBGAME-{self.G1}")
+
+    def test_home_perspective_spread_sign_survives_the_marker(self):
+        # Regression: with the marker unparseable the home code came back
+        # None, every spread leg typed as AWAY, and CLE -3.5 was stored as
+        # +3.5 — a wrong line, not a decline.
+        legs = slate.legs_for_market("KXMLBSPREAD", self.G1,
+                                     f"KXMLBSPREAD-{self.G1}-CLE4")
+        assert {(l.line, l.side) for l in legs} == {(-3.5, "home"),
+                                                    (-3.5, "away")}
+
+    def test_discover_slate_keeps_both_games(self, monkeypatch):
+        now = datetime(2026, 9, 4, 12, 0, 0)
+        monkeypatch.setattr(
+            slate, "_fetch_open_game_events",
+            lambda: [f"KXMLBGAME-{self.G1}", f"KXMLBGAME-{self.G2}"])
+        monkeypatch.setattr(
+            slate, "_fetch_series_tickers",
+            lambda series, suffix: ([f"KXMLBTOTAL-{suffix}-9"]
+                                    if series == "KXMLBTOTAL" else []))
+        games = slate.discover_slate(min_minutes=5, max_hours=12,
+                                     now_utc=now)
+        assert [g.game_id for g in games] == [self.G1, self.G2]
+        assert {g.home_team for g in games} == {"Cleveland Guardians"}
+        assert len({g.start_utc for g in games}) == 2

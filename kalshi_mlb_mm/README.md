@@ -99,7 +99,7 @@ REST-polling daemon, single process. Eight timed sub-loops:
 | Reconcile sweep | 30s | Verify recorded fill side/size against Kalshi `/portfolio/positions` (live only) |
 | Settlement sweep | 600s | Poll `GET /markets/{ticker}` for combos with unsettled fills → write `fills.realized_pnl` + `settlements` audit row (live only; issue #12) |
 | Structure warming | 120s | #50: structure-only pass (no pricing calls) keeping every book's events/structure TTL caches + the CZR WAF token hot, so live fetches never pay a cold start |
-| Target-line refresh | 300s | #81: Kalshi MVE enumeration + Odds API schedule → `mlb_target_lines` (game resolution, tipoff gating and warming read it). **Zero book requests** |
+| Target-line refresh | 300s | #81: Kalshi MVE enumeration + Odds API schedule → `mlb_target_lines` (game resolution and warming read it; tipoff reads the ticker suffix instead). **Zero book requests** |
 | Coverage summary | 300s | #81: drain the service's per-book on-demand outcome tally into an `on_demand_coverage` research event — the record of which books actually answer live fetches |
 
 Plus, since #96, the **leg-surface ingest** — its own threads on their own
@@ -391,9 +391,106 @@ off by **0.05–0.11 in probability** — a wrong number, not a decline. The suf
 encodes date, ET first pitch and both team codes, so it is unique per
 doubleheader game, and it is what `CanonicalLeg.game_id` already carries.
 
-Every book-side match is on canonical teams **plus** start time within
-`SURFACE_START_TOLERANCE_MIN`, and **two candidates inside tolerance fail
-closed** (`n_game_ambiguous`) rather than picking the closest.
+Kalshi additionally marks a doubleheader by appending **`G1` / `G2`** to both
+games' suffixes (`26SEP041410DETCLEG1`, `26SEP041915DETCLEG2` — live
+2026-09-01). `leg_types._parse_event_suffix` strips that marker before probing
+the team codes, and `leg_types.game_number_from_suffix` reads it back. The
+marker stays part of the **identity** (`game_id_of` keeps the whole suffix), so
+the two games never collapse onto one surface key. Before this was parsed the
+slate logged `unparseable event` and dropped **both** games of every
+doubleheader — the surface could not price the case it was built for — and
+every spread/moneyline leg on those events failed to resolve its home code, so
+a home margin line was typed with the away sign.
+
+The team-name resolvers behind `mlb_target_lines` used to decline the pair
+outright, which meant the maker could never QUOTE a combo touching a
+doubleheader even after the surface could price its legs. They now resolve it,
+because **the team pair narrows and the suffix's own first pitch identifies**
+(`leg_types.unique_game_by_start`, tolerance `SCHEDULE_START_TOLERANCE_MIN` =
+30 min):
+
+* `_fetch_schedule_from_odds_api` returns a **list**, never a dict keyed on
+  `(home_team, away_team)`. That key was not an identity, and the damage was
+  not limited to doubleheaders: the Odds API `events` endpoint returns a
+  MULTI-DAY window, so a series' consecutive games collide too — live on
+  2026-09-01 that silently dropped **10 of 25 events**, and last-write-wins
+  handed the Kalshi event for TONIGHT's `STL @ LAD` tomorrow's `game_id` and
+  `commence_time`.
+* `enumerate_kalshi_targets` and `_resolve_game_for_legs` both pick the one
+  candidate whose start is within tolerance of the suffix's. The two feeds
+  agree to ~1 minute in practice (suffix `26SEP012210STLLAD` = 22:10 ET vs the
+  Odds API's `02:11Z`), while a real doubleheader gap is hours — 2026-09-04
+  DET @ CLE is 14:10 and 19:15.
+* **Ambiguity fails closed.** Two schedule rows still inside the tolerance
+  decline (`resolve_game_ambiguous`), as does a game the Odds API does not
+  carry. Losing a quote is cheap; a wrong game is the failure #95 priced at
+  0.05–0.11.
+
+`kalshi_rfi` still drops doubleheaders outright via `drop_doubleheaders` — it
+quotes one market per game off team-name book matching — and keeps the marker
+as a second signal alongside its same-ET-day count, so a pair whose first game
+already delisted is still dropped.
+
+**The tipoff clock moved to the suffix** (`main._first_pitch_utc`) rather than
+`mlb_target_lines.commence_time` reached through a `game_id`. The suffix is the
+authoritative first pitch on a Kalshi market (`close_time` is first pitch +
+72h), and after the change above the stored Odds-API time only has to agree
+with it to within the 30-minute match tolerance — too loose to sit under a
+`TIPOFF_CANCEL_MIN` = 5 gate. Reading the suffix keeps the gate exact, costs no
+DB read (so `_COMMENCE_CACHE` is gone with `_commence_time`), and works for
+games the Odds API has not listed yet. Both the discovery tick and the risk
+sweep read it with the SAME contract: **any unreadable clock fails closed** —
+the sweep through `_quote_first_pitches` (`None` → cancel, exactly like
+`_quote_game_ids`), the tick by skipping the RFQ. The tick used to drop the
+`None`s and take `min()` of the rest, which would have passed a cross-game
+combo on its *other* game's clock; it never fired only because the `no_game`
+gate happened to run first.
+
+**Observability of the decline.** `sgp_runner` is `print()`-based and stdout
+is not in `bot.log`, so a game dropped by the schedule match was invisible. It
+now logs `[schedule_match] matched=N dropped=M unmatched=.. ambiguous=..
+no_kalshi_start=..` at WARNING (only when something dropped). The three reasons
+need opposite fixes: `unmatched` = the Odds API does not carry the game or the
+two feeds' first pitches disagree by more than the tolerance (a rescheduled
+game the Kalshi ticker cannot restate); `ambiguous` = two schedule rows
+indistinguishable; `no_kalshi_start` = the suffix date grammar did not parse —
+if that is EVERY game, Kalshi changed the ticker format and the table is about
+to be emptied by the next `write_target_lines` (unconditional `DELETE` +
+insert), which cancels every resting quote `unresolvable_game` within ~300s.
+The maker and taker each warn once per ambiguous game (`_AMBIGUOUS_WARNED`,
+re-armed on their cache refresh) — resolution failures are deliberately not
+cached, so an unconditional warning was ~one line per RFQ per tick.
+
+One caveat this does not remove: the payoff depends on the **Odds API listing
+both games** of the doubleheader. If it lists one, the unmatched game declines
+(fail closed) — the risk gates need an Odds-API id, even though the leg surface
+itself does not.
+
+Book-side matching is fail-closed on BOTH routes, but by different mechanisms,
+and the structure route only became so at the pre-merge review of this change:
+
+* **Singles route** (`singles.match_book_game`): canonical teams **plus** start
+  time within `SURFACE_START_TOLERANCE_MIN`, and **two candidates inside
+  tolerance fail closed** (`n_game_ambiguous`) rather than picking the closest.
+* **Structure route** goes through the legacy per-book `match_events` helpers
+  (`mlb_sgp/scraper_*_sgp.py`, `betmgm.py`, `caesars.py`), and those are NOT
+  fail-closed on their own: every one of them **skips its UTC-hour guard when
+  either side lacks a start time and falls back to matching on teams alone**
+  ("backward compat" in FanDuel's; "one side lacks a timestamp — accept" in
+  MGM's), and the bot's hooks then took `matched[0]` — the first hit, never the
+  unique one. The dashboard scrapers need that fallback, so the guard lives at
+  the **bot's boundary** in `kalshi_common/sgp_service.py`, applied to all six
+  `match_event` hooks: `_sole_book_event` (DK/FD/PX/NV — the helper is fed a
+  single-game dict, so **more than one matched book event is ambiguous** →
+  `book_event_ambiguous`, declined) and `_sole_dated_book_event` (MGM/CZR —
+  their matcher keys on OUR game id, so a second book event *overwrites* the
+  first and a count cannot see it; instead the returned Event's **own
+  `start_time` must agree with the game's within
+  `SCHEDULE_START_TOLERANCE_MIN`**, and a missing or unparseable start is a
+  decline — `book_event_undated` / `book_event_wrong_start`). Measured
+  2026-09-02: 17/17 live MGM events carry `start_time`, clocks within ~6 min of
+  ours. Both guards are no-ops for a book that lists the game once with a
+  clock, and a decline just drops that book from the leg's consensus.
 
 Legs are produced by `legset.parse_leg` on synthetic leg dicts — the same
 function the quote path parses real RFQ legs with — so the surface cannot
@@ -862,7 +959,7 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `QUORUM_MARGIN_ADDON` | `0.01` | Extra probability-point floor term on quotes whose thinnest per-game consensus is exactly 2 books (issue #55) — a 2-sample σ underprices visible disagreement; drops out when a straggler book lands |
 | `FAIR_DRIFT_TOLERANCE` | `0.02` | Last-look: void confirm if fair drifted >2¢ against filled side since quote time |
 | `BOOK_MOVE_CB_THRESHOLD` | `0.03` | Circuit breaker: cancel a combo's quotes if the live book fair jumps >3¢ between consecutive pricings (per-tick) or if drift since quote exceeds this (per-quote risk sweep) |
-| `TIPOFF_CANCEL_MIN` | `5` | Pull quotes this many minutes before first pitch |
+| `TIPOFF_CANCEL_MIN` | `5` | Pull quotes this many minutes before first pitch. First pitch is parsed from the Kalshi event-ticker suffix (`_first_pitch_utc`), not `mlb_target_lines` |
 | `QUOTE_HYSTERESIS` | `0.005` | Don't replace a resting quote unless fair moved more than ½¢. Also the ε of the post-fill `same_price_block` |
 | `COMBO_COOLDOWN_SEC` | `60` | Hard FLOOR of the post-fill per-combo cooldown. The combo additionally stays cooled until every game it touches has a completed post-fill TARGETED fetch (#57), then until consensus fair moves off the filled fair (defense item 5) |
 | `MAX_COMBO_EXPOSURE_USD` | `50.0` | Per-combo concentration cap (H8/N7): fills + in-flight open quotes on one combo may not exceed this |
@@ -915,6 +1012,7 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `SURFACE_GAME_MIN_MINUTES` | `5` | Ignore games inside the tipoff-cancel window (matches `TIPOFF_CANCEL_MIN`) — prices we would never quote on |
 | `SURFACE_OVERROUND_MIN` / `SURFACE_OVERROUND_MAX` | `1.005` / `1.20` | Two-way devig envelope on a rung's RAW implied sum, checked BEFORE the devig. Outside it the rung is excluded and counted, never devigged |
 | `SURFACE_START_TOLERANCE_MIN` | `30` | Singles-route game matching: canonical teams PLUS start time within this window. Two candidates inside it fail closed — teams alone silently returns the wrong game of a doubleheader |
+| `leg_types.SCHEDULE_START_TOLERANCE_MIN` | `30` | Module constant, not env. Same rule for matching a Kalshi event to its Odds-API schedule row (`unique_game_by_start`) — used by `enumerate_kalshi_targets` and `_resolve_game_for_legs` |
 | `SURFACE_MAINTENANCE_SEC` | `30` | Housekeeping-thread cadence (refresh-log prune). The mirror itself is written per pass, not on a timer |
 | `SURFACE_LOG_RETENTION_HOURS` | `24` | `surface_refresh_log` retention. It is the only unbounded surface table (~1 row per book per pass) |
 
@@ -936,7 +1034,7 @@ Resting quotes are priced off books that lag reality (books refresh every 60s). 
 
 7. **Post-fill cooldown + same-price block (issue #21, re-pointed by #57).** After a fill, the combo is cooled for `COMBO_COOLDOWN_SEC` (hard floor) — and stays cooled past the floor until **every game the combo touches has a completed post-fill TARGETED on-demand fetch** (`in_cooldown_awaiting_refresh`). The confirm tick queues that fetch the instant the fill is recorded (research event `on_demand_requested` with `trigger="post_fill"`), so it lands within seconds and the gate normally clears right at the 60s floor; if the landing is lost (process restart, engine store prune) the cooldown gate lazily re-queues it — self-healing, never wedged, and never waiting on a sweep pass. "Landed" means the engine flight COMPLETED with ≥1 book fair after `filled_at` (`OnDemandEngine.completed_fetch_age_sec`). Once the books have been re-asked, the combo is still skipped (`same_price_block`) while the **live** consensus fair remains within `QUOTE_HYSTERESIS` of the fair the fill transacted against (`fair_at_confirm`, falling back to `blended_fair_at_quote`) — quote prices are fair ± a fixed ROI margin, so unchanged fair ⇔ the identical just-picked-off price. Both skip reasons are logged distinctly in `quote_decisions` for the funnel report. The refresh check fails CLOSED (no engine, missing landings, comparison errors keep the combo cooled).
 
-8. **Tipoff blackout.** `TIPOFF_CANCEL_MIN` pulls all quotes for a game before first pitch. A cross-game combo is swept against the **earliest** first pitch across ALL its games (re-derived from `seen_rfqs.legs_json` each sweep — same legset path as discovery); any game the sweep can't resolve cancels the quote (fail-safe, never fail open).
+8. **Tipoff blackout.** `TIPOFF_CANCEL_MIN` pulls all quotes for a game before first pitch, read from the Kalshi event-ticker suffix (`_first_pitch_utc` — exact, no DB read, independent of whether the Odds API carries the game). A cross-game combo is swept against the **earliest** first pitch across ALL its games (re-derived from `seen_rfqs.legs_json` each sweep — same legset path as discovery, via `_quote_first_pitches`); any game whose clock or id the sweep can't resolve cancels the quote (fail-safe, never fail open).
 
 9. **Last-look backstop (discrete events).** On accept, the bot first runs the **singles-move veto** (issue #17): the raw Kalshi odds of every leg, snapshotted at quote time, are re-read live (<~1s) and ANY one-tick move on any leg's bid or ask voids the fill (`voided_singles_moved`). Previously the last look re-priced grid combos from the same ~150s scrape cache the quote came from — `cur_fair == prev_fair` by construction, a no-op exactly in the fast-pickoff window. Combos that pass the veto still run the existing gates: (a) cannot re-price (no fresh books / failed on-demand re-fetch → `voided_no_fresh_books`), (b) no longer +EV (`price + fee >= current_fair`), (c) fair drifted past `FAIR_DRIFT_TOLERANCE` (→ `voided_last_look`). "Can't verify ⇒ don't confirm" is intentional throughout. Every accept emits a `confirm_singles_check` research event (quote age at accept, per-leg snapshot-vs-fresh odds, moved flag) — both the gate's save-rate and what a non-zero tolerance would have passed are measurable from day one. Non-confirms are abusive behavior Kalshi can throttle; the zero-tolerance veto's void rate is a watch item — if crowd noise voids too many clean accepts, the firehose deltas are the tuning dataset.
 

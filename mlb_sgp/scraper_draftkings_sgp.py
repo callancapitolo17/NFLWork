@@ -72,18 +72,22 @@ DK_SGP_PARLAYS_URL = (
 # SGP pricing — correlation-adjusted odds. DK reads on sportsbook-nash but
 # prices on gaming-us-nj, and only THIS host is bot-protected.
 #
-# The "/en/" is load-bearing — do not "tidy" it away (issue #39). On
-# 2026-06-24 an Akamai edge rule began denying the bare path, which killed
-# every DK price call (~18k rows/day -> 0) while events and structure stayed
-# green. The rule matches the path EXACTLY. DK's own betslip builds this URL
-# as `{locale}/api/wager/v1/calculateBets` (English maps to an empty prefix),
-# and the origin still routes the explicit "/en/" form, which the rule misses.
-# Verified live 2026-07-30:
-#     POST /api/wager/v1/calculateBets     -> 403 AkamaiGHost "Access Denied"
-#     POST /en/api/wager/v1/calculateBets  -> 200 correlated SGP price
-# If DK ever closes this too, the tell is error_class "…:price:403" in
-# sgp_fetch_health; the other locale prefixes (/de/, /fr/) 404, so the next
-# move is re-reading dkBetSlip.js for the current route, not a fingerprint fix.
+# BLOCKED since ~2026-08-20 — see issue #102 and mlb_sgp/README.md
+# "DraftKings price host". Kept as-is deliberately: the URL is NOT the defect,
+# so changing it would be churn that also destroys the comparison baseline.
+#
+# History. Issue #39 (2026-06-24) added the "/en/" prefix because an Akamai
+# rule denied the bare path and matched it EXACTLY; the explicit locale form
+# slipped past and priced normally through 2026-08-19. That gap is now closed:
+# the rule matches POST x path-suffix, so locale prefixing is dead as a
+# technique (2026-08-27 probes, both wager hosts):
+#     POST /api/wager/v1/calculateBets       -> 403 AkamaiGHost
+#     POST /en/api/wager/v1/calculateBets    -> 403 AkamaiGHost
+#     POST /en/api/wager/v1/somethingelse    -> 404 nginx (origin reachable)
+# Do not chase a new request FORM. dkBetSlip.js 2633.4.1 was re-read on
+# 2026-08-27: it builds this exact path (English -> empty prefix) on
+# wagerBaseApiHost = gaming-us-wv, and DK's OWN betslip 403s here too, from a
+# real Chrome on this egress. Our request shape already matches theirs.
 DK_CALCULATE_BETS_URL = (
     "https://gaming-us-nj.draftkings.com/en/api/wager/v1/calculateBets"
 )

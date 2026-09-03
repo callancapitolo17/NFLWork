@@ -24,10 +24,12 @@ class OrderGateway(ABC):
 
     @abstractmethod
     def place_yes_bid(self, ticker: str, price_cents: int, count: int,
-                      client_order_id: str) -> str | None: ...
+                      client_order_id: str,
+                      exchange_index: int | None = None) -> str | None: ...
 
     @abstractmethod
-    def cancel(self, order_id: str) -> bool: ...
+    def cancel(self, order_id: str, *, ticker: str | None = None,
+               exchange_index: int | None = None) -> bool: ...
 
 
 class ShadowGateway(OrderGateway):
@@ -37,18 +39,20 @@ class ShadowGateway(OrderGateway):
     def __init__(self):
         self._n = 0
 
-    def place_yes_bid(self, ticker, price_cents, count, client_order_id):
+    def place_yes_bid(self, ticker, price_cents, count, client_order_id,
+                      exchange_index=None):
         self._n += 1
         return f"shadow-{self._n}"
 
-    def cancel(self, order_id):
+    def cancel(self, order_id, *, ticker=None, exchange_index=None):
         return True
 
 
 class LiveGateway(OrderGateway):
     is_live = True
 
-    def place_yes_bid(self, ticker, price_cents, count, client_order_id):
+    def place_yes_bid(self, ticker, price_cents, count, client_order_id,
+                      exchange_index=None):
         # Kalshi v2 order API (v1 POST /portfolio/orders retired -> HTTP 410).
         # A YES buy is a bid at the YES price, in decimal-dollar strings.
         body = {"ticker": ticker, "side": "bid",
@@ -57,6 +61,11 @@ class LiveGateway(OrderGateway):
                 "time_in_force": "good_till_canceled",
                 "self_trade_prevention_type": "taker_at_cross",
                 "client_order_id": client_order_id}
+        if exchange_index is not None:
+            # Exchange sharding (announced 2026-08-24): the ticker alone
+            # auto-routes, but naming the shard skips that lookup's latency.
+            # Never hardcode the index — baseball is 3 today, NFL is 0.
+            body["exchange_index"] = int(exchange_index)
         try:
             status, resp, _ = auth_client.api(
                 "POST", "/portfolio/events/orders", body)
@@ -73,25 +82,65 @@ class LiveGateway(OrderGateway):
             return None
         return resp.get("order_id") or (resp.get("order") or {}).get("order_id")
 
-    def cancel(self, order_id):
+    def cancel(self, order_id, *, ticker=None, exchange_index=None):
+        """Cancel one resting order. Routing is not optional: DELETE carries
+        no ticker in its path, so without `exchange_index` (or the
+        `market_ticker` auto-route hint) Kalshi routes to shard 0 and
+        returns 404 for a baseball order that lives on shard 3 — which the
+        404-means-gone rule below then reported as a successful cancel while
+        the order kept resting (bug 2, observed live 2026-08-27)."""
+        path = f"/portfolio/events/orders/{order_id}"
+        params = []
+        if exchange_index is not None:
+            params.append(f"exchange_index={int(exchange_index)}")
+        if ticker:
+            params.append(f"market_ticker={ticker}")
+        if params:
+            path = f"{path}?{'&'.join(params)}"
         try:
-            status, _, _ = auth_client.api(
-                "DELETE", f"/portfolio/events/orders/{order_id}")
+            status, _, _ = auth_client.api("DELETE", path)
         except NETWORK_ERRORS as e:
             log.error("cancel NETWORK FAILURE %s: %s", order_id, e)
             return False
         if status == 404:
-            # Explicit 404 = the order is already gone (filled out, expired,
-            # or auto-cancelled on market close). Treating it as failure
-            # wedges the ticker with a phantom resting entry forever — the
-            # exact MM phantom-open-quotes bug (resolved 2026-08-12).
-            log.info("cancel %s: already gone (404) — treating as cancelled",
+            # A 404 is ambiguous: the order may be terminal (filled,
+            # expired, auto-cancelled at close) or merely misrouted. Ask
+            # Kalshi which it is — treating every 404 as "already gone" is
+            # what silently stranded 13 live orders. Unknown fails CLOSED:
+            # local state is held and the next cycle retries, so the phantom
+            # entry the MM bug taught us about can only outlive a listing
+            # endpoint that is itself down.
+            still = self._order_still_resting(order_id)
+            if still is None:
+                log.error("cancel %s: 404 and could not verify — holding",
+                          order_id)
+                return False
+            if still:
+                log.error("cancel %s: 404 but STILL RESTING on Kalshi "
+                          "(routing? exchange_index=%s) — holding",
+                          order_id, exchange_index)
+                return False
+            log.info("cancel %s: verified gone (404) — treating as cancelled",
                      order_id)
             return True
         if status not in (200, 204):
             log.warning("cancel failed %s: status=%s", order_id, status)
             return False
         return True
+
+    def _order_still_resting(self, order_id: str) -> bool | None:
+        """True/False if Kalshi's resting listing settles it, None if the
+        check itself failed. Omitting exchange_index lists ALL shards."""
+        try:
+            status, body, _ = auth_client.api(
+                "GET", "/portfolio/orders?status=resting&limit=1000")
+        except NETWORK_ERRORS as e:
+            log.error("cancel verify network failure %s: %s", order_id, e)
+            return None
+        if status != 200 or not isinstance(body, dict):
+            return None
+        return any(o.get("order_id") == order_id
+                   for o in body.get("orders") or [])
 
 
 def make_gateway(mode: str | None, ack: str | None) -> OrderGateway | None:

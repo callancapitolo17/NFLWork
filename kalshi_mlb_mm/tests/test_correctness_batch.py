@@ -3,7 +3,7 @@
    defaults to 1; unparseable size records 0 conservatively.
 2. B5: a transient `get_market` failure must NOT poison the scope cache; the
    cache is size-bounded.
-3. O-1: `_commence_time` / `_resolve_game_for_legs` results are cached in
+3. O-1: `_resolve_game_for_legs` results are cached in
    memory and invalidated on SGP refresh (no DuckDB connect per call).
 4. O-2: maker tables migrate to TIMESTAMPTZ; instants preserved; idempotent.
 """
@@ -181,41 +181,9 @@ def test_scope_cache_size_bounded(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 3. O-1 — game-metadata caches (no DuckDB connect per call)
+# 3. O-1 — game-metadata caches (no DuckDB connect per call).
+#    Tipoff is not among them: _first_pitch_utc parses the ticker suffix.
 # ---------------------------------------------------------------------------
-def test_commence_time_cached_until_target_line_refresh(monkeypatch, tmp_path):
-    from kalshi_common import sgp_runner
-    from kalshi_mlb_mm import main
-
-    main._invalidate_game_caches()
-    calls = []
-    ct = datetime(2026, 7, 20, 23, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr(main, "_commence_time_uncached",
-                        lambda gid: (calls.append(gid), ct)[1])
-
-    assert main._commence_time("g1") == ct
-    assert main._commence_time("g1") == ct
-    assert calls == ["g1"], "second call must hit the cache"
-
-    # #81: the target-line tick is the O-1 invalidation heir (new games
-    # appear via mlb_target_lines now, not a scrape).
-    monkeypatch.setattr(sgp_runner, "target_line_cycle", lambda **kw: [])
-    main._target_line_tick()
-    assert main._commence_time("g1") == ct
-    assert calls == ["g1", "g1"], "target-line refresh must invalidate the cache"
-
-
-def test_commence_time_failure_not_cached(monkeypatch):
-    from kalshi_mlb_mm import main
-    main._invalidate_game_caches()
-    calls = []
-    monkeypatch.setattr(main, "_commence_time_uncached",
-                        lambda gid: (calls.append(gid), None)[1])
-    assert main._commence_time("g1") is None
-    assert main._commence_time("g1") is None
-    assert calls == ["g1", "g1"], "a None (lookup failure) must not be cached"
-
-
 def test_resolve_game_cached_by_event_ticker(monkeypatch):
     from kalshi_mlb_mm import main
     from kalshi_common.legset import CanonicalLeg

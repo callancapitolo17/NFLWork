@@ -70,7 +70,8 @@ def test_discovery_dedup_no_resubmit_when_price_unchanged(monkeypatch, tmp_path)
     # router.combo_fair replaces _book_fairs + blended_fair in the live path.
     monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.55, 0.0, 1), "ok"))
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
-    monkeypatch.setattr(main, "_commence_time", lambda gid: None)
+    monkeypatch.setattr(main, "_first_pitch_utc",
+                        lambda gl: main.datetime.now(main.timezone.utc) + main.timedelta(hours=1))
     # Make tipoff_ok pass (commence_time is None → normally fails; override).
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
 
@@ -247,7 +248,8 @@ def test_risk_sweep_cancels_on_drift_since_quote(monkeypatch, tmp_path):
     db.init_database()
 
     # a book frame exists (inert since #57) and tipoff is far away.
-    monkeypatch.setattr(main, "_commence_time", lambda gid: None)
+    monkeypatch.setattr(main, "_first_pitch_utc",
+                        lambda gl: main.datetime.now(main.timezone.utc) + main.timedelta(hours=1))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
     # B1 fix: the sweep now re-derives the combo's games from legs_json and
     # fail-safe cancels on an unresolvable game — resolve to a real id so this
@@ -371,9 +373,12 @@ def test_risk_sweep_cancels_when_nonprimary_game_near_tipoff(monkeypatch, tmp_pa
 
     db, main = _sweep_env(monkeypatch, tmp_path, "xg_tipoff.duckdb")
     now = datetime.now(timezone.utc)
-    commence = {"gA": now + timedelta(hours=3),
-                "gB": now + timedelta(minutes=2)}   # inside TIPOFF_CANCEL_MIN=5
-    monkeypatch.setattr(main, "_commence_time", lambda gid: commence[gid])
+    commence = {_XG_SUF_A: now + timedelta(hours=3),
+                _XG_SUF_B: now + timedelta(minutes=2)}  # inside TIPOFF_CANCEL_MIN=5
+    # The tipoff clock is the Kalshi suffix, not mlb_target_lines — the test
+    # suffixes are 2025 dates, so the real parse would cancel everything.
+    monkeypatch.setattr(main, "_first_pitch_utc",
+                        lambda gl: commence.get(gl[0].game_id))
 
     _seed_cross_game_quote(db, "qid-xg", "r-xg", "COMBO-XG")
     gw = _CancelRecorder()
@@ -394,8 +399,10 @@ def test_risk_sweep_keeps_quote_when_all_games_far_from_tipoff(monkeypatch, tmp_
 
     db, main = _sweep_env(monkeypatch, tmp_path, "xg_keep.duckdb")
     now = datetime.now(timezone.utc)
-    commence = {"gA": now + timedelta(hours=3), "gB": now + timedelta(hours=2)}
-    monkeypatch.setattr(main, "_commence_time", lambda gid: commence[gid])
+    commence = {_XG_SUF_A: now + timedelta(hours=3),
+                _XG_SUF_B: now + timedelta(hours=2)}
+    monkeypatch.setattr(main, "_first_pitch_utc",
+                        lambda gl: commence.get(gl[0].game_id))
 
     _seed_cross_game_quote(db, "qid-keep", "r-keep", "COMBO-KEEP")
     gw = _CancelRecorder()
@@ -415,8 +422,8 @@ def test_risk_sweep_cancels_when_any_game_unresolvable(monkeypatch, tmp_path):
 
     db, main = _sweep_env(monkeypatch, tmp_path, "xg_unresolvable.duckdb")
     now = datetime.now(timezone.utc)
-    monkeypatch.setattr(main, "_commence_time",
-                        lambda gid: now + timedelta(hours=3))
+    monkeypatch.setattr(main, "_first_pitch_utc",
+                        lambda gl: now + timedelta(hours=3))
     # Secondary game resolves to None (e.g. dropped out of mlb_target_lines).
     monkeypatch.setattr(
         main, "_resolve_game_for_legs",
@@ -828,7 +835,7 @@ def test_discovery_skips_creator_with_too_many_fills(monkeypatch, tmp_path):
 # H8 — per-combo exposure cap. Pre-seed fills totalling >= cap on one ticker;
 # discovery on that ticker is skipped with reason='per_combo_cap'.
 # The per-combo cap now runs AFTER pricing (needs the quote), so stubs for
-# _book_fairs / _commence_time are required to reach it.
+# _book_fairs / _first_pitch_utc are required to reach it.
 # Cap is $50 (MAX_COMBO_EXPOSURE_USD default). Pre-seed $51 in reconciled fills.
 # ---------------------------------------------------------------------------
 def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
@@ -852,7 +859,8 @@ def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
     # Per-combo cap runs after pricing — mock router so pricing produces a valid fair.
     import kalshi_mlb_mm.router as router_mod
     monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.55, 0.0, 1), "ok"))
-    monkeypatch.setattr(main, "_commence_time", lambda gid: None)
+    monkeypatch.setattr(main, "_first_pitch_utc",
+                        lambda gl: main.datetime.now(main.timezone.utc) + main.timedelta(hours=1))
 
     _evt = "KXMLBGAME-25JUN271905TEXLAA"
     legs = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
