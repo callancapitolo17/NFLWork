@@ -442,6 +442,19 @@ was logged out), the `_abck` sensor cookie (unvalidated for 90s and still
 different TLS stacks, all 403 with controls stable). A proxy would have
 bought nothing, and so would swapping the imitation library.
 
+### Decision: DK stays OFF the same-game path (2026-09-02)
+
+A browser-backed sidecar (`dk_price_sidecar/`, commit ac9ecf3) was built,
+verified end to end (`true_odds=7.75` 4/4) and **reverted the same day by
+owner decision** (ba1eec9): a resident browser is not a dependency this
+operation will run. Cookie transplant from a real Chrome was also measured —
+a browser-minted `_abck` is a budget of ~6 requests before Akamai rotates it
+dead — so there is no pure-HTTP path either. Same-game combos (7% of RFQ
+flow) price off the other five books; cross-game never needed DK's price
+call. Reopen only if same-game `too_few_books` declines become material, and
+cap DK's concurrency to 1 before any re-enable — the burst is what drew the
+rule.
+
 ### Diagnostic fix that did land (issue #102)
 
 `draftkings.price_selection_set` is the only book's price hook that issues its
