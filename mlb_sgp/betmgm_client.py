@@ -157,13 +157,25 @@ class BetMGMClient(PriceCallTallyMixin):
 
     # --- full market tree (alts) ----------------------------------------- #
     def fetch_markets(self, fixture_id: str,
-                      profile: RetryProfile = RETRY_BACKGROUND) -> list[dict]:
+                      profile: RetryProfile = RETRY_BACKGROUND, *,
+                      include_main_line_games: bool = False) -> list[dict]:
         """Return the full ``optionMarkets`` list for one fixture.
 
         ``offerMapping=All`` returns every alt run line + alt total + F5
         market (the Gridable listing only carries the main line). Refreshes
         the accessid once on a 400 gate error; a 404 means the fixture is
         gone (skip it), anything else non-200 raises.
+
+        ``include_main_line_games`` (keyword-only, default off): also fold in
+        the fixture's legacy ``games`` markets, re-shaped to the
+        ``optionMarkets`` schema. BetMGM builds a next-day fixture's full
+        market tree only the next MORNING (~05:50 PT, live 2026-09-03); until
+        then ``optionMarkets`` is EMPTY and the 4 main lines (money line, two
+        run lines, main total) sit only in ``games``. That is fine for a
+        reader that devigs the two-sided odds (the leg surface) and WRONG for
+        the bet-builder: ``price_picks`` returns None for those ids (verified
+        2026-09-03), so a same-game SGP caller that opted in would spend one
+        doomed POST per RFQ all night. Hence off by default.
         """
         self.accessid(profile=profile)   # raises BookTransportError if it can't harvest
         r = self._get_fixture_markets(fixture_id, profile)
@@ -173,7 +185,12 @@ class BetMGMClient(PriceCallTallyMixin):
         if not check_response(BOOK, "structure", r, allow_404=True):
             return []
         fxs = json_or_raise(BOOK, "structure", r).get("fixtures", [])
-        return fxs[0].get("optionMarkets", []) if fxs else []
+        if not fxs:
+            return []
+        option_markets = fxs[0].get("optionMarkets") or []
+        if not include_main_line_games:
+            return option_markets
+        return _merge_main_line_games(option_markets, fxs[0].get("games") or [])
 
     def _get_fixture_markets(self, fixture_id: str, profile: RetryProfile):
         """One raw GET of the full market tree (retried per ``profile``).
@@ -257,6 +274,50 @@ def _is_accessid_gate(resp) -> bool:
     return "ccess id" in (getattr(resp, "text", "") or "").lower()
 
 
+def _merge_main_line_games(option_markets: list[dict],
+                           games: list[dict]) -> list[dict]:
+    """``optionMarkets`` plus the legacy ``games`` markets not already in it.
+
+    Both arrays share one market-id space (a main line that later appears in
+    ``optionMarkets`` keeps the id it had under ``games``), so an id already
+    present wins and its ``games`` twin is dropped — never two entries for
+    one line.
+    """
+    seen_market_ids = {m.get("id") for m in option_markets}
+    merged = list(option_markets)
+    for game_market in games:
+        if game_market.get("id") in seen_market_ids:
+            continue
+        merged.append(_main_line_game_as_option_market(game_market))
+    return merged
+
+
+def _main_line_game_as_option_market(game_market: dict) -> dict:
+    """One legacy ``games`` market -> the ``optionMarkets`` shape
+    ``betmgm.parse_markets`` reads.
+
+    Field map (live payload 2026-09-03): ``results`` -> ``options``; each
+    result's top-level ``odds`` -> ``price.odds``; ``name``/``attr``/
+    ``totalsPrefix``/``id`` carry over unchanged. Only the keys
+    ``parse_markets`` reads are produced — nothing pretends to be a
+    bet-builder field.
+    """
+    options = []
+    for result in game_market.get("results") or []:
+        options.append({
+            "id": result.get("id"),
+            "name": result.get("name"),
+            "attr": result.get("attr"),
+            "totalsPrefix": result.get("totalsPrefix"),
+            "price": {"odds": result.get("odds")},
+        })
+    return {
+        "id": game_market.get("id"),
+        "name": game_market.get("name"),
+        "options": options,
+    }
+
+
 def _is_mlb(fixture: dict) -> bool:
     """True only for Major League Baseball fixtures (competition name 'MLB').
 
@@ -283,7 +344,7 @@ def _split_home_away(fixture: dict) -> tuple[str, str]:
         name = nm.get("value", "") or ""
     if " at " in name:
         away, home = name.split(" at ", 1)
-        return home.strip(), away.strip()
+        return _strip_game_number(home), _strip_game_number(away)
 
     teams = [
         p for p in fixture.get("participants", [])
@@ -295,5 +356,21 @@ def _split_home_away(fixture: dict) -> tuple[str, str]:
             return (n.get("value") or "").strip() if isinstance(n, dict) else ""
         away, home = _pname(teams[0]), _pname(teams[1])
         if home and away:
-            return home, away
+            return _strip_game_number(home), _strip_game_number(away)
     return "", ""
+
+
+_GAME_NUMBER_SUFFIX = re.compile(r"\s*\(Game \d+\)\s*$", re.IGNORECASE)
+
+
+def _strip_game_number(team_name: str) -> str:
+    """Drop BetMGM's doubleheader marker from a team name.
+
+    A doubleheader fixture is named "Detroit Tigers at Cleveland Guardians
+    (Game 1)" (live 2026-09-03), and the marker rides on the HOME name, which
+    the canonical team dict cannot resolve — so both games of every
+    doubleheader failed to match. The two games stay distinct downstream:
+    ``_match_events`` is UTC-hour-bucket strict and ``_sole_dated_book_event``
+    checks the fixture's own start time.
+    """
+    return _GAME_NUMBER_SUFFIX.sub("", team_name).strip()

@@ -146,6 +146,15 @@ dashboard spawns the shims + blends them in `mlb_correlated_parlay.R`.
   header; use state `pa`), then `POST /cds-api/bettingoffer/picks` with legs
   sharing a `pickGroupId` returns the Angstrom correlated price. Source
   `betmgm_direct`. Verified live (4-corner overround ~1.12–1.18). No browser.
+  **Next-day fixtures carry only their 4 main lines** (money line, two run
+  lines, main total) in the legacy `games` array until BetMGM builds the full
+  `optionMarkets` tree the next morning (~05:50 PT, live 2026-09-03);
+  `fetch_markets(..., include_main_line_games=True)` folds them in re-shaped
+  to the `optionMarkets` schema. Opt-in because the bet-builder refuses those
+  ids (`price_picks` → None, verified) — only a two-sided-devig reader (the
+  maker's leg surface) should ask for them. Doubleheader fixtures are named
+  `"<Away> at <Home> (Game N)"`; the marker is stripped before team
+  resolution, and the UTC-hour bucket + fixture start time keep G1/G2 apart.
 - **Caesars** (`scraper_caesars_sgp.py` + `caesars.py` + `caesars_client.py`
   + `caesars_waf.py` + `caesars_waf_node.js`) — token-broker + REST, **browser
   free**. `POST /sb/v2/bets/details` with `combinationSelections: []` returns

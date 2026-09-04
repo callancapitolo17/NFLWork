@@ -430,6 +430,10 @@ class TestFreshnessIsNotFabricated:
         # payload's age. Any other value reintroduces the bug.
         assert built["structure_ttl_sec"] == 0.0
         assert built["single_leg_structure_fair"] is True
+        # BetMGM's next-day main lines sit in its legacy ``games`` array
+        # until the morning tree build; without this the surface priced
+        # 1 of 7 games overnight (2026-09-03).
+        assert built["structure_main_line_fallback"] is True
         assert built["health_db_path"] is None
 
     def test_a_cached_payload_is_refused_rather_than_stamped_fresh(self):

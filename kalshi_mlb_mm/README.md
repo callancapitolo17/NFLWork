@@ -380,6 +380,21 @@ Each worker has its own clock, so a slow book never drags a fast one — DK's
 slate scrape is ~21s while BetMGM's structure pass is ~7s — and every row
 carries its own `built_at`.
 
+**BetMGM overnight (fixed 2026-09-03).** BetMGM builds a next-day fixture's
+full `optionMarkets` tree only the next morning (~05:50 PT); until then the
+fixture's 4 main lines sit solely in its legacy `games` array, which the
+client did not read — so from ~21:40 PT to ~05:50 PT the MGM structure pass
+priced 1 of 7 in-window games (`unmatched=6`, actually `no_structure`) and
+most cross-game legs fell to an FD+NV pair (162 `surface_too_few_books`
+declines in one session). The surface's private `SGPService` now passes
+`structure_main_line_fallback=True`, which re-shapes those `games` markets
+into the `optionMarkets` schema for this route only: it devigs two-sided
+singles, so main-line odds are all it needs. The maker's on-demand service
+keeps the default (off) because MGM's bet-builder refuses those ids — a
+same-game RFQ on a next-day game would otherwise spend one doomed POST per
+flight all night. Expect MGM to cover only the 3 main rungs per game
+overnight and the full ladder after the morning build.
+
 ### Identity: keyed on the Kalshi suffix, never on team names
 
 Surface rows key on the **Kalshi event-ticker suffix** (`26AUG252138CLELAA`),

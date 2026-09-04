@@ -148,7 +148,12 @@ class SurfaceIngest:
         from kalshi_common.sgp_service import SGPService
         return SGPService(
             books=self._books_structure, health_db_path=None,
-            structure_ttl_sec=0.0, single_leg_structure_fair=True)
+            structure_ttl_sec=0.0, single_leg_structure_fair=True,
+            # BetMGM's next-day main lines live only in its legacy ``games``
+            # array until the morning tree build; this route devigs
+            # two-sided singles, so it can read them (the on-demand path
+            # cannot price them and keeps the default).
+            structure_main_line_fallback=True)
 
     def structure_pass(self, book: str) -> PassResult:
         started_at = datetime.now(timezone.utc)
