@@ -71,7 +71,7 @@ def _setup(monkeypatch, tmp_path):
     # An open quote's worst-case exposure counts against the per-combo cap
     # (N7); raise it so the hysteresis REPLACE path is reachable (same
     # workaround as test_main_smoke's dedup test).
-    monkeypatch.setattr(cfg, "MAX_COMBO_EXPOSURE_USD", 500.0)
+    monkeypatch.setattr(cfg, "max_combo_exposure_usd", lambda: 500.0)
     importlib.reload(db)
     db.init_database()
     clock = FakeClock()

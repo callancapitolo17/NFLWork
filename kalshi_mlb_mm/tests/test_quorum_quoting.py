@@ -269,9 +269,13 @@ def _setup(monkeypatch, tmp_path, engine, db_name, legs=GRID_LEGS):
     from kalshi_mlb_mm import main
     monkeypatch.setattr(cfg, "DB_PATH", tmp_path / db_name)
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
+    # Pin the bankroll like the other cap tests do: the operator's .env
+    # (BANKROLL=2000 since 2026-09-03) otherwise makes one open quote's
+    # worst case $200 and saturates the cap below on its own.
+    monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     # One open quote's worst-case exposure saturates the default per-combo
     # cap and would mask the refine paths (same as test_quote_replace).
-    monkeypatch.setattr(cfg, "MAX_COMBO_EXPOSURE_USD", 200.0)
+    monkeypatch.setattr(cfg, "max_combo_exposure_usd", lambda: 200.0)
     importlib.reload(db)
     db.init_database()
     monkeypatch.setattr(main, "_today_fills", lambda: [])

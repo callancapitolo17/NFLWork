@@ -197,7 +197,7 @@ def test_own_open_quote_excluded_when_requoting_same_rfq(monkeypatch, tmp_path):
     # worst_inflight and would fire first at the default $50 cap; issue #22
     # keeps N7 as-is, so give it headroom (same as test_quote_replace) to pin
     # the per-game/daily exclusion specifically.
-    monkeypatch.setattr(cfg, "MAX_COMBO_EXPOSURE_USD", 200.0)
+    monkeypatch.setattr(cfg, "max_combo_exposure_usd", lambda: 200.0)
     # Existing open quote for THIS rfq at the full per-game cap ($50). Its
     # prices differ from the new quote by >> hysteresis → replace path.
     with db.connect() as con:

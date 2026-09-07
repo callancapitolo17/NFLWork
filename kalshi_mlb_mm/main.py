@@ -1892,7 +1892,7 @@ def _discovery_tick(source, gateway, dry_run):
             combo_exp = snapshot.combo_fill_exposure(ticker)
             inflight_count = snapshot.open_count_for_ticker(ticker)
             worst_inflight = float(inflight_count) * config.max_fill_exposure_usd()
-            if combo_exp + worst_inflight + fill_exposure > config.MAX_COMBO_EXPOSURE_USD:
+            if combo_exp + worst_inflight + fill_exposure > config.max_combo_exposure_usd():
                 _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                               reason="per_combo_cap")
                 continue

@@ -27,7 +27,10 @@ def _replace_env(monkeypatch, tmp_path, db_name):
 
     monkeypatch.setattr(cfg, "DB_PATH", tmp_path / db_name)
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
-    monkeypatch.setattr(cfg, "MAX_COMBO_EXPOSURE_USD", 200.0)
+    # Pin the bankroll like the other cap tests: the operator's .env
+    # (BANKROLL=2000 since 2026-09-03) otherwise saturates the cap below.
+    monkeypatch.setattr(cfg, "BANKROLL", 500.0)
+    monkeypatch.setattr(cfg, "max_combo_exposure_usd", lambda: 200.0)
     importlib.reload(db)
     db.init_database()
 

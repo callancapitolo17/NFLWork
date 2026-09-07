@@ -8,7 +8,7 @@ _TEST_DESC = ComboDescriptor('spread_total', -1.5, 8.5, 'Home Spread + Over',
 # N7 — per-combo cap counts in-flight live_quotes' worst-case exposure.
 # The per-combo cap now runs AFTER pricing (needs the quote). In-flight worst-
 # case = inflight_count * max_fill_exposure_usd(). We pin BANKROLL=$500 and
-# MAX_FILL_EXPOSURE_PCT=0.10 (cap=$50) and set MAX_COMBO_EXPOSURE_USD=10 so
+# MAX_FILL_EXPOSURE_PCT=0.10 (cap=$50) and set max_combo_exposure_usd()=10 so
 # 4 in-flight quotes ($200 worst) + this-quote (~$1.71) >> $10 cap.
 # ---------------------------------------------------------------------------
 def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
@@ -22,7 +22,7 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
     # Pin so per-fill cap = $50, per-combo cap = $10 (so inflight $200 >> $10).
     monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)   # per-fill cap = $50
-    monkeypatch.setattr(cfg, "MAX_COMBO_EXPOSURE_USD", 10.0)  # tight combo cap
+    monkeypatch.setattr(cfg, "max_combo_exposure_usd", lambda: 10.0)  # tight combo cap
     # R-1 (issue #22): the per-game/daily gates now also count open quotes'
     # worst-case exposure ($200 here) and run BEFORE the per-combo gate. Give
     # them headroom so this test still pins the per-combo path specifically.
