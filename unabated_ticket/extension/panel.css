@@ -23,7 +23,8 @@ body {
   font: 14px/1.4 system-ui, -apple-system, sans-serif;
 }
 main { margin-bottom: 16px; }
-.side { font-size: 22px; font-weight: 700; }
+.side-caption { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.side { font-size: 24px; font-weight: 700; line-height: 1.2; }
 .muted { color: var(--muted); font-size: 12px; }
 .facts {
   display: grid;

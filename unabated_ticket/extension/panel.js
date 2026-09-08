@@ -36,6 +36,15 @@
     return price > 0 ? `+${price}` : `${price}`;
   }
 
+  // Prediction-market style: implied probability in cents (what Kalshi/Novig show).
+  function fmtCents(price) {
+    return `${(kelly.americanToProb(price) * 100).toFixed(1)}\u00a2`;
+  }
+
+  function fmtPriceBoth(price) {
+    return `${fmtAmerican(price)} \u00b7 ${fmtCents(price)}`;
+  }
+
   function fmtDollars(value) {
     return value.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
@@ -87,6 +96,28 @@
     }
   }
 
+  // ---- side wording --------------------------------------------------------
+
+  // "Total · Over 55.5 combined points" / "Spread · Oregon (away) vs Oklahoma State"
+  function describeSide(ticket) {
+    const rotation = ticket.rotation != null ? ` \u00b7 rot ${ticket.rotation}` : "";
+    if (ticket.betType === "Total") {
+      const overUnder = ticket.sideIndex === 0 ? "Over" : "Under";
+      return `Total \u00b7 ${overUnder} ${ticket.points} combined points${rotation}`;
+    }
+    const opponent = ticket.sideIndex === 0 ? ticket.homeTeam : ticket.awayTeam;
+    const vs = opponent ? ` vs ${opponent}` : "";
+    const where = ticket.homeAway ? ` (${ticket.homeAway.toLowerCase()})` : "";
+    return `${ticket.betType} \u00b7 ${ticket.homeAway === "Away" ? ticket.awayTeam || "" : ticket.homeTeam || ""}${where}${vs}${rotation}`;
+  }
+
+  // "Villanova Wildcats @ Louisville Cardinals · CFB", falling back to Unabated's event name.
+  function describeMatchup(ticket) {
+    const league = (ticket.league || "").toUpperCase();
+    if (ticket.awayTeam && ticket.homeTeam) return `${ticket.awayTeam} @ ${ticket.homeTeam}${league ? ` \u00b7 ${league}` : ""}`;
+    return ticket.eventName || "";
+  }
+
   // ---- rendering -----------------------------------------------------------
 
   function show(which) {
@@ -127,15 +158,14 @@
     renderWarning(ticket, watchStatus);
 
     view.sideLabel.textContent = ticket.sideLabel;
-    const rotation = ticket.rotation != null ? ` · rot ${ticket.rotation}` : "";
-    view.betLine.textContent = `${ticket.betType}${ticket.points != null ? ` ${fmtPoints(ticket.points)}` : ""} · ${(ticket.league || "").toUpperCase()}${rotation}`;
-    view.eventLine.textContent = ticket.eventName || "";
+    view.betLine.textContent = describeSide(ticket);
+    view.eventLine.textContent = describeMatchup(ticket);
     view.startLine.textContent = fmtStart(ticket.eventStart);
 
     const { line, result, reason } = computeStake(ticket, settings);
     view.book.textContent = ticket.book.name;
-    view.price.textContent = fmtAmerican(line.price);
-    view.fair.textContent = line.fair == null ? "unknown" : fmtAmerican(line.fair);
+    view.price.textContent = fmtPriceBoth(line.price);
+    view.fair.textContent = line.fair == null ? "unknown" : fmtPriceBoth(line.fair);
     view.edge.textContent = result ? fmtEdge(result.edge, ticket) : "—";
 
     view.stake.classList.remove("no-edge");
@@ -149,11 +179,11 @@
       view.fullKelly.textContent = "No edge at this price.";
     } else {
       view.stake.textContent = fmtDollars(result.stake);
-      view.fullKelly.textContent = `Full Kelly ${fmtDollars(result.fullKellyStake)} (${fmtPct(result.fullKellyFraction)} of bankroll) × ${settings.multiplier}`;
+      view.fullKelly.textContent = "";
     }
 
     const stakeText = result ? result.stake.toFixed(2) : "n/a";
-    lastCopyText = `${ticket.sideLabel} ${fmtAmerican(line.price)} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtAmerican(line.fair)} | edge ${result ? fmtPct(result.edge) : "?"} | stake $${stakeText} | ${ticket.eventName || ""}`;
+    lastCopyText = `${ticket.sideLabel} ${fmtPriceBoth(line.price)} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(line.fair)} | edge ${result ? fmtPct(result.edge) : "?"} | stake $${stakeText} | ${describeMatchup(ticket)}`;
     view.copyStatus.textContent = "";
     show("ticket");
   }

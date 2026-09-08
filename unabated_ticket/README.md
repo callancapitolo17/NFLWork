@@ -57,6 +57,10 @@ extension's card and reload the Unabated tab.
 
 ## Stake
 
+Prices print as American plus prediction-market cents (implied probability),
+e.g. `-111 · 52.6¢`, so they read the same on Kalshi/Novig and on a book.
+The panel leads with "You are betting" + the side, then the matchup.
+
 Mode A of the Kelly sheet (`extension/kelly.js`):
 
 ```

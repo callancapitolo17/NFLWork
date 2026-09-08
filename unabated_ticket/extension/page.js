@@ -180,6 +180,13 @@
     return key;
   }
 
+  // Team name or null; the panel falls back to eventName when a lookup fails.
+  function teamNameOrNull(sideIdx, rowData, context) {
+    const eventTeam = rowData.eventTeams && rowData.eventTeams[sideIdx];
+    if (!eventTeam || eventTeam.id == null) return null;
+    try { return teamNameOf(eventTeam.id, context); } catch (_error) { return null; }
+  }
+
   function buildTicket({ marketLine, sideIndex, rowData, context, cellProps }) {
     const betTypeId = rowData.betTypeId;
     const betType = BET_TYPE_NAMES[betTypeId];
@@ -201,6 +208,10 @@
       betType,
       sideIndex,
       sideLabel: sideLabelOf(betType, sideIndex, points, rowData, context),
+      // Side 0 is the away team / Over, side 1 the home team / Under.
+      awayTeam: teamNameOrNull(0, rowData, context),
+      homeTeam: teamNameOrNull(1, rowData, context),
+      homeAway: sideIndex === 0 ? "Away" : "Home",
       rotation,
       points,
       book: { id: bookId, name: bookNameOf(bookId, context, cellProps) },
