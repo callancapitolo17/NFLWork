@@ -14,7 +14,7 @@ extension remembers the bet and computes the stake at the moment of the click.
 **In:** one ticket at a time, shown in a Chrome side panel that stays open when
 the book tab takes focus. Stake from the Kelly sheet's Mode A. Line-moved
 warning while the ticket is open. Copy button. Settings: bankroll, Kelly
-multiplier, rounding.
+multiplier.
 
 **Out (user decisions 2026-09-08):** bet tracking (Pikkit), on-screen overlay,
 placed tags, recent-tickets list, exposure-aware Kelly, voice, phone.
@@ -79,12 +79,12 @@ dec_book  = american_to_decimal(price)
 p_fair    = american_to_prob(fair)          # fair is already no-vig
 b         = dec_book - 1
 full      = (p_fair * b - (1 - p_fair)) / b # 0 if <= 0
-stake     = round_to(bankroll * full * multiplier, rounding)
+stake     = bankroll * full * multiplier               # shown to the dollar
 ```
 
 Shown: stake (large), full-Kelly dollars (small), edge %, fair. Negative edge
 shows stake $0 and a muted "no edge" line. Defaults: bankroll 30000,
-multiplier 0.25, rounding 5 (from the Kelly Calculator sheet).
+multiplier 0.25 (from the Kelly Calculator sheet). No rounding (user decision).
 
 ### Side labels
 
