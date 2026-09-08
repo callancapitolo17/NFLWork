@@ -27,8 +27,13 @@ extension's card and reload the Unabated tab.
   is read from React fiber props (`marketLine`, `sideIndex`, `context`) and
   the AG Grid row (`node.data`) attached to the clicked
   `.odds-cell-action-shell`; those are invisible to an isolated content
-  script. A capture-phase click listener runs first; Unabated's own
-  deep-link handler runs untouched afterwards.
+  script. Capture runs on **pointerdown** (capture phase on `document`, so
+  before any Unabated handler) with `click` as a fallback, deduped per cell —
+  Unabated's one-click betting can open the book's deeplink on mouse-down and
+  may navigate the tab away before a `click` ever fires. Unabated's own
+  handler runs untouched afterwards. If the deeplink replaces the Unabated
+  tab, the ticket is already stored and the panel shows it with
+  "Not watching the line" (no tab left to watch).
 - Fast path: fiber props. Fallback: `data-marketline-id` on the shell plus a
   `forEachNode` scan of every row's `sides`. If both fail the panel says
   **Could not read this cell** with the reason; it never shows a stake it

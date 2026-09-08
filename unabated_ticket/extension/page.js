@@ -331,11 +331,24 @@
 
   // ---- click capture -------------------------------------------------------
 
+  // One-click betting: Unabated's own handler opens the book's deeplink, and
+  // it can do so on mouse-down and can navigate THIS tab away before a `click`
+  // event ever fires. So capture on pointerdown (capture phase on document runs
+  // before any page handler) and keep `click` only as a fallback for keyboard
+  // or synthetic activation. The two are deduped per shell.
+  const CAPTURE_DEDUPE_MS = 1500;
+  const PRIMARY_BUTTON = 0;
+  const MIDDLE_BUTTON = 1;
+  let lastCapture = { shell: null, at: 0 };
+
   function onClickCapture(event) {
     const target = event.target instanceof Element ? event.target : null;
     const shell = target && target.closest(CELL_SHELL_SELECTOR);
     if (!shell) return;
     if (target.closest(MORE_BUTTON_SELECTOR)) return;
+    if (event.type === "pointerdown" && event.button !== PRIMARY_BUTTON && event.button !== MIDDLE_BUTTON) return;
+    if (lastCapture.shell === shell && Date.now() - lastCapture.at < CAPTURE_DEDUPE_MS) return;
+    lastCapture = { shell, at: Date.now() };
     try {
       const cell = readCell(shell);
       const ticket = buildTicket(cell);
@@ -349,6 +362,7 @@
     }
   }
 
+  document.addEventListener("pointerdown", onClickCapture, true);
   document.addEventListener("click", onClickCapture, true);
   // Heartbeat so the panel can show whether this script is alive on the tab.
   post("ready", { url: window.location.href, at: Date.now() });
