@@ -39,8 +39,11 @@ extension's card and reload the Unabated tab.
 - The ticket also carries `watch: {gridKey, sideKey, bookKey}` — the row id
   and `sides["si<n>:tid<id>"]["ms<book>"]` path used to find the same line
   again. Not in the plan's contract; needed by the watcher.
-- `content.js` forwards the ticket to `background.js`, which writes
-  `chrome.storage.session` (cleared when Chrome closes) and opens the panel.
+- `content.js` (isolated world) writes the ticket to `chrome.storage.session`
+  directly (cleared when Chrome closes). `background.js` is off the hot path —
+  it only sets the panel-open-on-click behavior and opens session storage to
+  content scripts (`setAccessLevel`) — so a sleeping or crashed service worker
+  can't stop a click from reaching the panel.
 - Every 5 s `page.js` re-reads the same book line through the grid API. If
   price or points moved, the panel shows **Line moved**, re-sizes off the
   new price and fair, and keeps the captured line for comparison. Off the

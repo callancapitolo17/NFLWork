@@ -1,31 +1,75 @@
 // Unabated Ticket — isolated-world bridge.
 //
-// page.js (MAIN world) cannot use chrome.* APIs, so it posts window messages;
-// this script forwards them to background.js, which owns storage writes.
-// Side effects: none on the page.
+// page.js (MAIN world) reads React fiber but cannot use chrome.* APIs, so it
+// hands data here via window.postMessage. This script (ISOLATED world) writes
+// chrome.storage.session directly — the side panel reads it and listens for
+// storage.onChanged. background.js only sets the storage access level and the
+// panel-open-on-click behavior; it is deliberately NOT on the hot path, so a
+// dead/asleep service worker cannot stop a ticket from reaching the panel.
+//
+// Side effects: writes chrome.storage.session {ticket, error, watchStatus,
+// pageReady}. None on the page.
 
 (function () {
   "use strict";
 
   const MESSAGE_SOURCE = "unabated-ticket";
-  const FORWARDED_TYPES = new Set(["ticket", "watch", "error", "ready"]);
+  const HANDLED_TYPES = new Set(["ticket", "watch", "error", "ready"]);
 
-  function forward(message) {
+  function setSession(obj) {
     try {
-      chrome.runtime.sendMessage(message, () => {
-        // Reading lastError marks it handled; the extension may have been reloaded.
-        if (chrome.runtime.lastError) console.info("[unabated-ticket] forward failed:", chrome.runtime.lastError.message);
+      chrome.storage.session.set(obj, () => {
+        if (chrome.runtime.lastError) console.info("[unabated-ticket] storage write failed:", chrome.runtime.lastError.message);
       });
     } catch (_error) {
-      // Extension context invalidated (reloaded while the page stayed open). Nothing to do.
+      // Extension context invalidated (reloaded while the page stayed open).
     }
   }
 
-  console.info("[unabated-ticket] content.js active");
+  function sameCurrent(a, b) {
+    if (a == null || b == null) return a == null && b == null;
+    return a.price === b.price && a.points === b.points && a.fair === b.fair && a.offBoard === b.offBoard;
+  }
+
+  function handleTicket(ticket) {
+    setSession({ ticket, error: null, watchStatus: null });
+  }
+
+  function handleError(payload) {
+    setSession({ ticket: null, error: payload, watchStatus: null });
+  }
+
+  function handleReady(payload) {
+    setSession({ pageReady: { url: payload.url, at: payload.at } });
+  }
+
+  function handleWatch(payload) {
+    chrome.storage.session.get("ticket", (session) => {
+      if (chrome.runtime.lastError) return;
+      const ticket = session.ticket;
+      if (!ticket || ticket.capturedAt !== payload.capturedAt) return; // stale watcher
+      if (payload.error) {
+        setSession({ watchStatus: { capturedAt: ticket.capturedAt, seenAt: Date.now(), error: payload.error } });
+        return;
+      }
+      const line = payload.line;
+      const moved = ticket.price !== line.price || ticket.points !== line.points || line.offBoard;
+      const current = moved ? line : null;
+      const updates = { watchStatus: { capturedAt: ticket.capturedAt, seenAt: line.seenAt, error: null } };
+      // Only rewrite the ticket when `current` changes, so the panel does not re-render every 5s.
+      if (!sameCurrent(ticket.current, current)) updates.ticket = { ...ticket, current };
+      setSession(updates);
+    });
+  }
+
+  const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch, ready: handleReady };
+
+  console.info("[unabated-ticket] content.js active (direct-to-storage)");
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     const data = event.data;
-    if (!data || data.source !== MESSAGE_SOURCE || !FORWARDED_TYPES.has(data.type)) return;
-    forward({ type: data.type, payload: data.payload });
+    if (!data || data.source !== MESSAGE_SOURCE || !HANDLED_TYPES.has(data.type)) return;
+    const handler = handlers[data.type];
+    if (handler) handler(data.payload);
   });
 })();
