@@ -2,12 +2,12 @@
 //
 // page.js (MAIN world) reads React fiber but cannot use chrome.* APIs, so it
 // hands data here via window.postMessage. This script (ISOLATED world) writes
-// chrome.storage.session directly — the side panel reads it and listens for
+// chrome.storage.local directly — the side panel reads it and listens for
 // storage.onChanged. background.js only sets the storage access level and the
 // panel-open-on-click behavior; it is deliberately NOT on the hot path, so a
 // dead/asleep service worker cannot stop a ticket from reaching the panel.
 //
-// Side effects: writes chrome.storage.session {ticket, error, watchStatus,
+// Side effects: writes chrome.storage.local {ticket, error, watchStatus,
 // pageReady}. None on the page.
 
 (function () {
@@ -18,7 +18,7 @@
 
   function setSession(obj) {
     try {
-      chrome.storage.session.set(obj, () => {
+      chrome.storage.local.set(obj, () => {
         if (chrome.runtime.lastError) console.info("[unabated-ticket] storage write failed:", chrome.runtime.lastError.message);
       });
     } catch (_error) {
@@ -44,9 +44,9 @@
   }
 
   function handleWatch(payload) {
-    chrome.storage.session.get("ticket", (session) => {
+    chrome.storage.local.get("ticket", (stored) => {
       if (chrome.runtime.lastError) return;
-      const ticket = session.ticket;
+      const ticket = stored.ticket;
       if (!ticket || ticket.capturedAt !== payload.capturedAt) return; // stale watcher
       if (payload.error) {
         setSession({ watchStatus: { capturedAt: ticket.capturedAt, seenAt: Date.now(), error: payload.error } });

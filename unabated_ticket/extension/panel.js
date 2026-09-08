@@ -1,7 +1,7 @@
 // Unabated Ticket — side panel.
 //
-// Reads: chrome.storage.session {ticket, error, watchStatus} (written by
-// background.js) and chrome.storage.local {bankroll, multiplier}.
+// Reads: chrome.storage.local {ticket, error, watchStatus, pageReady} (written
+// by content.js) and {bankroll, multiplier} (settings, written here).
 // Writes: chrome.storage.local settings only. Re-renders on storage.onChanged.
 
 (function () {
@@ -222,22 +222,21 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
-    const session = await chrome.storage.session.get(["ticket", "error", "watchStatus", "pageReady"]);
-    state.ticket = session.ticket || null;
-    state.error = session.error || null;
-    state.watchStatus = session.watchStatus || null;
-    state.pageReady = session.pageReady || null;
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady"]);
+    state.ticket = relay.ticket || null;
+    state.error = relay.error || null;
+    state.watchStatus = relay.watchStatus || null;
+    state.pageReady = relay.pageReady || null;
     render();
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "session") {
-      if ("ticket" in changes) state.ticket = changes.ticket.newValue || null;
-      if ("error" in changes) state.error = changes.error.newValue || null;
-      if ("watchStatus" in changes) state.watchStatus = changes.watchStatus.newValue || null;
-      if ("pageReady" in changes) state.pageReady = changes.pageReady.newValue || null;
-      render();
-    }
+    if (area !== "local") return;
+    if ("ticket" in changes) state.ticket = changes.ticket.newValue || null;
+    if ("error" in changes) state.error = changes.error.newValue || null;
+    if ("watchStatus" in changes) state.watchStatus = changes.watchStatus.newValue || null;
+    if ("pageReady" in changes) state.pageReady = changes.pageReady.newValue || null;
+    if ("ticket" in changes || "error" in changes || "watchStatus" in changes || "pageReady" in changes) render();
   });
 
   view.bankroll.addEventListener("input", onSettingsInput);
