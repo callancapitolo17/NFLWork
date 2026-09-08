@@ -58,7 +58,7 @@ extension's card and reload the Unabated tab.
 ## Stake
 
 Prices print as American plus prediction-market cents (implied probability),
-e.g. `-111 · 52.6¢`, so they read the same on Kalshi/Novig and on a book.
+e.g. `-111 · 52.5¢`. On exchanges (Novig, Kalshi, ProphetX) the cents and the stake use the exchange's exact `sourcePrice`; Unabated's `price` is that rounded to a whole American number, which is why a naive conversion read one cent off the screen, so they read the same on Kalshi/Novig and on a book.
 The panel leads with "You are betting" + the side, then the matchup.
 
 Mode A of the Kelly sheet (`extension/kelly.js`):

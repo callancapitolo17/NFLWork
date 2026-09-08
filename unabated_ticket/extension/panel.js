@@ -36,13 +36,19 @@
     return price > 0 ? `+${price}` : `${price}`;
   }
 
-  // Prediction-market style: implied probability in cents (what Kalshi/Novig show).
-  function fmtCents(price) {
-    return `${(kelly.americanToProb(price) * 100).toFixed(1)}\u00a2`;
+  // Prediction-market style: implied probability in cents (what Kalshi/Novig
+  // show). Uses the exchange's exact source price when the line carries one, so
+  // it matches Unabated's screen instead of a rounded American round-trip.
+  function fmtCents(line) {
+    return `${(kelly.bookProbOf(line) * 100).toFixed(1)}\u00a2`;
   }
 
-  function fmtPriceBoth(price) {
-    return `${fmtAmerican(price)} \u00b7 ${fmtCents(price)}`;
+  function fmtPriceBoth(line) {
+    return `${fmtAmerican(line.bookPrice)} \u00b7 ${fmtCents(line)}`;
+  }
+
+  function asBookLine(price, sourceFormat, sourcePrice) {
+    return { bookPrice: price, sourceFormat, sourcePrice };
   }
 
   function fmtDollars(value) {
@@ -81,15 +87,15 @@
   // The line the stake is computed from: the current line if it moved, else the captured one.
   function pricedLine(ticket) {
     const current = ticket.current;
-    if (!current) return { price: ticket.price, fair: ticket.fair, points: ticket.points, moved: false };
-    return { price: current.price, fair: current.fair, points: current.points, moved: true };
+    if (!current) return { price: ticket.price, sourceFormat: ticket.sourceFormat, sourcePrice: ticket.sourcePrice, fair: ticket.fair, points: ticket.points, moved: false };
+    return { price: current.price, sourceFormat: current.sourceFormat, sourcePrice: current.sourcePrice, fair: current.fair, points: current.points, moved: true };
   }
 
   function computeStake(ticket, settings) {
     const line = pricedLine(ticket);
     if (line.fair == null) return { line, result: null, reason: "no Unabated fair at the new line" };
     try {
-      const result = kelly.kellyStake({ bookPrice: line.price, fairPrice: line.fair, bankroll: settings.bankroll, multiplier: settings.multiplier });
+      const result = kelly.kellyStake({ bookPrice: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice, fairPrice: line.fair, bankroll: settings.bankroll, multiplier: settings.multiplier });
       return { line, result, reason: null };
     } catch (error) {
       return { line, result: null, reason: error.message };
@@ -164,8 +170,9 @@
 
     const { line, result, reason } = computeStake(ticket, settings);
     view.book.textContent = ticket.book.name;
-    view.price.textContent = fmtPriceBoth(line.price);
-    view.fair.textContent = line.fair == null ? "unknown" : fmtPriceBoth(line.fair);
+    view.price.textContent = fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice));
+    // The fair is Unabated's own American number; there is no more exact source for it.
+    view.fair.textContent = line.fair == null ? "unknown" : fmtPriceBoth(asBookLine(line.fair, 1, null));
     view.edge.textContent = result ? fmtEdge(result.edge, ticket) : "—";
 
     view.stake.classList.remove("no-edge");
@@ -183,7 +190,7 @@
     }
 
     const stakeText = result ? result.stake.toFixed(2) : "n/a";
-    lastCopyText = `${ticket.sideLabel} ${fmtPriceBoth(line.price)} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(line.fair)} | edge ${result ? fmtPct(result.edge) : "?"} | stake $${stakeText} | ${describeMatchup(ticket)}`;
+    lastCopyText = `${ticket.sideLabel} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${result ? fmtPct(result.edge) : "?"} | stake $${stakeText} | ${describeMatchup(ticket)}`;
     view.copyStatus.textContent = "";
     show("ticket");
   }

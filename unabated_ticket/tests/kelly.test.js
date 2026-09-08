@@ -68,6 +68,16 @@ test("stake is not rounded", () => {
   assert.notEqual(result.stake, Math.round(result.stake));
 });
 
+test("exchange source price beats the rounded American (Novig 0.525 vs -111)", () => {
+  // Unabated rounds 0.525 -> -110.5 -> -111; converting back gives 52.6c. The exchange said 52.5c.
+  nearly(kelly.bookProbOf({ bookPrice: -111, sourceFormat: 4, sourcePrice: 0.525 }), 0.525);
+  nearly(kelly.bookProbOf({ bookPrice: -111, sourceFormat: 1, sourcePrice: null }), 111 / 211);
+  nearly(kelly.bookDecimalOf({ bookPrice: -110, sourceFormat: 2, sourcePrice: 1.90909 }), 1.90909);
+  const exact = kelly.kellyStake({ bookPrice: 105, sourceFormat: 4, sourcePrice: 0.48, fairPrice: -101, bankroll: 30000, multiplier: 0.25 });
+  const rounded = kelly.kellyStake({ bookPrice: 105, fairPrice: -101, bankroll: 30000, multiplier: 0.25 });
+  assert.ok(exact.stake > rounded.stake, "48.0c pays better than +105 (48.8c), so the exact stake is larger");
+});
+
 test("bankroll and multiplier must be positive", () => {
   assert.throws(() => kelly.kellyStake({ bookPrice: -400, fairPrice: -900, bankroll: 0, multiplier: 0.25 }), /bankroll/);
   assert.throws(() => kelly.kellyStake({ bookPrice: -400, fairPrice: -900, bankroll: 100, multiplier: -1 }), /multiplier/);

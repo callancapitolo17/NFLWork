@@ -88,6 +88,18 @@
     return fair;
   }
 
+  // Unabated's sourceFormat: 1 = American, 2 = decimal (1.909), 4 = probability (0.525).
+  // Exchanges publish probability; Unabated's `price` is that rounded to a whole
+  // American number, so the panel prefers the exact source when it is 2 or 4.
+  function sourcePriceOf(marketLine) {
+    const format = marketLine.sourceFormat;
+    const value = marketLine.sourcePrice;
+    if ((format === 2 || format === 4) && typeof value === "number" && Number.isFinite(value) && value > 0) {
+      return { sourceFormat: format, sourcePrice: value };
+    }
+    return { sourceFormat: 1, sourcePrice: null };
+  }
+
   function edgePctOf(marketLine) {
     const edge = marketLine.edge && marketLine.edge.edge;
     return typeof edge === "number" && Number.isFinite(edge) ? edge : null;
@@ -216,6 +228,7 @@
       points,
       book: { id: bookId, name: bookNameOf(bookId, context, cellProps) },
       price: bookPriceOf(marketLine),
+      ...sourcePriceOf(marketLine),
       fair: fairPriceOf(marketLine),
       edgePct: edgePctOf(marketLine),
       // Watcher handle: how to find this same line again through the grid API.
@@ -319,6 +332,7 @@
     if (!line) throw new Error("book line no longer on the row");
     return {
       price: bookPriceOf(line),
+      ...sourcePriceOf(line),
       points: line.points ?? null,
       fair: typeof line.bacr === "number" ? line.bacr : null,
       offBoard: line.statusId === 2,

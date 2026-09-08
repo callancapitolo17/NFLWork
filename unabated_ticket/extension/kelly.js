@@ -35,9 +35,21 @@
   // comes out at ~1e-13), not a bet.
   const ZERO_EDGE_EPSILON = 1e-9;
 
+  // Book decimal odds from the most exact number available: an exchange's own
+  // probability/decimal (sourceFormat 4/2) beats Unabated's rounded American.
+  function bookDecimalOf({ bookPrice, sourceFormat, sourcePrice }) {
+    if (sourceFormat === 4 && sourcePrice > 0 && sourcePrice < 1) return 1 / sourcePrice;
+    if (sourceFormat === 2 && sourcePrice > 1) return sourcePrice;
+    return americanToDecimal(bookPrice);
+  }
+
+  function bookProbOf(line) {
+    return 1 / bookDecimalOf(line);
+  }
+
   // Full-Kelly fraction of bankroll. 0 when the bet has no edge.
-  function fullKellyFraction(bookPrice, fairPrice) {
-    const decimalBook = americanToDecimal(bookPrice);
+  function fullKellyFraction(bookPrice, fairPrice, source) {
+    const decimalBook = bookDecimalOf({ bookPrice, ...(source || {}) });
     const fairProb = americanToProb(fairPrice);
     const netOdds = decimalBook - 1;
     const fraction = (fairProb * netOdds - (1 - fairProb)) / netOdds;
@@ -45,8 +57,8 @@
   }
 
   // Edge per $1 staked: p_fair * dec_book - 1. Negative means -EV.
-  function edgeFraction(bookPrice, fairPrice) {
-    return americanToProb(fairPrice) * americanToDecimal(bookPrice) - 1;
+  function edgeFraction(bookPrice, fairPrice, source) {
+    return americanToProb(fairPrice) * bookDecimalOf({ bookPrice, ...(source || {}) }) - 1;
   }
 
   function assertPositiveNumber(value, label) {
@@ -57,22 +69,25 @@
 
   // Returns { stake, fullKellyStake, fullKellyFraction, edge }. Dollars are
   // NOT rounded (user decision 2026-09-08); the panel formats them.
-  function kellyStake({ bookPrice, fairPrice, bankroll, multiplier }) {
+  function kellyStake({ bookPrice, fairPrice, bankroll, multiplier, sourceFormat, sourcePrice }) {
     assertPositiveNumber(bankroll, "bankroll");
     assertPositiveNumber(multiplier, "multiplier");
-    const fraction = fullKellyFraction(bookPrice, fairPrice);
+    const source = { sourceFormat, sourcePrice };
+    const fraction = fullKellyFraction(bookPrice, fairPrice, source);
     const fullKellyStake = bankroll * fraction;
     return {
       stake: fullKellyStake * multiplier,
       fullKellyStake,
       fullKellyFraction: fraction,
-      edge: edgeFraction(bookPrice, fairPrice),
+      edge: edgeFraction(bookPrice, fairPrice, source),
     };
   }
 
   const api = {
     americanToDecimal,
     americanToProb,
+    bookDecimalOf,
+    bookProbOf,
     fullKellyFraction,
     edgeFraction,
     kellyStake,
