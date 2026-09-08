@@ -9,9 +9,7 @@
 
 const PANEL_ON_ACTION_CLICK = { openPanelOnActionClick: true };
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.sidePanel.setPanelBehavior(PANEL_ON_ACTION_CLICK).catch(() => {});
-});
+// Runs on every service-worker start, which covers install and update.
 chrome.sidePanel.setPanelBehavior(PANEL_ON_ACTION_CLICK).catch(() => {});
 
 async function openPanelForSender(sender) {

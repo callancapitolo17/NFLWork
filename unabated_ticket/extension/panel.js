@@ -49,6 +49,16 @@
     return date.toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
 
+  // Edge from our fair/price math; if Unabated's own edge % (display only) disagrees, say so.
+  const EDGE_MISMATCH_PCT = 0.05;
+  function fmtEdge(edgeFraction, ticket) {
+    const ours = fmtPct(edgeFraction);
+    if (ticket.current || ticket.edgePct == null) return ours;
+    const unabated = ticket.edgePct;
+    if (Math.abs(unabated - edgeFraction * 100) <= EDGE_MISMATCH_PCT) return ours;
+    return `${ours} (Unabated shows ${unabated > 0 ? "+" : ""}${unabated.toFixed(2)}%)`;
+  }
+
   function fmtPoints(points) {
     return points == null ? "" : `${points > 0 ? "+" : ""}${points}`;
   }
@@ -122,7 +132,7 @@
     view.book.textContent = ticket.book.name;
     view.price.textContent = fmtAmerican(line.price);
     view.fair.textContent = line.fair == null ? "unknown" : fmtAmerican(line.fair);
-    view.edge.textContent = result ? fmtPct(result.edge) : "—";
+    view.edge.textContent = result ? fmtEdge(result.edge, ticket) : "—";
 
     view.stake.classList.remove("no-edge");
     if (!result) {

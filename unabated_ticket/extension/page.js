@@ -100,11 +100,34 @@
     return `book ${bookId}`;
   }
 
-  function bookIdOf(marketLine, cellProps) {
+  function lineIdOf(line) {
+    return line.marketLineId ?? line.id ?? null;
+  }
+
+  // Which "ms<id>" entry under this side holds `marketLine` (same object, or same line id).
+  function bookIdFromSides(marketLine, rowData, sideKey) {
+    const books = rowData.sides && rowData.sides[sideKey];
+    if (!books) return null;
+    const wantedId = lineIdOf(marketLine);
+    for (const [bookKey, line] of Object.entries(books)) {
+      const sameObject = line === marketLine;
+      const sameId = wantedId != null && line && String(lineIdOf(line)) === String(wantedId);
+      if (sameObject || sameId) {
+        const parsed = Number(bookKey.replace(/^ms/, ""));
+        if (Number.isInteger(parsed)) return parsed;
+      }
+    }
+    return null;
+  }
+
+  function bookIdOf(marketLine, cellProps, rowData, sideKey) {
     if (typeof marketLine.marketSourceId === "number") return marketLine.marketSourceId;
     if (cellProps && cellProps.marketSource && typeof cellProps.marketSource.id === "number") {
       return cellProps.marketSource.id;
     }
+    // Best-line cells sit in a column with no book id; find the line inside the row's sides instead.
+    const fromSides = bookIdFromSides(marketLine, rowData, sideKey);
+    if (fromSides != null) return fromSides;
     const colId = cellProps && cellProps.colDef && cellProps.colDef.colId;
     const parsed = Number(colId);
     if (Number.isInteger(parsed)) return parsed;
@@ -153,7 +176,8 @@
     if (!betType) throw new Error(`unsupported betTypeId ${betTypeId} (only moneyline, spread, total)`);
 
     const points = marketLine.points ?? null;
-    const bookId = bookIdOf(marketLine, cellProps);
+    const sideKey = sideKeyOf(rowData, sideIndex);
+    const bookId = bookIdOf(marketLine, cellProps, rowData, sideKey);
     const rotation = rowData.eventTeams && rowData.eventTeams[sideIndex]
       ? rowData.eventTeams[sideIndex].rotationNumber ?? null
       : null;
@@ -174,7 +198,7 @@
       fair: fairPriceOf(marketLine),
       edgePct: edgePctOf(marketLine),
       // Watcher handle: how to find this same line again through the grid API.
-      watch: { gridKey: rowData.gridKey ?? null, sideKey: sideKeyOf(rowData, sideIndex), bookKey: `ms${bookId}` },
+      watch: { gridKey: rowData.gridKey ?? null, sideKey, bookKey: `ms${bookId}` },
       current: null,
     };
   }
@@ -214,10 +238,6 @@
       if (props) return { api: props.api, context: props.context ?? null };
     }
     throw new Error("could not reach the AG Grid API from any rendered cell");
-  }
-
-  function lineIdOf(line) {
-    return line.marketLineId ?? line.id ?? null;
   }
 
   // Fallback: data-marketline-id on the shell + a scan of every row's sides.

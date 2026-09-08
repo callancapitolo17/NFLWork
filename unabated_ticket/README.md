@@ -36,6 +36,9 @@ extension's card and reload the Unabated tab.
 - Fields: `price` = `americanPrice` (exchanges have only `price`), `fair` =
   `marketLine.bacr` (Unabated's no-vig price at that book's points),
   side 0 = away / Over, side 1 = home / Under.
+- The ticket also carries `watch: {gridKey, sideKey, bookKey}` — the row id
+  and `sides["si<n>:tid<id>"]["ms<book>"]` path used to find the same line
+  again. Not in the plan's contract; needed by the watcher.
 - `content.js` forwards the ticket to `background.js`, which writes
   `chrome.storage.session` (cleared when Chrome closes) and opens the panel.
 - Every 5 s `page.js` re-reads the same book line through the grid API. If
