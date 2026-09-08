@@ -41,6 +41,10 @@ async function handleError(payload, sender) {
   await openPanelForSender(sender);
 }
 
+async function handleReady(payload) {
+  await chrome.storage.session.set({ pageReady: { url: payload.url, at: payload.at } });
+}
+
 async function handleWatch(payload) {
   const { ticket } = await chrome.storage.session.get("ticket");
   if (!ticket || ticket.capturedAt !== payload.capturedAt) return; // stale watcher
@@ -58,7 +62,7 @@ async function handleWatch(payload) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== "string") return false;
-  const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch };
+  const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch, ready: handleReady };
   const handler = handlers[message.type];
   if (!handler) return false;
   handler(message.payload, sender)

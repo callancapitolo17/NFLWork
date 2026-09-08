@@ -8,19 +8,20 @@
   "use strict";
 
   const MESSAGE_SOURCE = "unabated-ticket";
-  const FORWARDED_TYPES = new Set(["ticket", "watch", "error"]);
+  const FORWARDED_TYPES = new Set(["ticket", "watch", "error", "ready"]);
 
   function forward(message) {
     try {
       chrome.runtime.sendMessage(message, () => {
         // Reading lastError marks it handled; the extension may have been reloaded.
-        void chrome.runtime.lastError;
+        if (chrome.runtime.lastError) console.debug("[unabated-ticket] forward failed:", chrome.runtime.lastError.message);
       });
     } catch (_error) {
       // Extension context invalidated (reloaded while the page stayed open). Nothing to do.
     }
   }
 
+  console.debug("[unabated-ticket] content.js active");
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     const data = event.data;

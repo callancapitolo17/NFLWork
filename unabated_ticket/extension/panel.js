@@ -22,9 +22,12 @@
     copy: el("copy"), copyStatus: el("copy-status"),
     errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
+    pageStatus: el("page-status"),
   };
+  // page.js heartbeats every 10s; past this it is not running on any Unabated tab.
+  const PAGE_READY_STALE_MS = 25000;
 
-  let state = { ticket: null, error: null, watchStatus: null, settings: { ...DEFAULT_SETTINGS } };
+  let state = { ticket: null, error: null, watchStatus: null, pageReady: null, settings: { ...DEFAULT_SETTINGS } };
   let lastCopyText = "";
 
   // ---- formatting ----------------------------------------------------------
@@ -178,6 +181,11 @@
       return;
     }
     if (!state.ticket) {
+      const ready = state.pageReady;
+      const alive = ready && Date.now() - ready.at < PAGE_READY_STALE_MS;
+      view.pageStatus.textContent = alive
+        ? `Capture script active on ${ready.url}`
+        : "Capture script not detected. Reload the Unabated tab; if this persists, see README troubleshooting.";
       show("empty");
       return;
     }
@@ -214,10 +222,11 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
-    const session = await chrome.storage.session.get(["ticket", "error", "watchStatus"]);
+    const session = await chrome.storage.session.get(["ticket", "error", "watchStatus", "pageReady"]);
     state.ticket = session.ticket || null;
     state.error = session.error || null;
     state.watchStatus = session.watchStatus || null;
+    state.pageReady = session.pageReady || null;
     render();
   }
 
@@ -226,6 +235,7 @@
       if ("ticket" in changes) state.ticket = changes.ticket.newValue || null;
       if ("error" in changes) state.error = changes.error.newValue || null;
       if ("watchStatus" in changes) state.watchStatus = changes.watchStatus.newValue || null;
+      if ("pageReady" in changes) state.pageReady = changes.pageReady.newValue || null;
       render();
     }
   });
@@ -243,7 +253,7 @@
   });
 
   // Re-evaluate the "not watching" state even when no storage event arrives.
-  setInterval(() => { if (state.ticket && !state.error) renderTicket(); }, 5000);
+  setInterval(() => { if (!state.error) render(); }, 5000);
 
   load().catch((error) => {
     view.errorDetail.textContent = error.message;
