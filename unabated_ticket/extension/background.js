@@ -62,6 +62,7 @@ async function handleWatch(payload) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== "string") return false;
+  console.info("[unabated-ticket] message", message.type, "from", sender.tab ? sender.tab.url : "no tab");
   const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch, ready: handleReady };
   const handler = handlers[message.type];
   if (!handler) return false;

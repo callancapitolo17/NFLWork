@@ -340,11 +340,11 @@
       const cell = readCell(shell);
       const ticket = buildTicket(cell);
       startWatching(ticket, cell.gridApi);
-      console.debug("[unabated-ticket] captured", ticket);
+      console.info("[unabated-ticket] captured", ticket);
       post("ticket", ticket);
     } catch (error) {
       stopWatching();
-      console.debug("[unabated-ticket] capture failed:", error.message);
+      console.info("[unabated-ticket] capture failed:", error.message);
       post("error", { message: error.message, kind: error.kind || "read_failed", at: Date.now() });
     }
   }
@@ -353,5 +353,5 @@
   // Heartbeat so the panel can show whether this script is alive on the tab.
   post("ready", { url: window.location.href, at: Date.now() });
   setInterval(() => post("ready", { url: window.location.href, at: Date.now() }), 10000);
-  console.debug("[unabated-ticket] page.js active on", window.location.href);
+  console.info("[unabated-ticket] page.js active on", window.location.href);
 })();

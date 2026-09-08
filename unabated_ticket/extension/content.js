@@ -14,14 +14,14 @@
     try {
       chrome.runtime.sendMessage(message, () => {
         // Reading lastError marks it handled; the extension may have been reloaded.
-        if (chrome.runtime.lastError) console.debug("[unabated-ticket] forward failed:", chrome.runtime.lastError.message);
+        if (chrome.runtime.lastError) console.info("[unabated-ticket] forward failed:", chrome.runtime.lastError.message);
       });
     } catch (_error) {
       // Extension context invalidated (reloaded while the page stayed open). Nothing to do.
     }
   }
 
-  console.debug("[unabated-ticket] content.js active");
+  console.info("[unabated-ticket] content.js active");
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     const data = event.data;
