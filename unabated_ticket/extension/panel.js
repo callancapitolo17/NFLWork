@@ -19,7 +19,8 @@
     eventLine: el("event-line"), startLine: el("start-line"),
     book: el("book"), price: el("price"), fair: el("fair"), edge: el("edge"),
     stake: el("stake"), fullKelly: el("full-kelly"),
-    copy: el("copy"), copyStatus: el("copy-status"), errorDetail: el("error-detail"),
+    copy: el("copy"), copyStatus: el("copy-status"),
+    errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
   };
 
@@ -154,8 +155,24 @@
     show("ticket");
   }
 
+  // Two kinds of capture error need opposite advice: no_fair is Unabated
+  // having no number for that line (normal); read_failed means the page changed.
+  const ERROR_COPY = {
+    no_fair: {
+      title: "No Unabated fair for this line",
+      hint: "Unabated has not priced this line, so there is nothing to size against. This is normal for lopsided moneylines and exchange-only lines. Pick a line that shows an edge %.",
+    },
+    read_failed: {
+      title: "Could not read this cell",
+      hint: "Click the price again. If it keeps failing, Unabated's page changed; see README troubleshooting.",
+    },
+  };
+
   function render() {
     if (state.error) {
+      const copy = ERROR_COPY[state.error.kind] || ERROR_COPY.read_failed;
+      view.errorTitle.textContent = copy.title;
+      view.errorHint.textContent = copy.hint;
       view.errorDetail.textContent = `${state.error.message} (${new Date(state.error.at).toLocaleTimeString()})`;
       show("error");
       return;

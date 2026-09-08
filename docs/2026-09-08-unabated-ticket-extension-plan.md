@@ -109,7 +109,7 @@ the panel shows "could not read this cell" rather than a wrong stake.
 
 ## Testing
 
-- `node --test unabated_ticket/tests` for `kelly.js`: the sheet's worked
+- `node --test unabated_ticket/tests/kelly.test.js` for `kelly.js`: the sheet's worked
   example (-400 vs fair -900, bankroll 30000, quarter Kelly) must give $3,750.
 - Manual: load unpacked, open `tools.unabated.com/cfb/odds`, click a best-line
   price and a book-column price, a moneyline, a spread and a total; confirm

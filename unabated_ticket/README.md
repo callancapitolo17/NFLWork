@@ -83,6 +83,9 @@ tab and see "Not watching".
 
 - **Panel empty / "Click a price"**: nothing captured yet, or Chrome was
   restarted (session storage clears). Click a price again.
+- **No Unabated fair for this line**: Unabated has no `bacr` for that
+  line (common on lopsided moneylines and exchange-only lines), so there is
+  nothing to size against. Not a bug; pick a line that shows an edge %.
 - **Could not read this cell**: Unabated changed prop or class names. Check
   `.odds-cell-action-shell` still exists and the fiber props still carry
   `marketLine` / `sideIndex` (see the DOM notes in the plan doc); the

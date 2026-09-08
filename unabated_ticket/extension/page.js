@@ -14,6 +14,8 @@
 
   const MESSAGE_SOURCE = "unabated-ticket";
   const CELL_SHELL_SELECTOR = ".odds-cell-action-shell";
+  // The "..." menu button is a child of the shell; opening a menu is not picking a bet.
+  const MORE_BUTTON_SELECTOR = ".odds-cell-more-button";
   const MAX_FIBER_HOPS = 40;
   const WATCH_INTERVAL_MS = 5000;
   const BET_TYPE_NAMES = { 1: "Moneyline", 2: "Spread", 3: "Total" };
@@ -74,8 +76,16 @@
   }
 
   function fairPriceOf(marketLine) {
-    // bacr = Unabated fair American price at this book's points.
-    return requireNumber(marketLine.bacr, "Unabated fair price (bacr)");
+    // bacr = Unabated fair American price at this book's points. Null is a
+    // normal condition (lopsided moneylines, exchange-only lines), not a parse
+    // failure, so it gets its own error kind for the panel.
+    const fair = marketLine.bacr;
+    if (typeof fair !== "number" || !Number.isFinite(fair)) {
+      const error = new Error("Unabated has no fair price for this line");
+      error.kind = "no_fair";
+      throw error;
+    }
+    return fair;
   }
 
   function edgePctOf(marketLine) {
@@ -325,6 +335,7 @@
     const target = event.target instanceof Element ? event.target : null;
     const shell = target && target.closest(CELL_SHELL_SELECTOR);
     if (!shell) return;
+    if (target.closest(MORE_BUTTON_SELECTOR)) return;
     try {
       const cell = readCell(shell);
       const ticket = buildTicket(cell);
@@ -332,7 +343,7 @@
       post("ticket", ticket);
     } catch (error) {
       stopWatching();
-      post("error", { message: error.message, at: Date.now() });
+      post("error", { message: error.message, kind: error.kind || "read_failed", at: Date.now() });
     }
   }
 
