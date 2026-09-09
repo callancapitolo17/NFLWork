@@ -68,13 +68,18 @@
     return date.toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
 
-  // Edge from our fair/price math; if Unabated's own edge % (display only) disagrees, say so.
+  // Edge from our fair/price math. Cross-check against Unabated's own edge %,
+  // which they compute from the ROUNDED American price — so compare against an
+  // American-based edge, not our exact-source one, or every exchange bet would
+  // "disagree" by the rounding. A real mismatch means the fair or price we read
+  // is not the one Unabated used.
   const EDGE_MISMATCH_PCT = 0.05;
   function fmtEdge(edgeFraction, ticket) {
     const ours = fmtPct(edgeFraction);
-    if (ticket.current || ticket.edgePct == null) return ours;
+    if (ticket.current || ticket.edgePct == null || ticket.fair == null) return ours;
     const unabated = ticket.edgePct;
-    if (Math.abs(unabated - edgeFraction * 100) <= EDGE_MISMATCH_PCT) return ours;
+    const americanBased = kelly.edgeFraction(ticket.price, ticket.fair) * 100;
+    if (Math.abs(unabated - americanBased) <= EDGE_MISMATCH_PCT) return ours;
     return `${ours} (Unabated shows ${unabated > 0 ? "+" : ""}${unabated.toFixed(2)}%)`;
   }
 
