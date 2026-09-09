@@ -75,17 +75,24 @@
     return requireNumber(raw, "book price");
   }
 
-  function fairPriceOf(marketLine) {
-    // bacr = Unabated fair American price at this book's points. Null is a
-    // normal condition (lopsided moneylines, exchange-only lines), not a parse
-    // failure, so it gets its own error kind for the panel.
+  // bacr = Unabated fair American price at this book's points; shown for
+  // information only, the stake is sized from Unabated's edge.
+  function fairPriceOrNull(marketLine) {
     const fair = marketLine.bacr;
-    if (typeof fair !== "number" || !Number.isFinite(fair)) {
-      const error = new Error("Unabated has no fair price for this line");
+    return typeof fair === "number" && Number.isFinite(fair) ? fair : null;
+  }
+
+  // Unabated's own edge % (EV per $1 staked) for this line. Null is a normal
+  // condition (lopsided moneylines, exchange-only lines Unabated has not
+  // priced), not a parse failure, so it gets its own error kind for the panel.
+  function requireEdgePct(marketLine) {
+    const edge = edgePctOf(marketLine);
+    if (edge == null) {
+      const error = new Error("Unabated has no edge for this line");
       error.kind = "no_fair";
       throw error;
     }
-    return fair;
+    return edge;
   }
 
   // Unabated's sourceFormat: 1 = American, 2 = decimal (1.909), 4 = probability (0.525).
@@ -229,8 +236,8 @@
       book: { id: bookId, name: bookNameOf(bookId, context, cellProps) },
       price: bookPriceOf(marketLine),
       ...sourcePriceOf(marketLine),
-      fair: fairPriceOf(marketLine),
-      edgePct: edgePctOf(marketLine),
+      fair: fairPriceOrNull(marketLine),
+      edgePct: requireEdgePct(marketLine),
       // Watcher handle: how to find this same line again through the grid API.
       watch: { gridKey: rowData.gridKey ?? null, sideKey, bookKey: `ms${bookId}` },
       current: null,
@@ -334,7 +341,8 @@
       price: bookPriceOf(line),
       ...sourcePriceOf(line),
       points: line.points ?? null,
-      fair: typeof line.bacr === "number" ? line.bacr : null,
+      fair: fairPriceOrNull(line),
+      edgePct: edgePctOf(line),
       offBoard: line.statusId === 2,
       seenAt: Date.now(),
     };

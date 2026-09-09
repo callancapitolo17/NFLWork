@@ -1,7 +1,9 @@
 // Kelly math for the Unabated Ticket panel. Pure functions, no DOM.
 //
-// Mode A of the Kelly Calculator sheet: the fair price is already no-vig
-// (Unabated's `bacr` at the book's points), so p_fair comes straight from it.
+// Mode B of the Kelly Calculator sheet: Unabated already publishes the edge
+// (EV per $1 staked) for every line, so the stake is sized straight from it:
+//   full Kelly fraction = edge / (decimal_book - 1)
+// (derivation: p_fair = (1 + edge) / dec, f = (p·b − q)/b with b = dec − 1).
 //
 // Loaded two ways: as a plain <script> in panel.html (exposes
 // globalThis.UnabatedKelly) and via require() in tests/kelly.test.js.
@@ -31,34 +33,13 @@
     return magnitude / (magnitude + 100);
   }
 
-  // Below this the "edge" is floating-point noise (e.g. -110 vs fair -110
-  // comes out at ~1e-13), not a bet.
-  const ZERO_EDGE_EPSILON = 1e-9;
-
-  // Book decimal odds from the most exact number available: an exchange's own
-  // probability/decimal (sourceFormat 4/2) beats Unabated's rounded American.
-  function bookDecimalOf({ bookPrice, sourceFormat, sourcePrice }) {
-    if (sourceFormat === 4 && sourcePrice > 0 && sourcePrice < 1) return 1 / sourcePrice;
-    if (sourceFormat === 2 && sourcePrice > 1) return sourcePrice;
-    return americanToDecimal(bookPrice);
-  }
-
-  function bookProbOf(line) {
-    return 1 / bookDecimalOf(line);
-  }
-
-  // Full-Kelly fraction of bankroll. 0 when the bet has no edge.
-  function fullKellyFraction(bookPrice, fairPrice, source) {
-    const decimalBook = bookDecimalOf({ bookPrice, ...(source || {}) });
-    const fairProb = americanToProb(fairPrice);
-    const netOdds = decimalBook - 1;
-    const fraction = (fairProb * netOdds - (1 - fairProb)) / netOdds;
-    return fraction > ZERO_EDGE_EPSILON ? fraction : 0;
-  }
-
-  // Edge per $1 staked: p_fair * dec_book - 1. Negative means -EV.
-  function edgeFraction(bookPrice, fairPrice, source) {
-    return americanToProb(fairPrice) * bookDecimalOf({ bookPrice, ...(source || {}) }) - 1;
+  // Implied probability for DISPLAY (prediction-market cents). Exchanges publish
+  // a probability (sourceFormat 4) or decimal (2) that Unabated rounds into a
+  // whole American `price`; prefer the exact source so the cents match the screen.
+  function bookProbOf({ bookPrice, sourceFormat, sourcePrice }) {
+    if (sourceFormat === 4 && sourcePrice > 0 && sourcePrice < 1) return sourcePrice;
+    if (sourceFormat === 2 && sourcePrice > 1) return 1 / sourcePrice;
+    return americanToProb(bookPrice);
   }
 
   function assertPositiveNumber(value, label) {
@@ -67,31 +48,23 @@
     }
   }
 
-  // Returns { stake, fullKellyStake, fullKellyFraction, edge }. Dollars are
-  // NOT rounded (user decision 2026-09-08); the panel formats them.
-  function kellyStake({ bookPrice, fairPrice, bankroll, multiplier, sourceFormat, sourcePrice }) {
+  // Stake from Unabated's edge % (e.g. 1.89 means +1.89% per $1) and the
+  // American book price. Dollars are NOT rounded (user decision 2026-09-08).
+  // Uses the American price, not the exchange source price, so the stake is
+  // consistent with the edge Unabated computed from that same American price.
+  function kellyStakeFromEdge({ bookPrice, edgePct, bankroll, multiplier }) {
     assertPositiveNumber(bankroll, "bankroll");
     assertPositiveNumber(multiplier, "multiplier");
-    const source = { sourceFormat, sourcePrice };
-    const fraction = fullKellyFraction(bookPrice, fairPrice, source);
-    const fullKellyStake = bankroll * fraction;
-    return {
-      stake: fullKellyStake * multiplier,
-      fullKellyStake,
-      fullKellyFraction: fraction,
-      edge: edgeFraction(bookPrice, fairPrice, source),
-    };
+    if (typeof edgePct !== "number" || !Number.isFinite(edgePct)) {
+      throw new Error(`edgePct: expected a finite number, got ${edgePct}`);
+    }
+    const netOdds = americanToDecimal(bookPrice) - 1;
+    const edge = edgePct / 100;
+    const fraction = edge > 0 ? edge / netOdds : 0;
+    return { stake: bankroll * fraction * multiplier, fullKellyFraction: fraction, edge };
   }
 
-  const api = {
-    americanToDecimal,
-    americanToProb,
-    bookDecimalOf,
-    bookProbOf,
-    fullKellyFraction,
-    edgeFraction,
-    kellyStake,
-  };
+  const api = { americanToDecimal, americanToProb, bookProbOf, kellyStakeFromEdge };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

@@ -57,24 +57,27 @@ extension's card and reload the Unabated tab.
 
 ## Stake
 
-Prices print as American plus prediction-market cents (implied probability),
-e.g. `-111 · 52.5¢`. On exchanges (Novig, Kalshi, ProphetX) the cents and the stake use the exchange's exact `sourcePrice`; Unabated's `price` is that rounded to a whole American number, which is why a naive conversion read one cent off the screen, so they read the same on Kalshi/Novig and on a book.
-The panel leads with "You are betting" + the side, then the matchup.
-
-Mode A of the Kelly sheet (`extension/kelly.js`):
+Mode B of the Kelly sheet (`extension/kelly.js`): Unabated already publishes
+the edge (EV per $1) for every line, so the stake is sized straight from it.
 
 ```
-p_fair = prob(fair)               fair is already no-vig
-b      = decimal(price) - 1
-full   = (p_fair * b - (1 - p_fair)) / b     0 if no edge
+b      = decimal(american book price) - 1
+full   = edge / b                 0 if edge <= 0
 stake  = bankroll * full * multiplier        not rounded
 ```
+
+The panel shows Unabated's edge % as-is. The fair price (`bacr`) is shown for
+information only. Prices print as American plus prediction-market cents
+(implied probability), e.g. `-111 · 52.5¢`; on exchanges the cents use the
+exchange's exact `sourcePrice` so they match Unabated's screen, while the
+stake uses the American price because that is what Unabated's edge was
+computed from.
 
 Settings (bankroll, Kelly multiplier) sit at the bottom of the panel and
 persist in `chrome.storage.local`. Defaults 30000 and 0.25.
 
 Copy puts one line on the clipboard:
-`LSU Tigers -22.5 -110 @ DraftKings | fair -106 | edge +1.23% | stake $412.50 | LT @ LSU`.
+`Seattle Mariners -133 · 57.0¢ @ Novig | fair -139 · 58.2¢ | edge +1.89% | stake $188.55 | Texas Rangers @ Seattle Mariners · MLB`.
 
 ## Tests
 
@@ -82,8 +85,9 @@ Copy puts one line on the clipboard:
 node --test unabated_ticket/tests/kelly.test.js
 ```
 
-Checks the sheet's worked example (-400 vs fair -900, bankroll 30000,
-quarter Kelly = $3,750), negative edge → $0, and that nothing rounds.
+Checks the sheet's worked example (-400 at +12.5% edge, bankroll 30000,
+quarter Kelly = $3,750), the Seattle -133 / +1.89% case, zero or negative
+edge → $0, that nothing rounds, and that exchange cents use `sourcePrice`.
 
 Manual checklist after loading unpacked: click a best-line price and a
 book-column price, then a moneyline, a spread and a total; confirm side
@@ -95,9 +99,9 @@ tab and see "Not watching".
 
 - **Panel empty / "Click a price"**: nothing captured yet, or Chrome was
   restarted (session storage clears). Click a price again.
-- **No Unabated fair for this line**: Unabated has no `bacr` for that
-  line (common on lopsided moneylines and exchange-only lines), so there is
-  nothing to size against. Not a bug; pick a line that shows an edge %.
+- **No Unabated fair for this line**: Unabated has no edge for that line
+  (common on lopsided moneylines and exchange-only lines), so there is
+  nothing to size from. Not a bug; pick a line that shows an edge %.
 - **Could not read this cell**: Unabated changed prop or class names. Check
   `.odds-cell-action-shell` still exists and the fiber props still carry
   `marketLine` / `sideIndex` (see the DOM notes in the plan doc); the
@@ -106,5 +110,5 @@ tab and see "Not watching".
   with a user gesture attached; click the toolbar icon once, it stays open.
 - **"Not watching the line"**: the Unabated tab is closed, navigated away,
   or the row left the grid (filter change). Re-click the price.
-- **Cannot size: no Unabated fair at the new line**: the line moved to
-  points Unabated has not priced yet (`bacr` missing). Wait a tick or re-click.
+- **Cannot size: Unabated has no edge at the new line**: the line moved to
+  points Unabated has not priced yet. Wait a tick or re-click.

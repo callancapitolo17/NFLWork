@@ -68,21 +68,6 @@
     return date.toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
 
-  // Edge from our fair/price math. Cross-check against Unabated's own edge %,
-  // which they compute from the ROUNDED American price — so compare against an
-  // American-based edge, not our exact-source one, or every exchange bet would
-  // "disagree" by the rounding. A real mismatch means the fair or price we read
-  // is not the one Unabated used.
-  const EDGE_MISMATCH_PCT = 0.05;
-  function fmtEdge(edgeFraction, ticket) {
-    const ours = fmtPct(edgeFraction);
-    if (ticket.current || ticket.edgePct == null || ticket.fair == null) return ours;
-    const unabated = ticket.edgePct;
-    const americanBased = kelly.edgeFraction(ticket.price, ticket.fair) * 100;
-    if (Math.abs(unabated - americanBased) <= EDGE_MISMATCH_PCT) return ours;
-    return `${ours} (Unabated shows ${unabated > 0 ? "+" : ""}${unabated.toFixed(2)}%)`;
-  }
-
   function fmtPoints(points) {
     return points == null ? "" : `${points > 0 ? "+" : ""}${points}`;
   }
@@ -92,15 +77,16 @@
   // The line the stake is computed from: the current line if it moved, else the captured one.
   function pricedLine(ticket) {
     const current = ticket.current;
-    if (!current) return { price: ticket.price, sourceFormat: ticket.sourceFormat, sourcePrice: ticket.sourcePrice, fair: ticket.fair, points: ticket.points, moved: false };
-    return { price: current.price, sourceFormat: current.sourceFormat, sourcePrice: current.sourcePrice, fair: current.fair, points: current.points, moved: true };
+    if (!current) return { price: ticket.price, sourceFormat: ticket.sourceFormat, sourcePrice: ticket.sourcePrice, fair: ticket.fair, edgePct: ticket.edgePct, points: ticket.points, moved: false };
+    return { price: current.price, sourceFormat: current.sourceFormat, sourcePrice: current.sourcePrice, fair: current.fair, edgePct: current.edgePct, points: current.points, moved: true };
   }
 
+  // Stake from Unabated's own edge for the line being priced (captured, or current if it moved).
   function computeStake(ticket, settings) {
     const line = pricedLine(ticket);
-    if (line.fair == null) return { line, result: null, reason: "no Unabated fair at the new line" };
+    if (line.edgePct == null) return { line, result: null, reason: "Unabated has no edge at the new line" };
     try {
-      const result = kelly.kellyStake({ bookPrice: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice, fairPrice: line.fair, bankroll: settings.bankroll, multiplier: settings.multiplier });
+      const result = kelly.kellyStakeFromEdge({ bookPrice: line.price, edgePct: line.edgePct, bankroll: settings.bankroll, multiplier: settings.multiplier });
       return { line, result, reason: null };
     } catch (error) {
       return { line, result: null, reason: error.message };
@@ -178,7 +164,7 @@
     view.price.textContent = fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice));
     // The fair is Unabated's own American number; there is no more exact source for it.
     view.fair.textContent = line.fair == null ? "unknown" : fmtPriceBoth(asBookLine(line.fair, 1, null));
-    view.edge.textContent = result ? fmtEdge(result.edge, ticket) : "—";
+    view.edge.textContent = line.edgePct == null ? "—" : fmtPct(line.edgePct / 100);
 
     view.stake.classList.remove("no-edge");
     if (!result) {
@@ -195,7 +181,7 @@
     }
 
     const stakeText = result ? result.stake.toFixed(2) : "n/a";
-    lastCopyText = `${ticket.sideLabel} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${result ? fmtPct(result.edge) : "?"} | stake $${stakeText} | ${describeMatchup(ticket)}`;
+    lastCopyText = `${ticket.sideLabel} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText} | ${describeMatchup(ticket)}`;
     view.copyStatus.textContent = "";
     show("ticket");
   }
