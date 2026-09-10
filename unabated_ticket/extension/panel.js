@@ -312,15 +312,24 @@
     return { bookIds, betTypeIds: betTypeIds && betTypeIds.size ? betTypeIds : null, fresh: Boolean(fresh), filter };
   }
 
+  function pageScriptAlive() {
+    const ready = state.pageReady;
+    return Boolean(ready && Date.now() - ready.at < PAGE_READY_STALE_MS);
+  }
+
   function describeFilter(effective) {
     const filter = effective.filter;
     const parts = [];
     if (effective.bookIds) {
       parts.push(`your ${effective.bookIds.size} Unabated books (read ${fmtAge(Date.now() - filter.at)})`);
+    } else if (!pageScriptAlive()) {
+      // A stored read error may be hours old; without a heartbeat the tab is
+      // closed, or still running a script from before the extension reloaded.
+      parts.push("no books filter yet: showing all live books (no Unabated odds tab is running the capture script; open one, or reload it if the extension was just reloaded)");
     } else if (filter && filter.lastError) {
-      parts.push(`no books filter yet: showing all live books (page read failed: ${filter.lastError})`);
+      parts.push(`no books filter yet: showing all live books (page read failed ${fmtAge(Date.now() - (filter.lastErrorAt || 0))}: ${filter.lastError})`);
     } else {
-      parts.push("no books filter yet: showing all live books (open an Unabated odds tab to publish your selection)");
+      parts.push("no books filter yet: showing all live books (waiting for the Unabated tab's first read)");
     }
     if (effective.betTypeIds) {
       parts.push(`bet types: ${Array.from(effective.betTypeIds).map((id) => feed.BET_TYPES[id]).join("/")}`);
@@ -777,6 +786,7 @@
     if ("watchStatus" in changes) state.watchStatus = changes.watchStatus.newValue || null;
     if ("pageReady" in changes) state.pageReady = changes.pageReady.newValue || null;
     if ("ticket" in changes || "error" in changes || "watchStatus" in changes || "pageReady" in changes) render();
+    if ("pageReady" in changes) renderEdges();
     if ("booksFilter" in changes) {
       state.booksFilter = changes.booksFilter.newValue || null;
       renderEdges();

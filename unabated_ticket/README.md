@@ -250,9 +250,14 @@ tab and see "Not watching".
   panel was hidden for minutes; the scanner reloads the snapshots by
   itself. Persistent repeats mean the cursor format changed
   (`feed.cursorFromDate`).
-- **Edges: "no books filter yet"** with an Unabated tab open: the tab's
-  console line `[unabated-ticket] books filter` shows the read error;
-  `userSettings.gameOdds` moved. Until fixed the list shows all live books.
+- **Edges: "no books filter yet … no Unabated odds tab is running the
+  capture script"**: open an odds tab, or reload the one you have — after an
+  extension reload the script already injected in an open tab is dead until
+  the tab reloads.
+- **Edges: "no books filter yet … page read failed"** with an Unabated tab
+  open: the tab's console line `[unabated-ticket] books filter` shows the
+  read error; `userSettings.gameOdds` moved. Until fixed the list shows all
+  live books.
 - **Edges row click: "row is not on the grid"**: the Unabated tab's own
   bet-type or period filter hides that row, or the game left the board.
 - **No notifications**: they only fire while the panel is open and the
