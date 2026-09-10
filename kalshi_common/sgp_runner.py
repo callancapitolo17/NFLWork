@@ -577,8 +577,10 @@ def sgp_cycle(
 
     import importlib
     from mlb_sgp import db as sgp_db
+    from mlb_sgp._shared import teams_by_game_id
 
     results = service.refresh(targets)
+    teams = teams_by_game_id(targets)
     counts: dict[str, int] = {}
     for book, rows in results.items():
         if rows is None:
@@ -593,6 +595,7 @@ def sgp_cycle(
         fallback_label = getattr(mod, "SOURCE_LABEL_FALLBACK", None)
         if fallback_label:
             sgp_db.clear_source(fallback_label, db_path=bot_market_db)
-        sgp_db.upsert_priced_rows(rows, db_path=bot_market_db)
+        sgp_db.upsert_priced_rows(rows, db_path=bot_market_db,
+                                  teams_by_game_id=teams)
         counts[book] = len(rows)
     return counts

@@ -708,7 +708,7 @@ def main():
         sys.path.insert(0, str(_REPO_ROOT))
 
     from mlb_sgp import db
-    from mlb_sgp._shared import load_target_lines
+    from mlb_sgp._shared import load_target_lines, teams_by_game_id
 
     db_path = str(db.MLB_DB)
     db.ensure_table(db_path)
@@ -739,7 +739,8 @@ def main():
     # both preserves the "fresh prices only" invariant.
     db.clear_source("novig_direct", db_path=db_path)
     db.clear_source("novig_interpolated", db_path=db_path)
-    db.upsert_priced_rows(rows, db_path=db_path)
+    db.upsert_priced_rows(rows, db_path=db_path,
+                          teams_by_game_id=teams_by_game_id(targets))
     return 0
 
 

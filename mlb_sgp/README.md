@@ -561,7 +561,7 @@ Writes to `mlb_sgp_odds` table in `Answer Keys/mlb_mm.duckdb`:
 
 | Column | Type | Description |
 |--------|------|-------------|
-| game_id | VARCHAR | Odds API event ID (joins to mlb_parlay_opportunities) |
+| game_id | VARCHAR | The target's game id as loaded from `mlb_target_lines` / `mlb_parlay_lines` (Odds API id today). **Not a join key for the dashboard** — see below. |
 | combo | VARCHAR | `"Home Spread + Over"` … or `"Home ML + Over"` … (moneyline family) |
 | period | VARCHAR | "FG" |
 | bookmaker | VARCHAR | "draftkings" |
@@ -571,11 +571,26 @@ Writes to `mlb_sgp_odds` table in `Answer Keys/mlb_mm.duckdb`:
 | sgp_american | INTEGER | American odds |
 | fetch_time | TIMESTAMP | When scraped |
 | source | VARCHAR | "draftkings_direct" |
+| home_team | VARCHAR | Canonical home team, copied from the target the row was priced from (issue #103) |
+| away_team | VARCHAR | Canonical away team, same source |
 
 > **NULL-safe dedup:** because `spread_line` is NULL for moneyline combos,
 > `db.upsert_priced_rows` matches the composite key with `IS NOT DISTINCT FROM`
 > (NULL-safe equality), not a plain tuple-IN. Never use a numeric sentinel for
 > the absent leg — NULL keeps the grid/dashboard clean.
+
+> **Join contract (issue #103 Phase 1):** `Answer Keys/mlb_correlated_parlay.R`
+> joins these rows to a game on `(home_team, away_team, period)`, never on
+> `game_id`, so the schedule source behind `game_id` can change without the R
+> side noticing. `upsert_priced_rows` requires a `teams_by_game_id` map (built
+> by `_shared.teams_by_game_id(targets)` from the SAME target list the rows
+> were priced from) and raises if any row's `game_id` is missing from it — a
+> NULL pair would silently drop that game from the blend. The R side drops
+> rows with NULL teams (written before the migration) and rows whose
+> `fetch_time` is older than `SGP_ODDS_MAX_AGE_MIN` (30 min), because every
+> scraper keeps its last rows on a failed cycle and a dead slate's row for the
+> same matchup would otherwise join to tonight's game. One team pair with two
+> `game_id`s among fresh rows (a doubleheader) is skipped, not guessed.
 
 ## SGP Scraping Playbook (for adding new books)
 

@@ -743,6 +743,27 @@ class PricedRow:
     fetch_time: datetime
 
 
+def teams_by_game_id(targets: list[TargetLine]) -> dict[str, tuple[str, str]]:
+    """Map each target's game_id to its (home_team, away_team).
+
+    `mlb_sgp_odds` stores the team pair on every row so the dashboard's
+    correlated-parlay join can key on teams instead of the Odds API
+    game_id (issue #103 Phase 1). Raises ValueError if one game_id claims two
+    different team pairs — that would mean the target table is corrupt and
+    a silent pick would mislabel every row of that game.
+    """
+    out: dict[str, tuple[str, str]] = {}
+    for t in targets:
+        pair = (t.home_team, t.away_team)
+        prior = out.get(t.game_id)
+        if prior is not None and prior != pair:
+            raise ValueError(
+                f"teams_by_game_id: game_id={t.game_id!r} maps to both "
+                f"{prior!r} and {pair!r}")
+        out[t.game_id] = pair
+    return out
+
+
 def decimal_to_american(dec: float) -> int:
     """Convert decimal odds to American format. Favorites are negative."""
     if dec >= 2.0:
