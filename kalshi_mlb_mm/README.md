@@ -380,6 +380,21 @@ Each worker has its own clock, so a slow book never drags a fast one — DK's
 slate scrape is ~21s while BetMGM's structure pass is ~7s — and every row
 carries its own `built_at`.
 
+**BetMGM overnight (fixed 2026-09-03).** BetMGM builds a next-day fixture's
+full `optionMarkets` tree only the next morning (~05:50 PT); until then the
+fixture's 4 main lines sit solely in its legacy `games` array, which the
+client did not read — so from ~21:40 PT to ~05:50 PT the MGM structure pass
+priced 1 of 7 in-window games (`unmatched=6`, actually `no_structure`) and
+most cross-game legs fell to an FD+NV pair (162 `surface_too_few_books`
+declines in one session). The surface's private `SGPService` now passes
+`structure_main_line_fallback=True`, which re-shapes those `games` markets
+into the `optionMarkets` schema for this route only: it devigs two-sided
+singles, so main-line odds are all it needs. The maker's on-demand service
+keeps the default (off) because MGM's bet-builder refuses those ids — a
+same-game RFQ on a next-day game would otherwise spend one doomed POST per
+flight all night. Expect MGM to cover only the 3 main rungs per game
+overnight and the full ladder after the morning build.
+
 ### Identity: keyed on the Kalshi suffix, never on team names
 
 Surface rows key on the **Kalshi event-ticker suffix** (`26AUG252138CLELAA`),
@@ -962,7 +977,7 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `TIPOFF_CANCEL_MIN` | `5` | Pull quotes this many minutes before first pitch. First pitch is parsed from the Kalshi event-ticker suffix (`_first_pitch_utc`), not `mlb_target_lines` |
 | `QUOTE_HYSTERESIS` | `0.005` | Don't replace a resting quote unless fair moved more than ½¢. Also the ε of the post-fill `same_price_block` |
 | `COMBO_COOLDOWN_SEC` | `60` | Hard FLOOR of the post-fill per-combo cooldown. The combo additionally stays cooled until every game it touches has a completed post-fill TARGETED fetch (#57), then until consensus fair moves off the filled fair (defense item 5) |
-| `MAX_COMBO_EXPOSURE_USD` | `50.0` | Per-combo concentration cap (H8/N7): fills + in-flight open quotes on one combo may not exceed this |
+| `MAX_COMBO_EXPOSURE_PCT` | `0.10` | Per-combo concentration cap (H8/N7) as a % of `BANKROLL`: fills + in-flight open quotes on one combo may not exceed `BANKROLL × this`. Must be ≥ `MAX_FILL_EXPOSURE_PCT` or a single max fill self-blocks — it was a fixed `$50` until 2026-09-07, which is why raising the bankroll to $2,000 produced 25k `per_combo_cap` declines and zero quotes |
 | `SIGMA_Z_MAX` | `0.07` | Consensus gate (issue #20): max sample stddev of the books' fairs in z-space (`norm.ppf`); above it the combo is declined (`consensus_dispersion`) — no outlier removal. 0.07 ≈ continuity with the old ±2¢ band at p=0.50 |
 | `MIN_AGREEING_BOOKS` | `2` | Consensus gate: minimum number of books with a fair for the combo (no longer "band survivors" — there is no band) |
 | `CORR_SANITY_FRECHET_ENABLED` | `true` | Reject a quote whose fair violates the Fréchet bounds implied by the live Kalshi marginals (issue #23) — parameter-free, so it gates by default |

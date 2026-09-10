@@ -48,7 +48,7 @@ def test_discovery_dedup_no_resubmit_when_price_unchanged(monkeypatch, tmp_path)
 
     monkeypatch.setattr(cfg, "DB_PATH", tmp_path / "dedup.duckdb")
     # Raise combo cap so per-combo cap doesn't fire before the dedup check.
-    monkeypatch.setattr(cfg, "MAX_COMBO_EXPOSURE_USD", 200.0)
+    monkeypatch.setattr(cfg, "max_combo_exposure_usd", lambda: 200.0)
 
     import importlib
     importlib.reload(db)
@@ -836,7 +836,7 @@ def test_discovery_skips_creator_with_too_many_fills(monkeypatch, tmp_path):
 # discovery on that ticker is skipped with reason='per_combo_cap'.
 # The per-combo cap now runs AFTER pricing (needs the quote), so stubs for
 # _book_fairs / _first_pitch_utc are required to reach it.
-# Cap is $50 (MAX_COMBO_EXPOSURE_USD default). Pre-seed $51 in reconciled fills.
+# Cap is $50 (BANKROLL 500 x MAX_COMBO_EXPOSURE_PCT 0.10). Pre-seed $51 in reconciled fills.
 # ---------------------------------------------------------------------------
 def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
     from datetime import datetime, timezone
@@ -849,7 +849,7 @@ def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)   # cap = $50
-    monkeypatch.setattr(cfg, "MAX_COMBO_EXPOSURE_USD", 50.0)
+    monkeypatch.setattr(cfg, "max_combo_exposure_usd", lambda: 50.0)
     import importlib
     importlib.reload(db)
     db.init_database()

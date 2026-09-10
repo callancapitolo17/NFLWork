@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Unabated Ticket</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <main id="ticket" hidden>
+    <div id="warning" class="warning" hidden></div>
+    <div class="side-caption">You are betting</div>
+    <div class="side" id="side-label"></div>
+    <div class="muted" id="bet-line"></div>
+    <div class="muted" id="event-line"></div>
+    <div class="muted" id="start-line"></div>
+
+    <dl class="facts">
+      <dt>Book</dt><dd id="book"></dd>
+      <dt>Price</dt><dd id="price"></dd>
+      <dt>Fair</dt><dd id="fair"></dd>
+      <dt>Edge</dt><dd id="edge"></dd>
+    </dl>
+
+    <div class="stake-block">
+      <div class="stake-label">Stake</div>
+      <div class="stake" id="stake"></div>
+      <div class="muted" id="full-kelly"></div>
+    </div>
+
+    <button id="copy" type="button">Copy</button>
+    <span id="copy-status" class="muted"></span>
+  </main>
+
+  <main id="error" class="error" hidden>
+    <div class="side" id="error-title">Could not read this cell</div>
+    <div class="muted" id="error-detail"></div>
+    <div class="muted" id="error-hint"></div>
+  </main>
+
+  <main id="empty" hidden>
+    <div class="muted">Click a price on tools.unabated.com to build a ticket.</div>
+    <div class="muted" id="page-status"></div>
+  </main>
+
+  <section class="settings">
+    <label>Bankroll <input id="bankroll" type="number" min="1" step="1"></label>
+    <label>Kelly multiplier <input id="multiplier" type="number" min="0.01" max="1" step="0.01"></label>
+    <div id="settings-error" class="muted"></div>
+  </section>
+
+  <script src="kelly.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>

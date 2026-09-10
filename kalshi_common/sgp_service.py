@@ -221,12 +221,23 @@ class SGPService:
         # together with a structure_ttl_sec small enough that structure
         # odds are as fresh as your quote cadence requires.
         single_leg_structure_fair: bool = False,
+        # Opt-in (leg surface, 2026-09-03): let a book's structure fall back
+        # to main-line markets its bet-builder cannot price. BetMGM lists a
+        # next-day fixture's 4 main lines only in its legacy ``games`` array
+        # until it builds the full tree the next morning (~05:50 PT), so
+        # overnight the structure read was empty and the surface priced
+        # 1 of 7 games. Those ids devig fine as two-sided singles but
+        # ``price_picks`` refuses them, so the default stays False: the
+        # same-game on-demand path must never resolve legs it cannot price
+        # (one doomed POST per RFQ all night).
+        structure_main_line_fallback: bool = False,
     ):
         self.books = tuple(books)
         self.per_book_deadline_sec = per_book_deadline_sec
         self.on_demand_deadline_sec = on_demand_deadline_sec
         self.structure_ttl_sec = structure_ttl_sec
         self.single_leg_structure_fair = single_leg_structure_fair
+        self.structure_main_line_fallback = structure_main_line_fallback
         self.min_refresh_sec = dict(min_refresh_sec or {})
         self._runners = runners
         self._on_demand_hooks = on_demand_hooks
@@ -1460,7 +1471,15 @@ class SGPService:
 
             def build_structure(client, event, game):
                 def _fetch():
-                    markets = client.fetch_markets(event.event_id, RETRY_LIVE)
+                    # The keyword rides only when opted in, so the default
+                    # call stays byte-for-byte what the on-demand path made.
+                    if self.structure_main_line_fallback:
+                        markets = client.fetch_markets(
+                            event.event_id, RETRY_LIVE,
+                            include_main_line_games=True)
+                    else:
+                        markets = client.fetch_markets(event.event_id,
+                                                       RETRY_LIVE)
                     if not markets:
                         return None
                     return mod.parse_markets(

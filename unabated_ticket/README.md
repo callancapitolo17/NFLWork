@@ -1,0 +1,114 @@
+# Unabated Ticket
+
+Chrome extension (Manifest V3, plain JS, no build step). Click a price on the
+Unabated odds screen and a side panel shows the bet — side, points, book
+price, Unabated fair price, edge — and the quarter-Kelly stake. The panel
+stays open when the sportsbook tab opens, so the stake is in view while you
+place the bet. Issue #111; plan in
+`docs/2026-09-08-unabated-ticket-extension-plan.md`.
+
+One ticket at a time. No bet tracking, no overlay on the Unabated page, no
+rounding of the stake.
+
+## Install (load unpacked)
+
+1. Chrome → `chrome://extensions` → turn on **Developer mode** (top right).
+2. **Load unpacked** → pick `NFLWork/unabated_ticket/extension`.
+3. Pin "Unabated Ticket" from the puzzle-piece menu (optional). Clicking the
+   toolbar icon opens the side panel; a captured price also opens it.
+4. Open `https://tools.unabated.com/cfb/odds` (premium login) and click a price.
+
+After editing any file under `extension/`, press the reload icon on the
+extension's card and reload the Unabated tab.
+
+## How capture works
+
+- `page.js` runs in the page's own JS world (`"world": "MAIN"`). The ticket
+  is read from React fiber props (`marketLine`, `sideIndex`, `context`) and
+  the AG Grid row (`node.data`) attached to the clicked
+  `.odds-cell-action-shell`; those are invisible to an isolated content
+  script. Capture runs on **pointerdown** (capture phase on `document`, so
+  before any Unabated handler) with `click` as a fallback, deduped per cell —
+  Unabated's one-click betting can open the book's deeplink on mouse-down and
+  may navigate the tab away before a `click` ever fires. Unabated's own
+  handler runs untouched afterwards. If the deeplink replaces the Unabated
+  tab, the ticket is already stored and the panel shows it with
+  "Not watching the line" (no tab left to watch).
+- Fast path: fiber props. Fallback: `data-marketline-id` on the shell plus a
+  `forEachNode` scan of every row's `sides`. If both fail the panel says
+  **Could not read this cell** with the reason; it never shows a stake it
+  cannot back.
+- Fields: `price` = `americanPrice` (exchanges have only `price`), `fair` =
+  `marketLine.bacr` (Unabated's no-vig price at that book's points),
+  side 0 = away / Over, side 1 = home / Under.
+- The ticket also carries `watch: {gridKey, sideKey, bookKey}` — the row id
+  and `sides["si<n>:tid<id>"]["ms<book>"]` path used to find the same line
+  again. Not in the plan's contract; needed by the watcher.
+- `content.js` (isolated world) writes the ticket to `chrome.storage.session`
+  directly (cleared when Chrome closes). `background.js` is off the hot path —
+  it only sets the panel-open-on-click behavior and opens session storage to
+  content scripts (`setAccessLevel`) — so a sleeping or crashed service worker
+  can't stop a click from reaching the panel.
+- Every 5 s `page.js` re-reads the same book line through the grid API. If
+  price or points moved, the panel shows **Line moved**, re-sizes off the
+  new price and fair, and keeps the captured line for comparison. Off the
+  board shows in red. If the Unabated tab is closed or navigated away the
+  panel says **Not watching the line**.
+
+## Stake
+
+Mode B of the Kelly sheet (`extension/kelly.js`): Unabated already publishes
+the edge (EV per $1) for every line, so the stake is sized straight from it.
+
+```
+b      = decimal(american book price) - 1
+full   = edge / b                 0 if edge <= 0
+stake  = bankroll * full * multiplier        not rounded
+```
+
+The panel shows Unabated's edge % as-is. The fair price (`bacr`) is shown for
+information only. Prices print as American plus prediction-market cents
+(implied probability), e.g. `-111 · 52.5¢`; on exchanges the cents use the
+exchange's exact `sourcePrice` so they match Unabated's screen, while the
+stake uses the American price because that is what Unabated's edge was
+computed from.
+
+Settings (bankroll, Kelly multiplier) sit at the bottom of the panel and
+persist in `chrome.storage.local`. Defaults 30000 and 0.25.
+
+Copy puts one line on the clipboard:
+`Seattle Mariners -133 · 57.0¢ @ Novig | fair -139 · 58.2¢ | edge +1.89% | stake $188.55 | Texas Rangers @ Seattle Mariners · MLB`.
+
+## Tests
+
+```bash
+node --test unabated_ticket/tests/kelly.test.js
+```
+
+Checks the sheet's worked example (-400 at +12.5% edge, bankroll 30000,
+quarter Kelly = $3,750), the Seattle -133 / +1.89% case, zero or negative
+edge → $0, that nothing rounds, and that exchange cents use `sourcePrice`.
+
+Manual checklist after loading unpacked: click a best-line price and a
+book-column price, then a moneyline, a spread and a total; confirm side
+label, points sign, price, fair and stake; change bankroll and watch the
+stake move; wait for a line change and see the warning; close the Unabated
+tab and see "Not watching".
+
+## Troubleshooting
+
+- **Panel empty / "Click a price"**: nothing captured yet, or Chrome was
+  restarted (session storage clears). Click a price again.
+- **No Unabated fair for this line**: Unabated has no edge for that line
+  (common on lopsided moneylines and exchange-only lines), so there is
+  nothing to size from. Not a bug; pick a line that shows an edge %.
+- **Could not read this cell**: Unabated changed prop or class names. Check
+  `.odds-cell-action-shell` still exists and the fiber props still carry
+  `marketLine` / `sideIndex` (see the DOM notes in the plan doc); the
+  reason text names which lookup failed.
+- **Panel did not open on click**: Chrome only auto-opens the side panel
+  with a user gesture attached; click the toolbar icon once, it stays open.
+- **"Not watching the line"**: the Unabated tab is closed, navigated away,
+  or the row left the grid (filter change). Re-click the price.
+- **Cannot size: Unabated has no edge at the new line**: the line moved to
+  points Unabated has not priced yet. Wait a tick or re-click.

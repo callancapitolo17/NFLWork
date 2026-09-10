@@ -379,10 +379,13 @@ PER_CREATOR_FILL_HALT = int(_get("PER_CREATOR_FILL_HALT", "10"))
 PER_CREATOR_WINDOW_HOURS = int(_get("PER_CREATOR_WINDOW_HOURS", "24"))
 
 # Per-combo concentration controls (H8 / H9)
-# Per-combo exposure cap. Must be >= max_fill_exposure_usd() (else a single max
-# fill self-blocks). At BANKROLL=$500: per-fill $50 = per-combo $50 = per-game
-# $50; diversification is across distinct games under the $375 daily cap.
-MAX_COMBO_EXPOSURE_USD = float(_get("MAX_COMBO_EXPOSURE_USD", "50.0"))
+# Per-combo exposure cap, as a % of BANKROLL like every other cap. Must be >=
+# MAX_FILL_EXPOSURE_PCT, else a single max fill self-blocks — which is exactly
+# what happened 2026-09-03..06: BANKROLL went 500 -> 2000 while this was a fixed
+# $50, so 25,083 priced RFQs between $50 and $200 cleared the size gate and died
+# here. Default equals the fill cap; diversification is across distinct games
+# under the daily cap.
+MAX_COMBO_EXPOSURE_PCT = float(_get("MAX_COMBO_EXPOSURE_PCT", "0.10"))
 COMBO_COOLDOWN_SEC = int(_get("COMBO_COOLDOWN_SEC", "60"))
 
 # Reconcile max-age fallback (N11): fills older than this with positions API
@@ -603,3 +606,7 @@ def daily_exposure_cap_usd() -> float:
 
 def max_fill_exposure_usd() -> float:
     return BANKROLL * MAX_FILL_EXPOSURE_PCT
+
+
+def max_combo_exposure_usd() -> float:
+    return BANKROLL * MAX_COMBO_EXPOSURE_PCT

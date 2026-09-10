@@ -146,6 +146,15 @@ dashboard spawns the shims + blends them in `mlb_correlated_parlay.R`.
   header; use state `pa`), then `POST /cds-api/bettingoffer/picks` with legs
   sharing a `pickGroupId` returns the Angstrom correlated price. Source
   `betmgm_direct`. Verified live (4-corner overround ~1.12–1.18). No browser.
+  **Next-day fixtures carry only their 4 main lines** (money line, two run
+  lines, main total) in the legacy `games` array until BetMGM builds the full
+  `optionMarkets` tree the next morning (~05:50 PT, live 2026-09-03);
+  `fetch_markets(..., include_main_line_games=True)` folds them in re-shaped
+  to the `optionMarkets` schema. Opt-in because the bet-builder refuses those
+  ids (`price_picks` → None, verified) — only a two-sided-devig reader (the
+  maker's leg surface) should ask for them. Doubleheader fixtures are named
+  `"<Away> at <Home> (Game N)"`; the marker is stripped before team
+  resolution, and the UTC-hour bucket + fixture start time keep G1/G2 apart.
 - **Caesars** (`scraper_caesars_sgp.py` + `caesars.py` + `caesars_client.py`
   + `caesars_waf.py` + `caesars_waf_node.js`) — token-broker + REST, **browser
   free**. `POST /sb/v2/bets/details` with `combinationSelections: []` returns
@@ -441,6 +450,19 @@ was logged out), the `_abck` sensor cookie (unvalidated for 90s and still
 (`primp` chrome_146, `rnet` Chrome137/136, `tls_client` chrome_120 — three
 different TLS stacks, all 403 with controls stable). A proxy would have
 bought nothing, and so would swapping the imitation library.
+
+### Decision: DK stays OFF the same-game path (2026-09-02)
+
+A browser-backed sidecar (`dk_price_sidecar/`, commit ac9ecf3) was built,
+verified end to end (`true_odds=7.75` 4/4) and **reverted the same day by
+owner decision** (ba1eec9): a resident browser is not a dependency this
+operation will run. Cookie transplant from a real Chrome was also measured —
+a browser-minted `_abck` is a budget of ~6 requests before Akamai rotates it
+dead — so there is no pure-HTTP path either. Same-game combos (7% of RFQ
+flow) price off the other five books; cross-game never needed DK's price
+call. Reopen only if same-game `too_few_books` declines become material, and
+cap DK's concurrency to 1 before any re-enable — the burst is what drew the
+rule.
 
 ### Diagnostic fix that did land (issue #102)
 
