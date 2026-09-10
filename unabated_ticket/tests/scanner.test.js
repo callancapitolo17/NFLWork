@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { createScanner, SNAPSHOT_URL, CHANGES_URL } = require("../extension/scanner.js");
+const { createScanner, SNAPSHOT_URL, SNAPSHOT_BASE_URL, CHANGES_URL } = require("../extension/scanner.js");
 
 const fixture = (name) => fs.readFileSync(path.join(__dirname, "fixtures", name), "utf8");
 const KICKOFF_MS = Date.parse("2026-09-13T17:00:00Z");
@@ -25,10 +25,12 @@ function response({ status = 200, body = "", headers = {} }) {
 function fakeFetch(overrides = {}) {
   const calls = [];
   const snapshotBuilt = new Date(NOW - 20 * 1000).toUTCString();
+  // Snapshot URLs carry a cache-busting query; match on the base.
+  const base = (url) => url.split("?")[0];
   const impl = async (url) => {
-    calls.push(url);
-    if (overrides[url]) return overrides[url]();
-    if (url === SNAPSHOT_URL(1)) return response({ body: fixture("v2_slice.json"), headers: { "last-modified": snapshotBuilt, "content-length": String(overrides.nflBytes || 1000) } });
+    calls.push(base(url));
+    if (overrides[base(url)]) return overrides[base(url)]();
+    if (base(url) === SNAPSHOT_BASE_URL(1)) return response({ body: fixture("v2_slice.json"), headers: { "last-modified": snapshotBuilt, "content-length": String(overrides.nflBytes || 1000) } });
     if (url.startsWith(CHANGES_URL)) return response({ body: fixture("changes_slice.json") });
     return response({ status: 404, body: "not found" });
   };
@@ -85,13 +87,13 @@ test("a rejected cursor triggers a resync from snapshots", async () => {
   await scanner.start([1]);
   await scanner.tick(); // moves the cursor to the fixture's latestTimestamp
   await scanner.tick(); // Failed -> resync
-  const snapshotLoads = fetchImpl.calls.filter((url) => url === SNAPSHOT_URL(1)).length;
+  const snapshotLoads = fetchImpl.calls.filter((url) => url === SNAPSHOT_BASE_URL(1)).length;
   assert.equal(snapshotLoads, 2);
   assert.equal(scanner.getStatus().phase, "live");
 });
 
 test("a league that fails to load is reported by name and the rest keep working", async () => {
-  const fetchImpl = fakeFetch({ [SNAPSHOT_URL(2)]: () => response({ status: 503, body: "" }) });
+  const fetchImpl = fakeFetch({ [SNAPSHOT_BASE_URL(2)]: () => response({ status: 503, body: "" }) });
   const scanner = createScanner({ fetchImpl, now: () => NOW, timers: noTimers });
   await scanner.start([1, 2]);
   const status = scanner.getStatus();
@@ -103,7 +105,7 @@ test("a league that fails to load is reported by name and the rest keep working"
 });
 
 test("every league failing is a loud error, not an empty list", async () => {
-  const fetchImpl = fakeFetch({ [SNAPSHOT_URL(1)]: () => { throw new Error("network down"); } });
+  const fetchImpl = fakeFetch({ [SNAPSHOT_BASE_URL(1)]: () => { throw new Error("network down"); } });
   const scanner = createScanner({ fetchImpl, now: () => NOW, timers: noTimers });
   await scanner.start([1]);
   const status = scanner.getStatus();
@@ -133,18 +135,18 @@ test("resume after a long pause resyncs; after a short one it just polls", async
   scanner.pause();
   clock += 30 * 1000;
   await scanner.resume();
-  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_URL(1)).length, 1);
+  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_BASE_URL(1)).length, 1);
   scanner.pause();
   clock += 5 * 60 * 1000;
   await scanner.resume();
-  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_URL(1)).length, 2);
+  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_BASE_URL(1)).length, 2);
 });
 
 test("switching leagues while a snapshot is still downloading discards the old load", async () => {
   let releaseCfb;
   const cfbGate = new Promise((resolve) => { releaseCfb = resolve; });
   const fetchImpl = fakeFetch({
-    [SNAPSHOT_URL(2)]: async () => { await cfbGate; return response({ body: fixture("v2_slice.json").replace(/lg1:/g, "lg2:") }); },
+    [SNAPSHOT_BASE_URL(2)]: async () => { await cfbGate; return response({ body: fixture("v2_slice.json").replace(/lg1:/g, "lg2:") }); },
   });
   const scanner = createScanner({ fetchImpl, now: () => NOW, timers: noTimers });
   const first = scanner.start([1, 2]); // CFB hangs
@@ -160,16 +162,16 @@ test("switching leagues while a snapshot is still downloading discards the old l
 
 test("while every league is failing, ticks retry on the 30s throttle instead of every poll", async () => {
   let clock = NOW;
-  const fetchImpl = fakeFetch({ [SNAPSHOT_URL(1)]: () => response({ status: 503, body: "" }) });
+  const fetchImpl = fakeFetch({ [SNAPSHOT_BASE_URL(1)]: () => response({ status: 503, body: "" }) });
   const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers });
   await scanner.start([1]);
   await scanner.tick();
   clock += 10 * 1000;
   await scanner.tick();
-  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_URL(1)).length, 2); // start + first throttled retry
+  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_BASE_URL(1)).length, 2); // start + first throttled retry
   clock += 30 * 1000;
   await scanner.tick();
-  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_URL(1)).length, 3);
+  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_BASE_URL(1)).length, 3);
   assert.equal(scanner.getStatus().phase, "error");
 });
 
@@ -177,7 +179,7 @@ test("a full load publishes each league as it lands, CFB last", async () => {
   let releaseCfb;
   const cfbGate = new Promise((resolve) => { releaseCfb = resolve; });
   const fetchImpl = fakeFetch({
-    [SNAPSHOT_URL(2)]: async () => { await cfbGate; return response({ body: fixture("v2_slice.json").replace(/lg1:/g, "lg2:") }); },
+    [SNAPSHOT_BASE_URL(2)]: async () => { await cfbGate; return response({ body: fixture("v2_slice.json").replace(/lg1:/g, "lg2:") }); },
   });
   const seen = [];
   const scanner = createScanner({ fetchImpl, now: () => NOW, timers: noTimers, onChange: (status) => seen.push([status.phase, status.leaguesLoaded.slice(), status.loading && status.loading.done]) });
@@ -204,7 +206,7 @@ test("each league re-downloads its snapshot on a cadence set by its compressed s
   assert.equal(scanner.refreshEveryMs(1000), 60 * 1000);
   assert.equal(scanner.refreshEveryMs(3 * 1024 * 1024), 120 * 1000);
   assert.equal(scanner.refreshEveryMs(9.7 * 1024 * 1024), 300 * 1000);
-  const loads = () => fetchImpl.calls.filter((u) => u === SNAPSHOT_URL(1)).length;
+  const loads = () => fetchImpl.calls.filter((u) => u === SNAPSHOT_BASE_URL(1)).length;
   clock += 30 * 1000;
   await scanner.tick();
   assert.equal(loads(), 1); // 1 KB file: not due until 60s
@@ -222,8 +224,15 @@ test("a large snapshot refreshes on the slow tier", async () => {
   await scanner.start([1]);
   clock += 200 * 1000;
   await scanner.tick();
-  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_URL(1)).length, 1);
+  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_BASE_URL(1)).length, 1);
   clock += 101 * 1000;
   await scanner.tick();
-  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_URL(1)).length, 2);
+  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_BASE_URL(1)).length, 2);
+});
+
+test("snapshot URLs carry a query that changes every 30s so CloudFront cannot serve a stale edge copy", () => {
+  const t = Date.UTC(2026, 8, 10, 22, 42, 0);
+  assert.equal(SNAPSHOT_URL(5, t), `${SNAPSHOT_BASE_URL(5)}?t=${Math.floor(t / 30000)}`);
+  assert.equal(SNAPSHOT_URL(5, t + 29 * 1000), SNAPSHOT_URL(5, t));
+  assert.notEqual(SNAPSHOT_URL(5, t + 30 * 1000), SNAPSHOT_URL(5, t));
 });

@@ -21,7 +21,15 @@
 
   const feed = typeof module !== "undefined" && module.exports ? require("./feed.js") : root.UnabatedFeed;
 
-  const SNAPSHOT_URL = (leagueId) => `https://content.unabated.com/markets/v2/league/${leagueId}/odds.json`;
+  const SNAPSHOT_BASE_URL = (leagueId) => `https://content.unabated.com/markets/v2/league/${leagueId}/odds.json`;
+  // CloudFront serves the bare URL to gzip clients (every browser) from an
+  // edge cache with no TTL from the origin: measured 2026-09-10 a copy 6.5 h
+  // old ("age: 23253", last-modified 16:14 at 22:42 UTC) while curl without
+  // gzip and any query string got the fresh file. A query that changes
+  // every CACHE_BUST_SEC forces a miss, so the panel never prices off a
+  // stale edge copy; within that window the browser cache still serves it.
+  const CACHE_BUST_SEC = 30;
+  const SNAPSHOT_URL = (leagueId, atMs) => `${SNAPSHOT_BASE_URL(leagueId)}?t=${Math.floor((atMs ?? Date.now()) / (CACHE_BUST_SEC * 1000))}`;
   const CHANGES_URL = "https://api-k.unabated.com/api/markets/changes/query";
   const POLL_MS = 10000;
   // Full resync (books, teams, cursor) — the per-league refresh below is what
@@ -84,6 +92,7 @@
       eventCount: 0,
       cursor: null,
       loading: null, // {done, total} while snapshots are downloading
+      snapshotBuiltAt: null, // newest Last-Modified among loaded leagues (stale edge copies show here)
     };
     let failedLeagueRetryAt = 0;
     // Bumped by start(); a load that began under an older generation is discarded.
@@ -128,7 +137,7 @@
 
     async function fetchSnapshot(leagueId) {
       // no-cache = revalidate with If-None-Match; a 304 serves the cached body.
-      const response = await fetchWithTimeout(SNAPSHOT_URL(leagueId), { cache: "no-cache", credentials: "include" }, SNAPSHOT_TIMEOUT_MS);
+      const response = await fetchWithTimeout(SNAPSHOT_URL(leagueId, now()), { cache: "no-cache", credentials: "include" }, SNAPSHOT_TIMEOUT_MS);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const json = await response.json();
       const lastModified = response.headers && response.headers.get ? response.headers.get("last-modified") : null;
@@ -186,7 +195,10 @@
         delete errors[leagueId];
         loadedCount += 1;
         leagueMeta[leagueId] = { loadedAt: now(), bytes: loaded.bytes };
-        if (loaded.builtAt != null) oldestBuild = oldestBuild == null ? loaded.builtAt : Math.min(oldestBuild, loaded.builtAt);
+        if (loaded.builtAt != null) {
+          oldestBuild = oldestBuild == null ? loaded.builtAt : Math.min(oldestBuild, loaded.builtAt);
+          status.snapshotBuiltAt = Math.max(status.snapshotBuiltAt || 0, loaded.builtAt);
+        }
         mergeInto(target, loaded.state);
         if (fullLoad && target !== state) {
           // First league of a full (re)load: switch to the fresh state now so
@@ -378,7 +390,7 @@
     };
   }
 
-  const api = { createScanner, SNAPSHOT_URL, CHANGES_URL };
+  const api = { createScanner, SNAPSHOT_URL, SNAPSHOT_BASE_URL, CHANGES_URL };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {

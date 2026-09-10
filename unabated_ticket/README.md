@@ -98,7 +98,7 @@ runs in the service worker.
 
 | Feed | URL | What it carries |
 |---|---|---|
-| Snapshot | `content.unabated.com/markets/v2/league/{id}/odds.json` (27 team-sport leagues, `feed.LEAGUES`; ~18 MB gzip in total, CFB alone 9.7 MB, regenerated ~every 27 s) | every row's `sides[side][ms<book>]` line: `points, americanPrice, sourcePrice, sourceFormat, bacr, ge, liquidity, statusId, sequenceNumber`; `teams`; `marketSources` |
+| Snapshot | `content.unabated.com/markets/v2/league/{id}/odds.json?t=<30 s bucket>` (29 team-sport leagues, `feed.LEAGUES`; ~18 MB gzip in total, CFB alone 9.7 MB, regenerated ~every 27 s). The query is a cache buster: CloudFront hands gzip clients the bare URL from an edge cache that was 6.5 h old on 2026-09-10 | every row's `sides[side][ms<book>]` line: `points, americanPrice, sourcePrice, sourceFormat, bacr, ge, liquidity, statusId, sequenceNumber`; `teams`; `marketSources` |
 | Changes | `api-k.unabated.com/api/markets/changes/query[/{cursor}]` (~300 KB per 10 s) | the same fields per changed line under `gameOddsEvents[lg:pt:pregame][].gameOddsMarketSourcesLines[si:ms:an][bt]`, plus `sideKey` |
 
 `ge` is Unabated's edge as a fraction (0.0296 = +2.96%), the same number the
@@ -161,8 +161,9 @@ screen path is verified for nfl/cfb/mlb only; nba, cbb, nhl, wnba and
 soccer follow the site's nav and, for a soccer league, the odds screen must
 have that league selected for the row to be found.
 
-The header shows leagues loaded, lines held, update age, and the filter in
-effect. A league that fails to load is named in a red banner while the rest
+The header shows leagues loaded, lines held, when the newest snapshot was
+built (its `Last-Modified`; minutes or more means a stale edge copy),
+stream age, and the filter in effect. A league that fails to load is named in a red banner while the rest
 keep working; if every league fails the tab says **feed unavailable** rather
 than showing an empty list.
 

@@ -487,7 +487,9 @@
     const leagues = status.leaguesLoaded.length > 4
       ? [`${status.leaguesLoaded.length} leagues (${loadedSports.map((sport) => feed.SPORTS[sport]).join(", ")})`]
       : status.leaguesLoaded.map((id) => (feed.LEAGUES[id] || { label: `league ${id}` }).label);
-    const updated = status.lastUpdateAt ? `updated ${fmtAge(Date.now() - status.lastUpdateAt)}` : (status.lastSnapshotAt ? `snapshot ${fmtAge(Date.now() - status.lastSnapshotAt)}` : "no data yet");
+    // "built" is the newest snapshot's Last-Modified: minutes or hours here means a stale edge copy, not a slow poll.
+    const built = status.snapshotBuiltAt ? `snapshot built ${fmtAge(Date.now() - status.snapshotBuiltAt)}` : "no data yet";
+    const updated = status.lastUpdateAt ? `${built} · stream ${fmtAge(Date.now() - status.lastUpdateAt)}` : built;
     const polled = status.lastPollAt ? ` · polled ${fmtAge(Date.now() - status.lastPollAt)}` : "";
     const loading = status.loading ? ` · loading ${status.loading.done}/${status.loading.total} leagues` : "";
     view.edgesStatus.textContent = status.phase === "loading" && !status.leaguesLoaded.length
