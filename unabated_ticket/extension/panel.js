@@ -1,16 +1,25 @@
-// Unabated Ticket — side panel.
+// Unabated Ticket — side panel: the Ticket tab (one captured bet) and the
+// Edges tab (every positive-edge line across the enabled leagues).
 //
-// Reads: chrome.storage.local {ticket, error, watchStatus, pageReady} (written
-// by content.js) and {bankroll, multiplier} (settings, written here).
+// Reads: chrome.storage.local {ticket, error, watchStatus, pageReady,
+// booksFilter} (written by content.js) and {bankroll, multiplier, edges,
+// activeTab} (settings, written here).
 // Writes: chrome.storage.local settings only. Re-renders on storage.onChanged.
+// Network: the scanner (scanner.js) fetches Unabated's public feeds while this
+// page is open; it pauses when the panel is hidden and stops when it closes.
 
 (function () {
   "use strict";
 
   const DEFAULT_SETTINGS = { bankroll: 30000, multiplier: 0.25 };
+  const DEFAULT_EDGE_SETTINGS = { leagues: [1, 2, 5], periods: [1], minEdgePct: 1.0, sortBy: "edge" };
   // Watcher heartbeats every 5s; past this with no heartbeat, the Unabated tab is gone.
   const WATCH_STALE_MS = 15000;
+  // page.js republishes the books filter every 10s while an Unabated tab is open.
+  const BOOKS_FILTER_STALE_MS = 6 * 60 * 60 * 1000;
+  const MAX_EDGE_ROWS = 200;
   const kelly = globalThis.UnabatedKelly;
+  const feed = globalThis.UnabatedFeed;
 
   const el = (id) => document.getElementById(id);
   const view = {
@@ -23,12 +32,28 @@
     errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
     pageStatus: el("page-status"),
+    tabs: el("tabs"), tabTicket: el("tab-ticket"), tabEdges: el("tab-edges"), edgesCount: el("edges-count"),
+    edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesLocate: el("edges-locate"),
+    edgesLeagues: el("edges-leagues"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesSort: el("edges-sort"),
+    edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
   };
   // page.js heartbeats every 10s; past this it is not running on any Unabated tab.
   const PAGE_READY_STALE_MS = 25000;
 
-  let state = { ticket: null, error: null, watchStatus: null, pageReady: null, settings: { ...DEFAULT_SETTINGS } };
+  let state = {
+    ticket: null, error: null, watchStatus: null, pageReady: null, settings: { ...DEFAULT_SETTINGS },
+    edgeSettings: { ...DEFAULT_EDGE_SETTINGS }, booksFilter: null, activeTab: "ticket",
+  };
   let lastCopyText = "";
+  let scannerStatus = null;
+  let scannerState = null;
+  const scanner = globalThis.UnabatedScanner.createScanner({
+    onChange: (status, feedState) => {
+      scannerStatus = status;
+      scannerState = feedState;
+      renderEdges();
+    },
+  });
 
   // ---- formatting ----------------------------------------------------------
 
@@ -220,6 +245,206 @@
     renderTicket();
   }
 
+
+  // ---- Edges tab -----------------------------------------------------------
+
+  function fmtAge(ms) {
+    if (ms < 1000) return "just now";
+    if (ms < 60 * 1000) return `${Math.round(ms / 1000)}s ago`;
+    if (ms < 60 * 60 * 1000) return `${Math.round(ms / 60000)}m ago`;
+    return `${Math.round(ms / 3600000)}h ago`;
+  }
+
+  function fmtUntil(startMs) {
+    const mins = Math.round((startMs - Date.now()) / 60000);
+    if (mins < 60) return `in ${mins}m`;
+    if (mins < 48 * 60) return `in ${Math.floor(mins / 60)}h ${mins % 60}m`;
+    return `in ${Math.round(mins / 1440)}d`;
+  }
+
+  function fmtLiquidity(value) {
+    return value == null ? "" : `liq ${value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}`;
+  }
+
+  // Which books and bet types the list is restricted to. The user's own
+  // Unabated selection wins when page.js has published one; otherwise every
+  // live book and moneyline/spread/total, and the header says so.
+  function effectiveFilter() {
+    const filter = state.booksFilter;
+    const fresh = filter && typeof filter.at === "number" && Date.now() - filter.at < BOOKS_FILTER_STALE_MS;
+    const bookIds = fresh && Array.isArray(filter.bookIds) && filter.bookIds.length ? new Set(filter.bookIds) : null;
+    const betTypeIds = fresh && Array.isArray(filter.betTypeIds) && filter.betTypeIds.length
+      ? new Set(filter.betTypeIds.filter((id) => feed.BET_TYPES[id]))
+      : null;
+    return { bookIds, betTypeIds: betTypeIds && betTypeIds.size ? betTypeIds : null, fresh: Boolean(fresh), filter };
+  }
+
+  function describeFilter(effective) {
+    const parts = [];
+    if (effective.bookIds) parts.push(`your ${effective.bookIds.size} Unabated books`);
+    else parts.push("no books filter yet: showing all live books (open an Unabated odds tab to publish your selection)");
+    if (effective.betTypeIds) parts.push(`bet types: ${Array.from(effective.betTypeIds).map((id) => feed.BET_TYPES[id]).join("/")}`);
+    else parts.push("ML/spread/total");
+    return parts.join(" · ");
+  }
+
+  function stakeFor(row) {
+    if (row.edgePct == null) return null;
+    try {
+      return kelly.kellyStakeFromEdge({ bookPrice: row.price, edgePct: row.edgePct, bankroll: state.settings.bankroll, multiplier: state.settings.multiplier }).stake;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function currentEdgeRows() {
+    if (!scannerState) return [];
+    const effective = effectiveFilter();
+    const settings = state.edgeSettings;
+    const rows = feed.selectEdges(scannerState, {
+      minEdge: settings.minEdgePct / 100,
+      periods: new Set(settings.periods),
+      betTypes: effective.betTypeIds || new Set([1, 2, 3]),
+      bookIds: effective.bookIds,
+      now: Date.now(),
+    }).map((row) => ({ ...row, stake: stakeFor(row) }));
+    if (settings.sortBy === "stake") rows.sort((a, b) => (b.stake ?? -1) - (a.stake ?? -1) || b.edgePct - a.edgePct);
+    if (settings.sortBy === "start") rows.sort((a, b) => a.eventStartMs - b.eventStartMs || b.edgePct - a.edgePct);
+    return rows;
+  }
+
+  function renderEdgeRow(row) {
+    const li = document.createElement("li");
+    li.className = `edge-row${row.isBlurred ? " blurred" : ""}`;
+    li.dataset.key = row.key;
+    const top = document.createElement("div");
+    top.className = "edge-top";
+    const side = document.createElement("span");
+    side.className = "edge-side";
+    side.textContent = row.sideLabel;
+    const pct = document.createElement("span");
+    pct.className = "edge-pct";
+    pct.textContent = fmtPct(row.edgePct / 100);
+    top.append(side, pct);
+
+    const bet = document.createElement("div");
+    bet.className = "muted";
+    bet.textContent = `${describeSide(row)}${row.period === "FG" ? "" : ` · ${row.period}`}`;
+    const matchup = document.createElement("div");
+    matchup.className = "muted";
+    matchup.textContent = `${describeMatchup(row)} · ${fmtStart(row.eventStart)} · ${fmtUntil(row.eventStartMs)}`;
+
+    const bottom = document.createElement("div");
+    bottom.className = "edge-bottom";
+    const book = document.createElement("span");
+    book.className = "edge-book";
+    book.textContent = `${row.book.name} ${fmtPriceBoth(asBookLine(row.price, row.sourceFormat, row.sourcePrice))}`;
+    const liquidity = document.createElement("span");
+    liquidity.className = "muted";
+    liquidity.textContent = fmtLiquidity(row.liquidity);
+    const stake = document.createElement("span");
+    stake.className = "edge-stake";
+    stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
+    bottom.append(book, liquidity, stake);
+
+    li.append(top, bet, matchup, bottom);
+    return li;
+  }
+
+  function renderEdgesStatus(rows) {
+    const status = scannerStatus;
+    if (!status) {
+      view.edgesStatus.textContent = "Starting the scanner…";
+      return;
+    }
+    const leagues = status.leaguesLoaded.map((id) => (feed.LEAGUES[id] || { label: `league ${id}` }).label);
+    const updated = status.lastUpdateAt ? `updated ${fmtAge(Date.now() - status.lastUpdateAt)}` : (status.lastSnapshotAt ? `snapshot ${fmtAge(Date.now() - status.lastSnapshotAt)}` : "no data yet");
+    const polled = status.lastPollAt ? ` · polled ${fmtAge(Date.now() - status.lastPollAt)}` : "";
+    view.edgesStatus.textContent = status.phase === "loading"
+      ? "Loading snapshots…"
+      : `${leagues.join(" · ") || "no leagues"} · ${status.lineCount.toLocaleString()} lines · ${updated}${polled}`;
+    view.edgesError.hidden = !status.error;
+    view.edgesError.textContent = status.error || "";
+    view.edgesCount.hidden = rows.length === 0;
+    view.edgesCount.textContent = String(rows.length);
+  }
+
+  function renderEdges() {
+    const rows = currentEdgeRows();
+    renderEdgesStatus(rows);
+    view.edgesFilter.textContent = describeFilter(effectiveFilter());
+    view.edgesList.replaceChildren(...rows.slice(0, MAX_EDGE_ROWS).map(renderEdgeRow));
+    const status = scannerStatus;
+    if (rows.length === 0) {
+      view.edgesEmpty.hidden = false;
+      view.edgesEmpty.textContent = !status || status.phase !== "live"
+        ? (status && status.phase === "error" ? "Nothing to list: the feed is unavailable (see above)." : "Waiting for the first snapshot…")
+        : `No line at or above ${state.edgeSettings.minEdgePct}% edge right now.`;
+    } else {
+      view.edgesEmpty.hidden = rows.length > MAX_EDGE_ROWS ? false : true;
+      view.edgesEmpty.textContent = rows.length > MAX_EDGE_ROWS ? `Showing the top ${MAX_EDGE_ROWS} of ${rows.length}; raise the minimum edge to see fewer.` : "";
+    }
+  }
+
+  // ---- tabs ----------------------------------------------------------------
+
+  function showTab(name) {
+    state.activeTab = name === "edges" ? "edges" : "ticket";
+    view.tabTicket.hidden = state.activeTab !== "ticket";
+    view.tabEdges.hidden = state.activeTab !== "edges";
+    for (const button of view.tabs.querySelectorAll("button[data-tab]")) {
+      button.classList.toggle("active", button.dataset.tab === state.activeTab);
+    }
+  }
+
+  view.tabs.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-tab]");
+    if (!button) return;
+    showTab(button.dataset.tab);
+    chrome.storage.local.set({ activeTab: state.activeTab });
+    if (state.activeTab === "edges") renderEdges();
+  });
+
+  // ---- edge settings -------------------------------------------------------
+
+  function readEdgeSettingInputs() {
+    const leagues = Array.from(view.edgesLeagues.querySelectorAll("input:checked")).map((input) => Number(input.dataset.league));
+    const periods = Array.from(view.edgesPeriods.querySelectorAll("input:checked")).map((input) => Number(input.dataset.period));
+    const minEdgePct = Number(view.edgesMin.value);
+    if (!Number.isFinite(minEdgePct) || minEdgePct < 0) return { error: "Minimum edge must be zero or more." };
+    if (!periods.length) return { error: "Pick at least one period." };
+    return { settings: { leagues, periods, minEdgePct, sortBy: view.edgesSort.value } };
+  }
+
+  function fillEdgeSettingInputs() {
+    const settings = state.edgeSettings;
+    for (const input of view.edgesLeagues.querySelectorAll("input")) input.checked = settings.leagues.includes(Number(input.dataset.league));
+    for (const input of view.edgesPeriods.querySelectorAll("input")) input.checked = settings.periods.includes(Number(input.dataset.period));
+    view.edgesMin.value = settings.minEdgePct;
+    view.edgesSort.value = settings.sortBy;
+  }
+
+  function onEdgeSettingsInput() {
+    const parsed = readEdgeSettingInputs();
+    view.edgesSettingsError.textContent = parsed.error || "";
+    if (parsed.error) return;
+    const leaguesChanged = parsed.settings.leagues.join(",") !== state.edgeSettings.leagues.join(",");
+    state.edgeSettings = parsed.settings;
+    chrome.storage.local.set({ edges: parsed.settings });
+    if (leaguesChanged) scanner.start(parsed.settings.leagues).catch((error) => console.error("[unabated-ticket] scanner restart failed", error));
+    renderEdges();
+  }
+
+  function sanitizeEdgeSettings(stored) {
+    const base = { ...DEFAULT_EDGE_SETTINGS };
+    if (!stored || typeof stored !== "object") return base;
+    if (Array.isArray(stored.leagues)) base.leagues = stored.leagues.filter((id) => feed.LEAGUES[id]);
+    if (Array.isArray(stored.periods) && stored.periods.length) base.periods = stored.periods.filter((id) => feed.PERIODS[id]);
+    if (typeof stored.minEdgePct === "number" && stored.minEdgePct >= 0) base.minEdgePct = stored.minEdgePct;
+    if (["edge", "stake", "start"].includes(stored.sortBy)) base.sortBy = stored.sortBy;
+    return base;
+  }
+
   // ---- settings ------------------------------------------------------------
 
   function readSettingInputs() {
@@ -237,6 +462,7 @@
     state.settings = parsed.settings;
     chrome.storage.local.set(parsed.settings);
     render();
+    renderEdges();
   }
 
   function fillSettingInputs() {
@@ -250,21 +476,50 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "activeTab"]);
     state.ticket = relay.ticket || null;
     state.error = relay.error || null;
     state.watchStatus = relay.watchStatus || null;
     state.pageReady = relay.pageReady || null;
+    state.booksFilter = relay.booksFilter || null;
+    state.edgeSettings = sanitizeEdgeSettings(relay.edges);
+    fillEdgeSettingInputs();
+    showTab(relay.activeTab === "edges" ? "edges" : "ticket");
     render();
+    renderEdges();
+    await scanner.start(state.edgeSettings.leagues);
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if ("ticket" in changes) state.ticket = changes.ticket.newValue || null;
-    if ("error" in changes) state.error = changes.error.newValue || null;
+    if ("ticket" in changes) {
+      const previous = state.ticket;
+      state.ticket = changes.ticket.newValue || null;
+      // A fresh capture (not the watcher rewriting `current`) brings the Ticket tab forward.
+      if (state.ticket && (!previous || previous.capturedAt !== state.ticket.capturedAt)) showTab("ticket");
+    }
+    if ("error" in changes) {
+      state.error = changes.error.newValue || null;
+      if (state.error) showTab("ticket");
+    }
     if ("watchStatus" in changes) state.watchStatus = changes.watchStatus.newValue || null;
     if ("pageReady" in changes) state.pageReady = changes.pageReady.newValue || null;
     if ("ticket" in changes || "error" in changes || "watchStatus" in changes || "pageReady" in changes) render();
+    if ("booksFilter" in changes) {
+      state.booksFilter = changes.booksFilter.newValue || null;
+      renderEdges();
+    }
+  });
+
+  view.edgesLeagues.addEventListener("change", onEdgeSettingsInput);
+  view.edgesPeriods.addEventListener("change", onEdgeSettingsInput);
+  view.edgesMin.addEventListener("input", onEdgeSettingsInput);
+  view.edgesSort.addEventListener("change", onEdgeSettingsInput);
+
+  // Nothing polls while the panel is hidden; back in view, the scanner catches up or resyncs.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) scanner.pause();
+    else scanner.resume().catch((error) => console.error("[unabated-ticket] scanner resume failed", error));
   });
 
   view.bankroll.addEventListener("input", onSettingsInput);
@@ -279,8 +534,11 @@
     }
   });
 
-  // Re-evaluate the "not watching" state even when no storage event arrives.
-  setInterval(() => { if (!state.error) render(); }, 5000);
+  // Re-evaluate the "not watching" state and the edge ages even when no event arrives.
+  setInterval(() => {
+    if (!state.error) render();
+    if (state.activeTab === "edges") renderEdges();
+  }, 5000);
 
   load().catch((error) => {
     view.errorDetail.textContent = error.message;
