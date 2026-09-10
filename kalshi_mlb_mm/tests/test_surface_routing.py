@@ -41,7 +41,7 @@ GREF = GameRef(game_id="game1", home_team="Boston Red Sox",
 
 # Surface fairs: two books, close enough to clear SIGMA_Z_MAX=0.07 in z-space
 # (sigma_z ~ 0.018). Per-leg fair ~0.555, so a 2-game product lands ~0.308 —
-# comfortably inside [MIN_FAIR_PROB, MAX_FAIR_PROB].
+# comfortably quotable.
 SURFACE_FAIRS = {"draftkings": 0.55, "fanduel": 0.56}
 SURFACE_COMBO_FAIR = pytest.approx(0.555 * 0.555, abs=0.002)
 # Deliberately far from the surface number, so any assertion can prove which

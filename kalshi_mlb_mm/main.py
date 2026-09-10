@@ -1785,7 +1785,13 @@ def _discovery_tick(source, gateway, dry_run):
                 surface_fairs=surface_gate)
             blended = fair_detail.fair if fair_detail is not None else None
             book_med = blended  # single consensus fair; book_med == blended
-            if blended is None or not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
+            # No quotable band on the fair (removed 2026-09-10, user decision):
+            # pricing.quote() already fails closed on a degenerate fair —
+            # yes_bid <= 0, no_bid <= 0 or yes_bid + no_bid >= 1 -> None ->
+            # `unpriceable` — so the [0.05, 0.95] band only ever declined
+            # long-shot multi-leg combos the pricer could quote (9,133
+            # `no_fair` on 9/8-9/9 once 4-8-leg RFQs were admitted).
+            if blended is None:
                 # #98 adds the two "surface_" variants: same gate, cached
                 # input. Kept distinct so the monitor can separate "the cached
                 # surface was thin/split" from "the live fetch was".

@@ -86,8 +86,6 @@ MAX_GAME_EXPOSURE_PCT = float(_get("MAX_GAME_EXPOSURE_PCT", "0.10"))
 MAX_FILL_EXPOSURE_PCT = float(_get("MAX_FILL_EXPOSURE_PCT", "0.10"))
 MAX_OPEN_QUOTES = int(_get("MAX_OPEN_QUOTES", "25"))
 FAIR_DRIFT_TOLERANCE = float(_get("FAIR_DRIFT_TOLERANCE", "0.02"))
-MIN_FAIR_PROB = float(_get("MIN_FAIR_PROB", "0.05"))
-MAX_FAIR_PROB = float(_get("MAX_FAIR_PROB", "0.95"))
 
 # Circuit breaker. (#57 deleted the book-data-age staleness knob that lived
 # here: every quote is priced by a live fetch, resting-quote protection is

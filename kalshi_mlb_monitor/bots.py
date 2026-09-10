@@ -107,7 +107,7 @@ REASON_GLOSS = {
     "out_of_scope_unparseable": "RFQ carried no decodable legs",
     "out_of_scope_non_mlb": "A leg wasn't a typeable MLB market",
     "out_of_scope_lone_single": "Lone single-leg RFQ — the maker only quotes combos",
-    "no_fair": "No blended fair (too few fresh books, or fair out of bounds)",
+    "no_fair": "No blended fair — the router returned nothing for an un-named reason",
     "size_gate": "Worst-case exposure exceeds the per-fill contract cap",
     "size_gate_dollars": "Worst-case exposure exceeds the per-fill dollar cap",
     "size_unknown": "RFQ had no size and no target cost — can't suggest a quote",

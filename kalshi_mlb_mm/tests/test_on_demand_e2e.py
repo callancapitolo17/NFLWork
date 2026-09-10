@@ -184,7 +184,7 @@ def test_mixed_grid_plus_on_demand_combo_prices_product(monkeypatch, tmp_path):
     gw = GW()
     # #54 live-only: BOTH games ride the engine — no cached grid rows
     # exist to price from.
-    svc.fair = 0.30           # 0.30 * 0.30 = 0.09, above MIN_FAIR_PROB
+    svc.fair = 0.30           # 0.30 * 0.30 = 0.09
     main._discovery_tick(SrcMix(), gw, dry_run=False)     # pending (both games)
     assert gw.submits == []
     assert eng._queue_len() == 2, "one live job per game, grid included"
