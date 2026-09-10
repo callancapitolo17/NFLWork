@@ -2,8 +2,12 @@
 //
 // Runs inside the side panel page (never the service worker): the panel is
 // open whenever you are betting, setInterval is reliable there, and closing
-// the panel stops every request. Snapshot per enabled league on start and
-// every RESYNC_MS, then the changes stream every POLL_MS from the last cursor.
+// the panel stops every request. Snapshot per enabled league on start, then
+// the changes stream every POLL_MS from the last cursor — and, because the
+// anonymous stream is INCOMPLETE (measured 2026-09-10 over 3 min: 69 of 191
+// NFL line changes delivered; Kalshi, Caesars, ProphetX, Polymarket and
+// Underdog moves mostly missing), each league's snapshot is re-downloaded on
+// its own cadence by file size so exchange prices never sit stale for long.
 //
 // Side effects: network requests to content.unabated.com and
 // api-k.unabated.com only. No storage, no DOM. State lives in memory and is
@@ -20,7 +24,18 @@
   const SNAPSHOT_URL = (leagueId) => `https://content.unabated.com/markets/v2/league/${leagueId}/odds.json`;
   const CHANGES_URL = "https://api-k.unabated.com/api/markets/changes/query";
   const POLL_MS = 10000;
+  // Full resync (books, teams, cursor) — the per-league refresh below is what
+  // keeps prices current.
   const RESYNC_MS = 10 * 60 * 1000;
+  // Per-league snapshot refresh cadence by compressed size: the snapshot is
+  // regenerated every ~27s and is the only complete source, so small files
+  // refresh often and CFB (9.7 MB) least. Unknown size -> the middle tier.
+  const REFRESH_TIERS = [
+    { maxBytes: 2 * 1024 * 1024, everyMs: 60 * 1000 },
+    { maxBytes: 5 * 1024 * 1024, everyMs: 120 * 1000 },
+    { maxBytes: Infinity, everyMs: 300 * 1000 },
+  ];
+  const UNKNOWN_SIZE_BYTES = 3 * 1024 * 1024;
   // A changes response carries at most this many ~1.3s batches; a full page
   // means there is more to read right away.
   const FULL_PAGE_BATCHES = 7;
@@ -73,6 +88,19 @@
     let failedLeagueRetryAt = 0;
     // Bumped by start(); a load that began under an older generation is discarded.
     let generation = 0;
+    // leagueId -> {loadedAt, bytes}: drives the per-league refresh cadence.
+    let leagueMeta = {};
+
+    function refreshEveryMs(bytes) {
+      return REFRESH_TIERS.find((tier) => bytes <= tier.maxBytes).everyMs;
+    }
+
+    function leaguesDueForRefresh() {
+      return leagues.filter((leagueId) => {
+        const meta = leagueMeta[leagueId];
+        return meta && now() - meta.loadedAt >= refreshEveryMs(meta.bytes);
+      });
+    }
 
     async function fetchWithTimeout(url, options, timeoutMs) {
       const controller = typeof AbortController === "function" ? new AbortController() : null;
@@ -105,7 +133,9 @@
       const json = await response.json();
       const lastModified = response.headers && response.headers.get ? response.headers.get("last-modified") : null;
       const builtAt = lastModified ? Date.parse(lastModified) : NaN;
-      return { state: feed.parseSnapshot(json, { leagueId }), builtAt: Number.isFinite(builtAt) ? builtAt : null };
+      const contentLength = response.headers && response.headers.get ? Number(response.headers.get("content-length")) : NaN;
+      const bytes = Number.isFinite(contentLength) && contentLength > 0 ? contentLength : UNKNOWN_SIZE_BYTES;
+      return { state: feed.parseSnapshot(json, { leagueId }), builtAt: Number.isFinite(builtAt) ? builtAt : null, bytes };
     }
 
     function loadOrder(leagueIds) {
@@ -135,7 +165,8 @@
       const fullLoad = leagueIds.length >= leagues.length;
       const target = fullLoad ? feed.emptyState() : state;
       const ordered = loadOrder(leagueIds);
-      status.loading = { done: 0, total: ordered.length };
+      // Progress counter only for a full load; a background refresh is silent.
+      if (fullLoad) status.loading = { done: 0, total: ordered.length };
       if (!status.leaguesLoaded.length || fullLoad) status.phase = status.leaguesLoaded.length ? status.phase : "loading";
       const errors = { ...status.leagueErrors };
       let oldestBuild = null;
@@ -147,13 +178,14 @@
         } catch (error) {
           if (startedUnder !== generation) return;
           errors[leagueId] = error.message;
-          status.loading = { done: status.loading.done + 1, total: ordered.length };
+          if (status.loading) status.loading = { done: status.loading.done + 1, total: ordered.length };
           return;
         }
         // start() ran meanwhile: this league is no longer what the panel wants.
         if (startedUnder !== generation) return;
         delete errors[leagueId];
         loadedCount += 1;
+        leagueMeta[leagueId] = { loadedAt: now(), bytes: loaded.bytes };
         if (loaded.builtAt != null) oldestBuild = oldestBuild == null ? loaded.builtAt : Math.min(oldestBuild, loaded.builtAt);
         mergeInto(target, loaded.state);
         if (fullLoad && target !== state) {
@@ -163,7 +195,7 @@
         }
         status.leaguesLoaded = Array.from(new Set(state.leagues)).sort((a, b) => a - b);
         status.leagueErrors = { ...errors };
-        status.loading = { done: status.loading.done + 1, total: ordered.length };
+        if (status.loading) status.loading = { done: status.loading.done + 1, total: ordered.length };
         notify();
       });
       if (startedUnder !== generation) return false;
@@ -177,8 +209,12 @@
       status.lastSnapshotAt = now();
       status.phase = "live";
       status.error = Object.keys(errors).length ? `feed unavailable for ${describeLeagueErrors(errors)}` : null;
-      const recent = oldestBuild != null && now() - oldestBuild <= CURSOR_MAX_AGE_MS;
-      cursor = recent ? feed.cursorFromDate(oldestBuild) : null;
+      // Only a full load restarts the stream at the snapshot build time; a
+      // per-league refresh leaves the cursor where the stream is.
+      if (fullLoad) {
+        const recent = oldestBuild != null && now() - oldestBuild <= CURSOR_MAX_AGE_MS;
+        cursor = recent ? feed.cursorFromDate(oldestBuild) : null;
+      }
       notify();
       return true;
     }
@@ -243,12 +279,16 @@
     }
 
     // Failed leagues retry on the 30s throttle only (never a full reload every
-    // tick while Unabated is down); loaded leagues poll the stream.
+    // tick while Unabated is down); leagues past their refresh cadence are
+    // re-downloaded; loaded leagues poll the stream.
     async function tick() {
       if (busy || paused || !leagues.length || status.loading) return;
       busy = true;
       try {
         await retryFailedLeagues();
+        const due = leaguesDueForRefresh();
+        if (due.length && due.length < leagues.length) await loadSnapshots(due);
+        else if (due.length) await loadSnapshots(leagues);
         if (status.leaguesLoaded.length) await pollChanges();
       } catch (error) {
         setError(`feed unavailable: ${error.message}`);
@@ -290,6 +330,7 @@
       cursor = null;
       paused = false;
       failedLeagueRetryAt = 0;
+      leagueMeta = {};
       if (!leagues.length) {
         status.phase = "idle";
         status.error = "no leagues enabled";
@@ -333,6 +374,7 @@
       start, stop, pause, resume, tick, resync,
       getState: () => state,
       getStatus: () => ({ ...status }),
+      refreshEveryMs,
     };
   }
 

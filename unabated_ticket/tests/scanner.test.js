@@ -28,7 +28,7 @@ function fakeFetch(overrides = {}) {
   const impl = async (url) => {
     calls.push(url);
     if (overrides[url]) return overrides[url]();
-    if (url === SNAPSHOT_URL(1)) return response({ body: fixture("v2_slice.json"), headers: { "last-modified": snapshotBuilt } });
+    if (url === SNAPSHOT_URL(1)) return response({ body: fixture("v2_slice.json"), headers: { "last-modified": snapshotBuilt, "content-length": String(overrides.nflBytes || 1000) } });
     if (url.startsWith(CHANGES_URL)) return response({ body: fixture("changes_slice.json") });
     return response({ status: 404, body: "not found" });
   };
@@ -194,4 +194,36 @@ test("a full load publishes each league as it lands, CFB last", async () => {
   assert.equal(scanner.getStatus().loading, null);
   assert.equal(scanner.getStatus().phase, "live");
   assert.ok(seen.some(([phase, loaded]) => phase === "loading" && loaded.length === 1));
+});
+
+test("each league re-downloads its snapshot on a cadence set by its compressed size", async () => {
+  let clock = NOW;
+  const fetchImpl = fakeFetch();
+  const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers });
+  await scanner.start([1]);
+  assert.equal(scanner.refreshEveryMs(1000), 60 * 1000);
+  assert.equal(scanner.refreshEveryMs(3 * 1024 * 1024), 120 * 1000);
+  assert.equal(scanner.refreshEveryMs(9.7 * 1024 * 1024), 300 * 1000);
+  const loads = () => fetchImpl.calls.filter((u) => u === SNAPSHOT_URL(1)).length;
+  clock += 30 * 1000;
+  await scanner.tick();
+  assert.equal(loads(), 1); // 1 KB file: not due until 60s
+  clock += 31 * 1000;
+  await scanner.tick();
+  assert.equal(loads(), 2);
+  assert.equal(scanner.getStatus().phase, "live");
+  assert.equal(scanner.getStatus().loading, null); // a refresh shows no progress counter
+});
+
+test("a large snapshot refreshes on the slow tier", async () => {
+  let clock = NOW;
+  const fetchImpl = fakeFetch({ nflBytes: 9.7 * 1024 * 1024 });
+  const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers });
+  await scanner.start([1]);
+  clock += 200 * 1000;
+  await scanner.tick();
+  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_URL(1)).length, 1);
+  clock += 101 * 1000;
+  await scanner.tick();
+  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_URL(1)).length, 2);
 });

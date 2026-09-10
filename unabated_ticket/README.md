@@ -104,10 +104,16 @@ runs in the service worker.
 `ge` is Unabated's edge as a fraction (0.0296 = +2.96%), the same number the
 Ticket tab sizes from. `bacr` is the fair at the book's points.
 
-Loop (`extension/scanner.js`): snapshot per enabled league on open and every
-10 min, four downloads at a time (browser-cache revalidation, so a quick
-reopen is a 304), then the changes stream every 10 s, which covers all
-leagues in one call. The first cursor is derived from the snapshot's
+Loop (`extension/scanner.js`): snapshot per enabled league on open (four
+downloads at a time, each league listed the moment it lands, CFB last),
+then the changes stream every 10 s, which covers all leagues in one call.
+**The anonymous stream is incomplete**: measured 2026-09-10 over 3 min it
+delivered 69 of the 191 NFL line changes the snapshot recorded, and the
+misses were Kalshi (42), Caesars (45), ProphetX, Polymarket and Underdog —
+the books that carry the edges. So each league's snapshot is re-downloaded
+on its own cadence by compressed size (≤2 MB every 60 s, ≤5 MB every 2 min,
+larger every 5 min; NFL is ~3 MB, CFB 9.7 MB), plus a full resync every
+10 min. Expect roughly 6–8 MB/min with every sport on. The first cursor is derived from the snapshot's
 `Last-Modified` (cursor = nanoseconds since 2021-01-06, kept as a string —
 it is above 2⁵³) so nothing between the build and the first poll is lost; a
 full page (7 batches) is followed immediately; a cursor the server rejects
@@ -195,9 +201,11 @@ fire while the panel is closed. The alert log lives in `chrome.storage.local`
 
 ### Etiquette
 
-While the panel is open: ~300 KB per 10 s on the changes stream, a snapshot
-per league on open and every 10 min. Same endpoints the page itself calls,
-at a far lower rate than its 0.6 s poll.
+While the panel is open: ~300 KB per 10 s on the changes stream and the
+per-league snapshot refreshes above (6–8 MB/min with all sports on, ~1
+MB/min with just football/baseball/basketball/hockey). Same endpoints the
+page itself calls, at a far lower rate than its 0.6 s poll; nothing runs
+when the panel is closed.
 
 ## Tests
 
