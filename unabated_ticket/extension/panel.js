@@ -43,7 +43,7 @@
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
     pageStatus: el("page-status"),
     tabs: el("tabs"), tabTicket: el("tab-ticket"), tabEdges: el("tab-edges"), edgesCount: el("edges-count"),
-    edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesLocate: el("edges-locate"),
+    edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
     edgesSports: el("edges-sports"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
     alertsEnabled: el("alerts-enabled"), alertsMin: el("alerts-min"),
@@ -427,10 +427,24 @@
     view.edgesCount.textContent = String(rows.length);
   }
 
+  function renderFilterDebug() {
+    if (view.edgesFilterDebug.hidden) return;
+    const filter = state.booksFilter;
+    view.edgesFilterDebug.textContent = filter
+      ? JSON.stringify({ bookIds: filter.bookIds, betTypeIds: filter.betTypeIds, betTypeReason: filter.betTypeReason, lastError: filter.lastError, debug: filter.debug }, null, 1)
+      : "no booksFilter published yet";
+  }
+
+  view.edgesFilter.addEventListener("click", () => {
+    view.edgesFilterDebug.hidden = !view.edgesFilterDebug.hidden;
+    renderFilterDebug();
+  });
+
   function renderEdges() {
     const rows = currentEdgeRows();
     renderEdgesStatus(rows);
     view.edgesFilter.textContent = describeFilter(effectiveFilter());
+    renderFilterDebug();
     view.edgesList.replaceChildren(...rows.slice(0, MAX_EDGE_ROWS).map(renderEdgeRow));
     const status = scannerStatus;
     if (rows.length === 0) {

@@ -437,7 +437,9 @@
     try { parsed = JSON.parse(raw); } catch (_error) { return { betTypeIds: null, reason: `${ODDS_FILTER_STORAGE_KEY} is not JSON` }; }
     const found = findBetTypeIds(parsed, 0);
     if (!found) return { betTypeIds: null, reason: `no betType ids found under ${ODDS_FILTER_STORAGE_KEY} (keys: ${Object.keys(parsed || {}).join(",")})` };
-    return { betTypeIds: found, reason: null };
+    const gameTypes = found.filter((id) => BET_TYPE_NAMES[id]);
+    if (!gameTypes.length) return { betTypeIds: null, reason: `bet type ids ${found.slice(0, 8).join(",")} are none of moneyline/spread/total (1/2/3)` };
+    return { betTypeIds: gameTypes, reason: null };
   }
 
   function idsFromArray(values) {
@@ -466,15 +468,47 @@
 
   let lastFiltersSignature = null;
 
+  // What the filter was read from, for the panel's click-to-expand line:
+  // the gameOdds entry fields with true/false counts per boolean field (so a
+  // wrong flag shows up as "33 of 33 false"), and the raw bet-type storage.
+  function filterDiagnostic(userSettings) {
+    const out = { userSettingsKeys: Object.keys(userSettings || {}).slice(0, 20) };
+    const gameOdds = userSettings && userSettings.gameOdds;
+    out.gameOddsShape = describeShape(gameOdds);
+    const entries = bookEntriesOf(gameOdds, 0) || [];
+    out.entryCount = entries.length;
+    const counts = {};
+    for (const { entry } of entries) {
+      for (const [key, value] of Object.entries(entry)) {
+        if (typeof value !== "boolean") continue;
+        counts[key] = counts[key] || { true: 0, false: 0 };
+        counts[key][value ? "true" : "false"] += 1;
+      }
+    }
+    out.booleanFields = counts;
+    out.firstEntry = entries.length ? JSON.stringify(entries[0].entry).slice(0, 400) : null;
+    out.localStorageKeys = Object.keys(window.localStorage).filter((key) => /odds|filter|pref|bet/i.test(key)).slice(0, 20);
+    let raw = null;
+    try { raw = window.localStorage.getItem(ODDS_FILTER_STORAGE_KEY); } catch (_error) { /* blocked */ }
+    out.betTypeStorage = raw ? raw.slice(0, 600) : null;
+    return out;
+  }
+
   function publishFilters() {
     let payload;
+    let context = null;
     try {
-      const { context } = anyGridApi();
+      context = anyGridApi().context;
       const bookIds = enabledBookIdsOf(context && context.userSettings);
       const betTypes = selectedBetTypeIdsOf();
       payload = { bookIds, betTypeIds: betTypes.betTypeIds, betTypeReason: betTypes.reason, error: null, url: window.location.href, at: Date.now() };
     } catch (error) {
       payload = { bookIds: null, betTypeIds: null, betTypeReason: null, error: error.message, url: window.location.href, at: Date.now() };
+    }
+    try {
+      payload.debug = context ? filterDiagnostic(context.userSettings) : { error: "no grid context" };
+    } catch (error) {
+      payload.debug = { error: error.message };
     }
     const signature = JSON.stringify([payload.bookIds, payload.betTypeIds, payload.error]);
     if (signature !== lastFiltersSignature) {

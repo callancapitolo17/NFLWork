@@ -55,11 +55,11 @@
       chrome.storage.local.get("booksFilter", (stored) => {
         if (chrome.runtime.lastError) return;
         const previous = stored.booksFilter || null;
-        setSession({ booksFilter: { ...(previous || {}), bookIds: previous ? previous.bookIds : null, betTypeIds: previous ? previous.betTypeIds : null, lastError: payload.error, lastErrorAt: payload.at, at: previous ? previous.at : null } });
+        setSession({ booksFilter: { ...(previous || {}), bookIds: previous ? previous.bookIds : null, betTypeIds: previous ? previous.betTypeIds : null, lastError: payload.error, lastErrorAt: payload.at, at: previous ? previous.at : null, debug: payload.debug || (previous ? previous.debug : null) } });
       });
       return;
     }
-    setSession({ booksFilter: { bookIds: payload.bookIds, betTypeIds: payload.betTypeIds, betTypeReason: payload.betTypeReason, url: payload.url, at: payload.at, lastError: null, lastErrorAt: null } });
+    setSession({ booksFilter: { bookIds: payload.bookIds, betTypeIds: payload.betTypeIds, betTypeReason: payload.betTypeReason, url: payload.url, at: payload.at, lastError: null, lastErrorAt: null, debug: payload.debug || null } });
   }
 
   function handleWatch(payload) {
