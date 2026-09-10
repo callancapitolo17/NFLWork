@@ -369,19 +369,20 @@ is retained as a rollback hatch — calling `sgp_cycle` without `service=`.
 
 **Data flow on each SGP tick (every `SGP_REFRESH_SEC`, default 60s):**
 
-1. Bot enumerates open Kalshi MVE markets per MLB game (every `(spread, total)` tuple Kalshi lists).
-2. Bot rewrites `mlb_target_lines` in `kalshi_mlb_rfq_market.duckdb` (sibling to state DB).
+1. Bot enumerates open Kalshi MVE markets per MLB game (every `(spread, total)` tuple Kalshi lists), matched to the Odds API `/events` schedule by team pair + start time, and **windowed to `TARGET_LINE_HORIZON_HOURS`** (default 24h; #103 Phase 3) — the one start-time filter on the path, applied in `kalshi_common.sgp_runner.enumerate_kalshi_targets` and logged at INFO as `[horizon] … kept_games=… dropped_games=…` every cycle.
+2. Bot rewrites `mlb_target_lines` in `kalshi_mlb_rfq_market.duckdb` (sibling to state DB) — a full DELETE+INSERT, so the parlay-lines cache (step 4) and the book refresh (step 3) inherit the window with no filter of their own.
 3. `SGPService.refresh()` prices every tuple at all four books concurrently (persistent clients), writing back to `mlb_sgp_odds` in the bot's market DB with `spread_line`/`total_line` columns. Each succeeded book's prior source labels are cleared first; failed/absent books keep their prior rows.
 4. Bot reloads `_SGP_ODDS_CACHE` from the bot market DB.
 
 **Edge surface:** any Kalshi MVE combo with ≥2 books priced at the matching (spread, total). Off-line combos (only 1 book) are dropped — the bot does not bet model-only or single-book candidates.
 
-**Schedule source:** game IDs and team metadata come from `Answer Keys/mlb.duckdb::mlb_odds_temp` (read-only). The bot has no dependency on Wagerzon-derived `mlb_parlay_lines` anymore.
+**Schedule source:** game IDs, team names and `commence_time` come from the Odds API `/events` feed (`kalshi_common.sgp_runner._fetch_schedule_from_odds_api`), disambiguated per Kalshi event by the ticker suffix's own first pitch. The bot has no dependency on `Answer Keys/mlb.duckdb` or Wagerzon-derived `mlb_parlay_lines` anymore.
 
 **Cold start:** the first SGP cycle runs synchronously before `main_loop` enters its tick. Bot blocks ~60-90s on startup.
 
 **Config:**
 - `SGP_REFRESH_SEC` (default 60) — SGP cadence interval
 - `SGP_SCRAPER_TIMEOUT_SEC` (default 90) — per-book deadline passed to `SGPService` (a book exceeding it contributes nothing that cycle and its client is rebuilt)
+- `TARGET_LINE_HORIZON_HOURS` (default 24) — #103 Phase 3: keep a Kalshi game in `mlb_target_lines` only if it starts within this many hours. Same knob and default as the maker; measured 2026-09-10, when every reachable book listed only today's slate (≤8h ahead) while Kalshi listed 35 games out to 58h. `0` disables the window (WARNING every cycle, never silent); negative refuses to start
 - `BOT_MARKET_DB` (default `kalshi_mlb_rfq_market.duckdb` in this package) — sibling market DB
 - `MIN_BOOK_COUNT_FOR_BLEND` (default 2) — drop-candidate threshold

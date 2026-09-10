@@ -1805,6 +1805,7 @@ def main_loop(dry_run: bool):
             bot_market_db=str(config.BOT_MARKET_DB),
             service=sgp_service,
             both_teams=True,
+            horizon_hours=config.TARGET_LINE_HORIZON_HOURS,
         )
         log.info("startup: SGP warm-up done — return codes %s", rcs)
     except Exception as e:
@@ -1861,6 +1862,7 @@ def main_loop(dry_run: bool):
                         bot_market_db=str(config.BOT_MARKET_DB),
                         service=sgp_service,
                         both_teams=True,
+                        horizon_hours=config.TARGET_LINE_HORIZON_HOURS,
                     )
                     _refresh_sgp_cache()
                     _refresh_caches()  # parlay_lines_cache may have new (spread, total) tuples

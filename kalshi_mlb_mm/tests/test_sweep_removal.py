@@ -176,6 +176,20 @@ def test_new_cadence_knobs_defaults():
     assert cfg.STRUCTURE_WARM_SEC < cfg.TARGET_LINE_REFRESH_SEC
 
 
+def test_target_line_horizon_knob_default():
+    """#103 Phase 3: the ONE start-time window on mlb_target_lines. 24h was
+    measured, not guessed (2026-09-10: every reachable book listed only
+    today's slate, <= 8h ahead; Kalshi listed 35 games out to 58h)."""
+    import os
+    import kalshi_mlb_mm.config as cfg
+    # Precedence is os.environ > .env > default; asserting the literal would
+    # break on a machine with a legit operator override in the .env.
+    expected = float(os.environ.get("TARGET_LINE_HORIZON_HOURS",
+                                    cfg._FILE_ENV.get("TARGET_LINE_HORIZON_HOURS", "24")))
+    assert cfg.TARGET_LINE_HORIZON_HOURS == expected
+    assert isinstance(cfg.TARGET_LINE_HORIZON_HOURS, float)
+
+
 def test_warming_wall_budget_survives_sweep_knob_deletion():
     """Pre-#81 warming rode the sweep's per-book deadline, which the live
     env had raised to 360s (books time out at the shipped default). The
