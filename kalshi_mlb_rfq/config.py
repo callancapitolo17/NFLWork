@@ -108,15 +108,6 @@ ANSWER_KEY_DB = PROJECT_ROOT / "Answer Keys" / "mlb_mm.duckdb"
 SGP_REFRESH_SEC = int(_get("SGP_REFRESH_SEC", "60"))
 SGP_SCRAPER_TIMEOUT_SEC = int(_get("SGP_SCRAPER_TIMEOUT_SEC", "90"))
 SGP_MIN_INTERVAL_SEC = int(_get("SGP_MIN_INTERVAL_SEC", "30"))
-# #103 Phase 3: start-time window on mlb_target_lines, applied once at
-# enumeration (kalshi_common.sgp_runner.enumerate_kalshi_targets); the
-# parlay cache and the per-cycle book refresh inherit it. Same default and
-# semantics as the maker's knob: 24h, 0 disables (loud), negative raises.
-TARGET_LINE_HORIZON_HOURS = float(_get("TARGET_LINE_HORIZON_HOURS", "24"))
-if TARGET_LINE_HORIZON_HOURS < 0:
-    raise ValueError(
-        "TARGET_LINE_HORIZON_HOURS must be >= 0 (0 disables the window), "
-        f"got {TARGET_LINE_HORIZON_HOURS}")
 
 # Bot market DB (sibling to bot state DB, holds mlb_target_lines + mlb_sgp_odds)
 BOT_MARKET_DB = Path(_get("BOT_MARKET_DB",

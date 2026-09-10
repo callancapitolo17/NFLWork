@@ -127,13 +127,10 @@ def _target_line_tick():
     read the table this writes. O-1 heir: new games / corrected schedule
     rows appear here now, so the game-metadata caches drop in `finally` —
     even when Kalshi enumeration fails mid-tick (the old sweep refresh
-    invalidated before its early returns for the same reason). The slate is
-    windowed to TARGET_LINE_HORIZON_HOURS at enumeration (#103 Phase 3) —
-    the one bound the warming fan-out inherits."""
+    invalidated before its early returns for the same reason)."""
     try:
-        sgp_runner.target_line_cycle(
-            bot_market_db=str(config.MARKET_DB), both_teams=True,
-            horizon_hours=config.TARGET_LINE_HORIZON_HOURS)
+        sgp_runner.target_line_cycle(bot_market_db=str(config.MARKET_DB),
+                                     both_teams=True)
     finally:
         _invalidate_game_caches()
 

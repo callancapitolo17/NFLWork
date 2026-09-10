@@ -90,7 +90,7 @@ def test_enumerate_kalshi_targets_returns_target_lines(monkeypatch):
     monkeypatch.setattr(sgp_runner, "_fetch_schedule_from_odds_api",
                          lambda: fake_schedule)
 
-    targets = sgp_runner.enumerate_kalshi_targets(horizon_hours=24)
+    targets = sgp_runner.enumerate_kalshi_targets()
     assert len(targets) == 4
     spreads = sorted({t.spread for t in targets})
     totals = sorted({t.total for t in targets})
@@ -103,7 +103,7 @@ def test_enumerate_kalshi_targets_returns_target_lines(monkeypatch):
 def test_enumerate_kalshi_targets_no_events_returns_empty(monkeypatch):
     from kalshi_common import sgp_runner
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events", lambda: [])
-    assert sgp_runner.enumerate_kalshi_targets(horizon_hours=24) == []
+    assert sgp_runner.enumerate_kalshi_targets() == []
 
 
 def test_enumerate_kalshi_targets_skips_unknown_team_codes(monkeypatch):
@@ -115,7 +115,7 @@ def test_enumerate_kalshi_targets_skips_unknown_team_codes(monkeypatch):
                          lambda suffix: [(-1.5, "home")])
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines", lambda suffix: [8.5])
     monkeypatch.setattr(sgp_runner, "_fetch_schedule_from_odds_api", lambda: [])
-    assert sgp_runner.enumerate_kalshi_targets(horizon_hours=24) == []
+    assert sgp_runner.enumerate_kalshi_targets() == []
 
 
 def test_fetch_schedule_from_odds_api_handles_missing_key(monkeypatch, tmp_path):
@@ -191,7 +191,7 @@ def test_enumerate_picks_the_game_whose_start_matches_the_suffix(monkeypatch):
          "commence_time": datetime(2026, 9, 3, 2, 11, tzinfo=timezone.utc)},
     ])
 
-    targets = sgp_runner.enumerate_kalshi_targets(horizon_hours=24)
+    targets = sgp_runner.enumerate_kalshi_targets()
     assert [t.game_id for t in targets] == ["tonight"]
 
 
@@ -222,7 +222,7 @@ def test_enumerate_prices_both_games_of_a_doubleheader(monkeypatch):
          "commence_time": datetime(2026, 9, 4, 23, 15, tzinfo=timezone.utc)},
     ])
 
-    targets = sgp_runner.enumerate_kalshi_targets(horizon_hours=24)
+    targets = sgp_runner.enumerate_kalshi_targets()
     assert [t.game_id for t in targets] == ["dh-game-1", "dh-game-2"]
 
 
@@ -248,7 +248,7 @@ def test_enumerate_declines_when_two_schedule_rows_are_indistinguishable(
          "away_team": "Detroit Tigers",
          "commence_time": datetime(2026, 9, 4, 18, 25, tzinfo=timezone.utc)},
     ])
-    assert sgp_runner.enumerate_kalshi_targets(horizon_hours=24) == []
+    assert sgp_runner.enumerate_kalshi_targets() == []
 
 
 def test_write_target_lines_atomic_replace(tmp_path):
@@ -387,7 +387,6 @@ def test_sgp_cycle_orchestrates_full_tick(monkeypatch, tmp_path):
         scraper_dir=str(tmp_path / "scrapers"),
         venv_python="python",
         timeout_sec=60,
-        horizon_hours=24,
     )
     assert call_order == ["enum", "write", "scrape"]
     assert isinstance(rcs, dict)
@@ -411,7 +410,6 @@ def test_sgp_cycle_passes_env_to_scrapers(monkeypatch, tmp_path):
         scraper_dir="/tmp/scrapers",
         venv_python="python",
         timeout_sec=60,
-        horizon_hours=24,
     )
     assert captured_env.get("MLB_SGP_DB_PATH") == "/tmp/bot.duckdb"
     assert captured_env.get("MLB_SGP_PERIODS") == "FG"
@@ -456,8 +454,7 @@ def test_sgp_cycle_service_path_writes_rows_and_preserves_failed_books(
             assert targets == [target]
             return {"draftkings": [fresh_dk], "fanduel": None}
 
-    counts = sgp_runner.sgp_cycle(bot_market_db=db_path, service=FakeService(),
-                                  horizon_hours=24)
+    counts = sgp_runner.sgp_cycle(bot_market_db=db_path, service=FakeService())
     assert counts == {"draftkings": 1, "fanduel": -1}
 
     con = duckdb.connect(db_path, read_only=True)
@@ -503,8 +500,7 @@ def test_sgp_cycle_service_path_skipped_book_rows_untouched(tmp_path, monkeypatc
         def refresh(self, targets):
             return {}   # everything skipped
 
-    counts = sgp_runner.sgp_cycle(bot_market_db=db_path, service=FakeService(),
-                                  horizon_hours=24)
+    counts = sgp_runner.sgp_cycle(bot_market_db=db_path, service=FakeService())
     assert counts == {}
     con = duckdb.connect(db_path, read_only=True)
     try:
@@ -575,7 +571,7 @@ def test_enumerate_logs_a_dropped_game_to_bot_log(monkeypatch, caplog):
          "commence_time": datetime(2026, 9, 4, 22, 10, tzinfo=timezone.utc)},
     ])
     with caplog.at_level(logging.WARNING, logger="kalshi_common.sgp_runner"):
-        targets = sgp_runner.enumerate_kalshi_targets(horizon_hours=24)
+        targets = sgp_runner.enumerate_kalshi_targets()
     assert [t.game_id for t in targets] == ["cin"]
     lines = [r.getMessage() for r in caplog.records
              if "schedule_match" in r.getMessage()]
@@ -599,5 +595,5 @@ def test_enumerate_is_quiet_when_every_game_matches(monkeypatch, caplog):
          "commence_time": datetime(2026, 9, 4, 22, 10, tzinfo=timezone.utc)},
     ])
     with caplog.at_level(logging.WARNING, logger="kalshi_common.sgp_runner"):
-        sgp_runner.enumerate_kalshi_targets(horizon_hours=24)
+        sgp_runner.enumerate_kalshi_targets()
     assert not [r for r in caplog.records if "schedule_match" in r.getMessage()]

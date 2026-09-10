@@ -99,7 +99,7 @@ REST-polling daemon, single process. Eight timed sub-loops:
 | Reconcile sweep | 30s | Verify recorded fill side/size against Kalshi `/portfolio/positions` (live only) |
 | Settlement sweep | 600s | Poll `GET /markets/{ticker}` for combos with unsettled fills → write `fills.realized_pnl` + `settlements` audit row (live only; issue #12) |
 | Structure warming | 120s | #50: structure-only pass (no pricing calls) keeping every book's events/structure TTL caches + the CZR WAF token hot, so live fetches never pay a cold start |
-| Target-line refresh | 300s | #81: Kalshi MVE enumeration + Odds API schedule → `mlb_target_lines` (game resolution and warming read it; tipoff reads the ticker suffix instead). **Zero book requests.** Since #103 Phase 3 the slate is windowed to `TARGET_LINE_HORIZON_HOURS` (24h) at enumeration — the one bound the warming fan-out inherits; the INFO line `[horizon] horizon_hours=… kept_games=… dropped_games=…` reports it every cycle |
+| Target-line refresh | 300s | #81: Kalshi MVE enumeration + Odds API schedule → `mlb_target_lines` (game resolution and warming read it; tipoff reads the ticker suffix instead). **Zero book requests** |
 | Coverage summary | 300s | #81: drain the service's per-book on-demand outcome tally into an `on_demand_coverage` research event — the record of which books actually answer live fetches |
 
 Plus, since #96, the **leg-surface ingest** — its own threads on their own
@@ -345,15 +345,9 @@ lose their fairs:
 |---|---|---|
 | near | `TIPOFF_CANCEL_MIN` = 5 min to first pitch | `SURFACE_GAME_MIN_MINUTES`, which **defaults to `TIPOFF_CANCEL_MIN`** |
 | far | `FLIGHT_HORIZON_HOURS` = 6h | `SURFACE_GAME_MAX_HOURS` = 12h |
-| far (game resolution) | `TARGET_LINE_HORIZON_HOURS` = 24h — a game outside it never reaches `mlb_target_lines`, so the discovery tick declines it `no_game` | — |
 
 Raising `FLIGHT_HORIZON_HOURS` above `SURFACE_GAME_MAX_HOURS` would create a
-band of games the maker tries to quote and the surface has never fetched.
-`TARGET_LINE_HORIZON_HOURS` (#103 Phase 3) is a third far bound: until Phase 4
-the Odds API `/events` window (roughly today's slate) is narrower still, so it
-binds nothing today; after Phase 4 it is the maker's far bound for game
-resolution, and quoting games further out than 24h means raising it — with
-the warming cost that implies — not just the two knobs above. The
+band of games the maker tries to quote and the surface has never fetched. The
 2026-08-27 live run confirmed the alignment holds today: every zero-book
 surface lookup was a game already in progress — one the tipoff gate rejects
 before pricing anyway — and **no lookup missed on a key the surface held**.
@@ -1010,7 +1004,6 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `EXPIRY_OUTCOME_MAX_TICKERS_PER_SWEEP` | `25` | Tape fetches per labeler sweep — only bounds the catch-up burst after downtime |
 | `EXPIRY_OUTCOME_INCLUDE_CANCELLED` | `false` | Also label quotes WE cancelled (risk pulls, tipoff, breakers). Off by default — pulls are our own decisions and muddy the headline ratio |
 | `TARGET_LINE_REFRESH_SEC` | `300` | #81: `mlb_target_lines` refresh cadence (Kalshi MVE enumeration + Odds API schedule; zero book requests). Sets how fast a NEW game becomes quotable |
-| `TARGET_LINE_HORIZON_HOURS` | `24` | #103 Phase 3: the ONE start-time window on `mlb_target_lines`, applied in `enumerate_kalshi_targets` (a game is kept only if it starts within now + horizon), so warming (one structure fetch per game per book per 120s pass), game resolution and the taker's parlay cache all inherit it — never add a second read-side filter. It replaces the Odds API `/events` window, which capped the slate at roughly today's games by accident, BEFORE Phase 4 takes the full Kalshi board (35 open games out to 58h measured 2026-09-10 08:38 PT vs 5 games / ≤8h on the Odds API and on every reachable book). `0` disables the window — a WARNING every cycle, never silent; negative refuses to start |
 | `COVERAGE_SUMMARY_SEC` | `300` | #81: cadence of the `on_demand_coverage` research event (per-book live-fetch outcome tally since the last summary; idle windows emit nothing) |
 | `STRUCTURE_WARM_BUDGET_SEC` | `360.0` | #81: wall budget for one warming pass (pre-#81 warming rode the sweep's per-book deadline, which the live env had raised to 360 — this keeps that proven value). A book still running at the budget is dropped with a warming-path timeout health row |
 | `STRUCTURE_WARM_SEC` | `120` | Structure-only warming cadence (issue #50): every book's events/structure TTL caches + Caesars' WAF token are re-warmed with ZERO pricing calls, so an RFQ never pays cold-structure discovery. Keep under `STRUCTURE_TTL_SEC` (180) and the CZR token TTL (240) |

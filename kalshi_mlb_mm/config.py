@@ -224,22 +224,6 @@ RECONCILE_SWEEP_SEC = int(_get("RECONCILE_SWEEP_SEC", "30"))
 # and warming read that table, and its cadence is how fast a NEW game
 # becomes quotable, not anything price-related.
 TARGET_LINE_REFRESH_SEC = int(_get("TARGET_LINE_REFRESH_SEC", "300"))
-# #103 Phase 3: the ONE start-time window on mlb_target_lines, applied at
-# enumeration so warming (one structure fetch per game per book per 120s
-# pass) and every other reader inherit it. Until Phase 4 the Odds API
-# /events window caps the slate by accident at roughly today's games; this
-# knob replaces that accident deliberately BEFORE the swap to the full
-# Kalshi board (35 open games out to 58h measured 2026-09-10 08:38 PT vs
-# 5 games / 8h on the Odds API AND on every reachable book — FD, Novig,
-# BetMGM, DK all listed only today's slate). 24h holds today's slate all
-# day, admits tomorrow's games as books post them in the evening, and
-# never reaches the day-after slate (49h+). 0 disables the window (loud
-# WARNING every cycle); negative is a config error.
-TARGET_LINE_HORIZON_HOURS = float(_get("TARGET_LINE_HORIZON_HOURS", "24"))
-if TARGET_LINE_HORIZON_HOURS < 0:
-    raise ValueError(
-        "TARGET_LINE_HORIZON_HOURS must be >= 0 (0 disables the window), "
-        f"got {TARGET_LINE_HORIZON_HOURS}")
 # #81: cadence of the on_demand_coverage research event — the periodic
 # per-book "who is actually answering live fetches" record that replaced
 # the sweep's book counts. Research-only; alerts are #37's job.

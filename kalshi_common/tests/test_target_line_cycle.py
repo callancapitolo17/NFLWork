@@ -35,8 +35,7 @@ def test_signature_is_keyword_only_and_service_free():
     no scraper knobs — only the DB path and the enumeration flag, both
     keyword-only (repo correctness bar)."""
     sig = inspect.signature(sgp_runner.target_line_cycle)
-    assert set(sig.parameters) == {"bot_market_db", "both_teams",
-                                   "horizon_hours"}
+    assert set(sig.parameters) == {"bot_market_db", "both_teams"}
     for param in sig.parameters.values():
         assert param.kind == inspect.Parameter.KEYWORD_ONLY, (
             f"{param.name} must be keyword-only")
@@ -45,17 +44,16 @@ def test_signature_is_keyword_only_and_service_free():
 def test_enumerates_and_writes_target_lines(tmp_path, monkeypatch):
     seen_flags = []
 
-    def fake_enumerate(both_teams=False, *, horizon_hours):
-        seen_flags.append((both_teams, horizon_hours))
+    def fake_enumerate(both_teams=False):
+        seen_flags.append(both_teams)
         return list(TARGETS)
 
     monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", fake_enumerate)
     db_path = str(tmp_path / "market.duckdb")
 
-    out = sgp_runner.target_line_cycle(bot_market_db=db_path, both_teams=True,
-                                       horizon_hours=24)
+    out = sgp_runner.target_line_cycle(bot_market_db=db_path, both_teams=True)
 
-    assert seen_flags == [(True, 24)]
+    assert seen_flags == [True]
     assert out == list(TARGETS)      # callers (warmup log, tests) see the list
     con = duckdb.connect(db_path, read_only=True)
     try:
@@ -74,7 +72,7 @@ def test_sgp_cycle_service_path_delegates_to_target_line_cycle(
     keep writing target lines — now via the extracted half — and still run
     the book refresh."""
     monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets",
-                        lambda both_teams=False, **kw: list(TARGETS))
+                        lambda both_teams=False: list(TARGETS))
     cycle_calls = []
     real_cycle = sgp_runner.target_line_cycle
 
@@ -91,12 +89,10 @@ def test_sgp_cycle_service_path_delegates_to_target_line_cycle(
 
     db_path = str(tmp_path / "market.duckdb")
     counts = sgp_runner.sgp_cycle(bot_market_db=db_path,
-                                  service=NoBookService(), both_teams=True,
-                                  horizon_hours=24)
+                                  service=NoBookService(), both_teams=True)
 
     assert counts == {"draftkings": -1}
-    assert cycle_calls == [{"bot_market_db": db_path, "both_teams": True,
-                            "horizon_hours": 24}]
+    assert cycle_calls == [{"bot_market_db": db_path, "both_teams": True}]
     con = duckdb.connect(db_path, read_only=True)
     try:
         n = con.execute("SELECT count(*) FROM mlb_target_lines").fetchone()[0]
