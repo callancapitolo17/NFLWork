@@ -484,9 +484,10 @@
       : status.leaguesLoaded.map((id) => (feed.LEAGUES[id] || { label: `league ${id}` }).label);
     const updated = status.lastUpdateAt ? `updated ${fmtAge(Date.now() - status.lastUpdateAt)}` : (status.lastSnapshotAt ? `snapshot ${fmtAge(Date.now() - status.lastSnapshotAt)}` : "no data yet");
     const polled = status.lastPollAt ? ` · polled ${fmtAge(Date.now() - status.lastPollAt)}` : "";
-    view.edgesStatus.textContent = status.phase === "loading"
-      ? "Loading snapshots…"
-      : `${leagues.join(" · ") || "no leagues"} · ${status.lineCount.toLocaleString()} lines · ${updated}${polled}`;
+    const loading = status.loading ? ` · loading ${status.loading.done}/${status.loading.total} leagues` : "";
+    view.edgesStatus.textContent = status.phase === "loading" && !status.leaguesLoaded.length
+      ? `Loading snapshots…${loading}`
+      : `${leagues.join(" · ") || "no leagues"} · ${status.lineCount.toLocaleString()} lines · ${updated}${polled}${loading}`;
     view.edgesError.hidden = !status.error;
     view.edgesError.textContent = status.error || "";
     view.edgesCount.hidden = rows.length === 0;
@@ -527,7 +528,7 @@
     const status = scannerStatus;
     if (rows.length === 0) {
       view.edgesEmpty.hidden = false;
-      view.edgesEmpty.textContent = !status || status.phase !== "live"
+      view.edgesEmpty.textContent = !status || (status.phase !== "live" && !status.leaguesLoaded.length)
         ? (status && status.phase === "error" ? "Nothing to list: the feed is unavailable (see above)." : "Waiting for the first snapshot…")
         : `No line at or above ${state.edgeSettings.minEdgePct}% edge right now.`;
     } else {

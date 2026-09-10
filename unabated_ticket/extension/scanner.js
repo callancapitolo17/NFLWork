@@ -34,6 +34,9 @@
   // ~27 leagues, 18 MB gzip per resync; a few at a time keeps peak memory
   // (each body is parsed in full) and the JSON.parse stalls bounded.
   const SNAPSHOT_CONCURRENCY = 4;
+  // Loaded last: CFB is half the bytes of a full load (9.7 of ~18 MB gzip);
+  // everything else shows up while it downloads.
+  const LOAD_LAST_LEAGUE_IDS = [2];
   // A hung fetch would otherwise hold `busy` forever and stall the loop silently.
   const SNAPSHOT_TIMEOUT_MS = 60 * 1000;
   const CHANGES_TIMEOUT_MS = 20 * 1000;
@@ -65,6 +68,7 @@
       lineCount: 0,
       eventCount: 0,
       cursor: null,
+      loading: null, // {done, total} while snapshots are downloading
     };
     let failedLeagueRetryAt = 0;
     // Bumped by start(); a load that began under an older generation is discarded.
@@ -104,42 +108,72 @@
       return { state: feed.parseSnapshot(json, { leagueId }), builtAt: Number.isFinite(builtAt) ? builtAt : null };
     }
 
-    // Load every requested league; keep whatever succeeds and report the rest
-    // by name. The changes cursor starts at the OLDEST snapshot build time when
-    // that is recent enough, so nothing between build and first poll is missed.
+    function loadOrder(leagueIds) {
+      const last = leagueIds.filter((id) => LOAD_LAST_LEAGUE_IDS.includes(id));
+      return leagueIds.filter((id) => !LOAD_LAST_LEAGUE_IDS.includes(id)).concat(last);
+    }
+
+    // Merge one league's snapshot into the live state in place (a full
+    // mergeStates per league would copy every line 29 times).
+    function mergeInto(target, loaded) {
+      target.leagues = target.leagues.filter((id) => !loaded.leagues.includes(id)).concat(loaded.leagues);
+      Object.assign(target.teams, loaded.teams);
+      Object.assign(target.books, loaded.books);
+      for (const [id, event] of Object.entries(target.events)) if (loaded.leagues.includes(event.leagueId)) delete target.events[id];
+      for (const [key, line] of Object.entries(target.lines)) if (loaded.leagues.includes(line.leagueId)) delete target.lines[key];
+      Object.assign(target.events, loaded.events);
+      Object.assign(target.lines, loaded.lines);
+    }
+
+    // Load every requested league, publishing each one the moment it lands
+    // (the panel fills in league by league); keep whatever succeeds and
+    // report the rest by name. The changes cursor starts at the OLDEST
+    // snapshot build time when that is recent enough, so nothing between
+    // build and first poll is missed.
     async function loadSnapshots(leagueIds) {
       const startedUnder = generation;
-      status.phase = status.leaguesLoaded.length ? status.phase : "loading";
-      const results = await mapWithConcurrency(leagueIds, SNAPSHOT_CONCURRENCY, (leagueId) => fetchSnapshot(leagueId).then(
-        (loaded) => ({ leagueId, loaded }),
-        (error) => ({ leagueId, error }),
-      ));
-      // start() ran meanwhile: these leagues are no longer what the panel wants.
-      if (startedUnder !== generation) return false;
-      const loadedStates = [];
-      let oldestBuild = null;
+      const fullLoad = leagueIds.length >= leagues.length;
+      const target = fullLoad ? feed.emptyState() : state;
+      const ordered = loadOrder(leagueIds);
+      status.loading = { done: 0, total: ordered.length };
+      if (!status.leaguesLoaded.length || fullLoad) status.phase = status.leaguesLoaded.length ? status.phase : "loading";
       const errors = { ...status.leagueErrors };
-      for (const result of results) {
-        if (result.error) {
-          errors[result.leagueId] = result.error.message;
-          continue;
+      let oldestBuild = null;
+      let loadedCount = 0;
+      await mapWithConcurrency(ordered, SNAPSHOT_CONCURRENCY, async (leagueId) => {
+        let loaded = null;
+        try {
+          loaded = await fetchSnapshot(leagueId);
+        } catch (error) {
+          if (startedUnder !== generation) return;
+          errors[leagueId] = error.message;
+          status.loading = { done: status.loading.done + 1, total: ordered.length };
+          return;
         }
-        delete errors[result.leagueId];
-        loadedStates.push(result.loaded.state);
-        if (result.loaded.builtAt != null) oldestBuild = oldestBuild == null ? result.loaded.builtAt : Math.min(oldestBuild, result.loaded.builtAt);
-      }
+        // start() ran meanwhile: this league is no longer what the panel wants.
+        if (startedUnder !== generation) return;
+        delete errors[leagueId];
+        loadedCount += 1;
+        if (loaded.builtAt != null) oldestBuild = oldestBuild == null ? loaded.builtAt : Math.min(oldestBuild, loaded.builtAt);
+        mergeInto(target, loaded.state);
+        if (fullLoad && target !== state) {
+          // First league of a full (re)load: switch to the fresh state now so
+          // the panel shows it, and the rest merge into it as they land.
+          state = target;
+        }
+        status.leaguesLoaded = Array.from(new Set(state.leagues)).sort((a, b) => a - b);
+        status.leagueErrors = { ...errors };
+        status.loading = { done: status.loading.done + 1, total: ordered.length };
+        notify();
+      });
+      if (startedUnder !== generation) return false;
+      status.loading = null;
       status.leagueErrors = errors;
-      if (loadedStates.length === 0) {
+      if (loadedCount === 0) {
         setError(`feed unavailable: ${describeLeagueErrors(errors)}`);
         notify();
         return false;
       }
-      // Keep already-loaded leagues that were not part of this load (partial retry).
-      const keep = status.leaguesLoaded.length && leagueIds.length < leagues.length
-        ? [stateWithout(state, leagueIds)]
-        : [];
-      state = feed.mergeStates([...keep, ...loadedStates]);
-      status.leaguesLoaded = Array.from(new Set(state.leagues)).sort((a, b) => a - b);
       status.lastSnapshotAt = now();
       status.phase = "live";
       status.error = Object.keys(errors).length ? `feed unavailable for ${describeLeagueErrors(errors)}` : null;
@@ -161,17 +195,6 @@
       }
       await Promise.all(Array.from({ length: Math.min(width, items.length) }, lane));
       return results;
-    }
-
-    function stateWithout(current, leagueIds) {
-      const drop = new Set(leagueIds);
-      const kept = feed.emptyState();
-      kept.leagues = current.leagues.filter((id) => !drop.has(id));
-      kept.teams = current.teams;
-      kept.books = current.books;
-      for (const [id, event] of Object.entries(current.events)) if (!drop.has(event.leagueId)) kept.events[id] = event;
-      for (const [key, line] of Object.entries(current.lines)) if (!drop.has(line.leagueId)) kept.lines[key] = line;
-      return kept;
     }
 
     function describeLeagueErrors(errors) {
@@ -222,7 +245,7 @@
     // Failed leagues retry on the 30s throttle only (never a full reload every
     // tick while Unabated is down); loaded leagues poll the stream.
     async function tick() {
-      if (busy || paused || !leagues.length) return;
+      if (busy || paused || !leagues.length || status.loading) return;
       busy = true;
       try {
         await retryFailedLeagues();

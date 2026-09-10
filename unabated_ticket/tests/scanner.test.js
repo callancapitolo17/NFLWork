@@ -60,7 +60,7 @@ test("start loads the snapshot, seeds the cursor from Last-Modified, then polls"
   assert.equal(status.cursor, "179164041314243100");
   assert.equal(status.lineCount, 66);
   assert.equal(scanner.getState().lines["289357360:ms4:si0:tid6"].points, -3.5);
-  assert.deepEqual(seen, ["live", "live"]);
+  assert.deepEqual(seen, ["loading", "live", "live"]); // NFL landed, load complete, first poll
 });
 
 test("a stale snapshot leaves the cursor null so the first poll uses the server default", async () => {
@@ -171,4 +171,27 @@ test("while every league is failing, ticks retry on the 30s throttle instead of 
   await scanner.tick();
   assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_URL(1)).length, 3);
   assert.equal(scanner.getStatus().phase, "error");
+});
+
+test("a full load publishes each league as it lands, CFB last", async () => {
+  let releaseCfb;
+  const cfbGate = new Promise((resolve) => { releaseCfb = resolve; });
+  const fetchImpl = fakeFetch({
+    [SNAPSHOT_URL(2)]: async () => { await cfbGate; return response({ body: fixture("v2_slice.json").replace(/lg1:/g, "lg2:") }); },
+  });
+  const seen = [];
+  const scanner = createScanner({ fetchImpl, now: () => NOW, timers: noTimers, onChange: (status) => seen.push([status.phase, status.leaguesLoaded.slice(), status.loading && status.loading.done]) });
+  const done = scanner.start([2, 1]);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  // NFL is in before CFB has finished downloading.
+  assert.deepEqual(scanner.getStatus().leaguesLoaded, [1]);
+  assert.equal(scanner.getStatus().lineCount, 62);
+  assert.deepEqual(scanner.getStatus().loading, { done: 1, total: 2 });
+  releaseCfb();
+  await done;
+  assert.deepEqual(scanner.getStatus().leaguesLoaded, [1, 2]);
+  assert.equal(scanner.getStatus().loading, null);
+  assert.equal(scanner.getStatus().phase, "live");
+  assert.ok(seen.some(([phase, loaded]) => phase === "loading" && loaded.length === 1));
 });
