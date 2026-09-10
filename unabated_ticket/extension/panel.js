@@ -280,11 +280,23 @@
   }
 
   function describeFilter(effective) {
+    const filter = effective.filter;
     const parts = [];
-    if (effective.bookIds) parts.push(`your ${effective.bookIds.size} Unabated books`);
-    else parts.push("no books filter yet: showing all live books (open an Unabated odds tab to publish your selection)");
-    if (effective.betTypeIds) parts.push(`bet types: ${Array.from(effective.betTypeIds).map((id) => feed.BET_TYPES[id]).join("/")}`);
-    else parts.push("ML/spread/total");
+    if (effective.bookIds) {
+      parts.push(`your ${effective.bookIds.size} Unabated books (read ${fmtAge(Date.now() - filter.at)})`);
+    } else if (filter && filter.lastError) {
+      parts.push(`no books filter yet: showing all live books (page read failed: ${filter.lastError})`);
+    } else {
+      parts.push("no books filter yet: showing all live books (open an Unabated odds tab to publish your selection)");
+    }
+    if (effective.betTypeIds) {
+      parts.push(`bet types: ${Array.from(effective.betTypeIds).map((id) => feed.BET_TYPES[id]).join("/")}`);
+    } else if (effective.fresh && filter.betTypeReason) {
+      parts.push(`bet-type filter unreadable (${filter.betTypeReason}); showing ML/spread/total`);
+    } else {
+      parts.push("ML/spread/total");
+    }
+    if (effective.fresh && filter.lastError && effective.bookIds) parts.push(`latest page read failed: ${filter.lastError}`);
     return parts.join(" · ");
   }
 

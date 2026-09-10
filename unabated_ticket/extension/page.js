@@ -7,7 +7,10 @@
 //
 // Side effects: none on the page. One capture-phase click listener on
 // document (Unabated's own handler still runs), one 5s interval while a
-// ticket is being watched. Never touches the DOM.
+// ticket is being watched, and a 10s heartbeat that also publishes the
+// user's Unabated book selection + bet-type filter (read from the grid's
+// React context and localStorage) so the Edges tab can filter on them.
+// Never touches the DOM.
 
 (function () {
   "use strict";
@@ -362,6 +365,89 @@
     watcher = { ticket, gridApi, timer: setInterval(watchTick, WATCH_INTERVAL_MS) };
   }
 
+
+  // ---- books / bet-type filter publish ------------------------------------
+
+  // The odds screen's book selection lives in context.userSettings.gameOdds:
+  // one entry per market source, isUnavailable === false when the book is
+  // shown. Accepts an array or an id-keyed object. Throws when unreadable so
+  // the panel says "no books filter yet" rather than silently showing all.
+  function enabledBookIdsOf(userSettings) {
+    const gameOdds = userSettings && userSettings.gameOdds;
+    if (!gameOdds || typeof gameOdds !== "object") throw new Error("userSettings.gameOdds missing");
+    const entries = Array.isArray(gameOdds)
+      ? gameOdds.map((entry) => ({ entry, key: null }))
+      : Object.entries(gameOdds).map(([key, entry]) => ({ entry, key }));
+    const ids = [];
+    for (const { entry, key } of entries) {
+      if (!entry || typeof entry !== "object" || entry.isUnavailable !== false) continue;
+      const id = Number(entry.marketSourceId ?? entry.id ?? key);
+      if (Number.isInteger(id)) ids.push(id);
+    }
+    if (!ids.length) throw new Error(`no enabled books in userSettings.gameOdds (${entries.length} entries)`);
+    return ids;
+  }
+
+  const ODDS_FILTER_STORAGE_KEY = "oddsFilterContext:preferences";
+
+  // Bet types selected in the odds-screen filter. Shape unverified (needs a
+  // login to see), so this looks for any betType* array of ids or {id}
+  // objects and reports null + reason when nothing matches.
+  function selectedBetTypeIdsOf() {
+    let raw = null;
+    try { raw = window.localStorage.getItem(ODDS_FILTER_STORAGE_KEY); } catch (_error) { /* storage blocked */ }
+    if (!raw) return { betTypeIds: null, reason: `localStorage ${ODDS_FILTER_STORAGE_KEY} missing` };
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch (_error) { return { betTypeIds: null, reason: `${ODDS_FILTER_STORAGE_KEY} is not JSON` }; }
+    const found = findBetTypeIds(parsed, 0);
+    if (!found) return { betTypeIds: null, reason: `no betType ids found under ${ODDS_FILTER_STORAGE_KEY} (keys: ${Object.keys(parsed || {}).join(",")})` };
+    return { betTypeIds: found, reason: null };
+  }
+
+  function idsFromArray(values) {
+    const ids = [];
+    for (const value of values) {
+      const id = typeof value === "number" ? value : Number(value && (value.betTypeId ?? value.id ?? value.value));
+      if (Number.isInteger(id)) ids.push(id);
+    }
+    return ids.length ? ids : null;
+  }
+
+  function findBetTypeIds(node, depth) {
+    if (!node || typeof node !== "object" || depth > 4) return null;
+    for (const [key, value] of Object.entries(node)) {
+      if (/bettype/i.test(key) && Array.isArray(value)) {
+        const ids = idsFromArray(value);
+        if (ids) return ids;
+      }
+    }
+    for (const value of Object.values(node)) {
+      const ids = findBetTypeIds(value, depth + 1);
+      if (ids) return ids;
+    }
+    return null;
+  }
+
+  let lastFiltersSignature = null;
+
+  function publishFilters() {
+    let payload;
+    try {
+      const { context } = anyGridApi();
+      const bookIds = enabledBookIdsOf(context && context.userSettings);
+      const betTypes = selectedBetTypeIdsOf();
+      payload = { bookIds, betTypeIds: betTypes.betTypeIds, betTypeReason: betTypes.reason, error: null, url: window.location.href, at: Date.now() };
+    } catch (error) {
+      payload = { bookIds: null, betTypeIds: null, betTypeReason: null, error: error.message, url: window.location.href, at: Date.now() };
+    }
+    const signature = JSON.stringify([payload.bookIds, payload.betTypeIds, payload.error]);
+    if (signature !== lastFiltersSignature) {
+      lastFiltersSignature = signature;
+      console.info("[unabated-ticket] books filter", payload);
+    }
+    post("filters", payload);
+  }
+
   // ---- click capture -------------------------------------------------------
 
   // One-click betting: Unabated's own handler opens the book's deeplink, and
@@ -397,8 +483,15 @@
 
   document.addEventListener("pointerdown", onClickCapture, true);
   document.addEventListener("click", onClickCapture, true);
-  // Heartbeat so the panel can show whether this script is alive on the tab.
-  post("ready", { url: window.location.href, at: Date.now() });
-  setInterval(() => post("ready", { url: window.location.href, at: Date.now() }), 10000);
+  // Heartbeat so the panel can show whether this script is alive on the tab,
+  // plus the books/bet-type filter for the Edges tab (grid may not be up yet
+  // on the first tick; the error is published and the next tick retries).
+  const HEARTBEAT_MS = 10000;
+  function heartbeat() {
+    post("ready", { url: window.location.href, at: Date.now() });
+    publishFilters();
+  }
+  heartbeat();
+  setInterval(heartbeat, HEARTBEAT_MS);
   console.info("[unabated-ticket] page.js active on", window.location.href);
 })();

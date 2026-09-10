@@ -8,13 +8,13 @@
 // dead/asleep service worker cannot stop a ticket from reaching the panel.
 //
 // Side effects: writes chrome.storage.local {ticket, error, watchStatus,
-// pageReady}. None on the page.
+// pageReady, booksFilter}. None on the page.
 
 (function () {
   "use strict";
 
   const MESSAGE_SOURCE = "unabated-ticket";
-  const HANDLED_TYPES = new Set(["ticket", "watch", "error", "ready"]);
+  const HANDLED_TYPES = new Set(["ticket", "watch", "error", "ready", "filters"]);
 
   function setSession(obj) {
     try {
@@ -43,6 +43,21 @@
     setSession({ pageReady: { url: payload.url, at: payload.at } });
   }
 
+  // Books/bet-type filter for the Edges tab. A failed read keeps the last
+  // good filter (a tab mid-load must not blank it) but records why, so the
+  // panel can say the filter is stale rather than pretend it is current.
+  function handleFilters(payload) {
+    if (payload.error) {
+      chrome.storage.local.get("booksFilter", (stored) => {
+        if (chrome.runtime.lastError) return;
+        const previous = stored.booksFilter || null;
+        setSession({ booksFilter: { ...(previous || {}), bookIds: previous ? previous.bookIds : null, betTypeIds: previous ? previous.betTypeIds : null, lastError: payload.error, lastErrorAt: payload.at, at: previous ? previous.at : null } });
+      });
+      return;
+    }
+    setSession({ booksFilter: { bookIds: payload.bookIds, betTypeIds: payload.betTypeIds, betTypeReason: payload.betTypeReason, url: payload.url, at: payload.at, lastError: null, lastErrorAt: null } });
+  }
+
   function handleWatch(payload) {
     chrome.storage.local.get("ticket", (stored) => {
       if (chrome.runtime.lastError) return;
@@ -62,7 +77,7 @@
     });
   }
 
-  const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch, ready: handleReady };
+  const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch, ready: handleReady, filters: handleFilters };
 
   console.info("[unabated-ticket] content.js active (direct-to-storage)");
   window.addEventListener("message", (event) => {
