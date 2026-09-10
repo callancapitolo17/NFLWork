@@ -388,8 +388,17 @@
   function setBookIds(bookIds) {
     state.edgeSettings = { ...state.edgeSettings, bookIds };
     chrome.storage.local.set({ edges: state.edgeSettings });
+    // A newly ticked book brings lines the alert log has never seen: baseline them, don't ping.
+    alertsBaselined = false;
     renderEdges();
+    processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
   }
+
+  // The dropdown stays open while you tick; a click anywhere else closes it.
+  document.addEventListener("click", (event) => {
+    const dropdown = document.getElementById("edges-books-dropdown");
+    if (dropdown && dropdown.open && !dropdown.contains(event.target)) dropdown.open = false;
+  });
 
   view.edgesBooks.addEventListener("change", () => {
     const ticked = Array.from(view.edgesBooks.querySelectorAll("input:checked")).map((input) => Number(input.dataset.book));
@@ -786,14 +795,20 @@
     const parsed = readEdgeSettingInputs();
     view.edgesSettingsError.textContent = parsed.error || "";
     if (parsed.error) return;
-    const leaguesChanged = parsed.settings.leagues.join(",") !== state.edgeSettings.leagues.join(",");
+    const before = state.edgeSettings;
+    const leaguesChanged = parsed.settings.leagues.join(",") !== before.leagues.join(",");
+    // Widening periods or bet types exposes lines the alert log has never seen.
+    const scopeChanged = leaguesChanged
+      || parsed.settings.periods.join(",") !== before.periods.join(",")
+      || parsed.settings.betTypes.join(",") !== before.betTypes.join(",");
     state.edgeSettings = parsed.settings;
     chrome.storage.local.set({ edges: parsed.settings });
+    if (scopeChanged) alertsBaselined = false;
     if (leaguesChanged) {
-      alertsBaselined = false;
       scanner.start(parsed.settings.leagues).catch((error) => console.error("[unabated-ticket] scanner restart failed", error));
     }
     renderEdges();
+    if (scopeChanged && !leaguesChanged) processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
   }
 
   function sanitizeEdgeSettings(stored) {

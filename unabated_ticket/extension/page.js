@@ -378,7 +378,7 @@
   }
 
 
-  // ---- books / bet-type filter publish ------------------------------------
+  // ---- Unabated book selection publish --------------------------------------
 
   // The odds screen's book selection lives under context.userSettings.gameOdds
   // as entries carrying isUnavailable (false = the book is shown). Live on
@@ -425,9 +425,9 @@
 
   let lastFiltersSignature = null;
 
-  // What the filter was read from, for the panel's click-to-expand line:
+  // What the selection was read from, for the panel's click-to-expand line:
   // the gameOdds entry fields with true/false counts per boolean field (so a
-  // wrong flag shows up as "33 of 33 false"), and the raw bet-type storage.
+  // wrong flag shows up as "33 of 33 false") and the first entry.
   function filterDiagnostic(userSettings) {
     const out = { userSettingsKeys: Object.keys(userSettings || {}).slice(0, 20) };
     const gameOdds = userSettings && userSettings.gameOdds;
