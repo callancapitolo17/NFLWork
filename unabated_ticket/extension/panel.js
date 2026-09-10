@@ -2,9 +2,10 @@
 // Edges tab (every positive-edge line across the enabled leagues).
 //
 // Reads: chrome.storage.local {ticket, error, watchStatus, pageReady,
-// booksFilter} (written by content.js) and {bankroll, multiplier, edges,
-// activeTab} (settings, written here).
-// Writes: chrome.storage.local settings only. Re-renders on storage.onChanged.
+// booksFilter, locateResult} (written by content.js) and {bankroll,
+// multiplier, edges, activeTab} (settings, written here).
+// Writes: chrome.storage.local settings and {locate} (row click, via
+// locate.js, which also focuses the Unabated tab). Re-renders on storage.onChanged.
 // Network: the scanner (scanner.js) fetches Unabated's public feeds while this
 // page is open; it pauses when the panel is hidden and stops when it closes.
 
@@ -43,6 +44,7 @@
   let state = {
     ticket: null, error: null, watchStatus: null, pageReady: null, settings: { ...DEFAULT_SETTINGS },
     edgeSettings: { ...DEFAULT_EDGE_SETTINGS }, booksFilter: null, activeTab: "ticket",
+    locateResult: null, locating: null,
   };
   let lastCopyText = "";
   let scannerStatus = null;
@@ -398,6 +400,54 @@
     }
   }
 
+
+  // ---- row click -> locate on the Unabated tab -----------------------------
+
+  function locateRequestOf(row) {
+    return {
+      key: row.key, league: row.league, leagueLabel: row.leagueLabel, eventId: row.eventId,
+      betTypeId: row.betTypeId, periodTypeId: row.periodTypeId, sideKey: row.sideKey, sideIndex: row.sideIndex,
+      bookId: row.book.id, bookName: row.book.name, marketId: row.marketId, points: row.points, price: row.price,
+      sideLabel: row.sideLabel, matchup: describeMatchup(row),
+    };
+  }
+
+  function renderLocate() {
+    const result = state.locateResult;
+    const pending = state.locating;
+    if (pending && (!result || result.at < pending.at)) {
+      view.edgesLocate.hidden = false;
+      view.edgesLocate.textContent = `Locating ${pending.sideLabel} @ ${pending.bookName} on the ${pending.leagueLabel} tab…`;
+      return;
+    }
+    if (result && Date.now() - result.at < 60000) {
+      view.edgesLocate.hidden = false;
+      view.edgesLocate.textContent = result.ok
+        ? `On the ${result.leagueLabel} tab: ${result.sideLabel} @ ${result.bookName} is highlighted. Click the price there to bet.`
+        : `Could not show ${result.sideLabel} @ ${result.bookName}: ${result.message}`;
+      return;
+    }
+    view.edgesLocate.hidden = true;
+  }
+
+  view.edgesList.addEventListener("click", async (event) => {
+    const li = event.target.closest("li.edge-row");
+    if (!li) return;
+    const row = currentEdgeRows().find((r) => r.key === li.dataset.key);
+    if (!row) return;
+    const request = locateRequestOf(row);
+    state.locating = { ...request, at: Date.now() };
+    state.locateResult = null;
+    renderLocate();
+    try {
+      await globalThis.UnabatedLocate.locateLine(request);
+    } catch (error) {
+      state.locating = null;
+      state.locateResult = { ...request, at: Date.now(), ok: false, message: `could not focus an Unabated tab (${error.message})` };
+      renderLocate();
+    }
+  });
+
   // ---- tabs ----------------------------------------------------------------
 
   function showTab(name) {
@@ -488,17 +538,19 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "activeTab"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "activeTab", "locateResult"]);
     state.ticket = relay.ticket || null;
     state.error = relay.error || null;
     state.watchStatus = relay.watchStatus || null;
     state.pageReady = relay.pageReady || null;
     state.booksFilter = relay.booksFilter || null;
+    state.locateResult = relay.locateResult || null;
     state.edgeSettings = sanitizeEdgeSettings(relay.edges);
     fillEdgeSettingInputs();
     showTab(relay.activeTab === "edges" ? "edges" : "ticket");
     render();
     renderEdges();
+    renderLocate();
     await scanner.start(state.edgeSettings.leagues);
   }
 
@@ -520,6 +572,11 @@
     if ("booksFilter" in changes) {
       state.booksFilter = changes.booksFilter.newValue || null;
       renderEdges();
+    }
+    if ("locateResult" in changes) {
+      state.locateResult = changes.locateResult.newValue || null;
+      if (state.locateResult && state.locating && state.locateResult.at >= state.locating.at) state.locating = null;
+      renderLocate();
     }
   });
 
@@ -549,7 +606,10 @@
   // Re-evaluate the "not watching" state and the edge ages even when no event arrives.
   setInterval(() => {
     if (!state.error) render();
-    if (state.activeTab === "edges") renderEdges();
+    if (state.activeTab === "edges") {
+      renderEdges();
+      renderLocate();
+    }
   }, 5000);
 
   load().catch((error) => {

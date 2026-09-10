@@ -8,13 +8,17 @@
 // dead/asleep service worker cannot stop a ticket from reaching the panel.
 //
 // Side effects: writes chrome.storage.local {ticket, error, watchStatus,
-// pageReady, booksFilter}. None on the page.
+// pageReady, booksFilter, locateResult}; forwards {locate} requests (row or
+// notification click) to page.js via window.postMessage. None on the page.
 
 (function () {
   "use strict";
 
   const MESSAGE_SOURCE = "unabated-ticket";
-  const HANDLED_TYPES = new Set(["ticket", "watch", "error", "ready", "filters"]);
+  const HANDLED_TYPES = new Set(["ticket", "watch", "error", "ready", "filters", "located"]);
+  // A locate request older than this is left alone (the tab it targeted may
+  // have been reloaded long after the click).
+  const LOCATE_MAX_AGE_MS = 90 * 1000;
 
   function setSession(obj) {
     try {
@@ -77,7 +81,30 @@
     });
   }
 
-  const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch, ready: handleReady, filters: handleFilters };
+  function handleLocated(payload) {
+    setSession({ locateResult: payload });
+  }
+
+  const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch, ready: handleReady, filters: handleFilters, located: handleLocated };
+
+  function forwardLocate(locate) {
+    if (!locate || typeof locate.at !== "number" || Date.now() - locate.at > LOCATE_MAX_AGE_MS) return;
+    window.postMessage({ source: MESSAGE_SOURCE, type: "locate", payload: locate }, window.location.origin);
+  }
+
+  // Requests arrive live while this tab is open, or are picked up on load when
+  // the panel had to navigate/open the tab (page.js waits for the grid).
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && changes.locate && changes.locate.newValue) forwardLocate(changes.locate.newValue);
+    });
+    chrome.storage.local.get("locate", (stored) => {
+      if (chrome.runtime.lastError) return;
+      forwardLocate(stored.locate);
+    });
+  } catch (_error) {
+    // Extension context invalidated.
+  }
 
   console.info("[unabated-ticket] content.js active (direct-to-storage)");
   window.addEventListener("message", (event) => {

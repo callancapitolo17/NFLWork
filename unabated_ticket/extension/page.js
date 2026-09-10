@@ -5,12 +5,12 @@
 // invisible from an isolated-world content script, so this file runs in the
 // page world and hands results to content.js via window.postMessage.
 //
-// Side effects: none on the page. One capture-phase click listener on
-// document (Unabated's own handler still runs), one 5s interval while a
-// ticket is being watched, and a 10s heartbeat that also publishes the
-// user's Unabated book selection + bet-type filter (read from the grid's
-// React context and localStorage) so the Edges tab can filter on them.
-// Never touches the DOM.
+// Side effects: one capture-phase click listener on document (Unabated's
+// own handler still runs), one 5s interval while a ticket is being watched,
+// and a 10s heartbeat that also publishes the user's Unabated book selection
+// + bet-type filter (read from the grid's React context and localStorage) so
+// the Edges tab can filter on them. The only DOM touch is the locate flash:
+// a 2.5s outline on the cell an Edges row or notification pointed at.
 
 (function () {
   "use strict";
@@ -447,6 +447,110 @@
     }
     post("filters", payload);
   }
+
+
+  // ---- locate: scroll the grid to a line and flash its cell -----------------
+
+  const LOCATE_ATTEMPTS = 20;
+  const LOCATE_RETRY_MS = 1000;
+  const FLASH_MS = 2500;
+  const FLASH_ATTR = "data-unabated-ticket-flash";
+  let lastLocateAt = 0;
+
+  function findRowNode(api, request) {
+    let hit = null;
+    api.forEachNode((node) => {
+      if (hit || !node.data) return;
+      const data = node.data;
+      if (data.eventId !== request.eventId || data.betTypeId !== request.betTypeId) return;
+      if ((data.periodTypeId ?? 1) !== request.periodTypeId) return;
+      hit = node;
+    });
+    return hit;
+  }
+
+  function cellShellFor(node, request) {
+    const rowId = node.data.gridKey ?? node.id;
+    if (rowId == null) return null;
+    const rowSelector = `.ag-row[row-id="${String(rowId).replace(/"/g, '\\"')}"]`;
+    const inBookColumn = document.querySelector(`${rowSelector} .ag-cell[col-id="${request.bookId}"] ${CELL_SHELL_SELECTOR}[data-side-index="${request.sideIndex}"]`);
+    if (inBookColumn) return inBookColumn;
+    // Book column may be scrolled out / hidden: fall back to any shell on the row for that side.
+    return document.querySelector(`${rowSelector} ${CELL_SHELL_SELECTOR}[data-side-index="${request.sideIndex}"]`);
+  }
+
+  function flash(element) {
+    element.setAttribute(FLASH_ATTR, "1");
+    const previousOutline = element.style.outline;
+    const previousOffset = element.style.outlineOffset;
+    element.style.outline = "3px solid #f59e0b";
+    element.style.outlineOffset = "1px";
+    element.scrollIntoView({ block: "center", inline: "center" });
+    setTimeout(() => {
+      element.style.outline = previousOutline;
+      element.style.outlineOffset = previousOffset;
+      element.removeAttribute(FLASH_ATTR);
+    }, FLASH_MS);
+  }
+
+  function reportLocate(request, ok, message) {
+    post("located", { key: request.key, sideLabel: request.sideLabel, bookName: request.bookName, leagueLabel: request.leagueLabel, ok, message, at: Date.now() });
+  }
+
+  // Retries while the grid loads (a navigated tab has no rows for a few seconds).
+  function locateLine(request, attempt) {
+    if (request.at !== lastLocateAt) return; // superseded by a newer request
+    let api = null;
+    let node = null;
+    try {
+      api = anyGridApi().api;
+      node = findRowNode(api, request);
+    } catch (_error) {
+      api = null;
+    }
+    if (!node) {
+      if (attempt < LOCATE_ATTEMPTS) {
+        setTimeout(() => locateLine(request, attempt + 1), LOCATE_RETRY_MS);
+        return;
+      }
+      reportLocate(request, false, api
+        ? "row is not on the grid (hidden by your bet-type or period filter, or the game left the board)"
+        : "the odds grid never appeared on this tab");
+      return;
+    }
+    try {
+      if (typeof api.ensureNodeVisible === "function") api.ensureNodeVisible(node, "middle");
+      if (typeof api.ensureColumnVisible === "function") api.ensureColumnVisible(String(request.bookId));
+    } catch (error) {
+      reportLocate(request, false, `grid scroll failed: ${error.message}`);
+      return;
+    }
+    // The row renders on the next frame after ensureNodeVisible.
+    setTimeout(() => {
+      const shell = cellShellFor(node, request);
+      if (!shell) {
+        reportLocate(request, false, "row found but its cell did not render (book column hidden?)");
+        return;
+      }
+      flash(shell);
+      reportLocate(request, true, null);
+    }, 50);
+  }
+
+  function onLocateMessage(payload) {
+    if (!payload || typeof payload.at !== "number" || payload.at <= lastLocateAt) return;
+    lastLocateAt = payload.at;
+    const wantedPath = `/${payload.league}/`;
+    if (!window.location.pathname.startsWith(wantedPath)) return; // another tab (or this one, mid-navigation) will handle it
+    locateLine(payload, 0);
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.source !== MESSAGE_SOURCE || data.type !== "locate") return;
+    onLocateMessage(data.payload);
+  });
 
   // ---- click capture -------------------------------------------------------
 
