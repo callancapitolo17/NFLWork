@@ -62,6 +62,9 @@
   // The first pass after a scanner (re)start records what is already on the
   // board without notifying, so opening the panel is not twenty pings.
   let alertsBaselined = false;
+  // processAlerts awaits storage + notifications; a poll landing mid-run must
+  // not start a second pass that notifies the same line twice.
+  let alertsBusy = false;
   let lastCopyText = "";
   let scannerStatus = null;
   let scannerState = null;
@@ -572,6 +575,16 @@
       alertsBaselined = false;
       return;
     }
+    if (alertsBusy) return;
+    alertsBusy = true;
+    try {
+      await processAlertsOnce();
+    } finally {
+      alertsBusy = false;
+    }
+  }
+
+  async function processAlertsOnce() {
     const now = Date.now();
     const rows = alertRows();
     pruneAlertLog(now);

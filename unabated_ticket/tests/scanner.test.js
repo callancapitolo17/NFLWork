@@ -139,3 +139,36 @@ test("resume after a long pause resyncs; after a short one it just polls", async
   await scanner.resume();
   assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_URL(1)).length, 2);
 });
+
+test("switching leagues while a snapshot is still downloading discards the old load", async () => {
+  let releaseCfb;
+  const cfbGate = new Promise((resolve) => { releaseCfb = resolve; });
+  const fetchImpl = fakeFetch({
+    [SNAPSHOT_URL(2)]: async () => { await cfbGate; return response({ body: fixture("v2_slice.json").replace(/lg1:/g, "lg2:") }); },
+  });
+  const scanner = createScanner({ fetchImpl, now: () => NOW, timers: noTimers });
+  const first = scanner.start([1, 2]); // CFB hangs
+  const second = scanner.start([1]);   // user unticks CFB meanwhile
+  await second;
+  releaseCfb();
+  await first;
+  const status = scanner.getStatus();
+  assert.deepEqual(status.leagues, [1]);
+  assert.deepEqual(status.leaguesLoaded, [1]);
+  assert.deepEqual(scanner.getState().leagues, [1]);
+});
+
+test("while every league is failing, ticks retry on the 30s throttle instead of every poll", async () => {
+  let clock = NOW;
+  const fetchImpl = fakeFetch({ [SNAPSHOT_URL(1)]: () => response({ status: 503, body: "" }) });
+  const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers });
+  await scanner.start([1]);
+  await scanner.tick();
+  clock += 10 * 1000;
+  await scanner.tick();
+  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_URL(1)).length, 2); // start + first throttled retry
+  clock += 30 * 1000;
+  await scanner.tick();
+  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_URL(1)).length, 3);
+  assert.equal(scanner.getStatus().phase, "error");
+});

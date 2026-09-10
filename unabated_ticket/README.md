@@ -115,8 +115,10 @@ panel pauses polling and a pause over 2 min resyncs on return.
 Parsing (`extension/feed.js`, node-tested on real slices under
 `tests/fixtures/`):
 
-- A line is keyed `(marketId, book, sideKey)`. Event + bet type is **not** a
-  key: team totals reuse `bt3` under the same event.
+- A line is keyed `(marketId, book, sideKey)`. Snapshot game rows are unique
+  per event, period and bet type, but the changes stream tags other markets
+  of the same event with the same `bt` key (team totals under `bt3`), so for
+  updates event + bet type is **not** a key; only `marketId` tells them apart.
 - An update is applied only when its `sequenceNumber` is newer than the line
   held. The stream replays old lines, and a snapshot can already be ahead of
   a batch.
@@ -200,7 +202,8 @@ use `sourcePrice`. `feed.test.js` parses the fixture slices (NFL event
 the live-book flag, edge selection and sorting, cursor extraction, and that
 an update overwrites a snapshot line only with a newer sequence number.
 `scanner.test.js` drives the loop with an injected fetch: cursor from
-`Last-Modified`, poll, rejected-cursor resync, per-league failure, resume.
+`Last-Modified`, poll, rejected-cursor resync, per-league failure, resume,
+and a league switch while a snapshot is still downloading.
 
 End-to-end without a real login: Playwright (in `mlb_sgp/venv`) with the
 ms-playwright Chromium, `--load-extension`, the two feed URLs routed to the

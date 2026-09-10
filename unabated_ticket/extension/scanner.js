@@ -31,6 +31,9 @@
   // After a pause longer than this the cursor may be dead: resync instead.
   const PAUSE_RESYNC_MS = 120 * 1000;
   const FAILED_LEAGUE_RETRY_MS = 30 * 1000;
+  // A hung fetch would otherwise hold `busy` forever and stall the loop silently.
+  const SNAPSHOT_TIMEOUT_MS = 60 * 1000;
+  const CHANGES_TIMEOUT_MS = 20 * 1000;
 
   function createScanner(deps) {
     const fetchImpl = (deps && deps.fetchImpl) || ((...args) => root.fetch(...args));
@@ -61,6 +64,20 @@
       cursor: null,
     };
     let failedLeagueRetryAt = 0;
+    // Bumped by start(); a load that began under an older generation is discarded.
+    let generation = 0;
+
+    async function fetchWithTimeout(url, options, timeoutMs) {
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+      try {
+        return await fetchImpl(url, controller ? { ...options, signal: controller.signal } : options);
+      } catch (error) {
+        throw new Error(controller && controller.signal.aborted ? `timed out after ${timeoutMs / 1000}s` : error.message);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
 
     function notify() {
       status.lineCount = feed.countLines(state);
@@ -76,7 +93,7 @@
 
     async function fetchSnapshot(leagueId) {
       // no-cache = revalidate with If-None-Match; a 304 serves the cached body.
-      const response = await fetchImpl(SNAPSHOT_URL(leagueId), { cache: "no-cache", credentials: "include" });
+      const response = await fetchWithTimeout(SNAPSHOT_URL(leagueId), { cache: "no-cache", credentials: "include" }, SNAPSHOT_TIMEOUT_MS);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const json = await response.json();
       const lastModified = response.headers && response.headers.get ? response.headers.get("last-modified") : null;
@@ -88,11 +105,14 @@
     // by name. The changes cursor starts at the OLDEST snapshot build time when
     // that is recent enough, so nothing between build and first poll is missed.
     async function loadSnapshots(leagueIds) {
+      const startedUnder = generation;
       status.phase = status.leaguesLoaded.length ? status.phase : "loading";
       const results = await Promise.all(leagueIds.map((leagueId) => fetchSnapshot(leagueId).then(
         (loaded) => ({ leagueId, loaded }),
         (error) => ({ leagueId, error }),
       )));
+      // start() ran meanwhile: these leagues are no longer what the panel wants.
+      if (startedUnder !== generation) return false;
       const loadedStates = [];
       let oldestBuild = null;
       const errors = { ...status.leagueErrors };
@@ -112,7 +132,7 @@
         return false;
       }
       // Keep already-loaded leagues that were not part of this load (partial retry).
-      const keep = Object.values(state.lines).length && leagueIds.length < leagues.length
+      const keep = status.leaguesLoaded.length && leagueIds.length < leagues.length
         ? [stateWithout(state, leagueIds)]
         : [];
       state = feed.mergeStates([...keep, ...loadedStates]);
@@ -143,7 +163,7 @@
 
     async function fetchChangesPage() {
       const url = cursor ? `${CHANGES_URL}/${cursor}` : CHANGES_URL;
-      const response = await fetchImpl(url, { credentials: "include" });
+      const response = await fetchWithTimeout(url, { credentials: "include" }, CHANGES_TIMEOUT_MS);
       if (!response.ok) throw new Error(`changes HTTP ${response.status}`);
       return feed.parseChanges(await response.text());
     }
@@ -152,8 +172,10 @@
     // cursor expired: resync from snapshots and restart from the server default.
     async function pollChanges() {
       let lines = 0;
+      const startedUnder = generation;
       for (let page = 0; page < MAX_PAGES_PER_POLL; page += 1) {
         const parsed = await fetchChangesPage();
+        if (startedUnder !== generation) return;
         if (!parsed.ok) {
           cursor = null;
           status.error = `changes cursor rejected (${parsed.resultCode}); resyncing`;
@@ -180,13 +202,14 @@
       await loadSnapshots(failed);
     }
 
+    // Failed leagues retry on the 30s throttle only (never a full reload every
+    // tick while Unabated is down); loaded leagues poll the stream.
     async function tick() {
       if (busy || paused || !leagues.length) return;
       busy = true;
       try {
         await retryFailedLeagues();
         if (status.leaguesLoaded.length) await pollChanges();
-        else await loadSnapshots(leagues);
       } catch (error) {
         setError(`feed unavailable: ${error.message}`);
         notify();
@@ -216,14 +239,17 @@
     }
 
     async function start(leagueIds) {
+      generation += 1;
       leagues = Array.from(new Set(leagueIds)).filter((id) => Number.isInteger(id));
       status.leagues = leagues.slice();
       clearTimers();
       state = feed.emptyState();
       status.leaguesLoaded = [];
       status.leagueErrors = {};
+      status.error = null;
       cursor = null;
       paused = false;
+      failedLeagueRetryAt = 0;
       if (!leagues.length) {
         status.phase = "idle";
         status.error = "no leagues enabled";
@@ -232,7 +258,14 @@
       }
       pollTimer = timers.setInterval(tick, POLL_MS);
       resyncTimer = timers.setInterval(resync, RESYNC_MS);
-      await resync();
+      // Not resync(): an in-flight load from the old generation holds `busy`,
+      // and its result is discarded anyway, so this generation loads now.
+      try {
+        await loadSnapshots(leagues);
+      } catch (error) {
+        setError(`feed unavailable: ${error.message}`);
+        notify();
+      }
     }
 
     function stop() {

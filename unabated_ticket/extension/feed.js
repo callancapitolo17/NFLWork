@@ -12,11 +12,13 @@
 //             {gameOddsEvents: {"lg1:pt1:pregame": [{eventId, eventStart, gameOddsMarketSourcesLines:
 //             {"si0:ms4:an0": {"bt2": line}}}]}}}]}]}
 //
-// One line is identified by (marketId, book, sideKey): a marketId is one
-// (event, period, bet type, side) market and the same key can carry several
-// rows' worth of updates (team totals reuse bt3), so event+betType is NOT a
-// key. Updates apply only when their sequenceNumber is newer than the line we
-// hold — the stream replays old lines and the snapshot may already be ahead.
+// One line is identified by (marketId, book, sideKey). Snapshot game rows are
+// unique per (event, period, bet type), but the changes stream tags OTHER
+// markets of the same event with the same bt key (e.g. team totals under
+// bt3) — only the marketId tells them apart, so event+betType is NOT a key
+// for updates. Updates apply only when their sequenceNumber is newer than the
+// line we hold — the stream replays old lines and the snapshot may already be
+// ahead.
 
 (function (root) {
   "use strict";
