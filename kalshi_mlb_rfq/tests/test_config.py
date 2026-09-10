@@ -32,6 +32,16 @@ def test_new_env_knobs_have_defaults():
     assert isinstance(config_mod.MLB_SGP_DIR, Path)
 
 
+def test_target_line_horizon_knob_default():
+    """#103 Phase 3: same knob, same default as the maker — one window,
+    applied once in enumerate_kalshi_targets."""
+    import os
+    expected = float(os.environ.get(
+        "TARGET_LINE_HORIZON_HOURS",
+        config_mod._FILE_ENV.get("TARGET_LINE_HORIZON_HOURS", "24")))
+    assert config_mod.TARGET_LINE_HORIZON_HOURS == expected
+
+
 def test_book_alert_knobs_have_defaults():
     """Issue #37. BOOK_ALERT_PATHS must parse to a tuple of path names — #57
     flips it to on_demand-only in config, so a broken parse silently turns

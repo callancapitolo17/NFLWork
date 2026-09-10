@@ -145,13 +145,14 @@ def _count_rows(db_path, source):
 def _run_cycle(monkeypatch, tmp_path, results):
     from kalshi_common import sgp_runner
     monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets",
-                        lambda both_teams=False: TARGETS)
+                        lambda both_teams=False, **kw: TARGETS)
     monkeypatch.setattr(sgp_runner, "write_target_lines",
                         lambda targets, db_path: None)
     db = str(tmp_path / "market.duckdb")
     _seed_rows(db, "draftkings_direct")
     counts = sgp_runner.sgp_cycle(bot_market_db=db,
-                                  service=_FakeService(results))
+                                  service=_FakeService(results),
+                                  horizon_hours=24)
     return db, counts
 
 

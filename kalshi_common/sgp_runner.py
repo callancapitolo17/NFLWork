@@ -9,7 +9,7 @@ import logging
 import os
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -17,7 +17,7 @@ import duckdb
 
 from kalshi_common import auth_client
 from kalshi_common.leg_types import (_MLB_CODE_TO_TEAM, _parse_event_suffix,
-                                     parse_suffix_start_utc,
+                                     as_naive_utc, parse_suffix_start_utc,
                                      unique_game_by_start)
 from mlb_sgp._shared import TargetLine
 from kalshi_common.sgp_service import SGPService  # noqa: F401  (re-export)
@@ -213,13 +213,38 @@ def _schedule_by_team_pair(schedule: list[dict]) -> dict[tuple, list[dict]]:
     return out
 
 
-def enumerate_kalshi_targets(both_teams: bool = False) -> list[TargetLine]:
+def enumerate_kalshi_targets(both_teams: bool = False, *,
+                             horizon_hours: float) -> list[TargetLine]:
     """Enumerate all open Kalshi MVE (spread, total) tuples per MLB game.
     Returns a TargetLine per (game x spread x total) combination, FG only.
 
     Schedule is fetched directly from the Odds API; we no longer read
     Answer Keys/mlb.duckdb (which is R-write-locked during pipeline runs).
+
+    ``horizon_hours`` (issue #103 Phase 3) is the ONE start-time window on
+    the target-line path: a game is kept only if its commence_time is at or
+    before ``now + horizon_hours``. ``mlb_target_lines`` is a full
+    DELETE+INSERT of this list, so every reader — the maker's structure
+    warming fan-out (one structure fetch per game per book per pass) and
+    the taker's parlay cache — inherits the bound without a filter of its
+    own. Deliberately required and keyword-only: the Odds API ``/events``
+    window used to cap the slate by accident, and once #103 Phase 4 takes
+    the full Kalshi board (~35–48 open games vs ~5–7 today) this knob is the
+    only thing standing between warming and a ~6x jump in book requests.
+    ``0`` disables the window (logged as a WARNING every cycle — never
+    silent); negative is a configuration error and raises.
     """
+    if horizon_hours < 0:
+        raise ValueError(
+            "horizon_hours must be >= 0 (0 disables the window), "
+            f"got {horizon_hours!r}")
+    horizon_deadline = (as_naive_utc(datetime.now(timezone.utc))
+                        + timedelta(hours=horizon_hours)
+                        if horizon_hours > 0 else None)
+    if horizon_deadline is None:
+        log.warning("[horizon] TARGET_LINE_HORIZON_HOURS=0: start-time window "
+                    "DISABLED — every open Kalshi game reaches mlb_target_lines "
+                    "and the warming fan-out (the #103 load limiter is off)")
     events = _fetch_kalshi_mlb_events()
     if not events:
         print("  enumerate: 0 kalshi events", flush=True)
@@ -230,6 +255,7 @@ def enumerate_kalshi_targets(both_teams: bool = False) -> list[TargetLine]:
           flush=True)
     targets: list[TargetLine] = []
     matched_games = 0
+    dropped_by_horizon = 0
     unmatched_reasons: dict[str, int] = {}
     for ev in events:
         event_ticker = ev.get("event_ticker", "")
@@ -254,6 +280,12 @@ def enumerate_kalshi_targets(both_teams: bool = False) -> list[TargetLine]:
             continue
         commence_time = starts_by_game[game_id]
         matched_games += 1
+        # Horizon check BEFORE the two per-game Kalshi line fetches below, so
+        # a far-out game costs zero requests, not just zero rows.
+        if (horizon_deadline is not None
+                and as_naive_utc(commence_time) > horizon_deadline):
+            dropped_by_horizon += 1
+            continue
         spreads = _fetch_kalshi_spread_lines(
             suffix, home_code=home_code, both_teams=both_teams)
         totals = _fetch_kalshi_total_lines(suffix)
@@ -268,7 +300,13 @@ def enumerate_kalshi_targets(both_teams: bool = False) -> list[TargetLine]:
                     period="FG", spread=spread, total=total,
                 ))
     print(f"  enumerate: matched_games={matched_games} → {len(targets)} target lines"
-          f" (unmatched: {unmatched_reasons or 'none'})", flush=True)
+          f" (unmatched: {unmatched_reasons or 'none'};"
+          f" beyond {horizon_hours}h horizon: {dropped_by_horizon})", flush=True)
+    # INFO, not print: the horizon is the load limiter on the warming fan-out
+    # and must be readable in bot.log every cycle (stdout is not captured).
+    log.info("[horizon] horizon_hours=%s kept_games=%d dropped_games=%d",
+             horizon_hours, matched_games - dropped_by_horizon,
+             dropped_by_horizon)
     if unmatched_reasons:
         # The three reasons need OPPOSITE fixes, so they are counted apart:
         #   unmatched       the Odds API does not carry this game, or the two
@@ -515,7 +553,8 @@ _BOOK_MODULES = {
 
 
 def target_line_cycle(*, bot_market_db: str,
-                      both_teams: bool = False) -> list:
+                      both_teams: bool = False,
+                      horizon_hours: float) -> list:
     """Refresh `mlb_target_lines` from Kalshi MVE enumeration + the Odds
     API schedule — the sweep-free half of `sgp_cycle`, extracted for #81.
 
@@ -524,11 +563,16 @@ def target_line_cycle(*, bot_market_db: str,
     gating and #50's structure warming all read `mlb_target_lines`);
     the taker still reaches it through `sgp_cycle`.
 
+    ``horizon_hours`` is the caller's `TARGET_LINE_HORIZON_HOURS` — the
+    start-time window applied once, in `enumerate_kalshi_targets`, that
+    every reader of the table inherits (#103 Phase 3).
+
     Side effect: atomic DELETE+INSERT of `mlb_target_lines` in
     `bot_market_db`. Returns the enumerated targets so callers can log
     the count.
     """
-    targets = enumerate_kalshi_targets(both_teams=both_teams)
+    targets = enumerate_kalshi_targets(both_teams=both_teams,
+                                       horizon_hours=horizon_hours)
     write_target_lines(targets, db_path=bot_market_db)
     return targets
 
@@ -540,9 +584,12 @@ def sgp_cycle(
     timeout_sec: int | None = None,
     service=None,
     both_teams: bool = False,
+    *,
+    horizon_hours: float,
 ) -> dict[str, int]:
     """One full SGP scrape tick (taker sweep; the maker stopped calling
-    this in #81 and runs `target_line_cycle` alone).
+    this in #81 and runs `target_line_cycle` alone). ``horizon_hours`` is
+    forwarded to `target_line_cycle` (#103 Phase 3).
 
     With `service` (an SGPService): in-process path —
       1. `target_line_cycle` — enumerate Kalshi MVE, write
@@ -557,7 +604,8 @@ def sgp_cycle(
     (scraper_dir / venv_python / timeout_sec are required then).
     """
     targets = target_line_cycle(bot_market_db=bot_market_db,
-                                both_teams=both_teams)
+                                both_teams=both_teams,
+                                horizon_hours=horizon_hours)
 
     if service is None:
         if not (scraper_dir and venv_python and timeout_sec):
