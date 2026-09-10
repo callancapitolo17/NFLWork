@@ -381,23 +381,46 @@
 
   // ---- books / bet-type filter publish ------------------------------------
 
-  // The odds screen's book selection lives in context.userSettings.gameOdds:
-  // one entry per market source, isUnavailable === false when the book is
-  // shown. Accepts an array or an id-keyed object. Throws when unreadable so
-  // the panel says "no books filter yet" rather than silently showing all.
+  // The odds screen's book selection lives under context.userSettings.gameOdds
+  // as entries carrying isUnavailable (false = the book is shown). Live on
+  // 2026-09-10 gameOdds had 6 top-level entries with no isUnavailable on them,
+  // so the book entries sit one level down; search up to 3 levels for the
+  // first array/object whose members carry the flag, and when nothing does,
+  // report the keys seen so the panel header shows the real shape.
+  const BOOK_ENTRY_SEARCH_DEPTH = 3;
+
+  function bookEntriesOf(node, depth) {
+    if (!node || typeof node !== "object" || depth > BOOK_ENTRY_SEARCH_DEPTH) return null;
+    const members = Array.isArray(node) ? node.map((entry) => ({ entry, key: null })) : Object.entries(node).map(([key, entry]) => ({ entry, key }));
+    const flagged = members.filter(({ entry }) => entry && typeof entry === "object" && "isUnavailable" in entry);
+    if (flagged.length) return flagged;
+    for (const { entry } of members) {
+      const found = bookEntriesOf(entry, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function describeShape(node) {
+    if (Array.isArray(node)) return `array[${node.length}]${node.length ? ` of {${Object.keys(node[0] || {}).slice(0, 8).join(",")}}` : ""}`;
+    if (node && typeof node === "object") return `{${Object.keys(node).slice(0, 12).join(",")}}`;
+    return typeof node;
+  }
+
   function enabledBookIdsOf(userSettings) {
     const gameOdds = userSettings && userSettings.gameOdds;
-    if (!gameOdds || typeof gameOdds !== "object") throw new Error("userSettings.gameOdds missing");
-    const entries = Array.isArray(gameOdds)
-      ? gameOdds.map((entry) => ({ entry, key: null }))
-      : Object.entries(gameOdds).map(([key, entry]) => ({ entry, key }));
+    if (!gameOdds || typeof gameOdds !== "object") {
+      throw new Error(`userSettings.gameOdds missing (userSettings keys: ${Object.keys(userSettings || {}).slice(0, 12).join(",") || "none"})`);
+    }
+    const entries = bookEntriesOf(gameOdds, 0);
+    if (!entries) throw new Error(`no isUnavailable entries under userSettings.gameOdds; shape ${describeShape(gameOdds)}`);
     const ids = [];
     for (const { entry, key } of entries) {
-      if (!entry || typeof entry !== "object" || entry.isUnavailable !== false) continue;
+      if (entry.isUnavailable !== false) continue;
       const id = Number(entry.marketSourceId ?? entry.id ?? key);
       if (Number.isInteger(id)) ids.push(id);
     }
-    if (!ids.length) throw new Error(`no enabled books in userSettings.gameOdds (${entries.length} entries)`);
+    if (!ids.length) throw new Error(`no enabled books among ${entries.length} isUnavailable entries under userSettings.gameOdds (first: ${describeShape(entries[0].entry)})`);
     return ids;
   }
 
