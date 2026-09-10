@@ -3,9 +3,10 @@
 //
 // Reads: chrome.storage.local {ticket, error, watchStatus, pageReady,
 // booksFilter, locateResult} (written by content.js) and {bankroll,
-// multiplier, edges, activeTab} (settings, written here).
-// Writes: chrome.storage.local settings and {locate} (row click, via
-// locate.js, which also focuses the Unabated tab). Re-renders on storage.onChanged.
+// multiplier, edges, alerts, alertLog, activeTab} (written here).
+// Writes: chrome.storage.local settings, {locate} (row click, via locate.js,
+// which also focuses the Unabated tab), {alertLog, alertTargets} and Chrome
+// notifications for new edges. Re-renders on storage.onChanged.
 // Network: the scanner (scanner.js) fetches Unabated's public feeds while this
 // page is open; it pauses when the panel is hidden and stops when it closes.
 
@@ -14,6 +15,11 @@
 
   const DEFAULT_SETTINGS = { bankroll: 30000, multiplier: 0.25 };
   const DEFAULT_EDGE_SETTINGS = { leagues: [1, 2, 5], periods: [1], minEdgePct: 1.0, sortBy: "edge" };
+  // Off until the list has been watched for a session (plan, 2026-09-10).
+  const DEFAULT_ALERT_SETTINGS = { enabled: false, minEdgePct: 2.0 };
+  const ALERT_EVENT_COOLDOWN_MS = 5 * 60 * 1000;
+  const ALERT_LOG_TTL_MS = 24 * 60 * 60 * 1000;
+  const ALERT_TARGETS_KEPT = 50;
   // Watcher heartbeats every 5s; past this with no heartbeat, the Unabated tab is gone.
   const WATCH_STALE_MS = 15000;
   // page.js republishes the books filter every 10s while an Unabated tab is open.
@@ -37,6 +43,7 @@
     edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesLocate: el("edges-locate"),
     edgesLeagues: el("edges-leagues"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesSort: el("edges-sort"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
+    alertsEnabled: el("alerts-enabled"), alertsMin: el("alerts-min"),
   };
   // page.js heartbeats every 10s; past this it is not running on any Unabated tab.
   const PAGE_READY_STALE_MS = 25000;
@@ -45,7 +52,14 @@
     ticket: null, error: null, watchStatus: null, pageReady: null, settings: { ...DEFAULT_SETTINGS },
     edgeSettings: { ...DEFAULT_EDGE_SETTINGS }, booksFilter: null, activeTab: "ticket",
     locateResult: null, locating: null,
+    alertSettings: { ...DEFAULT_ALERT_SETTINGS },
   };
+  // key -> {price, at}: what has been alerted (or seen at baseline); persisted.
+  let alertLog = {};
+  let eventAlertAt = {};
+  // The first pass after a scanner (re)start records what is already on the
+  // board without notifying, so opening the panel is not twenty pings.
+  let alertsBaselined = false;
   let lastCopyText = "";
   let scannerStatus = null;
   let scannerState = null;
@@ -54,6 +68,7 @@
       scannerStatus = status;
       scannerState = feedState;
       renderEdges();
+      processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
     },
   });
 
@@ -448,6 +463,156 @@
     }
   });
 
+
+  // ---- alerts --------------------------------------------------------------
+
+  // Same line = same market, book, side and points; a price change on it is
+  // an update to the same alert key and only notifies again if it improved.
+  function alertKeyOf(row) {
+    return `${row.marketId}:${row.book.id}:${row.sideKey}:${row.points}`;
+  }
+
+  function priceImproved(newPrice, oldPrice) {
+    try {
+      return kelly.americanToDecimal(newPrice) > kelly.americanToDecimal(oldPrice);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  let iconDataUrl = null;
+  // chrome.notifications needs an iconUrl; drawn here so the repo carries no binary.
+  function notificationIcon() {
+    if (iconDataUrl) return iconDataUrl;
+    const canvas = document.createElement("canvas");
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#f59e0b";
+    ctx.fillRect(0, 0, 64, 64);
+    ctx.fillStyle = "#111827";
+    ctx.font = "bold 40px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("U", 32, 34);
+    iconDataUrl = canvas.toDataURL("image/png");
+    return iconDataUrl;
+  }
+
+  async function rememberAlertTarget(notificationId, row) {
+    const stored = await chrome.storage.local.get("alertTargets");
+    const targets = stored.alertTargets && typeof stored.alertTargets === "object" ? stored.alertTargets : {};
+    targets[notificationId] = locateRequestOf(row);
+    const ids = Object.keys(targets);
+    for (const id of ids.slice(0, Math.max(0, ids.length - ALERT_TARGETS_KEPT))) delete targets[id];
+    await chrome.storage.local.set({ alertTargets: targets });
+  }
+
+  async function notifyEdge(row) {
+    const notificationId = `edge:${row.key}:${Date.now()}`;
+    await rememberAlertTarget(notificationId, row);
+    const stake = stakeFor(row);
+    const message = [
+      `${fmtPct(row.edgePct / 100)} edge`,
+      stake == null ? null : `stake ${fmtDollars(stake)}`,
+      describeMatchup(row),
+      fmtUntil(row.eventStartMs),
+    ].filter(Boolean).join(" · ");
+    await new Promise((resolve) => {
+      chrome.notifications.create(notificationId, {
+        type: "basic",
+        iconUrl: notificationIcon(),
+        title: `${row.sideLabel} ${fmtAmerican(row.price)} @ ${row.book.name}`,
+        message,
+        priority: 1,
+      }, () => {
+        if (chrome.runtime.lastError) console.error("[unabated-ticket] notification failed:", chrome.runtime.lastError.message);
+        resolve();
+      });
+    });
+  }
+
+  function pruneAlertLog(now) {
+    for (const [key, entry] of Object.entries(alertLog)) {
+      if (!entry || typeof entry.at !== "number" || now - entry.at > ALERT_LOG_TTL_MS) delete alertLog[key];
+    }
+  }
+
+  function alertRows() {
+    const effective = effectiveFilter();
+    return feed.selectEdges(scannerState, {
+      minEdge: state.alertSettings.minEdgePct / 100,
+      periods: new Set(state.edgeSettings.periods),
+      betTypes: effective.betTypeIds || new Set([1, 2, 3]),
+      bookIds: effective.bookIds,
+      now: Date.now(),
+    });
+  }
+
+  // Runs after every scanner update. Baseline first, then one notification
+  // per line that first crosses the alert threshold (or improves its price),
+  // at most one per event per ALERT_EVENT_COOLDOWN_MS.
+  async function processAlerts() {
+    if (!scannerState || !scannerStatus || scannerStatus.phase !== "live") return;
+    if (!state.alertSettings.enabled) {
+      alertsBaselined = false;
+      return;
+    }
+    const now = Date.now();
+    const rows = alertRows();
+    pruneAlertLog(now);
+    if (!alertsBaselined) {
+      for (const row of rows) alertLog[alertKeyOf(row)] = { price: row.price, at: now, baseline: true };
+      alertsBaselined = true;
+      await chrome.storage.local.set({ alertLog });
+      return;
+    }
+    let fired = 0;
+    for (const row of rows) {
+      const key = alertKeyOf(row);
+      const previous = alertLog[key];
+      if (previous && !priceImproved(row.price, previous.price)) continue;
+      const lastForEvent = eventAlertAt[row.eventId] || 0;
+      if (now - lastForEvent < ALERT_EVENT_COOLDOWN_MS) continue;
+      await notifyEdge(row);
+      alertLog[key] = { price: row.price, at: now };
+      eventAlertAt[row.eventId] = now;
+      fired += 1;
+    }
+    if (fired) await chrome.storage.local.set({ alertLog });
+  }
+
+  function readAlertSettingInputs() {
+    const minEdgePct = Number(view.alertsMin.value);
+    if (!Number.isFinite(minEdgePct) || minEdgePct < 0) return { error: "Alert edge must be zero or more." };
+    return { settings: { enabled: view.alertsEnabled.checked, minEdgePct } };
+  }
+
+  function fillAlertSettingInputs() {
+    view.alertsEnabled.checked = state.alertSettings.enabled;
+    view.alertsMin.value = state.alertSettings.minEdgePct;
+  }
+
+  function onAlertSettingsInput() {
+    const parsed = readAlertSettingInputs();
+    view.edgesSettingsError.textContent = parsed.error || "";
+    if (parsed.error) return;
+    const thresholdChanged = parsed.settings.minEdgePct !== state.alertSettings.minEdgePct;
+    state.alertSettings = parsed.settings;
+    chrome.storage.local.set({ alerts: parsed.settings });
+    // A new threshold re-baselines so lowering it does not fire for everything already listed.
+    if (thresholdChanged) alertsBaselined = false;
+    processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
+  }
+
+  function sanitizeAlertSettings(stored) {
+    const base = { ...DEFAULT_ALERT_SETTINGS };
+    if (!stored || typeof stored !== "object") return base;
+    if (typeof stored.enabled === "boolean") base.enabled = stored.enabled;
+    if (typeof stored.minEdgePct === "number" && stored.minEdgePct >= 0) base.minEdgePct = stored.minEdgePct;
+    return base;
+  }
+
   // ---- tabs ----------------------------------------------------------------
 
   function showTab(name) {
@@ -493,7 +658,10 @@
     const leaguesChanged = parsed.settings.leagues.join(",") !== state.edgeSettings.leagues.join(",");
     state.edgeSettings = parsed.settings;
     chrome.storage.local.set({ edges: parsed.settings });
-    if (leaguesChanged) scanner.start(parsed.settings.leagues).catch((error) => console.error("[unabated-ticket] scanner restart failed", error));
+    if (leaguesChanged) {
+      alertsBaselined = false;
+      scanner.start(parsed.settings.leagues).catch((error) => console.error("[unabated-ticket] scanner restart failed", error));
+    }
     renderEdges();
   }
 
@@ -538,7 +706,7 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "activeTab", "locateResult"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult"]);
     state.ticket = relay.ticket || null;
     state.error = relay.error || null;
     state.watchStatus = relay.watchStatus || null;
@@ -546,7 +714,10 @@
     state.booksFilter = relay.booksFilter || null;
     state.locateResult = relay.locateResult || null;
     state.edgeSettings = sanitizeEdgeSettings(relay.edges);
+    state.alertSettings = sanitizeAlertSettings(relay.alerts);
+    alertLog = relay.alertLog && typeof relay.alertLog === "object" ? relay.alertLog : {};
     fillEdgeSettingInputs();
+    fillAlertSettingInputs();
     showTab(relay.activeTab === "edges" ? "edges" : "ticket");
     render();
     renderEdges();
@@ -584,6 +755,8 @@
   view.edgesPeriods.addEventListener("change", onEdgeSettingsInput);
   view.edgesMin.addEventListener("input", onEdgeSettingsInput);
   view.edgesSort.addEventListener("change", onEdgeSettingsInput);
+  view.alertsEnabled.addEventListener("change", onAlertSettingsInput);
+  view.alertsMin.addEventListener("input", onAlertSettingsInput);
 
   // Nothing polls while the panel is hidden; back in view, the scanner catches up or resyncs.
   document.addEventListener("visibilitychange", () => {
