@@ -275,13 +275,26 @@
     };
   }
 
+  // AG Grid's own .ag-cell wrappers are not React-rendered on Unabated (no
+  // fiber on them); the price shells inside are, and their fiber walks up to
+  // the cell renderer props (api, node, context) — the same path capture uses.
+  // .ag-cell stays as a fallback for a grid that mounts differently.
+  const GRID_PROBE_SELECTORS = [CELL_SHELL_SELECTOR, ".ag-cell"];
+
   function anyGridApi() {
-    const cells = document.querySelectorAll(".ag-cell");
-    for (const cell of cells) {
-      const props = findProps(fiberOf(cell), isGridCellProps);
-      if (props) return { api: props.api, context: props.context ?? null };
+    for (const selector of GRID_PROBE_SELECTORS) {
+      for (const element of document.querySelectorAll(selector)) {
+        const fiber = fiberOf(element);
+        if (!fiber) continue;
+        const props = findProps(fiber, isGridCellProps);
+        if (!props) continue;
+        // The line renderer's context carries userSettings; the grid context is the fallback.
+        const lineProps = findProps(fiber, isLineProps);
+        const context = (lineProps && lineProps.context) || props.context || null;
+        return { api: props.api, context };
+      }
     }
-    throw new Error("could not reach the AG Grid API from any rendered cell");
+    throw new Error(`could not reach the AG Grid API from any rendered cell (tried ${GRID_PROBE_SELECTORS.join(", ")})`);
   }
 
   // Fallback: data-marketline-id on the shell + a scan of every row's sides.

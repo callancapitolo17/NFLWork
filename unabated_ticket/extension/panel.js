@@ -13,10 +13,13 @@
 (function () {
   "use strict";
 
+  const kelly = globalThis.UnabatedKelly;
+  const feed = globalThis.UnabatedFeed;
   const DEFAULT_SETTINGS = { bankroll: 30000, multiplier: 0.25 };
   // maxLineAgeHours: a "live" book's line unchanged for a week is a dead feed
   // (live 2026-09-10: Buckeye -110 on a 44.5 total, 96 days old, "+36.67%").
-  const DEFAULT_EDGE_SETTINGS = { leagues: [1, 2, 5], periods: [1], minEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge" };
+  const ALL_LEAGUE_IDS = Object.keys(feed.LEAGUES).map(Number);
+  const DEFAULT_EDGE_SETTINGS = { leagues: ALL_LEAGUE_IDS, periods: [1], minEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge" };
   // Off until the list has been watched for a session (plan, 2026-09-10).
   const DEFAULT_ALERT_SETTINGS = { enabled: false, minEdgePct: 2.0 };
   const ALERT_EVENT_COOLDOWN_MS = 5 * 60 * 1000;
@@ -27,8 +30,6 @@
   // page.js republishes the books filter every 10s while an Unabated tab is open.
   const BOOKS_FILTER_STALE_MS = 6 * 60 * 60 * 1000;
   const MAX_EDGE_ROWS = 200;
-  const kelly = globalThis.UnabatedKelly;
-  const feed = globalThis.UnabatedFeed;
 
   const el = (id) => document.getElementById(id);
   const view = {
@@ -43,7 +44,7 @@
     pageStatus: el("page-status"),
     tabs: el("tabs"), tabTicket: el("tab-ticket"), tabEdges: el("tab-edges"), edgesCount: el("edges-count"),
     edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesLocate: el("edges-locate"),
-    edgesLeagues: el("edges-leagues"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
+    edgesSports: el("edges-sports"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
     alertsEnabled: el("alerts-enabled"), alertsMin: el("alerts-min"),
   };
@@ -157,7 +158,7 @@
 
   // "Villanova Wildcats @ Louisville Cardinals · CFB", falling back to Unabated's event name.
   function describeMatchup(ticket) {
-    const league = (ticket.league || "").toUpperCase();
+    const league = ticket.leagueLabel || (ticket.league || "").toUpperCase();
     if (ticket.awayTeam && ticket.homeTeam) return `${ticket.awayTeam} @ ${ticket.homeTeam}${league ? ` \u00b7 ${league}` : ""}`;
     return ticket.eventName || "";
   }
@@ -402,7 +403,10 @@
       view.edgesStatus.textContent = "Starting the scanner…";
       return;
     }
-    const leagues = status.leaguesLoaded.map((id) => (feed.LEAGUES[id] || { label: `league ${id}` }).label);
+    const loadedSports = Array.from(new Set(status.leaguesLoaded.map((id) => (feed.LEAGUES[id] || {}).sport).filter(Boolean)));
+    const leagues = status.leaguesLoaded.length > 4
+      ? [`${status.leaguesLoaded.length} leagues (${loadedSports.map((sport) => feed.SPORTS[sport]).join(", ")})`]
+      : status.leaguesLoaded.map((id) => (feed.LEAGUES[id] || { label: `league ${id}` }).label);
     const updated = status.lastUpdateAt ? `updated ${fmtAge(Date.now() - status.lastUpdateAt)}` : (status.lastSnapshotAt ? `snapshot ${fmtAge(Date.now() - status.lastSnapshotAt)}` : "no data yet");
     const polled = status.lastPollAt ? ` · polled ${fmtAge(Date.now() - status.lastPollAt)}` : "";
     view.edgesStatus.textContent = status.phase === "loading"
@@ -662,7 +666,7 @@
   // ---- edge settings -------------------------------------------------------
 
   function readEdgeSettingInputs() {
-    const leagues = Array.from(view.edgesLeagues.querySelectorAll("input:checked")).map((input) => Number(input.dataset.league));
+    const leagues = Array.from(view.edgesSports.querySelectorAll("input:checked")).flatMap((input) => feed.leagueIdsOfSport(input.dataset.sport));
     const periods = Array.from(view.edgesPeriods.querySelectorAll("input:checked")).map((input) => Number(input.dataset.period));
     const minEdgePct = Number(view.edgesMin.value);
     const maxLineAgeHours = Number(view.edgesMaxAge.value);
@@ -674,7 +678,9 @@
 
   function fillEdgeSettingInputs() {
     const settings = state.edgeSettings;
-    for (const input of view.edgesLeagues.querySelectorAll("input")) input.checked = settings.leagues.includes(Number(input.dataset.league));
+    for (const input of view.edgesSports.querySelectorAll("input")) {
+      input.checked = feed.leagueIdsOfSport(input.dataset.sport).some((id) => settings.leagues.includes(id));
+    }
     for (const input of view.edgesPeriods.querySelectorAll("input")) input.checked = settings.periods.includes(Number(input.dataset.period));
     view.edgesMin.value = settings.minEdgePct;
     view.edgesMaxAge.value = settings.maxLineAgeHours;
@@ -782,7 +788,7 @@
     }
   });
 
-  view.edgesLeagues.addEventListener("change", onEdgeSettingsInput);
+  view.edgesSports.addEventListener("change", onEdgeSettingsInput);
   view.edgesPeriods.addEventListener("change", onEdgeSettingsInput);
   view.edgesMin.addEventListener("input", onEdgeSettingsInput);
   view.edgesMaxAge.addEventListener("input", onEdgeSettingsInput);

@@ -74,6 +74,9 @@ test("snapshot for a league the file does not carry fails loudly; an empty slate
   const offSeason = feed.parseSnapshot({ odds: { "lg5:pt1:pregame": [] }, teams: {}, marketSources: [] }, { leagueId: 5 });
   assert.equal(feed.countLines(offSeason), 0);
   assert.deepEqual(offSeason.leagues, [5]);
+  // Serie B on 2026-09-10: teams listed, `odds` an empty object.
+  const noOdds = feed.parseSnapshot({ odds: {}, teams: { 1: { name: "Genoa CFC" } }, marketSources: [] }, { leagueId: 38 });
+  assert.equal(feed.countLines(noOdds), 0);
 });
 
 test("selectEdges: maxLineAgeMs drops lines the book has not touched, and lines with no modifiedOn", () => {
@@ -203,4 +206,14 @@ test("a changes line whose snapshot edge existed but is now null lists nothing",
   feed.applyChanges(state, { ...changes, lines: [overwrite] });
   assert.equal(state.lines[southPointKey].ge, null);
   assert.ok(!feed.selectEdges(state, { now: BEFORE_KICKOFF }).some((r) => r.key === southPointKey));
+});
+
+test("league table: every entry has a label, an odds-screen path and a sport; sports group them", () => {
+  for (const [id, league] of Object.entries(feed.LEAGUES)) {
+    assert.ok(Number.isInteger(Number(id)), `league id ${id}`);
+    assert.ok(league.label && league.path && feed.SPORTS[league.sport], `league ${id} incomplete`);
+  }
+  assert.deepEqual(feed.leagueIdsOfSport("football"), [1, 2]);
+  assert.ok(feed.leagueIdsOfSport("soccer").includes(28));
+  assert.equal(feed.leagueIdsOfSport("tennis").length, 0);
 });

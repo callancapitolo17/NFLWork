@@ -23,11 +23,50 @@
 (function (root) {
   "use strict";
 
+  // Every team-sport league the v2 feed served on 2026-09-10 (ids probed
+  // 1-70; labels read off the fixtures' team names). `path` is the
+  // tools.unabated.com odds screen for the row click: nfl/cfb/mlb are
+  // verified, the rest follow the site's nav (nba, cbb, nhl, wnba, soccer)
+  // and are unverified without a login. Tennis (9, 10) and combat (22) key
+  // sides on people and use other bet types, so they are not listed.
   const LEAGUES = {
-    1: { label: "NFL", path: "nfl" },
-    2: { label: "CFB", path: "cfb" },
-    5: { label: "MLB", path: "mlb" },
+    1: { label: "NFL", path: "nfl", sport: "football" },
+    2: { label: "CFB", path: "cfb", sport: "football" },
+    3: { label: "NBA", path: "nba", sport: "basketball" },
+    4: { label: "CBB", path: "cbb", sport: "basketball" },
+    7: { label: "WNBA", path: "wnba", sport: "basketball" },
+    5: { label: "MLB", path: "mlb", sport: "baseball" },
+    12: { label: "WBC", path: "mlb", sport: "baseball" },
+    6: { label: "NHL", path: "nhl", sport: "hockey" },
+    11: { label: "Olympic hockey", path: "nhl", sport: "hockey" },
+    21: { label: "Intl soccer", path: "soccer", sport: "soccer" },
+    25: { label: "MLS", path: "soccer", sport: "soccer" },
+    26: { label: "La Liga", path: "soccer", sport: "soccer" },
+    27: { label: "Serie A", path: "soccer", sport: "soccer" },
+    28: { label: "Premier League", path: "soccer", sport: "soccer" },
+    29: { label: "Europa League", path: "soccer", sport: "soccer" },
+    30: { label: "Bundesliga", path: "soccer", sport: "soccer" },
+    31: { label: "Ligue 1", path: "soccer", sport: "soccer" },
+    32: { label: "Liga MX", path: "soccer", sport: "soccer" },
+    33: { label: "Mexico (lg33)", path: "soccer", sport: "soccer" },
+    34: { label: "Primeira Liga", path: "soccer", sport: "soccer" },
+    35: { label: "Belgian Pro League", path: "soccer", sport: "soccer" },
+    36: { label: "Eredivisie", path: "soccer", sport: "soccer" },
+    37: { label: "EFL Championship", path: "soccer", sport: "soccer" },
+    38: { label: "Serie B", path: "soccer", sport: "soccer" },
+    39: { label: "Scottish Premiership", path: "soccer", sport: "soccer" },
+    41: { label: "English cups", path: "soccer", sport: "soccer" },
+    42: { label: "German cup", path: "soccer", sport: "soccer" },
+    43: { label: "Danish Superliga", path: "soccer", sport: "soccer" },
+    44: { label: "Swiss Super League", path: "soccer", sport: "soccer" },
   };
+  const SPORTS = {
+    football: "Football", basketball: "Basketball", baseball: "Baseball", hockey: "Hockey", soccer: "Soccer",
+  };
+
+  function leagueIdsOfSport(sport) {
+    return Object.entries(LEAGUES).filter(([, league]) => league.sport === sport).map(([id]) => Number(id));
+  }
   const BET_TYPES = { 1: "Moneyline", 2: "Spread", 3: "Total" };
   const PERIODS = { 1: "FG", 2: "1H", 3: "2H", 4: "1Q", 5: "2Q", 6: "3Q", 7: "4Q" };
   // ms49 is Unabated's own line, not a book anyone can bet.
@@ -184,9 +223,10 @@
       if (parsed.phase !== "pregame" || !Array.isArray(rows)) continue;
       for (const row of rows) ingestSnapshotRow(state, row, leagueId, parsed.periodTypeId, counts);
     }
-    // No lg<id> key at all is the wrong file or a schema change; keys with no
-    // game rows is an empty slate (off-season) and must not read as a failure.
-    if (leagueKeysSeen === 0) {
+    // No lg<id> key while other leagues' keys exist is the wrong file or a
+    // schema change; an empty `odds` map (Serie B off-season, 2026-09-10) or
+    // keys with no game rows is an empty slate and must not read as a failure.
+    if (leagueKeysSeen === 0 && Object.keys(json.odds).length > 0) {
       throw new Error(`snapshot: no lg${leagueId} odds keys in the file (keys: ${Object.keys(json.odds).slice(0, 5).join(", ") || "none"})`);
     }
     state.counts = counts;
@@ -425,7 +465,7 @@
   }
 
   const api = {
-    LEAGUES, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID, CURSOR_EPOCH_MS,
+    LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID, CURSOR_EPOCH_MS,
     parseLeagueKey, parseEventStart, lineKeyOf, emptyState,
     parseSnapshot, mergeStates, extractCursor, cursorFromDate, parseChanges, applyChanges,
     describeLine, selectEdges, countLines,

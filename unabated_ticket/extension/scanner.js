@@ -31,6 +31,9 @@
   // After a pause longer than this the cursor may be dead: resync instead.
   const PAUSE_RESYNC_MS = 120 * 1000;
   const FAILED_LEAGUE_RETRY_MS = 30 * 1000;
+  // ~27 leagues, 18 MB gzip per resync; a few at a time keeps peak memory
+  // (each body is parsed in full) and the JSON.parse stalls bounded.
+  const SNAPSHOT_CONCURRENCY = 4;
   // A hung fetch would otherwise hold `busy` forever and stall the loop silently.
   const SNAPSHOT_TIMEOUT_MS = 60 * 1000;
   const CHANGES_TIMEOUT_MS = 20 * 1000;
@@ -107,10 +110,10 @@
     async function loadSnapshots(leagueIds) {
       const startedUnder = generation;
       status.phase = status.leaguesLoaded.length ? status.phase : "loading";
-      const results = await Promise.all(leagueIds.map((leagueId) => fetchSnapshot(leagueId).then(
+      const results = await mapWithConcurrency(leagueIds, SNAPSHOT_CONCURRENCY, (leagueId) => fetchSnapshot(leagueId).then(
         (loaded) => ({ leagueId, loaded }),
         (error) => ({ leagueId, error }),
-      )));
+      ));
       // start() ran meanwhile: these leagues are no longer what the panel wants.
       if (startedUnder !== generation) return false;
       const loadedStates = [];
@@ -144,6 +147,20 @@
       cursor = recent ? feed.cursorFromDate(oldestBuild) : null;
       notify();
       return true;
+    }
+
+    async function mapWithConcurrency(items, width, worker) {
+      const results = new Array(items.length);
+      let next = 0;
+      async function lane() {
+        while (next < items.length) {
+          const index = next;
+          next += 1;
+          results[index] = await worker(items[index]);
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(width, items.length) }, lane));
+      return results;
     }
 
     function stateWithout(current, leagueIds) {

@@ -8,9 +8,10 @@ side panel:
   quarter-Kelly stake. The panel stays open when the sportsbook tab opens,
   so the stake is in view while you place the bet. Issue #111; plan in
   `docs/2026-09-08-unabated-ticket-extension-plan.md`.
-- **Edges** — every positive-edge moneyline / spread / total across NFL, CFB
-  and MLB at once, read from Unabated's public market feeds while the panel
-  is open, with a stake per line, a click that jumps to the row on the
+- **Edges** — every positive-edge moneyline / spread / total across every
+  team sport Unabated prices (NFL, CFB, NBA, CBB, WNBA, MLB, NHL and ~20
+  soccer leagues) at once, read from Unabated's public market feeds while
+  the panel is open, with a stake per line, a click that jumps to the row on the
   Unabated tab, and optional Chrome notifications when a new line crosses
   your alert threshold. Issue #112; plan in
   `docs/2026-09-10-unabated-edge-scanner-plan.md`.
@@ -97,15 +98,16 @@ runs in the service worker.
 
 | Feed | URL | What it carries |
 |---|---|---|
-| Snapshot | `content.unabated.com/markets/v2/league/{1,2,5}/odds.json` (NFL, CFB, MLB; 2–8 MB gzip, regenerated ~every 27 s) | every row's `sides[side][ms<book>]` line: `points, americanPrice, sourcePrice, sourceFormat, bacr, ge, liquidity, statusId, sequenceNumber`; `teams`; `marketSources` |
+| Snapshot | `content.unabated.com/markets/v2/league/{id}/odds.json` (27 team-sport leagues, `feed.LEAGUES`; ~18 MB gzip in total, CFB alone 9.7 MB, regenerated ~every 27 s) | every row's `sides[side][ms<book>]` line: `points, americanPrice, sourcePrice, sourceFormat, bacr, ge, liquidity, statusId, sequenceNumber`; `teams`; `marketSources` |
 | Changes | `api-k.unabated.com/api/markets/changes/query[/{cursor}]` (~300 KB per 10 s) | the same fields per changed line under `gameOddsEvents[lg:pt:pregame][].gameOddsMarketSourcesLines[si:ms:an][bt]`, plus `sideKey` |
 
 `ge` is Unabated's edge as a fraction (0.0296 = +2.96%), the same number the
 Ticket tab sizes from. `bacr` is the fair at the book's points.
 
 Loop (`extension/scanner.js`): snapshot per enabled league on open and every
-10 min (browser-cache revalidation, so a quick reopen is a 304), then the
-changes stream every 10 s. The first cursor is derived from the snapshot's
+10 min, four downloads at a time (browser-cache revalidation, so a quick
+reopen is a 304), then the changes stream every 10 s, which covers all
+leagues in one call. The first cursor is derived from the snapshot's
 `Last-Modified` (cursor = nanoseconds since 2021-01-06, kept as a string —
 it is above 2⁵³) so nothing between the build and the first poll is lost; a
 full page (7 batches) is followed immediately; a cursor the server rejects
@@ -142,8 +144,16 @@ is a real edge, can be told from a dead one. Rows carry the same wording as
 the ticket, the price as American plus cents (exchange cents from
 `sourcePrice`), liquidity for exchanges, time to start, and the stake from
 `kellyStakeFromEdge` with the panel's bankroll and multiplier. Sort by edge,
-stake or start time. Settings (leagues, periods, minimum edge, max line
-age, sort) persist in `chrome.storage.local` under `edges`.
+stake or start time. Settings (sports, periods, minimum edge, max line
+age, sort) persist in `chrome.storage.local` under `edges` (as league ids;
+a sport checkbox toggles all of its leagues).
+
+Leagues come from `feed.LEAGUES` (ids probed 1–70 on 2026-09-10, labels
+read off team names). Tennis (ATP 9, WTA 10) and combat (22) are not listed:
+their sides key on people and their bet types are not 1/2/3. The row-click
+screen path is verified for nfl/cfb/mlb only; nba, cbb, nhl, wnba and
+soccer follow the site's nav and, for a soccer league, the odds screen must
+have that league selected for the row to be found.
 
 The header shows leagues loaded, lines held, update age, and the filter in
 effect. A league that fails to load is named in a red banner while the rest
