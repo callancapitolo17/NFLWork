@@ -427,12 +427,22 @@
     view.edgesCount.textContent = String(rows.length);
   }
 
+  function bookNameOf(id) {
+    const book = scannerState && scannerState.books[id];
+    return book ? `${book.name} (${id})` : `book ${id}`;
+  }
+
+  // Books in the filter by name, then what page.js read them from.
   function renderFilterDebug() {
     if (view.edgesFilterDebug.hidden) return;
     const filter = state.booksFilter;
-    view.edgesFilterDebug.textContent = filter
-      ? JSON.stringify({ bookIds: filter.bookIds, betTypeIds: filter.betTypeIds, betTypeReason: filter.betTypeReason, lastError: filter.lastError, debug: filter.debug }, null, 1)
-      : "no booksFilter published yet";
+    if (!filter) {
+      view.edgesFilterDebug.textContent = "no booksFilter published yet";
+      return;
+    }
+    const names = Array.isArray(filter.bookIds) ? filter.bookIds.map(bookNameOf).join(", ") : "none";
+    view.edgesFilterDebug.textContent = `Books in filter: ${names}\n\n` +
+      JSON.stringify({ betTypeIds: filter.betTypeIds, betTypeReason: filter.betTypeReason, lastError: filter.lastError, debug: filter.debug }, null, 1);
   }
 
   view.edgesFilter.addEventListener("click", () => {
