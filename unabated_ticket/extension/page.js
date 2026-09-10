@@ -8,8 +8,7 @@
 // Side effects: one capture-phase click listener on document (Unabated's
 // own handler still runs), one 5s interval while a ticket is being watched,
 // and a 10s heartbeat that also publishes the user's Unabated book selection
-// + bet-type filter (read from the grid's React context and localStorage) so
-// the Edges tab can filter on them. The only DOM touch is the locate flash:
+// (read from the grid's React context) as the Edges tab's default book filter. The only DOM touch is the locate flash:
 // a 2.5s outline on the cell an Edges row or notification pointed at.
 
 (function () {
@@ -424,48 +423,6 @@
     return ids;
   }
 
-  const ODDS_FILTER_STORAGE_KEY = "oddsFilterContext:preferences";
-
-  // Bet types selected in the odds-screen filter. Shape unverified (needs a
-  // login to see), so this looks for any betType* array of ids or {id}
-  // objects and reports null + reason when nothing matches.
-  function selectedBetTypeIdsOf() {
-    let raw = null;
-    try { raw = window.localStorage.getItem(ODDS_FILTER_STORAGE_KEY); } catch (_error) { /* storage blocked */ }
-    if (!raw) return { betTypeIds: null, reason: `localStorage ${ODDS_FILTER_STORAGE_KEY} missing` };
-    let parsed;
-    try { parsed = JSON.parse(raw); } catch (_error) { return { betTypeIds: null, reason: `${ODDS_FILTER_STORAGE_KEY} is not JSON` }; }
-    const found = findBetTypeIds(parsed, 0);
-    if (!found) return { betTypeIds: null, reason: `no betType ids found under ${ODDS_FILTER_STORAGE_KEY} (keys: ${Object.keys(parsed || {}).join(",")})` };
-    const gameTypes = found.filter((id) => BET_TYPE_NAMES[id]);
-    if (!gameTypes.length) return { betTypeIds: null, reason: `bet type ids ${found.slice(0, 8).join(",")} are none of moneyline/spread/total (1/2/3)` };
-    return { betTypeIds: gameTypes, reason: null };
-  }
-
-  function idsFromArray(values) {
-    const ids = [];
-    for (const value of values) {
-      const id = typeof value === "number" ? value : Number(value && (value.betTypeId ?? value.id ?? value.value));
-      if (Number.isInteger(id)) ids.push(id);
-    }
-    return ids.length ? ids : null;
-  }
-
-  function findBetTypeIds(node, depth) {
-    if (!node || typeof node !== "object" || depth > 4) return null;
-    for (const [key, value] of Object.entries(node)) {
-      if (/bettype/i.test(key) && Array.isArray(value)) {
-        const ids = idsFromArray(value);
-        if (ids) return ids;
-      }
-    }
-    for (const value of Object.values(node)) {
-      const ids = findBetTypeIds(value, depth + 1);
-      if (ids) return ids;
-    }
-    return null;
-  }
-
   let lastFiltersSignature = null;
 
   // What the filter was read from, for the panel's click-to-expand line:
@@ -487,10 +444,6 @@
     }
     out.booleanFields = counts;
     out.firstEntry = entries.length ? JSON.stringify(entries[0].entry).slice(0, 400) : null;
-    out.localStorageKeys = Object.keys(window.localStorage).filter((key) => /odds|filter|pref|bet/i.test(key)).slice(0, 20);
-    let raw = null;
-    try { raw = window.localStorage.getItem(ODDS_FILTER_STORAGE_KEY); } catch (_error) { /* blocked */ }
-    out.betTypeStorage = raw ? raw.slice(0, 600) : null;
     return out;
   }
 
@@ -500,17 +453,16 @@
     try {
       context = anyGridApi().context;
       const bookIds = enabledBookIdsOf(context && context.userSettings);
-      const betTypes = selectedBetTypeIdsOf();
-      payload = { bookIds, betTypeIds: betTypes.betTypeIds, betTypeReason: betTypes.reason, error: null, url: window.location.href, at: Date.now() };
+      payload = { bookIds, error: null, url: window.location.href, at: Date.now() };
     } catch (error) {
-      payload = { bookIds: null, betTypeIds: null, betTypeReason: null, error: error.message, url: window.location.href, at: Date.now() };
+      payload = { bookIds: null, error: error.message, url: window.location.href, at: Date.now() };
     }
     try {
       payload.debug = context ? filterDiagnostic(context.userSettings) : { error: "no grid context" };
     } catch (error) {
       payload.debug = { error: error.message };
     }
-    const signature = JSON.stringify([payload.bookIds, payload.betTypeIds, payload.error]);
+    const signature = JSON.stringify([payload.bookIds, payload.error]);
     if (signature !== lastFiltersSignature) {
       lastFiltersSignature = signature;
       console.info("[unabated-ticket] books filter", payload);

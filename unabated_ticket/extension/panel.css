@@ -91,3 +91,17 @@ button { font: inherit; padding: 6px 12px; cursor: pointer; }
 .edge-row.blurred .edge-pct { color: var(--muted); }
 .debug { white-space: pre-wrap; word-break: break-all; font-size: 11px; max-height: 260px; overflow: auto; margin: 4px 0; padding: 6px; border: 1px solid var(--border); border-radius: 4px; }
 #edges-filter { cursor: pointer; }
+/* Multi-select dropdown: a <details> whose panel floats over the list. */
+.dropdown { position: relative; font-size: 13px; }
+.dropdown summary { cursor: pointer; padding: 3px 8px; border: 1px solid var(--border); border-radius: 4px; list-style: none; user-select: none; }
+.dropdown summary::-webkit-details-marker { display: none; }
+.dropdown summary::after { content: " \25BE"; color: var(--muted); }
+.dropdown-panel {
+  position: absolute; left: 0; top: calc(100% + 4px); z-index: 10; width: 300px; max-width: calc(100vw - 40px);
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: Canvas; color: CanvasText; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+.dropdown-actions { display: flex; gap: 6px; margin-bottom: 6px; }
+.books-list { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; max-height: 240px; overflow: auto; font-size: 12px; }
+.books-list label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+button.small { font-size: 11px; padding: 2px 6px; }

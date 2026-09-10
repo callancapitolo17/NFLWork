@@ -47,7 +47,7 @@
     setSession({ pageReady: { url: payload.url, at: payload.at } });
   }
 
-  // Books/bet-type filter for the Edges tab. A failed read keeps the last
+  // Unabated book selection, the Edges tab's default book filter. A failed read keeps the last
   // good filter (a tab mid-load must not blank it) but records why, so the
   // panel can say the filter is stale rather than pretend it is current.
   function handleFilters(payload) {
@@ -55,11 +55,11 @@
       chrome.storage.local.get("booksFilter", (stored) => {
         if (chrome.runtime.lastError) return;
         const previous = stored.booksFilter || null;
-        setSession({ booksFilter: { ...(previous || {}), bookIds: previous ? previous.bookIds : null, betTypeIds: previous ? previous.betTypeIds : null, lastError: payload.error, lastErrorAt: payload.at, at: previous ? previous.at : null, debug: payload.debug || (previous ? previous.debug : null) } });
+        setSession({ booksFilter: { ...(previous || {}), bookIds: previous ? previous.bookIds : null, lastError: payload.error, lastErrorAt: payload.at, at: previous ? previous.at : null, debug: payload.debug || (previous ? previous.debug : null) } });
       });
       return;
     }
-    setSession({ booksFilter: { bookIds: payload.bookIds, betTypeIds: payload.betTypeIds, betTypeReason: payload.betTypeReason, url: payload.url, at: payload.at, lastError: null, lastErrorAt: null, debug: payload.debug || null } });
+    setSession({ booksFilter: { bookIds: payload.bookIds, url: payload.url, at: payload.at, lastError: null, lastErrorAt: null, debug: payload.debug || null } });
   }
 
   function handleWatch(payload) {

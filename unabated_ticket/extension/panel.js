@@ -19,7 +19,9 @@
   // maxLineAgeHours: a "live" book's line unchanged for a week is a dead feed
   // (live 2026-09-10: Buckeye -110 on a 44.5 total, 96 days old, "+36.67%").
   const ALL_LEAGUE_IDS = Object.keys(feed.LEAGUES).map(Number);
-  const DEFAULT_EDGE_SETTINGS = { leagues: ALL_LEAGUE_IDS, periods: [1], minEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge" };
+  // bookIds null = follow the Unabated selection page.js publishes (all live
+  // books until one exists); an array = the user's own ticks in the panel.
+  const DEFAULT_EDGE_SETTINGS = { leagues: ALL_LEAGUE_IDS, periods: [1], betTypes: [1, 2, 3], bookIds: null, minEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge" };
   // Off until the list has been watched for a session (plan, 2026-09-10).
   const DEFAULT_ALERT_SETTINGS = { enabled: false, minEdgePct: 2.0 };
   const ALERT_EVENT_COOLDOWN_MS = 5 * 60 * 1000;
@@ -44,7 +46,8 @@
     pageStatus: el("page-status"),
     tabs: el("tabs"), tabTicket: el("tab-ticket"), tabEdges: el("tab-edges"), edgesCount: el("edges-count"),
     edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
-    edgesSports: el("edges-sports"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
+    edgesSports: el("edges-sports"), edgesBetTypes: el("edges-bettypes"), edgesBooks: el("edges-books"), edgesBooksMode: el("edges-books-mode"),
+    booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
     alertsEnabled: el("alerts-enabled"), alertsMin: el("alerts-min"),
   };
@@ -299,48 +302,102 @@
     return value == null ? "" : `liq ${value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}`;
   }
 
-  // Which books and bet types the list is restricted to. The user's own
-  // Unabated selection wins when page.js has published one; otherwise every
-  // live book and moneyline/spread/total, and the header says so.
-  function effectiveFilter() {
-    const filter = state.booksFilter;
-    const fresh = filter && typeof filter.at === "number" && Date.now() - filter.at < BOOKS_FILTER_STALE_MS;
-    const bookIds = fresh && Array.isArray(filter.bookIds) && filter.bookIds.length ? new Set(filter.bookIds) : null;
-    const betTypeIds = fresh && Array.isArray(filter.betTypeIds) && filter.betTypeIds.length
-      ? new Set(filter.betTypeIds.filter((id) => feed.BET_TYPES[id]))
-      : null;
-    return { bookIds, betTypeIds: betTypeIds && betTypeIds.size ? betTypeIds : null, fresh: Boolean(fresh), filter };
+  function liveBooks() {
+    if (!scannerState) return [];
+    return Object.values(scannerState.books).filter((book) => book.isLive && book.id !== feed.UNABATED_LINE_BOOK_ID)
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  function pageScriptAlive() {
-    const ready = state.pageReady;
-    return Boolean(ready && Date.now() - ready.at < PAGE_READY_STALE_MS);
+  function unabatedSelection() {
+    const filter = state.booksFilter;
+    const fresh = filter && typeof filter.at === "number" && Date.now() - filter.at < BOOKS_FILTER_STALE_MS;
+    return fresh && Array.isArray(filter.bookIds) && filter.bookIds.length ? filter.bookIds : null;
+  }
+
+  // Which books the list is restricted to: the user's own ticks when they
+  // have made any, else the Unabated selection page.js published, else every
+  // live book. Bet types are the panel's own checkboxes.
+  function effectiveFilter() {
+    const settings = state.edgeSettings;
+    const selection = unabatedSelection();
+    let mode;
+    let bookIds;
+    if (Array.isArray(settings.bookIds)) {
+      mode = "custom";
+      bookIds = new Set(settings.bookIds);
+    } else if (selection) {
+      mode = "unabated";
+      bookIds = new Set(selection);
+    } else {
+      mode = "all";
+      bookIds = null;
+    }
+    return { mode, bookIds, betTypeIds: new Set(settings.betTypes), filter: state.booksFilter };
   }
 
   function describeFilter(effective) {
     const filter = effective.filter;
+    const live = liveBooks().length;
     const parts = [];
-    if (effective.bookIds) {
-      parts.push(`your ${effective.bookIds.size} Unabated books (read ${fmtAge(Date.now() - filter.at)})`);
+    if (effective.mode === "custom") {
+      parts.push(`books: your ${effective.bookIds.size} ticks below (of ${live} live)`);
+    } else if (effective.mode === "unabated") {
+      parts.push(`books: your Unabated selection, ${effective.bookIds.size} books (read ${fmtAge(Date.now() - filter.at)})`);
     } else if (!pageScriptAlive()) {
-      // A stored read error may be hours old; without a heartbeat the tab is
-      // closed, or still running a script from before the extension reloaded.
-      parts.push("no books filter yet: showing all live books (no Unabated odds tab is running the capture script; open one, or reload it if the extension was just reloaded)");
+      parts.push(`books: all ${live} live (no Unabated odds tab is running the capture script; open or reload one to default to your selection, or tick books below)`);
     } else if (filter && filter.lastError) {
-      parts.push(`no books filter yet: showing all live books (page read failed ${fmtAge(Date.now() - (filter.lastErrorAt || 0))}: ${filter.lastError})`);
+      parts.push(`books: all ${live} live (Unabated selection unreadable ${fmtAge(Date.now() - (filter.lastErrorAt || 0))}: ${filter.lastError})`);
     } else {
-      parts.push("no books filter yet: showing all live books (waiting for the Unabated tab's first read)");
+      parts.push(`books: all ${live} live (waiting for the Unabated tab's first read)`);
     }
-    if (effective.betTypeIds) {
-      parts.push(`bet types: ${Array.from(effective.betTypeIds).map((id) => feed.BET_TYPES[id]).join("/")}`);
-    } else if (effective.fresh && filter.betTypeReason) {
-      parts.push(`bet-type filter unreadable (${filter.betTypeReason}); showing ML/spread/total`);
-    } else {
-      parts.push("ML/spread/total");
-    }
-    if (effective.fresh && filter.lastError && effective.bookIds) parts.push(`latest page read failed: ${filter.lastError}`);
+    parts.push(`bets: ${Array.from(effective.betTypeIds).map((id) => feed.BET_TYPES[id]).join("/") || "none"}`);
     return parts.join(" · ");
   }
+
+  // ---- books checkboxes ----------------------------------------------------
+
+  let booksListSignature = null;
+
+  // Rebuild the checkbox list only when the set of live books changes (a
+  // resync), otherwise just sync the ticks, so a click never loses its target.
+  function renderBooksList(effective) {
+    const books = liveBooks();
+    const signature = books.map((book) => book.id).join(",");
+    if (signature !== booksListSignature) {
+      booksListSignature = signature;
+      view.edgesBooks.replaceChildren(...books.map((book) => {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.dataset.book = String(book.id);
+        label.append(input, ` ${book.name}`);
+        label.title = book.name;
+        return label;
+      }));
+    }
+    for (const input of view.edgesBooks.querySelectorAll("input")) {
+      const id = Number(input.dataset.book);
+      input.checked = effective.bookIds ? effective.bookIds.has(id) : true;
+    }
+    const count = effective.bookIds ? effective.bookIds.size : books.length;
+    const source = effective.mode === "custom" ? "your ticks" : effective.mode === "unabated" ? "Unabated selection" : "all live";
+    view.edgesBooksMode.textContent = `${count} of ${books.length} (${source})`;
+    view.booksUnabated.disabled = !unabatedSelection();
+  }
+
+  function setBookIds(bookIds) {
+    state.edgeSettings = { ...state.edgeSettings, bookIds };
+    chrome.storage.local.set({ edges: state.edgeSettings });
+    renderEdges();
+  }
+
+  view.edgesBooks.addEventListener("change", () => {
+    const ticked = Array.from(view.edgesBooks.querySelectorAll("input:checked")).map((input) => Number(input.dataset.book));
+    setBookIds(ticked);
+  });
+  view.booksUnabated.addEventListener("click", () => setBookIds(null));
+  view.booksAll.addEventListener("click", () => setBookIds(liveBooks().map((book) => book.id)));
+  view.booksNone.addEventListener("click", () => setBookIds([]));
 
   function stakeFor(row) {
     if (row.edgePct == null) return null;
@@ -358,7 +415,7 @@
     const rows = feed.selectEdges(scannerState, {
       minEdge: settings.minEdgePct / 100,
       periods: new Set(settings.periods),
-      betTypes: effective.betTypeIds || new Set([1, 2, 3]),
+      betTypes: effective.betTypeIds,
       bookIds: effective.bookIds,
       now: Date.now(),
       maxLineAgeMs: settings.maxLineAgeHours * 3600 * 1000,
@@ -441,8 +498,8 @@
       return;
     }
     const names = Array.isArray(filter.bookIds) ? filter.bookIds.map(bookNameOf).join(", ") : "none";
-    view.edgesFilterDebug.textContent = `Books in filter: ${names}\n\n` +
-      JSON.stringify({ betTypeIds: filter.betTypeIds, betTypeReason: filter.betTypeReason, lastError: filter.lastError, debug: filter.debug }, null, 1);
+    view.edgesFilterDebug.textContent = `Unabated selection as read from the tab: ${names}\n\n` +
+      JSON.stringify({ lastError: filter.lastError, debug: filter.debug }, null, 1);
   }
 
   view.edgesFilter.addEventListener("click", () => {
@@ -453,7 +510,9 @@
   function renderEdges() {
     const rows = currentEdgeRows();
     renderEdgesStatus(rows);
-    view.edgesFilter.textContent = describeFilter(effectiveFilter());
+    const effective = effectiveFilter();
+    view.edgesFilter.textContent = describeFilter(effective);
+    renderBooksList(effective);
     renderFilterDebug();
     view.edgesList.replaceChildren(...rows.slice(0, MAX_EDGE_ROWS).map(renderEdgeRow));
     const status = scannerStatus;
@@ -596,7 +655,7 @@
     return feed.selectEdges(scannerState, {
       minEdge: state.alertSettings.minEdgePct / 100,
       periods: new Set(state.edgeSettings.periods),
-      betTypes: effective.betTypeIds || new Set([1, 2, 3]),
+      betTypes: effective.betTypeIds,
       bookIds: effective.bookIds,
       now: Date.now(),
       maxLineAgeMs: state.edgeSettings.maxLineAgeHours * 3600 * 1000,
@@ -701,12 +760,14 @@
   function readEdgeSettingInputs() {
     const leagues = Array.from(view.edgesSports.querySelectorAll("input:checked")).flatMap((input) => feed.leagueIdsOfSport(input.dataset.sport));
     const periods = Array.from(view.edgesPeriods.querySelectorAll("input:checked")).map((input) => Number(input.dataset.period));
+    const betTypes = Array.from(view.edgesBetTypes.querySelectorAll("input:checked")).map((input) => Number(input.dataset.bettype));
     const minEdgePct = Number(view.edgesMin.value);
     const maxLineAgeHours = Number(view.edgesMaxAge.value);
     if (!Number.isFinite(minEdgePct) || minEdgePct < 0) return { error: "Minimum edge must be zero or more." };
     if (!Number.isFinite(maxLineAgeHours) || maxLineAgeHours <= 0) return { error: "Max line age must be above zero hours." };
     if (!periods.length) return { error: "Pick at least one period." };
-    return { settings: { leagues, periods, minEdgePct, maxLineAgeHours, sortBy: view.edgesSort.value } };
+    if (!betTypes.length) return { error: "Pick at least one bet type." };
+    return { settings: { ...state.edgeSettings, leagues, periods, betTypes, minEdgePct, maxLineAgeHours, sortBy: view.edgesSort.value } };
   }
 
   function fillEdgeSettingInputs() {
@@ -715,6 +776,7 @@
       input.checked = feed.leagueIdsOfSport(input.dataset.sport).some((id) => settings.leagues.includes(id));
     }
     for (const input of view.edgesPeriods.querySelectorAll("input")) input.checked = settings.periods.includes(Number(input.dataset.period));
+    for (const input of view.edgesBetTypes.querySelectorAll("input")) input.checked = settings.betTypes.includes(Number(input.dataset.bettype));
     view.edgesMin.value = settings.minEdgePct;
     view.edgesMaxAge.value = settings.maxLineAgeHours;
     view.edgesSort.value = settings.sortBy;
@@ -739,6 +801,8 @@
     if (!stored || typeof stored !== "object") return base;
     if (Array.isArray(stored.leagues)) base.leagues = stored.leagues.filter((id) => feed.LEAGUES[id]);
     if (Array.isArray(stored.periods) && stored.periods.length) base.periods = stored.periods.filter((id) => feed.PERIODS[id]);
+    if (Array.isArray(stored.betTypes) && stored.betTypes.length) base.betTypes = stored.betTypes.filter((id) => feed.BET_TYPES[id]);
+    if (Array.isArray(stored.bookIds)) base.bookIds = stored.bookIds.filter((id) => Number.isInteger(id));
     if (typeof stored.minEdgePct === "number" && stored.minEdgePct >= 0) base.minEdgePct = stored.minEdgePct;
     if (typeof stored.maxLineAgeHours === "number" && stored.maxLineAgeHours > 0) base.maxLineAgeHours = stored.maxLineAgeHours;
     if (["edge", "stake", "start"].includes(stored.sortBy)) base.sortBy = stored.sortBy;
@@ -824,6 +888,7 @@
 
   view.edgesSports.addEventListener("change", onEdgeSettingsInput);
   view.edgesPeriods.addEventListener("change", onEdgeSettingsInput);
+  view.edgesBetTypes.addEventListener("change", onEdgeSettingsInput);
   view.edgesMin.addEventListener("input", onEdgeSettingsInput);
   view.edgesMaxAge.addEventListener("input", onEdgeSettingsInput);
   view.edgesSort.addEventListener("change", onEdgeSettingsInput);

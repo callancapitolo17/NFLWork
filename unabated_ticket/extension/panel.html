@@ -52,7 +52,7 @@
   <section id="tab-edges" hidden>
     <div id="edges-error" class="warning bad" hidden></div>
     <div id="edges-status" class="muted"></div>
-    <div id="edges-filter" class="muted" title="Click to show what the filter was read from"></div>
+    <div id="edges-filter" class="muted" title="Click to show what the Unabated selection was read from"></div>
     <pre id="edges-filter-debug" class="muted debug" hidden></pre>
     <div id="edges-locate" class="muted" hidden></div>
 
@@ -69,6 +69,26 @@
         <span class="control-label">Periods</span>
         <label><input type="checkbox" data-period="1"> Full game</label>
         <label><input type="checkbox" data-period="2"> 1st half</label>
+      </div>
+      <div class="control-row" id="edges-bettypes">
+        <span class="control-label">Bets</span>
+        <label><input type="checkbox" data-bettype="1"> Moneyline</label>
+        <label><input type="checkbox" data-bettype="2"> Spread</label>
+        <label><input type="checkbox" data-bettype="3"> Total</label>
+      </div>
+      <div class="control-row">
+        <span class="control-label">Books</span>
+        <details id="edges-books-dropdown" class="dropdown">
+          <summary id="edges-books-mode">Books</summary>
+          <div class="dropdown-panel">
+            <div class="dropdown-actions">
+              <button type="button" id="books-unabated" class="small">My Unabated selection</button>
+              <button type="button" id="books-all" class="small">All live</button>
+              <button type="button" id="books-none" class="small">None</button>
+            </div>
+            <div id="edges-books" class="books-list"></div>
+          </div>
+        </details>
       </div>
       <div class="control-row">
         <label class="control-inline">Min edge % <input id="edges-min" type="number" min="0" max="50" step="0.1"></label>

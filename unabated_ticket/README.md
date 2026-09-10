@@ -144,9 +144,9 @@ is a real edge, can be told from a dead one. Rows carry the same wording as
 the ticket, the price as American plus cents (exchange cents from
 `sourcePrice`), liquidity for exchanges, time to start, and the stake from
 `kellyStakeFromEdge` with the panel's bankroll and multiplier. Sort by edge,
-stake or start time. Settings (sports, periods, minimum edge, max line
-age, sort) persist in `chrome.storage.local` under `edges` (as league ids;
-a sport checkbox toggles all of its leagues).
+stake or start time. Settings (sports, periods, bets, books, minimum edge,
+max line age, sort) persist in `chrome.storage.local` under `edges` (sports
+as league ids; a sport checkbox toggles all of its leagues).
 
 Leagues come from `feed.LEAGUES` (ids probed 1–70 on 2026-09-10, labels
 read off team names). Tennis (ATP 9, WTA 10) and combat (22) are not listed:
@@ -160,17 +160,18 @@ effect. A league that fails to load is named in a red banner while the rest
 keep working; if every league fails the tab says **feed unavailable** rather
 than showing an empty list.
 
-**Books filter.** Your Unabated book selection lives in the page's
-`context.userSettings.gameOdds` (entries with `isUnavailable === false`) and
-the selected bet types under localStorage `oddsFilterContext:preferences`.
-`page.js` publishes both every 10 s while an Unabated odds tab is open;
-`content.js` stores them as `booksFilter`. Until one has been published the
-header says **no books filter yet: showing all live books**. A failed read
-keeps the last good filter and reports the error. The bet-type shape was
-never seen logged in (it needs a premium session), so an unreadable one is
-reported in the header and the list falls back to ML/spread/total — check
-the tab's console line `[unabated-ticket] books filter` once and fix
-`selectedBetTypeIdsOf` in `page.js` if the ids are somewhere else.
+**Books and bets.** The filter box has a **Books** dropdown (every live
+book in the feed, multi-select, with "My Unabated selection" / "All live" /
+"None") and **Bets** checkboxes (moneyline / spread / total). Until you
+tick a book yourself the list follows the selection `page.js` reads off
+your open Unabated odds tab (`context.userSettings.gameOdds`, published
+every 10 s, stored as `booksFilter`); the summary says which source is in
+effect, and the header line under the status explains it. Click that
+header line to see the selection as read from the tab and the raw fields
+it came from (a diagnostic; on 2026-09-10 the `isUnavailable` flag gave 33
+books where the screen showed ~12, so the flag may still need adjusting —
+your own ticks always win). Settings persist under `edges` (`bookIds` null
+= follow Unabated).
 
 **Row click.** Focuses the Unabated tab showing that league (navigates an
 existing Unabated tab, or opens one, when none does), then `page.js` finds
@@ -250,14 +251,12 @@ tab and see "Not watching".
   panel was hidden for minutes; the scanner reloads the snapshots by
   itself. Persistent repeats mean the cursor format changed
   (`feed.cursorFromDate`).
-- **Edges: "no books filter yet … no Unabated odds tab is running the
-  capture script"**: open an odds tab, or reload the one you have — after an
-  extension reload the script already injected in an open tab is dead until
-  the tab reloads.
-- **Edges: "no books filter yet … page read failed"** with an Unabated tab
-  open: the tab's console line `[unabated-ticket] books filter` shows the
-  read error; `userSettings.gameOdds` moved. Until fixed the list shows all
-  live books.
+- **Edges: "no Unabated odds tab is running the capture script"**: open an
+  odds tab, or reload the one you have — after an extension reload the
+  script already injected in an open tab is dead until the tab reloads.
+- **Edges: "books: all N live (Unabated selection unreadable …)"** with an
+  Unabated tab open: click that line for the raw fields; `userSettings.gameOdds`
+  moved. Tick your books in the Books dropdown meanwhile.
 - **Edges row click: "row is not on the grid"**: the Unabated tab's own
   bet-type or period filter hides that row, or the game left the board.
 - **No notifications**: they only fire while the panel is open and the
