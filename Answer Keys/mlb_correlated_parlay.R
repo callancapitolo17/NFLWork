@@ -606,9 +606,17 @@ filter_sgp_odds_for_blend <- function(sgp_odds, max_age_min = SGP_ODDS_MAX_AGE_M
   # June ProphetX row for the same matchup would join to tonight's game.
   fetched_at <- as.POSIXct(format(sgp_odds$fetch_time), tz = Sys.timezone())
   age_min <- as.numeric(difftime(Sys.time(), fetched_at, units = "mins"))
-  stale <- is.na(age_min) | age_min > max_age_min
-  if (any(stale)) {
-    cat(sprintf("  Dropping %d SGP rows older than %d min\n", sum(stale), max_age_min))
+  # A fetch_time in the future means the writer stored a different clock
+  # convention (e.g. UTC). Fail closed instead of passing rows of unknown age.
+  future_dated <- !is.na(age_min) & age_min < -1
+  if (any(future_dated)) {
+    cat(sprintf("  Dropping %d SGP rows with fetch_time in the future (clock convention mismatch)\n",
+                sum(future_dated)))
+  }
+  stale <- is.na(age_min) | age_min > max_age_min | future_dated
+  if (any(stale & !future_dated)) {
+    cat(sprintf("  Dropping %d SGP rows older than %d min\n",
+                sum(stale & !future_dated), max_age_min))
   }
   sgp_odds <- sgp_odds[!stale, ]
   if (nrow(sgp_odds) == 0) return(empty)
