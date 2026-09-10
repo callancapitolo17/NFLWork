@@ -14,7 +14,9 @@
   "use strict";
 
   const DEFAULT_SETTINGS = { bankroll: 30000, multiplier: 0.25 };
-  const DEFAULT_EDGE_SETTINGS = { leagues: [1, 2, 5], periods: [1], minEdgePct: 1.0, sortBy: "edge" };
+  // maxLineAgeHours: a "live" book's line unchanged for a week is a dead feed
+  // (live 2026-09-10: Buckeye -110 on a 44.5 total, 96 days old, "+36.67%").
+  const DEFAULT_EDGE_SETTINGS = { leagues: [1, 2, 5], periods: [1], minEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge" };
   // Off until the list has been watched for a session (plan, 2026-09-10).
   const DEFAULT_ALERT_SETTINGS = { enabled: false, minEdgePct: 2.0 };
   const ALERT_EVENT_COOLDOWN_MS = 5 * 60 * 1000;
@@ -41,7 +43,7 @@
     pageStatus: el("page-status"),
     tabs: el("tabs"), tabTicket: el("tab-ticket"), tabEdges: el("tab-edges"), edgesCount: el("edges-count"),
     edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesLocate: el("edges-locate"),
-    edgesLeagues: el("edges-leagues"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesSort: el("edges-sort"),
+    edgesLeagues: el("edges-leagues"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
     alertsEnabled: el("alerts-enabled"), alertsMin: el("alerts-min"),
   };
@@ -279,6 +281,16 @@
     return `in ${Math.round(mins / 1440)}d`;
   }
 
+  // How long ago the book last changed this line; the reader's stale-line tell.
+  function fmtLineAge(modifiedMs) {
+    if (modifiedMs == null) return "line age unknown";
+    const ms = Date.now() - modifiedMs;
+    if (ms < 60 * 1000) return "line just changed";
+    if (ms < 60 * 60 * 1000) return `line ${Math.round(ms / 60000)}m old`;
+    if (ms < 48 * 60 * 60 * 1000) return `line ${Math.round(ms / 3600000)}h old`;
+    return `line ${Math.round(ms / 86400000)}d old`;
+  }
+
   function fmtLiquidity(value) {
     return value == null ? "" : `liq ${value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}`;
   }
@@ -336,6 +348,7 @@
       betTypes: effective.betTypeIds || new Set([1, 2, 3]),
       bookIds: effective.bookIds,
       now: Date.now(),
+      maxLineAgeMs: settings.maxLineAgeHours * 3600 * 1000,
     }).map((row) => ({ ...row, stake: stakeFor(row) }));
     if (settings.sortBy === "stake") rows.sort((a, b) => (b.stake ?? -1) - (a.stake ?? -1) || b.edgePct - a.edgePct);
     if (settings.sortBy === "start") rows.sort((a, b) => a.eventStartMs - b.eventStartMs || b.edgePct - a.edgePct);
@@ -370,7 +383,7 @@
     book.textContent = `${row.book.name} ${fmtPriceBoth(asBookLine(row.price, row.sourceFormat, row.sourcePrice))}`;
     const liquidity = document.createElement("span");
     liquidity.className = "muted";
-    liquidity.textContent = fmtLiquidity(row.liquidity);
+    liquidity.textContent = [fmtLineAge(row.modifiedMs), fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ");
     const stake = document.createElement("span");
     stake.className = "edge-stake";
     stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
@@ -546,6 +559,7 @@
       betTypes: effective.betTypeIds || new Set([1, 2, 3]),
       bookIds: effective.bookIds,
       now: Date.now(),
+      maxLineAgeMs: state.edgeSettings.maxLineAgeHours * 3600 * 1000,
     });
   }
 
@@ -638,9 +652,11 @@
     const leagues = Array.from(view.edgesLeagues.querySelectorAll("input:checked")).map((input) => Number(input.dataset.league));
     const periods = Array.from(view.edgesPeriods.querySelectorAll("input:checked")).map((input) => Number(input.dataset.period));
     const minEdgePct = Number(view.edgesMin.value);
+    const maxLineAgeHours = Number(view.edgesMaxAge.value);
     if (!Number.isFinite(minEdgePct) || minEdgePct < 0) return { error: "Minimum edge must be zero or more." };
+    if (!Number.isFinite(maxLineAgeHours) || maxLineAgeHours <= 0) return { error: "Max line age must be above zero hours." };
     if (!periods.length) return { error: "Pick at least one period." };
-    return { settings: { leagues, periods, minEdgePct, sortBy: view.edgesSort.value } };
+    return { settings: { leagues, periods, minEdgePct, maxLineAgeHours, sortBy: view.edgesSort.value } };
   }
 
   function fillEdgeSettingInputs() {
@@ -648,6 +664,7 @@
     for (const input of view.edgesLeagues.querySelectorAll("input")) input.checked = settings.leagues.includes(Number(input.dataset.league));
     for (const input of view.edgesPeriods.querySelectorAll("input")) input.checked = settings.periods.includes(Number(input.dataset.period));
     view.edgesMin.value = settings.minEdgePct;
+    view.edgesMaxAge.value = settings.maxLineAgeHours;
     view.edgesSort.value = settings.sortBy;
   }
 
@@ -671,6 +688,7 @@
     if (Array.isArray(stored.leagues)) base.leagues = stored.leagues.filter((id) => feed.LEAGUES[id]);
     if (Array.isArray(stored.periods) && stored.periods.length) base.periods = stored.periods.filter((id) => feed.PERIODS[id]);
     if (typeof stored.minEdgePct === "number" && stored.minEdgePct >= 0) base.minEdgePct = stored.minEdgePct;
+    if (typeof stored.maxLineAgeHours === "number" && stored.maxLineAgeHours > 0) base.maxLineAgeHours = stored.maxLineAgeHours;
     if (["edge", "stake", "start"].includes(stored.sortBy)) base.sortBy = stored.sortBy;
     return base;
   }
@@ -754,6 +772,7 @@
   view.edgesLeagues.addEventListener("change", onEdgeSettingsInput);
   view.edgesPeriods.addEventListener("change", onEdgeSettingsInput);
   view.edgesMin.addEventListener("input", onEdgeSettingsInput);
+  view.edgesMaxAge.addEventListener("input", onEdgeSettingsInput);
   view.edgesSort.addEventListener("change", onEdgeSettingsInput);
   view.alertsEnabled.addEventListener("change", onAlertSettingsInput);
   view.alertsMin.addEventListener("input", onAlertSettingsInput);

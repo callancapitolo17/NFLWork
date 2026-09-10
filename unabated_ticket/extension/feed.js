@@ -174,13 +174,18 @@
         hasLiquidity: source.hasLiquidity === true,
       };
     }
+    let leagueKeysSeen = 0;
     for (const [leagueKey, rows] of Object.entries(json.odds)) {
       const parsed = parseLeagueKey(leagueKey);
-      if (!parsed || parsed.leagueId !== leagueId || parsed.phase !== "pregame" || !Array.isArray(rows)) continue;
+      if (!parsed || parsed.leagueId !== leagueId) continue;
+      leagueKeysSeen += 1;
+      if (parsed.phase !== "pregame" || !Array.isArray(rows)) continue;
       for (const row of rows) ingestSnapshotRow(state, row, leagueId, parsed.periodTypeId, counts);
     }
-    if (counts.lines === 0) {
-      throw new Error(`snapshot: no game lines found for league ${leagueId} (rows seen: ${counts.rows + counts.skippedRows})`);
+    // No lg<id> key at all is the wrong file or a schema change; keys with no
+    // game rows is an empty slate (off-season) and must not read as a failure.
+    if (leagueKeysSeen === 0) {
+      throw new Error(`snapshot: no lg${leagueId} odds keys in the file (keys: ${Object.keys(json.odds).slice(0, 5).join(", ") || "none"})`);
     }
     state.counts = counts;
     return state;
@@ -371,11 +376,17 @@
       liquidity: line.liquidity,
       marketId: line.marketId,
       isBlurred: line.isBlurred,
+      // When the book last changed this line (feed's modifiedOn); null if unknown.
+      modifiedMs: parseEventStart(line.modifiedOn),
     };
   }
 
   // Lines worth listing: on the board, edge known and >= minEdge (a fraction),
-  // period/bet type enabled, book allowed, game not started. Sorted by edge.
+  // period/bet type enabled, book allowed, game not started, and — when
+  // maxLineAgeMs is set — changed by the book within that window (a 96-day-old
+  // line at a "live" book is a dead feed, and its 36% "edge" is not bettable;
+  // a line with no modifiedOn is excluded too, since its age is unknowable).
+  // Sorted by edge.
   function selectEdges(state, options) {
     const opts = options || {};
     const minEdge = typeof opts.minEdge === "number" ? opts.minEdge : 0.01;
@@ -383,6 +394,7 @@
     const betTypes = opts.betTypes instanceof Set ? opts.betTypes : new Set([1, 2, 3]);
     const bookIds = opts.bookIds instanceof Set ? opts.bookIds : null;
     const now = typeof opts.now === "number" ? opts.now : Date.now();
+    const maxLineAgeMs = typeof opts.maxLineAgeMs === "number" && opts.maxLineAgeMs > 0 ? opts.maxLineAgeMs : null;
     const rows = [];
     for (const line of Object.values(state.lines)) {
       if (line.bookId === UNABATED_LINE_BOOK_ID) continue;
@@ -394,6 +406,12 @@
       const event = state.events[line.eventId];
       if (!event || event.eventStart == null || event.eventStart <= now) continue;
       if (line.betTypeId !== 1 && line.points == null) continue;
+      // Not a valid American price: nothing downstream (cents, Kelly) can use it.
+      if (Math.abs(line.price) < 100) continue;
+      if (maxLineAgeMs != null) {
+        const modifiedMs = parseEventStart(line.modifiedOn);
+        if (modifiedMs == null || now - modifiedMs > maxLineAgeMs) continue;
+      }
       rows.push(describeLine(line, state));
     }
     rows.sort((a, b) => b.edgePct - a.edgePct || a.eventStartMs - b.eventStartMs);

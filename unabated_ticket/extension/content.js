@@ -98,9 +98,13 @@
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === "local" && changes.locate && changes.locate.newValue) forwardLocate(changes.locate.newValue);
     });
-    chrome.storage.local.get("locate", (stored) => {
+    chrome.storage.local.get(["locate", "locateResult"], (stored) => {
       if (chrome.runtime.lastError) return;
-      forwardLocate(stored.locate);
+      const locate = stored.locate;
+      const result = stored.locateResult;
+      // Already answered (a plain reload within the max age): do not flash again.
+      if (locate && result && result.key === locate.key && result.at >= locate.at) return;
+      forwardLocate(locate);
     });
   } catch (_error) {
     // Extension context invalidated.

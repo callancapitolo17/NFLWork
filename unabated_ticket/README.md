@@ -130,12 +130,18 @@ Parsing (`extension/feed.js`, node-tested on real slices under
 
 A line shows when: it is on the board (`statusId 1`), its book is allowed
 (see filter), the bet type and period are enabled, `ge` is at or above the
-minimum edge, and the game has not started. Rows carry the same wording as
+minimum edge, the game has not started, and the book changed the line
+within **Max line age** (default 168 h). That last one matters: on
+2026-09-10 the biggest "edges" on the live feed were a 96-day-old Buckeye
+-110 on a 44.5 total (+36.67%) and a 24-day-old SouthPoint Oklahoma +2 —
+dead feeds at books Unabated still flags active. Every row prints the
+line's age ("line 12d old") so a genuinely stale line at a live book, which
+is a real edge, can be told from a dead one. Rows carry the same wording as
 the ticket, the price as American plus cents (exchange cents from
 `sourcePrice`), liquidity for exchanges, time to start, and the stake from
 `kellyStakeFromEdge` with the panel's bankroll and multiplier. Sort by edge,
-stake or start time. Settings (leagues, periods, minimum edge, sort) persist
-in `chrome.storage.local` under `edges`.
+stake or start time. Settings (leagues, periods, minimum edge, max line
+age, sort) persist in `chrome.storage.local` under `edges`.
 
 The header shows leagues loaded, lines held, update age, and the filter in
 effect. A league that fails to load is named in a red banner while the rest

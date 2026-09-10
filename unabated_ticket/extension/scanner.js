@@ -260,7 +260,6 @@
       start, stop, pause, resume, tick, resync,
       getState: () => state,
       getStatus: () => ({ ...status }),
-      constants: { POLL_MS, RESYNC_MS, FULL_PAGE_BATCHES, CURSOR_MAX_AGE_MS, PAUSE_RESYNC_MS },
     };
   }
 

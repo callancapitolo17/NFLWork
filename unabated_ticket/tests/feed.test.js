@@ -68,9 +68,30 @@ test("snapshot line carries ge, bacr, sourcePrice, liquidity and the side key", 
   assert.equal(offBoard.ge, null);
 });
 
-test("snapshot for a league the file does not carry fails loudly", () => {
-  assert.throws(() => feed.parseSnapshot(snapshotJson(), { leagueId: 2 }), /no game lines found for league 2/);
+test("snapshot for a league the file does not carry fails loudly; an empty slate does not", () => {
+  assert.throws(() => feed.parseSnapshot(snapshotJson(), { leagueId: 2 }), /no lg2 odds keys in the file/);
   assert.throws(() => feed.parseSnapshot({ nope: true }, { leagueId: 1 }), /expected an object with an `odds` map/);
+  const offSeason = feed.parseSnapshot({ odds: { "lg5:pt1:pregame": [] }, teams: {}, marketSources: [] }, { leagueId: 5 });
+  assert.equal(feed.countLines(offSeason), 0);
+  assert.deepEqual(offSeason.leagues, [5]);
+});
+
+test("selectEdges: maxLineAgeMs drops lines the book has not touched, and lines with no modifiedOn", () => {
+  const state = loadedState();
+  const DAY = 86400 * 1000;
+  // The three edges were last changed Aug 29-30; kickoff-1h is Sep 13.
+  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, maxLineAgeMs: 7 * DAY }).length, 0);
+  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, maxLineAgeMs: 30 * DAY }).length, 3);
+  const row = feed.selectEdges(state, { now: BEFORE_KICKOFF })[0];
+  assert.equal(row.modifiedMs, Date.parse("2026-08-29T14:40:50.899Z"));
+  state.lines["289357360:ms99:si0:tid6"].modifiedOn = null;
+  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, maxLineAgeMs: 30 * DAY }).length, 2);
+});
+
+test("selectEdges skips a line whose price is not a valid American number", () => {
+  const state = loadedState();
+  state.lines["289357360:ms99:si0:tid6"].price = -95;
+  assert.ok(!feed.selectEdges(state, { now: BEFORE_KICKOFF }).some((r) => r.key === "289357360:ms99:si0:tid6"));
 });
 
 test("selectEdges: live books, full game, >= 1%, sorted by edge, ticket-shaped rows", () => {
