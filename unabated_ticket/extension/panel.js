@@ -302,6 +302,11 @@
     return value == null ? "" : `liq ${value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}`;
   }
 
+  function pageScriptAlive() {
+    const ready = state.pageReady;
+    return Boolean(ready && Date.now() - ready.at < PAGE_READY_STALE_MS);
+  }
+
   function liveBooks() {
     if (!scannerState) return [];
     return Object.values(scannerState.books).filter((book) => book.isLive && book.id !== feed.UNABATED_LINE_BOOK_ID)
