@@ -217,3 +217,160 @@ test("league table: every entry has a label, an odds-screen path and a sport; sp
   assert.ok(feed.leagueIdsOfSport("soccer").includes(28));
   assert.equal(feed.leagueIdsOfSport("tennis").length, 0);
 });
+
+// ---- alternate lines (issue #113) --------------------------------------------
+// The fixture's alternateLines are real entries from the live NFL file of
+// 2026-09-11 for the same event, slimmed to the fields the parser reads, with
+// two deliberate edits: a null entry in Kalshi's away-spread ladder (nulls do
+// appear live) and nothing else. Every alt's modifiedOn is the feed's
+// "0001-01-01T00:00:00" sentinel, exactly as served.
+
+const ALT_CHANGED_MS = 1789147708947; // Kalshi Bears -20.5 sequenceNumber = 2026-09-11T17:28:28.947Z
+
+test("snapshot: alternateLines expand into alt-keyed lines under their main line", () => {
+  const state = feed.parseSnapshot(snapshotJson(), { leagueId: NFL });
+  assert.equal(state.counts.lines, 62);
+  assert.equal(state.counts.altLines, 27);
+  // 1 null entry + 3 alts sitting on their main line's own points (Novig
+  // -2.5 / 2.5, Kalshi 46.5) + 5 alts on rows the parser never lists.
+  assert.equal(state.counts.skippedAltLines, 9);
+  assert.equal(feed.countLines(state), 62);
+  assert.equal(feed.countAltLines(state), 27);
+  const alt = state.lines["289357360:ms105:si0:tid6:alt-20.5"];
+  assert.equal(alt.isAlt, true);
+  assert.equal(alt.mainKey, "289357360:ms105:si0:tid6");
+  assert.equal(alt.mainPoints, -2.5);
+  assert.equal(alt.points, -20.5);
+  assert.equal(alt.price, 944);
+  assert.equal(alt.ge, 0.0642);
+  assert.equal(alt.bacr, 881);
+  assert.equal(alt.sourceFormat, 4);
+  assert.equal(alt.sourcePrice, 0.095733);
+  assert.equal(alt.liquidity, 264.51);
+  assert.equal(alt.betTypeId, 2);
+  assert.equal(alt.sideIndex, 0);
+  assert.equal(state.lines["289357360:ms105:si0:tid6"].isAlt, false);
+  // No alt sits on the main line's own points, and moneylines carry none.
+  assert.equal(state.lines["289357360:ms89:si0:tid6:alt-2.5"], undefined);
+  assert.ok(!Object.values(state.lines).some((l) => l.isAlt && l.betTypeId === 1));
+});
+
+test("an alt's change time is its sequenceNumber; the sentinel modifiedOn is not a date", () => {
+  const state = feed.parseSnapshot(snapshotJson(), { leagueId: NFL });
+  const alt = state.lines["289357360:ms105:si0:tid6:alt-20.5"];
+  assert.equal(alt.modifiedOn, "0001-01-01T00:00:00");
+  assert.equal(feed.parseModifiedOn(alt.modifiedOn), null);
+  assert.equal(feed.lineChangedMs(alt), ALT_CHANGED_MS);
+  // A main line still reads modifiedOn only: a counter-sized sequence is never a clock.
+  const main = state.lines["289357360:ms105:si0:tid6"];
+  assert.equal(feed.lineChangedMs(main), Date.parse("2026-09-10T15:39:34.824Z"));
+  assert.equal(feed.lineChangedMs({ ...main, modifiedOn: null }), null);
+  assert.equal(feed.lineChangedMs({ ...alt, sequenceNumber: 12345 }), null);
+  assert.equal(feed.lineChangedMs({ ...alt, sequenceNumber: null }), null);
+});
+
+test("selectEdges lists no alt unless includeAlts is on", () => {
+  const state = loadedState();
+  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF }).some((r) => r.isAlt), false);
+  const rows = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true });
+  const alts = rows.filter((r) => r.isAlt);
+  assert.equal(rows.length - alts.length, 3); // the three main-line edges are still there
+  assert.deepEqual(alts.slice(0, 4).map((r) => [r.book.name, r.sideLabel, r.price, r.edgePct, r.mainPoints]), [
+    ["Kalshi", "Carolina Panthers -9.5", 625, 12.58, 2.5],
+    ["Kalshi", "Over 64.5", 840, 9.56, 46.5],
+    ["Kalshi", "Over 61.5", 573, 6.83, 46.5],
+    ["Kalshi", "Chicago Bears -20.5", 944, 6.42, -2.5],
+  ]);
+  assert.equal(alts.length, 16);
+  // Matchbook's Over 8.5 at +112 (ge 1.1193) is a dead feed: the book is not live.
+  assert.ok(!alts.some((r) => r.book.id === 52));
+  const top = alts[0];
+  assert.equal(top.isAlt, true);
+  assert.equal(top.key, "289357357:ms105:si1:tid5:alt-9.5");
+  assert.equal(top.marketId, 289357357);
+  assert.equal(top.modifiedMs, 1789147708929);
+  assert.equal(rows.find((r) => !r.isAlt).mainPoints, null);
+});
+
+test("altMaxDistance keeps alts within N points of the book's main number", () => {
+  const state = loadedState();
+  const within7 = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 7 }).filter((r) => r.isAlt);
+  assert.deepEqual(within7.map((r) => [r.sideLabel, r.mainPoints]), [
+    ["Carolina Panthers -2.5", 2.5],
+    ["Carolina Panthers -4.5", 2.5],
+    ["Over 54.5", 47.5], // exactly 7 away is kept
+    ["Over 50.5", 47.5],
+    ["Chicago Bears -4.5", -2.5],
+    ["Chicago Bears -9.5", -2.5],
+  ]);
+  const within2 = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 2 }).filter((r) => r.isAlt);
+  assert.deepEqual(within2.map((r) => r.sideLabel), ["Chicago Bears -4.5"]);
+  // 0 or a non-number means no distance gate.
+  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 0 }).filter((r) => r.isAlt).length, 16);
+});
+
+test("altMinLiquidity drops thin exchange alts and leaves books with no liquidity figure alone", () => {
+  const state = loadedState();
+  const rows = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMinLiquidity: 100 }).filter((r) => r.isAlt);
+  assert.equal(rows.length, 14);
+  // Kalshi Panthers -9.5 ($35 resting) and Over 64.5 ($86) are gone; Novig's alts carry no liquidity and stay.
+  assert.ok(!rows.some((r) => r.key === "289357357:ms105:si1:tid5:alt-9.5"));
+  assert.ok(!rows.some((r) => r.key === "289357345:ms105:si0:tid6:alt64.5"));
+  assert.ok(rows.some((r) => r.key === "289357345:ms105:si0:tid6:alt61.5"));
+  assert.ok(rows.some((r) => r.key === "289357357:ms89:si1:tid5:alt-2.5"));
+});
+
+test("an alt is hidden while the main line sits on its number, and distance follows the moved main line", () => {
+  const state = loadedState();
+  const opts = { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 7 };
+  assert.ok(feed.selectEdges(state, opts).some((r) => r.key === "289357360:ms89:si0:tid6:alt-4.5"));
+  // Novig moves its Bears main line from -2.5 to -4.5 (a changes-stream update).
+  const main = state.lines["289357360:ms89:si0:tid6"];
+  feed.applyChanges(state, { lines: [{ ...main, points: -4.5, price: 130, sequenceNumber: main.sequenceNumber + 1, eventStart: null }] });
+  assert.equal(state.lines["289357360:ms89:si0:tid6"].points, -4.5);
+  const rows = feed.selectEdges(state, opts);
+  assert.ok(!rows.some((r) => r.key === "289357360:ms89:si0:tid6:alt-4.5"));
+  // -9.5 is now 5 from the main number; -13.5 (9 away) is still out; mainPoints reports the current main.
+  const nineHalf = rows.find((r) => r.key === "289357360:ms89:si0:tid6:alt-9.5");
+  assert.equal(nineHalf.mainPoints, -4.5);
+  assert.ok(!rows.some((r) => r.key === "289357360:ms89:si0:tid6:alt-13.5"));
+  // The stream never carries alts, so the alt itself is untouched.
+  assert.equal(state.lines["289357360:ms89:si0:tid6:alt-9.5"].price, 245);
+});
+
+test("maxLineAgeMs applies to alts through their sequenceNumber", () => {
+  const state = loadedState();
+  const DAY = 86400 * 1000;
+  // Alts changed 2026-09-11; kickoff-1h is 2026-09-13T16:00Z, so they are ~46h old.
+  const fresh = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, maxLineAgeMs: 3 * DAY }).filter((r) => r.isAlt);
+  assert.equal(fresh.length, 16);
+  const strict = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, maxLineAgeMs: DAY }).filter((r) => r.isAlt);
+  assert.equal(strict.length, 0);
+  state.lines["289357357:ms105:si1:tid5:alt-9.5"].sequenceNumber = null;
+  const unknowable = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, maxLineAgeMs: 3 * DAY }).filter((r) => r.isAlt);
+  assert.equal(unknowable.length, 15);
+  assert.ok(!unknowable.some((r) => r.key === "289357357:ms105:si1:tid5:alt-9.5"));
+});
+
+test("alt lines honour the same board, book, bet-type, period and price gates as main lines", () => {
+  const state = loadedState();
+  state.lines["289357357:ms105:si1:tid5:alt-9.5"].statusId = 2;
+  const rows = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true });
+  assert.ok(!rows.some((r) => r.key === "289357357:ms105:si1:tid5:alt-9.5"));
+  const totalsOnly = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, betTypes: new Set([3]) });
+  assert.ok(totalsOnly.every((r) => r.betType === "Total"));
+  assert.equal(totalsOnly.filter((r) => r.isAlt).length, 4);
+  const novigOnly = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, bookIds: new Set([89]) });
+  assert.ok(novigOnly.every((r) => r.book.id === 89));
+  assert.equal(feed.selectEdges(state, { now: KICKOFF_MS, includeAlts: true }).length, 0);
+});
+
+test("a ladder the book pulls is gone from the next snapshot parse", () => {
+  const first = feed.parseSnapshot(snapshotJson(), { leagueId: NFL });
+  const again = snapshotJson();
+  const spreadRow = again.odds["lg1:pt1:pregame"].find((row) => row.key === "pt1:pregame:bt2:e125807");
+  spreadRow.sides["si0:tid6"].ms105.alternateLines = [];
+  const second = feed.parseSnapshot(again, { leagueId: NFL });
+  assert.equal(feed.countAltLines(second), 24);
+  assert.equal(second.lines["289357360:ms105:si0:tid6:alt-20.5"], undefined);
+});
