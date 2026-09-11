@@ -44,6 +44,9 @@
     { maxBytes: Infinity, everyMs: 300 * 1000 },
   ];
   const UNKNOWN_SIZE_BYTES = 3 * 1024 * 1024;
+  // A snapshot regenerates every ~27s; a build older than this is a stale
+  // CDN copy (or an off-season league that stopped regenerating).
+  const STALE_BUILD_MS = 15 * 60 * 1000;
   // A changes response carries at most this many ~1.3s batches; a full page
   // means there is more to read right away.
   const FULL_PAGE_BATCHES = 7;
@@ -92,7 +95,8 @@
       eventCount: 0,
       cursor: null,
       loading: null, // {done, total} while snapshots are downloading
-      snapshotBuiltAt: null, // newest Last-Modified among loaded leagues (stale edge copies show here)
+      snapshotBuiltAt: null, // newest Last-Modified among loaded leagues
+      staleLeagues: [], // leagues whose Last-Modified is older than STALE_BUILD_MS (a stale edge copy, or an off-season file)
     };
     let failedLeagueRetryAt = 0;
     // Bumped by start(); a load that began under an older generation is discarded.
@@ -172,7 +176,6 @@
     async function loadSnapshots(leagueIds) {
       const startedUnder = generation;
       const fullLoad = leagueIds.length >= leagues.length;
-      const target = fullLoad ? feed.emptyState() : state;
       const ordered = loadOrder(leagueIds);
       // Progress counter only for a full load; a background refresh is silent.
       if (fullLoad) status.loading = { done: 0, total: ordered.length };
@@ -194,17 +197,15 @@
         if (startedUnder !== generation) return;
         delete errors[leagueId];
         loadedCount += 1;
-        leagueMeta[leagueId] = { loadedAt: now(), bytes: loaded.bytes };
+        leagueMeta[leagueId] = { loadedAt: now(), bytes: loaded.bytes, builtAt: loaded.builtAt };
         if (loaded.builtAt != null) {
           oldestBuild = oldestBuild == null ? loaded.builtAt : Math.min(oldestBuild, loaded.builtAt);
           status.snapshotBuiltAt = Math.max(status.snapshotBuiltAt || 0, loaded.builtAt);
         }
-        mergeInto(target, loaded.state);
-        if (fullLoad && target !== state) {
-          // First league of a full (re)load: switch to the fresh state now so
-          // the panel shows it, and the rest merge into it as they land.
-          state = target;
-        }
+        status.staleLeagues = leagues.filter((id) => leagueMeta[id] && leagueMeta[id].builtAt != null && now() - leagueMeta[id].builtAt > STALE_BUILD_MS);
+        // In place, full load or refresh alike: the list never collapses to
+        // one league while the others are still downloading.
+        mergeInto(state, loaded.state);
         status.leaguesLoaded = Array.from(new Set(state.leagues)).sort((a, b) => a - b);
         status.leagueErrors = { ...errors };
         if (status.loading) status.loading = { done: status.loading.done + 1, total: ordered.length };

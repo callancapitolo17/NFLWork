@@ -192,7 +192,10 @@
       const pts = ticket.current.points != null ? ` at ${fmtPoints(ticket.current.points)}` : "";
       messages.push(`Line moved: now ${fmtAmerican(ticket.current.price)}${pts} (captured ${fmtAmerican(ticket.price)}${ticket.points != null ? ` at ${fmtPoints(ticket.points)}` : ""}). Stake re-sized.`);
     }
-    if (!watcherIsLive(ticket, watchStatus)) {
+    if (!pageScriptAlive()) {
+      messages.push("No Unabated tab is running the capture script, so new clicks will not reach this panel. Open an odds tab, or reload the one you have.");
+      bad = true;
+    } else if (!watcherIsLive(ticket, watchStatus)) {
       const why = watchStatus && watchStatus.error ? `: ${watchStatus.error}` : "";
       messages.push(`Not watching the line${why}. Showing the captured price.`);
     }
@@ -496,7 +499,10 @@
       ? [`${status.leaguesLoaded.length} leagues (${loadedSports.map((sport) => feed.SPORTS[sport]).join(", ")})`]
       : status.leaguesLoaded.map((id) => (feed.LEAGUES[id] || { label: `league ${id}` }).label);
     // "built" is the newest snapshot's Last-Modified: minutes or hours here means a stale edge copy, not a slow poll.
-    const built = status.snapshotBuiltAt ? `snapshot built ${fmtAge(Date.now() - status.snapshotBuiltAt)}` : "no data yet";
+    const stale = status.staleLeagues && status.staleLeagues.length
+      ? ` (${status.staleLeagues.length} stale: ${status.staleLeagues.map((id) => (feed.LEAGUES[id] || { label: id }).label).join(", ")})`
+      : "";
+    const built = status.snapshotBuiltAt ? `snapshot built ${fmtAge(Date.now() - status.snapshotBuiltAt)}${stale}` : "no data yet";
     const updated = status.lastUpdateAt ? `${built} · stream ${fmtAge(Date.now() - status.lastUpdateAt)}` : built;
     const polled = status.lastPollAt ? ` · polled ${fmtAge(Date.now() - status.lastPollAt)}` : "";
     const loading = status.loading ? ` · loading ${status.loading.done}/${status.loading.total} leagues` : "";

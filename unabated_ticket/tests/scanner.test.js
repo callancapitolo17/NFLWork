@@ -188,6 +188,7 @@ test("a full load publishes each league as it lands, CFB last", async () => {
   await new Promise((resolve) => setImmediate(resolve));
   // NFL is in before CFB has finished downloading.
   assert.deepEqual(scanner.getStatus().leaguesLoaded, [1]);
+  assert.deepEqual(scanner.getStatus().staleLeagues, []);
   assert.equal(scanner.getStatus().lineCount, 62);
   assert.deepEqual(scanner.getStatus().loading, { done: 1, total: 2 });
   releaseCfb();
@@ -235,4 +236,36 @@ test("snapshot URLs carry a query that changes every 30s so CloudFront cannot se
   assert.equal(SNAPSHOT_URL(5, t), `${SNAPSHOT_BASE_URL(5)}?t=${Math.floor(t / 30000)}`);
   assert.equal(SNAPSHOT_URL(5, t + 29 * 1000), SNAPSHOT_URL(5, t));
   assert.notEqual(SNAPSHOT_URL(5, t + 30 * 1000), SNAPSHOT_URL(5, t));
+});
+
+test("a full resync keeps every league listed while the others re-download", async () => {
+  let releaseCfb = null;
+  const fetchImpl = fakeFetch({
+    [SNAPSHOT_BASE_URL(2)]: async () => {
+      if (releaseCfb) await new Promise((resolve) => { releaseCfb = resolve; });
+      // Same slice re-labelled as CFB with distinct market ids so its keys do not collide with NFL's.
+      return response({ body: fixture("v2_slice.json").replace(/lg1:/g, "lg2:").replace(/"marketId":(\d+)/g, '"marketId":9$1') });
+    },
+  });
+  const scanner = createScanner({ fetchImpl, now: () => NOW, timers: noTimers });
+  await scanner.start([1, 2]);
+  assert.deepEqual(scanner.getStatus().leaguesLoaded, [1, 2]);
+  assert.equal(scanner.getStatus().lineCount, 124);
+  releaseCfb = () => {};
+  const resync = scanner.resync();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  // NFL has re-landed, CFB is still downloading: both are still in the state.
+  assert.deepEqual(scanner.getStatus().leaguesLoaded, [1, 2]);
+  assert.equal(scanner.getStatus().lineCount, 124);
+  releaseCfb();
+  await resync;
+  assert.deepEqual(scanner.getStatus().leaguesLoaded, [1, 2]);
+});
+
+test("a league whose snapshot build is older than 15 min is reported stale", async () => {
+  const fetchImpl = fakeFetch();
+  const scanner = createScanner({ fetchImpl, now: () => NOW + 60 * 60 * 1000, timers: noTimers }); // snapshot built 1h before "now"
+  await scanner.start([1]);
+  assert.deepEqual(scanner.getStatus().staleLeagues, [1]);
 });
