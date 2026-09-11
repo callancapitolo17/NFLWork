@@ -14,7 +14,9 @@ side panel:
   the panel is open, with a stake per line, a click that jumps to the row on the
   Unabated tab, and optional Chrome notifications when a new line crosses
   your alert threshold. Issue #112; plan in
-  `docs/2026-09-10-unabated-edge-scanner-plan.md`.
+  `docs/2026-09-10-unabated-edge-scanner-plan.md`. Alternate spreads and
+  totals (every rung Unabated prices, not just the main number) list too
+  behind an **Include alt lines** toggle — issue #113, see *Alt lines*.
 
 One ticket at a time. No bet tracking, no overlay on the Unabated page, no
 rounding of the stake.
@@ -66,6 +68,12 @@ tab is running the capture script", reload the tab.
   new price and fair, and keeps the captured line for comparison. Off the
   board shows in red. If the Unabated tab is closed or navigated away the
   panel says **Not watching the line**.
+- A click on an **alternate-line cell** works the same way: its `marketLine`
+  is one of the main line's `alternateLines`, so the ticket carries
+  `watch.altPoints` and the watcher re-finds that rung by points inside
+  the ladder (a rung the book pulls shows as off the board). The screen
+  computes `edge` for main lines only, so an alt ticket is sized from the
+  feed's `ge` on the object — the same number.
 
 ## Stake
 
@@ -103,7 +111,7 @@ runs in the service worker.
 
 | Feed | URL | What it carries |
 |---|---|---|
-| Snapshot | `content.unabated.com/markets/v2/league/{id}/odds.json?t=<30 s bucket>` (29 team-sport leagues, `feed.LEAGUES`; ~18 MB gzip in total, CFB alone 9.7 MB, regenerated ~every 27 s). The query is a cache buster: CloudFront hands gzip clients the bare URL from an edge cache that was 6.5 h old on 2026-09-10 | every row's `sides[side][ms<book>]` line: `points, americanPrice, sourcePrice, sourceFormat, bacr, ge, liquidity, statusId, sequenceNumber`; `teams`; `marketSources` |
+| Snapshot | `content.unabated.com/markets/v2/league/{id}/odds.json?t=<30 s bucket>` (29 team-sport leagues, `feed.LEAGUES`; ~18 MB gzip in total, CFB alone 9.7 MB, regenerated ~every 27 s). The query is a cache buster: CloudFront hands gzip clients the bare URL from an edge cache that was 6.5 h old on 2026-09-10 | every row's `sides[side][ms<book>]` line: `points, americanPrice, sourcePrice, sourceFormat, bacr, ge, liquidity, statusId, sequenceNumber`, plus its `alternateLines[]` (same fields per rung); `teams`; `marketSources` |
 | Changes | `api-k.unabated.com/api/markets/changes/query[/{cursor}]` (~300 KB per 10 s) | the same fields per changed line under `gameOddsEvents[lg:pt:pregame][].gameOddsMarketSourcesLines[si:ms:an][bt]`, plus `sideKey` |
 
 `ge` is Unabated's edge as a fraction (0.0296 = +2.96%), the same number the
@@ -140,6 +148,54 @@ Parsing (`extension/feed.js`, node-tested on real slices under
 - Books list only when `isActive && statusId == 1` in `marketSources` —
   what the odds screen itself shows. Dead feeds (Matchbook, pool books)
   carry lines like +5900 at -1.5 with a 3336% "edge".
+- Each spread/total line's `alternateLines[]` expands into alt lines keyed
+  `(marketId, book, sideKey, points)` — `<main key>:alt<points>` — flagged
+  `isAlt` with `mainPoints` = the parent line's points. Measured on the live
+  NFL file 2026-09-11 (38k alts, 1.4k with `ge` ≥ 1% at live books): the
+  parent's `marketId` and `ms<id>` are the key because an alt's own
+  `marketId` can be null (Fanatics) and its `marketSourceId` can name
+  another book (Sports Interaction mirrors BetMGM's 4); `stn` is the
+  market's standard number, not the book's main (Hard Rock: `stn` 47.5 on
+  a 48.0 main); ladders can hold `null` entries; an alt on the main line's
+  own points is dropped (same bet twice). Moneylines have no alts.
+
+### Alt lines
+
+Off by default. Tick **Include alt lines** in the filter box and every
+book's alternate spreads and totals join the list under the same gates as
+main lines (board, book, bet type, period, edge, start, line age) plus two
+of their own — most alt "edges" are deep longshots (live 2026-09-11 the
+median NFL alt edge sat 13 points off the number at +400 and up; -18.5 at
++800 for +3.6% and a few-dollar stake is typical) where Unabated's fair is
+extrapolated:
+
+- **Max pts from main** (default 7): distance from the book's *current*
+  main-line points. 0 = no limit.
+- **Min liquidity $** (default 100): for lines that report liquidity, i.e.
+  exchanges (Kalshi's median alt depth was $129, Novig's $250); books with
+  no figure pass. 0 = no limit.
+
+An alt sitting on the main line's current number is hidden (it would be
+the same bet twice; when a main line moves onto an alt's number via the
+stream, that alt hides until the next snapshot replaces the ladder). A
+main line the stream takes off the board leaves its ladder listed until
+that refresh too. On the grid, an alt cell's book is read by object
+identity in the row's ladders, then the column, before the line's own
+`marketSourceId` (Sports Interaction's alts carry BetMGM's id).
+Rows carry an `alt` badge and say `alt of -2.5` (the book's main number);
+the header counts alts apart (`3,120 lines (+40,278 alts)`).
+
+**Freshness.** The anonymous changes stream carries **no alt updates**
+(2,603 keys in a live page, all `an0`, none with `alternateLines`; only a
+`bestAlt*` summary rides on the main line), so alts are exactly as fresh as
+the league's last snapshot refresh — 60 s / 2 min / 5 min by file size —
+and a main line that moves between refreshes leaves its ladder stale until
+the next one. Every alt's `modifiedOn` is the feed's `0001-01-01T00:00:00`
+sentinel; its `sequenceNumber` is the change time in epoch ms (on 10,182
+main lines it trailed `modifiedOn` by a median 1.2 s), so **Max line age**
+applies to alts through that (`feed.lineChangedMs`). Caveat: on ~1% of
+main lines the sequence ran far ahead of `modifiedOn`, so an alt's age can
+read younger than the price really is.
 
 ### What is listed
 
@@ -190,7 +246,14 @@ existing Unabated tab, or opens one, when none does), then `page.js` finds
 the row through the grid API, scrolls it into view and outlines the price
 cell for 2.5 s. You click the price there yourself, so the book's deeplink
 is a real gesture and never popup-blocked. If the row is hidden by your
-bet-type or period filter the panel says so.
+bet-type or period filter the panel says so. An **alt row** click first
+expands the grid row's Alts (`node.setExpanded(true)`), then finds the
+cell by its fiber props — points, side, book and, when the cell's row data
+carries them, event and bet type — retrying for 2 s while the alt cells
+mount. If no such cell renders it says so and outlines the main-line cell
+instead, so the row is still found. The expand-and-match path is verified
+against the scripted grid only (see Tests); the real screen's Alts row was
+not reachable from the harness, so the first real click is the check.
 
 ### Alerts
 
@@ -199,7 +262,11 @@ Off by default. Turn on **Notify on new edges at or above N%** (default
 the leagues — baselines every line already there without pinging. After
 that: one Chrome notification per line the first time it crosses the
 threshold, again only if its price improves (dedupe key = market, book,
-side, points), and at most one per event per 5 min. Title is the bet and
+side, points — so alt lines, when included, are deduped per rung, and
+turning alts or their gates on re-baselines first), and at most one per
+event per 5 min. A ladder with several rungs over the threshold therefore
+pings once per 5 min per rung until each has fired; the notification title
+says `(alt of -2.5)` so an alt is never mistaken for the main line. Title is the bet and
 book, body the edge, stake, matchup and time to start. Clicking the
 notification runs the same jump-to-row path as a row click. No alerts
 fire while the panel is closed. The alert log lives in `chrome.storage.local`
@@ -223,9 +290,14 @@ node --test "unabated_ticket/tests/*.test.js"
 bankroll 30000, quarter Kelly = $3,750), the Seattle -133 / +1.89% case,
 zero or negative edge → $0, that nothing rounds, and that exchange cents
 use `sourcePrice`. `feed.test.js` parses the fixture slices (NFL event
-125807, captured 2026-09-10): `ge`/`bacr`/`sourcePrice`/liquidity/side keys,
-the live-book flag, edge selection and sorting, cursor extraction, and that
-an update overwrites a snapshot line only with a newer sequence number.
+125807, captured 2026-09-10; its `alternateLines` are real rungs from the
+2026-09-11 file for the same event, one `null` entry added): `ge`/`bacr`/
+`sourcePrice`/liquidity/side keys, the live-book flag, edge selection and
+sorting, cursor extraction, that an update overwrites a snapshot line only
+with a newer sequence number, and the alt path — keys, `mainPoints`,
+`includeAlts` off by default, the distance / liquidity / same-number gates
+following a moved main line, age through `sequenceNumber`, and a pulled
+ladder disappearing on the next parse.
 `scanner.test.js` drives the loop with an injected fetch: cursor from
 `Last-Modified`, poll, rejected-cursor resync, per-league failure, resume,
 and a league switch while a snapshot is still downloading.
@@ -234,6 +306,15 @@ End-to-end without a real login: Playwright (in `mlb_sgp/venv`) with the
 ms-playwright Chromium, `--load-extension`, the two feed URLs routed to the
 fixtures and `tools.unabated.com` to a page that fakes the grid's React
 fiber props; open `chrome-extension://<id>/panel.html` and read its text.
+The panel page's CSP forbids string eval, so every `evaluate` /
+`wait_for_function` must be an arrow-function string. The #113 run (14
+checks, 2026-09-11) drove: alts off by default, the toggle listing 6 alt
+rows under the default gates and 16 with them off, the distance gate,
+settings persistence, an alt row click expanding the fake row (a
+`setExpanded` that mounts the ladder's shells) and outlining the right
+alt cell, a main row click unchanged, an alt-cell ticket with
+`watch.altPoints` staying quiet for a watch tick then going off the board
+when the rung was pulled, and a main-cell ticket unchanged.
 
 Manual checklist after loading unpacked: click a best-line price and a
 book-column price, then a moneyline, a spread and a total; confirm side
@@ -277,6 +358,16 @@ tab and see "Not watching".
   moved. Tick your books in the Books dropdown meanwhile.
 - **Edges row click: "row is not on the grid"**: the Unabated tab's own
   bet-type or period filter hides that row, or the game left the board.
+- **Edges alt row click: "row expanded but no … cell at N rendered"**: the
+  row was found (its main cell is outlined) but no cell for that book at
+  that number mounted within 2 s — Unabated's Alts section renders
+  differently from what `page.js` expects (`node.setExpanded`), or the
+  book's ladder no longer carries that rung. Open the row's Alts by hand
+  and look for the number; if it is there, the expand path needs the real
+  DOM (`altCellShellFor`).
+- **Edges alt rows look stale**: they only refresh with the league snapshot
+  (60 s–5 min); the stream never carries alts. The row's line age comes
+  from the alt's `sequenceNumber`.
 - **No notifications**: they only fire while the panel is open and the
   toggle is on; the first pass after enabling is silent by design. Check
   Chrome's notification permission for the extension in System Settings.

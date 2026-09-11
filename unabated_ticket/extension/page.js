@@ -93,8 +93,8 @@
   // Unabated's own edge % (EV per $1 staked) for this line. Null is a normal
   // condition (lopsided moneylines, exchange-only lines Unabated has not
   // priced), not a parse failure, so it gets its own error kind for the panel.
-  function requireEdgePct(marketLine) {
-    const edge = edgePctOf(marketLine);
+  function requireEdgePct(marketLine, { fromGe }) {
+    const edge = edgePctOf(marketLine, { fromGe });
     if (edge == null) {
       const error = new Error("Unabated has no edge for this line");
       error.kind = "no_fair";
@@ -115,9 +115,16 @@
     return { sourceFormat: 1, sourcePrice: null };
   }
 
-  function edgePctOf(marketLine) {
+  // The screen's computed edge; with fromGe (alternate-line objects, for
+  // which the screen computes none) the feed's own fraction on the object
+  // (0.0296 = +2.96%). Main lines never read ge, so a main line Unabated
+  // has not priced still reports no_fair.
+  function edgePctOf(marketLine, { fromGe } = { fromGe: false }) {
     const edge = marketLine.edge && marketLine.edge.edge;
-    return typeof edge === "number" && Number.isFinite(edge) ? edge : null;
+    if (typeof edge === "number" && Number.isFinite(edge)) return edge;
+    if (!fromGe) return null;
+    const ge = marketLine.ge;
+    return typeof ge === "number" && Number.isFinite(ge) ? Math.round(ge * 1e6) / 1e4 : null;
   }
 
   function bookNameOf(bookId, context, cellProps) {
@@ -141,30 +148,49 @@
     return line.marketLineId ?? line.id ?? null;
   }
 
-  // Which "ms<id>" entry under this side holds `marketLine` (same object, or same line id).
-  function bookIdFromSides(marketLine, rowData, sideKey) {
+  function bookIdOfKey(bookKey) {
+    const parsed = Number(bookKey.replace(/^ms/, ""));
+    return Number.isInteger(parsed) ? parsed : null;
+  }
+
+  // Which "ms<id>" entry under this side IS `marketLine` — the entry itself
+  // or one of its alternateLines (same object). Exact when it hits.
+  function bookIdByIdentity(marketLine, rowData, sideKey) {
     const books = rowData.sides && rowData.sides[sideKey];
     if (!books) return null;
-    const wantedId = lineIdOf(marketLine);
     for (const [bookKey, line] of Object.entries(books)) {
-      const sameObject = line === marketLine;
-      const sameId = wantedId != null && line && String(lineIdOf(line)) === String(wantedId);
-      if (sameObject || sameId) {
-        const parsed = Number(bookKey.replace(/^ms/, ""));
-        if (Number.isInteger(parsed)) return parsed;
-      }
+      if (!line) continue;
+      const ladder = Array.isArray(line.alternateLines) ? line.alternateLines : [];
+      if (line === marketLine || ladder.includes(marketLine)) return bookIdOfKey(bookKey);
     }
     return null;
   }
 
+  // Which "ms<id>" entry under this side carries the same line id.
+  function bookIdByLineId(marketLine, rowData, sideKey) {
+    const books = rowData.sides && rowData.sides[sideKey];
+    const wantedId = lineIdOf(marketLine);
+    if (!books || wantedId == null) return null;
+    for (const [bookKey, line] of Object.entries(books)) {
+      if (line && String(lineIdOf(line)) === String(wantedId)) return bookIdOfKey(bookKey);
+    }
+    return null;
+  }
+
+  // Identity first, then the column the cell sits in, then the line's own
+  // marketSourceId: an alternate-line object can name ANOTHER book there
+  // (Sports Interaction's alts carry BetMGM's id 4, feed 2026-09-11), and
+  // best-line cells sit in a column with no book id, so no single field is
+  // enough on its own.
   function bookIdOf(marketLine, cellProps, rowData, sideKey) {
-    if (typeof marketLine.marketSourceId === "number") return marketLine.marketSourceId;
+    const byIdentity = bookIdByIdentity(marketLine, rowData, sideKey);
+    if (byIdentity != null) return byIdentity;
     if (cellProps && cellProps.marketSource && typeof cellProps.marketSource.id === "number") {
       return cellProps.marketSource.id;
     }
-    // Best-line cells sit in a column with no book id; find the line inside the row's sides instead.
-    const fromSides = bookIdFromSides(marketLine, rowData, sideKey);
-    if (fromSides != null) return fromSides;
+    if (typeof marketLine.marketSourceId === "number") return marketLine.marketSourceId;
+    const byLineId = bookIdByLineId(marketLine, rowData, sideKey);
+    if (byLineId != null) return byLineId;
     const colId = cellProps && cellProps.colDef && cellProps.colDef.colId;
     const parsed = Number(colId);
     if (Number.isInteger(parsed)) return parsed;
@@ -214,6 +240,16 @@
     try { return teamNameOf(eventTeam.id, context); } catch (_error) { return null; }
   }
 
+  // An alternate-line cell's marketLine is one of the main line's
+  // alternateLines, not the sides entry itself; the watcher must then
+  // re-find it by points inside that ladder. Null for a main-line cell (the
+  // same object, or the same points, as the sides entry).
+  function altPointsOf(marketLine, rowData, sideKey, bookKey) {
+    const main = rowData.sides && rowData.sides[sideKey] && rowData.sides[sideKey][bookKey];
+    if (!main || main === marketLine || main.points === marketLine.points) return null;
+    return typeof marketLine.points === "number" ? marketLine.points : null;
+  }
+
   function buildTicket({ marketLine, sideIndex, rowData, context, cellProps }) {
     const betTypeId = rowData.betTypeId;
     const betType = BET_TYPE_NAMES[betTypeId];
@@ -222,6 +258,7 @@
     const points = marketLine.points ?? null;
     const sideKey = sideKeyOf(rowData, sideIndex);
     const bookId = bookIdOf(marketLine, cellProps, rowData, sideKey);
+    const altPoints = altPointsOf(marketLine, rowData, sideKey, `ms${bookId}`);
     const rotation = rowData.eventTeams && rowData.eventTeams[sideIndex]
       ? rowData.eventTeams[sideIndex].rotationNumber ?? null
       : null;
@@ -245,9 +282,11 @@
       price: bookPriceOf(marketLine),
       ...sourcePriceOf(marketLine),
       fair: fairPriceOrNull(marketLine),
-      edgePct: requireEdgePct(marketLine),
-      // Watcher handle: how to find this same line again through the grid API.
-      watch: { gridKey: rowData.gridKey ?? null, sideKey, bookKey: `ms${bookId}` },
+      edgePct: requireEdgePct(marketLine, { fromGe: altPoints != null }),
+      isAlt: altPoints != null,
+      // Watcher handle: how to find this same line again through the grid API
+      // (altPoints set = look inside the book line's alternateLines).
+      watch: { gridKey: rowData.gridKey ?? null, sideKey, bookKey: `ms${bookId}`, altPoints },
       current: null,
     };
   }
@@ -356,17 +395,30 @@
     const node = gridApi.getRowNode(gridKey);
     if (!node || !node.data) throw new Error("row no longer in the grid");
     const books = node.data.sides && node.data.sides[sideKey];
-    const line = books && books[bookKey];
-    if (!line) throw new Error("book line no longer on the row");
+    const bookLine = books && books[bookKey];
+    if (!bookLine) throw new Error("book line no longer on the row");
+    const line = ticket.watch.altPoints == null ? bookLine : altLineAt(bookLine, ticket.watch.altPoints);
+    // The ladder no longer offers that number: off the board at the captured price.
+    if (!line) {
+      return {
+        price: ticket.price, sourceFormat: ticket.sourceFormat, sourcePrice: ticket.sourcePrice,
+        points: ticket.watch.altPoints, fair: ticket.fair, edgePct: ticket.edgePct, offBoard: true, seenAt: Date.now(),
+      };
+    }
     return {
       price: bookPriceOf(line),
       ...sourcePriceOf(line),
       points: line.points ?? null,
       fair: fairPriceOrNull(line),
-      edgePct: edgePctOf(line),
+      edgePct: edgePctOf(line, { fromGe: ticket.watch.altPoints != null }),
       offBoard: line.statusId === 2,
       seenAt: Date.now(),
     };
+  }
+
+  function altLineAt(bookLine, points) {
+    const ladder = Array.isArray(bookLine.alternateLines) ? bookLine.alternateLines : [];
+    return ladder.find((alt) => alt && alt.points === points) || null;
   }
 
   function watchTick() {
@@ -482,6 +534,9 @@
 
   const LOCATE_ATTEMPTS = 20;
   const LOCATE_RETRY_MS = 1000;
+  // After expanding a row's Alts, its cells mount over a few frames.
+  const ALT_CELL_ATTEMPTS = 8;
+  const ALT_CELL_RETRY_MS = 250;
   const FLASH_MS = 2500;
   const FLASH_ATTR = "data-unabated-ticket-flash";
   let lastLocateAt = 0;
@@ -506,6 +561,59 @@
     if (inBookColumn) return inBookColumn;
     // Book column may be scrolled out / hidden: fall back to any shell on the row for that side.
     return document.querySelector(`${rowSelector} ${CELL_SHELL_SELECTOR}[data-side-index="${request.sideIndex}"]`);
+  }
+
+  // Alt cells live in the row's expanded Alts section (AG Grid master/detail:
+  // node.setExpanded). Rendered shells are matched on their fiber props —
+  // points, side, book and, when the cell's row data carries them, event and
+  // bet type — never on DOM position, which differs per layout.
+  function expandAlts(node) {
+    if (typeof node.setExpanded !== "function") throw new Error("this grid row cannot be expanded (no setExpanded on the row node)");
+    if (node.expanded !== true) node.setExpanded(true);
+  }
+
+  function shellBookId(marketLine, cellProps, rowData, sideKey) {
+    try {
+      return bookIdOf(marketLine, cellProps, rowData, sideKey);
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function altCellShellFor(request) {
+    for (const shell of document.querySelectorAll(CELL_SHELL_SELECTOR)) {
+      const fiber = fiberOf(shell);
+      const lineProps = fiber && findProps(fiber, isLineProps);
+      if (!lineProps || !lineProps.marketLine || lineProps.marketLine.points !== request.points) continue;
+      const attr = shell.getAttribute("data-side-index");
+      const sideIndex = attr == null ? lineProps.sideIndex : Number(attr);
+      if (sideIndex !== request.sideIndex) continue;
+      const cellProps = findProps(fiber, isGridCellProps);
+      const rowData = (cellProps && cellProps.node && cellProps.node.data) || {};
+      if (rowData.eventId != null && rowData.eventId !== request.eventId) continue;
+      if (rowData.betTypeId != null && rowData.betTypeId !== request.betTypeId) continue;
+      if (shellBookId(lineProps.marketLine, cellProps, rowData, request.sideKey) !== request.bookId) continue;
+      return shell;
+    }
+    return null;
+  }
+
+  function locateAltCell(node, request, attempt) {
+    if (request.at !== lastLocateAt) return;
+    const shell = altCellShellFor(request);
+    if (shell) {
+      flash(shell);
+      reportLocate(request, true, null);
+      return;
+    }
+    if (attempt < ALT_CELL_ATTEMPTS) {
+      setTimeout(() => locateAltCell(node, request, attempt + 1), ALT_CELL_RETRY_MS);
+      return;
+    }
+    // Loud, and still useful: outline the main-line cell so the row is found.
+    const mainShell = cellShellFor(node, request);
+    if (mainShell) flash(mainShell);
+    reportLocate(request, false, `row expanded but no ${request.bookName} cell at ${request.points} rendered${mainShell ? " (its main-line cell is outlined; open the row's Alts and look for that number)" : ""}`);
   }
 
   function flash(element) {
@@ -547,11 +655,23 @@
         : "the odds grid never appeared on this tab");
       return;
     }
+    if (request.isAlt) {
+      try {
+        expandAlts(node);
+      } catch (error) {
+        reportLocate(request, false, `could not open the row's Alts: ${error.message}`);
+        return;
+      }
+    }
     try {
       if (typeof api.ensureNodeVisible === "function") api.ensureNodeVisible(node, "middle");
       if (typeof api.ensureColumnVisible === "function") api.ensureColumnVisible(String(request.bookId));
     } catch (error) {
       reportLocate(request, false, `grid scroll failed: ${error.message}`);
+      return;
+    }
+    if (request.isAlt) {
+      locateAltCell(node, request, 0);
       return;
     }
     // The row renders on the next frame after ensureNodeVisible.

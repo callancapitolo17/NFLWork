@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Unabated Ticket",
-  "version": "0.2.0",
-  "description": "Click a price on the Unabated odds screen; see the bet and its Kelly stake in a side panel. An Edges tab lists every positive-edge line across NFL, CFB and MLB, with Chrome notifications for new ones.",
+  "version": "0.3.0",
+  "description": "Click a price on the Unabated odds screen; see the bet and its Kelly stake in a side panel. An Edges tab lists every positive-edge line (main and, optionally, alternate spreads/totals) across every team sport Unabated prices, with Chrome notifications for new ones.",
   "minimum_chrome_version": "116",
   "permissions": [
     "sidePanel",

@@ -19,6 +19,23 @@
 // for updates. Updates apply only when their sequenceNumber is newer than the
 // line we hold — the stream replays old lines and the snapshot may already be
 // ahead.
+//
+// Alternate lines (issue #113): each snapshot line carries alternateLines[]
+// with the same price/edge fields at other points. They are expanded into
+// lines keyed (marketId, book, sideKey, points) — `<mainKey>:alt<points>` —
+// flagged isAlt with mainPoints = the book's own main-line points. Facts
+// measured on the live NFL file 2026-09-11 that shape the parsing:
+//   - the changes stream carries NO alt updates (2,603 keys, all an0, no
+//     alternateLines), so alts refresh only with the per-league snapshot;
+//   - every alt's modifiedOn is the sentinel "0001-01-01T00:00:00", but its
+//     sequenceNumber is the change time in epoch ms (on 10,182 main lines it
+//     trailed modifiedOn by a median 1.2 s), so alt freshness reads from it;
+//   - an alt's marketId can be null (Fanatics) and its marketSourceId can
+//     name another book (Sports Interaction mirrors BetMGM's id 4), so the
+//     key uses the parent line's marketId and the ms<id> the alt sits under;
+//   - `stn` is the market's standard number, not this book's main points
+//     (Hard Rock: stn 47.5 on a 48.0 main), so mainPoints comes from the
+//     parent line; and alternateLines can hold null entries.
 
 (function (root) {
   "use strict";
@@ -72,6 +89,11 @@
   // ms49 is Unabated's own line, not a book anyone can bet.
   const UNABATED_LINE_BOOK_ID = 49;
   const STATUS_ON_BOARD = 1;
+  // The feed writes this in place of an unknown modifiedOn (every alt line).
+  const MODIFIED_ON_UNKNOWN_PREFIX = "0001-";
+  // A sequenceNumber below this cannot be an epoch-ms change time (2021-01-06,
+  // the changes cursor epoch); anything older is a counter, not a clock.
+  const SEQUENCE_AS_EPOCH_MS_MIN = Date.UTC(2021, 0, 6);
   // Cursor = nanoseconds since 2021-01-06T00:00:00Z (decoded from the feed's own
   // latestTimestamp vs modifiedOn pairs, 2026-09-10). Kept as a STRING: it is
   // above 2^53 and JSON.parse would round it.
@@ -109,6 +131,27 @@
     return `${marketId}:ms${bookId}:${sideKey}`;
   }
 
+  function altLineKeyOf({ marketId, bookId, sideKey, points }) {
+    return `${lineKeyOf({ marketId, bookId, sideKey })}:alt${points}`;
+  }
+
+  // The feed's modifiedOn, or null when it is missing or the sentinel.
+  function parseModifiedOn(value) {
+    if (typeof value !== "string" || value.startsWith(MODIFIED_ON_UNKNOWN_PREFIX)) return null;
+    return parseEventStart(value);
+  }
+
+  // When the book last changed the line, in epoch ms. Main lines read their
+  // modifiedOn; an alt has only the sentinel, so it reads its sequenceNumber
+  // (epoch ms of the change, see the header). Null when unknowable.
+  function lineChangedMs(line) {
+    const fromModifiedOn = parseModifiedOn(line.modifiedOn);
+    if (fromModifiedOn != null) return fromModifiedOn;
+    if (!line.isAlt) return null;
+    const sequence = line.sequenceNumber;
+    return typeof sequence === "number" && sequence >= SEQUENCE_AS_EPOCH_MS_MIN ? sequence : null;
+  }
+
   // Sequence numbers are monotonic per line (the same feed cannot go backwards).
   function isNewer(candidateSeq, heldSeq) {
     if (typeof candidateSeq !== "number") return false;
@@ -127,6 +170,7 @@
     if (price == null || raw.marketId == null) return null;
     return {
       key: lineKeyOf({ marketId: raw.marketId, bookId: context.bookId, sideKey: context.sideKey }),
+      isAlt: false,
       leagueId: context.leagueId,
       periodTypeId: context.periodTypeId,
       betTypeId: context.betTypeId,
@@ -136,6 +180,42 @@
       sideKey: context.sideKey,
       sideIndex: sideIndexOf(context.sideKey),
       points: numberOrNull(raw.points),
+      price,
+      sourceFormat: numberOrNull(raw.sourceFormat) ?? 1,
+      sourcePrice: numberOrNull(raw.sourcePrice),
+      bacr: numberOrNull(raw.bacr),
+      ge: numberOrNull(raw.ge),
+      liquidity: numberOrNull(raw.liquidity),
+      statusId: numberOrNull(raw.statusId),
+      sequenceNumber: numberOrNull(raw.sequenceNumber),
+      isBlurred: raw.isBlurred === true,
+      modifiedOn: raw.modifiedOn ?? null,
+    };
+  }
+
+  // One alternateLines[] entry, keyed under its parent main line. Null when
+  // the entry is null, unpriced, has no points, hangs off a main line with no
+  // points (nothing to measure distance from), or sits at the main line's own
+  // points (that would be the same bet listed twice). Moneylines have no alts.
+  function normalizeAltLine(raw, mainLine) {
+    if (!raw || typeof raw !== "object" || mainLine.points == null) return null;
+    const points = numberOrNull(raw.points);
+    const price = numberOrNull(raw.americanPrice) ?? numberOrNull(raw.price);
+    if (points == null || price == null || points === mainLine.points) return null;
+    return {
+      key: altLineKeyOf({ marketId: mainLine.marketId, bookId: mainLine.bookId, sideKey: mainLine.sideKey, points }),
+      isAlt: true,
+      mainKey: mainLine.key,
+      mainPoints: mainLine.points,
+      leagueId: mainLine.leagueId,
+      periodTypeId: mainLine.periodTypeId,
+      betTypeId: mainLine.betTypeId,
+      eventId: mainLine.eventId,
+      marketId: mainLine.marketId,
+      bookId: mainLine.bookId,
+      sideKey: mainLine.sideKey,
+      sideIndex: mainLine.sideIndex,
+      points,
       price,
       sourceFormat: numberOrNull(raw.sourceFormat) ?? 1,
       sourcePrice: numberOrNull(raw.sourcePrice),
@@ -189,6 +269,17 @@
         }
         state.lines[line.key] = line;
         counts.lines += 1;
+        // Spread/total alts only: a moneyline has no points to be an alt of.
+        if (betTypeId === 1 || !Array.isArray(raw.alternateLines)) continue;
+        for (const rawAlt of raw.alternateLines) {
+          const alt = normalizeAltLine(rawAlt, line);
+          if (!alt) {
+            counts.skippedAltLines += 1;
+            continue;
+          }
+          state.lines[alt.key] = alt;
+          counts.altLines += 1;
+        }
       }
     }
   }
@@ -201,7 +292,7 @@
     }
     const state = emptyState();
     state.leagues = [leagueId];
-    const counts = { rows: 0, skippedRows: 0, lines: 0, skippedLines: 0 };
+    const counts = { rows: 0, skippedRows: 0, lines: 0, skippedLines: 0, altLines: 0, skippedAltLines: 0 };
     for (const [teamId, team] of Object.entries(json.teams || {})) {
       if (team && team.name) state.teams[teamId] = team.name;
     }
@@ -267,6 +358,7 @@
     if (price == null || raw.marketId == null || typeof raw.sideKey !== "string") return null;
     return {
       key: lineKeyOf({ marketId: raw.marketId, bookId: context.bookId, sideKey: raw.sideKey }),
+      isAlt: false,
       leagueId: context.leagueId,
       periodTypeId: context.periodTypeId,
       betTypeId: context.betTypeId,
@@ -338,6 +430,10 @@
   // snapshot never listed are skipped (we have no teams/name for them); lines
   // for known events are added when new and replaced when their sequence
   // number is newer. Snapshot-only fields (liquidity) carry over on replace.
+  // Alt lines are never in the stream, so they stay as the last snapshot left
+  // them; selectEdges reads the main line's CURRENT points for the distance
+  // gate and the same-points dedupe, so a main line that moves onto an alt's
+  // number hides that alt until the next snapshot refresh replaces it.
   function applyChanges(state, changes) {
     const counts = { applied: 0, added: 0, stale: 0, unknownEvent: 0, otherLeague: 0 };
     const leagues = new Set(state.leagues);
@@ -418,17 +514,47 @@
       liquidity: line.liquidity,
       marketId: line.marketId,
       isBlurred: line.isBlurred,
-      // When the book last changed this line (feed's modifiedOn); null if unknown.
-      modifiedMs: parseEventStart(line.modifiedOn),
+      // When the book last changed this line (modifiedOn; an alt's sequenceNumber); null if unknown.
+      modifiedMs: lineChangedMs(line),
+      isAlt: line.isAlt === true,
+      // The book's main-line points this alt hangs off (current main line when held); null on a main line.
+      mainPoints: line.isAlt ? currentMainPoints(line, state) : null,
     };
+  }
+
+  function currentMainPoints(altLine, state) {
+    const main = state.lines[altLine.mainKey];
+    return main && main.points != null ? main.points : altLine.mainPoints;
+  }
+
+  function positiveNumberOrNull(value) {
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+  }
+
+  // Alt-only gates. An alt is listed only when includeAlts is on, the main
+  // line is not currently sitting on the same number (same bet twice), it is
+  // within altMaxDistance points of the book's current main number (deep
+  // ladders are extrapolated fairs and a few-dollar stake), and — for lines
+  // that report liquidity, i.e. exchanges — at least altMinLiquidity is
+  // resting. Books with no liquidity figure pass that gate.
+  function altPassesGates(line, state, opts) {
+    if (!opts.includeAlts) return false;
+    const main = state.lines[line.mainKey];
+    if (main && main.points === line.points) return false;
+    if (opts.altMaxDistance != null) {
+      const mainPoints = currentMainPoints(line, state);
+      if (mainPoints == null || Math.abs(line.points - mainPoints) > opts.altMaxDistance) return false;
+    }
+    if (opts.altMinLiquidity != null && line.liquidity != null && line.liquidity < opts.altMinLiquidity) return false;
+    return true;
   }
 
   // Lines worth listing: on the board, edge known and >= minEdge (a fraction),
   // period/bet type enabled, book allowed, game not started, and — when
   // maxLineAgeMs is set — changed by the book within that window (a 96-day-old
   // line at a "live" book is a dead feed, and its 36% "edge" is not bettable;
-  // a line with no modifiedOn is excluded too, since its age is unknowable).
-  // Sorted by edge.
+  // a line whose change time is unknowable is excluded too). Alt lines
+  // additionally pass altPassesGates. Sorted by edge.
   function selectEdges(state, options) {
     const opts = options || {};
     const minEdge = typeof opts.minEdge === "number" ? opts.minEdge : 0.01;
@@ -436,10 +562,16 @@
     const betTypes = opts.betTypes instanceof Set ? opts.betTypes : new Set([1, 2, 3]);
     const bookIds = opts.bookIds instanceof Set ? opts.bookIds : null;
     const now = typeof opts.now === "number" ? opts.now : Date.now();
-    const maxLineAgeMs = typeof opts.maxLineAgeMs === "number" && opts.maxLineAgeMs > 0 ? opts.maxLineAgeMs : null;
+    const maxLineAgeMs = positiveNumberOrNull(opts.maxLineAgeMs);
+    const altOpts = {
+      includeAlts: opts.includeAlts === true,
+      altMaxDistance: positiveNumberOrNull(opts.altMaxDistance),
+      altMinLiquidity: positiveNumberOrNull(opts.altMinLiquidity),
+    };
     const rows = [];
     for (const line of Object.values(state.lines)) {
       if (line.bookId === UNABATED_LINE_BOOK_ID) continue;
+      if (line.isAlt && !altPassesGates(line, state, altOpts)) continue;
       if (line.statusId !== STATUS_ON_BOARD) continue;
       if (line.ge == null || line.ge < minEdge) continue;
       if (!periods.has(line.periodTypeId) || !betTypes.has(line.betTypeId)) continue;
@@ -451,8 +583,8 @@
       // Not a valid American price: nothing downstream (cents, Kelly) can use it.
       if (Math.abs(line.price) < 100) continue;
       if (maxLineAgeMs != null) {
-        const modifiedMs = parseEventStart(line.modifiedOn);
-        if (modifiedMs == null || now - modifiedMs > maxLineAgeMs) continue;
+        const changedMs = lineChangedMs(line);
+        if (changedMs == null || now - changedMs > maxLineAgeMs) continue;
       }
       rows.push(describeLine(line, state));
     }
@@ -460,15 +592,24 @@
     return rows;
   }
 
+  // Main lines only; alts are counted apart so the header can say both.
   function countLines(state) {
-    return Object.keys(state.lines).length;
+    let count = 0;
+    for (const line of Object.values(state.lines)) if (!line.isAlt) count += 1;
+    return count;
+  }
+
+  function countAltLines(state) {
+    let count = 0;
+    for (const line of Object.values(state.lines)) if (line.isAlt) count += 1;
+    return count;
   }
 
   const api = {
     LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID, CURSOR_EPOCH_MS,
-    parseLeagueKey, parseEventStart, lineKeyOf, emptyState,
+    parseLeagueKey, parseEventStart, parseModifiedOn, lineChangedMs, lineKeyOf, altLineKeyOf, emptyState,
     parseSnapshot, mergeStates, extractCursor, cursorFromDate, parseChanges, applyChanges,
-    describeLine, selectEdges, countLines,
+    describeLine, selectEdges, countLines, countAltLines,
   };
 
   if (typeof module !== "undefined" && module.exports) {
