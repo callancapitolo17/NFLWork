@@ -301,8 +301,13 @@
       state.books[source.id] = {
         id: source.id,
         name: source.name || `book ${source.id}`,
-        // What the odds screen itself shows: an active source whose game-odds status is live.
-        isLive: source.isActive === true && source.statusId === STATUS_ON_BOARD,
+        // An active source enabled for game odds. marketSources.statusId is
+        // NOT a liveness flag: on 2026-09-11 Caesars, Bet365, Fliff, Bet105,
+        // BetOnline and Underdog Prediction Market carried statusId 2 or 3
+        // with lines changed minutes earlier, and the old `statusId == 1`
+        // rule hid them from the Books filter. Dead feeds (Matchbook, the
+        // pool books) are isActive false or caught by the max-line-age gate.
+        isLive: source.isActive === true && source.isEnabledForGameOdds !== false,
         hasLiquidity: source.hasLiquidity === true,
       };
     }

@@ -145,9 +145,13 @@ Parsing (`extension/feed.js`, node-tested on real slices under
   a batch.
 - Only pregame moneyline/spread/total rows (`pt*:pregame:bt{1,2,3}:e*`).
   Props, team totals (`bt4`) and live rows are skipped.
-- Books list only when `isActive && statusId == 1` in `marketSources` —
-  what the odds screen itself shows. Dead feeds (Matchbook, pool books)
-  carry lines like +5900 at -1.5 with a 3336% "edge".
+- Books list when `isActive` and enabled for game odds in `marketSources`.
+  `statusId` there is **not** a liveness flag: on 2026-09-11 Caesars,
+  Bet365, Fliff, Bet105, BetOnline and Underdog Prediction Market carried
+  `statusId` 2 or 3 with lines changed minutes earlier (the first rule,
+  `statusId == 1`, hid them from the Books filter). Dead feeds (Matchbook,
+  `isActive` false) carry lines like +5900 at -1.5 with a 3336% "edge";
+  the max-line-age gate catches the rest.
 - Each spread/total line's `alternateLines[]` expands into alt lines keyed
   `(marketId, book, sideKey, points)` — `<main key>:alt<points>` — flagged
   `isAlt` with `mainPoints` = the parent line's points. Measured on the live
