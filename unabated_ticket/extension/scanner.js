@@ -92,6 +92,7 @@
       lastPollLines: 0,
       pollCount: 0,
       lineCount: 0,
+      altLineCount: 0,
       eventCount: 0,
       cursor: null,
       loading: null, // {done, total} while snapshots are downloading
@@ -129,6 +130,7 @@
 
     function notify() {
       status.lineCount = feed.countLines(state);
+      status.altLineCount = feed.countAltLines(state);
       status.eventCount = Object.keys(state.events).length;
       status.cursor = cursor;
       onChange({ ...status }, state);

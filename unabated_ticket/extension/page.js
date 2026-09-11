@@ -214,6 +214,16 @@
     try { return teamNameOf(eventTeam.id, context); } catch (_error) { return null; }
   }
 
+  // An alternate-line cell's marketLine is one of the main line's
+  // alternateLines, not the sides entry itself; the watcher must then
+  // re-find it by points inside that ladder. Null for a main-line cell (the
+  // same object, or the same points, as the sides entry).
+  function altPointsOf(marketLine, rowData, sideKey, bookKey) {
+    const main = rowData.sides && rowData.sides[sideKey] && rowData.sides[sideKey][bookKey];
+    if (!main || main === marketLine || main.points === marketLine.points) return null;
+    return typeof marketLine.points === "number" ? marketLine.points : null;
+  }
+
   function buildTicket({ marketLine, sideIndex, rowData, context, cellProps }) {
     const betTypeId = rowData.betTypeId;
     const betType = BET_TYPE_NAMES[betTypeId];
@@ -222,6 +232,7 @@
     const points = marketLine.points ?? null;
     const sideKey = sideKeyOf(rowData, sideIndex);
     const bookId = bookIdOf(marketLine, cellProps, rowData, sideKey);
+    const altPoints = altPointsOf(marketLine, rowData, sideKey, `ms${bookId}`);
     const rotation = rowData.eventTeams && rowData.eventTeams[sideIndex]
       ? rowData.eventTeams[sideIndex].rotationNumber ?? null
       : null;
@@ -246,8 +257,10 @@
       ...sourcePriceOf(marketLine),
       fair: fairPriceOrNull(marketLine),
       edgePct: requireEdgePct(marketLine),
-      // Watcher handle: how to find this same line again through the grid API.
-      watch: { gridKey: rowData.gridKey ?? null, sideKey, bookKey: `ms${bookId}` },
+      isAlt: altPoints != null,
+      // Watcher handle: how to find this same line again through the grid API
+      // (altPoints set = look inside the book line's alternateLines).
+      watch: { gridKey: rowData.gridKey ?? null, sideKey, bookKey: `ms${bookId}`, altPoints },
       current: null,
     };
   }
@@ -356,8 +369,16 @@
     const node = gridApi.getRowNode(gridKey);
     if (!node || !node.data) throw new Error("row no longer in the grid");
     const books = node.data.sides && node.data.sides[sideKey];
-    const line = books && books[bookKey];
-    if (!line) throw new Error("book line no longer on the row");
+    const bookLine = books && books[bookKey];
+    if (!bookLine) throw new Error("book line no longer on the row");
+    const line = ticket.watch.altPoints == null ? bookLine : altLineAt(bookLine, ticket.watch.altPoints);
+    // The ladder no longer offers that number: off the board at the captured price.
+    if (!line) {
+      return {
+        price: ticket.price, sourceFormat: ticket.sourceFormat, sourcePrice: ticket.sourcePrice,
+        points: ticket.watch.altPoints, fair: ticket.fair, edgePct: ticket.edgePct, offBoard: true, seenAt: Date.now(),
+      };
+    }
     return {
       price: bookPriceOf(line),
       ...sourcePriceOf(line),
@@ -367,6 +388,11 @@
       offBoard: line.statusId === 2,
       seenAt: Date.now(),
     };
+  }
+
+  function altLineAt(bookLine, points) {
+    const ladder = Array.isArray(bookLine.alternateLines) ? bookLine.alternateLines : [];
+    return ladder.find((alt) => alt && alt.points === points) || null;
   }
 
   function watchTick() {
@@ -482,6 +508,9 @@
 
   const LOCATE_ATTEMPTS = 20;
   const LOCATE_RETRY_MS = 1000;
+  // After expanding a row's Alts, its cells mount over a few frames.
+  const ALT_CELL_ATTEMPTS = 8;
+  const ALT_CELL_RETRY_MS = 250;
   const FLASH_MS = 2500;
   const FLASH_ATTR = "data-unabated-ticket-flash";
   let lastLocateAt = 0;
@@ -506,6 +535,59 @@
     if (inBookColumn) return inBookColumn;
     // Book column may be scrolled out / hidden: fall back to any shell on the row for that side.
     return document.querySelector(`${rowSelector} ${CELL_SHELL_SELECTOR}[data-side-index="${request.sideIndex}"]`);
+  }
+
+  // Alt cells live in the row's expanded Alts section (AG Grid master/detail:
+  // node.setExpanded). Rendered shells are matched on their fiber props —
+  // points, side, book and, when the cell's row data carries them, event and
+  // bet type — never on DOM position, which differs per layout.
+  function expandAlts(node) {
+    if (typeof node.setExpanded !== "function") throw new Error("this grid row cannot be expanded (no setExpanded on the row node)");
+    if (node.expanded !== true) node.setExpanded(true);
+  }
+
+  function shellBookId(marketLine, cellProps, rowData, sideKey) {
+    try {
+      return bookIdOf(marketLine, cellProps, rowData, sideKey);
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function altCellShellFor(request) {
+    for (const shell of document.querySelectorAll(CELL_SHELL_SELECTOR)) {
+      const fiber = fiberOf(shell);
+      const lineProps = fiber && findProps(fiber, isLineProps);
+      if (!lineProps || !lineProps.marketLine || lineProps.marketLine.points !== request.points) continue;
+      const attr = Number(shell.getAttribute("data-side-index"));
+      const sideIndex = Number.isInteger(attr) ? attr : lineProps.sideIndex;
+      if (sideIndex !== request.sideIndex) continue;
+      const cellProps = findProps(fiber, isGridCellProps);
+      const rowData = (cellProps && cellProps.node && cellProps.node.data) || {};
+      if (rowData.eventId != null && rowData.eventId !== request.eventId) continue;
+      if (rowData.betTypeId != null && rowData.betTypeId !== request.betTypeId) continue;
+      if (shellBookId(lineProps.marketLine, cellProps, rowData, request.sideKey) !== request.bookId) continue;
+      return shell;
+    }
+    return null;
+  }
+
+  function locateAltCell(node, request, attempt) {
+    if (request.at !== lastLocateAt) return;
+    const shell = altCellShellFor(request);
+    if (shell) {
+      flash(shell);
+      reportLocate(request, true, null);
+      return;
+    }
+    if (attempt < ALT_CELL_ATTEMPTS) {
+      setTimeout(() => locateAltCell(node, request, attempt + 1), ALT_CELL_RETRY_MS);
+      return;
+    }
+    // Loud, and still useful: outline the main-line cell so the row is found.
+    const mainShell = cellShellFor(node, request);
+    if (mainShell) flash(mainShell);
+    reportLocate(request, false, `row expanded but no ${request.bookName} cell at ${request.points} rendered${mainShell ? " (its main-line cell is outlined; open the row's Alts and look for that number)" : ""}`);
   }
 
   function flash(element) {
@@ -548,10 +630,15 @@
       return;
     }
     try {
+      if (request.isAlt) expandAlts(node);
       if (typeof api.ensureNodeVisible === "function") api.ensureNodeVisible(node, "middle");
       if (typeof api.ensureColumnVisible === "function") api.ensureColumnVisible(String(request.bookId));
     } catch (error) {
       reportLocate(request, false, `grid scroll failed: ${error.message}`);
+      return;
+    }
+    if (request.isAlt) {
+      locateAltCell(node, request, 0);
       return;
     }
     // The row renders on the next frame after ensureNodeVisible.

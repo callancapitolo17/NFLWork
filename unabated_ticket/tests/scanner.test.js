@@ -269,3 +269,11 @@ test("a league whose snapshot build is older than 15 min is reported stale", asy
   await scanner.start([1]);
   assert.deepEqual(scanner.getStatus().staleLeagues, [1]);
 });
+
+test("status counts alt lines apart from main lines", async () => {
+  const scanner = createScanner({ fetchImpl: fakeFetch(), now: () => NOW, timers: noTimers });
+  await scanner.start([1]);
+  const status = scanner.getStatus();
+  assert.equal(status.lineCount, 62);
+  assert.equal(status.altLineCount, 27);
+});
