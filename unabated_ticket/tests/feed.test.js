@@ -40,8 +40,11 @@ test("snapshot: game rows only, books keyed by id with the live flag", () => {
   assert.equal(state.books[4].isLive, true);
   assert.equal(state.books[89].isLive, true); // Novig
   assert.equal(state.books[52].isLive, false); // Matchbook, isActive false
-  assert.equal(state.books[69].isLive, false); // Sports Interaction, statusId 2
-  assert.equal(state.books[49].isLive, false); // Unabated line
+  // statusId 2 is not "dead": Caesars/Underdog PM/Bet365 carry 2 or 3 while live (2026-09-11).
+  assert.equal(state.books[69].isLive, true); // Sports Interaction, statusId 2
+  assert.equal(state.books[49].isLive, true); // Unabated line: active, but selectEdges skips UNABATED_LINE_BOOK_ID
+  const disabled = feed.parseSnapshot({ odds: {}, teams: {}, marketSources: [{ id: 7, name: "x", isActive: true, statusId: 1, isEnabledForGameOdds: false }] }, { leagueId: 1 });
+  assert.equal(disabled.books[7].isLive, false);
   const event = state.events[125807];
   assert.equal(event.eventStart, KICKOFF_MS);
   assert.equal(event.awayTeamId, 6);
@@ -82,13 +85,13 @@ test("snapshot for a league the file does not carry fails loudly; an empty slate
 test("selectEdges: maxLineAgeMs drops lines the book has not touched, and lines with no modifiedOn", () => {
   const state = loadedState();
   const DAY = 86400 * 1000;
-  // The three edges were last changed Aug 29-30; kickoff-1h is Sep 13.
+  // The four edges were last changed Aug 29-30; kickoff-1h is Sep 13.
   assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, maxLineAgeMs: 7 * DAY }).length, 0);
-  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, maxLineAgeMs: 30 * DAY }).length, 3);
+  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, maxLineAgeMs: 30 * DAY }).length, 4);
   const row = feed.selectEdges(state, { now: BEFORE_KICKOFF })[0];
   assert.equal(row.modifiedMs, Date.parse("2026-08-29T14:40:50.899Z"));
   state.lines["289357360:ms99:si0:tid6"].modifiedOn = null;
-  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, maxLineAgeMs: 30 * DAY }).length, 2);
+  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, maxLineAgeMs: 30 * DAY }).length, 3);
 });
 
 test("selectEdges skips a line whose price is not a valid American number", () => {
@@ -102,6 +105,7 @@ test("selectEdges: live books, full game, >= 1%, sorted by edge, ticket-shaped r
   assert.deepEqual(rows.map((r) => [r.book.name, r.betType, r.sideLabel, r.edgePct]), [
     ["SouthPoint", "Spread", "Chicago Bears -2.5", 5.3],
     ["BetMGM", "Moneyline", "Chicago Bears", 2.96],
+    ["Sports Interaction", "Moneyline", "Chicago Bears", 2.96], // statusId 2, live (mirrors BetMGM)
     ["SouthPoint", "Moneyline", "Chicago Bears", 1.56],
   ]);
   const top = rows[0];
@@ -183,7 +187,7 @@ test("applyChanges overwrites newer lines, adds new ones, skips other leagues an
   // Replaying the same batch changes nothing.
   assert.deepEqual(feed.applyChanges(state, changes), { applied: 0, added: 0, stale: 14, unknownEvent: 0, otherLeague: 1 });
   // The edge list is unaffected: the moved lines were all negative edge.
-  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF }).length, 3);
+  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF }).length, 4);
 });
 
 test("applyChanges ignores an older sequence number and lines for unknown events", () => {
@@ -274,7 +278,7 @@ test("selectEdges lists no alt unless includeAlts is on", () => {
   assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF }).some((r) => r.isAlt), false);
   const rows = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true });
   const alts = rows.filter((r) => r.isAlt);
-  assert.equal(rows.length - alts.length, 3); // the three main-line edges are still there
+  assert.equal(rows.length - alts.length, 4); // the four main-line edges are still there
   assert.deepEqual(alts.slice(0, 4).map((r) => [r.book.name, r.sideLabel, r.price, r.edgePct, r.mainPoints]), [
     ["Kalshi", "Carolina Panthers -9.5", 625, 12.58, 2.5],
     ["Kalshi", "Over 64.5", 840, 9.56, 46.5],
@@ -387,7 +391,7 @@ test("groupEdges: one card per (game, period, bet type, side) with books and lin
     ["125807:pt1:bt2:si1", "Carolina Panthers", "Spread", 2, 6],
     ["125807:pt1:bt3:si0", "Over", "Total", 2, 4],
     ["125807:pt1:bt2:si0", "Chicago Bears", "Spread", 3, 7],
-    ["125807:pt1:bt1:si0", "Chicago Bears", "Moneyline", 2, 2],
+    ["125807:pt1:bt1:si0", "Chicago Bears", "Moneyline", 3, 3],
   ]);
   assert.equal(rows.length, groups.reduce((n, g) => n + g.rows.length, 0));
   const bears = groups[2];
@@ -426,11 +430,11 @@ test("groupEdges ranked by Kelly stake picks the bettable main line over the +94
   assert.equal(typeof bears.rows[3].stake, "number");
 });
 
-test("groupEdges: alts off collapses the three main-line edges to two cards; empty in, empty out; a null rank sorts last", () => {
+test("groupEdges: alts off collapses the four main-line edges to two cards; empty in, empty out; a null rank sorts last", () => {
   const rows = feed.selectEdges(loadedState(), { now: BEFORE_KICKOFF });
   const groups = feed.groupEdges(rows);
-  // SouthPoint -2.5 alone; BetMGM and SouthPoint moneylines share a card.
-  assert.deepEqual(groups.map((g) => [g.betType, g.rows.length, g.bookCount]), [["Spread", 1, 1], ["Moneyline", 2, 2]]);
+  // SouthPoint -2.5 alone; BetMGM, Sports Interaction and SouthPoint moneylines share a card.
+  assert.deepEqual(groups.map((g) => [g.betType, g.rows.length, g.bookCount]), [["Spread", 1, 1], ["Moneyline", 3, 3]]);
   assert.deepEqual(feed.groupEdges([]), []);
   const ranked = feed.groupEdges(rows, (row) => (row.book.id === 99 ? null : row.edgePct));
   assert.equal(ranked[ranked.length - 1].best.book.id, 99);
