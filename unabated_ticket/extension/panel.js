@@ -488,10 +488,6 @@
     return groups;
   }
 
-  function currentEdgeGroups() {
-    return groupsOf(currentEdgeRows());
-  }
-
   // Cards the user has opened; survives the 5s re-render, not a panel reload.
   const expandedGroups = new Set();
 
@@ -642,7 +638,7 @@
     renderFilterDebug();
     view.edgesList.replaceChildren(...items.slice(0, MAX_EDGE_ROWS).map((item) => (grouped ? renderGroupCard(item) : renderEdgeRow(item, false))));
     const status = scannerStatus;
-    const unit = grouped ? "markets" : "lines";
+    const unit = grouped ? "cards" : "lines";
     if (rows.length === 0) {
       view.edgesEmpty.hidden = false;
       view.edgesEmpty.textContent = !status || (status.phase !== "live" && !status.leaguesLoaded.length)
@@ -732,8 +728,10 @@
     return groupsOf(rows).map((group) => ({
       key: `group:${group.key}`, row: group.best,
       summary: `${group.bookCount} book${group.bookCount === 1 ? "" : "s"} \u00b7 ${group.rows.length} line${group.rows.length === 1 ? "" : "s"}`,
-      // A card pings again only when its best edge got better (a new rung or a better price).
-      improvedOn: (previous) => typeof previous.edgePct === "number" && group.best.edgePct > previous.edgePct,
+      // A card pings again only when its best line got better by the card's
+      // own ranking, the stake: the best rung pulled and a +944 longshot
+      // taking over is a worse card, not news, whatever its edge %.
+      improvedOn: (previous) => typeof previous.stake === "number" && typeof group.best.stake === "number" && group.best.stake > previous.stake,
     }));
   }
 
@@ -776,7 +774,7 @@
   async function notifyEdge(row, summary) {
     const notificationId = `edge:${row.key}:${Date.now()}`;
     await rememberAlertTarget(notificationId, row);
-    const stake = stakeFor(row);
+    const stake = row.stake ?? stakeFor(row);
     const message = [
       `${fmtPct(row.edgePct / 100)} edge`,
       stake == null ? null : `stake ${fmtDollars(stake)}`,
@@ -832,7 +830,7 @@
     const items = alertItems();
     pruneAlertLog(now);
     if (!alertsBaselined) {
-      for (const item of items) alertLog[item.key] = { price: item.row.price, edgePct: item.row.edgePct, at: now, baseline: true };
+      for (const item of items) alertLog[item.key] = { price: item.row.price, stake: item.row.stake, at: now, baseline: true };
       alertsBaselined = true;
       await chrome.storage.local.set({ alertLog });
       return;
@@ -844,7 +842,7 @@
       const lastForEvent = eventAlertAt[item.row.eventId] || 0;
       if (now - lastForEvent < ALERT_EVENT_COOLDOWN_MS) continue;
       await notifyEdge(item.row, item.summary);
-      alertLog[item.key] = { price: item.row.price, edgePct: item.row.edgePct, at: now };
+      alertLog[item.key] = { price: item.row.price, stake: item.row.stake, at: now };
       eventAlertAt[item.row.eventId] = now;
       fired += 1;
     }

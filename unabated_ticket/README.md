@@ -281,8 +281,12 @@ side, points — so alt lines, when included, are deduped per rung, and
 turning alts or their gates on re-baselines first), and at most one per
 event per 5 min. With **Group by market** on, the unit is the card instead:
 one notification per (game, market, side) about its best line, again only
-when the card's best edge improves (a new rung or a better price), with
-`N books · M lines` in the body; toggling grouping re-baselines. In the flat
+when the card's best line improves by the card's own ranking — a higher
+stake, so a pulled main line that leaves a +944 rung as "best" is not news
+however its edge % compares — with `N books · M lines` in the body;
+toggling grouping re-baselines. The alert card is built from the lines at
+or above the *alert* threshold, so its best line and counts can differ
+from the card on screen (built at the list threshold). In the flat
 list a ladder with several rungs over the threshold pings once per 5 min
 per rung until each has fired; the notification title says `(alt of -2.5)`
 so an alt is never mistaken for the main line. Title is the bet and
