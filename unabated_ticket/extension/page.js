@@ -5,14 +5,21 @@
 // invisible from an isolated-world content script, so this file runs in the
 // page world and hands results to content.js via window.postMessage.
 //
-// Side effects: none on the page. One capture-phase click listener on
-// document (Unabated's own handler still runs), one 5s interval while a
-// ticket is being watched. Never touches the DOM.
+// Side effects: one capture-phase click listener on document (Unabated's
+// own handler still runs), one 5s interval while a ticket is being watched,
+// and a 10s heartbeat that also publishes the user's Unabated book selection
+// (read from the grid's React context) as the Edges tab's default book filter. The only DOM touch is the locate flash:
+// a 2.5s outline on the cell an Edges row or notification pointed at.
 
 (function () {
   "use strict";
 
   const MESSAGE_SOURCE = "unabated-ticket";
+  // Each injected copy has an id; a newer copy (re-injected after an extension
+  // reload) posts a takeover and every older copy retires itself.
+  const INSTANCE_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let retired = false;
+  const intervals = [];
   const CELL_SHELL_SELECTOR = ".odds-cell-action-shell";
   // The "..." menu button is a child of the shell; opening a menu is not picking a bet.
   const MORE_BUTTON_SELECTOR = ".odds-cell-more-button";
@@ -23,7 +30,8 @@
   // ---- messaging -----------------------------------------------------------
 
   function post(type, payload) {
-    window.postMessage({ source: MESSAGE_SOURCE, type, payload }, window.location.origin);
+    if (retired) return;
+    window.postMessage({ source: MESSAGE_SOURCE, type, payload, instanceId: INSTANCE_ID }, window.location.origin);
   }
 
   // ---- React fiber helpers -------------------------------------------------
@@ -272,13 +280,26 @@
     };
   }
 
+  // AG Grid's own .ag-cell wrappers are not React-rendered on Unabated (no
+  // fiber on them); the price shells inside are, and their fiber walks up to
+  // the cell renderer props (api, node, context) — the same path capture uses.
+  // .ag-cell stays as a fallback for a grid that mounts differently.
+  const GRID_PROBE_SELECTORS = [CELL_SHELL_SELECTOR, ".ag-cell"];
+
   function anyGridApi() {
-    const cells = document.querySelectorAll(".ag-cell");
-    for (const cell of cells) {
-      const props = findProps(fiberOf(cell), isGridCellProps);
-      if (props) return { api: props.api, context: props.context ?? null };
+    for (const selector of GRID_PROBE_SELECTORS) {
+      for (const element of document.querySelectorAll(selector)) {
+        const fiber = fiberOf(element);
+        if (!fiber) continue;
+        const props = findProps(fiber, isGridCellProps);
+        if (!props) continue;
+        // The line renderer's context carries userSettings; the grid context is the fallback.
+        const lineProps = findProps(fiber, isLineProps);
+        const context = (lineProps && lineProps.context) || props.context || null;
+        return { api: props.api, context };
+      }
     }
-    throw new Error("could not reach the AG Grid API from any rendered cell");
+    throw new Error(`could not reach the AG Grid API from any rendered cell (tried ${GRID_PROBE_SELECTORS.join(", ")})`);
   }
 
   // Fallback: data-marketline-id on the shell + a scan of every row's sides.
@@ -360,7 +381,216 @@
   function startWatching(ticket, gridApi) {
     stopWatching();
     watcher = { ticket, gridApi, timer: setInterval(watchTick, WATCH_INTERVAL_MS) };
+    intervals.push(watcher.timer);
   }
+
+
+  // ---- Unabated book selection publish --------------------------------------
+
+  // The odds screen's book selection lives under context.userSettings.gameOdds
+  // as entries carrying isUnavailable (false = the book is shown). Live on
+  // 2026-09-10 gameOdds had 6 top-level entries with no isUnavailable on them,
+  // so the book entries sit one level down; search up to 3 levels for the
+  // first array/object whose members carry the flag, and when nothing does,
+  // report the keys seen so the panel header shows the real shape.
+  const BOOK_ENTRY_SEARCH_DEPTH = 3;
+
+  function bookEntriesOf(node, depth) {
+    if (!node || typeof node !== "object" || depth > BOOK_ENTRY_SEARCH_DEPTH) return null;
+    const members = Array.isArray(node) ? node.map((entry) => ({ entry, key: null })) : Object.entries(node).map(([key, entry]) => ({ entry, key }));
+    const flagged = members.filter(({ entry }) => entry && typeof entry === "object" && "isUnavailable" in entry);
+    if (flagged.length) return flagged;
+    for (const { entry } of members) {
+      const found = bookEntriesOf(entry, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function describeShape(node) {
+    if (Array.isArray(node)) return `array[${node.length}]${node.length ? ` of {${Object.keys(node[0] || {}).slice(0, 8).join(",")}}` : ""}`;
+    if (node && typeof node === "object") return `{${Object.keys(node).slice(0, 12).join(",")}}`;
+    return typeof node;
+  }
+
+  function enabledBookIdsOf(userSettings) {
+    const gameOdds = userSettings && userSettings.gameOdds;
+    if (!gameOdds || typeof gameOdds !== "object") {
+      throw new Error(`userSettings.gameOdds missing (userSettings keys: ${Object.keys(userSettings || {}).slice(0, 12).join(",") || "none"})`);
+    }
+    const entries = bookEntriesOf(gameOdds, 0);
+    if (!entries) throw new Error(`no isUnavailable entries under userSettings.gameOdds; shape ${describeShape(gameOdds)}`);
+    const ids = [];
+    for (const { entry, key } of entries) {
+      if (entry.isUnavailable !== false) continue;
+      const id = Number(entry.marketSourceId ?? entry.id ?? key);
+      if (Number.isInteger(id)) ids.push(id);
+    }
+    if (!ids.length) throw new Error(`no enabled books among ${entries.length} isUnavailable entries under userSettings.gameOdds (first: ${describeShape(entries[0].entry)})`);
+    return ids;
+  }
+
+  let lastFiltersSignature = null;
+
+  // What the selection was read from, for the panel's click-to-expand line:
+  // the gameOdds entry fields with true/false counts per boolean field (so a
+  // wrong flag shows up as "33 of 33 false") and the first entry.
+  function filterDiagnostic(userSettings) {
+    const out = { userSettingsKeys: Object.keys(userSettings || {}).slice(0, 20) };
+    const gameOdds = userSettings && userSettings.gameOdds;
+    out.gameOddsShape = describeShape(gameOdds);
+    const entries = bookEntriesOf(gameOdds, 0) || [];
+    out.entryCount = entries.length;
+    const counts = {};
+    for (const { entry } of entries) {
+      for (const [key, value] of Object.entries(entry)) {
+        if (typeof value !== "boolean") continue;
+        counts[key] = counts[key] || { true: 0, false: 0 };
+        counts[key][value ? "true" : "false"] += 1;
+      }
+    }
+    out.booleanFields = counts;
+    out.firstEntry = entries.length ? JSON.stringify(entries[0].entry).slice(0, 400) : null;
+    return out;
+  }
+
+  function publishFilters() {
+    let payload;
+    let context = null;
+    try {
+      context = anyGridApi().context;
+      const bookIds = enabledBookIdsOf(context && context.userSettings);
+      payload = { bookIds, error: null, url: window.location.href, at: Date.now() };
+    } catch (error) {
+      payload = { bookIds: null, error: error.message, url: window.location.href, at: Date.now() };
+    }
+    try {
+      payload.debug = context ? filterDiagnostic(context.userSettings) : { error: "no grid context" };
+    } catch (error) {
+      payload.debug = { error: error.message };
+    }
+    const signature = JSON.stringify([payload.bookIds, payload.error]);
+    if (signature !== lastFiltersSignature) {
+      lastFiltersSignature = signature;
+      console.info("[unabated-ticket] books filter", payload);
+    }
+    post("filters", payload);
+  }
+
+
+  // ---- locate: scroll the grid to a line and flash its cell -----------------
+
+  const LOCATE_ATTEMPTS = 20;
+  const LOCATE_RETRY_MS = 1000;
+  const FLASH_MS = 2500;
+  const FLASH_ATTR = "data-unabated-ticket-flash";
+  let lastLocateAt = 0;
+
+  function findRowNode(api, request) {
+    let hit = null;
+    api.forEachNode((node) => {
+      if (hit || !node.data) return;
+      const data = node.data;
+      if (data.eventId !== request.eventId || data.betTypeId !== request.betTypeId) return;
+      if ((data.periodTypeId ?? 1) !== request.periodTypeId) return;
+      hit = node;
+    });
+    return hit;
+  }
+
+  function cellShellFor(node, request) {
+    const rowId = node.data.gridKey ?? node.id;
+    if (rowId == null) return null;
+    const rowSelector = `.ag-row[row-id="${String(rowId).replace(/"/g, '\\"')}"]`;
+    const inBookColumn = document.querySelector(`${rowSelector} .ag-cell[col-id="${request.bookId}"] ${CELL_SHELL_SELECTOR}[data-side-index="${request.sideIndex}"]`);
+    if (inBookColumn) return inBookColumn;
+    // Book column may be scrolled out / hidden: fall back to any shell on the row for that side.
+    return document.querySelector(`${rowSelector} ${CELL_SHELL_SELECTOR}[data-side-index="${request.sideIndex}"]`);
+  }
+
+  function flash(element) {
+    element.setAttribute(FLASH_ATTR, "1");
+    const previousOutline = element.style.outline;
+    const previousOffset = element.style.outlineOffset;
+    element.style.outline = "3px solid #f59e0b";
+    element.style.outlineOffset = "1px";
+    element.scrollIntoView({ block: "center", inline: "center" });
+    setTimeout(() => {
+      element.style.outline = previousOutline;
+      element.style.outlineOffset = previousOffset;
+      element.removeAttribute(FLASH_ATTR);
+    }, FLASH_MS);
+  }
+
+  function reportLocate(request, ok, message) {
+    post("located", { key: request.key, sideLabel: request.sideLabel, bookName: request.bookName, leagueLabel: request.leagueLabel, ok, message, at: Date.now() });
+  }
+
+  // Retries while the grid loads (a navigated tab has no rows for a few seconds).
+  function locateLine(request, attempt) {
+    if (request.at !== lastLocateAt) return; // superseded by a newer request
+    let api = null;
+    let node = null;
+    try {
+      api = anyGridApi().api;
+      node = findRowNode(api, request);
+    } catch (_error) {
+      api = null;
+    }
+    if (!node) {
+      if (attempt < LOCATE_ATTEMPTS) {
+        setTimeout(() => locateLine(request, attempt + 1), LOCATE_RETRY_MS);
+        return;
+      }
+      reportLocate(request, false, api
+        ? "row is not on the grid (hidden by your bet-type or period filter, or the game left the board)"
+        : "the odds grid never appeared on this tab");
+      return;
+    }
+    try {
+      if (typeof api.ensureNodeVisible === "function") api.ensureNodeVisible(node, "middle");
+      if (typeof api.ensureColumnVisible === "function") api.ensureColumnVisible(String(request.bookId));
+    } catch (error) {
+      reportLocate(request, false, `grid scroll failed: ${error.message}`);
+      return;
+    }
+    // The row renders on the next frame after ensureNodeVisible.
+    setTimeout(() => {
+      const shell = cellShellFor(node, request);
+      if (!shell) {
+        reportLocate(request, false, "row found but its cell did not render (book column hidden?)");
+        return;
+      }
+      flash(shell);
+      reportLocate(request, true, null);
+    }, 50);
+  }
+
+  function onLocateMessage(payload) {
+    if (!payload || typeof payload.at !== "number" || payload.at <= lastLocateAt) return;
+    lastLocateAt = payload.at;
+    const wantedPath = `/${payload.league}/`;
+    if (!window.location.pathname.startsWith(wantedPath)) return; // another tab (or this one, mid-navigation) will handle it
+    locateLine(payload, 0);
+  }
+
+  function retire() {
+    retired = true;
+    stopWatching();
+    for (const timer of intervals) clearInterval(timer);
+    document.removeEventListener("pointerdown", onClickCapture, true);
+    document.removeEventListener("click", onClickCapture, true);
+    console.info("[unabated-ticket] page.js retired (a newer copy took over)");
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.source !== MESSAGE_SOURCE) return;
+    if (data.type === "takeover" && data.instanceId !== INSTANCE_ID && !retired) retire();
+    if (retired || data.type !== "locate") return;
+    onLocateMessage(data.payload);
+  });
 
   // ---- click capture -------------------------------------------------------
 
@@ -375,6 +605,7 @@
   let lastCapture = { shell: null, at: 0 };
 
   function onClickCapture(event) {
+    if (retired) return;
     const target = event.target instanceof Element ? event.target : null;
     const shell = target && target.closest(CELL_SHELL_SELECTOR);
     if (!shell) return;
@@ -397,8 +628,17 @@
 
   document.addEventListener("pointerdown", onClickCapture, true);
   document.addEventListener("click", onClickCapture, true);
-  // Heartbeat so the panel can show whether this script is alive on the tab.
-  post("ready", { url: window.location.href, at: Date.now() });
-  setInterval(() => post("ready", { url: window.location.href, at: Date.now() }), 10000);
+  // Heartbeat so the panel can show whether this script is alive on the tab,
+  // plus the books/bet-type filter for the Edges tab (grid may not be up yet
+  // on the first tick; the error is published and the next tick retries).
+  const HEARTBEAT_MS = 10000;
+  function heartbeat() {
+    if (retired) return;
+    post("ready", { url: window.location.href, at: Date.now() });
+    publishFilters();
+  }
+  post("takeover", { at: Date.now() });
+  heartbeat();
+  intervals.push(setInterval(heartbeat, HEARTBEAT_MS));
   console.info("[unabated-ticket] page.js active on", window.location.href);
 })();

@@ -1,24 +1,48 @@
 {
   "manifest_version": 3,
   "name": "Unabated Ticket",
-  "version": "0.1.0",
-  "description": "Click a price on the Unabated odds screen; see the bet and its Kelly stake in a side panel that stays open when the sportsbook tab opens.",
+  "version": "0.2.0",
+  "description": "Click a price on the Unabated odds screen; see the bet and its Kelly stake in a side panel. An Edges tab lists every positive-edge line across NFL, CFB and MLB, with Chrome notifications for new ones.",
   "minimum_chrome_version": "116",
-  "permissions": ["sidePanel", "storage"],
-  "host_permissions": ["https://tools.unabated.com/*"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_title": "Unabated Ticket" },
-  "side_panel": { "default_path": "panel.html" },
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "notifications",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://tools.unabated.com/*",
+    "https://content.unabated.com/*",
+    "https://api-k.unabated.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Unabated Ticket"
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
   "content_scripts": [
     {
-      "matches": ["https://tools.unabated.com/*"],
-      "js": ["page.js"],
+      "matches": [
+        "https://tools.unabated.com/*"
+      ],
+      "js": [
+        "page.js"
+      ],
       "world": "MAIN",
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://tools.unabated.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://tools.unabated.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "world": "ISOLATED",
       "run_at": "document_idle"
     }

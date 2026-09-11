@@ -6,41 +6,115 @@
   <link rel="stylesheet" href="panel.css">
 </head>
 <body>
-  <main id="ticket" hidden>
-    <div id="warning" class="warning" hidden></div>
-    <div class="side-caption">You are betting</div>
-    <div class="side" id="side-label"></div>
-    <div class="muted" id="bet-line"></div>
-    <div class="muted" id="event-line"></div>
-    <div class="muted" id="start-line"></div>
+  <nav class="tabs" id="tabs">
+    <button type="button" data-tab="ticket" class="active">Ticket</button>
+    <button type="button" data-tab="edges">Edges <span id="edges-count" class="count" hidden></span></button>
+  </nav>
 
-    <dl class="facts">
-      <dt>Book</dt><dd id="book"></dd>
-      <dt>Price</dt><dd id="price"></dd>
-      <dt>Fair</dt><dd id="fair"></dd>
-      <dt>Edge</dt><dd id="edge"></dd>
-    </dl>
+  <section id="tab-ticket">
+    <main id="ticket" hidden>
+      <div id="warning" class="warning" hidden></div>
+      <div class="side-caption">You are betting</div>
+      <div class="side" id="side-label"></div>
+      <div class="muted" id="bet-line"></div>
+      <div class="muted" id="event-line"></div>
+      <div class="muted" id="start-line"></div>
 
-    <div class="stake-block">
-      <div class="stake-label">Stake</div>
-      <div class="stake" id="stake"></div>
-      <div class="muted" id="full-kelly"></div>
+      <dl class="facts">
+        <dt>Book</dt><dd id="book"></dd>
+        <dt>Price</dt><dd id="price"></dd>
+        <dt>Fair</dt><dd id="fair"></dd>
+        <dt>Edge</dt><dd id="edge"></dd>
+      </dl>
+
+      <div class="stake-block">
+        <div class="stake-label">Stake</div>
+        <div class="stake" id="stake"></div>
+        <div class="payout-row" id="payout-row" hidden>
+          <div class="payout-cell"><div class="payout-label">To win</div><div class="payout-value" id="profit"></div></div>
+          <div class="payout-cell"><div class="payout-label">Payout</div><div class="payout-value" id="payout"></div></div>
+        </div>
+        <div class="muted" id="full-kelly"></div>
+      </div>
+
+      <button id="copy" type="button">Copy</button>
+      <span id="copy-status" class="muted"></span>
+    </main>
+
+    <main id="error" class="error" hidden>
+      <div class="side" id="error-title">Could not read this cell</div>
+      <div class="muted" id="error-detail"></div>
+      <div class="muted" id="error-hint"></div>
+    </main>
+
+    <main id="empty" hidden>
+      <div class="muted">Click a price on tools.unabated.com to build a ticket.</div>
+      <div class="muted" id="page-status"></div>
+    </main>
+  </section>
+
+  <section id="tab-edges" hidden>
+    <div id="edges-error" class="warning bad" hidden></div>
+    <div id="edges-status" class="muted"></div>
+    <div id="edges-filter" class="muted" title="Click to show what the Unabated selection was read from"></div>
+    <pre id="edges-filter-debug" class="muted debug" hidden></pre>
+    <div id="edges-locate" class="muted" hidden></div>
+
+    <div class="edges-controls">
+      <div class="control-row" id="edges-sports">
+        <span class="control-label">Sports</span>
+        <label><input type="checkbox" data-sport="football"> Football</label>
+        <label><input type="checkbox" data-sport="basketball"> Basketball</label>
+        <label><input type="checkbox" data-sport="baseball"> Baseball</label>
+        <label><input type="checkbox" data-sport="hockey"> Hockey</label>
+        <label><input type="checkbox" data-sport="soccer"> Soccer</label>
+      </div>
+      <div class="control-row" id="edges-periods">
+        <span class="control-label">Periods</span>
+        <label><input type="checkbox" data-period="1"> Full game</label>
+        <label><input type="checkbox" data-period="2"> 1st half</label>
+      </div>
+      <div class="control-row" id="edges-bettypes">
+        <span class="control-label">Bets</span>
+        <label><input type="checkbox" data-bettype="1"> Moneyline</label>
+        <label><input type="checkbox" data-bettype="2"> Spread</label>
+        <label><input type="checkbox" data-bettype="3"> Total</label>
+      </div>
+      <div class="control-row">
+        <span class="control-label">Books</span>
+        <details id="edges-books-dropdown" class="dropdown">
+          <summary id="edges-books-mode">Books</summary>
+          <div class="dropdown-panel">
+            <div class="dropdown-actions">
+              <button type="button" id="books-unabated" class="small">My Unabated selection</button>
+              <button type="button" id="books-all" class="small">All live</button>
+              <button type="button" id="books-none" class="small">None</button>
+            </div>
+            <div id="edges-books" class="books-list"></div>
+          </div>
+        </details>
+      </div>
+      <div class="control-row">
+        <label class="control-inline">Min edge % <input id="edges-min" type="number" min="0" max="50" step="0.1"></label>
+        <label class="control-inline" title="Hide lines the book has not changed for longer than this (dead feeds keep old prices)">Max line age h <input id="edges-max-age" type="number" min="1" step="1"></label>
+        <label class="control-inline">Sort
+          <select id="edges-sort">
+            <option value="edge">by edge</option>
+            <option value="stake">by stake</option>
+            <option value="start">by start time</option>
+          </select>
+        </label>
+      </div>
+      <div class="control-row" id="edges-alerts">
+        <label><input type="checkbox" id="alerts-enabled"> Notify on new edges at or above</label>
+        <label class="control-inline"><input id="alerts-min" type="number" min="0" max="50" step="0.1"> %</label>
+      </div>
+      <div id="edges-settings-error" class="muted"></div>
     </div>
 
-    <button id="copy" type="button">Copy</button>
-    <span id="copy-status" class="muted"></span>
-  </main>
-
-  <main id="error" class="error" hidden>
-    <div class="side" id="error-title">Could not read this cell</div>
-    <div class="muted" id="error-detail"></div>
-    <div class="muted" id="error-hint"></div>
-  </main>
-
-  <main id="empty" hidden>
-    <div class="muted">Click a price on tools.unabated.com to build a ticket.</div>
-    <div class="muted" id="page-status"></div>
-  </main>
+    <ol id="edges-list" class="edges-list"></ol>
+    <div id="edges-empty" class="muted" hidden></div>
+  </section>
 
   <section class="settings">
     <label>Bankroll <input id="bankroll" type="number" min="1" step="1"></label>
@@ -49,6 +123,9 @@
   </section>
 
   <script src="kelly.js"></script>
+  <script src="feed.js"></script>
+  <script src="scanner.js"></script>
+  <script src="locate.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>

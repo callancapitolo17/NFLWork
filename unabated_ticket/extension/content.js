@@ -8,13 +8,22 @@
 // dead/asleep service worker cannot stop a ticket from reaching the panel.
 //
 // Side effects: writes chrome.storage.local {ticket, error, watchStatus,
-// pageReady}. None on the page.
+// pageReady, booksFilter, locateResult}; forwards {locate} requests (row or
+// notification click) to page.js via window.postMessage. None on the page.
 
 (function () {
   "use strict";
 
+  // A re-injected copy (extension reloaded with this tab open) replaces the
+  // dead one; if a live one is somehow present, it must not double-write.
+  if (window.__unabatedTicketContentActive) return;
+  window.__unabatedTicketContentActive = true;
+
   const MESSAGE_SOURCE = "unabated-ticket";
-  const HANDLED_TYPES = new Set(["ticket", "watch", "error", "ready"]);
+  const HANDLED_TYPES = new Set(["ticket", "watch", "error", "ready", "filters", "located"]);
+  // A locate request older than this is left alone (the tab it targeted may
+  // have been reloaded long after the click).
+  const LOCATE_MAX_AGE_MS = 90 * 1000;
 
   function setSession(obj) {
     try {
@@ -43,6 +52,21 @@
     setSession({ pageReady: { url: payload.url, at: payload.at } });
   }
 
+  // Unabated book selection, the Edges tab's default book filter. A failed read keeps the last
+  // good filter (a tab mid-load must not blank it) but records why, so the
+  // panel can say the filter is stale rather than pretend it is current.
+  function handleFilters(payload) {
+    if (payload.error) {
+      chrome.storage.local.get("booksFilter", (stored) => {
+        if (chrome.runtime.lastError) return;
+        const previous = stored.booksFilter || null;
+        setSession({ booksFilter: { ...(previous || {}), bookIds: previous ? previous.bookIds : null, lastError: payload.error, lastErrorAt: payload.at, at: previous ? previous.at : null, debug: payload.debug || (previous ? previous.debug : null) } });
+      });
+      return;
+    }
+    setSession({ booksFilter: { bookIds: payload.bookIds, url: payload.url, at: payload.at, lastError: null, lastErrorAt: null, debug: payload.debug || null } });
+  }
+
   function handleWatch(payload) {
     chrome.storage.local.get("ticket", (stored) => {
       if (chrome.runtime.lastError) return;
@@ -62,7 +86,34 @@
     });
   }
 
-  const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch, ready: handleReady };
+  function handleLocated(payload) {
+    setSession({ locateResult: payload });
+  }
+
+  const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch, ready: handleReady, filters: handleFilters, located: handleLocated };
+
+  function forwardLocate(locate) {
+    if (!locate || typeof locate.at !== "number" || Date.now() - locate.at > LOCATE_MAX_AGE_MS) return;
+    window.postMessage({ source: MESSAGE_SOURCE, type: "locate", payload: locate }, window.location.origin);
+  }
+
+  // Requests arrive live while this tab is open, or are picked up on load when
+  // the panel had to navigate/open the tab (page.js waits for the grid).
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && changes.locate && changes.locate.newValue) forwardLocate(changes.locate.newValue);
+    });
+    chrome.storage.local.get(["locate", "locateResult"], (stored) => {
+      if (chrome.runtime.lastError) return;
+      const locate = stored.locate;
+      const result = stored.locateResult;
+      // Already answered (a plain reload within the max age): do not flash again.
+      if (locate && result && result.key === locate.key && result.at >= locate.at) return;
+      forwardLocate(locate);
+    });
+  } catch (_error) {
+    // Extension context invalidated.
+  }
 
   console.info("[unabated-ticket] content.js active (direct-to-storage)");
   window.addEventListener("message", (event) => {
