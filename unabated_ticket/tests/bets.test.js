@@ -496,6 +496,24 @@ test("pruneForRetention: open bets always, settled and closed within the window"
   assert.equal(bets.pruneForRetention(undated, NOW, 1).length, 1);
 });
 
+test("resolveTeamKeys: fills null keys from names the way the service leaves them", () => {
+  const records = normalizedFixture();
+  const fromService = records.map((r) => Object.assign({}, r, { awayKey: null, homeKey: null }));
+  const resolved = bets.resolveTeamKeys(fromService);
+  assert.deepEqual(resolved, records);
+  assert.equal(fromService[0].awayKey, null); // input untouched
+  const ne = resolved.find((r) => r.id === "kalshi:KXNFLGAME-26SEP20PITNE-NE:yes");
+  assert.equal(ne.awayKey, "nfl:pit");
+  assert.equal(ne.homeKey, "nfl:ne");
+  const unknown = bets.resolveTeamKeys([{ league: "cfb", awayTeam: "Springfield", homeTeam: "Lehigh", awayKey: null, homeKey: null }])[0];
+  assert.equal(unknown.awayKey, null);
+  assert.equal(unknown.homeKey, "cfb:lehigh");
+  const kept = { league: "cfb", awayTeam: "Lehigh", homeTeam: "Drake", awayKey: "cfb:custom", homeKey: null };
+  assert.equal(bets.resolveTeamKeys([kept])[0].awayKey, "cfb:custom");
+  const future = fromService.find((r) => r.league === null);
+  assert.equal(bets.resolveTeamKeys([future])[0], future);
+});
+
 test("dedupeByNativeId: newest record per id across consecutive payloads", () => {
   const first = { generatedAt: "2026-09-11T20:00:00Z", bets: [
     { id: "kalshi:a:yes", sourceFetchedAt: "2026-09-11T20:00:00Z", status: "open", contracts: 100 },

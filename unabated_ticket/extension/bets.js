@@ -20,6 +20,8 @@
 // Python bets service (phase 2). It is written here first so the node tests on
 // tests/fixtures/bets/kalshi_fixture.json pin the semantics — side, points,
 // price, stake, status — that the Python port must reproduce. Keep it small.
+// The service leaves awayKey / homeKey null and the panel fills them with
+// resolveTeamKeys() on load, so the team table lives only in teams.js.
 //
 // Kalshi facts the normaliser relies on (recon 2026-09-11, plan § Recon):
 //   event_ticker  <SERIES>-<YYMMMDD>[HHMM]<AWAY><HOME>[G1|G2]; football suffixes
@@ -581,6 +583,19 @@
     });
   }
 
+  // Fill null awayKey / homeKey from the raw team names. The bets service
+  // leaves both null (the team table lives here, not in Python); records that
+  // already carry keys, or have no league / no name, are returned unchanged.
+  function resolveTeamKeys(records) {
+    return records.map((record) => {
+      if (!record.league) return record;
+      const resolved = Object.assign({}, record);
+      if (resolved.awayKey == null && resolved.awayTeam != null) resolved.awayKey = teams.teamKey(record.league, record.awayTeam);
+      if (resolved.homeKey == null && resolved.homeTeam != null) resolved.homeKey = teams.teamKey(record.league, record.homeTeam);
+      return resolved;
+    });
+  }
+
   // Newest record per id across consecutive service payloads (arrays of
   // records or {bets: [...]}); a later payload wins a tie on sourceFetchedAt.
   function dedupeByNativeId(payloads) {
@@ -598,7 +613,7 @@
   const api = {
     TIE_CAVEAT, GAME_SERIES, RETENTION_DAYS_DEFAULT,
     normalizeKalshi, parseEventSuffix, centsToAmerican,
-    matchBets, annotateRows, unmatchedReasons, pruneForRetention, dedupeByNativeId,
+    matchBets, annotateRows, unmatchedReasons, pruneForRetention, dedupeByNativeId, resolveTeamKeys,
     describeBet, formatPlacedAt,
   };
 

@@ -307,10 +307,58 @@ MB/min with just football/baseball/basketball/hockey). Same endpoints the
 page itself calls, at a far lower rate than its 0.6 s poll; nothing runs
 when the panel is closed.
 
+## Bets service
+
+A local Python service that turns the user's own bet history into normalised
+records the panel can match against a line (issue #114; plan in
+`docs/2026-09-11-issue-114-bet-history-plan.md`). It is the only place that
+signs Kalshi requests — the private key never enters the extension. Read-only
+GETs; no order placement.
+
+```bash
+./unabated_ticket/bets_service/run.sh        # http://127.0.0.1:8094
+```
+
+- **Install**: nothing beyond the `kalshi_draft/venv` (duckdb, cryptography);
+  `run.sh` uses it when present, else `python3`. Launch from the repo root.
+- **Credentials**: `KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY_PATH`, read from
+  the environment, then `unabated_ticket/bets_service/.env`, then the bots'
+  `kalshi_draft/.env` in the main checkout — so with the bots configured no
+  new file is needed. `.env.example` lists every knob (port, retention window,
+  Kalshi cadence, log level). Never commit `.env`.
+- **Endpoints** (loopback only, no auth): `GET /bets.json[?days=N]` →
+  `{generatedAt, sources: {kalshi: {fetchedAt, ok, error, count}}, bets: [...]}`
+  with open bets plus settled/closed ones within `N` days (default 30);
+  `GET /health` → `{ok, uptimeSec, sources}`.
+- **Kalshi source** (`sources/kalshi.py`): every 60 s pulls fills since the
+  last poll with a 60 s overlap (deduped on `trade_id`) and unsettled
+  positions, plus one cached public GET per market and per event; a full
+  fills re-pull once an hour is the reconcile, and it re-reads every cached
+  market without a result yet (settlement is the one thing on a market payload
+  that changes). Records are one per (ticker, side): positions are the truth
+  for the open size, fills give the VWAP entry price and first fill time,
+  `market.result` gives won/lost. Team keys are left `null` — the panel fills
+  them with `bets.resolveTeamKeys()` so the team table lives only in
+  `teams.js`. `normalize_kalshi()` is a port of `extension/bets.js`
+  `normalizeKalshi()`; `tests/test_parity.py` holds the two byte-equivalent.
+- **Store** (`store.py`, `bets.duckdb`, gitignored): `bets` upserts on the
+  record id and is never pruned (the CLV work needs the history);
+  `source_runs` appends one row per poll. A failed poll writes a failed
+  `source_runs` row and touches nothing else, so a dark source keeps serving
+  its previous records. Log: `bets_service.log` (rotating).
+- **Adding a venue** (#115 BetOnline, #116 Novig, #117 ProphetX): a module
+  in `bets_service/sources/` with `name`, `poll_sec` and `fetch() ->
+  list[record]` (the `Source` protocol in `sources/__init__.py`), registered in
+  `service.main()`. `fetch()` returns every record the venue knows and raises
+  on failure — never a partial list. Records follow the contract in the plan
+  (`id` = `"<venue>:<native id>"`, `side`/`points` in the side's own number,
+  raw team names, keys `null`).
+
 ## Tests
 
 ```bash
 node --test "unabated_ticket/tests/*.test.js"
+/Users/callancapitolo/NFLWork/kalshi_draft/venv/bin/python3 -m pytest unabated_ticket/bets_service/tests
 ```
 
 `kelly.test.js` checks the sheet's worked example (-400 at +12.5% edge,
@@ -328,7 +376,13 @@ ladder disappearing on the next parse, and `groupEdges` (card keys, book
 and line counts, best by edge vs by stake, cards following their best).
 `scanner.test.js` drives the loop with an injected fetch: cursor from
 `Last-Modified`, poll, rejected-cursor resync, per-league failure, resume,
-and a league switch while a snapshot is still downloading.
+and a league switch while a snapshot is still downloading. `bets.test.js`
+pins the Kalshi normaliser and the matcher on
+`fixtures/bets/kalshi_fixture.json`; the pytest suite covers the service
+(fills → positions aggregation, both spread signs and total directions, the
+NO-moneyline tie caveat, unknown series failing closed, a failed poll keeping
+the previous records, the `/bets.json` shape and `?days=` window, and node
+parity on the same fixture).
 
 End-to-end without a real login: Playwright (in `mlb_sgp/venv`) with the
 ms-playwright Chromium, `--load-extension`, the two feed URLs routed to the
