@@ -93,8 +93,8 @@
   // Unabated's own edge % (EV per $1 staked) for this line. Null is a normal
   // condition (lopsided moneylines, exchange-only lines Unabated has not
   // priced), not a parse failure, so it gets its own error kind for the panel.
-  function requireEdgePct(marketLine) {
-    const edge = edgePctOf(marketLine);
+  function requireEdgePct(marketLine, { fromGe }) {
+    const edge = edgePctOf(marketLine, { fromGe });
     if (edge == null) {
       const error = new Error("Unabated has no edge for this line");
       error.kind = "no_fair";
@@ -115,11 +115,14 @@
     return { sourceFormat: 1, sourcePrice: null };
   }
 
-  function edgePctOf(marketLine) {
+  // The screen's computed edge; with fromGe (alternate-line objects, for
+  // which the screen computes none) the feed's own fraction on the object
+  // (0.0296 = +2.96%). Main lines never read ge, so a main line Unabated
+  // has not priced still reports no_fair.
+  function edgePctOf(marketLine, { fromGe } = { fromGe: false }) {
     const edge = marketLine.edge && marketLine.edge.edge;
     if (typeof edge === "number" && Number.isFinite(edge)) return edge;
-    // The feed's own fraction (0.0296 = +2.96%): what an alternate-line
-    // object carries when the screen has computed no `edge` for it.
+    if (!fromGe) return null;
     const ge = marketLine.ge;
     return typeof ge === "number" && Number.isFinite(ge) ? Math.round(ge * 1e6) / 1e4 : null;
   }
@@ -145,30 +148,49 @@
     return line.marketLineId ?? line.id ?? null;
   }
 
-  // Which "ms<id>" entry under this side holds `marketLine` (same object, or same line id).
-  function bookIdFromSides(marketLine, rowData, sideKey) {
+  function bookIdOfKey(bookKey) {
+    const parsed = Number(bookKey.replace(/^ms/, ""));
+    return Number.isInteger(parsed) ? parsed : null;
+  }
+
+  // Which "ms<id>" entry under this side IS `marketLine` — the entry itself
+  // or one of its alternateLines (same object). Exact when it hits.
+  function bookIdByIdentity(marketLine, rowData, sideKey) {
     const books = rowData.sides && rowData.sides[sideKey];
     if (!books) return null;
-    const wantedId = lineIdOf(marketLine);
     for (const [bookKey, line] of Object.entries(books)) {
-      const sameObject = line === marketLine;
-      const sameId = wantedId != null && line && String(lineIdOf(line)) === String(wantedId);
-      if (sameObject || sameId) {
-        const parsed = Number(bookKey.replace(/^ms/, ""));
-        if (Number.isInteger(parsed)) return parsed;
-      }
+      if (!line) continue;
+      const ladder = Array.isArray(line.alternateLines) ? line.alternateLines : [];
+      if (line === marketLine || ladder.includes(marketLine)) return bookIdOfKey(bookKey);
     }
     return null;
   }
 
+  // Which "ms<id>" entry under this side carries the same line id.
+  function bookIdByLineId(marketLine, rowData, sideKey) {
+    const books = rowData.sides && rowData.sides[sideKey];
+    const wantedId = lineIdOf(marketLine);
+    if (!books || wantedId == null) return null;
+    for (const [bookKey, line] of Object.entries(books)) {
+      if (line && String(lineIdOf(line)) === String(wantedId)) return bookIdOfKey(bookKey);
+    }
+    return null;
+  }
+
+  // Identity first, then the column the cell sits in, then the line's own
+  // marketSourceId: an alternate-line object can name ANOTHER book there
+  // (Sports Interaction's alts carry BetMGM's id 4, feed 2026-09-11), and
+  // best-line cells sit in a column with no book id, so no single field is
+  // enough on its own.
   function bookIdOf(marketLine, cellProps, rowData, sideKey) {
-    if (typeof marketLine.marketSourceId === "number") return marketLine.marketSourceId;
+    const byIdentity = bookIdByIdentity(marketLine, rowData, sideKey);
+    if (byIdentity != null) return byIdentity;
     if (cellProps && cellProps.marketSource && typeof cellProps.marketSource.id === "number") {
       return cellProps.marketSource.id;
     }
-    // Best-line cells sit in a column with no book id; find the line inside the row's sides instead.
-    const fromSides = bookIdFromSides(marketLine, rowData, sideKey);
-    if (fromSides != null) return fromSides;
+    if (typeof marketLine.marketSourceId === "number") return marketLine.marketSourceId;
+    const byLineId = bookIdByLineId(marketLine, rowData, sideKey);
+    if (byLineId != null) return byLineId;
     const colId = cellProps && cellProps.colDef && cellProps.colDef.colId;
     const parsed = Number(colId);
     if (Number.isInteger(parsed)) return parsed;
@@ -260,7 +282,7 @@
       price: bookPriceOf(marketLine),
       ...sourcePriceOf(marketLine),
       fair: fairPriceOrNull(marketLine),
-      edgePct: requireEdgePct(marketLine),
+      edgePct: requireEdgePct(marketLine, { fromGe: altPoints != null }),
       isAlt: altPoints != null,
       // Watcher handle: how to find this same line again through the grid API
       // (altPoints set = look inside the book line's alternateLines).
@@ -388,7 +410,7 @@
       ...sourcePriceOf(line),
       points: line.points ?? null,
       fair: fairPriceOrNull(line),
-      edgePct: edgePctOf(line),
+      edgePct: edgePctOf(line, { fromGe: ticket.watch.altPoints != null }),
       offBoard: line.statusId === 2,
       seenAt: Date.now(),
     };
@@ -563,8 +585,8 @@
       const fiber = fiberOf(shell);
       const lineProps = fiber && findProps(fiber, isLineProps);
       if (!lineProps || !lineProps.marketLine || lineProps.marketLine.points !== request.points) continue;
-      const attr = Number(shell.getAttribute("data-side-index"));
-      const sideIndex = Number.isInteger(attr) ? attr : lineProps.sideIndex;
+      const attr = shell.getAttribute("data-side-index");
+      const sideIndex = attr == null ? lineProps.sideIndex : Number(attr);
       if (sideIndex !== request.sideIndex) continue;
       const cellProps = findProps(fiber, isGridCellProps);
       const rowData = (cellProps && cellProps.node && cellProps.node.data) || {};

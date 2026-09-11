@@ -699,7 +699,7 @@
       chrome.notifications.create(notificationId, {
         type: "basic",
         iconUrl: notificationIcon(),
-        title: `${row.sideLabel} ${fmtAmerican(row.price)} @ ${row.book.name}`,
+        title: `${row.sideLabel} ${fmtAmerican(row.price)} @ ${row.book.name}${row.isAlt ? ` (alt of ${fmtPoints(row.mainPoints)})` : ""}`,
         message,
         priority: 1,
       }, () => {

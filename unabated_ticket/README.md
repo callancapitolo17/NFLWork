@@ -177,7 +177,11 @@ extrapolated:
 
 An alt sitting on the main line's current number is hidden (it would be
 the same bet twice; when a main line moves onto an alt's number via the
-stream, that alt hides until the next snapshot replaces the ladder).
+stream, that alt hides until the next snapshot replaces the ladder). A
+main line the stream takes off the board leaves its ladder listed until
+that refresh too. On the grid, an alt cell's book is read by object
+identity in the row's ladders, then the column, before the line's own
+`marketSourceId` (Sports Interaction's alts carry BetMGM's id).
 Rows carry an `alt` badge and say `alt of -2.5` (the book's main number);
 the header counts alts apart (`3,120 lines (+40,278 alts)`).
 
@@ -260,7 +264,9 @@ that: one Chrome notification per line the first time it crosses the
 threshold, again only if its price improves (dedupe key = market, book,
 side, points — so alt lines, when included, are deduped per rung, and
 turning alts or their gates on re-baselines first), and at most one per
-event per 5 min. Title is the bet and
+event per 5 min. A ladder with several rungs over the threshold therefore
+pings once per 5 min per rung until each has fired; the notification title
+says `(alt of -2.5)` so an alt is never mistaken for the main line. Title is the bet and
 book, body the edge, stake, matchup and time to start. Clicking the
 notification runs the same jump-to-row path as a row click. No alerts
 fire while the panel is closed. The alert log lives in `chrome.storage.local`
