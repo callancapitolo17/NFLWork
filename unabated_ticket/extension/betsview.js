@@ -106,10 +106,23 @@
     return BADGE_TEXT[tier] || null;
   }
 
+  // Venues whose latest service poll succeeded: the payload is then the whole
+  // store window for that venue (the service keeps records across its own
+  // failed polls), so a stored record it no longer lists is gone for good — a
+  // reset service DB, a purged fill — and must not flag lines forever.
+  function venuesWithFreshPull(payload) {
+    const sources = payload && payload.sources && typeof payload.sources === "object" ? payload.sources : {};
+    return new Set(Object.keys(sources).filter((venue) => sources[venue] && sources[venue].ok === true));
+  }
+
   // Records to keep after a poll: the stored ones and the fresh payload deduped
-  // on native id (newest wins), team keys filled, then the retention prune.
+  // on native id (newest wins), minus stored records of a venue whose pull
+  // succeeded without them; team keys filled, then the retention prune.
   function mergeServicePayload(storedRecords, payload, now) {
-    const merged = bets.dedupeByNativeId([storedRecords || [], payload]);
+    const fresh = venuesWithFreshPull(payload);
+    const listed = new Set((payload.bets || []).map((record) => record.id));
+    const kept = (storedRecords || []).filter((record) => !fresh.has(record.venue) || listed.has(record.id));
+    const merged = bets.dedupeByNativeId([kept, payload]);
     return bets.pruneForRetention(bets.resolveTeamKeys(merged), now);
   }
 
@@ -139,7 +152,7 @@
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badgeText, mergeServicePayload, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badgeText, venuesWithFreshPull, mergeServicePayload, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

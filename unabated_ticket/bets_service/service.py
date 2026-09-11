@@ -58,25 +58,46 @@ def run_source_once(source: Source, store: BetsStore) -> bool:
 
 
 def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event) -> None:
+    """Run each source on its own cadence until `stop`. A store write that
+    raises (disk full, a locked file) is logged and retried next poll — the
+    thread must outlive it, or the HTTP side would serve ageing data with no
+    failed run to show for it."""
     next_due = {source.name: 0.0 for source in sources}
     while not stop.is_set():
         now = time.monotonic()
         for source in sources:
             if now >= next_due[source.name]:
-                run_source_once(source, store)
+                try:
+                    run_source_once(source, store)
+                except Exception:  # noqa: BLE001 — the poll thread is the service's heartbeat
+                    log.exception("store write failed for source %s; retrying next poll", source.name)
                 next_due[source.name] = time.monotonic() + source.poll_sec
         stop.wait(POLL_TICK_SEC)
 
 
-def bets_payload(store: BetsStore, days: int) -> dict:
+# A registered source that has not finished a poll yet (the first Kalshi poll
+# takes ~1-2 min: one throttled GET per market and per event). Without this
+# entry the panel would read "no source configured" — the text for venues
+# with no source at all (#115-#117).
+NO_POLL_YET = {"fetchedAt": None, "ok": False, "error": "no completed poll yet", "count": 0}
+
+
+def source_status(store: BetsStore, source_names: list[str]) -> dict[str, dict]:
+    status = store.source_status()
+    for name in source_names:
+        status.setdefault(name, dict(NO_POLL_YET))
+    return status
+
+
+def bets_payload(store: BetsStore, days: int, source_names: list[str] = ()) -> dict:
     now = _now()
-    return {"generatedAt": _iso(now), "sources": store.source_status(),
+    return {"generatedAt": _iso(now), "sources": source_status(store, list(source_names)),
             "bets": store.load_bets(days, now)}
 
 
-def health_payload(store: BetsStore, started_at: float) -> dict:
+def health_payload(store: BetsStore, started_at: float, source_names: list[str] = ()) -> dict:
     return {"ok": True, "generatedAt": _iso(_now()), "uptimeSec": int(time.monotonic() - started_at),
-            "sources": store.source_status()}
+            "sources": source_status(store, list(source_names))}
 
 
 def parse_days(query: str) -> int | str:
@@ -93,19 +114,22 @@ def parse_days(query: str) -> int | str:
     return days
 
 
-def make_handler(store: BetsStore, started_at: float) -> type[BaseHTTPRequestHandler]:
+def make_handler(store: BetsStore, started_at: float,
+                 source_names: list[str] = ()) -> type[BaseHTTPRequestHandler]:
+    names = list(source_names)
+
     class BetsHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — http.server's name
             url = urlparse(self.path)
             if url.path == "/health":
-                self._send_json(200, health_payload(store, started_at))
+                self._send_json(200, health_payload(store, started_at, names))
                 return
             if url.path == "/bets.json":
                 days = parse_days(url.query)
                 if isinstance(days, str):
                     self._send_json(400, {"error": days})
                     return
-                self._send_json(200, bets_payload(store, days))
+                self._send_json(200, bets_payload(store, days, names))
                 return
             self._send_json(404, {"error": f"no route for {url.path}"})
 
@@ -128,7 +152,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
     """Run the poll thread and the HTTP server until SIGINT/SIGTERM."""
     stop = threading.Event()
     started_at = time.monotonic()
-    server = ThreadingHTTPServer((host, port), make_handler(store, started_at))
+    source_names = [source.name for source in sources]
+    server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names))
     server.daemon_threads = True
     poller = threading.Thread(target=poll_loop, args=(sources, store, stop), name="poll", daemon=True)
 
@@ -140,8 +165,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
     poller.start()
-    log.info("bets service on http://%s:%d (sources: %s)", host, port,
-             ", ".join(source.name for source in sources))
+    log.info("bets service on http://%s:%d (sources: %s)", host, port, ", ".join(source_names))
     try:
         server.serve_forever()
     finally:

@@ -129,6 +129,23 @@ test("mergeServicePayload: fresh wins on the same id, team keys are filled, old 
   assert.equal(x.homeKey, "cfb:eastern-kentucky");
 });
 
+test("mergeServicePayload: a venue's successful pull drops its stored records the payload no longer lists; a failed or absent pull keeps them", () => {
+  const stored = [
+    record("kalshi:gone:yes", "open", { sourceFetchedAt: iso(60e3) }),
+    record("kalshi:kept:yes", "open", { sourceFetchedAt: iso(60e3) }),
+    record("novig:gone:yes", "open", { venue: "novig", source: "novig_api", sourceFetchedAt: iso(60e3) }),
+  ];
+  const kalshiOk = { fetchedAt: iso(0), ok: true, error: null, count: 1 };
+  const novigFailed = { fetchedAt: iso(3600e3), ok: false, error: "HTTP 503", count: 0 };
+  const payload = { generatedAt: iso(0), sources: { kalshi: kalshiOk, novig: novigFailed }, bets: [record("kalshi:kept:yes", "open")] };
+  assert.deepEqual(view.mergeServicePayload(stored, payload, NOW).map((r) => r.id).sort(), ["kalshi:kept:yes", "novig:gone:yes"]);
+  // The same payload with kalshi's pull failed keeps the missing record.
+  const failed = { ...payload, sources: { kalshi: { ...kalshiOk, ok: false, error: "HTTP 503" } } };
+  assert.deepEqual(view.mergeServicePayload(stored, failed, NOW).map((r) => r.id).sort(), ["kalshi:gone:yes", "kalshi:kept:yes", "novig:gone:yes"]);
+  assert.deepEqual([...view.venuesWithFreshPull(payload)], ["kalshi"]);
+  assert.deepEqual([...view.venuesWithFreshPull({ sources: null })], []);
+});
+
 test("ticketAsLine: naive-UTC eventStart parsed, period defaults to FG, fields the matcher reads", () => {
   const line = view.ticketAsLine({
     league: "cfb", eventId: 900001, eventStart: "2026-09-12T20:00:00", awayTeam: "Chattanooga", homeTeam: "Eastern Kentucky",

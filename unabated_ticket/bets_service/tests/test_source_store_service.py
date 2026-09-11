@@ -2,6 +2,7 @@
 rule, and the /bets.json + /health contract over a real HTTP server."""
 import json
 import threading
+import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
@@ -172,6 +173,48 @@ def test_failed_poll_keeps_previous_records_and_logs_a_failed_run(store):
     assert runs == [(True, None, 1), (False, "RuntimeError: Kalshi 503", 0)]
 
 
+class FailingStore:
+    """A store whose every write raises — what a full disk looks like to the loop."""
+
+    def __init__(self):
+        self.attempts = 0
+
+    def upsert_bets(self, records, seen_at):
+        self.attempts += 1
+        raise RuntimeError("disk full")
+
+    def log_source_run(self, *args):
+        raise RuntimeError("disk full")
+
+
+def test_poll_loop_survives_a_store_write_error_and_retries():
+    source = ScriptedSource([[record("kalshi:a:yes", "open", None)]] * 3)
+    failing = FailingStore()
+    stop = threading.Event()
+    thread = threading.Thread(target=service.poll_loop, args=([source], failing, stop), daemon=True)
+    original_tick_sec = service.POLL_TICK_SEC
+    service.POLL_TICK_SEC = 0.01
+    source.poll_sec = 0.02
+    try:
+        thread.start()
+        deadline = time.monotonic() + 2
+        while failing.attempts < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        stop.set()
+        thread.join(timeout=2)
+        service.POLL_TICK_SEC = original_tick_sec
+    assert failing.attempts >= 2  # the thread outlived the first failure
+    assert not thread.is_alive()
+
+
+def test_registered_sources_report_no_completed_poll_yet(store):
+    payload = service.bets_payload(store, days=30, source_names=["kalshi"])
+    assert payload["sources"] == {"kalshi": service.NO_POLL_YET}
+    service.run_source_once(ScriptedSource([[record("kalshi:a:yes", "open", None)]]), store)
+    assert service.bets_payload(store, days=30, source_names=["kalshi"])["sources"]["kalshi"]["ok"] is True
+
+
 def test_upsert_replaces_a_record_by_id(store):
     source = ScriptedSource([[record("kalshi:a:yes", "open", None)],
                              [record("kalshi:a:yes", "won", "2026-09-12T00:00:00Z")]])
@@ -210,7 +253,7 @@ def test_parse_days():
 
 @pytest.fixture
 def http_server(store):
-    server = ThreadingHTTPServer(("127.0.0.1", 0), service.make_handler(store, 0.0))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), service.make_handler(store, 0.0, ["kalshi"]))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{server.server_address[1]}"
@@ -244,7 +287,9 @@ def test_http_bets_json_and_health_shape(store, http_server):
     assert status == 404
 
 
-def test_http_before_any_poll_serves_an_empty_list(http_server):
+def test_http_before_any_poll_serves_an_empty_list_with_the_source_pending(http_server):
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
-    assert payload == {"generatedAt": payload["generatedAt"], "sources": {}, "bets": []}
+    assert payload == {"generatedAt": payload["generatedAt"], "sources": {"kalshi": service.NO_POLL_YET}, "bets": []}
+    status, payload = get_json(f"{http_server}/health")
+    assert status == 200 and payload["sources"] == {"kalshi": service.NO_POLL_YET}
