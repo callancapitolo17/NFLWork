@@ -633,8 +633,15 @@
         : "the odds grid never appeared on this tab");
       return;
     }
+    if (request.isAlt) {
+      try {
+        expandAlts(node);
+      } catch (error) {
+        reportLocate(request, false, `could not open the row's Alts: ${error.message}`);
+        return;
+      }
+    }
     try {
-      if (request.isAlt) expandAlts(node);
       if (typeof api.ensureNodeVisible === "function") api.ensureNodeVisible(node, "middle");
       if (typeof api.ensureColumnVisible === "function") api.ensureColumnVisible(String(request.bookId));
     } catch (error) {

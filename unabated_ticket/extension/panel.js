@@ -217,7 +217,7 @@
     renderWarning(ticket, watchStatus);
 
     view.sideLabel.textContent = ticket.sideLabel;
-    view.betLine.textContent = describeSide(ticket);
+    view.betLine.textContent = `${describeSide(ticket)}${ticket.isAlt ? " \u00b7 alt line" : ""}`;
     view.eventLine.textContent = describeMatchup(ticket);
     view.startLine.textContent = fmtStart(ticket.eventStart);
 

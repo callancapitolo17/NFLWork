@@ -194,10 +194,11 @@
   }
 
   // One alternateLines[] entry, keyed under its parent main line. Null when
-  // the entry is null, unpriced, has no points, or sits at the main line's own
+  // the entry is null, unpriced, has no points, hangs off a main line with no
+  // points (nothing to measure distance from), or sits at the main line's own
   // points (that would be the same bet listed twice). Moneylines have no alts.
   function normalizeAltLine(raw, mainLine) {
-    if (!raw || typeof raw !== "object") return null;
+    if (!raw || typeof raw !== "object" || mainLine.points == null) return null;
     const points = numberOrNull(raw.points);
     const price = numberOrNull(raw.americanPrice) ?? numberOrNull(raw.price);
     if (points == null || price == null || points === mainLine.points) return null;
