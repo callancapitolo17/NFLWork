@@ -96,6 +96,12 @@ button { font: inherit; padding: 6px 12px; cursor: pointer; }
   display: inline-block; margin-right: 6px; padding: 0 5px; border-radius: 3px; vertical-align: 2px;
   border: 1px solid var(--border); color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
 }
+.edge-group { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.edge-group .group-lines { list-style: none; margin: 4px 0 0; padding: 0 0 0 10px; border-left: 2px solid var(--border); }
+.edge-group .group-lines .edge-row { padding: 4px 0; border-bottom: none; }
+.edge-group .group-lines .edge-row .edge-side { font-size: 13px; font-weight: 600; }
+.edge-group .group-lines .edge-row .edge-pct { font-size: 13px; }
+.edge-group .group-more { margin: 4px 0 0 10px; }
 .debug { white-space: pre-wrap; word-break: break-all; font-size: 11px; max-height: 260px; overflow: auto; margin: 4px 0; padding: 6px; border: 1px solid var(--border); border-radius: 4px; }
 #edges-filter { cursor: pointer; }
 /* Multi-select dropdown: a <details> whose panel floats over the list. */
