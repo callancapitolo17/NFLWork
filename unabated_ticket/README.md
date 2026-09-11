@@ -197,6 +197,21 @@ applies to alts through that (`feed.lineChangedMs`). Caveat: on ~1% of
 main lines the sequence ran far ahead of `modifiedOn`, so an alt's age can
 read younger than the price really is.
 
+### Grouped by market
+
+On by default (**Group by market** in the filter box). With alts on, one
+soft ladder yields 4–10 rows that all say one thing, so the list shows one
+**card per (game, period, bet type, side)** — a +EV opinion is directional,
+so the two sides of a market are two cards. The card's head is the side and
+its best edge; under it the market, matchup and start; then the **best
+line**, which is the highest Kelly stake (stake = edge / (decimal − 1)
+already taxes longshots), so a -110 main line at +5% outranks a +944 rung at
++6%; then `▸ 2 books · 7 lines (+6)`, which opens the other books and rungs.
+Every line is clickable (locate) as before. The count badge counts cards,
+sort orders cards through their best line, and `feed.groupEdges` (pure,
+node-tested) does the grouping; the panel passes the stake as the rank.
+Turning the toggle off gives the flat list.
+
 ### What is listed
 
 A line shows when: it is on the board (`statusId 1`), its book is allowed
@@ -264,9 +279,13 @@ that: one Chrome notification per line the first time it crosses the
 threshold, again only if its price improves (dedupe key = market, book,
 side, points — so alt lines, when included, are deduped per rung, and
 turning alts or their gates on re-baselines first), and at most one per
-event per 5 min. A ladder with several rungs over the threshold therefore
-pings once per 5 min per rung until each has fired; the notification title
-says `(alt of -2.5)` so an alt is never mistaken for the main line. Title is the bet and
+event per 5 min. With **Group by market** on, the unit is the card instead:
+one notification per (game, market, side) about its best line, again only
+when the card's best edge improves (a new rung or a better price), with
+`N books · M lines` in the body; toggling grouping re-baselines. In the flat
+list a ladder with several rungs over the threshold pings once per 5 min
+per rung until each has fired; the notification title says `(alt of -2.5)`
+so an alt is never mistaken for the main line. Title is the bet and
 book, body the edge, stake, matchup and time to start. Clicking the
 notification runs the same jump-to-row path as a row click. No alerts
 fire while the panel is closed. The alert log lives in `chrome.storage.local`
@@ -296,8 +315,9 @@ use `sourcePrice`. `feed.test.js` parses the fixture slices (NFL event
 sorting, cursor extraction, that an update overwrites a snapshot line only
 with a newer sequence number, and the alt path — keys, `mainPoints`,
 `includeAlts` off by default, the distance / liquidity / same-number gates
-following a moved main line, age through `sequenceNumber`, and a pulled
-ladder disappearing on the next parse.
+following a moved main line, age through `sequenceNumber`, a pulled
+ladder disappearing on the next parse, and `groupEdges` (card keys, book
+and line counts, best by edge vs by stake, cards following their best).
 `scanner.test.js` drives the loop with an injected fetch: cursor from
 `Last-Modified`, poll, rejected-cursor resync, per-league failure, resume,
 and a league switch while a snapshot is still downloading.
@@ -314,7 +334,10 @@ settings persistence, an alt row click expanding the fake row (a
 `setExpanded` that mounts the ladder's shells) and outlining the right
 alt cell, a main row click unchanged, an alt-cell ticket with
 `watch.altPoints` staying quiet for a watch tick then going off the board
-when the rung was pulled, and a main-cell ticket unchanged.
+when the rung was pulled, and a main-cell ticket unchanged. The grouped
+run (20 checks) adds: 4 cards for 9 lines, the Bears card's best line being
+the -110 main over the +944 rung, the badge counting cards, the expander,
+a nested row click locating, and a card staying open across a re-render.
 
 Manual checklist after loading unpacked: click a best-line price and a
 book-column price, then a moneyline, a spread and a total; confirm side
