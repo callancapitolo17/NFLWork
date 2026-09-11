@@ -117,7 +117,11 @@
 
   function edgePctOf(marketLine) {
     const edge = marketLine.edge && marketLine.edge.edge;
-    return typeof edge === "number" && Number.isFinite(edge) ? edge : null;
+    if (typeof edge === "number" && Number.isFinite(edge)) return edge;
+    // The feed's own fraction (0.0296 = +2.96%): what an alternate-line
+    // object carries when the screen has computed no `edge` for it.
+    const ge = marketLine.ge;
+    return typeof ge === "number" && Number.isFinite(ge) ? Math.round(ge * 1e6) / 1e4 : null;
   }
 
   function bookNameOf(bookId, context, cellProps) {
