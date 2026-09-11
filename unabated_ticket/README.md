@@ -321,7 +321,10 @@ on the venue's native id against what it already holds, and keeps open bets
 plus settled ones from the last 30 days in `chrome.storage.local`
 (`betsService`; `betsSettings` holds the service URL and the hide toggle).
 A poll that fails keeps the last records and says so; nothing is ever
-blanked.
+blanked. A poll that succeeds is authoritative for every venue whose source
+reports `ok`: a stored record of that venue the payload no longer lists is
+dropped (a reset service DB, a purged fill), so a stale position cannot flag
+lines forever; records of a venue whose source failed stay as they were.
 
 **What is matched.** A bet matches a line when the league is the same, the
 two teams resolve to the same pair (either order) or the rotation number
@@ -362,7 +365,8 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   hidden.
 - *Bets tab*: the per-venue table (last pull, green under 5 min, amber
   under 60, red past that or on a failed poll with its error; venues with
-  no source yet read "no source configured"; the service itself shows
+  no source yet read "no source configured", a source still on its first
+  poll reads "no completed poll yet"; the service itself shows
   "unreachable since …" in red with the last records still listed), the
   service URL, the open bets (venue, bet, stake, placed), and the
   **unmatched** list — every open bet no board line matches, with why: team
@@ -408,7 +412,11 @@ GETs; no order placement.
   record id and is never pruned (the CLV work needs the history);
   `source_runs` appends one row per poll. A failed poll writes a failed
   `source_runs` row and touches nothing else, so a dark source keeps serving
-  its previous records. Log: `bets_service.log` (rotating).
+  its previous records; a store write that raises (disk full) is logged and
+  retried next poll, never killing the poll thread. Until a source's first
+  poll completes (Kalshi: ~1–2 min, one throttled GET per market and event)
+  `/bets.json` lists it as `{ok: false, error: "no completed poll yet"}`.
+  Log: `bets_service.log` (rotating, 10 MB × 3).
 - **Adding a venue** (#115 BetOnline, #116 Novig, #117 ProphetX): a module
   in `bets_service/sources/` with `name`, `poll_sec` and `fetch() ->
   list[record]` (the `Source` protocol in `sources/__init__.py`), registered in
