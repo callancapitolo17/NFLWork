@@ -28,7 +28,10 @@ rounding of the stake.
 4. Open `https://tools.unabated.com/cfb/odds` (premium login) and click a price.
 
 After editing any file under `extension/`, press the reload icon on the
-extension's card and reload the Unabated tab.
+extension's card. The service worker re-injects `page.js` and `content.js`
+into Unabated tabs that are already open (the old copy retires itself), so
+the tab does not need a reload; if the Ticket tab ever shows "No Unabated
+tab is running the capture script", reload the tab.
 
 ## How capture works
 
@@ -262,9 +265,13 @@ tab and see "Not watching".
   panel was hidden for minutes; the scanner reloads the snapshots by
   itself. Persistent repeats mean the cursor format changed
   (`feed.cursorFromDate`).
-- **Edges: "no Unabated odds tab is running the capture script"**: open an
-  odds tab, or reload the one you have — after an extension reload the
-  script already injected in an open tab is dead until the tab reloads.
+- **"No Unabated tab is running the capture script"** (Ticket warning or
+  Edges header): open an odds tab, or reload the one you have. The worker
+  re-injects on an extension reload, but a tab opened before the extension
+  was first installed, or one where the re-injection failed, needs a reload.
+- **Edges header shows "(N stale: …)"**: those leagues' snapshot builds are
+  older than 15 min — a CDN edge copy the cache buster did not get past, or
+  an off-season league whose file stopped regenerating (Serie B, WBC).
 - **Edges: "books: all N live (Unabated selection unreadable …)"** with an
   Unabated tab open: click that line for the raw fields; `userSettings.gameOdds`
   moved. Tick your books in the Books dropdown meanwhile.

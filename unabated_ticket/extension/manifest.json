@@ -8,7 +8,8 @@
     "sidePanel",
     "storage",
     "notifications",
-    "tabs"
+    "tabs",
+    "scripting"
   ],
   "host_permissions": [
     "https://tools.unabated.com/*",

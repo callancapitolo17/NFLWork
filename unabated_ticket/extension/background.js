@@ -8,9 +8,33 @@
 // and points page.js at the row through locate.js, same path as a row click).
 //
 // Side effects: writes chrome.storage.local {locate, locateResult} via
-// locate.js; clears the clicked notification.
+// locate.js; clears the clicked notification; on install/reload re-injects
+// page.js + content.js into Unabated tabs that are already open.
 
 importScripts("locate.js");
+
+// Chrome injects content scripts only into pages loaded after the extension
+// (re)loads; a tab that was already open keeps a dead copy whose storage
+// writes fail silently, so clicks stop reaching the panel until the tab is
+// reloaded. Re-inject instead; the new page.js tells the old one to retire.
+const UNABATED_TAB_PATTERN = "https://tools.unabated.com/*";
+
+async function reinjectIntoOpenTabs() {
+  const tabs = await chrome.tabs.query({ url: UNABATED_TAB_PATTERN });
+  for (const tab of tabs) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["page.js"], world: "MAIN" });
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"], world: "ISOLATED" });
+      console.info("[unabated-ticket] re-injected into", tab.url);
+    } catch (error) {
+      console.error("[unabated-ticket] re-inject failed for", tab.url, error);
+    }
+  }
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  reinjectIntoOpenTabs().catch((error) => console.error("[unabated-ticket] re-inject failed", error));
+});
 
 // Clicking the toolbar icon opens the side panel.
 chrome.sidePanel

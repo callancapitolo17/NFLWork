@@ -14,6 +14,11 @@
 (function () {
   "use strict";
 
+  // A re-injected copy (extension reloaded with this tab open) replaces the
+  // dead one; if a live one is somehow present, it must not double-write.
+  if (window.__unabatedTicketContentActive) return;
+  window.__unabatedTicketContentActive = true;
+
   const MESSAGE_SOURCE = "unabated-ticket";
   const HANDLED_TYPES = new Set(["ticket", "watch", "error", "ready", "filters", "located"]);
   // A locate request older than this is left alone (the tab it targeted may

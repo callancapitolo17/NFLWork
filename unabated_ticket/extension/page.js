@@ -15,6 +15,11 @@
   "use strict";
 
   const MESSAGE_SOURCE = "unabated-ticket";
+  // Each injected copy has an id; a newer copy (re-injected after an extension
+  // reload) posts a takeover and every older copy retires itself.
+  const INSTANCE_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let retired = false;
+  const intervals = [];
   const CELL_SHELL_SELECTOR = ".odds-cell-action-shell";
   // The "..." menu button is a child of the shell; opening a menu is not picking a bet.
   const MORE_BUTTON_SELECTOR = ".odds-cell-more-button";
@@ -25,7 +30,8 @@
   // ---- messaging -----------------------------------------------------------
 
   function post(type, payload) {
-    window.postMessage({ source: MESSAGE_SOURCE, type, payload }, window.location.origin);
+    if (retired) return;
+    window.postMessage({ source: MESSAGE_SOURCE, type, payload, instanceId: INSTANCE_ID }, window.location.origin);
   }
 
   // ---- React fiber helpers -------------------------------------------------
@@ -375,6 +381,7 @@
   function startWatching(ticket, gridApi) {
     stopWatching();
     watcher = { ticket, gridApi, timer: setInterval(watchTick, WATCH_INTERVAL_MS) };
+    intervals.push(watcher.timer);
   }
 
 
@@ -567,10 +574,21 @@
     locateLine(payload, 0);
   }
 
+  function retire() {
+    retired = true;
+    stopWatching();
+    for (const timer of intervals) clearInterval(timer);
+    document.removeEventListener("pointerdown", onClickCapture, true);
+    document.removeEventListener("click", onClickCapture, true);
+    console.info("[unabated-ticket] page.js retired (a newer copy took over)");
+  }
+
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     const data = event.data;
-    if (!data || data.source !== MESSAGE_SOURCE || data.type !== "locate") return;
+    if (!data || data.source !== MESSAGE_SOURCE) return;
+    if (data.type === "takeover" && data.instanceId !== INSTANCE_ID && !retired) retire();
+    if (retired || data.type !== "locate") return;
     onLocateMessage(data.payload);
   });
 
@@ -587,6 +605,7 @@
   let lastCapture = { shell: null, at: 0 };
 
   function onClickCapture(event) {
+    if (retired) return;
     const target = event.target instanceof Element ? event.target : null;
     const shell = target && target.closest(CELL_SHELL_SELECTOR);
     if (!shell) return;
@@ -614,10 +633,12 @@
   // on the first tick; the error is published and the next tick retries).
   const HEARTBEAT_MS = 10000;
   function heartbeat() {
+    if (retired) return;
     post("ready", { url: window.location.href, at: Date.now() });
     publishFilters();
   }
+  post("takeover", { at: Date.now() });
   heartbeat();
-  setInterval(heartbeat, HEARTBEAT_MS);
+  intervals.push(setInterval(heartbeat, HEARTBEAT_MS));
   console.info("[unabated-ticket] page.js active on", window.location.href);
 })();
