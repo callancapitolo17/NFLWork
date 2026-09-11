@@ -92,7 +92,8 @@ blank the list. `/bets.json`:
   placedAt:      ISO UTC                  (Kalshi: first fill)
   status:        "open" | "won" | "lost" | "push" | "void" | "closed" | "unknown"   ("closed" = position sold to 0)
   isParlayLeg:   bool, parlayId: string | null, legIndex, legCount
-  approx:        [ "kalshi_no_side_includes_tie", "game_date_unknown", ... ]   reasons the match is weaker than it looks
+  approx:        [ "kalshi_no_side_includes_tie", ... ]   reasons the match is weaker than it looks
+  eventDate:     "YYYY-MM-DD" Eastern | null    (Kalshi suffix date; the date rule above when eventStart is null)
   sourceFetchedAt: ISO
   raw:           { trimmed venue fields } (for the unmatched list and debugging, never for matching)
 }
@@ -130,10 +131,12 @@ and start come from the **event-ticker suffix, never team names** (the
 2. both `awayKey`/`homeKey` equal (order-insensitive: a source may swap them)
    **or** `rotation` equals the row's away/home rotation, and
 3. time: when the bet has `eventStart`, |Δ| ≤ 30 min (the doubleheader rule
-   from `leg_types.SCHEDULE_START_TOLERANCE_MIN`); when it does not, the
-   event starts between `placedAt` and `placedAt + 8 days` and the bet is
-   flagged `game_date_unknown`. Two candidate events for one bet (a series,
-   a doubleheader with no time) ⇒ **no match, listed under "unmatched:
+   from `leg_types.SCHEDULE_START_TOLERANCE_MIN`); when it does not
+   (football: the Kalshi suffix carries the date only), the bet's `eventDate`
+   (Eastern) is within ±1 day of the row's Eastern start date — user decision
+   2026-09-11, replacing an earlier `placedAt + 8 days` idea. Two candidate
+   events for one bet (a series, a doubleheader with no time, the same two
+   teams on consecutive days) ⇒ **no match, listed under "unmatched:
    ambiguous game"** — never a guess.
 
 **Tiers**, per bet (and per parlay leg, labelled "(parlay leg)"), strongest first:
