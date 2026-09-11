@@ -75,8 +75,10 @@ full   = edge / b                 0 if edge <= 0
 stake  = bankroll * full * multiplier        not rounded
 ```
 
-The panel shows Unabated's edge % as-is. The fair price (`bacr`) is shown for
-information only. Prices print as American plus prediction-market cents
+Under the stake the panel shows **To win** (profit at the book's American
+price) and **Payout** (stake plus profit), the way an exchange order slip
+does. The panel shows Unabated's edge % as-is. The fair price (`bacr`) is
+shown for information only. Prices print as American plus prediction-market cents
 (implied probability), e.g. `-111 · 52.5¢`; on exchanges the cents use the
 exchange's exact `sourcePrice` so they match Unabated's screen, while the
 stake uses the American price because that is what Unabated's edge was
@@ -86,7 +88,7 @@ Settings (bankroll, Kelly multiplier) sit at the bottom of the panel and
 persist in `chrome.storage.local`. Defaults 30000 and 0.25.
 
 Copy puts one line on the clipboard:
-`Seattle Mariners -133 · 57.0¢ @ Novig | fair -139 · 58.2¢ | edge +1.89% | stake $188.55 | Texas Rangers @ Seattle Mariners · MLB`.
+`Seattle Mariners -133 · 57.0¢ @ Novig | fair -139 · 58.2¢ | edge +1.89% | stake $188.55 | to win $141.77 | payout $330.32 | Texas Rangers @ Seattle Mariners · MLB`.
 
 ## Edges tab
 

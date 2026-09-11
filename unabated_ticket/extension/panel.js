@@ -39,7 +39,7 @@
     warning: el("warning"), sideLabel: el("side-label"), betLine: el("bet-line"),
     eventLine: el("event-line"), startLine: el("start-line"),
     book: el("book"), price: el("price"), fair: el("fair"), edge: el("edge"),
-    stake: el("stake"), fullKelly: el("full-kelly"),
+    stake: el("stake"), fullKelly: el("full-kelly"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
     copy: el("copy"), copyStatus: el("copy-status"),
     errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
@@ -218,6 +218,8 @@
     view.edge.textContent = line.edgePct == null ? "—" : fmtPct(line.edgePct / 100);
 
     view.stake.classList.remove("no-edge");
+    view.payoutRow.hidden = true;
+    let payoutText = "";
     if (!result) {
       view.stake.textContent = "—";
       view.stake.classList.add("no-edge");
@@ -229,10 +231,16 @@
     } else {
       view.stake.textContent = fmtDollars(result.stake);
       view.fullKelly.textContent = "";
+      // Payout = stake x decimal odds at the book's American price; "to win" is the profit on top of the stake.
+      const payout = result.stake * kelly.americanToDecimal(line.price);
+      view.profit.textContent = fmtDollars(payout - result.stake);
+      view.payout.textContent = fmtDollars(payout);
+      view.payoutRow.hidden = false;
+      payoutText = ` | to win $${(payout - result.stake).toFixed(2)} | payout $${payout.toFixed(2)}`;
     }
 
     const stakeText = result ? result.stake.toFixed(2) : "n/a";
-    lastCopyText = `${ticket.sideLabel} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText} | ${describeMatchup(ticket)}`;
+    lastCopyText = `${ticket.sideLabel} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${payoutText} | ${describeMatchup(ticket)}`;
     view.copyStatus.textContent = "";
     show("ticket");
   }
