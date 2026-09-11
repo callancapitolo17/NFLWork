@@ -374,3 +374,64 @@ test("a ladder the book pulls is gone from the next snapshot parse", () => {
   assert.equal(feed.countAltLines(second), 24);
   assert.equal(second.lines["289357360:ms105:si0:tid6:alt-20.5"], undefined);
 });
+
+// ---- grouping by market ---------------------------------------------------------
+
+const kellyForTests = require("../extension/kelly.js");
+const stakeOf = (row) => kellyForTests.kellyStakeFromEdge({ bookPrice: row.price, edgePct: row.edgePct, bankroll: 30000, multiplier: 0.25 }).stake;
+
+test("groupEdges: one card per (game, period, bet type, side) with books and lines counted", () => {
+  const rows = feed.selectEdges(loadedState(), { now: BEFORE_KICKOFF, includeAlts: true });
+  const groups = feed.groupEdges(rows);
+  assert.deepEqual(groups.map((g) => [g.key, g.sideName, g.betType, g.bookCount, g.rows.length]), [
+    ["125807:pt1:bt2:si1", "Carolina Panthers", "Spread", 2, 6],
+    ["125807:pt1:bt3:si0", "Over", "Total", 2, 4],
+    ["125807:pt1:bt2:si0", "Chicago Bears", "Spread", 3, 7],
+    ["125807:pt1:bt1:si0", "Chicago Bears", "Moneyline", 2, 2],
+  ]);
+  assert.equal(rows.length, groups.reduce((n, g) => n + g.rows.length, 0));
+  const bears = groups[2];
+  assert.equal(bears.league, "nfl");
+  assert.equal(bears.awayTeam, "Chicago Bears");
+  assert.equal(bears.homeTeam, "Carolina Panthers");
+  assert.equal(bears.eventStartMs, KICKOFF_MS);
+  assert.equal(bears.period, "FG");
+  assert.equal(feed.groupKeyOf(bears.best), bears.key);
+});
+
+test("groupEdges: with no rank function the best line is the highest edge; cards follow their best", () => {
+  const rows = feed.selectEdges(loadedState(), { now: BEFORE_KICKOFF, includeAlts: true });
+  const groups = feed.groupEdges(rows);
+  assert.deepEqual(groups.map((g) => [g.best.sideLabel, g.best.book.name, g.best.edgePct]), [
+    ["Carolina Panthers -9.5", "Kalshi", 12.58],
+    ["Over 64.5", "Kalshi", 9.56],
+    ["Chicago Bears -20.5", "Kalshi", 6.42],
+    ["Chicago Bears", "BetMGM", 2.96],
+  ]);
+  assert.ok(groups[2].rows.every((row, i, all) => i === 0 || all[i - 1].edgePct >= row.edgePct));
+});
+
+test("groupEdges ranked by Kelly stake picks the bettable main line over the +944 rung", () => {
+  const rows = feed.selectEdges(loadedState(), { now: BEFORE_KICKOFF, includeAlts: true }).map((row) => ({ ...row, stake: stakeOf(row) }));
+  const groups = feed.groupEdges(rows, (row) => row.stake);
+  assert.deepEqual(groups.map((g) => [g.sideName, g.betType, g.best.sideLabel, g.best.book.name, g.best.isAlt]), [
+    ["Chicago Bears", "Spread", "Chicago Bears -2.5", "SouthPoint", false],
+    ["Chicago Bears", "Moneyline", "Chicago Bears", "BetMGM", false],
+    ["Carolina Panthers", "Spread", "Carolina Panthers -2.5", "Novig", true],
+    ["Over", "Total", "Over 61.5", "Kalshi", true],
+  ]);
+  // Inside a card the lines fall by stake, and the rows keep their extra fields.
+  const bears = groups[0];
+  assert.ok(bears.rows.every((row, i, all) => i === 0 || all[i - 1].stake >= row.stake));
+  assert.equal(typeof bears.rows[3].stake, "number");
+});
+
+test("groupEdges: alts off collapses the three main-line edges to two cards; empty in, empty out; a null rank sorts last", () => {
+  const rows = feed.selectEdges(loadedState(), { now: BEFORE_KICKOFF });
+  const groups = feed.groupEdges(rows);
+  // SouthPoint -2.5 alone; BetMGM and SouthPoint moneylines share a card.
+  assert.deepEqual(groups.map((g) => [g.betType, g.rows.length, g.bookCount]), [["Spread", 1, 1], ["Moneyline", 2, 2]]);
+  assert.deepEqual(feed.groupEdges([]), []);
+  const ranked = feed.groupEdges(rows, (row) => (row.book.id === 99 ? null : row.edgePct));
+  assert.equal(ranked[ranked.length - 1].best.book.id, 99);
+});

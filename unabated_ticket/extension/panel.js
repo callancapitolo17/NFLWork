@@ -28,6 +28,8 @@
   const DEFAULT_EDGE_SETTINGS = {
     leagues: ALL_LEAGUE_IDS, periods: [1], betTypes: [1, 2, 3], bookIds: null, minEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge",
     includeAlts: false, altMaxDistance: 7, altMinLiquidity: 100,
+    // One card per (game, market, side) with its best line; the flat list is the toggle off.
+    groupByMarket: true,
   };
   // Off until the list has been watched for a session (plan, 2026-09-10).
   const DEFAULT_ALERT_SETTINGS = { enabled: false, minEdgePct: 2.0 };
@@ -55,7 +57,7 @@
     edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
     edgesSports: el("edges-sports"), edgesBetTypes: el("edges-bettypes"), edgesBooks: el("edges-books"), edgesBooksMode: el("edges-books-mode"),
     booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
-    edgesIncludeAlts: el("edges-include-alts"), edgesAltDistance: el("edges-alt-distance"), edgesAltLiquidity: el("edges-alt-liquidity"),
+    edgesIncludeAlts: el("edges-include-alts"), edgesAltDistance: el("edges-alt-distance"), edgesAltLiquidity: el("edges-alt-liquidity"), edgesGroup: el("edges-group"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
     alertsEnabled: el("alerts-enabled"), alertsMin: el("alerts-min"),
   };
@@ -476,7 +478,21 @@
     return rows;
   }
 
-  function renderEdgeRow(row) {
+  // Cards: the best line of each (game, market, side) is always the highest
+  // stake; the panel's sort orders the cards through that line.
+  function groupsOf(rows) {
+    const groups = feed.groupEdges(rows, (row) => row.stake);
+    const sortBy = state.edgeSettings.sortBy;
+    if (sortBy === "edge") groups.sort((a, b) => b.best.edgePct - a.best.edgePct || a.eventStartMs - b.eventStartMs);
+    if (sortBy === "start") groups.sort((a, b) => a.eventStartMs - b.eventStartMs || b.best.edgePct - a.best.edgePct);
+    return groups;
+  }
+
+  // Cards the user has opened; survives the 5s re-render, not a panel reload.
+  const expandedGroups = new Set();
+
+  // compact: inside a card, where the matchup and market are on the card.
+  function renderEdgeRow(row, compact) {
     const li = document.createElement("li");
     li.className = `edge-row${row.isBlurred ? " blurred" : ""}`;
     li.dataset.key = row.key;
@@ -503,6 +519,7 @@
     const matchup = document.createElement("div");
     matchup.className = "muted";
     matchup.textContent = `${describeMatchup(row)} · ${fmtStart(row.eventStart)} · ${fmtUntil(row.eventStartMs)}`;
+    const altOf = row.isAlt ? `alt of ${fmtPoints(row.mainPoints)}` : "";
 
     const bottom = document.createElement("div");
     bottom.className = "edge-bottom";
@@ -511,13 +528,52 @@
     book.textContent = `${row.book.name} ${fmtPriceBoth(asBookLine(row.price, row.sourceFormat, row.sourcePrice))}`;
     const liquidity = document.createElement("span");
     liquidity.className = "muted";
-    liquidity.textContent = [fmtLineAge(row.modifiedMs), fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ");
+    liquidity.textContent = [compact ? altOf : "", fmtLineAge(row.modifiedMs), fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ");
     const stake = document.createElement("span");
     stake.className = "edge-stake";
     stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
     bottom.append(book, liquidity, stake);
 
-    li.append(top, bet, matchup, bottom);
+    if (compact) li.append(top, bottom);
+    else li.append(top, bet, matchup, bottom);
+    return li;
+  }
+
+  // "Idaho Vandals · +5.30%" then market and matchup, the best line, and an
+  // expander for the other books and rungs.
+  function renderGroupCard(group) {
+    const li = document.createElement("li");
+    li.className = "edge-group";
+    li.dataset.group = group.key;
+    const top = document.createElement("div");
+    top.className = "edge-top";
+    const side = document.createElement("span");
+    side.className = "edge-side";
+    side.textContent = group.sideName;
+    const pct = document.createElement("span");
+    pct.className = "edge-pct";
+    pct.textContent = fmtPct(group.best.edgePct / 100);
+    top.append(side, pct);
+    const market = document.createElement("div");
+    market.className = "muted";
+    market.textContent = `${group.betType}${group.period === "FG" ? "" : ` · ${group.period}`} · ${describeMatchup(group)} · ${fmtStart(group.eventStart)} · ${fmtUntil(group.eventStartMs)}`;
+    const lines = document.createElement("ol");
+    lines.className = "group-lines";
+    const expanded = expandedGroups.has(group.key);
+    const shown = expanded ? group.rows : group.rows.slice(0, 1);
+    lines.append(...shown.map((row) => renderEdgeRow(row, true)));
+    li.append(top, market, lines);
+    if (group.rows.length > 1) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "small group-more";
+      more.dataset.group = group.key;
+      const others = group.rows.length - 1;
+      more.textContent = expanded
+        ? "\u25be hide the other lines"
+        : `\u25b8 ${group.bookCount} book${group.bookCount === 1 ? "" : "s"} \u00b7 ${group.rows.length} lines (+${others})`;
+      li.append(more);
+    }
     return li;
   }
 
@@ -573,21 +629,24 @@
 
   function renderEdges() {
     const rows = currentEdgeRows();
-    renderEdgesStatus(rows);
+    const grouped = state.edgeSettings.groupByMarket;
+    const items = grouped ? groupsOf(rows) : rows;
+    renderEdgesStatus(items);
     const effective = effectiveFilter();
     view.edgesFilter.textContent = describeFilter(effective);
     renderBooksList(effective);
     renderFilterDebug();
-    view.edgesList.replaceChildren(...rows.slice(0, MAX_EDGE_ROWS).map(renderEdgeRow));
+    view.edgesList.replaceChildren(...items.slice(0, MAX_EDGE_ROWS).map((item) => (grouped ? renderGroupCard(item) : renderEdgeRow(item, false))));
     const status = scannerStatus;
+    const unit = grouped ? "cards" : "lines";
     if (rows.length === 0) {
       view.edgesEmpty.hidden = false;
       view.edgesEmpty.textContent = !status || (status.phase !== "live" && !status.leaguesLoaded.length)
         ? (status && status.phase === "error" ? "Nothing to list: the feed is unavailable (see above)." : "Waiting for the first snapshot…")
         : `No line at or above ${state.edgeSettings.minEdgePct}% edge right now.`;
     } else {
-      view.edgesEmpty.hidden = rows.length > MAX_EDGE_ROWS ? false : true;
-      view.edgesEmpty.textContent = rows.length > MAX_EDGE_ROWS ? `Showing the top ${MAX_EDGE_ROWS} of ${rows.length}; raise the minimum edge to see fewer.` : "";
+      view.edgesEmpty.hidden = items.length > MAX_EDGE_ROWS ? false : true;
+      view.edgesEmpty.textContent = items.length > MAX_EDGE_ROWS ? `Showing the top ${MAX_EDGE_ROWS} of ${items.length} ${unit}; raise the minimum edge to see fewer.` : "";
     }
   }
 
@@ -623,6 +682,13 @@
   }
 
   view.edgesList.addEventListener("click", async (event) => {
+    const more = event.target.closest("button.group-more");
+    if (more) {
+      if (expandedGroups.has(more.dataset.group)) expandedGroups.delete(more.dataset.group);
+      else expandedGroups.add(more.dataset.group);
+      renderEdges();
+      return;
+    }
     const li = event.target.closest("li.edge-row");
     if (!li) return;
     const row = currentEdgeRows().find((r) => r.key === li.dataset.key);
@@ -647,6 +713,26 @@
   // an update to the same alert key and only notifies again if it improved.
   function alertKeyOf(row) {
     return `${row.marketId}:${row.book.id}:${row.sideKey}:${row.points}`;
+  }
+
+  // What one notification is about: a line (flat list) or a card's best line
+  // (grouped), with the rule for notifying the same key again.
+  function alertItems() {
+    const rows = alertRows();
+    if (!state.edgeSettings.groupByMarket) {
+      return rows.map((row) => ({
+        key: alertKeyOf(row), row, summary: null,
+        improvedOn: (previous) => priceImproved(row.price, previous.price),
+      }));
+    }
+    return groupsOf(rows).map((group) => ({
+      key: `group:${group.key}`, row: group.best,
+      summary: `${group.bookCount} book${group.bookCount === 1 ? "" : "s"} \u00b7 ${group.rows.length} line${group.rows.length === 1 ? "" : "s"}`,
+      // A card pings again only when its best line got better by the card's
+      // own ranking, the stake: the best rung pulled and a +944 longshot
+      // taking over is a worse card, not news, whatever its edge %.
+      improvedOn: (previous) => typeof previous.stake === "number" && typeof group.best.stake === "number" && group.best.stake > previous.stake,
+    }));
   }
 
   function priceImproved(newPrice, oldPrice) {
@@ -685,13 +771,14 @@
     await chrome.storage.local.set({ alertTargets: targets });
   }
 
-  async function notifyEdge(row) {
+  async function notifyEdge(row, summary) {
     const notificationId = `edge:${row.key}:${Date.now()}`;
     await rememberAlertTarget(notificationId, row);
-    const stake = stakeFor(row);
+    const stake = row.stake ?? stakeFor(row);
     const message = [
       `${fmtPct(row.edgePct / 100)} edge`,
       stake == null ? null : `stake ${fmtDollars(stake)}`,
+      summary,
       describeMatchup(row),
       fmtUntil(row.eventStartMs),
     ].filter(Boolean).join(" · ");
@@ -716,7 +803,8 @@
   }
 
   function alertRows() {
-    return feed.selectEdges(scannerState, { ...edgeSelectionOptions(effectiveFilter()), minEdge: state.alertSettings.minEdgePct / 100 });
+    return feed.selectEdges(scannerState, { ...edgeSelectionOptions(effectiveFilter()), minEdge: state.alertSettings.minEdgePct / 100 })
+      .map((row) => ({ ...row, stake: stakeFor(row) }));
   }
 
   // Runs after every scanner update. Baseline first, then one notification
@@ -739,24 +827,23 @@
 
   async function processAlertsOnce() {
     const now = Date.now();
-    const rows = alertRows();
+    const items = alertItems();
     pruneAlertLog(now);
     if (!alertsBaselined) {
-      for (const row of rows) alertLog[alertKeyOf(row)] = { price: row.price, at: now, baseline: true };
+      for (const item of items) alertLog[item.key] = { price: item.row.price, stake: item.row.stake, at: now, baseline: true };
       alertsBaselined = true;
       await chrome.storage.local.set({ alertLog });
       return;
     }
     let fired = 0;
-    for (const row of rows) {
-      const key = alertKeyOf(row);
-      const previous = alertLog[key];
-      if (previous && !priceImproved(row.price, previous.price)) continue;
-      const lastForEvent = eventAlertAt[row.eventId] || 0;
+    for (const item of items) {
+      const previous = alertLog[item.key];
+      if (previous && !item.improvedOn(previous)) continue;
+      const lastForEvent = eventAlertAt[item.row.eventId] || 0;
       if (now - lastForEvent < ALERT_EVENT_COOLDOWN_MS) continue;
-      await notifyEdge(row);
-      alertLog[key] = { price: row.price, at: now };
-      eventAlertAt[row.eventId] = now;
+      await notifyEdge(item.row, item.summary);
+      alertLog[item.key] = { price: item.row.price, stake: item.row.stake, at: now };
+      eventAlertAt[item.row.eventId] = now;
       fired += 1;
     }
     if (fired) await chrome.storage.local.set({ alertLog });
@@ -832,6 +919,7 @@
       settings: {
         ...state.edgeSettings, leagues, periods, betTypes, minEdgePct, maxLineAgeHours, sortBy: view.edgesSort.value,
         includeAlts: view.edgesIncludeAlts.checked, altMaxDistance, altMinLiquidity,
+        groupByMarket: view.edgesGroup.checked,
       },
     };
   }
@@ -849,6 +937,7 @@
     view.edgesIncludeAlts.checked = settings.includeAlts;
     view.edgesAltDistance.value = settings.altMaxDistance;
     view.edgesAltLiquidity.value = settings.altMinLiquidity;
+    view.edgesGroup.checked = settings.groupByMarket;
   }
 
   function onEdgeSettingsInput() {
@@ -863,7 +952,9 @@
       || parsed.settings.betTypes.join(",") !== before.betTypes.join(",")
       || parsed.settings.includeAlts !== before.includeAlts
       || parsed.settings.altMaxDistance !== before.altMaxDistance
-      || parsed.settings.altMinLiquidity !== before.altMinLiquidity;
+      || parsed.settings.altMinLiquidity !== before.altMinLiquidity
+      // Alert keys differ between the flat list and cards.
+      || parsed.settings.groupByMarket !== before.groupByMarket;
     state.edgeSettings = parsed.settings;
     chrome.storage.local.set({ edges: parsed.settings });
     if (scopeChanged) alertsBaselined = false;
@@ -887,6 +978,7 @@
     if (typeof stored.includeAlts === "boolean") base.includeAlts = stored.includeAlts;
     if (typeof stored.altMaxDistance === "number" && stored.altMaxDistance >= 0) base.altMaxDistance = stored.altMaxDistance;
     if (typeof stored.altMinLiquidity === "number" && stored.altMinLiquidity >= 0) base.altMinLiquidity = stored.altMinLiquidity;
+    if (typeof stored.groupByMarket === "boolean") base.groupByMarket = stored.groupByMarket;
     return base;
   }
 
@@ -976,6 +1068,7 @@
   view.edgesIncludeAlts.addEventListener("change", onEdgeSettingsInput);
   view.edgesAltDistance.addEventListener("input", onEdgeSettingsInput);
   view.edgesAltLiquidity.addEventListener("input", onEdgeSettingsInput);
+  view.edgesGroup.addEventListener("change", onEdgeSettingsInput);
   view.alertsEnabled.addEventListener("change", onAlertSettingsInput);
   view.alertsMin.addEventListener("input", onAlertSettingsInput);
 

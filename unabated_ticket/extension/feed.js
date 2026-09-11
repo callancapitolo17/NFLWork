@@ -592,6 +592,68 @@
     return rows;
   }
 
+  // ---- grouping ------------------------------------------------------------
+
+  function groupKeyOf(row) {
+    return `${row.eventId}:pt${row.periodTypeId}:bt${row.betTypeId}:si${row.sideIndex}`;
+  }
+
+  // The side without its number: "Idaho Vandals", "Over".
+  function sideNameOf(row) {
+    if (row.betTypeId === 3) return row.sideIndex === 0 ? "Over" : "Under";
+    const team = row.sideIndex === 0 ? row.awayTeam : row.homeTeam;
+    return team || row.sideLabel;
+  }
+
+  // One card per (game, period, bet type, side): a +EV opinion is
+  // directional, so the two sides of a market are two cards. Rows inside a
+  // card sort by rankOf(row) descending (the panel passes the Kelly stake,
+  // which already taxes longshots), edge as the tie-break; `best` is the
+  // first. Cards come back in the same order by their best line. Rows are
+  // the selectEdges output (any extra fields, e.g. stake, ride along).
+  function groupEdges(rows, rankOf) {
+    const rank = typeof rankOf === "function" ? rankOf : (row) => row.edgePct;
+    const byKey = new Map();
+    for (const row of rows) {
+      const key = groupKeyOf(row);
+      let group = byKey.get(key);
+      if (!group) {
+        group = {
+          key,
+          eventId: row.eventId,
+          leagueId: row.leagueId,
+          league: row.league,
+          leagueLabel: row.leagueLabel,
+          eventName: row.eventName,
+          eventStart: row.eventStart,
+          eventStartMs: row.eventStartMs,
+          awayTeam: row.awayTeam,
+          homeTeam: row.homeTeam,
+          betTypeId: row.betTypeId,
+          betType: row.betType,
+          periodTypeId: row.periodTypeId,
+          period: row.period,
+          sideIndex: row.sideIndex,
+          sideName: sideNameOf(row),
+          rows: [],
+          bookCount: 0,
+          best: null,
+        };
+        byKey.set(key, group);
+      }
+      group.rows.push(row);
+    }
+    const compare = (a, b) => (rank(b) ?? -Infinity) - (rank(a) ?? -Infinity) || b.edgePct - a.edgePct;
+    const groups = Array.from(byKey.values());
+    for (const group of groups) {
+      group.rows.sort(compare);
+      group.best = group.rows[0];
+      group.bookCount = new Set(group.rows.map((row) => row.book.id)).size;
+    }
+    groups.sort((a, b) => compare(a.best, b.best) || a.eventStartMs - b.eventStartMs);
+    return groups;
+  }
+
   // Main lines only; alts are counted apart so the header can say both.
   function countLines(state) {
     let count = 0;
@@ -609,7 +671,7 @@
     LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID, CURSOR_EPOCH_MS,
     parseLeagueKey, parseEventStart, parseModifiedOn, lineChangedMs, lineKeyOf, altLineKeyOf, emptyState,
     parseSnapshot, mergeStates, extractCursor, cursorFromDate, parseChanges, applyChanges,
-    describeLine, selectEdges, countLines, countAltLines,
+    describeLine, selectEdges, groupEdges, groupKeyOf, countLines, countAltLines,
   };
 
   if (typeof module !== "undefined" && module.exports) {
