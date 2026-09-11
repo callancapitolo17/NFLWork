@@ -26,6 +26,9 @@
   const MAX_FIBER_HOPS = 40;
   const WATCH_INTERVAL_MS = 5000;
   const BET_TYPE_NAMES = { 1: "Moneyline", 2: "Spread", 3: "Total" };
+  // Same names feed.PERIODS uses; the bet matcher compares a ticket's period
+  // to a bet's, so an unknown id is named, never defaulted to full game.
+  const PERIOD_NAMES = { 1: "FG", 2: "1H", 3: "2H", 4: "1Q", 5: "2Q", 6: "3Q", 7: "4Q" };
 
   // ---- messaging -----------------------------------------------------------
 
@@ -270,6 +273,7 @@
       eventStart: rowData.eventStart ?? null,
       eventName: rowData.eventName ?? null,
       betType,
+      period: PERIOD_NAMES[rowData.periodTypeId ?? 1] || `pt${rowData.periodTypeId}`,
       sideIndex,
       sideLabel: sideLabelOf(betType, sideIndex, points, rowData, context),
       // Side 0 is the away team / Over, side 1 the home team / Under.

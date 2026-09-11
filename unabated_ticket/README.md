@@ -1,6 +1,6 @@
 # Unabated Ticket
 
-Chrome extension (Manifest V3, plain JS, no build step). Two tabs in one
+Chrome extension (Manifest V3, plain JS, no build step). Three tabs in one
 side panel:
 
 - **Ticket** — click a price on the Unabated odds screen and the panel shows
@@ -17,9 +17,14 @@ side panel:
   `docs/2026-09-10-unabated-edge-scanner-plan.md`. Alternate spreads and
   totals (every rung Unabated prices, not just the main number) list too
   behind an **Include alt lines** toggle — issue #113, see *Alt lines*.
+- **Bets** — your own open bets (Kalshi today; BetOnline, Novig and ProphetX
+  are separate tickets) read from a local service, matched against the
+  board so the Ticket tab says when you already have this line, the other
+  side of it, or a bet on the game, and the Edges list flags the same. Issue
+  #114; plan in `docs/2026-09-11-issue-114-bet-history-plan.md`. See *Bets*.
 
-One ticket at a time. No bet tracking, no overlay on the Unabated page, no
-rounding of the stake.
+One ticket at a time. No overlay on the Unabated page, no rounding of the
+stake, no order placement.
 
 ## Install (load unpacked)
 
@@ -307,6 +312,64 @@ MB/min with just football/baseball/basketball/hockey). Same endpoints the
 page itself calls, at a far lower rate than its 0.6 s poll; nothing runs
 when the panel is closed.
 
+## Bets
+
+Start the service (next section), keep the panel open. Every 30 s while the
+panel is visible it fetches `http://127.0.0.1:8094/bets.json` (never from
+the service worker), resolves each record's teams through `teams.js`, dedupes
+on the venue's native id against what it already holds, and keeps open bets
+plus settled ones from the last 30 days in `chrome.storage.local`
+(`betsService`; `betsSettings` holds the service URL and the hide toggle).
+A poll that fails keeps the last records and says so; nothing is ever
+blanked.
+
+**What is matched.** A bet matches a line when the league is the same, the
+two teams resolve to the same pair (either order) or the rotation number
+matches, and the time agrees: within 30 min when the venue gives a start
+time (Kalshi MLB tickers), else the bet's Eastern date within a day of the
+line's (Kalshi football tickers carry the date only). A bet that two board
+events accept (a series, a doubleheader without a time) is **never**
+guessed — it lands in the unmatched list as "ambiguous game". Only open bets
+match; settled and closed positions stay in the list but never flag a line.
+
+**Four tiers**, strongest first (`bets.js`, node-tested):
+
+| Tier | Meaning | Ticket banner | Edges badge |
+|---|---|---|---|
+| `same_line` | same market, period, side and number | "You bet this: Eagles -3.5 -110 · $300 @ Kalshi · Sep 10 2:15 PM" | `BET` |
+| `same_side` | same market, period, side; different number | "You have Eagles -3.5 -110 (this is -4.5)" | `BET` |
+| `opposite` | same market and period, the other side | red: "You are on the OTHER side: Cowboys +3.5 -105 · $200 @ Kalshi" ("at a different number" when the points differ) | `OTHER SIDE` (red) |
+| `same_game` | same game, any other market or period | "You have a bet on this game: Under 40.5 · $150 @ Kalshi" | `GAME` |
+
+A Kalshi NO on a team market is the other team **or a tie** (NFL/CFB/soccer);
+it matches as that team and the label says so ("NO Eagles ≈ Cowboys or
+tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
+
+**Where it shows.**
+
+- *Header line* under the tabs, always: "bets: 14 open · kalshi 20 s ·
+  betonline — · novig — · prophetx —" — open bets known to the panel and the
+  age of each venue's last successful pull (a dash = no source yet). Red
+  when the service is unreachable.
+- *Ticket tab*: a banner between the matchup and the stake, one line per
+  matching bet, strongest first, at most 5 then "+N more"; nothing when no
+  bet matches. The warning strip adds "Bet sources unavailable" when no
+  venue has reported in the last hour (the flags may then be missing).
+- *Edges tab*: the badge on each row, or on each card from its best line.
+  **Hide lines I've bet** (off by default) removes `same_line` and
+  `same_side` rows only — `OTHER SIDE` and `GAME` are warnings and stay —
+  and alerts skip whatever the filter hides. The filter line counts what was
+  hidden.
+- *Bets tab*: the per-venue table (last pull, green under 5 min, amber
+  under 60, red past that or on a failed poll with its error; venues with
+  no source yet read "no source configured"; the service itself shows
+  "unreachable since …" in red with the last records still listed), the
+  service URL, the open bets (venue, bet, stake, placed), and the
+  **unmatched** list — every open bet no board line matches, with why: team
+  not recognised (the raw name, so `teams.js` can grow), ambiguous game, no
+  event on the board yet, league not on the scanner, not a game market
+  (futures, the bots' combos), unknown Kalshi series.
+
 ## Bets service
 
 A local Python service that turns the user's own bet history into normalised
@@ -361,6 +424,13 @@ node --test "unabated_ticket/tests/*.test.js"
 /Users/callancapitolo/NFLWork/kalshi_draft/venv/bin/python3 -m pytest unabated_ticket/bets_service/tests
 ```
 
+`betsview.test.js` covers the panel's bet-history presentation helpers:
+freshness colours at the 5 / 60 min bounds, the per-venue rows (unconfigured,
+failed poll, never fetched), the service status texts, the "sources
+unavailable" rule, the header line, the banner's 5-line cut, the badge
+texts, the stored + fresh merge (newest per id, keys filled, old settled
+pruned), the ticket → line shape, and settings sanitising.
+
 `kelly.test.js` checks the sheet's worked example (-400 at +12.5% edge,
 bankroll 30000, quarter Kelly = $3,750), the Seattle -133 / +1.89% case,
 zero or negative edge → $0, that nothing rounds, and that exchange cents
@@ -400,12 +470,29 @@ when the rung was pulled, and a main-cell ticket unchanged. The grouped
 run (20 checks) adds: 4 cards for 9 lines, the Bears card's best line being
 the -110 main over the +944 rung, the badge counting cards, the expander,
 a nested row click locating, and a card staying open across a re-render.
+The #114 run (31 checks, 2026-09-11) routes `127.0.0.1:8094/bets.json` to a
+payload built from the Kalshi fixture plus synthetic CHI@CAR bets and
+drove: the header line and open count, the Bets tab rows (kalshi green,
+a red Novig row with its error, two "no source configured"), the open and
+unmatched lists with their reasons, the Ticket banner for every tier
+(moneyline both sides, NO with the tie caveat, spread same-side and
+other-side-at-a-different-number, full-game total as same_game, 1H total
+same_line), `BET` / `OTHER SIDE` / `GAME` badges on cards and rows, the hide
+filter removing exactly the `BET` items in both views and the filter line
+counting them, settings and payload persistence, a stale source turning
+the row red and raising the Ticket warning while the banner keeps the last
+bets, the service going away (red header, "unreachable since", records
+kept) and a reload restoring the stored records. A second script pointed
+the panel at the running service: 29 real open positions listed, the bots'
+combos as "not a game market", no console errors.
 
 Manual checklist after loading unpacked: click a best-line price and a
 book-column price, then a moneyline, a spread and a total; confirm side
 label, points sign, price, fair and stake; change bankroll and watch the
 stake move; wait for a line change and see the warning; close the Unabated
-tab and see "Not watching".
+tab and see "Not watching". With the bets service running and a real
+Kalshi position: click that line and see the banner; the other side of it
+in red.
 
 ## Troubleshooting
 
@@ -456,3 +543,29 @@ tab and see "Not watching".
 - **No notifications**: they only fire while the panel is open and the
   toggle is on; the first pass after enabling is silent by design. Check
   Chrome's notification permission for the extension in System Settings.
+- **Bets: "bets service unreachable since …"** (red header, Bets tab
+  banner): nothing is listening on the service URL. Start it with
+  `./unabated_ticket/bets_service/run.sh` from the repo root and check
+  `bets_service.log`; the panel keeps the last records it fetched and
+  retries every 30 s. A URL on another port needs a matching
+  `host_permissions` entry in `manifest.json` (only `127.0.0.1:8094` ships).
+- **Bets: a venue row is red with an error**: that source's last poll
+  failed (the text is the exception); the records shown are from its last
+  good pull. Kalshi: expired or missing `KALSHI_API_KEY_ID` /
+  `KALSHI_PRIVATE_KEY_PATH` (see the service's `.env.example`).
+- **Bets: "Bet sources unavailable" on the Ticket tab**: no venue has
+  reported in the last hour — the service is down or every source is
+  failing — so a missing flag means nothing. Fix the service, not the bet.
+- **Bets: unmatched "unknown Kalshi series"**: a game market whose series
+  is not in `bets.js` `GAME_SERIES` (and its Python twin in
+  `bets_service/sources/kalshi_ticker.py`); the raw ticker is in the list.
+  Add the series with its league, bet type and period, with a fixture test.
+- **Bets: unmatched "team not recognised (Name)"**: the venue's spelling is
+  not in `teams.js` for that league. Add the alias to the league's table
+  (never a nickname alone for CFB) and it matches on the next poll.
+- **Bets: unmatched "ambiguous game"**: two board events accept the bet
+  (a doubleheader or series without a start time on the venue side). The
+  panel refuses to guess; the bet still counts in the header.
+- **Bets: unmatched "no event on the board yet" / "league not on the
+  scanner"**: the game is not in any loaded league snapshot — untick fewer
+  sports in the Edges controls, or wait for Unabated to list it.
