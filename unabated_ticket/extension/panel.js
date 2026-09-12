@@ -420,15 +420,13 @@
   // What the Copy button adds after "stake $X" so the clipboard carries the
   // number to act on, not only the full Kelly.
   function copyExposureText(advice) {
-    if (advice.kind === "add") return ` (held $${advice.held.toFixed(2)}, add $${advice.add.toFixed(2)})`;
-    if (advice.kind === "at_size") return ` (at size: held $${advice.held.toFixed(2)})`;
-    if (advice.kind === "reverse") return ` (other side held $${advice.against.toFixed(2)})`;
-    return "";
+    const line = betsView.stakeAdviceLine(advice);
+    return line ? ` (${line})` : "";
   }
 
-  // Under the Kelly stake: what you already hold on this market and the
-  // number to act on — "Held $300 · add $200", "At size: held $600, Kelly
-  // $520", or in red "Other side $200 · net $300 on this side". Returns the advice.
+  // Under the Kelly stake, the same words as the Edges row: "have $350 →
+  // target $600, bet $250", the bet number large; red when the position held
+  // is on the other side. Returns the advice.
   function renderStakeExposure(stake, flag) {
     const advice = betsView.stakeAdvice(stake, flag.exposure);
     view.stakeExposure.classList.toggle("against", advice.kind === "reverse");
@@ -438,21 +436,13 @@
       return advice;
     }
     const summary = document.createElement("div");
-    if (advice.kind === "add") {
-      summary.append(`Held ${fmtDollars(advice.held)} · add `);
-      const add = document.createElement("span");
-      add.className = "stake-add";
-      add.textContent = fmtDollars(advice.add);
-      summary.append(add);
-    } else if (advice.kind === "at_size") {
-      summary.textContent = advice.stake == null
-        ? `At size: held ${fmtDollars(advice.held)}, nothing to size here`
-        : `At size: held ${fmtDollars(advice.held)}, Kelly ${fmtDollars(advice.stake)}`;
-    } else {
-      summary.textContent = advice.net == null
-        ? `Other side ${fmtDollars(advice.against)}`
-        : `Other side ${fmtDollars(advice.against)} · net ${fmtDollars(Math.abs(advice.net))} ${advice.net >= 0 ? "on this side" : "still against"}`;
-    }
+    const words = betsView.stakeAdviceWords(advice);
+    summary.append(`have ${words.have} → target ${words.target}, bet `);
+    const bet = document.createElement("span");
+    bet.className = "stake-add";
+    bet.textContent = words.bet;
+    summary.append(bet);
+    if (words.note) summary.append(` (${words.note})`);
     const positions = betsView.positionLines(flag).map((text) => {
       const div = document.createElement("div");
       div.className = "muted";
@@ -727,24 +717,20 @@
     return badge;
   }
 
-  // The row's stake cell sized against what you hold: "$500", "+$200 of $500",
-  // "at size $600 of $520", "$500 reverses $200".
+  // The row's stake cell: a plain "$500" when nothing is held on the market,
+  // else "bet $250" over a small "have $350 → target $600" (the Ticket block
+  // reads the same way; betsview.stakeAdviceWords).
   function fillStakeCell(cell, row) {
     const advice = row.bet ? row.bet.advice : { kind: "none" };
-    const note = document.createElement("small");
     cell.classList.toggle("at-size", advice.kind === "at_size");
-    if (advice.kind === "add") {
-      cell.append(`+${fmtDollars(advice.add)} `, note);
-      note.textContent = `of ${fmtDollars(advice.stake)}`;
-    } else if (advice.kind === "at_size") {
-      cell.append("at size ", note);
-      note.textContent = advice.stake == null ? `held ${fmtDollars(advice.held)}` : `${fmtDollars(advice.held)} of ${fmtDollars(advice.stake)}`;
-    } else if (advice.kind === "reverse") {
-      cell.append(`${row.stake == null ? "—" : fmtDollars(row.stake)} `, note);
-      note.textContent = `reverses ${fmtDollars(advice.against)}`;
-    } else {
+    const words = betsView.stakeAdviceWords(advice);
+    if (!words) {
       cell.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
+      return;
     }
+    const note = document.createElement("small");
+    note.textContent = `have ${words.have} → target ${words.target}${words.note ? ` (${words.note})` : ""}`;
+    cell.append(`bet ${words.bet} `, note);
   }
 
   // The dim lines under a row naming the position(s) behind its badge, one per position.

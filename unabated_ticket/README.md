@@ -378,12 +378,18 @@ number is the same opinion) and `against` the dollars on the other side;
 both are dollars risked at every venue, so they compare directly with the
 Kelly stake (`bets.exposureOf`, `betsview.stakeAdvice`):
 
+The wording is the same three numbers in the same order everywhere (user
+choice 2026-09-11): **have** what you hold on this side (or "against" when
+it is on the other side), **target** the Kelly stake, **bet** the number to
+act on. `betsview.stakeAdviceWords` builds it once for the row, the Ticket
+block and the Copy text:
+
 | You hold | Stake column | Ticket stake block |
 |---|---|---|
 | nothing | `$500` | — |
-| $300 same side, Kelly $500 | `+$200 of $500` | "Held $300 · **add $200**" |
-| $600 same side, Kelly $520 | `at size $600 of $520` (muted) | "At size: held $600, Kelly $520" |
-| $200 other side, Kelly $500 | `$500 reverses $200` | red "Other side $200 · net $300 on this side" |
+| $300 same side, Kelly $500 | `bet $200` over "have $300 → target $500" | "have $300 → target $500, bet **$200**" |
+| $600 same side, Kelly $520 | `bet $0` over "have $600 → target $520" (muted) | "have $600 → target $520, bet **$0**" |
+| $200 other side, Kelly $500 | `bet $500` over "have $200 against → target $500 (net $300 on this side)" | red "have $200 against → target $500, bet **$500** (net $300 on this side)" |
 | same game only | `$500` | — (the banner still lists the bet) |
 
 Held and against rows (and cards) carry a dim line naming the position:
@@ -656,7 +662,7 @@ unmatched lists with their reasons, the Ticket banner for every tier
 (moneyline both sides, NO with the tie caveat, spread same-side and
 other-side-at-a-different-number, full-game total as same_game, 1H total
 same_line), `held $N` / `against $N` / `game` badges with their position
-lines and sized stakes (`+$X of $Y`, `at size`, `reverses $Z`) on cards and
+lines and sized stakes ("bet $200" over "have $300 → target $500") on cards and
 rows, the exposure sort, the ticket's held / other-side / at-size block,
 settings and payload persistence, a stale source turning
 the row red and raising the Ticket warning while the banner keeps the last
