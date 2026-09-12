@@ -132,7 +132,7 @@ button.small { font-size: 11px; padding: 2px 6px; }
 }
 .edge-bet.kind-against { background: var(--bad-bg); color: var(--bad-fg); }
 .edge-bet.kind-game { background: none; border: 1px solid var(--border); color: var(--muted); font-weight: 500; }
-.edge-position { color: var(--muted); font-size: 12px; }
+.edge-position { font-size: 12px; font-weight: 600; }
 .edge-row .edge-stake small { font-weight: 400; color: var(--muted); margin-left: 4px; }
 .edge-row .edge-stake.at-size { color: var(--muted); }
 .stake-exposure { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); font-size: 13px; font-variant-numeric: tabular-nums; }
