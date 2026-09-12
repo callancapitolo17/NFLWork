@@ -309,7 +309,11 @@
       isAlt: altPoints != null,
       // Watcher handle: how to find this same line again through the grid API
       // (altPoints set = look inside the book line's alternateLines).
-      watch: { gridKey: rowData.gridKey ?? null, sideKey, bookKey: `ms${bookId}`, altPoints },
+      watch: {
+        gridKey: rowData.gridKey ?? null, sideKey, bookKey: `ms${bookId}`, altPoints,
+        // Row identity for when the grid key stops resolving (rebuilt grid, re-keyed row).
+        eventId: rowData.eventId ?? null, betTypeId, periodTypeId: rowData.periodTypeId ?? 1,
+      },
       current: null,
     };
   }
@@ -408,15 +412,58 @@
     watcher = null;
   }
 
-  function readWatchedLine() {
-    const { ticket, gridApi } = watcher;
-    const { gridKey, sideKey, bookKey } = ticket.watch;
-    if (!gridKey) throw new Error("no gridKey on the ticket");
-    if (typeof gridApi.isDestroyed === "function" && gridApi.isDestroyed()) {
-      throw new Error("grid was destroyed");
+  function apiIsDead(api) {
+    return !api || (typeof api.isDestroyed === "function" && api.isDestroyed());
+  }
+
+  function rowCountOf(api) {
+    try {
+      return typeof api.getDisplayedRowCount === "function" ? api.getDisplayedRowCount() : "?";
+    } catch (_error) {
+      return "?";
     }
-    const node = gridApi.getRowNode(gridKey);
-    if (!node || !node.data) throw new Error("row no longer in the grid");
+  }
+
+  // The watched row, surviving what the plain grid-key lookup does not: a
+  // grid Unabated rebuilt (the held API answers with no rows — re-acquire one
+  // from the DOM), a row it re-keyed (its key embeds flags like livefalse —
+  // find it by event, bet type and period), and the tab having been steered
+  // to another league by a locate (say which, instead of "row gone").
+  function watchedRowNode() {
+    const { ticket } = watcher;
+    const { gridKey, eventId, betTypeId, periodTypeId } = ticket.watch;
+    const shownLeague = leagueFromUrl();
+    if (ticket.league && shownLeague && shownLeague !== ticket.league) {
+      throw new Error(`the Unabated tab is showing ${shownLeague.toUpperCase()}; this line is on ${ticket.league.toUpperCase()}`);
+    }
+    if (!gridKey && eventId == null) throw new Error("no gridKey on the ticket");
+    const byIdentity = (api) => (eventId == null ? null : findRowNode(api, { eventId, betTypeId, periodTypeId: periodTypeId ?? 1 }));
+    const lookup = (api) => {
+      const byKey = gridKey ? api.getRowNode(gridKey) : null;
+      return byKey && byKey.data ? byKey : byIdentity(api);
+    };
+    let api = watcher.gridApi;
+    let node = apiIsDead(api) ? null : lookup(api);
+    if (!node) {
+      // The held API may belong to a grid that no longer exists; a rendered cell always reaches the live one.
+      const fresh = anyGridApi().api;
+      if (fresh !== api) {
+        api = fresh;
+        watcher.gridApi = api;
+        node = lookup(api);
+      }
+    }
+    if (!node || !node.data) {
+      throw new Error(`row no longer in the grid (${rowCountOf(api)} rows shown, event ${eventId} bt${betTypeId} pt${periodTypeId} not among them)`);
+    }
+    if (node.data.gridKey && node.data.gridKey !== gridKey) ticket.watch.gridKey = node.data.gridKey;
+    return node;
+  }
+
+  function readWatchedLine() {
+    const { ticket } = watcher;
+    const { sideKey, bookKey } = ticket.watch;
+    const node = watchedRowNode();
     const books = node.data.sides && node.data.sides[sideKey];
     const bookLine = books && books[bookKey];
     if (!bookLine) throw new Error("book line no longer on the row");
