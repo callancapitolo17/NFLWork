@@ -40,6 +40,15 @@
     ["cfb", "UAlbany", "Albany"],                       // Novig
     ["cfb", "North Carolina State", "NC State"],        // Novig
     ["cfb", "Southern Mississippi", "Southern Miss"],   // Novig
+    // Measured against the live CFB snapshot 2026-09-12: these three blocked
+    // 8 of 111 open bets. None can be a rule. "A&M" must never join
+    // INSTITUTION_SUFFIXES — Texas A&M is not Texas, and Unabated lists only
+    // the teams playing this week, so the school a query extends may simply
+    // be absent. "Louisiana" is genuinely ambiguous by containment (Louisiana
+    // Tech and SE Louisiana both hit) and resolves to null without this line.
+    ["cfb", "Prairie View A&M", "Prairie View"],        // Novig
+    ["cfb", "Louisiana", "UL Lafayette"],               // Novig (the Ragin' Cajuns)
+    ["cfb", "Southeastern Louisiana", "SE Louisiana"],  // Novig
     ["mlb", "Los Angeles D", "Los Angeles Dodgers"],    // Kalshi KXMLBRFI event title truncation
   ];
   const CODE_TOKEN_RE = /^[A-Z][A-Z0-9&]{1,4}$/;

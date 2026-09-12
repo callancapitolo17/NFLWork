@@ -67,6 +67,14 @@ test("CFB: Kalshi St. forms and Novig spellings both land on Unabated's team; am
   assert.equal(teams.teamKey("cfb", "Long Island University"), keyOf("cfb", "Long Island"));
   assert.equal(teams.teamKey("cfb", "UAlbany"), keyOf("cfb", "Albany")); // alias
   assert.equal(teams.teamKey("cfb", "North Carolina State"), keyOf("cfb", "NC State")); // alias
+  // The three Novig spellings that blocked 8 of 111 open bets on 2026-09-12.
+  assert.equal(teams.teamKey("cfb", "Prairie View A&M"), keyOf("cfb", "Prairie View")); // alias: "A&M" is not an institutional suffix
+  assert.equal(teams.teamKey("cfb", "Louisiana"), keyOf("cfb", "UL Lafayette")); // alias: containment hits Louisiana Tech AND SE Louisiana
+  assert.equal(teams.teamKey("cfb", "Southeastern Louisiana"), keyOf("cfb", "SE Louisiana")); // alias: no rule derives SE from Southeastern
+  assert.equal(teams.teamKey("cfb", "Lafayette"), keyOf("cfb", "Lafayette")); // exact still beats the UL Lafayette alias target
+  // Texas A&M is not Texas: the A&M alias must stay one spelling, never a rule.
+  assert.equal(teams.teamKey("cfb", "Texas A&M"), keyOf("cfb", "Texas A&M"));
+  assert.equal(teams.teamKey("cfb", "Alabama A&M"), keyOf("cfb", "Alabama A&M"));
   assert.equal(teams.teamKey("cfb", "Kentucky"), keyOf("cfb", "Kentucky")); // exact beats "Eastern Kentucky"
   assert.equal(teams.teamKey("cfb", "Miami"), null); // Miami Florida or Miami Ohio
   assert.equal(teams.teamKey("cfb", "Southern"), keyOf("cfb", "Southern")); // Southern University, an exact name
