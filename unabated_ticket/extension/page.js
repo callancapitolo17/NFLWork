@@ -96,10 +96,28 @@
   // Unabated's own edge % (EV per $1 staked) for this line. Null is a normal
   // condition (lopsided moneylines, exchange-only lines Unabated has not
   // priced), not a parse failure, so it gets its own error kind for the panel.
+  // Script build, so a stale copy of page.js in an old tab shows itself in the panel.
+  const PAGE_SCRIPT_BUILD = "0.5.1";
+
+  // What the clicked object actually carried, for the panel's no_fair detail:
+  // decides between "Unabated never priced it" and "the field moved".
+  function describeLineFields(marketLine) {
+    const summary = {
+      keys: Object.keys(marketLine).slice(0, 40),
+      edge: marketLine.edge, ge: marketLine.ge, bacr: marketLine.bacr,
+      price: marketLine.price, americanPrice: marketLine.americanPrice, statusId: marketLine.statusId,
+    };
+    try {
+      return JSON.stringify(summary);
+    } catch (_error) {
+      return "(unserialisable line object)";
+    }
+  }
+
   function requireEdgePct(marketLine) {
     const edge = edgePctOf(marketLine);
     if (edge == null) {
-      const error = new Error("Unabated has no edge for this line");
+      const error = new Error(`Unabated has no edge for this line (script ${PAGE_SCRIPT_BUILD}; cell fields ${describeLineFields(marketLine)})`);
       error.kind = "no_fair";
       throw error;
     }

@@ -359,7 +359,7 @@
   const ERROR_COPY = {
     no_fair: {
       title: "No Unabated fair for this line",
-      hint: "Unabated has not priced this line, so there is nothing to size against. This is normal for lopsided moneylines and exchange-only lines. Pick a line that shows an edge %.",
+      hint: "Unabated has not priced this line, so there is nothing to size against. This is normal for lopsided moneylines and exchange-only lines. Pick a line that shows an edge %. If the Edges tab lists this line, the detail below says which fields the cell carried — send it along.",
     },
     read_failed: {
       title: "Could not read this cell",
