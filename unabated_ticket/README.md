@@ -93,7 +93,13 @@ tab is running the capture script", reload the tab.
   `watch.altPoints` and the watcher re-finds that rung by points inside
   the ladder (a rung the book pulls shows as off the board). The screen
   computes `edge` for main lines only, so an alt ticket is sized from the
-  feed's `ge` on the object — the same number.
+  feed's `ge` on the object — the same number. A cell in the expanded Alts
+  section sits on its own grid row whose entry for the book is the rung
+  itself, so capture first resolves the row that carries the book's
+  `alternateLines` ladder (`ladderRowFor`) and classifies, prices and
+  watches against that one — measured against the Alts row the rung read
+  as a main line and the watcher followed the real main number (live
+  2026-09-12: Alabama A&M -5.5 +264 became "now -102 at +1.5").
 
 ## Stake
 
