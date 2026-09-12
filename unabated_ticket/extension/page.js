@@ -335,10 +335,17 @@
       + (nodeIsTopLevel(node) ? 4 : 0) + (hasBestLines ? 2 : 0) + (carriesLadder(entry) ? 1 : 0);
   }
 
-  // The clicked line object, on the row's entry itself or inside its ladder.
+  // The clicked line, on the row's entry itself or inside its ladder: the
+  // same object, or the same number. By number as well because an Alts
+  // child's entry is the rung itself and is not known to be the SAME object
+  // as the parent ladder's element — on identity alone the child could
+  // outrank its top-level parent, and the watcher would follow the parent's
+  // main number once the Alts section closed (the 2026-09-12 bug again).
   function fitsClickedLine(marketLine) {
-    return (entry) => entry === marketLine
-      || (Array.isArray(entry.alternateLines) && entry.alternateLines.includes(marketLine));
+    const points = typeof marketLine.points === "number" ? marketLine.points : null;
+    const same = (line) => line === marketLine || (points != null && line.points === points);
+    return (entry) => same(entry)
+      || (Array.isArray(entry.alternateLines) && entry.alternateLines.some((alt) => alt && same(alt)));
   }
 
   // The captured number: the entry's own points for a main-line watch (any
@@ -350,18 +357,24 @@
     return (entry) => entry.points === watch.points;
   }
 
-  // A market whose rungs are sibling top-level rows: two or more top-level
-  // rows carry this book's entry at DIFFERENT points. On such a grid the
-  // rows share a grid key, so a keyed lookup can answer with another rung,
-  // and an entry at another number is a different rung, not a line move.
-  function hasPerRungRows(ranked, sideKey, bookKey) {
-    const points = new Set();
+  // A market whose rungs are sibling top-level rows: another top-level row
+  // sharing the picked row's grid key carries this book's entry at a
+  // DIFFERENT number. The shared key is the observed signature and the
+  // reason it matters — a keyed lookup can answer with another rung, and an
+  // entry at another number is a different rung, not a line move. Keyed on
+  // the pick's own key, not "any two top-level rows", so a layout where an
+  // Alts child reads as top-level cannot mark an ordinary market per-rung
+  // and turn its real line moves into "off the board".
+  function hasPerRungRows(ranked, pick, sideKey, bookKey) {
+    const key = pick.node.data.gridKey;
+    const own = bookEntryOf(pick.node.data, sideKey, bookKey);
+    if (key == null || !own || typeof own.points !== "number") return false;
     for (const { node } of ranked) {
-      if (!nodeIsTopLevel(node)) continue;
+      if (node === pick.node || !nodeIsTopLevel(node) || node.data.gridKey !== key) continue;
       const entry = bookEntryOf(node.data, sideKey, bookKey);
-      if (entry && typeof entry.points === "number") points.add(entry.points);
+      if (entry && typeof entry.points === "number" && entry.points !== own.points) return true;
     }
-    return points.size > 1;
+    return false;
   }
 
   // One line per candidate row, for the panel's trace when the watched
@@ -450,7 +463,7 @@
       trace: `picked ${describeMarketNode(pick.node, sideKey, bookKey, marketLine)} of ${trace}`,
       ambiguous: tied,
       top: nodeIsTopLevel(pick.node),
-      perRungRows: hasPerRungRows(ranked, sideKey, bookKey),
+      perRungRows: hasPerRungRows(ranked, pick, sideKey, bookKey),
     };
   }
 

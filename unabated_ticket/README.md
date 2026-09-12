@@ -99,8 +99,9 @@ tab is running the capture script", reload the tab.
   itself, so both capture and the watcher resolve the market's rows
   through one ranking (`rankedMarketNodes`, over every AG Grid on the
   page — an open Alts section mounts its own): a row whose entry for the
-  book IS the line being resolved (capture: the clicked object, on the
-  entry or in its ladder; the watcher: the captured number) beats every
+  book IS the line being resolved (capture: the clicked object or its
+  number, on the entry or in its ladder; the watcher: the captured
+  number) beats every
   shape signal, then a top-level row beats a child, a row carrying the
   market's `bestLines` beats one without, and a row carrying this book's
   `alternateLines` ladder beats a lone rung. The line-identity rank exists
@@ -114,8 +115,8 @@ tab is running the capture script", reload the tab.
   (`ladderRowFor`); the watcher trusts its grid-key lookup only when it
   answers with a row of the same shape carrying the captured line, and
   otherwise re-ranks, requiring the book's entry as capture did. On such a
-  per-rung grid (`watch.perRungRows`, two top-level rows carrying the book
-  at different numbers) an entry at another number is another rung, so
+  per-rung grid (`watch.perRungRows`: a sibling top-level row sharing the
+  pick's grid key carries the book at another number) an entry at another number is another rung, so
   the watcher reports the captured rung off the board rather than a line
   move. Picking a child is
   legitimate when a book prices no main line, so the shape is compared,
