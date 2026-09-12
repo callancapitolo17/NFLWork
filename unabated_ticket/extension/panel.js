@@ -56,7 +56,7 @@
   const el = (id) => document.getElementById(id);
   const view = {
     ticket: el("ticket"), error: el("error"), empty: el("empty"),
-    warning: el("warning"), sideLabel: el("side-label"), betLine: el("bet-line"),
+    warning: el("warning"), rowTrace: el("row-trace"), sideLabel: el("side-label"), betLine: el("bet-line"),
     eventLine: el("event-line"), startLine: el("start-line"),
     book: el("book"), price: el("price"), fair: el("fair"), edge: el("edge"),
     stake: el("stake"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
@@ -277,6 +277,12 @@
   // ---- side wording --------------------------------------------------------
 
   // "Total · Over 55.5 combined points" / "Spread · Oregon (away) vs Oklahoma State"
+  // " · 1H" on anything but the full game: a first-half ticket read as a
+  // full-game one until 2026-09-12 (the bet banner said 1H, the heading did not).
+  function periodSuffix(ticket) {
+    return ticket.period && ticket.period !== "FG" ? ` \u00b7 ${ticket.period}` : "";
+  }
+
   function describeSide(ticket) {
     const rotation = ticket.rotation != null ? ` \u00b7 rot ${ticket.rotation}` : "";
     if (ticket.betType === "Total") {
@@ -339,6 +345,7 @@
     view.warning.hidden = messages.length === 0;
     view.warning.textContent = messages.join(" ");
     view.warning.classList.toggle("bad", bad);
+    renderRowTrace(ticket);
   }
 
   // Why the feed gave no line, for the no-edge view: nothing for the game,
@@ -366,6 +373,40 @@
     show("error");
   }
 
+  // Which grid rows the capture chose between and which one the watcher is
+  // reading. Shown only when the panel has a concrete reason to doubt it is
+  // following the clicked rung (live 2026-09-12: Under 19.5 captured, Under
+  // 2.5 watched), never on an ordinary line move:
+  //   - the watcher is reading a row of a different SHAPE than capture picked
+  //     (top-level vs an Alts child) — the shape of that bug, and a comparison
+  //     rather than an absolute, so a grid where every row is a child is quiet;
+  //   - an alt ticket's watched points changed, which cannot happen while the
+  //     watcher is re-finding the rung by its number;
+  //   - capture found two rows TIED at the best rank, so grid order decided.
+  function rowTraceReason(ticket) {
+    const current = ticket.current;
+    if (current && current.rowTop != null && ticket.watch && ticket.watch.rowTop != null
+      && current.rowTop !== ticket.watch.rowTop) {
+      return "the watcher is reading a different row than the capture";
+    }
+    if (ticket.isAlt && current && !current.offBoard && current.points !== ticket.points) {
+      return "the watched rung is not the captured number";
+    }
+    if (ticket.rowResolution && ticket.rowResolution.ambiguous) {
+      return "two grid rows tied for this market";
+    }
+    return null;
+  }
+
+  function renderRowTrace(ticket) {
+    const resolution = ticket.rowResolution;
+    const reason = resolution ? rowTraceReason(ticket) : null;
+    view.rowTrace.hidden = !reason;
+    if (!reason) return;
+    const watching = ticket.current && ticket.current.row ? ` Watching ${ticket.current.row}.` : "";
+    view.rowTrace.textContent = `Row trace (${reason}; script ${resolution.build}): ${resolution.trace}.${watching}`;
+  }
+
   function renderTicket() {
     const { ticket, settings, watchStatus } = state;
     const { line, result, reason } = computeStake(ticket, settings);
@@ -376,7 +417,7 @@
     renderWarning(ticket, watchStatus, line);
 
     view.sideLabel.textContent = ticket.sideLabel;
-    view.betLine.textContent = `${describeSide(ticket)}${ticket.isAlt ? " \u00b7 alt line" : ""}`;
+    view.betLine.textContent = `${describeSide(ticket)}${periodSuffix(ticket)}${ticket.isAlt ? " \u00b7 alt line" : ""}`;
     view.eventLine.textContent = describeMatchup(ticket);
     view.startLine.textContent = fmtStart(ticket.eventStart);
     const betFlag = renderBetBanner(ticket);
@@ -411,7 +452,7 @@
     const advice = renderStakeExposure(result ? result.stake : null, betFlag);
 
     const stakeText = result ? result.stake.toFixed(2) : "n/a";
-    lastCopyText = `${ticket.sideLabel} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${copyExposureText(advice)}${payoutText} | ${describeMatchup(ticket)}`;
+    lastCopyText = `${ticket.sideLabel}${periodSuffix(ticket)} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${copyExposureText(advice)}${payoutText} | ${describeMatchup(ticket)}`;
     view.copyStatus.textContent = "";
     show("ticket");
   }
