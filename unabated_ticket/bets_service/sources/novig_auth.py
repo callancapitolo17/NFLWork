@@ -46,6 +46,7 @@ AUTHORIZE_URL = f"https://{AUTH0_DOMAIN}/authorize"
 HTTP_TIMEOUT_SEC = 20
 # Refresh when this close to expiry, so a poll never starts on a dying token.
 REFRESH_MARGIN_SEC = 120
+LOGIN_TIMEOUT_SEC = 600
 
 
 class NovigAuthError(RuntimeError):
@@ -181,6 +182,24 @@ def _redirect_via_paste(url: str) -> str:
     return input("Paste the redirected URL here: ")
 
 
+def _launch_any_chromium(p):
+    """Playwright's own Chromium if its version is downloaded, else the
+    installed Google Chrome, else any Chromium the ms-playwright cache holds
+    (venvs pin different Playwright builds; the login page needs none in
+    particular). Always a fresh profile: the user logs in inside it."""
+    attempts = [{}, {"channel": "chrome"}]
+    cache = Path.home() / "Library" / "Caches" / "ms-playwright"
+    for candidate in sorted(cache.glob("chromium-*/chrome-mac*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"), reverse=True):
+        attempts.append({"executable_path": str(candidate)})
+    errors = []
+    for kwargs in attempts:
+        try:
+            return p.chromium.launch(headless=False, **kwargs)
+        except Exception as error:  # noqa: BLE001 — try the next browser, report all if none launch
+            errors.append(f"{kwargs or 'default'}: {str(error).splitlines()[0]}")
+    raise NovigAuthError("no Chromium could be launched:\n  " + "\n  ".join(errors))
+
+
 def _redirect_via_browser(url: str) -> str:
     """Headed Playwright window; the app never loads because the callback
     request is intercepted, so the code cannot be stripped. The user types
@@ -191,7 +210,7 @@ def _redirect_via_browser(url: str) -> str:
         raise NovigAuthError("--browser needs Playwright (mlb_sgp/venv has it); use the paste flow instead") from error
     landed: list[str] = []
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = _launch_any_chromium(p)
         page = browser.new_page()
 
         def intercept(route, request):
@@ -201,13 +220,29 @@ def _redirect_via_browser(url: str) -> str:
 
         page.route(f"{REDIRECT_URI}/**", intercept)
         page.route(REDIRECT_URI, intercept)
+        # Progress on stdout so a stuck login can be diagnosed without seeing the screen.
+        page.on("framenavigated", lambda frame: print(f"  [browser] {frame.url[:120]}", flush=True) if frame == page.main_frame else None)
         page.goto(url)
-        deadline = time.time() + 300
+        print("  [browser] window open — log in to Novig there", flush=True)
+        deadline = time.time() + LOGIN_TIMEOUT_SEC
+        last_title = None
         while not landed and time.time() < deadline:
-            page.wait_for_timeout(250)
+            page.wait_for_timeout(500)
+            try:
+                title = page.title()
+            except Exception:  # noqa: BLE001 — a navigating page may refuse briefly
+                continue
+            if title != last_title:
+                print(f"  [browser] page: {title!r}", flush=True)
+                last_title = title
+            if "auth.novig.us" in page.url and "/authorize" not in page.url and "/u/" not in page.url:
+                text = page.inner_text("body")[:300].replace("\n", " ")
+                if "mismatch" in text.lower() or "oops" in text.lower():
+                    browser.close()
+                    raise NovigAuthError(f"Auth0 refused the request: {text}")
         browser.close()
     if not landed:
-        raise NovigAuthError("login did not complete within 5 minutes")
+        raise NovigAuthError(f"login did not complete within {LOGIN_TIMEOUT_SEC // 60} minutes")
     return landed[0]
 
 
