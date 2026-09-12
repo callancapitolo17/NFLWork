@@ -94,7 +94,7 @@
   }
 
   // Script build, so a stale copy of page.js in an old tab shows itself in the panel.
-  const PAGE_SCRIPT_BUILD = "0.6.0";
+  const PAGE_SCRIPT_BUILD = "0.6.1";
 
   // What the clicked object actually carried, for the panel's no-edge detail:
   // decides between "Unabated never priced it" and "the field moved". Space
@@ -132,15 +132,6 @@
     const fromRow = entry && entry !== marketLine ? edgePctOf(entry) : null;
     if (fromRow != null) return { edgePct: fromRow, fair: fairPriceOrNull(entry) };
     return { edgePct: null, fair: fairPriceOrNull(marketLine) };
-  }
-
-  // The feed's market id, which keys the Edges tab's copy of this line. An
-  // alternate-line object can carry null there (Fanatics), so the row's main
-  // entry is the fallback.
-  function marketIdOf(marketLine, rowData, sideKey, bookKey) {
-    if (marketLine.marketId != null) return marketLine.marketId;
-    const main = rowData.sides && rowData.sides[sideKey] && rowData.sides[sideKey][bookKey];
-    return main && main.marketId != null ? main.marketId : null;
   }
 
   // Unabated's sourceFormat: 1 = American, 2 = decimal (1.909), 4 = probability (0.525).
@@ -331,7 +322,6 @@
       // same price, else shows noEdgeDetail as "No Unabated fair".
       edgePct: edge.edgePct,
       noEdgeDetail: edge.edgePct == null ? `script ${PAGE_SCRIPT_BUILD}; cell fields ${describeLineFields(marketLine)}` : null,
-      marketId: marketIdOf(marketLine, rowData, sideKey, bookKey),
       isAlt: altPoints != null,
       // Watcher handle: how to find this same line again through the grid API
       // (altPoints set = look inside the book line's alternateLines).

@@ -65,8 +65,12 @@ tab is running the capture script", reload the tab.
   `sides[side][ms<book>]` entry at the same points (the cell's prop can be a
   copy without `ge` — live 2026-09-12 a Novig main line the Edges tab listed
   carried neither on the cell, twice, after a tab reload), then in the
-  panel the Edges feed's copy of the same line (`marketId`, book, side,
-  points) **only at the same price** — an edge is for one price. A ticket
+  panel the Edges feed's copy of the same line, matched on game, bet type,
+  period, side, book and points — never on the feed key, since an alt rung's
+  cell object can lack `marketId`; two feed lines at that number are two
+  markets (a team total the changes stream tagged `bt3`) and the panel
+  refuses rather than guess — **only at the same price**; an edge is for
+  one price. A ticket
   sized from the feed says so in the warning strip with the feed copy's
   age. When none of the three has an edge the panel shows **No Unabated
   fair for this line** with the cell's fields (`noEdgeDetail`) and what the

@@ -159,15 +159,50 @@
 
   // ---- pricing -------------------------------------------------------------
 
-  // The Edges feed's copy of the ticket's line — same market, book, side and
-  // points — or null. The screen cell can carry no edge at all (live
-  // 2026-09-12: a Novig main line the Edges tab listed captured with neither
-  // `edge` nor `ge`), and this is the same `ge` the Edges tab sizes from.
+  // Does this feed line describe the ticket's line: same game, bet type,
+  // period, side and book. Points are the caller's (the captured or current number).
+  function feedLineMatchesTicket(line, ticket) {
+    return line.eventId === ticket.eventId
+      && line.betTypeId === ticket.watch.betTypeId
+      && line.periodTypeId === ticket.watch.periodTypeId
+      && line.sideIndex === ticket.sideIndex
+      && line.bookId === ticket.book.id;
+  }
+
+  // Every feed line with the ticket's game, bet type, period, side, book and
+  // points. Matched on the fields both sides carry, never on the feed key: an
+  // alt rung's cell object can lack marketId, and whether page.js classed the
+  // cell as an alt does not decide which key the feed filed the line under
+  // (live 2026-09-12: an Under 46.5 +213 Novig rung the Edges tab listed came
+  // back "no copy" through the key). Normally one line: the feed drops an alt
+  // sitting on its main line's points. Two means two MARKETS — the changes
+  // stream tags an event's team totals bt3 like its game total, and only the
+  // marketId the ticket may lack tells them apart — so the caller refuses.
+  function feedLinesFor(ticket, points) {
+    if (!scannerState || !ticket.watch || ticket.eventId == null) return [];
+    const matches = [];
+    for (const line of Object.values(scannerState.lines)) {
+      if (line.points === points && feedLineMatchesTicket(line, ticket)) matches.push(line);
+    }
+    return matches;
+  }
+
+  // The Edges feed's one copy of the ticket's line, or null. The screen cell
+  // can carry no edge at all, and this is the same `ge` the Edges tab sizes from.
   function feedLineFor(ticket, points) {
-    if (!scannerState || ticket.marketId == null || !ticket.watch) return null;
-    const keyArgs = { marketId: ticket.marketId, bookId: ticket.book.id, sideKey: ticket.watch.sideKey, points };
-    const held = scannerState.lines[ticket.isAlt ? feed.altLineKeyOf(keyArgs) : feed.lineKeyOf(keyArgs)];
-    return held && held.points === points ? held : null;
+    const matches = feedLinesFor(ticket, points);
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  // Every number the feed holds for the ticket's game, side and book, for the
+  // no-edge view: tells a game the feed lacks apart from a missing rung.
+  function feedPointsHeld(ticket) {
+    if (!scannerState || !ticket.watch || ticket.eventId == null) return [];
+    const points = [];
+    for (const line of Object.values(scannerState.lines)) {
+      if (feedLineMatchesTicket(line, ticket)) points.push(line.points);
+    }
+    return points.sort((a, b) => a - b);
   }
 
   // The line the stake is computed from: the current line if it moved, else
@@ -280,6 +315,17 @@
     view.warning.classList.toggle("bad", bad);
   }
 
+  // Why the feed gave no line, for the no-edge view: nothing for the game,
+  // no rung at this number, or two markets at it (a team total beside the total).
+  function describeFeedMiss(ticket, points) {
+    const atNumber = feedLinesFor(ticket, points).length;
+    if (atNumber > 1) return `${atNumber} markets at this number for this game, side and book; refusing to guess which is the ticket's`;
+    const held = feedPointsHeld(ticket);
+    const where = points == null ? "no line" : `no line at ${fmtPoints(points)}`;
+    if (held.length === 0) return `${where} for this game, side and book; it holds nothing for them`;
+    return `${where} for this game, side and book; it holds ${held.map(fmtPoints).join(", ")}`;
+  }
+
   // A captured line with no edge anywhere — not the cell, not its row, not the
   // Edges feed at that price — is unpriced: the same view a failed read uses,
   // with the cell's fields from page.js so a moved field can be spotted.
@@ -289,7 +335,7 @@
     view.errorHint.textContent = copy.hint;
     const feedNote = line.feedLine
       ? ` Edges feed: ${fmtAmerican(line.feedLine.price)}${line.feedLine.ge == null ? ", no edge" : ` with ${fmtPct(line.feedLine.ge)}`}.`
-      : scannerState ? " Edges feed: no copy of this line." : " Edges feed: not loaded yet.";
+      : scannerState ? ` Edges feed: ${describeFeedMiss(ticket, line.points)}.` : " Edges feed: not loaded yet.";
     view.errorDetail.textContent = `${ticket.sideLabel} ${fmtAmerican(ticket.price)} @ ${ticket.book.name}: ${ticket.noEdgeDetail || "no edge on the cell"} (${new Date(ticket.capturedAt).toLocaleTimeString()}).${feedNote}`;
     show("error");
   }
