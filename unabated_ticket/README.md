@@ -97,21 +97,28 @@ tab is running the capture script", reload the tab.
   section sits on its own grid row (an AG Grid child: `detail`, `level`
   > 0, or a parent carrying data) whose entry for the book is the rung
   itself, so both capture and the watcher resolve the market's rows
-  through one ranking (`rankedMarketNodes`): a top-level row beats a
+  through one ranking (`rankedMarketNodes`, over every AG Grid on the
+  page — an open Alts section mounts its own): a top-level row beats a
   child, a row carrying the market's `bestLines` beats one without, and a
   row carrying this book's `alternateLines` ladder beats a lone rung.
-  Capture classifies, prices and watches against the best-ranked row
-  (`ladderRowFor`); the watcher trusts its grid-key lookup only when it
-  returns a top-level row and otherwise re-ranks. Measured against the
+  Capture classifies, prices and watches against the best-ranked row that
+  carries the book (`ladderRowFor`); the watcher trusts its grid-key
+  lookup only when it answers with a row of the same shape and otherwise
+  re-ranks, requiring the book's entry as capture did. Picking a child is
+  legitimate when a book prices no main line, so the shape is compared,
+  never forced. Measured against the
   Alts row the rung read as a main line and the watcher followed the real
   main number (live 2026-09-12: Alabama A&M -5.5 +264 became "now -102 at
   +1.5"); picking "any row of the market carrying a ladder" then followed
   the LOWEST rung (Under 19.5 +265 became "now +2242 at +2.5"). The ticket
   carries `rowResolution` (the candidate rows, the pick, the script
-  build) and each watch tick names the row it read; the panel prints that
-  **Row trace** under the warning whenever the watched number is not the
-  captured one or the market had no lone top-level row — send that line
-  with a screenshot if a capture ever follows the wrong rung again.
+  build) and each watch tick names the row it read and its shape; the
+  panel prints that **Row trace** under the warning only on a concrete
+  doubt — the watcher reading a row of a different shape than capture
+  picked, an alt ticket whose watched number moved (it is re-found by
+  number, so it cannot), or two rows tied at the best rank. An ordinary
+  line move never shows it. Send that line with a screenshot if a capture
+  ever follows the wrong rung again.
 
 ## Stake
 

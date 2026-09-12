@@ -374,18 +374,37 @@
   }
 
   // Which grid rows the capture chose between and which one the watcher is
-  // reading, shown only when the watched number is not the captured one or
-  // the capture could not find a lone top-level row for the market — the
-  // two cases where the panel may be following a different rung than the
-  // one clicked (live 2026-09-12: Under 19.5 captured, Under 2.5 watched).
+  // reading. Shown only when the panel has a concrete reason to doubt it is
+  // following the clicked rung (live 2026-09-12: Under 19.5 captured, Under
+  // 2.5 watched), never on an ordinary line move:
+  //   - the watcher is reading a row of a different SHAPE than capture picked
+  //     (top-level vs an Alts child) — the shape of that bug, and a comparison
+  //     rather than an absolute, so a grid where every row is a child is quiet;
+  //   - an alt ticket's watched points changed, which cannot happen while the
+  //     watcher is re-finding the rung by its number;
+  //   - capture found two rows TIED at the best rank, so grid order decided.
+  function rowTraceReason(ticket) {
+    const current = ticket.current;
+    if (current && current.rowTop != null && ticket.watch && ticket.watch.rowTop != null
+      && current.rowTop !== ticket.watch.rowTop) {
+      return "the watcher is reading a different row than the capture";
+    }
+    if (ticket.isAlt && current && !current.offBoard && current.points !== ticket.points) {
+      return "the watched rung is not the captured number";
+    }
+    if (ticket.rowResolution && ticket.rowResolution.ambiguous) {
+      return "two grid rows tied for this market";
+    }
+    return null;
+  }
+
   function renderRowTrace(ticket) {
     const resolution = ticket.rowResolution;
-    const pointsDiffer = ticket.current && !ticket.current.offBoard && ticket.current.points !== ticket.points;
-    const show = resolution && (resolution.ambiguous || pointsDiffer);
-    view.rowTrace.hidden = !show;
-    if (!show) return;
+    const reason = resolution ? rowTraceReason(ticket) : null;
+    view.rowTrace.hidden = !reason;
+    if (!reason) return;
     const watching = ticket.current && ticket.current.row ? ` Watching ${ticket.current.row}.` : "";
-    view.rowTrace.textContent = `Row trace (script ${resolution.build}): ${resolution.trace}.${watching}`;
+    view.rowTrace.textContent = `Row trace (${reason}; script ${resolution.build}): ${resolution.trace}.${watching}`;
   }
 
   function renderTicket() {

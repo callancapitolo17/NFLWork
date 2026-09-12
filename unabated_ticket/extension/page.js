@@ -341,9 +341,23 @@
     return `[${shape}; key ${key}; ${entryText}; bestLines ${data.bestLines ? Object.keys(data.bestLines).length : 0}]`;
   }
 
-  // Every distinct grid API reachable from a rendered cell: the master grid
-  // and, when an Alts section is open, its detail grid mount separately.
-  const GRID_API_PROBE_LIMIT = 400;
+  // Every distinct grid API on the page: the master grid and, when an Alts
+  // section is open, its detail grid, which mounts as its own AG Grid. One
+  // fiber walk per grid root rather than per rendered cell — a busy slate
+  // renders hundreds of cells and this runs on a watch tick that missed.
+  const GRID_ROOT_SELECTOR = ".ag-root";
+  const GRID_ROOT_LIMIT = 20;
+
+  function apiInside(container) {
+    for (const selector of GRID_PROBE_SELECTORS) {
+      for (const element of container.querySelectorAll(selector)) {
+        const fiber = fiberOf(element);
+        const props = fiber && findProps(fiber, isGridCellProps);
+        if (props && props.api) return props.api;
+      }
+    }
+    return null;
+  }
 
   function allGridApis(seed) {
     const apis = [];
@@ -355,22 +369,17 @@
       }
     };
     add(seed);
-    let probed = 0;
-    for (const selector of GRID_PROBE_SELECTORS) {
-      for (const element of document.querySelectorAll(selector)) {
-        if (probed++ >= GRID_API_PROBE_LIMIT) return apis;
-        const fiber = fiberOf(element);
-        const props = fiber && findProps(fiber, isGridCellProps);
-        if (props) add(props.api);
-      }
-    }
+    const roots = Array.from(document.querySelectorAll(GRID_ROOT_SELECTOR)).slice(0, GRID_ROOT_LIMIT);
+    // No .ag-root (a grid that mounts differently): fall back to the cell scan.
+    for (const root of roots.length ? roots : [document]) add(apiInside(root));
     return apis;
   }
 
   // Every row of this market across the reachable grids, best-ranked first.
-  function rankedMarketNodes(seedApi, identity, sideKey, bookKey) {
+  // `apis` lets a caller that already probed the page reuse that list.
+  function rankedMarketNodes(seedApi, identity, sideKey, bookKey, apis) {
     const found = [];
-    for (const api of allGridApis(seedApi)) {
+    for (const api of apis || allGridApis(seedApi)) {
       api.forEachNode((node) => {
         if (!node.data || !sameMarketRow(node.data, identity)) return;
         found.push({ node, api, rank: rowRank(node, sideKey, bookKey), order: found.length });
@@ -382,19 +391,28 @@
 
   // The row to classify, price and watch against: the market's best-ranked
   // row that carries an entry for the book, else the clicked row itself.
-  // `trace` lists every candidate for the panel; `ambiguous` says the pick
-  // was not a lone top-level row, so the trace is worth showing at once.
+  // `trace` lists every candidate for the panel. `ambiguous` means two rows
+  // TIED at the best rank, so the pick came down to grid order — deliberately
+  // not "the pick was not top-level", which would be true of every row on a
+  // grid that groups its rows and would show the trace on every ticket.
+  // `top` is the pick's shape, which the watcher compares against later.
   function ladderRowFor(gridApi, rowData, sideKey, bookKey, marketLine) {
-    const own = { rowData, gridApi, trace: "clicked row only", ambiguous: false };
+    const own = { rowData, gridApi, trace: "clicked row only", ambiguous: false, top: true };
     // Without an event id the identity match would accept any row; keep the cell's own.
     if (rowData.eventId == null) return own;
     const ranked = rankedMarketNodes(gridApi, rowData, sideKey, bookKey);
     const trace = ranked.slice(0, 8).map(({ node }) => describeMarketNode(node, sideKey, bookKey, marketLine)).join(" ");
     const withEntry = ranked.filter(({ node }) => bookEntryOf(node.data, sideKey, bookKey));
     if (!withEntry.length) return { ...own, trace: `no row carries ${bookKey}: ${trace}` };
-    const topLevelCount = withEntry.filter(({ node }) => nodeIsTopLevel(node)).length;
     const pick = withEntry[0];
-    return { rowData: pick.node.data, gridApi: pick.api, trace: `picked ${describeMarketNode(pick.node, sideKey, bookKey, marketLine)} of ${trace}`, ambiguous: topLevelCount !== 1 };
+    const tied = withEntry.filter((candidate) => candidate.rank === pick.rank).length > 1;
+    return {
+      rowData: pick.node.data,
+      gridApi: pick.api,
+      trace: `picked ${describeMarketNode(pick.node, sideKey, bookKey, marketLine)} of ${trace}`,
+      ambiguous: tied,
+      top: nodeIsTopLevel(pick.node),
+    };
   }
 
   function buildTicket({ marketLine, sideIndex, rowData: cellRowData, context, cellProps, gridApi: cellGridApi }) {
@@ -406,7 +424,7 @@
     const sideKey = sideKeyOf(cellRowData, sideIndex);
     const bookId = bookIdOf(marketLine, cellProps, cellRowData, sideKey);
     const bookKey = `ms${bookId}`;
-    const { rowData, gridApi, trace: rowTrace, ambiguous: rowAmbiguous } = ladderRowFor(cellGridApi, cellRowData, sideKey, bookKey, marketLine);
+    const { rowData, gridApi, trace: rowTrace, ambiguous: rowAmbiguous, top: rowTop } = ladderRowFor(cellGridApi, cellRowData, sideKey, bookKey, marketLine);
     const altPoints = altPointsOf(marketLine, rowData, sideKey, bookKey);
     const edge = edgeForCell(marketLine, rowData, sideKey, bookKey);
     const rotation = rowData.eventTeams && rowData.eventTeams[sideIndex]
@@ -447,6 +465,9 @@
       // (altPoints set = look inside the book line's alternateLines).
       watch: {
         gridKey: rowData.gridKey ?? null, sideKey, bookKey, altPoints,
+        // The picked row's shape; a watch tick reading a row of the OTHER
+        // shape is reading a different rung, whatever the grid's layout.
+        rowTop,
         // Row identity for when the grid key stops resolving (rebuilt grid, re-keyed row).
         eventId: rowData.eventId ?? null, betTypeId, periodTypeId: rowData.periodTypeId ?? 1,
       },
@@ -577,17 +598,23 @@
     if (!gridKey && eventId == null) throw new Error("no gridKey on the ticket");
     const { sideKey, bookKey } = ticket.watch;
     const identity = { eventId, betTypeId, periodTypeId: periodTypeId ?? 1 };
-    // The key lookup is trusted only for a top-level row: a re-keyed grid can
-    // answer with an Alts child row, whose entry for the book is one rung.
+    // The key lookup is trusted only when it answers with a row of the SAME
+    // shape capture picked: a re-keyed grid can answer with an Alts child row,
+    // whose entry for the book is one rung. Compared rather than forced to
+    // top-level, because capture legitimately picks a child when the book
+    // prices no main line — forcing it would send every tick down the rescan.
+    const wantTop = ticket.watch.rowTop ?? true;
     const byKey = (api) => {
       const node = gridKey ? api.getRowNode(gridKey) : null;
-      return node && node.data && nodeIsTopLevel(node) ? node : null;
+      return node && node.data && nodeIsTopLevel(node) === wantTop ? node : null;
     };
     let api = watcher.gridApi;
     let node = apiIsDead(api) ? null : byKey(api);
     if (!node) {
-      // The held API may belong to a grid that no longer exists; a rendered cell always reaches the live ones.
-      for (const other of allGridApis(api)) {
+      // The held API may belong to a grid that no longer exists; a rendered
+      // cell always reaches the live ones. Probed once and reused below.
+      const apis = allGridApis(api);
+      for (const other of apis) {
         node = byKey(other);
         if (node) {
           api = other;
@@ -595,13 +622,18 @@
           break;
         }
       }
-    }
-    if (!node && eventId != null) {
-      const best = rankedMarketNodes(api, identity, sideKey, bookKey)[0];
-      if (best) {
-        node = best.node;
-        api = best.api;
-        watcher.gridApi = api;
+      if (!node && eventId != null) {
+        // Best-ranked row that actually carries this book, as capture did:
+        // the top-ranked row overall may not price this book at all, and
+        // taking it would report "book line no longer on the row" while a
+        // row that carries it sits further down.
+        const ranked = rankedMarketNodes(api, identity, sideKey, bookKey, apis);
+        const best = ranked.find((candidate) => bookEntryOf(candidate.node.data, sideKey, bookKey));
+        if (best) {
+          node = best.node;
+          api = best.api;
+          watcher.gridApi = api;
+        }
       }
     }
     if (!node || !node.data) {
@@ -617,14 +649,16 @@
     const node = watchedRowNode();
     const bookLine = bookEntryOf(node.data, sideKey, bookKey);
     if (!bookLine) throw new Error("book line no longer on the row");
-    // Which row this read came from, for the panel's trace when the number differs from capture.
+    // Which row this read came from, and whether its shape matches the row
+    // capture picked: the panel shows the trace when the two disagree.
     const row = describeMarketNode(node, sideKey, bookKey, null);
+    const rowTop = nodeIsTopLevel(node);
     const line = ticket.watch.altPoints == null ? bookLine : altLineAt(bookLine, ticket.watch.altPoints);
     // The ladder no longer offers that number: off the board at the captured price.
     if (!line) {
       return {
         price: ticket.price, sourceFormat: ticket.sourceFormat, sourcePrice: ticket.sourcePrice,
-        points: ticket.watch.altPoints, fair: ticket.fair, edgePct: ticket.edgePct, offBoard: true, seenAt: Date.now(), row,
+        points: ticket.watch.altPoints, fair: ticket.fair, edgePct: ticket.edgePct, offBoard: true, seenAt: Date.now(), row, rowTop,
       };
     }
     return {
@@ -636,6 +670,7 @@
       offBoard: line.statusId === 2,
       seenAt: Date.now(),
       row,
+      rowTop,
     };
   }
 
