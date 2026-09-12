@@ -108,6 +108,9 @@
       scannerStatus = status;
       scannerState = feedState;
       renderEdges();
+      // A ticket sized from the feed (or waiting for it) follows the feed's
+      // updates; one the screen priced is left alone (a re-render clears the copy status).
+      if (state.ticket && !state.error && pricedLine(state.ticket).edgeFrom !== "screen") render();
       processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
     },
   });
@@ -156,17 +159,52 @@
 
   // ---- pricing -------------------------------------------------------------
 
-  // The line the stake is computed from: the current line if it moved, else the captured one.
+  // The Edges feed's copy of the ticket's line — same market, book, side and
+  // points — or null. The screen cell can carry no edge at all (live
+  // 2026-09-12: a Novig main line the Edges tab listed captured with neither
+  // `edge` nor `ge`), and this is the same `ge` the Edges tab sizes from.
+  function feedLineFor(ticket, points) {
+    if (!scannerState || ticket.marketId == null || !ticket.watch) return null;
+    const keyArgs = { marketId: ticket.marketId, bookId: ticket.book.id, sideKey: ticket.watch.sideKey, points };
+    const held = scannerState.lines[ticket.isAlt ? feed.altLineKeyOf(keyArgs) : feed.lineKeyOf(keyArgs)];
+    return held && held.points === points ? held : null;
+  }
+
+  // The line the stake is computed from: the current line if it moved, else
+  // the captured one. edgeFrom says where the edge came from: "screen" (the
+  // cell or its row), "feed" (the Edges feed at the same price), or null
+  // (none — feedLine then carries the feed's copy when there is one, so the
+  // panel can say what price the feed has instead).
   function pricedLine(ticket) {
     const current = ticket.current;
-    if (!current) return { price: ticket.price, sourceFormat: ticket.sourceFormat, sourcePrice: ticket.sourcePrice, fair: ticket.fair, edgePct: ticket.edgePct, points: ticket.points, moved: false };
-    return { price: current.price, sourceFormat: current.sourceFormat, sourcePrice: current.sourcePrice, fair: current.fair, edgePct: current.edgePct, points: current.points, moved: true };
+    const line = current
+      ? { price: current.price, sourceFormat: current.sourceFormat, sourcePrice: current.sourcePrice, fair: current.fair, edgePct: current.edgePct, points: current.points, moved: true }
+      : { price: ticket.price, sourceFormat: ticket.sourceFormat, sourcePrice: ticket.sourcePrice, fair: ticket.fair, edgePct: ticket.edgePct, points: ticket.points, moved: false };
+    line.edgeFrom = line.edgePct == null ? null : "screen";
+    line.feedLine = null;
+    if (line.edgePct != null) return line;
+    const held = feedLineFor(ticket, line.points);
+    if (!held) return line;
+    line.feedLine = held;
+    // An edge is for one price: the feed's number only applies at the price the cell shows.
+    if (held.price !== line.price || held.ge == null) return line;
+    line.edgePct = Math.round(held.ge * 1e6) / 1e4;
+    if (line.fair == null) line.fair = held.bacr;
+    line.edgeFrom = "feed";
+    return line;
+  }
+
+  function noEdgeReason(line) {
+    const held = line.feedLine;
+    if (!held) return "Unabated has no edge at this line";
+    if (held.ge == null) return `Unabated has no edge at this line (the Edges feed has it at ${fmtAmerican(held.price)} with no edge either)`;
+    return `Unabated has no edge at ${fmtAmerican(line.price)} (the Edges feed has this line at ${fmtAmerican(held.price)} with ${fmtPct(held.ge)}; the cell shows a different price)`;
   }
 
   // Stake from Unabated's own edge for the line being priced (captured, or current if it moved).
   function computeStake(ticket, settings) {
     const line = pricedLine(ticket);
-    if (line.edgePct == null) return { line, result: null, reason: "Unabated has no edge at the new line" };
+    if (line.edgePct == null) return { line, result: null, reason: noEdgeReason(line) };
     try {
       const result = kelly.kellyStakeFromEdge({ bookPrice: line.price, edgePct: line.edgePct, bankroll: settings.bankroll, multiplier: settings.multiplier });
       return { line, result, reason: null };
@@ -213,7 +251,7 @@
     return !watchStatus.error && Date.now() - watchStatus.seenAt < WATCH_STALE_MS;
   }
 
-  function renderWarning(ticket, watchStatus) {
+  function renderWarning(ticket, watchStatus, line) {
     const messages = [];
     let bad = false;
     if (ticket.current && ticket.current.offBoard) {
@@ -222,6 +260,10 @@
     } else if (ticket.current) {
       const pts = ticket.current.points != null ? ` at ${fmtPoints(ticket.current.points)}` : "";
       messages.push(`Line moved: now ${fmtAmerican(ticket.current.price)}${pts} (captured ${fmtAmerican(ticket.price)}${ticket.points != null ? ` at ${fmtPoints(ticket.points)}` : ""}). Stake re-sized.`);
+    }
+    if (line.edgeFrom === "feed") {
+      const age = fmtLineAge(feed.lineChangedMs(line.feedLine)).replace(/^line /, "");
+      messages.push(`Edge from the Edges feed (the screen cell carried none): same line at the same price, feed copy ${age}.`);
     }
     if (betsView.sourcesUnavailable(state.betsService && state.betsService.payload, Date.now())) {
       messages.push("Bet sources unavailable (no venue has reported in the last hour), so bet flags may be missing; see the Bets tab.");
@@ -238,9 +280,28 @@
     view.warning.classList.toggle("bad", bad);
   }
 
+  // A captured line with no edge anywhere — not the cell, not its row, not the
+  // Edges feed at that price — is unpriced: the same view a failed read uses,
+  // with the cell's fields from page.js so a moved field can be spotted.
+  function renderNoEdge(ticket, line) {
+    const copy = ERROR_COPY.no_fair;
+    view.errorTitle.textContent = copy.title;
+    view.errorHint.textContent = copy.hint;
+    const feedNote = line.feedLine
+      ? ` Edges feed: ${fmtAmerican(line.feedLine.price)}${line.feedLine.ge == null ? ", no edge" : ` with ${fmtPct(line.feedLine.ge)}`}.`
+      : scannerState ? " Edges feed: no copy of this line." : " Edges feed: not loaded yet.";
+    view.errorDetail.textContent = `${ticket.sideLabel} ${fmtAmerican(ticket.price)} @ ${ticket.book.name}: ${ticket.noEdgeDetail || "no edge on the cell"} (${new Date(ticket.capturedAt).toLocaleTimeString()}).${feedNote}`;
+    show("error");
+  }
+
   function renderTicket() {
     const { ticket, settings, watchStatus } = state;
-    renderWarning(ticket, watchStatus);
+    const { line, result, reason } = computeStake(ticket, settings);
+    if (!line.moved && line.edgePct == null) {
+      renderNoEdge(ticket, line);
+      return;
+    }
+    renderWarning(ticket, watchStatus, line);
 
     view.sideLabel.textContent = ticket.sideLabel;
     view.betLine.textContent = `${describeSide(ticket)}${ticket.isAlt ? " \u00b7 alt line" : ""}`;
@@ -248,7 +309,6 @@
     view.startLine.textContent = fmtStart(ticket.eventStart);
     const betFlag = renderBetBanner(ticket);
 
-    const { line, result, reason } = computeStake(ticket, settings);
     view.book.textContent = ticket.book.name;
     view.price.textContent = fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice));
     // The fair is Unabated's own American number; there is no more exact source for it.
@@ -359,7 +419,7 @@
   const ERROR_COPY = {
     no_fair: {
       title: "No Unabated fair for this line",
-      hint: "Unabated has not priced this line, so there is nothing to size against. This is normal for lopsided moneylines and exchange-only lines. Pick a line that shows an edge %. If the Edges tab lists this line, the detail below says which fields the cell carried — send it along.",
+      hint: "Neither the clicked cell, its grid row, nor the Edges feed (at this price) carries an edge for this line, so there is nothing to size against. This is normal for lopsided moneylines and exchange-only lines. If the Edges tab lists this line at this price, the detail above says which fields the cell carried — send it along.",
     },
     read_failed: {
       title: "Could not read this cell",

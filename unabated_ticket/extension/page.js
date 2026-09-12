@@ -93,35 +93,54 @@
     return typeof fair === "number" && Number.isFinite(fair) ? fair : null;
   }
 
-  // Unabated's own edge % (EV per $1 staked) for this line. Null is a normal
-  // condition (lopsided moneylines, exchange-only lines Unabated has not
-  // priced), not a parse failure, so it gets its own error kind for the panel.
   // Script build, so a stale copy of page.js in an old tab shows itself in the panel.
-  const PAGE_SCRIPT_BUILD = "0.5.1";
+  const PAGE_SCRIPT_BUILD = "0.6.0";
 
-  // What the clicked object actually carried, for the panel's no_fair detail:
-  // decides between "Unabated never priced it" and "the field moved".
+  // What the clicked object actually carried, for the panel's no-edge detail:
+  // decides between "Unabated never priced it" and "the field moved". Space
+  // separated so the panel can wrap it.
   function describeLineFields(marketLine) {
-    const summary = {
-      keys: Object.keys(marketLine).slice(0, 40),
-      edge: marketLine.edge, ge: marketLine.ge, bacr: marketLine.bacr,
-      price: marketLine.price, americanPrice: marketLine.americanPrice, statusId: marketLine.statusId,
+    const show = (value) => {
+      try {
+        return JSON.stringify(value) ?? "undefined";
+      } catch (_error) {
+        return "(unserialisable)";
+      }
     };
-    try {
-      return JSON.stringify(summary);
-    } catch (_error) {
-      return "(unserialisable line object)";
-    }
+    return `keys=[${Object.keys(marketLine).slice(0, 40).join(" ")}] edge=${show(marketLine.edge)} ge=${show(marketLine.ge)} `
+      + `bacr=${show(marketLine.bacr)} price=${show(marketLine.price)} americanPrice=${show(marketLine.americanPrice)} statusId=${show(marketLine.statusId)}`;
   }
 
-  function requireEdgePct(marketLine) {
-    const edge = edgePctOf(marketLine);
-    if (edge == null) {
-      const error = new Error(`Unabated has no edge for this line (script ${PAGE_SCRIPT_BUILD}; cell fields ${describeLineFields(marketLine)})`);
-      error.kind = "no_fair";
-      throw error;
-    }
-    return edge;
+  // The row's own sides entry for this book at the clicked points: the main
+  // line, or the ladder rung at those points. The cell's prop can be a copy
+  // the screen made without the feed's ge (live 2026-09-12: a Novig main
+  // line listed on the Edges tab carried neither edge nor ge on the cell).
+  function rowLineFor(marketLine, rowData, sideKey, bookKey) {
+    const main = rowData.sides && rowData.sides[sideKey] && rowData.sides[sideKey][bookKey];
+    if (!main) return null;
+    if (main.points === marketLine.points) return main;
+    return altLineAt(main, marketLine.points);
+  }
+
+  // Edge and fair for the clicked cell: the cell's object first, then the
+  // row's entry for the same book and points. Both null when neither has
+  // one — the panel then tries the Edges feed before calling it unpriced.
+  function edgeForCell(marketLine, rowData, sideKey, bookKey) {
+    const own = edgePctOf(marketLine);
+    if (own != null) return { edgePct: own, fair: fairPriceOrNull(marketLine) };
+    const entry = rowLineFor(marketLine, rowData, sideKey, bookKey);
+    const fromRow = entry && entry !== marketLine ? edgePctOf(entry) : null;
+    if (fromRow != null) return { edgePct: fromRow, fair: fairPriceOrNull(entry) };
+    return { edgePct: null, fair: fairPriceOrNull(marketLine) };
+  }
+
+  // The feed's market id, which keys the Edges tab's copy of this line. An
+  // alternate-line object can carry null there (Fanatics), so the row's main
+  // entry is the fallback.
+  function marketIdOf(marketLine, rowData, sideKey, bookKey) {
+    if (marketLine.marketId != null) return marketLine.marketId;
+    const main = rowData.sides && rowData.sides[sideKey] && rowData.sides[sideKey][bookKey];
+    return main && main.marketId != null ? main.marketId : null;
   }
 
   // Unabated's sourceFormat: 1 = American, 2 = decimal (1.909), 4 = probability (0.525).
@@ -141,7 +160,7 @@
   // and Unabated's own % come from. Alternate-line objects never carry
   // `edge`, and main-line cells sometimes lack it too (live 2026-09-11: a
   // line listed with an edge on the Edges tab captured as "no fair"). A line
-  // Unabated has not priced has neither, so it still reports no_fair.
+  // Unabated has not priced has neither, so this returns null.
   function edgePctOf(marketLine) {
     const edge = marketLine.edge && marketLine.edge.edge;
     if (typeof edge === "number" && Number.isFinite(edge)) return edge;
@@ -280,7 +299,9 @@
     const points = marketLine.points ?? null;
     const sideKey = sideKeyOf(rowData, sideIndex);
     const bookId = bookIdOf(marketLine, cellProps, rowData, sideKey);
-    const altPoints = altPointsOf(marketLine, rowData, sideKey, `ms${bookId}`);
+    const bookKey = `ms${bookId}`;
+    const altPoints = altPointsOf(marketLine, rowData, sideKey, bookKey);
+    const edge = edgeForCell(marketLine, rowData, sideKey, bookKey);
     const rotation = rowData.eventTeams && rowData.eventTeams[sideIndex]
       ? rowData.eventTeams[sideIndex].rotationNumber ?? null
       : null;
@@ -304,13 +325,18 @@
       book: { id: bookId, name: bookNameOf(bookId, context, cellProps) },
       price: bookPriceOf(marketLine),
       ...sourcePriceOf(marketLine),
-      fair: fairPriceOrNull(marketLine),
-      edgePct: requireEdgePct(marketLine),
+      fair: edge.fair,
+      // Null when neither the cell nor the row carried an edge: the panel
+      // sizes from the Edges feed's copy of this line when it has one at the
+      // same price, else shows noEdgeDetail as "No Unabated fair".
+      edgePct: edge.edgePct,
+      noEdgeDetail: edge.edgePct == null ? `script ${PAGE_SCRIPT_BUILD}; cell fields ${describeLineFields(marketLine)}` : null,
+      marketId: marketIdOf(marketLine, rowData, sideKey, bookKey),
       isAlt: altPoints != null,
       // Watcher handle: how to find this same line again through the grid API
       // (altPoints set = look inside the book line's alternateLines).
       watch: {
-        gridKey: rowData.gridKey ?? null, sideKey, bookKey: `ms${bookId}`, altPoints,
+        gridKey: rowData.gridKey ?? null, sideKey, bookKey, altPoints,
         // Row identity for when the grid key stops resolving (rebuilt grid, re-keyed row).
         eventId: rowData.eventId ?? null, betTypeId, periodTypeId: rowData.periodTypeId ?? 1,
       },

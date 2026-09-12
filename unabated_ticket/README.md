@@ -60,6 +60,17 @@ tab is running the capture script", reload the tab.
 - Fields: `price` = `americanPrice` (exchanges have only `price`), `fair` =
   `marketLine.bacr` (Unabated's no-vig price at that book's points),
   side 0 = away / Over, side 1 = home / Under.
+- Edge, three places in order: the clicked object (`edge.edge`, the screen's
+  computed %, else the feed's `ge` fraction), then the row's own
+  `sides[side][ms<book>]` entry at the same points (the cell's prop can be a
+  copy without `ge` — live 2026-09-12 a Novig main line the Edges tab listed
+  carried neither on the cell, twice, after a tab reload), then in the
+  panel the Edges feed's copy of the same line (`marketId`, book, side,
+  points) **only at the same price** — an edge is for one price. A ticket
+  sized from the feed says so in the warning strip with the feed copy's
+  age. When none of the three has an edge the panel shows **No Unabated
+  fair for this line** with the cell's fields (`noEdgeDetail`) and what the
+  feed holds instead.
 - The ticket also carries `watch: {gridKey, sideKey, bookKey}` — the row id
   and `sides["si<n>:tid<id>"]["ms<book>"]` path used to find the same line
   again. Not in the plan's contract; needed by the watcher.
