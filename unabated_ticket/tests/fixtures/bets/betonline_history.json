@@ -1,0 +1,16 @@
+{
+  "_note": "SYNTHESISED on the grammar bet_logger/scraper_betonline.py's regexes and issue #115 imply (no saved report payload exists; the token was dead on 2026-09-11). Shape mirrors POST get-bet-history: {TotalRows, Data[]}. Row id field, Date timezone and the SGP leg separator are unverified until the first live pull. Rotations 465/466 are the NFL v2 slice's Chicago Bears @ Carolina Panthers (event 125807).",
+  "TotalRows": 10,
+  "Data": [
+    {"Id": 900001, "Date": "2026-09-11T18:12:33", "Description": "Desktop - NFL - 465 Chicago Bears +3.5 -110 - 1st Half", "WagerType": "Spread", "WagerStatus": "Pending", "Risk": 110.0, "ToWin": 100.0, "Product": "Sportsbook"},
+    {"Id": 900002, "Date": "2026-09-07T15:40:02", "Description": "Mobile - NFL - 466 Carolina Panthers -7 -105", "WagerType": "Spread", "WagerStatus": "Won", "Risk": 105.0, "ToWin": 100.0, "Product": "Sportsbook"},
+    {"Id": 900003, "Date": "2026-09-11T19:02:10", "Description": "Desktop - NFL - 466 Carolina Panthers over 44½ -110", "WagerType": "Total", "WagerStatus": "Pending", "Risk": 55.0, "ToWin": 50.0, "Product": "Sportsbook"},
+    {"Id": 900004, "Date": "2026-09-11T19:05:44", "Description": "Desktop - NFL - NFL - 465 Chicago Bears +3.5 -110, 466 Carolina Panthers under 44.5 -115", "WagerType": "Same Game Parlay", "WagerStatus": "Pending", "Risk": 50.0, "ToWin": 130.0, "Product": "Sportsbook"},
+    {"Id": 900005, "Date": "2026-09-10T22:10:00", "Description": "Desktop - NFL - 453 Washington Commanders +140", "WagerType": "Money Line", "WagerStatus": "Lost", "Risk": 100.0, "ToWin": 140.0, "Product": "Sportsbook"},
+    {"Id": 900006, "Date": "2026-09-11T20:00:00", "Description": "Desktop - NHL - 21 Boston Bruins -1.5 +150 - 1st Period", "WagerType": "Spread", "WagerStatus": "Pending", "Risk": 20.0, "ToWin": 30.0, "Product": "Sportsbook"},
+    {"Id": 900007, "Date": "2026-09-06T17:00:00", "Description": "Desktop - NFL - 454 Green Bay Packers -3 -110", "WagerType": "Spread", "WagerStatus": "Push", "Risk": 110.0, "ToWin": 100.0, "Product": "Sportsbook"},
+    {"Id": 900008, "Date": "2026-09-06T17:30:00", "Description": "Desktop - NFL - 453 Washington Commanders under 41 -110", "WagerType": "Total", "WagerStatus": "Cancelled", "Risk": 110.0, "ToWin": 100.0, "Product": "Sportsbook"},
+    {"Id": 900009, "Date": "2026-09-11T20:30:00", "Description": "Desktop - Football - 101 Alabama -14 -110", "WagerType": "Spread", "WagerStatus": "Pending", "Risk": 110.0, "ToWin": 100.0, "Product": "Sportsbook"},
+    {"Id": 900010, "Date": "2026-09-11T21:15:00", "Description": "Desktop - MLB - 951 New York Yankees -0.5 -120 - 1st 5 Innings", "WagerType": "Spread", "WagerStatus": "Pending", "Risk": 120.0, "ToWin": 100.0, "Product": "Sportsbook"}
+  ]
+}

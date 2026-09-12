@@ -17,6 +17,7 @@ import os
 import sys
 import re
 import json
+import fcntl
 import requests
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
@@ -34,6 +35,12 @@ load_dotenv()
 # Paths
 SCRIPT_DIR = os.path.dirname(__file__)
 COOKIES_FILE = os.path.join(SCRIPT_DIR, "recon_betonline_cookies.json")
+
+# The Unabated Ticket bets service (unabated_ticket/bets_service/sources/betonline.py)
+# rotates the same refresh token. Both take this exclusive lock around
+# read -> refresh -> write, so a race loser waits and then rotates the winner's
+# token instead of the dead parent (Keycloak reuse detection would kill both).
+COOKIES_LOCK_FILE = COOKIES_FILE + ".lock"
 
 # API endpoints
 TOKEN_URL = "https://api.betonline.ag/api/auth/realms/betonline/protocol/openid-connect/token"
@@ -84,9 +91,29 @@ def refresh_access_token(session: requests.Session, cookies: list) -> str:
     Use the saved refresh token to get a fresh access token.
     Saves the rotated refresh token back to the cookies file.
 
+    Runs under the cookie-file lock and re-reads krefresh from disk inside it,
+    so a rotation another process just made is used instead of the stale value
+    in `cookies` (which is updated in place).
+
     Returns the new access token.
     Raises RuntimeError if the refresh token has expired.
     """
+    with open(COOKIES_LOCK_FILE, 'w') as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            return _refresh_access_token_locked(session, cookies)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def _refresh_access_token_locked(session: requests.Session, cookies: list) -> str:
+    on_disk = load_cookies()
+    for c in on_disk:
+        if c['name'] == 'krefresh':
+            for held in cookies:
+                if held['name'] == 'krefresh':
+                    held['value'] = c['value']
+            break
     krefresh = None
     for c in cookies:
         if c['name'] == 'krefresh':
@@ -120,14 +147,17 @@ def refresh_access_token(session: requests.Session, cookies: list) -> str:
     new_access = token_data["access_token"]
     new_refresh = token_data.get("refresh_token")
 
-    # Save rotated refresh token back to cookies file
+    # Save rotated refresh token back to cookies file (temp file + os.replace so
+    # a concurrent reader — the bets service — never sees a half-written file)
     if new_refresh and new_refresh != krefresh:
         for c in cookies:
             if c['name'] == 'krefresh':
                 c['value'] = new_refresh
                 break
-        with open(COOKIES_FILE, 'w') as f:
+        temp_file = COOKIES_FILE + ".tmp"
+        with open(temp_file, 'w') as f:
             json.dump(cookies, f, indent=2)
+        os.replace(temp_file, COOKIES_FILE)
 
     return new_access
 

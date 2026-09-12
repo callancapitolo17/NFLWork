@@ -69,6 +69,13 @@ KALSHI_LOOKUP_GAP_SEC = 0.6
 NOVIG_TOKEN_PATH = Path(_get("NOVIG_TOKEN_PATH", str(PKG_DIR / "novig_token.json")))
 NOVIG_POLL_SEC = float(_get("BETS_NOVIG_POLL_SEC", "60"))
 NOVIG_GRAPHQL_URL = _get("NOVIG_GRAPHQL_URL", "https://api.novig.us/v1/graphql")
+# BetOnline (#115): the Keycloak refresh token lives in bet_logger's recon cookie
+# file in the MAIN checkout (shared with scraper_betonline.py + its LaunchAgent);
+# the paged report is polled every POLL_SEC over the last HISTORY_DAYS.
+BETONLINE_COOKIES_PATH = Path(_get("BETS_BETONLINE_COOKIES_PATH",
+                                   str(PROJECT_ROOT / "bet_logger" / "recon_betonline_cookies.json")))
+BETONLINE_POLL_SEC = float(_get("BETS_BETONLINE_POLL_SEC", "300"))
+BETONLINE_HISTORY_DAYS = int(_get("BETS_BETONLINE_HISTORY_DAYS", str(RETENTION_DAYS + 1)))
 
 # Logging
 LOG_PATH = Path(_get("BETS_SERVICE_LOG_PATH", str(PKG_DIR / "bets_service.log")))
