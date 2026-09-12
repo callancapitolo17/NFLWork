@@ -113,6 +113,10 @@ test("badgeText / badgeKind: dollars held win, then dollars against, then a plai
   assert.equal(view.badgeText(flag("same_game", 0, 0)), "game");
   assert.equal(view.badgeText({ tier: null, matches: [], exposure: { held: 0, against: 0 } }), null);
   assert.equal(view.badgeText(null), null);
+  // A venue that gave no stake: the tier still names the kind, without dollars.
+  assert.equal(view.badgeText(flag("opposite", 0, 0)), "against");
+  assert.equal(view.badgeText(flag("same_side", 0, 0)), "held");
+  assert.equal(view.badgeKind(flag("opposite", 0, 0)), "against");
   assert.deepEqual(["same_line", "opposite", "same_game"].map((tier) => view.badgeKind(flag(tier, tier === "same_line" ? 1 : 0, tier === "opposite" ? 1 : 0))), ["held", "against", "game"]);
 });
 

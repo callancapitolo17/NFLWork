@@ -101,25 +101,29 @@
     return { shown: matches.slice(0, limit), more: Math.max(0, matches.length - limit) };
   }
 
-  // The row badge: what you already have on this market, in dollars. `held`
-  // wins over `against` when both exist (the against bets stay in the tooltip);
-  // a same_game match is a plain "game" marker — it does not change the size.
-  function badgeText(flag) {
-    if (!flag || !flag.tier) return null;
-    const exposure = flag.exposure || { held: 0, against: 0 };
-    if (exposure.held > 0) return `held ${bets.formatStake(exposure.held)}`;
-    if (exposure.against > 0) return `against ${bets.formatStake(exposure.against)}`;
-    if (flag.tier === "same_game") return "game";
-    return null;
-  }
-
-  // The badge's colour class: held (warning tint), against (red), game (outline).
+  // The badge's kind: held (warning tint), against (red), game (outline).
+  // Dollars decide when a venue supplied them; a bet without a stake still
+  // gets its kind from the tier, so an other-side position is never unflagged.
   function badgeKind(flag) {
     if (!flag || !flag.tier) return null;
     const exposure = flag.exposure || { held: 0, against: 0 };
     if (exposure.held > 0) return "held";
     if (exposure.against > 0) return "against";
+    if (flag.tier === "same_line" || flag.tier === "same_side") return "held";
+    if (flag.tier === "opposite") return "against";
     return "game";
+  }
+
+  // The row badge: what you already have on this market, in dollars when the
+  // venue gave a stake ("held $300", "against $200"), bare otherwise. `held`
+  // wins over `against` when both exist (the against bets stay in the tooltip);
+  // a same_game match is a plain "game" marker — it does not change the size.
+  function badgeText(flag) {
+    const kind = badgeKind(flag);
+    if (!kind) return null;
+    const exposure = flag.exposure || { held: 0, against: 0 };
+    const dollars = kind === "held" ? exposure.held : kind === "against" ? exposure.against : 0;
+    return dollars > 0 ? `${kind} ${bets.formatStake(dollars)}` : kind;
   }
 
   // What to do with a Kelly stake given what you already hold on the market.

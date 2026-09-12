@@ -276,10 +276,10 @@
       view.payoutRow.hidden = false;
       payoutText = ` | to win $${(payout - result.stake).toFixed(2)} | payout $${payout.toFixed(2)}`;
     }
-    renderStakeExposure(result ? result.stake : null, betFlag);
+    const advice = renderStakeExposure(result ? result.stake : null, betFlag);
 
     const stakeText = result ? result.stake.toFixed(2) : "n/a";
-    lastCopyText = `${ticket.sideLabel} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${payoutText} | ${describeMatchup(ticket)}`;
+    lastCopyText = `${ticket.sideLabel} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${copyExposureText(advice)}${payoutText} | ${describeMatchup(ticket)}`;
     view.copyStatus.textContent = "";
     show("ticket");
   }
@@ -308,16 +308,25 @@
     return { tier: matches.length ? matches[0].tier : null, matches, exposure: betsLib.exposureOf(matches) };
   }
 
+  // What the Copy button adds after "stake $X" so the clipboard carries the
+  // number to act on, not only the full Kelly.
+  function copyExposureText(advice) {
+    if (advice.kind === "add") return ` (held $${advice.held.toFixed(2)}, add $${advice.add.toFixed(2)})`;
+    if (advice.kind === "at_size") return ` (at size: held $${advice.held.toFixed(2)})`;
+    if (advice.kind === "reverse") return ` (other side held $${advice.against.toFixed(2)})`;
+    return "";
+  }
+
   // Under the Kelly stake: what you already hold on this market and the
   // number to act on — "Held $300 · add $200", "At size: held $600, Kelly
-  // $520", or in red "Other side $200 · net $300 on this side".
+  // $520", or in red "Other side $200 · net $300 on this side". Returns the advice.
   function renderStakeExposure(stake, flag) {
     const advice = betsView.stakeAdvice(stake, flag.exposure);
     view.stakeExposure.classList.toggle("against", advice.kind === "reverse");
     view.stakeExposure.hidden = advice.kind === "none";
     if (advice.kind === "none") {
       view.stakeExposure.replaceChildren();
-      return;
+      return advice;
     }
     const summary = document.createElement("div");
     if (advice.kind === "add") {
@@ -342,6 +351,7 @@
       return div;
     });
     view.stakeExposure.replaceChildren(summary, ...positions);
+    return advice;
   }
 
   // Two kinds of capture error need opposite advice: no_fair is Unabated
@@ -628,13 +638,17 @@
     }
   }
 
-  // The dim line under a row naming the position(s) behind its badge.
+  // The dim lines under a row naming the position(s) behind its badge, one per position.
   function positionLine(flag) {
     const lines = flag ? betsView.positionLines(flag) : [];
     if (!lines.length) return null;
     const div = document.createElement("div");
     div.className = "edge-position";
-    div.textContent = lines.join(" · ");
+    div.replaceChildren(...lines.map((text) => {
+      const line = document.createElement("div");
+      line.textContent = text;
+      return line;
+    }));
     return div;
   }
 
