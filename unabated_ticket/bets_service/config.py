@@ -63,6 +63,13 @@ KALSHI_FILLS_OVERLAP_SEC = 60
 # Minimum gap between market/event lookups (kalshi_draft.auth precedent).
 KALSHI_LOOKUP_GAP_SEC = 0.6
 
+# Novig (issue #116): the service's own Auth0 refresh token, minted once by
+# `python -m unabated_ticket.bets_service.sources.novig_auth connect` and
+# rewritten on rotation. The source registers only when the file exists.
+NOVIG_TOKEN_PATH = Path(_get("NOVIG_TOKEN_PATH", str(PKG_DIR / "novig_token.json")))
+NOVIG_POLL_SEC = float(_get("BETS_NOVIG_POLL_SEC", "60"))
+NOVIG_GRAPHQL_URL = _get("NOVIG_GRAPHQL_URL", "https://api.novig.us/v1/graphql")
+
 # Logging
 LOG_PATH = Path(_get("BETS_SERVICE_LOG_PATH", str(PKG_DIR / "bets_service.log")))
 LOG_LEVEL = _get("BETS_SERVICE_LOG_LEVEL", "INFO")

@@ -2,7 +2,8 @@
 
     python -m unabated_ticket.bets_service.service      (or bets_service/run.sh)
 
-Inputs:  each registered Source (sources/kalshi.py today) on its own poll_sec.
+Inputs:  each registered Source (sources/kalshi.py; sources/novig.py when its
+         token file exists) on its own poll_sec.
 Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
            GET /bets.json[?days=N]  {generatedAt, sources: {name: {fetchedAt, ok,
                                     error, count}}, bets: [records open + settled
@@ -26,6 +27,7 @@ from unabated_ticket.bets_service import config
 from unabated_ticket.bets_service.log_setup import setup_logging
 from unabated_ticket.bets_service.sources import Source
 from unabated_ticket.bets_service.sources.kalshi import KalshiSource
+from unabated_ticket.bets_service.sources.novig import source_if_connected as novig_source_if_connected
 from unabated_ticket.bets_service.store import BetsStore
 
 log = logging.getLogger(__name__)
@@ -179,6 +181,9 @@ def main() -> None:
     setup_logging()
     store = BetsStore(config.DB_PATH)
     sources: list[Source] = [KalshiSource()]
+    novig = novig_source_if_connected()
+    if novig is not None:
+        sources.append(novig)
     serve(sources, store, config.BIND_HOST, config.PORT)
 
 

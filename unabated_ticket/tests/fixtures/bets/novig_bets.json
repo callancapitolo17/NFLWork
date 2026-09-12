@@ -1,0 +1,1502 @@
+{
+ "capturedAt": "2026-09-11",
+ "provenance": "Shapes derived from the app.novig.us web bundle (index-1a443052562380e3edb6f8fe5174da80.js, read 2026-09-11): the three portfolio operation documents, the OrderStateCard/OrderDescription/EventData/ParlayStateCard fragments the cards read the jsonb blobs through, and the Order/Outcome/Market/Game entity enums. NOT a live capture (no logged-in session was available); ids and teams are synthetic on the NFL slice matchup (Chicago Bears @ Carolina Panthers, 2026-09-13T17:00Z). Replace with a real capture from the Bets tab's raw view once one exists. Live-verified 2026-09-11 against the account through the service's GraphQL: qty/originalQty/fills.qty are in HUNDREDTHS of a contract (93,650 at 0.315 cost $294.9975), outcome.status can be a fractional settlement string ('0.50' = first-five tie, '0.72'), parlay.status is Title-case ('Unfilled'), market.strike is the home-perspective number, isBid was true on every order.",
+ "responses": [
+  {
+   "operationName": "ActivePortfolioOrders_Query",
+   "variables": {
+    "offset": 0,
+    "limit": 15
+   },
+   "at": "2026-09-11T21:00:00.000Z",
+   "url": "https://app.novig.us/portfolio",
+   "data": {
+    "ActivePortfolioOrders_Query": [
+     {
+      "id": "o-ml-car",
+      "timeToLiveMs": null,
+      "qty": 0,
+      "originalQty": 10000,
+      "created_at": "2026-09-11T15:05:12.481+00:00",
+      "updated_at": "2026-09-11T15:05:12.481+00:00",
+      "status": "FILLED",
+      "price": 0.58,
+      "isBid": true,
+      "tif": "GTC",
+      "currency": "CASH",
+      "market": {
+       "id": "m-ml",
+       "type": "MONEY",
+       "strike": null,
+       "status": "OPEN",
+       "re_settled_at": null,
+       "cash_out_requests": [],
+       "market_detail": null,
+       "player": null,
+       "competitor": null,
+       "event": {
+        "id": "ev-chicar",
+        "type": "GAME",
+        "status": "OPEN_PREGAME",
+        "scheduled_start": "2026-09-13T17:00:00+00:00",
+        "league": "NFL",
+        "description": null,
+        "game": {
+         "id": "g-ev-chicar",
+         "league": "NFL",
+         "sport": "FOOTBALL",
+         "scheduled_start": "2026-09-13T17:00:00+00:00",
+         "period": null,
+         "time_remaining": null,
+         "home_score": null,
+         "away_score": null,
+         "awayTeam": {
+          "id": "t-chi",
+          "name": "Chicago Bears",
+          "symbol": "CHI",
+          "short_name": "Chicago",
+          "mascot": "Bears",
+          "country": "US"
+         },
+         "homeTeam": {
+          "id": "t-car",
+          "name": "Carolina Panthers",
+          "symbol": "CAR",
+          "short_name": "Carolina",
+          "mascot": "Panthers",
+          "country": "US"
+         }
+        }
+       }
+      },
+      "outcome": {
+       "id": "oc-ml-car",
+       "index": 0,
+       "description": "CAR",
+       "status": "TBD",
+       "available": null,
+       "altAvailable": null,
+       "competitor": {
+        "id": "t-car",
+        "name": "Carolina Panthers",
+        "symbol": "CAR",
+        "country": "US"
+       }
+      },
+      "fills": [
+       {
+        "id": "f1",
+        "created_at": "2026-09-11T15:05:12.9+00:00",
+        "cost": "58.00",
+        "qty": 10000,
+        "isWash": false,
+        "isTaker": true
+       }
+      ],
+      "entry_promotion_name": null
+     },
+     {
+      "id": "o-sp-chi",
+      "timeToLiveMs": null,
+      "qty": 0,
+      "originalQty": 20000,
+      "created_at": "2026-09-11T15:06:40.001+00:00",
+      "updated_at": "2026-09-11T15:06:40.001+00:00",
+      "status": "FILLED",
+      "price": 0.4,
+      "isBid": true,
+      "tif": "GTC",
+      "currency": "CASH",
+      "market": {
+       "id": "m-sp",
+       "type": "SPREAD",
+       "strike": 13.5,
+       "status": "OPEN",
+       "re_settled_at": null,
+       "cash_out_requests": [],
+       "market_detail": null,
+       "player": null,
+       "competitor": null,
+       "event": {
+        "id": "ev-chicar",
+        "type": "GAME",
+        "status": "OPEN_PREGAME",
+        "scheduled_start": "2026-09-13T17:00:00+00:00",
+        "league": "NFL",
+        "description": null,
+        "game": {
+         "id": "g-ev-chicar",
+         "league": "NFL",
+         "sport": "FOOTBALL",
+         "scheduled_start": "2026-09-13T17:00:00+00:00",
+         "period": null,
+         "time_remaining": null,
+         "home_score": null,
+         "away_score": null,
+         "awayTeam": {
+          "id": "t-chi",
+          "name": "Chicago Bears",
+          "symbol": "CHI",
+          "short_name": "Chicago",
+          "mascot": "Bears",
+          "country": "US"
+         },
+         "homeTeam": {
+          "id": "t-car",
+          "name": "Carolina Panthers",
+          "symbol": "CAR",
+          "short_name": "Carolina",
+          "mascot": "Panthers",
+          "country": "US"
+         }
+        }
+       }
+      },
+      "outcome": {
+       "id": "oc-sp-chi",
+       "index": 1,
+       "description": "CHI -13.5",
+       "status": "TBD",
+       "available": null,
+       "altAvailable": null,
+       "competitor": {
+        "id": "t-chi",
+        "name": "Chicago Bears",
+        "symbol": "CHI",
+        "country": "US"
+       }
+      },
+      "fills": [
+       {
+        "id": "f2",
+        "created_at": "2026-09-11T15:06:40.5+00:00",
+        "cost": "80.00",
+        "qty": 20000,
+        "isWash": false,
+        "isTaker": true
+       }
+      ],
+      "entry_promotion_name": null
+     },
+     {
+      "id": "o-sp-lay",
+      "timeToLiveMs": null,
+      "qty": 0,
+      "originalQty": 5000,
+      "created_at": "2026-09-11T15:07:10.000+00:00",
+      "updated_at": "2026-09-11T15:07:10.000+00:00",
+      "status": "FILLED",
+      "price": 0.4,
+      "isBid": false,
+      "tif": "GTC",
+      "currency": "CASH",
+      "market": {
+       "id": "m-sp",
+       "type": "SPREAD",
+       "strike": 13.5,
+       "status": "OPEN",
+       "re_settled_at": null,
+       "cash_out_requests": [],
+       "market_detail": null,
+       "player": null,
+       "competitor": null,
+       "event": {
+        "id": "ev-chicar",
+        "type": "GAME",
+        "status": "OPEN_PREGAME",
+        "scheduled_start": "2026-09-13T17:00:00+00:00",
+        "league": "NFL",
+        "description": null,
+        "game": {
+         "id": "g-ev-chicar",
+         "league": "NFL",
+         "sport": "FOOTBALL",
+         "scheduled_start": "2026-09-13T17:00:00+00:00",
+         "period": null,
+         "time_remaining": null,
+         "home_score": null,
+         "away_score": null,
+         "awayTeam": {
+          "id": "t-chi",
+          "name": "Chicago Bears",
+          "symbol": "CHI",
+          "short_name": "Chicago",
+          "mascot": "Bears",
+          "country": "US"
+         },
+         "homeTeam": {
+          "id": "t-car",
+          "name": "Carolina Panthers",
+          "symbol": "CAR",
+          "short_name": "Carolina",
+          "mascot": "Panthers",
+          "country": "US"
+         }
+        }
+       }
+      },
+      "outcome": {
+       "id": "oc-sp-chi",
+       "index": 1,
+       "description": "CHI -13.5",
+       "status": "TBD",
+       "available": null,
+       "altAvailable": null,
+       "competitor": {
+        "id": "t-chi",
+        "name": "Chicago Bears",
+        "symbol": "CHI",
+        "country": "US"
+       }
+      },
+      "fills": [
+       {
+        "id": "f3",
+        "created_at": "2026-09-11T15:07:10.2+00:00",
+        "cost": "20.00",
+        "qty": 5000,
+        "isWash": false,
+        "isTaker": true
+       }
+      ],
+      "entry_promotion_name": null
+     },
+     {
+      "id": "o-tot-over",
+      "timeToLiveMs": null,
+      "qty": 4000,
+      "originalQty": 10000,
+      "created_at": "2026-09-11T15:08:00.000+00:00",
+      "updated_at": "2026-09-11T15:08:00.000+00:00",
+      "status": "OPEN",
+      "price": 0.52,
+      "isBid": true,
+      "tif": "GTC",
+      "currency": "CASH",
+      "market": {
+       "id": "m-tot",
+       "type": "TOTAL",
+       "strike": 47.5,
+       "status": "OPEN",
+       "re_settled_at": null,
+       "cash_out_requests": [],
+       "market_detail": null,
+       "player": null,
+       "competitor": null,
+       "event": {
+        "id": "ev-chicar",
+        "type": "GAME",
+        "status": "OPEN_PREGAME",
+        "scheduled_start": "2026-09-13T17:00:00+00:00",
+        "league": "NFL",
+        "description": null,
+        "game": {
+         "id": "g-ev-chicar",
+         "league": "NFL",
+         "sport": "FOOTBALL",
+         "scheduled_start": "2026-09-13T17:00:00+00:00",
+         "period": null,
+         "time_remaining": null,
+         "home_score": null,
+         "away_score": null,
+         "awayTeam": {
+          "id": "t-chi",
+          "name": "Chicago Bears",
+          "symbol": "CHI",
+          "short_name": "Chicago",
+          "mascot": "Bears",
+          "country": "US"
+         },
+         "homeTeam": {
+          "id": "t-car",
+          "name": "Carolina Panthers",
+          "symbol": "CAR",
+          "short_name": "Carolina",
+          "mascot": "Panthers",
+          "country": "US"
+         }
+        }
+       }
+      },
+      "outcome": {
+       "id": "oc-tot-over",
+       "index": 0,
+       "description": "Over 47.5",
+       "status": "TBD",
+       "available": null,
+       "altAvailable": null,
+       "competitor": null
+      },
+      "fills": [
+       {
+        "id": "f4",
+        "created_at": "2026-09-11T15:08:01.0+00:00",
+        "cost": "31.20",
+        "qty": 6000,
+        "isWash": false,
+        "isTaker": true
+       }
+      ],
+      "entry_promotion_name": null
+     },
+     {
+      "id": "o-tot-under-rest",
+      "timeToLiveMs": null,
+      "qty": 2000,
+      "originalQty": 2000,
+      "created_at": "2026-09-11T15:09:00.000+00:00",
+      "updated_at": "2026-09-11T15:09:00.000+00:00",
+      "status": "OPEN",
+      "price": 0.45,
+      "isBid": true,
+      "tif": "GTC",
+      "currency": "CASH",
+      "market": {
+       "id": "m-tot",
+       "type": "TOTAL",
+       "strike": 47.5,
+       "status": "OPEN",
+       "re_settled_at": null,
+       "cash_out_requests": [],
+       "market_detail": null,
+       "player": null,
+       "competitor": null,
+       "event": {
+        "id": "ev-chicar",
+        "type": "GAME",
+        "status": "OPEN_PREGAME",
+        "scheduled_start": "2026-09-13T17:00:00+00:00",
+        "league": "NFL",
+        "description": null,
+        "game": {
+         "id": "g-ev-chicar",
+         "league": "NFL",
+         "sport": "FOOTBALL",
+         "scheduled_start": "2026-09-13T17:00:00+00:00",
+         "period": null,
+         "time_remaining": null,
+         "home_score": null,
+         "away_score": null,
+         "awayTeam": {
+          "id": "t-chi",
+          "name": "Chicago Bears",
+          "symbol": "CHI",
+          "short_name": "Chicago",
+          "mascot": "Bears",
+          "country": "US"
+         },
+         "homeTeam": {
+          "id": "t-car",
+          "name": "Carolina Panthers",
+          "symbol": "CAR",
+          "short_name": "Carolina",
+          "mascot": "Panthers",
+          "country": "US"
+         }
+        }
+       }
+      },
+      "outcome": {
+       "id": "oc-tot-under",
+       "index": 1,
+       "description": "Under 47.5",
+       "status": "TBD",
+       "available": null,
+       "altAvailable": null,
+       "competitor": null
+      },
+      "fills": [],
+      "entry_promotion_name": null
+     },
+     {
+      "id": "o-f5",
+      "timeToLiveMs": null,
+      "qty": 0,
+      "originalQty": 3000,
+      "created_at": "2026-09-11T16:00:00.000+00:00",
+      "updated_at": "2026-09-11T16:00:00.000+00:00",
+      "status": "FILLED",
+      "price": 0.47,
+      "isBid": true,
+      "tif": "GTC",
+      "currency": "CASH",
+      "market": {
+       "id": "m-f5",
+       "type": "SPREAD_1H",
+       "strike": -0.5,
+       "status": "OPEN",
+       "re_settled_at": null,
+       "cash_out_requests": [],
+       "market_detail": null,
+       "player": null,
+       "competitor": null,
+       "event": {
+        "id": "ev-mia-min",
+        "type": "GAME",
+        "status": "OPEN_PREGAME",
+        "scheduled_start": "2026-09-12T23:40:00+00:00",
+        "league": "MLB",
+        "description": null,
+        "game": {
+         "id": "g-ev-mia-min",
+         "league": "MLB",
+         "sport": "BASEBALL",
+         "scheduled_start": "2026-09-12T23:40:00+00:00",
+         "period": null,
+         "time_remaining": null,
+         "home_score": null,
+         "away_score": null,
+         "awayTeam": {
+          "id": "t-mia",
+          "name": "Miami Marlins",
+          "symbol": "MIA",
+          "short_name": "Miami",
+          "mascot": "Marlins",
+          "country": "US"
+         },
+         "homeTeam": {
+          "id": "t-min",
+          "name": "Minnesota Twins",
+          "symbol": "MIN",
+          "short_name": "Minnesota",
+          "mascot": "Twins",
+          "country": "US"
+         }
+        }
+       }
+      },
+      "outcome": {
+       "id": "oc-f5-mia",
+       "index": 1,
+       "description": "MIA +0.5",
+       "status": "TBD",
+       "available": null,
+       "altAvailable": null,
+       "competitor": {
+        "id": "t-mia",
+        "name": "Miami Marlins",
+        "symbol": "MIA",
+        "country": "US"
+       }
+      },
+      "fills": [
+       {
+        "id": "f6",
+        "created_at": "2026-09-11T16:00:00.3+00:00",
+        "cost": "14.10",
+        "qty": 3000,
+        "isWash": false,
+        "isTaker": true
+       }
+      ],
+      "entry_promotion_name": null
+     },
+     {
+      "id": "o-cfb",
+      "timeToLiveMs": null,
+      "qty": 0,
+      "originalQty": 2500,
+      "created_at": "2026-09-11T16:10:00.000+00:00",
+      "updated_at": "2026-09-11T16:10:00.000+00:00",
+      "status": "FILLED",
+      "price": 0.42,
+      "isBid": true,
+      "tif": "GTC",
+      "currency": "CASH",
+      "market": {
+       "id": "m-cfb",
+       "type": "MONEY",
+       "strike": null,
+       "status": "OPEN",
+       "re_settled_at": null,
+       "cash_out_requests": [],
+       "market_detail": null,
+       "player": null,
+       "competitor": null,
+       "event": {
+        "id": "ev-cfb",
+        "type": "GAME",
+        "status": "OPEN_PREGAME",
+        "scheduled_start": "2026-09-12T20:00:00+00:00",
+        "league": "NCAAF",
+        "description": null,
+        "game": {
+         "id": "g-ev-cfb",
+         "league": "NCAAF",
+         "sport": "FOOTBALL",
+         "scheduled_start": "2026-09-12T20:00:00+00:00",
+         "period": null,
+         "time_remaining": null,
+         "home_score": null,
+         "away_score": null,
+         "awayTeam": {
+          "id": "t-utc",
+          "name": "Chattanooga",
+          "symbol": "UTC",
+          "short_name": "Chattanooga",
+          "mascot": "Chattanooga",
+          "country": "US"
+         },
+         "homeTeam": {
+          "id": "t-eku",
+          "name": "Eastern Kentucky",
+          "symbol": "EKU",
+          "short_name": "E. Kentucky",
+          "mascot": "Kentucky",
+          "country": "US"
+         }
+        }
+       }
+      },
+      "outcome": {
+       "id": "oc-cfb-utc",
+       "index": 1,
+       "description": "UTC",
+       "status": "TBD",
+       "available": null,
+       "altAvailable": null,
+       "competitor": {
+        "id": "t-utc",
+        "name": "Chattanooga",
+        "symbol": "UTC",
+        "country": "US"
+       }
+      },
+      "fills": [
+       {
+        "id": "f7",
+        "created_at": "2026-09-11T16:10:00.2+00:00",
+        "cost": "10.50",
+        "qty": 2500,
+        "isWash": false,
+        "isTaker": true
+       }
+      ],
+      "entry_promotion_name": null
+     },
+     {
+      "id": "o-prop",
+      "timeToLiveMs": null,
+      "qty": 0,
+      "originalQty": 1000,
+      "created_at": "2026-09-11T16:20:00.000+00:00",
+      "updated_at": "2026-09-11T16:20:00.000+00:00",
+      "status": "FILLED",
+      "price": 0.5,
+      "isBid": true,
+      "tif": "GTC",
+      "currency": "CASH",
+      "market": {
+       "id": "m-prop",
+       "type": "RUSHING_YARDS",
+       "strike": 85.5,
+       "status": "OPEN",
+       "re_settled_at": null,
+       "cash_out_requests": [],
+       "market_detail": null,
+       "player": {
+        "id": "p-1",
+        "full_name": "Chuba Hubbard"
+       },
+       "competitor": null,
+       "event": {
+        "id": "ev-chicar",
+        "type": "GAME",
+        "status": "OPEN_PREGAME",
+        "scheduled_start": "2026-09-13T17:00:00+00:00",
+        "league": "NFL",
+        "description": null,
+        "game": {
+         "id": "g-ev-chicar",
+         "league": "NFL",
+         "sport": "FOOTBALL",
+         "scheduled_start": "2026-09-13T17:00:00+00:00",
+         "period": null,
+         "time_remaining": null,
+         "home_score": null,
+         "away_score": null,
+         "awayTeam": {
+          "id": "t-chi",
+          "name": "Chicago Bears",
+          "symbol": "CHI",
+          "short_name": "Chicago",
+          "mascot": "Bears",
+          "country": "US"
+         },
+         "homeTeam": {
+          "id": "t-car",
+          "name": "Carolina Panthers",
+          "symbol": "CAR",
+          "short_name": "Carolina",
+          "mascot": "Panthers",
+          "country": "US"
+         }
+        }
+       }
+      },
+      "outcome": {
+       "id": "oc-prop",
+       "index": 0,
+       "description": "Over 85.5",
+       "status": "TBD",
+       "available": null,
+       "altAvailable": null,
+       "competitor": null
+      },
+      "fills": [
+       {
+        "id": "f8",
+        "created_at": "2026-09-11T16:20:00.1+00:00",
+        "cost": "5.00",
+        "qty": 1000,
+        "isWash": false,
+        "isTaker": true
+       }
+      ],
+      "entry_promotion_name": null
+     },
+     {
+      "id": "o-atp",
+      "timeToLiveMs": null,
+      "qty": 0,
+      "originalQty": 1000,
+      "created_at": "2026-09-11T16:30:00.000+00:00",
+      "updated_at": "2026-09-11T16:30:00.000+00:00",
+      "status": "FILLED",
+      "price": 0.55,
+      "isBid": true,
+      "tif": "GTC",
+      "currency": "CASH",
+      "market": {
+       "id": "m-atp",
+       "type": "MONEY",
+       "strike": null,
+       "status": "OPEN",
+       "re_settled_at": null,
+       "cash_out_requests": [],
+       "market_detail": null,
+       "player": null,
+       "competitor": null,
+       "event": {
+        "id": "ev-atp",
+        "type": "GAME",
+        "status": "OPEN_PREGAME",
+        "scheduled_start": "2026-09-12T13:00:00+00:00",
+        "league": "ATP",
+        "description": null,
+        "game": {
+         "id": "g-ev-atp",
+         "league": "ATP",
+         "sport": "TENNIS",
+         "scheduled_start": "2026-09-12T13:00:00+00:00",
+         "period": null,
+         "time_remaining": null,
+         "home_score": null,
+         "away_score": null,
+         "awayTeam": {
+          "id": "t-sin",
+          "name": "J. Sinner",
+          "symbol": "SIN",
+          "short_name": "Sinner",
+          "mascot": "Sinner",
+          "country": "US"
+         },
+         "homeTeam": {
+          "id": "t-alc",
+          "name": "C. Alcaraz",
+          "symbol": "ALC",
+          "short_name": "Alcaraz",
+          "mascot": "Alcaraz",
+          "country": "US"
+         }
+        }
+       }
+      },
+      "outcome": {
+       "id": "oc-atp",
+       "index": 0,
+       "description": "ALC",
+       "status": "TBD",
+       "available": null,
+       "altAvailable": null,
+       "competitor": {
+        "id": "t-alc",
+        "name": "C. Alcaraz",
+        "symbol": "ALC",
+        "country": "ES"
+       }
+      },
+      "fills": [
+       {
+        "id": "f9",
+        "created_at": "2026-09-11T16:30:00.1+00:00",
+        "cost": "5.50",
+        "qty": 1000,
+        "isWash": false,
+        "isTaker": true
+       }
+      ],
+      "entry_promotion_name": null
+     },
+     {
+      "id": "o-noteams",
+      "timeToLiveMs": null,
+      "qty": 0,
+      "originalQty": 1000,
+      "created_at": "2026-09-11T16:40:00.000+00:00",
+      "updated_at": "2026-09-11T16:40:00.000+00:00",
+      "status": "FILLED",
+      "price": 0.5,
+      "isBid": true,
+      "tif": "GTC",
+      "currency": "CASH",
+      "market": {
+       "id": "m-x",
+       "type": "MONEY",
+       "strike": null,
+       "status": "OPEN",
+       "cash_out_requests": [],
+       "event": {
+        "id": "ev-x",
+        "type": "GAME",
+        "status": "OPEN_PREGAME",
+        "scheduled_start": "2026-09-12T13:00:00+00:00",
+        "league": "NFL",
+        "game": null
+       }
+      },
+      "outcome": {
+       "id": "oc-x",
+       "index": 0,
+       "description": "XXX",
+       "status": "TBD",
+       "available": null,
+       "altAvailable": null,
+       "competitor": null
+      },
+      "fills": [
+       {
+        "id": "f10",
+        "created_at": "2026-09-11T16:40:00.1+00:00",
+        "cost": "5.00",
+        "qty": 1000,
+        "isWash": false,
+        "isTaker": true
+       }
+      ],
+      "entry_promotion_name": null
+     }
+    ]
+   }
+  },
+  {
+   "operationName": "SettledPortfolioOrders_Query",
+   "variables": {
+    "offset": 0,
+    "limit": 15
+   },
+   "at": "2026-09-11T21:00:00.500Z",
+   "url": "https://app.novig.us/portfolio",
+   "data": {
+    "SettledPortfolioOrders_Query": [
+     {
+      "id": "o-won",
+      "timeToLiveMs": null,
+      "qty": 0,
+      "originalQty": 5000,
+      "created_at": "2026-09-06T12:00:00.000+00:00",
+      "updated_at": "2026-09-07T21:00:00.000+00:00",
+      "status": "FILLED",
+      "price": 0.6,
+      "isBid": true,
+      "tif": "GTC",
+      "currency": "CASH",
+      "market": {
+       "id": "m-old-ml",
+       "type": "MONEY",
+       "strike": null,
+       "status": "SETTLED",
+       "re_settled_at": null,
+       "cash_out_requests": [],
+       "market_detail": null,
+       "player": null,
+       "competitor": null,
+       "event": {
+        "id": "ev-old",
+        "type": "GAME",
+        "status": "FINAL",
+        "scheduled_start": "2026-09-07T17:00:00+00:00",
+        "league": "NFL",
+        "description": null,
+        "game": {
+         "id": "g-ev-old",
+         "league": "NFL",
+         "sport": "FOOTBALL",
+         "scheduled_start": "2026-09-07T17:00:00+00:00",
+         "period": null,
+         "time_remaining": null,
+         "home_score": null,
+         "away_score": null,
+         "awayTeam": {
+          "id": "t-phi",
+          "name": "Philadelphia Eagles",
+          "symbol": "PHI",
+          "short_name": "Philadelphia",
+          "mascot": "Eagles",
+          "country": "US"
+         },
+         "homeTeam": {
+          "id": "t-dal",
+          "name": "Dallas Cowboys",
+          "symbol": "DAL",
+          "short_name": "Dallas",
+          "mascot": "Cowboys",
+          "country": "US"
+         }
+        }
+       }
+      },
+      "outcome": {
+       "id": "oc-old-dal",
+       "index": 0,
+       "description": "DAL",
+       "status": "WIN",
+       "available": null,
+       "altAvailable": null,
+       "competitor": {
+        "id": "t-dal",
+        "name": "Dallas Cowboys",
+        "symbol": "DAL",
+        "country": "US"
+       }
+      },
+      "fills": [
+       {
+        "id": "f11",
+        "created_at": "2026-09-06T12:00:00.1+00:00",
+        "cost": "30.00",
+        "qty": 5000,
+        "isWash": false,
+        "isTaker": true
+       }
+      ],
+      "entry_promotion_name": null
+     },
+     {
+      "id": "o-lay-won",
+      "timeToLiveMs": null,
+      "qty": 0,
+      "originalQty": 4000,
+      "created_at": "2026-09-06T12:05:00.000+00:00",
+      "updated_at": "2026-09-07T21:00:00.000+00:00",
+      "status": "FILLED",
+      "price": 0.55,
+      "isBid": false,
+      "tif": "GTC",
+      "currency": "CASH",
+      "market": {
+       "id": "m-old-sp",
+       "type": "SPREAD",
+       "strike": -3.5,
+       "status": "SETTLED",
+       "re_settled_at": null,
+       "cash_out_requests": [],
+       "market_detail": null,
+       "player": null,
+       "competitor": null,
+       "event": {
+        "id": "ev-old",
+        "type": "GAME",
+        "status": "FINAL",
+        "scheduled_start": "2026-09-07T17:00:00+00:00",
+        "league": "NFL",
+        "description": null,
+        "game": {
+         "id": "g-ev-old",
+         "league": "NFL",
+         "sport": "FOOTBALL",
+         "scheduled_start": "2026-09-07T17:00:00+00:00",
+         "period": null,
+         "time_remaining": null,
+         "home_score": null,
+         "away_score": null,
+         "awayTeam": {
+          "id": "t-phi",
+          "name": "Philadelphia Eagles",
+          "symbol": "PHI",
+          "short_name": "Philadelphia",
+          "mascot": "Eagles",
+          "country": "US"
+         },
+         "homeTeam": {
+          "id": "t-dal",
+          "name": "Dallas Cowboys",
+          "symbol": "DAL",
+          "short_name": "Dallas",
+          "mascot": "Cowboys",
+          "country": "US"
+         }
+        }
+       }
+      },
+      "outcome": {
+       "id": "oc-old-phi",
+       "index": 1,
+       "description": "PHI +3.5",
+       "status": "LOSS",
+       "available": null,
+       "altAvailable": null,
+       "competitor": {
+        "id": "t-phi",
+        "name": "Philadelphia Eagles",
+        "symbol": "PHI",
+        "country": "US"
+       }
+      },
+      "fills": [
+       {
+        "id": "f12",
+        "created_at": "2026-09-06T12:05:00.1+00:00",
+        "cost": "22.00",
+        "qty": 4000,
+        "isWash": false,
+        "isTaker": true
+       }
+      ],
+      "entry_promotion_name": null
+     },
+     {
+      "id": "o-push",
+      "timeToLiveMs": null,
+      "qty": 0,
+      "originalQty": 4000,
+      "created_at": "2026-09-06T12:06:00.000+00:00",
+      "updated_at": "2026-09-07T21:00:00.000+00:00",
+      "status": "FILLED",
+      "price": 0.5,
+      "isBid": true,
+      "tif": "GTC",
+      "currency": "CASH",
+      "market": {
+       "id": "m-old-tot",
+       "type": "TOTAL",
+       "strike": 44,
+       "status": "SETTLED",
+       "re_settled_at": null,
+       "cash_out_requests": [],
+       "market_detail": null,
+       "player": null,
+       "competitor": null,
+       "event": {
+        "id": "ev-old",
+        "type": "GAME",
+        "status": "FINAL",
+        "scheduled_start": "2026-09-07T17:00:00+00:00",
+        "league": "NFL",
+        "description": null,
+        "game": {
+         "id": "g-ev-old",
+         "league": "NFL",
+         "sport": "FOOTBALL",
+         "scheduled_start": "2026-09-07T17:00:00+00:00",
+         "period": null,
+         "time_remaining": null,
+         "home_score": null,
+         "away_score": null,
+         "awayTeam": {
+          "id": "t-phi",
+          "name": "Philadelphia Eagles",
+          "symbol": "PHI",
+          "short_name": "Philadelphia",
+          "mascot": "Eagles",
+          "country": "US"
+         },
+         "homeTeam": {
+          "id": "t-dal",
+          "name": "Dallas Cowboys",
+          "symbol": "DAL",
+          "short_name": "Dallas",
+          "mascot": "Cowboys",
+          "country": "US"
+         }
+        }
+       }
+      },
+      "outcome": {
+       "id": "oc-old-over",
+       "index": 0,
+       "description": "Over 44",
+       "status": "PUSH",
+       "available": null,
+       "altAvailable": null,
+       "competitor": null
+      },
+      "fills": [
+       {
+        "id": "f13",
+        "created_at": "2026-09-06T12:06:00.1+00:00",
+        "cost": "20.00",
+        "qty": 4000,
+        "isWash": false,
+        "isTaker": true
+       }
+      ],
+      "entry_promotion_name": null
+     },
+     {
+      "id": "o-cancel",
+      "timeToLiveMs": null,
+      "qty": 4000,
+      "originalQty": 4000,
+      "created_at": "2026-09-06T12:07:00.000+00:00",
+      "updated_at": "2026-09-06T12:30:00.000+00:00",
+      "status": "CANCELED",
+      "price": 0.48,
+      "isBid": true,
+      "tif": "GTC",
+      "currency": "CASH",
+      "market": {
+       "id": "m-old-tot",
+       "type": "TOTAL",
+       "strike": 44,
+       "status": "SETTLED",
+       "re_settled_at": null,
+       "cash_out_requests": [],
+       "market_detail": null,
+       "player": null,
+       "competitor": null,
+       "event": {
+        "id": "ev-old",
+        "type": "GAME",
+        "status": "FINAL",
+        "scheduled_start": "2026-09-07T17:00:00+00:00",
+        "league": "NFL",
+        "description": null,
+        "game": {
+         "id": "g-ev-old",
+         "league": "NFL",
+         "sport": "FOOTBALL",
+         "scheduled_start": "2026-09-07T17:00:00+00:00",
+         "period": null,
+         "time_remaining": null,
+         "home_score": null,
+         "away_score": null,
+         "awayTeam": {
+          "id": "t-phi",
+          "name": "Philadelphia Eagles",
+          "symbol": "PHI",
+          "short_name": "Philadelphia",
+          "mascot": "Eagles",
+          "country": "US"
+         },
+         "homeTeam": {
+          "id": "t-dal",
+          "name": "Dallas Cowboys",
+          "symbol": "DAL",
+          "short_name": "Dallas",
+          "mascot": "Cowboys",
+          "country": "US"
+         }
+        }
+       }
+      },
+      "outcome": {
+       "id": "oc-old-under",
+       "index": 1,
+       "description": "Under 44",
+       "status": "PUSH",
+       "available": null,
+       "altAvailable": null,
+       "competitor": null
+      },
+      "fills": [],
+      "entry_promotion_name": null
+     },
+     {
+      "id": "o-wash",
+      "timeToLiveMs": null,
+      "qty": 0,
+      "originalQty": 3000,
+      "created_at": "2026-09-06T12:08:00.000+00:00",
+      "updated_at": "2026-09-06T13:00:00.000+00:00",
+      "status": "FILLED",
+      "price": 0.42,
+      "isBid": true,
+      "tif": "GTC",
+      "currency": "CASH",
+      "market": {
+       "id": "m-old-ml",
+       "type": "MONEY",
+       "strike": null,
+       "status": "SETTLED",
+       "re_settled_at": null,
+       "cash_out_requests": [],
+       "market_detail": null,
+       "player": null,
+       "competitor": null,
+       "event": {
+        "id": "ev-old",
+        "type": "GAME",
+        "status": "FINAL",
+        "scheduled_start": "2026-09-07T17:00:00+00:00",
+        "league": "NFL",
+        "description": null,
+        "game": {
+         "id": "g-ev-old",
+         "league": "NFL",
+         "sport": "FOOTBALL",
+         "scheduled_start": "2026-09-07T17:00:00+00:00",
+         "period": null,
+         "time_remaining": null,
+         "home_score": null,
+         "away_score": null,
+         "awayTeam": {
+          "id": "t-phi",
+          "name": "Philadelphia Eagles",
+          "symbol": "PHI",
+          "short_name": "Philadelphia",
+          "mascot": "Eagles",
+          "country": "US"
+         },
+         "homeTeam": {
+          "id": "t-dal",
+          "name": "Dallas Cowboys",
+          "symbol": "DAL",
+          "short_name": "Dallas",
+          "mascot": "Cowboys",
+          "country": "US"
+         }
+        }
+       }
+      },
+      "outcome": {
+       "id": "oc-old-phi-ml",
+       "index": 1,
+       "description": "PHI",
+       "status": "LOSS",
+       "available": null,
+       "altAvailable": null,
+       "competitor": {
+        "id": "t-phi",
+        "name": "Philadelphia Eagles",
+        "symbol": "PHI",
+        "country": "US"
+       }
+      },
+      "fills": [
+       {
+        "id": "f14",
+        "created_at": "2026-09-06T12:08:00.1+00:00",
+        "cost": "12.60",
+        "qty": 3000,
+        "isWash": true,
+        "isTaker": true
+       }
+      ],
+      "entry_promotion_name": null
+     }
+    ]
+   }
+  },
+  {
+   "operationName": "ParlayPortfolioQuery",
+   "variables": {
+    "offset": 0,
+    "limit": 15,
+    "where": {
+     "status": {
+      "_eq": "FILLED"
+     }
+    }
+   },
+   "at": "2026-09-11T21:00:01.000Z",
+   "url": "https://app.novig.us/portfolio",
+   "data": {
+    "parlay": [
+     {
+      "id": "pl-1",
+      "created_at": "2026-09-11T17:00:00.000+00:00",
+      "updated_at": "2026-09-11T17:00:00.000+00:00",
+      "status": "Filled",
+      "wager": "25.00",
+      "price": 0.25,
+      "unboosted_price": 0.25,
+      "boost_claim": null,
+      "wallet": {
+       "currency": "CASH"
+      },
+      "legs": [
+       {
+        "price": 0.55,
+        "outcome": {
+         "id": "oc-pl-car",
+         "status": "TBD",
+         "index": 0,
+         "description": "CAR",
+         "available": null,
+         "altAvailable": null,
+         "competitor": {
+          "id": "t-car",
+          "name": "Carolina Panthers",
+          "symbol": "CAR",
+          "country": "US"
+         },
+         "market": {
+          "id": "m-oc-pl-car",
+          "type": "MONEY",
+          "strike": null,
+          "re_settled_at": null,
+          "market_detail": null,
+          "event": {
+           "id": "ev-chicar",
+           "type": "GAME",
+           "status": "OPEN_PREGAME",
+           "scheduled_start": "2026-09-13T17:00:00+00:00",
+           "league": "NFL",
+           "description": null,
+           "game": {
+            "id": "g-ev-chicar",
+            "league": "NFL",
+            "sport": "FOOTBALL",
+            "scheduled_start": "2026-09-13T17:00:00+00:00",
+            "period": null,
+            "time_remaining": null,
+            "home_score": null,
+            "away_score": null,
+            "awayTeam": {
+             "id": "t-chi",
+             "name": "Chicago Bears",
+             "symbol": "CHI",
+             "short_name": "Chicago",
+             "mascot": "Bears",
+             "country": "US"
+            },
+            "homeTeam": {
+             "id": "t-car",
+             "name": "Carolina Panthers",
+             "symbol": "CAR",
+             "short_name": "Carolina",
+             "mascot": "Panthers",
+             "country": "US"
+            }
+           }
+          },
+          "player": null,
+          "competitor": null
+         }
+        }
+       },
+       {
+        "price": 0.45,
+        "outcome": {
+         "id": "oc-pl-under",
+         "status": "TBD",
+         "index": 1,
+         "description": "Under 47.5",
+         "available": null,
+         "altAvailable": null,
+         "competitor": null,
+         "market": {
+          "id": "m-oc-pl-under",
+          "type": "TOTAL",
+          "strike": 47.5,
+          "re_settled_at": null,
+          "market_detail": null,
+          "event": {
+           "id": "ev-chicar",
+           "type": "GAME",
+           "status": "OPEN_PREGAME",
+           "scheduled_start": "2026-09-13T17:00:00+00:00",
+           "league": "NFL",
+           "description": null,
+           "game": {
+            "id": "g-ev-chicar",
+            "league": "NFL",
+            "sport": "FOOTBALL",
+            "scheduled_start": "2026-09-13T17:00:00+00:00",
+            "period": null,
+            "time_remaining": null,
+            "home_score": null,
+            "away_score": null,
+            "awayTeam": {
+             "id": "t-chi",
+             "name": "Chicago Bears",
+             "symbol": "CHI",
+             "short_name": "Chicago",
+             "mascot": "Bears",
+             "country": "US"
+            },
+            "homeTeam": {
+             "id": "t-car",
+             "name": "Carolina Panthers",
+             "symbol": "CAR",
+             "short_name": "Carolina",
+             "mascot": "Panthers",
+             "country": "US"
+            }
+           }
+          },
+          "player": null,
+          "competitor": null
+         }
+        }
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "operationName": "ParlayPortfolioQuery",
+   "variables": {
+    "offset": 0,
+    "limit": 15,
+    "where": {
+     "status": {
+      "_in": [
+       "WIN",
+       "LOSS",
+       "PUSH"
+      ]
+     }
+    }
+   },
+   "at": "2026-09-11T21:00:01.200Z",
+   "url": "https://app.novig.us/portfolio",
+   "data": {
+    "parlay": [
+     {
+      "id": "pl-2",
+      "created_at": "2026-09-05T17:00:00.000+00:00",
+      "updated_at": "2026-09-07T21:00:00.000+00:00",
+      "status": "Loss",
+      "wager": "10.00",
+      "price": 0.3,
+      "unboosted_price": 0.3,
+      "boost_claim": null,
+      "wallet": {
+       "currency": "CASH"
+      },
+      "legs": [
+       {
+        "price": 0.6,
+        "outcome": {
+         "id": "oc-pl2-dal",
+         "status": "TBD",
+         "index": 0,
+         "description": "DAL",
+         "available": null,
+         "altAvailable": null,
+         "competitor": {
+          "id": "t-dal",
+          "name": "Dallas Cowboys",
+          "symbol": "DAL",
+          "country": "US"
+         },
+         "market": {
+          "id": "m-oc-pl2-dal",
+          "type": "MONEY",
+          "strike": null,
+          "re_settled_at": null,
+          "market_detail": null,
+          "event": {
+           "id": "ev-old",
+           "type": "GAME",
+           "status": "FINAL",
+           "scheduled_start": "2026-09-07T17:00:00+00:00",
+           "league": "NFL",
+           "description": null,
+           "game": {
+            "id": "g-ev-old",
+            "league": "NFL",
+            "sport": "FOOTBALL",
+            "scheduled_start": "2026-09-07T17:00:00+00:00",
+            "period": null,
+            "time_remaining": null,
+            "home_score": null,
+            "away_score": null,
+            "awayTeam": {
+             "id": "t-phi",
+             "name": "Philadelphia Eagles",
+             "symbol": "PHI",
+             "short_name": "Philadelphia",
+             "mascot": "Eagles",
+             "country": "US"
+            },
+            "homeTeam": {
+             "id": "t-dal",
+             "name": "Dallas Cowboys",
+             "symbol": "DAL",
+             "short_name": "Dallas",
+             "mascot": "Cowboys",
+             "country": "US"
+            }
+           }
+          },
+          "player": null,
+          "competitor": null
+         }
+        }
+       },
+       {
+        "price": 0.5,
+        "outcome": {
+         "id": "oc-pl2-over",
+         "status": "TBD",
+         "index": 0,
+         "description": "Over 44",
+         "available": null,
+         "altAvailable": null,
+         "competitor": null,
+         "market": {
+          "id": "m-oc-pl2-over",
+          "type": "TOTAL",
+          "strike": 44,
+          "re_settled_at": null,
+          "market_detail": null,
+          "event": {
+           "id": "ev-old",
+           "type": "GAME",
+           "status": "FINAL",
+           "scheduled_start": "2026-09-07T17:00:00+00:00",
+           "league": "NFL",
+           "description": null,
+           "game": {
+            "id": "g-ev-old",
+            "league": "NFL",
+            "sport": "FOOTBALL",
+            "scheduled_start": "2026-09-07T17:00:00+00:00",
+            "period": null,
+            "time_remaining": null,
+            "home_score": null,
+            "away_score": null,
+            "awayTeam": {
+             "id": "t-phi",
+             "name": "Philadelphia Eagles",
+             "symbol": "PHI",
+             "short_name": "Philadelphia",
+             "mascot": "Eagles",
+             "country": "US"
+            },
+            "homeTeam": {
+             "id": "t-dal",
+             "name": "Dallas Cowboys",
+             "symbol": "DAL",
+             "short_name": "Dallas",
+             "mascot": "Cowboys",
+             "country": "US"
+            }
+           }
+          },
+          "player": null,
+          "competitor": null
+         }
+        }
+       }
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}

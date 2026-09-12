@@ -11,6 +11,9 @@
 //   serviceState what panel.js remembers about the service itself:
 //                {okAt, error, errorAt, unreachableSince} (ms epochs, error text)
 //   records      normalised bet records (bets.js contract)
+//   pageSources  venues read by a content script instead of the service, keyed
+//                by venue: {novig: {bets, readAt, url, error, complete,
+//                pageSeenAt}} — what novig_content.js writes to storage (#116)
 // Outputs plain objects / strings; nothing here writes anywhere.
 
 (function (root) {
@@ -25,6 +28,12 @@
   const STALE_MS = 60 * 60 * 1000;
   const BANNER_MAX_LINES = 5;
   const DEFAULT_BETS_SETTINGS = { serviceUrl: "http://127.0.0.1:8094" };
+  // How a page-sourced venue is refreshed, for the Bets tab when its read is
+  // old or missing: the second form when its tab is open but has not shown
+  // the screen the content script mirrors.
+  const PAGE_SOURCE_HINT = {
+    novig: { closed: "open app.novig.us and its Portfolio screen in a tab to refresh", open: "Novig tab is open — open its Portfolio screen to refresh" },
+  };
 
   // "20 s" / "3 min" / "2 h" / "3 d" — the header line's short form.
   function fmtAgeShort(ms) {
@@ -43,11 +52,34 @@
     return "red";
   }
 
-  // One row per venue: what the service reported for it, or "no source configured".
-  function sourceRows(payload, now) {
+  // A venue read by a content script: fresh as of its last portfolio
+  // response; the hint says how to refresh once that is old or absent.
+  function pageSourceRow(venue, source, now) {
+    const readMs = source && source.readAt ? Date.parse(source.readAt) : NaN;
+    const ageMs = Number.isFinite(readMs) ? now - readMs : null;
+    const level = freshnessLevel(ageMs);
+    const seenMs = source && source.pageSeenAt ? Date.parse(source.pageSeenAt) : NaN;
+    const tabOpen = Number.isFinite(seenMs) && now - seenMs < FRESH_MS;
+    const hint = PAGE_SOURCE_HINT[venue] || { closed: "open the venue's site in a tab to refresh", open: "the venue's tab is open — open its bets screen to refresh" };
+    const note = level === "red" ? (tabOpen ? hint.open : hint.closed) : null;
+    return {
+      venue, configured: true, level, ageMs,
+      ageText: ageMs == null ? "never" : fmtAgeShort(ageMs),
+      fetchedAt: Number.isFinite(readMs) ? source.readAt : null,
+      count: source && Array.isArray(source.bets) ? source.bets.length : 0,
+      error: source && source.error ? source.error : null,
+      note,
+    };
+  }
+
+  // One row per venue: what the service reported for it, what a content
+  // script wrote for it, or "no source configured".
+  function sourceRows(payload, now, pageSources) {
     const sources = payload && payload.sources && typeof payload.sources === "object" ? payload.sources : {};
+    const pages = pageSources && typeof pageSources === "object" ? pageSources : {};
     return VENUES.map((venue) => {
       const source = sources[venue];
+      if (!source && pages[venue]) return pageSourceRow(venue, pages[venue], now);
       if (!source) {
         return { venue, configured: false, level: "none", ageMs: null, ageText: "—", fetchedAt: null, count: null, error: null, note: "no source configured" };
       }
@@ -79,8 +111,8 @@
 
   // The Ticket tab's warning fires when nothing can vouch for the flags:
   // no source has ever reported, or every one that has is past the stale bound.
-  function sourcesUnavailable(payload, now) {
-    const configured = sourceRows(payload, now).filter((row) => row.configured);
+  function sourcesUnavailable(payload, now, pageSources) {
+    const configured = sourceRows(payload, now, pageSources).filter((row) => row.configured);
     return configured.length === 0 || configured.every((row) => row.level === "red");
   }
 
@@ -89,8 +121,8 @@
   }
 
   // "bets: 14 open · kalshi 20 s · betonline — · novig — · prophetx —"
-  function headerLine(records, payload, now) {
-    const venues = sourceRows(payload, now).map((row) => `${row.venue} ${row.configured ? row.ageText : "—"}`);
+  function headerLine(records, payload, now, pageSources) {
+    const venues = sourceRows(payload, now, pageSources).map((row) => `${row.venue} ${row.configured ? row.ageText : "—"}`);
     return [`bets: ${openCount(records)} open`, ...venues].join(" · ");
   }
 
@@ -144,6 +176,34 @@
     return { kind: "none" };
   }
 
+  // The advice as words, the same on the row, the Ticket block and the Copy
+  // text: "wagered $350 → target $600, bet $250" (user choice 2026-09-11: the
+  // same three numbers in the same order every time). `wagered` is what you
+  // hold on this side, or "against" when it is on the other side; `bet` is
+  // the number to act on; `net` only appears when an against position is
+  // being cancelled.
+  //   {have, target, bet, note}  as display strings; `note` null unless there is a net line
+  function stakeAdviceWords(advice) {
+    const money = (dollars) => bets.formatStake(Math.round(dollars * 100) / 100);
+    if (!advice || advice.kind === "none") return null;
+    if (advice.kind === "add") return { have: money(advice.held), target: money(advice.stake), bet: money(advice.add), note: null };
+    if (advice.kind === "at_size") {
+      return { have: money(advice.held), target: advice.stake == null ? "none here" : money(advice.stake), bet: "$0", note: null };
+    }
+    const target = advice.stake == null ? "none here" : money(advice.stake);
+    const bet = advice.stake == null ? "$0" : money(advice.stake);
+    let note = null;
+    if (advice.net != null) note = advice.net >= 0 ? `net ${money(advice.net)} on this side` : `still ${money(-advice.net)} against`;
+    return { have: `${money(advice.against)} against`, target, bet, note };
+  }
+
+  // One line: "wagered $350 → target $600, bet $250" (+ " (net $400 on this side)").
+  function stakeAdviceLine(advice) {
+    const words = stakeAdviceWords(advice);
+    if (!words) return null;
+    return `wagered ${words.have} → target ${words.target}, bet ${words.bet}${words.note ? ` (${words.note})` : ""}`;
+  }
+
   // "you hold Texas A&M -38.5 -110 · Kalshi · Sep 10 2:15 PM" — one line per
   // held or against bet, for the row's third line and the ticket's facts.
   function positionLines(flag) {
@@ -176,6 +236,19 @@
     return bets.pruneForRetention(bets.resolveTeamKeys(merged), now);
   }
 
+  // Records to keep after a content-script venue wrote its read: the stored
+  // ones and the read deduped on native id (newest wins). A COMPLETE read
+  // (every list seen to its end) is authoritative for that venue, so a stored
+  // record it no longer lists is dropped; an incomplete read only adds.
+  function mergePageSource(storedRecords, venue, pageSource, now) {
+    const read = pageSource && Array.isArray(pageSource.bets) ? pageSource.bets : [];
+    const listed = new Set(read.map((record) => record.id));
+    const authoritative = !!(pageSource && pageSource.complete === true);
+    const kept = (storedRecords || []).filter((record) => record.venue !== venue || !authoritative || listed.has(record.id));
+    const merged = bets.dedupeByNativeId([kept, read]);
+    return bets.pruneForRetention(bets.resolveTeamKeys(merged), now);
+  }
+
   // The captured ticket as the describeLine-shaped row the matcher reads.
   // Unabated's eventStart is naive UTC ("2026-09-12T23:30:00"); tickets
   // captured before page.js carried `period` are full game.
@@ -185,6 +258,7 @@
     return {
       league: ticket.league, eventId: ticket.eventId ?? null,
       awayTeam: ticket.awayTeam ?? null, homeTeam: ticket.homeTeam ?? null,
+      awayTeamId: ticket.awayTeamId ?? null, homeTeamId: ticket.homeTeamId ?? null,
       eventStart, eventStartMs: Number.isFinite(eventStartMs) ? eventStartMs : null,
       betType: ticket.betType, period: ticket.period || "FG",
       sideIndex: ticket.sideIndex, points: ticket.points ?? null, rotation: ticket.rotation ?? null,
@@ -201,7 +275,7 @@
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badgeText, badgeKind, stakeAdvice, positionLines, venuesWithFreshPull, mergeServicePayload, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badgeText, badgeKind, stakeAdvice, stakeAdviceWords, stakeAdviceLine, positionLines, venuesWithFreshPull, mergeServicePayload, mergePageSource, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

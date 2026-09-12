@@ -4,7 +4,8 @@
 // Reads: chrome.storage.local {ticket, error, watchStatus, pageReady,
 // booksFilter, locateResult} (written by content.js) and {bankroll,
 // multiplier, edges, alerts, alertLog, activeTab, betsService, betsSettings}
-// (written here).
+// (written here) and {betsNovig} (written by novig_content.js on
+// app.novig.us, #116).
 // Writes: chrome.storage.local settings, {locate} (row click, via locate.js,
 // which also focuses the Unabated tab), {alertLog, alertTargets} and Chrome
 // notifications for new edges; {betsService} after every bets-service poll.
@@ -88,6 +89,8 @@
     // What the last bets-service poll left: {payload: {generatedAt, sources},
     // okAt, error, errorAt, unreachableSince}; null before the first poll.
     betsService: null,
+    // What novig_content.js last wrote: {bets, readAt, url, error, complete, pageSeenAt} or null.
+    betsNovig: null,
     // Normalised bet records (bets.js contract), team keys resolved, pruned to the retention window.
     betRecords: [],
   };
@@ -103,10 +106,33 @@
   let lastCopyText = "";
   let scannerStatus = null;
   let scannerState = null;
+  const teamsLib = globalThis.UnabatedTeams;
+  let teamsIndexSize = 0;
+
+  // Every snapshot carries Unabated's team list: register it as the team
+  // index (teams.js), persist it, and fill keys on bet records that were
+  // waiting for it (#116 — no hand-written team tables).
+  function registerFeedTeams(feedState) {
+    if (!feedState || !feedState.teamIndex) return;
+    const byLeague = {};
+    for (const team of Object.values(feedState.teamIndex)) {
+      const league = feed.LEAGUES[team.leagueId];
+      if (!league) continue;
+      (byLeague[league.path] ||= []).push(team);
+    }
+    for (const [league, list] of Object.entries(byLeague)) teamsLib.registerTeams(league, list);
+    const size = Object.values(teamsLib.exportIndex()).reduce((n, list) => n + list.length, 0);
+    if (size === teamsIndexSize) return;
+    teamsIndexSize = size;
+    chrome.storage.local.set({ teamsIndex: teamsLib.exportIndex() });
+    state.betRecords = betsLib.resolveTeamKeys(state.betRecords);
+  }
+
   const scanner = globalThis.UnabatedScanner.createScanner({
     onChange: (status, feedState) => {
       scannerStatus = status;
       scannerState = feedState;
+      registerFeedTeams(feedState);
       renderEdges();
       // A ticket sized from the feed (or waiting for it) follows the feed's
       // updates; one the screen priced is left alone (a re-render clears the copy status).
@@ -300,7 +326,7 @@
       const age = fmtLineAge(feed.lineChangedMs(line.feedLine)).replace(/^line /, "");
       messages.push(`Edge from the Edges feed (the screen cell carried none): same line at the same price, feed copy ${age}.`);
     }
-    if (betsView.sourcesUnavailable(state.betsService && state.betsService.payload, Date.now())) {
+    if (betsView.sourcesUnavailable(state.betsService && state.betsService.payload, Date.now(), pageSources())) {
       messages.push("Bet sources unavailable (no venue has reported in the last hour), so bet flags may be missing; see the Bets tab.");
     }
     if (!pageScriptAlive()) {
@@ -417,15 +443,13 @@
   // What the Copy button adds after "stake $X" so the clipboard carries the
   // number to act on, not only the full Kelly.
   function copyExposureText(advice) {
-    if (advice.kind === "add") return ` (held $${advice.held.toFixed(2)}, add $${advice.add.toFixed(2)})`;
-    if (advice.kind === "at_size") return ` (at size: held $${advice.held.toFixed(2)})`;
-    if (advice.kind === "reverse") return ` (other side held $${advice.against.toFixed(2)})`;
-    return "";
+    const line = betsView.stakeAdviceLine(advice);
+    return line ? ` (${line})` : "";
   }
 
-  // Under the Kelly stake: what you already hold on this market and the
-  // number to act on — "Held $300 · add $200", "At size: held $600, Kelly
-  // $520", or in red "Other side $200 · net $300 on this side". Returns the advice.
+  // Under the Kelly stake, the same words as the Edges row: "wagered $350 →
+  // target $600, bet $250", the bet number large; red when the position held
+  // is on the other side. Returns the advice.
   function renderStakeExposure(stake, flag) {
     const advice = betsView.stakeAdvice(stake, flag.exposure);
     view.stakeExposure.classList.toggle("against", advice.kind === "reverse");
@@ -435,21 +459,13 @@
       return advice;
     }
     const summary = document.createElement("div");
-    if (advice.kind === "add") {
-      summary.append(`Held ${fmtDollars(advice.held)} · add `);
-      const add = document.createElement("span");
-      add.className = "stake-add";
-      add.textContent = fmtDollars(advice.add);
-      summary.append(add);
-    } else if (advice.kind === "at_size") {
-      summary.textContent = advice.stake == null
-        ? `At size: held ${fmtDollars(advice.held)}, nothing to size here`
-        : `At size: held ${fmtDollars(advice.held)}, Kelly ${fmtDollars(advice.stake)}`;
-    } else {
-      summary.textContent = advice.net == null
-        ? `Other side ${fmtDollars(advice.against)}`
-        : `Other side ${fmtDollars(advice.against)} · net ${fmtDollars(Math.abs(advice.net))} ${advice.net >= 0 ? "on this side" : "still against"}`;
-    }
+    const words = betsView.stakeAdviceWords(advice);
+    summary.append(`wagered ${words.have} → target ${words.target}, bet `);
+    const bet = document.createElement("span");
+    bet.className = "stake-add";
+    bet.textContent = words.bet;
+    summary.append(bet);
+    if (words.note) summary.append(` (${words.note})`);
     const positions = betsView.positionLines(flag).map((text) => {
       const div = document.createElement("div");
       div.className = "muted";
@@ -724,24 +740,20 @@
     return badge;
   }
 
-  // The row's stake cell sized against what you hold: "$500", "+$200 of $500",
-  // "at size $600 of $520", "$500 reverses $200".
+  // The row's stake cell: a plain "$500" when nothing is held on the market,
+  // else "bet $250" over a small "wagered $350 → target $600" (the Ticket block
+  // reads the same way; betsview.stakeAdviceWords).
   function fillStakeCell(cell, row) {
     const advice = row.bet ? row.bet.advice : { kind: "none" };
-    const note = document.createElement("small");
     cell.classList.toggle("at-size", advice.kind === "at_size");
-    if (advice.kind === "add") {
-      cell.append(`+${fmtDollars(advice.add)} `, note);
-      note.textContent = `of ${fmtDollars(advice.stake)}`;
-    } else if (advice.kind === "at_size") {
-      cell.append("at size ", note);
-      note.textContent = advice.stake == null ? `held ${fmtDollars(advice.held)}` : `${fmtDollars(advice.held)} of ${fmtDollars(advice.stake)}`;
-    } else if (advice.kind === "reverse") {
-      cell.append(`${row.stake == null ? "—" : fmtDollars(row.stake)} `, note);
-      note.textContent = `reverses ${fmtDollars(advice.against)}`;
-    } else {
+    const words = betsView.stakeAdviceWords(advice);
+    if (!words) {
       cell.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
+      return;
     }
+    const note = document.createElement("small");
+    note.textContent = `wagered ${words.have} → target ${words.target}${words.note ? ` (${words.note})` : ""}`;
+    cell.append(`bet ${words.bet} `, note);
   }
 
   // The dim lines under a row naming the position(s) behind its badge, one per position.
@@ -1281,6 +1293,18 @@
     return state.betsService ? state.betsService.payload : null;
   }
 
+  // Venues read by a content script rather than the service (#116).
+  function pageSources() {
+    return state.betsNovig ? { novig: state.betsNovig } : {};
+  }
+
+  // A new Novig read from storage: merge its records (complete reads are
+  // authoritative for the venue) and refresh every view that shows a flag.
+  function applyNovigRead(betsNovig) {
+    state.betsNovig = betsNovig && typeof betsNovig === "object" ? betsNovig : null;
+    if (state.betsNovig) state.betRecords = betsView.mergePageSource(state.betRecords, "novig", state.betsNovig, Date.now());
+  }
+
   let betsPollBusy = false;
   let betsPollTimer = null;
 
@@ -1326,7 +1350,7 @@
 
   function renderBetsHeader() {
     const now = Date.now();
-    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now);
+    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now, pageSources());
     view.betsHeader.classList.toggle("bad", betsView.serviceStatus(state.betsService, now).unreachable);
   }
 
@@ -1341,7 +1365,7 @@
     const service = betsView.serviceStatus(state.betsService, now);
     view.betsService.hidden = !service.unreachable;
     view.betsService.textContent = service.unreachable ? `${service.text}. Start it with unabated_ticket/bets_service/run.sh; the last records it served are still shown.` : "";
-    view.betsSources.replaceChildren(...betsView.sourceRows(betsPayload(), now).map((row) => {
+    view.betsSources.replaceChildren(...betsView.sourceRows(betsPayload(), now, pageSources()).map((row) => {
       const tr = document.createElement("tr");
       tr.className = `fresh-${row.level}`;
       const status = row.error ? row.error : row.note ? row.note : "ok";
@@ -1443,7 +1467,10 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "betsNovig", "teamsIndex"]);
+    // The team index from the last session, so bet records resolve before the first snapshot lands.
+    teamsLib.loadIndex(relay.teamsIndex);
+    teamsIndexSize = Object.values(teamsLib.exportIndex()).reduce((n, list) => n + list.length, 0);
     state.ticket = relay.ticket || null;
     state.error = relay.error || null;
     state.watchStatus = relay.watchStatus || null;
@@ -1464,6 +1491,7 @@
         error: storedBets.error ?? null, errorAt: storedBets.errorAt ?? null, unreachableSince: storedBets.unreachableSince ?? null,
       };
     }
+    applyNovigRead(relay.betsNovig);
     fillEdgeSettingInputs();
     fillAlertSettingInputs();
     fillBetsSettingInputs();
@@ -1501,6 +1529,14 @@
       state.locateResult = changes.locateResult.newValue || null;
       if (state.locateResult && state.locating && state.locateResult.at >= state.locating.at) state.locating = null;
       renderLocate();
+    }
+    // novig_content.js wrote a read of the Novig Portfolio screen (#116).
+    if ("betsNovig" in changes) {
+      applyNovigRead(changes.betsNovig.newValue);
+      renderBetsHeader();
+      if (!state.error) render();
+      renderEdges();
+      if (state.activeTab === "bets") renderBets();
     }
   });
 

@@ -3,6 +3,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const view = require("../extension/betsview.js");
+const fs = require("node:fs");
+const path = require("node:path");
+const teams = require("../extension/teams.js");
+// The runtime team index the panel builds from Unabated's snapshots, from a
+// captured copy (fixtures/teams_index.json) — keys are "<league>:<Unabated id>".
+teams.loadIndex(JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "teams_index.json"), "utf8")).leagues);
+const key = (league, name) => teams.teamKey(league, name);
 
 const NOW = Date.parse("2026-09-11T21:00:00Z");
 const iso = (msAgo) => new Date(NOW - msAgo).toISOString();
@@ -120,6 +127,18 @@ test("badgeText / badgeKind: dollars held win, then dollars against, then a plai
   assert.deepEqual(["same_line", "opposite", "same_game"].map((tier) => view.badgeKind(flag(tier, tier === "same_line" ? 1 : 0, tier === "opposite" ? 1 : 0))), ["held", "against", "game"]);
 });
 
+test("stakeAdviceLine: the same three numbers in the same order for every case", () => {
+  const exposure = (held, against) => ({ held, against, heldBets: [], againstBets: [] });
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(500, exposure(0, 0))), null);
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(600, exposure(350, 0))), "wagered $350 → target $600, bet $250");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(520, exposure(600, 0))), "wagered $600 → target $520, bet $0");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(null, exposure(600, 0))), "wagered $600 → target none here, bet $0");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(500, exposure(0, 200))), "wagered $200 against → target $500, bet $500 (net $300 on this side)");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(100, exposure(0, 200))), "wagered $200 against → target $100, bet $100 (still $100 against)");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(null, exposure(0, 200))), "wagered $200 against → target none here, bet $0");
+  assert.deepEqual(view.stakeAdviceWords(view.stakeAdvice(600, exposure(350.5, 0))), { have: "$350.50", target: "$600", bet: "$249.50", note: null });
+});
+
 test("stakeAdvice: none, add the difference, at size when held covers the stake, reverse with the net", () => {
   const exposure = (held, against) => ({ held, against, heldBets: [], againstBets: [] });
   assert.deepEqual(view.stakeAdvice(500, exposure(0, 0)), { kind: "none" });
@@ -152,8 +171,8 @@ test("mergeServicePayload: fresh wins on the same id, team keys are filled, old 
   assert.deepEqual(ids, ["kalshi:gone:yes", "kalshi:x:yes"]);
   const x = merged.find((r) => r.id === "kalshi:x:yes");
   assert.equal(x.stake, 168);
-  assert.equal(x.awayKey, "cfb:chattanooga");
-  assert.equal(x.homeKey, "cfb:eastern-kentucky");
+  assert.equal(x.awayKey, key("cfb", "Chattanooga"));
+  assert.equal(x.homeKey, key("cfb", "Eastern Kentucky"));
 });
 
 test("mergeServicePayload: a venue's successful pull drops its stored records the payload no longer lists; a failed or absent pull keeps them", () => {
@@ -190,4 +209,46 @@ test("sanitizeBetsSettings: defaults, a trailing slash trimmed, junk ignored", (
   assert.deepEqual(view.sanitizeBetsSettings(null), { serviceUrl: "http://127.0.0.1:8094" });
   assert.deepEqual(view.sanitizeBetsSettings({ serviceUrl: "http://localhost:9000/", hideBet: true }), { serviceUrl: "http://localhost:9000" });
   assert.deepEqual(view.sanitizeBetsSettings({ serviceUrl: "not a url" }), { serviceUrl: "http://127.0.0.1:8094" });
+});
+
+// ---- page-sourced venues (#116: Novig content script) ----
+
+function novigRead(overrides) {
+  return Object.assign({ bets: [record("novig:1", "open", { venue: "novig", source: "novig_page" })], readAt: iso(20e3), url: "https://app.novig.us/portfolio", error: null, complete: true, pageSeenAt: iso(0) }, overrides);
+}
+
+test("sourceRows: a content-script venue is configured with its read age; a stale or missing read carries the refresh hint", () => {
+  const fresh = view.sourceRows(null, NOW, { novig: novigRead() }).find((row) => row.venue === "novig");
+  assert.equal(fresh.configured, true);
+  assert.equal(fresh.level, "green");
+  assert.equal(fresh.ageText, "20 s");
+  assert.equal(fresh.count, 1);
+  assert.equal(fresh.note, null);
+  const stale = view.sourceRows(null, NOW, { novig: novigRead({ readAt: iso(2 * 3600e3), pageSeenAt: iso(2 * 3600e3) }) }).find((row) => row.venue === "novig");
+  assert.equal(stale.level, "red");
+  assert.equal(stale.note, "open app.novig.us and its Portfolio screen in a tab to refresh");
+  const tabOpen = view.sourceRows(null, NOW, { novig: novigRead({ readAt: iso(2 * 3600e3), pageSeenAt: iso(30e3) }) }).find((row) => row.venue === "novig");
+  assert.equal(tabOpen.note, "Novig tab is open — open its Portfolio screen to refresh");
+  const never = view.sourceRows(null, NOW, { novig: novigRead({ readAt: null, bets: [] }) }).find((row) => row.venue === "novig");
+  assert.equal(never.ageText, "never");
+  assert.equal(never.count, 0);
+  const errored = view.sourceRows(null, NOW, { novig: novigRead({ error: "ActivePortfolioOrders_Query: boom" }) }).find((row) => row.venue === "novig");
+  assert.equal(errored.error, "ActivePortfolioOrders_Query: boom");
+  assert.equal(view.sourceRows(null, NOW, {}).find((row) => row.venue === "novig").configured, false);
+});
+
+test("headerLine and sourcesUnavailable: a fresh Novig read counts as a live source", () => {
+  assert.equal(view.headerLine([], null, NOW, { novig: novigRead() }), "bets: 0 open · kalshi — · betonline — · novig 20 s · prophetx —");
+  assert.equal(view.sourcesUnavailable(null, NOW, { novig: novigRead() }), false);
+  assert.equal(view.sourcesUnavailable(null, NOW, { novig: novigRead({ readAt: iso(2 * 3600e3) }) }), true);
+});
+
+test("mergePageSource: a complete read is authoritative for its venue; an incomplete one only adds; other venues untouched", () => {
+  const stored = [record("novig:old", "open", { venue: "novig" }), record("kalshi:k", "open")];
+  const complete = view.mergePageSource(stored, "novig", novigRead(), NOW);
+  assert.deepEqual(complete.map((r) => r.id).sort(), ["kalshi:k", "novig:1"]);
+  const partial = view.mergePageSource(stored, "novig", novigRead({ complete: false }), NOW);
+  assert.deepEqual(partial.map((r) => r.id).sort(), ["kalshi:k", "novig:1", "novig:old"]);
+  assert.ok(complete.every((r) => r.awayKey === key("cfb", "Chattanooga")));
+  assert.deepEqual(view.mergePageSource(stored, "novig", null, NOW).map((r) => r.id).sort(), ["kalshi:k", "novig:old"]);
 });

@@ -163,6 +163,7 @@
     function mergeInto(target, loaded) {
       target.leagues = target.leagues.filter((id) => !loaded.leagues.includes(id)).concat(loaded.leagues);
       Object.assign(target.teams, loaded.teams);
+      Object.assign(target.teamIndex ||= {}, loaded.teamIndex || {});
       Object.assign(target.books, loaded.books);
       for (const [id, event] of Object.entries(target.events)) if (loaded.leagues.includes(event.leagueId)) delete target.events[id];
       for (const [key, line] of Object.entries(target.lines)) if (loaded.leagues.includes(line.leagueId)) delete target.lines[key];
