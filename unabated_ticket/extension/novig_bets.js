@@ -395,7 +395,7 @@
   const api = {
     LEAGUES, MARKET_TYPES, WATCHED_OPERATIONS, APPROX_UNMATCHED, APPROX_PENDING, REASON_NOT_GAME, QTY_PER_CONTRACT,
     normalizeNovig, normalizeOrder, normalizeParlay, probabilityToAmerican,
-    rowsOf, pageKey, applyResponse, collectPages,
+    applyResponse, collectPages,
   };
 
   if (typeof module !== "undefined" && module.exports) {

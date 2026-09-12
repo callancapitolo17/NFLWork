@@ -272,7 +272,7 @@
   }
 
   const api = {
-    VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS, PAGE_SOURCE_HINT,
+    VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
     bannerLines, badgeText, badgeKind, stakeAdvice, stakeAdviceWords, stakeAdviceLine, positionLines, venuesWithFreshPull, mergeServicePayload, mergePageSource, ticketAsLine, sanitizeBetsSettings,
   };
