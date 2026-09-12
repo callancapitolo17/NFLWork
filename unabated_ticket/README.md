@@ -329,12 +329,22 @@ when the panel is closed.
 
 ## Bets
 
+Two kinds of source feed the flags:
+
+| Venue | Source | How it refreshes |
+|---|---|---|
+| Kalshi | `bets_service/sources/kalshi.py` (local service, signed REST) | every 60 s while the service runs |
+| Novig | `extension/novig_page.js` + `novig_content.js` (content scripts on `app.novig.us`, #116) | whenever the Novig tab's Portfolio screen fetches its lists — open it to refresh |
+| BetOnline | — (#115) | shows "no source configured" |
+| ProphetX | — (#117) | shows "no source configured" |
+
 Start the service (next section), keep the panel open. Every 30 s while the
 panel is visible it fetches `http://127.0.0.1:8094/bets.json` (never from
 the service worker), resolves each record's teams through `teams.js`, dedupes
 on the venue's native id against what it already holds, and keeps open bets
 plus settled ones from the last 30 days in `chrome.storage.local`
-(`betsService`; `betsSettings` holds the service URL and the hide toggle).
+(`betsService`; `betsSettings` holds the service URL; `betsNovig` is what
+the Novig content script wrote).
 A poll that fails keeps the last records and says so; nothing is ever
 blanked. A poll that succeeds is authoritative for every venue whose source
 reports `ok`: a stored record of that venue the payload no longer lists is
@@ -344,8 +354,8 @@ lines forever; records of a venue whose source failed stay as they were.
 **What is matched.** A bet matches a line when the league is the same, the
 two teams resolve to the same pair (either order) or the rotation number
 matches, and the time agrees: within 30 min when the venue gives a start
-time (Kalshi MLB tickers), else the bet's Eastern date within a day of the
-line's (Kalshi football tickers carry the date only). A bet that two board
+time (Kalshi MLB tickers, every Novig order), else the bet's Eastern date
+within a day of the line's (Kalshi football tickers carry the date only). A bet that two board
 events accept (a series, a doubleheader without a time) is **never**
 guessed — it lands in the unmatched list as "ambiguous game". Only open bets
 match; settled and closed positions stay in the list but never flag a line.
@@ -402,13 +412,66 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
 - *Bets tab*: the per-venue table (last pull, green under 5 min, amber
   under 60, red past that or on a failed poll with its error; venues with
   no source yet read "no source configured", a source still on its first
-  poll reads "no completed poll yet"; the service itself shows
+  poll reads "no completed poll yet"; a page-sourced venue past the hour
+  says how to refresh — "open app.novig.us and its Portfolio screen in a
+  tab to refresh"; the service itself shows
   "unreachable since …" in red with the last records still listed), the
   service URL, the open bets (venue, bet, stake, placed), and the
   **unmatched** list — every open bet no board line matches, with why: team
   not recognised (the raw name, so `teams.js` can grow), ambiguous game, no
   event on the board yet, league not on the scanner, not a game market
   (futures, the bots' combos), unknown Kalshi series.
+
+### Novig source (content scripts)
+
+Novig issues NBX API credentials to external market makers only, so the
+panel reads the user's own bets off the Novig web app instead
+(`app.novig.us`, issue #116). Two content scripts run on that origin and
+send **zero** requests of their own:
+
+- `novig_page.js` (MAIN world, `document_start`) wraps `window.fetch` before
+  the app bundle captures it and mirrors the responses the app fetches for
+  its Portfolio screen — the Apollo queries `ActivePortfolioOrders_Query`,
+  `SettledPortfolioOrders_Query` and `ParlayPortfolioQuery` POSTed to
+  `api.novig.us/v1/graphql` (subscriptions run over a WebSocket and are not
+  mirrored; the app refetches these lists over fetch after a fill, which is
+  caught). No token is read; the clone of a watched response goes to the
+  isolated world by `window.postMessage`.
+- `novig_content.js` (ISOLATED world, after `novig_bets.js`) keeps the pages
+  each list returned in this tab (keyed on operation + where-clause, offset 0
+  restarts a list), normalises them with `novig_bets.js` and writes
+  `chrome.storage.local.betsNovig = {bets, readAt, url, error, complete,
+  pageSeenAt}`. The panel merges `bets` on every change: a **complete** read
+  (every list's last page short of its limit) is authoritative for the venue
+  — a stored Novig record it no longer lists is dropped; an incomplete read
+  (a list still has pages the app has not loaded) only adds.
+
+`novig_bets.js` (pure, node-tested on
+`tests/fixtures/bets/novig_bets.json`) applies the app's own rules, read off
+its bundle on 2026-09-11: outcome index 0 is the **home** team or **Over**;
+`price` is a 0–1 probability and one contract pays $1; `isBid: true` backs
+the outcome and `false` lays it, so a lay at `p` becomes the other side at
+`1 - p` (a spread's number negated); the matched size is `originalQty -
+qty`; `MONEY`/`SPREAD`/`TOTAL` (+ `_1H`, which on MLB is the first five
+innings → period `F5`, else `1H`) are game markets, everything else
+(props, futures, `1X2`, team totals) is `other` / "not a game market";
+leagues map NFL→nfl, NCAAF→cfb, NBA/NCAAB/WNBA/MLB/NHL and the soccer
+leagues, the rest fail closed as "league not supported (…)". Status follows
+the app's card: settled by the outcome's WIN/LOSS/PUSH against `isBid`, a
+cancel with no fill is `void`, a wash or an approved cash-out is `closed`, a
+cancel with fills stays `open` on the matched part. A resting or pending
+order is `open` on its full size with `approx: ["novig_order_unmatched"]`
+(or `_pending`) — it is a bet you are trying to place. Parlays give one
+record per leg (`id` `novig:<parlay>:<leg>`, stake = the parlay's wager).
+Team keys are left null; the panel resolves `game.awayTeam.name` /
+`homeTeam.name` through `teams.js` (MLB seeded for this: full names, Kalshi
+codes, the Athletics without a city).
+
+Caveat: the fixture's shapes come from the bundle's operation documents and
+the fragments the cards read the `market` / `outcome` / `fills` JSON blobs
+through, not from a logged-in capture. If a live blob differs, the record
+lands in the unmatched list with a specific "unreadable Novig order (…)"
+reason and its `raw` fields — nothing is guessed.
 
 ## Bets service
 
@@ -453,13 +516,16 @@ GETs; no order placement.
   poll completes (Kalshi: ~1–2 min, one throttled GET per market and event)
   `/bets.json` lists it as `{ok: false, error: "no completed poll yet"}`.
   Log: `bets_service.log` (rotating, 10 MB × 3).
-- **Adding a venue** (#115 BetOnline, #116 Novig, #117 ProphetX): a module
-  in `bets_service/sources/` with `name`, `poll_sec` and `fetch() ->
-  list[record]` (the `Source` protocol in `sources/__init__.py`), registered in
-  `service.main()`. `fetch()` returns every record the venue knows and raises
-  on failure — never a partial list. Records follow the contract in the plan
-  (`id` = `"<venue>:<native id>"`, `side`/`points` in the side's own number,
-  raw team names, keys `null`).
+- **Adding a venue** (#115 BetOnline, #117 ProphetX; Novig went the
+  content-script route above): a module in `bets_service/sources/` with
+  `name`, `poll_sec` and `fetch() -> list[record]` (the `Source` protocol in
+  `sources/__init__.py`), registered in `service.main()`. `fetch()` returns
+  every record the venue knows and raises on failure — never a partial list.
+  Records follow the contract in the plan (`id` = `"<venue>:<native id>"`,
+  `side`/`points` in the side's own number, raw team names, keys `null`). A
+  content-script venue instead writes `{bets<Venue>: {bets, readAt, url,
+  error, complete}}` to `chrome.storage.local` and the panel merges it with
+  `betsview.mergePageSource`.
 
 ## Tests
 
@@ -476,6 +542,22 @@ text and kind (held / against / game), `stakeAdvice` (none / add / at size /
 reverse with the net), the position lines, the stored + fresh merge (newest
 per id, a venue's ok pull authoritative, keys filled, old settled pruned),
 the ticket → line shape, and settings sanitising.
+
+`novig_bets.test.js` runs the Novig normaliser on
+`fixtures/bets/novig_bets.json`: page bookkeeping (complete vs a full last
+page, offset 0 restarting a list, parlay lists keyed on their where-clause),
+a matched moneyline bid (index 0 = home, probability → American, stake =
+contracts × price), a spread bid and the lay of the same outcome (other
+team, negated number, `1 - p`), totals (partial fill sized on the matched
+part, a resting order open with the caveat), MLB `_1H` → `F5`, NCAAF → cfb,
+the strike fallback in the home perspective, props / unsupported leagues /
+blobs without teams failing closed with a reason, the settled grades (bid on
+WIN, lay on LOSS, PUSH, void cancel, wash closed), cancel-with-fills /
+cash-out / REJECTED / PENDING, parlay legs, and native-id dedupe.
+`bets.test.js` then matches those Novig records against the NFL slice: the
+moneyline bid (same_line / opposite with Novig labels), the spread bid and
+its lay on both signs, a resting Under and a parlay leg flagging the game,
+settled orders never matching, and the unmatched reasons.
 
 `kelly.test.js` checks the sheet's worked example (-400 at +12.5% edge,
 bankroll 30000, quarter Kelly = $3,750), the Seattle -133 / +1.89% case,
