@@ -282,8 +282,20 @@
     return typeof marketLine.points === "number" ? marketLine.points : null;
   }
 
+  // The row's entry for this book on this side. The side key is matched by
+  // its "si<index>:" prefix when the exact key is absent, so a key read off
+  // an Alts child row still finds the side on the top-level row (and the
+  // other way round) should the two spell the team part differently.
   function bookEntryOf(rowData, sideKey, bookKey) {
-    return (rowData.sides && rowData.sides[sideKey] && rowData.sides[sideKey][bookKey]) || null;
+    const sides = rowData.sides;
+    if (!sides || !sideKey) return null;
+    let side = sides[sideKey];
+    if (!side) {
+      const prefix = sideKey.slice(0, sideKey.indexOf(":") + 1);
+      const key = prefix ? Object.keys(sides).find((k) => k.startsWith(prefix)) : null;
+      side = key ? sides[key] : null;
+    }
+    return (side && side[bookKey]) || null;
   }
 
   function carriesLadder(entry) {
@@ -603,8 +615,7 @@
     const { ticket } = watcher;
     const { sideKey, bookKey } = ticket.watch;
     const node = watchedRowNode();
-    const books = node.data.sides && node.data.sides[sideKey];
-    const bookLine = books && books[bookKey];
+    const bookLine = bookEntryOf(node.data, sideKey, bookKey);
     if (!bookLine) throw new Error("book line no longer on the row");
     // Which row this read came from, for the panel's trace when the number differs from capture.
     const row = describeMarketNode(node, sideKey, bookKey, null);

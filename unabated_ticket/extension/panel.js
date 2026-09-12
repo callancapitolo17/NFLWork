@@ -277,6 +277,12 @@
   // ---- side wording --------------------------------------------------------
 
   // "Total · Over 55.5 combined points" / "Spread · Oregon (away) vs Oklahoma State"
+  // " · 1H" on anything but the full game: a first-half ticket read as a
+  // full-game one until 2026-09-12 (the bet banner said 1H, the heading did not).
+  function periodSuffix(ticket) {
+    return ticket.period && ticket.period !== "FG" ? ` \u00b7 ${ticket.period}` : "";
+  }
+
   function describeSide(ticket) {
     const rotation = ticket.rotation != null ? ` \u00b7 rot ${ticket.rotation}` : "";
     if (ticket.betType === "Total") {
@@ -392,7 +398,7 @@
     renderWarning(ticket, watchStatus, line);
 
     view.sideLabel.textContent = ticket.sideLabel;
-    view.betLine.textContent = `${describeSide(ticket)}${ticket.isAlt ? " \u00b7 alt line" : ""}`;
+    view.betLine.textContent = `${describeSide(ticket)}${periodSuffix(ticket)}${ticket.isAlt ? " \u00b7 alt line" : ""}`;
     view.eventLine.textContent = describeMatchup(ticket);
     view.startLine.textContent = fmtStart(ticket.eventStart);
     const betFlag = renderBetBanner(ticket);
@@ -427,7 +433,7 @@
     const advice = renderStakeExposure(result ? result.stake : null, betFlag);
 
     const stakeText = result ? result.stake.toFixed(2) : "n/a";
-    lastCopyText = `${ticket.sideLabel} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${copyExposureText(advice)}${payoutText} | ${describeMatchup(ticket)}`;
+    lastCopyText = `${ticket.sideLabel}${periodSuffix(ticket)} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${copyExposureText(advice)}${payoutText} | ${describeMatchup(ticket)}`;
     view.copyStatus.textContent = "";
     show("ticket");
   }
