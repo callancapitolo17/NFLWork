@@ -116,11 +116,24 @@
   }
 
   console.info("[unabated-ticket] content.js active (direct-to-storage)");
-  window.addEventListener("message", (event) => {
+  // Reloading the extension leaves this copy running in an open tab with a
+  // dead chrome.* handle ("Extension context invalidated" on every watch
+  // tick). One such failure retires this copy; the reloaded extension injects
+  // a live one when the tab is reloaded.
+  function onPageMessage(event) {
     if (event.source !== window) return;
     const data = event.data;
     if (!data || data.source !== MESSAGE_SOURCE || !HANDLED_TYPES.has(data.type)) return;
     const handler = handlers[data.type];
-    if (handler) handler(data.payload);
-  });
+    if (!handler) return;
+    try {
+      handler(data.payload);
+    } catch (error) {
+      if (!/context invalidated/i.test(String(error && error.message))) throw error;
+      window.removeEventListener("message", onPageMessage);
+      window.__unabatedTicketContentActive = false;
+      console.info("[unabated-ticket] content.js retired: extension was reloaded; reload this tab");
+    }
+  }
+  window.addEventListener("message", onPageMessage);
 })();
