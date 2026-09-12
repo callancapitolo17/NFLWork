@@ -94,7 +94,7 @@
   }
 
   // Script build, so a stale copy of page.js in an old tab shows itself in the panel.
-  const PAGE_SCRIPT_BUILD = "0.6.3";
+  const PAGE_SCRIPT_BUILD = "0.6.4";
 
   // What the clicked object actually carried, for the panel's no-edge detail:
   // decides between "Unabated never priced it" and "the field moved". Space
@@ -320,10 +320,48 @@
     return !(node.parent && node.parent.data);
   }
 
-  function rowRank(node, sideKey, bookKey) {
+  // `fitsLine(entry)` says whether the row's entry for the book IS the line
+  // being resolved (capture: the clicked object; the watcher: the captured
+  // number). It outranks every shape signal: a grid that lists a market's
+  // rungs as sibling TOP-LEVEL rows sharing one grid key (Unabated's CFB
+  // alt-lines view, live 2026-09-12: eight "Over" rows 33.5 .. 56.5, every
+  // one top-level with bestLines and no ladder) ties every row on shape, and
+  // grid order then picked the 33.5 row for a click on 56.5.
+  function rowRank(node, sideKey, bookKey, fitsLine) {
     const data = node.data || {};
+    const entry = bookEntryOf(data, sideKey, bookKey);
     const hasBestLines = !!data.bestLines && Object.keys(data.bestLines).length > 0;
-    return (nodeIsTopLevel(node) ? 4 : 0) + (hasBestLines ? 2 : 0) + (carriesLadder(bookEntryOf(data, sideKey, bookKey)) ? 1 : 0);
+    return (fitsLine && entry && fitsLine(entry) ? 8 : 0)
+      + (nodeIsTopLevel(node) ? 4 : 0) + (hasBestLines ? 2 : 0) + (carriesLadder(entry) ? 1 : 0);
+  }
+
+  // The clicked line object, on the row's entry itself or inside its ladder.
+  function fitsClickedLine(marketLine) {
+    return (entry) => entry === marketLine
+      || (Array.isArray(entry.alternateLines) && entry.alternateLines.includes(marketLine));
+  }
+
+  // The captured number: the entry's own points for a main-line watch (any
+  // entry when the market has no number, a moneyline), the rung inside the
+  // entry's ladder for an alt watch.
+  function fitsWatchedLine(watch) {
+    if (watch.altPoints != null) return (entry) => !!altLineAt(entry, watch.altPoints);
+    if (typeof watch.points !== "number") return () => true;
+    return (entry) => entry.points === watch.points;
+  }
+
+  // A market whose rungs are sibling top-level rows: two or more top-level
+  // rows carry this book's entry at DIFFERENT points. On such a grid the
+  // rows share a grid key, so a keyed lookup can answer with another rung,
+  // and an entry at another number is a different rung, not a line move.
+  function hasPerRungRows(ranked, sideKey, bookKey) {
+    const points = new Set();
+    for (const { node } of ranked) {
+      if (!nodeIsTopLevel(node)) continue;
+      const entry = bookEntryOf(node.data, sideKey, bookKey);
+      if (entry && typeof entry.points === "number") points.add(entry.points);
+    }
+    return points.size > 1;
   }
 
   // One line per candidate row, for the panel's trace when the watched
@@ -377,12 +415,12 @@
 
   // Every row of this market across the reachable grids, best-ranked first.
   // `apis` lets a caller that already probed the page reuse that list.
-  function rankedMarketNodes(seedApi, identity, sideKey, bookKey, apis) {
+  function rankedMarketNodes(seedApi, identity, sideKey, bookKey, apis, fitsLine) {
     const found = [];
     for (const api of apis || allGridApis(seedApi)) {
       api.forEachNode((node) => {
         if (!node.data || !sameMarketRow(node.data, identity)) return;
-        found.push({ node, api, rank: rowRank(node, sideKey, bookKey), order: found.length });
+        found.push({ node, api, rank: rowRank(node, sideKey, bookKey, fitsLine), order: found.length });
       });
     }
     found.sort((a, b) => b.rank - a.rank || a.order - b.order);
@@ -397,10 +435,10 @@
   // grid that groups its rows and would show the trace on every ticket.
   // `top` is the pick's shape, which the watcher compares against later.
   function ladderRowFor(gridApi, rowData, sideKey, bookKey, marketLine) {
-    const own = { rowData, gridApi, trace: "clicked row only", ambiguous: false, top: true };
+    const own = { rowData, gridApi, trace: "clicked row only", ambiguous: false, top: true, perRungRows: false };
     // Without an event id the identity match would accept any row; keep the cell's own.
     if (rowData.eventId == null) return own;
-    const ranked = rankedMarketNodes(gridApi, rowData, sideKey, bookKey);
+    const ranked = rankedMarketNodes(gridApi, rowData, sideKey, bookKey, undefined, fitsClickedLine(marketLine));
     const trace = ranked.slice(0, 8).map(({ node }) => describeMarketNode(node, sideKey, bookKey, marketLine)).join(" ");
     const withEntry = ranked.filter(({ node }) => bookEntryOf(node.data, sideKey, bookKey));
     if (!withEntry.length) return { ...own, trace: `no row carries ${bookKey}: ${trace}` };
@@ -412,6 +450,7 @@
       trace: `picked ${describeMarketNode(pick.node, sideKey, bookKey, marketLine)} of ${trace}`,
       ambiguous: tied,
       top: nodeIsTopLevel(pick.node),
+      perRungRows: hasPerRungRows(ranked, sideKey, bookKey),
     };
   }
 
@@ -424,7 +463,7 @@
     const sideKey = sideKeyOf(cellRowData, sideIndex);
     const bookId = bookIdOf(marketLine, cellProps, cellRowData, sideKey);
     const bookKey = `ms${bookId}`;
-    const { rowData, gridApi, trace: rowTrace, ambiguous: rowAmbiguous, top: rowTop } = ladderRowFor(cellGridApi, cellRowData, sideKey, bookKey, marketLine);
+    const { rowData, gridApi, trace: rowTrace, ambiguous: rowAmbiguous, top: rowTop, perRungRows } = ladderRowFor(cellGridApi, cellRowData, sideKey, bookKey, marketLine);
     const altPoints = altPointsOf(marketLine, rowData, sideKey, bookKey);
     const edge = edgeForCell(marketLine, rowData, sideKey, bookKey);
     const rotation = rowData.eventTeams && rowData.eventTeams[sideIndex]
@@ -468,6 +507,10 @@
         // The picked row's shape; a watch tick reading a row of the OTHER
         // shape is reading a different rung, whatever the grid's layout.
         rowTop,
+        // The captured number and whether the market's rungs are sibling
+        // top-level rows (shared grid key): the watcher re-finds the row by
+        // this number, and on such a grid another number is another rung.
+        points, perRungRows,
         // Row identity for when the grid key stops resolving (rebuilt grid, re-keyed row).
         eventId: rowData.eventId ?? null, betTypeId, periodTypeId: rowData.periodTypeId ?? 1,
       },
@@ -604,9 +647,15 @@
     // top-level, because capture legitimately picks a child when the book
     // prices no main line — forcing it would send every tick down the rescan.
     const wantTop = ticket.watch.rowTop ?? true;
+    const fitsLine = fitsWatchedLine(ticket.watch);
+    // ... and, when the keyed row carries the book, with the captured line
+    // on it: rungs listed as sibling rows share one key, so the key alone
+    // can answer with another rung.
     const byKey = (api) => {
       const node = gridKey ? api.getRowNode(gridKey) : null;
-      return node && node.data && nodeIsTopLevel(node) === wantTop ? node : null;
+      if (!node || !node.data || nodeIsTopLevel(node) !== wantTop) return null;
+      const entry = bookEntryOf(node.data, sideKey, bookKey);
+      return entry && !fitsLine(entry) ? null : node;
     };
     let api = watcher.gridApi;
     let node = apiIsDead(api) ? null : byKey(api);
@@ -627,7 +676,7 @@
         // the top-ranked row overall may not price this book at all, and
         // taking it would report "book line no longer on the row" while a
         // row that carries it sits further down.
-        const ranked = rankedMarketNodes(api, identity, sideKey, bookKey, apis);
+        const ranked = rankedMarketNodes(api, identity, sideKey, bookKey, apis, fitsLine);
         const best = ranked.find((candidate) => bookEntryOf(candidate.node.data, sideKey, bookKey));
         if (best) {
           node = best.node;
@@ -654,11 +703,15 @@
     const row = describeMarketNode(node, sideKey, bookKey, null);
     const rowTop = nodeIsTopLevel(node);
     const line = ticket.watch.altPoints == null ? bookLine : altLineAt(bookLine, ticket.watch.altPoints);
-    // The ladder no longer offers that number: off the board at the captured price.
-    if (!line) {
+    // On a per-rung grid the row read is whichever sibling still carries
+    // the book; an entry at another number is another rung, not a move.
+    const otherRung = line && ticket.watch.perRungRows && typeof ticket.watch.points === "number"
+      && line.points !== ticket.watch.points;
+    // The ladder (or the grid) no longer offers that number: off the board at the captured price.
+    if (!line || otherRung) {
       return {
         price: ticket.price, sourceFormat: ticket.sourceFormat, sourcePrice: ticket.sourcePrice,
-        points: ticket.watch.altPoints, fair: ticket.fair, edgePct: ticket.edgePct, offBoard: true, seenAt: Date.now(), row, rowTop,
+        points: ticket.points, fair: ticket.fair, edgePct: ticket.edgePct, offBoard: true, seenAt: Date.now(), row, rowTop,
       };
     }
     return {
