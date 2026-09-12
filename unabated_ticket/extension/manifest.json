@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Unabated Ticket",
-  "version": "0.4.0",
-  "description": "Click a price on the Unabated odds screen; see the bet and its Kelly stake in a side panel. An Edges tab lists every positive-edge line (main and, optionally, alternate spreads/totals) across every team sport Unabated prices, with Chrome notifications for new ones.",
+  "version": "0.5.0",
+  "description": "Click a price on the Unabated odds screen; see the bet and its Kelly stake in a side panel. An Edges tab lists every positive-edge line (main and, optionally, alternate spreads/totals) across every team sport Unabated prices, with Chrome notifications for new ones. A Bets tab and per-line flags show which lines and games you already have a bet on, read from a local bets service.",
   "minimum_chrome_version": "116",
   "permissions": [
     "sidePanel",
@@ -14,7 +14,8 @@
   "host_permissions": [
     "https://tools.unabated.com/*",
     "https://content.unabated.com/*",
-    "https://api-k.unabated.com/*"
+    "https://api-k.unabated.com/*",
+    "http://127.0.0.1:8094/*"
   ],
   "background": {
     "service_worker": "background.js"

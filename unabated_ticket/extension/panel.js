@@ -3,18 +3,28 @@
 //
 // Reads: chrome.storage.local {ticket, error, watchStatus, pageReady,
 // booksFilter, locateResult} (written by content.js) and {bankroll,
-// multiplier, edges, alerts, alertLog, activeTab} (written here).
+// multiplier, edges, alerts, alertLog, activeTab, betsService, betsSettings}
+// (written here).
 // Writes: chrome.storage.local settings, {locate} (row click, via locate.js,
 // which also focuses the Unabated tab), {alertLog, alertTargets} and Chrome
-// notifications for new edges. Re-renders on storage.onChanged.
+// notifications for new edges; {betsService} after every bets-service poll.
+// Re-renders on storage.onChanged.
 // Network: the scanner (scanner.js) fetches Unabated's public feeds while this
 // page is open; it pauses when the panel is hidden and stops when it closes.
+// The bets tab (#114) polls the local bets service (betsSettings.serviceUrl,
+// default http://127.0.0.1:8094) every 30 s on the same visibility rule —
+// never from the service worker. Matching is bets.js; presentation helpers
+// are betsview.js.
 
 (function () {
   "use strict";
 
   const kelly = globalThis.UnabatedKelly;
   const feed = globalThis.UnabatedFeed;
+  const betsLib = globalThis.UnabatedBets;
+  const betsView = globalThis.UnabatedBetsView;
+  // Bets service poll cadence while the panel is visible (plan § Storage).
+  const BETS_POLL_MS = 30 * 1000;
   const DEFAULT_SETTINGS = { bankroll: 30000, multiplier: 0.25 };
   // maxLineAgeHours: a "live" book's line unchanged for a week is a dead feed
   // (live 2026-09-10: Buckeye -110 on a 44.5 total, 96 days old, "+36.67%").
@@ -48,7 +58,7 @@
     warning: el("warning"), sideLabel: el("side-label"), betLine: el("bet-line"),
     eventLine: el("event-line"), startLine: el("start-line"),
     book: el("book"), price: el("price"), fair: el("fair"), edge: el("edge"),
-    stake: el("stake"), fullKelly: el("full-kelly"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
+    stake: el("stake"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
     copy: el("copy"), copyStatus: el("copy-status"),
     errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
@@ -60,6 +70,11 @@
     edgesIncludeAlts: el("edges-include-alts"), edgesAltDistance: el("edges-alt-distance"), edgesAltLiquidity: el("edges-alt-liquidity"), edgesGroup: el("edges-group"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
     alertsEnabled: el("alerts-enabled"), alertsMin: el("alerts-min"),
+    betsHeader: el("bets-header"), betsBanner: el("bets-banner"),
+    tabBets: el("tab-bets"), betsService: el("bets-service"), betsSources: el("bets-sources"),
+    betsUrl: el("bets-url"), betsSettingsError: el("bets-settings-error"),
+    betsOpen: el("bets-open"), betsOpenCount: el("bets-open-count"), betsOpenEmpty: el("bets-open-empty"),
+    betsUnmatched: el("bets-unmatched"), betsUnmatchedCount: el("bets-unmatched-count"), betsUnmatchedEmpty: el("bets-unmatched-empty"),
   };
   // page.js heartbeats every 10s; past this it is not running on any Unabated tab.
   const PAGE_READY_STALE_MS = 25000;
@@ -69,6 +84,12 @@
     edgeSettings: { ...DEFAULT_EDGE_SETTINGS }, booksFilter: null, activeTab: "ticket",
     locateResult: null, locating: null,
     alertSettings: { ...DEFAULT_ALERT_SETTINGS },
+    betsSettings: { ...betsView.DEFAULT_BETS_SETTINGS },
+    // What the last bets-service poll left: {payload: {generatedAt, sources},
+    // okAt, error, errorAt, unreachableSince}; null before the first poll.
+    betsService: null,
+    // Normalised bet records (bets.js contract), team keys resolved, pruned to the retention window.
+    betRecords: [],
   };
   // key -> {price, at}: what has been alerted (or seen at baseline); persisted.
   let alertLog = {};
@@ -202,6 +223,9 @@
       const pts = ticket.current.points != null ? ` at ${fmtPoints(ticket.current.points)}` : "";
       messages.push(`Line moved: now ${fmtAmerican(ticket.current.price)}${pts} (captured ${fmtAmerican(ticket.price)}${ticket.points != null ? ` at ${fmtPoints(ticket.points)}` : ""}). Stake re-sized.`);
     }
+    if (betsView.sourcesUnavailable(state.betsService && state.betsService.payload, Date.now())) {
+      messages.push("Bet sources unavailable (no venue has reported in the last hour), so bet flags may be missing; see the Bets tab.");
+    }
     if (!pageScriptAlive()) {
       messages.push("No Unabated tab is running the capture script, so new clicks will not reach this panel. Open an odds tab, or reload the one you have.");
       bad = true;
@@ -222,6 +246,7 @@
     view.betLine.textContent = `${describeSide(ticket)}${ticket.isAlt ? " \u00b7 alt line" : ""}`;
     view.eventLine.textContent = describeMatchup(ticket);
     view.startLine.textContent = fmtStart(ticket.eventStart);
+    const betFlag = renderBetBanner(ticket);
 
     const { line, result, reason } = computeStake(ticket, settings);
     view.book.textContent = ticket.book.name;
@@ -251,11 +276,82 @@
       view.payoutRow.hidden = false;
       payoutText = ` | to win $${(payout - result.stake).toFixed(2)} | payout $${payout.toFixed(2)}`;
     }
+    const advice = renderStakeExposure(result ? result.stake : null, betFlag);
 
     const stakeText = result ? result.stake.toFixed(2) : "n/a";
-    lastCopyText = `${ticket.sideLabel} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${payoutText} | ${describeMatchup(ticket)}`;
+    lastCopyText = `${ticket.sideLabel} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${copyExposureText(advice)}${payoutText} | ${describeMatchup(ticket)}`;
     view.copyStatus.textContent = "";
     show("ticket");
+  }
+
+  // Every open bet on this line's game, strongest tier first: same line, same
+  // side, the other side (red), anything else on the game. Nothing when none.
+  // Returns the row-style flag {tier, matches, exposure} for the stake block.
+  function renderBetBanner(ticket) {
+    const line = betsView.ticketAsLine(ticket);
+    const { matches } = betsLib.matchBets(line, state.betRecords, { lines: boardLines() });
+    const { shown, more } = betsView.bannerLines(matches);
+    const items = shown.map((match) => {
+      const div = document.createElement("div");
+      div.className = `bet-match tier-${match.tier}${match.tier === "opposite" ? " bad" : ""}`;
+      div.textContent = match.label;
+      return div;
+    });
+    if (more > 0) {
+      const div = document.createElement("div");
+      div.className = "bet-match more";
+      div.textContent = `+${more} more on this game (Bets tab)`;
+      items.push(div);
+    }
+    view.betsBanner.replaceChildren(...items);
+    view.betsBanner.hidden = items.length === 0;
+    return { tier: matches.length ? matches[0].tier : null, matches, exposure: betsLib.exposureOf(matches) };
+  }
+
+  // What the Copy button adds after "stake $X" so the clipboard carries the
+  // number to act on, not only the full Kelly.
+  function copyExposureText(advice) {
+    if (advice.kind === "add") return ` (held $${advice.held.toFixed(2)}, add $${advice.add.toFixed(2)})`;
+    if (advice.kind === "at_size") return ` (at size: held $${advice.held.toFixed(2)})`;
+    if (advice.kind === "reverse") return ` (other side held $${advice.against.toFixed(2)})`;
+    return "";
+  }
+
+  // Under the Kelly stake: what you already hold on this market and the
+  // number to act on — "Held $300 · add $200", "At size: held $600, Kelly
+  // $520", or in red "Other side $200 · net $300 on this side". Returns the advice.
+  function renderStakeExposure(stake, flag) {
+    const advice = betsView.stakeAdvice(stake, flag.exposure);
+    view.stakeExposure.classList.toggle("against", advice.kind === "reverse");
+    view.stakeExposure.hidden = advice.kind === "none";
+    if (advice.kind === "none") {
+      view.stakeExposure.replaceChildren();
+      return advice;
+    }
+    const summary = document.createElement("div");
+    if (advice.kind === "add") {
+      summary.append(`Held ${fmtDollars(advice.held)} · add `);
+      const add = document.createElement("span");
+      add.className = "stake-add";
+      add.textContent = fmtDollars(advice.add);
+      summary.append(add);
+    } else if (advice.kind === "at_size") {
+      summary.textContent = advice.stake == null
+        ? `At size: held ${fmtDollars(advice.held)}, nothing to size here`
+        : `At size: held ${fmtDollars(advice.held)}, Kelly ${fmtDollars(advice.stake)}`;
+    } else {
+      summary.textContent = advice.net == null
+        ? `Other side ${fmtDollars(advice.against)}`
+        : `Other side ${fmtDollars(advice.against)} · net ${fmtDollars(Math.abs(advice.net))} ${advice.net >= 0 ? "on this side" : "still against"}`;
+    }
+    const positions = betsView.positionLines(flag).map((text) => {
+      const div = document.createElement("div");
+      div.className = "muted";
+      div.textContent = text;
+      return div;
+    });
+    view.stakeExposure.replaceChildren(summary, ...positions);
+    return advice;
   }
 
   // Two kinds of capture error need opposite advice: no_fair is Unabated
@@ -467,14 +563,33 @@
     };
   }
 
+  // Each row gets `bet` = {tier, matches, exposure, advice} from the open bet
+  // records: what you hold on that market and how the Kelly stake changes
+  // for it. No row is ever hidden for being bet — the edge still being there
+  // after you bet it is information, and the stake column carries the top-up.
+  function withBetFlags(rows) {
+    const flags = betsLib.annotateRows(rows, state.betRecords);
+    return rows.map((row, index) => {
+      const flag = flags[index];
+      return { ...row, bet: { ...flag, advice: betsView.stakeAdvice(row.stake, flag.exposure) } };
+    });
+  }
+
+  // Sort key for "by my exposure": dollars on the market, held or against.
+  function exposureDollars(row) {
+    return row.bet ? row.bet.exposure.held + row.bet.exposure.against : 0;
+  }
+
   function currentEdgeRows() {
     if (!scannerState) return [];
     const effective = effectiveFilter();
     const settings = state.edgeSettings;
-    const rows = feed.selectEdges(scannerState, { ...edgeSelectionOptions(effective), minEdge: settings.minEdgePct / 100 })
+    const selected = feed.selectEdges(scannerState, { ...edgeSelectionOptions(effective), minEdge: settings.minEdgePct / 100 })
       .map((row) => ({ ...row, stake: stakeFor(row) }));
+    const rows = withBetFlags(selected);
     if (settings.sortBy === "stake") rows.sort((a, b) => (b.stake ?? -1) - (a.stake ?? -1) || b.edgePct - a.edgePct);
     if (settings.sortBy === "start") rows.sort((a, b) => a.eventStartMs - b.eventStartMs || b.edgePct - a.edgePct);
+    if (settings.sortBy === "exposure") rows.sort((a, b) => exposureDollars(b) - exposureDollars(a) || b.edgePct - a.edgePct);
     return rows;
   }
 
@@ -485,11 +600,57 @@
     const sortBy = state.edgeSettings.sortBy;
     if (sortBy === "edge") groups.sort((a, b) => b.best.edgePct - a.best.edgePct || a.eventStartMs - b.eventStartMs);
     if (sortBy === "start") groups.sort((a, b) => a.eventStartMs - b.eventStartMs || b.best.edgePct - a.best.edgePct);
+    if (sortBy === "exposure") groups.sort((a, b) => exposureDollars(b.best) - exposureDollars(a.best) || b.best.edgePct - a.best.edgePct);
     return groups;
   }
 
   // Cards the user has opened; survives the 5s re-render, not a panel reload.
   const expandedGroups = new Set();
+
+  // "held $300" / "against $200" / "game", with every match's label as the tooltip.
+  function betBadge(flag) {
+    const text = betsView.badgeText(flag);
+    if (!text) return null;
+    const badge = document.createElement("span");
+    badge.className = `edge-bet kind-${betsView.badgeKind(flag)}`;
+    badge.textContent = text;
+    badge.title = flag.matches.map((match) => match.label).join("\n");
+    return badge;
+  }
+
+  // The row's stake cell sized against what you hold: "$500", "+$200 of $500",
+  // "at size $600 of $520", "$500 reverses $200".
+  function fillStakeCell(cell, row) {
+    const advice = row.bet ? row.bet.advice : { kind: "none" };
+    const note = document.createElement("small");
+    cell.classList.toggle("at-size", advice.kind === "at_size");
+    if (advice.kind === "add") {
+      cell.append(`+${fmtDollars(advice.add)} `, note);
+      note.textContent = `of ${fmtDollars(advice.stake)}`;
+    } else if (advice.kind === "at_size") {
+      cell.append("at size ", note);
+      note.textContent = advice.stake == null ? `held ${fmtDollars(advice.held)}` : `${fmtDollars(advice.held)} of ${fmtDollars(advice.stake)}`;
+    } else if (advice.kind === "reverse") {
+      cell.append(`${row.stake == null ? "—" : fmtDollars(row.stake)} `, note);
+      note.textContent = `reverses ${fmtDollars(advice.against)}`;
+    } else {
+      cell.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
+    }
+  }
+
+  // The dim lines under a row naming the position(s) behind its badge, one per position.
+  function positionLine(flag) {
+    const lines = flag ? betsView.positionLines(flag) : [];
+    if (!lines.length) return null;
+    const div = document.createElement("div");
+    div.className = "edge-position";
+    div.replaceChildren(...lines.map((text) => {
+      const line = document.createElement("div");
+      line.textContent = text;
+      return line;
+    }));
+    return div;
+  }
 
   // compact: inside a card, where the matchup and market are on the card.
   function renderEdgeRow(row, compact) {
@@ -507,6 +668,8 @@
       badge.title = `Alternate line; this book's main number is ${fmtPoints(row.mainPoints)}`;
       side.append(badge);
     }
+    const flag = compact ? null : betBadge(row.bet);
+    if (flag) side.append(flag);
     side.append(row.sideLabel);
     const pct = document.createElement("span");
     pct.className = "edge-pct";
@@ -531,11 +694,11 @@
     liquidity.textContent = [compact ? altOf : "", fmtLineAge(row.modifiedMs), fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ");
     const stake = document.createElement("span");
     stake.className = "edge-stake";
-    stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
+    fillStakeCell(stake, row);
     bottom.append(book, liquidity, stake);
 
     if (compact) li.append(top, bottom);
-    else li.append(top, bet, matchup, bottom);
+    else li.append(top, bet, matchup, ...[positionLine(row.bet)].filter(Boolean), bottom);
     return li;
   }
 
@@ -549,7 +712,10 @@
     top.className = "edge-top";
     const side = document.createElement("span");
     side.className = "edge-side";
-    side.textContent = group.sideName;
+    // The card carries its best line's flag; the bet is on the market, not one book.
+    const flag = betBadge(group.best.bet);
+    if (flag) side.append(flag);
+    side.append(group.sideName);
     const pct = document.createElement("span");
     pct.className = "edge-pct";
     pct.textContent = fmtPct(group.best.edgePct / 100);
@@ -562,7 +728,7 @@
     const expanded = expandedGroups.has(group.key);
     const shown = expanded ? group.rows : group.rows.slice(0, 1);
     lines.append(...shown.map((row) => renderEdgeRow(row, true)));
-    li.append(top, market, lines);
+    li.append(top, market, ...[positionLine(group.best.bet)].filter(Boolean), lines);
     if (group.rows.length > 1) {
       const more = document.createElement("button");
       more.type = "button";
@@ -803,8 +969,10 @@
   }
 
   function alertRows() {
-    return feed.selectEdges(scannerState, { ...edgeSelectionOptions(effectiveFilter()), minEdge: state.alertSettings.minEdgePct / 100 })
+    const selected = feed.selectEdges(scannerState, { ...edgeSelectionOptions(effectiveFilter()), minEdge: state.alertSettings.minEdgePct / 100 })
       .map((row) => ({ ...row, stake: stakeFor(row) }));
+    // A line you already hold at size has nothing to act on; everything else alerts as before.
+    return withBetFlags(selected).filter((row) => row.bet.advice.kind !== "at_size");
   }
 
   // Runs after every scanner update. Baseline first, then one notification
@@ -882,10 +1050,13 @@
 
   // ---- tabs ----------------------------------------------------------------
 
+  const TABS = ["ticket", "edges", "bets"];
+
   function showTab(name) {
-    state.activeTab = name === "edges" ? "edges" : "ticket";
+    state.activeTab = TABS.includes(name) ? name : "ticket";
     view.tabTicket.hidden = state.activeTab !== "ticket";
     view.tabEdges.hidden = state.activeTab !== "edges";
+    view.tabBets.hidden = state.activeTab !== "bets";
     for (const button of view.tabs.querySelectorAll("button[data-tab]")) {
       button.classList.toggle("active", button.dataset.tab === state.activeTab);
     }
@@ -897,6 +1068,7 @@
     showTab(button.dataset.tab);
     chrome.storage.local.set({ activeTab: state.activeTab });
     if (state.activeTab === "edges") renderEdges();
+    if (state.activeTab === "bets") renderBets();
   });
 
   // ---- edge settings -------------------------------------------------------
@@ -974,12 +1146,164 @@
     if (Array.isArray(stored.bookIds)) base.bookIds = stored.bookIds.filter((id) => Number.isInteger(id));
     if (typeof stored.minEdgePct === "number" && stored.minEdgePct >= 0) base.minEdgePct = stored.minEdgePct;
     if (typeof stored.maxLineAgeHours === "number" && stored.maxLineAgeHours > 0) base.maxLineAgeHours = stored.maxLineAgeHours;
-    if (["edge", "stake", "start"].includes(stored.sortBy)) base.sortBy = stored.sortBy;
+    if (["edge", "stake", "start", "exposure"].includes(stored.sortBy)) base.sortBy = stored.sortBy;
     if (typeof stored.includeAlts === "boolean") base.includeAlts = stored.includeAlts;
     if (typeof stored.altMaxDistance === "number" && stored.altMaxDistance >= 0) base.altMaxDistance = stored.altMaxDistance;
     if (typeof stored.altMinLiquidity === "number" && stored.altMinLiquidity >= 0) base.altMinLiquidity = stored.altMinLiquidity;
     if (typeof stored.groupByMarket === "boolean") base.groupByMarket = stored.groupByMarket;
     return base;
+  }
+
+  // ---- bets (#114) ---------------------------------------------------------
+
+  // One describeLine-shaped row per event on the board (main lines only):
+  // the matcher's ambiguity check and the unmatched list only need to know
+  // which games exist, not every book's price.
+  function boardLines() {
+    if (!scannerState) return [];
+    const seen = new Set();
+    const rows = [];
+    for (const line of Object.values(scannerState.lines)) {
+      if (line.isAlt || seen.has(line.eventId)) continue;
+      seen.add(line.eventId);
+      rows.push(feed.describeLine(line, scannerState));
+    }
+    return rows;
+  }
+
+  function betsPayload() {
+    return state.betsService ? state.betsService.payload : null;
+  }
+
+  let betsPollBusy = false;
+  let betsPollTimer = null;
+
+  // One GET of /bets.json. Success replaces the source status and merges the
+  // records (bets.js dedupe on native id, team keys, retention prune); failure
+  // keeps everything and records since when the service has been unreachable.
+  async function pollBets() {
+    if (betsPollBusy || document.hidden) return;
+    betsPollBusy = true;
+    const now = Date.now();
+    const previous = state.betsService || {};
+    try {
+      const response = await fetch(`${state.betsSettings.serviceUrl}/bets.json`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      if (!payload || !Array.isArray(payload.bets)) throw new Error("bets.json has no bets array");
+      state.betRecords = betsView.mergeServicePayload(state.betRecords, payload, now);
+      state.betsService = {
+        payload: { generatedAt: payload.generatedAt ?? null, sources: payload.sources && typeof payload.sources === "object" ? payload.sources : {} },
+        okAt: now, error: null, errorAt: null, unreachableSince: null,
+      };
+    } catch (error) {
+      if (previous.error !== error.message) console.warn("[unabated-ticket] bets service poll failed:", error.message);
+      state.betsService = {
+        payload: previous.payload || null, okAt: previous.okAt ?? null,
+        error: error.message, errorAt: now, unreachableSince: previous.unreachableSince ?? now,
+      };
+    } finally {
+      betsPollBusy = false;
+    }
+    await chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords } });
+    renderBetsHeader();
+    if (!state.error) render();
+    renderEdges();
+    if (state.activeTab === "bets") renderBets();
+  }
+
+  function startBetsPolling() {
+    if (betsPollTimer != null) return;
+    betsPollTimer = setInterval(() => pollBets().catch((error) => console.error("[unabated-ticket] bets poll failed", error)), BETS_POLL_MS);
+    pollBets().catch((error) => console.error("[unabated-ticket] bets poll failed", error));
+  }
+
+  function renderBetsHeader() {
+    const now = Date.now();
+    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now);
+    view.betsHeader.classList.toggle("bad", betsView.serviceStatus(state.betsService, now).unreachable);
+  }
+
+  function cell(text, className) {
+    const td = document.createElement("td");
+    td.textContent = text;
+    if (className) td.className = className;
+    return td;
+  }
+
+  function renderBetsSources(now) {
+    const service = betsView.serviceStatus(state.betsService, now);
+    view.betsService.hidden = !service.unreachable;
+    view.betsService.textContent = service.unreachable ? `${service.text}. Start it with unabated_ticket/bets_service/run.sh; the last records it served are still shown.` : "";
+    view.betsSources.replaceChildren(...betsView.sourceRows(betsPayload(), now).map((row) => {
+      const tr = document.createElement("tr");
+      tr.className = `fresh-${row.level}`;
+      const status = row.error ? row.error : row.note ? row.note : "ok";
+      tr.append(
+        cell(row.venue, "venue"),
+        cell(row.configured ? `${row.ageText}${row.fetchedAt ? ` (${new Date(row.fetchedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })})` : ""}` : "—", "age"),
+        cell(row.count == null ? "—" : String(row.count)),
+        cell(status, row.error ? "error" : row.note ? "muted" : ""),
+      );
+      return tr;
+    }));
+  }
+
+  function betItem(bet, trailing, trailingClass) {
+    const li = document.createElement("li");
+    const what = document.createElement("div");
+    what.className = "bet-what";
+    what.textContent = `${betsLib.describeBet(bet)}`;
+    const meta = document.createElement("div");
+    meta.className = "muted bet-meta";
+    const venue = bet.venue ? bet.venue.charAt(0).toUpperCase() + bet.venue.slice(1) : "unknown venue";
+    const game = bet.awayTeam && bet.homeTeam ? `${bet.awayTeam} @ ${bet.homeTeam}` : null;
+    meta.textContent = [venue, game, bet.stake == null ? null : fmtDollars(bet.stake), bet.placedAt ? betsLib.formatPlacedAt(bet.placedAt) : null]
+      .filter(Boolean).join(" · ");
+    li.append(what, meta);
+    if (trailing) {
+      const extra = document.createElement("div");
+      extra.className = trailingClass;
+      extra.textContent = trailing;
+      li.append(extra);
+    }
+    return li;
+  }
+
+  function renderBets() {
+    const now = Date.now();
+    renderBetsSources(now);
+    const open = state.betRecords.filter((bet) => bet.status === "open")
+      .sort((a, b) => Date.parse(b.placedAt || 0) - Date.parse(a.placedAt || 0));
+    view.betsOpenCount.textContent = open.length ? `(${open.length})` : "";
+    view.betsOpen.replaceChildren(...open.map((bet) => betItem(bet, null)));
+    view.betsOpenEmpty.hidden = open.length > 0;
+    view.betsOpenEmpty.textContent = state.betsService && state.betsService.okAt != null ? "No open bets." : "No bets loaded yet.";
+    const unmatched = betsLib.unmatchedReasons(state.betRecords, boardLines());
+    view.betsUnmatchedCount.textContent = unmatched.length ? `(${unmatched.length})` : "";
+    view.betsUnmatched.replaceChildren(...unmatched.map(({ bet, reason }) => betItem(bet, reason, "bet-reason")));
+    view.betsUnmatchedEmpty.hidden = unmatched.length > 0;
+    view.betsUnmatchedEmpty.textContent = open.length ? "Every open bet matches a game on the board." : "";
+  }
+
+  function readBetsSettingInputs() {
+    const serviceUrl = view.betsUrl.value.trim().replace(/\/+$/, "");
+    if (!/^https?:\/\/\S+$/.test(serviceUrl)) return { error: "Service URL must start with http:// or https://." };
+    return { settings: { serviceUrl } };
+  }
+
+  function fillBetsSettingInputs() {
+    view.betsUrl.value = state.betsSettings.serviceUrl;
+  }
+
+  function onBetsSettingsInput() {
+    const parsed = readBetsSettingInputs();
+    view.betsSettingsError.textContent = parsed.error || "";
+    if (parsed.error) return;
+    const urlChanged = parsed.settings.serviceUrl !== state.betsSettings.serviceUrl;
+    state.betsSettings = parsed.settings;
+    chrome.storage.local.set({ betsSettings: parsed.settings });
+    if (urlChanged) pollBets().catch((error) => console.error("[unabated-ticket] bets poll failed", error));
   }
 
   // ---- settings ------------------------------------------------------------
@@ -1013,7 +1337,7 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings"]);
     state.ticket = relay.ticket || null;
     state.error = relay.error || null;
     state.watchStatus = relay.watchStatus || null;
@@ -1023,12 +1347,27 @@
     state.edgeSettings = sanitizeEdgeSettings(relay.edges);
     state.alertSettings = sanitizeAlertSettings(relay.alerts);
     alertLog = relay.alertLog && typeof relay.alertLog === "object" ? relay.alertLog : {};
+    state.betsSettings = betsView.sanitizeBetsSettings(relay.betsSettings);
+    const storedBets = relay.betsService && typeof relay.betsService === "object" ? relay.betsService : null;
+    if (storedBets) {
+      // Team keys resolved and the retention window applied on every load, so
+      // a grown teams.js table and a passed month both take effect.
+      state.betRecords = betsLib.pruneForRetention(betsLib.resolveTeamKeys(Array.isArray(storedBets.bets) ? storedBets.bets : []), Date.now());
+      state.betsService = {
+        payload: storedBets.payload || null, okAt: storedBets.okAt ?? null,
+        error: storedBets.error ?? null, errorAt: storedBets.errorAt ?? null, unreachableSince: storedBets.unreachableSince ?? null,
+      };
+    }
     fillEdgeSettingInputs();
     fillAlertSettingInputs();
-    showTab(relay.activeTab === "edges" ? "edges" : "ticket");
+    fillBetsSettingInputs();
+    showTab(relay.activeTab);
+    renderBetsHeader();
     render();
     renderEdges();
     renderLocate();
+    if (state.activeTab === "bets") renderBets();
+    startBetsPolling();
     await scanner.start(state.edgeSettings.leagues);
   }
 
@@ -1071,11 +1410,17 @@
   view.edgesGroup.addEventListener("change", onEdgeSettingsInput);
   view.alertsEnabled.addEventListener("change", onAlertSettingsInput);
   view.alertsMin.addEventListener("input", onAlertSettingsInput);
+  view.betsUrl.addEventListener("change", onBetsSettingsInput);
 
-  // Nothing polls while the panel is hidden; back in view, the scanner catches up or resyncs.
+  // Nothing polls while the panel is hidden; back in view, the scanner catches
+  // up or resyncs and the bets service is polled at once (its tick skips hidden).
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) scanner.pause();
-    else scanner.resume().catch((error) => console.error("[unabated-ticket] scanner resume failed", error));
+    if (document.hidden) {
+      scanner.pause();
+      return;
+    }
+    scanner.resume().catch((error) => console.error("[unabated-ticket] scanner resume failed", error));
+    pollBets().catch((error) => console.error("[unabated-ticket] bets poll failed", error));
   });
 
   view.bankroll.addEventListener("input", onSettingsInput);
@@ -1093,10 +1438,12 @@
   // Re-evaluate the "not watching" state and the edge ages even when no event arrives.
   setInterval(() => {
     if (!state.error) render();
+    renderBetsHeader();
     if (state.activeTab === "edges") {
       renderEdges();
       renderLocate();
     }
+    if (state.activeTab === "bets") renderBets();
   }, 5000);
 
   load().catch((error) => {

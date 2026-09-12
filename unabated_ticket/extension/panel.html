@@ -9,7 +9,9 @@
   <nav class="tabs" id="tabs">
     <button type="button" data-tab="ticket" class="active">Ticket</button>
     <button type="button" data-tab="edges">Edges <span id="edges-count" class="count" hidden></span></button>
+    <button type="button" data-tab="bets">Bets</button>
   </nav>
+  <div id="bets-header" class="muted bets-header" title="Open bets known to the panel and how old each venue's last successful pull is"></div>
 
   <section id="tab-ticket">
     <main id="ticket" hidden>
@@ -19,6 +21,7 @@
       <div class="muted" id="bet-line"></div>
       <div class="muted" id="event-line"></div>
       <div class="muted" id="start-line"></div>
+      <div id="bets-banner" class="bets-banner" hidden></div>
 
       <dl class="facts">
         <dt>Book</dt><dd id="book"></dd>
@@ -35,6 +38,7 @@
           <div class="payout-cell"><div class="payout-label">Payout</div><div class="payout-value" id="payout"></div></div>
         </div>
         <div class="muted" id="full-kelly"></div>
+        <div class="stake-exposure" id="stake-exposure" hidden></div>
       </div>
 
       <button id="copy" type="button">Copy</button>
@@ -102,6 +106,7 @@
             <option value="edge">by edge</option>
             <option value="stake">by stake</option>
             <option value="start">by start time</option>
+            <option value="exposure">by my exposure</option>
           </select>
         </label>
         <label title="One card per game, market and side showing its best line (highest stake); the other books and rungs sit behind the card's expander"><input type="checkbox" id="edges-group"> Group by market</label>
@@ -122,6 +127,27 @@
     <div id="edges-empty" class="muted" hidden></div>
   </section>
 
+  <section id="tab-bets" hidden>
+    <div id="bets-service" class="warning bad" hidden></div>
+    <table class="bets-sources">
+      <thead><tr><th>Venue</th><th>Last pull</th><th>Bets</th><th>Status</th></tr></thead>
+      <tbody id="bets-sources"></tbody>
+    </table>
+    <div class="control-row bets-url-row">
+      <label class="control-inline">Service URL <input id="bets-url" type="url" placeholder="http://127.0.0.1:8094"></label>
+      <div id="bets-settings-error" class="muted"></div>
+    </div>
+
+    <h2 class="bets-heading">Open bets <span id="bets-open-count" class="muted"></span></h2>
+    <ol id="bets-open" class="bets-list"></ol>
+    <div id="bets-open-empty" class="muted" hidden></div>
+
+    <h2 class="bets-heading">Unmatched <span id="bets-unmatched-count" class="muted"></span></h2>
+    <div class="muted">Open bets no line on the board matches, with why. Nothing is dropped silently.</div>
+    <ol id="bets-unmatched" class="bets-list"></ol>
+    <div id="bets-unmatched-empty" class="muted" hidden></div>
+  </section>
+
   <section class="settings">
     <label>Bankroll <input id="bankroll" type="number" min="1" step="1"></label>
     <label>Kelly multiplier <input id="multiplier" type="number" min="0.01" max="1" step="0.01"></label>
@@ -132,6 +158,9 @@
   <script src="feed.js"></script>
   <script src="scanner.js"></script>
   <script src="locate.js"></script>
+  <script src="teams.js"></script>
+  <script src="bets.js"></script>
+  <script src="betsview.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>
