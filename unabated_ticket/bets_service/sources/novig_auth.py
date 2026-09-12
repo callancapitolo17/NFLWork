@@ -25,11 +25,11 @@ import os
 import secrets
 import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
-
-import requests
 
 from unabated_ticket.bets_service import config
 
@@ -72,14 +72,24 @@ def jwt_subject(access_token: str) -> str:
 
 
 def _token_request(body: dict) -> dict:
-    response = requests.post(TOKEN_URL, json=body, timeout=HTTP_TIMEOUT_SEC)
+    """POST to Auth0's token endpoint with the standard library — `connect` must
+    run from any venv (mlb_sgp's has Playwright but no requests)."""
+    request = urllib.request.Request(TOKEN_URL, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json", "Accept": "application/json"})
     try:
-        payload = response.json()
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SEC) as response:
+            status, text = response.status, response.read().decode()
+    except urllib.error.HTTPError as error:
+        status, text = error.code, error.read().decode(errors="replace")
+    except urllib.error.URLError as error:
+        raise NovigAuthError(f"Auth0 {body.get('grant_type')} unreachable: {error.reason}") from error
+    try:
+        payload = json.loads(text)
     except ValueError:
         payload = {}
-    if response.status_code != 200 or "access_token" not in payload:
-        detail = payload.get("error_description") or payload.get("error") or response.text[:200]
-        raise NovigAuthError(f"Auth0 {body.get('grant_type')} failed ({response.status_code}): {detail}")
+    if status != 200 or "access_token" not in payload:
+        detail = payload.get("error_description") or payload.get("error") or text[:200]
+        raise NovigAuthError(f"Auth0 {body.get('grant_type')} failed ({status}): {detail}")
     return payload
 
 
