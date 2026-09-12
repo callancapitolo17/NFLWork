@@ -96,8 +96,8 @@
   // Unabated's own edge % (EV per $1 staked) for this line. Null is a normal
   // condition (lopsided moneylines, exchange-only lines Unabated has not
   // priced), not a parse failure, so it gets its own error kind for the panel.
-  function requireEdgePct(marketLine, { fromGe }) {
-    const edge = edgePctOf(marketLine, { fromGe });
+  function requireEdgePct(marketLine) {
+    const edge = edgePctOf(marketLine);
     if (edge == null) {
       const error = new Error("Unabated has no edge for this line");
       error.kind = "no_fair";
@@ -118,14 +118,15 @@
     return { sourceFormat: 1, sourcePrice: null };
   }
 
-  // The screen's computed edge; with fromGe (alternate-line objects, for
-  // which the screen computes none) the feed's own fraction on the object
-  // (0.0296 = +2.96%). Main lines never read ge, so a main line Unabated
-  // has not priced still reports no_fair.
-  function edgePctOf(marketLine, { fromGe } = { fromGe: false }) {
+  // The screen's computed edge when the cell carries one, else the feed's own
+  // fraction on the same object (0.0296 = +2.96%) — the number the Edges tab
+  // and Unabated's own % come from. Alternate-line objects never carry
+  // `edge`, and main-line cells sometimes lack it too (live 2026-09-11: a
+  // line listed with an edge on the Edges tab captured as "no fair"). A line
+  // Unabated has not priced has neither, so it still reports no_fair.
+  function edgePctOf(marketLine) {
     const edge = marketLine.edge && marketLine.edge.edge;
     if (typeof edge === "number" && Number.isFinite(edge)) return edge;
-    if (!fromGe) return null;
     const ge = marketLine.ge;
     return typeof ge === "number" && Number.isFinite(ge) ? Math.round(ge * 1e6) / 1e4 : null;
   }
@@ -286,7 +287,7 @@
       price: bookPriceOf(marketLine),
       ...sourcePriceOf(marketLine),
       fair: fairPriceOrNull(marketLine),
-      edgePct: requireEdgePct(marketLine, { fromGe: altPoints != null }),
+      edgePct: requireEdgePct(marketLine),
       isAlt: altPoints != null,
       // Watcher handle: how to find this same line again through the grid API
       // (altPoints set = look inside the book line's alternateLines).
@@ -414,7 +415,7 @@
       ...sourcePriceOf(line),
       points: line.points ?? null,
       fair: fairPriceOrNull(line),
-      edgePct: edgePctOf(line, { fromGe: ticket.watch.altPoints != null }),
+      edgePct: edgePctOf(line),
       offBoard: line.statusId === 2,
       seenAt: Date.now(),
     };
