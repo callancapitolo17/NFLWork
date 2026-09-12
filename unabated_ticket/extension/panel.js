@@ -4,7 +4,8 @@
 // Reads: chrome.storage.local {ticket, error, watchStatus, pageReady,
 // booksFilter, locateResult} (written by content.js) and {bankroll,
 // multiplier, edges, alerts, alertLog, activeTab, betsService, betsSettings}
-// (written here).
+// (written here) and {betsNovig} (written by novig_content.js on
+// app.novig.us, #116).
 // Writes: chrome.storage.local settings, {locate} (row click, via locate.js,
 // which also focuses the Unabated tab), {alertLog, alertTargets} and Chrome
 // notifications for new edges; {betsService} after every bets-service poll.
@@ -88,6 +89,8 @@
     // What the last bets-service poll left: {payload: {generatedAt, sources},
     // okAt, error, errorAt, unreachableSince}; null before the first poll.
     betsService: null,
+    // What novig_content.js last wrote: {bets, readAt, url, error, complete, pageSeenAt} or null.
+    betsNovig: null,
     // Normalised bet records (bets.js contract), team keys resolved, pruned to the retention window.
     betRecords: [],
   };
@@ -300,7 +303,7 @@
       const age = fmtLineAge(feed.lineChangedMs(line.feedLine)).replace(/^line /, "");
       messages.push(`Edge from the Edges feed (the screen cell carried none): same line at the same price, feed copy ${age}.`);
     }
-    if (betsView.sourcesUnavailable(state.betsService && state.betsService.payload, Date.now())) {
+    if (betsView.sourcesUnavailable(state.betsService && state.betsService.payload, Date.now(), pageSources())) {
       messages.push("Bet sources unavailable (no venue has reported in the last hour), so bet flags may be missing; see the Bets tab.");
     }
     if (!pageScriptAlive()) {
@@ -1281,6 +1284,18 @@
     return state.betsService ? state.betsService.payload : null;
   }
 
+  // Venues read by a content script rather than the service (#116).
+  function pageSources() {
+    return state.betsNovig ? { novig: state.betsNovig } : {};
+  }
+
+  // A new Novig read from storage: merge its records (complete reads are
+  // authoritative for the venue) and refresh every view that shows a flag.
+  function applyNovigRead(betsNovig) {
+    state.betsNovig = betsNovig && typeof betsNovig === "object" ? betsNovig : null;
+    if (state.betsNovig) state.betRecords = betsView.mergePageSource(state.betRecords, "novig", state.betsNovig, Date.now());
+  }
+
   let betsPollBusy = false;
   let betsPollTimer = null;
 
@@ -1326,7 +1341,7 @@
 
   function renderBetsHeader() {
     const now = Date.now();
-    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now);
+    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now, pageSources());
     view.betsHeader.classList.toggle("bad", betsView.serviceStatus(state.betsService, now).unreachable);
   }
 
@@ -1341,7 +1356,7 @@
     const service = betsView.serviceStatus(state.betsService, now);
     view.betsService.hidden = !service.unreachable;
     view.betsService.textContent = service.unreachable ? `${service.text}. Start it with unabated_ticket/bets_service/run.sh; the last records it served are still shown.` : "";
-    view.betsSources.replaceChildren(...betsView.sourceRows(betsPayload(), now).map((row) => {
+    view.betsSources.replaceChildren(...betsView.sourceRows(betsPayload(), now, pageSources()).map((row) => {
       const tr = document.createElement("tr");
       tr.className = `fresh-${row.level}`;
       const status = row.error ? row.error : row.note ? row.note : "ok";
@@ -1443,7 +1458,7 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "betsNovig"]);
     state.ticket = relay.ticket || null;
     state.error = relay.error || null;
     state.watchStatus = relay.watchStatus || null;
@@ -1464,6 +1479,7 @@
         error: storedBets.error ?? null, errorAt: storedBets.errorAt ?? null, unreachableSince: storedBets.unreachableSince ?? null,
       };
     }
+    applyNovigRead(relay.betsNovig);
     fillEdgeSettingInputs();
     fillAlertSettingInputs();
     fillBetsSettingInputs();
@@ -1501,6 +1517,14 @@
       state.locateResult = changes.locateResult.newValue || null;
       if (state.locateResult && state.locating && state.locateResult.at >= state.locating.at) state.locating = null;
       renderLocate();
+    }
+    // novig_content.js wrote a read of the Novig Portfolio screen (#116).
+    if ("betsNovig" in changes) {
+      applyNovigRead(changes.betsNovig.newValue);
+      renderBetsHeader();
+      if (!state.error) render();
+      renderEdges();
+      if (state.activeTab === "bets") renderBets();
     }
   });
 

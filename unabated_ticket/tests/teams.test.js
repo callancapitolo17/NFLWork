@@ -43,9 +43,25 @@ test("CFB: Kalshi short names, State/St. agree, no nickname fallback", () => {
   assert.equal(teams.teamKey("cfb", "Michigan State"), null);
 });
 
+test("MLB: full names (Kalshi / Novig), codes, cities that name one team, the Athletics without a city", () => {
+  assert.equal(teams.teamKey("mlb", "Miami Marlins"), "mlb:mia");
+  assert.equal(teams.teamKey("mlb", "Minnesota Twins"), "mlb:min");
+  assert.equal(teams.teamKey("mlb", "MIA Marlins"), "mlb:mia");
+  assert.equal(teams.teamKey("mlb", "St. Louis"), "mlb:stl");
+  assert.equal(teams.teamKey("mlb", "Athletics"), "mlb:ath");
+  assert.equal(teams.teamKey("mlb", "Oakland Athletics"), "mlb:ath");
+  assert.equal(teams.teamKey("mlb", "OAK Athletics"), "mlb:ath");
+  assert.equal(teams.teamKey("mlb", "Los Angeles D"), "mlb:lad"); // KXMLBRFI event title truncation
+  assert.equal(teams.teamKey("mlb", "Los Angeles"), null);
+  assert.equal(teams.teamKey("mlb", "Chicago"), null); // Cubs or White Sox
+  assert.equal(teams.teamKey("mlb", "New York"), null);
+  assert.equal(teams.teamKey("mlb", "Yankees"), "mlb:nyy"); // nickname fallback
+  assert.equal(teams.teamKey("mlb", "Chicago Bears"), null); // an NFL nickname is not an MLB team
+});
+
 test("unknown league or name is null, never a guess", () => {
-  assert.equal(teams.teamKey("mlb", "Washington"), null);
+  assert.equal(teams.teamKey("nba", "Washington"), null);
   assert.equal(teams.teamKey("nfl", "Springfield Isotopes"), null);
   assert.equal(teams.teamKey(undefined, "Chicago Bears"), null);
-  assert.deepEqual(teams.knownLeagues(), ["nfl", "cfb"]);
+  assert.deepEqual(teams.knownLeagues(), ["nfl", "mlb", "cfb"]);
 });

@@ -11,6 +11,9 @@
 //   serviceState what panel.js remembers about the service itself:
 //                {okAt, error, errorAt, unreachableSince} (ms epochs, error text)
 //   records      normalised bet records (bets.js contract)
+//   pageSources  venues read by a content script instead of the service, keyed
+//                by venue: {novig: {bets, readAt, url, error, complete,
+//                pageSeenAt}} — what novig_content.js writes to storage (#116)
 // Outputs plain objects / strings; nothing here writes anywhere.
 
 (function (root) {
@@ -25,6 +28,8 @@
   const STALE_MS = 60 * 60 * 1000;
   const BANNER_MAX_LINES = 5;
   const DEFAULT_BETS_SETTINGS = { serviceUrl: "http://127.0.0.1:8094" };
+  // How a page-sourced venue is refreshed, for the Bets tab when its read is old or missing.
+  const PAGE_SOURCE_HINT = { novig: "open app.novig.us and its Portfolio screen in a tab to refresh" };
 
   // "20 s" / "3 min" / "2 h" / "3 d" — the header line's short form.
   function fmtAgeShort(ms) {
@@ -43,11 +48,31 @@
     return "red";
   }
 
-  // One row per venue: what the service reported for it, or "no source configured".
-  function sourceRows(payload, now) {
+  // A venue read by a content script: fresh as of its last portfolio
+  // response; the hint says how to refresh once that is old or absent.
+  function pageSourceRow(venue, source, now) {
+    const readMs = source && source.readAt ? Date.parse(source.readAt) : NaN;
+    const ageMs = Number.isFinite(readMs) ? now - readMs : null;
+    const level = freshnessLevel(ageMs);
+    const note = level === "red" ? (PAGE_SOURCE_HINT[venue] || "open the venue's site in a tab to refresh") : null;
+    return {
+      venue, configured: true, level, ageMs,
+      ageText: ageMs == null ? "never" : fmtAgeShort(ageMs),
+      fetchedAt: Number.isFinite(readMs) ? source.readAt : null,
+      count: source && Array.isArray(source.bets) ? source.bets.length : 0,
+      error: source && source.error ? source.error : null,
+      note,
+    };
+  }
+
+  // One row per venue: what the service reported for it, what a content
+  // script wrote for it, or "no source configured".
+  function sourceRows(payload, now, pageSources) {
     const sources = payload && payload.sources && typeof payload.sources === "object" ? payload.sources : {};
+    const pages = pageSources && typeof pageSources === "object" ? pageSources : {};
     return VENUES.map((venue) => {
       const source = sources[venue];
+      if (!source && pages[venue]) return pageSourceRow(venue, pages[venue], now);
       if (!source) {
         return { venue, configured: false, level: "none", ageMs: null, ageText: "—", fetchedAt: null, count: null, error: null, note: "no source configured" };
       }
@@ -79,8 +104,8 @@
 
   // The Ticket tab's warning fires when nothing can vouch for the flags:
   // no source has ever reported, or every one that has is past the stale bound.
-  function sourcesUnavailable(payload, now) {
-    const configured = sourceRows(payload, now).filter((row) => row.configured);
+  function sourcesUnavailable(payload, now, pageSources) {
+    const configured = sourceRows(payload, now, pageSources).filter((row) => row.configured);
     return configured.length === 0 || configured.every((row) => row.level === "red");
   }
 
@@ -89,8 +114,8 @@
   }
 
   // "bets: 14 open · kalshi 20 s · betonline — · novig — · prophetx —"
-  function headerLine(records, payload, now) {
-    const venues = sourceRows(payload, now).map((row) => `${row.venue} ${row.configured ? row.ageText : "—"}`);
+  function headerLine(records, payload, now, pageSources) {
+    const venues = sourceRows(payload, now, pageSources).map((row) => `${row.venue} ${row.configured ? row.ageText : "—"}`);
     return [`bets: ${openCount(records)} open`, ...venues].join(" · ");
   }
 
@@ -176,6 +201,19 @@
     return bets.pruneForRetention(bets.resolveTeamKeys(merged), now);
   }
 
+  // Records to keep after a content-script venue wrote its read: the stored
+  // ones and the read deduped on native id (newest wins). A COMPLETE read
+  // (every list seen to its end) is authoritative for that venue, so a stored
+  // record it no longer lists is dropped; an incomplete read only adds.
+  function mergePageSource(storedRecords, venue, pageSource, now) {
+    const read = pageSource && Array.isArray(pageSource.bets) ? pageSource.bets : [];
+    const listed = new Set(read.map((record) => record.id));
+    const authoritative = !!(pageSource && pageSource.complete === true);
+    const kept = (storedRecords || []).filter((record) => record.venue !== venue || !authoritative || listed.has(record.id));
+    const merged = bets.dedupeByNativeId([kept, read]);
+    return bets.pruneForRetention(bets.resolveTeamKeys(merged), now);
+  }
+
   // The captured ticket as the describeLine-shaped row the matcher reads.
   // Unabated's eventStart is naive UTC ("2026-09-12T23:30:00"); tickets
   // captured before page.js carried `period` are full game.
@@ -199,9 +237,9 @@
   }
 
   const api = {
-    VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
+    VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS, PAGE_SOURCE_HINT,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badgeText, badgeKind, stakeAdvice, positionLines, venuesWithFreshPull, mergeServicePayload, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badgeText, badgeKind, stakeAdvice, positionLines, venuesWithFreshPull, mergeServicePayload, mergePageSource, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

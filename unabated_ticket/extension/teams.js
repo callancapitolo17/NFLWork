@@ -23,7 +23,10 @@
 //        Unabated's CFB snapshot was not captured; "Missouri State" and
 //        "Missouri St." normalise to the same key. No nickname fallback: CFB
 //        nicknames repeat ("Eastern Kentucky" must never become "Kentucky").
-//   MLB  not seeded yet — the account trades no MLB game markets by hand.
+//   MLB  full names as kalshi_common/leg_types._MLB_CODE_TO_TEAM spells them
+//        (Kalshi codes ported, ATH/OAK both = "Athletics"); Novig's
+//        game.awayTeam.name / homeTeam.name are full names too (#116), and
+//        nicknames are unique in MLB so the nickname fallback applies.
 
 (function (root) {
   "use strict";
@@ -66,6 +69,45 @@
     ["was", "Washington Commanders", "Washington", "WAS"],
   ];
 
+  // [key, full name, city, Kalshi code]; "Athletics" carries no city (Oakland /
+  // Sacramento / Las Vegas depending on the year) and answers to OAK and ATH.
+  const MLB_TEAMS = [
+    ["ari", "Arizona Diamondbacks", "Arizona", "ARI"],
+    ["atl", "Atlanta Braves", "Atlanta", "ATL"],
+    ["bal", "Baltimore Orioles", "Baltimore", "BAL"],
+    ["bos", "Boston Red Sox", "Boston", "BOS"],
+    ["chc", "Chicago Cubs", null, "CHC"],
+    ["cws", "Chicago White Sox", null, "CWS"],
+    ["cin", "Cincinnati Reds", "Cincinnati", "CIN"],
+    ["cle", "Cleveland Guardians", "Cleveland", "CLE"],
+    ["col", "Colorado Rockies", "Colorado", "COL"],
+    ["det", "Detroit Tigers", "Detroit", "DET"],
+    ["hou", "Houston Astros", "Houston", "HOU"],
+    ["kc", "Kansas City Royals", "Kansas City", "KC"],
+    ["laa", "Los Angeles Angels", null, "LAA"],
+    ["lad", "Los Angeles Dodgers", null, "LAD"],
+    ["mia", "Miami Marlins", "Miami", "MIA"],
+    ["mil", "Milwaukee Brewers", "Milwaukee", "MIL"],
+    ["min", "Minnesota Twins", "Minnesota", "MIN"],
+    ["nym", "New York Mets", null, "NYM"],
+    ["nyy", "New York Yankees", null, "NYY"],
+    ["ath", "Athletics", null, "ATH"],
+    ["phi", "Philadelphia Phillies", "Philadelphia", "PHI"],
+    ["pit", "Pittsburgh Pirates", "Pittsburgh", "PIT"],
+    ["sd", "San Diego Padres", "San Diego", "SD"],
+    ["sf", "San Francisco Giants", "San Francisco", "SF"],
+    ["sea", "Seattle Mariners", "Seattle", "SEA"],
+    ["stl", "St. Louis Cardinals", "St. Louis", "STL"],
+    ["tb", "Tampa Bay Rays", "Tampa Bay", "TB"],
+    ["tex", "Texas Rangers", "Texas", "TEX"],
+    ["tor", "Toronto Blue Jays", "Toronto", "TOR"],
+    ["was", "Washington Nationals", "Washington", "WAS"],
+  ];
+  // Other spellings of the same MLB team: [alias, key]. "Los Angeles D" is
+  // how the Kalshi KXMLBRFI event title truncates the Dodgers (fixture);
+  // the Angels' truncation has not been seen on the wire, so it is not guessed.
+  const MLB_ALIASES = [["Oakland Athletics", "ath"], ["Sacramento Athletics", "ath"], ["OAK Athletics", "ath"], ["AZ Diamondbacks", "ari"], ["WSH Nationals", "was"], ["Los Angeles D", "lad"]];
+
   // Kalshi short names; the key is the slug of the normalised name.
   const CFB_TEAMS = [
     "Alabama", "Chattanooga", "Drake", "East Carolina", "Eastern Kentucky", "Georgetown",
@@ -88,17 +130,20 @@
     return normalized.replace(/ /g, "-");
   }
 
-  function buildNflTable() {
+  // A pro league whose nicknames are unique: full name, "<CODE> <Nickname>",
+  // the city when it names one team, and the nickname alone as the fallback.
+  function buildProTable(league, teamRows, extraAliases) {
     const aliases = new Map();
     const nicknames = new Map();
-    for (const [key, fullName, city, abbreviation] of NFL_TEAMS) {
-      const leagueKey = `nfl:${key}`;
+    for (const [key, fullName, city, abbreviation] of teamRows) {
+      const leagueKey = `${league}:${key}`;
       const nickname = fullName.split(" ").pop();
       aliases.set(normalizeName(fullName), leagueKey);
       aliases.set(normalizeName(`${abbreviation} ${nickname}`), leagueKey);
       if (city) aliases.set(normalizeName(city), leagueKey);
       nicknames.set(normalizeName(nickname), leagueKey);
     }
+    for (const [alias, key] of extraAliases || []) aliases.set(normalizeName(alias), `${league}:${key}`);
     return { aliases, nicknames };
   }
 
@@ -111,7 +156,7 @@
     return { aliases, nicknames: null };
   }
 
-  const TABLES = { nfl: buildNflTable(), cfb: buildCfbTable() };
+  const TABLES = { nfl: buildProTable("nfl", NFL_TEAMS), mlb: buildProTable("mlb", MLB_TEAMS, MLB_ALIASES), cfb: buildCfbTable() };
 
   // Key for (league, name) or null. The nickname fallback (last word) exists
   // only for leagues whose nicknames are unique.
