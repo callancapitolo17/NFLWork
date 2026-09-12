@@ -347,8 +347,11 @@
 
   // Apply one response to the held pages (a Map the caller owns). Returns
   // {orders, parlays, complete} or null when the response is not a portfolio
-  // page. `complete` is true when every held list's last page came back short
-  // of its limit — nothing the app lists is beyond what was seen.
+  // page. `complete` is true only when all three portfolio operations have
+  // been seen in this tab AND every held list's last page came back short of
+  // its limit — nothing the app lists is beyond what was seen. (An
+  // Active-only refetch elsewhere in the app must not count as complete, or
+  // the panel would drop the parlay legs it holds.)
   function applyResponse(pages, response) {
     const found = rowsOf(response.operationName, response.data);
     if (!found) return null;
@@ -362,7 +365,8 @@
   }
 
   function collectPages(pages) {
-    const out = { orders: [], parlays: [], complete: true };
+    const seenOperations = new Set(Array.from(pages.keys()).map((key) => key.split("|")[0]));
+    const out = { orders: [], parlays: [], complete: Object.keys(WATCHED_OPERATIONS).every((name) => seenOperations.has(name)) };
     for (const list of pages.values()) {
       const offsets = Array.from(list.pages.keys()).sort((a, b) => a - b);
       for (const offset of offsets) out[list.kind].push(...list.pages.get(offset).rows);

@@ -28,8 +28,12 @@
   const STALE_MS = 60 * 60 * 1000;
   const BANNER_MAX_LINES = 5;
   const DEFAULT_BETS_SETTINGS = { serviceUrl: "http://127.0.0.1:8094" };
-  // How a page-sourced venue is refreshed, for the Bets tab when its read is old or missing.
-  const PAGE_SOURCE_HINT = { novig: "open app.novig.us and its Portfolio screen in a tab to refresh" };
+  // How a page-sourced venue is refreshed, for the Bets tab when its read is
+  // old or missing: the second form when its tab is open but has not shown
+  // the screen the content script mirrors.
+  const PAGE_SOURCE_HINT = {
+    novig: { closed: "open app.novig.us and its Portfolio screen in a tab to refresh", open: "Novig tab is open — open its Portfolio screen to refresh" },
+  };
 
   // "20 s" / "3 min" / "2 h" / "3 d" — the header line's short form.
   function fmtAgeShort(ms) {
@@ -54,7 +58,10 @@
     const readMs = source && source.readAt ? Date.parse(source.readAt) : NaN;
     const ageMs = Number.isFinite(readMs) ? now - readMs : null;
     const level = freshnessLevel(ageMs);
-    const note = level === "red" ? (PAGE_SOURCE_HINT[venue] || "open the venue's site in a tab to refresh") : null;
+    const seenMs = source && source.pageSeenAt ? Date.parse(source.pageSeenAt) : NaN;
+    const tabOpen = Number.isFinite(seenMs) && now - seenMs < FRESH_MS;
+    const hint = PAGE_SOURCE_HINT[venue] || { closed: "open the venue's site in a tab to refresh", open: "the venue's tab is open — open its bets screen to refresh" };
+    const note = level === "red" ? (tabOpen ? hint.open : hint.closed) : null;
     return {
       venue, configured: true, level, ageMs,
       ageText: ageMs == null ? "never" : fmtAgeShort(ageMs),

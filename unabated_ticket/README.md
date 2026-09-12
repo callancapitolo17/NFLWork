@@ -414,7 +414,8 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   no source yet read "no source configured", a source still on its first
   poll reads "no completed poll yet"; a page-sourced venue past the hour
   says how to refresh — "open app.novig.us and its Portfolio screen in a
-  tab to refresh"; the service itself shows
+  tab to refresh", or "Novig tab is open — open its Portfolio screen to
+  refresh" when the tab was seen in the last 5 min; the service itself shows
   "unreachable since …" in red with the last records still listed), the
   service URL, the open bets (venue, bet, stake, placed), and the
   **unmatched** list — every open bet no board line matches, with why: team
@@ -442,9 +443,11 @@ send **zero** requests of their own:
   restarts a list), normalises them with `novig_bets.js` and writes
   `chrome.storage.local.betsNovig = {bets, readAt, url, error, complete,
   pageSeenAt}`. The panel merges `bets` on every change: a **complete** read
-  (every list's last page short of its limit) is authoritative for the venue
-  — a stored Novig record it no longer lists is dropped; an incomplete read
-  (a list still has pages the app has not loaded) only adds.
+  (all three operations seen in this tab, every list's last page short of
+  its limit) is authoritative for the venue — a stored Novig record it no
+  longer lists is dropped; an incomplete read (a list still has pages the
+  app has not loaded, or an Active-only refetch from another screen) only
+  adds.
 
 `novig_bets.js` (pure, node-tested on
 `tests/fixtures/bets/novig_bets.json`) applies the app's own rules, read off

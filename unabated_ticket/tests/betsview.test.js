@@ -205,9 +205,11 @@ test("sourceRows: a content-script venue is configured with its read age; a stal
   assert.equal(fresh.ageText, "20 s");
   assert.equal(fresh.count, 1);
   assert.equal(fresh.note, null);
-  const stale = view.sourceRows(null, NOW, { novig: novigRead({ readAt: iso(2 * 3600e3) }) }).find((row) => row.venue === "novig");
+  const stale = view.sourceRows(null, NOW, { novig: novigRead({ readAt: iso(2 * 3600e3), pageSeenAt: iso(2 * 3600e3) }) }).find((row) => row.venue === "novig");
   assert.equal(stale.level, "red");
   assert.equal(stale.note, "open app.novig.us and its Portfolio screen in a tab to refresh");
+  const tabOpen = view.sourceRows(null, NOW, { novig: novigRead({ readAt: iso(2 * 3600e3), pageSeenAt: iso(30e3) }) }).find((row) => row.venue === "novig");
+  assert.equal(tabOpen.note, "Novig tab is open — open its Portfolio screen to refresh");
   const never = view.sourceRows(null, NOW, { novig: novigRead({ readAt: null, bets: [] }) }).find((row) => row.venue === "novig");
   assert.equal(never.ageText, "never");
   assert.equal(never.count, 0);

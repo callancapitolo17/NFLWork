@@ -61,12 +61,16 @@ test("applyResponse: a full page leaves the read incomplete; offset 0 restarts i
   assert.equal(out.complete, false);
   out = novig.applyResponse(pages, { operationName: "ActivePortfolioOrders_Query", variables: { offset: 2, limit: 2 }, data: { ActivePortfolioOrders_Query: rows(1, "b") } });
   assert.deepEqual(out.orders.map((r) => r.id), ["a0", "a1", "b0"]);
+  assert.equal(out.complete, false); // the settled and parlay lists have not been seen in this tab
+  novig.applyResponse(pages, { operationName: "SettledPortfolioOrders_Query", variables: { offset: 0, limit: 2 }, data: { SettledPortfolioOrders_Query: [] } });
+  out = novig.applyResponse(pages, { operationName: "ParlayPortfolioQuery", variables: { offset: 0, limit: 2, where: { status: { _eq: "FILLED" } } }, data: { parlay: [] } });
   assert.equal(out.complete, true);
   out = novig.applyResponse(pages, { operationName: "ActivePortfolioOrders_Query", variables: { offset: 0, limit: 2 }, data: { ActivePortfolioOrders_Query: rows(1, "c") } });
   assert.deepEqual(out.orders.map((r) => r.id), ["c0"]);
   novig.applyResponse(pages, { operationName: "ParlayPortfolioQuery", variables: { offset: 0, limit: 15, where: { status: { _eq: "FILLED" } } }, data: { parlay: [{ id: "p1", legs: [] }] } });
   out = novig.applyResponse(pages, { operationName: "ParlayPortfolioQuery", variables: { offset: 0, limit: 15, where: { status: { _in: ["WIN"] } } }, data: { parlay: [{ id: "p2", legs: [] }] } });
   assert.deepEqual(out.parlays.map((r) => r.id), ["p1", "p2"]);
+  assert.equal(out.complete, true);
 });
 
 test("normalize: a matched moneyline bid — index 0 is the HOME team, price is a probability, stake = contracts x price", () => {
