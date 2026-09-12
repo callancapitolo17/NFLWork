@@ -73,6 +73,31 @@ test("applyResponse: a full page leaves the read incomplete; offset 0 restarts i
   assert.equal(out.complete, true);
 });
 
+test("normalize: qty is hundredths of a contract — 10,000 at 0.58 is 100 contracts risking $58", () => {
+  const record = byId(records(), "novig:o-ml-car");
+  assert.equal(record.raw.originalQty, 100);
+  assert.equal(record.raw.qtyUnit, novig.QTY_PER_CONTRACT);
+  assert.equal(record.contracts, 100);
+  assert.equal(record.stake, 58);
+});
+
+test("normalize: a fractional outcome status is a settlement — 0.50 pushes, 1 wins, 0.72 is unknown but never open", () => {
+  const order = fixture().responses[1].data.SettledPortfolioOrders_Query.find((o) => o.id === "o-won");
+  const at = (status) => novig.normalizeOrder({ ...order, outcome: { ...order.outcome, status } }, READ_AT).status;
+  assert.equal(at("0.50"), "push");
+  assert.equal(at("1"), "won");
+  assert.equal(at("0"), "lost");
+  assert.equal(at("0.72"), "unknown");
+  assert.equal(novig.normalizeOrder({ ...order, isBid: false, outcome: { ...order.outcome, status: "0" } }, READ_AT).status, "won");
+});
+
+test("normalize: parlay statuses are Title-case on the wire — 'Unfilled' is void, 'Filled' open", () => {
+  const parlay = fixture().responses[2].data.parlay[0];
+  assert.equal(novig.normalizeParlay({ ...parlay, status: "Unfilled", wager: null }, READ_AT)[0].status, "void");
+  assert.equal(novig.normalizeParlay({ ...parlay, status: "Filled" }, READ_AT)[0].status, "open");
+  assert.equal(novig.normalizeParlay({ ...parlay, status: "Win" }, READ_AT)[0].status, "won");
+});
+
 test("normalize: a matched moneyline bid — index 0 is the HOME team, price is a probability, stake = contracts x price", () => {
   const record = byId(records(), "novig:o-ml-car");
   assert.deepEqual(pick(record, GAME_KEYS), {
@@ -176,7 +201,7 @@ test("normalize: parlays — one record per leg with the parlay's wager as the s
 
 test("normalize: a row seen twice keeps the later page's copy; rows without an id are skipped", () => {
   const order = fixture().responses[0].data.ActivePortfolioOrders_Query.find((o) => o.id === "o-ml-car");
-  const list = novig.normalizeNovig({ orders: [order, { ...order, qty: 100, status: "OPEN", fills: [] }, { market: {}, outcome: {} }], parlays: [], readAt: READ_AT });
+  const list = novig.normalizeNovig({ orders: [order, { ...order, qty: order.originalQty, status: "OPEN", fills: [] }, { market: {}, outcome: {} }], parlays: [], readAt: READ_AT });
   assert.equal(list.length, 1);
   assert.deepEqual(list[0].approx, [novig.APPROX_UNMATCHED]);
 });

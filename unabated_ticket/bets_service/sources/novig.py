@@ -23,11 +23,13 @@ Outputs: list of records. Side effects: NovigAuth may rewrite the token file on
          GraphQL error so the service records a failed run and keeps the
          previous records.
 
-Novig facts (read off the app.novig.us bundle 2026-09-11 — see the fixture's
-"provenance" and novig_bets.js): outcome index 0 = HOME / OVER; `price` is a
-0-1 probability, one contract pays $1; `isBid` false LAYS the outcome (the
-other side at 1 - p, a spread's number negated); matched size =
-originalQty - qty; `_1H` market types are the first five innings on MLB.
+Novig facts (bundle 2026-09-11, live-verified the same day — see the
+fixture's "provenance" and novig_bets.js): outcome index 0 = HOME / OVER;
+`price` is a 0-1 probability, one contract pays $1 and `qty` is in
+HUNDREDTHS of a contract; `isBid` false LAYS the outcome (the other side at
+1 - p, a spread's number negated); matched size = originalQty - qty; `_1H`
+market types are the first five innings on MLB; outcome.status may be a
+fractional settlement string; parlay.status is Title-case on the wire.
 """
 import logging
 import re
@@ -60,6 +62,8 @@ REASON_NOT_GAME = "not a game market"
 APPROX_UNMATCHED = "novig_order_unmatched"
 APPROX_PENDING = "novig_order_pending"
 DESCRIPTION_NUMBER_RE = re.compile(r"([+-]?\d+(?:\.\d+)?)\s*$")
+# Novig's qty unit: 100 = one $1-payout contract (live-verified 2026-09-11).
+QTY_PER_CONTRACT = 100
 
 
 # ---- pure normaliser (port of novig_bets.js) -----------------------------------------
@@ -183,13 +187,20 @@ def _lay_side(bet_type: str, backed: dict) -> dict:
 
 
 def _grade_settled(outcome_status: object, is_bid: bool) -> str:
+    """WIN/LOSS/PUSH, or a fractional payout per contract as a string ("0.50"
+    = a first-five tie): 1 / 0 / 0.5 are won / lost / push, anything else a
+    partial settlement the contract has no word for (unknown, never open)."""
     if outcome_status == "PUSH":
         return "push"
     if outcome_status == "WIN":
         return "won" if is_bid else "lost"
     if outcome_status == "LOSS":
         return "lost" if is_bid else "won"
-    return "unknown"
+    fraction = _to_number(outcome_status)
+    if fraction is None:
+        return "unknown"
+    paid = fraction if is_bid else 1 - fraction
+    return {1.0: "won", 0.0: "lost", 0.5: "push"}.get(paid, "unknown")
 
 
 def _parse_ms(value: object) -> float:
@@ -205,7 +216,7 @@ def _order_status(order: dict, market: dict, outcome: dict, matched_qty: float) 
     fills = order.get("fills") if isinstance(order.get("fills"), list) else []
     if order.get("status") == "REJECTED":
         return "void"
-    if order.get("qty") == 0 and fills and all(fill.get("isWash") for fill in fills):
+    if _to_number(order.get("qty")) == 0 and fills and all(fill.get("isWash") for fill in fills):
         return "closed"
     cash_outs = market.get("cash_out_requests")
     cash_out = cash_outs[0] if isinstance(cash_outs, list) and cash_outs else None
@@ -223,7 +234,8 @@ def _order_status(order: dict, market: dict, outcome: dict, matched_qty: float) 
 
 
 def _parlay_status(status: object) -> str:
-    return {"FILLED": "open", "WIN": "won", "LOSS": "lost", "PUSH": "push", "UNFILLED": "void"}.get(status, "unknown")
+    upper = status.upper() if isinstance(status, str) else ""
+    return {"FILLED": "open", "WIN": "won", "LOSS": "lost", "PUSH": "push", "UNFILLED": "void"}.get(upper, "unknown")
 
 
 def _unmatchable(base: dict, reason: str) -> dict:
@@ -272,8 +284,8 @@ def _market_title(market: dict, outcome: dict) -> str:
 def normalize_order(order: dict, read_at: str | None) -> dict:
     market = order.get("market") or {}
     outcome = order.get("outcome") or {}
-    original_qty = _to_number(order.get("originalQty")) or 0.0
-    remaining_qty = _to_number(order.get("qty")) or 0.0
+    original_qty = (_to_number(order.get("originalQty")) or 0.0) / QTY_PER_CONTRACT
+    remaining_qty = (_to_number(order.get("qty")) or 0.0) / QTY_PER_CONTRACT
     matched_qty = max(original_qty - remaining_qty, 0.0)
     is_bid = order.get("isBid") is True
     outcome_price = _to_number(order.get("price"))
@@ -302,7 +314,7 @@ def normalize_order(order: dict, read_at: str | None) -> dict:
         "sourceFetchedAt": read_at,
         "raw": {
             "orderId": order["id"], "orderStatus": order.get("status"), "isBid": is_bid,
-            "outcomePrice": outcome_price, "originalQty": original_qty, "remainingQty": remaining_qty,
+            "outcomePrice": outcome_price, "originalQty": original_qty, "remainingQty": remaining_qty, "qtyUnit": QTY_PER_CONTRACT,
             "fillCount": len(fills), "marketType": market.get("type") or None, "marketStatus": market.get("status") or None,
             "strike": _to_number(market.get("strike")), "outcomeIndex": outcome.get("index"),
             "outcomeDescription": outcome.get("description") or None, "outcomeStatus": outcome.get("status") or None,

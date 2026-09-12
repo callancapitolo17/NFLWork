@@ -167,11 +167,11 @@ def code_from_redirect(redirected_url: str, expected_state: str) -> str:
     query = parse_qs(urlparse(redirected_url.strip()).query)
     if query.get("error"):
         raise NovigAuthError(f"login refused: {query['error'][0]}: {query.get('error_description', [''])[0]}")
-    if query.get("state", [None])[0] != expected_state:
-        raise NovigAuthError("state mismatch — paste the URL from THIS run's login, not an older one")
     code = query.get("code", [None])[0]
     if not code:
         raise NovigAuthError("no ?code= in that URL (the app may have stripped it — try --browser)")
+    if query.get("state", [None])[0] != expected_state:
+        raise NovigAuthError("state mismatch — paste the URL from THIS run's login, not an older one")
     return code
 
 
@@ -201,48 +201,48 @@ def _launch_any_chromium(p):
 
 
 def _redirect_via_browser(url: str) -> str:
-    """Headed Playwright window; the app never loads because the callback
-    request is intercepted, so the code cannot be stripped. The user types
-    their own credentials; nothing here reads them."""
+    """Headed Playwright window; the user types their own credentials, nothing
+    here reads them. The callback URL is taken from the navigation event the
+    moment the main frame lands on app.novig.us — a route handler cannot be
+    used, because Playwright does not run routes on a request that arrives
+    through a redirect (Auth0 302s to the callback), so the app loads; by then
+    the code is already captured, and stripping it changes nothing."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as error:  # pragma: no cover
         raise NovigAuthError("--browser needs Playwright (mlb_sgp/venv has it); use the paste flow instead") from error
     landed: list[str] = []
+
+    def on_request(request):
+        if request.is_navigation_request() and request.url.startswith(REDIRECT_URI) and "code=" in request.url:
+            landed.append(request.url)
+
     with sync_playwright() as p:
         browser = _launch_any_chromium(p)
         page = browser.new_page()
-
-        def intercept(route, request):
-            landed.append(request.url)
-            route.fulfill(status=200, content_type="text/html",
-                          body="<h2>Novig connected — you can close this window.</h2>")
-
-        page.route(f"{REDIRECT_URI}/**", intercept)
-        page.route(REDIRECT_URI, intercept)
+        page.on("request", on_request)
         # Progress on stdout so a stuck login can be diagnosed without seeing the screen.
-        page.on("framenavigated", lambda frame: print(f"  [browser] {frame.url[:120]}", flush=True) if frame == page.main_frame else None)
-        page.goto(url)
+        page.on("framenavigated", lambda frame: print(f"  [browser] {frame.url.split('?')[0]}", flush=True) if frame == page.main_frame else None)
+        page.goto(url, wait_until="commit")  # never block on a slow page load
         print("  [browser] window open — log in to Novig there", flush=True)
         deadline = time.time() + LOGIN_TIMEOUT_SEC
-        last_title = None
         while not landed and time.time() < deadline:
-            page.wait_for_timeout(500)
-            try:
-                title = page.title()
-            except Exception:  # noqa: BLE001 — a navigating page may refuse briefly
-                continue
-            if title != last_title:
-                print(f"  [browser] page: {title!r}", flush=True)
-                last_title = title
+            page.wait_for_timeout(250)
+            if page.url.startswith(REDIRECT_URI) and "code=" in page.url:
+                landed.append(page.url)
+                break
             if "auth.novig.us" in page.url and "/authorize" not in page.url and "/u/" not in page.url:
-                text = page.inner_text("body")[:300].replace("\n", " ")
+                try:
+                    text = page.inner_text("body")[:300].replace("\n", " ")
+                except Exception:  # noqa: BLE001 — a navigating page may refuse briefly
+                    continue
                 if "mismatch" in text.lower() or "oops" in text.lower():
                     browser.close()
                     raise NovigAuthError(f"Auth0 refused the request: {text}")
         browser.close()
     if not landed:
         raise NovigAuthError(f"login did not complete within {LOGIN_TIMEOUT_SEC // 60} minutes")
+    print("  [browser] callback captured", flush=True)
     return landed[0]
 
 

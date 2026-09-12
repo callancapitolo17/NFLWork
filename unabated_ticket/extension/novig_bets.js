@@ -16,16 +16,19 @@
 //
 // Novig facts these rules rest on (read off the app.novig.us bundle, 2026-09-11;
 // see tests/fixtures/bets/novig_bets.json "provenance"):
-//   order         qty = contracts still resting, originalQty = placed, so the
-//                 matched size is originalQty - qty; price is a 0-1
-//                 probability; one contract pays $1; isBid true BACKS the
+//   order         qty = HUNDREDTHS of a contract still resting (100 = one $1
+//                 contract; live-verified: 93,650 at 0.315 cost $294.9975),
+//                 originalQty = placed, so the matched size is originalQty -
+//                 qty; price is a 0-1 probability; isBid true BACKS the
 //                 outcome, false LAYS it (the card grades an ask on a LOSS
 //                 outcome as a win) — in a two-way market a lay at p is the
 //                 other side at 1 - p. status PENDING/OPEN/FILLED/CANCELED/
 //                 REJECTED; fills [{cost, qty, isWash, isTaker, created_at}].
 //   outcome       index 0 = HOME or OVER, 1 = AWAY or UNDER (HomeAwayIndex /
 //                 OverUnderIndex); description carries the side's own number
-//                 ("CHI -13.5", "Over 47.5"); status TBD/WIN/LOSS/PUSH.
+//                 ("CHI -13.5", "Over 47.5"); status TBD/WIN/LOSS/PUSH, or a
+//                 fractional settlement as a string ("0.50" = a first-five
+//                 tie paid at half, "0.72") that the enum never lists.
 //   market        type MONEY/SPREAD/TOTAL (+ _1H = first half, which on MLB is
 //                 the first five innings — the SGP scrapers' finding), status
 //                 OPEN/CLOSED/SETTLED, strike is the market's number in the
@@ -33,8 +36,9 @@
 //   event/game    event.type GAME|FUTURE, game.league "NFL"/"NCAAF"/"MLB"/...,
 //                 game.awayTeam / homeTeam {name, symbol, short_name},
 //                 scheduled_start ISO with a +00:00 offset.
-//   parlay        status FILLED (open) / WIN / LOSS / PUSH / UNFILLED; wager in
-//                 dollars; each leg {price, outcome{... market{... event}}}.
+//   parlay        status Filled (open) / Win / Loss / Push / Unfilled — Title
+//                 case on the wire, matched case-insensitively; wager in
+//                 dollars (null on Unfilled); each leg {price, outcome{...}}.
 
 (function (root) {
   "use strict";
@@ -62,6 +66,8 @@
   const APPROX_UNMATCHED = "novig_order_unmatched";
   const APPROX_PENDING = "novig_order_pending";
   const DESCRIPTION_NUMBER_RE = /([+-]?\d+(?:\.\d+)?)\s*$/;
+  // Novig's qty unit: 100 = one $1-payout contract (the NBX docs' "watch the units").
+  const QTY_PER_CONTRACT = 100;
 
   // ---- helpers -----------------------------------------------------------------
 
@@ -156,10 +162,19 @@
 
   // ---- status ------------------------------------------------------------------
 
+  // WIN/LOSS/PUSH, or a fractional payout per contract as a string: 1 and 0
+  // are a win and a loss, 0.5 a push, anything else a partial settlement the
+  // contract has no word for (unknown — settled either way, never open).
   function gradeSettled(outcomeStatus, isBid) {
     if (outcomeStatus === "PUSH") return "push";
     if (outcomeStatus === "WIN") return isBid ? "won" : "lost";
     if (outcomeStatus === "LOSS") return isBid ? "lost" : "won";
+    const fraction = toNumber(outcomeStatus);
+    if (fraction == null) return "unknown";
+    const paid = isBid ? fraction : 1 - fraction;
+    if (paid === 1) return "won";
+    if (paid === 0) return "lost";
+    if (paid === 0.5) return "push";
     return "unknown";
   }
 
@@ -167,7 +182,7 @@
   function orderStatus(order, market, outcome, matchedQty) {
     const fills = Array.isArray(order.fills) ? order.fills : [];
     if (order.status === "REJECTED") return "void";
-    if (order.qty === 0 && fills.length > 0 && fills.every((fill) => fill.isWash)) return "closed";
+    if (toNumber(order.qty) === 0 && fills.length > 0 && fills.every((fill) => fill.isWash)) return "closed";
     const cashOut = Array.isArray(market.cash_out_requests) && market.cash_out_requests.length ? market.cash_out_requests[0] : null;
     if (cashOut && cashOut.status === "APPROVED" && Date.parse(cashOut.created_at) > Date.parse(order.created_at)) return "closed";
     if (market.status === "SETTLED") {
@@ -180,11 +195,12 @@
   }
 
   function parlayStatus(status) {
-    if (status === "FILLED") return "open";
-    if (status === "WIN") return "won";
-    if (status === "LOSS") return "lost";
-    if (status === "PUSH") return "push";
-    if (status === "UNFILLED") return "void";
+    const upper = typeof status === "string" ? status.toUpperCase() : "";
+    if (upper === "FILLED") return "open";
+    if (upper === "WIN") return "won";
+    if (upper === "LOSS") return "lost";
+    if (upper === "PUSH") return "push";
+    if (upper === "UNFILLED") return "void";
     return "unknown";
   }
 
@@ -223,8 +239,8 @@
   function normalizeOrder(order, readAt) {
     const market = order.market || {};
     const outcome = order.outcome || {};
-    const originalQty = toNumber(order.originalQty) ?? 0;
-    const remainingQty = toNumber(order.qty) ?? 0;
+    const originalQty = (toNumber(order.originalQty) ?? 0) / QTY_PER_CONTRACT;
+    const remainingQty = (toNumber(order.qty) ?? 0) / QTY_PER_CONTRACT;
     const matchedQty = Math.max(originalQty - remainingQty, 0);
     const isBid = order.isBid === true;
     const outcomePrice = toNumber(order.price);
@@ -253,7 +269,7 @@
       approx,
       sourceFetchedAt: readAt,
       raw: {
-        orderId: order.id, orderStatus: order.status, isBid, outcomePrice, originalQty, remainingQty,
+        orderId: order.id, orderStatus: order.status, isBid, outcomePrice, originalQty, remainingQty, qtyUnit: QTY_PER_CONTRACT,
         fillCount: fills.length, marketType: market.type || null, marketStatus: market.status || null,
         strike: toNumber(market.strike), outcomeIndex: outcome.index ?? null,
         outcomeDescription: outcome.description || null, outcomeStatus: outcome.status || null,
@@ -377,7 +393,7 @@
   }
 
   const api = {
-    LEAGUES, MARKET_TYPES, WATCHED_OPERATIONS, APPROX_UNMATCHED, APPROX_PENDING, REASON_NOT_GAME,
+    LEAGUES, MARKET_TYPES, WATCHED_OPERATIONS, APPROX_UNMATCHED, APPROX_PENDING, REASON_NOT_GAME, QTY_PER_CONTRACT,
     normalizeNovig, normalizeOrder, normalizeParlay, probabilityToAmerican,
     rowsOf, pageKey, applyResponse, collectPages,
   };

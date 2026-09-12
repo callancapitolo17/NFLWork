@@ -23,6 +23,7 @@
 //        Unabated's CFB snapshot was not captured; "Missouri State" and
 //        "Missouri St." normalise to the same key. No nickname fallback: CFB
 //        nicknames repeat ("Eastern Kentucky" must never become "Kentucky").
+//   WNBA full names + codes as Novig writes them (#116 live pull).
 //   MLB  full names as kalshi_common/leg_types._MLB_CODE_TO_TEAM spells them
 //        (Kalshi codes ported, ATH/OAK both = "Athletics"); Novig's
 //        game.awayTeam.name / homeTeam.name are full names too (#116), and
@@ -108,12 +109,52 @@
   // the Angels' truncation has not been seen on the wire, so it is not guessed.
   const MLB_ALIASES = [["Oakland Athletics", "ath"], ["Sacramento Athletics", "ath"], ["OAK Athletics", "ath"], ["AZ Diamondbacks", "ari"], ["WSH Nationals", "was"], ["Los Angeles D", "lad"]];
 
-  // Kalshi short names; the key is the slug of the normalised name.
+  // Kalshi short names plus every CFB name Novig's account data carried on
+  // 2026-09-11 (#116; Novig writes "Portland State" where Kalshi writes
+  // "Portland St." — normalizeName folds those together). The key is the slug
+  // of the normalised name.
   const CFB_TEAMS = [
     "Alabama", "Chattanooga", "Drake", "East Carolina", "Eastern Kentucky", "Georgetown",
     "Grambling St.", "Lehigh", "Lindenwood", "Louisville", "Marshall", "Michigan",
     "Missouri St.", "Montana", "Notre Dame", "Oklahoma", "Penn St.", "Rice", "TCU",
     "Texas A&M", "Villanova",
+    "Air Force", "Akron", "Alcorn State", "Appalachian State", "Arizona State", "Auburn", "Austin Peay",
+    "Ball State", "Baylor", "Boise State", "Boston College", "Bowling Green", "California", "Central Michigan",
+    "Charlotte", "Clemson", "Coastal Carolina", "Colgate", "Colorado", "Delaware", "Duke", "Duquesne",
+    "Eastern Illinois", "Eastern Michigan", "Elon", "Florida Atlantic", "Florida International", "Fordham",
+    "Gardner-Webb", "Georgia", "Georgia Southern", "Grambling", "Hawaii", "Houston", "Howard", "Idaho",
+    "Idaho State", "Illinois", "Indiana", "Indiana State", "Iowa", "Iowa State", "Jacksonville State", "Kansas",
+    "Kansas State", "Kentucky", "LSU", "Lamar", "Long Island University", "Maine", "Massachusetts", "Memphis",
+    "Mercyhurst", "Merrimack", "Miami Ohio", "Middle Tennessee", "Mississippi State", "Missouri",
+    "Montana State", "Morehead State", "Murray State", "Navy", "Nevada", "Norfolk State", "North Carolina A&T",
+    "North Carolina Central", "North Carolina State", "North Dakota", "North Dakota State", "North Texas",
+    "Northern Iowa", "Oregon State", "Pittsburgh", "Portland State", "Rhode Island", "Richmond", "Robert Morris",
+    "Rutgers", "Sam Houston State", "San Diego State", "San Jose State", "South Carolina", "South Florida",
+    "Southeast Missouri State", "Southern Mississippi", "Stony Brook", "Tarleton State", "Tennessee State",
+    "Texas Southern", "Texas Tech", "The Citadel", "Towson", "Tulane", "Tulsa", "UAB", "UAlbany", "UCLA",
+    "UL Monroe", "UNLV", "UT Rio Grande Valley", "UTEP", "UTSA", "Utah State", "Utah Tech", "Vanderbilt",
+    "Virginia", "Wake Forest", "Washington State", "Weber State", "Western Kentucky", "William & Mary",
+    "Wisconsin", "Wofford", "Youngstown State",
+  ];
+
+  // [key, full name, city, code] as Novig writes them (2026-09-11); nicknames
+  // are unique in the WNBA so the nickname fallback applies.
+  const WNBA_TEAMS = [
+    ["atl", "Atlanta Dream", "Atlanta", "ATL"],
+    ["chi", "Chicago Sky", "Chicago", "CHI"],
+    ["conn", "Connecticut Sun", "Connecticut", "CONN"],
+    ["dal", "Dallas Wings", "Dallas", "DAL"],
+    ["gsv", "Golden State Valkyries", "Golden State", "GSV"],
+    ["ind", "Indiana Fever", "Indiana", "IND"],
+    ["lv", "Las Vegas Aces", "Las Vegas", "LV"],
+    ["la", "Los Angeles Sparks", "Los Angeles", "LA"],
+    ["min", "Minnesota Lynx", "Minnesota", "MIN"],
+    ["ny", "New York Liberty", "New York", "NY"],
+    ["phx", "Phoenix Mercury", "Phoenix", "PHX"],
+    ["por", "Portland Fire", "Portland", "POR"],
+    ["sea", "Seattle Storm", "Seattle", "SEA"],
+    ["tor", "Toronto Tempo", "Toronto", "TOR"],
+    ["wsh", "Washington Mystics", "Washington", "WSH"],
   ];
 
   // Lowercase, single spaces, no periods; a trailing "st" becomes "state" so
@@ -156,7 +197,10 @@
     return { aliases, nicknames: null };
   }
 
-  const TABLES = { nfl: buildProTable("nfl", NFL_TEAMS), mlb: buildProTable("mlb", MLB_TEAMS, MLB_ALIASES), cfb: buildCfbTable() };
+  const TABLES = {
+    nfl: buildProTable("nfl", NFL_TEAMS), mlb: buildProTable("mlb", MLB_TEAMS, MLB_ALIASES),
+    wnba: buildProTable("wnba", WNBA_TEAMS), cfb: buildCfbTable(),
+  };
 
   // Key for (league, name) or null. The nickname fallback (last word) exists
   // only for leagues whose nicknames are unique.

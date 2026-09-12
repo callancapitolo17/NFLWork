@@ -38,9 +38,10 @@ test("CFB: Kalshi short names, State/St. agree, no nickname fallback", () => {
   assert.equal(teams.teamKey("cfb", "Missouri State"), "cfb:missouri-state");
   assert.equal(teams.teamKey("cfb", "Penn St."), "cfb:penn-state");
   assert.equal(teams.teamKey("cfb", "Eastern Kentucky"), "cfb:eastern-kentucky");
-  assert.equal(teams.teamKey("cfb", "Kentucky"), null);
+  assert.equal(teams.teamKey("cfb", "Kentucky"), "cfb:kentucky"); // seeded from Novig; "Eastern Kentucky" stays its own key
   assert.equal(teams.teamKey("cfb", "Notre Dame"), "cfb:notre-dame");
-  assert.equal(teams.teamKey("cfb", "Michigan State"), null);
+  assert.equal(teams.teamKey("cfb", "Michigan State"), null); // not seeded, and no nickname fallback
+  assert.equal(teams.teamKey("cfb", "Wildcats"), null);
 });
 
 test("MLB: full names (Kalshi / Novig), codes, cities that name one team, the Athletics without a city", () => {
@@ -59,9 +60,19 @@ test("MLB: full names (Kalshi / Novig), codes, cities that name one team, the At
   assert.equal(teams.teamKey("mlb", "Chicago Bears"), null); // an NFL nickname is not an MLB team
 });
 
+test("CFB: Novig's spellings resolve and agree with Kalshi's St. forms; WNBA table", () => {
+  assert.equal(teams.teamKey("cfb", "Portland State"), "cfb:portland-state");
+  assert.equal(teams.teamKey("cfb", "Portland St."), "cfb:portland-state");
+  assert.equal(teams.teamKey("cfb", "North Carolina A&T"), "cfb:north-carolina-a&t");
+  assert.equal(teams.teamKey("cfb", "Texas A&M"), "cfb:texas-a&m");
+  assert.equal(teams.teamKey("wnba", "Golden State Valkyries"), "wnba:gsv");
+  assert.equal(teams.teamKey("wnba", "Valkyries"), "wnba:gsv");
+  assert.equal(teams.teamKey("wnba", "Connecticut"), "wnba:conn");
+});
+
 test("unknown league or name is null, never a guess", () => {
   assert.equal(teams.teamKey("nba", "Washington"), null);
   assert.equal(teams.teamKey("nfl", "Springfield Isotopes"), null);
   assert.equal(teams.teamKey(undefined, "Chicago Bears"), null);
-  assert.deepEqual(teams.knownLeagues(), ["nfl", "mlb", "cfb"]);
+  assert.deepEqual(teams.knownLeagues(), ["nfl", "mlb", "wnba", "cfb"]);
 });

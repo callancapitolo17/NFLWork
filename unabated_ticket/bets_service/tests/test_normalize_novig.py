@@ -120,9 +120,22 @@ def test_parlays_one_record_per_leg(novig_rows):
 def test_dedupe_on_native_id_and_rows_without_id_skipped(novig_rows):
     orders, _ = novig_rows
     order = next(o for o in orders if o["id"] == "o-ml-car")
-    items = normalize_novig([order, {**order, "qty": 100, "status": "OPEN", "fills": []}, {"market": {}, "outcome": {}}], [], NOVIG_READ_AT)
+    items = normalize_novig([order, {**order, "qty": order["originalQty"], "status": "OPEN", "fills": []}, {"market": {}, "outcome": {}}], [], NOVIG_READ_AT)
     assert len(items) == 1
     assert items[0]["approx"] == [APPROX_UNMATCHED]
+
+
+def test_qty_is_hundredths_fractional_settlement_and_title_case_parlay_status(novig_rows):
+    orders, parlays = novig_rows
+    won = next(o for o in orders if o["id"] == "o-won")
+    record = normalize_order(won, NOVIG_READ_AT)
+    assert record["raw"]["originalQty"] == 50 and record["contracts"] == 50 and record["stake"] == 30
+    at = lambda status, is_bid=True: normalize_order({**won, "isBid": is_bid, "outcome": {**won["outcome"], "status": status}}, NOVIG_READ_AT)["status"]
+    assert (at("0.50"), at("1"), at("0"), at("0.72"), at("0", is_bid=False)) == ("push", "won", "lost", "unknown", "won")
+    from unabated_ticket.bets_service.sources.novig import normalize_parlay
+    parlay = parlays[0]
+    assert normalize_parlay({**parlay, "status": "Unfilled", "wager": None}, NOVIG_READ_AT)[0]["status"] == "void"
+    assert normalize_parlay({**parlay, "status": "Filled"}, NOVIG_READ_AT)[0]["status"] == "open"
 
 
 @pytest.mark.parametrize("probability, american", [(0.5, -100), (0.58, -138), (0.4, 150), (0, None), (1, None), (None, None)])
