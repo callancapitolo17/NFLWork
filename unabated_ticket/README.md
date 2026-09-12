@@ -540,7 +540,10 @@ order is `open` on its full size with `approx: ["novig_order_unmatched"]`
 record per leg (`id` `novig:<parlay>:<leg>`, stake = the parlay's wager).
 Team keys are left null; the panel resolves `game.awayTeam.name` /
 `homeTeam.name` through `teams.js` (the runtime index below — Novig's full
-names are Unabated's for every team seen so far, with three aliases).
+names are Unabated's for every team seen so far, with six aliases).
+Novig sends no rotation number, so the team pair is the ONLY way a Novig
+bet reaches a line: one unrecognised name blocks the bet outright, and
+it lands in the Bets tab's unmatched list naming the spelling to add.
 
 Caveat: the fixture's shapes come from the bundle's operation documents and
 the fragments the cards read the `market` / `outcome` / `fills` JSON blobs
@@ -780,12 +783,20 @@ in red.
   the board side never name-matches at all. A venue spelling resolves by
   exact normalised name (St. = State), then a hand alias (`ALIASES` in
   `teams.js`: "UAlbany" → "Albany", "North Carolina State" → "NC State",
-  "Southern Mississippi" → "Southern Miss"), then the name minus a leading
+  "Southern Mississippi" → "Southern Miss", "Prairie View A&M" → "Prairie
+  View", "Louisiana" → "UL Lafayette", "Southeastern Louisiana" → "SE
+  Louisiana"), then the name minus a leading
   code token ("PIT Steelers"), then a UNIQUE word-boundary containment
   ("Steelers", "New England", "Middle Tennessee" → "Middle Tennessee State",
   "Grambling St." → "Grambling" only because the leftover is an
   institutional suffix). Two candidates is null, never a guess. If a
   spelling keeps failing, add one `ALIASES` row with a `teams.test.js` case.
+  Resist turning an alias into a rule: "A&M" as an institutional suffix
+  would map a bet on Texas A&M to Texas on any week Unabated lists Texas
+  and not Texas A&M, since the index holds only the teams currently
+  playing. Measured 2026-09-12 against 111 open bets, every one of the 16
+  cross-spelling resolutions the rules make was correct, and the only
+  failures were three names no rule can derive.
 - **Bets: unmatched "ambiguous game"**: two board events accept the bet
   (a doubleheader or series without a start time on the venue side). The
   panel refuses to guess; the bet still counts in the header.
