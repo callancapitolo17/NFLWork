@@ -51,6 +51,8 @@ main { margin-bottom: 16px; }
 }
 .warning.bad { background: var(--bad-bg); color: var(--bad-fg); }
 .error .side { color: var(--bad-fg); }
+/* The capture detail is one long field dump; it must wrap, not push the panel sideways. */
+#error-detail { overflow-wrap: anywhere; }
 button { font: inherit; padding: 6px 12px; cursor: pointer; }
 #copy-status { margin-left: 8px; }
 .settings {
