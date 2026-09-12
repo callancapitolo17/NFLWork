@@ -166,11 +166,13 @@ and grow from the unmatched list.
   per match (strongest first, at most 5 then "+N more"), `opposite` in the
   red `.bad` style. Nothing shown when no match; "bet sources unavailable" in
   the existing warning strip when every source is stale or absent.
-- **Edges tab** — a badge per row: `BET` (same_line/same_side), `OTHER SIDE`
-  (red), `GAME`. A **"Hide lines I've bet"** checkbox hides `same_line` +
-  `same_side` rows only — `opposite` and `same_game` stay visible because
-  they are warnings. Alerts skip lines that would be hidden (same setting;
-  default off like the filter).
+- **Edges tab** — *revised 2026-09-11 before merge (user decision): a held
+  bet never hides a line, it changes the size of the next one.* Each row
+  carries `held $N` (same_line + same_side dollars), `against $N` (red,
+  opposite) or `game`, a dim "you hold …" position line, and a stake sized
+  against the position: `+$X of $Y`, `at size`, `$Y reverses $Z`; sort "by
+  my exposure"; alerts skip only lines already held at size. The original
+  "Hide lines I've bet" checkbox was built in phase 3 and removed here.
 - **Bets tab** (third tab) — (1) per-venue freshness table, one row per
   registered source (`fetchedAt`, count, error; green/amber/red at 5 min /
   60 min; the service itself "unreachable since …" in red; a venue with no
@@ -186,7 +188,7 @@ and grow from the unmatched list.
 
 - `chrome.storage.local`: `betsService` (last `/bets.json` payload +
   `fetchedAt`), `betsSettings` (`serviceUrl` default
-  `http://127.0.0.1:8094`, `hideBet`); venue content scripts (#116/#117) add
+  `http://127.0.0.1:8094`); venue content scripts (#116/#117) add
   `betsNovig` / `betsProphetxPage`. A record is ~1 KB; the extension keeps
   **open bets + settled within 30 days** and prunes on load, so a heavy
   month stays under 1 MB of the 10 MB quota.

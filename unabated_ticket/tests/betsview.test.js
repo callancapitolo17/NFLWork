@@ -105,12 +105,35 @@ test("bannerLines: at most five, strongest first as given, and the count of the 
   assert.deepEqual(view.bannerLines([]), { shown: [], more: 0 });
 });
 
-test("badgeText: BET for same_line and same_side, OTHER SIDE, GAME, null otherwise", () => {
-  assert.equal(view.badgeText("same_line"), "BET");
-  assert.equal(view.badgeText("same_side"), "BET");
-  assert.equal(view.badgeText("opposite"), "OTHER SIDE");
-  assert.equal(view.badgeText("same_game"), "GAME");
+test("badgeText / badgeKind: dollars held win, then dollars against, then a plain game marker", () => {
+  const flag = (tier, held, against) => ({ tier, matches: [], exposure: { held, against, heldBets: [], againstBets: [] } });
+  assert.equal(view.badgeText(flag("same_line", 300, 0)), "held $300");
+  assert.equal(view.badgeText(flag("same_side", 12.5, 20)), "held $12.50");
+  assert.equal(view.badgeText(flag("opposite", 0, 200)), "against $200");
+  assert.equal(view.badgeText(flag("same_game", 0, 0)), "game");
+  assert.equal(view.badgeText({ tier: null, matches: [], exposure: { held: 0, against: 0 } }), null);
   assert.equal(view.badgeText(null), null);
+  assert.deepEqual(["same_line", "opposite", "same_game"].map((tier) => view.badgeKind(flag(tier, tier === "same_line" ? 1 : 0, tier === "opposite" ? 1 : 0))), ["held", "against", "game"]);
+});
+
+test("stakeAdvice: none, add the difference, at size when held covers the stake, reverse with the net", () => {
+  const exposure = (held, against) => ({ held, against, heldBets: [], againstBets: [] });
+  assert.deepEqual(view.stakeAdvice(500, exposure(0, 0)), { kind: "none" });
+  assert.deepEqual(view.stakeAdvice(500, exposure(300, 0)), { kind: "add", add: 200, held: 300, stake: 500 });
+  assert.deepEqual(view.stakeAdvice(520, exposure(600, 0)), { kind: "at_size", held: 600, stake: 520 });
+  assert.deepEqual(view.stakeAdvice(null, exposure(600, 0)), { kind: "at_size", held: 600, stake: null });
+  assert.deepEqual(view.stakeAdvice(0, exposure(100, 0)), { kind: "at_size", held: 100, stake: null });
+  assert.deepEqual(view.stakeAdvice(500, exposure(0, 200)), { kind: "reverse", against: 200, stake: 500, net: 300 });
+  assert.deepEqual(view.stakeAdvice(100, exposure(0, 200)), { kind: "reverse", against: 200, stake: 100, net: -100 });
+  assert.deepEqual(view.stakeAdvice(500, exposure(300, 200)).kind, "add");
+});
+
+test("positionLines: one line per held bet then per against bet", () => {
+  const held = record("kalshi:h:yes", "open", { stake: 300, placedAt: "2026-09-10T18:15:00Z" });
+  const against = record("kalshi:a:no", "open", { side: "home", points: 5.5, price: -150, stake: 200, placedAt: null });
+  const lines = view.positionLines({ tier: "same_line", matches: [], exposure: { held: 300, against: 200, heldBets: [held], againstBets: [against] } });
+  assert.deepEqual(lines, ["you hold Chattanooga -5.5 +138 · $300 · Kalshi · Sep 10 2:15 PM", "other side: Eastern Kentucky +5.5 -150 · $200 · Kalshi"]);
+  assert.deepEqual(view.positionLines(null), []);
 });
 
 test("mergeServicePayload: fresh wins on the same id, team keys are filled, old settled bets are pruned", () => {
@@ -160,7 +183,7 @@ test("ticketAsLine: naive-UTC eventStart parsed, period defaults to FG, fields t
 });
 
 test("sanitizeBetsSettings: defaults, a trailing slash trimmed, junk ignored", () => {
-  assert.deepEqual(view.sanitizeBetsSettings(null), { serviceUrl: "http://127.0.0.1:8094", hideBet: false });
-  assert.deepEqual(view.sanitizeBetsSettings({ serviceUrl: "http://localhost:9000/", hideBet: true }), { serviceUrl: "http://localhost:9000", hideBet: true });
-  assert.deepEqual(view.sanitizeBetsSettings({ serviceUrl: "not a url", hideBet: "yes" }), { serviceUrl: "http://127.0.0.1:8094", hideBet: false });
+  assert.deepEqual(view.sanitizeBetsSettings(null), { serviceUrl: "http://127.0.0.1:8094" });
+  assert.deepEqual(view.sanitizeBetsSettings({ serviceUrl: "http://localhost:9000/", hideBet: true }), { serviceUrl: "http://localhost:9000" });
+  assert.deepEqual(view.sanitizeBetsSettings({ serviceUrl: "not a url" }), { serviceUrl: "http://127.0.0.1:8094" });
 });

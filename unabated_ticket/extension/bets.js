@@ -536,14 +536,30 @@
     return { matches, unmatched };
   }
 
-  // Per Edges row: the strongest tier (or null), its matches, and whether the
-  // "hide lines I've bet" filter removes it — same_line and same_side only;
-  // opposite and same_game are warnings and stay visible.
+  // Dollars already risked on this line's market, from its matches: `held` is
+  // the same direction (same_line + same_side — a different number is still
+  // the same opinion), `against` the other side. Stake is dollars risked at
+  // every venue, so both compare directly with a Kelly stake. same_game
+  // matches carry no dollars here: they do not change how this line is sized.
+  function exposureOf(matches) {
+    const heldBets = [];
+    const againstBets = [];
+    for (const match of matches) {
+      if (match.tier === "same_line" || match.tier === "same_side") heldBets.push(match.bet);
+      else if (match.tier === "opposite") againstBets.push(match.bet);
+    }
+    const sum = (list) => roundCents(list.reduce((total, bet) => total + (typeof bet.stake === "number" ? bet.stake : 0), 0));
+    return { held: sum(heldBets), against: sum(againstBets), heldBets, againstBets };
+  }
+
+  // Per Edges row: the strongest tier (or null), its matches, and the dollars
+  // already on the market. A bet you hold never hides a line — it changes the
+  // size of the next one (see betsview.stakeAdvice).
   function annotateRows(rows, bets) {
     return rows.map((row) => {
       const { matches } = matchBets(row, bets, { lines: rows });
       const tier = matches.length ? matches[0].tier : null;
-      return { tier, matches, hidden: tier === "same_line" || tier === "same_side" };
+      return { tier, matches, exposure: exposureOf(matches) };
     });
   }
 
@@ -613,8 +629,8 @@
   const api = {
     TIE_CAVEAT, GAME_SERIES, RETENTION_DAYS_DEFAULT,
     normalizeKalshi, parseEventSuffix, centsToAmerican,
-    matchBets, annotateRows, unmatchedReasons, pruneForRetention, dedupeByNativeId, resolveTeamKeys,
-    describeBet, formatPlacedAt,
+    matchBets, annotateRows, exposureOf, unmatchedReasons, pruneForRetention, dedupeByNativeId, resolveTeamKeys,
+    describeBet, formatPlacedAt, formatStake,
   };
 
   if (typeof module !== "undefined" && module.exports) {

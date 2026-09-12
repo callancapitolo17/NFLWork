@@ -38,6 +38,7 @@
           <div class="payout-cell"><div class="payout-label">Payout</div><div class="payout-value" id="payout"></div></div>
         </div>
         <div class="muted" id="full-kelly"></div>
+        <div class="stake-exposure" id="stake-exposure" hidden></div>
       </div>
 
       <button id="copy" type="button">Copy</button>
@@ -105,10 +106,10 @@
             <option value="edge">by edge</option>
             <option value="stake">by stake</option>
             <option value="start">by start time</option>
+            <option value="exposure">by my exposure</option>
           </select>
         </label>
         <label title="One card per game, market and side showing its best line (highest stake); the other books and rungs sit behind the card's expander"><input type="checkbox" id="edges-group"> Group by market</label>
-        <label title="Hide lines you already have a bet on (same side, any number). Other-side and same-game flags stay visible as warnings. Alerts skip hidden lines too."><input type="checkbox" id="edges-hide-bet"> Hide lines I've bet</label>
       </div>
       <div class="control-row" id="edges-alts">
         <label title="Also list each book's alternate spreads and totals (Unabated prices every rung). They refresh only with the league snapshot (1-5 min), never with the stream."><input type="checkbox" id="edges-include-alts"> Include alt lines</label>

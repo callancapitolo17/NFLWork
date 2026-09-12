@@ -127,11 +127,17 @@ button.small { font-size: 11px; padding: 2px 6px; }
 .bet-match.bad { background: var(--bad-bg); color: var(--bad-fg); }
 .bet-match.more { background: none; color: var(--muted); font-weight: 400; padding: 0 10px; }
 .edge-bet {
-  display: inline-block; margin-right: 6px; padding: 0 5px; border-radius: 3px; vertical-align: 2px;
-  background: var(--warn-bg); color: var(--warn-fg); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; white-space: nowrap;
+  display: inline-block; margin-right: 6px; padding: 0 5px; border-radius: 3px; vertical-align: 1px;
+  background: var(--warn-bg); color: var(--warn-fg); font-size: 11px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums;
 }
-.edge-bet.tier-opposite { background: var(--bad-bg); color: var(--bad-fg); }
-.edge-bet.tier-same_game { background: none; border: 1px solid var(--border); color: var(--muted); }
+.edge-bet.kind-against { background: var(--bad-bg); color: var(--bad-fg); }
+.edge-bet.kind-game { background: none; border: 1px solid var(--border); color: var(--muted); font-weight: 500; }
+.edge-position { color: var(--muted); font-size: 12px; }
+.edge-row .edge-stake small { font-weight: 400; color: var(--muted); margin-left: 4px; }
+.edge-row .edge-stake.at-size { color: var(--muted); }
+.stake-exposure { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); font-size: 13px; font-variant-numeric: tabular-nums; }
+.stake-exposure .stake-add { font-size: 20px; font-weight: 700; }
+.stake-exposure.against { color: var(--bad-fg); }
 .bets-sources { width: 100%; border-collapse: collapse; font-size: 12px; margin: 4px 0 8px; }
 .bets-sources th { text-align: left; color: var(--muted); font-weight: 600; padding: 2px 6px 2px 0; border-bottom: 1px solid var(--border); }
 .bets-sources td { padding: 3px 6px 3px 0; border-bottom: 1px solid var(--border); vertical-align: top; font-variant-numeric: tabular-nums; }

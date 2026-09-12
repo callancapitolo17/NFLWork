@@ -24,8 +24,7 @@
   const FRESH_MS = 5 * 60 * 1000;
   const STALE_MS = 60 * 60 * 1000;
   const BANNER_MAX_LINES = 5;
-  const DEFAULT_BETS_SETTINGS = { serviceUrl: "http://127.0.0.1:8094", hideBet: false };
-  const BADGE_TEXT = { same_line: "BET", same_side: "BET", opposite: "OTHER SIDE", same_game: "GAME" };
+  const DEFAULT_BETS_SETTINGS = { serviceUrl: "http://127.0.0.1:8094" };
 
   // "20 s" / "3 min" / "2 h" / "3 d" — the header line's short form.
   function fmtAgeShort(ms) {
@@ -102,8 +101,55 @@
     return { shown: matches.slice(0, limit), more: Math.max(0, matches.length - limit) };
   }
 
-  function badgeText(tier) {
-    return BADGE_TEXT[tier] || null;
+  // The row badge: what you already have on this market, in dollars. `held`
+  // wins over `against` when both exist (the against bets stay in the tooltip);
+  // a same_game match is a plain "game" marker — it does not change the size.
+  function badgeText(flag) {
+    if (!flag || !flag.tier) return null;
+    const exposure = flag.exposure || { held: 0, against: 0 };
+    if (exposure.held > 0) return `held ${bets.formatStake(exposure.held)}`;
+    if (exposure.against > 0) return `against ${bets.formatStake(exposure.against)}`;
+    if (flag.tier === "same_game") return "game";
+    return null;
+  }
+
+  // The badge's colour class: held (warning tint), against (red), game (outline).
+  function badgeKind(flag) {
+    if (!flag || !flag.tier) return null;
+    const exposure = flag.exposure || { held: 0, against: 0 };
+    if (exposure.held > 0) return "held";
+    if (exposure.against > 0) return "against";
+    return "game";
+  }
+
+  // What to do with a Kelly stake given what you already hold on the market.
+  //   none     nothing held either way: the stake stands
+  //   add      held less than the stake: top up by `add` (the number to act on)
+  //   at_size  held the stake or more (or no stake could be computed): nothing to add
+  //   reverse  on the other side only: the stake stands and `net` is what is
+  //            left after it cancels the against position (negative = still net against)
+  function stakeAdvice(stake, exposure) {
+    const held = exposure && exposure.held > 0 ? exposure.held : 0;
+    const against = exposure && exposure.against > 0 ? exposure.against : 0;
+    const sized = typeof stake === "number" && stake > 0;
+    if (held > 0) {
+      if (sized && stake > held) return { kind: "add", add: Math.round((stake - held) * 100) / 100, held, stake };
+      return { kind: "at_size", held, stake: sized ? stake : null };
+    }
+    if (against > 0) return { kind: "reverse", against, stake: sized ? stake : null, net: sized ? Math.round((stake - against) * 100) / 100 : null };
+    return { kind: "none" };
+  }
+
+  // "you hold Texas A&M -38.5 -110 · Kalshi · Sep 10 2:15 PM" — one line per
+  // held or against bet, for the row's third line and the ticket's facts.
+  function positionLines(flag) {
+    const exposure = flag && flag.exposure;
+    if (!exposure) return [];
+    const describe = (bet) => `${bets.describeBet(bet)} · ${bets.formatStake(bet.stake)} · ${bet.venue ? bet.venue.charAt(0).toUpperCase() + bet.venue.slice(1) : "unknown venue"}${bet.placedAt ? ` · ${bets.formatPlacedAt(bet.placedAt)}` : ""}`;
+    return [
+      ...exposure.heldBets.map((bet) => `you hold ${describe(bet)}`),
+      ...exposure.againstBets.map((bet) => `other side: ${describe(bet)}`),
+    ];
   }
 
   // Venues whose latest service poll succeeded: the payload is then the whole
@@ -145,14 +191,13 @@
     const base = { ...DEFAULT_BETS_SETTINGS };
     if (!stored || typeof stored !== "object") return base;
     if (typeof stored.serviceUrl === "string" && /^https?:\/\/\S+$/.test(stored.serviceUrl)) base.serviceUrl = stored.serviceUrl.replace(/\/+$/, "");
-    if (typeof stored.hideBet === "boolean") base.hideBet = stored.hideBet;
     return base;
   }
 
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badgeText, venuesWithFreshPull, mergeServicePayload, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badgeText, badgeKind, stakeAdvice, positionLines, venuesWithFreshPull, mergeServicePayload, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

@@ -445,7 +445,7 @@ test("game match: a closed position on the same market never matches", () => {
 
 // ---- annotateRows / unmatchedReasons ---------------------------------------------
 
-test("annotateRows: strongest tier per row; hidden only for same_line and same_side", () => {
+test("annotateRows: strongest tier per row, with the dollars held and against on the market", () => {
   const records = normalizedFixture();
   const rows = [
     cfbRow({ sideIndex: 0, points: -5.5 }),
@@ -456,8 +456,24 @@ test("annotateRows: strongest tier per row; hidden only for same_line and same_s
   ];
   const annotated = bets.annotateRows(rows, records);
   assert.deepEqual(annotated.map((a) => a.tier), ["same_line", "same_side", "opposite", "same_game", null]);
-  assert.deepEqual(annotated.map((a) => a.hidden), [true, true, false, false, false]);
+  assert.ok(annotated.every((a) => a.exposure && typeof a.exposure.held === "number" && typeof a.exposure.against === "number"));
+  assert.ok(annotated[0].exposure.held > 0 && annotated[0].exposure.against === 0);
+  assert.ok(annotated[2].exposure.against > 0 && annotated[2].exposure.held === 0);
+  assert.deepEqual(annotated[4].exposure, { held: 0, against: 0, heldBets: [], againstBets: [] });
   assert.equal(annotated[0].matches[0].bet.id, "kalshi:KXNCAAFSPREAD-26SEP12CHATEKY-CHAT6:yes");
+});
+
+test("exposureOf: held sums same_line + same_side stakes, against sums opposite, same_game adds nothing", () => {
+  const bet = (stake) => ({ stake });
+  const exposure = bets.exposureOf([
+    { tier: "same_line", bet: bet(100) }, { tier: "same_side", bet: bet(50.5) },
+    { tier: "opposite", bet: bet(20) }, { tier: "same_game", bet: bet(999) }, { tier: "opposite", bet: bet(null) },
+  ]);
+  assert.equal(exposure.held, 150.5);
+  assert.equal(exposure.against, 20);
+  assert.equal(exposure.heldBets.length, 2);
+  assert.equal(exposure.againstBets.length, 2);
+  assert.deepEqual(bets.exposureOf([]), { held: 0, against: 0, heldBets: [], againstBets: [] });
 });
 
 test("unmatchedReasons: every open bet with no match, with why", () => {

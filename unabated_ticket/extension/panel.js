@@ -58,7 +58,7 @@
     warning: el("warning"), sideLabel: el("side-label"), betLine: el("bet-line"),
     eventLine: el("event-line"), startLine: el("start-line"),
     book: el("book"), price: el("price"), fair: el("fair"), edge: el("edge"),
-    stake: el("stake"), fullKelly: el("full-kelly"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
+    stake: el("stake"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
     copy: el("copy"), copyStatus: el("copy-status"),
     errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
@@ -70,7 +70,7 @@
     edgesIncludeAlts: el("edges-include-alts"), edgesAltDistance: el("edges-alt-distance"), edgesAltLiquidity: el("edges-alt-liquidity"), edgesGroup: el("edges-group"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
     alertsEnabled: el("alerts-enabled"), alertsMin: el("alerts-min"),
-    betsHeader: el("bets-header"), betsBanner: el("bets-banner"), edgesHideBet: el("edges-hide-bet"),
+    betsHeader: el("bets-header"), betsBanner: el("bets-banner"),
     tabBets: el("tab-bets"), betsService: el("bets-service"), betsSources: el("bets-sources"),
     betsUrl: el("bets-url"), betsSettingsError: el("bets-settings-error"),
     betsOpen: el("bets-open"), betsOpenCount: el("bets-open-count"), betsOpenEmpty: el("bets-open-empty"),
@@ -246,7 +246,7 @@
     view.betLine.textContent = `${describeSide(ticket)}${ticket.isAlt ? " \u00b7 alt line" : ""}`;
     view.eventLine.textContent = describeMatchup(ticket);
     view.startLine.textContent = fmtStart(ticket.eventStart);
-    renderBetBanner(ticket);
+    const betFlag = renderBetBanner(ticket);
 
     const { line, result, reason } = computeStake(ticket, settings);
     view.book.textContent = ticket.book.name;
@@ -276,6 +276,7 @@
       view.payoutRow.hidden = false;
       payoutText = ` | to win $${(payout - result.stake).toFixed(2)} | payout $${payout.toFixed(2)}`;
     }
+    renderStakeExposure(result ? result.stake : null, betFlag);
 
     const stakeText = result ? result.stake.toFixed(2) : "n/a";
     lastCopyText = `${ticket.sideLabel} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${payoutText} | ${describeMatchup(ticket)}`;
@@ -285,6 +286,7 @@
 
   // Every open bet on this line's game, strongest tier first: same line, same
   // side, the other side (red), anything else on the game. Nothing when none.
+  // Returns the row-style flag {tier, matches, exposure} for the stake block.
   function renderBetBanner(ticket) {
     const line = betsView.ticketAsLine(ticket);
     const { matches } = betsLib.matchBets(line, state.betRecords, { lines: boardLines() });
@@ -303,6 +305,43 @@
     }
     view.betsBanner.replaceChildren(...items);
     view.betsBanner.hidden = items.length === 0;
+    return { tier: matches.length ? matches[0].tier : null, matches, exposure: betsLib.exposureOf(matches) };
+  }
+
+  // Under the Kelly stake: what you already hold on this market and the
+  // number to act on — "Held $300 · add $200", "At size: held $600, Kelly
+  // $520", or in red "Other side $200 · net $300 on this side".
+  function renderStakeExposure(stake, flag) {
+    const advice = betsView.stakeAdvice(stake, flag.exposure);
+    view.stakeExposure.classList.toggle("against", advice.kind === "reverse");
+    view.stakeExposure.hidden = advice.kind === "none";
+    if (advice.kind === "none") {
+      view.stakeExposure.replaceChildren();
+      return;
+    }
+    const summary = document.createElement("div");
+    if (advice.kind === "add") {
+      summary.append(`Held ${fmtDollars(advice.held)} · add `);
+      const add = document.createElement("span");
+      add.className = "stake-add";
+      add.textContent = fmtDollars(advice.add);
+      summary.append(add);
+    } else if (advice.kind === "at_size") {
+      summary.textContent = advice.stake == null
+        ? `At size: held ${fmtDollars(advice.held)}, nothing to size here`
+        : `At size: held ${fmtDollars(advice.held)}, Kelly ${fmtDollars(advice.stake)}`;
+    } else {
+      summary.textContent = advice.net == null
+        ? `Other side ${fmtDollars(advice.against)}`
+        : `Other side ${fmtDollars(advice.against)} · net ${fmtDollars(Math.abs(advice.net))} ${advice.net >= 0 ? "on this side" : "still against"}`;
+    }
+    const positions = betsView.positionLines(flag).map((text) => {
+      const div = document.createElement("div");
+      div.className = "muted";
+      div.textContent = text;
+      return div;
+    });
+    view.stakeExposure.replaceChildren(summary, ...positions);
   }
 
   // Two kinds of capture error need opposite advice: no_fair is Unabated
@@ -425,7 +464,6 @@
     }
     parts.push(`bets: ${Array.from(effective.betTypeIds).map((id) => feed.BET_TYPES[id]).join("/") || "none"}`);
     parts.push(describeAltFilter(state.edgeSettings));
-    if (state.betsSettings.hideBet) parts.push(`hiding ${hiddenBetRows} line${hiddenBetRows === 1 ? "" : "s"} you've bet`);
     return parts.join(" · ");
   }
 
@@ -515,18 +553,21 @@
     };
   }
 
-  // How many rows the "Hide lines I've bet" filter removed on the last list render.
-  let hiddenBetRows = 0;
-
-  // Each row gets `bet` = {tier, matches, hidden} from the open bet records;
-  // with the hide filter on, same_line / same_side rows are dropped (opposite
-  // and same_game are warnings and stay). Applies to the list and to alerts.
+  // Each row gets `bet` = {tier, matches, exposure, advice} from the open bet
+  // records: what you hold on that market and how the Kelly stake changes
+  // for it. No row is ever hidden for being bet — the edge still being there
+  // after you bet it is information, and the stake column carries the top-up.
   function withBetFlags(rows) {
     const flags = betsLib.annotateRows(rows, state.betRecords);
-    const flagged = rows.map((row, index) => ({ ...row, bet: flags[index] }));
-    if (!state.betsSettings.hideBet) return { rows: flagged, hidden: 0 };
-    const kept = flagged.filter((row) => !row.bet.hidden);
-    return { rows: kept, hidden: flagged.length - kept.length };
+    return rows.map((row, index) => {
+      const flag = flags[index];
+      return { ...row, bet: { ...flag, advice: betsView.stakeAdvice(row.stake, flag.exposure) } };
+    });
+  }
+
+  // Sort key for "by my exposure": dollars on the market, held or against.
+  function exposureDollars(row) {
+    return row.bet ? row.bet.exposure.held + row.bet.exposure.against : 0;
   }
 
   function currentEdgeRows() {
@@ -535,10 +576,10 @@
     const settings = state.edgeSettings;
     const selected = feed.selectEdges(scannerState, { ...edgeSelectionOptions(effective), minEdge: settings.minEdgePct / 100 })
       .map((row) => ({ ...row, stake: stakeFor(row) }));
-    const { rows, hidden } = withBetFlags(selected);
-    hiddenBetRows = hidden;
+    const rows = withBetFlags(selected);
     if (settings.sortBy === "stake") rows.sort((a, b) => (b.stake ?? -1) - (a.stake ?? -1) || b.edgePct - a.edgePct);
     if (settings.sortBy === "start") rows.sort((a, b) => a.eventStartMs - b.eventStartMs || b.edgePct - a.edgePct);
+    if (settings.sortBy === "exposure") rows.sort((a, b) => exposureDollars(b) - exposureDollars(a) || b.edgePct - a.edgePct);
     return rows;
   }
 
@@ -549,21 +590,52 @@
     const sortBy = state.edgeSettings.sortBy;
     if (sortBy === "edge") groups.sort((a, b) => b.best.edgePct - a.best.edgePct || a.eventStartMs - b.eventStartMs);
     if (sortBy === "start") groups.sort((a, b) => a.eventStartMs - b.eventStartMs || b.best.edgePct - a.best.edgePct);
+    if (sortBy === "exposure") groups.sort((a, b) => exposureDollars(b.best) - exposureDollars(a.best) || b.best.edgePct - a.best.edgePct);
     return groups;
   }
 
   // Cards the user has opened; survives the 5s re-render, not a panel reload.
   const expandedGroups = new Set();
 
-  // BET / OTHER SIDE / GAME, with every match's label as the tooltip.
+  // "held $300" / "against $200" / "game", with every match's label as the tooltip.
   function betBadge(flag) {
-    const text = flag ? betsView.badgeText(flag.tier) : null;
+    const text = betsView.badgeText(flag);
     if (!text) return null;
     const badge = document.createElement("span");
-    badge.className = `edge-bet tier-${flag.tier}`;
+    badge.className = `edge-bet kind-${betsView.badgeKind(flag)}`;
     badge.textContent = text;
     badge.title = flag.matches.map((match) => match.label).join("\n");
     return badge;
+  }
+
+  // The row's stake cell sized against what you hold: "$500", "+$200 of $500",
+  // "at size $600 of $520", "$500 reverses $200".
+  function fillStakeCell(cell, row) {
+    const advice = row.bet ? row.bet.advice : { kind: "none" };
+    const note = document.createElement("small");
+    cell.classList.toggle("at-size", advice.kind === "at_size");
+    if (advice.kind === "add") {
+      cell.append(`+${fmtDollars(advice.add)} `, note);
+      note.textContent = `of ${fmtDollars(advice.stake)}`;
+    } else if (advice.kind === "at_size") {
+      cell.append("at size ", note);
+      note.textContent = advice.stake == null ? `held ${fmtDollars(advice.held)}` : `${fmtDollars(advice.held)} of ${fmtDollars(advice.stake)}`;
+    } else if (advice.kind === "reverse") {
+      cell.append(`${row.stake == null ? "—" : fmtDollars(row.stake)} `, note);
+      note.textContent = `reverses ${fmtDollars(advice.against)}`;
+    } else {
+      cell.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
+    }
+  }
+
+  // The dim line under a row naming the position(s) behind its badge.
+  function positionLine(flag) {
+    const lines = flag ? betsView.positionLines(flag) : [];
+    if (!lines.length) return null;
+    const div = document.createElement("div");
+    div.className = "edge-position";
+    div.textContent = lines.join(" · ");
+    return div;
   }
 
   // compact: inside a card, where the matchup and market are on the card.
@@ -608,11 +680,11 @@
     liquidity.textContent = [compact ? altOf : "", fmtLineAge(row.modifiedMs), fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ");
     const stake = document.createElement("span");
     stake.className = "edge-stake";
-    stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
+    fillStakeCell(stake, row);
     bottom.append(book, liquidity, stake);
 
     if (compact) li.append(top, bottom);
-    else li.append(top, bet, matchup, bottom);
+    else li.append(top, bet, matchup, ...[positionLine(row.bet)].filter(Boolean), bottom);
     return li;
   }
 
@@ -642,7 +714,7 @@
     const expanded = expandedGroups.has(group.key);
     const shown = expanded ? group.rows : group.rows.slice(0, 1);
     lines.append(...shown.map((row) => renderEdgeRow(row, true)));
-    li.append(top, market, lines);
+    li.append(top, market, ...[positionLine(group.best.bet)].filter(Boolean), lines);
     if (group.rows.length > 1) {
       const more = document.createElement("button");
       more.type = "button";
@@ -885,7 +957,8 @@
   function alertRows() {
     const selected = feed.selectEdges(scannerState, { ...edgeSelectionOptions(effectiveFilter()), minEdge: state.alertSettings.minEdgePct / 100 })
       .map((row) => ({ ...row, stake: stakeFor(row) }));
-    return withBetFlags(selected).rows;
+    // A line you already hold at size has nothing to act on; everything else alerts as before.
+    return withBetFlags(selected).filter((row) => row.bet.advice.kind !== "at_size");
   }
 
   // Runs after every scanner update. Baseline first, then one notification
@@ -1059,7 +1132,7 @@
     if (Array.isArray(stored.bookIds)) base.bookIds = stored.bookIds.filter((id) => Number.isInteger(id));
     if (typeof stored.minEdgePct === "number" && stored.minEdgePct >= 0) base.minEdgePct = stored.minEdgePct;
     if (typeof stored.maxLineAgeHours === "number" && stored.maxLineAgeHours > 0) base.maxLineAgeHours = stored.maxLineAgeHours;
-    if (["edge", "stake", "start"].includes(stored.sortBy)) base.sortBy = stored.sortBy;
+    if (["edge", "stake", "start", "exposure"].includes(stored.sortBy)) base.sortBy = stored.sortBy;
     if (typeof stored.includeAlts === "boolean") base.includeAlts = stored.includeAlts;
     if (typeof stored.altMaxDistance === "number" && stored.altMaxDistance >= 0) base.altMaxDistance = stored.altMaxDistance;
     if (typeof stored.altMinLiquidity === "number" && stored.altMinLiquidity >= 0) base.altMinLiquidity = stored.altMinLiquidity;
@@ -1202,12 +1275,11 @@
   function readBetsSettingInputs() {
     const serviceUrl = view.betsUrl.value.trim().replace(/\/+$/, "");
     if (!/^https?:\/\/\S+$/.test(serviceUrl)) return { error: "Service URL must start with http:// or https://." };
-    return { settings: { serviceUrl, hideBet: view.edgesHideBet.checked } };
+    return { settings: { serviceUrl } };
   }
 
   function fillBetsSettingInputs() {
     view.betsUrl.value = state.betsSettings.serviceUrl;
-    view.edgesHideBet.checked = state.betsSettings.hideBet;
   }
 
   function onBetsSettingsInput() {
@@ -1217,7 +1289,6 @@
     const urlChanged = parsed.settings.serviceUrl !== state.betsSettings.serviceUrl;
     state.betsSettings = parsed.settings;
     chrome.storage.local.set({ betsSettings: parsed.settings });
-    renderEdges();
     if (urlChanged) pollBets().catch((error) => console.error("[unabated-ticket] bets poll failed", error));
   }
 
@@ -1325,7 +1396,6 @@
   view.edgesGroup.addEventListener("change", onEdgeSettingsInput);
   view.alertsEnabled.addEventListener("change", onAlertSettingsInput);
   view.alertsMin.addEventListener("input", onAlertSettingsInput);
-  view.edgesHideBet.addEventListener("change", onBetsSettingsInput);
   view.betsUrl.addEventListener("change", onBetsSettingsInput);
 
   // Nothing polls while the panel is hidden; back in view, the scanner catches

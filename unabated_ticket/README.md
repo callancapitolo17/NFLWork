@@ -339,10 +339,31 @@ match; settled and closed positions stay in the list but never flag a line.
 
 | Tier | Meaning | Ticket banner | Edges badge |
 |---|---|---|---|
-| `same_line` | same market, period, side and number | "You bet this: Eagles -3.5 -110 · $300 @ Kalshi · Sep 10 2:15 PM" | `BET` |
-| `same_side` | same market, period, side; different number | "You have Eagles -3.5 -110 (this is -4.5)" | `BET` |
-| `opposite` | same market and period, the other side | red: "You are on the OTHER side: Cowboys +3.5 -105 · $200 @ Kalshi" ("at a different number" when the points differ) | `OTHER SIDE` (red) |
-| `same_game` | same game, any other market or period | "You have a bet on this game: Under 40.5 · $150 @ Kalshi" | `GAME` |
+| `same_line` | same market, period, side and number | "You bet this: Eagles -3.5 -110 · $300 @ Kalshi · Sep 10 2:15 PM" | `held $300` |
+| `same_side` | same market, period, side; different number | "You have Eagles -3.5 -110 (this is -4.5)" | `held $300` |
+| `opposite` | same market and period, the other side | red: "You are on the OTHER side: Cowboys +3.5 -105 · $200 @ Kalshi" ("at a different number" when the points differ) | `against $200` (red) |
+| `same_game` | same game, any other market or period | "You have a bet on this game: Under 40.5 · $150 @ Kalshi" | `game` |
+
+**A bet you hold never hides a line — it changes the size of the next one.**
+The edge still being there after you bet it is information (add, or at
+least know the market has not moved against you). Per line, `held` is the
+dollars risked on the same direction (`same_line` + `same_side`; a different
+number is the same opinion) and `against` the dollars on the other side;
+both are dollars risked at every venue, so they compare directly with the
+Kelly stake (`bets.exposureOf`, `betsview.stakeAdvice`):
+
+| You hold | Stake column | Ticket stake block |
+|---|---|---|
+| nothing | `$500` | — |
+| $300 same side, Kelly $500 | `+$200 of $500` | "Held $300 · **add $200**" |
+| $600 same side, Kelly $520 | `at size $600 of $520` (muted) | "At size: held $600, Kelly $520" |
+| $200 other side, Kelly $500 | `$500 reverses $200` | red "Other side $200 · net $300 on this side" |
+| same game only | `$500` | — (the banner still lists the bet) |
+
+Held and against rows (and cards) carry a dim line naming the position:
+"you hold Texas A&M -38.5 -110 · $300 · Kalshi · Sep 10 2:15 PM". A `game`
+badge is a plain marker — another market on the game does not change how
+this line is sized.
 
 A Kalshi NO on a team market is the other team **or a tie** (NFL/CFB/soccer);
 it matches as that team and the label says so ("NO Eagles ≈ Cowboys or
@@ -356,13 +377,13 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   when the service is unreachable.
 - *Ticket tab*: a banner between the matchup and the stake, one line per
   matching bet, strongest first, at most 5 then "+N more"; nothing when no
-  bet matches. The warning strip adds "Bet sources unavailable" when no
-  venue has reported in the last hour (the flags may then be missing).
-- *Edges tab*: the badge on each row, or on each card from its best line.
-  **Hide lines I've bet** (off by default) removes `same_line` and
-  `same_side` rows only — `OTHER SIDE` and `GAME` are warnings and stay —
-  and alerts skip whatever the filter hides. The filter line counts what was
-  hidden.
+  bet matches; under the Kelly stake, the held / add / other-side block
+  above. The warning strip adds "Bet sources unavailable" when no venue has
+  reported in the last hour (the flags may then be missing).
+- *Edges tab*: the badge, position line and sized stake on each row, or on
+  each card from its best line. Sort **by my exposure** puts held and
+  against lines first. Nothing is filtered; alerts skip only lines you
+  already hold at size (nothing to act on) and fire as before otherwise.
 - *Bets tab*: the per-venue table (last pull, green under 5 min, amber
   under 60, red past that or on a failed poll with its error; venues with
   no source yet read "no source configured", a source still on its first
@@ -436,8 +457,10 @@ node --test "unabated_ticket/tests/*.test.js"
 freshness colours at the 5 / 60 min bounds, the per-venue rows (unconfigured,
 failed poll, never fetched), the service status texts, the "sources
 unavailable" rule, the header line, the banner's 5-line cut, the badge
-texts, the stored + fresh merge (newest per id, keys filled, old settled
-pruned), the ticket → line shape, and settings sanitising.
+text and kind (held / against / game), `stakeAdvice` (none / add / at size /
+reverse with the net), the position lines, the stored + fresh merge (newest
+per id, a venue's ok pull authoritative, keys filled, old settled pruned),
+the ticket → line shape, and settings sanitising.
 
 `kelly.test.js` checks the sheet's worked example (-400 at +12.5% edge,
 bankroll 30000, quarter Kelly = $3,750), the Seattle -133 / +1.89% case,
@@ -485,9 +508,10 @@ a red Novig row with its error, two "no source configured"), the open and
 unmatched lists with their reasons, the Ticket banner for every tier
 (moneyline both sides, NO with the tie caveat, spread same-side and
 other-side-at-a-different-number, full-game total as same_game, 1H total
-same_line), `BET` / `OTHER SIDE` / `GAME` badges on cards and rows, the hide
-filter removing exactly the `BET` items in both views and the filter line
-counting them, settings and payload persistence, a stale source turning
+same_line), `held $N` / `against $N` / `game` badges with their position
+lines and sized stakes (`+$X of $Y`, `at size`, `reverses $Z`) on cards and
+rows, the exposure sort, the ticket's held / other-side / at-size block,
+settings and payload persistence, a stale source turning
 the row red and raising the Ticket warning while the banner keeps the last
 bets, the service going away (red header, "unreachable since", records
 kept) and a reload restoring the stored records. A second script pointed
