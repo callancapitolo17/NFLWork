@@ -514,8 +514,8 @@ order is `open` on its full size with `approx: ["novig_order_unmatched"]`
 (or `_pending`) — it is a bet you are trying to place. Parlays give one
 record per leg (`id` `novig:<parlay>:<leg>`, stake = the parlay's wager).
 Team keys are left null; the panel resolves `game.awayTeam.name` /
-`homeTeam.name` through `teams.js` (MLB seeded for this: full names, Kalshi
-codes, the Athletics without a city).
+`homeTeam.name` through `teams.js` (the runtime index below — Novig's full
+names are Unabated's for every team seen so far, with three aliases).
 
 Caveat: the fixture's shapes come from the bundle's operation documents and
 the fragments the cards read the `market` / `outcome` / `fills` JSON blobs
@@ -745,9 +745,22 @@ in red.
   is not in `bets.js` `GAME_SERIES` (and its Python twin in
   `bets_service/sources/kalshi_ticker.py`); the raw ticker is in the list.
   Add the series with its league, bet type and period, with a fixture test.
-- **Bets: unmatched "team not recognised (Name)"**: the venue's spelling is
-  not in `teams.js` for that league. Add the alias to the league's table
-  (never a nickname alone for CFB) and it matches on the next poll.
+- **Bets: unmatched "team not recognised (Name)"**: the venue's spelling
+  resolves to no team, or to more than one, in the league's index. The
+  index is not hand-written: every league snapshot the scanner parses
+  carries Unabated's team list (id, name, abbreviation), `teams.js`
+  registers it and the panel persists it (`teamsIndex`), so a name resolves
+  once its league has been scanned this session or a previous one. Keys are
+  `<league>:<Unabated team id>`, the ids the board's own lines carry, so
+  the board side never name-matches at all. A venue spelling resolves by
+  exact normalised name (St. = State), then a hand alias (`ALIASES` in
+  `teams.js`: "UAlbany" → "Albany", "North Carolina State" → "NC State",
+  "Southern Mississippi" → "Southern Miss"), then the name minus a leading
+  code token ("PIT Steelers"), then a UNIQUE word-boundary containment
+  ("Steelers", "New England", "Middle Tennessee" → "Middle Tennessee State",
+  "Grambling St." → "Grambling" only because the leftover is an
+  institutional suffix). Two candidates is null, never a guess. If a
+  spelling keeps failing, add one `ALIASES` row with a `teams.test.js` case.
 - **Bets: unmatched "ambiguous game"**: two board events accept the bet
   (a doubleheader or series without a start time on the venue side). The
   panel refuses to guess; the bet still counts in the header.

@@ -379,8 +379,13 @@
 
   // ---- game match ------------------------------------------------------------
 
+  // A board line carries Unabated's team ids, which ARE the keys; a line
+  // shaped by hand (tests, a captured ticket) resolves by name.
   function lineTeamKeys(line) {
-    return { away: teams.teamKey(line.league, line.awayTeam), home: teams.teamKey(line.league, line.homeTeam) };
+    return {
+      away: line.awayTeamId != null ? teams.keyOf(line.league, line.awayTeamId) : teams.teamKey(line.league, line.awayTeam),
+      home: line.homeTeamId != null ? teams.keyOf(line.league, line.homeTeamId) : teams.teamKey(line.league, line.homeTeam),
+    };
   }
 
   function sameTeamPair(bet, keys) {

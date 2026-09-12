@@ -258,6 +258,7 @@
     return {
       league: ticket.league, eventId: ticket.eventId ?? null,
       awayTeam: ticket.awayTeam ?? null, homeTeam: ticket.homeTeam ?? null,
+      awayTeamId: ticket.awayTeamId ?? null, homeTeamId: ticket.homeTeamId ?? null,
       eventStart, eventStartMs: Number.isFinite(eventStartMs) ? eventStartMs : null,
       betType: ticket.betType, period: ticket.period || "FG",
       sideIndex: ticket.sideIndex, points: ticket.points ?? null, rotation: ticket.rotation ?? null,

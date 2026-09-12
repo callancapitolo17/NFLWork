@@ -1,161 +1,58 @@
-// Team-name -> stable key tables for matching a bet from one venue against a
-// line on Unabated. Pure: no DOM, no fetch, no chrome.* — loaded as a plain
+// Team-name -> stable key resolution for matching a bet from one venue against
+// a line on Unabated. Pure: no DOM, no fetch, no chrome.* — loaded as a plain
 // <script> in panel.html (exposes globalThis.UnabatedTeams, before bets.js)
 // and via require() in tests/teams.test.js.
 //
+// The index is NOT hand-written (user decision 2026-09-11): every league
+// snapshot the scanner parses carries Unabated's own team list (id, name,
+// abbreviation), and the panel registers it here (registerTeams) and
+// persists it (exportIndex / loadIndex, chrome.storage.local `teamsIndex`)
+// so it is there before the first snapshot of the next session. A key is
+// "<league>:<Unabated team id>" — the same id the board's own lines carry, so
+// the board side never needs a name match at all (feed.describeLine's
+// awayTeamId / homeTeamId).
+//
 // Input:  a league path as feed.LEAGUES uses it ("nfl", "cfb", "mlb", ...) and
 //         a team name as some venue wrote it.
-// Output: a key like "nfl:ne" / "cfb:texas-a&m", or null when the name is not
-//         in the table. Null is the ONLY answer for an unknown name — a wrong
-//         key would match a bet to the wrong game, and a null shows up in the
-//         panel's unmatched list with the raw name so the table can grow.
-//
-// Spellings seeded (2026-09-11):
-//   NFL  Unabated full names ("Philadelphia Eagles"); Kalshi event titles use
-//        "PIT Steelers vs NE Patriots" (KXNFLGAME), "DEN Broncos vs KC Chiefs"
-//        (KXNFL1H*), and city only "Detroit vs Buffalo" (KXNFLSPREAD/TOTAL);
-//        Kalshi market titles say "New England wins". Only PIT/NE/DEN/KC/DET/
-//        BUF abbreviations are seen on the wire; the rest are the standard
-//        ones, and every NFL name also resolves by its nickname alone (unique
-//        within the league), so an unexpected abbreviation still lands.
-//   CFB  the Kalshi short names in tests/fixtures/bets/kalshi_fixture.json plus
-//        a few from the account's other fills ("Penn St.", "Lehigh", ...).
-//        Unabated's CFB snapshot was not captured; "Missouri State" and
-//        "Missouri St." normalise to the same key. No nickname fallback: CFB
-//        nicknames repeat ("Eastern Kentucky" must never become "Kentucky").
-//   WNBA full names + codes as Novig writes them (#116 live pull).
-//   MLB  full names as kalshi_common/leg_types._MLB_CODE_TO_TEAM spells them
-//        (Kalshi codes ported, ATH/OAK both = "Athletics"); Novig's
-//        game.awayTeam.name / homeTeam.name are full names too (#116), and
-//        nicknames are unique in MLB so the nickname fallback applies.
+// Output: the key, or null when the name does not resolve. Null is the ONLY
+//         answer for an unknown or ambiguous name — a wrong key could match a
+//         bet to the wrong game, and a null shows up in the panel's unmatched
+//         list with the raw name. Resolution, in order:
+//   1. exact normalised name ("Missouri St." and "Missouri State" agree);
+//   2. a hand alias for a venue spelling that cannot be derived (ALIASES);
+//   3. the name minus a leading code token ("PIT Steelers" -> "Steelers",
+//      "OAK Athletics" -> "Athletics", Kalshi's event-title style), again by 1-2;
+//   4. a UNIQUE word-boundary containment against the league's names:
+//      "Steelers" ends "Pittsburgh Steelers", "New England" starts "New
+//      England Patriots", "Middle Tennessee" starts "Middle Tennessee State";
+//      the other direction ("Grambling St." starts with "Grambling") only
+//      when what is left is an institutional suffix (State, University,
+//      College) — "Southern Mississippi" must not become "Southern", the
+//      university. Two candidates ("Los Angeles", "Miami") is null. A false
+//      positive here still cannot match the wrong game: bets.js also needs
+//      the opponent and the start time to agree.
 
 (function (root) {
   "use strict";
 
-  // [key, Unabated full name, city, Kalshi abbreviation]. City is used as an
-  // alias only when it names one team in the league (not "New York",
-  // "Los Angeles").
-  const NFL_TEAMS = [
-    ["ari", "Arizona Cardinals", "Arizona", "ARI"],
-    ["atl", "Atlanta Falcons", "Atlanta", "ATL"],
-    ["bal", "Baltimore Ravens", "Baltimore", "BAL"],
-    ["buf", "Buffalo Bills", "Buffalo", "BUF"],
-    ["car", "Carolina Panthers", "Carolina", "CAR"],
-    ["chi", "Chicago Bears", "Chicago", "CHI"],
-    ["cin", "Cincinnati Bengals", "Cincinnati", "CIN"],
-    ["cle", "Cleveland Browns", "Cleveland", "CLE"],
-    ["dal", "Dallas Cowboys", "Dallas", "DAL"],
-    ["den", "Denver Broncos", "Denver", "DEN"],
-    ["det", "Detroit Lions", "Detroit", "DET"],
-    ["gb", "Green Bay Packers", "Green Bay", "GB"],
-    ["hou", "Houston Texans", "Houston", "HOU"],
-    ["ind", "Indianapolis Colts", "Indianapolis", "IND"],
-    ["jax", "Jacksonville Jaguars", "Jacksonville", "JAX"],
-    ["kc", "Kansas City Chiefs", "Kansas City", "KC"],
-    ["lv", "Las Vegas Raiders", "Las Vegas", "LV"],
-    ["lac", "Los Angeles Chargers", null, "LAC"],
-    ["lar", "Los Angeles Rams", null, "LAR"],
-    ["mia", "Miami Dolphins", "Miami", "MIA"],
-    ["min", "Minnesota Vikings", "Minnesota", "MIN"],
-    ["ne", "New England Patriots", "New England", "NE"],
-    ["no", "New Orleans Saints", "New Orleans", "NO"],
-    ["nyg", "New York Giants", null, "NYG"],
-    ["nyj", "New York Jets", null, "NYJ"],
-    ["phi", "Philadelphia Eagles", "Philadelphia", "PHI"],
-    ["pit", "Pittsburgh Steelers", "Pittsburgh", "PIT"],
-    ["sf", "San Francisco 49ers", "San Francisco", "SF"],
-    ["sea", "Seattle Seahawks", "Seattle", "SEA"],
-    ["tb", "Tampa Bay Buccaneers", "Tampa Bay", "TB"],
-    ["ten", "Tennessee Titans", "Tennessee", "TEN"],
-    ["was", "Washington Commanders", "Washington", "WAS"],
+  // Venue spellings that no rule derives: [league, venue spelling, Unabated name].
+  const ALIASES = [
+    ["cfb", "UAlbany", "Albany"],                       // Novig
+    ["cfb", "North Carolina State", "NC State"],        // Novig
+    ["cfb", "Southern Mississippi", "Southern Miss"],   // Novig
+    ["mlb", "Los Angeles D", "Los Angeles Dodgers"],    // Kalshi KXMLBRFI event title truncation
   ];
+  const CODE_TOKEN_RE = /^[A-Z][A-Z0-9&]{1,4}$/;
+  // What a venue may append to a team's name without naming a different team.
+  const INSTITUTION_SUFFIXES = new Set(["state", "university", "college"]);
 
-  // [key, full name, city, Kalshi code]; "Athletics" carries no city (Oakland /
-  // Sacramento / Las Vegas depending on the year) and answers to OAK and ATH.
-  const MLB_TEAMS = [
-    ["ari", "Arizona Diamondbacks", "Arizona", "ARI"],
-    ["atl", "Atlanta Braves", "Atlanta", "ATL"],
-    ["bal", "Baltimore Orioles", "Baltimore", "BAL"],
-    ["bos", "Boston Red Sox", "Boston", "BOS"],
-    ["chc", "Chicago Cubs", null, "CHC"],
-    ["cws", "Chicago White Sox", null, "CWS"],
-    ["cin", "Cincinnati Reds", "Cincinnati", "CIN"],
-    ["cle", "Cleveland Guardians", "Cleveland", "CLE"],
-    ["col", "Colorado Rockies", "Colorado", "COL"],
-    ["det", "Detroit Tigers", "Detroit", "DET"],
-    ["hou", "Houston Astros", "Houston", "HOU"],
-    ["kc", "Kansas City Royals", "Kansas City", "KC"],
-    ["laa", "Los Angeles Angels", null, "LAA"],
-    ["lad", "Los Angeles Dodgers", null, "LAD"],
-    ["mia", "Miami Marlins", "Miami", "MIA"],
-    ["mil", "Milwaukee Brewers", "Milwaukee", "MIL"],
-    ["min", "Minnesota Twins", "Minnesota", "MIN"],
-    ["nym", "New York Mets", null, "NYM"],
-    ["nyy", "New York Yankees", null, "NYY"],
-    ["ath", "Athletics", null, "ATH"],
-    ["phi", "Philadelphia Phillies", "Philadelphia", "PHI"],
-    ["pit", "Pittsburgh Pirates", "Pittsburgh", "PIT"],
-    ["sd", "San Diego Padres", "San Diego", "SD"],
-    ["sf", "San Francisco Giants", "San Francisco", "SF"],
-    ["sea", "Seattle Mariners", "Seattle", "SEA"],
-    ["stl", "St. Louis Cardinals", "St. Louis", "STL"],
-    ["tb", "Tampa Bay Rays", "Tampa Bay", "TB"],
-    ["tex", "Texas Rangers", "Texas", "TEX"],
-    ["tor", "Toronto Blue Jays", "Toronto", "TOR"],
-    ["was", "Washington Nationals", "Washington", "WAS"],
-  ];
-  // Other spellings of the same MLB team: [alias, key]. "Los Angeles D" is
-  // how the Kalshi KXMLBRFI event title truncates the Dodgers (fixture);
-  // the Angels' truncation has not been seen on the wire, so it is not guessed.
-  const MLB_ALIASES = [["Oakland Athletics", "ath"], ["Sacramento Athletics", "ath"], ["OAK Athletics", "ath"], ["AZ Diamondbacks", "ari"], ["WSH Nationals", "was"], ["Los Angeles D", "lad"]];
-
-  // Kalshi short names plus every CFB name Novig's account data carried on
-  // 2026-09-11 (#116; Novig writes "Portland State" where Kalshi writes
-  // "Portland St." — normalizeName folds those together). The key is the slug
-  // of the normalised name.
-  const CFB_TEAMS = [
-    "Alabama", "Chattanooga", "Drake", "East Carolina", "Eastern Kentucky", "Georgetown",
-    "Grambling St.", "Lehigh", "Lindenwood", "Louisville", "Marshall", "Michigan",
-    "Missouri St.", "Montana", "Notre Dame", "Oklahoma", "Penn St.", "Rice", "TCU",
-    "Texas A&M", "Villanova",
-    "Air Force", "Akron", "Alcorn State", "Appalachian State", "Arizona State", "Auburn", "Austin Peay",
-    "Ball State", "Baylor", "Boise State", "Boston College", "Bowling Green", "California", "Central Michigan",
-    "Charlotte", "Clemson", "Coastal Carolina", "Colgate", "Colorado", "Delaware", "Duke", "Duquesne",
-    "Eastern Illinois", "Eastern Michigan", "Elon", "Florida Atlantic", "Florida International", "Fordham",
-    "Gardner-Webb", "Georgia", "Georgia Southern", "Grambling", "Hawaii", "Houston", "Howard", "Idaho",
-    "Idaho State", "Illinois", "Indiana", "Indiana State", "Iowa", "Iowa State", "Jacksonville State", "Kansas",
-    "Kansas State", "Kentucky", "LSU", "Lamar", "Long Island University", "Maine", "Massachusetts", "Memphis",
-    "Mercyhurst", "Merrimack", "Miami Ohio", "Middle Tennessee", "Mississippi State", "Missouri",
-    "Montana State", "Morehead State", "Murray State", "Navy", "Nevada", "Norfolk State", "North Carolina A&T",
-    "North Carolina Central", "North Carolina State", "North Dakota", "North Dakota State", "North Texas",
-    "Northern Iowa", "Oregon State", "Pittsburgh", "Portland State", "Rhode Island", "Richmond", "Robert Morris",
-    "Rutgers", "Sam Houston State", "San Diego State", "San Jose State", "South Carolina", "South Florida",
-    "Southeast Missouri State", "Southern Mississippi", "Stony Brook", "Tarleton State", "Tennessee State",
-    "Texas Southern", "Texas Tech", "The Citadel", "Towson", "Tulane", "Tulsa", "UAB", "UAlbany", "UCLA",
-    "UL Monroe", "UNLV", "UT Rio Grande Valley", "UTEP", "UTSA", "Utah State", "Utah Tech", "Vanderbilt",
-    "Virginia", "Wake Forest", "Washington State", "Weber State", "Western Kentucky", "William & Mary",
-    "Wisconsin", "Wofford", "Youngstown State",
-  ];
-
-  // [key, full name, city, code] as Novig writes them (2026-09-11); nicknames
-  // are unique in the WNBA so the nickname fallback applies.
-  const WNBA_TEAMS = [
-    ["atl", "Atlanta Dream", "Atlanta", "ATL"],
-    ["chi", "Chicago Sky", "Chicago", "CHI"],
-    ["conn", "Connecticut Sun", "Connecticut", "CONN"],
-    ["dal", "Dallas Wings", "Dallas", "DAL"],
-    ["gsv", "Golden State Valkyries", "Golden State", "GSV"],
-    ["ind", "Indiana Fever", "Indiana", "IND"],
-    ["lv", "Las Vegas Aces", "Las Vegas", "LV"],
-    ["la", "Los Angeles Sparks", "Los Angeles", "LA"],
-    ["min", "Minnesota Lynx", "Minnesota", "MIN"],
-    ["ny", "New York Liberty", "New York", "NY"],
-    ["phx", "Phoenix Mercury", "Phoenix", "PHX"],
-    ["por", "Portland Fire", "Portland", "POR"],
-    ["sea", "Seattle Storm", "Seattle", "SEA"],
-    ["tor", "Toronto Tempo", "Toronto", "TOR"],
-    ["wsh", "Washington Mystics", "Washington", "WSH"],
-  ];
+  // league -> { byName: Map(normalised -> key), names: [[normalised, key]] }
+  const index = new Map();
+  const aliasByLeague = new Map();
+  for (const [league, spelling, target] of ALIASES) {
+    if (!aliasByLeague.has(league)) aliasByLeague.set(league, new Map());
+    aliasByLeague.get(league).set(normalizeName(spelling), target);
+  }
 
   // Lowercase, single spaces, no periods; a trailing "st" becomes "state" so
   // Kalshi's "Missouri St." and Unabated's "Missouri State" agree. A leading
@@ -167,58 +64,84 @@
     return flat.replace(/ st$/, " state");
   }
 
-  function slugOf(normalized) {
-    return normalized.replace(/ /g, "-");
+  function keyOf(league, teamId) {
+    return `${league}:${teamId}`;
   }
 
-  // A pro league whose nicknames are unique: full name, "<CODE> <Nickname>",
-  // the city when it names one team, and the nickname alone as the fallback.
-  function buildProTable(league, teamRows, extraAliases) {
-    const aliases = new Map();
-    const nicknames = new Map();
-    for (const [key, fullName, city, abbreviation] of teamRows) {
-      const leagueKey = `${league}:${key}`;
-      const nickname = fullName.split(" ").pop();
-      aliases.set(normalizeName(fullName), leagueKey);
-      aliases.set(normalizeName(`${abbreviation} ${nickname}`), leagueKey);
-      if (city) aliases.set(normalizeName(city), leagueKey);
-      nicknames.set(normalizeName(nickname), leagueKey);
+  // Add (or refresh) a league's teams: [{id, name, abbreviation}].
+  function registerTeams(league, teams) {
+    if (!league || !Array.isArray(teams)) return;
+    if (!index.has(league)) index.set(league, { byName: new Map(), byId: new Map() });
+    const table = index.get(league);
+    for (const team of teams) {
+      if (!team || team.id == null || typeof team.name !== "string") continue;
+      const normalized = normalizeName(team.name);
+      if (!normalized) continue;
+      table.byId.set(String(team.id), { id: team.id, name: team.name, abbreviation: team.abbreviation ?? null });
+      table.byName.set(normalized, keyOf(league, team.id));
     }
-    for (const [alias, key] of extraAliases || []) aliases.set(normalizeName(alias), `${league}:${key}`);
-    return { aliases, nicknames };
   }
 
-  function buildCfbTable() {
-    const aliases = new Map();
-    for (const name of CFB_TEAMS) {
-      const normalized = normalizeName(name);
-      aliases.set(normalized, `cfb:${slugOf(normalized)}`);
+  // {league: [{id, name, abbreviation}]} — what the panel persists.
+  function exportIndex() {
+    const out = {};
+    for (const [league, table] of index) out[league] = Array.from(table.byId.values());
+    return out;
+  }
+
+  function loadIndex(stored) {
+    if (!stored || typeof stored !== "object") return;
+    for (const [league, teams] of Object.entries(stored)) registerTeams(league, teams);
+  }
+
+  function teamCount(league) {
+    const table = index.get(league);
+    return table ? table.byId.size : 0;
+  }
+
+  function exactKey(table, league, normalized) {
+    const direct = table.byName.get(normalized);
+    if (direct) return direct;
+    const aliases = aliasByLeague.get(league);
+    const target = aliases ? aliases.get(normalized) : null;
+    return target ? table.byName.get(normalizeName(target)) ?? null : null;
+  }
+
+  // The one league name the query starts or ends on a word boundary, or that
+  // the query extends by an institutional suffix; null when none or more than one.
+  function containmentKey(table, normalized) {
+    let found = null;
+    for (const [candidate, key] of table.byName) {
+      const extendsCandidate = normalized.startsWith(`${candidate} `) && INSTITUTION_SUFFIXES.has(normalized.slice(candidate.length + 1));
+      const hit = candidate.startsWith(`${normalized} `) || candidate.endsWith(` ${normalized}`) || extendsCandidate;
+      if (!hit) continue;
+      if (found && found !== key) return null;
+      found = key;
     }
-    return { aliases, nicknames: null };
+    return found;
   }
 
-  const TABLES = {
-    nfl: buildProTable("nfl", NFL_TEAMS), mlb: buildProTable("mlb", MLB_TEAMS, MLB_ALIASES),
-    wnba: buildProTable("wnba", WNBA_TEAMS), cfb: buildCfbTable(),
-  };
-
-  // Key for (league, name) or null. The nickname fallback (last word) exists
-  // only for leagues whose nicknames are unique.
+  // Key for (league, name) or null.
   function teamKey(league, name) {
-    const table = TABLES[league];
+    const table = index.get(league);
     const normalized = normalizeName(name);
     if (!table || normalized == null) return null;
-    const exact = table.aliases.get(normalized);
+    const exact = exactKey(table, league, normalized);
     if (exact) return exact;
-    if (!table.nicknames) return null;
-    return table.nicknames.get(normalized.split(" ").pop()) ?? null;
+    const [first, ...rest] = String(name).trim().split(/\s+/);
+    if (rest.length && CODE_TOKEN_RE.test(first)) {
+      const remainder = normalizeName(rest.join(" "));
+      const stripped = exactKey(table, league, remainder) || containmentKey(table, remainder);
+      if (stripped) return stripped;
+    }
+    return containmentKey(table, normalized);
   }
 
   function knownLeagues() {
-    return Object.keys(TABLES);
+    return Array.from(index.keys());
   }
 
-  const api = { teamKey, normalizeName, knownLeagues };
+  const api = { teamKey, keyOf, normalizeName, registerTeams, exportIndex, loadIndex, teamCount, knownLeagues };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

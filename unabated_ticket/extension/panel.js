@@ -106,10 +106,33 @@
   let lastCopyText = "";
   let scannerStatus = null;
   let scannerState = null;
+  const teamsLib = globalThis.UnabatedTeams;
+  let teamsIndexSize = 0;
+
+  // Every snapshot carries Unabated's team list: register it as the team
+  // index (teams.js), persist it, and fill keys on bet records that were
+  // waiting for it (#116 — no hand-written team tables).
+  function registerFeedTeams(feedState) {
+    if (!feedState || !feedState.teamIndex) return;
+    const byLeague = {};
+    for (const team of Object.values(feedState.teamIndex)) {
+      const league = feed.LEAGUES[team.leagueId];
+      if (!league) continue;
+      (byLeague[league.path] ||= []).push(team);
+    }
+    for (const [league, list] of Object.entries(byLeague)) teamsLib.registerTeams(league, list);
+    const size = Object.values(teamsLib.exportIndex()).reduce((n, list) => n + list.length, 0);
+    if (size === teamsIndexSize) return;
+    teamsIndexSize = size;
+    chrome.storage.local.set({ teamsIndex: teamsLib.exportIndex() });
+    state.betRecords = betsLib.resolveTeamKeys(state.betRecords);
+  }
+
   const scanner = globalThis.UnabatedScanner.createScanner({
     onChange: (status, feedState) => {
       scannerStatus = status;
       scannerState = feedState;
+      registerFeedTeams(feedState);
       renderEdges();
       // A ticket sized from the feed (or waiting for it) follows the feed's
       // updates; one the screen priced is left alone (a re-render clears the copy status).
@@ -1444,7 +1467,10 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "betsNovig"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "betsNovig", "teamsIndex"]);
+    // The team index from the last session, so bet records resolve before the first snapshot lands.
+    teamsLib.loadIndex(relay.teamsIndex);
+    teamsIndexSize = Object.values(teamsLib.exportIndex()).reduce((n, list) => n + list.length, 0);
     state.ticket = relay.ticket || null;
     state.error = relay.error || null;
     state.watchStatus = relay.watchStatus || null;

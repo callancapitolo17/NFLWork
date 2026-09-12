@@ -3,6 +3,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const view = require("../extension/betsview.js");
+const fs = require("node:fs");
+const path = require("node:path");
+const teams = require("../extension/teams.js");
+// The runtime team index the panel builds from Unabated's snapshots, from a
+// captured copy (fixtures/teams_index.json) — keys are "<league>:<Unabated id>".
+teams.loadIndex(JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "teams_index.json"), "utf8")).leagues);
+const key = (league, name) => teams.teamKey(league, name);
 
 const NOW = Date.parse("2026-09-11T21:00:00Z");
 const iso = (msAgo) => new Date(NOW - msAgo).toISOString();
@@ -164,8 +171,8 @@ test("mergeServicePayload: fresh wins on the same id, team keys are filled, old 
   assert.deepEqual(ids, ["kalshi:gone:yes", "kalshi:x:yes"]);
   const x = merged.find((r) => r.id === "kalshi:x:yes");
   assert.equal(x.stake, 168);
-  assert.equal(x.awayKey, "cfb:chattanooga");
-  assert.equal(x.homeKey, "cfb:eastern-kentucky");
+  assert.equal(x.awayKey, key("cfb", "Chattanooga"));
+  assert.equal(x.homeKey, key("cfb", "Eastern Kentucky"));
 });
 
 test("mergeServicePayload: a venue's successful pull drops its stored records the payload no longer lists; a failed or absent pull keeps them", () => {
@@ -242,6 +249,6 @@ test("mergePageSource: a complete read is authoritative for its venue; an incomp
   assert.deepEqual(complete.map((r) => r.id).sort(), ["kalshi:k", "novig:1"]);
   const partial = view.mergePageSource(stored, "novig", novigRead({ complete: false }), NOW);
   assert.deepEqual(partial.map((r) => r.id).sort(), ["kalshi:k", "novig:1", "novig:old"]);
-  assert.ok(complete.every((r) => r.awayKey === "cfb:chattanooga"));
+  assert.ok(complete.every((r) => r.awayKey === key("cfb", "Chattanooga")));
   assert.deepEqual(view.mergePageSource(stored, "novig", null, NOW).map((r) => r.id).sort(), ["kalshi:k", "novig:old"]);
 });

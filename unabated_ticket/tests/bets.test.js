@@ -21,6 +21,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 const feed = require("../extension/feed.js");
 const bets = require("../extension/bets.js");
+const teams = require("../extension/teams.js");
+// The runtime team index the panel builds from Unabated's snapshots, from a
+// captured copy (fixtures/teams_index.json) — keys are "<league>:<Unabated id>".
+teams.loadIndex(JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "teams_index.json"), "utf8")).leagues);
+const key = (league, name) => teams.teamKey(league, name);
 
 const FETCHED_AT = "2026-09-11T21:00:00Z";
 const NOW = Date.parse(FETCHED_AT);
@@ -130,8 +135,8 @@ test("normalize: YES spread = the named team at -floor_strike, stake = position 
   assert.equal(record.period, "FG");
   assert.equal(record.awayTeam, "Chattanooga");
   assert.equal(record.homeTeam, "Eastern Kentucky");
-  assert.equal(record.awayKey, "cfb:chattanooga");
-  assert.equal(record.homeKey, "cfb:eastern-kentucky");
+  assert.equal(record.awayKey, key("cfb", "Chattanooga"));
+  assert.equal(record.homeKey, key("cfb", "Eastern Kentucky"));
   assert.equal(record.side, "away");
   assert.equal(record.points, -5.5);
   assert.equal(record.price, 138); // two buys at 42c
@@ -212,8 +217,8 @@ test("normalize: moneylines — YES is the named team; NFL event title 'PIT Stee
   assert.equal(ne.betType, "moneyline");
   assert.equal(ne.awayTeam, "PIT Steelers");
   assert.equal(ne.homeTeam, "NE Patriots");
-  assert.equal(ne.awayKey, "nfl:pit");
-  assert.equal(ne.homeKey, "nfl:ne");
+  assert.equal(ne.awayKey, key("nfl", "Pittsburgh Steelers"));
+  assert.equal(ne.homeKey, key("nfl", "New England Patriots"));
   assert.equal(ne.side, "home");
   assert.equal(ne.points, null);
   assert.equal(ne.price, -178); // VWAP of two fills at 64c
@@ -231,7 +236,7 @@ test("normalize: NO moneyline is the other team with the tie caveat", () => {
   const record = byId(normalizedFixture(CHICAR), "kalshi:KXNFLGAME-26SEP13CHICAR-CAR:no");
   assert.equal(record.side, "away");
   assert.equal(record.awayTeam, "CHI Bears");
-  assert.equal(record.awayKey, "nfl:chi");
+  assert.equal(record.awayKey, key("nfl", "Chicago Bears"));
   assert.equal(record.points, null);
   assert.deepEqual(record.approx, [bets.TIE_CAVEAT]);
   assert.equal(record.price, 122); // NO at 45c
@@ -282,8 +287,8 @@ test("normalize: MLB suffix carries HHMM Eastern -> eventStart UTC; RFI is an I1
   assert.equal(record.eventDate, "2026-09-06");
   assert.equal(record.eventStart, "2026-09-07T02:10:00.000Z"); // 10:10 PM EDT
   assert.equal(record.status, "lost");
-  assert.equal(record.awayKey, "mlb:was"); // "WSH Nationals" via the Kalshi event title
-  assert.equal(record.homeKey, "mlb:lad");
+  assert.equal(record.awayKey, key("mlb", "Washington Nationals")); // "WSH Nationals" via the Kalshi event title
+  assert.equal(record.homeKey, key("mlb", "Los Angeles Dodgers"));
 });
 
 test("parseEventSuffix: football date only, MLB with time, doubleheader marker kept apart", () => {
@@ -520,11 +525,11 @@ test("resolveTeamKeys: fills null keys from names the way the service leaves the
   assert.deepEqual(resolved, records);
   assert.equal(fromService[0].awayKey, null); // input untouched
   const ne = resolved.find((r) => r.id === "kalshi:KXNFLGAME-26SEP20PITNE-NE:yes");
-  assert.equal(ne.awayKey, "nfl:pit");
-  assert.equal(ne.homeKey, "nfl:ne");
+  assert.equal(ne.awayKey, key("nfl", "Pittsburgh Steelers"));
+  assert.equal(ne.homeKey, key("nfl", "New England Patriots"));
   const unknown = bets.resolveTeamKeys([{ league: "cfb", awayTeam: "Springfield", homeTeam: "Lehigh", awayKey: null, homeKey: null }])[0];
   assert.equal(unknown.awayKey, null);
-  assert.equal(unknown.homeKey, "cfb:lehigh");
+  assert.equal(unknown.homeKey, key("cfb", "Lehigh"));
   const kept = { league: "cfb", awayTeam: "Lehigh", homeTeam: "Drake", awayKey: "cfb:custom", homeKey: null };
   assert.equal(bets.resolveTeamKeys([kept])[0].awayKey, "cfb:custom");
   const future = fromService.find((r) => r.league === null);
