@@ -334,7 +334,8 @@ Two kinds of source feed the flags:
 | Venue | Source | How it refreshes |
 |---|---|---|
 | Kalshi | `bets_service/sources/kalshi.py` (local service, signed REST) | every 60 s while the service runs |
-| Novig | `extension/novig_page.js` + `novig_content.js` (content scripts on `app.novig.us`, #116) | whenever the Novig tab's Portfolio screen fetches its lists — open it to refresh |
+| Novig | `bets_service/sources/novig.py` (local service, the account's own Auth0 refresh token, #116) | every 60 s while the service runs; no tab needed |
+| Novig (fallback) | `extension/novig_page.js` + `novig_content.js` (content scripts on `app.novig.us`) | whenever the Novig tab's Portfolio screen fetches its lists — open it to refresh |
 | BetOnline | — (#115) | shows "no source configured" |
 | ProphetX | — (#117) | shows "no source configured" |
 
@@ -423,12 +424,52 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   event on the board yet, league not on the scanner, not a game market
   (futures, the bots' combos), unknown Kalshi series.
 
-### Novig source (content scripts)
+### Novig source (service)
 
-Novig issues NBX API credentials to external market makers only, so the
-panel reads the user's own bets off the Novig web app instead
-(`app.novig.us`, issue #116). Two content scripts run on that origin and
-send **zero** requests of their own:
+Novig's official NBX API is a separate "Liquidity Provider" account with a
+$30k minimum deposit, so it cannot see bets placed in the retail app. The
+service instead logs in **as the retail account once** and polls the same
+Hasura GraphQL the app uses (issue #116):
+
+```bash
+/Users/callancapitolo/NFLWork/kalshi_draft/venv/bin/python3 -m unabated_ticket.bets_service.sources.novig_auth connect
+# or, to avoid the copy/paste race on the callback:
+/Users/callancapitolo/NFLWork/mlb_sgp/venv/bin/python3 -m unabated_ticket.bets_service.sources.novig_auth connect --browser
+```
+
+- **Connect** runs Auth0's PKCE authorization-code flow against the app's
+  public client (no secret exists). You log in yourself; the script only
+  needs the URL you land on (`https://app.novig.us/?code=…&state=…` —
+  copy it at once, the app strips it as it loads; `--browser` opens a
+  Playwright window that intercepts the callback so nothing can be lost).
+  The refresh token goes to `NOVIG_TOKEN_PATH`
+  (`bets_service/novig_token.json`, gitignored, mode 0600) and the source
+  registers on the next service start.
+- **Why its own token.** The web app keeps a *rotating* refresh token in
+  localStorage, and Auth0 revokes the whole chain when a rotated token is
+  reused — copying the app's token would log the app out and kill the
+  poller. A separate login is a separate chain; both live side by side.
+- **Polling** (`sources/novig.py`, every 60 s): refresh the 30-min access
+  token inside a 2-min margin (a rotated refresh token is rewritten at
+  once), resolve the trader once from the JWT `sub` (`user.auth_id` →
+  `trader_id`, the app's own `AppEntry_Query` chain), then read the `order`
+  and `parlay` tables filtered to that trader and to rows that are open or
+  changed within the retention window, 100 per page to a short page. The
+  selections are the fields the app's Portfolio cards read, so the rows have
+  the shape `novig_bets.js` was written against; `normalize_novig()` is a
+  port of it and `tests/test_parity_novig.py` holds the two byte-equivalent.
+  Transport is `curl_cffi` with Chrome impersonation, the session the
+  anonymous Novig SGP scraper already gets through Cloudflare with.
+- **Renewal.** Auth0 chains usually cap at about 30 days; when the refresh
+  fails the poll fails loudly (the Bets tab row goes red with the error and
+  the previous records stay) and you run `connect` again.
+
+### Novig source (content scripts, fallback)
+
+The content-script route reads the same bets without any token, while a
+Novig tab has the Portfolio screen open. It stays as the fallback when the
+service is not connected; the panel shows the service row when both report.
+Two content scripts run on `app.novig.us` and send **zero** requests of their own:
 
 - `novig_page.js` (MAIN world, `document_start`) wraps `window.fetch` before
   the app bundle captures it and mirrors the responses the app fetches for
@@ -519,8 +560,8 @@ GETs; no order placement.
   poll completes (Kalshi: ~1–2 min, one throttled GET per market and event)
   `/bets.json` lists it as `{ok: false, error: "no completed poll yet"}`.
   Log: `bets_service.log` (rotating, 10 MB × 3).
-- **Adding a venue** (#115 BetOnline, #117 ProphetX; Novig went the
-  content-script route above): a module in `bets_service/sources/` with
+- **Adding a venue** (#115 BetOnline, #117 ProphetX; Novig is
+  `sources/novig.py` above): a module in `bets_service/sources/` with
   `name`, `poll_sec` and `fetch() -> list[record]` (the `Source` protocol in
   `sources/__init__.py`), registered in `service.main()`. `fetch()` returns
   every record the venue knows and raises on failure — never a partial list.
@@ -560,7 +601,13 @@ cash-out / REJECTED / PENDING, parlay legs, and native-id dedupe.
 `bets.test.js` then matches those Novig records against the NFL slice: the
 moneyline bid (same_line / opposite with Novig labels), the spread bid and
 its lay on both signs, a resting Under and a parlay leg flagging the game,
-settled orders never matching, and the unmatched reasons.
+settled orders never matching, and the unmatched reasons. On the Python
+side `test_normalize_novig.py` restates those cases for the port,
+`test_parity_novig.py` holds it byte-equivalent to the JS, and
+`test_novig_source.py` covers the auth (refresh once then cache to the
+margin, rotation persisted with 0600, missing/broken token file, callback
+state/error parsing) and the source (trader resolved once, pagination to a
+short page, no user / auth failure / GraphQL error all raise).
 
 `kelly.test.js` checks the sheet's worked example (-400 at +12.5% edge,
 bankroll 30000, quarter Kelly = $3,750), the Seattle -133 / +1.89% case,
