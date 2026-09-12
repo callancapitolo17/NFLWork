@@ -177,8 +177,8 @@
   }
 
   // The advice as words, the same on the row, the Ticket block and the Copy
-  // text: "have $350 → target $600, bet $250" (user choice 2026-09-11: the
-  // same three numbers in the same order every time). `have` is what you
+  // text: "wagered $350 → target $600, bet $250" (user choice 2026-09-11: the
+  // same three numbers in the same order every time). `wagered` is what you
   // hold on this side, or "against" when it is on the other side; `bet` is
   // the number to act on; `net` only appears when an against position is
   // being cancelled.
@@ -197,11 +197,11 @@
     return { have: `${money(advice.against)} against`, target, bet, note };
   }
 
-  // One line: "have $350 → target $600, bet $250" (+ " (net $400 on this side)").
+  // One line: "wagered $350 → target $600, bet $250" (+ " (net $400 on this side)").
   function stakeAdviceLine(advice) {
     const words = stakeAdviceWords(advice);
     if (!words) return null;
-    return `have ${words.have} → target ${words.target}, bet ${words.bet}${words.note ? ` (${words.note})` : ""}`;
+    return `wagered ${words.have} → target ${words.target}, bet ${words.bet}${words.note ? ` (${words.note})` : ""}`;
   }
 
   // "you hold Texas A&M -38.5 -110 · Kalshi · Sep 10 2:15 PM" — one line per

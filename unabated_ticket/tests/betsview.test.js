@@ -123,12 +123,12 @@ test("badgeText / badgeKind: dollars held win, then dollars against, then a plai
 test("stakeAdviceLine: the same three numbers in the same order for every case", () => {
   const exposure = (held, against) => ({ held, against, heldBets: [], againstBets: [] });
   assert.equal(view.stakeAdviceLine(view.stakeAdvice(500, exposure(0, 0))), null);
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(600, exposure(350, 0))), "have $350 → target $600, bet $250");
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(520, exposure(600, 0))), "have $600 → target $520, bet $0");
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(null, exposure(600, 0))), "have $600 → target none here, bet $0");
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(500, exposure(0, 200))), "have $200 against → target $500, bet $500 (net $300 on this side)");
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(100, exposure(0, 200))), "have $200 against → target $100, bet $100 (still $100 against)");
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(null, exposure(0, 200))), "have $200 against → target none here, bet $0");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(600, exposure(350, 0))), "wagered $350 → target $600, bet $250");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(520, exposure(600, 0))), "wagered $600 → target $520, bet $0");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(null, exposure(600, 0))), "wagered $600 → target none here, bet $0");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(500, exposure(0, 200))), "wagered $200 against → target $500, bet $500 (net $300 on this side)");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(100, exposure(0, 200))), "wagered $200 against → target $100, bet $100 (still $100 against)");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(null, exposure(0, 200))), "wagered $200 against → target none here, bet $0");
   assert.deepEqual(view.stakeAdviceWords(view.stakeAdvice(600, exposure(350.5, 0))), { have: "$350.50", target: "$600", bet: "$249.50", note: null });
 });
 

@@ -424,7 +424,7 @@
     return line ? ` (${line})` : "";
   }
 
-  // Under the Kelly stake, the same words as the Edges row: "have $350 →
+  // Under the Kelly stake, the same words as the Edges row: "wagered $350 →
   // target $600, bet $250", the bet number large; red when the position held
   // is on the other side. Returns the advice.
   function renderStakeExposure(stake, flag) {
@@ -437,7 +437,7 @@
     }
     const summary = document.createElement("div");
     const words = betsView.stakeAdviceWords(advice);
-    summary.append(`have ${words.have} → target ${words.target}, bet `);
+    summary.append(`wagered ${words.have} → target ${words.target}, bet `);
     const bet = document.createElement("span");
     bet.className = "stake-add";
     bet.textContent = words.bet;
@@ -718,7 +718,7 @@
   }
 
   // The row's stake cell: a plain "$500" when nothing is held on the market,
-  // else "bet $250" over a small "have $350 → target $600" (the Ticket block
+  // else "bet $250" over a small "wagered $350 → target $600" (the Ticket block
   // reads the same way; betsview.stakeAdviceWords).
   function fillStakeCell(cell, row) {
     const advice = row.bet ? row.bet.advice : { kind: "none" };
@@ -729,7 +729,7 @@
       return;
     }
     const note = document.createElement("small");
-    note.textContent = `have ${words.have} → target ${words.target}${words.note ? ` (${words.note})` : ""}`;
+    note.textContent = `wagered ${words.have} → target ${words.target}${words.note ? ` (${words.note})` : ""}`;
     cell.append(`bet ${words.bet} `, note);
   }
 
