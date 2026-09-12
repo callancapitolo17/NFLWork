@@ -56,7 +56,7 @@
   const el = (id) => document.getElementById(id);
   const view = {
     ticket: el("ticket"), error: el("error"), empty: el("empty"),
-    warning: el("warning"), sideLabel: el("side-label"), betLine: el("bet-line"),
+    warning: el("warning"), rowTrace: el("row-trace"), sideLabel: el("side-label"), betLine: el("bet-line"),
     eventLine: el("event-line"), startLine: el("start-line"),
     book: el("book"), price: el("price"), fair: el("fair"), edge: el("edge"),
     stake: el("stake"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
@@ -339,6 +339,7 @@
     view.warning.hidden = messages.length === 0;
     view.warning.textContent = messages.join(" ");
     view.warning.classList.toggle("bad", bad);
+    renderRowTrace(ticket);
   }
 
   // Why the feed gave no line, for the no-edge view: nothing for the game,
@@ -364,6 +365,21 @@
       : scannerState ? ` Edges feed: ${describeFeedMiss(ticket, line.points)}.` : " Edges feed: not loaded yet.";
     view.errorDetail.textContent = `${ticket.sideLabel} ${fmtAmerican(ticket.price)} @ ${ticket.book.name}: ${ticket.noEdgeDetail || "no edge on the cell"} (${new Date(ticket.capturedAt).toLocaleTimeString()}).${feedNote}`;
     show("error");
+  }
+
+  // Which grid rows the capture chose between and which one the watcher is
+  // reading, shown only when the watched number is not the captured one or
+  // the capture could not find a lone top-level row for the market — the
+  // two cases where the panel may be following a different rung than the
+  // one clicked (live 2026-09-12: Under 19.5 captured, Under 2.5 watched).
+  function renderRowTrace(ticket) {
+    const resolution = ticket.rowResolution;
+    const pointsDiffer = ticket.current && !ticket.current.offBoard && ticket.current.points !== ticket.points;
+    const show = resolution && (resolution.ambiguous || pointsDiffer);
+    view.rowTrace.hidden = !show;
+    if (!show) return;
+    const watching = ticket.current && ticket.current.row ? ` Watching ${ticket.current.row}.` : "";
+    view.rowTrace.textContent = `Row trace (script ${resolution.build}): ${resolution.trace}.${watching}`;
   }
 
   function renderTicket() {

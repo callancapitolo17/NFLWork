@@ -94,12 +94,24 @@ tab is running the capture script", reload the tab.
   the ladder (a rung the book pulls shows as off the board). The screen
   computes `edge` for main lines only, so an alt ticket is sized from the
   feed's `ge` on the object — the same number. A cell in the expanded Alts
-  section sits on its own grid row whose entry for the book is the rung
-  itself, so capture first resolves the row that carries the book's
-  `alternateLines` ladder (`ladderRowFor`) and classifies, prices and
-  watches against that one — measured against the Alts row the rung read
-  as a main line and the watcher followed the real main number (live
-  2026-09-12: Alabama A&M -5.5 +264 became "now -102 at +1.5").
+  section sits on its own grid row (an AG Grid child: `detail`, `level`
+  > 0, or a parent carrying data) whose entry for the book is the rung
+  itself, so both capture and the watcher resolve the market's rows
+  through one ranking (`rankedMarketNodes`): a top-level row beats a
+  child, a row carrying the market's `bestLines` beats one without, and a
+  row carrying this book's `alternateLines` ladder beats a lone rung.
+  Capture classifies, prices and watches against the best-ranked row
+  (`ladderRowFor`); the watcher trusts its grid-key lookup only when it
+  returns a top-level row and otherwise re-ranks. Measured against the
+  Alts row the rung read as a main line and the watcher followed the real
+  main number (live 2026-09-12: Alabama A&M -5.5 +264 became "now -102 at
+  +1.5"); picking "any row of the market carrying a ladder" then followed
+  the LOWEST rung (Under 19.5 +265 became "now +2242 at +2.5"). The ticket
+  carries `rowResolution` (the candidate rows, the pick, the script
+  build) and each watch tick names the row it read; the panel prints that
+  **Row trace** under the warning whenever the watched number is not the
+  captured one or the market had no lone top-level row — send that line
+  with a screenshot if a capture ever follows the wrong rung again.
 
 ## Stake
 
