@@ -94,7 +94,7 @@
   }
 
   // Script build, so a stale copy of page.js in an old tab shows itself in the panel.
-  const PAGE_SCRIPT_BUILD = "0.6.1";
+  const PAGE_SCRIPT_BUILD = "0.6.2";
 
   // What the clicked object actually carried, for the panel's no-edge detail:
   // decides between "Unabated never priced it" and "the field moved". Space
@@ -277,20 +277,65 @@
   // re-find it by points inside that ladder. Null for a main-line cell (the
   // same object, or the same points, as the sides entry).
   function altPointsOf(marketLine, rowData, sideKey, bookKey) {
-    const main = rowData.sides && rowData.sides[sideKey] && rowData.sides[sideKey][bookKey];
+    const main = bookEntryOf(rowData, sideKey, bookKey);
     if (!main || main === marketLine || main.points === marketLine.points) return null;
     return typeof marketLine.points === "number" ? marketLine.points : null;
   }
 
-  function buildTicket({ marketLine, sideIndex, rowData, context, cellProps }) {
-    const betTypeId = rowData.betTypeId;
+  function bookEntryOf(rowData, sideKey, bookKey) {
+    return (rowData.sides && rowData.sides[sideKey] && rowData.sides[sideKey][bookKey]) || null;
+  }
+
+  function carriesLadder(entry) {
+    return !!entry && Array.isArray(entry.alternateLines) && entry.alternateLines.length > 0;
+  }
+
+  function sameMarketRow(a, b) {
+    return a.eventId === b.eventId && a.betTypeId === b.betTypeId && (a.periodTypeId ?? 1) === (b.periodTypeId ?? 1);
+  }
+
+  // The grid row that carries this book's alternateLines ladder for the
+  // clicked market, with the API it lives on. A cell in the expanded Alts
+  // section sits on its own grid row, whose entry for the book is the rung
+  // itself — so measured against that row the rung reads as a main line
+  // (no altPoints), and the watcher, keyed on event/bet type/period, then
+  // follows the real main line: live 2026-09-12 a capture of Alabama A&M
+  // -5.5 +264 @ Novig reported "Line moved: now -102 at +1.5". The row with
+  // the ladder is the one to classify, price and watch against; a row that
+  // already carries it (a main-line cell) is returned as is.
+  function ladderRowFor(gridApi, rowData, sideKey, bookKey) {
+    if (carriesLadder(bookEntryOf(rowData, sideKey, bookKey))) return { rowData, gridApi };
+    // Without an event id the identity match would accept any row; keep the cell's own.
+    if (rowData.eventId == null) return { rowData, gridApi };
+    const apis = [gridApi];
+    try {
+      const fromDom = anyGridApi().api;
+      if (fromDom !== gridApi) apis.push(fromDom);
+    } catch (_error) {
+      // No other grid reachable; the cell's own API is all there is.
+    }
+    for (const api of apis) {
+      if (apiIsDead(api)) continue;
+      let hit = null;
+      api.forEachNode((node) => {
+        if (hit || !node.data || !sameMarketRow(node.data, rowData)) return;
+        if (carriesLadder(bookEntryOf(node.data, sideKey, bookKey))) hit = node.data;
+      });
+      if (hit) return { rowData: hit, gridApi: api };
+    }
+    return { rowData, gridApi };
+  }
+
+  function buildTicket({ marketLine, sideIndex, rowData: cellRowData, context, cellProps, gridApi: cellGridApi }) {
+    const betTypeId = cellRowData.betTypeId;
     const betType = BET_TYPE_NAMES[betTypeId];
     if (!betType) throw new Error(`unsupported betTypeId ${betTypeId} (only moneyline, spread, total)`);
 
     const points = marketLine.points ?? null;
-    const sideKey = sideKeyOf(rowData, sideIndex);
-    const bookId = bookIdOf(marketLine, cellProps, rowData, sideKey);
+    const sideKey = sideKeyOf(cellRowData, sideIndex);
+    const bookId = bookIdOf(marketLine, cellProps, cellRowData, sideKey);
     const bookKey = `ms${bookId}`;
+    const { rowData, gridApi } = ladderRowFor(cellGridApi, cellRowData, sideKey, bookKey);
     const altPoints = altPointsOf(marketLine, rowData, sideKey, bookKey);
     const edge = edgeForCell(marketLine, rowData, sideKey, bookKey);
     const rotation = rowData.eventTeams && rowData.eventTeams[sideIndex]
@@ -331,6 +376,8 @@
         eventId: rowData.eventId ?? null, betTypeId, periodTypeId: rowData.periodTypeId ?? 1,
       },
       current: null,
+      // The grid API the ladder row lives on: what the watcher must poll.
+      gridApi,
     };
   }
 
@@ -821,8 +868,8 @@
     lastCapture = { shell, at: Date.now() };
     try {
       const cell = readCell(shell);
-      const ticket = buildTicket(cell);
-      startWatching(ticket, cell.gridApi);
+      const { gridApi, ...ticket } = buildTicket(cell);
+      startWatching(ticket, gridApi);
       console.info("[unabated-ticket] captured", ticket);
       post("ticket", ticket);
     } catch (error) {
