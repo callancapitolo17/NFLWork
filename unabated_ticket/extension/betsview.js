@@ -183,37 +183,44 @@
   // the number to act on; `net` only appears when an against position is
   // being cancelled.
   //   {have, target, bet, note}  as display strings; `note` null unless there is a net line
+  // verb:  what the bet number IS — "add" when topping up a position, "bet"
+  //        otherwise. have/target: what is already down and the full Kelly size.
   function stakeAdviceWords(advice) {
     const money = (dollars) => bets.formatStake(Math.round(dollars * 100) / 100);
     if (!advice || advice.kind === "none") return null;
-    if (advice.kind === "add") return { have: money(advice.held), target: money(advice.stake), bet: money(advice.add), note: null };
+    if (advice.kind === "add") {
+      return { verb: "add", have: money(advice.held), target: money(advice.stake), bet: money(advice.add), note: null, against: false };
+    }
     if (advice.kind === "at_size") {
-      return { have: money(advice.held), target: advice.stake == null ? "none here" : money(advice.stake), bet: "$0", note: null };
+      return { verb: "bet", have: money(advice.held), target: advice.stake == null ? "none here" : money(advice.stake), bet: "$0", note: null, against: false };
     }
     const target = advice.stake == null ? "none here" : money(advice.stake);
     const bet = advice.stake == null ? "$0" : money(advice.stake);
     let note = null;
     if (advice.net != null) note = advice.net >= 0 ? `net ${money(advice.net)} on this side` : `still ${money(-advice.net)} against`;
-    return { have: `${money(advice.against)} against`, target, bet, note };
+    return { verb: "bet", have: money(advice.against), target, bet, note, against: true };
   }
 
-  // One line: "wagered $350 → target $600, bet $250" (+ " (net $400 on this side)").
+  // One line: "add $250, $350 held, full size $600" — or, against a position,
+  // "bet $500, $200 on the other side (net $300 on this side)".
   function stakeAdviceLine(advice) {
     const words = stakeAdviceWords(advice);
     if (!words) return null;
-    return `wagered ${words.have} → target ${words.target}, bet ${words.bet}${words.note ? ` (${words.note})` : ""}`;
+    const held = words.against
+      ? `${words.have} on the other side`
+      : `${words.have} held · full size ${words.target}`;
+    return `${words.verb} ${words.bet}, ${held}${words.note ? ` (${words.note})` : ""}`;
   }
 
-  // "you hold Texas A&M -38.5 -110 · Kalshi · Sep 10 2:15 PM" — one line per
-  // held or against bet, for the row's third line and the ticket's facts.
-  function positionLines(flag) {
-    const exposure = flag && flag.exposure;
-    if (!exposure) return [];
-    const describe = (bet) => `${bets.describeBet(bet)} · ${bets.formatStake(bet.stake)} · ${bet.venue ? bet.venue.charAt(0).toUpperCase() + bet.venue.slice(1) : "unknown venue"}${bet.placedAt ? ` · ${bets.formatPlacedAt(bet.placedAt)}` : ""}`;
-    return [
-      ...exposure.heldBets.map((bet) => `you hold ${describe(bet)}`),
-      ...exposure.againstBets.map((bet) => `other side: ${describe(bet)}`),
-    ];
+  // The related bets for one line, for the block a row or the ticket shows.
+  // `compact` uses the short label a row can carry (the row already states the
+  // pick); the ticket keeps the full sentence.
+  function relatedLines(flag, compact) {
+    const matches = flag && Array.isArray(flag.matches) ? flag.matches : [];
+    return matches.map((match) => ({
+      tier: match.tier,
+      text: compact && match.compactLabel ? match.compactLabel : match.label,
+    }));
   }
 
   // Venues whose latest service poll succeeded: the payload is then the whole
@@ -275,7 +282,7 @@
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badgeText, badgeKind, stakeAdvice, stakeAdviceWords, stakeAdviceLine, positionLines, venuesWithFreshPull, mergeServicePayload, mergePageSource, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badgeText, badgeKind, relatedLines, stakeAdvice, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, mergePageSource, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

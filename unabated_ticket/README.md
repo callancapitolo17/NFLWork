@@ -164,6 +164,31 @@ tab is running the capture script", reload the tab.
   line move never shows it. Send that line with a screenshot if a capture
   ever follows the wrong rung again.
 
+## Panel layout
+
+The panel is a fixed header over one scrolling pane per tab. The header holds
+the tab bar, the bets header line, and (on the Edges tab) the filter toolbar;
+everything else scrolls inside its own tab. **This is what keeps your place in
+the Edges list**: the three tabs used to share the document's scroller, so
+hiding one collapsed the scroll height and Chrome clamped `scrollTop` to 0 —
+every capture (which brings the Ticket tab forward on its own) sent the list
+back to the top. Each pane now scrolls on its own, `showTab` remembers and
+restores each pane's offset, and `renderEdges` preserves it across the
+scanner's rebuild every few seconds. The row you last clicked keeps a tint, and
+the Ticket tab shows a **← Back to edges** link to it.
+
+The filter controls sit behind one chip that states the filter in words
+(`Football · FG · Moneyline/Spread/Total · 12 books · ≥1.0%`) and opens the
+drawer in place; sort and minimum edge stay out on the toolbar. Bankroll,
+Kelly multiplier and the bets service URL live behind the **⚙** at the right
+of the tab bar.
+
+An Edges row is two columns: the pick, market, matchup and the book's line on
+the left, and a right rail carrying the **edge %** and the **stake**, so both
+line up in one column down the list. Edge magnitude also reads as colour in
+three tiers (≥4%, 2–4%, under 2%) on the figure and on the row's left stripe,
+and the time to first pitch warms to amber inside 12 hours and red inside 2.
+
 ## Stake
 
 Mode B of the Kelly sheet (`extension/kelly.js`): Unabated already publishes
@@ -184,8 +209,17 @@ exchange's exact `sourcePrice` so they match Unabated's screen, while the
 stake uses the American price because that is what Unabated's edge was
 computed from.
 
-Settings (bankroll, Kelly multiplier) sit at the bottom of the panel and
-persist in `chrome.storage.local`. Defaults 30000 and 0.25.
+The figure shown is the number to act on, with the verb on it: `bet $281`
+when nothing is held on the market, `add $121` when a position is already
+down, and under it what you hold and what full size is
+(`$120 held · full size $241`). Against a position on the other side it reads
+`bet $192` over `$120 on the other side · net $72 on this side` (the Ticket
+spells it `$120 already on the other side`). The Ticket's label says
+the same thing ("Bet" / "Add to your position" / "Already at full size"). A
+line that cannot be sized keeps a `—`, never a computed-looking `$0`.
+
+Settings (bankroll, Kelly multiplier, bets service URL) sit behind the ⚙ in
+the tab bar and persist in `chrome.storage.local`. Defaults 30000 and 0.25.
 
 Copy puts one line on the clipboard:
 `Seattle Mariners -133 · 57.0¢ @ Novig | fair -139 · 58.2¢ | edge +1.89% | stake $188.55 | to win $141.77 | payout $330.32 | Texas Rangers @ Seattle Mariners · MLB`.
@@ -300,7 +334,9 @@ its best edge; under it the market, matchup and start; then the **best
 line**, which is the highest Kelly stake (stake = edge / (decimal − 1)
 already taxes longshots), so a -110 main line at +5% outranks a +944 rung at
 +6%; then `▸ 2 books · 7 lines (+6)`, which opens the other books and rungs.
-Every line is clickable (locate) as before. The count badge counts cards,
+The card is its best line — it carries that line's own number, and a rung
+behind the expander names its own when it differs. Every line is clickable
+(locate) as before. The count badge counts cards,
 sort orders cards through their best line, and `feed.groupEdges` (pure,
 node-tested) does the grouping; the panel passes the stake as the rank.
 Turning the toggle off gives the flat list.
@@ -481,11 +517,18 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   bet matches; under the Kelly stake, the held / add / other-side block
   above. The warning strip adds "Bet sources unavailable" when no venue has
   reported in the last hour (the flags may then be missing).
-- *Edges tab*: the badge, position line and sized stake on each row, or on
-  each card from its best line. Sort **by my exposure** puts held and
+- *Edges tab*: the badge, the **Related bets** block and the sized stake on
+  each row, or on each card from its best line. The block is labelled and
+  ruled (red when a position is against you); a bet on that very line prints
+  only what differs from the row — venue, its entry price, when — because the
+  row already states the pick, while another market or the other side names
+  itself. The Ticket shows the same matches with the full sentence. Sort **by my exposure** puts held and
   against lines first. Nothing is filtered; alerts skip only lines you
   already hold at size (nothing to act on) and fire as before otherwise.
-- *Bets tab*: the per-venue table (last pull, green under 5 min, amber
+- *Bets tab*: opens on **total at risk** across open bets, with the venue
+  count and, when a venue reported a bet without a stake, how many are not in
+  that total. Then one line per venue (a dot for freshness, what it holds, how
+  old the last pull is) rather than a table: last pull green under 5 min, amber
   under 60, red past that or on a failed poll with its error; venues with
   no source yet read "no source configured", a source still on its first
   poll reads "no completed poll yet"; a page-sourced venue past the hour
@@ -493,8 +536,9 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   tab to refresh", or "Novig tab is open — open its Portfolio screen to
   refresh" when the tab was seen in the last 5 min; the service itself shows
   "unreachable since …" in red with the last records still listed), the
-  service URL, the open bets (venue, bet, stake, placed), and the
-  **unmatched** list — every open bet no board line matches, with why: team
+  open bets (venue, bet, stake, placed — each with a green left edge when
+  the board matched it, red when it did not, so a problem bet is visible in
+  the open list too), and the **unmatched** list — every open bet no board line matches, with why: team
   not recognised (the raw name, so `teams.js` can grow), ambiguous game, no
   event on the board yet, league not on the scanner, not a game market
   (futures, the bots' combos), unknown Kalshi series.

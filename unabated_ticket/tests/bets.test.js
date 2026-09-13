@@ -240,7 +240,7 @@ test("normalize: NO moneyline is the other team with the tie caveat", () => {
   assert.equal(record.points, null);
   assert.deepEqual(record.approx, [bets.TIE_CAVEAT]);
   assert.equal(record.price, 122); // NO at 45c
-  assert.equal(bets.describeBet(record), "NO CAR Panthers ≈ CHI Bears or tie +122");
+  assert.equal(bets.describeBet(record), "NO CAR Panthers ≈ CHI Bears or tie +122 · 45.0¢");
 });
 
 test("normalize: position_fp 0 with trades is closed; sell-only fills price from the sells", () => {
@@ -262,7 +262,7 @@ test("normalize: futures are 'other' / not a game market; unknown series fails c
   assert.equal(future.unmatchable, "not a game market");
   assert.equal(future.status, "open");
   assert.equal(future.stake, 100); // 5000 x 2c
-  assert.equal(bets.describeBet(future), "Will Mike Washington Jr. win the Offensive Rookie of the Year? +4900");
+  assert.equal(bets.describeBet(future), "Will Mike Washington Jr. win the Offensive Rookie of the Year? +4900 · 2.0¢");
   const nba = byId(records, "kalshi:KXNBAGAME-26OCT20LALBOS-BOS:yes");
   assert.equal(nba.betType, "other");
   assert.equal(nba.league, null);
@@ -315,10 +315,10 @@ test("NFL slice: moneyline YES on Carolina is same_line on the Carolina row, opp
   const home = bets.matchBets(rows["Moneyline FG 1 null"], records);
   assert.equal(home.matches.length, 1);
   assert.equal(home.matches[0].tier, "same_line");
-  assert.equal(home.matches[0].label, "You bet this: CAR Panthers -138 · $58 @ Kalshi · Sep 11 11:05 AM");
+  assert.equal(home.matches[0].label, "You bet this: CAR Panthers -138 · 58.0¢ · $58 @ Kalshi · Sep 11 11:05 AM");
   const away = bets.matchBets(rows["Moneyline FG 0 null"], records);
   assert.equal(away.matches[0].tier, "opposite");
-  assert.equal(away.matches[0].label, "You are on the OTHER side: CAR Panthers -138 · $58 @ Kalshi");
+  assert.equal(away.matches[0].label, "You are on the OTHER side: CAR Panthers -138 · 58.0¢ · $58 @ Kalshi");
   assert.deepEqual(home.unmatched, []);
 });
 
@@ -327,7 +327,7 @@ test("NFL slice: NO on the Carolina market matches the Chicago row as same_line 
   const records = normalizedFixture(CHICAR).filter((r) => r.id === "kalshi:KXNFLGAME-26SEP13CHICAR-CAR:no");
   const { matches } = bets.matchBets(rows["Moneyline FG 0 null"], records);
   assert.equal(matches[0].tier, "same_line");
-  assert.equal(matches[0].label, "You bet this: NO CAR Panthers ≈ CHI Bears or tie +122 · $45 @ Kalshi · Sep 11 11:06 AM");
+  assert.equal(matches[0].label, "You bet this: NO CAR Panthers ≈ CHI Bears or tie +122 · 45.0¢ · $45 @ Kalshi · Sep 11 11:06 AM");
   assert.equal(bets.matchBets(rows["Moneyline FG 1 null"], records).matches[0].tier, "opposite");
 });
 
@@ -336,14 +336,14 @@ test("NFL slice: spread Chicago -13.5 is same_side on Chicago -14, opposite at a
   const records = normalizedFixture(CHICAR).filter((r) => r.id === "kalshi:KXNFLSPREAD-26SEP13CHICAR-CHI14:yes");
   const sameSide = bets.matchBets(rows["Spread FG 0 -14"], records).matches[0];
   assert.equal(sameSide.tier, "same_side");
-  assert.equal(sameSide.label, "You have Chicago -13.5 +150 (this is -14)");
-  assert.equal(bets.matchBets(rows["Spread FG 0 -3"], records).matches[0].label, "You have Chicago -13.5 +150 (this is -3)");
+  assert.equal(sameSide.label, "You have Chicago -13.5 +150 · 40.0¢ (this is -14)");
+  assert.equal(bets.matchBets(rows["Spread FG 0 -3"], records).matches[0].label, "You have Chicago -13.5 +150 · 40.0¢ (this is -3)");
   const opposite = bets.matchBets(rows["Spread FG 1 14"], records).matches[0];
   assert.equal(opposite.tier, "opposite");
-  assert.equal(opposite.label, "You are on the OTHER side: Chicago -13.5 +150 · $80 @ Kalshi at a different number");
+  assert.equal(opposite.label, "You are on the OTHER side: Chicago -13.5 +150 · 40.0¢ · $80 @ Kalshi at a different number");
   const sameGame = bets.matchBets(rows["Total FG 0 47"], records).matches[0];
   assert.equal(sameGame.tier, "same_game");
-  assert.equal(sameGame.label, "You have a bet on this game: Chicago -13.5 +150 · $80 @ Kalshi");
+  assert.equal(sameGame.label, "You have a bet on this game: Chicago -13.5 +150 · 40.0¢ · $80 @ Kalshi");
 });
 
 test("NFL slice: 1H total YES Over 20.5 is same_line on the 1H Over row; FG total is only same_game", () => {
@@ -351,7 +351,7 @@ test("NFL slice: 1H total YES Over 20.5 is same_line on the 1H Over row; FG tota
   const records = normalizedFixture(CHICAR).filter((r) => r.id === "kalshi:KXNFL1HTOTAL-26SEP13CHICAR-21:yes");
   const over = bets.matchBets(rows["Total 1H 0 20.5"], records).matches[0];
   assert.equal(over.tier, "same_line");
-  assert.equal(over.label, "You bet this: 1H Over 20.5 -100 · $25 @ Kalshi · Sep 11 11:08 AM");
+  assert.equal(over.label, "You bet this: 1H Over 20.5 -100 · 50.0¢ · $25 @ Kalshi · Sep 11 11:08 AM");
   assert.equal(bets.matchBets(rows["Total 1H 1 20.5"], records).matches[0].tier, "opposite");
   assert.equal(bets.matchBets(rows["Total FG 0 47"], records).matches[0].tier, "same_game");
 });
@@ -377,18 +377,18 @@ test("CFB: every tier for the Chattanooga -5.5 bet, exact labels", () => {
   const sameLine = bets.matchBets(cfbRow({ sideIndex: 0, points: -5.5 }), records).matches;
   assert.equal(sameLine.length, 1);
   assert.equal(sameLine[0].tier, "same_line");
-  assert.equal(sameLine[0].label, "You bet this: Chattanooga -5.5 +138 · $168 @ Kalshi · Sep 11 1:14 PM");
+  assert.equal(sameLine[0].label, "You bet this: Chattanooga -5.5 +138 · 42.0¢ · $168 @ Kalshi · Sep 11 1:14 PM");
   const sameSide = bets.matchBets(cfbRow({ sideIndex: 0, points: -6.5 }), records).matches[0];
   assert.equal(sameSide.tier, "same_side");
-  assert.equal(sameSide.label, "You have Chattanooga -5.5 +138 (this is -6.5)");
+  assert.equal(sameSide.label, "You have Chattanooga -5.5 +138 · 42.0¢ (this is -6.5)");
   const opposite = bets.matchBets(cfbRow({ sideIndex: 1, points: 5.5 }), records).matches[0];
   assert.equal(opposite.tier, "opposite");
-  assert.equal(opposite.label, "You are on the OTHER side: Chattanooga -5.5 +138 · $168 @ Kalshi");
+  assert.equal(opposite.label, "You are on the OTHER side: Chattanooga -5.5 +138 · 42.0¢ · $168 @ Kalshi");
   const oppositeOther = bets.matchBets(cfbRow({ sideIndex: 1, points: 6.5 }), records).matches[0];
-  assert.equal(oppositeOther.label, "You are on the OTHER side: Chattanooga -5.5 +138 · $168 @ Kalshi at a different number");
+  assert.equal(oppositeOther.label, "You are on the OTHER side: Chattanooga -5.5 +138 · 42.0¢ · $168 @ Kalshi at a different number");
   const sameGame = bets.matchBets(cfbRow({ betType: "Total", sideIndex: 0, points: 48.5 }), records).matches[0];
   assert.equal(sameGame.tier, "same_game");
-  assert.equal(sameGame.label, "You have a bet on this game: Chattanooga -5.5 +138 · $168 @ Kalshi");
+  assert.equal(sameGame.label, "You have a bet on this game: Chattanooga -5.5 +138 · 42.0¢ · $168 @ Kalshi");
 });
 
 test("CFB: NO 1H total is same_line on the 1H Under row and opposite on the 1H Over row", () => {
@@ -396,12 +396,12 @@ test("CFB: NO 1H total is same_line on the 1H Under row and opposite on the 1H O
   const game = { eventId: 900002, awayTeam: "Oklahoma", homeTeam: "Michigan", betType: "Total", period: "1H", points: 22.5 };
   const under = bets.matchBets(cfbRow(Object.assign({ sideIndex: 1 }, game)), records).matches[0];
   assert.equal(under.tier, "same_line");
-  assert.equal(under.label, "You bet this: 1H Under 22.5 -104 · $255 @ Kalshi · Sep 8 1:58 PM");
+  assert.equal(under.label, "You bet this: 1H Under 22.5 -104 · 51.0¢ · $255 @ Kalshi · Sep 8 1:58 PM");
   const over = bets.matchBets(cfbRow(Object.assign({ sideIndex: 0 }, game)), records).matches[0];
   assert.equal(over.tier, "opposite");
   const fullGame = bets.matchBets(cfbRow(Object.assign({ sideIndex: 1 }, game, { period: "FG", points: 48.5 })), records).matches[0];
   assert.equal(fullGame.tier, "same_game");
-  assert.equal(fullGame.label, "You have a bet on this game: 1H Under 22.5 -104 · $255 @ Kalshi");
+  assert.equal(fullGame.label, "You have a bet on this game: 1H Under 22.5 -104 · 51.0¢ · $255 @ Kalshi");
 });
 
 test("CFB: team order on the venue side does not matter", () => {
@@ -573,10 +573,10 @@ test("Novig: moneyline bid on Carolina is same_line on the Carolina row and oppo
   const home = bets.matchBets(rows["Moneyline FG 1 null"], records);
   assert.equal(home.matches.length, 1);
   assert.equal(home.matches[0].tier, "same_line");
-  assert.equal(home.matches[0].label, "You bet this: Carolina Panthers -138 · $58 @ Novig · Sep 11 11:05 AM");
+  assert.equal(home.matches[0].label, "You bet this: Carolina Panthers -138 · 58.0¢ · $58 @ Novig · Sep 11 11:05 AM");
   const away = bets.matchBets(rows["Moneyline FG 0 null"], records);
   assert.equal(away.matches[0].tier, "opposite");
-  assert.equal(away.matches[0].label, "You are on the OTHER side: Carolina Panthers -138 · $58 @ Novig");
+  assert.equal(away.matches[0].label, "You are on the OTHER side: Carolina Panthers -138 · 58.0¢ · $58 @ Novig");
 });
 
 test("Novig: spread bid Chicago -13.5 is same_side on Chicago -14 and opposite at a different number on Carolina +14", () => {
@@ -584,10 +584,10 @@ test("Novig: spread bid Chicago -13.5 is same_side on Chicago -14 and opposite a
   const records = novigRecords().filter((r) => r.id === "novig:o-sp-chi");
   const sameSide = bets.matchBets(rows["Spread FG 0 -14"], records).matches[0];
   assert.equal(sameSide.tier, "same_side");
-  assert.equal(sameSide.label, "You have Chicago Bears -13.5 +150 (this is -14)");
+  assert.equal(sameSide.label, "You have Chicago Bears -13.5 +150 · 40.0¢ (this is -14)");
   const opposite = bets.matchBets(rows["Spread FG 1 14"], records).matches[0];
   assert.equal(opposite.tier, "opposite");
-  assert.equal(opposite.label, "You are on the OTHER side: Chicago Bears -13.5 +150 · $80 @ Novig at a different number");
+  assert.equal(opposite.label, "You are on the OTHER side: Chicago Bears -13.5 +150 · 40.0¢ · $80 @ Novig at a different number");
 });
 
 test("Novig: the LAY of Chicago -13.5 is Carolina +13.5 — same_side on Carolina +14, opposite on Chicago -14", () => {
@@ -595,7 +595,7 @@ test("Novig: the LAY of Chicago -13.5 is Carolina +13.5 — same_side on Carolin
   const records = novigRecords().filter((r) => r.id === "novig:o-sp-lay");
   const sameSide = bets.matchBets(rows["Spread FG 1 14"], records).matches[0];
   assert.equal(sameSide.tier, "same_side");
-  assert.equal(sameSide.label, "You have Carolina Panthers +13.5 -150 (this is +14)");
+  assert.equal(sameSide.label, "You have Carolina Panthers +13.5 -150 · 60.0¢ (this is +14)");
   assert.equal(bets.matchBets(rows["Spread FG 0 -14"], records).matches[0].tier, "opposite");
 });
 
@@ -606,7 +606,7 @@ test("Novig: a resting Under and a parlay leg flag the game; settled, void and c
   assert.equal(resting.tier, "same_side");
   const leg = bets.matchBets(rows["Moneyline FG 1 null"], records.filter((r) => r.id === "novig:pl-1:0")).matches[0];
   assert.equal(leg.tier, "same_line");
-  assert.equal(leg.label, "You bet this: Carolina Panthers -122 (parlay leg) · $25 @ Novig · Sep 11 1:00 PM");
+  assert.equal(leg.label, "You bet this: Carolina Panthers -122 · 55.0¢ (parlay leg) · $25 @ Novig · Sep 11 1:00 PM");
   for (const id of ["novig:o-won", "novig:o-lay-won", "novig:o-push", "novig:o-cancel", "novig:o-wash", "novig:pl-2:0"]) {
     assert.equal(bets.matchBets(rows["Moneyline FG 1 null"], records.filter((r) => r.id === id)).matches.length, 0, id);
   }

@@ -127,16 +127,17 @@ test("badgeText / badgeKind: dollars held win, then dollars against, then a plai
   assert.deepEqual(["same_line", "opposite", "same_game"].map((tier) => view.badgeKind(flag(tier, tier === "same_line" ? 1 : 0, tier === "opposite" ? 1 : 0))), ["held", "against", "game"]);
 });
 
-test("stakeAdviceLine: the same three numbers in the same order for every case", () => {
+test("stakeAdviceLine: the verb says what the number is, then what is held and full size", () => {
   const exposure = (held, against) => ({ held, against, heldBets: [], againstBets: [] });
   assert.equal(view.stakeAdviceLine(view.stakeAdvice(500, exposure(0, 0))), null);
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(600, exposure(350, 0))), "wagered $350 → target $600, bet $250");
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(520, exposure(600, 0))), "wagered $600 → target $520, bet $0");
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(null, exposure(600, 0))), "wagered $600 → target none here, bet $0");
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(500, exposure(0, 200))), "wagered $200 against → target $500, bet $500 (net $300 on this side)");
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(100, exposure(0, 200))), "wagered $200 against → target $100, bet $100 (still $100 against)");
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(null, exposure(0, 200))), "wagered $200 against → target none here, bet $0");
-  assert.deepEqual(view.stakeAdviceWords(view.stakeAdvice(600, exposure(350.5, 0))), { have: "$350.50", target: "$600", bet: "$249.50", note: null });
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(600, exposure(350, 0))), "add $250, $350 held · full size $600");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(520, exposure(600, 0))), "bet $0, $600 held · full size $520");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(null, exposure(600, 0))), "bet $0, $600 held · full size none here");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(500, exposure(0, 200))), "bet $500, $200 on the other side (net $300 on this side)");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(100, exposure(0, 200))), "bet $100, $200 on the other side (still $100 against)");
+  assert.equal(view.stakeAdviceLine(view.stakeAdvice(null, exposure(0, 200))), "bet $0, $200 on the other side");
+  assert.deepEqual(view.stakeAdviceWords(view.stakeAdvice(600, exposure(350.5, 0))),
+    { verb: "add", have: "$350.50", target: "$600", bet: "$249.50", note: null, against: false });
 });
 
 test("stakeAdvice: none, add the difference, at size when held covers the stake, reverse with the net", () => {
@@ -151,12 +152,20 @@ test("stakeAdvice: none, add the difference, at size when held covers the stake,
   assert.deepEqual(view.stakeAdvice(500, exposure(300, 200)).kind, "add");
 });
 
-test("positionLines: one line per held bet then per against bet", () => {
-  const held = record("kalshi:h:yes", "open", { stake: 300, placedAt: "2026-09-10T18:15:00Z" });
-  const against = record("kalshi:a:no", "open", { side: "home", points: 5.5, price: -150, stake: 200, placedAt: null });
-  const lines = view.positionLines({ tier: "same_line", matches: [], exposure: { held: 300, against: 200, heldBets: [held], againstBets: [against] } });
-  assert.deepEqual(lines, ["you hold Chattanooga -5.5 +138 · $300 · Kalshi · Sep 10 2:15 PM", "other side: Eastern Kentucky +5.5 -150 · $200 · Kalshi"]);
-  assert.deepEqual(view.positionLines(null), []);
+test("relatedLines: compact drops what the row already states, full keeps the sentence", () => {
+  const flag = {
+    tier: "same_line",
+    matches: [
+      { tier: "same_line", label: "You bet this: Chattanooga -5.5 +138 · 42.0¢ · $300 @ Kalshi · Sep 10 2:15 PM", compactLabel: "Kalshi +138 · 42.0¢ · $300 · Sep 10 2:15 PM" },
+      { tier: "opposite", label: "You are on the OTHER side: Eastern Kentucky +5.5 -150 · 60.0¢ · $200 @ Kalshi", compactLabel: "You are on the OTHER side: Eastern Kentucky +5.5 -150 · 60.0¢ · $200 @ Kalshi" },
+    ],
+  };
+  assert.deepEqual(view.relatedLines(flag, true).map((line) => line.text), [
+    "Kalshi +138 · 42.0¢ · $300 · Sep 10 2:15 PM",
+    "You are on the OTHER side: Eastern Kentucky +5.5 -150 · 60.0¢ · $200 @ Kalshi",
+  ]);
+  assert.equal(view.relatedLines(flag, false)[0].text, "You bet this: Chattanooga -5.5 +138 · 42.0¢ · $300 @ Kalshi · Sep 10 2:15 PM");
+  assert.deepEqual(view.relatedLines(null, true), []);
 });
 
 test("mergeServicePayload: fresh wins on the same id, team keys are filled, old settled bets are pruned", () => {

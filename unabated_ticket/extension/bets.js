@@ -149,6 +149,15 @@
     return value > 0 ? `+${value}` : `${value}`;
   }
 
+  // Every price in the panel reads in both worlds: the American number and the
+  // prediction-market cents the exchanges actually quote (panel.js fmtPriceBoth,
+  // kelly.bookProbOf). A bet record carries only the American price it was
+  // placed at, so the cents are derived from it.
+  function priceBoth(american) {
+    const decimal = american > 0 ? 1 + american / 100 : 1 + 100 / Math.abs(american);
+    return `${signedNumber(american)} \u00b7 ${(100 / decimal).toFixed(1)}\u00a2`;
+  }
+
   function roundCents(dollars) {
     return Math.round(dollars * 100) / 100;
   }
@@ -490,7 +499,7 @@
     } else {
       pick = betTeamName(bet, bet.side);
     }
-    const price = bet.price == null ? "" : ` ${signedNumber(bet.price)}`;
+    const price = bet.price == null ? "" : ` ${priceBoth(bet.price)}`;
     const parlay = bet.isParlayLeg ? " (parlay leg)" : "";
     return `${period}${pick}${price}${parlay}`;
   }
@@ -504,6 +513,13 @@
 
   function linePointsLabel(line) {
     return lineBetType(line) === "spread" ? signedNumber(line.points) : `${line.points}`;
+  }
+
+  // The same match in one line, for a row that already states the pick.
+  function compactLabelOf(tier, bet, line) {
+    if (tier !== "same_line") return labelOf(tier, bet, line);
+    const price = bet.price == null ? "" : ` ${priceBoth(bet.price)}`;
+    return `${venueLabel(bet.venue)}${price} · ${formatStake(bet.stake)} · ${formatPlacedAt(bet.placedAt)}`;
   }
 
   function labelOf(tier, bet, line) {
@@ -535,7 +551,7 @@
         continue;
       }
       const tier = tierOf(bet, line);
-      matches.push({ tier, bet, label: labelOf(tier, bet, line) });
+      matches.push({ tier, bet, label: labelOf(tier, bet, line), compactLabel: compactLabelOf(tier, bet, line) });
     }
     matches.sort((a, b) => TIER_RANK[a.tier] - TIER_RANK[b.tier] || (b.bet.stake ?? 0) - (a.bet.stake ?? 0));
     return { matches, unmatched };

@@ -65,6 +65,11 @@
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
     pageStatus: el("page-status"),
     tabs: el("tabs"), tabTicket: el("tab-ticket"), tabEdges: el("tab-edges"), edgesCount: el("edges-count"),
+    edgesToolbar: el("edges-toolbar"), edgesControls: el("edges-controls"),
+    filtersToggle: el("filters-toggle"), filtersSummary: el("filters-summary"),
+    settingsToggle: el("settings-toggle"), settings: el("settings"),
+    backToEdges: el("back-to-edges"), stakeLabel: el("stake-label"), betsBannerHead: el("bets-banner-head"),
+    betsCount: el("bets-count"), betsRisk: el("bets-risk"), betsRiskCaption: el("bets-risk-caption"),
     edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
     edgesSports: el("edges-sports"), edgesBetTypes: el("edges-bettypes"), edgesBooks: el("edges-books"), edgesBooksMode: el("edges-books-mode"),
     booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
@@ -104,6 +109,9 @@
   // not start a second pass that notifies the same line twice.
   let alertsBusy = false;
   let lastCopyText = "";
+  // The row a locate (or a capture) last came from, so returning to the Edges
+  // list shows where you were rather than only restoring the scroll offset.
+  let lastClickedKey = null;
   let scannerStatus = null;
   let scannerState = null;
   const teamsLib = globalThis.UnabatedTeams;
@@ -407,6 +415,15 @@
     view.rowTrace.textContent = `Row trace (${reason}; script ${resolution.build}): ${resolution.trace}.${watching}`;
   }
 
+  // What the panel is telling you to put down now: the top-up when a position
+  // is already held, zero when it covers the stake, the stake otherwise.
+  function actedStake(advice, stake) {
+    if (!advice || advice.kind === "none") return stake;
+    if (advice.kind === "add") return advice.add;
+    if (advice.kind === "at_size") return 0;
+    return advice.stake;
+  }
+
   function renderTicket() {
     const { ticket, settings, watchStatus } = state;
     const { line, result, reason } = computeStake(ticket, settings);
@@ -430,7 +447,6 @@
 
     view.stake.classList.remove("no-edge");
     view.payoutRow.hidden = true;
-    let payoutText = "";
     if (!result) {
       view.stake.textContent = "—";
       view.stake.classList.add("no-edge");
@@ -442,14 +458,22 @@
     } else {
       view.stake.textContent = fmtDollars(result.stake);
       view.fullKelly.textContent = "";
-      // Payout = stake x decimal odds at the book's American price; "to win" is the profit on top of the stake.
-      const payout = result.stake * kelly.americanToDecimal(line.price);
-      view.profit.textContent = fmtDollars(payout - result.stake);
+    }
+    // Sets view.stake to the number to act on when a position is already held.
+    const advice = renderStakeExposure(result ? result.stake : null, betFlag);
+
+    // Payout = stake x decimal odds at the book's American price; "to win" is
+    // the profit on top of it. Both describe the number shown above them, so a
+    // top-up prices the top-up and an at-size line shows no payout at all.
+    let payoutText = "";
+    const acted = result ? actedStake(advice, result.stake) : null;
+    if (acted != null && acted > 0) {
+      const payout = acted * kelly.americanToDecimal(line.price);
+      view.profit.textContent = fmtDollars(payout - acted);
       view.payout.textContent = fmtDollars(payout);
       view.payoutRow.hidden = false;
-      payoutText = ` | to win $${(payout - result.stake).toFixed(2)} | payout $${payout.toFixed(2)}`;
+      payoutText = ` | to win $${(payout - acted).toFixed(2)} | payout $${payout.toFixed(2)}`;
     }
-    const advice = renderStakeExposure(result ? result.stake : null, betFlag);
 
     const stakeText = result ? result.stake.toFixed(2) : "n/a";
     lastCopyText = `${ticket.sideLabel}${periodSuffix(ticket)} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${copyExposureText(advice)}${payoutText} | ${describeMatchup(ticket)}`;
@@ -466,8 +490,13 @@
     const { shown, more } = betsView.bannerLines(matches);
     const items = shown.map((match) => {
       const div = document.createElement("div");
-      div.className = `bet-match tier-${match.tier}${match.tier === "opposite" ? " bad" : ""}`;
-      div.textContent = match.label;
+      div.className = `bet-match tier-${match.tier}${match.tier === "opposite" ? " bad" : match.tier === "same_game" ? " game" : ""}`;
+      const kind = document.createElement("span");
+      kind.className = "k";
+      kind.textContent = match.tier === "opposite" ? "other side" : match.tier === "same_game" ? "same game" : "you hold";
+      const text = document.createElement("span");
+      text.textContent = match.label;
+      div.append(kind, text);
       return div;
     });
     if (more > 0) {
@@ -478,6 +507,7 @@
     }
     view.betsBanner.replaceChildren(...items);
     view.betsBanner.hidden = items.length === 0;
+    view.betsBannerHead.hidden = items.length === 0;
     return { tier: matches.length ? matches[0].tier : null, matches, exposure: betsLib.exposureOf(matches) };
   }
 
@@ -491,29 +521,29 @@
   // Under the Kelly stake, the same words as the Edges row: "wagered $350 →
   // target $600, bet $250", the bet number large; red when the position held
   // is on the other side. Returns the advice.
+  // Under the stake, the same words as the Edges rail: what is already down
+  // and what full size is. The big number above it is what to act on now, and
+  // the label says which ("Bet" or "Add to your position").
   function renderStakeExposure(stake, flag) {
     const advice = betsView.stakeAdvice(stake, flag.exposure);
+    const words = betsView.stakeAdviceWords(advice);
     view.stakeExposure.classList.toggle("against", advice.kind === "reverse");
     view.stakeExposure.hidden = advice.kind === "none";
+    view.stakeLabel.textContent = advice.kind === "add" ? "Add to your position"
+      : advice.kind === "at_size" ? "Already at full size" : "Bet";
     if (advice.kind === "none") {
       view.stakeExposure.replaceChildren();
       return advice;
     }
+    // The stake shown is the number to act on, not the full Kelly size — but
+    // only when there was a stake to compute: an unsizable line keeps its "—"
+    // rather than claiming a considered $0.
+    if (advice.stake != null) view.stake.textContent = words.bet;
     const summary = document.createElement("div");
-    const words = betsView.stakeAdviceWords(advice);
-    summary.append(`wagered ${words.have} → target ${words.target}, bet `);
-    const bet = document.createElement("span");
-    bet.className = "stake-add";
-    bet.textContent = words.bet;
-    summary.append(bet);
-    if (words.note) summary.append(` (${words.note})`);
-    const positions = betsView.positionLines(flag).map((text) => {
-      const div = document.createElement("div");
-      div.className = "muted";
-      div.textContent = text;
-      return div;
-    });
-    view.stakeExposure.replaceChildren(summary, ...positions);
+    summary.textContent = words.against
+      ? `${words.have} already on the other side${words.note ? ` · ${words.note}` : ""}`
+      : `${words.have} already held · full size ${words.target}`;
+    view.stakeExposure.replaceChildren(summary);
     return advice;
   }
 
@@ -775,129 +805,195 @@
     const text = betsView.badgeText(flag);
     if (!text) return null;
     const badge = document.createElement("span");
-    badge.className = `edge-bet kind-${betsView.badgeKind(flag)}`;
+    badge.className = `tag ${betsView.badgeKind(flag)}`;
     badge.textContent = text;
     badge.title = flag.matches.map((match) => match.label).join("\n");
     return badge;
   }
 
-  // The row's stake cell: a plain "$500" when nothing is held on the market,
-  // else "bet $250" over a small "wagered $350 → target $600" (the Ticket block
-  // reads the same way; betsview.stakeAdviceWords).
+  // Edge magnitude in three steps, so a +6% and a +1.1% never read the same:
+  // the row's left stripe and the figure both take their colour from here.
+  function edgeTier(edgePct) {
+    if (edgePct >= 4) return "hot";
+    if (edgePct >= 2) return "warm";
+    return "thin";
+  }
+
+  // The rail under the edge: the number to act on, with the verb on it, then
+  // what is already down and what full size is. "add $250" is not the same
+  // instruction as "bet $250" and must not look like it.
   function fillStakeCell(cell, row) {
     const advice = row.bet ? row.bet.advice : { kind: "none" };
     cell.classList.toggle("at-size", advice.kind === "at_size");
     const words = betsView.stakeAdviceWords(advice);
     if (!words) {
-      cell.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
+      cell.textContent = row.stake == null ? "—" : `bet ${fmtDollars(row.stake)}`;
       return;
     }
     const note = document.createElement("small");
-    note.textContent = `wagered ${words.have} → target ${words.target}${words.note ? ` (${words.note})` : ""}`;
-    cell.append(`bet ${words.bet} `, note);
+    note.textContent = words.against
+      ? `${words.have} on the other side${words.note ? ` · ${words.note}` : ""}`
+      : `${words.have} held · full size ${words.target}`;
+    cell.append(`${words.verb} ${words.bet} `, note);
   }
 
-  // The dim lines under a row naming the position(s) behind its badge, one per position.
-  function positionLine(flag) {
-    const lines = flag ? betsView.positionLines(flag) : [];
-    if (!lines.length) return null;
-    const div = document.createElement("div");
-    div.className = "edge-position";
-    div.replaceChildren(...lines.map((text) => {
-      const line = document.createElement("div");
-      line.textContent = text;
-      return line;
+  // The bets already on this game, as a labelled section of the row rather
+  // than a loose line. A bet on this very line prints only what differs from
+  // the row (venue, its entry price, when); anything else names itself.
+  const RELATED_LINES_ON_A_ROW = 3;
+
+  function relatedBlock(flag, compact) {
+    const all = betsView.relatedLines(flag, compact);
+    if (!all.length) return null;
+    const lines = all.slice(0, RELATED_LINES_ON_A_ROW);
+    const block = document.createElement("div");
+    block.className = `related-block${all.some((line) => line.tier === "opposite") ? " against" : ""}`;
+    const head = document.createElement("div");
+    head.className = "related-head";
+    head.textContent = `Related bets · ${all.length}`;
+    block.append(head, ...lines.map((line) => {
+      const div = document.createElement("div");
+      div.textContent = line.text;
+      return div;
     }));
-    return div;
+    if (all.length > lines.length) {
+      const more = document.createElement("div");
+      more.textContent = `+${all.length - lines.length} more on this game (Bets tab)`;
+      block.append(more);
+    }
+    return block;
   }
 
-  // compact: inside a card, where the matchup and market are on the card.
-  function renderEdgeRow(row, compact) {
+  // Time to first pitch is a decision, not a footnote: inside 12 hours it
+  // warms, inside 2 it goes red.
+  function untilEl(startMs) {
+    const span = document.createElement("span");
+    const hours = (startMs - Date.now()) / 3600000;
+    span.className = hours <= 2 ? "soon urgent" : hours <= 12 ? "soon" : "";
+    span.textContent = fmtUntil(startMs);
+    return span;
+  }
+
+  // One book's line, as a full row.
+  function renderEdgeRow(row) {
     const li = document.createElement("li");
-    li.className = `edge-row${row.isBlurred ? " blurred" : ""}`;
+    const tier = edgeTier(row.edgePct);
+    li.className = `edge-row tier-${tier}${row.isBlurred ? " blurred" : ""}${row.key === lastClickedKey ? " last-clicked" : ""}`;
     li.dataset.key = row.key;
-    const top = document.createElement("div");
-    top.className = "edge-top";
-    const side = document.createElement("span");
+    li.append(...rowParts(row, tier));
+    return li;
+  }
+
+  // The two columns every row and card share: content, then the rail of
+  // numbers that line up down the list.
+  function rowParts(row, tier) {
+    const main = document.createElement("div");
+
+    const side = document.createElement("div");
     side.className = "edge-side";
+    const flag = betBadge(row.bet);
+    if (flag) side.append(flag);
     if (row.isAlt) {
       const badge = document.createElement("span");
-      badge.className = "edge-alt";
+      badge.className = "tag";
       badge.textContent = "alt";
       badge.title = `Alternate line; this book's main number is ${fmtPoints(row.mainPoints)}`;
       side.append(badge);
     }
-    const flag = compact ? null : betBadge(row.bet);
-    if (flag) side.append(flag);
     side.append(row.sideLabel);
-    const pct = document.createElement("span");
-    pct.className = "edge-pct";
-    pct.textContent = fmtPct(row.edgePct / 100);
-    top.append(side, pct);
 
-    const bet = document.createElement("div");
-    bet.className = "muted";
-    bet.textContent = `${describeSide(row)}${row.period === "FG" ? "" : ` · ${row.period}`}${row.isAlt ? ` · alt of ${fmtPoints(row.mainPoints)}` : ""}`;
-    const matchup = document.createElement("div");
-    matchup.className = "muted";
-    matchup.textContent = `${describeMatchup(row)} · ${fmtStart(row.eventStart)} · ${fmtUntil(row.eventStartMs)}`;
-    const altOf = row.isAlt ? `alt of ${fmtPoints(row.mainPoints)}` : "";
+    const meta = document.createElement("div");
+    meta.className = "edge-meta";
+    meta.append(
+      `${row.betType}${row.period === "FG" ? "" : ` · ${row.period}`}${row.isAlt ? ` · alt of ${fmtPoints(row.mainPoints)}` : ""}`
+        + `${row.rotation != null ? ` · rot ${row.rotation}` : ""} · `,
+      `${describeMatchup(row)} · ${fmtStart(row.eventStart)} · `,
+      untilEl(row.eventStartMs),
+    );
 
-    const bottom = document.createElement("div");
-    bottom.className = "edge-bottom";
-    const book = document.createElement("span");
+    const book = document.createElement("div");
     book.className = "edge-book";
-    book.textContent = `${row.book.name} ${fmtPriceBoth(asBookLine(row.price, row.sourceFormat, row.sourcePrice))}`;
-    const liquidity = document.createElement("span");
-    liquidity.className = "muted";
-    liquidity.textContent = [compact ? altOf : "", fmtLineAge(row.modifiedMs), fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ");
+    const price = document.createElement("span");
+    price.className = "price";
+    price.textContent = `${row.book.name} ${fmtPriceBoth(asBookLine(row.price, row.sourceFormat, row.sourcePrice))}`;
+    const age = document.createElement("span");
+    age.className = "age";
+    age.textContent = ` · ${[fmtLineAge(row.modifiedMs), fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ")}`;
+    book.append(price, age);
+    main.append(side, meta, book);
+
+    const rail = document.createElement("div");
+    rail.className = "edge-rail";
+    const pct = document.createElement("span");
+    pct.className = `edge-pct tier-${tier}`;
+    pct.textContent = fmtPct(row.edgePct / 100);
     const stake = document.createElement("span");
     stake.className = "edge-stake";
     fillStakeCell(stake, row);
-    bottom.append(book, liquidity, stake);
+    rail.append(pct, stake);
 
-    if (compact) li.append(top, bottom);
-    else li.append(top, bet, matchup, ...[positionLine(row.bet)].filter(Boolean), bottom);
+    return [main, rail, ...[relatedBlock(row.bet, true)].filter(Boolean)];
+  }
+
+  // A line inside a card's expander: price and edge only.
+  function renderGroupLine(row, cardSideLabel) {
+    const li = document.createElement("li");
+    li.className = "group-line";
+    li.dataset.key = row.key;
+
+    const main = document.createElement("div");
+    const price = document.createElement("span");
+    price.className = "gl-price";
+    const rung = cardSideLabel && row.sideLabel !== cardSideLabel ? `${row.sideLabel} · ` : "";
+    price.textContent = `${rung}${row.book.name} ${fmtPriceBoth(asBookLine(row.price, row.sourceFormat, row.sourcePrice))}`
+      + `${row.isAlt ? ` · alt of ${fmtPoints(row.mainPoints)}` : ""}`;
+    const age = document.createElement("span");
+    age.className = "gl-age";
+    age.textContent = [fmtLineAge(row.modifiedMs), fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ");
+    main.append(price, age);
+
+    const rail = document.createElement("div");
+    rail.className = "gl-rail";
+    const edge = document.createElement("span");
+    edge.className = "gl-edge";
+    edge.textContent = fmtPct(row.edgePct / 100);
+    const stake = document.createElement("span");
+    stake.className = "gl-stake";
+    stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
+    rail.append(edge, stake);
+
+    li.append(main, rail);
     return li;
   }
 
-  // "Idaho Vandals · +5.30%" then market and matchup, the best line, and an
-  // expander for the other books and rungs.
+  // A card is a row built from the market's best line, with the other books
+  // and rungs behind its expander. Same two columns as an ungrouped row, so
+  // the edge and the stake stay in one column down the whole list.
   function renderGroupCard(group) {
+    const best = group.best;
+    const tier = edgeTier(best.edgePct);
     const li = document.createElement("li");
-    li.className = "edge-group";
+    li.className = `edge-row tier-${tier}${best.key === lastClickedKey ? " last-clicked" : ""}`;
     li.dataset.group = group.key;
-    const top = document.createElement("div");
-    top.className = "edge-top";
-    const side = document.createElement("span");
-    side.className = "edge-side";
-    // The card carries its best line's flag; the bet is on the market, not one book.
-    const flag = betBadge(group.best.bet);
-    if (flag) side.append(flag);
-    side.append(group.sideName);
-    const pct = document.createElement("span");
-    pct.className = "edge-pct";
-    pct.textContent = fmtPct(group.best.edgePct / 100);
-    top.append(side, pct);
-    const market = document.createElement("div");
-    market.className = "muted";
-    market.textContent = `${group.betType}${group.period === "FG" ? "" : ` · ${group.period}`} · ${describeMatchup(group)} · ${fmtStart(group.eventStart)} · ${fmtUntil(group.eventStartMs)}`;
-    const lines = document.createElement("ol");
-    lines.className = "group-lines";
-    const expanded = expandedGroups.has(group.key);
-    const shown = expanded ? group.rows : group.rows.slice(0, 1);
-    lines.append(...shown.map((row) => renderEdgeRow(row, true)));
-    li.append(top, market, ...[positionLine(group.best.bet)].filter(Boolean), lines);
+    li.dataset.key = best.key;
+    li.append(...rowParts(best, tier));
+
     if (group.rows.length > 1) {
+      const expanded = expandedGroups.has(group.key);
       const more = document.createElement("button");
       more.type = "button";
-      more.className = "small group-more";
+      more.className = "group-more";
       more.dataset.group = group.key;
-      const others = group.rows.length - 1;
       more.textContent = expanded
-        ? "\u25be hide the other lines"
-        : `\u25b8 ${group.bookCount} book${group.bookCount === 1 ? "" : "s"} \u00b7 ${group.rows.length} lines (+${others})`;
+        ? "▾ hide the other lines"
+        : `▸ ${group.bookCount} book${group.bookCount === 1 ? "" : "s"} · ${group.rows.length} lines (+${group.rows.length - 1})`;
       li.append(more);
+      if (expanded) {
+        const lines = document.createElement("ol");
+        lines.className = "group-lines";
+        lines.append(...group.rows.slice(1).map((row) => renderGroupLine(row, best.sideLabel)));
+        li.append(lines);
+      }
     }
     return li;
   }
@@ -952,6 +1048,22 @@
     renderFilterDebug();
   });
 
+  // Books, markets, minimum edge — the filter in words, for the header chip
+  // that stands in for the whole control block.
+  function summariseFilter(effective) {
+    const sports = Array.from(new Set(state.edgeSettings.leagues.map((id) => (feed.LEAGUES[id] || {}).sport).filter(Boolean)))
+      .map((sport) => feed.SPORTS[sport]);
+    const books = effective.bookIds ? `${effective.bookIds.size} books` : `all ${liveBooks().length} books`;
+    return [
+      sports.length > 3 ? `${sports.length} sports` : sports.join("/") || "no sport",
+      state.edgeSettings.periods.map((id) => feed.PERIODS[id] || `pt${id}`).join("/"),
+      Array.from(effective.betTypeIds).map((id) => feed.BET_TYPES[id]).join("/") || "no market",
+      books,
+      `≥${state.edgeSettings.minEdgePct}%`,
+      state.edgeSettings.includeAlts ? "+alts" : null,
+    ].filter(Boolean).join(" · ");
+  }
+
   function renderEdges() {
     const rows = currentEdgeRows();
     const grouped = state.edgeSettings.groupByMarket;
@@ -959,9 +1071,14 @@
     renderEdgesStatus(items);
     const effective = effectiveFilter();
     view.edgesFilter.textContent = describeFilter(effective);
+    view.filtersSummary.textContent = summariseFilter(effective);
     renderBooksList(effective);
     renderFilterDebug();
-    view.edgesList.replaceChildren(...items.slice(0, MAX_EDGE_ROWS).map((item) => (grouped ? renderGroupCard(item) : renderEdgeRow(item, false))));
+    // The scanner rebuilds this list every few seconds; without this the reader
+    // is thrown back to the top of it mid-scroll.
+    const scrollTop = view.tabEdges.scrollTop;
+    view.edgesList.replaceChildren(...items.slice(0, MAX_EDGE_ROWS).map((item) => (grouped ? renderGroupCard(item) : renderEdgeRow(item))));
+    view.tabEdges.scrollTop = scrollTop;
     const status = scannerStatus;
     const unit = grouped ? "cards" : "lines";
     if (rows.length === 0) {
@@ -1014,10 +1131,14 @@
       renderEdges();
       return;
     }
-    const li = event.target.closest("li.edge-row");
+    const li = event.target.closest("li.edge-row, li.group-line");
     if (!li) return;
     const row = currentEdgeRows().find((r) => r.key === li.dataset.key);
     if (!row) return;
+    lastClickedKey = row.key;
+    for (const marked of view.edgesList.querySelectorAll(".last-clicked")) marked.classList.remove("last-clicked");
+    const card = li.closest("li.edge-row");
+    if (card) card.classList.add("last-clicked");
     const request = locateRequestOf(row);
     state.locating = { ...request, at: Date.now() };
     state.locateResult = null;
@@ -1210,16 +1331,46 @@
   // ---- tabs ----------------------------------------------------------------
 
   const TABS = ["ticket", "edges", "bets"];
+  const paneOf = { ticket: view.tabTicket, edges: view.tabEdges, bets: view.tabBets };
+  // Each pane scrolls on its own, but a hidden element is not guaranteed to
+  // keep its scrollTop, so the position is remembered explicitly. Without this
+  // the Edges list went back to the top every time a capture brought the
+  // Ticket tab forward, which is the whole reason for the split panes.
+  const paneScroll = { ticket: 0, edges: 0, bets: 0 };
 
   function showTab(name) {
-    state.activeTab = TABS.includes(name) ? name : "ticket";
-    view.tabTicket.hidden = state.activeTab !== "ticket";
-    view.tabEdges.hidden = state.activeTab !== "edges";
-    view.tabBets.hidden = state.activeTab !== "bets";
+    const next = TABS.includes(name) ? name : "ticket";
+    const previous = state.activeTab;
+    if (paneOf[previous] && !paneOf[previous].hidden) paneScroll[previous] = paneOf[previous].scrollTop;
+    state.activeTab = next;
+    for (const tab of TABS) paneOf[tab].hidden = tab !== next;
     for (const button of view.tabs.querySelectorAll("button[data-tab]")) {
-      button.classList.toggle("active", button.dataset.tab === state.activeTab);
+      button.classList.toggle("active", button.dataset.tab === next);
     }
+    // The filter toolbar belongs to the Edges tab; it is chrome, not content.
+    view.edgesToolbar.hidden = next !== "edges";
+    if (next !== "edges") view.edgesControls.hidden = true;
+    view.backToEdges.hidden = next !== "ticket" || !lastClickedKey;
+    paneOf[next].scrollTop = paneScroll[next];
   }
+
+  view.settingsToggle.addEventListener("click", () => {
+    view.settings.hidden = !view.settings.hidden;
+    view.settingsToggle.classList.toggle("active", !view.settings.hidden);
+  });
+
+  view.filtersToggle.addEventListener("click", () => {
+    const open = view.edgesControls.hidden;
+    view.edgesControls.hidden = !open;
+    view.filtersToggle.setAttribute("aria-expanded", String(open));
+    view.filtersToggle.querySelector(".caret").textContent = open ? "\u25B4" : "\u25BE";
+  });
+
+  view.backToEdges.addEventListener("click", () => {
+    showTab("edges");
+    chrome.storage.local.set({ activeTab: state.activeTab });
+    renderEdges();
+  });
 
   view.tabs.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-tab]");
@@ -1391,50 +1542,75 @@
 
   function renderBetsHeader() {
     const now = Date.now();
+    const open = state.betRecords.filter((bet) => bet.status === "open").length;
+    view.betsCount.hidden = open === 0;
+    view.betsCount.textContent = String(open);
     view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now, pageSources());
     view.betsHeader.classList.toggle("bad", betsView.serviceStatus(state.betsService, now).unreachable);
   }
 
-  function cell(text, className) {
-    const td = document.createElement("td");
-    td.textContent = text;
-    if (className) td.className = className;
-    return td;
-  }
-
+  // One line per venue: a dot for freshness, what it holds, how old the last
+  // successful pull is. A venue that failed says why, in place of its count.
   function renderBetsSources(now) {
     const service = betsView.serviceStatus(state.betsService, now);
     view.betsService.hidden = !service.unreachable;
     view.betsService.textContent = service.unreachable ? `${service.text}. Start it with unabated_ticket/bets_service/run.sh; the last records it served are still shown.` : "";
     view.betsSources.replaceChildren(...betsView.sourceRows(betsPayload(), now, pageSources()).map((row) => {
-      const tr = document.createElement("tr");
-      tr.className = `fresh-${row.level}`;
-      const status = row.error ? row.error : row.note ? row.note : "ok";
-      tr.append(
-        cell(row.venue, "venue"),
-        cell(row.configured ? `${row.ageText}${row.fetchedAt ? ` (${new Date(row.fetchedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })})` : ""}` : "—", "age"),
-        cell(row.count == null ? "—" : String(row.count)),
-        cell(status, row.error ? "error" : row.note ? "muted" : ""),
-      );
-      return tr;
+      const div = document.createElement("div");
+      div.className = `venue fresh-${row.level}`;
+      const bets = row.count == null ? null : `${row.count} bets`;
+      const trouble = row.error || row.note;
+      const note = trouble ? [bets, trouble].filter(Boolean).join(" · ") : bets || "no bets";
+      div.title = row.fetchedAt ? `last pull ${new Date(row.fetchedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : note;
+      const dot = document.createElement("span");
+      dot.className = "vdot";
+      const name = document.createElement("span");
+      const venue = document.createElement("span");
+      venue.className = "vname";
+      venue.textContent = row.venue;
+      const detail = document.createElement("span");
+      detail.className = "vnote";
+      detail.textContent = note;
+      name.append(venue, detail);
+      const age = document.createElement("span");
+      age.className = "vage";
+      age.textContent = row.configured ? row.ageText : "—";
+      div.append(dot, name, age);
+      return div;
     }));
   }
 
-  function betItem(bet, trailing, trailingClass) {
+  // `trailing` is the unmatched reason; its presence is also what colours the
+  // bet's left edge, so an unmatched bet is visible in the open list too.
+  function betItem(bet, trailing, unmatched) {
     const li = document.createElement("li");
+    li.className = unmatched ? "unmatched" : "matched";
+    const main = document.createElement("div");
     const what = document.createElement("div");
     what.className = "bet-what";
     what.textContent = `${betsLib.describeBet(bet)}`;
     const meta = document.createElement("div");
-    meta.className = "muted bet-meta";
+    meta.className = "bet-meta";
     const venue = bet.venue ? bet.venue.charAt(0).toUpperCase() + bet.venue.slice(1) : "unknown venue";
     const game = bet.awayTeam && bet.homeTeam ? `${bet.awayTeam} @ ${bet.homeTeam}` : null;
-    meta.textContent = [venue, game, bet.stake == null ? null : fmtDollars(bet.stake), bet.placedAt ? betsLib.formatPlacedAt(bet.placedAt) : null]
-      .filter(Boolean).join(" · ");
-    li.append(what, meta);
+    meta.textContent = [venue, game].filter(Boolean).join(" · ");
+    main.append(what, meta);
+
+    const rail = document.createElement("div");
+    const stake = document.createElement("span");
+    stake.className = "bet-stake";
+    stake.textContent = bet.stake == null ? "—" : fmtDollars(bet.stake);
+    rail.append(stake);
+    if (bet.placedAt) {
+      const when = document.createElement("small");
+      when.className = "bet-when";
+      when.textContent = betsLib.formatPlacedAt(bet.placedAt);
+      rail.append(when);
+    }
+    li.append(main, rail);
     if (trailing) {
       const extra = document.createElement("div");
-      extra.className = trailingClass;
+      extra.className = "bet-reason";
       extra.textContent = trailing;
       li.append(extra);
     }
@@ -1443,18 +1619,36 @@
 
   function renderBets() {
     const now = Date.now();
+    const scrollTop = view.tabBets.scrollTop;
     renderBetsSources(now);
     const open = state.betRecords.filter((bet) => bet.status === "open")
       .sort((a, b) => Date.parse(b.placedAt || 0) - Date.parse(a.placedAt || 0));
-    view.betsOpenCount.textContent = open.length ? `(${open.length})` : "";
-    view.betsOpen.replaceChildren(...open.map((bet) => betItem(bet, null)));
+    const unmatched = betsLib.unmatchedReasons(state.betRecords, boardLines());
+    const unmatchedIds = new Set(unmatched.map(({ bet }) => bet.id));
+
+    // What the tab opens with: the money, before the plumbing. A bet whose
+    // venue reported no stake is counted separately rather than as zero.
+    const priced = open.filter((bet) => typeof bet.stake === "number");
+    const atRisk = priced.reduce((total, bet) => total + bet.stake, 0);
+    const venues = betsView.sourceRows(betsPayload(), now, pageSources()).filter((row) => row.configured).length;
+    view.betsRisk.textContent = fmtDollars(atRisk);
+    view.betsRiskCaption.textContent = [
+      `at risk · ${open.length} open bet${open.length === 1 ? "" : "s"}`,
+      `${venues} venue${venues === 1 ? "" : "s"}`,
+      priced.length === open.length ? null : `${open.length - priced.length} with no stake reported`,
+    ].filter(Boolean).join(" · ");
+
+    view.betsOpenCount.textContent = open.length ? String(open.length) : "";
+    view.betsOpen.replaceChildren(...open.map((bet) => betItem(bet, null, unmatchedIds.has(bet.id))));
     view.betsOpenEmpty.hidden = open.length > 0;
     view.betsOpenEmpty.textContent = state.betsService && state.betsService.okAt != null ? "No open bets." : "No bets loaded yet.";
-    const unmatched = betsLib.unmatchedReasons(state.betRecords, boardLines());
-    view.betsUnmatchedCount.textContent = unmatched.length ? `(${unmatched.length})` : "";
-    view.betsUnmatched.replaceChildren(...unmatched.map(({ bet, reason }) => betItem(bet, reason, "bet-reason")));
+    view.betsUnmatchedCount.textContent = unmatched.length ? String(unmatched.length) : "";
+    view.betsUnmatched.replaceChildren(...unmatched.map(({ bet, reason }) => betItem(bet, reason, true)));
     view.betsUnmatchedEmpty.hidden = unmatched.length > 0;
     view.betsUnmatchedEmpty.textContent = open.length ? "Every open bet matches a game on the board." : "";
+    view.betsCount.hidden = open.length === 0;
+    view.betsCount.textContent = String(open.length);
+    view.tabBets.scrollTop = scrollTop;
   }
 
   function readBetsSettingInputs() {
