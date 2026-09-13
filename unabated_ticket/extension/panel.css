@@ -77,7 +77,10 @@ body {
 .pane-note { padding: 2px 0 6px; }
 
 /* ---- fixed header ---- */
-.panel-head { border-bottom: 1px solid var(--border); min-width: 0; }
+.panel-head {
+  border-bottom: 1px solid var(--border); min-width: 0;
+  max-height: 60vh; overflow-y: auto;
+}
 .tabs { display: flex; align-items: stretch; padding: 0 6px; gap: 2px; }
 .tabs button {
   appearance: none; background: none; border: 0; cursor: pointer;
@@ -194,7 +197,7 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
 .edge-row .edge-stake { font: 600 13px var(--figure); color: var(--ink-2); }
 .edge-row .edge-stake small { display: block; font: 400 11.5px system-ui, sans-serif; color: var(--muted); margin-top: 1px; }
 .edge-row .edge-stake.at-size { color: var(--muted); }
-.edge-row.blurred .edge-pct { color: var(--muted); }
+.edge-row.blurred .edge-pct, .group-line.blurred .gl-edge { color: var(--muted); }
 
 .tag {
   font: 600 9.5px system-ui, sans-serif; letter-spacing: .07em; text-transform: uppercase;
@@ -229,6 +232,7 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
 }
 .group-line > * { min-width: 0; }
 .group-line:hover { background: var(--surface-2); }
+.group-line.last-clicked { background: color-mix(in srgb, var(--edge-strong) 10%, transparent); }
 .group-line .gl-price { font-family: var(--figure); overflow-wrap: anywhere; }
 .group-line .gl-age { display: block; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .group-line .gl-rail { text-align: right; }

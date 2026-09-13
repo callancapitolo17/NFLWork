@@ -475,7 +475,7 @@
       payoutText = ` | to win $${(payout - acted).toFixed(2)} | payout $${payout.toFixed(2)}`;
     }
 
-    const stakeText = result ? result.stake.toFixed(2) : "n/a";
+    const stakeText = acted != null ? acted.toFixed(2) : "n/a";
     lastCopyText = `${ticket.sideLabel}${periodSuffix(ticket)} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${copyExposureText(advice)}${payoutText} | ${describeMatchup(ticket)}`;
     view.copyStatus.textContent = "";
     show("ticket");
@@ -868,8 +868,8 @@
   // warms, inside 2 it goes red.
   function untilEl(startMs) {
     const span = document.createElement("span");
-    const hours = (startMs - Date.now()) / 3600000;
-    span.className = hours <= 2 ? "soon urgent" : hours <= 12 ? "soon" : "";
+    const hours = Number.isFinite(startMs) ? (startMs - Date.now()) / 3600000 : null;
+    span.className = hours == null ? "" : hours <= 2 ? "soon urgent" : hours <= 12 ? "soon" : "";
     span.textContent = fmtUntil(startMs);
     return span;
   }
@@ -938,7 +938,7 @@
   // A line inside a card's expander: price and edge only.
   function renderGroupLine(row, cardSideLabel) {
     const li = document.createElement("li");
-    li.className = "group-line";
+    li.className = `group-line${row.isBlurred ? " blurred" : ""}${row.key === lastClickedKey ? " last-clicked" : ""}`;
     li.dataset.key = row.key;
 
     const main = document.createElement("div");
@@ -973,7 +973,8 @@
     const best = group.best;
     const tier = edgeTier(best.edgePct);
     const li = document.createElement("li");
-    li.className = `edge-row tier-${tier}${best.key === lastClickedKey ? " last-clicked" : ""}`;
+    li.className = `edge-row tier-${tier}${best.isBlurred ? " blurred" : ""}`
+      + `${group.rows.some((row) => row.key === lastClickedKey) ? " last-clicked" : ""}`;
     li.dataset.group = group.key;
     li.dataset.key = best.key;
     li.append(...rowParts(best, tier));
@@ -1349,7 +1350,7 @@
     }
     // The filter toolbar belongs to the Edges tab; it is chrome, not content.
     view.edgesToolbar.hidden = next !== "edges";
-    if (next !== "edges") view.edgesControls.hidden = true;
+    if (next !== "edges") setFiltersOpen(false);
     view.backToEdges.hidden = next !== "ticket" || !lastClickedKey;
     paneOf[next].scrollTop = paneScroll[next];
   }
@@ -1359,12 +1360,15 @@
     view.settingsToggle.classList.toggle("active", !view.settings.hidden);
   });
 
-  view.filtersToggle.addEventListener("click", () => {
-    const open = view.edgesControls.hidden;
+  // The drawer, its chip's caret and its aria state are one thing; leaving the
+  // tab closed the drawer and left the chip claiming it was open.
+  function setFiltersOpen(open) {
     view.edgesControls.hidden = !open;
     view.filtersToggle.setAttribute("aria-expanded", String(open));
     view.filtersToggle.querySelector(".caret").textContent = open ? "\u25B4" : "\u25BE";
-  });
+  }
+
+  view.filtersToggle.addEventListener("click", () => setFiltersOpen(view.edgesControls.hidden));
 
   view.backToEdges.addEventListener("click", () => {
     showTab("edges");
@@ -1646,8 +1650,6 @@
     view.betsUnmatched.replaceChildren(...unmatched.map(({ bet, reason }) => betItem(bet, reason, true)));
     view.betsUnmatchedEmpty.hidden = unmatched.length > 0;
     view.betsUnmatchedEmpty.textContent = open.length ? "Every open bet matches a game on the board." : "";
-    view.betsCount.hidden = open.length === 0;
-    view.betsCount.textContent = String(open.length);
     view.tabBets.scrollTop = scrollTop;
   }
 

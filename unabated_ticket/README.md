@@ -168,7 +168,10 @@ tab is running the capture script", reload the tab.
 
 The panel is a fixed header over one scrolling pane per tab. The header holds
 the tab bar, the bets header line, and (on the Edges tab) the filter toolbar;
-everything else scrolls inside its own tab. **This is what keeps your place in
+everything else scrolls inside its own tab. The header stops at 60% of the
+panel and scrolls itself past that, so the filter drawer and the settings
+block — which live in it — stay reachable in a short window instead of
+squeezing the pane to nothing. **This is what keeps your place in
 the Edges list**: the three tabs used to share the document's scroller, so
 hiding one collapsed the scroll height and Chrome clamped `scrollTop` to 0 —
 every capture (which brings the Ticket tab forward on its own) sent the list
