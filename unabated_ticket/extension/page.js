@@ -94,7 +94,7 @@
   }
 
   // Script build, so a stale copy of page.js in an old tab shows itself in the panel.
-  const PAGE_SCRIPT_BUILD = "0.6.4";
+  const PAGE_SCRIPT_BUILD = "0.6.5";
 
   // What the clicked object actually carried, for the panel's no-edge detail:
   // decides between "Unabated never priced it" and "the field moved". Space
@@ -298,8 +298,12 @@
     return (side && side[bookKey]) || null;
   }
 
+  // Counted by rung, not array length: a per-rung row's entry can carry an
+  // alternateLines array holding no rung at all (live 2026-09-12, NFL CHI@CAR:
+  // the -2.5 row traced "ladder 0" yet ranked as carrying one, tying the main
+  // row whose 25-rung ladder held -2.5 — the trace fired on every capture).
   function carriesLadder(entry) {
-    return !!entry && Array.isArray(entry.alternateLines) && entry.alternateLines.length > 0;
+    return !!entry && Array.isArray(entry.alternateLines) && entry.alternateLines.some(Boolean);
   }
 
   function sameMarketRow(a, b) {
@@ -348,33 +352,22 @@
       || (Array.isArray(entry.alternateLines) && entry.alternateLines.some((alt) => alt && same(alt)));
   }
 
-  // The captured number: the entry's own points for a main-line watch (any
-  // entry when the market has no number, a moneyline), the rung inside the
-  // entry's ladder for an alt watch.
+  // The captured number, wherever the row carries it: any entry when the
+  // market has no number (a moneyline), else the entry at that number
+  // itself or its ladder's rung at it. One rule for capture's pick and for
+  // every watch tick, whichever sibling row a keyed lookup answers with.
   function fitsWatchedLine(watch) {
-    if (watch.altPoints != null) return (entry) => !!altLineAt(entry, watch.altPoints);
     if (typeof watch.points !== "number") return () => true;
-    return (entry) => entry.points === watch.points;
+    return (entry) => !!lineOnEntry(entry, watch.points);
   }
 
-  // A market whose rungs are sibling top-level rows: another top-level row
-  // sharing the picked row's grid key carries this book's entry at a
-  // DIFFERENT number. The shared key is the observed signature and the
-  // reason it matters — a keyed lookup can answer with another rung, and an
-  // entry at another number is a different rung, not a line move. Keyed on
-  // the pick's own key, not "any two top-level rows", so a layout where an
-  // Alts child reads as top-level cannot mark an ordinary market per-rung
-  // and turn its real line moves into "off the board".
-  function hasPerRungRows(ranked, pick, sideKey, bookKey) {
-    const key = pick.node.data.gridKey;
-    const own = bookEntryOf(pick.node.data, sideKey, bookKey);
-    if (key == null || !own || typeof own.points !== "number") return false;
-    for (const { node } of ranked) {
-      if (node === pick.node || !nodeIsTopLevel(node) || node.data.gridKey !== key) continue;
-      const entry = bookEntryOf(node.data, sideKey, bookKey);
-      if (entry && typeof entry.points === "number" && entry.points !== own.points) return true;
-    }
-    return false;
+  // The line at `points` on a book's entry: the entry itself when it sits
+  // at that number (a main line, or a per-rung row's own rung), else the
+  // rung inside its ladder, else null (the number is off the board).
+  function lineOnEntry(entry, points) {
+    if (typeof points !== "number") return entry;
+    if (entry.points === points) return entry;
+    return altLineAt(entry, points);
   }
 
   // One line per candidate row, for the panel's trace when the watched
@@ -448,7 +441,7 @@
   // grid that groups its rows and would show the trace on every ticket.
   // `top` is the pick's shape, which the watcher compares against later.
   function ladderRowFor(gridApi, rowData, sideKey, bookKey, marketLine) {
-    const own = { rowData, gridApi, trace: "clicked row only", ambiguous: false, top: true, perRungRows: false };
+    const own = { rowData, gridApi, trace: "clicked row only", ambiguous: false, top: true };
     // Without an event id the identity match would accept any row; keep the cell's own.
     if (rowData.eventId == null) return own;
     const ranked = rankedMarketNodes(gridApi, rowData, sideKey, bookKey, undefined, fitsClickedLine(marketLine));
@@ -463,7 +456,6 @@
       trace: `picked ${describeMarketNode(pick.node, sideKey, bookKey, marketLine)} of ${trace}`,
       ambiguous: tied,
       top: nodeIsTopLevel(pick.node),
-      perRungRows: hasPerRungRows(ranked, pick, sideKey, bookKey),
     };
   }
 
@@ -476,7 +468,7 @@
     const sideKey = sideKeyOf(cellRowData, sideIndex);
     const bookId = bookIdOf(marketLine, cellProps, cellRowData, sideKey);
     const bookKey = `ms${bookId}`;
-    const { rowData, gridApi, trace: rowTrace, ambiguous: rowAmbiguous, top: rowTop, perRungRows } = ladderRowFor(cellGridApi, cellRowData, sideKey, bookKey, marketLine);
+    const { rowData, gridApi, trace: rowTrace, ambiguous: rowAmbiguous, top: rowTop } = ladderRowFor(cellGridApi, cellRowData, sideKey, bookKey, marketLine);
     const altPoints = altPointsOf(marketLine, rowData, sideKey, bookKey);
     const edge = edgeForCell(marketLine, rowData, sideKey, bookKey);
     const rotation = rowData.eventTeams && rowData.eventTeams[sideIndex]
@@ -520,10 +512,11 @@
         // The picked row's shape; a watch tick reading a row of the OTHER
         // shape is reading a different rung, whatever the grid's layout.
         rowTop,
-        // The captured number and whether the market's rungs are sibling
-        // top-level rows (shared grid key): the watcher re-finds the row by
-        // this number, and on such a grid another number is another rung.
-        points, perRungRows,
+        // The captured number: every watch tick re-finds the line by it
+        // (the row's entry at it, or its ladder's rung), so a grid that
+        // lists rungs as sibling rows under one key cannot hand the watcher
+        // another rung, and a number gone from the row reads off the board.
+        points,
         // Row identity for when the grid key stops resolving (rebuilt grid, re-keyed row).
         eventId: rowData.eventId ?? null, betTypeId, periodTypeId: rowData.periodTypeId ?? 1,
       },
@@ -715,13 +708,9 @@
     // capture picked: the panel shows the trace when the two disagree.
     const row = describeMarketNode(node, sideKey, bookKey, null);
     const rowTop = nodeIsTopLevel(node);
-    const line = ticket.watch.altPoints == null ? bookLine : altLineAt(bookLine, ticket.watch.altPoints);
-    // On a per-rung grid the row read is whichever sibling still carries
-    // the book; an entry at another number is another rung, not a move.
-    const otherRung = line && ticket.watch.perRungRows && typeof ticket.watch.points === "number"
-      && line.points !== ticket.watch.points;
-    // The ladder (or the grid) no longer offers that number: off the board at the captured price.
-    if (!line || otherRung) {
+    const line = lineOnEntry(bookLine, ticket.watch.points);
+    // Neither the entry nor its ladder offers that number: off the board at the captured price.
+    if (!line) {
       return {
         price: ticket.price, sourceFormat: ticket.sourceFormat, sourcePrice: ticket.sourcePrice,
         points: ticket.points, fair: ticket.fair, edgePct: ticket.edgePct, offBoard: true, seenAt: Date.now(), row, rowTop,
@@ -1066,6 +1055,15 @@
 
   document.addEventListener("pointerdown", onClickCapture, true);
   document.addEventListener("click", onClickCapture, true);
+  // Row resolution under test (tests/page_rows.test.js): the harness sets
+  // this flag on its fake window before loading the file. Never set on
+  // tools.unabated.com, so production exposes nothing.
+  if (window.__unabatedTicketExposeInternals === true) {
+    window.__unabatedTicketInternals = {
+      buildTicket, ladderRowFor, rankedMarketNodes, readWatchedLine, startWatching, stopWatching, watchTick,
+      intervals,
+    };
+  }
   // Heartbeat so the panel can show whether this script is alive on the tab,
   // plus the books/bet-type filter for the Edges tab (grid may not be up yet
   // on the first tick; the error is published and the next tick retries).
