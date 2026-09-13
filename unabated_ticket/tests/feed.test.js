@@ -52,6 +52,38 @@ test("snapshot: game rows only, books keyed by id with the live flag", () => {
   assert.equal(event.awayRotation, 465);
 });
 
+test("snapshot: the team index carries each team's eventName spelling (#118)", () => {
+  const state = feed.parseSnapshot(snapshotJson(), { leagueId: NFL });
+  // "Bears Chicago CHI @ Panthers Carolina CAR": side 0 is away, the trailing abbreviation goes.
+  assert.equal(state.teamIndex["6"].eventName, "Bears Chicago");
+  assert.equal(state.teamIndex["5"].eventName, "Panthers Carolina");
+  assert.deepEqual(Object.keys(state.teamIndex["5"]).sort(), ["abbreviation", "eventName", "id", "leagueId", "name"]);
+  // Only pregame game rows are read: the live 49ers @ Rams row registers nothing.
+  assert.equal(state.teamIndex["27"] ? state.teamIndex["27"].eventName : null, null);
+});
+
+test("teamSpellingsFromEventName: every league form measured 2026-09-12", () => {
+  const parse = feed.teamSpellingsFromEventName;
+  // CFB: "School Nickname - ABBR"; the suffix goes whatever the abbreviation is.
+  assert.deepEqual(parse("Prairie View A&M Panthers - PRV @ Baylor Bears - BAY", ["PRV", "BAY"]), ["Prairie View A&M Panthers", "Baylor Bears"]);
+  assert.deepEqual(parse("Albany Great Danes - ALB @ LIU Sharks - LIUCWP", [null, null]), ["Albany Great Danes", "LIU Sharks"]);
+  assert.deepEqual(parse("Louisiana-Lafayette Ragin' Cajuns - ULL @ Rice Owls - RICE", ["ULL", "RICE"]), ["Louisiana-Lafayette Ragin' Cajuns", "Rice Owls"]);
+  // CBB off-season: the abbreviation is empty, the " -" still goes.
+  assert.deepEqual(parse("UConn Huskies - @ Michigan Wolverines -", [null, null]), ["UConn Huskies", "Michigan Wolverines"]);
+  // NFL / NBA / NHL: "Nickname City ABBR" — only the team's own abbreviation is dropped.
+  assert.deepEqual(parse("Ravens Baltimore BAL @ Cowboys Dallas DAL", ["BAL", "DAL"]), ["Ravens Baltimore", "Cowboys Dallas"]);
+  assert.deepEqual(parse("Ravens Baltimore BAL @ Cowboys Dallas DAL", [null, "DAL"]), ["Ravens Baltimore BAL", "Cowboys Dallas"]);
+  assert.deepEqual(parse("49ers San Francisco SF @ Rams Los Angeles LA", ["SF", "LA"]), ["49ers San Francisco", "Rams Los Angeles"]);
+  // MLB: "Nickname City", nothing to strip; MLS: the plain club name.
+  assert.deepEqual(parse("Dodgers Los Angeles @ Marlins Miami", ["LAD", "MIA"]), ["Dodgers Los Angeles", "Marlins Miami"]);
+  assert.deepEqual(parse("Inter Miami CF @ LA Galaxy", [null, null]), ["Inter Miami CF", "LA Galaxy"]);
+  // Not "a @ b": null, never a guess. A side that is only its abbreviation stays whole.
+  assert.equal(parse("Ravens Baltimore BAL", ["BAL", null]), null);
+  assert.equal(parse("a @ b @ c", [null, null]), null);
+  assert.equal(parse(null, [null, null]), null);
+  assert.deepEqual(parse("BAL @ DAL", ["BAL", "DAL"]), ["BAL", "DAL"]);
+});
+
 test("snapshot line carries ge, bacr, sourcePrice, liquidity and the side key", () => {
   const state = feed.parseSnapshot(snapshotJson(), { leagueId: NFL });
   const mgmMoneyline = state.lines["289357353:ms4:si0:tid6"];

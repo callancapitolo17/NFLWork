@@ -163,6 +163,44 @@
     return { leagues: [], teams: {}, teamIndex: {}, books: {}, events: {}, lines: {} };
   }
 
+  // A row's eventName spells both teams in a form the `teams` map does not
+  // carry (#118, measured 2026-09-12): CFB "Prairie View A&M Panthers - PRV @
+  // Baylor Bears - BAY" (the map says "Prairie View"), CBB the same with the
+  // abbreviation empty ("UConn Huskies - @ Michigan Wolverines -"), NFL / NBA
+  // / NHL "Ravens Baltimore BAL @ Cowboys Dallas DAL", MLB "Dodgers Los Angeles
+  // @ Marlins Miami", MLS the plain club name. Returns [away, home] spellings
+  // (side 0 of eventTeams is away), or null when the name is not "a @ b".
+  // Per side: drop a trailing " - <abbr>" (or a bare " -"), else a trailing
+  // token equal to that team's own abbreviation, else keep it whole.
+  function teamSpellingsFromEventName(eventName, abbreviations) {
+    if (typeof eventName !== "string") return null;
+    const sides = eventName.split(" @ ");
+    if (sides.length !== 2) return null;
+    return sides.map((side, index) => {
+      const withoutSuffix = side.replace(/ -(?: \S+)?$/, "").trim();
+      if (withoutSuffix !== side.trim()) return withoutSuffix;
+      const abbreviation = abbreviations[index];
+      const trailing = abbreviation ? ` ${abbreviation}` : null;
+      if (trailing && withoutSuffix.endsWith(trailing) && withoutSuffix.length > trailing.length) {
+        return withoutSuffix.slice(0, -trailing.length).trim();
+      }
+      return withoutSuffix;
+    }).map((spelling) => (spelling === "" ? null : spelling));
+  }
+
+  // Register the eventName spellings on the event's teams in the league's
+  // team index, as a second name for the same team id.
+  function noteEventNameSpellings(state, row) {
+    const teams = row.eventTeams || {};
+    const ids = [teams[0] ? teams[0].id ?? null : null, teams[1] ? teams[1].id ?? null : null];
+    const entries = ids.map((id) => (id == null ? null : state.teamIndex[String(id)] ?? null));
+    const spellings = teamSpellingsFromEventName(row.eventName, entries.map((entry) => (entry ? entry.abbreviation : null)));
+    if (!spellings) return;
+    entries.forEach((entry, index) => {
+      if (entry && spellings[index] && entry.eventName == null) entry.eventName = spellings[index];
+    });
+  }
+
   // ---- snapshot ------------------------------------------------------------
 
   function normalizeSnapshotLine(raw, context) {
@@ -255,6 +293,7 @@
         awayRotation: teams[0] ? teams[0].rotationNumber ?? null : null,
         homeRotation: teams[1] ? teams[1].rotationNumber ?? null : null,
       };
+      noteEventNameSpellings(state, row);
     }
     counts.rows += 1;
     for (const [sideKey, books] of Object.entries(row.sides || {})) {
@@ -297,7 +336,8 @@
       if (!team || !team.name) continue;
       state.teams[teamId] = team.name;
       // The full entry, for the team index teams.js builds at runtime (#116).
-      state.teamIndex[teamId] = { id: team.id ?? Number(teamId), name: team.name, abbreviation: team.abbreviation ?? null, leagueId: team.leagueId ?? leagueId };
+      // eventName is filled from the team's game row (noteEventNameSpellings); null until one is seen.
+      state.teamIndex[teamId] = { id: team.id ?? Number(teamId), name: team.name, abbreviation: team.abbreviation ?? null, leagueId: team.leagueId ?? leagueId, eventName: null };
     }
     for (const source of Array.isArray(json.marketSources) ? json.marketSources : []) {
       if (!source || source.id == null) continue;
@@ -680,7 +720,7 @@
 
   const api = {
     LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID, CURSOR_EPOCH_MS,
-    parseLeagueKey, parseEventStart, parseModifiedOn, lineChangedMs, lineKeyOf, altLineKeyOf, emptyState,
+    parseLeagueKey, parseEventStart, parseModifiedOn, lineChangedMs, lineKeyOf, altLineKeyOf, emptyState, teamSpellingsFromEventName,
     parseSnapshot, mergeStates, extractCursor, cursorFromDate, parseChanges, applyChanges,
     describeLine, selectEdges, groupEdges, groupKeyOf, countLines, countAltLines,
   };

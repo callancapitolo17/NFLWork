@@ -1,2037 +1,2441 @@
 {
  "capturedAt": "2026-09-12",
- "provenance": "Unabated v2 league snapshots' `teams` maps (id, name, abbreviation), one entry per team, read 2026-09-12 \u2014 the index teams.js builds at runtime from the boards the scanner parses.",
+ "provenance": "Unabated v2 league snapshots' `teams` maps (id, name, abbreviation), one entry per team, read 2026-09-12 — the index teams.js builds at runtime from the boards the scanner parses. `eventName` is the second spelling of the team parsed from its game row's eventName (feed.teamSpellingsFromEventName, #118), read from the NFL, CFB and NBA snapshots the same day; null where the league had no game rows (off-season) or the fixture was captured before the snapshot carried one.",
  "leagues": {
   "nfl": [
    {
     "id": 1,
     "name": "Arizona Cardinals",
-    "abbreviation": "ARI"
+    "abbreviation": "ARI",
+    "eventName": "Cardinals Arizona"
    },
    {
     "id": 2,
     "name": "Atlanta Falcons",
-    "abbreviation": "ATL"
+    "abbreviation": "ATL",
+    "eventName": "Falcons Atlanta"
    },
    {
     "id": 3,
     "name": "Baltimore Ravens",
-    "abbreviation": "BAL"
+    "abbreviation": "BAL",
+    "eventName": "Ravens Baltimore"
    },
    {
     "id": 4,
     "name": "Buffalo Bills",
-    "abbreviation": "BUF"
+    "abbreviation": "BUF",
+    "eventName": "Bills Buffalo"
    },
    {
     "id": 5,
     "name": "Carolina Panthers",
-    "abbreviation": "CAR"
+    "abbreviation": "CAR",
+    "eventName": "Panthers Carolina"
    },
    {
     "id": 6,
     "name": "Chicago Bears",
-    "abbreviation": "CHI"
+    "abbreviation": "CHI",
+    "eventName": "Bears Chicago"
    },
    {
     "id": 7,
     "name": "Cincinnati Bengals",
-    "abbreviation": "CIN"
+    "abbreviation": "CIN",
+    "eventName": "Bengals Cincinnati"
    },
    {
     "id": 8,
     "name": "Cleveland Browns",
-    "abbreviation": "CLE"
+    "abbreviation": "CLE",
+    "eventName": "Browns Cleveland"
    },
    {
     "id": 9,
     "name": "Dallas Cowboys",
-    "abbreviation": "DAL"
+    "abbreviation": "DAL",
+    "eventName": "Cowboys Dallas"
    },
    {
     "id": 10,
     "name": "Denver Broncos",
-    "abbreviation": "DEN"
+    "abbreviation": "DEN",
+    "eventName": "Broncos Denver"
    },
    {
     "id": 11,
     "name": "Detroit Lions",
-    "abbreviation": "DET"
+    "abbreviation": "DET",
+    "eventName": "Lions Detroit"
    },
    {
     "id": 12,
     "name": "Green Bay Packers",
-    "abbreviation": "GB"
+    "abbreviation": "GB",
+    "eventName": "Packers Green Bay"
    },
    {
     "id": 13,
     "name": "Houston Texans",
-    "abbreviation": "HOU"
+    "abbreviation": "HOU",
+    "eventName": "Texans Houston"
    },
    {
     "id": 14,
     "name": "Indianapolis Colts",
-    "abbreviation": "IND"
+    "abbreviation": "IND",
+    "eventName": "Colts Indianapolis"
    },
    {
     "id": 15,
     "name": "Jacksonville Jaguars",
-    "abbreviation": "JAX"
+    "abbreviation": "JAX",
+    "eventName": "Jaguars Jacksonville JAC"
    },
    {
     "id": 16,
     "name": "Kansas City Chiefs",
-    "abbreviation": "KC"
+    "abbreviation": "KC",
+    "eventName": "Chiefs Kansas City"
    },
    {
     "id": 23,
     "name": "Las Vegas Raiders",
-    "abbreviation": "LV"
+    "abbreviation": "LV",
+    "eventName": "Raiders Las Vegas"
    },
    {
     "id": 26,
     "name": "Los Angeles Chargers",
-    "abbreviation": "LAC"
+    "abbreviation": "LAC",
+    "eventName": "Chargers Los Angeles"
    },
    {
     "id": 29,
     "name": "Los Angeles Rams",
-    "abbreviation": "LAR"
+    "abbreviation": "LAR",
+    "eventName": "Rams Los Angeles LA"
    },
    {
     "id": 17,
     "name": "Miami Dolphins",
-    "abbreviation": "MIA"
+    "abbreviation": "MIA",
+    "eventName": "Dolphins Miami"
    },
    {
     "id": 18,
     "name": "Minnesota Vikings",
-    "abbreviation": "MIN"
+    "abbreviation": "MIN",
+    "eventName": "Vikings Minnesota"
    },
    {
     "id": 19,
     "name": "New England Patriots",
-    "abbreviation": "NE"
+    "abbreviation": "NE",
+    "eventName": "Patriots New England"
    },
    {
     "id": 20,
     "name": "New Orleans Saints",
-    "abbreviation": "NO"
+    "abbreviation": "NO",
+    "eventName": "Saints New Orleans"
    },
    {
     "id": 21,
     "name": "New York Giants",
-    "abbreviation": "NYG"
+    "abbreviation": "NYG",
+    "eventName": "Giants New York"
    },
    {
     "id": 22,
     "name": "New York Jets",
-    "abbreviation": "NYJ"
+    "abbreviation": "NYJ",
+    "eventName": "Jets New York"
    },
    {
     "id": 24,
     "name": "Philadelphia Eagles",
-    "abbreviation": "PHI"
+    "abbreviation": "PHI",
+    "eventName": "Eagles Philadelphia"
    },
    {
     "id": 25,
     "name": "Pittsburgh Steelers",
-    "abbreviation": "PIT"
+    "abbreviation": "PIT",
+    "eventName": "Steelers Pittsburgh"
    },
    {
     "id": 27,
     "name": "San Francisco 49ers",
-    "abbreviation": "SF"
+    "abbreviation": "SF",
+    "eventName": "49ers San Francisco"
    },
    {
     "id": 28,
     "name": "Seattle Seahawks",
-    "abbreviation": "SEA"
+    "abbreviation": "SEA",
+    "eventName": "Seahawks Seattle"
    },
    {
     "id": 30,
     "name": "Tampa Bay Buccaneers",
-    "abbreviation": "TB"
+    "abbreviation": "TB",
+    "eventName": "Buccaneers Tampa Bay"
    },
    {
     "id": 31,
     "name": "Tennessee Titans",
-    "abbreviation": "TEN"
+    "abbreviation": "TEN",
+    "eventName": "Titans Tennessee"
    },
    {
     "id": 32,
     "name": "Washington Commanders",
-    "abbreviation": "WAS"
+    "abbreviation": "WAS",
+    "eventName": "Commanders Washington"
    }
   ],
   "cfb": [
    {
     "id": 1123,
     "name": "Abilene Christian",
-    "abbreviation": "ACU"
+    "abbreviation": "ACU",
+    "eventName": "Abilene Christian Wildcats"
    },
    {
     "id": 592,
     "name": "Air Force",
-    "abbreviation": "AF"
+    "abbreviation": "AF",
+    "eventName": "Air Force Falcons"
    },
    {
     "id": 593,
     "name": "Akron",
-    "abbreviation": "AKR"
+    "abbreviation": "AKR",
+    "eventName": "Akron Zips"
    },
    {
     "id": 594,
     "name": "Alabama",
-    "abbreviation": "BAMA"
+    "abbreviation": "BAMA",
+    "eventName": "Alabama Crimson Tide"
    },
    {
     "id": 1024,
     "name": "Alabama A&M",
-    "abbreviation": "AAM"
+    "abbreviation": "AAM",
+    "eventName": "Alabama A&M Bulldogs"
    },
    {
     "id": 958,
     "name": "Alabama State",
-    "abbreviation": "ALAST"
+    "abbreviation": "ALAST",
+    "eventName": "Alabama State Hornets"
    },
    {
     "id": 1025,
     "name": "Albany",
-    "abbreviation": "ALB"
+    "abbreviation": "ALB",
+    "eventName": "Albany Great Danes"
    },
    {
     "id": 776,
     "name": "Alcorn State",
-    "abbreviation": "ALCST"
+    "abbreviation": "ALCST",
+    "eventName": "Alcorn State Braves"
    },
    {
     "id": 595,
     "name": "Appalachian State",
-    "abbreviation": "APP"
+    "abbreviation": "APP",
+    "eventName": "Appalachian State Mountaineers"
    },
    {
     "id": 597,
     "name": "Arizona",
-    "abbreviation": "ARI"
+    "abbreviation": "ARI",
+    "eventName": "Arizona Wildcats"
    },
    {
     "id": 596,
     "name": "Arizona State",
-    "abbreviation": "ASU"
+    "abbreviation": "ASU",
+    "eventName": "Arizona State Sun Devils"
    },
    {
     "id": 598,
     "name": "Arkansas",
-    "abbreviation": "ARK"
+    "abbreviation": "ARK",
+    "eventName": "Arkansas Razorbacks"
    },
    {
     "id": 599,
     "name": "Arkansas State",
-    "abbreviation": "ARKS"
+    "abbreviation": "ARKS",
+    "eventName": "Arkansas State Red Wolves"
    },
    {
     "id": 767,
     "name": "Arkansas-Pine Bluff",
-    "abbreviation": "APB"
+    "abbreviation": "APB",
+    "eventName": "Arkansas-Pine Bluff Golden Lions"
    },
    {
     "id": 600,
     "name": "Army",
-    "abbreviation": "ARM"
+    "abbreviation": "ARM",
+    "eventName": "Army Black Knights"
    },
    {
     "id": 601,
     "name": "Auburn",
-    "abbreviation": "AUB"
+    "abbreviation": "AUB",
+    "eventName": "Auburn Tigers"
    },
    {
     "id": 794,
     "name": "Austin Peay",
-    "abbreviation": "APY"
+    "abbreviation": "APY",
+    "eventName": "Austin Peay Governors"
    },
    {
     "id": 608,
     "name": "BYU",
-    "abbreviation": "BYU"
+    "abbreviation": "BYU",
+    "eventName": "Brigham Young Cougars"
    },
    {
     "id": 602,
     "name": "Ball State",
-    "abbreviation": "BALL"
+    "abbreviation": "BALL",
+    "eventName": "Ball State Cardinals"
    },
    {
     "id": 603,
     "name": "Baylor",
-    "abbreviation": "BAY"
+    "abbreviation": "BAY",
+    "eventName": "Baylor Bears"
    },
    {
     "id": 1057,
     "name": "Bethune-Cookman",
-    "abbreviation": "BCU"
+    "abbreviation": "BCU",
+    "eventName": "Bethune-Cookman Wildcats"
    },
    {
     "id": 604,
     "name": "Boise State",
-    "abbreviation": "BOISE"
+    "abbreviation": "BOISE",
+    "eventName": "Boise State Broncos"
    },
    {
     "id": 605,
     "name": "Boston College",
-    "abbreviation": "BC"
+    "abbreviation": "BC",
+    "eventName": "Boston College Eagles"
    },
    {
     "id": 606,
     "name": "Bowling Green",
-    "abbreviation": "BGN"
+    "abbreviation": "BGN",
+    "eventName": "Bowling Green Falcons"
    },
    {
     "id": 1124,
     "name": "Brown",
-    "abbreviation": "BRN"
+    "abbreviation": "BRN",
+    "eventName": "Brown Bears"
    },
    {
     "id": 786,
     "name": "Bryant",
-    "abbreviation": "BRY"
+    "abbreviation": "BRY",
+    "eventName": "Bryant University Bulldogs"
    },
    {
     "id": 763,
     "name": "Bucknell",
-    "abbreviation": "BUC"
+    "abbreviation": "BUC",
+    "eventName": "Bucknell Bison"
    },
    {
     "id": 607,
     "name": "Buffalo",
-    "abbreviation": "BUF"
+    "abbreviation": "BUF",
+    "eventName": "Buffalo Bulls"
    },
    {
     "id": 1126,
     "name": "Butler",
-    "abbreviation": "BUT"
+    "abbreviation": "BUT",
+    "eventName": "Butler Bulldogs"
    },
    {
     "id": 1058,
     "name": "Cal Poly",
-    "abbreviation": "CPS"
+    "abbreviation": "CPS",
+    "eventName": "Cal Poly Mustangs"
    },
    {
     "id": 609,
     "name": "California",
-    "abbreviation": "CAL"
+    "abbreviation": "CAL",
+    "eventName": "California Golden Bears"
    },
    {
     "id": 1127,
     "name": "Campbell",
-    "abbreviation": "CAM"
+    "abbreviation": "CAM",
+    "eventName": "Campbell Fighting Camels"
    },
    {
     "id": 1128,
     "name": "Central Arkansas",
-    "abbreviation": "UCA"
+    "abbreviation": "UCA",
+    "eventName": "Central Arkansas Bears"
    },
    {
     "id": 774,
     "name": "Central Connecticut",
-    "abbreviation": "CCSU"
+    "abbreviation": "CCSU",
+    "eventName": "Central Connecticut State Blue Devils"
    },
    {
     "id": 701,
     "name": "Central Florida",
-    "abbreviation": "UCF"
+    "abbreviation": "UCF",
+    "eventName": "UCF Knights"
    },
    {
     "id": 610,
     "name": "Central Michigan",
-    "abbreviation": "CMC"
+    "abbreviation": "CMC",
+    "eventName": "Central Michigan Chippewas"
    },
    {
     "id": 761,
     "name": "Charleston Southern",
-    "abbreviation": "CCH"
+    "abbreviation": "CCH",
+    "eventName": "Charleston Southern Buccaneers"
    },
    {
     "id": 611,
     "name": "Charlotte",
-    "abbreviation": "CHA"
+    "abbreviation": "CHA",
+    "eventName": "Charlotte 49ers"
    },
    {
     "id": 791,
     "name": "Chattanooga",
-    "abbreviation": "CHT"
+    "abbreviation": "CHT",
+    "eventName": "Chattanooga Mocs"
    },
    {
     "id": 612,
     "name": "Cincinnati",
-    "abbreviation": "CIN"
+    "abbreviation": "CIN",
+    "eventName": "Cincinnati Bearcats"
    },
    {
     "id": 613,
     "name": "Clemson",
-    "abbreviation": "CLE"
+    "abbreviation": "CLE",
+    "eventName": "Clemson Tigers"
    },
    {
     "id": 614,
     "name": "Coastal Carolina",
-    "abbreviation": "CC"
+    "abbreviation": "CC",
+    "eventName": "Coastal Carolina Chanticleers"
    },
    {
     "id": 1059,
     "name": "Colgate",
-    "abbreviation": "CGT"
+    "abbreviation": "CGT",
+    "eventName": "Colgate Raiders"
    },
    {
     "id": 615,
     "name": "Colorado",
-    "abbreviation": "COL"
+    "abbreviation": "COL",
+    "eventName": "Colorado Buffaloes"
    },
    {
     "id": 616,
     "name": "Colorado State",
-    "abbreviation": "CSU"
+    "abbreviation": "CSU",
+    "eventName": "Colorado State Rams"
    },
    {
     "id": 1131,
     "name": "Columbia",
-    "abbreviation": "CMB"
+    "abbreviation": "CMB",
+    "eventName": "Columbia Lions"
    },
    {
     "id": 703,
     "name": "Connecticut",
-    "abbreviation": "CONN"
+    "abbreviation": "CONN",
+    "eventName": "Connecticut Huskies"
    },
    {
     "id": 1132,
     "name": "Cornell",
-    "abbreviation": "COR"
+    "abbreviation": "COR",
+    "eventName": "Cornell Big Red"
    },
    {
     "id": 1134,
     "name": "Dartmouth",
-    "abbreviation": "DRT"
+    "abbreviation": "DRT",
+    "eventName": "Dartmouth Big Green"
    },
    {
     "id": 1135,
     "name": "Davidson",
-    "abbreviation": "DAV"
+    "abbreviation": "DAV",
+    "eventName": "Davidson Wildcats"
    },
    {
     "id": 1136,
     "name": "Dayton",
-    "abbreviation": "DAY"
+    "abbreviation": "DAY",
+    "eventName": "Dayton Flyers"
    },
    {
     "id": 787,
     "name": "Delaware",
-    "abbreviation": "DEL"
+    "abbreviation": "DEL",
+    "eventName": "Delaware Fightin Blue Hens"
    },
    {
     "id": 1060,
     "name": "Delaware State",
-    "abbreviation": "DLS"
+    "abbreviation": "DLS",
+    "eventName": "Delaware State Hornets"
    },
    {
     "id": 1138,
     "name": "Dragons Virginia Lynchburg",
-    "abbreviation": "VLB"
+    "abbreviation": "VLB",
+    "eventName": "Dragons Virginia Lynchburg"
    },
    {
     "id": 1139,
     "name": "Drake",
-    "abbreviation": "DRA"
+    "abbreviation": "DRA",
+    "eventName": "Drake Bulldogs"
    },
    {
     "id": 617,
     "name": "Duke",
-    "abbreviation": "DUK"
+    "abbreviation": "DUK",
+    "eventName": "Duke Blue Devils"
    },
    {
     "id": 927,
     "name": "Duquesne",
-    "abbreviation": "DUQ"
+    "abbreviation": "DUQ",
+    "eventName": "Duquesne Dukes"
    },
    {
     "id": 618,
     "name": "East Carolina",
-    "abbreviation": "ECU"
+    "abbreviation": "ECU",
+    "eventName": "East Carolina Pirates"
    },
    {
     "id": 1145,
     "name": "East Tennessee State",
-    "abbreviation": "ETSU"
+    "abbreviation": "ETSU",
+    "eventName": "East Tennessee State Buccaneers"
    },
    {
     "id": 1144,
     "name": "East Washington",
-    "abbreviation": "EW"
+    "abbreviation": "EW",
+    "eventName": "Eastern Washington Eagles"
    },
    {
     "id": 1061,
     "name": "Eastern Illinois",
-    "abbreviation": "EIL"
+    "abbreviation": "EIL",
+    "eventName": "Eastern Illinois Panthers"
    },
    {
     "id": 1062,
     "name": "Eastern Kentucky",
-    "abbreviation": "EKY"
+    "abbreviation": "EKY",
+    "eventName": "Eastern Kentucky Colonels"
    },
    {
     "id": 619,
     "name": "Eastern Michigan",
-    "abbreviation": "EMC"
+    "abbreviation": "EMC",
+    "eventName": "Eastern Michigan Eagles"
    },
    {
     "id": 785,
     "name": "Elon",
-    "abbreviation": "ELO"
+    "abbreviation": "ELO",
+    "eventName": "Elon Phoenix"
    },
    {
     "id": 621,
     "name": "Florida",
-    "abbreviation": "FLA"
+    "abbreviation": "FLA",
+    "eventName": "Florida Gators"
    },
    {
     "id": 925,
     "name": "Florida A&M",
-    "abbreviation": "FAMU"
+    "abbreviation": "FAMU",
+    "eventName": "Florida A&M Rattlers"
    },
    {
     "id": 620,
     "name": "Florida Atlantic",
-    "abbreviation": "FAU"
+    "abbreviation": "FAU",
+    "eventName": "Florida Atlantic Owls"
    },
    {
     "id": 622,
     "name": "Florida International",
-    "abbreviation": "FIU"
+    "abbreviation": "FIU",
+    "eventName": "Florida International Golden Panthers"
    },
    {
     "id": 623,
     "name": "Florida State",
-    "abbreviation": "FSU"
+    "abbreviation": "FSU",
+    "eventName": "Florida State Seminoles"
    },
    {
     "id": 781,
     "name": "Fordham",
-    "abbreviation": "FOR"
+    "abbreviation": "FOR",
+    "eventName": "Fordham Rams"
    },
    {
     "id": 624,
     "name": "Fresno State",
-    "abbreviation": "FRE"
+    "abbreviation": "FRE",
+    "eventName": "Fresno State Bulldogs"
    },
    {
     "id": 779,
     "name": "Furman",
-    "abbreviation": "FUR"
+    "abbreviation": "FUR",
+    "eventName": "Furman Paladins"
    },
    {
     "id": 1147,
     "name": "Gardner-Webb",
-    "abbreviation": "GWB"
+    "abbreviation": "GWB",
+    "eventName": "Gardner-Webb Runnin' Bulldogs"
    },
    {
     "id": 1148,
     "name": "Georgetown",
-    "abbreviation": "GTOWN"
+    "abbreviation": "GTOWN",
+    "eventName": "Georgetown Hoyas"
    },
    {
     "id": 625,
     "name": "Georgia",
-    "abbreviation": "UGA"
+    "abbreviation": "UGA",
+    "eventName": "Georgia Bulldogs"
    },
    {
     "id": 626,
     "name": "Georgia Southern",
-    "abbreviation": "GSO"
+    "abbreviation": "GSO",
+    "eventName": "Georgia Southern Eagles"
    },
    {
     "id": 627,
     "name": "Georgia State",
-    "abbreviation": "GST"
+    "abbreviation": "GST",
+    "eventName": "Georgia State Panthers"
    },
    {
     "id": 628,
     "name": "Georgia Tech",
-    "abbreviation": "GT"
+    "abbreviation": "GT",
+    "eventName": "Georgia Tech Yellow Jackets"
    },
    {
     "id": 780,
     "name": "Grambling",
-    "abbreviation": "GRA"
+    "abbreviation": "GRA",
+    "eventName": "Grambling State Tigers"
    },
    {
     "id": 1150,
     "name": "Hampton",
-    "abbreviation": "HAMP"
+    "abbreviation": "HAMP",
+    "eventName": "Hampton Pirates"
    },
    {
     "id": 1151,
     "name": "Harvard",
-    "abbreviation": "HAR"
+    "abbreviation": "HAR",
+    "eventName": "Harvard Crimson"
    },
    {
     "id": 629,
     "name": "Hawaii",
-    "abbreviation": "HAW"
+    "abbreviation": "HAW",
+    "eventName": "Hawaii Warriors"
    },
    {
     "id": 1152,
     "name": "Holy Cross",
-    "abbreviation": "HC"
+    "abbreviation": "HC",
+    "eventName": "Holy Cross Crusaders"
    },
    {
     "id": 630,
     "name": "Houston",
-    "abbreviation": "HOU"
+    "abbreviation": "HOU",
+    "eventName": "Houston Cougars"
    },
    {
     "id": 1155,
     "name": "Houston Christian",
-    "abbreviation": "HB"
+    "abbreviation": "HB",
+    "eventName": "Houston Baptist Huskies"
    },
    {
     "id": 793,
     "name": "Howard",
-    "abbreviation": "HOW"
+    "abbreviation": "HOW",
+    "eventName": "Howard Bison"
    },
    {
     "id": 784,
     "name": "Idaho",
-    "abbreviation": "IDA"
+    "abbreviation": "IDA",
+    "eventName": "Idaho Vandals"
    },
    {
     "id": 765,
     "name": "Idaho State",
-    "abbreviation": "IDS"
+    "abbreviation": "IDS",
+    "eventName": "Idaho State Bengals"
    },
    {
     "id": 631,
     "name": "Illinois",
-    "abbreviation": "ILL"
+    "abbreviation": "ILL",
+    "eventName": "Illinois Fighting Illini"
    },
    {
     "id": 1063,
     "name": "Illinois State",
-    "abbreviation": "ILS"
+    "abbreviation": "ILS",
+    "eventName": "Illinois State Redbirds"
    },
    {
     "id": 632,
     "name": "Incarnate Word",
-    "abbreviation": "IW"
+    "abbreviation": "IW",
+    "eventName": "Incarnate Word Cardinals"
    },
    {
     "id": 633,
     "name": "Indiana",
-    "abbreviation": "IU"
+    "abbreviation": "IU",
+    "eventName": "Indiana Hoosiers"
    },
    {
     "id": 1156,
     "name": "Indiana State",
-    "abbreviation": "INDS"
+    "abbreviation": "INDS",
+    "eventName": "Indiana State Sycamores"
    },
    {
     "id": 634,
     "name": "Iowa",
-    "abbreviation": "IOW"
+    "abbreviation": "IOW",
+    "eventName": "Iowa Hawkeyes"
    },
    {
     "id": 635,
     "name": "Iowa State",
-    "abbreviation": "ISU"
+    "abbreviation": "ISU",
+    "eventName": "Iowa State Cyclones"
    },
    {
     "id": 777,
     "name": "Jackson St",
-    "abbreviation": "JST"
+    "abbreviation": "JST",
+    "eventName": "Jackson State Tigers"
    },
    {
     "id": 792,
     "name": "Jacksonville State",
-    "abbreviation": "JVS"
+    "abbreviation": "JVS",
+    "eventName": "Jacksonville State Gamecocks"
    },
    {
     "id": 892,
     "name": "James Madison",
-    "abbreviation": "JMU"
+    "abbreviation": "JMU",
+    "eventName": "James Madison Dukes"
    },
    {
     "id": 636,
     "name": "Kansas",
-    "abbreviation": "KAN"
+    "abbreviation": "KAN",
+    "eventName": "Kansas Jayhawks"
    },
    {
     "id": 637,
     "name": "Kansas State",
-    "abbreviation": "KST"
+    "abbreviation": "KST",
+    "eventName": "Kansas State Wildcats"
    },
    {
     "id": 1157,
     "name": "Kennesaw St",
-    "abbreviation": "KENN"
+    "abbreviation": "KENN",
+    "eventName": "Kennesaw State Owls"
    },
    {
     "id": 638,
     "name": "Kent State",
-    "abbreviation": "KNT"
+    "abbreviation": "KNT",
+    "eventName": "Kent State Golden Flashes"
    },
    {
     "id": 639,
     "name": "Kentucky",
-    "abbreviation": "KEN"
+    "abbreviation": "KEN",
+    "eventName": "Kentucky Wildcats"
    },
    {
     "id": 644,
     "name": "LSU",
-    "abbreviation": "LSU"
+    "abbreviation": "LSU",
+    "eventName": "LSU Tigers"
    },
    {
     "id": 1159,
     "name": "Lafayette",
-    "abbreviation": "LAF"
+    "abbreviation": "LAF",
+    "eventName": "Lafayette Leopards"
    },
    {
     "id": 1160,
     "name": "Lamar",
-    "abbreviation": "LAM"
+    "abbreviation": "LAM",
+    "eventName": "Lamar Cardinals"
    },
    {
     "id": 1161,
     "name": "Lehigh",
-    "abbreviation": "LEI"
+    "abbreviation": "LEI",
+    "eventName": "Lehigh Mountain Hawks"
    },
    {
     "id": 640,
     "name": "Liberty",
-    "abbreviation": "LIB"
+    "abbreviation": "LIB",
+    "eventName": "Liberty Flames"
    },
    {
     "id": 1162,
     "name": "Lindenwood University",
-    "abbreviation": "LINU"
+    "abbreviation": "LINU",
+    "eventName": "Lindenwood University Lions"
    },
    {
     "id": 1090,
     "name": "Long Island",
-    "abbreviation": "LIUCWP"
+    "abbreviation": "LIUCWP",
+    "eventName": "LIU Sharks"
    },
    {
     "id": 642,
     "name": "Louisiana Tech",
-    "abbreviation": "LT"
+    "abbreviation": "LT",
+    "eventName": "Louisiana Tech Bulldogs"
    },
    {
     "id": 643,
     "name": "Louisville",
-    "abbreviation": "LOU"
+    "abbreviation": "LOU",
+    "eventName": "Louisville Cardinals"
    },
    {
     "id": 1064,
     "name": "Maine",
-    "abbreviation": "UMAINE"
+    "abbreviation": "UMAINE",
+    "eventName": "Maine Black Bears"
    },
    {
     "id": 1163,
     "name": "Marist Red",
-    "abbreviation": "MST"
+    "abbreviation": "MST",
+    "eventName": "Marist Red Foxes"
    },
    {
     "id": 645,
     "name": "Marshall",
-    "abbreviation": "MSH"
+    "abbreviation": "MSH",
+    "eventName": "Marshall Thundering Herd"
    },
    {
     "id": 646,
     "name": "Maryland",
-    "abbreviation": "MAR"
+    "abbreviation": "MAR",
+    "eventName": "Maryland Terrapins"
    },
    {
     "id": 705,
     "name": "Massachusetts",
-    "abbreviation": "UMASS"
+    "abbreviation": "UMASS",
+    "eventName": "Massachusetts Minutemen"
    },
    {
     "id": 1164,
     "name": "McNeese State",
-    "abbreviation": "MCN"
+    "abbreviation": "MCN",
+    "eventName": "McNeese State Cowboys"
    },
    {
     "id": 647,
     "name": "Memphis",
-    "abbreviation": "MEM"
+    "abbreviation": "MEM",
+    "eventName": "Memphis Tigers"
    },
    {
     "id": 928,
     "name": "Mercer",
-    "abbreviation": "MER"
+    "abbreviation": "MER",
+    "eventName": "Mercer Bears"
    },
    {
     "id": 1585,
     "name": "Mercyhurst",
-    "abbreviation": "MHU"
+    "abbreviation": "MHU",
+    "eventName": "Mercyhurst Lakers"
    },
    {
     "id": 1165,
     "name": "Merrimack College",
-    "abbreviation": "MC"
+    "abbreviation": "MC",
+    "eventName": "Merrimack College Warriors"
    },
    {
     "id": 649,
     "name": "Miami Florida",
-    "abbreviation": "MFL"
+    "abbreviation": "MFL",
+    "eventName": "Miami (FL) Hurricanes"
    },
    {
     "id": 648,
     "name": "Miami Ohio",
-    "abbreviation": "MOH"
+    "abbreviation": "MOH",
+    "eventName": "Miami (OH) RedHawks"
    },
    {
     "id": 651,
     "name": "Michigan",
-    "abbreviation": "MICH"
+    "abbreviation": "MICH",
+    "eventName": "Michigan Wolverines"
    },
    {
     "id": 650,
     "name": "Michigan State",
-    "abbreviation": "MSU"
+    "abbreviation": "MSU",
+    "eventName": "Michigan State Spartans"
    },
    {
     "id": 652,
     "name": "Middle Tennessee State",
-    "abbreviation": "MTS"
+    "abbreviation": "MTS",
+    "eventName": "Middle Tennessee Blue Raiders"
    },
    {
     "id": 653,
     "name": "Minnesota",
-    "abbreviation": "MIN"
+    "abbreviation": "MIN",
+    "eventName": "Minnesota Golden Gophers"
    },
    {
     "id": 672,
     "name": "Mississippi",
-    "abbreviation": "MIS"
+    "abbreviation": "MIS",
+    "eventName": "Ole Miss Rebels"
    },
    {
     "id": 654,
     "name": "Mississippi State",
-    "abbreviation": "MSST"
+    "abbreviation": "MSST",
+    "eventName": "Mississippi State Bulldogs"
    },
    {
     "id": 1166,
     "name": "Mississippi Valley State",
-    "abbreviation": "MVS"
+    "abbreviation": "MVS",
+    "eventName": "Mississippi Valley State Delta Devils"
    },
    {
     "id": 655,
     "name": "Missouri",
-    "abbreviation": "MIZ"
+    "abbreviation": "MIZ",
+    "eventName": "Missouri Tigers"
    },
    {
     "id": 1167,
     "name": "Missouri State",
-    "abbreviation": "MIZST"
+    "abbreviation": "MIZST",
+    "eventName": "Missouri State Bears"
    },
    {
     "id": 1168,
     "name": "Monmouth",
-    "abbreviation": "MNM"
+    "abbreviation": "MNM",
+    "eventName": "Monmouth Hawks"
    },
    {
     "id": 1169,
     "name": "Montana",
-    "abbreviation": "MONT"
+    "abbreviation": "MONT",
+    "eventName": "Montana Grizzlies"
    },
    {
     "id": 1170,
     "name": "Montana State",
-    "abbreviation": "MOS"
+    "abbreviation": "MOS",
+    "eventName": "Montana State Bobcats"
    },
    {
     "id": 929,
     "name": "Morehead State",
-    "abbreviation": "MOR"
+    "abbreviation": "MOR",
+    "eventName": "Morehead State Eagles"
    },
    {
     "id": 1065,
     "name": "Morgan State",
-    "abbreviation": "MGN"
+    "abbreviation": "MGN",
+    "eventName": "Morgan State Bears"
    },
    {
     "id": 782,
     "name": "Murray State",
-    "abbreviation": "MUR"
+    "abbreviation": "MUR",
+    "eventName": "Murray State Racers"
    },
    {
     "id": 657,
     "name": "NC State",
-    "abbreviation": "NCST"
+    "abbreviation": "NCST",
+    "eventName": "North Carolina State Wolfpack"
    },
    {
     "id": 656,
     "name": "Navy",
-    "abbreviation": "NAV"
+    "abbreviation": "NAV",
+    "eventName": "Navy Midshipmen"
    },
    {
     "id": 658,
     "name": "Nebraska",
-    "abbreviation": "NEB"
+    "abbreviation": "NEB",
+    "eventName": "Nebraska Cornhuskers"
    },
    {
     "id": 659,
     "name": "Nevada",
-    "abbreviation": "NEV"
+    "abbreviation": "NEV",
+    "eventName": "Nevada Wolf Pack"
    },
    {
     "id": 773,
     "name": "New Hampshire",
-    "abbreviation": "NH"
+    "abbreviation": "NH",
+    "eventName": "New Hampshire Wildcats"
    },
    {
     "id": 1687,
     "name": "New Haven",
-    "abbreviation": "NHC"
+    "abbreviation": "NHC",
+    "eventName": "New Haven Chargers"
    },
    {
     "id": 660,
     "name": "New Mexico",
-    "abbreviation": "NM"
+    "abbreviation": "NM",
+    "eventName": "New Mexico Lobos"
    },
    {
     "id": 661,
     "name": "New Mexico State",
-    "abbreviation": "NMS"
+    "abbreviation": "NMS",
+    "eventName": "New Mexico State Aggies"
    },
    {
     "id": 1066,
     "name": "Nicholls State",
-    "abbreviation": "NIC"
+    "abbreviation": "NIC",
+    "eventName": "Nicholls State Colonels"
    },
    {
     "id": 1067,
     "name": "Norfolk State",
-    "abbreviation": "NFS"
+    "abbreviation": "NFS",
+    "eventName": "Norfolk State Spartans"
    },
    {
     "id": 1172,
     "name": "North Alabama",
-    "abbreviation": "UNA"
+    "abbreviation": "UNA",
+    "eventName": "North Alabama Lions"
    },
    {
     "id": 662,
     "name": "North Carolina",
-    "abbreviation": "NC"
+    "abbreviation": "NC",
+    "eventName": "North Carolina Tar Heels"
    },
    {
     "id": 1173,
     "name": "North Carolina A&T",
-    "abbreviation": "NAT"
+    "abbreviation": "NAT",
+    "eventName": "North Carolina A&T Aggies"
    },
    {
     "id": 1174,
     "name": "North Carolina Central",
-    "abbreviation": "NCC"
+    "abbreviation": "NCC",
+    "eventName": "North Carolina Central Eagles"
    },
    {
     "id": 1068,
     "name": "North Dakota",
-    "abbreviation": "UND"
+    "abbreviation": "UND",
+    "eventName": "North Dakota Fighting Hawks"
    },
    {
     "id": 1175,
     "name": "North Dakota State",
-    "abbreviation": "NDS"
+    "abbreviation": "NDS",
+    "eventName": "North Dakota State Bison"
    },
    {
     "id": 663,
     "name": "North Texas",
-    "abbreviation": "NTX"
+    "abbreviation": "NTX",
+    "eventName": "North Texas Mean Green"
    },
    {
     "id": 775,
     "name": "Northern Arizona",
-    "abbreviation": "NAZ"
+    "abbreviation": "NAZ",
+    "eventName": "Northern Arizona Lumberjacks"
    },
    {
     "id": 1176,
     "name": "Northern Colorado",
-    "abbreviation": "NOCO"
+    "abbreviation": "NOCO",
+    "eventName": "Northern Colorado Bears"
    },
    {
     "id": 664,
     "name": "Northern Illinois",
-    "abbreviation": "NIL"
+    "abbreviation": "NIL",
+    "eventName": "Northern Illinois Huskies"
    },
    {
     "id": 1069,
     "name": "Northern Iowa",
-    "abbreviation": "UNI"
+    "abbreviation": "UNI",
+    "eventName": "Northern Iowa Panthers"
    },
    {
     "id": 665,
     "name": "Northwestern",
-    "abbreviation": "NW"
+    "abbreviation": "NW",
+    "eventName": "Northwestern Wildcats"
    },
    {
     "id": 1177,
     "name": "Northwestern State",
-    "abbreviation": "NWS"
+    "abbreviation": "NWS",
+    "eventName": "Northwestern State Demons"
    },
    {
     "id": 666,
     "name": "Notre Dame",
-    "abbreviation": "ND"
+    "abbreviation": "ND",
+    "eventName": "Notre Dame Fighting Irish"
    },
    {
     "id": 667,
     "name": "Ohio",
-    "abbreviation": "OHI"
+    "abbreviation": "OHI",
+    "eventName": "Ohio Bobcats"
    },
    {
     "id": 668,
     "name": "Ohio State",
-    "abbreviation": "OSU"
+    "abbreviation": "OSU",
+    "eventName": "Ohio State Buckeyes"
    },
    {
     "id": 669,
     "name": "Oklahoma",
-    "abbreviation": "OKL"
+    "abbreviation": "OKL",
+    "eventName": "Oklahoma Sooners"
    },
    {
     "id": 670,
     "name": "Oklahoma State",
-    "abbreviation": "OKS"
+    "abbreviation": "OKS",
+    "eventName": "Oklahoma State Cowboys"
    },
    {
     "id": 671,
     "name": "Old Dominion",
-    "abbreviation": "ODU"
+    "abbreviation": "ODU",
+    "eventName": "Old Dominion Monarchs"
    },
    {
     "id": 673,
     "name": "Oregon",
-    "abbreviation": "ORE"
+    "abbreviation": "ORE",
+    "eventName": "Oregon Ducks"
    },
    {
     "id": 674,
     "name": "Oregon State",
-    "abbreviation": "ORS"
+    "abbreviation": "ORS",
+    "eventName": "Oregon State Beavers"
    },
    {
     "id": 675,
     "name": "Penn State",
-    "abbreviation": "PSU"
+    "abbreviation": "PSU",
+    "eventName": "Penn State Nittany Lions"
    },
    {
     "id": 1179,
     "name": "Pennsylvania",
-    "abbreviation": "PEN"
+    "abbreviation": "PEN",
+    "eventName": "Pennsylvania Quakers"
    },
    {
     "id": 676,
     "name": "Pittsburgh",
-    "abbreviation": "PITT"
+    "abbreviation": "PITT",
+    "eventName": "Pittsburgh Panthers"
    },
    {
     "id": 1070,
     "name": "Portland State",
-    "abbreviation": "PRST"
+    "abbreviation": "PRST",
+    "eventName": "Portland State Vikings"
    },
    {
     "id": 759,
     "name": "Prairie View",
-    "abbreviation": "PRV"
+    "abbreviation": "PRV",
+    "eventName": "Prairie View A&M Panthers"
    },
    {
     "id": 1180,
     "name": "Presbyterian Blue Hose",
-    "abbreviation": "PRES"
+    "abbreviation": "PRES",
+    "eventName": "Presbyterian Blue Hose"
    },
    {
     "id": 1181,
     "name": "Princeton",
-    "abbreviation": "PRI"
+    "abbreviation": "PRI",
+    "eventName": "Princeton Tigers"
    },
    {
     "id": 677,
     "name": "Purdue",
-    "abbreviation": "PUR"
+    "abbreviation": "PUR",
+    "eventName": "Purdue Boilermakers"
    },
    {
     "id": 766,
     "name": "Rhode Island",
-    "abbreviation": "RIL"
+    "abbreviation": "RIL",
+    "eventName": "Rhode Island Rams"
    },
    {
     "id": 678,
     "name": "Rice",
-    "abbreviation": "RICE"
+    "abbreviation": "RICE",
+    "eventName": "Rice Owls"
    },
    {
     "id": 772,
     "name": "Richmond",
-    "abbreviation": "RCH"
+    "abbreviation": "RCH",
+    "eventName": "Richmond Spiders"
    },
    {
     "id": 1182,
     "name": "Robert Morris",
-    "abbreviation": "RM"
+    "abbreviation": "RM",
+    "eventName": "Robert Morris Colonials"
    },
    {
     "id": 679,
     "name": "Rutgers",
-    "abbreviation": "RUT"
+    "abbreviation": "RUT",
+    "eventName": "Rutgers Scarlet Knights"
    },
    {
     "id": 1190,
     "name": "S Illinois",
-    "abbreviation": "SIL"
+    "abbreviation": "SIL",
+    "eventName": "Southern Illinois Salukis"
    },
    {
     "id": 1074,
     "name": "SE Louisiana",
-    "abbreviation": "SEL"
+    "abbreviation": "SEL",
+    "eventName": "Southeastern Louisiana Lions"
    },
    {
     "id": 790,
     "name": "SE Missouri State",
-    "abbreviation": "SEM"
+    "abbreviation": "SEM",
+    "eventName": "Southeast Missouri State Redhawks"
    },
    {
     "id": 682,
     "name": "SMU",
-    "abbreviation": "SMU"
+    "abbreviation": "SMU",
+    "eventName": "SMU Mustangs"
    },
    {
     "id": 783,
     "name": "Sacramento St",
-    "abbreviation": "CSUS"
+    "abbreviation": "CSUS",
+    "eventName": "Sacramento State Hornets"
    },
    {
     "id": 1185,
     "name": "Sacred Heart",
-    "abbreviation": "SCH"
+    "abbreviation": "SCH",
+    "eventName": "Sacred Heart Pioneers"
    },
    {
     "id": 1071,
     "name": "Sam Houston State",
-    "abbreviation": "SHS"
+    "abbreviation": "SHS",
+    "eventName": "Sam Houston State Bearkats"
    },
    {
     "id": 764,
     "name": "Samford",
-    "abbreviation": "SAM"
+    "abbreviation": "SAM",
+    "eventName": "Samford Bulldogs"
    },
    {
     "id": 1189,
     "name": "San Diego",
-    "abbreviation": "SDG"
+    "abbreviation": "SDG",
+    "eventName": "San Diego Toreros"
    },
    {
     "id": 680,
     "name": "San Diego State",
-    "abbreviation": "SDSU"
+    "abbreviation": "SDSU",
+    "eventName": "San Diego State Aztecs"
    },
    {
     "id": 681,
     "name": "San Jose State",
-    "abbreviation": "SJS"
+    "abbreviation": "SJS",
+    "eventName": "San Jose State Spartans"
    },
    {
     "id": 683,
     "name": "South Alabama",
-    "abbreviation": "SAB"
+    "abbreviation": "SAB",
+    "eventName": "South Alabama Jaguars"
    },
    {
     "id": 684,
     "name": "South Carolina",
-    "abbreviation": "SC"
+    "abbreviation": "SC",
+    "eventName": "South Carolina Gamecocks"
    },
    {
     "id": 788,
     "name": "South Carolina State",
-    "abbreviation": "SCS"
+    "abbreviation": "SCS",
+    "eventName": "South Carolina State Bulldogs"
    },
    {
     "id": 1072,
     "name": "South Dakota",
-    "abbreviation": "SD"
+    "abbreviation": "SD",
+    "eventName": "South Dakota Coyotes"
    },
    {
     "id": 1073,
     "name": "South Dakota State",
-    "abbreviation": "SDS"
+    "abbreviation": "SDS",
+    "eventName": "South Dakota State Jackrabbits"
    },
    {
     "id": 685,
     "name": "South Florida",
-    "abbreviation": "USF"
+    "abbreviation": "USF",
+    "eventName": "South Florida Bulls"
    },
    {
     "id": 1191,
     "name": "Southern",
-    "abbreviation": "SU"
+    "abbreviation": "SU",
+    "eventName": "Southern University Jaguars"
    },
    {
     "id": 686,
     "name": "Southern Miss",
-    "abbreviation": "USM"
+    "abbreviation": "USM",
+    "eventName": "Southern Miss Golden Eagles"
    },
    {
     "id": 1192,
     "name": "Southern Utah",
-    "abbreviation": "SUT"
+    "abbreviation": "SUT",
+    "eventName": "Southern Utah Thunderbirds"
    },
    {
     "id": 1195,
     "name": "St. Thomas",
-    "abbreviation": "UST"
+    "abbreviation": "UST",
+    "eventName": "St. Thomas Tommies"
    },
    {
     "id": 687,
     "name": "Stanford",
-    "abbreviation": "STA"
+    "abbreviation": "STA",
+    "eventName": "Stanford Cardinal"
    },
    {
     "id": 991,
     "name": "Stephen F. Austin",
-    "abbreviation": "SAU"
+    "abbreviation": "SAU",
+    "eventName": "Stephen F. Austin Lumberjacks"
    },
    {
     "id": 1193,
     "name": "Stetson",
-    "abbreviation": "STU"
+    "abbreviation": "STU",
+    "eventName": "Stetson Hatters"
    },
    {
     "id": 1194,
     "name": "Stonehill College",
-    "abbreviation": "STHL"
+    "abbreviation": "STHL",
+    "eventName": "Stonehill College Skyhawks"
    },
    {
     "id": 778,
     "name": "Stony Brook",
-    "abbreviation": "SBK"
+    "abbreviation": "SBK",
+    "eventName": "Stony Brook Seawolves"
    },
    {
     "id": 688,
     "name": "Syracuse",
-    "abbreviation": "SYR"
+    "abbreviation": "SYR",
+    "eventName": "Syracuse Orange"
    },
    {
     "id": 689,
     "name": "TCU",
-    "abbreviation": "TCU"
+    "abbreviation": "TCU",
+    "eventName": "TCU Horned Frogs"
    },
    {
     "id": 1196,
     "name": "Tarleton",
-    "abbreviation": "TSU"
+    "abbreviation": "TSU",
+    "eventName": "Tarleton State Texans"
    },
    {
     "id": 690,
     "name": "Temple",
-    "abbreviation": "TEM"
+    "abbreviation": "TEM",
+    "eventName": "Temple Owls"
    },
    {
     "id": 691,
     "name": "Tennessee",
-    "abbreviation": "TEN"
+    "abbreviation": "TEN",
+    "eventName": "Tennessee Volunteers"
    },
    {
     "id": 760,
     "name": "Tennessee State",
-    "abbreviation": "TNST"
+    "abbreviation": "TNST",
+    "eventName": "Tennessee State Tigers"
    },
    {
     "id": 789,
     "name": "Tennessee Tech",
-    "abbreviation": "TNT"
+    "abbreviation": "TNT",
+    "eventName": "Tennessee Tech Golden Eagles"
    },
    {
     "id": 693,
     "name": "Texas",
-    "abbreviation": "TEX"
+    "abbreviation": "TEX",
+    "eventName": "Texas Longhorns"
    },
    {
     "id": 692,
     "name": "Texas A&M",
-    "abbreviation": "TXAM"
+    "abbreviation": "TXAM",
+    "eventName": "Texas A&M Aggies"
    },
    {
     "id": 1198,
     "name": "Texas A&M-Commerce",
-    "abbreviation": "TAMC"
+    "abbreviation": "TAMC",
+    "eventName": "Texas A&M-Commerce Lions"
    },
    {
     "id": 770,
     "name": "Texas Southern",
-    "abbreviation": "TSO"
+    "abbreviation": "TSO",
+    "eventName": "Texas Southern Tigers"
    },
    {
     "id": 694,
     "name": "Texas State",
-    "abbreviation": "TXST"
+    "abbreviation": "TXST",
+    "eventName": "Texas State Bobcats"
    },
    {
     "id": 695,
     "name": "Texas Tech",
-    "abbreviation": "TT"
+    "abbreviation": "TT",
+    "eventName": "Texas Tech Red Raiders"
    },
    {
     "id": 1130,
     "name": "The Citadel",
-    "abbreviation": "CIT"
+    "abbreviation": "CIT",
+    "eventName": "Citadel Bulldogs"
    },
    {
     "id": 696,
     "name": "Toledo",
-    "abbreviation": "TOL"
+    "abbreviation": "TOL",
+    "eventName": "Toledo Rockets"
    },
    {
     "id": 768,
     "name": "Towson",
-    "abbreviation": "TWN"
+    "abbreviation": "TWN",
+    "eventName": "Towson Tigers"
    },
    {
     "id": 697,
     "name": "Troy",
-    "abbreviation": "TRY"
+    "abbreviation": "TRY",
+    "eventName": "Troy Trojans"
    },
    {
     "id": 698,
     "name": "Tulane",
-    "abbreviation": "TUL"
+    "abbreviation": "TUL",
+    "eventName": "Tulane Green Wave"
    },
    {
     "id": 699,
     "name": "Tulsa",
-    "abbreviation": "TSA"
+    "abbreviation": "TSA",
+    "eventName": "Tulsa Golden Hurricane"
    },
    {
     "id": 700,
     "name": "UAB",
-    "abbreviation": "UAB"
+    "abbreviation": "UAB",
+    "eventName": "UAB Blazers"
    },
    {
     "id": 1076,
     "name": "UC Davis",
-    "abbreviation": "UCD"
+    "abbreviation": "UCD",
+    "eventName": "UC Davis Aggies"
    },
    {
     "id": 702,
     "name": "UCLA",
-    "abbreviation": "UCLA"
+    "abbreviation": "UCLA",
+    "eventName": "UCLA Bruins"
    },
    {
     "id": 1222,
     "name": "UL Lafayette",
-    "abbreviation": "ULL"
+    "abbreviation": "ULL",
+    "eventName": "Louisiana-Lafayette Ragin' Cajuns"
    },
    {
     "id": 704,
     "name": "UL Monroe",
-    "abbreviation": "ULM"
+    "abbreviation": "ULM",
+    "eventName": "Louisiana-Monroe Warhawks"
    },
    {
     "id": 706,
     "name": "UNLV",
-    "abbreviation": "UNLV"
+    "abbreviation": "UNLV",
+    "eventName": "UNLV Rebels"
    },
    {
     "id": 707,
     "name": "USC",
-    "abbreviation": "USC"
+    "abbreviation": "USC",
+    "eventName": "USC Trojans"
    },
    {
     "id": 1197,
     "name": "UT Martin",
-    "abbreviation": "TNM"
+    "abbreviation": "TNM",
+    "eventName": "Tennessee-Martin Skyhawks"
    },
    {
     "id": 1997,
     "name": "UT Rio Grande Valley",
-    "abbreviation": "UTRGV"
+    "abbreviation": "UTRGV",
+    "eventName": "UT Rio Grande Valley Vaqueros"
    },
    {
     "id": 710,
     "name": "UTEP",
-    "abbreviation": "UTEP"
+    "abbreviation": "UTEP",
+    "eventName": "UTEP Miners"
    },
    {
     "id": 711,
     "name": "UTSA",
-    "abbreviation": "UTSA"
+    "abbreviation": "UTSA",
+    "eventName": "UTSA Roadrunners"
    },
    {
     "id": 709,
     "name": "Utah",
-    "abbreviation": "UTH"
+    "abbreviation": "UTH",
+    "eventName": "Utah Utes"
    },
    {
     "id": 708,
     "name": "Utah State",
-    "abbreviation": "UTS"
+    "abbreviation": "UTS",
+    "eventName": "Utah State Aggies"
    },
    {
     "id": 1137,
     "name": "Utah Tech",
-    "abbreviation": "DSU"
+    "abbreviation": "DSU",
+    "eventName": "Dixie State Trailblazers"
    },
    {
     "id": 1091,
     "name": "VMI",
-    "abbreviation": "VMI"
+    "abbreviation": "VMI",
+    "eventName": "Virginia Military Institute Keydets"
    },
    {
     "id": 1202,
     "name": "Valparaiso",
-    "abbreviation": "VAL"
+    "abbreviation": "VAL",
+    "eventName": "Valparaiso Beacons"
    },
    {
     "id": 712,
     "name": "Vanderbilt",
-    "abbreviation": "VAN"
+    "abbreviation": "VAN",
+    "eventName": "Vanderbilt Commodores"
    },
    {
     "id": 771,
     "name": "Villanova",
-    "abbreviation": "VIL"
+    "abbreviation": "VIL",
+    "eventName": "Villanova Wildcats"
    },
    {
     "id": 713,
     "name": "Virginia",
-    "abbreviation": "UVA"
+    "abbreviation": "UVA",
+    "eventName": "Virginia Cavaliers"
    },
    {
     "id": 714,
     "name": "Virginia Tech",
-    "abbreviation": "VT"
+    "abbreviation": "VT",
+    "eventName": "Virginia Tech Hokies"
    },
    {
     "id": 769,
     "name": "Wagner",
-    "abbreviation": "WAG"
+    "abbreviation": "WAG",
+    "eventName": "Wagner Seahawks"
    },
    {
     "id": 715,
     "name": "Wake Forest",
-    "abbreviation": "WF"
+    "abbreviation": "WF",
+    "eventName": "Wake Forest Demon Deacons"
    },
    {
     "id": 716,
     "name": "Washington",
-    "abbreviation": "WAS"
+    "abbreviation": "WAS",
+    "eventName": "Washington Huskies"
    },
    {
     "id": 717,
     "name": "Washington State",
-    "abbreviation": "WST"
+    "abbreviation": "WST",
+    "eventName": "Washington State Cougars"
    },
    {
     "id": 1206,
     "name": "Weber State",
-    "abbreviation": "WBS"
+    "abbreviation": "WBS",
+    "eventName": "Weber State Wildcats"
    },
    {
     "id": 1586,
     "name": "West Georgia",
-    "abbreviation": "UWGA"
+    "abbreviation": "UWGA",
+    "eventName": "West Georgia Wolves"
    },
    {
     "id": 718,
     "name": "West Virginia",
-    "abbreviation": "WVU"
+    "abbreviation": "WVU",
+    "eventName": "West Virginia Mountaineers"
    },
    {
     "id": 719,
     "name": "Western Carolina",
-    "abbreviation": "WCU"
+    "abbreviation": "WCU",
+    "eventName": "Western Carolina Catamounts"
    },
    {
     "id": 1207,
     "name": "Western Illinois",
-    "abbreviation": "WIL"
+    "abbreviation": "WIL",
+    "eventName": "Western Illinois Leathernecks"
    },
    {
     "id": 720,
     "name": "Western Kentucky",
-    "abbreviation": "WKY"
+    "abbreviation": "WKY",
+    "eventName": "Western Kentucky Hilltoppers"
    },
    {
     "id": 721,
     "name": "Western Michigan",
-    "abbreviation": "WMC"
+    "abbreviation": "WMC",
+    "eventName": "Western Michigan Broncos"
    },
    {
     "id": 1077,
     "name": "William & Mary",
-    "abbreviation": "WM"
+    "abbreviation": "WM",
+    "eventName": "William & Mary Tribe"
    },
    {
     "id": 722,
     "name": "Wisconsin",
-    "abbreviation": "WIS"
+    "abbreviation": "WIS",
+    "eventName": "Wisconsin Badgers"
    },
    {
     "id": 762,
     "name": "Wofford",
-    "abbreviation": "WOF"
+    "abbreviation": "WOF",
+    "eventName": "Wofford Terriers"
    },
    {
     "id": 723,
     "name": "Wyoming",
-    "abbreviation": "WYO"
+    "abbreviation": "WYO",
+    "eventName": "Wyoming Cowboys"
    },
    {
     "id": 1209,
     "name": "Yale",
-    "abbreviation": "YAL"
+    "abbreviation": "YAL",
+    "eventName": "Yale Bulldogs"
    },
    {
     "id": 926,
     "name": "Youngstown State",
-    "abbreviation": "YSU"
+    "abbreviation": "YSU",
+    "eventName": "Youngstown State Penguins"
    }
   ],
   "nba": [
    {
     "id": 63,
     "name": "Atlanta Hawks",
-    "abbreviation": "ATL"
+    "abbreviation": "ATL",
+    "eventName": "Hawks Atlanta"
    },
    {
     "id": 64,
     "name": "Boston Celtics",
-    "abbreviation": "BOS"
+    "abbreviation": "BOS",
+    "eventName": "Celtics Boston"
    },
    {
     "id": 65,
     "name": "Brooklyn Nets",
-    "abbreviation": "BKN"
+    "abbreviation": "BKN",
+    "eventName": "Nets Brooklyn"
    },
    {
     "id": 66,
     "name": "Charlotte Hornets",
-    "abbreviation": "CHA"
+    "abbreviation": "CHA",
+    "eventName": "Hornets Charlotte"
    },
    {
     "id": 67,
     "name": "Chicago Bulls",
-    "abbreviation": "CHI"
+    "abbreviation": "CHI",
+    "eventName": "Bulls Chicago"
    },
    {
     "id": 68,
     "name": "Cleveland Cavaliers",
-    "abbreviation": "CLE"
+    "abbreviation": "CLE",
+    "eventName": "Cavaliers Cleveland"
    },
    {
     "id": 69,
     "name": "Dallas Mavericks",
-    "abbreviation": "DAL"
+    "abbreviation": "DAL",
+    "eventName": "Mavericks Dallas"
    },
    {
     "id": 70,
     "name": "Denver Nuggets",
-    "abbreviation": "DEN"
+    "abbreviation": "DEN",
+    "eventName": "Nuggets Denver"
    },
    {
     "id": 71,
     "name": "Detroit Pistons",
-    "abbreviation": "DET"
+    "abbreviation": "DET",
+    "eventName": "Pistons Detroit"
    },
    {
     "id": 72,
     "name": "Golden State Warriors",
-    "abbreviation": "GSW"
+    "abbreviation": "GSW",
+    "eventName": "Warriors Golden State"
    },
    {
     "id": 73,
     "name": "Houston Rockets",
-    "abbreviation": "HOU"
+    "abbreviation": "HOU",
+    "eventName": "Rockets Houston"
    },
    {
     "id": 74,
     "name": "Indiana Pacers",
-    "abbreviation": "IND"
+    "abbreviation": "IND",
+    "eventName": "Pacers Indiana"
    },
    {
     "id": 75,
     "name": "LA Clippers",
-    "abbreviation": "LAC"
+    "abbreviation": "LAC",
+    "eventName": null
    },
    {
     "id": 76,
     "name": "Los Angeles Lakers",
-    "abbreviation": "LAL"
+    "abbreviation": "LAL",
+    "eventName": "Lakers Los Angeles"
    },
    {
     "id": 77,
     "name": "Memphis Grizzlies",
-    "abbreviation": "MEM"
+    "abbreviation": "MEM",
+    "eventName": "Grizzlies Memphis"
    },
    {
     "id": 78,
     "name": "Miami Heat",
-    "abbreviation": "MIA"
+    "abbreviation": "MIA",
+    "eventName": "Heat Miami"
    },
    {
     "id": 79,
     "name": "Milwaukee Bucks",
-    "abbreviation": "MIL"
+    "abbreviation": "MIL",
+    "eventName": "Bucks Milwaukee"
    },
    {
     "id": 80,
     "name": "Minnesota Timberwolves",
-    "abbreviation": "MIN"
+    "abbreviation": "MIN",
+    "eventName": "Timberwolves Minnesota"
    },
    {
     "id": 81,
     "name": "New Orleans Pelicans",
-    "abbreviation": "NOP"
+    "abbreviation": "NOP",
+    "eventName": "Pelicans New Orleans"
    },
    {
     "id": 82,
     "name": "New York Knicks",
-    "abbreviation": "NYK"
+    "abbreviation": "NYK",
+    "eventName": "Knicks New York"
    },
    {
     "id": 83,
     "name": "Oklahoma City Thunder",
-    "abbreviation": "OKC"
+    "abbreviation": "OKC",
+    "eventName": "Thunder Oklahoma City"
    },
    {
     "id": 84,
     "name": "Orlando Magic",
-    "abbreviation": "ORL"
+    "abbreviation": "ORL",
+    "eventName": "Magic Orlando"
    },
    {
     "id": 85,
     "name": "Philadelphia 76ers",
-    "abbreviation": "PHI"
+    "abbreviation": "PHI",
+    "eventName": "76ers Philadelphia"
    },
    {
     "id": 86,
     "name": "Phoenix Suns",
-    "abbreviation": "PHX"
+    "abbreviation": "PHX",
+    "eventName": "Suns Phoenix"
    },
    {
     "id": 87,
     "name": "Portland Trail Blazers",
-    "abbreviation": "POR"
+    "abbreviation": "POR",
+    "eventName": "Trail Blazers Portland"
    },
    {
     "id": 88,
     "name": "Sacramento Kings",
-    "abbreviation": "SAC"
+    "abbreviation": "SAC",
+    "eventName": null
    },
    {
     "id": 89,
     "name": "San Antonio Spurs",
-    "abbreviation": "SAS"
+    "abbreviation": "SAS",
+    "eventName": "Spurs San Antonio"
    },
    {
     "id": 90,
     "name": "Toronto Raptors",
-    "abbreviation": "TOR"
+    "abbreviation": "TOR",
+    "eventName": null
    },
    {
     "id": 91,
     "name": "Utah Jazz",
-    "abbreviation": "UTA"
+    "abbreviation": "UTA",
+    "eventName": "Jazz Utah"
    },
    {
     "id": 92,
     "name": "Washington Wizards",
-    "abbreviation": "WAS"
+    "abbreviation": "WAS",
+    "eventName": "Wizards Washington"
    }
   ],
   "mlb": [
    {
     "id": 33,
     "name": "Arizona Diamondbacks",
-    "abbreviation": "ARI"
+    "abbreviation": "ARI",
+    "eventName": null
    },
    {
     "id": 34,
     "name": "Atlanta Braves",
-    "abbreviation": "ATL"
+    "abbreviation": "ATL",
+    "eventName": null
    },
    {
     "id": 35,
     "name": "Baltimore Orioles",
-    "abbreviation": "BAL"
+    "abbreviation": "BAL",
+    "eventName": null
    },
    {
     "id": 36,
     "name": "Boston Red Sox",
-    "abbreviation": "BOS"
+    "abbreviation": "BOS",
+    "eventName": null
    },
    {
     "id": 37,
     "name": "Chicago Cubs",
-    "abbreviation": "CHC"
+    "abbreviation": "CHC",
+    "eventName": null
    },
    {
     "id": 38,
     "name": "Chicago White Sox",
-    "abbreviation": "CWS"
+    "abbreviation": "CWS",
+    "eventName": null
    },
    {
     "id": 39,
     "name": "Cincinnati Reds",
-    "abbreviation": "CIN"
+    "abbreviation": "CIN",
+    "eventName": null
    },
    {
     "id": 40,
     "name": "Cleveland Guardians",
-    "abbreviation": "CLE"
+    "abbreviation": "CLE",
+    "eventName": null
    },
    {
     "id": 41,
     "name": "Colorado Rockies",
-    "abbreviation": "COL"
+    "abbreviation": "COL",
+    "eventName": null
    },
    {
     "id": 42,
     "name": "Detroit Tigers",
-    "abbreviation": "DET"
+    "abbreviation": "DET",
+    "eventName": null
    },
    {
     "id": 43,
     "name": "Houston Astros",
-    "abbreviation": "HOU"
+    "abbreviation": "HOU",
+    "eventName": null
    },
    {
     "id": 44,
     "name": "Kansas City Royals",
-    "abbreviation": "KC"
+    "abbreviation": "KC",
+    "eventName": null
    },
    {
     "id": 45,
     "name": "Los Angeles Angels",
-    "abbreviation": "LAA"
+    "abbreviation": "LAA",
+    "eventName": null
    },
    {
     "id": 46,
     "name": "Los Angeles Dodgers",
-    "abbreviation": "LAD"
+    "abbreviation": "LAD",
+    "eventName": null
    },
    {
     "id": 47,
     "name": "Miami Marlins",
-    "abbreviation": "MIA"
+    "abbreviation": "MIA",
+    "eventName": null
    },
    {
     "id": 48,
     "name": "Milwaukee Brewers",
-    "abbreviation": "MIL"
+    "abbreviation": "MIL",
+    "eventName": null
    },
    {
     "id": 49,
     "name": "Minnesota Twins",
-    "abbreviation": "MIN"
+    "abbreviation": "MIN",
+    "eventName": null
    },
    {
     "id": 50,
     "name": "New York Mets",
-    "abbreviation": "NYM"
+    "abbreviation": "NYM",
+    "eventName": null
    },
    {
     "id": 51,
     "name": "New York Yankees",
-    "abbreviation": "NYY"
+    "abbreviation": "NYY",
+    "eventName": null
    },
    {
     "id": 52,
     "name": "Oakland Athletics",
-    "abbreviation": "OAK"
+    "abbreviation": "OAK",
+    "eventName": null
    },
    {
     "id": 53,
     "name": "Philadelphia Phillies",
-    "abbreviation": "PHI"
+    "abbreviation": "PHI",
+    "eventName": null
    },
    {
     "id": 54,
     "name": "Pittsburgh Pirates",
-    "abbreviation": "PIT"
+    "abbreviation": "PIT",
+    "eventName": null
    },
    {
     "id": 55,
     "name": "San Diego Padres",
-    "abbreviation": "SD"
+    "abbreviation": "SD",
+    "eventName": null
    },
    {
     "id": 56,
     "name": "San Francisco Giants",
-    "abbreviation": "SF"
+    "abbreviation": "SF",
+    "eventName": null
    },
    {
     "id": 57,
     "name": "Seattle Mariners",
-    "abbreviation": "SEA"
+    "abbreviation": "SEA",
+    "eventName": null
    },
    {
     "id": 58,
     "name": "St. Louis Cardinals",
-    "abbreviation": "STL"
+    "abbreviation": "STL",
+    "eventName": null
    },
    {
     "id": 59,
     "name": "Tampa Bay Rays",
-    "abbreviation": "TB"
+    "abbreviation": "TB",
+    "eventName": null
    },
    {
     "id": 60,
     "name": "Texas Rangers",
-    "abbreviation": "TEX"
+    "abbreviation": "TEX",
+    "eventName": null
    },
    {
     "id": 61,
     "name": "Toronto Blue Jays",
-    "abbreviation": "TOR"
+    "abbreviation": "TOR",
+    "eventName": null
    },
    {
     "id": 62,
     "name": "Washington Nationals",
-    "abbreviation": "WAS"
+    "abbreviation": "WAS",
+    "eventName": null
    }
   ],
   "nhl": [
    {
     "id": 746,
     "name": "Anaheim Ducks",
-    "abbreviation": "ANA"
+    "abbreviation": "ANA",
+    "eventName": null
    },
    {
     "id": 729,
     "name": "Boston Bruins",
-    "abbreviation": "BOS"
+    "abbreviation": "BOS",
+    "eventName": null
    },
    {
     "id": 730,
     "name": "Buffalo Sabres",
-    "abbreviation": "BUF"
+    "abbreviation": "BUF",
+    "eventName": null
    },
    {
     "id": 742,
     "name": "Calgary Flames",
-    "abbreviation": "CGY"
+    "abbreviation": "CGY",
+    "eventName": null
    },
    {
     "id": 734,
     "name": "Carolina Hurricanes",
-    "abbreviation": "CAR"
+    "abbreviation": "CAR",
+    "eventName": null
    },
    {
     "id": 738,
     "name": "Chicago Blackhawks",
-    "abbreviation": "CHI"
+    "abbreviation": "CHI",
+    "eventName": null
    },
    {
     "id": 743,
     "name": "Colorado Avalanche",
-    "abbreviation": "COL"
+    "abbreviation": "COL",
+    "eventName": null
    },
    {
     "id": 750,
     "name": "Columbus Blue Jackets",
-    "abbreviation": "CBJ"
+    "abbreviation": "CBJ",
+    "eventName": null
    },
    {
     "id": 747,
     "name": "Dallas Stars",
-    "abbreviation": "DAL"
+    "abbreviation": "DAL",
+    "eventName": null
    },
    {
     "id": 739,
     "name": "Detroit Red Wings",
-    "abbreviation": "DET"
+    "abbreviation": "DET",
+    "eventName": null
    },
    {
     "id": 744,
     "name": "Edmonton Oilers",
-    "abbreviation": "EDM"
+    "abbreviation": "EDM",
+    "eventName": null
    },
    {
     "id": 735,
     "name": "Florida Panthers",
-    "abbreviation": "FLA"
+    "abbreviation": "FLA",
+    "eventName": null
    },
    {
     "id": 748,
     "name": "Los Angeles Kings",
-    "abbreviation": "LAK"
+    "abbreviation": "LAK",
+    "eventName": null
    },
    {
     "id": 751,
     "name": "Minnesota Wild",
-    "abbreviation": "MIN"
+    "abbreviation": "MIN",
+    "eventName": null
    },
    {
     "id": 731,
     "name": "Montreal Canadiens",
-    "abbreviation": "MTL"
+    "abbreviation": "MTL",
+    "eventName": null
    },
    {
     "id": 740,
     "name": "Nashville Predators",
-    "abbreviation": "NSH"
+    "abbreviation": "NSH",
+    "eventName": null
    },
    {
     "id": 724,
     "name": "New Jersey Devils",
-    "abbreviation": "NJD"
+    "abbreviation": "NJD",
+    "eventName": null
    },
    {
     "id": 725,
     "name": "New York Islanders",
-    "abbreviation": "NYI"
+    "abbreviation": "NYI",
+    "eventName": null
    },
    {
     "id": 726,
     "name": "New York Rangers",
-    "abbreviation": "NYR"
+    "abbreviation": "NYR",
+    "eventName": null
    },
    {
     "id": 732,
     "name": "Ottawa Senators",
-    "abbreviation": "OTT"
+    "abbreviation": "OTT",
+    "eventName": null
    },
    {
     "id": 727,
     "name": "Philadelphia Flyers",
-    "abbreviation": "PHI"
+    "abbreviation": "PHI",
+    "eventName": null
    },
    {
     "id": 728,
     "name": "Pittsburgh Penguins",
-    "abbreviation": "PIT"
+    "abbreviation": "PIT",
+    "eventName": null
    },
    {
     "id": 749,
     "name": "San Jose Sharks",
-    "abbreviation": "SJS"
+    "abbreviation": "SJS",
+    "eventName": null
    },
    {
     "id": 755,
     "name": "Seattle Kraken",
-    "abbreviation": "SEA"
+    "abbreviation": "SEA",
+    "eventName": null
    },
    {
     "id": 741,
     "name": "St. Louis Blues",
-    "abbreviation": "STL"
+    "abbreviation": "STL",
+    "eventName": null
    },
    {
     "id": 736,
     "name": "Tampa Bay Lightning",
-    "abbreviation": "TBL"
+    "abbreviation": "TBL",
+    "eventName": null
    },
    {
     "id": 733,
     "name": "Toronto Maple Leafs",
-    "abbreviation": "TOR"
+    "abbreviation": "TOR",
+    "eventName": null
    },
    {
     "id": 753,
     "name": "Utah Mammoth",
-    "abbreviation": "UTA"
+    "abbreviation": "UTA",
+    "eventName": null
    },
    {
     "id": 745,
     "name": "Vancouver Canucks",
-    "abbreviation": "VAN"
+    "abbreviation": "VAN",
+    "eventName": null
    },
    {
     "id": 754,
     "name": "Vegas Golden Knights",
-    "abbreviation": "VGK"
+    "abbreviation": "VGK",
+    "eventName": null
    },
    {
     "id": 737,
     "name": "Washington Capitals",
-    "abbreviation": "WSH"
+    "abbreviation": "WSH",
+    "eventName": null
    },
    {
     "id": 752,
     "name": "Winnipeg Jets",
-    "abbreviation": "WPG"
+    "abbreviation": "WPG",
+    "eventName": null
    }
   ],
   "wnba": [
    {
     "id": 1519,
     "name": "Atlanta Dream",
-    "abbreviation": "ATL"
+    "abbreviation": "ATL",
+    "eventName": null
    },
    {
     "id": 1520,
     "name": "Chicago Sky",
-    "abbreviation": "CHI"
+    "abbreviation": "CHI",
+    "eventName": null
    },
    {
     "id": 1521,
     "name": "Connecticut Sun",
-    "abbreviation": "CON"
+    "abbreviation": "CON",
+    "eventName": null
    },
    {
     "id": 1525,
     "name": "Dallas Wings",
-    "abbreviation": "DAL"
+    "abbreviation": "DAL",
+    "eventName": null
    },
    {
     "id": 1651,
     "name": "Golden State Valkyries",
-    "abbreviation": "GSV"
+    "abbreviation": "GSV",
+    "eventName": null
    },
    {
     "id": 1522,
     "name": "Indiana Fever",
-    "abbreviation": "IND"
+    "abbreviation": "IND",
+    "eventName": null
    },
    {
     "id": 1526,
     "name": "Las Vegas Aces",
-    "abbreviation": "LVA"
+    "abbreviation": "LVA",
+    "eventName": null
    },
    {
     "id": 1527,
     "name": "Los Angeles Sparks",
-    "abbreviation": "LAS"
+    "abbreviation": "LAS",
+    "eventName": null
    },
    {
     "id": 1528,
     "name": "Minnesota Lynx",
-    "abbreviation": "MIN"
+    "abbreviation": "MIN",
+    "eventName": null
    },
    {
     "id": 1523,
     "name": "New York Liberty",
-    "abbreviation": "NYL"
+    "abbreviation": "NYL",
+    "eventName": null
    },
    {
     "id": 1529,
     "name": "Phoenix Mercury",
-    "abbreviation": "PHO"
+    "abbreviation": "PHO",
+    "eventName": null
    },
    {
     "id": 1995,
     "name": "Portland Fire",
-    "abbreviation": "POR"
+    "abbreviation": "POR",
+    "eventName": null
    },
    {
     "id": 1530,
     "name": "Seattle Storm",
-    "abbreviation": "SEA"
+    "abbreviation": "SEA",
+    "eventName": null
    },
    {
     "id": 1996,
     "name": "Toronto Tempo",
-    "abbreviation": "TOR"
+    "abbreviation": "TOR",
+    "eventName": null
    },
    {
     "id": 1524,
     "name": "Washington Mystics",
-    "abbreviation": "WAS"
+    "abbreviation": "WAS",
+    "eventName": null
    }
   ]
  }

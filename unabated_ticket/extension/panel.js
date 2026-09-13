@@ -107,11 +107,14 @@
   let scannerStatus = null;
   let scannerState = null;
   const teamsLib = globalThis.UnabatedTeams;
-  let teamsIndexSize = 0;
+  let teamsSpellingCount = 0;
 
-  // Every snapshot carries Unabated's team list: register it as the team
-  // index (teams.js), persist it, and fill keys on bet records that were
-  // waiting for it (#116 — no hand-written team tables).
+  // Every snapshot carries Unabated's team list and, per game row, a second
+  // spelling of each team (feed.teamSpellingsFromEventName, #118): register
+  // both as the team index (teams.js), persist it, and fill keys on bet
+  // records that were waiting for it (#116 — no hand-written team tables).
+  // The trigger counts spellings, not teams: a new eventName spelling for a
+  // team already indexed must persist and re-resolve too.
   function registerFeedTeams(feedState) {
     if (!feedState || !feedState.teamIndex) return;
     const byLeague = {};
@@ -121,9 +124,9 @@
       (byLeague[league.path] ||= []).push(team);
     }
     for (const [league, list] of Object.entries(byLeague)) teamsLib.registerTeams(league, list);
-    const size = Object.values(teamsLib.exportIndex()).reduce((n, list) => n + list.length, 0);
-    if (size === teamsIndexSize) return;
-    teamsIndexSize = size;
+    const spellings = teamsLib.spellingCount();
+    if (spellings === teamsSpellingCount) return;
+    teamsSpellingCount = spellings;
     chrome.storage.local.set({ teamsIndex: teamsLib.exportIndex() });
     state.betRecords = betsLib.resolveTeamKeys(state.betRecords);
   }
@@ -1511,7 +1514,7 @@
     const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "betsNovig", "teamsIndex"]);
     // The team index from the last session, so bet records resolve before the first snapshot lands.
     teamsLib.loadIndex(relay.teamsIndex);
-    teamsIndexSize = Object.values(teamsLib.exportIndex()).reduce((n, list) => n + list.length, 0);
+    teamsSpellingCount = teamsLib.spellingCount();
     state.ticket = relay.ticket || null;
     state.error = relay.error || null;
     state.watchStatus = relay.watchStatus || null;

@@ -566,7 +566,8 @@ order is `open` on its full size with `approx: ["novig_order_unmatched"]`
 record per leg (`id` `novig:<parlay>:<leg>`, stake = the parlay's wager).
 Team keys are left null; the panel resolves `game.awayTeam.name` /
 `homeTeam.name` through `teams.js` (the runtime index below — Novig's full
-names are Unabated's for every team seen so far, with six aliases).
+names are Unabated's, or the long form of its `eventName`, for every team
+seen so far, with four college aliases).
 Novig sends no rotation number, so the team pair is the ONLY way a Novig
 bet reaches a line: one unrecognised name blocks the bet outright, and
 it lands in the Bets tab's unmatched list naming the spelling to add.
@@ -802,27 +803,39 @@ in red.
 - **Bets: unmatched "team not recognised (Name)"**: the venue's spelling
   resolves to no team, or to more than one, in the league's index. The
   index is not hand-written: every league snapshot the scanner parses
-  carries Unabated's team list (id, name, abbreviation), `teams.js`
-  registers it and the panel persists it (`teamsIndex`), so a name resolves
-  once its league has been scanned this session or a previous one. Keys are
-  `<league>:<Unabated team id>`, the ids the board's own lines carry, so
-  the board side never name-matches at all. A venue spelling resolves by
-  exact normalised name (St. = State), then a hand alias (`ALIASES` in
-  `teams.js`: "UAlbany" → "Albany", "North Carolina State" → "NC State",
-  "Southern Mississippi" → "Southern Miss", "Prairie View A&M" → "Prairie
-  View", "Louisiana" → "UL Lafayette", "Southeastern Louisiana" → "SE
-  Louisiana"), then the name minus a leading
-  code token ("PIT Steelers"), then a UNIQUE word-boundary containment
-  ("Steelers", "New England", "Middle Tennessee" → "Middle Tennessee State",
+  carries Unabated's team list (id, name, abbreviation) AND, on each game
+  row's `eventName`, a second, long-form spelling of both teams ("Prairie
+  View A&M Panthers - PRV @ Baylor Bears - BAY" where the list says
+  "Prairie View"; NFL/NBA/NHL "Ravens Baltimore BAL", MLB "Dodgers Los
+  Angeles" — `feed.teamSpellingsFromEventName`, #118). `teams.js` registers
+  both spellings under the same team id and the panel persists them
+  (`teamsIndex`, one entry per team with `name` and `eventName`), so a name
+  resolves once its league has been scanned this session or a previous
+  one. Keys are `<league>:<Unabated team id>`, the ids the board's own
+  lines carry, so the board side never name-matches at all. A venue
+  spelling resolves by exact normalised name (St. = State) against either
+  spelling, then a hand alias (`ALIASES` in `teams.js`: "UAlbany" →
+  "Albany", "North Carolina State" → "NC State", "Southern Mississippi" →
+  "Southern Miss", "Louisiana" → "UL Lafayette"), then the name minus a
+  leading code token ("PIT Steelers"), then a UNIQUE word-boundary
+  containment ("Steelers", "New England", "Middle Tennessee" → "Middle
+  Tennessee State", "Prairie View A&M" → "Prairie View A&M Panthers",
   "Grambling St." → "Grambling" only because the leftover is an
   institutional suffix). Two candidates is null, never a guess. If a
   spelling keeps failing, add one `ALIASES` row with a `teams.test.js` case.
   Resist turning an alias into a rule: "A&M" as an institutional suffix
   would map a bet on Texas A&M to Texas on any week Unabated lists Texas
   and not Texas A&M, since the index holds only the teams currently
-  playing. Measured 2026-09-12 against 111 open bets, every one of the 16
-  cross-spelling resolutions the rules make was correct, and the only
-  failures were three names no rule can derive.
+  playing. Measured 2026-09-12 against all 338 distinct (venue, league,
+  name) pairs in 408 bet records with the day's NFL/CFB/NBA/MLB/WNBA
+  snapshots registered: 58 cross-spelling resolutions, every one correct,
+  and 4 unresolved — Kalshi MLB "A's" and "Chicago WS", Novig "Arkansas
+  Pine Bluff" and "Texas A&M Commerce" (Unabated hyphenates both). The
+  eventName spellings retired the "Prairie View A&M" and "Southeastern
+  Louisiana" aliases; the four kept were each re-checked against the same
+  snapshot (the long forms are "Albany Great Danes" and "Southern Miss
+  Golden Eagles", and "North Carolina State" hits both the Wolfpack and
+  "North Carolina" + State).
 - **Bets: unmatched "ambiguous game"**: two board events accept the bet
   (a doubleheader or series without a start time on the venue side). The
   panel refuses to guess; the bet still counts in the header.
