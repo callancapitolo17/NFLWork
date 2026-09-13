@@ -505,10 +505,9 @@
       // rows it was chosen from; the panel shows it when the watched number
       // is not the captured one, or when the pick was not a lone top-level row.
       rowResolution: { trace: rowTrace, ambiguous: rowAmbiguous, build: PAGE_SCRIPT_BUILD },
-      // Watcher handle: how to find this same line again through the grid API
-      // (altPoints set = look inside the book line's alternateLines).
+      // Watcher handle: how to find this same line again through the grid API.
       watch: {
-        gridKey: rowData.gridKey ?? null, sideKey, bookKey, altPoints,
+        gridKey: rowData.gridKey ?? null, sideKey, bookKey,
         // The picked row's shape; a watch tick reading a row of the OTHER
         // shape is reading a different rung, whatever the grid's layout.
         rowTop,
@@ -1059,10 +1058,7 @@
   // this flag on its fake window before loading the file. Never set on
   // tools.unabated.com, so production exposes nothing.
   if (window.__unabatedTicketExposeInternals === true) {
-    window.__unabatedTicketInternals = {
-      buildTicket, ladderRowFor, rankedMarketNodes, readWatchedLine, startWatching, stopWatching, watchTick,
-      intervals,
-    };
+    window.__unabatedTicketInternals = { buildTicket, startWatching, readWatchedLine };
   }
   // Heartbeat so the panel can show whether this script is alive on the tab,
   // plus the books/bet-type filter for the Edges tab (grid may not be up yet
