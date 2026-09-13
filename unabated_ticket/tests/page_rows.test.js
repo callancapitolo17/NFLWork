@@ -17,23 +17,44 @@ const vm = require("node:vm");
 
 const PAGE_JS = process.env.PAGE_JS || path.join(__dirname, "..", "extension", "page.js");
 
-function loadPage(pathname = "/nfl/odds") {
+// `page.window` is the sandbox: `posted` collects every window.postMessage
+// (what content.js would receive), `deliver(type, payload)` plays a message
+// from content.js into page.js's listener, `watchTimers()` counts watch intervals started.
+function loadPage(pathname = "/nfl/odds", { gridRoots = [] } = {}) {
+  const listeners = [];
+  const posted = [];
+  let timers = 0;
   const sandbox = {
     __unabatedTicketExposeInternals: true,
     console: { info() {}, warn() {}, error() {} },
-    setInterval: () => 0,
+    setInterval: () => { timers += 1; return timers; },
     clearInterval() {},
     Element: class {},
     location: { origin: "https://tools.unabated.com", pathname, href: `https://tools.unabated.com${pathname}` },
-    postMessage() {},
-    addEventListener() {},
-    document: { addEventListener() {}, removeEventListener() {}, querySelectorAll: () => [], querySelector: () => null },
+    postMessage(data) { posted.push(data); },
+    addEventListener(type, fn) { if (type === "message") listeners.push(fn); },
+    document: {
+      addEventListener() {}, removeEventListener() {}, querySelector: () => null,
+      querySelectorAll: (selector) => (selector === ".ag-root" ? gridRoots : []),
+    },
   };
   sandbox.window = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(PAGE_JS, "utf8"), sandbox, { filename: "page.js" });
   assert.ok(sandbox.__unabatedTicketInternals, "page.js exposed nothing to the harness");
-  return sandbox.__unabatedTicketInternals;
+  const timersAtLoad = timers; // the heartbeat
+  // page.js checks event.source against its own `window`, which inside the
+  // context is the contextified global, not the outer sandbox object.
+  const innerWindow = vm.runInContext("window", sandbox);
+  const deliver = (type, payload) => listeners.forEach((fn) => fn({ source: innerWindow, data: { source: "unabated-ticket", type, payload } }));
+  return { ...sandbox.__unabatedTicketInternals, posted, deliver, watchTimers: () => timers - timersAtLoad };
+}
+
+// A rendered grid root whose one cell reaches `api` through fake React fiber
+// props, the way allGridApis re-acquires a grid a resumed watcher never held.
+function gridRoot(api) {
+  const cell = { "__reactFiber$test": { memoizedProps: { api, node: { data: {} } }, return: null } };
+  return { querySelectorAll: (selector) => (selector === ".ag-cell" ? [cell] : []) };
 }
 
 const BOOK = 99;
@@ -227,4 +248,64 @@ test("main-line capture: a price move at the number is read; the number moving o
   entry.alternateLines = [];
   read = page.readWatchedLine();
   assert.equal(read.offBoard, true);
+});
+
+// ---- resume after a navigation: the stored ticket rebuilds the watcher ----
+//
+// page.js dies with every navigation (one-click betting leaving the tab,
+// Back, a reload or discard, an extension reload's takeover) while the ticket
+// stays in storage; before 0.6.6 nothing re-attached, and the panel read
+// "Not watching the line" with a live heartbeat for every such ticket.
+
+function storedTicketAfterCapture() {
+  const page = loadPage();
+  const { nodes, clicked, rungRow } = nflGrid();
+  const ticket = capture(page, gridApi(nodes), rungRow, clicked);
+  return JSON.parse(JSON.stringify(ticket)); // structured clone, as storage hands it back
+}
+
+test("a freshly loaded page.js asks content.js for the stored ticket", () => {
+  const page = loadPage();
+  assert.ok(page.posted.some((message) => message.type === "resume_request"), "no resume_request posted on load");
+});
+
+test("resume: the watcher is rebuilt from the stored ticket with no grid API and reads the rung off the DOM's grid", () => {
+  const ticket = storedTicketAfterCapture();
+  const { nodes } = nflGrid();
+  const page = loadPage("/nfl/odds", { gridRoots: [gridRoot(gridApi(nodes))] });
+  page.deliver("resume", ticket);
+  assert.equal(page.watchTimers(), 1, "one watch interval started");
+  const read = page.readWatchedLine();
+  assert.equal(read.offBoard, false, read.row);
+  assert.equal(read.points, -2.5);
+  assert.equal(read.price, 182);
+});
+
+test("resume: a second offer of the same ticket does not restart the watcher; a different ticket replaces it", () => {
+  const ticket = storedTicketAfterCapture();
+  const { nodes } = nflGrid();
+  const page = loadPage("/nfl/odds", { gridRoots: [gridRoot(gridApi(nodes))] });
+  page.deliver("resume", ticket);
+  page.deliver("resume", ticket);
+  assert.equal(page.watchTimers(), 1);
+  page.deliver("resume", { ...ticket, capturedAt: ticket.capturedAt + 1 });
+  assert.equal(page.watchTimers(), 2);
+});
+
+test("resume: a tab whose grid has not mounted yet says so, then reads once it has", () => {
+  const ticket = storedTicketAfterCapture();
+  const roots = [];
+  const page = loadPage("/nfl/odds", { gridRoots: roots });
+  page.deliver("resume", ticket);
+  assert.throws(() => page.readWatchedLine(), /no odds grid on the page yet/);
+  roots.push(gridRoot(gridApi(nflGrid().nodes)));
+  assert.equal(page.readWatchedLine().price, 182);
+});
+
+test("resume: a malformed or watch-less ticket, or one arriving before any capture, is ignored", () => {
+  const page = loadPage();
+  page.deliver("resume", null);
+  page.deliver("resume", { capturedAt: "x", watch: {} });
+  page.deliver("resume", { capturedAt: Date.now() });
+  assert.equal(page.watchTimers(), 0);
 });

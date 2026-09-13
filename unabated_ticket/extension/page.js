@@ -6,7 +6,8 @@
 // page world and hands results to content.js via window.postMessage.
 //
 // Side effects: one capture-phase click listener on document (Unabated's
-// own handler still runs), one 5s interval while a ticket is being watched,
+// own handler still runs), one 5s interval while a ticket is being watched
+// (resumed from the stored ticket on load, so a navigation does not end it),
 // and a 10s heartbeat that also publishes the user's Unabated book selection
 // (read from the grid's React context) as the Edges tab's default book filter. The only DOM touch is the locate flash:
 // a 2.5s outline on the cell an Edges row or notification pointed at.
@@ -94,7 +95,7 @@
   }
 
   // Script build, so a stale copy of page.js in an old tab shows itself in the panel.
-  const PAGE_SCRIPT_BUILD = "0.6.5";
+  const PAGE_SCRIPT_BUILD = "0.6.6";
 
   // What the clicked object actually carried, for the panel's no-edge detail:
   // decides between "Unabated never priced it" and "the field moved". Space
@@ -668,6 +669,7 @@
       // The held API may belong to a grid that no longer exists; a rendered
       // cell always reaches the live ones. Probed once and reused below.
       const apis = allGridApis(api);
+      if (apis.length === 0) throw new Error("no odds grid on the page yet");
       for (const other of apis) {
         node = byKey(other);
         if (node) {
@@ -1000,6 +1002,21 @@
     locateLine(payload, 0);
   }
 
+  // The ticket outlives this script: content.js keeps it in storage while
+  // this copy dies with any navigation (one-click betting leaving the tab,
+  // Back, a tab reload or discard, an extension reload's takeover). Without
+  // this the panel showed "Not watching the line" for every ticket after
+  // such an event, with a live heartbeat and nothing to re-click for. The
+  // watcher is rebuilt from the stored ticket's identity; watchedRowNode
+  // finds the grid from the DOM and the row by event/bet type/period/number,
+  // so no grid API from the capture is needed.
+  function onResumeMessage(ticket) {
+    if (retired || !ticket || typeof ticket.capturedAt !== "number" || !ticket.watch) return;
+    if (watcher && watcher.ticket.capturedAt === ticket.capturedAt) return; // already watching it
+    startWatching(ticket, null);
+    console.info("[unabated-ticket] resumed watching", ticket.sideLabel, "captured", new Date(ticket.capturedAt).toLocaleTimeString());
+  }
+
   function retire() {
     retired = true;
     stopWatching();
@@ -1014,8 +1031,9 @@
     const data = event.data;
     if (!data || data.source !== MESSAGE_SOURCE) return;
     if (data.type === "takeover" && data.instanceId !== INSTANCE_ID && !retired) retire();
-    if (retired || data.type !== "locate") return;
-    onLocateMessage(data.payload);
+    if (retired) return;
+    if (data.type === "locate") onLocateMessage(data.payload);
+    if (data.type === "resume") onResumeMessage(data.payload);
   });
 
   // ---- click capture -------------------------------------------------------
@@ -1070,6 +1088,7 @@
     publishFilters();
   }
   post("takeover", { at: Date.now() });
+  post("resume_request", { at: Date.now() });
   heartbeat();
   intervals.push(setInterval(heartbeat, HEARTBEAT_MS));
   console.info("[unabated-ticket] page.js active on", window.location.href);

@@ -9,7 +9,8 @@
 //
 // Side effects: writes chrome.storage.local {ticket, error, watchStatus,
 // pageReady, booksFilter, locateResult}; forwards {locate} requests (row or
-// notification click) to page.js via window.postMessage. None on the page.
+// notification click) and the stored {ticket} (for the watcher to resume
+// after a navigation) to page.js via window.postMessage. None on the page.
 
 (function () {
   "use strict";
@@ -20,7 +21,7 @@
   window.__unabatedTicketContentActive = true;
 
   const MESSAGE_SOURCE = "unabated-ticket";
-  const HANDLED_TYPES = new Set(["ticket", "watch", "error", "ready", "filters", "located"]);
+  const HANDLED_TYPES = new Set(["ticket", "watch", "error", "ready", "filters", "located", "resume_request"]);
   // A locate request older than this is left alone (the tab it targeted may
   // have been reloaded long after the click).
   const LOCATE_MAX_AGE_MS = 90 * 1000;
@@ -90,7 +91,18 @@
     setSession({ locateResult: payload });
   }
 
-  const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch, ready: handleReady, filters: handleFilters, located: handleLocated };
+  // The stored ticket, handed to page.js so a freshly loaded copy resumes
+  // watching it (page.js dies with every navigation; the ticket does not).
+  // Offered once on load and again on request, since the two scripts load
+  // in no guaranteed order; page.js ignores a ticket it already watches.
+  function offerStoredTicket() {
+    chrome.storage.local.get("ticket", (stored) => {
+      if (chrome.runtime.lastError || !stored.ticket) return;
+      window.postMessage({ source: MESSAGE_SOURCE, type: "resume", payload: stored.ticket }, window.location.origin);
+    });
+  }
+
+  const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch, ready: handleReady, filters: handleFilters, located: handleLocated, resume_request: offerStoredTicket };
 
   function forwardLocate(locate) {
     if (!locate || typeof locate.at !== "number" || Date.now() - locate.at > LOCATE_MAX_AGE_MS) return;
@@ -111,6 +123,7 @@
       if (locate && result && result.key === locate.key && result.at >= locate.at) return;
       forwardLocate(locate);
     });
+    offerStoredTicket();
   } catch (_error) {
     // Extension context invalidated.
   }
