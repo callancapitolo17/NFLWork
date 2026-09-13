@@ -101,24 +101,36 @@ tab is running the capture script", reload the tab.
   page — an open Alts section mounts its own): a row whose entry for the
   book IS the line being resolved (capture: the clicked object or its
   number, on the entry or in its ladder; the watcher: the captured
-  number) beats every
-  shape signal, then a top-level row beats a child, a row carrying the
-  market's `bestLines` beats one without, and a row carrying this book's
-  `alternateLines` ladder beats a lone rung. The line-identity rank exists
-  because Unabated's CFB alt-lines view lists a market's rungs as sibling
-  TOP-LEVEL rows sharing one grid key (live 2026-09-12: eight Over rows
-  33.5 .. 56.5, each with `bestLines` and no ladder), which tie on every
-  shape signal — grid order then picked the 33.5 row for a click on 56.5,
-  the Row trace fired on every such capture, and the watcher's keyed
-  lookup could answer with any sibling. Capture classifies, prices and
-  watches against the best-ranked row that carries the book
-  (`ladderRowFor`); the watcher trusts its grid-key lookup only when it
-  answers with a row of the same shape carrying the captured line, and
-  otherwise re-ranks, requiring the book's entry as capture did. On such a
-  per-rung grid (`watch.perRungRows`: a sibling top-level row sharing the
-  pick's grid key carries the book at another number) an entry at another number is another rung, so
-  the watcher reports the captured rung off the board rather than a line
-  move. Picking a child is
+  number) beats every shape signal, then a top-level row beats a child, a
+  row carrying the market's `bestLines` beats one without, and a row
+  carrying this book's `alternateLines` ladder — counted by rung, not
+  array length — beats a lone rung. The line-identity rank exists because
+  Unabated's alt-lines views list a market's rungs as sibling TOP-LEVEL
+  rows sharing one grid key (live 2026-09-12, CFB UAPB@ALCN: eight Over
+  rows 33.5 .. 56.5 with `bestLines` and no ladder; NFL CHI@CAR: rung rows
+  next to a main row whose 25-rung ladder held the clicked -2.5, the -2.5
+  row's own entry carrying an alternateLines array with no rung in it),
+  which tie on every shape signal — grid order picked the 33.5 row for a
+  click on 56.5, the rungless array counted as a ladder and tied the -2.5
+  row with the main row, the Row trace fired on every such capture, and
+  the watcher's keyed lookup could answer with any sibling. Capture
+  classifies, prices and watches against the best-ranked row that carries
+  the book (`ladderRowFor`): on the NFL layout the main row, the ticket an
+  alt line; on the CFB layout the rung's own row. The watcher is anchored
+  on the captured NUMBER, never on which row answers: each tick trusts
+  the grid-key lookup only for a row of the same shape carrying that
+  number (its entry at it, or its ladder's rung — one rule,
+  `lineOnEntry`), otherwise re-ranks requiring the book's entry as capture
+  did, and reads the price at that number; a number gone from the entry
+  and its ladder reads off the board at the captured price. So a main
+  line whose number moves while the ladder keeps the old number reports
+  the price at the captured number, not "moved to" the new one — you bet
+  a number. `tests/page_rows.test.js` loads the real `page.js` into a vm
+  sandbox (it exposes its row-resolution internals only when the sandbox
+  sets `__unabatedTicketExposeInternals`) and replays both live grids, an
+  expanded Alts section and a plain main line; run it against an older
+  `page.js` with `PAGE_JS=<path>` to watch it reproduce the tie verbatim.
+  Picking a child is
   legitimate when a book prices no main line, so the shape is compared,
   never forced. Measured against the
   Alts row the rung read as a main line and the watcher followed the real
