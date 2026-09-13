@@ -99,8 +99,12 @@ tab is running the capture script", reload the tab.
   Until 0.6.6 nothing re-attached, so every ticket after such an event read
   "Not watching the line" under a live heartbeat with nothing to re-click
   for. A tab whose grid has not mounted yet reports "no odds grid on the
-  page yet" for a tick or two, then reads. Harness:
-  `tests/page_rows.test.js` (resume section).
+  page yet" for a tick or two, then reads. Not resumed: a tab on another
+  league (a second tab would otherwise post "wrong league" every 5 s), and
+  a ticket whose `eventStart` has passed. Two same-league tabs may both
+  watch; `content.js` drops a failed read while a good one from the last
+  7.5 s stands, so a tab on another game date cannot flap the banner.
+  Harness: `tests/page_rows.test.js` (resume section).
 - A click on an **alternate-line cell** works the same way: its `marketLine`
   is one of the main line's `alternateLines`, so the ticket carries
   `watch.altPoints` and the watcher re-finds that rung by points inside

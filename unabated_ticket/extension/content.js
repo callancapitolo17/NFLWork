@@ -68,12 +68,22 @@
     setSession({ booksFilter: { bookIds: payload.bookIds, url: payload.url, at: payload.at, lastError: null, lastErrorAt: null, debug: payload.debug || null } });
   }
 
+  // Two Unabated tabs can both watch the resumed ticket; a tab that reads
+  // the line outranks one that cannot (other game date, filtered row), so a
+  // failure is dropped while a good read from within the last interval and
+  // a half stands. Otherwise the panel would flap between the two every 5 s.
+  const GOOD_READ_OUTRANKS_MS = 7500;
+
   function handleWatch(payload) {
-    chrome.storage.local.get("ticket", (stored) => {
+    chrome.storage.local.get(["ticket", "watchStatus"], (stored) => {
       if (chrome.runtime.lastError) return;
       const ticket = stored.ticket;
       if (!ticket || ticket.capturedAt !== payload.capturedAt) return; // stale watcher
       if (payload.error) {
+        const last = stored.watchStatus;
+        const goodReadStands = last && !last.error && last.capturedAt === ticket.capturedAt
+          && Date.now() - last.seenAt < GOOD_READ_OUTRANKS_MS;
+        if (goodReadStands) return;
         setSession({ watchStatus: { capturedAt: ticket.capturedAt, seenAt: Date.now(), error: payload.error } });
         return;
       }

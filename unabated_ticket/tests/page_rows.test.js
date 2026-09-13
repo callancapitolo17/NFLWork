@@ -309,3 +309,15 @@ test("resume: a malformed or watch-less ticket, or one arriving before any captu
   page.deliver("resume", { capturedAt: Date.now() });
   assert.equal(page.watchTimers(), 0);
 });
+
+test("resume: a tab on another league, or a ticket whose game has started, is left alone", () => {
+  const ticket = storedTicketAfterCapture();
+  const otherLeague = loadPage("/cfb/odds", { gridRoots: [gridRoot(gridApi(nflGrid().nodes))] });
+  otherLeague.deliver("resume", ticket);
+  assert.equal(otherLeague.watchTimers(), 0, "a CFB tab must not watch an NFL ticket");
+  const started = loadPage("/nfl/odds", { gridRoots: [gridRoot(gridApi(nflGrid().nodes))] });
+  started.deliver("resume", { ...ticket, eventStart: new Date(Date.now() - 60000).toISOString() });
+  assert.equal(started.watchTimers(), 0, "a started game is not resumed");
+  started.deliver("resume", { ...ticket, eventStart: null });
+  assert.equal(started.watchTimers(), 1, "no start time known: resumed");
+});

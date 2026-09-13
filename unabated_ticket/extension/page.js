@@ -1010,9 +1010,17 @@
   // watcher is rebuilt from the stored ticket's identity; watchedRowNode
   // finds the grid from the DOM and the row by event/bet type/period/number,
   // so no grid API from the capture is needed.
+  // Not resumed: a ticket for a league this tab is not showing (a second
+  // tab on another league would otherwise post "wrong league" every 5 s
+  // against the tab that can read it), and one whose game has started (its
+  // pre-game line is gone; a scan every 5 s for it would never end).
   function onResumeMessage(ticket) {
     if (retired || !ticket || typeof ticket.capturedAt !== "number" || !ticket.watch) return;
     if (watcher && watcher.ticket.capturedAt === ticket.capturedAt) return; // already watching it
+    const shownLeague = leagueFromUrl();
+    if (ticket.league && shownLeague && shownLeague !== ticket.league) return;
+    const startMs = ticket.eventStart ? Date.parse(ticket.eventStart) : NaN;
+    if (Number.isFinite(startMs) && startMs <= Date.now()) return;
     startWatching(ticket, null);
     console.info("[unabated-ticket] resumed watching", ticket.sideLabel, "captured", new Date(ticket.capturedAt).toLocaleTimeString());
   }
