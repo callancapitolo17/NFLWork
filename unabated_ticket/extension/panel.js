@@ -415,7 +415,6 @@
     const watching = ticket.current && ticket.current.row ? ` Watching ${ticket.current.row}.` : "";
     view.rowTraceReason.textContent = `Row trace: ${reason}`;
     view.rowTraceDetail.textContent = `Script ${resolution.build}: ${resolution.trace}.${watching}`;
-    view.rowTrace.open = false;
   }
 
   // What the panel is telling you to put down now: the top-up when a position

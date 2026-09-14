@@ -162,7 +162,7 @@ tab is running the capture script", reload the tab.
   picked, an alt ticket whose watched number moved (it is re-found by
   number, so it cannot), or two rows tied at the best rank. An ordinary
   line move never shows it. It is collapsed to its reason ("Row trace: two
-  rows tied at the best rank"); open it for the candidates and the pick, and
+  grid rows tied for this market"); open it for the candidates and the pick, and
   send that with a screenshot if a capture ever follows the wrong rung again.
 
 ## Panel layout
@@ -183,9 +183,10 @@ the Ticket tab shows a **← Back to edges** link to it.
 
 The filter controls sit behind one chip that states the filter in words
 (`Football · FG · Moneyline/Spread/Total · 12 books · ≥1.0%`) and opens the
-drawer in place; sort and minimum edge stay out on the toolbar. Bankroll,
-Kelly multiplier and the bets service URL live behind the **⚙** at the right
-of the tab bar.
+drawer in place; sort and minimum edge stay out on the toolbar. Bankroll and
+the Kelly multiplier sit at the foot of the Ticket tab under **Sizing**, where
+the stake they size is; the **⚙** at the right of the tab bar jumps there from
+any tab. The bets service URL is on the Bets tab, with the venues it feeds.
 
 An Edges row is two columns: the pick, market, matchup and the book's line on
 the left, and a right rail carrying the **edge %** and the **stake**, so both
@@ -224,7 +225,8 @@ line that cannot be sized keeps a `—`, never a computed-looking `$0`.
 
 Settings (bankroll, Kelly multiplier) sit at the foot of the Ticket tab under
 **Sizing**, reachable from any tab via the ⚙, and persist in
-`chrome.storage.local`. Defaults 30000 and 0.25.
+`chrome.storage.local`. Defaults 30000 and 0.25. The bets service URL is on
+the Bets tab, under the venue strip it feeds.
 
 Copy puts one line on the clipboard:
 `Seattle Mariners -133 · 57.0¢ @ Novig | fair -139 · 58.2¢ | edge +1.89% | stake $188.55 | to win $141.77 | payout $330.32 | Texas Rangers @ Seattle Mariners · MLB`.

@@ -95,7 +95,6 @@ body {
 }
 .tabs button.active .count { background: var(--edge-strong); color: var(--ground); }
 .tabs .gear { margin-left: auto; font-size: 15px; padding: 10px 6px 8px; }
-.tabs .gear.active { border-bottom-color: transparent; }
 
 .bets-header {
   padding: 5px 12px; font-variant-numeric: tabular-nums;
@@ -128,7 +127,7 @@ body {
   border-top: 1px solid var(--border-soft);
 }
 .control-row { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
-.control-label { color: var(--muted); font-size: 11px; min-width: 52px; }
+.control-label { color: var(--muted); font-size: 11px; min-width: 52px; align-self: flex-start; padding-top: 4px; }
 .control-row label { font-size: 12.5px; }
 .control-inline { display: flex; align-items: center; gap: 6px; }
 .control-inline input { width: 60px; font: inherit; padding: 2px 4px; text-align: right; }

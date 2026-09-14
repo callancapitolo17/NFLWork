@@ -530,13 +530,23 @@
     return TIER_LABELS[tier] || tier;
   }
 
-  // The bet itself: what, how much, where — and the line's own number when it
-  // differs from the bet's, which is the whole point of those two tiers. No
-  // placed-at: it never told you which bet was which (user decision 2026-09-14).
+  // The line's number as the BET's side would write it. The row's number is in
+  // the row's frame, and on a spread the two sides are negatives of each other
+  // — printing "now +14" beside a bet on "Chicago -13.5" reads as a 27.5-point
+  // move in the wrong direction. Totals do not flip.
+  function linePointsAsBetSide(tier, line) {
+    if (tier !== "opposite" || lineBetType(line) !== "spread") return linePointsLabel(line);
+    return signedNumber(-line.points);
+  }
+
+  // The bet itself: what, how much, where — and where the line sits now when
+  // it has moved off the bet's number, which is the whole point of those two
+  // tiers. No placed-at: it never told you which bet was which (user decision
+  // 2026-09-14).
   function labelOf(tier, bet, line) {
     const parts = [describeBet(bet), formatStake(bet.stake), venueLabel(bet.venue)];
     const numberMoved = tier === "same_side" || (tier === "opposite" && !oppositeSameNumber(bet, line));
-    if (numberMoved) parts.push(`now ${linePointsLabel(line)}`);
+    if (numberMoved) parts.push(`now ${linePointsAsBetSide(tier, line)}`);
     return parts.join(" · ");
   }
 

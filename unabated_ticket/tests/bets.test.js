@@ -340,7 +340,7 @@ test("NFL slice: spread Chicago -13.5 is same_side on Chicago -14, opposite at a
   assert.equal(bets.matchBets(rows["Spread FG 0 -3"], records).matches[0].label, "Chicago -13.5 +150 · 40.0¢ · $80 · Kalshi · now -3");
   const opposite = bets.matchBets(rows["Spread FG 1 14"], records).matches[0];
   assert.equal(opposite.tier, "opposite");
-  assert.equal(opposite.label, "Chicago -13.5 +150 · 40.0¢ · $80 · Kalshi · now +14");
+  assert.equal(opposite.label, "Chicago -13.5 +150 · 40.0¢ · $80 · Kalshi · now -14");
   const sameGame = bets.matchBets(rows["Total FG 0 47"], records).matches[0];
   assert.equal(sameGame.tier, "same_game");
   assert.equal(sameGame.label, "Chicago -13.5 +150 · 40.0¢ · $80 · Kalshi");
@@ -385,7 +385,7 @@ test("CFB: every tier for the Chattanooga -5.5 bet, exact labels", () => {
   assert.equal(opposite.tier, "opposite");
   assert.equal(opposite.label, "Chattanooga -5.5 +138 · 42.0¢ · $168 · Kalshi");
   const oppositeOther = bets.matchBets(cfbRow({ sideIndex: 1, points: 6.5 }), records).matches[0];
-  assert.equal(oppositeOther.label, "Chattanooga -5.5 +138 · 42.0¢ · $168 · Kalshi · now +6.5");
+  assert.equal(oppositeOther.label, "Chattanooga -5.5 +138 · 42.0¢ · $168 · Kalshi · now -6.5");
   const sameGame = bets.matchBets(cfbRow({ betType: "Total", sideIndex: 0, points: 48.5 }), records).matches[0];
   assert.equal(sameGame.tier, "same_game");
   assert.equal(sameGame.label, "Chattanooga -5.5 +138 · 42.0¢ · $168 · Kalshi");
@@ -587,7 +587,7 @@ test("Novig: spread bid Chicago -13.5 is same_side on Chicago -14 and opposite a
   assert.equal(sameSide.label, "Chicago Bears -13.5 +150 · 40.0¢ · $80 · Novig · now -14");
   const opposite = bets.matchBets(rows["Spread FG 1 14"], records).matches[0];
   assert.equal(opposite.tier, "opposite");
-  assert.equal(opposite.label, "Chicago Bears -13.5 +150 · 40.0¢ · $80 · Novig · now +14");
+  assert.equal(opposite.label, "Chicago Bears -13.5 +150 · 40.0¢ · $80 · Novig · now -14");
 });
 
 test("Novig: the LAY of Chicago -13.5 is Carolina +13.5 — same_side on Carolina +14, opposite on Chicago -14", () => {
@@ -597,6 +597,12 @@ test("Novig: the LAY of Chicago -13.5 is Carolina +13.5 — same_side on Carolin
   assert.equal(sameSide.tier, "same_side");
   assert.equal(sameSide.label, "Carolina Panthers +13.5 -150 · 60.0¢ · $30 · Novig · now +14");
   assert.equal(bets.matchBets(rows["Spread FG 0 -14"], records).matches[0].tier, "opposite");
+});
+
+test("formatPlacedAt: Eastern month, day and 12-hour clock", () => {
+  assert.equal(bets.formatPlacedAt("2026-09-10T18:15:00Z"), "Sep 10 2:15 PM");
+  assert.equal(bets.formatPlacedAt("2026-01-15T18:00:00Z"), "Jan 15 1:00 PM");
+  assert.equal(bets.formatPlacedAt("not a date"), "unknown time");
 });
 
 test("Novig: a resting Under and a parlay leg flag the game; settled, void and closed orders never match", () => {
