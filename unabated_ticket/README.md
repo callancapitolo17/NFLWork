@@ -221,8 +221,8 @@ spells it `$120 already on the other side`). The Ticket's label says
 the same thing ("Bet" / "Add to your position" / "Already at full size"). A
 line that cannot be sized keeps a `—`, never a computed-looking `$0`.
 
-Settings (bankroll, Kelly multiplier, bets service URL) sit at the foot of the
-Ticket tab under **Sizing**, reachable from any tab via the ⚙, and persist in
+Settings (bankroll, Kelly multiplier) sit at the foot of the Ticket tab under
+**Sizing**, reachable from any tab via the ⚙, and persist in
 `chrome.storage.local`. Defaults 30000 and 0.25.
 
 Copy puts one line on the clipboard:

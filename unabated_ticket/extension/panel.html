@@ -139,9 +139,7 @@
       <h2 class="section-label">Sizing</h2>
       <label>Bankroll <input id="bankroll" type="number" min="1" step="1"></label>
       <label>Kelly multiplier <input id="multiplier" type="number" min="0.01" max="1" step="0.01"></label>
-      <label>Bets service <input id="bets-url" type="url" placeholder="http://127.0.0.1:8094"></label>
       <div id="settings-error" class="muted"></div>
-      <div id="bets-settings-error" class="muted"></div>
     </section>
   </section>
 
@@ -164,6 +162,10 @@
       <span class="cap" id="bets-risk-caption"></span>
     </div>
     <div class="venues" id="bets-sources"></div>
+    <div class="settings service-url">
+      <label>Bets service <input id="bets-url" type="url" placeholder="http://127.0.0.1:8094"></label>
+      <div id="bets-settings-error" class="muted"></div>
+    </div>
 
     <h2 class="section-label">Open <span id="bets-open-count" class="num"></span></h2>
     <ol id="bets-open" class="bets-list"></ol>
