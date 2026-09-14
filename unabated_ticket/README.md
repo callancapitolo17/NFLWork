@@ -51,8 +51,8 @@ tab is running the capture script", reload the tab.
   Unabated's one-click betting can open the book's deeplink on mouse-down and
   may navigate the tab away before a `click` ever fires. Unabated's own
   handler runs untouched afterwards. If the deeplink replaces the Unabated
-  tab, the ticket is already stored and the panel shows it with
-  "Not watching the line" (no tab left to watch).
+  tab, the ticket is already stored; the watcher resumes when an Unabated
+  tab loads again (Back, a reload), see below.
 - Fast path: fiber props. Fallback: `data-marketline-id` on the shell plus a
   `forEachNode` scan of every row's `sides`. If both fail the panel says
   **Could not read this cell** with the reason; it never shows a stake it
@@ -88,6 +88,24 @@ tab is running the capture script", reload the tab.
   new price and fair, and keeps the captured line for comparison. Off the
   board shows in red. If the Unabated tab is closed or navigated away the
   panel says **Not watching the line**.
+- **The watcher outlives the page.** `page.js` dies with every navigation
+  (one-click betting leaving the tab, Back, a tab reload or discard, an
+  extension reload's takeover) while the ticket stays in storage. On load
+  `page.js` posts `resume_request`; `content.js` answers with the stored
+  ticket (and offers it unasked once on its own load, since the two scripts
+  load in no guaranteed order) and `page.js` rebuilds the watcher from the
+  ticket's identity with no grid API — `watchedRowNode` finds the grid from
+  the DOM and the row by event, bet type, period, side, book and number.
+  Until 0.6.6 nothing re-attached, so every ticket after such an event read
+  "Not watching the line" under a live heartbeat with nothing to re-click
+  for. A tab whose grid has not mounted yet reports "no odds grid
+  reachable on the page" for a tick or two, then reads. Not resumed: a tab on another
+  league (a second tab would otherwise post "wrong league" every 5 s), and
+  a ticket whose `eventStart` (naive UTC on the grid row) has passed, and
+  an offer older than the capture the tab is already watching. Two same-league tabs may both
+  watch; `content.js` drops a failed read while a good one from the last
+  7.5 s stands, so a tab on another game date cannot flap the banner.
+  Harness: `tests/page_rows.test.js` (resume section).
 - A click on an **alternate-line cell** works the same way: its `marketLine`
   is one of the main line's `alternateLines`, so the ticket carries
   `watch.altPoints` and the watcher re-finds that rung by points inside
@@ -746,8 +764,11 @@ in red.
   reason text names which lookup failed.
 - **Panel did not open on click**: Chrome only auto-opens the side panel
   with a user gesture attached; click the toolbar icon once, it stays open.
-- **"Not watching the line"**: the Unabated tab is closed, navigated away,
-  or the row left the grid (filter change). Re-click the price.
+- **"Not watching the line"**: no Unabated tab is showing the line — the
+  tab is closed, on another league, or the row left the grid (filter
+  change, game off the board). A tab that merely reloaded or navigated
+  and came back resumes on its own within ~5 s; if the message stays with
+  the tab open on the right league, read the reason after the colon.
 - **Cannot size: Unabated has no edge at the new line**: the line moved to
   points Unabated has not priced yet. Wait a tick or re-click.
 - **Edges: "feed unavailable for CFB (HTTP 403)"**: Unabated blocked or moved
