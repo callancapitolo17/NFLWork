@@ -503,10 +503,10 @@ builds it once for the row, the Ticket block and the Copy text:
 
 To win and Payout describe the number shown above them, so a top-up prices
 the top-up and an at-size line shows no payout at all; the Copy line carries
-the same figure. Rows and cards carry a labelled **Related bets** block
-naming each position — a bet on that very line prints only what differs from
-the row ("Kalshi +138 · 42.0¢ · $300 · Sep 10 2:15 PM"), another market or
-the other side names itself — capped at three with "+N more on this game".
+the same figure. Rows and cards carry a labelled **Related bets** block naming each position in
+the same sentence the Ticket banner uses — "You bet this: Chattanooga -5.5
++138 · 42.0¢ · $168 @ Kalshi · Sep 11 1:14 PM", "You are on the OTHER
+side: …" — capped at three with "+N more on this game".
 A `game` badge is a plain marker: another market on the game does not change
 how this line is sized.
 
@@ -713,8 +713,7 @@ freshness colours at the 5 / 60 min bounds, the per-venue rows (unconfigured,
 failed poll, never fetched), the service status texts, the "sources
 unavailable" rule, the header line, the banner's 5-line cut, the badge
 text and kind (held / against / game), `stakeAdvice` (none / add / at size /
-reverse with the net), `relatedLines` (compact drops what the row already
-states, full keeps the sentence), the stored + fresh merge (newest
+reverse with the net), `relatedLines` (one entry per match, tier and label), the stored + fresh merge (newest
 per id, a venue's ok pull authoritative, keys filled, old settled pruned),
 the ticket → line shape, and settings sanitising.
 

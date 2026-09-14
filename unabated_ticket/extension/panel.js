@@ -835,12 +835,12 @@
   }
 
   // The bets already on this game, as a labelled section of the row rather
-  // than a loose line. A bet on this very line prints only what differs from
-  // the row (venue, its entry price, when); anything else names itself.
+  // than a loose line. Every line names the bet and how it relates to this
+  // line; past three the rest are a count, as the Ticket banner does it.
   const RELATED_LINES_ON_A_ROW = 3;
 
-  function relatedBlock(flag, compact) {
-    const all = betsView.relatedLines(flag, compact);
+  function relatedBlock(flag) {
+    const all = betsView.relatedLines(flag);
     if (!all.length) return null;
     const lines = all.slice(0, RELATED_LINES_ON_A_ROW);
     const block = document.createElement("div");
@@ -929,7 +929,7 @@
     fillStakeCell(stake, row);
     rail.append(pct, stake);
 
-    return [main, rail, ...[relatedBlock(row.bet, true)].filter(Boolean)];
+    return [main, rail, ...[relatedBlock(row.bet)].filter(Boolean)];
   }
 
   // A line inside a card's expander: price and edge only.

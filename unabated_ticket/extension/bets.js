@@ -515,13 +515,6 @@
     return lineBetType(line) === "spread" ? signedNumber(line.points) : `${line.points}`;
   }
 
-  // The same match in one line, for a row that already states the pick.
-  function compactLabelOf(tier, bet, line) {
-    if (tier !== "same_line") return labelOf(tier, bet, line);
-    const price = bet.price == null ? "" : ` ${priceBoth(bet.price)}`;
-    return `${venueLabel(bet.venue)}${price} · ${formatStake(bet.stake)} · ${formatPlacedAt(bet.placedAt)}`;
-  }
-
   function labelOf(tier, bet, line) {
     const what = describeBet(bet);
     const where = `${formatStake(bet.stake)} @ ${venueLabel(bet.venue)}`;
@@ -551,7 +544,7 @@
         continue;
       }
       const tier = tierOf(bet, line);
-      matches.push({ tier, bet, label: labelOf(tier, bet, line), compactLabel: compactLabelOf(tier, bet, line) });
+      matches.push({ tier, bet, label: labelOf(tier, bet, line) });
     }
     matches.sort((a, b) => TIER_RANK[a.tier] - TIER_RANK[b.tier] || (b.bet.stake ?? 0) - (a.bet.stake ?? 0));
     return { matches, unmatched };

@@ -211,15 +211,11 @@
     return `${words.verb} ${words.bet}, ${held}${words.note ? ` (${words.note})` : ""}`;
   }
 
-  // The related bets for one line, for the block a row or the ticket shows.
-  // `compact` uses the short label a row can carry (the row already states the
-  // pick); the ticket keeps the full sentence.
-  function relatedLines(flag, compact) {
+  // The related bets for one line: the same sentence on a row and on the
+  // Ticket, each naming what the bet was and how it relates to this line.
+  function relatedLines(flag) {
     const matches = flag && Array.isArray(flag.matches) ? flag.matches : [];
-    return matches.map((match) => ({
-      tier: match.tier,
-      text: compact && match.compactLabel ? match.compactLabel : match.label,
-    }));
+    return matches.map((match) => ({ tier: match.tier, text: match.label }));
   }
 
   // Venues whose latest service poll succeeded: the payload is then the whole

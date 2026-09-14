@@ -152,20 +152,19 @@ test("stakeAdvice: none, add the difference, at size when held covers the stake,
   assert.deepEqual(view.stakeAdvice(500, exposure(300, 200)).kind, "add");
 });
 
-test("relatedLines: compact drops what the row already states, full keeps the sentence", () => {
+test("relatedLines: one line per match, each naming the bet and its tier", () => {
   const flag = {
     tier: "same_line",
     matches: [
-      { tier: "same_line", label: "You bet this: Chattanooga -5.5 +138 · 42.0¢ · $300 @ Kalshi · Sep 10 2:15 PM", compactLabel: "Kalshi +138 · 42.0¢ · $300 · Sep 10 2:15 PM" },
-      { tier: "opposite", label: "You are on the OTHER side: Eastern Kentucky +5.5 -150 · 60.0¢ · $200 @ Kalshi", compactLabel: "You are on the OTHER side: Eastern Kentucky +5.5 -150 · 60.0¢ · $200 @ Kalshi" },
+      { tier: "same_line", label: "You bet this: Chattanooga -5.5 +138 · 42.0¢ · $300 @ Kalshi · Sep 10 2:15 PM" },
+      { tier: "opposite", label: "You are on the OTHER side: Eastern Kentucky +5.5 -150 · 60.0¢ · $200 @ Kalshi" },
     ],
   };
-  assert.deepEqual(view.relatedLines(flag, true).map((line) => line.text), [
-    "Kalshi +138 · 42.0¢ · $300 · Sep 10 2:15 PM",
-    "You are on the OTHER side: Eastern Kentucky +5.5 -150 · 60.0¢ · $200 @ Kalshi",
+  assert.deepEqual(view.relatedLines(flag), [
+    { tier: "same_line", text: "You bet this: Chattanooga -5.5 +138 · 42.0¢ · $300 @ Kalshi · Sep 10 2:15 PM" },
+    { tier: "opposite", text: "You are on the OTHER side: Eastern Kentucky +5.5 -150 · 60.0¢ · $200 @ Kalshi" },
   ]);
-  assert.equal(view.relatedLines(flag, false)[0].text, "You bet this: Chattanooga -5.5 +138 · 42.0¢ · $300 @ Kalshi · Sep 10 2:15 PM");
-  assert.deepEqual(view.relatedLines(null, true), []);
+  assert.deepEqual(view.relatedLines(null), []);
 });
 
 test("mergeServicePayload: fresh wins on the same id, team keys are filled, old settled bets are pruned", () => {
