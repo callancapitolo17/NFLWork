@@ -487,23 +487,27 @@ both are dollars risked at every venue, so they compare directly with the
 Kelly stake (`bets.exposureOf`, `betsview.stakeAdvice`):
 
 The wording is the same three numbers in the same order everywhere (user
-choice 2026-09-11): **wagered** what you hold on this side (or "against" when
-it is on the other side), **target** the Kelly stake, **bet** the number to
-act on. `betsview.stakeAdviceWords` builds it once for the row, the Ticket
-block and the Copy text:
+choice 2026-09-11, reworded 2026-09-13): the **verb** says what the number
+is — `add` when a position is already down, `bet` otherwise — and under it
+what is **held** and what **full size** is. `betsview.stakeAdviceWords`
+builds it once for the row, the Ticket block and the Copy text:
 
 | You hold | Stake column | Ticket stake block |
 |---|---|---|
-| nothing | `$500` | — |
-| $300 same side, Kelly $500 | `bet $200` over "wagered $300 → target $500" | "wagered $300 → target $500, bet **$200**" |
-| $600 same side, Kelly $520 | `bet $0` over "wagered $600 → target $520" (muted) | "wagered $600 → target $520, bet **$0**" |
-| $200 other side, Kelly $500 | `bet $500` over "wagered $200 against → target $500 (net $300 on this side)" | red "wagered $200 against → target $500, bet **$500** (net $300 on this side)" |
-| same game only | `$500` | — (the banner still lists the bet) |
+| nothing | `bet $500.00` | "Bet" · **$500.00** |
+| $300 same side, Kelly $500 | `add $200` over "$300 held · full size $500" | "Add to your position" · **$200** · "$300 already held · full size $500" |
+| $600 same side, Kelly $520 | `bet $0` over "$600 held · full size $520" (muted) | "Already at full size" · **$0** · same line |
+| $200 other side, Kelly $500 | `bet $500` over "$200 on the other side · net $300" | red "$200 already on the other side · net $300 on this side" |
+| same game only | `bet $500.00` | — (the banner still lists the bet) |
 
-Held and against rows (and cards) carry a dim line naming the position:
-"you hold Texas A&M -38.5 -110 · $300 · Kalshi · Sep 10 2:15 PM". A `game`
-badge is a plain marker — another market on the game does not change how
-this line is sized.
+To win and Payout describe the number shown above them, so a top-up prices
+the top-up and an at-size line shows no payout at all; the Copy line carries
+the same figure. Rows and cards carry a labelled **Related bets** block
+naming each position — a bet on that very line prints only what differs from
+the row ("Kalshi +138 · 42.0¢ · $300 · Sep 10 2:15 PM"), another market or
+the other side names itself — capped at three with "+N more on this game".
+A `game` badge is a plain marker: another market on the game does not change
+how this line is sized.
 
 A Kalshi NO on a team market is the other team **or a tie** (NFL/CFB/soccer);
 it matches as that team and the label says so ("NO Eagles ≈ Cowboys or
@@ -708,7 +712,8 @@ freshness colours at the 5 / 60 min bounds, the per-venue rows (unconfigured,
 failed poll, never fetched), the service status texts, the "sources
 unavailable" rule, the header line, the banner's 5-line cut, the badge
 text and kind (held / against / game), `stakeAdvice` (none / add / at size /
-reverse with the net), the position lines, the stored + fresh merge (newest
+reverse with the net), `relatedLines` (compact drops what the row already
+states, full keeps the sentence), the stored + fresh merge (newest
 per id, a venue's ok pull authoritative, keys filled, old settled pruned),
 the ticket → line shape, and settings sanitising.
 
@@ -780,9 +785,9 @@ a red Novig row with its error, two "no source configured"), the open and
 unmatched lists with their reasons, the Ticket banner for every tier
 (moneyline both sides, NO with the tie caveat, spread same-side and
 other-side-at-a-different-number, full-game total as same_game, 1H total
-same_line), `held $N` / `against $N` / `game` badges with their position
-lines and sized stakes ("bet $200" over "wagered $300 → target $500") on cards and
-rows, the exposure sort, the ticket's held / other-side / at-size block,
+same_line), `held $N` / `against $N` / `game` badges with their Related
+bets block and sized stakes ("add $200" over "$300 held · full size $500") on
+cards and rows, the exposure sort, the ticket's held / other-side / at-size block,
 settings and payload persistence, a stale source turning
 the row red and raising the Ticket warning while the banner keeps the last
 bets, the service going away (red header, "unreachable since", records

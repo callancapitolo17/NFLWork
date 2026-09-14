@@ -177,14 +177,13 @@
   }
 
   // The advice as words, the same on the row, the Ticket block and the Copy
-  // text: "wagered $350 → target $600, bet $250" (user choice 2026-09-11: the
-  // same three numbers in the same order every time). `wagered` is what you
-  // hold on this side, or "against" when it is on the other side; `bet` is
-  // the number to act on; `net` only appears when an against position is
-  // being cancelled.
-  //   {have, target, bet, note}  as display strings; `note` null unless there is a net line
-  // verb:  what the bet number IS — "add" when topping up a position, "bet"
-  //        otherwise. have/target: what is already down and the full Kelly size.
+  // text. `verb` says what the bet number IS — "add" when topping up a
+  // position, "bet" otherwise — because "$121 of $241 target" read as though
+  // $121 were the whole bet (user choice 2026-09-13). `have` is what is
+  // already down (on this side, or on the other when `against`), `target` the
+  // full Kelly size, `bet` the number to act on, `note` the net only when an
+  // against position is being cancelled.
+  //   {verb, have, target, bet, note, against}  display strings; `note` null unless there is a net line
   function stakeAdviceWords(advice) {
     const money = (dollars) => bets.formatStake(Math.round(dollars * 100) / 100);
     if (!advice || advice.kind === "none") return null;

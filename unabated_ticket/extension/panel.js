@@ -518,9 +518,6 @@
     return line ? ` (${line})` : "";
   }
 
-  // Under the Kelly stake, the same words as the Edges row: "wagered $350 →
-  // target $600, bet $250", the bet number large; red when the position held
-  // is on the other side. Returns the advice.
   // Under the stake, the same words as the Edges rail: what is already down
   // and what full size is. The big number above it is what to act on now, and
   // the label says which ("Bet" or "Add to your position").
