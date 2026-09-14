@@ -15,6 +15,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
+// A zone west of UTC, so a naive UTC timestamp read as local time lands
+// hours late and the started-game gate below fails loudly (it passed in UTC).
+process.env.TZ = "America/Los_Angeles";
+
 const PAGE_JS = process.env.PAGE_JS || path.join(__dirname, "..", "extension", "page.js");
 
 // `page.window` is the sandbox: `posted` collects every window.postMessage
@@ -261,7 +265,11 @@ function storedTicketAfterCapture() {
   const page = loadPage();
   const { nodes, clicked, rungRow } = nflGrid();
   const ticket = capture(page, gridApi(nodes), rungRow, clicked);
-  return JSON.parse(JSON.stringify(ticket)); // structured clone, as storage hands it back
+  const stored = JSON.parse(JSON.stringify(ticket)); // structured clone, as storage hands it back
+  // Kickoff a day out in the grid's naive-UTC format, so the started-game
+  // gate never depends on when the suite runs (the fixture's own date passed).
+  stored.eventStart = new Date(Date.now() + 86400000).toISOString().slice(0, 19);
+  return stored;
 }
 
 test("a freshly loaded page.js asks content.js for the stored ticket", () => {
@@ -281,7 +289,7 @@ test("resume: the watcher is rebuilt from the stored ticket with no grid API and
   assert.equal(read.price, 182);
 });
 
-test("resume: a second offer of the same ticket does not restart the watcher; a different ticket replaces it", () => {
+test("resume: a second offer of the same ticket does not restart the watcher; a newer ticket replaces it, an older one does not", () => {
   const ticket = storedTicketAfterCapture();
   const { nodes } = nflGrid();
   const page = loadPage("/nfl/odds", { gridRoots: [gridRoot(gridApi(nodes))] });
@@ -290,6 +298,8 @@ test("resume: a second offer of the same ticket does not restart the watcher; a 
   assert.equal(page.watchTimers(), 1);
   page.deliver("resume", { ...ticket, capturedAt: ticket.capturedAt + 1 });
   assert.equal(page.watchTimers(), 2);
+  page.deliver("resume", ticket);
+  assert.equal(page.watchTimers(), 2, "an older ticket read from storage must not replace a newer capture");
 });
 
 test("resume: a tab whose grid has not mounted yet says so, then reads once it has", () => {
@@ -297,7 +307,7 @@ test("resume: a tab whose grid has not mounted yet says so, then reads once it h
   const roots = [];
   const page = loadPage("/nfl/odds", { gridRoots: roots });
   page.deliver("resume", ticket);
-  assert.throws(() => page.readWatchedLine(), /no odds grid on the page yet/);
+  assert.throws(() => page.readWatchedLine(), /no odds grid reachable on the page/);
   roots.push(gridRoot(gridApi(nflGrid().nodes)));
   assert.equal(page.readWatchedLine().price, 182);
 });
@@ -318,6 +328,10 @@ test("resume: a tab on another league, or a ticket whose game has started, is le
   const started = loadPage("/nfl/odds", { gridRoots: [gridRoot(gridApi(nflGrid().nodes))] });
   started.deliver("resume", { ...ticket, eventStart: new Date(Date.now() - 60000).toISOString() });
   assert.equal(started.watchTimers(), 0, "a started game is not resumed");
+  // The grid's own format: naive UTC, one hour ago.
+  const naiveHourAgo = new Date(Date.now() - 3600000).toISOString().slice(0, 19);
+  started.deliver("resume", { ...ticket, eventStart: naiveHourAgo });
+  assert.equal(started.watchTimers(), 0, `naive UTC ${naiveHourAgo} read as local time`);
   started.deliver("resume", { ...ticket, eventStart: null });
   assert.equal(started.watchTimers(), 1, "no start time known: resumed");
 });
