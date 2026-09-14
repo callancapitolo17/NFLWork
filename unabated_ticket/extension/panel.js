@@ -493,7 +493,7 @@
       div.className = `bet-match tier-${match.tier}${match.tier === "opposite" ? " bad" : match.tier === "same_game" ? " game" : ""}`;
       const kind = document.createElement("span");
       kind.className = "k";
-      kind.textContent = match.tier === "opposite" ? "other side" : match.tier === "same_game" ? "same game" : "you hold";
+      kind.textContent = betsLib.tierLabel(match.tier);
       const text = document.createElement("span");
       text.textContent = match.label;
       div.append(kind, text);
@@ -850,11 +850,18 @@
     head.textContent = `Related bets · ${all.length}`;
     block.append(head, ...lines.map((line) => {
       const div = document.createElement("div");
-      div.textContent = line.text;
+      div.className = `related-line tier-${line.tier}`;
+      const tag = document.createElement("span");
+      tag.className = "related-tag";
+      tag.textContent = line.tag;
+      const text = document.createElement("span");
+      text.textContent = line.text;
+      div.append(tag, text);
       return div;
     }));
     if (all.length > lines.length) {
       const more = document.createElement("div");
+      more.className = "related-more";
       more.textContent = `+${all.length - lines.length} more on this game (Bets tab)`;
       block.append(more);
     }

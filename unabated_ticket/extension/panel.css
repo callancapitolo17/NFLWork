@@ -225,7 +225,17 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
 .related-head {
   font: 600 9.5px system-ui, sans-serif; letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
 }
-.related-block div:not(.related-head) { font-size: 11.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+.related-line {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px; align-items: baseline;
+  font-size: 11.5px; color: var(--ink-2); overflow-wrap: anywhere;
+}
+.related-tag {
+  font: 600 9.5px system-ui, sans-serif; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--edge-mid); white-space: nowrap;
+}
+.related-line.tier-opposite .related-tag { color: var(--against-fg); }
+.related-line.tier-same_game .related-tag { color: var(--muted); }
+.related-more { font-size: 11.5px; color: var(--muted); }
 
 .edge-row .group-more {
   grid-column: 1 / -1; margin-top: 6px; justify-self: start;

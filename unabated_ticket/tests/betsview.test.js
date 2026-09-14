@@ -152,17 +152,19 @@ test("stakeAdvice: none, add the difference, at size when held covers the stake,
   assert.deepEqual(view.stakeAdvice(500, exposure(300, 200)).kind, "add");
 });
 
-test("relatedLines: one line per match, each naming the bet and its tier", () => {
+test("relatedLines: a tag for the tier and the bet itself, one entry per match", () => {
   const flag = {
     tier: "same_line",
     matches: [
-      { tier: "same_line", label: "You bet this: Chattanooga -5.5 +138 · 42.0¢ · $300 @ Kalshi · Sep 10 2:15 PM" },
-      { tier: "opposite", label: "You are on the OTHER side: Eastern Kentucky +5.5 -150 · 60.0¢ · $200 @ Kalshi" },
+      { tier: "same_line", label: "Chattanooga -5.5 +138 · 42.0¢ · $300 · Kalshi" },
+      { tier: "opposite", label: "Eastern Kentucky +5.5 -150 · 60.0¢ · $200 · Kalshi · now +6.5" },
+      { tier: "same_game", label: "1H Under 22.5 -104 · 51.0¢ · $255 · Kalshi" },
     ],
   };
   assert.deepEqual(view.relatedLines(flag), [
-    { tier: "same_line", text: "You bet this: Chattanooga -5.5 +138 · 42.0¢ · $300 @ Kalshi · Sep 10 2:15 PM" },
-    { tier: "opposite", text: "You are on the OTHER side: Eastern Kentucky +5.5 -150 · 60.0¢ · $200 @ Kalshi" },
+    { tier: "same_line", tag: "this line", text: "Chattanooga -5.5 +138 · 42.0¢ · $300 · Kalshi" },
+    { tier: "opposite", tag: "other side", text: "Eastern Kentucky +5.5 -150 · 60.0¢ · $200 · Kalshi · now +6.5" },
+    { tier: "same_game", tag: "game", text: "1H Under 22.5 -104 · 51.0¢ · $255 · Kalshi" },
   ]);
   assert.deepEqual(view.relatedLines(null), []);
 });

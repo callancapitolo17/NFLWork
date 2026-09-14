@@ -211,11 +211,11 @@
     return `${words.verb} ${words.bet}, ${held}${words.note ? ` (${words.note})` : ""}`;
   }
 
-  // The related bets for one line: the same sentence on a row and on the
-  // Ticket, each naming what the bet was and how it relates to this line.
+  // The related bets for one line: a tag for how it relates and the bet
+  // itself, the same on a row and on the Ticket.
   function relatedLines(flag) {
     const matches = flag && Array.isArray(flag.matches) ? flag.matches : [];
-    return matches.map((match) => ({ tier: match.tier, text: match.label }));
+    return matches.map((match) => ({ tier: match.tier, tag: bets.tierLabel(match.tier), text: match.label }));
   }
 
   // Venues whose latest service poll succeeded: the payload is then the whole

@@ -515,16 +515,29 @@
     return lineBetType(line) === "spread" ? signedNumber(line.points) : `${line.points}`;
   }
 
+  // How a bet relates to the line it matched. The words are a TAG the panel
+  // renders beside the label, not a sentence in front of it: the block has a
+  // heading and a colour, so "You are on the OTHER side:" was three quarters
+  // of the line saying what a red chip says (user decision 2026-09-14).
+  const TIER_LABELS = {
+    same_line: "this line",
+    same_side: "same side",
+    opposite: "other side",
+    same_game: "game",
+  };
+
+  function tierLabel(tier) {
+    return TIER_LABELS[tier] || tier;
+  }
+
+  // The bet itself: what, how much, where — and the line's own number when it
+  // differs from the bet's, which is the whole point of those two tiers. No
+  // placed-at: it never told you which bet was which (user decision 2026-09-14).
   function labelOf(tier, bet, line) {
-    const what = describeBet(bet);
-    const where = `${formatStake(bet.stake)} @ ${venueLabel(bet.venue)}`;
-    if (tier === "same_line") return `You bet this: ${what} · ${where} · ${formatPlacedAt(bet.placedAt)}`;
-    if (tier === "same_side") return `You have ${what} (this is ${linePointsLabel(line)})`;
-    if (tier === "opposite") {
-      const differentNumber = oppositeSameNumber(bet, line) ? "" : " at a different number";
-      return `You are on the OTHER side: ${what} · ${where}${differentNumber}`;
-    }
-    return `You have a bet on this game: ${what} · ${where}`;
+    const parts = [describeBet(bet), formatStake(bet.stake), venueLabel(bet.venue)];
+    const numberMoved = tier === "same_side" || (tier === "opposite" && !oppositeSameNumber(bet, line));
+    if (numberMoved) parts.push(`now ${linePointsLabel(line)}`);
+    return parts.join(" · ");
   }
 
   // ---- public API ------------------------------------------------------------
@@ -644,7 +657,7 @@
     TIE_CAVEAT, GAME_SERIES, RETENTION_DAYS_DEFAULT,
     normalizeKalshi, parseEventSuffix, centsToAmerican,
     matchBets, annotateRows, exposureOf, unmatchedReasons, pruneForRetention, dedupeByNativeId, resolveTeamKeys,
-    describeBet, formatPlacedAt, formatStake,
+    describeBet, formatPlacedAt, formatStake, tierLabel,
   };
 
   if (typeof module !== "undefined" && module.exports) {
