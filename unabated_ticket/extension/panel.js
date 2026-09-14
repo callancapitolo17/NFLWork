@@ -64,6 +64,7 @@
     errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
     pageStatus: el("page-status"),
+    rowTraceReason: el("row-trace-reason"), rowTraceDetail: el("row-trace-detail"),
     tabs: el("tabs"), tabTicket: el("tab-ticket"), tabEdges: el("tab-edges"), edgesCount: el("edges-count"),
     edgesToolbar: el("edges-toolbar"), edgesControls: el("edges-controls"),
     filtersToggle: el("filters-toggle"), filtersSummary: el("filters-summary"),
@@ -412,7 +413,9 @@
     view.rowTrace.hidden = !reason;
     if (!reason) return;
     const watching = ticket.current && ticket.current.row ? ` Watching ${ticket.current.row}.` : "";
-    view.rowTrace.textContent = `Row trace (${reason}; script ${resolution.build}): ${resolution.trace}.${watching}`;
+    view.rowTraceReason.textContent = `Row trace: ${reason}`;
+    view.rowTraceDetail.textContent = `Script ${resolution.build}: ${resolution.trace}.${watching}`;
+    view.rowTrace.open = false;
   }
 
   // What the panel is telling you to put down now: the top-up when a position

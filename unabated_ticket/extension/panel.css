@@ -287,6 +287,10 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 .error .side { color: var(--bad-fg); }
 /* The capture detail is one long field dump; it must wrap, not push the panel sideways. */
 #error-detail { overflow-wrap: anywhere; }
+/* A diagnostic, not the bet: one line unless you open it. */
+.row-trace { margin: 0 0 10px; font-size: 11.5px; color: var(--muted); }
+.row-trace summary { cursor: pointer; color: var(--warn-fg); font-weight: 600; }
+#row-trace-detail { margin-top: 5px; overflow-wrap: anywhere; }
 
 .bets-banner { display: grid; gap: 4px; margin: 4px 0 2px; }
 .bet-match {

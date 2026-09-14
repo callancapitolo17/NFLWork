@@ -161,8 +161,9 @@ tab is running the capture script", reload the tab.
   doubt — the watcher reading a row of a different shape than capture
   picked, an alt ticket whose watched number moved (it is re-found by
   number, so it cannot), or two rows tied at the best rank. An ordinary
-  line move never shows it. Send that line with a screenshot if a capture
-  ever follows the wrong rung again.
+  line move never shows it. It is collapsed to its reason ("Row trace: two
+  rows tied at the best rank"); open it for the candidates and the pick, and
+  send that with a screenshot if a capture ever follows the wrong rung again.
 
 ## Panel layout
 
