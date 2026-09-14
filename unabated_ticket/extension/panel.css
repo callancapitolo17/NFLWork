@@ -247,18 +247,20 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
 .group-line .gl-edge { font-family: var(--figure); color: var(--edge-mid); font-weight: 600; }
 .group-line .gl-stake { display: block; font-family: var(--figure); color: var(--muted); }
 
-/* Multi-select dropdown: a <details> whose panel floats over the list. */
-.dropdown { position: relative; font-size: 12.5px; }
+/* Multi-select book picker: a <details> that opens IN FLOW. It used to float
+   over the list, but the header is its own scroll container now, so an
+   absolutely positioned panel was clipped at the header's edge. */
+.dropdown { font-size: 12.5px; flex: 1; min-width: 0; }
 .dropdown summary { cursor: pointer; padding: 3px 8px; border: 1px solid var(--border); border-radius: 4px; list-style: none; user-select: none; }
 .dropdown summary::-webkit-details-marker { display: none; }
 .dropdown summary::after { content: " \25BE"; color: var(--muted); }
+.dropdown[open] summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .dropdown-panel {
-  position: absolute; left: 0; top: calc(100% + 4px); z-index: 10; width: 300px; max-width: calc(100vw - 40px);
-  padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
-  background: var(--ground); color: var(--ink); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  padding: 6px 8px; border: 1px solid var(--border); border-top: 0;
+  border-radius: 0 0 6px 6px; background: var(--surface-2); color: var(--ink);
 }
 .dropdown-actions { display: flex; gap: 6px; margin-bottom: 6px; }
-.books-list { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; max-height: 240px; overflow: auto; font-size: 12px; }
+.books-list { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; max-height: min(240px, 32vh); overflow: auto; font-size: 12px; }
 .books-list label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
 button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer; }
 
