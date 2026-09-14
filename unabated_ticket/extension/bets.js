@@ -149,6 +149,15 @@
     return value > 0 ? `+${value}` : `${value}`;
   }
 
+  // Every price in the panel reads in both worlds: the American number and the
+  // prediction-market cents the exchanges actually quote (panel.js fmtPriceBoth,
+  // kelly.bookProbOf). A bet record carries only the American price it was
+  // placed at, so the cents are derived from it.
+  function priceBoth(american) {
+    const decimal = american > 0 ? 1 + american / 100 : 1 + 100 / Math.abs(american);
+    return `${signedNumber(american)} \u00b7 ${(100 / decimal).toFixed(1)}\u00a2`;
+  }
+
   function roundCents(dollars) {
     return Math.round(dollars * 100) / 100;
   }
@@ -490,7 +499,7 @@
     } else {
       pick = betTeamName(bet, bet.side);
     }
-    const price = bet.price == null ? "" : ` ${signedNumber(bet.price)}`;
+    const price = bet.price == null ? "" : ` ${priceBoth(bet.price)}`;
     const parlay = bet.isParlayLeg ? " (parlay leg)" : "";
     return `${period}${pick}${price}${parlay}`;
   }
@@ -506,16 +515,39 @@
     return lineBetType(line) === "spread" ? signedNumber(line.points) : `${line.points}`;
   }
 
+  // How a bet relates to the line it matched. The words are a TAG the panel
+  // renders beside the label, not a sentence in front of it: the block has a
+  // heading and a colour, so "You are on the OTHER side:" was three quarters
+  // of the line saying what a red chip says (user decision 2026-09-14).
+  const TIER_LABELS = {
+    same_line: "this line",
+    same_side: "same side",
+    opposite: "other side",
+    same_game: "game",
+  };
+
+  function tierLabel(tier) {
+    return TIER_LABELS[tier] || tier;
+  }
+
+  // The line's number as the BET's side would write it. The row's number is in
+  // the row's frame, and on a spread the two sides are negatives of each other
+  // — printing "now +14" beside a bet on "Chicago -13.5" reads as a 27.5-point
+  // move in the wrong direction. Totals do not flip.
+  function linePointsAsBetSide(tier, line) {
+    if (tier !== "opposite" || lineBetType(line) !== "spread") return linePointsLabel(line);
+    return signedNumber(-line.points);
+  }
+
+  // The bet itself: what, how much, where — and where the line sits now when
+  // it has moved off the bet's number, which is the whole point of those two
+  // tiers. No placed-at: it never told you which bet was which (user decision
+  // 2026-09-14).
   function labelOf(tier, bet, line) {
-    const what = describeBet(bet);
-    const where = `${formatStake(bet.stake)} @ ${venueLabel(bet.venue)}`;
-    if (tier === "same_line") return `You bet this: ${what} · ${where} · ${formatPlacedAt(bet.placedAt)}`;
-    if (tier === "same_side") return `You have ${what} (this is ${linePointsLabel(line)})`;
-    if (tier === "opposite") {
-      const differentNumber = oppositeSameNumber(bet, line) ? "" : " at a different number";
-      return `You are on the OTHER side: ${what} · ${where}${differentNumber}`;
-    }
-    return `You have a bet on this game: ${what} · ${where}`;
+    const parts = [describeBet(bet), formatStake(bet.stake), venueLabel(bet.venue)];
+    const numberMoved = tier === "same_side" || (tier === "opposite" && !oppositeSameNumber(bet, line));
+    if (numberMoved) parts.push(`now ${linePointsAsBetSide(tier, line)}`);
+    return parts.join(" · ");
   }
 
   // ---- public API ------------------------------------------------------------
@@ -635,7 +667,7 @@
     TIE_CAVEAT, GAME_SERIES, RETENTION_DAYS_DEFAULT,
     normalizeKalshi, parseEventSuffix, centsToAmerican,
     matchBets, annotateRows, exposureOf, unmatchedReasons, pruneForRetention, dedupeByNativeId, resolveTeamKeys,
-    describeBet, formatPlacedAt, formatStake,
+    describeBet, formatPlacedAt, formatStake, tierLabel,
   };
 
   if (typeof module !== "undefined" && module.exports) {

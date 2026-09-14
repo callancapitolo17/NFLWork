@@ -161,8 +161,38 @@ tab is running the capture script", reload the tab.
   doubt — the watcher reading a row of a different shape than capture
   picked, an alt ticket whose watched number moved (it is re-found by
   number, so it cannot), or two rows tied at the best rank. An ordinary
-  line move never shows it. Send that line with a screenshot if a capture
-  ever follows the wrong rung again.
+  line move never shows it. It is collapsed to its reason ("Row trace: two
+  grid rows tied for this market"); open it for the candidates and the pick, and
+  send that with a screenshot if a capture ever follows the wrong rung again.
+
+## Panel layout
+
+The panel is a fixed header over one scrolling pane per tab. The header holds
+the tab bar, the bets header line, and (on the Edges tab) the filter toolbar;
+everything else scrolls inside its own tab. The header stops at 60% of the
+panel and scrolls itself past that, so the filter drawer and the settings
+block — which live in it — stay reachable in a short window instead of
+squeezing the pane to nothing. **This is what keeps your place in
+the Edges list**: the three tabs used to share the document's scroller, so
+hiding one collapsed the scroll height and Chrome clamped `scrollTop` to 0 —
+every capture (which brings the Ticket tab forward on its own) sent the list
+back to the top. Each pane now scrolls on its own, `showTab` remembers and
+restores each pane's offset, and `renderEdges` preserves it across the
+scanner's rebuild every few seconds. The row you last clicked keeps a tint, and
+the Ticket tab shows a **← Back to edges** link to it.
+
+The filter controls sit behind one chip that states the filter in words
+(`Football · FG · Moneyline/Spread/Total · 12 books · ≥1.0%`) and opens the
+drawer in place; sort and minimum edge stay out on the toolbar. Bankroll and
+the Kelly multiplier sit at the foot of the Ticket tab under **Sizing**, where
+the stake they size is; the **⚙** at the right of the tab bar jumps there from
+any tab. The bets service URL is on the Bets tab, with the venues it feeds.
+
+An Edges row is two columns: the pick, market, matchup and the book's line on
+the left, and a right rail carrying the **edge %** and the **stake**, so both
+line up in one column down the list. Edge magnitude also reads as colour in
+three tiers (≥4%, 2–4%, under 2%) on the figure and on the row's left stripe,
+and the time to first pitch warms to amber inside 12 hours and red inside 2.
 
 ## Stake
 
@@ -184,8 +214,19 @@ exchange's exact `sourcePrice` so they match Unabated's screen, while the
 stake uses the American price because that is what Unabated's edge was
 computed from.
 
-Settings (bankroll, Kelly multiplier) sit at the bottom of the panel and
-persist in `chrome.storage.local`. Defaults 30000 and 0.25.
+The figure shown is the number to act on, with the verb on it: `bet $281`
+when nothing is held on the market, `add $121` when a position is already
+down, and under it what you hold and what full size is
+(`$120 held · full size $241`). Against a position on the other side it reads
+`bet $192` over `$120 on the other side · net $72 on this side` (the Ticket
+spells it `$120 already on the other side`). The Ticket's label says
+the same thing ("Bet" / "Add to your position" / "Already at full size"). A
+line that cannot be sized keeps a `—`, never a computed-looking `$0`.
+
+Settings (bankroll, Kelly multiplier) sit at the foot of the Ticket tab under
+**Sizing**, reachable from any tab via the ⚙, and persist in
+`chrome.storage.local`. Defaults 30000 and 0.25. The bets service URL is on
+the Bets tab, under the venue strip it feeds.
 
 Copy puts one line on the clipboard:
 `Seattle Mariners -133 · 57.0¢ @ Novig | fair -139 · 58.2¢ | edge +1.89% | stake $188.55 | to win $141.77 | payout $330.32 | Texas Rangers @ Seattle Mariners · MLB`.
@@ -300,7 +341,9 @@ its best edge; under it the market, matchup and start; then the **best
 line**, which is the highest Kelly stake (stake = edge / (decimal − 1)
 already taxes longshots), so a -110 main line at +5% outranks a +944 rung at
 +6%; then `▸ 2 books · 7 lines (+6)`, which opens the other books and rungs.
-Every line is clickable (locate) as before. The count badge counts cards,
+The card is its best line — it carries that line's own number, and a rung
+behind the expander names its own when it differs. Every line is clickable
+(locate) as before. The count badge counts cards,
 sort orders cards through their best line, and `feed.groupEdges` (pure,
 node-tested) does the grouping; the panel passes the stake as the rank.
 Turning the toggle off gives the flat list.
@@ -448,23 +491,31 @@ both are dollars risked at every venue, so they compare directly with the
 Kelly stake (`bets.exposureOf`, `betsview.stakeAdvice`):
 
 The wording is the same three numbers in the same order everywhere (user
-choice 2026-09-11): **wagered** what you hold on this side (or "against" when
-it is on the other side), **target** the Kelly stake, **bet** the number to
-act on. `betsview.stakeAdviceWords` builds it once for the row, the Ticket
-block and the Copy text:
+choice 2026-09-11, reworded 2026-09-13): the **verb** says what the number
+is — `add` when a position is already down, `bet` otherwise — and under it
+what is **held** and what **full size** is. `betsview.stakeAdviceWords`
+builds it once for the row, the Ticket block and the Copy text:
 
 | You hold | Stake column | Ticket stake block |
 |---|---|---|
-| nothing | `$500` | — |
-| $300 same side, Kelly $500 | `bet $200` over "wagered $300 → target $500" | "wagered $300 → target $500, bet **$200**" |
-| $600 same side, Kelly $520 | `bet $0` over "wagered $600 → target $520" (muted) | "wagered $600 → target $520, bet **$0**" |
-| $200 other side, Kelly $500 | `bet $500` over "wagered $200 against → target $500 (net $300 on this side)" | red "wagered $200 against → target $500, bet **$500** (net $300 on this side)" |
-| same game only | `$500` | — (the banner still lists the bet) |
+| nothing | `bet $500.00` | "Bet" · **$500.00** |
+| $300 same side, Kelly $500 | `add $200` over "$300 held · full size $500" | "Add to your position" · **$200** · "$300 already held · full size $500" |
+| $600 same side, Kelly $520 | `bet $0` over "$600 held · full size $520" (muted) | "Already at full size" · **$0** · same line |
+| $200 other side, Kelly $500 | `bet $500` over "$200 on the other side · net $300" | red "$200 already on the other side · net $300 on this side" |
+| same game only | `bet $500.00` | — (the banner still lists the bet) |
 
-Held and against rows (and cards) carry a dim line naming the position:
-"you hold Texas A&M -38.5 -110 · $300 · Kalshi · Sep 10 2:15 PM". A `game`
-badge is a plain marker — another market on the game does not change how
-this line is sized.
+To win and Payout describe the number shown above them, so a top-up prices
+the top-up and an at-size line shows no payout at all; the Copy line carries
+the same figure. Rows and cards carry a labelled **Related bets** block, one line per position:
+a tag for how it relates — `this line` / `same side` / `other side` (red) /
+`game` — then the bet itself, "Chattanooga -5.5 +138 · 42.0¢ · $168 · Kalshi",
+plus `· now -6.5` when the line has moved off the number you bet. Capped at
+three with "+N more on this game". The Ticket banner uses the same four tags
+and the same labels. No placed-at: it never told you which bet was which, and
+it was a third of the line (user decision 2026-09-14). The Bets tab still
+shows it, where the bets are the subject.
+A `game` badge is a plain marker: another market on the game does not change
+how this line is sized.
 
 A Kalshi NO on a team market is the other team **or a tie** (NFL/CFB/soccer);
 it matches as that team and the label says so ("NO Eagles ≈ Cowboys or
@@ -481,11 +532,18 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   bet matches; under the Kelly stake, the held / add / other-side block
   above. The warning strip adds "Bet sources unavailable" when no venue has
   reported in the last hour (the flags may then be missing).
-- *Edges tab*: the badge, position line and sized stake on each row, or on
-  each card from its best line. Sort **by my exposure** puts held and
+- *Edges tab*: the badge, the **Related bets** block and the sized stake on
+  each row, or on each card from its best line. The block is labelled and
+  ruled (red when a position is against you); a bet on that very line prints
+  only what differs from the row — venue, its entry price, when — because the
+  row already states the pick, while another market or the other side names
+  itself. The Ticket shows the same matches with the full sentence. Sort **by my exposure** puts held and
   against lines first. Nothing is filtered; alerts skip only lines you
   already hold at size (nothing to act on) and fire as before otherwise.
-- *Bets tab*: the per-venue table (last pull, green under 5 min, amber
+- *Bets tab*: opens on **total at risk** across open bets, with the venue
+  count and, when a venue reported a bet without a stake, how many are not in
+  that total. Then one line per venue (a dot for freshness, what it holds, how
+  old the last pull is) rather than a table: last pull green under 5 min, amber
   under 60, red past that or on a failed poll with its error; venues with
   no source yet read "no source configured", a source still on its first
   poll reads "no completed poll yet"; a page-sourced venue past the hour
@@ -493,8 +551,9 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   tab to refresh", or "Novig tab is open — open its Portfolio screen to
   refresh" when the tab was seen in the last 5 min; the service itself shows
   "unreachable since …" in red with the last records still listed), the
-  service URL, the open bets (venue, bet, stake, placed), and the
-  **unmatched** list — every open bet no board line matches, with why: team
+  open bets (venue, bet, stake, placed — each with a green left edge when
+  the board matched it, red when it did not, so a problem bet is visible in
+  the open list too), and the **unmatched** list — every open bet no board line matches, with why: team
   not recognised (the raw name, so `teams.js` can grow), ambiguous game, no
   event on the board yet, league not on the scanner, not a game market
   (futures, the bots' combos), unknown Kalshi series.
@@ -661,7 +720,7 @@ freshness colours at the 5 / 60 min bounds, the per-venue rows (unconfigured,
 failed poll, never fetched), the service status texts, the "sources
 unavailable" rule, the header line, the banner's 5-line cut, the badge
 text and kind (held / against / game), `stakeAdvice` (none / add / at size /
-reverse with the net), the position lines, the stored + fresh merge (newest
+reverse with the net), `relatedLines` (a tag and the label per match), the stored + fresh merge (newest
 per id, a venue's ok pull authoritative, keys filled, old settled pruned),
 the ticket → line shape, and settings sanitising.
 
@@ -733,9 +792,9 @@ a red Novig row with its error, two "no source configured"), the open and
 unmatched lists with their reasons, the Ticket banner for every tier
 (moneyline both sides, NO with the tie caveat, spread same-side and
 other-side-at-a-different-number, full-game total as same_game, 1H total
-same_line), `held $N` / `against $N` / `game` badges with their position
-lines and sized stakes ("bet $200" over "wagered $300 → target $500") on cards and
-rows, the exposure sort, the ticket's held / other-side / at-size block,
+same_line), `held $N` / `against $N` / `game` badges with their Related
+bets block and sized stakes ("add $200" over "$300 held · full size $500") on
+cards and rows, the exposure sort, the ticket's held / other-side / at-size block,
 settings and payload persistence, a stale source turning
 the row red and raising the Ticket warning while the banner keeps the last
 bets, the service going away (red header, "unreachable since", records
