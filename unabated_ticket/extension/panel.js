@@ -1353,8 +1353,13 @@
   }
 
   view.settingsToggle.addEventListener("click", () => {
-    view.settings.hidden = !view.settings.hidden;
-    view.settingsToggle.classList.toggle("active", !view.settings.hidden);
+    showTab("ticket");
+    chrome.storage.local.set({ activeTab: state.activeTab });
+    view.settings.scrollIntoView({ block: "end", behavior: "smooth" });
+    view.settings.classList.remove("flash");
+    // Restart the animation: the class has to leave the element and come back.
+    void view.settings.offsetWidth;
+    view.settings.classList.add("flash");
   });
 
   // The drawer, its chip's caret and its aria state are one thing; leaving the

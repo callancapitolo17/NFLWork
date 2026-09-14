@@ -85,13 +85,6 @@
       <div id="edges-settings-error" class="muted"></div>
     </div>
 
-    <section class="settings" id="settings" hidden>
-      <label>Bankroll <input id="bankroll" type="number" min="1" step="1"></label>
-      <label>Kelly multiplier <input id="multiplier" type="number" min="0.01" max="1" step="0.01"></label>
-      <label>Bets service <input id="bets-url" type="url" placeholder="http://127.0.0.1:8094"></label>
-      <div id="settings-error" class="muted"></div>
-      <div id="bets-settings-error" class="muted"></div>
-    </section>
   </header>
 
   <section id="tab-ticket" class="tabpane" hidden>
@@ -141,6 +134,15 @@
       <div class="muted">Click a price on tools.unabated.com to build a ticket.</div>
       <div class="muted" id="page-status"></div>
     </main>
+
+    <section class="settings" id="settings">
+      <h2 class="section-label">Sizing</h2>
+      <label>Bankroll <input id="bankroll" type="number" min="1" step="1"></label>
+      <label>Kelly multiplier <input id="multiplier" type="number" min="0.01" max="1" step="0.01"></label>
+      <label>Bets service <input id="bets-url" type="url" placeholder="http://127.0.0.1:8094"></label>
+      <div id="settings-error" class="muted"></div>
+      <div id="bets-settings-error" class="muted"></div>
+    </section>
   </section>
 
   <section id="tab-edges" class="tabpane" hidden>

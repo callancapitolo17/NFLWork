@@ -221,8 +221,9 @@ spells it `$120 already on the other side`). The Ticket's label says
 the same thing ("Bet" / "Add to your position" / "Already at full size"). A
 line that cannot be sized keeps a `—`, never a computed-looking `$0`.
 
-Settings (bankroll, Kelly multiplier, bets service URL) sit behind the ⚙ in
-the tab bar and persist in `chrome.storage.local`. Defaults 30000 and 0.25.
+Settings (bankroll, Kelly multiplier, bets service URL) sit at the foot of the
+Ticket tab under **Sizing**, reachable from any tab via the ⚙, and persist in
+`chrome.storage.local`. Defaults 30000 and 0.25.
 
 Copy puts one line on the clipboard:
 `Seattle Mariners -133 · 57.0¢ @ Novig | fair -139 · 58.2¢ | edge +1.89% | stake $188.55 | to win $141.77 | payout $330.32 | Texas Rangers @ Seattle Mariners · MLB`.

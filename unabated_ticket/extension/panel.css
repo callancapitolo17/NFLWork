@@ -135,12 +135,20 @@ body {
 input[type="checkbox"] { accent-color: var(--edge-strong); }
 
 .settings {
-  display: grid; gap: 6px; padding: 8px 12px 12px;
-  border-top: 1px solid var(--border-soft); background: var(--surface-2);
+  display: grid; gap: 6px; margin-top: 18px; padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
+.settings .section-label { margin: 0 0 2px; }
 .settings label { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
 .settings input { width: 130px; font: inherit; padding: 3px 6px; text-align: right; }
 .settings input[type="url"] { width: 180px; text-align: left; }
+/* The gear jumps here from another tab; the flash says where it landed. */
+.settings.flash { animation: settings-flash 1.2s ease-out; }
+@keyframes settings-flash {
+  from { background: color-mix(in srgb, var(--edge-strong) 18%, transparent); }
+  to { background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .settings.flash { animation: none; } }
 
 /* ---- panes ---- */
 .tabpane { overflow-y: auto; min-width: 0; padding: 0 0 16px; }
