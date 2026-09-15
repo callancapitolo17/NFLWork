@@ -495,11 +495,12 @@ test("unmatchedReasons: every open bet with no match, with why", () => {
   const board = [cfbRow(), cfbRow({ eventId: 1 }), cfbRow({ eventId: 2, eventStartMs: Date.parse("2026-09-13T20:00:00Z") })];
   const reasons = new Map(bets.unmatchedReasons(records, board).map((u) => [u.bet.id, u.reason]));
   assert.equal(reasons.get("kalshi:KXNCAAFSPREAD-26SEP12CHATEKY-CHAT6:yes"), "ambiguous game");
-  assert.equal(reasons.get("kalshi:KXNCAAFTOTAL-26SEP12RICEND-60:yes"), "no event on the board yet");
+  // A Kalshi bet carries its event suffix, so its reason names both tiers (#118 step 3).
+  assert.equal(reasons.get("kalshi:KXNCAAFTOTAL-26SEP12RICEND-60:yes"), "by id: Kalshi event 26SEP12RICEND not on any board ladder; by name: no event on the board yet");
   assert.equal(reasons.get("kalshi:KXNFLGAME-26SEP20PITNE-NE:yes"), "league not on the scanner");
   assert.equal(reasons.get("kalshi:KXNFLOROTY-27-MWAS:yes"), "not a game market");
   assert.equal(reasons.get("kalshi:KXNBAGAME-26OCT20LALBOS-BOS:yes"), "unknown Kalshi series");
-  assert.equal(reasons.get("kalshi:synthetic:unknown-team"), "team not recognised (Springfield)");
+  assert.equal(reasons.get("kalshi:synthetic:unknown-team"), "by id: Kalshi event 26SEP12LINWMOSU not on any board ladder; by name: team not recognised (Springfield)");
   assert.equal(reasons.has("kalshi:KXNCAAFSPREAD-26SEP05MOSUTXAM-TXAM39:yes"), false); // settled: not a problem
   assert.equal(reasons.has("kalshi:KXNEXTTEAMNFL-26MCROSBY-LV:yes"), false); // closed
   const unambiguous = new Map(bets.unmatchedReasons(records, [cfbRow()]).map((u) => [u.bet.id, u.reason]));
@@ -705,4 +706,198 @@ test("BetOnline: a matched bet whose team name teams.js does not know is not lis
   assert.deepEqual(bets.unmatchedReasons([bet], Object.values(rows)), []);
   const off = bets.resolveTeamKeys([betonlineRecord({ awayTeam: "Chi Bears (BOL spelling)", rotation: 999 })])[0];
   assert.equal(bets.unmatchedReasons([off], Object.values(rows))[0].reason, "team not recognised (Chi Bears (BOL spelling))");
+});
+
+// ---- venue id joins (#118 step 3) ------------------------------------------------
+// fixtures/v2_venue_ids_slice.json: real CFB event 123742, Duquesne (927) @
+// Washington State (717), 2026-09-19T19:30Z. Its Kalshi rungs carry the
+// suffix 26SEP19DUQWSU; Novig's rung on its -35.5 main number carries outcome
+// 01a0a05e-…-9e502e4e98d5. Records below spell the teams the way no team
+// table knows and leave both keys null: only the id can carry them.
+
+const CFB_LEAGUE = 2;
+const DUQ_WSU_SUFFIX = "26SEP19DUQWSU";
+const NOVIG_WSU_MINUS_35_5 = "01a0a05e-e864-7b73-9b80-9e502e4e98d5";
+
+function venueState() {
+  const snapshot = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "v2_venue_ids_slice.json"), "utf8"));
+  return feed.mergeStates([feed.parseSnapshot(snapshot, { leagueId: CFB_LEAGUE })]);
+}
+
+// Main-line rows keyed "<betType> <sideIndex> <book id>".
+function venueRows(state) {
+  const board = state || venueState();
+  const rows = {};
+  for (const line of Object.values(board.lines)) {
+    if (line.isAlt) continue;
+    const row = feed.describeLine(line, board);
+    rows[`${row.betType} ${row.sideIndex} ${row.book.id}`] = row;
+  }
+  return rows;
+}
+
+// The Kalshi bet as normalizeKalshi builds it from the real grammar, with the
+// team names then made unrecognisable.
+function kalshiDuqWsu(ticker, side, floorStrike, options) {
+  const opts = options || {};
+  const seriesEvent = ticker.split("-").slice(0, 2).join("-");
+  const [record] = bets.normalizeKalshi({
+    fills: [fill(ticker, side, 100, 0.5, "2026-09-15T15:00:00Z")],
+    positions: [position(ticker, side === "yes" ? 100 : -100, 50)],
+    markets: { [ticker]: market(ticker, seriesEvent, floorStrike == null ? "structured" : "greater", floorStrike, ticker) },
+    events: { [seriesEvent]: { event_ticker: seriesEvent, title: "Duquesne vs Washington St.: Spread", sub_title: opts.subTitle || "DUQ vs WSU (Sep 19)" } },
+    fetchedAt: FETCHED_AT,
+  });
+  return Object.assign(record, { awayTeam: "Duquesne Dukes (venue spelling)", homeTeam: "Wazzu (venue spelling)", awayKey: null, homeKey: null },
+    "venueIds" in opts ? { venueIds: opts.venueIds } : {});
+}
+
+function novigDuqWsu(overrides) {
+  return Object.assign({
+    id: "novig:o-wsu", source: "novig_api", venue: "novig", rotation: null, price: -110, stake: 55, toWin: 50, contracts: 100,
+    placedAt: "2026-09-15T15:00:00Z", status: "open", closedAt: null, isParlayLeg: false, parlayId: null, legIndex: null, legCount: null,
+    approx: [], sourceFetchedAt: FETCHED_AT,
+    venueIds: { marketId: "m-1", outcomeId: NOVIG_WSU_MINUS_35_5, eventId: "e-1", gameId: "g-1" },
+    league: "cfb", eventStart: "2026-09-19T19:30:00.000Z", eventDate: "2026-09-19",
+    awayTeam: "Duquesne Dukes (venue spelling)", homeTeam: "Wazzu (venue spelling)", awayKey: null, homeKey: null,
+    betType: "spread", period: "FG", side: "home", points: -35.5, unmatchable: null,
+  }, overrides);
+}
+
+test("id join: a Kalshi spread whose team names resolve nowhere matches its game on the event suffix alone", () => {
+  const rows = venueRows();
+  const lines = Object.values(rows);
+  const bet = kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 35.5);
+  assert.equal(bet.venueIds.eventTicker, "KXNCAAFSPREAD-26SEP19DUQWSU");
+  const rowWithoutIds = Object.assign({}, rows["Spread 1 105"], { venueIds: null });
+  assert.equal(bets.matchBets(rowWithoutIds, [bet]).matches.length, 0); // no ids on the board: the names alone cannot place it
+  // Tier from the bet's own number: WSU -35.5 is the Novig main number, Kalshi's main sits at -38.5.
+  assert.equal(bets.matchBets(rows["Spread 1 89"], [bet], { lines }).matches[0].tier, "same_line");
+  const kalshiRow = bets.matchBets(rows["Spread 1 105"], [bet], { lines }).matches[0];
+  assert.equal(kalshiRow.tier, "same_side");
+  assert.ok(kalshiRow.label.endsWith("· now -38.5"));
+  assert.equal(bets.matchBets(rows["Spread 0 89"], [bet], { lines }).matches[0].tier, "opposite");
+  assert.equal(bets.matchBets(rows["Total 0 105"], [bet], { lines }).matches[0].tier, "same_game");
+  assert.deepEqual(bets.unmatchedReasons([bet], lines), []);
+  assert.equal(bets.annotateRows(lines, [bet]).filter((flag) => flag.tier).length, lines.length);
+  // The NO side of the same contract is Duquesne +35.5: placed off the contract's own strike, not a name.
+  const no = kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "no", 35.5);
+  assert.deepEqual([no.side, no.points], ["away", 35.5]);
+  assert.equal(bets.matchBets(rows["Spread 0 89"], [no], { lines }).matches[0].tier, "same_line");
+  assert.equal(bets.matchBets(rows["Spread 1 89"], [no], { lines }).matches[0].tier, "opposite");
+});
+
+test("id join: a Kalshi moneyline joins through the suffix its event's spread and total rungs carry", () => {
+  const rows = venueRows();
+  const lines = Object.values(rows);
+  const bet = kalshiDuqWsu("KXNCAAFGAME-26SEP19DUQWSU-WSU", "yes", null);
+  assert.equal(bet.betType, "moneyline");
+  // Joined, but no rung carries a moneyline contract to say which side an unkeyed bet is on.
+  assert.equal(bets.matchBets(rows["Moneyline 1 105"], [bet], { lines }).matches[0].tier, "same_game");
+  assert.deepEqual(bets.unmatchedReasons([bet], lines), []);
+  // With its teams keyed (one of them is enough to place the side) the tier is exact.
+  const keyed = Object.assign({}, bet, { homeKey: "cfb:717" });
+  assert.equal(bets.matchBets(rows["Moneyline 1 105"], [keyed], { lines }).matches[0].tier, "same_line");
+});
+
+test("id join: a Novig spread joins on its outcome id; a LAY of that outcome is tiered as the other side", () => {
+  const rows = venueRows();
+  const lines = Object.values(rows);
+  const back = novigDuqWsu();
+  assert.equal(bets.matchBets(rows["Spread 1 89"], [back], { lines }).matches[0].tier, "same_line");
+  assert.equal(bets.matchBets(rows["Spread 0 89"], [back], { lines }).matches[0].tier, "opposite");
+  // The lay's outcome id names WSU -35.5, the side it is against: the tier reads the bet, not the id's target.
+  const lay = novigDuqWsu({ id: "novig:o-lay", side: "away", points: 35.5 });
+  assert.equal(bets.matchBets(rows["Spread 0 89"], [lay], { lines }).matches[0].tier, "same_line");
+  assert.equal(bets.matchBets(rows["Spread 1 89"], [lay], { lines }).matches[0].tier, "opposite");
+});
+
+test("id join: a main line the changes stream moved off the id's number is same_side, not same_line", () => {
+  const state = venueState();
+  const main = state.lines["420942308:ms89:si1:tid717"];
+  feed.applyChanges(state, { lines: [{ ...main, points: -36.5, price: -105, sequenceNumber: main.sequenceNumber + 1, eventStart: null }] });
+  // The id map still says -35.5 (it rebuilds only with the snapshot); the row is at -36.5 now.
+  assert.equal(state.events[123742].venueIds.novigOutcomes[NOVIG_WSU_MINUS_35_5].points, -35.5);
+  const rows = venueRows(state);
+  const match = bets.matchBets(rows["Spread 1 89"], [novigDuqWsu()], { lines: Object.values(rows) }).matches[0];
+  assert.equal(match.tier, "same_side");
+  assert.ok(match.label.endsWith("· now -36.5"));
+});
+
+test("id join: a suffix on two board events is ambiguous — named, never a guess", () => {
+  const rows = venueRows();
+  const twin = Object.assign({}, rows["Spread 1 105"], { eventId: 999999 });
+  const lines = Object.values(rows).concat([twin]);
+  const bet = kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 35.5);
+  const result = bets.matchBets(rows["Spread 1 105"], [bet], { lines });
+  assert.equal(result.matches.length, 0);
+  assert.equal(result.unmatched[0].reason, "ambiguous game (Kalshi event 26SEP19DUQWSU on 2 board events)");
+  assert.deepEqual(bets.unmatchedReasons([bet], lines).map((u) => u.reason), ["ambiguous game (Kalshi event 26SEP19DUQWSU on 2 board events)"]);
+});
+
+test("id join: when the id and the team names point at different events, the id wins", () => {
+  const rows = venueRows();
+  // Another event on the same day whose teams ARE the bet's resolved names, and no venue ids.
+  const decoy = Object.assign({}, rows["Spread 1 105"], { eventId: 555555, awayTeamId: 11, homeTeamId: 12, venueIds: null });
+  const lines = Object.values(rows).concat([decoy]);
+  const bet = Object.assign(kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 35.5), { awayKey: "cfb:11", homeKey: "cfb:12" });
+  assert.equal(bets.matchBets(decoy, [bet], { lines: [decoy] }).matches.length, 1); // the name rule alone would take the decoy
+  assert.equal(bets.matchBets(decoy, [bet], { lines }).matches.length, 0);
+  assert.equal(bets.matchBets(rows["Spread 1 89"], [bet], { lines }).matches[0].tier, "same_line");
+  const flags = bets.annotateRows(lines, [bet]);
+  assert.equal(flags[lines.length - 1].tier, null);
+  assert.deepEqual(bets.unmatchedReasons([bet], lines), []);
+});
+
+test("id join: malformed, missing or other-league ids are no id — never an error, never a join", () => {
+  const rows = venueRows();
+  const lines = Object.values(rows);
+  const malformedKalshi = [undefined, null, "", "KXNCAAFSPREAD_26SEP19DUQWSU", "-26SEP19DUQWSU", "KXNCAAFSPREAD-26sep19duqwsu", 42]
+    .map((eventTicker) => kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 35.5, { venueIds: { marketTicker: "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", eventTicker } }))
+    .map((record, index) => Object.assign(record, { id: `kalshi:bad${index}` }));
+  const malformedNovig = ["01A0A05E-E864-7B73-9B80-9E502E4E98D5", "oc-sp-chi", 7, null]
+    .map((outcomeId, index) => novigDuqWsu({ id: `novig:bad${index}`, venueIds: { outcomeId } }));
+  const noMap = [novigDuqWsu({ id: "novig:nomap", venueIds: null }), novigDuqWsu({ id: "novig:string", venueIds: "01a0a05e" })];
+  const otherLeague = novigDuqWsu({ id: "novig:nfl", league: "nfl" });
+  const all = malformedKalshi.concat(malformedNovig, noMap, [otherLeague]);
+  assert.equal(bets.matchBets(rows["Spread 1 89"], all, { lines }).matches.length, 0);
+  const reasons = bets.unmatchedReasons(all, lines).map((u) => u.reason);
+  assert.equal(reasons.length, all.length);
+  // No usable id: the plain name reason, no "by id" tier.
+  assert.equal(reasons[0], "team not recognised (Duquesne Dukes (venue spelling), Wazzu (venue spelling))");
+  assert.ok(reasons.slice(0, all.length - 1).every((reason) => !reason.startsWith("by id")));
+  // An id on an event of another league is no join: the NFL bet is not placed on the CFB game.
+  assert.ok(reasons[all.length - 1].startsWith("by id: Novig outcome not on any board ladder; by name:"));
+  // A row with a malformed map is skipped, not thrown on.
+  const brokenRow = Object.assign({}, rows["Spread 1 89"], { venueIds: { kalshiEventSuffixes: "26SEP19DUQWSU", novigOutcomes: 3 } });
+  assert.equal(bets.matchBets(brokenRow, [novigDuqWsu()], { lines: [brokenRow] }).matches.length, 0);
+});
+
+test("id join: unmatched reasons name the id tier and the name tier that both missed", () => {
+  const rows = venueRows();
+  const lines = Object.values(rows);
+  const kalshiElsewhere = kalshiDuqWsu("KXNCAAFSPREAD-26SEP26ELONURI-URI7", "yes", 6.5, { subTitle: "ELON vs URI (Sep 26)" });
+  const novigOffLadder = novigDuqWsu({ id: "novig:off", venueIds: { outcomeId: "01a0a05e-e864-7b73-9b80-000000000000" }, eventDate: "2026-09-26", eventStart: null });
+  const novigMoneyline = novigDuqWsu({ id: "novig:ml", betType: "moneyline", points: null, eventDate: "2026-09-26", eventStart: null });
+  const reasons = bets.unmatchedReasons([kalshiElsewhere, novigOffLadder, novigMoneyline], lines).map((u) => u.reason);
+  assert.deepEqual(reasons, [
+    "by id: Kalshi event 26SEP26ELONURI not on any board ladder; by name: team not recognised (Duquesne Dukes (venue spelling), Wazzu (venue spelling))",
+    "by id: Novig outcome not on any board ladder; by name: team not recognised (Duquesne Dukes (venue spelling), Wazzu (venue spelling))",
+    // Moneylines have no rungs, so a Novig moneyline has no id tier to report.
+    "team not recognised (Duquesne Dukes (venue spelling), Wazzu (venue spelling))",
+  ]);
+});
+
+test("id join: BetOnline records have no venue ids and stay on the name / rotation path on an id-carrying board", () => {
+  const rows = venueRows();
+  const lines = Object.values(rows);
+  const bet = betonlineRecord({
+    league: "cfb", awayTeam: "Duquesne", homeTeam: "Washington State", awayKey: "cfb:927", homeKey: "cfb:717", rotation: null,
+    side: "home", points: -35.5, placedAt: "2026-09-15T15:00:00Z", approx: ["game_date_unknown"],
+    // A stray Kalshi-shaped map is ignored: only Kalshi and Novig records join by id.
+    venueIds: { eventTicker: "KXNCAAFSPREAD-26SEP19DUQWSU", outcomeId: NOVIG_WSU_MINUS_35_5 },
+  });
+  assert.equal(bets.matchBets(rows["Spread 1 89"], [bet], { lines }).matches[0].tier, "same_line");
+  const lost = Object.assign({}, bet, { awayKey: null, awayTeam: "Duq (BOL spelling)" });
+  assert.deepEqual(bets.unmatchedReasons([lost], lines).map((u) => u.reason), ["team not recognised (Duq (BOL spelling))"]);
 });

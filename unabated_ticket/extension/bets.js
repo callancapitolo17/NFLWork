@@ -11,7 +11,11 @@
 //   Lines  the ticket / edge-row shape feed.describeLine builds: league,
 //          awayTeam, homeTeam, eventStartMs, eventId, betType ("Moneyline" /
 //          "Spread" / "Total"), period ("FG", "1H", ...), sideIndex (0 = away
-//          or Over, 1 = home or Under), points, rotation.
+//          or Over, 1 = home or Under), points, rotation, and venueIds — the
+//          line's EVENT's venue id map (feed.js noteRungVenueIds), which
+//          describeLine hands every row of the event by reference. A row
+//          shaped by hand (a captured ticket) has none and still matches
+//          through the board rows passed as options.lines.
 // Outputs matches per line ({tier, bet, label}), per-row annotations for the
 //          Edges list, the unmatched list with a reason per bet, the retention
 //          prune, and the native-id dedupe. Nothing here writes anywhere.
@@ -92,6 +96,17 @@
   ]);
   const REASON_NOT_GAME = "not a game market";
   const REASON_UNKNOWN_SERIES = "unknown Kalshi series";
+  const REASON_AMBIGUOUS = "ambiguous game";
+  const REASON_LEAGUE_OFF = "league not on the scanner";
+
+  // Venue ids the board's rungs carry, in the shapes feed.js accepts (its
+  // KALSHI_CONTRACT_RE event group and NOVIG_OUTCOME_ID_RE): a bet id in any
+  // other shape can never be on the board, so it is "no id", not a miss.
+  const KALSHI_EVENT_SUFFIX_RE = /^[A-Z0-9]+$/;
+  const NOVIG_OUTCOME_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const JOIN_KALSHI_EVENT = "kalshi_event";
+  const JOIN_NOVIG_OUTCOME = "novig_outcome";
+  const JOIN_NAME = "name";
 
   const MONTHS = { JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5, JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11 };
   const EVENT_SUFFIX_RE = /^(\d{2})([A-Z]{3})(\d{2})(\d{4})?([A-Z0-9]+?)(G[12])?$/;
@@ -468,6 +483,114 @@
     return found;
   }
 
+  // ---- venue id join (#118 step 3) --------------------------------------------
+  //
+  // Before the name rule, a bet whose venue ids the board's rungs carry joins
+  // its game EXACTLY: a Kalshi bet on its event-ticker suffix, a Novig bet on
+  // its outcome id. No team name has to resolve. Exact or nothing: an id on
+  // no board event falls through to the name rule, an id on two board events
+  // is ambiguous (never a guess), and an id join is final — the name rule is
+  // not consulted, so a team pair that points at another event cannot win.
+  //
+  // The join decides WHICH GAME; the tier still comes from the bet's own
+  // betType / period / side / points against the row's current line
+  // (tierOf). The id map's lineKey / mainKey are not read: the map is as old
+  // as the last snapshot while the changes stream moves main lines, and a
+  // Novig lay's outcome id names the side the bet is AGAINST. Only the
+  // contract's fixed strike and side are read, to orient a spread bet whose
+  // team names do not resolve (sideIndexByVenueId).
+
+  // "26SEP19DUQWSU" from "KXNCAAFSPREAD-26SEP19DUQWSU": everything after the
+  // first "-" (series names carry none), kept whole — Kalshi's CFB team codes
+  // are not Unabated's abbreviations, so the suffix is never split.
+  function kalshiEventSuffixOfTicker(eventTicker) {
+    if (typeof eventTicker !== "string") return null;
+    const dash = eventTicker.indexOf("-");
+    if (dash <= 0) return null;
+    const suffix = eventTicker.slice(dash + 1);
+    return KALSHI_EVENT_SUFFIX_RE.test(suffix) ? suffix : null;
+  }
+
+  // The bet's venue id the board can carry: {join, id}, or null. Novig
+  // moneylines never have one on the board (moneylines have no rungs).
+  function betVenueId(bet) {
+    const ids = bet.venueIds;
+    if (!ids || typeof ids !== "object") return null;
+    if (bet.venue === "kalshi") {
+      const suffix = kalshiEventSuffixOfTicker(ids.eventTicker);
+      return suffix ? { join: JOIN_KALSHI_EVENT, id: suffix } : null;
+    }
+    if (bet.venue === "novig" && bet.betType !== "moneyline"
+      && typeof ids.outcomeId === "string" && NOVIG_OUTCOME_ID_RE.test(ids.outcomeId)) {
+      return { join: JOIN_NOVIG_OUTCOME, id: ids.outcomeId };
+    }
+    return null;
+  }
+
+  function addIdToIndex(byId, id, identity, league) {
+    if (typeof id !== "string") return;
+    if (!byId.has(id)) byId.set(id, new Map());
+    byId.get(id).set(identity, league);
+  }
+
+  // id -> Map(event identity -> league), over the board rows' venueIds. Rows
+  // of one event share one map, so each event is read once.
+  function venueIdIndex(lines) {
+    const index = { [JOIN_KALSHI_EVENT]: new Map(), [JOIN_NOVIG_OUTCOME]: new Map() };
+    const seen = new Set();
+    for (const line of lines) {
+      const ids = line.venueIds;
+      if (!ids || typeof ids !== "object" || line.eventId == null) continue;
+      const identity = eventIdentity(line);
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      const suffixes = Array.isArray(ids.kalshiEventSuffixes) ? ids.kalshiEventSuffixes : [];
+      for (const suffix of suffixes) addIdToIndex(index[JOIN_KALSHI_EVENT], suffix, identity, line.league);
+      const outcomes = ids.novigOutcomes && typeof ids.novigOutcomes === "object" ? Object.keys(ids.novigOutcomes) : [];
+      for (const outcomeId of outcomes) addIdToIndex(index[JOIN_NOVIG_OUTCOME], outcomeId, identity, line.league);
+    }
+    return index;
+  }
+
+  // A board: its rows, their venue id index, and each bet's game decided once.
+  function boardOf(lines) {
+    return { lines, venueIds: venueIdIndex(lines), games: new Map() };
+  }
+
+  // {join, venueId, events}: the board event identities the bet's game is —
+  // by venue id when its id is on an event of the bet's own league, else by
+  // the name rule. One event = matched, several = ambiguous, none = a miss.
+  function resolveGame(bet, board) {
+    const venueId = betVenueId(bet);
+    const carriers = venueId ? board.venueIds[venueId.join].get(venueId.id) : null;
+    const idEvents = new Set();
+    for (const [identity, league] of carriers || []) if (league === bet.league) idEvents.add(identity);
+    if (idEvents.size > 0) return { join: venueId.join, venueId, events: idEvents };
+    return { join: JOIN_NAME, venueId, events: candidateEvents(bet, board.lines) };
+  }
+
+  function gameOf(bet, board) {
+    if (!board.games.has(bet)) board.games.set(bet, resolveGame(bet, board));
+    return board.games.get(bet);
+  }
+
+  // Is this line on the bet's game? An id join names the event outright; the
+  // name rule is re-checked on the line itself, which a captured ticket's
+  // hand-shaped row may not share with the board.
+  function lineInGame(bet, line, game) {
+    if (game.join === JOIN_NAME) return gameMatches(bet, line);
+    return bet.league === line.league && game.events.has(eventIdentity(line));
+  }
+
+  function venueIdLabel(venueId) {
+    return venueId.join === JOIN_KALSHI_EVENT ? `Kalshi event ${venueId.id}` : "Novig outcome";
+  }
+
+  function ambiguousReason(game) {
+    if (game.join === JOIN_NAME) return REASON_AMBIGUOUS;
+    return `${REASON_AMBIGUOUS} (${venueIdLabel(game.venueId)} on ${game.events.size} board events)`;
+  }
+
   // ---- tiers -----------------------------------------------------------------
 
   function lineBetType(line) {
@@ -486,6 +609,16 @@
     return bet.side === "away" ? bet.awayKey : bet.homeKey;
   }
 
+  // The bet's team key when the row's game has that team. A key the game does
+  // not have is a name an id join overruled (#118 step 3), so it names no
+  // side here and the bet is placed the way an unkeyed bet is.
+  function betSideKeyInGame(bet, line) {
+    const betKey = betSideKey(bet);
+    if (bet.betType === "total" || betKey == null) return betKey;
+    const keys = lineTeamKeys(line);
+    return betKey === keys.away || betKey === keys.home ? betKey : null;
+  }
+
   function betOtherSideKey(bet) {
     if (bet.betType === "total") return bet.side === "over" ? "under" : "over";
     return bet.side === "away" ? bet.homeKey : bet.awayKey;
@@ -499,22 +632,56 @@
     if (bet.betType !== lineBetType(line) || bet.period !== line.period) return "same_game";
     const lineKey = lineSideKey(line);
     if (lineKey == null) return "same_game";
-    const betKey = betSideKey(bet);
-    if (betKey == null && bet.betType !== "total") return tierByRotation(bet, line);
+    const betKey = betSideKeyInGame(bet, line);
+    if (betKey == null && bet.betType !== "total") {
+      return tierBySideIndex(bet, line, sideIndexByVenueId(bet, line) ?? sideIndexByRotation(bet, line));
+    }
     if (betKey === lineKey) return samePoints(bet.points, line.points) ? "same_line" : "same_side";
     if (betOtherSideKey(bet) === lineKey) return "opposite";
     return "same_game";
   }
 
-  // A team-market bet whose own team teams.js could not key (BetOnline names
-  // its team as it likes): the bet's rotation IS its team, so the row's
-  // away/home rotations say which side it sits on.
-  function tierByRotation(bet, line) {
-    if (bet.rotation == null) return "same_game";
-    const betSideIndex = bet.rotation === line.awayRotation ? 0 : bet.rotation === line.homeRotation ? 1 : null;
+  // A team-market bet whose own team teams.js could not key sits on a side
+  // the row can still name: `betSideIndex` (0 away / 1 home in Unabated's
+  // frame) or null when nothing says which. The number is the row's CURRENT
+  // one, so a line moved off the bet's number is same_side.
+  function tierBySideIndex(bet, line, betSideIndex) {
     if (betSideIndex == null) return "same_game";
     if (betSideIndex === line.sideIndex) return samePoints(bet.points, line.points) ? "same_line" : "same_side";
     return "opposite";
+  }
+
+  // BetOnline names its team as it likes: the bet's rotation IS its team, so
+  // the row's away/home rotations say which side it sits on.
+  function sideIndexByRotation(bet, line) {
+    if (bet.rotation == null) return null;
+    return bet.rotation === line.awayRotation ? 0 : bet.rotation === line.homeRotation ? 1 : null;
+  }
+
+  // The bet's own contract on the row's event id map (#118 step 3): a Kalshi
+  // market ticker (either contract side, "Y-"/"N-") or a Novig outcome id.
+  // Its target carries the contract's fixed strike and Unabated side, so the
+  // bet sits on that side at the same number and on the other side at the
+  // negated one — a Kalshi NO or a Novig lay. Spreads only (a total needs no
+  // side, a moneyline has no rung); a 0 strike cannot tell the sides apart.
+  // A Kalshi moneyline whose names do not resolve stays same_game.
+  function sideIndexByVenueId(bet, line) {
+    if (bet.betType !== "spread" || typeof bet.points !== "number" || bet.points === 0) return null;
+    const ids = bet.venueIds;
+    const map = line.venueIds;
+    if (!ids || typeof ids !== "object" || !map || typeof map !== "object") return null;
+    const targets = [];
+    if (bet.venue === "kalshi" && typeof ids.marketTicker === "string" && map.kalshiContracts) {
+      targets.push(map.kalshiContracts[`Y-${ids.marketTicker}`], map.kalshiContracts[`N-${ids.marketTicker}`]);
+    } else if (bet.venue === "novig" && typeof ids.outcomeId === "string" && map.novigOutcomes) {
+      targets.push(map.novigOutcomes[ids.outcomeId]);
+    }
+    for (const target of targets) {
+      if (!target || (target.sideIndex !== 0 && target.sideIndex !== 1)) continue;
+      if (target.points === bet.points) return target.sideIndex;
+      if (target.points === -bet.points) return 1 - target.sideIndex;
+    }
+    return null;
   }
 
   // ---- labels ----------------------------------------------------------------
@@ -593,17 +760,24 @@
   // ---- public API ------------------------------------------------------------
 
   // Matches for one line, strongest tier first. options.lines is the whole
-  // board (defaults to [line]) — a bet whose game rule accepts two distinct
-  // board events is ambiguous and lands in `unmatched`, never in `matches`.
+  // board (defaults to [line]) — the rows whose venueIds a bet's id joins on,
+  // and where a bet whose game rule accepts two distinct board events is
+  // ambiguous and lands in `unmatched`, never in `matches`.
   // Closed and settled bets never match and are not listed here.
   function matchBets(line, bets, options) {
-    const board = options && Array.isArray(options.lines) ? options.lines : [line];
+    const lines = options && Array.isArray(options.lines) ? options.lines : [line];
+    return matchOnBoard(line, bets, boardOf(lines));
+  }
+
+  function matchOnBoard(line, bets, board) {
     const matches = [];
     const unmatched = [];
     for (const bet of bets) {
-      if (!isMatchable(bet) || !gameMatches(bet, line)) continue;
-      if (candidateEvents(bet, board).size > 1) {
-        unmatched.push({ bet, reason: "ambiguous game" });
+      if (!isMatchable(bet)) continue;
+      const game = gameOf(bet, board);
+      if (!lineInGame(bet, line, game)) continue;
+      if (game.events.size > 1) {
+        unmatched.push({ bet, reason: ambiguousReason(game) });
         continue;
       }
       const tier = tierOf(bet, line);
@@ -633,8 +807,9 @@
   // already on the market. A bet you hold never hides a line — it changes the
   // size of the next one (see betsview.stakeAdvice).
   function annotateRows(rows, bets) {
+    const board = boardOf(rows);
     return rows.map((row) => {
-      const { matches } = matchBets(row, bets, { lines: rows });
+      const { matches } = matchOnBoard(row, bets, board);
       const tier = matches.length ? matches[0].tier : null;
       return { tier, matches, exposure: exposureOf(matches) };
     });
@@ -647,23 +822,35 @@
     return names;
   }
 
+  // Why the name rule found no event for a bet.
+  function nameMissReason(bet, leaguesOnBoard) {
+    const unresolved = unresolvedTeamNames(bet);
+    if (unresolved.length) return `team not recognised (${unresolved.join(", ")})`;
+    if (!leaguesOnBoard.has(bet.league)) return REASON_LEAGUE_OFF;
+    return "no event on the board yet";
+  }
+
   // Every OPEN bet that matches no line on the board, with why. Closed and
-  // settled bets are not problems, so they are not listed.
+  // settled bets are not problems, so they are not listed. A bet that carries
+  // a venue id says both tiers failed — "by id: Kalshi event 26SEP19DUQWSU
+  // not on any board ladder; by name: team not recognised (…)" — since an id
+  // misses when the venue lists no ladder for the game (Kalshi rungs sat on
+  // 126 of 346 CFB events, 2026-09-12) while the name rule may still see it.
   function unmatchedReasons(bets, lines) {
     const leaguesOnBoard = new Set(lines.map((line) => line.league));
+    const board = boardOf(lines);
     const out = [];
     for (const bet of bets) {
       if (bet.status !== "open") continue;
       if (bet.unmatchable) { out.push({ bet, reason: bet.unmatchable }); continue; }
-      // Matched (by team pair or by rotation) is not a problem, whatever the
+      // Matched (by id, team pair or rotation) is not a problem, whatever the
       // team table makes of the names; the diagnoses below explain a miss.
-      const candidates = candidateEvents(bet, lines).size;
-      if (candidates === 1) continue;
-      if (candidates > 1) { out.push({ bet, reason: "ambiguous game" }); continue; }
-      const unresolved = unresolvedTeamNames(bet);
-      if (unresolved.length) { out.push({ bet, reason: `team not recognised (${unresolved.join(", ")})` }); continue; }
-      if (!leaguesOnBoard.has(bet.league)) { out.push({ bet, reason: "league not on the scanner" }); continue; }
-      out.push({ bet, reason: "no event on the board yet" });
+      const game = gameOf(bet, board);
+      if (game.events.size === 1) continue;
+      if (game.events.size > 1) { out.push({ bet, reason: ambiguousReason(game) }); continue; }
+      const nameReason = nameMissReason(bet, leaguesOnBoard);
+      if (!game.venueId || nameReason === REASON_LEAGUE_OFF) { out.push({ bet, reason: nameReason }); continue; }
+      out.push({ bet, reason: `by id: ${venueIdLabel(game.venueId)} not on any board ladder; by name: ${nameReason}` });
     }
     return out;
   }

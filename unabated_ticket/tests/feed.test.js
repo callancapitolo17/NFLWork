@@ -445,15 +445,15 @@ test("each event collects its Kalshi event suffixes and contract / Novig outcome
   assert.equal(Object.keys(venueIds.novigOutcomes).length, 16);
   // A priced rung points at its own alt line; both sides of one contract are separate ids.
   assert.deepEqual(venueIds.kalshiContracts["Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU36"],
-    { lineKey: "420942308:ms105:si1:tid717:alt-35.5", mainKey: "420942308:ms105:si1:tid717", points: -35.5 });
+    { lineKey: "420942308:ms105:si1:tid717:alt-35.5", mainKey: "420942308:ms105:si1:tid717", points: -35.5, sideIndex: 1 });
   assert.equal(venueIds.kalshiContracts["N-KXNCAAFSPREAD-26SEP19DUQWSU-WSU36"].lineKey, "420942310:ms105:si0:tid927:alt35.5");
   // An unpriced rung is no listed line, but its id still names the event and market.
   assert.deepEqual(venueIds.kalshiContracts["Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU34"],
-    { lineKey: null, mainKey: "420942308:ms105:si1:tid717", points: -33.5 });
+    { lineKey: null, mainKey: "420942308:ms105:si1:tid717", points: -33.5, sideIndex: 1 });
   // Novig's rung ON its main number (-35.5) is dropped as an alt, and its
   // outcome id points at the main line — the join a main-line Novig bet needs.
   assert.deepEqual(venueIds.novigOutcomes["01a0a05e-e864-7b73-9b80-9e502e4e98d5"],
-    { lineKey: "420942308:ms89:si1:tid717", mainKey: "420942308:ms89:si1:tid717", points: -35.5 });
+    { lineKey: "420942308:ms89:si1:tid717", mainKey: "420942308:ms89:si1:tid717", points: -35.5, sideIndex: 1 });
   assert.equal(state.lines["420942308:ms89:si1:tid717:alt-35.5"], undefined);
   // ProphetX ids stay on its alt lines only (no bet source for them yet).
   assert.ok(!Object.values(venueIds).some((ids) => JSON.stringify(ids).includes("9f81cbcb98c0617a0c087c4a587c73d9")));
@@ -484,6 +484,13 @@ test("malformed or missing venue ids degrade to no id, never an error", () => {
   for (const bad of [null, undefined, 7, "", "Y-KXNFLSPREAD-26SEP13DALNYG", "X-KXNFLSPREAD-26SEP13DALNYG-NYG15", "y-kxnflspread-26sep13dalnyg-nyg15"]) {
     assert.equal(feed.kalshiEventSuffixOf(bad), null, String(bad));
   }
+});
+
+test("describeLine hands every row its event's venue id map by reference", () => {
+  const state = feed.parseSnapshot(venueSnapshotJson(), { leagueId: CFB });
+  const rows = Object.values(state.lines).map((line) => feed.describeLine(line, state));
+  assert.ok(rows.length > 1);
+  assert.ok(rows.every((row) => row.venueIds === state.events[VENUE_EVENT].venueIds));
 });
 
 test("venue ids refresh with the snapshot: the changes stream leaves them alone, a re-parse replaces them", () => {

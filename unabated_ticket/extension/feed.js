@@ -235,7 +235,10 @@
     return { kalshiEventSuffixes: [], kalshiContracts: {}, novigOutcomes: {} };
   }
 
-  // Record one rung's venue id on its event: id -> {lineKey, mainKey, points}.
+  // Record one rung's venue id on its event: id -> {lineKey, mainKey, points,
+  // sideIndex}. `points` and `sideIndex` are the contract's own strike and
+  // Unabated side — fixed for the id, so the bet matcher reads them to tell
+  // which side a bet whose team names do not resolve is on (#118 step 3).
   // `lineKey` is the listed line at the rung's number — the alt, or the main
   // line when the rung sits on the main number (normalizeAltLine drops that
   // rung, but its id is exactly what a main-line bet joins on) — or null when
@@ -249,7 +252,7 @@
     const points = numberOrNull(rung.points);
     const onMainNumber = points != null && points === mainLine.points;
     const lineKey = alt ? alt.key : onMainNumber ? mainLine.key : null;
-    const target = { lineKey, mainKey: mainLine.key, points };
+    const target = { lineKey, mainKey: mainLine.key, points, sideIndex: mainLine.sideIndex };
     if (mainLine.bookId === KALSHI_BOOK_ID) {
       const suffix = kalshiEventSuffixOf(rung.sourceKey);
       if (!suffix) return;
@@ -637,6 +640,10 @@
       isAlt: line.isAlt === true,
       // The book's main-line points this alt hangs off (current main line when held); null on a main line.
       mainPoints: line.isAlt ? currentMainPoints(line, state) : null,
+      // The EVENT's venue id map (noteRungVenueIds), by reference — every row
+      // of the event shares it, so the bet matcher can join a bet on its
+      // Kalshi / Novig id (#118 step 3). Null for an event with no snapshot.
+      venueIds: event.venueIds ?? null,
     };
   }
 

@@ -490,7 +490,10 @@
   // side, the other side (red), anything else on the game. Nothing when none.
   // Returns the row-style flag {tier, matches, exposure} for the stake block.
   function renderBetBanner(ticket) {
-    const line = betsView.ticketAsLine(ticket);
+    // The ticket's event's venue id map lets an id-joined bet whose team
+    // names do not resolve be placed on a side (bets.sideIndexByVenueId).
+    const event = scannerState && ticket.eventId != null ? scannerState.events[ticket.eventId] : null;
+    const line = { ...betsView.ticketAsLine(ticket), venueIds: event ? event.venueIds ?? null : null };
     const { matches } = betsLib.matchBets(line, state.betRecords, { lines: boardLines() });
     const { shown, more } = betsView.bannerLines(matches);
     const items = shown.map((match) => {
@@ -1485,8 +1488,9 @@
   // ---- bets (#114) ---------------------------------------------------------
 
   // One describeLine-shaped row per event on the board (main lines only):
-  // the matcher's ambiguity check and the unmatched list only need to know
-  // which games exist, not every book's price.
+  // the matcher's ambiguity check, its venue id join (each row carries its
+  // event's venueIds) and the unmatched list only need to know which games
+  // exist, not every book's price.
   function boardLines() {
     if (!scannerState) return [];
     const seen = new Set();
