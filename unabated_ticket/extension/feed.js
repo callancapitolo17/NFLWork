@@ -160,7 +160,7 @@
   }
 
   function emptyState() {
-    return { leagues: [], teams: {}, books: {}, events: {}, lines: {} };
+    return { leagues: [], teams: {}, teamIndex: {}, books: {}, events: {}, lines: {} };
   }
 
   // ---- snapshot ------------------------------------------------------------
@@ -294,7 +294,10 @@
     state.leagues = [leagueId];
     const counts = { rows: 0, skippedRows: 0, lines: 0, skippedLines: 0, altLines: 0, skippedAltLines: 0 };
     for (const [teamId, team] of Object.entries(json.teams || {})) {
-      if (team && team.name) state.teams[teamId] = team.name;
+      if (!team || !team.name) continue;
+      state.teams[teamId] = team.name;
+      // The full entry, for the team index teams.js builds at runtime (#116).
+      state.teamIndex[teamId] = { id: team.id ?? Number(teamId), name: team.name, abbreviation: team.abbreviation ?? null, leagueId: team.leagueId ?? leagueId };
     }
     for (const source of Array.isArray(json.marketSources) ? json.marketSources : []) {
       if (!source || source.id == null) continue;
@@ -334,6 +337,7 @@
     for (const state of states) {
       merged.leagues.push(...state.leagues);
       Object.assign(merged.teams, state.teams);
+      Object.assign(merged.teamIndex, state.teamIndex || {});
       Object.assign(merged.books, state.books);
       Object.assign(merged.events, state.events);
       Object.assign(merged.lines, state.lines);
@@ -506,8 +510,12 @@
       sideLabel: sideLabelOf(line, event, state.teams),
       awayTeam: state.teams[event.awayTeamId] ?? null,
       homeTeam: state.teams[event.homeTeamId] ?? null,
+      awayTeamId: event.awayTeamId ?? null,
+      homeTeamId: event.homeTeamId ?? null,
       homeAway: line.sideIndex === 0 ? "Away" : "Home",
       rotation: line.sideIndex === 0 ? event.awayRotation : event.homeRotation,
+      awayRotation: event.awayRotation,
+      homeRotation: event.homeRotation,
       points: line.points,
       book: { id: book.id, name: book.name, hasLiquidity: book.hasLiquidity },
       price: line.price,

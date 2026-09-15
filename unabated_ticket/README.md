@@ -1,6 +1,6 @@
 # Unabated Ticket
 
-Chrome extension (Manifest V3, plain JS, no build step). Two tabs in one
+Chrome extension (Manifest V3, plain JS, no build step). Three tabs in one
 side panel:
 
 - **Ticket** — click a price on the Unabated odds screen and the panel shows
@@ -17,9 +17,14 @@ side panel:
   `docs/2026-09-10-unabated-edge-scanner-plan.md`. Alternate spreads and
   totals (every rung Unabated prices, not just the main number) list too
   behind an **Include alt lines** toggle — issue #113, see *Alt lines*.
+- **Bets** — your own open bets (Kalshi today; BetOnline, Novig and ProphetX
+  are separate tickets) read from a local service, matched against the
+  board so the Ticket tab says when you already have this line, the other
+  side of it, or a bet on the game, and the Edges list flags the same. Issue
+  #114; plan in `docs/2026-09-11-issue-114-bet-history-plan.md`. See *Bets*.
 
-One ticket at a time. No bet tracking, no overlay on the Unabated page, no
-rounding of the stake.
+One ticket at a time. No overlay on the Unabated page, no rounding of the
+stake, no order placement.
 
 ## Install (load unpacked)
 
@@ -46,8 +51,8 @@ tab is running the capture script", reload the tab.
   Unabated's one-click betting can open the book's deeplink on mouse-down and
   may navigate the tab away before a `click` ever fires. Unabated's own
   handler runs untouched afterwards. If the deeplink replaces the Unabated
-  tab, the ticket is already stored and the panel shows it with
-  "Not watching the line" (no tab left to watch).
+  tab, the ticket is already stored; the watcher resumes when an Unabated
+  tab loads again (Back, a reload), see below.
 - Fast path: fiber props. Fallback: `data-marketline-id` on the shell plus a
   `forEachNode` scan of every row's `sides`. If both fail the panel says
   **Could not read this cell** with the reason; it never shows a stake it
@@ -55,6 +60,21 @@ tab is running the capture script", reload the tab.
 - Fields: `price` = `americanPrice` (exchanges have only `price`), `fair` =
   `marketLine.bacr` (Unabated's no-vig price at that book's points),
   side 0 = away / Over, side 1 = home / Under.
+- Edge, three places in order: the clicked object (`edge.edge`, the screen's
+  computed %, else the feed's `ge` fraction), then the row's own
+  `sides[side][ms<book>]` entry at the same points (the cell's prop can be a
+  copy without `ge` — live 2026-09-12 a Novig main line the Edges tab listed
+  carried neither on the cell, twice, after a tab reload), then in the
+  panel the Edges feed's copy of the same line, matched on game, bet type,
+  period, side, book and points — never on the feed key, since an alt rung's
+  cell object can lack `marketId`; two feed lines at that number are two
+  markets (a team total the changes stream tagged `bt3`) and the panel
+  refuses rather than guess — **only at the same price**; an edge is for
+  one price. A ticket
+  sized from the feed says so in the warning strip with the feed copy's
+  age. When none of the three has an edge the panel shows **No Unabated
+  fair for this line** with the cell's fields (`noEdgeDetail`) and what the
+  feed holds instead.
 - The ticket also carries `watch: {gridKey, sideKey, bookKey}` — the row id
   and `sides["si<n>:tid<id>"]["ms<book>"]` path used to find the same line
   again. Not in the plan's contract; needed by the watcher.
@@ -68,12 +88,111 @@ tab is running the capture script", reload the tab.
   new price and fair, and keeps the captured line for comparison. Off the
   board shows in red. If the Unabated tab is closed or navigated away the
   panel says **Not watching the line**.
+- **The watcher outlives the page.** `page.js` dies with every navigation
+  (one-click betting leaving the tab, Back, a tab reload or discard, an
+  extension reload's takeover) while the ticket stays in storage. On load
+  `page.js` posts `resume_request`; `content.js` answers with the stored
+  ticket (and offers it unasked once on its own load, since the two scripts
+  load in no guaranteed order) and `page.js` rebuilds the watcher from the
+  ticket's identity with no grid API — `watchedRowNode` finds the grid from
+  the DOM and the row by event, bet type, period, side, book and number.
+  Until 0.6.6 nothing re-attached, so every ticket after such an event read
+  "Not watching the line" under a live heartbeat with nothing to re-click
+  for. A tab whose grid has not mounted yet reports "no odds grid
+  reachable on the page" for a tick or two, then reads. Not resumed: a tab on another
+  league (a second tab would otherwise post "wrong league" every 5 s), and
+  a ticket whose `eventStart` (naive UTC on the grid row) has passed, and
+  an offer older than the capture the tab is already watching. Two same-league tabs may both
+  watch; `content.js` drops a failed read while a good one from the last
+  7.5 s stands, so a tab on another game date cannot flap the banner.
+  Harness: `tests/page_rows.test.js` (resume section).
 - A click on an **alternate-line cell** works the same way: its `marketLine`
   is one of the main line's `alternateLines`, so the ticket carries
   `watch.altPoints` and the watcher re-finds that rung by points inside
   the ladder (a rung the book pulls shows as off the board). The screen
   computes `edge` for main lines only, so an alt ticket is sized from the
-  feed's `ge` on the object — the same number.
+  feed's `ge` on the object — the same number. A cell in the expanded Alts
+  section sits on its own grid row (an AG Grid child: `detail`, `level`
+  > 0, or a parent carrying data) whose entry for the book is the rung
+  itself, so both capture and the watcher resolve the market's rows
+  through one ranking (`rankedMarketNodes`, over every AG Grid on the
+  page — an open Alts section mounts its own): a row whose entry for the
+  book IS the line being resolved (capture: the clicked object or its
+  number, on the entry or in its ladder; the watcher: the captured
+  number) beats every shape signal, then a top-level row beats a child, a
+  row carrying the market's `bestLines` beats one without, and a row
+  carrying this book's `alternateLines` ladder — counted by rung, not
+  array length — beats a lone rung. The line-identity rank exists because
+  Unabated's alt-lines views list a market's rungs as sibling TOP-LEVEL
+  rows sharing one grid key (live 2026-09-12, CFB UAPB@ALCN: eight Over
+  rows 33.5 .. 56.5 with `bestLines` and no ladder; NFL CHI@CAR: rung rows
+  next to a main row whose 25-rung ladder held the clicked -2.5, the -2.5
+  row's own entry carrying an alternateLines array with no rung in it),
+  which tie on every shape signal — grid order picked the 33.5 row for a
+  click on 56.5, the rungless array counted as a ladder and tied the -2.5
+  row with the main row, the Row trace fired on every such capture, and
+  the watcher's keyed lookup could answer with any sibling. Capture
+  classifies, prices and watches against the best-ranked row that carries
+  the book (`ladderRowFor`): on the NFL layout the main row, the ticket an
+  alt line; on the CFB layout the rung's own row. The watcher is anchored
+  on the captured NUMBER, never on which row answers: each tick trusts
+  the grid-key lookup only for a row of the same shape carrying that
+  number (its entry at it, or its ladder's rung — one rule,
+  `lineOnEntry`), otherwise re-ranks requiring the book's entry as capture
+  did, and reads the price at that number; a number gone from the entry
+  and its ladder reads off the board at the captured price. So a main
+  line whose number moves while the ladder keeps the old number reports
+  the price at the captured number, not "moved to" the new one — you bet
+  a number. `tests/page_rows.test.js` loads the real `page.js` into a vm
+  sandbox (it exposes its row-resolution internals only when the sandbox
+  sets `__unabatedTicketExposeInternals`) and replays both live grids, an
+  expanded Alts section and a plain main line; run it against an older
+  `page.js` with `PAGE_JS=<path>` to watch it reproduce the tie verbatim.
+  Picking a child is
+  legitimate when a book prices no main line, so the shape is compared,
+  never forced. Measured against the
+  Alts row the rung read as a main line and the watcher followed the real
+  main number (live 2026-09-12: Alabama A&M -5.5 +264 became "now -102 at
+  +1.5"); picking "any row of the market carrying a ladder" then followed
+  the LOWEST rung (Under 19.5 +265 became "now +2242 at +2.5"). The ticket
+  carries `rowResolution` (the candidate rows, the pick, the script
+  build) and each watch tick names the row it read and its shape; the
+  panel prints that **Row trace** under the warning only on a concrete
+  doubt — the watcher reading a row of a different shape than capture
+  picked, an alt ticket whose watched number moved (it is re-found by
+  number, so it cannot), or two rows tied at the best rank. An ordinary
+  line move never shows it. It is collapsed to its reason ("Row trace: two
+  grid rows tied for this market"); open it for the candidates and the pick, and
+  send that with a screenshot if a capture ever follows the wrong rung again.
+
+## Panel layout
+
+The panel is a fixed header over one scrolling pane per tab. The header holds
+the tab bar, the bets header line, and (on the Edges tab) the filter toolbar;
+everything else scrolls inside its own tab. The header stops at 60% of the
+panel and scrolls itself past that, so the filter drawer and the settings
+block — which live in it — stay reachable in a short window instead of
+squeezing the pane to nothing. **This is what keeps your place in
+the Edges list**: the three tabs used to share the document's scroller, so
+hiding one collapsed the scroll height and Chrome clamped `scrollTop` to 0 —
+every capture (which brings the Ticket tab forward on its own) sent the list
+back to the top. Each pane now scrolls on its own, `showTab` remembers and
+restores each pane's offset, and `renderEdges` preserves it across the
+scanner's rebuild every few seconds. The row you last clicked keeps a tint, and
+the Ticket tab shows a **← Back to edges** link to it.
+
+The filter controls sit behind one chip that states the filter in words
+(`Football · FG · Moneyline/Spread/Total · 12 books · ≥1.0%`) and opens the
+drawer in place; sort and minimum edge stay out on the toolbar. Bankroll and
+the Kelly multiplier sit at the foot of the Ticket tab under **Sizing**, where
+the stake they size is; the **⚙** at the right of the tab bar jumps there from
+any tab. The bets service URL is on the Bets tab, with the venues it feeds.
+
+An Edges row is two columns: the pick, market, matchup and the book's line on
+the left, and a right rail carrying the **edge %** and the **stake**, so both
+line up in one column down the list. Edge magnitude also reads as colour in
+three tiers (≥4%, 2–4%, under 2%) on the figure and on the row's left stripe,
+and the time to first pitch warms to amber inside 12 hours and red inside 2.
 
 ## Stake
 
@@ -95,8 +214,19 @@ exchange's exact `sourcePrice` so they match Unabated's screen, while the
 stake uses the American price because that is what Unabated's edge was
 computed from.
 
-Settings (bankroll, Kelly multiplier) sit at the bottom of the panel and
-persist in `chrome.storage.local`. Defaults 30000 and 0.25.
+The figure shown is the number to act on, with the verb on it: `bet $281`
+when nothing is held on the market, `add $121` when a position is already
+down, and under it what you hold and what full size is
+(`$120 held · full size $241`). Against a position on the other side it reads
+`bet $192` over `$120 on the other side · net $72 on this side` (the Ticket
+spells it `$120 already on the other side`). The Ticket's label says
+the same thing ("Bet" / "Add to your position" / "Already at full size"). A
+line that cannot be sized keeps a `—`, never a computed-looking `$0`.
+
+Settings (bankroll, Kelly multiplier) sit at the foot of the Ticket tab under
+**Sizing**, reachable from any tab via the ⚙, and persist in
+`chrome.storage.local`. Defaults 30000 and 0.25. The bets service URL is on
+the Bets tab, under the venue strip it feeds.
 
 Copy puts one line on the clipboard:
 `Seattle Mariners -133 · 57.0¢ @ Novig | fair -139 · 58.2¢ | edge +1.89% | stake $188.55 | to win $141.77 | payout $330.32 | Texas Rangers @ Seattle Mariners · MLB`.
@@ -211,7 +341,9 @@ its best edge; under it the market, matchup and start; then the **best
 line**, which is the highest Kelly stake (stake = edge / (decimal − 1)
 already taxes longshots), so a -110 main line at +5% outranks a +944 rung at
 +6%; then `▸ 2 books · 7 lines (+6)`, which opens the other books and rungs.
-Every line is clickable (locate) as before. The count badge counts cards,
+The card is its best line — it carries that line's own number, and a rung
+behind the expander names its own when it differs. Every line is clickable
+(locate) as before. The count badge counts cards,
 sort orders cards through their best line, and `feed.groupEdges` (pure,
 node-tested) does the grouping; the panel passes the stake as the rank.
 Turning the toggle off gives the flat list.
@@ -307,11 +439,343 @@ MB/min with just football/baseball/basketball/hockey). Same endpoints the
 page itself calls, at a far lower rate than its 0.6 s poll; nothing runs
 when the panel is closed.
 
+## Bets
+
+Two kinds of source feed the flags:
+
+| Venue | Source | How it refreshes |
+|---|---|---|
+| Kalshi | `bets_service/sources/kalshi.py` (local service, signed REST) | every 60 s while the service runs |
+| Novig | `bets_service/sources/novig.py` (local service, the account's own Auth0 refresh token, #116) | every 60 s while the service runs; no tab needed |
+| Novig (fallback) | `extension/novig_page.js` + `novig_content.js` (content scripts on `app.novig.us`) | whenever the Novig tab's Portfolio screen fetches its lists — open it to refresh |
+| BetOnline | — (#115) | shows "no source configured" |
+| ProphetX | — (#117) | shows "no source configured" |
+
+Start the service (next section), keep the panel open. Every 30 s while the
+panel is visible it fetches `http://127.0.0.1:8094/bets.json` (never from
+the service worker), resolves each record's teams through `teams.js`, dedupes
+on the venue's native id against what it already holds, and keeps open bets
+plus settled ones from the last 30 days in `chrome.storage.local`
+(`betsService`; `betsSettings` holds the service URL; `betsNovig` is what
+the Novig content script wrote).
+A poll that fails keeps the last records and says so; nothing is ever
+blanked. A poll that succeeds is authoritative for every venue whose source
+reports `ok`: a stored record of that venue the payload no longer lists is
+dropped (a reset service DB, a purged fill), so a stale position cannot flag
+lines forever; records of a venue whose source failed stay as they were.
+
+**What is matched.** A bet matches a line when the league is the same, the
+two teams resolve to the same pair (either order) or the rotation number
+matches, and the time agrees: within 30 min when the venue gives a start
+time (Kalshi MLB tickers, every Novig order), else the bet's Eastern date
+within a day of the line's (Kalshi football tickers carry the date only),
+else — for a venue that gives no game date at all (BetOnline's report,
+flagged `approx: game_date_unknown`) — an event starting between 12 h before
+and 14 days after the bet was placed, keyed on the rotation number; a
+rotation match with one recognised team name also needs that team in the
+row's game (the same rotation comes round the next week), and a team name
+`teams.js` does not know still matches by rotation and takes its side from
+the row's away/home rotations. A bet that two board events accept (a series,
+a doubleheader without a time, two weeks of the same rotation) is **never**
+guessed — it lands in the unmatched list as "ambiguous game". Only open bets
+match; settled and closed positions stay in the list but never flag a line.
+
+**Four tiers**, strongest first (`bets.js`, node-tested):
+
+| Tier | Meaning | Ticket banner | Edges badge |
+|---|---|---|---|
+| `same_line` | same market, period, side and number | "You bet this: Eagles -3.5 -110 · $300 @ Kalshi · Sep 10 2:15 PM" | `held $300` |
+| `same_side` | same market, period, side; different number | "You have Eagles -3.5 -110 (this is -4.5)" | `held $300` |
+| `opposite` | same market and period, the other side | red: "You are on the OTHER side: Cowboys +3.5 -105 · $200 @ Kalshi" ("at a different number" when the points differ) | `against $200` (red) |
+| `same_game` | same game, any other market or period | "You have a bet on this game: Under 40.5 · $150 @ Kalshi" | `game` |
+
+**A bet you hold never hides a line — it changes the size of the next one.**
+The edge still being there after you bet it is information (add, or at
+least know the market has not moved against you). Per line, `held` is the
+dollars risked on the same direction (`same_line` + `same_side`; a different
+number is the same opinion) and `against` the dollars on the other side;
+both are dollars risked at every venue, so they compare directly with the
+Kelly stake (`bets.exposureOf`, `betsview.stakeAdvice`):
+
+The wording is the same three numbers in the same order everywhere (user
+choice 2026-09-11, reworded 2026-09-13): the **verb** says what the number
+is — `add` when a position is already down, `bet` otherwise — and under it
+what is **held** and what **full size** is. `betsview.stakeAdviceWords`
+builds it once for the row, the Ticket block and the Copy text:
+
+| You hold | Stake column | Ticket stake block |
+|---|---|---|
+| nothing | `bet $500.00` | "Bet" · **$500.00** |
+| $300 same side, Kelly $500 | `add $200` over "$300 held · full size $500" | "Add to your position" · **$200** · "$300 already held · full size $500" |
+| $600 same side, Kelly $520 | `bet $0` over "$600 held · full size $520" (muted) | "Already at full size" · **$0** · same line |
+| $200 other side, Kelly $500 | `bet $500` over "$200 on the other side · net $300" | red "$200 already on the other side · net $300 on this side" |
+| same game only | `bet $500.00` | — (the banner still lists the bet) |
+
+To win and Payout describe the number shown above them, so a top-up prices
+the top-up and an at-size line shows no payout at all; the Copy line carries
+the same figure. Rows and cards carry a labelled **Related bets** block, one line per position:
+a tag for how it relates — `this line` / `same side` / `other side` (red) /
+`game` — then the bet itself, "Chattanooga -5.5 +138 · 42.0¢ · $168 · Kalshi",
+plus `· now -6.5` when the line has moved off the number you bet. Capped at
+three with "+N more on this game". The Ticket banner uses the same four tags
+and the same labels. No placed-at: it never told you which bet was which, and
+it was a third of the line (user decision 2026-09-14). The Bets tab still
+shows it, where the bets are the subject.
+A `game` badge is a plain marker: another market on the game does not change
+how this line is sized.
+
+A Kalshi NO on a team market is the other team **or a tie** (NFL/CFB/soccer);
+it matches as that team and the label says so ("NO Eagles ≈ Cowboys or
+tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
+
+**Where it shows.**
+
+- *Header line* under the tabs, always: "bets: 14 open · kalshi 20 s ·
+  betonline — · novig — · prophetx —" — open bets known to the panel and the
+  age of each venue's last successful pull (a dash = no source yet). Red
+  when the service is unreachable.
+- *Ticket tab*: a banner between the matchup and the stake, one line per
+  matching bet, strongest first, at most 5 then "+N more"; nothing when no
+  bet matches; under the Kelly stake, the held / add / other-side block
+  above. The warning strip adds "Bet sources unavailable" when no venue has
+  reported in the last hour (the flags may then be missing).
+- *Edges tab*: the badge, the **Related bets** block and the sized stake on
+  each row, or on each card from its best line. The block is labelled and
+  ruled (red when a position is against you); a bet on that very line prints
+  only what differs from the row — venue, its entry price, when — because the
+  row already states the pick, while another market or the other side names
+  itself. The Ticket shows the same matches with the full sentence. Sort **by my exposure** puts held and
+  against lines first. Nothing is filtered; alerts skip only lines you
+  already hold at size (nothing to act on) and fire as before otherwise.
+- *Bets tab*: opens on **total at risk** across open bets, with the venue
+  count and, when a venue reported a bet without a stake, how many are not in
+  that total. Then one line per venue (a dot for freshness, what it holds, how
+  old the last pull is) rather than a table: last pull green under 5 min, amber
+  under 60, red past that or on a failed poll with its error; venues with
+  no source yet read "no source configured", a source still on its first
+  poll reads "no completed poll yet"; a page-sourced venue past the hour
+  says how to refresh — "open app.novig.us and its Portfolio screen in a
+  tab to refresh", or "Novig tab is open — open its Portfolio screen to
+  refresh" when the tab was seen in the last 5 min; the service itself shows
+  "unreachable since …" in red with the last records still listed), the
+  open bets (venue, bet, stake, placed — each with a green left edge when
+  the board matched it, red when it did not, so a problem bet is visible in
+  the open list too), and the **unmatched** list — every open bet no board line matches, with why: team
+  not recognised (the raw name, so `teams.js` can grow), ambiguous game, no
+  event on the board yet, league not on the scanner, not a game market
+  (futures, the bots' combos), unknown Kalshi series.
+
+### Novig source (service)
+
+Novig's official NBX API is a separate "Liquidity Provider" account with a
+$30k minimum deposit, so it cannot see bets placed in the retail app. The
+service instead logs in **as the retail account once** and polls the same
+Hasura GraphQL the app uses (issue #116):
+
+```bash
+/Users/callancapitolo/NFLWork/kalshi_draft/venv/bin/python3 -m unabated_ticket.bets_service.sources.novig_auth connect
+# or, to avoid the copy/paste race on the callback:
+/Users/callancapitolo/NFLWork/mlb_sgp/venv/bin/python3 -m unabated_ticket.bets_service.sources.novig_auth connect --browser
+```
+
+- **Connect** runs Auth0's PKCE authorization-code flow against the app's
+  public client (no secret exists). You log in yourself; the script only
+  needs the URL you land on (`https://app.novig.us/?code=…&state=…` —
+  copy it at once, the app strips it as it loads; `--browser` opens a
+  Playwright window that intercepts the callback so nothing can be lost).
+  The refresh token goes to `NOVIG_TOKEN_PATH`
+  (`bets_service/novig_token.json`, gitignored, mode 0600) and the source
+  registers on the next service start.
+- **Why its own token.** The web app keeps a *rotating* refresh token in
+  localStorage, and Auth0 revokes the whole chain when a rotated token is
+  reused — copying the app's token would log the app out and kill the
+  poller. A separate login is a separate chain; both live side by side.
+- **Polling** (`sources/novig.py`, every 60 s): refresh the 30-min access
+  token inside a 2-min margin (a rotated refresh token is rewritten at
+  once), resolve the trader once from the JWT `sub` (`user.auth_id` →
+  `trader_id`, the app's own `AppEntry_Query` chain), then read the `order`
+  and `parlay` tables filtered to that trader and to rows that are open or
+  changed within the retention window, 100 per page to a short page. The
+  selections are the fields the app's Portfolio cards read, so the rows have
+  the shape `novig_bets.js` was written against; `normalize_novig()` is a
+  port of it and `tests/test_parity_novig.py` holds the two byte-equivalent.
+  Transport is `curl_cffi` with Chrome impersonation, the session the
+  anonymous Novig SGP scraper already gets through Cloudflare with.
+- **Renewal.** Auth0 chains usually cap at about 30 days; when the refresh
+  fails the poll fails loudly (the Bets tab row goes red with the error and
+  the previous records stay) and you run `connect` again.
+
+### Novig source (content scripts, fallback)
+
+The content-script route reads the same bets without any token, while a
+Novig tab has the Portfolio screen open. It stays as the fallback when the
+service is not connected; the panel shows the service row when both report.
+Two content scripts run on `app.novig.us` and send **zero** requests of their own:
+
+- `novig_page.js` (MAIN world, `document_start`) wraps `window.fetch` before
+  the app bundle captures it and mirrors the responses the app fetches for
+  its Portfolio screen — the Apollo queries `ActivePortfolioOrders_Query`,
+  `SettledPortfolioOrders_Query` and `ParlayPortfolioQuery` POSTed to
+  `api.novig.us/v1/graphql` (subscriptions run over a WebSocket and are not
+  mirrored; the app refetches these lists over fetch after a fill, which is
+  caught). No token is read; the clone of a watched response goes to the
+  isolated world by `window.postMessage`.
+- `novig_content.js` (ISOLATED world, after `novig_bets.js`) keeps the pages
+  each list returned in this tab (keyed on operation + where-clause, offset 0
+  restarts a list), normalises them with `novig_bets.js` and writes
+  `chrome.storage.local.betsNovig = {bets, readAt, url, error, complete,
+  pageSeenAt}`. The panel merges `bets` on every change: a **complete** read
+  (all three operations seen in this tab, every list's last page short of
+  its limit) is authoritative for the venue — a stored Novig record it no
+  longer lists is dropped; an incomplete read (a list still has pages the
+  app has not loaded, or an Active-only refetch from another screen) only
+  adds.
+
+`novig_bets.js` (pure, node-tested on
+`tests/fixtures/bets/novig_bets.json`) applies the app's own rules, read off
+its bundle on 2026-09-11: outcome index 0 is the **home** team or **Over**;
+`price` is a 0–1 probability and one contract pays $1; `isBid: true` backs
+the outcome and `false` lays it, so a lay at `p` becomes the other side at
+`1 - p` (a spread's number negated); the matched size is `originalQty -
+qty`; `MONEY`/`SPREAD`/`TOTAL` (+ `_1H`, which on MLB is the first five
+innings → period `F5`, else `1H`) are game markets, everything else
+(props, futures, `1X2`, team totals) is `other` / "not a game market";
+leagues map NFL→nfl, NCAAF→cfb, NBA/NCAAB/WNBA/MLB/NHL and the soccer
+leagues, the rest fail closed as "league not supported (…)". Status follows
+the app's card: settled by the outcome's WIN/LOSS/PUSH against `isBid`, a
+cancel with no fill is `void`, a wash or an approved cash-out is `closed`, a
+cancel with fills stays `open` on the matched part. A resting or pending
+order is `open` on its full size with `approx: ["novig_order_unmatched"]`
+(or `_pending`) — it is a bet you are trying to place. Parlays give one
+record per leg (`id` `novig:<parlay>:<leg>`, stake = the parlay's wager).
+Team keys are left null; the panel resolves `game.awayTeam.name` /
+`homeTeam.name` through `teams.js` (the runtime index below — Novig's full
+names are Unabated's for every team seen so far, with six aliases).
+Novig sends no rotation number, so the team pair is the ONLY way a Novig
+bet reaches a line: one unrecognised name blocks the bet outright, and
+it lands in the Bets tab's unmatched list naming the spelling to add.
+
+Caveat: the fixture's shapes come from the bundle's operation documents and
+the fragments the cards read the `market` / `outcome` / `fills` JSON blobs
+through, not from a logged-in capture. If a live blob differs, the record
+lands in the unmatched list with a specific "unreadable Novig order (…)"
+reason and its `raw` fields — nothing is guessed.
+
+## Bets service
+
+A local Python service that turns the user's own bet history into normalised
+records the panel can match against a line (issue #114; plan in
+`docs/2026-09-11-issue-114-bet-history-plan.md`). It is the only place that
+signs Kalshi requests — the private key never enters the extension. Read-only
+GETs; no order placement.
+
+```bash
+./unabated_ticket/bets_service/run.sh        # http://127.0.0.1:8094
+```
+
+- **Install**: nothing beyond the `kalshi_draft/venv` (duckdb, cryptography);
+  `run.sh` uses it when present, else `python3`. Launch from the repo root.
+- **Credentials**: `KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY_PATH`, read from
+  the environment, then `unabated_ticket/bets_service/.env`, then the bots'
+  `kalshi_draft/.env` in the main checkout — so with the bots configured no
+  new file is needed. `.env.example` lists every knob (port, retention window,
+  Kalshi cadence, log level). Never commit `.env`.
+- **Endpoints** (loopback only, no auth): `GET /bets.json[?days=N]` →
+  `{generatedAt, sources: {kalshi: {...}, betonline: {fetchedAt, ok, error, count}}, bets: [...]}`
+  with open bets plus settled/closed ones within `N` days (default 30);
+  `GET /health` → `{ok, uptimeSec, sources}`.
+- **Kalshi source** (`sources/kalshi.py`): every 60 s pulls fills since the
+  last poll with a 60 s overlap (deduped on `trade_id`) and unsettled
+  positions, plus one cached public GET per market and per event; a full
+  fills re-pull once an hour is the reconcile, and it re-reads every cached
+  market without a result yet (settlement is the one thing on a market payload
+  that changes). Records are one per (ticker, side): positions are the truth
+  for the open size, fills give the VWAP entry price and first fill time,
+  `market.result` gives won/lost. Team keys are left `null` — the panel fills
+  them with `bets.resolveTeamKeys()` so the team table lives only in
+  `teams.js`. `normalize_kalshi()` is a port of `extension/bets.js`
+  `normalizeKalshi()`; `tests/test_parity.py` holds the two byte-equivalent.
+- **BetOnline source** (`sources/betonline.py`, #115): every 300 s pulls the
+  account's paged bet-history report (`POST api.betonline.ag/report/api/report/get-bet-history`,
+  pure HTTP — the same endpoint `bet_logger/scraper_betonline.py` uses) for the
+  last 31 days and keeps **pending** bets. The Keycloak refresh token is the
+  `krefresh` cookie in `bet_logger/recon_betonline_cookies.json` (main
+  checkout; `BETS_BETONLINE_COOKIES_PATH`), written by `bet_logger/recon_betonline.py`
+  — run it with `--interactive` and log in by hand when the poll reports
+  "token refresh failed" (the token dies after 3 days unused). The access
+  token is refreshed only within 60 s of expiry, under an exclusive lock on
+  `recon_betonline_cookies.json.lock` shared with the bet_logger scraper and
+  its LaunchAgent, and the rotated refresh token is written back atomically.
+  Record ids are `betonline:<TicketNumber>-<WagerNumber>`; the league comes
+  from `bet_logger/utils.py parse_sport` (the report names the SPORT —
+  "FOOTBALL" — never the league); a total names both teams, a spread or
+  moneyline only its own team, placed by rotation parity (odd = away, `approx:
+  side_from_rotation_parity`); the report carries no game date or settle time,
+  so `eventStart`/`eventDate` are null and a settled bet's `closedAt` is its
+  placed time. Unknown periods, sports outside the scanner and parlays whose
+  legs do not parse fail closed as unmatchable with the reason. Same Game
+  Parlay rows have not been seen live yet; their leg grammar is a guess the
+  parser refuses rather than misreads.
+- **Store** (`store.py`, `bets.duckdb`, gitignored): `bets` upserts on the
+  record id and is never pruned (the CLV work needs the history);
+  `source_runs` appends one row per poll. A failed poll writes a failed
+  `source_runs` row and touches nothing else, so a dark source keeps serving
+  its previous records; a store write that raises (disk full) is logged and
+  retried next poll, never killing the poll thread. Until a source's first
+  poll completes (Kalshi: ~1–2 min, one throttled GET per market and event)
+  `/bets.json` lists it as `{ok: false, error: "no completed poll yet"}`.
+  Log: `bets_service.log` (rotating, 10 MB × 3).
+- **Adding a venue** (#117 ProphetX; BetOnline and Novig are
+  `sources/betonline.py` / `sources/novig.py` above): a module in
+  `bets_service/sources/` with `name`, `poll_sec` and `fetch() -> list[record]`
+  (the `Source` protocol in `sources/__init__.py`), registered in
+  `service.main()`. `fetch()` returns every record the venue knows and raises
+  on failure — never a partial list. Records follow the contract in the plan
+  (`id` = `"<venue>:<native id>"`, `side`/`points` in the side's own number,
+  raw team names, keys `null`). A venue with no game date sets `eventStart`
+  and `eventDate` null, carries `rotation` and `approx: ["game_date_unknown"]`,
+  and the matcher windows on `placedAt` (see Bets). A content-script venue
+  instead writes `{bets<Venue>: {bets, readAt, url, error, complete}}` to
+  `chrome.storage.local` and the panel merges it with
+  `betsview.mergePageSource`.
+
 ## Tests
 
 ```bash
 node --test "unabated_ticket/tests/*.test.js"
+/Users/callancapitolo/NFLWork/kalshi_draft/venv/bin/python3 -m pytest unabated_ticket/bets_service/tests
 ```
+
+`betsview.test.js` covers the panel's bet-history presentation helpers:
+freshness colours at the 5 / 60 min bounds, the per-venue rows (unconfigured,
+failed poll, never fetched), the service status texts, the "sources
+unavailable" rule, the header line, the banner's 5-line cut, the badge
+text and kind (held / against / game), `stakeAdvice` (none / add / at size /
+reverse with the net), `relatedLines` (a tag and the label per match), the stored + fresh merge (newest
+per id, a venue's ok pull authoritative, keys filled, old settled pruned),
+the ticket → line shape, and settings sanitising.
+
+`novig_bets.test.js` runs the Novig normaliser on
+`fixtures/bets/novig_bets.json`: page bookkeeping (complete vs a full last
+page, offset 0 restarting a list, parlay lists keyed on their where-clause),
+a matched moneyline bid (index 0 = home, probability → American, stake =
+contracts × price), a spread bid and the lay of the same outcome (other
+team, negated number, `1 - p`), totals (partial fill sized on the matched
+part, a resting order open with the caveat), MLB `_1H` → `F5`, NCAAF → cfb,
+the strike fallback in the home perspective, props / unsupported leagues /
+blobs without teams failing closed with a reason, the settled grades (bid on
+WIN, lay on LOSS, PUSH, void cancel, wash closed), cancel-with-fills /
+cash-out / REJECTED / PENDING, parlay legs, and native-id dedupe.
+`bets.test.js` then matches those Novig records against the NFL slice: the
+moneyline bid (same_line / opposite with Novig labels), the spread bid and
+its lay on both signs, a resting Under and a parlay leg flagging the game,
+settled orders never matching, and the unmatched reasons. On the Python
+side `test_normalize_novig.py` restates those cases for the port,
+`test_parity_novig.py` holds it byte-equivalent to the JS, and
+`test_novig_source.py` covers the auth (refresh once then cache to the
+margin, rotation persisted with 0600, missing/broken token file, callback
+state/error parsing) and the source (trader resolved once, pagination to a
+short page, no user / auth failure / GraphQL error all raise).
 
 `kelly.test.js` checks the sheet's worked example (-400 at +12.5% edge,
 bankroll 30000, quarter Kelly = $3,750), the Seattle -133 / +1.89% case,
@@ -328,7 +792,13 @@ ladder disappearing on the next parse, and `groupEdges` (card keys, book
 and line counts, best by edge vs by stake, cards following their best).
 `scanner.test.js` drives the loop with an injected fetch: cursor from
 `Last-Modified`, poll, rejected-cursor resync, per-league failure, resume,
-and a league switch while a snapshot is still downloading.
+and a league switch while a snapshot is still downloading. `bets.test.js`
+pins the Kalshi normaliser and the matcher on
+`fixtures/bets/kalshi_fixture.json`; the pytest suite covers the service
+(fills → positions aggregation, both spread signs and total directions, the
+NO-moneyline tie caveat, unknown series failing closed, a failed poll keeping
+the previous records, the `/bets.json` shape and `?days=` window, and node
+parity on the same fixture).
 
 End-to-end without a real login: Playwright (in `mlb_sgp/venv`) with the
 ms-playwright Chromium, `--load-extension`, the two feed URLs routed to the
@@ -346,12 +816,30 @@ when the rung was pulled, and a main-cell ticket unchanged. The grouped
 run (20 checks) adds: 4 cards for 9 lines, the Bears card's best line being
 the -110 main over the +944 rung, the badge counting cards, the expander,
 a nested row click locating, and a card staying open across a re-render.
+The #114 run (31 checks, 2026-09-11) routes `127.0.0.1:8094/bets.json` to a
+payload built from the Kalshi fixture plus synthetic CHI@CAR bets and
+drove: the header line and open count, the Bets tab rows (kalshi green,
+a red Novig row with its error, two "no source configured"), the open and
+unmatched lists with their reasons, the Ticket banner for every tier
+(moneyline both sides, NO with the tie caveat, spread same-side and
+other-side-at-a-different-number, full-game total as same_game, 1H total
+same_line), `held $N` / `against $N` / `game` badges with their Related
+bets block and sized stakes ("add $200" over "$300 held · full size $500") on
+cards and rows, the exposure sort, the ticket's held / other-side / at-size block,
+settings and payload persistence, a stale source turning
+the row red and raising the Ticket warning while the banner keeps the last
+bets, the service going away (red header, "unreachable since", records
+kept) and a reload restoring the stored records. A second script pointed
+the panel at the running service: 29 real open positions listed, the bots'
+combos as "not a game market", no console errors.
 
 Manual checklist after loading unpacked: click a best-line price and a
 book-column price, then a moneyline, a spread and a total; confirm side
 label, points sign, price, fair and stake; change bankroll and watch the
 stake move; wait for a line change and see the warning; close the Unabated
-tab and see "Not watching".
+tab and see "Not watching". With the bets service running and a real
+Kalshi position: click that line and see the banner; the other side of it
+in red.
 
 ## Troubleshooting
 
@@ -366,8 +854,11 @@ tab and see "Not watching".
   reason text names which lookup failed.
 - **Panel did not open on click**: Chrome only auto-opens the side panel
   with a user gesture attached; click the toolbar icon once, it stays open.
-- **"Not watching the line"**: the Unabated tab is closed, navigated away,
-  or the row left the grid (filter change). Re-click the price.
+- **"Not watching the line"**: no Unabated tab is showing the line — the
+  tab is closed, on another league, or the row left the grid (filter
+  change, game off the board). A tab that merely reloaded or navigated
+  and came back resumes on its own within ~5 s; if the message stays with
+  the tab open on the right league, read the reason after the colon.
 - **Cannot size: Unabated has no edge at the new line**: the line moved to
   points Unabated has not priced yet. Wait a tick or re-click.
 - **Edges: "feed unavailable for CFB (HTTP 403)"**: Unabated blocked or moved
@@ -402,10 +893,57 @@ tab and see "Not watching".
 - **No notifications**: they only fire while the panel is open and the
   toggle is on; the first pass after enabling is silent by design. Check
   Chrome's notification permission for the extension in System Settings.
+- **Bets: "bets service unreachable since …"** (red header, Bets tab
+  banner): nothing is listening on the service URL. Start it with
+  `./unabated_ticket/bets_service/run.sh` from the repo root and check
+  `bets_service.log`; the panel keeps the last records it fetched and
+  retries every 30 s. A URL on another port needs a matching
+  `host_permissions` entry in `manifest.json` (only `127.0.0.1:8094` ships).
+- **Bets: a venue row is red with an error**: that source's last poll
+  failed (the text is the exception); the records shown are from its last
+  good pull. Kalshi: expired or missing `KALSHI_API_KEY_ID` /
+  `KALSHI_PRIVATE_KEY_PATH` (see the service's `.env.example`).
+- **Bets: "Bet sources unavailable" on the Ticket tab**: no venue has
+  reported in the last hour — the service is down or every source is
+  failing — so a missing flag means nothing. Fix the service, not the bet.
+- **Bets: unmatched "unknown Kalshi series"**: a game market whose series
+  is not in `bets.js` `GAME_SERIES` (and its Python twin in
+  `bets_service/sources/kalshi_ticker.py`); the raw ticker is in the list.
+  Add the series with its league, bet type and period, with a fixture test.
+- **Bets: unmatched "team not recognised (Name)"**: the venue's spelling
+  resolves to no team, or to more than one, in the league's index. The
+  index is not hand-written: every league snapshot the scanner parses
+  carries Unabated's team list (id, name, abbreviation), `teams.js`
+  registers it and the panel persists it (`teamsIndex`), so a name resolves
+  once its league has been scanned this session or a previous one. Keys are
+  `<league>:<Unabated team id>`, the ids the board's own lines carry, so
+  the board side never name-matches at all. A venue spelling resolves by
+  exact normalised name (St. = State), then a hand alias (`ALIASES` in
+  `teams.js`: "UAlbany" → "Albany", "North Carolina State" → "NC State",
+  "Southern Mississippi" → "Southern Miss", "Prairie View A&M" → "Prairie
+  View", "Louisiana" → "UL Lafayette", "Southeastern Louisiana" → "SE
+  Louisiana"), then the name minus a leading
+  code token ("PIT Steelers"), then a UNIQUE word-boundary containment
+  ("Steelers", "New England", "Middle Tennessee" → "Middle Tennessee State",
+  "Grambling St." → "Grambling" only because the leftover is an
+  institutional suffix). Two candidates is null, never a guess. If a
+  spelling keeps failing, add one `ALIASES` row with a `teams.test.js` case.
+  Resist turning an alias into a rule: "A&M" as an institutional suffix
+  would map a bet on Texas A&M to Texas on any week Unabated lists Texas
+  and not Texas A&M, since the index holds only the teams currently
+  playing. Measured 2026-09-12 against 111 open bets, every one of the 16
+  cross-spelling resolutions the rules make was correct, and the only
+  failures were three names no rule can derive.
+- **Bets: unmatched "ambiguous game"**: two board events accept the bet
+  (a doubleheader or series without a start time on the venue side). The
+  panel refuses to guess; the bet still counts in the header.
+- **Bets: unmatched "no event on the board yet" / "league not on the
+  scanner"**: the game is not in any loaded league snapshot — untick fewer
+  sports in the Edges controls, or wait for Unabated to list it.
 
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
 
-**Unabated Ticket** (`unabated_ticket/`) — Chrome MV3 side-panel extension (plain JS, no build). A capture-phase click on an Unabated odds-screen price reads the React fiber / AG Grid row (`page.js`, MAIN world), builds a one-at-a-time ticket (side, points, book price, `bacr` fair) in `chrome.storage.local`, computes the unrounded quarter-Kelly stake (`kelly.js`, node-tested), and re-reads the line every 5 s for a line-moved warning. **Edges tab (issue #112)**: while the panel is open, `scanner.js` reads Unabated's public feeds — the v2 league snapshot (`content.unabated.com/markets/v2/league/{lg}/odds.json?t=<30s bucket>` — the query busts a CloudFront edge cache that served gzip clients a 6.5 h-old copy on 2026-09-10 — on open + per-league refresh, 4 at a time, for the 29 team-sport leagues in `feed.LEAGUES`: NFL/CFB/NBA/CBB/WNBA/MLB/NHL + soccer; tennis and combat key sides on people and are out) and the changes stream (`api-k.unabated.com/api/markets/changes/query/{cursor}`, every 10 s; cursor = ns since 2021-01-06, kept as a string; **incomplete anonymously** — 69 of 191 NFL line changes in 3 min on 2026-09-10, exchange moves mostly missing — so each league's snapshot re-downloads on a size-tiered cadence, 60 s / 2 min / 5 min) — through `feed.js` (pure, fixture-tested: lines keyed `(marketId, book, sideKey)` because the changes stream tags other markets of an event with the same `bt` key, updates applied only on a newer `sequenceNumber`, books listed when `isActive` and enabled for game odds — `statusId` is not liveness, Caesars/Underdog carry 2 while live) and lists every ML/spread/total with Unabated's `ge` at or above the minimum and a `modifiedOn` within the max line age (default 168 h — dead feeds at "active" books carried 96-day-old lines with +36% "edges" on 2026-09-10; each row prints its line age), sized with `kellyStakeFromEdge`, filtered by a Books multi-select dropdown + Bets checkboxes in the panel (books default to the selection `page.js` publishes from `userSettings.gameOdds`; the user's own ticks win). Row click / notification click store a `locate` request (`locate.js`) that focuses the Unabated tab and has `page.js` scroll to the row and outline the cell — the price click stays the user's. Alerts are Chrome notifications, off by default, baselined on enable, deduped per line with a 5-min per-event cooldown. **Alt lines (issue #113)**: each snapshot line's `alternateLines[]` expands into lines keyed `(marketId, book, sideKey, points)` under the main line (`isAlt`, `mainPoints` = the book's own main number — NOT the feed's `stn`, which is the market's standard number), listed only behind an **Include alt lines** toggle (off by default) with two alt-only gates, **Max pts from main** (7) and **Min liquidity** ($100, exchanges only), on top of every main-line gate; an alt sitting on its main line's current number is hidden. Freshness caveat measured 2026-09-11: the anonymous changes stream carries NO alt updates and every alt's `modifiedOn` is the `0001-01-01` sentinel, so alts refresh only with the per-league snapshot and their age reads from `sequenceNumber` (the change time in epoch ms). An alt row click expands the grid row's Alts (`setExpanded`) and finds the cell by fiber props (points/side/book/event), failing loudly with the main cell outlined; a ticket captured on an alt cell carries `watch.altPoints` so the watcher re-reads the same rung. **Group by market** (on by default): `feed.groupEdges` collapses the list to one card per (game, period, bet type, side) — a +EV opinion is directional — whose best line is the highest Kelly stake (taxes longshots, so a -110 main at +5% beats a +944 rung at +6%), with `N books · M lines` behind an expander; alerts then key on the card and re-fire only when its best edge improves. No overlay, no tracking, no order placement. Load unpacked from `unabated_ticket/extension`.
+**Unabated Ticket** (`unabated_ticket/`) — Chrome MV3 side-panel extension (plain JS, no build). A capture-phase click on an Unabated odds-screen price reads the React fiber / AG Grid row (`page.js`, MAIN world), builds a one-at-a-time ticket (side, points, book price, `bacr` fair) in `chrome.storage.local`, computes the unrounded quarter-Kelly stake (`kelly.js`, node-tested), and re-reads the line every 5 s for a line-moved warning — **the watcher resumes from the stored ticket** whenever `page.js` loads (it dies with every navigation: one-click betting leaving the tab, Back, reload, discard, extension-reload takeover; `content.js` hands the stored ticket back on `resume_request` and once on its own load, and `page.js` rebuilds the watch by identity with no grid API — before 0.6.6 every such ticket read "Not watching the line" under a live heartbeat). **Edges tab (issue #112)**: while the panel is open, `scanner.js` reads Unabated's public feeds — the v2 league snapshot (`content.unabated.com/markets/v2/league/{lg}/odds.json?t=<30s bucket>` — the query busts a CloudFront edge cache that served gzip clients a 6.5 h-old copy on 2026-09-10 — on open + per-league refresh, 4 at a time, for the 29 team-sport leagues in `feed.LEAGUES`: NFL/CFB/NBA/CBB/WNBA/MLB/NHL + soccer; tennis and combat key sides on people and are out) and the changes stream (`api-k.unabated.com/api/markets/changes/query/{cursor}`, every 10 s; cursor = ns since 2021-01-06, kept as a string; **incomplete anonymously** — 69 of 191 NFL line changes in 3 min on 2026-09-10, exchange moves mostly missing — so each league's snapshot re-downloads on a size-tiered cadence, 60 s / 2 min / 5 min) — through `feed.js` (pure, fixture-tested: lines keyed `(marketId, book, sideKey)` because the changes stream tags other markets of an event with the same `bt` key, updates applied only on a newer `sequenceNumber`, books listed when `isActive` and enabled for game odds — `statusId` is not liveness, Caesars/Underdog carry 2 while live) and lists every ML/spread/total with Unabated's `ge` at or above the minimum and a `modifiedOn` within the max line age (default 168 h — dead feeds at "active" books carried 96-day-old lines with +36% "edges" on 2026-09-10; each row prints its line age), sized with `kellyStakeFromEdge`, filtered by a Books multi-select dropdown + Bets checkboxes in the panel (books default to the selection `page.js` publishes from `userSettings.gameOdds`; the user's own ticks win). Row click / notification click store a `locate` request (`locate.js`) that focuses the Unabated tab and has `page.js` scroll to the row and outline the cell — the price click stays the user's. Alerts are Chrome notifications, off by default, baselined on enable, deduped per line with a 5-min per-event cooldown. **Alt lines (issue #113)**: each snapshot line's `alternateLines[]` expands into lines keyed `(marketId, book, sideKey, points)` under the main line (`isAlt`, `mainPoints` = the book's own main number — NOT the feed's `stn`, which is the market's standard number), listed only behind an **Include alt lines** toggle (off by default) with two alt-only gates, **Max pts from main** (7) and **Min liquidity** ($100, exchanges only), on top of every main-line gate; an alt sitting on its main line's current number is hidden. Freshness caveat measured 2026-09-11: the anonymous changes stream carries NO alt updates and every alt's `modifiedOn` is the `0001-01-01` sentinel, so alts refresh only with the per-league snapshot and their age reads from `sequenceNumber` (the change time in epoch ms). An alt row click expands the grid row's Alts (`setExpanded`) and finds the cell by fiber props (points/side/book/event), failing loudly with the main cell outlined; a ticket captured on an alt cell carries `watch.altPoints` so the watcher re-reads the same rung. **Group by market** (on by default): `feed.groupEdges` collapses the list to one card per (game, period, bet type, side) — a +EV opinion is directional — whose best line is the highest Kelly stake (taxes longshots, so a -110 main at +5% beats a +944 rung at +6%), with `N books · M lines` behind an expander; alerts then key on the card and re-fire only when its best edge improves. **Bet history flags (issue #114, core; merged 2026-09-11)**: a local **bets service** (`unabated_ticket/bets_service/`, `run.sh`, `127.0.0.1:8094` loopback-only, no auth) is the only place that signs Kalshi requests — the private key never enters the extension — and turns the account's fills + unsettled positions into normalised bet records (one per `(ticker, side)`; positions are the truth for open size, fills the VWAP entry price; `sources/kalshi.py`, `sources/kalshi_ticker.py` a series map + cached public `/markets` and `/events` GETs, football suffixes carry the Eastern DATE only, MLB `HHMM` too; unknown series and futures fail closed as "unmatchable", shown never matched), UPSERTs them on native id into `bets_service/bets.duckdb::bets` (never pruned — future CLV) with a `source_runs` row per poll, and serves `GET /bets.json[?days=30]` (`{generatedAt, sources: {kalshi: {fetchedAt, ok, error, count}}, bets}`) + `/health`; a failed poll keeps the previous records (a dark source never blanks the list), a source on its first poll reads `ok:false, "no completed poll yet"`. The panel polls it every 30 s while visible — **never from the service worker** — into `chrome.storage.local` `betsService` (payload + records, open + settled ≤30 days, ~1 KB each) and `betsSettings` (`serviceUrl`), resolving team keys through `teams.js` — NOT a hand table (user decision 2026-09-11): every league snapshot's own team list (id, name, abbreviation) is registered at runtime and persisted as `teamsIndex`, keys are `<league>:<Unabated team id>` (the ids the board's lines carry), venue spellings resolve by exact normalised name, then a three-row `ALIASES` list, then a leading-code strip ("PIT Steelers"), then a UNIQUE word-boundary containment (the query-extends-team direction only for State/University/College, so "Southern Mississippi" never becomes "Southern") — and treating a venue's `ok` pull as authoritative for that venue's records. `bets.js` (pure, node-tested on `tests/fixtures/bets/kalshi_fixture.json`; `normalize_kalshi` in Python is held byte-equivalent by `test_parity.py`) matches a bet to a line on league + team pair (either order) or rotation + time (≤30 min with a start; the Eastern date ±1 day without), refuses to guess when two board events fit ("ambiguous game"), and ranks four tiers: `same_line` (market, period, side and number), `same_side` (different number), `opposite` (the other side — red), `same_game` (any other market/period); Kalshi NO on a team market = the other team **or a tie** (NFL/CFB/soccer, `approx: kalshi_no_side_includes_tie`). Surfaces: a **Ticket banner** (strongest first, 5 then "+N more"), **Edges badges + sized stakes** — a held bet NEVER hides a line, it changes the size of the next one (user decision 2026-09-11, replacing a hide toggle): `bets.exposureOf` sums dollars risked on the same direction (`held`, same_line + same_side) and the other side (`against`), `betsview.stakeAdvice` turns the row's Kelly stake into one wording everywhere (user choice 2026-09-11, `stakeAdviceWords`): "wagered $350 → target $600, bet $250" (against positions read "wagered $200 against …, bet $500 (net $300 on this side)", full size reads "bet $0"), rows and cards carry a `held $N` / `against $N` (red) / `game` badge plus a dim "you hold …" position line, a **by my exposure** sort, and alerts skip only lines already held at size, a **Bets tab** (per-venue freshness green <5 min / amber <60 / red, open bets, and an **unmatched** list with a reason per bet — nothing dropped silently), and a **header line** under the tabs ("bets: N open · kalshi 20 s · betonline — …"). Venue split: **#115 BetOnline (merged 2026-09-15)** polls the account's bet-history report through the bets service on the bet_logger Keycloak refresh token (`sources/betonline.py`; registered when the recon cookie file exists; refresh only within 60 s of expiry under a file lock shared with `bet_logger/scraper_betonline.py`, pending bets kept, league via `bet_logger/utils.parse_sport`, no game date → `approx: game_date_unknown` and the matcher windows `placedAt` −12 h/+14 d keyed on the rotation, with `tierByRotation` for team names `teams.js` cannot key); **#116 Novig, #117 ProphetX** each add a `Source` (`sources/__init__.py` protocol: `name`, `poll_sec`, `fetch() -> list[record]`, raise on failure, never partial) or a content script writing storage directly; until they land those venues read "no source configured". **Novig (issue #116)**: the official NBX API is a separate "Liquidity Provider" account ($30k minimum deposit; docs.novig.com/lp-onboarding) and cannot see retail-app bets, so the primary source is `bets_service/sources/novig.py` — a one-time `novig_auth connect` (Auth0 PKCE against the app's public client, the user logs in, refresh token saved to gitignored `novig_token.json`; its OWN chain, never the app's rotating localStorage token) then a 60 s poll of the app's Hasura `order`/`parlay` tables for the trader resolved from the JWT `sub`, through `curl_cffi`; `normalize_novig` is held byte-equivalent to `novig_bets.js` by `test_parity_novig.py`. The content-script mirror is the token-free fallback: `novig_page.js` (MAIN world, `document_start`, wraps `window.fetch` before the app bundle captures it) mirrors the three Portfolio queries the `app.novig.us` app fetches for itself (`ActivePortfolioOrders_Query` / `SettledPortfolioOrders_Query` / `ParlayPortfolioQuery` → `api.novig.us/v1/graphql`; zero requests of its own, no token read) and `novig_content.js` normalises them via `novig_bets.js` (outcome index 0 = home/Over, `price` a 0–1 probability, `isBid:false` LAYS the outcome = the other side at `1 - p`, `_1H` on MLB = `F5`, props/futures/unsupported leagues fail closed) into `chrome.storage.local.betsNovig`, which the panel merges (a complete read is authoritative for the venue; a stale one says "open app.novig.us … to refresh"); shapes are bundle-derived, not a live capture — a divergent blob lands in the unmatched list as "unreadable Novig order (…)". No overlay, no order placement. Load unpacked from `unabated_ticket/extension`.
 

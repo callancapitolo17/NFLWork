@@ -159,3 +159,10 @@ mlb_sgp/.caesars_profile/
 mlb_sgp/_czr_*.json
 mlb_sgp/recon_caesars_*.json
 mlb_sgp/recon_bet365_*.json
+
+# Unabated Ticket bets service: the Novig refresh token (rotating secret)
+unabated_ticket/bets_service/novig_token.json
+unabated_ticket/bets_service/novig_token.json.tmp
+# BetOnline cookie-file lock / atomic-write temp (bet_logger + the bets service)
+bet_logger/recon_betonline_cookies.json.lock
+bet_logger/recon_betonline_cookies.json.tmp

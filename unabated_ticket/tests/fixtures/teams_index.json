@@ -1,0 +1,2038 @@
+{
+ "capturedAt": "2026-09-12",
+ "provenance": "Unabated v2 league snapshots' `teams` maps (id, name, abbreviation), one entry per team, read 2026-09-12 \u2014 the index teams.js builds at runtime from the boards the scanner parses.",
+ "leagues": {
+  "nfl": [
+   {
+    "id": 1,
+    "name": "Arizona Cardinals",
+    "abbreviation": "ARI"
+   },
+   {
+    "id": 2,
+    "name": "Atlanta Falcons",
+    "abbreviation": "ATL"
+   },
+   {
+    "id": 3,
+    "name": "Baltimore Ravens",
+    "abbreviation": "BAL"
+   },
+   {
+    "id": 4,
+    "name": "Buffalo Bills",
+    "abbreviation": "BUF"
+   },
+   {
+    "id": 5,
+    "name": "Carolina Panthers",
+    "abbreviation": "CAR"
+   },
+   {
+    "id": 6,
+    "name": "Chicago Bears",
+    "abbreviation": "CHI"
+   },
+   {
+    "id": 7,
+    "name": "Cincinnati Bengals",
+    "abbreviation": "CIN"
+   },
+   {
+    "id": 8,
+    "name": "Cleveland Browns",
+    "abbreviation": "CLE"
+   },
+   {
+    "id": 9,
+    "name": "Dallas Cowboys",
+    "abbreviation": "DAL"
+   },
+   {
+    "id": 10,
+    "name": "Denver Broncos",
+    "abbreviation": "DEN"
+   },
+   {
+    "id": 11,
+    "name": "Detroit Lions",
+    "abbreviation": "DET"
+   },
+   {
+    "id": 12,
+    "name": "Green Bay Packers",
+    "abbreviation": "GB"
+   },
+   {
+    "id": 13,
+    "name": "Houston Texans",
+    "abbreviation": "HOU"
+   },
+   {
+    "id": 14,
+    "name": "Indianapolis Colts",
+    "abbreviation": "IND"
+   },
+   {
+    "id": 15,
+    "name": "Jacksonville Jaguars",
+    "abbreviation": "JAX"
+   },
+   {
+    "id": 16,
+    "name": "Kansas City Chiefs",
+    "abbreviation": "KC"
+   },
+   {
+    "id": 23,
+    "name": "Las Vegas Raiders",
+    "abbreviation": "LV"
+   },
+   {
+    "id": 26,
+    "name": "Los Angeles Chargers",
+    "abbreviation": "LAC"
+   },
+   {
+    "id": 29,
+    "name": "Los Angeles Rams",
+    "abbreviation": "LAR"
+   },
+   {
+    "id": 17,
+    "name": "Miami Dolphins",
+    "abbreviation": "MIA"
+   },
+   {
+    "id": 18,
+    "name": "Minnesota Vikings",
+    "abbreviation": "MIN"
+   },
+   {
+    "id": 19,
+    "name": "New England Patriots",
+    "abbreviation": "NE"
+   },
+   {
+    "id": 20,
+    "name": "New Orleans Saints",
+    "abbreviation": "NO"
+   },
+   {
+    "id": 21,
+    "name": "New York Giants",
+    "abbreviation": "NYG"
+   },
+   {
+    "id": 22,
+    "name": "New York Jets",
+    "abbreviation": "NYJ"
+   },
+   {
+    "id": 24,
+    "name": "Philadelphia Eagles",
+    "abbreviation": "PHI"
+   },
+   {
+    "id": 25,
+    "name": "Pittsburgh Steelers",
+    "abbreviation": "PIT"
+   },
+   {
+    "id": 27,
+    "name": "San Francisco 49ers",
+    "abbreviation": "SF"
+   },
+   {
+    "id": 28,
+    "name": "Seattle Seahawks",
+    "abbreviation": "SEA"
+   },
+   {
+    "id": 30,
+    "name": "Tampa Bay Buccaneers",
+    "abbreviation": "TB"
+   },
+   {
+    "id": 31,
+    "name": "Tennessee Titans",
+    "abbreviation": "TEN"
+   },
+   {
+    "id": 32,
+    "name": "Washington Commanders",
+    "abbreviation": "WAS"
+   }
+  ],
+  "cfb": [
+   {
+    "id": 1123,
+    "name": "Abilene Christian",
+    "abbreviation": "ACU"
+   },
+   {
+    "id": 592,
+    "name": "Air Force",
+    "abbreviation": "AF"
+   },
+   {
+    "id": 593,
+    "name": "Akron",
+    "abbreviation": "AKR"
+   },
+   {
+    "id": 594,
+    "name": "Alabama",
+    "abbreviation": "BAMA"
+   },
+   {
+    "id": 1024,
+    "name": "Alabama A&M",
+    "abbreviation": "AAM"
+   },
+   {
+    "id": 958,
+    "name": "Alabama State",
+    "abbreviation": "ALAST"
+   },
+   {
+    "id": 1025,
+    "name": "Albany",
+    "abbreviation": "ALB"
+   },
+   {
+    "id": 776,
+    "name": "Alcorn State",
+    "abbreviation": "ALCST"
+   },
+   {
+    "id": 595,
+    "name": "Appalachian State",
+    "abbreviation": "APP"
+   },
+   {
+    "id": 597,
+    "name": "Arizona",
+    "abbreviation": "ARI"
+   },
+   {
+    "id": 596,
+    "name": "Arizona State",
+    "abbreviation": "ASU"
+   },
+   {
+    "id": 598,
+    "name": "Arkansas",
+    "abbreviation": "ARK"
+   },
+   {
+    "id": 599,
+    "name": "Arkansas State",
+    "abbreviation": "ARKS"
+   },
+   {
+    "id": 767,
+    "name": "Arkansas-Pine Bluff",
+    "abbreviation": "APB"
+   },
+   {
+    "id": 600,
+    "name": "Army",
+    "abbreviation": "ARM"
+   },
+   {
+    "id": 601,
+    "name": "Auburn",
+    "abbreviation": "AUB"
+   },
+   {
+    "id": 794,
+    "name": "Austin Peay",
+    "abbreviation": "APY"
+   },
+   {
+    "id": 608,
+    "name": "BYU",
+    "abbreviation": "BYU"
+   },
+   {
+    "id": 602,
+    "name": "Ball State",
+    "abbreviation": "BALL"
+   },
+   {
+    "id": 603,
+    "name": "Baylor",
+    "abbreviation": "BAY"
+   },
+   {
+    "id": 1057,
+    "name": "Bethune-Cookman",
+    "abbreviation": "BCU"
+   },
+   {
+    "id": 604,
+    "name": "Boise State",
+    "abbreviation": "BOISE"
+   },
+   {
+    "id": 605,
+    "name": "Boston College",
+    "abbreviation": "BC"
+   },
+   {
+    "id": 606,
+    "name": "Bowling Green",
+    "abbreviation": "BGN"
+   },
+   {
+    "id": 1124,
+    "name": "Brown",
+    "abbreviation": "BRN"
+   },
+   {
+    "id": 786,
+    "name": "Bryant",
+    "abbreviation": "BRY"
+   },
+   {
+    "id": 763,
+    "name": "Bucknell",
+    "abbreviation": "BUC"
+   },
+   {
+    "id": 607,
+    "name": "Buffalo",
+    "abbreviation": "BUF"
+   },
+   {
+    "id": 1126,
+    "name": "Butler",
+    "abbreviation": "BUT"
+   },
+   {
+    "id": 1058,
+    "name": "Cal Poly",
+    "abbreviation": "CPS"
+   },
+   {
+    "id": 609,
+    "name": "California",
+    "abbreviation": "CAL"
+   },
+   {
+    "id": 1127,
+    "name": "Campbell",
+    "abbreviation": "CAM"
+   },
+   {
+    "id": 1128,
+    "name": "Central Arkansas",
+    "abbreviation": "UCA"
+   },
+   {
+    "id": 774,
+    "name": "Central Connecticut",
+    "abbreviation": "CCSU"
+   },
+   {
+    "id": 701,
+    "name": "Central Florida",
+    "abbreviation": "UCF"
+   },
+   {
+    "id": 610,
+    "name": "Central Michigan",
+    "abbreviation": "CMC"
+   },
+   {
+    "id": 761,
+    "name": "Charleston Southern",
+    "abbreviation": "CCH"
+   },
+   {
+    "id": 611,
+    "name": "Charlotte",
+    "abbreviation": "CHA"
+   },
+   {
+    "id": 791,
+    "name": "Chattanooga",
+    "abbreviation": "CHT"
+   },
+   {
+    "id": 612,
+    "name": "Cincinnati",
+    "abbreviation": "CIN"
+   },
+   {
+    "id": 613,
+    "name": "Clemson",
+    "abbreviation": "CLE"
+   },
+   {
+    "id": 614,
+    "name": "Coastal Carolina",
+    "abbreviation": "CC"
+   },
+   {
+    "id": 1059,
+    "name": "Colgate",
+    "abbreviation": "CGT"
+   },
+   {
+    "id": 615,
+    "name": "Colorado",
+    "abbreviation": "COL"
+   },
+   {
+    "id": 616,
+    "name": "Colorado State",
+    "abbreviation": "CSU"
+   },
+   {
+    "id": 1131,
+    "name": "Columbia",
+    "abbreviation": "CMB"
+   },
+   {
+    "id": 703,
+    "name": "Connecticut",
+    "abbreviation": "CONN"
+   },
+   {
+    "id": 1132,
+    "name": "Cornell",
+    "abbreviation": "COR"
+   },
+   {
+    "id": 1134,
+    "name": "Dartmouth",
+    "abbreviation": "DRT"
+   },
+   {
+    "id": 1135,
+    "name": "Davidson",
+    "abbreviation": "DAV"
+   },
+   {
+    "id": 1136,
+    "name": "Dayton",
+    "abbreviation": "DAY"
+   },
+   {
+    "id": 787,
+    "name": "Delaware",
+    "abbreviation": "DEL"
+   },
+   {
+    "id": 1060,
+    "name": "Delaware State",
+    "abbreviation": "DLS"
+   },
+   {
+    "id": 1138,
+    "name": "Dragons Virginia Lynchburg",
+    "abbreviation": "VLB"
+   },
+   {
+    "id": 1139,
+    "name": "Drake",
+    "abbreviation": "DRA"
+   },
+   {
+    "id": 617,
+    "name": "Duke",
+    "abbreviation": "DUK"
+   },
+   {
+    "id": 927,
+    "name": "Duquesne",
+    "abbreviation": "DUQ"
+   },
+   {
+    "id": 618,
+    "name": "East Carolina",
+    "abbreviation": "ECU"
+   },
+   {
+    "id": 1145,
+    "name": "East Tennessee State",
+    "abbreviation": "ETSU"
+   },
+   {
+    "id": 1144,
+    "name": "East Washington",
+    "abbreviation": "EW"
+   },
+   {
+    "id": 1061,
+    "name": "Eastern Illinois",
+    "abbreviation": "EIL"
+   },
+   {
+    "id": 1062,
+    "name": "Eastern Kentucky",
+    "abbreviation": "EKY"
+   },
+   {
+    "id": 619,
+    "name": "Eastern Michigan",
+    "abbreviation": "EMC"
+   },
+   {
+    "id": 785,
+    "name": "Elon",
+    "abbreviation": "ELO"
+   },
+   {
+    "id": 621,
+    "name": "Florida",
+    "abbreviation": "FLA"
+   },
+   {
+    "id": 925,
+    "name": "Florida A&M",
+    "abbreviation": "FAMU"
+   },
+   {
+    "id": 620,
+    "name": "Florida Atlantic",
+    "abbreviation": "FAU"
+   },
+   {
+    "id": 622,
+    "name": "Florida International",
+    "abbreviation": "FIU"
+   },
+   {
+    "id": 623,
+    "name": "Florida State",
+    "abbreviation": "FSU"
+   },
+   {
+    "id": 781,
+    "name": "Fordham",
+    "abbreviation": "FOR"
+   },
+   {
+    "id": 624,
+    "name": "Fresno State",
+    "abbreviation": "FRE"
+   },
+   {
+    "id": 779,
+    "name": "Furman",
+    "abbreviation": "FUR"
+   },
+   {
+    "id": 1147,
+    "name": "Gardner-Webb",
+    "abbreviation": "GWB"
+   },
+   {
+    "id": 1148,
+    "name": "Georgetown",
+    "abbreviation": "GTOWN"
+   },
+   {
+    "id": 625,
+    "name": "Georgia",
+    "abbreviation": "UGA"
+   },
+   {
+    "id": 626,
+    "name": "Georgia Southern",
+    "abbreviation": "GSO"
+   },
+   {
+    "id": 627,
+    "name": "Georgia State",
+    "abbreviation": "GST"
+   },
+   {
+    "id": 628,
+    "name": "Georgia Tech",
+    "abbreviation": "GT"
+   },
+   {
+    "id": 780,
+    "name": "Grambling",
+    "abbreviation": "GRA"
+   },
+   {
+    "id": 1150,
+    "name": "Hampton",
+    "abbreviation": "HAMP"
+   },
+   {
+    "id": 1151,
+    "name": "Harvard",
+    "abbreviation": "HAR"
+   },
+   {
+    "id": 629,
+    "name": "Hawaii",
+    "abbreviation": "HAW"
+   },
+   {
+    "id": 1152,
+    "name": "Holy Cross",
+    "abbreviation": "HC"
+   },
+   {
+    "id": 630,
+    "name": "Houston",
+    "abbreviation": "HOU"
+   },
+   {
+    "id": 1155,
+    "name": "Houston Christian",
+    "abbreviation": "HB"
+   },
+   {
+    "id": 793,
+    "name": "Howard",
+    "abbreviation": "HOW"
+   },
+   {
+    "id": 784,
+    "name": "Idaho",
+    "abbreviation": "IDA"
+   },
+   {
+    "id": 765,
+    "name": "Idaho State",
+    "abbreviation": "IDS"
+   },
+   {
+    "id": 631,
+    "name": "Illinois",
+    "abbreviation": "ILL"
+   },
+   {
+    "id": 1063,
+    "name": "Illinois State",
+    "abbreviation": "ILS"
+   },
+   {
+    "id": 632,
+    "name": "Incarnate Word",
+    "abbreviation": "IW"
+   },
+   {
+    "id": 633,
+    "name": "Indiana",
+    "abbreviation": "IU"
+   },
+   {
+    "id": 1156,
+    "name": "Indiana State",
+    "abbreviation": "INDS"
+   },
+   {
+    "id": 634,
+    "name": "Iowa",
+    "abbreviation": "IOW"
+   },
+   {
+    "id": 635,
+    "name": "Iowa State",
+    "abbreviation": "ISU"
+   },
+   {
+    "id": 777,
+    "name": "Jackson St",
+    "abbreviation": "JST"
+   },
+   {
+    "id": 792,
+    "name": "Jacksonville State",
+    "abbreviation": "JVS"
+   },
+   {
+    "id": 892,
+    "name": "James Madison",
+    "abbreviation": "JMU"
+   },
+   {
+    "id": 636,
+    "name": "Kansas",
+    "abbreviation": "KAN"
+   },
+   {
+    "id": 637,
+    "name": "Kansas State",
+    "abbreviation": "KST"
+   },
+   {
+    "id": 1157,
+    "name": "Kennesaw St",
+    "abbreviation": "KENN"
+   },
+   {
+    "id": 638,
+    "name": "Kent State",
+    "abbreviation": "KNT"
+   },
+   {
+    "id": 639,
+    "name": "Kentucky",
+    "abbreviation": "KEN"
+   },
+   {
+    "id": 644,
+    "name": "LSU",
+    "abbreviation": "LSU"
+   },
+   {
+    "id": 1159,
+    "name": "Lafayette",
+    "abbreviation": "LAF"
+   },
+   {
+    "id": 1160,
+    "name": "Lamar",
+    "abbreviation": "LAM"
+   },
+   {
+    "id": 1161,
+    "name": "Lehigh",
+    "abbreviation": "LEI"
+   },
+   {
+    "id": 640,
+    "name": "Liberty",
+    "abbreviation": "LIB"
+   },
+   {
+    "id": 1162,
+    "name": "Lindenwood University",
+    "abbreviation": "LINU"
+   },
+   {
+    "id": 1090,
+    "name": "Long Island",
+    "abbreviation": "LIUCWP"
+   },
+   {
+    "id": 642,
+    "name": "Louisiana Tech",
+    "abbreviation": "LT"
+   },
+   {
+    "id": 643,
+    "name": "Louisville",
+    "abbreviation": "LOU"
+   },
+   {
+    "id": 1064,
+    "name": "Maine",
+    "abbreviation": "UMAINE"
+   },
+   {
+    "id": 1163,
+    "name": "Marist Red",
+    "abbreviation": "MST"
+   },
+   {
+    "id": 645,
+    "name": "Marshall",
+    "abbreviation": "MSH"
+   },
+   {
+    "id": 646,
+    "name": "Maryland",
+    "abbreviation": "MAR"
+   },
+   {
+    "id": 705,
+    "name": "Massachusetts",
+    "abbreviation": "UMASS"
+   },
+   {
+    "id": 1164,
+    "name": "McNeese State",
+    "abbreviation": "MCN"
+   },
+   {
+    "id": 647,
+    "name": "Memphis",
+    "abbreviation": "MEM"
+   },
+   {
+    "id": 928,
+    "name": "Mercer",
+    "abbreviation": "MER"
+   },
+   {
+    "id": 1585,
+    "name": "Mercyhurst",
+    "abbreviation": "MHU"
+   },
+   {
+    "id": 1165,
+    "name": "Merrimack College",
+    "abbreviation": "MC"
+   },
+   {
+    "id": 649,
+    "name": "Miami Florida",
+    "abbreviation": "MFL"
+   },
+   {
+    "id": 648,
+    "name": "Miami Ohio",
+    "abbreviation": "MOH"
+   },
+   {
+    "id": 651,
+    "name": "Michigan",
+    "abbreviation": "MICH"
+   },
+   {
+    "id": 650,
+    "name": "Michigan State",
+    "abbreviation": "MSU"
+   },
+   {
+    "id": 652,
+    "name": "Middle Tennessee State",
+    "abbreviation": "MTS"
+   },
+   {
+    "id": 653,
+    "name": "Minnesota",
+    "abbreviation": "MIN"
+   },
+   {
+    "id": 672,
+    "name": "Mississippi",
+    "abbreviation": "MIS"
+   },
+   {
+    "id": 654,
+    "name": "Mississippi State",
+    "abbreviation": "MSST"
+   },
+   {
+    "id": 1166,
+    "name": "Mississippi Valley State",
+    "abbreviation": "MVS"
+   },
+   {
+    "id": 655,
+    "name": "Missouri",
+    "abbreviation": "MIZ"
+   },
+   {
+    "id": 1167,
+    "name": "Missouri State",
+    "abbreviation": "MIZST"
+   },
+   {
+    "id": 1168,
+    "name": "Monmouth",
+    "abbreviation": "MNM"
+   },
+   {
+    "id": 1169,
+    "name": "Montana",
+    "abbreviation": "MONT"
+   },
+   {
+    "id": 1170,
+    "name": "Montana State",
+    "abbreviation": "MOS"
+   },
+   {
+    "id": 929,
+    "name": "Morehead State",
+    "abbreviation": "MOR"
+   },
+   {
+    "id": 1065,
+    "name": "Morgan State",
+    "abbreviation": "MGN"
+   },
+   {
+    "id": 782,
+    "name": "Murray State",
+    "abbreviation": "MUR"
+   },
+   {
+    "id": 657,
+    "name": "NC State",
+    "abbreviation": "NCST"
+   },
+   {
+    "id": 656,
+    "name": "Navy",
+    "abbreviation": "NAV"
+   },
+   {
+    "id": 658,
+    "name": "Nebraska",
+    "abbreviation": "NEB"
+   },
+   {
+    "id": 659,
+    "name": "Nevada",
+    "abbreviation": "NEV"
+   },
+   {
+    "id": 773,
+    "name": "New Hampshire",
+    "abbreviation": "NH"
+   },
+   {
+    "id": 1687,
+    "name": "New Haven",
+    "abbreviation": "NHC"
+   },
+   {
+    "id": 660,
+    "name": "New Mexico",
+    "abbreviation": "NM"
+   },
+   {
+    "id": 661,
+    "name": "New Mexico State",
+    "abbreviation": "NMS"
+   },
+   {
+    "id": 1066,
+    "name": "Nicholls State",
+    "abbreviation": "NIC"
+   },
+   {
+    "id": 1067,
+    "name": "Norfolk State",
+    "abbreviation": "NFS"
+   },
+   {
+    "id": 1172,
+    "name": "North Alabama",
+    "abbreviation": "UNA"
+   },
+   {
+    "id": 662,
+    "name": "North Carolina",
+    "abbreviation": "NC"
+   },
+   {
+    "id": 1173,
+    "name": "North Carolina A&T",
+    "abbreviation": "NAT"
+   },
+   {
+    "id": 1174,
+    "name": "North Carolina Central",
+    "abbreviation": "NCC"
+   },
+   {
+    "id": 1068,
+    "name": "North Dakota",
+    "abbreviation": "UND"
+   },
+   {
+    "id": 1175,
+    "name": "North Dakota State",
+    "abbreviation": "NDS"
+   },
+   {
+    "id": 663,
+    "name": "North Texas",
+    "abbreviation": "NTX"
+   },
+   {
+    "id": 775,
+    "name": "Northern Arizona",
+    "abbreviation": "NAZ"
+   },
+   {
+    "id": 1176,
+    "name": "Northern Colorado",
+    "abbreviation": "NOCO"
+   },
+   {
+    "id": 664,
+    "name": "Northern Illinois",
+    "abbreviation": "NIL"
+   },
+   {
+    "id": 1069,
+    "name": "Northern Iowa",
+    "abbreviation": "UNI"
+   },
+   {
+    "id": 665,
+    "name": "Northwestern",
+    "abbreviation": "NW"
+   },
+   {
+    "id": 1177,
+    "name": "Northwestern State",
+    "abbreviation": "NWS"
+   },
+   {
+    "id": 666,
+    "name": "Notre Dame",
+    "abbreviation": "ND"
+   },
+   {
+    "id": 667,
+    "name": "Ohio",
+    "abbreviation": "OHI"
+   },
+   {
+    "id": 668,
+    "name": "Ohio State",
+    "abbreviation": "OSU"
+   },
+   {
+    "id": 669,
+    "name": "Oklahoma",
+    "abbreviation": "OKL"
+   },
+   {
+    "id": 670,
+    "name": "Oklahoma State",
+    "abbreviation": "OKS"
+   },
+   {
+    "id": 671,
+    "name": "Old Dominion",
+    "abbreviation": "ODU"
+   },
+   {
+    "id": 673,
+    "name": "Oregon",
+    "abbreviation": "ORE"
+   },
+   {
+    "id": 674,
+    "name": "Oregon State",
+    "abbreviation": "ORS"
+   },
+   {
+    "id": 675,
+    "name": "Penn State",
+    "abbreviation": "PSU"
+   },
+   {
+    "id": 1179,
+    "name": "Pennsylvania",
+    "abbreviation": "PEN"
+   },
+   {
+    "id": 676,
+    "name": "Pittsburgh",
+    "abbreviation": "PITT"
+   },
+   {
+    "id": 1070,
+    "name": "Portland State",
+    "abbreviation": "PRST"
+   },
+   {
+    "id": 759,
+    "name": "Prairie View",
+    "abbreviation": "PRV"
+   },
+   {
+    "id": 1180,
+    "name": "Presbyterian Blue Hose",
+    "abbreviation": "PRES"
+   },
+   {
+    "id": 1181,
+    "name": "Princeton",
+    "abbreviation": "PRI"
+   },
+   {
+    "id": 677,
+    "name": "Purdue",
+    "abbreviation": "PUR"
+   },
+   {
+    "id": 766,
+    "name": "Rhode Island",
+    "abbreviation": "RIL"
+   },
+   {
+    "id": 678,
+    "name": "Rice",
+    "abbreviation": "RICE"
+   },
+   {
+    "id": 772,
+    "name": "Richmond",
+    "abbreviation": "RCH"
+   },
+   {
+    "id": 1182,
+    "name": "Robert Morris",
+    "abbreviation": "RM"
+   },
+   {
+    "id": 679,
+    "name": "Rutgers",
+    "abbreviation": "RUT"
+   },
+   {
+    "id": 1190,
+    "name": "S Illinois",
+    "abbreviation": "SIL"
+   },
+   {
+    "id": 1074,
+    "name": "SE Louisiana",
+    "abbreviation": "SEL"
+   },
+   {
+    "id": 790,
+    "name": "SE Missouri State",
+    "abbreviation": "SEM"
+   },
+   {
+    "id": 682,
+    "name": "SMU",
+    "abbreviation": "SMU"
+   },
+   {
+    "id": 783,
+    "name": "Sacramento St",
+    "abbreviation": "CSUS"
+   },
+   {
+    "id": 1185,
+    "name": "Sacred Heart",
+    "abbreviation": "SCH"
+   },
+   {
+    "id": 1071,
+    "name": "Sam Houston State",
+    "abbreviation": "SHS"
+   },
+   {
+    "id": 764,
+    "name": "Samford",
+    "abbreviation": "SAM"
+   },
+   {
+    "id": 1189,
+    "name": "San Diego",
+    "abbreviation": "SDG"
+   },
+   {
+    "id": 680,
+    "name": "San Diego State",
+    "abbreviation": "SDSU"
+   },
+   {
+    "id": 681,
+    "name": "San Jose State",
+    "abbreviation": "SJS"
+   },
+   {
+    "id": 683,
+    "name": "South Alabama",
+    "abbreviation": "SAB"
+   },
+   {
+    "id": 684,
+    "name": "South Carolina",
+    "abbreviation": "SC"
+   },
+   {
+    "id": 788,
+    "name": "South Carolina State",
+    "abbreviation": "SCS"
+   },
+   {
+    "id": 1072,
+    "name": "South Dakota",
+    "abbreviation": "SD"
+   },
+   {
+    "id": 1073,
+    "name": "South Dakota State",
+    "abbreviation": "SDS"
+   },
+   {
+    "id": 685,
+    "name": "South Florida",
+    "abbreviation": "USF"
+   },
+   {
+    "id": 1191,
+    "name": "Southern",
+    "abbreviation": "SU"
+   },
+   {
+    "id": 686,
+    "name": "Southern Miss",
+    "abbreviation": "USM"
+   },
+   {
+    "id": 1192,
+    "name": "Southern Utah",
+    "abbreviation": "SUT"
+   },
+   {
+    "id": 1195,
+    "name": "St. Thomas",
+    "abbreviation": "UST"
+   },
+   {
+    "id": 687,
+    "name": "Stanford",
+    "abbreviation": "STA"
+   },
+   {
+    "id": 991,
+    "name": "Stephen F. Austin",
+    "abbreviation": "SAU"
+   },
+   {
+    "id": 1193,
+    "name": "Stetson",
+    "abbreviation": "STU"
+   },
+   {
+    "id": 1194,
+    "name": "Stonehill College",
+    "abbreviation": "STHL"
+   },
+   {
+    "id": 778,
+    "name": "Stony Brook",
+    "abbreviation": "SBK"
+   },
+   {
+    "id": 688,
+    "name": "Syracuse",
+    "abbreviation": "SYR"
+   },
+   {
+    "id": 689,
+    "name": "TCU",
+    "abbreviation": "TCU"
+   },
+   {
+    "id": 1196,
+    "name": "Tarleton",
+    "abbreviation": "TSU"
+   },
+   {
+    "id": 690,
+    "name": "Temple",
+    "abbreviation": "TEM"
+   },
+   {
+    "id": 691,
+    "name": "Tennessee",
+    "abbreviation": "TEN"
+   },
+   {
+    "id": 760,
+    "name": "Tennessee State",
+    "abbreviation": "TNST"
+   },
+   {
+    "id": 789,
+    "name": "Tennessee Tech",
+    "abbreviation": "TNT"
+   },
+   {
+    "id": 693,
+    "name": "Texas",
+    "abbreviation": "TEX"
+   },
+   {
+    "id": 692,
+    "name": "Texas A&M",
+    "abbreviation": "TXAM"
+   },
+   {
+    "id": 1198,
+    "name": "Texas A&M-Commerce",
+    "abbreviation": "TAMC"
+   },
+   {
+    "id": 770,
+    "name": "Texas Southern",
+    "abbreviation": "TSO"
+   },
+   {
+    "id": 694,
+    "name": "Texas State",
+    "abbreviation": "TXST"
+   },
+   {
+    "id": 695,
+    "name": "Texas Tech",
+    "abbreviation": "TT"
+   },
+   {
+    "id": 1130,
+    "name": "The Citadel",
+    "abbreviation": "CIT"
+   },
+   {
+    "id": 696,
+    "name": "Toledo",
+    "abbreviation": "TOL"
+   },
+   {
+    "id": 768,
+    "name": "Towson",
+    "abbreviation": "TWN"
+   },
+   {
+    "id": 697,
+    "name": "Troy",
+    "abbreviation": "TRY"
+   },
+   {
+    "id": 698,
+    "name": "Tulane",
+    "abbreviation": "TUL"
+   },
+   {
+    "id": 699,
+    "name": "Tulsa",
+    "abbreviation": "TSA"
+   },
+   {
+    "id": 700,
+    "name": "UAB",
+    "abbreviation": "UAB"
+   },
+   {
+    "id": 1076,
+    "name": "UC Davis",
+    "abbreviation": "UCD"
+   },
+   {
+    "id": 702,
+    "name": "UCLA",
+    "abbreviation": "UCLA"
+   },
+   {
+    "id": 1222,
+    "name": "UL Lafayette",
+    "abbreviation": "ULL"
+   },
+   {
+    "id": 704,
+    "name": "UL Monroe",
+    "abbreviation": "ULM"
+   },
+   {
+    "id": 706,
+    "name": "UNLV",
+    "abbreviation": "UNLV"
+   },
+   {
+    "id": 707,
+    "name": "USC",
+    "abbreviation": "USC"
+   },
+   {
+    "id": 1197,
+    "name": "UT Martin",
+    "abbreviation": "TNM"
+   },
+   {
+    "id": 1997,
+    "name": "UT Rio Grande Valley",
+    "abbreviation": "UTRGV"
+   },
+   {
+    "id": 710,
+    "name": "UTEP",
+    "abbreviation": "UTEP"
+   },
+   {
+    "id": 711,
+    "name": "UTSA",
+    "abbreviation": "UTSA"
+   },
+   {
+    "id": 709,
+    "name": "Utah",
+    "abbreviation": "UTH"
+   },
+   {
+    "id": 708,
+    "name": "Utah State",
+    "abbreviation": "UTS"
+   },
+   {
+    "id": 1137,
+    "name": "Utah Tech",
+    "abbreviation": "DSU"
+   },
+   {
+    "id": 1091,
+    "name": "VMI",
+    "abbreviation": "VMI"
+   },
+   {
+    "id": 1202,
+    "name": "Valparaiso",
+    "abbreviation": "VAL"
+   },
+   {
+    "id": 712,
+    "name": "Vanderbilt",
+    "abbreviation": "VAN"
+   },
+   {
+    "id": 771,
+    "name": "Villanova",
+    "abbreviation": "VIL"
+   },
+   {
+    "id": 713,
+    "name": "Virginia",
+    "abbreviation": "UVA"
+   },
+   {
+    "id": 714,
+    "name": "Virginia Tech",
+    "abbreviation": "VT"
+   },
+   {
+    "id": 769,
+    "name": "Wagner",
+    "abbreviation": "WAG"
+   },
+   {
+    "id": 715,
+    "name": "Wake Forest",
+    "abbreviation": "WF"
+   },
+   {
+    "id": 716,
+    "name": "Washington",
+    "abbreviation": "WAS"
+   },
+   {
+    "id": 717,
+    "name": "Washington State",
+    "abbreviation": "WST"
+   },
+   {
+    "id": 1206,
+    "name": "Weber State",
+    "abbreviation": "WBS"
+   },
+   {
+    "id": 1586,
+    "name": "West Georgia",
+    "abbreviation": "UWGA"
+   },
+   {
+    "id": 718,
+    "name": "West Virginia",
+    "abbreviation": "WVU"
+   },
+   {
+    "id": 719,
+    "name": "Western Carolina",
+    "abbreviation": "WCU"
+   },
+   {
+    "id": 1207,
+    "name": "Western Illinois",
+    "abbreviation": "WIL"
+   },
+   {
+    "id": 720,
+    "name": "Western Kentucky",
+    "abbreviation": "WKY"
+   },
+   {
+    "id": 721,
+    "name": "Western Michigan",
+    "abbreviation": "WMC"
+   },
+   {
+    "id": 1077,
+    "name": "William & Mary",
+    "abbreviation": "WM"
+   },
+   {
+    "id": 722,
+    "name": "Wisconsin",
+    "abbreviation": "WIS"
+   },
+   {
+    "id": 762,
+    "name": "Wofford",
+    "abbreviation": "WOF"
+   },
+   {
+    "id": 723,
+    "name": "Wyoming",
+    "abbreviation": "WYO"
+   },
+   {
+    "id": 1209,
+    "name": "Yale",
+    "abbreviation": "YAL"
+   },
+   {
+    "id": 926,
+    "name": "Youngstown State",
+    "abbreviation": "YSU"
+   }
+  ],
+  "nba": [
+   {
+    "id": 63,
+    "name": "Atlanta Hawks",
+    "abbreviation": "ATL"
+   },
+   {
+    "id": 64,
+    "name": "Boston Celtics",
+    "abbreviation": "BOS"
+   },
+   {
+    "id": 65,
+    "name": "Brooklyn Nets",
+    "abbreviation": "BKN"
+   },
+   {
+    "id": 66,
+    "name": "Charlotte Hornets",
+    "abbreviation": "CHA"
+   },
+   {
+    "id": 67,
+    "name": "Chicago Bulls",
+    "abbreviation": "CHI"
+   },
+   {
+    "id": 68,
+    "name": "Cleveland Cavaliers",
+    "abbreviation": "CLE"
+   },
+   {
+    "id": 69,
+    "name": "Dallas Mavericks",
+    "abbreviation": "DAL"
+   },
+   {
+    "id": 70,
+    "name": "Denver Nuggets",
+    "abbreviation": "DEN"
+   },
+   {
+    "id": 71,
+    "name": "Detroit Pistons",
+    "abbreviation": "DET"
+   },
+   {
+    "id": 72,
+    "name": "Golden State Warriors",
+    "abbreviation": "GSW"
+   },
+   {
+    "id": 73,
+    "name": "Houston Rockets",
+    "abbreviation": "HOU"
+   },
+   {
+    "id": 74,
+    "name": "Indiana Pacers",
+    "abbreviation": "IND"
+   },
+   {
+    "id": 75,
+    "name": "LA Clippers",
+    "abbreviation": "LAC"
+   },
+   {
+    "id": 76,
+    "name": "Los Angeles Lakers",
+    "abbreviation": "LAL"
+   },
+   {
+    "id": 77,
+    "name": "Memphis Grizzlies",
+    "abbreviation": "MEM"
+   },
+   {
+    "id": 78,
+    "name": "Miami Heat",
+    "abbreviation": "MIA"
+   },
+   {
+    "id": 79,
+    "name": "Milwaukee Bucks",
+    "abbreviation": "MIL"
+   },
+   {
+    "id": 80,
+    "name": "Minnesota Timberwolves",
+    "abbreviation": "MIN"
+   },
+   {
+    "id": 81,
+    "name": "New Orleans Pelicans",
+    "abbreviation": "NOP"
+   },
+   {
+    "id": 82,
+    "name": "New York Knicks",
+    "abbreviation": "NYK"
+   },
+   {
+    "id": 83,
+    "name": "Oklahoma City Thunder",
+    "abbreviation": "OKC"
+   },
+   {
+    "id": 84,
+    "name": "Orlando Magic",
+    "abbreviation": "ORL"
+   },
+   {
+    "id": 85,
+    "name": "Philadelphia 76ers",
+    "abbreviation": "PHI"
+   },
+   {
+    "id": 86,
+    "name": "Phoenix Suns",
+    "abbreviation": "PHX"
+   },
+   {
+    "id": 87,
+    "name": "Portland Trail Blazers",
+    "abbreviation": "POR"
+   },
+   {
+    "id": 88,
+    "name": "Sacramento Kings",
+    "abbreviation": "SAC"
+   },
+   {
+    "id": 89,
+    "name": "San Antonio Spurs",
+    "abbreviation": "SAS"
+   },
+   {
+    "id": 90,
+    "name": "Toronto Raptors",
+    "abbreviation": "TOR"
+   },
+   {
+    "id": 91,
+    "name": "Utah Jazz",
+    "abbreviation": "UTA"
+   },
+   {
+    "id": 92,
+    "name": "Washington Wizards",
+    "abbreviation": "WAS"
+   }
+  ],
+  "mlb": [
+   {
+    "id": 33,
+    "name": "Arizona Diamondbacks",
+    "abbreviation": "ARI"
+   },
+   {
+    "id": 34,
+    "name": "Atlanta Braves",
+    "abbreviation": "ATL"
+   },
+   {
+    "id": 35,
+    "name": "Baltimore Orioles",
+    "abbreviation": "BAL"
+   },
+   {
+    "id": 36,
+    "name": "Boston Red Sox",
+    "abbreviation": "BOS"
+   },
+   {
+    "id": 37,
+    "name": "Chicago Cubs",
+    "abbreviation": "CHC"
+   },
+   {
+    "id": 38,
+    "name": "Chicago White Sox",
+    "abbreviation": "CWS"
+   },
+   {
+    "id": 39,
+    "name": "Cincinnati Reds",
+    "abbreviation": "CIN"
+   },
+   {
+    "id": 40,
+    "name": "Cleveland Guardians",
+    "abbreviation": "CLE"
+   },
+   {
+    "id": 41,
+    "name": "Colorado Rockies",
+    "abbreviation": "COL"
+   },
+   {
+    "id": 42,
+    "name": "Detroit Tigers",
+    "abbreviation": "DET"
+   },
+   {
+    "id": 43,
+    "name": "Houston Astros",
+    "abbreviation": "HOU"
+   },
+   {
+    "id": 44,
+    "name": "Kansas City Royals",
+    "abbreviation": "KC"
+   },
+   {
+    "id": 45,
+    "name": "Los Angeles Angels",
+    "abbreviation": "LAA"
+   },
+   {
+    "id": 46,
+    "name": "Los Angeles Dodgers",
+    "abbreviation": "LAD"
+   },
+   {
+    "id": 47,
+    "name": "Miami Marlins",
+    "abbreviation": "MIA"
+   },
+   {
+    "id": 48,
+    "name": "Milwaukee Brewers",
+    "abbreviation": "MIL"
+   },
+   {
+    "id": 49,
+    "name": "Minnesota Twins",
+    "abbreviation": "MIN"
+   },
+   {
+    "id": 50,
+    "name": "New York Mets",
+    "abbreviation": "NYM"
+   },
+   {
+    "id": 51,
+    "name": "New York Yankees",
+    "abbreviation": "NYY"
+   },
+   {
+    "id": 52,
+    "name": "Oakland Athletics",
+    "abbreviation": "OAK"
+   },
+   {
+    "id": 53,
+    "name": "Philadelphia Phillies",
+    "abbreviation": "PHI"
+   },
+   {
+    "id": 54,
+    "name": "Pittsburgh Pirates",
+    "abbreviation": "PIT"
+   },
+   {
+    "id": 55,
+    "name": "San Diego Padres",
+    "abbreviation": "SD"
+   },
+   {
+    "id": 56,
+    "name": "San Francisco Giants",
+    "abbreviation": "SF"
+   },
+   {
+    "id": 57,
+    "name": "Seattle Mariners",
+    "abbreviation": "SEA"
+   },
+   {
+    "id": 58,
+    "name": "St. Louis Cardinals",
+    "abbreviation": "STL"
+   },
+   {
+    "id": 59,
+    "name": "Tampa Bay Rays",
+    "abbreviation": "TB"
+   },
+   {
+    "id": 60,
+    "name": "Texas Rangers",
+    "abbreviation": "TEX"
+   },
+   {
+    "id": 61,
+    "name": "Toronto Blue Jays",
+    "abbreviation": "TOR"
+   },
+   {
+    "id": 62,
+    "name": "Washington Nationals",
+    "abbreviation": "WAS"
+   }
+  ],
+  "nhl": [
+   {
+    "id": 746,
+    "name": "Anaheim Ducks",
+    "abbreviation": "ANA"
+   },
+   {
+    "id": 729,
+    "name": "Boston Bruins",
+    "abbreviation": "BOS"
+   },
+   {
+    "id": 730,
+    "name": "Buffalo Sabres",
+    "abbreviation": "BUF"
+   },
+   {
+    "id": 742,
+    "name": "Calgary Flames",
+    "abbreviation": "CGY"
+   },
+   {
+    "id": 734,
+    "name": "Carolina Hurricanes",
+    "abbreviation": "CAR"
+   },
+   {
+    "id": 738,
+    "name": "Chicago Blackhawks",
+    "abbreviation": "CHI"
+   },
+   {
+    "id": 743,
+    "name": "Colorado Avalanche",
+    "abbreviation": "COL"
+   },
+   {
+    "id": 750,
+    "name": "Columbus Blue Jackets",
+    "abbreviation": "CBJ"
+   },
+   {
+    "id": 747,
+    "name": "Dallas Stars",
+    "abbreviation": "DAL"
+   },
+   {
+    "id": 739,
+    "name": "Detroit Red Wings",
+    "abbreviation": "DET"
+   },
+   {
+    "id": 744,
+    "name": "Edmonton Oilers",
+    "abbreviation": "EDM"
+   },
+   {
+    "id": 735,
+    "name": "Florida Panthers",
+    "abbreviation": "FLA"
+   },
+   {
+    "id": 748,
+    "name": "Los Angeles Kings",
+    "abbreviation": "LAK"
+   },
+   {
+    "id": 751,
+    "name": "Minnesota Wild",
+    "abbreviation": "MIN"
+   },
+   {
+    "id": 731,
+    "name": "Montreal Canadiens",
+    "abbreviation": "MTL"
+   },
+   {
+    "id": 740,
+    "name": "Nashville Predators",
+    "abbreviation": "NSH"
+   },
+   {
+    "id": 724,
+    "name": "New Jersey Devils",
+    "abbreviation": "NJD"
+   },
+   {
+    "id": 725,
+    "name": "New York Islanders",
+    "abbreviation": "NYI"
+   },
+   {
+    "id": 726,
+    "name": "New York Rangers",
+    "abbreviation": "NYR"
+   },
+   {
+    "id": 732,
+    "name": "Ottawa Senators",
+    "abbreviation": "OTT"
+   },
+   {
+    "id": 727,
+    "name": "Philadelphia Flyers",
+    "abbreviation": "PHI"
+   },
+   {
+    "id": 728,
+    "name": "Pittsburgh Penguins",
+    "abbreviation": "PIT"
+   },
+   {
+    "id": 749,
+    "name": "San Jose Sharks",
+    "abbreviation": "SJS"
+   },
+   {
+    "id": 755,
+    "name": "Seattle Kraken",
+    "abbreviation": "SEA"
+   },
+   {
+    "id": 741,
+    "name": "St. Louis Blues",
+    "abbreviation": "STL"
+   },
+   {
+    "id": 736,
+    "name": "Tampa Bay Lightning",
+    "abbreviation": "TBL"
+   },
+   {
+    "id": 733,
+    "name": "Toronto Maple Leafs",
+    "abbreviation": "TOR"
+   },
+   {
+    "id": 753,
+    "name": "Utah Mammoth",
+    "abbreviation": "UTA"
+   },
+   {
+    "id": 745,
+    "name": "Vancouver Canucks",
+    "abbreviation": "VAN"
+   },
+   {
+    "id": 754,
+    "name": "Vegas Golden Knights",
+    "abbreviation": "VGK"
+   },
+   {
+    "id": 737,
+    "name": "Washington Capitals",
+    "abbreviation": "WSH"
+   },
+   {
+    "id": 752,
+    "name": "Winnipeg Jets",
+    "abbreviation": "WPG"
+   }
+  ],
+  "wnba": [
+   {
+    "id": 1519,
+    "name": "Atlanta Dream",
+    "abbreviation": "ATL"
+   },
+   {
+    "id": 1520,
+    "name": "Chicago Sky",
+    "abbreviation": "CHI"
+   },
+   {
+    "id": 1521,
+    "name": "Connecticut Sun",
+    "abbreviation": "CON"
+   },
+   {
+    "id": 1525,
+    "name": "Dallas Wings",
+    "abbreviation": "DAL"
+   },
+   {
+    "id": 1651,
+    "name": "Golden State Valkyries",
+    "abbreviation": "GSV"
+   },
+   {
+    "id": 1522,
+    "name": "Indiana Fever",
+    "abbreviation": "IND"
+   },
+   {
+    "id": 1526,
+    "name": "Las Vegas Aces",
+    "abbreviation": "LVA"
+   },
+   {
+    "id": 1527,
+    "name": "Los Angeles Sparks",
+    "abbreviation": "LAS"
+   },
+   {
+    "id": 1528,
+    "name": "Minnesota Lynx",
+    "abbreviation": "MIN"
+   },
+   {
+    "id": 1523,
+    "name": "New York Liberty",
+    "abbreviation": "NYL"
+   },
+   {
+    "id": 1529,
+    "name": "Phoenix Mercury",
+    "abbreviation": "PHO"
+   },
+   {
+    "id": 1995,
+    "name": "Portland Fire",
+    "abbreviation": "POR"
+   },
+   {
+    "id": 1530,
+    "name": "Seattle Storm",
+    "abbreviation": "SEA"
+   },
+   {
+    "id": 1996,
+    "name": "Toronto Tempo",
+    "abbreviation": "TOR"
+   },
+   {
+    "id": 1524,
+    "name": "Washington Mystics",
+    "abbreviation": "WAS"
+   }
+  ]
+ }
+}

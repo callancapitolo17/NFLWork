@@ -85,7 +85,12 @@ def is_logged_in(page) -> bool:
     except Exception:
         pass
 
-    # Default to logged in (persistent profile usually works)
+    # A Keycloak auth URL or a username field means the login never finished
+    # (2026-09-15: two runs reported "Already authenticated" on this page and
+    # captured no krefresh). Otherwise assume the persistent profile is live.
+    if "openid-connect/auth" in page.url or page.locator('input[name="username"]').count() > 0:
+        print(f"  Not logged in (on the Keycloak form): {page.url[:100]}")
+        return False
     return True
 
 
@@ -147,6 +152,15 @@ def do_login(page):
 # ── Main recon flow ──────────────────────────────────────────────
 
 
+def _post_data_or_none(request):
+    """Telemetry beacons post binary bodies; Playwright's post_data raises on
+    those and the error would surface in the middle of the capture log."""
+    try:
+        return request.post_data
+    except UnicodeDecodeError:
+        return None
+
+
 def run_recon(interactive: bool = False):
     """Run recon to capture BetOnline auth tokens.
 
@@ -164,7 +178,7 @@ def run_recon(interactive: bool = False):
                 "url": request.url,
                 "method": request.method,
                 "headers": dict(request.headers),
-                "post_data": request.post_data,
+                "post_data": _post_data_or_none(request),
                 "resource_type": request.resource_type,
             }
             captured_requests.append(entry)
@@ -234,6 +248,17 @@ def run_recon(interactive: bool = False):
         # Wait for API calls to complete (token exchange + data load)
         print("Waiting for API calls to complete...")
         page.wait_for_timeout(10000)
+
+        if not is_logged_in(page):
+            if interactive:
+                print("\nStill on the login form: complete the login in the browser "
+                      "(reCAPTCHA / one-time code), wait for the bet history to load, "
+                      "then press ENTER.")
+                input()
+                page.wait_for_timeout(5000)
+            else:
+                print("\nLogin did not complete (the site may need a reCAPTCHA or a "
+                      "one-time code). Re-run with --interactive and log in by hand.")
 
         print(f"\nCaptured {len(captured_requests)} API requests")
 

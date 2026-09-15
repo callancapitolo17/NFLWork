@@ -6,7 +6,8 @@
 // page world and hands results to content.js via window.postMessage.
 //
 // Side effects: one capture-phase click listener on document (Unabated's
-// own handler still runs), one 5s interval while a ticket is being watched,
+// own handler still runs), one 5s interval while a ticket is being watched
+// (resumed from the stored ticket on load, so a navigation does not end it),
 // and a 10s heartbeat that also publishes the user's Unabated book selection
 // (read from the grid's React context) as the Edges tab's default book filter. The only DOM touch is the locate flash:
 // a 2.5s outline on the cell an Edges row or notification pointed at.
@@ -26,6 +27,9 @@
   const MAX_FIBER_HOPS = 40;
   const WATCH_INTERVAL_MS = 5000;
   const BET_TYPE_NAMES = { 1: "Moneyline", 2: "Spread", 3: "Total" };
+  // Same names feed.PERIODS uses; the bet matcher compares a ticket's period
+  // to a bet's, so an unknown id is named, never defaulted to full game.
+  const PERIOD_NAMES = { 1: "FG", 2: "1H", 3: "2H", 4: "1Q", 5: "2Q", 6: "3Q", 7: "4Q" };
 
   // ---- messaging -----------------------------------------------------------
 
@@ -90,17 +94,45 @@
     return typeof fair === "number" && Number.isFinite(fair) ? fair : null;
   }
 
-  // Unabated's own edge % (EV per $1 staked) for this line. Null is a normal
-  // condition (lopsided moneylines, exchange-only lines Unabated has not
-  // priced), not a parse failure, so it gets its own error kind for the panel.
-  function requireEdgePct(marketLine, { fromGe }) {
-    const edge = edgePctOf(marketLine, { fromGe });
-    if (edge == null) {
-      const error = new Error("Unabated has no edge for this line");
-      error.kind = "no_fair";
-      throw error;
-    }
-    return edge;
+  // Script build, so a stale copy of page.js in an old tab shows itself in the panel.
+  const PAGE_SCRIPT_BUILD = "0.6.6";
+
+  // What the clicked object actually carried, for the panel's no-edge detail:
+  // decides between "Unabated never priced it" and "the field moved". Space
+  // separated so the panel can wrap it.
+  function describeLineFields(marketLine) {
+    const show = (value) => {
+      try {
+        return JSON.stringify(value) ?? "undefined";
+      } catch (_error) {
+        return "(unserialisable)";
+      }
+    };
+    return `keys=[${Object.keys(marketLine).slice(0, 40).join(" ")}] edge=${show(marketLine.edge)} ge=${show(marketLine.ge)} `
+      + `bacr=${show(marketLine.bacr)} price=${show(marketLine.price)} americanPrice=${show(marketLine.americanPrice)} statusId=${show(marketLine.statusId)}`;
+  }
+
+  // The row's own sides entry for this book at the clicked points: the main
+  // line, or the ladder rung at those points. The cell's prop can be a copy
+  // the screen made without the feed's ge (live 2026-09-12: a Novig main
+  // line listed on the Edges tab carried neither edge nor ge on the cell).
+  function rowLineFor(marketLine, rowData, sideKey, bookKey) {
+    const main = rowData.sides && rowData.sides[sideKey] && rowData.sides[sideKey][bookKey];
+    if (!main) return null;
+    if (main.points === marketLine.points) return main;
+    return altLineAt(main, marketLine.points);
+  }
+
+  // Edge and fair for the clicked cell: the cell's object first, then the
+  // row's entry for the same book and points. Both null when neither has
+  // one — the panel then tries the Edges feed before calling it unpriced.
+  function edgeForCell(marketLine, rowData, sideKey, bookKey) {
+    const own = edgePctOf(marketLine);
+    if (own != null) return { edgePct: own, fair: fairPriceOrNull(marketLine) };
+    const entry = rowLineFor(marketLine, rowData, sideKey, bookKey);
+    const fromRow = entry && entry !== marketLine ? edgePctOf(entry) : null;
+    if (fromRow != null) return { edgePct: fromRow, fair: fairPriceOrNull(entry) };
+    return { edgePct: null, fair: fairPriceOrNull(marketLine) };
   }
 
   // Unabated's sourceFormat: 1 = American, 2 = decimal (1.909), 4 = probability (0.525).
@@ -115,14 +147,15 @@
     return { sourceFormat: 1, sourcePrice: null };
   }
 
-  // The screen's computed edge; with fromGe (alternate-line objects, for
-  // which the screen computes none) the feed's own fraction on the object
-  // (0.0296 = +2.96%). Main lines never read ge, so a main line Unabated
-  // has not priced still reports no_fair.
-  function edgePctOf(marketLine, { fromGe } = { fromGe: false }) {
+  // The screen's computed edge when the cell carries one, else the feed's own
+  // fraction on the same object (0.0296 = +2.96%) — the number the Edges tab
+  // and Unabated's own % come from. Alternate-line objects never carry
+  // `edge`, and main-line cells sometimes lack it too (live 2026-09-11: a
+  // line listed with an edge on the Edges tab captured as "no fair"). A line
+  // Unabated has not priced has neither, so this returns null.
+  function edgePctOf(marketLine) {
     const edge = marketLine.edge && marketLine.edge.edge;
     if (typeof edge === "number" && Number.isFinite(edge)) return edge;
-    if (!fromGe) return null;
     const ge = marketLine.ge;
     return typeof ge === "number" && Number.isFinite(ge) ? Math.round(ge * 1e6) / 1e4 : null;
   }
@@ -245,20 +278,200 @@
   // re-find it by points inside that ladder. Null for a main-line cell (the
   // same object, or the same points, as the sides entry).
   function altPointsOf(marketLine, rowData, sideKey, bookKey) {
-    const main = rowData.sides && rowData.sides[sideKey] && rowData.sides[sideKey][bookKey];
+    const main = bookEntryOf(rowData, sideKey, bookKey);
     if (!main || main === marketLine || main.points === marketLine.points) return null;
     return typeof marketLine.points === "number" ? marketLine.points : null;
   }
 
-  function buildTicket({ marketLine, sideIndex, rowData, context, cellProps }) {
-    const betTypeId = rowData.betTypeId;
+  // The row's entry for this book on this side. The side key is matched by
+  // its "si<index>:" prefix when the exact key is absent, so a key read off
+  // an Alts child row still finds the side on the top-level row (and the
+  // other way round) should the two spell the team part differently.
+  function bookEntryOf(rowData, sideKey, bookKey) {
+    const sides = rowData.sides;
+    if (!sides || !sideKey) return null;
+    let side = sides[sideKey];
+    if (!side) {
+      const prefix = sideKey.slice(0, sideKey.indexOf(":") + 1);
+      const key = prefix ? Object.keys(sides).find((k) => k.startsWith(prefix)) : null;
+      side = key ? sides[key] : null;
+    }
+    return (side && side[bookKey]) || null;
+  }
+
+  // Counted by rung, not array length: a per-rung row's entry can carry an
+  // alternateLines array holding no rung at all (live 2026-09-12, NFL CHI@CAR:
+  // the -2.5 row traced "ladder 0" yet ranked as carrying one, tying the main
+  // row whose 25-rung ladder held -2.5 — the trace fired on every capture).
+  function carriesLadder(entry) {
+    return !!entry && Array.isArray(entry.alternateLines) && entry.alternateLines.some(Boolean);
+  }
+
+  function sameMarketRow(a, b) {
+    return a.eventId === b.eventId && a.betTypeId === b.betTypeId && (a.periodTypeId ?? 1) === (b.periodTypeId ?? 1);
+  }
+
+  // A market's MAIN row is a top-level grid row. The rows of an expanded Alts
+  // section are children (AG Grid detail/tree rows: `detail`, `level` > 0, a
+  // parent that carries data) whose entry for the book is one rung, so any
+  // lookup that takes "a row of this market" can land on a rung — live
+  // 2026-09-12 the watcher followed Kalshi's 1H Under 2.5 (+2242) after a
+  // capture of Under 19.5 (+265). Rank rows so a top-level row always beats a
+  // child, a row carrying the market's bestLines beats one without, and a row
+  // carrying this book's ladder beats one whose entry is a lone rung.
+  function nodeIsTopLevel(node) {
+    if (!node || node.detail === true) return false;
+    if (typeof node.level === "number" && node.level > 0) return false;
+    return !(node.parent && node.parent.data);
+  }
+
+  // `fitsLine(entry)` says whether the row's entry for the book IS the line
+  // being resolved (capture: the clicked object; the watcher: the captured
+  // number). It outranks every shape signal: a grid that lists a market's
+  // rungs as sibling TOP-LEVEL rows sharing one grid key (Unabated's CFB
+  // alt-lines view, live 2026-09-12: eight "Over" rows 33.5 .. 56.5, every
+  // one top-level with bestLines and no ladder) ties every row on shape, and
+  // grid order then picked the 33.5 row for a click on 56.5.
+  function rowRank(node, sideKey, bookKey, fitsLine) {
+    const data = node.data || {};
+    const entry = bookEntryOf(data, sideKey, bookKey);
+    const hasBestLines = !!data.bestLines && Object.keys(data.bestLines).length > 0;
+    return (fitsLine && entry && fitsLine(entry) ? 8 : 0)
+      + (nodeIsTopLevel(node) ? 4 : 0) + (hasBestLines ? 2 : 0) + (carriesLadder(entry) ? 1 : 0);
+  }
+
+  // The clicked line, on the row's entry itself or inside its ladder: the
+  // same object, or the same number. By number as well because an Alts
+  // child's entry is the rung itself and is not known to be the SAME object
+  // as the parent ladder's element — on identity alone the child could
+  // outrank its top-level parent, and the watcher would follow the parent's
+  // main number once the Alts section closed (the 2026-09-12 bug again).
+  function fitsClickedLine(marketLine) {
+    const points = typeof marketLine.points === "number" ? marketLine.points : null;
+    const same = (line) => line === marketLine || (points != null && line.points === points);
+    return (entry) => same(entry)
+      || (Array.isArray(entry.alternateLines) && entry.alternateLines.some((alt) => alt && same(alt)));
+  }
+
+  // The captured number, wherever the row carries it: any entry when the
+  // market has no number (a moneyline), else the entry at that number
+  // itself or its ladder's rung at it. One rule for capture's pick and for
+  // every watch tick, whichever sibling row a keyed lookup answers with.
+  function fitsWatchedLine(watch) {
+    if (typeof watch.points !== "number") return () => true;
+    return (entry) => !!lineOnEntry(entry, watch.points);
+  }
+
+  // The line at `points` on a book's entry: the entry itself when it sits
+  // at that number (a main line, or a per-rung row's own rung), else the
+  // rung inside its ladder, else null (the number is off the board).
+  function lineOnEntry(entry, points) {
+    if (typeof points !== "number") return entry;
+    if (entry.points === points) return entry;
+    return altLineAt(entry, points);
+  }
+
+  // One line per candidate row, for the panel's trace when the watched
+  // number is not the captured one: which rows the market had, what each
+  // one's entry for the book carried, and which one was chosen.
+  function describeMarketNode(node, sideKey, bookKey, marketLine) {
+    const data = node.data || {};
+    const entry = bookEntryOf(data, sideKey, bookKey);
+    const ladder = Array.isArray(entry && entry.alternateLines) ? entry.alternateLines.filter(Boolean) : [];
+    const shape = `${nodeIsTopLevel(node) ? "top" : "child"}${typeof node.level === "number" ? ` L${node.level}` : ""}${node.detail ? " detail" : ""}${node.parent && node.parent.data ? " parented" : ""}`;
+    const key = data.gridKey != null ? String(data.gridKey) : node.id != null ? `#${node.id}` : "?";
+    const entryText = entry
+      ? `entry ${entry.points ?? "-"} ${entry.americanPrice ?? entry.price ?? "?"}${entry === marketLine ? " (=clicked)" : ""}, ladder ${ladder.length}${ladder.some((alt) => alt === marketLine) ? " (has clicked)" : ""}`
+      : "no entry";
+    return `[${shape}; key ${key}; ${entryText}; bestLines ${data.bestLines ? Object.keys(data.bestLines).length : 0}]`;
+  }
+
+  // Every distinct grid API on the page: the master grid and, when an Alts
+  // section is open, its detail grid, which mounts as its own AG Grid. One
+  // fiber walk per grid root rather than per rendered cell — a busy slate
+  // renders hundreds of cells and this runs on a watch tick that missed.
+  const GRID_ROOT_SELECTOR = ".ag-root";
+  const GRID_ROOT_LIMIT = 20;
+
+  function apiInside(container) {
+    for (const selector of GRID_PROBE_SELECTORS) {
+      for (const element of container.querySelectorAll(selector)) {
+        const fiber = fiberOf(element);
+        const props = fiber && findProps(fiber, isGridCellProps);
+        if (props && props.api) return props.api;
+      }
+    }
+    return null;
+  }
+
+  function allGridApis(seed) {
+    const apis = [];
+    const seen = new Set();
+    const add = (api) => {
+      if (api && !seen.has(api) && !apiIsDead(api)) {
+        seen.add(api);
+        apis.push(api);
+      }
+    };
+    add(seed);
+    const roots = Array.from(document.querySelectorAll(GRID_ROOT_SELECTOR)).slice(0, GRID_ROOT_LIMIT);
+    // No .ag-root (a grid that mounts differently): fall back to the cell scan.
+    for (const root of roots.length ? roots : [document]) add(apiInside(root));
+    return apis;
+  }
+
+  // Every row of this market across the reachable grids, best-ranked first.
+  // `apis` lets a caller that already probed the page reuse that list.
+  function rankedMarketNodes(seedApi, identity, sideKey, bookKey, apis, fitsLine) {
+    const found = [];
+    for (const api of apis || allGridApis(seedApi)) {
+      api.forEachNode((node) => {
+        if (!node.data || !sameMarketRow(node.data, identity)) return;
+        found.push({ node, api, rank: rowRank(node, sideKey, bookKey, fitsLine), order: found.length });
+      });
+    }
+    found.sort((a, b) => b.rank - a.rank || a.order - b.order);
+    return found;
+  }
+
+  // The row to classify, price and watch against: the market's best-ranked
+  // row that carries an entry for the book, else the clicked row itself.
+  // `trace` lists every candidate for the panel. `ambiguous` means two rows
+  // TIED at the best rank, so the pick came down to grid order — deliberately
+  // not "the pick was not top-level", which would be true of every row on a
+  // grid that groups its rows and would show the trace on every ticket.
+  // `top` is the pick's shape, which the watcher compares against later.
+  function ladderRowFor(gridApi, rowData, sideKey, bookKey, marketLine) {
+    const own = { rowData, gridApi, trace: "clicked row only", ambiguous: false, top: true };
+    // Without an event id the identity match would accept any row; keep the cell's own.
+    if (rowData.eventId == null) return own;
+    const ranked = rankedMarketNodes(gridApi, rowData, sideKey, bookKey, undefined, fitsClickedLine(marketLine));
+    const trace = ranked.slice(0, 8).map(({ node }) => describeMarketNode(node, sideKey, bookKey, marketLine)).join(" ");
+    const withEntry = ranked.filter(({ node }) => bookEntryOf(node.data, sideKey, bookKey));
+    if (!withEntry.length) return { ...own, trace: `no row carries ${bookKey}: ${trace}` };
+    const pick = withEntry[0];
+    const tied = withEntry.filter((candidate) => candidate.rank === pick.rank).length > 1;
+    return {
+      rowData: pick.node.data,
+      gridApi: pick.api,
+      trace: `picked ${describeMarketNode(pick.node, sideKey, bookKey, marketLine)} of ${trace}`,
+      ambiguous: tied,
+      top: nodeIsTopLevel(pick.node),
+    };
+  }
+
+  function buildTicket({ marketLine, sideIndex, rowData: cellRowData, context, cellProps, gridApi: cellGridApi }) {
+    const betTypeId = cellRowData.betTypeId;
     const betType = BET_TYPE_NAMES[betTypeId];
     if (!betType) throw new Error(`unsupported betTypeId ${betTypeId} (only moneyline, spread, total)`);
 
     const points = marketLine.points ?? null;
-    const sideKey = sideKeyOf(rowData, sideIndex);
-    const bookId = bookIdOf(marketLine, cellProps, rowData, sideKey);
-    const altPoints = altPointsOf(marketLine, rowData, sideKey, `ms${bookId}`);
+    const sideKey = sideKeyOf(cellRowData, sideIndex);
+    const bookId = bookIdOf(marketLine, cellProps, cellRowData, sideKey);
+    const bookKey = `ms${bookId}`;
+    const { rowData, gridApi, trace: rowTrace, ambiguous: rowAmbiguous, top: rowTop } = ladderRowFor(cellGridApi, cellRowData, sideKey, bookKey, marketLine);
+    const altPoints = altPointsOf(marketLine, rowData, sideKey, bookKey);
+    const edge = edgeForCell(marketLine, rowData, sideKey, bookKey);
     const rotation = rowData.eventTeams && rowData.eventTeams[sideIndex]
       ? rowData.eventTeams[sideIndex].rotationNumber ?? null
       : null;
@@ -270,6 +483,7 @@
       eventStart: rowData.eventStart ?? null,
       eventName: rowData.eventName ?? null,
       betType,
+      period: PERIOD_NAMES[rowData.periodTypeId ?? 1] || `pt${rowData.periodTypeId}`,
       sideIndex,
       sideLabel: sideLabelOf(betType, sideIndex, points, rowData, context),
       // Side 0 is the away team / Over, side 1 the home team / Under.
@@ -281,13 +495,34 @@
       book: { id: bookId, name: bookNameOf(bookId, context, cellProps) },
       price: bookPriceOf(marketLine),
       ...sourcePriceOf(marketLine),
-      fair: fairPriceOrNull(marketLine),
-      edgePct: requireEdgePct(marketLine, { fromGe: altPoints != null }),
+      fair: edge.fair,
+      // Null when neither the cell nor the row carried an edge: the panel
+      // sizes from the Edges feed's copy of this line when it has one at the
+      // same price, else shows noEdgeDetail as "No Unabated fair".
+      edgePct: edge.edgePct,
+      noEdgeDetail: edge.edgePct == null ? `script ${PAGE_SCRIPT_BUILD}; cell fields ${describeLineFields(marketLine)}` : null,
       isAlt: altPoints != null,
-      // Watcher handle: how to find this same line again through the grid API
-      // (altPoints set = look inside the book line's alternateLines).
-      watch: { gridKey: rowData.gridKey ?? null, sideKey, bookKey: `ms${bookId}`, altPoints },
+      // Which grid row the ticket was classified and priced against, and the
+      // rows it was chosen from; the panel shows it when the watched number
+      // is not the captured one, or when the pick was not a lone top-level row.
+      rowResolution: { trace: rowTrace, ambiguous: rowAmbiguous, build: PAGE_SCRIPT_BUILD },
+      // Watcher handle: how to find this same line again through the grid API.
+      watch: {
+        gridKey: rowData.gridKey ?? null, sideKey, bookKey,
+        // The picked row's shape; a watch tick reading a row of the OTHER
+        // shape is reading a different rung, whatever the grid's layout.
+        rowTop,
+        // The captured number: every watch tick re-finds the line by it
+        // (the row's entry at it, or its ladder's rung), so a grid that
+        // lists rungs as sibling rows under one key cannot hand the watcher
+        // another rung, and a number gone from the row reads off the board.
+        points,
+        // Row identity for when the grid key stops resolving (rebuilt grid, re-keyed row).
+        eventId: rowData.eventId ?? null, betTypeId, periodTypeId: rowData.periodTypeId ?? 1,
+      },
       current: null,
+      // The grid API the ladder row lives on: what the watcher must poll.
+      gridApi,
     };
   }
 
@@ -385,24 +620,101 @@
     watcher = null;
   }
 
-  function readWatchedLine() {
-    const { ticket, gridApi } = watcher;
-    const { gridKey, sideKey, bookKey } = ticket.watch;
-    if (!gridKey) throw new Error("no gridKey on the ticket");
-    if (typeof gridApi.isDestroyed === "function" && gridApi.isDestroyed()) {
-      throw new Error("grid was destroyed");
+  function apiIsDead(api) {
+    return !api || (typeof api.isDestroyed === "function" && api.isDestroyed());
+  }
+
+  function rowCountOf(api) {
+    try {
+      return typeof api.getDisplayedRowCount === "function" ? api.getDisplayedRowCount() : "?";
+    } catch (_error) {
+      return "?";
     }
-    const node = gridApi.getRowNode(gridKey);
-    if (!node || !node.data) throw new Error("row no longer in the grid");
-    const books = node.data.sides && node.data.sides[sideKey];
-    const bookLine = books && books[bookKey];
+  }
+
+  // The watched row, surviving what the plain grid-key lookup does not: a
+  // grid Unabated rebuilt (the held API answers with no rows — re-acquire one
+  // from the DOM), a row it re-keyed (its key embeds flags like livefalse —
+  // find it by event, bet type and period), and the tab having been steered
+  // to another league by a locate (say which, instead of "row gone").
+  function watchedRowNode() {
+    const { ticket } = watcher;
+    const { gridKey, eventId, betTypeId, periodTypeId } = ticket.watch;
+    const shownLeague = leagueFromUrl();
+    if (ticket.league && shownLeague && shownLeague !== ticket.league) {
+      throw new Error(`the Unabated tab is showing ${shownLeague.toUpperCase()}; this line is on ${ticket.league.toUpperCase()}`);
+    }
+    if (!gridKey && eventId == null) throw new Error("no gridKey on the ticket");
+    const { sideKey, bookKey } = ticket.watch;
+    const identity = { eventId, betTypeId, periodTypeId: periodTypeId ?? 1 };
+    // The key lookup is trusted only when it answers with a row of the SAME
+    // shape capture picked: a re-keyed grid can answer with an Alts child row,
+    // whose entry for the book is one rung. Compared rather than forced to
+    // top-level, because capture legitimately picks a child when the book
+    // prices no main line — forcing it would send every tick down the rescan.
+    const wantTop = ticket.watch.rowTop ?? true;
+    const fitsLine = fitsWatchedLine(ticket.watch);
+    // ... and, when the keyed row carries the book, with the captured line
+    // on it: rungs listed as sibling rows share one key, so the key alone
+    // can answer with another rung.
+    const byKey = (api) => {
+      const node = gridKey ? api.getRowNode(gridKey) : null;
+      if (!node || !node.data || nodeIsTopLevel(node) !== wantTop) return null;
+      const entry = bookEntryOf(node.data, sideKey, bookKey);
+      return entry && !fitsLine(entry) ? null : node;
+    };
+    let api = watcher.gridApi;
+    let node = apiIsDead(api) ? null : byKey(api);
+    if (!node) {
+      // The held API may belong to a grid that no longer exists; a rendered
+      // cell always reaches the live ones. Probed once and reused below.
+      const apis = allGridApis(api);
+      if (apis.length === 0) throw new Error("no odds grid reachable on the page (still loading, or Unabated changed its grid)");
+      for (const other of apis) {
+        node = byKey(other);
+        if (node) {
+          api = other;
+          watcher.gridApi = api;
+          break;
+        }
+      }
+      if (!node && eventId != null) {
+        // Best-ranked row that actually carries this book, as capture did:
+        // the top-ranked row overall may not price this book at all, and
+        // taking it would report "book line no longer on the row" while a
+        // row that carries it sits further down.
+        const ranked = rankedMarketNodes(api, identity, sideKey, bookKey, apis, fitsLine);
+        const best = ranked.find((candidate) => bookEntryOf(candidate.node.data, sideKey, bookKey));
+        if (best) {
+          node = best.node;
+          api = best.api;
+          watcher.gridApi = api;
+        }
+      }
+    }
+    if (!node || !node.data) {
+      throw new Error(`row no longer in the grid (${rowCountOf(api)} rows shown, event ${eventId} bt${betTypeId} pt${periodTypeId} not among them)`);
+    }
+    if (node.data.gridKey && node.data.gridKey !== gridKey) ticket.watch.gridKey = node.data.gridKey;
+    return node;
+  }
+
+  function readWatchedLine() {
+    const { ticket } = watcher;
+    const { sideKey, bookKey } = ticket.watch;
+    const node = watchedRowNode();
+    const bookLine = bookEntryOf(node.data, sideKey, bookKey);
     if (!bookLine) throw new Error("book line no longer on the row");
-    const line = ticket.watch.altPoints == null ? bookLine : altLineAt(bookLine, ticket.watch.altPoints);
-    // The ladder no longer offers that number: off the board at the captured price.
+    // Which row this read came from, and whether its shape matches the row
+    // capture picked: the panel shows the trace when the two disagree.
+    const row = describeMarketNode(node, sideKey, bookKey, null);
+    const rowTop = nodeIsTopLevel(node);
+    const line = lineOnEntry(bookLine, ticket.watch.points);
+    // Neither the entry nor its ladder offers that number: off the board at the captured price.
     if (!line) {
       return {
         price: ticket.price, sourceFormat: ticket.sourceFormat, sourcePrice: ticket.sourcePrice,
-        points: ticket.watch.altPoints, fair: ticket.fair, edgePct: ticket.edgePct, offBoard: true, seenAt: Date.now(),
+        points: ticket.points, fair: ticket.fair, edgePct: ticket.edgePct, offBoard: true, seenAt: Date.now(), row, rowTop,
       };
     }
     return {
@@ -410,9 +722,11 @@
       ...sourcePriceOf(line),
       points: line.points ?? null,
       fair: fairPriceOrNull(line),
-      edgePct: edgePctOf(line, { fromGe: ticket.watch.altPoints != null }),
+      edgePct: edgePctOf(line),
       offBoard: line.statusId === 2,
       seenAt: Date.now(),
+      row,
+      rowTop,
     };
   }
 
@@ -541,16 +855,10 @@
   const FLASH_ATTR = "data-unabated-ticket-flash";
   let lastLocateAt = 0;
 
+  // The market's main row (top-level, never an Alts child) on any reachable grid.
   function findRowNode(api, request) {
-    let hit = null;
-    api.forEachNode((node) => {
-      if (hit || !node.data) return;
-      const data = node.data;
-      if (data.eventId !== request.eventId || data.betTypeId !== request.betTypeId) return;
-      if ((data.periodTypeId ?? 1) !== request.periodTypeId) return;
-      hit = node;
-    });
-    return hit;
+    const best = rankedMarketNodes(api, request, null, null)[0];
+    return best ? best.node : null;
   }
 
   function cellShellFor(node, request) {
@@ -694,6 +1002,41 @@
     locateLine(payload, 0);
   }
 
+  // The ticket outlives this script: content.js keeps it in storage while
+  // this copy dies with any navigation (one-click betting leaving the tab,
+  // Back, a tab reload or discard, an extension reload's takeover). Without
+  // this the panel showed "Not watching the line" for every ticket after
+  // such an event, with a live heartbeat and nothing to re-click for. The
+  // watcher is rebuilt from the stored ticket's identity; watchedRowNode
+  // finds the grid from the DOM and the row by event/bet type/period/number,
+  // so no grid API from the capture is needed.
+  // Not resumed: a ticket for a league this tab is not showing (a second
+  // tab on another league would otherwise post "wrong league" every 5 s
+  // against the tab that can read it), and one whose game has started (its
+  // pre-game line is gone; a scan every 5 s for it would never end).
+  // The grid row's eventStart is naive UTC ("2026-09-13T17:00:00"), and
+  // Date.parse reads a naive date-time as LOCAL time: 7 h late in PDT.
+  // Same rule as feed.parseEventStart and betsview.ticketAsLine.
+  function eventStartMs(value) {
+    if (typeof value !== "string" || !value) return null;
+    const hasZone = /(?:Z|[+-]\d\d:\d\d)$/.test(value);
+    const ms = Date.parse(hasZone ? value : `${value}Z`);
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  function onResumeMessage(ticket) {
+    if (retired || !ticket || typeof ticket.capturedAt !== "number" || !ticket.watch) return;
+    // Already watching it, or watching a NEWER capture: an offer read from
+    // storage just before a fresh click on this tab must not replace it.
+    if (watcher && watcher.ticket.capturedAt >= ticket.capturedAt) return;
+    const shownLeague = leagueFromUrl();
+    if (ticket.league && shownLeague && shownLeague !== ticket.league) return;
+    const startMs = eventStartMs(ticket.eventStart);
+    if (startMs != null && startMs <= Date.now()) return;
+    startWatching(ticket, null);
+    console.info("[unabated-ticket] resumed watching", ticket.sideLabel, "captured", new Date(ticket.capturedAt).toLocaleTimeString());
+  }
+
   function retire() {
     retired = true;
     stopWatching();
@@ -708,8 +1051,9 @@
     const data = event.data;
     if (!data || data.source !== MESSAGE_SOURCE) return;
     if (data.type === "takeover" && data.instanceId !== INSTANCE_ID && !retired) retire();
-    if (retired || data.type !== "locate") return;
-    onLocateMessage(data.payload);
+    if (retired) return;
+    if (data.type === "locate") onLocateMessage(data.payload);
+    if (data.type === "resume") onResumeMessage(data.payload);
   });
 
   // ---- click capture -------------------------------------------------------
@@ -735,8 +1079,8 @@
     lastCapture = { shell, at: Date.now() };
     try {
       const cell = readCell(shell);
-      const ticket = buildTicket(cell);
-      startWatching(ticket, cell.gridApi);
+      const { gridApi, ...ticket } = buildTicket(cell);
+      startWatching(ticket, gridApi);
       console.info("[unabated-ticket] captured", ticket);
       post("ticket", ticket);
     } catch (error) {
@@ -748,6 +1092,12 @@
 
   document.addEventListener("pointerdown", onClickCapture, true);
   document.addEventListener("click", onClickCapture, true);
+  // Row resolution under test (tests/page_rows.test.js): the harness sets
+  // this flag on its fake window before loading the file. Never set on
+  // tools.unabated.com, so production exposes nothing.
+  if (window.__unabatedTicketExposeInternals === true) {
+    window.__unabatedTicketInternals = { buildTicket, startWatching, readWatchedLine };
+  }
   // Heartbeat so the panel can show whether this script is alive on the tab,
   // plus the books/bet-type filter for the Edges tab (grid may not be up yet
   // on the first tick; the error is published and the next tick retries).
@@ -758,6 +1108,7 @@
     publishFilters();
   }
   post("takeover", { at: Date.now() });
+  post("resume_request", { at: Date.now() });
   heartbeat();
   intervals.push(setInterval(heartbeat, HEARTBEAT_MS));
   console.info("[unabated-ticket] page.js active on", window.location.href);
