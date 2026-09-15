@@ -1011,6 +1011,18 @@ test("crosswalk: a venue name that already resolves to a DIFFERENT team is a con
   const result = bets.learnCrosswalk([kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 35.5)], lines, held);
   assert.deepEqual(result.learned, []);
   assert.match(result.conflicts[0].reason, /crosswalk holds cfb:1, the joined event says cfb:927/);
+  // The venue's own contract on the joined row is the orientation check that needs no name: a bet whose
+  // venue side is "away" but whose Novig outcome sits on Unabated's home side at the same number is refused.
+  const swappedVenue = novigDuqWsu({ side: "away", points: -35.5,
+    awayTeamVenue: { id: "nv-a", name: "Duquesne Dukes (venue spelling)" }, homeTeamVenue: { id: "nv-h", name: "Wazzu (venue spelling)" } });
+  assert.equal(bets.matchBets(Object.values(venueRows())[0], [swappedVenue], { lines }).unmatched.length, 0); // it still joins its game
+  const byContract = bets.learnCrosswalk([swappedVenue], lines, []);
+  assert.deepEqual(byContract.learned, []);
+  assert.match(byContract.conflicts[0].reason, /own contract puts it on Unabated side 1, its venue side is away/);
+  // A Kalshi NO whose venue side is consistent with its contract (Duquesne +35.5 = Unabated away) still teaches.
+  const kalshiNo = kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "no", 35.5);
+  assert.deepEqual([kalshiNo.side, kalshiNo.points], ["away", 35.5]);
+  assert.equal(bets.learnCrosswalk([kalshiNo], lines, []).learned.length, 2);
   // A name that resolves to the SAME team the board names is fine (it confirms the row).
   const agreeing = Object.assign(kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 35.5), { homeTeam: "Washington St." });
   assert.deepEqual(crosswalkKeys(bets.learnCrosswalk([agreeing], lines, []).learned), [

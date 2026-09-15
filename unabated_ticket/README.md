@@ -541,7 +541,11 @@ crosswalk)`), so a later bet of that venue on either team matches even
 where the venue lists no ladder for the game (nothing to id-join) — and a
 Kalshi moneyline whose names resolve nowhere gets its side. Fail-closed:
 learned only from a join on exactly ONE board event whose row carries both
-Unabated ids, from a bet naming both venue teams; a venue name that already
+Unabated ids, from a bet naming both venue teams; a bet whose own contract
+on the joined row (a Kalshi `Y-`/`N-` ticker or a Novig outcome at the bet's
+number) sits on a different Unabated side than the bet's venue side is a
+conflict — the venue's away/home is not Unabated's for that game, the one
+orientation check that needs no name; a venue name that already
 resolves to a DIFFERENT team than the joined event's is a conflict — neither
 side is learned and the panel logs why once (`console.warn`) — because a
 swapped away/home (a neutral site) would otherwise write a wrong row; a
@@ -550,7 +554,8 @@ too and reports it in the POST reply). A wrong row could still only match a
 game where the opponent and the start time also agree. The *Bets tab* lists
 the table under **Team crosswalk** — "Wazzu → Washington State · Novig ·
 CFB · learned Sep 15 3:00 PM", the source bet in the tooltip — with a
-**Clear** button (confirmed) that `DELETE`s the table on the service and
+**Clear** button (two clicks: the first arms it as "Clear 68 rows?" for 6 s,
+the second deletes — no dialog) that `DELETE`s the table on the service and
 re-keys every record from its names alone; the board teaches the rows again
 as bets join. Live 2026-09-15 (60 open records, 358 board events): 68 rows
 would be learned (54 Novig, 14 Kalshi), 0 conflicts, and re-learning

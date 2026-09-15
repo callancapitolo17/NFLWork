@@ -977,9 +977,19 @@
 
   // Both sides of one id-joined bet as crosswalk rows to write, or the
   // conflict that stops the whole bet (a name pointing at another team on
-  // either side makes the venue's orientation suspect on both).
+  // either side makes the venue's orientation suspect on both). The bet's
+  // own contract on the joined row is the orientation check that needs no
+  // name: it says which Unabated side the bet sits on, and the bet's own
+  // `side` says which venue side — they must be the same side, or the
+  // venue's away/home is not Unabated's for this game.
   function lessonOf(bet, row, known) {
     const rows = [];
+    const contractSideIndex = sideIndexByVenueId(bet, row);
+    const betSideIndex = bet.side === "away" ? 0 : bet.side === "home" ? 1 : null;
+    if (contractSideIndex != null && betSideIndex != null && contractSideIndex !== betSideIndex) {
+      return { rows: [], conflict: { betId: bet.id, venue: bet.venue, league: bet.league, side: bet.side, venueTeamKey: null, boardKey: null,
+        reason: `the bet's own contract puts it on Unabated side ${contractSideIndex}, its venue side is ${bet.side}` } };
+    }
     for (const side of ["away", "home"]) {
       const venueTeam = venueTeamOf(bet, side);
       if (!venueTeam) return { rows: [], conflict: null };

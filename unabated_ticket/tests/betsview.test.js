@@ -212,8 +212,8 @@ test("crosswalkRows: one Bets-tab line per served row — venue spelling, Unabat
     null, "junk",
   ]);
   assert.deepEqual(rows, [
-    { key: "novig|cfb|nv-1", what: "Wazzu → Washington State", meta: "Novig · CFB · learned Sep 15 3:00 PM", title: "from novig:o on board event 1" },
-    { key: "kalshi|nfl|PIT Steelers", what: "PIT Steelers → team 3", meta: "Kalshi · NFL", title: "" },
+    { what: "Wazzu → Washington State", meta: "Novig · CFB · learned Sep 15 3:00 PM", title: "from novig:o on board event 1" },
+    { what: "PIT Steelers → team 3", meta: "Kalshi · NFL", title: "" },
   ]);
   assert.deepEqual(view.crosswalkRows(undefined), []);
 });

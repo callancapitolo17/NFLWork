@@ -1675,28 +1675,54 @@
     renderBetsFlags();
   }
 
+  // Clear is two clicks: the first arms the button ("Clear 68 rows?") for a
+  // few seconds, the second deletes. No dialog — a side panel is not a place
+  // to rely on window.confirm — and a re-render while armed leaves it armed.
+  const CROSSWALK_CLEAR_ARM_MS = 6000;
+  let crosswalkClearArmedUntil = 0;
+  let crosswalkClearTimer = null;
+
+  function crosswalkClearArmed() {
+    return Date.now() < crosswalkClearArmedUntil;
+  }
+
+  function renderCrosswalkClearButton(count) {
+    const button = view.betsCrosswalkClear;
+    button.disabled = count === 0;
+    button.classList.toggle("armed", crosswalkClearArmed());
+    button.textContent = crosswalkClearArmed() ? `Clear ${count} row${count === 1 ? "" : "s"}?` : "Clear";
+  }
+
   async function clearCrosswalk() {
     const count = state.crosswalk.length;
     if (!count) return;
-    if (!confirm(`Delete all ${count} learned team row${count === 1 ? "" : "s"} from the bets service? Bets go back to name matching until the board teaches them again.`)) return;
+    if (!crosswalkClearArmed()) {
+      crosswalkClearArmedUntil = Date.now() + CROSSWALK_CLEAR_ARM_MS;
+      clearTimeout(crosswalkClearTimer);
+      crosswalkClearTimer = setTimeout(() => renderCrosswalkClearButton(state.crosswalk.length), CROSSWALK_CLEAR_ARM_MS);
+      renderCrosswalkClearButton(count);
+      return;
+    }
+    crosswalkClearArmedUntil = 0;
     view.betsCrosswalkClear.disabled = true;
     try {
       const reply = await postCrosswalk("DELETE", null);
       console.info(`[unabated-ticket] crosswalk: cleared ${reply.cleared} row(s)`);
       await applyCrosswalk([]);
       crosswalkConflictsLogged.clear();
+      view.betsSettingsError.textContent = "";
     } catch (error) {
       console.warn("[unabated-ticket] crosswalk: clear failed:", error.message);
       view.betsSettingsError.textContent = `Could not clear the crosswalk: ${error.message}`;
     } finally {
-      view.betsCrosswalkClear.disabled = state.crosswalk.length === 0;
+      renderCrosswalkClearButton(state.crosswalk.length);
     }
   }
 
   function renderCrosswalk() {
     const rows = betsView.crosswalkRows(state.crosswalk);
     view.betsCrosswalkCount.textContent = rows.length ? String(rows.length) : "";
-    view.betsCrosswalkClear.disabled = rows.length === 0;
+    renderCrosswalkClearButton(rows.length);
     view.betsCrosswalk.replaceChildren(...rows.map((row) => {
       const li = document.createElement("li");
       li.title = row.title;

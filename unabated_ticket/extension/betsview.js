@@ -262,7 +262,6 @@
   // Unabated calls it, and where it was learned. Newest first as served.
   function crosswalkRows(crosswalk) {
     return (Array.isArray(crosswalk) ? crosswalk : []).filter((row) => row && typeof row === "object").map((row) => ({
-      key: `${row.venue}|${row.league}|${row.venueTeamKey}`,
       what: `${row.venueTeamName || row.venueTeamKey} \u2192 ${row.unabatedTeamName || `team ${row.unabatedTeamId}`}`,
       meta: [bets.venueLabel(row.venue), typeof row.league === "string" ? row.league.toUpperCase() : null,
         row.learnedAt ? `learned ${bets.formatPlacedAt(row.learnedAt)}` : null].filter(Boolean).join(" \u00b7 "),
