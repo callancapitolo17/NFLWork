@@ -626,3 +626,78 @@ test("Novig: unmatched reasons — props, unsupported leagues and unreadable blo
   assert.equal(reasons["novig:o-f5"], "league not on the scanner");
   assert.equal(reasons["novig:o-ml-car"], undefined);
 });
+
+// ---- BetOnline records (no game date; rotation + placed-time window) --------------
+
+// A record as bets_service/sources/betonline.py emits it (fixture
+// betonline_history.json grammar): eventStart / eventDate null, the rotation
+// number, approx game_date_unknown, keys null until resolveTeamKeys.
+function betonlineRecord(overrides) {
+  return Object.assign({
+    id: "betonline:996000009-1", source: "betonline_api", venue: "betonline", league: "nfl",
+    eventStart: null, eventDate: null, awayTeam: "Chicago Bears", homeTeam: null, awayKey: null, homeKey: null,
+    rotation: 465, betType: "spread", period: "FG", side: "away", points: 3, price: -110,
+    stake: 110, toWin: 100, contracts: null, placedAt: "2026-09-11T19:05:44Z", status: "open", closedAt: null,
+    isParlayLeg: false, parlayId: null, legIndex: null, legCount: null,
+    approx: ["game_date_unknown", "side_from_rotation_parity"], unmatchable: null, sourceFetchedAt: FETCHED_AT,
+    raw: { description: "Desktop - FOOTBALL - 465 Chicago Bears +3 -110 for GAME " },
+  }, overrides);
+}
+
+test("BetOnline: a first-half total naming both teams is same_line on the slice's 1H Under row by team pair + placed window", () => {
+  const rows = nflRows();
+  const bet = bets.resolveTeamKeys([betonlineRecord({
+    id: "betonline:996000010-1", homeTeam: "Carolina Panthers", betType: "total", period: "1H", side: "under",
+    points: 20.5, price: -110, rotation: 466, approx: ["game_date_unknown"],
+  })])[0];
+  const under = bets.matchBets(rows["Total 1H 1 20.5"], [bet], { lines: Object.values(rows) });
+  assert.equal(under.matches[0].tier, "same_line");
+  assert.equal(under.matches[0].label, "1H Under 20.5 -110 · 52.4¢ · $110 · Betonline");
+  const over = bets.matchBets(rows["Total 1H 0 20.5"], [bet], { lines: Object.values(rows) });
+  assert.equal(over.matches[0].tier, "opposite");
+  assert.equal(bets.matchBets(rows["Total FG 1 46"], [bet], { lines: Object.values(rows) }).matches[0].tier, "same_game");
+});
+
+test("BetOnline: a one-team spread with unresolved keys matches event 125807 by rotation 465 alone", () => {
+  const rows = nflRows();
+  const bet = betonlineRecord();  // keys left null: only the rotation can carry it
+  const chicago = bets.matchBets(rows["Spread FG 0 -3"], [bet], { lines: Object.values(rows) });
+  assert.equal(chicago.matches[0].tier, "same_side");  // Chicago +3 held, row is Chicago -3
+  const carolina = bets.matchBets(rows["Spread FG 1 3"], [bet], { lines: Object.values(rows) });
+  assert.equal(carolina.matches[0].tier, "opposite");
+  assert.deepEqual(bets.unmatchedReasons([bet], Object.values(rows)), []);
+});
+
+test("BetOnline: the rotation match is refused when the one resolved team is not in the row's game", () => {
+  const rows = nflRows();
+  const bet = betonlineRecord({ awayTeam: "Philadelphia Eagles", awayKey: "nfl:phi" });
+  assert.equal(bets.matchBets(rows["Spread FG 0 -3"], [bet], { lines: Object.values(rows) }).matches.length, 0);
+  assert.deepEqual(bets.unmatchedReasons([bet], Object.values(rows)).map((u) => u.reason), ["no event on the board yet"]);
+  // Undecidable when the row's own names are unknown to teams.js: the rotation stands.
+  const unknownRow = Object.assign({}, rows["Spread FG 0 -3"], {
+    awayTeamId: null, homeTeamId: null, awayTeam: "Chi. (Unabated spelling)", homeTeam: "Car. (Unabated spelling)",
+  });
+  assert.equal(bets.matchBets(unknownRow, [bet], { lines: [unknownRow] }).matches.length, 1);
+});
+
+test("BetOnline: the placed-time window is 12 h back and 14 days ahead of placedAt", () => {
+  const rows = nflRows();
+  const lines = Object.values(rows);
+  const kickoff = Date.parse("2026-09-13T17:00:00Z");
+  const at = (ms) => betonlineRecord({ placedAt: new Date(ms).toISOString() });
+  assert.equal(bets.matchBets(rows["Spread FG 0 -3"], [at(kickoff - 14 * 24 * 3600 * 1000)], { lines }).matches.length, 1);
+  assert.equal(bets.matchBets(rows["Spread FG 0 -3"], [at(kickoff - 15 * 24 * 3600 * 1000)], { lines }).matches.length, 0);
+  assert.equal(bets.matchBets(rows["Spread FG 0 -3"], [at(kickoff + 11 * 3600 * 1000)], { lines }).matches.length, 1);
+  assert.equal(bets.matchBets(rows["Spread FG 0 -3"], [at(kickoff + 13 * 3600 * 1000)], { lines }).matches.length, 0);
+  // Without the flag a dateless record never matches, whatever placedAt says.
+  assert.equal(bets.matchBets(rows["Spread FG 0 -3"], [betonlineRecord({ approx: [] })], { lines }).matches.length, 0);
+});
+
+test("BetOnline: a matched bet whose team name teams.js does not know is not listed as unmatched", () => {
+  const rows = nflRows();
+  const bet = bets.resolveTeamKeys([betonlineRecord({ awayTeam: "Chi Bears (BOL spelling)" })])[0];
+  assert.equal(bet.awayKey, null);
+  assert.deepEqual(bets.unmatchedReasons([bet], Object.values(rows)), []);
+  const off = bets.resolveTeamKeys([betonlineRecord({ awayTeam: "Chi Bears (BOL spelling)", rotation: 999 })])[0];
+  assert.equal(bets.unmatchedReasons([off], Object.values(rows))[0].reason, "team not recognised (Chi Bears (BOL spelling))");
+});

@@ -51,6 +51,13 @@
   const RETENTION_DAYS_DEFAULT = 30;
   const EASTERN = "America/New_York";
   const TIE_CAVEAT = "kalshi_no_side_includes_tie";
+  // A venue that gives no game date at all (BetOnline's report, #115): the bet
+  // matches an event that starts within this window around its placed time —
+  // 12 h back for live bets and a report clock read in the wrong offset, 14
+  // days ahead because the account bets NFL totals up to two weeks out.
+  const DATE_UNKNOWN = "game_date_unknown";
+  const PLACED_WINDOW_BEFORE_MS = 12 * 3600 * 1000;
+  const PLACED_WINDOW_AFTER_MS = 14 * DAY_MS;
   // Leagues whose games can end level, so a NO on a team market also wins on a tie.
   const LEAGUES_WITH_TIES = new Set(["nfl", "cfb", "soccer"]);
 
@@ -413,14 +420,31 @@
       const betMs = Date.parse(bet.eventStart);
       return Number.isFinite(betMs) && Math.abs(betMs - line.eventStartMs) <= START_TOLERANCE_MS;
     }
-    if (!bet.eventDate) return false;
-    const delta = Math.abs(dateStringToUtcMs(easternDateOf(line.eventStartMs)) - dateStringToUtcMs(bet.eventDate));
-    return delta <= DATE_TOLERANCE_DAYS * DAY_MS;
+    if (bet.eventDate) {
+      const delta = Math.abs(dateStringToUtcMs(easternDateOf(line.eventStartMs)) - dateStringToUtcMs(bet.eventDate));
+      return delta <= DATE_TOLERANCE_DAYS * DAY_MS;
+    }
+    if (!(bet.approx && bet.approx.includes(DATE_UNKNOWN)) || !bet.placedAt) return false;
+    const placedMs = Date.parse(bet.placedAt);
+    return Number.isFinite(placedMs)
+      && line.eventStartMs >= placedMs - PLACED_WINDOW_BEFORE_MS
+      && line.eventStartMs <= placedMs + PLACED_WINDOW_AFTER_MS;
+  }
+
+  // A rotation match with one resolved team (BetOnline names only its own
+  // team on a spread) must put that team in the row's game: the same rotation
+  // number comes round again the next week. Decidable only when both of the
+  // row's teams resolve; otherwise the rotation stands on its own.
+  function knownTeamFits(bet, keys) {
+    const known = [bet.awayKey, bet.homeKey].filter(Boolean);
+    if (known.length !== 1 || !keys.away || !keys.home) return true;
+    return known[0] === keys.away || known[0] === keys.home;
   }
 
   function gameMatches(bet, line) {
     if (bet.unmatchable || bet.league !== line.league) return false;
-    if (!sameTeamPair(bet, lineTeamKeys(line)) && !rotationMatches(bet, line)) return false;
+    const keys = lineTeamKeys(line);
+    if (!sameTeamPair(bet, keys) && !(rotationMatches(bet, line) && knownTeamFits(bet, keys))) return false;
     return timeMatches(bet, line);
   }
 
@@ -472,9 +496,22 @@
     if (bet.betType !== lineBetType(line) || bet.period !== line.period) return "same_game";
     const lineKey = lineSideKey(line);
     if (lineKey == null) return "same_game";
-    if (betSideKey(bet) === lineKey) return samePoints(bet.points, line.points) ? "same_line" : "same_side";
+    const betKey = betSideKey(bet);
+    if (betKey == null && bet.betType !== "total") return tierByRotation(bet, line);
+    if (betKey === lineKey) return samePoints(bet.points, line.points) ? "same_line" : "same_side";
     if (betOtherSideKey(bet) === lineKey) return "opposite";
     return "same_game";
+  }
+
+  // A team-market bet whose own team teams.js could not key (BetOnline names
+  // its team as it likes): the bet's rotation IS its team, so the row's
+  // away/home rotations say which side it sits on.
+  function tierByRotation(bet, line) {
+    if (bet.rotation == null) return "same_game";
+    const betSideIndex = bet.rotation === line.awayRotation ? 0 : bet.rotation === line.homeRotation ? 1 : null;
+    if (betSideIndex == null) return "same_game";
+    if (betSideIndex === line.sideIndex) return samePoints(bet.points, line.points) ? "same_line" : "same_side";
+    return "opposite";
   }
 
   // ---- labels ----------------------------------------------------------------
@@ -615,12 +652,15 @@
     for (const bet of bets) {
       if (bet.status !== "open") continue;
       if (bet.unmatchable) { out.push({ bet, reason: bet.unmatchable }); continue; }
+      // Matched (by team pair or by rotation) is not a problem, whatever the
+      // team table makes of the names; the diagnoses below explain a miss.
+      const candidates = candidateEvents(bet, lines).size;
+      if (candidates === 1) continue;
+      if (candidates > 1) { out.push({ bet, reason: "ambiguous game" }); continue; }
       const unresolved = unresolvedTeamNames(bet);
       if (unresolved.length) { out.push({ bet, reason: `team not recognised (${unresolved.join(", ")})` }); continue; }
       if (!leaguesOnBoard.has(bet.league)) { out.push({ bet, reason: "league not on the scanner" }); continue; }
-      const candidates = candidateEvents(bet, lines).size;
-      if (candidates > 1) out.push({ bet, reason: "ambiguous game" });
-      else if (candidates === 0) out.push({ bet, reason: "no event on the board yet" });
+      out.push({ bet, reason: "no event on the board yet" });
     }
     return out;
   }

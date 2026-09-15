@@ -31,68 +31,75 @@ def by_id(records: list[dict], record_id: str) -> dict:
 
 # ---- parser ---------------------------------------------------------------------------
 
-def test_pending_first_half_spread_is_kept_open_with_the_side_number(records):
-    record = by_id(records, "betonline:900001")
+def test_pending_nfl_total_names_both_teams_and_stays_open(records):
+    record = by_id(records, "betonline:995909271-1")
     assert record["status"] == "open" and record["closedAt"] is None
-    assert (record["league"], record["betType"], record["period"]) == ("nfl", "spread", "1H")
-    assert (record["rotation"], record["side"], record["points"], record["price"]) == (465, "away", 3.5, -110)
-    assert (record["awayTeam"], record["homeTeam"]) == ("Chicago Bears", None)
+    assert (record["league"], record["betType"], record["period"]) == ("nfl", "total", "FG")
+    assert (record["rotation"], record["side"], record["points"], record["price"]) == (273, "over", 39.5, -108)
+    assert (record["awayTeam"], record["homeTeam"]) == ("Seattle Seahawks", "Arizona Cardinals")
     assert (record["awayKey"], record["homeKey"]) == (None, None)  # the panel resolves keys
-    assert (record["stake"], record["toWin"]) == (110, 100)
-    assert record["placedAt"] == "2026-09-11T18:12:33Z"
+    assert (record["stake"], record["toWin"]) == (540, 500)
+    assert record["placedAt"] == "2026-09-14T00:19:21Z"  # naive report time read as UTC-8
     assert record["eventStart"] is None and record["eventDate"] is None
-    assert record["approx"] == ["game_date_unknown", "side_from_rotation_parity"]
+    assert record["approx"] == ["game_date_unknown"]  # no parity guess on a total
     assert record["unmatchable"] is None
     assert (record["source"], record["venue"], record["sourceFetchedAt"]) == ("betonline_api", "betonline", FETCHED_AT)
-    assert record["raw"]["description"].startswith("Desktop - NFL - 465")
+    assert record["raw"]["ticketNumber"] == 995909271 and record["raw"]["wagerNumber"] == 1
 
 
-def test_settled_negative_spread_is_won_with_placed_time_as_closed_at(records):
-    record = by_id(records, "betonline:900002")
-    assert (record["status"], record["closedAt"]) == ("won", "2026-09-07T15:40:02Z")
-    assert (record["side"], record["points"], record["price"], record["period"]) == ("home", -7, -105, "FG")
-    assert (record["awayTeam"], record["homeTeam"]) == (None, "Carolina Panthers")
+def test_college_first_half_total_is_cfb_with_the_home_rotation(records):
+    record = by_id(records, "betonline:995445752-1")
+    assert (record["league"], record["period"], record["side"], record["points"], record["price"]) == \
+        ("cfb", "1H", "under", 26.5, 105)
+    assert (record["awayTeam"], record["homeTeam"], record["rotation"]) == ("Tulsa", "Sam Houston St", 374)
+    assert (record["status"], record["closedAt"]) == ("won", "2026-09-12T19:33:46Z")  # placed time: a lower bound
 
 
-def test_total_reads_over_under_and_the_half_glyph(records):
-    record = by_id(records, "betonline:900003")
-    assert (record["betType"], record["side"], record["points"], record["price"]) == ("total", "over", 44.5, -110)
-    assert record["approx"] == ["game_date_unknown"]  # no parity guess on a total
-    assert record["homeTeam"] == "Carolina Panthers"  # rotation 466 is the home team
+def test_one_team_spread_is_placed_by_rotation_parity(records):
+    record = by_id(records, "betonline:993434702-1")
+    assert (record["betType"], record["side"], record["points"], record["price"]) == ("spread", "home", 15, 104)
+    assert (record["awayTeam"], record["homeTeam"]) == (None, "San Diego")  # 307122 is even = home
+    assert record["approx"] == ["game_date_unknown", "side_from_rotation_parity"]
+    assert record["status"] == "lost"
+    negative = by_id(records, "betonline:996000003-1")
+    assert (negative["side"], negative["points"], negative["homeTeam"]) == ("home", -3, "Green Bay Packers")
 
 
 def test_same_game_parlay_is_one_record_per_leg(records):
-    legs = [record for record in records if record["parlayId"] == "betonline:900004"]
-    assert [record["id"] for record in legs] == ["betonline:900004:leg0", "betonline:900004:leg1"]
+    legs = [record for record in records if record["parlayId"] == "betonline:996000001-1"]
+    assert [record["id"] for record in legs] == ["betonline:996000001-1:leg0", "betonline:996000001-1:leg1"]
     assert all(record["isParlayLeg"] and record["legCount"] == 2 for record in legs)
-    assert [record["legIndex"] for record in legs] == [0, 1]
     first, second = legs
-    assert (first["betType"], first["side"], first["points"], first["price"]) == ("spread", "away", 3.5, -110)
-    assert (second["betType"], second["side"], second["points"], second["price"]) == ("total", "under", 44.5, -115)
+    assert (first["betType"], first["side"], first["points"], first["price"], first["period"]) == \
+        ("spread", "away", 3.5, -110, "1H")
+    assert first["awayTeam"] == "Chicago Bears" and first["league"] == "nfl"
+    assert (second["betType"], second["side"], second["points"], second["price"], second["period"]) == \
+        ("total", "under", 44.5, -115, "FG")
     assert all(record["stake"] == 50 and record["toWin"] == 130 for record in legs)
     assert all(record["raw"]["parlayPrice"] == 260 for record in legs)
-    assert not any(record["id"] == "betonline:900004" for record in records)
+    assert not any(record["id"] == "betonline:996000001-1" for record in records)
 
 
-def test_moneyline_lost_push_and_cancelled_statuses(records):
-    lost = by_id(records, "betonline:900005")
-    assert (lost["betType"], lost["points"], lost["price"], lost["status"]) == ("moneyline", None, 140, "lost")
-    assert by_id(records, "betonline:900007")["status"] == "push"
-    assert by_id(records, "betonline:900008")["status"] == "void"
+def test_moneyline_push_and_cancelled_statuses(records):
+    push = by_id(records, "betonline:996000002-1")
+    assert (push["betType"], push["points"], push["price"], push["status"], push["side"]) == \
+        ("moneyline", None, 140, "push", "away")
+    assert by_id(records, "betonline:996000003-1")["status"] == "void"
 
 
-def test_unknown_period_sport_only_prefix_fail_closed_with_a_reason(records):
-    period = by_id(records, "betonline:900006")
-    assert period["unmatchable"] == "unknown period (1st Period)"
-    assert period["betType"] == "other" and period["league"] is None
-    sport = by_id(records, "betonline:900009")
-    assert sport["unmatchable"] == "league not determined from sport prefix (Football)"
+def test_unknown_period_fails_closed_with_a_reason(records):
+    record = by_id(records, "betonline:996000004-1")
+    assert record["unmatchable"] == "unknown period (1ST PERIOD)"
+    assert record["betType"] == "other" and record["league"] is None
 
 
-def test_mlb_first_five_period(records):
-    record = by_id(records, "betonline:900010")
-    assert (record["league"], record["period"], record["points"], record["price"]) == ("mlb", "F5", -0.5, -120)
-    assert record["awayTeam"] == "New York Yankees"
+def test_basketball_quarter_and_baseball_first_five(records):
+    quarter = by_id(records, "betonline:996000005-1")
+    assert (quarter["league"], quarter["period"], quarter["points"]) == ("nba", "1Q", -4.5)
+    first_five = by_id(records, "betonline:996000006-1")
+    assert (first_five["league"], first_five["period"], first_five["points"], first_five["price"]) == \
+        ("mlb", "F5", -0.5, -120)
+    assert first_five["awayTeam"] == "New York Yankees"
 
 
 def test_every_fixture_record_carries_the_contract_keys(records):
@@ -100,17 +107,17 @@ def test_every_fixture_record_carries_the_contract_keys(records):
                 "awayKey", "homeKey", "rotation", "betType", "period", "side", "points", "price", "stake",
                 "toWin", "contracts", "placedAt", "status", "closedAt", "isParlayLeg", "parlayId",
                 "legIndex", "legCount", "approx", "unmatchable", "sourceFetchedAt", "raw"}
-    assert len(records) == 11
+    assert len(records) == 15  # 14 rows, the parlay is two
     for record in records:
         assert set(record) == expected, record["id"]
 
 
 @pytest.mark.parametrize("text, expected", [
-    ("465 Chicago Bears +3½ -110", ("spread", "away", 3.5, -110, "FG")),
-    ("466 Carolina Panthers -3 -110 - 2nd Half", ("spread", "home", -3, -110, "2H")),
-    ("466 Carolina Panthers pk -105", ("spread", "home", 0, -105, "FG")),
-    ("465 Chicago Bears over 21½ -110 - 1st Quarter", ("total", "over", 21.5, -110, "1Q")),
-    ("465 Chicago Bears +145 for 100.00", ("moneyline", "away", None, 145, "FG")),
+    ("465 Chicago Bears +3½ -110 for GAME", ("spread", "away", 3.5, -110, "FG")),
+    ("466 Carolina Panthers -3 -110 for 2ND HALF", ("spread", "home", -3, -110, "2H")),
+    ("466 Carolina Panthers pk -105 for GAME", ("spread", "home", 0, -105, "FG")),
+    ("465 Chicago Bears/Carolina Panthers over 21½ -110 for 1ST QUARTER", ("total", "over", 21.5, -110, "1Q")),
+    ("465 Chicago Bears +145 for game ", ("moneyline", "away", None, 145, "FG")),
 ])
 def test_parse_leg_grammar(text, expected):
     leg = parse_leg(text)
@@ -118,35 +125,38 @@ def test_parse_leg_grammar(text, expected):
     assert (leg["betType"], leg["side"], leg["points"], leg["price"], leg["period"]) == expected
 
 
+def test_leg_without_the_for_period_tail_does_not_parse():
+    assert parse_leg("465 Chicago Bears +3.5 -110").startswith("no '<rotation> <selection> for <period>'")
+
+
 def test_wager_type_disagreeing_with_the_selection_is_unmatchable():
-    row = {"Id": 1, "Date": "2026-09-11T18:00:00Z", "Description": "NFL - 465 Chicago Bears +3.5 -110",
+    row = {"Id": "1-1", "Date": "2026-09-11T18:00:00", "Description": "FOOTBALL - 465 Chicago Bears +3.5 -110 for GAME",
            "WagerType": "Total", "WagerStatus": "Pending", "Risk": 10, "ToWin": 9}
     [record] = normalize_row(row, FETCHED_AT)
     assert record["unmatchable"] == "wager type Total but the selection reads as spread"
 
 
+def test_sport_outside_the_scanner_is_unmatchable():
+    row = {"Id": "1-1", "Date": "2026-09-11T18:00:00", "Description": "Desktop - TENNIS - 1 Alcaraz -200 for MATCH",
+           "WagerType": "Money Line", "WagerStatus": "Pending", "Risk": 10, "ToWin": 5}
+    [record] = normalize_row(row, FETCHED_AT)
+    assert record["unmatchable"] == "unknown sport prefix (TENNIS)"
+
+
 def test_parlay_with_an_unparseable_leg_is_one_unmatchable_record():
-    row = {"Id": 2, "Date": "2026-09-11T18:00:00Z",
-           "Description": "NFL - NFL - 465 Chicago Bears +3.5 -110, Justin Fields 200+ passing yards -120",
+    row = {"Id": "2-1", "Date": "2026-09-11T18:00:00",
+           "Description": "FOOTBALL - FOOTBALL - 465 Chicago Bears +3.5 -110 for GAME, Justin Fields 200+ passing yards -120",
            "WagerType": "Same Game Parlay", "WagerStatus": "Pending", "Risk": 10, "ToWin": 30}
     [record] = normalize_row(row, FETCHED_AT)
-    assert record["id"] == "betonline:2" and not record["isParlayLeg"]
+    assert record["id"] == "betonline:2-1" and not record["isParlayLeg"]
     assert record["unmatchable"].startswith("parlay legs not parsed")
 
 
 def test_row_without_a_native_id_fails_the_poll_loudly():
-    row = {"Date": "2026-09-11T18:00:00Z", "Description": "NFL - 465 Chicago Bears +3.5 -110",
+    row = {"Date": "2026-09-11T18:00:00", "Description": "FOOTBALL - 465 Chicago Bears +3.5 -110 for GAME",
            "WagerType": "Spread", "WagerStatus": "Pending", "Risk": 10, "ToWin": 9}
     with pytest.raises(RuntimeError, match="none of the id fields"):
         normalize_betonline([row], FETCHED_AT)
-
-
-def test_ticket_number_is_accepted_as_the_native_id():
-    row = {"TicketNumber": "AB12", "Date": "2026-09-11T18:00:00Z",
-           "Description": "NFL - 465 Chicago Bears +3.5 -110", "WagerType": "Spread",
-           "WagerStatus": "Pending", "Risk": 10, "ToWin": 9}
-    [record] = normalize_row(row, FETCHED_AT)
-    assert record["id"] == "betonline:AB12"
 
 
 # ---- network half ---------------------------------------------------------------------
@@ -212,7 +222,7 @@ def test_fetch_normalises_the_paged_report_and_rotates_the_refresh_token(tmp_pat
     now = [1_800_000_000.0]
     cookies_path, source = make_source(tmp_path, session, clock=lambda: now[0])
     records = source.fetch()
-    assert len(records) == 11 and records[0]["id"] == "betonline:900001"
+    assert len(records) == 15 and records[0]["id"] == "betonline:995909271-1"
     assert session.refresh_tokens_seen == ["initial"]
     saved = json.loads(cookies_path.read_text())
     assert [cookie["value"] for cookie in saved if cookie["name"] == "krefresh"] == ["rotated-1"]

@@ -40,32 +40,37 @@ LaunchAgent made while the service was down is picked up; (4) it writes the
 rotated token with os.replace. The LaunchAgent stays loaded and unchanged — it is
 the keep-alive for when the service is not running.
 
-Report grammar (from the issue and bet_logger/scraper_betonline.py's regexes; no
-saved payload exists, so the first live pull must confirm it — the parser fails
-closed on anything it does not recognise, listing the row as unmatchable with the
-reason and the raw description):
-  Description  "[Desktop|Mobile] - NFL - 465 Chicago Bears +3.5 -110[ - 1st Half]"
-               <league> - <rotation> <team> <points> <price>, totals as
-               "<team> over 44½ -110", moneyline "<team> +140"; a trailing
-               " - <period>" names a non-full-game period; a trailing " for ..."
-               tail is ignored. Same Game Parlay descriptions repeat the league
-               ("NFL - NFL - ") and list the legs on one line; the separator is
-               unverified — ", " / " | " / "; " are tried and EVERY piece must parse,
-               else the ticket is one unmatchable record.
+Report grammar (live pull 2026-09-15, 14 rows; the parser fails closed on anything
+else, listing the row as unmatchable with the reason and the raw description):
+  Id           "995909271-1" = TicketNumber-WagerNumber — the stable native id.
+  Description  "[Desktop|Mobile] - FOOTBALL - 273 Seattle Seahawks/Arizona Cardinals over 39½ -108 for GAME"
+               <SPORT> - <rotation> <selection> for <PERIOD>. The prefix is the
+               SPORT (FOOTBALL / BASKETBALL / BASEBALL / HOCKEY / SOCCER), never
+               the league, so the league comes from bet_logger/utils.py
+               parse_sport (the sheet scraper's nickname resolver; see
+               SHEET_LABEL_TO_LEAGUE). A total names BOTH teams ("Away/Home",
+               away first) and carries the over (away, odd) or under (home, even)
+               rotation; a spread or moneyline names its own team only ("307122
+               San Diego +15 +104"). PERIOD: GAME = FG, 1ST HALF, 2ND HALF,
+               quarters; anything else fails closed. Same Game Parlay rows were
+               NOT in the pull — their grammar is unverified: the leg separators
+               ", " / " | " / "; " are tried and EVERY piece must parse, else the
+               ticket is one unmatchable record.
   WagerType    Spread | Total | Money Line | Same Game Parlay (the authority for a
-               straight bet's type; a description that parses as another type is
-               unmatchable).
-  WagerStatus  Pending | Won | Lost | Push | Cancelled.
-  Risk, ToWin  USD.  Date  the placed time (ISO; a naive value is read as UTC).
-The report carries NO game date and names only the bet's own team, so
-eventStart / eventDate are null and the side comes from rotation parity (odd =
-away, even = home, the US rotation convention) — both recorded in `approx`
-("game_date_unknown", "side_from_rotation_parity"); the matcher keys on the
-rotation number. The report carries no settle time either: a settled bet's
+               straight bet's type; a selection that reads as another type is
+               unmatchable).  WagerStatus  Pending | Won | Lost | Push | Cancelled.
+  Risk, ToWin  USD.  Date  naive local time in the gmt-offset we send (-8, fixed,
+               BASE_HEADERS) — read as UTC-8; it only feeds the placed-time window.
+The report carries NO game date, so eventStart / eventDate are null; a spread or
+moneyline side comes from rotation parity (odd = away, the US convention) — both
+recorded in `approx` ("game_date_unknown", "side_from_rotation_parity"); the
+matcher keys on the rotation number and the team names. The report carries no
+settle time either (GradeDateTime was null on every settled row): a settled bet's
 closedAt is its placed time (a lower bound; it only decides when the bet leaves
 the 30-day window, never a match).
 """
 import fcntl
+import importlib.util
 import json
 import logging
 import os
@@ -111,26 +116,43 @@ REFRESH_MARGIN_SEC = 60
 # When the token response carries no expires_in, assume Keycloak's usual 5 min.
 DEFAULT_ACCESS_TTL_SEC = 300
 
-# The report's own wager id. The field name is unverified until the first live
-# pull: a row carrying none of these fails the poll loudly (never a hash of
-# mutable fields — the store upserts on the id).
-ID_FIELD_CANDIDATES = ("Id", "TicketNumber", "WagerNumber", "TicketId", "WagerId", "BetId")
+# The report's own wager id ("<TicketNumber>-<WagerNumber>", live 2026-09-15). A
+# row without it fails the poll loudly (never a hash of mutable fields — the
+# store upserts on the id).
+ID_FIELD_CANDIDATES = ("Id",)
 
 SOURCE = "betonline_api"
 VENUE = "betonline"
 DEVICE_PREFIX_RE = re.compile(r"^(?:Desktop|Mobile)\s*-\s*", re.IGNORECASE)
-LEAGUE_TOKENS = {
-    "NFL": "nfl", "NCAAF": "cfb", "CFB": "cfb", "COLLEGE FOOTBALL": "cfb",
-    "NBA": "nba", "NCAAB": "cbb", "NCAAM": "cbb", "CBB": "cbb", "COLLEGE BASKETBALL": "cbb",
-    "WNBA": "wnba", "MLB": "mlb", "NHL": "nhl", "HOCKEY": "nhl", "SOCCER": "soccer",
-}
-# A sport prefix names two leagues the scanner keeps apart; fail closed.
-SPORT_ONLY_TOKENS = {"FOOTBALL", "BASKETBALL", "BASEBALL"}
+# The report renders Date in the gmt-offset header we send (BASE_HEADERS: -8).
+REPORT_TZ = timezone(timedelta(hours=-8))
+# League within a sport comes from bet_logger/utils.py parse_sport — the sheet
+# scraper's resolver (nickname scan: FOOTBALL with an NFL nickname is NFL, else
+# NCAAF; BASKETBALL likewise NBA / NCAAM; BASEBALL MLB; HOCKEY NHL). Its labels
+# map onto feed.LEAGUES paths here; a label outside the scanner (Tennis, CFL
+# read as NCAAF and left unresolved by teams.js) is visible in the unmatched list,
+# never a wrong match. WNBA has no table there and reads as college basketball.
+SPORT_PREFIXES = {"FOOTBALL", "BASKETBALL", "BASEBALL", "HOCKEY", "SOCCER"}
+SHEET_LABEL_TO_LEAGUE = {"NFL": "nfl", "NCAAF": "cfb", "NBA": "nba", "NCAAM": "cbb", "MLB": "mlb",
+                         "NHL": "nhl", "Soccer": "soccer"}
+BET_LOGGER_DIR = config.PKG_DIR.parent.parent / "bet_logger"
+
+
+def _load_parse_sport() -> Callable[..., str]:
+    """bet_logger is a script directory, not a package: load utils.py by path
+    (it imports only `re`)."""
+    spec = importlib.util.spec_from_file_location("bet_logger_utils", BET_LOGGER_DIR / "utils.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.parse_sport
+
+
+parse_sport = _load_parse_sport()
+
 PERIODS = {
-    "1st half": "1H", "first half": "1H", "2nd half": "2H", "second half": "2H",
-    "1st quarter": "1Q", "2nd quarter": "2Q", "3rd quarter": "3Q", "4th quarter": "4Q",
-    "1st 5 innings": "F5", "first 5 innings": "F5", "1st five innings": "F5",
-    "first five innings": "F5", "1st inning": "I1", "first inning": "I1",
+    "GAME": "FG", "1ST HALF": "1H", "2ND HALF": "2H", "1ST QUARTER": "1Q", "2ND QUARTER": "2Q",
+    "3RD QUARTER": "3Q", "4TH QUARTER": "4Q", "1ST 5 INNINGS": "F5", "FIRST 5 INNINGS": "F5",
+    "1ST INNING": "I1",
 }
 STATUS_MAP = {
     "pending": "open", "won": "won", "lost": "lost", "push": "push",
@@ -149,12 +171,11 @@ PRICE = r"[+-]\d{3,}"
 # A team name never carries a signed number or a leg separator, so a moneyline
 # regex cannot swallow "Bears +3.5 -110, <another leg>" as one team.
 TEAM = r"(?P<team>(?:(?![+-]\d)[^,;|])+?)"
-LEG_RE = re.compile(r"^(?P<rotation>\d+)\s+(?P<body>.+)$")
+LEG_RE = re.compile(r"^(?P<rotation>\d+)\s+(?P<body>.+?)\s+for\s+(?P<period>[A-Za-z0-9 ]+?)\s*$")
 TOTAL_RE = re.compile(rf"^{TEAM}\s+(?P<direction>over|under)\s+(?P<points>{NUMBER})\s+(?P<price>{PRICE})$",
                       re.IGNORECASE)
 SPREAD_RE = re.compile(rf"^{TEAM}\s+(?P<points>[+-]{NUMBER}|pk|pick)\s+(?P<price>{PRICE})$", re.IGNORECASE)
 MONEYLINE_RE = re.compile(rf"^{TEAM}\s+(?P<price>{PRICE})$")
-FOR_TAIL_RE = re.compile(r"\s+for\s+.*$", re.IGNORECASE)
 
 
 # ---- pure parser --------------------------------------------------------------------
@@ -172,43 +193,47 @@ def parse_points(text: str) -> float:
     return float(text)
 
 
-def split_period(text: str) -> tuple[str, str | None, str | None]:
-    """"<body> - 1st Half" -> (body, "1H", None); no tail -> FG; an unknown tail
-    -> (body, None, reason)."""
-    head, separator, tail = text.rpartition(" - ")
+def period_of(text: str) -> str | None:
+    return PERIODS.get(text.strip().upper())
+
+
+def split_teams(text: str) -> tuple[str | None, str | None]:
+    """"Seattle Seahawks/Arizona Cardinals" -> (away, home); one name -> (name, None)
+    as a placeholder the caller places by rotation parity."""
+    away, separator, home = text.partition("/")
     if not separator:
-        return text, "FG", None
-    period = PERIODS.get(tail.strip().lower())
-    if period is None:
-        return head, None, f"unknown period ({tail.strip()})"
-    return head, period, None
+        return text.strip(), None
+    return away.strip(), home.strip()
 
 
 def parse_leg(text: str) -> dict | str:
-    """"465 Chicago Bears +3.5 -110 - 1st Half" -> {rotation, team, betType, side,
-    points, price, period}, or the reason it does not parse."""
+    """"465 Chicago Bears +3.5 -110 for 1ST HALF" -> {rotation, teams, betType,
+    side, points, price, period}, or the reason it does not parse."""
     leg_match = LEG_RE.match(text.strip())
     if not leg_match:
-        return f"no rotation number ({text.strip()[:60]})"
+        return f"no '<rotation> <selection> for <period>' shape ({text.strip()[:60]})"
     rotation = int(leg_match.group("rotation"))
-    body, period, period_error = split_period(FOR_TAIL_RE.sub("", leg_match.group("body")).strip())
-    if period_error:
-        return period_error
+    period = period_of(leg_match.group("period"))
+    if period is None:
+        return f"unknown period ({leg_match.group('period').strip()})"
+    body = leg_match.group("body")
     parsed = {"rotation": rotation, "period": period}
     total = TOTAL_RE.match(body)
     if total:
-        parsed.update(team=total.group("team"), betType="total", side=total.group("direction").lower(),
-                      points=parse_points(total.group("points")), price=int(total.group("price")))
+        parsed.update(teams=split_teams(total.group("team")), betType="total",
+                      side=total.group("direction").lower(), points=parse_points(total.group("points")),
+                      price=int(total.group("price")))
         return parsed
     spread = SPREAD_RE.match(body)
     if spread:
-        parsed.update(team=spread.group("team"), betType="spread", side=side_from_rotation(rotation),
-                      points=parse_points(spread.group("points")), price=int(spread.group("price")))
+        parsed.update(teams=split_teams(spread.group("team")), betType="spread",
+                      side=side_from_rotation(rotation), points=parse_points(spread.group("points")),
+                      price=int(spread.group("price")))
         return parsed
     moneyline = MONEYLINE_RE.match(body)
     if moneyline:
-        parsed.update(team=moneyline.group("team"), betType="moneyline", side=side_from_rotation(rotation),
-                      points=None, price=int(moneyline.group("price")))
+        parsed.update(teams=split_teams(moneyline.group("team")), betType="moneyline",
+                      side=side_from_rotation(rotation), points=None, price=int(moneyline.group("price")))
         return parsed
     return f"unrecognised selection ({body[:60]})"
 
@@ -218,27 +243,30 @@ def side_from_rotation(rotation: int) -> str:
     return "away" if rotation % 2 == 1 else "home"
 
 
-def split_league(description: str) -> tuple[str | None, str, str | None]:
-    """"Desktop - NFL - 465 ..." -> ("nfl", "465 ...", None); a sport-only or
-    unknown prefix -> (None, rest, reason)."""
+def split_sport(description: str) -> tuple[str | None, str, str | None]:
+    """"Desktop - FOOTBALL - 465 ..." -> ("FOOTBALL", "465 ...", None); an unknown
+    prefix -> (None, rest, reason)."""
     text = DEVICE_PREFIX_RE.sub("", description.strip())
     token, separator, rest = text.partition(" - ")
     if not separator:
-        return None, text, "no league prefix"
-    upper = token.strip().upper()
-    league = LEAGUE_TOKENS.get(upper)
-    if league:
-        return league, rest.strip(), None
-    if upper in SPORT_ONLY_TOKENS:
-        return None, rest.strip(), f"league not determined from sport prefix ({token.strip()})"
-    return None, rest.strip(), f"unknown league prefix ({token.strip()})"
+        return None, text, "no sport prefix"
+    sport = token.strip().upper()
+    if sport not in SPORT_PREFIXES:
+        return None, rest.strip(), f"unknown sport prefix ({token.strip()})"
+    return sport, rest.strip(), None
+
+
+def league_of(description: str) -> str | None:
+    """feed.LEAGUES path for the row, or None when the sheet resolver's label is
+    not a league the scanner lists."""
+    return SHEET_LABEL_TO_LEAGUE.get(parse_sport(description))
 
 
 def split_parlay_legs(rest: str) -> list[dict] | str:
-    """Legs of a Same Game Parlay description (after the league prefix). A second
-    repeated league token is dropped. Every piece must parse, else the reason."""
+    """Legs of a Same Game Parlay description (after the sport prefix). A second
+    repeated sport token is dropped. Every piece must parse, else the reason."""
     token, separator, tail = rest.partition(" - ")
-    if separator and token.strip().upper() in LEAGUE_TOKENS:
+    if separator and token.strip().upper() in SPORT_PREFIXES:
         rest = tail.strip()
     for candidate in PARLAY_LEG_SEPARATORS:
         pieces = [piece.strip() for piece in rest.split(candidate)]
@@ -271,7 +299,7 @@ def parse_placed_at(value: object) -> str | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=REPORT_TZ)
     return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -325,21 +353,23 @@ def _base_record(row: dict, native_id: str, fetched_at: str | None) -> dict:
             "risk": row.get("Risk"),
             "toWin": row.get("ToWin"),
             "date": row.get("Date"),
+            "ticketNumber": row.get("TicketNumber"),
+            "wagerNumber": row.get("WagerNumber"),
         },
     }
 
 
 def _apply_leg(record: dict, league: str, leg: dict) -> dict:
+    away, home = leg["teams"]
+    if home is None and side_from_rotation(leg["rotation"]) == "home":
+        away, home = None, away
     record.update({
-        "league": league, "rotation": leg["rotation"], "betType": leg["betType"],
-        "period": leg["period"], "side": leg["side"], "points": leg["points"], "price": leg["price"],
+        "league": league,
+        "rotation": leg["rotation"], "betType": leg["betType"], "period": leg["period"],
+        "side": leg["side"], "points": leg["points"], "price": leg["price"],
+        "awayTeam": away, "homeTeam": home,
         "approx": [APPROX_DATE_UNKNOWN] + ([APPROX_SIDE_PARITY] if leg["betType"] != "total" else []),
     })
-    if side_from_rotation(leg["rotation"]) == "away":
-        record["awayTeam"] = leg["team"]
-    else:
-        record["homeTeam"] = leg["team"]
-    record["raw"]["team"] = leg["team"]
     return record
 
 
@@ -352,13 +382,17 @@ def normalize_row(row: dict, fetched_at: str | None) -> list[dict]:
     """One report row -> one record, or one record per leg of a parlay. Pure."""
     native_id = native_id_of(row)
     base = _base_record(row, native_id, fetched_at)
-    league, rest, league_error = split_league(str(row.get("Description") or ""))
+    description = str(row.get("Description") or "")
+    sport, rest, sport_error = split_sport(description)
+    league = league_of(description) if sport else None
+    if sport and league is None:
+        sport_error = f"league not on the scanner ({parse_sport(description) or sport})"
     wager_type = str(row.get("WagerType") or "").strip().lower()
     if wager_type in PARLAY_WAGER_TYPES:
         parlay_price = american_from_payout(base["stake"] or 0, base["toWin"] or 0)
         base["raw"]["parlayPrice"] = parlay_price
-        if league_error:
-            return [json_clean(_unmatchable(base, league_error))]
+        if sport_error:
+            return [json_clean(_unmatchable(base, sport_error))]
         legs = split_parlay_legs(rest)
         if isinstance(legs, str):
             return [json_clean(_unmatchable(base, legs))]
@@ -371,8 +405,8 @@ def normalize_row(row: dict, fetched_at: str | None) -> list[dict]:
                            "legCount": len(legs)})
             records.append(json_clean(_apply_leg(record, league, leg)))
         return records
-    if league_error:
-        return [json_clean(_unmatchable(base, league_error))]
+    if sport_error:
+        return [json_clean(_unmatchable(base, sport_error))]
     leg = parse_leg(rest)
     if isinstance(leg, str):
         return [json_clean(_unmatchable(base, leg))]
