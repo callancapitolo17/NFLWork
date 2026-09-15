@@ -2796,9 +2796,11 @@ def main_loop(dry_run: bool):
     # the full-slate sweep the maker no longer runs. On-demand flights are
     # budgeted by on_demand_deadline_sec; warming gets its own explicit
     # wall budget at the warm_cycle call (STRUCTURE_WARM_BUDGET_SEC).
-    sgp_service = SGPService(on_demand_deadline_sec=config.ON_DEMAND_DEADLINE_SEC,
+    sgp_service = SGPService(books=config.SGP_BOOKS,
+                             on_demand_deadline_sec=config.ON_DEMAND_DEADLINE_SEC,
                              health_db_path=str(config.MARKET_DB),
                              book_health=book_alerter)
+    log.info("SGP books: %s", ", ".join(config.SGP_BOOKS))
     # Phase 2: on-demand pricing engine shares the service's persistent
     # clients + structure caches. Always on — no switch (user decision);
     # the bot-wide kill file remains the emergency stop.

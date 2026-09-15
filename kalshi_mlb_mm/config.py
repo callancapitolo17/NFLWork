@@ -508,6 +508,20 @@ SURFACE_BOOKS_STRUCTURE = tuple(
 SURFACE_BOOKS_SINGLES = tuple(
     b.strip() for b in _get("SURFACE_BOOKS_SINGLES",
                             "draftkings,fanduel").split(",") if b.strip())
+# Books the maker's SGP service prices at all — on-demand flights AND #50's
+# structure warming. Everything else in the bot reads the service's own
+# `books`, so this is the one list to edit.
+#   prophetx   — off (user decision 2026-09-15): www.prophetx.co has served a
+#     CloudFront 403 to this IP for the whole site since 2026-09-01 and the
+#     120s warming pass alone was failing 6k–42k times a day against it —
+#     the same self-funded WAF block #90 measured on Caesars. Those requests
+#     were 100% doomed and kept the block open for every other PX use on
+#     this machine (#117's content-script recon included). Re-enable via
+#     env once the block has cleared and #91's rate cap exists.
+SGP_BOOKS = tuple(
+    b.strip() for b in _get("SGP_BOOKS",
+                            "draftkings,fanduel,novig,betmgm,caesars").split(",")
+    if b.strip())
 # (market_type, period) pairs a singles-route book owns. Anything not listed
 # falls to that book's structure route; a book absent from
 # SURFACE_BOOKS_STRUCTURE simply has no other route.
