@@ -784,7 +784,7 @@
 
   const api = {
     LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID, CURSOR_EPOCH_MS,
-    KALSHI_BOOK_ID, NOVIG_BOOK_ID, kalshiEventSuffixOf,
+    kalshiEventSuffixOf,
     parseLeagueKey, parseEventStart, parseModifiedOn, lineChangedMs, lineKeyOf, altLineKeyOf, emptyState, teamSpellingsFromEventName,
     parseSnapshot, mergeStates, extractCursor, cursorFromDate, parseChanges, applyChanges,
     describeLine, selectEdges, groupEdges, groupKeyOf, countLines, countAltLines,
