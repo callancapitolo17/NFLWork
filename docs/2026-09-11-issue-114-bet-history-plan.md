@@ -95,6 +95,9 @@ blank the list. `/bets.json`:
   approx:        [ "kalshi_no_side_includes_tie", ... ]   reasons the match is weaker than it looks
   eventDate:     "YYYY-MM-DD" Eastern | null    (Kalshi suffix date; the date rule above when eventStart is null)
   sourceFetchedAt: ISO
+  venueIds:      the venue's own ids, each a string or null (#118 step 2; absent = the venue source keeps none)
+                 Kalshi {marketTicker, eventTicker}   Novig {marketId, outcomeId, eventId, gameId}
+  awayTeamVenue, homeTeamVenue:  {id, name, shortName, symbol} | null   (Novig; symbol is never a key)
   raw:           { trimmed venue fields } (for the unmatched list and debugging, never for matching)
 }
 ```

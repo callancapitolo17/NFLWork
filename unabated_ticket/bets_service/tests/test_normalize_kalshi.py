@@ -88,6 +88,8 @@ def test_yes_spread_stake_from_position_and_vwap(kalshi_fixture):
     assert record["unmatchable"] is None
     assert record["sourceFetchedAt"] == FETCHED_AT
     assert record["raw"]["ticker"] == "KXNCAAFSPREAD-26SEP12CHATEKY-CHAT6"
+    assert record["venueIds"] == {"marketTicker": "KXNCAAFSPREAD-26SEP12CHATEKY-CHAT6",
+                                  "eventTicker": "KXNCAAFSPREAD-26SEP12CHATEKY"}
     assert isinstance(record["contracts"], int) and isinstance(record["stake"], int)
 
 
@@ -219,6 +221,7 @@ def test_known_series_missing_market_or_event_payload_fails_closed(kalshi_fixtur
     fills = [fill("KXNFLGAME-26SEP20PITNE-NE", "yes", 10, 0.50, "2026-09-11T12:00:00Z")]
     [no_market] = normalize_kalshi(fills, [], {}, kalshi_fixture["events"], FETCHED_AT)
     assert no_market["unmatchable"] == "unreadable Kalshi market (no market payload for KXNFLGAME-26SEP20PITNE-NE)"
+    assert no_market["venueIds"] == {"marketTicker": "KXNFLGAME-26SEP20PITNE-NE", "eventTicker": None}
     [no_event] = normalize_kalshi(fills, [], kalshi_fixture["markets"], {}, FETCHED_AT)
     assert no_event["unmatchable"] == "unreadable Kalshi market (no event payload for KXNFLGAME-26SEP20PITNE-NE)"
 

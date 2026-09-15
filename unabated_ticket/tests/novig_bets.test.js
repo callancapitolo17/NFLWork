@@ -166,6 +166,38 @@ test("normalize: props, unsupported leagues and blobs without teams fail closed 
   }
 });
 
+test("normalize: every record keeps Novig's own ids and team names (#118); a parlay leg keeps its own leg's", () => {
+  const list = records();
+  const cfb = byId(list, "novig:o-cfb");
+  assert.deepEqual(cfb.venueIds, { marketId: "m-cfb", outcomeId: "oc-cfb-utc", eventId: "ev-cfb", gameId: "g-ev-cfb" });
+  // Novig's symbol (UTC) is not Unabated's abbreviation (CHT): stored, never a key.
+  assert.deepEqual(cfb.awayTeamVenue, { id: "t-utc", name: "Chattanooga", shortName: "Chattanooga", symbol: "UTC" });
+  assert.equal(cfb.homeTeamVenue.name, "Eastern Kentucky");
+  // The lay of an outcome carries that outcome's id — the side taken is in `side`, not the id.
+  assert.equal(byId(list, "novig:o-sp-lay").venueIds.outcomeId, "oc-sp-chi");
+  assert.deepEqual(byId(list, "novig:pl-1:1").venueIds, { marketId: "m-oc-pl-under", outcomeId: "oc-pl-under", eventId: "ev-chicar", gameId: "g-ev-chicar" });
+  // Unmatchable records keep what the venue sent.
+  assert.equal(byId(list, "novig:o-prop").venueIds.marketId, "m-prop");
+  const noTeams = byId(list, "novig:o-noteams");
+  assert.deepEqual(noTeams.venueIds, { marketId: "m-x", outcomeId: "oc-x", eventId: "ev-x", gameId: null });
+  assert.equal(noTeams.awayTeamVenue, null);
+});
+
+test("normalize: a missing or non-string venue id is null, never an error", () => {
+  const order = fixture().responses[0].data.ActivePortfolioOrders_Query.find((o) => o.id === "o-cfb");
+  const odd = JSON.parse(JSON.stringify(order));
+  odd.market.id = 42;
+  odd.outcome.id = "";
+  delete odd.market.event.id;
+  odd.market.event.game.awayTeam = { name: "Chattanooga" };
+  const record = novig.normalizeOrder(odd, READ_AT);
+  assert.deepEqual(record.venueIds, { marketId: null, outcomeId: null, eventId: null, gameId: "g-ev-cfb" });
+  assert.deepEqual(record.awayTeamVenue, { id: null, name: "Chattanooga", shortName: null, symbol: null });
+  const bare = novig.normalizeOrder({ id: "o-bare" }, READ_AT);
+  assert.deepEqual(bare.venueIds, { marketId: null, outcomeId: null, eventId: null, gameId: null });
+  assert.equal(bare.homeTeamVenue, null);
+});
+
 test("normalize: settled orders — a bid on WIN won, a lay on LOSS won, PUSH pushed, an unfilled cancel is void, a wash is closed", () => {
   const list = records();
   assert.deepEqual(pick(byId(list, "novig:o-won"), ["status", "closedAt", "side", "price", "stake"]), { status: "won", closedAt: "2026-09-07T21:00:00.000Z", side: "home", price: -150, stake: 30 });

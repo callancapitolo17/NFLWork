@@ -151,6 +151,11 @@ test("normalize: YES spread = the named team at -floor_strike, stake = position 
   assert.equal(record.unmatchable, null);
   assert.equal(record.sourceFetchedAt, FETCHED_AT);
   assert.equal(record.raw.ticker, "KXNCAAFSPREAD-26SEP12CHATEKY-CHAT6");
+  // #118: the event ticker's suffix is what Unabated's Kalshi rungs carry in sourceKey.
+  assert.deepEqual(record.venueIds, { marketTicker: "KXNCAAFSPREAD-26SEP12CHATEKY-CHAT6", eventTicker: "KXNCAAFSPREAD-26SEP12CHATEKY" });
+  // No market payload: the ticker is known, the event ticker is not guessed from it.
+  const [noMarket] = bets.normalizeKalshi({ fills: [fill("KXNFLGAME-26SEP20PITNE-NE", "yes", 10, 0.5, "2026-09-11T12:00:00Z")], positions: [], markets: {}, events: {}, fetchedAt: FETCHED_AT });
+  assert.deepEqual(noMarket.venueIds, { marketTicker: "KXNFLGAME-26SEP20PITNE-NE", eventTicker: null });
 });
 
 test("normalize: the plan's TXAM39 example — YES on the home code is home -38.5, settled won", () => {

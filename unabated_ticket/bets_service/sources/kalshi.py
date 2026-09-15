@@ -180,6 +180,9 @@ def normalize_kalshi(fills: list[dict], positions: list[dict], markets: dict[str
             "closedAt": closed_at_of(status, position, market, last_fill_at),
             "isParlayLeg": False, "parlayId": None, "legIndex": None, "legCount": None,
             "sourceFetchedAt": fetched_at,
+            # Kalshi's own ids (#118): the event ticker's suffix is what
+            # Unabated's Kalshi alt rungs carry inside sourceKey.
+            "venueIds": {"marketTicker": ticker, "eventTicker": market.get("event_ticker") if market else None},
             "raw": {
                 "ticker": ticker, "series": series, "contractSide": contract_side,
                 "fillCount": agg["fillCount"], "vwapCents": agg["vwapCents"],

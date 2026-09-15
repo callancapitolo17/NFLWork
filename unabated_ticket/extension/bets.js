@@ -343,6 +343,9 @@
         closedAt: closedAtOf(status, position, market, lastFillAt),
         isParlayLeg: false, parlayId: null, legIndex: null, legCount: null,
         sourceFetchedAt: fetchedAt,
+        // Kalshi's own ids (#118): the event ticker's suffix is what
+        // Unabated's Kalshi alt rungs carry inside sourceKey.
+        venueIds: { marketTicker: ticker, eventTicker: market ? market.event_ticker ?? null : null },
         raw: {
           ticker, series, contractSide, fillCount: agg.fillCount, vwapCents: agg.vwapCents,
           positionFp: position ? toNumber(position.position_fp) : null,

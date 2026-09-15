@@ -106,6 +106,31 @@
     return team.name || team.short_name || team.symbol || null;
   }
 
+  // A Novig id as sent (a non-empty string), else null — never guessed.
+  function venueId(value) {
+    return typeof value === "string" && value !== "" ? value : null;
+  }
+
+  // Novig's own ids for the bet (#118): the outcome id is what Unabated's
+  // Novig alt rungs carry as sourceData.
+  function venueIdsOf(market, outcome) {
+    const event = market.event || {};
+    const game = event.game || {};
+    return { marketId: venueId(market.id), outcomeId: venueId(outcome.id), eventId: venueId(event.id), gameId: venueId(game.id) };
+  }
+
+  // The team as Novig names it. `symbol` is Novig's code, NOT Unabated's
+  // abbreviation (EKU vs EKY) — stored, never a key.
+  function venueTeam(team) {
+    if (!team) return null;
+    return { id: venueId(team.id), name: team.name || null, shortName: team.short_name || null, symbol: team.symbol || null };
+  }
+
+  function venueFields(market, outcome) {
+    const game = (market.event || {}).game || {};
+    return { venueIds: venueIdsOf(market, outcome), awayTeamVenue: venueTeam(game.awayTeam), homeTeamVenue: venueTeam(game.homeTeam) };
+  }
+
   function matchupOf(market) {
     const game = market.event && market.event.game;
     return game ? `${teamName(game.awayTeam)} @ ${teamName(game.homeTeam)}` : null;
@@ -268,8 +293,9 @@
       isParlayLeg: false, parlayId: null, legIndex: null, legCount: null,
       approx,
       sourceFetchedAt: readAt,
+      ...venueFields(market, outcome),
       raw: {
-        orderId: order.id, orderStatus: order.status, isBid, outcomePrice, originalQty, remainingQty, qtyUnit: QTY_PER_CONTRACT,
+        orderId: order.id, orderStatus: order.status ?? null, isBid, outcomePrice, originalQty, remainingQty, qtyUnit: QTY_PER_CONTRACT,
         fillCount: fills.length, marketType: market.type || null, marketStatus: market.status || null,
         strike: toNumber(market.strike), outcomeIndex: outcome.index ?? null,
         outcomeDescription: outcome.description || null, outcomeStatus: outcome.status || null,
@@ -306,8 +332,9 @@
         isParlayLeg: true, parlayId: `novig:${parlay.id}`, legIndex, legCount: legs.length,
         approx: [],
         sourceFetchedAt: readAt,
+        ...venueFields(market, outcome),
         raw: {
-          parlayId: parlay.id, parlayStatus: parlay.status, parlayPrice, legPrice,
+          parlayId: parlay.id, parlayStatus: parlay.status ?? null, parlayPrice, legPrice,
           marketType: market.type || null, strike: toNumber(market.strike), outcomeIndex: outcome.index ?? null,
           outcomeDescription: outcome.description || null, outcomeStatus: outcome.status || null,
           novigLeague: market.event && market.event.game ? market.event.game.league : null,

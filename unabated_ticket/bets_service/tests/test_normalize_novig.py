@@ -141,3 +141,32 @@ def test_qty_is_hundredths_fractional_settlement_and_title_case_parlay_status(no
 @pytest.mark.parametrize("probability, american", [(0.5, -100), (0.58, -138), (0.4, 150), (0, None), (1, None), (None, None)])
 def test_probability_to_american(probability, american):
     assert probability_to_american(probability) == american
+
+
+def test_records_keep_novig_ids_and_team_names_and_parlay_legs_their_own(novig_rows):
+    items = records(novig_rows)
+    cfb = by_id(items, "novig:o-cfb")
+    assert cfb["venueIds"] == {"marketId": "m-cfb", "outcomeId": "oc-cfb-utc", "eventId": "ev-cfb", "gameId": "g-ev-cfb"}
+    # Novig's symbol (UTC) is not Unabated's abbreviation (CHT): stored, never a key.
+    assert cfb["awayTeamVenue"] == {"id": "t-utc", "name": "Chattanooga", "shortName": "Chattanooga", "symbol": "UTC"}
+    assert by_id(items, "novig:o-sp-lay")["venueIds"]["outcomeId"] == "oc-sp-chi"
+    assert by_id(items, "novig:pl-1:1")["venueIds"] == {
+        "marketId": "m-oc-pl-under", "outcomeId": "oc-pl-under", "eventId": "ev-chicar", "gameId": "g-ev-chicar"}
+    no_teams = by_id(items, "novig:o-noteams")
+    assert no_teams["venueIds"] == {"marketId": "m-x", "outcomeId": "oc-x", "eventId": "ev-x", "gameId": None}
+    assert no_teams["awayTeamVenue"] is None
+
+
+def test_missing_or_non_string_venue_ids_are_none(novig_rows):
+    orders, _ = novig_rows
+    order = copy.deepcopy(next(o for o in orders if o["id"] == "o-cfb"))
+    order["market"]["id"] = 42
+    order["outcome"]["id"] = ""
+    del order["market"]["event"]["id"]
+    order["market"]["event"]["game"]["awayTeam"] = {"name": "Chattanooga"}
+    record = normalize_order(order, NOVIG_READ_AT)
+    assert record["venueIds"] == {"marketId": None, "outcomeId": None, "eventId": None, "gameId": "g-ev-cfb"}
+    assert record["awayTeamVenue"] == {"id": None, "name": "Chattanooga", "shortName": None, "symbol": None}
+    bare = normalize_order({"id": "o-bare"}, NOVIG_READ_AT)
+    assert bare["venueIds"] == {"marketId": None, "outcomeId": None, "eventId": None, "gameId": None}
+    assert bare["homeTeamVenue"] is None

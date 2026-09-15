@@ -292,6 +292,22 @@ Parsing (`extension/feed.js`, node-tested on real slices under
   market's standard number, not the book's main (Hard Rock: `stn` 47.5 on
   a 48.0 main); ladders can hold `null` entries; an alt on the main line's
   own points is dropped (same bet twice). Moneylines have no alts.
+- **Venue ids on the rungs** (#118 step 2, measured on the live NFL and CFB
+  files 2026-09-15). Alt lines keep the book's own `sourceKey` /
+  `sourceData` strings. Kalshi rungs carry `sourceKey`
+  `Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU36` (contract side + market ticker; the
+  other side reads `N-…`; 12,318 of 12,318 rungs fit that shape), Novig
+  rungs `sourceData` = the Novig outcome id (a UUID), ProphetX a 32-hex id.
+  Main lines never carry either field, and the changes stream has neither,
+  so they refresh with the snapshot only. Each event collects them in
+  `event.venueIds`: `kalshiEventSuffixes` (e.g. `["26SEP19DUQWSU"]`, kept
+  whole — Kalshi's team codes are not Unabated's abbreviations),
+  `kalshiContracts` and `novigOutcomes` (id → `{lineKey, mainKey,
+  points}`; `lineKey` is the listed line at that number — the main line
+  when the rung sits on the main number, null for an unpriced rung). An id
+  of any other shape is "no id", never an error. Coverage that day: 95 of
+  319 NFL/CFB/WNBA events had Kalshi ids, 98 Novig ids. Nothing matches on
+  them yet (#118 step 3).
 
 ### Alt lines
 
@@ -656,6 +672,19 @@ Novig sends no rotation number, so the team pair is the ONLY way a Novig
 bet reaches a line: one unrecognised name blocks the bet outright, and
 it lands in the Bets tab's unmatched list naming the spelling to add.
 
+Every record (orders and each parlay leg, matchable or not) also keeps
+Novig's own ids (#118 step 2): `venueIds: {marketId, outcomeId, eventId,
+gameId}` and `awayTeamVenue` / `homeTeamVenue` `{id, name, shortName,
+symbol}` — each a string as Novig sent it, else null. The outcome id is
+what Unabated's Novig rungs carry as `sourceData` (see Edges → Parsing);
+on a lay it is the outcome laid, the side taken stays in `side`. Novig's
+`symbol` is not Unabated's abbreviation (`UTC` vs `CHT`, `EKU` vs `EKY`):
+stored, never a key. Matching does not read these yet (step 3). Live
+2026-09-15: all 41 open Novig game bets sat on events with Novig rungs,
+and 29 had a rung at their own number and side; the other 12 were 2
+moneylines (moneylines have no rungs) and 10 numbers the ladder no longer
+listed.
+
 Caveat: the fixture's shapes come from the bundle's operation documents and
 the fragments the cards read the `market` / `outcome` / `fills` JSON blobs
 through, not from a logged-in capture. If a live blob differs, the record
@@ -696,6 +725,13 @@ GETs; no order placement.
   them with `bets.resolveTeamKeys()` so the team table lives only in
   `teams.js`. `normalize_kalshi()` is a port of `extension/bets.js`
   `normalizeKalshi()`; `tests/test_parity.py` holds the two byte-equivalent.
+  Records carry `venueIds: {marketTicker, eventTicker}` (#118; `eventTicker`
+  null when the market payload is missing — never derived from the ticker).
+  The event ticker's suffix is the string Unabated's Kalshi rungs carry
+  (join it whole; CFB codes are not Unabated abbreviations). Live
+  2026-09-15: all 7 open Kalshi game bets' suffixes were on the board, each
+  on one event and the same one the team names matched; 6 had their exact
+  contract as a rung (the 7th a moneyline).
 - **BetOnline source** (`sources/betonline.py`, #115): every 300 s pulls the
   account's paged bet-history report (`POST api.betonline.ag/report/api/report/get-bet-history`,
   pure HTTP — the same endpoint `bet_logger/scraper_betonline.py` uses) for the
@@ -766,13 +802,16 @@ part, a resting order open with the caveat), MLB `_1H` → `F5`, NCAAF → cfb,
 the strike fallback in the home perspective, props / unsupported leagues /
 blobs without teams failing closed with a reason, the settled grades (bid on
 WIN, lay on LOSS, PUSH, void cancel, wash closed), cancel-with-fills /
-cash-out / REJECTED / PENDING, parlay legs, and native-id dedupe.
+cash-out / REJECTED / PENDING, parlay legs, native-id dedupe, and the
+venue ids (#118: kept on every record and parlay leg, a missing or
+non-string id null).
 `bets.test.js` then matches those Novig records against the NFL slice: the
 moneyline bid (same_line / opposite with Novig labels), the spread bid and
 its lay on both signs, a resting Under and a parlay leg flagging the game,
 settled orders never matching, and the unmatched reasons. On the Python
 side `test_normalize_novig.py` restates those cases for the port,
-`test_parity_novig.py` holds it byte-equivalent to the JS, and
+`test_parity_novig.py` holds it byte-equivalent to the JS (on the fixture,
+and on extra rows with malformed or missing ids fed to node on stdin), and
 `test_novig_source.py` covers the auth (refresh once then cache to the
 margin, rotation persisted with 0600, missing/broken token file, callback
 state/error parsing) and the source (trader resolved once, pagination to a
@@ -789,7 +828,11 @@ sorting, cursor extraction, that an update overwrites a snapshot line only
 with a newer sequence number, and the alt path — keys, `mainPoints`,
 `includeAlts` off by default, the distance / liquidity / same-number gates
 following a moved main line, age through `sequenceNumber`, a pulled
-ladder disappearing on the next parse, and `groupEdges` (card keys, book
+ladder disappearing on the next parse, the rung venue ids on
+`fixtures/v2_venue_ids_slice.json` (real CFB rows of 2026-09-15 with the
+ids intact: per-event suffixes and id maps, the Novig rung on its main
+number pointing at the main line, malformed ids ignored, the changes
+stream leaving them alone), and `groupEdges` (card keys, book
 and line counts, best by edge vs by stake, cards following their best).
 `scanner.test.js` drives the loop with an injected fetch: cursor from
 `Last-Modified`, poll, rejected-cursor resync, per-league failure, resume,
