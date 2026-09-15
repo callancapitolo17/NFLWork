@@ -468,8 +468,15 @@ lines forever; records of a venue whose source failed stay as they were.
 two teams resolve to the same pair (either order) or the rotation number
 matches, and the time agrees: within 30 min when the venue gives a start
 time (Kalshi MLB tickers, every Novig order), else the bet's Eastern date
-within a day of the line's (Kalshi football tickers carry the date only). A bet that two board
-events accept (a series, a doubleheader without a time) is **never**
+within a day of the line's (Kalshi football tickers carry the date only),
+else — for a venue that gives no game date at all (BetOnline's report,
+flagged `approx: game_date_unknown`) — an event starting between 12 h before
+and 14 days after the bet was placed, keyed on the rotation number; a
+rotation match with one recognised team name also needs that team in the
+row's game (the same rotation comes round the next week), and a team name
+`teams.js` does not know still matches by rotation and takes its side from
+the row's away/home rotations. A bet that two board events accept (a series,
+a doubleheader without a time, two weeks of the same rotation) is **never**
 guessed — it lands in the unmatched list as "ambiguous game". Only open bets
 match; settled and closed positions stay in the list but never flag a line.
 
@@ -675,7 +682,7 @@ GETs; no order placement.
   new file is needed. `.env.example` lists every knob (port, retention window,
   Kalshi cadence, log level). Never commit `.env`.
 - **Endpoints** (loopback only, no auth): `GET /bets.json[?days=N]` →
-  `{generatedAt, sources: {kalshi: {fetchedAt, ok, error, count}}, bets: [...]}`
+  `{generatedAt, sources: {kalshi: {...}, betonline: {fetchedAt, ok, error, count}}, bets: [...]}`
   with open bets plus settled/closed ones within `N` days (default 30);
   `GET /health` → `{ok, uptimeSec, sources}`.
 - **Kalshi source** (`sources/kalshi.py`): every 60 s pulls fills since the
@@ -689,6 +696,27 @@ GETs; no order placement.
   them with `bets.resolveTeamKeys()` so the team table lives only in
   `teams.js`. `normalize_kalshi()` is a port of `extension/bets.js`
   `normalizeKalshi()`; `tests/test_parity.py` holds the two byte-equivalent.
+- **BetOnline source** (`sources/betonline.py`, #115): every 300 s pulls the
+  account's paged bet-history report (`POST api.betonline.ag/report/api/report/get-bet-history`,
+  pure HTTP — the same endpoint `bet_logger/scraper_betonline.py` uses) for the
+  last 31 days and keeps **pending** bets. The Keycloak refresh token is the
+  `krefresh` cookie in `bet_logger/recon_betonline_cookies.json` (main
+  checkout; `BETS_BETONLINE_COOKIES_PATH`), written by `bet_logger/recon_betonline.py`
+  — run it with `--interactive` and log in by hand when the poll reports
+  "token refresh failed" (the token dies after 3 days unused). The access
+  token is refreshed only within 60 s of expiry, under an exclusive lock on
+  `recon_betonline_cookies.json.lock` shared with the bet_logger scraper and
+  its LaunchAgent, and the rotated refresh token is written back atomically.
+  Record ids are `betonline:<TicketNumber>-<WagerNumber>`; the league comes
+  from `bet_logger/utils.py parse_sport` (the report names the SPORT —
+  "FOOTBALL" — never the league); a total names both teams, a spread or
+  moneyline only its own team, placed by rotation parity (odd = away, `approx:
+  side_from_rotation_parity`); the report carries no game date or settle time,
+  so `eventStart`/`eventDate` are null and a settled bet's `closedAt` is its
+  placed time. Unknown periods, sports outside the scanner and parlays whose
+  legs do not parse fail closed as unmatchable with the reason. Same Game
+  Parlay rows have not been seen live yet; their leg grammar is a guess the
+  parser refuses rather than misreads.
 - **Store** (`store.py`, `bets.duckdb`, gitignored): `bets` upserts on the
   record id and is never pruned (the CLV work needs the history);
   `source_runs` appends one row per poll. A failed poll writes a failed
@@ -698,15 +726,18 @@ GETs; no order placement.
   poll completes (Kalshi: ~1–2 min, one throttled GET per market and event)
   `/bets.json` lists it as `{ok: false, error: "no completed poll yet"}`.
   Log: `bets_service.log` (rotating, 10 MB × 3).
-- **Adding a venue** (#115 BetOnline, #117 ProphetX; Novig is
-  `sources/novig.py` above): a module in `bets_service/sources/` with
-  `name`, `poll_sec` and `fetch() -> list[record]` (the `Source` protocol in
-  `sources/__init__.py`), registered in `service.main()`. `fetch()` returns
-  every record the venue knows and raises on failure — never a partial list.
-  Records follow the contract in the plan (`id` = `"<venue>:<native id>"`,
-  `side`/`points` in the side's own number, raw team names, keys `null`). A
-  content-script venue instead writes `{bets<Venue>: {bets, readAt, url,
-  error, complete}}` to `chrome.storage.local` and the panel merges it with
+- **Adding a venue** (#117 ProphetX; BetOnline and Novig are
+  `sources/betonline.py` / `sources/novig.py` above): a module in
+  `bets_service/sources/` with `name`, `poll_sec` and `fetch() -> list[record]`
+  (the `Source` protocol in `sources/__init__.py`), registered in
+  `service.main()`. `fetch()` returns every record the venue knows and raises
+  on failure — never a partial list. Records follow the contract in the plan
+  (`id` = `"<venue>:<native id>"`, `side`/`points` in the side's own number,
+  raw team names, keys `null`). A venue with no game date sets `eventStart`
+  and `eventDate` null, carries `rotation` and `approx: ["game_date_unknown"]`,
+  and the matcher windows on `placedAt` (see Bets). A content-script venue
+  instead writes `{bets<Venue>: {bets, readAt, url, error, complete}}` to
+  `chrome.storage.local` and the panel merges it with
   `betsview.mergePageSource`.
 
 ## Tests

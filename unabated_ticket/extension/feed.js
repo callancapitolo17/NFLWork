@@ -554,6 +554,8 @@
       homeTeamId: event.homeTeamId ?? null,
       homeAway: line.sideIndex === 0 ? "Away" : "Home",
       rotation: line.sideIndex === 0 ? event.awayRotation : event.homeRotation,
+      awayRotation: event.awayRotation,
+      homeRotation: event.homeRotation,
       points: line.points,
       book: { id: book.id, name: book.name, hasLiquidity: book.hasLiquidity },
       price: line.price,
