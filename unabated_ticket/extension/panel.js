@@ -30,18 +30,29 @@
   // maxLineAgeHours: a "live" book's line unchanged for a week is a dead feed
   // (live 2026-09-10: Buckeye -110 on a 44.5 total, 96 days old, "+36.67%").
   const ALL_LEAGUE_IDS = Object.keys(feed.LEAGUES).map(Number);
-  // bookIds null = follow the Unabated selection page.js publishes (all live
-  // books until one exists); an array = the user's own ticks in the panel.
+  // bookIds undefined (never ticked) = DEFAULT_BOOK_NAMES; null = follow the
+  // Unabated selection page.js publishes (all live books until one exists),
+  // set by its button; an array = the user's own ticks in the panel.
   // Alt lines (#113) are off until asked for; altMaxDistance 7 points keeps
   // NFL/CFB spreads to about a touchdown off the number (live 2026-09-11 the
   // median NFL alt "edge" sat 13 points out, +400 and up); altMinLiquidity
   // $100 is Kalshi's median alt depth ($129) with its thin tail cut. 0 = off.
   const DEFAULT_EDGE_SETTINGS = {
-    leagues: ALL_LEAGUE_IDS, periods: [1], betTypes: [1, 2, 3], bookIds: null, minEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge",
+    leagues: ALL_LEAGUE_IDS, periods: [1], betTypes: [1, 2, 3], bookIds: undefined, minEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge",
     includeAlts: false, altMaxDistance: 7, altMinLiquidity: 100,
     // One card per (game, market, side) with its best line; the flat list is the toggle off.
     groupByMarket: true,
   };
+  // The books the Edges list starts on until you tick your own (the user's
+  // list, 2026-09-15). By NAME, not id: BetOnline Direct, Bookmaker-Internal,
+  // Poly US Ing and Polymarket US are listed in the panel but absent from the
+  // anonymous feed their ids could be read from. A name the feed does not
+  // carry (a book not listed today) simply ticks nothing.
+  const DEFAULT_BOOK_NAMES = [
+    "Bet105", "BetOnline", "BetOnline Direct", "Bookmaker", "Bookmaker-Internal", "Buckeye", "Kalshi",
+    "Novig", "NoVig-Internal", "Poly US Ing", "Polymarket", "Polymarket US", "Prophet Exchange",
+    "Underdog Prediction Market",
+  ];
   // Off until the list has been watched for a session (plan, 2026-09-10).
   const DEFAULT_ALERT_SETTINGS = { enabled: false, minEdgePct: 2.0 };
   const ALERT_EVENT_COOLDOWN_MS = 5 * 60 * 1000;
@@ -73,7 +84,7 @@
     betsCount: el("bets-count"), betsRisk: el("bets-risk"), betsRiskCaption: el("bets-risk-caption"),
     edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
     edgesSports: el("edges-sports"), edgesBetTypes: el("edges-bettypes"), edgesBooks: el("edges-books"), edgesBooksMode: el("edges-books-mode"),
-    booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
+    booksDefault: el("books-default"), booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
     edgesIncludeAlts: el("edges-include-alts"), edgesAltDistance: el("edges-alt-distance"), edgesAltLiquidity: el("edges-alt-liquidity"), edgesGroup: el("edges-group"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
     alertsEnabled: el("alerts-enabled"), alertsMin: el("alerts-min"),
@@ -636,9 +647,16 @@
     return fresh && Array.isArray(filter.bookIds) && filter.bookIds.length ? filter.bookIds : null;
   }
 
+  function defaultBookIds() {
+    if (!scannerState) return [];
+    const wanted = new Set(DEFAULT_BOOK_NAMES);
+    return Object.values(scannerState.books).filter((book) => wanted.has(book.name)).map((book) => book.id);
+  }
+
   // Which books the list is restricted to: the user's own ticks when they
-  // have made any, else the Unabated selection page.js published, else every
-  // live book. Bet types are the panel's own checkboxes.
+  // have made any, else the default books until "My Unabated selection" is
+  // chosen, which follows the selection page.js published, else every live
+  // book. Bet types are the panel's own checkboxes.
   function effectiveFilter() {
     const settings = state.edgeSettings;
     const selection = unabatedSelection();
@@ -647,6 +665,9 @@
     if (Array.isArray(settings.bookIds)) {
       mode = "custom";
       bookIds = new Set(settings.bookIds);
+    } else if (settings.bookIds === undefined) {
+      mode = "default";
+      bookIds = new Set(defaultBookIds());
     } else if (selection) {
       mode = "unabated";
       bookIds = new Set(selection);
@@ -663,6 +684,8 @@
     const parts = [];
     if (effective.mode === "custom") {
       parts.push(`books: your ${effective.bookIds.size} ticks below (of ${live} live)`);
+    } else if (effective.mode === "default") {
+      parts.push(`books: the ${effective.bookIds.size} default books (of ${live} live; tick below to change)`);
     } else if (effective.mode === "unabated") {
       parts.push(`books: your Unabated selection, ${effective.bookIds.size} books (read ${fmtAge(Date.now() - filter.at)})`);
     } else if (!pageScriptAlive()) {
@@ -711,7 +734,7 @@
       input.checked = effective.bookIds ? effective.bookIds.has(id) : true;
     }
     const count = effective.bookIds ? effective.bookIds.size : books.length;
-    const source = effective.mode === "custom" ? "your ticks" : effective.mode === "unabated" ? "Unabated selection" : "all live";
+    const source = { custom: "your ticks", default: "default books", unabated: "Unabated selection", all: "all live" }[effective.mode];
     view.edgesBooksMode.textContent = `${count} of ${books.length} (${source})`;
     view.booksUnabated.disabled = !unabatedSelection();
   }
@@ -735,6 +758,7 @@
     const ticked = Array.from(view.edgesBooks.querySelectorAll("input:checked")).map((input) => Number(input.dataset.book));
     setBookIds(ticked);
   });
+  view.booksDefault.addEventListener("click", () => setBookIds(undefined));
   view.booksUnabated.addEventListener("click", () => setBookIds(null));
   view.booksAll.addEventListener("click", () => setBookIds(liveBooks().map((book) => book.id)));
   view.booksNone.addEventListener("click", () => setBookIds([]));
@@ -1476,7 +1500,9 @@
     if (Array.isArray(stored.leagues)) base.leagues = stored.leagues.filter((id) => feed.LEAGUES[id]);
     if (Array.isArray(stored.periods) && stored.periods.length) base.periods = stored.periods.filter((id) => feed.PERIODS[id]);
     if (Array.isArray(stored.betTypes) && stored.betTypes.length) base.betTypes = stored.betTypes.filter((id) => feed.BET_TYPES[id]);
+    // A stored null is the Unabated-selection choice; no key at all is the default books.
     if (Array.isArray(stored.bookIds)) base.bookIds = stored.bookIds.filter((id) => Number.isInteger(id));
+    else if (stored.bookIds === null) base.bookIds = null;
     if (typeof stored.minEdgePct === "number" && stored.minEdgePct >= 0) base.minEdgePct = stored.minEdgePct;
     if (typeof stored.maxLineAgeHours === "number" && stored.maxLineAgeHours > 0) base.maxLineAgeHours = stored.maxLineAgeHours;
     if (["edge", "stake", "start", "exposure"].includes(stored.sortBy)) base.sortBy = stored.sortBy;

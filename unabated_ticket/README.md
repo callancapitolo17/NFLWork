@@ -401,17 +401,26 @@ keep working; if every league fails the tab says **feed unavailable** rather
 than showing an empty list.
 
 **Books and bets.** The filter box has a **Books** dropdown (every live
-book in the feed, multi-select, with "My Unabated selection" / "All live" /
-"None") and **Bets** checkboxes (moneyline / spread / total). Until you
-tick a book yourself the list follows the selection `page.js` reads off
+book in the feed, multi-select, with "Default books" / "My Unabated
+selection" / "All live" / "None") and **Bets** checkboxes (moneyline /
+spread / total). Until you tick a book yourself the list uses the **default
+books** (`DEFAULT_BOOK_NAMES` in `panel.js`, the user's list of 2026-09-15):
+Bet105, BetOnline, BetOnline Direct, Bookmaker, Bookmaker-Internal, Buckeye,
+Kalshi, Novig, NoVig-Internal, Poly US Ing, Polymarket, Polymarket US,
+Prophet Exchange, Underdog Prediction Market — matched by name, because four
+of them never appear in the anonymous feed their ids could be read from; a
+book the feed does not list that day ticks nothing. "My Unabated selection"
+switches the list to the selection `page.js` reads off
 your open Unabated odds tab (`context.userSettings.gameOdds`, published
 every 10 s, stored as `booksFilter`); the summary says which source is in
 effect, and the header line under the status explains it. Click that
 header line to see the selection as read from the tab and the raw fields
 it came from (a diagnostic; on 2026-09-10 the `isUnavailable` flag gave 33
 books where the screen showed ~12, so the flag may still need adjusting —
-your own ticks always win). Settings persist under `edges` (`bookIds` null
-= follow Unabated).
+your own ticks always win). Settings persist under `edges` (`bookIds`
+absent = default books, null = follow Unabated, an array = your ticks; an
+install that stored null before the default books existed keeps following
+Unabated).
 
 **Row click.** Focuses the Unabated tab showing that league (navigates an
 existing Unabated tab, or opens one, when none does), then `page.js` finds
