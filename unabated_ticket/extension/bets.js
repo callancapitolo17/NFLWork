@@ -18,7 +18,9 @@
 //          through the board rows passed as options.lines.
 // Outputs matches per line ({tier, bet, label}), per-row annotations for the
 //          Edges list, the unmatched list with a reason per bet, the retention
-//          prune, and the native-id dedupe. Nothing here writes anywhere.
+//          prune, the native-id dedupe, and the team-crosswalk rows an id join
+//          teaches (#118 step 4; the bets service stores them). Nothing here
+//          writes anywhere.
 //
 // normalizeKalshi is a PORT TARGET: the plan runs the Kalshi normaliser in the
 // Python bets service (phase 2). It is written here first so the node tests on
@@ -883,17 +885,156 @@
     });
   }
 
-  // Fill null awayKey / homeKey from the raw team names. The bets service
-  // leaves both null (the team table lives here, not in Python); records that
-  // already carry keys, or have no league / no name, are returned unchanged.
-  function resolveTeamKeys(records) {
+  // ---- team crosswalk (#118 step 4) -------------------------------------------
+  //
+  // Every unambiguous id join is a lesson: the bet's venue names both teams
+  // (Novig by team id, Kalshi by its event-title name) and the joined board
+  // event carries both Unabated team ids. Remembered as (venue, league, venue
+  // team) -> Unabated team id, the lesson keys a LATER bet of that venue on
+  // either team before teams.js sees the name — a bet on a game the venue
+  // lists no ladder for, where the id has nothing to join, or a Kalshi
+  // moneyline whose names resolve nowhere (no rung carries its contract, so
+  // without a key it tiered same_game and held $0). The bets service owns the
+  // table (bets.duckdb::team_crosswalk, served with /bets.json); this module
+  // only decides what to learn (learnCrosswalk) and applies what was learned
+  // (resolveTeamKeys). Fail-closed: learn only from a join on exactly ONE
+  // board event whose row carries both Unabated ids, from a bet naming both
+  // venue teams; never learn a venue team whose name already resolves to a
+  // DIFFERENT team (a swapped away/home — a neutral site — would otherwise
+  // write a row that then needs opponent and time to agree before it could
+  // mismatch, so it mostly yields no match; better not written at all); never
+  // relearn a held venue team as another id. Conflicts are reported, not
+  // written.
+
+  // The venue's own team on one side of the bet, {key, name}, or null. Novig
+  // records carry the venue's team id (awayTeamVenue.id); Kalshi has no team
+  // ids, so its event-title name is the key — stable per team ("PIT
+  // Steelers"), unlike its per-event codes.
+  function venueTeamOf(bet, side) {
+    const venueTeam = side === "away" ? bet.awayTeamVenue : bet.homeTeamVenue;
+    const name = side === "away" ? bet.awayTeam : bet.homeTeam;
+    const plainName = typeof name === "string" && name !== "" ? name : null;
+    if (venueTeam && typeof venueTeam === "object") {
+      const id = typeof venueTeam.id === "string" && venueTeam.id !== "" ? venueTeam.id : null;
+      const venueName = (typeof venueTeam.name === "string" && venueTeam.name) || (typeof venueTeam.shortName === "string" && venueTeam.shortName) || plainName;
+      if (id) return { key: id, name: venueName };
+      return venueName ? { key: venueName, name: venueName } : null;
+    }
+    return plainName ? { key: plainName, name: plainName } : null;
+  }
+
+  function crosswalkKeyOf(venue, league, venueTeamKey) {
+    return `${venue}|${league}|${venueTeamKey}`;
+  }
+
+  // crosswalk key -> row over the served rows; a malformed row is skipped.
+  function crosswalkIndex(rows) {
+    const index = new Map();
+    for (const row of Array.isArray(rows) ? rows : []) {
+      if (!row || typeof row !== "object") continue;
+      if (typeof row.venue !== "string" || typeof row.league !== "string" || typeof row.venueTeamKey !== "string") continue;
+      if (row.unabatedTeamId == null || row.unabatedTeamId === "") continue;
+      index.set(crosswalkKeyOf(row.venue, row.league, row.venueTeamKey), row);
+    }
+    return index;
+  }
+
+  // The team key a crosswalk row gives one side of a bet, or null.
+  function learnedKeyOf(bet, side, index) {
+    if (index.size === 0 || !bet.venue) return null;
+    const venueTeam = venueTeamOf(bet, side);
+    const row = venueTeam ? index.get(crosswalkKeyOf(bet.venue, bet.league, venueTeam.key)) : null;
+    return row ? teams.keyOf(bet.league, row.unabatedTeamId) : null;
+  }
+
+  // Fill awayKey / homeKey: a crosswalk row for the venue team first (it was
+  // learned from an id join and is applied whatever the name resolves to),
+  // else the raw team name through teams.js where the key is still null. The
+  // bets service leaves both keys null (the team table lives here, not in
+  // Python); records that already carry keys and have no crosswalk row, or
+  // have no league / no name, are returned unchanged.
+  function resolveTeamKeys(records, crosswalk) {
+    const index = crosswalkIndex(crosswalk);
     return records.map((record) => {
       if (!record.league) return record;
       const resolved = Object.assign({}, record);
-      if (resolved.awayKey == null && resolved.awayTeam != null) resolved.awayKey = teams.teamKey(record.league, record.awayTeam);
-      if (resolved.homeKey == null && resolved.homeTeam != null) resolved.homeKey = teams.teamKey(record.league, record.homeTeam);
+      const awayLearned = learnedKeyOf(record, "away", index);
+      const homeLearned = learnedKeyOf(record, "home", index);
+      if (awayLearned) resolved.awayKey = awayLearned;
+      else if (resolved.awayKey == null && resolved.awayTeam != null) resolved.awayKey = teams.teamKey(record.league, record.awayTeam);
+      if (homeLearned) resolved.homeKey = homeLearned;
+      else if (resolved.homeKey == null && resolved.homeTeam != null) resolved.homeKey = teams.teamKey(record.league, record.homeTeam);
       return resolved;
     });
+  }
+
+  // Keys from scratch: what a record resolves to under THIS crosswalk, so a
+  // cleared table takes its keys back and a grown one applies to records that
+  // were keyed by name before it was learned.
+  function rekeyRecords(records, crosswalk) {
+    return resolveTeamKeys(records.map((record) => (record.league ? Object.assign({}, record, { awayKey: null, homeKey: null }) : record)), crosswalk);
+  }
+
+  // Both sides of one id-joined bet as crosswalk rows to write, or the
+  // conflict that stops the whole bet (a name pointing at another team on
+  // either side makes the venue's orientation suspect on both).
+  function lessonOf(bet, row, known) {
+    const rows = [];
+    for (const side of ["away", "home"]) {
+      const venueTeam = venueTeamOf(bet, side);
+      if (!venueTeam) return { rows: [], conflict: null };
+      const teamId = String(side === "away" ? row.awayTeamId : row.homeTeamId);
+      const boardKey = teams.keyOf(bet.league, teamId);
+      const name = side === "away" ? bet.awayTeam : bet.homeTeam;
+      const nameKey = name == null ? null : teams.teamKey(bet.league, name);
+      const conflict = { betId: bet.id, venue: bet.venue, league: bet.league, side, venueTeamKey: venueTeam.key, boardKey };
+      if (nameKey && nameKey !== boardKey) {
+        return { rows: [], conflict: Object.assign(conflict, { reason: `name "${name}" resolves to ${nameKey}, the joined event says ${boardKey}` }) };
+      }
+      const held = known.get(crosswalkKeyOf(bet.venue, bet.league, venueTeam.key));
+      if (held && String(held.unabatedTeamId) !== teamId) {
+        return { rows: [], conflict: Object.assign(conflict, { reason: `crosswalk holds ${teams.keyOf(bet.league, held.unabatedTeamId)}, the joined event says ${boardKey}` }) };
+      }
+      if (held) continue;
+      const unabatedTeamName = side === "away" ? row.awayTeam : row.homeTeam;
+      rows.push({
+        venue: bet.venue, league: bet.league, venueTeamKey: venueTeam.key, venueTeamName: venueTeam.name,
+        unabatedTeamId: teamId, unabatedTeamName: typeof unabatedTeamName === "string" ? unabatedTeamName : null,
+        learnedFrom: `${bet.id} on board event ${row.eventId}`,
+      });
+    }
+    return { rows, conflict: null };
+  }
+
+  // What the open bets teach against this board: {learned, conflicts}.
+  // `learned` holds rows not yet in `crosswalk` (one per venue team, two
+  // bets on one game teach the same rows once) for the service to write;
+  // `conflicts` the bets that were refused and why. Nothing is written here.
+  function learnCrosswalk(betRecords, lines, crosswalk) {
+    const known = crosswalkIndex(crosswalk);
+    const board = boardOf(lines);
+    const rowByIdentity = new Map();
+    for (const line of lines) {
+      if (line.eventId == null) continue;
+      const identity = eventIdentity(line);
+      if (!rowByIdentity.has(identity)) rowByIdentity.set(identity, line);
+    }
+    const learned = new Map();
+    const conflicts = [];
+    for (const bet of betRecords) {
+      if (!isMatchable(bet) || !bet.venue || !bet.league) continue;
+      const game = gameOf(bet, board);
+      if (game.join === JOIN_NAME || game.events.size !== 1) continue;
+      const row = rowByIdentity.get(game.events.values().next().value);
+      if (!row || row.awayTeamId == null || row.homeTeamId == null) continue;
+      const lesson = lessonOf(bet, row, known);
+      if (lesson.conflict) {
+        conflicts.push(lesson.conflict);
+        continue;
+      }
+      for (const entry of lesson.rows) learned.set(crosswalkKeyOf(entry.venue, entry.league, entry.venueTeamKey), entry);
+    }
+    return { learned: Array.from(learned.values()), conflicts };
   }
 
   // Newest record per id across consecutive service payloads (arrays of
@@ -914,7 +1055,8 @@
     TIE_CAVEAT, GAME_SERIES, RETENTION_DAYS_DEFAULT,
     normalizeKalshi, parseEventSuffix, centsToAmerican,
     matchBets, annotateRows, exposureOf, unmatchedReasons, pruneForRetention, dedupeByNativeId, resolveTeamKeys,
-    describeBet, formatPlacedAt, formatStake, tierLabel,
+    rekeyRecords, learnCrosswalk, venueTeamOf,
+    describeBet, formatPlacedAt, formatStake, tierLabel, venueLabel,
   };
 
   if (typeof module !== "undefined" && module.exports) {

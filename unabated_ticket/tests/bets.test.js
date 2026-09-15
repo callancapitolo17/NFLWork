@@ -930,6 +930,129 @@ test("id join: a row without an eventId falls back to the name rule", () => {
   assert.equal(bets.matchBets(ticketRow, [keyed], { lines }).matches[0].tier, "same_line");
 });
 
+// ---- team crosswalk (#118 step 4) -------------------------------------------
+//
+// Duquesne is Unabated id 927 and Washington State 717 on the venue-ids
+// slice; the records above spell them so no name resolves.
+
+const DUQ_KEY = "cfb:927";
+const WSU_KEY = "cfb:717";
+
+function crosswalkKeys(rows) {
+  return rows.map((row) => [row.venue, row.venueTeamKey, row.unabatedTeamId, row.unabatedTeamName]);
+}
+
+test("crosswalk: a Kalshi id join teaches both event-title names; the rows carry where they came from", () => {
+  const lines = Object.values(venueRows());
+  const bet = kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 35.5);
+  const { learned, conflicts } = bets.learnCrosswalk([bet], lines, []);
+  assert.deepEqual(conflicts, []);
+  assert.deepEqual(crosswalkKeys(learned), [
+    ["kalshi", "Duquesne Dukes (venue spelling)", "927", "Duquesne"],
+    ["kalshi", "Wazzu (venue spelling)", "717", "Washington State"],
+  ]);
+  assert.deepEqual(learned.map((row) => [row.league, row.venueTeamName, row.learnedFrom]), [
+    ["cfb", "Duquesne Dukes (venue spelling)", `${bet.id} on board event 123742`],
+    ["cfb", "Wazzu (venue spelling)", `${bet.id} on board event 123742`],
+  ]);
+  // Two bets on the game teach the same two rows once; rows already held teach nothing.
+  const twice = bets.learnCrosswalk([bet, kalshiDuqWsu("KXNCAAFGAME-26SEP19DUQWSU-WSU", "yes", null)], lines, []);
+  assert.equal(twice.learned.length, 2);
+  assert.deepEqual(bets.learnCrosswalk([bet], lines, learned).learned, []);
+});
+
+test("crosswalk: a Novig id join keys on Novig's team ids, naming the team as Novig does", () => {
+  const lines = Object.values(venueRows());
+  const bet = novigDuqWsu({
+    awayTeamVenue: { id: "nv-duq", name: "Duquesne Dukes (venue spelling)", shortName: "Duquesne", symbol: "DUQ" },
+    homeTeamVenue: { id: "nv-wsu", name: "Wazzu (venue spelling)", shortName: "Wazzu", symbol: "WSU" },
+  });
+  const { learned, conflicts } = bets.learnCrosswalk([bet], lines, []);
+  assert.deepEqual(conflicts, []);
+  assert.deepEqual(crosswalkKeys(learned), [["novig", "nv-duq", "927", "Duquesne"], ["novig", "nv-wsu", "717", "Washington State"]]);
+  assert.deepEqual(learned.map((row) => row.venueTeamName), ["Duquesne Dukes (venue spelling)", "Wazzu (venue spelling)"]);
+  // A Novig record without team ids (an older service) keys on the name, like Kalshi; without names on one side it teaches nothing.
+  const noIds = novigDuqWsu({ awayTeamVenue: { id: null, name: "Duquesne Dukes (venue spelling)" }, homeTeamVenue: null });
+  assert.deepEqual(crosswalkKeys(bets.learnCrosswalk([noIds], lines, []).learned), [
+    ["novig", "Duquesne Dukes (venue spelling)", "927", "Duquesne"], ["novig", "Wazzu (venue spelling)", "717", "Washington State"]]);
+  assert.deepEqual(bets.learnCrosswalk([novigDuqWsu({ homeTeam: null })], lines, []).learned, []);
+});
+
+test("crosswalk: nothing is learned from a name match, an ambiguous id, a closed bet, or a row without both Unabated ids", () => {
+  const rows = venueRows();
+  const lines = Object.values(rows);
+  const bet = kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 35.5);
+  // The names resolve and the id is not on the board: a name match teaches nothing.
+  const byName = Object.assign({}, bet, { awayKey: DUQ_KEY, homeKey: WSU_KEY, venueIds: { eventTicker: "KXNCAAFSPREAD-26SEP26ELONURI" } });
+  assert.equal(bets.matchBets(rows["Spread 1 89"], [byName], { lines }).matches.length, 1);
+  assert.deepEqual(bets.learnCrosswalk([byName], lines, []).learned, []);
+  // The suffix on two board events.
+  const twin = Object.assign({}, rows["Spread 1 105"], { eventId: 999999 });
+  assert.deepEqual(bets.learnCrosswalk([bet], lines.concat([twin]), []), { learned: [], conflicts: [] });
+  // A settled bet, and a board row missing a team id.
+  assert.deepEqual(bets.learnCrosswalk([Object.assign({}, bet, { status: "won" })], lines, []).learned, []);
+  const idless = lines.map((line) => Object.assign({}, line, { homeTeamId: null }));
+  assert.deepEqual(bets.learnCrosswalk([bet], idless, []).learned, []);
+});
+
+test("crosswalk: a venue name that already resolves to a DIFFERENT team is a conflict — neither side is learned", () => {
+  const lines = Object.values(venueRows());
+  // The venue's away team reads as the Bears (nfl slice key) — a spelling teams.js knows for another team.
+  const swapped = Object.assign(kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 35.5), { awayTeam: "Washington St.", homeTeam: "Duquesne" });
+  assert.equal(key("cfb", "Washington St."), WSU_KEY);
+  const { learned, conflicts } = bets.learnCrosswalk([swapped], lines, []);
+  assert.deepEqual(learned, []);
+  assert.equal(conflicts.length, 1);
+  assert.equal(conflicts[0].side, "away");
+  assert.equal(conflicts[0].venueTeamKey, "Washington St.");
+  assert.match(conflicts[0].reason, /resolves to cfb:717, the joined event says cfb:927/);
+  // A held row with another id for the same venue team is a conflict too, never rewritten.
+  const held = [{ venue: "kalshi", league: "cfb", venueTeamKey: "Duquesne Dukes (venue spelling)", unabatedTeamId: "1" }];
+  const result = bets.learnCrosswalk([kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 35.5)], lines, held);
+  assert.deepEqual(result.learned, []);
+  assert.match(result.conflicts[0].reason, /crosswalk holds cfb:1, the joined event says cfb:927/);
+  // A name that resolves to the SAME team the board names is fine (it confirms the row).
+  const agreeing = Object.assign(kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 35.5), { homeTeam: "Washington St." });
+  assert.deepEqual(crosswalkKeys(bets.learnCrosswalk([agreeing], lines, []).learned), [
+    ["kalshi", "Duquesne Dukes (venue spelling)", "927", "Duquesne"], ["kalshi", "Washington St.", "717", "Washington State"]]);
+});
+
+test("crosswalk: a later bet on a game with NO ladder matches through the crosswalk alone, and a cleared table takes the keys back", () => {
+  const rows = venueRows();
+  const lines = Object.values(rows);
+  const taught = bets.learnCrosswalk([kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 35.5)], lines, []).learned;
+  // The venue lists no ladder for the game: no venue ids on the board, the id has nothing to join.
+  const bare = lines.map((line) => Object.assign({}, line, { venueIds: null }));
+  const later = kalshiDuqWsu("KXNCAAFGAME-26SEP19DUQWSU-WSU", "yes", null, { venueIds: { marketTicker: "KXNCAAFGAME-26SEP19DUQWSU-WSU", eventTicker: "KXNCAAFGAME-26SEP19DUQWSU" } });
+  assert.deepEqual(bets.unmatchedReasons([later], bare).map((u) => u.reason),
+    ["by id: Kalshi event 26SEP19DUQWSU not on any board ladder; by name: team not recognised (Duquesne Dukes (venue spelling), Wazzu (venue spelling))"]);
+  const [keyed] = bets.resolveTeamKeys([later], taught);
+  assert.deepEqual([keyed.awayKey, keyed.homeKey], [DUQ_KEY, WSU_KEY]);
+  assert.equal(later.awayKey, null); // input untouched
+  const bareRows = venueRows();
+  const bareMl = Object.assign({}, bareRows["Moneyline 1 105"], { venueIds: null });
+  assert.equal(bets.matchBets(bareMl, [keyed], { lines: bare }).matches[0].tier, "same_line");
+  assert.deepEqual(bets.unmatchedReasons([keyed], bare), []);
+  // The crosswalk is applied whatever the name resolves to, and only for its own venue.
+  const novigSame = Object.assign(novigDuqWsu(), { venueIds: null });
+  assert.deepEqual(bets.resolveTeamKeys([novigSame], taught).map((r) => [r.awayKey, r.homeKey]), [[null, null]]);
+  // Cleared: rekeyRecords drops the learned keys again (resolveTeamKeys alone keeps a key it finds).
+  assert.deepEqual(bets.resolveTeamKeys([keyed], []).map((r) => [r.awayKey, r.homeKey]), [[DUQ_KEY, WSU_KEY]]);
+  assert.deepEqual(bets.rekeyRecords([keyed], []).map((r) => [r.awayKey, r.homeKey]), [[null, null]]);
+  // Malformed served rows are skipped, never thrown on.
+  const junk = [null, 7, { venue: "kalshi" }, { venue: "kalshi", league: "cfb", venueTeamKey: "Wazzu (venue spelling)", unabatedTeamId: "" }];
+  assert.deepEqual(bets.resolveTeamKeys([later], junk).map((r) => [r.awayKey, r.homeKey]), [[null, null]]);
+});
+
+test("crosswalk: venueTeamOf reads Novig's team id, then its name, then the record's own name", () => {
+  const novig = novigDuqWsu({ awayTeamVenue: { id: "nv-duq", name: "Duquesne", shortName: "DUQ" }, homeTeamVenue: { id: "", name: null, shortName: "Wazzu" } });
+  assert.deepEqual(bets.venueTeamOf(novig, "away"), { key: "nv-duq", name: "Duquesne" });
+  assert.deepEqual(bets.venueTeamOf(novig, "home"), { key: "Wazzu", name: "Wazzu" });
+  assert.deepEqual(bets.venueTeamOf(kalshiDuqWsu("KXNCAAFGAME-26SEP19DUQWSU-WSU", "yes", null), "home"), { key: "Wazzu (venue spelling)", name: "Wazzu (venue spelling)" });
+  assert.equal(bets.venueTeamOf({ awayTeam: null, awayTeamVenue: null }, "away"), null);
+  assert.equal(bets.venueTeamOf({ awayTeam: "", awayTeamVenue: { id: null, name: "" } }, "away"), null);
+});
+
 test("BetOnline: a reused rotation whose named teams are not in next week's game is not ambiguous on the Edges board", () => {
   const rows = nflRows();
   const thisWeek = rows["Total FG 1 46"];

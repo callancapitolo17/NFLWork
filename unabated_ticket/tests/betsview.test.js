@@ -185,6 +185,39 @@ test("mergeServicePayload: fresh wins on the same id, team keys are filled, old 
   assert.equal(x.homeKey, key("cfb", "Eastern Kentucky"));
 });
 
+test("mergeServicePayload: the payload's team crosswalk keys a record before its names do (#118 step 4)", () => {
+  const stored = [record("kalshi:x:yes", "open", { sourceFetchedAt: iso(60e3), awayTeam: "Chatt (venue spelling)", awayKey: null, homeKey: null })];
+  const payload = {
+    generatedAt: iso(0), sources: {}, bets: [record("kalshi:x:yes", "open", { awayTeam: "Chatt (venue spelling)", awayKey: null, homeKey: null })],
+    crosswalk: [{ venue: "kalshi", league: "cfb", venueTeamKey: "Chatt (venue spelling)", unabatedTeamId: "41", learnedAt: iso(0) }],
+  };
+  const [x] = view.mergeServicePayload(stored, payload, NOW);
+  assert.equal(x.awayKey, "cfb:41");
+  assert.equal(x.homeKey, key("cfb", "Eastern Kentucky"));
+  assert.deepEqual(view.crosswalkOf(payload), payload.crosswalk);
+  assert.deepEqual(view.crosswalkOf({ bets: [] }), []);
+  const [plain] = view.mergeServicePayload(stored, { ...payload, crosswalk: undefined }, NOW);
+  assert.equal(plain.awayKey, null);
+  // mergePageSource takes the held crosswalk the same way.
+  const read = { bets: [record("novig:n", "open", { venue: "novig", awayTeam: "Chatt (venue spelling)", awayKey: null, homeKey: null })], readAt: iso(0), complete: true };
+  const novigRows = [{ venue: "novig", league: "cfb", venueTeamKey: "Chatt (venue spelling)", unabatedTeamId: "41" }];
+  assert.equal(view.mergePageSource([], "novig", read, NOW, novigRows).find((r) => r.id === "novig:n").awayKey, "cfb:41");
+  assert.equal(view.mergePageSource([], "novig", read, NOW, payload.crosswalk).find((r) => r.id === "novig:n").awayKey, null); // kalshi rows never key a novig record
+});
+
+test("crosswalkRows: one Bets-tab line per served row — venue spelling, Unabated name, venue, league, when", () => {
+  const rows = view.crosswalkRows([
+    { venue: "novig", league: "cfb", venueTeamKey: "nv-1", venueTeamName: "Wazzu", unabatedTeamId: "717", unabatedTeamName: "Washington State", learnedFrom: "novig:o on board event 1", learnedAt: "2026-09-15T19:00:00Z" },
+    { venue: "kalshi", league: "nfl", venueTeamKey: "PIT Steelers", venueTeamName: null, unabatedTeamId: "3", unabatedTeamName: null, learnedFrom: null, learnedAt: null },
+    null, "junk",
+  ]);
+  assert.deepEqual(rows, [
+    { key: "novig|cfb|nv-1", what: "Wazzu → Washington State", meta: "Novig · CFB · learned Sep 15 3:00 PM", title: "from novig:o on board event 1" },
+    { key: "kalshi|nfl|PIT Steelers", what: "PIT Steelers → team 3", meta: "Kalshi · NFL", title: "" },
+  ]);
+  assert.deepEqual(view.crosswalkRows(undefined), []);
+});
+
 test("mergeServicePayload: a venue's successful pull drops its stored records the payload no longer lists; a failed or absent pull keeps them", () => {
   const stored = [
     record("kalshi:gone:yes", "open", { sourceFetchedAt: iso(60e3) }),

@@ -8,8 +8,10 @@
 // app.novig.us, #116).
 // Writes: chrome.storage.local settings, {locate} (row click, via locate.js,
 // which also focuses the Unabated tab), {alertLog, alertTargets} and Chrome
-// notifications for new edges; {betsService} after every bets-service poll.
-// Re-renders on storage.onChanged.
+// notifications for new edges; {betsService} after every bets-service poll
+// (records + the service's team crosswalk); POST /crosswalk.json to the
+// bets service with the team rows an id join taught, DELETE it on Clear
+// (#118 step 4). Re-renders on storage.onChanged.
 // Network: the scanner (scanner.js) fetches Unabated's public feeds while this
 // page is open; it pauses when the panel is hidden and stops when it closes.
 // The bets tab (#114) polls the local bets service (betsSettings.serviceUrl,
@@ -93,6 +95,8 @@
     betsUrl: el("bets-url"), betsSettingsError: el("bets-settings-error"),
     betsOpen: el("bets-open"), betsOpenCount: el("bets-open-count"), betsOpenEmpty: el("bets-open-empty"),
     betsUnmatched: el("bets-unmatched"), betsUnmatchedCount: el("bets-unmatched-count"), betsUnmatchedEmpty: el("bets-unmatched-empty"),
+    betsCrosswalk: el("bets-crosswalk"), betsCrosswalkCount: el("bets-crosswalk-count"), betsCrosswalkEmpty: el("bets-crosswalk-empty"),
+    betsCrosswalkClear: el("bets-crosswalk-clear"),
   };
   // page.js heartbeats every 10s; past this it is not running on any Unabated tab.
   const PAGE_READY_STALE_MS = 25000;
@@ -110,6 +114,10 @@
     betsNovig: null,
     // Normalised bet records (bets.js contract), team keys resolved, pruned to the retention window.
     betRecords: [],
+    // The team crosswalk the bets service holds (#118 step 4), as last served
+    // or stored: [{venue, league, venueTeamKey, venueTeamName, unabatedTeamId,
+    // unabatedTeamName, learnedFrom, learnedAt}]. Keys resolve through it first.
+    crosswalk: [],
   };
   // key -> {price, at}: what has been alerted (or seen at baseline); persisted.
   let alertLog = {};
@@ -149,7 +157,7 @@
     if (spellings === teamsSpellingCount) return;
     teamsSpellingCount = spellings;
     chrome.storage.local.set({ teamsIndex: teamsLib.exportIndex() });
-    state.betRecords = betsLib.resolveTeamKeys(state.betRecords);
+    state.betRecords = betsLib.resolveTeamKeys(state.betRecords, state.crosswalk);
   }
 
   const scanner = globalThis.UnabatedScanner.createScanner({
@@ -158,6 +166,7 @@
       scannerState = feedState;
       boardLinesCache = null;
       registerFeedTeams(feedState);
+      learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
       renderEdges();
       // A ticket sized from the feed (or waiting for it) follows the feed's
       // updates; one the screen priced is left alone (a re-render clears the copy status).
@@ -1551,7 +1560,7 @@
   // authoritative for the venue) and refresh every view that shows a flag.
   function applyNovigRead(betsNovig) {
     state.betsNovig = betsNovig && typeof betsNovig === "object" ? betsNovig : null;
-    if (state.betsNovig) state.betRecords = betsView.mergePageSource(state.betRecords, "novig", state.betsNovig, Date.now());
+    if (state.betsNovig) state.betRecords = betsView.mergePageSource(state.betRecords, "novig", state.betsNovig, Date.now(), state.crosswalk);
   }
 
   let betsPollBusy = false;
@@ -1570,7 +1579,9 @@
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.json();
       if (!payload || !Array.isArray(payload.bets)) throw new Error("bets.json has no bets array");
-      state.betRecords = betsView.mergeServicePayload(state.betRecords, payload, now);
+      // The service's crosswalk is the truth; a payload without one (an older service) keeps the stored rows.
+      if (Array.isArray(payload.crosswalk)) state.crosswalk = payload.crosswalk;
+      state.betRecords = betsView.mergeServicePayload(state.betRecords, { ...payload, crosswalk: state.crosswalk }, now);
       state.betsService = {
         payload: { generatedAt: payload.generatedAt ?? null, sources: payload.sources && typeof payload.sources === "object" ? payload.sources : {} },
         okAt: now, error: null, errorAt: null, unreachableSince: null,
@@ -1584,11 +1595,124 @@
     } finally {
       betsPollBusy = false;
     }
-    await chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords } });
+    await persistBets();
+    renderBetsFlags();
+    learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
+  }
+
+  // The records, the service state and the crosswalk, as one stored object.
+  function persistBets() {
+    return chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords, crosswalk: state.crosswalk } });
+  }
+
+  // Every surface that shows a bet flag, after the records or the crosswalk changed.
+  function renderBetsFlags() {
     renderBetsHeader();
     if (!state.error) render();
     renderEdges();
     if (state.activeTab === "bets") renderBets();
+  }
+
+  // ---- team crosswalk (#118 step 4) -----------------------------------------
+  //
+  // The panel is the only side that sees both a bet and the board, so it
+  // learns; the service keeps the table. After every poll and every scanner
+  // update, the open bets the board joined by venue id teach what their
+  // venue calls both teams (bets.learnCrosswalk); new rows go to the service
+  // in one POST, its reply is the whole table, and the records are re-keyed
+  // through it. A refused bet (its name resolves to another team) is logged
+  // once. A failed POST waits a minute before the next try.
+  const CROSSWALK_RETRY_MS = 60 * 1000;
+  let crosswalkBusy = false;
+  let crosswalkRetryAt = 0;
+  let crosswalkLastError = null;
+  const crosswalkConflictsLogged = new Set();
+
+  async function learnCrosswalk() {
+    if (crosswalkBusy || Date.now() < crosswalkRetryAt || !scannerState) return;
+    const { learned, conflicts } = betsLib.learnCrosswalk(state.betRecords, boardLines(), state.crosswalk);
+    for (const conflict of conflicts) {
+      const tag = `${conflict.betId}:${conflict.side}`;
+      if (crosswalkConflictsLogged.has(tag)) continue;
+      crosswalkConflictsLogged.add(tag);
+      console.warn(`[unabated-ticket] crosswalk: not learning ${conflict.venue} ${conflict.league} "${conflict.venueTeamKey}" from ${conflict.betId}: ${conflict.reason}`);
+    }
+    if (!learned.length) return;
+    crosswalkBusy = true;
+    try {
+      const reply = await postCrosswalk("POST", { rows: learned });
+      console.info(`[unabated-ticket] crosswalk: learned ${reply.learned} row(s), ${reply.conflicts.length} refused by the service, ${reply.crosswalk.length} held`);
+      await applyCrosswalk(reply.crosswalk);
+      crosswalkLastError = null;
+    } catch (error) {
+      crosswalkRetryAt = Date.now() + CROSSWALK_RETRY_MS;
+      if (crosswalkLastError !== error.message) console.warn("[unabated-ticket] crosswalk: service write failed:", error.message);
+      crosswalkLastError = error.message;
+    } finally {
+      crosswalkBusy = false;
+    }
+  }
+
+  // POST (learn) or DELETE (clear) /crosswalk.json; the reply carries the table.
+  async function postCrosswalk(method, body) {
+    const response = await fetch(`${state.betsSettings.serviceUrl}/crosswalk.json`, {
+      method, cache: "no-store",
+      headers: body ? { "Content-Type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const reply = await response.json();
+    if (!reply || !Array.isArray(reply.crosswalk)) throw new Error("crosswalk.json has no crosswalk array");
+    return reply;
+  }
+
+  // The served table replaces the held one; keys are rebuilt from scratch so
+  // a cleared row takes its key back and a new one applies everywhere.
+  async function applyCrosswalk(crosswalk) {
+    state.crosswalk = crosswalk;
+    state.betRecords = betsLib.rekeyRecords(state.betRecords, state.crosswalk);
+    await persistBets();
+    renderBetsFlags();
+  }
+
+  async function clearCrosswalk() {
+    const count = state.crosswalk.length;
+    if (!count) return;
+    if (!confirm(`Delete all ${count} learned team row${count === 1 ? "" : "s"} from the bets service? Bets go back to name matching until the board teaches them again.`)) return;
+    view.betsCrosswalkClear.disabled = true;
+    try {
+      const reply = await postCrosswalk("DELETE", null);
+      console.info(`[unabated-ticket] crosswalk: cleared ${reply.cleared} row(s)`);
+      await applyCrosswalk([]);
+      crosswalkConflictsLogged.clear();
+    } catch (error) {
+      console.warn("[unabated-ticket] crosswalk: clear failed:", error.message);
+      view.betsSettingsError.textContent = `Could not clear the crosswalk: ${error.message}`;
+    } finally {
+      view.betsCrosswalkClear.disabled = state.crosswalk.length === 0;
+    }
+  }
+
+  function renderCrosswalk() {
+    const rows = betsView.crosswalkRows(state.crosswalk);
+    view.betsCrosswalkCount.textContent = rows.length ? String(rows.length) : "";
+    view.betsCrosswalkClear.disabled = rows.length === 0;
+    view.betsCrosswalk.replaceChildren(...rows.map((row) => {
+      const li = document.createElement("li");
+      li.title = row.title;
+      const main = document.createElement("div");
+      const what = document.createElement("div");
+      what.className = "bet-what";
+      what.textContent = row.what;
+      const meta = document.createElement("div");
+      meta.className = "bet-meta";
+      meta.textContent = row.meta;
+      main.append(what, meta);
+      li.append(main);
+      return li;
+    }));
+    view.betsCrosswalkEmpty.hidden = rows.length > 0;
+    view.betsCrosswalkEmpty.textContent = "Nothing learned yet. Rows appear when an open bet joins the board by its Kalshi event or Novig outcome id.";
   }
 
   function startBetsPolling() {
@@ -1703,6 +1827,7 @@
     view.betsUnmatched.replaceChildren(...unmatched.map(({ bet, reason }) => betItem(bet, reason, true)));
     view.betsUnmatchedEmpty.hidden = unmatched.length > 0;
     view.betsUnmatchedEmpty.textContent = open.length ? "Every open bet matches a game on the board." : "";
+    renderCrosswalk();
     view.tabBets.scrollTop = scrollTop;
   }
 
@@ -1774,8 +1899,9 @@
     const storedBets = relay.betsService && typeof relay.betsService === "object" ? relay.betsService : null;
     if (storedBets) {
       // Team keys resolved and the retention window applied on every load, so
-      // a grown teams.js table and a passed month both take effect.
-      state.betRecords = betsLib.pruneForRetention(betsLib.resolveTeamKeys(Array.isArray(storedBets.bets) ? storedBets.bets : []), Date.now());
+      // a grown teams.js table, a grown crosswalk and a passed month all take effect.
+      state.crosswalk = Array.isArray(storedBets.crosswalk) ? storedBets.crosswalk : [];
+      state.betRecords = betsLib.pruneForRetention(betsLib.rekeyRecords(Array.isArray(storedBets.bets) ? storedBets.bets : [], state.crosswalk), Date.now());
       state.betsService = {
         payload: storedBets.payload || null, okAt: storedBets.okAt ?? null,
         error: storedBets.error ?? null, errorAt: storedBets.errorAt ?? null, unreachableSince: storedBets.unreachableSince ?? null,
@@ -1843,6 +1969,7 @@
   view.alertsEnabled.addEventListener("change", onAlertSettingsInput);
   view.alertsMin.addEventListener("input", onAlertSettingsInput);
   view.betsUrl.addEventListener("change", onBetsSettingsInput);
+  view.betsCrosswalkClear.addEventListener("click", () => clearCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk clear failed", error)));
 
   // Nothing polls while the panel is hidden; back in view, the scanner catches
   // up or resyncs and the bets service is polled at once (its tick skips hidden).

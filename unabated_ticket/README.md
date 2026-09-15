@@ -486,8 +486,9 @@ panel is visible it fetches `http://127.0.0.1:8094/bets.json` (never from
 the service worker), resolves each record's teams through `teams.js`, dedupes
 on the venue's native id against what it already holds, and keeps open bets
 plus settled ones from the last 30 days in `chrome.storage.local`
-(`betsService`; `betsSettings` holds the service URL; `betsNovig` is what
-the Novig content script wrote).
+(`betsService`, which also carries the service's team crosswalk;
+`betsSettings` holds the service URL; `betsNovig` is what the Novig content
+script wrote).
 A poll that fails keeps the last records and says so; nothing is ever
 blanked. A poll that succeeds is authoritative for every venue whose source
 reports `ok`: a stored record of that venue the payload no longer lists is
@@ -522,7 +523,40 @@ row its team names happen to fit. A spread bet whose team names do not resolve i
 placed on its side off its own contract in the map (Kalshi `Y-`/`N-` market
 ticker, Novig outcome): the same side at the contract's strike, the other
 side at the negated one (a Kalshi NO, a Novig lay). A Kalshi moneyline with
-unresolved names has no contract on a rung, so it matches as `same_game`.
+unresolved names has no contract on a rung, so it matches as `same_game` —
+until the crosswalk below has keyed its teams.
+
+**Team crosswalk (#118 step 4).** Every id join is also a lesson: the bet's
+venue names both teams (Novig by its own team id, `awayTeamVenue.id`; Kalshi
+has no team ids, so its event-title name — "PIT Steelers" — is the key) and
+the joined board event carries both Unabated team ids. The panel learns
+`(venue, league, venue team) → Unabated team id` for both teams
+(`bets.learnCrosswalk`), sends the new rows to the bets service in one
+`POST /crosswalk.json` after every poll and every board update, and the
+service keeps them in `bets.duckdb::team_crosswalk` with `learned_from`
+(the bet id and board event) and `learned_at`, serving the whole table with
+every `/bets.json`. Records then resolve their keys through the crosswalk
+BEFORE `teams.js` sees the names (`bets.resolveTeamKeys(records,
+crosswalk)`), so a later bet of that venue on either team matches even
+where the venue lists no ladder for the game (nothing to id-join) — and a
+Kalshi moneyline whose names resolve nowhere gets its side. Fail-closed:
+learned only from a join on exactly ONE board event whose row carries both
+Unabated ids, from a bet naming both venue teams; a venue name that already
+resolves to a DIFFERENT team than the joined event's is a conflict — neither
+side is learned and the panel logs why once (`console.warn`) — because a
+swapped away/home (a neutral site) would otherwise write a wrong row; a
+held venue team is never rewritten as another id (the service refuses it
+too and reports it in the POST reply). A wrong row could still only match a
+game where the opponent and the start time also agree. The *Bets tab* lists
+the table under **Team crosswalk** — "Wazzu → Washington State · Novig ·
+CFB · learned Sep 15 3:00 PM", the source bet in the tooltip — with a
+**Clear** button (confirmed) that `DELETE`s the table on the service and
+re-keys every record from its names alone; the board teaches the rows again
+as bets join. Live 2026-09-15 (60 open records, 358 board events): 68 rows
+would be learned (54 Novig, 14 Kalshi), 0 conflicts, and re-learning
+against the table taught nothing new; every spelling learned that day
+already resolved by name (step 1's eventName spellings), so the payoff is
+the next venue spelling `teams.js` cannot key, not a rescue today.
 
 Otherwise a bet matches a line when the league is the same, the
 two teams resolve to the same pair (either order) or the rotation number
@@ -629,7 +663,8 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   any board ladder; by name: team not recognised (…)" ("Novig outcome" for
   Novig; "only on another league's board ladder" when the id sits on an
   event of a different league; no id tier for a Novig moneyline or a league
-  off the scanner).
+  off the scanner) — and, last, the **Team crosswalk** list with its Clear
+  button (above).
 
 ### Novig source (service)
 
@@ -762,9 +797,21 @@ GETs; no order placement.
   new file is needed. `.env.example` lists every knob (port, retention window,
   Kalshi cadence, log level). Never commit `.env`.
 - **Endpoints** (loopback only, no auth): `GET /bets.json[?days=N]` →
-  `{generatedAt, sources: {kalshi: {...}, betonline: {fetchedAt, ok, error, count}}, bets: [...]}`
-  with open bets plus settled/closed ones within `N` days (default 30);
-  `GET /health` → `{ok, uptimeSec, sources}`.
+  `{generatedAt, sources: {kalshi: {...}, betonline: {fetchedAt, ok, error, count}}, bets: [...], crosswalk: [...]}`
+  with open bets plus settled/closed ones within `N` days (default 30) and
+  the whole team crosswalk (newest first); `GET /health` → `{ok, uptimeSec,
+  sources}`; `POST /crosswalk.json` with `{rows: [{venue, league,
+  venueTeamKey, unabatedTeamId, venueTeamName?, unabatedTeamName?,
+  learnedFrom?}]}` (at most 1000 rows, 1 MiB) → `{ok, learned, conflicts,
+  crosswalk}` — INSERT only, a held key with another id is returned in
+  `conflicts` and never rewritten; `DELETE /crosswalk.json` → `{ok, cleared,
+  crosswalk: []}`. The two write routes require `Content-Type:
+  application/json` (415 otherwise): the service sends no CORS headers, so a
+  web page can only reach it with a "simple" cross-origin request (a form or
+  `text/plain` POST, which is refused) and never with JSON or DELETE (both
+  need a preflight the service never answers), while the extension page is
+  exempt from CORS for its `127.0.0.1:8094` host permission — nothing new
+  in the manifest.
 - **Kalshi source** (`sources/kalshi.py`): every 60 s pulls fills since the
   last poll with a 60 s overlap (deduped on `trade_id`) and unsettled
   positions, plus one cached public GET per market and per event; a full
@@ -815,7 +862,10 @@ GETs; no order placement.
   parser refuses rather than misreads.
 - **Store** (`store.py`, `bets.duckdb`, gitignored): `bets` upserts on the
   record id and is never pruned (the CLV work needs the history);
-  `source_runs` appends one row per poll. A failed poll writes a failed
+  `source_runs` appends one row per poll; `team_crosswalk` (#118 step 4,
+  primary key `(venue, league, venue_team_key)`, plus `venue_team_name`,
+  `unabated_team_id`, `unabated_team_name`, `learned_from`, `learned_at`)
+  holds what the panel learned, INSERT-only and cleared on DELETE. A failed poll writes a failed
   `source_runs` row and touches nothing else, so a dark source keeps serving
   its previous records; a store write that raises (disk full) is logged and
   retried next poll, never killing the poll thread. Until a source's first
@@ -871,7 +921,21 @@ suffix, the Novig bid and its lay on the outcome id, a main line moved off
 the id's number by the changes stream (`same_side`), a suffix on two events
 (ambiguous), id vs team names pointing at different events (id wins),
 malformed / missing / other-league ids, the two-tier unmatched wording, and
-BetOnline staying on the name path.
+BetOnline staying on the name path. Its crosswalk cases (#118 step 4): a
+Kalshi join teaching both event-title names with `learnedFrom`, a Novig join
+keying on Novig's team ids (name fallback when the ids are missing, nothing
+when a side has no name), nothing learned from a name match / an ambiguous
+suffix / a settled bet / a row missing an Unabated id, a name resolving to
+another team refused as a conflict (and a held row with another id), a
+later moneyline on a no-ladder board matching through the crosswalk alone,
+`rekeyRecords` taking the keys back on clear, malformed served rows
+skipped, and `venueTeamOf`'s id → name → record-name order.
+`betsview.test.js` adds the payload crosswalk keying a record before its
+names in both merges and the Bets-tab rows; the pytest suite covers the
+store (learn once, no duplicates, a different id refused with what is
+held, served with the payload, cleared), the row validator naming the first
+bad row, and over HTTP the POST / conflict / DELETE round trip plus the
+415 on non-JSON writes, 400 on bad bodies and 404 on other paths.
 `bets.test.js` then matches those Novig records against the NFL slice: the
 moneyline bid (same_line / opposite with Novig labels), the spread bid and
 its lay on both signs, a resting Under and a parlay leg flagging the game,
