@@ -778,10 +778,11 @@ GETs; no order placement.
   snapshots, 288 board events): Kalshi 7/7 game bets matched by name alone
   and 7/7 by id + name, every one joined by id, and across the 2,590 rows
   those bets matched the tier and match set were identical both ways; Novig
-  39/41 by name (the 2 misses are WNBA, not in the audited snapshots), 29
-  with a rung at their own number and side — the ones the id join will
-  carry once the service runs the step-2 normaliser (the running service
-  predated it and sent no ids); BetOnline 3/3, unchanged.
+  (re-run on the branch's service, which sends outcome ids) 39/41 by name
+  and 39/41 by id + name (the 2 misses are WNBA, not in the audited
+  snapshots), 29 joined by outcome id, 0 of 11,012 rows different;
+  BetOnline 3/3, 0 of 1,190 rows different. Where names resolve the id join
+  changes nothing; it pays off on names teams.js cannot key.
 - **BetOnline source** (`sources/betonline.py`, #115): every 300 s pulls the
   account's paged bet-history report (`POST api.betonline.ag/report/api/report/get-bet-history`,
   pure HTTP — the same endpoint `bet_logger/scraper_betonline.py` uses) for the
