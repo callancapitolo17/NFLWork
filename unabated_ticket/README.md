@@ -304,7 +304,10 @@ Parsing (`extension/feed.js`, node-tested on real slices under
   whole — Kalshi's team codes are not Unabated's abbreviations),
   `kalshiContracts` and `novigOutcomes` (id → `{lineKey, mainKey,
   points}`; `lineKey` is the listed line at that number — the main line
-  when the rung sits on the main number, null for an unpriced rung). An id
+  when a Kalshi or Novig rung sits on the main number (priced or not), else
+  null for an unpriced rung; the map rebuilds only with the snapshot while
+  the stream can move a main line, so a join checks `points` against the
+  line's current number). An id
   of any other shape is "no id", never an error. Coverage that day: 95 of
   319 NFL/CFB/WNBA events had Kalshi ids, 98 Novig ids. Nothing matches on
   them yet (#118 step 3).

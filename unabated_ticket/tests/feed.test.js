@@ -53,13 +53,18 @@ test("snapshot: game rows only, books keyed by id with the live flag", () => {
 });
 
 test("snapshot: the team index carries each team's eventName spelling (#118)", () => {
-  const state = feed.parseSnapshot(snapshotJson(), { leagueId: NFL });
+  const json = snapshotJson();
+  // The live row's teams are not in the slice's team list; add them so the live-row check below can fail.
+  json.teams["27"] = { id: 27, name: "San Francisco 49ers", abbreviation: "SF", leagueId: 1 };
+  json.teams["29"] = { id: 29, name: "Los Angeles Rams", abbreviation: "LA", leagueId: 1 };
+  const state = feed.parseSnapshot(json, { leagueId: NFL });
   // "Bears Chicago CHI @ Panthers Carolina CAR": side 0 is away, the trailing abbreviation goes.
   assert.equal(state.teamIndex["6"].eventName, "Bears Chicago");
   assert.equal(state.teamIndex["5"].eventName, "Panthers Carolina");
   assert.deepEqual(Object.keys(state.teamIndex["5"]).sort(), ["abbreviation", "eventName", "id", "leagueId", "name"]);
   // Only pregame game rows are read: the live 49ers @ Rams row registers nothing.
-  assert.equal(state.teamIndex["27"] ? state.teamIndex["27"].eventName : null, null);
+  assert.equal(state.teamIndex["27"].eventName, null);
+  assert.equal(state.teamIndex["29"].eventName, null);
 });
 
 test("teamSpellingsFromEventName: every league form measured 2026-09-12", () => {

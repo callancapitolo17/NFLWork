@@ -241,6 +241,9 @@
   // rung, but its id is exactly what a main-line bet joins on) — or null when
   // the rung is not listed (unpriced); the id still names the event and
   // market, so it is kept. `alt` is normalizeAltLine's result for the rung.
+  // Applies to Kalshi and Novig alike. The map is rebuilt only by the next
+  // snapshot, while the changes stream can move a main line off `points`, so
+  // a joiner must check `points` against the line's current points.
   function noteRungVenueIds(venueIds, rung, mainLine, alt) {
     if (!rung || typeof rung !== "object") return;
     const points = numberOrNull(rung.points);
