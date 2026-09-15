@@ -5,6 +5,7 @@ Uploads scraped bet data to the specified Google Sheet.
 """
 
 import os
+import json
 import time
 import httplib2
 from google.oauth2.service_account import Credentials
@@ -67,10 +68,20 @@ COLUMN_ORDER = ['date', 'platform', 'sport', 'description', 'bet_type', 'line', 
 
 
 def get_sheets_service():
-    """Initialize and return Google Sheets API service."""
+    """Initialize and return Google Sheets API service.
+
+    Reads the service-account key from GOOGLE_CREDENTIALS_JSON (the key's JSON
+    text, for cloud sessions with no credentials.json on disk) when set,
+    otherwise from CREDENTIALS_FILE.
+    """
+    credentials_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    if credentials_json:
+        creds = Credentials.from_service_account_info(json.loads(credentials_json), scopes=SCOPES)
+        return build('sheets', 'v4', credentials=creds)
+
     if not os.path.exists(CREDENTIALS_FILE):
         raise FileNotFoundError(
-            f"Credentials file '{CREDENTIALS_FILE}' not found. "
+            f"Credentials file '{CREDENTIALS_FILE}' not found and GOOGLE_CREDENTIALS_JSON is unset. "
             "Please download your service account credentials from Google Cloud Console."
         )
 

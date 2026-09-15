@@ -63,7 +63,18 @@ BASE_HEADERS = {
 
 
 def load_cookies() -> list:
-    """Load saved cookies from recon output."""
+    """Load saved cookies from recon output.
+
+    If the file is missing and BETONLINE_COOKIES_JSON is set (a cloud session
+    seeded with the Mac's recon_betonline_cookies.json text), the file is
+    written from it once, so the lock + rotation write-back below work unchanged.
+    """
+    seed_json = os.getenv("BETONLINE_COOKIES_JSON")
+    if not os.path.exists(COOKIES_FILE) and seed_json:
+        with open(COOKIES_FILE, 'w') as f:
+            json.dump(json.loads(seed_json), f, indent=2)
+        print(f"Seeded {COOKIES_FILE} from BETONLINE_COOKIES_JSON")
+
     if not os.path.exists(COOKIES_FILE):
         raise FileNotFoundError(
             f"Cookie file not found: {COOKIES_FILE}\n"
