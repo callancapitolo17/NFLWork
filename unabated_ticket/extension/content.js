@@ -9,7 +9,8 @@
 //
 // Side effects: writes chrome.storage.local {ticket, error, watchStatus,
 // pageReady, booksFilter, locateResult}; forwards {locate} requests (row or
-// notification click) to page.js via window.postMessage. None on the page.
+// notification click) and the stored {ticket} (for the watcher to resume
+// after a navigation) to page.js via window.postMessage. None on the page.
 
 (function () {
   "use strict";
@@ -20,7 +21,7 @@
   window.__unabatedTicketContentActive = true;
 
   const MESSAGE_SOURCE = "unabated-ticket";
-  const HANDLED_TYPES = new Set(["ticket", "watch", "error", "ready", "filters", "located"]);
+  const HANDLED_TYPES = new Set(["ticket", "watch", "error", "ready", "filters", "located", "resume_request"]);
   // A locate request older than this is left alone (the tab it targeted may
   // have been reloaded long after the click).
   const LOCATE_MAX_AGE_MS = 90 * 1000;
@@ -67,12 +68,22 @@
     setSession({ booksFilter: { bookIds: payload.bookIds, url: payload.url, at: payload.at, lastError: null, lastErrorAt: null, debug: payload.debug || null } });
   }
 
+  // Two Unabated tabs can both watch the resumed ticket; a tab that reads
+  // the line outranks one that cannot (other game date, filtered row), so a
+  // failure is dropped while a good read from within the last interval and
+  // a half stands. Otherwise the panel would flap between the two every 5 s.
+  const GOOD_READ_OUTRANKS_MS = 7500;
+
   function handleWatch(payload) {
-    chrome.storage.local.get("ticket", (stored) => {
+    chrome.storage.local.get(["ticket", "watchStatus"], (stored) => {
       if (chrome.runtime.lastError) return;
       const ticket = stored.ticket;
       if (!ticket || ticket.capturedAt !== payload.capturedAt) return; // stale watcher
       if (payload.error) {
+        const last = stored.watchStatus;
+        const goodReadStands = last && !last.error && last.capturedAt === ticket.capturedAt
+          && Date.now() - last.seenAt < GOOD_READ_OUTRANKS_MS;
+        if (goodReadStands) return;
         setSession({ watchStatus: { capturedAt: ticket.capturedAt, seenAt: Date.now(), error: payload.error } });
         return;
       }
@@ -90,7 +101,18 @@
     setSession({ locateResult: payload });
   }
 
-  const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch, ready: handleReady, filters: handleFilters, located: handleLocated };
+  // The stored ticket, handed to page.js so a freshly loaded copy resumes
+  // watching it (page.js dies with every navigation; the ticket does not).
+  // Offered once on load and again on request, since the two scripts load
+  // in no guaranteed order; page.js ignores a ticket it already watches.
+  function offerStoredTicket() {
+    chrome.storage.local.get("ticket", (stored) => {
+      if (chrome.runtime.lastError || !stored.ticket) return;
+      window.postMessage({ source: MESSAGE_SOURCE, type: "resume", payload: stored.ticket }, window.location.origin);
+    });
+  }
+
+  const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch, ready: handleReady, filters: handleFilters, located: handleLocated, resume_request: offerStoredTicket };
 
   function forwardLocate(locate) {
     if (!locate || typeof locate.at !== "number" || Date.now() - locate.at > LOCATE_MAX_AGE_MS) return;
@@ -111,6 +133,7 @@
       if (locate && result && result.key === locate.key && result.at >= locate.at) return;
       forwardLocate(locate);
     });
+    offerStoredTicket();
   } catch (_error) {
     // Extension context invalidated.
   }
