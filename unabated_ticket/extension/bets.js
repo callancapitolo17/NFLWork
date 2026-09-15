@@ -806,8 +806,11 @@
   // Per Edges row: the strongest tier (or null), its matches, and the dollars
   // already on the market. A bet you hold never hides a line — it changes the
   // size of the next one (see betsview.stakeAdvice).
-  function annotateRows(rows, bets) {
-    const board = boardOf(rows);
+  // options.lines is the whole board (defaults to rows), the same one the
+  // Ticket banner and the unmatched list decide games on: a bet's id event
+  // may have no listed edge row while its team names fit one that is listed.
+  function annotateRows(rows, bets, options) {
+    const board = boardOf(options && Array.isArray(options.lines) ? options.lines : rows);
     return rows.map((row) => {
       const { matches } = matchOnBoard(row, bets, board);
       const tier = matches.length ? matches[0].tier : null;

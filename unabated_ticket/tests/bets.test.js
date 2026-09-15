@@ -847,6 +847,9 @@ test("id join: when the id and the team names point at different events, the id 
   const flags = bets.annotateRows(lines, [bet]);
   assert.equal(flags[lines.length - 1].tier, null);
   assert.deepEqual(bets.unmatchedReasons([bet], lines), []);
+  // The Edges list may show only the decoy's row: the whole board still decides the game.
+  assert.equal(bets.annotateRows([decoy], [bet])[0].tier, "same_side"); // names alone would size the decoy
+  assert.equal(bets.annotateRows([decoy], [bet], { lines })[0].tier, null);
 });
 
 test("id join: malformed, missing or other-league ids are no id — never an error, never a join", () => {

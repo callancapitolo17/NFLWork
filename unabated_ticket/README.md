@@ -503,7 +503,10 @@ still reads the bet's own market, side and number against the row's CURRENT
 line (so a -35.5 bet on a line the changes stream has since moved to -36.5
 is `same_side`), and the id map's `lineKey` / `mainKey` are never read — the
 map is as old as the last snapshot, and a Novig lay's outcome id names the
-side the bet is against. A spread bet whose team names do not resolve is
+side the bet is against. All three surfaces — the Edges rows, the Ticket banner
+and the unmatched list — decide the game on the whole board (one row per
+event), so a bet whose id event has no listed edge row never flags a listed
+row its team names happen to fit. A spread bet whose team names do not resolve is
 placed on its side off its own contract in the map (Kalshi `Y-`/`N-` market
 ticker, Novig outcome): the same side at the contract's strike, the other
 side at the negated one (a Kalshi NO, a Novig lay). A Kalshi moneyline with

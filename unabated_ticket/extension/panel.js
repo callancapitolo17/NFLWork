@@ -766,7 +766,7 @@
   // for it. No row is ever hidden for being bet — the edge still being there
   // after you bet it is information, and the stake column carries the top-up.
   function withBetFlags(rows) {
-    const flags = betsLib.annotateRows(rows, state.betRecords);
+    const flags = betsLib.annotateRows(rows, state.betRecords, { lines: boardLines() });
     return rows.map((row, index) => {
       const flag = flags[index];
       return { ...row, bet: { ...flag, advice: betsView.stakeAdvice(row.stake, flag.exposure) } };
