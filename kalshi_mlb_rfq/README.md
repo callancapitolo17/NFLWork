@@ -385,3 +385,22 @@ is retained as a rollback hatch — calling `sgp_cycle` without `service=`.
 - `SGP_SCRAPER_TIMEOUT_SEC` (default 90) — per-book deadline passed to `SGPService` (a book exceeding it contributes nothing that cycle and its client is rebuilt)
 - `BOT_MARKET_DB` (default `kalshi_mlb_rfq_market.duckdb` in this package) — sibling market DB
 - `MIN_BOOK_COUNT_FOR_BLEND` (default 2) — drop-candidate threshold
+
+## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
+
+History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**Autonomous Kalshi MLB SGP taker bot** (`kalshi_mlb_rfq/`) — wide-mode RFQs on cross-category MVE combos with book-only fair value by default (`USE_MODEL=false`; model optional), book-implied correlation engine for Kelly sizing (exact grid joint for same-direction spread/total pairs; ρ=1 Fréchet fallback otherwise), full per-accept gate scaffold (tipoff, line-move, exposure caps, fill-ratio halt; prediction-staleness gate only active when `USE_MODEL=true`). Book-only pricing now covers both teams' margin markets via signed `spread_line` grids (negative = home-favorite, positive = away-favorite); since #70 the maker enumerates both teams' lines too (`target_line_cycle(both_teams=True)` post-#81), and `kalshi_common.legset`/`leg_types` canonicalize spread lines with the same sign convention (an away-team margin ticker is `+(N-0.5)` home-perspective). Standalone process; reads `mlb.duckdb` read-only and writes `kalshi_mlb_rfq.duckdb`.
+- Bot owns a sibling **market DB** `kalshi_mlb_rfq/kalshi_mlb_rfq_market.duckdb`
+  (separate from the state DB) for SGP-line and SGP-odds data; reads
+  schedule from `mlb.duckdb::mlb_odds_temp` (read-only). Line surface
+  is now driven by Kalshi MVE enumeration, not Wagerzon-derived
+  `mlb_parlay_lines`.
+- Bot also owns a **research firehose DB** `kalshi_mlb_rfq/kalshi_mlb_rfq_research.duckdb`
+  (third sibling, separate write lock) capturing the full RFQ lifecycle
+  (candidate pricing/rejections, per-book fairs, gates, Kelly, fills) the
+  trading path otherwise discards — `research.py` buffers + batch-flushes
+  per tick; can never raise into the trading loop. Operational logging is
+  `print()`-free (Python `logging` + rotating `bot.log`). Retention is
+  unbounded (no scheduled prune). See README "Observability" section.
+
