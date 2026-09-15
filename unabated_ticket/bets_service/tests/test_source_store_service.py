@@ -6,11 +6,12 @@ import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from unabated_ticket.bets_service import service
+from unabated_ticket.bets_service import config, service
 from unabated_ticket.bets_service.sources.kalshi import KalshiSource
 from unabated_ticket.bets_service.store import BetsStore
 from unabated_ticket.bets_service.tests.conftest import fill, position
@@ -293,3 +294,13 @@ def test_http_before_any_poll_serves_an_empty_list_with_the_source_pending(http_
     assert payload == {"generatedAt": payload["generatedAt"], "sources": {"kalshi": service.NO_POLL_YET}, "bets": []}
     status, payload = get_json(f"{http_server}/health")
     assert status == 200 and payload["sources"] == {"kalshi": service.NO_POLL_YET}
+
+
+@pytest.mark.parametrize("raw_root, expected", [
+    ("/u/NFLWork", "/u/NFLWork"),
+    ("/u/NFLWork/.worktrees/feature-x", "/u/NFLWork"),
+    # Claude desktop's layout: without this the service read no Kalshi credentials from a worktree.
+    ("/u/NFLWork/.claude/worktrees/bet-venue-ids", "/u/NFLWork"),
+])
+def test_main_checkout_root_finds_the_main_checkout_from_either_worktree_layout(raw_root: str, expected: str) -> None:
+    assert config.main_checkout_root(Path(raw_root)) == Path(expected)

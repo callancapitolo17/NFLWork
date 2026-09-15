@@ -449,14 +449,16 @@
       && line.eventStartMs <= placedMs + PLACED_WINDOW_AFTER_MS;
   }
 
-  // A rotation match with one resolved team (BetOnline names only its own
-  // team on a spread) must put that team in the row's game: the same rotation
-  // number comes round again the next week. Decidable only when both of the
-  // row's teams resolve; otherwise the rotation stands on its own.
+  // A rotation match must put every team the bet names (BetOnline names only
+  // its own team on a spread, both on a total) in the row's game: the same
+  // rotation number comes round again the next week, and a dateless bet's
+  // 14-day window would otherwise accept both weeks as "ambiguous game".
+  // Decidable only when both of the row's teams resolve; otherwise the
+  // rotation stands on its own.
   function knownTeamFits(bet, keys) {
+    if (!keys.away || !keys.home) return true;
     const known = [bet.awayKey, bet.homeKey].filter(Boolean);
-    if (known.length !== 1 || !keys.away || !keys.home) return true;
-    return known[0] === keys.away || known[0] === keys.home;
+    return known.every((key) => key === keys.away || key === keys.home);
   }
 
   function gameMatches(bet, line) {
@@ -557,16 +559,20 @@
     return { lines, venueIds: venueIdIndex(lines), games: new Map() };
   }
 
-  // {join, venueId, events}: the board event identities the bet's game is —
+  // {join, venueId, idInOtherLeague, events}: the board event identities the bet's game is —
   // by venue id when its id is on an event of the bet's own league, else by
   // the name rule. One event = matched, several = ambiguous, none = a miss.
   function resolveGame(bet, board) {
     const venueId = betVenueId(bet);
     const carriers = venueId ? board.venueIds[venueId.join].get(venueId.id) : null;
     const idEvents = new Set();
-    for (const [identity, league] of carriers || []) if (league === bet.league) idEvents.add(identity);
+    let idInOtherLeague = false;
+    for (const [identity, league] of carriers || []) {
+      if (league === bet.league) idEvents.add(identity);
+      else idInOtherLeague = true;
+    }
     if (idEvents.size > 0) return { join: venueId.join, venueId, events: idEvents };
-    return { join: JOIN_NAME, venueId, events: candidateEvents(bet, board.lines) };
+    return { join: JOIN_NAME, venueId, idInOtherLeague, events: candidateEvents(bet, board.lines) };
   }
 
   function gameOf(bet, board) {
@@ -577,8 +583,10 @@
   // Is this line on the bet's game? An id join names the event outright; the
   // name rule is re-checked on the line itself, which a captured ticket's
   // hand-shaped row may not share with the board.
+  // A line with no eventId (a hand-shaped row) has no identity the board's
+  // id join could name, so it falls back to the name rule.
   function lineInGame(bet, line, game) {
-    if (game.join === JOIN_NAME) return gameMatches(bet, line);
+    if (game.join === JOIN_NAME || line.eventId == null) return gameMatches(bet, line);
     return bet.league === line.league && game.events.has(eventIdentity(line));
   }
 
@@ -609,16 +617,6 @@
     return bet.side === "away" ? bet.awayKey : bet.homeKey;
   }
 
-  // The bet's team key when the row's game has that team. A key the game does
-  // not have is a name an id join overruled (#118 step 3), so it names no
-  // side here and the bet is placed the way an unkeyed bet is.
-  function betSideKeyInGame(bet, line) {
-    const betKey = betSideKey(bet);
-    if (bet.betType === "total" || betKey == null) return betKey;
-    const keys = lineTeamKeys(line);
-    return betKey === keys.away || betKey === keys.home ? betKey : null;
-  }
-
   function betOtherSideKey(bet) {
     if (bet.betType === "total") return bet.side === "over" ? "under" : "over";
     return bet.side === "away" ? bet.homeKey : bet.awayKey;
@@ -632,18 +630,33 @@
     if (bet.betType !== lineBetType(line) || bet.period !== line.period) return "same_game";
     const lineKey = lineSideKey(line);
     if (lineKey == null) return "same_game";
-    const betKey = betSideKeyInGame(bet, line);
-    if (betKey == null && bet.betType !== "total") {
-      return tierBySideIndex(bet, line, sideIndexByVenueId(bet, line) ?? sideIndexByRotation(bet, line));
+    if (bet.betType === "total") {
+      if (bet.side === lineKey) return samePoints(bet.points, line.points) ? "same_line" : "same_side";
+      return betOtherSideKey(bet) === lineKey ? "opposite" : "same_game";
     }
-    if (betKey === lineKey) return samePoints(bet.points, line.points) ? "same_line" : "same_side";
-    if (betOtherSideKey(bet) === lineKey) return "opposite";
-    return "same_game";
+    const betSideIndex = sideIndexByTeamKeys(bet, line) ?? sideIndexByVenueId(bet, line) ?? sideIndexByRotation(bet, line);
+    return tierBySideIndex(bet, line, betSideIndex);
   }
 
-  // A team-market bet whose own team teams.js could not key sits on a side
-  // the row can still name: `betSideIndex` (0 away / 1 home in Unabated's
-  // frame) or null when nothing says which. The number is the row's CURRENT
+  // The side (0 away / 1 home) the bet's team keys put it on in the row's
+  // game: its own team's key where the game has it, else the other team's
+  // key on the opposite side. One key is enough — an id join reaches here
+  // with names teams.js half-resolved (#118 step 3). A key the game does not
+  // have names no side (a name an id join overruled).
+  function sideIndexByTeamKeys(bet, line) {
+    const keys = lineTeamKeys(line);
+    const own = betSideKey(bet);
+    const other = betOtherSideKey(bet);
+    if (own != null && own === keys.away) return 0;
+    if (own != null && own === keys.home) return 1;
+    if (other != null && other === keys.away) return 1;
+    if (other != null && other === keys.home) return 0;
+    return null;
+  }
+
+  // A team-market bet sits on a side of the row's game: `betSideIndex` (0
+  // away / 1 home in Unabated's frame, from its team keys, its venue
+  // contract or its rotation) or null when nothing says which. The number is the row's CURRENT
   // one, so a line moved off the bet's number is same_side.
   function tierBySideIndex(bet, line, betSideIndex) {
     if (betSideIndex == null) return "same_game";
@@ -853,7 +866,8 @@
       if (game.events.size > 1) { out.push({ bet, reason: ambiguousReason(game) }); continue; }
       const nameReason = nameMissReason(bet, leaguesOnBoard);
       if (!game.venueId || nameReason === REASON_LEAGUE_OFF) { out.push({ bet, reason: nameReason }); continue; }
-      out.push({ bet, reason: `by id: ${venueIdLabel(game.venueId)} not on any board ladder; by name: ${nameReason}` });
+      const idMiss = game.idInOtherLeague ? "only on another league's board ladder" : "not on any board ladder";
+      out.push({ bet, reason: `by id: ${venueIdLabel(game.venueId)} ${idMiss}; by name: ${nameReason}` });
     }
     return out;
   }

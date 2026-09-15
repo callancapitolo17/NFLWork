@@ -12,10 +12,22 @@ from pathlib import Path
 
 PKG_DIR = Path(__file__).parent
 _RAW_ROOT = PKG_DIR.parent.parent
-# Worktree-aware root (kalshi_rfi/config.py pattern): credentials and
-# kalshi_draft/auth.py live in the main checkout, not the worktree.
-PROJECT_ROOT = (Path(str(_RAW_ROOT).split(".worktrees")[0].rstrip("/"))
-                if ".worktrees" in str(_RAW_ROOT) else _RAW_ROOT)
+# Worktree-aware root (kalshi_rfi/config.py pattern): credentials, bet_logger's
+# cookie file and kalshi_draft/auth.py live in the main checkout, not the
+# worktree. Claude desktop puts worktrees under .claude/worktrees/<name>, which
+# the ".worktrees" marker alone missed (no Kalshi credentials from a worktree).
+WORKTREE_MARKERS = ("/.claude/worktrees/", "/.worktrees/")
+
+
+def main_checkout_root(raw_root: Path) -> Path:
+    path = f"{raw_root}/"
+    for marker in WORKTREE_MARKERS:
+        if marker in path:
+            return Path(path.split(marker)[0])
+    return raw_root
+
+
+PROJECT_ROOT = main_checkout_root(_RAW_ROOT)
 DB_PATH = PKG_DIR / "bets.duckdb"
 
 

@@ -870,7 +870,7 @@ test("id join: malformed, missing or other-league ids are no id — never an err
   assert.equal(reasons[0], "team not recognised (Duquesne Dukes (venue spelling), Wazzu (venue spelling))");
   assert.ok(reasons.slice(0, all.length - 1).every((reason) => !reason.startsWith("by id")));
   // An id on an event of another league is no join: the NFL bet is not placed on the CFB game.
-  assert.ok(reasons[all.length - 1].startsWith("by id: Novig outcome not on any board ladder; by name:"));
+  assert.ok(reasons[all.length - 1].startsWith("by id: Novig outcome only on another league's board ladder; by name:"));
   // A row with a malformed map is skipped, not thrown on.
   const brokenRow = Object.assign({}, rows["Spread 1 89"], { venueIds: { kalshiEventSuffixes: "26SEP19DUQWSU", novigOutcomes: 3 } });
   assert.equal(bets.matchBets(brokenRow, [novigDuqWsu()], { lines: [brokenRow] }).matches.length, 0);
@@ -903,4 +903,44 @@ test("id join: BetOnline records have no venue ids and stay on the name / rotati
   assert.equal(bets.matchBets(rows["Spread 1 89"], [bet], { lines }).matches[0].tier, "same_line");
   const lost = Object.assign({}, bet, { awayKey: null, awayTeam: "Duq (BOL spelling)" });
   assert.deepEqual(bets.unmatchedReasons([lost], lines).map((u) => u.reason), ["team not recognised (Duq (BOL spelling))"]);
+});
+
+test("id join: a bet with ONE team keyed still gets its side — its own key, or the other team's on the opposite side", () => {
+  const rows = venueRows();
+  const lines = Object.values(rows);
+  // Duquesne moneyline with only the OTHER team (WSU) keyed: before, every row was same_game and held $0.
+  const duqMoneyline = Object.assign(kalshiDuqWsu("KXNCAAFGAME-26SEP19DUQWSU-DUQ", "yes", null, { subTitle: "DUQ vs WSU (Sep 19)" }), { homeKey: "cfb:717" });
+  assert.equal(duqMoneyline.side, "away");
+  assert.equal(bets.matchBets(rows["Moneyline 0 105"], [duqMoneyline], { lines }).matches[0].tier, "same_line");
+  assert.equal(bets.matchBets(rows["Moneyline 1 105"], [duqMoneyline], { lines }).matches[0].tier, "opposite");
+  // NO on WSU36 = Duquesne +35.5 with only Duquesne keyed: the WSU row carries the "against" dollars.
+  const duqPlus = Object.assign(kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "no", 35.5), { awayKey: "cfb:927" });
+  assert.equal(bets.matchBets(rows["Spread 0 89"], [duqPlus], { lines }).matches[0].tier, "same_line");
+  assert.equal(bets.exposureOf(bets.matchBets(rows["Spread 1 89"], [duqPlus], { lines }).matches).against, duqPlus.stake);
+  // A key for a team not in the game is ignored; the keyed WSU side still places the bet.
+  const wrongOther = Object.assign(kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 35.5), { awayKey: "cfb:1", homeKey: "cfb:717" });
+  assert.equal(bets.matchBets(rows["Spread 0 89"], [wrongOther], { lines }).matches[0].tier, "opposite");
+});
+
+test("id join: a row without an eventId falls back to the name rule", () => {
+  const rows = venueRows();
+  const lines = Object.values(rows);
+  const keyed = Object.assign(kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 35.5), { awayKey: "cfb:927", homeKey: "cfb:717" });
+  const ticketRow = Object.assign({}, rows["Spread 1 89"], { eventId: null, venueIds: null });
+  assert.equal(bets.matchBets(ticketRow, [keyed], { lines }).matches[0].tier, "same_line");
+});
+
+test("BetOnline: a reused rotation whose named teams are not in next week's game is not ambiguous on the Edges board", () => {
+  const rows = nflRows();
+  const thisWeek = rows["Total FG 1 46"];
+  const nextWeek = Object.assign({}, thisWeek, { eventId: 999001, awayTeamId: 999, homeTeamId: 998,
+    eventStartMs: thisWeek.eventStartMs + 7 * 24 * 3600 * 1000 });
+  const bet = bets.resolveTeamKeys([betonlineRecord({
+    id: "betonline:reused-rotation", homeTeam: "Carolina Panthers", betType: "total", side: "under", points: 46, rotation: 466,
+  })])[0];
+  assert.ok(bet.awayKey && bet.homeKey);
+  const flags = bets.annotateRows([thisWeek], [bet], { lines: [thisWeek, nextWeek] });
+  assert.equal(flags[0].tier, "same_line");
+  assert.equal(flags[0].exposure.held, bet.stake);
+  assert.equal(bets.matchBets(nextWeek, [bet], { lines: [thisWeek, nextWeek] }).matches.length, 0);
 });

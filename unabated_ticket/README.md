@@ -489,13 +489,16 @@ lines forever; records of a venue whose source failed stay as they were.
 a Kalshi bet joins the board event whose Kalshi rungs carry its event-ticker
 suffix (`venueIds.eventTicker` after the first "-", the WHOLE string —
 `26SEP19DUQWSU`, never split into team codes; a moneyline joins through the
-suffix its event's spread/total rungs carry), a Novig spread/total bet the
+suffix its event's spread/total rungs carry, so only when Kalshi lists a
+spread or total ladder for that game — else it takes the name rule), a Novig spread/total bet the
 event whose Novig rungs carry its `outcomeId`. The event must be in the bet's
 league. No team name has to resolve. An id join is final: the name rule is
 not consulted, so team names that point at another event cannot win, and a
-bet's team key the joined game does not have is ignored for its side. An id
+bet's team key the joined game does not have is ignored for its side. One
+keyed team is enough to place a bet: its own team's key names that side, the
+other team's key the opposite one. An id
 on two board events is "ambiguous game (Kalshi event … on 2 board events)";
-an id on no board event (Kalshi lists ladders on a third of CFB events,
+an id on no board event of its league (Kalshi lists ladders on a third of CFB events,
 Novig moneylines have no rungs at all, a number the ladder dropped) falls
 through to the name rule below. Malformed or missing ids are no id, never an
 error. BetOnline records carry no ids. The join decides the GAME; the tier
@@ -520,8 +523,9 @@ within a day of the line's (Kalshi football tickers carry the date only),
 else — for a venue that gives no game date at all (BetOnline's report,
 flagged `approx: game_date_unknown`) — an event starting between 12 h before
 and 14 days after the bet was placed, keyed on the rotation number; a
-rotation match with one recognised team name also needs that team in the
-row's game (the same rotation comes round the next week), and a team name
+rotation match also needs every recognised team name in the row's game (the
+same rotation comes round the next week, inside a dateless bet's 14-day
+window), and a team name
 `teams.js` does not know still matches by rotation and takes its side from
 the row's away/home rotations. A bet that two board events accept (a series,
 a doubleheader without a time, two weeks of the same rotation) is **never**
@@ -614,7 +618,9 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   (futures, the bots' combos), unknown Kalshi series. A bet with a venue id
   names both tiers that missed: "by id: Kalshi event 26SEP19DUQWSU not on
   any board ladder; by name: team not recognised (…)" ("Novig outcome" for
-  Novig; no id tier for a Novig moneyline or a league off the scanner).
+  Novig; "only on another league's board ladder" when the id sits on an
+  event of a different league; no id tier for a Novig moneyline or a league
+  off the scanner).
 
 ### Novig source (service)
 

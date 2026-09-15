@@ -115,6 +115,7 @@
   let lastClickedKey = null;
   let scannerStatus = null;
   let scannerState = null;
+  let boardLinesCache = null;
   const teamsLib = globalThis.UnabatedTeams;
   let teamsSpellingCount = 0;
 
@@ -144,6 +145,7 @@
     onChange: (status, feedState) => {
       scannerStatus = status;
       scannerState = feedState;
+      boardLinesCache = null;
       registerFeedTeams(feedState);
       renderEdges();
       // A ticket sized from the feed (or waiting for it) follows the feed's
@@ -1491,8 +1493,14 @@
   // the matcher's ambiguity check, its venue id join (each row carries its
   // event's venueIds) and the unmatched list only need to know which games
   // exist, not every book's price.
+  // Built once per scanner update (73 ms over the 140,755 NFL + CFB lines of
+  // 2026-09-15) and shared by the Edges rows, the alert pass, the Ticket
+  // banner and the Bets tab. The rows only name games — teams, start, venue
+  // ids — so a copy from the last update is current; every tier reads the
+  // row or ticket being matched, never these.
   function boardLines() {
     if (!scannerState) return [];
+    if (boardLinesCache) return boardLinesCache;
     const seen = new Set();
     const rows = [];
     for (const line of Object.values(scannerState.lines)) {
@@ -1500,6 +1508,7 @@
       seen.add(line.eventId);
       rows.push(feed.describeLine(line, scannerState));
     }
+    boardLinesCache = rows;
     return rows;
   }
 
