@@ -67,7 +67,7 @@
   window.fetch = function unabatedTicketFetch(input, init) {
     let bodyText = null;
     let requestCopy = null;
-    let watched = false;
+    let watched;
     try {
       watched = requestUrl(input).startsWith(GRAPHQL_URL_PREFIX);
       if (watched) {

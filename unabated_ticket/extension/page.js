@@ -606,7 +606,7 @@
       try {
         return readViaMarketLineId(shell);
       } catch (fallbackError) {
-        throw new Error(`fiber: ${fiberError.message}; fallback: ${fallbackError.message}`);
+        throw new Error(`fiber: ${fiberError.message}; fallback: ${fallbackError.message}`, { cause: fallbackError });
       }
     }
   }
@@ -945,7 +945,7 @@
   // Retries while the grid loads (a navigated tab has no rows for a few seconds).
   function locateLine(request, attempt) {
     if (request.at !== lastLocateAt) return; // superseded by a newer request
-    let api = null;
+    let api;
     let node = null;
     try {
       api = anyGridApi().api;

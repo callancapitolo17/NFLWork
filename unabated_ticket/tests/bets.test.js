@@ -716,7 +716,6 @@ test("BetOnline: a matched bet whose team name teams.js does not know is not lis
 // table knows and leave both keys null: only the id can carry them.
 
 const CFB_LEAGUE = 2;
-const DUQ_WSU_SUFFIX = "26SEP19DUQWSU";
 const NOVIG_WSU_MINUS_35_5 = "01a0a05e-e864-7b73-9b80-9e502e4e98d5";
 
 function venueState() {

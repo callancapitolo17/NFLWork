@@ -893,10 +893,26 @@ GETs; no order placement.
 
 ## Tests
 
+One command runs everything and exits non-zero if any part fails:
+
 ```bash
-node --test "unabated_ticket/tests/*.test.js"
-/Users/callancapitolo/NFLWork/kalshi_draft/venv/bin/python3 -m pytest unabated_ticket/bets_service/tests
+./unabated_ticket/check.sh
 ```
+
+It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
+the node suite (`npm test` = `node --test tests/*.test.js`, 185 tests) and
+the bets service's pytest suite (97 tests, on the `kalshi_draft/venv`
+python from the main checkout, resolved the way `bets_service/run.sh`
+does, else `python3`). All three run even when an earlier one fails, so one
+run shows every failure. ESLint comes from `unabated_ticket/package.json`
+— run `npm install` once per checkout (it lands in the gitignored
+`node_modules/`; `package-lock.json` is tracked so everyone gets the same
+eslint). The config (`eslint.config.js`) errors only on real defects —
+undefined or unused variables, unreachable code, dead assignments, a
+rethrow that drops its cause — and has no style rules; it knows the
+modules are dual-loaded (plain `<script>` publishing `globalThis.UnabatedX`
+in the panel, `require()` in tests), so no file needs a disable comment.
+The extension itself has no build step and stays loaded unpacked.
 
 `betsview.test.js` covers the panel's bet-history presentation helpers:
 freshness colours at the 5 / 60 min bounds, the per-venue rows (unconfigured,
@@ -1012,6 +1028,12 @@ bets, the service going away (red header, "unreachable since", records
 kept) and a reload restoring the stored records. A second script pointed
 the panel at the running service: 29 real open positions listed, the bots'
 combos as "not a game market", no console errors.
+
+Pre-merge checklist for this directory, on top of the repo-wide review in
+`CLAUDE.md`: `./unabated_ticket/check.sh` passes on the branch (lint, node
+suite, pytest — this is the one command the review runs; a failing or
+skipped check blocks the merge), then the manual pass below after loading
+the branch unpacked.
 
 Manual checklist after loading unpacked: click a best-line price and a
 book-column price, then a moneyline, a spread and a total; confirm side

@@ -1,0 +1,15 @@
+{
+  "name": "unabated-ticket",
+  "version": "0.8.0",
+  "private": true,
+  "description": "Unabated Ticket Chrome extension (plain JS, loaded unpacked, no build step) and its node test suite. The Python bets service lives in bets_service/ and is tested with pytest; check.sh runs everything.",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.10.0",
+    "globals": "^17.12.0"
+  }
+}

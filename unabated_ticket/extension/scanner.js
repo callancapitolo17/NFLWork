@@ -122,7 +122,7 @@
       try {
         return await fetchImpl(url, controller ? { ...options, signal: controller.signal } : options);
       } catch (error) {
-        throw new Error(controller && controller.signal.aborted ? `timed out after ${timeoutMs / 1000}s` : error.message);
+        throw new Error(controller && controller.signal.aborted ? `timed out after ${timeoutMs / 1000}s` : error.message, { cause: error });
       } finally {
         if (timer) clearTimeout(timer);
       }
@@ -187,7 +187,7 @@
       let oldestBuild = null;
       let loadedCount = 0;
       await mapWithConcurrency(ordered, SNAPSHOT_CONCURRENCY, async (leagueId) => {
-        let loaded = null;
+        let loaded;
         try {
           loaded = await fetchSnapshot(leagueId);
         } catch (error) {

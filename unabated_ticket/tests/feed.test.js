@@ -408,6 +408,8 @@ test("alt lines honour the same board, book, bet-type, period and price gates as
 
 test("a ladder the book pulls is gone from the next snapshot parse", () => {
   const first = feed.parseSnapshot(snapshotJson(), { leagueId: NFL });
+  assert.equal(feed.countAltLines(first), 27);
+  assert.notEqual(first.lines["289357360:ms105:si0:tid6:alt-20.5"], undefined);
   const again = snapshotJson();
   const spreadRow = again.odds["lg1:pt1:pregame"].find((row) => row.key === "pt1:pregame:bt2:e125807");
   spreadRow.sides["si0:tid6"].ms105.alternateLines = [];
