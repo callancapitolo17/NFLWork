@@ -1,7 +1,7 @@
 // Unabated Ticket — side panel: the Ticket tab (one captured bet) and the
 // Edges tab (every positive-edge line across the enabled leagues).
 //
-// Reads: chrome.storage.local {ticket, error, watchStatus, pageReady,
+// Reads: chrome.storage.local {ticket, error, watchStatus, pageCheck, pageReady,
 // booksFilter, locateResult} (written by content.js) and {bankroll,
 // multiplier, edges, alerts, alertLog, activeTab, betsService, betsSettings}
 // (written here) and {betsNovig} (written by novig_content.js on
@@ -97,12 +97,15 @@
     betsUnmatched: el("bets-unmatched"), betsUnmatchedCount: el("bets-unmatched-count"), betsUnmatchedEmpty: el("bets-unmatched-empty"),
     betsCrosswalk: el("bets-crosswalk"), betsCrosswalkCount: el("bets-crosswalk-count"), betsCrosswalkEmpty: el("bets-crosswalk-empty"),
     betsCrosswalkClear: el("bets-crosswalk-clear"),
+    shapeBanner: el("shape-banner"),
   };
   // page.js heartbeats every 10s; past this it is not running on any Unabated tab.
   const PAGE_READY_STALE_MS = 25000;
 
   let state = {
     ticket: null, error: null, watchStatus: null, pageReady: null, settings: { ...DEFAULT_SETTINGS },
+    // page.js's once-per-load shape check: {status: "checking"|"ok"|"changed", ...}.
+    pageCheck: null,
     edgeSettings: { ...DEFAULT_EDGE_SETTINGS }, booksFilter: null, activeTab: "ticket",
     locateResult: null, locating: null,
     alertSettings: { ...DEFAULT_ALERT_SETTINGS },
@@ -271,7 +274,7 @@
   // (none — feedLine then carries the feed's copy when there is one, so the
   // panel can say what price the feed has instead).
   function pricedLine(ticket) {
-    const current = ticket.current;
+    const current = currentOf(ticket);
     const line = current
       ? { price: current.price, sourceFormat: current.sourceFormat, sourcePrice: current.sourcePrice, fair: current.fair, edgePct: current.edgePct, points: current.points, moved: true }
       : { price: ticket.price, sourceFormat: ticket.sourceFormat, sourcePrice: ticket.sourcePrice, fair: ticket.fair, edgePct: ticket.edgePct, points: ticket.points, moved: false };
@@ -344,6 +347,17 @@
     view.empty.hidden = which !== "empty";
   }
 
+  // The watched line when it has moved off the captured one, else null.
+  // It rides on `watchStatus`, not on the ticket: content.js's watcher writes
+  // only that key, so a tick in flight can never put a stale ticket back over
+  // a fresh capture. A late tick for the PREVIOUS capture is what capturedAt
+  // guards here.
+  function currentOf(ticket) {
+    const status = state.watchStatus;
+    if (!ticket || !status || status.capturedAt !== ticket.capturedAt) return null;
+    return status.current || null;
+  }
+
   function watcherIsLive(ticket, watchStatus) {
     if (!watchStatus || watchStatus.capturedAt !== ticket.capturedAt) {
       // No heartbeat yet: live only during the first interval after capture.
@@ -355,12 +369,13 @@
   function renderWarning(ticket, watchStatus, line) {
     const messages = [];
     let bad = false;
-    if (ticket.current && ticket.current.offBoard) {
+    const current = currentOf(ticket);
+    if (current && current.offBoard) {
       messages.push("Off the board at this book.");
       bad = true;
-    } else if (ticket.current) {
-      const pts = ticket.current.points != null ? ` at ${fmtPoints(ticket.current.points)}` : "";
-      messages.push(`Line moved: now ${fmtAmerican(ticket.current.price)}${pts} (captured ${fmtAmerican(ticket.price)}${ticket.points != null ? ` at ${fmtPoints(ticket.points)}` : ""}). Stake re-sized.`);
+    } else if (current) {
+      const pts = current.points != null ? ` at ${fmtPoints(current.points)}` : "";
+      messages.push(`Line moved: now ${fmtAmerican(current.price)}${pts} (captured ${fmtAmerican(ticket.price)}${ticket.points != null ? ` at ${fmtPoints(ticket.points)}` : ""}). Stake re-sized.`);
     }
     if (line.edgeFrom === "feed") {
       const age = fmtLineAge(feed.lineChangedMs(line.feedLine)).replace(/^line /, "");
@@ -418,7 +433,7 @@
   //     watcher is re-finding the rung by its number;
   //   - capture found two rows TIED at the best rank, so grid order decided.
   function rowTraceReason(ticket) {
-    const current = ticket.current;
+    const current = currentOf(ticket);
     if (current && current.rowTop != null && ticket.watch && ticket.watch.rowTop != null
       && current.rowTop !== ticket.watch.rowTop) {
       return "the watcher is reading a different row than the capture";
@@ -437,7 +452,8 @@
     const reason = resolution ? rowTraceReason(ticket) : null;
     view.rowTrace.hidden = !reason;
     if (!reason) return;
-    const watching = ticket.current && ticket.current.row ? ` Watching ${ticket.current.row}.` : "";
+    const watched = currentOf(ticket);
+    const watching = watched && watched.row ? ` Watching ${watched.row}.` : "";
     view.rowTraceReason.textContent = `Row trace: ${reason}`;
     view.rowTraceDetail.textContent = `Script ${resolution.build}: ${resolution.trace}.${watching}`;
   }
@@ -587,7 +603,22 @@
     },
   };
 
+  // One loud state above the tabs when page.js's load check found Unabated's
+  // price cells no longer carrying the props a ticket is read from. Gated on
+  // the capture script being alive, so a verdict from a tab that has since
+  // been closed does not outlive it — and on a board with rows, since the
+  // check publishes "checking" and stops when there are none.
+  function renderShapeBanner() {
+    const check = state.pageCheck;
+    const changed = Boolean(check && check.status === "changed" && pageScriptAlive());
+    view.shapeBanner.hidden = !changed;
+    if (!changed) return;
+    const detail = check.detail ? ` ${check.detail}.` : "";
+    view.shapeBanner.textContent = `Unabated changed: ${check.message}.${detail} Clicking a price will not produce a ticket until page.js is updated for the new bundle.`;
+  }
+
   function render() {
+    renderShapeBanner();
     if (state.error) {
       const copy = ERROR_COPY[state.error.kind] || ERROR_COPY.read_failed;
       view.errorTitle.textContent = copy.title;
@@ -1908,7 +1939,7 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "betsNovig", "teamsIndex"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "betsNovig", "teamsIndex"]);
     // The team index from the last session, so bet records resolve before the first snapshot lands.
     teamsLib.loadIndex(relay.teamsIndex);
     teamsSpellingCount = teamsLib.spellingCount();
@@ -1916,6 +1947,7 @@
     state.error = relay.error || null;
     state.watchStatus = relay.watchStatus || null;
     state.pageReady = relay.pageReady || null;
+    state.pageCheck = relay.pageCheck || null;
     state.booksFilter = relay.booksFilter || null;
     state.locateResult = relay.locateResult || null;
     state.edgeSettings = sanitizeEdgeSettings(relay.edges);
@@ -1952,7 +1984,8 @@
     if ("ticket" in changes) {
       const previous = state.ticket;
       state.ticket = changes.ticket.newValue || null;
-      // A fresh capture (not the watcher rewriting `current`) brings the Ticket tab forward.
+      // The watcher no longer rewrites the ticket, so every write here is a
+      // capture; the capturedAt check stays as the cheap guard against one.
       if (state.ticket && (!previous || previous.capturedAt !== state.ticket.capturedAt)) showTab("ticket");
     }
     if ("error" in changes) {
@@ -1961,7 +1994,8 @@
     }
     if ("watchStatus" in changes) state.watchStatus = changes.watchStatus.newValue || null;
     if ("pageReady" in changes) state.pageReady = changes.pageReady.newValue || null;
-    if ("ticket" in changes || "error" in changes || "watchStatus" in changes || "pageReady" in changes) render();
+    if ("pageCheck" in changes) state.pageCheck = changes.pageCheck.newValue || null;
+    if ("ticket" in changes || "error" in changes || "watchStatus" in changes || "pageReady" in changes || "pageCheck" in changes) render();
     if ("pageReady" in changes) renderEdges();
     if ("booksFilter" in changes) {
       state.booksFilter = changes.booksFilter.newValue || null;

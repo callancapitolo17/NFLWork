@@ -9,7 +9,11 @@
 // own handler still runs), one 5s interval while a ticket is being watched
 // (resumed from the stored ticket on load, so a navigation does not end it),
 // and a 10s heartbeat that also publishes the user's Unabated book selection
-// (read from the grid's React context) as the Edges tab's default book filter. The only DOM touch is the locate flash:
+// (read from the grid's React context) as the Edges tab's default book filter.
+// Once per load it also publishes a shape check: whether the price cells on a
+// grid that has rows still carry the React props a ticket is read from, so a
+// new Unabated bundle shows in the panel on arrival instead of mid-click.
+// The only DOM touch is the locate flash:
 // a 2.5s outline on the cell an Edges row or notification pointed at.
 
 (function () {
@@ -844,6 +848,96 @@
   }
 
 
+  // ---- load-time shape check -----------------------------------------------
+
+  // Every other fiber read in this file already reports its own failure at
+  // the point of use: a failed capture posts the cell's actual keys
+  // (describeLineFields), the watcher posts its error, the book-selection
+  // read posts the userSettings shape. What none of them can say is that the
+  // page is broken BEFORE you click it. This is the one load-time check, and
+  // deliberately the cheapest one that cannot cry wolf: on a grid that has
+  // rendered rows, at least ONE price cell must carry the React props a
+  // ticket is read from. Zero is the "Unabated shipped a new bundle" state.
+  // A board with no rows is not checked at all (it is a quiet slate, a
+  // non-odds page, or a grid still loading), so the panel stays silent
+  // rather than guess. Runs once per page.js load; page.js dies with every
+  // navigation, so a mid-session deploy surfaces on the next one.
+  const GRID_ROW_SELECTOR = ".ag-row";
+  const SHAPE_CHECK_ATTEMPTS = 20;
+  const SHAPE_CHECK_RETRY_MS = 1000;
+  const FIBER_SHAPE_HOPS = 6;
+
+  // What the cell carries instead, so the fix does not start with a bisect:
+  // whether React is still attaching a fiber at all, and the props shapes up
+  // the tree (a renamed prop shows as a key list that no longer has
+  // marketLine/sideIndex in it).
+  function describeShellFiber(shell) {
+    const fiber = fiberOf(shell);
+    if (!fiber) return "no __reactFiber$ key on the cell (React did not render it, or the key moved)";
+    const shapes = [];
+    let node = fiber;
+    for (let hop = 0; node && hop < FIBER_SHAPE_HOPS; hop += 1) {
+      if (node.memoizedProps && typeof node.memoizedProps === "object") shapes.push(describeShape(node.memoizedProps));
+      node = node.return;
+    }
+    return shapes.length ? `props up the fiber: ${shapes.join(" <- ")}` : "a fiber with no memoizedProps on it";
+  }
+
+  function countReadableShells(shells) {
+    let readable = 0;
+    for (const shell of shells) {
+      const fiber = fiberOf(shell);
+      if (fiber && findProps(fiber, isLineProps)) readable += 1;
+    }
+    return readable;
+  }
+
+  // null while the grid has not rendered a row yet (keep waiting); otherwise
+  // the result to publish.
+  function shapeCheckResult() {
+    const rows = document.querySelectorAll(GRID_ROW_SELECTOR).length;
+    if (!rows) return null;
+    const shells = Array.from(document.querySelectorAll(CELL_SHELL_SELECTOR));
+    if (!shells.length) {
+      return {
+        status: "changed", rows, shells: 0, readable: 0,
+        message: `no price cells (${CELL_SHELL_SELECTOR}) on a grid showing ${rows} rows`,
+        detail: "the odds cell's class moved; capture, the line watcher and locate all find their cell by it",
+      };
+    }
+    const readable = countReadableShells(shells);
+    if (!readable) {
+      return {
+        status: "changed", rows, shells: shells.length, readable: 0,
+        message: `${shells.length} price cells on ${rows} rows, but none carries the React props a ticket is read from (marketLine + sideIndex)`,
+        detail: describeShellFiber(shells[0]),
+      };
+    }
+    return { status: "ok", rows, shells: shells.length, readable, message: null, detail: null };
+  }
+
+  function publishShapeCheck(result) {
+    post("pagecheck", { ...result, url: window.location.href, at: Date.now() });
+  }
+
+  // Retries only while the grid has no rows — it is one check, not a poll.
+  function runShapeCheck(attempt) {
+    if (retired) return;
+    let result;
+    try {
+      result = shapeCheckResult();
+    } catch (error) {
+      publishShapeCheck({ status: "changed", rows: null, shells: null, readable: null, message: `the page could not be checked: ${error.message}`, detail: null });
+      return;
+    }
+    if (!result) {
+      if (attempt < SHAPE_CHECK_ATTEMPTS) setTimeout(() => runShapeCheck(attempt + 1), SHAPE_CHECK_RETRY_MS);
+      return; // no rows ever appeared: nothing was checked, so nothing is claimed
+    }
+    if (result.status !== "ok") console.warn("[unabated-ticket] Unabated changed:", result.message, "-", result.detail);
+    publishShapeCheck(result);
+  }
+
   // ---- locate: scroll the grid to a line and flash its cell -----------------
 
   const LOCATE_ATTEMPTS = 20;
@@ -1096,7 +1190,7 @@
   // this flag on its fake window before loading the file. Never set on
   // tools.unabated.com, so production exposes nothing.
   if (window.__unabatedTicketExposeInternals === true) {
-    window.__unabatedTicketInternals = { buildTicket, startWatching, readWatchedLine };
+    window.__unabatedTicketInternals = { buildTicket, startWatching, readWatchedLine, shapeCheckResult };
   }
   // Heartbeat so the panel can show whether this script is alive on the tab,
   // plus the books/bet-type filter for the Edges tab (grid may not be up yet
@@ -1110,6 +1204,10 @@
   post("takeover", { at: Date.now() });
   post("resume_request", { at: Date.now() });
   heartbeat();
+  // Clears any previous load's verdict first, so a banner never outlives the
+  // page it described; "checking" is what a board with no rows stays on.
+  publishShapeCheck({ status: "checking", rows: null, shells: null, readable: null, message: null, detail: null });
+  runShapeCheck(0);
   intervals.push(setInterval(heartbeat, HEARTBEAT_MS));
   console.info("[unabated-ticket] page.js active on", window.location.href);
 })();

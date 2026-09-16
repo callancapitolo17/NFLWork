@@ -36,9 +36,17 @@ stake, no order placement.
 
 After editing any file under `extension/`, press the reload icon on the
 extension's card. The service worker re-injects `page.js` and `content.js`
-into Unabated tabs that are already open (the old copy retires itself), so
-the tab does not need a reload; if the Ticket tab ever shows "No Unabated
-tab is running the capture script", reload the tab.
+into Unabated tabs that are already open, so the tab does not need a reload.
+Both halves hand over rather than stand aside: the new `page.js` posts a
+`takeover` and the old one retires; the new `content.js` calls the retire hook
+its predecessor published on the isolated world's `window` (Chrome keys that
+world on the extension id, which a reload does not change, so both copies see
+it). Until 2026-09-15 `content.js` guarded on a boolean instead, which made the
+*new* copy return and left the dead one — whose `chrome.storage` writes throw
+"Extension context invalidated" — holding the page's messages; the tab did
+need a reload, and this paragraph said otherwise. If the Ticket tab still shows
+"No Unabated tab is running the capture script", reload the tab (a tab the
+re-injection could not reach still needs one).
 
 ## How capture works
 
@@ -57,6 +65,24 @@ tab is running the capture script", reload the tab.
   `forEachNode` scan of every row's `sides`. If both fail the panel says
   **Could not read this cell** with the reason; it never shows a stake it
   cannot back.
+- **"Unabated changed" (the load-time shape check).** Every fiber read in
+  `page.js` already reports its own failure where it is used — a failed
+  capture prints the cell's actual keys, the watcher posts its error, the
+  book-selection read posts the `userSettings` shape — but all of those only
+  fire once you click. So `page.js` runs one check per load: on a grid that
+  has rendered `.ag-row`s, at least one `.odds-cell-action-shell` must carry
+  React props with `marketLine` + `sideIndex` on them. Zero is the new-bundle
+  state and the panel shows one red banner above the tabs naming what it
+  found (no price cells at all, or cells whose props no longer say what a
+  ticket needs, with the shapes seen up the fiber). A board with **no rows**
+  is not checked at all — a quiet slate, a non-odds page and a grid still
+  loading are indistinguishable from each other, so the panel stays silent
+  rather than guess; the check retries for 20 s waiting for rows and then
+  gives up, leaving the stored verdict on `checking`. It is deliberately one
+  count and not a per-prop matrix: the point-of-use errors above already name
+  every other shape. It re-runs on every `page.js` load (so every navigation),
+  and the banner is gated on the capture script still heartbeating, so a
+  verdict never outlives the tab that produced it.
 - Fields: `price` = `americanPrice` (exchanges have only `price`), `fair` =
   `marketLine.bacr` (Unabated's no-vig price at that book's points),
   side 0 = away / Over, side 1 = home / Under.
@@ -87,7 +113,15 @@ tab is running the capture script", reload the tab.
   price or points moved, the panel shows **Line moved**, re-sizes off the
   new price and fair, and keeps the captured line for comparison. Off the
   board shows in red. If the Unabated tab is closed or navigated away the
-  panel says **Not watching the line**.
+  panel says **Not watching the line**. The moved line is written to
+  `watchStatus.current`, **not onto the ticket**: the watcher used to
+  read-modify-write the whole `ticket` to hang `current` off it, and its
+  `capturedAt` guard tested the ticket it had *read*, so a click landing
+  inside that `get`→`set` window was written and then reverted ~1 ms later by
+  the old ticket coming back — a stale ticket with a dead watcher, reading as
+  "my click did not register". The two writers now touch different keys, so a
+  capture always stands; every reader matches `watchStatus.capturedAt` against
+  the ticket's, which is what drops a late tick for a previous capture.
 - **The watcher outlives the page.** `page.js` dies with every navigation
   (one-click betting leaving the tab, Back, a tab reload or discard, an
   extension reload's takeover) while the ticket stays in storage. On load
@@ -1054,6 +1088,15 @@ in red.
   `.odds-cell-action-shell` still exists and the fiber props still carry
   `marketLine` / `sideIndex` (see the DOM notes in the plan doc); the
   reason text names which lookup failed.
+- **Red banner above the tabs, "Unabated changed: …"**: the load-time shape
+  check found a grid with rows whose price cells no longer carry what a
+  ticket is read from — a new Unabated bundle. Nothing will capture until
+  `page.js` is updated for it. The banner names what was found: *no price
+  cells* means the `.odds-cell-action-shell` class moved (capture, the
+  watcher and locate all find their cell by it); *N price cells … but none
+  carries the React props* means the props moved, and the detail prints the
+  props shapes up the fiber so the new names are right there. Absence of the
+  banner is not a pass on a board with no rows — nothing is checked there.
 - **Panel did not open on click**: Chrome only auto-opens the side panel
   with a user gesture attached; click the toolbar icon once, it stays open.
 - **"Not watching the line"**: no Unabated tab is showing the line — the

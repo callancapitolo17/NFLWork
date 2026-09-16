@@ -161,6 +161,7 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
   background: var(--warn-bg); color: var(--warn-fg); font-weight: 600; font-size: 12.5px;
 }
 .warning.bad { background: var(--bad-bg); color: var(--bad-fg); }
+.shape-banner { margin: 0 0 8px; }
 #tab-ticket .warning { margin: 0 0 10px; }
 .locate-strip {
   margin: 10px 12px 0; padding: 7px 10px; border-radius: 6px; font-size: 12px;
