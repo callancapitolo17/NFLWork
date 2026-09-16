@@ -549,3 +549,29 @@ test("self-check: a sample that throws is reported as a change, not swallowed", 
   assert.match(selfcheck.summaryOf(report), /reading the page/);
   assert.match(selfcheck.detailOf(report), /boom/);
 });
+
+test("self-check: an odds screen that has rendered nothing a minute after load is a change; a fresh one is waiting", () => {
+  const bare = { path: "/nfl/odds", shells: 0, rowElements: 0, gridRoots: 0, lines: [] };
+  assert.equal(selfcheck.run({ ...bare, sinceLoadMs: 5000 }).status, "waiting");
+  const late = selfcheck.run({ ...bare, sinceLoadMs: 61000 });
+  assert.equal(late.status, "changed");
+  assert.equal(late.failed.join(","), "cells");
+  // Not the odds screen: nothing is expected to render, however long ago.
+  assert.equal(selfcheck.run({ ...bare, path: "/account", sinceLoadMs: 600000 }).status, "waiting");
+});
+
+test("self-check: a malformed sample never throws out of the module", () => {
+  for (const sample of [null, undefined, 42, {}, { shells: 3, lines: "no", cell: "no" }]) {
+    const report = selfcheck.run(sample);
+    assert.ok(["ok", "changed", "waiting"].includes(report.status), `status ${report.status} for ${JSON.stringify(sample)}`);
+  }
+});
+
+test("self-check: a best-line cell first in DOM order does not get the bundle blamed for its missing book", () => {
+  const board = probeBoard();
+  // A cell whose marketLine is a copy the row does not hold and which sits in
+  // a column with no book id: bookIdOf falls all the way through on it.
+  const orphan = oddsCell({ api: board.api, node: board.node, marketLine: { ...board.line } });
+  const report = lastReport(probePage({ ...board, shells: [orphan, ...board.shells] }));
+  assert.equal(report.status, "ok", report.probes.filter((probe) => probe.state !== "pass").map((probe) => `${probe.id}: ${probe.detail}`).join(" | "));
+});

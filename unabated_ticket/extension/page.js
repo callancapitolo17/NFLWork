@@ -863,23 +863,49 @@
   // captures nothing look exactly like a quiet board.
   const SELF_CHECK_MS = 30000;
   const GRID_ROW_SELECTOR = ".ag-row";
+  // Lines are taken a few PER ROW across many rows, not the first N off the
+  // first row: the probes check that a field is still on some line, and a
+  // handful of unpriced lines from one market could carry none of them.
   const SELF_CHECK_MAX_ROWS = 60;
-  const SELF_CHECK_MAX_LINES = 40;
+  const SELF_CHECK_LINES_PER_ROW = 3;
+  const SELF_CHECK_MAX_LINES = 120;
 
-  // The first rendered odds cell that exposes React props — the same walk a
-  // click makes, so the probe fails wherever a capture would.
+  // A rendered odds cell that exposes React props — the same walk a click
+  // makes, so the probe fails wherever a capture would. Prefers, within the
+  // first few, a cell whose BOOK resolves: DOM order can put a best-line
+  // column first, and blaming the bundle for a cell capture itself would
+  // fall through on is not a change. Falls back to the first with props.
+  const SELF_CHECK_CELL_CANDIDATES = 12;
+
+  function readCellForSelfCheck(element) {
+    const fiber = fiberOf(element);
+    if (!fiber) return null;
+    const lineProps = findProps(fiber, isLineProps);
+    const cellProps = findProps(fiber, isGridCellProps);
+    if (!lineProps && !cellProps) return null;
+    const marketLine = (lineProps && lineProps.marketLine) || null;
+    const rowData = (cellProps && cellProps.node && cellProps.node.data) || null;
+    const sideIndex = sampleSideIndex(element, lineProps);
+    const bookId = marketLine && rowData && Number.isInteger(sideIndex)
+      ? sampleBookId(marketLine, cellProps, rowData, sideIndex)
+      : null;
+    return { element, lineProps, cellProps, marketLine, rowData, sideIndex, bookId };
+  }
+
   function sampleCell() {
+    let first = null;
+    let seen = 0;
     for (const selector of GRID_PROBE_SELECTORS) {
       for (const element of document.querySelectorAll(selector)) {
-        const fiber = fiberOf(element);
-        if (!fiber) continue;
-        const lineProps = findProps(fiber, isLineProps);
-        const cellProps = findProps(fiber, isGridCellProps);
-        if (!lineProps && !cellProps) continue;
-        return { element, lineProps, cellProps };
+        if (seen >= SELF_CHECK_CELL_CANDIDATES) return first;
+        const cell = readCellForSelfCheck(element);
+        if (!cell) continue;
+        seen += 1;
+        if (cell.bookId != null) return cell;
+        first = first || cell;
       }
     }
-    return null;
+    return first;
   }
 
   function sampleSideIndex(element, lineProps) {
@@ -909,9 +935,13 @@
       rows += 1;
       if (altsExpandable === null && nodeIsTopLevel(node)) altsExpandable = typeof node.setExpanded === "function";
       if (rows > SELF_CHECK_MAX_ROWS || lines.length >= SELF_CHECK_MAX_LINES) return;
+      let fromThisRow = 0;
       for (const books of Object.values(data.sides)) {
         for (const line of Object.values(books || {})) {
-          if (line && typeof line === "object" && lines.length < SELF_CHECK_MAX_LINES) lines.push(line);
+          if (fromThisRow >= SELF_CHECK_LINES_PER_ROW || lines.length >= SELF_CHECK_MAX_LINES) return;
+          if (!line || typeof line !== "object") continue;
+          lines.push(line);
+          fromThisRow += 1;
         }
       }
     });
@@ -967,12 +997,7 @@
     const cell = sampleCell();
     const lineProps = cell && cell.lineProps;
     const cellProps = cell && cell.cellProps;
-    const marketLine = (lineProps && lineProps.marketLine) || null;
-    const rowData = (cellProps && cellProps.node && cellProps.node.data) || null;
-    const sideIndex = cell ? sampleSideIndex(cell.element, lineProps) : null;
-    const bookId = marketLine && rowData && Number.isInteger(sideIndex)
-      ? sampleBookId(marketLine, cellProps, rowData, sideIndex)
-      : null;
+    const { marketLine = null, rowData = null, sideIndex = null, bookId = null } = cell || {};
     const api = cellProps && cellProps.api;
     const grid = api && typeof api.forEachNode === "function" ? sampleGrid(api) : { rows: 0, lines: [], altsExpandable: null };
     const context = (lineProps && lineProps.context) || (cellProps && cellProps.context) || null;
