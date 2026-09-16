@@ -33,7 +33,6 @@
         "https://tools.unabated.com/*"
       ],
       "js": [
-        "selfcheck.js",
         "page.js"
       ],
       "world": "MAIN",
