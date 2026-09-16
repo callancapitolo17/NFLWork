@@ -862,6 +862,7 @@
   // Without it a new bundle is silent: an empty edges list and a ticket that
   // captures nothing look exactly like a quiet board.
   const SELF_CHECK_MS = 30000;
+  const GRID_ROW_SELECTOR = ".ag-row";
   const SELF_CHECK_MAX_ROWS = 60;
   const SELF_CHECK_MAX_LINES = 40;
 
@@ -940,11 +941,25 @@
     }
   }
 
-  function sampleBookSelection(context) {
+  // The enabled ids AND how many book entries userSettings.gameOdds held at
+  // all: a user who has unticked every book still has the shape intact, and
+  // the probe must not read that as Unabated moving the field.
+  function sampleBookEntryCount(gameOdds) {
+    if (!gameOdds || typeof gameOdds !== "object") return 0;
     try {
-      return { bookIds: enabledBookIdsOf(context && context.userSettings), error: null };
+      return (bookEntriesOf(gameOdds, 0) || []).length;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function sampleBookSelection(context) {
+    const userSettings = context && context.userSettings;
+    const entryCount = sampleBookEntryCount(userSettings && userSettings.gameOdds);
+    try {
+      return { bookIds: enabledBookIdsOf(userSettings), error: null, entryCount };
     } catch (error) {
-      return { bookIds: null, error: error.message };
+      return { bookIds: null, error: error.message, entryCount };
     }
   }
 
@@ -968,6 +983,9 @@
       build: PAGE_SCRIPT_BUILD,
       sinceLoadMs: Date.now() - SCRIPT_LOADED_AT,
       shells: document.querySelectorAll(CELL_SHELL_SELECTOR).length,
+      // Rows rendered with no odds cells in them is a renamed cell class; a
+      // grid with no rows at all is an empty board or the user's own filters.
+      rowElements: document.querySelectorAll(GRID_ROW_SELECTOR).length,
       gridRoots: document.querySelectorAll(GRID_ROOT_SELECTOR).length,
       rows: grid.rows,
       lines: grid.lines,

@@ -17,7 +17,7 @@
 //     at, url, build,                 // when, where, which page.js build
 //     path, sinceLoadMs,              // location.pathname, age of this page.js copy
 //     shells,                         // odds-cell elements rendered (int)
-//     gridRoots,                      // AG Grid roots in the DOM (int)
+//     rowElements, gridRoots,         // .ag-row and .ag-root nodes (int)
 //     rows,                           // grid rows carrying `sides` (int)
 //     lines: [line, ...],             // book entries harvested off those rows
 //     cell: null | {                  // one rendered odds cell, as capture reads it
@@ -25,7 +25,7 @@
 //       marketLine, sideIndex, rowData, bookId,
 //     },
 //     altsExpandable,                 // bool|null: setExpanded on a top-level row node
-//     bookSelection: { bookIds, error },   // what userSettings.gameOdds yielded
+//     bookSelection: { bookIds, error, entryCount },  // userSettings.gameOdds
 //     locate: null | { rowElement, bookCell },  // the row/cell selectors locate uses
 //   }
 //
@@ -95,10 +95,11 @@
       scope: "both",
       check: (sample) => {
         if (sample.shells > 0) return { state: PASS, detail: `${sample.shells} odds cells, ${sample.gridRoots} grid roots rendered` };
-        // The grid is up and our cell selector matched nothing: a renamed cell
-        // class is exactly the silent break this file exists to catch, so it
-        // must not be filed under "still loading".
-        if (sample.gridRoots > 0) return { state: FAIL, detail: `${sample.gridRoots} grid roots rendered but no odds cells matched` };
+        // Rows rendered with no odds cell in any of them: a renamed cell class,
+        // which is exactly the silent break this file exists to catch.
+        if (sample.rowElements > 0) return { state: FAIL, detail: `${sample.rowElements} grid rows rendered but no odds cells matched` };
+        // A grid with no rows is an empty board or the user's own filters.
+        if (sample.gridRoots > 0) return { state: UNKNOWN, detail: "the odds grid is up with no rows" };
         if (isOddsScreen(sample.path) && (sample.sinceLoadMs ?? 0) >= GRID_GRACE_MS) {
           return { state: FAIL, detail: `nothing rendered on an odds screen ${Math.round((sample.sinceLoadMs ?? 0) / 1000)}s after load` };
         }
@@ -171,7 +172,12 @@
         const selection = sample.bookSelection || {};
         const ids = Array.isArray(selection.bookIds) ? selection.bookIds : null;
         if (ids && ids.length) return { state: PASS, detail: `${ids.length} books enabled under userSettings.gameOdds` };
-        return { state: FAIL, detail: selection.error || "userSettings.gameOdds yielded no enabled books" };
+        // The shape is what is probed: entries found and none of them enabled
+        // is a user who has unticked every book, not a moved field.
+        if (selection.entryCount > 0) {
+          return { state: PASS, detail: `${selection.entryCount} book entries, none of them enabled (your selection, not a change)` };
+        }
+        return { state: FAIL, detail: selection.error || "userSettings.gameOdds yielded no book entries" };
       },
     },
     {

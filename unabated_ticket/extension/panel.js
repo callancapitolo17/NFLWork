@@ -1997,10 +1997,15 @@
     if ("watchStatus" in changes) state.watchStatus = changes.watchStatus.newValue || null;
     if ("pageReady" in changes) state.pageReady = changes.pageReady.newValue || null;
     if ("selfCheck" in changes) {
+      // Every tab republishes its report every 30s; only a report that says
+      // something NEW is worth re-rendering the panes for.
+      const before = selfCheckLib.summaryOf(currentSelfCheck());
       state.selfCheck = changes.selfCheck.newValue || null;
       renderSelfCheck();
-      render();
-      renderEdges();
+      if (selfCheckLib.summaryOf(currentSelfCheck()) !== before) {
+        render();
+        renderEdges();
+      }
     }
     if ("ticket" in changes || "error" in changes || "watchStatus" in changes || "pageReady" in changes) render();
     if ("pageReady" in changes) renderEdges();

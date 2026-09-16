@@ -77,11 +77,14 @@ tab is running the capture script", reload the tab.
   only does the reads.
   Two deliberate calls: a probe checks that the **field is still there**, not
   that today's value is usable (a book that stops publishing a fair is not a
-  bundle change, and crying wolf on a quiet board would make the banner
-  worthless — the value counts are in the detail line), and a tab with no grid
-  rendered is **waiting**, silent, unless the grid itself is up with no odds
-  cells in it, or an odds screen has rendered nothing 60 s after load. Both of
-  those are loud: a renamed cell class is exactly the break this exists for.
+  bundle change, and neither is a user who has unticked every book — crying
+  wolf on a quiet board would make the banner worthless, so the value counts
+  go in the detail line), and a quiet page is **waiting**, silent: no grid
+  rendered, or a grid with no rows in it (an empty slate, or your own
+  filters). Two cases are loud instead, because neither can be a quiet board:
+  grid rows rendered with no odds cell in any of them (a renamed cell class —
+  exactly the break this exists for) and an odds screen that has rendered
+  nothing 60 s after load.
   This makes the break visible; fixing the read is still a per-change job.
 - Fields: `price` = `americanPrice` (exchanges have only `price`), `fair` =
   `marketLine.bacr` (Unabated's no-vig price at that book's points),
@@ -927,7 +930,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 197 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 199 tests) and
 the bets service's pytest suite (97 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one

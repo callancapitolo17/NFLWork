@@ -29,7 +29,7 @@ const selfcheck = require("../extension/selfcheck.js");
 // `page.window` is the sandbox: `posted` collects every window.postMessage
 // (what content.js would receive), `deliver(type, payload)` plays a message
 // from content.js into page.js's listener, `watchTimers()` counts watch intervals started.
-function loadPage(pathname = "/nfl/odds", { gridRoots = [], shells = [], rendered = (selector) => selector.startsWith(".ag-row") } = {}) {
+function loadPage(pathname = "/nfl/odds", { gridRoots = [], shells = [], rowElements = [], rendered = (selector) => selector.startsWith(".ag-row") } = {}) {
   const listeners = [];
   const posted = [];
   let timers = 0;
@@ -49,6 +49,7 @@ function loadPage(pathname = "/nfl/odds", { gridRoots = [], shells = [], rendere
       querySelector: (selector) => (rendered(selector) ? { selector } : null),
       querySelectorAll: (selector) => {
         if (selector === ".ag-root") return gridRoots;
+        if (selector === ".ag-row") return rowElements;
         if (selector === ".odds-cell-action-shell") return shells;
         return [];
       },
@@ -389,11 +390,16 @@ function probeBoard(line = probeLine()) {
   const row = spreadRow(line);
   const node = topNode(row, "r0");
   const api = gridApi([node]);
-  return { line, row, node, api, shells: [oddsCell({ api, node, marketLine: line })], gridRoots: [gridRoot(api)] };
+  return {
+    line, row, node, api,
+    shells: [oddsCell({ api, node, marketLine: line })],
+    rowElements: [{ id: "r0" }],
+    gridRoots: [gridRoot(api)],
+  };
 }
 
 function probePage(board = probeBoard(), options = {}) {
-  return loadPage("/nfl/odds", { gridRoots: board.gridRoots, shells: board.shells, ...options });
+  return loadPage("/nfl/odds", { gridRoots: board.gridRoots, shells: board.shells, rowElements: board.rowElements, ...options });
 }
 
 function lastReport(page) {
@@ -449,7 +455,7 @@ test("self-check: the edge field moving names the edge probe, whichever of edge/
 
 test("self-check: a renamed cell class is a change, not a slow load", () => {
   const board = probeBoard();
-  // The grid rendered; nothing matched .odds-cell-action-shell.
+  // Rows rendered; nothing in them matched .odds-cell-action-shell.
   const report = lastReport(probePage({ ...board, shells: [] }));
   assert.equal(report.status, "changed");
   assert.equal(report.failed.join(","), "cells");
@@ -465,6 +471,27 @@ test("self-check: a tab with no grid yet is waiting, and the panel stays quiet",
   assert.equal(report.failed.join(","), "");
   assert.equal(selfcheck.summaryOf(report), null);
   assert.equal(report.probes.every((probe) => probe.state === "unknown"), true);
+});
+
+test("self-check: a grid up with no rows is an empty board, not a change", () => {
+  const board = probeBoard();
+  // The user filtered every game away, or the slate is over: the grid is
+  // mounted and empty. Shouting "Unabated changed" here would train the
+  // reader to ignore the banner.
+  const report = lastReport(probePage({ ...board, shells: [], rowElements: [] }));
+  assert.equal(report.status, "waiting");
+  assert.equal(selfcheck.summaryOf(report), null);
+});
+
+test("self-check: every book unticked is the user's selection, not a moved field", () => {
+  const board = probeBoard();
+  const settings = { gameOdds: { books: [{ marketSourceId: BOOK, isUnavailable: true }] } };
+  for (const fiber of [board.shells[0].__reactFiber$test, board.shells[0].__reactFiber$test.return]) {
+    fiber.memoizedProps.context = { ...CONTEXT, userSettings: settings };
+  }
+  const report = lastReport(probePage(board));
+  assert.equal(report.status, "ok");
+  assert.equal(stateOf(report, "books"), "pass");
 });
 
 test("self-check: the book selection failing is the Edges tab's problem, not the ticket's", () => {
