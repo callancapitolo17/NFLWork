@@ -27,7 +27,11 @@ const NOVIG_TAB_PATTERN = "https://app.novig.us/*";
 async function reinjectIntoOpenTabs() {
   for (const tab of await chrome.tabs.query({ url: UNABATED_TAB_PATTERN })) {
     try {
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["page.js"], world: "MAIN" });
+      // Same pair, in the same order, as the manifest's MAIN-world entry:
+      // page.js takes selfcheck.js's reference off the page global at load,
+      // so injecting page.js alone here would leave the re-injected tabs —
+      // every tab open across an extension reload — with no self-check.
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["selfcheck.js", "page.js"], world: "MAIN" });
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"], world: "ISOLATED" });
       console.info("[unabated-ticket] re-injected into", tab.url);
     } catch (error) {

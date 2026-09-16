@@ -298,7 +298,7 @@
     return `${VIEW_NOTES[where]}: ${relevant.map((probe) => probe.label).join(", ")}.`;
   }
 
-  const api = { PROBES, PASS, FAIL, UNKNOWN, run, errorReport, summaryOf, detailOf, noteFor };
+  const api = { run, errorReport, summaryOf, detailOf, noteFor };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
