@@ -28,6 +28,10 @@ __pycache__/
 *.pyc
 venv/
 
+# Node (unabated_ticket dev tooling: eslint lives in node_modules; the
+# lockfile is tracked so `npm install` gives everyone the same eslint)
+node_modules/
+
 # macOS
 .DS_Store
 
