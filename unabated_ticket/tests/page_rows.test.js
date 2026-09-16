@@ -28,11 +28,12 @@ function loadPage(pathname = "/nfl/odds", { gridRoots = [], rows = [], shells = 
   const listeners = [];
   const posted = [];
   let timers = 0;
+  const intervalCallbacks = [];
   const bySelector = { ".ag-root": gridRoots, ".ag-row": rows, ".odds-cell-action-shell": shells };
   const sandbox = {
     __unabatedTicketExposeInternals: true,
     console: { info() {}, warn() {}, error() {} },
-    setInterval: () => { timers += 1; return timers; },
+    setInterval: (fn) => { timers += 1; intervalCallbacks.push(fn); return timers; },
     clearInterval() {},
     // The shape check retries while the grid has no rows; the harness never
     // runs those, it calls shapeCheckResult directly.
@@ -55,7 +56,9 @@ function loadPage(pathname = "/nfl/odds", { gridRoots = [], rows = [], shells = 
   // context is the contextified global, not the outer sandbox object.
   const innerWindow = vm.runInContext("window", sandbox);
   const deliver = (type, payload) => listeners.forEach((fn) => fn({ source: innerWindow, data: { source: "unabated-ticket", type, payload } }));
-  return { ...sandbox.__unabatedTicketInternals, posted, deliver, watchTimers: () => timers - timersAtLoad };
+  // The heartbeat is the one interval started at load.
+  const heartbeat = () => intervalCallbacks[0]();
+  return { ...sandbox.__unabatedTicketInternals, posted, deliver, heartbeat, watchTimers: () => timers - timersAtLoad };
 }
 
 // A rendered grid root whose one cell reaches `api` through fake React fiber
@@ -400,4 +403,23 @@ test("shape check: page.js publishes 'checking' on load, so a previous load's ve
   const checks = page.posted.filter((message) => message.type === "pagecheck");
   assert.equal(checks.length, 1);
   assert.equal(checks[0].payload.status, "checking");
+});
+
+test("shape check: the verdict rides on every heartbeat, so a post content.js missed is not a silent miss", () => {
+  // Extension reload re-injects page.js and content.js in two round trips; the
+  // load-time post can land before content.js is listening.
+  const renamed = { line: { points: -2.5 }, sideIndex: 1 };
+  const page = loadPage("/nfl/odds", { rows: [{}], shells: [cellShell(renamed)] });
+  page.posted.length = 0;
+  page.heartbeat();
+  const resent = page.posted.filter((message) => message.type === "pagecheck");
+  assert.equal(resent.length, 1);
+  assert.equal(resent[0].payload.status, "changed");
+});
+
+test("shape check: 'checking' is never re-sent, so a tab with no rows cannot keep clearing another tab's verdict", () => {
+  const page = loadPage("/nfl/odds", { rows: [], shells: [] });
+  page.posted.length = 0;
+  page.heartbeat();
+  assert.equal(page.posted.filter((message) => message.type === "pagecheck").length, 0);
 });

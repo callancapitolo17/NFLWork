@@ -104,7 +104,11 @@
         const goodReadStands = last && !last.error && last.capturedAt === ticket.capturedAt
           && Date.now() - last.seenAt < GOOD_READ_OUTRANKS_MS;
         if (goodReadStands) return;
-        setSession({ watchStatus: { capturedAt: ticket.capturedAt, seenAt: Date.now(), error: payload.error, current: null } });
+        // A failed read says nothing about the line, so the last moved line it
+        // saw stands: the panel keeps sizing off it under "Not watching the
+        // line", never falling back to the captured price the market left.
+        const lastCurrent = last && last.capturedAt === ticket.capturedAt ? last.current || null : null;
+        setSession({ watchStatus: { capturedAt: ticket.capturedAt, seenAt: Date.now(), error: payload.error, current: lastCurrent } });
         return;
       }
       const line = payload.line;

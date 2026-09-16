@@ -916,8 +916,16 @@
     return { status: "ok", rows, shells: shells.length, readable, message: null, detail: null };
   }
 
+  // The verdict, once there is one, rides on every heartbeat (re-sent, not
+  // re-checked): a single post can land before content.js is listening — the
+  // extension-reload path injects page.js and content.js in two round trips —
+  // and a lost "changed" would be a silent miss.
+  let shapeVerdict = null;
+
   function publishShapeCheck(result) {
-    post("pagecheck", { ...result, url: window.location.href, at: Date.now() });
+    const payload = { ...result, url: window.location.href, at: Date.now() };
+    if (result.status !== "checking") shapeVerdict = payload;
+    post("pagecheck", payload);
   }
 
   // Retries only while the grid has no rows — it is one check, not a poll.
@@ -1200,6 +1208,7 @@
     if (retired) return;
     post("ready", { url: window.location.href, at: Date.now() });
     publishFilters();
+    if (shapeVerdict) post("pagecheck", shapeVerdict);
   }
   post("takeover", { at: Date.now() });
   post("resume_request", { at: Date.now() });

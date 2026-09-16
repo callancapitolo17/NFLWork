@@ -80,7 +80,11 @@ re-injection could not reach still needs one).
   rather than guess; the check retries for 20 s waiting for rows and then
   gives up, leaving the stored verdict on `checking`. It is deliberately one
   count and not a per-prop matrix: the point-of-use errors above already name
-  every other shape. It re-runs on every `page.js` load (so every navigation),
+  every other shape. The verdict is re-sent (not re-checked) with every 10 s
+  heartbeat, since the extension-reload path injects `page.js` and
+  `content.js` in two round trips and a single load-time post can land before
+  `content.js` listens; `checking` is never re-sent. It re-runs on every
+  `page.js` load (so every navigation),
   and the banner is gated on the capture script still heartbeating, so a
   verdict never outlives the tab that produced it. One verdict is stored, not
   one per tab: with two Unabated tabs open, the last one to load wins, so a
@@ -124,7 +128,10 @@ re-injection could not reach still needs one).
   the old ticket coming back — a stale ticket with a dead watcher, reading as
   "my click did not register". The two writers now touch different keys, so a
   capture always stands; every reader matches `watchStatus.capturedAt` against
-  the ticket's, which is what drops a late tick for a previous capture.
+  the ticket's, which is what drops a late tick for a previous capture. A
+  failed read carries the last moved line forward, so the stake keeps sizing
+  off it under **Not watching the line** instead of reverting to the captured
+  price the market already left.
 - **The watcher outlives the page.** `page.js` dies with every navigation
   (one-click betting leaving the tab, Back, a tab reload or discard, an
   extension reload's takeover) while the ticket stays in storage. On load
