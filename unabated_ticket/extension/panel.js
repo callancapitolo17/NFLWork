@@ -2056,6 +2056,10 @@
 
   // Re-evaluate the "not watching" state and the edge ages even when no event arrives.
   setInterval(() => {
+    // Unconditionally: the banner is above the tabs and its liveness gate is a
+    // clock, so it must keep re-evaluating while a failed capture is on screen
+    // — which is exactly the state a new Unabated bundle puts the panel in.
+    renderShapeBanner();
     if (!state.error) render();
     renderBetsHeader();
     if (state.activeTab === "edges") {

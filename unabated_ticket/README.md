@@ -82,7 +82,10 @@ re-injection could not reach still needs one).
   count and not a per-prop matrix: the point-of-use errors above already name
   every other shape. It re-runs on every `page.js` load (so every navigation),
   and the banner is gated on the capture script still heartbeating, so a
-  verdict never outlives the tab that produced it.
+  verdict never outlives the tab that produced it. One verdict is stored, not
+  one per tab: with two Unabated tabs open, the last one to load wins, so a
+  second tab landing on a page with no rows can clear a real banner. The
+  point-of-use errors still fire on the next click.
 - Fields: `price` = `americanPrice` (exchanges have only `price`), `fair` =
   `marketLine.bacr` (Unabated's no-vig price at that book's points),
   side 0 = away / Over, side 1 = home / Under.
