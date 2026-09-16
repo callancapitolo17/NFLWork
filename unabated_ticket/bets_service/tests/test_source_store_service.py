@@ -13,7 +13,7 @@ import pytest
 
 from unabated_ticket.bets_service import config, service
 from unabated_ticket.bets_service.sources.kalshi import KalshiSource
-from unabated_ticket.bets_service.store import BetsStore
+from unabated_ticket.bets_service.store import UPSERT_ROWS_PER_STATEMENT, BetsStore
 from unabated_ticket.bets_service.tests.conftest import fill, position
 
 NE_FILL = fill("KXNFLGAME-26SEP20PITNE-NE", "yes", 482.42, 0.64, "2026-09-11T15:05:04.400105Z", trade_id="t1")
@@ -152,9 +152,12 @@ def record(record_id: str, status: str, closed_at: str | None, placed_at: str = 
             "sourceFetchedAt": "2026-09-11T21:00:00Z"}
 
 
+SOURCE_RUNS_RETENTION_DAYS = 7
+
+
 @pytest.fixture
 def store(tmp_path):
-    bets_store = BetsStore(tmp_path / "bets.duckdb")
+    bets_store = BetsStore(tmp_path / "bets.duckdb", SOURCE_RUNS_RETENTION_DAYS)
     yield bets_store
     bets_store.close()
 
@@ -224,6 +227,157 @@ def test_upsert_replaces_a_record_by_id(store):
     [bet] = service.bets_payload(store, days=30)["bets"]
     assert bet["status"] == "won"
     assert store._con.execute("SELECT count(*) FROM bets").fetchone()[0] == 1
+
+
+def test_upsert_writes_only_records_whose_content_changed(store):
+    first = record("kalshi:a:yes", "open", None)
+    seen = datetime(2026, 9, 15, 19, 0, tzinfo=timezone.utc)
+    assert store.upsert_bets([first], seen) == 1
+    # The same content again, a minute later: nothing to write. Kalshi re-sends
+    # every record it has ever seen on every poll, and a DuckDB update is
+    # copy-on-write — the WAL is what an identical rewrite costs (#125).
+    assert store.upsert_bets([dict(first)], seen + timedelta(minutes=1)) == 0
+    # `sourceFetchedAt` is the poll's own clock and changes every poll: were it
+    # compared, no row would ever be skipped.
+    restamped = {**first, "sourceFetchedAt": "2026-09-15T19:01:00Z"}
+    assert store.upsert_bets([restamped], seen + timedelta(minutes=1)) == 0
+    # A real change is written, and only it.
+    settled = record("kalshi:a:yes", "won", "2026-09-15T20:00:00Z")
+    assert store.upsert_bets([settled, record("kalshi:b:no", "open", None)], seen + timedelta(minutes=2)) == 2
+    assert store.upsert_bets([settled, record("kalshi:b:no", "open", None)], seen + timedelta(minutes=3)) == 0
+    assert store._con.execute("SELECT count(*) FROM bets").fetchone()[0] == 2
+    [won] = [bet for bet in service.bets_payload(store, days=30)["bets"] if bet["id"] == "kalshi:a:yes"]
+    assert won["status"] == "won"
+
+
+def test_an_unchanged_record_serves_the_stamp_of_the_poll_that_last_changed_it(store):
+    # The served sourceFetchedAt is the stored one — the last poll that CHANGED
+    # the record — never the latest poll: the panel breaks merge ties on it,
+    # and a record the source no longer returns must not read as fresh.
+    seen = datetime(2026, 9, 15, 19, 0, tzinfo=timezone.utc)
+    first = {**record("kalshi:a:yes", "open", None), "sourceFetchedAt": "2026-09-15T19:00:00Z"}
+    store.upsert_bets([first], seen)
+    store.upsert_bets([{**first, "sourceFetchedAt": "2026-09-15T19:01:00Z"}], seen + timedelta(minutes=1))
+    [bet] = service.bets_payload(store, days=30, source_names=["kalshi"])["bets"]
+    assert bet["sourceFetchedAt"] == "2026-09-15T19:00:00Z"
+    settled = {**record("kalshi:a:yes", "won", "2026-09-15T20:00:00Z"), "sourceFetchedAt": "2026-09-15T20:02:00Z"}
+    store.upsert_bets([settled], seen + timedelta(hours=1))
+    [bet] = service.bets_payload(store, days=30, source_names=["kalshi"])["bets"]
+    assert (bet["status"], bet["sourceFetchedAt"]) == ("won", "2026-09-15T20:02:00Z")
+
+
+def test_a_poll_larger_than_one_upsert_statement_is_chunked(store):
+    seen = datetime(2026, 9, 15, 19, 0, tzinfo=timezone.utc)
+    records = [record(f"novig:{n}:yes", "open", None) for n in range(UPSERT_ROWS_PER_STATEMENT * 2 + 7)]
+    assert store.upsert_bets(records, seen) == len(records)
+    assert store.upsert_bets(records, seen + timedelta(minutes=1)) == 0
+    records[-1] = record(records[-1]["id"], "won", "2026-09-15T20:00:00Z")
+    assert store.upsert_bets(records, seen + timedelta(minutes=2)) == 1
+    assert store._con.execute("SELECT count(*) FROM bets").fetchone()[0] == len(records)
+
+
+def test_a_duplicated_id_in_one_poll_keeps_the_last_record_and_warns(store, caplog):
+    # A multi-row INSERT ... ON CONFLICT silently keeps the FIRST row of a key
+    # repeated in the statement; the old per-row executemany kept the last.
+    seen = datetime(2026, 9, 15, 19, 0, tzinfo=timezone.utc)
+    with caplog.at_level("WARNING"):
+        assert store.upsert_bets([record("kalshi:a:yes", "open", None),
+                                  record("kalshi:b:yes", "open", None),
+                                  record("kalshi:a:yes", "won", "2026-09-15T20:00:00Z")], seen) == 2
+    assert store._con.execute("SELECT status FROM bets WHERE id = 'kalshi:a:yes'").fetchone() == ("won",)
+    assert "1 record id(s) repeated in one poll" in caplog.text and "kalshi:a:yes" in caplog.text
+    assert store.upsert_bets([], seen + timedelta(minutes=1)) == 0  # an empty poll writes nothing
+    # The count is the statement's own, not a scan keyed on seen_at: two polls
+    # sharing a clock reading (two sources in one microsecond) do not add up.
+    assert store.upsert_bets([record("kalshi:b:yes", "open", None)], seen) == 0
+
+
+def test_rows_from_before_the_content_hash_column_are_rewritten_once(store):
+    seen = datetime(2026, 9, 15, 19, 0, tzinfo=timezone.utc)
+    store.upsert_bets([record("kalshi:a:yes", "open", None)], seen)
+    store._con.execute("UPDATE bets SET content_hash = NULL")  # what a pre-#125 row looks like
+    assert store.upsert_bets([record("kalshi:a:yes", "open", None)], seen + timedelta(minutes=1)) == 1
+    assert store.upsert_bets([record("kalshi:a:yes", "open", None)], seen + timedelta(minutes=2)) == 0
+    # An exact text compare: a value that Python would call equal is a change.
+    assert store.upsert_bets([{**record("kalshi:a:yes", "open", None), "contracts": 3}], seen) == 1
+    assert store.upsert_bets([{**record("kalshi:a:yes", "open", None), "contracts": 3.0}], seen) == 1
+
+
+def log_run(store: BetsStore, source: str, at: datetime, ok: bool = True) -> None:
+    store.log_source_run(source, at, at + timedelta(seconds=1), ok, None if ok else "RuntimeError: 503", 1 if ok else 0)
+
+
+def count_runs(store: BetsStore) -> int:
+    return store._con.execute("SELECT count(*) FROM source_runs").fetchone()[0]
+
+
+def test_source_runs_are_pruned_to_the_retention_window_and_no_more_than_hourly(store):
+    start = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    log_run(store, "kalshi", start)                                       # first run prunes; nothing is old yet
+    log_run(store, "kalshi", start + timedelta(hours=2))
+    log_run(store, "kalshi", start + timedelta(days=SOURCE_RUNS_RETENTION_DAYS, hours=3))  # prunes the first two
+    assert count_runs(store) == 1
+    # The freshness read is unchanged by the prune: the surviving run is the latest.
+    status = store.source_status()["kalshi"]
+    assert (status["ok"], status["count"], status["fetchedAt"]) == (True, 1, "2026-09-08T15:00:00Z")
+    # At most one prune per SOURCE_RUNS_PRUNE_INTERVAL_SEC: a row old enough to
+    # go survives a run logged inside the interval, and goes on the next one.
+    ancient = start - timedelta(days=30)
+    store._con.execute("INSERT INTO source_runs (source, started_at, finished_at, ok, error, n_records) "
+                       "VALUES (?, ?, ?, ?, ?, ?)", ["kalshi", ancient, ancient, True, None, 1])
+    log_run(store, "kalshi", start + timedelta(days=SOURCE_RUNS_RETENTION_DAYS, hours=3, minutes=30))
+    assert count_runs(store) == 3
+    log_run(store, "kalshi", start + timedelta(days=SOURCE_RUNS_RETENTION_DAYS, hours=5))
+    assert count_runs(store) == 3  # the two recent runs plus this one; the ancient row is gone
+    assert store._con.execute("SELECT count(*) FROM source_runs WHERE started_at < ?",
+                              [start]).fetchone()[0] == 0
+
+
+def test_prune_keeps_every_source_its_latest_run_and_latest_successful_run(store):
+    # A source failing for longer than the window must keep showing its last
+    # good read; a source no longer polled must keep its last run at all.
+    start = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    log_run(store, "novig", start)                          # the last time Novig succeeded
+    log_run(store, "betonline", start + timedelta(hours=1))  # BetOnline's last run ever
+    for day in range(1, 2 * SOURCE_RUNS_RETENTION_DAYS + 1):
+        log_run(store, "novig", start + timedelta(days=day), ok=False)
+        log_run(store, "kalshi", start + timedelta(days=day))
+    status = store.source_status()
+    assert (status["novig"]["ok"], status["novig"]["fetchedAt"], status["novig"]["count"]) == (False, "2026-09-01T12:00:00Z", 1)
+    assert status["novig"]["error"] == "RuntimeError: 503"
+    assert (status["betonline"]["ok"], status["betonline"]["fetchedAt"]) == (True, "2026-09-01T13:00:00Z")
+    assert status["kalshi"]["fetchedAt"] == "2026-09-15T12:00:00Z"
+    # And everything else past the window is gone.
+    assert store._con.execute("SELECT count(*) FROM source_runs WHERE started_at < ?",
+                              [start + timedelta(days=SOURCE_RUNS_RETENTION_DAYS)]).fetchone()[0] == 2
+
+
+def test_a_zero_retention_window_disables_the_prune_and_a_negative_one_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="0 \\(no prune\\) or more"):
+        BetsStore(tmp_path / "bad.duckdb", -1)
+    unpruned = BetsStore(tmp_path / "bets.duckdb", 0)
+    try:
+        start = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+        log_run(unpruned, "kalshi", start)
+        log_run(unpruned, "kalshi", start + timedelta(days=400))
+        assert count_runs(unpruned) == 2
+    finally:
+        unpruned.close()
+
+
+def test_a_failing_prune_is_logged_and_never_fails_the_poll(store, caplog):
+    start = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    log_run(store, "kalshi", start)
+    store._con.execute("ALTER TABLE source_runs RENAME TO source_runs_gone")  # the DELETE now raises
+    try:
+        with caplog.at_level("ERROR"):
+            source = ScriptedSource([[record("kalshi:a:yes", "open", None)]])
+            # The INSERT would fail too; exercise the prune path directly instead.
+            assert store._prune_source_runs_locked(start + timedelta(hours=2)) == 0
+    finally:
+        store._con.execute("ALTER TABLE source_runs_gone RENAME TO source_runs")
+    assert "prune of rows older than" in caplog.text
+    assert service.run_source_once(source, store) is True
 
 
 def test_bets_json_window_keeps_open_and_recently_closed(store):
@@ -315,8 +469,11 @@ def get_json(url: str) -> tuple[int, dict]:
     return request_json("GET", url)
 
 
-def request_json(method: str, url: str, body: bytes | None = None, content_type: str | None = None) -> tuple[int, dict]:
+def request_json(method: str, url: str, body: bytes | None = None, content_type: str | None = None,
+                 host: str | None = None) -> tuple[int, dict]:
     headers = {"Content-Type": content_type} if content_type else {}
+    if host:
+        headers["Host"] = host  # what a DNS-rebound page sends: its own name
     request = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
@@ -387,6 +544,43 @@ def test_http_crosswalk_refuses_non_json_writes_bad_bodies_and_other_paths(http_
     status, reply = request_json("DELETE", f"{http_server}/bets.json")
     assert status == 404
     assert get_json(f"{http_server}/bets.json")[1]["crosswalk"] == []
+
+
+def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):
+    """DNS rebinding: evil.example resolving to 127.0.0.1 is SAME-ORIGIN with
+    this server, so CORS and the JSON Content-Type guard do not apply to it.
+    The Host it sends is still its own name."""
+    service.run_source_once(ScriptedSource([[record("kalshi:a:yes", "open", None)]]), store)
+    store.learn_crosswalk([crosswalk_row("kalshi", "Wazzu", "717")], datetime.now(timezone.utc))
+    body = json.dumps({"rows": [crosswalk_row("novig", "nv-1", "927")]}).encode()
+    for method, path, payload, content_type in [
+            ("GET", "/bets.json", None, None), ("GET", "/health", None, None),
+            ("POST", "/crosswalk.json", body, "application/json"),
+            ("DELETE", "/crosswalk.json", None, None)]:
+        status, reply = request_json(method, f"{http_server}{path}", payload, content_type, host="evil.example")
+        assert status == 403, f"{method} {path}"
+        assert "Host must be one of" in reply["error"]
+    # Nothing leaked and nothing was written or cleared.
+    assert len(store.load_crosswalk()) == 1
+    # The loopback names the service is actually serving on still pass.
+    port = urlparse(http_server).port
+    for host in [f"127.0.0.1:{port}", f"localhost:{port}", f"LOCALHOST:{port}"]:
+        status, payload = request_json("GET", f"{http_server}/bets.json", host=host)
+        assert (status, payload["bets"][0]["id"]) == (200, "kalshi:a:yes"), host
+
+
+def test_host_allowed():
+    assert service.host_allowed("127.0.0.1:8094", 8094) is True
+    assert service.host_allowed("localhost:8094", 8094) is True
+    assert service.host_allowed("evil.example", 8094) is False
+    assert service.host_allowed("evil.example:8094", 8094) is False
+    assert service.host_allowed("127.0.0.1:8095", 8094) is False  # another service's port
+    assert service.host_allowed("127.0.0.1", 8094) is False       # port 80, not ours
+    assert service.host_allowed(None, 8094) is False
+    # On the scheme's default port a browser omits it from Host.
+    assert service.host_allowed("127.0.0.1", 80) is True
+    assert service.host_allowed("localhost:80", 80) is True
+    assert service.host_allowed("evil.example", 80) is False
 
 
 @pytest.mark.parametrize("raw_root, expected", [

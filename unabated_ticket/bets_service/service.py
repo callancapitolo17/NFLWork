@@ -19,6 +19,10 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     cannot send that cross-origin without a preflight
                                     this server never answers, so no site can write here)
            DELETE /crosswalk.json   -> {ok, cleared, crosswalk: []}
+         Every verb refuses a request whose Host header is not the loopback
+         name the service is serving on (403): a page at evil.example whose
+         DNS flips to 127.0.0.1 is SAME-ORIGIN with this server, so neither
+         CORS nor the JSON Content-Type guard applies to it.
 Side effects: UPSERTs records into bets.duckdb::bets and APPENDs a row to
 bets.duckdb::source_runs per poll (see store.py); INSERTs into / DELETEs from
 bets.duckdb::team_crosswalk on the two crosswalk routes; rotating log at
@@ -49,6 +53,9 @@ MAX_DAYS = 3650
 # A crosswalk POST is a few rows per poll; anything near this is not the panel.
 MAX_BODY_BYTES = 1024 * 1024
 MAX_CROSSWALK_ROWS_PER_POST = 1000
+# The only Host headers a request can carry (DNS rebinding sends its own name).
+LOOPBACK_HOST_NAMES = ("127.0.0.1", "localhost")
+HTTP_DEFAULT_PORT = 80
 CROSSWALK_REQUIRED_FIELDS = ("venue", "league", "venueTeamKey", "unabatedTeamId")
 CROSSWALK_OPTIONAL_FIELDS = ("venueTeamName", "unabatedTeamName", "learnedFrom")
 
@@ -61,12 +68,28 @@ def _iso(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def allowed_hosts(port: int) -> tuple[str, ...]:
+    """The Host values a request to this port can carry. A browser omits the
+    scheme's default port, so on 80 the bare names are valid too."""
+    with_port = tuple(f"{name}:{port}" for name in LOOPBACK_HOST_NAMES)
+    return with_port + LOOPBACK_HOST_NAMES if port == HTTP_DEFAULT_PORT else with_port
+
+
+def host_allowed(host_header: str | None, port: int) -> bool:
+    """Whether a request's Host names this loopback service. A browser sends
+    the name the page was loaded from, so a rebound evil.example does not
+    match — the one check that survives the attacker being same-origin."""
+    return (host_header or "").strip().lower() in allowed_hosts(port)
+
+
 def run_source_once(source: Source, store: BetsStore) -> bool:
     """One poll of one source: upsert its records and log the run. Never raises."""
     started_at = _now()
     try:
         records = source.fetch()
-        store.upsert_bets(records, started_at)
+        written = store.upsert_bets(records, started_at)
+        if written:  # unchanged records are not rewritten, so this is what moved
+            log.info("source %s: %d of %d record(s) changed", source.name, written, len(records))
         store.log_source_run(source.name, started_at, _now(), True, None, len(records))
         return True
     except Exception as error:  # a source failure is a failed run, not a dead service
@@ -174,6 +197,8 @@ def make_handler(store: BetsStore, started_at: float,
 
     class BetsHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — http.server's name
+            if self._refused_foreign_host():
+                return
             url = urlparse(self.path)
             if url.path == "/health":
                 self._send_json(200, health_payload(store, started_at, names))
@@ -188,6 +213,8 @@ def make_handler(store: BetsStore, started_at: float,
             self._send_json(404, {"error": f"no route for {url.path}"})
 
         def do_POST(self) -> None:  # noqa: N802 — http.server's name
+            if self._refused_foreign_host():
+                return
             url = urlparse(self.path)
             if url.path != "/crosswalk.json":
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
@@ -205,12 +232,27 @@ def make_handler(store: BetsStore, started_at: float,
                                   "crosswalk": store.load_crosswalk()})
 
         def do_DELETE(self) -> None:  # noqa: N802 — http.server's name
+            if self._refused_foreign_host():
+                return
             url = urlparse(self.path)
             if url.path != "/crosswalk.json":
                 self._send_json(404, {"error": f"no route for DELETE {url.path}"})
                 return
             cleared = store.clear_crosswalk()
             self._send_json(200, {"ok": True, "cleared": cleared, "crosswalk": []})
+
+        # DNS-rebinding guard, first thing on every verb: a page whose name
+        # resolves to 127.0.0.1 is same-origin with this server, so nothing
+        # else here stops it reading every bet or clearing the crosswalk. Its
+        # Host is still its own name. The port comes from the socket, not
+        # config, so a service on a non-default port guards itself.
+        def _refused_foreign_host(self) -> bool:
+            port = self.server.server_address[1]
+            host = self.headers.get("Host")
+            if host_allowed(host, port):
+                return False
+            self._send_json(403, {"error": f"Host must be one of {list(allowed_hosts(port))}, got {host!r}"})
+            return True
 
         # The parsed JSON body, or a (status, error payload) tuple to send. The
         # Content-Type check is the write guard: without CORS headers here a
@@ -276,7 +318,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
 
 def main() -> None:
     setup_logging()
-    store = BetsStore(config.DB_PATH)
+    store = BetsStore(config.DB_PATH, config.SOURCE_RUNS_RETENTION_DAYS)
     sources: list[Source] = [KalshiSource()]
     for optional in (betonline_source_if_configured(), novig_source_if_connected()):
         if optional is not None:

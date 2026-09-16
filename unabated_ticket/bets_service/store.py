@@ -6,9 +6,15 @@ writer). Tables:
                bet id) — every record ever seen, never pruned: the future CLV
                work needs the full history. `record` holds the JSON the panel
                receives; the other columns exist for the retention window and
-               ad-hoc queries.
+               ad-hoc queries. A row whose content is unchanged is not
+               rewritten (see upsert_bets; `content_hash` is the compare key),
+               so `last_seen_at` and the record's own `sourceFetchedAt` are
+               the last poll that CHANGED the record, not the last poll that
+               saw it — no column records the latter.
   source_runs  APPEND, one row per source poll whether it succeeded or not —
-               the per-source freshness the panel shows.
+               the per-source freshness the panel shows. Pruned to
+               `source_runs_retention_days` (see _prune_source_runs_locked),
+               always keeping each source's latest run and latest OK run.
   team_crosswalk  one row per (venue, league, venue team) -> Unabated team id,
                learned by the panel from a bet the board joined by its venue
                id (#118 step 4; the panel POSTs them, see service.py). INSERT
@@ -21,6 +27,7 @@ dark source keeps serving its previous records.
 The DuckDB connection is shared between the poll thread and the HTTP handler
 threads behind one lock (DuckDB connections are not thread-safe).
 """
+import hashlib
 import json
 import logging
 import threading
@@ -45,6 +52,9 @@ CREATE TABLE IF NOT EXISTS bets (
     first_seen_at  TIMESTAMPTZ,
     last_seen_at   TIMESTAMPTZ
 );
+-- #125: sha256 of the record content the UPSERT compares (see _content_hash).
+-- Rows from before the column carry NULL and are rewritten once.
+ALTER TABLE bets ADD COLUMN IF NOT EXISTS content_hash VARCHAR;
 CREATE TABLE IF NOT EXISTS source_runs (
     source       VARCHAR,
     started_at   TIMESTAMPTZ,
@@ -81,15 +91,32 @@ FROM team_crosswalk
 ORDER BY learned_at DESC, venue, league, venue_team_key
 """
 
-_UPSERT_BET = """
+# One statement per UPSERT_ROWS_PER_STATEMENT rows ({values} is that many
+# 12-placeholder tuples): DuckDB runs executemany one statement per row, which
+# measured 440 ms for a 528-row poll against 20-28 ms for multi-row VALUES.
+_UPSERT_BETS = """
 INSERT INTO bets (id, source, venue, league, status, placed_at, closed_at, event_date,
-                  record, first_seen_at, last_seen_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  record, content_hash, first_seen_at, last_seen_at)
+VALUES {values}
 ON CONFLICT (id) DO UPDATE SET
     source = excluded.source, venue = excluded.venue, league = excluded.league,
     status = excluded.status, placed_at = excluded.placed_at, closed_at = excluded.closed_at,
-    event_date = excluded.event_date, record = excluded.record,
+    event_date = excluded.event_date, record = excluded.record, content_hash = excluded.content_hash,
     last_seen_at = excluded.last_seen_at
+WHERE bets.content_hash IS DISTINCT FROM excluded.content_hash
+"""
+
+_UPSERT_ROW_PLACEHOLDERS = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+UPSERT_ROWS_PER_STATEMENT = 200
+
+# Keeps every source's latest run AND latest successful run whatever their
+# age: source_status() reads exactly those two, and a source failing for
+# longer than the window must keep showing its last good read, not blank out.
+_PRUNE_SOURCE_RUNS = """
+DELETE FROM source_runs
+WHERE started_at < ?
+  AND rowid NOT IN (SELECT rowid FROM source_runs
+                    QUALIFY row_number() OVER (PARTITION BY source, ok ORDER BY started_at DESC) = 1)
 """
 
 # Open bets always; settled/closed ones within the window; a non-open bet with
@@ -116,6 +143,54 @@ QUALIFY row_number() OVER (PARTITION BY source ORDER BY started_at DESC) = 1
 """
 
 
+# `sourceFetchedAt` is the poll's own clock — every source restamps every
+# record with it on every poll (sources/kalshi.py:182) — so an unchanged-row
+# check that compared it would never skip anything. Excluding it means the
+# STORED stamp is the last poll that changed the record. That is the right
+# value to serve: the panel breaks merge ties on it (bets.js dedupeByNativeId,
+# newest wins), and "content current as of its last change" is the honest
+# claim — restamping it with the latest poll would also mark records the
+# source no longer returns (Novig/BetOnline pull a rolling window; `bets`
+# serves open rows forever) as fresh, and a stale copy would then beat a
+# newer content-script read for good.
+VOLATILE_RECORD_FIELDS = ("sourceFetchedAt",)
+
+# source_runs is pruned at most this often: source_status() only ever reads the
+# latest run per source, so a DELETE on every poll would scan the table under
+# the store lock for nothing.
+SOURCE_RUNS_PRUNE_INTERVAL_SEC = 3600
+
+
+def _content_hash(record: dict) -> str:
+    """sha256 of the record with the volatile fields removed, keys sorted —
+    the UPSERT's compare key: an exact text compare (no Python `==`, where
+    1 == 1.0 and True == 1). The hash covers the record only — a change to
+    how the derived columns (status, closed_at, ...) are extracted does not
+    rewrite existing rows, and a build from before the column leaves the
+    hash stale while rewriting `record`; after either, force a one-time
+    rewrite with `UPDATE bets SET content_hash = NULL`."""
+    content = {key: value for key, value in record.items() if key not in VOLATILE_RECORD_FIELDS}
+    return hashlib.sha256(json.dumps(content, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _last_record_per_id(records: list[dict]) -> list[dict]:
+    """The records with any duplicate id collapsed to its LAST occurrence.
+    No source emits one today; if one did, a multi-row INSERT ... ON CONFLICT
+    silently keeps the FIRST row for a key repeated within the statement
+    (verified on DuckDB 1.4.4) — the old per-row executemany applied them in
+    order, so last-wins is the behaviour kept, and the duplicate is logged."""
+    by_id: dict[str, dict] = {}
+    duplicates: set[str] = set()
+    for record in records:
+        if record["id"] in by_id:
+            duplicates.add(record["id"])
+        by_id[record["id"]] = record
+    if duplicates:
+        log.warning("upsert_bets: %d record id(s) repeated in one poll, last occurrence kept: %s",
+                    len(duplicates), sorted(duplicates))
+    return list(by_id.values())
+
+
 def _parse_iso(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -133,8 +208,15 @@ def _epoch_to_iso(epoch_seconds: float | None) -> str | None:
 
 
 class BetsStore:
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, source_runs_retention_days: int):
+        """`source_runs_retention_days` 0 disables the prune (the repo's
+        convention for switching a guard off); negative is a config error."""
+        if source_runs_retention_days < 0:
+            raise ValueError(
+                f"source_runs_retention_days must be 0 (no prune) or more, got {source_runs_retention_days}")
         self._lock = threading.Lock()
+        self._source_runs_retention_days = source_runs_retention_days
+        self._last_source_runs_prune_at: datetime | None = None
         self._con = duckdb.connect(str(db_path))
         self._con.execute(_SCHEMA)
 
@@ -142,14 +224,33 @@ class BetsStore:
         with self._lock:
             self._con.close()
 
-    def upsert_bets(self, records: list[dict], seen_at: datetime) -> None:
+    def upsert_bets(self, records: list[dict], seen_at: datetime) -> int:
+        """UPSERT the records; a row whose content_hash is unchanged is left
+        alone by the UPSERT's WHERE (measured: zero WAL bytes over 20
+        identical polls of 500 rows, against 1.3 MB unconditionally). Returns
+        how many rows were inserted or updated. A source re-sends every record
+        it has ever seen on every poll (Kalshi: ~111 records every 60 s, of
+        which ~109 are unchanged), and a DuckDB update is copy-on-write —
+        rewriting an identical row appends a new version and turns the old
+        one into garbage, which is what grew the WAL to 9.8 MB against a
+        4.7 MB file holding 500 rows (#125). `last_seen_at` is written only
+        on those rows — it is the last poll that CHANGED the record."""
         rows = [(
             record["id"], record.get("source"), record.get("venue"), record.get("league"),
             record.get("status"), _parse_iso(record.get("placedAt")), _parse_iso(record.get("closedAt")),
-            record.get("eventDate"), json.dumps(record, separators=(",", ":")), seen_at, seen_at,
-        ) for record in records]
+            record.get("eventDate"), json.dumps(record, separators=(",", ":")), _content_hash(record),
+            seen_at, seen_at,
+        ) for record in _last_record_per_id(records)]
+        written = 0
         with self._lock:
-            self._con.executemany(_UPSERT_BET, rows)
+            for start in range(0, len(rows), UPSERT_ROWS_PER_STATEMENT):
+                chunk = rows[start:start + UPSERT_ROWS_PER_STATEMENT]
+                statement = _UPSERT_BETS.format(values=", ".join([_UPSERT_ROW_PLACEHOLDERS] * len(chunk)))
+                # DuckDB's INSERT result is the rows it inserted or updated —
+                # the ones the WHERE let through (verified on 1.4.4).
+                [written_in_chunk] = self._con.execute(statement, [value for row in chunk for value in row]).fetchone()
+                written += written_in_chunk
+        return written
 
     def log_source_run(self, source: str, started_at: datetime, finished_at: datetime,
                        ok: bool, error: str | None, n_records: int) -> None:
@@ -158,6 +259,37 @@ class BetsStore:
                 "INSERT INTO source_runs (source, started_at, finished_at, ok, error, n_records) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 [source, started_at, finished_at, ok, error, n_records])
+            self._prune_source_runs_locked(finished_at)
+
+    def _prune_source_runs_locked(self, now: datetime) -> int:
+        """DELETE source_runs rows older than the retention window — never a
+        source's latest run of either outcome, so its latest run and latest
+        OK run always survive — at most once per
+        SOURCE_RUNS_PRUNE_INTERVAL_SEC; returns how many went. The store lock
+        is already taken. Nothing reads a run but source_status(), which
+        full-scans this table twice under the lock on every /bets.json and
+        /health, so an unbounded table (~2,000 rows/day measured) slows every
+        poll and every panel refresh. Never raises: the run that triggered it
+        is already logged, and an error here must not re-enter
+        run_source_once's failure path and log that poll a second time as
+        failed. The throttle advances first, so a persistent error is
+        reported hourly, not every poll."""
+        if self._source_runs_retention_days == 0:
+            return 0
+        if (self._last_source_runs_prune_at is not None
+                and (now - self._last_source_runs_prune_at).total_seconds() < SOURCE_RUNS_PRUNE_INTERVAL_SEC):
+            return 0
+        self._last_source_runs_prune_at = now
+        cutoff = now - timedelta(days=self._source_runs_retention_days)
+        try:
+            [deleted] = self._con.execute(_PRUNE_SOURCE_RUNS, [cutoff]).fetchone()
+        except Exception:  # noqa: BLE001 — a failed prune is logged, never a failed poll
+            log.exception("source_runs: prune of rows older than %s failed; retrying in %ds",
+                          cutoff.isoformat(), SOURCE_RUNS_PRUNE_INTERVAL_SEC)
+            return 0
+        if deleted:
+            log.info("source_runs: pruned %d row(s) older than %s", deleted, cutoff.isoformat())
+        return deleted
 
     def load_bets(self, days: int, now: datetime) -> list[dict]:
         """Records in the retention window: open, or closed within `days` of `now`."""
