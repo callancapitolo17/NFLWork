@@ -10,7 +10,8 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-MAIN_ROOT="${REPO_ROOT%%/.worktrees/*}"
+MAIN_ROOT="${REPO_ROOT%%/.claude/worktrees/*}"  # Claude desktop worktrees
+MAIN_ROOT="${MAIN_ROOT%%/.worktrees/*}"
 PYTHON="$MAIN_ROOT/kalshi_draft/venv/bin/python3"
 if [ ! -x "$PYTHON" ]; then PYTHON=python3; fi
 cd "$REPO_ROOT"

@@ -5,12 +5,14 @@
 //
 // The index is NOT hand-written (user decision 2026-09-11): every league
 // snapshot the scanner parses carries Unabated's own team list (id, name,
-// abbreviation), and the panel registers it here (registerTeams) and
-// persists it (exportIndex / loadIndex, chrome.storage.local `teamsIndex`)
-// so it is there before the first snapshot of the next session. A key is
-// "<league>:<Unabated team id>" — the same id the board's own lines carry, so
-// the board side never needs a name match at all (feed.describeLine's
-// awayTeamId / homeTeamId).
+// abbreviation) and, on each game row's eventName, a SECOND spelling of both
+// teams ("Prairie View A&M Panthers" where the list says "Prairie View" —
+// #118, feed.teamSpellingsFromEventName); the panel registers both here
+// (registerTeams) and persists them (exportIndex / loadIndex,
+// chrome.storage.local `teamsIndex`) so they are there before the first
+// snapshot of the next session. A key is "<league>:<Unabated team id>" — the
+// same id the board's own lines carry, so the board side never needs a name
+// match at all (feed.describeLine's awayTeamId / homeTeamId).
 //
 // Input:  a league path as feed.LEAGUES uses it ("nfl", "cfb", "mlb", ...) and
 //         a team name as some venue wrote it.
@@ -18,7 +20,8 @@
 //         answer for an unknown or ambiguous name — a wrong key could match a
 //         bet to the wrong game, and a null shows up in the panel's unmatched
 //         list with the raw name. Resolution, in order:
-//   1. exact normalised name ("Missouri St." and "Missouri State" agree);
+//   1. exact normalised name ("Missouri St." and "Missouri State" agree),
+//      against either registered spelling of a team;
 //   2. a hand alias for a venue spelling that cannot be derived (ALIASES);
 //   3. the name minus a leading code token ("PIT Steelers" -> "Steelers",
 //      "OAK Athletics" -> "Athletics", Kalshi's event-title style), again by 1-2;
@@ -36,19 +39,24 @@
   "use strict";
 
   // Venue spellings that no rule derives: [league, venue spelling, Unabated name].
+  // The eventName spellings (#118) retired two college aliases on 2026-09-12
+  // ("Prairie View A&M" and "Southeastern Louisiana" now start Unabated's own
+  // long forms "Prairie View A&M Panthers" / "Southeastern Louisiana Lions");
+  // teams.test.js keeps a case per retired alias. The four college rows that
+  // stay were each re-measured against that day's CFB snapshot: "UAlbany" (the
+  // long form is "Albany Great Danes"), "Southern Mississippi" ("Southern Miss
+  // Golden Eagles" — nothing turns Mississippi into Miss), "North Carolina
+  // State" (containment hits BOTH "North Carolina State Wolfpack" and, by the
+  // institutional-suffix rule, "North Carolina"), and "Louisiana" (Louisiana
+  // Tech, Louisiana Tech Bulldogs and SE Louisiana all hit). "A&M" must never
+  // join INSTITUTION_SUFFIXES — Texas A&M is not Texas, and Unabated lists
+  // only the teams playing this week, so the school a query extends may
+  // simply be absent.
   const ALIASES = [
     ["cfb", "UAlbany", "Albany"],                       // Novig
     ["cfb", "North Carolina State", "NC State"],        // Novig
     ["cfb", "Southern Mississippi", "Southern Miss"],   // Novig
-    // Measured against the live CFB snapshot 2026-09-12: these three blocked
-    // 8 of 111 open bets. None can be a rule. "A&M" must never join
-    // INSTITUTION_SUFFIXES — Texas A&M is not Texas, and Unabated lists only
-    // the teams playing this week, so the school a query extends may simply
-    // be absent. "Louisiana" is genuinely ambiguous by containment (Louisiana
-    // Tech and SE Louisiana both hit) and resolves to null without this line.
-    ["cfb", "Prairie View A&M", "Prairie View"],        // Novig
     ["cfb", "Louisiana", "UL Lafayette"],               // Novig (the Ragin' Cajuns)
-    ["cfb", "Southeastern Louisiana", "SE Louisiana"],  // Novig
     ["mlb", "Los Angeles D", "Los Angeles Dodgers"],    // Kalshi KXMLBRFI event title truncation
   ];
   const CODE_TOKEN_RE = /^[A-Z][A-Z0-9&]{1,4}$/;
@@ -77,7 +85,10 @@
     return `${league}:${teamId}`;
   }
 
-  // Add (or refresh) a league's teams: [{id, name, abbreviation}].
+  // Add (or refresh) a league's teams: [{id, name, abbreviation, eventName}].
+  // Both spellings resolve to the same key. A refresh without an eventName
+  // (the team's row has gone live, so this snapshot carries no eventName for
+  // it) keeps the spelling already held, or the next session would lose it.
   function registerTeams(league, teams) {
     if (!league || !Array.isArray(teams)) return;
     if (!index.has(league)) index.set(league, { byName: new Map(), byId: new Map() });
@@ -86,12 +97,22 @@
       if (!team || team.id == null || typeof team.name !== "string") continue;
       const normalized = normalizeName(team.name);
       if (!normalized) continue;
-      table.byId.set(String(team.id), { id: team.id, name: team.name, abbreviation: team.abbreviation ?? null });
+      const held = table.byId.get(String(team.id));
+      const eventName = typeof team.eventName === "string" && team.eventName !== "" ? team.eventName : held ? held.eventName : null;
+      table.byId.set(String(team.id), { id: team.id, name: team.name, abbreviation: team.abbreviation ?? null, eventName });
       table.byName.set(normalized, keyOf(league, team.id));
+      const normalizedEventName = normalizeName(eventName);
+      if (!normalizedEventName) continue;
+      // A list name always wins over a second spelling: if some other team's
+      // name already reads the same, the eventName spelling is not registered
+      // (a collision must not turn an exact hit into the wrong team).
+      const heldKey = table.byName.get(normalizedEventName);
+      if (heldKey && heldKey !== keyOf(league, team.id)) continue;
+      table.byName.set(normalizedEventName, keyOf(league, team.id));
     }
   }
 
-  // {league: [{id, name, abbreviation}]} — what the panel persists.
+  // {league: [{id, name, abbreviation, eventName}]} — what the panel persists.
   function exportIndex() {
     const out = {};
     for (const [league, table] of index) out[league] = Array.from(table.byId.values());
@@ -106,6 +127,14 @@
   function teamCount(league) {
     const table = index.get(league);
     return table ? table.byId.size : 0;
+  }
+
+  // Distinct registered spellings across every league — grows when a team OR
+  // a second spelling arrives, so the panel can tell either apart from a no-op refresh.
+  function spellingCount() {
+    let total = 0;
+    for (const table of index.values()) total += table.byName.size;
+    return total;
   }
 
   function exactKey(table, league, normalized) {
@@ -150,7 +179,7 @@
     return Array.from(index.keys());
   }
 
-  const api = { teamKey, keyOf, normalizeName, registerTeams, exportIndex, loadIndex, teamCount, knownLeagues };
+  const api = { teamKey, keyOf, normalizeName, registerTeams, exportIndex, loadIndex, teamCount, spellingCount, knownLeagues };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

@@ -292,6 +292,27 @@ Parsing (`extension/feed.js`, node-tested on real slices under
   market's standard number, not the book's main (Hard Rock: `stn` 47.5 on
   a 48.0 main); ladders can hold `null` entries; an alt on the main line's
   own points is dropped (same bet twice). Moneylines have no alts.
+- **Venue ids on the rungs** (#118 step 2, measured on the live NFL and CFB
+  files 2026-09-15). Alt lines keep the book's own `sourceKey` /
+  `sourceData` strings. Kalshi rungs carry `sourceKey`
+  `Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU36` (contract side + market ticker; the
+  other side reads `N-…`; 12,318 of 12,318 rungs fit that shape), Novig
+  rungs `sourceData` = the Novig outcome id (a UUID), ProphetX a 32-hex id.
+  Main lines never carry either field, and the changes stream has neither,
+  so they refresh with the snapshot only. Each event collects them in
+  `event.venueIds`: `kalshiEventSuffixes` (e.g. `["26SEP19DUQWSU"]`, kept
+  whole — Kalshi's team codes are not Unabated's abbreviations),
+  `kalshiContracts` and `novigOutcomes` (id → `{lineKey, mainKey,
+  points, sideIndex}` — `points` / `sideIndex` are the contract's own strike
+  and Unabated side, fixed for the id; `lineKey` is the listed line at that number — the main line
+  when a Kalshi or Novig rung sits on the main number (priced or not), else
+  null for an unpriced rung; the map rebuilds only with the snapshot while
+  the stream can move a main line, so a join checks `points` against the
+  line's current number). An id
+  of any other shape is "no id", never an error. Coverage that day: 95 of
+  319 NFL/CFB/WNBA events had Kalshi ids, 98 Novig ids. `describeLine` hands
+  every row its event's map by reference (`row.venueIds`), which is how the
+  bet matcher joins on them (Bets → What is matched).
 
 ### Alt lines
 
@@ -380,17 +401,26 @@ keep working; if every league fails the tab says **feed unavailable** rather
 than showing an empty list.
 
 **Books and bets.** The filter box has a **Books** dropdown (every live
-book in the feed, multi-select, with "My Unabated selection" / "All live" /
-"None") and **Bets** checkboxes (moneyline / spread / total). Until you
-tick a book yourself the list follows the selection `page.js` reads off
+book in the feed, multi-select, with "Default books" / "My Unabated
+selection" / "All live" / "None") and **Bets** checkboxes (moneyline /
+spread / total). Until you tick a book yourself the list uses the **default
+books** (`DEFAULT_BOOK_NAMES` in `panel.js`, the user's list of 2026-09-15):
+Bet105, BetOnline, BetOnline Direct, Bookmaker, Bookmaker-Internal, Buckeye,
+Kalshi, Novig, NoVig-Internal, Poly US Ing, Polymarket, Polymarket US,
+Prophet Exchange, Underdog Prediction Market — matched by name, because four
+of them never appear in the anonymous feed their ids could be read from; a
+book the feed does not list that day ticks nothing. "My Unabated selection"
+switches the list to the selection `page.js` reads off
 your open Unabated odds tab (`context.userSettings.gameOdds`, published
 every 10 s, stored as `booksFilter`); the summary says which source is in
 effect, and the header line under the status explains it. Click that
 header line to see the selection as read from the tab and the raw fields
 it came from (a diagnostic; on 2026-09-10 the `isUnavailable` flag gave 33
 books where the screen showed ~12, so the flag may still need adjusting —
-your own ticks always win). Settings persist under `edges` (`bookIds` null
-= follow Unabated).
+your own ticks always win). Settings persist under `edges` (`bookIds`
+absent = default books, null = follow Unabated, an array = your ticks; an
+install that stored null before the default books existed keeps following
+Unabated).
 
 **Row click.** Focuses the Unabated tab showing that league (navigates an
 existing Unabated tab, or opens one, when none does), then `page.js` finds
@@ -456,15 +486,84 @@ panel is visible it fetches `http://127.0.0.1:8094/bets.json` (never from
 the service worker), resolves each record's teams through `teams.js`, dedupes
 on the venue's native id against what it already holds, and keeps open bets
 plus settled ones from the last 30 days in `chrome.storage.local`
-(`betsService`; `betsSettings` holds the service URL; `betsNovig` is what
-the Novig content script wrote).
+(`betsService`, which also carries the service's team crosswalk;
+`betsSettings` holds the service URL; `betsNovig` is what the Novig content
+script wrote).
 A poll that fails keeps the last records and says so; nothing is ever
 blanked. A poll that succeeds is authoritative for every venue whose source
 reports `ok`: a stored record of that venue the payload no longer lists is
 dropped (a reset service DB, a purged fill), so a stale position cannot flag
 lines forever; records of a venue whose source failed stay as they were.
 
-**What is matched.** A bet matches a line when the league is the same, the
+**What is matched.** First by **venue id** (#118 step 3), exact or nothing:
+a Kalshi bet joins the board event whose Kalshi rungs carry its event-ticker
+suffix (`venueIds.eventTicker` after the first "-", the WHOLE string —
+`26SEP19DUQWSU`, never split into team codes; a moneyline joins through the
+suffix its event's spread/total rungs carry, so only when Kalshi lists a
+spread or total ladder for that game — else it takes the name rule), a Novig spread/total bet the
+event whose Novig rungs carry its `outcomeId`. The event must be in the bet's
+league. No team name has to resolve. An id join is final: the name rule is
+not consulted, so team names that point at another event cannot win, and a
+bet's team key the joined game does not have is ignored for its side. One
+keyed team is enough to place a bet: its own team's key names that side, the
+other team's key the opposite one. An id
+on two board events is "ambiguous game (Kalshi event … on 2 board events)";
+an id on no board event of its league (Kalshi lists ladders on a third of CFB events,
+Novig moneylines have no rungs at all, a number the ladder dropped) falls
+through to the name rule below. Malformed or missing ids are no id, never an
+error. BetOnline records carry no ids. The join decides the GAME; the tier
+still reads the bet's own market, side and number against the row's CURRENT
+line (so a -35.5 bet on a line the changes stream has since moved to -36.5
+is `same_side`), and the id map's `lineKey` / `mainKey` are never read — the
+map is as old as the last snapshot, and a Novig lay's outcome id names the
+side the bet is against. All three surfaces — the Edges rows, the Ticket banner
+and the unmatched list — decide the game on the whole board (one row per
+event), so a bet whose id event has no listed edge row never flags a listed
+row its team names happen to fit. A spread bet whose team names do not resolve is
+placed on its side off its own contract in the map (Kalshi `Y-`/`N-` market
+ticker, Novig outcome): the same side at the contract's strike, the other
+side at the negated one (a Kalshi NO, a Novig lay). A Kalshi moneyline with
+unresolved names has no contract on a rung, so it matches as `same_game` —
+until the crosswalk below has keyed its teams.
+
+**Team crosswalk (#118 step 4).** Every id join is also a lesson: the bet's
+venue names both teams (Novig by its own team id, `awayTeamVenue.id`; Kalshi
+has no team ids, so its event-title name — "PIT Steelers" — is the key) and
+the joined board event carries both Unabated team ids. The panel learns
+`(venue, league, venue team) → Unabated team id` for both teams
+(`bets.learnCrosswalk`), sends the new rows to the bets service in one
+`POST /crosswalk.json` after every poll and every board update, and the
+service keeps them in `bets.duckdb::team_crosswalk` with `learned_from`
+(the bet id and board event) and `learned_at`, serving the whole table with
+every `/bets.json`. Records then resolve their keys through the crosswalk
+BEFORE `teams.js` sees the names (`bets.resolveTeamKeys(records,
+crosswalk)`), so a later bet of that venue on either team matches even
+where the venue lists no ladder for the game (nothing to id-join) — and a
+Kalshi moneyline whose names resolve nowhere gets its side. Fail-closed:
+learned only from a join on exactly ONE board event whose row carries both
+Unabated ids, from a bet naming both venue teams; a bet whose own contract
+on the joined row (a Kalshi `Y-`/`N-` ticker or a Novig outcome at the bet's
+number) sits on a different Unabated side than the bet's venue side is a
+conflict — the venue's away/home is not Unabated's for that game, the one
+orientation check that needs no name; a venue name that already
+resolves to a DIFFERENT team than the joined event's is a conflict — neither
+side is learned and the panel logs why once (`console.warn`) — because a
+swapped away/home (a neutral site) would otherwise write a wrong row; a
+held venue team is never rewritten as another id (the service refuses it
+too and reports it in the POST reply). A wrong row could still only match a
+game where the opponent and the start time also agree. The *Bets tab* lists
+the table under **Team crosswalk** — "Wazzu → Washington State · Novig ·
+CFB · learned Sep 15 3:00 PM", the source bet in the tooltip — with a
+**Clear** button (two clicks: the first arms it as "Clear 68 rows?" for 6 s,
+the second deletes — no dialog) that `DELETE`s the table on the service and
+re-keys every record from its names alone; the board teaches the rows again
+as bets join. Live 2026-09-15 (60 open records, 358 board events): 68 rows
+would be learned (54 Novig, 14 Kalshi), 0 conflicts, and re-learning
+against the table taught nothing new; every spelling learned that day
+already resolved by name (step 1's eventName spellings), so the payoff is
+the next venue spelling `teams.js` cannot key, not a rescue today.
+
+Otherwise a bet matches a line when the league is the same, the
 two teams resolve to the same pair (either order) or the rotation number
 matches, and the time agrees: within 30 min when the venue gives a start
 time (Kalshi MLB tickers, every Novig order), else the bet's Eastern date
@@ -472,8 +571,9 @@ within a day of the line's (Kalshi football tickers carry the date only),
 else — for a venue that gives no game date at all (BetOnline's report,
 flagged `approx: game_date_unknown`) — an event starting between 12 h before
 and 14 days after the bet was placed, keyed on the rotation number; a
-rotation match with one recognised team name also needs that team in the
-row's game (the same rotation comes round the next week), and a team name
+rotation match also needs every recognised team name in the row's game (the
+same rotation comes round the next week, inside a dateless bet's 14-day
+window), and a team name
 `teams.js` does not know still matches by rotation and takes its side from
 the row's away/home rotations. A bet that two board events accept (a series,
 a doubleheader without a time, two weeks of the same rotation) is **never**
@@ -563,7 +663,13 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   the open list too), and the **unmatched** list — every open bet no board line matches, with why: team
   not recognised (the raw name, so `teams.js` can grow), ambiguous game, no
   event on the board yet, league not on the scanner, not a game market
-  (futures, the bots' combos), unknown Kalshi series.
+  (futures, the bots' combos), unknown Kalshi series. A bet with a venue id
+  names both tiers that missed: "by id: Kalshi event 26SEP19DUQWSU not on
+  any board ladder; by name: team not recognised (…)" ("Novig outcome" for
+  Novig; "only on another league's board ladder" when the id sits on an
+  event of a different league; no id tier for a Novig moneyline or a league
+  off the scanner) — and, last, the **Team crosswalk** list with its Clear
+  button (above).
 
 ### Novig source (service)
 
@@ -650,10 +756,25 @@ order is `open` on its full size with `approx: ["novig_order_unmatched"]`
 record per leg (`id` `novig:<parlay>:<leg>`, stake = the parlay's wager).
 Team keys are left null; the panel resolves `game.awayTeam.name` /
 `homeTeam.name` through `teams.js` (the runtime index below — Novig's full
-names are Unabated's for every team seen so far, with six aliases).
+names are Unabated's, or the long form of its `eventName`, for every team
+seen so far, with four college aliases).
 Novig sends no rotation number, so the team pair is the ONLY way a Novig
 bet reaches a line: one unrecognised name blocks the bet outright, and
 it lands in the Bets tab's unmatched list naming the spelling to add.
+
+Every record (orders and each parlay leg, matchable or not) also keeps
+Novig's own ids (#118 step 2): `venueIds: {marketId, outcomeId, eventId,
+gameId}` and `awayTeamVenue` / `homeTeamVenue` `{id, name, shortName,
+symbol}` — each a string as Novig sent it, else null. The outcome id is
+what Unabated's Novig rungs carry as `sourceData` (see Edges → Parsing);
+on a lay it is the outcome laid, the side taken stays in `side`. Novig's
+`symbol` is not Unabated's abbreviation (`UTC` vs `CHT`, `EKU` vs `EKY`):
+stored, never a key. The matcher joins on `outcomeId` (Bets → What is
+matched). Live
+2026-09-15: all 41 open Novig game bets sat on events with Novig rungs,
+and 29 had a rung at their own number and side; the other 12 were 2
+moneylines (moneylines have no rungs) and 10 numbers the ladder no longer
+listed.
 
 Caveat: the fixture's shapes come from the bundle's operation documents and
 the fragments the cards read the `market` / `outcome` / `fills` JSON blobs
@@ -681,9 +802,21 @@ GETs; no order placement.
   new file is needed. `.env.example` lists every knob (port, retention window,
   Kalshi cadence, log level). Never commit `.env`.
 - **Endpoints** (loopback only, no auth): `GET /bets.json[?days=N]` →
-  `{generatedAt, sources: {kalshi: {...}, betonline: {fetchedAt, ok, error, count}}, bets: [...]}`
-  with open bets plus settled/closed ones within `N` days (default 30);
-  `GET /health` → `{ok, uptimeSec, sources}`.
+  `{generatedAt, sources: {kalshi: {...}, betonline: {fetchedAt, ok, error, count}}, bets: [...], crosswalk: [...]}`
+  with open bets plus settled/closed ones within `N` days (default 30) and
+  the whole team crosswalk (newest first); `GET /health` → `{ok, uptimeSec,
+  sources}`; `POST /crosswalk.json` with `{rows: [{venue, league,
+  venueTeamKey, unabatedTeamId, venueTeamName?, unabatedTeamName?,
+  learnedFrom?}]}` (at most 1000 rows, 1 MiB) → `{ok, learned, conflicts,
+  crosswalk}` — INSERT only, a held key with another id is returned in
+  `conflicts` and never rewritten; `DELETE /crosswalk.json` → `{ok, cleared,
+  crosswalk: []}`. The two write routes require `Content-Type:
+  application/json` (415 otherwise): the service sends no CORS headers, so a
+  web page can only reach it with a "simple" cross-origin request (a form or
+  `text/plain` POST, which is refused) and never with JSON or DELETE (both
+  need a preflight the service never answers), while the extension page is
+  exempt from CORS for its `127.0.0.1:8094` host permission — nothing new
+  in the manifest.
 - **Kalshi source** (`sources/kalshi.py`): every 60 s pulls fills since the
   last poll with a 60 s overlap (deduped on `trade_id`) and unsettled
   positions, plus one cached public GET per market and per event; a full
@@ -695,6 +828,22 @@ GETs; no order placement.
   them with `bets.resolveTeamKeys()` so the team table lives only in
   `teams.js`. `normalize_kalshi()` is a port of `extension/bets.js`
   `normalizeKalshi()`; `tests/test_parity.py` holds the two byte-equivalent.
+  Records carry `venueIds: {marketTicker, eventTicker}` (#118; `eventTicker`
+  null when the market payload is missing — never derived from the ticker).
+  The event ticker's suffix is the string Unabated's Kalshi rungs carry
+  (join it whole; CFB codes are not Unabated abbreviations). Live
+  2026-09-15: all 7 open Kalshi game bets' suffixes were on the board, each
+  on one event and the same one the team names matched; 6 had their exact
+  contract as a rung (the 7th a moneyline). The step-3 audit the same day
+  (every open record through the matcher against the live NFL + CFB
+  snapshots, 288 board events): Kalshi 7/7 game bets matched by name alone
+  and 7/7 by id + name, every one joined by id, and across the 2,590 rows
+  those bets matched the tier and match set were identical both ways; Novig
+  (re-run on the branch's service, which sends outcome ids) 39/41 by name
+  and 39/41 by id + name (the 2 misses are WNBA, not in the audited
+  snapshots), 29 joined by outcome id, 0 of 11,012 rows different;
+  BetOnline 3/3, 0 of 1,190 rows different. Where names resolve the id join
+  changes nothing; it pays off on names teams.js cannot key.
 - **BetOnline source** (`sources/betonline.py`, #115): every 300 s pulls the
   account's paged bet-history report (`POST api.betonline.ag/report/api/report/get-bet-history`,
   pure HTTP — the same endpoint `bet_logger/scraper_betonline.py` uses) for the
@@ -718,7 +867,10 @@ GETs; no order placement.
   parser refuses rather than misreads.
 - **Store** (`store.py`, `bets.duckdb`, gitignored): `bets` upserts on the
   record id and is never pruned (the CLV work needs the history);
-  `source_runs` appends one row per poll. A failed poll writes a failed
+  `source_runs` appends one row per poll; `team_crosswalk` (#118 step 4,
+  primary key `(venue, league, venue_team_key)`, plus `venue_team_name`,
+  `unabated_team_id`, `unabated_team_name`, `learned_from`, `learned_at`)
+  holds what the panel learned, INSERT-only and cleared on DELETE. A failed poll writes a failed
   `source_runs` row and touches nothing else, so a dark source keeps serving
   its previous records; a store write that raises (disk full) is logged and
   retried next poll, never killing the poll thread. Until a source's first
@@ -765,13 +917,37 @@ part, a resting order open with the caveat), MLB `_1H` → `F5`, NCAAF → cfb,
 the strike fallback in the home perspective, props / unsupported leagues /
 blobs without teams failing closed with a reason, the settled grades (bid on
 WIN, lay on LOSS, PUSH, void cancel, wash closed), cancel-with-fills /
-cash-out / REJECTED / PENDING, parlay legs, and native-id dedupe.
+cash-out / REJECTED / PENDING, parlay legs, native-id dedupe, and the
+venue ids (#118: kept on every record and parlay leg, a missing or
+non-string id null). `bets.test.js` joins synthetic Kalshi and Novig records
+with unrecognisable team names on `fixtures/v2_venue_ids_slice.json`'s ids
+(#118 step 3): the Kalshi spread YES and NO and the moneyline through the
+suffix, the Novig bid and its lay on the outcome id, a main line moved off
+the id's number by the changes stream (`same_side`), a suffix on two events
+(ambiguous), id vs team names pointing at different events (id wins),
+malformed / missing / other-league ids, the two-tier unmatched wording, and
+BetOnline staying on the name path. Its crosswalk cases (#118 step 4): a
+Kalshi join teaching both event-title names with `learnedFrom`, a Novig join
+keying on Novig's team ids (name fallback when the ids are missing, nothing
+when a side has no name), nothing learned from a name match / an ambiguous
+suffix / a settled bet / a row missing an Unabated id, a name resolving to
+another team refused as a conflict (and a held row with another id), a
+later moneyline on a no-ladder board matching through the crosswalk alone,
+`rekeyRecords` taking the keys back on clear, malformed served rows
+skipped, and `venueTeamOf`'s id → name → record-name order.
+`betsview.test.js` adds the payload crosswalk keying a record before its
+names in both merges and the Bets-tab rows; the pytest suite covers the
+store (learn once, no duplicates, a different id refused with what is
+held, served with the payload, cleared), the row validator naming the first
+bad row, and over HTTP the POST / conflict / DELETE round trip plus the
+415 on non-JSON writes, 400 on bad bodies and 404 on other paths.
 `bets.test.js` then matches those Novig records against the NFL slice: the
 moneyline bid (same_line / opposite with Novig labels), the spread bid and
 its lay on both signs, a resting Under and a parlay leg flagging the game,
 settled orders never matching, and the unmatched reasons. On the Python
 side `test_normalize_novig.py` restates those cases for the port,
-`test_parity_novig.py` holds it byte-equivalent to the JS, and
+`test_parity_novig.py` holds it byte-equivalent to the JS (on the fixture,
+and on extra rows with malformed or missing ids fed to node on stdin), and
 `test_novig_source.py` covers the auth (refresh once then cache to the
 margin, rotation persisted with 0600, missing/broken token file, callback
 state/error parsing) and the source (trader resolved once, pagination to a
@@ -788,7 +964,11 @@ sorting, cursor extraction, that an update overwrites a snapshot line only
 with a newer sequence number, and the alt path — keys, `mainPoints`,
 `includeAlts` off by default, the distance / liquidity / same-number gates
 following a moved main line, age through `sequenceNumber`, a pulled
-ladder disappearing on the next parse, and `groupEdges` (card keys, book
+ladder disappearing on the next parse, the rung venue ids on
+`fixtures/v2_venue_ids_slice.json` (real CFB rows of 2026-09-15 with the
+ids intact: per-event suffixes and id maps, the Novig rung on its main
+number pointing at the main line, malformed ids ignored, the changes
+stream leaving them alone), and `groupEdges` (card keys, book
 and line counts, best by edge vs by stake, cards following their best).
 `scanner.test.js` drives the loop with an injected fetch: cursor from
 `Last-Modified`, poll, rejected-cursor resync, per-league failure, resume,
@@ -913,30 +1093,49 @@ in red.
 - **Bets: unmatched "team not recognised (Name)"**: the venue's spelling
   resolves to no team, or to more than one, in the league's index. The
   index is not hand-written: every league snapshot the scanner parses
-  carries Unabated's team list (id, name, abbreviation), `teams.js`
-  registers it and the panel persists it (`teamsIndex`), so a name resolves
-  once its league has been scanned this session or a previous one. Keys are
-  `<league>:<Unabated team id>`, the ids the board's own lines carry, so
-  the board side never name-matches at all. A venue spelling resolves by
-  exact normalised name (St. = State), then a hand alias (`ALIASES` in
-  `teams.js`: "UAlbany" → "Albany", "North Carolina State" → "NC State",
-  "Southern Mississippi" → "Southern Miss", "Prairie View A&M" → "Prairie
-  View", "Louisiana" → "UL Lafayette", "Southeastern Louisiana" → "SE
-  Louisiana"), then the name minus a leading
-  code token ("PIT Steelers"), then a UNIQUE word-boundary containment
-  ("Steelers", "New England", "Middle Tennessee" → "Middle Tennessee State",
+  carries Unabated's team list (id, name, abbreviation) AND, on each game
+  row's `eventName`, a second, long-form spelling of both teams ("Prairie
+  View A&M Panthers - PRV @ Baylor Bears - BAY" where the list says
+  "Prairie View"; NFL/NBA/NHL "Ravens Baltimore BAL", MLB "Dodgers Los
+  Angeles" — `feed.teamSpellingsFromEventName`, #118). `teams.js` registers
+  both spellings under the same team id and the panel persists them
+  (`teamsIndex`, one entry per team with `name` and `eventName`), so a name
+  resolves once its league has been scanned this session or a previous
+  one. Keys are `<league>:<Unabated team id>`, the ids the board's own
+  lines carry, so the board side never name-matches at all. A venue
+  spelling resolves by exact normalised name (St. = State) against either
+  spelling, then a hand alias (`ALIASES` in `teams.js`: "UAlbany" →
+  "Albany", "North Carolina State" → "NC State", "Southern Mississippi" →
+  "Southern Miss", "Louisiana" → "UL Lafayette"), then the name minus a
+  leading code token ("PIT Steelers"), then a UNIQUE word-boundary
+  containment ("Steelers", "New England", "Middle Tennessee" → "Middle
+  Tennessee State", "Prairie View A&M" → "Prairie View A&M Panthers",
   "Grambling St." → "Grambling" only because the leftover is an
   institutional suffix). Two candidates is null, never a guess. If a
   spelling keeps failing, add one `ALIASES` row with a `teams.test.js` case.
   Resist turning an alias into a rule: "A&M" as an institutional suffix
   would map a bet on Texas A&M to Texas on any week Unabated lists Texas
   and not Texas A&M, since the index holds only the teams currently
-  playing. Measured 2026-09-12 against 111 open bets, every one of the 16
-  cross-spelling resolutions the rules make was correct, and the only
-  failures were three names no rule can derive.
+  playing. Measured 2026-09-12 against all 338 distinct (venue, league,
+  name) pairs in 408 bet records with the day's NFL/CFB/NBA/MLB/WNBA
+  snapshots registered: 58 cross-spelling resolutions, every one correct,
+  and 4 unresolved — Kalshi MLB "A's" and "Chicago WS", Novig "Arkansas
+  Pine Bluff" and "Texas A&M Commerce" (Unabated hyphenates both). The
+  eventName spellings retired the "Prairie View A&M" and "Southeastern
+  Louisiana" aliases; the four kept were each re-checked against the same
+  snapshot (the long forms are "Albany Great Danes" and "Southern Miss
+  Golden Eagles", and "North Carolina State" hits both the Wolfpack and
+  "North Carolina" + State).
 - **Bets: unmatched "ambiguous game"**: two board events accept the bet
-  (a doubleheader or series without a start time on the venue side). The
-  panel refuses to guess; the bet still counts in the header.
+  (a doubleheader or series without a start time on the venue side), or —
+  "ambiguous game (Kalshi event … on 2 board events)" — the bet's venue id
+  sits on two board events. The panel refuses to guess; the bet still counts
+  in the header.
+- **Bets: unmatched "by id: … not on any board ladder; by name: …"**: the
+  bet carries a Kalshi / Novig id no board rung carries (the venue lists no
+  ladder for the game, or the ladder dropped that number), and the name rule
+  then missed for the reason after "by name". Fix the name reason; the id
+  joins by itself once Unabated lists the ladder.
 - **Bets: unmatched "no event on the board yet" / "league not on the
   scanner"**: the game is not in any loaded league snapshot — untick fewer
   sports in the Edges controls, or wait for Unabated to list it.

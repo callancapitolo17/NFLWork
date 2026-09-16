@@ -119,6 +119,39 @@ def _team_name(team: dict | None) -> str | None:
     return team.get("name") or team.get("short_name") or team.get("symbol") or None
 
 
+def _venue_id(value: object) -> str | None:
+    """A Novig id as sent (a non-empty string), else None — never guessed."""
+    return value if isinstance(value, str) and value else None
+
+
+def _venue_ids(market: dict, outcome: dict) -> dict:
+    """Novig's own ids for the bet (#118): the outcome id is what Unabated's
+    Novig alt rungs carry as sourceData."""
+    event = market.get("event") or {}
+    game = event.get("game") or {}
+    return {
+        "marketId": _venue_id(market.get("id")), "outcomeId": _venue_id(outcome.get("id")),
+        "eventId": _venue_id(event.get("id")), "gameId": _venue_id(game.get("id")),
+    }
+
+
+def _venue_team(team: dict | None) -> dict | None:
+    """The team as Novig names it. `symbol` is Novig's code, NOT Unabated's
+    abbreviation (EKU vs EKY) — stored, never a key."""
+    if not team:
+        return None
+    return {"id": _venue_id(team.get("id")), "name": team.get("name") or None,
+            "shortName": team.get("short_name") or None, "symbol": team.get("symbol") or None}
+
+
+def _venue_fields(market: dict, outcome: dict) -> dict:
+    game = (market.get("event") or {}).get("game") or {}
+    return {
+        "venueIds": _venue_ids(market, outcome),
+        "awayTeamVenue": _venue_team(game.get("awayTeam")), "homeTeamVenue": _venue_team(game.get("homeTeam")),
+    }
+
+
 def _matchup_of(market: dict) -> str | None:
     game = (market.get("event") or {}).get("game")
     return f"{_team_name(game.get('awayTeam'))} @ {_team_name(game.get('homeTeam'))}" if game else None
@@ -312,6 +345,7 @@ def normalize_order(order: dict, read_at: str | None) -> dict:
         "isParlayLeg": False, "parlayId": None, "legIndex": None, "legCount": None,
         "approx": approx,
         "sourceFetchedAt": read_at,
+        **_venue_fields(market, outcome),
         "raw": {
             "orderId": order["id"], "orderStatus": order.get("status"), "isBid": is_bid,
             "outcomePrice": outcome_price, "originalQty": original_qty, "remainingQty": remaining_qty, "qtyUnit": QTY_PER_CONTRACT,
@@ -355,6 +389,7 @@ def normalize_parlay(parlay: dict, read_at: str | None) -> list[dict]:
             "isParlayLeg": True, "parlayId": f"novig:{parlay['id']}", "legIndex": leg_index, "legCount": len(legs),
             "approx": [],
             "sourceFetchedAt": read_at,
+            **_venue_fields(market, outcome),
             "raw": {
                 "parlayId": parlay["id"], "parlayStatus": parlay.get("status"), "parlayPrice": parlay_price, "legPrice": leg_price,
                 "marketType": market.get("type") or None, "strike": _to_number(market.get("strike")), "outcomeIndex": outcome.get("index"),

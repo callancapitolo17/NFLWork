@@ -52,6 +52,43 @@ test("snapshot: game rows only, books keyed by id with the live flag", () => {
   assert.equal(event.awayRotation, 465);
 });
 
+test("snapshot: the team index carries each team's eventName spelling (#118)", () => {
+  const json = snapshotJson();
+  // The live row's teams are not in the slice's team list; add them so the live-row check below can fail.
+  json.teams["27"] = { id: 27, name: "San Francisco 49ers", abbreviation: "SF", leagueId: 1 };
+  json.teams["29"] = { id: 29, name: "Los Angeles Rams", abbreviation: "LA", leagueId: 1 };
+  const state = feed.parseSnapshot(json, { leagueId: NFL });
+  // "Bears Chicago CHI @ Panthers Carolina CAR": side 0 is away, the trailing abbreviation goes.
+  assert.equal(state.teamIndex["6"].eventName, "Bears Chicago");
+  assert.equal(state.teamIndex["5"].eventName, "Panthers Carolina");
+  assert.deepEqual(Object.keys(state.teamIndex["5"]).sort(), ["abbreviation", "eventName", "id", "leagueId", "name"]);
+  // Only pregame game rows are read: the live 49ers @ Rams row registers nothing.
+  assert.equal(state.teamIndex["27"].eventName, null);
+  assert.equal(state.teamIndex["29"].eventName, null);
+});
+
+test("teamSpellingsFromEventName: every league form measured 2026-09-12", () => {
+  const parse = feed.teamSpellingsFromEventName;
+  // CFB: "School Nickname - ABBR"; the suffix goes whatever the abbreviation is.
+  assert.deepEqual(parse("Prairie View A&M Panthers - PRV @ Baylor Bears - BAY", ["PRV", "BAY"]), ["Prairie View A&M Panthers", "Baylor Bears"]);
+  assert.deepEqual(parse("Albany Great Danes - ALB @ LIU Sharks - LIUCWP", [null, null]), ["Albany Great Danes", "LIU Sharks"]);
+  assert.deepEqual(parse("Louisiana-Lafayette Ragin' Cajuns - ULL @ Rice Owls - RICE", ["ULL", "RICE"]), ["Louisiana-Lafayette Ragin' Cajuns", "Rice Owls"]);
+  // CBB off-season: the abbreviation is empty, the " -" still goes.
+  assert.deepEqual(parse("UConn Huskies - @ Michigan Wolverines -", [null, null]), ["UConn Huskies", "Michigan Wolverines"]);
+  // NFL / NBA / NHL: "Nickname City ABBR" — only the team's own abbreviation is dropped.
+  assert.deepEqual(parse("Ravens Baltimore BAL @ Cowboys Dallas DAL", ["BAL", "DAL"]), ["Ravens Baltimore", "Cowboys Dallas"]);
+  assert.deepEqual(parse("Ravens Baltimore BAL @ Cowboys Dallas DAL", [null, "DAL"]), ["Ravens Baltimore BAL", "Cowboys Dallas"]);
+  assert.deepEqual(parse("49ers San Francisco SF @ Rams Los Angeles LA", ["SF", "LA"]), ["49ers San Francisco", "Rams Los Angeles"]);
+  // MLB: "Nickname City", nothing to strip; MLS: the plain club name.
+  assert.deepEqual(parse("Dodgers Los Angeles @ Marlins Miami", ["LAD", "MIA"]), ["Dodgers Los Angeles", "Marlins Miami"]);
+  assert.deepEqual(parse("Inter Miami CF @ LA Galaxy", [null, null]), ["Inter Miami CF", "LA Galaxy"]);
+  // Not "a @ b": null, never a guess. A side that is only its abbreviation stays whole.
+  assert.equal(parse("Ravens Baltimore BAL", ["BAL", null]), null);
+  assert.equal(parse("a @ b @ c", [null, null]), null);
+  assert.equal(parse(null, [null, null]), null);
+  assert.deepEqual(parse("BAL @ DAL", ["BAL", "DAL"]), ["BAL", "DAL"]);
+});
+
 test("snapshot line carries ge, bacr, sourcePrice, liquidity and the side key", () => {
   const state = feed.parseSnapshot(snapshotJson(), { leagueId: NFL });
   const mgmMoneyline = state.lines["289357353:ms4:si0:tid6"];
@@ -377,6 +414,100 @@ test("a ladder the book pulls is gone from the next snapshot parse", () => {
   const second = feed.parseSnapshot(again, { leagueId: NFL });
   assert.equal(feed.countAltLines(second), 24);
   assert.equal(second.lines["289357360:ms105:si0:tid6:alt-20.5"], undefined);
+});
+
+// ---- venue ids on rungs (#118 step 2) ------------------------------------------
+// fixtures/v2_venue_ids_slice.json: real CFB rows fetched 2026-09-15 (see its
+// "provenance"), one event with Kalshi, Novig and ProphetX ladders kept
+// verbatim — the ids v2_slice.json was slimmed of.
+
+const CFB = 2;
+const VENUE_EVENT = 123742; // Duquesne @ Washington State
+const venueSnapshotJson = () => JSON.parse(fixture("v2_venue_ids_slice.json"));
+
+test("alt lines keep the book's own sourceKey / sourceData; main lines carry neither", () => {
+  const state = feed.parseSnapshot(venueSnapshotJson(), { leagueId: CFB });
+  const kalshiAlt = state.lines["420942308:ms105:si1:tid717:alt-35.5"];
+  assert.equal(kalshiAlt.sourceKey, "Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU36");
+  assert.equal(kalshiAlt.sourceData, null);
+  const pxAlt = state.lines["420942308:ms66:si1:tid717:alt-35.5"];
+  assert.equal(pxAlt.sourceData, "9f81cbcb98c0617a0c087c4a587c73d9");
+  assert.equal(pxAlt.sourceKey, null);
+  assert.ok(Object.values(state.lines).filter((line) => !line.isAlt).every((line) => !("sourceKey" in line) && !("sourceData" in line)));
+});
+
+test("each event collects its Kalshi event suffixes and contract / Novig outcome ids off every rung", () => {
+  const state = feed.parseSnapshot(venueSnapshotJson(), { leagueId: CFB });
+  const { venueIds } = state.events[VENUE_EVENT];
+  // One suffix, kept whole, though the rungs span the spread and total series.
+  assert.deepEqual(venueIds.kalshiEventSuffixes, ["26SEP19DUQWSU"]);
+  assert.equal(Object.keys(venueIds.kalshiContracts).length, 16);
+  assert.equal(Object.keys(venueIds.novigOutcomes).length, 16);
+  // A priced rung points at its own alt line; both sides of one contract are separate ids.
+  assert.deepEqual(venueIds.kalshiContracts["Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU36"],
+    { lineKey: "420942308:ms105:si1:tid717:alt-35.5", mainKey: "420942308:ms105:si1:tid717", points: -35.5, sideIndex: 1 });
+  assert.equal(venueIds.kalshiContracts["N-KXNCAAFSPREAD-26SEP19DUQWSU-WSU36"].lineKey, "420942310:ms105:si0:tid927:alt35.5");
+  // An unpriced rung is no listed line, but its id still names the event and market.
+  assert.deepEqual(venueIds.kalshiContracts["Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU34"],
+    { lineKey: null, mainKey: "420942308:ms105:si1:tid717", points: -33.5, sideIndex: 1 });
+  // Novig's rung ON its main number (-35.5) is dropped as an alt, and its
+  // outcome id points at the main line — the join a main-line Novig bet needs.
+  assert.deepEqual(venueIds.novigOutcomes["01a0a05e-e864-7b73-9b80-9e502e4e98d5"],
+    { lineKey: "420942308:ms89:si1:tid717", mainKey: "420942308:ms89:si1:tid717", points: -35.5, sideIndex: 1 });
+  assert.equal(state.lines["420942308:ms89:si1:tid717:alt-35.5"], undefined);
+  // ProphetX ids stay on its alt lines only (no bet source for them yet).
+  assert.ok(!Object.values(venueIds).some((ids) => JSON.stringify(ids).includes("9f81cbcb98c0617a0c087c4a587c73d9")));
+});
+
+test("malformed or missing venue ids degrade to no id, never an error", () => {
+  const json = venueSnapshotJson();
+  const spreadRow = json.odds["lg2:pt1:pregame"].find((row) => row.key === "pt1:pregame:bt2:e123742");
+  const kalshiLadder = spreadRow.sides["si1:tid717"].ms105.alternateLines;
+  kalshiLadder[0].sourceKey = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU42"; // no contract side
+  kalshiLadder[1].sourceKey = 12345;
+  delete kalshiLadder[2].sourceKey;
+  kalshiLadder.push(null);
+  const novigLadder = spreadRow.sides["si1:tid717"].ms89.alternateLines;
+  novigLadder[0].sourceData = "not-an-outcome-id";
+  novigLadder[1].sourceKey = "Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU35"; // a Kalshi shape under Novig is not a Kalshi id
+  delete novigLadder[1].sourceData;
+  const state = feed.parseSnapshot(json, { leagueId: CFB });
+  const { venueIds } = state.events[VENUE_EVENT];
+  assert.equal(Object.keys(venueIds.kalshiContracts).length, 13);
+  assert.equal(venueIds.kalshiContracts["KXNCAAFSPREAD-26SEP19DUQWSU-WSU42"], undefined);
+  assert.equal(venueIds.kalshiContracts["Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU35"], undefined);
+  assert.equal(Object.keys(venueIds.novigOutcomes).length, 14);
+  // The line keeps whatever string the book sent; a non-string is null.
+  assert.equal(state.lines["420942308:ms105:si1:tid717:alt-41.5"].sourceKey, "KXNCAAFSPREAD-26SEP19DUQWSU-WSU42");
+  assert.equal(state.lines["420942308:ms105:si1:tid717:alt-35.5"].sourceKey, null);
+  assert.equal(feed.kalshiEventSuffixOf("Y-KXNFLSPREAD-26SEP13DALNYG-NYG15"), "26SEP13DALNYG");
+  for (const bad of [null, undefined, 7, "", "Y-KXNFLSPREAD-26SEP13DALNYG", "X-KXNFLSPREAD-26SEP13DALNYG-NYG15", "y-kxnflspread-26sep13dalnyg-nyg15"]) {
+    assert.equal(feed.kalshiEventSuffixOf(bad), null, String(bad));
+  }
+});
+
+test("describeLine hands every row its event's venue id map by reference", () => {
+  const state = feed.parseSnapshot(venueSnapshotJson(), { leagueId: CFB });
+  const rows = Object.values(state.lines).map((line) => feed.describeLine(line, state));
+  assert.ok(rows.length > 1);
+  assert.ok(rows.every((row) => row.venueIds === state.events[VENUE_EVENT].venueIds));
+});
+
+test("venue ids refresh with the snapshot: the changes stream leaves them alone, a re-parse replaces them", () => {
+  const state = feed.parseSnapshot(venueSnapshotJson(), { leagueId: CFB });
+  const before = JSON.stringify(state.events[VENUE_EVENT].venueIds);
+  const main = state.lines["420942308:ms105:si1:tid717"];
+  feed.applyChanges(state, { lines: [{ ...main, points: -35.5, price: -150, sequenceNumber: main.sequenceNumber + 1, eventStart: null }] });
+  assert.equal(JSON.stringify(state.events[VENUE_EVENT].venueIds), before);
+  assert.equal(state.lines["420942308:ms105:si1:tid717:alt-35.5"].sourceKey, "Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU36");
+  const pulled = venueSnapshotJson();
+  for (const row of pulled.odds["lg2:pt1:pregame"]) {
+    for (const books of Object.values(row.sides)) if (books.ms105) books.ms105.alternateLines = null;
+  }
+  const again = feed.parseSnapshot(pulled, { leagueId: CFB });
+  assert.deepEqual(again.events[VENUE_EVENT].venueIds.kalshiEventSuffixes, []);
+  assert.deepEqual(again.events[VENUE_EVENT].venueIds.kalshiContracts, {});
+  assert.equal(Object.keys(again.events[VENUE_EVENT].venueIds.novigOutcomes).length, 16);
 });
 
 // ---- grouping by market ---------------------------------------------------------

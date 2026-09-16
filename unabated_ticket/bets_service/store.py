@@ -9,6 +9,12 @@ writer). Tables:
                ad-hoc queries.
   source_runs  APPEND, one row per source poll whether it succeeded or not —
                the per-source freshness the panel shows.
+  team_crosswalk  one row per (venue, league, venue team) -> Unabated team id,
+               learned by the panel from a bet the board joined by its venue
+               id (#118 step 4; the panel POSTs them, see service.py). INSERT
+               only: a held key is never rewritten — the same id is a no-op,
+               a different id is a conflict the caller is told about. Served
+               with every /bets.json; DELETE /crosswalk.json empties it.
 A failed poll writes a source_runs row and touches nothing in `bets`, so a
 dark source keeps serving its previous records.
 
@@ -47,6 +53,32 @@ CREATE TABLE IF NOT EXISTS source_runs (
     error        VARCHAR,
     n_records    INTEGER
 );
+CREATE TABLE IF NOT EXISTS team_crosswalk (
+    venue               VARCHAR NOT NULL,
+    league              VARCHAR NOT NULL,
+    venue_team_key      VARCHAR NOT NULL,   -- Novig team id; Kalshi event-title name
+    venue_team_name     VARCHAR,
+    unabated_team_id    VARCHAR NOT NULL,   -- the id the board's lines carry; key = "<league>:<id>"
+    unabated_team_name  VARCHAR,
+    learned_from        VARCHAR,            -- "<bet id> on board event <event id>"
+    learned_at          TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (venue, league, venue_team_key)
+);
+"""
+
+_INSERT_CROSSWALK = """
+INSERT INTO team_crosswalk (venue, league, venue_team_key, venue_team_name, unabated_team_id,
+                            unabated_team_name, learned_from, learned_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+_SELECT_CROSSWALK_KEYS = "SELECT venue, league, venue_team_key, unabated_team_id FROM team_crosswalk"
+
+_SELECT_CROSSWALK = """
+SELECT venue, league, venue_team_key, venue_team_name, unabated_team_id, unabated_team_name,
+       learned_from, epoch(learned_at)
+FROM team_crosswalk
+ORDER BY learned_at DESC, venue, league, venue_team_key
 """
 
 _UPSERT_BET = """
@@ -133,6 +165,52 @@ class BetsStore:
         with self._lock:
             rows = self._con.execute(_SELECT_WINDOW, [cutoff]).fetchall()
         return [json.loads(row[0]) for row in rows]
+
+    def learn_crosswalk(self, rows: list[dict], learned_at: datetime) -> dict:
+        """INSERT the crosswalk rows not yet held (validated shape: see
+        service.validate_crosswalk_rows). A held key is never rewritten: the
+        same Unabated id is a no-op, a different one is returned in
+        `conflicts` with what is held. Returns {learned, conflicts}."""
+        learned = 0
+        conflicts: list[dict] = []
+        with self._lock:
+            held = {(venue, league, key): team_id
+                    for venue, league, key, team_id in self._con.execute(_SELECT_CROSSWALK_KEYS).fetchall()}
+            for row in rows:
+                key = (row["venue"], row["league"], row["venueTeamKey"])
+                if key in held:
+                    if held[key] != row["unabatedTeamId"]:
+                        conflicts.append({"venue": row["venue"], "league": row["league"],
+                                          "venueTeamKey": row["venueTeamKey"],
+                                          "held": held[key], "proposed": row["unabatedTeamId"]})
+                    continue
+                self._con.execute(_INSERT_CROSSWALK, [
+                    row["venue"], row["league"], row["venueTeamKey"], row.get("venueTeamName"),
+                    row["unabatedTeamId"], row.get("unabatedTeamName"), row.get("learnedFrom"), learned_at])
+                held[key] = row["unabatedTeamId"]
+                learned += 1
+        if conflicts:
+            log.warning("crosswalk: %d row(s) refused, a different Unabated id is held: %s", len(conflicts), conflicts)
+        return {"learned": learned, "conflicts": conflicts}
+
+    def load_crosswalk(self) -> list[dict]:
+        """Every crosswalk row, newest first, in the panel's camelCase shape."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_CROSSWALK).fetchall()
+        return [{
+            "venue": venue, "league": league, "venueTeamKey": venue_team_key, "venueTeamName": venue_team_name,
+            "unabatedTeamId": unabated_team_id, "unabatedTeamName": unabated_team_name,
+            "learnedFrom": learned_from, "learnedAt": _epoch_to_iso(learned_at),
+        } for venue, league, venue_team_key, venue_team_name, unabated_team_id, unabated_team_name,
+              learned_from, learned_at in rows]
+
+    def clear_crosswalk(self) -> int:
+        """DELETE every crosswalk row; returns how many were held."""
+        with self._lock:
+            count = self._con.execute("SELECT count(*) FROM team_crosswalk").fetchone()[0]
+            self._con.execute("DELETE FROM team_crosswalk")
+        log.info("crosswalk: cleared %d row(s)", count)
+        return count
 
     def source_status(self) -> dict[str, dict]:
         """{source: {fetchedAt, ok, error, count}} — fetchedAt/count from the

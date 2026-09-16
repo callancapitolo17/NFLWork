@@ -61,6 +61,7 @@
           <summary id="edges-books-mode">Books</summary>
           <div class="dropdown-panel">
             <div class="dropdown-actions">
+              <button type="button" id="books-default" class="small">Default books</button>
               <button type="button" id="books-unabated" class="small">My Unabated selection</button>
               <button type="button" id="books-all" class="small">All live</button>
               <button type="button" id="books-none" class="small">None</button>
@@ -178,6 +179,12 @@
     <div class="muted pane-note">No line on the board matches these. Nothing is dropped silently.</div>
     <ol id="bets-unmatched" class="bets-list"></ol>
     <div id="bets-unmatched-empty" class="muted pane-note" hidden></div>
+
+    <h2 class="section-label crosswalk-label">Team crosswalk <span id="bets-crosswalk-count" class="num"></span>
+      <button id="bets-crosswalk-clear" type="button" class="small" title="Click twice: delete every learned row from the bets service; bets go back to name matching until the board teaches them again">Clear</button></h2>
+    <div class="muted pane-note">What each venue calls a team, learned whenever a bet joins the board by its Kalshi or Novig id. Applied before name matching, so a later bet on that team matches even where the venue lists no ladder.</div>
+    <ol id="bets-crosswalk" class="bets-list crosswalk"></ol>
+    <div id="bets-crosswalk-empty" class="muted pane-note" hidden></div>
   </section>
 
   <script src="kelly.js"></script>

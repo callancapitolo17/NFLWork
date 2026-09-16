@@ -8,8 +8,10 @@
 // app.novig.us, #116).
 // Writes: chrome.storage.local settings, {locate} (row click, via locate.js,
 // which also focuses the Unabated tab), {alertLog, alertTargets} and Chrome
-// notifications for new edges; {betsService} after every bets-service poll.
-// Re-renders on storage.onChanged.
+// notifications for new edges; {betsService} after every bets-service poll
+// (records + the service's team crosswalk); POST /crosswalk.json to the
+// bets service with the team rows an id join taught, DELETE it on Clear
+// (#118 step 4). Re-renders on storage.onChanged.
 // Network: the scanner (scanner.js) fetches Unabated's public feeds while this
 // page is open; it pauses when the panel is hidden and stops when it closes.
 // The bets tab (#114) polls the local bets service (betsSettings.serviceUrl,
@@ -30,18 +32,29 @@
   // maxLineAgeHours: a "live" book's line unchanged for a week is a dead feed
   // (live 2026-09-10: Buckeye -110 on a 44.5 total, 96 days old, "+36.67%").
   const ALL_LEAGUE_IDS = Object.keys(feed.LEAGUES).map(Number);
-  // bookIds null = follow the Unabated selection page.js publishes (all live
-  // books until one exists); an array = the user's own ticks in the panel.
+  // bookIds undefined (never ticked) = DEFAULT_BOOK_NAMES; null = follow the
+  // Unabated selection page.js publishes (all live books until one exists),
+  // set by its button; an array = the user's own ticks in the panel.
   // Alt lines (#113) are off until asked for; altMaxDistance 7 points keeps
   // NFL/CFB spreads to about a touchdown off the number (live 2026-09-11 the
   // median NFL alt "edge" sat 13 points out, +400 and up); altMinLiquidity
   // $100 is Kalshi's median alt depth ($129) with its thin tail cut. 0 = off.
   const DEFAULT_EDGE_SETTINGS = {
-    leagues: ALL_LEAGUE_IDS, periods: [1], betTypes: [1, 2, 3], bookIds: null, minEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge",
+    leagues: ALL_LEAGUE_IDS, periods: [1], betTypes: [1, 2, 3], bookIds: undefined, minEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge",
     includeAlts: false, altMaxDistance: 7, altMinLiquidity: 100,
     // One card per (game, market, side) with its best line; the flat list is the toggle off.
     groupByMarket: true,
   };
+  // The books the Edges list starts on until you tick your own (the user's
+  // list, 2026-09-15). By NAME, not id: BetOnline Direct, Bookmaker-Internal,
+  // Poly US Ing and Polymarket US are listed in the panel but absent from the
+  // anonymous feed their ids could be read from. A name the feed does not
+  // carry (a book not listed today) simply ticks nothing.
+  const DEFAULT_BOOK_NAMES = [
+    "Bet105", "BetOnline", "BetOnline Direct", "Bookmaker", "Bookmaker-Internal", "Buckeye", "Kalshi",
+    "Novig", "NoVig-Internal", "Poly US Ing", "Polymarket", "Polymarket US", "Prophet Exchange",
+    "Underdog Prediction Market",
+  ];
   // Off until the list has been watched for a session (plan, 2026-09-10).
   const DEFAULT_ALERT_SETTINGS = { enabled: false, minEdgePct: 2.0 };
   const ALERT_EVENT_COOLDOWN_MS = 5 * 60 * 1000;
@@ -73,7 +86,7 @@
     betsCount: el("bets-count"), betsRisk: el("bets-risk"), betsRiskCaption: el("bets-risk-caption"),
     edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
     edgesSports: el("edges-sports"), edgesBetTypes: el("edges-bettypes"), edgesBooks: el("edges-books"), edgesBooksMode: el("edges-books-mode"),
-    booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
+    booksDefault: el("books-default"), booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
     edgesIncludeAlts: el("edges-include-alts"), edgesAltDistance: el("edges-alt-distance"), edgesAltLiquidity: el("edges-alt-liquidity"), edgesGroup: el("edges-group"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
     alertsEnabled: el("alerts-enabled"), alertsMin: el("alerts-min"),
@@ -82,6 +95,8 @@
     betsUrl: el("bets-url"), betsSettingsError: el("bets-settings-error"),
     betsOpen: el("bets-open"), betsOpenCount: el("bets-open-count"), betsOpenEmpty: el("bets-open-empty"),
     betsUnmatched: el("bets-unmatched"), betsUnmatchedCount: el("bets-unmatched-count"), betsUnmatchedEmpty: el("bets-unmatched-empty"),
+    betsCrosswalk: el("bets-crosswalk"), betsCrosswalkCount: el("bets-crosswalk-count"), betsCrosswalkEmpty: el("bets-crosswalk-empty"),
+    betsCrosswalkClear: el("bets-crosswalk-clear"),
   };
   // page.js heartbeats every 10s; past this it is not running on any Unabated tab.
   const PAGE_READY_STALE_MS = 25000;
@@ -99,6 +114,10 @@
     betsNovig: null,
     // Normalised bet records (bets.js contract), team keys resolved, pruned to the retention window.
     betRecords: [],
+    // The team crosswalk the bets service holds (#118 step 4), as last served
+    // or stored: [{venue, league, venueTeamKey, venueTeamName, unabatedTeamId,
+    // unabatedTeamName, learnedFrom, learnedAt}]. Keys resolve through it first.
+    crosswalk: [],
   };
   // key -> {price, at}: what has been alerted (or seen at baseline); persisted.
   let alertLog = {};
@@ -115,12 +134,16 @@
   let lastClickedKey = null;
   let scannerStatus = null;
   let scannerState = null;
+  let boardLinesCache = null;
   const teamsLib = globalThis.UnabatedTeams;
-  let teamsIndexSize = 0;
+  let teamsSpellingCount = 0;
 
-  // Every snapshot carries Unabated's team list: register it as the team
-  // index (teams.js), persist it, and fill keys on bet records that were
-  // waiting for it (#116 — no hand-written team tables).
+  // Every snapshot carries Unabated's team list and, per game row, a second
+  // spelling of each team (feed.teamSpellingsFromEventName, #118): register
+  // both as the team index (teams.js), persist it, and fill keys on bet
+  // records that were waiting for it (#116 — no hand-written team tables).
+  // The trigger counts spellings, not teams: a new eventName spelling for a
+  // team already indexed must persist and re-resolve too.
   function registerFeedTeams(feedState) {
     if (!feedState || !feedState.teamIndex) return;
     const byLeague = {};
@@ -130,18 +153,20 @@
       (byLeague[league.path] ||= []).push(team);
     }
     for (const [league, list] of Object.entries(byLeague)) teamsLib.registerTeams(league, list);
-    const size = Object.values(teamsLib.exportIndex()).reduce((n, list) => n + list.length, 0);
-    if (size === teamsIndexSize) return;
-    teamsIndexSize = size;
+    const spellings = teamsLib.spellingCount();
+    if (spellings === teamsSpellingCount) return;
+    teamsSpellingCount = spellings;
     chrome.storage.local.set({ teamsIndex: teamsLib.exportIndex() });
-    state.betRecords = betsLib.resolveTeamKeys(state.betRecords);
+    state.betRecords = betsLib.resolveTeamKeys(state.betRecords, state.crosswalk);
   }
 
   const scanner = globalThis.UnabatedScanner.createScanner({
     onChange: (status, feedState) => {
       scannerStatus = status;
       scannerState = feedState;
+      boardLinesCache = null;
       registerFeedTeams(feedState);
+      learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
       renderEdges();
       // A ticket sized from the feed (or waiting for it) follows the feed's
       // updates; one the screen priced is left alone (a re-render clears the copy status).
@@ -487,7 +512,10 @@
   // side, the other side (red), anything else on the game. Nothing when none.
   // Returns the row-style flag {tier, matches, exposure} for the stake block.
   function renderBetBanner(ticket) {
-    const line = betsView.ticketAsLine(ticket);
+    // The ticket's event's venue id map lets an id-joined bet whose team
+    // names do not resolve be placed on a side (bets.sideIndexByVenueId).
+    const event = scannerState && ticket.eventId != null ? scannerState.events[ticket.eventId] : null;
+    const line = { ...betsView.ticketAsLine(ticket), venueIds: event ? event.venueIds ?? null : null };
     const { matches } = betsLib.matchBets(line, state.betRecords, { lines: boardLines() });
     const { shown, more } = betsView.bannerLines(matches);
     const items = shown.map((match) => {
@@ -628,9 +656,16 @@
     return fresh && Array.isArray(filter.bookIds) && filter.bookIds.length ? filter.bookIds : null;
   }
 
+  function defaultBookIds() {
+    if (!scannerState) return [];
+    const wanted = new Set(DEFAULT_BOOK_NAMES);
+    return Object.values(scannerState.books).filter((book) => wanted.has(book.name)).map((book) => book.id);
+  }
+
   // Which books the list is restricted to: the user's own ticks when they
-  // have made any, else the Unabated selection page.js published, else every
-  // live book. Bet types are the panel's own checkboxes.
+  // have made any, else the default books until "My Unabated selection" is
+  // chosen, which follows the selection page.js published, else every live
+  // book. Bet types are the panel's own checkboxes.
   function effectiveFilter() {
     const settings = state.edgeSettings;
     const selection = unabatedSelection();
@@ -639,6 +674,9 @@
     if (Array.isArray(settings.bookIds)) {
       mode = "custom";
       bookIds = new Set(settings.bookIds);
+    } else if (settings.bookIds === undefined) {
+      mode = "default";
+      bookIds = new Set(defaultBookIds());
     } else if (selection) {
       mode = "unabated";
       bookIds = new Set(selection);
@@ -655,6 +693,8 @@
     const parts = [];
     if (effective.mode === "custom") {
       parts.push(`books: your ${effective.bookIds.size} ticks below (of ${live} live)`);
+    } else if (effective.mode === "default") {
+      parts.push(`books: the ${effective.bookIds.size} default books (of ${live} live; tick below to change)`);
     } else if (effective.mode === "unabated") {
       parts.push(`books: your Unabated selection, ${effective.bookIds.size} books (read ${fmtAge(Date.now() - filter.at)})`);
     } else if (!pageScriptAlive()) {
@@ -703,7 +743,7 @@
       input.checked = effective.bookIds ? effective.bookIds.has(id) : true;
     }
     const count = effective.bookIds ? effective.bookIds.size : books.length;
-    const source = effective.mode === "custom" ? "your ticks" : effective.mode === "unabated" ? "Unabated selection" : "all live";
+    const source = { custom: "your ticks", default: "default books", unabated: "Unabated selection", all: "all live" }[effective.mode];
     view.edgesBooksMode.textContent = `${count} of ${books.length} (${source})`;
     view.booksUnabated.disabled = !unabatedSelection();
   }
@@ -727,6 +767,7 @@
     const ticked = Array.from(view.edgesBooks.querySelectorAll("input:checked")).map((input) => Number(input.dataset.book));
     setBookIds(ticked);
   });
+  view.booksDefault.addEventListener("click", () => setBookIds(undefined));
   view.booksUnabated.addEventListener("click", () => setBookIds(null));
   view.booksAll.addEventListener("click", () => setBookIds(liveBooks().map((book) => book.id)));
   view.booksNone.addEventListener("click", () => setBookIds([]));
@@ -760,7 +801,7 @@
   // for it. No row is ever hidden for being bet — the edge still being there
   // after you bet it is information, and the stake column carries the top-up.
   function withBetFlags(rows) {
-    const flags = betsLib.annotateRows(rows, state.betRecords);
+    const flags = betsLib.annotateRows(rows, state.betRecords, { lines: boardLines() });
     return rows.map((row, index) => {
       const flag = flags[index];
       return { ...row, bet: { ...flag, advice: betsView.stakeAdvice(row.stake, flag.exposure) } };
@@ -1468,7 +1509,9 @@
     if (Array.isArray(stored.leagues)) base.leagues = stored.leagues.filter((id) => feed.LEAGUES[id]);
     if (Array.isArray(stored.periods) && stored.periods.length) base.periods = stored.periods.filter((id) => feed.PERIODS[id]);
     if (Array.isArray(stored.betTypes) && stored.betTypes.length) base.betTypes = stored.betTypes.filter((id) => feed.BET_TYPES[id]);
+    // A stored null is the Unabated-selection choice; no key at all is the default books.
     if (Array.isArray(stored.bookIds)) base.bookIds = stored.bookIds.filter((id) => Number.isInteger(id));
+    else if (stored.bookIds === null) base.bookIds = null;
     if (typeof stored.minEdgePct === "number" && stored.minEdgePct >= 0) base.minEdgePct = stored.minEdgePct;
     if (typeof stored.maxLineAgeHours === "number" && stored.maxLineAgeHours > 0) base.maxLineAgeHours = stored.maxLineAgeHours;
     if (["edge", "stake", "start", "exposure"].includes(stored.sortBy)) base.sortBy = stored.sortBy;
@@ -1482,10 +1525,17 @@
   // ---- bets (#114) ---------------------------------------------------------
 
   // One describeLine-shaped row per event on the board (main lines only):
-  // the matcher's ambiguity check and the unmatched list only need to know
-  // which games exist, not every book's price.
+  // the matcher's ambiguity check, its venue id join (each row carries its
+  // event's venueIds) and the unmatched list only need to know which games
+  // exist, not every book's price.
+  // Built once per scanner update (73 ms over the 140,755 NFL + CFB lines of
+  // 2026-09-15) and shared by the Edges rows, the alert pass, the Ticket
+  // banner and the Bets tab. The rows only name games — teams, start, venue
+  // ids — so a copy from the last update is current; every tier reads the
+  // row or ticket being matched, never these.
   function boardLines() {
     if (!scannerState) return [];
+    if (boardLinesCache) return boardLinesCache;
     const seen = new Set();
     const rows = [];
     for (const line of Object.values(scannerState.lines)) {
@@ -1493,6 +1543,7 @@
       seen.add(line.eventId);
       rows.push(feed.describeLine(line, scannerState));
     }
+    boardLinesCache = rows;
     return rows;
   }
 
@@ -1509,7 +1560,7 @@
   // authoritative for the venue) and refresh every view that shows a flag.
   function applyNovigRead(betsNovig) {
     state.betsNovig = betsNovig && typeof betsNovig === "object" ? betsNovig : null;
-    if (state.betsNovig) state.betRecords = betsView.mergePageSource(state.betRecords, "novig", state.betsNovig, Date.now());
+    if (state.betsNovig) state.betRecords = betsView.mergePageSource(state.betRecords, "novig", state.betsNovig, Date.now(), state.crosswalk);
   }
 
   let betsPollBusy = false;
@@ -1528,7 +1579,9 @@
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.json();
       if (!payload || !Array.isArray(payload.bets)) throw new Error("bets.json has no bets array");
-      state.betRecords = betsView.mergeServicePayload(state.betRecords, payload, now);
+      // The service's crosswalk is the truth; a payload without one (an older service) keeps the stored rows.
+      if (Array.isArray(payload.crosswalk)) state.crosswalk = payload.crosswalk;
+      state.betRecords = betsView.mergeServicePayload(state.betRecords, { ...payload, crosswalk: state.crosswalk }, now);
       state.betsService = {
         payload: { generatedAt: payload.generatedAt ?? null, sources: payload.sources && typeof payload.sources === "object" ? payload.sources : {} },
         okAt: now, error: null, errorAt: null, unreachableSince: null,
@@ -1542,11 +1595,150 @@
     } finally {
       betsPollBusy = false;
     }
-    await chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords } });
+    await persistBets();
+    renderBetsFlags();
+    learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
+  }
+
+  // The records, the service state and the crosswalk, as one stored object.
+  function persistBets() {
+    return chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords, crosswalk: state.crosswalk } });
+  }
+
+  // Every surface that shows a bet flag, after the records or the crosswalk changed.
+  function renderBetsFlags() {
     renderBetsHeader();
     if (!state.error) render();
     renderEdges();
     if (state.activeTab === "bets") renderBets();
+  }
+
+  // ---- team crosswalk (#118 step 4) -----------------------------------------
+  //
+  // The panel is the only side that sees both a bet and the board, so it
+  // learns; the service keeps the table. After every poll and every scanner
+  // update, the open bets the board joined by venue id teach what their
+  // venue calls both teams (bets.learnCrosswalk); new rows go to the service
+  // in one POST, its reply is the whole table, and the records are re-keyed
+  // through it. A refused bet (its name resolves to another team) is logged
+  // once. A failed POST waits a minute before the next try.
+  const CROSSWALK_RETRY_MS = 60 * 1000;
+  let crosswalkBusy = false;
+  let crosswalkRetryAt = 0;
+  let crosswalkLastError = null;
+  const crosswalkConflictsLogged = new Set();
+
+  async function learnCrosswalk() {
+    if (crosswalkBusy || Date.now() < crosswalkRetryAt || !scannerState) return;
+    const { learned, conflicts } = betsLib.learnCrosswalk(state.betRecords, boardLines(), state.crosswalk);
+    for (const conflict of conflicts) {
+      const tag = `${conflict.betId}:${conflict.side}`;
+      if (crosswalkConflictsLogged.has(tag)) continue;
+      crosswalkConflictsLogged.add(tag);
+      console.warn(`[unabated-ticket] crosswalk: not learning ${conflict.venue} ${conflict.league} "${conflict.venueTeamKey}" from ${conflict.betId}: ${conflict.reason}`);
+    }
+    if (!learned.length) return;
+    crosswalkBusy = true;
+    try {
+      const reply = await postCrosswalk("POST", { rows: learned });
+      console.info(`[unabated-ticket] crosswalk: learned ${reply.learned} row(s), ${reply.conflicts.length} refused by the service, ${reply.crosswalk.length} held`);
+      await applyCrosswalk(reply.crosswalk);
+      crosswalkLastError = null;
+    } catch (error) {
+      crosswalkRetryAt = Date.now() + CROSSWALK_RETRY_MS;
+      if (crosswalkLastError !== error.message) console.warn("[unabated-ticket] crosswalk: service write failed:", error.message);
+      crosswalkLastError = error.message;
+    } finally {
+      crosswalkBusy = false;
+    }
+  }
+
+  // POST (learn) or DELETE (clear) /crosswalk.json; the reply carries the table.
+  async function postCrosswalk(method, body) {
+    const response = await fetch(`${state.betsSettings.serviceUrl}/crosswalk.json`, {
+      method, cache: "no-store",
+      headers: body ? { "Content-Type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const reply = await response.json();
+    if (!reply || !Array.isArray(reply.crosswalk)) throw new Error("crosswalk.json has no crosswalk array");
+    return reply;
+  }
+
+  // The served table replaces the held one; keys are rebuilt from scratch so
+  // a cleared row takes its key back and a new one applies everywhere.
+  async function applyCrosswalk(crosswalk) {
+    state.crosswalk = crosswalk;
+    state.betRecords = betsLib.rekeyRecords(state.betRecords, state.crosswalk);
+    await persistBets();
+    renderBetsFlags();
+  }
+
+  // Clear is two clicks: the first arms the button ("Clear 68 rows?") for a
+  // few seconds, the second deletes. No dialog — a side panel is not a place
+  // to rely on window.confirm — and a re-render while armed leaves it armed.
+  const CROSSWALK_CLEAR_ARM_MS = 6000;
+  let crosswalkClearArmedUntil = 0;
+  let crosswalkClearTimer = null;
+
+  function crosswalkClearArmed() {
+    return Date.now() < crosswalkClearArmedUntil;
+  }
+
+  function renderCrosswalkClearButton(count) {
+    const button = view.betsCrosswalkClear;
+    button.disabled = count === 0;
+    button.classList.toggle("armed", crosswalkClearArmed());
+    button.textContent = crosswalkClearArmed() ? `Clear ${count} row${count === 1 ? "" : "s"}?` : "Clear";
+  }
+
+  async function clearCrosswalk() {
+    const count = state.crosswalk.length;
+    if (!count) return;
+    if (!crosswalkClearArmed()) {
+      crosswalkClearArmedUntil = Date.now() + CROSSWALK_CLEAR_ARM_MS;
+      clearTimeout(crosswalkClearTimer);
+      crosswalkClearTimer = setTimeout(() => renderCrosswalkClearButton(state.crosswalk.length), CROSSWALK_CLEAR_ARM_MS);
+      renderCrosswalkClearButton(count);
+      return;
+    }
+    crosswalkClearArmedUntil = 0;
+    view.betsCrosswalkClear.disabled = true;
+    try {
+      const reply = await postCrosswalk("DELETE", null);
+      console.info(`[unabated-ticket] crosswalk: cleared ${reply.cleared} row(s)`);
+      await applyCrosswalk([]);
+      crosswalkConflictsLogged.clear();
+      view.betsSettingsError.textContent = "";
+    } catch (error) {
+      console.warn("[unabated-ticket] crosswalk: clear failed:", error.message);
+      view.betsSettingsError.textContent = `Could not clear the crosswalk: ${error.message}`;
+    } finally {
+      renderCrosswalkClearButton(state.crosswalk.length);
+    }
+  }
+
+  function renderCrosswalk() {
+    const rows = betsView.crosswalkRows(state.crosswalk);
+    view.betsCrosswalkCount.textContent = rows.length ? String(rows.length) : "";
+    renderCrosswalkClearButton(rows.length);
+    view.betsCrosswalk.replaceChildren(...rows.map((row) => {
+      const li = document.createElement("li");
+      li.title = row.title;
+      const main = document.createElement("div");
+      const what = document.createElement("div");
+      what.className = "bet-what";
+      what.textContent = row.what;
+      const meta = document.createElement("div");
+      meta.className = "bet-meta";
+      meta.textContent = row.meta;
+      main.append(what, meta);
+      li.append(main);
+      return li;
+    }));
+    view.betsCrosswalkEmpty.hidden = rows.length > 0;
+    view.betsCrosswalkEmpty.textContent = "Nothing learned yet. Rows appear when an open bet joins the board by its Kalshi event or Novig outcome id.";
   }
 
   function startBetsPolling() {
@@ -1661,6 +1853,7 @@
     view.betsUnmatched.replaceChildren(...unmatched.map(({ bet, reason }) => betItem(bet, reason, true)));
     view.betsUnmatchedEmpty.hidden = unmatched.length > 0;
     view.betsUnmatchedEmpty.textContent = open.length ? "Every open bet matches a game on the board." : "";
+    renderCrosswalk();
     view.tabBets.scrollTop = scrollTop;
   }
 
@@ -1718,7 +1911,7 @@
     const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "betsNovig", "teamsIndex"]);
     // The team index from the last session, so bet records resolve before the first snapshot lands.
     teamsLib.loadIndex(relay.teamsIndex);
-    teamsIndexSize = Object.values(teamsLib.exportIndex()).reduce((n, list) => n + list.length, 0);
+    teamsSpellingCount = teamsLib.spellingCount();
     state.ticket = relay.ticket || null;
     state.error = relay.error || null;
     state.watchStatus = relay.watchStatus || null;
@@ -1732,8 +1925,9 @@
     const storedBets = relay.betsService && typeof relay.betsService === "object" ? relay.betsService : null;
     if (storedBets) {
       // Team keys resolved and the retention window applied on every load, so
-      // a grown teams.js table and a passed month both take effect.
-      state.betRecords = betsLib.pruneForRetention(betsLib.resolveTeamKeys(Array.isArray(storedBets.bets) ? storedBets.bets : []), Date.now());
+      // a grown teams.js table, a grown crosswalk and a passed month all take effect.
+      state.crosswalk = Array.isArray(storedBets.crosswalk) ? storedBets.crosswalk : [];
+      state.betRecords = betsLib.pruneForRetention(betsLib.rekeyRecords(Array.isArray(storedBets.bets) ? storedBets.bets : [], state.crosswalk), Date.now());
       state.betsService = {
         payload: storedBets.payload || null, okAt: storedBets.okAt ?? null,
         error: storedBets.error ?? null, errorAt: storedBets.errorAt ?? null, unreachableSince: storedBets.unreachableSince ?? null,
@@ -1801,6 +1995,7 @@
   view.alertsEnabled.addEventListener("change", onAlertSettingsInput);
   view.alertsMin.addEventListener("input", onAlertSettingsInput);
   view.betsUrl.addEventListener("change", onBetsSettingsInput);
+  view.betsCrosswalkClear.addEventListener("click", () => clearCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk clear failed", error)));
 
   // Nothing polls while the panel is hidden; back in view, the scanner catches
   // up or resyncs and the bets service is polled at once (its tick skips hidden).

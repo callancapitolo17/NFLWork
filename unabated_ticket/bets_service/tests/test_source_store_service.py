@@ -6,11 +6,12 @@ import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from unabated_ticket.bets_service import service
+from unabated_ticket.bets_service import config, service
 from unabated_ticket.bets_service.sources.kalshi import KalshiSource
 from unabated_ticket.bets_service.store import BetsStore
 from unabated_ticket.bets_service.tests.conftest import fill, position
@@ -249,6 +250,55 @@ def test_parse_days():
     assert service.parse_days("days=-1").startswith("days must be between")
 
 
+# ---- team crosswalk (#118 step 4) -------------------------------------------------------
+
+def crosswalk_row(venue: str, venue_team_key: str, unabated_team_id: str, **extra) -> dict:
+    return {"venue": venue, "league": "cfb", "venueTeamKey": venue_team_key, "unabatedTeamId": unabated_team_id,
+            "venueTeamName": venue_team_key, "unabatedTeamName": f"team {unabated_team_id}",
+            "learnedFrom": "kalshi:x:yes on board event 123742", **extra}
+
+
+def test_crosswalk_learns_once_per_venue_team_and_never_rewrites_a_held_id(store):
+    now = datetime(2026, 9, 15, 19, 0, tzinfo=timezone.utc)
+    first = store.learn_crosswalk([crosswalk_row("kalshi", "Wazzu (venue spelling)", "717"),
+                                   crosswalk_row("novig", "nv-wsu", "717")], now)
+    assert first == {"learned": 2, "conflicts": []}
+    # The same rows again: no duplicates, nothing changes, no conflict.
+    again = store.learn_crosswalk([crosswalk_row("kalshi", "Wazzu (venue spelling)", "717", learnedFrom="later bet")], now + timedelta(hours=1))
+    assert again == {"learned": 0, "conflicts": []}
+    # A different id for a held venue team is refused and reported, the held row untouched.
+    refused = store.learn_crosswalk([crosswalk_row("kalshi", "Wazzu (venue spelling)", "1")], now + timedelta(hours=2))
+    assert refused == {"learned": 0, "conflicts": [{"venue": "kalshi", "league": "cfb", "venueTeamKey": "Wazzu (venue spelling)",
+                                                    "held": "717", "proposed": "1"}]}
+    rows = store.load_crosswalk()
+    assert [(row["venue"], row["venueTeamKey"], row["unabatedTeamId"], row["learnedAt"], row["learnedFrom"]) for row in rows] == [
+        ("kalshi", "Wazzu (venue spelling)", "717", "2026-09-15T19:00:00Z", "kalshi:x:yes on board event 123742"),
+        ("novig", "nv-wsu", "717", "2026-09-15T19:00:00Z", "kalshi:x:yes on board event 123742"),
+    ]
+    assert store._con.execute("SELECT count(*) FROM team_crosswalk").fetchone()[0] == 2
+    assert set(rows[0]) == {"venue", "league", "venueTeamKey", "venueTeamName", "unabatedTeamId", "unabatedTeamName", "learnedFrom", "learnedAt"}
+    # Served with every bets payload; cleared on request.
+    assert service.bets_payload(store, days=30)["crosswalk"] == rows
+    assert store.clear_crosswalk() == 2
+    assert store.load_crosswalk() == []
+    assert store.clear_crosswalk() == 0
+
+
+def test_validate_crosswalk_rows_names_the_first_bad_row():
+    good = crosswalk_row("kalshi", "Wazzu", "717")
+    assert service.validate_crosswalk_rows({"rows": [good]}) == [good]
+    # A numeric Unabated id is stored as its string; optional fields default to None.
+    numeric = {"venue": "novig", "league": "cfb", "venueTeamKey": "nv-1", "unabatedTeamId": 717}
+    assert service.validate_crosswalk_rows({"rows": [numeric]}) == [
+        {**numeric, "unabatedTeamId": "717", "venueTeamName": None, "unabatedTeamName": None, "learnedFrom": None}]
+    assert service.validate_crosswalk_rows([]) == "body must be an object with a `rows` array"
+    assert service.validate_crosswalk_rows({"rows": [1]}) == "rows[0] must be an object"
+    assert service.validate_crosswalk_rows({"rows": [good, {**good, "venue": ""}]}) == "rows[1].venue must be a non-empty string"
+    assert service.validate_crosswalk_rows({"rows": [{**good, "unabatedTeamId": True}]}) == "rows[0].unabatedTeamId must be a non-empty string"
+    assert service.validate_crosswalk_rows({"rows": [{**good, "learnedFrom": 3}]}) == "rows[0].learnedFrom must be a string or null"
+    assert service.validate_crosswalk_rows({"rows": [good] * 1001}).startswith("at most 1000 rows")
+
+
 # ---- HTTP ------------------------------------------------------------------------------
 
 @pytest.fixture
@@ -262,8 +312,14 @@ def http_server(store):
 
 
 def get_json(url: str) -> tuple[int, dict]:
+    return request_json("GET", url)
+
+
+def request_json(method: str, url: str, body: bytes | None = None, content_type: str | None = None) -> tuple[int, dict]:
+    headers = {"Content-Type": content_type} if content_type else {}
+    request = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(url, timeout=5) as response:
+        with urllib.request.urlopen(request, timeout=5) as response:
             return response.status, json.loads(response.read())
     except urllib.error.HTTPError as error:
         return error.code, json.loads(error.read())
@@ -273,7 +329,7 @@ def test_http_bets_json_and_health_shape(store, http_server):
     service.run_source_once(ScriptedSource([[record("kalshi:a:yes", "open", None)]]), store)
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
-    assert set(payload) == {"generatedAt", "sources", "bets"}
+    assert set(payload) == {"generatedAt", "sources", "bets", "crosswalk"}
     assert set(payload["sources"]["kalshi"]) == {"fetchedAt", "ok", "error", "count"}
     assert payload["sources"]["kalshi"]["ok"] is True
     assert payload["bets"][0]["id"] == "kalshi:a:yes"
@@ -290,6 +346,54 @@ def test_http_bets_json_and_health_shape(store, http_server):
 def test_http_before_any_poll_serves_an_empty_list_with_the_source_pending(http_server):
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
-    assert payload == {"generatedAt": payload["generatedAt"], "sources": {"kalshi": service.NO_POLL_YET}, "bets": []}
+    assert payload == {"generatedAt": payload["generatedAt"], "sources": {"kalshi": service.NO_POLL_YET}, "bets": [], "crosswalk": []}
     status, payload = get_json(f"{http_server}/health")
     assert status == 200 and payload["sources"] == {"kalshi": service.NO_POLL_YET}
+
+
+def test_http_crosswalk_post_learns_and_delete_clears(store, http_server):
+    rows = [crosswalk_row("kalshi", "Wazzu (venue spelling)", "717"), crosswalk_row("novig", "nv-duq", 927)]
+    body = json.dumps({"rows": rows}).encode()
+    status, reply = request_json("POST", f"{http_server}/crosswalk.json", body, "application/json; charset=utf-8")
+    assert status == 200
+    assert (reply["ok"], reply["learned"], reply["conflicts"]) == (True, 2, [])
+    assert [(row["venue"], row["unabatedTeamId"]) for row in reply["crosswalk"]] == [("kalshi", "717"), ("novig", "927")]
+    # The table rides along with every bets payload.
+    status, payload = get_json(f"{http_server}/bets.json")
+    assert status == 200 and len(payload["crosswalk"]) == 2
+    # A conflicting re-learn is refused, reported, and the held row survives.
+    conflict = json.dumps({"rows": [crosswalk_row("kalshi", "Wazzu (venue spelling)", "1")]}).encode()
+    status, reply = request_json("POST", f"{http_server}/crosswalk.json", conflict, "application/json")
+    assert status == 200 and reply["learned"] == 0 and reply["conflicts"][0]["held"] == "717"
+    assert store.load_crosswalk()[0]["unabatedTeamId"] == "717" or store.load_crosswalk()[1]["unabatedTeamId"] == "717"
+    status, reply = request_json("DELETE", f"{http_server}/crosswalk.json")
+    assert status == 200 and reply == {"ok": True, "cleared": 2, "crosswalk": []}
+    assert get_json(f"{http_server}/bets.json")[1]["crosswalk"] == []
+
+
+def test_http_crosswalk_refuses_non_json_writes_bad_bodies_and_other_paths(http_server):
+    body = json.dumps({"rows": [crosswalk_row("kalshi", "Wazzu", "717")]}).encode()
+    # The CSRF guard: a web page's cross-origin POST can only be form- or text-encoded.
+    status, reply = request_json("POST", f"{http_server}/crosswalk.json", body, "text/plain")
+    assert status == 415 and "application/json" in reply["error"]
+    status, reply = request_json("POST", f"{http_server}/crosswalk.json", body, "application/x-www-form-urlencoded")
+    assert status == 415
+    status, reply = request_json("POST", f"{http_server}/crosswalk.json", b"{not json", "application/json")
+    assert status == 400 and reply["error"].startswith("body is not JSON")
+    status, reply = request_json("POST", f"{http_server}/crosswalk.json", b'{"rows": [{"venue": "kalshi"}]}', "application/json")
+    assert status == 400 and reply["error"] == "rows[0].league must be a non-empty string"
+    status, reply = request_json("POST", f"{http_server}/bets.json", body, "application/json")
+    assert status == 404
+    status, reply = request_json("DELETE", f"{http_server}/bets.json")
+    assert status == 404
+    assert get_json(f"{http_server}/bets.json")[1]["crosswalk"] == []
+
+
+@pytest.mark.parametrize("raw_root, expected", [
+    ("/u/NFLWork", "/u/NFLWork"),
+    ("/u/NFLWork/.worktrees/feature-x", "/u/NFLWork"),
+    # Claude desktop's layout: without this the service read no Kalshi credentials from a worktree.
+    ("/u/NFLWork/.claude/worktrees/bet-venue-ids", "/u/NFLWork"),
+])
+def test_main_checkout_root_finds_the_main_checkout_from_either_worktree_layout(raw_root: str, expected: str) -> None:
+    assert config.main_checkout_root(Path(raw_root)) == Path(expected)

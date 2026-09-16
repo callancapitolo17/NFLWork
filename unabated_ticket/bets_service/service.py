@@ -8,10 +8,20 @@ Inputs:  each registered Source (sources/kalshi.py; sources/betonline.py when
 Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
            GET /bets.json[?days=N]  {generatedAt, sources: {name: {fetchedAt, ok,
                                     error, count}}, bets: [records open + settled
-                                    within N days (default RETENTION_DAYS=30)]}
+                                    within N days (default RETENTION_DAYS=30)],
+                                    crosswalk: [team_crosswalk rows, newest first]}
            GET /health              {ok, generatedAt, uptimeSec, sources}
+           POST /crosswalk.json     body {rows: [{venue, league, venueTeamKey,
+                                    unabatedTeamId, venueTeamName?, unabatedTeamName?,
+                                    learnedFrom?}]} -> {ok, learned, conflicts, crosswalk}
+                                    (#118 step 4: the panel's lessons from id joins;
+                                    Content-Type must be application/json — a web page
+                                    cannot send that cross-origin without a preflight
+                                    this server never answers, so no site can write here)
+           DELETE /crosswalk.json   -> {ok, cleared, crosswalk: []}
 Side effects: UPSERTs records into bets.duckdb::bets and APPENDs a row to
-bets.duckdb::source_runs per poll (see store.py); rotating log at
+bets.duckdb::source_runs per poll (see store.py); INSERTs into / DELETEs from
+bets.duckdb::team_crosswalk on the two crosswalk routes; rotating log at
 bets_service.log. A poll that raises writes a failed source_runs row and
 leaves `bets` untouched — a dark source never blanks the list.
 """
@@ -36,6 +46,11 @@ log = logging.getLogger(__name__)
 
 POLL_TICK_SEC = 1.0
 MAX_DAYS = 3650
+# A crosswalk POST is a few rows per poll; anything near this is not the panel.
+MAX_BODY_BYTES = 1024 * 1024
+MAX_CROSSWALK_ROWS_PER_POST = 1000
+CROSSWALK_REQUIRED_FIELDS = ("venue", "league", "venueTeamKey", "unabatedTeamId")
+CROSSWALK_OPTIONAL_FIELDS = ("venueTeamName", "unabatedTeamName", "learnedFrom")
 
 
 def _now() -> datetime:
@@ -96,7 +111,42 @@ def source_status(store: BetsStore, source_names: list[str]) -> dict[str, dict]:
 def bets_payload(store: BetsStore, days: int, source_names: list[str] = ()) -> dict:
     now = _now()
     return {"generatedAt": _iso(now), "sources": source_status(store, list(source_names)),
-            "bets": store.load_bets(days, now)}
+            "bets": store.load_bets(days, now), "crosswalk": store.load_crosswalk()}
+
+
+def _non_empty_string(value: object) -> bool:
+    return isinstance(value, str) and value != ""
+
+
+def validate_crosswalk_rows(body: object) -> list[dict] | str:
+    """The rows of a POST /crosswalk.json body in the store's shape, or an
+    error message naming the first bad row. `unabatedTeamId` may arrive as an
+    int (Unabated's ids are numeric) and is stored as its string."""
+    if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
+        return "body must be an object with a `rows` array"
+    raw_rows = body["rows"]
+    if len(raw_rows) > MAX_CROSSWALK_ROWS_PER_POST:
+        return f"at most {MAX_CROSSWALK_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
+    rows: list[dict] = []
+    for index, raw in enumerate(raw_rows):
+        if not isinstance(raw, dict):
+            return f"rows[{index}] must be an object"
+        team_id = raw.get("unabatedTeamId")
+        if isinstance(team_id, int) and not isinstance(team_id, bool):
+            team_id = str(team_id)
+        row = {"unabatedTeamId": team_id}
+        for field in CROSSWALK_REQUIRED_FIELDS:
+            value = row.get(field, raw.get(field))
+            if not _non_empty_string(value):
+                return f"rows[{index}].{field} must be a non-empty string"
+            row[field] = value
+        for field in CROSSWALK_OPTIONAL_FIELDS:
+            value = raw.get(field)
+            if value is not None and not isinstance(value, str):
+                return f"rows[{index}].{field} must be a string or null"
+            row[field] = value
+        rows.append(row)
+    return rows
 
 
 def health_payload(store: BetsStore, started_at: float, source_names: list[str] = ()) -> dict:
@@ -136,6 +186,51 @@ def make_handler(store: BetsStore, started_at: float,
                 self._send_json(200, bets_payload(store, days, names))
                 return
             self._send_json(404, {"error": f"no route for {url.path}"})
+
+        def do_POST(self) -> None:  # noqa: N802 — http.server's name
+            url = urlparse(self.path)
+            if url.path != "/crosswalk.json":
+                self._send_json(404, {"error": f"no route for POST {url.path}"})
+                return
+            body = self._read_json_body()
+            if isinstance(body, tuple):
+                self._send_json(*body)
+                return
+            rows = validate_crosswalk_rows(body)
+            if isinstance(rows, str):
+                self._send_json(400, {"error": rows})
+                return
+            result = store.learn_crosswalk(rows, _now())
+            self._send_json(200, {"ok": True, "learned": result["learned"], "conflicts": result["conflicts"],
+                                  "crosswalk": store.load_crosswalk()})
+
+        def do_DELETE(self) -> None:  # noqa: N802 — http.server's name
+            url = urlparse(self.path)
+            if url.path != "/crosswalk.json":
+                self._send_json(404, {"error": f"no route for DELETE {url.path}"})
+                return
+            cleared = store.clear_crosswalk()
+            self._send_json(200, {"ok": True, "cleared": cleared, "crosswalk": []})
+
+        # The parsed JSON body, or a (status, error payload) tuple to send. The
+        # Content-Type check is the write guard: without CORS headers here a
+        # browser page can only reach this server with a "simple" request
+        # (form or text/plain), never application/json, and the extension
+        # page is exempt from CORS for its host permission.
+        def _read_json_body(self) -> object | tuple[int, dict]:
+            content_type = self.headers.get("Content-Type", "")
+            if not content_type.split(";")[0].strip().lower() == "application/json":
+                return 415, {"error": "Content-Type must be application/json"}
+            try:
+                length = int(self.headers.get("Content-Length", ""))
+            except ValueError:
+                return 411, {"error": "Content-Length required"}
+            if length < 0 or length > MAX_BODY_BYTES:
+                return 413, {"error": f"body must be at most {MAX_BODY_BYTES} bytes, got {length}"}
+            try:
+                return json.loads(self.rfile.read(length))
+            except ValueError as error:
+                return 400, {"error": f"body is not JSON: {error}"}
 
         def _send_json(self, status: int, payload: dict) -> None:
             body = json.dumps(payload).encode()

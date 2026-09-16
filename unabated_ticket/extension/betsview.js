@@ -229,26 +229,44 @@
 
   // Records to keep after a poll: the stored ones and the fresh payload deduped
   // on native id (newest wins), minus stored records of a venue whose pull
-  // succeeded without them; team keys filled, then the retention prune.
+  // succeeded without them; team keys filled (through the payload's team
+  // crosswalk first, #118 step 4), then the retention prune.
   function mergeServicePayload(storedRecords, payload, now) {
     const fresh = venuesWithFreshPull(payload);
     const listed = new Set((payload.bets || []).map((record) => record.id));
     const kept = (storedRecords || []).filter((record) => !fresh.has(record.venue) || listed.has(record.id));
     const merged = bets.dedupeByNativeId([kept, payload]);
-    return bets.pruneForRetention(bets.resolveTeamKeys(merged), now);
+    return bets.pruneForRetention(bets.resolveTeamKeys(merged, crosswalkOf(payload)), now);
+  }
+
+  // The team crosswalk a /bets.json payload carries, or none.
+  function crosswalkOf(payload) {
+    return payload && Array.isArray(payload.crosswalk) ? payload.crosswalk : [];
   }
 
   // Records to keep after a content-script venue wrote its read: the stored
   // ones and the read deduped on native id (newest wins). A COMPLETE read
   // (every list seen to its end) is authoritative for that venue, so a stored
   // record it no longer lists is dropped; an incomplete read only adds.
-  function mergePageSource(storedRecords, venue, pageSource, now) {
+  // `crosswalk` is the served team crosswalk the keys resolve through first.
+  function mergePageSource(storedRecords, venue, pageSource, now, crosswalk) {
     const read = pageSource && Array.isArray(pageSource.bets) ? pageSource.bets : [];
     const listed = new Set(read.map((record) => record.id));
     const authoritative = !!(pageSource && pageSource.complete === true);
     const kept = (storedRecords || []).filter((record) => record.venue !== venue || !authoritative || listed.has(record.id));
     const merged = bets.dedupeByNativeId([kept, read]);
-    return bets.pruneForRetention(bets.resolveTeamKeys(merged), now);
+    return bets.pruneForRetention(bets.resolveTeamKeys(merged, crosswalk), now);
+  }
+
+  // One Bets-tab line per crosswalk row: what the venue calls the team, what
+  // Unabated calls it, and where it was learned. Newest first as served.
+  function crosswalkRows(crosswalk) {
+    return (Array.isArray(crosswalk) ? crosswalk : []).filter((row) => row && typeof row === "object").map((row) => ({
+      what: `${row.venueTeamName || row.venueTeamKey} \u2192 ${row.unabatedTeamName || `team ${row.unabatedTeamId}`}`,
+      meta: [bets.venueLabel(row.venue), typeof row.league === "string" ? row.league.toUpperCase() : null,
+        row.learnedAt ? `learned ${bets.formatPlacedAt(row.learnedAt)}` : null].filter(Boolean).join(" \u00b7 "),
+      title: row.learnedFrom ? `from ${row.learnedFrom}` : "",
+    }));
   }
 
   // The captured ticket as the describeLine-shaped row the matcher reads.
@@ -277,7 +295,7 @@
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badgeText, badgeKind, relatedLines, stakeAdvice, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, mergePageSource, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badgeText, badgeKind, relatedLines, stakeAdvice, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, mergePageSource, crosswalkOf, crosswalkRows, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

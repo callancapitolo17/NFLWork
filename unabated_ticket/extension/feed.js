@@ -101,11 +101,27 @@
   const GAME_ROW_KEY = /^pt(\d+):pregame:bt([123]):e(\d+)$/;
   const LEAGUE_KEY = /^lg(\d+):pt(\d+):(pregame|live)$/;
   const LINE_KEY_RE = /^si(\d):ms(\d+):an(\d+)$/;
+  // Venue ids on alternate-line rungs (#118 step 2; measured on the live NFL
+  // and CFB files 2026-09-15). Every Kalshi rung's sourceKey is the contract
+  // side + full market ticker, "Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU36" (the
+  // other side of the same contract reads "N-…"; 12,318 of 12,318 matched the
+  // pattern below); every Novig rung's sourceData is the Novig outcome id (a
+  // UUID). Main lines never carry either field and the changes stream has
+  // neither, so venue ids refresh with the snapshot only. The fields are
+  // undocumented: any other shape is "no id", never an error.
+  const KALSHI_BOOK_ID = 105;
+  const NOVIG_BOOK_ID = 89;
+  const KALSHI_CONTRACT_RE = /^([YN])-([A-Z0-9]+)-([A-Z0-9]+)-([A-Z0-9.]+)$/;
+  const NOVIG_OUTCOME_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
   // ---- small helpers -------------------------------------------------------
 
   function numberOrNull(value) {
     return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+
+  function stringOrNull(value) {
+    return typeof value === "string" && value !== "" ? value : null;
   }
 
   function parseLeagueKey(key) {
@@ -161,6 +177,90 @@
 
   function emptyState() {
     return { leagues: [], teams: {}, teamIndex: {}, books: {}, events: {}, lines: {} };
+  }
+
+  // A row's eventName spells both teams in a form the `teams` map does not
+  // carry (#118, measured 2026-09-12): CFB "Prairie View A&M Panthers - PRV @
+  // Baylor Bears - BAY" (the map says "Prairie View"), CBB the same with the
+  // abbreviation empty ("UConn Huskies - @ Michigan Wolverines -"), NFL / NBA
+  // / NHL "Ravens Baltimore BAL @ Cowboys Dallas DAL", MLB "Dodgers Los Angeles
+  // @ Marlins Miami", MLS the plain club name. Returns [away, home] spellings
+  // (side 0 of eventTeams is away), or null when the name is not "a @ b".
+  // Per side: drop a trailing " - <abbr>" (or a bare " -"), else a trailing
+  // token equal to that team's own abbreviation, else keep it whole.
+  function teamSpellingsFromEventName(eventName, abbreviations) {
+    if (typeof eventName !== "string") return null;
+    const sides = eventName.split(" @ ");
+    if (sides.length !== 2) return null;
+    return sides.map((side, index) => {
+      const withoutSuffix = side.replace(/ -(?: \S+)?$/, "").trim();
+      if (withoutSuffix !== side.trim()) return withoutSuffix;
+      const abbreviation = abbreviations[index];
+      const trailing = abbreviation ? ` ${abbreviation}` : null;
+      if (trailing && withoutSuffix.endsWith(trailing) && withoutSuffix.length > trailing.length) {
+        return withoutSuffix.slice(0, -trailing.length).trim();
+      }
+      return withoutSuffix;
+    }).map((spelling) => (spelling === "" ? null : spelling));
+  }
+
+  // Register the eventName spellings on the event's teams in the league's
+  // team index, as a second name for the same team id.
+  function noteEventNameSpellings(state, row) {
+    const teams = row.eventTeams || {};
+    const ids = [teams[0] ? teams[0].id ?? null : null, teams[1] ? teams[1].id ?? null : null];
+    const entries = ids.map((id) => (id == null ? null : state.teamIndex[String(id)] ?? null));
+    const spellings = teamSpellingsFromEventName(row.eventName, entries.map((entry) => (entry ? entry.abbreviation : null)));
+    if (!spellings) return;
+    entries.forEach((entry, index) => {
+      if (entry && spellings[index] && entry.eventName == null) entry.eventName = spellings[index];
+    });
+  }
+
+  // ---- venue ids -----------------------------------------------------------
+
+  // The Kalshi event suffix of a rung's sourceKey ("26SEP19DUQWSU"), or null.
+  // Kept whole: Kalshi's team codes are not Unabated's abbreviations (CFB
+  // `ELONURI` vs `ELO`+`RIL`), so the suffix is only ever compared as a string.
+  function kalshiEventSuffixOf(sourceKey) {
+    const match = typeof sourceKey === "string" ? KALSHI_CONTRACT_RE.exec(sourceKey) : null;
+    return match ? match[3] : null;
+  }
+
+  function isNovigOutcomeId(sourceData) {
+    return typeof sourceData === "string" && NOVIG_OUTCOME_ID_RE.test(sourceData);
+  }
+
+  function emptyVenueIds() {
+    return { kalshiEventSuffixes: [], kalshiContracts: {}, novigOutcomes: {} };
+  }
+
+  // Record one rung's venue id on its event: id -> {lineKey, mainKey, points,
+  // sideIndex}. `points` and `sideIndex` are the contract's own strike and
+  // Unabated side — fixed for the id, so the bet matcher reads them to tell
+  // which side a bet whose team names do not resolve is on (#118 step 3).
+  // `lineKey` is the listed line at the rung's number — the alt, or the main
+  // line when the rung sits on the main number (normalizeAltLine drops that
+  // rung, but its id is exactly what a main-line bet joins on) — or null when
+  // the rung is not listed (unpriced); the id still names the event and
+  // market, so it is kept. `alt` is normalizeAltLine's result for the rung.
+  // Applies to Kalshi and Novig alike. The map is rebuilt only by the next
+  // snapshot, while the changes stream can move a main line off `points`, so
+  // a joiner must check `points` against the line's current points.
+  function noteRungVenueIds(venueIds, rung, mainLine, alt) {
+    if (!rung || typeof rung !== "object") return;
+    const points = numberOrNull(rung.points);
+    const onMainNumber = points != null && points === mainLine.points;
+    const lineKey = alt ? alt.key : onMainNumber ? mainLine.key : null;
+    const target = { lineKey, mainKey: mainLine.key, points, sideIndex: mainLine.sideIndex };
+    if (mainLine.bookId === KALSHI_BOOK_ID) {
+      const suffix = kalshiEventSuffixOf(rung.sourceKey);
+      if (!suffix) return;
+      if (!venueIds.kalshiEventSuffixes.includes(suffix)) venueIds.kalshiEventSuffixes.push(suffix);
+      venueIds.kalshiContracts[rung.sourceKey] = target;
+    } else if (mainLine.bookId === NOVIG_BOOK_ID && isNovigOutcomeId(rung.sourceData)) {
+      venueIds.novigOutcomes[rung.sourceData] = target;
+    }
   }
 
   // ---- snapshot ------------------------------------------------------------
@@ -226,6 +326,10 @@
       sequenceNumber: numberOrNull(raw.sequenceNumber),
       isBlurred: raw.isBlurred === true,
       modifiedOn: raw.modifiedOn ?? null,
+      // The book's own id for the rung (see KALSHI_CONTRACT_RE): Kalshi fills
+      // sourceKey, Novig and ProphetX fill sourceData, many books both.
+      sourceData: stringOrNull(raw.sourceData),
+      sourceKey: stringOrNull(raw.sourceKey),
     };
   }
 
@@ -254,7 +358,9 @@
         homeTeamId: teams[1] ? teams[1].id ?? null : null,
         awayRotation: teams[0] ? teams[0].rotationNumber ?? null : null,
         homeRotation: teams[1] ? teams[1].rotationNumber ?? null : null,
+        venueIds: emptyVenueIds(),
       };
+      noteEventNameSpellings(state, row);
     }
     counts.rows += 1;
     for (const [sideKey, books] of Object.entries(row.sides || {})) {
@@ -273,6 +379,7 @@
         if (betTypeId === 1 || !Array.isArray(raw.alternateLines)) continue;
         for (const rawAlt of raw.alternateLines) {
           const alt = normalizeAltLine(rawAlt, line);
+          noteRungVenueIds(state.events[eventId].venueIds, rawAlt, line, alt);
           if (!alt) {
             counts.skippedAltLines += 1;
             continue;
@@ -297,7 +404,8 @@
       if (!team || !team.name) continue;
       state.teams[teamId] = team.name;
       // The full entry, for the team index teams.js builds at runtime (#116).
-      state.teamIndex[teamId] = { id: team.id ?? Number(teamId), name: team.name, abbreviation: team.abbreviation ?? null, leagueId: team.leagueId ?? leagueId };
+      // eventName is filled from the team's game row (noteEventNameSpellings); null until one is seen.
+      state.teamIndex[teamId] = { id: team.id ?? Number(teamId), name: team.name, abbreviation: team.abbreviation ?? null, leagueId: team.leagueId ?? leagueId, eventName: null };
     }
     for (const source of Array.isArray(json.marketSources) ? json.marketSources : []) {
       if (!source || source.id == null) continue;
@@ -532,6 +640,10 @@
       isAlt: line.isAlt === true,
       // The book's main-line points this alt hangs off (current main line when held); null on a main line.
       mainPoints: line.isAlt ? currentMainPoints(line, state) : null,
+      // The EVENT's venue id map (noteRungVenueIds), by reference — every row
+      // of the event shares it, so the bet matcher can join a bet on its
+      // Kalshi / Novig id (#118 step 3). Null for an event with no snapshot.
+      venueIds: event.venueIds ?? null,
     };
   }
 
@@ -682,7 +794,8 @@
 
   const api = {
     LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID, CURSOR_EPOCH_MS,
-    parseLeagueKey, parseEventStart, parseModifiedOn, lineChangedMs, lineKeyOf, altLineKeyOf, emptyState,
+    kalshiEventSuffixOf,
+    parseLeagueKey, parseEventStart, parseModifiedOn, lineChangedMs, lineKeyOf, altLineKeyOf, emptyState, teamSpellingsFromEventName,
     parseSnapshot, mergeStates, extractCursor, cursorFromDate, parseChanges, applyChanges,
     describeLine, selectEdges, groupEdges, groupKeyOf, countLines, countAltLines,
   };
