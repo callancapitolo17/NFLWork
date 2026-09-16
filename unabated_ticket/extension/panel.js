@@ -2,7 +2,7 @@
 // Edges tab (every positive-edge line across the enabled leagues).
 //
 // Reads: chrome.storage.local {ticket, error, watchStatus, pageReady,
-// booksFilter, locateResult} (written by content.js) and {bankroll,
+// booksFilter, locateResult, selfCheck} (written by content.js) and {bankroll,
 // multiplier, edges, alerts, alertLog, activeTab, betsService, betsSettings}
 // (written here) and {betsNovig} (written by novig_content.js on
 // app.novig.us, #116).
@@ -26,6 +26,8 @@
   const feed = globalThis.UnabatedFeed;
   const betsLib = globalThis.UnabatedBets;
   const betsView = globalThis.UnabatedBetsView;
+  // page.js's bundle self-check (#123); every pass/fail decision is its own.
+  const selfCheckLib = globalThis.UnabatedSelfCheck;
   // Bets service poll cadence while the panel is visible (plan § Storage).
   const BETS_POLL_MS = 30 * 1000;
   const DEFAULT_SETTINGS = { bankroll: 30000, multiplier: 0.25 };
@@ -78,6 +80,7 @@
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
     pageStatus: el("page-status"),
     rowTraceReason: el("row-trace-reason"), rowTraceDetail: el("row-trace-detail"),
+    pageBreak: el("page-break"), pageBreakSummary: el("page-break-summary"), pageBreakDetail: el("page-break-detail"),
     tabs: el("tabs"), tabTicket: el("tab-ticket"), tabEdges: el("tab-edges"), edgesCount: el("edges-count"),
     edgesToolbar: el("edges-toolbar"), edgesControls: el("edges-controls"),
     filtersToggle: el("filters-toggle"), filtersSummary: el("filters-summary"),
@@ -100,9 +103,12 @@
   };
   // page.js heartbeats every 10s; past this it is not running on any Unabated tab.
   const PAGE_READY_STALE_MS = 25000;
+  // page.js self-checks every 30s; past this the report describes a tab that
+  // is gone or asleep, and shouting about a bundle nobody is reading is noise.
+  const SELF_CHECK_STALE_MS = 90000;
 
   let state = {
-    ticket: null, error: null, watchStatus: null, pageReady: null, settings: { ...DEFAULT_SETTINGS },
+    ticket: null, error: null, watchStatus: null, pageReady: null, selfCheck: null, settings: { ...DEFAULT_SETTINGS },
     edgeSettings: { ...DEFAULT_EDGE_SETTINGS }, booksFilter: null, activeTab: "ticket",
     locateResult: null, locating: null,
     alertSettings: { ...DEFAULT_ALERT_SETTINGS },
@@ -337,6 +343,24 @@
   }
 
   // ---- rendering -----------------------------------------------------------
+
+  // The last self-check report, or null when it is too old to speak for the
+  // page as it is now.
+  function currentSelfCheck() {
+    const report = state.selfCheck;
+    if (!report || typeof report.at !== "number") return null;
+    return Date.now() - report.at < SELF_CHECK_STALE_MS ? report : null;
+  }
+
+  // One loud state above the tabs naming the probes that failed. What that
+  // breaks per view is selfcheck.js's call, not this file's.
+  function renderSelfCheck() {
+    const report = currentSelfCheck();
+    const summary = selfCheckLib.summaryOf(report);
+    view.pageBreak.hidden = !summary;
+    view.pageBreakSummary.textContent = summary || "";
+    view.pageBreakDetail.textContent = summary ? selfCheckLib.detailOf(report) : "";
+  }
 
   function show(which) {
     view.ticket.hidden = which !== "ticket";
@@ -599,9 +623,14 @@
     if (!state.ticket) {
       const ready = state.pageReady;
       const alive = ready && Date.now() - ready.at < PAGE_READY_STALE_MS;
-      view.pageStatus.textContent = alive
-        ? `Capture script active on ${ready.url}`
-        : "Capture script not detected. Reload the Unabated tab; if this persists, see README troubleshooting.";
+      // A changed bundle outranks "active": the script is running and still
+      // cannot read the page, which is the one thing an empty pane hides.
+      const broken = selfCheckLib.noteFor(currentSelfCheck(), "ticket");
+      view.pageStatus.textContent = broken
+        ? `${broken} Click a price to see what it reads.`
+        : alive
+          ? `Capture script active on ${ready.url}`
+          : "Capture script not detected. Reload the Unabated tab; if this persists, see README troubleshooting.";
       show("empty");
       return;
     }
@@ -1131,9 +1160,13 @@
     const unit = grouped ? "cards" : "lines";
     if (rows.length === 0) {
       view.edgesEmpty.hidden = false;
-      view.edgesEmpty.textContent = !status || (status.phase !== "live" && !status.leaguesLoaded.length)
+      // The list comes from the public feeds, not the tab — so a bundle change
+      // is an extra sentence about the book filter, never the whole reason.
+      const broken = selfCheckLib.noteFor(currentSelfCheck(), "edges");
+      const why = !status || (status.phase !== "live" && !status.leaguesLoaded.length)
         ? (status && status.phase === "error" ? "Nothing to list: the feed is unavailable (see above)." : "Waiting for the first snapshot…")
         : `No line at or above ${state.edgeSettings.minEdgePct}% edge right now.`;
+      view.edgesEmpty.textContent = broken ? `${why} ${broken}` : why;
     } else {
       view.edgesEmpty.hidden = items.length > MAX_EDGE_ROWS ? false : true;
       view.edgesEmpty.textContent = items.length > MAX_EDGE_ROWS ? `Showing the top ${MAX_EDGE_ROWS} of ${items.length} ${unit}; raise the minimum edge to see fewer.` : "";
@@ -1908,7 +1941,7 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "betsNovig", "teamsIndex"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "selfCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "betsNovig", "teamsIndex"]);
     // The team index from the last session, so bet records resolve before the first snapshot lands.
     teamsLib.loadIndex(relay.teamsIndex);
     teamsSpellingCount = teamsLib.spellingCount();
@@ -1916,6 +1949,7 @@
     state.error = relay.error || null;
     state.watchStatus = relay.watchStatus || null;
     state.pageReady = relay.pageReady || null;
+    state.selfCheck = relay.selfCheck || null;
     state.booksFilter = relay.booksFilter || null;
     state.locateResult = relay.locateResult || null;
     state.edgeSettings = sanitizeEdgeSettings(relay.edges);
@@ -1939,6 +1973,7 @@
     fillBetsSettingInputs();
     showTab(relay.activeTab);
     renderBetsHeader();
+    renderSelfCheck();
     render();
     renderEdges();
     renderLocate();
@@ -1961,6 +1996,12 @@
     }
     if ("watchStatus" in changes) state.watchStatus = changes.watchStatus.newValue || null;
     if ("pageReady" in changes) state.pageReady = changes.pageReady.newValue || null;
+    if ("selfCheck" in changes) {
+      state.selfCheck = changes.selfCheck.newValue || null;
+      renderSelfCheck();
+      render();
+      renderEdges();
+    }
     if ("ticket" in changes || "error" in changes || "watchStatus" in changes || "pageReady" in changes) render();
     if ("pageReady" in changes) renderEdges();
     if ("booksFilter" in changes) {
@@ -2022,6 +2063,7 @@
 
   // Re-evaluate the "not watching" state and the edge ages even when no event arrives.
   setInterval(() => {
+    renderSelfCheck();
     if (!state.error) render();
     renderBetsHeader();
     if (state.activeTab === "edges") {

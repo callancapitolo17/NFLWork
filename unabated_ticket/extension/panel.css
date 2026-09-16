@@ -161,6 +161,9 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
   background: var(--warn-bg); color: var(--warn-fg); font-weight: 600; font-size: 12.5px;
 }
 .warning.bad { background: var(--bad-bg); color: var(--bad-fg); }
+/* The bundle self-check banner sits inside the fixed header, above the tabs. */
+#page-break { margin: 10px 12px 8px; }
+.page-break-detail { margin-top: 4px; font-weight: 400; font-size: 11.5px; white-space: pre-line; }
 #tab-ticket .warning { margin: 0 0 10px; }
 .locate-strip {
   margin: 10px 12px 0; padding: 7px 10px; border-radius: 6px; font-size: 12px;
