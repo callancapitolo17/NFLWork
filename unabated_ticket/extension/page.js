@@ -8,9 +8,12 @@
 // Side effects: one capture-phase click listener on document (Unabated's
 // own handler still runs), one 5s interval while a ticket is being watched
 // (resumed from the stored ticket on load, so a navigation does not end it),
-// and a 10s heartbeat that also publishes the user's Unabated book selection
-// (read from the grid's React context) as the Edges tab's default book filter. The only DOM touch is the locate flash:
-// a 2.5s outline on the cell an Edges row or notification pointed at.
+// a 10s heartbeat that also publishes the user's Unabated book selection
+// (read from the grid's React context) as the Edges tab's default book filter,
+// and a 30s self-check (#123) that probes every fiber/grid shape read here and
+// publishes per-probe pass/fail, so a new Unabated bundle is named in the panel
+// instead of showing up as an empty list. The only DOM touch is the locate
+// flash: a 2.5s outline on the cell an Edges row or notification pointed at.
 
 (function () {
   "use strict";
@@ -19,6 +22,13 @@
   // Each injected copy has an id; a newer copy (re-injected after an extension
   // reload) posts a takeover and every older copy retires itself.
   const INSTANCE_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const SCRIPT_LOADED_AT = Date.now();
+  // selfcheck.js is injected immediately before this file (manifest, MAIN
+  // world), so it publishes onto the PAGE's global. Take the reference and
+  // put the page's namespace back the way it was: this script's only lasting
+  // footprint stays the two listeners and the locate flash.
+  const selfCheck = globalThis.UnabatedSelfCheck || null;
+  delete globalThis.UnabatedSelfCheck;
   let retired = false;
   const intervals = [];
   const CELL_SHELL_SELECTOR = ".odds-cell-action-shell";
@@ -95,7 +105,7 @@
   }
 
   // Script build, so a stale copy of page.js in an old tab shows itself in the panel.
-  const PAGE_SCRIPT_BUILD = "0.6.6";
+  const PAGE_SCRIPT_BUILD = "0.7.0";
 
   // What the clicked object actually carried, for the panel's no-edge detail:
   // decides between "Unabated never priced it" and "the field moved". Space
@@ -844,6 +854,201 @@
   }
 
 
+  // ---- self-check: has Unabated's bundle moved under us? --------------------
+  //
+  // Every fiber/grid shape this file depends on, probed on load and on a timer
+  // (a mid-session deploy surfaces without a reload). RAW READS ONLY here; the
+  // pass/fail decisions are selfcheck.js, a pure module the node suite loads.
+  // Without it a new bundle is silent: an empty edges list and a ticket that
+  // captures nothing look exactly like a quiet board.
+  const SELF_CHECK_MS = 30000;
+  const GRID_ROW_SELECTOR = ".ag-row";
+  // Lines are taken a few PER ROW across many rows, not the first N off the
+  // first row: the probes check that a field is still on some line, and a
+  // handful of unpriced lines from one market could carry none of them.
+  const SELF_CHECK_MAX_ROWS = 60;
+  const SELF_CHECK_LINES_PER_ROW = 3;
+  const SELF_CHECK_MAX_LINES = 120;
+
+  // A rendered odds cell that exposes React props — the same walk a click
+  // makes, so the probe fails wherever a capture would. Prefers, within the
+  // first few, a cell whose BOOK resolves: DOM order can put a best-line
+  // column first, and blaming the bundle for a cell capture itself would
+  // fall through on is not a change. Falls back to the first with props.
+  const SELF_CHECK_CELL_CANDIDATES = 12;
+
+  function readCellForSelfCheck(element) {
+    const fiber = fiberOf(element);
+    if (!fiber) return null;
+    const lineProps = findProps(fiber, isLineProps);
+    const cellProps = findProps(fiber, isGridCellProps);
+    if (!lineProps && !cellProps) return null;
+    const marketLine = (lineProps && lineProps.marketLine) || null;
+    const rowData = (cellProps && cellProps.node && cellProps.node.data) || null;
+    const sideIndex = sampleSideIndex(element, lineProps);
+    const bookId = marketLine && rowData && Number.isInteger(sideIndex)
+      ? sampleBookId(marketLine, cellProps, rowData, sideIndex)
+      : null;
+    return { element, lineProps, cellProps, marketLine, rowData, sideIndex, bookId };
+  }
+
+  function sampleCell() {
+    let first = null;
+    let seen = 0;
+    for (const selector of GRID_PROBE_SELECTORS) {
+      for (const element of document.querySelectorAll(selector)) {
+        if (seen >= SELF_CHECK_CELL_CANDIDATES) return first;
+        const cell = readCellForSelfCheck(element);
+        if (!cell) continue;
+        seen += 1;
+        if (cell.bookId != null) return cell;
+        first = first || cell;
+      }
+    }
+    return first;
+  }
+
+  function sampleSideIndex(element, lineProps) {
+    const attr = element && typeof element.getAttribute === "function" ? element.getAttribute("data-side-index") : null;
+    const fromAttr = attr == null ? NaN : Number(attr);
+    if (Number.isInteger(fromAttr)) return fromAttr;
+    return lineProps && Number.isInteger(lineProps.sideIndex) ? lineProps.sideIndex : null;
+  }
+
+  function sampleBookId(marketLine, cellProps, rowData, sideIndex) {
+    try {
+      return bookIdOf(marketLine, cellProps, rowData, sideKeyOf(rowData, sideIndex));
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  // Book entries off the grid's rows, bounded: a busy slate carries thousands
+  // and the probes only need to see whether the fields are still there.
+  function sampleGrid(api) {
+    const lines = [];
+    let rows = 0;
+    let altsExpandable = null;
+    api.forEachNode((node) => {
+      const data = node && node.data;
+      if (!data || !data.sides) return;
+      rows += 1;
+      if (altsExpandable === null && nodeIsTopLevel(node)) altsExpandable = typeof node.setExpanded === "function";
+      if (rows > SELF_CHECK_MAX_ROWS || lines.length >= SELF_CHECK_MAX_LINES) return;
+      let fromThisRow = 0;
+      for (const books of Object.values(data.sides)) {
+        for (const line of Object.values(books || {})) {
+          if (fromThisRow >= SELF_CHECK_LINES_PER_ROW || lines.length >= SELF_CHECK_MAX_LINES) return;
+          if (!line || typeof line !== "object") continue;
+          lines.push(line);
+          fromThisRow += 1;
+        }
+      }
+    });
+    return { rows, lines, altsExpandable };
+  }
+
+  // The locate path's own lookup, run against the cell we just read: the row
+  // element by row-id, then its cell in the book's column with the side
+  // fallback — the same two selectors cellShellFor uses.
+  function sampleLocate(cellProps, bookId, sideIndex) {
+    const node = cellProps && cellProps.node;
+    const rowId = node ? (node.data && node.data.gridKey != null ? node.data.gridKey : node.id) : null;
+    if (rowId == null || !Number.isInteger(sideIndex)) return null;
+    const rowSelector = `.ag-row[row-id="${String(rowId).replace(/"/g, '\\"')}"]`;
+    try {
+      if (!document.querySelector(rowSelector)) return { rowElement: false, bookCell: null };
+      const inBookColumn = bookId == null
+        ? null
+        : document.querySelector(`${rowSelector} .ag-cell[col-id="${bookId}"] ${CELL_SHELL_SELECTOR}[data-side-index="${sideIndex}"]`);
+      const anyOnRow = document.querySelector(`${rowSelector} ${CELL_SHELL_SELECTOR}[data-side-index="${sideIndex}"]`);
+      return { rowElement: true, bookCell: Boolean(inBookColumn || anyOnRow) };
+    } catch (_error) {
+      // A row key that will not go into a selector is locate's problem, and
+      // locate says so when it is clicked. Reporting it here would blame the
+      // bundle for the ONE thing this probe cannot tell apart from it.
+      return null;
+    }
+  }
+
+  // The enabled ids AND how many book entries userSettings.gameOdds held at
+  // all: a user who has unticked every book still has the shape intact, and
+  // the probe must not read that as Unabated moving the field.
+  function sampleBookEntryCount(gameOdds) {
+    if (!gameOdds || typeof gameOdds !== "object") return 0;
+    try {
+      return (bookEntriesOf(gameOdds, 0) || []).length;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function sampleBookSelection(context) {
+    const userSettings = context && context.userSettings;
+    const entryCount = sampleBookEntryCount(userSettings && userSettings.gameOdds);
+    try {
+      return { bookIds: enabledBookIdsOf(userSettings), error: null, entryCount };
+    } catch (error) {
+      return { bookIds: null, error: error.message, entryCount };
+    }
+  }
+
+  function collectSelfCheckSample() {
+    const cell = sampleCell();
+    const lineProps = cell && cell.lineProps;
+    const cellProps = cell && cell.cellProps;
+    const { marketLine = null, rowData = null, sideIndex = null, bookId = null } = cell || {};
+    const api = cellProps && cellProps.api;
+    const grid = api && typeof api.forEachNode === "function" ? sampleGrid(api) : { rows: 0, lines: [], altsExpandable: null };
+    const context = (lineProps && lineProps.context) || (cellProps && cellProps.context) || null;
+    return {
+      at: Date.now(),
+      url: window.location.href,
+      path: window.location.pathname,
+      build: PAGE_SCRIPT_BUILD,
+      sinceLoadMs: Date.now() - SCRIPT_LOADED_AT,
+      shells: document.querySelectorAll(CELL_SHELL_SELECTOR).length,
+      // Rows rendered with no odds cells in them is a renamed cell class; a
+      // grid with no rows at all is an empty board or the user's own filters.
+      rowElements: document.querySelectorAll(GRID_ROW_SELECTOR).length,
+      gridRoots: document.querySelectorAll(GRID_ROOT_SELECTOR).length,
+      rows: grid.rows,
+      lines: grid.lines,
+      altsExpandable: grid.altsExpandable,
+      cell: cell
+        ? {
+          hasFiber: true,
+          hasLineProps: Boolean(lineProps),
+          hasGridProps: Boolean(cellProps && cellProps.api && cellProps.node),
+          marketLine, sideIndex, rowData, bookId,
+        }
+        : null,
+      bookSelection: sampleBookSelection(context),
+      locate: sampleLocate(cellProps, bookId, sideIndex),
+    };
+  }
+
+  let lastSelfCheckSignature = null;
+
+  function runSelfCheck() {
+    if (retired || !selfCheck) return;
+    let report;
+    try {
+      report = selfCheck.run(collectSelfCheckSample());
+    } catch (error) {
+      // Reading the page threw: that IS the change, and staying quiet about it
+      // is the failure mode this whole path exists to end.
+      report = selfCheck.errorReport({ at: Date.now(), url: window.location.href, build: PAGE_SCRIPT_BUILD, message: error.message });
+    }
+    const signature = `${report.status}:${report.failed.join(",")}`;
+    if (signature !== lastSelfCheckSignature) {
+      lastSelfCheckSignature = signature;
+      if (report.status === "changed") console.warn("[unabated-ticket] self-check:", selfCheck.detailOf(report));
+    }
+    post("selfcheck", report);
+  }
+
+
   // ---- locate: scroll the grid to a line and flash its cell -----------------
 
   const LOCATE_ATTEMPTS = 20;
@@ -1096,7 +1301,7 @@
   // this flag on its fake window before loading the file. Never set on
   // tools.unabated.com, so production exposes nothing.
   if (window.__unabatedTicketExposeInternals === true) {
-    window.__unabatedTicketInternals = { buildTicket, startWatching, readWatchedLine };
+    window.__unabatedTicketInternals = { buildTicket, startWatching, readWatchedLine, runSelfCheck };
   }
   // Heartbeat so the panel can show whether this script is alive on the tab,
   // plus the books/bet-type filter for the Edges tab (grid may not be up yet
@@ -1111,5 +1316,10 @@
   post("resume_request", { at: Date.now() });
   heartbeat();
   intervals.push(setInterval(heartbeat, HEARTBEAT_MS));
+  // On every load (this script dies with each navigation) and on a timer, so a
+  // bundle deployed mid-session surfaces without a reload.
+  if (!selfCheck) console.warn("[unabated-ticket] selfcheck.js did not load; Unabated bundle changes will be silent");
+  runSelfCheck();
+  intervals.push(setInterval(runSelfCheck, SELF_CHECK_MS));
   console.info("[unabated-ticket] page.js active on", window.location.href);
 })();

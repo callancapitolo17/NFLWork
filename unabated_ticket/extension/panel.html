@@ -10,6 +10,14 @@
        Everything below it scrolls in its own pane, so switching tabs (which a
        capture does on its own) never collapses another tab's scroll position. -->
   <header class="panel-head">
+    <!-- Loud above everything when page.js's self-check says an Unabated bundle
+         moved a shape it reads (#123): which probes failed, and what that
+         breaks. Hidden whenever the last report is fresh and passing. -->
+    <div id="page-break" class="warning bad" hidden>
+      <div id="page-break-summary"></div>
+      <div id="page-break-detail" class="page-break-detail"></div>
+    </div>
+
     <nav class="tabs" id="tabs">
       <button type="button" data-tab="edges">Edges <span id="edges-count" class="count" hidden></span></button>
       <button type="button" data-tab="ticket" class="active">Ticket</button>
@@ -188,6 +196,7 @@
   </section>
 
   <script src="kelly.js"></script>
+  <script src="selfcheck.js"></script>
   <script src="feed.js"></script>
   <script src="scanner.js"></script>
   <script src="locate.js"></script>

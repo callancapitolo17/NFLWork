@@ -57,6 +57,35 @@ tab is running the capture script", reload the tab.
   `forEachNode` scan of every row's `sides`. If both fail the panel says
   **Could not read this cell** with the reason; it never shows a stake it
   cannot back.
+- **Self-check (#123).** Everything above is read off shapes Unabated owns,
+  and when a new bundle moves one the old failure was silence: an empty edges
+  list, a ticket that captures nothing, "Not watching the line" — none of it
+  distinguishable from a quiet board. `page.js` now probes each shape it
+  depends on at load (it dies with every navigation) and every 30 s after,
+  and publishes per-probe pass/fail to `chrome.storage.local.selfCheck`; the
+  panel shows one red line above the tabs, **"Unabated changed: …"**, naming
+  the probes that failed with a detail line each. The probes: odds cells on
+  the page, the cell's React props (`marketLine` + `sideIndex`), the grid row
+  behind a cell (`node.data.sides` keyed `si<n>:`), Unabated's edge
+  (`edge.edge` / `ge`), its fair (`bacr`), the exchange source price
+  (`sourcePrice` + `sourceFormat`), your book selection
+  (`userSettings.gameOdds`), the Alts expander (`setExpanded`) and the locate
+  lookup (points / side / book / event, then `.ag-row[row-id]` and the cell
+  in the book's column). The pass/fail decisions live in `extension/selfcheck.js`
+  — a pure module, dual-loaded (a plain `<script>` in the panel, a MAIN-world
+  content script beside `page.js`, `require()` in the tests) — and `page.js`
+  only does the reads.
+  Two deliberate calls: a probe checks that the **field is still there**, not
+  that today's value is usable (a book that stops publishing a fair is not a
+  bundle change, and neither is a user who has unticked every book — crying
+  wolf on a quiet board would make the banner worthless, so the value counts
+  go in the detail line), and a quiet page is **waiting**, silent: no grid
+  rendered, or a grid with no rows in it (an empty slate, or your own
+  filters). Two cases are loud instead, because neither can be a quiet board:
+  grid rows rendered with no odds cell in any of them (a renamed cell class —
+  exactly the break this exists for) and an odds screen that has rendered
+  nothing 60 s after load.
+  This makes the break visible; fixing the read is still a per-change job.
 - Fields: `price` = `americanPrice` (exchanges have only `price`), `fair` =
   `marketLine.bacr` (Unabated's no-vig price at that book's points),
   side 0 = away / Over, side 1 = home / Under.
@@ -168,7 +197,8 @@ tab is running the capture script", reload the tab.
 ## Panel layout
 
 The panel is a fixed header over one scrolling pane per tab. The header holds
-the tab bar, the bets header line, and (on the Edges tab) the filter toolbar;
+the bundle self-check banner (red, only when a probe failed), the tab bar, the
+bets header line, and (on the Edges tab) the filter toolbar;
 everything else scrolls inside its own tab. The header stops at 60% of the
 panel and scrolls itself past that, so the filter drawer and the settings
 block — which live in it — stay reachable in a short window instead of
@@ -900,7 +930,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 185 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 202 tests) and
 the bets service's pytest suite (97 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -913,6 +943,18 @@ rethrow that drops its cause — and has no style rules; it knows the
 modules are dual-loaded (plain `<script>` publishing `globalThis.UnabatedX`
 in the panel, `require()` in tests), so no file needs a disable comment.
 The extension itself has no build step and stays loaded unpacked.
+
+`page_rows.test.js` runs the real `page.js` in a vm sandbox with a fake
+window/document: which grid row a capture classifies and watches against,
+what the watcher reads back, resume after a navigation — and the self-check
+(#123), which loads `selfcheck.js` into the same sandbox the manifest loads
+it into. Those cases assert both directions: a board shaped like the live one
+passes every probe and the panel says nothing, and renaming one field on the
+fixture's lines (`bacr`, `sourcePrice`, `edge`+`ge`), dropping `setExpanded`,
+emptying `userSettings.gameOdds`, hiding the odds cells or the `.ag-row`
+element makes the report name exactly that probe — and nothing else. One case
+holds the published report to verdicts only (no sampled board line may reach
+storage), since it is written on every probe.
 
 `betsview.test.js` covers the panel's bet-history presentation helpers:
 freshness colours at the 5 / 60 min bounds, the per-venue rows (unconfigured,
@@ -1050,6 +1092,12 @@ in red.
 - **No Unabated fair for this line**: Unabated has no edge for that line
   (common on lopsided moneylines and exchange-only lines), so there is
   nothing to size from. Not a bug; pick a line that shows an edge %.
+- **"Unabated changed: …" above the tabs**: `page.js`'s self-check (#123)
+  found a fiber/grid shape it reads is gone. The line under it names each
+  failed probe and what it saw; that is the reproduction. It clears by itself
+  within 30 s of the shape coming back (or the page.js read being fixed), and
+  hides on its own when no Unabated tab has self-checked in 90 s. The Ticket
+  and Edges panes say what the failure breaks instead of just showing empty.
 - **Could not read this cell**: Unabated changed prop or class names. Check
   `.odds-cell-action-shell` still exists and the fiber props still carry
   `marketLine` / `sideIndex` (see the DOM notes in the plan doc); the

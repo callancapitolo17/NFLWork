@@ -20,11 +20,16 @@ const vm = require("node:vm");
 process.env.TZ = "America/Los_Angeles";
 
 const PAGE_JS = process.env.PAGE_JS || path.join(__dirname, "..", "extension", "page.js");
+// selfcheck.js is injected immediately before page.js (manifest, MAIN world)
+// and page.js takes its reference off the page global. The sandbox loads it
+// the same way; `selfcheck` here is the same module under require().
+const SELF_CHECK_JS = path.join(__dirname, "..", "extension", "selfcheck.js");
+const selfcheck = require("../extension/selfcheck.js");
 
 // `page.window` is the sandbox: `posted` collects every window.postMessage
 // (what content.js would receive), `deliver(type, payload)` plays a message
 // from content.js into page.js's listener, `watchTimers()` counts watch intervals started.
-function loadPage(pathname = "/nfl/odds", { gridRoots = [] } = {}) {
+function loadPage(pathname = "/nfl/odds", { gridRoots = [], shells = [], rowElements = [], rendered = (selector) => selector.startsWith(".ag-row") } = {}) {
   const listeners = [];
   const posted = [];
   let timers = 0;
@@ -38,12 +43,21 @@ function loadPage(pathname = "/nfl/odds", { gridRoots = [] } = {}) {
     postMessage(data) { posted.push(data); },
     addEventListener(type, fn) { if (type === "message") listeners.push(fn); },
     document: {
-      addEventListener() {}, removeEventListener() {}, querySelector: () => null,
-      querySelectorAll: (selector) => (selector === ".ag-root" ? gridRoots : []),
+      addEventListener() {}, removeEventListener() {},
+      // Only the locate flow and the self-check's locate probe use
+      // querySelector; both ask for `.ag-row[row-id=...]` and a cell inside it.
+      querySelector: (selector) => (rendered(selector) ? { selector } : null),
+      querySelectorAll: (selector) => {
+        if (selector === ".ag-root") return gridRoots;
+        if (selector === ".ag-row") return rowElements;
+        if (selector === ".odds-cell-action-shell") return shells;
+        return [];
+      },
     },
   };
   sandbox.window = sandbox;
   vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(SELF_CHECK_JS, "utf8"), sandbox, { filename: "selfcheck.js" });
   vm.runInContext(fs.readFileSync(PAGE_JS, "utf8"), sandbox, { filename: "page.js" });
   assert.ok(sandbox.__unabatedTicketInternals, "page.js exposed nothing to the harness");
   const timersAtLoad = timers; // the heartbeat
@@ -79,7 +93,8 @@ function spreadRow(entry, { gridKey = "eid:125807:pid:tid5:eid:tid5:bt2:pt1:bst:
 }
 
 function topNode(data, id) {
-  return { id, data, level: 0, detail: false, parent: { data: null } };
+  // AG Grid row nodes carry setExpanded; the Alts probe and locate both need it.
+  return { id, data, level: 0, detail: false, parent: { data: null }, setExpanded() {} };
 }
 
 function childNode(data, id, parent) {
@@ -334,4 +349,229 @@ test("resume: a tab on another league, or a ticket whose game has started, is le
   assert.equal(started.watchTimers(), 0, `naive UTC ${naiveHourAgo} read as local time`);
   started.deliver("resume", { ...ticket, eventStart: null });
   assert.equal(started.watchTimers(), 1, "no start time known: resumed");
+});
+
+// ---- the bundle self-check (#123) ----------------------------------------
+//
+// page.js dies with every navigation and Unabated deploys mid-session, so the
+// shapes it reads are re-probed on each load and on a timer. These run the
+// real page.js against a fiber-shaped board and assert what the panel would
+// be told: every probe passing on today's shape, and the probe NAMED when one
+// field is renamed out from under it.
+
+const USER_SETTINGS = {
+  gameOdds: { books: [{ marketSourceId: BOOK, isUnavailable: false }, { marketSourceId: 4, isUnavailable: true }] },
+};
+
+// A book entry carrying every field page.js reads off a line.
+function probeLine(overrides = {}) {
+  return {
+    points: -2.5, price: 182, americanPrice: 182, ge: 0.0483, edge: { edge: 4.83 },
+    bacr: 169, sourcePrice: 0.352, sourceFormat: 4, statusId: 1, alternateLines: [],
+    ...overrides,
+  };
+}
+
+// A rendered odds cell: the price shell's fiber walks up to the line
+// renderer's props and then to the AG Grid cell renderer's (api, node,
+// context) — the same walk a click makes.
+function oddsCell({ api, node, marketLine, sideIndex = 1 }) {
+  const context = { ...CONTEXT, userSettings: USER_SETTINGS };
+  const gridFiber = { memoizedProps: { api, node, context }, return: null };
+  const lineFiber = { memoizedProps: { marketLine, sideIndex, context }, return: gridFiber };
+  return {
+    "__reactFiber$test": lineFiber,
+    getAttribute: (name) => (name === "data-side-index" ? String(sideIndex) : null),
+  };
+}
+
+// One market's rows plus the cell rendered over the clicked one.
+function probeBoard(line = probeLine()) {
+  const row = spreadRow(line);
+  const node = topNode(row, "r0");
+  const api = gridApi([node]);
+  return {
+    line, row, node, api,
+    shells: [oddsCell({ api, node, marketLine: line })],
+    rowElements: [{ id: "r0" }],
+    gridRoots: [gridRoot(api)],
+  };
+}
+
+function probePage(board = probeBoard(), options = {}) {
+  return loadPage("/nfl/odds", { gridRoots: board.gridRoots, shells: board.shells, rowElements: board.rowElements, ...options });
+}
+
+function lastReport(page) {
+  const reports = page.posted.filter((message) => message.type === "selfcheck");
+  assert.ok(reports.length, "page.js published no self-check");
+  return reports[reports.length - 1].payload;
+}
+
+function stateOf(report, id) {
+  const probe = report.probes.find((entry) => entry.id === id);
+  assert.ok(probe, `no probe ${id} in the report`);
+  return probe.state;
+}
+
+test("self-check: today's board passes every probe and says nothing", () => {
+  const report = lastReport(probePage());
+  const notPassing = report.probes.filter((probe) => probe.state !== "pass").map((probe) => `${probe.id}: ${probe.detail}`);
+  assert.equal(notPassing.join(" | "), "", "probes did not pass on a board shaped like the live one");
+  assert.equal(report.status, "ok");
+  assert.equal(selfcheck.summaryOf(report), null);
+  assert.equal(selfcheck.noteFor(report, "ticket"), null);
+  assert.equal(selfcheck.noteFor(report, "edges"), null);
+});
+
+// The issue's acceptance test: rename one probed prop, and the panel must name
+// that probe rather than showing an empty pane.
+for (const [renamed, probeId, label] of [
+  ["bacr", "fair", "Unabated's fair price (bacr)"],
+  ["sourcePrice", "sourcePrice", "the exchange source price"],
+]) {
+  test(`self-check: renaming ${renamed} on the board's lines names that probe`, () => {
+    const line = probeLine();
+    line[`${renamed}Renamed`] = line[renamed];
+    delete line[renamed];
+    const report = lastReport(probePage(probeBoard(line)));
+    assert.equal(report.status, "changed");
+    assert.equal(report.failed.join(","), probeId);
+    assert.equal(selfcheck.summaryOf(report), `Unabated changed: ${label}`);
+    assert.match(selfcheck.noteFor(report, "ticket"), new RegExp(label.replace(/[()]/g, "\\$&")));
+    // A line-shape failure is the ticket's, not the Edges list's.
+    assert.equal(selfcheck.noteFor(report, "edges"), null);
+  });
+}
+
+test("self-check: the edge field moving names the edge probe, whichever of edge/ge it was", () => {
+  const line = probeLine();
+  delete line.edge;
+  delete line.ge;
+  const report = lastReport(probePage(probeBoard(line)));
+  assert.equal(report.failed.join(","), "edge");
+  assert.equal(stateOf(report, "fair"), "pass");
+});
+
+test("self-check: a renamed cell class is a change, not a slow load", () => {
+  const board = probeBoard();
+  // Rows rendered; nothing in them matched .odds-cell-action-shell.
+  const report = lastReport(probePage({ ...board, shells: [] }));
+  assert.equal(report.status, "changed");
+  assert.equal(report.failed.join(","), "cells");
+  assert.match(selfcheck.summaryOf(report), /odds cells/);
+  // Nothing else can be judged without a cell, and nothing else is blamed.
+  assert.equal(stateOf(report, "fiber"), "unknown");
+  assert.equal(stateOf(report, "books"), "unknown");
+});
+
+test("self-check: a tab with no grid yet is waiting, and the panel stays quiet", () => {
+  const report = lastReport(loadPage("/nfl/odds"));
+  assert.equal(report.status, "waiting");
+  assert.equal(report.failed.join(","), "");
+  assert.equal(selfcheck.summaryOf(report), null);
+  assert.equal(report.probes.every((probe) => probe.state === "unknown"), true);
+});
+
+test("self-check: a grid up with no rows is an empty board, not a change", () => {
+  const board = probeBoard();
+  // The user filtered every game away, or the slate is over: the grid is
+  // mounted and empty. Shouting "Unabated changed" here would train the
+  // reader to ignore the banner.
+  const report = lastReport(probePage({ ...board, shells: [], rowElements: [] }));
+  assert.equal(report.status, "waiting");
+  assert.equal(selfcheck.summaryOf(report), null);
+});
+
+test("self-check: every book unticked is the user's selection, not a moved field", () => {
+  const board = probeBoard();
+  const settings = { gameOdds: { books: [{ marketSourceId: BOOK, isUnavailable: true }] } };
+  for (const fiber of [board.shells[0].__reactFiber$test, board.shells[0].__reactFiber$test.return]) {
+    fiber.memoizedProps.context = { ...CONTEXT, userSettings: settings };
+  }
+  const report = lastReport(probePage(board));
+  assert.equal(report.status, "ok");
+  assert.equal(stateOf(report, "books"), "pass");
+});
+
+test("self-check: the book selection failing is the Edges tab's problem, not the ticket's", () => {
+  const board = probeBoard();
+  const cell = board.shells[0];
+  // userSettings kept, gameOdds gone: the shape page.js reads the Unabated
+  // book selection from (live 2026-09-10 it sat one level down under it).
+  for (const fiber of [cell.__reactFiber$test, cell.__reactFiber$test.return]) {
+    fiber.memoizedProps.context = { ...CONTEXT, userSettings: { theme: "dark" } };
+  }
+  const report = lastReport(probePage(board));
+  assert.equal(report.failed.join(","), "books");
+  assert.match(selfcheck.noteFor(report, "edges"), /book selection/);
+  assert.equal(selfcheck.noteFor(report, "ticket"), null);
+});
+
+test("self-check: a row node without setExpanded fails the Alts probe", () => {
+  const board = probeBoard();
+  delete board.node.setExpanded;
+  const report = lastReport(probePage(board));
+  assert.equal(report.failed.join(","), "alts");
+  assert.match(selfcheck.summaryOf(report), /Alts expander/);
+  // Alts is the locate path too, so both views are told.
+  assert.ok(selfcheck.noteFor(report, "ticket"));
+  assert.ok(selfcheck.noteFor(report, "edges"));
+});
+
+test("self-check: the row element the locate path keys on going missing names the lookup", () => {
+  const report = lastReport(probePage(probeBoard(), { rendered: () => false }));
+  assert.equal(report.failed.join(","), "cellLookup");
+  assert.match(report.probes.find((probe) => probe.id === "cellLookup").detail, /\.ag-row/);
+});
+
+test("self-check: the published report carries verdicts only, never the sampled lines", () => {
+  const report = lastReport(probePage());
+  const json = JSON.stringify(report);
+  assert.equal(json.includes("alternateLines"), false, "a raw board line reached storage");
+  assert.ok(json.length < 4096, `report is ${json.length} bytes; it is written to storage on every probe`);
+});
+
+test("self-check: it is re-run on a timer, so a mid-session deploy surfaces without a reload", () => {
+  const board = probeBoard();
+  const page = probePage(board);
+  assert.equal(lastReport(page).status, "ok");
+  // page.js registers the self-check interval at load; the callback is what a
+  // later tick runs, so re-running it against a moved board is the same path.
+  delete board.line.bacr;
+  page.runSelfCheck();
+  assert.equal(lastReport(page).failed.join(","), "fair");
+});
+
+test("self-check: a sample that throws is reported as a change, not swallowed", () => {
+  const report = selfcheck.errorReport({ at: Date.now(), url: "https://tools.unabated.com/nfl/odds", build: "x", message: "boom" });
+  assert.equal(report.status, "changed");
+  assert.match(selfcheck.summaryOf(report), /reading the page/);
+  assert.match(selfcheck.detailOf(report), /boom/);
+});
+
+test("self-check: an odds screen that has rendered nothing a minute after load is a change; a fresh one is waiting", () => {
+  const bare = { path: "/nfl/odds", shells: 0, rowElements: 0, gridRoots: 0, lines: [] };
+  assert.equal(selfcheck.run({ ...bare, sinceLoadMs: 5000 }).status, "waiting");
+  const late = selfcheck.run({ ...bare, sinceLoadMs: 61000 });
+  assert.equal(late.status, "changed");
+  assert.equal(late.failed.join(","), "cells");
+  // Not the odds screen: nothing is expected to render, however long ago.
+  assert.equal(selfcheck.run({ ...bare, path: "/account", sinceLoadMs: 600000 }).status, "waiting");
+});
+
+test("self-check: a malformed sample never throws out of the module", () => {
+  for (const sample of [null, undefined, 42, {}, { shells: 3, lines: "no", cell: "no" }]) {
+    const report = selfcheck.run(sample);
+    assert.ok(["ok", "changed", "waiting"].includes(report.status), `status ${report.status} for ${JSON.stringify(sample)}`);
+  }
+});
+
+test("self-check: a best-line cell first in DOM order does not get the bundle blamed for its missing book", () => {
+  const board = probeBoard();
+  // A cell whose marketLine is a copy the row does not hold and which sits in
+  // a column with no book id: bookIdOf falls all the way through on it.
+  const orphan = oddsCell({ api: board.api, node: board.node, marketLine: { ...board.line } });
+  const report = lastReport(probePage({ ...board, shells: [orphan, ...board.shells] }));
+  assert.equal(report.status, "ok", report.probes.filter((probe) => probe.state !== "pass").map((probe) => `${probe.id}: ${probe.detail}`).join(" | "));
 });
