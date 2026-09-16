@@ -69,9 +69,13 @@ re-injection could not reach still needs one).
   `page.js` already reports its own failure where it is used — a failed
   capture prints the cell's actual keys, the watcher posts its error, the
   book-selection read posts the `userSettings` shape — but all of those only
-  fire once you click. So `page.js` runs one check per load: on a grid that
-  has rendered `.ag-row`s, at least one `.odds-cell-action-shell` must carry
-  React props with `marketLine` + `sideIndex` on them. Zero is the new-bundle
+  fire once you click. So `page.js` runs one check per load, on the odds screen
+  only (a path segment `odds`; other Unabated pages may render a grid with no
+  price cells at all): on a grid that has rendered `.ag-row`s, at least one
+  `.odds-cell-action-shell` must carry React props with `marketLine` +
+  `sideIndex` on them. A failing check is re-run once 3 s later and published
+  only if it still fails, since AG Grid can mount a row a frame before React
+  mounts its price cells. Zero is the new-bundle
   state and the panel shows one red banner above the tabs naming what it
   found (no price cells at all, or cells whose props no longer say what a
   ticket needs, with the shapes seen up the fiber). A board with **no rows**

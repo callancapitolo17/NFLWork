@@ -29,15 +29,15 @@ function loadPage(pathname = "/nfl/odds", { gridRoots = [], rows = [], shells = 
   const posted = [];
   let timers = 0;
   const intervalCallbacks = [];
+  const timeouts = [];
   const bySelector = { ".ag-root": gridRoots, ".ag-row": rows, ".odds-cell-action-shell": shells };
   const sandbox = {
     __unabatedTicketExposeInternals: true,
     console: { info() {}, warn() {}, error() {} },
     setInterval: (fn) => { timers += 1; intervalCallbacks.push(fn); return timers; },
     clearInterval() {},
-    // The shape check retries while the grid has no rows; the harness never
-    // runs those, it calls shapeCheckResult directly.
-    setTimeout() { return 0; },
+    // Held, never run on their own: `runTimeouts()` runs what is pending.
+    setTimeout: (fn) => { timeouts.push(fn); return timeouts.length; },
     Element: class {},
     location: { origin: "https://tools.unabated.com", pathname, href: `https://tools.unabated.com${pathname}` },
     postMessage(data) { posted.push(data); },
@@ -58,7 +58,8 @@ function loadPage(pathname = "/nfl/odds", { gridRoots = [], rows = [], shells = 
   const deliver = (type, payload) => listeners.forEach((fn) => fn({ source: innerWindow, data: { source: "unabated-ticket", type, payload } }));
   // The heartbeat is the one interval started at load.
   const heartbeat = () => intervalCallbacks[0]();
-  return { ...sandbox.__unabatedTicketInternals, posted, deliver, heartbeat, watchTimers: () => timers - timersAtLoad };
+  const runTimeouts = () => timeouts.splice(0).forEach((fn) => fn());
+  return { ...sandbox.__unabatedTicketInternals, posted, deliver, heartbeat, runTimeouts, watchTimers: () => timers - timersAtLoad };
 }
 
 // A rendered grid root whose one cell reaches `api` through fake React fiber
@@ -410,6 +411,7 @@ test("shape check: the verdict rides on every heartbeat, so a post content.js mi
   // load-time post can land before content.js is listening.
   const renamed = { line: { points: -2.5 }, sideIndex: 1 };
   const page = loadPage("/nfl/odds", { rows: [{}], shells: [cellShell(renamed)] });
+  page.runTimeouts(); // the confirming re-check
   page.posted.length = 0;
   page.heartbeat();
   const resent = page.posted.filter((message) => message.type === "pagecheck");
@@ -422,4 +424,29 @@ test("shape check: 'checking' is never re-sent, so a tab with no rows cannot kee
   page.posted.length = 0;
   page.heartbeat();
   assert.equal(page.posted.filter((message) => message.type === "pagecheck").length, 0);
+});
+
+const shapeVerdicts = (page) => page.posted.filter((message) => message.type === "pagecheck").map((message) => message.payload.status);
+
+test("shape check: a page other than the odds screen is not checked, even with grid rows and no price cells", () => {
+  const page = loadPage("/nfl/props", { rows: [{}, {}], shells: [] });
+  assert.equal(page.shapeCheckResult(), null);
+  page.runTimeouts();
+  assert.deepEqual(shapeVerdicts(page), ["checking"]);
+});
+
+test("shape check: a 'changed' is published only after it holds on a re-check a few seconds later", () => {
+  const page = loadPage("/nfl/odds", { rows: [{}], shells: [] });
+  assert.deepEqual(shapeVerdicts(page), ["checking"], "published on the first sighting");
+  page.runTimeouts();
+  assert.deepEqual(shapeVerdicts(page), ["checking", "changed"]);
+});
+
+test("shape check: rows that mount a moment before their price cells do not raise the banner", () => {
+  const rows = [{}];
+  const shells = [];
+  const page = loadPage("/nfl/odds", { rows, shells });
+  shells.push(cellShell(READABLE_CELL_PROPS)); // React mounts the cells before the re-check
+  page.runTimeouts();
+  assert.deepEqual(shapeVerdicts(page), ["checking", "ok"]);
 });

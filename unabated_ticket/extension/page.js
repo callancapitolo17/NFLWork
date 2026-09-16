@@ -865,7 +865,15 @@
   const GRID_ROW_SELECTOR = ".ag-row";
   const SHAPE_CHECK_ATTEMPTS = 20;
   const SHAPE_CHECK_RETRY_MS = 1000;
+  // A "changed" is re-checked once this much later before it is published:
+  // AG Grid can mount a row a frame before React mounts the price cells in
+  // it, and a check landing in that gap must not raise the banner.
+  const SHAPE_CHECK_CONFIRM_MS = 3000;
   const FIBER_SHAPE_HOPS = 6;
+  // Only the odds screen ("/cfb/odds") is checked: other tools.unabated.com
+  // pages may render an AG Grid with no price cells in it at all, which is
+  // not a changed bundle. A path segment, so "/nfl/odds/..." still counts.
+  const ODDS_SCREEN_PATH = /\/odds(\/|$)/;
 
   // What the cell carries instead, so the fix does not start with a bisect:
   // whether React is still attaching a fiber at all, and the props shapes up
@@ -892,9 +900,10 @@
     return readable;
   }
 
-  // null while the grid has not rendered a row yet (keep waiting); otherwise
-  // the result to publish.
+  // null while there is nothing to check yet — not on the odds screen, or its
+  // grid has not rendered a row (keep waiting); otherwise the result.
   function shapeCheckResult() {
+    if (!ODDS_SCREEN_PATH.test(window.location.pathname)) return null;
     const rows = document.querySelectorAll(GRID_ROW_SELECTOR).length;
     if (!rows) return null;
     const shells = Array.from(document.querySelectorAll(CELL_SHELL_SELECTOR));
@@ -928,19 +937,26 @@
     post("pagecheck", payload);
   }
 
-  // Retries only while the grid has no rows — it is one check, not a poll.
-  function runShapeCheck(attempt) {
-    if (retired) return;
-    let result;
+  function checkShapeOnce() {
     try {
-      result = shapeCheckResult();
+      return shapeCheckResult();
     } catch (error) {
-      publishShapeCheck({ status: "changed", rows: null, shells: null, readable: null, message: `the page could not be checked: ${error.message}`, detail: null });
-      return;
+      return { status: "changed", rows: null, shells: null, readable: null, message: `the page could not be checked: ${error.message}`, detail: null };
     }
+  }
+
+  // Retries only while there is nothing to check — it is one check, not a
+  // poll. `suspected` is set on the confirming re-check of a "changed".
+  function runShapeCheck(attempt, suspected) {
+    if (retired) return;
+    const result = checkShapeOnce();
     if (!result) {
-      if (attempt < SHAPE_CHECK_ATTEMPTS) setTimeout(() => runShapeCheck(attempt + 1), SHAPE_CHECK_RETRY_MS);
+      if (attempt < SHAPE_CHECK_ATTEMPTS) setTimeout(() => runShapeCheck(attempt + 1, false), SHAPE_CHECK_RETRY_MS);
       return; // no rows ever appeared: nothing was checked, so nothing is claimed
+    }
+    if (result.status === "changed" && !suspected) {
+      setTimeout(() => runShapeCheck(attempt, true), SHAPE_CHECK_CONFIRM_MS);
+      return;
     }
     if (result.status !== "ok") console.warn("[unabated-ticket] Unabated changed:", result.message, "-", result.detail);
     publishShapeCheck(result);
@@ -1216,7 +1232,7 @@
   // Clears any previous load's verdict first, so a banner never outlives the
   // page it described; "checking" is what a board with no rows stays on.
   publishShapeCheck({ status: "checking", rows: null, shells: null, readable: null, message: null, detail: null });
-  runShapeCheck(0);
+  runShapeCheck(0, false);
   intervals.push(setInterval(heartbeat, HEARTBEAT_MS));
   console.info("[unabated-ticket] page.js active on", window.location.href);
 })();
