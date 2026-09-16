@@ -17,7 +17,14 @@ importScripts("locate.js");
 // Chrome injects content scripts only into pages loaded after the extension
 // (re)loads; a tab that was already open keeps a dead copy whose storage
 // writes fail silently, so clicks stop reaching the panel until the tab is
-// reloaded. Re-inject instead; the new page.js tells the old one to retire.
+// reloaded. Re-inject instead. Both re-injected copies replace their
+// predecessor: the new page.js posts a `takeover` the old one retires on
+// (they are separate MAIN-world IIFEs), and the new content.js calls the
+// retire hook the old one published (they share the isolated world's
+// `window`). A guard that let the NEW copy return instead would leave the
+// dead one holding the page's messages — the bug this pair of handoffs
+// closes; page.js alone was not enough, since content.js is the half that
+// writes storage.
 const UNABATED_TAB_PATTERN = "https://tools.unabated.com/*";
 // The Novig main-world mirror survives an extension reload (it is a page
 // script, and Apollo resolves window.fetch per request); only the isolated

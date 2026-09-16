@@ -24,22 +24,27 @@ const PAGE_JS = process.env.PAGE_JS || path.join(__dirname, "..", "extension", "
 // `page.window` is the sandbox: `posted` collects every window.postMessage
 // (what content.js would receive), `deliver(type, payload)` plays a message
 // from content.js into page.js's listener, `watchTimers()` counts watch intervals started.
-function loadPage(pathname = "/nfl/odds", { gridRoots = [] } = {}) {
+function loadPage(pathname = "/nfl/odds", { gridRoots = [], rows = [], shells = [] } = {}) {
   const listeners = [];
   const posted = [];
   let timers = 0;
+  const intervalCallbacks = [];
+  const timeouts = [];
+  const bySelector = { ".ag-root": gridRoots, ".ag-row": rows, ".odds-cell-action-shell": shells };
   const sandbox = {
     __unabatedTicketExposeInternals: true,
     console: { info() {}, warn() {}, error() {} },
-    setInterval: () => { timers += 1; return timers; },
+    setInterval: (fn) => { timers += 1; intervalCallbacks.push(fn); return timers; },
     clearInterval() {},
+    // Held, never run on their own: `runTimeouts()` runs what is pending.
+    setTimeout: (fn) => { timeouts.push(fn); return timeouts.length; },
     Element: class {},
     location: { origin: "https://tools.unabated.com", pathname, href: `https://tools.unabated.com${pathname}` },
     postMessage(data) { posted.push(data); },
     addEventListener(type, fn) { if (type === "message") listeners.push(fn); },
     document: {
       addEventListener() {}, removeEventListener() {}, querySelector: () => null,
-      querySelectorAll: (selector) => (selector === ".ag-root" ? gridRoots : []),
+      querySelectorAll: (selector) => bySelector[selector] || [],
     },
   };
   sandbox.window = sandbox;
@@ -51,7 +56,10 @@ function loadPage(pathname = "/nfl/odds", { gridRoots = [] } = {}) {
   // context is the contextified global, not the outer sandbox object.
   const innerWindow = vm.runInContext("window", sandbox);
   const deliver = (type, payload) => listeners.forEach((fn) => fn({ source: innerWindow, data: { source: "unabated-ticket", type, payload } }));
-  return { ...sandbox.__unabatedTicketInternals, posted, deliver, watchTimers: () => timers - timersAtLoad };
+  // The heartbeat is the one interval started at load.
+  const heartbeat = () => intervalCallbacks[0]();
+  const runTimeouts = () => timeouts.splice(0).forEach((fn) => fn());
+  return { ...sandbox.__unabatedTicketInternals, posted, deliver, heartbeat, runTimeouts, watchTimers: () => timers - timersAtLoad };
 }
 
 // A rendered grid root whose one cell reaches `api` through fake React fiber
@@ -334,4 +342,111 @@ test("resume: a tab on another league, or a ticket whose game has started, is le
   assert.equal(started.watchTimers(), 0, `naive UTC ${naiveHourAgo} read as local time`);
   started.deliver("resume", { ...ticket, eventStart: null });
   assert.equal(started.watchTimers(), 1, "no start time known: resumed");
+});
+
+// ---- load-time shape check ------------------------------------------------
+//
+// The one check page.js runs before you click anything: on a grid that has
+// rendered rows, at least one price cell must still carry the React props a
+// ticket is read from. Everything else in page.js reports itself at the point
+// of use, so this stays a single count, not a probe matrix.
+
+// A rendered price cell. `props` is what its fiber carries; the real cell's
+// props are {marketLine, sideIndex, context} and only that shape is readable.
+function cellShell(props) {
+  return { "__reactFiber$test": { memoizedProps: props, return: null } };
+}
+
+const READABLE_CELL_PROPS = { marketLine: { points: -2.5, price: 182 }, sideIndex: 1, context: CONTEXT };
+
+test("shape check: a grid with rows whose cells carry the ticket props passes", () => {
+  const page = loadPage("/nfl/odds", { rows: [{}, {}, {}], shells: [cellShell(READABLE_CELL_PROPS)] });
+  const result = page.shapeCheckResult();
+  assert.equal(result.status, "ok");
+  assert.equal(result.rows, 3);
+  assert.equal(result.readable, 1);
+});
+
+test("shape check: a board with no rows is not checked at all, so nothing is claimed", () => {
+  const page = loadPage("/nfl/odds", { rows: [], shells: [] });
+  assert.equal(page.shapeCheckResult(), null);
+});
+
+test("shape check: rows but no price cells names the selector that moved", () => {
+  const page = loadPage("/nfl/odds", { rows: [{}, {}], shells: [] });
+  const result = page.shapeCheckResult();
+  assert.equal(result.status, "changed");
+  assert.match(result.message, /no price cells \(\.odds-cell-action-shell\) on a grid showing 2 rows/);
+});
+
+test("shape check: renaming the prop a ticket is read from fails the check and prints the shape found", () => {
+  // Unabated's next bundle renames marketLine -> line: the cell still renders
+  // and still has a fiber, it just no longer says what the ticket needs.
+  const renamed = { line: { points: -2.5, price: 182 }, sideIndex: 1, context: CONTEXT };
+  const page = loadPage("/nfl/odds", { rows: [{}, {}], shells: [cellShell(renamed), cellShell(renamed)] });
+  const result = page.shapeCheckResult();
+  assert.equal(result.status, "changed");
+  assert.equal(result.shells, 2);
+  assert.equal(result.readable, 0);
+  assert.match(result.message, /2 price cells on 2 rows/);
+  assert.match(result.detail, /line,sideIndex,context/, result.detail);
+});
+
+test("shape check: a price cell React no longer attaches a fiber to says so", () => {
+  const page = loadPage("/nfl/odds", { rows: [{}], shells: [{}] });
+  const result = page.shapeCheckResult();
+  assert.equal(result.status, "changed");
+  assert.match(result.detail, /no __reactFiber\$ key/);
+});
+
+test("shape check: page.js publishes 'checking' on load, so a previous load's verdict never stands", () => {
+  const page = loadPage("/nfl/odds", { rows: [], shells: [] });
+  const checks = page.posted.filter((message) => message.type === "pagecheck");
+  assert.equal(checks.length, 1);
+  assert.equal(checks[0].payload.status, "checking");
+});
+
+test("shape check: the verdict rides on every heartbeat, so a post content.js missed is not a silent miss", () => {
+  // Extension reload re-injects page.js and content.js in two round trips; the
+  // load-time post can land before content.js is listening.
+  const renamed = { line: { points: -2.5 }, sideIndex: 1 };
+  const page = loadPage("/nfl/odds", { rows: [{}], shells: [cellShell(renamed)] });
+  page.runTimeouts(); // the confirming re-check
+  page.posted.length = 0;
+  page.heartbeat();
+  const resent = page.posted.filter((message) => message.type === "pagecheck");
+  assert.equal(resent.length, 1);
+  assert.equal(resent[0].payload.status, "changed");
+});
+
+test("shape check: 'checking' is never re-sent, so a tab with no rows cannot keep clearing another tab's verdict", () => {
+  const page = loadPage("/nfl/odds", { rows: [], shells: [] });
+  page.posted.length = 0;
+  page.heartbeat();
+  assert.equal(page.posted.filter((message) => message.type === "pagecheck").length, 0);
+});
+
+const shapeVerdicts = (page) => page.posted.filter((message) => message.type === "pagecheck").map((message) => message.payload.status);
+
+test("shape check: a page other than the odds screen is not checked, even with grid rows and no price cells", () => {
+  const page = loadPage("/nfl/props", { rows: [{}, {}], shells: [] });
+  assert.equal(page.shapeCheckResult(), null);
+  page.runTimeouts();
+  assert.deepEqual(shapeVerdicts(page), ["checking"]);
+});
+
+test("shape check: a 'changed' is published only after it holds on a re-check a few seconds later", () => {
+  const page = loadPage("/nfl/odds", { rows: [{}], shells: [] });
+  assert.deepEqual(shapeVerdicts(page), ["checking"], "published on the first sighting");
+  page.runTimeouts();
+  assert.deepEqual(shapeVerdicts(page), ["checking", "changed"]);
+});
+
+test("shape check: rows that mount a moment before their price cells do not raise the banner", () => {
+  const rows = [{}];
+  const shells = [];
+  const page = loadPage("/nfl/odds", { rows, shells });
+  shells.push(cellShell(READABLE_CELL_PROPS)); // React mounts the cells before the re-check
+  page.runTimeouts();
+  assert.deepEqual(shapeVerdicts(page), ["checking", "ok"]);
 });

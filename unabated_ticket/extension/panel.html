@@ -10,6 +10,10 @@
        Everything below it scrolls in its own pane, so switching tabs (which a
        capture does on its own) never collapses another tab's scroll position. -->
   <header class="panel-head">
+    <!-- page.js's once-per-load shape check: shown only when Unabated's price
+         cells no longer carry the props a ticket is read from. -->
+    <div id="shape-banner" class="warning bad shape-banner" hidden></div>
+
     <nav class="tabs" id="tabs">
       <button type="button" data-tab="edges">Edges <span id="edges-count" class="count" hidden></span></button>
       <button type="button" data-tab="ticket" class="active">Ticket</button>
