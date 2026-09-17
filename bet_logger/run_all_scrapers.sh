@@ -1,7 +1,9 @@
 #!/bin/bash
 
-# Run All Bet Scrapers
-# Runs all betting platform scrapers in sequence.
+# Run Bet Scrapers
+# Runs the active betting platform scrapers in sequence: BFA primary
+# ("Betfastaction") and BetOnline. Wagerzon, Hoop88 and BFAJ were dropped
+# 2026-09-16 at the user's request; their scrapers remain runnable by hand.
 # Continues to the next scraper even if one fails.
 
 cd "/Users/callancapitolo/NFLWork/bet_logger"
@@ -15,32 +17,6 @@ echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================"
 echo ""
 
-# Run Wagerzon scraper (single surviving account; logged to the sheet as WagerzonC)
-echo "[$(date '+%H:%M:%S')] Running Wagerzon scraper (WagerzonC)..."
-echo "----------------------------------------"
-if ./venv/bin/python3 scraper_wagerzon.py; then
-    echo "[$(date '+%H:%M:%S')] WagerzonC: done"
-else
-    rc=$?
-    echo "[$(date '+%H:%M:%S')] WagerzonC: FAILED (exit $rc)"
-    FAILED=$((FAILED + 1))
-    FAILED_NAMES="${FAILED_NAMES}WagerzonC, "
-fi
-echo ""
-
-# Run Hoop88 scraper
-echo "[$(date '+%H:%M:%S')] Running Hoop88 scraper..."
-echo "----------------------------------------"
-if ./venv/bin/python3 scraper_hoop88.py; then
-    echo "[$(date '+%H:%M:%S')] Hoop88: done"
-else
-    rc=$?
-    echo "[$(date '+%H:%M:%S')] Hoop88: FAILED (exit $rc)"
-    FAILED=$((FAILED + 1))
-    FAILED_NAMES="${FAILED_NAMES}Hoop88, "
-fi
-echo ""
-
 # Run BFA Gaming scraper — primary account (recon first to get fresh auth token)
 echo "[$(date '+%H:%M:%S')] Running BFA Gaming recon + scraper (primary)..."
 echo "----------------------------------------"
@@ -52,20 +28,6 @@ else
     echo "[$(date '+%H:%M:%S')] BFA primary: FAILED (exit $rc)"
     FAILED=$((FAILED + 1))
     FAILED_NAMES="${FAILED_NAMES}BFA, "
-fi
-echo ""
-
-# Run BFA Gaming scraper — BFAJ account
-echo "[$(date '+%H:%M:%S')] Running BFA Gaming recon + scraper (BFAJ)..."
-echo "----------------------------------------"
-./venv/bin/python3 recon_bfa.py --account j
-if ./venv/bin/python3 scraper_bfa.py --account j; then
-    echo "[$(date '+%H:%M:%S')] BFAJ: done"
-else
-    rc=$?
-    echo "[$(date '+%H:%M:%S')] BFAJ: FAILED (exit $rc)"
-    FAILED=$((FAILED + 1))
-    FAILED_NAMES="${FAILED_NAMES}BFAJ, "
 fi
 echo ""
 
@@ -97,7 +59,7 @@ echo ""
 
 echo "========================================"
 if [ $FAILED -eq 0 ]; then
-    MSG="All 5 scrapers completed successfully."
+    MSG="All 2 scrapers completed successfully."
     echo "$MSG"
     /usr/local/bin/terminal-notifier -title "Bet Logger ✓" -message "$MSG" -sound Glass -group betlogger
 else
