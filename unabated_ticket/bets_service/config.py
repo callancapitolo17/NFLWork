@@ -65,6 +65,11 @@ PORT = int(_get("BETS_SERVICE_PORT", "8094"))
 
 # /bets.json returns open bets plus settled/closed ones within this window.
 RETENTION_DAYS = int(_get("BETS_RETENTION_DAYS", "30"))
+# How long a source_runs row is kept. Only the latest run per source is ever
+# read (the freshness the panel shows); the table appends ~2,000 rows/day and
+# is scanned on every /bets.json and /health, so it is pruned to this window
+# (0 = never prune).
+SOURCE_RUNS_RETENTION_DAYS = int(_get("BETS_SOURCE_RUNS_RETENTION_DAYS", "7"))
 
 # Kalshi cadence: fills + positions every poll; a full fills re-pull (the
 # reconcile) once per RECONCILE_SEC; the fills poll overlaps the previous

@@ -865,6 +865,18 @@ GETs; no order placement.
   need a preflight the service never answers), while the extension page is
   exempt from CORS for its `127.0.0.1:8094` host permission — nothing new
   in the manifest.
+- **Host rule** (every verb, #125): a request whose `Host` header is not
+  `127.0.0.1:<port>` or `localhost:<port>` is refused with 403 before any
+  route runs. This is the guard the CORS and Content-Type rules above cannot
+  be: a page at `evil.example` whose DNS flips to `127.0.0.1` (rebinding) is
+  **same-origin** with this service, so no CORS applies to it at all and it
+  could otherwise `GET /bets.json` — every venue's open positions, stakes and
+  venue ids — or `DELETE /crosswalk.json`. A browser sends the name the page
+  was loaded from, so the rebound request's Host is still `evil.example`.
+  Chrome prompts on public→loopback; Safari and Firefox do not. The port
+  comes from the listening socket, so a non-default `BETS_SERVICE_PORT`
+  guards itself (on port 80 the bare names pass too — browsers omit the
+  default port).
 - **Kalshi source** (`sources/kalshi.py`): every 60 s pulls fills since the
   last poll with a 60 s overlap (deduped on `trade_id`) and unsettled
   positions, plus one cached public GET per market and per event; a full
@@ -914,8 +926,31 @@ GETs; no order placement.
   Parlay rows have not been seen live yet; their leg grammar is a guess the
   parser refuses rather than misreads.
 - **Store** (`store.py`, `bets.duckdb`, gitignored): `bets` upserts on the
-  record id and is never pruned (the CLV work needs the history);
-  `source_runs` appends one row per poll; `team_crosswalk` (#118 step 4,
+  record id and is never pruned (the CLV work needs the history), but only
+  rows whose content actually CHANGED are written (#125): a source re-sends
+  every record it has ever seen on every poll (Kalshi: ~111 records every 60 s, of
+  which ~109 are identical) and a DuckDB update is copy-on-write, so an
+  identical rewrite appends a new version and leaves the old one as garbage —
+  that is what grew the WAL to 9.8 MB against a 4.7 MB file holding 500 rows.
+  The compare key is a `content_hash` column (sha256 of the record with
+  `sourceFetchedAt` removed — that field is the poll's own clock and would
+  defeat the skip; rows from before the column are rewritten once), checked
+  by the UPSERT's own `DO UPDATE … WHERE` — no read-back; measured 0 WAL
+  bytes over 20 identical polls of the live 528 records, ~74 ms a poll. So a
+  record's served `sourceFetchedAt`, like `last_seen_at`, is the last poll
+  that CHANGED it, not the last poll that saw it — deliberately: the panel
+  breaks merge ties on it (`bets.js dedupeByNativeId`), and restamping it
+  with the latest poll would also mark records the source no longer returns
+  (Novig and BetOnline pull a rolling window; `bets` serves open rows
+  forever) as fresh. No column records when a venue last returned a record.
+  `source_runs` appends one row per poll and is **pruned to
+  `BETS_SOURCE_RUNS_RETENTION_DAYS` (default 7; 0 disables)** — it grows
+  ~2,000 rows/day and `source_status()` full-scans it twice under the store
+  lock on every `/bets.json` and `/health`. Every source always keeps its
+  latest run and its latest successful run whatever their age (a source
+  failing for weeks still shows its last good read). The prune runs on a
+  source poll, at most hourly, and can never fail the poll (an error is
+  logged and retried an hour later). `team_crosswalk` (#118 step 4,
   primary key `(venue, league, venue_team_key)`, plus `venue_team_name`,
   `unabated_team_id`, `unabated_team_name`, `learned_from`, `learned_at`)
   holds what the panel learned, INSERT-only and cleared on DELETE. A failed poll writes a failed
@@ -949,7 +984,7 @@ One command runs everything and exits non-zero if any part fails:
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
 the node suite (`npm test` = `node --test tests/*.test.js`, 185 tests) and
-the bets service's pytest suite (97 tests, on the `kalshi_draft/venv`
+the bets service's pytest suite (108 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`
