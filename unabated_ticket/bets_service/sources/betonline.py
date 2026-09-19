@@ -504,14 +504,12 @@ class BetOnlineSource:
     def __init__(self, cookies_path: Path | None = None, poll_sec: float | None = None,
                  history_days: int | None = None,
                  session_factory: Callable[[list[dict]], object] = session_with_cookies,
-                 clock: Callable[[], float] = time.time,
-                 local_today: Callable[[], datetime] = datetime.now):
+                 clock: Callable[[], float] = time.time):
         self.poll_sec = poll_sec if poll_sec is not None else config.BETONLINE_POLL_SEC
         self._cookies_path = Path(cookies_path or config.BETONLINE_COOKIES_PATH)
         self._history_days = history_days if history_days is not None else config.BETONLINE_HISTORY_DAYS
         self._session_factory = session_factory
         self._clock = clock
-        self._local_today = local_today
         self._access_token: str | None = None
         self._access_expires_at = 0.0
         self._refresh_lock = threading.Lock()
@@ -571,11 +569,15 @@ class BetOnlineSource:
     # -- report -----------------------------------------------------------------------
 
     def _report_window(self) -> tuple[str, str]:
-        # Local dates: BetOnline returns 0 rows when EndDate is "tomorrow" in its
-        # own timezone (bet_logger/CLAUDE.md), so never compute this in UTC.
-        today = self._local_today()
-        start = today - timedelta(days=self._history_days)
-        return start.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d")
+        """(StartDate, EndDate) on the report's own clock (REPORT_TZ, the clock its
+        Date column uses). EndDate is a real timestamp cutoff, not a date: a
+        midnight EndDate hides every bet placed today until the day rolls over
+        (probed 2026-09-19). It must not run far ahead either — a cutoff ~12 h in
+        the future returned 0 rows with HTTP 200 — so it is "now", never later."""
+        now_on_report_clock = datetime.fromtimestamp(self._clock(), REPORT_TZ)
+        start = now_on_report_clock - timedelta(days=self._history_days)
+        return (start.strftime("%Y-%m-%dT00:00:00.000Z"),
+                now_on_report_clock.strftime("%Y-%m-%dT%H:%M:%S.000Z"))
 
     def _fetch_report(self, session: object, access_token: str) -> list[dict]:
         start_date, end_date = self._report_window()
@@ -585,8 +587,8 @@ class BetOnlineSource:
             response = session.post(
                 BET_HISTORY_URL, headers=headers,
                 json={
-                    "Id": None, "StartDate": f"{start_date}T00:00:00.000Z",
-                    "EndDate": f"{end_date}T00:00:00.000Z", "Status": None, "Product": None,
+                    "Id": None, "StartDate": start_date,
+                    "EndDate": end_date, "Status": None, "Product": None,
                     "WagerType": None, "FreePlayFlag": None, "StartPosition": page * PAGE_SIZE,
                     "TotalPerPage": PAGE_SIZE, "IsDailyFigureReport": False,
                 },
