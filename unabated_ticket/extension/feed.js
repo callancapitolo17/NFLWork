@@ -271,6 +271,10 @@
     return {
       key: lineKeyOf({ marketId: raw.marketId, bookId: context.bookId, sideKey: context.sideKey }),
       isAlt: false,
+      // A snapshot game row is the game's own market. The changes stream is
+      // not: it files team totals under the game total's bt3 (see the header),
+      // so only snapshot lines may feed a fair ladder (ladder.js, #130).
+      fromSnapshot: true,
       leagueId: context.leagueId,
       periodTypeId: context.periodTypeId,
       betTypeId: context.betTypeId,
@@ -305,6 +309,7 @@
     return {
       key: altLineKeyOf({ marketId: mainLine.marketId, bookId: mainLine.bookId, sideKey: mainLine.sideKey, points }),
       isAlt: true,
+      fromSnapshot: true,
       mainKey: mainLine.key,
       mainPoints: mainLine.points,
       leagueId: mainLine.leagueId,
@@ -546,7 +551,9 @@
   // Apply parsed changes to a merged state in place. Lines for events the
   // snapshot never listed are skipped (we have no teams/name for them); lines
   // for known events are added when new and replaced when their sequence
-  // number is newer. Snapshot-only fields (liquidity) carry over on replace.
+  // number is newer. Snapshot-only fields (liquidity, fromSnapshot) carry over
+  // on replace: an update shares its snapshot line's key, so it is the same
+  // market; a line the stream ADDS may be another market of the event.
   // Alt lines are never in the stream, so they stay as the last snapshot left
   // them; selectEdges reads the main line's CURRENT points for the distance
   // gate and the same-points dedupe, so a main line that moves onto an alt's
@@ -571,7 +578,7 @@
         continue;
       }
       const { eventStart, ...fields } = line;
-      state.lines[line.key] = { liquidity: held ? held.liquidity : null, ...fields };
+      state.lines[line.key] = { liquidity: held ? held.liquidity : null, fromSnapshot: held ? held.fromSnapshot === true : false, ...fields };
       counts.applied += 1;
       if (!held) counts.added += 1;
     }

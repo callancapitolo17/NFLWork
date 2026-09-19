@@ -1,6 +1,8 @@
 // Bet history for the Unabated Ticket panel: the normalised bet record, the
 // Kalshi normaliser, and the matcher that flags a line as already bet, bet on
-// the other side, or on a game you already have a position in (#114). Pure:
+// the other side, bet in another period of the same market, or on a game you
+// already have a position in (#114), and where each matched bet sits on its
+// market's axis so the next stake can be sized against it (#130). Pure:
 // no DOM, no fetch, no chrome.* — loaded as a plain <script> in panel.html
 // after teams.js (exposes globalThis.UnabatedBets) and via require() in
 // tests/bets.test.js.
@@ -16,7 +18,7 @@
 //          describeLine hands every row of the event by reference. A row
 //          shaped by hand (a captured ticket) has none and still matches
 //          through the board rows passed as options.lines.
-// Outputs matches per line ({tier, bet, label}), per-row annotations for the
+// Outputs matches per line ({tier, bet, label, position}), per-row annotations for the
 //          Edges list, the unmatched list with a reason per bet, the retention
 //          prune, the native-id dedupe, and the team-crosswalk rows an id join
 //          teaches (#118 step 4; the bets service stores them). Nothing here
@@ -50,7 +52,29 @@
 
   const teams = typeof module !== "undefined" && module.exports ? require("./teams.js") : root.UnabatedTeams;
 
-  const TIER_RANK = { same_line: 0, same_side: 1, opposite: 2, same_game: 3 };
+  // related_*: the same market in ANOTHER period of the game (a 1H total on
+  // an FG total row). same_game: a different market — never sized off (#129).
+  const TIER_RANK = { same_line: 0, same_side: 1, opposite: 2, related_same: 3, related_opposite: 4, same_game: 5 };
+  // Spreads and moneylines are cuts on one axis, the margin (away minus
+  // home); totals are cuts on the other. Bets on one axis size each other.
+  const AXIS_TOTAL = "total";
+  const AXIS_MARGIN = "margin";
+  const AXIS_OF_BET_TYPE = { total: AXIS_TOTAL, spread: AXIS_MARGIN, moneyline: AXIS_MARGIN };
+  const SIDE_AWAY_OR_OVER = 0;
+  const SIDE_HOME_OR_UNDER = 1;
+  const MONEYLINE_CUT = 0.5;
+  const LEAGUE_WITH_THREE_WAY_MONEYLINE = "soccer";
+  // Why a matched bet cannot be placed on its axis (#130 guards): named on
+  // the card, never guessed around.
+  const REASON_PARLAY_LEG = "parlay leg";
+  const REASON_NO_STAKE = "no stake on the record";
+  const REASON_BET_TYPE = "bet type not sized";
+  const REASON_TIE_CAVEAT = "Kalshi NO also wins on a tie";
+  const REASON_THREE_WAY = "three-way moneyline";
+  const REASON_QUARTER_LINE = "quarter line";
+  const REASON_NO_SIDE = "side not resolved";
+  const REASON_NO_NUMBER = "no number on the line";
+  const REASON_NO_PERIOD = "no period on the record";
   const START_TOLERANCE_MS = 30 * 60 * 1000;
   const DATE_TOLERANCE_DAYS = 1;
   const DAY_MS = 24 * 3600 * 1000;
@@ -614,13 +638,12 @@
     return line.sideIndex === 0 ? keys.away : keys.home;
   }
 
+  // Team bets only: a total's side is read straight off the record.
   function betSideKey(bet) {
-    if (bet.betType === "total") return bet.side;
     return bet.side === "away" ? bet.awayKey : bet.homeKey;
   }
 
   function betOtherSideKey(bet) {
-    if (bet.betType === "total") return bet.side === "over" ? "under" : "over";
     return bet.side === "away" ? bet.homeKey : bet.awayKey;
   }
 
@@ -628,16 +651,30 @@
     return (a == null && b == null) || (typeof a === "number" && a === b);
   }
 
+  // The side (0 away or Over / 1 home or Under, Unabated's frame) a bet sits
+  // on in the row's game, or null when nothing says which. A team bet reads
+  // its team keys, then its venue contract, then its rotation — never the
+  // record's own away/home, which is the VENUE's frame.
+  function betSideIndexOn(bet, line) {
+    if (bet.betType === "total") return bet.side === "over" ? SIDE_AWAY_OR_OVER : bet.side === "under" ? SIDE_HOME_OR_UNDER : null;
+    return sideIndexByTeamKeys(bet, line) ?? sideIndexByVenueId(bet, line) ?? sideIndexByRotation(bet, line);
+  }
+
+  // How a bet relates to a row. Same axis, same period: same_line (type and
+  // number too), same_side, opposite — a moneyline held against a spread on
+  // the same team is the same side (#130). Same axis, another period:
+  // related_same / related_opposite. Another axis: same_game.
   function tierOf(bet, line) {
-    if (bet.betType !== lineBetType(line) || bet.period !== line.period) return "same_game";
-    const lineKey = lineSideKey(line);
-    if (lineKey == null) return "same_game";
-    if (bet.betType === "total") {
-      if (bet.side === lineKey) return samePoints(bet.points, line.points) ? "same_line" : "same_side";
-      return betOtherSideKey(bet) === lineKey ? "opposite" : "same_game";
-    }
-    const betSideIndex = sideIndexByTeamKeys(bet, line) ?? sideIndexByVenueId(bet, line) ?? sideIndexByRotation(bet, line);
-    return tierBySideIndex(bet, line, betSideIndex);
+    const lineType = lineBetType(line);
+    const axis = AXIS_OF_BET_TYPE[bet.betType];
+    if (axis == null || axis !== AXIS_OF_BET_TYPE[lineType]) return "same_game";
+    if (lineSideKey(line) == null) return "same_game";
+    const betSideIndex = betSideIndexOn(bet, line);
+    if (betSideIndex == null) return "same_game";
+    const sameDirection = betSideIndex === line.sideIndex;
+    if (bet.period !== line.period) return sameDirection ? "related_same" : "related_opposite";
+    if (!sameDirection) return "opposite";
+    return bet.betType === lineType && samePoints(bet.points, line.points) ? "same_line" : "same_side";
   }
 
   // The side (0 away / 1 home) the bet's team keys put it on in the row's
@@ -654,16 +691,6 @@
     if (other != null && other === keys.away) return 1;
     if (other != null && other === keys.home) return 0;
     return null;
-  }
-
-  // A team-market bet sits on a side of the row's game: `betSideIndex` (0
-  // away / 1 home in Unabated's frame, from its team keys, its venue
-  // contract or its rotation) or null when nothing says which. The number is the row's CURRENT
-  // one, so a line moved off the bet's number is same_side.
-  function tierBySideIndex(bet, line, betSideIndex) {
-    if (betSideIndex == null) return "same_game";
-    if (betSideIndex === line.sideIndex) return samePoints(bet.points, line.points) ? "same_line" : "same_side";
-    return "opposite";
   }
 
   // BetOnline names its team as it likes: the bet's rotation IS its team, so
@@ -745,6 +772,10 @@
     same_line: "this line",
     same_side: "same side",
     opposite: "other side",
+    // The bet's own text starts with its period ("1H Over 20.5"), so the tag
+    // only has to name the direction.
+    related_same: "same side",
+    related_opposite: "other side",
     same_game: "game",
   };
 
@@ -767,9 +798,67 @@
   // 2026-09-14).
   function labelOf(tier, bet, line) {
     const parts = [describeBet(bet), formatStake(bet.stake), venueLabel(bet.venue)];
-    const numberMoved = tier === "same_side" || (tier === "opposite" && !oppositeSameNumber(bet, line));
+    // Only a bet of the row's own type has a number the row can have moved
+    // off: a moneyline held against a spread row does not.
+    const sameType = bet.betType === lineBetType(line);
+    const numberMoved = sameType && (tier === "same_side" || (tier === "opposite" && !oppositeSameNumber(bet, line)));
     if (numberMoved) parts.push(`now ${linePointsAsBetSide(tier, line)}`);
     return parts.join(" · ");
+  }
+
+  // ---- positions on the market axis (#130) -----------------------------------
+  //
+  // Conditional Kelly needs to know WHEN each bet wins. Every spread,
+  // moneyline and alt number is a cut on the margin (away score minus home
+  // score); every total is a cut on the total. A position is {axis, cut,
+  // direction}: the bet wins when the result lands "above" or "below" the
+  // cut. Over 52.5 = above 52.5; an away bet at points a = above -a; a home
+  // bet at points h = below h; a moneyline = above +0.5 (away) / below -0.5
+  // (home). A whole-number cut pushes on the number (condkelly.js).
+
+  // {axis, cut, direction} for a bet type, side and number, or {reason}.
+  function axisPosition(betType, sideIndex, points) {
+    const direction = sideIndex === SIDE_AWAY_OR_OVER ? "above" : "below";
+    if (betType === "moneyline") return { axis: AXIS_MARGIN, cut: sideIndex === SIDE_AWAY_OR_OVER ? MONEYLINE_CUT : -MONEYLINE_CUT, direction };
+    if (typeof points !== "number" || !Number.isFinite(points)) return { reason: REASON_NO_NUMBER };
+    if (!Number.isInteger(points * 2)) return { reason: REASON_QUARTER_LINE };
+    if (betType === "total") return { axis: AXIS_TOTAL, cut: points, direction };
+    // `|| 0` folds a pick'em's -0 into 0.
+    return { axis: AXIS_MARGIN, cut: (sideIndex === SIDE_AWAY_OR_OVER ? -points : points) || 0, direction };
+  }
+
+  // The period names the group a bet is sized in; without one it is left out.
+  function hasPeriodName(period) {
+    return typeof period === "string" && period !== "";
+  }
+
+  // The row's own position: {axis, period, cut, direction} or {reason}.
+  function linePosition(line) {
+    const betType = lineBetType(line);
+    if (AXIS_OF_BET_TYPE[betType] == null) return { reason: REASON_BET_TYPE };
+    if (betType === "moneyline" && line.league === LEAGUE_WITH_THREE_WAY_MONEYLINE) return { reason: REASON_THREE_WAY };
+    if (line.sideIndex !== SIDE_AWAY_OR_OVER && line.sideIndex !== SIDE_HOME_OR_UNDER) return { reason: REASON_NO_SIDE };
+    if (!hasPeriodName(line.period)) return { reason: REASON_NO_PERIOD };
+    const position = axisPosition(betType, line.sideIndex, line.points);
+    return position.reason ? position : { ...position, period: line.period };
+  }
+
+  // A matched bet's position in the row's game, with its dollars: {axis,
+  // period, cut, direction, stake, toWin}, or {reason} for a bet that is
+  // left out of the sizing and named.
+  function positionOf(bet, line) {
+    if (AXIS_OF_BET_TYPE[bet.betType] == null) return { reason: REASON_BET_TYPE };
+    if (bet.isParlayLeg) return { reason: REASON_PARLAY_LEG };
+    if (!hasPeriodName(bet.period)) return { reason: REASON_NO_PERIOD };
+    if (!(typeof bet.stake === "number" && bet.stake > 0) || !(typeof bet.toWin === "number" && bet.toWin > 0)) return { reason: REASON_NO_STAKE };
+    if (bet.betType === "moneyline") {
+      if (Array.isArray(bet.approx) && bet.approx.includes(TIE_CAVEAT)) return { reason: REASON_TIE_CAVEAT };
+      if (bet.league === LEAGUE_WITH_THREE_WAY_MONEYLINE) return { reason: REASON_THREE_WAY };
+    }
+    const sideIndex = betSideIndexOn(bet, line);
+    if (sideIndex == null) return { reason: REASON_NO_SIDE };
+    const position = axisPosition(bet.betType, sideIndex, bet.points);
+    return position.reason ? position : { ...position, period: bet.period, stake: bet.stake, toWin: bet.toWin };
   }
 
   // ---- public API ------------------------------------------------------------
@@ -796,31 +885,15 @@
         continue;
       }
       const tier = tierOf(bet, line);
-      matches.push({ tier, bet, label: labelOf(tier, bet, line) });
+      matches.push({ tier, bet, label: labelOf(tier, bet, line), position: positionOf(bet, line) });
     }
     matches.sort((a, b) => TIER_RANK[a.tier] - TIER_RANK[b.tier] || (b.bet.stake ?? 0) - (a.bet.stake ?? 0));
     return { matches, unmatched };
   }
 
-  // Dollars already risked on this line's market, from its matches: `held` is
-  // the same direction (same_line + same_side — a different number is still
-  // the same opinion), `against` the other side. Stake is dollars risked at
-  // every venue, so both compare directly with a Kelly stake. same_game
-  // matches carry no dollars here: they do not change how this line is sized.
-  function exposureOf(matches) {
-    const heldBets = [];
-    const againstBets = [];
-    for (const match of matches) {
-      if (match.tier === "same_line" || match.tier === "same_side") heldBets.push(match.bet);
-      else if (match.tier === "opposite") againstBets.push(match.bet);
-    }
-    const sum = (list) => roundCents(list.reduce((total, bet) => total + (typeof bet.stake === "number" ? bet.stake : 0), 0));
-    return { held: sum(heldBets), against: sum(againstBets), heldBets, againstBets };
-  }
-
-  // Per Edges row: the strongest tier (or null), its matches, and the dollars
-  // already on the market. A bet you hold never hides a line — it changes the
-  // size of the next one (see betsview.stakeAdvice).
+  // Per Edges row: the strongest tier (or null) and its matches. A bet you
+  // hold never hides a line — it changes the size of the next one (see
+  // betsview.stakeAdvice, which also counts the dollars held and against).
   // options.lines is the whole board (defaults to rows), the same one the
   // Ticket banner and the unmatched list decide games on: a bet's id event
   // may have no listed edge row while its team names fit one that is listed.
@@ -828,8 +901,7 @@
     const board = boardOf(options && Array.isArray(options.lines) ? options.lines : rows);
     return rows.map((row) => {
       const { matches } = matchOnBoard(row, bets, board);
-      const tier = matches.length ? matches[0].tier : null;
-      return { tier, matches, exposure: exposureOf(matches) };
+      return { tier: matches.length ? matches[0].tier : null, matches };
     });
   }
 
@@ -985,7 +1057,7 @@
   function lessonOf(bet, row, known) {
     const rows = [];
     const contractSideIndex = sideIndexByVenueId(bet, row);
-    const betSideIndex = bet.side === "away" ? 0 : bet.side === "home" ? 1 : null;
+    const betSideIndex = bet.side === "away" ? SIDE_AWAY_OR_OVER : bet.side === "home" ? SIDE_HOME_OR_UNDER : null;
     if (contractSideIndex != null && betSideIndex != null && contractSideIndex !== betSideIndex) {
       return { rows: [], conflict: { betId: bet.id, venue: bet.venue, league: bet.league, side: bet.side, venueTeamKey: null, boardKey: null,
         reason: `the bet's own contract puts it on Unabated side ${contractSideIndex}, its venue side is ${bet.side}` } };
@@ -1064,7 +1136,8 @@
   const api = {
     TIE_CAVEAT, GAME_SERIES, RETENTION_DAYS_DEFAULT,
     normalizeKalshi, parseEventSuffix, centsToAmerican,
-    matchBets, annotateRows, exposureOf, unmatchedReasons, pruneForRetention, dedupeByNativeId, resolveTeamKeys,
+    AXIS_TOTAL, AXIS_MARGIN,
+    matchBets, annotateRows, linePosition, unmatchedReasons, pruneForRetention, dedupeByNativeId, resolveTeamKeys,
     rekeyRecords, learnCrosswalk, venueTeamOf,
     describeBet, formatPlacedAt, formatStake, tierLabel, venueLabel,
   };

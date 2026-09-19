@@ -264,14 +264,82 @@ exchange's exact `sourcePrice` so they match Unabated's screen, while the
 stake uses the American price because that is what Unabated's edge was
 computed from.
 
-The figure shown is the number to act on, with the verb on it: `bet $281`
-when nothing is held on the market, `add $121` when a position is already
-down, and under it what you hold and what full size is
-(`$120 held · full size $241`). Against a position on the other side it reads
-`bet $192` over `$120 on the other side · net $72 on this side` (the Ticket
-spells it `$120 already on the other side`). The Ticket's label says
-the same thing ("Bet" / "Add to your position" / "Already at full size"). A
-line that cannot be sized keeps a `—`, never a computed-looking `$0`.
+That is the stake with nothing held. **With open bets on the same market of
+the game, the stake is sized GIVEN them — conditional Kelly (issue #130,
+`extension/condkelly.js`)** — instead of sizing alone and subtracting dollars,
+which compares dollars at different prices and numbers:
+
+```
+K      = bankroll * multiplier      the scale the held bets were sized on
+choose x >= 0 to maximize  sum over outcome rows of  prob * ln(1 + pnl / K)
+```
+
+- **The new bet's win chance** comes from Unabated's edge, as above:
+  `p = (1 + edge) / decimal`. **A held bet's** comes from Unabated's fair
+  today at its number: the median `bacr` across books at that half-point rung
+  (`extension/ladder.js`, snapshot lines only — the changes stream files team
+  totals under the game total's bet type). Its payoff is `toWin` / `-stake`
+  from the record. No fees are added: Unabated's prices already include them.
+- **Same market, same period: exact.** Spreads, moneylines and every alt
+  number are cuts on the margin (away minus home: an away bet at `a` wins above
+  `-a`, a home bet at `h` wins below `h`, a moneyline is the `±0.5` cut);
+  totals are cuts on the total. Outcome rows are the gaps between the cuts,
+  their chances differences along the ladder. One procedure covers the same
+  line, another number on the same side, the other side, middles, and a
+  moneyline against a spread. A whole-number line gets a push row from the
+  `k-0.5` and `k+0.5` rungs (the whole-number rung's own fair is conditional on
+  no push and is never read). A held bet on the row's own number takes the
+  row's chance, so it needs no rung.
+- **Same market, another period, same direction (1H Over with FG Over):
+  worst case.** Unabated says nothing about how two periods move together and
+  no correlation is estimated (user decision 2026-09-18), so each period's
+  rows are sorted by P&L and paired by cumulative probability — bad with bad,
+  good with good. Hold 1H Over $300 at +110 (55%), new FG Over +120 (50%), K
+  $8,000: $667 alone, $408 worst case (the measured NFL link 0.69 would give
+  $530; $408 keeps 95% of the growth).
+- **Same market, another period, the OTHER direction (1H Under with FG Over):
+  not in the math** — grey `other period · not sized`, the stake is the
+  standalone one (user decision 2026-09-19). It is a hedge in the real world,
+  and the worst-case pairing would size it as though both bets won together:
+  hold 1H Under $300 at +110, same FG Over: $407, where the measured link wants
+  $802 ($407 keeps 76% of the growth, $667 keeps 97%). Left out is "no credit
+  for the hedge" without the penalty.
+- **Another market (a spread against a total): not in the math** — it stays a
+  grey `game` line. Open question in #129.
+- **Left out and named, never guessed:** no rung at the bet's number or a rung
+  whose fair repeats a neighbour's (Unabated flat-lines deep tails; the two
+  moneyline cuts are exempt), no stake on the record, parlay legs, a Kalshi NO
+  moneyline (also wins on a tie), a soccer three-way moneyline, quarter lines,
+  a period Unabated has no ladder for (`F5`, `I1`). A ladder that crosses by
+  more than half a point of probability, held bets that can already lose `K`,
+  a whole-number row without its two rungs, or an edge so large on a heavy
+  favourite that `p >= 1`, decline the whole calc and the standalone stake
+  stands.
+- The search is a bounded golden section (the score is a single hill), capped
+  so `K + pnl` stays positive, and `$0` when the slope at zero is not positive.
+  With nothing held the panel uses `kellyStakeFromEdge` directly, so the
+  number is unchanged to the cent. `bacr` is a whole American price, so
+  conditional stakes are good to about ±$10.
+- **Not sized: hedges.** A price with no edge of its own is `$0` even when a
+  held bet on the other side would make the math want some (deferred, user
+  decision 2026-09-19).
+
+Measured on four live cards, 2026-09-17/18, K $8,000:
+
+| Card | Before | Now |
+|---|---|---|
+| New Mexico @ Oklahoma: Over 53.5 +217, hold Under 39.5 $214 and Under 48.5 $6.20 | bet $183, "still $37 against" | bet $296 |
+| Lions @ Bills: Over 61.5 +213, hold Over 61.5 $270 and Under 51.5 $413 | at full size | add $188 |
+| UConn @ Southern Miss: Under 52.5 +125, hold Under 47.5 $181.50 | add $116 | add $121 |
+| Chargers @ Bills: Chargers ML +213, hold Chargers +3.5 $400 | bet $189 | add $0 |
+
+The figure shown is the number to act on, with the verb on it — `add` when
+anything in the math is held on this direction, `bet` otherwise — and under
+it one small line, what the stake would be alone: `add $188.32` over
+`$270.05 alone`. The Ticket's label says the same thing ("Bet" / "Add to your
+position" / "Already at full size") and its small line adds the position:
+`held $270 · against $413 · $270.05 alone`. A line that cannot be sized keeps
+a `—`, never a computed-looking `$0`.
 
 Settings (bankroll, Kelly multiplier) sit at the foot of the Ticket tab under
 **Sizing**, reachable from any tab via the ⚙, and persist in
@@ -280,6 +348,7 @@ the Bets tab, under the venue strip it feeds.
 
 Copy puts one line on the clipboard:
 `Seattle Mariners -133 · 57.0¢ @ Novig | fair -139 · 58.2¢ | edge +1.89% | stake $188.55 | to win $141.77 | payout $330.32 | Texas Rangers @ Seattle Mariners · MLB`.
+When held bets changed the number the stake reads `stake $188.32 (add $188.32, $270.05 alone)`.
 
 ## Edges tab
 
@@ -630,49 +699,55 @@ a doubleheader without a time, two weeks of the same rotation) is **never**
 guessed — it lands in the unmatched list as "ambiguous game". Only open bets
 match; settled and closed positions stay in the list but never flag a line.
 
-**Four tiers**, strongest first (`bets.js`, node-tested):
+**Six tiers**, strongest first (`bets.js`, node-tested). Spreads and
+moneylines are one market here (the margin), totals the other:
 
-| Tier | Meaning | Ticket banner | Edges badge |
+| Tier | Meaning | Tag | In the stake's math |
 |---|---|---|---|
-| `same_line` | same market, period, side and number | "You bet this: Eagles -3.5 -110 · $300 @ Kalshi · Sep 10 2:15 PM" | `held $300` |
-| `same_side` | same market, period, side; different number | "You have Eagles -3.5 -110 (this is -4.5)" | `held $300` |
-| `opposite` | same market and period, the other side | red: "You are on the OTHER side: Cowboys +3.5 -105 · $200 @ Kalshi" ("at a different number" when the points differ) | `against $200` (red) |
-| `same_game` | same game, any other market or period | "You have a bet on this game: Under 40.5 · $150 @ Kalshi" | `game` |
+| `same_line` | same bet type, period, side and number | `this line` | yes, exact |
+| `same_side` | same market and period, same direction: another number, or a moneyline against a spread on the same team | `same side` | yes, exact |
+| `opposite` | same market and period, the other direction | `other side` (red) | yes, exact |
+| `related_same` | same market and direction, another period (1H total on an FG total row) | `same side` | yes, worst case |
+| `related_opposite` | same market, other direction, another period | `other period · not sized` (grey) | never: a real-world hedge the worst case would penalise |
+| `same_game` | another market of the game (a spread on a total row) | `game · not sized` (grey) | never (#129) |
+
+Every match also carries its **position** on the market axis
+(`bets.positionOf`: axis, period, cut, direction, stake, toWin) or the reason
+it has none; the side comes from the bet's team keys, then its venue contract,
+then its rotation — Unabated's frame, never the venue's away/home.
 
 **A bet you hold never hides a line — it changes the size of the next one.**
 The edge still being there after you bet it is information (add, or at
-least know the market has not moved against you). Per line, `held` is the
-dollars risked on the same direction (`same_line` + `same_side`; a different
-number is the same opinion) and `against` the dollars on the other side;
-both are dollars risked at every venue, so they compare directly with the
-Kelly stake (`bets.exposureOf`, `betsview.stakeAdvice`):
+least know the market has not moved against you). The size is conditional
+Kelly against the bets that are in the math (see **Stake**;
+`betsview.stakeAdvice`). Per line, `held` is the dollars in the math on the
+row's direction and `against` the dollars on the other one.
 
-The wording is the same three numbers in the same order everywhere (user
-choice 2026-09-11, reworded 2026-09-13): the **verb** says what the number
-is — `add` when a position is already down, `bet` otherwise — and under it
-what is **held** and what **full size** is. `betsview.stakeAdviceWords`
-builds it once for the row, the Ticket block and the Copy text:
+| You hold | Badge | Stake column | Ticket stake block |
+|---|---|---|---|
+| nothing | — | `bet $500.00` | "Bet" · **$500.00** |
+| the same over $270 and two unders $413 at another number | `held $270` `against $413` | `add $188.32` over "$270.05 alone" | "Add to your position" · **$188.32** · "held $270 · against $413 · $270.05 alone" |
+| the team's +3.5 $400, row is its moneyline | `held $400` | `add $0.00` over "$188.92 alone" (muted) | "Already at full size" · **$0.00** |
+| a bet with no fair at its number, or a parlay leg | `held` / `against`, bare | `bet $500.00` | "Bet" · **$500.00** |
+| another market only | `game` | `bet $500.00` | "Bet" · **$500.00** |
 
-| You hold | Stake column | Ticket stake block |
-|---|---|---|
-| nothing | `bet $500.00` | "Bet" · **$500.00** |
-| $300 same side, Kelly $500 | `add $200` over "$300 held · full size $500" | "Add to your position" · **$200** · "$300 already held · full size $500" |
-| $600 same side, Kelly $520 | `bet $0` over "$600 held · full size $520" (muted) | "Already at full size" · **$0** · same line |
-| $200 other side, Kelly $500 | `bet $500` over "$200 on the other side · net $300" | red "$200 already on the other side · net $300 on this side" |
-| same game only | `bet $500.00` | — (the banner still lists the bet) |
-
-To win and Payout describe the number shown above them, so a top-up prices
-the top-up and an at-size line shows no payout at all; the Copy line carries
-the same figure. Rows and cards carry a labelled **Related bets** block, one line per position:
-a tag for how it relates — `this line` / `same side` / `other side` (red) /
-`game` — then the bet itself, "Chattanooga -5.5 +138 · 42.0¢ · $168 · Kalshi",
-plus `· now -6.5` when the line has moved off the number you bet. Capped at
-three with "+N more on this game". The Ticket banner uses the same four tags
-and the same labels. No placed-at: it never told you which bet was which, and
-it was a third of the line (user decision 2026-09-14). The Bets tab still
-shows it, where the bets are the subject.
-A `game` badge is a plain marker: another market on the game does not change
-how this line is sized.
+Both badges show when both exist. To win and Payout describe the number shown
+above them, so a top-up prices the top-up and a $0 line shows no payout at
+all; the Copy line carries the same figure. Rows and cards carry a labelled
+**Related bets** block, one line per position, bets in the math first: a tag
+and the bet itself, "Chattanooga -5.5 +138 · 42.0¢ · $168 · Kalshi", plus
+`· now -6.5` when the line has moved off the number you bet. A **coloured**
+tag (`this line` / `same side` / `other side`) means the bet is in the math; a
+**grey** tag with grey text means it is not, and the tag says why —
+`game · not sized` for another market, `other period · not sized` for the
+other direction in another period, `no fair at 36.5`, `parlay leg`,
+`no stake on the record`, `Kalshi NO also wins on a tie`,
+`three-way moneyline`, `quarter line`, `side not resolved`, or the reason the
+whole calc was declined (`ladder not monotone`). Capped at three with
+"+N more on this game". The Ticket banner shows the same lines and tags (five,
+then "+N more"). No placed-at: it never told you which bet was which, and it
+was a third of the line (user decision 2026-09-14). The Bets tab still shows
+it, where the bets are the subject.
 
 A Kalshi NO on a team market is the other team **or a tie** (NFL/CFB/soccer);
 it matches as that team and the label says so ("NO Eagles ≈ Cowboys or
@@ -686,8 +761,8 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   when the service is unreachable.
 - *Ticket tab*: a banner between the matchup and the stake, one line per
   matching bet, strongest first, at most 5 then "+N more"; nothing when no
-  bet matches; under the Kelly stake, the held / add / other-side block
-  above. The warning strip adds "Bet sources unavailable" when no venue has
+  bet matches; under the stake, the position and the standalone size
+  (`held $270 · against $413 · $270.05 alone`). The warning strip adds "Bet sources unavailable" when no venue has
   reported in the last hour (the flags may then be missing).
 - *Edges tab*: the badge, the **Related bets** block and the sized stake on
   each row, or on each card from its best line. The block is labelled and
@@ -695,8 +770,9 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   only what differs from the row — venue, its entry price, when — because the
   row already states the pick, while another market or the other side names
   itself. The Ticket shows the same matches with the full sentence. Sort **by my exposure** puts held and
-  against lines first. Nothing is filtered; alerts skip only lines you
-  already hold at size (nothing to act on) and fire as before otherwise.
+  against lines first. Nothing is filtered; alerts skip only lines whose
+  stake against what you hold is $0 (nothing to act on) and fire as before
+  otherwise. The Min suggested bet filter reads the same number.
 - *Bets tab*: opens on **total at risk** across open bets, with the venue
   count and, when a venue reported a bet without a stake, how many are not in
   that total. Then one line per venue (a dot for freshness, what it holds, how
@@ -985,8 +1061,8 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 185 tests) and
-the bets service's pytest suite (108 tests, on the `kalshi_draft/venv`
+the node suite (`npm test` = `node --test tests/*.test.js`, 240 tests) and
+the bets service's pytest suite (109 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`
@@ -1002,11 +1078,33 @@ The extension itself has no build step and stays loaded unpacked.
 `betsview.test.js` covers the panel's bet-history presentation helpers:
 freshness colours at the 5 / 60 min bounds, the per-venue rows (unconfigured,
 failed poll, never fetched), the service status texts, the "sources
-unavailable" rule, the header line, the banner's 5-line cut, the badge
-text and kind (held / against / game), `stakeAdvice` (none / add / at size /
-reverse with the net), `relatedLines` (a tag and the label per match), the stored + fresh merge (newest
-per id, a venue's ok pull authoritative, keys filled, old settled pruned),
-the ticket → line shape, and settings sanitising.
+unavailable" rule, the header line, the banner's 5-line cut, the stored +
+fresh merge (newest per id, a venue's ok pull authoritative, keys filled, old
+settled pruned), the ticket → line shape, settings sanitising, and the #130
+stake advice through the real matcher on a Kelly bankroll of $8,000: nothing
+held equals `kellyStakeFromEdge` exactly; Lions @ Bills adds $188.32 with
+`held $270` + `against $413` badges, and a held Bills -8.5 leaves it
+unchanged as a grey `game · not sized` line; the Chargers moneyline with the
++3.5 held adds $0; a 1H over held sizes the FG over at $408.39 while a 1H
+under is left out (`other period · not sized`, the standalone $666.67); the same
+line held needs no ladder ($116.10, then $0 once over size); every guard (no
+rung, flat rung, unknown period, parlay leg, no stake) leaves the bet out
+with its reason and a bare badge; a non-monotone ladder and a whole-number
+row without its two rungs decline the calc; a price with no edge is $0.
+
+`condkelly.test.js` pins the solver on the cards measured 2026-09-17/18 (K
+$8,000): the standalone stake to the cent at four prices, same line $116.10
+and $0, UConn $121.28 (easier number held) and $24.10 (harder number), New
+Mexico @ Oklahoma $295.99, Lions @ Bills $188.32, Chargers $0, the
+cross-period worst case $408.39 against $666.67 alone and no hedge credit
+across periods, the whole-number push row, the 0.005 clamp and the decline
+past it, held risk above K, and loud failures on a missing rung, a quarter
+line and a bad probability. `ladder.test.js` covers the fair ladder: totals
+and margin cuts (away `-a`, home `h`, moneyline `±0.5`), the median across
+books with both sides counted, the flat-tail guard and its moneyline-pair
+exemption, no rung / whole number / other period, changes-stream lines
+ignored (`fromSnapshot`), soccer moneylines feeding no cut, and the period
+name → id map.
 
 `novig_bets.test.js` runs the Novig normaliser on
 `fixtures/bets/novig_bets.json`: page bookkeeping (complete vs a full last
@@ -1053,6 +1151,13 @@ and on extra rows with malformed or missing ids fed to node on stdin), and
 margin, rotation persisted with 0600, missing/broken token file, callback
 state/error parsing) and the source (trader resolved once, pagination to a
 short page, no user / auth failure / GraphQL error all raise).
+
+The #130 smoke run (2026-09-19, a scratch Playwright harness, not committed)
+loaded the unpacked extension with the NFL slice at a future kickoff and four
+synthetic CHI@CAR bets: both badges, `add $95.90` over `$85.36 alone`, a grey
+`no fair at 36.5` tag, a Bears moneyline sizing the Bears -20.5 row as the
+same side, grey `game · not sized` lines on the spread rows, and the Ticket
+tab showing the same $104.87 as its Edges row, with no console errors.
 
 `kelly.test.js` checks the sheet's worked example (-400 at +12.5% edge,
 bankroll 30000, quarter Kelly = $3,750), the Seattle -133 / +1.89% case,
@@ -1261,3 +1366,5 @@ in red.
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
 
 **Unabated Ticket** (`unabated_ticket/`) — Chrome MV3 side-panel extension (plain JS, no build). A capture-phase click on an Unabated odds-screen price reads the React fiber / AG Grid row (`page.js`, MAIN world), builds a one-at-a-time ticket (side, points, book price, `bacr` fair) in `chrome.storage.local`, computes the unrounded quarter-Kelly stake (`kelly.js`, node-tested), and re-reads the line every 5 s for a line-moved warning — **the watcher resumes from the stored ticket** whenever `page.js` loads (it dies with every navigation: one-click betting leaving the tab, Back, reload, discard, extension-reload takeover; `content.js` hands the stored ticket back on `resume_request` and once on its own load, and `page.js` rebuilds the watch by identity with no grid API — before 0.6.6 every such ticket read "Not watching the line" under a live heartbeat). **Edges tab (issue #112)**: while the panel is open, `scanner.js` reads Unabated's public feeds — the v2 league snapshot (`content.unabated.com/markets/v2/league/{lg}/odds.json?t=<30s bucket>` — the query busts a CloudFront edge cache that served gzip clients a 6.5 h-old copy on 2026-09-10 — on open + per-league refresh, 4 at a time, for the 29 team-sport leagues in `feed.LEAGUES`: NFL/CFB/NBA/CBB/WNBA/MLB/NHL + soccer; tennis and combat key sides on people and are out) and the changes stream (`api-k.unabated.com/api/markets/changes/query/{cursor}`, every 10 s; cursor = ns since 2021-01-06, kept as a string; **incomplete anonymously** — 69 of 191 NFL line changes in 3 min on 2026-09-10, exchange moves mostly missing — so each league's snapshot re-downloads on a size-tiered cadence, 60 s / 2 min / 5 min) — through `feed.js` (pure, fixture-tested: lines keyed `(marketId, book, sideKey)` because the changes stream tags other markets of an event with the same `bt` key, updates applied only on a newer `sequenceNumber`, books listed when `isActive` and enabled for game odds — `statusId` is not liveness, Caesars/Underdog carry 2 while live) and lists every ML/spread/total with Unabated's `ge` at or above the minimum and a `modifiedOn` within the max line age (default 168 h — dead feeds at "active" books carried 96-day-old lines with +36% "edges" on 2026-09-10; each row prints its line age), sized with `kellyStakeFromEdge`, filtered by a Books multi-select dropdown + Bets checkboxes in the panel (books default to the selection `page.js` publishes from `userSettings.gameOdds`; the user's own ticks win). Row click / notification click store a `locate` request (`locate.js`) that focuses the Unabated tab and has `page.js` scroll to the row and outline the cell — the price click stays the user's. Alerts are Chrome notifications, off by default, baselined on enable, deduped per line with a 5-min per-event cooldown. **Alt lines (issue #113)**: each snapshot line's `alternateLines[]` expands into lines keyed `(marketId, book, sideKey, points)` under the main line (`isAlt`, `mainPoints` = the book's own main number — NOT the feed's `stn`, which is the market's standard number), listed only behind an **Include alt lines** toggle (off by default) with two alt-only gates, **Max pts from main** (7) and **Min liquidity** ($100, exchanges only), on top of every main-line gate; an alt sitting on its main line's current number is hidden. Freshness caveat measured 2026-09-11: the anonymous changes stream carries NO alt updates and every alt's `modifiedOn` is the `0001-01-01` sentinel, so alts refresh only with the per-league snapshot and their age reads from `sequenceNumber` (the change time in epoch ms). An alt row click expands the grid row's Alts (`setExpanded`) and finds the cell by fiber props (points/side/book/event), failing loudly with the main cell outlined; a ticket captured on an alt cell carries `watch.altPoints` so the watcher re-reads the same rung. **Group by market** (on by default): `feed.groupEdges` collapses the list to one card per (game, period, bet type, side) — a +EV opinion is directional — whose best line is the highest Kelly stake (taxes longshots, so a -110 main at +5% beats a +944 rung at +6%), with `N books · M lines` behind an expander; alerts then key on the card and re-fire only when its best edge improves. **Bet history flags (issue #114, core; merged 2026-09-11)**: a local **bets service** (`unabated_ticket/bets_service/`, `run.sh`, `127.0.0.1:8094` loopback-only, no auth) is the only place that signs Kalshi requests — the private key never enters the extension — and turns the account's fills + unsettled positions into normalised bet records (one per `(ticker, side)`; positions are the truth for open size, fills the VWAP entry price; `sources/kalshi.py`, `sources/kalshi_ticker.py` a series map + cached public `/markets` and `/events` GETs, football suffixes carry the Eastern DATE only, MLB `HHMM` too; unknown series and futures fail closed as "unmatchable", shown never matched), UPSERTs them on native id into `bets_service/bets.duckdb::bets` (never pruned — future CLV) with a `source_runs` row per poll, and serves `GET /bets.json[?days=30]` (`{generatedAt, sources: {kalshi: {fetchedAt, ok, error, count}}, bets}`) + `/health`; a failed poll keeps the previous records (a dark source never blanks the list), a source on its first poll reads `ok:false, "no completed poll yet"`. The panel polls it every 30 s while visible — **never from the service worker** — into `chrome.storage.local` `betsService` (payload + records, open + settled ≤30 days, ~1 KB each) and `betsSettings` (`serviceUrl`), resolving team keys through `teams.js` — NOT a hand table (user decision 2026-09-11): every league snapshot's own team list (id, name, abbreviation) is registered at runtime and persisted as `teamsIndex`, keys are `<league>:<Unabated team id>` (the ids the board's lines carry), venue spellings resolve by exact normalised name, then a three-row `ALIASES` list, then a leading-code strip ("PIT Steelers"), then a UNIQUE word-boundary containment (the query-extends-team direction only for State/University/College, so "Southern Mississippi" never becomes "Southern") — and treating a venue's `ok` pull as authoritative for that venue's records. `bets.js` (pure, node-tested on `tests/fixtures/bets/kalshi_fixture.json`; `normalize_kalshi` in Python is held byte-equivalent by `test_parity.py`) matches a bet to a line on league + team pair (either order) or rotation + time (≤30 min with a start; the Eastern date ±1 day without), refuses to guess when two board events fit ("ambiguous game"), and ranks four tiers: `same_line` (market, period, side and number), `same_side` (different number), `opposite` (the other side — red), `same_game` (any other market/period); Kalshi NO on a team market = the other team **or a tie** (NFL/CFB/soccer, `approx: kalshi_no_side_includes_tie`). Surfaces: a **Ticket banner** (strongest first, 5 then "+N more"), **Edges badges + sized stakes** — a held bet NEVER hides a line, it changes the size of the next one (user decision 2026-09-11, replacing a hide toggle): `bets.exposureOf` sums dollars risked on the same direction (`held`, same_line + same_side) and the other side (`against`), `betsview.stakeAdvice` turns the row's Kelly stake into one wording everywhere (user choice 2026-09-11, `stakeAdviceWords`): "wagered $350 → target $600, bet $250" (against positions read "wagered $200 against …, bet $500 (net $300 on this side)", full size reads "bet $0"), rows and cards carry a `held $N` / `against $N` (red) / `game` badge plus a dim "you hold …" position line, a **by my exposure** sort, and alerts skip only lines already held at size, a **Bets tab** (per-venue freshness green <5 min / amber <60 / red, open bets, and an **unmatched** list with a reason per bet — nothing dropped silently), and a **header line** under the tabs ("bets: N open · kalshi 20 s · betonline — …"). Venue split: **#115 BetOnline (merged 2026-09-15)** polls the account's bet-history report through the bets service on the bet_logger Keycloak refresh token (`sources/betonline.py`; registered when the recon cookie file exists; refresh only within 60 s of expiry under a file lock shared with `bet_logger/scraper_betonline.py`, pending bets kept, league via `bet_logger/utils.parse_sport`, no game date → `approx: game_date_unknown` and the matcher windows `placedAt` −12 h/+14 d keyed on the rotation, with `tierByRotation` for team names `teams.js` cannot key); **#116 Novig, #117 ProphetX** each add a `Source` (`sources/__init__.py` protocol: `name`, `poll_sec`, `fetch() -> list[record]`, raise on failure, never partial) or a content script writing storage directly; until they land those venues read "no source configured". **Novig (issue #116)**: the official NBX API is a separate "Liquidity Provider" account ($30k minimum deposit; docs.novig.com/lp-onboarding) and cannot see retail-app bets, so the primary source is `bets_service/sources/novig.py` — a one-time `novig_auth connect` (Auth0 PKCE against the app's public client, the user logs in, refresh token saved to gitignored `novig_token.json`; its OWN chain, never the app's rotating localStorage token) then a 60 s poll of the app's Hasura `order`/`parlay` tables for the trader resolved from the JWT `sub`, through `curl_cffi`; `normalize_novig` is held byte-equivalent to `novig_bets.js` by `test_parity_novig.py`. The content-script mirror is the token-free fallback: `novig_page.js` (MAIN world, `document_start`, wraps `window.fetch` before the app bundle captures it) mirrors the three Portfolio queries the `app.novig.us` app fetches for itself (`ActivePortfolioOrders_Query` / `SettledPortfolioOrders_Query` / `ParlayPortfolioQuery` → `api.novig.us/v1/graphql`; zero requests of its own, no token read) and `novig_content.js` normalises them via `novig_bets.js` (outcome index 0 = home/Over, `price` a 0–1 probability, `isBid:false` LAYS the outcome = the other side at `1 - p`, `_1H` on MLB = `F5`, props/futures/unsupported leagues fail closed) into `chrome.storage.local.betsNovig`, which the panel merges (a complete read is authoritative for the venue; a stale one says "open app.novig.us … to refresh"); shapes are bundle-derived, not a live capture — a divergent blob lands in the unmatched list as "unreadable Novig order (…)". No overlay, no order placement. Load unpacked from `unabated_ticket/extension`.
+
+**Conditional Kelly against held bets (issue #130, 2026-09-19).** The panel sized every line alone and adjusted by subtracting dollars (`add $X`, `still $X against`); dollars at different prices and numbers are not comparable and a moneyline held against a spread was ignored (four live cards, K $8,000: New Mexico @ Oklahoma bet $183 → $296, Lions @ Bills "at full size" → add $188, UConn add $116 → $121, Chargers ML bet $189 → add $0). Now `betsview.stakeAdvice` sizes the row given the open bets on its market (`condkelly.js`, `ladder.js`): K = bankroll × multiplier (full Kelly on the whole bankroll then a quarter is wrong — it says add $500 to a line already held at full size $667); the new bet's chance from Unabated's edge (decision 2026-09-09 stands), a held bet's from the median `bacr` at its half-point rung today; no fees added (Unabated's prices include them, user 2026-09-17). Same market and period is exact off the ladder; another period is the worst case the fairs allow (comonotonic pairing) because no correlation is estimated (user decision 2026-09-18: no per-sport history, use what Unabated provides) — **this reverses the 2026-09-12 "show it, don't size off it" decision** on the unmerged `feature/unabated-related-period-bets`, whose `related_same` / `related_opposite` tier names were taken and which is retired; **only the same direction is sized across periods** — the logic review (2026-09-19) showed the literal rule sizes a cross-period hedge as if both bets won together (hold 1H Under $300, new FG Over: $407 vs $667 alone vs $802 under the measured 0.69 link), so the other direction in another period is left out and named `other period · not sized` (user decision 2026-09-19); another market is never in the math (worst case gave $35 vs $188 on the Bills card and independent differs from ignored by $1; open in #129). Guards are left out and named, never guessed. Found while building: the changes stream ADDS lines for known events and files team totals under the game total's `bt3`, so `feed.js` marks snapshot lines `fromSnapshot` and only those feed a ladder. `bets.exposureOf`, `badgeText` / `badgeKind` and the `add` / `at_size` / `reverse` advice kinds are gone. **Hedge sizing is deferred** (user, 2026-09-19): a price with no edge of its own stays $0 and there is no `hedge only` label. Plan: `docs/2026-09-18-unabated-ticket-conditional-kelly-plan.md`.

@@ -236,8 +236,11 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
   font: 600 9.5px system-ui, sans-serif; letter-spacing: .07em; text-transform: uppercase;
   color: var(--edge-mid); white-space: nowrap;
 }
-.related-line.tier-opposite .related-tag { color: var(--against-fg); }
-.related-line.tier-same_game .related-tag { color: var(--muted); }
+.related-line.tier-opposite .related-tag,
+.related-line.tier-related_opposite .related-tag { color: var(--against-fg); }
+/* Not in the stake's math (#130): another market, or a bet with no fair. */
+.related-line.not-sized,
+.related-line.not-sized .related-tag { color: var(--muted); }
 .related-more { font-size: 11.5px; color: var(--muted); }
 
 .edge-row .group-more {
@@ -301,8 +304,8 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 .bet-match .k { font: 600 9.5px system-ui, sans-serif; letter-spacing: .07em; text-transform: uppercase; color: var(--edge-mid); }
 .bet-match.bad { background: var(--against-bg); }
 .bet-match.bad .k { color: var(--against-fg); }
-.bet-match.game { background: var(--chip); }
-.bet-match.game .k { color: var(--muted); }
+.bet-match.not-sized { background: var(--chip); color: var(--muted); }
+.bet-match.not-sized .k { color: var(--muted); }
 .bet-match.more { background: none; color: var(--muted); padding: 0 9px; display: block; }
 
 .facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 14px; margin: 12px 0 0; font-size: 13px; }

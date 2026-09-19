@@ -6,6 +6,9 @@ const view = require("../extension/betsview.js");
 const fs = require("node:fs");
 const path = require("node:path");
 const teams = require("../extension/teams.js");
+const betsLib = require("../extension/bets.js");
+const kelly = require("../extension/kelly.js");
+const ladderLib = require("../extension/ladder.js");
 // The runtime team index the panel builds from Unabated's snapshots, from a
 // captured copy (fixtures/teams_index.json) — keys are "<league>:<Unabated id>".
 teams.loadIndex(JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "teams_index.json"), "utf8")).leagues);
@@ -112,70 +115,250 @@ test("bannerLines: at most five, strongest first as given, and the count of the 
   assert.deepEqual(view.bannerLines([]), { shown: [], more: 0 });
 });
 
-test("badgeText / badgeKind: dollars held win, then dollars against, then a plain game marker", () => {
-  const flag = (tier, held, against) => ({ tier, matches: [], exposure: { held, against, heldBets: [], againstBets: [] } });
-  assert.equal(view.badgeText(flag("same_line", 300, 0)), "held $300");
-  assert.equal(view.badgeText(flag("same_side", 12.5, 20)), "held $12.50");
-  assert.equal(view.badgeText(flag("opposite", 0, 200)), "against $200");
-  assert.equal(view.badgeText(flag("same_game", 0, 0)), "game");
-  assert.equal(view.badgeText({ tier: null, matches: [], exposure: { held: 0, against: 0 } }), null);
-  assert.equal(view.badgeText(null), null);
-  // A venue that gave no stake: the tier still names the kind, without dollars.
-  assert.equal(view.badgeText(flag("opposite", 0, 0)), "against");
-  assert.equal(view.badgeText(flag("same_side", 0, 0)), "held");
-  assert.equal(view.badgeKind(flag("opposite", 0, 0)), "against");
-  assert.deepEqual(["same_line", "opposite", "same_game"].map((tier) => view.badgeKind(flag(tier, tier === "same_line" ? 1 : 0, tier === "opposite" ? 1 : 0))), ["held", "against", "game"]);
+// ---- #130: stake advice (conditional Kelly against held bets) ---------------------
+//
+// The cards below were measured live 2026-09-17/18 on a Kelly bankroll of
+// $8,000 (32000 x 0.25). Bets go through the real matcher, so tiers, positions
+// and the math are exercised together.
+
+const SIZING = { bankroll: 32000, multiplier: 0.25 };
+const KICKOFF = "2026-09-20T17:00:00.000Z";
+
+function nflLine(overrides) {
+  return Object.assign({
+    league: "nfl", eventId: 700001, awayTeam: "Detroit Lions", homeTeam: "Buffalo Bills",
+    eventStart: KICKOFF, eventStartMs: Date.parse(KICKOFF), betType: "Total", period: "FG", sideIndex: 0, points: 61.5, rotation: null,
+  }, overrides);
+}
+
+function heldRecord(id, overrides) {
+  const base = record(id, "open", Object.assign({
+    league: "nfl", awayTeam: "Detroit Lions", homeTeam: "Buffalo Bills", eventStart: KICKOFF, isParlayLeg: false,
+  }, overrides));
+  const netOdds = base.price > 0 ? base.price / 100 : 100 / Math.abs(base.price);
+  if (!("toWin" in overrides)) base.toWin = base.stake == null ? null : base.stake * netOdds;
+  return betsLib.resolveTeamKeys([base])[0];
+}
+
+// A ladder as ladder.buildLadder returns it; neighbours differ so no rung is flat.
+function ladderStub(byPeriodAxis) {
+  return (period, axis) => {
+    const rungs = byPeriodAxis[`${period} ${axis}`];
+    return rungs ? { axis, rungs } : null;
+  };
+}
+
+function adviceFor(line, price, edgePct, records, ladderOf) {
+  const { matches } = betsLib.matchBets(line, records);
+  return view.stakeAdvice({ line, price, edgePct, ...SIZING, matches, ladderOf });
+}
+
+const LIONS_BILLS_HELD = [
+  heldRecord("over-61.5", { betType: "total", side: "over", points: 61.5, price: 212, stake: 270 }),
+  heldRecord("under-51.5-a", { betType: "total", side: "under", points: 51.5, price: 127, stake: 352 }),
+  heldRecord("under-51.5-b", { betType: "total", side: "under", points: 51.5, price: 150, stake: 61 }),
+];
+const LIONS_BILLS_LADDER = ladderStub({ "FG total": [[50.5, 0.61], [51.5, 0.5745], [52.5, 0.54]] });
+
+test("bets.js and ladder.js name the two market axes the same: a position's axis is the ladder's key", () => {
+  assert.equal(betsLib.AXIS_TOTAL, ladderLib.AXIS_TOTAL);
+  assert.equal(betsLib.AXIS_MARGIN, ladderLib.AXIS_MARGIN);
 });
 
-test("suggestedBetAmount: the top-up when adding, $0 at size, else the full stake", () => {
-  const exposure = (held, against) => ({ held, against, heldBets: [], againstBets: [] });
-  const amount = (stake, held, against) => view.suggestedBetAmount(stake, view.stakeAdvice(stake, exposure(held, against)));
-  assert.equal(amount(500, 0, 0), 500);
-  assert.equal(amount(600, 350, 0), 250);
-  assert.equal(amount(520, 600, 0), 0);
-  assert.equal(amount(500, 0, 200), 500);
-  assert.equal(amount(null, 0, 0), 0);
-  assert.equal(view.suggestedBetAmount(300, null), 300);
+test("stakeAdvice: the real ladder feeds it — fairs read off feed lines, a rung the feed lacks is no fair", () => {
+  const over = (points, bacr) => ({ eventId: 700001, leagueId: 1, periodTypeId: 1, betTypeId: 3, sideIndex: 0, points, bacr, fromSnapshot: true });
+  const eventLines = [over(50.5, -156), over(51.5, -135), over(52.5, -117)];
+  const ladderOf = (period, axis) => ladderLib.buildLadder(eventLines, { periodTypeId: ladderLib.periodTypeIdOf(period), axis });
+  const sized = adviceFor(nflLine(), 213, 7.19, LIONS_BILLS_HELD, ladderOf);
+  assert.equal(sized.kind, "sized");
+  // -135 is 57.447%, the whole American price behind the card's 57.45%: two cents off its $188.32.
+  assert.equal(sized.bet, 188.34);
+  const noRung = adviceFor(nflLine(), 213, 7.19, LIONS_BILLS_HELD, (period, axis) => ladderLib.buildLadder(eventLines.slice(0, 1), { periodTypeId: 1, axis }));
+  assert.deepEqual(noRung.matches.filter((match) => !match.inMath).map((match) => match.note), ["no fair at 51.5", "no fair at 51.5"]);
+  assert.deepEqual([noRung.held, noRung.against], [270, 0]);
 });
 
-test("stakeAdviceLine: the verb says what the number is, then what is held and full size", () => {
-  const exposure = (held, against) => ({ held, against, heldBets: [], againstBets: [] });
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(500, exposure(0, 0))), null);
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(600, exposure(350, 0))), "add $250, $350 held · full size $600");
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(520, exposure(600, 0))), "bet $0, $600 held · full size $520");
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(null, exposure(600, 0))), "bet $0, $600 held · full size none here");
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(500, exposure(0, 200))), "bet $500, $200 on the other side (net $300 on this side)");
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(100, exposure(0, 200))), "bet $100, $200 on the other side (still $100 against)");
-  assert.equal(view.stakeAdviceLine(view.stakeAdvice(null, exposure(0, 200))), "bet $0, $200 on the other side");
-  assert.deepEqual(view.stakeAdviceWords(view.stakeAdvice(600, exposure(350.5, 0))),
-    { verb: "add", have: "$350.50", target: "$600", bet: "$249.50", note: null, against: false });
+test("stakeAdvice: nothing held is the standalone Kelly stake, exactly", () => {
+  const advice = adviceFor(nflLine(), 213, 7.19, [], LIONS_BILLS_LADDER);
+  const standalone = kelly.kellyStakeFromEdge({ bookPrice: 213, edgePct: 7.19, ...SIZING }).stake;
+  assert.deepEqual(advice, { kind: "none", bet: standalone, alone: standalone, verb: "bet", held: 0, against: 0, reason: null, matches: [] });
+  assert.equal(view.stakeAdviceWords(advice), null);
+  assert.equal(view.suggestedBetAmount(advice), standalone);
 });
 
-test("stakeAdvice: none, add the difference, at size when held covers the stake, reverse with the net", () => {
-  const exposure = (held, against) => ({ held, against, heldBets: [], againstBets: [] });
-  assert.deepEqual(view.stakeAdvice(500, exposure(0, 0)), { kind: "none" });
-  assert.deepEqual(view.stakeAdvice(500, exposure(300, 0)), { kind: "add", add: 200, held: 300, stake: 500 });
-  assert.deepEqual(view.stakeAdvice(520, exposure(600, 0)), { kind: "at_size", held: 600, stake: 520 });
-  assert.deepEqual(view.stakeAdvice(null, exposure(600, 0)), { kind: "at_size", held: 600, stake: null });
-  assert.deepEqual(view.stakeAdvice(0, exposure(100, 0)), { kind: "at_size", held: 100, stake: null });
-  assert.deepEqual(view.stakeAdvice(500, exposure(0, 200)), { kind: "reverse", against: 200, stake: 500, net: 300 });
-  assert.deepEqual(view.stakeAdvice(100, exposure(0, 200)), { kind: "reverse", against: 200, stake: 100, net: -100 });
-  assert.deepEqual(view.stakeAdvice(500, exposure(300, 200)).kind, "add");
+test("stakeAdvice: Lions @ Bills — the same over held and two unders at another number, add $188.32", () => {
+  const advice = adviceFor(nflLine(), 213, 7.19, LIONS_BILLS_HELD, LIONS_BILLS_LADDER);
+  assert.equal(advice.kind, "sized");
+  assert.equal(advice.bet, 188.32);
+  assert.equal(advice.verb, "add");
+  assert.equal(advice.held, 270);
+  assert.equal(advice.against, 413);
+  assert.ok(advice.matches.every((match) => match.inMath && match.note === null));
+  assert.deepEqual(view.badges({ tier: "same_line", matches: advice.matches, advice }),
+    [{ kind: "held", text: "held $270" }, { kind: "against", text: "against $413" }]);
+  assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$188.32", alone: "$270.05 alone" });
+  assert.equal(view.stakeAdviceLine(advice), "add $188.32, $270.05 alone");
+  assert.equal(view.suggestedBetAmount(advice), 188.32);
 });
 
-test("relatedLines: a tag for the tier and the bet itself, one entry per match", () => {
+test("stakeAdvice: a held spread never changes the size of a total — shown grey as game · not sized (#129)", () => {
+  const billsSpread = heldRecord("bills-8.5", { betType: "spread", side: "home", points: -8.5, price: 212, stake: 472 });
+  const advice = adviceFor(nflLine(), 213, 7.19, LIONS_BILLS_HELD.concat([billsSpread]), LIONS_BILLS_LADDER);
+  assert.equal(advice.bet, 188.32);
+  assert.equal(advice.held, 270);
+  assert.equal(advice.against, 413);
+  const last = advice.matches[advice.matches.length - 1];
+  assert.equal(last.bet.id, "bills-8.5");
+  assert.equal(last.inMath, false);
+  const lines = view.relatedLines({ matches: advice.matches });
+  assert.deepEqual(lines.map((line) => [line.inMath, line.tag]),
+    [[true, "this line"], [true, "other side"], [true, "other side"], [false, "game · not sized"]]);
+});
+
+test("stakeAdvice: Chargers moneyline with the Chargers +3.5 held — in the math as the same side, add $0", () => {
+  const line = nflLine({ awayTeam: "Los Angeles Chargers", betType: "Moneyline", sideIndex: 0, points: null });
+  const held = heldRecord("chargers+3.5", { awayTeam: "Los Angeles Chargers", betType: "spread", side: "away", points: 3.5, price: 122, stake: 400 });
+  const advice = adviceFor(line, 213, 5.03, [held], ladderStub({ "FG margin": [[-6.5, 0.56], [-3.5, 0.4785], [-0.5, 0.34]] }));
+  assert.equal(advice.kind, "sized");
+  assert.equal(advice.bet, 0);
+  assert.equal(advice.verb, "add");
+  assert.equal(advice.matches[0].tier, "same_side");
+  assert.deepEqual(view.badges({ tier: "same_side", matches: advice.matches, advice }), [{ kind: "held", text: "held $400" }]);
+  assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$0", alone: "$188.92 alone" });
+  assert.equal(view.suggestedBetAmount(advice), 0);
+});
+
+test("stakeAdvice: a 1H over held sizes the FG over on the worst case, $408.39 not $666.67", () => {
+  const line = nflLine({ points: 48.5 });
+  const held = heldRecord("1h-over", { betType: "total", period: "1H", side: "over", points: 24.5, price: 110, stake: 300 });
+  const advice = adviceFor(line, 120, 10, [held], ladderStub({ "1H total": [[23.5, 0.6], [24.5, 0.55], [25.5, 0.5]] }));
+  assert.equal(advice.matches[0].tier, "related_same");
+  assert.equal(advice.bet, 408.39);
+  assert.equal(advice.held, 300);
+  assert.equal(view.stakeAdviceLine(advice), "add $408.39, $666.67 alone");
+});
+
+test("stakeAdvice: the OTHER direction in another period is left out — no hedge credit, no worst-case penalty", () => {
+  const line = nflLine({ points: 48.5 });
+  const held = heldRecord("1h-under", { betType: "total", period: "1H", side: "under", points: 24.5, price: 110, stake: 300 });
+  const advice = adviceFor(line, 120, 10, [held], ladderStub({ "1H total": [[23.5, 0.6], [24.5, 0.55], [25.5, 0.5]] }));
+  const standalone = kelly.kellyStakeFromEdge({ bookPrice: 120, edgePct: 10, ...SIZING }).stake;
+  assert.equal(advice.matches[0].tier, "related_opposite");
+  // The worst-case pairing would have said $407.22 here; the measured 1H/FG link wants about $800.
+  assert.deepEqual([advice.kind, advice.bet, advice.against, advice.verb], ["none", standalone, 0, "bet"]);
+  assert.deepEqual([advice.matches[0].inMath, advice.matches[0].note], [false, "other period \u00b7 not sized"]);
+  assert.deepEqual(view.badges({ tier: "related_opposite", matches: advice.matches, advice }), [{ kind: "against", text: "against" }]);
+  // Beside a same-direction 1H bet, only that one sizes the row.
+  const over = heldRecord("1h-over", { betType: "total", period: "1H", side: "over", points: 24.5, price: 110, stake: 300 });
+  const both = adviceFor(line, 120, 10, [over, held], ladderStub({ "1H total": [[23.5, 0.6], [24.5, 0.55], [25.5, 0.5]] }));
+  assert.deepEqual([both.bet, both.held, both.against], [408.39, 300, 0]);
+});
+
+test("stakeAdvice: the same line held needs no ladder at all", () => {
+  const line = nflLine({ sideIndex: 1, points: 52.5 });
+  const held = heldRecord("under-52.5", { betType: "total", side: "under", points: 52.5, price: 125, stake: 181.5 });
+  const advice = adviceFor(line, 125, 4.65, [held], () => null);
+  assert.equal(advice.bet, 116.1);
+  const atSize = adviceFor(line, 125, 4.65, [Object.assign({}, held, { stake: 400, toWin: 500 })], () => null);
+  assert.equal(atSize.bet, 0);
+});
+
+test("stakeAdvice guards: a bet with no fair, a flat rung, no stake or a parlay leg is left out and named", () => {
+  const line = nflLine();
+  const under = (id, overrides) => heldRecord(id, Object.assign({ betType: "total", side: "under", points: 36.5, price: 300, stake: 50 }, overrides));
+  const standalone = kelly.kellyStakeFromEdge({ bookPrice: 213, edgePct: 7.19, ...SIZING }).stake;
+  const cases = [
+    [under("no-rung", {}), LIONS_BILLS_LADDER, "no fair at 36.5"],
+    [under("flat", {}), ladderStub({ "FG total": [[35.5, 0.802], [36.5, 0.802], [37.5, 0.802]] }), "no fair at 36.5"],
+    [under("leg", { isParlayLeg: true }), LIONS_BILLS_LADDER, "parlay leg"],
+    [under("no-stake", { stake: null }), LIONS_BILLS_LADDER, "no stake on the record"],
+  ];
+  for (const [held, ladderOf, note] of cases) {
+    const advice = adviceFor(line, 213, 7.19, [held], ladderOf);
+    assert.equal(advice.kind, "none", held.id);
+    assert.equal(advice.bet, standalone, held.id);
+    assert.equal(advice.against, 0, held.id);
+    assert.deepEqual([advice.matches[0].inMath, advice.matches[0].note], [false, note], held.id);
+    // Still on the other side of this line: flagged, bare, with no dollars.
+    assert.deepEqual(view.badges({ tier: advice.matches[0].tier, matches: advice.matches, advice }), [{ kind: "against", text: "against" }], held.id);
+    assert.deepEqual(view.relatedLines({ matches: advice.matches })[0], { tier: advice.matches[0].tier, inMath: false, tag: note, text: advice.matches[0].label }, held.id);
+  }
+});
+
+test("stakeAdvice guards: a period Unabated has no ladder for (Kalshi's F5) is no fair", () => {
+  const held = heldRecord("f5-over", { betType: "total", period: "F5", side: "over", points: 36.5, price: -300, stake: 50 });
+  const advice = adviceFor(nflLine(), 213, 7.19, [held], LIONS_BILLS_LADDER);
+  assert.deepEqual([advice.kind, advice.held, advice.matches[0].inMath, advice.matches[0].note], ["none", 0, false, "no fair at 36.5"]);
+  assert.deepEqual(view.badges({ tier: advice.matches[0].tier, matches: advice.matches, advice }), [{ kind: "held", text: "held" }]);
+});
+
+test("stakeAdvice: a ladder that is not monotone declines the whole calc and shows the standalone stake", () => {
+  // The over's own chance at 61.5 is 34.2%; a 25% fair for Over 51.5 cannot sit below it.
+  const advice = adviceFor(nflLine(), 213, 7.19, LIONS_BILLS_HELD, ladderStub({ "FG total": [[50.5, 0.3], [51.5, 0.25], [52.5, 0.2]] }));
+  const standalone = kelly.kellyStakeFromEdge({ bookPrice: 213, edgePct: 7.19, ...SIZING }).stake;
+  assert.equal(advice.kind, "declined");
+  assert.equal(advice.reason, "ladder not monotone");
+  assert.equal(advice.bet, standalone);
+  assert.deepEqual([advice.held, advice.against, advice.verb], [0, 0, "bet"]);
+  assert.ok(advice.matches.every((match) => !match.inMath && match.note === "ladder not monotone"));
+  assert.equal(view.stakeAdviceWords(advice), null);
+});
+
+test("stakeAdvice: an edge that implies a certain win declines instead of throwing in the render loop", () => {
+  const line = nflLine({ betType: "Moneyline", sideIndex: 1, points: null });
+  const held = heldRecord("bills-ml", { betType: "moneyline", side: "home", points: null, price: -4000, stake: 500 });
+  const advice = adviceFor(line, -5000, 2.5, [held], () => null);
+  assert.deepEqual([advice.kind, advice.reason], ["declined", "edge implies a certain win"]);
+  assert.equal(advice.bet, advice.alone);
+});
+
+test("stakeAdvice: a whole-number row needs the two rungs around it to price its push", () => {
+  const line = nflLine({ points: 61 });
+  const declined = adviceFor(line, 213, 7.19, LIONS_BILLS_HELD.slice(1), LIONS_BILLS_LADDER);
+  assert.equal(declined.kind, "declined");
+  assert.equal(declined.reason, "no fair at 60.5 to price the push");
+  const ladderOf = ladderStub({ "FG total": [[50.5, 0.61], [51.5, 0.5745], [52.5, 0.54], [60.5, 0.37], [61.5, 0.33], [62.5, 0.3]] });
+  assert.equal(adviceFor(line, 213, 7.19, LIONS_BILLS_HELD.slice(1), ladderOf).kind, "sized");
+});
+
+test("stakeAdvice: a price with no edge of its own is $0 even against a held bet (hedge sizing is deferred)", () => {
+  const line = nflLine({ points: 52.5 });
+  const under = heldRecord("under-52.5", { betType: "total", side: "under", points: 52.5, price: 125, stake: 600 });
+  const advice = adviceFor(line, -115, 0, [under], () => null);
+  assert.deepEqual([advice.kind, advice.bet, advice.against], ["none", 0, 600]);
+  const unknownEdge = adviceFor(line, -115, null, [under], () => null);
+  assert.equal(unknownEdge.bet, null);
+  assert.equal(view.suggestedBetAmount(unknownEdge), 0);
+  assert.equal(view.suggestedBetAmount(null), 0);
+});
+
+test("badges: a plain game marker for another market, nothing with no match", () => {
+  const spread = heldRecord("bills-8.5", { betType: "spread", side: "home", points: -8.5, price: 212, stake: 472 });
+  const advice = adviceFor(nflLine(), 213, 7.19, [spread], LIONS_BILLS_LADDER);
+  assert.deepEqual(view.badges({ tier: "same_game", matches: advice.matches, advice }), [{ kind: "game", text: "game" }]);
+  assert.deepEqual(view.badges({ tier: null, matches: [], advice }), []);
+  assert.deepEqual(view.badges(null), []);
+});
+
+test("stakeAdviceWords: no `alone` line when the held bets left the number where it was", () => {
+  assert.deepEqual(view.stakeAdviceWords({ kind: "sized", verb: "bet", bet: 183.04, alone: 183.0412 }), { verb: "bet", bet: "$183.04", alone: null });
+  assert.equal(view.stakeAdviceLine({ kind: "sized", verb: "bet", bet: 183.04, alone: 183.0412 }), "bet $183.04");
+  assert.equal(view.stakeAdviceLine({ kind: "none", bet: 183.04, alone: 183.04 }), null);
+});
+
+test("relatedLines: bets in the math carry their tier's tag, the rest carry why they are not", () => {
   const flag = {
     tier: "same_line",
     matches: [
-      { tier: "same_line", label: "Chattanooga -5.5 +138 · 42.0¢ · $300 · Kalshi" },
-      { tier: "opposite", label: "Eastern Kentucky +5.5 -150 · 60.0¢ · $200 · Kalshi · now +6.5" },
-      { tier: "same_game", label: "1H Under 22.5 -104 · 51.0¢ · $255 · Kalshi" },
+      { tier: "same_line", label: "Chattanooga -5.5 +138 · 42.0¢ · $300 · Kalshi", inMath: true, note: null },
+      { tier: "related_opposite", label: "1H Eastern Kentucky +2.5 -110 · 52.4¢ · $200 · Kalshi", inMath: true, note: null },
+      { tier: "same_game", label: "1H Under 22.5 -104 · 51.0¢ · $255 · Kalshi", inMath: false, note: "game · not sized" },
     ],
   };
   assert.deepEqual(view.relatedLines(flag), [
-    { tier: "same_line", tag: "this line", text: "Chattanooga -5.5 +138 · 42.0¢ · $300 · Kalshi" },
-    { tier: "opposite", tag: "other side", text: "Eastern Kentucky +5.5 -150 · 60.0¢ · $200 · Kalshi · now +6.5" },
-    { tier: "same_game", tag: "game", text: "1H Under 22.5 -104 · 51.0¢ · $255 · Kalshi" },
+    { tier: "same_line", inMath: true, tag: "this line", text: "Chattanooga -5.5 +138 · 42.0¢ · $300 · Kalshi" },
+    { tier: "related_opposite", inMath: true, tag: "other side", text: "1H Eastern Kentucky +2.5 -110 · 52.4¢ · $200 · Kalshi" },
+    { tier: "same_game", inMath: false, tag: "game · not sized", text: "1H Under 22.5 -104 · 51.0¢ · $255 · Kalshi" },
   ]);
   assert.deepEqual(view.relatedLines(null), []);
 });

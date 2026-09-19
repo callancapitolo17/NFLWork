@@ -221,6 +221,12 @@ test("applyChanges overwrites newer lines, adds new ones, skips other leagues an
   assert.equal(after.liquidity, null);
   // A first-quarter line the snapshot slice never carried is now known.
   assert.equal(state.lines["366866367:ms4:si0:tid6"].periodTypeId, 4);
+  // An update is the snapshot's own market; a line the stream added may be
+  // another market of the event (a team total under bt3), so it is not marked.
+  assert.equal(before.fromSnapshot, true);
+  assert.equal(after.fromSnapshot, true);
+  assert.equal(state.lines["366866367:ms4:si0:tid6"].fromSnapshot, false);
+  assert.ok(Object.values(loadedState().lines).every((line) => line.fromSnapshot === true));
   // Replaying the same batch changes nothing.
   assert.deepEqual(feed.applyChanges(state, changes), { applied: 0, added: 0, stale: 14, unknownEvent: 0, otherLeague: 1 });
   // The edge list is unaffected: the moved lines were all negative edge.
