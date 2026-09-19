@@ -1,9 +1,11 @@
 // Presentation helpers for the bet-history flags in the Unabated Ticket panel
 // (#114): source freshness, the header line under the tabs, the Ticket-tab
-// banner truncation, the service-payload merge, and the ticket -> line shape.
-// Pure: no DOM, no fetch, no chrome.* — loaded as a plain <script> in
-// panel.html after bets.js (exposes globalThis.UnabatedBetsView) and via
-// require() in tests/betsview.test.js. panel.js keeps only the DOM writes.
+// banner truncation, the service-payload merge, the ticket -> line shape, and
+// the stake advice — the next bet sized against the bets already held on its
+// market (#130, conditional Kelly). Pure: no DOM, no fetch, no chrome.* —
+// loaded as a plain <script> in panel.html after bets.js, ladder.js and
+// condkelly.js (exposes globalThis.UnabatedBetsView) and via require() in
+// tests/betsview.test.js. panel.js keeps only the DOM writes.
 //
 // Inputs
 //   payload      the last /bets.json body the panel fetched:
@@ -19,7 +21,11 @@
 (function (root) {
   "use strict";
 
-  const bets = typeof module !== "undefined" && module.exports ? require("./bets.js") : root.UnabatedBets;
+  const inNode = typeof module !== "undefined" && module.exports;
+  const bets = inNode ? require("./bets.js") : root.UnabatedBets;
+  const kelly = inNode ? require("./kelly.js") : root.UnabatedKelly;
+  const ladderLib = inNode ? require("./ladder.js") : root.UnabatedLadder;
+  const condkelly = inNode ? require("./condkelly.js") : root.UnabatedCondKelly;
 
   // Every venue the plan registers a source for; #115/#116/#117 fill the
   // missing ones. Listing them keeps the Bets tab honest about coverage.
@@ -28,6 +34,11 @@
   const STALE_MS = 60 * 60 * 1000;
   const BANNER_MAX_LINES = 5;
   const DEFAULT_BETS_SETTINGS = { serviceUrl: "http://127.0.0.1:8094" };
+  // Tiers on the row's own direction and on the other one; same_game is neither.
+  const HELD_TIERS = new Set(["same_line", "same_side", "related_same"]);
+  const AGAINST_TIERS = new Set(["opposite", "related_opposite"]);
+  // A bet on another market of the game: shown, never sized off (#129).
+  const NOTE_OTHER_MARKET = "game \u00b7 not sized";
   // How a page-sourced venue is refreshed, for the Bets tab when its read is
   // old or missing: the second form when its tab is open but has not shown
   // the screen the content script mirrors.
@@ -133,98 +144,199 @@
     return { shown: matches.slice(0, limit), more: Math.max(0, matches.length - limit) };
   }
 
-  // The badge's kind: held (warning tint), against (red), game (outline).
-  // Dollars decide when a venue supplied them; a bet without a stake still
-  // gets its kind from the tier, so an other-side position is never unflagged.
-  function badgeKind(flag) {
-    if (!flag || !flag.tier) return null;
-    const exposure = flag.exposure || { held: 0, against: 0 };
-    if (exposure.held > 0) return "held";
-    if (exposure.against > 0) return "against";
-    if (flag.tier === "same_line" || flag.tier === "same_side") return "held";
-    if (flag.tier === "opposite") return "against";
-    return "game";
+  // ---- stake advice (#130) ---------------------------------------------------
+  //
+  // The next bet is sized GIVEN the bets already held on its market of the
+  // game (conditional Kelly, condkelly.js), not sized alone and then adjusted
+  // by subtracting dollars: dollars at different prices and numbers are not
+  // comparable. A matched bet is "in the math" when it sits on the row's
+  // axis (totals with totals, spreads and moneylines together, any period)
+  // and Unabated has a fair at its number; every other match is left out and
+  // says why. Bets on another market of the game never size it (#129).
+
+  function roundCents(dollars) {
+    return Math.round(dollars * 100) / 100;
   }
 
-  // The row badge: what you already have on this market, in dollars when the
-  // venue gave a stake ("held $300", "against $200"), bare otherwise. `held`
-  // wins over `against` when both exist (the against bets stay in the tooltip);
-  // a same_game match is a plain "game" marker — it does not change the size.
-  function badgeText(flag) {
-    const kind = badgeKind(flag);
-    if (!kind) return null;
-    const exposure = flag.exposure || { held: 0, against: 0 };
-    const dollars = kind === "held" ? exposure.held : kind === "against" ? exposure.against : 0;
-    return dollars > 0 ? `${kind} ${bets.formatStake(dollars)}` : kind;
-  }
-
-  // What to do with a Kelly stake given what you already hold on the market.
-  //   none     nothing held either way: the stake stands
-  //   add      held less than the stake: top up by `add` (the number to act on)
-  //   at_size  held the stake or more (or no stake could be computed): nothing to add
-  //   reverse  on the other side only: the stake stands and `net` is what is
-  //            left after it cancels the against position (negative = still net against)
-  function stakeAdvice(stake, exposure) {
-    const held = exposure && exposure.held > 0 ? exposure.held : 0;
-    const against = exposure && exposure.against > 0 ? exposure.against : 0;
-    const sized = typeof stake === "number" && stake > 0;
-    if (held > 0) {
-      if (sized && stake > held) return { kind: "add", add: Math.round((stake - held) * 100) / 100, held, stake };
-      return { kind: "at_size", held, stake: sized ? stake : null };
+  // The stake with nothing held: kelly.kellyStakeFromEdge, or null when the
+  // line cannot be sized at all (no edge known, not an American price).
+  function standaloneStake({ price, edgePct, bankroll, multiplier }) {
+    if (edgePct == null) return null;
+    try {
+      return kelly.kellyStakeFromEdge({ bookPrice: price, edgePct, bankroll, multiplier }).stake;
+    } catch (_error) {
+      return null;
     }
-    if (against > 0) return { kind: "reverse", against, stake: sized ? stake : null, net: sized ? Math.round((stake - against) * 100) / 100 : null };
-    return { kind: "none" };
   }
 
-  // The dollars the rail tells the user to bet now: the top-up when adding to
-  // a position, $0 when already at size, else the full stake (null stake =
-  // $0). The Min suggested bet filter and alerts gate on this, not the target.
-  function suggestedBetAmount(stake, advice) {
-    if (advice && advice.kind === "add") return advice.add;
-    if (advice && advice.kind === "at_size") return 0;
-    return typeof stake === "number" ? stake : 0;
+  // The bet's number as its own side writes it: "36.5", "-8.5".
+  function betNumberLabel(bet) {
+    if (typeof bet.points !== "number") return "its number";
+    return bet.betType === "spread" && bet.points > 0 ? `+${bet.points}` : `${bet.points}`;
+  }
+
+  // P(above) at every cut the bet needs that the row does not set itself:
+  // {pairs: [[cut, prob], ...]} or {reason}. A cut on the row's own number
+  // takes the row's chance (from Unabated's edge), so it needs no rung.
+  function ladderPairsFor(position, rowPosition, ladderOf) {
+    const rowCuts = position.period === rowPosition.period ? condkelly.cutsNeeded(rowPosition) : [];
+    const pairs = [];
+    for (const cut of condkelly.cutsNeeded(position)) {
+      if (rowCuts.includes(cut)) continue;
+      const found = ladderLib.probAbove(ladderOf(position.period, position.axis), cut);
+      if (found.reason) return { reason: found.reason };
+      pairs.push([cut, found.prob]);
+    }
+    return { pairs };
+  }
+
+  // Why one match is not in the math, or null when it is: {note} | {pairs}.
+  function sizingOf(match, rowPosition, ladderOf) {
+    if (match.tier === "same_game") return { note: NOTE_OTHER_MARKET };
+    if (rowPosition.reason) return { note: rowPosition.reason };
+    const position = match.position;
+    if (!position || position.reason) return { note: position ? position.reason : "position unknown" };
+    if (position.axis !== rowPosition.axis) return { note: NOTE_OTHER_MARKET };
+    const found = ladderPairsFor(position, rowPosition, ladderOf);
+    if (found.reason) return { note: `no fair at ${betNumberLabel(match.bet)}` };
+    return { pairs: found.pairs };
+  }
+
+  function heldBetOf(position) {
+    return { group: position.period, cut: position.cut, direction: position.direction, stake: position.stake, toWin: position.toWin };
+  }
+
+  // A whole-number row pushes on its number: the push mass comes from the two
+  // rungs around it. {pairs} or {reason}.
+  function rowPushPairs(rowPosition, ladderOf) {
+    const cuts = condkelly.cutsNeeded(rowPosition);
+    if (cuts.length === 1) return { pairs: [] };
+    const pairs = [];
+    for (const cut of cuts) {
+      const found = ladderLib.probAbove(ladderOf(rowPosition.period, rowPosition.axis), cut);
+      if (found.reason) return { reason: `no fair at ${cut} to price the push` };
+      pairs.push([cut, found.prob]);
+    }
+    return { pairs };
+  }
+
+  // What to bet on a line given the open bets matched to it.
+  //   line       the row / ticket as the matcher saw it (bets.linePosition reads it)
+  //   price      the book's American price; edgePct Unabated's edge in percent
+  //   matches    bets.matchBets(...).matches for the line
+  //   ladderOf   (period, axis) -> ladder.buildLadder(...) result or null
+  // Returns
+  //   kind      "none"     nothing held is in the math: `bet` is the standalone stake
+  //             "sized"    conditional Kelly ran: `bet` is the stake given the held bets
+  //             "declined" held bets belong in the math but the calc was refused
+  //                        (`reason`): `bet` is the standalone stake
+  //   bet       the dollars to act on (null when the line cannot be sized)
+  //   alone     the standalone stake; verb "add" when anything in the math is
+  //             on this direction, else "bet"; held / against the dollars in
+  //             the math by direction
+  //   matches   the input matches, in-math first, each with inMath and note
+  function stakeAdvice({ line, price, edgePct, bankroll, multiplier, matches, ladderOf }) {
+    const alone = standaloneStake({ price, edgePct, bankroll, multiplier });
+    const rowPosition = bets.linePosition(line);
+    const readLadder = typeof ladderOf === "function" ? ladderOf : () => null;
+    const annotated = (matches || []).map((match) => {
+      const sizing = sizingOf(match, rowPosition, readLadder);
+      return { ...match, inMath: !sizing.note, note: sizing.note || null, pairs: sizing.pairs || [] };
+    });
+    const inMath = annotated.filter((match) => match.inMath);
+    const sumStakes = (list) => roundCents(list.reduce((total, match) => total + match.position.stake, 0));
+    const held = sumStakes(inMath.filter((match) => match.position.direction === rowPosition.direction));
+    const against = sumStakes(inMath.filter((match) => match.position.direction !== rowPosition.direction));
+    const advice = { kind: "none", bet: alone, alone, verb: held > 0 ? "add" : "bet", held, against, reason: null };
+    const finish = (list) => ({ ...advice, matches: orderedForDisplay(list) });
+    // No edge of its own: $0 as today. Sizing a hedge is deferred (user, 2026-09-19).
+    if (inMath.length === 0 || alone == null || !(alone > 0)) return finish(annotated);
+
+    const decline = (reason) => {
+      Object.assign(advice, { kind: "declined", reason, held: 0, against: 0, verb: "bet" });
+      return finish(annotated.map((match) => (match.inMath ? { ...match, inMath: false, note: reason } : match)));
+    };
+    const push = rowPushPairs(rowPosition, readLadder);
+    if (push.reason) return decline(push.reason);
+    const ladders = {};
+    const addPairs = (period, pairs) => { ladders[period] = (ladders[period] || []).concat(pairs); };
+    addPairs(rowPosition.period, push.pairs);
+    for (const match of inMath) addPairs(match.position.period, match.pairs);
+    const solved = condkelly.solveStake({
+      kellyBankroll: bankroll * multiplier,
+      candidate: {
+        group: rowPosition.period, cut: rowPosition.cut, direction: rowPosition.direction,
+        netOdds: kelly.americanToDecimal(price) - 1,
+        prob: (1 + edgePct / 100) / kelly.americanToDecimal(price),
+      },
+      held: inMath.map((match) => heldBetOf(match.position)),
+      ladders,
+    });
+    if (solved.reason) return decline(solved.reason);
+    Object.assign(advice, { kind: "sized", bet: roundCents(solved.stake) });
+    return finish(annotated);
+  }
+
+  // In-math bets first, each group in the matcher's order (strongest tier,
+  // then stake); the working `pairs` are dropped.
+  function orderedForDisplay(annotated) {
+    const strip = ({ pairs: _pairs, ...match }) => match;
+    return annotated.filter((match) => match.inMath).concat(annotated.filter((match) => !match.inMath)).map(strip);
+  }
+
+  // The dollars the rail tells the user to bet now. The Min suggested bet
+  // filter, alerts, the Ticket and the Copy line all read this one number.
+  function suggestedBetAmount(advice) {
+    return advice && typeof advice.bet === "number" ? advice.bet : 0;
+  }
+
+  // The row's badges: your position in dollars. `held $X` for the bets in the
+  // math on this direction, `against $X` for the other — both when both
+  // exist. A bet that is on a direction but not in the math (no stake, no
+  // fair) still flags it, bare. Anything else on the game is a plain `game`.
+  //   flag  {tier, matches, advice} as panel.js builds it
+  function badges(flag) {
+    if (!flag || !flag.tier) return [];
+    const advice = flag.advice || { held: 0, against: 0 };
+    const tiers = new Set((flag.matches || []).map((match) => match.tier));
+    const onDirection = (tierSet) => Array.from(tiers).some((tier) => tierSet.has(tier));
+    const out = [];
+    if (advice.held > 0) out.push({ kind: "held", text: `held ${bets.formatStake(advice.held)}` });
+    else if (onDirection(HELD_TIERS)) out.push({ kind: "held", text: "held" });
+    if (advice.against > 0) out.push({ kind: "against", text: `against ${bets.formatStake(advice.against)}` });
+    else if (onDirection(AGAINST_TIERS)) out.push({ kind: "against", text: "against" });
+    return out.length ? out : [{ kind: "game", text: "game" }];
   }
 
   // The advice as words, the same on the row, the Ticket block and the Copy
-  // text. `verb` says what the bet number IS — "add" when topping up a
-  // position, "bet" otherwise — because "$121 of $241 target" read as though
-  // $121 were the whole bet (user choice 2026-09-13). `have` is what is
-  // already down (on this side, or on the other when `against`), `target` the
-  // full Kelly size, `bet` the number to act on, `note` the net only when an
-  // against position is being cancelled.
-  //   {verb, have, target, bet, note, against}  display strings; `note` null unless there is a net line
+  // text. `verb` says what the number IS — "add" when topping up a position,
+  // "bet" otherwise (user choice 2026-09-13); `alone` is the one small line
+  // under it, only when the held bets changed the number.
+  //   {verb, bet, alone}  display strings, or null when nothing is held in the math
   function stakeAdviceWords(advice) {
-    const money = (dollars) => bets.formatStake(Math.round(dollars * 100) / 100);
-    if (!advice || advice.kind === "none") return null;
-    if (advice.kind === "add") {
-      return { verb: "add", have: money(advice.held), target: money(advice.stake), bet: money(advice.add), note: null, against: false };
-    }
-    if (advice.kind === "at_size") {
-      return { verb: "bet", have: money(advice.held), target: advice.stake == null ? "none here" : money(advice.stake), bet: "$0", note: null, against: false };
-    }
-    const target = advice.stake == null ? "none here" : money(advice.stake);
-    const bet = advice.stake == null ? "$0" : money(advice.stake);
-    let note = null;
-    if (advice.net != null) note = advice.net >= 0 ? `net ${money(advice.net)} on this side` : `still ${money(-advice.net)} against`;
-    return { verb: "bet", have: money(advice.against), target, bet, note, against: true };
+    if (!advice || advice.kind !== "sized") return null;
+    const changed = roundCents(advice.alone) !== advice.bet;
+    return { verb: advice.verb, bet: bets.formatStake(advice.bet), alone: changed ? `${bets.formatStake(roundCents(advice.alone))} alone` : null };
   }
 
-  // One line: "add $250, $350 held, full size $600" — or, against a position,
-  // "bet $500, $200 on the other side (net $300 on this side)".
+  // One line for the clipboard: "add $188.32, $183 alone".
   function stakeAdviceLine(advice) {
     const words = stakeAdviceWords(advice);
     if (!words) return null;
-    const held = words.against
-      ? `${words.have} on the other side`
-      : `${words.have} held · full size ${words.target}`;
-    return `${words.verb} ${words.bet}, ${held}${words.note ? ` (${words.note})` : ""}`;
+    return `${words.verb} ${words.bet}${words.alone ? `, ${words.alone}` : ""}`;
   }
 
-  // The related bets for one line: a tag for how it relates and the bet
-  // itself, the same on a row and on the Ticket.
+  // The related bets for one line: the bet itself and a tag. A bet in the
+  // math carries how it relates (`this line`, `same side`, `other side`); one
+  // that is not carries why (`game · not sized`, `no fair at 36.5`) and is
+  // rendered grey.
   function relatedLines(flag) {
     const matches = flag && Array.isArray(flag.matches) ? flag.matches : [];
-    return matches.map((match) => ({ tier: match.tier, tag: bets.tierLabel(match.tier), text: match.label }));
+    return matches.map((match) => ({
+      tier: match.tier, inMath: match.inMath === true,
+      tag: match.inMath === true ? bets.tierLabel(match.tier) : match.note || bets.tierLabel(match.tier),
+      text: match.label,
+    }));
   }
 
   // Venues whose latest service poll succeeded: the payload is then the whole
@@ -304,7 +416,7 @@
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badgeText, badgeKind, relatedLines, stakeAdvice, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, mergePageSource, crosswalkOf, crosswalkRows, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badges, relatedLines, stakeAdvice, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, mergePageSource, crosswalkOf, crosswalkRows, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

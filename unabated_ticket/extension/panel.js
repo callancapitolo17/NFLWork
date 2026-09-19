@@ -26,6 +26,7 @@
   const feed = globalThis.UnabatedFeed;
   const betsLib = globalThis.UnabatedBets;
   const betsView = globalThis.UnabatedBetsView;
+  const ladderLib = globalThis.UnabatedLadder;
   // Bets service poll cadence while the panel is visible (plan § Storage).
   const BETS_POLL_MS = 30 * 1000;
   const DEFAULT_SETTINGS = { bankroll: 30000, multiplier: 0.25 };
@@ -139,6 +140,11 @@
   let scannerStatus = null;
   let scannerState = null;
   let boardLinesCache = null;
+  // Unabated's fair ladders for sizing against held bets (#130): the feed's
+  // lines grouped by event, and each (event, period, axis) ladder built from
+  // them on first use. Both are dropped on every scanner update.
+  let linesByEventCache = null;
+  let ladderCache = new Map();
   const teamsLib = globalThis.UnabatedTeams;
   let teamsSpellingCount = 0;
 
@@ -169,6 +175,8 @@
       scannerStatus = status;
       scannerState = feedState;
       boardLinesCache = null;
+      linesByEventCache = null;
+      ladderCache = new Map();
       registerFeedTeams(feedState);
       learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
       renderEdges();
@@ -459,15 +467,6 @@
     view.rowTraceDetail.textContent = `Script ${resolution.build}: ${resolution.trace}.${watching}`;
   }
 
-  // What the panel is telling you to put down now: the top-up when a position
-  // is already held, zero when it covers the stake, the stake otherwise.
-  function actedStake(advice, stake) {
-    if (!advice || advice.kind === "none") return stake;
-    if (advice.kind === "add") return advice.add;
-    if (advice.kind === "at_size") return 0;
-    return advice.stake;
-  }
-
   function renderTicket() {
     const { ticket, settings, watchStatus } = state;
     const { line, result, reason } = computeStake(ticket, settings);
@@ -481,7 +480,8 @@
     view.betLine.textContent = `${describeSide(ticket)}${periodSuffix(ticket)}${ticket.isAlt ? " \u00b7 alt line" : ""}`;
     view.eventLine.textContent = describeMatchup(ticket);
     view.startLine.textContent = fmtStart(ticket.eventStart);
-    const betFlag = renderBetBanner(ticket);
+    const betFlag = ticketBetFlag(ticket, line);
+    renderBetBanner(betFlag);
 
     view.book.textContent = ticket.book.name;
     view.price.textContent = fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice));
@@ -503,14 +503,15 @@
       view.stake.textContent = fmtDollars(result.stake);
       view.fullKelly.textContent = "";
     }
-    // Sets view.stake to the number to act on when a position is already held.
-    const advice = renderStakeExposure(result ? result.stake : null, betFlag);
+    // Sets view.stake to the number to act on when held bets changed it.
+    const advice = betFlag.advice;
+    renderStakeExposure(advice);
 
     // Payout = stake x decimal odds at the book's American price; "to win" is
     // the profit on top of it. Both describe the number shown above them, so a
     // top-up prices the top-up and an at-size line shows no payout at all.
     let payoutText = "";
-    const acted = result ? actedStake(advice, result.stake) : null;
+    const acted = result ? betsView.suggestedBetAmount(advice) : null;
     if (acted != null && acted > 0) {
       const payout = acted * kelly.americanToDecimal(line.price);
       view.profit.textContent = fmtDollars(payout - acted);
@@ -525,24 +526,37 @@
     show("ticket");
   }
 
-  // Every open bet on this line's game, strongest tier first: same line, same
-  // side, the other side (red), anything else on the game. Nothing when none.
-  // Returns the row-style flag {tier, matches, exposure} for the stake block.
-  function renderBetBanner(ticket) {
+  // The ticket's open bets and what they do to its stake: the row-style flag
+  // {tier, matches, advice}. `line` is the priced line (the current number
+  // when the line moved), so the bets are sized against what is on offer now.
+  function ticketBetFlag(ticket, line) {
     // The ticket's event's venue id map lets an id-joined bet whose team
     // names do not resolve be placed on a side (bets.sideIndexByVenueId).
     const event = scannerState && ticket.eventId != null ? scannerState.events[ticket.eventId] : null;
-    const line = { ...betsView.ticketAsLine(ticket), venueIds: event ? event.venueIds ?? null : null };
-    const { matches } = betsLib.matchBets(line, state.betRecords, { lines: boardLines() });
-    const { shown, more } = betsView.bannerLines(matches);
-    const items = shown.map((match) => {
+    const matchLine = { ...betsView.ticketAsLine(ticket), points: line.points ?? ticket.points ?? null, venueIds: event ? event.venueIds ?? null : null };
+    const { matches } = betsLib.matchBets(matchLine, state.betRecords, { lines: boardLines() });
+    const advice = betsView.stakeAdvice({
+      line: matchLine, price: line.price, edgePct: line.edgePct,
+      bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
+      matches, ladderOf: ladderReader(ticket.eventId),
+    });
+    return { tier: matches.length ? matches[0].tier : null, matches: advice.matches, advice };
+  }
+
+  // Every open bet on this line's game, bets in the math first: this line,
+  // same side, the other side (red); then the ones that are not sized, grey,
+  // with why. Nothing when none.
+  function renderBetBanner(flag) {
+    const { shown, more } = betsView.bannerLines(betsView.relatedLines(flag));
+    const items = shown.map((related) => {
       const div = document.createElement("div");
-      div.className = `bet-match tier-${match.tier}${match.tier === "opposite" ? " bad" : match.tier === "same_game" ? " game" : ""}`;
+      const against = related.tier === "opposite" || related.tier === "related_opposite";
+      div.className = `bet-match tier-${related.tier}${!related.inMath ? " not-sized" : against ? " bad" : ""}`;
       const kind = document.createElement("span");
       kind.className = "k";
-      kind.textContent = betsLib.tierLabel(match.tier);
+      kind.textContent = related.tag;
       const text = document.createElement("span");
-      text.textContent = match.label;
+      text.textContent = related.text;
       div.append(kind, text);
       return div;
     });
@@ -555,40 +569,33 @@
     view.betsBanner.replaceChildren(...items);
     view.betsBanner.hidden = items.length === 0;
     view.betsBannerHead.hidden = items.length === 0;
-    return { tier: matches.length ? matches[0].tier : null, matches, exposure: betsLib.exposureOf(matches) };
   }
 
-  // What the Copy button adds after "stake $X" so the clipboard carries the
-  // number to act on, not only the full Kelly.
+  // What the Copy button adds after "stake $X": the verb and the standalone
+  // size, so the clipboard says the number was sized against held bets.
   function copyExposureText(advice) {
     const line = betsView.stakeAdviceLine(advice);
     return line ? ` (${line})` : "";
   }
 
-  // Under the stake, the same words as the Edges rail: what is already down
-  // and what full size is. The big number above it is what to act on now, and
-  // the label says which ("Bet" or "Add to your position").
-  function renderStakeExposure(stake, flag) {
-    const advice = betsView.stakeAdvice(stake, flag.exposure);
+  // Under the stake, the same three pieces as the Edges rail: the position in
+  // dollars, the number to act on (the big figure, its label says "Bet" or
+  // "Add to your position"), and what the stake would be alone.
+  function renderStakeExposure(advice) {
     const words = betsView.stakeAdviceWords(advice);
-    view.stakeExposure.classList.toggle("against", advice.kind === "reverse");
-    view.stakeExposure.hidden = advice.kind === "none";
-    view.stakeLabel.textContent = advice.kind === "add" ? "Add to your position"
-      : advice.kind === "at_size" ? "Already at full size" : "Bet";
-    if (advice.kind === "none") {
-      view.stakeExposure.replaceChildren();
-      return advice;
-    }
-    // The stake shown is the number to act on, not the full Kelly size — but
-    // only when there was a stake to compute: an unsizable line keeps its "—"
-    // rather than claiming a considered $0.
-    if (advice.stake != null) view.stake.textContent = words.bet;
-    const summary = document.createElement("div");
-    summary.textContent = words.against
-      ? `${words.have} already on the other side${words.note ? ` · ${words.note}` : ""}`
-      : `${words.have} already held · full size ${words.target}`;
-    view.stakeExposure.replaceChildren(summary);
-    return advice;
+    const position = [
+      advice.held > 0 ? `held ${betsLib.formatStake(advice.held)}` : null,
+      advice.against > 0 ? `against ${betsLib.formatStake(advice.against)}` : null,
+      words ? words.alone : null,
+    ].filter(Boolean);
+    view.stakeExposure.classList.toggle("against", advice.against > 0 && advice.held === 0);
+    view.stakeExposure.hidden = position.length === 0;
+    view.stakeExposure.textContent = position.join(" \u00b7 ");
+    view.stakeLabel.textContent = !words ? "Bet"
+      : advice.bet === 0 ? "Already at full size"
+        : words.verb === "add" ? "Add to your position" : "Bet";
+    // The stake shown is the number to act on, not the standalone size.
+    if (words) view.stake.textContent = fmtDollars(advice.bet);
   }
 
   // Two kinds of capture error need opposite advice: no_fair is Unabated
@@ -828,28 +835,48 @@
     };
   }
 
-  // Each row gets `bet` = {tier, matches, exposure, advice} from the open bet
-  // records: what you hold on that market and how the Kelly stake changes
-  // for it. No row is ever hidden for being bet — the edge still being there
-  // after you bet it is information, and the stake column carries the top-up.
+  // (period, axis) -> Unabated's fair ladder for one event, built from the
+  // feed's lines on first use and kept until the next scanner update.
+  function ladderReader(eventId) {
+    return (period, axis) => {
+      const periodTypeId = ladderLib.periodTypeIdOf(period);
+      if (!scannerState || eventId == null || periodTypeId == null) return null;
+      const cacheKey = `${eventId}|${periodTypeId}|${axis}`;
+      if (!ladderCache.has(cacheKey)) {
+        if (!linesByEventCache) linesByEventCache = ladderLib.groupLinesByEvent(Object.values(scannerState.lines));
+        ladderCache.set(cacheKey, ladderLib.buildLadder(linesByEventCache.get(eventId), { periodTypeId, axis }));
+      }
+      return ladderCache.get(cacheKey);
+    };
+  }
+
+  // Each row gets `bet` = {tier, matches, advice} from the open bet records:
+  // what you hold on that market and the stake sized against it (conditional
+  // Kelly, #130). No row is ever hidden for being bet — the edge still being
+  // there after you bet it is information, and the stake column carries the top-up.
   function withBetFlags(rows) {
     const flags = betsLib.annotateRows(rows, state.betRecords, { lines: boardLines() });
     return rows.map((row, index) => {
       const flag = flags[index];
-      return { ...row, bet: { ...flag, advice: betsView.stakeAdvice(row.stake, flag.exposure) } };
+      const advice = betsView.stakeAdvice({
+        line: row, price: row.price, edgePct: row.edgePct,
+        bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
+        matches: flag.matches, ladderOf: ladderReader(row.eventId),
+      });
+      return { ...row, bet: { tier: flag.tier, matches: advice.matches, advice } };
     });
   }
 
-  // Sort key for "by my exposure": dollars on the market, held or against.
+  // Sort key for "by my exposure": dollars in the math on the market, held or against.
   function exposureDollars(row) {
-    return row.bet ? row.bet.exposure.held + row.bet.exposure.against : 0;
+    return row.bet ? row.bet.advice.held + row.bet.advice.against : 0;
   }
 
-  // Min suggested bet: gates on what the rail says to bet now (the top-up on
-  // a held position), not the full Kelly target. The list and alerts share it.
+  // Min suggested bet: gates on what the rail says to bet now (the stake
+  // sized against what is held), not the standalone size. The list and alerts share it.
   function meetsMinStake(row) {
     const minStake = state.edgeSettings.minStake;
-    return minStake === 0 || betsView.suggestedBetAmount(row.stake, row.bet.advice) >= minStake;
+    return minStake === 0 || betsView.suggestedBetAmount(row.bet.advice) >= minStake;
   }
 
   function currentEdgeRows() {
@@ -879,15 +906,15 @@
   // Cards the user has opened; survives the 5s re-render, not a panel reload.
   const expandedGroups = new Set();
 
-  // "held $300" / "against $200" / "game", with every match's label as the tooltip.
-  function betBadge(flag) {
-    const text = betsView.badgeText(flag);
-    if (!text) return null;
-    const badge = document.createElement("span");
-    badge.className = `tag ${betsView.badgeKind(flag)}`;
-    badge.textContent = text;
-    badge.title = flag.matches.map((match) => match.label).join("\n");
-    return badge;
+  // "held $300" and/or "against $200", or "game", with every match's label as the tooltip.
+  function betBadges(flag) {
+    return betsView.badges(flag).map(({ kind, text }) => {
+      const badge = document.createElement("span");
+      badge.className = `tag ${kind}`;
+      badge.textContent = text;
+      badge.title = flag.matches.map((match) => match.label).join("\n");
+      return badge;
+    });
   }
 
   // Edge magnitude in three steps, so a +6% and a +1.1% never read the same:
@@ -899,21 +926,21 @@
   }
 
   // The rail under the edge: the number to act on, with the verb on it, then
-  // what is already down and what full size is. "add $250" is not the same
-  // instruction as "bet $250" and must not look like it.
+  // one small line — what the stake would be with nothing held. "add $250"
+  // is not the same instruction as "bet $250" and must not look like it.
   function fillStakeCell(cell, row) {
-    const advice = row.bet ? row.bet.advice : { kind: "none" };
-    cell.classList.toggle("at-size", advice.kind === "at_size");
+    const advice = row.bet ? row.bet.advice : null;
     const words = betsView.stakeAdviceWords(advice);
+    cell.classList.toggle("at-size", Boolean(words) && advice.bet === 0);
     if (!words) {
       cell.textContent = row.stake == null ? "—" : `bet ${fmtDollars(row.stake)}`;
       return;
     }
+    cell.append(`${words.verb} ${fmtDollars(advice.bet)}`);
+    if (!words.alone) return;
     const note = document.createElement("small");
-    note.textContent = words.against
-      ? `${words.have} on the other side${words.note ? ` · ${words.note}` : ""}`
-      : `${words.have} held · full size ${words.target}`;
-    cell.append(`${words.verb} ${words.bet} `, note);
+    note.textContent = words.alone;
+    cell.append(" ", note);
   }
 
   // The bets already on this game, as a labelled section of the row rather
@@ -926,13 +953,13 @@
     if (!all.length) return null;
     const lines = all.slice(0, RELATED_LINES_ON_A_ROW);
     const block = document.createElement("div");
-    block.className = `related-block${all.some((line) => line.tier === "opposite") ? " against" : ""}`;
+    block.className = `related-block${all.some((line) => line.inMath && (line.tier === "opposite" || line.tier === "related_opposite")) ? " against" : ""}`;
     const head = document.createElement("div");
     head.className = "related-head";
     head.textContent = `Related bets · ${all.length}`;
     block.append(head, ...lines.map((line) => {
       const div = document.createElement("div");
-      div.className = `related-line tier-${line.tier}`;
+      div.className = `related-line tier-${line.tier}${line.inMath ? "" : " not-sized"}`;
       const tag = document.createElement("span");
       tag.className = "related-tag";
       tag.textContent = line.tag;
@@ -977,8 +1004,7 @@
 
     const side = document.createElement("div");
     side.className = "edge-side";
-    const flag = betBadge(row.bet);
-    if (flag) side.append(flag);
+    side.append(...betBadges(row.bet));
     if (row.isAlt) {
       const badge = document.createElement("span");
       badge.className = "tag";
@@ -1339,9 +1365,9 @@
   function alertRows() {
     const selected = feed.selectEdges(scannerState, { ...edgeSelectionOptions(effectiveFilter()), minEdge: state.alertSettings.minEdgePct / 100 })
       .map((row) => ({ ...row, stake: stakeFor(row) }));
-    // A line you already hold at size has nothing to act on, and one below the
-    // Min suggested bet is hidden from the list, so neither alerts.
-    return withBetFlags(selected).filter((row) => row.bet.advice.kind !== "at_size" && meetsMinStake(row));
+    // A line whose stake against what you hold is $0 has nothing to act on, and
+    // one below the Min suggested bet is hidden from the list, so neither alerts.
+    return withBetFlags(selected).filter((row) => betsView.suggestedBetAmount(row.bet.advice) > 0 && meetsMinStake(row));
   }
 
   // Runs after every scanner update. Baseline first, then one notification

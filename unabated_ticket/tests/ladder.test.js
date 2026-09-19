@@ -17,7 +17,7 @@ const nearly = (actual, expected, tol = 1e-9) =>
   assert.ok(Math.abs(actual - expected) <= tol, `expected ${expected}, got ${actual}`);
 
 function feedLine(fields) {
-  return { eventId: 501, leagueId: NFL, periodTypeId: FULL_GAME, bookId: 4, ...fields };
+  return { eventId: 501, leagueId: NFL, periodTypeId: FULL_GAME, bookId: 4, fromSnapshot: true, ...fields };
 }
 
 function probAt(built, cut) {
@@ -94,6 +94,15 @@ test("no rung: a number the ladder lacks, a whole number, another period", () =>
   assert.deepEqual(built.rungs.map(([cut]) => cut), [47.5]);
   for (const cut of [36.5, 48, 23.5]) assert.deepEqual(probAt(built, cut), { reason: ladder.REASON_NO_RUNG });
   assert.deepEqual(ladder.probAbove(null, 47.5), { reason: ladder.REASON_NO_RUNG });
+});
+
+test("a line the changes stream added is not read: it may be a team total filed under the game total", () => {
+  const built = ladder.buildLadder([
+    feedLine({ betTypeId: TOTAL, sideIndex: AWAY_OR_OVER, points: 47.5, bacr: -150 }),
+    feedLine({ betTypeId: TOTAL, sideIndex: AWAY_OR_OVER, points: 23.5, bacr: -110, fromSnapshot: false }),
+    feedLine({ betTypeId: TOTAL, sideIndex: AWAY_OR_OVER, points: 47.5, bacr: 400, fromSnapshot: undefined }),
+  ], { periodTypeId: FULL_GAME, axis: ladder.AXIS_TOTAL });
+  assert.deepEqual(built.rungs, [[47.5, 0.6]]);
 });
 
 test("a soccer moneyline is three-way and feeds no margin cut", () => {

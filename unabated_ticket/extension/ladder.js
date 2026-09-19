@@ -7,9 +7,12 @@
 // Inputs
 //   lines  scannerState.lines values (feed.js): every book line and alt rung,
 //          each {eventId, leagueId, periodTypeId, betTypeId, sideIndex,
-//          points, bacr}. `bacr` is Unabated's fair for THAT side at THAT
-//          number, as a whole American price; side 0 = away / Over, side 1 =
-//          home / Under.
+//          points, bacr, fromSnapshot}. `bacr` is Unabated's fair for THAT
+//          side at THAT number, as a whole American price; side 0 = away /
+//          Over, side 1 = home / Under. Only lines a snapshot listed are
+//          read: the changes stream files an event's team totals under the
+//          game total's bet type, and a team total's fair at 23.5 is not the
+//          game's.
 // Outputs a ladder {axis, periodTypeId, rungs: [[cut, probAbove], ...]}
 //          sorted by cut, and probAbove(ladder, cut) -> {prob} or {reason}.
 //          Nothing here writes anywhere.
@@ -89,7 +92,7 @@
   function buildLadder(eventLines, { periodTypeId, axis }) {
     const samplesByCut = new Map();
     for (const line of eventLines || []) {
-      if (line.periodTypeId !== periodTypeId) continue;
+      if (line.periodTypeId !== periodTypeId || line.fromSnapshot !== true) continue;
       if (typeof line.bacr !== "number" || Math.abs(line.bacr) < 100) continue;
       const position = cutOfLine(line);
       if (!position || position.axis !== axis || !isHalfPoint(position.cut)) continue;

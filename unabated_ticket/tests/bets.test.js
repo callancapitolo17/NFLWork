@@ -351,14 +351,19 @@ test("NFL slice: spread Chicago -13.5 is same_side on Chicago -14, opposite at a
   assert.equal(sameGame.label, "Chicago -13.5 +150 · 40.0¢ · $80 · Kalshi");
 });
 
-test("NFL slice: 1H total YES Over 20.5 is same_line on the 1H Over row; FG total is only same_game", () => {
+test("NFL slice: 1H total YES Over 20.5 is same_line on the 1H Over row; on the FG total it is related, by direction", () => {
   const rows = nflRows();
   const records = normalizedFixture(CHICAR).filter((r) => r.id === "kalshi:KXNFL1HTOTAL-26SEP13CHICAR-21:yes");
   const over = bets.matchBets(rows["Total 1H 0 20.5"], records).matches[0];
   assert.equal(over.tier, "same_line");
   assert.equal(over.label, "1H Over 20.5 -100 · 50.0¢ · $25 · Kalshi");
   assert.equal(bets.matchBets(rows["Total 1H 1 20.5"], records).matches[0].tier, "opposite");
-  assert.equal(bets.matchBets(rows["Total FG 0 47"], records).matches[0].tier, "same_game");
+  const fullGameOver = bets.matchBets(rows["Total FG 0 47"], records).matches[0];
+  assert.equal(fullGameOver.tier, "related_same");
+  // The row's number belongs to another period: no "now 47" on a 1H bet.
+  assert.equal(fullGameOver.label, "1H Over 20.5 -100 · 50.0¢ · $25 · Kalshi");
+  assert.equal(bets.matchBets(rows["Total FG 1 46"], records).matches[0].tier, "related_opposite");
+  assert.equal(bets.matchBets(rows["Spread FG 0 -14"], records).matches[0].tier, "same_game");
 });
 
 test("NFL slice: a NO total (sold to the other side by the position) is excluded as closed", () => {
@@ -405,7 +410,7 @@ test("CFB: NO 1H total is same_line on the 1H Under row and opposite on the 1H O
   const over = bets.matchBets(cfbRow(Object.assign({ sideIndex: 0 }, game)), records).matches[0];
   assert.equal(over.tier, "opposite");
   const fullGame = bets.matchBets(cfbRow(Object.assign({ sideIndex: 1 }, game, { period: "FG", points: 48.5 })), records).matches[0];
-  assert.equal(fullGame.tier, "same_game");
+  assert.equal(fullGame.tier, "related_same");
   assert.equal(fullGame.label, "1H Under 22.5 -104 · 51.0¢ · $255 · Kalshi");
 });
 
@@ -456,7 +461,7 @@ test("game match: a closed position on the same market never matches", () => {
 
 // ---- annotateRows / unmatchedReasons ---------------------------------------------
 
-test("annotateRows: strongest tier per row, with the dollars held and against on the market", () => {
+test("annotateRows: strongest tier per row, each match carrying its position on the market axis", () => {
   const records = normalizedFixture();
   const rows = [
     cfbRow({ sideIndex: 0, points: -5.5 }),
@@ -467,24 +472,66 @@ test("annotateRows: strongest tier per row, with the dollars held and against on
   ];
   const annotated = bets.annotateRows(rows, records);
   assert.deepEqual(annotated.map((a) => a.tier), ["same_line", "same_side", "opposite", "same_game", null]);
-  assert.ok(annotated.every((a) => a.exposure && typeof a.exposure.held === "number" && typeof a.exposure.against === "number"));
-  assert.ok(annotated[0].exposure.held > 0 && annotated[0].exposure.against === 0);
-  assert.ok(annotated[2].exposure.against > 0 && annotated[2].exposure.held === 0);
-  assert.deepEqual(annotated[4].exposure, { held: 0, against: 0, heldBets: [], againstBets: [] });
+  assert.deepEqual(annotated[4].matches, []);
+  // Chattanooga (away) -5.5 wins when away minus home lands above +5.5.
+  const held = annotated[0].matches[0];
+  assert.deepEqual(held.position, { axis: "margin", cut: 5.5, direction: "above", period: "FG", stake: held.bet.stake, toWin: held.bet.toWin });
   assert.equal(annotated[0].matches[0].bet.id, "kalshi:KXNCAAFSPREAD-26SEP12CHATEKY-CHAT6:yes");
 });
 
-test("exposureOf: held sums same_line + same_side stakes, against sums opposite, same_game adds nothing", () => {
-  const bet = (stake) => ({ stake });
-  const exposure = bets.exposureOf([
-    { tier: "same_line", bet: bet(100) }, { tier: "same_side", bet: bet(50.5) },
-    { tier: "opposite", bet: bet(20) }, { tier: "same_game", bet: bet(999) }, { tier: "opposite", bet: bet(null) },
-  ]);
-  assert.equal(exposure.held, 150.5);
-  assert.equal(exposure.against, 20);
-  assert.equal(exposure.heldBets.length, 2);
-  assert.equal(exposure.againstBets.length, 2);
-  assert.deepEqual(bets.exposureOf([]), { held: 0, against: 0, heldBets: [], againstBets: [] });
+// ---- #130: moneyline with spread, positions, guards -------------------------------
+
+test("#130: a moneyline held against a spread on the same team is the same side; the other team's spread is opposite", () => {
+  const rows = nflRows();
+  const records = normalizedFixture(CHICAR).filter((r) => r.id === "kalshi:KXNFLGAME-26SEP13CHICAR-CAR:yes");
+  const carolinaSpread = bets.matchBets(rows["Spread FG 1 14"], records).matches[0];
+  assert.equal(carolinaSpread.tier, "same_side");
+  // A moneyline has no number for the row to have moved off: no "now +14".
+  assert.equal(carolinaSpread.label, "CAR Panthers -138 · 58.0¢ · $58 · Kalshi");
+  // Carolina is home: its moneyline wins when away minus home lands below -0.5.
+  assert.deepEqual(carolinaSpread.position, { axis: "margin", cut: -0.5, direction: "below", period: "FG", stake: 58, toWin: carolinaSpread.bet.toWin });
+  const chicagoSpread = bets.matchBets(rows["Spread FG 0 -14"], records).matches[0];
+  assert.equal(chicagoSpread.tier, "opposite");
+  assert.equal(chicagoSpread.label, "CAR Panthers -138 · 58.0¢ · $58 · Kalshi");
+  assert.equal(bets.matchBets(rows["Total FG 0 47"], records).matches[0].tier, "same_game");
+});
+
+test("#130: a spread held against the moneyline row is the same side too", () => {
+  const rows = nflRows();
+  const records = normalizedFixture(CHICAR).filter((r) => r.id === "kalshi:KXNFLSPREAD-26SEP13CHICAR-CHI14:yes");
+  assert.equal(bets.matchBets(rows["Moneyline FG 0 null"], records).matches[0].tier, "same_side");
+  assert.equal(bets.matchBets(rows["Moneyline FG 1 null"], records).matches[0].tier, "opposite");
+});
+
+test("#130 positions: totals cut on the number, away spreads above -a, home spreads below h, moneylines at +/-0.5", () => {
+  const line = (fields) => cfbRow(fields);
+  assert.deepEqual(bets.linePosition(line({ betType: "Total", sideIndex: 0, points: 48.5 })), { axis: "total", cut: 48.5, direction: "above", period: "FG" });
+  assert.deepEqual(bets.linePosition(line({ betType: "Total", sideIndex: 1, points: 48 })), { axis: "total", cut: 48, direction: "below", period: "FG" });
+  assert.deepEqual(bets.linePosition(line({ betType: "Spread", sideIndex: 0, points: 3.5 })), { axis: "margin", cut: -3.5, direction: "above", period: "FG" });
+  assert.deepEqual(bets.linePosition(line({ betType: "Spread", sideIndex: 1, points: -3.5 })), { axis: "margin", cut: -3.5, direction: "below", period: "FG" });
+  assert.deepEqual(bets.linePosition(line({ betType: "Spread", sideIndex: 0, points: 0 })), { axis: "margin", cut: 0, direction: "above", period: "FG" });
+  assert.deepEqual(bets.linePosition(line({ betType: "Moneyline", sideIndex: 0, points: null })), { axis: "margin", cut: 0.5, direction: "above", period: "FG" });
+  assert.deepEqual(bets.linePosition(line({ betType: "Moneyline", sideIndex: 1, points: null, period: "1H" })), { axis: "margin", cut: -0.5, direction: "below", period: "1H" });
+});
+
+test("#130 guards: a row or bet that cannot be placed on its axis says why", () => {
+  assert.deepEqual(bets.linePosition(cfbRow({ betType: "Total", sideIndex: 0, points: 48.25 })), { reason: "quarter line" });
+  assert.deepEqual(bets.linePosition(cfbRow({ league: "soccer", betType: "Moneyline", sideIndex: 0, points: null })), { reason: "three-way moneyline" });
+  assert.deepEqual(bets.linePosition(cfbRow({ betType: "Total", sideIndex: 0, points: null })), { reason: "no number on the line" });
+
+  const records = normalizedFixture();
+  const held = records.find((r) => r.id === "kalshi:KXNCAAFSPREAD-26SEP12CHATEKY-CHAT6:yes");
+  const row = cfbRow({ sideIndex: 0, points: -5.5 });
+  const positionOf = (overrides) => bets.matchBets(row, [Object.assign({}, held, overrides)]).matches[0].position;
+  assert.equal(positionOf({}).cut, 5.5);
+  assert.deepEqual(positionOf({ isParlayLeg: true }), { reason: "parlay leg" });
+  assert.deepEqual(positionOf({ stake: null }), { reason: "no stake on the record" });
+  assert.deepEqual(positionOf({ toWin: null }), { reason: "no stake on the record" });
+  assert.deepEqual(positionOf({ points: -5.75 }), { reason: "quarter line" });
+  assert.deepEqual(positionOf({ betType: "moneyline", points: null, approx: [bets.TIE_CAVEAT] }), { reason: "Kalshi NO also wins on a tie" });
+  // Joined to the game by rotation alone, on a row that does not say which team the rotation is.
+  const unkeyed = Object.assign({}, held, { awayKey: null, homeKey: null, rotation: 300 });
+  assert.deepEqual(bets.matchBets(cfbRow({ sideIndex: 0, points: -5.5, rotation: 300 }), [unkeyed]).matches[0].position, { reason: "side not resolved" });
 });
 
 test("unmatchedReasons: every open bet with no match, with why", () => {
@@ -661,7 +708,7 @@ test("BetOnline: a first-half total naming both teams is same_line on the slice'
   assert.equal(under.matches[0].label, "1H Under 20.5 -110 · 52.4¢ · $110 · Betonline");
   const over = bets.matchBets(rows["Total 1H 0 20.5"], [bet], { lines: Object.values(rows) });
   assert.equal(over.matches[0].tier, "opposite");
-  assert.equal(bets.matchBets(rows["Total FG 1 46"], [bet], { lines: Object.values(rows) }).matches[0].tier, "same_game");
+  assert.equal(bets.matchBets(rows["Total FG 1 46"], [bet], { lines: Object.values(rows) }).matches[0].tier, "related_same");
 });
 
 test("BetOnline: a one-team spread with unresolved keys matches event 125807 by rotation 465 alone", () => {
@@ -915,7 +962,9 @@ test("id join: a bet with ONE team keyed still gets its side — its own key, or
   // NO on WSU36 = Duquesne +35.5 with only Duquesne keyed: the WSU row carries the "against" dollars.
   const duqPlus = Object.assign(kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "no", 35.5), { awayKey: "cfb:927" });
   assert.equal(bets.matchBets(rows["Spread 0 89"], [duqPlus], { lines }).matches[0].tier, "same_line");
-  assert.equal(bets.exposureOf(bets.matchBets(rows["Spread 1 89"], [duqPlus], { lines }).matches).against, duqPlus.stake);
+  const against = bets.matchBets(rows["Spread 1 89"], [duqPlus], { lines }).matches[0];
+  assert.equal(against.tier, "opposite");
+  assert.equal(against.position.stake, duqPlus.stake);
   // A key for a team not in the game is ignored; the keyed WSU side still places the bet.
   const wrongOther = Object.assign(kalshiDuqWsu("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 35.5), { awayKey: "cfb:1", homeKey: "cfb:717" });
   assert.equal(bets.matchBets(rows["Spread 0 89"], [wrongOther], { lines }).matches[0].tier, "opposite");
@@ -1075,6 +1124,6 @@ test("BetOnline: a reused rotation whose named teams are not in next week's game
   assert.ok(bet.awayKey && bet.homeKey);
   const flags = bets.annotateRows([thisWeek], [bet], { lines: [thisWeek, nextWeek] });
   assert.equal(flags[0].tier, "same_line");
-  assert.equal(flags[0].exposure.held, bet.stake);
+  assert.equal(flags[0].matches[0].position.stake, bet.stake);
   assert.equal(bets.matchBets(nextWeek, [bet], { lines: [thisWeek, nextWeek] }).matches.length, 0);
 });
