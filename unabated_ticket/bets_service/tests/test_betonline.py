@@ -231,6 +231,17 @@ def test_fetch_normalises_the_paged_report_and_rotates_the_refresh_token(tmp_pat
     assert report_calls[0]["StartDate"].endswith("T00:00:00.000Z") and report_calls[0]["StartPosition"] == 0
 
 
+def test_report_window_ends_now_on_the_report_clock_so_todays_bets_are_included(tmp_path, report):
+    # 2026-09-19 15:49:42 UTC = 07:49:42 on the report's UTC-8 clock. A midnight
+    # EndDate hid a bet placed at 06:47 that morning until the next day.
+    session = FakeSession(report)
+    _, source = make_source(tmp_path, session, clock=lambda: 1_789_832_982.0)
+    source.fetch()
+    report_call = [body for url, body in session.calls if url == betonline.BET_HISTORY_URL][0]
+    assert report_call["EndDate"] == "2026-09-19T07:49:42.000Z"
+    assert report_call["StartDate"] == "2026-08-19T00:00:00.000Z"
+
+
 def test_access_token_is_refreshed_only_within_60s_of_expiry(tmp_path, report):
     session = FakeSession(report, expires_in=300)
     now = [1_800_000_000.0]
