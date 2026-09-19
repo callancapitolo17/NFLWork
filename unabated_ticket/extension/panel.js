@@ -845,14 +845,11 @@
     return row.bet ? row.bet.exposure.held + row.bet.exposure.against : 0;
   }
 
-  // The filter follows the amount the rail tells the user to bet, not the
-  // full Kelly target. A held position can reduce a $600 target to "add $250"
-  // or zero, and the list should reflect that actionable amount.
-  function suggestedBetAmount(row) {
-    const advice = row.bet ? row.bet.advice : null;
-    if (advice && advice.kind === "add") return advice.add;
-    if (advice && advice.kind === "at_size") return 0;
-    return row.stake ?? 0;
+  // Min suggested bet: gates on what the rail says to bet now (the top-up on
+  // a held position), not the full Kelly target. The list and alerts share it.
+  function meetsMinStake(row) {
+    const minStake = state.edgeSettings.minStake;
+    return minStake === 0 || betsView.suggestedBetAmount(row.stake, row.bet.advice) >= minStake;
   }
 
   function currentEdgeRows() {
@@ -861,8 +858,7 @@
     const settings = state.edgeSettings;
     const selected = feed.selectEdges(scannerState, { ...edgeSelectionOptions(effective), minEdge: settings.minEdgePct / 100 })
       .map((row) => ({ ...row, stake: stakeFor(row) }));
-    const rows = withBetFlags(selected)
-      .filter((row) => settings.minStake === 0 || suggestedBetAmount(row) >= settings.minStake);
+    const rows = withBetFlags(selected).filter(meetsMinStake);
     if (settings.sortBy === "stake") rows.sort((a, b) => (b.stake ?? -1) - (a.stake ?? -1) || b.edgePct - a.edgePct);
     if (settings.sortBy === "start") rows.sort((a, b) => a.eventStartMs - b.eventStartMs || b.edgePct - a.edgePct);
     if (settings.sortBy === "exposure") rows.sort((a, b) => exposureDollars(b) - exposureDollars(a) || b.edgePct - a.edgePct);
@@ -1177,7 +1173,7 @@
       view.edgesEmpty.hidden = false;
       view.edgesEmpty.textContent = !status || (status.phase !== "live" && !status.leaguesLoaded.length)
         ? (status && status.phase === "error" ? "Nothing to list: the feed is unavailable (see above)." : "Waiting for the first snapshot…")
-        : `No line at or above ${state.edgeSettings.minEdgePct}% edge right now.`;
+        : `No line at or above ${state.edgeSettings.minEdgePct}% edge${state.edgeSettings.minStake > 0 ? ` with a suggested bet of ${fmtDollars(state.edgeSettings.minStake)} or more` : ""} right now.`;
     } else {
       view.edgesEmpty.hidden = items.length > MAX_EDGE_ROWS ? false : true;
       view.edgesEmpty.textContent = items.length > MAX_EDGE_ROWS ? `Showing the top ${MAX_EDGE_ROWS} of ${items.length} ${unit}; raise the minimum edge to see fewer.` : "";
@@ -1343,8 +1339,9 @@
   function alertRows() {
     const selected = feed.selectEdges(scannerState, { ...edgeSelectionOptions(effectiveFilter()), minEdge: state.alertSettings.minEdgePct / 100 })
       .map((row) => ({ ...row, stake: stakeFor(row) }));
-    // A line you already hold at size has nothing to act on; everything else alerts as before.
-    return withBetFlags(selected).filter((row) => row.bet.advice.kind !== "at_size");
+    // A line you already hold at size has nothing to act on, and one below the
+    // Min suggested bet is hidden from the list, so neither alerts.
+    return withBetFlags(selected).filter((row) => row.bet.advice.kind !== "at_size" && meetsMinStake(row));
   }
 
   // Runs after every scanner update. Baseline first, then one notification

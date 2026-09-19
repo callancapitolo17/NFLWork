@@ -236,7 +236,7 @@ the Kelly multiplier sit at the foot of the Ticket tab under **Sizing**, where
 the stake they size is; the **⚙** at the right of the tab bar jumps there from
 any tab. The filter drawer also has **Min suggested bet $**: zero is off;
 otherwise it hides a row unless its current actionable bet or top-up meets the
-amount. The bets service URL is on the Bets tab, with the venues it feeds.
+amount, and alerts skip the rows it hides. The bets service URL is on the Bets tab, with the venues it feeds.
 
 An Edges row is two columns: the pick, market, matchup and the book's line on
 the left, and a right rail carrying the **edge %** and the **stake**, so both

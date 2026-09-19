@@ -176,6 +176,15 @@
     return { kind: "none" };
   }
 
+  // The dollars the rail tells the user to bet now: the top-up when adding to
+  // a position, $0 when already at size, else the full stake (null stake =
+  // $0). The Min suggested bet filter and alerts gate on this, not the target.
+  function suggestedBetAmount(stake, advice) {
+    if (advice && advice.kind === "add") return advice.add;
+    if (advice && advice.kind === "at_size") return 0;
+    return typeof stake === "number" ? stake : 0;
+  }
+
   // The advice as words, the same on the row, the Ticket block and the Copy
   // text. `verb` says what the bet number IS — "add" when topping up a
   // position, "bet" otherwise — because "$121 of $241 target" read as though
@@ -295,7 +304,7 @@
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badgeText, badgeKind, relatedLines, stakeAdvice, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, mergePageSource, crosswalkOf, crosswalkRows, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badgeText, badgeKind, relatedLines, stakeAdvice, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, mergePageSource, crosswalkOf, crosswalkRows, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {
