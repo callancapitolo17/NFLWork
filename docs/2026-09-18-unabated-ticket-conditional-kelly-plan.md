@@ -19,7 +19,7 @@ Pure, IIFE + `module.exports` like `kelly.js`. No feed or bet-record
 knowledge: it sees cuts, directions, dollars and probabilities.
 
 ```
-solveStake({ kellyBankroll, candidate, held, ladders }) -> { stake, reason, hedgeOnly }
+solveStake({ kellyBankroll, candidate, held, ladders }) -> { stake, reason }
   candidate  { group, cut, direction: "above"|"below", netOdds, prob }
   held       [{ group, cut, direction, stake, toWin }]
   ladders    { [group]: [[cut, probAbove], ...] }   half-point cuts only
@@ -43,7 +43,8 @@ solveStake({ kellyBankroll, candidate, held, ladders }) -> { stake, reason, hedg
   Return 0 when `f(tiny x) <= f(0)`. Otherwise golden-section on `[0, hi]`
   (the objective is a min of concave functions, so one hill). Held bets that
   can already lose `K` or more: `reason: "held risk exceeds the Kelly bankroll"`.
-- `hedgeOnly` = candidate edge <= 0 and stake > 0.
+- A candidate with no edge of its own is never solved: the stake is $0, as
+  today (hedge sizing is deferred, section 11).
 - A missing ladder cut throws (expected vs found) — the caller filters first.
 
 ## 3. Ladder — new `extension/ladder.js`
@@ -95,7 +96,7 @@ Pure. Input is `scannerState.lines`.
 
 ```
 { kind: "none" | "sized" | "declined",
-  bet, alone, verb: "add" | "bet", held, against, hedgeOnly, reason,
+  bet, alone, verb: "add" | "bet", held, against, reason,
   matches: [...match, inMath, note] }
 ```
 
@@ -123,13 +124,11 @@ Pure. Input is `scannerState.lines`.
 - `fillStakeCell`: `add|bet $stake` + one small `$X alone` line (only when
   sized and different). `at-size` class when the bet is $0.
 - `relatedBlock` / `renderBetBanner`: grey class for not-sized lines.
-- `renderStakeExposure` + `actedStake`: same three pieces, plus a red
-  `hedge only` label (Ticket tab only). A ticket with edge <= 0 still runs
-  the math so a hedge can show.
+- `renderStakeExposure` + `actedStake`: the same three pieces as the rail.
 - Alerts: skip rows whose conditional stake is $0 (replaces the `at_size`
   check); `meetsMinStake` unchanged in shape.
-- CSS: `.related-line.not-sized`, `.bet-match.not-sized`, `.hedge-only`,
-  second badge spacing. Manifest 0.8.0 -> 0.9.0.
+- CSS: `.related-line.not-sized`, `.bet-match.not-sized`, second badge
+  spacing. Manifest 0.8.0 -> 0.9.0.
 
 ## 7. Tests (Kelly bankroll 8000)
 
@@ -147,14 +146,6 @@ Pure. Input is `scannerState.lines`.
 | Lions @ Bills | 188.32; unchanged with Bills -8.5 $472 held (betsview level) |
 | Chargers ML vs held +3.5 $400 | 0 |
 | cross-period 1H Over $300 -> FG Over | 408.39 |
-| fair-priced hedge | see below |
-
-**Hedge number.** At exactly zero edge (`p = 1/decimal`) the optimum is
-**722.09** and P&L is equal both ways to the cent (27.91). **722.18** comes
-out only with `p = 1 - 1.0465/2.25` (the UConn fair, edge +0.001%), where the
-two P&Ls differ by $0.16. Unabated's `ge` has four decimals, so the live path
-gives 722.09. Plan: pin 722.09 + equal P&L + `hedgeOnly`, and pin 722.18 as a
-second test with that explicit `p`.
 
 Guards, one test each: no rung, flat rung, `±0.5` exemption, missing stake,
 parlay leg, Kalshi NO moneyline, soccer moneyline, quarter line, unknown
@@ -188,12 +179,16 @@ after merge, with a yes: delete the stale `feature/unabated-related-period-bets`
 ## 10. Documentation
 
 Same branch, after the code is final: `unabated_ticket/README.md` — Stake
-(conditional Kelly, rail wording, hedge only), Bets (tiers, in-math vs grey,
+(conditional Kelly, rail wording), Bets (tiers, in-math vs grey,
 badges, guards), Tests (counts + the two new suites), design-decisions log
 entry reversing 2026-09-12 "show it, don't size off it"; root `CLAUDE.md`
 Unabated Ticket blurb; manifest description if the wording changes.
 
 ## 11. Known limits
+
+- **Hedge sizing is deferred** (user, 2026-09-19): no `hedge only` label and
+  no stake on a price with no edge of its own, even when a held bet on the
+  other side would make the math want one. Such a line reads $0, as today.
 
 - `bacr` is a whole American price: stakes are good to about ±$10.
 - A cross-period hedge gets no credit (accepted in the issue).
