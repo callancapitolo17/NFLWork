@@ -39,6 +39,13 @@
   const AGAINST_TIERS = new Set(["opposite", "related_opposite"]);
   // A bet on another market of the game: shown, never sized off (#129).
   const NOTE_OTHER_MARKET = "game \u00b7 not sized";
+  // The other direction in another period is a hedge in the real world (1H
+  // and FG totals move together, measured link 0.69), but the worst-case
+  // pairing would size it as though both bets won together: hold 1H Under
+  // $300, new FG Over, K $8,000 -> $407 against $667 alone, where the measured
+  // link wants $802. Left out, the stake is the standalone one: no credit for
+  // the hedge and no penalty either (user decision 2026-09-19).
+  const NOTE_OTHER_PERIOD_HEDGE = "other period \u00b7 not sized";
   // A big edge on a heavy favourite ((1 + edge) / decimal >= 1) leaves the
   // new bet no losing outcome to weigh the held bets against.
   const REASON_CERTAIN_WIN = "edge implies a certain win";
@@ -153,9 +160,10 @@
   // game (conditional Kelly, condkelly.js), not sized alone and then adjusted
   // by subtracting dollars: dollars at different prices and numbers are not
   // comparable. A matched bet is "in the math" when it sits on the row's
-  // axis (totals with totals, spreads and moneylines together, any period)
-  // and Unabated has a fair at its number; every other match is left out and
-  // says why. Bets on another market of the game never size it (#129).
+  // axis (totals with totals, spreads and moneylines together), in the row's
+  // period or on the row's direction in another one, and Unabated has a fair
+  // at its number; every other match is left out and says why. Bets on
+  // another market of the game never size it (#129).
 
   function roundCents(dollars) {
     return Math.round(dollars * 100) / 100;
@@ -200,6 +208,7 @@
     const position = match.position;
     if (!position || position.reason) return { note: position ? position.reason : "position unknown" };
     if (position.axis !== rowPosition.axis) return { note: NOTE_OTHER_MARKET };
+    if (position.period !== rowPosition.period && position.direction !== rowPosition.direction) return { note: NOTE_OTHER_PERIOD_HEDGE };
     const found = ladderPairsFor(position, rowPosition, ladderOf);
     if (found.reason) return { note: `no fair at ${betNumberLabel(match.bet)}` };
     return { pairs: found.pairs };

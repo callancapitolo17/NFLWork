@@ -191,6 +191,11 @@ Unabated Ticket blurb; manifest description if the wording changes.
   other side would make the math want one. Such a line reads $0, as today.
 
 - `bacr` is a whole American price: stakes are good to about ±$10.
-- A cross-period hedge gets no credit (accepted in the issue).
+- **The other direction in another period is left out of the math** (user,
+  2026-09-19, after the logic review): the worst-case pairing sized a
+  cross-period hedge as if both bets won together ($407 vs $667 alone vs $802
+  under the measured link). It shows grey as `other period · not sized` and
+  the standalone stake stands. Only the same direction is sized across
+  periods.
 - Re-ranking a card's best line by conditional stake is out of scope: cards
   still rank by the standalone stake.

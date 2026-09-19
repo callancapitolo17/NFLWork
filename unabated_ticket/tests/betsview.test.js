@@ -238,6 +238,22 @@ test("stakeAdvice: a 1H over held sizes the FG over on the worst case, $408.39 n
   assert.equal(view.stakeAdviceLine(advice), "add $408.39, $666.67 alone");
 });
 
+test("stakeAdvice: the OTHER direction in another period is left out — no hedge credit, no worst-case penalty", () => {
+  const line = nflLine({ points: 48.5 });
+  const held = heldRecord("1h-under", { betType: "total", period: "1H", side: "under", points: 24.5, price: 110, stake: 300 });
+  const advice = adviceFor(line, 120, 10, [held], ladderStub({ "1H total": [[23.5, 0.6], [24.5, 0.55], [25.5, 0.5]] }));
+  const standalone = kelly.kellyStakeFromEdge({ bookPrice: 120, edgePct: 10, ...SIZING }).stake;
+  assert.equal(advice.matches[0].tier, "related_opposite");
+  // The worst-case pairing would have said $407.22 here; the measured 1H/FG link wants about $800.
+  assert.deepEqual([advice.kind, advice.bet, advice.against, advice.verb], ["none", standalone, 0, "bet"]);
+  assert.deepEqual([advice.matches[0].inMath, advice.matches[0].note], [false, "other period \u00b7 not sized"]);
+  assert.deepEqual(view.badges({ tier: "related_opposite", matches: advice.matches, advice }), [{ kind: "against", text: "against" }]);
+  // Beside a same-direction 1H bet, only that one sizes the row.
+  const over = heldRecord("1h-over", { betType: "total", period: "1H", side: "over", points: 24.5, price: 110, stake: 300 });
+  const both = adviceFor(line, 120, 10, [over, held], ladderStub({ "1H total": [[23.5, 0.6], [24.5, 0.55], [25.5, 0.5]] }));
+  assert.deepEqual([both.bet, both.held, both.against], [408.39, 300, 0]);
+});
+
 test("stakeAdvice: the same line held needs no ladder at all", () => {
   const line = nflLine({ sideIndex: 1, points: 52.5 });
   const held = heldRecord("under-52.5", { betType: "total", side: "under", points: 52.5, price: 125, stake: 181.5 });
@@ -247,14 +263,13 @@ test("stakeAdvice: the same line held needs no ladder at all", () => {
   assert.equal(atSize.bet, 0);
 });
 
-test("stakeAdvice guards: a bet with no fair, a flat rung, an unknown period or a parlay leg is left out and named", () => {
+test("stakeAdvice guards: a bet with no fair, a flat rung, no stake or a parlay leg is left out and named", () => {
   const line = nflLine();
   const under = (id, overrides) => heldRecord(id, Object.assign({ betType: "total", side: "under", points: 36.5, price: 300, stake: 50 }, overrides));
   const standalone = kelly.kellyStakeFromEdge({ bookPrice: 213, edgePct: 7.19, ...SIZING }).stake;
   const cases = [
     [under("no-rung", {}), LIONS_BILLS_LADDER, "no fair at 36.5"],
     [under("flat", {}), ladderStub({ "FG total": [[35.5, 0.802], [36.5, 0.802], [37.5, 0.802]] }), "no fair at 36.5"],
-    [under("f5", { period: "F5" }), LIONS_BILLS_LADDER, "no fair at 36.5"],
     [under("leg", { isParlayLeg: true }), LIONS_BILLS_LADDER, "parlay leg"],
     [under("no-stake", { stake: null }), LIONS_BILLS_LADDER, "no stake on the record"],
   ];
@@ -268,6 +283,13 @@ test("stakeAdvice guards: a bet with no fair, a flat rung, an unknown period or 
     assert.deepEqual(view.badges({ tier: advice.matches[0].tier, matches: advice.matches, advice }), [{ kind: "against", text: "against" }], held.id);
     assert.deepEqual(view.relatedLines({ matches: advice.matches })[0], { tier: advice.matches[0].tier, inMath: false, tag: note, text: advice.matches[0].label }, held.id);
   }
+});
+
+test("stakeAdvice guards: a period Unabated has no ladder for (Kalshi's F5) is no fair", () => {
+  const held = heldRecord("f5-over", { betType: "total", period: "F5", side: "over", points: 36.5, price: -300, stake: 50 });
+  const advice = adviceFor(nflLine(), 213, 7.19, [held], LIONS_BILLS_LADDER);
+  assert.deepEqual([advice.kind, advice.held, advice.matches[0].inMath, advice.matches[0].note], ["none", 0, false, "no fair at 36.5"]);
+  assert.deepEqual(view.badges({ tier: advice.matches[0].tier, matches: advice.matches, advice }), [{ kind: "held", text: "held" }]);
 });
 
 test("stakeAdvice: a ladder that is not monotone declines the whole calc and shows the standalone stake", () => {
