@@ -127,6 +127,17 @@ test("badgeText / badgeKind: dollars held win, then dollars against, then a plai
   assert.deepEqual(["same_line", "opposite", "same_game"].map((tier) => view.badgeKind(flag(tier, tier === "same_line" ? 1 : 0, tier === "opposite" ? 1 : 0))), ["held", "against", "game"]);
 });
 
+test("suggestedBetAmount: the top-up when adding, $0 at size, else the full stake", () => {
+  const exposure = (held, against) => ({ held, against, heldBets: [], againstBets: [] });
+  const amount = (stake, held, against) => view.suggestedBetAmount(stake, view.stakeAdvice(stake, exposure(held, against)));
+  assert.equal(amount(500, 0, 0), 500);
+  assert.equal(amount(600, 350, 0), 250);
+  assert.equal(amount(520, 600, 0), 0);
+  assert.equal(amount(500, 0, 200), 500);
+  assert.equal(amount(null, 0, 0), 0);
+  assert.equal(view.suggestedBetAmount(300, null), 300);
+});
+
 test("stakeAdviceLine: the verb says what the number is, then what is held and full size", () => {
   const exposure = (held, against) => ({ held, against, heldBets: [], againstBets: [] });
   assert.equal(view.stakeAdviceLine(view.stakeAdvice(500, exposure(0, 0))), null);
