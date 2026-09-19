@@ -41,6 +41,7 @@
   // $100 is Kalshi's median alt depth ($129) with its thin tail cut. 0 = off.
   const DEFAULT_EDGE_SETTINGS = {
     leagues: ALL_LEAGUE_IDS, periods: [1], betTypes: [1, 2, 3], bookIds: undefined, minEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge",
+    minStake: 0,
     includeAlts: false, altMaxDistance: 7, altMinLiquidity: 100,
     // One card per (game, market, side) with its best line; the flat list is the toggle off.
     groupByMarket: true,
@@ -86,7 +87,7 @@
     betsCount: el("bets-count"), betsRisk: el("bets-risk"), betsRiskCaption: el("bets-risk-caption"),
     edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
     edgesSports: el("edges-sports"), edgesBetTypes: el("edges-bettypes"), edgesBooks: el("edges-books"), edgesBooksMode: el("edges-books-mode"),
-    booksDefault: el("books-default"), booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
+    booksDefault: el("books-default"), booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMinStake: el("edges-min-stake"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
     edgesIncludeAlts: el("edges-include-alts"), edgesAltDistance: el("edges-alt-distance"), edgesAltLiquidity: el("edges-alt-liquidity"), edgesGroup: el("edges-group"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
     alertsEnabled: el("alerts-enabled"), alertsMin: el("alerts-min"),
@@ -844,13 +845,24 @@
     return row.bet ? row.bet.exposure.held + row.bet.exposure.against : 0;
   }
 
+  // The filter follows the amount the rail tells the user to bet, not the
+  // full Kelly target. A held position can reduce a $600 target to "add $250"
+  // or zero, and the list should reflect that actionable amount.
+  function suggestedBetAmount(row) {
+    const advice = row.bet ? row.bet.advice : null;
+    if (advice && advice.kind === "add") return advice.add;
+    if (advice && advice.kind === "at_size") return 0;
+    return row.stake ?? 0;
+  }
+
   function currentEdgeRows() {
     if (!scannerState) return [];
     const effective = effectiveFilter();
     const settings = state.edgeSettings;
     const selected = feed.selectEdges(scannerState, { ...edgeSelectionOptions(effective), minEdge: settings.minEdgePct / 100 })
       .map((row) => ({ ...row, stake: stakeFor(row) }));
-    const rows = withBetFlags(selected);
+    const rows = withBetFlags(selected)
+      .filter((row) => settings.minStake === 0 || suggestedBetAmount(row) >= settings.minStake);
     if (settings.sortBy === "stake") rows.sort((a, b) => (b.stake ?? -1) - (a.stake ?? -1) || b.edgePct - a.edgePct);
     if (settings.sortBy === "start") rows.sort((a, b) => a.eventStartMs - b.eventStartMs || b.edgePct - a.edgePct);
     if (settings.sortBy === "exposure") rows.sort((a, b) => exposureDollars(b) - exposureDollars(a) || b.edgePct - a.edgePct);
@@ -1139,6 +1151,7 @@
       Array.from(effective.betTypeIds).map((id) => feed.BET_TYPES[id]).join("/") || "no market",
       books,
       `≥${state.edgeSettings.minEdgePct}%`,
+      state.edgeSettings.minStake > 0 ? `bet ≥${fmtDollars(state.edgeSettings.minStake)}` : null,
       state.edgeSettings.includeAlts ? "+alts" : null,
     ].filter(Boolean).join(" · ");
   }
@@ -1475,10 +1488,12 @@
     const periods = Array.from(view.edgesPeriods.querySelectorAll("input:checked")).map((input) => Number(input.dataset.period));
     const betTypes = Array.from(view.edgesBetTypes.querySelectorAll("input:checked")).map((input) => Number(input.dataset.bettype));
     const minEdgePct = Number(view.edgesMin.value);
+    const minStake = Number(view.edgesMinStake.value);
     const maxLineAgeHours = Number(view.edgesMaxAge.value);
     const altMaxDistance = Number(view.edgesAltDistance.value);
     const altMinLiquidity = Number(view.edgesAltLiquidity.value);
     if (!Number.isFinite(minEdgePct) || minEdgePct < 0) return { error: "Minimum edge must be zero or more." };
+    if (!Number.isFinite(minStake) || minStake < 0) return { error: "Minimum suggested bet must be zero (off) or more." };
     if (!Number.isFinite(maxLineAgeHours) || maxLineAgeHours <= 0) return { error: "Max line age must be above zero hours." };
     if (!Number.isFinite(altMaxDistance) || altMaxDistance < 0) return { error: "Max points from main must be zero (off) or more." };
     if (!Number.isFinite(altMinLiquidity) || altMinLiquidity < 0) return { error: "Min liquidity must be zero (off) or more." };
@@ -1486,7 +1501,7 @@
     if (!betTypes.length) return { error: "Pick at least one bet type." };
     return {
       settings: {
-        ...state.edgeSettings, leagues, periods, betTypes, minEdgePct, maxLineAgeHours, sortBy: view.edgesSort.value,
+        ...state.edgeSettings, leagues, periods, betTypes, minEdgePct, minStake, maxLineAgeHours, sortBy: view.edgesSort.value,
         includeAlts: view.edgesIncludeAlts.checked, altMaxDistance, altMinLiquidity,
         groupByMarket: view.edgesGroup.checked,
       },
@@ -1501,6 +1516,7 @@
     for (const input of view.edgesPeriods.querySelectorAll("input")) input.checked = settings.periods.includes(Number(input.dataset.period));
     for (const input of view.edgesBetTypes.querySelectorAll("input")) input.checked = settings.betTypes.includes(Number(input.dataset.bettype));
     view.edgesMin.value = settings.minEdgePct;
+    view.edgesMinStake.value = settings.minStake;
     view.edgesMaxAge.value = settings.maxLineAgeHours;
     view.edgesSort.value = settings.sortBy;
     view.edgesIncludeAlts.checked = settings.includeAlts;
@@ -1544,6 +1560,7 @@
     if (Array.isArray(stored.bookIds)) base.bookIds = stored.bookIds.filter((id) => Number.isInteger(id));
     else if (stored.bookIds === null) base.bookIds = null;
     if (typeof stored.minEdgePct === "number" && stored.minEdgePct >= 0) base.minEdgePct = stored.minEdgePct;
+    if (typeof stored.minStake === "number" && stored.minStake >= 0) base.minStake = stored.minStake;
     if (typeof stored.maxLineAgeHours === "number" && stored.maxLineAgeHours > 0) base.maxLineAgeHours = stored.maxLineAgeHours;
     if (["edge", "stake", "start", "exposure"].includes(stored.sortBy)) base.sortBy = stored.sortBy;
     if (typeof stored.includeAlts === "boolean") base.includeAlts = stored.includeAlts;
@@ -2020,6 +2037,7 @@
   view.edgesPeriods.addEventListener("change", onEdgeSettingsInput);
   view.edgesBetTypes.addEventListener("change", onEdgeSettingsInput);
   view.edgesMin.addEventListener("input", onEdgeSettingsInput);
+  view.edgesMinStake.addEventListener("input", onEdgeSettingsInput);
   view.edgesMaxAge.addEventListener("input", onEdgeSettingsInput);
   view.edgesSort.addEventListener("change", onEdgeSettingsInput);
   view.edgesIncludeAlts.addEventListener("change", onEdgeSettingsInput);
