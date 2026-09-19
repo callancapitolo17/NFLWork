@@ -74,6 +74,7 @@
   const REASON_QUARTER_LINE = "quarter line";
   const REASON_NO_SIDE = "side not resolved";
   const REASON_NO_NUMBER = "no number on the line";
+  const REASON_NO_PERIOD = "no period on the record";
   const START_TOLERANCE_MS = 30 * 60 * 1000;
   const DATE_TOLERANCE_DAYS = 1;
   const DAY_MS = 24 * 3600 * 1000;
@@ -826,12 +827,18 @@
     return { axis: AXIS_MARGIN, cut: (sideIndex === SIDE_AWAY_OR_OVER ? -points : points) || 0, direction };
   }
 
+  // The period names the group a bet is sized in; without one it is left out.
+  function hasPeriodName(period) {
+    return typeof period === "string" && period !== "";
+  }
+
   // The row's own position: {axis, period, cut, direction} or {reason}.
   function linePosition(line) {
     const betType = lineBetType(line);
     if (AXIS_OF_BET_TYPE[betType] == null) return { reason: REASON_BET_TYPE };
     if (betType === "moneyline" && line.league === LEAGUE_WITH_THREE_WAY_MONEYLINE) return { reason: REASON_THREE_WAY };
     if (line.sideIndex !== SIDE_AWAY_OR_OVER && line.sideIndex !== SIDE_HOME_OR_UNDER) return { reason: REASON_NO_SIDE };
+    if (!hasPeriodName(line.period)) return { reason: REASON_NO_PERIOD };
     const position = axisPosition(betType, line.sideIndex, line.points);
     return position.reason ? position : { ...position, period: line.period };
   }
@@ -842,6 +849,7 @@
   function positionOf(bet, line) {
     if (AXIS_OF_BET_TYPE[bet.betType] == null) return { reason: REASON_BET_TYPE };
     if (bet.isParlayLeg) return { reason: REASON_PARLAY_LEG };
+    if (!hasPeriodName(bet.period)) return { reason: REASON_NO_PERIOD };
     if (!(typeof bet.stake === "number" && bet.stake > 0) || !(typeof bet.toWin === "number" && bet.toWin > 0)) return { reason: REASON_NO_STAKE };
     if (bet.betType === "moneyline") {
       if (Array.isArray(bet.approx) && bet.approx.includes(TIE_CAVEAT)) return { reason: REASON_TIE_CAVEAT };

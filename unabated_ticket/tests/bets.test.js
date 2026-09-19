@@ -528,6 +528,9 @@ test("#130 guards: a row or bet that cannot be placed on its axis says why", () 
   assert.deepEqual(positionOf({ stake: null }), { reason: "no stake on the record" });
   assert.deepEqual(positionOf({ toWin: null }), { reason: "no stake on the record" });
   assert.deepEqual(positionOf({ points: -5.75 }), { reason: "quarter line" });
+  assert.deepEqual(bets.linePosition(cfbRow({ period: undefined })), { reason: "no period on the record" });
+  // BetOnline's period_of returns None for a period text it does not know.
+  assert.deepEqual(positionOf({ period: null }), { reason: "no period on the record" });
   assert.deepEqual(positionOf({ betType: "moneyline", points: null, approx: [bets.TIE_CAVEAT] }), { reason: "Kalshi NO also wins on a tie" });
   // Joined to the game by rotation alone, on a row that does not say which team the rotation is.
   const unkeyed = Object.assign({}, held, { awayKey: null, homeKey: null, rotation: 300 });
