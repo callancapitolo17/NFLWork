@@ -8,6 +8,7 @@ const path = require("node:path");
 const teams = require("../extension/teams.js");
 const betsLib = require("../extension/bets.js");
 const kelly = require("../extension/kelly.js");
+const ladderLib = require("../extension/ladder.js");
 // The runtime team index the panel builds from Unabated's snapshots, from a
 // captured copy (fixtures/teams_index.json) — keys are "<league>:<Unabated id>".
 teams.loadIndex(JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "teams_index.json"), "utf8")).leagues);
@@ -159,6 +160,24 @@ const LIONS_BILLS_HELD = [
 ];
 const LIONS_BILLS_LADDER = ladderStub({ "FG total": [[50.5, 0.61], [51.5, 0.5745], [52.5, 0.54]] });
 
+test("bets.js and ladder.js name the two market axes the same: a position's axis is the ladder's key", () => {
+  assert.equal(betsLib.AXIS_TOTAL, ladderLib.AXIS_TOTAL);
+  assert.equal(betsLib.AXIS_MARGIN, ladderLib.AXIS_MARGIN);
+});
+
+test("stakeAdvice: the real ladder feeds it — fairs read off feed lines, a rung the feed lacks is no fair", () => {
+  const over = (points, bacr) => ({ eventId: 700001, leagueId: 1, periodTypeId: 1, betTypeId: 3, sideIndex: 0, points, bacr, fromSnapshot: true });
+  const eventLines = [over(50.5, -156), over(51.5, -135), over(52.5, -117)];
+  const ladderOf = (period, axis) => ladderLib.buildLadder(eventLines, { periodTypeId: ladderLib.periodTypeIdOf(period), axis });
+  const sized = adviceFor(nflLine(), 213, 7.19, LIONS_BILLS_HELD, ladderOf);
+  assert.equal(sized.kind, "sized");
+  // -135 is 57.447%, the whole American price behind the card's 57.45%: two cents off its $188.32.
+  assert.equal(sized.bet, 188.34);
+  const noRung = adviceFor(nflLine(), 213, 7.19, LIONS_BILLS_HELD, (period, axis) => ladderLib.buildLadder(eventLines.slice(0, 1), { periodTypeId: 1, axis }));
+  assert.deepEqual(noRung.matches.filter((match) => !match.inMath).map((match) => match.note), ["no fair at 51.5", "no fair at 51.5"]);
+  assert.deepEqual([noRung.held, noRung.against], [270, 0]);
+});
+
 test("stakeAdvice: nothing held is the standalone Kelly stake, exactly", () => {
   const advice = adviceFor(nflLine(), 213, 7.19, [], LIONS_BILLS_LADDER);
   const standalone = kelly.kellyStakeFromEdge({ bookPrice: 213, edgePct: 7.19, ...SIZING }).stake;
@@ -261,6 +280,14 @@ test("stakeAdvice: a ladder that is not monotone declines the whole calc and sho
   assert.deepEqual([advice.held, advice.against, advice.verb], [0, 0, "bet"]);
   assert.ok(advice.matches.every((match) => !match.inMath && match.note === "ladder not monotone"));
   assert.equal(view.stakeAdviceWords(advice), null);
+});
+
+test("stakeAdvice: an edge that implies a certain win declines instead of throwing in the render loop", () => {
+  const line = nflLine({ betType: "Moneyline", sideIndex: 1, points: null });
+  const held = heldRecord("bills-ml", { betType: "moneyline", side: "home", points: null, price: -4000, stake: 500 });
+  const advice = adviceFor(line, -5000, 2.5, [held], () => null);
+  assert.deepEqual([advice.kind, advice.reason], ["declined", "edge implies a certain win"]);
+  assert.equal(advice.bet, advice.alone);
 });
 
 test("stakeAdvice: a whole-number row needs the two rungs around it to price its push", () => {

@@ -304,8 +304,10 @@ choose x >= 0 to maximize  sum over outcome rows of  prob * ln(1 + pnl / K)
   moneyline cuts are exempt), no stake on the record, parlay legs, a Kalshi NO
   moneyline (also wins on a tie), a soccer three-way moneyline, quarter lines,
   a period Unabated has no ladder for (`F5`, `I1`). A ladder that crosses by
-  more than half a point of probability, or held bets that can already lose
-  `K`, decline the whole calc and the standalone stake stands.
+  more than half a point of probability, held bets that can already lose `K`,
+  a whole-number row without its two rungs, or an edge so large on a heavy
+  favourite that `p >= 1`, decline the whole calc and the standalone stake
+  stands.
 - The search is a bounded golden section (the score is a single hill), capped
   so `K + pnl` stays positive, and `$0` when the slope at zero is not positive.
   With nothing held the panel uses `kellyStakeFromEdge` directly, so the
@@ -1051,7 +1053,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 235 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 238 tests) and
 the bets service's pytest suite (108 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one

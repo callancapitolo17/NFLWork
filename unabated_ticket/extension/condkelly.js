@@ -281,7 +281,7 @@
     return { stake: goldenSectionMax(score, upper), reason: null };
   }
 
-  const api = { MAX_NEGATIVE_SLICE, REASON_NOT_MONOTONE, REASON_HELD_RISK, REASON_NO_LOSING_ROW, cutsNeeded, solveStake };
+  const api = { REASON_NOT_MONOTONE, REASON_HELD_RISK, cutsNeeded, solveStake };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

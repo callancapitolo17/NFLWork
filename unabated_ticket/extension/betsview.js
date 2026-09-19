@@ -39,6 +39,9 @@
   const AGAINST_TIERS = new Set(["opposite", "related_opposite"]);
   // A bet on another market of the game: shown, never sized off (#129).
   const NOTE_OTHER_MARKET = "game \u00b7 not sized";
+  // A big edge on a heavy favourite ((1 + edge) / decimal >= 1) leaves the
+  // new bet no losing outcome to weigh the held bets against.
+  const REASON_CERTAIN_WIN = "edge implies a certain win";
   // How a page-sourced venue is refreshed, for the Bets tab when its read is
   // old or missing: the second form when its tab is open but has not shown
   // the screen the content script mirrors.
@@ -256,6 +259,8 @@
       Object.assign(advice, { kind: "declined", reason, held: 0, against: 0, verb: "bet" });
       return finish(annotated.map((match) => (match.inMath ? { ...match, inMath: false, note: reason } : match)));
     };
+    const winProb = (1 + edgePct / 100) / kelly.americanToDecimal(price);
+    if (!(winProb < 1)) return decline(REASON_CERTAIN_WIN);
     const push = rowPushPairs(rowPosition, readLadder);
     if (push.reason) return decline(push.reason);
     const ladders = {};
@@ -267,7 +272,7 @@
       candidate: {
         group: rowPosition.period, cut: rowPosition.cut, direction: rowPosition.direction,
         netOdds: kelly.americanToDecimal(price) - 1,
-        prob: (1 + edgePct / 100) / kelly.americanToDecimal(price),
+        prob: winProb,
       },
       held: inMath.map((match) => heldBetOf(match.position)),
       ladders,
