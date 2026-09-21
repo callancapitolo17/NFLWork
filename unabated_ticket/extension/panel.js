@@ -74,7 +74,7 @@
     warning: el("warning"), rowTrace: el("row-trace"), sideLabel: el("side-label"), betLine: el("bet-line"),
     eventLine: el("event-line"), startLine: el("start-line"),
     book: el("book"), price: el("price"), fair: el("fair"), edge: el("edge"),
-    stake: el("stake"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
+    stake: el("stake"), contracts: el("contracts"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
     copy: el("copy"), copyStatus: el("copy-status"),
     errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
@@ -519,11 +519,40 @@
       view.payoutRow.hidden = false;
       payoutText = ` | to win $${(payout - acted).toFixed(2)} | payout $${payout.toFixed(2)}`;
     }
+    const contractsText = renderContracts(acted, line);
 
     const stakeText = acted != null ? acted.toFixed(2) : "n/a";
-    lastCopyText = `${ticket.sideLabel}${periodSuffix(ticket)} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${copyExposureText(advice)}${payoutText} | ${describeMatchup(ticket)}`;
+    lastCopyText = `${ticket.sideLabel}${periodSuffix(ticket)} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${copyExposureText(advice)}${contractsText}${payoutText} | ${describeMatchup(ticket)}`;
     view.copyStatus.textContent = "";
     show("ticket");
+  }
+
+  // Under the dollar figure, the limit order it means on an exchange: "466
+  // contracts @ 53¢ · $246.98", with the count floored so the cost never
+  // passes the stake (kelly.contractOrder). Only a line priced in contracts
+  // (Kalshi, Novig) gets the row; a sportsbook line keeps just the dollars.
+  // `acted` is the number to act on, so a top-up shows the top-up's contracts.
+  // Returns what Copy appends, "" when there is no row.
+  function renderContracts(acted, line) {
+    view.contracts.hidden = true;
+    view.contracts.classList.remove("under");
+    view.contracts.replaceChildren();
+    if (acted == null || acted <= 0) return "";
+    const order = kelly.contractOrder({ stake: acted, bookPrice: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice });
+    if (!order) return "";
+    view.contracts.hidden = false;
+    if (order.contracts === 0) {
+      view.contracts.classList.add("under");
+      view.contracts.textContent = `under 1 contract @ ${order.priceCents}\u00a2`;
+      return ` | under 1 contract @ ${order.priceCents}\u00a2`;
+    }
+    const count = document.createElement("span");
+    count.textContent = `${order.contracts.toLocaleString("en-US")} contract${order.contracts === 1 ? "" : "s"} @ ${order.priceCents}\u00a2`;
+    const cost = document.createElement("span");
+    cost.className = "cost";
+    cost.textContent = ` \u00b7 ${fmtDollars(order.costDollars)}`;
+    view.contracts.append(count, cost);
+    return ` | ${order.contracts} contract${order.contracts === 1 ? "" : "s"} @ ${order.priceCents}\u00a2`;
   }
 
   // The ticket's open bets and what they do to its stake: the row-style flag

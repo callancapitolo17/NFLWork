@@ -59,3 +59,47 @@ test("bankroll, multiplier and edge must be valid", () => {
   assert.throws(() => kelly.kellyStakeFromEdge({ bookPrice: -400, edgePct: 1, bankroll: 100, multiplier: -1 }), /multiplier/);
   assert.throws(() => kelly.kellyStakeFromEdge({ bookPrice: -400, edgePct: null, bankroll: 100, multiplier: 0.25 }), /edgePct/);
 });
+
+test("contract order: floor in whole cents so the cost reconciles ($247.50 at 53¢ -> 466 x 53¢ = $246.98)", () => {
+  const order = kelly.contractOrder({ stake: 247.5, bookPrice: -113, sourceFormat: 4, sourcePrice: 0.53 });
+  assert.deepEqual(order, { contracts: 466, priceCents: 53, costDollars: 246.98 });
+  // 467 x 53¢ = $247.51 would spend past the stake; the leftover is under one contract.
+  assert.ok(order.costDollars <= 247.5);
+  assert.ok(247.5 - order.costDollars < 0.53);
+});
+
+test("contract order uses the exchange's exact probability, not the rounded American", () => {
+  // -130 implies 56.5%; the source, not the American, decides the cent.
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -130, sourceFormat: 4, sourcePrice: 0.564 }).priceCents, 56);
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -130, sourceFormat: 4, sourcePrice: 0.566 }).priceCents, 57);
+});
+
+test("contract order rounds every half-cent source up (0.565 * 100 is 56.4999... in floats)", () => {
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -130, sourceFormat: 4, sourcePrice: 0.565 }).priceCents, 57);
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -136, sourceFormat: 4, sourcePrice: 0.575 }).priceCents, 58);
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -141, sourceFormat: 4, sourcePrice: 0.585 }).priceCents, 59);
+});
+
+test("contract order is null, not a throw, when the probability rounds outside 1-99 cents", () => {
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -19900, sourceFormat: 4, sourcePrice: 0.995 }), null);
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: 24900, sourceFormat: 4, sourcePrice: 0.004 }), null);
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -9900, sourceFormat: 4, sourcePrice: 0.99 }).priceCents, 99);
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: 9900, sourceFormat: 4, sourcePrice: 0.01 }).priceCents, 1);
+});
+
+test("contract order: a stake under one contract is 0 contracts, and a zero stake is 0", () => {
+  assert.deepEqual(kelly.contractOrder({ stake: 0.4, bookPrice: -113, sourceFormat: 4, sourcePrice: 0.53 }), { contracts: 0, priceCents: 53, costDollars: 0 });
+  assert.equal(kelly.contractOrder({ stake: 0, bookPrice: -113, sourceFormat: 4, sourcePrice: 0.53 }).contracts, 0);
+});
+
+test("contract order is null for a book that takes dollars (American or decimal source)", () => {
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -110, sourceFormat: 1, sourcePrice: null }), null);
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -110, sourceFormat: 2, sourcePrice: 1.909 }), null);
+  assert.equal(kelly.isContractMarket({ sourceFormat: 4, sourcePrice: 0.53 }), true);
+  assert.equal(kelly.isContractMarket({ sourceFormat: 1, sourcePrice: -110 }), false);
+});
+
+test("contract order rejects a bad stake", () => {
+  assert.throws(() => kelly.contractOrder({ stake: -5, bookPrice: -113, sourceFormat: 4, sourcePrice: 0.53 }), /non-negative stake/);
+  assert.throws(() => kelly.contractOrder({ stake: NaN, bookPrice: -113, sourceFormat: 4, sourcePrice: 0.53 }), /non-negative stake/);
+});
