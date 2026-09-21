@@ -69,10 +69,22 @@ test("contract order: floor in whole cents so the cost reconciles ($247.50 at 53
 });
 
 test("contract order uses the exchange's exact probability, not the rounded American", () => {
-  // Novig 0.525 rounds to -111, whose implied probability is 52.6%: the limit is still 53¢ here but
-  // 0.565 (-130, 56.5%) is the case that would split -- assert the source drives it.
+  // -130 implies 56.5%; the source, not the American, decides the cent.
   assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -130, sourceFormat: 4, sourcePrice: 0.564 }).priceCents, 56);
   assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -130, sourceFormat: 4, sourcePrice: 0.566 }).priceCents, 57);
+});
+
+test("contract order rounds every half-cent source up (0.565 * 100 is 56.4999... in floats)", () => {
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -130, sourceFormat: 4, sourcePrice: 0.565 }).priceCents, 57);
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -136, sourceFormat: 4, sourcePrice: 0.575 }).priceCents, 58);
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -141, sourceFormat: 4, sourcePrice: 0.585 }).priceCents, 59);
+});
+
+test("contract order is null, not a throw, when the probability rounds outside 1-99 cents", () => {
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -19900, sourceFormat: 4, sourcePrice: 0.995 }), null);
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: 24900, sourceFormat: 4, sourcePrice: 0.004 }), null);
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -9900, sourceFormat: 4, sourcePrice: 0.99 }).priceCents, 99);
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: 9900, sourceFormat: 4, sourcePrice: 0.01 }).priceCents, 1);
 });
 
 test("contract order: a stake under one contract is 0 contracts, and a zero stake is 0", () => {

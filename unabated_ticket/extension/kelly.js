@@ -74,21 +74,28 @@
     return sourceFormat === EXCHANGE_PROBABILITY_FORMAT && sourcePrice > 0 && sourcePrice < 1;
   }
 
+  // Exchange order books run 1¢..99¢; a probability that rounds outside that
+  // has no contract price to type, so it is "not priced in contracts", not an error.
+  const MIN_CONTRACT_CENTS = 1;
+  const MAX_CONTRACT_CENTS = 99;
+  // Half-cent sources (Novig 0.565) sit on a float boundary (56.499999...),
+  // so a hair is added before rounding to make every tie round up.
+  const HALF_CENT_TIE_EPSILON = 1e-9;
+
   // The limit order that spends `stake` on an exchange line: how many contracts
   // at what whole-cent price, and what they cost. Null for a line that is not
-  // priced in contracts. The count is floored (never past Kelly) in integer
-  // cents so the cost reconciles to the cent; the leftover is under one
-  // contract's price. Fees are not folded in: the stake and Unabated's edge are
-  // both pre-fee, so the count stays consistent with them.
+  // priced in contracts (a sportsbook, or a probability with no cent price).
+  // The count is floored (never past Kelly) in integer cents so the cost
+  // reconciles to the cent; the leftover is under one contract's price. Fees
+  // are not folded in: the stake and Unabated's edge are both pre-fee, so the
+  // count stays consistent with them.
   function contractOrder({ stake, bookPrice, sourceFormat, sourcePrice }) {
     if (!isContractMarket({ sourceFormat, sourcePrice })) return null;
     if (typeof stake !== "number" || !Number.isFinite(stake) || stake < 0) {
       throw new Error(`contractOrder: expected a non-negative stake, got ${stake}`);
     }
-    const priceCents = Math.round(bookProbOf({ bookPrice, sourceFormat, sourcePrice }) * 100);
-    if (priceCents < 1 || priceCents > 99) {
-      throw new Error(`contractOrder: expected a limit price of 1-99 cents, got ${priceCents}`);
-    }
+    const priceCents = Math.round(bookProbOf({ bookPrice, sourceFormat, sourcePrice }) * 100 + HALF_CENT_TIE_EPSILON);
+    if (priceCents < MIN_CONTRACT_CENTS || priceCents > MAX_CONTRACT_CENTS) return null;
     const stakeCents = Math.round(stake * 100);
     const contracts = Math.floor(stakeCents / priceCents);
     return { contracts, priceCents, costDollars: (contracts * priceCents) / 100 };
