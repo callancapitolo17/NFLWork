@@ -320,6 +320,9 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 .stake-label { font: 600 10px system-ui, sans-serif; letter-spacing: .12em; text-transform: uppercase; color: var(--edge-mid); }
 .stake { font: 700 34px var(--figure); letter-spacing: -.03em; color: var(--ink); }
 .stake.no-edge { font-size: 26px; color: var(--muted); }
+.stake-contracts { margin-top: 2px; font: 600 15px var(--figure); color: var(--ink); font-variant-numeric: tabular-nums; }
+.stake-contracts .cost { font-weight: 400; color: var(--ink-2); }
+.stake-contracts.under { font-weight: 400; color: var(--muted); }
 .stake-exposure { margin-top: 2px; font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .stake-exposure.against { color: var(--against-fg); }
 .payout-row {

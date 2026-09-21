@@ -64,7 +64,37 @@
     return { stake: bankroll * fraction * multiplier, fullKellyFraction: fraction, edge };
   }
 
-  const api = { americanToDecimal, americanToProb, bookProbOf, kellyStakeFromEdge };
+  // Exchanges (Kalshi, Novig) publish a probability, and a contract there costs
+  // that probability in whole cents and pays $1. Unabated marks such lines with
+  // sourceFormat 4; every other book takes dollars, so this is the one rule
+  // that says a line trades in contracts.
+  const EXCHANGE_PROBABILITY_FORMAT = 4;
+
+  function isContractMarket({ sourceFormat, sourcePrice }) {
+    return sourceFormat === EXCHANGE_PROBABILITY_FORMAT && sourcePrice > 0 && sourcePrice < 1;
+  }
+
+  // The limit order that spends `stake` on an exchange line: how many contracts
+  // at what whole-cent price, and what they cost. Null for a line that is not
+  // priced in contracts. The count is floored (never past Kelly) in integer
+  // cents so the cost reconciles to the cent; the leftover is under one
+  // contract's price. Fees are not folded in: the stake and Unabated's edge are
+  // both pre-fee, so the count stays consistent with them.
+  function contractOrder({ stake, bookPrice, sourceFormat, sourcePrice }) {
+    if (!isContractMarket({ sourceFormat, sourcePrice })) return null;
+    if (typeof stake !== "number" || !Number.isFinite(stake) || stake < 0) {
+      throw new Error(`contractOrder: expected a non-negative stake, got ${stake}`);
+    }
+    const priceCents = Math.round(bookProbOf({ bookPrice, sourceFormat, sourcePrice }) * 100);
+    if (priceCents < 1 || priceCents > 99) {
+      throw new Error(`contractOrder: expected a limit price of 1-99 cents, got ${priceCents}`);
+    }
+    const stakeCents = Math.round(stake * 100);
+    const contracts = Math.floor(stakeCents / priceCents);
+    return { contracts, priceCents, costDollars: (contracts * priceCents) / 100 };
+  }
+
+  const api = { americanToDecimal, americanToProb, bookProbOf, kellyStakeFromEdge, isContractMarket, contractOrder };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
