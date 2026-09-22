@@ -15,8 +15,7 @@
     "https://tools.unabated.com/*",
     "https://content.unabated.com/*",
     "https://api-k.unabated.com/*",
-    "http://127.0.0.1:8094/*",
-    "https://app.novig.us/*"
+    "http://127.0.0.1:8094/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -44,27 +43,6 @@
       ],
       "js": [
         "content.js"
-      ],
-      "world": "ISOLATED",
-      "run_at": "document_idle"
-    },
-    {
-      "matches": [
-        "https://app.novig.us/*"
-      ],
-      "js": [
-        "novig_page.js"
-      ],
-      "world": "MAIN",
-      "run_at": "document_start"
-    },
-    {
-      "matches": [
-        "https://app.novig.us/*"
-      ],
-      "js": [
-        "novig_bets.js",
-        "novig_content.js"
       ],
       "world": "ISOLATED",
       "run_at": "document_idle"

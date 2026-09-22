@@ -13,9 +13,6 @@
 //   serviceState what panel.js remembers about the service itself:
 //                {okAt, error, errorAt, unreachableSince} (ms epochs, error text)
 //   records      normalised bet records (bets.js contract)
-//   pageSources  venues read by a content script instead of the service, keyed
-//                by venue: {novig: {bets, readAt, url, error, complete,
-//                pageSeenAt}} — what novig_content.js writes to storage (#116)
 // Outputs plain objects / strings; nothing here writes anywhere.
 
 (function (root) {
@@ -49,13 +46,6 @@
   // A big edge on a heavy favourite ((1 + edge) / decimal >= 1) leaves the
   // new bet no losing outcome to weigh the held bets against.
   const REASON_CERTAIN_WIN = "edge implies a certain win";
-  // How a page-sourced venue is refreshed, for the Bets tab when its read is
-  // old or missing: the second form when its tab is open but has not shown
-  // the screen the content script mirrors.
-  const PAGE_SOURCE_HINT = {
-    novig: { closed: "open app.novig.us and its Portfolio screen in a tab to refresh", open: "Novig tab is open — open its Portfolio screen to refresh" },
-  };
-
   // "20 s" / "3 min" / "2 h" / "3 d" — the header line's short form.
   function fmtAgeShort(ms) {
     const age = Math.max(0, ms);
@@ -73,34 +63,11 @@
     return "red";
   }
 
-  // A venue read by a content script: fresh as of its last portfolio
-  // response; the hint says how to refresh once that is old or absent.
-  function pageSourceRow(venue, source, now) {
-    const readMs = source && source.readAt ? Date.parse(source.readAt) : NaN;
-    const ageMs = Number.isFinite(readMs) ? now - readMs : null;
-    const level = freshnessLevel(ageMs);
-    const seenMs = source && source.pageSeenAt ? Date.parse(source.pageSeenAt) : NaN;
-    const tabOpen = Number.isFinite(seenMs) && now - seenMs < FRESH_MS;
-    const hint = PAGE_SOURCE_HINT[venue] || { closed: "open the venue's site in a tab to refresh", open: "the venue's tab is open — open its bets screen to refresh" };
-    const note = level === "red" ? (tabOpen ? hint.open : hint.closed) : null;
-    return {
-      venue, configured: true, level, ageMs,
-      ageText: ageMs == null ? "never" : fmtAgeShort(ageMs),
-      fetchedAt: Number.isFinite(readMs) ? source.readAt : null,
-      count: source && Array.isArray(source.bets) ? source.bets.length : 0,
-      error: source && source.error ? source.error : null,
-      note,
-    };
-  }
-
-  // One row per venue: what the service reported for it, what a content
-  // script wrote for it, or "no source configured".
-  function sourceRows(payload, now, pageSources) {
+  // One row per venue: what the service reported for it, or "no source configured".
+  function sourceRows(payload, now) {
     const sources = payload && payload.sources && typeof payload.sources === "object" ? payload.sources : {};
-    const pages = pageSources && typeof pageSources === "object" ? pageSources : {};
     return VENUES.map((venue) => {
       const source = sources[venue];
-      if (!source && pages[venue]) return pageSourceRow(venue, pages[venue], now);
       if (!source) {
         return { venue, configured: false, level: "none", ageMs: null, ageText: "—", fetchedAt: null, count: null, error: null, note: "no source configured" };
       }
@@ -132,8 +99,8 @@
 
   // The Ticket tab's warning fires when nothing can vouch for the flags:
   // no source has ever reported, or every one that has is past the stale bound.
-  function sourcesUnavailable(payload, now, pageSources) {
-    const configured = sourceRows(payload, now, pageSources).filter((row) => row.configured);
+  function sourcesUnavailable(payload, now) {
+    const configured = sourceRows(payload, now).filter((row) => row.configured);
     return configured.length === 0 || configured.every((row) => row.level === "red");
   }
 
@@ -142,8 +109,8 @@
   }
 
   // "bets: 14 open · kalshi 20 s · betonline — · novig — · prophetx —"
-  function headerLine(records, payload, now, pageSources) {
-    const venues = sourceRows(payload, now, pageSources).map((row) => `${row.venue} ${row.configured ? row.ageText : "—"}`);
+  function headerLine(records, payload, now) {
+    const venues = sourceRows(payload, now).map((row) => `${row.venue} ${row.configured ? row.ageText : "—"}`);
     return [`bets: ${openCount(records)} open`, ...venues].join(" · ");
   }
 
@@ -379,20 +346,6 @@
     return payload && Array.isArray(payload.crosswalk) ? payload.crosswalk : [];
   }
 
-  // Records to keep after a content-script venue wrote its read: the stored
-  // ones and the read deduped on native id (newest wins). A COMPLETE read
-  // (every list seen to its end) is authoritative for that venue, so a stored
-  // record it no longer lists is dropped; an incomplete read only adds.
-  // `crosswalk` is the served team crosswalk the keys resolve through first.
-  function mergePageSource(storedRecords, venue, pageSource, now, crosswalk) {
-    const read = pageSource && Array.isArray(pageSource.bets) ? pageSource.bets : [];
-    const listed = new Set(read.map((record) => record.id));
-    const authoritative = !!(pageSource && pageSource.complete === true);
-    const kept = (storedRecords || []).filter((record) => record.venue !== venue || !authoritative || listed.has(record.id));
-    const merged = bets.dedupeByNativeId([kept, read]);
-    return bets.pruneForRetention(bets.resolveTeamKeys(merged, crosswalk), now);
-  }
-
   // One Bets-tab line per crosswalk row: what the venue calls the team, what
   // Unabated calls it, and where it was learned. Newest first as served.
   function crosswalkRows(crosswalk) {
@@ -430,7 +383,7 @@
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badges, relatedLines, stakeAdvice, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, mergePageSource, crosswalkOf, crosswalkRows, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badges, relatedLines, stakeAdvice, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, crosswalkRows, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

@@ -1,0 +1,1765 @@
+{
+ "provenance": "Live GET https://api.novig.us/nbx/v1/portfolio/{active,settled}?currency=CASH&sort=<tab>_recency&limit=50 on 2026-09-22 (the novig.com bundle, index-808d8ebd...). Team objects trimmed to id/name/shortName/symbol/league/unabatedId; visual and promo fields dropped. The CONN moneyline order (...bddcfb) appears twice on purpose: Matched in `active`, its Canceled unmatched remainder in `settled`. One card is a copy with id 0000...a7a7: a spread relabelled league ATP (unsupported). The last three are a First 5 Total, a First 5 Moneyline (MLB) and a Settled line (fractional settlement 0.72).",
+ "active": [
+  {
+   "type": "straight",
+   "cardId": "01a0c55e-82d9-7550-bb37-006e23756d68",
+   "sortAt": "2026-09-22T20:12:26.744Z",
+   "orderId": "01a0cabf-8ef6-7cc2-8bde-8451ccd8ca33",
+   "qty": 0,
+   "eventHeader": {
+    "eventId": "01a0c55e-829b-73c3-970b-5937a7d2de9d",
+    "league": "MLB",
+    "scheduledStart": "2026-09-22T23:15:00.000Z",
+    "eventStatus": "OPEN_PREGAME",
+    "eventType": "Game",
+    "isLive": false,
+    "homeTeam": {
+     "id": "bdad0d95-3eae-45a9-b6c3-8484253cb330",
+     "name": "Atlanta Braves",
+     "shortName": "ATL",
+     "symbol": "ATL",
+     "league": "MLB",
+     "unabatedId": 34
+    },
+    "awayTeam": {
+     "id": "686bf033-ca28-4581-af2e-2f63eab6c40e",
+     "name": "Cincinnati Reds",
+     "shortName": "CIN",
+     "symbol": "CIN",
+     "league": "MLB",
+     "unabatedId": 39
+    },
+    "homeScore": null,
+    "awayScore": null,
+    "description": "Cincinnati Reds @ Atlanta Braves"
+   },
+   "state": "Matched",
+   "outcome": {
+    "outcomeId": "01a0c55e-82d9-7550-bb37-00754b6ef20b",
+    "index": 0,
+    "status": "TBD",
+    "title": "ATL -1.5",
+    "subtitle": "Spread",
+    "displayLabel": "-1.5",
+    "competitor": {
+     "id": "bdad0d95-3eae-45a9-b6c3-8484253cb330",
+     "name": "Atlanta Braves",
+     "shortName": "ATL",
+     "symbol": "ATL",
+     "league": "MLB",
+     "unabatedId": 34
+    }
+   },
+   "price": "0.49000",
+   "amounts": {
+    "state": "Matched",
+    "currency": "CASH",
+    "amountCopy": "330.00",
+    "payoutCopy": "673.46",
+    "payoutLabel": "To Pay",
+    "cost": "329.99540",
+    "cashOutAmountCopy": null,
+    "priceImprovement": null
+   },
+   "cashOut": {
+    "heldQty": 67346,
+    "costBasis": "329.99540"
+   },
+   "metadata": {
+    "cutoffId": "8451ccd8ca33",
+    "createdAt": "2026-09-22T20:12:26.744Z"
+   }
+  },
+  {
+   "type": "union",
+   "cardId": "01a0c55e-8263-7021-a06f-5e78a2c2c045",
+   "sortAt": "2026-09-22T17:18:44.266Z",
+   "orderIds": [
+    "01a0c9e8-4a94-75f3-b1a4-f041f51db477",
+    "01a0ca20-8628-7a63-ba40-3a6568913437"
+   ],
+   "eventHeader": {
+    "eventId": "01a0c55e-8213-7221-98ec-49b02c7b1e8e",
+    "league": "MLB",
+    "scheduledStart": "2026-09-22T23:05:00.000Z",
+    "eventStatus": "OPEN_PREGAME",
+    "eventType": "Game",
+    "isLive": false,
+    "homeTeam": {
+     "id": "d13cdd0c-1306-4526-a0ba-91e3af6489f1",
+     "name": "New York Yankees",
+     "shortName": "NYY",
+     "symbol": "NYY",
+     "league": "MLB",
+     "unabatedId": 51
+    },
+    "awayTeam": {
+     "id": "ed06a009-1c69-427b-ab44-81ffb7f1f751",
+     "name": "Tampa Bay Rays",
+     "shortName": "TB",
+     "symbol": "TB",
+     "league": "MLB",
+     "unabatedId": 59
+    },
+    "homeScore": null,
+    "awayScore": null,
+    "description": "Tampa Bay Rays @ New York Yankees"
+   },
+   "marketLabel": "7.5 Total",
+   "currency": "CASH",
+   "isSettled": false,
+   "orderCount": 2,
+   "aggregateAmounts": null,
+   "netPosition": null,
+   "stateBlocks": [
+    {
+     "state": "Matched",
+     "home": {
+      "lines": [
+       {
+        "orderId": "01a0c9e8-4a94-75f3-b1a4-f041f51db477",
+        "outcomeIndex": 0,
+        "state": "Matched",
+        "outcome": {
+         "outcomeId": "01a0c55e-8263-7021-a06f-5e86f6e31e4f",
+         "index": 0,
+         "status": "TBD",
+         "title": "Over",
+         "subtitle": "Total",
+         "displayLabel": "O 7.5",
+         "competitor": null
+        },
+        "price": "0.37000",
+        "amounts": {
+         "state": "Matched",
+         "currency": "CASH",
+         "amountCopy": "7.40",
+         "payoutCopy": "20.00",
+         "payoutLabel": "To Pay",
+         "cost": "7.40000",
+         "cashOutAmountCopy": null,
+         "priceImprovement": null
+        },
+        "qty": 0,
+        "metadata": {
+         "cutoffId": "f041f51db477",
+         "createdAt": "2026-09-22T16:17:18.998Z"
+        }
+       },
+       {
+        "orderId": "01a0ca20-8628-7a63-ba40-3a6568913437",
+        "outcomeIndex": 0,
+        "state": "Matched",
+        "outcome": {
+         "outcomeId": "01a0c55e-8263-7021-a06f-5e86f6e31e4f",
+         "index": 0,
+         "status": "TBD",
+         "title": "Over",
+         "subtitle": "Total",
+         "displayLabel": "O 7.5",
+         "competitor": null
+        },
+        "price": "0.35000",
+        "amounts": {
+         "state": "Matched",
+         "currency": "CASH",
+         "amountCopy": "7.54",
+         "payoutCopy": "21.54",
+         "payoutLabel": "To Pay",
+         "cost": "7.53900",
+         "cashOutAmountCopy": null,
+         "priceImprovement": null
+        },
+        "qty": 0,
+        "metadata": {
+         "cutoffId": "3a6568913437",
+         "createdAt": "2026-09-22T17:18:44.266Z"
+        }
+       }
+      ],
+      "weighted": {
+       "state": "Matched",
+       "title": "Over",
+       "weightedPrice": "0.36000",
+       "amountCopy": "14.94",
+       "payoutCopy": "41.54"
+      }
+     },
+     "away": {
+      "lines": [],
+      "weighted": null
+     }
+    }
+   ],
+   "settledItems": [],
+   "metadata": {
+    "cutoffId": "f041f51db477",
+    "createdAt": "2026-09-22T16:17:18.998Z"
+   }
+  },
+  {
+   "type": "straight",
+   "cardId": "01a0c5b1-009a-7231-8e1e-4ff5e3f7ba3f",
+   "sortAt": "2026-09-22T16:17:45.136Z",
+   "orderId": "01a0c9e8-b0af-70f2-ba04-764567bddcfb",
+   "qty": 0,
+   "eventHeader": {
+    "eventId": "01a0c3c2-7aeb-7730-9c12-d8862ca841f9",
+    "league": "WNBA",
+    "scheduledStart": "2026-09-22T23:30:00.000Z",
+    "eventStatus": "OPEN_PREGAME",
+    "eventType": "Game",
+    "isLive": false,
+    "homeTeam": {
+     "id": "088d1ab8-11dc-455b-80e1-b6bb9abf5bd3",
+     "name": "Washington Mystics",
+     "shortName": "WSH",
+     "symbol": "WSH",
+     "league": "WNBA",
+     "unabatedId": 1524
+    },
+    "awayTeam": {
+     "id": "ce1c8908-c426-4600-9260-60c29760652c",
+     "name": "Connecticut Sun",
+     "shortName": "CONN",
+     "symbol": "CONN",
+     "league": "WNBA",
+     "unabatedId": 1521
+    },
+    "homeScore": null,
+    "awayScore": null,
+    "description": "Connecticut Sun @ Washington Mystics"
+   },
+   "state": "Matched",
+   "outcome": {
+    "outcomeId": "01a0c5b1-009a-7231-8e1e-5011bd1f4a09",
+    "index": 1,
+    "status": "TBD",
+    "title": "CONN",
+    "subtitle": "Moneyline",
+    "displayLabel": null,
+    "competitor": {
+     "id": "ce1c8908-c426-4600-9260-60c29760652c",
+     "name": "Connecticut Sun",
+     "shortName": "CONN",
+     "symbol": "CONN",
+     "league": "WNBA",
+     "unabatedId": 1521
+    }
+   },
+   "price": "0.07500",
+   "amounts": {
+    "state": "Matched",
+    "currency": "CASH",
+    "amountCopy": "9.13",
+    "payoutCopy": "121.68",
+    "payoutLabel": "To Pay",
+    "cost": "9.12600",
+    "cashOutAmountCopy": null,
+    "priceImprovement": null
+   },
+   "cashOut": {
+    "heldQty": 12168,
+    "costBasis": "9.12600"
+   },
+   "metadata": {
+    "cutoffId": "764567bddcfb",
+    "createdAt": "2026-09-22T16:17:45.136Z"
+   }
+  },
+  {
+   "type": "straight",
+   "cardId": "01a0bdab-a485-75a0-9ada-7232cc983560",
+   "sortAt": "2026-09-22T17:15:13.088Z",
+   "orderId": "01a0ca1d-4d3e-7160-b86d-1eeabc005497",
+   "qty": 0,
+   "eventHeader": {
+    "eventId": "01a0b554-d382-73b0-8140-812c2deb9d25",
+    "league": "NCAAF",
+    "scheduledStart": "2026-09-26T16:00:00.000Z",
+    "eventStatus": "OPEN_PREGAME",
+    "eventType": "Game",
+    "isLive": false,
+    "homeTeam": {
+     "id": "c49c8430-c367-45a9-9bdd-81cad3070e03",
+     "name": "UTSA",
+     "shortName": "UTSA",
+     "symbol": "UTSA",
+     "league": "NCAAF",
+     "unabatedId": null
+    },
+    "awayTeam": {
+     "id": "14c253df-5a2d-4ca5-857d-b45286d7c918",
+     "name": "Colorado State",
+     "shortName": "CSU",
+     "symbol": "CSU",
+     "league": "NCAAF",
+     "unabatedId": null
+    },
+    "homeScore": null,
+    "awayScore": null,
+    "description": "Colorado State @ UTSA"
+   },
+   "state": "Matched",
+   "outcome": {
+    "outcomeId": "01a0bdab-a485-75a0-9ada-724191bebf6d",
+    "index": 0,
+    "status": "TBD",
+    "title": "Over 60.5",
+    "subtitle": "Total",
+    "displayLabel": "O 60.5",
+    "competitor": null
+   },
+   "price": "0.43500",
+   "amounts": {
+    "state": "Matched",
+    "currency": "CASH",
+    "amountCopy": "105.00",
+    "payoutCopy": "241.37",
+    "payoutLabel": "To Pay",
+    "cost": "104.99595",
+    "cashOutAmountCopy": null,
+    "priceImprovement": null
+   },
+   "cashOut": {
+    "heldQty": 24137,
+    "costBasis": "104.99595"
+   },
+   "metadata": {
+    "cutoffId": "1eeabc005497",
+    "createdAt": "2026-09-22T17:15:13.088Z"
+   }
+  }
+ ],
+ "settled": [
+  {
+   "type": "straight",
+   "cardId": "01a0c5b1-009a-7231-8e1e-4ff5e3f7ba3f",
+   "sortAt": "2026-09-22T16:17:45.749Z",
+   "orderId": "01a0c9e8-b0af-70f2-ba04-764567bddcfb",
+   "qty": 5,
+   "eventHeader": {
+    "eventId": "01a0c3c2-7aeb-7730-9c12-d8862ca841f9",
+    "league": "WNBA",
+    "scheduledStart": "2026-09-22T23:30:00.000Z",
+    "eventStatus": "OPEN_PREGAME",
+    "eventType": "Game",
+    "isLive": false,
+    "homeTeam": {
+     "id": "088d1ab8-11dc-455b-80e1-b6bb9abf5bd3",
+     "name": "Washington Mystics",
+     "shortName": "WSH",
+     "symbol": "WSH",
+     "league": "WNBA",
+     "unabatedId": 1524
+    },
+    "awayTeam": {
+     "id": "ce1c8908-c426-4600-9260-60c29760652c",
+     "name": "Connecticut Sun",
+     "shortName": "CONN",
+     "symbol": "CONN",
+     "league": "WNBA",
+     "unabatedId": 1521
+    },
+    "homeScore": null,
+    "awayScore": null,
+    "description": "Connecticut Sun @ Washington Mystics"
+   },
+   "state": "Canceled",
+   "outcome": {
+    "outcomeId": "01a0c5b1-009a-7231-8e1e-5011bd1f4a09",
+    "index": 1,
+    "status": "TBD",
+    "title": "CONN",
+    "subtitle": "Moneyline",
+    "displayLabel": null,
+    "competitor": {
+     "id": "ce1c8908-c426-4600-9260-60c29760652c",
+     "name": "Connecticut Sun",
+     "shortName": "CONN",
+     "symbol": "CONN",
+     "league": "WNBA",
+     "unabatedId": 1521
+    }
+   },
+   "price": "0.07500",
+   "amounts": {
+    "state": "Canceled",
+    "currency": "CASH",
+    "amountCopy": "0.00",
+    "payoutCopy": null,
+    "payoutLabel": "",
+    "cost": "0.00375",
+    "cashOutAmountCopy": null,
+    "priceImprovement": null
+   },
+   "cashOut": null,
+   "metadata": {
+    "cutoffId": "764567bddcfb",
+    "createdAt": "2026-09-22T16:17:45.136Z"
+   }
+  },
+  {
+   "type": "straight",
+   "cardId": "01a0827d-3be0-7c93-8d26-03d675b152f9",
+   "sortAt": "2026-09-20T23:16:39.822Z",
+   "orderId": "01a0c072-0046-7250-ba82-42983e7e3a81",
+   "qty": 0,
+   "eventHeader": {
+    "eventId": "01a07c6a-a6b6-7de0-8317-88734d821750",
+    "league": "NFL",
+    "scheduledStart": "2026-09-20T20:25:00.000Z",
+    "eventStatus": "FINAL",
+    "eventType": "Game",
+    "isLive": true,
+    "homeTeam": {
+     "id": "4645eb08-a8e5-4724-b1b2-cae70e0986a6",
+     "name": "San Francisco 49ers",
+     "shortName": "SF",
+     "symbol": "SF",
+     "league": "NFL",
+     "unabatedId": 27
+    },
+    "awayTeam": {
+     "id": "457e4058-3dfb-4017-a344-93cecacf130f",
+     "name": "Miami Dolphins",
+     "shortName": "MIA",
+     "symbol": "MIA",
+     "league": "NFL",
+     "unabatedId": 17
+    },
+    "homeScore": 35,
+    "awayScore": 13,
+    "description": "Miami Dolphins @ San Francisco 49ers"
+   },
+   "state": "Win",
+   "outcome": {
+    "outcomeId": "01a0827d-3be0-7c93-8d26-03e310cf93db",
+    "index": 0,
+    "status": "WIN",
+    "title": "SF 49ers -19.5",
+    "subtitle": "Spread",
+    "displayLabel": "-19.5",
+    "competitor": {
+     "id": "4645eb08-a8e5-4724-b1b2-cae70e0986a6",
+     "name": "San Francisco 49ers",
+     "shortName": "SF",
+     "symbol": "SF",
+     "league": "NFL",
+     "unabatedId": 27
+    }
+   },
+   "price": "0.31000",
+   "amounts": {
+    "state": "Win",
+    "currency": "CASH",
+    "amountCopy": "6.20",
+    "payoutCopy": "20.00",
+    "payoutLabel": "Paid",
+    "cost": "6.20000",
+    "cashOutAmountCopy": null,
+    "priceImprovement": null
+   },
+   "cashOut": null,
+   "metadata": {
+    "cutoffId": "42983e7e3a81",
+    "createdAt": "2026-09-20T20:11:31.786Z"
+   }
+  },
+  {
+   "type": "straight",
+   "cardId": "01a0bac5-1209-7e03-b105-f38bc79b6a21",
+   "sortAt": "2026-09-21T01:37:09.222Z",
+   "orderId": "01a0bd8b-59f6-7cc2-8218-d9da1043d2ef",
+   "qty": 0,
+   "eventHeader": {
+    "eventId": "01a0b961-f1d7-70a1-afef-686e816bf84d",
+    "league": "WNBA",
+    "scheduledStart": "2026-09-20T23:00:00.000Z",
+    "eventStatus": "FINAL",
+    "eventType": "Game",
+    "isLive": true,
+    "homeTeam": {
+     "id": "af3c1846-b7cd-4236-9396-a4c8d936cf89",
+     "name": "Los Angeles Sparks",
+     "shortName": "LA",
+     "symbol": "LA",
+     "league": "WNBA",
+     "unabatedId": 1527
+    },
+    "awayTeam": {
+     "id": "27a62a94-2811-4465-b075-e27cc66071ab",
+     "name": "Portland Fire",
+     "shortName": "POR",
+     "symbol": "POR",
+     "league": "WNBA",
+     "unabatedId": 1995
+    },
+    "homeScore": 105,
+    "awayScore": 84,
+    "description": "Portland Fire @ Los Angeles Sparks"
+   },
+   "state": "Loss",
+   "outcome": {
+    "outcomeId": "01a0bac5-1209-7e03-b105-f3abd381a289",
+    "index": 1,
+    "status": "LOSS",
+    "title": "Under 174.5",
+    "subtitle": "Total",
+    "displayLabel": "U 174.5",
+    "competitor": null
+   },
+   "price": "0.44500",
+   "amounts": {
+    "state": "Loss",
+    "currency": "CASH",
+    "amountCopy": "291.00",
+    "payoutCopy": "653.93",
+    "payoutLabel": "To Pay",
+    "cost": "290.99885",
+    "cashOutAmountCopy": null,
+    "priceImprovement": null
+   },
+   "cashOut": null,
+   "metadata": {
+    "cutoffId": "d9da1043d2ef",
+    "createdAt": "2026-09-20T06:40:21.496Z"
+   }
+  },
+  {
+   "type": "straight",
+   "cardId": "01a0a0c7-7ca6-7ec1-a216-38dd3f9bb69e",
+   "sortAt": "2026-09-20T21:48:40.209Z",
+   "orderId": "01a0bff3-81bd-7c13-8f1e-7efbb0c9a7f7",
+   "qty": 0,
+   "eventHeader": {
+    "eventId": "01a07c6a-a599-7e70-8d6f-dffd3e1b0f0d",
+    "league": "NFL",
+    "scheduledStart": "2026-09-20T20:05:00.000Z",
+    "eventStatus": "FINAL",
+    "eventType": "Game",
+    "isLive": true,
+    "homeTeam": {
+     "id": "493b79b7-1654-48c4-88ab-fe2c10281378",
+     "name": "Los Angeles Chargers",
+     "shortName": "LAC",
+     "symbol": "LA",
+     "league": "NFL",
+     "unabatedId": 26
+    },
+    "awayTeam": {
+     "id": "15828d11-973b-45af-bbd0-74d55edc5d21",
+     "name": "Las Vegas Raiders",
+     "shortName": "LV",
+     "symbol": "LV",
+     "league": "NFL",
+     "unabatedId": 23
+    },
+    "homeScore": 14,
+    "awayScore": 26,
+    "description": "Las Vegas Raiders @ Los Angeles Chargers"
+   },
+   "state": "Win",
+   "outcome": {
+    "outcomeId": "01a0a0c7-7ca6-7ec1-a216-38f75f3a022e",
+    "index": 1,
+    "status": "WIN",
+    "title": "Under 21.5",
+    "subtitle": "1st Half Total",
+    "displayLabel": "U 21.5",
+    "competitor": null
+   },
+   "price": "0.49000",
+   "amounts": {
+    "state": "Win",
+    "currency": "CASH",
+    "amountCopy": "12.13",
+    "payoutCopy": "24.75",
+    "payoutLabel": "Paid",
+    "cost": "12.12750",
+    "cashOutAmountCopy": null,
+    "priceImprovement": null
+   },
+   "cashOut": null,
+   "metadata": {
+    "cutoffId": "7efbb0c9a7f7",
+    "createdAt": "2026-09-20T17:53:21.855Z"
+   }
+  },
+  {
+   "type": "union",
+   "cardId": "01a07ab5-ffd4-76d2-b1c1-2a51a16c1d62",
+   "sortAt": "2026-09-13T03:41:53.177Z",
+   "orderIds": [
+    "01a09622-48ad-7b20-a3d9-9efaacd77c57",
+    "01a09657-d075-7ee1-b899-f0e878dad9a3",
+    "01a0972b-3857-7561-8dc4-a80cfb5f0b89",
+    "01a09783-f6cc-71e0-b02a-e349efece56e",
+    "01a097df-259f-77f1-bdf2-6b4038dad6c5",
+    "01a097e0-d689-7053-8f47-9d3057f4f666",
+    "01a097a2-4d3a-7531-941f-a98369028fe7",
+    "01a097c3-3178-7741-bca5-c5de00ba8129",
+    "01a097aa-f8d5-7b70-9d8d-e07aa64a49f7",
+    "01a097c9-a4b2-7a53-83c0-fad23538d1bc",
+    "01a097eb-16a1-7090-a0f6-f4ab785a18a4",
+    "01a097ee-8486-7001-a53b-9de63cf494e0",
+    "01a097f4-973f-7931-aab6-75952606d2e4",
+    "01a097f5-85af-7251-83aa-02c7ba09025a"
+   ],
+   "eventHeader": {
+    "eventId": "01a06ee6-aad9-7d02-8ffe-b2a9b36f3d07",
+    "league": "NCAAF",
+    "scheduledStart": "2026-09-13T00:08:00.000Z",
+    "eventStatus": "FINAL",
+    "eventType": "Game",
+    "isLive": true,
+    "homeTeam": {
+     "id": "95f5a710-23d8-48b0-9cb9-88f8b596fc8c",
+     "name": "Baylor",
+     "shortName": "BAY",
+     "symbol": "BAY",
+     "league": "NCAAF",
+     "unabatedId": null
+    },
+    "awayTeam": {
+     "id": "0d881fe1-fce0-4ec8-8cd2-40a6c28f4131",
+     "name": "Prairie View A&M",
+     "shortName": "PV",
+     "symbol": "PV",
+     "league": "NCAAF",
+     "unabatedId": 416
+    },
+    "homeScore": 44,
+    "awayScore": 3,
+    "description": "Prairie View A&M @ Baylor"
+   },
+   "marketLabel": "48.5 Total",
+   "currency": "CASH",
+   "isSettled": true,
+   "orderCount": 16,
+   "aggregateAmounts": null,
+   "netPosition": {
+    "netIndex": 1,
+    "title": "Under",
+    "price": "0.30900",
+    "amountCopy": "1,178.98",
+    "payoutCopy": "3,814.68",
+    "guaranteedPayoutCopy": "445.97",
+    "state": "Win"
+   },
+   "stateBlocks": [],
+   "settledItems": [
+    {
+     "state": "Win",
+     "line": {
+      "orderId": "01a09622-48ad-7b20-a3d9-9efaacd77c57",
+      "outcomeIndex": 1,
+      "state": "Win",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a75ad7da01e",
+       "index": 1,
+       "status": "WIN",
+       "title": "Under",
+       "subtitle": "Total",
+       "displayLabel": "U 48.5",
+       "competitor": null
+      },
+      "price": "0.30500",
+      "amounts": {
+       "state": "Win",
+       "currency": "CASH",
+       "amountCopy": "320.00",
+       "payoutCopy": "1,049.18",
+       "payoutLabel": "Paid",
+       "cost": "319.99990",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 0,
+      "metadata": {
+       "cutoffId": "9efaacd77c57",
+       "createdAt": "2026-09-12T15:00:24.367Z"
+      }
+     }
+    },
+    {
+     "state": "Win",
+     "line": {
+      "orderId": "01a09657-d075-7ee1-b899-f0e878dad9a3",
+      "outcomeIndex": 1,
+      "state": "Win",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a75ad7da01e",
+       "index": 1,
+       "status": "WIN",
+       "title": "Under",
+       "subtitle": "Total",
+       "displayLabel": "U 48.5",
+       "competitor": null
+      },
+      "price": "0.31000",
+      "amounts": {
+       "state": "Win",
+       "currency": "CASH",
+       "amountCopy": "270.00",
+       "payoutCopy": "870.96",
+       "payoutLabel": "Paid",
+       "cost": "269.99760",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 0,
+      "metadata": {
+       "cutoffId": "f0e878dad9a3",
+       "createdAt": "2026-09-12T15:58:52.533Z"
+      }
+     }
+    },
+    {
+     "state": "Win",
+     "line": {
+      "orderId": "01a0972b-3857-7561-8dc4-a80cfb5f0b89",
+      "outcomeIndex": 1,
+      "state": "Win",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a75ad7da01e",
+       "index": 1,
+       "status": "WIN",
+       "title": "Under",
+       "subtitle": "Total",
+       "displayLabel": "U 48.5",
+       "competitor": null
+      },
+      "price": "0.30500",
+      "amounts": {
+       "state": "Win",
+       "currency": "CASH",
+       "amountCopy": "248.00",
+       "payoutCopy": "813.11",
+       "payoutLabel": "Paid",
+       "cost": "247.99855",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 0,
+      "metadata": {
+       "cutoffId": "a80cfb5f0b89",
+       "createdAt": "2026-09-12T19:49:47.225Z"
+      }
+     }
+    },
+    {
+     "state": "Win",
+     "line": {
+      "orderId": "01a09783-f6cc-71e0-b02a-e349efece56e",
+      "outcomeIndex": 1,
+      "state": "Win",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a75ad7da01e",
+       "index": 1,
+       "status": "WIN",
+       "title": "Under",
+       "subtitle": "Total",
+       "displayLabel": "U 48.5",
+       "competitor": null
+      },
+      "price": "0.30500",
+      "amounts": {
+       "state": "Win",
+       "currency": "CASH",
+       "amountCopy": "248.00",
+       "payoutCopy": "813.11",
+       "payoutLabel": "Paid",
+       "cost": "247.99855",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 0,
+      "metadata": {
+       "cutoffId": "e349efece56e",
+       "createdAt": "2026-09-12T21:26:43.152Z"
+      }
+     }
+    },
+    {
+     "state": "Win",
+     "line": {
+      "orderId": "01a097df-259f-77f1-bdf2-6b4038dad6c5",
+      "outcomeIndex": 1,
+      "state": "Win",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a75ad7da01e",
+       "index": 1,
+       "status": "WIN",
+       "title": "Under",
+       "subtitle": "Total",
+       "displayLabel": "U 48.5",
+       "competitor": null
+      },
+      "price": "0.30500",
+      "amounts": {
+       "state": "Win",
+       "currency": "CASH",
+       "amountCopy": "217.86",
+       "payoutCopy": "714.29",
+       "payoutLabel": "Paid",
+       "cost": "217.85845",
+       "cashOutAmountCopy": null,
+       "priceImprovement": {
+        "amount": "282.14455",
+        "amountCopy": "282.14"
+       }
+      },
+      "qty": 0,
+      "metadata": {
+       "cutoffId": "6b4038dad6c5",
+       "createdAt": "2026-09-12T23:06:18.912Z"
+      }
+     }
+    },
+    {
+     "state": "Loss",
+     "line": {
+      "orderId": "01a097c9-a4b2-7a53-83c0-fad23538d1bc",
+      "outcomeIndex": 0,
+      "state": "Loss",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a6174982a8e",
+       "index": 0,
+       "status": "LOSS",
+       "title": "Over",
+       "subtitle": "Total",
+       "displayLabel": "O 48.5",
+       "competitor": null
+      },
+      "price": "0.72000",
+      "amounts": {
+       "state": "Loss",
+       "currency": "CASH",
+       "amountCopy": "51.42",
+       "payoutCopy": "71.42",
+       "payoutLabel": "To Pay",
+       "cost": "51.42240",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 0,
+      "metadata": {
+       "cutoffId": "fad23538d1bc",
+       "createdAt": "2026-09-12T22:42:49.651Z"
+      }
+     }
+    },
+    {
+     "state": "Loss",
+     "line": {
+      "orderId": "01a097ee-8486-7001-a53b-9de63cf494e0",
+      "outcomeIndex": 0,
+      "state": "Loss",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a6174982a8e",
+       "index": 0,
+       "status": "LOSS",
+       "title": "Over",
+       "subtitle": "Total",
+       "displayLabel": "O 48.5",
+       "competitor": null
+      },
+      "price": "0.72000",
+      "amounts": {
+       "state": "Loss",
+       "currency": "CASH",
+       "amountCopy": "269.68",
+       "payoutCopy": "374.55",
+       "payoutLabel": "To Pay",
+       "cost": "269.67600",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 0,
+      "metadata": {
+       "cutoffId": "9de63cf494e0",
+       "createdAt": "2026-09-12T23:23:06.247Z"
+      }
+     }
+    },
+    {
+     "state": "Canceled",
+     "line": {
+      "orderId": "01a097e0-d689-7053-8f47-9d3057f4f666",
+      "outcomeIndex": 0,
+      "state": "Canceled",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a6174982a8e",
+       "index": 0,
+       "status": "LOSS",
+       "title": "Over",
+       "subtitle": "Total",
+       "displayLabel": "O 48.5",
+       "competitor": null
+      },
+      "price": "0.70000",
+      "amounts": {
+       "state": "Canceled",
+       "currency": "CASH",
+       "amountCopy": "270.00",
+       "payoutCopy": null,
+       "payoutLabel": "",
+       "cost": "269.99700",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 38571,
+      "metadata": {
+       "cutoffId": "9d3057f4f666",
+       "createdAt": "2026-09-12T23:08:09.738Z"
+      }
+     }
+    },
+    {
+     "state": "Canceled",
+     "line": {
+      "orderId": "01a097a2-4d3a-7531-941f-a98369028fe7",
+      "outcomeIndex": 0,
+      "state": "Canceled",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a6174982a8e",
+       "index": 0,
+       "status": "LOSS",
+       "title": "Over",
+       "subtitle": "Total",
+       "displayLabel": "O 48.5",
+       "competitor": null
+      },
+      "price": "0.70000",
+      "amounts": {
+       "state": "Canceled",
+       "currency": "CASH",
+       "amountCopy": "100.00",
+       "payoutCopy": null,
+       "payoutLabel": "",
+       "cost": "100.00200",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 14286,
+      "metadata": {
+       "cutoffId": "a98369028fe7",
+       "createdAt": "2026-09-12T21:59:51.356Z"
+      }
+     }
+    },
+    {
+     "state": "Canceled",
+     "line": {
+      "orderId": "01a097c3-3178-7741-bca5-c5de00ba8129",
+      "outcomeIndex": 0,
+      "state": "Canceled",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a6174982a8e",
+       "index": 0,
+       "status": "LOSS",
+       "title": "Over",
+       "subtitle": "Total",
+       "displayLabel": "O 48.5",
+       "competitor": null
+      },
+      "price": "0.71000",
+      "amounts": {
+       "state": "Canceled",
+       "currency": "CASH",
+       "amountCopy": "300.00",
+       "payoutCopy": null,
+       "payoutLabel": "",
+       "cost": "299.99630",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 42253,
+      "metadata": {
+       "cutoffId": "c5de00ba8129",
+       "createdAt": "2026-09-12T22:35:46.937Z"
+      }
+     }
+    },
+    {
+     "state": "Canceled",
+     "line": {
+      "orderId": "01a097aa-f8d5-7b70-9d8d-e07aa64a49f7",
+      "outcomeIndex": 0,
+      "state": "Canceled",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a6174982a8e",
+       "index": 0,
+       "status": "LOSS",
+       "title": "Over",
+       "subtitle": "Total",
+       "displayLabel": "O 48.5",
+       "competitor": null
+      },
+      "price": "0.70000",
+      "amounts": {
+       "state": "Canceled",
+       "currency": "CASH",
+       "amountCopy": "300.00",
+       "payoutCopy": null,
+       "payoutLabel": "",
+       "cost": "299.99900",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 42857,
+      "metadata": {
+       "cutoffId": "e07aa64a49f7",
+       "createdAt": "2026-09-12T22:09:19.575Z"
+      }
+     }
+    },
+    {
+     "state": "Canceled",
+     "line": {
+      "orderId": "01a097c9-a4b2-7a53-83c0-fad23538d1bc",
+      "outcomeIndex": 0,
+      "state": "Canceled",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a6174982a8e",
+       "index": 0,
+       "status": "LOSS",
+       "title": "Over",
+       "subtitle": "Total",
+       "displayLabel": "O 48.5",
+       "competitor": null
+      },
+      "price": "0.72000",
+      "amounts": {
+       "state": "Canceled",
+       "currency": "CASH",
+       "amountCopy": "248.57",
+       "payoutCopy": null,
+       "payoutLabel": "",
+       "cost": "248.57280",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 34524,
+      "metadata": {
+       "cutoffId": "fad23538d1bc",
+       "createdAt": "2026-09-12T22:42:49.651Z"
+      }
+     }
+    },
+    {
+     "state": "Canceled",
+     "line": {
+      "orderId": "01a097eb-16a1-7090-a0f6-f4ab785a18a4",
+      "outcomeIndex": 0,
+      "state": "Canceled",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a6174982a8e",
+       "index": 0,
+       "status": "LOSS",
+       "title": "Over",
+       "subtitle": "Total",
+       "displayLabel": "O 48.5",
+       "competitor": null
+      },
+      "price": "0.71000",
+      "amounts": {
+       "state": "Canceled",
+       "currency": "CASH",
+       "amountCopy": "269.99",
+       "payoutCopy": null,
+       "payoutLabel": "",
+       "cost": "269.99170",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 38027,
+      "metadata": {
+       "cutoffId": "f4ab785a18a4",
+       "createdAt": "2026-09-12T23:19:21.507Z"
+      }
+     }
+    },
+    {
+     "state": "Canceled",
+     "line": {
+      "orderId": "01a097ee-8486-7001-a53b-9de63cf494e0",
+      "outcomeIndex": 0,
+      "state": "Canceled",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a6174982a8e",
+       "index": 0,
+       "status": "LOSS",
+       "title": "Over",
+       "subtitle": "Total",
+       "displayLabel": "O 48.5",
+       "competitor": null
+      },
+      "price": "0.72000",
+      "amounts": {
+       "state": "Canceled",
+       "currency": "CASH",
+       "amountCopy": "0.31",
+       "payoutCopy": null,
+       "payoutLabel": "",
+       "cost": "0.30960",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 43,
+      "metadata": {
+       "cutoffId": "9de63cf494e0",
+       "createdAt": "2026-09-12T23:23:06.247Z"
+      }
+     }
+    },
+    {
+     "state": "Canceled",
+     "line": {
+      "orderId": "01a097f4-973f-7931-aab6-75952606d2e4",
+      "outcomeIndex": 0,
+      "state": "Canceled",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a6174982a8e",
+       "index": 0,
+       "status": "LOSS",
+       "title": "Over",
+       "subtitle": "Total",
+       "displayLabel": "O 48.5",
+       "competitor": null
+      },
+      "price": "0.70000",
+      "amounts": {
+       "state": "Canceled",
+       "currency": "CASH",
+       "amountCopy": "500.00",
+       "payoutCopy": null,
+       "payoutLabel": "",
+       "cost": "500.00300",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 71429,
+      "metadata": {
+       "cutoffId": "75952606d2e4",
+       "createdAt": "2026-09-12T23:29:44.257Z"
+      }
+     }
+    },
+    {
+     "state": "Canceled",
+     "line": {
+      "orderId": "01a097f5-85af-7251-83aa-02c7ba09025a",
+      "outcomeIndex": 0,
+      "state": "Canceled",
+      "outcome": {
+       "outcomeId": "01a07ab5-ffd4-76d2-b1c1-2a6174982a8e",
+       "index": 0,
+       "status": "LOSS",
+       "title": "Over",
+       "subtitle": "Total",
+       "displayLabel": "O 48.5",
+       "competitor": null
+      },
+      "price": "0.70000",
+      "amounts": {
+       "state": "Canceled",
+       "currency": "CASH",
+       "amountCopy": "100.00",
+       "payoutCopy": null,
+       "payoutLabel": "",
+       "cost": "100.00200",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 14286,
+      "metadata": {
+       "cutoffId": "02c7ba09025a",
+       "createdAt": "2026-09-12T23:30:45.297Z"
+      }
+     }
+    }
+   ],
+   "metadata": {
+    "cutoffId": "9efaacd77c57",
+    "createdAt": "2026-09-12T15:00:24.367Z"
+   }
+  },
+  {
+   "type": "union",
+   "cardId": "01a07c6a-a9c0-7eb2-9531-7482495ff320",
+   "sortAt": "2026-09-22T03:19:13.022Z",
+   "orderIds": [
+    "01a0a186-cade-7b53-95f8-f249800ae9c4",
+    "01a0b6d1-1ae7-7962-a4cb-df319ed6276f"
+   ],
+   "eventHeader": {
+    "eventId": "01a07c6a-a8df-76b0-8b49-f060a1243721",
+    "league": "NFL",
+    "scheduledStart": "2026-09-22T00:15:00.000Z",
+    "eventStatus": "FINAL",
+    "eventType": "Game",
+    "isLive": true,
+    "homeTeam": {
+     "id": "e6afddf5-72dc-4dbc-9da9-a17ea98b3ae8",
+     "name": "Los Angeles Rams",
+     "shortName": "LAR",
+     "symbol": "LA",
+     "league": "NFL",
+     "unabatedId": 29
+    },
+    "awayTeam": {
+     "id": "c8b340dd-4d70-4334-8e82-aa470f1f7b21",
+     "name": "New York Giants",
+     "shortName": "NYG",
+     "symbol": "NYG",
+     "league": "NFL",
+     "unabatedId": 21
+    },
+    "homeScore": 28,
+    "awayScore": 6,
+    "description": "New York Giants @ Los Angeles Rams"
+   },
+   "marketLabel": "14.5 Spread",
+   "currency": "CASH",
+   "isSettled": true,
+   "orderCount": 2,
+   "aggregateAmounts": {
+    "state": "Win",
+    "currency": "CASH",
+    "amountCopy": "345.40",
+    "payoutCopy": "1,279.25",
+    "payoutLabel": "Paid",
+    "cost": "345.39750",
+    "cashOutAmountCopy": null,
+    "priceImprovement": null
+   },
+   "netPosition": null,
+   "stateBlocks": [],
+   "settledItems": [
+    {
+     "state": "Win",
+     "line": {
+      "orderId": "01a0a186-cade-7b53-95f8-f249800ae9c4",
+      "outcomeIndex": 0,
+      "state": "Win",
+      "outcome": {
+       "outcomeId": "01a07c6a-a9c0-7eb2-9531-74993a3c3d93",
+       "index": 0,
+       "status": "WIN",
+       "title": "LA Rams -14.5",
+       "subtitle": "Spread",
+       "displayLabel": "-14.5",
+       "competitor": {
+        "id": "e6afddf5-72dc-4dbc-9da9-a17ea98b3ae8",
+        "name": "Los Angeles Rams",
+        "shortName": "LAR",
+        "symbol": "LA",
+        "league": "NFL",
+        "unabatedId": 29
+       }
+      },
+      "price": "0.27000",
+      "amounts": {
+       "state": "Win",
+       "currency": "CASH",
+       "amountCopy": "340.00",
+       "payoutCopy": "1,259.25",
+       "payoutLabel": "Paid",
+       "cost": "339.99750",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 0,
+      "metadata": {
+       "cutoffId": "f249800ae9c4",
+       "createdAt": "2026-09-14T20:06:00.672Z"
+      }
+     }
+    },
+    {
+     "state": "Win",
+     "line": {
+      "orderId": "01a0b6d1-1ae7-7962-a4cb-df319ed6276f",
+      "outcomeIndex": 0,
+      "state": "Win",
+      "outcome": {
+       "outcomeId": "01a07c6a-a9c0-7eb2-9531-74993a3c3d93",
+       "index": 0,
+       "status": "WIN",
+       "title": "LA Rams -14.5",
+       "subtitle": "Spread",
+       "displayLabel": "-14.5",
+       "competitor": {
+        "id": "e6afddf5-72dc-4dbc-9da9-a17ea98b3ae8",
+        "name": "Los Angeles Rams",
+        "shortName": "LAR",
+        "symbol": "LA",
+        "league": "NFL",
+        "unabatedId": 29
+       }
+      },
+      "price": "0.27000",
+      "amounts": {
+       "state": "Win",
+       "currency": "CASH",
+       "amountCopy": "5.40",
+       "payoutCopy": "20.00",
+       "payoutLabel": "Paid",
+       "cost": "5.40000",
+       "cashOutAmountCopy": null,
+       "priceImprovement": null
+      },
+      "qty": 0,
+      "metadata": {
+       "cutoffId": "df319ed6276f",
+       "createdAt": "2026-09-18T23:19:12.361Z"
+      }
+     }
+    }
+   ],
+   "metadata": {
+    "cutoffId": "f249800ae9c4",
+    "createdAt": "2026-09-14T20:06:00.672Z"
+   }
+  },
+  {
+   "type": "parlay",
+   "cardId": "01a093a8-5c45-7d93-83e0-73985c5e854c",
+   "sortAt": "2026-09-13T23:30:29.253Z",
+   "currency": "CASH",
+   "state": "Loss",
+   "isSgp": true,
+   "isPlus": false,
+   "legCount": 3,
+   "sgpGroups": [
+    {
+     "eventId": "019fed1f-5bc4-73e3-ae68-6f5a627354fe",
+     "eventHeader": {
+      "eventId": "019fed1f-5bc4-73e3-ae68-6f5a627354fe",
+      "league": "NFL",
+      "scheduledStart": "2026-09-13T20:25:00.000Z",
+      "eventStatus": "FINAL",
+      "eventType": "Game",
+      "isLive": true,
+      "homeTeam": {
+       "id": "15828d11-973b-45af-bbd0-74d55edc5d21",
+       "name": "Las Vegas Raiders",
+       "shortName": "LV",
+       "symbol": "LV",
+       "league": "NFL",
+       "unabatedId": 23
+      },
+      "awayTeam": {
+       "id": "457e4058-3dfb-4017-a344-93cecacf130f",
+       "name": "Miami Dolphins",
+       "shortName": "MIA",
+       "symbol": "MIA",
+       "league": "NFL",
+       "unabatedId": 17
+      },
+      "homeScore": 27,
+      "awayScore": 13,
+      "description": "Miami Dolphins @ Las Vegas Raiders"
+     },
+     "legs": [
+      {
+       "outcomeId": "019fed1f-5c55-7610-82e7-159db22b3ef9",
+       "marketId": "019fed1f-5c55-7610-82e7-1589ca8c69f9",
+       "eventHeader": {
+        "eventId": "019fed1f-5bc4-73e3-ae68-6f5a627354fe",
+        "league": "NFL",
+        "scheduledStart": "2026-09-13T20:25:00.000Z",
+        "eventStatus": "FINAL",
+        "eventType": "Game",
+        "isLive": true,
+        "homeTeam": {
+         "id": "15828d11-973b-45af-bbd0-74d55edc5d21",
+         "name": "Las Vegas Raiders",
+         "shortName": "LV",
+         "symbol": "LV",
+         "league": "NFL",
+         "unabatedId": 23
+        },
+        "awayTeam": {
+         "id": "457e4058-3dfb-4017-a344-93cecacf130f",
+         "name": "Miami Dolphins",
+         "shortName": "MIA",
+         "symbol": "MIA",
+         "league": "NFL",
+         "unabatedId": 17
+        },
+        "homeScore": 27,
+        "awayScore": 13,
+        "description": "Miami Dolphins @ Las Vegas Raiders"
+       },
+       "outcome": {
+        "outcomeId": "019fed1f-5c55-7610-82e7-159db22b3ef9",
+        "index": 0,
+        "status": "WIN",
+        "title": "LV Raiders -7.5",
+        "subtitle": "Spread",
+        "displayLabel": "-7.5",
+        "competitor": {
+         "id": "15828d11-973b-45af-bbd0-74d55edc5d21",
+         "name": "Las Vegas Raiders",
+         "shortName": "LV",
+         "symbol": "LV",
+         "league": "NFL",
+         "unabatedId": 23
+        }
+       }
+      },
+      {
+       "outcomeId": "01a087d0-4a5f-7e43-af2e-42426af937dd",
+       "marketId": "01a087d0-4a5f-7e43-af2e-422e183389ed",
+       "eventHeader": {
+        "eventId": "019fed1f-5bc4-73e3-ae68-6f5a627354fe",
+        "league": "NFL",
+        "scheduledStart": "2026-09-13T20:25:00.000Z",
+        "eventStatus": "FINAL",
+        "eventType": "Game",
+        "isLive": true,
+        "homeTeam": {
+         "id": "15828d11-973b-45af-bbd0-74d55edc5d21",
+         "name": "Las Vegas Raiders",
+         "shortName": "LV",
+         "symbol": "LV",
+         "league": "NFL",
+         "unabatedId": 23
+        },
+        "awayTeam": {
+         "id": "457e4058-3dfb-4017-a344-93cecacf130f",
+         "name": "Miami Dolphins",
+         "shortName": "MIA",
+         "symbol": "MIA",
+         "league": "NFL",
+         "unabatedId": 17
+        },
+        "homeScore": 27,
+        "awayScore": 13,
+        "description": "Miami Dolphins @ Las Vegas Raiders"
+       },
+       "outcome": {
+        "outcomeId": "01a087d0-4a5f-7e43-af2e-42426af937dd",
+        "index": 1,
+        "status": "WIN",
+        "title": "Kirk Cousins U 207.5",
+        "subtitle": "Passing Yards",
+        "displayLabel": "Under 207.5",
+        "competitor": null
+       }
+      },
+      {
+       "outcomeId": "01a05a89-6b0f-7373-b762-2849810d0483",
+       "marketId": "01a05a89-6b0f-7373-b762-28359e77c5f6",
+       "eventHeader": {
+        "eventId": "019fed1f-5bc4-73e3-ae68-6f5a627354fe",
+        "league": "NFL",
+        "scheduledStart": "2026-09-13T20:25:00.000Z",
+        "eventStatus": "FINAL",
+        "eventType": "Game",
+        "isLive": true,
+        "homeTeam": {
+         "id": "15828d11-973b-45af-bbd0-74d55edc5d21",
+         "name": "Las Vegas Raiders",
+         "shortName": "LV",
+         "symbol": "LV",
+         "league": "NFL",
+         "unabatedId": 23
+        },
+        "awayTeam": {
+         "id": "457e4058-3dfb-4017-a344-93cecacf130f",
+         "name": "Miami Dolphins",
+         "shortName": "MIA",
+         "symbol": "MIA",
+         "league": "NFL",
+         "unabatedId": 17
+        },
+        "homeScore": 27,
+        "awayScore": 13,
+        "description": "Miami Dolphins @ Las Vegas Raiders"
+       },
+       "outcome": {
+        "outcomeId": "01a05a89-6b0f-7373-b762-2849810d0483",
+        "index": 0,
+        "status": "LOSS",
+        "title": "Tre Tucker O 79.5",
+        "subtitle": "Receiving Yards",
+        "displayLabel": "Over 79.5",
+        "competitor": null
+       }
+      }
+     ],
+     "state": "Loss"
+    }
+   ],
+   "singleLegs": [],
+   "amountCopy": "13.67",
+   "payoutCopy": "569.42",
+   "payoutLabel": "To Pay",
+   "price": "0.02400",
+   "hasSettledLegs": false,
+   "metadata": {
+    "cutoffId": "73985c5e854c",
+    "createdAt": "2026-09-12T03:27:59.557Z"
+   }
+  },
+  {
+   "type": "straight",
+   "cardId": "00000000-0000-0000-0000-00000000a7a8",
+   "sortAt": "2026-09-20T23:16:39.822Z",
+   "orderId": "00000000-0000-0000-0000-00000000a7a7",
+   "qty": 0,
+   "eventHeader": {
+    "eventId": "01a07c6a-a6b6-7de0-8317-88734d821750",
+    "league": "ATP",
+    "scheduledStart": "2026-09-20T20:25:00.000Z",
+    "eventStatus": "FINAL",
+    "eventType": "Game",
+    "isLive": true,
+    "homeTeam": {
+     "id": "4645eb08-a8e5-4724-b1b2-cae70e0986a6",
+     "name": "San Francisco 49ers",
+     "shortName": "SF",
+     "symbol": "SF",
+     "league": "NFL",
+     "unabatedId": 27
+    },
+    "awayTeam": {
+     "id": "457e4058-3dfb-4017-a344-93cecacf130f",
+     "name": "Miami Dolphins",
+     "shortName": "MIA",
+     "symbol": "MIA",
+     "league": "NFL",
+     "unabatedId": 17
+    },
+    "homeScore": 35,
+    "awayScore": 13,
+    "description": "Miami Dolphins @ San Francisco 49ers"
+   },
+   "state": "Win",
+   "outcome": {
+    "outcomeId": "01a0827d-3be0-7c93-8d26-03e310cf93db",
+    "index": 0,
+    "status": "WIN",
+    "title": "SF 49ers -19.5",
+    "subtitle": "Spread",
+    "displayLabel": "-19.5",
+    "competitor": {
+     "id": "4645eb08-a8e5-4724-b1b2-cae70e0986a6",
+     "name": "San Francisco 49ers",
+     "shortName": "SF",
+     "symbol": "SF",
+     "league": "NFL",
+     "unabatedId": 27
+    }
+   },
+   "price": "0.31000",
+   "amounts": {
+    "state": "Win",
+    "currency": "CASH",
+    "amountCopy": "6.20",
+    "payoutCopy": "20.00",
+    "payoutLabel": "Paid",
+    "cost": "6.20000",
+    "cashOutAmountCopy": null,
+    "priceImprovement": null
+   },
+   "cashOut": null,
+   "metadata": {
+    "cutoffId": "42983e7e3a81",
+    "createdAt": "2026-09-20T20:11:31.786Z"
+   }
+  },
+  {
+   "type": "straight",
+   "cardId": "01a0889d-465c-7ec0-816a-4120ae6d0dd7",
+   "sortAt": "2026-09-11T01:09:22.268Z",
+   "orderId": "01a08d69-e1cc-7c23-9f60-095c65a7a573",
+   "qty": 0,
+   "eventHeader": {
+    "eventId": "01a0889d-4569-79a1-a152-6dd204c5e68f",
+    "league": "MLB",
+    "scheduledStart": "2026-09-10T23:40:00.000Z",
+    "eventStatus": "FINAL",
+    "eventType": "Game",
+    "isLive": true,
+    "homeTeam": {
+     "id": "8066c07c-5eea-437d-aa05-62022d079484",
+     "name": "Chicago White Sox",
+     "shortName": "CWS",
+     "symbol": "CHI",
+     "league": "MLB",
+     "unabatedId": 38
+    },
+    "awayTeam": {
+     "id": "b1be9c37-2732-4a7c-a465-61cc33bbeb53",
+     "name": "Pittsburgh Pirates",
+     "shortName": "PIT",
+     "symbol": "PIT",
+     "league": "MLB",
+     "unabatedId": 54
+    },
+    "homeScore": 0,
+    "awayScore": 2,
+    "description": "Pittsburgh Pirates @ Chicago White Sox"
+   },
+   "state": "Loss",
+   "outcome": {
+    "outcomeId": "01a0889d-465c-7ec0-816a-413f34235ca2",
+    "index": 0,
+    "status": "LOSS",
+    "title": "Over 4.5",
+    "subtitle": "First 5 Total",
+    "displayLabel": "O 4.5",
+    "competitor": null
+   },
+   "price": "0.43500",
+   "amounts": {
+    "state": "Loss",
+    "currency": "CASH",
+    "amountCopy": "154.00",
+    "payoutCopy": "354.02",
+    "payoutLabel": "To Pay",
+    "cost": "153.99870",
+    "cashOutAmountCopy": null,
+    "priceImprovement": null
+   },
+   "cashOut": null,
+   "metadata": {
+    "cutoffId": "095c65a7a573",
+    "createdAt": "2026-09-10T22:22:01.677Z"
+   }
+  },
+  {
+   "type": "straight",
+   "cardId": "01a07e06-b905-7070-9c46-92e805a9aefa",
+   "sortAt": "2026-09-09T00:30:43.349Z",
+   "orderId": "01a08183-02a0-76d2-bd83-64be7c9a26a6",
+   "qty": 0,
+   "eventHeader": {
+    "eventId": "01a07cf3-fbdb-7350-ad76-ea5b2d66c6eb",
+    "league": "MLB",
+    "scheduledStart": "2026-09-08T22:45:00.000Z",
+    "eventStatus": "FINAL",
+    "eventType": "Game",
+    "isLive": true,
+    "homeTeam": {
+     "id": "9b28411a-0dab-40a3-86ed-860e03fef019",
+     "name": "Boston Red Sox",
+     "shortName": "BOS",
+     "symbol": "BOS",
+     "league": "MLB",
+     "unabatedId": 36
+    },
+    "awayTeam": {
+     "id": "d09c395d-4df0-4859-be9a-a11422d6367d",
+     "name": "Los Angeles Angels",
+     "shortName": "LAA",
+     "symbol": "LAA",
+     "league": "MLB",
+     "unabatedId": 45
+    },
+    "homeScore": 1,
+    "awayScore": 6,
+    "description": "Los Angeles Angels @ Boston Red Sox"
+   },
+   "state": "Loss",
+   "outcome": {
+    "outcomeId": "01a07e06-b905-7070-9c46-92f698e5839b",
+    "index": 0,
+    "status": "LOSS",
+    "title": "BOS",
+    "subtitle": "First 5 Moneyline",
+    "displayLabel": null,
+    "competitor": {
+     "id": "9b28411a-0dab-40a3-86ed-860e03fef019",
+     "name": "Boston Red Sox",
+     "shortName": "BOS",
+     "symbol": "BOS",
+     "league": "MLB",
+     "unabatedId": 36
+    }
+   },
+   "price": "0.52000",
+   "amounts": {
+    "state": "Loss",
+    "currency": "CASH",
+    "amountCopy": "179.58",
+    "payoutCopy": "345.34",
+    "payoutLabel": "To Pay",
+    "cost": "179.57680",
+    "cashOutAmountCopy": null,
+    "priceImprovement": null
+   },
+   "cashOut": null,
+   "metadata": {
+    "cutoffId": "64be7c9a26a6",
+    "createdAt": "2026-09-08T14:54:01.889Z"
+   }
+  },
+  {
+   "type": "straight",
+   "cardId": "01a04aa9-4613-7c22-acaa-f023d1554316",
+   "sortAt": "2026-09-06T06:38:25.039Z",
+   "orderId": "01a0723c-55d9-7b20-8bb5-97eae780ba28",
+   "qty": 0,
+   "eventHeader": {
+    "eventId": "01a04aa9-457a-79d1-90b4-b2afddc1dce9",
+    "league": "NCAAF",
+    "scheduledStart": "2026-09-05T23:45:00.000Z",
+    "eventStatus": "FINAL",
+    "eventType": "Game",
+    "isLive": true,
+    "homeTeam": {
+     "id": "6c21aecc-28a2-4294-b874-9ad5afdb75fa",
+     "name": "Middle Tennessee",
+     "shortName": "MTSU",
+     "symbol": "MTSU",
+     "league": "NCAAF",
+     "unabatedId": null
+    },
+    "awayTeam": {
+     "id": "8ccecc55-17c5-44ba-8702-1ee72222ac80",
+     "name": "Murray State",
+     "shortName": "MURR",
+     "symbol": "MURR",
+     "league": "NCAAF",
+     "unabatedId": null
+    },
+    "homeScore": 38,
+    "awayScore": 14,
+    "description": "Murray State @ Middle Tennessee"
+   },
+   "state": "Settled",
+   "outcome": {
+    "outcomeId": "01a04aa9-4613-7c22-acaa-f036aadc1d7c",
+    "index": 0,
+    "status": "0.72",
+    "title": "Over 56.5",
+    "subtitle": "Total",
+    "displayLabel": "O 56.5",
+    "competitor": null
+   },
+   "price": "0.50000",
+   "amounts": {
+    "state": "Settled",
+    "currency": "CASH",
+    "amountCopy": "55.00",
+    "payoutCopy": "79.20",
+    "payoutLabel": "Returned",
+    "cost": "55.00000",
+    "cashOutAmountCopy": null,
+    "priceImprovement": null
+   },
+   "cashOut": null,
+   "metadata": {
+    "cutoffId": "97eae780ba28",
+    "createdAt": "2026-09-05T15:42:31.898Z"
+   }
+  }
+ ]
+}

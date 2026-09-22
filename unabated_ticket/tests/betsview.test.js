@@ -392,11 +392,6 @@ test("mergeServicePayload: the payload's team crosswalk keys a record before its
   assert.deepEqual(view.crosswalkOf({ bets: [] }), []);
   const [plain] = view.mergeServicePayload(stored, { ...payload, crosswalk: undefined }, NOW);
   assert.equal(plain.awayKey, null);
-  // mergePageSource takes the held crosswalk the same way.
-  const read = { bets: [record("novig:n", "open", { venue: "novig", awayTeam: "Chatt (venue spelling)", awayKey: null, homeKey: null })], readAt: iso(0), complete: true };
-  const novigRows = [{ venue: "novig", league: "cfb", venueTeamKey: "Chatt (venue spelling)", unabatedTeamId: "41" }];
-  assert.equal(view.mergePageSource([], "novig", read, NOW, novigRows).find((r) => r.id === "novig:n").awayKey, "cfb:41");
-  assert.equal(view.mergePageSource([], "novig", read, NOW, payload.crosswalk).find((r) => r.id === "novig:n").awayKey, null); // kalshi rows never key a novig record
 });
 
 test("crosswalkRows: one Bets-tab line per served row — venue spelling, Unabated name, venue, league, when", () => {
@@ -446,46 +441,4 @@ test("sanitizeBetsSettings: defaults, a trailing slash trimmed, junk ignored", (
   assert.deepEqual(view.sanitizeBetsSettings(null), { serviceUrl: "http://127.0.0.1:8094" });
   assert.deepEqual(view.sanitizeBetsSettings({ serviceUrl: "http://localhost:9000/", hideBet: true }), { serviceUrl: "http://localhost:9000" });
   assert.deepEqual(view.sanitizeBetsSettings({ serviceUrl: "not a url" }), { serviceUrl: "http://127.0.0.1:8094" });
-});
-
-// ---- page-sourced venues (#116: Novig content script) ----
-
-function novigRead(overrides) {
-  return Object.assign({ bets: [record("novig:1", "open", { venue: "novig", source: "novig_page" })], readAt: iso(20e3), url: "https://app.novig.us/portfolio", error: null, complete: true, pageSeenAt: iso(0) }, overrides);
-}
-
-test("sourceRows: a content-script venue is configured with its read age; a stale or missing read carries the refresh hint", () => {
-  const fresh = view.sourceRows(null, NOW, { novig: novigRead() }).find((row) => row.venue === "novig");
-  assert.equal(fresh.configured, true);
-  assert.equal(fresh.level, "green");
-  assert.equal(fresh.ageText, "20 s");
-  assert.equal(fresh.count, 1);
-  assert.equal(fresh.note, null);
-  const stale = view.sourceRows(null, NOW, { novig: novigRead({ readAt: iso(2 * 3600e3), pageSeenAt: iso(2 * 3600e3) }) }).find((row) => row.venue === "novig");
-  assert.equal(stale.level, "red");
-  assert.equal(stale.note, "open app.novig.us and its Portfolio screen in a tab to refresh");
-  const tabOpen = view.sourceRows(null, NOW, { novig: novigRead({ readAt: iso(2 * 3600e3), pageSeenAt: iso(30e3) }) }).find((row) => row.venue === "novig");
-  assert.equal(tabOpen.note, "Novig tab is open — open its Portfolio screen to refresh");
-  const never = view.sourceRows(null, NOW, { novig: novigRead({ readAt: null, bets: [] }) }).find((row) => row.venue === "novig");
-  assert.equal(never.ageText, "never");
-  assert.equal(never.count, 0);
-  const errored = view.sourceRows(null, NOW, { novig: novigRead({ error: "ActivePortfolioOrders_Query: boom" }) }).find((row) => row.venue === "novig");
-  assert.equal(errored.error, "ActivePortfolioOrders_Query: boom");
-  assert.equal(view.sourceRows(null, NOW, {}).find((row) => row.venue === "novig").configured, false);
-});
-
-test("headerLine and sourcesUnavailable: a fresh Novig read counts as a live source", () => {
-  assert.equal(view.headerLine([], null, NOW, { novig: novigRead() }), "bets: 0 open · kalshi — · betonline — · novig 20 s · prophetx —");
-  assert.equal(view.sourcesUnavailable(null, NOW, { novig: novigRead() }), false);
-  assert.equal(view.sourcesUnavailable(null, NOW, { novig: novigRead({ readAt: iso(2 * 3600e3) }) }), true);
-});
-
-test("mergePageSource: a complete read is authoritative for its venue; an incomplete one only adds; other venues untouched", () => {
-  const stored = [record("novig:old", "open", { venue: "novig" }), record("kalshi:k", "open")];
-  const complete = view.mergePageSource(stored, "novig", novigRead(), NOW);
-  assert.deepEqual(complete.map((r) => r.id).sort(), ["kalshi:k", "novig:1"]);
-  const partial = view.mergePageSource(stored, "novig", novigRead({ complete: false }), NOW);
-  assert.deepEqual(partial.map((r) => r.id).sort(), ["kalshi:k", "novig:1", "novig:old"]);
-  assert.ok(complete.every((r) => r.awayKey === key("cfb", "Chattanooga")));
-  assert.deepEqual(view.mergePageSource(stored, "novig", null, NOW).map((r) => r.id).sort(), ["kalshi:k", "novig:old"]);
 });

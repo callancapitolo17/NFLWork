@@ -1011,6 +1011,15 @@
     return index;
   }
 
+  // The team key from the Unabated team id the venue itself sent for one
+  // side of a bet, or null. Nothing is guessed: the id is the venue's, and a
+  // non-numeric or missing one leaves the side to the crosswalk and names.
+  function venueUnabatedKeyOf(bet, side) {
+    const venueTeam = side === "away" ? bet.awayTeamVenue : bet.homeTeamVenue;
+    const id = venueTeam && typeof venueTeam === "object" ? venueTeam.unabatedId : null;
+    return typeof id === "string" && /^\d+$/.test(id) ? teams.keyOf(bet.league, id) : null;
+  }
+
   // The team key a crosswalk row gives one side of a bet, or null.
   function learnedKeyOf(bet, side, index) {
     if (index.size === 0 || !bet.venue) return null;
@@ -1021,8 +1030,10 @@
 
   // Fill awayKey / homeKey: a crosswalk row for the venue team first (it was
   // learned from an id join and is applied whatever the name resolves to),
-  // else the raw team name through teams.js where the key is still null. The
-  // bets service leaves both keys null (the team table lives here, not in
+  // then the venue's own copy of Unabated's team id where it sends one
+  // (Novig's team objects carry `unabatedId`; awayTeamVenue.unabatedId), else
+  // the raw team name through teams.js where the key is still null. The bets
+  // service leaves both keys null (the team table lives here, not in
   // Python); records that already carry keys and have no crosswalk row, or
   // have no league / no name, are returned unchanged.
   function resolveTeamKeys(records, crosswalk) {
@@ -1030,8 +1041,8 @@
     return records.map((record) => {
       if (!record.league) return record;
       const resolved = Object.assign({}, record);
-      const awayLearned = learnedKeyOf(record, "away", index);
-      const homeLearned = learnedKeyOf(record, "home", index);
+      const awayLearned = learnedKeyOf(record, "away", index) || venueUnabatedKeyOf(record, "away");
+      const homeLearned = learnedKeyOf(record, "home", index) || venueUnabatedKeyOf(record, "home");
       if (awayLearned) resolved.awayKey = awayLearned;
       else if (resolved.awayKey == null && resolved.awayTeam != null) resolved.awayKey = teams.teamKey(record.league, record.awayTeam);
       if (homeLearned) resolved.homeKey = homeLearned;

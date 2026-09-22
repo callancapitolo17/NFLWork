@@ -8,11 +8,10 @@ import pytest
 
 FIXTURE_PATH = Path(__file__).parents[2] / "tests" / "fixtures" / "bets" / "kalshi_fixture.json"
 FETCHED_AT = "2026-09-11T21:00:00Z"
-# The Novig fixture (#116): the three portfolio responses the web app fetches,
-# in the shape novig_page.js hands novig_content.js; the service's GraphQL
-# rows carry the same fields (the app's card fragments).
-NOVIG_FIXTURE_PATH = Path(__file__).parents[2] / "tests" / "fixtures" / "bets" / "novig_bets.json"
-NOVIG_READ_AT = "2026-09-11T21:00:01.200Z"
+# The Novig fixture (#116, REST rebuild 2026-09-22): live Portfolio cards from
+# GET /nbx/v1/portfolio/{active,settled}, trimmed (see its "provenance").
+NOVIG_FIXTURE_PATH = Path(__file__).parents[2] / "tests" / "fixtures" / "bets" / "novig_portfolio.json"
+NOVIG_FETCHED_AT = "2026-09-22T21:00:00Z"
 
 
 @pytest.fixture
@@ -61,10 +60,6 @@ def event(event_ticker: str, series_ticker: str, title: str, sub_title: str) -> 
 
 
 @pytest.fixture
-def novig_rows() -> tuple[list[dict], list[dict]]:
-    """(orders, parlays) flattened from the fixture's four responses."""
-    fixture = json.loads(NOVIG_FIXTURE_PATH.read_text())
-    responses = fixture["responses"]
-    orders = responses[0]["data"]["ActivePortfolioOrders_Query"] + responses[1]["data"]["SettledPortfolioOrders_Query"]
-    parlays = responses[2]["data"]["parlay"] + responses[3]["data"]["parlay"]
-    return orders, parlays
+def novig_fixture() -> dict:
+    """{provenance, active: [card], settled: [card]} — the two Portfolio lists."""
+    return json.loads(NOVIG_FIXTURE_PATH.read_text())
