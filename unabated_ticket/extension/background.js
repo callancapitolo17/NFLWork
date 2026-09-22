@@ -9,8 +9,7 @@
 //
 // Side effects: writes chrome.storage.local {locate, locateResult} via
 // locate.js; clears the clicked notification; on install/reload re-injects
-// page.js + content.js into Unabated tabs that are already open, and
-// novig_bets.js + novig_content.js into open Novig tabs (#116).
+// page.js + content.js into Unabated tabs that are already open.
 
 importScripts("locate.js");
 
@@ -26,25 +25,12 @@ importScripts("locate.js");
 // closes; page.js alone was not enough, since content.js is the half that
 // writes storage.
 const UNABATED_TAB_PATTERN = "https://tools.unabated.com/*";
-// The Novig main-world mirror survives an extension reload (it is a page
-// script, and Apollo resolves window.fetch per request); only the isolated
-// bridge dies, so that is what gets re-injected (novig_page.js guards itself).
-const NOVIG_TAB_PATTERN = "https://app.novig.us/*";
 
 async function reinjectIntoOpenTabs() {
   for (const tab of await chrome.tabs.query({ url: UNABATED_TAB_PATTERN })) {
     try {
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["page.js"], world: "MAIN" });
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"], world: "ISOLATED" });
-      console.info("[unabated-ticket] re-injected into", tab.url);
-    } catch (error) {
-      console.error("[unabated-ticket] re-inject failed for", tab.url, error);
-    }
-  }
-  for (const tab of await chrome.tabs.query({ url: NOVIG_TAB_PATTERN })) {
-    try {
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["novig_page.js"], world: "MAIN" });
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["novig_bets.js", "novig_content.js"], world: "ISOLATED" });
       console.info("[unabated-ticket] re-injected into", tab.url);
     } catch (error) {
       console.error("[unabated-ticket] re-inject failed for", tab.url, error);

@@ -609,77 +609,78 @@ test("dedupeByNativeId: newest record per id across consecutive payloads", () =>
   assert.equal(bets.dedupeByNativeId([first.bets]).length, 2);
 });
 
-// ---- Novig (#116): records from the content-script source against the NFL slice ----
-
-const novigSource = require("../extension/novig_bets.js");
-
-// The fixture's NFL rows sit on the slice's game (Chicago Bears @ Carolina
-// Panthers, 2026-09-13T17:00Z); team keys resolved the way the panel does.
-function novigRecords() {
-  const fx = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "bets", "novig_bets.json"), "utf8"));
-  const pages = new Map();
-  let out = null;
-  for (const response of fx.responses) out = novigSource.applyResponse(pages, response);
-  return bets.resolveTeamKeys(novigSource.normalizeNovig({ orders: out.orders, parlays: out.parlays, readAt: FETCHED_AT }));
-}
-
-test("Novig: moneyline bid on Carolina is same_line on the Carolina row and opposite on Chicago", () => {
-  const rows = nflRows();
-  const records = novigRecords().filter((r) => r.id === "novig:o-ml-car");
-  const home = bets.matchBets(rows["Moneyline FG 1 null"], records);
-  assert.equal(home.matches.length, 1);
-  assert.equal(home.matches[0].tier, "same_line");
-  assert.equal(home.matches[0].label, "Carolina Panthers -138 · 58.0¢ · $58 · Novig");
-  const away = bets.matchBets(rows["Moneyline FG 0 null"], records);
-  assert.equal(away.matches[0].tier, "opposite");
-  assert.equal(away.matches[0].label, "Carolina Panthers -138 · 58.0¢ · $58 · Novig");
-});
-
-test("Novig: spread bid Chicago -13.5 is same_side on Chicago -14 and opposite at a different number on Carolina +14", () => {
-  const rows = nflRows();
-  const records = novigRecords().filter((r) => r.id === "novig:o-sp-chi");
-  const sameSide = bets.matchBets(rows["Spread FG 0 -14"], records).matches[0];
-  assert.equal(sameSide.tier, "same_side");
-  assert.equal(sameSide.label, "Chicago Bears -13.5 +150 · 40.0¢ · $80 · Novig · now -14");
-  const opposite = bets.matchBets(rows["Spread FG 1 14"], records).matches[0];
-  assert.equal(opposite.tier, "opposite");
-  assert.equal(opposite.label, "Chicago Bears -13.5 +150 · 40.0¢ · $80 · Novig · now -14");
-});
-
-test("Novig: the LAY of Chicago -13.5 is Carolina +13.5 — same_side on Carolina +14, opposite on Chicago -14", () => {
-  const rows = nflRows();
-  const records = novigRecords().filter((r) => r.id === "novig:o-sp-lay");
-  const sameSide = bets.matchBets(rows["Spread FG 1 14"], records).matches[0];
-  assert.equal(sameSide.tier, "same_side");
-  assert.equal(sameSide.label, "Carolina Panthers +13.5 -150 · 60.0¢ · $30 · Novig · now +14");
-  assert.equal(bets.matchBets(rows["Spread FG 0 -14"], records).matches[0].tier, "opposite");
-});
-
 test("formatPlacedAt: Eastern month, day and 12-hour clock", () => {
   assert.equal(bets.formatPlacedAt("2026-09-10T18:15:00Z"), "Sep 10 2:15 PM");
   assert.equal(bets.formatPlacedAt("2026-01-15T18:00:00Z"), "Jan 15 1:00 PM");
   assert.equal(bets.formatPlacedAt("not a date"), "unknown time");
 });
 
-test("Novig: a resting Under and a parlay leg flag the game; settled, void and closed orders never match", () => {
+// ---- Novig (#116): records as bets_service/sources/novig.py emits them from the
+// Portfolio REST feed (rebuilt 2026-09-22) against the NFL slice. The feed
+// presents the side HELD, so there is no lay to flip here; the venue's team
+// objects carry Unabated's own team id (awayTeamVenue.unabatedId).
+
+// Chicago Bears @ Carolina Panthers, 2026-09-13T17:00Z (the slice's game).
+function novigChiCar(overrides) {
+  return Object.assign({
+    id: "novig:o-ml-car", source: "novig_rest", venue: "novig", rotation: null, price: -138, stake: 58, toWin: 42, contracts: 100,
+    placedAt: "2026-09-12T15:00:00Z", status: "open", closedAt: null, isParlayLeg: false, parlayId: null, legIndex: null, legCount: null,
+    approx: [], sourceFetchedAt: FETCHED_AT,
+    venueIds: { marketId: "m-ml", outcomeId: "oc-car", eventId: "ev-chi-car", gameId: null },
+    awayTeamVenue: { id: "nv-chi", name: "Chicago Bears", shortName: "CHI", symbol: "CHI", unabatedId: "6" },
+    homeTeamVenue: { id: "nv-car", name: "Carolina Panthers", shortName: "CAR", symbol: "CAR", unabatedId: "5" },
+    league: "nfl", eventStart: "2026-09-13T17:00:00.000Z", eventDate: "2026-09-13",
+    awayTeam: "Chicago Bears", homeTeam: "Carolina Panthers", awayKey: null, homeKey: null,
+    betType: "moneyline", period: "FG", side: "home", points: null, unmatchable: null,
+  }, overrides);
+}
+
+test("Novig: a moneyline on Carolina is same_line on the Carolina row and opposite on Chicago, keyed on the venue's Unabated ids", () => {
   const rows = nflRows();
-  const records = novigRecords();
-  const resting = bets.matchBets(rows["Total FG 1 47"], records.filter((r) => r.id === "novig:o-tot-under-rest")).matches[0];
-  assert.equal(resting.tier, "same_side");
-  const leg = bets.matchBets(rows["Moneyline FG 1 null"], records.filter((r) => r.id === "novig:pl-1:0")).matches[0];
-  assert.equal(leg.tier, "same_line");
-  assert.equal(leg.label, "Carolina Panthers -122 · 55.0¢ (parlay leg) · $25 · Novig");
-  for (const id of ["novig:o-won", "novig:o-lay-won", "novig:o-push", "novig:o-cancel", "novig:o-wash", "novig:pl-2:0"]) {
-    assert.equal(bets.matchBets(rows["Moneyline FG 1 null"], records.filter((r) => r.id === id)).matches.length, 0, id);
+  const [record] = bets.resolveTeamKeys([novigChiCar()]);
+  assert.equal(record.awayKey, "nfl:6");
+  assert.equal(record.homeKey, "nfl:5");
+  const home = bets.matchBets(rows["Moneyline FG 1 null"], [record]);
+  assert.equal(home.matches.length, 1);
+  assert.equal(home.matches[0].tier, "same_line");
+  assert.equal(home.matches[0].label, "Carolina Panthers -138 · 58.0¢ · $58 · Novig");
+  assert.equal(bets.matchBets(rows["Moneyline FG 0 null"], [record]).matches[0].tier, "opposite");
+});
+
+test("resolveTeamKeys: the venue's unabatedId keys a side before names, a learned crosswalk row still wins, rekeyRecords keeps it", () => {
+  const misspelt = novigChiCar({ awayTeam: "Chi Town Bears (venue spelling)", homeTeam: "Carolina Kitties (venue spelling)" });
+  const [byId] = bets.resolveTeamKeys([misspelt]);
+  assert.deepEqual([byId.awayKey, byId.homeKey], ["nfl:6", "nfl:5"]);
+  assert.deepEqual([byId.awayKey, byId.homeKey], (([r]) => [r.awayKey, r.homeKey])(bets.rekeyRecords([byId])));
+  const taught = [{ venue: "novig", league: "nfl", venueTeamKey: "nv-chi", unabatedTeamId: "999" }];
+  assert.equal(bets.resolveTeamKeys([misspelt], taught)[0].awayKey, "nfl:999");
+  // A non-numeric or missing id leaves the side to the names.
+  const noId = novigChiCar({ awayTeamVenue: { id: "nv-chi", name: "Chicago Bears", unabatedId: null } });
+  assert.equal(bets.resolveTeamKeys([noId])[0].awayKey, bets.resolveTeamKeys([novigChiCar({ awayTeamVenue: null })])[0].awayKey);
+});
+
+test("Novig: a resting order and a parlay leg flag the game with their own labels; settled and void records never match", () => {
+  const rows = nflRows();
+  const resting = novigChiCar({ id: "novig:o-rest", approx: ["novig_order_unmatched"], betType: "total", side: "under", points: 47 });
+  assert.equal(bets.matchBets(rows["Total FG 1 47"], bets.resolveTeamKeys([resting])).matches[0].tier, "same_line");
+  const leg = novigChiCar({ id: "novig:pl-1:0", price: null, stake: 25, toWin: 100, contracts: null, isParlayLeg: true, parlayId: "novig:pl-1", legIndex: 0, legCount: 2 });
+  const legMatch = bets.matchBets(rows["Moneyline FG 1 null"], bets.resolveTeamKeys([leg])).matches[0];
+  assert.equal(legMatch.tier, "same_line");
+  assert.match(legMatch.label, /\(parlay leg\)/);
+  for (const status of ["won", "lost", "push", "void", "closed"]) {
+    assert.equal(bets.matchBets(rows["Moneyline FG 1 null"], bets.resolveTeamKeys([novigChiCar({ id: `novig:${status}`, status })])).matches.length, 0, status);
   }
 });
 
-test("Novig: unmatched reasons — props, unsupported leagues and unreadable blobs carry the source's reason", () => {
-  const reasons = Object.fromEntries(bets.unmatchedReasons(novigRecords(), Object.values(nflRows())).map(({ bet, reason }) => [bet.id, reason]));
+test("Novig: unmatched reasons — the source's own reason for props, unsupported leagues and unreadable cards passes through", () => {
+  const unmatchable = (id, reason) => novigChiCar({ id, league: null, eventStart: null, eventDate: null, awayTeam: null, homeTeam: null,
+    betType: "other", period: null, side: null, points: null, unmatchable: reason });
+  const records = [unmatchable("novig:o-prop", "not a game market"), unmatchable("novig:o-atp", "league not supported (ATP)"),
+    unmatchable("novig:o-noteams", "unreadable Novig card (no teams on event ev-x)"), novigChiCar()];
+  const reasons = Object.fromEntries(bets.unmatchedReasons(bets.resolveTeamKeys(records), Object.values(nflRows())).map(({ bet, reason }) => [bet.id, reason]));
   assert.equal(reasons["novig:o-prop"], "not a game market");
   assert.equal(reasons["novig:o-atp"], "league not supported (ATP)");
-  assert.equal(reasons["novig:o-noteams"], "unreadable Novig order (no teams on event ev-x)");
-  assert.equal(reasons["novig:o-f5"], "league not on the scanner");
+  assert.equal(reasons["novig:o-noteams"], "unreadable Novig card (no teams on event ev-x)");
   assert.equal(reasons["novig:o-ml-car"], undefined);
 });
 

@@ -10,7 +10,8 @@ app's token out of the browser would log the app out and kill the poller the
 next time either side refreshed. A separate login = a separate chain.
 
 Inputs:  the Novig web app's public Auth0 client (domain, client id, audience —
-         read off app.novig.us's bundle, 2026-09-11; there is no secret) and
+         read off the novig.com bundle, unchanged since app.novig.us 2026-09-11;
+         there is no secret) and
          one interactive login by the user (PKCE authorization-code flow).
 Outputs: NOVIG_TOKEN_PATH (gitignored JSON: refresh_token, obtained_at,
          auth_id) — rewritten in place whenever Auth0 rotates the token.
@@ -39,8 +40,9 @@ AUTH0_DOMAIN = "auth.novig.us"
 AUTH0_CLIENT_ID = "gwTWbh0EewYND7LUCX0fKyv5xTzVpTCi"
 AUTH0_AUDIENCE = "https://api.novig.us"
 AUTH0_SCOPE = "openid profile email offline_access"
-# The only callback the app registers (its redirect_uri is window.location.origin).
-REDIRECT_URI = "https://app.novig.us"
+# The app's callback is its own origin; novig.com since the 2026-09-22 move
+# (app.novig.us still answers, with a "moved" banner).
+REDIRECT_URI = "https://novig.com"
 TOKEN_URL = f"https://{AUTH0_DOMAIN}/oauth/token"
 AUTHORIZE_URL = f"https://{AUTH0_DOMAIN}/authorize"
 HTTP_TIMEOUT_SEC = 20
@@ -177,7 +179,7 @@ def code_from_redirect(redirected_url: str, expected_state: str) -> str:
 
 def _redirect_via_paste(url: str) -> str:
     print("\n1. Open this URL in a browser and log in to Novig:\n\n" + url + "\n")
-    print("2. After login you land on https://app.novig.us/?code=...&state=... — copy that")
+    print("2. After login you land on https://novig.com/?code=...&state=... — copy that")
     print("   address IMMEDIATELY (the app removes it once it loads).\n")
     return input("Paste the redirected URL here: ")
 
@@ -203,7 +205,7 @@ def _launch_any_chromium(p):
 def _redirect_via_browser(url: str) -> str:
     """Headed Playwright window; the user types their own credentials, nothing
     here reads them. The callback URL is taken from the navigation event the
-    moment the main frame lands on app.novig.us — a route handler cannot be
+    moment the main frame lands on novig.com — a route handler cannot be
     used, because Playwright does not run routes on a request that arrives
     through a redirect (Auth0 302s to the callback), so the app loads; by then
     the code is already captured, and stripping it changes nothing."""

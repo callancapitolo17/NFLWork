@@ -85,7 +85,9 @@ KALSHI_LOOKUP_GAP_SEC = 0.6
 # rewritten on rotation. The source registers only when the file exists.
 NOVIG_TOKEN_PATH = Path(_get("NOVIG_TOKEN_PATH", str(PKG_DIR / "novig_token.json")))
 NOVIG_POLL_SEC = float(_get("BETS_NOVIG_POLL_SEC", "60"))
-NOVIG_GRAPHQL_URL = _get("NOVIG_GRAPHQL_URL", "https://api.novig.us/v1/graphql")
+# The app's own REST base (novig.com bundle, 2026-09-22); the Portfolio feed
+# lives under it. Its GraphQL is behind a query allowlist and is not used.
+NOVIG_REST_URL = _get("NOVIG_REST_URL", "https://api.novig.us/nbx/v1")
 # BetOnline (#115): the Keycloak refresh token lives in bet_logger's recon cookie
 # file in the MAIN checkout (shared with scraper_betonline.py + its LaunchAgent);
 # the paged report is polled every POLL_SEC over the last HISTORY_DAYS.

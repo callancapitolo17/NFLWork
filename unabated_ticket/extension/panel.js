@@ -4,8 +4,7 @@
 // Reads: chrome.storage.local {ticket, error, watchStatus, pageCheck, pageReady,
 // booksFilter, locateResult} (written by content.js) and {bankroll,
 // multiplier, edges, alerts, alertLog, activeTab, betsService, betsSettings}
-// (written here) and {betsNovig} (written by novig_content.js on
-// app.novig.us, #116).
+// (written here).
 // Writes: chrome.storage.local settings, {locate} (row click, via locate.js,
 // which also focuses the Unabated tab), {alertLog, alertTargets} and Chrome
 // notifications for new edges; {betsService} after every bets-service poll
@@ -115,8 +114,6 @@
     // What the last bets-service poll left: {payload: {generatedAt, sources},
     // okAt, error, errorAt, unreachableSince}; null before the first poll.
     betsService: null,
-    // What novig_content.js last wrote: {bets, readAt, url, error, complete, pageSeenAt} or null.
-    betsNovig: null,
     // Normalised bet records (bets.js contract), team keys resolved, pruned to the retention window.
     betRecords: [],
     // The team crosswalk the bets service holds (#118 step 4), as last served
@@ -390,7 +387,7 @@
       const age = fmtLineAge(feed.lineChangedMs(line.feedLine)).replace(/^line /, "");
       messages.push(`Edge from the Edges feed (the screen cell carried none): same line at the same price, feed copy ${age}.`);
     }
-    if (betsView.sourcesUnavailable(state.betsService && state.betsService.payload, Date.now(), pageSources())) {
+    if (betsView.sourcesUnavailable(state.betsService && state.betsService.payload, Date.now())) {
       messages.push("Bet sources unavailable (no venue has reported in the last hour), so bet flags may be missing; see the Bets tab.");
     }
     if (!pageScriptAlive()) {
@@ -1651,18 +1648,6 @@
     return state.betsService ? state.betsService.payload : null;
   }
 
-  // Venues read by a content script rather than the service (#116).
-  function pageSources() {
-    return state.betsNovig ? { novig: state.betsNovig } : {};
-  }
-
-  // A new Novig read from storage: merge its records (complete reads are
-  // authoritative for the venue) and refresh every view that shows a flag.
-  function applyNovigRead(betsNovig) {
-    state.betsNovig = betsNovig && typeof betsNovig === "object" ? betsNovig : null;
-    if (state.betsNovig) state.betRecords = betsView.mergePageSource(state.betRecords, "novig", state.betsNovig, Date.now(), state.crosswalk);
-  }
-
   let betsPollBusy = false;
   let betsPollTimer = null;
 
@@ -1852,7 +1837,7 @@
     const open = state.betRecords.filter((bet) => bet.status === "open").length;
     view.betsCount.hidden = open === 0;
     view.betsCount.textContent = String(open);
-    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now, pageSources());
+    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now);
     view.betsHeader.classList.toggle("bad", betsView.serviceStatus(state.betsService, now).unreachable);
   }
 
@@ -1862,7 +1847,7 @@
     const service = betsView.serviceStatus(state.betsService, now);
     view.betsService.hidden = !service.unreachable;
     view.betsService.textContent = service.unreachable ? `${service.text}. Start it with unabated_ticket/bets_service/run.sh; the last records it served are still shown.` : "";
-    view.betsSources.replaceChildren(...betsView.sourceRows(betsPayload(), now, pageSources()).map((row) => {
+    view.betsSources.replaceChildren(...betsView.sourceRows(betsPayload(), now).map((row) => {
       const div = document.createElement("div");
       div.className = `venue fresh-${row.level}`;
       const bets = row.count == null ? null : `${row.count} bets`;
@@ -1937,7 +1922,7 @@
     // venue reported no stake is counted separately rather than as zero.
     const priced = open.filter((bet) => typeof bet.stake === "number");
     const atRisk = priced.reduce((total, bet) => total + bet.stake, 0);
-    const venues = betsView.sourceRows(betsPayload(), now, pageSources()).filter((row) => row.configured).length;
+    const venues = betsView.sourceRows(betsPayload(), now).filter((row) => row.configured).length;
     view.betsRisk.textContent = fmtDollars(atRisk);
     view.betsRiskCaption.textContent = [
       `at risk · ${open.length} open bet${open.length === 1 ? "" : "s"}`,
@@ -2008,7 +1993,7 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "betsNovig", "teamsIndex"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex"]);
     // The team index from the last session, so bet records resolve before the first snapshot lands.
     teamsLib.loadIndex(relay.teamsIndex);
     teamsSpellingCount = teamsLib.spellingCount();
@@ -2034,7 +2019,6 @@
         error: storedBets.error ?? null, errorAt: storedBets.errorAt ?? null, unreachableSince: storedBets.unreachableSince ?? null,
       };
     }
-    applyNovigRead(relay.betsNovig);
     fillEdgeSettingInputs();
     fillAlertSettingInputs();
     fillBetsSettingInputs();
@@ -2074,14 +2058,6 @@
       state.locateResult = changes.locateResult.newValue || null;
       if (state.locateResult && state.locating && state.locateResult.at >= state.locating.at) state.locating = null;
       renderLocate();
-    }
-    // novig_content.js wrote a read of the Novig Portfolio screen (#116).
-    if ("betsNovig" in changes) {
-      applyNovigRead(changes.betsNovig.newValue);
-      renderBetsHeader();
-      if (!state.error) render();
-      renderEdges();
-      if (state.activeTab === "bets") renderBets();
     }
   });
 

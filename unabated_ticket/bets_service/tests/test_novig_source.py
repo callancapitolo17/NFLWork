@@ -1,14 +1,14 @@
-"""NovigAuth (refresh, rotation, connect parsing) and NovigSource (trader
-resolution, pagination, failures) against fakes — no network."""
+"""NovigAuth (refresh, rotation, connect parsing) and NovigSource (cursor
+pagination of the Portfolio feed, failures) against fakes — no network."""
 import base64
 import json
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 from unabated_ticket.bets_service.sources import novig, novig_auth
-from unabated_ticket.bets_service.sources.novig import NovigSource, source_if_connected
+from unabated_ticket.bets_service.sources.novig import NovigSource, portfolio_url, source_if_connected
 from unabated_ticket.bets_service.sources.novig_auth import NovigAuth, NovigAuthError, code_from_redirect, jwt_subject
-from unabated_ticket.bets_service.tests.conftest import NOVIG_READ_AT
 
 
 def fake_jwt(sub: str) -> str:
@@ -84,66 +84,68 @@ def test_code_from_redirect_checks_state_and_errors():
         code_from_redirect("https://app.novig.us/?error=access_denied&error_description=nope&state=s1", "s1")
 
 
-class FakeGraphql:
-    """Serves the fixture rows in pages, records every call."""
+class FakePortfolio:
+    """Serves the fixture's two lists in cursor pages, records every GET."""
 
-    def __init__(self, orders, parlays, users=None, page_limit=None):
-        self.orders, self.parlays = orders, parlays
-        self.users = users if users is not None else [{"id": "u1", "trader_id": "t1"}]
-        self.calls: list[tuple[str, dict, str]] = []
-        self.page_limit = page_limit
+    def __init__(self, active, settled, page=3, items_key="items"):
+        self.lists = {"active": active, "settled": settled}
+        self.page = page
+        self.items_key = items_key
+        self.calls: list[tuple[str, str]] = []
 
-    def __call__(self, query, variables, bearer):
-        self.calls.append((query, variables, bearer))
-        if "BetsService_User" in query:
-            return {"user": self.users}
-        rows = self.orders if "BetsService_Orders" in query else self.parlays
-        limit = self.page_limit or variables["limit"]
-        key = "order" if "BetsService_Orders" in query else "parlay"
-        return {key: rows[variables["offset"]:variables["offset"] + limit]}
+    def __call__(self, url, bearer):
+        self.calls.append((url, bearer))
+        parsed = urlparse(url)
+        tab = parsed.path.rsplit("/", 1)[1]
+        query = parse_qs(parsed.query)
+        offset = int(query.get("cursor", ["0"])[0])
+        rows = self.lists[tab]
+        page = rows[offset:offset + self.page]
+        next_offset = offset + self.page
+        return {self.items_key: page, "nextCursor": str(next_offset) if next_offset < len(rows) else None}
 
 
-def make_source(token_file, graphql):
+def make_source(token_file, http_get):
     auth = NovigAuth(token_file, request=FakeTokenEndpoint(rotate=False), clock=lambda: 0.0)
-    return NovigSource(auth=auth, graphql=graphql, poll_sec=1, retention_days=30)
+    return NovigSource(auth=auth, http_get=http_get, poll_sec=1, base_url="https://api.example/nbx/v1/")
 
 
-def test_fetch_resolves_the_trader_once_and_returns_normalised_records(token_file, novig_rows):
-    orders, parlays = novig_rows
-    graphql = FakeGraphql(orders, parlays)
-    source = make_source(token_file, graphql)
-    records = source.fetch()
-    assert len(records) == 19
+def test_fetch_pages_both_lists_to_the_end_and_returns_normalised_records(token_file, novig_fixture):
+    portfolio = FakePortfolio(novig_fixture["active"], novig_fixture["settled"])
+    records = make_source(token_file, portfolio).fetch()
+    assert len(records) == 31
     assert {r["venue"] for r in records} == {"novig"}
-    assert any(r["id"] == "novig:o-ml-car" and r["side"] == "home" for r in records)
-    user_calls = [c for c in graphql.calls if "BetsService_User" in c[0]]
-    assert len(user_calls) == 1 and user_calls[0][1] == {"auth_id": "auth0|user1"}
-    assert all(c[2] == fake_jwt("auth0|user1") for c in graphql.calls)
-    source.fetch()
-    assert len([c for c in graphql.calls if "BetsService_User" in c[0]]) == 1  # cached trader id
+    assert any(r["id"] == "novig:01a0cabf-8ef6-7cc2-8bde-8451ccd8ca33" and r["side"] == "home" for r in records)
+    urls = [url for url, _bearer in portfolio.calls]
+    assert urls[0] == "https://api.example/nbx/v1/portfolio/active?currency=CASH&sort=active_recency&limit=50"
+    assert urls[1] == "https://api.example/nbx/v1/portfolio/active?currency=CASH&sort=active_recency&limit=50&cursor=3"
+    assert [u.rsplit("/", 1)[1].split("?")[0] for u in urls] == ["active", "active", "settled", "settled", "settled", "settled"]  # 4 and 11 cards, pages of 3
+    assert all(bearer == fake_jwt("auth0|user1") for _url, bearer in portfolio.calls)
 
 
-def test_fetch_paginates_to_a_short_page(token_file, novig_rows):
-    orders, parlays = novig_rows
-    graphql = FakeGraphql(orders * 30, parlays)  # 450 orders: pages of 100 + a short one
-    records = make_source(token_file, graphql).fetch()
-    order_calls = [c for c in graphql.calls if "BetsService_Orders" in c[0]]
-    assert [c[1]["offset"] for c in order_calls] == [0, 100, 200, 300, 400]
-    assert len(records) == 19  # duplicates collapse on native id
+def test_portfolio_url():
+    assert portfolio_url("https://api.novig.us/nbx/v1", "settled", "settled_recency", 50, None) == \
+        "https://api.novig.us/nbx/v1/portfolio/settled?currency=CASH&sort=settled_recency&limit=50"
+    assert portfolio_url("https://api.novig.us/nbx/v1", "active", "active_recency", 10, "abc").endswith("&limit=10&cursor=abc")
 
 
-def test_fetch_fails_loudly_on_no_user_auth_failure_or_graphql_error(token_file, novig_rows, tmp_path):
-    orders, parlays = novig_rows
-    with pytest.raises(RuntimeError, match="exactly one Novig user"):
-        make_source(token_file, FakeGraphql(orders, parlays, users=[])).fetch()
+def test_fetch_fails_loudly_on_a_bad_page_an_unended_list_auth_failure_or_http_error(token_file, novig_fixture, monkeypatch):
+    with pytest.raises(RuntimeError, match="expected an `items` list"):
+        make_source(token_file, FakePortfolio(novig_fixture["active"], novig_fixture["settled"], items_key="cards")).fetch()
 
-    def broken(query, variables, bearer):
-        raise RuntimeError("novig graphql error: field 'trader' not found")
-    with pytest.raises(RuntimeError, match="novig graphql error"):
+    def never_ends(url, bearer):
+        return {"items": [], "nextCursor": "again"}
+    monkeypatch.setattr(novig, "MAX_PAGES", 3)
+    with pytest.raises(RuntimeError, match="did not end within 3 pages"):
+        make_source(token_file, never_ends).fetch()
+
+    def broken(url, bearer):
+        raise RuntimeError("novig portfolio HTTP 503: upstream")
+    with pytest.raises(RuntimeError, match="HTTP 503"):
         make_source(token_file, broken).fetch()
     dead_auth = NovigAuth(token_file, request=FakeTokenEndpoint(fail=True), clock=lambda: 0.0)
     with pytest.raises(RuntimeError, match="novig auth"):
-        NovigSource(auth=dead_auth, graphql=FakeGraphql(orders, parlays), poll_sec=1, retention_days=30).fetch()
+        NovigSource(auth=dead_auth, http_get=FakePortfolio([], []), poll_sec=1).fetch()
 
 
 def test_source_if_connected_is_none_without_a_token_file(tmp_path):
