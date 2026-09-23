@@ -4,7 +4,7 @@ Reads, in this order (the first place a key is found wins):
   1. process environment
   2. unabated_ticket/bets_service/.env            (gitignored)
   3. <main checkout>/kalshi_draft/.env             (the bots' shared credentials)
-  4. <main checkout>/bet_logger/.env               (the sheet scrapers' book logins: BFA)
+  4. <main checkout>/bet_logger/.env               (the sheet scrapers' book logins: BFA, Wagerzon)
 Side effects: none — pure constants; auth_client.configure() happens in the
 Kalshi source.
 """
@@ -108,6 +108,14 @@ BFA_USERNAME = _get("BFA_USERNAME")
 BFA_PASSWORD = _get("BFA_PASSWORD")
 BFA_POLL_SEC = 300.0
 BFA_HISTORY_DAYS = RETENTION_DAYS + 1
+
+# Wagerzon (2026-09-23): the C account. Its login has sat in the primary WAGERZON_*
+# slot since 2026-06-26 (bet_logger/scraper_wagerzon.py); WAGERZONC_* wins when set.
+# Six Mon-Sun weeks of HistoryHelper cover the 30-day window with margin.
+WAGERZON_USERNAME = _get("WAGERZONC_USERNAME") or _get("WAGERZON_USERNAME")
+WAGERZON_PASSWORD = _get("WAGERZONC_PASSWORD") or _get("WAGERZON_PASSWORD")
+WAGERZON_POLL_SEC = 300.0
+WAGERZON_HISTORY_WEEKS = 6
 
 # Logging
 LOG_PATH = Path(_get("BETS_SERVICE_LOG_PATH", str(PKG_DIR / "bets_service.log")))

@@ -692,6 +692,7 @@ Two kinds of source feed the flags:
 | Novig | `bets_service/sources/novig.py` (local service, the app's Portfolio REST feed on the account's own Auth0 refresh token, #116) | every 60 s while the service runs; no tab needed |
 | BetOnline | — (#115) | shows "no source configured" |
 | BFA (Betfastaction) | `bets_service/sources/bfa.py` (local service, the account's own Keycloak password login from `bet_logger/.env`; 2026-09-23) | every 300 s while the service runs |
+| Wagerzon (the C account) | `bets_service/sources/wagerzon.py` (local service, the site's form login from `bet_logger/.env`; 2026-09-23) | every 300 s while the service runs |
 | ProphetX | — (#117) | shows "no source configured" |
 
 Start the service (next section), keep the panel open. Every 30 s while the
@@ -998,7 +999,8 @@ GETs; no order placement.
 - **Credentials**: `KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY_PATH`, read from
   the environment, then `unabated_ticket/bets_service/.env`, then the bots'
   `kalshi_draft/.env` in the main checkout, then `bet_logger/.env` there (the
-  sheet scrapers' book logins: `BFA_USERNAME` / `BFA_PASSWORD`) — so with the
+  sheet scrapers' book logins: `BFA_USERNAME` / `BFA_PASSWORD`, `WAGERZONC_*`
+  else `WAGERZON_*`) — so with the
   bots and the sheet scrapers configured no new file is needed. `.env.example` lists every knob (port, retention window,
   Kalshi cadence, log level). Never commit `.env`.
 - **Endpoints** (loopback only, no auth): `GET /bets.json[?days=N]` →
@@ -1111,6 +1113,34 @@ GETs; no order placement.
   closed with the reason. What an OPEN straight bet's `settledDate` holds is
   unobserved (the pull had none pending): a null or placeholder falls to the
   dateless window, so nothing is lost either way.
+- **Wagerzon source** (`sources/wagerzon.py`, 2026-09-23, the C account): every
+  300 s pulls `HistoryHelper.aspx?week=N` for the last 6 Mon–Sun weeks (the
+  30-day window with margin) plus `OpenBetsHelper.aspx`, on an ASP.NET form
+  login (`WAGERZONC_USERNAME` / `WAGERZONC_PASSWORD`, else `WAGERZON_*`, from
+  `bet_logger/.env` — the C account's login has sat in the primary slot since
+  2026-06-26) whose session cookie lives in memory; a helper answering HTML or
+  a redirect instead of JSON means the session died and is replaced by one
+  fresh login (a second miss fails the poll). Pending bets are kept: the
+  history lists them under their game day with an empty `Result`, and the
+  open-bets helper adds only rows the weeks did not carry — its row shape is
+  UNOBSERVED (`{"result": []}` live, no open bet that night), so a row that is
+  not a HistoryHelper-shaped wager fails the poll naming its keys rather than
+  being dropped. Record ids are `wagerzon:<IdWager>`, `:legN` per leg of a
+  parlay (`details[]` is the leg list; each leg carries its own `IdSport`,
+  `GameDate` + `GameTime` and `DetailResult`), transfer rows (`WagerOrTrans`
+  `TRAN`) are not bets. The league is the leg's `IdSport` (`NFL CFB NBA CBK
+  WNBA MLB NHL SOC`; `PROP` / `RBL` / `DST` are props and fail closed as
+  "not a game market"), the start its `GameDate` + `GameTime` on the site's
+  Eastern clock, so the matcher uses the 30-minute rule and a settled bet's
+  `closedAt` is its event start. Grammar from every bet_logger run since
+  2026-04: `[967] TOTAL o7½-120 (CHI CUBS vrs TB RAYS)<BR>( pitchers )` (away
+  first, the pitchers bracket ignored), `[969] 1H ARI DBACKS -½+115<BR>( … )`
+  (the period token BEFORE the name, no opponent anywhere — placed by rotation
+  parity, `approx: side_from_rotation_parity`), `GM#1` / `GM#2` after a name on
+  a doubleheader (kept in `raw.gameNumber`), `EV` = +100; MLB `1H` is the first
+  five innings (`F5`, Novig's rule). A postponed leg ("( NYM vs COL Has Been
+  Postponed. NO Action )"), an unsupported sport and an unparsed selection fail
+  closed per leg with the reason.
 - **Store** (`store.py`, `bets.duckdb`, gitignored): `bets` upserts on the
   record id and is never pruned (the CLV work needs the history), but only
   rows whose content actually CHANGED are written (#125): a source re-sends
@@ -1146,8 +1176,9 @@ GETs; no order placement.
   poll completes (Kalshi: ~1–2 min, one throttled GET per market and event)
   `/bets.json` lists it as `{ok: false, error: "no completed poll yet"}`.
   Log: `bets_service.log` (rotating, 10 MB × 3).
-- **Adding a venue** (#117 ProphetX; BetOnline, Novig and BFA are
-  `sources/betonline.py` / `sources/novig.py` / `sources/bfa.py` above): a module in
+- **Adding a venue** (#117 ProphetX; BetOnline, Novig, BFA and Wagerzon are
+  `sources/betonline.py` / `sources/novig.py` / `sources/bfa.py` /
+  `sources/wagerzon.py` above): a module in
   `bets_service/sources/` with `name`, `poll_sec` and `fetch() -> list[record]`
   (the `Source` protocol in `sources/__init__.py`), registered in
   `service.main()`. `fetch()` returns every record the venue knows and raises
@@ -1182,7 +1213,7 @@ One command runs everything and exits non-zero if any part fails:
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
 the node suite (`npm test` = `node --test tests/*.test.js`, 249 tests) and
-the bets service's pytest suite (140 tests, on the `kalshi_draft/venv`
+the bets service's pytest suite (176 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`
@@ -1502,6 +1533,24 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-09-23 — Wagerzon (the C account) source in the bets service.** Second of
+the Bet Logger books Cal asked for. Same shape as BFA: a form login this
+process owns in memory (`sources/wagerzon.py`), history plus the open-bets
+helper every 300 s, pending bets kept. The live capture that night held only
+props (NFL specials, RBL touchdown props) and one transfer, so the game-bet
+grammar — MLB totals with the pitchers bracket, first-five run lines with the
+`1H` token before the name and no opponent, `GM#1`/`GM#2` doubleheaders,
+`EV` prices, postponed legs — was taken from every bet_logger run since
+2026-04 (`bet_logger/logs`) and pinned by a hand-written fixture week; the
+matcher gets a real start time here (`GameDate` + `GameTime`, Eastern) and
+the league from `IdSport`, so unlike BFA nothing depends on a nickname scan.
+**Unobserved:** `OpenBetsHelper.aspx` answered `{"result": []}` — a row's
+shape is unknown, so a row that is not a HistoryHelper-shaped wager fails the
+poll naming its keys (loud, never a silent drop); the history already lists a
+pending bet with an empty `Result`, so the helper may add nothing. Considered
+and rejected: skipping the helper until a shape is seen (an open bet the
+history did not carry would go unflagged with no trace).
 
 **2026-09-23 — BFA (Betfastaction) source in the bets service.** Cal asked for
 the Bet Logger books on the Bets tab: BFA first, the Wagerzon C account next,
