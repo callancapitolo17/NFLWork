@@ -1,25 +1,29 @@
 # Unabated Ticket — why an edge grew: fair moved to you vs book moved away (plan, issue #132)
 
-Spec: GitHub issue #132. Context: #130 (conditional Kelly, merged 2026-09-19
-as 8b04947 — the `add $X` the tag qualifies) and #126 (the unread
-`openerPrice` / `openerPoints` fields). The stake is never changed by this
-work: the tag informs, the number to act on stays what #130 computes.
+Spec: GitHub issue #132 and its 2026-09-22 comment (four cases, the fair
+decides). Context: #130 (conditional Kelly, merged 2026-09-19 as 8b04947 —
+the `add $X` the tag qualifies) and #126 (the unread `openerPrice` /
+`openerPoints` fields). The stake is never changed by this work: the tag
+informs, the number to act on stays what #130 computes.
 
 ## 1. Goal
 
 An edge on a held line grows and the row says `add $X`. Two causes, opposite
 actions:
 
-| Why the edge grew | Meaning | Action |
-|---|---|---|
-| Unabated's fair (`bacr`) moved toward the bet's side | sharp consensus now agrees: closing-line value | add |
-| the book's price moved away from the side, fair unchanged | the book is shading against the side; Unabated's fair is ~1–2 min behind (v2 rebuild ~1/min + ~40 s ingest, #126); the edge spikes for a refresh or two, then collapses | wait a snapshot |
+| Fair (`bacr`, in probability) | Book price on the side | Tag | Meaning |
+|---|---|---|---|
+| moved toward the side | anything | `fair moved to you` (green) | the sharps agree; the price is a bonus |
+| unchanged | got better | `book moved away` (amber) | the book is shading against the side and the fair has not answered yet (Unabated's fair is ~1–2 min behind: v2 rebuild ~1/min + ~40 s ingest, #126); wait one snapshot — if the fair holds and the price is still there it is a stale soft line |
+| moved against the side | anything | `fair moved against you` (red) | the market is moving against the side and the book is ahead of the fair; the edge can still read bigger because the price improved by more than the fair fell |
+| unchanged | unchanged | no tag | |
 
-The second is adverse selection: adding on every "improvement" puts the most
-money on right as the market turns. The panel keeps no previous value today
-(`feed.applyChanges` and the per-league snapshot merge replace a line in
-place), so it cannot tell the two apart. This adds a small per-line history
-in memory and one tag next to every edge figure.
+The red row is the adverse-selection case the issue exists for: adding on
+every "improvement" puts the most money on right as the market turns. The
+panel keeps no previous value today (`feed.applyChanges` and the per-league
+snapshot merge replace a line in place), so it cannot tell the cases apart.
+This adds a small per-line history in memory and one tag next to every edge
+figure.
 
 ## 2. Math — new `extension/edgemove.js`
 
@@ -59,13 +63,13 @@ edgeMove(entries, now) -> { kind, fairDelta, priceDelta, sinceMs, source, from, 
   fair is missing); `priceDelta = bookProb(from) − bookProb(to)` (the book
   lengthened the side's odds), where `bookProb` is `kelly.bookProbOf` so an
   exchange's exact `sourcePrice` is compared, not its whole-American rounding.
-- **Kind**: `fair_to_you` when `fairDelta ≥ T` and it is at least the price
-  move; `book_away` when `priceDelta ≥ T` and larger; else `none`. Edge-
-  reducing moves (fair against you, book shortened) never earn a tag on
-  their own; when one side grew and the other shrank, the one that grew is
-  named and the tooltip shows both numbers. So the amber tag survives the
-  fair following the book (the collapse the issue describes), with
-  `fair 35.6% → 33.7%` visible in the tooltip.
+- **Kind — the fair decides** (issue comment 2026-09-22): `fair_to_you`
+  when `fairDelta ≥ T`, `fair_against` when `fairDelta ≤ −T`, both whatever
+  the price did; a fair inside the threshold (or unknown at either end) is
+  `book_away` when `priceDelta ≥ T`, else `none`. A book that only
+  shortened never earns a tag. So the amber tag turns red when the fair
+  follows the book (the collapse the issue describes), with
+  `fair 35.6% → 33.7%` in the tooltip.
 - **`sinceMs` / `source`**: the first entry after the reference — when the
   move was first observed and whether that was a snapshot or a stream tick.
   For Kalshi/Novig and every alt rung that is always a snapshot, up to one
@@ -100,8 +104,9 @@ edgeMove(entries, now) -> { kind, fairDelta, priceDelta, sinceMs, source, from, 
 
 ## 5. Panel — `panel.js`, `panel.html`, `panel.css`, `manifest.json`
 
-- `moveTag(row)` → `<span class="tag move-fair|move-book">` reading `fair
-  moved to you` / `book moved away`, with the numbers in `title`:
+- `moveTag(row)` → `<span class="tag move-fair|move-book|move-against">`
+  reading `fair moved to you` / `book moved away` / `fair moved against
+  you`, with the numbers in `title`:
   `fair 33.7% → 35.6% · price +199 → +215 · moved 2m ago (snapshot) ·
   opened +185`. Nothing for `none`.
 - Rows and cards (`rowParts`): the tag sits in the rail under the edge
@@ -114,19 +119,22 @@ edgeMove(entries, now) -> { kind, fairDelta, priceDelta, sinceMs, source, from, 
   after the edge (`+3.2% edge · book moved away · stake $120 · …`), so a
   re-fire on an improved edge (#112) says which improvement it was.
 - CSS: `.tag.move-fair` green (the `held` treatment), `.tag.move-book`
-  amber (`--warn-bg` / `--warn-fg`); rail alignment. `panel.html` loads
+  amber (`--warn-bg` / `--warn-fg`), `.tag.move-against` red (the `against`
+  treatment); rail alignment. `panel.html` loads
   `edgemove.js` before `panel.js`. Manifest 0.9.0 → 0.10.0.
 
 ## 6. Tests
 
 `tests/edgemove.test.js` (new): fair up / price flat → `fair_to_you`; price
-better / fair flat → `book_away`; both → the larger in probability; neither
-(sub-threshold) → `none`; first sighting → `none`; an alt rung with
-snapshot-only history reports `source: "snapshot"`; a whole-point fair change
-(-150 → -160, 1.5 pts) vs a one-point one (-150 → -151, 0.16 pts); a Novig
-half-cent counts; fair against you + book away → `book_away`; a number move
-resets; a move older than the window → `none`; a missing fair decides on
-price alone; pruning keeps one baseline.
+better / fair flat → `book_away`; fair up + price better and fair up + price
+worse → still `fair_to_you`; fair against + price better (the red row, with
+the edge bigger) and fair against + price flat → `fair_against`; neither
+(sub-threshold) → `none`; a book that only shortened → `none`; first
+sighting → `none`; an alt rung with snapshot-only history reports `source:
+"snapshot"`; a whole-point fair change (-150 → -160, 1.5 pts) vs a one-point
+one (-150 → -151, 0.16 pts); a Novig half-cent counts; a number move resets;
+a move older than the window → `none`; a missing fair decides on price
+alone; pruning keeps one baseline.
 
 `tests/scanner.test.js`: every line has one snapshot entry after `start`; the
 fixture's spread move (-14 → -3.5, a number move) resets to one stream entry;
@@ -181,5 +189,6 @@ blurb.
   and every league change; the first refresh after opening shows no tags.
 - A number move within the window reads as first seen, not as a move.
 - Verified by the node suite and fixtures only; no live panel session in
-  this worktree. A delay rule ("no add for two snapshots after a book move")
-  is a separate decision once the tag has been watched on live cards.
+  this worktree. A hold rule ("no add for one snapshot after an amber, never
+  on a red") is a separate decision once the tag has been watched on live
+  cards.
