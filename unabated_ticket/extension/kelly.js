@@ -74,31 +74,32 @@
     return sourceFormat === EXCHANGE_PROBABILITY_FORMAT && sourcePrice > 0 && sourcePrice < 1;
   }
 
-  // Exchange order books run 1¢..99¢; a probability that rounds outside that
-  // has no contract price to type, so it is "not priced in contracts", not an error.
-  const MIN_CONTRACT_CENTS = 1;
-  const MAX_CONTRACT_CENTS = 99;
-  // Half-cent sources (Novig 0.565) sit on a float boundary (56.499999...),
-  // so a hair is added before rounding to make every tie round up.
-  const HALF_CENT_TIE_EPSILON = 1e-9;
+  // Exchange order books run 1¢..99¢; a probability outside that has no
+  // contract to buy, so it is "not priced in contracts", not an error.
+  const MIN_CONTRACT_PROB = 0.01;
+  const MAX_CONTRACT_PROB = 0.99;
+  // Float noise (261.69 / 0.232012 = 1127.999...) must not drop a contract
+  // that the stake covers exactly.
+  const FLOOR_EPSILON = 1e-9;
 
-  // The limit order that spends `stake` on an exchange line: how many contracts
-  // at what whole-cent price, and what they cost. Null for a line that is not
-  // priced in contracts (a sportsbook, or a probability with no cent price).
-  // The count is floored (never past Kelly) in integer cents so the cost
-  // reconciles to the cent; the leftover is under one contract's price. Fees
-  // are not folded in: the stake and Unabated's edge are both pre-fee, so the
-  // count stays consistent with them.
+  // The order that spends `stake` on an exchange line: how many contracts at
+  // Unabated's price, and what they cost. Null for a line that is not priced
+  // in contracts. The price is Unabated's exact number for the book, taken as
+  // the all-in cost of one contract (for Kalshi that number already carries
+  // Kalshi's fee: a 22¢ ask shows as 23.2¢ = +331; user decision 2026-09-22),
+  // so contracts = floor(stake / price), never rounded up past Kelly, and the
+  // cost reconciles to the exchange's own Cost line. The leftover is under
+  // one contract.
   function contractOrder({ stake, bookPrice, sourceFormat, sourcePrice }) {
     if (!isContractMarket({ sourceFormat, sourcePrice })) return null;
     if (typeof stake !== "number" || !Number.isFinite(stake) || stake < 0) {
       throw new Error(`contractOrder: expected a non-negative stake, got ${stake}`);
     }
-    const priceCents = Math.round(bookProbOf({ bookPrice, sourceFormat, sourcePrice }) * 100 + HALF_CENT_TIE_EPSILON);
-    if (priceCents < MIN_CONTRACT_CENTS || priceCents > MAX_CONTRACT_CENTS) return null;
-    const stakeCents = Math.round(stake * 100);
-    const contracts = Math.floor(stakeCents / priceCents);
-    return { contracts, priceCents, costDollars: (contracts * priceCents) / 100 };
+    const priceProb = bookProbOf({ bookPrice, sourceFormat, sourcePrice });
+    if (priceProb < MIN_CONTRACT_PROB || priceProb > MAX_CONTRACT_PROB) return null;
+    const contracts = Math.floor(stake / priceProb + FLOOR_EPSILON);
+    const costDollars = Math.round(contracts * priceProb * 100) / 100;
+    return { contracts, priceCents: priceProb * 100, costDollars };
   }
 
   const api = { americanToDecimal, americanToProb, bookProbOf, kellyStakeFromEdge, isContractMarket, contractOrder };
