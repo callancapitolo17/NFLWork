@@ -4,8 +4,7 @@
 // Reads: chrome.storage.local {ticket, error, watchStatus, pageCheck, pageReady,
 // booksFilter, locateResult} (written by content.js) and {bankroll,
 // multiplier, edges, alerts, alertLog, activeTab, betsService, betsSettings}
-// (written here) and {betsNovig} (written by novig_content.js on
-// app.novig.us, #116).
+// (written here).
 // Writes: chrome.storage.local settings, {locate} (row click, via locate.js,
 // which also focuses the Unabated tab), {alertLog, alertTargets} and Chrome
 // notifications for new edges; {betsService} after every bets-service poll
@@ -117,8 +116,6 @@
     // What the last bets-service poll left: {payload: {generatedAt, sources},
     // okAt, error, errorAt, unreachableSince}; null before the first poll.
     betsService: null,
-    // What novig_content.js last wrote: {bets, readAt, url, error, complete, pageSeenAt} or null.
-    betsNovig: null,
     // Normalised bet records (bets.js contract), team keys resolved, pruned to the retention window.
     betRecords: [],
     // The team crosswalk the bets service holds (#118 step 4), as last served
@@ -141,6 +138,9 @@
   let lastClickedKey = null;
   let scannerStatus = null;
   let scannerState = null;
+  // The scanner's per-line history (edgemove.js, #132): what each line was
+  // worth on every snapshot and stream update, read for the edge-move tag.
+  let scannerHistory = {};
   let boardLinesCache = null;
   // Unabated's fair ladders for sizing against held bets (#130): the feed's
   // lines grouped by event, and each (event, period, axis) ladder built from
@@ -173,9 +173,10 @@
   }
 
   const scanner = globalThis.UnabatedScanner.createScanner({
-    onChange: (status, feedState) => {
+    onChange: (status, feedState, history) => {
       scannerStatus = status;
       scannerState = feedState;
+      scannerHistory = history || {};
       boardLinesCache = null;
       linesByEventCache = null;
       ladderCache = new Map();
@@ -392,7 +393,7 @@
       const age = fmtLineAge(feed.lineChangedMs(line.feedLine)).replace(/^line /, "");
       messages.push(`Edge from the Edges feed (the screen cell carried none): same line at the same price, feed copy ${age}.`);
     }
-    if (betsView.sourcesUnavailable(state.betsService && state.betsService.payload, Date.now(), pageSources())) {
+    if (betsView.sourcesUnavailable(state.betsService && state.betsService.payload, Date.now())) {
       messages.push("Bet sources unavailable (no venue has reported in the last hour), so bet flags may be missing; see the Bets tab.");
     }
     if (!pageScriptAlive()) {
@@ -489,7 +490,11 @@
     view.price.textContent = fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice));
     // The fair is Unabated's own American number; there is no more exact source for it.
     view.fair.textContent = line.fair == null ? "unknown" : fmtPriceBoth(asBookLine(line.fair, 1, null));
-    view.edge.textContent = line.edgePct == null ? "—" : fmtPct(line.edgePct / 100);
+    // The edge-move tag reads the feed's copy of this line, and only at the
+    // price being sized: the feed's history says nothing about another price.
+    const feedCopy = feedLineFor(ticket, line.points);
+    const ticketMoveParts = feedCopy && feedCopy.price === line.price ? moveParts(feedCopy) : [];
+    view.edge.replaceChildren(line.edgePct == null ? "\u2014" : fmtPct(line.edgePct / 100), ...ticketMoveParts.flatMap((part) => [" ", part]));
 
     view.stake.classList.remove("no-edge");
     view.payoutRow.hidden = true;
@@ -529,12 +534,13 @@
     show("ticket");
   }
 
-  // Under the dollar figure, the limit order it means on an exchange: "466
-  // contracts @ 53¢ · $246.98", with the count floored so the cost never
-  // passes the stake (kelly.contractOrder). Only a line priced in contracts
-  // (Kalshi, Novig) gets the row; a sportsbook line keeps just the dollars.
-  // `acted` is the number to act on, so a top-up shows the top-up's contracts.
-  // Returns what Copy appends, "" when there is no row.
+  // Under the dollar figure, the order it means on an exchange: "1,127
+  // contracts @ 23.2¢ · $261.48", sized straight off Unabated's price for the
+  // book with the count floored so the cost never passes the stake
+  // (kelly.contractOrder). Only a line priced in contracts (Kalshi, Novig)
+  // gets the row; a sportsbook line keeps just the dollars. `acted` is the
+  // number to act on, so a top-up shows the top-up's contracts. Returns what
+  // Copy appends, "" when there is no row.
   function renderContracts(acted, line) {
     view.contracts.hidden = true;
     view.contracts.classList.remove("under");
@@ -543,18 +549,19 @@
     const order = kelly.contractOrder({ stake: acted, bookPrice: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice });
     if (!order) return "";
     view.contracts.hidden = false;
+    const priceText = `${order.priceCents.toFixed(1)}\u00a2`;
     if (order.contracts === 0) {
       view.contracts.classList.add("under");
-      view.contracts.textContent = `under 1 contract @ ${order.priceCents}\u00a2`;
-      return ` | under 1 contract @ ${order.priceCents}\u00a2`;
+      view.contracts.textContent = `under 1 contract @ ${priceText}`;
+      return ` | under 1 contract @ ${priceText}`;
     }
     const count = document.createElement("span");
-    count.textContent = `${order.contracts.toLocaleString("en-US")} contract${order.contracts === 1 ? "" : "s"} @ ${order.priceCents}\u00a2`;
+    count.textContent = `${order.contracts.toLocaleString("en-US")} contract${order.contracts === 1 ? "" : "s"} @ ${priceText}`;
     const cost = document.createElement("span");
     cost.className = "cost";
     cost.textContent = ` \u00b7 ${fmtDollars(order.costDollars)}`;
     view.contracts.append(count, cost);
-    return ` | ${order.contracts} contract${order.contracts === 1 ? "" : "s"} @ ${order.priceCents}\u00a2`;
+    return ` | ${order.contracts} contract${order.contracts === 1 ? "" : "s"} @ ${priceText}`;
   }
 
   // The ticket's open bets and what they do to its stake: the row-style flag
@@ -707,6 +714,85 @@
 
   function fmtLiquidity(value) {
     return value == null ? "" : `liq ${value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}`;
+  }
+
+  // ---- why the edge grew (#132) --------------------------------------------
+
+  const edgemove = globalThis.UnabatedEdgeMove;
+  const MOVE_TAG_CLASS = { fair_to_you: "move-fair", book_away: "move-book", fair_against: "move-against" };
+
+  // The line's move since the previous observation inside the window, or kind "none".
+  function moveFor(key) {
+    return edgemove.edgeMove(scannerHistory[key], Date.now());
+  }
+
+  function fmtFairEntry(entry) {
+    if (entry.bacr == null) return "?";
+    try {
+      return `${(kelly.americanToProb(entry.bacr) * 100).toFixed(1)}%`;
+    } catch (_error) {
+      return fmtAmerican(entry.bacr);
+    }
+  }
+
+  // The numbers behind the tag: "fair 33.7% → 35.6% · price +199 → +215 ·
+  // moved 2m ago (snapshot) · opened +185". "ago" is when the panel first SAW
+  // the move and by what: a snapshot observation can be up to one refresh
+  // interval after the book moved (the stream misses most exchange moves and
+  // never carries an alt rung). The opener is the book's own opening price
+  // (#126); on another number it is not comparable, so the number is named.
+  function moveTooltip(move, line) {
+    const parts = [
+      `fair ${fmtFairEntry(move.from)} \u2192 ${fmtFairEntry(move.to)}`,
+      `price ${fmtPriceBoth(asBookLine(move.from.price, move.from.sourceFormat, move.from.sourcePrice))} \u2192 ${fmtPriceBoth(asBookLine(move.to.price, move.to.sourceFormat, move.to.sourcePrice))}`,
+      `moved ${fmtAge(move.sinceMs)} (${move.source})`,
+    ];
+    const openerPrice = line.openerPrice ?? null;
+    const openerPoints = line.openerPoints ?? null;
+    if (openerPrice != null) {
+      const sameNumber = openerPoints == null || openerPoints === line.points;
+      parts.push(`opened ${fmtAmerican(openerPrice)}${sameNumber ? "" : ` at ${fmtPoints(openerPoints)}`}`);
+    }
+    return parts.join(" \u00b7 ");
+  }
+
+  // One small tag naming why the edge on this line is what it is (the fair
+  // decides — see edgemove.js), with the numbers in the tooltip; null when
+  // nothing moved inside the window or the line was first seen this session.
+  // `line` needs key, points and the openers: an Edges row or a raw feed line.
+  function moveTag(line) {
+    const move = moveFor(line.key);
+    if (move.kind === "none") return null;
+    const tag = document.createElement("span");
+    tag.className = `tag ${MOVE_TAG_CLASS[move.kind]}`;
+    tag.textContent = edgemove.MOVE_LABELS[move.kind];
+    tag.title = moveTooltip(move, line);
+    return tag;
+  }
+
+  // The mover, on the card under the tag: the fair then and now when the
+  // fair decided (green / red), the price when it was the book (amber).
+  // Both, with cents and the opener, stay in the tooltip.
+  function moveDetail(move) {
+    if (move.kind === "book_away") return `price ${fmtAmerican(move.from.price)} \u2192 ${fmtAmerican(move.to.price)}`;
+    return `fair ${fmtFairEntry(move.from)} \u2192 ${fmtFairEntry(move.to)}`;
+  }
+
+  // The tag and its detail line for a rail or the Ticket's Edge fact; [] when
+  // there is nothing to tag.
+  function moveParts(line) {
+    const tag = moveTag(line);
+    if (!tag) return [];
+    const detail = document.createElement("small");
+    detail.className = "move-detail";
+    detail.textContent = moveDetail(moveFor(line.key));
+    return [tag, detail];
+  }
+
+  // The tag's words for an alert body, or null.
+  function moveWords(row) {
+    const move = moveFor(row.key);
+    return move.kind === "none" ? null : edgemove.MOVE_LABELS[move.kind];
   }
 
   function pageScriptAlive() {
@@ -1078,7 +1164,7 @@
     const stake = document.createElement("span");
     stake.className = "edge-stake";
     fillStakeCell(stake, row);
-    rail.append(pct, stake);
+    rail.append(pct, ...moveParts(row), stake);
 
     return [main, rail, ...[relatedBlock(row.bet)].filter(Boolean)];
   }
@@ -1108,7 +1194,7 @@
     const stake = document.createElement("span");
     stake.className = "gl-stake";
     stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
-    rail.append(edge, stake);
+    rail.append(edge, ...moveParts(row), stake);
 
     li.append(main, rail);
     return li;
@@ -1373,6 +1459,8 @@
     const stake = row.stake ?? stakeFor(row);
     const message = [
       `${fmtPct(row.edgePct / 100)} edge`,
+      // Why it grew (#132): a re-fire on a better edge says which improvement it was.
+      moveWords(row),
       stake == null ? null : `stake ${fmtDollars(stake)}`,
       summary,
       describeMatchup(row),
@@ -1659,18 +1747,6 @@
     return state.betsService ? state.betsService.payload : null;
   }
 
-  // Venues read by a content script rather than the service (#116).
-  function pageSources() {
-    return state.betsNovig ? { novig: state.betsNovig } : {};
-  }
-
-  // A new Novig read from storage: merge its records (complete reads are
-  // authoritative for the venue) and refresh every view that shows a flag.
-  function applyNovigRead(betsNovig) {
-    state.betsNovig = betsNovig && typeof betsNovig === "object" ? betsNovig : null;
-    if (state.betsNovig) state.betRecords = betsView.mergePageSource(state.betRecords, "novig", state.betsNovig, Date.now(), state.crosswalk);
-  }
-
   let betsPollBusy = false;
   let betsPollTimer = null;
 
@@ -1860,7 +1936,7 @@
     const open = state.betRecords.filter((bet) => bet.status === "open").length;
     view.betsCount.hidden = open === 0;
     view.betsCount.textContent = String(open);
-    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now, pageSources());
+    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now);
     view.betsHeader.classList.toggle("bad", betsView.serviceStatus(state.betsService, now).unreachable);
   }
 
@@ -1870,7 +1946,7 @@
     const service = betsView.serviceStatus(state.betsService, now);
     view.betsService.hidden = !service.unreachable;
     view.betsService.textContent = service.unreachable ? `${service.text}. Start it with unabated_ticket/bets_service/run.sh; the last records it served are still shown.` : "";
-    view.betsSources.replaceChildren(...betsView.sourceRows(betsPayload(), now, pageSources()).map((row) => {
+    view.betsSources.replaceChildren(...betsView.sourceRows(betsPayload(), now).map((row) => {
       const div = document.createElement("div");
       div.className = `venue fresh-${row.level}`;
       const bets = row.count == null ? null : `${row.count} bets`;
@@ -1945,7 +2021,7 @@
     // venue reported no stake is counted separately rather than as zero.
     const priced = open.filter((bet) => typeof bet.stake === "number");
     const atRisk = priced.reduce((total, bet) => total + bet.stake, 0);
-    const venues = betsView.sourceRows(betsPayload(), now, pageSources()).filter((row) => row.configured).length;
+    const venues = betsView.sourceRows(betsPayload(), now).filter((row) => row.configured).length;
     view.betsRisk.textContent = fmtDollars(atRisk);
     view.betsRiskCaption.textContent = [
       `at risk · ${open.length} open bet${open.length === 1 ? "" : "s"}`,
@@ -2016,7 +2092,7 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "betsNovig", "teamsIndex"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex"]);
     // The team index from the last session, so bet records resolve before the first snapshot lands.
     teamsLib.loadIndex(relay.teamsIndex);
     teamsSpellingCount = teamsLib.spellingCount();
@@ -2042,7 +2118,6 @@
         error: storedBets.error ?? null, errorAt: storedBets.errorAt ?? null, unreachableSince: storedBets.unreachableSince ?? null,
       };
     }
-    applyNovigRead(relay.betsNovig);
     fillEdgeSettingInputs();
     fillAlertSettingInputs();
     fillBetsSettingInputs();
@@ -2082,14 +2157,6 @@
       state.locateResult = changes.locateResult.newValue || null;
       if (state.locateResult && state.locating && state.locateResult.at >= state.locating.at) state.locating = null;
       renderLocate();
-    }
-    // novig_content.js wrote a read of the Novig Portfolio screen (#116).
-    if ("betsNovig" in changes) {
-      applyNovigRead(changes.betsNovig.newValue);
-      renderBetsHeader();
-      if (!state.error) render();
-      renderEdges();
-      if (state.activeTab === "bets") renderBets();
     }
   });
 

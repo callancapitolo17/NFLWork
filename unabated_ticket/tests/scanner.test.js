@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { createScanner, SNAPSHOT_URL, SNAPSHOT_BASE_URL, CHANGES_URL } = require("../extension/scanner.js");
+const edgemove = require("../extension/edgemove.js");
 
 const fixture = (name) => fs.readFileSync(path.join(__dirname, "fixtures", name), "utf8");
 const KICKOFF_MS = Date.parse("2026-09-13T17:00:00Z");
@@ -276,4 +277,123 @@ test("status counts alt lines apart from main lines", async () => {
   const status = scanner.getStatus();
   assert.equal(status.lineCount, 62);
   assert.equal(status.altLineCount, 27);
+});
+
+// ---- per-line history for the edge-move tag (#132) ------------------------
+
+// The v2 fixture with one edit applied to its parsed form.
+function snapshotWith(edit) {
+  const json = JSON.parse(fixture("v2_slice.json"));
+  edit(json);
+  return JSON.stringify(json);
+}
+
+const NOVIG_ML_KEY = "289357353:ms89:si0:tid6";
+const KALSHI_ALT_KEY = "289357360:ms105:si0:tid6:alt-3.5";
+const TOTAL_KEY = "289357343:ms4:si1:tid5";
+
+test("history: every snapshot line gets one observation on start, and start clears it", async () => {
+  let clock = NOW;
+  const scanner = createScanner({ fetchImpl: fakeFetch(), now: () => clock, timers: noTimers });
+  await scanner.start([1]);
+  const history = scanner.getHistory();
+  assert.equal(Object.keys(history).length, 62 + 27);
+  assert.ok(Object.values(history).every((entries) => entries.length === 1 && entries[0].source === "snapshot" && entries[0].at === NOW));
+  assert.equal(edgemove.edgeMove(history[NOVIG_ML_KEY], NOW).kind, "none");
+  assert.equal(history[NOVIG_ML_KEY][0].bacr, -156);
+  clock += 60 * 1000;
+  await scanner.start([1]);
+  assert.ok(Object.values(scanner.getHistory()).every((entries) => entries.length === 1 && entries[0].at === clock));
+});
+
+test("history: a stream update records a stream observation; a number move resets the line", async () => {
+  let clock = NOW;
+  const fetchImpl = fakeFetch({
+    [`${CHANGES_URL}/${`${Math.floor((NOW - 20 * 1000 - Date.UTC(2021, 0, 6)) / 1000)}000000000`}`]: () => response({
+      // The total's price gets better on the same number (-110 -> -100, +2.4 pts); the fair holds.
+      body: fixture("changes_slice.json").replace(/("marketId":289357343,"points":47\.0,"price":)-110\.0/g, "$1-100.0"),
+    }),
+  });
+  const seen = [];
+  const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers, onChange: (status, state, history) => seen.push(history) });
+  await scanner.start([1]);
+  clock += 10 * 1000;
+  await scanner.tick();
+  const history = scanner.getHistory();
+  assert.equal(seen[seen.length - 1], history); // the panel is handed the same object
+  // Spread -14 -> -3.5: a number move, so the line reads as first seen (on the stream).
+  const spread = history["289357360:ms4:si0:tid6"];
+  assert.equal(spread.length, 1);
+  assert.equal(spread[0].source, "stream");
+  assert.equal(spread[0].points, -3.5);
+  assert.equal(edgemove.edgeMove(spread, clock).kind, "none");
+  // The total moved on its number: amber, seen on the stream 10s ago.
+  const move = edgemove.edgeMove(history[TOTAL_KEY], clock);
+  assert.equal(move.kind, "book_away");
+  assert.equal(move.source, "stream");
+  assert.equal(move.sinceMs, 0);
+  assert.equal(move.from.price, -110);
+  assert.equal(move.to.price, -100);
+  // A line the stream added is a first sighting.
+  assert.equal(history["366866367:ms4:si0:tid6"].length, 1);
+  assert.equal(history["366866367:ms4:si0:tid6"][0].source, "stream");
+  // An unchanged replay adds nothing.
+  assert.equal(history[NOVIG_ML_KEY].length, 1);
+});
+
+test("history: a re-downloaded snapshot records fair and alt-rung moves as snapshot observations and forgets pulled lines", async () => {
+  let clock = NOW;
+  let snapshots = 0;
+  const fetchImpl = fakeFetch({
+    [SNAPSHOT_BASE_URL(1)]: () => {
+      snapshots += 1;
+      const built = new Date(clock - 20 * 1000).toUTCString();
+      if (snapshots === 1) return response({ body: fixture("v2_slice.json"), headers: { "last-modified": built, "content-length": "1000" } });
+      return response({
+        body: snapshotWith((json) => {
+          const rows = json.odds["lg1:pt1:pregame"];
+          // Novig moneyline: fair -156 -> -166 (60.9% -> 62.4%), price unchanged.
+          rows.find((row) => row.key === "pt1:pregame:bt1:e125807").sides["si0:tid6"].ms89.bacr = -166;
+          // Kalshi -3.5 rung: 46.7c -> 44.4c (+113 -> +125), fair unchanged. An
+          // exchange line is measured on its exact source price, so both move.
+          const kalshiSpread = rows.find((row) => row.key === "pt1:pregame:bt2:e125807").sides["si0:tid6"].ms105;
+          const rung = kalshiSpread.alternateLines.find((alt) => alt && alt.points === -3.5);
+          rung.americanPrice = 125;
+          rung.price = 125;
+          rung.sourcePrice = 0.444;
+          // The first-half rows are gone.
+          delete json.odds["lg1:pt2:pregame"];
+        }),
+        headers: { "last-modified": built, "content-length": "1000" },
+      });
+    },
+  });
+  const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers });
+  await scanner.start([1]);
+  const firstHalfKeys = Object.values(scanner.getState().lines).filter((line) => line.periodTypeId === 2).map((line) => line.key);
+  assert.equal(firstHalfKeys.length, 12);
+  clock += 61 * 1000; // past the 60s tier
+  await scanner.tick();
+  assert.equal(snapshots, 2);
+  const history = scanner.getHistory();
+  const fair = edgemove.edgeMove(history[NOVIG_ML_KEY], clock);
+  assert.equal(fair.kind, "fair_to_you");
+  assert.equal(fair.source, "snapshot");
+  assert.equal(fair.sinceMs, 0);
+  assert.equal(fair.from.bacr, -156);
+  assert.equal(fair.to.bacr, -166);
+  const alt = edgemove.edgeMove(history[KALSHI_ALT_KEY], clock);
+  assert.equal(alt.kind, "book_away");
+  assert.equal(alt.source, "snapshot");
+  assert.equal(alt.from.price, 113);
+  assert.equal(alt.to.price, 125);
+  // The stream then re-adds the 1H lines it carries (a first sighting on the
+  // stream); every other 1H line is gone from the state and from the history.
+  const lines = scanner.getState().lines;
+  const gone = firstHalfKeys.filter((key) => lines[key] === undefined);
+  const readded = firstHalfKeys.filter((key) => lines[key] !== undefined);
+  assert.equal(gone.length, 8);
+  assert.equal(readded.length, 4);
+  assert.ok(gone.every((key) => history[key] === undefined));
+  assert.ok(readded.every((key) => history[key].length === 1 && history[key][0].source === "stream"));
 });

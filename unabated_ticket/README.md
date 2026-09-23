@@ -265,18 +265,20 @@ stake uses the American price because that is what Unabated's edge was
 computed from.
 
 On an exchange line (Kalshi, Novig — any line Unabated marks `sourceFormat 4`,
-a probability) the panel also prints the **limit order** the stake means,
-under the dollar figure: `466 contracts @ 53¢ · $246.98`
-(`kelly.contractOrder`). A contract costs its price in whole cents and pays
-$1, so the limit price is the exchange's exact probability rounded to the
-cent — what you type into Kalshi — and the count is `floor(stake / price)` in
-integer cents, never rounded up past Kelly; the cost shown is what the
-contracts actually spend, so the leftover (under one contract) is visible
-rather than hidden. The count divides the number to act on, so a top-up shows
-the top-up's contracts, and a stake under one contract reads
-`under 1 contract @ 53¢` rather than a zero. Sportsbook lines show no
-contract row. Fees are not folded in: the stake and Unabated's edge are both
-pre-fee, so the real outlay on Kalshi is a touch above the cost shown.
+a probability) the panel also prints the **order** the stake means, under the
+dollar figure: `1,127 contracts @ 23.2¢ · $261.48` (`kelly.contractOrder`).
+The price is Unabated's exact number for the book, taken as the all-in cost of
+one contract; the count is `floor(stake / price)`, never rounded up past
+Kelly; the cost shown is what the contracts actually spend, so the leftover
+(under one contract) is visible rather than hidden. **Kalshi's price on
+Unabated already carries Kalshi's fee** (a 22¢ ask shows as 23.2¢ = +331,
+because 22¢ + 7% × 0.22 × 0.78 = 23.2¢), so the edge is net of the fee, the
+count needs no fee model, and the cost matches Kalshi's own Cost line
+(contracts × ask + fee) to the cent; the number in Kalshi's limit-price box is
+its own ask, not Unabated's figure. The count divides the number to act on, so
+a top-up shows the top-up's contracts, and a stake under one contract reads
+`under 1 contract @ 23.2¢` rather than a zero. Sportsbook lines show no
+contract row.
 
 That is the stake with nothing held. **With open bets on the same market of
 the game, the stake is sized GIVEN them — conditional Kelly (issue #130,
@@ -355,6 +357,13 @@ position" / "Already at full size") and its small line adds the position:
 `held $270 · against $413 · $270.05 alone`. A line that cannot be sized keeps
 a `—`, never a computed-looking `$0`.
 
+Before acting on an `add`, read the tag next to the edge (Edges tab → [Why
+an edge grew](#why-an-edge-grew), issue #132): `fair moved to you` is the
+sharps agreeing, `book moved away` is the book ahead of a fair that has not
+answered yet, `fair moved against you` is the market turning against the
+side while the edge still reads bigger. The number itself is unchanged by
+the tag.
+
 Settings (bankroll, Kelly multiplier) sit at the foot of the Ticket tab under
 **Sizing**, reachable from any tab via the ⚙, and persist in
 `chrome.storage.local`. Defaults 30000 and 0.25. The bets service URL is on
@@ -363,7 +372,7 @@ the Bets tab, under the venue strip it feeds.
 Copy puts one line on the clipboard:
 `Seattle Mariners -133 · 57.0¢ @ Novig | fair -139 · 58.2¢ | edge +1.89% | stake $188.55 | to win $141.77 | payout $330.32 | Texas Rangers @ Seattle Mariners · MLB`.
 When held bets changed the number the stake reads `stake $188.32 (add $188.32, $270.05 alone)`.
-On an exchange line the contract order follows the stake: `stake $188.55 | 330 contracts @ 57¢ | to win ...`.
+On an exchange line the contract order follows the stake: `stake $261.69 | 1127 contracts @ 23.2¢ | to win ...`.
 
 ## Edges tab
 
@@ -578,6 +587,60 @@ instead, so the row is still found. The expand-and-match path is verified
 against the scripted grid only (see Tests); the real screen's Alts row was
 not reachable from the harness, so the first real click is the check.
 
+### Why an edge grew
+
+Next to every edge figure — rows, cards and the lines behind a card's
+expander, and the Ticket's Edge fact — one small tag says what moved since
+the panel last saw the line, inside a ten-minute window
+(`extension/edgemove.js`, issue #132). It matters most on a held line, where
+the row says `add $X` (conditional Kelly, Stake above) and the reasons an
+edge can grow call for opposite actions. **The fair decides**; the price
+only refines the reading.
+
+| Unabated's fair (`bacr`, in probability) | The book's price on the side | Tag | Meaning |
+|---|---|---|---|
+| moved toward the side | anything | `fair moved to you` (green) | the sharps agree; the price is a bonus — closing-line value |
+| unchanged | got better | `book moved away` (amber) | the book is shading against the side and the fair has not answered yet: Unabated's fair is ~1–2 min behind the book (v2 rebuild ~1/min + ~40 s ingest lag, #126), so the edge spikes for a refresh or two. Wait one snapshot; if the fair holds and the price is still there, it is a stale soft line |
+| moved against the side | anything | `fair moved against you` (red) | the market is moving against the side and the book is ahead of the fair. The edge can still read *bigger* because the price improved by more than the fair fell — adding on it is adverse selection: on an exchange a great price resting right after a move usually belongs to someone who knows the line moved |
+| unchanged | unchanged or worse | none | |
+
+The rule, in probability (`kelly.americanToProb` on the fair; the exchange's
+exact `sourcePrice` on the price, so a Kalshi cent or a Novig half-cent is
+measured as itself): a move under 0.5 points is unchanged — `bacr` is a
+whole American price, so a one-point fair change near even money (-110 →
+-111, 0.23 pts) is rounding, and the fair must move about three American
+points there to register (at +200 a five-point move does). The comparison is
+against the newest observation at or before ten minutes ago, else the line's
+first sighting; a line seen once, or unchanged for ten minutes, has no tag,
+and a book that only shortened never earns one. **A line whose number moved
+reads as first seen**, not as a move: a price at 48.5 is not comparable to
+one at 47.5 (1,466 of 2,720 live NFL spread/total lines sat on a different
+number than they opened, measured 2026-09-22).
+
+Under the tag, one small line names the mover: `fair 33.7% → 35.6%` when
+the fair decided (green or red), `price +125 → +141` when it was the book
+(amber). The tooltip carries everything: `fair 33.7% → 35.6% · price +199 →
++215 · moved 2m ago (snapshot) · opened +185`. "ago" is when the panel first *saw*
+the move and by what. The anonymous changes stream misses most exchange
+moves and never carries an alt rung, so for Kalshi, Novig and every alt the
+observation is a snapshot, up to one refresh interval (60 s / 2 min / 5 min
+by league) after the book actually moved; a `(stream)` observation is within
+10 s. `opened` is the book's own opening price (`openerPrice`, on every main
+line and no alt rung, per book — #126, measured 2026-09-22); when the book
+has moved its number since open it reads `opened -120 at -3`, because the
+price is not comparable across numbers. The opener's fair is not in the feed,
+so it is context, never a tag.
+
+The history lives in the scanner's memory only (`scanner.getHistory()`,
+handed to the panel with every update): it starts empty when the panel
+opens or the leagues change, so the first refresh shows no tags, and a line
+the snapshot no longer lists is forgotten. Alerts carry the tag's words in
+the notification body (Alerts below), so a re-fire on an improved edge says
+which improvement it was. **The stake never changes for the tag** — it
+informs; the number to act on stays what conditional Kelly computes. A hold
+rule ("no add for one snapshot after an amber, never on a red") is a
+separate decision once the tag has been watched on live cards.
+
 ### Alerts
 
 Off by default. Turn on **Notify on new edges at or above N%** (default
@@ -598,7 +661,9 @@ from the card on screen (built at the list threshold). In the flat
 list a ladder with several rungs over the threshold pings once per 5 min
 per rung until each has fired; the notification title says `(alt of -2.5)`
 so an alt is never mistaken for the main line. Title is the bet and
-book, body the edge, stake, matchup and time to start. Clicking the
+book, body the edge, the why-it-grew tag when there is one (`fair moved to
+you` / `book moved away` / `fair moved against you`, Why an edge grew
+above), stake, matchup and time to start. Clicking the
 notification runs the same jump-to-row path as a row click. No alerts
 fire while the panel is closed. The alert log lives in `chrome.storage.local`
 (`alertLog`, 24 h).
@@ -618,8 +683,7 @@ Two kinds of source feed the flags:
 | Venue | Source | How it refreshes |
 |---|---|---|
 | Kalshi | `bets_service/sources/kalshi.py` (local service, signed REST) | every 60 s while the service runs |
-| Novig | `bets_service/sources/novig.py` (local service, the account's own Auth0 refresh token, #116) | every 60 s while the service runs; no tab needed |
-| Novig (fallback) | `extension/novig_page.js` + `novig_content.js` (content scripts on `app.novig.us`) | whenever the Novig tab's Portfolio screen fetches its lists — open it to refresh |
+| Novig | `bets_service/sources/novig.py` (local service, the app's Portfolio REST feed on the account's own Auth0 refresh token, #116) | every 60 s while the service runs; no tab needed |
 | BetOnline | — (#115) | shows "no source configured" |
 | ProphetX | — (#117) | shows "no source configured" |
 
@@ -629,8 +693,7 @@ the service worker), resolves each record's teams through `teams.js`, dedupes
 on the venue's native id against what it already holds, and keeps open bets
 plus settled ones from the last 30 days in `chrome.storage.local`
 (`betsService`, which also carries the service's team crosswalk;
-`betsSettings` holds the service URL; `betsNovig` is what the Novig content
-script wrote).
+`betsSettings` holds the service URL).
 A poll that fails keeps the last records and says so; nothing is ever
 blanked. A poll that succeeds is authoritative for every venue whose source
 reports `ok`: a stored record of that venue the payload no longer lists is
@@ -802,10 +865,7 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   old the last pull is) rather than a table: last pull green under 5 min, amber
   under 60, red past that or on a failed poll with its error; venues with
   no source yet read "no source configured", a source still on its first
-  poll reads "no completed poll yet"; a page-sourced venue past the hour
-  says how to refresh — "open app.novig.us and its Portfolio screen in a
-  tab to refresh", or "Novig tab is open — open its Portfolio screen to
-  refresh" when the tab was seen in the last 5 min; the service itself shows
+  poll reads "no completed poll yet"; the service itself shows
   "unreachable since …" in red with the last records still listed), the
   open bets (venue, bet, stake, placed — each with a green left edge when
   the board matched it, red when it did not, so a problem bet is visible in
@@ -820,12 +880,12 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   off the scanner) — and, last, the **Team crosswalk** list with its Clear
   button (above).
 
-### Novig source (service)
+### Novig source
 
 Novig's official NBX API is a separate "Liquidity Provider" account with a
 $30k minimum deposit, so it cannot see bets placed in the retail app. The
-service instead logs in **as the retail account once** and polls the same
-Hasura GraphQL the app uses (issue #116):
+service instead logs in **as the retail account once** and reads the same
+Portfolio feed the app reads (issue #116):
 
 ```bash
 /Users/callancapitolo/NFLWork/kalshi_draft/venv/bin/python3 -m unabated_ticket.bets_service.sources.novig_auth connect
@@ -835,101 +895,84 @@ Hasura GraphQL the app uses (issue #116):
 
 - **Connect** runs Auth0's PKCE authorization-code flow against the app's
   public client (no secret exists). You log in yourself; the script only
-  needs the URL you land on (`https://app.novig.us/?code=…&state=…` —
-  copy it at once, the app strips it as it loads; `--browser` opens a
-  Playwright window that intercepts the callback so nothing can be lost).
-  The refresh token goes to `NOVIG_TOKEN_PATH`
-  (`bets_service/novig_token.json`, gitignored, mode 0600) and the source
-  registers on the next service start.
+  needs the URL you land on (`https://novig.com/?code=…&state=…` — copy it
+  at once, the app strips it as it loads; `--browser` opens a Playwright
+  window that intercepts the callback so nothing can be lost). The refresh
+  token goes to `NOVIG_TOKEN_PATH` (`bets_service/novig_token.json`,
+  gitignored, mode 0600) and the source registers on the next service start.
 - **Why its own token.** The web app keeps a *rotating* refresh token in
   localStorage, and Auth0 revokes the whole chain when a rotated token is
   reused — copying the app's token would log the app out and kill the
   poller. A separate login is a separate chain; both live side by side.
-- **Polling** (`sources/novig.py`, every 60 s): refresh the 30-min access
-  token inside a 2-min margin (a rotated refresh token is rewritten at
-  once), resolve the trader once from the JWT `sub` (`user.auth_id` →
-  `trader_id`, the app's own `AppEntry_Query` chain), then read the `order`
-  and `parlay` tables filtered to that trader and to rows that are open or
-  changed within the retention window, 100 per page to a short page. The
-  selections are the fields the app's Portfolio cards read, so the rows have
-  the shape `novig_bets.js` was written against; `normalize_novig()` is a
-  port of it and `tests/test_parity_novig.py` holds the two byte-equivalent.
-  Transport is `curl_cffi` with Chrome impersonation, the session the
-  anonymous Novig SGP scraper already gets through Cloudflare with.
+- **Polling** (`sources/novig.py`, every 60 s): refresh the access token
+  inside a 2-min margin (a rotated refresh token is rewritten at once), then
+  `GET https://api.novig.us/nbx/v1/portfolio/{active,settled}?currency=CASH&sort=<tab>_recency&limit=50`
+  with the app's `novig-client-capabilities: card_stack,player_props`
+  header, following `nextCursor` to the end of both lists (a list that
+  does not end within 200 pages, a page without `items`, or any non-200
+  fails the poll loudly and keeps the previous records). Transport is
+  `curl_cffi` with Chrome impersonation, the session the anonymous Novig
+  SGP scraper already gets through Cloudflare with.
+- **Why REST (2026-09-22).** Novig moved its web app from `app.novig.us`
+  to `novig.com` and put its Hasura GraphQL behind a query allowlist the
+  same hour — every hand-written query, and the old app's own Portfolio
+  queries, now answer `query is not allowed`. The new app's Portfolio screen
+  is a REST feed on the same Auth0 client and audience the service already
+  mints for, so nothing in the path can tell the poller from the app. The
+  earlier content-script mirror of `app.novig.us` (three extension files)
+  went with the old app.
 - **Renewal.** Auth0 chains usually cap at about 30 days; when the refresh
   fails the poll fails loudly (the Bets tab row goes red with the error and
   the previous records stay) and you run `connect` again.
 
-### Novig source (content scripts, fallback)
+`normalize_novig()` (pytest on `tests/fixtures/bets/novig_portfolio.json`,
+live cards captured 2026-09-22 and validated against the 476 orders the
+GraphQL-era normaliser had recorded — side agreed on every one) applies the
+feed's own shapes:
 
-The content-script route reads the same bets without any token, while a
-Novig tab has the Portfolio screen open. It stays as the fallback when the
-service is not connected; the panel shows the service row when both report.
-Two content scripts run on `app.novig.us` and send **zero** requests of their own:
-
-- `novig_page.js` (MAIN world, `document_start`) wraps `window.fetch` before
-  the app bundle captures it and mirrors the responses the app fetches for
-  its Portfolio screen — the Apollo queries `ActivePortfolioOrders_Query`,
-  `SettledPortfolioOrders_Query` and `ParlayPortfolioQuery` POSTed to
-  `api.novig.us/v1/graphql` (subscriptions run over a WebSocket and are not
-  mirrored; the app refetches these lists over fetch after a fill, which is
-  caught). No token is read; the clone of a watched response goes to the
-  isolated world by `window.postMessage`.
-- `novig_content.js` (ISOLATED world, after `novig_bets.js`) keeps the pages
-  each list returned in this tab (keyed on operation + where-clause, offset 0
-  restarts a list), normalises them with `novig_bets.js` and writes
-  `chrome.storage.local.betsNovig = {bets, readAt, url, error, complete,
-  pageSeenAt}`. The panel merges `bets` on every change: a **complete** read
-  (all three operations seen in this tab, every list's last page short of
-  its limit) is authoritative for the venue — a stored Novig record it no
-  longer lists is dropped; an incomplete read (a list still has pages the
-  app has not loaded, or an Active-only refetch from another screen) only
-  adds.
-
-`novig_bets.js` (pure, node-tested on
-`tests/fixtures/bets/novig_bets.json`) applies the app's own rules, read off
-its bundle on 2026-09-11: outcome index 0 is the **home** team or **Over**;
-`price` is a 0–1 probability and one contract pays $1; `isBid: true` backs
-the outcome and `false` lays it, so a lay at `p` becomes the other side at
-`1 - p` (a spread's number negated); the matched size is `originalQty -
-qty`; `MONEY`/`SPREAD`/`TOTAL` (+ `_1H`, which on MLB is the first five
-innings → period `F5`, else `1H`) are game markets, everything else
-(props, futures, `1X2`, team totals) is `other` / "not a game market";
-leagues map NFL→nfl, NCAAF→cfb, NBA/NCAAB/WNBA/MLB/NHL and the soccer
-leagues, the rest fail closed as "league not supported (…)". Status follows
-the app's card: settled by the outcome's WIN/LOSS/PUSH against `isBid`, a
-cancel with no fill is `void`, a wash or an approved cash-out is `closed`, a
-cancel with fills stays `open` on the matched part. A resting or pending
-order is `open` on its full size with `approx: ["novig_order_unmatched"]`
-(or `_pending`) — it is a bet you are trying to place. Parlays give one
-record per leg (`id` `novig:<parlay>:<leg>`, stake = the parlay's wager).
-Team keys are left null; the panel resolves `game.awayTeam.name` /
-`homeTeam.name` through `teams.js` (the runtime index below — Novig's full
-names are Unabated's, or the long form of its `eventName`, for every team
-seen so far, with four college aliases).
-Novig sends no rotation number, so the team pair is the ONLY way a Novig
-bet reaches a line: one unrecognised name blocks the bet outright, and
-it lands in the Bets tab's unmatched list naming the spelling to add.
-
-Every record (orders and each parlay leg, matchable or not) also keeps
-Novig's own ids (#118 step 2): `venueIds: {marketId, outcomeId, eventId,
-gameId}` and `awayTeamVenue` / `homeTeamVenue` `{id, name, shortName,
-symbol}` — each a string as Novig sent it, else null. The outcome id is
-what Unabated's Novig rungs carry as `sourceData` (see Edges → Parsing);
-on a lay it is the outcome laid, the side taken stays in `side`. Novig's
-`symbol` is not Unabated's abbreviation (`UTC` vs `CHT`, `EKU` vs `EKY`):
-stored, never a key. The matcher joins on `outcomeId` (Bets → What is
-matched). Live
-2026-09-15: all 41 open Novig game bets sat on events with Novig rungs,
-and 29 had a rung at their own number and side; the other 12 were 2
-moneylines (moneylines have no rungs) and 10 numbers the ladder no longer
-listed.
-
-Caveat: the fixture's shapes come from the bundle's operation documents and
-the fragments the cards read the `market` / `outcome` / `fills` JSON blobs
-through, not from a logged-in capture. If a live blob differs, the record
-lands in the unmatched list with a specific "unreadable Novig order (…)"
-reason and its `raw` fields — nothing is guessed.
+- A **straight** card is one order; a **union** card is several orders on
+  one market, each an order line under `stateBlocks[].{home,away}.lines[]`
+  (active) or `settledItems[].line` (settled), sharing the card's
+  `eventHeader` and `marketLabel`; a **parlay** card lists its legs under
+  `sgpGroups[].legs[]` and `singleLegs[]`, priced as a whole. The card id
+  of a straight or union card is the market id.
+- The outcome on a line is the side **held** — a lay already reads as the
+  other outcome, so there is no `isBid` to flip (the old lay flip had
+  priced one order at the wrong side's 0.70; the feed's own 0.305 is what
+  was paid). `price` is that side's 0–1 probability, `amounts.cost` the
+  dollars risked, `payoutCopy` the gross payout (thousands commas), so
+  contracts = cost / price and toWin = payout − cost.
+- One order can appear twice: its matched part (`Matched` / `Win` /
+  `Loss`) and a `Canceled` line for the unmatched remainder, under the same
+  `orderId`. The matched line is the bet; a `Canceled` line is a bet only
+  when the order never matched at all — then `void` with $0 at risk. A
+  `Settled` state is a **fractional** settlement (`outcome.status` `"0.72"`,
+  `"0.50"` — a first-five tie paid at half, a partial) and is graded on
+  what it paid against its cost, toWin being the actual P&L. `Draw`/`Push`,
+  `Cash Out` and `Unmatched`/`Pending` (open on the resting size with
+  `approx: ["novig_order_unmatched"]`) map by name; any other state is
+  `unknown` and logged, never silently open.
+- `outcome.subtitle` names the market: `Moneyline` / `Spread` / `Total`
+  are full game, `1st Half …` is `1H`, `First 5 …` is `F5` (MLB), anything
+  else (`Passing Yards`, …) is "not a game market"; the number is the
+  outcome title's trailing number (`ATL -1.5`, `Under 58.5`), else its
+  display label (`O 7.5`), else the union's `marketLabel` (`7.5 Total`).
+  The team is `competitor.id` against the event's teams (index 0 = home /
+  Over second). Leagues map NFL→nfl, NCAAF→cfb, NBA/NCAAB/WNBA/MLB/NHL and
+  the soccer leagues; the rest fail closed as "league not supported (…)".
+  Parlays give one record per leg (`id` `novig:<parlay>:<leg>`, stake =
+  the parlay's wager, no leg price).
+- Every team object carries **`unabatedId`**, Unabated's own team id, which
+  rides in `awayTeamVenue` / `homeTeamVenue` (with Novig's `id`, `name`,
+  `shortName`, `symbol`) and keys the record in `bets.js` ahead of names —
+  Novig sends it for every NFL, MLB and WNBA team seen and for 8 of 398
+  CFB records, so college bets still resolve by name and crosswalk.
+  Novig's `symbol` is not Unabated's abbreviation (`UTC` vs `CHT`): stored,
+  never a key. `venueIds: {marketId, outcomeId, eventId}` are the venue's
+  own; the outcome id is what Unabated's Novig rungs carry as `sourceData`
+  (see Edges → Parsing) and the matcher joins on it (Bets → What is
+  matched). Novig sends no rotation number, so a Novig bet reaches a line
+  by its outcome id or its team pair only.
 
 ## Bets service
 
@@ -1084,8 +1127,8 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 240 tests) and
-the bets service's pytest suite (109 tests, on the `kalshi_draft/venv`
+the node suite (`npm test` = `node --test tests/*.test.js`, 245 tests) and
+the bets service's pytest suite (105 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`
@@ -1129,19 +1172,24 @@ exemption, no rung / whole number / other period, changes-stream lines
 ignored (`fromSnapshot`), soccer moneylines feeding no cut, and the period
 name → id map.
 
-`novig_bets.test.js` runs the Novig normaliser on
-`fixtures/bets/novig_bets.json`: page bookkeeping (complete vs a full last
-page, offset 0 restarting a list, parlay lists keyed on their where-clause),
-a matched moneyline bid (index 0 = home, probability → American, stake =
-contracts × price), a spread bid and the lay of the same outcome (other
-team, negated number, `1 - p`), totals (partial fill sized on the matched
-part, a resting order open with the caveat), MLB `_1H` → `F5`, NCAAF → cfb,
-the strike fallback in the home perspective, props / unsupported leagues /
-blobs without teams failing closed with a reason, the settled grades (bid on
-WIN, lay on LOSS, PUSH, void cancel, wash closed), cancel-with-fills /
-cash-out / REJECTED / PENDING, parlay legs, native-id dedupe, and the
-venue ids (#118: kept on every record and parlay leg, a missing or
-non-string id null). `bets.test.js` joins synthetic Kalshi and Novig records
+`edgemove.test.js` pins the why-it-grew tag (#132): fair up with the price
+flat, better or worse is green; price better with the fair flat is amber;
+fair against the side with the price better (the edge reading bigger) or
+flat is red; amber turns red once the fair follows the book, with "ago"
+counted from the book's move; a book that only shortened, a sub-threshold
+one-point fair change (-150 → -151) and a first sighting are no tag; a
+whole-point change (-150 → -160) and a Novig half-cent are moves; a number
+move resets; a move older than the window expires; a line first seen inside
+the window compares to its first sighting; a missing fair decides on the
+price; pruning keeps one baseline; bad input fails loudly. `scanner.test.js`
+adds the history's plumbing on the fixtures: one snapshot observation per
+line on start and a clean slate on restart; a stream update on the same
+number is a `(stream)` amber while the fixture's number move resets the
+line; a re-downloaded snapshot records a fair move and an alt rung's price
+move as `(snapshot)` observations and forgets the lines it no longer lists
+(the stream re-adds the ones it carries, as first sightings).
+
+`bets.test.js` joins synthetic Kalshi and Novig records
 with unrecognisable team names on `fixtures/v2_venue_ids_slice.json`'s ids
 (#118 step 3): the Kalshi spread YES and NO and the moneyline through the
 suffix, the Novig bid and its lay on the outcome id, a main line moved off
@@ -1163,17 +1211,30 @@ store (learn once, no duplicates, a different id refused with what is
 held, served with the payload, cleared), the row validator naming the first
 bad row, and over HTTP the POST / conflict / DELETE round trip plus the
 415 on non-JSON writes, 400 on bad bodies and 404 on other paths.
-`bets.test.js` then matches those Novig records against the NFL slice: the
-moneyline bid (same_line / opposite with Novig labels), the spread bid and
-its lay on both signs, a resting Under and a parlay leg flagging the game,
-settled orders never matching, and the unmatched reasons. On the Python
-side `test_normalize_novig.py` restates those cases for the port,
-`test_parity_novig.py` holds it byte-equivalent to the JS (on the fixture,
-and on extra rows with malformed or missing ids fed to node on stdin), and
+`bets.test.js` then matches Novig records as the service emits them
+against the NFL slice: a moneyline on Carolina (same_line / opposite with
+the Novig label, keyed on the venue's `unabatedId`s), `resolveTeamKeys`
+keying on `unabatedId` ahead of names with a learned crosswalk row still
+winning and `rekeyRecords` keeping it, a resting order and a parlay leg
+flagging the game, settled and void records never matching, and the
+source's unmatched reasons passing through. On the Python side
+`test_normalize_novig.py` runs the normaliser on
+`fixtures/bets/novig_portfolio.json` (live cards, 2026-09-22): a matched
+straight spread (the side held at its own price, cost / payout / contracts,
+`unabatedId` as a string, cardId = market id), a team without an
+`unabatedId`, union lines as one record each with the number from the
+market label, an order seen matched and as a Canceled remainder kept once,
+never-matched cancels void at $0, the feed pricing the side held (no lay
+flip), settled wins and losses with `closedAt`, `1st Half` → `1H` and
+`First 5` → `F5`, a fractional `Settled` line graded on what it paid,
+props / unsupported leagues / unreadable cards failing closed with a
+reason, parlay legs sharing the wager with no leg price, unknown states
+logged as `unknown`, resting states flagged, and the line / leg walkers;
 `test_novig_source.py` covers the auth (refresh once then cache to the
 margin, rotation persisted with 0600, missing/broken token file, callback
-state/error parsing) and the source (trader resolved once, pagination to a
-short page, no user / auth failure / GraphQL error all raise).
+state/error parsing) and the source (both Portfolio lists cursor-paged to
+the end with the bearer on every GET, the URL grammar, and a page without
+`items` / an unended list / an HTTP error / an auth failure all raising).
 
 The #130 smoke run (2026-09-19, a scratch Playwright harness, not committed)
 loaded the unpacked extension with the NFL slice at a future kickoff and four
@@ -1388,6 +1449,54 @@ in red.
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
 
-**Unabated Ticket** (`unabated_ticket/`) — Chrome MV3 side-panel extension (plain JS, no build). A capture-phase click on an Unabated odds-screen price reads the React fiber / AG Grid row (`page.js`, MAIN world), builds a one-at-a-time ticket (side, points, book price, `bacr` fair) in `chrome.storage.local`, computes the unrounded quarter-Kelly stake (`kelly.js`, node-tested), and re-reads the line every 5 s for a line-moved warning — **the watcher resumes from the stored ticket** whenever `page.js` loads (it dies with every navigation: one-click betting leaving the tab, Back, reload, discard, extension-reload takeover; `content.js` hands the stored ticket back on `resume_request` and once on its own load, and `page.js` rebuilds the watch by identity with no grid API — before 0.6.6 every such ticket read "Not watching the line" under a live heartbeat). **Edges tab (issue #112)**: while the panel is open, `scanner.js` reads Unabated's public feeds — the v2 league snapshot (`content.unabated.com/markets/v2/league/{lg}/odds.json?t=<30s bucket>` — the query busts a CloudFront edge cache that served gzip clients a 6.5 h-old copy on 2026-09-10 — on open + per-league refresh, 4 at a time, for the 29 team-sport leagues in `feed.LEAGUES`: NFL/CFB/NBA/CBB/WNBA/MLB/NHL + soccer; tennis and combat key sides on people and are out) and the changes stream (`api-k.unabated.com/api/markets/changes/query/{cursor}`, every 10 s; cursor = ns since 2021-01-06, kept as a string; **incomplete anonymously** — 69 of 191 NFL line changes in 3 min on 2026-09-10, exchange moves mostly missing — so each league's snapshot re-downloads on a size-tiered cadence, 60 s / 2 min / 5 min) — through `feed.js` (pure, fixture-tested: lines keyed `(marketId, book, sideKey)` because the changes stream tags other markets of an event with the same `bt` key, updates applied only on a newer `sequenceNumber`, books listed when `isActive` and enabled for game odds — `statusId` is not liveness, Caesars/Underdog carry 2 while live) and lists every ML/spread/total with Unabated's `ge` at or above the minimum and a `modifiedOn` within the max line age (default 168 h — dead feeds at "active" books carried 96-day-old lines with +36% "edges" on 2026-09-10; each row prints its line age), sized with `kellyStakeFromEdge`, filtered by a Books multi-select dropdown + Bets checkboxes in the panel (books default to the selection `page.js` publishes from `userSettings.gameOdds`; the user's own ticks win). Row click / notification click store a `locate` request (`locate.js`) that focuses the Unabated tab and has `page.js` scroll to the row and outline the cell — the price click stays the user's. Alerts are Chrome notifications, off by default, baselined on enable, deduped per line with a 5-min per-event cooldown. **Alt lines (issue #113)**: each snapshot line's `alternateLines[]` expands into lines keyed `(marketId, book, sideKey, points)` under the main line (`isAlt`, `mainPoints` = the book's own main number — NOT the feed's `stn`, which is the market's standard number), listed only behind an **Include alt lines** toggle (off by default) with one alt-only gate, **Max pts from main** (7), on top of every main-line gate (**Min liq to win**, $100, gates main lines and alts alike since 2026-09-23 on what the resting money can win, and every suggested stake is capped at the line's liquidity); an alt sitting on its main line's current number is hidden. Freshness caveat measured 2026-09-11: the anonymous changes stream carries NO alt updates and every alt's `modifiedOn` is the `0001-01-01` sentinel, so alts refresh only with the per-league snapshot and their age reads from `sequenceNumber` (the change time in epoch ms). An alt row click expands the grid row's Alts (`setExpanded`) and finds the cell by fiber props (points/side/book/event), failing loudly with the main cell outlined; a ticket captured on an alt cell carries `watch.altPoints` so the watcher re-reads the same rung. **Group by market** (on by default): `feed.groupEdges` collapses the list to one card per (game, period, bet type, side) — a +EV opinion is directional — whose best line is the highest Kelly stake (taxes longshots, so a -110 main at +5% beats a +944 rung at +6%), with `N books · M lines` behind an expander; alerts then key on the card and re-fire only when its best edge improves. **Bet history flags (issue #114, core; merged 2026-09-11)**: a local **bets service** (`unabated_ticket/bets_service/`, `run.sh`, `127.0.0.1:8094` loopback-only, no auth) is the only place that signs Kalshi requests — the private key never enters the extension — and turns the account's fills + unsettled positions into normalised bet records (one per `(ticker, side)`; positions are the truth for open size, fills the VWAP entry price; `sources/kalshi.py`, `sources/kalshi_ticker.py` a series map + cached public `/markets` and `/events` GETs, football suffixes carry the Eastern DATE only, MLB `HHMM` too; unknown series and futures fail closed as "unmatchable", shown never matched), UPSERTs them on native id into `bets_service/bets.duckdb::bets` (never pruned — future CLV) with a `source_runs` row per poll, and serves `GET /bets.json[?days=30]` (`{generatedAt, sources: {kalshi: {fetchedAt, ok, error, count}}, bets}`) + `/health`; a failed poll keeps the previous records (a dark source never blanks the list), a source on its first poll reads `ok:false, "no completed poll yet"`. The panel polls it every 30 s while visible — **never from the service worker** — into `chrome.storage.local` `betsService` (payload + records, open + settled ≤30 days, ~1 KB each) and `betsSettings` (`serviceUrl`), resolving team keys through `teams.js` — NOT a hand table (user decision 2026-09-11): every league snapshot's own team list (id, name, abbreviation) is registered at runtime and persisted as `teamsIndex`, keys are `<league>:<Unabated team id>` (the ids the board's lines carry), venue spellings resolve by exact normalised name, then a three-row `ALIASES` list, then a leading-code strip ("PIT Steelers"), then a UNIQUE word-boundary containment (the query-extends-team direction only for State/University/College, so "Southern Mississippi" never becomes "Southern") — and treating a venue's `ok` pull as authoritative for that venue's records. `bets.js` (pure, node-tested on `tests/fixtures/bets/kalshi_fixture.json`; `normalize_kalshi` in Python is held byte-equivalent by `test_parity.py`) matches a bet to a line on league + team pair (either order) or rotation + time (≤30 min with a start; the Eastern date ±1 day without), refuses to guess when two board events fit ("ambiguous game"), and ranks four tiers: `same_line` (market, period, side and number), `same_side` (different number), `opposite` (the other side — red), `same_game` (any other market/period); Kalshi NO on a team market = the other team **or a tie** (NFL/CFB/soccer, `approx: kalshi_no_side_includes_tie`). Surfaces: a **Ticket banner** (strongest first, 5 then "+N more"), **Edges badges + sized stakes** — a held bet NEVER hides a line, it changes the size of the next one (user decision 2026-09-11, replacing a hide toggle): `bets.exposureOf` sums dollars risked on the same direction (`held`, same_line + same_side) and the other side (`against`), `betsview.stakeAdvice` turns the row's Kelly stake into one wording everywhere (user choice 2026-09-11, `stakeAdviceWords`): "wagered $350 → target $600, bet $250" (against positions read "wagered $200 against …, bet $500 (net $300 on this side)", full size reads "bet $0"), rows and cards carry a `held $N` / `against $N` (red) / `game` badge plus a dim "you hold …" position line, a **by my exposure** sort, and alerts skip only lines already held at size, a **Bets tab** (per-venue freshness green <5 min / amber <60 / red, open bets, and an **unmatched** list with a reason per bet — nothing dropped silently), and a **header line** under the tabs ("bets: N open · kalshi 20 s · betonline — …"). Venue split: **#115 BetOnline (merged 2026-09-15)** polls the account's bet-history report through the bets service on the bet_logger Keycloak refresh token (`sources/betonline.py`; registered when the recon cookie file exists; refresh only within 60 s of expiry under a file lock shared with `bet_logger/scraper_betonline.py`, pending bets kept, league via `bet_logger/utils.parse_sport`, no game date → `approx: game_date_unknown` and the matcher windows `placedAt` −12 h/+14 d keyed on the rotation, with `tierByRotation` for team names `teams.js` cannot key); **#116 Novig, #117 ProphetX** each add a `Source` (`sources/__init__.py` protocol: `name`, `poll_sec`, `fetch() -> list[record]`, raise on failure, never partial) or a content script writing storage directly; until they land those venues read "no source configured". **Novig (issue #116)**: the official NBX API is a separate "Liquidity Provider" account ($30k minimum deposit; docs.novig.com/lp-onboarding) and cannot see retail-app bets, so the primary source is `bets_service/sources/novig.py` — a one-time `novig_auth connect` (Auth0 PKCE against the app's public client, the user logs in, refresh token saved to gitignored `novig_token.json`; its OWN chain, never the app's rotating localStorage token) then a 60 s poll of the app's Hasura `order`/`parlay` tables for the trader resolved from the JWT `sub`, through `curl_cffi`; `normalize_novig` is held byte-equivalent to `novig_bets.js` by `test_parity_novig.py`. The content-script mirror is the token-free fallback: `novig_page.js` (MAIN world, `document_start`, wraps `window.fetch` before the app bundle captures it) mirrors the three Portfolio queries the `app.novig.us` app fetches for itself (`ActivePortfolioOrders_Query` / `SettledPortfolioOrders_Query` / `ParlayPortfolioQuery` → `api.novig.us/v1/graphql`; zero requests of its own, no token read) and `novig_content.js` normalises them via `novig_bets.js` (outcome index 0 = home/Over, `price` a 0–1 probability, `isBid:false` LAYS the outcome = the other side at `1 - p`, `_1H` on MLB = `F5`, props/futures/unsupported leagues fail closed) into `chrome.storage.local.betsNovig`, which the panel merges (a complete read is authoritative for the venue; a stale one says "open app.novig.us … to refresh"); shapes are bundle-derived, not a live capture — a divergent blob lands in the unmatched list as "unreadable Novig order (…)". No overlay, no order placement. Load unpacked from `unabated_ticket/extension`.
+**2026-09-23 — Liquidity: a floor on what the resting money can win, and no
+stake above it.** Min liquidity ($100) gated alts only, so a Novig Portland
+Fire +809 main moneyline with $17 resting listed with "add $32.58". A flat
+stake floor on every line was rejected: it hides longshots whose whole Kelly
+bet is small. Cal's rule instead: $20 on +2000 (wins $400) is worth a look,
+$20 on +100 (wins $20) is not, so **Min liq to win** ($100) gates main lines
+and alts on liquidity × the price's win per dollar, and every suggested
+stake (rows, cards, sort, alerts, the Ticket) is capped at the line's
+liquidity. Unverified: that Unabated's liquidity is stake dollars, not payout.
+
+**2026-09-22 — Why an edge grew: the fair decides (#132).** The panel sized on
+the current edge every refresh and could not say why it was what it was;
+on a held line the two reasons an edge grows call for opposite actions
+(fair moved to you: add; the book moved away while Unabated's fair, ~1–2
+min behind, has not answered: wait). The scanner now keeps a per-line
+history in memory — one observation per snapshot and per stream update,
+distinct values only, a number move resets the line — and `edgemove.js`
+reads a tag off it inside a 10-min window at a 0.5-point threshold in
+probability. Spec addition the same day: four cases, the fair's direction
+picks the tag (`fair moved to you` green, `book moved away` amber, `fair
+moved against you` red — the adverse-selection case, red whatever the price
+did — none otherwise); "both moved, name the larger" was dropped. Openers
+(`openerPrice` / `openerPoints`, #126) are parsed for the first time and
+shown as tooltip context only: measured live, per book on every main line,
+none on alt rungs, and 54% of NFL spread/total lines sit on another number
+than they opened. Acting on the tag (a hold rule) is out of scope; the stake
+is untouched. Plan: `docs/2026-09-22-unabated-ticket-edge-source-tag-plan.md`.
+
+**2026-09-22 — Novig source rebuilt on the Portfolio REST feed (#116).** Novig
+moved its web app from `app.novig.us` to `novig.com` and put its Hasura
+GraphQL behind a query allowlist the same hour; the service's hand-written
+`order`/`parlay` queries, and the old app's own Portfolio queries, all answer
+`query is not allowed`. The new app reads `GET api.novig.us/nbx/v1/portfolio/{active,settled}`
+on the same Auth0 client and audience the service already mints for, so
+`sources/novig.py` now does the same — pure HTTP, cursor-paged, no allowlist
+in the path. Considered and rejected: a capture-and-replay of the app's
+allowlisted GraphQL documents (an arms race Novig had just shown it was
+running, and moot once the app itself left GraphQL) and keeping the
+content-script mirror as the primary source (the Portfolio screen pages 15
+at a time; 91 open positions / $16k at risk would need seven "load more"
+taps per refresh, and a position outside the window would go stale rather
+than missing — worse for conditional Kelly). The mirror (`novig_page.js`,
+`novig_content.js`, `novig_bets.js`) and the parity test went with the old
+app. The REST shape validated against the 476 GraphQL-era records: side
+agreed on all of them; the old normaliser's lay flip had priced one order at
+the wrong side's 0.70 where the feed's 0.305 was paid. The Novig paragraph
+below is the pre-rebuild text, kept as history.
+
+**Unabated Ticket** (`unabated_ticket/`) — Chrome MV3 side-panel extension (plain JS, no build). A capture-phase click on an Unabated odds-screen price reads the React fiber / AG Grid row (`page.js`, MAIN world), builds a one-at-a-time ticket (side, points, book price, `bacr` fair) in `chrome.storage.local`, computes the unrounded quarter-Kelly stake (`kelly.js`, node-tested), and re-reads the line every 5 s for a line-moved warning — **the watcher resumes from the stored ticket** whenever `page.js` loads (it dies with every navigation: one-click betting leaving the tab, Back, reload, discard, extension-reload takeover; `content.js` hands the stored ticket back on `resume_request` and once on its own load, and `page.js` rebuilds the watch by identity with no grid API — before 0.6.6 every such ticket read "Not watching the line" under a live heartbeat). **Edges tab (issue #112)**: while the panel is open, `scanner.js` reads Unabated's public feeds — the v2 league snapshot (`content.unabated.com/markets/v2/league/{lg}/odds.json?t=<30s bucket>` — the query busts a CloudFront edge cache that served gzip clients a 6.5 h-old copy on 2026-09-10 — on open + per-league refresh, 4 at a time, for the 29 team-sport leagues in `feed.LEAGUES`: NFL/CFB/NBA/CBB/WNBA/MLB/NHL + soccer; tennis and combat key sides on people and are out) and the changes stream (`api-k.unabated.com/api/markets/changes/query/{cursor}`, every 10 s; cursor = ns since 2021-01-06, kept as a string; **incomplete anonymously** — 69 of 191 NFL line changes in 3 min on 2026-09-10, exchange moves mostly missing — so each league's snapshot re-downloads on a size-tiered cadence, 60 s / 2 min / 5 min) — through `feed.js` (pure, fixture-tested: lines keyed `(marketId, book, sideKey)` because the changes stream tags other markets of an event with the same `bt` key, updates applied only on a newer `sequenceNumber`, books listed when `isActive` and enabled for game odds — `statusId` is not liveness, Caesars/Underdog carry 2 while live) and lists every ML/spread/total with Unabated's `ge` at or above the minimum and a `modifiedOn` within the max line age (default 168 h — dead feeds at "active" books carried 96-day-old lines with +36% "edges" on 2026-09-10; each row prints its line age), sized with `kellyStakeFromEdge`, filtered by a Books multi-select dropdown + Bets checkboxes in the panel (books default to the selection `page.js` publishes from `userSettings.gameOdds`; the user's own ticks win). Row click / notification click store a `locate` request (`locate.js`) that focuses the Unabated tab and has `page.js` scroll to the row and outline the cell — the price click stays the user's. Alerts are Chrome notifications, off by default, baselined on enable, deduped per line with a 5-min per-event cooldown. **Alt lines (issue #113)**: each snapshot line's `alternateLines[]` expands into lines keyed `(marketId, book, sideKey, points)` under the main line (`isAlt`, `mainPoints` = the book's own main number — NOT the feed's `stn`, which is the market's standard number), listed only behind an **Include alt lines** toggle (off by default) with two alt-only gates, **Max pts from main** (7) and **Min liquidity** ($100, exchanges only), on top of every main-line gate; an alt sitting on its main line's current number is hidden. Freshness caveat measured 2026-09-11: the anonymous changes stream carries NO alt updates and every alt's `modifiedOn` is the `0001-01-01` sentinel, so alts refresh only with the per-league snapshot and their age reads from `sequenceNumber` (the change time in epoch ms). An alt row click expands the grid row's Alts (`setExpanded`) and finds the cell by fiber props (points/side/book/event), failing loudly with the main cell outlined; a ticket captured on an alt cell carries `watch.altPoints` so the watcher re-reads the same rung. **Group by market** (on by default): `feed.groupEdges` collapses the list to one card per (game, period, bet type, side) — a +EV opinion is directional — whose best line is the highest Kelly stake (taxes longshots, so a -110 main at +5% beats a +944 rung at +6%), with `N books · M lines` behind an expander; alerts then key on the card and re-fire only when its best edge improves. **Bet history flags (issue #114, core; merged 2026-09-11)**: a local **bets service** (`unabated_ticket/bets_service/`, `run.sh`, `127.0.0.1:8094` loopback-only, no auth) is the only place that signs Kalshi requests — the private key never enters the extension — and turns the account's fills + unsettled positions into normalised bet records (one per `(ticker, side)`; positions are the truth for open size, fills the VWAP entry price; `sources/kalshi.py`, `sources/kalshi_ticker.py` a series map + cached public `/markets` and `/events` GETs, football suffixes carry the Eastern DATE only, MLB `HHMM` too; unknown series and futures fail closed as "unmatchable", shown never matched), UPSERTs them on native id into `bets_service/bets.duckdb::bets` (never pruned — future CLV) with a `source_runs` row per poll, and serves `GET /bets.json[?days=30]` (`{generatedAt, sources: {kalshi: {fetchedAt, ok, error, count}}, bets}`) + `/health`; a failed poll keeps the previous records (a dark source never blanks the list), a source on its first poll reads `ok:false, "no completed poll yet"`. The panel polls it every 30 s while visible — **never from the service worker** — into `chrome.storage.local` `betsService` (payload + records, open + settled ≤30 days, ~1 KB each) and `betsSettings` (`serviceUrl`), resolving team keys through `teams.js` — NOT a hand table (user decision 2026-09-11): every league snapshot's own team list (id, name, abbreviation) is registered at runtime and persisted as `teamsIndex`, keys are `<league>:<Unabated team id>` (the ids the board's lines carry), venue spellings resolve by exact normalised name, then a three-row `ALIASES` list, then a leading-code strip ("PIT Steelers"), then a UNIQUE word-boundary containment (the query-extends-team direction only for State/University/College, so "Southern Mississippi" never becomes "Southern") — and treating a venue's `ok` pull as authoritative for that venue's records. `bets.js` (pure, node-tested on `tests/fixtures/bets/kalshi_fixture.json`; `normalize_kalshi` in Python is held byte-equivalent by `test_parity.py`) matches a bet to a line on league + team pair (either order) or rotation + time (≤30 min with a start; the Eastern date ±1 day without), refuses to guess when two board events fit ("ambiguous game"), and ranks four tiers: `same_line` (market, period, side and number), `same_side` (different number), `opposite` (the other side — red), `same_game` (any other market/period); Kalshi NO on a team market = the other team **or a tie** (NFL/CFB/soccer, `approx: kalshi_no_side_includes_tie`). Surfaces: a **Ticket banner** (strongest first, 5 then "+N more"), **Edges badges + sized stakes** — a held bet NEVER hides a line, it changes the size of the next one (user decision 2026-09-11, replacing a hide toggle): `bets.exposureOf` sums dollars risked on the same direction (`held`, same_line + same_side) and the other side (`against`), `betsview.stakeAdvice` turns the row's Kelly stake into one wording everywhere (user choice 2026-09-11, `stakeAdviceWords`): "wagered $350 → target $600, bet $250" (against positions read "wagered $200 against …, bet $500 (net $300 on this side)", full size reads "bet $0"), rows and cards carry a `held $N` / `against $N` (red) / `game` badge plus a dim "you hold …" position line, a **by my exposure** sort, and alerts skip only lines already held at size, a **Bets tab** (per-venue freshness green <5 min / amber <60 / red, open bets, and an **unmatched** list with a reason per bet — nothing dropped silently), and a **header line** under the tabs ("bets: N open · kalshi 20 s · betonline — …"). Venue split: **#115 BetOnline (merged 2026-09-15)** polls the account's bet-history report through the bets service on the bet_logger Keycloak refresh token (`sources/betonline.py`; registered when the recon cookie file exists; refresh only within 60 s of expiry under a file lock shared with `bet_logger/scraper_betonline.py`, pending bets kept, league via `bet_logger/utils.parse_sport`, no game date → `approx: game_date_unknown` and the matcher windows `placedAt` −12 h/+14 d keyed on the rotation, with `tierByRotation` for team names `teams.js` cannot key); **#116 Novig, #117 ProphetX** each add a `Source` (`sources/__init__.py` protocol: `name`, `poll_sec`, `fetch() -> list[record]`, raise on failure, never partial) or a content script writing storage directly; until they land those venues read "no source configured". **Novig (issue #116)**: the official NBX API is a separate "Liquidity Provider" account ($30k minimum deposit; docs.novig.com/lp-onboarding) and cannot see retail-app bets, so the primary source is `bets_service/sources/novig.py` — a one-time `novig_auth connect` (Auth0 PKCE against the app's public client, the user logs in, refresh token saved to gitignored `novig_token.json`; its OWN chain, never the app's rotating localStorage token) then a 60 s poll of the app's Hasura `order`/`parlay` tables for the trader resolved from the JWT `sub`, through `curl_cffi`; `normalize_novig` is held byte-equivalent to `novig_bets.js` by `test_parity_novig.py`. The content-script mirror is the token-free fallback: `novig_page.js` (MAIN world, `document_start`, wraps `window.fetch` before the app bundle captures it) mirrors the three Portfolio queries the `app.novig.us` app fetches for itself (`ActivePortfolioOrders_Query` / `SettledPortfolioOrders_Query` / `ParlayPortfolioQuery` → `api.novig.us/v1/graphql`; zero requests of its own, no token read) and `novig_content.js` normalises them via `novig_bets.js` (outcome index 0 = home/Over, `price` a 0–1 probability, `isBid:false` LAYS the outcome = the other side at `1 - p`, `_1H` on MLB = `F5`, props/futures/unsupported leagues fail closed) into `chrome.storage.local.betsNovig`, which the panel merges (a complete read is authoritative for the venue; a stale one says "open app.novig.us … to refresh"); shapes are bundle-derived, not a live capture — a divergent blob lands in the unmatched list as "unreadable Novig order (…)". No overlay, no order placement. Load unpacked from `unabated_ticket/extension`.
 
 **Conditional Kelly against held bets (issue #130, 2026-09-19).** The panel sized every line alone and adjusted by subtracting dollars (`add $X`, `still $X against`); dollars at different prices and numbers are not comparable and a moneyline held against a spread was ignored (four live cards, K $8,000: New Mexico @ Oklahoma bet $183 → $296, Lions @ Bills "at full size" → add $188, UConn add $116 → $121, Chargers ML bet $189 → add $0). Now `betsview.stakeAdvice` sizes the row given the open bets on its market (`condkelly.js`, `ladder.js`): K = bankroll × multiplier (full Kelly on the whole bankroll then a quarter is wrong — it says add $500 to a line already held at full size $667); the new bet's chance from Unabated's edge (decision 2026-09-09 stands), a held bet's from the median `bacr` at its half-point rung today; no fees added (Unabated's prices include them, user 2026-09-17). Same market and period is exact off the ladder; another period is the worst case the fairs allow (comonotonic pairing) because no correlation is estimated (user decision 2026-09-18: no per-sport history, use what Unabated provides) — **this reverses the 2026-09-12 "show it, don't size off it" decision** on the unmerged `feature/unabated-related-period-bets`, whose `related_same` / `related_opposite` tier names were taken and which is retired; **only the same direction is sized across periods** — the logic review (2026-09-19) showed the literal rule sizes a cross-period hedge as if both bets won together (hold 1H Under $300, new FG Over: $407 vs $667 alone vs $802 under the measured 0.69 link), so the other direction in another period is left out and named `other period · not sized` (user decision 2026-09-19); another market is never in the math (worst case gave $35 vs $188 on the Bills card and independent differs from ignored by $1; open in #129). Guards are left out and named, never guessed. Found while building: the changes stream ADDS lines for known events and files team totals under the game total's `bt3`, so `feed.js` marks snapshot lines `fromSnapshot` and only those feed a ladder. `bets.exposureOf`, `badgeText` / `badgeKind` and the `add` / `at_size` / `reverse` advice kinds are gone. **Hedge sizing is deferred** (user, 2026-09-19): a price with no edge of its own stays $0 and there is no `hedge only` label. Plan: `docs/2026-09-18-unabated-ticket-conditional-kelly-plan.md`.

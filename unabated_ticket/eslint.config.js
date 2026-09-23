@@ -5,8 +5,8 @@
 // rules: the extension is plain JS loaded unpacked, and formatting churn
 // would bury the one diff line that matters in a pre-merge review.
 //
-// The pure modules (feed.js, bets.js, teams.js, kelly.js, betsview.js,
-// scanner.js, novig_bets.js, locate.js) are dual-loaded: as a plain <script>
+// The pure modules (feed.js, bets.js, teams.js, kelly.js, edgemove.js,
+// betsview.js, scanner.js, locate.js) are dual-loaded: as a plain <script>
 // in panel.html, where they publish onto globalThis.UnabatedX, and via
 // require() in tests/. That is why extension files get the CommonJS globals
 // (module, require) next to the browser + chrome.* ones — one config for

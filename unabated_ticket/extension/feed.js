@@ -36,6 +36,14 @@
 //   - `stn` is the market's standard number, not this book's main points
 //     (Hard Rock: stn 47.5 on a 48.0 main), so mainPoints comes from the
 //     parent line; and alternateLines can hold null entries.
+//
+// Openers (issue #126, read since #132): every main line carries the BOOK's
+// own openerPrice / openerPoints (live NFL file 2026-09-22: 2,720 of 2,720
+// spread/total and 1,393 of 1,393 moneyline lines, and on every side priced
+// by three or more books the openers differed across books); alt rungs carry
+// none (0 of 40,499) and the changes stream carries none, so an update keeps
+// the snapshot line's. 1,466 of those 2,720 lines sat on a different number
+// than they opened, so an opener price only compares when its points match.
 
 (function (root) {
   "use strict";
@@ -294,6 +302,8 @@
       sequenceNumber: numberOrNull(raw.sequenceNumber),
       isBlurred: raw.isBlurred === true,
       modifiedOn: raw.modifiedOn ?? null,
+      openerPrice: numberOrNull(raw.openerPrice),
+      openerPoints: numberOrNull(raw.openerPoints),
     };
   }
 
@@ -558,8 +568,10 @@
   // them; selectEdges reads the main line's CURRENT points for the distance
   // gate and the same-points dedupe, so a main line that moves onto an alt's
   // number hides that alt until the next snapshot refresh replaces it.
+  // `appliedKeys` lists every line replaced or added, so the scanner can
+  // record them in the per-line history (#132) without re-diffing the state.
   function applyChanges(state, changes) {
-    const counts = { applied: 0, added: 0, stale: 0, unknownEvent: 0, otherLeague: 0 };
+    const counts = { applied: 0, added: 0, stale: 0, unknownEvent: 0, otherLeague: 0, appliedKeys: [] };
     const leagues = new Set(state.leagues);
     for (const line of changes.lines) {
       if (!leagues.has(line.leagueId)) {
@@ -578,8 +590,15 @@
         continue;
       }
       const { eventStart, ...fields } = line;
-      state.lines[line.key] = { liquidity: held ? held.liquidity : null, fromSnapshot: held ? held.fromSnapshot === true : false, ...fields };
+      state.lines[line.key] = {
+        liquidity: held ? held.liquidity : null,
+        fromSnapshot: held ? held.fromSnapshot === true : false,
+        openerPrice: held ? held.openerPrice ?? null : null,
+        openerPoints: held ? held.openerPoints ?? null : null,
+        ...fields,
+      };
       counts.applied += 1;
+      counts.appliedKeys.push(line.key);
       if (!held) counts.added += 1;
     }
     return counts;
@@ -644,6 +663,9 @@
       isBlurred: line.isBlurred,
       // When the book last changed this line (modifiedOn; an alt's sequenceNumber); null if unknown.
       modifiedMs: lineChangedMs(line),
+      // The book's own opening price and number (main lines only; see the header). Tooltip context for the edge-move tag (#132).
+      openerPrice: line.openerPrice ?? null,
+      openerPoints: line.openerPoints ?? null,
       isAlt: line.isAlt === true,
       // The book's main-line points this alt hangs off (current main line when held); null on a main line.
       mainPoints: line.isAlt ? currentMainPoints(line, state) : null,

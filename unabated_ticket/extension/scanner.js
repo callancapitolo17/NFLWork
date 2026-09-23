@@ -11,7 +11,9 @@
 //
 // Side effects: network requests to content.unabated.com and
 // api-k.unabated.com only. No storage, no DOM. State lives in memory and is
-// handed to the panel through onChange(status, state).
+// handed to the panel through onChange(status, state, history) — `history`
+// is the per-line record of what each line was worth on every snapshot and
+// stream update (edgemove.js, #132), also in memory only.
 //
 // Loaded as a plain <script> in panel.html (globalThis.UnabatedScanner) and via
 // require() in tests, where fetch and timers are injected.
@@ -20,6 +22,7 @@
   "use strict";
 
   const feed = typeof module !== "undefined" && module.exports ? require("./feed.js") : root.UnabatedFeed;
+  const edgemove = typeof module !== "undefined" && module.exports ? require("./edgemove.js") : root.UnabatedEdgeMove;
 
   const SNAPSHOT_BASE_URL = (leagueId) => `https://content.unabated.com/markets/v2/league/${leagueId}/odds.json`;
   // CloudFront serves the bare URL to gzip clients (every browser) from an
@@ -74,6 +77,8 @@
     const onChange = (deps && deps.onChange) || (() => {});
 
     let state = feed.emptyState();
+    // line key -> observations (edgemove.observe); reset with the state.
+    let history = {};
     let leagues = [];
     let cursor = null;
     let pollTimer = null;
@@ -133,7 +138,7 @@
       status.altLineCount = feed.countAltLines(state);
       status.eventCount = Object.keys(state.events).length;
       status.cursor = cursor;
-      onChange({ ...status }, state);
+      onChange({ ...status }, state, history);
     }
 
     function setError(message) {
@@ -159,16 +164,37 @@
     }
 
     // Merge one league's snapshot into the live state in place (a full
-    // mergeStates per league would copy every line 29 times).
+    // mergeStates per league would copy every line 29 times). Returns the
+    // keys of the league's lines it dropped, re-listed or not.
     function mergeInto(target, loaded) {
       target.leagues = target.leagues.filter((id) => !loaded.leagues.includes(id)).concat(loaded.leagues);
       Object.assign(target.teams, loaded.teams);
       Object.assign(target.teamIndex ||= {}, loaded.teamIndex || {});
       Object.assign(target.books, loaded.books);
       for (const [id, event] of Object.entries(target.events)) if (loaded.leagues.includes(event.leagueId)) delete target.events[id];
-      for (const [key, line] of Object.entries(target.lines)) if (loaded.leagues.includes(line.leagueId)) delete target.lines[key];
+      const dropped = [];
+      for (const [key, line] of Object.entries(target.lines)) {
+        if (!loaded.leagues.includes(line.leagueId)) continue;
+        delete target.lines[key];
+        dropped.push(key);
+      }
       Object.assign(target.events, loaded.events);
       Object.assign(target.lines, loaded.lines);
+      return dropped;
+    }
+
+    // One observation per line of a freshly merged snapshot, and the history
+    // of every line the snapshot no longer lists is forgotten: a pulled line
+    // must not keep a stale record for the session.
+    function recordSnapshot(loaded, droppedKeys) {
+      const at = now();
+      for (const line of Object.values(loaded.lines)) edgemove.observe(history, line, { at, source: "snapshot" });
+      for (const key of droppedKeys) if (!state.lines[key]) edgemove.forget(history, key);
+    }
+
+    function recordStream(appliedKeys) {
+      const at = now();
+      for (const key of appliedKeys) edgemove.observe(history, state.lines[key], { at, source: "stream" });
     }
 
     // Load every requested league, publishing each one the moment it lands
@@ -208,7 +234,8 @@
         status.staleLeagues = leagues.filter((id) => leagueMeta[id] && leagueMeta[id].builtAt != null && now() - leagueMeta[id].builtAt > STALE_BUILD_MS);
         // In place, full load or refresh alike: the list never collapses to
         // one league while the others are still downloading.
-        mergeInto(state, loaded.state);
+        const dropped = mergeInto(state, loaded.state);
+        recordSnapshot(loaded.state, dropped);
         status.leaguesLoaded = Array.from(new Set(state.leagues)).sort((a, b) => a - b);
         status.leagueErrors = { ...errors };
         if (status.loading) status.loading = { done: status.loading.done + 1, total: ordered.length };
@@ -275,6 +302,7 @@
           return;
         }
         const counts = feed.applyChanges(state, parsed);
+        recordStream(counts.appliedKeys);
         lines += counts.applied;
         cursor = parsed.cursor || cursor;
         if (parsed.batches < FULL_PAGE_BATCHES) break;
@@ -340,6 +368,7 @@
       status.leagues = leagues.slice();
       clearTimers();
       state = feed.emptyState();
+      history = {};
       status.leaguesLoaded = [];
       status.leagueErrors = {};
       status.error = null;
@@ -389,6 +418,7 @@
     return {
       start, stop, pause, resume, tick, resync,
       getState: () => state,
+      getHistory: () => history,
       getStatus: () => ({ ...status }),
       refreshEveryMs,
     };

@@ -217,6 +217,18 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
 }
 .tag.held { background: color-mix(in srgb, var(--edge-strong) 15%, transparent); border-color: transparent; color: var(--edge-mid); }
 .tag.against { background: var(--against-bg); border-color: transparent; color: var(--against-fg); }
+/* Why the edge grew (#132): the fair decides — green agrees, amber is the book
+   ahead of a fair that has not answered, red is the fair moving against the side. */
+.tag.move-fair { background: color-mix(in srgb, var(--edge-strong) 15%, transparent); border-color: transparent; color: var(--edge-mid); }
+.tag.move-book { background: var(--warn-bg); border-color: transparent; color: var(--warn-fg); }
+.tag.move-against { background: var(--against-bg); border-color: transparent; color: var(--against-fg); }
+.edge-row .edge-rail .tag, .group-line .gl-rail .tag { justify-self: end; margin: 1px 0; }
+.group-line .gl-rail .tag { display: inline-block; }
+.facts dd .tag { margin-left: 6px; vertical-align: middle; }
+/* The mover under the tag: fair then → now (green / red), price then → now (amber). */
+.move-detail { font: 400 11px system-ui, sans-serif; color: var(--muted); white-space: nowrap; }
+.edge-row .edge-rail .move-detail, .group-line .gl-rail .move-detail { display: block; }
+.facts dd .move-detail { margin-left: 6px; }
 
 /* The bets you already have on this game, as a section of the row. */
 .related-block {

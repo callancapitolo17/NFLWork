@@ -515,5 +515,6 @@ if __name__ == "__main__":
             print(f"Raw total wagered:      ${raw_total:,.2f}")
             print(f"Adjusted total wagered: ${adj_total:,.2f}")
     elif not bets:
+        # A week with no wagers is a normal outcome, not a failure — exiting
+        # non-zero here made the weekly runner report a false FAILED.
         print("No bets found to upload")
-        sys.exit(1)

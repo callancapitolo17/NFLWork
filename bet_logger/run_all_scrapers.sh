@@ -1,9 +1,11 @@
 #!/bin/bash
 
 # Run Bet Scrapers
-# Runs the active betting platform scrapers in sequence: BFA primary
-# ("Betfastaction") and BetOnline. Wagerzon, Hoop88 and BFAJ were dropped
-# 2026-09-16 at the user's request; their scrapers remain runnable by hand.
+# Runs the active betting platform scrapers in sequence: Wagerzon (the one
+# surviving login, logged to the sheet as WagerzonC), BFA primary
+# ("Betfastaction") and BetOnline. Hoop88 and BFAJ were dropped 2026-09-16 at
+# the user's request; their scrapers remain runnable by hand.
+# Wagerzon defaults to last week (--weeks 1), matching the Monday schedule.
 # Continues to the next scraper even if one fails.
 
 cd "/Users/callancapitolo/NFLWork/bet_logger"
@@ -15,6 +17,19 @@ echo "========================================"
 echo "MULTI-PLATFORM BET SCRAPER"
 echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================"
+echo ""
+
+# Run Wagerzon scraper (single surviving account; logged to the sheet as WagerzonC)
+echo "[$(date '+%H:%M:%S')] Running Wagerzon scraper (WagerzonC)..."
+echo "----------------------------------------"
+if ./venv/bin/python3 scraper_wagerzon.py; then
+    echo "[$(date '+%H:%M:%S')] WagerzonC: done"
+else
+    rc=$?
+    echo "[$(date '+%H:%M:%S')] WagerzonC: FAILED (exit $rc)"
+    FAILED=$((FAILED + 1))
+    FAILED_NAMES="${FAILED_NAMES}WagerzonC, "
+fi
 echo ""
 
 # Run BFA Gaming scraper — primary account (recon first to get fresh auth token)
@@ -59,7 +74,7 @@ echo ""
 
 echo "========================================"
 if [ $FAILED -eq 0 ]; then
-    MSG="All 2 scrapers completed successfully."
+    MSG="All 3 scrapers completed successfully."
     echo "$MSG"
     /usr/local/bin/terminal-notifier -title "Bet Logger ✓" -message "$MSG" -sound Glass -group betlogger
 else
