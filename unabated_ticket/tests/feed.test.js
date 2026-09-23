@@ -356,15 +356,29 @@ test("altMaxDistance keeps alts within N points of the book's main number", () =
   assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 0 }).filter((r) => r.isAlt).length, 16);
 });
 
-test("altMinLiquidity drops thin exchange alts and leaves books with no liquidity figure alone", () => {
+test("minLiquidity drops thin exchange alts and leaves books with no liquidity figure alone", () => {
   const state = loadedState();
-  const rows = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMinLiquidity: 100 }).filter((r) => r.isAlt);
+  const rows = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, minLiquidity: 100 }).filter((r) => r.isAlt);
   assert.equal(rows.length, 14);
   // Kalshi Panthers -9.5 ($35 resting) and Over 64.5 ($86) are gone; Novig's alts carry no liquidity and stay.
   assert.ok(!rows.some((r) => r.key === "289357357:ms105:si1:tid5:alt-9.5"));
   assert.ok(!rows.some((r) => r.key === "289357345:ms105:si0:tid6:alt64.5"));
   assert.ok(rows.some((r) => r.key === "289357345:ms105:si0:tid6:alt61.5"));
   assert.ok(rows.some((r) => r.key === "289357357:ms89:si1:tid5:alt-2.5"));
+});
+
+test("minLiquidity gates main lines too: a Novig moneyline with $17 resting is not listed", () => {
+  // Live 2026-09-22: Novig Portland Fire +809, "liq $17", listed under a $100
+  // floor because the floor only gated alts.
+  const state = loadedState();
+  const mainRow = feed.selectEdges(state, { now: BEFORE_KICKOFF })[0];
+  state.lines[mainRow.key].liquidity = 17;
+  const listed = (opts) => feed.selectEdges(state, { now: BEFORE_KICKOFF, ...opts }).some((r) => r.key === mainRow.key);
+  assert.equal(listed({ minLiquidity: 100 }), false);
+  assert.equal(listed({ minLiquidity: 0 }), true);
+  assert.equal(listed({ minLiquidity: 17 }), true);
+  state.lines[mainRow.key].liquidity = null;
+  assert.equal(listed({ minLiquidity: 100 }), true);
 });
 
 test("an alt is hidden while the main line sits on its number, and distance follows the moved main line", () => {
