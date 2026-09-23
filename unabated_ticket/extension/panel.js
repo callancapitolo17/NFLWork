@@ -957,8 +957,8 @@
   }
 
   // The rail under the edge: the number to act on, with the verb on it, then
-  // one small line — what liquidity cut it from, and what the stake would
-  // be with nothing held. "add $250" is not the same instruction
+  // one small line — that it is all the liquidity there is, and what the
+  // stake would be with nothing held. "add $250" is not the same instruction
   // as "bet $250" and must not look like it.
   function fillStakeCell(cell, row) {
     const advice = row.bet ? row.bet.advice : null;

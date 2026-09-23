@@ -248,12 +248,10 @@
   //             the math by direction
   //   matches   the input matches, in-math first, each with inMath and note
   //   cappedAt  the line's liquidity when it cut `bet`, else null (capAtLiquidity)
-  //   wanted    the bet before liquidity cut it, else null
   function stakeAdvice({ line, price, edgePct, bankroll, multiplier, matches, ladderOf, liquidity }) {
     const advice = sizeAgainstHeld({ line, price, edgePct, bankroll, multiplier, matches, ladderOf });
     const capped = capAtLiquidity(advice.bet, liquidity);
-    const wanted = capped.cappedAt == null ? null : advice.bet;
-    return { ...advice, bet: capped.stake, cappedAt: capped.cappedAt, wanted };
+    return { ...advice, bet: capped.stake, cappedAt: capped.cappedAt };
   }
 
   // A stake can never be more than is resting at the price: an exchange line
@@ -344,14 +342,13 @@
   // The advice as words, the same on the row, the Ticket block and the Copy
   // text. `verb` says what the number IS — "add" when topping up a position,
   // "bet" otherwise (user choice 2026-09-13); `alone` is the one small line
-  // under it, only when the held bets changed the number; `cap` says
-  // liquidity cut the number and from what, so "$20 of the $375 Kelly wants"
-  // reads differently from "$20, the whole bet".
+  // under it, only when the held bets changed the number; `cap` says the
+  // number is all the liquidity there is, whenever liquidity cut it.
   //   {verb, bet, alone, cap}  display strings, or null when nothing is held in
   //                            the math and liquidity did not cut the stake
   function stakeAdviceWords(advice) {
     if (!advice) return null;
-    const cap = advice.cappedAt != null ? `liq-capped from ${bets.formatStake(roundCents(advice.wanted))}` : null;
+    const cap = advice.cappedAt != null ? `all ${bets.formatStake(roundCents(advice.cappedAt))} liq` : null;
     if (advice.kind !== "sized") {
       return cap ? { verb: advice.verb, bet: bets.formatStake(advice.bet), alone: null, cap } : null;
     }
@@ -359,7 +356,7 @@
     return { verb: advice.verb, bet: bets.formatStake(advice.bet), alone: changed ? `${bets.formatStake(roundCents(advice.alone))} alone` : null, cap };
   }
 
-  // One line for the clipboard: "add $188.32, $183 alone", "add $17, liq-capped from $32.58, $71.06 alone".
+  // One line for the clipboard: "add $188.32, $183 alone", "add $17, all $17 liq, $71.06 alone".
   function stakeAdviceLine(advice) {
     const words = stakeAdviceWords(advice);
     if (!words) return null;

@@ -181,7 +181,7 @@ test("stakeAdvice: the real ladder feeds it — fairs read off feed lines, a run
 test("stakeAdvice: nothing held is the standalone Kelly stake, exactly", () => {
   const advice = adviceFor(nflLine(), 213, 7.19, [], LIONS_BILLS_LADDER);
   const standalone = kelly.kellyStakeFromEdge({ bookPrice: 213, edgePct: 7.19, ...SIZING }).stake;
-  assert.deepEqual(advice, { kind: "none", bet: standalone, alone: standalone, verb: "bet", held: 0, against: 0, reason: null, matches: [], cappedAt: null, wanted: null });
+  assert.deepEqual(advice, { kind: "none", bet: standalone, alone: standalone, verb: "bet", held: 0, against: 0, reason: null, matches: [], cappedAt: null });
   assert.equal(view.stakeAdviceWords(advice), null);
   assert.equal(view.suggestedBetAmount(advice), standalone);
 });
@@ -234,18 +234,16 @@ test("stakeAdvice: a Novig line with $17 resting says add $17, never the $32.58 
   assert.equal(advice.kind, "sized");
   assert.equal(advice.bet, 17);
   assert.equal(advice.cappedAt, 17);
-  assert.equal(advice.wanted, 188.32);
   assert.equal(view.suggestedBetAmount(advice), 17);
-  assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$17", alone: "$270.05 alone", cap: "liq-capped from $188.32" });
-  assert.equal(view.stakeAdviceLine(advice), "add $17, liq-capped from $188.32, $270.05 alone");
+  assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$17", alone: "$270.05 alone", cap: "all $17 liq" });
+  assert.equal(view.stakeAdviceLine(advice), "add $17, all $17 liq, $270.05 alone");
 });
 
 test("stakeAdvice: nothing held and thin liquidity still caps, and says so", () => {
   const advice = view.stakeAdvice({ line: nflLine(), price: 213, edgePct: 7.19, ...SIZING, matches: [], ladderOf: LIONS_BILLS_LADDER, liquidity: 50 });
   assert.equal(advice.kind, "none");
   assert.equal(advice.bet, 50);
-  assert.deepEqual(view.stakeAdviceWords(advice), { verb: "bet", bet: "$50", alone: null, cap: `liq-capped from ${betsLib.formatStake(Math.round(advice.wanted * 100) / 100)}` });
-  assert.ok(advice.wanted > 50);
+  assert.deepEqual(view.stakeAdviceWords(advice), { verb: "bet", bet: "$50", alone: null, cap: "all $50 liq" });
 });
 
 test("capAtLiquidity: deep or unreported liquidity leaves the stake alone", () => {
