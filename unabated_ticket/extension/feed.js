@@ -678,21 +678,14 @@
     return true;
   }
 
-  // For lines that report liquidity, i.e. exchanges, at least minLiquidity
-  // must be resting — main lines and alts alike (a Novig main moneyline with
-  // $17 behind it is no more bettable than a thin alt). Books with no
-  // liquidity figure pass.
-  function hasMinLiquidity(line, minLiquidity) {
-    return minLiquidity == null || line.liquidity == null || line.liquidity >= minLiquidity;
-  }
-
   // Lines worth listing: on the board, edge known and >= minEdge (a fraction),
   // period/bet type enabled, book allowed, game not started, and — when
   // maxLineAgeMs is set — changed by the book within that window (a 96-day-old
   // line at a "live" book is a dead feed, and its 36% "edge" is not bettable;
   // a line whose change time is unknowable is excluded too). Alt lines
-  // additionally pass altPassesGates. Every line passes hasMinLiquidity.
-  // Sorted by edge.
+  // additionally pass altPassesGates. Thin liquidity hides nothing here: the
+  // panel caps each stake at the line's liquidity, and its Min suggested bet
+  // floor hides a capped bet too small to bother with. Sorted by edge.
   function selectEdges(state, options) {
     const opts = options || {};
     const minEdge = typeof opts.minEdge === "number" ? opts.minEdge : 0.01;
@@ -705,12 +698,10 @@
       includeAlts: opts.includeAlts === true,
       altMaxDistance: positiveNumberOrNull(opts.altMaxDistance),
     };
-    const minLiquidity = positiveNumberOrNull(opts.minLiquidity);
     const rows = [];
     for (const line of Object.values(state.lines)) {
       if (line.bookId === UNABATED_LINE_BOOK_ID) continue;
       if (line.isAlt && !altPassesGates(line, state, altOpts)) continue;
-      if (!hasMinLiquidity(line, minLiquidity)) continue;
       if (line.statusId !== STATUS_ON_BOARD) continue;
       if (line.ge == null || line.ge < minEdge) continue;
       if (!periods.has(line.periodTypeId) || !betTypes.has(line.betTypeId)) continue;

@@ -75,9 +75,8 @@
         </details>
       </div>
       <div class="control-row">
-        <label class="control-inline" title="Hide edges whose quarter-Kelly suggested bet is below this amount. 0 = no limit.">Min suggested bet $ <input id="edges-min-stake" type="number" min="0" step="1"></label>
+        <label class="control-inline" title="Hide edges whose suggested bet is below this amount. The bet is quarter-Kelly, never more than an exchange line's resting liquidity, so this also hides lines too thin to be worth it. 0 = no limit.">Min suggested bet $ <input id="edges-min-stake" type="number" min="0" step="1"></label>
         <label class="control-inline" title="Hide lines the book has not changed for longer than this (dead feeds keep old prices)">Max line age h <input id="edges-max-age" type="number" min="1" step="1"></label>
-        <label class="control-inline" title="Hide exchange lines, main and alt, with less than this resting; books that report no liquidity are not affected. Suggested bets never exceed what is resting. 0 = no limit.">Min liquidity $ <input id="edges-min-liquidity" type="number" min="0" step="10"></label>
         <label title="One card per game, market and side showing its best line; the other books and rungs sit behind the card's expander"><input type="checkbox" id="edges-group"> Group by market</label>
       </div>
       <div class="control-row" id="edges-alts">
