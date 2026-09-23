@@ -77,6 +77,7 @@ test("MLB: Kalshi codes and truncations, Novig full names, the Athletics", () =>
   assert.equal(teams.teamKey("mlb", "Miami Marlins"), keyOf("mlb", "Miami Marlins"));
   assert.equal(teams.teamKey("mlb", "WSH Nationals"), keyOf("mlb", "Washington Nationals")); // Kalshi code + nickname
   assert.equal(teams.teamKey("mlb", "Los Angeles D"), keyOf("mlb", "Los Angeles Dodgers")); // KXMLBRFI title truncation (alias)
+  assert.equal(teams.teamKey("mlb", "ARI DBACKS"), keyOf("mlb", "Arizona Diamondbacks")); // Wagerzon (alias: "DBACKS" is no word of the name)
   assert.equal(teams.teamKey("mlb", "Athletics"), keyOf("mlb", "Oakland Athletics"));
   assert.equal(teams.teamKey("mlb", "OAK Athletics"), keyOf("mlb", "Oakland Athletics"));
   assert.equal(teams.teamKey("mlb", "St. Louis"), keyOf("mlb", "St. Louis Cardinals"));

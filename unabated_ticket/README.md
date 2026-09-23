@@ -1107,7 +1107,12 @@ GETs; no order placement.
   pitchers bracket ignored); `[rotation] ILLINOIS ST -3-110` and
   `GRAMBLING 1H +168` (own team only, placed by rotation parity — the pull's
   totals follow the same convention, every over odd, every under even —
-  `approx: side_from_rotation_parity`); a teaser leg's `(B+6)` dropped. The
+  `approx: side_from_rotation_parity`); a teaser leg's `(B+6)` dropped. BFA's
+  rotations are Unabated's own (the pull's 308945 / 308959 and 461–481 were
+  all on that week's board) except that a **first-half leg's rotation is the
+  game's with a "1" prepended** (1340 for game 340, 1306551 for 306551), so a
+  1H leg is served with that digit stripped (`raw.rotationAsWritten` keeps it)
+  and a one-team 1H bet can match by rotation. The
   history description names no sport, so there the league is
   `bet_logger/utils.py parse_sport`'s nickname scan — pro leagues only — and a
   **settled college game is unmatchable as "league unknown"**, never guessed
@@ -1230,7 +1235,7 @@ One command runs everything and exits non-zero if any part fails:
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
 the node suite (`npm test` = `node --test tests/*.test.js`, 249 tests) and
-the bets service's pytest suite (176 tests, on the `kalshi_draft/venv`
+the bets service's pytest suite (191 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`
@@ -1594,7 +1599,12 @@ capture) holds `GetPlayerOpenBets`, whose legs carry `idSport` and
 `gameDateTime` — so an OPEN college bet is placed after all, and the source
 reads that endpoint first with the history only settling records; its clock
 is the Pacific wall-clock plus 7 hours (two February rows), true UTC only in
-summer. The college question now touches settled bets only. Credentials resolve
+summer. The college question now touches settled bets only. Measured the same
+evening against the live board: every BFA NFL (15) and CFB (21) spelling from
+the pull keys through `teams.js`, every Wagerzon MLB spelling but "ARI DBACKS"
+(now an `ALIASES` row), and both books' rotations are Unabated's numbers — BFA
+prepends a "1" on first-half legs, which the source strips. CBB spellings are
+untested until Unabated lists the teams (2 today). Credentials resolve
 from `bet_logger/.env` as `config.py`'s fourth lookup place, so no password is
 copied. Poll 300 s and the 31-day window are constants, not settings.
 

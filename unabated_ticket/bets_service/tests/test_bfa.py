@@ -9,7 +9,8 @@ import pytest
 
 from unabated_ticket.bets_service.sources import bfa
 from unabated_ticket.bets_service.sources.bfa import (
-    BFASource, merge_open_over_history, normalize_bfa, normalize_open_bets, normalize_wager, parse_leg)
+    BFASource, game_rotation_of, merge_open_over_history, normalize_bfa, normalize_open_bets, normalize_wager,
+    parse_leg)
 
 FIXTURE_PATH = Path(__file__).parents[2] / "tests" / "fixtures" / "bets" / "bfa_history.json"
 FETCHED_AT = "2026-09-23T05:00:00Z"
@@ -162,7 +163,8 @@ def test_open_college_bets_carry_their_league_and_start_from_the_open_list(open_
     assert (total["status"], total["closedAt"], total["unmatchable"]) == ("open", None, None)
     assert (total["league"], total["betType"], total["period"], total["side"], total["points"], total["price"]) == \
         ("cbb", "total", "1H", "under", 68.5, 110)
-    assert (total["rotation"], total["awayTeam"], total["homeTeam"]) == (1674, "NEW MEXICO", "NEVADA")
+    assert (total["rotation"], total["awayTeam"], total["homeTeam"]) == (674, "NEW MEXICO", "NEVADA")  # 1674 as written
+    assert total["raw"]["rotationAsWritten"] == 1674
     # 03:00 on the open list = 20:00 PST the evening before + 7 h; 22:33 placed = 15:33 PST
     assert (total["eventStart"], total["eventDate"]) == ("2026-02-25T04:00:00Z", "2026-02-24")
     assert total["placedAt"] == "2026-02-24T23:33:05Z"
@@ -172,6 +174,23 @@ def test_open_college_bets_carry_their_league_and_start_from_the_open_list(open_
     assert (spread["league"], spread["betType"], spread["period"], spread["side"], spread["points"], spread["price"]) == \
         ("cbb", "spread", "1H", "home", -2.5, -137)  # 1670 is even = home
     assert (spread["awayTeam"], spread["homeTeam"], spread["approx"]) == (None, "UCLA", ["side_from_rotation_parity"])
+    assert (spread["rotation"], spread["raw"]["rotationAsWritten"]) == (670, 1670)
+
+
+@pytest.mark.parametrize("rotation, period, expected", [
+    (1340, "1H", 340), (1306551, "1H", 306551), (1670, "1H", 670),
+    (455, "1H", 455),      # three digits: nothing to strip
+    (1340, "FG", 1340), (340, "FG", 340), (2340, "1H", 2340),
+])
+def test_game_rotation_of_strips_the_first_half_prefix(rotation, period, expected):
+    assert game_rotation_of(rotation, period) == expected
+
+
+def test_parse_leg_serves_the_game_rotation_and_keeps_the_written_one():
+    leg = parse_leg("[1340] TOTAL u24EV \r(ARIZONA 1H vrs BYU 1H)")
+    assert (leg["rotation"], leg["rotationAsWritten"], leg["period"]) == (340, 1340, "1H")
+    full_game = parse_leg("[308945] ILLINOIS ST -3-110")
+    assert (full_game["rotation"], full_game["rotationAsWritten"]) == (308945, 308945)
 
 
 def test_open_parlay_prop_and_first_five(open_records):

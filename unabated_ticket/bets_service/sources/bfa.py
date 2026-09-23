@@ -85,7 +85,11 @@ account — is "league unknown" and unmatchable, never guessed as CFB or CBB (ha
 2026-09-23). Only settled bets are affected: an open bet's league comes from its idSport.
 A spread or moneyline names one team, placed by rotation parity (odd = away, approx
 side_from_rotation_parity) — the convention the pull's totals follow too: every over carries
-an odd rotation, every under an even one.
+an odd rotation, every under an even one. BFA's rotations are Unabated's own numbers (the
+2026-09-22 pull's 308945 / 308959 and 461-481 were all on that week's board), except that a
+first-half leg's rotation is the game's with a "1" PREPENDED — 1340 for game 340, 1306551
+for 306551, 1670 for 670 — so a 1H leg's rotation is served with that digit stripped (the
+number as written stays in raw.rotationAsWritten) and a one-team 1H bet can match by rotation.
 """
 import base64
 import hashlib
@@ -151,6 +155,9 @@ EVENT_START_DAYS_BEFORE_PLACED = 1
 EVENT_START_DAYS_AFTER_PLACED = 60
 REASON_LEAGUE_UNKNOWN = "league unknown (BFA names no sport; a college game cannot be placed)"
 REASON_TEAM_TOTAL = "team total"
+FIRST_HALF_ROTATION_PREFIX = "1"
+# A game rotation has at least three digits, so a prefixed one has at least four.
+FIRST_HALF_ROTATION_MIN_DIGITS = 4
 TEAM_TOTAL_MARKER = "TEAM PTS"
 
 STATUS_MAP = {"": "open", "pending": "open", "open": "open", "win": "won", "lose": "lost", "push": "push",
@@ -268,9 +275,29 @@ def _one_team_leg(rotation: int, bet_type: str, team_text: str, points: float | 
     return leg
 
 
+def game_rotation_of(rotation: int, period: str | None) -> int:
+    """A first-half leg's rotation as written -> the game's (module docstring)."""
+    written = str(rotation)
+    if period == "1H" and len(written) >= FIRST_HALF_ROTATION_MIN_DIGITS and written.startswith(FIRST_HALF_ROTATION_PREFIX):
+        return int(written[len(FIRST_HALF_ROTATION_PREFIX):])
+    return rotation
+
+
+def _with_game_rotation(leg: dict) -> dict:
+    leg["rotationAsWritten"] = leg["rotation"]
+    leg["rotation"] = game_rotation_of(leg["rotation"], leg["period"])
+    return leg
+
+
 def parse_leg(raw_description: str) -> dict | str:
-    """"[1340] TOTAL u24EV \\r(ARIZONA 1H vrs BYU 1H)" -> {rotation, betType, side, points,
-    price, period, awayTeam, homeTeam, sideFromParity}, or the reason it does not parse."""
+    """"[1340] TOTAL u24EV \\r(ARIZONA 1H vrs BYU 1H)" -> {rotation (the game's), rotationAsWritten,
+    betType, side, points, price, period, awayTeam, homeTeam, sideFromParity}, or the reason it
+    does not parse."""
+    leg = _parse_leg_as_written(raw_description)
+    return _with_game_rotation(leg) if isinstance(leg, dict) else leg
+
+
+def _parse_leg_as_written(raw_description: str) -> dict | str:
     text = normalize_description(leg_segment_of(raw_description))
     rotation_match = ROTATION_RE.match(text)
     if not rotation_match:
@@ -432,6 +459,7 @@ def _apply_leg(record: dict, league: str, leg: dict, event_start: datetime | Non
         "awayTeam": leg["awayTeam"], "homeTeam": leg["homeTeam"],
         "approx": approx,
     })
+    record["raw"]["rotationAsWritten"] = leg["rotationAsWritten"]
     return record
 
 
