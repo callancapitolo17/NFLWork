@@ -357,6 +357,12 @@ position" / "Already at full size") and its small line adds the position:
 `held $270 · against $413 · $270.05 alone`. A line that cannot be sized keeps
 a `—`, never a computed-looking `$0`.
 
+On an exchange line the number never passes what is resting at the price
+(the feed's liquidity, on the Edges row and on the Ticket when the feed
+holds the line at the ticket's price): `add $17 · all $17 liq · $71.06
+alone`. With nothing resting the Ticket reads "Nothing resting at this
+price" over `$0`.
+
 Before acting on an `add`, read the tag next to the edge (Edges tab → [Why
 an edge grew](#why-an-edge-grew), issue #132): `fair moved to you` is the
 sharps agreeing, `book moved away` is the book ahead of a fair that has not

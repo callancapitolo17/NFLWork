@@ -573,10 +573,14 @@
     const event = scannerState && ticket.eventId != null ? scannerState.events[ticket.eventId] : null;
     const matchLine = { ...betsView.ticketAsLine(ticket), points: line.points ?? ticket.points ?? null, venueIds: event ? event.venueIds ?? null : null };
     const { matches } = betsLib.matchBets(matchLine, state.betRecords, { lines: boardLines() });
+    // Liquidity is for one price, like the edge: only the feed's copy of the
+    // line at the price being sized caps the stake, as it does on the Edges row.
+    const feedCopy = feedLineFor(ticket, line.points);
+    const liquidity = feedCopy && feedCopy.price === line.price ? feedCopy.liquidity : null;
     const advice = betsView.stakeAdvice({
       line: matchLine, price: line.price, edgePct: line.edgePct,
       bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
-      matches, ladderOf: ladderReader(ticket.eventId),
+      matches, ladderOf: ladderReader(ticket.eventId), liquidity,
     });
     return { tier: matches.length ? matches[0].tier : null, matches: advice.matches, advice };
   }
@@ -616,22 +620,25 @@
     return line ? ` (${line})` : "";
   }
 
-  // Under the stake, the same three pieces as the Edges rail: the position in
+  // Under the stake, the same pieces as the Edges rail: the position in
   // dollars, the number to act on (the big figure, its label says "Bet" or
-  // "Add to your position"), and what the stake would be alone.
+  // "Add to your position"), that liquidity capped it, and what the stake
+  // would be alone.
   function renderStakeExposure(advice) {
     const words = betsView.stakeAdviceWords(advice);
     const position = [
       advice.held > 0 ? `held ${betsLib.formatStake(advice.held)}` : null,
       advice.against > 0 ? `against ${betsLib.formatStake(advice.against)}` : null,
+      words ? words.cap : null,
       words ? words.alone : null,
     ].filter(Boolean);
     view.stakeExposure.classList.toggle("against", advice.against > 0 && advice.held === 0);
     view.stakeExposure.hidden = position.length === 0;
     view.stakeExposure.textContent = position.join(" \u00b7 ");
     view.stakeLabel.textContent = !words ? "Bet"
-      : advice.bet === 0 ? "Already at full size"
-        : words.verb === "add" ? "Add to your position" : "Bet";
+      : advice.bet === 0 && advice.cappedAt === 0 ? "Nothing resting at this price"
+          : advice.bet === 0 ? "Already at full size"
+            : words.verb === "add" ? "Add to your position" : "Bet";
     // The stake shown is the number to act on, not the standalone size.
     if (words) view.stake.textContent = fmtDollars(advice.bet);
   }

@@ -252,6 +252,8 @@ test("capAtLiquidity: deep or unreported liquidity leaves the stake alone", () =
   assert.deepEqual(view.capAtLiquidity(32.58, null), { stake: 32.58, cappedAt: null });
   assert.deepEqual(view.capAtLiquidity(32.58, undefined), { stake: 32.58, cappedAt: null });
   assert.deepEqual(view.capAtLiquidity(null, 17), { stake: null, cappedAt: null });
+  // Nothing resting: the stake is $0 and says why (the Ticket labels it "Nothing resting at this price").
+  assert.deepEqual(view.capAtLiquidity(32.58, 0), { stake: 0, cappedAt: 0 });
 });
 
 test("stakeAdvice: a 1H over held sizes the FG over on the worst case, $408.39 not $666.67", () => {
