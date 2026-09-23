@@ -1131,3 +1131,92 @@ test("BetOnline: a reused rotation whose named teams are not in next week's game
   assert.equal(flags[0].matches[0].position.stake, bet.stake);
   assert.equal(bets.matchBets(nextWeek, [bet], { lines: [thisWeek, nextWeek] }).matches.length, 0);
 });
+
+// ---- manual attach: pins and the needs-a-game flag ---------------------------------
+
+// A describeLine-shaped board row with real Unabated team ids (teams_index.json).
+function idRow(fields) {
+  return Object.assign({ betType: "Total", period: "FG", sideIndex: 0, points: 50.5, rotation: null }, fields,
+    { eventStartMs: Date.parse(fields.eventStart) });
+}
+const ACU_AT_TARLETON = idRow({ league: "cfb", eventId: 7001, awayTeam: "Abilene Christian", homeTeam: "Tarleton State",
+  awayTeamId: 1123, homeTeamId: 1196, awayRotation: 371, homeRotation: 372, eventStart: "2026-09-27T00:00:00Z" });
+const BEFORE_KICKOFF = Date.parse("2026-09-26T18:00:00Z");
+const AFTER_KICKOFF = Date.parse("2026-09-27T01:00:00Z");
+
+function openBet(fields) {
+  const [record] = bets.resolveTeamKeys([Object.assign({ status: "open", venue: "bfa", league: "cfb", betType: "total",
+    period: "FG", side: "under", points: 50.5, stake: 100, toWin: 90, eventStart: "2026-09-27T00:00:00Z" }, fields)], []);
+  return record;
+}
+
+test("pins: an attached bet matches its event even with a name no rule resolves, and Undo takes it back", () => {
+  const bet = openBet({ id: "bfa:1", side: "over", awayTeam: "Abilene Chr", homeTeam: "Tarleton St" });
+  assert.equal(bets.matchBets(ACU_AT_TARLETON, [bet]).matches.length, 0);
+  const pin = { betId: "bfa:1", league: "cfb", eventId: "7001" };
+  const [pinned] = bets.applyPins([bet], [pin]);
+  assert.equal(pinned.pin, pin);
+  assert.equal(bets.matchBets(ACU_AT_TARLETON, [pinned]).matches[0].tier, "same_line");
+  assert.deepEqual(bets.unmatchedReasons([pinned], [ACU_AT_TARLETON], BEFORE_KICKOFF), []);
+  // The attach already taught the names: an id-join lesson is not drawn from a pin.
+  assert.deepEqual(bets.learnCrosswalk([pinned], [ACU_AT_TARLETON], []), { learned: [], conflicts: [] });
+  // A pinned event that left the board falls back to the usual rules.
+  assert.equal(bets.unmatchedReasons([pinned], [idRow({ ...ACU_AT_TARLETON, eventId: 7999 })], BEFORE_KICKOFF).length, 1);
+  const [unpinned] = bets.applyPins([pinned], []);
+  assert.equal(unpinned.pin, null);
+  assert.equal(bets.matchBets(ACU_AT_TARLETON, [unpinned]).matches.length, 0);
+  // Records nobody pinned are returned as they came.
+  assert.equal(bets.applyPins([bet], [])[0], bet);
+});
+
+test("pins: a bet with no league takes the pin's, and gives it back on Undo", () => {
+  const bet = openBet({ id: "bol:1", venue: "betonline", league: null, awayTeam: "Abilene Chr", homeTeam: null });
+  const [pinned] = bets.applyPins([bet], [{ betId: "bol:1", league: "cfb", eventId: 7001 }]);
+  assert.equal(pinned.league, "cfb");
+  assert.equal(bets.matchBets(ACU_AT_TARLETON, [pinned]).matches.length, 1);
+  const [unpinned] = bets.applyPins([pinned], []);
+  assert.equal(unpinned.league, null);
+  assert.equal(unpinned.leagueFromPin, undefined);
+});
+
+test("needsGame: a name no rule resolves flags until the game starts; futures and leagues off the board never flag", () => {
+  const unknownName = openBet({ id: "bfa:1", awayTeam: "Abilene Chr", homeTeam: "Tarleton St" });
+  const future = { id: "kalshi:roty", status: "open", venue: "kalshi", league: null, unmatchable: "not a game market" };
+  const offBoard = openBet({ id: "nv:1", venue: "novig", league: "nhl", awayTeam: "Somebody", homeTeam: "Else" });
+  const before = bets.unmatchedReasons([unknownName, future, offBoard], [ACU_AT_TARLETON], BEFORE_KICKOFF);
+  assert.deepEqual(before.map((u) => [u.bet.id, u.reason, u.attachable, u.needsGame]), [
+    ["bfa:1", "team not recognised (Abilene Chr)", true, true],
+    ["kalshi:roty", "not a game market", false, false],
+    ["nv:1", "team not recognised (Somebody, Else)", false, false],
+  ]);
+  const after = bets.unmatchedReasons([unknownName], [ACU_AT_TARLETON], AFTER_KICKOFF);
+  assert.deepEqual(after.map((u) => [u.attachable, u.needsGame]), [[true, false]]);
+});
+
+test("needsGame: a date-only bet flags through its Eastern date; a bet with no date at all flags", () => {
+  const dated = openBet({ id: "bol:2", venue: "betonline", eventStart: null, eventDate: "2026-09-26", awayTeam: "Abilene Chr", homeTeam: null });
+  assert.equal(bets.unmatchedReasons([dated], [ACU_AT_TARLETON], Date.parse("2026-09-26T23:00:00Z"))[0].needsGame, true);
+  assert.equal(bets.unmatchedReasons([dated], [ACU_AT_TARLETON], Date.parse("2026-09-27T12:00:00Z"))[0].needsGame, false);
+  const undated = openBet({ id: "bol:3", venue: "betonline", eventStart: null, awayTeam: "Abilene Chr", homeTeam: null });
+  assert.equal(bets.unmatchedReasons([undated], [ACU_AT_TARLETON], AFTER_KICKOFF)[0].needsGame, true);
+});
+
+test("needsGame: two possible games flag; a game not posted yet does not", () => {
+  const known = openBet({ id: "bfa:2", awayTeam: "Abilene Christian", homeTeam: "Tarleton State", eventStart: null, eventDate: "2026-09-26" });
+  const twice = [ACU_AT_TARLETON, idRow({ ...ACU_AT_TARLETON, eventId: 7002, eventStart: "2026-09-26T19:00:00Z" })];
+  assert.deepEqual(bets.unmatchedReasons([known], twice, BEFORE_KICKOFF).map((u) => [u.reason, u.needsGame]), [["ambiguous game", true]]);
+  const elsewhere = [idRow({ league: "cfb", eventId: 7003, awayTeam: "Lamar", homeTeam: "Northwestern State",
+    awayTeamId: 1160, homeTeamId: 1177, eventStart: "2026-09-26T23:00:00Z" })];
+  assert.deepEqual(bets.unmatchedReasons([known], elsewhere, BEFORE_KICKOFF).map((u) => [u.reason, u.needsGame]),
+    [["no event on the board yet", false]]);
+});
+
+test("start time differs: the same pair on the board within 12 h at another start flags; the next day's game does not", () => {
+  const sevenPm = openBet({ id: "wz:1", venue: "wagerzon", awayTeam: "Abilene Christian", homeTeam: "Tarleton State",
+    eventStart: "2026-09-26T23:00:00Z" });
+  const [miss] = bets.unmatchedReasons([sevenPm], [ACU_AT_TARLETON], BEFORE_KICKOFF);
+  assert.equal(miss.reason, "start time differs (bet Sep 26 7:00 PM, board Sep 26 8:00 PM)");
+  assert.equal(miss.needsGame, true);
+  const nextDay = idRow({ ...ACU_AT_TARLETON, eventStart: "2026-09-27T20:00:00Z" });
+  assert.equal(bets.unmatchedReasons([sevenPm], [nextDay], BEFORE_KICKOFF)[0].reason, "no event on the board yet");
+});
