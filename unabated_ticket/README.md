@@ -514,7 +514,9 @@ is a real edge, can be told from a dead one. Rows carry the same wording as
 the ticket, the price as American plus cents (exchange cents from
 `sourcePrice`), liquidity for exchanges, time to start, and the stake from
 `kellyStakeFromEdge` with the panel's bankroll and multiplier, never more
-than the line's resting liquidity (the rail then reads "all $17 liq").
+than the line's resting liquidity (the rail then reads "liq-capped from
+$375", so $20 of a $375 Kelly bet reads differently from $20 that is the
+whole bet).
 There is no liquidity floor (removed 2026-09-23): a flat dollar floor hid
 longshots whose whole Kelly stake is small, and before then it gated alts
 only, so a Novig Portland Fire +809 main moneyline with $17 behind it
