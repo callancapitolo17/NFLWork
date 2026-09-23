@@ -637,8 +637,8 @@
     view.stakeExposure.textContent = position.join(" \u00b7 ");
     view.stakeLabel.textContent = !words ? "Bet"
       : advice.bet === 0 && advice.cappedAt === 0 ? "Nothing resting at this price"
-          : advice.bet === 0 ? "Already at full size"
-            : words.verb === "add" ? "Add to your position" : "Bet";
+        : advice.bet === 0 ? "Already at full size"
+          : words.verb === "add" ? "Add to your position" : "Bet";
     // The stake shown is the number to act on, not the standalone size.
     if (words) view.stake.textContent = fmtDollars(advice.bet);
   }
