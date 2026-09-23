@@ -1,13 +1,17 @@
 """Wagerzon (the C account) bet source: HistoryHelper weeks + the open-bets helper -> normalised bet records.
 
 Two halves, like sources/betonline.py:
-  normalize_wagerzon(wagers, fetched_at)   pure parser of HistoryHelper wager rows; the pytest on
-                                           tests/fixtures/bets/wagerzon_history.json pins it.
-  WagerzonSource                           the network half (Source protocol): an ASP.NET form
-                                           login whose session cookie lives in memory, then
-                                           `HistoryHelper.aspx?week=N` for the last HISTORY_WEEKS
-                                           Mon-Sun weeks plus `OpenBetsHelper.aspx`, every wager
-                                           normalised (pending bets kept).
+  normalize_open_bets(tickets, fetched_at)  pure parser of OpenBetsHelper rows — the OPEN bets,
+                                            the ones the panel flags — pinned by the pytest on
+                                            tests/fixtures/bets/wagerzon_history.json ("openBets").
+  normalize_wagerzon(wagers, fetched_at)    pure parser of HistoryHelper wager rows: what settles
+                                            an open record once it leaves the helper (a store row
+                                            stays open until a later poll says otherwise).
+  WagerzonSource                            the network half (Source protocol): an ASP.NET form
+                                            login whose session cookie lives in memory, then
+                                            `HistoryHelper.aspx?week=N` for the last HISTORY_WEEKS
+                                            Mon-Sun weeks and `OpenBetsHelper.aspx`; an open-bets
+                                            record replaces the history's copy of the same ticket.
 
 Inputs:  WAGERZONC_USERNAME / WAGERZONC_PASSWORD, else WAGERZON_USERNAME / WAGERZON_PASSWORD
          (config: the environment, bets_service/.env, kalshi_draft/.env, then bet_logger/.env in
@@ -15,10 +19,14 @@ Inputs:  WAGERZONC_USERNAME / WAGERZONC_PASSWORD, else WAGERZON_USERNAME / WAGER
          2026-06-26, bet_logger/scraper_wagerzon.py);
          GET backend.wagerzon.com/wager/HistoryHelper.aspx?week=N   {result: {details: [{Date,
              wager: [...]}], StartDate, EndDate, ErrorMsg, ...}}
-         GET backend.wagerzon.com/wager/OpenBetsHelper.aspx          {result: [...]} (the helper
-             the OpenBets.aspx widget loads; `{"result": []}` with no open bet on 2026-09-22, so a
-             row's shape is unobserved — a row that is not a HistoryHelper-shaped wager fails the
-             poll loudly, naming its keys, rather than being dropped).
+         GET backend.wagerzon.com/wager/OpenBetsHelper.aspx          {result: [row, ...]} — the
+             helper the OpenBets.aspx widget (`OpenBetsTable` in the ui_c bundle) loads: one row
+             PER LEG, grouped by TicketNumber, each with TicketNumber, RiskAmount, WinAmount,
+             PlacedDate and GameDateTime ("M/D/YYYY h:mm:ss A", Eastern), IdGame, IdSport,
+             Result, DetailResult, DetailDescription, RotationNumbers, GameDescription (the
+             fields the bundle reads; `{"result": []}` with no open bet on 2026-09-22, so the
+             values are unobserved). A row without TicketNumber and DetailDescription fails the
+             poll loudly, naming its keys, rather than being dropped.
 Outputs: list of records. Side effects: none on disk. Raises on a failed login, a helper that
          answers HTML or a redirect after a fresh login (the session died), an error message in a
          week's body, or an open-bets row of unknown shape, so the service records a failed run
@@ -71,7 +79,8 @@ from unabated_ticket.bets_service import config
 from unabated_ticket.bets_service.normalize import EASTERN, json_clean, round_cents, utc_now_iso
 from unabated_ticket.bets_service.sources.betonline import (
     APPROX_SIDE_PARITY, american_from_payout, parse_points, side_from_rotation)
-from unabated_ticket.bets_service.sources.bfa import NUMBER, PRICE, VERSUS_RE, iso_utc, parse_price
+from unabated_ticket.bets_service.sources.bfa import (
+    NUMBER, PRICE, VERSUS_RE, iso_utc, leg_segment_of, merge_open_over_history, parse_price)
 
 log = logging.getLogger(__name__)
 
@@ -100,6 +109,8 @@ STATUS_MAP = {"": "open", "win": "won", "lose": "lost", "push": "push", "cancell
 PERIODS = {"1H": "1H", "2H": "2H", "1Q": "1Q", "2Q": "2Q", "3Q": "3Q", "4Q": "4Q"}
 POSTPONED_MARKER = "POSTPONED"
 REASON_NO_LEGS = "wager carries no legs"
+OPEN_BET_ROW_KEYS = ("TicketNumber", "DetailDescription")
+HELPER_DATETIME_FORMATS = ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %I:%M %p")
 
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 ROTATION_RE = re.compile(r"^\[(?P<rotation>\d+)\]\s*(?P<body>.*)$")
@@ -198,7 +209,7 @@ def _one_team_leg(rotation: int | None, bet_type: str, team_text: str, points: f
 def parse_leg(raw_description: str) -> dict | str:
     """A DetailDesc -> {rotation, betType, side, points, price, period (None = full game),
     awayTeam, homeTeam, gameNumber, sideFromParity}, or the reason it does not parse."""
-    text = clean_description(raw_description)
+    text = clean_description(leg_segment_of(raw_description))
     rotation = None
     body = text
     rotation_match = ROTATION_RE.match(text)
@@ -250,6 +261,19 @@ def parse_eastern(date_text: object, time_text: object) -> datetime | None:
     except ValueError:
         return None
     return naive.replace(tzinfo=WAGERZON_TZ).astimezone(timezone.utc)
+
+
+def parse_helper_datetime(text: object) -> datetime | None:
+    """"9/24/2026 7:10:00 PM" on the site's Eastern clock (the open-bets helper) -> aware UTC."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    for fmt in HELPER_DATETIME_FORMATS:
+        try:
+            naive = datetime.strptime(text.strip(), fmt)
+        except ValueError:
+            continue
+        return naive.replace(tzinfo=WAGERZON_TZ).astimezone(timezone.utc)
+    return None
 
 
 def eastern_date_of(date_text: object) -> str | None:
@@ -331,12 +355,11 @@ def _describe_leg(record: dict, leg_row: dict) -> dict:
     return record
 
 
-def _apply_leg(record: dict, league: str, leg: dict, leg_row: dict) -> dict:
-    event_start = parse_eastern(leg_row.get("GameDate"), leg_row.get("GameTime"))
+def _apply_leg(record: dict, league: str, leg: dict, event_start: datetime | None) -> dict:
     record.update({
         "league": league,
         "eventStart": iso_utc(event_start),
-        "eventDate": eastern_date_of(leg_row.get("GameDate")),
+        "eventDate": None if event_start is None else event_start.astimezone(WAGERZON_TZ).strftime("%Y-%m-%d"),
         "rotation": leg["rotation"], "betType": leg["betType"], "period": period_for(league, leg["period"]),
         "side": leg["side"], "points": leg["points"], "price": leg["price"],
         "awayTeam": leg["awayTeam"], "homeTeam": leg["homeTeam"],
@@ -365,7 +388,7 @@ def _leg_record(record: dict, leg_row: dict) -> dict:
     leg = parse_leg(str(leg_row.get("DetailDesc") or ""))
     if isinstance(leg, str):
         return _unmatchable(record, leg)
-    return _apply_leg(record, league, leg, leg_row)
+    return _apply_leg(record, league, leg, parse_eastern(leg_row.get("GameDate"), leg_row.get("GameTime")))
 
 
 def normalize_wager(wager: dict, fetched_at: str | None) -> list[dict]:
@@ -406,19 +429,104 @@ def wagers_of_history(result: dict) -> list[dict]:
     return [wager for day in result.get("details") or [] for wager in day.get("wager") or []]
 
 
-def open_wagers_of(body: object) -> list[dict]:
-    """The OpenBetsHelper rows when they are HistoryHelper-shaped wagers; an unknown
-    shape fails loudly with its keys (the shape is unobserved — module docstring)."""
+def open_tickets_of(body: object) -> list[list[dict]]:
+    """The OpenBetsHelper rows grouped by TicketNumber, in the order served (one
+    row per leg, as the OpenBets widget reads them); a row without the keys the
+    parser needs fails loudly with its keys (values unobserved — module docstring)."""
     rows = body.get("result") if isinstance(body, dict) else None
     if not isinstance(rows, list):
         keys = sorted(body.keys()) if isinstance(body, dict) else type(body).__name__
         raise RuntimeError(f"Wagerzon OpenBetsHelper: expected {{result: [...]}}, got {keys}")
+    tickets: dict[str, list[dict]] = {}
     for row in rows:
-        if not isinstance(row, dict) or "IdWager" not in row or not isinstance(row.get("details"), list):
+        if not isinstance(row, dict) or any(key not in row for key in OPEN_BET_ROW_KEYS):
             keys = sorted(row.keys()) if isinstance(row, dict) else type(row).__name__
             raise RuntimeError(f"Wagerzon OpenBetsHelper row in an unknown shape (keys {keys}); "
                                "capture it and extend sources/wagerzon.py")
-    return rows
+        tickets.setdefault(str(row["TicketNumber"]), []).append(row)
+    return list(tickets.values())
+
+
+def _open_base_record(first_row: dict, native_id: str, fetched_at: str | None) -> dict:
+    placed_at = parse_helper_datetime(first_row.get("PlacedDate"))
+    return {
+        "id": f"{VENUE}:{native_id}",
+        "source": SOURCE,
+        "venue": VENUE,
+        "league": None, "eventStart": None, "eventDate": None,
+        "awayTeam": None, "homeTeam": None, "awayKey": None, "homeKey": None,
+        "rotation": None, "betType": "other", "period": None, "side": None, "points": None,
+        "price": None,
+        "stake": _money(first_row.get("RiskAmount")),
+        "toWin": _money(first_row.get("WinAmount")),
+        "contracts": None,
+        "placedAt": iso_utc(placed_at),
+        "status": "open",
+        "closedAt": None,
+        "isParlayLeg": False, "parlayId": None, "legIndex": None, "legCount": None,
+        "approx": [],
+        "unmatchable": None,
+        "sourceFetchedAt": fetched_at,
+        "raw": {
+            "nativeId": native_id,
+            "openBet": True,
+            "headerDescription": first_row.get("HeaderDescription"),
+            "riskAmount": first_row.get("RiskAmount"),
+            "winAmount": first_row.get("WinAmount"),
+            "placedDate": first_row.get("PlacedDate"),
+        },
+    }
+
+
+def _open_leg_record(record: dict, row: dict) -> dict:
+    description = str(row.get("DetailDescription") or "")
+    record["raw"].update({
+        "description": description,
+        "result": row.get("Result"),
+        "legResult": row.get("DetailResult"),
+        "sportCode": row.get("IdSport"),
+        "gameDateTime": row.get("GameDateTime"),
+        "idGame": row.get("IdGame"),
+        "rotationNumbers": row.get("RotationNumbers"),
+        "gameDescription": row.get("GameDescription"),
+    })
+    sport_code = str(row.get("IdSport") or "").strip().upper()
+    if sport_code in PROP_SPORT_CODES:
+        return _unmatchable(record, f"not a game market (IdSport {sport_code})")
+    league = league_of(sport_code)
+    if league is None:
+        return _unmatchable(record, f"league not supported (IdSport {sport_code or 'blank'})")
+    leg = parse_leg(description)
+    if isinstance(leg, str):
+        return _unmatchable(record, leg)
+    return _apply_leg(record, league, leg, parse_helper_datetime(row.get("GameDateTime")))
+
+
+def normalize_open_ticket(rows: list[dict], fetched_at: str | None) -> list[dict]:
+    """One ticket's OpenBetsHelper rows -> one open record, or one per leg. Pure."""
+    first = rows[0]
+    if first.get("TicketNumber") in (None, "", 0, "0"):
+        raise RuntimeError(f"Wagerzon open bet carries no TicketNumber; keys seen: {sorted(first.keys())}")
+    native_id = str(first["TicketNumber"])
+    base = _open_base_record(first, native_id, fetched_at)
+    if len(rows) == 1:
+        return [json_clean(_open_leg_record(base, first))]
+    parlay_price = american_from_payout(base["stake"] or 0, base["toWin"] or 0)
+    records = []
+    for index, row in enumerate(rows):
+        record = _open_base_record(first, native_id, fetched_at)
+        record["id"] = f"{base['id']}:leg{index}"
+        record["raw"]["parlayPrice"] = parlay_price
+        record.update({"isParlayLeg": True, "parlayId": base["id"], "legIndex": index, "legCount": len(rows)})
+        records.append(json_clean(_open_leg_record(record, row)))
+    return records
+
+
+def normalize_open_bets(tickets: list[list[dict]], fetched_at: str | None) -> list[dict]:
+    records: list[dict] = []
+    for rows in tickets:
+        records.extend(normalize_open_ticket(rows, fetched_at))
+    return records
 
 
 # ---- network half -------------------------------------------------------------------
@@ -521,22 +629,21 @@ class WagerzonSource:
             wagers.extend(wagers_of_history(result))
         return wagers
 
-    def _fetch_open_bets(self) -> list[dict]:
-        return open_wagers_of(self._get_json(OPEN_BETS_URL, None))
+    def _fetch_open_tickets(self) -> list[list[dict]]:
+        return open_tickets_of(self._get_json(OPEN_BETS_URL, None))
 
     # -- Source protocol --------------------------------------------------------------
 
     def fetch(self) -> list[dict]:
+        fetched_at = utc_now_iso()
         history = self._fetch_history()
-        seen = {str(wager.get("IdWager")) for wager in history}
-        # The history already lists a pending bet under its game day (Result ""); the
-        # open-bets helper adds only what the weeks did not carry.
-        open_only = [wager for wager in self._fetch_open_bets() if str(wager.get("IdWager")) not in seen]
-        records = normalize_wagerzon(history + open_only, utc_now_iso())
+        open_tickets = self._fetch_open_tickets()
+        records = merge_open_over_history(normalize_wagerzon(history, fetched_at),
+                                          normalize_open_bets(open_tickets, fetched_at))
         n_open = sum(1 for record in records if record["status"] == "open")
         n_unmatchable = sum(1 for record in records if record["unmatchable"])
-        log.info("wagerzon: %d history rows + %d open-only rows -> %d records (%d open, %d unmatchable)",
-                 len(history), len(open_only), len(records), n_open, n_unmatchable)
+        log.info("wagerzon: %d open tickets + %d history rows -> %d records (%d open, %d unmatchable)",
+                 len(open_tickets), len(history), len(records), n_open, n_unmatchable)
         return records
 
 

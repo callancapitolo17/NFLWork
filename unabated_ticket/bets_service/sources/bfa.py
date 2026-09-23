@@ -1,20 +1,26 @@
-"""BFA (Betfastaction) bet source: the account's GetPlayerHistory wagers -> normalised bet records.
+"""BFA (Betfastaction) bet source: the account's open bets + GetPlayerHistory -> normalised bet records.
 
 Two halves, like sources/betonline.py:
-  normalize_bfa(wagers, fetched_at)   pure parser of the history's wager objects; the pytest on
-                                      tests/fixtures/bets/bfa_history.json pins it.
-  BFASource                           the network half (Source protocol): a Keycloak PASSWORD
-                                      login (PKCE) this process owns — access and refresh token
-                                      in memory only, the access token refreshed within
-                                      REFRESH_MARGIN_SEC of expiry and a failed refresh replaced
-                                      by a new login — then the paged history over the retention
-                                      window, every wager normalised (pending bets kept).
+  normalize_open_bets(wagers, fetched_at)  pure parser of GetPlayerOpenBets rows — the OPEN bets,
+                                           the ones the panel flags — pinned by the pytest on
+                                           tests/fixtures/bets/bfa_history.json ("openBets").
+  normalize_bfa(wagers, fetched_at)        pure parser of GetPlayerHistory wagers: what settles an
+                                           open record once it leaves the open list (a store row
+                                           stays open until a later poll says otherwise).
+  BFASource                                the network half (Source protocol): a Keycloak PASSWORD
+                                           login (PKCE) this process owns — access and refresh
+                                           token in memory only, the access token refreshed within
+                                           REFRESH_MARGIN_SEC of expiry and a failed refresh
+                                           replaced by a new login — then the open bets, then the
+                                           paged history over the retention window; an open-bets
+                                           record replaces the history's copy of the same wager.
 
 Inputs:  BFA_USERNAME / BFA_PASSWORD (config: the environment, bets_service/.env,
          kalshi_draft/.env, then bet_logger/.env in the main checkout — the sheet scraper's
          own credentials, no copying);
+         GET api.bfagaming.com/history/api/GetPlayerOpenBets?playerId   (player id from the JWT)
          GET api.bfagaming.com/history/api/GetPlayerHistory
-             ?playerId&startDate&endDate&page&recordsByPage   (player id from the JWT).
+             ?playerId&startDate&endDate&page&recordsByPage
 Outputs: list of records. Side effects: none on disk. bet_logger/recon_bfa_auth.json is
          neither read nor written: the weekly LaunchAgent (bet_logger/scraper_bfa.py) rotates
          that refresh token, and two processes rotating one token trip Keycloak's reuse
@@ -27,8 +33,23 @@ Why not import bet_logger/scraper_bfa.py: it imports Google Sheets at module lev
 this venv), rotates the shared token file and skips pending bets. The endpoints, headers and
 the description grammar are copied from it and bet_logger/recon_bfa.py and must stay in step.
 
-Wager grammar (live pull 2026-09-22, 16 wagers; the parser fails closed on anything else,
-listing the record as unmatchable with the reason and the raw description):
+Open bet shape (GetPlayerOpenBets, captured 2026-02-24 with two open bets; a list, one object
+per wager):
+  idWager        343243731 — the same id the history later carries (ticketNumber repeats it).
+  headerDescription  STRAIGHT BET | PARLAY (2 TEAMS) | …;  riskAmount, winAmount  USD;  result 255.
+  betDetails[]   one per leg: idSport (CBB / CFB / NFL / NBA / MLB / NHL …, the league the
+                 history never names — so an open college bet IS placed), gameDateTime (the
+                 event start), idGame, detailDescription
+                 "CBB - Alternative Lines <br> [1674] TOTAL u68½+110 \r(NEW MEXICO 1H vrs NEVADA 1H) [Sport:Basketball, League:NCAA]"
+                 — the market group, then the history's own leg grammar, then a sport suffix.
+  placedDate, gameDateTime   the Pacific wall-clock PLUS 7 HOURS, whatever the season: that
+                 wager, placed between two history rows stamped 15:32 and 15:33 PST, reads 22:33,
+                 and its 8 PM PT tip reads 03:00. True UTC only under daylight time, so the 7 hours
+                 are subtracted and the wall-clock localised (OPEN_BETS_CLOCK_OFFSET).
+  GetPlayerOpenBetsWithOpenSpot (if-bets awaiting a leg) answered [] and is not read.
+
+History wager grammar (live pull 2026-09-22, 16 wagers; the parser fails closed on anything
+else, listing the record as unmatchable with the reason and the raw description):
   id            354669433 — the wager id, the stable native id.
   type          STRAIGHT BET | STRAIGHT BET (FP) (free play: risk 0) | PARLAY (2 TEAMS) |
                 4 TEAM TEASERS. A parlay or teaser's `description` is its FIRST leg and
@@ -58,9 +79,10 @@ listing the record as unmatchable with the reason and the raw description):
                 lastModification its closedAt. A parlay or teaser carries ONE settledDate for
                 the whole ticket, so its legs get no start (game_date_unknown: the matcher
                 windows placedAt and keys on the rotation, as for BetOnline).
-The description names no sport: the league comes from bet_logger/utils.py parse_sport (its
-nickname scan resolves the pro leagues only), and a college game — most of this account — is
-"league unknown" and unmatchable, never guessed as CFB or CBB (hand-off rule, 2026-09-23).
+A history description names no sport: the league comes from bet_logger/utils.py parse_sport
+(its nickname scan resolves the pro leagues only), and a settled college game — most of this
+account — is "league unknown" and unmatchable, never guessed as CFB or CBB (hand-off rule,
+2026-09-23). Only settled bets are affected: an open bet's league comes from its idSport.
 A spread or moneyline names one team, placed by rotation parity (odd = away, approx
 side_from_rotation_parity) — the convention the pull's totals follow too: every over carries
 an odd rotation, every under an even one.
@@ -95,6 +117,7 @@ TOKEN_URL = f"{KEYCLOAK_BASE}/token"
 CLIENT_ID = "bfagaming"
 REDIRECT_URI = "https://bfagaming.com/"
 HISTORY_URL = "https://api.bfagaming.com/history/api/GetPlayerHistory"
+OPEN_BETS_URL = "https://api.bfagaming.com/history/api/GetPlayerOpenBets"
 USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36")
 BASE_HEADERS = {"Accept": "application/json", "Origin": "https://bfagaming.com",
@@ -111,8 +134,18 @@ INVALID_CREDENTIALS_MARKER = "Invalid username or password"
 
 SOURCE = "bfa_api"
 VENUE = "bfa"
-# The account renders every timestamp on its own clock (module docstring).
+# The account renders every history timestamp on its own clock (module docstring).
 BFA_TZ = ZoneInfo("America/Los_Angeles")
+# GetPlayerOpenBets stamps the Pacific wall-clock plus 7 hours (module docstring).
+OPEN_BETS_CLOCK_OFFSET = timedelta(hours=7)
+# An open leg's idSport (the codes the account's line profile lists); the rest are props.
+OPEN_BET_LEAGUES = {"CBB": "cbb", "CFB": "cfb", "NFL": "nfl", "NBA": "nba", "WNBA": "wnba", "MLB": "mlb",
+                    "NHL": "nhl", "SOC": "soccer"}
+OPEN_BET_PROP_CODES = {"PROP", "TNT", "MU", "ESOC"}
+REASON_NO_OPEN_LEGS = "open bet carries no legs"
+# "… [Sport:Basketball, League:NCAA]" closes an open bet's description.
+SPORT_SUFFIX_RE = re.compile(r"\s*\[Sport:[^\]]*\]\s*$", re.IGNORECASE)
+HTML_TAG_RE = re.compile(r"<[^>]+>")
 APPROX_START_FROM_SETTLED = "event_start_from_settled_date"
 EVENT_START_DAYS_BEFORE_PLACED = 1
 EVENT_START_DAYS_AFTER_PLACED = 60
@@ -155,6 +188,26 @@ def normalize_description(raw: str) -> str:
 
 def parse_price(text: str) -> int:
     return 100 if text.upper() == "EV" else int(text)
+
+
+def leg_segment_of(raw: str) -> str:
+    """The "[rotation] …" segment of a description that wraps it in HTML — an open
+    bet's "CBB - Alternative Lines <br> [1674] TOTAL … [Sport:…, League:…]" — else
+    the whole text. A history description has no wrapping and passes through."""
+    text = SPORT_SUFFIX_RE.sub("", raw)
+    for segment in HTML_TAG_RE.split(text):
+        if ROTATION_RE.match(normalize_description(segment)):
+            return segment
+    return text
+
+
+def period_for(league: str, period: str | None) -> str:
+    """The leg's period; an MLB "1H" is the first five innings (Novig's rule)."""
+    if period is None:
+        return "FG"
+    if period == "1H" and league == "mlb":
+        return "F5"
+    return period
 
 
 def split_period(name: str) -> tuple[str, str | None] | str:
@@ -218,7 +271,7 @@ def _one_team_leg(rotation: int, bet_type: str, team_text: str, points: float | 
 def parse_leg(raw_description: str) -> dict | str:
     """"[1340] TOTAL u24EV \\r(ARIZONA 1H vrs BYU 1H)" -> {rotation, betType, side, points,
     price, period, awayTeam, homeTeam, sideFromParity}, or the reason it does not parse."""
-    text = normalize_description(raw_description)
+    text = normalize_description(leg_segment_of(raw_description))
     rotation_match = ROTATION_RE.match(text)
     if not rotation_match:
         return f"no '[rotation]' prefix ({text[:60]})"
@@ -264,6 +317,20 @@ def parse_account_time(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=BFA_TZ)
     return parsed.astimezone(timezone.utc)
+
+
+def parse_open_bets_time(value: object) -> datetime | None:
+    """A GetPlayerOpenBets timestamp (Pacific wall-clock + 7 h) -> aware UTC."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        stamped = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if stamped.tzinfo is not None:
+        return stamped.astimezone(timezone.utc)
+    pacific_wall_clock = stamped - OPEN_BETS_CLOCK_OFFSET
+    return pacific_wall_clock.replace(tzinfo=BFA_TZ).astimezone(timezone.utc)
 
 
 def iso_utc(moment: datetime | None) -> str | None:
@@ -345,15 +412,22 @@ def _base_record(wager: dict, native_id: str, fetched_at: str | None) -> dict:
     }
 
 
-def _apply_leg(record: dict, league: str, leg: dict, event_start: datetime | None) -> dict:
-    approx = [APPROX_DATE_UNKNOWN] if event_start is None else [APPROX_START_FROM_SETTLED]
+def _apply_leg(record: dict, league: str, leg: dict, event_start: datetime | None,
+               start_approx: str | None = None) -> dict:
+    """`start_approx` names why the start is weaker than it looks (the history's
+    settledDate); an open bet's gameDateTime needs no flag."""
+    approx = []
+    if event_start is None:
+        approx.append(APPROX_DATE_UNKNOWN)
+    elif start_approx:
+        approx.append(start_approx)
     if leg["sideFromParity"]:
         approx.append(APPROX_SIDE_PARITY)
     record.update({
         "league": league,
         "eventStart": iso_utc(event_start),
         "eventDate": None if event_start is None else eastern_date_of(event_start),
-        "rotation": leg["rotation"], "betType": leg["betType"], "period": leg["period"],
+        "rotation": leg["rotation"], "betType": leg["betType"], "period": period_for(league, leg["period"]),
         "side": leg["side"], "points": leg["points"], "price": leg["price"],
         "awayTeam": leg["awayTeam"], "homeTeam": leg["homeTeam"],
         "approx": approx,
@@ -418,7 +492,7 @@ def normalize_wager(wager: dict, fetched_at: str | None) -> list[dict]:
     if league is None:
         return [json_clean(_unmatchable(base, REASON_LEAGUE_UNKNOWN))]
     event_start = event_start_of(wager.get("settledDate"), parse_account_time(wager.get("placedDate")))
-    return [json_clean(_apply_leg(base, league, leg, event_start))]
+    return [json_clean(_apply_leg(base, league, leg, event_start, APPROX_START_FROM_SETTLED))]
 
 
 def normalize_bfa(wagers: list[dict], fetched_at: str | None) -> list[dict]:
@@ -429,6 +503,114 @@ def normalize_bfa(wagers: list[dict], fetched_at: str | None) -> list[dict]:
     for wager in wagers:
         records.extend(normalize_wager(wager, fetched_at))
     return records
+
+
+# ---- open bets ----------------------------------------------------------------------
+
+def open_native_id_of(wager: dict) -> str:
+    value = wager.get("idWager")
+    if value in (None, "", 0, "0"):
+        raise RuntimeError(f"BFA open bet carries no idWager; keys seen: {sorted(wager.keys())}")
+    return str(value)
+
+
+def open_bet_league_of(sport_code: object, description: str) -> tuple[str | None, str | None]:
+    """(league, reason): the leg's idSport first, the nickname scan for a code the
+    table does not know; a prop code or no league at all is the reason."""
+    code = str(sport_code or "").strip().upper()
+    if code in OPEN_BET_PROP_CODES:
+        return None, f"not a game market (idSport {code})"
+    league = OPEN_BET_LEAGUES.get(code) or league_of(description)
+    if league is None:
+        return None, f"league not supported (idSport {code or 'blank'})"
+    return league, None
+
+
+def _open_base_record(wager: dict, native_id: str, fetched_at: str | None) -> dict:
+    placed_at = parse_open_bets_time(wager.get("placedDate"))
+    return {
+        "id": f"{VENUE}:{native_id}",
+        "source": SOURCE,
+        "venue": VENUE,
+        "league": None, "eventStart": None, "eventDate": None,
+        "awayTeam": None, "homeTeam": None, "awayKey": None, "homeKey": None,
+        "rotation": None, "betType": "other", "period": None, "side": None, "points": None,
+        "price": None,
+        "stake": _money(wager.get("riskAmount")),
+        "toWin": _money(wager.get("winAmount")),
+        "contracts": None,
+        "placedAt": iso_utc(placed_at),
+        "status": "open",
+        "closedAt": None,
+        "isParlayLeg": False, "parlayId": None, "legIndex": None, "legCount": None,
+        "approx": [],
+        "unmatchable": None,
+        "sourceFetchedAt": fetched_at,
+        "raw": {
+            "nativeId": native_id,
+            "openBet": True,
+            "headerDescription": wager.get("headerDescription"),
+            "riskAmount": wager.get("riskAmount"),
+            "winAmount": wager.get("winAmount"),
+            "placedDate": wager.get("placedDate"),
+            "wagerType": wager.get("wagerType"),
+            "ifBetWagerType": wager.get("ifBetWagerType"),
+        },
+    }
+
+
+def _open_leg_record(record: dict, leg_row: dict) -> dict:
+    description = str(leg_row.get("detailDescription") or "")
+    record["raw"].update({
+        "description": description,
+        "idSport": leg_row.get("idSport"),
+        "gameDateTime": leg_row.get("gameDateTime"),
+        "idGame": leg_row.get("idGame"),
+    })
+    league, reason = open_bet_league_of(leg_row.get("idSport"), description)
+    if reason:
+        return _unmatchable(record, reason)
+    leg = parse_leg(description)
+    if isinstance(leg, str):
+        return _unmatchable(record, leg)
+    return _apply_leg(record, league, leg, parse_open_bets_time(leg_row.get("gameDateTime")))
+
+
+def normalize_open_wager(wager: dict, fetched_at: str | None) -> list[dict]:
+    """One GetPlayerOpenBets wager -> one open record, or one per leg. Pure."""
+    native_id = open_native_id_of(wager)
+    legs = wager.get("betDetails") or []
+    base = _open_base_record(wager, native_id, fetched_at)
+    if not legs:
+        return [json_clean(_unmatchable(base, REASON_NO_OPEN_LEGS))]
+    if len(legs) == 1:
+        return [json_clean(_open_leg_record(base, legs[0]))]
+    parlay_price = american_from_payout(base["stake"] or 0, base["toWin"] or 0)
+    records = []
+    for index, leg_row in enumerate(legs):
+        record = _open_base_record(wager, native_id, fetched_at)
+        record["id"] = f"{base['id']}:leg{index}"
+        record["raw"]["parlayPrice"] = parlay_price
+        record.update({"isParlayLeg": True, "parlayId": base["id"], "legIndex": index, "legCount": len(legs)})
+        records.append(json_clean(_open_leg_record(record, leg_row)))
+    return records
+
+
+def normalize_open_bets(wagers: list[dict], fetched_at: str | None) -> list[dict]:
+    """Every open wager -> records. Raises only when one has no idWager."""
+    records: list[dict] = []
+    for wager in wagers:
+        records.extend(normalize_open_wager(wager, fetched_at))
+    return records
+
+
+def merge_open_over_history(history_records: list[dict], open_records: list[dict]) -> list[dict]:
+    """One list, an open-bets record replacing the history's copy of the same id:
+    the history lists a pending wager too, with less (no league code, no start)."""
+    by_id = {record["id"]: record for record in history_records}
+    for record in open_records:
+        by_id[record["id"]] = record
+    return list(by_id.values())
 
 
 # ---- network half -------------------------------------------------------------------
@@ -563,6 +745,17 @@ class BFASource:
         today = datetime.fromtimestamp(self._clock(), BFA_TZ).date()
         return (today - timedelta(days=self._history_days)).isoformat(), (today + timedelta(days=1)).isoformat()
 
+    def _fetch_open_bets(self) -> list[dict]:
+        session = self._session_factory()
+        response = session.get(OPEN_BETS_URL, headers={"Authorization": f"Bearer {self._access_token}", **BASE_HEADERS},
+                               params={"playerId": self._player_id}, timeout=HTTP_TIMEOUT_SEC)
+        if response.status_code != 200:
+            raise RuntimeError(f"BFA open bets failed: HTTP {response.status_code}")
+        body = response.json()
+        if not isinstance(body, list):
+            raise RuntimeError(f"BFA open bets: expected a list, got {type(body).__name__}")
+        return body
+
     def _fetch_history(self) -> list[dict]:
         start_date, end_date = self._history_window()
         session = self._session_factory()
@@ -588,12 +781,15 @@ class BFASource:
 
     def fetch(self) -> list[dict]:
         self._ensure_access_token()
-        wagers = self._fetch_history()
-        records = normalize_bfa(wagers, utc_now_iso())
+        fetched_at = utc_now_iso()
+        open_wagers = self._fetch_open_bets()
+        history_wagers = self._fetch_history()
+        records = merge_open_over_history(normalize_bfa(history_wagers, fetched_at),
+                                          normalize_open_bets(open_wagers, fetched_at))
         n_open = sum(1 for record in records if record["status"] == "open")
         n_unmatchable = sum(1 for record in records if record["unmatchable"])
-        log.info("bfa: %d wagers -> %d records (%d open, %d unmatchable)",
-                 len(wagers), len(records), n_open, n_unmatchable)
+        log.info("bfa: %d open + %d history wagers -> %d records (%d open, %d unmatchable)",
+                 len(open_wagers), len(history_wagers), len(records), n_open, n_unmatchable)
         return records
 
 

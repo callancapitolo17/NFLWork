@@ -1081,9 +1081,19 @@ GETs; no order placement.
   parser refuses rather than misreads.
 - **BFA source** (`sources/bfa.py`, 2026-09-23): every 300 s logs in to
   Betfastaction's Keycloak with the password in `bet_logger/.env`
-  (`BFA_USERNAME` / `BFA_PASSWORD`) and pulls
-  `GET api.bfagaming.com/history/api/GetPlayerHistory` for the last 31 days
-  through tomorrow, keeping **pending** bets. The session is this process's
+  (`BFA_USERNAME` / `BFA_PASSWORD`) and reads the **open bets first** —
+  `GET api.bfagaming.com/history/api/GetPlayerOpenBets?playerId`, one object
+  per wager with `betDetails[]` per leg carrying `idSport` (the league: `CBB`,
+  `CFB`, `NFL`, …, so an open college bet IS placed), `gameDateTime` (the
+  start) and the leg's description wrapped as `CBB - Alternative Lines <br>
+  [1674] TOTAL u68½+110 (NEW MEXICO 1H vrs NEVADA 1H) [Sport:…, League:…]`;
+  its timestamps are the Pacific wall-clock **plus 7 hours** whatever the
+  season (a February wager placed between two history rows stamped 15:32 and
+  15:33 PST reads 22:33 there), so 7 hours are subtracted before localising —
+  then `GET …/GetPlayerHistory` for the last 31 days through tomorrow, which
+  settles an open record once it leaves the open list (a store row stays open
+  until a poll says otherwise); an open-bets record replaces the history's
+  pending copy of the same wager. The session is this process's
   own and lives in memory: the access token is refreshed within 60 s of
   expiry and a refused refresh is replaced by a new login;
   `bet_logger/recon_bfa_auth.json` is never read or written (the weekly
@@ -1098,10 +1108,11 @@ GETs; no order placement.
   `GRAMBLING 1H +168` (own team only, placed by rotation parity — the pull's
   totals follow the same convention, every over odd, every under even —
   `approx: side_from_rotation_parity`); a teaser leg's `(B+6)` dropped. The
-  description names no sport, so the league is `bet_logger/utils.py
-  parse_sport`'s nickname scan — pro leagues only — and a **college game,
-  most of this account, is unmatchable as "league unknown"**, never guessed
-  as CFB or CBB (hand-off rule; the open question is in the design log).
+  history description names no sport, so there the league is
+  `bet_logger/utils.py parse_sport`'s nickname scan — pro leagues only — and a
+  **settled college game is unmatchable as "league unknown"**, never guessed
+  as CFB or CBB (hand-off rule); only open bets are flagged and those carry
+  their `idSport`, so nothing that matters is lost.
   Timestamps are on the account's Pacific clock: a straight bet's
   `settledDate` was its scheduled kickoff on every settled row (noon-ET games
   read 09:00), so it is served as `eventStart` (`approx:
@@ -1121,11 +1132,17 @@ GETs; no order placement.
   2026-06-26) whose session cookie lives in memory; a helper answering HTML or
   a redirect instead of JSON means the session died and is replaced by one
   fresh login (a second miss fails the poll). Pending bets are kept: the
-  history lists them under their game day with an empty `Result`, and the
-  open-bets helper adds only rows the weeks did not carry — its row shape is
-  UNOBSERVED (`{"result": []}` live, no open bet that night), so a row that is
-  not a HistoryHelper-shaped wager fails the poll naming its keys rather than
-  being dropped. Record ids are `wagerzon:<IdWager>`, `:legN` per leg of a
+  helper is read first — `{result: [row, …]}`, one row PER LEG grouped by
+  `TicketNumber`, each with `RiskAmount`, `WinAmount`, `PlacedDate` and
+  `GameDateTime` (`M/D/YYYY h:mm:ss A`, Eastern), `IdSport`, `IdGame`,
+  `DetailDescription`, `RotationNumbers`, `GameDescription` — the fields the
+  site's own `OpenBetsTable` widget reads off the `ui_c` bundle; the values
+  are unobserved (`{"result": []}` live, no open bet that night), and a row
+  without `TicketNumber` and `DetailDescription` fails the poll naming its
+  keys rather than being dropped. The history lists a pending bet too, under
+  its game day with an empty `Result`, and settles it once it leaves the
+  helper; an open-bets record replaces the history's copy of the same ticket.
+  Record ids are `wagerzon:<TicketNumber>` (= `IdWager`), `:legN` per leg of a
   parlay (`details[]` is the leg list; each leg carries its own `IdSport`,
   `GameDate` + `GameTime` and `DetailResult`), transfer rows (`WagerOrTrans`
   `TRAN`) are not bets. The league is the leg's `IdSport` (`NFL CFB NBA CBK
@@ -1550,7 +1567,11 @@ shape is unknown, so a row that is not a HistoryHelper-shaped wager fails the
 poll naming its keys (loud, never a silent drop); the history already lists a
 pending bet with an empty `Result`, so the helper may add nothing. Considered
 and rejected: skipping the helper until a shape is seen (an open bet the
-history did not carry would go unflagged with no trace).
+history did not carry would go unflagged with no trace). Later that day, on
+Cal's "we just need the open bets right": the row shape was read off the
+site's `ui_c` bundle (`OpenBetsTable.loadOpenBets` groups the helper's rows by
+`TicketNumber` and reads the fields listed in the source bullet), so the
+helper is now the primary source of open bets and the history only settles them.
 
 **2026-09-23 — BFA (Betfastaction) source in the bets service.** Cal asked for
 the Bet Logger books on the Bets tab: BFA first, the Wagerzon C account next,
@@ -1567,9 +1588,13 @@ account's Pacific clock, on every settled straight bet (noon-ET games read
 (every over odd, every under even); the description names no sport and
 `parse_sport` cannot tell CFB from CBB, so college bets — the bulk of the
 account (1H totals) — land in the unmatched list as "league unknown", the
-hand-off's rule (never guess). **Open, Cal's call:** let the panel try the
-college leagues by team name for a league-less record, or infer the league
-from the season in the source; nothing guesses today. Credentials resolve
+hand-off's rule (never guess). Later that day, on Cal's "we just need the
+open bets right": `bet_logger/recon_bfa_api.json` (the February browser
+capture) holds `GetPlayerOpenBets`, whose legs carry `idSport` and
+`gameDateTime` — so an OPEN college bet is placed after all, and the source
+reads that endpoint first with the history only settling records; its clock
+is the Pacific wall-clock plus 7 hours (two February rows), true UTC only in
+summer. The college question now touches settled bets only. Credentials resolve
 from `bet_logger/.env` as `config.py`'s fourth lookup place, so no password is
 copied. Poll 300 s and the 31-day window are constants, not settings.
 

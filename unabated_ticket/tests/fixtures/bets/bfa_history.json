@@ -1,5 +1,5 @@
 {
- "provenance": "GetPlayerHistory wagers from the live pull of 2026-09-22 21:46 PT (ids below 990000000, verbatim: the page carries no account identifier) plus hand-written rows on the same shape (ids 990000001+) for the shapes the pull had none of: pending, push, cancelled, moneyline, team total, a baseball pitchers bracket, a pending parlay, a short teaser, a prop. Timestamps are naive on the account's Pacific clock.",
+ "provenance": "GetPlayerHistory wagers from the live pull of 2026-09-22 21:46 PT (ids below 990000000, verbatim: the page carries no account identifier) plus hand-written rows on the same shape (ids 990000001+) for the shapes the pull had none of: pending, push, cancelled, moneyline, team total, a baseball pitchers bracket, a pending parlay, a short teaser, a prop. Timestamps are naive on the account's Pacific clock. `openBets`: GetPlayerOpenBets as captured 2026-02-24 (two live rows, the ip removed) plus hand-written rows on that shape (ids 990100001+): a pending NFL parlay, a prop, an MLB first-five total; its timestamps are the Pacific wall-clock plus 7 hours.",
  "window": {
   "startDate": "2026-08-23",
   "endDate": "2026-09-23"
@@ -307,6 +307,192 @@
    "win": 4838.0,
    "amount": -250.0,
    "picks": []
+  }
+ ],
+ "openBets": [
+  {
+   "ticketNumber": 343243731,
+   "idWager": 343243731,
+   "phoneLine": -1,
+   "placedDate": "2026-02-24T22:33:05.13",
+   "headerDescription": "STRAIGHT BET",
+   "headerDescriptionLang": "STRAIGHT BET",
+   "ifBetRiskAmount": 150.0,
+   "riskAmount": 150.0,
+   "winAmount": 165.0,
+   "result": 255,
+   "ifParent": 0,
+   "ifChild": 0,
+   "epos": 0,
+   "openPlay": 0,
+   "idWagerType": 117580,
+   "ifBetWagerType": 0,
+   "wagerType": 0,
+   "play": 3,
+   "loginName": "SITE_EUROPEAN",
+   "idEvent": 0,
+   "eventDesc": null,
+   "gameDescription": "",
+   "betDetails": [
+    {
+     "idGame": 35382901,
+     "gameDateTime": "2026-02-25T03:00:00",
+     "idSport": "CBB",
+     "detailDescription": "CBB - Alternative Lines <br> [1674] TOTAL u68½+110 \r(NEW MEXICO 1H vrs NEVADA 1H) [Sport:Basketball, League:NCAA]",
+     "detailDescriptionLang": "CBB - Alternative Lines <br> [1674] TOTAL u68½+110 \r(NEW MEXICO 1H vrs NEVADA 1H) [Sport:Basketball, League:NCAA]",
+     "shortGame": 0,
+     "pitcherChange": 0
+    }
+   ]
+  },
+  {
+   "ticketNumber": 343243900,
+   "idWager": 343243900,
+   "phoneLine": -1,
+   "placedDate": "2026-02-24T22:34:33.037",
+   "headerDescription": "STRAIGHT BET",
+   "headerDescriptionLang": "STRAIGHT BET",
+   "ifBetRiskAmount": 175.0,
+   "riskAmount": 175.0,
+   "winAmount": 127.74,
+   "result": 255,
+   "ifParent": 0,
+   "ifChild": 0,
+   "epos": 0,
+   "openPlay": 0,
+   "idWagerType": 117580,
+   "ifBetWagerType": 0,
+   "wagerType": 0,
+   "play": 3,
+   "loginName": "SITE_EUROPEAN",
+   "idEvent": 0,
+   "eventDesc": null,
+   "gameDescription": "",
+   "betDetails": [
+    {
+     "idGame": 35382818,
+     "gameDateTime": "2026-02-25T03:00:00",
+     "idSport": "CBB",
+     "detailDescription": "CBB - Alternative Lines <br> [1670] UCLA 1H -2½-137 [Sport:Basketball, League:NCAA]",
+     "detailDescriptionLang": "CBB - Alternative Lines <br> [1670] UCLA 1H -2½-137 [Sport:Basketball, League:NCAA]",
+     "shortGame": 0,
+     "pitcherChange": 0
+    }
+   ]
+  },
+  {
+   "ticketNumber": 990100001,
+   "idWager": 990100001,
+   "phoneLine": -1,
+   "placedDate": "2026-09-27T15:00:00",
+   "headerDescription": "PARLAY (2 TEAMS)",
+   "headerDescriptionLang": "PARLAY (2 TEAMS)",
+   "ifBetRiskAmount": 100.0,
+   "riskAmount": 100.0,
+   "winAmount": 260.0,
+   "result": 255,
+   "ifParent": 0,
+   "ifChild": 0,
+   "epos": 0,
+   "openPlay": 0,
+   "idWagerType": 117580,
+   "ifBetWagerType": 0,
+   "wagerType": 0,
+   "play": 3,
+   "loginName": "SITE_EUROPEAN",
+   "idEvent": 0,
+   "eventDesc": null,
+   "gameDescription": "",
+   "betDetails": [
+    {
+     "idGame": 36810300,
+     "gameDateTime": "2026-09-27T20:00:00",
+     "idSport": "NFL",
+     "detailDescription": "NFL - Game <br> [451] GREEN BAY PACKERS -3-110 [Sport:Football, League:NFL]",
+     "detailDescriptionLang": "NFL - Game <br> [451] GREEN BAY PACKERS -3-110 [Sport:Football, League:NFL]",
+     "shortGame": 0,
+     "pitcherChange": 0
+    },
+    {
+     "idGame": 36810301,
+     "gameDateTime": "2026-09-27T23:25:00",
+     "idSport": "NFL",
+     "detailDescription": "NFL - Game <br> [453] TOTAL u44½-110 \r(DALLAS COWBOYS vrs NEW YORK GIANTS) [Sport:Football, League:NFL]",
+     "detailDescriptionLang": "NFL - Game <br> [453] TOTAL u44½-110 \r(DALLAS COWBOYS vrs NEW YORK GIANTS) [Sport:Football, League:NFL]",
+     "shortGame": 0,
+     "pitcherChange": 0
+    }
+   ]
+  },
+  {
+   "ticketNumber": 990100002,
+   "idWager": 990100002,
+   "phoneLine": -1,
+   "placedDate": "2026-09-20T23:09:00",
+   "headerDescription": "STRAIGHT BET",
+   "headerDescriptionLang": "STRAIGHT BET",
+   "ifBetRiskAmount": 250.0,
+   "riskAmount": 250.0,
+   "winAmount": 4838.0,
+   "result": 255,
+   "ifParent": 0,
+   "ifChild": 0,
+   "epos": 0,
+   "openPlay": 0,
+   "idWagerType": 117580,
+   "ifBetWagerType": 0,
+   "wagerType": 0,
+   "play": 3,
+   "loginName": "SITE_EUROPEAN",
+   "idEvent": 0,
+   "eventDesc": null,
+   "gameDescription": "",
+   "betDetails": [
+    {
+     "idGame": 5970860,
+     "gameDateTime": "2026-09-22T03:15:00",
+     "idSport": "PROP",
+     "detailDescription": "PROP - NFL Specials <br> [777045] GIANTS SUPERFECTA (SCR 1ST, 1Q, 1H & GM +7½) +1935 [Sport:Football, League:NFL]",
+     "detailDescriptionLang": "PROP - NFL Specials <br> [777045] GIANTS SUPERFECTA (SCR 1ST, 1Q, 1H & GM +7½) +1935 [Sport:Football, League:NFL]",
+     "shortGame": 0,
+     "pitcherChange": 0
+    }
+   ]
+  },
+  {
+   "ticketNumber": 990100003,
+   "idWager": 990100003,
+   "phoneLine": -1,
+   "placedDate": "2026-09-24T18:00:00",
+   "headerDescription": "STRAIGHT BET",
+   "headerDescriptionLang": "STRAIGHT BET",
+   "ifBetRiskAmount": 110.0,
+   "riskAmount": 110.0,
+   "winAmount": 100.0,
+   "result": 255,
+   "ifParent": 0,
+   "ifChild": 0,
+   "epos": 0,
+   "openPlay": 0,
+   "idWagerType": 117580,
+   "ifBetWagerType": 0,
+   "wagerType": 0,
+   "play": 3,
+   "loginName": "SITE_EUROPEAN",
+   "idEvent": 0,
+   "eventDesc": null,
+   "gameDescription": "",
+   "betDetails": [
+    {
+     "idGame": 5980001,
+     "gameDateTime": "2026-09-25T02:10:00",
+     "idSport": "MLB",
+     "detailDescription": "MLB - Game <br> [969] TOTAL o4½-110 \r(CHI CUBS 1H vrs TB RAYS 1H) [Sport:Baseball, League:MLB]",
+     "detailDescriptionLang": "MLB - Game <br> [969] TOTAL o4½-110 \r(CHI CUBS 1H vrs TB RAYS 1H) [Sport:Baseball, League:MLB]",
+     "shortGame": 0,
+     "pitcherChange": 0
+    }
+   ]
   }
  ]
 }

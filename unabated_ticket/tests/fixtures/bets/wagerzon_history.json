@@ -1,5 +1,5 @@
 {
- "provenance": "HistoryHelper.aspx weeks 0 and 1 from the live pull of 2026-09-22 21:46 PT, trimmed to 4 rows (a NFL special, two RBL props, a transfer) with the account name, balances and week totals removed, plus a hand-written week on the same shape (IdWager 300000001+) for the game-bet grammar the pull had none of, copied from bet_logger runs since 2026-04: MLB total with the pitchers bracket, a first-five run line, a doubleheader, a pending parlay, an NFL spread, a CFB moneyline, a postponed leg, a push, a cancel, an unsupported sport. Timestamps are on the site's Eastern clock.",
+ "provenance": "HistoryHelper.aspx weeks 0 and 1 from the live pull of 2026-09-22 21:46 PT, trimmed to 4 rows (a NFL special, two RBL props, a transfer) with the account name, balances and week totals removed, plus a hand-written week on the same shape (IdWager 300000001+) for the game-bet grammar the pull had none of, copied from bet_logger runs since 2026-04: MLB total with the pitchers bracket, a first-five run line, a doubleheader, a pending parlay, an NFL spread, a CFB moneyline, a postponed leg, a push, a cancel, an unsupported sport. Timestamps are on the site's Eastern clock. `openBets`: OpenBetsHelper rows hand-written on the field list the OpenBets widget reads off the ui_c bundle (one row per leg, grouped by TicketNumber; live the helper answered an empty list): an MLB total, a two-leg parlay, an RBL prop, and the pending NFL spread the history week also lists.",
  "weeks": [
   {
    "EndDate": "09/27/2026",
@@ -644,6 +644,87 @@
   }
  ],
  "openBets": {
-  "result": []
+  "result": [
+   {
+    "TicketNumber": 400000001,
+    "IdWager": 400000001,
+    "HeaderDescription": "STRAIGHT BET",
+    "RiskAmount": 120,
+    "WinAmount": 100,
+    "PlacedDate": "9/23/2026 11:02:00 AM",
+    "GameDateTime": "9/24/2026 7:10:00 PM",
+    "IdGame": 5009,
+    "IdSport": "MLB",
+    "Result": "",
+    "DetailResult": "",
+    "DetailDescription": "[967] TOTAL o7½-120 (CHI CUBS vrs TB RAYS)<BR>( JAMESON TAILLON - R / SHANE MCCLANAHAN - L )",
+    "RotationNumbers": "967",
+    "GameDescription": "CHI CUBS vrs TB RAYS"
+   },
+   {
+    "TicketNumber": 400000002,
+    "IdWager": 400000002,
+    "HeaderDescription": "PARLAY (2 TEAMS)",
+    "RiskAmount": 50,
+    "WinAmount": 214,
+    "PlacedDate": "9/23/2026 11:05:00 AM",
+    "GameDateTime": "9/24/2026 6:40:00 PM",
+    "IdGame": 5010,
+    "IdSport": "MLB",
+    "Result": "",
+    "DetailResult": "",
+    "DetailDescription": "[971] BOS RED SOX -1½+151<BR>( RANGER SUAREZ - L / CAM SCHLITTLER - R )",
+    "RotationNumbers": "971",
+    "GameDescription": "BOS RED SOX vrs NY YANKEES"
+   },
+   {
+    "TicketNumber": 400000002,
+    "IdWager": 400000002,
+    "HeaderDescription": "PARLAY (2 TEAMS)",
+    "RiskAmount": 50,
+    "WinAmount": 214,
+    "PlacedDate": "9/23/2026 11:05:00 AM",
+    "GameDateTime": "9/24/2026 6:40:00 PM",
+    "IdGame": 5011,
+    "IdSport": "MLB",
+    "Result": "",
+    "DetailResult": "",
+    "DetailDescription": "[973] TOTAL u7½-105 (COL ROCKIES GM#1 vrs NY METS GM#1)<BR>( JAMESON TAILLON - R / SHANE MCCLANAHAN - L )",
+    "RotationNumbers": "973",
+    "GameDescription": "COL ROCKIES vrs NY METS"
+   },
+   {
+    "TicketNumber": 400000003,
+    "IdWager": 400000003,
+    "HeaderDescription": "DST Straight|ID:396870000",
+    "RiskAmount": 15,
+    "WinAmount": 27,
+    "PlacedDate": "9/27/2026 12:18:00 PM",
+    "GameDateTime": "9/27/2026 1:00:00 PM",
+    "IdGame": 0,
+    "IdSport": "RBL",
+    "Result": "",
+    "DetailResult": "",
+    "DetailDescription": "Tucker Kraft (GB) 1+ Touchdowns <br /> Green Bay Packers vs New York Jets",
+    "RotationNumbers": "",
+    "GameDescription": ""
+   },
+   {
+    "TicketNumber": 300000005,
+    "IdWager": 300000005,
+    "HeaderDescription": "STRAIGHT BET",
+    "RiskAmount": 110,
+    "WinAmount": 100,
+    "PlacedDate": "9/23/2026 10:00:00 AM",
+    "GameDateTime": "9/28/2026 1:00:00 PM",
+    "IdGame": 5012,
+    "IdSport": "NFL",
+    "Result": "",
+    "DetailResult": "",
+    "DetailDescription": "[455] JACKSONVILLE JAGUARS +2½-110",
+    "RotationNumbers": "455",
+    "GameDescription": "JACKSONVILLE JAGUARS vrs CINCINNATI BENGALS"
+   }
+  ]
  }
 }

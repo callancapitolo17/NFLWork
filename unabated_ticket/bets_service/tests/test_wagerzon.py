@@ -1,6 +1,5 @@
 """Wagerzon parser on tests/fixtures/bets/wagerzon_history.json, and WagerzonSource's
 in-memory session and never-partial rules against a fake session."""
-import copy
 import json
 from pathlib import Path
 
@@ -8,7 +7,8 @@ import pytest
 
 from unabated_ticket.bets_service.sources import wagerzon
 from unabated_ticket.bets_service.sources.wagerzon import (
-    WagerzonSource, normalize_wager, normalize_wagerzon, open_wagers_of, parse_leg, period_for, wagers_of_history)
+    WagerzonSource, normalize_open_bets, normalize_wager, normalize_wagerzon, open_tickets_of, parse_leg, period_for,
+    wagers_of_history)
 
 FIXTURE_PATH = Path(__file__).parents[2] / "tests" / "fixtures" / "bets" / "wagerzon_history.json"
 FETCHED_AT = "2026-09-23T15:00:00Z"
@@ -187,12 +187,45 @@ def test_wager_without_legs_is_unmatchable_not_dropped():
     assert (record["id"], record["unmatchable"], record["status"]) == ("wagerzon:5", "wager carries no legs", "open")
 
 
-def test_open_wagers_of_refuses_unknown_shapes():
+# ---- open bets ------------------------------------------------------------------------
+
+@pytest.fixture
+def open_records(history) -> list[dict]:
+    return normalize_open_bets(open_tickets_of(history["openBets"]), FETCHED_AT)
+
+
+def test_open_tickets_of_groups_rows_by_ticket_and_refuses_unknown_shapes(history):
+    tickets = open_tickets_of(history["openBets"])
+    assert [(rows[0]["TicketNumber"], len(rows)) for rows in tickets] == \
+        [(400000001, 1), (400000002, 2), (400000003, 1), (300000005, 1)]
     with pytest.raises(RuntimeError, match=r"expected \{result: \[...\]\}, got \['rows'\]"):
-        open_wagers_of({"rows": []})
-    with pytest.raises(RuntimeError, match=r"unknown shape \(keys \['ticket'\]\)"):
-        open_wagers_of({"result": [{"ticket": 1}]})
-    assert open_wagers_of({"result": []}) == []
+        open_tickets_of({"rows": []})
+    with pytest.raises(RuntimeError, match=r"unknown shape \(keys \['TicketNumber', 'legs'\]\)"):
+        open_tickets_of({"result": [{"TicketNumber": 1, "legs": []}]})
+    assert open_tickets_of({"result": []}) == []
+
+
+def test_open_mlb_total_reads_its_start_from_the_helper_row(open_records):
+    record = by_id(open_records, "wagerzon:400000001")
+    assert (record["status"], record["closedAt"], record["unmatchable"]) == ("open", None, None)
+    assert (record["league"], record["betType"], record["period"], record["side"], record["points"], record["price"]) == \
+        ("mlb", "total", "FG", "over", 7.5, -120)
+    assert (record["awayTeam"], record["homeTeam"], record["rotation"]) == ("CHI CUBS", "TB RAYS", 967)
+    assert (record["eventStart"], record["eventDate"], record["placedAt"]) == \
+        ("2026-09-24T23:10:00Z", "2026-09-24", "2026-09-23T15:02:00Z")
+    assert (record["stake"], record["toWin"], record["approx"]) == (120, 100, [])
+    assert record["raw"]["openBet"] is True and record["raw"]["rotationNumbers"] == "967"
+
+
+def test_open_parlay_rows_of_one_ticket_are_its_legs(open_records):
+    spread, total = [record for record in open_records if record["parlayId"] == "wagerzon:400000002"]
+    assert [spread["id"], total["id"]] == ["wagerzon:400000002:leg0", "wagerzon:400000002:leg1"]
+    assert all(record["status"] == "open" and record["legCount"] == 2 and record["stake"] == 50
+               and record["raw"]["parlayPrice"] == 428 for record in (spread, total))
+    assert (spread["betType"], spread["side"], spread["points"], spread["price"]) == ("spread", "away", -1.5, 151)
+    assert (total["betType"], total["side"], total["points"], total["raw"]["gameNumber"]) == ("total", "under", 7.5, 1)
+    assert by_id(open_records, "wagerzon:400000003")["unmatchable"] == "not a game market (IdSport RBL)"
+    assert len(open_records) == 5
 
 
 # ---- network half ---------------------------------------------------------------------
@@ -258,30 +291,23 @@ class FakeSession:
         return FakeResponse(200, text="<html>welcome</html>")
 
 
-def open_row(wager: dict, id_wager: int) -> dict:
-    row = copy.deepcopy(wager)
-    row["IdWager"] = row["TicketNumber"] = id_wager
-    return row
-
-
 def make_source(session: FakeSession) -> WagerzonSource:
     return WagerzonSource(username="user", password="secret", history_weeks=6, poll_sec=300,
                           session_factory=lambda: session)
 
 
-def test_fetch_logs_in_once_pulls_six_weeks_and_merges_open_only_rows(history, wagers):
-    pending = next(wager for wager in wagers if wager["IdWager"] == 300000005)
-    open_rows = [open_row(pending, 300000005), open_row(pending, 300000011)]  # one already in the weeks, one new
-    session = FakeSession(history["weeks"], open_rows)
+def test_fetch_logs_in_once_pulls_six_weeks_and_the_open_list_which_wins_on_a_shared_ticket(history):
+    session = FakeSession(history["weeks"], history["openBets"]["result"])
     source = make_source(session)
     records = source.fetch()
     assert session.logins == 1
     assert session.posted_fields[0]["__VIEWSTATE"] == "vs-1" and session.posted_fields[0]["Account"] == "user"
     assert session.posted_fields[0]["Password"] == "secret" and session.posted_fields[0]["BtnSubmit"] == ""
     assert [week for week, _ in session.history_calls] == [0, 1, 2, 3, 4, 5] and session.open_calls == 1
-    assert len(records) == 17  # the fixture's 16 plus the open-only row
-    assert by_id(records, "wagerzon:300000011")["status"] == "open"
-    assert len([record for record in records if record["id"] == "wagerzon:300000005"]) == 1
+    assert len(records) == 20  # 16 from the weeks + 5 open, the pending Jaguars spread listed by both
+    jaguars = by_id(records, "wagerzon:300000005")
+    assert jaguars["status"] == "open" and jaguars["raw"]["openBet"] is True
+    assert by_id(records, "wagerzon:400000001")["status"] == "open"
 
 
 def test_session_is_kept_across_polls_and_a_dead_one_is_replaced_by_one_login(history):
@@ -312,6 +338,9 @@ def test_an_error_message_in_a_week_fails_the_poll(history):
 def test_open_bets_rows_of_unknown_shape_fail_the_poll(history):
     session = FakeSession(history["weeks"], [{"WagerId": 1, "Legs": []}])
     with pytest.raises(RuntimeError, match=r"unknown shape \(keys \['Legs', 'WagerId'\]\)"):
+        make_source(session).fetch()
+    session = FakeSession(history["weeks"], [{"TicketNumber": 0, "DetailDescription": "x"}])
+    with pytest.raises(RuntimeError, match="carries no TicketNumber"):
         make_source(session).fetch()
 
 

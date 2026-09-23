@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from unabated_ticket.bets_service.sources import bfa
-from unabated_ticket.bets_service.sources.bfa import BFASource, normalize_bfa, normalize_wager, parse_leg
+from unabated_ticket.bets_service.sources.bfa import (
+    BFASource, merge_open_over_history, normalize_bfa, normalize_open_bets, normalize_wager, parse_leg)
 
 FIXTURE_PATH = Path(__file__).parents[2] / "tests" / "fixtures" / "bets" / "bfa_history.json"
 FETCHED_AT = "2026-09-23T05:00:00Z"
@@ -149,6 +150,62 @@ def test_every_fixture_record_carries_the_contract_keys(records):
         assert record["id"].startswith("bfa:")
 
 
+# ---- open bets ------------------------------------------------------------------------
+
+@pytest.fixture
+def open_records(history) -> list[dict]:
+    return normalize_open_bets(history["openBets"], FETCHED_AT)
+
+
+def test_open_college_bets_carry_their_league_and_start_from_the_open_list(open_records):
+    total = by_id(open_records, "bfa:343243731")
+    assert (total["status"], total["closedAt"], total["unmatchable"]) == ("open", None, None)
+    assert (total["league"], total["betType"], total["period"], total["side"], total["points"], total["price"]) == \
+        ("cbb", "total", "1H", "under", 68.5, 110)
+    assert (total["rotation"], total["awayTeam"], total["homeTeam"]) == (1674, "NEW MEXICO", "NEVADA")
+    # 03:00 on the open list = 20:00 PST the evening before + 7 h; 22:33 placed = 15:33 PST
+    assert (total["eventStart"], total["eventDate"]) == ("2026-02-25T04:00:00Z", "2026-02-24")
+    assert total["placedAt"] == "2026-02-24T23:33:05Z"
+    assert total["approx"] == [] and (total["stake"], total["toWin"]) == (150, 165)
+    assert total["raw"]["openBet"] is True and total["raw"]["idSport"] == "CBB"
+    spread = by_id(open_records, "bfa:343243900")
+    assert (spread["league"], spread["betType"], spread["period"], spread["side"], spread["points"], spread["price"]) == \
+        ("cbb", "spread", "1H", "home", -2.5, -137)  # 1670 is even = home
+    assert (spread["awayTeam"], spread["homeTeam"], spread["approx"]) == (None, "UCLA", ["side_from_rotation_parity"])
+
+
+def test_open_parlay_prop_and_first_five(open_records):
+    spread, total = [record for record in open_records if record["parlayId"] == "bfa:990100001"]
+    assert [spread["id"], total["id"]] == ["bfa:990100001:leg0", "bfa:990100001:leg1"]
+    assert all(record["status"] == "open" and record["league"] == "nfl" and record["legCount"] == 2
+               and record["raw"]["parlayPrice"] == 260 for record in (spread, total))
+    assert (spread["side"], spread["points"], spread["eventStart"], spread["eventDate"]) == \
+        ("away", -3, "2026-09-27T20:00:00Z", "2026-09-27")  # 20:00 = 13:00 PDT + 7 h = true UTC in summer
+    assert (total["side"], total["points"], total["awayTeam"], total["homeTeam"]) == \
+        ("under", 44.5, "DALLAS COWBOYS", "NEW YORK GIANTS")
+    assert by_id(open_records, "bfa:990100002")["unmatchable"] == "not a game market (idSport PROP)"
+    first_five = by_id(open_records, "bfa:990100003")
+    assert (first_five["league"], first_five["period"], first_five["side"], first_five["points"]) == ("mlb", "F5", "over", 4.5)
+
+
+def test_every_open_record_carries_the_contract_keys(open_records):
+    assert len(open_records) == 6  # 5 wagers, the parlay is two
+    for record in open_records:
+        assert set(record) == CONTRACT_KEYS, record["id"]
+
+
+def test_open_records_replace_the_historys_pending_copy():
+    pending = {"id": 343243731, "type": "STRAIGHT BET", "description": "[1674] TOTAL u68\u00bd+110 \r(NEW MEXICO 1H vrs NEVADA 1H)",
+               "placedDate": "2026-02-24T15:33:05", "result": "PENDING", "risk": 150.0, "win": 165.0}
+    open_wager = {"idWager": 343243731, "headerDescription": "STRAIGHT BET", "riskAmount": 150.0, "winAmount": 165.0,
+                  "placedDate": "2026-02-24T22:33:05.13",
+                  "betDetails": [{"idSport": "CBB", "gameDateTime": "2026-02-25T03:00:00",
+                                  "detailDescription": "CBB - Game <br> [1674] TOTAL u68\u00bd+110 \r(NEW MEXICO 1H vrs NEVADA 1H) [Sport:Basketball, League:NCAA]"}]}
+    merged = merge_open_over_history(normalize_bfa([pending], FETCHED_AT), normalize_open_bets([open_wager], FETCHED_AT))
+    [record] = merged
+    assert (record["league"], record["unmatchable"], record["status"]) == ("cbb", None, "open")
+
+
 @pytest.mark.parametrize("text, expected", [
     ("[1340] TOTAL u24EV \r(ARIZONA 1H vrs BYU 1H)", ("total", "under", 24, 100, "1H", "ARIZONA", "BYU")),
     ("[1117] TOTAL O35-110 \r(KENT STATE 1H VRS OHIO STATE 1H)", ("total", "over", 35, -110, "1H", "KENT STATE", "OHIO STATE")),
@@ -160,6 +217,8 @@ def test_every_fixture_record_carries_the_contract_keys(records):
     ("[1306551] GRAMBLING 1H +168", ("moneyline", "away", None, 168, "1H", "GRAMBLING", None)),
     ("[464] HOUSTON TEXANS pk-105", ("spread", "home", 0, -105, "FG", None, "HOUSTON TEXANS")),
     ("[968] TB RAYS +120 (CHI CUBS vrs TB RAYS)", ("moneyline", "home", None, 120, "FG", "CHI CUBS", "TB RAYS")),
+    ("CBB - Alternative Lines <br> [1670] UCLA 1H -2\u00bd-137 [Sport:Basketball, League:NCAA]",
+     ("spread", "home", -2.5, -137, "1H", None, "UCLA")),
 ])
 def test_parse_leg_grammar(text, expected):
     leg = parse_leg(text)
@@ -226,8 +285,10 @@ class FakeSession:
 
     LOGIN_ACTION = "https://auth.bfagaming.com/realms/players_realm/login-actions/authenticate?session_code=abc&execution=def"
 
-    def __init__(self, wagers: list[dict], login_ok: bool = True, history_status: int = 200, expires_in: int = 300):
+    def __init__(self, wagers: list[dict], login_ok: bool = True, history_status: int = 200, expires_in: int = 300,
+                 open_wagers: list[dict] | None = None):
         self.wagers = wagers
+        self.open_wagers = open_wagers or []
         self.login_ok = login_ok
         self.history_status = history_status
         self.expires_in = expires_in
@@ -247,6 +308,9 @@ class FakeSession:
         if url == bfa.AUTH_URL:
             assert params["code_challenge_method"] == "S256" and params["client_id"] == "bfagaming"
             return FakeResponse(200, text=f'<form action="{self.LOGIN_ACTION.replace("&", "&amp;")}" method="post">')
+        if url == bfa.OPEN_BETS_URL:
+            assert headers["Authorization"] == f"Bearer {jwt_with('777')}" and params == {"playerId": "777"}
+            return FakeResponse(200, self.open_wagers)
         if url == bfa.HISTORY_URL:
             assert headers["Authorization"] == f"Bearer {jwt_with('777')}" and params["playerId"] == "777"
             self.history_calls.append(params)
@@ -282,12 +346,13 @@ def make_source(session: FakeSession, clock) -> BFASource:
                      session_factory=lambda: session, clock=clock)
 
 
-def test_fetch_logs_in_once_and_normalises_the_paged_history(history, monkeypatch):
+def test_fetch_logs_in_once_reads_the_open_list_and_the_paged_history(history, monkeypatch):
     monkeypatch.setattr(bfa, "RECORDS_PER_PAGE", 5)
-    session = FakeSession(history["wagers"])
+    session = FakeSession(history["wagers"], open_wagers=history["openBets"])
     source = make_source(session, clock=lambda: CLOCK)
     records = source.fetch()
-    assert len(records) == 23 and records[0]["id"] == "bfa:354669433"
+    assert len(records) == 29 and records[0]["id"] == "bfa:354669433"  # 23 history + 6 open
+    assert sum(1 for record in records if record["status"] == "open") == 12  # 6 pending in the weeks + 6 open
     assert session.logins == 1 and session.passwords_seen == ["secret"]
     # 18 wagers in pages of 5, then the empty page that ends a total padded by transactions.
     assert [call["page"] for call in session.history_calls] == [0, 1, 2, 3, 4]
