@@ -430,7 +430,9 @@ def test_crosswalk_learns_once_per_venue_team_and_never_rewrites_a_held_id(store
         ("novig", "nv-wsu", "717", "2026-09-15T19:00:00Z", "kalshi:x:yes on board event 123742"),
     ]
     assert store._con.execute("SELECT count(*) FROM team_crosswalk").fetchone()[0] == 2
-    assert set(rows[0]) == {"venue", "league", "venueTeamKey", "venueTeamName", "unabatedTeamId", "unabatedTeamName", "learnedFrom", "learnedAt"}
+    assert set(rows[0]) == {"venue", "league", "venueTeamKey", "venueTeamName", "unabatedTeamId", "unabatedTeamName",
+                            "learnedFrom", "learnedAt", "pinnedBetId"}
+    assert rows[0]["pinnedBetId"] is None  # learned from an id join, not an attach
     # Served with every bets payload; cleared on request.
     assert service.bets_payload(store, days=30)["crosswalk"] == rows
     assert store.clear_crosswalk() == 2
@@ -451,6 +453,75 @@ def test_validate_crosswalk_rows_names_the_first_bad_row():
     assert service.validate_crosswalk_rows({"rows": [{**good, "unabatedTeamId": True}]}) == "rows[0].unabatedTeamId must be a non-empty string"
     assert service.validate_crosswalk_rows({"rows": [{**good, "learnedFrom": 3}]}) == "rows[0].learnedFrom must be a string or null"
     assert service.validate_crosswalk_rows({"rows": [good] * 1001}).startswith("at most 1000 rows")
+
+
+# ---- manual attach: pins -----------------------------------------------------------------
+
+def pin_for(bet_id: str, **extra) -> dict:
+    return {"betId": bet_id, "venue": "kalshi", "league": "cfb", "eventId": "123853",
+            "eventStart": "2026-09-27T17:00:00Z", "awayTeamId": "41", "homeTeamId": "42",
+            "awayTeamName": "Pittsburgh Steelers", "homeTeamName": "New England Patriots", **extra}
+
+
+def crosswalk_by_key(store: BetsStore) -> dict:
+    return {(row["venue"], row["league"], row["venueTeamKey"]): row for row in store.load_crosswalk()}
+
+
+def test_a_pin_replaces_a_held_automatic_row_and_unpin_removes_only_what_it_taught(store):
+    now = datetime(2026, 9, 23, 22, 0, tzinfo=timezone.utc)
+    store.learn_crosswalk([crosswalk_row("kalshi", "PIT Steelers", "99"), crosswalk_row("kalshi", "Other", "7")], now)
+    store.pin_bet(pin_for("kalshi:a:yes"), [crosswalk_row("kalshi", "PIT Steelers", "41", learnedFrom="attached by you"),
+                                          crosswalk_row("kalshi", "NE Patriots", 42)], now)
+    rows = crosswalk_by_key(store)
+    assert rows[("kalshi", "cfb", "PIT Steelers")]["unabatedTeamId"] == "41"  # Cal overrides the id join's 99
+    assert rows[("kalshi", "cfb", "PIT Steelers")]["pinnedBetId"] == "kalshi:a:yes"
+    assert rows[("kalshi", "cfb", "NE Patriots")]["unabatedTeamId"] == "42"
+    assert rows[("kalshi", "cfb", "Other")]["pinnedBetId"] is None
+    [pin] = store.load_pins()
+    assert pin == {**pin_for("kalshi:a:yes"), "pinnedAt": "2026-09-23T22:00:00Z"}
+    # Automatic learning stays insert-only: it cannot overwrite the manual row.
+    refused = store.learn_crosswalk([crosswalk_row("kalshi", "PIT Steelers", "99")], now)
+    assert refused["learned"] == 0 and refused["conflicts"][0]["held"] == "41"
+    # Undo: the pin and its two rows go; the id join's own row stays; the replaced 99 is not restored.
+    assert store.unpin_bet("kalshi:a:yes") == {"removedPin": True, "removedRows": 2}
+    assert store.load_pins() == []
+    assert list(crosswalk_by_key(store)) == [("kalshi", "cfb", "Other")]
+    assert store.unpin_bet("kalshi:a:yes") == {"removedPin": False, "removedRows": 0}
+
+
+def test_re_attaching_a_bet_replaces_its_pin_and_the_rows_the_first_attach_taught(store):
+    now = datetime(2026, 9, 23, 22, 0, tzinfo=timezone.utc)
+    store.pin_bet(pin_for("kalshi:a:yes"), [crosswalk_row("kalshi", "Steelers?", "41")], now)
+    store.pin_bet(pin_for("kalshi:a:yes", eventId="999"), [crosswalk_row("kalshi", "Pats?", "42")], now + timedelta(minutes=5))
+    [pin] = store.load_pins()
+    assert pin["eventId"] == "999" and pin["pinnedAt"] == "2026-09-23T22:05:00Z"
+    assert list(crosswalk_by_key(store)) == [("kalshi", "cfb", "Pats?")]
+
+
+def test_a_failed_pin_write_rolls_back_the_whole_attach(store):
+    now = datetime(2026, 9, 23, 22, 0, tzinfo=timezone.utc)
+    broken_row = {**crosswalk_row("kalshi", "PIT Steelers", "41"), "unabatedTeamId": None}  # NOT NULL column
+    with pytest.raises(Exception):
+        store.pin_bet(pin_for("kalshi:a:yes"), [broken_row], now)
+    assert store.load_pins() == [] and store.load_crosswalk() == []
+
+
+def test_validate_pin_request_names_the_first_problem():
+    good_row = crosswalk_row("kalshi", "PIT Steelers", "41")
+    pin, rows = service.validate_pin_request({"pin": pin_for("kalshi:a:yes", eventId=123853, awayTeamId=41), "crosswalk": [good_row]})
+    assert pin["eventId"] == "123853" and pin["awayTeamId"] == "41" and rows == [good_row]
+    assert service.validate_pin_request({"pin": pin_for("kalshi:a:yes")}) == (pin_for("kalshi:a:yes"), [])
+    assert service.validate_pin_request([]) == "body must be an object with a `pin` object"
+    assert service.validate_pin_request({"pin": pin_for("")}) == "pin.betId must be a non-empty string"
+    assert service.validate_pin_request({"pin": pin_for("b", eventId=True)}) == "pin.eventId must be a non-empty string"
+    assert service.validate_pin_request({"pin": pin_for("b", homeTeamId=1.5)}) == "pin.homeTeamId must be a non-empty string, a number or null"
+    assert service.validate_pin_request({"pin": pin_for("b", eventStart=5)}) == "pin.eventStart must be a string or null"
+    assert service.validate_pin_request({"pin": pin_for("b"), "crosswalk": {}}) == "crosswalk must be an array"
+    assert service.validate_pin_request({"pin": pin_for("b"), "crosswalk": [good_row] * 3}) == "at most 2 crosswalk rows per pin, got 3"
+    assert service.validate_pin_request({"pin": pin_for("b"), "crosswalk": [{**good_row, "venueTeamKey": ""}]}) == \
+        "crosswalk: rows[0].venueTeamKey must be a non-empty string"
+    assert service.validate_pin_request({"pin": pin_for("b"), "crosswalk": [crosswalk_row("novig", "x", "1")]}) == \
+        "crosswalk[0] is novig/cfb, the pin is kalshi/cfb"
 
 
 # ---- HTTP ------------------------------------------------------------------------------
@@ -486,7 +557,7 @@ def test_http_bets_json_and_health_shape(store, http_server):
     service.run_source_once(ScriptedSource([[record("kalshi:a:yes", "open", None)]]), store)
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
-    assert set(payload) == {"generatedAt", "sources", "bets", "crosswalk"}
+    assert set(payload) == {"generatedAt", "sources", "bets", "crosswalk", "pins"}
     assert set(payload["sources"]["kalshi"]) == {"fetchedAt", "ok", "error", "count"}
     assert payload["sources"]["kalshi"]["ok"] is True
     assert payload["bets"][0]["id"] == "kalshi:a:yes"
@@ -503,7 +574,8 @@ def test_http_bets_json_and_health_shape(store, http_server):
 def test_http_before_any_poll_serves_an_empty_list_with_the_source_pending(http_server):
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
-    assert payload == {"generatedAt": payload["generatedAt"], "sources": {"kalshi": service.NO_POLL_YET}, "bets": [], "crosswalk": []}
+    assert payload == {"generatedAt": payload["generatedAt"], "sources": {"kalshi": service.NO_POLL_YET}, "bets": [],
+                       "crosswalk": [], "pins": []}
     status, payload = get_json(f"{http_server}/health")
     assert status == 200 and payload["sources"] == {"kalshi": service.NO_POLL_YET}
 
@@ -546,6 +618,28 @@ def test_http_crosswalk_refuses_non_json_writes_bad_bodies_and_other_paths(http_
     assert get_json(f"{http_server}/bets.json")[1]["crosswalk"] == []
 
 
+def test_http_pins_post_attaches_a_known_bet_and_delete_undoes_it(store, http_server):
+    service.run_source_once(ScriptedSource([[record("kalshi:a:yes", "open", None)]]), store)
+    body = json.dumps({"pin": pin_for("kalshi:nope"), "crosswalk": []}).encode()
+    status, reply = request_json("POST", f"{http_server}/pins.json", body, "application/json")
+    assert status == 404 and reply["error"] == "no bet with id 'kalshi:nope'"
+    body = json.dumps({"pin": pin_for("kalshi:a:yes"), "crosswalk": [crosswalk_row("kalshi", "PIT Steelers", 41)]}).encode()
+    status, reply = request_json("POST", f"{http_server}/pins.json", body, "application/json")
+    assert status == 200 and reply["ok"] is True
+    assert [pin["betId"] for pin in reply["pins"]] == ["kalshi:a:yes"]
+    assert [(row["venueTeamKey"], row["pinnedBetId"]) for row in reply["crosswalk"]] == [("PIT Steelers", "kalshi:a:yes")]
+    assert get_json(f"{http_server}/bets.json")[1]["pins"] == reply["pins"]
+    status, reply = request_json("POST", f"{http_server}/pins.json", b'{"pin": {}}', "application/json")
+    assert status == 400 and reply["error"] == "pin.betId must be a non-empty string"
+    status, reply = request_json("POST", f"{http_server}/pins.json", body, "text/plain")
+    assert status == 415
+    status, reply = request_json("DELETE", f"{http_server}/pins.json")
+    assert status == 400 and reply["error"] == "betId query parameter required"
+    status, reply = request_json("DELETE", f"{http_server}/pins.json?betId=kalshi%3Aa%3Ayes")
+    assert status == 200
+    assert reply == {"ok": True, "removedPin": True, "removedRows": 1, "pins": [], "crosswalk": []}
+
+
 def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):
     """DNS rebinding: evil.example resolving to 127.0.0.1 is SAME-ORIGIN with
     this server, so CORS and the JSON Content-Type guard do not apply to it.
@@ -556,12 +650,15 @@ def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):
     for method, path, payload, content_type in [
             ("GET", "/bets.json", None, None), ("GET", "/health", None, None),
             ("POST", "/crosswalk.json", body, "application/json"),
-            ("DELETE", "/crosswalk.json", None, None)]:
+            ("DELETE", "/crosswalk.json", None, None),
+            ("POST", "/pins.json", json.dumps({"pin": pin_for("kalshi:a:yes")}).encode(), "application/json"),
+            ("DELETE", "/pins.json?betId=kalshi:a:yes", None, None)]:
         status, reply = request_json(method, f"{http_server}{path}", payload, content_type, host="evil.example")
         assert status == 403, f"{method} {path}"
         assert "Host must be one of" in reply["error"]
     # Nothing leaked and nothing was written or cleared.
     assert len(store.load_crosswalk()) == 1
+    assert store.load_pins() == []
     # The loopback names the service is actually serving on still pass.
     port = urlparse(http_server).port
     for host in [f"127.0.0.1:{port}", f"localhost:{port}", f"LOCALHOST:{port}"]:

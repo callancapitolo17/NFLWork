@@ -1008,15 +1008,25 @@ GETs; no order placement.
   bots and the sheet scrapers configured no new file is needed. `.env.example` lists every knob (port, retention window,
   Kalshi cadence, log level). Never commit `.env`.
 - **Endpoints** (loopback only, no auth): `GET /bets.json[?days=N]` →
-  `{generatedAt, sources: {kalshi: {...}, betonline: {fetchedAt, ok, error, count}}, bets: [...], crosswalk: [...]}`
-  with open bets plus settled/closed ones within `N` days (default 30) and
-  the whole team crosswalk (newest first); `GET /health` → `{ok, uptimeSec,
+  `{generatedAt, sources: {kalshi: {...}, betonline: {fetchedAt, ok, error, count}}, bets: [...], crosswalk: [...], pins: [...]}`
+  with open bets plus settled/closed ones within `N` days (default 30),
+  the whole team crosswalk and every pin (newest first); `GET /health` → `{ok, uptimeSec,
   sources}`; `POST /crosswalk.json` with `{rows: [{venue, league,
   venueTeamKey, unabatedTeamId, venueTeamName?, unabatedTeamName?,
   learnedFrom?}]}` (at most 1000 rows, 1 MiB) → `{ok, learned, conflicts,
   crosswalk}` — INSERT only, a held key with another id is returned in
   `conflicts` and never rewritten; `DELETE /crosswalk.json` → `{ok, cleared,
-  crosswalk: []}`. The two write routes require `Content-Type:
+  crosswalk: []}`. **Pins** (the Bets tab's Attach, 2026-09-23): `POST
+  /pins.json` with `{pin: {betId, venue, league, eventId, eventStart?,
+  awayTeamId?, homeTeamId?, awayTeamName?, homeTeamName?}, crosswalk: [at
+  most 2 rows of the pin's own venue and league]}` → `{ok, pins, crosswalk}`
+  (404 when no stored bet has that id) saves the bet → board event pin and
+  the team names the attach teaches, in one transaction; those rows REPLACE a
+  held key (Cal is the authority) and carry `pinned_bet_id`, and a re-attach
+  first drops the rows the earlier attach taught. `DELETE
+  /pins.json?betId=` → `{ok, removedPin, removedRows, pins, crosswalk}` is
+  Undo: the pin and exactly the rows it taught (a row it replaced is not
+  restored). The write routes require `Content-Type:
   application/json` (415 otherwise): the service sends no CORS headers, so a
   web page can only reach it with a "simple" cross-origin request (a form or
   `text/plain` POST, which is refused) and never with JSON or DELETE (both
@@ -1194,8 +1204,12 @@ GETs; no order placement.
   source poll, at most hourly, and can never fail the poll (an error is
   logged and retried an hour later). `team_crosswalk` (#118 step 4,
   primary key `(venue, league, venue_team_key)`, plus `venue_team_name`,
-  `unabated_team_id`, `unabated_team_name`, `learned_from`, `learned_at`)
-  holds what the panel learned, INSERT-only and cleared on DELETE. A failed poll writes a failed
+  `unabated_team_id`, `unabated_team_name`, `learned_from`, `learned_at`,
+  `pinned_bet_id`) holds what the panel learned, INSERT-only from id joins
+  and cleared on DELETE; an attach's rows replace a held key and name their
+  pin. `bet_pins` (primary key `bet_id`, plus `venue`, `league`, `event_id`,
+  `event_start`, both team ids and names, `pinned_at`) holds every attach,
+  never pruned (a few a week). A failed poll writes a failed
   `source_runs` row and touches nothing else, so a dark source keeps serving
   its previous records; a store write that raises (disk full) is logged and
   retried next poll, never killing the poll thread. Until a source's first

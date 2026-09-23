@@ -10,7 +10,8 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
            GET /bets.json[?days=N]  {generatedAt, sources: {name: {fetchedAt, ok,
                                     error, count}}, bets: [records open + settled
                                     within N days (default RETENTION_DAYS=30)],
-                                    crosswalk: [team_crosswalk rows, newest first]}
+                                    crosswalk: [team_crosswalk rows, newest first],
+                                    pins: [bet_pins rows, newest first]}
            GET /health              {ok, generatedAt, uptimeSec, sources}
            POST /crosswalk.json     body {rows: [{venue, league, venueTeamKey,
                                     unabatedTeamId, venueTeamName?, unabatedTeamName?,
@@ -20,13 +21,23 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     cannot send that cross-origin without a preflight
                                     this server never answers, so no site can write here)
            DELETE /crosswalk.json   -> {ok, cleared, crosswalk: []}
+           POST /pins.json          body {pin: {betId, venue, league, eventId, eventStart?,
+                                    awayTeamId?, homeTeamId?, awayTeamName?, homeTeamName?},
+                                    crosswalk: [at most 2 rows, the crosswalk shape]}
+                                    -> {ok, pins, crosswalk}; 404 when no bet has that id
+                                    (Cal's manual attach: the pin plus the team names it
+                                    teaches, which REPLACE a held key)
+           DELETE /pins.json?betId= -> {ok, removedPin, removedRows, pins, crosswalk}
+                                    (Undo: the pin and the rows it taught)
          Every verb refuses a request whose Host header is not the loopback
          name the service is serving on (403): a page at evil.example whose
          DNS flips to 127.0.0.1 is SAME-ORIGIN with this server, so neither
          CORS nor the JSON Content-Type guard applies to it.
 Side effects: UPSERTs records into bets.duckdb::bets and APPENDs a row to
 bets.duckdb::source_runs per poll (see store.py); INSERTs into / DELETEs from
-bets.duckdb::team_crosswalk on the two crosswalk routes; rotating log at
+bets.duckdb::team_crosswalk on the two crosswalk routes; UPSERTs / DELETEs
+bets.duckdb::bet_pins and the crosswalk rows a pin taught on the two pin
+routes; rotating log at
 bets_service.log. A poll that raises writes a failed source_runs row and
 leaves `bets` untouched — a dark source never blanks the list.
 """
@@ -61,6 +72,11 @@ LOOPBACK_HOST_NAMES = ("127.0.0.1", "localhost")
 HTTP_DEFAULT_PORT = 80
 CROSSWALK_REQUIRED_FIELDS = ("venue", "league", "venueTeamKey", "unabatedTeamId")
 CROSSWALK_OPTIONAL_FIELDS = ("venueTeamName", "unabatedTeamName", "learnedFrom")
+# A bet names at most two teams, so one attach teaches at most two rows.
+MAX_CROSSWALK_ROWS_PER_PIN = 2
+PIN_REQUIRED_FIELDS = ("betId", "venue", "league", "eventId")
+PIN_OPTIONAL_ID_FIELDS = ("awayTeamId", "homeTeamId")
+PIN_OPTIONAL_TEXT_FIELDS = ("eventStart", "awayTeamName", "homeTeamName")
 
 
 def _now() -> datetime:
@@ -137,11 +153,57 @@ def source_status(store: BetsStore, source_names: list[str]) -> dict[str, dict]:
 def bets_payload(store: BetsStore, days: int, source_names: list[str] = ()) -> dict:
     now = _now()
     return {"generatedAt": _iso(now), "sources": source_status(store, list(source_names)),
-            "bets": store.load_bets(days, now), "crosswalk": store.load_crosswalk()}
+            "bets": store.load_bets(days, now), "crosswalk": store.load_crosswalk(), "pins": store.load_pins()}
 
 
 def _non_empty_string(value: object) -> bool:
     return isinstance(value, str) and value != ""
+
+
+def _id_as_string(value: object) -> object:
+    """Unabated's ids are numeric; the store keeps them as strings. Anything
+    else is returned as it came, for the caller's type check to name."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return value
+
+
+def validate_pin_request(body: object) -> tuple[dict, list[dict]] | str:
+    """(pin, crosswalk rows) of a POST /pins.json body, or an error message.
+    Every crosswalk row must be the pin's own venue and league: an attach
+    teaches only what that bet's venue calls that game's teams."""
+    if not isinstance(body, dict) or not isinstance(body.get("pin"), dict):
+        return "body must be an object with a `pin` object"
+    raw = body["pin"]
+    pin: dict = {}
+    for field in PIN_REQUIRED_FIELDS:
+        value = _id_as_string(raw.get(field)) if field == "eventId" else raw.get(field)
+        if not _non_empty_string(value):
+            return f"pin.{field} must be a non-empty string"
+        pin[field] = value
+    for field in PIN_OPTIONAL_ID_FIELDS:
+        value = _id_as_string(raw.get(field))
+        if value is not None and not _non_empty_string(value):
+            return f"pin.{field} must be a non-empty string, a number or null"
+        pin[field] = value
+    for field in PIN_OPTIONAL_TEXT_FIELDS:
+        value = raw.get(field)
+        if value is not None and not isinstance(value, str):
+            return f"pin.{field} must be a string or null"
+        pin[field] = value
+    raw_rows = body.get("crosswalk", [])
+    if not isinstance(raw_rows, list):
+        return "crosswalk must be an array"
+    if len(raw_rows) > MAX_CROSSWALK_ROWS_PER_PIN:
+        return f"at most {MAX_CROSSWALK_ROWS_PER_PIN} crosswalk rows per pin, got {len(raw_rows)}"
+    rows = validate_crosswalk_rows({"rows": raw_rows})
+    if isinstance(rows, str):
+        return f"crosswalk: {rows}"
+    for index, row in enumerate(rows):
+        if (row["venue"], row["league"]) != (pin["venue"], pin["league"]):
+            return (f"crosswalk[{index}] is {row['venue']}/{row['league']}, "
+                    f"the pin is {pin['venue']}/{pin['league']}")
+    return pin, rows
 
 
 def validate_crosswalk_rows(body: object) -> list[dict] | str:
@@ -157,10 +219,7 @@ def validate_crosswalk_rows(body: object) -> list[dict] | str:
     for index, raw in enumerate(raw_rows):
         if not isinstance(raw, dict):
             return f"rows[{index}] must be an object"
-        team_id = raw.get("unabatedTeamId")
-        if isinstance(team_id, int) and not isinstance(team_id, bool):
-            team_id = str(team_id)
-        row = {"unabatedTeamId": team_id}
+        row = {"unabatedTeamId": _id_as_string(raw.get("unabatedTeamId"))}
         for field in CROSSWALK_REQUIRED_FIELDS:
             value = row.get(field, raw.get(field))
             if not _non_empty_string(value):
@@ -219,12 +278,15 @@ def make_handler(store: BetsStore, started_at: float,
             if self._refused_foreign_host():
                 return
             url = urlparse(self.path)
-            if url.path != "/crosswalk.json":
+            if url.path not in ("/crosswalk.json", "/pins.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
             if isinstance(body, tuple):
                 self._send_json(*body)
+                return
+            if url.path == "/pins.json":
+                self._post_pin(body)
                 return
             rows = validate_crosswalk_rows(body)
             if isinstance(rows, str):
@@ -234,15 +296,38 @@ def make_handler(store: BetsStore, started_at: float,
             self._send_json(200, {"ok": True, "learned": result["learned"], "conflicts": result["conflicts"],
                                   "crosswalk": store.load_crosswalk()})
 
+        def _post_pin(self, body: object) -> None:
+            request = validate_pin_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            pin, rows = request
+            if not store.has_bet(pin["betId"]):
+                self._send_json(404, {"error": f"no bet with id {pin['betId']!r}"})
+                return
+            store.pin_bet(pin, rows, _now())
+            self._send_json(200, {"ok": True, "pins": store.load_pins(), "crosswalk": store.load_crosswalk()})
+
         def do_DELETE(self) -> None:  # noqa: N802 — http.server's name
             if self._refused_foreign_host():
                 return
             url = urlparse(self.path)
+            if url.path == "/pins.json":
+                self._delete_pin(url.query)
+                return
             if url.path != "/crosswalk.json":
                 self._send_json(404, {"error": f"no route for DELETE {url.path}"})
                 return
             cleared = store.clear_crosswalk()
             self._send_json(200, {"ok": True, "cleared": cleared, "crosswalk": []})
+
+        def _delete_pin(self, query: str) -> None:
+            bet_ids = parse_qs(query).get("betId")
+            if not bet_ids or not _non_empty_string(bet_ids[0]):
+                self._send_json(400, {"error": "betId query parameter required"})
+                return
+            result = store.unpin_bet(bet_ids[0])
+            self._send_json(200, {"ok": True, **result, "pins": store.load_pins(), "crosswalk": store.load_crosswalk()})
 
         # DNS-rebinding guard, first thing on every verb: a page whose name
         # resolves to 127.0.0.1 is same-origin with this server, so nothing
