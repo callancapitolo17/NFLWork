@@ -8,7 +8,7 @@ Scrapes bet history from 4 sportsbooks and logs them to Google Sheets for P&L tr
 - `sheets.py` — Google Sheets API integration (append rows, read existing)
 - `utils.py` — Shared utilities (date parsing, deduplication)
 - `create_summary.py` — Generate summary reports
-- `run_all_scrapers.sh` — Weekly runner (Mondays 05:00 LaunchAgent). Since 2026-09-16 it runs only BFA primary and BetOnline; Wagerzon, Hoop88 and BFAJ scrapers still exist but are run by hand only
+- `run_all_scrapers.sh` — Weekly runner (Mondays 05:00 LaunchAgent). Since 2026-09-16 it runs Wagerzon, BFA primary and BetOnline; the Hoop88 and BFAJ scrapers still exist but are run by hand only
 
 ## Multi-account scrapers
 
@@ -29,7 +29,7 @@ account (formerly **WagerzonC**) was promoted into the primary
 `WAGERZON_USERNAME` / `WAGERZON_PASSWORD` slot in `.env`. To keep its P&L under
 the existing **WagerzonC** spreadsheet column, `ACCOUNTS['default']` now carries
 `platform: 'WagerzonC'` while still reading the primary env slot, and
-`run_all_scrapers.sh` no longer runs Wagerzon at all (dropped 2026-09-16). The
+`run_all_scrapers.sh` runs a single Wagerzon scrape (no `--account` flag). The
 `j` and `c` `ACCOUNTS` entries are retained for reference but are inert — their
 `WAGERZONJ_*` / `WAGERZONC_*` env vars are unset, so the cron no longer invokes
 them. Note the odds/placement side (`wagerzon_odds/`, dashboard registry) still
