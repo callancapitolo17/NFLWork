@@ -136,6 +136,9 @@
   let lastClickedKey = null;
   let scannerStatus = null;
   let scannerState = null;
+  // The scanner's per-line history (edgemove.js, #132): what each line was
+  // worth on every snapshot and stream update, read for the edge-move tag.
+  let scannerHistory = {};
   let boardLinesCache = null;
   // Unabated's fair ladders for sizing against held bets (#130): the feed's
   // lines grouped by event, and each (event, period, axis) ladder built from
@@ -168,9 +171,10 @@
   }
 
   const scanner = globalThis.UnabatedScanner.createScanner({
-    onChange: (status, feedState) => {
+    onChange: (status, feedState, history) => {
       scannerStatus = status;
       scannerState = feedState;
+      scannerHistory = history || {};
       boardLinesCache = null;
       linesByEventCache = null;
       ladderCache = new Map();
@@ -484,7 +488,11 @@
     view.price.textContent = fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice));
     // The fair is Unabated's own American number; there is no more exact source for it.
     view.fair.textContent = line.fair == null ? "unknown" : fmtPriceBoth(asBookLine(line.fair, 1, null));
-    view.edge.textContent = line.edgePct == null ? "—" : fmtPct(line.edgePct / 100);
+    // The edge-move tag reads the feed's copy of this line, and only at the
+    // price being sized: the feed's history says nothing about another price.
+    const feedCopy = feedLineFor(ticket, line.points);
+    const ticketMoveTag = feedCopy && feedCopy.price === line.price ? moveTag(feedCopy) : null;
+    view.edge.replaceChildren(line.edgePct == null ? "\u2014" : fmtPct(line.edgePct / 100), ...(ticketMoveTag ? [" ", ticketMoveTag] : []));
 
     view.stake.classList.remove("no-edge");
     view.payoutRow.hidden = true;
@@ -702,6 +710,66 @@
 
   function fmtLiquidity(value) {
     return value == null ? "" : `liq ${value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}`;
+  }
+
+  // ---- why the edge grew (#132) --------------------------------------------
+
+  const edgemove = globalThis.UnabatedEdgeMove;
+  const MOVE_TAG_CLASS = { fair_to_you: "move-fair", book_away: "move-book", fair_against: "move-against" };
+
+  // The line's move since the previous observation inside the window, or kind "none".
+  function moveFor(key) {
+    return edgemove.edgeMove(scannerHistory[key], Date.now());
+  }
+
+  function fmtFairEntry(entry) {
+    if (entry.bacr == null) return "?";
+    try {
+      return `${(kelly.americanToProb(entry.bacr) * 100).toFixed(1)}%`;
+    } catch (_error) {
+      return fmtAmerican(entry.bacr);
+    }
+  }
+
+  // The numbers behind the tag: "fair 33.7% → 35.6% · price +199 → +215 ·
+  // moved 2m ago (snapshot) · opened +185". "ago" is when the panel first SAW
+  // the move and by what: a snapshot observation can be up to one refresh
+  // interval after the book moved (the stream misses most exchange moves and
+  // never carries an alt rung). The opener is the book's own opening price
+  // (#126); on another number it is not comparable, so the number is named.
+  function moveTooltip(move, line) {
+    const parts = [
+      `fair ${fmtFairEntry(move.from)} \u2192 ${fmtFairEntry(move.to)}`,
+      `price ${fmtPriceBoth(asBookLine(move.from.price, move.from.sourceFormat, move.from.sourcePrice))} \u2192 ${fmtPriceBoth(asBookLine(move.to.price, move.to.sourceFormat, move.to.sourcePrice))}`,
+      `moved ${fmtAge(move.sinceMs)} (${move.source})`,
+    ];
+    const openerPrice = line.openerPrice ?? null;
+    const openerPoints = line.openerPoints ?? null;
+    if (openerPrice != null) {
+      const sameNumber = openerPoints == null || openerPoints === line.points;
+      parts.push(`opened ${fmtAmerican(openerPrice)}${sameNumber ? "" : ` at ${fmtPoints(openerPoints)}`}`);
+    }
+    return parts.join(" \u00b7 ");
+  }
+
+  // One small tag naming why the edge on this line is what it is (the fair
+  // decides — see edgemove.js), with the numbers in the tooltip; null when
+  // nothing moved inside the window or the line was first seen this session.
+  // `line` needs key, points and the openers: an Edges row or a raw feed line.
+  function moveTag(line) {
+    const move = moveFor(line.key);
+    if (move.kind === "none") return null;
+    const tag = document.createElement("span");
+    tag.className = `tag ${MOVE_TAG_CLASS[move.kind]}`;
+    tag.textContent = edgemove.MOVE_LABELS[move.kind];
+    tag.title = moveTooltip(move, line);
+    return tag;
+  }
+
+  // The tag's words for an alert body, or null.
+  function moveWords(row) {
+    const move = moveFor(row.key);
+    return move.kind === "none" ? null : edgemove.MOVE_LABELS[move.kind];
   }
 
   function pageScriptAlive() {
@@ -1068,7 +1136,7 @@
     const stake = document.createElement("span");
     stake.className = "edge-stake";
     fillStakeCell(stake, row);
-    rail.append(pct, stake);
+    rail.append(pct, ...[moveTag(row)].filter(Boolean), stake);
 
     return [main, rail, ...[relatedBlock(row.bet)].filter(Boolean)];
   }
@@ -1098,7 +1166,7 @@
     const stake = document.createElement("span");
     stake.className = "gl-stake";
     stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
-    rail.append(edge, stake);
+    rail.append(edge, ...[moveTag(row)].filter(Boolean), stake);
 
     li.append(main, rail);
     return li;
@@ -1363,6 +1431,8 @@
     const stake = row.stake ?? stakeFor(row);
     const message = [
       `${fmtPct(row.edgePct / 100)} edge`,
+      // Why it grew (#132): a re-fire on a better edge says which improvement it was.
+      moveWords(row),
       stake == null ? null : `stake ${fmtDollars(stake)}`,
       summary,
       describeMatchup(row),
