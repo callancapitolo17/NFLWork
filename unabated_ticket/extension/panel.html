@@ -77,12 +77,12 @@
       <div class="control-row">
         <label class="control-inline" title="Hide edges whose quarter-Kelly suggested bet is below this amount. 0 = no limit.">Min suggested bet $ <input id="edges-min-stake" type="number" min="0" step="1"></label>
         <label class="control-inline" title="Hide lines the book has not changed for longer than this (dead feeds keep old prices)">Max line age h <input id="edges-max-age" type="number" min="1" step="1"></label>
+        <label class="control-inline" title="Hide exchange lines, main and alt, whose resting money would win less than this: $20 at +2000 wins $400 and stays, $20 at +100 wins $20 and goes. Books that report no liquidity are not affected. 0 = no limit.">Min liq to win $ <input id="edges-min-to-win" type="number" min="0" step="10"></label>
         <label title="One card per game, market and side showing its best line; the other books and rungs sit behind the card's expander"><input type="checkbox" id="edges-group"> Group by market</label>
       </div>
       <div class="control-row" id="edges-alts">
         <label title="Also list each book's alternate spreads and totals (Unabated prices every rung). They refresh only with the league snapshot (1-5 min), never with the stream."><input type="checkbox" id="edges-include-alts"> Include alt lines</label>
         <label class="control-inline" title="Hide alts further than this many points from the book's own main number; deep rungs are extrapolated fairs and a few-dollar stake. 0 = no limit.">Max pts from main <input id="edges-alt-distance" type="number" min="0" step="0.5"></label>
-        <label class="control-inline" title="Hide exchange alts with less than this resting; books that report no liquidity are not affected. 0 = no limit.">Min liquidity $ <input id="edges-alt-liquidity" type="number" min="0" step="10"></label>
       </div>
       <div class="control-row" id="edges-alerts">
         <label><input type="checkbox" id="alerts-enabled"> Notify on new edges at or above</label>

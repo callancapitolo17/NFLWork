@@ -181,7 +181,7 @@ test("stakeAdvice: the real ladder feeds it — fairs read off feed lines, a run
 test("stakeAdvice: nothing held is the standalone Kelly stake, exactly", () => {
   const advice = adviceFor(nflLine(), 213, 7.19, [], LIONS_BILLS_LADDER);
   const standalone = kelly.kellyStakeFromEdge({ bookPrice: 213, edgePct: 7.19, ...SIZING }).stake;
-  assert.deepEqual(advice, { kind: "none", bet: standalone, alone: standalone, verb: "bet", held: 0, against: 0, reason: null, matches: [] });
+  assert.deepEqual(advice, { kind: "none", bet: standalone, alone: standalone, verb: "bet", held: 0, against: 0, reason: null, matches: [], cappedAt: null });
   assert.equal(view.stakeAdviceWords(advice), null);
   assert.equal(view.suggestedBetAmount(advice), standalone);
 });
@@ -196,7 +196,7 @@ test("stakeAdvice: Lions @ Bills — the same over held and two unders at anothe
   assert.ok(advice.matches.every((match) => match.inMath && match.note === null));
   assert.deepEqual(view.badges({ tier: "same_line", matches: advice.matches, advice }),
     [{ kind: "held", text: "held $270" }, { kind: "against", text: "against $413" }]);
-  assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$188.32", alone: "$270.05 alone" });
+  assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$188.32", alone: "$270.05 alone", cap: null });
   assert.equal(view.stakeAdviceLine(advice), "add $188.32, $270.05 alone");
   assert.equal(view.suggestedBetAmount(advice), 188.32);
 });
@@ -224,8 +224,36 @@ test("stakeAdvice: Chargers moneyline with the Chargers +3.5 held — in the mat
   assert.equal(advice.verb, "add");
   assert.equal(advice.matches[0].tier, "same_side");
   assert.deepEqual(view.badges({ tier: "same_side", matches: advice.matches, advice }), [{ kind: "held", text: "held $400" }]);
-  assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$0", alone: "$188.92 alone" });
+  assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$0", alone: "$188.92 alone", cap: null });
   assert.equal(view.suggestedBetAmount(advice), 0);
+});
+
+test("stakeAdvice: a Novig line with $17 resting says add $17, never the $32.58 Kelly wants", () => {
+  // Live 2026-09-22: $35 held on Portland Fire, the rail said "add $32.58" on a line with $17 behind it.
+  const advice = view.stakeAdvice({ line: nflLine(), price: 213, edgePct: 7.19, ...SIZING, matches: betsLib.matchBets(nflLine(), LIONS_BILLS_HELD).matches, ladderOf: LIONS_BILLS_LADDER, liquidity: 17 });
+  assert.equal(advice.kind, "sized");
+  assert.equal(advice.bet, 17);
+  assert.equal(advice.cappedAt, 17);
+  assert.equal(view.suggestedBetAmount(advice), 17);
+  assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$17", alone: "$270.05 alone", cap: "all $17 liq" });
+  assert.equal(view.stakeAdviceLine(advice), "add $17, all $17 liq, $270.05 alone");
+});
+
+test("stakeAdvice: nothing held and thin liquidity still caps, and says so", () => {
+  const advice = view.stakeAdvice({ line: nflLine(), price: 213, edgePct: 7.19, ...SIZING, matches: [], ladderOf: LIONS_BILLS_LADDER, liquidity: 50 });
+  assert.equal(advice.kind, "none");
+  assert.equal(advice.bet, 50);
+  assert.deepEqual(view.stakeAdviceWords(advice), { verb: "bet", bet: "$50", alone: null, cap: "all $50 liq" });
+});
+
+test("capAtLiquidity: deep or unreported liquidity leaves the stake alone", () => {
+  assert.deepEqual(view.capAtLiquidity(32.58, 17), { stake: 17, cappedAt: 17 });
+  assert.deepEqual(view.capAtLiquidity(32.58, 5000), { stake: 32.58, cappedAt: null });
+  assert.deepEqual(view.capAtLiquidity(32.58, null), { stake: 32.58, cappedAt: null });
+  assert.deepEqual(view.capAtLiquidity(32.58, undefined), { stake: 32.58, cappedAt: null });
+  assert.deepEqual(view.capAtLiquidity(null, 17), { stake: null, cappedAt: null });
+  // Nothing resting: the stake is $0 and says why (the Ticket labels it "Nothing resting at this price").
+  assert.deepEqual(view.capAtLiquidity(32.58, 0), { stake: 0, cappedAt: 0 });
 });
 
 test("stakeAdvice: a 1H over held sizes the FG over on the worst case, $408.39 not $666.67", () => {
@@ -341,7 +369,7 @@ test("badges: a plain game marker for another market, nothing with no match", ()
 });
 
 test("stakeAdviceWords: no `alone` line when the held bets left the number where it was", () => {
-  assert.deepEqual(view.stakeAdviceWords({ kind: "sized", verb: "bet", bet: 183.04, alone: 183.0412 }), { verb: "bet", bet: "$183.04", alone: null });
+  assert.deepEqual(view.stakeAdviceWords({ kind: "sized", verb: "bet", bet: 183.04, alone: 183.0412 }), { verb: "bet", bet: "$183.04", alone: null, cap: null });
   assert.equal(view.stakeAdviceLine({ kind: "sized", verb: "bet", bet: 183.04, alone: 183.0412 }), "bet $183.04");
   assert.equal(view.stakeAdviceLine({ kind: "none", bet: 183.04, alone: 183.04 }), null);
 });

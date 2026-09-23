@@ -381,15 +381,37 @@ test("altMaxDistance keeps alts within N points of the book's main number", () =
   assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 0 }).filter((r) => r.isAlt).length, 16);
 });
 
-test("altMinLiquidity drops thin exchange alts and leaves books with no liquidity figure alone", () => {
+test("minLiquidityToWin: $20 resting at +2000 wins $400 and lists, $20 at +100 wins $20 and does not", () => {
+  // Cal, 2026-09-23: thin liquidity on a longshot is worth a look, on a favorite it is not.
   const state = loadedState();
-  const rows = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMinLiquidity: 100 }).filter((r) => r.isAlt);
-  assert.equal(rows.length, 14);
-  // Kalshi Panthers -9.5 ($35 resting) and Over 64.5 ($86) are gone; Novig's alts carry no liquidity and stay.
-  assert.ok(!rows.some((r) => r.key === "289357357:ms105:si1:tid5:alt-9.5"));
-  assert.ok(!rows.some((r) => r.key === "289357345:ms105:si0:tid6:alt64.5"));
-  assert.ok(rows.some((r) => r.key === "289357345:ms105:si0:tid6:alt61.5"));
-  assert.ok(rows.some((r) => r.key === "289357357:ms89:si1:tid5:alt-2.5"));
+  const mainRow = feed.selectEdges(state, { now: BEFORE_KICKOFF })[0];
+  const line = state.lines[mainRow.key];
+  const listed = (price, liquidity, minLiquidityToWin) => {
+    Object.assign(line, { price, liquidity });
+    return feed.selectEdges(state, { now: BEFORE_KICKOFF, minLiquidityToWin }).some((r) => r.key === mainRow.key);
+  };
+  assert.equal(listed(2000, 20, 100), true);
+  assert.equal(listed(100, 20, 100), false);
+  assert.equal(listed(-200, 150, 100), false); // wins $75
+  assert.equal(listed(-200, 200, 100), true); // wins exactly $100
+  // Novig Portland Fire +809, $17 resting: wins $137.53.
+  assert.equal(listed(809, 17, 100), true);
+  assert.equal(listed(100, 20, 0), true);
+  assert.equal(listed(100, null, 100), true);
+});
+
+test("minLiquidityToWin gates alts too, and leaves books with no liquidity figure alone", () => {
+  const state = loadedState();
+  const alts = (minLiquidityToWin) => feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, minLiquidityToWin }).filter((r) => r.isAlt);
+  const all = alts(0);
+  const thinKalshi = all.find((r) => r.key === "289357357:ms105:si1:tid5:alt-9.5");
+  assert.equal(thinKalshi.liquidity, 35.36);
+  const winnable = (row) => row.liquidity * (row.price > 0 ? row.price / 100 : 100 / Math.abs(row.price));
+  const kept = alts(1e6);
+  // Everything that reports liquidity is gone at a $1M floor; Novig's alts carry no figure and stay.
+  assert.ok(kept.length > 0 && kept.every((r) => r.liquidity == null));
+  assert.equal(alts(winnable(thinKalshi)).some((r) => r.key === thinKalshi.key), true);
+  assert.equal(alts(winnable(thinKalshi) + 1).some((r) => r.key === thinKalshi.key), false);
 });
 
 test("an alt is hidden while the main line sits on its number, and distance follows the moved main line", () => {

@@ -214,7 +214,24 @@
   //             on this direction, else "bet"; held / against the dollars in
   //             the math by direction
   //   matches   the input matches, in-math first, each with inMath and note
-  function stakeAdvice({ line, price, edgePct, bankroll, multiplier, matches, ladderOf }) {
+  //   cappedAt  the line's liquidity when it cut `bet`, else null (capAtLiquidity)
+  function stakeAdvice({ line, price, edgePct, bankroll, multiplier, matches, ladderOf, liquidity }) {
+    const advice = sizeAgainstHeld({ line, price, edgePct, bankroll, multiplier, matches, ladderOf });
+    const capped = capAtLiquidity(advice.bet, liquidity);
+    return { ...advice, bet: capped.stake, cappedAt: capped.cappedAt };
+  }
+
+  // A stake can never be more than is resting at the price: an exchange line
+  // with $17 behind it takes $17, whatever Kelly wants. `liquidity` null or
+  // absent (a book that reports none) leaves the stake alone.
+  //   {stake, cappedAt}  cappedAt is the liquidity when it cut the stake, else null
+  function capAtLiquidity(stake, liquidity) {
+    const reported = typeof liquidity === "number" && Number.isFinite(liquidity) && liquidity >= 0;
+    if (!reported || typeof stake !== "number" || stake <= liquidity) return { stake, cappedAt: null };
+    return { stake: roundCents(liquidity), cappedAt: liquidity };
+  }
+
+  function sizeAgainstHeld({ line, price, edgePct, bankroll, multiplier, matches, ladderOf }) {
     const alone = standaloneStake({ price, edgePct, bankroll, multiplier });
     const rowPosition = bets.linePosition(line);
     const readLadder = typeof ladderOf === "function" ? ladderOf : () => null;
@@ -292,19 +309,25 @@
   // The advice as words, the same on the row, the Ticket block and the Copy
   // text. `verb` says what the number IS — "add" when topping up a position,
   // "bet" otherwise (user choice 2026-09-13); `alone` is the one small line
-  // under it, only when the held bets changed the number.
-  //   {verb, bet, alone}  display strings, or null when nothing is held in the math
+  // under it, only when the held bets changed the number; `cap` says the
+  // number is all the liquidity there is, whenever liquidity cut it.
+  //   {verb, bet, alone, cap}  display strings, or null when nothing is held in
+  //                            the math and liquidity did not cut the stake
   function stakeAdviceWords(advice) {
-    if (!advice || advice.kind !== "sized") return null;
+    if (!advice) return null;
+    const cap = advice.cappedAt != null ? `all ${bets.formatStake(roundCents(advice.cappedAt))} liq` : null;
+    if (advice.kind !== "sized") {
+      return cap ? { verb: advice.verb, bet: bets.formatStake(advice.bet), alone: null, cap } : null;
+    }
     const changed = roundCents(advice.alone) !== advice.bet;
-    return { verb: advice.verb, bet: bets.formatStake(advice.bet), alone: changed ? `${bets.formatStake(roundCents(advice.alone))} alone` : null };
+    return { verb: advice.verb, bet: bets.formatStake(advice.bet), alone: changed ? `${bets.formatStake(roundCents(advice.alone))} alone` : null, cap };
   }
 
-  // One line for the clipboard: "add $188.32, $183 alone".
+  // One line for the clipboard: "add $188.32, $183 alone", "add $17, all $17 liq, $71.06 alone".
   function stakeAdviceLine(advice) {
     const words = stakeAdviceWords(advice);
     if (!words) return null;
-    return `${words.verb} ${words.bet}${words.alone ? `, ${words.alone}` : ""}`;
+    return [`${words.verb} ${words.bet}`, words.cap, words.alone].filter(Boolean).join(", ");
   }
 
   // The related bets for one line: the bet itself and a tag. A bet in the
@@ -383,7 +406,7 @@
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badges, relatedLines, stakeAdvice, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, crosswalkRows, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badges, relatedLines, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, crosswalkRows, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

@@ -37,12 +37,14 @@
   // set by its button; an array = the user's own ticks in the panel.
   // Alt lines (#113) are off until asked for; altMaxDistance 7 points keeps
   // NFL/CFB spreads to about a touchdown off the number (live 2026-09-11 the
-  // median NFL alt "edge" sat 13 points out, +400 and up); altMinLiquidity
-  // $100 is Kalshi's median alt depth ($129) with its thin tail cut. 0 = off.
+  // median NFL alt "edge" sat 13 points out, +400 and up). minLiquidityToWin
+  // $100: an exchange line is listed when its resting money can win $100
+  // (feed.liquidityCanWin), so a thin longshot stays and a thin favorite goes. 0 = off.
   const DEFAULT_EDGE_SETTINGS = {
     leagues: ALL_LEAGUE_IDS, periods: [1], betTypes: [1, 2, 3], bookIds: undefined, minEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge",
     minStake: 0,
-    includeAlts: false, altMaxDistance: 7, altMinLiquidity: 100,
+    minLiquidityToWin: 100,
+    includeAlts: false, altMaxDistance: 7,
     // One card per (game, market, side) with its best line; the flat list is the toggle off.
     groupByMarket: true,
   };
@@ -88,7 +90,7 @@
     edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
     edgesSports: el("edges-sports"), edgesBetTypes: el("edges-bettypes"), edgesBooks: el("edges-books"), edgesBooksMode: el("edges-books-mode"),
     booksDefault: el("books-default"), booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMinStake: el("edges-min-stake"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
-    edgesIncludeAlts: el("edges-include-alts"), edgesAltDistance: el("edges-alt-distance"), edgesAltLiquidity: el("edges-alt-liquidity"), edgesGroup: el("edges-group"),
+    edgesIncludeAlts: el("edges-include-alts"), edgesAltDistance: el("edges-alt-distance"), edgesMinToWin: el("edges-min-to-win"), edgesGroup: el("edges-group"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
     alertsEnabled: el("alerts-enabled"), alertsMin: el("alerts-min"),
     betsHeader: el("bets-header"), betsBanner: el("bets-banner"),
@@ -571,10 +573,14 @@
     const event = scannerState && ticket.eventId != null ? scannerState.events[ticket.eventId] : null;
     const matchLine = { ...betsView.ticketAsLine(ticket), points: line.points ?? ticket.points ?? null, venueIds: event ? event.venueIds ?? null : null };
     const { matches } = betsLib.matchBets(matchLine, state.betRecords, { lines: boardLines() });
+    // Liquidity is for one price, like the edge: only the feed's copy of the
+    // line at the price being sized caps the stake, as it does on the Edges row.
+    const feedCopy = feedLineFor(ticket, line.points);
+    const liquidity = feedCopy && feedCopy.price === line.price ? feedCopy.liquidity : null;
     const advice = betsView.stakeAdvice({
       line: matchLine, price: line.price, edgePct: line.edgePct,
       bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
-      matches, ladderOf: ladderReader(ticket.eventId),
+      matches, ladderOf: ladderReader(ticket.eventId), liquidity,
     });
     return { tier: matches.length ? matches[0].tier : null, matches: advice.matches, advice };
   }
@@ -614,22 +620,25 @@
     return line ? ` (${line})` : "";
   }
 
-  // Under the stake, the same three pieces as the Edges rail: the position in
+  // Under the stake, the same pieces as the Edges rail: the position in
   // dollars, the number to act on (the big figure, its label says "Bet" or
-  // "Add to your position"), and what the stake would be alone.
+  // "Add to your position"), that liquidity capped it, and what the stake
+  // would be alone.
   function renderStakeExposure(advice) {
     const words = betsView.stakeAdviceWords(advice);
     const position = [
       advice.held > 0 ? `held ${betsLib.formatStake(advice.held)}` : null,
       advice.against > 0 ? `against ${betsLib.formatStake(advice.against)}` : null,
+      words ? words.cap : null,
       words ? words.alone : null,
     ].filter(Boolean);
     view.stakeExposure.classList.toggle("against", advice.against > 0 && advice.held === 0);
     view.stakeExposure.hidden = position.length === 0;
     view.stakeExposure.textContent = position.join(" \u00b7 ");
     view.stakeLabel.textContent = !words ? "Bet"
-      : advice.bet === 0 ? "Already at full size"
-        : words.verb === "add" ? "Add to your position" : "Bet";
+      : advice.bet === 0 && advice.cappedAt === 0 ? "Nothing resting at this price"
+        : advice.bet === 0 ? "Already at full size"
+          : words.verb === "add" ? "Add to your position" : "Bet";
     // The stake shown is the number to act on, not the standalone size.
     if (words) view.stake.textContent = fmtDollars(advice.bet);
   }
@@ -859,6 +868,7 @@
       parts.push(`books: all ${live} live (waiting for the Unabated tab's first read)`);
     }
     parts.push(`bets: ${Array.from(effective.betTypeIds).map((id) => feed.BET_TYPES[id]).join("/") || "none"}`);
+    if (state.edgeSettings.minLiquidityToWin > 0) parts.push(`exchange liq wins ≥ ${fmtDollars(state.edgeSettings.minLiquidityToWin)}`);
     parts.push(describeAltFilter(state.edgeSettings));
     return parts.join(" · ");
   }
@@ -867,7 +877,6 @@
     if (!settings.includeAlts) return "alts: off";
     const gates = [];
     if (settings.altMaxDistance > 0) gates.push(`within ${settings.altMaxDistance} pts of main`);
-    if (settings.altMinLiquidity > 0) gates.push(`exchange liq ≥ ${fmtDollars(settings.altMinLiquidity)}`);
     return `alts: on${gates.length ? ` (${gates.join(", ")})` : " (no gates)"}`;
   }
 
@@ -926,10 +935,13 @@
   view.booksAll.addEventListener("click", () => setBookIds(liveBooks().map((book) => book.id)));
   view.booksNone.addEventListener("click", () => setBookIds([]));
 
+  // Quarter-Kelly with nothing held, never more than the line's resting
+  // liquidity: it picks a card's best line and sorts "by stake".
   function stakeFor(row) {
     if (row.edgePct == null) return null;
     try {
-      return kelly.kellyStakeFromEdge({ bookPrice: row.price, edgePct: row.edgePct, bankroll: state.settings.bankroll, multiplier: state.settings.multiplier }).stake;
+      const kellyStake = kelly.kellyStakeFromEdge({ bookPrice: row.price, edgePct: row.edgePct, bankroll: state.settings.bankroll, multiplier: state.settings.multiplier }).stake;
+      return betsView.capAtLiquidity(kellyStake, row.liquidity).stake;
     } catch (_error) {
       return null;
     }
@@ -946,7 +958,7 @@
       maxLineAgeMs: settings.maxLineAgeHours * 3600 * 1000,
       includeAlts: settings.includeAlts,
       altMaxDistance: settings.altMaxDistance,
-      altMinLiquidity: settings.altMinLiquidity,
+      minLiquidityToWin: settings.minLiquidityToWin,
     };
   }
 
@@ -976,7 +988,7 @@
       const advice = betsView.stakeAdvice({
         line: row, price: row.price, edgePct: row.edgePct,
         bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
-        matches: flag.matches, ladderOf: ladderReader(row.eventId),
+        matches: flag.matches, ladderOf: ladderReader(row.eventId), liquidity: row.liquidity,
       });
       return { ...row, bet: { tier: flag.tier, matches: advice.matches, advice } };
     });
@@ -1041,8 +1053,9 @@
   }
 
   // The rail under the edge: the number to act on, with the verb on it, then
-  // one small line — what the stake would be with nothing held. "add $250"
-  // is not the same instruction as "bet $250" and must not look like it.
+  // one small line — that it is all the liquidity there is, and what the
+  // stake would be with nothing held. "add $250" is not the same instruction
+  // as "bet $250" and must not look like it.
   function fillStakeCell(cell, row) {
     const advice = row.bet ? row.bet.advice : null;
     const words = betsView.stakeAdviceWords(advice);
@@ -1052,9 +1065,10 @@
       return;
     }
     cell.append(`${words.verb} ${fmtDollars(advice.bet)}`);
-    if (!words.alone) return;
+    const noteText = [words.cap, words.alone].filter(Boolean).join(" · ");
+    if (!noteText) return;
     const note = document.createElement("small");
-    note.textContent = words.alone;
+    note.textContent = noteText;
     cell.append(" ", note);
   }
 
@@ -1631,18 +1645,18 @@
     const minStake = Number(view.edgesMinStake.value);
     const maxLineAgeHours = Number(view.edgesMaxAge.value);
     const altMaxDistance = Number(view.edgesAltDistance.value);
-    const altMinLiquidity = Number(view.edgesAltLiquidity.value);
+    const minLiquidityToWin = Number(view.edgesMinToWin.value);
     if (!Number.isFinite(minEdgePct) || minEdgePct < 0) return { error: "Minimum edge must be zero or more." };
     if (!Number.isFinite(minStake) || minStake < 0) return { error: "Minimum suggested bet must be zero (off) or more." };
     if (!Number.isFinite(maxLineAgeHours) || maxLineAgeHours <= 0) return { error: "Max line age must be above zero hours." };
     if (!Number.isFinite(altMaxDistance) || altMaxDistance < 0) return { error: "Max points from main must be zero (off) or more." };
-    if (!Number.isFinite(altMinLiquidity) || altMinLiquidity < 0) return { error: "Min liquidity must be zero (off) or more." };
+    if (!Number.isFinite(minLiquidityToWin) || minLiquidityToWin < 0) return { error: "Min liq to win must be zero (off) or more." };
     if (!periods.length) return { error: "Pick at least one period." };
     if (!betTypes.length) return { error: "Pick at least one bet type." };
     return {
       settings: {
-        ...state.edgeSettings, leagues, periods, betTypes, minEdgePct, minStake, maxLineAgeHours, sortBy: view.edgesSort.value,
-        includeAlts: view.edgesIncludeAlts.checked, altMaxDistance, altMinLiquidity,
+        ...state.edgeSettings, leagues, periods, betTypes, minEdgePct, minStake, maxLineAgeHours, minLiquidityToWin, sortBy: view.edgesSort.value,
+        includeAlts: view.edgesIncludeAlts.checked, altMaxDistance,
         groupByMarket: view.edgesGroup.checked,
       },
     };
@@ -1658,10 +1672,10 @@
     view.edgesMin.value = settings.minEdgePct;
     view.edgesMinStake.value = settings.minStake;
     view.edgesMaxAge.value = settings.maxLineAgeHours;
+    view.edgesMinToWin.value = settings.minLiquidityToWin;
     view.edgesSort.value = settings.sortBy;
     view.edgesIncludeAlts.checked = settings.includeAlts;
     view.edgesAltDistance.value = settings.altMaxDistance;
-    view.edgesAltLiquidity.value = settings.altMinLiquidity;
     view.edgesGroup.checked = settings.groupByMarket;
   }
 
@@ -1671,13 +1685,13 @@
     if (parsed.error) return;
     const before = state.edgeSettings;
     const leaguesChanged = parsed.settings.leagues.join(",") !== before.leagues.join(",");
-    // Widening periods, bet types or the alt gates exposes lines the alert log has never seen.
+    // Widening periods, bet types, the liquidity floor or the alt gates exposes lines the alert log has never seen.
     const scopeChanged = leaguesChanged
       || parsed.settings.periods.join(",") !== before.periods.join(",")
       || parsed.settings.betTypes.join(",") !== before.betTypes.join(",")
       || parsed.settings.includeAlts !== before.includeAlts
       || parsed.settings.altMaxDistance !== before.altMaxDistance
-      || parsed.settings.altMinLiquidity !== before.altMinLiquidity
+      || parsed.settings.minLiquidityToWin !== before.minLiquidityToWin
       // Alert keys differ between the flat list and cards.
       || parsed.settings.groupByMarket !== before.groupByMarket;
     state.edgeSettings = parsed.settings;
@@ -1702,10 +1716,11 @@
     if (typeof stored.minEdgePct === "number" && stored.minEdgePct >= 0) base.minEdgePct = stored.minEdgePct;
     if (typeof stored.minStake === "number" && stored.minStake >= 0) base.minStake = stored.minStake;
     if (typeof stored.maxLineAgeHours === "number" && stored.maxLineAgeHours > 0) base.maxLineAgeHours = stored.maxLineAgeHours;
+    // The old altMinLiquidity was a stake floor, not a to-win one, so it does not carry over.
+    if (typeof stored.minLiquidityToWin === "number" && stored.minLiquidityToWin >= 0) base.minLiquidityToWin = stored.minLiquidityToWin;
     if (["edge", "stake", "start", "exposure"].includes(stored.sortBy)) base.sortBy = stored.sortBy;
     if (typeof stored.includeAlts === "boolean") base.includeAlts = stored.includeAlts;
     if (typeof stored.altMaxDistance === "number" && stored.altMaxDistance >= 0) base.altMaxDistance = stored.altMaxDistance;
-    if (typeof stored.altMinLiquidity === "number" && stored.altMinLiquidity >= 0) base.altMinLiquidity = stored.altMinLiquidity;
     if (typeof stored.groupByMarket === "boolean") base.groupByMarket = stored.groupByMarket;
     return base;
   }
@@ -2161,7 +2176,7 @@
   view.edgesSort.addEventListener("change", onEdgeSettingsInput);
   view.edgesIncludeAlts.addEventListener("change", onEdgeSettingsInput);
   view.edgesAltDistance.addEventListener("input", onEdgeSettingsInput);
-  view.edgesAltLiquidity.addEventListener("input", onEdgeSettingsInput);
+  view.edgesMinToWin.addEventListener("input", onEdgeSettingsInput);
   view.edgesGroup.addEventListener("change", onEdgeSettingsInput);
   view.alertsEnabled.addEventListener("change", onAlertSettingsInput);
   view.alertsMin.addEventListener("input", onAlertSettingsInput);

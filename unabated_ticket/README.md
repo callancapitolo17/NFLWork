@@ -357,6 +357,12 @@ position" / "Already at full size") and its small line adds the position:
 `held $270 · against $413 · $270.05 alone`. A line that cannot be sized keeps
 a `—`, never a computed-looking `$0`.
 
+On an exchange line the number never passes what is resting at the price
+(the feed's liquidity, on the Edges row and on the Ticket when the feed
+holds the line at the ticket's price): `add $17 · all $17 liq · $71.06
+alone`. With nothing resting the Ticket reads "Nothing resting at this
+price" over `$0`.
+
 Before acting on an `add`, read the tag next to the edge (Edges tab → [Why
 an edge grew](#why-an-edge-grew), issue #132): `fair moved to you` is the
 sharps agreeing, `book moved away` is the book ahead of a fair that has not
@@ -461,17 +467,14 @@ Parsing (`extension/feed.js`, node-tested on real slices under
 
 Off by default. Tick **Include alt lines** in the filter box and every
 book's alternate spreads and totals join the list under the same gates as
-main lines (board, book, bet type, period, edge, start, line age) plus two
-of their own — most alt "edges" are deep longshots (live 2026-09-11 the
+main lines (board, book, bet type, period, edge, start, line age) plus
+one of their own — most alt "edges" are deep longshots (live 2026-09-11 the
 median NFL alt edge sat 13 points off the number at +400 and up; -18.5 at
 +800 for +3.6% and a few-dollar stake is typical) where Unabated's fair is
 extrapolated:
 
 - **Max pts from main** (default 7): distance from the book's *current*
   main-line points. 0 = no limit.
-- **Min liquidity $** (default 100): for lines that report liquidity, i.e.
-  exchanges (Kalshi's median alt depth was $129, Novig's $250); books with
-  no figure pass. 0 = no limit.
 
 An alt sitting on the main line's current number is hidden (it would be
 the same bet twice; when a main line moves onto an alt's number via the
@@ -525,9 +528,20 @@ line's age ("line 12d old") so a genuinely stale line at a live book, which
 is a real edge, can be told from a dead one. Rows carry the same wording as
 the ticket, the price as American plus cents (exchange cents from
 `sourcePrice`), liquidity for exchanges, time to start, and the stake from
-`kellyStakeFromEdge` with the panel's bankroll and multiplier. Sort by edge,
+`kellyStakeFromEdge` with the panel's bankroll and multiplier, never more
+than the line's resting liquidity (the rail then reads "all $17 liq").
+**Min liq to win $** (default 100) hides an exchange line, main or alt,
+when the money resting at its price would win less than that: $20 at
++2000 wins $400 and stays, $20 at +100 wins $20 and goes (Cal,
+2026-09-23). It replaced a flat $100 stake floor that gated alts only and
+hid longshots whose whole Kelly bet is small; a Novig Portland Fire +809
+main moneyline with $17 behind it listed with "add $32.58" under it, and
+now lists (it can win $137) as "add $17". Books with no figure pass, 0 =
+off. Liquidity is read as dollars you can stake (not verified against
+payout) and comes from the league snapshot only (the changes stream
+carries none), so it can lag a price move by up to a snapshot cycle. Sort by edge,
 stake or start time. Settings (sports, periods, bets, books, minimum edge,
-minimum suggested bet, max line age, sort) persist in `chrome.storage.local` under `edges` (sports
+minimum suggested bet, max line age, min liq to win, sort) persist in `chrome.storage.local` under `edges` (sports
 as league ids; a sport checkbox toggles all of its leagues).
 
 Leagues come from `feed.LEAGUES` (ids probed 1–70 on 2026-09-10, labels
@@ -1440,6 +1454,16 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-09-23 — Liquidity: a floor on what the resting money can win, and no
+stake above it.** Min liquidity ($100) gated alts only, so a Novig Portland
+Fire +809 main moneyline with $17 resting listed with "add $32.58". A flat
+stake floor on every line was rejected: it hides longshots whose whole Kelly
+bet is small. Cal's rule instead: $20 on +2000 (wins $400) is worth a look,
+$20 on +100 (wins $20) is not, so **Min liq to win** ($100) gates main lines
+and alts on liquidity × the price's win per dollar, and every suggested
+stake (rows, cards, sort, alerts, the Ticket) is capped at the line's
+liquidity. Unverified: that Unabated's liquidity is stake dollars, not payout.
 
 **2026-09-22 — Why an edge grew: the fair decides (#132).** The panel sized on
 the current edge every refresh and could not say why it was what it was;

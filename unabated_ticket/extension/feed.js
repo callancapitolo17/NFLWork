@@ -686,11 +686,9 @@
   }
 
   // Alt-only gates. An alt is listed only when includeAlts is on, the main
-  // line is not currently sitting on the same number (same bet twice), it is
-  // within altMaxDistance points of the book's current main number (deep
-  // ladders are extrapolated fairs and a few-dollar stake), and — for lines
-  // that report liquidity, i.e. exchanges — at least altMinLiquidity is
-  // resting. Books with no liquidity figure pass that gate.
+  // line is not currently sitting on the same number (same bet twice), and it
+  // is within altMaxDistance points of the book's current main number (deep
+  // ladders are extrapolated fairs and a few-dollar stake).
   function altPassesGates(line, state, opts) {
     if (!opts.includeAlts) return false;
     const main = state.lines[line.mainKey];
@@ -699,8 +697,22 @@
       const mainPoints = currentMainPoints(line, state);
       if (mainPoints == null || Math.abs(line.points - mainPoints) > opts.altMaxDistance) return false;
     }
-    if (opts.altMinLiquidity != null && line.liquidity != null && line.liquidity < opts.altMinLiquidity) return false;
     return true;
+  }
+
+  // Dollars won per dollar staked at an American price: +2000 -> 20, -110 -> 0.909.
+  function winPerDollarStaked(americanPrice) {
+    return americanPrice > 0 ? americanPrice / 100 : 100 / Math.abs(americanPrice);
+  }
+
+  // A line that reports liquidity, i.e. an exchange, is listed only when the
+  // money resting at its price can win at least minLiquidityToWin: $20 at
+  // +2000 wins $400 and is worth a look, $20 at +100 wins $20 and is not
+  // (Cal, 2026-09-23). A flat stake floor hid longshots whose whole Kelly bet
+  // is small. Main lines and alts alike; books with no liquidity figure pass.
+  function liquidityCanWin(line, minLiquidityToWin) {
+    if (minLiquidityToWin == null || line.liquidity == null) return true;
+    return line.liquidity * winPerDollarStaked(line.price) >= minLiquidityToWin;
   }
 
   // Lines worth listing: on the board, edge known and >= minEdge (a fraction),
@@ -708,7 +720,8 @@
   // maxLineAgeMs is set — changed by the book within that window (a 96-day-old
   // line at a "live" book is a dead feed, and its 36% "edge" is not bettable;
   // a line whose change time is unknowable is excluded too). Alt lines
-  // additionally pass altPassesGates. Sorted by edge.
+  // additionally pass altPassesGates. Every line passes liquidityCanWin.
+  // Sorted by edge.
   function selectEdges(state, options) {
     const opts = options || {};
     const minEdge = typeof opts.minEdge === "number" ? opts.minEdge : 0.01;
@@ -717,10 +730,10 @@
     const bookIds = opts.bookIds instanceof Set ? opts.bookIds : null;
     const now = typeof opts.now === "number" ? opts.now : Date.now();
     const maxLineAgeMs = positiveNumberOrNull(opts.maxLineAgeMs);
+    const minLiquidityToWin = positiveNumberOrNull(opts.minLiquidityToWin);
     const altOpts = {
       includeAlts: opts.includeAlts === true,
       altMaxDistance: positiveNumberOrNull(opts.altMaxDistance),
-      altMinLiquidity: positiveNumberOrNull(opts.altMinLiquidity),
     };
     const rows = [];
     for (const line of Object.values(state.lines)) {
@@ -736,6 +749,7 @@
       if (line.betTypeId !== 1 && line.points == null) continue;
       // Not a valid American price: nothing downstream (cents, Kelly) can use it.
       if (Math.abs(line.price) < 100) continue;
+      if (!liquidityCanWin(line, minLiquidityToWin)) continue;
       if (maxLineAgeMs != null) {
         const changedMs = lineChangedMs(line);
         if (changedMs == null || now - changedMs > maxLineAgeMs) continue;
