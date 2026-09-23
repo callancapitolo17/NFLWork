@@ -607,8 +607,10 @@ reads as first seen**, not as a move: a price at 48.5 is not comparable to
 one at 47.5 (1,466 of 2,720 live NFL spread/total lines sat on a different
 number than they opened, measured 2026-09-22).
 
-The tooltip carries the numbers: `fair 33.7% → 35.6% · price +199 → +215 ·
-moved 2m ago (snapshot) · opened +185`. "ago" is when the panel first *saw*
+Under the tag, one small line names the mover: `fair 33.7% → 35.6%` when
+the fair decided (green or red), `price +125 → +141` when it was the book
+(amber). The tooltip carries everything: `fair 33.7% → 35.6% · price +199 →
++215 · moved 2m ago (snapshot) · opened +185`. "ago" is when the panel first *saw*
 the move and by what. The anonymous changes stream misses most exchange
 moves and never carries an alt rung, so for Kalshi, Novig and every alt the
 observation is a snapshot, up to one refresh interval (60 s / 2 min / 5 min

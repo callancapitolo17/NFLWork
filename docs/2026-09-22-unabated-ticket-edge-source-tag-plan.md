@@ -110,7 +110,9 @@ edgeMove(entries, now) -> { kind, fairDelta, priceDelta, sinceMs, source, from, 
   `fair 33.7% → 35.6% · price +199 → +215 · moved 2m ago (snapshot) ·
   opened +185`. Nothing for `none`.
 - Rows and cards (`rowParts`): the tag sits in the rail under the edge
-  figure. Card expander lines (`renderGroupLine`): same tag next to the
+  figure, with one small line under it naming the mover (`fair 33.7% →
+  35.6%` for green / red, `price +125 → +141` for amber; user choice after
+  the mock, 2026-09-22). Card expander lines (`renderGroupLine`): same tag next to the
   edge, each book moves on its own. Ticket (`renderTicket`): the tag next to
   the edge fact, from the feed's copy of the ticket's line only when its
   price equals the price being sized (the same one-price rule `pricedLine`

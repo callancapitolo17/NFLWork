@@ -491,8 +491,8 @@
     // The edge-move tag reads the feed's copy of this line, and only at the
     // price being sized: the feed's history says nothing about another price.
     const feedCopy = feedLineFor(ticket, line.points);
-    const ticketMoveTag = feedCopy && feedCopy.price === line.price ? moveTag(feedCopy) : null;
-    view.edge.replaceChildren(line.edgePct == null ? "\u2014" : fmtPct(line.edgePct / 100), ...(ticketMoveTag ? [" ", ticketMoveTag] : []));
+    const ticketMoveParts = feedCopy && feedCopy.price === line.price ? moveParts(feedCopy) : [];
+    view.edge.replaceChildren(line.edgePct == null ? "\u2014" : fmtPct(line.edgePct / 100), ...ticketMoveParts.flatMap((part) => [" ", part]));
 
     view.stake.classList.remove("no-edge");
     view.payoutRow.hidden = true;
@@ -764,6 +764,25 @@
     tag.textContent = edgemove.MOVE_LABELS[move.kind];
     tag.title = moveTooltip(move, line);
     return tag;
+  }
+
+  // The mover, on the card under the tag: the fair then and now when the
+  // fair decided (green / red), the price when it was the book (amber).
+  // Both, with cents and the opener, stay in the tooltip.
+  function moveDetail(move) {
+    if (move.kind === "book_away") return `price ${fmtAmerican(move.from.price)} \u2192 ${fmtAmerican(move.to.price)}`;
+    return `fair ${fmtFairEntry(move.from)} \u2192 ${fmtFairEntry(move.to)}`;
+  }
+
+  // The tag and its detail line for a rail or the Ticket's Edge fact; [] when
+  // there is nothing to tag.
+  function moveParts(line) {
+    const tag = moveTag(line);
+    if (!tag) return [];
+    const detail = document.createElement("small");
+    detail.className = "move-detail";
+    detail.textContent = moveDetail(moveFor(line.key));
+    return [tag, detail];
   }
 
   // The tag's words for an alert body, or null.
@@ -1136,7 +1155,7 @@
     const stake = document.createElement("span");
     stake.className = "edge-stake";
     fillStakeCell(stake, row);
-    rail.append(pct, ...[moveTag(row)].filter(Boolean), stake);
+    rail.append(pct, ...moveParts(row), stake);
 
     return [main, rail, ...[relatedBlock(row.bet)].filter(Boolean)];
   }
@@ -1166,7 +1185,7 @@
     const stake = document.createElement("span");
     stake.className = "gl-stake";
     stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
-    rail.append(edge, ...[moveTag(row)].filter(Boolean), stake);
+    rail.append(edge, ...moveParts(row), stake);
 
     li.append(main, rail);
     return li;

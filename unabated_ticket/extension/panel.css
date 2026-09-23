@@ -225,6 +225,10 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
 .edge-row .edge-rail .tag, .group-line .gl-rail .tag { justify-self: end; margin: 1px 0; }
 .group-line .gl-rail .tag { display: inline-block; }
 .facts dd .tag { margin-left: 6px; vertical-align: middle; }
+/* The mover under the tag: fair then → now (green / red), price then → now (amber). */
+.move-detail { font: 400 11px system-ui, sans-serif; color: var(--muted); white-space: nowrap; }
+.edge-row .edge-rail .move-detail, .group-line .gl-rail .move-detail { display: block; }
+.facts dd .move-detail { margin-left: 6px; }
 
 /* The bets you already have on this game, as a section of the row. */
 .related-block {
