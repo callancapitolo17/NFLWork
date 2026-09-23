@@ -1,0 +1,730 @@
+{
+ "provenance": "HistoryHelper.aspx weeks 0 and 1 from the live pull of 2026-09-22 21:46 PT, trimmed to 4 rows (a NFL special, two RBL props, a transfer) with the account name, balances and week totals removed, plus a hand-written week on the same shape (IdWager 300000001+) for the game-bet grammar the pull had none of, copied from bet_logger runs since 2026-04: MLB total with the pitchers bracket, a first-five run line, a doubleheader, a pending parlay, an NFL spread, a CFB moneyline, a postponed leg, a push, a cancel, an unsupported sport. Timestamps are on the site's Eastern clock. `openBets`: OpenBetsHelper rows hand-written on the field list the OpenBets widget reads off the ui_c bundle (one row per leg, grouped by TicketNumber; live the helper answered an empty list): an MLB total, a two-leg parlay, an RBL prop, and the pending NFL spread the history week also lists.",
+ "weeks": [
+  {
+   "EndDate": "09/27/2026",
+   "StartDate": "09/21/2026",
+   "Week1": "Mon",
+   "Week2": "Tue",
+   "Week3": "Wed",
+   "Week4": "Thu",
+   "Week5": "Fri",
+   "Week6": "Sat",
+   "Week7": "Sun",
+   "ErrorCode": {},
+   "ErrorMsg": "",
+   "ErrorMsgKey": "",
+   "ErrorMsgParams": "",
+   "details": [
+    {
+     "Date": "09/21/2026",
+     "wager": [
+      {
+       "GameScoreResult": [
+        "NFL WEEK 2 - SPECIALS 0 to GIANTS SUPERFECTA (SCR 1ST, 1Q, 1H & GM +7½) 0"
+       ],
+       "details": [
+        {
+         "DetailResult": "LOSE",
+         "DetailDesc": "[777045] GIANTS SUPERFECTA (SCR 1ST, 1Q, 1H & GM +7½) +1935",
+         "GameDate": "09/21/2026",
+         "GameTime": "08:15 PM",
+         "IdGame": 5970860,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "PROP",
+         "PitcherChange": false,
+         "ShortGame": false
+        }
+       ],
+       "IfBetWagerType": 0,
+       "Result": "LOSE",
+       "TransType": "W",
+       "WagerOrTrans": "WAGER",
+       "WinLoss": "-250",
+       "HeaderDesc": "NFL WEEK 2 - SPECIALS",
+       "IdWager": 219337542,
+       "IdWagerType": -1,
+       "PhoneLine": -1,
+       "PlacedDate": "09/20/2026",
+       "PlacedTime": "04:09 PM ",
+       "RiskAmount": "250",
+       "TicketNumber": 219337542,
+       "WagerType": 0,
+       "WinAmount": "4838"
+      }
+     ]
+    },
+    {
+     "Date": "09/22/2026",
+     "wager": []
+    },
+    {
+     "Date": "09/23/2026",
+     "wager": []
+    },
+    {
+     "Date": "09/24/2026",
+     "wager": []
+    },
+    {
+     "Date": "09/25/2026",
+     "wager": []
+    },
+    {
+     "Date": "09/26/2026",
+     "wager": []
+    },
+    {
+     "Date": "09/27/2026",
+     "wager": []
+    }
+   ]
+  },
+  {
+   "EndDate": "09/20/2026",
+   "StartDate": "09/14/2026",
+   "Week1": "Mon",
+   "Week2": "Tue",
+   "Week3": "Wed",
+   "Week4": "Thu",
+   "Week5": "Fri",
+   "Week6": "Sat",
+   "Week7": "Sun",
+   "ErrorCode": {},
+   "ErrorMsg": "",
+   "ErrorMsgKey": "",
+   "ErrorMsgParams": "",
+   "details": [
+    {
+     "Date": "09/14/2026",
+     "wager": []
+    },
+    {
+     "Date": "09/15/2026",
+     "wager": []
+    },
+    {
+     "Date": "09/16/2026",
+     "wager": []
+    },
+    {
+     "Date": "09/17/2026",
+     "wager": []
+    },
+    {
+     "Date": "09/18/2026",
+     "wager": []
+    },
+    {
+     "Date": "09/19/2026",
+     "wager": []
+    },
+    {
+     "Date": "09/20/2026",
+     "wager": [
+      {
+       "GameScoreResult": [
+        "  to  "
+       ],
+       "details": [
+        {
+         "DetailResult": "LOSE",
+         "DetailDesc": "Mark Andrews (BAL) 1+ Touchdowns <br /> New Orleans Saints vs Baltimore Ravens",
+         "GameDate": "09/20/2026",
+         "GameTime": "01:00 PM",
+         "IdGame": 0,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "RBL",
+         "PitcherChange": false,
+         "ShortGame": false
+        }
+       ],
+       "IfBetWagerType": 0,
+       "Result": "LOSE",
+       "TransType": "W",
+       "WagerOrTrans": "WAGER",
+       "WinLoss": "-15",
+       "HeaderDesc": "DST Straight|ID:396861121",
+       "IdWager": 219292648,
+       "IdWagerType": -1,
+       "PhoneLine": -1,
+       "PlacedDate": "09/20/2026",
+       "PlacedTime": "12:18 PM ",
+       "RiskAmount": "15",
+       "TicketNumber": 219292648,
+       "WagerType": 23,
+       "WinAmount": "21"
+      },
+      {
+       "GameScoreResult": [
+        "  to  "
+       ],
+       "details": [
+        {
+         "DetailResult": "WIN",
+         "DetailDesc": "Jake Ferguson (DAL) 1+ Touchdowns <br /> Washington Commanders vs Dallas Cowboys",
+         "GameDate": "09/20/2026",
+         "GameTime": "04:25 PM",
+         "IdGame": 0,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "RBL",
+         "PitcherChange": false,
+         "ShortGame": false
+        }
+       ],
+       "IfBetWagerType": 0,
+       "Result": "WIN",
+       "TransType": "W",
+       "WagerOrTrans": "WAGER",
+       "WinLoss": "39",
+       "HeaderDesc": "DST Straight|ID:396861082",
+       "IdWager": 219292620,
+       "IdWagerType": -1,
+       "PhoneLine": -1,
+       "PlacedDate": "09/20/2026",
+       "PlacedTime": "12:18 PM ",
+       "RiskAmount": "15",
+       "TicketNumber": 219292620,
+       "WagerType": 23,
+       "WinAmount": "39"
+      },
+      {
+       "GameScoreResult": [
+        "NFL WEEK 2 - SPECIALS 0 to CARDINALS SUPERFECTA (SCR 1ST, 1Q, 1H & GM) 0"
+       ],
+       "details": [
+        {
+         "DetailResult": "LOSE",
+         "DetailDesc": "[777043] CARDINALS SUPERFECTA (SCR 1ST, 1Q, 1H & GM) +1770",
+         "GameDate": "09/20/2026",
+         "GameTime": "04:25 PM",
+         "IdGame": 5970858,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "PROP",
+         "PitcherChange": false,
+         "ShortGame": false
+        }
+       ],
+       "IfBetWagerType": 0,
+       "Result": "LOSE",
+       "TransType": "W",
+       "WagerOrTrans": "WAGER",
+       "WinLoss": "-250",
+       "HeaderDesc": "NFL WEEK 2 - SPECIALS",
+       "IdWager": 219337541,
+       "IdWagerType": -1,
+       "PhoneLine": -1,
+       "PlacedDate": "09/20/2026",
+       "PlacedTime": "04:09 PM ",
+       "RiskAmount": "250",
+       "TicketNumber": 219337541,
+       "WagerType": 0,
+       "WinAmount": "4425"
+      },
+      {
+       "GameScoreResult": [],
+       "details": [
+        {
+         "DetailResult": "",
+         "DetailDesc": "",
+         "GameDate": "",
+         "GameTime": "",
+         "IdGame": 0,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "XFER",
+         "PitcherChange": false,
+         "ShortGame": false
+        }
+       ],
+       "IfBetWagerType": 0,
+       "Result": "",
+       "TransType": "T",
+       "WagerOrTrans": "TRAN",
+       "WinLoss": "233",
+       "HeaderDesc": "Transfer to agent: LARAGENT",
+       "IdWager": 0,
+       "IdWagerType": -1,
+       "PhoneLine": 0,
+       "PlacedDate": "09/20/2026",
+       "PlacedTime": "11:59 PM",
+       "RiskAmount": "0",
+       "TicketNumber": 0,
+       "WagerType": 0,
+       "WinAmount": "0"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "StartDate": "09/21/2026",
+   "EndDate": "09/27/2026",
+   "ErrorCode": {},
+   "ErrorMsg": "",
+   "ErrorMsgKey": "",
+   "ErrorMsgParams": "",
+   "Week1": "Mon",
+   "Week2": "Tue",
+   "Week3": "Wed",
+   "Week4": "Thu",
+   "Week5": "Fri",
+   "Week6": "Sat",
+   "Week7": "Sun",
+   "details": [
+    {
+     "Date": "09/19/2026",
+     "wager": [
+      {
+       "GameScoreResult": [],
+       "details": [
+        {
+         "DetailResult": "LOSE",
+         "DetailDesc": "[915] TOTAL o5EV (1H HOU ASTROS GM#2 vrs 1H BAL ORIOLES GM#2)<BR>( JAMESON TAILLON - R / SHANE MCCLANAHAN - L )",
+         "GameDate": "09/19/2026",
+         "GameTime": "06:35 PM",
+         "IdGame": 5001,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "MLB",
+         "PitcherChange": false,
+         "ShortGame": false
+        }
+       ],
+       "IfBetWagerType": 0,
+       "Result": "LOSE",
+       "TransType": "W",
+       "WagerOrTrans": "WAGER",
+       "WinLoss": "-100",
+       "HeaderDesc": "STRAIGHT BET",
+       "IdWager": 300000003,
+       "IdWagerType": -1,
+       "PhoneLine": -1,
+       "PlacedDate": "09/19/2026",
+       "PlacedTime": "02:11 PM ",
+       "RiskAmount": "100",
+       "TicketNumber": 300000003,
+       "WagerType": 0,
+       "WinAmount": "100"
+      },
+      {
+       "GameScoreResult": [],
+       "details": [
+        {
+         "DetailResult": "WIN",
+         "DetailDesc": "[212] TEXAS TECH +168",
+         "GameDate": "09/19/2026",
+         "GameTime": "07:30 PM",
+         "IdGame": 5002,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "CFB",
+         "PitcherChange": false,
+         "ShortGame": false
+        }
+       ],
+       "IfBetWagerType": 0,
+       "Result": "WIN",
+       "TransType": "W",
+       "WagerOrTrans": "WAGER",
+       "WinLoss": "168",
+       "HeaderDesc": "STRAIGHT BET",
+       "IdWager": 300000006,
+       "IdWagerType": -1,
+       "PhoneLine": -1,
+       "PlacedDate": "09/19/2026",
+       "PlacedTime": "02:15 PM ",
+       "RiskAmount": "100",
+       "TicketNumber": 300000006,
+       "WagerType": 0,
+       "WinAmount": "168"
+      },
+      {
+       "GameScoreResult": [],
+       "details": [
+        {
+         "DetailResult": "PUSH",
+         "DetailDesc": "[42] BOS BRUINS -1½+180",
+         "GameDate": "09/19/2026",
+         "GameTime": "07:00 PM",
+         "IdGame": 5003,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "NHL",
+         "PitcherChange": false,
+         "ShortGame": false
+        }
+       ],
+       "IfBetWagerType": 0,
+       "Result": "PUSH",
+       "TransType": "W",
+       "WagerOrTrans": "WAGER",
+       "WinLoss": "0",
+       "HeaderDesc": "STRAIGHT BET",
+       "IdWager": 300000008,
+       "IdWagerType": -1,
+       "PhoneLine": -1,
+       "PlacedDate": "09/19/2026",
+       "PlacedTime": "02:20 PM ",
+       "RiskAmount": "50",
+       "TicketNumber": 300000008,
+       "WagerType": 0,
+       "WinAmount": "90"
+      }
+     ]
+    },
+    {
+     "Date": "09/20/2026",
+     "wager": [
+      {
+       "GameScoreResult": [],
+       "details": [
+        {
+         "DetailResult": "WIN",
+         "DetailDesc": "[969] 1H ARI DBACKS -½+115<BR>( ZAC GALLEN - R / SHOHEI OHTANI - R )",
+         "GameDate": "09/20/2026",
+         "GameTime": "04:10 PM",
+         "IdGame": 5004,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "MLB",
+         "PitcherChange": false,
+         "ShortGame": false
+        }
+       ],
+       "IfBetWagerType": 0,
+       "Result": "WIN",
+       "TransType": "W",
+       "WagerOrTrans": "WAGER",
+       "WinLoss": "115",
+       "HeaderDesc": "STRAIGHT BET",
+       "IdWager": 300000002,
+       "IdWagerType": -1,
+       "PhoneLine": -1,
+       "PlacedDate": "09/20/2026",
+       "PlacedTime": "11:40 AM ",
+       "RiskAmount": "100",
+       "TicketNumber": 300000002,
+       "WagerType": 0,
+       "WinAmount": "115"
+      },
+      {
+       "GameScoreResult": [],
+       "details": [
+        {
+         "DetailResult": "NO ACTION",
+         "DetailDesc": "( NYM vs COL Has Been Postponed. NO Action )",
+         "GameDate": "09/20/2026",
+         "GameTime": "01:10 PM",
+         "IdGame": 5005,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "MLB",
+         "PitcherChange": false,
+         "ShortGame": false
+        },
+        {
+         "DetailResult": "WIN",
+         "DetailDesc": "[977] TOTAL o8-110 (SEA MARINERS vrs SD PADRES)<BR>( JAMESON TAILLON - R / SHANE MCCLANAHAN - L )",
+         "GameDate": "09/20/2026",
+         "GameTime": "04:10 PM",
+         "IdGame": 5006,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "MLB",
+         "PitcherChange": false,
+         "ShortGame": false
+        }
+       ],
+       "IfBetWagerType": 0,
+       "Result": "PUSH",
+       "TransType": "W",
+       "WagerOrTrans": "WAGER",
+       "WinLoss": "0",
+       "HeaderDesc": "PARLAY (2 TEAMS)",
+       "IdWager": 300000007,
+       "IdWagerType": -1,
+       "PhoneLine": -1,
+       "PlacedDate": "09/20/2026",
+       "PlacedTime": "11:45 AM ",
+       "RiskAmount": "151",
+       "TicketNumber": 300000007,
+       "WagerType": 0,
+       "WinAmount": "233"
+      },
+      {
+       "GameScoreResult": [],
+       "details": [
+        {
+         "DetailResult": "WIN",
+         "DetailDesc": "[3001] ALCARAZ -200",
+         "GameDate": "09/20/2026",
+         "GameTime": "09:00 AM",
+         "IdGame": 5007,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "TNS",
+         "PitcherChange": false,
+         "ShortGame": false
+        }
+       ],
+       "IfBetWagerType": 0,
+       "Result": "WIN",
+       "TransType": "W",
+       "WagerOrTrans": "WAGER",
+       "WinLoss": "100",
+       "HeaderDesc": "STRAIGHT BET",
+       "IdWager": 300000009,
+       "IdWagerType": -1,
+       "PhoneLine": -1,
+       "PlacedDate": "09/20/2026",
+       "PlacedTime": "08:00 AM ",
+       "RiskAmount": "200",
+       "TicketNumber": 300000009,
+       "WagerType": 0,
+       "WinAmount": "100"
+      },
+      {
+       "GameScoreResult": [],
+       "details": [
+        {
+         "DetailResult": "CANCELLED",
+         "DetailDesc": "[459] DENVER BRONCOS -3-110",
+         "GameDate": "09/20/2026",
+         "GameTime": "04:25 PM",
+         "IdGame": 5008,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "NFL",
+         "PitcherChange": false,
+         "ShortGame": false
+        }
+       ],
+       "IfBetWagerType": 0,
+       "Result": "CANCELLED",
+       "TransType": "W",
+       "WagerOrTrans": "WAGER",
+       "WinLoss": "0",
+       "HeaderDesc": "STRAIGHT BET",
+       "IdWager": 300000010,
+       "IdWagerType": -1,
+       "PhoneLine": -1,
+       "PlacedDate": "09/20/2026",
+       "PlacedTime": "09:00 AM ",
+       "RiskAmount": "110",
+       "TicketNumber": 300000010,
+       "WagerType": 0,
+       "WinAmount": "100"
+      }
+     ]
+    },
+    {
+     "Date": "09/24/2026",
+     "wager": [
+      {
+       "GameScoreResult": [],
+       "details": [
+        {
+         "DetailResult": "",
+         "DetailDesc": "[967] TOTAL o7½-120 (CHI CUBS vrs TB RAYS)<BR>( JAMESON TAILLON - R / SHANE MCCLANAHAN - L )",
+         "GameDate": "09/24/2026",
+         "GameTime": "07:10 PM",
+         "IdGame": 5009,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "MLB",
+         "PitcherChange": false,
+         "ShortGame": false
+        }
+       ],
+       "IfBetWagerType": 0,
+       "Result": "",
+       "TransType": "W",
+       "WagerOrTrans": "WAGER",
+       "WinLoss": "0",
+       "HeaderDesc": "STRAIGHT BET",
+       "IdWager": 300000001,
+       "IdWagerType": -1,
+       "PhoneLine": -1,
+       "PlacedDate": "09/23/2026",
+       "PlacedTime": "11:02 AM ",
+       "RiskAmount": "120",
+       "TicketNumber": 300000001,
+       "WagerType": 0,
+       "WinAmount": "100"
+      },
+      {
+       "GameScoreResult": [],
+       "details": [
+        {
+         "DetailResult": "",
+         "DetailDesc": "[971] BOS RED SOX -1½+151<BR>( RANGER SUAREZ - L / CAM SCHLITTLER - R )",
+         "GameDate": "09/24/2026",
+         "GameTime": "06:40 PM",
+         "IdGame": 5010,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "MLB",
+         "PitcherChange": false,
+         "ShortGame": false
+        },
+        {
+         "DetailResult": "",
+         "DetailDesc": "[973] TOTAL u7½-105 (COL ROCKIES GM#1 vrs NY METS GM#1)<BR>( JAMESON TAILLON - R / SHANE MCCLANAHAN - L )",
+         "GameDate": "09/24/2026",
+         "GameTime": "06:40 PM",
+         "IdGame": 5011,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "MLB",
+         "PitcherChange": false,
+         "ShortGame": false
+        }
+       ],
+       "IfBetWagerType": 0,
+       "Result": "",
+       "TransType": "W",
+       "WagerOrTrans": "WAGER",
+       "WinLoss": "0",
+       "HeaderDesc": "PARLAY (2 TEAMS)",
+       "IdWager": 300000004,
+       "IdWagerType": -1,
+       "PhoneLine": -1,
+       "PlacedDate": "09/23/2026",
+       "PlacedTime": "11:05 AM ",
+       "RiskAmount": "50",
+       "TicketNumber": 300000004,
+       "WagerType": 0,
+       "WinAmount": "214"
+      }
+     ]
+    },
+    {
+     "Date": "09/28/2026",
+     "wager": [
+      {
+       "GameScoreResult": [],
+       "details": [
+        {
+         "DetailResult": "",
+         "DetailDesc": "[455] JACKSONVILLE JAGUARS +2½-110",
+         "GameDate": "09/28/2026",
+         "GameTime": "01:00 PM",
+         "IdGame": 5012,
+         "PointsPurchased": 0,
+         "Play": 0,
+         "IdSport": "NFL",
+         "PitcherChange": false,
+         "ShortGame": false
+        }
+       ],
+       "IfBetWagerType": 0,
+       "Result": "",
+       "TransType": "W",
+       "WagerOrTrans": "WAGER",
+       "WinLoss": "0",
+       "HeaderDesc": "STRAIGHT BET",
+       "IdWager": 300000005,
+       "IdWagerType": -1,
+       "PhoneLine": -1,
+       "PlacedDate": "09/23/2026",
+       "PlacedTime": "10:00 AM ",
+       "RiskAmount": "110",
+       "TicketNumber": 300000005,
+       "WagerType": 0,
+       "WinAmount": "100"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "openBets": {
+  "result": [
+   {
+    "TicketNumber": 400000001,
+    "IdWager": 400000001,
+    "HeaderDescription": "STRAIGHT BET",
+    "RiskAmount": 120,
+    "WinAmount": 100,
+    "PlacedDate": "9/23/2026 11:02:00 AM",
+    "GameDateTime": "9/24/2026 7:10:00 PM",
+    "IdGame": 5009,
+    "IdSport": "MLB",
+    "Result": "",
+    "DetailResult": "",
+    "DetailDescription": "[967] TOTAL o7½-120 (CHI CUBS vrs TB RAYS)<BR>( JAMESON TAILLON - R / SHANE MCCLANAHAN - L )",
+    "RotationNumbers": "967",
+    "GameDescription": "CHI CUBS vrs TB RAYS"
+   },
+   {
+    "TicketNumber": 400000002,
+    "IdWager": 400000002,
+    "HeaderDescription": "PARLAY (2 TEAMS)",
+    "RiskAmount": 50,
+    "WinAmount": 214,
+    "PlacedDate": "9/23/2026 11:05:00 AM",
+    "GameDateTime": "9/24/2026 6:40:00 PM",
+    "IdGame": 5010,
+    "IdSport": "MLB",
+    "Result": "",
+    "DetailResult": "",
+    "DetailDescription": "[971] BOS RED SOX -1½+151<BR>( RANGER SUAREZ - L / CAM SCHLITTLER - R )",
+    "RotationNumbers": "971",
+    "GameDescription": "BOS RED SOX vrs NY YANKEES"
+   },
+   {
+    "TicketNumber": 400000002,
+    "IdWager": 400000002,
+    "HeaderDescription": "PARLAY (2 TEAMS)",
+    "RiskAmount": 50,
+    "WinAmount": 214,
+    "PlacedDate": "9/23/2026 11:05:00 AM",
+    "GameDateTime": "9/24/2026 6:40:00 PM",
+    "IdGame": 5011,
+    "IdSport": "MLB",
+    "Result": "",
+    "DetailResult": "",
+    "DetailDescription": "[973] TOTAL u7½-105 (COL ROCKIES GM#1 vrs NY METS GM#1)<BR>( JAMESON TAILLON - R / SHANE MCCLANAHAN - L )",
+    "RotationNumbers": "973",
+    "GameDescription": "COL ROCKIES vrs NY METS"
+   },
+   {
+    "TicketNumber": 400000003,
+    "IdWager": 400000003,
+    "HeaderDescription": "DST Straight|ID:396870000",
+    "RiskAmount": 15,
+    "WinAmount": 27,
+    "PlacedDate": "9/27/2026 12:18:00 PM",
+    "GameDateTime": "9/27/2026 1:00:00 PM",
+    "IdGame": 0,
+    "IdSport": "RBL",
+    "Result": "",
+    "DetailResult": "",
+    "DetailDescription": "Tucker Kraft (GB) 1+ Touchdowns <br /> Green Bay Packers vs New York Jets",
+    "RotationNumbers": "",
+    "GameDescription": ""
+   },
+   {
+    "TicketNumber": 300000005,
+    "IdWager": 300000005,
+    "HeaderDescription": "STRAIGHT BET",
+    "RiskAmount": 110,
+    "WinAmount": 100,
+    "PlacedDate": "9/23/2026 10:00:00 AM",
+    "GameDateTime": "9/28/2026 1:00:00 PM",
+    "IdGame": 5012,
+    "IdSport": "NFL",
+    "Result": "",
+    "DetailResult": "",
+    "DetailDescription": "[455] JACKSONVILLE JAGUARS +2½-110",
+    "RotationNumbers": "455",
+    "GameDescription": "JACKSONVILLE JAGUARS vrs CINCINNATI BENGALS"
+   }
+  ]
+ }
+}
