@@ -355,6 +355,13 @@ position" / "Already at full size") and its small line adds the position:
 `held $270 · against $413 · $270.05 alone`. A line that cannot be sized keeps
 a `—`, never a computed-looking `$0`.
 
+Before acting on an `add`, read the tag next to the edge (Edges tab → [Why
+an edge grew](#why-an-edge-grew), issue #132): `fair moved to you` is the
+sharps agreeing, `book moved away` is the book ahead of a fair that has not
+answered yet, `fair moved against you` is the market turning against the
+side while the edge still reads bigger. The number itself is unchanged by
+the tag.
+
 Settings (bankroll, Kelly multiplier) sit at the foot of the Ticket tab under
 **Sizing**, reachable from any tab via the ⚙, and persist in
 `chrome.storage.local`. Defaults 30000 and 0.25. The bets service URL is on
@@ -570,6 +577,58 @@ instead, so the row is still found. The expand-and-match path is verified
 against the scripted grid only (see Tests); the real screen's Alts row was
 not reachable from the harness, so the first real click is the check.
 
+### Why an edge grew
+
+Next to every edge figure — rows, cards and the lines behind a card's
+expander, and the Ticket's Edge fact — one small tag says what moved since
+the panel last saw the line, inside a ten-minute window
+(`extension/edgemove.js`, issue #132). It matters most on a held line, where
+the row says `add $X` (conditional Kelly, Stake above) and the reasons an
+edge can grow call for opposite actions. **The fair decides**; the price
+only refines the reading.
+
+| Unabated's fair (`bacr`, in probability) | The book's price on the side | Tag | Meaning |
+|---|---|---|---|
+| moved toward the side | anything | `fair moved to you` (green) | the sharps agree; the price is a bonus — closing-line value |
+| unchanged | got better | `book moved away` (amber) | the book is shading against the side and the fair has not answered yet: Unabated's fair is ~1–2 min behind the book (v2 rebuild ~1/min + ~40 s ingest lag, #126), so the edge spikes for a refresh or two. Wait one snapshot; if the fair holds and the price is still there, it is a stale soft line |
+| moved against the side | anything | `fair moved against you` (red) | the market is moving against the side and the book is ahead of the fair. The edge can still read *bigger* because the price improved by more than the fair fell — adding on it is adverse selection: on an exchange a great price resting right after a move usually belongs to someone who knows the line moved |
+| unchanged | unchanged or worse | none | |
+
+The rule, in probability (`kelly.americanToProb` on the fair; the exchange's
+exact `sourcePrice` on the price, so a Kalshi cent or a Novig half-cent is
+measured as itself): a move under 0.5 points is unchanged — `bacr` is a
+whole American price, so a one-point fair change near even money (-110 →
+-111, 0.23 pts) is rounding, and the fair must move about three American
+points there to register (at +200 a five-point move does). The comparison is
+against the newest observation at or before ten minutes ago, else the line's
+first sighting; a line seen once, or unchanged for ten minutes, has no tag,
+and a book that only shortened never earns one. **A line whose number moved
+reads as first seen**, not as a move: a price at 48.5 is not comparable to
+one at 47.5 (1,466 of 2,720 live NFL spread/total lines sat on a different
+number than they opened, measured 2026-09-22).
+
+The tooltip carries the numbers: `fair 33.7% → 35.6% · price +199 → +215 ·
+moved 2m ago (snapshot) · opened +185`. "ago" is when the panel first *saw*
+the move and by what. The anonymous changes stream misses most exchange
+moves and never carries an alt rung, so for Kalshi, Novig and every alt the
+observation is a snapshot, up to one refresh interval (60 s / 2 min / 5 min
+by league) after the book actually moved; a `(stream)` observation is within
+10 s. `opened` is the book's own opening price (`openerPrice`, on every main
+line and no alt rung, per book — #126, measured 2026-09-22); when the book
+has moved its number since open it reads `opened -120 at -3`, because the
+price is not comparable across numbers. The opener's fair is not in the feed,
+so it is context, never a tag.
+
+The history lives in the scanner's memory only (`scanner.getHistory()`,
+handed to the panel with every update): it starts empty when the panel
+opens or the leagues change, so the first refresh shows no tags, and a line
+the snapshot no longer lists is forgotten. Alerts carry the tag's words in
+the notification body (Alerts below), so a re-fire on an improved edge says
+which improvement it was. **The stake never changes for the tag** — it
+informs; the number to act on stays what conditional Kelly computes. A hold
+rule ("no add for one snapshot after an amber, never on a red") is a
+separate decision once the tag has been watched on live cards.
+
 ### Alerts
 
 Off by default. Turn on **Notify on new edges at or above N%** (default
@@ -590,7 +649,9 @@ from the card on screen (built at the list threshold). In the flat
 list a ladder with several rungs over the threshold pings once per 5 min
 per rung until each has fired; the notification title says `(alt of -2.5)`
 so an alt is never mistaken for the main line. Title is the bet and
-book, body the edge, stake, matchup and time to start. Clicking the
+book, body the edge, the why-it-grew tag when there is one (`fair moved to
+you` / `book moved away` / `fair moved against you`, Why an edge grew
+above), stake, matchup and time to start. Clicking the
 notification runs the same jump-to-row path as a row click. No alerts
 fire while the panel is closed. The alert log lives in `chrome.storage.local`
 (`alertLog`, 24 h).
@@ -1054,7 +1115,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 224 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 245 tests) and
 the bets service's pytest suite (105 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -1098,6 +1159,23 @@ books with both sides counted, the flat-tail guard and its moneyline-pair
 exemption, no rung / whole number / other period, changes-stream lines
 ignored (`fromSnapshot`), soccer moneylines feeding no cut, and the period
 name → id map.
+
+`edgemove.test.js` pins the why-it-grew tag (#132): fair up with the price
+flat, better or worse is green; price better with the fair flat is amber;
+fair against the side with the price better (the edge reading bigger) or
+flat is red; amber turns red once the fair follows the book, with "ago"
+counted from the book's move; a book that only shortened, a sub-threshold
+one-point fair change (-150 → -151) and a first sighting are no tag; a
+whole-point change (-150 → -160) and a Novig half-cent are moves; a number
+move resets; a move older than the window expires; a line first seen inside
+the window compares to its first sighting; a missing fair decides on the
+price; pruning keeps one baseline; bad input fails loudly. `scanner.test.js`
+adds the history's plumbing on the fixtures: one snapshot observation per
+line on start and a clean slate on restart; a stream update on the same
+number is a `(stream)` amber while the fixture's number move resets the
+line; a re-downloaded snapshot records a fair move and an alt rung's price
+move as `(snapshot)` observations and forgets the lines it no longer lists
+(the stream re-adds the ones it carries, as first sightings).
 
 `bets.test.js` joins synthetic Kalshi and Novig records
 with unrecognisable team names on `fixtures/v2_venue_ids_slice.json`'s ids
@@ -1358,6 +1436,24 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-09-22 — Why an edge grew: the fair decides (#132).** The panel sized on
+the current edge every refresh and could not say why it was what it was;
+on a held line the two reasons an edge grows call for opposite actions
+(fair moved to you: add; the book moved away while Unabated's fair, ~1–2
+min behind, has not answered: wait). The scanner now keeps a per-line
+history in memory — one observation per snapshot and per stream update,
+distinct values only, a number move resets the line — and `edgemove.js`
+reads a tag off it inside a 10-min window at a 0.5-point threshold in
+probability. Spec addition the same day: four cases, the fair's direction
+picks the tag (`fair moved to you` green, `book moved away` amber, `fair
+moved against you` red — the adverse-selection case, red whatever the price
+did — none otherwise); "both moved, name the larger" was dropped. Openers
+(`openerPrice` / `openerPoints`, #126) are parsed for the first time and
+shown as tooltip context only: measured live, per book on every main line,
+none on alt rungs, and 54% of NFL spread/total lines sit on another number
+than they opened. Acting on the tag (a hold rule) is out of scope; the stake
+is untouched. Plan: `docs/2026-09-22-unabated-ticket-edge-source-tag-plan.md`.
 
 **2026-09-22 — Novig source rebuilt on the Portfolio REST feed (#116).** Novig
 moved its web app from `app.novig.us` to `novig.com` and put its Hasura
