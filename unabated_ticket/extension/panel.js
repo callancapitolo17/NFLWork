@@ -493,7 +493,7 @@
     // The edge-move tag reads the feed's copy of this line, and only at the
     // price being sized: the feed's history says nothing about another price.
     const feedCopy = feedLineFor(ticket, line.points);
-    const ticketMoveParts = feedCopy && feedCopy.price === line.price ? moveParts(feedCopy) : [];
+    const ticketMoveParts = feedCopy && feedCopy.price === line.price ? moveParts(feedCopy, betFlag) : [];
     view.edge.replaceChildren(line.edgePct == null ? "\u2014" : fmtPct(line.edgePct / 100), ...ticketMoveParts.flatMap((part) => [" ", part]));
 
     view.stake.classList.remove("no-edge");
@@ -785,9 +785,21 @@
     return `fair ${fmtFairEntry(move.from)} \u2192 ${fmtFairEntry(move.to)}`;
   }
 
+  // The tag shows only on a line the user already holds in the same direction
+  // (user decision, 2026-09-23): it exists for the adverse selection of ADDING
+  // to a position, and a first bet is not a top-up. stakeAdvice says "add"
+  // exactly when held dollars are on the row's direction. The history behind
+  // the tag is still recorded for every line (scanner.js), so a line bet later
+  // is tagged at once.
+  function heldInThisDirection(bet) {
+    return Boolean(bet && bet.advice && bet.advice.verb === "add");
+  }
+
   // The tag and its detail line for a rail or the Ticket's Edge fact; [] when
-  // there is nothing to tag.
-  function moveParts(line) {
+  // there is nothing to tag or the line is not held in this direction.
+  // `bet` is the row's {tier, matches, advice} (withBetFlags / ticketBetFlag).
+  function moveParts(line, bet) {
+    if (!heldInThisDirection(bet)) return [];
     const tag = moveTag(line);
     if (!tag) return [];
     const detail = document.createElement("small");
@@ -796,8 +808,10 @@
     return [tag, detail];
   }
 
-  // The tag's words for an alert body, or null.
+  // The tag's words for an alert body, or null; alert rows come through
+  // withBetFlags, so row.bet is set.
   function moveWords(row) {
+    if (!heldInThisDirection(row.bet)) return null;
     const move = moveFor(row.key);
     return move.kind === "none" ? null : edgemove.MOVE_LABELS[move.kind];
   }
@@ -1171,7 +1185,7 @@
     const stake = document.createElement("span");
     stake.className = "edge-stake";
     fillStakeCell(stake, row);
-    rail.append(pct, ...moveParts(row), stake);
+    rail.append(pct, ...moveParts(row, row.bet), stake);
 
     return [main, rail, ...[relatedBlock(row.bet)].filter(Boolean)];
   }
@@ -1201,7 +1215,7 @@
     const stake = document.createElement("span");
     stake.className = "gl-stake";
     stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
-    rail.append(edge, ...moveParts(row), stake);
+    rail.append(edge, ...moveParts(row, row.bet), stake);
 
     li.append(main, rail);
     return li;

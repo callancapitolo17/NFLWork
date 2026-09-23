@@ -595,13 +595,16 @@ not reachable from the harness, so the first real click is the check.
 
 ### Why an edge grew
 
-Next to every edge figure — rows, cards and the lines behind a card's
-expander, and the Ticket's Edge fact — one small tag says what moved since
-the panel last saw the line, inside a ten-minute window
-(`extension/edgemove.js`, issue #132). It matters most on a held line, where
-the row says `add $X` (conditional Kelly, Stake above) and the reasons an
-edge can grow call for opposite actions. **The fair decides**; the price
-only refines the reading.
+Next to the edge figure of a line you already hold in the same direction —
+the rows, card lines and Ticket whose stake reads `add $X` (conditional
+Kelly, Stake above) — one small tag says what moved since the panel last
+saw the line, inside a ten-minute window (`extension/edgemove.js`, issue
+#132). A line you do not hold, or hold only on the other side, shows no
+tag (user decision, 2026-09-23): the tag exists for the adverse selection
+of *adding* to a position, where the reasons an edge can grow call for
+opposite actions, and a first bet is not a top-up. The history behind the
+tag is still recorded for every line, so a line bet later is tagged at
+once. **The fair decides**; the price only refines the reading.
 
 | Unabated's fair (`bacr`, in probability) | The book's price on the side | Tag | Meaning |
 |---|---|---|---|
@@ -667,9 +670,10 @@ from the card on screen (built at the list threshold). In the flat
 list a ladder with several rungs over the threshold pings once per 5 min
 per rung until each has fired; the notification title says `(alt of -2.5)`
 so an alt is never mistaken for the main line. Title is the bet and
-book, body the edge, the why-it-grew tag when there is one (`fair moved to
-you` / `book moved away` / `fair moved against you`, Why an edge grew
-above), stake, matchup and time to start. Clicking the
+book, body the edge, the why-it-grew tag when the line is one you hold in
+the same direction and something moved (`fair moved to you` / `book moved
+away` / `fair moved against you`, Why an edge grew above), stake, matchup
+and time to start. Clicking the
 notification runs the same jump-to-row path as a row click. No alerts
 fire while the panel is closed. The alert log lives in `chrome.storage.local`
 (`alertLog`, 24 h).
@@ -1482,6 +1486,10 @@ shown as tooltip context only: measured live, per book on every main line,
 none on alt rungs, and 54% of NFL spread/total lines sit on another number
 than they opened. Acting on the tag (a hold rule) is out of scope; the stake
 is untouched. Plan: `docs/2026-09-22-unabated-ticket-edge-source-tag-plan.md`.
+Narrowed 2026-09-23 (user decision): the tag is shown only next to lines
+held in the same direction (the `add` rows, card lines and Ticket) — it
+exists for the adverse selection of adding, and a first bet is not a
+top-up — while the history is still kept for every line.
 
 **2026-09-22 — Novig source rebuilt on the Portfolio REST feed (#116).** Novig
 moved its web app from `app.novig.us` to `novig.com` and put its Hasura
