@@ -265,18 +265,20 @@ stake uses the American price because that is what Unabated's edge was
 computed from.
 
 On an exchange line (Kalshi, Novig — any line Unabated marks `sourceFormat 4`,
-a probability) the panel also prints the **limit order** the stake means,
-under the dollar figure: `466 contracts @ 53¢ · $246.98`
-(`kelly.contractOrder`). A contract costs its price in whole cents and pays
-$1, so the limit price is the exchange's exact probability rounded to the
-cent — what you type into Kalshi — and the count is `floor(stake / price)` in
-integer cents, never rounded up past Kelly; the cost shown is what the
-contracts actually spend, so the leftover (under one contract) is visible
-rather than hidden. The count divides the number to act on, so a top-up shows
-the top-up's contracts, and a stake under one contract reads
-`under 1 contract @ 53¢` rather than a zero. Sportsbook lines show no
-contract row. Fees are not folded in: the stake and Unabated's edge are both
-pre-fee, so the real outlay on Kalshi is a touch above the cost shown.
+a probability) the panel also prints the **order** the stake means, under the
+dollar figure: `1,127 contracts @ 23.2¢ · $261.48` (`kelly.contractOrder`).
+The price is Unabated's exact number for the book, taken as the all-in cost of
+one contract; the count is `floor(stake / price)`, never rounded up past
+Kelly; the cost shown is what the contracts actually spend, so the leftover
+(under one contract) is visible rather than hidden. **Kalshi's price on
+Unabated already carries Kalshi's fee** (a 22¢ ask shows as 23.2¢ = +331,
+because 22¢ + 7% × 0.22 × 0.78 = 23.2¢), so the edge is net of the fee, the
+count needs no fee model, and the cost matches Kalshi's own Cost line
+(contracts × ask + fee) to the cent; the number in Kalshi's limit-price box is
+its own ask, not Unabated's figure. The count divides the number to act on, so
+a top-up shows the top-up's contracts, and a stake under one contract reads
+`under 1 contract @ 23.2¢` rather than a zero. Sportsbook lines show no
+contract row.
 
 That is the stake with nothing held. **With open bets on the same market of
 the game, the stake is sized GIVEN them — conditional Kelly (issue #130,
@@ -370,7 +372,7 @@ the Bets tab, under the venue strip it feeds.
 Copy puts one line on the clipboard:
 `Seattle Mariners -133 · 57.0¢ @ Novig | fair -139 · 58.2¢ | edge +1.89% | stake $188.55 | to win $141.77 | payout $330.32 | Texas Rangers @ Seattle Mariners · MLB`.
 When held bets changed the number the stake reads `stake $188.32 (add $188.32, $270.05 alone)`.
-On an exchange line the contract order follows the stake: `stake $188.55 | 330 contracts @ 57¢ | to win ...`.
+On an exchange line the contract order follows the stake: `stake $261.69 | 1127 contracts @ 23.2¢ | to win ...`.
 
 ## Edges tab
 

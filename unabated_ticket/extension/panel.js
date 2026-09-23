@@ -532,12 +532,13 @@
     show("ticket");
   }
 
-  // Under the dollar figure, the limit order it means on an exchange: "466
-  // contracts @ 53¢ · $246.98", with the count floored so the cost never
-  // passes the stake (kelly.contractOrder). Only a line priced in contracts
-  // (Kalshi, Novig) gets the row; a sportsbook line keeps just the dollars.
-  // `acted` is the number to act on, so a top-up shows the top-up's contracts.
-  // Returns what Copy appends, "" when there is no row.
+  // Under the dollar figure, the order it means on an exchange: "1,127
+  // contracts @ 23.2¢ · $261.48", sized straight off Unabated's price for the
+  // book with the count floored so the cost never passes the stake
+  // (kelly.contractOrder). Only a line priced in contracts (Kalshi, Novig)
+  // gets the row; a sportsbook line keeps just the dollars. `acted` is the
+  // number to act on, so a top-up shows the top-up's contracts. Returns what
+  // Copy appends, "" when there is no row.
   function renderContracts(acted, line) {
     view.contracts.hidden = true;
     view.contracts.classList.remove("under");
@@ -546,18 +547,19 @@
     const order = kelly.contractOrder({ stake: acted, bookPrice: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice });
     if (!order) return "";
     view.contracts.hidden = false;
+    const priceText = `${order.priceCents.toFixed(1)}\u00a2`;
     if (order.contracts === 0) {
       view.contracts.classList.add("under");
-      view.contracts.textContent = `under 1 contract @ ${order.priceCents}\u00a2`;
-      return ` | under 1 contract @ ${order.priceCents}\u00a2`;
+      view.contracts.textContent = `under 1 contract @ ${priceText}`;
+      return ` | under 1 contract @ ${priceText}`;
     }
     const count = document.createElement("span");
-    count.textContent = `${order.contracts.toLocaleString("en-US")} contract${order.contracts === 1 ? "" : "s"} @ ${order.priceCents}\u00a2`;
+    count.textContent = `${order.contracts.toLocaleString("en-US")} contract${order.contracts === 1 ? "" : "s"} @ ${priceText}`;
     const cost = document.createElement("span");
     cost.className = "cost";
     cost.textContent = ` \u00b7 ${fmtDollars(order.costDollars)}`;
     view.contracts.append(count, cost);
-    return ` | ${order.contracts} contract${order.contracts === 1 ? "" : "s"} @ ${order.priceCents}\u00a2`;
+    return ` | ${order.contracts} contract${order.contracts === 1 ? "" : "s"} @ ${priceText}`;
   }
 
   // The ticket's open bets and what they do to its stake: the row-style flag
