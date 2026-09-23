@@ -211,8 +211,12 @@ test("applyChanges overwrites newer lines, adds new ones, skips other leagues an
   assert.equal(before.points, -14);
   assert.equal(before.price, 400);
   const changes = feed.parseChanges(changesText());
-  const counts = feed.applyChanges(state, changes);
+  const { appliedKeys, ...counts } = feed.applyChanges(state, changes);
   assert.deepEqual(counts, { applied: 14, added: 4, stale: 0, unknownEvent: 0, otherLeague: 1 });
+  // Every replaced or added line is named, so the scanner can record it (#132).
+  assert.equal(appliedKeys.length, 14);
+  assert.ok(appliedKeys.includes("289357360:ms4:si0:tid6"));
+  assert.ok(appliedKeys.includes("366866367:ms4:si0:tid6"));
   const after = state.lines["289357360:ms4:si0:tid6"];
   assert.equal(after.points, -3.5);
   assert.equal(after.price, -105);
@@ -228,9 +232,30 @@ test("applyChanges overwrites newer lines, adds new ones, skips other leagues an
   assert.equal(state.lines["366866367:ms4:si0:tid6"].fromSnapshot, false);
   assert.ok(Object.values(loadedState().lines).every((line) => line.fromSnapshot === true));
   // Replaying the same batch changes nothing.
-  assert.deepEqual(feed.applyChanges(state, changes), { applied: 0, added: 0, stale: 14, unknownEvent: 0, otherLeague: 1 });
+  assert.deepEqual(feed.applyChanges(state, changes), { applied: 0, added: 0, stale: 14, unknownEvent: 0, otherLeague: 1, appliedKeys: [] });
   // The edge list is unaffected: the moved lines were all negative edge.
   assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF }).length, 4);
+});
+
+test("openers: the book's own opening price and number on main lines, none on alts, kept across a stream update (#126, #132)", () => {
+  const state = loadedState();
+  const novigMoneyline = state.lines["289357353:ms89:si0:tid6"];
+  assert.equal(novigMoneyline.openerPrice, -167);
+  assert.equal(novigMoneyline.openerPoints, null);
+  assert.ok(Object.values(state.lines).filter((line) => line.isAlt).every((line) => line.openerPrice === undefined));
+  const changes = feed.parseChanges(changesText());
+  const nflLine = changes.lines.find((line) => line.eventId === novigMoneyline.eventId);
+  const withOpener = { ...nflLine, key: novigMoneyline.key, marketId: novigMoneyline.marketId, bookId: 89, sequenceNumber: 9e12 };
+  feed.applyChanges(state, { ...changes, lines: [withOpener] });
+  assert.equal(state.lines[novigMoneyline.key].openerPrice, -167);
+  assert.equal(state.lines[novigMoneyline.key].sequenceNumber, 9e12);
+  const row = feed.describeLine(state.lines[novigMoneyline.key], state);
+  assert.equal(row.openerPrice, -167);
+  assert.equal(row.openerPoints, null);
+  // A line the stream added has no opener to keep.
+  assert.equal(state.lines["366866367:ms4:si0:tid6"], undefined);
+  feed.applyChanges(state, changes);
+  assert.equal(state.lines["366866367:ms4:si0:tid6"].openerPrice, null);
 });
 
 test("applyChanges ignores an older sequence number and lines for unknown events", () => {
