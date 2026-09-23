@@ -37,7 +37,7 @@ Edit `.env` with credentials for each platform (Wagerzon, WagerzonJ, WagerzonC, 
 ./run_all_scrapers.sh
 ```
 
-Runs BFA primary ("Betfastaction") and BetOnline sequentially — the weekly LaunchAgent (Mondays 05:00) calls this. Wagerzon, Hoop88 and BFAJ were dropped from the runner on 2026-09-16; run their scrapers by hand if needed. Continues to the next scraper if one fails.
+Runs Wagerzon (logged as WagerzonC, last week by default), BFA primary ("Betfastaction") and BetOnline sequentially — the weekly LaunchAgent (Mondays 05:00) calls this. Hoop88 and BFAJ were dropped from the runner on 2026-09-16; run their scrapers by hand if needed. Continues to the next scraper if one fails.
 
 ### Run individual scrapers
 
@@ -178,7 +178,7 @@ After recon, the scrapers work without a browser.
 ## Architecture
 
 ```
-run_all_scrapers.sh          # Entry point (runs 2: BFA primary, BetOnline)
+run_all_scrapers.sh          # Entry point (runs 3: Wagerzon, BFA primary, BetOnline)
   scraper_wagerzon.py        # Wagerzon scraper (HTTP, supports --account j)
   scraper_hoop88.py          # Hoop88 scraper (headless Chromium)
   scraper_bfa.py             # BFA Gaming scraper (REST API, supports --account j)
