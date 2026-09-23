@@ -1,0 +1,312 @@
+{
+ "provenance": "GetPlayerHistory wagers from the live pull of 2026-09-22 21:46 PT (ids below 990000000, verbatim: the page carries no account identifier) plus hand-written rows on the same shape (ids 990000001+) for the shapes the pull had none of: pending, push, cancelled, moneyline, team total, a baseball pitchers bracket, a pending parlay, a short teaser, a prop. Timestamps are naive on the account's Pacific clock.",
+ "window": {
+  "startDate": "2026-08-23",
+  "endDate": "2026-09-23"
+ },
+ "pageBodyKeys": [
+  "id",
+  "totalAmount",
+  "totalRecords",
+  "totalRisk",
+  "totalWin",
+  "transactions",
+  "wagers"
+ ],
+ "wagers": [
+  {
+   "id": 354669433,
+   "type": "STRAIGHT BET",
+   "description": "[1340] TOTAL u24EV \r(ARIZONA 1H vrs BYU 1H)",
+   "placedDate": "2026-09-11T19:10:33.603",
+   "lastModification": "2026-09-12T14:14:20.837",
+   "settledDate": "2026-09-12T12:45:00",
+   "result": "LOSE",
+   "risk": 200.0,
+   "win": 200.0,
+   "amount": -200.0,
+   "picks": []
+  },
+  {
+   "id": 354693777,
+   "type": "STRAIGHT BET (FP)",
+   "description": "[308945] ILLINOIS ST -3-110",
+   "placedDate": "2026-09-12T07:30:20.047",
+   "lastModification": "2026-09-12T19:01:30.02",
+   "settledDate": "2026-09-12T16:00:00",
+   "result": "WIN",
+   "risk": 0.0,
+   "win": 200.0,
+   "amount": 200.0,
+   "picks": []
+  },
+  {
+   "id": 354693779,
+   "type": "STRAIGHT BET",
+   "description": "[308959] WESTERN ILLINOIS +42-110",
+   "placedDate": "2026-09-12T07:30:20.193",
+   "lastModification": "2026-09-12T19:25:18.603",
+   "settledDate": "2026-09-12T16:15:00",
+   "result": "WIN",
+   "risk": 210.0,
+   "win": 190.91,
+   "amount": 190.91,
+   "picks": []
+  },
+  {
+   "id": 354693780,
+   "type": "STRAIGHT BET",
+   "description": "[308915] TOTAL o47-110 \r(HOLY CROSS vrs MIAMI OHIO)",
+   "placedDate": "2026-09-12T07:30:20.243",
+   "lastModification": "2026-09-12T12:51:32.15",
+   "settledDate": "2026-09-12T10:00:00",
+   "result": "WIN",
+   "risk": 220.0,
+   "win": 200.0,
+   "amount": 200.0,
+   "picks": []
+  },
+  {
+   "id": 354715025,
+   "type": "STRAIGHT BET (FP)",
+   "description": "[1359] TOTAL o30½-110 \r(RICE 1H vrs NOTRE DAME 1H)",
+   "placedDate": "2026-09-12T09:04:37.48",
+   "lastModification": "2026-09-12T14:03:24.28",
+   "settledDate": "2026-09-12T12:30:00",
+   "result": "WIN",
+   "risk": 0.0,
+   "win": 190.91,
+   "amount": 190.91,
+   "picks": []
+  },
+  {
+   "id": 354852863,
+   "type": "4 TEAM TEASERS",
+   "description": "[477] GREEN BAY PACKERS +8-110 (B+6)",
+   "placedDate": "2026-09-13T09:26:29.16",
+   "lastModification": "2026-09-13T16:44:45.797",
+   "settledDate": "2026-09-13T13:25:00",
+   "result": "LOSE",
+   "risk": 200.0,
+   "win": 600.0,
+   "amount": -200.0,
+   "picks": [
+    {
+     "gameId": 36810103,
+     "gameDate": "2026-09-13T09:26:29.16",
+     "description": "[481] DENVER BRONCOS +8½-110 (B+6)",
+     "amount": -200.0,
+     "result": "PENDING",
+     "settledDate": "2026-09-13T13:25:00"
+    },
+    {
+     "gameId": 36809938,
+     "gameDate": "2026-09-13T09:26:29.16",
+     "description": "[456] JACKSONVILLE JAGUARS -2½-110 (B+6)",
+     "amount": -200.0,
+     "result": "WIN",
+     "settledDate": "2026-09-13T13:25:00"
+    },
+    {
+     "gameId": 36810017,
+     "gameDate": "2026-09-13T09:26:29.16",
+     "description": "[470] DETROIT LIONS -1-110 (B+6)",
+     "amount": -200.0,
+     "result": "PUSH",
+     "settledDate": "2026-09-13T13:25:00"
+    }
+   ]
+  },
+  {
+   "id": 355159147,
+   "type": "PARLAY (2 TEAMS)",
+   "description": "[1117] TOTAL O35-110 \r(KENT STATE 1H VRS OHIO STATE 1H)",
+   "placedDate": "2026-09-18T10:24:20.15",
+   "lastModification": "2026-09-19T14:33:32.74",
+   "settledDate": "2026-09-19T09:00:00",
+   "result": "LOSE",
+   "risk": 200.0,
+   "win": 509.45,
+   "amount": -200.0,
+   "picks": [
+    {
+     "gameId": 38304098,
+     "gameDate": "2026-09-18T10:24:20.15",
+     "description": "[1159] TOTAL O34½-115 \r(WESTERN KENTUCKY 1H VRS INDIANA 1H)",
+     "amount": -200.0,
+     "result": "LOSE",
+     "settledDate": "2026-09-19T13:00:00"
+    }
+   ]
+  },
+  {
+   "id": 355252008,
+   "type": "STRAIGHT BET",
+   "description": "[309115] PENNSYLVANIA -3-110",
+   "placedDate": "2026-09-19T10:16:47.99",
+   "lastModification": "2026-09-19T15:23:07.927",
+   "settledDate": "2026-09-19T12:00:00",
+   "result": "WIN",
+   "risk": 220.0,
+   "win": 200.0,
+   "amount": 200.0,
+   "picks": []
+  },
+  {
+   "id": 990000001,
+   "type": "STRAIGHT BET",
+   "description": "[455] TOTAL o24½-110 \r(JACKSONVILLE JAGUARS 1H vrs CINCINNATI BENGALS 1H)",
+   "placedDate": "2026-09-27T07:12:03.5",
+   "lastModification": "2026-09-27T07:12:03.5",
+   "settledDate": "2026-09-27T10:00:00",
+   "result": "PENDING",
+   "risk": 220.0,
+   "win": 200.0,
+   "amount": 0.0,
+   "picks": []
+  },
+  {
+   "id": 990000002,
+   "type": "STRAIGHT BET",
+   "description": "[458] MIAMI DOLPHINS +7-115",
+   "placedDate": "2026-09-27T07:13:00",
+   "lastModification": "2026-09-27T07:13:00",
+   "settledDate": "0001-01-01T00:00:00",
+   "result": "",
+   "risk": 230.0,
+   "win": 200.0,
+   "amount": 0.0,
+   "picks": []
+  },
+  {
+   "id": 990000003,
+   "type": "STRAIGHT BET",
+   "description": "[1306551] GRAMBLING 1H +168",
+   "placedDate": "2026-09-19T09:00:00",
+   "lastModification": "2026-09-19T15:10:00",
+   "settledDate": "2026-09-19T12:00:00",
+   "result": "WIN",
+   "risk": 100.0,
+   "win": 168.0,
+   "amount": 168.0,
+   "picks": []
+  },
+  {
+   "id": 990000004,
+   "type": "STRAIGHT BET",
+   "description": "[461] PITTSBURGH STEELERS +140",
+   "placedDate": "2026-09-20T08:00:00",
+   "lastModification": "2026-09-20T16:20:00",
+   "settledDate": "2026-09-20T13:25:00",
+   "result": "PUSH",
+   "risk": 100.0,
+   "win": 140.0,
+   "amount": 0.0,
+   "picks": []
+  },
+  {
+   "id": 990000005,
+   "type": "STRAIGHT BET",
+   "description": "[464] HOUSTON TEXANS PK-105",
+   "placedDate": "2026-09-20T08:01:00",
+   "lastModification": "2026-09-20T09:30:00",
+   "settledDate": "2026-09-20T10:00:00",
+   "result": "CANCELLED",
+   "risk": 105.0,
+   "win": 100.0,
+   "amount": 0.0,
+   "picks": []
+  },
+  {
+   "id": 990000006,
+   "type": "STRAIGHT BET",
+   "description": "[96072] TOTAL u38½-115 \r(SAINT LOUIS 1H TEAM PTS vrs SAINT LOUIS 1H TEAM PTS)",
+   "placedDate": "2026-09-18T18:00:00",
+   "lastModification": "2026-09-18T21:00:00",
+   "settledDate": "2026-09-18T19:00:00",
+   "result": "LOSE",
+   "risk": 115.0,
+   "win": 100.0,
+   "amount": -115.0,
+   "picks": []
+  },
+  {
+   "id": 990000007,
+   "type": "STRAIGHT BET",
+   "description": "[967] TOTAL o7½-120 \r(CHI CUBS vrs TB RAYS)\r( JAMESON TAILLON - R / SHANE MCCLANAHAN - L )",
+   "placedDate": "2026-09-21T10:00:00",
+   "lastModification": "2026-09-21T10:00:00",
+   "settledDate": "2026-09-21T16:10:00",
+   "result": "OPEN",
+   "risk": 120.0,
+   "win": 100.0,
+   "amount": 0.0,
+   "picks": []
+  },
+  {
+   "id": 990000008,
+   "type": "PARLAY (2 TEAMS)",
+   "description": "[451] GREEN BAY PACKERS -3-110",
+   "placedDate": "2026-09-27T08:00:00",
+   "lastModification": "2026-09-27T08:00:00",
+   "settledDate": "2026-09-27T08:00:00",
+   "result": "PENDING",
+   "risk": 100.0,
+   "win": 260.0,
+   "amount": 0.0,
+   "picks": [
+    {
+     "gameId": 36810200,
+     "gameDate": "2026-09-27T08:00:00",
+     "description": "[453] TOTAL u44½-110 \r(DALLAS COWBOYS vrs NEW YORK GIANTS)",
+     "amount": -100.0,
+     "result": "PENDING",
+     "settledDate": "2026-09-27T08:00:00"
+    }
+   ]
+  },
+  {
+   "id": 990000009,
+   "type": "4 TEAM TEASERS",
+   "description": "[471] DETROIT LIONS +9-110 (B+6)",
+   "placedDate": "2026-09-27T08:05:00",
+   "lastModification": "2026-09-27T08:05:00",
+   "settledDate": "2026-09-27T08:05:00",
+   "result": "PENDING",
+   "risk": 100.0,
+   "win": 300.0,
+   "amount": 0.0,
+   "picks": [
+    {
+     "gameId": 36810201,
+     "gameDate": "2026-09-27T08:05:00",
+     "description": "[473] LOS ANGELES RAMS +8½-110 (B+6)",
+     "amount": -100.0,
+     "result": "PENDING",
+     "settledDate": "2026-09-27T08:05:00"
+    },
+    {
+     "gameId": 36810202,
+     "gameDate": "2026-09-27T08:05:00",
+     "description": "[475] KANSAS CITY CHIEFS +2-110 (B+6)",
+     "amount": -100.0,
+     "result": "PENDING",
+     "settledDate": "2026-09-27T08:05:00"
+    }
+   ]
+  },
+  {
+   "id": 990000010,
+   "type": "STRAIGHT BET",
+   "description": "[777045] GIANTS SUPERFECTA (SCR 1ST, 1Q, 1H & GM +7½) +1935",
+   "placedDate": "2026-09-20T16:09:00",
+   "lastModification": "2026-09-21T23:30:00",
+   "settledDate": "2026-09-21T17:15:00",
+   "result": "LOSE",
+   "risk": 250.0,
+   "win": 4838.0,
+   "amount": -250.0,
+   "picks": []
+  }
+ ]
+}

@@ -215,8 +215,12 @@
     return Number.isInteger(stake) ? `$${stake}` : `$${stake.toFixed(2)}`;
   }
 
+  // Venues whose display name is not the capitalised key.
+  const VENUE_LABELS = { bfa: "BFA" };
+
   function venueLabel(venue) {
-    return venue ? venue.charAt(0).toUpperCase() + venue.slice(1) : "unknown venue";
+    if (!venue) return "unknown venue";
+    return VENUE_LABELS[venue] || venue.charAt(0).toUpperCase() + venue.slice(1);
   }
 
   // ---- Kalshi ticker parsing -------------------------------------------------

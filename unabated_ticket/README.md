@@ -691,6 +691,7 @@ Two kinds of source feed the flags:
 | Kalshi | `bets_service/sources/kalshi.py` (local service, signed REST) | every 60 s while the service runs |
 | Novig | `bets_service/sources/novig.py` (local service, the app's Portfolio REST feed on the account's own Auth0 refresh token, #116) | every 60 s while the service runs; no tab needed |
 | BetOnline | — (#115) | shows "no source configured" |
+| BFA (Betfastaction) | `bets_service/sources/bfa.py` (local service, the account's own Keycloak password login from `bet_logger/.env`; 2026-09-23) | every 300 s while the service runs |
 | ProphetX | — (#117) | shows "no source configured" |
 
 Start the service (next section), keep the panel open. Every 30 s while the
@@ -996,8 +997,9 @@ GETs; no order placement.
   `run.sh` uses it when present, else `python3`. Launch from the repo root.
 - **Credentials**: `KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY_PATH`, read from
   the environment, then `unabated_ticket/bets_service/.env`, then the bots'
-  `kalshi_draft/.env` in the main checkout — so with the bots configured no
-  new file is needed. `.env.example` lists every knob (port, retention window,
+  `kalshi_draft/.env` in the main checkout, then `bet_logger/.env` there (the
+  sheet scrapers' book logins: `BFA_USERNAME` / `BFA_PASSWORD`) — so with the
+  bots and the sheet scrapers configured no new file is needed. `.env.example` lists every knob (port, retention window,
   Kalshi cadence, log level). Never commit `.env`.
 - **Endpoints** (loopback only, no auth): `GET /bets.json[?days=N]` →
   `{generatedAt, sources: {kalshi: {...}, betonline: {fetchedAt, ok, error, count}}, bets: [...], crosswalk: [...]}`
@@ -1075,6 +1077,40 @@ GETs; no order placement.
   legs do not parse fail closed as unmatchable with the reason. Same Game
   Parlay rows have not been seen live yet; their leg grammar is a guess the
   parser refuses rather than misreads.
+- **BFA source** (`sources/bfa.py`, 2026-09-23): every 300 s logs in to
+  Betfastaction's Keycloak with the password in `bet_logger/.env`
+  (`BFA_USERNAME` / `BFA_PASSWORD`) and pulls
+  `GET api.bfagaming.com/history/api/GetPlayerHistory` for the last 31 days
+  through tomorrow, keeping **pending** bets. The session is this process's
+  own and lives in memory: the access token is refreshed within 60 s of
+  expiry and a refused refresh is replaced by a new login;
+  `bet_logger/recon_bfa_auth.json` is never read or written (the weekly
+  LaunchAgent rotates that token, and two rotators trip Keycloak's reuse
+  detection — the reason BetOnline needs its file lock). Record ids are
+  `bfa:<wager id>`, `:legN` per leg of a parlay or teaser (the ticket's
+  `description` is leg 0, `picks[]` the rest, every leg on the ticket's
+  status). Grammar from the live pull of 2026-09-22 (16 wagers) and
+  `bet_logger/scraper_bfa.py`: `[rotation] TOTAL o30½-110 (RICE 1H vrs NOTRE DAME 1H)`
+  (away first, `1H` on the names = 1H, `EV` = +100, a baseball total's
+  pitchers bracket ignored); `[rotation] ILLINOIS ST -3-110` and
+  `GRAMBLING 1H +168` (own team only, placed by rotation parity — the pull's
+  totals follow the same convention, every over odd, every under even —
+  `approx: side_from_rotation_parity`); a teaser leg's `(B+6)` dropped. The
+  description names no sport, so the league is `bet_logger/utils.py
+  parse_sport`'s nickname scan — pro leagues only — and a **college game,
+  most of this account, is unmatchable as "league unknown"**, never guessed
+  as CFB or CBB (hand-off rule; the open question is in the design log).
+  Timestamps are on the account's Pacific clock: a straight bet's
+  `settledDate` was its scheduled kickoff on every settled row (noon-ET games
+  read 09:00), so it is served as `eventStart` (`approx:
+  event_start_from_settled_date`; refused outside placed −1 d / +60 d, where a
+  .NET default date would parse), and `lastModification` — the grading time —
+  as `closedAt`; a parlay or teaser has one `settledDate` for the ticket, so
+  its legs are dateless (`game_date_unknown`, matched by rotation). Team
+  totals, a teaser short of its declared legs and unparsed selections fail
+  closed with the reason. What an OPEN straight bet's `settledDate` holds is
+  unobserved (the pull had none pending): a null or placeholder falls to the
+  dateless window, so nothing is lost either way.
 - **Store** (`store.py`, `bets.duckdb`, gitignored): `bets` upserts on the
   record id and is never pruned (the CLV work needs the history), but only
   rows whose content actually CHANGED are written (#125): a source re-sends
@@ -1110,8 +1146,8 @@ GETs; no order placement.
   poll completes (Kalshi: ~1–2 min, one throttled GET per market and event)
   `/bets.json` lists it as `{ok: false, error: "no completed poll yet"}`.
   Log: `bets_service.log` (rotating, 10 MB × 3).
-- **Adding a venue** (#117 ProphetX; BetOnline and Novig are
-  `sources/betonline.py` / `sources/novig.py` above): a module in
+- **Adding a venue** (#117 ProphetX; BetOnline, Novig and BFA are
+  `sources/betonline.py` / `sources/novig.py` / `sources/bfa.py` above): a module in
   `bets_service/sources/` with `name`, `poll_sec` and `fetch() -> list[record]`
   (the `Source` protocol in `sources/__init__.py`), registered in
   `service.main()`. `fetch()` returns every record the venue knows and raises
@@ -1123,6 +1159,18 @@ GETs; no order placement.
   instead writes `{bets<Venue>: {bets, readAt, url, error, complete}}` to
   `chrome.storage.local` and the panel merges it with
   `betsview.mergePageSource`.
+- **Capturing a venue's raw rows** (`bets_service/recon_capture.py`): a
+  parser is built and re-verified on a live pull, and the cloud sessions that
+  write parsers cannot reach the books, so this standalone script (only
+  `requests`) runs on the Mac and its output is attached to the project
+  thread. Today it covers BFA (Keycloak password login from `bet_logger/.env`,
+  every `GetPlayerHistory` wager of the last 30 days through tomorrow, raw,
+  with counts per result and type) and the Wagerzon C account (form login;
+  `HistoryHelper` weeks 0 and 1; the `OpenBets.aspx` page plus every
+  open/pending helper it or its scripts name, fetched raw). `cd` to the repo
+  root and run `bet_logger/venv/bin/python3 unabated_ticket/bets_service/recon_capture.py`;
+  files land in `~/Downloads/bets_recon/` (`--out DIR`). It writes no token,
+  cookie or password, and leaves `bet_logger/recon_bfa_auth.json` alone.
 
 ## Tests
 
@@ -1133,8 +1181,8 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 245 tests) and
-the bets service's pytest suite (105 tests, on the `kalshi_draft/venv`
+the node suite (`npm test` = `node --test tests/*.test.js`, 249 tests) and
+the bets service's pytest suite (140 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`
@@ -1454,6 +1502,27 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-09-23 — BFA (Betfastaction) source in the bets service.** Cal asked for
+the Bet Logger books on the Bets tab: BFA first, the Wagerzon C account next,
+Polymarket after a question on which Polymarket. The source owns its own
+Keycloak password session in memory (`sources/bfa.py`) rather than sharing
+`bet_logger/recon_bfa_auth.json`: a shared refresh token needs a file lock
+(BetOnline, #115) and still dies when the LaunchAgent and the service race a
+rotation. Built on a live capture (`bets_service/recon_capture.py`, run on the
+Mac because the cloud thread cannot reach the book): 16 wagers over 30 days —
+9 straight, 3 free-play, 3 four-team teasers, 1 two-team parlay, none pending.
+Findings that shaped the parser: `settledDate` is the scheduled kickoff, on the
+account's Pacific clock, on every settled straight bet (noon-ET games read
+09:00), so it serves as the event start; the rotation-parity convention holds
+(every over odd, every under even); the description names no sport and
+`parse_sport` cannot tell CFB from CBB, so college bets — the bulk of the
+account (1H totals) — land in the unmatched list as "league unknown", the
+hand-off's rule (never guess). **Open, Cal's call:** let the panel try the
+college leagues by team name for a league-less record, or infer the league
+from the season in the source; nothing guesses today. Credentials resolve
+from `bet_logger/.env` as `config.py`'s fourth lookup place, so no password is
+copied. Poll 300 s and the 31-day window are constants, not settings.
 
 **2026-09-23 — Liquidity: a floor on what the resting money can win, and no
 stake above it.** Min liquidity ($100) gated alts only, so a Novig Portland

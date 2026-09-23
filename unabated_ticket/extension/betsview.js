@@ -24,9 +24,9 @@
   const ladderLib = inNode ? require("./ladder.js") : root.UnabatedLadder;
   const condkelly = inNode ? require("./condkelly.js") : root.UnabatedCondKelly;
 
-  // Every venue the plan registers a source for; #115/#116/#117 fill the
-  // missing ones. Listing them keeps the Bets tab honest about coverage.
-  const VENUES = ["kalshi", "betonline", "novig", "prophetx"];
+  // Every venue the plan registers a source for (#117 ProphetX still to come;
+  // BFA added 2026-09-23). Listing them keeps the Bets tab honest about coverage.
+  const VENUES = ["kalshi", "betonline", "novig", "prophetx", "bfa"];
   const FRESH_MS = 5 * 60 * 1000;
   const STALE_MS = 60 * 60 * 1000;
   const BANNER_MAX_LINES = 5;

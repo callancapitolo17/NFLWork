@@ -4,6 +4,7 @@ Reads, in this order (the first place a key is found wins):
   1. process environment
   2. unabated_ticket/bets_service/.env            (gitignored)
   3. <main checkout>/kalshi_draft/.env             (the bots' shared credentials)
+  4. <main checkout>/bet_logger/.env               (the sheet scrapers' book logins: BFA)
 Side effects: none — pure constants; auth_client.configure() happens in the
 Kalshi source.
 """
@@ -46,11 +47,15 @@ def _load_env(path: Path) -> dict[str, str]:
 
 _SERVICE_FILE_ENV = _load_env(PKG_DIR / ".env")
 _DRAFT_FILE_ENV = _load_env(PROJECT_ROOT / "kalshi_draft" / ".env")
+_BET_LOGGER_FILE_ENV = _load_env(PROJECT_ROOT / "bet_logger" / ".env")
+_ENV_LOOKUP_ORDER = (os.environ, _SERVICE_FILE_ENV, _DRAFT_FILE_ENV, _BET_LOGGER_FILE_ENV)
 
 
 def _get(key: str, default: str | None = None) -> str | None:
-    return os.environ.get(
-        key, _SERVICE_FILE_ENV.get(key, _DRAFT_FILE_ENV.get(key, default)))
+    for env in _ENV_LOOKUP_ORDER:
+        if key in env:
+            return env[key]
+    return default
 
 
 # Kalshi credentials (same names as every bot so one .env works everywhere).
@@ -95,6 +100,14 @@ BETONLINE_COOKIES_PATH = Path(_get("BETS_BETONLINE_COOKIES_PATH",
                                    str(PROJECT_ROOT / "bet_logger" / "recon_betonline_cookies.json")))
 BETONLINE_POLL_SEC = float(_get("BETS_BETONLINE_POLL_SEC", "300"))
 BETONLINE_HISTORY_DAYS = int(_get("BETS_BETONLINE_HISTORY_DAYS", str(RETENTION_DAYS + 1)))
+
+# BFA (2026-09-23): the account's own Keycloak password login — the sheet scraper's
+# credentials in bet_logger/.env, no token file (see sources/bfa.py). Cadence and
+# window are constants: the history is one GET per 100 wagers.
+BFA_USERNAME = _get("BFA_USERNAME")
+BFA_PASSWORD = _get("BFA_PASSWORD")
+BFA_POLL_SEC = 300.0
+BFA_HISTORY_DAYS = RETENTION_DAYS + 1
 
 # Logging
 LOG_PATH = Path(_get("BETS_SERVICE_LOG_PATH", str(PKG_DIR / "bets_service.log")))
