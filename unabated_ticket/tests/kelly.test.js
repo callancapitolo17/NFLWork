@@ -60,27 +60,32 @@ test("bankroll, multiplier and edge must be valid", () => {
   assert.throws(() => kelly.kellyStakeFromEdge({ bookPrice: -400, edgePct: null, bankroll: 100, multiplier: 0.25 }), /edgePct/);
 });
 
-test("contract order: floor in whole cents so the cost reconciles ($247.50 at 53¢ -> 466 x 53¢ = $246.98)", () => {
+test("contract order: Kalshi Iowa State, 2026-09-21 -- $261.69 at Unabated's 23.2¢ -> 1,127 contracts, $261.48", () => {
+  // Unabated's Kalshi price already carries Kalshi's fee (ask 22¢ + 7% x .22 x .78 = 23.2¢),
+  // so the count divides by that number as-is. 1,128 would cost $261.71, past the stake.
+  const order = kelly.contractOrder({ stake: 261.69, bookPrice: 331, sourceFormat: 4, sourcePrice: 0.232012 });
+  assert.equal(order.contracts, 1127);
+  nearly(order.priceCents, 23.2012);
+  assert.equal(order.costDollars, 261.48);
+  assert.ok(order.costDollars <= 261.69);
+  assert.ok(261.69 - order.costDollars < 0.232012);
+});
+
+test("contract order is floored, never up past Kelly, and a stake that covers a count exactly keeps it", () => {
   const order = kelly.contractOrder({ stake: 247.5, bookPrice: -113, sourceFormat: 4, sourcePrice: 0.53 });
   assert.deepEqual(order, { contracts: 466, priceCents: 53, costDollars: 246.98 });
-  // 467 x 53¢ = $247.51 would spend past the stake; the leftover is under one contract.
-  assert.ok(order.costDollars <= 247.5);
-  assert.ok(247.5 - order.costDollars < 0.53);
+  // 100 x 0.232012 = 23.2012 exactly: float noise must not turn 100 into 99.
+  assert.equal(kelly.contractOrder({ stake: 23.2012, bookPrice: 331, sourceFormat: 4, sourcePrice: 0.232012 }).contracts, 100);
 });
 
 test("contract order uses the exchange's exact probability, not the rounded American", () => {
-  // -130 implies 56.5%; the source, not the American, decides the cent.
-  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -130, sourceFormat: 4, sourcePrice: 0.564 }).priceCents, 56);
-  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -130, sourceFormat: 4, sourcePrice: 0.566 }).priceCents, 57);
+  const exact = kelly.contractOrder({ stake: 100, bookPrice: -130, sourceFormat: 4, sourcePrice: 0.564 });
+  nearly(exact.priceCents, 56.4);
+  const americanOnly = kelly.contractOrder({ stake: 100, bookPrice: -130, sourceFormat: 4, sourcePrice: 130 / 230 });
+  nearly(americanOnly.priceCents, 100 * 130 / 230);
 });
 
-test("contract order rounds every half-cent source up (0.565 * 100 is 56.4999... in floats)", () => {
-  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -130, sourceFormat: 4, sourcePrice: 0.565 }).priceCents, 57);
-  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -136, sourceFormat: 4, sourcePrice: 0.575 }).priceCents, 58);
-  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -141, sourceFormat: 4, sourcePrice: 0.585 }).priceCents, 59);
-});
-
-test("contract order is null, not a throw, when the probability rounds outside 1-99 cents", () => {
+test("contract order is null, not a throw, when the probability is outside 1-99 cents", () => {
   assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -19900, sourceFormat: 4, sourcePrice: 0.995 }), null);
   assert.equal(kelly.contractOrder({ stake: 100, bookPrice: 24900, sourceFormat: 4, sourcePrice: 0.004 }), null);
   assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -9900, sourceFormat: 4, sourcePrice: 0.99 }).priceCents, 99);
