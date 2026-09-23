@@ -678,14 +678,28 @@
     return true;
   }
 
+  // Dollars won per dollar staked at an American price: +2000 -> 20, -110 -> 0.909.
+  function winPerDollarStaked(americanPrice) {
+    return americanPrice > 0 ? americanPrice / 100 : 100 / Math.abs(americanPrice);
+  }
+
+  // A line that reports liquidity, i.e. an exchange, is listed only when the
+  // money resting at its price can win at least minLiquidityToWin: $20 at
+  // +2000 wins $400 and is worth a look, $20 at +100 wins $20 and is not
+  // (Cal, 2026-09-23). A flat stake floor hid longshots whose whole Kelly bet
+  // is small. Main lines and alts alike; books with no liquidity figure pass.
+  function liquidityCanWin(line, minLiquidityToWin) {
+    if (minLiquidityToWin == null || line.liquidity == null) return true;
+    return line.liquidity * winPerDollarStaked(line.price) >= minLiquidityToWin;
+  }
+
   // Lines worth listing: on the board, edge known and >= minEdge (a fraction),
   // period/bet type enabled, book allowed, game not started, and — when
   // maxLineAgeMs is set — changed by the book within that window (a 96-day-old
   // line at a "live" book is a dead feed, and its 36% "edge" is not bettable;
   // a line whose change time is unknowable is excluded too). Alt lines
-  // additionally pass altPassesGates. Thin liquidity hides nothing here: the
-  // panel caps each stake at the line's liquidity, and its Min suggested bet
-  // floor hides a capped bet too small to bother with. Sorted by edge.
+  // additionally pass altPassesGates. Every line passes liquidityCanWin.
+  // Sorted by edge.
   function selectEdges(state, options) {
     const opts = options || {};
     const minEdge = typeof opts.minEdge === "number" ? opts.minEdge : 0.01;
@@ -694,6 +708,7 @@
     const bookIds = opts.bookIds instanceof Set ? opts.bookIds : null;
     const now = typeof opts.now === "number" ? opts.now : Date.now();
     const maxLineAgeMs = positiveNumberOrNull(opts.maxLineAgeMs);
+    const minLiquidityToWin = positiveNumberOrNull(opts.minLiquidityToWin);
     const altOpts = {
       includeAlts: opts.includeAlts === true,
       altMaxDistance: positiveNumberOrNull(opts.altMaxDistance),
@@ -712,6 +727,7 @@
       if (line.betTypeId !== 1 && line.points == null) continue;
       // Not a valid American price: nothing downstream (cents, Kelly) can use it.
       if (Math.abs(line.price) < 100) continue;
+      if (!liquidityCanWin(line, minLiquidityToWin)) continue;
       if (maxLineAgeMs != null) {
         const changedMs = lineChangedMs(line);
         if (changedMs == null || now - changedMs > maxLineAgeMs) continue;
