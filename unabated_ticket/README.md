@@ -697,6 +697,7 @@ Two kinds of source feed the flags:
 | BetOnline | — (#115) | shows "no source configured" |
 | BFA (Betfastaction) | `bets_service/sources/bfa.py` (local service, the account's own Keycloak password login from `bet_logger/.env`; 2026-09-23) | every 300 s while the service runs |
 | Wagerzon (the C account) | `bets_service/sources/wagerzon.py` (local service, the site's form login from `bet_logger/.env`; 2026-09-23) | every 300 s while the service runs |
+| Polymarket US (the CFTC app) | `bets_service/sources/polymarket_us.py` (local service, the account's own API key from `bet_logger/.env`, Ed25519-signed; 2026-09-23) | every 60 s while the service runs |
 | ProphetX | — (#117) | shows "no source configured" |
 
 Start the service (next section), keep the panel open. Every 30 s while the
@@ -1004,7 +1005,8 @@ GETs; no order placement.
   the environment, then `unabated_ticket/bets_service/.env`, then the bots'
   `kalshi_draft/.env` in the main checkout, then `bet_logger/.env` there (the
   sheet scrapers' book logins: `BFA_USERNAME` / `BFA_PASSWORD`, `WAGERZONC_*`
-  else `WAGERZON_*`) — so with the
+  else `WAGERZON_*`, and the Polymarket US API key `POLYMARKET_US_KEY_ID` /
+  `POLYMARKET_US_SECRET_KEY` from polymarket.us/developer) — so with the
   bots and the sheet scrapers configured no new file is needed. `.env.example` lists every knob (port, retention window,
   Kalshi cadence, log level). Never commit `.env`.
 - **Endpoints** (loopback only, no auth): `GET /bets.json[?days=N]` →
@@ -1167,6 +1169,44 @@ GETs; no order placement.
   five innings (`F5`, Novig's rule). A postponed leg ("( NYM vs COL Has Been
   Postponed. NO Action )"), an unsupported sport and an unparsed selection fail
   closed per leg with the reason.
+- **Polymarket US source** (`sources/polymarket_us.py`, 2026-09-23; the CFTC
+  app at polymarket.us, not the international polymarket.com — Unabated lists
+  them as two books, so the venue key is `polymarket_us`): every 60 s two
+  signed GETs on `api.polymarket.us` — `/v1/portfolio/positions` (a slug →
+  position map, `netPositionDecimal` positive = YES held, negative = NO) and
+  `/v1/portfolio/activities` (newest first, paged until a page ends before the
+  31-day window AND the fills in hand add up to the size of every open
+  position and every settlement inside the window, so a bet placed weeks
+  before its game keeps its full entry price and its settlement still closes
+  the store's open row; a settlement older than the window adds nothing) —
+  with the account's own API key (`X-PM-Access-Key`,
+  `X-PM-Timestamp` in ms, `X-PM-Signature` = base64 Ed25519 over timestamp +
+  `GET` + the path **without** its query string; a signed query is refused
+  401). A record is one (market slug, contract side) of our own fills: each
+  trade carries both orders and ours is `aggressor` when `isAggressor`, else
+  `passive`; its `intent` (BUY_LONG / SELL_LONG = YES opened / reduced,
+  BUY_SHORT / SELL_SHORT = NO) decides the side and buy/sell, so a "buy NO"
+  booked against a held YES nets the YES; `price` is always the
+  YES price, so a NO fill costs `1 − price`. Price is the VWAP of our buys on
+  that side (fees excluded), the open size comes from the position, and a
+  `positionResolution` settles it (`side` LONG = YES won, SHORT = NO won,
+  NEUTRAL — a tie at $0.50 — is `unknown`); a side sold back to zero is
+  `closed`, and fills still holding contracts with neither a position nor a
+  settlement are `unknown` (a held bet is only ever read off the positions
+  endpoint); an open position with no fill
+  anywhere in the history is listed unmatchable and unpriced; busted and clearinghouse-rejected trades never count, and a trade
+  state the docs do not list fails the poll. The trade's own `market` object
+  gives the type — `sportsMarketType` `<sport>_(team|game)_<period>_<winner|spread|total>`
+  for football, basketball, baseball and hockey, periods FG / 1H / 2H / 1Q–4Q
+  / F5 — and each side's own number (`+2.50` / `-2.50`; the YES side can be
+  the favourite). The teams and start come from one cached public GET per game
+  (`gateway.polymarket.us/v1/events?slug=…&sportsMarketTypes=<the traded type>`,
+  ~10 KB; the unfiltered event is up to 4.7 MB), away first (checked against
+  Kalshi tickers and the sides' `ordering` field, which must agree or the
+  record fails closed), spelled `safeName` for CFB, CBB and the NHL ("Liberty",
+  "Ottawa Senators") and `name` elsewhere. Team totals, player props, soccer,
+  unsupported leagues and combos (`caoc-…` parlays, listed as one record with
+  their legs in `raw.comboLegs`) fail closed with the reason.
 - **Store** (`store.py`, `bets.duckdb`, gitignored): `bets` upserts on the
   record id and is never pruned (the CLV work needs the history), but only
   rows whose content actually CHANGED are written (#125): a source re-sends
@@ -1202,9 +1242,10 @@ GETs; no order placement.
   poll completes (Kalshi: ~1–2 min, one throttled GET per market and event)
   `/bets.json` lists it as `{ok: false, error: "no completed poll yet"}`.
   Log: `bets_service.log` (rotating, 10 MB × 3).
-- **Adding a venue** (#117 ProphetX; BetOnline, Novig, BFA and Wagerzon are
-  `sources/betonline.py` / `sources/novig.py` / `sources/bfa.py` /
-  `sources/wagerzon.py` above): a module in
+- **Adding a venue** (#117 ProphetX; BetOnline, Novig, BFA, Wagerzon and
+  Polymarket US are `sources/betonline.py` / `sources/novig.py` /
+  `sources/bfa.py` / `sources/wagerzon.py` / `sources/polymarket_us.py`
+  above): a module in
   `bets_service/sources/` with `name`, `poll_sec` and `fetch() -> list[record]`
   (the `Source` protocol in `sources/__init__.py`), registered in
   `service.main()`. `fetch()` returns every record the venue knows and raises
@@ -1559,6 +1600,24 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-09-23 — Polymarket US source in the bets service.** Cal's account is on
+Polymarket US (the CFTC app), not polymarket.com, so the public
+wallet-address data API that would have served the international site does
+not apply. Chosen over borrowing the app's session: the documented API key
+from polymarket.us/developer, which Cal created and keeps in
+`bet_logger/.env`; the service signs with it and nothing else sees it. No
+title parsing: the live pull showed every trade carries its full market
+object (type, line, both sides with their own signed number, team ids and
+away/home), so the type and side come from structured fields and only the
+team names and start come from a public event lookup, filtered to the traded
+market type because the whole event runs to 4.7 MB. Verified on the live
+pull of 2026-09-23 (1 open position, 26 trades, 5 settlements, one 3-leg
+combo): all seven records' stakes and results agree with the venue's own
+realized P&L. Combos fail closed as one record for now (plan decision), though
+their legs carry slug, side and state. **Unobserved:** a NEUTRAL settlement
+(served `unknown`), a busted trade, a CBB or NBA event (spelling rule
+assumed from CFB and WNBA). Poll 60 s and the 31-day window are constants.
 
 **2026-09-23 — Wagerzon (the C account) source in the bets service.** Second of
 the Bet Logger books Cal asked for. Same shape as BFA: a form login this

@@ -684,6 +684,37 @@ test("Novig: unmatched reasons — the source's own reason for props, unsupporte
   assert.equal(reasons["novig:o-ml-car"], undefined);
 });
 
+// ---- Polymarket US: records as bets_service/sources/polymarket_us.py emits them
+// (fixture polymarket_us_account.json grammar): the venue's own team spelling,
+// keys through teams.js, one record per (market, contract side) with the side
+// HELD already resolved (a NO on a total is the Under).
+
+function polymarketUsChiCar(overrides) {
+  return Object.assign({
+    id: "polymarket_us:tsc-nfl-chi-car-2026-09-13-total-47pt0:no", source: "polymarket_us_api", venue: "polymarket_us",
+    rotation: null, price: 120, stake: 45.5, toWin: 54.5, contracts: 100, placedAt: "2026-09-12T15:00:00Z", status: "open",
+    closedAt: null, isParlayLeg: false, parlayId: null, legIndex: null, legCount: null, approx: [], sourceFetchedAt: FETCHED_AT,
+    venueIds: { marketSlug: "tsc-nfl-chi-car-2026-09-13-total-47pt0", eventSlug: "nfl-chi-car-2026-09-13" },
+    league: "nfl", eventStart: "2026-09-13T17:00:00Z", eventDate: "2026-09-13",
+    awayTeam: "Chicago Bears", homeTeam: "Carolina Panthers", awayKey: null, homeKey: null,
+    betType: "total", period: "FG", side: "under", points: 47, unmatchable: null,
+  }, overrides);
+}
+
+test("Polymarket US: a NO on the total is same_line on the Under row by name, and the venue label reads Polymarket US", () => {
+  const rows = nflRows();
+  const [record] = bets.resolveTeamKeys([polymarketUsChiCar()]);
+  assert.ok(record.awayKey && record.homeKey, "both venue spellings resolve through teams.js");
+  const under = bets.matchBets(rows["Total FG 1 47"], [record]);
+  assert.equal(under.matches.length, 1);
+  assert.equal(under.matches[0].tier, "same_line");
+  assert.match(under.matches[0].label, / · Polymarket US$/);
+  assert.equal(bets.matchBets(rows["Total FG 0 47"], [record]).matches[0].tier, "opposite");
+  assert.equal(bets.venueLabel("polymarket_us"), "Polymarket US");
+  const moneyline = polymarketUsChiCar({ id: "polymarket_us:aec-nfl-chi-car-2026-09-13:no", betType: "moneyline", side: "home", points: null });
+  assert.equal(bets.matchBets(rows["Moneyline FG 1 null"], bets.resolveTeamKeys([moneyline])).matches[0].tier, "same_line");
+});
+
 // ---- BetOnline records (no game date; rotation + placed-time window) --------------
 
 // A record as bets_service/sources/betonline.py emits it (fixture

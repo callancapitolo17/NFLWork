@@ -4,7 +4,8 @@ Reads, in this order (the first place a key is found wins):
   1. process environment
   2. unabated_ticket/bets_service/.env            (gitignored)
   3. <main checkout>/kalshi_draft/.env             (the bots' shared credentials)
-  4. <main checkout>/bet_logger/.env               (the sheet scrapers' book logins: BFA, Wagerzon)
+  4. <main checkout>/bet_logger/.env               (the sheet scrapers' book logins: BFA, Wagerzon;
+                                                     the Polymarket US API key)
 Side effects: none — pure constants; auth_client.configure() happens in the
 Kalshi source.
 """
@@ -116,6 +117,15 @@ WAGERZON_USERNAME = _get("WAGERZONC_USERNAME") or _get("WAGERZON_USERNAME")
 WAGERZON_PASSWORD = _get("WAGERZONC_PASSWORD") or _get("WAGERZON_PASSWORD")
 WAGERZON_POLL_SEC = 300.0
 WAGERZON_HISTORY_WEEKS = 6
+
+# Polymarket US (2026-09-23): the CFTC app's own API key, created by Cal at
+# polymarket.us/developer and kept in bet_logger/.env (see sources/polymarket_us.py).
+# An exchange like Kalshi, so the same cadence; activities are read back one day past
+# the retention window, and further while an open or just-settled position's fills are older.
+POLYMARKET_US_KEY_ID = _get("POLYMARKET_US_KEY_ID")
+POLYMARKET_US_SECRET_KEY = _get("POLYMARKET_US_SECRET_KEY")
+POLYMARKET_US_POLL_SEC = 60.0
+POLYMARKET_US_HISTORY_DAYS = RETENTION_DAYS + 1
 
 # Logging
 LOG_PATH = Path(_get("BETS_SERVICE_LOG_PATH", str(PKG_DIR / "bets_service.log")))

@@ -4,7 +4,8 @@
 
 Inputs:  each registered Source (sources/kalshi.py; sources/betonline.py when
          its cookie file exists; sources/novig.py when its token file exists;
-         sources/bfa.py and sources/wagerzon.py when their logins are configured)
+         sources/bfa.py and sources/wagerzon.py when their logins are configured;
+         sources/polymarket_us.py when its API key is configured)
          on its own poll_sec.
 Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
            GET /bets.json[?days=N]  {generatedAt, sources: {name: {fetchedAt, ok,
@@ -46,6 +47,7 @@ from unabated_ticket.bets_service.sources.betonline import source_if_configured 
 from unabated_ticket.bets_service.sources.bfa import source_if_configured as bfa_source_if_configured
 from unabated_ticket.bets_service.sources.kalshi import KalshiSource
 from unabated_ticket.bets_service.sources.novig import source_if_connected as novig_source_if_connected
+from unabated_ticket.bets_service.sources.polymarket_us import source_if_configured as polymarket_us_source_if_configured
 from unabated_ticket.bets_service.sources.wagerzon import source_if_configured as wagerzon_source_if_configured
 from unabated_ticket.bets_service.store import BetsStore
 
@@ -324,7 +326,7 @@ def main() -> None:
     store = BetsStore(config.DB_PATH, config.SOURCE_RUNS_RETENTION_DAYS)
     sources: list[Source] = [KalshiSource()]
     for optional in (betonline_source_if_configured(), novig_source_if_connected(), bfa_source_if_configured(),
-                     wagerzon_source_if_configured()):
+                     wagerzon_source_if_configured(), polymarket_us_source_if_configured()):
         if optional is not None:
             sources.append(optional)
     serve(sources, store, config.BIND_HOST, config.PORT)
