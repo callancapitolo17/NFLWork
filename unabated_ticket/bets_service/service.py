@@ -24,7 +24,8 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
            POST /pins.json          body {pin: {betId, venue, league, eventId, eventStart?,
                                     awayTeamId?, homeTeamId?, awayTeamName?, homeTeamName?},
                                     crosswalk: [at most 2 rows, the crosswalk shape]}
-                                    -> {ok, pins, crosswalk}; 404 when no bet has that id
+                                    -> {ok, pins, crosswalk}; 404 when no bet has that id,
+                                    400 when the pin's venue is not the bet's
                                     (Cal's manual attach: the pin plus the team names it
                                     teaches, which REPLACE a held key)
            DELETE /pins.json?betId= -> {ok, removedPin, removedRows, pins, crosswalk}
@@ -168,6 +169,14 @@ def _id_as_string(value: object) -> object:
     return value
 
 
+def _is_iso_timestamp(value: str) -> bool:
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
 def validate_pin_request(body: object) -> tuple[dict, list[dict]] | str:
     """(pin, crosswalk rows) of a POST /pins.json body, or an error message.
     Every crosswalk row must be the pin's own venue and league: an attach
@@ -191,6 +200,8 @@ def validate_pin_request(body: object) -> tuple[dict, list[dict]] | str:
         if value is not None and not isinstance(value, str):
             return f"pin.{field} must be a string or null"
         pin[field] = value
+    if pin["eventStart"] is not None and not _is_iso_timestamp(pin["eventStart"]):
+        return f"pin.eventStart must be an ISO timestamp or null, got {pin['eventStart']!r}"
     raw_rows = body.get("crosswalk", [])
     if not isinstance(raw_rows, list):
         return "crosswalk must be an array"
@@ -302,8 +313,13 @@ def make_handler(store: BetsStore, started_at: float,
                 self._send_json(400, {"error": request})
                 return
             pin, rows = request
-            if not store.has_bet(pin["betId"]):
+            venue = store.bet_venue(pin["betId"])
+            if venue is None:
                 self._send_json(404, {"error": f"no bet with id {pin['betId']!r}"})
+                return
+            # The rows carry the pin's venue, so the pin must carry the bet's.
+            if venue != pin["venue"]:
+                self._send_json(400, {"error": f"bet {pin['betId']!r} is {venue}, the pin says {pin['venue']}"})
                 return
             store.pin_bet(pin, rows, _now())
             self._send_json(200, {"ok": True, "pins": store.load_pins(), "crosswalk": store.load_crosswalk()})

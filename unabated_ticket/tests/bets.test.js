@@ -1223,3 +1223,30 @@ test("start time differs: the same pair on the board within 12 h at another star
   const nextDay = idRow({ ...ACU_AT_TARLETON, eventStart: "2026-09-27T20:00:00Z" });
   assert.equal(bets.unmatchedReasons([sevenPm], [nextDay], BEFORE_KICKOFF)[0].reason, "no event on the board yet");
 });
+
+test("needsGame: a name not recognised on a game not posted yet stays grey until its league has a game around its date", () => {
+  const twoWeeksOut = openBet({ id: "nv:2", venue: "novig", awayTeam: "Abilene Chr", homeTeam: "Tarleton St",
+    eventStart: "2026-10-10T00:00:00Z" });
+  const [grey] = bets.unmatchedReasons([twoWeeksOut], [ACU_AT_TARLETON], BEFORE_KICKOFF);
+  assert.deepEqual([grey.reason, grey.attachable, grey.needsGame], ["team not recognised (Abilene Chr)", true, false]);
+  const posted = idRow({ ...ACU_AT_TARLETON, eventId: 7010, eventStart: "2026-10-10T00:00:00Z" });
+  assert.equal(bets.unmatchedReasons([twoWeeksOut], [ACU_AT_TARLETON, posted], BEFORE_KICKOFF)[0].needsGame, true);
+});
+
+test("start time differs: a doubleheader's game 1 in progress is not the game-2 bet's game", () => {
+  const gameTwo = openBet({ id: "wz:2", venue: "wagerzon", awayTeam: "Abilene Christian", homeTeam: "Tarleton State",
+    eventStart: "2026-09-27T04:00:00Z" });
+  const gameOneInProgress = Date.parse("2026-09-27T00:30:00Z");
+  const [miss] = bets.unmatchedReasons([gameTwo], [ACU_AT_TARLETON], gameOneInProgress);
+  assert.deepEqual([miss.reason, miss.needsGame], ["no event on the board yet", false]);
+  // Before game 1 starts the disagreement is still reported.
+  assert.equal(bets.unmatchedReasons([gameTwo], [ACU_AT_TARLETON], BEFORE_KICKOFF)[0].reason,
+    "start time differs (bet Sep 27 12:00 AM, board Sep 26 8:00 PM)");
+});
+
+test("betDateWindow: a day either side of the start or date; the placed window when the bet has neither", () => {
+  assert.deepEqual(bets.betDateWindow({ eventStart: "2026-09-27T00:00:00Z" }), { fromDate: "2026-09-25", toDate: "2026-09-27" });
+  assert.deepEqual(bets.betDateWindow({ eventDate: "2026-09-26" }), { fromDate: "2026-09-25", toDate: "2026-09-27" });
+  assert.deepEqual(bets.betDateWindow({ placedAt: "2026-09-23T20:00:00Z" }), { fromDate: "2026-09-23", toDate: "2026-10-07" });
+  assert.equal(bets.betDateWindow({}), null);
+});

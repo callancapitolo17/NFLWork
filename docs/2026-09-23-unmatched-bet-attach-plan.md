@@ -18,11 +18,12 @@ An open bet the panel cannot match to a game is left out when the panel sizes th
 
 ## 3. What turns the tab red
 
-An open, unmatched bet **needs a game** when all three hold:
+An open, unmatched bet **needs a game** when all four hold:
 
 1. It is a game bet: not `unmatchable` (futures, props, unreadable Kalshi markets) and its league is on the scanner.
 2. Its game has not started by what the bet knows: `eventStart` in the future, or `eventDate` today or later (Eastern), or no date at all.
-3. The miss is fixable: `team not recognised`, `ambiguous game`, or **start time differs** — the same team pair is on the board within 12 h of the bet's start at another time (a new diagnosis: today it reads "no event on the board yet").
+3. The miss is fixable: `team not recognised`, `ambiguous game`, or **start time differs** — the same team pair is on the board, not started yet, within 12 h of the bet's start at another time (a new diagnosis: today it reads "no event on the board yet"). A started game is left out so a doubleheader's game 1 in progress never claims a game-2 bet.
+4. The board lists at least one game of its league in the bet's date window (a day either side), so there is something to attach it to. Added after review: without it a bet on a game two weeks out kept the tab red with nothing in the picker.
 
 Everything else unmatched is **not on the board**: futures and props, leagues the scanner does not cover, games not posted yet, games already over and awaiting settlement. Those are listed, folded, and never flag. 12 h is below the gap between two games of one MLB series (16 h or more) and above any doubleheader gap.
 

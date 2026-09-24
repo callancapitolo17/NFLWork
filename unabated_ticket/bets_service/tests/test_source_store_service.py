@@ -526,6 +526,9 @@ def test_validate_pin_request_names_the_first_problem():
     assert service.validate_pin_request({"pin": pin_for("b", eventId=True)}) == "pin.eventId must be a non-empty string"
     assert service.validate_pin_request({"pin": pin_for("b", homeTeamId=1.5)}) == "pin.homeTeamId must be a non-empty string, a number or null"
     assert service.validate_pin_request({"pin": pin_for("b", eventStart=5)}) == "pin.eventStart must be a string or null"
+    assert service.validate_pin_request({"pin": pin_for("b", eventStart="Sat 8pm")}) == \
+        "pin.eventStart must be an ISO timestamp or null, got 'Sat 8pm'"
+    assert service.validate_pin_request({"pin": pin_for("b", eventStart=None)})[0]["eventStart"] is None
     assert service.validate_pin_request({"pin": pin_for("b"), "crosswalk": {}}) == "crosswalk must be an array"
     assert service.validate_pin_request({"pin": pin_for("b"), "crosswalk": [good_row] * 3}) == "at most 2 crosswalk rows per pin, got 3"
     assert service.validate_pin_request({"pin": pin_for("b"), "crosswalk": [{**good_row, "venueTeamKey": ""}]}) == \
@@ -639,6 +642,10 @@ def test_http_pins_post_attaches_a_known_bet_and_delete_undoes_it(store, http_se
     assert [pin["betId"] for pin in reply["pins"]] == ["kalshi:a:yes"]
     assert [(row["venueTeamKey"], row["pinnedBetId"]) for row in reply["crosswalk"]] == [("PIT Steelers", "kalshi:a:yes")]
     assert get_json(f"{http_server}/bets.json")[1]["pins"] == reply["pins"]
+    # The bet is Kalshi's, so a pin (and its rows) under another venue is refused.
+    wrong_venue = json.dumps({"pin": pin_for("kalshi:a:yes", venue="bfa"), "crosswalk": []}).encode()
+    status, reply = request_json("POST", f"{http_server}/pins.json", wrong_venue, "application/json")
+    assert status == 400 and reply["error"] == "bet 'kalshi:a:yes' is kalshi, the pin says bfa"
     status, reply = request_json("POST", f"{http_server}/pins.json", b'{"pin": {}}', "application/json")
     assert status == 400 and reply["error"] == "pin.betId must be a non-empty string"
     status, reply = request_json("POST", f"{http_server}/pins.json", body, "text/plain")

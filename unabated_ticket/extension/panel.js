@@ -98,7 +98,7 @@
     betsHeader: el("bets-header"), betsBanner: el("bets-banner"),
     tabBets: el("tab-bets"), betsService: el("bets-service"), betsSources: el("bets-sources"),
     betsUrl: el("bets-url"), betsSettingsError: el("bets-settings-error"),
-    betsOpen: el("bets-open"), betsOpenCount: el("bets-open-count"), betsOpenEmpty: el("bets-open-empty"),
+    betsOpen: el("bets-open"), betsOpenCount: el("bets-open-count"), betsOpenEmpty: el("bets-open-empty"), betsMatchNote: el("bets-match-note"),
     betsNeedsBanner: el("bets-needs-banner"), betsNeedsBlock: el("bets-needs-block"), betsNeeds: el("bets-needs"), betsNeedsCount: el("bets-needs-count"),
     betsOffboard: el("bets-offboard"), betsOffboardList: el("bets-offboard-list"), betsOffboardCount: el("bets-offboard-count"),
     betsCrosswalk: el("bets-crosswalk"), betsCrosswalkCount: el("bets-crosswalk-count"), betsCrosswalkEmpty: el("bets-crosswalk-empty"),
@@ -2102,16 +2102,11 @@
     }
   }
 
-  // Step 1: the games to pick from, a search box, best fit first.
-  function attachPickStep(bet, panel) {
+  // Step 1's scope line and game list for the current query, into their two
+  // holders. Typing redraws only these, never the whole tab.
+  function fillCandidates(bet, scopeHolder, listHolder) {
     const { scope, events, more } = attachLib.attachCandidates(bet, boardLines(), { query: attachState.query });
-    const head = makeEl("div", "attach-head", "Which game?");
-    head.append(makeEl("span", "scope", scope));
-    const search = makeEl("input", "attach-search");
-    search.type = "search";
-    search.placeholder = "Search a team";
-    search.value = attachState.query;
-    search.addEventListener("input", () => updateAttach({ query: search.value }));
+    scopeHolder.textContent = scope;
     const list = makeEl("ol", "candidates");
     for (const { event, why } of events) {
       const item = makeEl("li", why ? "candidate best" : "candidate");
@@ -2125,10 +2120,29 @@
       });
       list.append(item);
     }
-    panel.append(head, search, list);
-    if (!events.length) panel.append(makeEl("div", "muted", "No game on the board fits. Search a team by name."));
-    if (more) panel.append(makeEl("div", "muted", `${more} more: type to narrow the list.`));
-    panel.append(makeEl("div", "muted", "Not listed? The game may not be on the board yet. The bet stays flagged until you attach it."));
+    const notes = [];
+    if (!events.length) notes.push(makeEl("div", "muted", "No game on the board fits. Search a team by name."));
+    if (more) notes.push(makeEl("div", "muted", `${more} more: type to narrow the list.`));
+    listHolder.replaceChildren(list, ...notes);
+  }
+
+  // Step 1: the games to pick from, a search box, best fit first.
+  function attachPickStep(bet, panel) {
+    const head = makeEl("div", "attach-head", "Which game?");
+    const scopeHolder = makeEl("span", "scope");
+    head.append(scopeHolder);
+    const search = makeEl("input", "attach-search");
+    search.type = "search";
+    search.placeholder = "Search a team";
+    search.value = attachState.query;
+    const listHolder = makeEl("div", "candidates-holder");
+    search.addEventListener("input", () => {
+      attachState.query = search.value;
+      fillCandidates(bet, scopeHolder, listHolder);
+    });
+    fillCandidates(bet, scopeHolder, listHolder);
+    panel.append(head, search, listHolder,
+      makeEl("div", "muted", "Not listed? The game may not be on the board yet. The bet stays flagged until you attach it."));
   }
 
   // Step 2: the picked game, what the venue's names mean on it, the bet restated.
@@ -2214,8 +2228,13 @@
     const reasonRow = makeEl("div", quiet ? "reason-row quiet" : "reason-row");
     reasonRow.append(makeEl("span", "bet-reason", reason));
     const panelOpen = attachState != null && attachState.betId === bet.id;
-    if (attachable) {
-      reasonRow.append(panelOpen ? makeButton("attach-btn open", "Cancel", closeAttach) : makeButton("attach-btn", "Attach", () => openAttach(bet.id)));
+    if (attachable && panelOpen) {
+      // Not while the attach is being saved: its reply, or its error, lands in this panel.
+      const cancel = makeButton("attach-btn open", "Cancel", closeAttach);
+      cancel.disabled = attachState.busy;
+      reasonRow.append(cancel);
+    } else if (attachable) {
+      reasonRow.append(makeButton("attach-btn", "Attach", () => openAttach(bet.id)));
     }
     li.append(reasonRow);
     if (attachable && panelOpen) li.append(attachPanel(bet));
@@ -2260,6 +2279,13 @@
     view.betsOpen.replaceChildren(...open.map((bet) => betItem(bet, { unmatched: unmatchedIds.has(bet.id) })));
     view.betsOpenEmpty.hidden = open.length > 0;
     view.betsOpenEmpty.textContent = state.betsService && state.betsService.okAt != null ? "No open bets." : "No bets loaded yet.";
+    // Say so when nothing is wrong, so "all matched" never looks like "not checked".
+    const matchable = open.filter((bet) => !bet.unmatchable).length;
+    const unmatchedGameBets = unmatched.filter((entry) => !entry.bet.unmatchable).length;
+    view.betsMatchNote.hidden = matchable === 0;
+    view.betsMatchNote.textContent = boardLines().length === 0 ? "Waiting for the board to load before checking which game each bet is on."
+      : unmatchedGameBets === 0 ? "Every open game bet matches a game on the board."
+        : `${matchable - unmatchedGameBets} of ${matchable} open game bets match a game on the board.`;
 
     view.betsOffboard.hidden = offBoard.length === 0;
     view.betsOffboardCount.textContent = offBoard.length ? String(offBoard.length) : "";

@@ -37,19 +37,11 @@
   const MAX_CANDIDATES = 25;
   // A one-letter query matches half the board.
   const MIN_QUERY_LENGTH = 2;
-  // Step 1 lists games whose Eastern date is within this many days of the bet's.
-  const WINDOW_DAYS = 1;
-  const DAY_MS = 24 * 3600 * 1000;
   const STATUS_KNOWN = "known";
   const STATUS_LEARN = "learn";
   const STATUS_FIX = "fix";
 
   // ---- dates --------------------------------------------------------------
-
-  function shiftDate(dateString, days) {
-    const [year, month, day] = dateString.split("-").map(Number);
-    return new Date(Date.UTC(year, month - 1, day) + days * DAY_MS).toISOString().slice(0, 10);
-  }
 
   // "Fri Sep 25" for a "YYYY-MM-DD" calendar date (read at UTC noon, so no
   // zone can move it to another day).
@@ -59,27 +51,6 @@
     const parts = {};
     for (const part of formatter.formatToParts(new Date(Date.UTC(year, month - 1, day, 12)))) parts[part.type] = part.value;
     return `${parts.weekday} ${parts.month} ${parts.day}`;
-  }
-
-  // The Eastern dates step 1 lists, {fromDate, toDate}, or null when the bet
-  // carries no date at all.
-  function candidateWindow(bet) {
-    const startMs = bet.eventStart ? Date.parse(bet.eventStart) : NaN;
-    if (Number.isFinite(startMs)) {
-      const date = bets.easternDateOf(startMs);
-      return { fromDate: shiftDate(date, -WINDOW_DAYS), toDate: shiftDate(date, WINDOW_DAYS) };
-    }
-    if (typeof bet.eventDate === "string" && bet.eventDate) {
-      return { fromDate: shiftDate(bet.eventDate, -WINDOW_DAYS), toDate: shiftDate(bet.eventDate, WINDOW_DAYS) };
-    }
-    const placedMs = bet.placedAt ? Date.parse(bet.placedAt) : NaN;
-    if (Number.isFinite(placedMs)) {
-      return {
-        fromDate: bets.easternDateOf(placedMs - bets.PLACED_WINDOW_BEFORE_MS),
-        toDate: bets.easternDateOf(placedMs + bets.PLACED_WINDOW_AFTER_MS),
-      };
-    }
-    return null;
   }
 
   // ---- board games --------------------------------------------------------
@@ -150,7 +121,8 @@
     const searching = query.length >= MIN_QUERY_LENGTH;
     const games = boardGames(lines, bet.league ?? null);
     const leagueText = bet.league ? String(bet.league).toUpperCase() : "Every league";
-    const window = searching ? null : candidateWindow(bet);
+    // The same dates the red flag checks for a game (bets.betDateWindow).
+    const window = searching ? null : bets.betDateWindow(bet);
     const listed = searching ? games.filter((game) => nameContains(game, query))
       : window ? games.filter((game) => inWindow(game, window)) : games;
     const scope = window ? `${leagueText} · ${dateLabel(window.fromDate)} to ${dateLabel(window.toDate)}` : `${leagueText} · every date`;

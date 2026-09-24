@@ -393,10 +393,12 @@ class BetsStore:
         log.info("crosswalk: cleared %d row(s)", count)
         return count
 
-    def has_bet(self, bet_id: str) -> bool:
-        """Whether `bets` holds a record with this id (a pin must name a real bet)."""
+    def bet_venue(self, bet_id: str) -> str | None:
+        """The venue of the stored bet with this id, or None when `bets` holds
+        no such record (a pin must name a real bet, of its own venue)."""
         with self._lock:
-            return self._con.execute("SELECT count(*) FROM bets WHERE id = ?", [bet_id]).fetchone()[0] > 0
+            row = self._con.execute("SELECT venue FROM bets WHERE id = ?", [bet_id]).fetchone()
+        return row[0] if row else None
 
     def pin_bet(self, pin: dict, crosswalk_rows: list[dict], pinned_at: datetime) -> None:
         """Cal's manual attach, in one transaction: UPSERT the pin (validated

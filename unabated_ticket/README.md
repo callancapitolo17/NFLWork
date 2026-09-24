@@ -789,11 +789,15 @@ it is flagged, attached by hand and learned from:
   the board; a bet with no league counts when any league is) and
   `needsGame`: attachable, its game not started by what the bet knows
   (`eventStart` in the future, else an `eventDate` today or later in
-  Eastern time, else no date at all), and a miss an attach fixes —
+  Eastern time, else no date at all), the board listing at least one game
+  of its league in its date window (`bets.betDateWindow`, the same dates
+  the picker lists — so a bet on a game two weeks out stays grey until
+  there is something to attach it to), and a miss an attach fixes —
   `team not recognised`, `ambiguous game`, or **start time differs** (the
-  same team pair on the board within 12 h of the bet's start at another
-  time; 12 h is under the gap between two games of one MLB series and over
-  any doubleheader gap). Bets needing a game turn the Bets tab label red
+  same team pair on the board, not started yet, within 12 h of the bet's
+  start at another time; 12 h is under the gap between two games of one
+  MLB series, and a doubleheader's game 1 in progress is left out so a
+  game-2 bet is never pointed at it). Bets needing a game turn the Bets tab label red
   with a red count, add "N not matched to a game" to the header line, and
   put a red banner at the top of the Bets tab. Futures and props, leagues
   off the scanner, games not posted yet and games over but not yet settled
@@ -926,7 +930,9 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   "unreachable since …" in red with the last records still listed), the
   open bets (venue, bet, stake, placed — each with a green left edge when
   the board matched it, red when it did not, so a problem bet is visible in
-  the open list too; an attached bet reads **attached** with **Undo**).
+  the open list too; an attached bet reads **attached** with **Undo**; a
+  line under the list says how many open game bets match, or "Every open
+  game bet matches a game on the board").
   Unmatched open bets are listed with why in two places (above): **Needs a
   game**, right under the money with an **Attach** button on each row, and
   the folded **Not on the board** under the open list (Attach there too when
@@ -1069,7 +1075,8 @@ GETs; no order placement.
   /pins.json` with `{pin: {betId, venue, league, eventId, eventStart?,
   awayTeamId?, homeTeamId?, awayTeamName?, homeTeamName?}, crosswalk: [at
   most 2 rows of the pin's own venue and league]}` → `{ok, pins, crosswalk}`
-  (404 when no stored bet has that id) saves the bet → board event pin and
+  (404 when no stored bet has that id, 400 when the pin's venue is not the
+  stored bet's or `eventStart` is not an ISO timestamp) saves the bet → board event pin and
   the team names the attach teaches, in one transaction; those rows REPLACE a
   held key (Cal is the authority) and carry `pinned_bet_id`, and a re-attach
   first drops the rows the earlier attach taught. `DELETE
