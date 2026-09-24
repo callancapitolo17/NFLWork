@@ -1,6 +1,6 @@
 # Unmatched open bets: flag, attach, learn — design
 
-2026-09-23. Status: approved by Cal (visual mockup approved the same day), building on `feature/unmatched-bet-attach`.
+2026-09-23. Status: approved by Cal (visual mockup approved the same day); built on `claude/reverent-shaw-f3ac7a`, awaiting Cal's merge.
 Replaces the "board history + settled-bet CLV" draft (d358ba1): Cal decided the point is catching open bets that match no game, not CLV. Settled bets, a board recorder and closes are out of scope.
 
 ## 1. Goal
@@ -58,7 +58,7 @@ Rules: a manual row overwrites a held automatic one for the same key (Cal is the
 ### 5.4 Panel
 
 - Bets tab label turns red with a red count of bets needing a game; the header line says "N not matched to a game".
-- Bets tab: a red banner, a "Needs a game" section above Open (hidden when empty) with Attach on each row, and a folded "Not on the board" list below Open. Unmatched open rows keep their red edge; pinned rows carry an `attached` tag and Undo.
+- Bets tab: a red banner, a "Needs a game" section right under the money (hidden when empty) with Attach on each row, and a folded "Not on the board" list below Open (Attach there too for game bets). Unmatched open rows keep their red edge; pinned rows carry an `attached` tag and Undo.
 - The attach panel opens under its row (the two steps of section 4) and survives the 30 s poll re-render, search focus included.
 - Crosswalk rows taught by an attach read "attached by you".
 
@@ -68,7 +68,7 @@ Settled bets, a board recorder, CLV (decided 2026-09-23). A pin on a settled bet
 
 ## 7. Version control, tests, documentation
 
-- Branch `feature/unmatched-bet-attach`, worktree `.claude/worktrees/board-history-clv`.
+- Branch `claude/reverent-shaw-f3ac7a`, worktree `.claude/worktrees/reverent-shaw-f3ac7a`. The first three commits were made on `feature/unmatched-bet-attach` (worktree `.claude/worktrees/board-history-clv`) and fast-forwarded here; that branch and worktree are stale and go at merge time.
 - Commits: (1) this document; (2) service pins, routes, pytest; (3) matcher pin join, flag rule, `attach.js`, node tests; (4) panel UI and CSS, docs.
 - Docs in the same commits: `unabated_ticket/README.md` (service routes; Bets tab), root `CLAUDE.md` Unabated Ticket bullet.
 - `./unabated_ticket/check.sh` green before any diff is shown. Pre-merge review per `CLAUDE.md`; Cal merges. After merging, Cal restarts the bets service and reloads the extension.

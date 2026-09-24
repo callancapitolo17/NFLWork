@@ -135,3 +135,10 @@ test("pinRequest: the pin names the event, its start and both teams as strings; 
     crosswalk: plan.crosswalk,
   });
 });
+
+test("labels: the game, then its Eastern start and rotations", () => {
+  const [game] = attach.boardGames(BOARD, "cfb");
+  assert.equal(attach.gameLabel(game), "Abilene Christian @ Tarleton State");
+  assert.equal(attach.gameMeta(game), "Sat Sep 26 8:00 PM ET · rot 371 / 372");
+  assert.equal(attach.gameMeta({ eventStartMs: null, awayRotation: null, homeRotation: 2 }), "start unknown");
+});

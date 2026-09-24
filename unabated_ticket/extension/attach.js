@@ -21,6 +21,7 @@
 //          known / learn / fix, the crosswalk rows the attach writes, and the
 //          bet restated on the game.
 //   pinRequest(bet, event, plan) -> the POST /pins.json body.
+//   gameLabel(event) / gameMeta(event) -> "Away @ Home" / "Sat Sep 26 8:00 PM ET · rot 371 / 372".
 // Nothing here writes anywhere; the panel POSTs pinRequest to the bets
 // service, which stores the pin and the rows (bets.duckdb::bet_pins,
 // team_crosswalk).
@@ -231,6 +232,29 @@
     return { names, crosswalk, betOnGame: betOnGame(bet, event, swapped) };
   }
 
+  // ---- labels -------------------------------------------------------------
+
+  function gameLabel(event) {
+    return `${event.awayTeam || "away team"} @ ${event.homeTeam || "home team"}`;
+  }
+
+  // "Sat Sep 26 8:00 PM ET"
+  function gameStartLabel(ms) {
+    if (typeof ms !== "number" || !Number.isFinite(ms)) return "start unknown";
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
+    });
+    const parts = {};
+    for (const part of formatter.formatToParts(new Date(ms))) parts[part.type] = part.value;
+    return `${parts.weekday} ${parts.month} ${parts.day} ${parts.hour}:${parts.minute} ${parts.dayPeriod} ET`;
+  }
+
+  // "Sat Sep 26 8:00 PM ET · rot 371 / 372": what tells two games of one pair apart.
+  function gameMeta(event) {
+    const rotations = event.awayRotation != null && event.homeRotation != null ? `rot ${event.awayRotation} / ${event.homeRotation}` : null;
+    return [gameStartLabel(event.eventStartMs), rotations].filter(Boolean).join(" · ");
+  }
+
   // The POST /pins.json body for an attach.
   function pinRequest(bet, event, plan) {
     return {
@@ -247,7 +271,7 @@
 
   const api = {
     MAX_CANDIDATES, MIN_QUERY_LENGTH, STATUS_KNOWN, STATUS_LEARN, STATUS_FIX,
-    attachCandidates, attachPlan, pinRequest, boardGames,
+    attachCandidates, attachPlan, pinRequest, boardGames, gameLabel, gameMeta,
   };
 
   if (isNode) {

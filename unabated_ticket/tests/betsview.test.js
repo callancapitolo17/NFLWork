@@ -106,6 +106,8 @@ test("headerLine: open count, then every venue with its age or a dash", () => {
   const payload = payloadWith({ kalshi: { fetchedAt: iso(20e3), ok: true, error: null, count: 4 } });
   assert.equal(view.headerLine(records, payload, NOW), "bets: 2 open · kalshi 20 s · betonline — · novig — · prophetx — · bfa — · wagerzon —");
   assert.equal(view.headerLine([], null, NOW), "bets: 0 open · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon —");
+  assert.equal(view.headerLine([], null, NOW, 2), "bets: 0 open · 2 not matched to a game · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon —");
+  assert.equal(view.headerLine([], null, NOW, 0), view.headerLine([], null, NOW));
 });
 
 test("bannerLines: at most five, strongest first as given, and the count of the rest", () => {
@@ -424,15 +426,38 @@ test("mergeServicePayload: the payload's team crosswalk keys a record before its
   assert.equal(plain.awayKey, null);
 });
 
+test("mergeServicePayload: the payload's pins attach their bets, and a pin can give a leagueless bet its league", () => {
+  const payload = {
+    generatedAt: iso(0), sources: {},
+    bets: [record("kalshi:x:yes", "open", { league: null, awayTeam: "Chatt (venue spelling)", awayKey: null, homeKey: null })],
+    pins: [{ betId: "kalshi:x:yes", league: "cfb", eventId: "900001" }],
+  };
+  const [x] = view.mergeServicePayload([], payload, NOW);
+  assert.deepEqual(x.pin, payload.pins[0]);
+  assert.equal(x.league, "cfb");
+  // The league came before the keys, so the other team's name keyed in it.
+  assert.equal(x.homeKey, key("cfb", "Eastern Kentucky"));
+  assert.deepEqual(view.pinsOf(payload), payload.pins);
+  assert.deepEqual(view.pinsOf({ bets: [] }), []);
+});
+
+test("needsGameBanner: singular, plural, and nothing when no bet needs a game", () => {
+  assert.equal(view.needsGameBanner(1), "1 open bet is not matched to a game. It is left out when the panel sizes your next bet on that game. Attach it below.");
+  assert.equal(view.needsGameBanner(2), "2 open bets are not matched to a game. They are left out when the panel sizes your next bet on that game. Attach them below.");
+  assert.equal(view.needsGameBanner(0), "");
+});
+
 test("crosswalkRows: one Bets-tab line per served row — venue spelling, Unabated name, venue, league, when", () => {
   const rows = view.crosswalkRows([
     { venue: "novig", league: "cfb", venueTeamKey: "nv-1", venueTeamName: "Wazzu", unabatedTeamId: "717", unabatedTeamName: "Washington State", learnedFrom: "novig:o on board event 1", learnedAt: "2026-09-15T19:00:00Z" },
     { venue: "kalshi", league: "nfl", venueTeamKey: "PIT Steelers", venueTeamName: null, unabatedTeamId: "3", unabatedTeamName: null, learnedFrom: null, learnedAt: null },
+    { venue: "bfa", league: "cfb", venueTeamKey: "Abilene Chr", venueTeamName: "Abilene Chr", unabatedTeamId: "1123", unabatedTeamName: "Abilene Christian", learnedFrom: "attached by you: bfa:1 on board event 7001", learnedAt: "2026-09-23T19:20:00Z", pinnedBetId: "bfa:1" },
     null, "junk",
   ]);
   assert.deepEqual(rows, [
     { what: "Wazzu → Washington State", meta: "Novig · CFB · learned Sep 15 3:00 PM", title: "from novig:o on board event 1" },
     { what: "PIT Steelers → team 3", meta: "Kalshi · NFL", title: "" },
+    { what: "Abilene Chr → Abilene Christian", meta: "BFA · CFB · attached by you Sep 23 3:20 PM", title: "from attached by you: bfa:1 on board event 7001" },
   ]);
   assert.deepEqual(view.crosswalkRows(undefined), []);
 });

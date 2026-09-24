@@ -17,7 +17,7 @@
     <nav class="tabs" id="tabs">
       <button type="button" data-tab="edges">Edges <span id="edges-count" class="count" hidden></span></button>
       <button type="button" data-tab="ticket" class="active">Ticket</button>
-      <button type="button" data-tab="bets">Bets <span id="bets-count" class="count" hidden></span></button>
+      <button type="button" data-tab="bets" id="bets-tab-button">Bets <span id="bets-count" class="count" hidden></span><span id="bets-alert" class="count alert" hidden></span></button>
       <button type="button" id="settings-toggle" class="gear" title="Bankroll and Kelly multiplier">&#9881;</button>
     </nav>
 
@@ -166,10 +166,17 @@
 
   <section id="tab-bets" class="tabpane" hidden>
     <div id="bets-service" class="warning bad" hidden></div>
+    <!-- Open bets that match no game and need one (bets.unmatchedReasons needsGame). -->
+    <div id="bets-needs-banner" class="warning bad banner-tight" hidden></div>
 
     <div class="bets-summary">
       <span class="risk" id="bets-risk"></span>
       <span class="cap" id="bets-risk-caption"></span>
+    </div>
+    <div id="bets-needs-block" class="needs-block" hidden>
+      <h2 class="section-label needs">Needs a game <span id="bets-needs-count" class="num"></span></h2>
+      <div class="muted pane-note">Attach each bet to its game. The venue's team names are learned, so the next bet like it matches on its own.</div>
+      <ol id="bets-needs" class="bets-list"></ol>
     </div>
     <div class="venues" id="bets-sources"></div>
     <div class="settings service-url">
@@ -181,14 +188,14 @@
     <ol id="bets-open" class="bets-list"></ol>
     <div id="bets-open-empty" class="muted pane-note" hidden></div>
 
-    <h2 class="section-label">Unmatched <span id="bets-unmatched-count" class="num"></span></h2>
-    <div class="muted pane-note">No line on the board matches these. Nothing is dropped silently.</div>
-    <ol id="bets-unmatched" class="bets-list"></ol>
-    <div id="bets-unmatched-empty" class="muted pane-note" hidden></div>
+    <details id="bets-offboard" class="offboard" hidden>
+      <summary><span class="section-label inline">Not on the board <span id="bets-offboard-count" class="num"></span></span> <span class="muted">futures, props, leagues the scanner does not cover, games not posted yet or already over</span></summary>
+      <ol id="bets-offboard-list" class="bets-list"></ol>
+    </details>
 
     <h2 class="section-label crosswalk-label">Team crosswalk <span id="bets-crosswalk-count" class="num"></span>
       <button id="bets-crosswalk-clear" type="button" class="small" title="Click twice: delete every learned row from the bets service; bets go back to name matching until the board teaches them again">Clear</button></h2>
-    <div class="muted pane-note">What each venue calls a team, learned whenever a bet joins the board by its Kalshi or Novig id. Applied before name matching, so a later bet on that team matches even where the venue lists no ladder.</div>
+    <div class="muted pane-note">What each venue calls a team, learned whenever a bet joins the board by its Kalshi or Novig id, or when you attach a bet by hand. Applied before name matching, so a later bet on that team matches even where the venue lists no ladder.</div>
     <ol id="bets-crosswalk" class="bets-list crosswalk"></ol>
     <div id="bets-crosswalk-empty" class="muted pane-note" hidden></div>
   </section>
@@ -200,6 +207,7 @@
   <script src="locate.js"></script>
   <script src="teams.js"></script>
   <script src="bets.js"></script>
+  <script src="attach.js"></script>
   <script src="ladder.js"></script>
   <script src="condkelly.js"></script>
   <script src="betsview.js"></script>
