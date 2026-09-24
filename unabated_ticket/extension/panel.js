@@ -8,9 +8,11 @@
 // Writes: chrome.storage.local settings, {locate} (row click, via locate.js,
 // which also focuses the Unabated tab), {alertLog, alertTargets} and Chrome
 // notifications for new edges; {betsService} after every bets-service poll
-// (records + the service's team crosswalk); POST /crosswalk.json to the
-// bets service with the team rows an id join taught, DELETE it on Clear
-// (#118 step 4). Re-renders on storage.onChanged.
+// (records + the service's team crosswalk + the saved fill fairs); POST
+// /crosswalk.json to the bets service with the team rows an id join taught,
+// DELETE it on Clear (#118 step 4); POST /fill_fairs.json with the fair a
+// new bet's line had when it was placed (fillfair.js, the service stores it
+// once per bet, insert-only). Re-renders on storage.onChanged.
 // Network: the scanner (scanner.js) fetches Unabated's public feeds while this
 // page is open; it pauses when the panel is hidden and stops when it closes.
 // The bets tab (#114) polls the local bets service (betsSettings.serviceUrl,
@@ -122,6 +124,11 @@
     // or stored: [{venue, league, venueTeamKey, venueTeamName, unabatedTeamId,
     // unabatedTeamName, learnedFrom, learnedAt}]. Keys resolve through it first.
     crosswalk: [],
+    // The fair each bet's line had when it was placed, as the bets service
+    // serves it (bets.duckdb::bet_fill_fairs): [{betId, lineKey, points,
+    // fairAmerican, fairObservedAt, placedAt, capturedAt}]. Set through
+    // setFillFairs, which keeps fillFairIndex in step.
+    fillFairs: [],
   };
   // key -> {price, at}: what has been alerted (or seen at baseline); persisted.
   let alertLog = {};
@@ -149,6 +156,14 @@
   let ladderCache = new Map();
   const teamsLib = globalThis.UnabatedTeams;
   let teamsSpellingCount = 0;
+  const fillfair = globalThis.UnabatedFillFair;
+  // bet id -> saved fill-fair row, over state.fillFairs.
+  let fillFairIndex = new Map();
+
+  function setFillFairs(rows) {
+    state.fillFairs = rows;
+    fillFairIndex = fillfair.fairsByBetId(rows);
+  }
 
   // Every snapshot carries Unabated's team list and, per game row, a second
   // spelling of each team (feed.teamSpellingsFromEventName, #118): register
@@ -182,6 +197,7 @@
       ladderCache = new Map();
       registerFeedTeams(feedState);
       learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
+      captureFillFairs().catch((error) => console.error("[unabated-ticket] fill fair capture failed", error));
       renderEdges();
       // A ticket sized from the feed (or waiting for it) follows the feed's
       // updates; one the screen priced is left alone (a re-render clears the copy status).
@@ -589,7 +605,7 @@
   // same side, the other side (red); then the ones that are not sized, grey,
   // with why. Nothing when none.
   function renderBetBanner(flag) {
-    const { shown, more } = betsView.bannerLines(betsView.relatedLines(flag));
+    const { shown, more } = betsView.bannerLines(betsView.relatedLines(flag, fillFairIndex));
     const items = shown.map((related) => {
       const div = document.createElement("div");
       const against = related.tier === "opposite" || related.tier === "related_opposite";
@@ -597,9 +613,7 @@
       const kind = document.createElement("span");
       kind.className = "k";
       kind.textContent = related.tag;
-      const text = document.createElement("span");
-      text.textContent = related.text;
-      div.append(kind, text);
+      div.append(kind, relatedText(related));
       return div;
     });
     if (more > 0) {
@@ -742,47 +756,81 @@
     }
   }
 
-  // The numbers behind the tag: "fair 33.7% → 35.6% · price +199 → +215 ·
-  // moved 2m ago (snapshot) · opened +185". "ago" is when the panel first SAW
-  // the move and by what: a snapshot observation can be up to one refresh
-  // interval after the book moved (the stream misses most exchange moves and
-  // never carries an alt rung). The opener is the book's own opening price
-  // (#126); on another number it is not comparable, so the number is named.
-  function moveTooltip(move, line) {
-    const parts = [
-      `fair ${fmtFairEntry(move.from)} \u2192 ${fmtFairEntry(move.to)}`,
-      `price ${fmtPriceBoth(asBookLine(move.from.price, move.from.sourceFormat, move.from.sourcePrice))} \u2192 ${fmtPriceBoth(asBookLine(move.to.price, move.to.sourceFormat, move.to.sourcePrice))}`,
-      `moved ${fmtAge(move.sinceMs)} (${move.source})`,
-    ];
-    const openerPrice = line.openerPrice ?? null;
-    const openerPoints = line.openerPoints ?? null;
-    if (openerPrice != null) {
-      const sameNumber = openerPoints == null || openerPoints === line.points;
-      parts.push(`opened ${fmtAmerican(openerPrice)}${sameNumber ? "" : ` at ${fmtPoints(openerPoints)}`}`);
-    }
-    return parts.join(" \u00b7 ");
+  // "fair 33.7% → 35.6% · price +199 · 33.4¢ → +215 · 31.7¢": a move's two ends.
+  function fmtMoveNumbers(move) {
+    const price = (entry) => (typeof entry.price === "number" ? fmtPriceBoth(asBookLine(entry.price, entry.sourceFormat, entry.sourcePrice)) : "?");
+    return `fair ${fmtFairEntry(move.from)} \u2192 ${fmtFairEntry(move.to)} \u00b7 price ${price(move.from)} \u2192 ${price(move.to)}`;
   }
 
-  // One small tag naming why the edge on this line is what it is (the fair
-  // decides — see edgemove.js), with the numbers in the tooltip; null when
-  // nothing moved inside the window or the line was first seen this session.
-  // `line` needs key, points and the openers: an Edges row or a raw feed line.
-  function moveTag(line) {
-    const move = moveFor(line.key);
-    if (move.kind === "none") return null;
-    const tag = document.createElement("span");
-    tag.className = `tag ${MOVE_TAG_CLASS[move.kind]}`;
-    tag.textContent = edgemove.MOVE_LABELS[move.kind];
-    tag.title = moveTooltip(move, line);
-    return tag;
+  // "opened +185", or "opened -120 at -3" when the book has moved its number
+  // since (#126: a price on another number is not comparable); null when the
+  // line carries no opener (every alt rung).
+  function openerText(line) {
+    const openerPrice = line.openerPrice ?? null;
+    const openerPoints = line.openerPoints ?? null;
+    if (openerPrice == null) return null;
+    const sameNumber = openerPoints == null || openerPoints === line.points;
+    return `opened ${fmtAmerican(openerPrice)}${sameNumber ? "" : ` at ${fmtPoints(openerPoints)}`}`;
+  }
+
+  // " +208" for a fill's price, "" for a record with none.
+  function fmtBetPrice(bet) {
+    return typeof bet.price === "number" ? ` ${fmtAmerican(bet.price)}` : "";
+  }
+
+  // The last ten minutes, for the since-fill tooltip: the tag it would show
+  // on its own and its numbers. An amber there is the fair lag itself: the
+  // book moved and Unabated's fair (~1-2 min behind, #126) has not answered.
+  function recentMoveText(move) {
+    if (move.kind === "none") return "last 10 min: nothing moved";
+    const lag = move.kind === "book_away" ? " \u2014 Unabated's fair runs ~1-2 min behind the book; wait a snapshot" : "";
+    return `last 10 min: ${edgemove.MOVE_LABELS[move.kind]}, ${fmtMoveNumbers(move)}, moved ${fmtAge(move.sinceMs)} (${move.source})${lag}`;
+  }
+
+  // What the tag reads on a line held in this direction: {move, baseline,
+  // recent}. With a saved fill fair on the line (fillfair.baselineOf: the
+  // earliest open bet on this very line that has one) the move is since that
+  // fill; without one it is the last ten minutes, as before. `recent` is
+  // always the ten-minute move. `line` needs key, points and the openers (an
+  // Edges row or a raw feed line); `bet` is its {tier, matches, advice}.
+  function tagReading(line, bet) {
+    const recent = moveFor(line.key);
+    const baseline = fillfair.baselineOf(bet.matches, fillFairIndex);
+    const entries = scannerHistory[line.key];
+    if (!baseline || !entries || entries.length === 0) return { move: recent, baseline: null, recent };
+    return { move: fillfair.moveSinceFill(baseline, entries[entries.length - 1]), baseline, recent };
+  }
+
+  // The numbers behind the tag. Since a fill: "since your Novig +208 bet
+  // (Sep 23, 12:03 PM): fair 36.0% → 34.7% · price … | last 10 min: … |
+  // opened +185". Ten minutes only: "fair 33.7% → 35.6% · price +199 → +215
+  // · moved 2m ago (snapshot) · opened +185" — "ago" is when the panel first
+  // SAW the move and by what: a snapshot observation can be up to one
+  // refresh interval after the book moved (the stream misses most exchange
+  // moves and never carries an alt rung).
+  function moveTooltip(reading, line) {
+    const opener = openerText(line);
+    if (!reading.baseline) {
+      const move = reading.move;
+      return [fmtMoveNumbers(move), `moved ${fmtAge(move.sinceMs)} (${move.source})`, opener].filter(Boolean).join(" \u00b7 ");
+    }
+    const bet = reading.baseline.bet;
+    const placed = new Date(reading.baseline.placedMs).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    const since = `since your ${betsLib.venueLabel(bet.venue)}${fmtBetPrice(bet)} bet (${placed}): ${fmtMoveNumbers(reading.move)}`;
+    return [since, recentMoveText(reading.recent), opener].filter(Boolean).join(" | ");
   }
 
   // The mover, on the card under the tag: the fair then and now when the
-  // fair decided (green / red), the price when it was the book (amber).
-  // Both, with cents and the opener, stay in the tooltip.
-  function moveDetail(move) {
-    if (move.kind === "book_away") return `price ${fmtAmerican(move.from.price)} \u2192 ${fmtAmerican(move.to.price)}`;
-    return `fair ${fmtFairEntry(move.from)} \u2192 ${fmtFairEntry(move.to)}`;
+  // fair decided (green / red), the price when it was the book (amber),
+  // named from your fill when the tag reads since one. Both ends with cents,
+  // the last ten minutes and the opener stay in the tooltip.
+  function moveDetail(reading) {
+    const move = reading.move;
+    const fromPrice = typeof move.from.price === "number" ? fmtAmerican(move.from.price) : "?";
+    const what = move.kind === "book_away"
+      ? `price ${fromPrice} \u2192 ${fmtAmerican(move.to.price)}`
+      : `fair ${fmtFairEntry(move.from)} \u2192 ${fmtFairEntry(move.to)}`;
+    return reading.baseline ? `since your${fmtBetPrice(reading.baseline.bet)} bet: ${what}` : what;
   }
 
   // The tag shows only on a line the user already holds in the same direction
@@ -795,16 +843,23 @@
     return Boolean(bet && bet.advice && bet.advice.verb === "add");
   }
 
-  // The tag and its detail line for a rail or the Ticket's Edge fact; [] when
-  // there is nothing to tag or the line is not held in this direction.
-  // `bet` is the row's {tier, matches, advice} (withBetFlags / ticketBetFlag).
+  // One small tag naming why the edge on this line is what it is (the fair
+  // decides — see edgemove.js), its detail line under it and the numbers in
+  // the tooltip, for a rail or the Ticket's Edge fact; [] when the line is
+  // not held in this direction or nothing moved. `bet` is the row's {tier,
+  // matches, advice} (withBetFlags / ticketBetFlag).
   function moveParts(line, bet) {
     if (!heldInThisDirection(bet)) return [];
-    const tag = moveTag(line);
-    if (!tag) return [];
+    const reading = tagReading(line, bet);
+    if (reading.move.kind === "none") return [];
+    const tag = document.createElement("span");
+    tag.className = `tag ${MOVE_TAG_CLASS[reading.move.kind]}`;
+    tag.textContent = edgemove.MOVE_LABELS[reading.move.kind];
+    tag.title = moveTooltip(reading, line);
     const detail = document.createElement("small");
     detail.className = "move-detail";
-    detail.textContent = moveDetail(moveFor(line.key));
+    detail.textContent = moveDetail(reading);
+    detail.title = tag.title;
     return [tag, detail];
   }
 
@@ -812,8 +867,10 @@
   // withBetFlags, so row.bet is set.
   function moveWords(row) {
     if (!heldInThisDirection(row.bet)) return null;
-    const move = moveFor(row.key);
-    return move.kind === "none" ? null : edgemove.MOVE_LABELS[move.kind];
+    const reading = tagReading(row, row.bet);
+    if (reading.move.kind === "none") return null;
+    const label = edgemove.MOVE_LABELS[reading.move.kind];
+    return reading.baseline ? `${label} since your${fmtBetPrice(reading.baseline.bet)} bet` : label;
   }
 
   function pageScriptAlive() {
@@ -1091,8 +1148,21 @@
   // line; past three the rest are a count, as the Ticket banner does it.
   const RELATED_LINES_ON_A_ROW = 3;
 
+  // The bet's own words, then "fair then 36.0%" when its fill fair was saved.
+  function relatedText(related) {
+    const text = document.createElement("span");
+    text.append(related.text);
+    if (related.fairThen) {
+      const fairThen = document.createElement("span");
+      fairThen.className = "fair-then";
+      fairThen.textContent = related.fairThen;
+      text.append(" \u00b7 ", fairThen);
+    }
+    return text;
+  }
+
   function relatedBlock(flag) {
-    const all = betsView.relatedLines(flag);
+    const all = betsView.relatedLines(flag, fillFairIndex);
     if (!all.length) return null;
     const lines = all.slice(0, RELATED_LINES_ON_A_ROW);
     const block = document.createElement("div");
@@ -1106,9 +1176,7 @@
       const tag = document.createElement("span");
       tag.className = "related-tag";
       tag.textContent = line.tag;
-      const text = document.createElement("span");
-      text.textContent = line.text;
-      div.append(tag, text);
+      div.append(tag, relatedText(line));
       return div;
     }));
     if (all.length > lines.length) {
@@ -1786,6 +1854,8 @@
       if (!payload || !Array.isArray(payload.bets)) throw new Error("bets.json has no bets array");
       // The service's crosswalk is the truth; a payload without one (an older service) keeps the stored rows.
       if (Array.isArray(payload.crosswalk)) state.crosswalk = payload.crosswalk;
+      // Same for the saved fill fairs: an older service without the key keeps the stored rows.
+      if (Array.isArray(payload.fillFairs)) setFillFairs(payload.fillFairs);
       state.betRecords = betsView.mergeServicePayload(state.betRecords, { ...payload, crosswalk: state.crosswalk }, now);
       state.betsService = {
         payload: { generatedAt: payload.generatedAt ?? null, sources: payload.sources && typeof payload.sources === "object" ? payload.sources : {} },
@@ -1803,11 +1873,12 @@
     await persistBets();
     renderBetsFlags();
     learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
+    captureFillFairs().catch((error) => console.error("[unabated-ticket] fill fair capture failed", error));
   }
 
-  // The records, the service state and the crosswalk, as one stored object.
+  // The records, the service state, the crosswalk and the saved fill fairs, as one stored object.
   function persistBets() {
-    return chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords, crosswalk: state.crosswalk } });
+    return chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords, crosswalk: state.crosswalk, fillFairs: state.fillFairs } });
   }
 
   // Every surface that shows a bet flag, after the records or the crosswalk changed.
@@ -1944,6 +2015,97 @@
     }));
     view.betsCrosswalkEmpty.hidden = rows.length > 0;
     view.betsCrosswalkEmpty.textContent = "Nothing learned yet. Rows appear when an open bet joins the board by its Kalshi event or Novig outcome id.";
+  }
+
+  // ---- fill fairs (since your first fill, 2026-09-23) -------------------------
+  //
+  // After every poll and every scanner update, each new open bet gets the
+  // fair its line had when it was placed, read off the scanner's history
+  // (fillfair.captureFillFairs) and POSTed to the bets service, which keeps
+  // the first one per bet for good (bets.duckdb::bet_fill_fairs). A bet is
+  // looked at until it is decided — saved, or refused for a reason that
+  // cannot change (placed before the panel was watching, its line first seen
+  // after it) — once per panel session. A failed POST keeps the captured rows
+  // and retries a minute later: they are the fill's numbers and do not age.
+  // A 400 is the service refusing the rows themselves, so they are dropped.
+  const FILL_FAIRS_RETRY_MS = 60 * 1000;
+  const HTTP_BAD_REQUEST = 400;
+  let fillFairsBusy = false;
+  let fillFairsRetryAt = 0;
+  let fillFairsLastError = null;
+  // Bet ids saved or refused this session; captured rows the service has not stored yet.
+  const fillFairsDecided = new Set();
+  const fillFairsUnsent = new Map();
+
+  async function captureFillFairs() {
+    if (!scannerState) return;
+    const { saves, refusals } = fillfair.captureFillFairs({
+      records: state.betRecords, skipIds: new Set([...fillFairIndex.keys(), ...fillFairsDecided]),
+      state: scannerState, boardLines: boardLines(), history: scannerHistory,
+      // Live, not the last onChange copy: pause() clears it before any notify.
+      observingSince: scanner.getStatus().observingSince, now: Date.now(),
+    });
+    for (const save of saves) {
+      fillFairsDecided.add(save.betId);
+      fillFairsUnsent.set(save.betId, save);
+    }
+    for (const refusal of refusals) fillFairsDecided.add(refusal.betId);
+    logFillFairDecisions(saves, refusals);
+    await sendFillFairs();
+  }
+
+  // One line per pass that decided anything: "2 captured; not saved: 14
+  // placed before the panel was watching".
+  function logFillFairDecisions(saves, refusals) {
+    if (!saves.length && !refusals.length) return;
+    const counts = new Map();
+    for (const { reason } of refusals) counts.set(reason, (counts.get(reason) || 0) + 1);
+    const refused = Array.from(counts, ([reason, count]) => `${count} ${reason}`).join(", ");
+    console.info(`[unabated-ticket] fill fairs: ${saves.length} captured${refused ? `; not saved: ${refused}` : ""}`);
+  }
+
+  async function sendFillFairs() {
+    if (fillFairsBusy || fillFairsUnsent.size === 0 || Date.now() < fillFairsRetryAt) return;
+    fillFairsBusy = true;
+    const rows = Array.from(fillFairsUnsent.values());
+    try {
+      const reply = await postFillFairs(rows);
+      for (const row of rows) fillFairsUnsent.delete(row.betId);
+      console.info(`[unabated-ticket] fill fairs: the service saved ${reply.saved} of ${rows.length}, holds ${reply.fillFairs.length} for the bets it serves`);
+      setFillFairs(reply.fillFairs);
+      fillFairsLastError = null;
+      await persistBets();
+      renderBetsFlags();
+    } catch (error) {
+      if (error.status === HTTP_BAD_REQUEST) {
+        for (const row of rows) fillFairsUnsent.delete(row.betId);
+        console.error(`[unabated-ticket] fill fairs: the service refused ${rows.length} row(s), dropped:`, error.message, rows);
+      } else {
+        fillFairsRetryAt = Date.now() + FILL_FAIRS_RETRY_MS;
+        if (fillFairsLastError !== error.message) console.warn("[unabated-ticket] fill fairs: service write failed:", error.message);
+        fillFairsLastError = error.message;
+      }
+    } finally {
+      fillFairsBusy = false;
+    }
+  }
+
+  // POST /fill_fairs.json; the reply carries every saved fair for the bets
+  // the service serves. A failure carries the HTTP status and the service's
+  // own error text.
+  async function postFillFairs(rows) {
+    const body = { rows: rows.map((row) => ({ ...row, fairObservedAt: new Date(row.fairObservedAt).toISOString() })) };
+    const response = await fetch(`${state.betsSettings.serviceUrl}/fill_fairs.json`, {
+      method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const reply = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(`HTTP ${response.status}${reply && reply.error ? `: ${reply.error}` : ""}`);
+      error.status = response.status;
+      throw error;
+    }
+    if (!reply || !Array.isArray(reply.fillFairs)) throw new Error("fill_fairs.json has no fillFairs array");
+    return reply;
   }
 
   function startBetsPolling() {
@@ -2133,6 +2295,7 @@
       // Team keys resolved and the retention window applied on every load, so
       // a grown teams.js table, a grown crosswalk and a passed month all take effect.
       state.crosswalk = Array.isArray(storedBets.crosswalk) ? storedBets.crosswalk : [];
+      setFillFairs(Array.isArray(storedBets.fillFairs) ? storedBets.fillFairs : []);
       state.betRecords = betsLib.pruneForRetention(betsLib.rekeyRecords(Array.isArray(storedBets.bets) ? storedBets.bets : [], state.crosswalk), Date.now());
       state.betsService = {
         payload: storedBets.payload || null, okAt: storedBets.okAt ?? null,

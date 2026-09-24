@@ -13,7 +13,9 @@
 // api-k.unabated.com only. No storage, no DOM. State lives in memory and is
 // handed to the panel through onChange(status, state, history) — `history`
 // is the per-line record of what each line was worth on every snapshot and
-// stream update (edgemove.js, #132), also in memory only.
+// stream update (edgemove.js, #132), also in memory only. `status.observingSince`
+// says since when that record has no gap (fillfair.js reads a bet's fill off
+// it only when the bet was placed after it).
 //
 // Loaded as a plain <script> in panel.html (globalThis.UnabatedScanner) and via
 // require() in tests, where fetch and timers are injected.
@@ -103,7 +105,15 @@
       loading: null, // {done, total} while snapshots are downloading
       snapshotBuiltAt: null, // newest Last-Modified among loaded leagues
       staleLeagues: [], // leagues whose Last-Modified is older than STALE_BUILD_MS (a stale edge copy, or an off-season file)
+      // Since when the history is a record of the board with no gap: the end
+      // of the first successful observation after start(), after resume(),
+      // or after more than PAUSE_RESYNC_MS without one (Unabated down, no
+      // network). Not the time resume() is called: until the catch-up lands
+      // the history still holds the pre-pause board. Null while paused.
+      observingSince: null,
     };
+    // The last successful snapshot load or stream poll, paused or not.
+    let lastObservedAt = null;
     let failedLeagueRetryAt = 0;
     // Bumped by start(); a load that began under an older generation is discarded.
     let generation = 0;
@@ -144,6 +154,16 @@
     function setError(message) {
       status.error = message;
       status.phase = status.leaguesLoaded.length ? "live" : "error";
+    }
+
+    // A snapshot load or stream poll succeeded. A pass that lands while
+    // paused (it was in flight when the panel hid) moves the clock but never
+    // starts a run: the panel is not watching.
+    function markObserved() {
+      const at = now();
+      const gap = lastObservedAt == null || at - lastObservedAt > PAUSE_RESYNC_MS;
+      if (!paused && (status.observingSince == null || gap)) status.observingSince = at;
+      lastObservedAt = at;
     }
 
     async function fetchSnapshot(leagueId) {
@@ -250,6 +270,7 @@
         return false;
       }
       status.lastSnapshotAt = now();
+      markObserved();
       status.phase = "live";
       status.error = Object.keys(errors).length ? `feed unavailable for ${describeLeagueErrors(errors)}` : null;
       // Only a full load restarts the stream at the snapshot build time; a
@@ -309,6 +330,7 @@
       }
       status.pollCount += 1;
       status.lastPollAt = now();
+      markObserved();
       status.lastPollLines = lines;
       if (lines > 0) status.lastUpdateAt = status.lastPollAt;
       status.error = Object.keys(status.leagueErrors).length ? `feed unavailable for ${describeLeagueErrors(status.leagueErrors)}` : null;
@@ -369,6 +391,8 @@
       clearTimers();
       state = feed.emptyState();
       history = {};
+      status.observingSince = null;
+      lastObservedAt = null;
       status.leaguesLoaded = [];
       status.leagueErrors = {};
       status.error = null;
@@ -399,11 +423,15 @@
       leagues = [];
       paused = false;
       status.phase = "idle";
+      status.observingSince = null;
       notify();
     }
 
+    // The history is kept but has a gap from here until the first
+    // observation after resume().
     function pause() {
       paused = true;
+      status.observingSince = null;
     }
 
     // Back from hidden: continue the stream if the cursor is still fresh, else resync.

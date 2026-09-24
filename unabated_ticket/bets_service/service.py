@@ -10,7 +10,8 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
            GET /bets.json[?days=N]  {generatedAt, sources: {name: {fetchedAt, ok,
                                     error, count}}, bets: [records open + settled
                                     within N days (default RETENTION_DAYS=30)],
-                                    crosswalk: [team_crosswalk rows, newest first]}
+                                    crosswalk: [team_crosswalk rows, newest first],
+                                    fillFairs: [bet_fill_fairs rows of those bets]}
            GET /health              {ok, generatedAt, uptimeSec, sources}
            POST /crosswalk.json     body {rows: [{venue, league, venueTeamKey,
                                     unabatedTeamId, venueTeamName?, unabatedTeamName?,
@@ -20,18 +21,26 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     cannot send that cross-origin without a preflight
                                     this server never answers, so no site can write here)
            DELETE /crosswalk.json   -> {ok, cleared, crosswalk: []}
+           POST /fill_fairs.json    body {rows: [{betId, lineKey, points, fairAmerican,
+                                    fairObservedAt, placedAt}]} -> {ok, saved, fillFairs}
+                                    (the fair a new bet's line had when it was placed,
+                                    read by the panel off its line history; same
+                                    Content-Type guard as the crosswalk)
          Every verb refuses a request whose Host header is not the loopback
          name the service is serving on (403): a page at evil.example whose
          DNS flips to 127.0.0.1 is SAME-ORIGIN with this server, so neither
          CORS nor the JSON Content-Type guard applies to it.
 Side effects: UPSERTs records into bets.duckdb::bets and APPENDs a row to
 bets.duckdb::source_runs per poll (see store.py); INSERTs into / DELETEs from
-bets.duckdb::team_crosswalk on the two crosswalk routes; rotating log at
-bets_service.log. A poll that raises writes a failed source_runs row and
-leaves `bets` untouched — a dark source never blanks the list.
+bets.duckdb::team_crosswalk on the two crosswalk routes; INSERTs into
+bets.duckdb::bet_fill_fairs on POST /fill_fairs.json — insert-only, a bet that
+has a saved fair keeps it; rotating log at bets_service.log. A poll that
+raises writes a failed source_runs row and leaves `bets` untouched — a dark
+source never blanks the list.
 """
 import json
 import logging
+import math
 import signal
 import threading
 import time
@@ -41,6 +50,7 @@ from urllib.parse import parse_qs, urlparse
 
 from unabated_ticket.bets_service import config
 from unabated_ticket.bets_service.log_setup import setup_logging
+from unabated_ticket.bets_service.normalize import parse_iso_ms
 from unabated_ticket.bets_service.sources import Source
 from unabated_ticket.bets_service.sources.betonline import source_if_configured as betonline_source_if_configured
 from unabated_ticket.bets_service.sources.bfa import source_if_configured as bfa_source_if_configured
@@ -61,6 +71,10 @@ LOOPBACK_HOST_NAMES = ("127.0.0.1", "localhost")
 HTTP_DEFAULT_PORT = 80
 CROSSWALK_REQUIRED_FIELDS = ("venue", "league", "venueTeamKey", "unabatedTeamId")
 CROSSWALK_OPTIONAL_FIELDS = ("venueTeamName", "unabatedTeamName", "learnedFrom")
+# A fill-fair POST carries the bets a capture pass decided: a handful.
+MAX_FILL_FAIR_ROWS_PER_POST = 1000
+# American odds run from -100 down and +100 up; the gap between is no price.
+MIN_AMERICAN_MAGNITUDE = 100
 
 
 def _now() -> datetime:
@@ -137,7 +151,8 @@ def source_status(store: BetsStore, source_names: list[str]) -> dict[str, dict]:
 def bets_payload(store: BetsStore, days: int, source_names: list[str] = ()) -> dict:
     now = _now()
     return {"generatedAt": _iso(now), "sources": source_status(store, list(source_names)),
-            "bets": store.load_bets(days, now), "crosswalk": store.load_crosswalk()}
+            "bets": store.load_bets(days, now), "crosswalk": store.load_crosswalk(),
+            "fillFairs": store.load_fill_fairs(days, now)}
 
 
 def _non_empty_string(value: object) -> bool:
@@ -171,6 +186,67 @@ def validate_crosswalk_rows(body: object) -> list[dict] | str:
             if value is not None and not isinstance(value, str):
                 return f"rows[{index}].{field} must be a string or null"
             row[field] = value
+        rows.append(row)
+    return rows
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _is_whole_american(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and abs(value) >= MIN_AMERICAN_MAGNITUDE
+
+
+def _iso_ms(value: object) -> int | None:
+    """Epoch ms of an ISO time string, None for anything else (parse_iso_ms takes strings only)."""
+    return parse_iso_ms(value) if isinstance(value, str) else None
+
+
+def _validate_fill_fair_row(index: int, raw: object) -> dict | str:
+    """One row of a POST /fill_fairs.json body in the store's shape, or what
+    was expected and what was found."""
+    if not isinstance(raw, dict):
+        return f"rows[{index}] must be an object, got {type(raw).__name__}"
+    for field in ("betId", "lineKey"):
+        if not _non_empty_string(raw.get(field)):
+            return f"rows[{index}].{field} must be a non-empty string, got {raw.get(field)!r}"
+    points = raw.get("points")
+    if points is not None and not _is_number(points):
+        return f"rows[{index}].points must be a number or null, got {points!r}"
+    fair = raw.get("fairAmerican")
+    if not _is_whole_american(fair):
+        return f"rows[{index}].fairAmerican must be a whole American price (an integer <= -100 or >= 100), got {fair!r}"
+    observed_ms = _iso_ms(raw.get("fairObservedAt"))
+    placed_ms = _iso_ms(raw.get("placedAt"))
+    if observed_ms is None:
+        return f"rows[{index}].fairObservedAt must be an ISO time, got {raw.get('fairObservedAt')!r}"
+    if placed_ms is None:
+        return f"rows[{index}].placedAt must be an ISO time, got {raw.get('placedAt')!r}"
+    if observed_ms > placed_ms:
+        return (f"rows[{index}].fairObservedAt must be at or before placedAt (the fair is read at the fill), "
+                f"got {raw['fairObservedAt']} after {raw['placedAt']}")
+    return {"betId": raw["betId"], "lineKey": raw["lineKey"], "points": points, "fairAmerican": fair,
+            "fairObservedAt": raw["fairObservedAt"], "placedAt": raw["placedAt"]}
+
+
+def validate_fill_fair_rows(body: object) -> list[dict] | str:
+    """The rows of a POST /fill_fairs.json body, or an error naming the first
+    bad row. Each row: betId and lineKey non-empty strings; points a number or
+    null (a moneyline); fairAmerican a whole American price (Unabated's bacr
+    always is); fairObservedAt and placedAt ISO times, the fair observed at or
+    before the placement — a saved fair is permanent, so a row that cannot be
+    the fill's is refused rather than stored."""
+    if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
+        return f"body must be an object with a `rows` array, got {type(body).__name__}"
+    raw_rows = body["rows"]
+    if len(raw_rows) > MAX_FILL_FAIR_ROWS_PER_POST:
+        return f"at most {MAX_FILL_FAIR_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
+    rows: list[dict] = []
+    for index, raw in enumerate(raw_rows):
+        row = _validate_fill_fair_row(index, raw)
+        if isinstance(row, str):
+            return row
         rows.append(row)
     return rows
 
@@ -219,12 +295,15 @@ def make_handler(store: BetsStore, started_at: float,
             if self._refused_foreign_host():
                 return
             url = urlparse(self.path)
-            if url.path != "/crosswalk.json":
+            if url.path not in ("/crosswalk.json", "/fill_fairs.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
             if isinstance(body, tuple):
                 self._send_json(*body)
+                return
+            if url.path == "/fill_fairs.json":
+                self._save_fill_fairs(body)
                 return
             rows = validate_crosswalk_rows(body)
             if isinstance(rows, str):
@@ -233,6 +312,18 @@ def make_handler(store: BetsStore, started_at: float,
             result = store.learn_crosswalk(rows, _now())
             self._send_json(200, {"ok": True, "learned": result["learned"], "conflicts": result["conflicts"],
                                   "crosswalk": store.load_crosswalk()})
+
+        # POST /fill_fairs.json: INSERT the rows (first capture wins) and reply
+        # with every saved fair of the bets /bets.json serves.
+        def _save_fill_fairs(self, body: object) -> None:
+            rows = validate_fill_fair_rows(body)
+            if isinstance(rows, str):
+                self._send_json(400, {"error": rows})
+                return
+            now = _now()
+            saved = store.save_fill_fairs(rows, now)
+            self._send_json(200, {"ok": True, "saved": saved,
+                                  "fillFairs": store.load_fill_fairs(config.RETENTION_DAYS, now)})
 
         def do_DELETE(self) -> None:  # noqa: N802 — http.server's name
             if self._refused_foreign_host():

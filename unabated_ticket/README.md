@@ -599,7 +599,8 @@ Next to the edge figure of a line you already hold in the same direction —
 the rows, card lines and Ticket whose stake reads `add $X` (conditional
 Kelly, Stake above) — one small tag says what moved since the panel last
 saw the line, inside a ten-minute window (`extension/edgemove.js`, issue
-#132). A line you do not hold, or hold only on the other side, shows no
+#132), or since your first fill on the line once its fair was saved (*Since
+your first fill* below). A line you do not hold, or hold only on the other side, shows no
 tag (user decision, 2026-09-23): the tag exists for the adverse selection
 of *adding* to a position, where the reasons an edge can grow call for
 opposite actions, and a first bet is not a top-up. The history behind the
@@ -650,6 +651,56 @@ informs; the number to act on stays what conditional Kelly computes. A hold
 rule ("no add for one snapshot after an amber, never on a red") is a
 separate decision once the tag has been watched on live cards.
 
+**Since your first fill** (user decisions 2026-09-23). On a line you hold in
+the same direction, the tag measures from your EARLIEST open bet on that very
+line — same period, bet type, side and number, at any venue — whose
+fill-time fair was saved, instead of from ten minutes ago: the fair then
+against the fair now, and that bet's own fill price against the price now
+(Kalshi's exact VWAP in cents, Novig's exact probability, a sportsbook's
+American price), through the same four cases at the same 0.5-point
+threshold (`edgemove.classifyMove`, the one rule both paths call). The
+detail line names the fill — `since your +208 bet: fair 36.0% → 34.7%`, or
+`since your +208 bet: price +208 → +223` on amber — and the tooltip carries
+the since-fill numbers, the last ten minutes as the plain tag would read
+them (an amber there is the fair lag itself: the book moved and Unabated's
+fair, ~1–2 min behind, has not answered — wait a snapshot) and the opener.
+Nothing moved since the fill is no tag, whatever the last ten minutes did.
+A held line with no saved fair at its number — including bets held only at
+another number or in another period — keeps the ten-minute tag above,
+unchanged. In the row's Related bets block and the Ticket banner, each bet
+with a saved fair adds `fair then 36.0%`.
+
+How a fill's fair is saved (`extension/fillfair.js`): after every bets poll
+and every scanner update, each open bet without one is read off the
+scanner's history — the newest observation of its line at or before
+`placedAt`. The bet's own venue's line first (Kalshi, Novig, BetOnline and
+ProphetX are on the board), else the book at that number that changed its
+line most recently: Unabated's fair is the same at every book on a number
+(measured 2026-09-23: NFL 5,796 of 5,796 multi-book rungs identical, MLB
+1,394 of 1,394; CFB 95.3%, the rest mostly alt rungs untouched for hours
+that still carry an older fair, median gap 0.04 points). A fair is saved
+only when the history is a gap-free record of the fill: the scanner has
+watched since before `placedAt` (`status.observingSince` — set when the
+first load after the panel opens lands, cleared when the panel hides, set
+again only once the catch-up after it reappears has landed, and restarted
+after more than two minutes without a successful snapshot or stream poll)
+and the line had been seen by then, with a fair. The panel POSTs the row to
+the bets service, which keeps the first capture per bet for good
+(`bet_fill_fairs`, Bets service below). **No backfill** (user decision): a
+bet placed before the panel was watching — every bet open when this shipped,
+one placed with the panel hidden or closed — gets no saved fair and keeps
+the ten-minute tag. A new bet reaches the panel well inside the ten minutes
+the history keeps: the service polls Kalshi and Novig every 60 s and
+BetOnline, BFA and Wagerzon every 300 s, and the panel polls the service
+every 30 s. Record quirks that shape the reading: a Kalshi record is one per
+contract, with the FIRST fill's time and the VWAP of every fill, so its
+baseline is the fair at the first fill against the average price; a Novig
+order's time is its placement, resting or not; and Unabated's Kalshi price
+includes the taker fee (a 22¢ ask shows 23.2¢) while the fill is the bare
+contract price, so on Kalshi the price leg reads up to ~1.75¢ worse than it
+is — it can hide an amber, never raise one. The stake never changes for the
+tag.
+
 ### Alerts
 
 Off by default. Turn on **Notify on new edges at or above N%** (default
@@ -672,7 +723,8 @@ per rung until each has fired; the notification title says `(alt of -2.5)`
 so an alt is never mistaken for the main line. Title is the bet and
 book, body the edge, the why-it-grew tag when the line is one you hold in
 the same direction and something moved (`fair moved to you` / `book moved
-away` / `fair moved against you`, Why an edge grew above), stake, matchup
+away` / `fair moved against you`, Why an edge grew above — `… since your
++208 bet` when it reads from a saved fill fair), stake, matchup
 and time to start. Clicking the
 notification runs the same jump-to-row path as a row click. No alerts
 fire while the panel is closed. The alert log lives in `chrome.storage.local`
@@ -704,8 +756,8 @@ panel is visible it fetches `http://127.0.0.1:8094/bets.json` (never from
 the service worker), resolves each record's teams through `teams.js`, dedupes
 on the venue's native id against what it already holds, and keeps open bets
 plus settled ones from the last 30 days in `chrome.storage.local`
-(`betsService`, which also carries the service's team crosswalk;
-`betsSettings` holds the service URL).
+(`betsService`, which also carries the service's team crosswalk and the
+saved fill fairs; `betsSettings` holds the service URL).
 A poll that fails keeps the last records and says so; nothing is ever
 blanked. A poll that succeeds is authoritative for every venue whose source
 reports `ok`: a stored record of that venue the payload no longer lists is
@@ -1008,15 +1060,22 @@ GETs; no order placement.
   bots and the sheet scrapers configured no new file is needed. `.env.example` lists every knob (port, retention window,
   Kalshi cadence, log level). Never commit `.env`.
 - **Endpoints** (loopback only, no auth): `GET /bets.json[?days=N]` →
-  `{generatedAt, sources: {kalshi: {...}, betonline: {fetchedAt, ok, error, count}}, bets: [...], crosswalk: [...]}`
-  with open bets plus settled/closed ones within `N` days (default 30) and
-  the whole team crosswalk (newest first); `GET /health` → `{ok, uptimeSec,
+  `{generatedAt, sources: {kalshi: {...}, betonline: {fetchedAt, ok, error, count}}, bets: [...], crosswalk: [...], fillFairs: [...]}`
+  with open bets plus settled/closed ones within `N` days (default 30), the
+  whole team crosswalk (newest first) and the saved fill fairs of those
+  bets (oldest placement first); `GET /health` → `{ok, uptimeSec,
   sources}`; `POST /crosswalk.json` with `{rows: [{venue, league,
   venueTeamKey, unabatedTeamId, venueTeamName?, unabatedTeamName?,
   learnedFrom?}]}` (at most 1000 rows, 1 MiB) → `{ok, learned, conflicts,
   crosswalk}` — INSERT only, a held key with another id is returned in
   `conflicts` and never rewritten; `DELETE /crosswalk.json` → `{ok, cleared,
-  crosswalk: []}`. The two write routes require `Content-Type:
+  crosswalk: []}`; `POST /fill_fairs.json` with `{rows: [{betId, lineKey,
+  points, fairAmerican, fairObservedAt, placedAt}]}` (at most 1000 rows) →
+  `{ok, saved, fillFairs}` — the fair a new bet's line had when it was
+  placed (*Since your first fill* above), INSERT only: a bet that has one
+  keeps it, so `saved` counts only new bets. A row is refused with a 400
+  that names it unless `fairAmerican` is a whole American price, both times
+  are ISO and the fair was observed at or before `placedAt`. The write routes require `Content-Type:
   application/json` (415 otherwise): the service sends no CORS headers, so a
   web page can only reach it with a "simple" cross-origin request (a form or
   `text/plain` POST, which is refused) and never with JSON or DELETE (both
@@ -1195,7 +1254,14 @@ GETs; no order placement.
   logged and retried an hour later). `team_crosswalk` (#118 step 4,
   primary key `(venue, league, venue_team_key)`, plus `venue_team_name`,
   `unabated_team_id`, `unabated_team_name`, `learned_from`, `learned_at`)
-  holds what the panel learned, INSERT-only and cleared on DELETE. A failed poll writes a failed
+  holds what the panel learned, INSERT-only and cleared on DELETE.
+  `bet_fill_fairs` (primary key `bet_id`, plus `line_key`, `points`,
+  `fair_american` — Unabated's `bacr`, a whole American price —
+  `fair_observed_at`, `placed_at`, `captured_at`) holds one fill-time fair
+  per bet, INSERT-only with `ON CONFLICT DO NOTHING` (the first capture wins;
+  a request repeating a bet keeps its first row and logs it), never pruned
+  (~14 bets a day) and never backfilled; `/bets.json` serves the rows of the
+  bets in its window only, so the table's growth never reaches the poll. A failed poll writes a failed
   `source_runs` row and touches nothing else, so a dark source keeps serving
   its previous records; a store write that raises (disk full) is logged and
   retried next poll, never killing the poll thread. Until a source's first
@@ -1238,8 +1304,8 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 249 tests) and
-the bets service's pytest suite (191 tests, on the `kalshi_draft/venv`
+the node suite (`npm test` = `node --test tests/*.test.js`, 267 tests) and
+the bets service's pytest suite (194 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`
@@ -1292,13 +1358,37 @@ one-point fair change (-150 → -151) and a first sighting are no tag; a
 whole-point change (-150 → -160) and a Novig half-cent are moves; a number
 move resets; a move older than the window expires; a line first seen inside
 the window compares to its first sighting; a missing fair decides on the
-price; pruning keeps one baseline; bad input fails loudly. `scanner.test.js`
+price; pruning keeps one baseline; bad input fails loudly; `classifyMove`
+reads the same four cases off any two observations and is exactly what
+`edgeMove` returns over its window. `scanner.test.js`
 adds the history's plumbing on the fixtures: one snapshot observation per
 line on start and a clean slate on restart; a stream update on the same
 number is a `(stream)` amber while the fixture's number move resets the
 line; a re-downloaded snapshot records a fair move and an alt rung's price
 move as `(snapshot)` observations and forgets the lines it no longer lists
-(the stream re-adds the ones it carries, as first sightings).
+(the stream re-adds the ones it carries, as first sightings). Its
+`observingSince` cases: set when the first load lands, cleared by
+`pause()`, set again when the catch-up after `resume()` lands (not when
+`resume()` ran — every request takes 5 s on the test clock), a pass that
+lands while hidden starting no run, and a 110 s outage keeping the run
+while a 140 s one restarts it.
+
+`fillfair.test.js` pins the since-your-first-fill capture and reading on
+the 49ers card that motivated it (Seahawks @ 49ers, a 49ers -14.5 alt held
+on Novig at +208): the fair the bet's own line showed at the fill (+178,
+not the +188 it shows now); the own venue first, and for a venue off the
+board (BFA) the most recently changed book at the number; an own-venue line
+first seen after the fill falling back to a book watched through it; every
+refusal with its reason (before the panel was watching, first seen after,
+no fair, placed in the future, no placed time); a bet with no line yet left
+for the next pass; the other side of the number never read; saved, settled
+and unmatchable bets skipped. On the display side: the earliest open
+`same_line` bet with a saved fair is the baseline (a same-side bet at
+another number is not); the card reads red — the price improved to +223
+while the fair fell 36.0% → 34.7% — amber with the fair holding, green with
+it rising, and exactly `edgemove.classifyMove`'s answer; a record with no
+price decides on the fair alone; and the fill price basis per venue
+(Kalshi's VWAP cents, Novig's probability, a sportsbook's American price).
 
 `bets.test.js` joins synthetic Kalshi and Novig records
 with unrecognisable team names on `fixtures/v2_venue_ids_slice.json`'s ids
@@ -1379,7 +1469,11 @@ pins the Kalshi normaliser and the matcher on
 (fills → positions aggregation, both spread signs and total directions, the
 NO-moneyline tie caveat, unknown series failing closed, a failed poll keeping
 the previous records, the `/bets.json` shape and `?days=` window, and node
-parity on the same fixture).
+parity on the same fixture) and the fill fairs: insert-only with the first
+capture winning (a later capture and a repeat inside one request are
+no-ops), served only for the bets in the window, the validator naming the
+first bad row with what it expected and found, and `POST /fill_fairs.json`
+behind the same JSON and Host guards as the crosswalk.
 
 End-to-end without a real login: Playwright (in `mlb_sgp/venv`) with the
 ms-playwright Chromium, `--load-extension`, the two feed URLs routed to the
@@ -1432,6 +1526,16 @@ in red.
 
 - **Panel empty / "Click a price"**: nothing captured yet. Click a price
   again.
+- **A held line still shows the ten-minute tag, not `since your … bet`**:
+  no bet on that line has a saved fill fair. Bets open before 0.11.0 and
+  bets placed while the panel was hidden or closed never get one (no
+  backfill, by decision). For a new bet, the panel console logs each
+  decision — `fill fairs: 1 captured` then `the service saved 1 of 1`, or
+  `not saved: … placed before the panel was watching` / `its line was first
+  seen after the bet` / `no Unabated fair on its line at the fill`. A
+  `service write failed: HTTP 404` means the bets service predates the
+  route: restart it (`bets_service/run.sh`) and reload the extension; the
+  captured row is retried every minute until the panel closes.
 - **No Unabated fair for this line**: Unabated has no edge for that line
   (common on lopsided moneylines and exchange-only lines), so there is
   nothing to size from. Not a bug; pick a line that shows an edge %.
@@ -1559,6 +1663,37 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-09-23 — Why an edge grew: since your first fill (#132 follow-up).**
+The trigger was a Novig card: 49ers -14.5, an alt of -8.5, held for $414 over
+three fills at +208, +217 and +212, then showing +223 and `add $77.25` at
++12.15%. Before adding, Cal wanted to see whether Unabated's fair had risen
+with the position or fallen while the price improved (the picked-off
+pattern) — which the tag's ten-minute window cannot see across fills hours
+apart. The tag on a line held in the same direction now reads from the
+earliest open bet on that line whose fill-time fair was saved: the panel
+reads the fair off its in-memory history at `placedAt` and the bets service
+keeps it once per bet (`bet_fill_fairs`, `POST /fill_fairs.json`). User
+decisions: (1) display only on held lines — the existing `add` gate; (2) save
+for every new bet, never backfill — nobody knows at fill time which line will
+pop back up, and a fair the panel did not observe is not saved, so bets open
+at ship time and bets placed with the panel hidden or closed keep the
+ten-minute tag; (3) the stake is untouched — a hold rule ("no add on red")
+stays a separate decision; (4) no knobs. My calls: the four cases stay one
+rule (`edgemove.classifyMove`, called by both paths); the price leg compares
+the fill's own price on edgemove's basis (exact cents for exchanges); the
+scanner's `observingSince` starts when the catch-up after a resume has
+landed rather than when `resume()` is called (until then the history is the
+pre-pause board) and restarts after a two-minute gap with no successful
+poll; a fallback to another book's line at the number, because the fair is
+the same across books there (NFL and MLB 100% of multi-book rungs, CFB 95%,
+measured 2026-09-23); and `/bets.json` serves only the fairs of the bets in
+its window, since the table is never pruned. Known and accepted: Kalshi's
+price on Unabated includes the taker fee while the fill does not, so on
+Kalshi the price leg reads up to ~1.75¢ worse — it can hide an amber, never
+raise one; a bet placed just before the panel hid and reported after it
+reappears gets no fair (the rule reads the last resume, not each hidden
+interval).
 
 **2026-09-23 — Wagerzon (the C account) source in the bets service.** Second of
 the Bet Logger books Cal asked for. Same shape as BFA: a form login this

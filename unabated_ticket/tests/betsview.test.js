@@ -311,7 +311,7 @@ test("stakeAdvice guards: a bet with no fair, a flat rung, no stake or a parlay 
     assert.deepEqual([advice.matches[0].inMath, advice.matches[0].note], [false, note], held.id);
     // Still on the other side of this line: flagged, bare, with no dollars.
     assert.deepEqual(view.badges({ tier: advice.matches[0].tier, matches: advice.matches, advice }), [{ kind: "against", text: "against" }], held.id);
-    assert.deepEqual(view.relatedLines({ matches: advice.matches })[0], { tier: advice.matches[0].tier, inMath: false, tag: note, text: advice.matches[0].label }, held.id);
+    assert.deepEqual(view.relatedLines({ matches: advice.matches })[0], { tier: advice.matches[0].tier, inMath: false, tag: note, text: advice.matches[0].label, fairThen: null }, held.id);
   }
 });
 
@@ -386,11 +386,27 @@ test("relatedLines: bets in the math carry their tier's tag, the rest carry why 
     ],
   };
   assert.deepEqual(view.relatedLines(flag), [
-    { tier: "same_line", inMath: true, tag: "this line", text: "Chattanooga -5.5 +138 · 42.0¢ · $300 · Kalshi" },
-    { tier: "related_opposite", inMath: true, tag: "other side", text: "1H Eastern Kentucky +2.5 -110 · 52.4¢ · $200 · Kalshi" },
-    { tier: "same_game", inMath: false, tag: "game · not sized", text: "1H Under 22.5 -104 · 51.0¢ · $255 · Kalshi" },
+    { tier: "same_line", inMath: true, tag: "this line", text: "Chattanooga -5.5 +138 · 42.0¢ · $300 · Kalshi", fairThen: null },
+    { tier: "related_opposite", inMath: true, tag: "other side", text: "1H Eastern Kentucky +2.5 -110 · 52.4¢ · $200 · Kalshi", fairThen: null },
+    { tier: "same_game", inMath: false, tag: "game · not sized", text: "1H Under 22.5 -104 · 51.0¢ · $255 · Kalshi", fairThen: null },
   ]);
   assert.deepEqual(view.relatedLines(null), []);
+});
+
+test("relatedLines: a bet whose fill fair was saved says what the fair was then", () => {
+  const saved = record("novig:1", "open", { venue: "novig" });
+  const unsaved = record("novig:2", "open", { venue: "novig" });
+  const flag = {
+    tier: "same_line",
+    matches: [
+      { tier: "same_line", bet: saved, label: "Chattanooga -5.5 +138 · $168 · Novig", inMath: true, note: null },
+      { tier: "same_line", bet: unsaved, label: "Chattanooga -5.5 +150 · $168 · Novig", inMath: true, note: null },
+    ],
+  };
+  // +178 = 36.0%: Unabated's fair for the bet's own line when it was placed.
+  const fairs = new Map([["novig:1", { betId: "novig:1", fairAmerican: 178 }]]);
+  assert.deepEqual(view.relatedLines(flag, fairs).map((line) => line.fairThen), ["fair then 36.0%", null]);
+  assert.deepEqual(view.relatedLines(flag).map((line) => line.fairThen), [null, null]);
 });
 
 test("mergeServicePayload: fresh wins on the same id, team keys are filled, old settled bets are pruned", () => {
