@@ -1174,9 +1174,12 @@ test("pins: a bet with no league takes the pin's, and gives it back on Undo", ()
   const [pinned] = bets.applyPins([bet], [{ betId: "bol:1", league: "cfb", eventId: 7001 }]);
   assert.equal(pinned.league, "cfb");
   assert.equal(bets.matchBets(ACU_AT_TARLETON, [pinned]).matches.length, 1);
-  const [unpinned] = bets.applyPins([pinned], []);
+  // Keys resolved while pinned (here one set by hand) belong to the pin's league.
+  const [unpinned] = bets.applyPins([{ ...pinned, homeKey: "cfb:1196" }], []);
   assert.equal(unpinned.league, null);
   assert.equal(unpinned.leagueFromPin, undefined);
+  // Keys resolved in the pin's league are dropped with it, so the name reads unrecognised again.
+  assert.deepEqual([unpinned.awayKey, unpinned.homeKey], [null, null]);
 });
 
 test("needsGame: a name no rule resolves flags until the game starts; futures and leagues off the board never flag", () => {

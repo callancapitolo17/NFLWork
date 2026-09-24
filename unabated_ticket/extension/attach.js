@@ -270,7 +270,7 @@
   }
 
   const api = {
-    MAX_CANDIDATES, MIN_QUERY_LENGTH, STATUS_KNOWN, STATUS_LEARN, STATUS_FIX,
+    MAX_CANDIDATES, STATUS_KNOWN,
     attachCandidates, attachPlan, pinRequest, boardGames, gameLabel, gameMeta,
   };
 

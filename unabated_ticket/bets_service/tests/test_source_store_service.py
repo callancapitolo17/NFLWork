@@ -498,6 +498,16 @@ def test_re_attaching_a_bet_replaces_its_pin_and_the_rows_the_first_attach_taugh
     assert list(crosswalk_by_key(store)) == [("kalshi", "cfb", "Pats?")]
 
 
+def test_re_attaching_with_the_same_venue_name_rewrites_its_row_in_one_transaction(store):
+    """The re-attach deletes and re-inserts the same primary key inside one
+    transaction, the case DuckDB's eager key checks have refused in the past."""
+    now = datetime(2026, 9, 23, 22, 0, tzinfo=timezone.utc)
+    store.pin_bet(pin_for("bfa:1"), [crosswalk_row("kalshi", "Abilene Chr", "1123")], now)
+    store.pin_bet(pin_for("bfa:1"), [crosswalk_row("kalshi", "Abilene Chr", "1196")], now + timedelta(minutes=1))
+    [row] = store.load_crosswalk()
+    assert (row["venueTeamKey"], row["unabatedTeamId"], row["pinnedBetId"]) == ("Abilene Chr", "1196", "bfa:1")
+
+
 def test_a_failed_pin_write_rolls_back_the_whole_attach(store):
     now = datetime(2026, 9, 23, 22, 0, tzinfo=timezone.utc)
     broken_row = {**crosswalk_row("kalshi", "PIT Steelers", "41"), "unabatedTeamId": None}  # NOT NULL column

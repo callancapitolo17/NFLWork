@@ -1053,7 +1053,10 @@
         pinned.leagueFromPin = true;
       }
       if (!pin && record.leagueFromPin) {
+        // The keys were resolved in the pin's league; without it they mean nothing.
         pinned.league = null;
+        pinned.awayKey = null;
+        pinned.homeKey = null;
         delete pinned.leagueFromPin;
       }
       return pinned;
@@ -1264,7 +1267,7 @@
     normalizeKalshi, parseEventSuffix, centsToAmerican,
     AXIS_TOTAL, AXIS_MARGIN,
     matchBets, annotateRows, linePosition, unmatchedReasons, pruneForRetention, dedupeByNativeId, resolveTeamKeys,
-    rekeyRecords, learnCrosswalk, venueTeamOf, applyPins, betGameStarted,
+    rekeyRecords, learnCrosswalk, venueTeamOf, applyPins,
     describeBet, formatPlacedAt, formatStake, tierLabel, venueLabel, easternDateOf,
     PLACED_WINDOW_BEFORE_MS, PLACED_WINDOW_AFTER_MS,
   };
