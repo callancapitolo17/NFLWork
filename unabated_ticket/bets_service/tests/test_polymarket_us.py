@@ -124,9 +124,9 @@ def test_a_neutral_settlement_is_unknown_and_closes_at_the_settlement(records):
 def test_soccer_fails_closed_and_a_deposit_is_not_a_bet(records):
     [record] = [r for r in records if r["raw"]["marketType"] == "soccer_team_full_game_total"]
     assert record["unmatchable"] == "market type not supported (soccer_team_full_game_total)"
-    # No position and no settlement while the fills still hold contracts: open (the Kalshi rule —
-    # a false open undersizes the next bet, a false settle would oversize it).
-    assert (record["status"], record["contracts"], record["closedAt"]) == ("open", 3, None)
+    # No position and no settlement while the fills still hold contracts: unknown, never open —
+    # a held bet is only ever read off the positions endpoint.
+    assert (record["status"], record["contracts"], record["closedAt"]) == ("unknown", 3, "2026-09-23T21:04:00Z")
     assert len(records) == 11  # 7 live (slug, side) groups + 4 hand-written; the deposit makes none
 
 
@@ -174,11 +174,28 @@ def test_an_undocumented_trade_state_fails_the_poll(account):
         fill_of(trade)
 
 
-def test_an_own_order_without_its_side_fails_the_poll(account):
+def test_an_own_order_without_its_intent_fails_the_poll(account):
     trade = copy.deepcopy(account["activities"][0]["trade"])
-    del trade["aggressor"]["outcomeSide"]
-    with pytest.raises(RuntimeError, match="own order without outcomeSide/action"):
+    del trade["aggressor"]["intent"]
+    with pytest.raises(RuntimeError, match="own order intent None is not one of"):
         fill_of(trade)
+
+
+def test_intent_decides_the_side_so_buying_no_against_a_held_yes_nets_the_yes(account):
+    """Hypothetical wire case: the app books "buy NO" against a held YES as intent SELL_LONG.
+    outcomeSide + action alone would open a phantom NO beside a YES that never nets down."""
+    activities = copy.deepcopy(account["activities"])
+    [f5_buy] = [a for a in activities if a["type"] == "ACTIVITY_TYPE_TRADE" and a["trade"]["id"] == "HAND00000001"]
+    close = copy.deepcopy(f5_buy)
+    close["trade"].update(id="HAND00000099", createTime="2026-09-23T22:00:00.000000000Z",
+                          price={"value": "0.5000", "currency": "USD"})
+    close["trade"]["aggressor"].update(outcomeSide="OUTCOME_SIDE_NO", action="ORDER_ACTION_BUY",
+                                       intent="ORDER_INTENT_SELL_LONG")
+    positions = {slug: position for slug, position in account["positions"].items() if slug != F5_SLUG}
+    records = normalize_polymarket_us(positions, [close] + activities, account["events"], FETCHED_AT)
+    assert [r["id"] for r in records if r["id"].startswith(f"polymarket_us:{F5_SLUG}")] == [f"polymarket_us:{F5_SLUG}:yes"]
+    record = by_id(records, f"polymarket_us:{F5_SLUG}:yes")
+    assert (record["status"], record["raw"]["netContracts"], record["price"]) == ("closed", 0, 150)
 
 
 @pytest.mark.parametrize("market_type, expected", [
@@ -365,6 +382,29 @@ def test_paging_goes_past_the_window_until_open_and_settling_positions_have_thei
     record = by_id(records, record_id)
     assert (record["status"], record["unmatchable"]) == (status, None)
     assert record["price"] is not None
+
+
+def test_paging_continues_until_the_fills_add_up_to_the_open_size(account):
+    """Two of the MIN/TB fills (0.68 + 0.12) are in the window; the 0.5 that completes the 1.3
+    held sits on page 2. Stopping at the first fill would price the bet off 0.8 contracts."""
+    secret, _public = make_secret()
+    old = {"type": "ACTIVITY_TYPE_ACCOUNT_DEPOSIT",
+           "accountBalanceChange": {"createTime": "2026-07-01T00:00:00Z", "amount": {"value": "0"}}}
+    is_half = lambda a: a["type"] == "ACTIVITY_TYPE_TRADE" and a["trade"]["qtyDecimal"] == "0.5000"  # noqa: E731
+    session = FakeSession(account, activity_pages=[[a for a in account["activities"] if not is_half(a)] + [old],
+                                                   [a for a in account["activities"] if is_half(a)]])
+    make_source(session, secret).fetch()
+    assert len(session.calls_to(polymarket_us.API_BASE_URL, polymarket_us.ACTIVITIES_PATH)) == 2
+
+
+def test_a_settlement_older_than_the_window_does_not_pull_more_history(account):
+    secret, _public = make_secret()
+    old_settlement = {"type": "ACTIVITY_TYPE_POSITION_RESOLUTION", "positionResolution": {
+        "marketSlug": "aec-nfl-old-game-2026-07-01", "side": "POSITION_RESOLUTION_SIDE_LONG",
+        "updateTime": "2026-07-01T00:00:00Z", "beforePosition": {"netPositionDecimal": "10.0000"}}}
+    session = FakeSession(account, activity_pages=[account["activities"] + [old_settlement], []])
+    make_source(session, secret).fetch()
+    assert len(session.calls_to(polymarket_us.API_BASE_URL, polymarket_us.ACTIVITIES_PATH)) == 1
 
 
 def test_a_cursor_that_never_ends_fails_the_poll(account, monkeypatch):

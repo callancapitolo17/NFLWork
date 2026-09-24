@@ -1175,20 +1175,25 @@ GETs; no order placement.
   signed GETs on `api.polymarket.us` — `/v1/portfolio/positions` (a slug →
   position map, `netPositionDecimal` positive = YES held, negative = NO) and
   `/v1/portfolio/activities` (newest first, paged until a page ends before the
-  31-day window AND every open or just-settled position has its fills in hand,
-  so a bet placed weeks before its game keeps its price and its settlement
-  still closes the store's open row) — with the account's own API key (`X-PM-Access-Key`,
+  31-day window AND the fills in hand add up to the size of every open
+  position and every settlement inside the window, so a bet placed weeks
+  before its game keeps its full entry price and its settlement still closes
+  the store's open row; a settlement older than the window adds nothing) —
+  with the account's own API key (`X-PM-Access-Key`,
   `X-PM-Timestamp` in ms, `X-PM-Signature` = base64 Ed25519 over timestamp +
   `GET` + the path **without** its query string; a signed query is refused
   401). A record is one (market slug, contract side) of our own fills: each
   trade carries both orders and ours is `aggressor` when `isAggressor`, else
-  `passive` (`outcomeSide` YES/NO, `action` BUY/SELL); `price` is always the
+  `passive`; its `intent` (BUY_LONG / SELL_LONG = YES opened / reduced,
+  BUY_SHORT / SELL_SHORT = NO) decides the side and buy/sell, so a "buy NO"
+  booked against a held YES nets the YES; `price` is always the
   YES price, so a NO fill costs `1 − price`. Price is the VWAP of our buys on
   that side (fees excluded), the open size comes from the position, and a
   `positionResolution` settles it (`side` LONG = YES won, SHORT = NO won,
   NEUTRAL — a tie at $0.50 — is `unknown`); a side sold back to zero is
   `closed`, and fills still holding contracts with neither a position nor a
-  settlement read `open` (the Kalshi rule); an open position with no fill
+  settlement are `unknown` (a held bet is only ever read off the positions
+  endpoint); an open position with no fill
   anywhere in the history is listed unmatchable and unpriced; busted and clearinghouse-rejected trades never count, and a trade
   state the docs do not list fails the poll. The trade's own `market` object
   gives the type — `sportsMarketType` `<sport>_(team|game)_<period>_<winner|spread|total>`

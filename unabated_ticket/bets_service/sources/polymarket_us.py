@@ -12,8 +12,9 @@ Two halves, like sources/kalshi.py:
                                 tests/fixtures/bets/polymarket_us_account.json.
   PolymarketUSSource            the network half (Source protocol): every poll signs two GETs
                                 with the account's API key (positions; activities back to
-                                HISTORY_DAYS, and further until every open or just-settled
-                                position's fills are in) and makes one cached public GET per game.
+                                HISTORY_DAYS, and further until the fills in hand add up to every
+                                open and every in-window settled position) and makes one cached
+                                public GET per game.
 
 Inputs:  POLYMARKET_US_KEY_ID / POLYMARKET_US_SECRET_KEY (created at polymarket.us/developer;
          config reads them from the environment, bets_service/.env, kalshi_draft/.env, then
@@ -35,8 +36,10 @@ Outputs: list of records. Side effects: none on disk; the event cache lives in m
 
 Wire grammar (live pull of 2026-09-23: 1 open position, 26 trades, 5 settlements):
   One instrument per market: the YES contract. `price` on a trade is always the YES price.
-  Buying NO is selling YES; the own order says which: `outcomeSide` OUTCOME_SIDE_YES|NO,
-  `action` ORDER_ACTION_BUY|SELL (intent BUY_LONG / SELL_LONG / BUY_SHORT / SELL_SHORT).
+  Buying NO is selling YES. The own order's `intent` says what the fill did to the position —
+  BUY_LONG / SELL_LONG (YES opened / reduced), BUY_SHORT / SELL_SHORT (NO opened / reduced) —
+  and decides the record's side and buy/sell; `outcomeSide` + `action` agreed with it on every
+  live fill, but only intent stays right if the app ever books "buy NO" against a held YES.
   A trade carries both orders; ours is `aggressor` when `isAggressor`, else `passive` (the
   other is the counterparty's and is never read). Quantities are fractional decimal strings.
   position.netPositionDecimal: positive = YES held, negative = NO held.
@@ -63,8 +66,8 @@ Wire grammar (live pull of 2026-09-23: 1 open position, 26 trades, 5 settlements
 Record conventions (plan § Kalshi specifics, same shape): one record per (slug, contract side)
 seen in our fills; the positions endpoint is the truth for the open size; a settlement decides
 won/lost; a side sold back to zero is closed; fills still holding contracts with neither a
-position nor a settlement read open (the Kalshi rule: a false open undersizes the next bet, a
-false settle would oversize it). An open position whose fills are nowhere in the account's whole
+position nor a settlement are unknown — a position is only ever read off the positions endpoint,
+so a mis-netted side can never show as a held bet. An open position whose fills are nowhere in the account's whole
 history is still listed, unmatchable and unpriced. Price is the VWAP of our buys on that side, in
 the side's own dollars (NO = 1 - YES price), fees excluded; stake = contracts x price. awayKey /
 homeKey stay None — the extension resolves them through teams.js.
@@ -109,8 +112,9 @@ COUNTED_TRADE_STATES = {
     "TRADE_STATE_PENDING_CLEARED", "TRADE_STATE_CLEARING_ACKNOWLEDGED", "TRADE_STATE_RETRY_REQUEST",
 }
 REVERSED_TRADE_STATES = {"TRADE_STATE_BUSTED", "TRADE_STATE_REJECTED"}
-CONTRACT_SIDES = {"OUTCOME_SIDE_YES": "yes", "OUTCOME_SIDE_NO": "no"}
-ORDER_ACTIONS = {"ORDER_ACTION_BUY": "buy", "ORDER_ACTION_SELL": "sell"}
+# Own order intent -> (contract side, buy/sell): its effect on the position.
+ORDER_INTENTS = {"ORDER_INTENT_BUY_LONG": ("yes", "buy"), "ORDER_INTENT_SELL_LONG": ("yes", "sell"),
+                 "ORDER_INTENT_BUY_SHORT": ("no", "buy"), "ORDER_INTENT_SELL_SHORT": ("no", "sell")}
 # The contract side that won; NEUTRAL (neither) is absent on purpose -> status "unknown".
 RESOLUTION_WINNERS = {"POSITION_RESOLUTION_SIDE_LONG": "yes", "POSITION_RESOLUTION_SIDE_SHORT": "no"}
 
@@ -163,11 +167,10 @@ def activity_time(activity: dict) -> datetime | None:
 def own_order_of(trade: dict) -> dict:
     """Our order on a trade (the other one is the counterparty's)."""
     order = trade.get("aggressor") if trade.get("isAggressor") else trade.get("passive")
-    if not isinstance(order, dict) or order.get("outcomeSide") not in CONTRACT_SIDES \
-            or order.get("action") not in ORDER_ACTIONS:
-        keys = sorted(order.keys()) if isinstance(order, dict) else type(order).__name__
+    if not isinstance(order, dict) or order.get("intent") not in ORDER_INTENTS:
+        seen = order.get("intent") if isinstance(order, dict) else type(order).__name__
         raise RuntimeError(f"Polymarket US trade {trade.get('id')} on {trade.get('marketSlug')}: own order "
-                           f"without outcomeSide/action (keys {keys}); capture it and extend "
+                           f"intent {seen!r} is not one of {sorted(ORDER_INTENTS)}; capture it and extend "
                            "sources/polymarket_us.py")
     return order
 
@@ -181,7 +184,7 @@ def fill_of(trade: dict) -> dict | None:
         raise RuntimeError(f"Polymarket US trade {trade.get('id')} on {trade.get('marketSlug')} is in state "
                            f"{state!r}, which the docs do not list; decide whether it stands before counting it")
     order = own_order_of(trade)
-    contract_side = CONTRACT_SIDES[order["outcomeSide"]]
+    contract_side, action = ORDER_INTENTS[order["intent"]]
     yes_price = to_number((trade.get("price") or {}).get("value"))
     metadata = order.get("marketMetadata") or {}
     return {
@@ -189,7 +192,7 @@ def fill_of(trade: dict) -> dict | None:
         "slug": trade.get("marketSlug"),
         "eventSlug": metadata.get("eventSlug") or None,
         "contractSide": contract_side,
-        "action": ORDER_ACTIONS[order["action"]],
+        "action": action,
         "contracts": to_number(trade.get("qtyDecimal")),
         "sidePrice": yes_price if contract_side == "yes" else 1 - yes_price,
         "createTime": trade.get("createTime"),
@@ -237,7 +240,7 @@ def net_of(position: dict | None) -> float:
 def status_of(contract_side: str, position: dict | None, resolution: dict | None,
               net_contracts: float) -> str:
     """A settlement decides first, then the open position; with neither, a side sold back to
-    zero is closed and one still holding contracts is open (module docstring)."""
+    zero is closed and one still holding contracts is unknown (positions are the truth)."""
     if resolution:
         if held_side_of(net_of(resolution.get("beforePosition"))) != contract_side:
             return "closed"
@@ -248,11 +251,11 @@ def status_of(contract_side: str, position: dict | None, resolution: dict | None
     open_side = held_side_of(net_of(position))
     if open_side is not None:
         return "open" if open_side == contract_side else "closed"
-    return "closed" if net_contracts <= 0 else "open"
+    return "closed" if net_contracts <= 0 else "unknown"
 
 
 def contracts_of(status: str, position: dict | None, resolution: dict | None, net_contracts: float) -> float:
-    if status == "open" and held_side_of(net_of(position)) is not None:
+    if status == "open":
         return abs(net_of(position))
     if resolution and status != "closed":
         return abs(net_of(resolution.get("beforePosition")))
@@ -405,6 +408,25 @@ def combo_legs_of(legs: list[dict]) -> list[dict]:
     return [{"slug": leg.get("slug"), "eventSlug": leg.get("eventSlug"), "outcome": leg.get("outcome"),
              "outcomeSide": leg.get("outcomeSide"), "eventStartTime": leg.get("eventStartTime"),
              "state": leg.get("state")} for leg in legs if isinstance(leg, dict)]
+
+
+def sizes_to_cover(positions_by_slug) -> dict[tuple[str, str], float]:
+    """(slug, held side) -> contracts, for each (slug, position) pair whose position holds a side
+    (an open position, or a settlement's beforePosition)."""
+    sizes = {}
+    for slug, position in positions_by_slug:
+        held = held_side_of(net_of(position))
+        if slug and held is not None:
+            sizes[(slug, held)] = abs(net_of(position))
+    return sizes
+
+
+# Fractional contracts are 4-decimal strings; nets are compared to this tolerance.
+CONTRACTS_TOLERANCE = 1e-6
+
+
+def fills_cover(needed: dict[tuple[str, str], float], in_hand: dict[tuple[str, str], float]) -> bool:
+    return all(in_hand.get(key, 0.0) >= size - CONTRACTS_TOLERANCE for key, size in needed.items())
 
 
 def latest_resolutions(activities: list[dict]) -> dict[str, dict]:
@@ -592,13 +614,15 @@ class PolymarketUSSource:
         raise RuntimeError(f"Polymarket US positions: no eof after {MAX_PAGES} pages")
 
     def _fetch_activities(self, positions: dict[str, dict]) -> list[dict]:
-        """Newest first. Paging stops once a page ends before the history_days cutoff AND every
-        open position and every settlement read so far has a fill in hand: a bet placed weeks
-        before its game keeps its price while open, and its settlement still finds its fills
-        (without them the store's open row would never close)."""
+        """Newest first. Paging stops once a page ends before the history_days cutoff AND the fills
+        in hand net to at least the size of every open position and every settlement inside the
+        window: a bet placed (or partly placed) weeks before its game keeps its full entry price,
+        and its settlement still finds its fills — without them the store's open row would never
+        close. A settlement older than the cutoff adds nothing, so paging never walks the whole
+        history for bets long settled."""
         cutoff = datetime.fromtimestamp(self._clock() - self._history_days * 86400, tz=timezone.utc)
-        needs_fill = {slug for slug, position in positions.items() if held_side_of(net_of(position)) is not None}
-        has_fill: set[str] = set()
+        needed = sizes_to_cover(positions.items())
+        in_hand: dict[tuple[str, str], float] = {}
         activities: list[dict] = []
         cursor = None
         for _page in range(MAX_PAGES):
@@ -607,15 +631,18 @@ class PolymarketUSSource:
             if not isinstance(page, list):
                 raise RuntimeError(f"Polymarket US activities: expected a list, got {type(page).__name__}")
             activities.extend(page)
-            for activity in page:
-                if activity.get("type") == ACTIVITY_TRADE:
-                    has_fill.add((activity.get("trade") or {}).get("marketSlug"))
-                elif activity.get("type") == ACTIVITY_RESOLUTION:
-                    needs_fill.add((activity.get("positionResolution") or {}).get("marketSlug"))
+            for fill in fills_of(page):
+                key = (fill["slug"], fill["contractSide"])
+                in_hand[key] = in_hand.get(key, 0.0) + (fill["contracts"] if fill["action"] == "buy" else -fill["contracts"])
+            recent_resolutions = [activity["positionResolution"] for activity in page
+                                  if activity.get("type") == ACTIVITY_RESOLUTION
+                                  and (activity_time(activity) or cutoff) >= cutoff]
+            needed.update(sizes_to_cover((resolution.get("marketSlug"), resolution.get("beforePosition"))
+                                         for resolution in recent_resolutions))
             cursor = body.get("nextCursor")
             oldest = activity_time(page[-1]) if page else None
             past_window = oldest is not None and oldest < cutoff
-            if body.get("eof") or not cursor or (past_window and needs_fill <= has_fill):
+            if body.get("eof") or not cursor or (past_window and fills_cover(needed, in_hand)):
                 return activities
         raise RuntimeError(f"Polymarket US activities: no eof after {MAX_PAGES} pages")
 
