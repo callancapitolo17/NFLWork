@@ -652,9 +652,10 @@ rule ("no add for one snapshot after an amber, never on a red") is a
 separate decision once the tag has been watched on live cards.
 
 **Since your first fill** (user decisions 2026-09-23). On a line you hold in
-the same direction, the tag measures from your EARLIEST open bet on that very
-line — same period, bet type, side and number, at any venue — whose
-fill-time fair was saved, instead of from ten minutes ago: the fair then
+the same direction, the tag measures from your EARLIEST open straight bet on
+that very line — same period, bet type, side and number, at any venue; a
+parlay leg is not a position on the line — whose fill-time fair was saved,
+instead of from ten minutes ago: the fair then
 against the fair now, and that bet's own fill price against the price now
 (Kalshi's exact VWAP in cents, Novig's exact probability, a sportsbook's
 American price), through the same four cases at the same 0.5-point
@@ -673,7 +674,13 @@ with a saved fair adds `fair then 36.0%`.
 How a fill's fair is saved (`extension/fillfair.js`): after every bets poll
 and every scanner update, each open bet without one is read off the
 scanner's history — the newest observation of its line at or before
-`placedAt`. The bet's own venue's line first (Kalshi, Novig, BetOnline and
+`placedAt`, from snapshot lines only (as for the fair ladder: the changes
+stream files an event's team totals under its game total's bet type, so a
+stream-only line at the number can be another market). A Kalshi NO that
+also wins on a tie is refused — no line's fair is its payoff — and a
+placement up to a minute past the panel's clock (a venue clock running
+ahead) waits a pass, while one further out is refused as a time-zone error.
+The bet's own venue's line first (Kalshi, Novig, BetOnline and
 ProphetX are on the board), else the book at that number that changed its
 line most recently: Unabated's fair is the same at every book on a number
 (measured 2026-09-23: NFL 5,796 of 5,796 multi-book rungs identical, MLB
@@ -683,8 +690,13 @@ only when the history is a gap-free record of the fill: the scanner has
 watched since before `placedAt` (`status.observingSince` — set when the
 first load after the panel opens lands, cleared when the panel hides, set
 again only once the catch-up after it reappears has landed, and restarted
-after more than two minutes without a successful snapshot or stream poll)
-and the line had been seen by then, with a fair. The panel POSTs the row to
+after more than two minutes without a successful snapshot or stream poll),
+the line's own league has loaded without a gap since before it too
+(`status.leagueObservingSince`: one league's snapshot can keep failing
+while the others land, and its exchange lines move on the snapshot only —
+a load more than one refresh interval plus two minutes after the previous
+one starts that league's run over), and the line had been seen by then,
+with a fair. The panel POSTs the row to
 the bets service, which keeps the first capture per bet for good
 (`bet_fill_fairs`, Bets service below). **No backfill** (user decision): a
 bet placed before the panel was watching — every bet open when this shipped,
@@ -1304,7 +1316,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 267 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 270 tests) and
 the bets service's pytest suite (194 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -1371,7 +1383,9 @@ move as `(snapshot)` observations and forgets the lines it no longer lists
 `pause()`, set again when the catch-up after `resume()` lands (not when
 `resume()` ran — every request takes 5 s on the test clock), a pass that
 lands while hidden starting no run, and a 110 s outage keeping the run
-while a 140 s one restarts it.
+while a 140 s one restarts it; `leagueObservingSince` keeps CFB's run
+through one missed refresh and starts it over after five minutes of failed
+loads while NFL's run and the global one go on.
 
 `fillfair.test.js` pins the since-your-first-fill capture and reading on
 the 49ers card that motivated it (Seahawks @ 49ers, a 49ers -14.5 alt held
@@ -1380,11 +1394,14 @@ not the +188 it shows now); the own venue first, and for a venue off the
 board (BFA) the most recently changed book at the number; an own-venue line
 first seen after the fill falling back to a book watched through it; every
 refusal with its reason (before the panel was watching, first seen after,
-no fair, placed in the future, no placed time); a bet with no line yet left
-for the next pass; the other side of the number never read; saved, settled
+no fair, a Kalshi NO that also wins on a tie, placed in the future, no
+placed time, and a fill inside a gap in its own league's snapshots); a bet
+with no line yet, and one a venue clock 30 s ahead
+placed "after now", left for the next pass; a line only the changes stream
+carries never read; the other side of the number never read; saved, settled
 and unmatchable bets skipped. On the display side: the earliest open
-`same_line` bet with a saved fair is the baseline (a same-side bet at
-another number is not); the card reads red — the price improved to +223
+`same_line` straight bet with a saved fair is the baseline (a same-side bet
+at another number is not, nor a parlay leg however early); the card reads red — the price improved to +223
 while the fair fell 36.0% → 34.7% — amber with the fair holding, green with
 it rising, and exactly `edgemove.classifyMove`'s answer; a record with no
 price decides on the fair alone; and the fill price basis per venue

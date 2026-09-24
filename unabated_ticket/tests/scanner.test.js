@@ -451,6 +451,43 @@ test("observingSince: a pass that lands while the panel is hidden does not start
   assert.equal(scanner.getStatus().observingSince, null);
 });
 
+test("leagueObservingSince: a league whose loads keep failing while another lands starts its own run over", async () => {
+  let clock = NOW;
+  let cfbDown = false;
+  const fetchImpl = fakeFetch({
+    [SNAPSHOT_BASE_URL(2)]: () => {
+      if (cfbDown) throw new Error("timed out");
+      return response({ body: fixture("v2_venue_ids_slice.json"), headers: { "last-modified": new Date(clock - 20 * 1000).toUTCString(), "content-length": "1000" } });
+    },
+  });
+  const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers });
+  await scanner.start([1, 2]);
+  assert.deepEqual(scanner.getStatus().leagueObservingSince, { 1: NOW, 2: NOW });
+  // One missed refresh and a quick recovery: the same run (60 s tier + the 120 s allowance).
+  cfbDown = true;
+  clock += 61 * 1000;
+  await scanner.tick();
+  cfbDown = false;
+  clock += 31 * 1000;
+  await scanner.tick();
+  assert.deepEqual(scanner.getStatus().leagueObservingSince, { 1: NOW, 2: NOW });
+  // Down for five minutes while NFL and the stream keep landing: CFB's run starts over, NFL's does not.
+  cfbDown = true;
+  for (let step = 0; step < 10; step += 1) {
+    clock += 31 * 1000;
+    await scanner.tick();
+  }
+  cfbDown = false;
+  clock += 31 * 1000;
+  await scanner.tick();
+  const status = scanner.getStatus();
+  assert.equal(status.leagueObservingSince[1], NOW);
+  assert.equal(status.leagueObservingSince[2], clock);
+  assert.equal(status.observingSince, NOW);
+  await scanner.start([1]);
+  assert.deepEqual(scanner.getStatus().leagueObservingSince, { 1: clock });
+});
+
 test("observingSince: more than two minutes without a successful observation starts a new run", async () => {
   let clock = NOW;
   let offline = false;

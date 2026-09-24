@@ -9,14 +9,15 @@
 // new open bet's fill-time fair is the newest observation of its line at or
 // before placedAt, read only when the history is a gap-free record of that
 // moment: the scanner has watched without a gap since before placedAt
-// (scanner.js status.observingSince) and the line had been seen by then.
+// (scanner.js status.observingSince, and the line's own league
+// status.leagueObservingSince) and the line had been seen by then.
 // Never a backfill: a bet placed before the panel was watching (open when
 // this shipped, placed with the panel hidden or closed) gets nothing and
 // keeps the ten-minute tag.
 //
 // Display (fairsByBetId, baselineOf, moveSinceFill): a line held in the same
-// direction is measured from the EARLIEST open bet on that very line with a
-// saved fair — the fair then against the fair now, the bet's own fill price
+// direction is measured from the EARLIEST open straight bet on that very line
+// with a saved fair — the fair then against the fair now, the bet's own fill price
 // against the price now — through edgemove.classifyMove, the same four cases
 // and the same 0.5-point threshold as the ten-minute tag.
 //
@@ -40,12 +41,19 @@
   // record keeps its exact fill the same way.
   const EXCHANGE_PROBABILITY_FORMAT = 4;
   const AMERICAN_FORMAT = 1;
+  // A placement up to this far past our clock is a venue clock running a
+  // little ahead (a fill can reach the panel seconds after it happens): it is
+  // looked at again next pass. Further out is a time-zone error, refused —
+  // waiting it out would read the history at the wrong moment.
+  const CLOCK_SKEW_GRACE_MS = 60 * 1000;
   // Why a bet gets no saved fair. Every one is final: the history only ever
   // loses the moment of a fill, it never gains it back.
   const REFUSED = Object.freeze({
     noPlacedAt: "no placed time on the record",
     future: "placed after now (a clock or time-zone error)",
     notWatching: "placed before the panel was watching",
+    tieCaveat: "a Kalshi NO that also wins on a tie has no line of its own",
+    leagueGap: "placed while its league's snapshot was not loading",
     notSeen: "its line was first seen after the bet",
     noFair: "no Unabated fair on its line at the fill",
   });
@@ -61,11 +69,13 @@
   }
 
   // The reasons a bet is refused before its line is looked up: they need
-  // only the record and the clocks.
-  function refusalByTime(placedMs, observingSince, now) {
+  // only the record and the clocks. A NO that also wins on a tie pays on
+  // "the other team or a tie", which no line's fair prices.
+  function refusalBeforeLookup(bet, placedMs, observingSince, now) {
     if (!Number.isFinite(placedMs)) return REFUSED.noPlacedAt;
-    if (placedMs > now) return REFUSED.future;
+    if (placedMs > now + CLOCK_SKEW_GRACE_MS) return REFUSED.future;
     if (placedMs < observingSince) return REFUSED.notWatching;
+    if (Array.isArray(bet.approx) && bet.approx.includes(bets.TIE_CAVEAT)) return REFUSED.tieCaveat;
     return null;
   }
 
@@ -94,7 +104,11 @@
     if (!betsByEvent.size) return out;
     const rows = [];
     for (const line of Object.values(state.lines)) {
-      if (line.bookId === feed.UNABATED_LINE_BOOK_ID) continue;
+      // Snapshot lines only, as the fair ladder (ladder.js): the changes
+      // stream files an event's team totals under its game total's bet type
+      // (feed.js), so a stream-only line at the bet's number can be another
+      // market — and a saved fair is permanent.
+      if (line.bookId === feed.UNABATED_LINE_BOOK_ID || line.fromSnapshot !== true) continue;
       const onEvent = betsByEvent.get(line.eventId);
       if (onEvent && onEvent.some((bet) => couldBeSameLine(bet, line))) rows.push(feed.describeLine(line, state));
     }
@@ -131,11 +145,17 @@
     return { entry };
   }
 
-  // The first line, in preference order, whose history holds the fill:
-  // {save} or {reason} (the most preferred line's).
-  function decide(bet, placedMs, rows, history) {
+  // The first line, in preference order, whose league was loading through
+  // the fill and whose history holds it: {save} or {reason} (the most
+  // preferred line's).
+  function decide(bet, placedMs, rows, history, leagueObservingSince) {
     let reason = null;
     for (const row of rows) {
+      const leagueSince = leagueObservingSince[row.leagueId];
+      if (typeof leagueSince !== "number" || placedMs < leagueSince) {
+        reason ||= REFUSED.leagueGap;
+        continue;
+      }
       const found = fillTimeEntry(history[row.key], placedMs);
       if (found.entry) {
         return { save: {
@@ -159,24 +179,26 @@
   //   boardLines      one describeLine row per event (the panel's boardLines())
   //   history         edgemove history: line key -> entries
   //   observingSince  ms since when the history has no gap, or null
+  //   leagueObservingSince  leagueId -> ms since when that league's snapshots
+  //                   have loaded without a gap (scanner status)
   //   now             ms
-  function captureFillFairs({ records, skipIds, state, boardLines, history, observingSince, now }) {
+  function captureFillFairs({ records, skipIds, state, boardLines, history, observingSince, leagueObservingSince, now }) {
     const result = { saves: [], refusals: [] };
     if (!state || typeof observingSince !== "number") return result;
     const pending = [];
     for (const bet of records) {
       if (bet.status !== "open" || bet.unmatchable || skipIds.has(bet.id)) continue;
       const placedMs = Date.parse(bet.placedAt);
-      const reason = refusalByTime(placedMs, observingSince, now);
+      const reason = refusalBeforeLookup(bet, placedMs, observingSince, now);
       if (reason) result.refusals.push({ betId: bet.id, reason });
-      else pending.push({ bet, placedMs });
+      else if (placedMs <= now) pending.push({ bet, placedMs });
     }
     if (!pending.length) return result;
     const rowsByBet = sameLineRows(pending.map((item) => item.bet), state, boardLines);
     for (const { bet, placedMs } of pending) {
       const rows = rowsByBet.get(bet.id);
       if (!rows) continue;
-      const decision = decide(bet, placedMs, byPreference(rows, bet), history || {});
+      const decision = decide(bet, placedMs, byPreference(rows, bet), history || {}, leagueObservingSince || {});
       if (decision.save) result.saves.push(decision.save);
       else result.refusals.push({ betId: bet.id, reason: decision.reason });
     }
@@ -218,14 +240,15 @@
   }
 
   // The bet a line held in this direction is measured from: the EARLIEST
-  // open bet on this very line (same_line — period, bet type, side and
-  // number, any venue) with a saved fair, as {bet, fair, placedMs}; null when
-  // none has one (the ten-minute tag stays). `matches` are the row's
-  // matchBets matches, which hold open bets only.
+  // open straight bet on this very line (same_line — period, bet type, side
+  // and number, any venue) with a saved fair, as {bet, fair, placedMs}; null
+  // when none has one (the ten-minute tag stays). A parlay leg is not a
+  // position on the line and has no fill price of its own. `matches` are the
+  // row's matchBets matches, which hold open bets only.
   function baselineOf(matches, fairs) {
     let baseline = null;
     for (const match of matches || []) {
-      if (match.tier !== "same_line" || !match.bet) continue;
+      if (match.tier !== "same_line" || !match.bet || match.bet.isParlayLeg === true) continue;
       const fair = fairs.get(match.bet.id);
       const placedMs = Date.parse(match.bet.placedAt);
       if (!fair || !Number.isFinite(placedMs)) continue;

@@ -35,7 +35,7 @@ function line(bookId, overrides = {}) {
     key: isAlt ? `${mainKey}:alt${points}` : mainKey, isAlt, mainKey, mainPoints: sideIndex === 1 ? -8.5 : 8.5,
     leagueId: 1, periodTypeId: 1, betTypeId: 2, eventId: EVENT_ID, marketId: "m1", bookId, sideKey, sideIndex, points,
     price: 223, sourceFormat: 1, sourcePrice: null, bacr: 188, ge: 0.12, liquidity: 500, statusId: 1,
-    sequenceNumber: T0, isBlurred: false, modifiedOn: null,
+    sequenceNumber: T0, isBlurred: false, modifiedOn: null, fromSnapshot: true,
     ...overrides,
   };
 }
@@ -95,9 +95,10 @@ function historyOf(observations) {
   return history;
 }
 
-function capture({ records, lines, history, observingSince = WATCHING_SINCE, now = T0 + 6 * MIN, skipIds = new Set() }) {
+function capture({ records, lines, history, observingSince = WATCHING_SINCE, leagueObservingSince = { 1: WATCHING_SINCE },
+  now = T0 + 6 * MIN, skipIds = new Set() }) {
   const state = boardState(lines);
-  return captureFillFairs({ records, skipIds, state, boardLines: boardLinesOf(state), history, observingSince, now });
+  return captureFillFairs({ records, skipIds, state, boardLines: boardLinesOf(state), history, observingSince, leagueObservingSince, now });
 }
 
 test("saves the fair the bet's own line showed at the fill, not the one it shows now", () => {
@@ -145,7 +146,7 @@ test("the own venue's line first seen after the fill falls back to a book that w
   assert.equal(save.fairObservedAt, T0 + MIN);
 });
 
-test("refusals are final and say why: before the panel was watching, first seen after, no fair, no or future time", () => {
+test("refusals are final and say why: before the panel was watching, first seen after, no fair, a tie caveat, no or future time", () => {
   const history = historyOf({
     [NINERS_ALT(NOVIG)]: [{ at: T0 + 3 * MIN, bacr: 188 }],
     [SEAHAWKS_ALT(NOVIG)]: [{ at: T0, bacr: null }],
@@ -155,12 +156,15 @@ test("refusals are final and say why: before the panel was watching, first seen 
     bet("novig:before", { placedAt: iso(WATCHING_SINCE - MIN) }),
     bet("novig:unseen"),
     bet("novig:nofair", { side: "away", points: 14.5 }),
-    bet("novig:future", { placedAt: iso(T0 + 7 * MIN) }),
+    bet("novig:future", { placedAt: iso(T0 + 10 * MIN) }),
     bet("novig:notime", { placedAt: null }),
+    // "NO on the Seahawks" = the 49ers or a tie: no line's fair is its payoff.
+    bet("kalshi:tie", { venue: "kalshi", betType: "moneyline", points: null, approx: ["kalshi_no_side_includes_tie"] }),
   ];
   const result = capture({ records, lines, history });
   assert.deepEqual(result.saves, []);
   assert.deepEqual(result.refusals.sort((a, b) => a.betId.localeCompare(b.betId)), [
+    { betId: "kalshi:tie", reason: REFUSED.tieCaveat },
     { betId: "novig:before", reason: REFUSED.notWatching },
     { betId: "novig:future", reason: REFUSED.future },
     { betId: "novig:nofair", reason: REFUSED.noFair },
@@ -175,8 +179,26 @@ test("a bet with no line on the board yet is neither saved nor refused, so the n
   const records = [
     bet("novig:other-game", { awayTeam: "Dallas Cowboys", homeTeam: "New York Giants", awayKey: "nfl:33", homeKey: "nfl:44" }),
     bet("novig:other-number", { points: -15.5 }),
+    // A venue clock 30 s ahead of ours: waited out, not refused.
+    bet("novig:skewed", { placedAt: iso(T0 + 6.5 * MIN) }),
   ];
   assert.deepEqual(capture({ records, lines: [line(NOVIG)], history }), { saves: [], refusals: [] });
+});
+
+test("a fill inside a gap in its own league's snapshots is refused, though the rest of the board was watched", () => {
+  // NFL's snapshot kept failing until T0 + 4 min while other leagues and the stream landed.
+  const history = historyOf({ [NINERS_ALT(NOVIG)]: [{ at: T0 - 30 * MIN, bacr: 178 }] });
+  const result = capture({ records: [bet("novig:1")], lines: [line(NOVIG)], history, leagueObservingSince: { 1: T0 + 4 * MIN } });
+  assert.deepEqual(result, { saves: [], refusals: [{ betId: "novig:1", reason: REFUSED.leagueGap }] });
+  assert.equal(capture({ records: [bet("novig:1")], lines: [line(NOVIG)], history, leagueObservingSince: {} }).refusals[0].reason, REFUSED.leagueGap);
+});
+
+test("a line only the changes stream carries is never read: it can be another market filed under the same bet type", () => {
+  // The stream files an event's team totals under its game total's bet type (feed.js);
+  // only snapshot lines are the game's own market, as for the fair ladder.
+  const history = historyOf({ [NINERS_ALT(NOVIG)]: [{ at: T0, bacr: 178 }] });
+  assert.deepEqual(capture({ records: [bet("novig:1")], lines: [line(NOVIG, { fromSnapshot: false })], history }),
+    { saves: [], refusals: [] });
 });
 
 test("the other side of the number is not the bet's line", () => {
@@ -239,6 +261,10 @@ test("baselineOf: the earliest open bet on this very line that has a saved fair"
   assert.equal(baseline.placedMs, T0 + 2 * MIN);
   assert.equal(baselineOf([{ tier: "same_side", bet: otherNumber }], fairs), null);
   assert.equal(baselineOf(undefined, fairs), null);
+  // A parlay leg is not a position on the line: never the baseline, however early.
+  const leg = bet("novig:leg", { placedAt: iso(T0 - 120 * MIN), isParlayLeg: true, price: null });
+  const withLeg = fairsByBetId([{ betId: "novig:leg", fairAmerican: 160 }, { betId: "novig:1", fairAmerican: 178 }]);
+  assert.equal(baselineOf([{ tier: "same_line", bet: leg }, { tier: "same_line", bet: first }], withLeg).bet.id, "novig:1");
 });
 
 test("the 49ers card: the price improved to +223 while the fair fell from 36.0% to 34.7% since the +208 fill: red", () => {

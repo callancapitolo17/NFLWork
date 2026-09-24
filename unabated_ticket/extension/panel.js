@@ -2039,11 +2039,12 @@
 
   async function captureFillFairs() {
     if (!scannerState) return;
+    const liveStatus = scanner.getStatus();
     const { saves, refusals } = fillfair.captureFillFairs({
       records: state.betRecords, skipIds: new Set([...fillFairIndex.keys(), ...fillFairsDecided]),
       state: scannerState, boardLines: boardLines(), history: scannerHistory,
       // Live, not the last onChange copy: pause() clears it before any notify.
-      observingSince: scanner.getStatus().observingSince, now: Date.now(),
+      observingSince: liveStatus.observingSince, leagueObservingSince: liveStatus.leagueObservingSince, now: Date.now(),
     });
     for (const save of saves) {
       fillFairsDecided.add(save.betId);
