@@ -25,9 +25,9 @@
   const condkelly = inNode ? require("./condkelly.js") : root.UnabatedCondKelly;
 
   // Every venue the plan registers a source for (#117 ProphetX still to come;
-  // BFA and Wagerzon added 2026-09-23). Listing them keeps the Bets tab honest
-  // about coverage.
-  const VENUES = ["kalshi", "betonline", "novig", "prophetx", "bfa", "wagerzon"];
+  // BFA, Wagerzon and Polymarket US added 2026-09-23). Listing them keeps the
+  // Bets tab honest about coverage.
+  const VENUES = ["kalshi", "betonline", "novig", "prophetx", "bfa", "wagerzon", "polymarket_us"];
   const FRESH_MS = 5 * 60 * 1000;
   const STALE_MS = 60 * 60 * 1000;
   const BANNER_MAX_LINES = 5;

@@ -1,0 +1,2730 @@
+{
+ "provenance": "Polymarket US account pull of 2026-09-23 (GET /v1/portfolio/positions + /v1/portfolio/activities, signed): the 1 open position, 26 trades and 5 settlements verbatim in shape, trimmed to the fields the source reads \u2014 the counterparty's order on every trade removed, the account's position ids, order ids, icons and team logos dropped, one deposit kept with its amount zeroed (not a bet) and the other balance rows dropped. `events`: the public gateway event of each game (GET gateway /v1/events?slug=\u2026), trimmed to slug, title, startTime and teams. Hand-written on the same shapes from 2026-09-23 public markets (trade ids HAND\u2026): an MLB first-five run line whose YES side is the favourite (-1.50) with a busted 1,000-contract trade that must not count, an NFL first-half TEAM total held NO, an NFL moneyline settled NEUTRAL (a tie at $0.50), and an MLS total (soccer is not supported).",
+ "positions": {
+  "tsc-nfl-min-tb-2026-09-27-total-46pt5": {
+   "netPositionDecimal": "-1.3000",
+   "qtyBoughtDecimal": "0.0000",
+   "qtySoldDecimal": "1.3000",
+   "cost": {
+    "value": "0.6120",
+    "currency": "USD"
+   },
+   "realized": {
+    "value": "0.0000",
+    "currency": "USD"
+   },
+   "expired": false,
+   "updateTime": "2026-09-15T20:22:51.500805479Z",
+   "marketMetadata": {
+    "slug": "tsc-nfl-min-tb-2026-09-27-total-46pt5",
+    "title": "MIN Vikings vs TB Buccaneers",
+    "outcome": "Under",
+    "eventSlug": "nfl-min-tb-2026-09-27"
+   }
+  },
+  "asc-mlb-tor-bal-2026-09-23-f5-neg-1pt5": {
+   "netPositionDecimal": "10.0000",
+   "qtyBoughtDecimal": "10.0000",
+   "qtySoldDecimal": "0.0000",
+   "cost": {
+    "value": "4.0000",
+    "currency": "USD"
+   },
+   "realized": {
+    "value": "0.0000",
+    "currency": "USD"
+   },
+   "expired": false,
+   "updateTime": "2026-09-23T21:00:00.000000000Z",
+   "marketMetadata": {
+    "slug": "asc-mlb-tor-bal-2026-09-23-f5-neg-1pt5",
+    "title": null,
+    "outcome": null,
+    "eventSlug": "mlb-tor-bal-2026-09-23"
+   }
+  },
+  "tsc-nfl-atl-gb-2026-09-24-tt1h-gb-6pt5": {
+   "netPositionDecimal": "-5.0000",
+   "qtyBoughtDecimal": "0.0000",
+   "qtySoldDecimal": "5.0000",
+   "cost": {
+    "value": "2.7500",
+    "currency": "USD"
+   },
+   "realized": {
+    "value": "0.0000",
+    "currency": "USD"
+   },
+   "expired": false,
+   "updateTime": "2026-09-23T21:02:00.000000000Z",
+   "marketMetadata": {
+    "slug": "tsc-nfl-atl-gb-2026-09-24-tt1h-gb-6pt5",
+    "title": null,
+    "outcome": null,
+    "eventSlug": "nfl-atl-gb-2026-09-24"
+   }
+  }
+ },
+ "activities": [
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "HAND00000001",
+    "marketSlug": "asc-mlb-tor-bal-2026-09-23-f5-neg-1pt5",
+    "state": "TRADE_STATE_CLEARED",
+    "createTime": "2026-09-23T21:00:00.000000000Z",
+    "updateTime": "2026-09-23T21:00:00.000000000Z",
+    "price": {
+     "value": "0.4000",
+     "currency": "USD"
+    },
+    "qtyDecimal": "10.0000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_YES",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_LONG",
+     "side": null,
+     "marketMetadata": {
+      "slug": "asc-mlb-tor-bal-2026-09-23-f5-neg-1pt5",
+      "title": null,
+      "outcome": null,
+      "eventSlug": "mlb-tor-bal-2026-09-23"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "asc-mlb-tor-bal-2026-09-23-f5-neg-1pt5",
+     "question": "Will the Toronto Blue Jays cover -1.5 vs the Baltimore Orioles in TOR vs BAL in the first 5 innings?",
+     "sportsMarketType": "baseball_team_first_five_spread",
+     "line": -1.5,
+     "gameStartTime": "2026-09-23T22:35:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "-1.50",
+       "teamId": 3028,
+       "team": {
+        "id": 3028,
+        "name": "Toronto Blue Jays",
+        "abbreviation": "tor",
+        "alias": "Toronto Blue Jays",
+        "safeName": "Blue Jays",
+        "league": "mlb",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "+1.50",
+       "teamId": 3003,
+       "team": {
+        "id": 3003,
+        "name": "Baltimore Orioles",
+        "abbreviation": "bal",
+        "alias": "Baltimore Orioles",
+        "safeName": "Orioles",
+        "league": "mlb",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "HAND00000002",
+    "marketSlug": "asc-mlb-tor-bal-2026-09-23-f5-neg-1pt5",
+    "state": "TRADE_STATE_BUSTED",
+    "createTime": "2026-09-23T21:01:00.000000000Z",
+    "updateTime": "2026-09-23T21:01:00.000000000Z",
+    "price": {
+     "value": "0.9000",
+     "currency": "USD"
+    },
+    "qtyDecimal": "1000.0000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_YES",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_LONG",
+     "side": null,
+     "marketMetadata": {
+      "slug": "asc-mlb-tor-bal-2026-09-23-f5-neg-1pt5",
+      "title": null,
+      "outcome": null,
+      "eventSlug": "mlb-tor-bal-2026-09-23"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "asc-mlb-tor-bal-2026-09-23-f5-neg-1pt5",
+     "question": "Will the Toronto Blue Jays cover -1.5 vs the Baltimore Orioles in TOR vs BAL in the first 5 innings?",
+     "sportsMarketType": "baseball_team_first_five_spread",
+     "line": -1.5,
+     "gameStartTime": "2026-09-23T22:35:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "-1.50",
+       "teamId": 3028,
+       "team": {
+        "id": 3028,
+        "name": "Toronto Blue Jays",
+        "abbreviation": "tor",
+        "alias": "Toronto Blue Jays",
+        "safeName": "Blue Jays",
+        "league": "mlb",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "+1.50",
+       "teamId": 3003,
+       "team": {
+        "id": 3003,
+        "name": "Baltimore Orioles",
+        "abbreviation": "bal",
+        "alias": "Baltimore Orioles",
+        "safeName": "Orioles",
+        "league": "mlb",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "HAND00000003",
+    "marketSlug": "tsc-nfl-atl-gb-2026-09-24-tt1h-gb-6pt5",
+    "state": "TRADE_STATE_CLEARED",
+    "createTime": "2026-09-23T21:02:00.000000000Z",
+    "updateTime": "2026-09-23T21:02:00.000000000Z",
+    "price": {
+     "value": "0.4500",
+     "currency": "USD"
+    },
+    "qtyDecimal": "5.0000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": null,
+     "marketMetadata": {
+      "slug": "tsc-nfl-atl-gb-2026-09-24-tt1h-gb-6pt5",
+      "title": null,
+      "outcome": null,
+      "eventSlug": "nfl-atl-gb-2026-09-24"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "tsc-nfl-atl-gb-2026-09-24-tt1h-gb-6pt5",
+     "question": "Will the total in Atlanta vs. Green Bay be more than 6.5?",
+     "sportsMarketType": "football_team_first_half_total",
+     "line": 6.5,
+     "gameStartTime": "2026-09-25T00:15:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Over",
+       "teamId": 59,
+       "team": {
+        "id": 59,
+        "name": "Green Bay Packers",
+        "abbreviation": "gb",
+        "alias": "Packers",
+        "safeName": "GB Packers",
+        "league": "nfl",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Under",
+       "teamId": 59,
+       "team": {
+        "id": 59,
+        "name": "Green Bay Packers",
+        "abbreviation": "gb",
+        "alias": "Packers",
+        "safeName": "GB Packers",
+        "league": "nfl",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "HAND00000004",
+    "marketSlug": "aec-nfl-atl-gb-2026-09-24",
+    "state": "TRADE_STATE_CLEARED",
+    "createTime": "2026-09-23T21:03:00.000000000Z",
+    "updateTime": "2026-09-23T21:03:00.000000000Z",
+    "price": {
+     "value": "0.3000",
+     "currency": "USD"
+    },
+    "qtyDecimal": "20.0000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_YES",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_LONG",
+     "side": null,
+     "marketMetadata": {
+      "slug": "aec-nfl-atl-gb-2026-09-24",
+      "title": null,
+      "outcome": null,
+      "eventSlug": "nfl-atl-gb-2026-09-24"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-nfl-atl-gb-2026-09-24",
+     "question": "Who will win in the upcoming football event Atlanta Falcons vs Green Bay Packers scheduled for September 25, 2026 at 12:15 AM UTC?",
+     "sportsMarketType": "football_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-09-25T00:15:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Falcons",
+       "teamId": 49,
+       "team": {
+        "id": 49,
+        "name": "Atlanta Falcons",
+        "abbreviation": "atl",
+        "alias": "Falcons",
+        "safeName": "ATL Falcons",
+        "league": "nfl",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Packers",
+       "teamId": 59,
+       "team": {
+        "id": 59,
+        "name": "Green Bay Packers",
+        "abbreviation": "gb",
+        "alias": "Packers",
+        "safeName": "GB Packers",
+        "league": "nfl",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_POSITION_RESOLUTION",
+   "positionResolution": {
+    "marketSlug": "aec-nfl-atl-gb-2026-09-24",
+    "side": "POSITION_RESOLUTION_SIDE_NEUTRAL",
+    "updateTime": "2026-09-25T04:00:00.000000000Z",
+    "tradeId": "HAND00000005",
+    "beforePosition": {
+     "netPositionDecimal": "20.0000",
+     "cost": {
+      "value": "6.0000",
+      "currency": "USD"
+     },
+     "realized": {
+      "value": "0.0000",
+      "currency": "USD"
+     }
+    },
+    "afterPosition": {
+     "netPositionDecimal": "0.0000",
+     "cost": {
+      "value": "0.0000",
+      "currency": "USD"
+     },
+     "realized": {
+      "value": "4.0000",
+      "currency": "USD"
+     }
+    },
+    "comboLegDetails": []
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "HAND00000006",
+    "marketSlug": "tsc-mls-sea-rsl-2026-09-23-0pt5",
+    "state": "TRADE_STATE_CLEARED",
+    "createTime": "2026-09-23T21:04:00.000000000Z",
+    "updateTime": "2026-09-23T21:04:00.000000000Z",
+    "price": {
+     "value": "0.9000",
+     "currency": "USD"
+    },
+    "qtyDecimal": "3.0000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_YES",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_LONG",
+     "side": null,
+     "marketMetadata": {
+      "slug": "tsc-mls-sea-rsl-2026-09-23-0pt5",
+      "title": null,
+      "outcome": null,
+      "eventSlug": "mls-sea-rsl-2026-09-23"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "tsc-mls-sea-rsl-2026-09-23-0pt5",
+     "question": "Will the total in SEA vs RSL be more than 0.5?",
+     "sportsMarketType": "soccer_team_full_game_total",
+     "line": 0.5,
+     "gameStartTime": "2026-09-24T01:30:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Over",
+       "teamId": null,
+       "team": null
+      },
+      {
+       "long": false,
+       "description": "Under",
+       "teamId": null,
+       "team": null
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "CNNZ54AKTW1E",
+    "marketSlug": "aec-wnba-dal-sea-2026-09-23",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-09-23T05:06:21.598926786Z",
+    "updateTime": "2026-09-23T05:06:21.598926786Z",
+    "price": {
+     "value": "0.7900",
+     "currency": "USD"
+    },
+    "qtyDecimal": "388.6100",
+    "isAggressor": false,
+    "passive": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_SELL",
+     "intent": "ORDER_INTENT_SELL_SHORT",
+     "side": "ORDER_SIDE_BUY",
+     "marketMetadata": {
+      "slug": "aec-wnba-dal-sea-2026-09-23",
+      "title": "Dallas vs. Seattle",
+      "outcome": "Storm",
+      "eventSlug": "wnba-dal-sea-2026-09-23"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-dal-sea-2026-09-23",
+     "question": "Who will win in the upcoming basketball event Dallas vs Seattle scheduled for September 24, 2026 at 2:00 AM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-09-24T02:00:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Wings",
+       "teamId": 1,
+       "team": {
+        "id": 1,
+        "name": "Dallas",
+        "abbreviation": "dal",
+        "alias": "Wings",
+        "safeName": "Dallas",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Storm",
+       "teamId": 9,
+       "team": {
+        "id": 9,
+        "name": "Seattle",
+        "abbreviation": "sea",
+        "alias": "Storm",
+        "safeName": "Seattle",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "CNNRS1R28W1E",
+    "marketSlug": "aec-wnba-dal-sea-2026-09-23",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-09-23T04:52:30.421003266Z",
+    "updateTime": "2026-09-23T04:52:30.421003266Z",
+    "price": {
+     "value": "0.7900",
+     "currency": "USD"
+    },
+    "qtyDecimal": "22.5700",
+    "isAggressor": false,
+    "passive": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_SELL",
+     "intent": "ORDER_INTENT_SELL_SHORT",
+     "side": "ORDER_SIDE_BUY",
+     "marketMetadata": {
+      "slug": "aec-wnba-dal-sea-2026-09-23",
+      "title": "Dallas vs. Seattle",
+      "outcome": "Storm",
+      "eventSlug": "wnba-dal-sea-2026-09-23"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-dal-sea-2026-09-23",
+     "question": "Who will win in the upcoming basketball event Dallas vs Seattle scheduled for September 24, 2026 at 2:00 AM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-09-24T02:00:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Wings",
+       "teamId": 1,
+       "team": {
+        "id": 1,
+        "name": "Dallas",
+        "abbreviation": "dal",
+        "alias": "Wings",
+        "safeName": "Dallas",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Storm",
+       "teamId": 9,
+       "team": {
+        "id": 9,
+        "name": "Seattle",
+        "abbreviation": "sea",
+        "alias": "Storm",
+        "safeName": "Seattle",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "CNNMVGH2MW1E",
+    "marketSlug": "aec-wnba-dal-sea-2026-09-23",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-09-23T04:43:49.075269359Z",
+    "updateTime": "2026-09-23T04:43:49.075269359Z",
+    "price": {
+     "value": "0.7900",
+     "currency": "USD"
+    },
+    "qtyDecimal": "4.2300",
+    "isAggressor": false,
+    "passive": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_SELL",
+     "intent": "ORDER_INTENT_SELL_SHORT",
+     "side": "ORDER_SIDE_BUY",
+     "marketMetadata": {
+      "slug": "aec-wnba-dal-sea-2026-09-23",
+      "title": "Dallas vs. Seattle",
+      "outcome": "Storm",
+      "eventSlug": "wnba-dal-sea-2026-09-23"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-dal-sea-2026-09-23",
+     "question": "Who will win in the upcoming basketball event Dallas vs Seattle scheduled for September 24, 2026 at 2:00 AM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-09-24T02:00:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Wings",
+       "teamId": 1,
+       "team": {
+        "id": 1,
+        "name": "Dallas",
+        "abbreviation": "dal",
+        "alias": "Wings",
+        "safeName": "Dallas",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Storm",
+       "teamId": 9,
+       "team": {
+        "id": 9,
+        "name": "Seattle",
+        "abbreviation": "sea",
+        "alias": "Storm",
+        "safeName": "Seattle",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "CNNK3DS78W1E",
+    "marketSlug": "aec-wnba-dal-sea-2026-09-23",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-09-23T04:39:51.085957048Z",
+    "updateTime": "2026-09-23T04:39:51.085957048Z",
+    "price": {
+     "value": "0.7900",
+     "currency": "USD"
+    },
+    "qtyDecimal": "84.5900",
+    "isAggressor": false,
+    "passive": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_SELL",
+     "intent": "ORDER_INTENT_SELL_SHORT",
+     "side": "ORDER_SIDE_BUY",
+     "marketMetadata": {
+      "slug": "aec-wnba-dal-sea-2026-09-23",
+      "title": "Dallas vs. Seattle",
+      "outcome": "Storm",
+      "eventSlug": "wnba-dal-sea-2026-09-23"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-dal-sea-2026-09-23",
+     "question": "Who will win in the upcoming basketball event Dallas vs Seattle scheduled for September 24, 2026 at 2:00 AM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-09-24T02:00:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Wings",
+       "teamId": 1,
+       "team": {
+        "id": 1,
+        "name": "Dallas",
+        "abbreviation": "dal",
+        "alias": "Wings",
+        "safeName": "Dallas",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Storm",
+       "teamId": 9,
+       "team": {
+        "id": 9,
+        "name": "Seattle",
+        "abbreviation": "sea",
+        "alias": "Storm",
+        "safeName": "Seattle",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "CNKCTD7X2W1E",
+    "marketSlug": "aec-wnba-dal-sea-2026-09-23",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-09-23T02:06:15.171920092Z",
+    "updateTime": "2026-09-23T02:06:15.171920092Z",
+    "price": {
+     "value": "0.8000",
+     "currency": "USD"
+    },
+    "qtyDecimal": "35.9000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "aec-wnba-dal-sea-2026-09-23",
+      "title": "Dallas vs. Seattle",
+      "outcome": "Storm",
+      "eventSlug": "wnba-dal-sea-2026-09-23"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-dal-sea-2026-09-23",
+     "question": "Who will win in the upcoming basketball event Dallas vs Seattle scheduled for September 24, 2026 at 2:00 AM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-09-24T02:00:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Wings",
+       "teamId": 1,
+       "team": {
+        "id": 1,
+        "name": "Dallas",
+        "abbreviation": "dal",
+        "alias": "Wings",
+        "safeName": "Dallas",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Storm",
+       "teamId": 9,
+       "team": {
+        "id": 9,
+        "name": "Seattle",
+        "abbreviation": "sea",
+        "alias": "Storm",
+        "safeName": "Seattle",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "CNKCTD7WWW1E",
+    "marketSlug": "aec-wnba-dal-sea-2026-09-23",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-09-23T02:06:15.171920092Z",
+    "updateTime": "2026-09-23T02:06:15.171920092Z",
+    "price": {
+     "value": "0.8000",
+     "currency": "USD"
+    },
+    "qtyDecimal": "310.0000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "aec-wnba-dal-sea-2026-09-23",
+      "title": "Dallas vs. Seattle",
+      "outcome": "Storm",
+      "eventSlug": "wnba-dal-sea-2026-09-23"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-dal-sea-2026-09-23",
+     "question": "Who will win in the upcoming basketball event Dallas vs Seattle scheduled for September 24, 2026 at 2:00 AM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-09-24T02:00:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Wings",
+       "teamId": 1,
+       "team": {
+        "id": 1,
+        "name": "Dallas",
+        "abbreviation": "dal",
+        "alias": "Wings",
+        "safeName": "Dallas",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Storm",
+       "teamId": 9,
+       "team": {
+        "id": 9,
+        "name": "Seattle",
+        "abbreviation": "sea",
+        "alias": "Storm",
+        "safeName": "Seattle",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "CNKCTD7WPW1E",
+    "marketSlug": "aec-wnba-dal-sea-2026-09-23",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-09-23T02:06:15.171920092Z",
+    "updateTime": "2026-09-23T02:06:15.171920092Z",
+    "price": {
+     "value": "0.8000",
+     "currency": "USD"
+    },
+    "qtyDecimal": "2.1000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "aec-wnba-dal-sea-2026-09-23",
+      "title": "Dallas vs. Seattle",
+      "outcome": "Storm",
+      "eventSlug": "wnba-dal-sea-2026-09-23"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-dal-sea-2026-09-23",
+     "question": "Who will win in the upcoming basketball event Dallas vs Seattle scheduled for September 24, 2026 at 2:00 AM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-09-24T02:00:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Wings",
+       "teamId": 1,
+       "team": {
+        "id": 1,
+        "name": "Dallas",
+        "abbreviation": "dal",
+        "alias": "Wings",
+        "safeName": "Dallas",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Storm",
+       "teamId": 9,
+       "team": {
+        "id": 9,
+        "name": "Seattle",
+        "abbreviation": "sea",
+        "alias": "Storm",
+        "safeName": "Seattle",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "CNKCTD7WGW1E",
+    "marketSlug": "aec-wnba-dal-sea-2026-09-23",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-09-23T02:06:15.171920092Z",
+    "updateTime": "2026-09-23T02:06:15.171920092Z",
+    "price": {
+     "value": "0.8000",
+     "currency": "USD"
+    },
+    "qtyDecimal": "4.0000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "aec-wnba-dal-sea-2026-09-23",
+      "title": "Dallas vs. Seattle",
+      "outcome": "Storm",
+      "eventSlug": "wnba-dal-sea-2026-09-23"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-dal-sea-2026-09-23",
+     "question": "Who will win in the upcoming basketball event Dallas vs Seattle scheduled for September 24, 2026 at 2:00 AM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-09-24T02:00:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Wings",
+       "teamId": 1,
+       "team": {
+        "id": 1,
+        "name": "Dallas",
+        "abbreviation": "dal",
+        "alias": "Wings",
+        "safeName": "Dallas",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Storm",
+       "teamId": 9,
+       "team": {
+        "id": 9,
+        "name": "Seattle",
+        "abbreviation": "sea",
+        "alias": "Storm",
+        "safeName": "Seattle",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "CNKCTD7WAW1E",
+    "marketSlug": "aec-wnba-dal-sea-2026-09-23",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-09-23T02:06:15.171920092Z",
+    "updateTime": "2026-09-23T02:06:15.171920092Z",
+    "price": {
+     "value": "0.8000",
+     "currency": "USD"
+    },
+    "qtyDecimal": "147.0000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "aec-wnba-dal-sea-2026-09-23",
+      "title": "Dallas vs. Seattle",
+      "outcome": "Storm",
+      "eventSlug": "wnba-dal-sea-2026-09-23"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-dal-sea-2026-09-23",
+     "question": "Who will win in the upcoming basketball event Dallas vs Seattle scheduled for September 24, 2026 at 2:00 AM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-09-24T02:00:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Wings",
+       "teamId": 1,
+       "team": {
+        "id": 1,
+        "name": "Dallas",
+        "abbreviation": "dal",
+        "alias": "Wings",
+        "safeName": "Dallas",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Storm",
+       "teamId": 9,
+       "team": {
+        "id": 9,
+        "name": "Seattle",
+        "abbreviation": "sea",
+        "alias": "Storm",
+        "safeName": "Seattle",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "CNKCTD7W4W1E",
+    "marketSlug": "aec-wnba-dal-sea-2026-09-23",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-09-23T02:06:15.171920092Z",
+    "updateTime": "2026-09-23T02:06:15.171920092Z",
+    "price": {
+     "value": "0.8000",
+     "currency": "USD"
+    },
+    "qtyDecimal": "1.0000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "aec-wnba-dal-sea-2026-09-23",
+      "title": "Dallas vs. Seattle",
+      "outcome": "Storm",
+      "eventSlug": "wnba-dal-sea-2026-09-23"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-dal-sea-2026-09-23",
+     "question": "Who will win in the upcoming basketball event Dallas vs Seattle scheduled for September 24, 2026 at 2:00 AM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-09-24T02:00:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Wings",
+       "teamId": 1,
+       "team": {
+        "id": 1,
+        "name": "Dallas",
+        "abbreviation": "dal",
+        "alias": "Wings",
+        "safeName": "Dallas",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Storm",
+       "teamId": 9,
+       "team": {
+        "id": 9,
+        "name": "Seattle",
+        "abbreviation": "sea",
+        "alias": "Storm",
+        "safeName": "Seattle",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_POSITION_RESOLUTION",
+   "positionResolution": {
+    "marketSlug": "aec-wnba-conn-wsh-2026-09-22",
+    "side": "POSITION_RESOLUTION_SIDE_SHORT",
+    "updateTime": "2026-09-23T01:34:16.326549670Z",
+    "tradeId": "",
+    "beforePosition": {
+     "netPositionDecimal": "600.0000",
+     "cost": {
+      "value": "42.0000",
+      "currency": "USD"
+     },
+     "realized": {
+      "value": "0.0000",
+      "currency": "USD"
+     }
+    },
+    "afterPosition": {
+     "netPositionDecimal": "0.0000",
+     "cost": {
+      "value": "0.0000",
+      "currency": "USD"
+     },
+     "realized": {
+      "value": "-42.0000",
+      "currency": "USD"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-conn-wsh-2026-09-22",
+     "question": "Who will win in the upcoming basketball event Connecticut vs Washington scheduled for September 22, 2026 at 11:30 PM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-09-22T23:30:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Sun",
+       "teamId": 13,
+       "team": {
+        "id": 13,
+        "name": "Connecticut",
+        "abbreviation": "conn",
+        "alias": "Sun",
+        "safeName": "Connecticut",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Mystics",
+       "teamId": 10,
+       "team": {
+        "id": 10,
+        "name": "Washington",
+        "abbreviation": "wsh",
+        "alias": "Mystics",
+        "safeName": "Washington",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "CNCWQKF54W1E",
+    "marketSlug": "aec-wnba-conn-wsh-2026-09-22",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-09-22T18:31:59.714146305Z",
+    "updateTime": "2026-09-22T18:31:59.714146305Z",
+    "price": {
+     "value": "0.0700",
+     "currency": "USD"
+    },
+    "qtyDecimal": "600.0000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_YES",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_LONG",
+     "side": "ORDER_SIDE_BUY",
+     "marketMetadata": {
+      "slug": "aec-wnba-conn-wsh-2026-09-22",
+      "title": "Connecticut vs. Washington",
+      "outcome": "Sun",
+      "eventSlug": "wnba-conn-wsh-2026-09-22"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-conn-wsh-2026-09-22",
+     "question": "Who will win in the upcoming basketball event Connecticut vs Washington scheduled for September 22, 2026 at 11:30 PM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-09-22T23:30:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Sun",
+       "teamId": 13,
+       "team": {
+        "id": 13,
+        "name": "Connecticut",
+        "abbreviation": "conn",
+        "alias": "Sun",
+        "safeName": "Connecticut",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Mystics",
+       "teamId": 10,
+       "team": {
+        "id": 10,
+        "name": "Washington",
+        "abbreviation": "wsh",
+        "alias": "Mystics",
+        "safeName": "Washington",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "CGY9B45PAVAY",
+    "marketSlug": "tsc-nfl-min-tb-2026-09-27-total-46pt5",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-09-15T20:22:51.500805479Z",
+    "updateTime": "2026-09-15T20:22:51.500805479Z",
+    "price": {
+     "value": "0.5450",
+     "currency": "USD"
+    },
+    "qtyDecimal": "0.6800",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "tsc-nfl-min-tb-2026-09-27-total-46pt5",
+      "title": "MIN Vikings vs TB Buccaneers",
+      "outcome": "Under",
+      "eventSlug": "nfl-min-tb-2026-09-27"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "tsc-nfl-min-tb-2026-09-27-total-46pt5",
+     "question": "Will the total in Minnesota vs. Tampa Bay be more than 46.5?",
+     "sportsMarketType": "football_team_full_game_total",
+     "line": 46.5,
+     "gameStartTime": "2026-09-27T20:05:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Over",
+       "teamId": null,
+       "team": null
+      },
+      {
+       "long": false,
+       "description": "Under",
+       "teamId": null,
+       "team": null
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "CGY9B45P4VAY",
+    "marketSlug": "tsc-nfl-min-tb-2026-09-27-total-46pt5",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-09-15T20:22:51.500805479Z",
+    "updateTime": "2026-09-15T20:22:51.500805479Z",
+    "price": {
+     "value": "0.5450",
+     "currency": "USD"
+    },
+    "qtyDecimal": "0.1200",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "tsc-nfl-min-tb-2026-09-27-total-46pt5",
+      "title": "MIN Vikings vs TB Buccaneers",
+      "outcome": "Under",
+      "eventSlug": "nfl-min-tb-2026-09-27"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "tsc-nfl-min-tb-2026-09-27-total-46pt5",
+     "question": "Will the total in Minnesota vs. Tampa Bay be more than 46.5?",
+     "sportsMarketType": "football_team_full_game_total",
+     "line": 46.5,
+     "gameStartTime": "2026-09-27T20:05:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Over",
+       "teamId": null,
+       "team": null
+      },
+      {
+       "long": false,
+       "description": "Under",
+       "teamId": null,
+       "team": null
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "CGY9B45NYVAY",
+    "marketSlug": "tsc-nfl-min-tb-2026-09-27-total-46pt5",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-09-15T20:22:51.500805479Z",
+    "updateTime": "2026-09-15T20:22:51.500805479Z",
+    "price": {
+     "value": "0.5450",
+     "currency": "USD"
+    },
+    "qtyDecimal": "0.5000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "tsc-nfl-min-tb-2026-09-27-total-46pt5",
+      "title": "MIN Vikings vs TB Buccaneers",
+      "outcome": "Under",
+      "eventSlug": "nfl-min-tb-2026-09-27"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "tsc-nfl-min-tb-2026-09-27-total-46pt5",
+     "question": "Will the total in Minnesota vs. Tampa Bay be more than 46.5?",
+     "sportsMarketType": "football_team_full_game_total",
+     "line": 46.5,
+     "gameStartTime": "2026-09-27T20:05:00Z",
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Over",
+       "teamId": null,
+       "team": null
+      },
+      {
+       "long": false,
+       "description": "Under",
+       "teamId": null,
+       "team": null
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_POSITION_RESOLUTION",
+   "positionResolution": {
+    "marketSlug": "caoc-97039773d2e5d3cb",
+    "side": "POSITION_RESOLUTION_SIDE_LONG",
+    "updateTime": "2026-09-14T00:17:31.051119703Z",
+    "tradeId": "",
+    "beforePosition": {
+     "netPositionDecimal": "193.5700",
+     "cost": {
+      "value": "19.9976",
+      "currency": "USD"
+     },
+     "realized": {
+      "value": "0.0000",
+      "currency": "USD"
+     }
+    },
+    "afterPosition": {
+     "netPositionDecimal": "0.0000",
+     "cost": {
+      "value": "174.6001",
+      "currency": "USD"
+     },
+     "realized": {
+      "value": "0.0000",
+      "currency": "USD"
+     }
+    },
+    "comboLegDetails": [
+     {
+      "slug": "aec-nfl-gb-min-2026-09-13",
+      "eventSlug": "nfl-gb-min-2026-09-13",
+      "outcome": "Vikings",
+      "outcomeSide": "OUTCOME_SIDE_NO",
+      "eventStartTime": "2026-09-13T20:25:00Z",
+      "state": "COMBO_LEG_STATE_WON",
+      "team": {
+       "name": "Minnesota Vikings",
+       "league": "nfl",
+       "ordering": "home"
+      }
+     },
+     {
+      "slug": "astatc-nfl-gb-min-2026-09-13-recyd-chrwat-gte80",
+      "eventSlug": "nfl-gb-min-2026-09-13",
+      "outcome": "Yes",
+      "outcomeSide": "OUTCOME_SIDE_YES",
+      "eventStartTime": "2026-09-13T20:25:00Z",
+      "state": "COMBO_LEG_STATE_WON",
+      "team": {
+       "name": "Green Bay Packers",
+       "league": "nfl",
+       "ordering": "away"
+      }
+     },
+     {
+      "slug": "astatc-nfl-gb-min-2026-09-13-td-chrwat-gte1",
+      "eventSlug": "nfl-gb-min-2026-09-13",
+      "outcome": "Yes",
+      "outcomeSide": "OUTCOME_SIDE_YES",
+      "eventStartTime": "2026-09-13T20:25:00Z",
+      "state": "COMBO_LEG_STATE_WON",
+      "team": {
+       "name": "Green Bay Packers",
+       "league": "nfl",
+       "ordering": "away"
+      }
+     }
+    ],
+    "market": {
+     "slug": "caoc-97039773d2e5d3cb",
+     "question": null,
+     "sportsMarketType": null,
+     "line": null,
+     "gameStartTime": null,
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Yes",
+       "teamId": null,
+       "team": null
+      },
+      {
+       "long": false,
+       "description": "No",
+       "teamId": null,
+       "team": null
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "CEJ4EZY3JTNR",
+    "marketSlug": "caoc-97039773d2e5d3cb",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-09-12T03:39:22.839614382Z",
+    "updateTime": "2026-09-12T03:39:22.839614382Z",
+    "price": {
+     "value": "0.0980",
+     "currency": "USD"
+    },
+    "qtyDecimal": "193.5700",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_YES",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_LONG",
+     "side": "ORDER_SIDE_BUY",
+     "marketMetadata": {
+      "slug": "caoc-97039773d2e5d3cb",
+      "title": "",
+      "outcome": "",
+      "eventSlug": ""
+     }
+    },
+    "comboLegDetails": [
+     {
+      "slug": "aec-nfl-gb-min-2026-09-13",
+      "eventSlug": "nfl-gb-min-2026-09-13",
+      "outcome": "Vikings",
+      "outcomeSide": "OUTCOME_SIDE_NO",
+      "eventStartTime": "2026-09-13T20:25:00Z",
+      "state": "COMBO_LEG_STATE_WON",
+      "team": {
+       "name": "Minnesota Vikings",
+       "league": "nfl",
+       "ordering": "home"
+      }
+     },
+     {
+      "slug": "astatc-nfl-gb-min-2026-09-13-recyd-chrwat-gte80",
+      "eventSlug": "nfl-gb-min-2026-09-13",
+      "outcome": "Yes",
+      "outcomeSide": "OUTCOME_SIDE_YES",
+      "eventStartTime": "2026-09-13T20:25:00Z",
+      "state": "COMBO_LEG_STATE_WON",
+      "team": {
+       "name": "Green Bay Packers",
+       "league": "nfl",
+       "ordering": "away"
+      }
+     },
+     {
+      "slug": "astatc-nfl-gb-min-2026-09-13-td-chrwat-gte1",
+      "eventSlug": "nfl-gb-min-2026-09-13",
+      "outcome": "Yes",
+      "outcomeSide": "OUTCOME_SIDE_YES",
+      "eventStartTime": "2026-09-13T20:25:00Z",
+      "state": "COMBO_LEG_STATE_WON",
+      "team": {
+       "name": "Green Bay Packers",
+       "league": "nfl",
+       "ordering": "away"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_POSITION_RESOLUTION",
+   "positionResolution": {
+    "marketSlug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+    "side": "POSITION_RESOLUTION_SIDE_LONG",
+    "updateTime": "2026-08-22T19:59:10.945241591Z",
+    "tradeId": "",
+    "beforePosition": {
+     "netPositionDecimal": "-7.6000",
+     "cost": {
+      "value": "4.1689",
+      "currency": "USD"
+     },
+     "realized": {
+      "value": "0.0000",
+      "currency": "USD"
+     }
+    },
+    "afterPosition": {
+     "netPositionDecimal": "0.0000",
+     "cost": {
+      "value": "0.0000",
+      "currency": "USD"
+     },
+     "realized": {
+      "value": "-4.0820",
+      "currency": "USD"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+     "question": "Will the Baltimore Ravens cover 2.5 vs the Minnesota Vikings in Baltimore Ravens vs. Minnesota Vikings?",
+     "sportsMarketType": "football_team_full_game_spread",
+     "line": 2.5,
+     "gameStartTime": "2026-08-22T17:00:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "+2.50",
+       "teamId": 50,
+       "team": {
+        "id": 50,
+        "name": "Baltimore Ravens",
+        "abbreviation": "bal",
+        "alias": "Ravens",
+        "safeName": "BAL Ravens",
+        "league": "nfl",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "-2.50",
+       "teamId": 68,
+       "team": {
+        "id": 68,
+        "name": "Minnesota Vikings",
+        "abbreviation": "min",
+        "alias": "Vikings",
+        "safeName": "MIN Vikings",
+        "league": "nfl",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_POSITION_RESOLUTION",
+   "positionResolution": {
+    "marketSlug": "aec-wnba-ind-tor-2026-08-18",
+    "side": "POSITION_RESOLUTION_SIDE_LONG",
+    "updateTime": "2026-08-19T01:12:11.066298991Z",
+    "tradeId": "",
+    "beforePosition": {
+     "netPositionDecimal": "-360.0000",
+     "cost": {
+      "value": "75.4600",
+      "currency": "USD"
+     },
+     "realized": {
+      "value": "0.0000",
+      "currency": "USD"
+     }
+    },
+    "afterPosition": {
+     "netPositionDecimal": "0.0000",
+     "cost": {
+      "value": "0.0000",
+      "currency": "USD"
+     },
+     "realized": {
+      "value": "-72.0000",
+      "currency": "USD"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-ind-tor-2026-08-18",
+     "question": "Who will win in the upcoming basketball event Indiana vs Toronto scheduled for August 18, 2026 at 11:00 PM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-08-18T23:00:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Fever",
+       "teamId": 12,
+       "team": {
+        "id": 12,
+        "name": "Indiana",
+        "abbreviation": "ind",
+        "alias": "Fever",
+        "safeName": "Indiana",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Toronto",
+       "teamId": 5550,
+       "team": {
+        "id": 5550,
+        "name": "Toronto",
+        "abbreviation": "tor",
+        "alias": "",
+        "safeName": "Toronto",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "BY8Y39HTTDKM",
+    "marketSlug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-08-17T20:25:00.946375103Z",
+    "updateTime": "2026-08-17T20:25:00.946375103Z",
+    "price": {
+     "value": "0.4700",
+     "currency": "USD"
+    },
+    "qtyDecimal": "0.7000",
+    "isAggressor": false,
+    "passive": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+      "title": "BAL Ravens vs MIN Vikings",
+      "outcome": "-2.50",
+      "eventSlug": "nfl-bal-min-2026-08-22"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+     "question": "Will the Baltimore Ravens cover 2.5 vs the Minnesota Vikings in Baltimore Ravens vs. Minnesota Vikings?",
+     "sportsMarketType": "football_team_full_game_spread",
+     "line": 2.5,
+     "gameStartTime": "2026-08-22T17:00:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "+2.50",
+       "teamId": 50,
+       "team": {
+        "id": 50,
+        "name": "Baltimore Ravens",
+        "abbreviation": "bal",
+        "alias": "Ravens",
+        "safeName": "BAL Ravens",
+        "league": "nfl",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "-2.50",
+       "teamId": 68,
+       "team": {
+        "id": 68,
+        "name": "Minnesota Vikings",
+        "abbreviation": "min",
+        "alias": "Vikings",
+        "safeName": "MIN Vikings",
+        "league": "nfl",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "BY6TPYDP8DKM",
+    "marketSlug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-08-17T17:57:45.031072586Z",
+    "updateTime": "2026-08-17T17:57:45.031072586Z",
+    "price": {
+     "value": "0.4600",
+     "currency": "USD"
+    },
+    "qtyDecimal": "3.0000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+      "title": "BAL Ravens vs MIN Vikings",
+      "outcome": "-2.50",
+      "eventSlug": "nfl-bal-min-2026-08-22"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+     "question": "Will the Baltimore Ravens cover 2.5 vs the Minnesota Vikings in Baltimore Ravens vs. Minnesota Vikings?",
+     "sportsMarketType": "football_team_full_game_spread",
+     "line": 2.5,
+     "gameStartTime": "2026-08-22T17:00:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "+2.50",
+       "teamId": 50,
+       "team": {
+        "id": 50,
+        "name": "Baltimore Ravens",
+        "abbreviation": "bal",
+        "alias": "Ravens",
+        "safeName": "BAL Ravens",
+        "league": "nfl",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "-2.50",
+       "teamId": 68,
+       "team": {
+        "id": 68,
+        "name": "Minnesota Vikings",
+        "abbreviation": "min",
+        "alias": "Vikings",
+        "safeName": "MIN Vikings",
+        "league": "nfl",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "BY6TG1YRCDKM",
+    "marketSlug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-08-17T17:57:17.146708389Z",
+    "updateTime": "2026-08-17T17:57:17.146708389Z",
+    "price": {
+     "value": "0.4600",
+     "currency": "USD"
+    },
+    "qtyDecimal": "3.0000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+      "title": "BAL Ravens vs MIN Vikings",
+      "outcome": "-2.50",
+      "eventSlug": "nfl-bal-min-2026-08-22"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+     "question": "Will the Baltimore Ravens cover 2.5 vs the Minnesota Vikings in Baltimore Ravens vs. Minnesota Vikings?",
+     "sportsMarketType": "football_team_full_game_spread",
+     "line": 2.5,
+     "gameStartTime": "2026-08-22T17:00:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "+2.50",
+       "teamId": 50,
+       "team": {
+        "id": 50,
+        "name": "Baltimore Ravens",
+        "abbreviation": "bal",
+        "alias": "Ravens",
+        "safeName": "BAL Ravens",
+        "league": "nfl",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "-2.50",
+       "teamId": 68,
+       "team": {
+        "id": 68,
+        "name": "Minnesota Vikings",
+        "abbreviation": "min",
+        "alias": "Vikings",
+        "safeName": "MIN Vikings",
+        "league": "nfl",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "BY6TCPQK8DKM",
+    "marketSlug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-08-17T17:57:03.284767694Z",
+    "updateTime": "2026-08-17T17:57:03.284767694Z",
+    "price": {
+     "value": "0.4700",
+     "currency": "USD"
+    },
+    "qtyDecimal": "0.3000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+      "title": "BAL Ravens vs MIN Vikings",
+      "outcome": "-2.50",
+      "eventSlug": "nfl-bal-min-2026-08-22"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+     "question": "Will the Baltimore Ravens cover 2.5 vs the Minnesota Vikings in Baltimore Ravens vs. Minnesota Vikings?",
+     "sportsMarketType": "football_team_full_game_spread",
+     "line": 2.5,
+     "gameStartTime": "2026-08-22T17:00:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "+2.50",
+       "teamId": 50,
+       "team": {
+        "id": 50,
+        "name": "Baltimore Ravens",
+        "abbreviation": "bal",
+        "alias": "Ravens",
+        "safeName": "BAL Ravens",
+        "league": "nfl",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "-2.50",
+       "teamId": 68,
+       "team": {
+        "id": 68,
+        "name": "Minnesota Vikings",
+        "abbreviation": "min",
+        "alias": "Vikings",
+        "safeName": "MIN Vikings",
+        "league": "nfl",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "BY6T9M3MPDKM",
+    "marketSlug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-08-17T17:56:49.583515728Z",
+    "updateTime": "2026-08-17T17:56:49.583515728Z",
+    "price": {
+     "value": "0.4800",
+     "currency": "USD"
+    },
+    "qtyDecimal": "0.3000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+      "title": "BAL Ravens vs MIN Vikings",
+      "outcome": "-2.50",
+      "eventSlug": "nfl-bal-min-2026-08-22"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+     "question": "Will the Baltimore Ravens cover 2.5 vs the Minnesota Vikings in Baltimore Ravens vs. Minnesota Vikings?",
+     "sportsMarketType": "football_team_full_game_spread",
+     "line": 2.5,
+     "gameStartTime": "2026-08-22T17:00:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "+2.50",
+       "teamId": 50,
+       "team": {
+        "id": 50,
+        "name": "Baltimore Ravens",
+        "abbreviation": "bal",
+        "alias": "Ravens",
+        "safeName": "BAL Ravens",
+        "league": "nfl",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "-2.50",
+       "teamId": 68,
+       "team": {
+        "id": 68,
+        "name": "Minnesota Vikings",
+        "abbreviation": "min",
+        "alias": "Vikings",
+        "safeName": "MIN Vikings",
+        "league": "nfl",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "BY6R91DGADKM",
+    "marketSlug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-08-17T17:52:26.863202810Z",
+    "updateTime": "2026-08-17T17:52:26.863202810Z",
+    "price": {
+     "value": "0.4800",
+     "currency": "USD"
+    },
+    "qtyDecimal": "0.3000",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+      "title": "BAL Ravens vs MIN Vikings",
+      "outcome": "-2.50",
+      "eventSlug": "nfl-bal-min-2026-08-22"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "asc-nfl-bal-min-2026-08-22-pos-2pt5",
+     "question": "Will the Baltimore Ravens cover 2.5 vs the Minnesota Vikings in Baltimore Ravens vs. Minnesota Vikings?",
+     "sportsMarketType": "football_team_full_game_spread",
+     "line": 2.5,
+     "gameStartTime": "2026-08-22T17:00:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "+2.50",
+       "teamId": 50,
+       "team": {
+        "id": 50,
+        "name": "Baltimore Ravens",
+        "abbreviation": "bal",
+        "alias": "Ravens",
+        "safeName": "BAL Ravens",
+        "league": "nfl",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "-2.50",
+       "teamId": 68,
+       "team": {
+        "id": 68,
+        "name": "Minnesota Vikings",
+        "abbreviation": "min",
+        "alias": "Vikings",
+        "safeName": "MIN Vikings",
+        "league": "nfl",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "BY6PJAZCYDKM",
+    "marketSlug": "aec-wnba-ind-tor-2026-08-18",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-08-17T17:48:42.876825145Z",
+    "updateTime": "2026-08-17T17:48:42.876825145Z",
+    "price": {
+     "value": "0.8000",
+     "currency": "USD"
+    },
+    "qtyDecimal": "99.7900",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "aec-wnba-ind-tor-2026-08-18",
+      "title": "Indiana vs. Toronto",
+      "outcome": "Toronto",
+      "eventSlug": "wnba-ind-tor-2026-08-18"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-ind-tor-2026-08-18",
+     "question": "Who will win in the upcoming basketball event Indiana vs Toronto scheduled for August 18, 2026 at 11:00 PM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-08-18T23:00:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Fever",
+       "teamId": 12,
+       "team": {
+        "id": 12,
+        "name": "Indiana",
+        "abbreviation": "ind",
+        "alias": "Fever",
+        "safeName": "Indiana",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Toronto",
+       "teamId": 5550,
+       "team": {
+        "id": 5550,
+        "name": "Toronto",
+        "abbreviation": "tor",
+        "alias": "",
+        "safeName": "Toronto",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "BY6PJAZCRDKM",
+    "marketSlug": "aec-wnba-ind-tor-2026-08-18",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-08-17T17:48:42.876825145Z",
+    "updateTime": "2026-08-17T17:48:42.876825145Z",
+    "price": {
+     "value": "0.8000",
+     "currency": "USD"
+    },
+    "qtyDecimal": "260.2100",
+    "isAggressor": true,
+    "aggressor": {
+     "outcomeSide": "OUTCOME_SIDE_NO",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_SHORT",
+     "side": "ORDER_SIDE_SELL",
+     "marketMetadata": {
+      "slug": "aec-wnba-ind-tor-2026-08-18",
+      "title": "Indiana vs. Toronto",
+      "outcome": "Toronto",
+      "eventSlug": "wnba-ind-tor-2026-08-18"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-ind-tor-2026-08-18",
+     "question": "Who will win in the upcoming basketball event Indiana vs Toronto scheduled for August 18, 2026 at 11:00 PM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-08-18T23:00:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Fever",
+       "teamId": 12,
+       "team": {
+        "id": 12,
+        "name": "Indiana",
+        "abbreviation": "ind",
+        "alias": "Fever",
+        "safeName": "Indiana",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Toronto",
+       "teamId": 5550,
+       "team": {
+        "id": 5550,
+        "name": "Toronto",
+        "abbreviation": "tor",
+        "alias": "",
+        "safeName": "Toronto",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_POSITION_RESOLUTION",
+   "positionResolution": {
+    "marketSlug": "aec-wnba-por-sea-2026-08-14",
+    "side": "POSITION_RESOLUTION_SIDE_LONG",
+    "updateTime": "2026-08-15T04:16:48.821315577Z",
+    "tradeId": "",
+    "beforePosition": {
+     "netPositionDecimal": "50.0000",
+     "cost": {
+      "value": "21.5000",
+      "currency": "USD"
+     },
+     "realized": {
+      "value": "0.0000",
+      "currency": "USD"
+     }
+    },
+    "afterPosition": {
+     "netPositionDecimal": "0.0000",
+     "cost": {
+      "value": "0.0000",
+      "currency": "USD"
+     },
+     "realized": {
+      "value": "28.5000",
+      "currency": "USD"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-por-sea-2026-08-14",
+     "question": "Who will win in the upcoming basketball event Portland vs Seattle scheduled for August 15, 2026 at 2:00 AM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-08-15T02:00:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Portland",
+       "teamId": 5549,
+       "team": {
+        "id": 5549,
+        "name": "Portland",
+        "abbreviation": "por",
+        "alias": "",
+        "safeName": "Portland",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Storm",
+       "teamId": 9,
+       "team": {
+        "id": 9,
+        "name": "Seattle",
+        "abbreviation": "sea",
+        "alias": "Storm",
+        "safeName": "Seattle",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "BVTMXWJNCDKM",
+    "marketSlug": "aec-wnba-por-sea-2026-08-14",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-08-14T01:12:24.917823489Z",
+    "updateTime": "2026-08-14T01:12:24.917823489Z",
+    "price": {
+     "value": "0.4300",
+     "currency": "USD"
+    },
+    "qtyDecimal": "22.9900",
+    "isAggressor": false,
+    "passive": {
+     "outcomeSide": "OUTCOME_SIDE_YES",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_LONG",
+     "side": "ORDER_SIDE_BUY",
+     "marketMetadata": {
+      "slug": "aec-wnba-por-sea-2026-08-14",
+      "title": "Portland vs. Seattle",
+      "outcome": "Portland",
+      "eventSlug": "wnba-por-sea-2026-08-14"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-por-sea-2026-08-14",
+     "question": "Who will win in the upcoming basketball event Portland vs Seattle scheduled for August 15, 2026 at 2:00 AM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-08-15T02:00:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Portland",
+       "teamId": 5549,
+       "team": {
+        "id": 5549,
+        "name": "Portland",
+        "abbreviation": "por",
+        "alias": "",
+        "safeName": "Portland",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Storm",
+       "teamId": 9,
+       "team": {
+        "id": 9,
+        "name": "Seattle",
+        "abbreviation": "sea",
+        "alias": "Storm",
+        "safeName": "Seattle",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "BVRJNQRPJDKM",
+    "marketSlug": "aec-wnba-por-sea-2026-08-14",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-08-13T22:47:45.204160037Z",
+    "updateTime": "2026-08-13T22:47:45.204160037Z",
+    "price": {
+     "value": "0.4300",
+     "currency": "USD"
+    },
+    "qtyDecimal": "9.9100",
+    "isAggressor": false,
+    "passive": {
+     "outcomeSide": "OUTCOME_SIDE_YES",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_LONG",
+     "side": "ORDER_SIDE_BUY",
+     "marketMetadata": {
+      "slug": "aec-wnba-por-sea-2026-08-14",
+      "title": "Portland vs. Seattle",
+      "outcome": "Portland",
+      "eventSlug": "wnba-por-sea-2026-08-14"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-por-sea-2026-08-14",
+     "question": "Who will win in the upcoming basketball event Portland vs Seattle scheduled for August 15, 2026 at 2:00 AM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-08-15T02:00:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Portland",
+       "teamId": 5549,
+       "team": {
+        "id": 5549,
+        "name": "Portland",
+        "abbreviation": "por",
+        "alias": "",
+        "safeName": "Portland",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Storm",
+       "teamId": 9,
+       "team": {
+        "id": 9,
+        "name": "Seattle",
+        "abbreviation": "sea",
+        "alias": "Storm",
+        "safeName": "Seattle",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_TRADE",
+   "trade": {
+    "id": "BVPR4BH6TDKM",
+    "marketSlug": "aec-wnba-por-sea-2026-08-14",
+    "state": "TRADE_STATE_NEW",
+    "createTime": "2026-08-13T20:39:52.183501940Z",
+    "updateTime": "2026-08-13T20:39:52.183501940Z",
+    "price": {
+     "value": "0.4300",
+     "currency": "USD"
+    },
+    "qtyDecimal": "17.1000",
+    "isAggressor": false,
+    "passive": {
+     "outcomeSide": "OUTCOME_SIDE_YES",
+     "action": "ORDER_ACTION_BUY",
+     "intent": "ORDER_INTENT_BUY_LONG",
+     "side": "ORDER_SIDE_BUY",
+     "marketMetadata": {
+      "slug": "aec-wnba-por-sea-2026-08-14",
+      "title": "Portland vs. Seattle",
+      "outcome": "Portland",
+      "eventSlug": "wnba-por-sea-2026-08-14"
+     }
+    },
+    "comboLegDetails": [],
+    "market": {
+     "slug": "aec-wnba-por-sea-2026-08-14",
+     "question": "Who will win in the upcoming basketball event Portland vs Seattle scheduled for August 15, 2026 at 2:00 AM UTC?",
+     "sportsMarketType": "basketball_team_full_game_winner",
+     "line": null,
+     "gameStartTime": "2026-08-15T02:00:00Z",
+     "status": "MARKET_STATUS_RESOLVED",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Portland",
+       "teamId": 5549,
+       "team": {
+        "id": 5549,
+        "name": "Portland",
+        "abbreviation": "por",
+        "alias": "",
+        "safeName": "Portland",
+        "league": "wnba",
+        "ordering": "away"
+       }
+      },
+      {
+       "long": false,
+       "description": "Storm",
+       "teamId": 9,
+       "team": {
+        "id": 9,
+        "name": "Seattle",
+        "abbreviation": "sea",
+        "alias": "Storm",
+        "safeName": "Seattle",
+        "league": "wnba",
+        "ordering": "home"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "ACTIVITY_TYPE_ACCOUNT_DEPOSIT",
+   "accountBalanceChange": {
+    "status": "ACCOUNT_BALANCE_CHANGE_STATUS_COMPLETED",
+    "amount": {
+     "value": "0.00",
+     "currency": "USD"
+    },
+    "createTime": "2026-07-17T02:48:12.243310511Z",
+    "updateTime": "2026-07-18T13:42:15.412906899Z"
+   }
+  }
+ ],
+ "events": {
+  "nfl-bal-min-2026-08-22": {
+   "slug": "nfl-bal-min-2026-08-22",
+   "title": "BAL Ravens vs MIN Vikings",
+   "startTime": "2026-08-22T17:00:00Z",
+   "teams": [
+    {
+     "id": 50,
+     "name": "Baltimore Ravens",
+     "abbreviation": "bal",
+     "alias": "Ravens",
+     "safeName": "BAL Ravens",
+     "league": "nfl",
+     "ordering": null
+    },
+    {
+     "id": 68,
+     "name": "Minnesota Vikings",
+     "abbreviation": "min",
+     "alias": "Vikings",
+     "safeName": "MIN Vikings",
+     "league": "nfl",
+     "ordering": null
+    }
+   ]
+  },
+  "nfl-min-tb-2026-09-27": {
+   "slug": "nfl-min-tb-2026-09-27",
+   "title": "MIN Vikings vs TB Buccaneers",
+   "startTime": "2026-09-27T20:05:00Z",
+   "teams": [
+    {
+     "id": 68,
+     "name": "Minnesota Vikings",
+     "abbreviation": "min",
+     "alias": "Vikings",
+     "safeName": "MIN Vikings",
+     "league": "nfl",
+     "ordering": null
+    },
+    {
+     "id": 77,
+     "name": "Tampa Bay Buccaneers",
+     "abbreviation": "tb",
+     "alias": "Buccaneers",
+     "safeName": "TB Buccaneers",
+     "league": "nfl",
+     "ordering": null
+    }
+   ]
+  },
+  "wnba-conn-wsh-2026-09-22": {
+   "slug": "wnba-conn-wsh-2026-09-22",
+   "title": "Connecticut vs. Washington",
+   "startTime": "2026-09-22T23:30:00Z",
+   "teams": [
+    {
+     "id": 13,
+     "name": "Connecticut",
+     "abbreviation": "conn",
+     "alias": "Sun",
+     "safeName": "Connecticut",
+     "league": "wnba",
+     "ordering": null
+    },
+    {
+     "id": 10,
+     "name": "Washington",
+     "abbreviation": "wsh",
+     "alias": "Mystics",
+     "safeName": "Washington",
+     "league": "wnba",
+     "ordering": null
+    }
+   ]
+  },
+  "wnba-dal-sea-2026-09-23": {
+   "slug": "wnba-dal-sea-2026-09-23",
+   "title": "Dallas vs. Seattle",
+   "startTime": "2026-09-24T02:00:00Z",
+   "teams": [
+    {
+     "id": 1,
+     "name": "Dallas",
+     "abbreviation": "dal",
+     "alias": "Wings",
+     "safeName": "Dallas",
+     "league": "wnba",
+     "ordering": null
+    },
+    {
+     "id": 9,
+     "name": "Seattle",
+     "abbreviation": "sea",
+     "alias": "Storm",
+     "safeName": "Seattle",
+     "league": "wnba",
+     "ordering": null
+    }
+   ]
+  },
+  "wnba-ind-tor-2026-08-18": {
+   "slug": "wnba-ind-tor-2026-08-18",
+   "title": "Indiana vs. Toronto",
+   "startTime": "2026-08-18T23:00:00Z",
+   "teams": [
+    {
+     "id": 12,
+     "name": "Indiana",
+     "abbreviation": "ind",
+     "alias": "Fever",
+     "safeName": "Indiana",
+     "league": "wnba",
+     "ordering": null
+    },
+    {
+     "id": 5550,
+     "name": "Toronto",
+     "abbreviation": "tor",
+     "alias": "",
+     "safeName": "Toronto",
+     "league": "wnba",
+     "ordering": null
+    }
+   ]
+  },
+  "wnba-por-sea-2026-08-14": {
+   "slug": "wnba-por-sea-2026-08-14",
+   "title": "Portland vs. Seattle",
+   "startTime": "2026-08-15T02:00:00Z",
+   "teams": [
+    {
+     "id": 5549,
+     "name": "Portland",
+     "abbreviation": "por",
+     "alias": "",
+     "safeName": "Portland",
+     "league": "wnba",
+     "ordering": null
+    },
+    {
+     "id": 9,
+     "name": "Seattle",
+     "abbreviation": "sea",
+     "alias": "Storm",
+     "safeName": "Seattle",
+     "league": "wnba",
+     "ordering": null
+    }
+   ]
+  },
+  "mlb-tor-bal-2026-09-23": {
+   "slug": "mlb-tor-bal-2026-09-23",
+   "title": "Toronto Blue Jays vs. Baltimore Orioles",
+   "startTime": "2026-09-23T22:35:00Z",
+   "teams": [
+    {
+     "id": 3028,
+     "name": "Toronto Blue Jays",
+     "abbreviation": "tor",
+     "alias": "Toronto Blue Jays",
+     "safeName": "Blue Jays",
+     "league": "mlb",
+     "ordering": null
+    },
+    {
+     "id": 3003,
+     "name": "Baltimore Orioles",
+     "abbreviation": "bal",
+     "alias": "Baltimore Orioles",
+     "safeName": "Orioles",
+     "league": "mlb",
+     "ordering": null
+    }
+   ]
+  },
+  "nfl-atl-gb-2026-09-24": {
+   "slug": "nfl-atl-gb-2026-09-24",
+   "title": "ATL Falcons vs GB Packers",
+   "startTime": "2026-09-25T00:15:00Z",
+   "teams": [
+    {
+     "id": 49,
+     "name": "Atlanta Falcons",
+     "abbreviation": "atl",
+     "alias": "Falcons",
+     "safeName": "ATL Falcons",
+     "league": "nfl",
+     "ordering": null
+    },
+    {
+     "id": 59,
+     "name": "Green Bay Packers",
+     "abbreviation": "gb",
+     "alias": "Packers",
+     "safeName": "GB Packers",
+     "league": "nfl",
+     "ordering": null
+    }
+   ]
+  },
+  "mls-sea-rsl-2026-09-23": {
+   "slug": "mls-sea-rsl-2026-09-23",
+   "title": "Seattle Sounders FC vs. Real Salt Lake",
+   "startTime": "2026-09-24T01:30:00Z",
+   "teams": [
+    {
+     "id": 2279,
+     "name": "Seattle Sounders FC",
+     "abbreviation": "sea",
+     "alias": "Rave Green",
+     "safeName": "Seattle Sounders FC",
+     "league": "mls",
+     "ordering": null
+    },
+    {
+     "id": 2277,
+     "name": "Real Salt Lake",
+     "abbreviation": "rsl",
+     "alias": "Claret and Cobalt",
+     "safeName": "Real Salt Lake",
+     "league": "mls",
+     "ordering": null
+    }
+   ]
+  }
+ }
+}
