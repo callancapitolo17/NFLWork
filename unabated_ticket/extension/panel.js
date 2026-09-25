@@ -1951,8 +1951,9 @@
     return reply;
   }
 
-  // One request to a bets-service write route: the parsed reply, or an Error
-  // carrying the HTTP status and the service's own error text.
+  // One request to a bets-service write route (crosswalk, pins, fill fairs):
+  // the parsed reply, or an Error carrying the HTTP status and the service's
+  // own error text — none when the body is not JSON (an older service's 404).
   async function serviceRequest(method, path, body) {
     const response = await fetch(`${state.betsSettings.serviceUrl}${path}`, {
       method, cache: "no-store",
@@ -2242,17 +2243,7 @@
   // POST (attach) or DELETE (undo) /pins.json; the reply carries every pin and the whole crosswalk.
   async function sendPins(method, body, betId) {
     const query = betId ? `?betId=${encodeURIComponent(betId)}` : "";
-    const response = await fetch(`${state.betsSettings.serviceUrl}/pins.json${query}`, {
-      method, cache: "no-store",
-      headers: body ? { "Content-Type": "application/json" } : {},
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    if (!response.ok) {
-      // The service names what it refused in {error}; a non-JSON body (an older service's 404 page) has none.
-      const detail = await response.json().then((reply) => (reply && reply.error) || "", () => "");
-      throw new Error(detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`);
-    }
-    const reply = await response.json();
+    const reply = await serviceRequest(method, `/pins.json${query}`, body);
     if (!reply || !Array.isArray(reply.pins) || !Array.isArray(reply.crosswalk)) throw new Error("pins.json reply has no pins or crosswalk array");
     return reply;
   }
