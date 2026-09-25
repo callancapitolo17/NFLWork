@@ -343,14 +343,28 @@
   // The related bets for one line: the bet itself and a tag. A bet in the
   // math carries how it relates (`this line`, `same side`, `other side`); one
   // that is not carries why (`game · not sized`, `no fair at 36.5`) and is
-  // rendered grey.
-  function relatedLines(flag) {
+  // rendered grey. `fairThen` is "fair then 36.0%" — Unabated's fair for the
+  // bet's own line when it was placed — on a bet with a saved fill fair
+  // (fillfair.js), else null.
+  //   fairs  bet id -> saved fill-fair row (fillfair.fairsByBetId); optional
+  function relatedLines(flag, fairs) {
     const matches = flag && Array.isArray(flag.matches) ? flag.matches : [];
     return matches.map((match) => ({
       tier: match.tier, inMath: match.inMath === true,
       tag: match.inMath === true ? bets.tierLabel(match.tier) : match.note || bets.tierLabel(match.tier),
       text: match.label,
+      fairThen: fairThenText(match.bet, fairs),
     }));
+  }
+
+  function fairThenText(bet, fairs) {
+    const saved = bet && fairs instanceof Map ? fairs.get(bet.id) : null;
+    if (!saved) return null;
+    try {
+      return `fair then ${(kelly.americanToProb(saved.fairAmerican) * 100).toFixed(1)}%`;
+    } catch (_error) {
+      return null;
+    }
   }
 
   // Venues whose latest service poll succeeded: the payload is then the whole

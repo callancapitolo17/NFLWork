@@ -13,9 +13,11 @@
 // The tag informs only; the stake stays what condkelly.js computes.
 //
 // Pure functions, no DOM: a per-line history the scanner keeps in memory
-// (`observe`), and `edgeMove` reading a tag off it. Loaded as a plain
-// <script> in panel.html (globalThis.UnabatedEdgeMove) and via require() in
-// tests/edgemove.test.js.
+// (`observe`), `classifyMove` — the four cases over any two observations —
+// and `edgeMove` reading a tag off the history's last ten minutes. The
+// since-your-first-fill baseline (fillfair.js) runs the same `classifyMove`
+// from the fill to now. Loaded as a plain <script> in panel.html
+// (globalThis.UnabatedEdgeMove) and via require() in tests/edgemove.test.js.
 
 (function (root) {
   "use strict";
@@ -116,29 +118,22 @@
     }
   }
 
-  // The tag for one line's entries at `now`. Deltas are in probability and
-  // signed so that positive is edge-increasing for the row's side: fairDelta
-  // = the fair's chance of the side now minus then; priceDelta = the book's
-  // implied chance then minus now (the book lengthened the side's odds).
-  // The reference is the newest entry at or before now - window (else the
-  // first sighting); the reference being the current entry, or one entry in
-  // all, is `none`. The fair decides (see the header): at least the
-  // threshold up is `fair_to_you`, at least the threshold down is
-  // `fair_against`, both whatever the price did; a fair inside the threshold
-  // (or unknown at either end) is `book_away` when the price got better by
-  // the threshold, else `none`. A book that only shortened never earns a tag.
-  // `sinceMs` and `source` are the first entry after the reference: when the
-  // move was first observed, and by what.
-  function edgeMove(entries, now) {
-    if (entries == null) return NO_MOVE;
-    if (!Array.isArray(entries)) throw new Error(`edgeMove: expected an array of entries, got ${typeof entries}`);
-    if (typeof now !== "number" || !Number.isFinite(now)) throw new Error(`edgeMove: expected a numeric time, got ${now}`);
-    if (entries.length < 2) return NO_MOVE;
-    const reference = referenceIndex(entries, now - EDGE_MOVE_WINDOW_MS);
-    if (reference === entries.length - 1) return NO_MOVE;
-    const from = entries[reference];
-    const to = entries[entries.length - 1];
-    const firstChange = entries[reference + 1];
+  // The four cases over two observations of a line's side, `from` then `to`
+  // ({price, sourceFormat, sourcePrice, bacr}, the shape `observe` records).
+  // Deltas are in probability and signed so that positive is
+  // edge-increasing for the side: fairDelta = the fair's chance of the side
+  // at `to` minus at `from`; priceDelta = the book's implied chance at
+  // `from` minus at `to` (the book lengthened the side's odds). The fair
+  // decides (see the header): at least the threshold up is `fair_to_you`,
+  // at least the threshold down is `fair_against`, both whatever the price
+  // did; a fair inside the threshold (or unknown at either end) is
+  // `book_away` when the price got better by the threshold, else `none`. A
+  // book that only shortened never earns a tag. Returns {kind, fairDelta,
+  // priceDelta}; a delta is null when either end is unknown.
+  function classifyMove(from, to) {
+    if (!from || typeof from !== "object" || !to || typeof to !== "object") {
+      throw new Error(`classifyMove: expected two observations, got ${from} and ${to}`);
+    }
     const fairFrom = fairProbOf(from);
     const fairTo = fairProbOf(to);
     const fairDelta = fairFrom == null || fairTo == null ? null : fairTo - fairFrom;
@@ -152,10 +147,29 @@
     if (fairUp) kind = "fair_to_you";
     else if (fairDown) kind = "fair_against";
     else if (priceUp) kind = "book_away";
+    return { kind, fairDelta, priceDelta };
+  }
+
+  // The tag for one line's entries at `now`: classifyMove from the reference
+  // — the newest entry at or before now - window, else the first sighting —
+  // to the newest entry. The reference being the current entry, or one entry
+  // in all, is `none`. `sinceMs` and `source` are the first entry after the
+  // reference: when the move was first observed, and by what.
+  function edgeMove(entries, now) {
+    if (entries == null) return NO_MOVE;
+    if (!Array.isArray(entries)) throw new Error(`edgeMove: expected an array of entries, got ${typeof entries}`);
+    if (typeof now !== "number" || !Number.isFinite(now)) throw new Error(`edgeMove: expected a numeric time, got ${now}`);
+    if (entries.length < 2) return NO_MOVE;
+    const reference = referenceIndex(entries, now - EDGE_MOVE_WINDOW_MS);
+    if (reference === entries.length - 1) return NO_MOVE;
+    const from = entries[reference];
+    const to = entries[entries.length - 1];
+    const firstChange = entries[reference + 1];
+    const { kind, fairDelta, priceDelta } = classifyMove(from, to);
     return { kind, fairDelta, priceDelta, sinceMs: now - firstChange.at, source: firstChange.source, from, to };
   }
 
-  const api = { EDGE_MOVE_WINDOW_MS, MOVE_THRESHOLD, MOVE_LABELS, observe, forget, edgeMove };
+  const api = { EDGE_MOVE_WINDOW_MS, MOVE_THRESHOLD, MOVE_LABELS, observe, forget, classifyMove, edgeMove };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

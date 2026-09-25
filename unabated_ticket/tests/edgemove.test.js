@@ -188,3 +188,16 @@ test("forget drops a key; observe and edgeMove fail loudly on bad input", () => 
   assert.throws(() => edgeMove({}, NOW), /expected an array/);
   assert.throws(() => edgeMove([], NaN), /expected a numeric time/);
 });
+
+test("classifyMove: the four cases over any two observations; edgeMove is classifyMove over its window", () => {
+  const seen = (fields = {}) => ({ price: 199, sourceFormat: 1, sourcePrice: null, bacr: -150, ...fields });
+  assert.equal(edgemove.classifyMove(seen(), seen({ bacr: -160, price: 185 })).kind, "fair_to_you");
+  assert.equal(edgemove.classifyMove(seen(), seen({ price: 215 })).kind, "book_away");
+  assert.equal(edgemove.classifyMove(seen(), seen({ bacr: -140, price: 250 })).kind, "fair_against");
+  assert.equal(edgemove.classifyMove(seen(), seen({ price: 185 })).kind, "none");
+  assert.deepEqual(edgemove.classifyMove(seen({ bacr: null }), seen()), { kind: "none", fairDelta: null, priceDelta: 0 });
+  assert.throws(() => edgemove.classifyMove(null, seen()), /expected two observations/);
+  const history = historyOf([{ at: T0 }, { at: T0 + MIN, bacr: -140, price: 250 }]);
+  const move = edgeMove(history["m1:ms4:si0:tid6"], NOW);
+  assert.deepEqual(edgemove.classifyMove(move.from, move.to), { kind: move.kind, fairDelta: move.fairDelta, priceDelta: move.priceDelta });
+});

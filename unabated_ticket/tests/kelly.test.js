@@ -19,6 +19,11 @@ test("american -> probability", () => {
   nearly(kelly.americanToProb(-100), 0.5);
 });
 
+test("isAmericanPrice: at or beyond +/-100, finite, a number", () => {
+  assert.deepEqual([-110, 100, -100, 250, 99, -99.5, 0, NaN, Infinity, "-110", null].map(kelly.isAmericanPrice),
+    [true, true, true, true, false, false, false, false, false, false, false]);
+});
+
 test("rejects prices inside (-100, 100) and non-numbers", () => {
   assert.throws(() => kelly.americanToDecimal(50), /American price/);
   assert.throws(() => kelly.americanToProb(NaN), /finite American price/);

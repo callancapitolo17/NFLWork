@@ -397,3 +397,128 @@ test("history: a re-downloaded snapshot records fair and alt-rung moves as snaps
   assert.ok(gone.every((key) => history[key] === undefined));
   assert.ok(readded.every((key) => history[key].length === 1 && history[key][0].source === "stream"));
 });
+
+// ---- observingSince: since when the history has no gap (fillfair.js) ------------------
+
+test("observingSince: set when the first load lands, cleared by pause, set again only once the catch-up after resume lands", async () => {
+  let clock = NOW;
+  const serve = fakeFetch();
+  // Every request takes 5 s on the clock, so "when resume() ran" and "when its catch-up landed" differ.
+  const fetchImpl = async (url, options) => {
+    clock += 5000;
+    return serve(url, options);
+  };
+  const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers });
+  const loading = scanner.start([1]);
+  assert.equal(scanner.getStatus().observingSince, null);
+  await loading;
+  assert.equal(scanner.getStatus().observingSince, NOW + 5000);
+  clock += 10 * 1000;
+  await scanner.tick(); // a stream poll inside the run keeps it
+  assert.equal(scanner.getStatus().observingSince, NOW + 5000);
+  scanner.pause();
+  assert.equal(scanner.getStatus().observingSince, null);
+  clock += 30 * 1000;
+  const shortResumeAt = clock;
+  await scanner.resume(); // short pause: one stream poll
+  assert.equal(scanner.getStatus().observingSince, shortResumeAt + 5000);
+  scanner.pause();
+  clock += 5 * 60 * 1000;
+  const longResumeAt = clock;
+  await scanner.resume(); // long pause: a full resync
+  assert.equal(scanner.getStatus().observingSince, longResumeAt + 5000);
+  await scanner.start([1]);
+  assert.equal(scanner.getStatus().observingSince, clock); // start() began a new history, and a new run
+});
+
+test("observingSince: a pass that lands while the panel is hidden does not start a run", async () => {
+  let clock = NOW;
+  let releaseChanges = null;
+  const serve = fakeFetch();
+  const fetchImpl = async (url, options) => {
+    if (url.startsWith(CHANGES_URL)) await new Promise((resolve) => { releaseChanges = resolve; });
+    return serve(url, options);
+  };
+  const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers });
+  await scanner.start([1]);
+  const inFlight = scanner.tick();
+  await new Promise(setImmediate); // the stream poll is now waiting on the network
+  scanner.pause();
+  clock += 10 * 1000;
+  releaseChanges();
+  await inFlight;
+  assert.equal(scanner.getStatus().pollCount, 1);
+  assert.equal(scanner.getStatus().observingSince, null);
+});
+
+test("leagueObservingSince: a league whose loads keep failing while another lands starts its own run over", async () => {
+  let clock = NOW;
+  let cfbDown = false;
+  const fetchImpl = fakeFetch({
+    [SNAPSHOT_BASE_URL(2)]: () => {
+      if (cfbDown) throw new Error("timed out");
+      return response({ body: fixture("v2_venue_ids_slice.json"), headers: { "last-modified": new Date(clock - 20 * 1000).toUTCString(), "content-length": "1000" } });
+    },
+  });
+  const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers });
+  await scanner.start([1, 2]);
+  assert.deepEqual(scanner.getStatus().leagueObservingSince, { 1: NOW, 2: NOW });
+  // One missed refresh and a quick recovery: the same run (60 s tier + the 120 s allowance).
+  cfbDown = true;
+  clock += 61 * 1000;
+  await scanner.tick();
+  cfbDown = false;
+  clock += 31 * 1000;
+  await scanner.tick();
+  assert.deepEqual(scanner.getStatus().leagueObservingSince, { 1: NOW, 2: NOW });
+  // Down for five minutes while NFL and the stream keep landing: CFB's run starts over, NFL's does not.
+  cfbDown = true;
+  for (let step = 0; step < 10; step += 1) {
+    clock += 31 * 1000;
+    await scanner.tick();
+  }
+  cfbDown = false;
+  clock += 31 * 1000;
+  await scanner.tick();
+  const status = scanner.getStatus();
+  assert.equal(status.leagueObservingSince[1], NOW);
+  assert.equal(status.leagueObservingSince[2], clock);
+  assert.equal(status.observingSince, NOW);
+  await scanner.start([1]);
+  assert.deepEqual(scanner.getStatus().leagueObservingSince, { 1: clock });
+});
+
+test("observingSince: more than two minutes without a successful observation starts a new run", async () => {
+  let clock = NOW;
+  let offline = false;
+  const serve = fakeFetch();
+  const fetchImpl = async (url, options) => {
+    if (offline) throw new Error("offline");
+    return serve(url, options);
+  };
+  const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers });
+  await scanner.start([1]);
+  assert.equal(scanner.getStatus().observingSince, NOW);
+  // 110 s without a success, then back: the same run.
+  offline = true;
+  clock += 50 * 1000;
+  await scanner.tick();
+  clock += 50 * 1000;
+  await scanner.tick();
+  offline = false;
+  clock += 10 * 1000;
+  await scanner.tick();
+  assert.equal(scanner.getStatus().observingSince, NOW);
+  const lastSuccessAt = clock;
+  // 140 s without one: the history may have missed a move, so the run starts over.
+  offline = true;
+  clock += 70 * 1000;
+  await scanner.tick();
+  clock += 60 * 1000;
+  await scanner.tick();
+  offline = false;
+  clock += 10 * 1000;
+  await scanner.tick();
+  assert.equal(clock - lastSuccessAt, 140 * 1000);
+  assert.equal(scanner.getStatus().observingSince, clock);
+});

@@ -27,6 +27,14 @@ writer). Tables:
   bet_pins     one row per bet Cal attached to a board event by hand (the
                panel's Attach control), UPSERT on `bet_id`. Never pruned: a
                few a week, and the history of manual matches.
+  bet_fill_fairs  one row per bet: the fair (Unabated's `bacr`, a whole
+               American price) the bet's own line had when it was placed, read
+               by the panel off its in-memory line history
+               (extension/fillfair.js) and POSTed to /fill_fairs.json. INSERT
+               only, first capture wins (ON CONFLICT DO NOTHING): a saved fair
+               is never rewritten, and nothing is ever backfilled. Never pruned
+               (~14 bets a day). Served with /bets.json for the bets in its
+               window (see load_fill_fairs).
 A failed poll writes a source_runs row and touches nothing in `bets`, so a
 dark source keeps serving its previous records.
 
@@ -94,6 +102,15 @@ CREATE TABLE IF NOT EXISTS bet_pins (
     home_team_name  VARCHAR,
     pinned_at       TIMESTAMPTZ NOT NULL
 );
+CREATE TABLE IF NOT EXISTS bet_fill_fairs (
+    bet_id            VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
+    line_key          VARCHAR NOT NULL,      -- the Unabated feed line the fair was read from
+    points            DOUBLE,                -- that line's number; NULL on a moneyline
+    fair_american     INTEGER NOT NULL,      -- Unabated's fair (bacr) for the bet's side at the fill
+    fair_observed_at  TIMESTAMPTZ NOT NULL,  -- when the panel saw that fair: at or before placed_at
+    placed_at         TIMESTAMPTZ NOT NULL,  -- the bet's placedAt
+    captured_at       TIMESTAMPTZ NOT NULL   -- when this service stored the row
+);
 """
 
 _INSERT_CROSSWALK = """
@@ -157,6 +174,29 @@ WHERE bets.content_hash IS DISTINCT FROM excluded.content_hash
 
 _UPSERT_ROW_PLACEHOLDERS = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 UPSERT_ROWS_PER_STATEMENT = 200
+
+# Insert-only, first capture wins: a bet that has a saved fair keeps it. The
+# same multi-row VALUES shape as _UPSERT_BETS ({values} is that many
+# 7-placeholder tuples, at most UPSERT_ROWS_PER_STATEMENT).
+_INSERT_FILL_FAIRS = """
+INSERT INTO bet_fill_fairs (bet_id, line_key, points, fair_american, fair_observed_at, placed_at, captured_at)
+VALUES {values}
+ON CONFLICT (bet_id) DO NOTHING
+"""
+
+_FILL_FAIR_ROW_PLACEHOLDERS = "(?, ?, ?, ?, ?, ?, ?)"
+
+# The saved fairs of the bets /bets.json serves — the same window as
+# _SELECT_WINDOW. The table is never pruned, so serving all of it would grow
+# every poll for good; the panel only reads the fairs of the bets it holds.
+_SELECT_FILL_FAIRS = """
+SELECT f.bet_id, f.line_key, f.points, f.fair_american,
+       epoch(f.fair_observed_at), epoch(f.placed_at), epoch(f.captured_at)
+FROM bet_fill_fairs f
+JOIN bets b ON b.id = f.bet_id
+WHERE b.status = 'open' OR b.closed_at IS NULL OR b.closed_at >= ?
+ORDER BY f.placed_at, f.bet_id
+"""
 
 # Keeps every source's latest run AND latest successful run whatever their
 # age: source_status() reads exactly those two, and a source failing for
@@ -238,6 +278,24 @@ def _last_record_per_id(records: list[dict]) -> list[dict]:
         log.warning("upsert_bets: %d record id(s) repeated in one poll, last occurrence kept: %s",
                     len(duplicates), sorted(duplicates))
     return list(by_id.values())
+
+
+def _first_row_per_bet(rows: list[dict]) -> list[dict]:
+    """The fill-fair rows with any repeated betId collapsed to its FIRST
+    occurrence: the first capture wins inside one request as it does against
+    the table. A multi-row INSERT would silently keep the first too (DuckDB
+    1.4.4); collapsing here makes that the stated rule and logs the repeat."""
+    by_bet: dict[str, dict] = {}
+    duplicates: set[str] = set()
+    for row in rows:
+        if row["betId"] in by_bet:
+            duplicates.add(row["betId"])
+            continue
+        by_bet[row["betId"]] = row
+    if duplicates:
+        log.warning("save_fill_fairs: %d bet id(s) repeated in one request, first row kept: %s",
+                    len(duplicates), sorted(duplicates))
+    return list(by_bet.values())
 
 
 def _parse_iso(value: object) -> datetime | None:
@@ -451,6 +509,39 @@ class BetsStore:
             "awayTeamName": away_team_name, "homeTeamName": home_team_name, "pinnedAt": _epoch_to_iso(pinned_at),
         } for bet_id, venue, league, event_id, event_start, away_team_id, home_team_id,
               away_team_name, home_team_name, pinned_at in rows]
+
+    def save_fill_fairs(self, rows: list[dict], captured_at: datetime) -> int:
+        """INSERT the fill fairs of bets that have none (validated shape: see
+        service.validate_fill_fair_rows). A bet that already has one keeps it
+        — ON CONFLICT DO NOTHING, the first capture wins and a saved fair is
+        never rewritten. Returns how many rows were inserted."""
+        values = [(
+            row["betId"], row["lineKey"], row["points"], row["fairAmerican"],
+            _parse_iso(row["fairObservedAt"]), _parse_iso(row["placedAt"]), captured_at,
+        ) for row in _first_row_per_bet(rows)]
+        saved = 0
+        with self._lock:
+            for start in range(0, len(values), UPSERT_ROWS_PER_STATEMENT):
+                chunk = values[start:start + UPSERT_ROWS_PER_STATEMENT]
+                statement = _INSERT_FILL_FAIRS.format(values=", ".join([_FILL_FAIR_ROW_PLACEHOLDERS] * len(chunk)))
+                # The INSERT's result row is the rows it inserted: the ones DO NOTHING let through.
+                [inserted] = self._con.execute(statement, [value for row in chunk for value in row]).fetchone()
+                saved += inserted
+        if saved:
+            log.info("fill fairs: saved %d of %d row(s)", saved, len(values))
+        return saved
+
+    def load_fill_fairs(self, days: int, now: datetime) -> list[dict]:
+        """The saved fill fairs of the bets load_bets(days, now) serves, oldest
+        placement first, in the panel's camelCase shape."""
+        cutoff = now - timedelta(days=days)
+        with self._lock:
+            rows = self._con.execute(_SELECT_FILL_FAIRS, [cutoff]).fetchall()
+        return [{
+            "betId": bet_id, "lineKey": line_key, "points": points, "fairAmerican": fair_american,
+            "fairObservedAt": _epoch_to_iso(fair_observed_at), "placedAt": _epoch_to_iso(placed_at),
+            "capturedAt": _epoch_to_iso(captured_at),
+        } for bet_id, line_key, points, fair_american, fair_observed_at, placed_at, captured_at in rows]
 
     def source_status(self) -> dict[str, dict]:
         """{source: {fetchedAt, ok, error, count}} — fetchedAt/count from the

@@ -253,6 +253,8 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
 /* Not in the stake's math (#130): another market, or a bet with no fair. */
 .related-line.not-sized,
 .related-line.not-sized .related-tag { color: var(--muted); }
+/* Unabated's fair for the bet's own line when it was placed (fillfair.js). */
+.fair-then { color: var(--muted); white-space: nowrap; }
 .related-more { font-size: 11.5px; color: var(--muted); }
 
 .edge-row .group-more {

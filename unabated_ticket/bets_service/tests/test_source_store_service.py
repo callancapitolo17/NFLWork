@@ -537,6 +537,64 @@ def test_validate_pin_request_names_the_first_problem():
         "crosswalk[0] is novig/cfb, the pin is kalshi/cfb"
 
 
+# ---- fill fairs (since your first fill, 2026-09-23) --------------------------------------
+
+def fill_fair_row(bet_id: str, fair_american: int = 178, **extra) -> dict:
+    return {"betId": bet_id, "lineKey": "m1:ms89:si1:tid22:alt-14.5", "points": -14.5, "fairAmerican": fair_american,
+            "fairObservedAt": "2026-09-23T17:00:00.000Z", "placedAt": "2026-09-23T17:02:00Z", **extra}
+
+
+def test_fill_fairs_are_insert_only_first_capture_wins_and_served_for_the_window(store, caplog):
+    now = datetime.now(timezone.utc)
+    recent = (now - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    old = (now - timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    service.run_source_once(ScriptedSource([[
+        record("novig:open", "open", None), record("novig:recent", "won", recent), record("novig:old", "lost", old),
+    ]]), store)
+    captured_at = datetime(2026, 9, 23, 17, 3, tzinfo=timezone.utc)
+    rows = [fill_fair_row("novig:open"), fill_fair_row("novig:recent", -120, points=None),
+            fill_fair_row("novig:old"), fill_fair_row("novig:no-such-bet")]
+    assert store.save_fill_fairs(rows, captured_at) == 4
+    # The first capture wins: a later fair for a saved bet is not written, and
+    # a bet repeated inside one request keeps its first row (and says so).
+    assert store.save_fill_fairs([fill_fair_row("novig:open", 188)], captured_at + timedelta(minutes=5)) == 0
+    assert store.save_fill_fairs([fill_fair_row("novig:open-2", 150), fill_fair_row("novig:open-2", 999)], captured_at) == 1
+    assert "repeated in one request, first row kept: ['novig:open-2']" in caplog.text
+    held = dict(store._con.execute("SELECT bet_id, fair_american FROM bet_fill_fairs").fetchall())
+    assert held == {"novig:open": 178, "novig:recent": -120, "novig:old": 178, "novig:no-such-bet": 178, "novig:open-2": 150}
+    # Served for the bets /bets.json serves: open and recently settled, never an old or unknown bet.
+    served = store.load_fill_fairs(30, now)
+    assert [row["betId"] for row in served] == ["novig:open", "novig:recent"]
+    assert served[0] == {"betId": "novig:open", "lineKey": "m1:ms89:si1:tid22:alt-14.5", "points": -14.5,
+                         "fairAmerican": 178, "fairObservedAt": "2026-09-23T17:00:00Z", "placedAt": "2026-09-23T17:02:00Z",
+                         "capturedAt": "2026-09-23T17:03:00Z"}
+    assert served[1]["points"] is None
+    assert service.bets_payload(store, days=30)["fillFairs"] == served
+    assert [row["betId"] for row in store.load_fill_fairs(60, now)] == ["novig:old", "novig:open", "novig:recent"]
+
+
+def test_validate_fill_fair_rows_says_what_was_expected_and_what_was_found():
+    good = fill_fair_row("novig:1")
+    assert service.validate_fill_fair_rows({"rows": [good]}) == [good]
+    moneyline = fill_fair_row("kalshi:x:yes", -150, points=None)
+    assert service.validate_fill_fair_rows({"rows": [moneyline]}) == [moneyline]
+    assert service.validate_fill_fair_rows([]) == "body must be an object with a `rows` array, got list"
+    assert service.validate_fill_fair_rows({"rows": [1]}) == "rows[0] must be an object, got int"
+    assert service.validate_fill_fair_rows({"rows": [good, {**good, "betId": ""}]}) == "rows[1].betId must be a non-empty string, got ''"
+    assert service.validate_fill_fair_rows({"rows": [{**good, "lineKey": None}]}) == "rows[0].lineKey must be a non-empty string, got None"
+    assert service.validate_fill_fair_rows({"rows": [{**good, "points": "-14.5"}]}) == "rows[0].points must be a number or null, got '-14.5'"
+    for fair in (50, -99, 178.5, True, None):
+        assert service.validate_fill_fair_rows({"rows": [{**good, "fairAmerican": fair}]}) == (
+            f"rows[0].fairAmerican must be a whole American price (an integer <= -100 or >= 100), got {fair!r}")
+    assert service.validate_fill_fair_rows({"rows": [{**good, "placedAt": "yesterday"}]}) == "rows[0].placedAt must be an ISO time, got 'yesterday'"
+    assert service.validate_fill_fair_rows({"rows": [{**good, "fairObservedAt": None}]}) == "rows[0].fairObservedAt must be an ISO time, got None"
+    late = {**good, "fairObservedAt": "2026-09-23T17:05:00Z"}
+    assert service.validate_fill_fair_rows({"rows": [late]}) == (
+        "rows[0].fairObservedAt must be at or before placedAt (the fair is read at the fill), "
+        "got 2026-09-23T17:05:00Z after 2026-09-23T17:02:00Z")
+    assert service.validate_fill_fair_rows({"rows": [good] * 1001}) == "at most 1000 rows per request, got 1001"
+
+
 # ---- HTTP ------------------------------------------------------------------------------
 
 @pytest.fixture
@@ -570,7 +628,7 @@ def test_http_bets_json_and_health_shape(store, http_server):
     service.run_source_once(ScriptedSource([[record("kalshi:a:yes", "open", None)]]), store)
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
-    assert set(payload) == {"generatedAt", "sources", "bets", "crosswalk", "pins"}
+    assert set(payload) == {"generatedAt", "sources", "bets", "crosswalk", "pins", "fillFairs"}
     assert set(payload["sources"]["kalshi"]) == {"fetchedAt", "ok", "error", "count"}
     assert payload["sources"]["kalshi"]["ok"] is True
     assert payload["bets"][0]["id"] == "kalshi:a:yes"
@@ -588,7 +646,7 @@ def test_http_before_any_poll_serves_an_empty_list_with_the_source_pending(http_
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
     assert payload == {"generatedAt": payload["generatedAt"], "sources": {"kalshi": service.NO_POLL_YET}, "bets": [],
-                       "crosswalk": [], "pins": []}
+                       "crosswalk": [], "pins": [], "fillFairs": []}
     status, payload = get_json(f"{http_server}/health")
     assert status == 200 and payload["sources"] == {"kalshi": service.NO_POLL_YET}
 
@@ -657,6 +715,29 @@ def test_http_pins_post_attaches_a_known_bet_and_delete_undoes_it(store, http_se
     assert reply == {"ok": True, "removedPin": True, "removedRows": 1, "pins": [], "crosswalk": []}
 
 
+def test_http_fill_fairs_post_saves_once_and_bets_json_serves_them(store, http_server):
+    service.run_source_once(ScriptedSource([[record("novig:1", "open", None)]]), store)
+    body = json.dumps({"rows": [fill_fair_row("novig:1")]}).encode()
+    status, reply = request_json("POST", f"{http_server}/fill_fairs.json", body, "application/json")
+    assert status == 200
+    assert (reply["ok"], reply["saved"]) == (True, 1)
+    assert [(row["betId"], row["fairAmerican"]) for row in reply["fillFairs"]] == [("novig:1", 178)]
+    # A second capture of the same bet is a no-op: the saved fair stands.
+    again = json.dumps({"rows": [fill_fair_row("novig:1", 188)]}).encode()
+    status, reply = request_json("POST", f"{http_server}/fill_fairs.json", again, "application/json; charset=utf-8")
+    assert status == 200 and reply["saved"] == 0 and reply["fillFairs"][0]["fairAmerican"] == 178
+    assert get_json(f"{http_server}/bets.json")[1]["fillFairs"] == reply["fillFairs"]
+    # The crosswalk's guards: JSON only, a bad row is a 400 naming it, and nothing else is written.
+    status, reply = request_json("POST", f"{http_server}/fill_fairs.json", body, "text/plain")
+    assert status == 415 and "application/json" in reply["error"]
+    bad = json.dumps({"rows": [fill_fair_row("novig:2", 50)]}).encode()
+    status, reply = request_json("POST", f"{http_server}/fill_fairs.json", bad, "application/json")
+    assert status == 400 and reply["error"].startswith("rows[0].fairAmerican must be a whole American price")
+    status, reply = request_json("DELETE", f"{http_server}/fill_fairs.json")
+    assert status == 404
+    assert store._con.execute("SELECT count(*) FROM bet_fill_fairs").fetchone()[0] == 1
+
+
 def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):
     """DNS rebinding: evil.example resolving to 127.0.0.1 is SAME-ORIGIN with
     this server, so CORS and the JSON Content-Type guard do not apply to it.
@@ -667,6 +748,7 @@ def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):
     for method, path, payload, content_type in [
             ("GET", "/bets.json", None, None), ("GET", "/health", None, None),
             ("POST", "/crosswalk.json", body, "application/json"),
+            ("POST", "/fill_fairs.json", json.dumps({"rows": [fill_fair_row("kalshi:a:yes")]}).encode(), "application/json"),
             ("DELETE", "/crosswalk.json", None, None),
             ("POST", "/pins.json", json.dumps({"pin": pin_for("kalshi:a:yes")}).encode(), "application/json"),
             ("DELETE", "/pins.json?betId=kalshi:a:yes", None, None)]:
@@ -676,6 +758,7 @@ def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):
     # Nothing leaked and nothing was written or cleared.
     assert len(store.load_crosswalk()) == 1
     assert store.load_pins() == []
+    assert store._con.execute("SELECT count(*) FROM bet_fill_fairs").fetchone()[0] == 0
     # The loopback names the service is actually serving on still pass.
     port = urlparse(http_server).port
     for host in [f"127.0.0.1:{port}", f"localhost:{port}", f"LOCALHOST:{port}"]:
