@@ -398,6 +398,73 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
   border-radius: 4px; padding: 2px 7px;
 }
 
+/* ---- unmatched open bets: flag, attach, learn ---- */
+/* The Bets tab label and its red count: open bets that need a game (bets.unmatchedReasons needsGame). */
+.tabs button.needs-game { color: var(--against-fg); }
+.tabs button.needs-game.active { border-bottom-color: var(--against-fg); }
+.tabs .count.alert, .tabs button.active .count.alert { background: var(--against-fg); color: var(--ground); margin-left: -2px; }
+.banner-tight { margin: 0 0 10px; }
+.section-label.needs { color: var(--against-fg); }
+.needs-block { margin-bottom: 12px; }
+.needs-block .section-label { margin-top: 4px; }
+.section-label.inline { display: inline; margin: 0; }
+.reason-row { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; margin-top: 5px; min-width: 0; }
+.reason-row .bet-reason { margin-top: 0; min-width: 0; overflow-wrap: anywhere; }
+.reason-row.quiet .bet-reason { color: var(--muted); background: var(--chip); }
+.attach-btn {
+  margin-left: auto; flex: none; appearance: none; cursor: pointer;
+  font: 600 11.5px system-ui, sans-serif; border-radius: 6px; padding: 3px 11px;
+  border: 1px solid var(--against-fg); color: var(--against-fg); background: var(--ground);
+}
+.reason-row.quiet .attach-btn { border-color: var(--border); color: var(--ink-2); }
+.attach-btn.open { border-color: var(--border); color: var(--ink-2); }
+.attach-panel {
+  grid-column: 1 / -1; margin-top: 8px; padding: 10px; border-radius: 8px;
+  background: var(--surface-2); border: 1px solid var(--border); display: grid; gap: 8px; min-width: 0;
+}
+.attach-head {
+  display: flex; align-items: baseline; gap: 8px;
+  font: 600 10px system-ui, sans-serif; letter-spacing: .12em; text-transform: uppercase; color: var(--muted);
+}
+.attach-head .scope { margin-left: auto; letter-spacing: .02em; text-transform: none; font-weight: 500; font-size: 11px; }
+.attach-head .linkbtn { margin-left: auto; letter-spacing: 0; text-transform: none; }
+.attach-search {
+  width: 100%; font: 13px system-ui, sans-serif; padding: 6px 9px; color: var(--ink);
+  border: 1px solid var(--border); border-radius: 6px; background: var(--ground);
+}
+.candidates { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.candidates-holder { display: grid; gap: 6px; }
+.candidate {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; align-items: center;
+  padding: 6px 9px; border-radius: 6px; cursor: pointer; background: var(--ground); border: 1px solid var(--border-soft);
+}
+.candidate:hover { border-color: var(--edge-strong); }
+.candidate.best { border-color: color-mix(in srgb, var(--edge-strong) 45%, transparent); }
+.candidate .c-game { font-weight: 600; font-size: 12.5px; overflow-wrap: anywhere; }
+.candidate .c-meta { font-size: 11px; color: var(--muted); grid-column: 1; }
+.candidate .c-why { grid-column: 2; grid-row: 1 / span 2; }
+.chosen { font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }
+.map-rows { display: grid; gap: 5px; }
+.map-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 7px; align-items: baseline; font-size: 12.5px; }
+.map-row .vn { font-family: var(--figure); font-size: 12px; }
+.map-row .arrow { color: var(--muted); }
+.tag.learn, .tag.pinned { background: color-mix(in srgb, var(--edge-strong) 15%, transparent); border-color: transparent; color: var(--edge-mid); }
+.tag.fix { background: var(--warn-bg); border-color: transparent; color: var(--warn-fg); }
+.tag.pinned { vertical-align: middle; margin-left: 4px; }
+.your-bet { font-size: 12px; color: var(--ink-2); overflow-wrap: anywhere; }
+.your-bet .k { font: 600 9.5px system-ui, sans-serif; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin-right: 6px; }
+.attach-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.attach-error { color: var(--against-fg); font-size: 12px; overflow-wrap: anywhere; }
+.btn.sm { padding: 6px 12px; font-size: 12.5px; }
+.btn:disabled { opacity: .6; cursor: default; }
+.linkbtn { appearance: none; background: none; border: 0; padding: 0; cursor: pointer; font: 500 11.5px system-ui, sans-serif; color: var(--edge-mid); }
+.offboard { margin-top: 14px; border-top: 1px solid var(--border-soft); padding-top: 8px; }
+.offboard summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.offboard summary::-webkit-details-marker { display: none; }
+.offboard summary::before { content: "\25B8"; color: var(--muted); font-size: 11px; }
+.offboard[open] summary::before { content: "\25BE"; }
+.offboard .bets-list { margin-top: 6px; }
+
 :where(button, select, input, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--edge-strong); outline-offset: 2px;
 }

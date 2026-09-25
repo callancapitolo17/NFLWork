@@ -781,6 +781,55 @@ against the table taught nothing new; every spelling learned that day
 already resolved by name (step 1's eventName spellings), so the payoff is
 the next venue spelling `teams.js` cannot key, not a rescue today.
 
+**Unmatched open bets: flag, attach, learn (2026-09-23; plan
+`docs/2026-09-23-unmatched-bet-attach-plan.md`).** An open bet the board
+cannot place is left out when the panel sizes the next bet on its game, so
+it is flagged, attached by hand and learned from:
+- *The flag.* `bets.unmatchedReasons(bets, lines, now)` marks each unmatched
+  open bet `attachable` (a game bet — not `unmatchable` — whose league is on
+  the board; a bet with no league counts when any league is) and
+  `needsGame`: attachable, its game not started by what the bet knows
+  (`eventStart` in the future, else an `eventDate` today or later in
+  Eastern time, else no date at all), the board listing at least one game
+  of its league in its date window (`bets.betDateWindow`, the same dates
+  the picker lists — so a bet on a game two weeks out stays grey until
+  there is something to attach it to), and a miss an attach fixes —
+  `team not recognised`, `ambiguous game`, or **start time differs** (the
+  same team pair on the board, not started yet, within 12 h of the bet's
+  start at another time; 12 h is under the gap between two games of one
+  MLB series, and a doubleheader's game 1 in progress is left out so a
+  game-2 bet is never pointed at it). Bets needing a game turn the Bets tab label red
+  with a red count, add "N not matched to a game" to the header line, and
+  put a red banner at the top of the Bets tab. Futures and props, leagues
+  off the scanner, games not posted yet and games over but not yet settled
+  never flag; they fold into **Not on the board**. Started games keep their
+  pregame rows on the board until they end (9 MLB events 0–6 h past their
+  start were still listed, 2026-09-23), so a bet in play stays matched.
+- *Attach* (`attach.js`, pure, node-tested). Step 1 lists the board's games
+  in the bet's league whose Eastern date is within a day of the bet's (no
+  date: from the day it was placed to 14 days later), games where one of
+  the bet's teams already resolves or its rotation matches first; two
+  letters in the search box search every game of the league at any date.
+  Step 2 lines each team the venue names up with the picked game's team on
+  the same side (**Swap** flips it: a neutral site, or a one-team bet on the
+  other side), tagged `known` (already resolves there, nothing written),
+  `learn` (resolves to nothing) or `fix` (resolves to another team, shown
+  as "was …"), and restates the bet on the game ("Your bet: Abilene
+  Christian +7.5") so a wrong side shows before saving. **Attach and learn**
+  POSTs `/pins.json`: the pin (bet → board event) and the learn / fix names
+  as crosswalk rows marked with the pin, which replace a held key — a
+  manual lesson outranks an id join, and automatic learning stays
+  insert-only, so it never overwrites one.
+- *After.* `bets.applyPins` puts each served pin on its record (`pin`; a
+  record with no league takes the pin's, marked `leagueFromPin`, and gives
+  it back on Undo) and `resolveGame` reads the pin before the id join and
+  the name rule while the pinned event is on the board. The open row reads
+  **attached** with **Undo** (`DELETE /pins.json?betId=`: the pin and the
+  names it taught go; a row it replaced is not restored), and the taught
+  names appear under Team crosswalk as "attached by you". Automatic
+  learning skips pinned bets. The panel keeps the pins with the records in
+  `betsService.pins`.
+
 Otherwise a bet matches a line when the league is the same, the
 two teams resolve to the same pair (either order) or the rotation number
 matches, and the time agrees: within 30 min when the venue gives a start
@@ -882,10 +931,16 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   "unreachable since …" in red with the last records still listed), the
   open bets (venue, bet, stake, placed — each with a green left edge when
   the board matched it, red when it did not, so a problem bet is visible in
-  the open list too), and the **unmatched** list — every open bet no board line matches, with why: team
-  not recognised (the raw name, so `teams.js` can grow), ambiguous game, no
-  event on the board yet, league not on the scanner, not a game market
-  (futures, the bots' combos), unknown Kalshi series. A bet with a venue id
+  the open list too; an attached bet reads **attached** with **Undo**; a
+  line under the list says how many open game bets match, or "Every open
+  game bet matches a game on the board").
+  Unmatched open bets are listed with why in two places (above): **Needs a
+  game**, right under the money with an **Attach** button on each row, and
+  the folded **Not on the board** under the open list (Attach there too when
+  the bet is a game bet). The reasons: team
+  not recognised (the raw name, so `teams.js` can grow), ambiguous game,
+  start time differs, no event on the board yet, league not on the scanner,
+  not a game market (futures, the bots' combos), unknown Kalshi series. A bet with a venue id
   names both tiers that missed: "by id: Kalshi event 26SEP19DUQWSU not on
   any board ladder; by name: team not recognised (…)" ("Novig outcome" for
   Novig; "only on another league's board ladder" when the id sits on an
@@ -1010,15 +1065,26 @@ GETs; no order placement.
   bots and the sheet scrapers configured no new file is needed. `.env.example` lists every knob (port, retention window,
   Kalshi cadence, log level). Never commit `.env`.
 - **Endpoints** (loopback only, no auth): `GET /bets.json[?days=N]` →
-  `{generatedAt, sources: {kalshi: {...}, betonline: {fetchedAt, ok, error, count}}, bets: [...], crosswalk: [...]}`
-  with open bets plus settled/closed ones within `N` days (default 30) and
-  the whole team crosswalk (newest first); `GET /health` → `{ok, uptimeSec,
+  `{generatedAt, sources: {kalshi: {...}, betonline: {fetchedAt, ok, error, count}}, bets: [...], crosswalk: [...], pins: [...]}`
+  with open bets plus settled/closed ones within `N` days (default 30),
+  the whole team crosswalk and every pin (newest first); `GET /health` → `{ok, uptimeSec,
   sources}`; `POST /crosswalk.json` with `{rows: [{venue, league,
   venueTeamKey, unabatedTeamId, venueTeamName?, unabatedTeamName?,
   learnedFrom?}]}` (at most 1000 rows, 1 MiB) → `{ok, learned, conflicts,
   crosswalk}` — INSERT only, a held key with another id is returned in
   `conflicts` and never rewritten; `DELETE /crosswalk.json` → `{ok, cleared,
-  crosswalk: []}`. The two write routes require `Content-Type:
+  crosswalk: []}`. **Pins** (the Bets tab's Attach, 2026-09-23): `POST
+  /pins.json` with `{pin: {betId, venue, league, eventId, eventStart?,
+  awayTeamId?, homeTeamId?, awayTeamName?, homeTeamName?}, crosswalk: [at
+  most 2 rows of the pin's own venue and league]}` → `{ok, pins, crosswalk}`
+  (404 when no stored bet has that id, 400 when the pin's venue is not the
+  stored bet's or `eventStart` is not an ISO timestamp) saves the bet → board event pin and
+  the team names the attach teaches, in one transaction; those rows REPLACE a
+  held key (Cal is the authority) and carry `pinned_bet_id`, and a re-attach
+  first drops the rows the earlier attach taught. `DELETE
+  /pins.json?betId=` → `{ok, removedPin, removedRows, pins, crosswalk}` is
+  Undo: the pin and exactly the rows it taught (a row it replaced is not
+  restored). The write routes require `Content-Type:
   application/json` (415 otherwise): the service sends no CORS headers, so a
   web page can only reach it with a "simple" cross-origin request (a form or
   `text/plain` POST, which is refused) and never with JSON or DELETE (both
@@ -1234,8 +1300,12 @@ GETs; no order placement.
   source poll, at most hourly, and can never fail the poll (an error is
   logged and retried an hour later). `team_crosswalk` (#118 step 4,
   primary key `(venue, league, venue_team_key)`, plus `venue_team_name`,
-  `unabated_team_id`, `unabated_team_name`, `learned_from`, `learned_at`)
-  holds what the panel learned, INSERT-only and cleared on DELETE. A failed poll writes a failed
+  `unabated_team_id`, `unabated_team_name`, `learned_from`, `learned_at`,
+  `pinned_bet_id`) holds what the panel learned, INSERT-only from id joins
+  and cleared on DELETE; an attach's rows replace a held key and name their
+  pin. `bet_pins` (primary key `bet_id`, plus `venue`, `league`, `event_id`,
+  `event_start`, both team ids and names, `pinned_at`) holds every attach,
+  never pruned (a few a week). A failed poll writes a failed
   `source_runs` row and touches nothing else, so a dark source keeps serving
   its previous records; a store write that raises (disk full) is logged and
   retried next poll, never killing the poll thread. Until a source's first
@@ -1369,7 +1439,18 @@ the Novig label, keyed on the venue's `unabatedId`s), `resolveTeamKeys`
 keying on `unabatedId` ahead of names with a learned crosswalk row still
 winning and `rekeyRecords` keeping it, a resting order and a parlay leg
 flagging the game, settled and void records never matching, and the
-source's unmatched reasons passing through. On the Python side
+source's unmatched reasons passing through. For attach (2026-09-23),
+`bets.test.js` covers a pin matching a bet whose name resolves nowhere, the
+pinned event leaving the board, Undo, a pin lending its league, and the flag
+rule (a name not recognised before and after kickoff, futures and leagues
+off the board, date-only and dateless bets, ambiguous vs not posted, start
+time differs vs the next day's game); `attach.test.js` covers step 1's
+window, ranking, search and cap, step 2's known / learn / fix with Swap, a
+one-team bet by name and by rotation, a doubleheader that teaches nothing,
+the pin body and the labels; the pytest suite covers a pin replacing a held
+row, Undo removing only what it taught, a re-attach, rollback, the request
+validator, and the `/pins.json` round trip with its 404 / 400 / 415 and the
+Host rule. On the Python side
 `test_normalize_novig.py` runs the normaliser on
 `fixtures/bets/novig_portfolio.json` (live cards, 2026-09-22): a matched
 straight spread (the side held at its own price, cost / payout / contracts,
@@ -1569,7 +1650,10 @@ in red.
   Tennessee State", "Prairie View A&M" → "Prairie View A&M Panthers",
   "Grambling St." → "Grambling" only because the leftover is an
   institutional suffix). Two candidates is null, never a guess. If a
-  spelling keeps failing, add one `ALIASES` row with a `teams.test.js` case.
+  spelling keeps failing, **Attach** the bet (the Bets tab's Needs a game):
+  the attach teaches that venue's spelling through the crosswalk. Add an
+  `ALIASES` row with a `teams.test.js` case only for a spelling every venue
+  shares.
   Resist turning an alias into a rule: "A&M" as an institutional suffix
   would map a bet on Texas A&M to Texas on any week Unabated lists Texas
   and not Texas A&M, since the index holds only the teams currently
@@ -1587,7 +1671,16 @@ in red.
   (a doubleheader or series without a start time on the venue side), or —
   "ambiguous game (Kalshi event … on 2 board events)" — the bet's venue id
   sits on two board events. The panel refuses to guess; the bet still counts
-  in the header.
+  in the header. **Attach** it to the right game: nothing is learned when
+  both names already resolve, the pin alone decides the game.
+- **Bets: "start time differs (bet …, board …)"**: the same two teams are on
+  the board within 12 h of the bet's start at another time — a rescheduled
+  game or a venue clock read in the wrong zone. Attach it; if every bet of
+  one venue shows it, fix that source's clock.
+- **Bets: "Attach failed: HTTP 404: no route for POST /pins.json"**: the
+  bets service predates attach (0.11.0). Restart it from `main`
+  (`./unabated_ticket/bets_service/run.sh`). "HTTP 404: no bet with id …"
+  means the service has not stored that record yet; wait for its next poll.
 - **Bets: unmatched "by id: … not on any board ladder; by name: …"**: the
   bet carries a Kalshi / Novig id no board rung carries (the venue lists no
   ladder for the game, or the ladder dropped that number), and the name rule

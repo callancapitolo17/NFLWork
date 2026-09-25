@@ -21,6 +21,12 @@ writer). Tables:
                only: a held key is never rewritten — the same id is a no-op,
                a different id is a conflict the caller is told about. Served
                with every /bets.json; DELETE /crosswalk.json empties it.
+               The one exception is a manual attach (pin_bet): Cal is the
+               authority, so its rows REPLACE a held key and carry
+               `pinned_bet_id`; unpin_bet deletes exactly those rows.
+  bet_pins     one row per bet Cal attached to a board event by hand (the
+               panel's Attach control), UPSERT on `bet_id`. Never pruned: a
+               few a week, and the history of manual matches.
 A failed poll writes a source_runs row and touches nothing in `bets`, so a
 dark source keeps serving its previous records.
 
@@ -74,6 +80,20 @@ CREATE TABLE IF NOT EXISTS team_crosswalk (
     learned_at          TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (venue, league, venue_team_key)
 );
+-- The bet whose manual attach wrote the row; NULL on rows learned from an id join.
+ALTER TABLE team_crosswalk ADD COLUMN IF NOT EXISTS pinned_bet_id VARCHAR;
+CREATE TABLE IF NOT EXISTS bet_pins (
+    bet_id          VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
+    venue           VARCHAR NOT NULL,
+    league          VARCHAR NOT NULL,
+    event_id        VARCHAR NOT NULL,      -- Unabated's eventId, as a string like the team ids
+    event_start     TIMESTAMPTZ,
+    away_team_id    VARCHAR,
+    home_team_id    VARCHAR,
+    away_team_name  VARCHAR,
+    home_team_name  VARCHAR,
+    pinned_at       TIMESTAMPTZ NOT NULL
+);
 """
 
 _INSERT_CROSSWALK = """
@@ -86,9 +106,38 @@ _SELECT_CROSSWALK_KEYS = "SELECT venue, league, venue_team_key, unabated_team_id
 
 _SELECT_CROSSWALK = """
 SELECT venue, league, venue_team_key, venue_team_name, unabated_team_id, unabated_team_name,
-       learned_from, epoch(learned_at)
+       learned_from, epoch(learned_at), pinned_bet_id
 FROM team_crosswalk
 ORDER BY learned_at DESC, venue, league, venue_team_key
+"""
+
+# A manual attach replaces whatever is held for the key (see the module docstring).
+_REPLACE_CROSSWALK = """
+INSERT INTO team_crosswalk (venue, league, venue_team_key, venue_team_name, unabated_team_id,
+                            unabated_team_name, learned_from, learned_at, pinned_bet_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (venue, league, venue_team_key) DO UPDATE SET
+    venue_team_name = excluded.venue_team_name, unabated_team_id = excluded.unabated_team_id,
+    unabated_team_name = excluded.unabated_team_name, learned_from = excluded.learned_from,
+    learned_at = excluded.learned_at, pinned_bet_id = excluded.pinned_bet_id
+"""
+
+_UPSERT_PIN = """
+INSERT INTO bet_pins (bet_id, venue, league, event_id, event_start, away_team_id, home_team_id,
+                      away_team_name, home_team_name, pinned_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (bet_id) DO UPDATE SET
+    venue = excluded.venue, league = excluded.league, event_id = excluded.event_id,
+    event_start = excluded.event_start, away_team_id = excluded.away_team_id,
+    home_team_id = excluded.home_team_id, away_team_name = excluded.away_team_name,
+    home_team_name = excluded.home_team_name, pinned_at = excluded.pinned_at
+"""
+
+_SELECT_PINS = """
+SELECT bet_id, venue, league, event_id, epoch(event_start), away_team_id, home_team_id,
+       away_team_name, home_team_name, epoch(pinned_at)
+FROM bet_pins
+ORDER BY pinned_at DESC, bet_id
 """
 
 # One statement per UPSERT_ROWS_PER_STATEMENT rows ({values} is that many
@@ -332,9 +381,9 @@ class BetsStore:
         return [{
             "venue": venue, "league": league, "venueTeamKey": venue_team_key, "venueTeamName": venue_team_name,
             "unabatedTeamId": unabated_team_id, "unabatedTeamName": unabated_team_name,
-            "learnedFrom": learned_from, "learnedAt": _epoch_to_iso(learned_at),
+            "learnedFrom": learned_from, "learnedAt": _epoch_to_iso(learned_at), "pinnedBetId": pinned_bet_id,
         } for venue, league, venue_team_key, venue_team_name, unabated_team_id, unabated_team_name,
-              learned_from, learned_at in rows]
+              learned_from, learned_at, pinned_bet_id in rows]
 
     def clear_crosswalk(self) -> int:
         """DELETE every crosswalk row; returns how many were held."""
@@ -343,6 +392,65 @@ class BetsStore:
             self._con.execute("DELETE FROM team_crosswalk")
         log.info("crosswalk: cleared %d row(s)", count)
         return count
+
+    def bet_venue(self, bet_id: str) -> str | None:
+        """The venue of the stored bet with this id, or None when `bets` holds
+        no such record (a pin must name a real bet, of its own venue)."""
+        with self._lock:
+            row = self._con.execute("SELECT venue FROM bets WHERE id = ?", [bet_id]).fetchone()
+        return row[0] if row else None
+
+    def pin_bet(self, pin: dict, crosswalk_rows: list[dict], pinned_at: datetime) -> None:
+        """Cal's manual attach, in one transaction: UPSERT the pin (validated
+        shape: see service.validate_pin_request), drop the crosswalk rows an
+        earlier attach of the same bet taught, then write this attach's rows,
+        REPLACING a held key (a manual lesson overrides an automatic one)."""
+        with self._lock:
+            self._con.execute("BEGIN TRANSACTION")
+            try:
+                self._con.execute(_UPSERT_PIN, [
+                    pin["betId"], pin["venue"], pin["league"], pin["eventId"], _parse_iso(pin.get("eventStart")),
+                    pin.get("awayTeamId"), pin.get("homeTeamId"), pin.get("awayTeamName"), pin.get("homeTeamName"),
+                    pinned_at])
+                self._con.execute("DELETE FROM team_crosswalk WHERE pinned_bet_id = ?", [pin["betId"]])
+                for row in crosswalk_rows:
+                    self._con.execute(_REPLACE_CROSSWALK, [
+                        row["venue"], row["league"], row["venueTeamKey"], row.get("venueTeamName"),
+                        row["unabatedTeamId"], row.get("unabatedTeamName"), row.get("learnedFrom"), pinned_at,
+                        pin["betId"]])
+                self._con.execute("COMMIT")
+            except Exception:
+                self._con.execute("ROLLBACK")
+                raise
+        log.info("pin: bet %s -> %s event %s, %d crosswalk row(s) taught",
+                 pin["betId"], pin["league"], pin["eventId"], len(crosswalk_rows))
+
+    def unpin_bet(self, bet_id: str) -> dict:
+        """Undo an attach: DELETE the pin and the crosswalk rows it taught.
+        A row it replaced is not restored. Returns {removedPin, removedRows}."""
+        with self._lock:
+            self._con.execute("BEGIN TRANSACTION")
+            try:
+                [removed_pin] = self._con.execute("DELETE FROM bet_pins WHERE bet_id = ?", [bet_id]).fetchone()
+                [removed_rows] = self._con.execute(
+                    "DELETE FROM team_crosswalk WHERE pinned_bet_id = ?", [bet_id]).fetchone()
+                self._con.execute("COMMIT")
+            except Exception:
+                self._con.execute("ROLLBACK")
+                raise
+        log.info("pin: bet %s unpinned, %d crosswalk row(s) removed", bet_id, removed_rows)
+        return {"removedPin": removed_pin > 0, "removedRows": removed_rows}
+
+    def load_pins(self) -> list[dict]:
+        """Every pin, newest first, in the panel's camelCase shape."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_PINS).fetchall()
+        return [{
+            "betId": bet_id, "venue": venue, "league": league, "eventId": event_id,
+            "eventStart": _epoch_to_iso(event_start), "awayTeamId": away_team_id, "homeTeamId": home_team_id,
+            "awayTeamName": away_team_name, "homeTeamName": home_team_name, "pinnedAt": _epoch_to_iso(pinned_at),
+        } for bet_id, venue, league, event_id, event_start, away_team_id, home_team_id,
+              away_team_name, home_team_name, pinned_at in rows]
 
     def source_status(self) -> dict[str, dict]:
         """{source: {fetchedAt, ok, error, count}} — fetchedAt/count from the

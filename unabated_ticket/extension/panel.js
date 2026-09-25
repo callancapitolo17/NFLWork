@@ -25,6 +25,7 @@
   const feed = globalThis.UnabatedFeed;
   const betsLib = globalThis.UnabatedBets;
   const betsView = globalThis.UnabatedBetsView;
+  const attachLib = globalThis.UnabatedAttach;
   const ladderLib = globalThis.UnabatedLadder;
   // Bets service poll cadence while the panel is visible (plan § Storage).
   const BETS_POLL_MS = 30 * 1000;
@@ -86,7 +87,8 @@
     filtersToggle: el("filters-toggle"), filtersSummary: el("filters-summary"),
     settingsToggle: el("settings-toggle"), settings: el("settings"),
     backToEdges: el("back-to-edges"), stakeLabel: el("stake-label"), betsBannerHead: el("bets-banner-head"),
-    betsCount: el("bets-count"), betsRisk: el("bets-risk"), betsRiskCaption: el("bets-risk-caption"),
+    betsCount: el("bets-count"), betsAlert: el("bets-alert"), betsTabButton: el("bets-tab-button"),
+    betsRisk: el("bets-risk"), betsRiskCaption: el("bets-risk-caption"),
     edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
     edgesSports: el("edges-sports"), edgesBetTypes: el("edges-bettypes"), edgesBooks: el("edges-books"), edgesBooksMode: el("edges-books-mode"),
     booksDefault: el("books-default"), booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMinStake: el("edges-min-stake"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
@@ -96,8 +98,9 @@
     betsHeader: el("bets-header"), betsBanner: el("bets-banner"),
     tabBets: el("tab-bets"), betsService: el("bets-service"), betsSources: el("bets-sources"),
     betsUrl: el("bets-url"), betsSettingsError: el("bets-settings-error"),
-    betsOpen: el("bets-open"), betsOpenCount: el("bets-open-count"), betsOpenEmpty: el("bets-open-empty"),
-    betsUnmatched: el("bets-unmatched"), betsUnmatchedCount: el("bets-unmatched-count"), betsUnmatchedEmpty: el("bets-unmatched-empty"),
+    betsOpen: el("bets-open"), betsOpenCount: el("bets-open-count"), betsOpenEmpty: el("bets-open-empty"), betsMatchNote: el("bets-match-note"),
+    betsNeedsBanner: el("bets-needs-banner"), betsNeedsBlock: el("bets-needs-block"), betsNeeds: el("bets-needs"), betsNeedsCount: el("bets-needs-count"),
+    betsOffboard: el("bets-offboard"), betsOffboardList: el("bets-offboard-list"), betsOffboardCount: el("bets-offboard-count"),
     betsCrosswalk: el("bets-crosswalk"), betsCrosswalkCount: el("bets-crosswalk-count"), betsCrosswalkEmpty: el("bets-crosswalk-empty"),
     betsCrosswalkClear: el("bets-crosswalk-clear"),
     shapeBanner: el("shape-banner"),
@@ -120,8 +123,12 @@
     betRecords: [],
     // The team crosswalk the bets service holds (#118 step 4), as last served
     // or stored: [{venue, league, venueTeamKey, venueTeamName, unabatedTeamId,
-    // unabatedTeamName, learnedFrom, learnedAt}]. Keys resolve through it first.
+    // unabatedTeamName, learnedFrom, learnedAt, pinnedBetId}]. Keys resolve through it first.
     crosswalk: [],
+    // Cal's manual attaches as the bets service serves them: [{betId, venue,
+    // league, eventId, eventStart, awayTeamId, homeTeamId, awayTeamName,
+    // homeTeamName, pinnedAt}]. A pin decides its bet's game (bets.applyPins).
+    pins: [],
   };
   // key -> {price, at}: what has been alerted (or seen at baseline); persisted.
   let alertLog = {};
@@ -1786,7 +1793,9 @@
       if (!payload || !Array.isArray(payload.bets)) throw new Error("bets.json has no bets array");
       // The service's crosswalk is the truth; a payload without one (an older service) keeps the stored rows.
       if (Array.isArray(payload.crosswalk)) state.crosswalk = payload.crosswalk;
-      state.betRecords = betsView.mergeServicePayload(state.betRecords, { ...payload, crosswalk: state.crosswalk }, now);
+      // Likewise the pins (an older service serves none and keeps the stored ones).
+      if (Array.isArray(payload.pins)) state.pins = payload.pins;
+      state.betRecords = betsView.mergeServicePayload(state.betRecords, { ...payload, crosswalk: state.crosswalk, pins: state.pins }, now);
       state.betsService = {
         payload: { generatedAt: payload.generatedAt ?? null, sources: payload.sources && typeof payload.sources === "object" ? payload.sources : {} },
         okAt: now, error: null, errorAt: null, unreachableSince: null,
@@ -1805,9 +1814,9 @@
     learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
   }
 
-  // The records, the service state and the crosswalk, as one stored object.
+  // The records, the service state, the crosswalk and the pins, as one stored object.
   function persistBets() {
-    return chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords, crosswalk: state.crosswalk } });
+    return chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords, crosswalk: state.crosswalk, pins: state.pins } });
   }
 
   // Every surface that shows a bet flag, after the records or the crosswalk changed.
@@ -1847,7 +1856,7 @@
     try {
       const reply = await postCrosswalk("POST", { rows: learned });
       console.info(`[unabated-ticket] crosswalk: learned ${reply.learned} row(s), ${reply.conflicts.length} refused by the service, ${reply.crosswalk.length} held`);
-      await applyCrosswalk(reply.crosswalk);
+      await applyServiceTables({ crosswalk: reply.crosswalk });
       crosswalkLastError = null;
     } catch (error) {
       crosswalkRetryAt = Date.now() + CROSSWALK_RETRY_MS;
@@ -1871,11 +1880,13 @@
     return reply;
   }
 
-  // The served table replaces the held one; keys are rebuilt from scratch so
-  // a cleared row takes its key back and a new one applies everywhere.
-  async function applyCrosswalk(crosswalk) {
-    state.crosswalk = crosswalk;
-    state.betRecords = betsLib.rekeyRecords(state.betRecords, state.crosswalk);
+  // The served crosswalk and/or pins replace the held ones; pins are applied
+  // first (a pin can give a record its league) and keys rebuilt from scratch,
+  // so a cleared row takes its key back and a new one applies everywhere.
+  async function applyServiceTables(tables) {
+    if (Array.isArray(tables.crosswalk)) state.crosswalk = tables.crosswalk;
+    if (Array.isArray(tables.pins)) state.pins = tables.pins;
+    state.betRecords = betsLib.rekeyRecords(betsLib.applyPins(state.betRecords, state.pins), state.crosswalk);
     await persistBets();
     renderBetsFlags();
   }
@@ -1913,7 +1924,7 @@
     try {
       const reply = await postCrosswalk("DELETE", null);
       console.info(`[unabated-ticket] crosswalk: cleared ${reply.cleared} row(s)`);
-      await applyCrosswalk([]);
+      await applyServiceTables({ crosswalk: [] });
       crosswalkConflictsLogged.clear();
       view.betsSettingsError.textContent = "";
     } catch (error) {
@@ -1943,7 +1954,7 @@
       return li;
     }));
     view.betsCrosswalkEmpty.hidden = rows.length > 0;
-    view.betsCrosswalkEmpty.textContent = "Nothing learned yet. Rows appear when an open bet joins the board by its Kalshi event or Novig outcome id.";
+    view.betsCrosswalkEmpty.textContent = "Nothing learned yet. Rows appear when an open bet joins the board by its Kalshi event or Novig outcome id, or when you attach one.";
   }
 
   function startBetsPolling() {
@@ -1952,13 +1963,25 @@
     pollBets().catch((error) => console.error("[unabated-ticket] bets poll failed", error));
   }
 
+  // Every open bet no board line matches, with why and whether it needs a
+  // game (the red flag). Before the first snapshot the board is empty and
+  // nothing is attachable, so nothing flags until the board is known.
+  function unmatchedNow() {
+    return betsLib.unmatchedReasons(state.betRecords, boardLines(), Date.now());
+  }
+
   function renderBetsHeader() {
     const now = Date.now();
     const open = state.betRecords.filter((bet) => bet.status === "open").length;
+    const needsGame = unmatchedNow().filter((entry) => entry.needsGame).length;
     view.betsCount.hidden = open === 0;
     view.betsCount.textContent = String(open);
-    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now);
-    view.betsHeader.classList.toggle("bad", betsView.serviceStatus(state.betsService, now).unreachable);
+    view.betsAlert.hidden = needsGame === 0;
+    view.betsAlert.textContent = String(needsGame);
+    view.betsAlert.title = needsGame ? `${needsGame} open bet${needsGame === 1 ? "" : "s"} not matched to a game` : "";
+    view.betsTabButton.classList.toggle("needs-game", needsGame > 0);
+    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now, needsGame);
+    view.betsHeader.classList.toggle("bad", needsGame > 0 || betsView.serviceStatus(state.betsService, now).unreachable);
   }
 
   // One line per venue: a dot for freshness, what it holds, how old the last
@@ -1992,51 +2015,247 @@
     }));
   }
 
-  // `trailing` is the unmatched reason; its presence is also what colours the
-  // bet's left edge, so an unmatched bet is visible in the open list too.
-  function betItem(bet, trailing, unmatched) {
-    const li = document.createElement("li");
-    li.className = unmatched ? "unmatched" : "matched";
-    const main = document.createElement("div");
-    const what = document.createElement("div");
-    what.className = "bet-what";
-    what.textContent = `${betsLib.describeBet(bet)}`;
-    const meta = document.createElement("div");
-    meta.className = "bet-meta";
-    const venue = bet.venue ? bet.venue.charAt(0).toUpperCase() + bet.venue.slice(1) : "unknown venue";
-    const game = bet.awayTeam && bet.homeTeam ? `${bet.awayTeam} @ ${bet.homeTeam}` : null;
-    meta.textContent = [venue, game].filter(Boolean).join(" · ");
+  // ---- Bets tab rows and the Attach flow ------------------------------------
+  //
+  // An open bet no board line matches is listed twice: in the open list with
+  // a red edge, and in "Needs a game" (the red flag, bets.unmatchedReasons
+  // needsGame) or the folded "Not on the board" with its reason. Attach opens
+  // a two-step panel under the listed row (attach.js): pick the game, then
+  // confirm what the venue's names mean. The attach is POSTed to the bets
+  // service (/pins.json), whose reply — every pin and the whole crosswalk —
+  // replaces the held tables. The open panel lives in `attachState`, so the
+  // 30 s poll's re-render redraws it, search focus included.
+  let attachState = null;
+
+  function openAttach(betId) {
+    attachState = { betId, step: "pick", query: "", eventId: null, swapped: false, busy: false, error: null, focusSearch: true };
+    renderBets();
+  }
+
+  function closeAttach() {
+    attachState = null;
+    renderBets();
+  }
+
+  function updateAttach(changes) {
+    attachState = { ...attachState, ...changes };
+    renderBets();
+  }
+
+  function makeEl(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function makeButton(className, text, onClick) {
+    const button = makeEl("button", className, text);
+    button.type = "button";
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      onClick();
+    });
+    return button;
+  }
+
+  // POST (attach) or DELETE (undo) /pins.json; the reply carries every pin and the whole crosswalk.
+  async function sendPins(method, body, betId) {
+    const query = betId ? `?betId=${encodeURIComponent(betId)}` : "";
+    const response = await fetch(`${state.betsSettings.serviceUrl}/pins.json${query}`, {
+      method, cache: "no-store",
+      headers: body ? { "Content-Type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!response.ok) {
+      // The service names what it refused in {error}; a non-JSON body (an older service's 404 page) has none.
+      const detail = await response.json().then((reply) => (reply && reply.error) || "", () => "");
+      throw new Error(detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`);
+    }
+    const reply = await response.json();
+    if (!reply || !Array.isArray(reply.pins) || !Array.isArray(reply.crosswalk)) throw new Error("pins.json reply has no pins or crosswalk array");
+    return reply;
+  }
+
+  async function submitAttach(bet, game, plan) {
+    updateAttach({ busy: true, error: null });
+    try {
+      const reply = await sendPins("POST", attachLib.pinRequest(bet, game, plan));
+      console.info(`[unabated-ticket] attach: ${bet.id} -> board event ${game.eventId}, ${plan.crosswalk.length} name(s) taught`);
+      attachState = null;
+      await applyServiceTables({ crosswalk: reply.crosswalk, pins: reply.pins });
+    } catch (error) {
+      console.warn("[unabated-ticket] attach failed:", error.message);
+      updateAttach({ busy: false, error: `Attach failed: ${error.message}. Is the bets service running and up to date?` });
+    }
+  }
+
+  async function undoAttach(bet) {
+    try {
+      const reply = await sendPins("DELETE", null, bet.id);
+      console.info(`[unabated-ticket] attach undone: ${bet.id}, ${reply.removedRows} name(s) removed`);
+      view.betsSettingsError.textContent = "";
+      await applyServiceTables({ crosswalk: reply.crosswalk, pins: reply.pins });
+    } catch (error) {
+      console.warn("[unabated-ticket] undo failed:", error.message);
+      view.betsSettingsError.textContent = `Undo failed: ${error.message}`;
+    }
+  }
+
+  // Step 1's scope line and game list for the current query, into their two
+  // holders. Typing redraws only these, never the whole tab.
+  function fillCandidates(bet, scopeHolder, listHolder) {
+    const { scope, events, more } = attachLib.attachCandidates(bet, boardLines(), { query: attachState.query });
+    scopeHolder.textContent = scope;
+    const list = makeEl("ol", "candidates");
+    for (const { event, why } of events) {
+      const item = makeEl("li", why ? "candidate best" : "candidate");
+      item.tabIndex = 0;
+      item.append(makeEl("div", "c-game", attachLib.gameLabel(event)), makeEl("div", "c-meta", attachLib.gameMeta(event)));
+      if (why) item.append(makeEl("span", "tag held c-why", why));
+      const choose = () => updateAttach({ step: "confirm", eventId: event.eventId, swapped: false, error: null });
+      item.addEventListener("click", choose);
+      item.addEventListener("keydown", (keyEvent) => {
+        if (keyEvent.key === "Enter") choose();
+      });
+      list.append(item);
+    }
+    const notes = [];
+    if (!events.length) notes.push(makeEl("div", "muted", "No game on the board fits. Search a team by name."));
+    if (more) notes.push(makeEl("div", "muted", `${more} more: type to narrow the list.`));
+    listHolder.replaceChildren(list, ...notes);
+  }
+
+  // Step 1: the games to pick from, a search box, best fit first.
+  function attachPickStep(bet, panel) {
+    const head = makeEl("div", "attach-head", "Which game?");
+    const scopeHolder = makeEl("span", "scope");
+    head.append(scopeHolder);
+    const search = makeEl("input", "attach-search");
+    search.type = "search";
+    search.placeholder = "Search a team";
+    search.value = attachState.query;
+    const listHolder = makeEl("div", "candidates-holder");
+    search.addEventListener("input", () => {
+      attachState.query = search.value;
+      fillCandidates(bet, scopeHolder, listHolder);
+    });
+    fillCandidates(bet, scopeHolder, listHolder);
+    panel.append(head, search, listHolder,
+      makeEl("div", "muted", "Not listed? The game may not be on the board yet. The bet stays flagged until you attach it."));
+  }
+
+  // Step 2: the picked game, what the venue's names mean on it, the bet restated.
+  function attachConfirmStep(bet, panel) {
+    const game = attachLib.boardGames(boardLines(), null).find((candidate) => candidate.eventId === attachState.eventId);
+    if (!game) {
+      panel.append(makeEl("div", "attach-error", "That game has left the board."),
+        makeButton("linkbtn", "Pick another game", () => updateAttach({ step: "pick", eventId: null })));
+      return;
+    }
+    const plan = attachLib.attachPlan(bet, game, { swapped: attachState.swapped, lines: boardLines() });
+    const gameHead = makeEl("div", "attach-head", "Game");
+    gameHead.append(makeButton("linkbtn", "Change", () => updateAttach({ step: "pick", eventId: null, error: null })));
+    const chosen = makeEl("div", "chosen", attachLib.gameLabel(game));
+    chosen.append(makeEl("span", "muted", ` · ${attachLib.gameMeta(game)}`));
+    panel.append(gameHead, chosen);
+    if (plan.names.length) {
+      const namesHead = makeEl("div", "attach-head", `${betsLib.venueLabel(bet.venue)} calls them`);
+      namesHead.append(makeButton("linkbtn", "Swap", () => updateAttach({ swapped: !attachState.swapped })));
+      const rows = makeEl("div", "map-rows");
+      for (const name of plan.names) {
+        const row = makeEl("div", "map-row");
+        const target = makeEl("span", null, `${name.unabatedTeamName} `);
+        target.append(makeEl("span", "muted", name.was ? `${name.eventSide}, was ${name.was}` : name.eventSide));
+        row.append(makeEl("span", "vn", name.venueTeamName), makeEl("span", "arrow", "→"), target,
+          makeEl("span", name.status === attachLib.STATUS_KNOWN ? "tag" : `tag ${name.status}`, name.status));
+        rows.append(row);
+      }
+      panel.append(namesHead, rows);
+    } else {
+      panel.append(makeEl("div", "muted", "The bet names no team, so nothing is learned. The attach pins the game."));
+    }
+    const yourBet = makeEl("div", "your-bet");
+    yourBet.append(makeEl("span", "k", "Your bet"), document.createTextNode(plan.betOnGame));
+    const learned = plan.crosswalk.map((row) => `"${row.venueTeamName}"`).join(" and ");
+    const submit = makeButton("btn primary sm", plan.crosswalk.length ? "Attach and learn" : "Attach", () => submitAttach(bet, game, plan));
+    submit.disabled = attachState.busy;
+    const actions = makeEl("div", "attach-actions");
+    actions.append(submit, makeEl("span", "muted", plan.crosswalk.length
+      ? `Next time ${betsLib.venueLabel(bet.venue)} writes ${learned}, it matches on its own.`
+      : "Nothing to learn: every name already matches. This pins the bet to this game."));
+    panel.append(yourBet, actions);
+  }
+
+  function attachPanel(bet) {
+    const panel = makeEl("div", "attach-panel");
+    if (attachState.step === "confirm") attachConfirmStep(bet, panel);
+    else attachPickStep(bet, panel);
+    if (attachState.error) panel.append(makeEl("div", "attach-error", attachState.error));
+    return panel;
+  }
+
+  // One bet row. options: {reason, unmatched, attachable, quiet}. `reason`
+  // (an unmatched list row) adds the reason chip and, when attachable, the
+  // Attach button and panel; `unmatched` colours the left edge, so an
+  // unmatched bet is visible in the open list too; `quiet` greys a row that
+  // does not flag. A pinned, matched open bet says "attached" with an Undo.
+  function betItem(bet, options) {
+    const { reason = null, unmatched = false, attachable = false, quiet = false } = options || {};
+    const li = makeEl("li", unmatched ? "unmatched" : "matched");
+    const main = makeEl("div");
+    const what = makeEl("div", "bet-what", betsLib.describeBet(bet));
+    const pinned = Boolean(bet.pin) && !unmatched;
+    if (pinned) what.append(makeEl("span", "tag pinned", "attached"));
+    const meta = makeEl("div", "bet-meta");
+    const venue = bet.venue ? betsLib.venueLabel(bet.venue) : "unknown venue";
+    const game = pinned && bet.pin.awayTeamName && bet.pin.homeTeamName ? `${bet.pin.awayTeamName} @ ${bet.pin.homeTeamName}`
+      : bet.awayTeam && bet.homeTeam ? `${bet.awayTeam} @ ${bet.homeTeam}` : bet.awayTeam || bet.homeTeam || null;
+    const league = reason && bet.league ? String(bet.league).toUpperCase() : null;
+    meta.textContent = [venue, league, game].filter(Boolean).join(" · ");
+    if (pinned) {
+      meta.append(document.createTextNode(" · "));
+      meta.append(makeButton("linkbtn", "Undo", () => undoAttach(bet)));
+    }
     main.append(what, meta);
 
-    const rail = document.createElement("div");
-    const stake = document.createElement("span");
-    stake.className = "bet-stake";
-    stake.textContent = bet.stake == null ? "—" : fmtDollars(bet.stake);
-    rail.append(stake);
-    if (bet.placedAt) {
-      const when = document.createElement("small");
-      when.className = "bet-when";
-      when.textContent = betsLib.formatPlacedAt(bet.placedAt);
-      rail.append(when);
-    }
+    const rail = makeEl("div");
+    rail.append(makeEl("span", "bet-stake", bet.stake == null ? "—" : fmtDollars(bet.stake)));
+    if (bet.placedAt) rail.append(makeEl("small", "bet-when", betsLib.formatPlacedAt(bet.placedAt)));
     li.append(main, rail);
-    if (trailing) {
-      const extra = document.createElement("div");
-      extra.className = "bet-reason";
-      extra.textContent = trailing;
-      li.append(extra);
+    if (!reason) return li;
+
+    const reasonRow = makeEl("div", quiet ? "reason-row quiet" : "reason-row");
+    reasonRow.append(makeEl("span", "bet-reason", reason));
+    const panelOpen = attachState != null && attachState.betId === bet.id;
+    if (attachable && panelOpen) {
+      // Not while the attach is being saved: its reply, or its error, lands in this panel.
+      const cancel = makeButton("attach-btn open", "Cancel", closeAttach);
+      cancel.disabled = attachState.busy;
+      reasonRow.append(cancel);
+    } else if (attachable) {
+      reasonRow.append(makeButton("attach-btn", "Attach", () => openAttach(bet.id)));
     }
+    li.append(reasonRow);
+    if (attachable && panelOpen) li.append(attachPanel(bet));
     return li;
   }
 
   function renderBets() {
     const now = Date.now();
     const scrollTop = view.tabBets.scrollTop;
+    // The search box is rebuilt on every render; keep typing where it was.
+    const active = document.activeElement;
+    const searchCaret = active && active.classList && active.classList.contains("attach-search") ? active.selectionStart : null;
     renderBetsSources(now);
     const open = state.betRecords.filter((bet) => bet.status === "open")
       .sort((a, b) => Date.parse(b.placedAt || 0) - Date.parse(a.placedAt || 0));
-    const unmatched = betsLib.unmatchedReasons(state.betRecords, boardLines());
+    const unmatched = unmatchedNow();
     const unmatchedIds = new Set(unmatched.map(({ bet }) => bet.id));
+    const needsGame = unmatched.filter((entry) => entry.needsGame);
+    const offBoard = unmatched.filter((entry) => !entry.needsGame);
+    // A bet that matched, settled or stopped being attachable closes its panel (never mid-POST).
+    if (attachState && !attachState.busy && !unmatched.some((entry) => entry.attachable && entry.bet.id === attachState.betId)) attachState = null;
 
     // What the tab opens with: the money, before the plumbing. A bet whose
     // venue reported no stake is counted separately rather than as zero.
@@ -2050,16 +2269,39 @@
       priced.length === open.length ? null : `${open.length - priced.length} with no stake reported`,
     ].filter(Boolean).join(" · ");
 
+    view.betsNeedsBanner.hidden = needsGame.length === 0;
+    view.betsNeedsBanner.textContent = betsView.needsGameBanner(needsGame.length);
+    view.betsNeedsBlock.hidden = needsGame.length === 0;
+    view.betsNeedsCount.textContent = needsGame.length ? String(needsGame.length) : "";
+    view.betsNeeds.replaceChildren(...needsGame.map(({ bet, reason, attachable }) => betItem(bet, { reason, unmatched: true, attachable })));
+
     view.betsOpenCount.textContent = open.length ? String(open.length) : "";
-    view.betsOpen.replaceChildren(...open.map((bet) => betItem(bet, null, unmatchedIds.has(bet.id))));
+    view.betsOpen.replaceChildren(...open.map((bet) => betItem(bet, { unmatched: unmatchedIds.has(bet.id) })));
     view.betsOpenEmpty.hidden = open.length > 0;
     view.betsOpenEmpty.textContent = state.betsService && state.betsService.okAt != null ? "No open bets." : "No bets loaded yet.";
-    view.betsUnmatchedCount.textContent = unmatched.length ? String(unmatched.length) : "";
-    view.betsUnmatched.replaceChildren(...unmatched.map(({ bet, reason }) => betItem(bet, reason, true)));
-    view.betsUnmatchedEmpty.hidden = unmatched.length > 0;
-    view.betsUnmatchedEmpty.textContent = open.length ? "Every open bet matches a game on the board." : "";
+    // Say so when nothing is wrong, so "all matched" never looks like "not checked".
+    const matchable = open.filter((bet) => !bet.unmatchable).length;
+    const unmatchedGameBets = unmatched.filter((entry) => !entry.bet.unmatchable).length;
+    view.betsMatchNote.hidden = matchable === 0;
+    view.betsMatchNote.textContent = boardLines().length === 0 ? "Waiting for the board to load before checking which game each bet is on."
+      : unmatchedGameBets === 0 ? "Every open game bet matches a game on the board."
+        : `${matchable - unmatchedGameBets} of ${matchable} open game bets match a game on the board.`;
+
+    view.betsOffboard.hidden = offBoard.length === 0;
+    view.betsOffboardCount.textContent = offBoard.length ? String(offBoard.length) : "";
+    view.betsOffboardList.replaceChildren(...offBoard.map(({ bet, reason, attachable }) => betItem(bet, { reason, unmatched: true, attachable, quiet: true })));
+    // An Attach opened from the folded list keeps the fold open.
+    if (attachState && offBoard.some((entry) => entry.bet.id === attachState.betId)) view.betsOffboard.open = true;
+
     renderCrosswalk();
     view.tabBets.scrollTop = scrollTop;
+    const search = view.tabBets.querySelector(".attach-search");
+    if (search && (searchCaret != null || (attachState && attachState.focusSearch))) {
+      search.focus();
+      const caret = searchCaret ?? search.value.length;
+      search.setSelectionRange(caret, caret);
+      attachState.focusSearch = false;
+    }
   }
 
   function readBetsSettingInputs() {
@@ -2133,7 +2375,9 @@
       // Team keys resolved and the retention window applied on every load, so
       // a grown teams.js table, a grown crosswalk and a passed month all take effect.
       state.crosswalk = Array.isArray(storedBets.crosswalk) ? storedBets.crosswalk : [];
-      state.betRecords = betsLib.pruneForRetention(betsLib.rekeyRecords(Array.isArray(storedBets.bets) ? storedBets.bets : [], state.crosswalk), Date.now());
+      state.pins = Array.isArray(storedBets.pins) ? storedBets.pins : [];
+      const storedRecords = Array.isArray(storedBets.bets) ? storedBets.bets : [];
+      state.betRecords = betsLib.pruneForRetention(betsLib.rekeyRecords(betsLib.applyPins(storedRecords, state.pins), state.crosswalk), Date.now());
       state.betsService = {
         payload: storedBets.payload || null, okAt: storedBets.okAt ?? null,
         error: storedBets.error ?? null, errorAt: storedBets.errorAt ?? null, unreachableSince: storedBets.unreachableSince ?? null,
