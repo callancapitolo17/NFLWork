@@ -9,7 +9,7 @@ const assert = require("node:assert/strict");
 const feed = require("../extension/feed.js");
 const edgemove = require("../extension/edgemove.js");
 const fillfair = require("../extension/fillfair.js");
-const { captureFillFairs, fillTimeEntry, fairsByBetId, fillPriceOf, baselineOf, moveSinceFill, REFUSED } = fillfair;
+const { captureFillFairs, fillTimeEntry, mergeFillFairs, fairsByBetId, fillPriceOf, baselineOf, moveSinceFill, REFUSED } = fillfair;
 
 const MIN = 60 * 1000;
 const T0 = Date.UTC(2026, 8, 23, 17, 0, 0);
@@ -111,7 +111,7 @@ test("saves the fair the bet's own line showed at the fill, not the one it shows
   const result = capture({ records: [bet("novig:1")], lines: [line(NOVIG)], history });
   assert.deepEqual(result.refusals, []);
   assert.deepEqual(result.saves, [{
-    betId: "novig:1", lineKey: NINERS_ALT(NOVIG), points: -14.5, fairAmerican: 178, fairObservedAt: T0, placedAt: iso(T0 + 2 * MIN),
+    betId: "novig:1", lineKey: NINERS_ALT(NOVIG), points: -14.5, fairAmerican: 178, fairObservedAt: iso(T0), placedAt: iso(T0 + 2 * MIN),
   }]);
 });
 
@@ -143,7 +143,7 @@ test("the own venue's line first seen after the fill falls back to a book that w
   const [save] = capture({ records: [bet("novig:1")], lines: [line(NOVIG), line(KALSHI)], history }).saves;
   assert.equal(save.lineKey, NINERS_ALT(KALSHI));
   assert.equal(save.fairAmerican, 178); // the newest observation at or before the fill
-  assert.equal(save.fairObservedAt, T0 + MIN);
+  assert.equal(save.fairObservedAt, iso(T0 + MIN));
 });
 
 test("refusals are final and say why: before the panel was watching, first seen after, no fair, a tie caveat, no or future time", () => {
@@ -160,10 +160,15 @@ test("refusals are final and say why: before the panel was watching, first seen 
     bet("novig:notime", { placedAt: null }),
     // "NO on the Seahawks" = the 49ers or a tie: no line's fair is its payoff.
     bet("kalshi:tie", { venue: "kalshi", betType: "moneyline", points: null, approx: ["kalshi_no_side_includes_tie"] }),
+    // Markets the board never carries: looked up forever otherwise.
+    bet("bfa:prop", { venue: "bfa", betType: "other", points: null }),
+    bet("kalshi:f5", { venue: "kalshi", period: "F5" }),
   ];
   const result = capture({ records, lines, history });
   assert.deepEqual(result.saves, []);
   assert.deepEqual(result.refusals.sort((a, b) => a.betId.localeCompare(b.betId)), [
+    { betId: "bfa:prop", reason: REFUSED.noBoardMarket },
+    { betId: "kalshi:f5", reason: REFUSED.noBoardMarket },
     { betId: "kalshi:tie", reason: REFUSED.tieCaveat },
     { betId: "novig:before", reason: REFUSED.notWatching },
     { betId: "novig:future", reason: REFUSED.future },
@@ -235,6 +240,15 @@ test("fillTimeEntry: the newest observation at or before the fill", () => {
 
 // ---- display ----------------------------------------------------------------
 
+test("mergeFillFairs: a saved row never changes, so a reply that lacks one keeps it, for the bets still held", () => {
+  const held = [{ betId: "novig:1", fairAmerican: 178 }, { betId: "novig:gone", fairAmerican: 150 }];
+  // A /bets.json that left before the POST landed: it lacks novig:1 but brings novig:2.
+  const served = [{ betId: "novig:2", fairAmerican: 183 }];
+  const records = [bet("novig:1"), bet("novig:2")];
+  assert.deepEqual(mergeFillFairs(held, served, records).map((row) => row.betId).sort(), ["novig:1", "novig:2"]);
+  assert.deepEqual(mergeFillFairs([], [{ betId: "novig:1", fairAmerican: 178 }, null], []), []);
+});
+
 test("fairsByBetId keeps well-formed rows only", () => {
   const index = fairsByBetId([
     { betId: "novig:1", fairAmerican: 178 }, { betId: "novig:2", fairAmerican: 50 }, { fairAmerican: 178 }, null,
@@ -248,47 +262,62 @@ test("baselineOf: the earliest open bet on this very line that has a saved fair"
   const second = bet("novig:2", { placedAt: iso(T0 + 40 * MIN), price: 217 });
   const unsaved = bet("novig:0", { placedAt: iso(T0) });
   const otherNumber = bet("novig:3", { placedAt: iso(T0 - 60 * MIN), points: -13.5 });
-  const fairs = fairsByBetId([
-    { betId: "novig:1", fairAmerican: 178 }, { betId: "novig:2", fairAmerican: 183 }, { betId: "novig:3", fairAmerican: 165 },
-  ]);
+  const saved = (betId, fairAmerican, lineKey = NINERS_ALT(NOVIG)) => ({ betId, fairAmerican, lineKey });
+  const fairs = fairsByBetId([saved("novig:1", 178), saved("novig:2", 183), saved("novig:3", 165)]);
   const matches = [
     { tier: "same_line", bet: second }, { tier: "same_line", bet: unsaved }, { tier: "same_line", bet: first },
     { tier: "same_side", bet: otherNumber },
   ];
-  const baseline = baselineOf(matches, fairs);
+  const baseline = baselineOf(matches, fairs, "m1");
   assert.equal(baseline.bet.id, "novig:1");
   assert.equal(baseline.fair.fairAmerican, 178);
   assert.equal(baseline.placedMs, T0 + 2 * MIN);
-  assert.equal(baselineOf([{ tier: "same_side", bet: otherNumber }], fairs), null);
-  assert.equal(baselineOf(undefined, fairs), null);
+  assert.equal(baselineOf([{ tier: "same_side", bet: otherNumber }], fairs, "m1"), null);
+  assert.equal(baselineOf(undefined, fairs, "m1"), null);
   // A parlay leg is not a position on the line: never the baseline, however early.
   const leg = bet("novig:leg", { placedAt: iso(T0 - 120 * MIN), isParlayLeg: true, price: null });
-  const withLeg = fairsByBetId([{ betId: "novig:leg", fairAmerican: 160 }, { betId: "novig:1", fairAmerican: 178 }]);
-  assert.equal(baselineOf([{ tier: "same_line", bet: leg }, { tier: "same_line", bet: first }], withLeg).bet.id, "novig:1");
+  const withLeg = fairsByBetId([saved("novig:leg", 160), saved("novig:1", 178)]);
+  assert.equal(baselineOf([{ tier: "same_line", bet: leg }, { tier: "same_line", bet: first }], withLeg, "m1").bet.id, "novig:1");
+  // A fair read off another market is never carried to this one (a bet the matcher later moved).
+  const elsewhere = fairsByBetId([saved("novig:1", 178, "m9:ms89:si1:tid22:alt-14.5")]);
+  assert.equal(baselineOf([{ tier: "same_line", bet: first }], elsewhere, "m1"), null);
+  assert.equal(baselineOf([{ tier: "same_line", bet: first }], fairs, null), null);
 });
 
 test("the 49ers card: the price improved to +223 while the fair fell from 36.0% to 34.7% since the +208 fill: red", () => {
   const baseline = { bet: bet("novig:1"), fair: { fairAmerican: 178 }, placedMs: T0 + 2 * MIN };
   const now = { price: 223, sourceFormat: 4, sourcePrice: 0.3096, bacr: 188 };
-  const move = moveSinceFill(baseline, now);
+  const move = moveSinceFill(baseline, now, NOVIG);
   assert.equal(move.kind, "fair_against");
   assert.equal(Math.round(move.fairDelta * 1000) / 10, -1.2); // 34.72% - 35.97%: the displays round to 34.7 / 36.0
   assert.equal(Math.round(move.priceDelta * 1000) / 10, 1.5);
   assert.deepEqual(move.from, { price: 208, sourceFormat: 4, sourcePrice: 0.3247, bacr: 178 });
   assert.equal(move.to, now);
   // The same price with the fair holding is the book moving away; the fair rising is green.
-  assert.equal(moveSinceFill(baseline, { ...now, bacr: 178 }).kind, "book_away");
-  assert.equal(moveSinceFill(baseline, { ...now, bacr: 170 }).kind, "fair_to_you");
+  assert.equal(moveSinceFill(baseline, { ...now, bacr: 178 }, NOVIG).kind, "book_away");
+  assert.equal(moveSinceFill(baseline, { ...now, bacr: 170 }, NOVIG).kind, "fair_to_you");
   // The same rule as the ten-minute tag, applied to the fill and now.
   assert.deepEqual(edgemove.classifyMove(move.from, now), { kind: move.kind, fairDelta: move.fairDelta, priceDelta: move.priceDelta });
 });
 
-test("a fill with no price on its record is decided on the fair alone", () => {
-  const baseline = { bet: bet("bfa:1", { venue: "bfa", price: null, raw: {} }), fair: { fairAmerican: 178 }, placedMs: T0 };
-  const flat = moveSinceFill(baseline, { price: 223, sourceFormat: 1, sourcePrice: null, bacr: 178 });
+test("on another book the fill's price is not compared: a Kalshi row at +230 is not the book moving away from a Novig +208", () => {
+  const baseline = { bet: bet("novig:1"), fair: { fairAmerican: 178 }, placedMs: T0 + 2 * MIN };
+  const kalshiNow = { price: 230, sourceFormat: 4, sourcePrice: 0.303, bacr: 178 };
+  const flat = moveSinceFill(baseline, kalshiNow, KALSHI);
   assert.equal(flat.kind, "none");
   assert.equal(flat.priceDelta, null);
-  assert.equal(moveSinceFill(baseline, { price: 223, sourceFormat: 1, sourcePrice: null, bacr: 188 }).kind, "fair_against");
+  assert.equal(flat.from.price, null);
+  // The fair still decides across books: it is the same at every book on a number.
+  assert.equal(moveSinceFill(baseline, { ...kalshiNow, bacr: 188 }, KALSHI).kind, "fair_against");
+  assert.equal(moveSinceFill(baseline, kalshiNow, undefined).priceDelta, null);
+});
+
+test("a fill with no price on its record is decided on the fair alone", () => {
+  const baseline = { bet: bet("bfa:1", { venue: "bfa", price: null, raw: {} }), fair: { fairAmerican: 178 }, placedMs: T0 };
+  const flat = moveSinceFill(baseline, { price: 223, sourceFormat: 1, sourcePrice: null, bacr: 178 }, DRAFTKINGS);
+  assert.equal(flat.kind, "none");
+  assert.equal(flat.priceDelta, null);
+  assert.equal(moveSinceFill(baseline, { price: 223, sourceFormat: 1, sourcePrice: null, bacr: 188 }, DRAFTKINGS).kind, "fair_against");
 });
 
 test("fillPriceOf: an exchange fill is its exact probability, a sportsbook fill its American price", () => {

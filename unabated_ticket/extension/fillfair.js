@@ -15,11 +15,12 @@
 // this shipped, placed with the panel hidden or closed) gets nothing and
 // keeps the ten-minute tag.
 //
-// Display (fairsByBetId, baselineOf, moveSinceFill): a line held in the same
-// direction is measured from the EARLIEST open straight bet on that very line
-// with a saved fair — the fair then against the fair now, the bet's own fill price
-// against the price now — through edgemove.classifyMove, the same four cases
-// and the same 0.5-point threshold as the ten-minute tag.
+// Display (mergeFillFairs, fairsByBetId, baselineOf, moveSinceFill): a line
+// held in the same direction is measured from the EARLIEST open straight bet
+// on that very line with a saved fair — the fair then against the fair now,
+// and on the bet's own book its fill price against the price now — through
+// edgemove.classifyMove, the same four cases and the same 0.5-point
+// threshold as the ten-minute tag.
 //
 // Pure: no DOM, no fetch, no chrome.*. Loaded as a plain <script> in
 // panel.html after kelly.js, edgemove.js, feed.js and bets.js (exposes
@@ -29,6 +30,7 @@
   "use strict";
 
   const inNode = typeof module !== "undefined" && module.exports;
+  const kelly = inNode ? require("./kelly.js") : root.UnabatedKelly;
   const feed = inNode ? require("./feed.js") : root.UnabatedFeed;
   const bets = inNode ? require("./bets.js") : root.UnabatedBets;
   const edgemove = inNode ? require("./edgemove.js") : root.UnabatedEdgeMove;
@@ -46,9 +48,14 @@
   // looked at again next pass. Further out is a time-zone error, refused —
   // waiting it out would read the history at the wrong moment.
   const CLOCK_SKEW_GRACE_MS = 60 * 1000;
+  // The markets the board carries: a bet on anything else (a prop, a team
+  // total, Kalshi's F5) can never find a line of its own.
+  const BOARD_BET_TYPES = new Set(Object.values(feed.BET_TYPES).map((name) => name.toLowerCase()));
+  const BOARD_PERIODS = new Set(Object.values(feed.PERIODS));
   // Why a bet gets no saved fair. Every one is final: the history only ever
   // loses the moment of a fill, it never gains it back.
   const REFUSED = Object.freeze({
+    noBoardMarket: "the board lists no market of its bet type and period",
     noPlacedAt: "no placed time on the record",
     future: "placed after now (a clock or time-zone error)",
     notWatching: "placed before the panel was watching",
@@ -61,17 +68,14 @@
   // bacr is a whole American price (172,172 of 172,172 live NFL/CFB/MLB
   // lines, 2026-09-23), and the service stores it as one.
   function isWholeAmerican(value) {
-    return Number.isInteger(value) && Math.abs(value) >= 100;
-  }
-
-  function samePoints(a, b) {
-    return (a == null && b == null) || (typeof a === "number" && a === b);
+    return Number.isInteger(value) && kelly.isAmericanPrice(value);
   }
 
   // The reasons a bet is refused before its line is looked up: they need
   // only the record and the clocks. A NO that also wins on a tie pays on
   // "the other team or a tie", which no line's fair prices.
   function refusalBeforeLookup(bet, placedMs, observingSince, now) {
+    if (!BOARD_BET_TYPES.has(bet.betType) || !BOARD_PERIODS.has(bet.period)) return REFUSED.noBoardMarket;
     if (!Number.isFinite(placedMs)) return REFUSED.noPlacedAt;
     if (placedMs > now + CLOCK_SKEW_GRACE_MS) return REFUSED.future;
     if (placedMs < observingSince) return REFUSED.notWatching;
@@ -85,7 +89,7 @@
     const betType = feed.BET_TYPES[line.betTypeId];
     return feed.PERIODS[line.periodTypeId] === bet.period
       && typeof betType === "string" && betType.toLowerCase() === bet.betType
-      && samePoints(line.points, bet.points);
+      && bets.samePoints(line.points, bet.points);
   }
 
   // bet id -> the board rows (feed.describeLine) each bet is `same_line` on:
@@ -159,8 +163,8 @@
       const found = fillTimeEntry(history[row.key], placedMs);
       if (found.entry) {
         return { save: {
-          betId: bet.id, lineKey: row.key, points: row.points ?? null,
-          fairAmerican: found.entry.bacr, fairObservedAt: found.entry.at, placedAt: bet.placedAt,
+          betId: bet.id, lineKey: row.key, points: row.points ?? null, fairAmerican: found.entry.bacr,
+          fairObservedAt: new Date(found.entry.at).toISOString(), placedAt: bet.placedAt,
         } };
       }
       reason ||= found.reason;
@@ -168,9 +172,10 @@
     return { reason };
   }
 
-  // One capture pass: {saves, refusals}. A save is the row the bets service
-  // stores — {betId, lineKey, points, fairAmerican, fairObservedAt (ms),
-  // placedAt}; a refusal {betId, reason} is final (REFUSED). A bet with no
+  // One capture pass: {saves, refusals}. A save is the row POST
+  // /fill_fairs.json takes — {betId, lineKey, points, fairAmerican,
+  // fairObservedAt, placedAt}, times ISO; a refusal {betId, reason} is final
+  // (REFUSED). A bet with no
   // line on the board yet — its game not resolved, no book at its number —
   // is in neither and is looked at again next pass.
   //   records         bet records (bets.js contract); only open ones are read
@@ -207,6 +212,18 @@
 
   // ---- display ---------------------------------------------------------------
 
+  // The saved fairs to hold after a service reply: the served rows, plus any
+  // held row the reply lacks — a /bets.json that left before a POST landed
+  // answers without the new row — for the bets still in the records. A saved
+  // row never changes, so the union is exact, and the records bound it to
+  // the retention window.
+  function mergeFillFairs(held, served, records) {
+    const byBet = new Map();
+    for (const row of [...held, ...served]) if (row && typeof row.betId === "string") byBet.set(row.betId, row);
+    const recordIds = new Set(records.map((record) => record.id));
+    return Array.from(byBet.values()).filter((row) => recordIds.has(row.betId));
+  }
+
   // bet id -> saved row, over the rows the bets service serves
   // ({betId, fairAmerican, ...}); a malformed row is skipped.
   function fairsByBetId(rows) {
@@ -233,25 +250,37 @@
   // sportsbook fill as its American price. Null when the record carries no
   // price (a parlay leg).
   function fillPriceOf(bet) {
-    if (typeof bet.price !== "number" || !Number.isFinite(bet.price) || Math.abs(bet.price) < 100) return null;
+    if (!kelly.isAmericanPrice(bet.price)) return null;
     const exact = exactFillProb(bet);
     if (exact == null) return { price: bet.price, sourceFormat: AMERICAN_FORMAT, sourcePrice: null };
     return { price: bet.price, sourceFormat: EXCHANGE_PROBABILITY_FORMAT, sourcePrice: exact };
+  }
+
+  // "289357353" from "289357353:ms89:si0:tid6:alt-3.5": Unabated's market for
+  // one side of one bet type in one period of one game, shared by every book
+  // (1,599 of 1,608 live NFL sides, 2026-09-23).
+  function marketIdOfLineKey(lineKey) {
+    return typeof lineKey === "string" ? lineKey.split(":")[0] : null;
   }
 
   // The bet a line held in this direction is measured from: the EARLIEST
   // open straight bet on this very line (same_line — period, bet type, side
   // and number, any venue) with a saved fair, as {bet, fair, placedMs}; null
   // when none has one (the ten-minute tag stays). A parlay leg is not a
-  // position on the line and has no fill price of its own. `matches` are the
-  // row's matchBets matches, which hold open bets only.
-  function baselineOf(matches, fairs) {
+  // position on the line and has no fill price of its own. A fair read off
+  // another market than the row's is never used: it is permanent, and a bet
+  // the matcher later puts on another game must not carry it there.
+  //   matches      the row's matchBets matches (open bets only)
+  //   fairs        fairsByBetId(...)
+  //   rowMarketId  the row's marketId
+  function baselineOf(matches, fairs, rowMarketId) {
     let baseline = null;
     for (const match of matches || []) {
       if (match.tier !== "same_line" || !match.bet || match.bet.isParlayLeg === true) continue;
       const fair = fairs.get(match.bet.id);
       const placedMs = Date.parse(match.bet.placedAt);
       if (!fair || !Number.isFinite(placedMs)) continue;
+      if (rowMarketId == null || marketIdOfLineKey(fair.lineKey) !== String(rowMarketId)) continue;
       if (!baseline || placedMs < baseline.placedMs) baseline = { bet: match.bet, fair, placedMs };
     }
     return baseline;
@@ -259,15 +288,19 @@
 
   // The four cases from the fill to `current`, the line's newest observation
   // ({price, sourceFormat, sourcePrice, bacr}): the saved fair against the
-  // fair now, the bet's own fill price against the price now. A bet with no
-  // price is decided on the fair alone. {kind, fairDelta, priceDelta, from, to}.
-  function moveSinceFill(baseline, current) {
-    const price = fillPriceOf(baseline.bet) || { price: null, sourceFormat: AMERICAN_FORMAT, sourcePrice: null };
+  // fair now, and the bet's own fill price against the price now — only on
+  // the bet's own book. A Novig fill against a Kalshi row is the spread
+  // between two books, not a book moving away, so on another book (and for
+  // a record with no price) the fair decides alone and `from.price` is null.
+  // {kind, fairDelta, priceDelta, from, to}.
+  function moveSinceFill(baseline, current, rowBookId) {
+    const onOwnBook = rowBookId != null && BOOK_ID_OF_VENUE[baseline.bet.venue] === rowBookId;
+    const price = (onOwnBook && fillPriceOf(baseline.bet)) || { price: null, sourceFormat: AMERICAN_FORMAT, sourcePrice: null };
     const from = { ...price, bacr: baseline.fair.fairAmerican };
     return { ...edgemove.classifyMove(from, current), from, to: current };
   }
 
-  const api = { BOOK_ID_OF_VENUE, REFUSED, captureFillFairs, fillTimeEntry, fairsByBetId, fillPriceOf, baselineOf, moveSinceFill };
+  const api = { BOOK_ID_OF_VENUE, REFUSED, captureFillFairs, fillTimeEntry, mergeFillFairs, fairsByBetId, fillPriceOf, baselineOf, moveSinceFill };
 
   if (inNode) {
     module.exports = api;

@@ -11,11 +11,18 @@
 (function (root) {
   "use strict";
 
+  // American odds run from -100 down and from +100 up; the gap between is no price.
+  const MIN_AMERICAN_MAGNITUDE = 100;
+
+  function isAmericanPrice(value) {
+    return typeof value === "number" && Number.isFinite(value) && Math.abs(value) >= MIN_AMERICAN_MAGNITUDE;
+  }
+
   function assertAmerican(americanOdds, label) {
     if (typeof americanOdds !== "number" || !Number.isFinite(americanOdds)) {
       throw new Error(`${label}: expected a finite American price, got ${americanOdds}`);
     }
-    if (Math.abs(americanOdds) < 100) {
+    if (!isAmericanPrice(americanOdds)) {
       throw new Error(`${label}: American price must be <= -100 or >= 100, got ${americanOdds}`);
     }
   }
@@ -102,7 +109,7 @@
     return { contracts, priceCents: priceProb * 100, costDollars };
   }
 
-  const api = { americanToDecimal, americanToProb, bookProbOf, kellyStakeFromEdge, isContractMarket, contractOrder };
+  const api = { isAmericanPrice, americanToDecimal, americanToProb, bookProbOf, kellyStakeFromEdge, isContractMarket, contractOrder };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

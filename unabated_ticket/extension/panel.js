@@ -795,10 +795,12 @@
   // Edges row or a raw feed line); `bet` is its {tier, matches, advice}.
   function tagReading(line, bet) {
     const recent = moveFor(line.key);
-    const baseline = fillfair.baselineOf(bet.matches, fillFairIndex);
+    const baseline = fillfair.baselineOf(bet.matches, fillFairIndex, line.marketId);
     const entries = scannerHistory[line.key];
     if (!baseline || !entries || entries.length === 0) return { move: recent, baseline: null, recent };
-    return { move: fillfair.moveSinceFill(baseline, entries[entries.length - 1]), baseline, recent };
+    // An Edges row carries its book as `book`; the Ticket's raw feed line as `bookId`.
+    const rowBookId = line.book ? line.book.id : line.bookId;
+    return { move: fillfair.moveSinceFill(baseline, entries[entries.length - 1], rowBookId), baseline, recent };
   }
 
   // The numbers behind the tag. Since a fill: "since your Novig +208 bet
@@ -816,7 +818,10 @@
     }
     const bet = reading.baseline.bet;
     const placed = new Date(reading.baseline.placedMs).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-    const since = `since your ${betsLib.venueLabel(bet.venue)}${fmtBetPrice(bet)} bet (${placed}): ${fmtMoveNumbers(reading.move)}`;
+    const numbers = reading.move.from.price == null
+      ? `fair ${fmtFairEntry(reading.move.from)} \u2192 ${fmtFairEntry(reading.move.to)} \u00b7 price not compared (another book, or no fill price)`
+      : fmtMoveNumbers(reading.move);
+    const since = `since your ${betsLib.venueLabel(bet.venue)}${fmtBetPrice(bet)} bet (${placed}): ${numbers}`;
     return [since, recentMoveText(reading.recent), opener].filter(Boolean).join(" | ");
   }
 
@@ -1854,9 +1859,10 @@
       if (!payload || !Array.isArray(payload.bets)) throw new Error("bets.json has no bets array");
       // The service's crosswalk is the truth; a payload without one (an older service) keeps the stored rows.
       if (Array.isArray(payload.crosswalk)) state.crosswalk = payload.crosswalk;
-      // Same for the saved fill fairs: an older service without the key keeps the stored rows.
-      if (Array.isArray(payload.fillFairs)) setFillFairs(payload.fillFairs);
       state.betRecords = betsView.mergeServicePayload(state.betRecords, { ...payload, crosswalk: state.crosswalk }, now);
+      // Saved fill fairs never change, so the served rows are merged into the
+      // held ones, not swapped in; an older service without the key keeps them.
+      if (Array.isArray(payload.fillFairs)) setFillFairs(fillfair.mergeFillFairs(state.fillFairs, payload.fillFairs, state.betRecords));
       state.betsService = {
         payload: { generatedAt: payload.generatedAt ?? null, sources: payload.sources && typeof payload.sources === "object" ? payload.sources : {} },
         okAt: now, error: null, errorAt: null, unreachableSince: null,
@@ -1931,14 +1937,25 @@
 
   // POST (learn) or DELETE (clear) /crosswalk.json; the reply carries the table.
   async function postCrosswalk(method, body) {
-    const response = await fetch(`${state.betsSettings.serviceUrl}/crosswalk.json`, {
+    const reply = await serviceRequest(method, "/crosswalk.json", body);
+    if (!reply || !Array.isArray(reply.crosswalk)) throw new Error("crosswalk.json has no crosswalk array");
+    return reply;
+  }
+
+  // One request to a bets-service write route: the parsed reply, or an Error
+  // carrying the HTTP status and the service's own error text.
+  async function serviceRequest(method, path, body) {
+    const response = await fetch(`${state.betsSettings.serviceUrl}${path}`, {
       method, cache: "no-store",
       headers: body ? { "Content-Type": "application/json" } : {},
       body: body ? JSON.stringify(body) : undefined,
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const reply = await response.json();
-    if (!reply || !Array.isArray(reply.crosswalk)) throw new Error("crosswalk.json has no crosswalk array");
+    const reply = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(`HTTP ${response.status}${reply && reply.error ? `: ${reply.error}` : ""}`);
+      error.status = response.status;
+      throw error;
+    }
     return reply;
   }
 
@@ -2025,9 +2042,10 @@
   // the first one per bet for good (bets.duckdb::bet_fill_fairs). A bet is
   // looked at until it is decided — saved, or refused for a reason that
   // cannot change (placed before the panel was watching, its line first seen
-  // after it) — once per panel session. A failed POST keeps the captured rows
-  // and retries a minute later: they are the fill's numbers and do not age.
-  // A 400 is the service refusing the rows themselves, so they are dropped.
+  // after it) — once per panel session. Rows go one per request: the service
+  // refuses a whole request on its first bad row, and a good row must not go
+  // down with it. A 400 drops that row; any other failure keeps every unsent
+  // row and retries a minute later — they are the fill's numbers and do not age.
   const FILL_FAIRS_RETRY_MS = 60 * 1000;
   const HTTP_BAD_REQUEST = 400;
   let fillFairsBusy = false;
@@ -2068,45 +2086,44 @@
   async function sendFillFairs() {
     if (fillFairsBusy || fillFairsUnsent.size === 0 || Date.now() < fillFairsRetryAt) return;
     fillFairsBusy = true;
-    const rows = Array.from(fillFairsUnsent.values());
+    let served = null;
     try {
-      const reply = await postFillFairs(rows);
-      for (const row of rows) fillFairsUnsent.delete(row.betId);
-      console.info(`[unabated-ticket] fill fairs: the service saved ${reply.saved} of ${rows.length}, holds ${reply.fillFairs.length} for the bets it serves`);
-      setFillFairs(reply.fillFairs);
-      fillFairsLastError = null;
-      await persistBets();
-      renderBetsFlags();
-    } catch (error) {
-      if (error.status === HTTP_BAD_REQUEST) {
-        for (const row of rows) fillFairsUnsent.delete(row.betId);
-        console.error(`[unabated-ticket] fill fairs: the service refused ${rows.length} row(s), dropped:`, error.message, rows);
-      } else {
-        fillFairsRetryAt = Date.now() + FILL_FAIRS_RETRY_MS;
-        if (fillFairsLastError !== error.message) console.warn("[unabated-ticket] fill fairs: service write failed:", error.message);
-        fillFairsLastError = error.message;
+      for (const row of Array.from(fillFairsUnsent.values())) {
+        const outcome = await sendFillFairRow(row);
+        if (outcome.retryLater) break;
+        if (outcome.served) served = outcome.served;
       }
     } finally {
       fillFairsBusy = false;
     }
+    if (!served) return;
+    setFillFairs(fillfair.mergeFillFairs(state.fillFairs, served, state.betRecords));
+    await persistBets();
+    renderBetsFlags();
   }
 
-  // POST /fill_fairs.json; the reply carries every saved fair for the bets
-  // the service serves. A failure carries the HTTP status and the service's
-  // own error text.
-  async function postFillFairs(rows) {
-    const body = { rows: rows.map((row) => ({ ...row, fairObservedAt: new Date(row.fairObservedAt).toISOString() })) };
-    const response = await fetch(`${state.betsSettings.serviceUrl}/fill_fairs.json`, {
-      method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    });
-    const reply = await response.json().catch(() => null);
-    if (!response.ok) {
-      const error = new Error(`HTTP ${response.status}${reply && reply.error ? `: ${reply.error}` : ""}`);
-      error.status = response.status;
-      throw error;
+  // One row: {served} (the reply's rows) once the service holds it; {} when
+  // the service refused it (a 400: dropped and logged); {retryLater: true}
+  // when the service failed or could not be reached.
+  async function sendFillFairRow(row) {
+    try {
+      const reply = await serviceRequest("POST", "/fill_fairs.json", { rows: [row] });
+      if (!reply || !Array.isArray(reply.fillFairs)) throw new Error("fill_fairs.json has no fillFairs array");
+      fillFairsUnsent.delete(row.betId);
+      fillFairsLastError = null;
+      console.info(`[unabated-ticket] fill fairs: ${row.betId} ${reply.saved ? "saved" : "already held by the service"}`);
+      return { served: reply.fillFairs };
+    } catch (error) {
+      if (error.status === HTTP_BAD_REQUEST) {
+        fillFairsUnsent.delete(row.betId);
+        console.error(`[unabated-ticket] fill fairs: the service refused ${row.betId}, dropped:`, error.message, row);
+        return {};
+      }
+      fillFairsRetryAt = Date.now() + FILL_FAIRS_RETRY_MS;
+      if (fillFairsLastError !== error.message) console.warn("[unabated-ticket] fill fairs: service write failed:", error.message);
+      fillFairsLastError = error.message;
+      return { retryLater: true };
     }
-    if (!reply || !Array.isArray(reply.fillFairs)) throw new Error("fill_fairs.json has no fillFairs array");
-    return reply;
   }
 
   function startBetsPolling() {
@@ -2296,8 +2313,8 @@
       // Team keys resolved and the retention window applied on every load, so
       // a grown teams.js table, a grown crosswalk and a passed month all take effect.
       state.crosswalk = Array.isArray(storedBets.crosswalk) ? storedBets.crosswalk : [];
-      setFillFairs(Array.isArray(storedBets.fillFairs) ? storedBets.fillFairs : []);
       state.betRecords = betsLib.pruneForRetention(betsLib.rekeyRecords(Array.isArray(storedBets.bets) ? storedBets.bets : [], state.crosswalk), Date.now());
+      setFillFairs(fillfair.mergeFillFairs([], Array.isArray(storedBets.fillFairs) ? storedBets.fillFairs : [], state.betRecords));
       state.betsService = {
         payload: storedBets.payload || null, okAt: storedBets.okAt ?? null,
         error: storedBets.error ?? null, errorAt: storedBets.errorAt ?? null, unreachableSince: storedBets.unreachableSince ?? null,

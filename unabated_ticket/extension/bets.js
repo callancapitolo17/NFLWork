@@ -1153,7 +1153,7 @@
     normalizeKalshi, parseEventSuffix, centsToAmerican,
     AXIS_TOTAL, AXIS_MARGIN,
     matchBets, annotateRows, linePosition, unmatchedReasons, pruneForRetention, dedupeByNativeId, resolveTeamKeys,
-    rekeyRecords, learnCrosswalk, venueTeamOf,
+    rekeyRecords, learnCrosswalk, venueTeamOf, samePoints,
     describeBet, formatPlacedAt, formatStake, tierLabel, venueLabel,
   };
 

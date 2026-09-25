@@ -656,10 +656,17 @@ the same direction, the tag measures from your EARLIEST open straight bet on
 that very line — same period, bet type, side and number, at any venue; a
 parlay leg is not a position on the line — whose fill-time fair was saved,
 instead of from ten minutes ago: the fair then
-against the fair now, and that bet's own fill price against the price now
-(Kalshi's exact VWAP in cents, Novig's exact probability, a sportsbook's
-American price), through the same four cases at the same 0.5-point
-threshold (`edgemove.classifyMove`, the one rule both paths call). The
+against the fair now, and — on the bet's own book only — that bet's fill
+price against the price now (Kalshi's exact VWAP in cents, Novig's exact
+probability, a sportsbook's American price), through the same four cases at
+the same 0.5-point threshold (`edgemove.classifyMove`, the one rule both
+paths call). On another book (a Kalshi row for a Novig bet, any row for a
+BFA or Wagerzon bet) the price is not compared — the gap between two books
+is not a book moving away — and the fair decides alone; the fair itself is
+the same across books. A saved fair is used only on the market it was read
+from (the `marketId` its line key starts with, one per side of a bet type,
+shared by every book), so a bet the matcher later puts on another game
+never carries it there. The
 detail line names the fill — `since your +208 bet: fair 36.0% → 34.7%`, or
 `since your +208 bet: price +208 → +223` on amber — and the tooltip carries
 the since-fill numbers, the last ten minutes as the plain tag would read
@@ -696,9 +703,13 @@ the line's own league has loaded without a gap since before it too
 while the others land, and its exchange lines move on the snapshot only —
 a load more than one refresh interval plus two minutes after the previous
 one starts that league's run over), and the line had been seen by then,
-with a fair. The panel POSTs the row to
-the bets service, which keeps the first capture per bet for good
-(`bet_fill_fairs`, Bets service below). **No backfill** (user decision): a
+with a fair. A bet on a market the board never carries (a prop, a team
+total, Kalshi's F5) is refused at once. The panel POSTs each row on its own
+to the bets service, which keeps the first capture per bet for good
+(`bet_fill_fairs`, Bets service below); one row per request so a row the
+service refuses never takes a good one down with it, and the served rows
+are merged into the held ones rather than swapped in (a saved row never
+changes, so a poll that left before a save landed cannot drop it). **No backfill** (user decision): a
 bet placed before the panel was watching — every bet open when this shipped,
 one placed with the panel hidden or closed — gets no saved fair and keeps
 the ten-minute tag. A new bet reaches the panel well inside the ten minutes
@@ -1316,7 +1327,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 270 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 273 tests) and
 the bets service's pytest suite (194 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -1394,18 +1405,22 @@ not the +188 it shows now); the own venue first, and for a venue off the
 board (BFA) the most recently changed book at the number; an own-venue line
 first seen after the fill falling back to a book watched through it; every
 refusal with its reason (before the panel was watching, first seen after,
-no fair, a Kalshi NO that also wins on a tie, placed in the future, no
-placed time, and a fill inside a gap in its own league's snapshots); a bet
-with no line yet, and one a venue clock 30 s ahead
-placed "after now", left for the next pass; a line only the changes stream
-carries never read; the other side of the number never read; saved, settled
-and unmatchable bets skipped. On the display side: the earliest open
-`same_line` straight bet with a saved fair is the baseline (a same-side bet
-at another number is not, nor a parlay leg however early); the card reads red — the price improved to +223
-while the fair fell 36.0% → 34.7% — amber with the fair holding, green with
-it rising, and exactly `edgemove.classifyMove`'s answer; a record with no
-price decides on the fair alone; and the fill price basis per venue
-(Kalshi's VWAP cents, Novig's probability, a sportsbook's American price).
+no fair, a Kalshi NO that also wins on a tie, a prop or Kalshi F5 the board
+never lists, placed in the future, no placed time, and a fill inside a gap
+in its own league's snapshots); a bet with no line yet, and one a venue
+clock 30 s ahead placed "after now", left for the next pass; a line only
+the changes stream carries never read; the other side of the number never
+read; saved, settled and unmatchable bets skipped. On the display side: a
+reply that lacks a held row keeps it, for the bets still held; the earliest
+open `same_line` straight bet with a saved fair is the baseline (a
+same-side bet at another number is not, nor a parlay leg however early, nor
+a fair read off another market); the card reads red — the price improved to
++223 while the fair fell 36.0% → 34.7% — amber with the fair holding, green
+with it rising, and exactly `edgemove.classifyMove`'s answer; on a Kalshi
+row the Novig fill's price is not compared (+230 with the fair flat is no
+tag) while the fair still decides; a record with no price decides on the
+fair alone; and the fill price basis per venue (Kalshi's VWAP cents,
+Novig's probability, a sportsbook's American price).
 
 `bets.test.js` joins synthetic Kalshi and Novig records
 with unrecognisable team names on `fixtures/v2_venue_ids_slice.json`'s ids
@@ -1547,9 +1562,10 @@ in red.
   no bet on that line has a saved fill fair. Bets open before 0.11.0 and
   bets placed while the panel was hidden or closed never get one (no
   backfill, by decision). For a new bet, the panel console logs each
-  decision — `fill fairs: 1 captured` then `the service saved 1 of 1`, or
+  decision — `fill fairs: 1 captured` then `fill fairs: <bet id> saved`, or
   `not saved: … placed before the panel was watching` / `its line was first
-  seen after the bet` / `no Unabated fair on its line at the fill`. A
+  seen after the bet` / `no Unabated fair on its line at the fill` / `the
+  board lists no market of its bet type and period`. A
   `service write failed: HTTP 404` means the bets service predates the
   route: restart it (`bets_service/run.sh`) and reload the extension; the
   captured row is retried every minute until the panel closes.
@@ -1698,7 +1714,9 @@ at ship time and bets placed with the panel hidden or closed keep the
 ten-minute tag; (3) the stake is untouched — a hold rule ("no add on red")
 stays a separate decision; (4) no knobs. My calls: the four cases stay one
 rule (`edgemove.classifyMove`, called by both paths); the price leg compares
-the fill's own price on edgemove's basis (exact cents for exchanges); the
+the fill's own price on edgemove's basis (exact cents for exchanges), and only
+on the bet's own book — across books it would read a venue spread as the book
+moving away; the
 scanner's `observingSince` starts when the catch-up after a resume has
 landed rather than when `resume()` is called (until then the history is the
 pre-pause board) and restarts after a two-minute gap with no successful
