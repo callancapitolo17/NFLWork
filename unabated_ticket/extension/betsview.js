@@ -25,9 +25,9 @@
   const condkelly = inNode ? require("./condkelly.js") : root.UnabatedCondKelly;
 
   // Every venue the plan registers a source for (#117 ProphetX still to come;
-  // BFA and Wagerzon added 2026-09-23). Listing them keeps the Bets tab honest
-  // about coverage.
-  const VENUES = ["kalshi", "betonline", "novig", "prophetx", "bfa", "wagerzon"];
+  // BFA, Wagerzon and Polymarket US added 2026-09-23). Listing them keeps the
+  // Bets tab honest about coverage.
+  const VENUES = ["kalshi", "betonline", "novig", "prophetx", "bfa", "wagerzon", "polymarket_us"];
   const FRESH_MS = 5 * 60 * 1000;
   const STALE_MS = 60 * 60 * 1000;
   const BANNER_MAX_LINES = 5;
@@ -109,10 +109,19 @@
     return records.filter((record) => record.status === "open").length;
   }
 
-  // "bets: 14 open · kalshi 20 s · betonline — · novig — · prophetx —"
-  function headerLine(records, payload, now) {
+  // "bets: 14 open · 2 not matched to a game · kalshi 20 s · betonline —"
+  // needsGame is how many open bets need a game (bets.unmatchedReasons).
+  function headerLine(records, payload, now, needsGame) {
     const venues = sourceRows(payload, now).map((row) => `${row.venue} ${row.configured ? row.ageText : "—"}`);
-    return [`bets: ${openCount(records)} open`, ...venues].join(" · ");
+    const flagged = needsGame > 0 ? `${needsGame} not matched to a game` : null;
+    return [`bets: ${openCount(records)} open`, flagged, ...venues].filter(Boolean).join(" · ");
+  }
+
+  // The Bets tab's red banner, or "" when no open bet needs a game.
+  function needsGameBanner(count) {
+    if (!(count > 0)) return "";
+    if (count === 1) return "1 open bet is not matched to a game. It is left out when the panel sizes your next bet on that game. Attach it below.";
+    return `${count} open bets are not matched to a game. They are left out when the panel sizes your next bet on that game. Attach them below.`;
   }
 
   // At most `max` matches for the banner, strongest first (matchBets already
@@ -369,19 +378,26 @@
 
   // Records to keep after a poll: the stored ones and the fresh payload deduped
   // on native id (newest wins), minus stored records of a venue whose pull
-  // succeeded without them; team keys filled (through the payload's team
+  // succeeded without them; Cal's pins applied (a pin can give a record its
+  // league, so before the keys), team keys filled (through the payload's team
   // crosswalk first, #118 step 4), then the retention prune.
   function mergeServicePayload(storedRecords, payload, now) {
     const fresh = venuesWithFreshPull(payload);
     const listed = new Set((payload.bets || []).map((record) => record.id));
     const kept = (storedRecords || []).filter((record) => !fresh.has(record.venue) || listed.has(record.id));
     const merged = bets.dedupeByNativeId([kept, payload]);
-    return bets.pruneForRetention(bets.resolveTeamKeys(merged, crosswalkOf(payload)), now);
+    const pinned = bets.applyPins(merged, pinsOf(payload));
+    return bets.pruneForRetention(bets.resolveTeamKeys(pinned, crosswalkOf(payload)), now);
   }
 
   // The team crosswalk a /bets.json payload carries, or none.
   function crosswalkOf(payload) {
     return payload && Array.isArray(payload.crosswalk) ? payload.crosswalk : [];
+  }
+
+  // The manual attaches (pins) a /bets.json payload carries, or none.
+  function pinsOf(payload) {
+    return payload && Array.isArray(payload.pins) ? payload.pins : [];
   }
 
   // One Bets-tab line per crosswalk row: what the venue calls the team, what
@@ -390,7 +406,7 @@
     return (Array.isArray(crosswalk) ? crosswalk : []).filter((row) => row && typeof row === "object").map((row) => ({
       what: `${row.venueTeamName || row.venueTeamKey} \u2192 ${row.unabatedTeamName || `team ${row.unabatedTeamId}`}`,
       meta: [bets.venueLabel(row.venue), typeof row.league === "string" ? row.league.toUpperCase() : null,
-        row.learnedAt ? `learned ${bets.formatPlacedAt(row.learnedAt)}` : null].filter(Boolean).join(" \u00b7 "),
+        row.learnedAt ? `${row.pinnedBetId ? "attached by you" : "learned"} ${bets.formatPlacedAt(row.learnedAt)}` : null].filter(Boolean).join(" \u00b7 "),
       title: row.learnedFrom ? `from ${row.learnedFrom}` : "",
     }));
   }
@@ -421,7 +437,7 @@
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badges, relatedLines, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, crosswalkRows, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badges, relatedLines, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

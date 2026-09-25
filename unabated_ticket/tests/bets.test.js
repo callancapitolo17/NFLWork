@@ -684,6 +684,37 @@ test("Novig: unmatched reasons — the source's own reason for props, unsupporte
   assert.equal(reasons["novig:o-ml-car"], undefined);
 });
 
+// ---- Polymarket US: records as bets_service/sources/polymarket_us.py emits them
+// (fixture polymarket_us_account.json grammar): the venue's own team spelling,
+// keys through teams.js, one record per (market, contract side) with the side
+// HELD already resolved (a NO on a total is the Under).
+
+function polymarketUsChiCar(overrides) {
+  return Object.assign({
+    id: "polymarket_us:tsc-nfl-chi-car-2026-09-13-total-47pt0:no", source: "polymarket_us_api", venue: "polymarket_us",
+    rotation: null, price: 120, stake: 45.5, toWin: 54.5, contracts: 100, placedAt: "2026-09-12T15:00:00Z", status: "open",
+    closedAt: null, isParlayLeg: false, parlayId: null, legIndex: null, legCount: null, approx: [], sourceFetchedAt: FETCHED_AT,
+    venueIds: { marketSlug: "tsc-nfl-chi-car-2026-09-13-total-47pt0", eventSlug: "nfl-chi-car-2026-09-13" },
+    league: "nfl", eventStart: "2026-09-13T17:00:00Z", eventDate: "2026-09-13",
+    awayTeam: "Chicago Bears", homeTeam: "Carolina Panthers", awayKey: null, homeKey: null,
+    betType: "total", period: "FG", side: "under", points: 47, unmatchable: null,
+  }, overrides);
+}
+
+test("Polymarket US: a NO on the total is same_line on the Under row by name, and the venue label reads Polymarket US", () => {
+  const rows = nflRows();
+  const [record] = bets.resolveTeamKeys([polymarketUsChiCar()]);
+  assert.ok(record.awayKey && record.homeKey, "both venue spellings resolve through teams.js");
+  const under = bets.matchBets(rows["Total FG 1 47"], [record]);
+  assert.equal(under.matches.length, 1);
+  assert.equal(under.matches[0].tier, "same_line");
+  assert.match(under.matches[0].label, / · Polymarket US$/);
+  assert.equal(bets.matchBets(rows["Total FG 0 47"], [record]).matches[0].tier, "opposite");
+  assert.equal(bets.venueLabel("polymarket_us"), "Polymarket US");
+  const moneyline = polymarketUsChiCar({ id: "polymarket_us:aec-nfl-chi-car-2026-09-13:no", betType: "moneyline", side: "home", points: null });
+  assert.equal(bets.matchBets(rows["Moneyline FG 1 null"], bets.resolveTeamKeys([moneyline])).matches[0].tier, "same_line");
+});
+
 // ---- BetOnline records (no game date; rotation + placed-time window) --------------
 
 // A record as bets_service/sources/betonline.py emits it (fixture
@@ -1130,4 +1161,123 @@ test("BetOnline: a reused rotation whose named teams are not in next week's game
   assert.equal(flags[0].tier, "same_line");
   assert.equal(flags[0].matches[0].position.stake, bet.stake);
   assert.equal(bets.matchBets(nextWeek, [bet], { lines: [thisWeek, nextWeek] }).matches.length, 0);
+});
+
+// ---- manual attach: pins and the needs-a-game flag ---------------------------------
+
+// A describeLine-shaped board row with real Unabated team ids (teams_index.json).
+function idRow(fields) {
+  return Object.assign({ betType: "Total", period: "FG", sideIndex: 0, points: 50.5, rotation: null }, fields,
+    { eventStartMs: Date.parse(fields.eventStart) });
+}
+const ACU_AT_TARLETON = idRow({ league: "cfb", eventId: 7001, awayTeam: "Abilene Christian", homeTeam: "Tarleton State",
+  awayTeamId: 1123, homeTeamId: 1196, awayRotation: 371, homeRotation: 372, eventStart: "2026-09-27T00:00:00Z" });
+const BEFORE_KICKOFF = Date.parse("2026-09-26T18:00:00Z");
+const AFTER_KICKOFF = Date.parse("2026-09-27T01:00:00Z");
+
+function openBet(fields) {
+  const [record] = bets.resolveTeamKeys([Object.assign({ status: "open", venue: "bfa", league: "cfb", betType: "total",
+    period: "FG", side: "under", points: 50.5, stake: 100, toWin: 90, eventStart: "2026-09-27T00:00:00Z" }, fields)], []);
+  return record;
+}
+
+test("pins: an attached bet matches its event even with a name no rule resolves, and Undo takes it back", () => {
+  const bet = openBet({ id: "bfa:1", side: "over", awayTeam: "Abilene Chr", homeTeam: "Tarleton St" });
+  assert.equal(bets.matchBets(ACU_AT_TARLETON, [bet]).matches.length, 0);
+  const pin = { betId: "bfa:1", league: "cfb", eventId: "7001" };
+  const [pinned] = bets.applyPins([bet], [pin]);
+  assert.equal(pinned.pin, pin);
+  assert.equal(bets.matchBets(ACU_AT_TARLETON, [pinned]).matches[0].tier, "same_line");
+  assert.deepEqual(bets.unmatchedReasons([pinned], [ACU_AT_TARLETON], BEFORE_KICKOFF), []);
+  // The attach already taught the names: an id-join lesson is not drawn from a pin.
+  assert.deepEqual(bets.learnCrosswalk([pinned], [ACU_AT_TARLETON], []), { learned: [], conflicts: [] });
+  // A pinned event that left the board falls back to the usual rules.
+  assert.equal(bets.unmatchedReasons([pinned], [idRow({ ...ACU_AT_TARLETON, eventId: 7999 })], BEFORE_KICKOFF).length, 1);
+  const [unpinned] = bets.applyPins([pinned], []);
+  assert.equal(unpinned.pin, null);
+  assert.equal(bets.matchBets(ACU_AT_TARLETON, [unpinned]).matches.length, 0);
+  // Records nobody pinned are returned as they came.
+  assert.equal(bets.applyPins([bet], [])[0], bet);
+});
+
+test("pins: a bet with no league takes the pin's, and gives it back on Undo", () => {
+  const bet = openBet({ id: "bol:1", venue: "betonline", league: null, awayTeam: "Abilene Chr", homeTeam: null });
+  const [pinned] = bets.applyPins([bet], [{ betId: "bol:1", league: "cfb", eventId: 7001 }]);
+  assert.equal(pinned.league, "cfb");
+  assert.equal(bets.matchBets(ACU_AT_TARLETON, [pinned]).matches.length, 1);
+  // Keys resolved while pinned (here one set by hand) belong to the pin's league.
+  const [unpinned] = bets.applyPins([{ ...pinned, homeKey: "cfb:1196" }], []);
+  assert.equal(unpinned.league, null);
+  assert.equal(unpinned.leagueFromPin, undefined);
+  // Keys resolved in the pin's league are dropped with it, so the name reads unrecognised again.
+  assert.deepEqual([unpinned.awayKey, unpinned.homeKey], [null, null]);
+});
+
+test("needsGame: a name no rule resolves flags until the game starts; futures and leagues off the board never flag", () => {
+  const unknownName = openBet({ id: "bfa:1", awayTeam: "Abilene Chr", homeTeam: "Tarleton St" });
+  const future = { id: "kalshi:roty", status: "open", venue: "kalshi", league: null, unmatchable: "not a game market" };
+  const offBoard = openBet({ id: "nv:1", venue: "novig", league: "nhl", awayTeam: "Somebody", homeTeam: "Else" });
+  const before = bets.unmatchedReasons([unknownName, future, offBoard], [ACU_AT_TARLETON], BEFORE_KICKOFF);
+  assert.deepEqual(before.map((u) => [u.bet.id, u.reason, u.attachable, u.needsGame]), [
+    ["bfa:1", "team not recognised (Abilene Chr)", true, true],
+    ["kalshi:roty", "not a game market", false, false],
+    ["nv:1", "team not recognised (Somebody, Else)", false, false],
+  ]);
+  const after = bets.unmatchedReasons([unknownName], [ACU_AT_TARLETON], AFTER_KICKOFF);
+  assert.deepEqual(after.map((u) => [u.attachable, u.needsGame]), [[true, false]]);
+});
+
+test("needsGame: a date-only bet flags through its Eastern date; a bet with no date at all flags", () => {
+  const dated = openBet({ id: "bol:2", venue: "betonline", eventStart: null, eventDate: "2026-09-26", awayTeam: "Abilene Chr", homeTeam: null });
+  assert.equal(bets.unmatchedReasons([dated], [ACU_AT_TARLETON], Date.parse("2026-09-26T23:00:00Z"))[0].needsGame, true);
+  assert.equal(bets.unmatchedReasons([dated], [ACU_AT_TARLETON], Date.parse("2026-09-27T12:00:00Z"))[0].needsGame, false);
+  const undated = openBet({ id: "bol:3", venue: "betonline", eventStart: null, awayTeam: "Abilene Chr", homeTeam: null });
+  assert.equal(bets.unmatchedReasons([undated], [ACU_AT_TARLETON], AFTER_KICKOFF)[0].needsGame, true);
+});
+
+test("needsGame: two possible games flag; a game not posted yet does not", () => {
+  const known = openBet({ id: "bfa:2", awayTeam: "Abilene Christian", homeTeam: "Tarleton State", eventStart: null, eventDate: "2026-09-26" });
+  const twice = [ACU_AT_TARLETON, idRow({ ...ACU_AT_TARLETON, eventId: 7002, eventStart: "2026-09-26T19:00:00Z" })];
+  assert.deepEqual(bets.unmatchedReasons([known], twice, BEFORE_KICKOFF).map((u) => [u.reason, u.needsGame]), [["ambiguous game", true]]);
+  const elsewhere = [idRow({ league: "cfb", eventId: 7003, awayTeam: "Lamar", homeTeam: "Northwestern State",
+    awayTeamId: 1160, homeTeamId: 1177, eventStart: "2026-09-26T23:00:00Z" })];
+  assert.deepEqual(bets.unmatchedReasons([known], elsewhere, BEFORE_KICKOFF).map((u) => [u.reason, u.needsGame]),
+    [["no event on the board yet", false]]);
+});
+
+test("start time differs: the same pair on the board within 12 h at another start flags; the next day's game does not", () => {
+  const sevenPm = openBet({ id: "wz:1", venue: "wagerzon", awayTeam: "Abilene Christian", homeTeam: "Tarleton State",
+    eventStart: "2026-09-26T23:00:00Z" });
+  const [miss] = bets.unmatchedReasons([sevenPm], [ACU_AT_TARLETON], BEFORE_KICKOFF);
+  assert.equal(miss.reason, "start time differs (bet Sep 26 7:00 PM, board Sep 26 8:00 PM)");
+  assert.equal(miss.needsGame, true);
+  const nextDay = idRow({ ...ACU_AT_TARLETON, eventStart: "2026-09-27T20:00:00Z" });
+  assert.equal(bets.unmatchedReasons([sevenPm], [nextDay], BEFORE_KICKOFF)[0].reason, "no event on the board yet");
+});
+
+test("needsGame: a name not recognised on a game not posted yet stays grey until its league has a game around its date", () => {
+  const twoWeeksOut = openBet({ id: "nv:2", venue: "novig", awayTeam: "Abilene Chr", homeTeam: "Tarleton St",
+    eventStart: "2026-10-10T00:00:00Z" });
+  const [grey] = bets.unmatchedReasons([twoWeeksOut], [ACU_AT_TARLETON], BEFORE_KICKOFF);
+  assert.deepEqual([grey.reason, grey.attachable, grey.needsGame], ["team not recognised (Abilene Chr)", true, false]);
+  const posted = idRow({ ...ACU_AT_TARLETON, eventId: 7010, eventStart: "2026-10-10T00:00:00Z" });
+  assert.equal(bets.unmatchedReasons([twoWeeksOut], [ACU_AT_TARLETON, posted], BEFORE_KICKOFF)[0].needsGame, true);
+});
+
+test("start time differs: a doubleheader's game 1 in progress is not the game-2 bet's game", () => {
+  const gameTwo = openBet({ id: "wz:2", venue: "wagerzon", awayTeam: "Abilene Christian", homeTeam: "Tarleton State",
+    eventStart: "2026-09-27T04:00:00Z" });
+  const gameOneInProgress = Date.parse("2026-09-27T00:30:00Z");
+  const [miss] = bets.unmatchedReasons([gameTwo], [ACU_AT_TARLETON], gameOneInProgress);
+  assert.deepEqual([miss.reason, miss.needsGame], ["no event on the board yet", false]);
+  // Before game 1 starts the disagreement is still reported.
+  assert.equal(bets.unmatchedReasons([gameTwo], [ACU_AT_TARLETON], BEFORE_KICKOFF)[0].reason,
+    "start time differs (bet Sep 27 12:00 AM, board Sep 26 8:00 PM)");
+});
+
+test("betDateWindow: a day either side of the start or date; the placed window when the bet has neither", () => {
+  assert.deepEqual(bets.betDateWindow({ eventStart: "2026-09-27T00:00:00Z" }), { fromDate: "2026-09-25", toDate: "2026-09-27" });
+  assert.deepEqual(bets.betDateWindow({ eventDate: "2026-09-26" }), { fromDate: "2026-09-25", toDate: "2026-09-27" });
+  assert.deepEqual(bets.betDateWindow({ placedAt: "2026-09-23T20:00:00Z" }), { fromDate: "2026-09-23", toDate: "2026-10-07" });
+  assert.equal(bets.betDateWindow({}), null);
 });
