@@ -224,7 +224,7 @@
   }
 
   // Venues whose display name is not the capitalised key.
-  const VENUE_LABELS = { bfa: "BFA" };
+  const VENUE_LABELS = { bfa: "BFA", polymarket_us: "Polymarket US" };
 
   function venueLabel(venue) {
     if (!venue) return "unknown venue";

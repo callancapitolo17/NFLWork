@@ -52,8 +52,8 @@ test("sourceRows: one row per venue; unconfigured venues say so; a failed poll k
     kalshi: { fetchedAt: iso(20e3), ok: true, error: null, count: 14 },
     novig: { fetchedAt: iso(90 * 60e3), ok: false, error: "HTTP 401", count: 3 },
   }), NOW);
-  assert.deepEqual(rows.map((row) => row.venue), ["kalshi", "betonline", "novig", "prophetx", "bfa", "wagerzon"]);
-  const [kalshi, betonline, novig, prophetx, bfa, wagerzon] = rows;
+  assert.deepEqual(rows.map((row) => row.venue), ["kalshi", "betonline", "novig", "prophetx", "bfa", "wagerzon", "polymarket_us"]);
+  const [kalshi, betonline, novig, prophetx, bfa, wagerzon, polymarketUs] = rows;
   assert.equal(kalshi.configured, true);
   assert.equal(kalshi.level, "green");
   assert.equal(kalshi.ageText, "20 s");
@@ -68,6 +68,7 @@ test("sourceRows: one row per venue; unconfigured venues say so; a failed poll k
   assert.equal(prophetx.configured, false);
   assert.equal(bfa.configured, false);
   assert.equal(wagerzon.configured, false);
+  assert.equal(polymarketUs.configured, false);
 });
 
 test("sourceRows: a configured source that never succeeded is red with 'never'", () => {
@@ -77,8 +78,10 @@ test("sourceRows: a configured source that never succeeded is red with 'never'",
   assert.equal(kalshi.error, "boom");
 });
 
-test("sourceRows: no payload at all is six unconfigured rows", () => {
-  assert.equal(view.sourceRows(null, NOW).filter((row) => row.configured).length, 0);
+test("sourceRows: no payload at all is seven unconfigured rows", () => {
+  const rows = view.sourceRows(null, NOW);
+  assert.equal(rows.length, 7);
+  assert.equal(rows.filter((row) => row.configured).length, 0);
 });
 
 test("serviceStatus: not reached, unreachable since, reached", () => {
@@ -104,9 +107,9 @@ test("sourcesUnavailable: true with no sources or every source red; false while 
 test("headerLine: open count, then every venue with its age or a dash", () => {
   const records = [record("a", "open"), record("b", "open"), record("c", "won"), record("d", "closed")];
   const payload = payloadWith({ kalshi: { fetchedAt: iso(20e3), ok: true, error: null, count: 4 } });
-  assert.equal(view.headerLine(records, payload, NOW), "bets: 2 open · kalshi 20 s · betonline — · novig — · prophetx — · bfa — · wagerzon —");
-  assert.equal(view.headerLine([], null, NOW), "bets: 0 open · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon —");
-  assert.equal(view.headerLine([], null, NOW, 2), "bets: 0 open · 2 not matched to a game · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon —");
+  assert.equal(view.headerLine(records, payload, NOW), "bets: 2 open · kalshi 20 s · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us —");
+  assert.equal(view.headerLine([], null, NOW), "bets: 0 open · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us —");
+  assert.equal(view.headerLine([], null, NOW, 2), "bets: 0 open · 2 not matched to a game · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us —");
   assert.equal(view.headerLine([], null, NOW, 0), view.headerLine([], null, NOW));
 });
 
