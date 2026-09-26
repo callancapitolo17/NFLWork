@@ -1240,10 +1240,12 @@ GETs; no order placement.
   per wager with `betDetails[]` per leg carrying `idSport` (the league: `CBB`,
   `CFB`, `NFL`, …, so an open college bet IS placed), `gameDateTime` (the
   start) and the leg's description wrapped as `CBB - Alternative Lines <br>
-  [1674] TOTAL u68½+110 (NEW MEXICO 1H vrs NEVADA 1H) [Sport:…, League:…]`;
-  its timestamps are the Pacific wall-clock **plus 7 hours** whatever the
-  season (a February wager placed between two history rows stamped 15:32 and
-  15:33 PST reads 22:33 there), so 7 hours are subtracted before localising —
+  [1674] TOTAL u68½+110 (NEW MEXICO 1H vrs NEVADA 1H) [Sport:…, League:…]`
+  (September's suffix is two brackets, `[Sport:Football][League:NCAA]`; both
+  are stripped); its timestamps are naive on the account's **Pacific** clock,
+  the same as the history's (checked live 2026-09-26: a bet stamped 12:42
+  first showed on the 12:43 PT poll, and its `16:00` kickoff is the board's
+  23:00 UTC start) —
   then `GET …/GetPlayerHistory` for the last 31 days through tomorrow, which
   settles an open record once it leaves the open list (a store row stays open
   until a poll says otherwise); an open-bets record replaces the history's
@@ -1830,6 +1832,20 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-09-26 — BFA open bets: a two-bracket suffix, and the open list is on
+Pacific time.** The first live BFA open bet (Eastern Illinois +35½, CFB) never
+matched, for two reasons. Its description ended `[Sport:Football][League:NCAA]`,
+two brackets, where the February capture had one (`[Sport:Basketball,
+League:NCAA]`). The suffix stripper only knew the one-bracket form, so the leg
+failed to parse ("unrecognised selection"). Behind that, the open list's
+timestamps are the account's Pacific wall clock, not the "+7 h" clock the
+February capture showed (that response was dated 18:50 PST but listed a bet
+placed "22:33"). The 7 h subtraction put the 4 PM PT kickoff at 9 AM PT, so
+even with the suffix fixed the bet would have missed the board's 23:00 UTC
+start. Both halves of the source now read one clock (`parse_account_time`).
+BFA has moved this clock once already; if it moves again, bets will miss the
+board by whole hours.
 
 **2026-09-23 — Why an edge grew: since your first fill (#132 follow-up).**
 The trigger was a Novig card: 49ers -14.5, an alt of -8.5, held for $414 over
