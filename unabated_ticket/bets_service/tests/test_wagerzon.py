@@ -228,6 +228,37 @@ def test_open_parlay_rows_of_one_ticket_are_its_legs(open_records):
     assert len(open_records) == 5
 
 
+def open_row(sport_code: str, description: str) -> dict:
+    """One OpenBetsHelper row in the fixture's shape."""
+    return {"TicketNumber": 500000001, "IdWager": 500000001, "HeaderDescription": "STRAIGHT BET",
+            "RiskAmount": 150, "WinAmount": 125, "PlacedDate": "9/26/2026 4:10:00 PM",
+            "GameDateTime": "9/26/2026 7:10:00 PM", "IdGame": 5100, "IdSport": sport_code, "Result": "",
+            "DetailResult": "", "DetailDescription": description, "RotationNumbers": "967", "GameDescription": ""}
+
+
+def test_a_game_leg_that_does_not_parse_is_marked_a_parse_failure_open_or_in_the_history(history):
+    # "vs" where the grammar reads "vrs": the venue changing its text, not a bet left out on purpose.
+    [record] = normalize_open_bets([[open_row("MLB", "[967] TOTAL o7½-120 (CHI CUBS vs TB RAYS)")]], FETCHED_AT)
+    assert record["unmatchable"] == "no 'AWAY vrs HOME' bracket (CHI CUBS vs TB RAYS)"
+    assert (record["raw"]["parseFailed"], record["status"], record["betType"]) == (True, "open", "other")
+    wager = next(wager for week in history["weeks"] for wager in wagers_of_history(week)
+                 if wager.get("WagerOrTrans") == "WAGER" and len(wager.get("details") or []) == 1)
+    wager = {**wager, "details": [{**wager["details"][0], "IdSport": "MLB", "DetailDesc": "[967] TOTAL o7½-120 (CHI CUBS vs TB RAYS)"}]}
+    [settled_or_open] = normalize_wager(wager, FETCHED_AT)
+    assert settled_or_open["raw"]["parseFailed"] is True
+
+
+@pytest.mark.parametrize("sport_code, description, reason", [
+    ("MLB", "( NYM vs COL Has Been Postponed. NO Action )", "postponed"),
+    ("RBL", "[777045] CARDINALS SUPERFECTA (SCR 1ST) +1770", "not a game market (IdSport RBL)"),
+    ("TNS", "[5001] DJOKOVIC -150", "league not supported (IdSport TNS)"),
+])
+def test_postponed_legs_props_and_unsupported_sports_are_not_marked(sport_code, description, reason):
+    [record] = normalize_open_bets([[open_row(sport_code, description)]], FETCHED_AT)
+    assert record["unmatchable"].startswith(reason), record["unmatchable"]
+    assert "parseFailed" not in record["raw"]
+
+
 # ---- network half ---------------------------------------------------------------------
 
 class FakeResponse:

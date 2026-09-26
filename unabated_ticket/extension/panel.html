@@ -176,6 +176,8 @@
     <div id="bets-service" class="warning bad" hidden></div>
     <!-- Open bets that match no game and need one (bets.unmatchedReasons needsGame). -->
     <div id="bets-needs-banner" class="warning bad banner-tight" hidden></div>
+    <!-- Open bets the bets service could not read (bets.unmatchedReasons needsFix). -->
+    <div id="bets-fix-banner" class="warning bad banner-tight" hidden></div>
 
     <div class="bets-summary">
       <span class="risk" id="bets-risk"></span>
@@ -185,6 +187,11 @@
       <h2 class="section-label needs">Needs a game <span id="bets-needs-count" class="num"></span></h2>
       <div class="muted pane-note">Attach each bet to its game. The venue's team names are learned, so the next bet like it matches on its own.</div>
       <ol id="bets-needs" class="bets-list"></ol>
+    </div>
+    <div id="bets-fix-block" class="needs-block" hidden>
+      <h2 class="section-label needs">Needs a code fix <span id="bets-fix-count" class="num"></span></h2>
+      <div class="muted pane-note">The bets service could not read these bets, so the panel knows no game, team or line for them. Fix the venue's parser in unabated_ticket/bets_service/sources/ and restart the service; the flag clears on its next poll.</div>
+      <ol id="bets-fix" class="bets-list"></ol>
     </div>
     <div class="venues" id="bets-sources"></div>
     <div class="settings service-url">

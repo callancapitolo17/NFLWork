@@ -322,6 +322,48 @@ def test_a_type_declaring_no_legs_is_one_unmatchable_record_never_dropped():
     assert record["unmatchable"] == "PARLAY (0 TEAMS) names 0 legs but carries 2"
 
 
+def open_straight(id_sport: str, description: str) -> dict:
+    """A one-leg GetPlayerOpenBets wager in the 2026-09-26 live shape."""
+    return {"idWager": 355820026, "headerDescription": "STRAIGHT BET", "riskAmount": 220.0, "winAmount": 200.0,
+            "placedDate": "2026-09-26T12:42:10",
+            "betDetails": [{"idSport": id_sport, "gameDateTime": "2026-09-26T16:00:00", "detailDescription": description}]}
+
+
+def test_an_open_game_leg_that_does_not_parse_is_marked_a_parse_failure():
+    # A suffix BFA has not sent yet: SPORT_SUFFIX_RE strips only [Sport:…] / [League:…] brackets.
+    wager = open_straight("CFB", "College Football FCS <br> [309011] EASTERN ILLINOIS +35½-110 "
+                                 "[Sport:Football][League:NCAA][Region:US]")
+    [record] = normalize_open_bets([wager], FETCHED_AT)
+    assert record["unmatchable"].startswith("unrecognised selection (EASTERN ILLINOIS +35½-110")
+    assert record["raw"]["parseFailed"] is True
+    assert (record["status"], record["league"], record["betType"], record["raw"]["idSport"]) == \
+        ("open", None, "other", "CFB")
+
+
+@pytest.mark.parametrize("id_sport, description, reason", [
+    ("CFB", "College Football <br> [1117] TOTAL o17½-115 \r(KENT STATE 1H TEAM PTS vrs OHIO STATE 1H) "
+            "[Sport:Football][League:NCAA]", "team total"),
+    ("PROP", "NFL Specials <br> [777045] GIANTS SUPERFECTA (SCR 1ST, 1Q, 1H & GM +7½) +1935 "
+             "[Sport:Football][League:NFL]", "not a game market (idSport PROP)"),
+    ("TNS", "Tennis <br> [5001] DJOKOVIC -150 [Sport:Tennis][League:ATP]", "league not supported (idSport TNS)"),
+    # A code the table does not list, its league read off a team nickname: a guess, never marked.
+    ("FB", "Pro Football <br> [101] PITTSBURGH STEELERS SPRING SPECIAL [Sport:Football][League:NFL]",
+     "unrecognised selection"),
+])
+def test_deliberate_exclusions_and_guessed_leagues_are_not_marked(id_sport, description, reason):
+    [record] = normalize_open_bets([open_straight(id_sport, description)], FETCHED_AT)
+    assert record["unmatchable"].startswith(reason), record["unmatchable"]
+    assert "parseFailed" not in record["raw"]
+
+
+def test_a_history_wager_that_does_not_parse_is_not_marked():
+    # The history names no league code, so its parse failure is never flagged.
+    wager = {"id": 1, "type": "STRAIGHT BET", "description": "[1] SOMETHING NEW", "result": "PENDING",
+             "placedDate": "2026-09-26T12:42:10", "risk": 110.0, "win": 100.0}
+    [record] = normalize_wager(wager, FETCHED_AT)
+    assert record["unmatchable"].startswith("unrecognised selection") and "parseFailed" not in record["raw"]
+
+
 @pytest.mark.parametrize("text, expected", [
     ("[1340] TOTAL u24EV \r(ARIZONA 1H vrs BYU 1H)", ("total", "under", 24, 100, "1H", "ARIZONA", "BYU")),
     ("[1117] TOTAL O35-110 \r(KENT STATE 1H VRS OHIO STATE 1H)", ("total", "over", 35, -110, "1H", "KENT STATE", "OHIO STATE")),

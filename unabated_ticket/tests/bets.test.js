@@ -1292,6 +1292,80 @@ test("start time differs: a doubleheader's game 1 in progress is not the game-2 
     "start time differs (bet Sep 27 12:00 AM, board Sep 26 8:00 PM)");
 });
 
+// The 2026-09-26 bet's shape: BFA "[309011] EASTERN ILLINOIS +35½-110", $220, names
+// only its own team, and the open list's clock read 7 h early (16:00Z for a 23:00Z
+// kickoff) — before the bet was even placed at 19:42Z. The opponent is a stand-in.
+const EIU_GAME = idRow({ league: "cfb", eventId: 7020, awayTeam: "Eastern Illinois", homeTeam: "Illinois",
+  awayTeamId: 1061, homeTeamId: 631, awayRotation: 309011, homeRotation: 309012, eventStart: "2026-09-26T23:00:00Z",
+  betType: "Spread", points: 35.5 });
+const EIU_POLL = Date.parse("2026-09-26T19:43:00Z");
+
+function eiuBet(fields) {
+  return openBet(Object.assign({ id: "bfa:355820026", betType: "spread", side: "away", points: 35.5, price: -110,
+    stake: 220, toWin: 200, awayTeam: "EASTERN ILLINOIS", homeTeam: null, rotation: 309011,
+    eventStart: "2026-09-26T16:00:00Z", placedAt: "2026-09-26T19:42:10Z" }, fields));
+}
+
+test("start time differs: a one-team bet finds its game by rotation and flags, its own early clock notwithstanding", () => {
+  const bet = eiuBet({});
+  assert.ok(bet.awayKey && bet.homeKey == null);
+  const [miss] = bets.unmatchedReasons([bet], [EIU_GAME], EIU_POLL);
+  assert.deepEqual([miss.reason, miss.attachable, miss.needsGame, miss.needsFix],
+    ["start time differs (bet Sep 26 12:00 PM, board Sep 26 7:00 PM)", true, true, false]);
+  // A DST slip: an hour early, flagged before the bet's own start and after it alike.
+  const hourEarly = eiuBet({ eventStart: "2026-09-26T22:00:00Z" });
+  for (const now of [EIU_POLL, Date.parse("2026-09-26T22:30:00Z")]) {
+    const [slip] = bets.unmatchedReasons([hourEarly], [EIU_GAME], now);
+    assert.deepEqual([slip.reason, slip.needsGame], ["start time differs (bet Sep 26 6:00 PM, board Sep 26 7:00 PM)", true]);
+  }
+});
+
+test("start time differs by rotation: not when the named team is elsewhere, the game started, or the rotation is next week's", () => {
+  const otherTeam = eiuBet({ awayTeam: "Abilene Christian" });
+  assert.deepEqual(bets.unmatchedReasons([otherTeam], [EIU_GAME], EIU_POLL).map((u) => [u.reason, u.needsGame]),
+    [["no event on the board yet", false]]);
+  const kickedOff = Date.parse("2026-09-26T23:30:00Z");
+  assert.deepEqual(bets.unmatchedReasons([eiuBet({})], [EIU_GAME], kickedOff).map((u) => [u.reason, u.needsGame]),
+    [["no event on the board yet", false]]);
+  // BetOnline-style reuse: the same rotation on next week's game is outside the 12 h window.
+  const nextWeek = idRow({ ...EIU_GAME, eventId: 7021, homeTeam: "Indiana", homeTeamId: 633, eventStart: "2026-10-03T23:00:00Z" });
+  assert.deepEqual(bets.unmatchedReasons([eiuBet({})], [nextWeek], EIU_POLL).map((u) => [u.reason, u.needsGame]),
+    [["no event on the board yet", false]]);
+});
+
+test("start time differs by team pair alone keeps the bet's own clock: a past start stays grey, a rotation overrules it", () => {
+  const pairOnly = openBet({ id: "wz:3", venue: "wagerzon", awayTeam: "Abilene Christian", homeTeam: "Tarleton State",
+    rotation: null, eventStart: "2026-09-26T17:00:00Z" });
+  const [grey] = bets.unmatchedReasons([pairOnly], [ACU_AT_TARLETON], BEFORE_KICKOFF);
+  assert.deepEqual([grey.reason, grey.needsGame], ["start time differs (bet Sep 26 1:00 PM, board Sep 26 8:00 PM)", false]);
+  const [red] = bets.unmatchedReasons([{ ...pairOnly, rotation: 371 }], [ACU_AT_TARLETON], BEFORE_KICKOFF);
+  assert.deepEqual([red.reason, red.needsGame], ["start time differs (bet Sep 26 1:00 PM, board Sep 26 8:00 PM)", true]);
+});
+
+test("needsFix: an open bet its source could not read flags whatever the board; deliberate exclusions and settled bets do not", () => {
+  const reason = "unrecognised selection (EASTERN ILLINOIS +35½-110 [Sport:Football][League:NC)";
+  const unreadable = { id: "bfa:355820026", status: "open", venue: "bfa", league: null, betType: "other", stake: 220,
+    unmatchable: reason, raw: { parseFailed: true, idSport: "CFB" } };
+  const teamTotal = { id: "bfa:2", status: "open", venue: "bfa", league: null, betType: "other", unmatchable: "team total",
+    raw: { idSport: "CFB" } };
+  const settled = { ...unreadable, id: "bfa:3", status: "won" };
+  const entries = bets.unmatchedReasons([unreadable, teamTotal, settled], [ACU_AT_TARLETON], BEFORE_KICKOFF);
+  assert.deepEqual(entries.map((u) => [u.bet.id, u.reason, u.attachable, u.needsGame, u.needsFix]), [
+    ["bfa:355820026", reason, false, false, true],
+    ["bfa:2", "team total", false, false, false],
+  ]);
+  // Before the first snapshot and after every kickoff alike: the fix is in the source, not the board.
+  assert.equal(bets.unmatchedReasons([unreadable], [], AFTER_KICKOFF)[0].needsFix, true);
+  assert.deepEqual([bets.isParseFailure(unreadable), bets.isParseFailure(teamTotal)], [true, false]);
+});
+
+test("describeBet: a record with no parsed pick reads the venue's own text, markup tags as separators, else its id", () => {
+  const unreadable = { id: "bfa:355820026", betType: "other", price: null,
+    raw: { description: "College Football FCS <br> [309011] EASTERN ILLINOIS +35½-110 \r[Sport:Football][League:NCAA]" } };
+  assert.equal(bets.describeBet(unreadable), "College Football FCS · [309011] EASTERN ILLINOIS +35½-110 [Sport:Football][League:NCAA]");
+  assert.equal(bets.describeBet({ id: "polymarket_us:x:yes", betType: "other", price: null, raw: { description: " <br> " } }), "polymarket_us:x:yes");
+});
+
 test("betDateWindow: a day either side of the start or date; the placed window when the bet has neither", () => {
   assert.deepEqual(bets.betDateWindow({ eventStart: "2026-09-27T00:00:00Z" }), { fromDate: "2026-09-25", toDate: "2026-09-27" });
   assert.deepEqual(bets.betDateWindow({ eventDate: "2026-09-26" }), { fromDate: "2026-09-25", toDate: "2026-09-27" });

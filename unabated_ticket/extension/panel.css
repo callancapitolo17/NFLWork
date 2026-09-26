@@ -415,9 +415,9 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 }
 
 /* ---- unmatched open bets: flag, attach, learn ---- */
-/* The Bets tab label and its red count: open bets that need a game (bets.unmatchedReasons needsGame). */
-.tabs button.needs-game { color: var(--against-fg); }
-.tabs button.needs-game.active { border-bottom-color: var(--against-fg); }
+/* The Bets tab label and its red count: open bets that need a game or a code fix (bets.unmatchedReasons needsGame / needsFix). */
+.tabs button.flagged { color: var(--against-fg); }
+.tabs button.flagged.active { border-bottom-color: var(--against-fg); }
 .tabs .count.alert, .tabs button.active .count.alert { background: var(--against-fg); color: var(--ground); margin-left: -2px; }
 .banner-tight { margin: 0 0 10px; }
 .section-label.needs { color: var(--against-fg); }

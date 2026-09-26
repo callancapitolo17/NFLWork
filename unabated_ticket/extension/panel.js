@@ -112,6 +112,7 @@
     betsUrl: el("bets-url"), betsSettingsError: el("bets-settings-error"),
     betsOpen: el("bets-open"), betsOpenCount: el("bets-open-count"), betsOpenEmpty: el("bets-open-empty"), betsMatchNote: el("bets-match-note"),
     betsNeedsBanner: el("bets-needs-banner"), betsNeedsBlock: el("bets-needs-block"), betsNeeds: el("bets-needs"), betsNeedsCount: el("bets-needs-count"),
+    betsFixBanner: el("bets-fix-banner"), betsFixBlock: el("bets-fix-block"), betsFix: el("bets-fix"), betsFixCount: el("bets-fix-count"),
     betsOffboard: el("bets-offboard"), betsOffboardList: el("bets-offboard-list"), betsOffboardCount: el("bets-offboard-count"),
     betsCrosswalk: el("bets-crosswalk"), betsCrosswalkCount: el("bets-crosswalk-count"), betsCrosswalkEmpty: el("bets-crosswalk-empty"),
     betsCrosswalkClear: el("bets-crosswalk-clear"),
@@ -2342,8 +2343,9 @@
   }
 
   // Every open bet no board line matches, with why and whether it needs a
-  // game (the red flag). Before the first snapshot the board is empty and
-  // nothing is attachable, so nothing flags until the board is known.
+  // game or a code fix (the red flag). Before the first snapshot the board
+  // is empty and nothing is attachable, so until the board is known only a
+  // bet its source could not read flags.
   function unmatchedNow() {
     return betsLib.unmatchedReasons(state.betRecords, boardLines(), Date.now());
   }
@@ -2351,15 +2353,21 @@
   function renderBetsHeader() {
     const now = Date.now();
     const open = state.betRecords.filter((bet) => bet.status === "open").length;
-    const needsGame = unmatchedNow().filter((entry) => entry.needsGame).length;
+    const unmatched = unmatchedNow();
+    const needsGame = unmatched.filter((entry) => entry.needsGame).length;
+    const needsFix = unmatched.filter((entry) => entry.needsFix).length;
+    const flagged = needsGame + needsFix;
     view.betsCount.hidden = open === 0;
     view.betsCount.textContent = String(open);
-    view.betsAlert.hidden = needsGame === 0;
-    view.betsAlert.textContent = String(needsGame);
-    view.betsAlert.title = needsGame ? `${needsGame} open bet${needsGame === 1 ? "" : "s"} not matched to a game` : "";
-    view.betsTabButton.classList.toggle("needs-game", needsGame > 0);
-    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now, needsGame);
-    view.betsHeader.classList.toggle("bad", needsGame > 0 || betsView.serviceStatus(state.betsService, now).unreachable);
+    view.betsAlert.hidden = flagged === 0;
+    view.betsAlert.textContent = String(flagged);
+    view.betsAlert.title = [
+      needsGame ? `${needsGame} open bet${needsGame === 1 ? "" : "s"} not matched to a game` : null,
+      needsFix ? `${needsFix} open bet${needsFix === 1 ? "" : "s"} needing a code fix` : null,
+    ].filter(Boolean).join(" · ");
+    view.betsTabButton.classList.toggle("flagged", flagged > 0);
+    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now, needsGame, needsFix);
+    view.betsHeader.classList.toggle("bad", flagged > 0 || betsView.serviceStatus(state.betsService, now).unreachable);
   }
 
   // One line per venue: a dot for freshness, what it holds, how old the last
@@ -2396,8 +2404,9 @@
   // ---- Bets tab rows and the Attach flow ------------------------------------
   //
   // An open bet no board line matches is listed twice: in the open list with
-  // a red edge, and in "Needs a game" (the red flag, bets.unmatchedReasons
-  // needsGame) or the folded "Not on the board" with its reason. Attach opens
+  // a red edge, and in "Needs a game" or "Needs a code fix" (the red flag,
+  // bets.unmatchedReasons needsGame / needsFix) or the folded "Not on the
+  // board" with its reason. A code fix has no Attach. Attach opens
   // a two-step panel under the listed row (attach.js): pick the game, then
   // confirm what the venue's names mean. The attach is POSTed to the bets
   // service (/pins.json), whose reply — every pin and the whole crosswalk —
@@ -2621,7 +2630,8 @@
     const unmatched = unmatchedNow();
     const unmatchedIds = new Set(unmatched.map(({ bet }) => bet.id));
     const needsGame = unmatched.filter((entry) => entry.needsGame);
-    const offBoard = unmatched.filter((entry) => !entry.needsGame);
+    const needsFix = unmatched.filter((entry) => entry.needsFix);
+    const offBoard = unmatched.filter((entry) => !entry.needsGame && !entry.needsFix);
     // A bet that matched, settled or stopped being attachable closes its panel (never mid-POST).
     if (attachState && !attachState.busy && !unmatched.some((entry) => entry.attachable && entry.bet.id === attachState.betId)) attachState = null;
 
@@ -2642,18 +2652,25 @@
     view.betsNeedsBlock.hidden = needsGame.length === 0;
     view.betsNeedsCount.textContent = needsGame.length ? String(needsGame.length) : "";
     view.betsNeeds.replaceChildren(...needsGame.map(({ bet, reason, attachable }) => betItem(bet, { reason, unmatched: true, attachable })));
+    view.betsFixBanner.hidden = needsFix.length === 0;
+    view.betsFixBanner.textContent = betsView.needsFixBanner(needsFix.length);
+    view.betsFixBlock.hidden = needsFix.length === 0;
+    view.betsFixCount.textContent = needsFix.length ? String(needsFix.length) : "";
+    view.betsFix.replaceChildren(...needsFix.map(({ bet, reason }) => betItem(bet, { reason, unmatched: true })));
 
     view.betsOpenCount.textContent = open.length ? String(open.length) : "";
     view.betsOpen.replaceChildren(...open.map((bet) => betItem(bet, { unmatched: unmatchedIds.has(bet.id) })));
     view.betsOpenEmpty.hidden = open.length > 0;
     view.betsOpenEmpty.textContent = state.betsService && state.betsService.okAt != null ? "No open bets." : "No bets loaded yet.";
     // Say so when nothing is wrong, so "all matched" never looks like "not checked".
-    const matchable = open.filter((bet) => !bet.unmatchable).length;
-    const unmatchedGameBets = unmatched.filter((entry) => !entry.bet.unmatchable).length;
-    view.betsMatchNote.hidden = matchable === 0;
+    // A bet its source could not read is still a game bet; a prop or a future is not.
+    const isGameBet = (bet) => !bet.unmatchable || betsLib.isParseFailure(bet);
+    const gameBets = open.filter(isGameBet).length;
+    const unmatchedGameBets = unmatched.filter((entry) => isGameBet(entry.bet)).length;
+    view.betsMatchNote.hidden = gameBets === 0;
     view.betsMatchNote.textContent = boardLines().length === 0 ? "Waiting for the board to load before checking which game each bet is on."
       : unmatchedGameBets === 0 ? "Every open game bet matches a game on the board."
-        : `${matchable - unmatchedGameBets} of ${matchable} open game bets match a game on the board.`;
+        : `${gameBets - unmatchedGameBets} of ${gameBets} open game bets match a game on the board.`;
 
     view.betsOffboard.hidden = offBoard.length === 0;
     view.betsOffboardCount.textContent = offBoard.length ? String(offBoard.length) : "";
