@@ -1169,12 +1169,27 @@
   }
 
   // The team key from the Unabated team id the venue itself sent for one
-  // side of a bet, or null. Nothing is guessed: the id is the venue's, and a
-  // non-numeric or missing one leaves the side to the crosswalk and names.
+  // side of a bet, or null. Nothing is guessed: a non-numeric or missing id,
+  // or one that is no team of the bet's league, gives no key — Novig sends
+  // some college teams an id that is no CFB team at all (Jackson State 276,
+  // where the CFB board's is 777).
   function venueUnabatedKeyOf(bet, side) {
     const venueTeam = side === "away" ? bet.awayTeamVenue : bet.homeTeamVenue;
     const id = venueTeam && typeof venueTeam === "object" ? venueTeam.unabatedId : null;
-    return typeof id === "string" && /^\d+$/.test(id) ? teams.keyOf(bet.league, id) : null;
+    if (typeof id !== "string" || !/^\d+$/.test(id)) return null;
+    return teams.hasTeam(bet.league, id) ? teams.keyOf(bet.league, id) : null;
+  }
+
+  // One side's key when no crosswalk row names it: the team name through
+  // teams.js, else the venue's copy of Unabated's team id. The name goes
+  // first because Novig's id can be wrong where the name is right: on
+  // 2026-09-26 five open CFB sides (Jackson State, UTEP, Prairie View A&M,
+  // Eastern Washington) carried an id that is no CFB team and missed their
+  // games, while every other side (38 CFB, 38 NFL) agreed with its name.
+  function nameOrVenueIdKey(record, side) {
+    const name = side === "away" ? record.awayTeam : record.homeTeam;
+    const byName = name != null ? teams.teamKey(record.league, name) : null;
+    return byName || venueUnabatedKeyOf(record, side);
   }
 
   // The team key a crosswalk row gives one side of a bet, or null.
@@ -1187,23 +1202,23 @@
 
   // Fill awayKey / homeKey: a crosswalk row for the venue team first (it was
   // learned from an id join and is applied whatever the name resolves to),
-  // then the venue's own copy of Unabated's team id where it sends one
-  // (Novig's team objects carry `unabatedId`; awayTeamVenue.unabatedId), else
-  // the raw team name through teams.js where the key is still null. The bets
-  // service leaves both keys null (the team table lives here, not in
+  // then, where the key is still null, the raw team name through teams.js,
+  // then the venue's own copy of Unabated's team id (Novig's team objects
+  // carry `unabatedId`; nameOrVenueIdKey says why the name goes first). The
+  // bets service leaves both keys null (the team table lives here, not in
   // Python); records that already carry keys and have no crosswalk row, or
-  // have no league / no name, are returned unchanged.
+  // have no league, are returned unchanged.
   function resolveTeamKeys(records, crosswalk) {
     const index = crosswalkIndex(crosswalk);
     return records.map((record) => {
       if (!record.league) return record;
       const resolved = Object.assign({}, record);
-      const awayLearned = learnedKeyOf(record, "away", index) || venueUnabatedKeyOf(record, "away");
-      const homeLearned = learnedKeyOf(record, "home", index) || venueUnabatedKeyOf(record, "home");
+      const awayLearned = learnedKeyOf(record, "away", index);
+      const homeLearned = learnedKeyOf(record, "home", index);
       if (awayLearned) resolved.awayKey = awayLearned;
-      else if (resolved.awayKey == null && resolved.awayTeam != null) resolved.awayKey = teams.teamKey(record.league, record.awayTeam);
+      else if (resolved.awayKey == null) resolved.awayKey = nameOrVenueIdKey(record, "away");
       if (homeLearned) resolved.homeKey = homeLearned;
-      else if (resolved.homeKey == null && resolved.homeTeam != null) resolved.homeKey = teams.teamKey(record.league, record.homeTeam);
+      else if (resolved.homeKey == null) resolved.homeKey = nameOrVenueIdKey(record, "home");
       return resolved;
     });
   }

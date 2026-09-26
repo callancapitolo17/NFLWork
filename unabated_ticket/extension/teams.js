@@ -130,6 +130,13 @@
     return table ? table.byId.size : 0;
   }
 
+  // Whether an Unabated team id is a registered team of the league: a venue's
+  // copy of the id can be another league's (bets.venueUnabatedKeyOf).
+  function hasTeam(league, teamId) {
+    const table = index.get(league);
+    return Boolean(table) && teamId != null && table.byId.has(String(teamId));
+  }
+
   // Distinct registered spellings across every league — grows when a team OR
   // a second spelling arrives, so the panel can tell either apart from a no-op refresh.
   function spellingCount() {
@@ -180,7 +187,7 @@
     return Array.from(index.keys());
   }
 
-  const api = { teamKey, keyOf, normalizeName, registerTeams, exportIndex, loadIndex, teamCount, spellingCount, knownLeagues };
+  const api = { teamKey, keyOf, normalizeName, registerTeams, exportIndex, loadIndex, teamCount, hasTeam, spellingCount, knownLeagues };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

@@ -647,7 +647,7 @@ test("Novig: a moneyline on Carolina is same_line on the Carolina row and opposi
   assert.equal(bets.matchBets(rows["Moneyline FG 0 null"], [record]).matches[0].tier, "opposite");
 });
 
-test("resolveTeamKeys: the venue's unabatedId keys a side before names, a learned crosswalk row still wins, rekeyRecords keeps it", () => {
+test("resolveTeamKeys: the venue's unabatedId keys a side whose name resolves nowhere, a learned crosswalk row still wins, rekeyRecords keeps it", () => {
   const misspelt = novigChiCar({ awayTeam: "Chi Town Bears (venue spelling)", homeTeam: "Carolina Kitties (venue spelling)" });
   const [byId] = bets.resolveTeamKeys([misspelt]);
   assert.deepEqual([byId.awayKey, byId.homeKey], ["nfl:6", "nfl:5"]);
@@ -657,6 +657,23 @@ test("resolveTeamKeys: the venue's unabatedId keys a side before names, a learne
   // A non-numeric or missing id leaves the side to the names.
   const noId = novigChiCar({ awayTeamVenue: { id: "nv-chi", name: "Chicago Bears", unabatedId: null } });
   assert.equal(bets.resolveTeamKeys([noId])[0].awayKey, bets.resolveTeamKeys([novigChiCar({ awayTeamVenue: null })])[0].awayKey);
+});
+
+test("resolveTeamKeys: Novig's unabatedId never beats a name that resolves, nor keys another league's team (Jackson State 276, 2026-09-26)", () => {
+  // Southern @ Jackson State with Novig's own ids: Southern's 1191 is the CFB board's, Jackson State's 276 is no CFB team.
+  const record = novigChiCar({
+    id: "novig:o-su-jst", league: "cfb", eventStart: "2026-09-26T23:00:00.000Z", eventDate: "2026-09-26",
+    awayTeam: "Southern", homeTeam: "Jackson State", betType: "total", side: "over", points: 57.5,
+    awayTeamVenue: { id: "nv-su", name: "Southern", shortName: "SOU", symbol: "SU", unabatedId: "1191" },
+    homeTeamVenue: { id: "nv-jkst", name: "Jackson State", shortName: "JKST", symbol: "JST", unabatedId: "276" },
+  });
+  assert.deepEqual((([r]) => [r.awayKey, r.homeKey])(bets.resolveTeamKeys([record])), ["cfb:1191", "cfb:777"]);
+  // Names no rule resolves: the id keys a side only when it is a team of the league.
+  const unnamed = { ...record, awayTeam: "Southern U (venue spelling)", homeTeam: "JSU (venue spelling)" };
+  assert.deepEqual((([r]) => [r.awayKey, r.homeKey])(bets.resolveTeamKeys([unnamed])), ["cfb:1191", null]);
+  // An id that IS a team of the league (1166, Mississippi Valley State) still loses to a name that resolves.
+  const collides = { ...record, homeTeamVenue: { ...record.homeTeamVenue, unabatedId: "1166" } };
+  assert.equal(bets.resolveTeamKeys([collides])[0].homeKey, "cfb:777");
 });
 
 test("Novig: a resting order and a parlay leg flag the game with their own labels; settled and void records never match", () => {
