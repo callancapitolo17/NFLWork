@@ -33,19 +33,23 @@ Why not import bet_logger/scraper_bfa.py: it imports Google Sheets at module lev
 this venv), rotates the shared token file and skips pending bets. The endpoints, headers and
 the description grammar are copied from it and bet_logger/recon_bfa.py and must stay in step.
 
-Open bet shape (GetPlayerOpenBets, captured 2026-02-24 with two open bets; a list, one object
-per wager):
+Open bet shape (GetPlayerOpenBets, captured 2026-02-24 with two open bets and live 2026-09-26
+with one; a list, one object per wager):
   idWager        343243731 — the same id the history later carries (ticketNumber repeats it).
   headerDescription  STRAIGHT BET | PARLAY (2 TEAMS) | …;  riskAmount, winAmount  USD;  result 255.
   betDetails[]   one per leg: idSport (CBB / CFB / NFL / NBA / MLB / NHL …, the league the
                  history never names — so an open college bet IS placed), gameDateTime (the
                  event start), idGame, detailDescription
                  "CBB - Alternative Lines <br> [1674] TOTAL u68½+110 \r(NEW MEXICO 1H vrs NEVADA 1H) [Sport:Basketball, League:NCAA]"
-                 — the market group, then the history's own leg grammar, then a sport suffix.
-  placedDate, gameDateTime   the Pacific wall-clock PLUS 7 HOURS, whatever the season: that
-                 wager, placed between two history rows stamped 15:32 and 15:33 PST, reads 22:33,
-                 and its 8 PM PT tip reads 03:00. True UTC only under daylight time, so the 7 hours
-                 are subtracted and the wall-clock localised (OPEN_BETS_CLOCK_OFFSET).
+                 "College Football FCS <br> [309011] EASTERN ILLINOIS +35½-110 [Sport:Football][League:NCAA]"
+                 — the market group, then the history's own leg grammar, then a sport suffix
+                 (one bracket in February, two in September).
+  placedDate, gameDateTime   naive on the account's Pacific clock, like the history's: the
+                 2026-09-26 bet stamped 12:42:10 first showed on the service's 12:43 PT poll
+                 (the 12:28 poll had no open bet), and its 16:00 kickoff is the board's 23:00 UTC
+                 start for that game. The February capture read 7 hours ahead of that clock (a
+                 bet "placed 22:33" in a response dated 18:50 PST), so BFA has moved this clock
+                 once; a wrong one shows as bets missing the board by whole hours.
   GetPlayerOpenBetsWithOpenSpot (if-bets awaiting a leg) answered [] and is not read.
 
 History wager grammar (live pull 2026-09-22, 16 wagers; the parser fails closed on anything
@@ -138,17 +142,16 @@ INVALID_CREDENTIALS_MARKER = "Invalid username or password"
 
 SOURCE = "bfa_api"
 VENUE = "bfa"
-# The account renders every history timestamp on its own clock (module docstring).
+# The account renders every timestamp, history and open list, on its own clock (module docstring).
 BFA_TZ = ZoneInfo("America/Los_Angeles")
-# GetPlayerOpenBets stamps the Pacific wall-clock plus 7 hours (module docstring).
-OPEN_BETS_CLOCK_OFFSET = timedelta(hours=7)
 # An open leg's idSport (the codes the account's line profile lists); the rest are props.
 OPEN_BET_LEAGUES = {"CBB": "cbb", "CFB": "cfb", "NFL": "nfl", "NBA": "nba", "WNBA": "wnba", "MLB": "mlb",
                     "NHL": "nhl", "SOC": "soccer"}
 OPEN_BET_PROP_CODES = {"PROP", "TNT", "MU", "ESOC"}
 REASON_NO_OPEN_LEGS = "open bet carries no legs"
-# "… [Sport:Basketball, League:NCAA]" closes an open bet's description.
-SPORT_SUFFIX_RE = re.compile(r"\s*\[Sport:[^\]]*\]\s*$", re.IGNORECASE)
+# "… [Sport:Basketball, League:NCAA]" (2026-02) or "… [Sport:Football][League:NCAA]"
+# (2026-09) closes an open bet's description.
+SPORT_SUFFIX_RE = re.compile(r"(?:\s*\[(?:Sport|League):[^\]]*\])+\s*$", re.IGNORECASE)
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 APPROX_START_FROM_SETTLED = "event_start_from_settled_date"
 EVENT_START_DAYS_BEFORE_PLACED = 1
@@ -346,20 +349,6 @@ def parse_account_time(value: object) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def parse_open_bets_time(value: object) -> datetime | None:
-    """A GetPlayerOpenBets timestamp (Pacific wall-clock + 7 h) -> aware UTC."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        stamped = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    if stamped.tzinfo is not None:
-        return stamped.astimezone(timezone.utc)
-    pacific_wall_clock = stamped - OPEN_BETS_CLOCK_OFFSET
-    return pacific_wall_clock.replace(tzinfo=BFA_TZ).astimezone(timezone.utc)
-
-
 def iso_utc(moment: datetime | None) -> str | None:
     return None if moment is None else moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -555,7 +544,7 @@ def open_bet_league_of(sport_code: object, description: str) -> tuple[str | None
 
 
 def _open_base_record(wager: dict, native_id: str, fetched_at: str | None) -> dict:
-    placed_at = parse_open_bets_time(wager.get("placedDate"))
+    placed_at = parse_account_time(wager.get("placedDate"))
     return {
         "id": f"{VENUE}:{native_id}",
         "source": SOURCE,
@@ -601,7 +590,7 @@ def _open_leg_record(record: dict, leg_row: dict) -> dict:
     leg = parse_leg(description)
     if isinstance(leg, str):
         return _unmatchable(record, leg)
-    return _apply_leg(record, league, leg, parse_open_bets_time(leg_row.get("gameDateTime")))
+    return _apply_leg(record, league, leg, parse_account_time(leg_row.get("gameDateTime")))
 
 
 def normalize_open_wager(wager: dict, fetched_at: str | None) -> list[dict]:

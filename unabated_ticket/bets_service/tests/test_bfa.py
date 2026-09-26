@@ -165,9 +165,7 @@ def test_open_college_bets_carry_their_league_and_start_from_the_open_list(open_
         ("cbb", "total", "1H", "under", 68.5, 110)
     assert (total["rotation"], total["awayTeam"], total["homeTeam"]) == (674, "NEW MEXICO", "NEVADA")  # 1674 as written
     assert total["raw"]["rotationAsWritten"] == 1674
-    # 03:00 on the open list = 20:00 PST the evening before + 7 h; 22:33 placed = 15:33 PST
-    assert (total["eventStart"], total["eventDate"]) == ("2026-02-25T04:00:00Z", "2026-02-24")
-    assert total["placedAt"] == "2026-02-24T23:33:05Z"
+    # No clock assertion here: the February rows read 7 h ahead of today's clock (module docstring).
     assert total["approx"] == [] and (total["stake"], total["toWin"]) == (150, 165)
     assert total["raw"]["openBet"] is True and total["raw"]["idSport"] == "CBB"
     spread = by_id(open_records, "bfa:343243900")
@@ -175,6 +173,18 @@ def test_open_college_bets_carry_their_league_and_start_from_the_open_list(open_
         ("cbb", "spread", "1H", "home", -2.5, -137)  # 1670 is even = home
     assert (spread["awayTeam"], spread["homeTeam"], spread["approx"]) == (None, "UCLA", ["side_from_rotation_parity"])
     assert (spread["rotation"], spread["raw"]["rotationAsWritten"]) == (670, 1670)
+
+
+def test_live_open_bet_with_the_two_bracket_suffix_reads_on_the_pacific_clock(open_records):
+    spread = by_id(open_records, "bfa:355820026")
+    assert spread["unmatchable"] is None
+    assert (spread["league"], spread["betType"], spread["period"], spread["side"], spread["points"], spread["price"]) == \
+        ("cfb", "spread", "FG", "away", 35.5, -110)  # 309011 is odd = away
+    assert (spread["rotation"], spread["awayTeam"], spread["homeTeam"]) == (309011, "EASTERN ILLINOIS", None)
+    # 16:00 PDT = the board's 23:00 UTC kickoff; placed 12:42 PDT, first seen on the 12:43 PT poll
+    assert (spread["eventStart"], spread["eventDate"]) == ("2026-09-26T23:00:00Z", "2026-09-26")
+    assert spread["placedAt"] == "2026-09-26T19:42:10Z"
+    assert spread["approx"] == ["side_from_rotation_parity"] and (spread["stake"], spread["toWin"]) == (220, 200)
 
 
 @pytest.mark.parametrize("rotation, period, expected", [
@@ -199,7 +209,7 @@ def test_open_parlay_prop_and_first_five(open_records):
     assert all(record["status"] == "open" and record["league"] == "nfl" and record["legCount"] == 2
                and record["raw"]["parlayPrice"] == 260 for record in (spread, total))
     assert (spread["side"], spread["points"], spread["eventStart"], spread["eventDate"]) == \
-        ("away", -3, "2026-09-27T20:00:00Z", "2026-09-27")  # 20:00 = 13:00 PDT + 7 h = true UTC in summer
+        ("away", -3, "2026-09-27T20:00:00Z", "2026-09-27")  # 13:00 PDT
     assert (total["side"], total["points"], total["awayTeam"], total["homeTeam"]) == \
         ("under", 44.5, "DALLAS COWBOYS", "NEW YORK GIANTS")
     assert by_id(open_records, "bfa:990100002")["unmatchable"] == "not a game market (idSport PROP)"
@@ -208,7 +218,7 @@ def test_open_parlay_prop_and_first_five(open_records):
 
 
 def test_every_open_record_carries_the_contract_keys(open_records):
-    assert len(open_records) == 6  # 5 wagers, the parlay is two
+    assert len(open_records) == 7  # 6 wagers, the parlay is two
     for record in open_records:
         assert set(record) == CONTRACT_KEYS, record["id"]
 
@@ -238,6 +248,10 @@ def test_open_records_replace_the_historys_pending_copy():
     ("[968] TB RAYS +120 (CHI CUBS vrs TB RAYS)", ("moneyline", "home", None, 120, "FG", "CHI CUBS", "TB RAYS")),
     ("CBB - Alternative Lines <br> [1670] UCLA 1H -2\u00bd-137 [Sport:Basketball, League:NCAA]",
      ("spread", "home", -2.5, -137, "1H", None, "UCLA")),
+    ("College Football FCS <br> [309011] EASTERN ILLINOIS +35\u00bd-110 [Sport:Football][League:NCAA]",
+     ("spread", "away", 35.5, -110, "FG", "EASTERN ILLINOIS", None)),
+    ("NFL - Game <br> [453] TOTAL u44\u00bd-110 \r(DALLAS COWBOYS vrs NEW YORK GIANTS) [League:NFL][Sport:Football]",
+     ("total", "under", 44.5, -110, "FG", "DALLAS COWBOYS", "NEW YORK GIANTS")),
 ])
 def test_parse_leg_grammar(text, expected):
     leg = parse_leg(text)
@@ -370,8 +384,8 @@ def test_fetch_logs_in_once_reads_the_open_list_and_the_paged_history(history, m
     session = FakeSession(history["wagers"], open_wagers=history["openBets"])
     source = make_source(session, clock=lambda: CLOCK)
     records = source.fetch()
-    assert len(records) == 29 and records[0]["id"] == "bfa:354669433"  # 23 history + 6 open
-    assert sum(1 for record in records if record["status"] == "open") == 12  # 6 pending in the weeks + 6 open
+    assert len(records) == 30 and records[0]["id"] == "bfa:354669433"  # 23 history + 7 open
+    assert sum(1 for record in records if record["status"] == "open") == 13  # 6 pending in the weeks + 7 open
     assert session.logins == 1 and session.passwords_seen == ["secret"]
     # 18 wagers in pages of 5, then the empty page that ends a total padded by transactions.
     assert [call["page"] for call in session.history_calls] == [0, 1, 2, 3, 4]
