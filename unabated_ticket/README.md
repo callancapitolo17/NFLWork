@@ -1107,9 +1107,11 @@ feed's own shapes:
   the parlay's wager, no leg price).
 - Every team object carries **`unabatedId`**, Unabated's own team id, which
   rides in `awayTeamVenue` / `homeTeamVenue` (with Novig's `id`, `name`,
-  `shortName`, `symbol`) and keys the record in `bets.js` ahead of names —
-  Novig sends it for every NFL, MLB and WNBA team seen and for 8 of 398
-  CFB records, so college bets still resolve by name and crosswalk.
+  `shortName`, `symbol`). In `bets.js` it keys a side only when the team's
+  name resolves nowhere and the id is a team of that league: Novig now sends
+  it for most CFB teams too, and some carry an id that is no CFB team
+  (2026-09-26: Jackson State 276 where the board's is 777; UTEP, Prairie
+  View A&M, Eastern Washington too), so the name goes first.
   Novig's `symbol` is not Unabated's abbreviation (`UTC` vs `CHT`): stored,
   never a key. `venueIds: {marketId, outcomeId, eventId}` are the venue's
   own; the outcome id is what Unabated's Novig rungs carry as `sourceData`
@@ -1560,8 +1562,10 @@ bad row, and over HTTP the POST / conflict / DELETE round trip plus the
 `bets.test.js` then matches Novig records as the service emits them
 against the NFL slice: a moneyline on Carolina (same_line / opposite with
 the Novig label, keyed on the venue's `unabatedId`s), `resolveTeamKeys`
-keying on `unabatedId` ahead of names with a learned crosswalk row still
-winning and `rekeyRecords` keeping it, a resting order and a parlay leg
+keying on `unabatedId` only where the name resolves nowhere (never over a
+name that resolves, never an id that is no team of the league) with a
+learned crosswalk row still winning and `rekeyRecords` keeping it, a
+resting order and a parlay leg
 flagging the game, settled and void records never matching, and the
 source's unmatched reasons passing through. For attach (2026-09-23),
 `bets.test.js` covers a pin matching a bet whose name resolves nowhere, the
@@ -1832,6 +1836,18 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-09-26 — Novig's `unabatedId` no longer beats the team name.** An
+open Novig over on Southern @ Jackson State never matched its game. Novig
+sends Jackson State `unabatedId` 276, which is no CFB team (the board's
+Jackson State is 777), and `resolveTeamKeys` put the venue id ahead of the
+name, so the bet looked for a team that is not on the board. Measured
+against that day's board: 5 open CFB sides carried an id that is no CFB
+team (Jackson State, UTEP, Prairie View A&M, Eastern Washington), and
+every other Novig side (38 CFB, 38 NFL) agreed with its name. The id never
+rescued a name that failed. Now the name goes first, and the id keys a side
+only when the name resolves nowhere and the id is a team of the bet's
+league (`teams.hasTeam`). A learned crosswalk row still wins over both.
 
 **2026-09-26 — BFA open bets: a two-bracket suffix, and the open list is on
 Pacific time.** The first live BFA open bet (Eastern Illinois +35½, CFB) never

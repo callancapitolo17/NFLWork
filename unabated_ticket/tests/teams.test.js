@@ -150,6 +150,15 @@ test("WNBA / NBA / NHL come from the same snapshots", () => {
   assert.equal(teams.teamKey("nhl", "Vegas Golden Knights"), keyOf("nhl", "Vegas Golden Knights"));
 });
 
+test("hasTeam: a registered id of that league only", () => {
+  assert.equal(teams.hasTeam("cfb", 777), true);
+  assert.equal(teams.hasTeam("cfb", "777"), true);
+  assert.equal(teams.hasTeam("cfb", "276"), false);
+  assert.equal(teams.hasTeam("nfl", "777"), false);
+  assert.equal(teams.hasTeam("soccer", "1"), false);
+  assert.equal(teams.hasTeam("cfb", null), false);
+});
+
 test("unknown league or name is null, never a guess; registering again refreshes, never duplicates", () => {
   assert.equal(teams.teamKey("soccer", "Arsenal"), null);
   assert.equal(teams.teamKey(undefined, "Chicago Bears"), null);
