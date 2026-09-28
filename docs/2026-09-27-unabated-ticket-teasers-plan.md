@@ -65,10 +65,14 @@ already placed instead of suggesting them again.
   same game, not independent. A game with a placed leg only offers new legs
   on the same market (spread or total).
 - The list holds still: it is rebuilt only when a Buckeye number moves, a
-  game joins or leaves, a ticket is placed or undone, or a setting changes.
-  Fair ticks update the EVs in place. Many 4-leg combos are near-tied, so
-  rebuilding on every tick reshuffled #4-#8 between 9:06 and 9:37 on 9/27
-  while fairs moved at most 0.4 points.
+  game joins or leaves, a ticket is placed or undone, a setting changes, or
+  a leg in the list moves `REBUILD_FAIR_MOVE = 1` point or more since the
+  last build. Smaller ticks update the EVs in place. Why: many 4-leg combos
+  are near-tied, so rebuilding on every tick gave lists sharing 1 of 7
+  tickets at 9:06 and 9:37 on 9/27 (no leg moved over 0.51 points) that are
+  worth the same at the same fairs (+$326 vs +$324 expected). A frozen list
+  alone would miss news: the 49ers leg down 5 points halves the 9:37 list's
+  value after risk ($141 -> $71).
 - Splitting finer does not cut the swing (measured 9/27): 92-97% of the
   variance is how many legs cover. The Kelly multiplier is the variance dial.
 - 9/27 board at $20k x 0.25, push = loss: 7 tickets, $1,292, expected +$324.
