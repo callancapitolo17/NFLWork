@@ -82,6 +82,13 @@ again.
   value after risk ($141 -> $71).
 - Splitting finer does not cut the swing (measured 9/27): 92-97% of the
   variance is how many legs cover. The Kelly multiplier is the variance dial.
+- No per-leg cap (user declined 2026-09-28, shown "no leg on more than half
+  the tickets": -6% value after risk). The same score stops the set and
+  limits each leg: every extra ticket on a leg is scored against the
+  tickets already riding on it. Each leg lands near its "target", quarter
+  Kelly as a straight bet at -241 (the per-leg price inside +300): 9/27
+  49ers $892 vs $1,089, Lions $400 vs $354. Filling targets alone (no log
+  score) stacked the top pair on 4 of 7 tickets and was worth $135 vs $141.
 - 9/27 board at $20k x 0.25, push = loss: 7 tickets, $1,292, expected +$324.
 
 ## 5. Placed tickets — BFA open bets from the bets service
@@ -161,7 +168,8 @@ path and `git branch -d feature/unabated-ticket-teasers`.
 ## 11. Documentation
 
 Same branch, after the code is final: `unabated_ticket/README.md` — Teasers
-section (legs, grading, portfolio, placed tickets from BFA, limits), the
+section (legs, grading, portfolio explained with the per-leg targets and a
+step-by-step table like 9/27's, placed tickets from BFA, limits), the
 bets service's BFA cadence, Tests counts, decisions log (Unabated fair over
 exchanges; $200 cap; 4-team only; push = loss; one leg per game; BFA is
 Buckeye, no marking); root `CLAUDE.md` Unabated Ticket blurb; manifest
