@@ -15,7 +15,7 @@
     <div id="shape-banner" class="warning bad shape-banner" hidden></div>
 
     <nav class="tabs" id="tabs">
-      <button type="button" data-tab="edges">Edges <span id="edges-count" class="count" hidden></span></button>
+      <button type="button" data-tab="edges">Edges <span id="edges-count" class="count" hidden></span><span id="edges-live-count" class="count live" hidden></span></button>
       <button type="button" data-tab="ticket" class="active">Ticket</button>
       <button type="button" data-tab="bets" id="bets-tab-button">Bets <span id="bets-count" class="count" hidden></span><span id="bets-alert" class="count alert" hidden></span></button>
       <button type="button" id="settings-toggle" class="gear" title="Bankroll and Kelly multiplier">&#9881;</button>
@@ -160,6 +160,14 @@
     <div id="edges-filter" class="muted" title="Click to show what the Unabated selection was read from"></div>
     <pre id="edges-filter-debug" class="muted debug" hidden></pre>
 
+    <!-- Live edges: the Unabated live screen's between-quarters in-game fair,
+         read by page.js. Shown only while a live game is on a screen. -->
+    <div id="edges-live" class="live-block" hidden>
+      <div id="edges-live-head" class="live-head"></div>
+      <ol id="edges-live-list" class="edges-list"></ol>
+    </div>
+    <h2 id="edges-pregame-label" class="section-label list-label" hidden>Pregame</h2>
+
     <ol id="edges-list" class="edges-list"></ol>
     <div id="edges-empty" class="muted pane-note" hidden></div>
   </section>
@@ -204,6 +212,7 @@
   <script src="kelly.js"></script>
   <script src="edgemove.js"></script>
   <script src="feed.js"></script>
+  <script src="live.js"></script>
   <script src="scanner.js"></script>
   <script src="locate.js"></script>
   <script src="teams.js"></script>

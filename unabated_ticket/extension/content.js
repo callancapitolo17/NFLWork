@@ -8,7 +8,7 @@
 // dead/asleep service worker cannot stop a ticket from reaching the panel.
 //
 // Side effects: writes chrome.storage.local {ticket, error, watchStatus,
-// pageReady, booksFilter, locateResult, pageCheck}; forwards {locate} requests
+// pageReady, booksFilter, locateResult, pageCheck, "liveEdges:<league>"}; forwards {locate} requests
 // (row or notification click) and the stored {ticket} (for the watcher to
 // resume after a navigation) to page.js via window.postMessage. On the page it
 // leaves one global, __unabatedTicketContentRetire, the handoff a re-injected
@@ -36,7 +36,7 @@
   let retired = false;
 
   const MESSAGE_SOURCE = "unabated-ticket";
-  const HANDLED_TYPES = new Set(["ticket", "watch", "error", "ready", "filters", "located", "resume_request", "pagecheck"]);
+  const HANDLED_TYPES = new Set(["ticket", "watch", "error", "ready", "filters", "located", "resume_request", "pagecheck", "live_edges"]);
   // A locate request older than this is left alone (the tab it targeted may
   // have been reloaded long after the click).
   const LOCATE_MAX_AGE_MS = 90 * 1000;
@@ -129,6 +129,14 @@
     setSession({ pageCheck: payload });
   }
 
+  // The live screen's between-quarters edges, one key per league so an NFL
+  // tab and a CFB tab never overwrite each other. Stored as posted: the
+  // panel ages it by `at`.
+  function handleLiveEdges(payload) {
+    if (!payload || typeof payload.league !== "string") return;
+    setSession({ [`liveEdges:${payload.league}`]: payload });
+  }
+
   // The stored ticket, handed to page.js so a freshly loaded copy resumes
   // watching it (page.js dies with every navigation; the ticket does not).
   // Offered once on load and again on request, since the two scripts load
@@ -140,7 +148,7 @@
     });
   }
 
-  const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch, ready: handleReady, filters: handleFilters, located: handleLocated, resume_request: offerStoredTicket, pagecheck: handlePageCheck };
+  const handlers = { ticket: handleTicket, error: handleError, watch: handleWatch, ready: handleReady, filters: handleFilters, located: handleLocated, resume_request: offerStoredTicket, pagecheck: handlePageCheck, live_edges: handleLiveEdges };
 
   function forwardLocate(locate) {
     if (!locate || typeof locate.at !== "number" || Date.now() - locate.at > LOCATE_MAX_AGE_MS) return;

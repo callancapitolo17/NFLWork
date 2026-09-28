@@ -384,33 +384,36 @@ On an exchange line the contract order follows the stake: `stake $261.69 | 1127 
 
 ### Data
 
-Two public Unabated feeds (no login needed; verified 2026-09-10). The panel
-fetches them only while it is open and stops the moment it closes; nothing
-runs in the service worker.
+The public league snapshots (no login needed). The panel fetches them only
+while it is open and stops the moment it closes; nothing runs in the service
+worker. The changes stream below was the second feed until **2026-09-27**,
+when every path under `api-k.unabated.com/api/markets/changes` started
+answering HTTP 410 ("Polling change subscriptions have been retired. Use SSE
+or WebSocket subscriptions."); its replacement (`POST <data API>/subscriptions`
+then `EventSource`) runs on the logged-in session, so the scanner no longer
+polls anything but snapshots.
 
 | Feed | URL | What it carries |
 |---|---|---|
 | Snapshot | `content.unabated.com/markets/v2/league/{id}/odds.json?t=<30 s bucket>` (29 team-sport leagues, `feed.LEAGUES`; ~18 MB gzip in total, CFB alone 9.7 MB, regenerated ~every 27 s). The query is a cache buster: CloudFront hands gzip clients the bare URL from an edge cache that was 6.5 h old on 2026-09-10 | every row's `sides[side][ms<book>]` line: `points, americanPrice, sourcePrice, sourceFormat, bacr, ge, liquidity, statusId, sequenceNumber`, plus its `alternateLines[]` (same fields per rung); `teams`; `marketSources` |
-| Changes | `api-k.unabated.com/api/markets/changes/query[/{cursor}]` (~300 KB per 10 s) | the same fields per changed line under `gameOddsEvents[lg:pt:pregame][].gameOddsMarketSourcesLines[si:ms:an][bt]`, plus `sideKey` |
+| Changes (retired 2026-09-27, HTTP 410) | `api-k.unabated.com/api/markets/changes/query[/{cursor}]` (~300 KB per 10 s) | the same fields per changed line under `gameOddsEvents[lg:pt:pregame][].gameOddsMarketSourcesLines[si:ms:an][bt]`, plus `sideKey` |
 
 `ge` is Unabated's edge as a fraction (0.0296 = +2.96%), the same number the
 Ticket tab sizes from. `bacr` is the fair at the book's points.
 
 Loop (`extension/scanner.js`): snapshot per enabled league on open (four
-downloads at a time, each league listed the moment it lands, CFB last),
-then the changes stream every 10 s, which covers all leagues in one call.
-**The anonymous stream is incomplete**: measured 2026-09-10 over 3 min it
-delivered 69 of the 191 NFL line changes the snapshot recorded, and the
-misses were Kalshi (42), Caesars (45), ProphetX, Polymarket and Underdog —
-the books that carry the edges. So each league's snapshot is re-downloaded
-on its own cadence by compressed size (≤2 MB every 60 s, ≤5 MB every 2 min,
-larger every 5 min; NFL is ~3 MB, CFB 9.7 MB), plus a full resync every
-10 min. Expect roughly 6–8 MB/min with every sport on. The first cursor is derived from the snapshot's
-`Last-Modified` (cursor = nanoseconds since 2021-01-06, kept as a string —
-it is above 2⁵³) so nothing between the build and the first poll is lost; a
-full page (7 batches) is followed immediately; a cursor the server rejects
-(`resultCode: Failed`, older than ~3 min) resyncs from snapshots; hiding the
-panel pauses polling and a pause over 2 min resyncs on return.
+downloads at a time, each league listed the moment it lands, CFB last), then
+each league's snapshot re-downloads on its own cadence by compressed size
+(≤2 MB every 60 s, ≤5 MB every 2 min, larger every 5 min; NFL is ~3 MB, CFB
+9.7 MB), plus a full resync every 10 min. Expect roughly 6–8 MB/min with
+every sport on. A 10 s tick checks which leagues are due; hiding the panel
+pauses it, and a pause over 2 min resyncs on return. Before 2026-09-27 the
+changes stream topped this up every 10 s, but even then it was incomplete
+anonymously (2026-09-10, 3 min: 69 of 191 NFL line changes; Kalshi, Caesars,
+ProphetX, Polymarket and Underdog mostly missing), which is why the
+per-league cadence exists. `feed.parseChanges` / `applyChanges` remain for
+now (the tests use `applyChanges` to move a line); the scanner no longer
+calls them.
 
 Parsing (`extension/feed.js`, node-tested on real slices under
 `tests/fixtures/`):
@@ -724,6 +727,55 @@ contract price, so on Kalshi the price leg reads up to ~1.75¢ worse than it
 is — it can hide an amber, never raise one. The stake never changes for the
 tag.
 
+### Live edges (between quarters)
+
+Unabated's live screen prices NFL lines off an **in-game fair** that exists
+only at a break: a per-game "fair price set" (`ready` at the end of a
+quarter, `expired` once play resumes) that reaches the screen over the
+logged-in stream and never the free v2 file (0 of ~5,700 live lines carried
+a fair on 2026-09-27, including at the end of Q3 of SNF while the screen
+showed edges). The app enables it for NFL, straight markets, live mode only.
+Read from Unabated's app bundle, 2026-09-27: the screen sets
+`row.inGameFairPrice = {status, producedUtc, checkpointType, lines}` on a live
+row and `line.edge = {edge: EV %, linePrice, simulatedPrice}` on every line
+of it, alt rungs included, `simulatedPrice` being the fair American price at
+that line's points.
+
+So the panel does not price live lines itself: `page.js` reads what the open
+live screen computed. Once a second it walks the grid's live rows (skipping
+final games and Unabated's own column) and posts `live_edges` — the games on
+screen with their fair status, and every on-board line of a game whose fair
+is `ready` with its edge and fair — on change, else every 5 s. `content.js`
+stores it per league as `liveEdges:<league>`, and `live.js` (pure,
+node-tested) turns it into rows for a **Live** block above the pregame list
+(the pregame list gets a *Pregame* label while the block shows):
+
+- **At a break**: rows in the usual style with a `live` tag, the checkpoint
+  (`end of Q1`, `halftime`) instead of the kickoff, and `fair −124 · changed
+  12s ago` on the book line; the Edges tab shows `N live` next to its count.
+- **In play**: one muted line, `in play · edges return at the next break`.
+- **Tab not reading** (no post for 10 s: closed, reloaded, throttled in the
+  background): an amber line, `bring the Unabated live tab to the front`,
+  and stakes read `—`, because the numbers may be gone. After 2 min without
+  a post the block disappears.
+
+The Edges filters apply as they do to pregame (Books, Bets, Periods, min
+edge, min suggested bet, min liquidity to win, alt lines and their distance);
+there are no live-only settings. Stakes are the line's own quarter-Kelly off
+the live edge: open bets on the game show on the row as `live · not sized`
+but are never netted, since conditional Kelly needs a fair ladder the screen
+does not expose (the fair set carries per-market probabilities; a
+follow-up). Clicking a live row outlines the cell on the screen (`locate`
+with `live: true`, so `page.js` looks only among live rows). Alerts use the
+same threshold, one per line per break (the key carries the fair's
+`producedUtc`), and nothing alerts while the tab is not reading.
+
+A price clicked on a live row builds a normal ticket whose fair is
+`edge.simulatedPrice` (live lines carry no `bacr`), labelled `Unabated live
+fair, end of Q1`, and whose watcher stays on the live row (`watch.live`).
+The screen shows one league at a time, so live edges exist only for the
+league of an open live tab; nothing is fetched to get them.
+
 ### Alerts
 
 Off by default. Turn on **Notify on new edges at or above N%** (default
@@ -755,11 +807,11 @@ fire while the panel is closed. The alert log lives in `chrome.storage.local`
 
 ### Etiquette
 
-While the panel is open: ~300 KB per 10 s on the changes stream and the
-per-league snapshot refreshes above (6–8 MB/min with all sports on, ~1
-MB/min with just football/baseball/basketball/hockey). Same endpoints the
-page itself calls, at a far lower rate than its 0.6 s poll; nothing runs
-when the panel is closed.
+While the panel is open: the per-league snapshot refreshes above (6–8
+MB/min with all sports on, ~1 MB/min with just
+football/baseball/basketball/hockey), the same files the page itself loads;
+nothing runs when the panel is closed. Live edges add no requests at all:
+they are read off the page the user already has open.
 
 ## Bets
 
@@ -1442,7 +1494,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 295 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 308 tests) and
 the bets service's pytest suite (239 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
