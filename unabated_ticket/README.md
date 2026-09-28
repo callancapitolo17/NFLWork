@@ -754,10 +754,20 @@ node-tested) turns it into rows for a **Live** block above the pregame list
   (`end of Q1`, `halftime`) instead of the kickoff, and `fair −124 · changed
   12s ago` on the book line; the Edges tab shows `N live` next to its count.
 - **In play**: one muted line, `in play · edges return at the next break`.
-- **Tab not reading** (no post for 10 s: closed, reloaded, throttled in the
-  background): an amber line, `bring the Unabated live tab to the front`,
+- **Tab not reading** (no post for 10 s from a visible tab, 75 s from a
+  hidden one): an amber line, `bring the Unabated live tab to the front`,
   and stakes read `—`, because the numbers may be gone. After 2 min without
-  a post the block disappears.
+  a post the block disappears; a tab that closes says so on `pagehide` and
+  its rows go at once.
+
+A hidden tab is the normal case (the bet is placed in another tab), and
+Chrome runs a hidden tab's timers about once a minute after five minutes in
+the background. So `page.js` also scans on the grid's own `modelUpdated` /
+`cellValueChanged` / `rowDataUpdated` events (at most every 250 ms), which
+the app's stream keeps firing in a hidden tab: a break's edges post when
+they land, not on the next throttled tick. Every post carries `visible` and
+the tab's `instanceId`; a pregame tab of the same league never blanks a
+live tab's game while that tab is still posting (`content.js`).
 
 The Edges filters apply as they do to pregame (Books, Bets, Periods, min
 edge, min suggested bet, min liquidity to win, alt lines and their distance);
@@ -1494,7 +1504,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 308 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 310 tests) and
 the bets service's pytest suite (239 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one

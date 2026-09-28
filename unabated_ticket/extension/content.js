@@ -131,10 +131,24 @@
 
   // The live screen's between-quarters edges, one key per league so an NFL
   // tab and a CFB tab never overwrite each other. Stored as posted: the
-  // panel ages it by `at`.
+  // panel ages it by `at`. Two tabs of one league (the live screen and a
+  // pregame one) both post: a tab showing no live game never replaces
+  // another tab's live game while that tab is still posting.
+  const LIVE_OWNER_HOLD_MS = 90 * 1000;
+
   function handleLiveEdges(payload) {
     if (!payload || typeof payload.league !== "string") return;
-    setSession({ [`liveEdges:${payload.league}`]: payload });
+    const key = `liveEdges:${payload.league}`;
+    chrome.storage.local.get(key, (stored) => {
+      if (chrome.runtime.lastError) return;
+      const held = stored[key];
+      const heldByOtherTab = held && held.instanceId !== payload.instanceId;
+      const heldHasGame = held && Array.isArray(held.games) && held.games.length > 0;
+      const heldFresh = held && typeof held.at === "number" && Date.now() - held.at < LIVE_OWNER_HOLD_MS;
+      const postsGame = Array.isArray(payload.games) && payload.games.length > 0;
+      if (heldByOtherTab && heldHasGame && heldFresh && !postsGame) return;
+      setSession({ [key]: payload });
+    });
   }
 
   // The stored ticket, handed to page.js so a freshly loaded copy resumes

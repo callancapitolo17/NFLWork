@@ -14,10 +14,12 @@
 
   const feed = typeof module !== "undefined" && module.exports ? require("./feed.js") : root.UnabatedFeed;
 
-  // page.js posts at least every 5 s; past two of those the tab has stopped
-  // reading (closed, reloaded, or throttled in the background) and the
-  // numbers on screen may be gone.
+  // page.js posts at least every 5 s from a visible tab; past two of those
+  // the tab has stopped reading and the numbers may be gone. A hidden tab's
+  // timers run about once a minute (Chrome's intensive throttling), so it
+  // gets a minute and a margin; its grid updates still post at once.
   const LIVE_STALE_MS = 10 * 1000;
+  const LIVE_STALE_HIDDEN_MS = 75 * 1000;
   // A payload this old is from a tab closed long ago: show nothing for it.
   const LIVE_DROP_MS = 2 * 60 * 1000;
   const FAIR_READY = "ready";
@@ -75,10 +77,11 @@
         games.push({ ...game, league: payload.league, matchup: matchupOf(game), checkpoint: checkpointLabel(game), fairReady: game.fairStatus === FAIR_READY });
       }
     }
-    const newestAt = fresh.reduce((max, payload) => Math.max(max, payload.at), 0);
-    const readAgoMs = newestAt ? now - newestAt : null;
+    const newest = fresh.reduce((best, payload) => (!best || payload.at > best.at ? payload : best), null);
+    const readAgoMs = newest ? now - newest.at : null;
+    const staleAfterMs = newest && newest.visible === false ? LIVE_STALE_HIDDEN_MS : LIVE_STALE_MS;
     const errors = fresh.map((payload) => payload.error).filter(Boolean);
-    return { games, stale: readAgoMs != null && readAgoMs > LIVE_STALE_MS, readAgoMs, error: errors.length ? errors.join("; ") : null };
+    return { games, stale: readAgoMs != null && readAgoMs > staleAfterMs, readAgoMs, error: errors.length ? errors.join("; ") : null };
   }
 
   function passesFilters(row, opts) {
@@ -186,7 +189,7 @@
   }
 
   const api = {
-    LIVE_STALE_MS, LIVE_DROP_MS, STORAGE_PREFIX,
+    LIVE_STALE_MS, LIVE_STALE_HIDDEN_MS, LIVE_DROP_MS, STORAGE_PREFIX,
     storageKeyOf, checkpointLabel, liveView, selectLiveEdges, liveAlertKey,
   };
 

@@ -106,3 +106,10 @@ test("storageKeyOf matches what content.js writes", () => {
   assert.equal(live.storageKeyOf("nfl"), "liveEdges:nfl");
   assert.ok(live.storageKeyOf("nfl").startsWith(live.STORAGE_PREFIX));
 });
+
+test("liveView: a hidden tab gets a minute and a margin before it reads stale (Chrome throttles its timers)", () => {
+  const hidden = (ageMs) => live.liveView([payload({ visible: false, at: NOW - ageMs })], NOW).stale;
+  assert.equal(hidden(30 * 1000), false);
+  assert.equal(hidden(live.LIVE_STALE_HIDDEN_MS + 1), true);
+  assert.equal(live.liveView([payload({ visible: true, at: NOW - 30 * 1000 })], NOW).stale, true);
+});

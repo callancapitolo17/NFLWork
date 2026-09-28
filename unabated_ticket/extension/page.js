@@ -1176,6 +1176,7 @@
     for (const timer of intervals) clearInterval(timer);
     document.removeEventListener("pointerdown", onClickCapture, true);
     document.removeEventListener("click", onClickCapture, true);
+    window.removeEventListener("pagehide", onPageHide);
     console.info("[unabated-ticket] page.js retired (a newer copy took over)");
   }
 
@@ -1326,23 +1327,65 @@
 
   let lastLiveSignature = null;
   let lastLivePostAt = 0;
+  // Chrome throttles a hidden tab's timers to about once a minute after five
+  // minutes in the background, which is where this tab sits while a bet is
+  // placed elsewhere. The grid's own update events are not throttled (the
+  // app's stream keeps feeding it), so they trigger a scan too, at most
+  // this often.
+  const LIVE_EVENT_SCAN_MIN_MS = 250;
+  const LIVE_GRID_EVENTS = ["modelUpdated", "cellValueChanged", "rowDataUpdated"];
+  const subscribedGridApis = new WeakSet();
+
+  function subscribeToGridUpdates(apis) {
+    for (const api of apis) {
+      if (subscribedGridApis.has(api) || typeof api.addEventListener !== "function") continue;
+      subscribedGridApis.add(api);
+      for (const type of LIVE_GRID_EVENTS) api.addEventListener(type, onGridUpdated);
+    }
+  }
+
+  function onGridUpdated() {
+    if (Date.now() - lastLiveScanAt >= LIVE_EVENT_SCAN_MIN_MS) scanLive();
+  }
+
+  let lastLiveScanAt = 0;
+
+  // `visible` lets the panel allow a hidden tab its throttled heartbeat
+  // before calling it stale; `instanceId` lets content.js keep one tab's
+  // live game from being blanked by another tab of the same league.
+  function postLive(payload, now) {
+    post("live_edges", {
+      league: leagueFromUrl(), url: window.location.href, at: now, instanceId: INSTANCE_ID,
+      visible: document.visibilityState !== "hidden", ...payload,
+    });
+  }
 
   function scanLive() {
     if (retired) return;
+    const now = Date.now();
+    lastLiveScanAt = now;
     let payload;
     try {
       let context = null;
       try { context = anyGridApi().context; } catch (_error) { /* no rendered cell yet */ }
-      payload = { ...readLiveEdges(allGridApis(null), context), error: null };
+      const apis = allGridApis(null);
+      subscribeToGridUpdates(apis);
+      payload = { ...readLiveEdges(apis, context), error: null };
     } catch (error) {
       payload = { games: [], rows: [], error: error.message };
     }
     const signature = JSON.stringify(payload);
-    const now = Date.now();
     if (signature === lastLiveSignature && now - lastLivePostAt < LIVE_HEARTBEAT_MS) return;
     lastLiveSignature = signature;
     lastLivePostAt = now;
-    post("live_edges", { league: leagueFromUrl(), url: window.location.href, at: now, ...payload });
+    postLive(payload, now);
+  }
+
+  // A closing tab says so, so the panel drops its rows at once instead of
+  // waiting out the staleness clock. Best effort: the page may be gone first.
+  function onPageHide() {
+    if (retired) return;
+    postLive({ games: [], rows: [], error: null, closing: true }, Date.now());
   }
 
   // ---- click capture -------------------------------------------------------
@@ -1406,5 +1449,6 @@
   runShapeCheck(0, false);
   intervals.push(setInterval(heartbeat, HEARTBEAT_MS));
   intervals.push(setInterval(scanLive, LIVE_SCAN_MS));
+  window.addEventListener("pagehide", onPageHide);
   console.info("[unabated-ticket] page.js active on", window.location.href);
 })();

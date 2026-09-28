@@ -552,3 +552,20 @@ test("live: a live ticket watches the live row, never the pregame row of the sam
   assert.equal(read.points, -7.5);
   assert.equal(read.price, -110);
 });
+
+test("live: a grid update scans at once, so a throttled background tab still posts the break", async () => {
+  const listeners = {};
+  const row = liveSpreadRow({ home: { [BOOK_KEY]: liveLine(-7.5, -110, 5.8, -124) } });
+  const api = { ...gridApi([topNode(row, "live")]), addEventListener(type, fn) { listeners[type] = fn; } };
+  const page = loadPage("/nfl/odds", { gridRoots: [gridRoot(api)] });
+  page.scanLive();
+  assert.equal(typeof listeners.modelUpdated, "function", "subscribed to the grid's updates");
+  row.sides["si1:tid2"][BOOK_KEY] = liveLine(-7.5, -105, 7.9, -124);
+  await new Promise((resolve) => setTimeout(resolve, 260)); // past the 250 ms floor
+  listeners.modelUpdated();
+  const posts = page.posted.filter((m) => m.type === "live_edges");
+  const last = posts[posts.length - 1].payload;
+  assert.equal(last.rows[0].edgePct, 7.9, "the update posted without waiting for the interval");
+  assert.equal(typeof last.instanceId, "string");
+  assert.equal(last.visible, true);
+});
