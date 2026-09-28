@@ -35,7 +35,7 @@ function line(bookId, overrides = {}) {
     key: isAlt ? `${mainKey}:alt${points}` : mainKey, isAlt, mainKey, mainPoints: sideIndex === 1 ? -8.5 : 8.5,
     leagueId: 1, periodTypeId: 1, betTypeId: 2, eventId: EVENT_ID, marketId: "m1", bookId, sideKey, sideIndex, points,
     price: 223, sourceFormat: 1, sourcePrice: null, bacr: 188, ge: 0.12, liquidity: 500, statusId: 1,
-    sequenceNumber: T0, isBlurred: false, modifiedOn: null, fromSnapshot: true,
+    sequenceNumber: T0, isBlurred: false, modifiedOn: null,
     ...overrides,
   };
 }
@@ -89,7 +89,7 @@ function historyOf(observations) {
     for (const { at, ...fields } of entries) {
       const [, bookId] = /:ms(\d+):/.exec(key);
       const sideIndex = key.includes(":si1:") ? 1 : 0;
-      edgemove.observe(history, { ...line(Number(bookId), { sideIndex }), key, ...fields }, { at, source: "snapshot" });
+      edgemove.observe(history, { ...line(Number(bookId), { sideIndex }), key, ...fields }, { at });
     }
   }
   return history;
@@ -191,19 +191,11 @@ test("a bet with no line on the board yet is neither saved nor refused, so the n
 });
 
 test("a fill inside a gap in its own league's snapshots is refused, though the rest of the board was watched", () => {
-  // NFL's snapshot kept failing until T0 + 4 min while other leagues and the stream landed.
+  // NFL's snapshot kept failing until T0 + 4 min while other leagues landed.
   const history = historyOf({ [NINERS_ALT(NOVIG)]: [{ at: T0 - 30 * MIN, bacr: 178 }] });
   const result = capture({ records: [bet("novig:1")], lines: [line(NOVIG)], history, leagueObservingSince: { 1: T0 + 4 * MIN } });
   assert.deepEqual(result, { saves: [], refusals: [{ betId: "novig:1", reason: REFUSED.leagueGap }] });
   assert.equal(capture({ records: [bet("novig:1")], lines: [line(NOVIG)], history, leagueObservingSince: {} }).refusals[0].reason, REFUSED.leagueGap);
-});
-
-test("a line only the changes stream carries is never read: it can be another market filed under the same bet type", () => {
-  // The stream files an event's team totals under its game total's bet type (feed.js);
-  // only snapshot lines are the game's own market, as for the fair ladder.
-  const history = historyOf({ [NINERS_ALT(NOVIG)]: [{ at: T0, bacr: 178 }] });
-  assert.deepEqual(capture({ records: [bet("novig:1")], lines: [line(NOVIG, { fromSnapshot: false })], history }),
-    { saves: [], refusals: [] });
 });
 
 test("the other side of the number is not the bet's line", () => {

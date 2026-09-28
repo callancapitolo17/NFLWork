@@ -264,7 +264,7 @@ test("history: every snapshot line gets one observation on start, and start clea
   await scanner.start([1]);
   const history = scanner.getHistory();
   assert.equal(Object.keys(history).length, 62 + 27);
-  assert.ok(Object.values(history).every((entries) => entries.length === 1 && entries[0].source === "snapshot" && entries[0].at === NOW));
+  assert.ok(Object.values(history).every((entries) => entries.length === 1 && entries[0].at === NOW));
   assert.equal(edgemove.edgeMove(history[NOVIG_ML_KEY], NOW).kind, "none");
   assert.equal(history[NOVIG_ML_KEY][0].bacr, -156);
   clock += 60 * 1000;
@@ -309,13 +309,11 @@ test("history: a re-downloaded snapshot records fair and alt-rung moves as snaps
   const history = scanner.getHistory();
   const fair = edgemove.edgeMove(history[NOVIG_ML_KEY], clock);
   assert.equal(fair.kind, "fair_to_you");
-  assert.equal(fair.source, "snapshot");
   assert.equal(fair.sinceMs, 0);
   assert.equal(fair.from.bacr, -156);
   assert.equal(fair.to.bacr, -166);
   const alt = edgemove.edgeMove(history[KALSHI_ALT_KEY], clock);
   assert.equal(alt.kind, "book_away");
-  assert.equal(alt.source, "snapshot");
   assert.equal(alt.from.price, 113);
   assert.equal(alt.to.price, 125);
   // Every 1H line is gone from the state and from the history.
@@ -402,7 +400,7 @@ test("leagueObservingSince: a league whose loads keep failing while another land
   clock += 31 * 1000;
   await scanner.tick();
   assert.deepEqual(scanner.getStatus().leagueObservingSince, { 1: NOW, 2: NOW });
-  // Down for five minutes while NFL and the stream keep landing: CFB's run starts over, NFL's does not.
+  // Down for five minutes while NFL keeps landing: CFB's run starts over, NFL's does not.
   cfbDown = true;
   for (let step = 0; step < 10; step += 1) {
     clock += 31 * 1000;

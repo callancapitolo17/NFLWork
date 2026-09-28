@@ -259,8 +259,7 @@ def main_loop(dry_run: bool):
     storage.init()
     kalshi.init()
     # v2 per-league polling: the v2 odds file carries UNBLURRED anchors anonymously
-    # (no token needed), and the legacy changes/query delta feed does not carry
-    # soccer at all — so each tick re-fetches the per-league file from the CDN.
+    # (no token needed), so each tick re-fetches the per-league file from the CDN.
     last_k = 0.0
     last_recon = 0.0
     kalshi_events = {}

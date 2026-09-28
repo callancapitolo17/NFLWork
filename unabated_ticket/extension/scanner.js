@@ -208,7 +208,7 @@
     // must not keep a stale record for the session.
     function recordSnapshot(loaded, droppedKeys) {
       const at = now();
-      for (const line of Object.values(loaded.lines)) edgemove.observe(history, line, { at, source: "snapshot" });
+      for (const line of Object.values(loaded.lines)) edgemove.observe(history, line, { at });
       for (const key of droppedKeys) if (!state.lines[key]) edgemove.forget(history, key);
     }
 

@@ -22,6 +22,7 @@ const path = require("node:path");
 const feed = require("../extension/feed.js");
 const bets = require("../extension/bets.js");
 const teams = require("../extension/teams.js");
+const { moveLine } = require("./helpers.js");
 // The runtime team index the panel builds from Unabated's snapshots, from a
 // captured copy (fixtures/teams_index.json) — keys are "<league>:<Unabated id>".
 teams.loadIndex(JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "teams_index.json"), "utf8")).leagues);
@@ -910,11 +911,10 @@ test("id join: a Novig spread joins on its outcome id; a LAY of that outcome is 
   assert.equal(bets.matchBets(rows["Spread 1 89"], [lay], { lines }).matches[0].tier, "opposite");
 });
 
-test("id join: a main line the changes stream moved off the id's number is same_side, not same_line", () => {
+test("id join: a main line that moved off the id's number is same_side, not same_line", () => {
   const state = venueState();
-  const main = state.lines["420942308:ms89:si1:tid717"];
-  feed.applyChanges(state, { lines: [{ ...main, points: -36.5, price: -105, sequenceNumber: main.sequenceNumber + 1, eventStart: null }] });
-  // The id map still says -35.5 (it rebuilds only with the snapshot); the row is at -36.5 now.
+  moveLine(state, "420942308:ms89:si1:tid717", { points: -36.5, price: -105 });
+  // The id map still says -35.5; the row is at -36.5 now.
   assert.equal(state.events[123742].venueIds.novigOutcomes[NOVIG_WSU_MINUS_35_5].points, -35.5);
   const rows = venueRows(state);
   const match = bets.matchBets(rows["Spread 1 89"], [novigDuqWsu()], { lines: Object.values(rows) }).matches[0];
