@@ -3,17 +3,16 @@
 // Runs inside the side panel page (never the service worker): the panel is
 // open whenever you are betting, setInterval is reliable there, and closing
 // the panel stops every request. Snapshot per enabled league on start, then
-// the changes stream every POLL_MS from the last cursor — and, because the
-// anonymous stream is INCOMPLETE (measured 2026-09-10 over 3 min: 69 of 191
-// NFL line changes delivered; Kalshi, Caesars, ProphetX, Polymarket and
-// Underdog moves mostly missing), each league's snapshot is re-downloaded on
-// its own cadence by file size so exchange prices never sit stale for long.
+// each league's snapshot is re-downloaded on its own cadence by file size.
+// Snapshots are the only source: the polling changes stream
+// (api-k.unabated.com/api/markets/changes/query) has answered HTTP 410
+// "Polling change subscriptions have been retired" since 2026-09-27, and its
+// SSE replacement needs the logged-in session.
 //
-// Side effects: network requests to content.unabated.com and
-// api-k.unabated.com only. No storage, no DOM. State lives in memory and is
-// handed to the panel through onChange(status, state, history) — `history`
-// is the per-line record of what each line was worth on every snapshot and
-// stream update (edgemove.js, #132), also in memory only. `status.observingSince`
+// Side effects: network requests to content.unabated.com only. No storage, no
+// DOM. State lives in memory and is handed to the panel through
+// onChange(status, state, history) — `history` is the per-line record of what
+// each line was worth on every snapshot (edgemove.js, #132), also in memory only. `status.observingSince`
 // says since when that record has no gap, and `status.leagueObservingSince`
 // the same per league (fillfair.js reads a bet's fill off it only when the
 // bet was placed after both).
@@ -36,10 +35,10 @@
   // stale edge copy; within that window the browser cache still serves it.
   const CACHE_BUST_SEC = 30;
   const SNAPSHOT_URL = (leagueId, atMs) => `${SNAPSHOT_BASE_URL(leagueId)}?t=${Math.floor((atMs ?? Date.now()) / (CACHE_BUST_SEC * 1000))}`;
-  const CHANGES_URL = "https://api-k.unabated.com/api/markets/changes/query";
-  const POLL_MS = 10000;
-  // Full resync (books, teams, cursor) — the per-league refresh below is what
-  // keeps prices current.
+  // How often the loop checks which leagues are due a re-download.
+  const TICK_MS = 10000;
+  // Full resync (books, teams) — the per-league refresh below is what keeps
+  // prices current.
   const RESYNC_MS = 10 * 60 * 1000;
   // Per-league snapshot refresh cadence by compressed size: the snapshot is
   // regenerated every ~27s and is the only complete source, so small files
@@ -53,14 +52,8 @@
   // A snapshot regenerates every ~27s; a build older than this is a stale
   // CDN copy (or an off-season league that stopped regenerating).
   const STALE_BUILD_MS = 15 * 60 * 1000;
-  // A changes response carries at most this many ~1.3s batches; a full page
-  // means there is more to read right away.
-  const FULL_PAGE_BATCHES = 7;
-  const MAX_PAGES_PER_POLL = 8;
-  // The server rejects cursors older than a few minutes (Failed at 300s,
-  // fine at 180s on 2026-09-10); a snapshot is regenerated every ~27s.
-  const CURSOR_MAX_AGE_MS = 150 * 1000;
-  // After a pause longer than this the cursor may be dead: resync instead.
+  // After a pause longer than this the board is too old to top up league by
+  // league: resync everything instead.
   const PAUSE_RESYNC_MS = 120 * 1000;
   const FAILED_LEAGUE_RETRY_MS = 30 * 1000;
   // ~27 leagues, 18 MB gzip per resync; a few at a time keeps peak memory
@@ -71,7 +64,6 @@
   const LOAD_LAST_LEAGUE_IDS = [2];
   // A hung fetch would otherwise hold `busy` forever and stall the loop silently.
   const SNAPSHOT_TIMEOUT_MS = 60 * 1000;
-  const CHANGES_TIMEOUT_MS = 20 * 1000;
 
   function createScanner(deps) {
     const fetchImpl = (deps && deps.fetchImpl) || ((...args) => root.fetch(...args));
@@ -83,8 +75,7 @@
     // line key -> observations (edgemove.observe); reset with the state.
     let history = {};
     let leagues = [];
-    let cursor = null;
-    let pollTimer = null;
+    let tickTimer = null;
     let resyncTimer = null;
     let busy = false;
     let paused = false;
@@ -95,14 +86,9 @@
       leaguesLoaded: [],
       leagueErrors: {},
       lastSnapshotAt: null,
-      lastUpdateAt: null,
-      lastPollAt: null,
-      lastPollLines: 0,
-      pollCount: 0,
       lineCount: 0,
       altLineCount: 0,
       eventCount: 0,
-      cursor: null,
       loading: null, // {done, total} while snapshots are downloading
       snapshotBuiltAt: null, // newest Last-Modified among loaded leagues
       staleLeagues: [], // leagues whose Last-Modified is older than STALE_BUILD_MS (a stale edge copy, or an off-season file)
@@ -114,11 +100,10 @@
       observingSince: null,
       // leagueId -> since when that league's snapshots have loaded without a
       // gap. One league can keep failing while the others land, which the
-      // clock above cannot see, and its exchange lines move on the snapshot
-      // only (the stream misses most of them).
+      // clock above cannot see.
       leagueObservingSince: {},
     };
-    // The last successful snapshot load or stream poll, paused or not.
+    // The last successful snapshot load, paused or not.
     let lastObservedAt = null;
     let failedLeagueRetryAt = 0;
     // Bumped by start(); a load that began under an older generation is discarded.
@@ -153,7 +138,6 @@
       status.lineCount = feed.countLines(state);
       status.altLineCount = feed.countAltLines(state);
       status.eventCount = Object.keys(state.events).length;
-      status.cursor = cursor;
       onChange({ ...status }, state, history);
     }
 
@@ -162,7 +146,7 @@
       status.phase = status.leaguesLoaded.length ? "live" : "error";
     }
 
-    // A snapshot load or stream poll succeeded. A pass that lands while
+    // A snapshot load succeeded. A pass that lands while
     // paused (it was in flight when the panel hid) moves the clock but never
     // starts a run: the panel is not watching.
     function markObserved() {
@@ -228,16 +212,9 @@
       for (const key of droppedKeys) if (!state.lines[key]) edgemove.forget(history, key);
     }
 
-    function recordStream(appliedKeys) {
-      const at = now();
-      for (const key of appliedKeys) edgemove.observe(history, state.lines[key], { at, source: "stream" });
-    }
-
     // Load every requested league, publishing each one the moment it lands
     // (the panel fills in league by league); keep whatever succeeds and
-    // report the rest by name. The changes cursor starts at the OLDEST
-    // snapshot build time when that is recent enough, so nothing between
-    // build and first poll is missed.
+    // report the rest by name.
     async function loadSnapshots(leagueIds) {
       const startedUnder = generation;
       const fullLoad = leagueIds.length >= leagues.length;
@@ -246,7 +223,6 @@
       if (fullLoad) status.loading = { done: 0, total: ordered.length };
       if (!status.leaguesLoaded.length || fullLoad) status.phase = status.leaguesLoaded.length ? status.phase : "loading";
       const errors = { ...status.leagueErrors };
-      let oldestBuild = null;
       let loadedCount = 0;
       await mapWithConcurrency(ordered, SNAPSHOT_CONCURRENCY, async (leagueId) => {
         let loaded;
@@ -265,7 +241,6 @@
         const previousLoadAt = leagueMeta[leagueId] ? leagueMeta[leagueId].loadedAt : null;
         leagueMeta[leagueId] = { loadedAt: now(), bytes: loaded.bytes, builtAt: loaded.builtAt };
         if (loaded.builtAt != null) {
-          oldestBuild = oldestBuild == null ? loaded.builtAt : Math.min(oldestBuild, loaded.builtAt);
           status.snapshotBuiltAt = Math.max(status.snapshotBuiltAt || 0, loaded.builtAt);
         }
         status.staleLeagues = leagues.filter((id) => leagueMeta[id] && leagueMeta[id].builtAt != null && now() - leagueMeta[id].builtAt > STALE_BUILD_MS);
@@ -291,12 +266,6 @@
       markObserved();
       status.phase = "live";
       status.error = Object.keys(errors).length ? `feed unavailable for ${describeLeagueErrors(errors)}` : null;
-      // Only a full load restarts the stream at the snapshot build time; a
-      // per-league refresh leaves the cursor where the stream is.
-      if (fullLoad) {
-        const recent = oldestBuild != null && now() - oldestBuild <= CURSOR_MAX_AGE_MS;
-        cursor = recent ? feed.cursorFromDate(oldestBuild) : null;
-      }
       notify();
       return true;
     }
@@ -319,42 +288,6 @@
       return Object.entries(errors).map(([id, message]) => `${(feed.LEAGUES[id] || { label: `league ${id}` }).label} (${message})`).join(", ");
     }
 
-    async function fetchChangesPage() {
-      const url = cursor ? `${CHANGES_URL}/${cursor}` : CHANGES_URL;
-      const response = await fetchWithTimeout(url, { credentials: "include" }, CHANGES_TIMEOUT_MS);
-      if (!response.ok) throw new Error(`changes HTTP ${response.status}`);
-      return feed.parseChanges(await response.text());
-    }
-
-    // Read the stream until a page comes back short. A Failed result means the
-    // cursor expired: resync from snapshots and restart from the server default.
-    async function pollChanges() {
-      let lines = 0;
-      const startedUnder = generation;
-      for (let page = 0; page < MAX_PAGES_PER_POLL; page += 1) {
-        const parsed = await fetchChangesPage();
-        if (startedUnder !== generation) return;
-        if (!parsed.ok) {
-          cursor = null;
-          status.error = `changes cursor rejected (${parsed.resultCode}); resyncing`;
-          await loadSnapshots(leagues);
-          return;
-        }
-        const counts = feed.applyChanges(state, parsed);
-        recordStream(counts.appliedKeys);
-        lines += counts.applied;
-        cursor = parsed.cursor || cursor;
-        if (parsed.batches < FULL_PAGE_BATCHES) break;
-      }
-      status.pollCount += 1;
-      status.lastPollAt = now();
-      markObserved();
-      status.lastPollLines = lines;
-      if (lines > 0) status.lastUpdateAt = status.lastPollAt;
-      status.error = Object.keys(status.leagueErrors).length ? `feed unavailable for ${describeLeagueErrors(status.leagueErrors)}` : null;
-      notify();
-    }
-
     async function retryFailedLeagues() {
       const failed = Object.keys(status.leagueErrors).map(Number).filter((id) => leagues.includes(id));
       if (!failed.length || now() - failedLeagueRetryAt < FAILED_LEAGUE_RETRY_MS) return;
@@ -364,7 +297,7 @@
 
     // Failed leagues retry on the 30s throttle only (never a full reload every
     // tick while Unabated is down); leagues past their refresh cadence are
-    // re-downloaded; loaded leagues poll the stream.
+    // re-downloaded.
     async function tick() {
       if (busy || paused || !leagues.length || status.loading) return;
       busy = true;
@@ -373,7 +306,6 @@
         const due = leaguesDueForRefresh();
         if (due.length && due.length < leagues.length) await loadSnapshots(due);
         else if (due.length) await loadSnapshots(leagues);
-        if (status.leaguesLoaded.length) await pollChanges();
       } catch (error) {
         setError(`feed unavailable: ${error.message}`);
         notify();
@@ -396,9 +328,9 @@
     }
 
     function clearTimers() {
-      if (pollTimer) timers.clearInterval(pollTimer);
+      if (tickTimer) timers.clearInterval(tickTimer);
       if (resyncTimer) timers.clearInterval(resyncTimer);
-      pollTimer = null;
+      tickTimer = null;
       resyncTimer = null;
     }
 
@@ -415,7 +347,6 @@
       status.leaguesLoaded = [];
       status.leagueErrors = {};
       status.error = null;
-      cursor = null;
       paused = false;
       failedLeagueRetryAt = 0;
       leagueMeta = {};
@@ -425,7 +356,7 @@
         notify();
         return;
       }
-      pollTimer = timers.setInterval(tick, POLL_MS);
+      tickTimer = timers.setInterval(tick, TICK_MS);
       resyncTimer = timers.setInterval(resync, RESYNC_MS);
       // Not resync(): an in-flight load from the old generation holds `busy`,
       // and its result is discarded anyway, so this generation loads now.
@@ -453,11 +384,11 @@
       status.observingSince = null;
     }
 
-    // Back from hidden: continue the stream if the cursor is still fresh, else resync.
+    // Back from hidden: top up the leagues that are due if the board is recent, else resync.
     async function resume() {
       if (!paused) return;
       paused = false;
-      const lastSeen = Math.max(status.lastPollAt || 0, status.lastSnapshotAt || 0);
+      const lastSeen = status.lastSnapshotAt || 0;
       if (!lastSeen || now() - lastSeen > PAUSE_RESYNC_MS) await resync();
       else await tick();
     }
@@ -471,7 +402,7 @@
     };
   }
 
-  const api = { createScanner, SNAPSHOT_URL, SNAPSHOT_BASE_URL, CHANGES_URL };
+  const api = { createScanner, SNAPSHOT_URL, SNAPSHOT_BASE_URL };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {
