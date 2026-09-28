@@ -11,13 +11,16 @@ exchange median, although at teaser numbers Unabated sits up to 3 points above
 Kalshi/Novig/Polymarket/ProphetX); $200 maximum per ticket; 4-team tickets
 only (+300 is Buckeye's best teaser price); a push counts as a loss
 (conservative, Buckeye's tie rule unconfirmed); the panel's bankroll and Kelly
-multiplier; a juiced Buckeye line teases like a -110 one (2026-09-27/28).
+multiplier; a juiced Buckeye line teases like a -110 one; BFA is Buckeye, so
+placed tickets are read from the bets service's BFA open bets, nothing to
+mark (2026-09-27/28).
 
 ## 1. Goal
 
 Open the tab, see "bet these N tickets, $200 each, in this order", place them
-at Buckeye, tick each one placed. The next visit sizes around the tickets
-already placed instead of suggesting them again.
+at BFA. The bets service's BFA pull brings them back as open tickets — nothing
+to click — and the next build sizes around them instead of suggesting them
+again.
 
 ## 2. Legs — new `extension/teaser.js` (pure)
 
@@ -56,16 +59,20 @@ already placed instead of suggesting them again.
 - Greedy in $200 steps (`TICKET_MAX_STAKE = 200`): add the ticket that most
   raises the objective, repeat until none does; the last ticket may be
   partial (golden section on 0-200, whole dollars). No ticket twice.
-- Placed tickets are fixed P&L in the objective until their LAST game starts.
-  New tickets never use a started game, but a placed ticket whose 10:00 legs
-  are live still rides on its 1:05 leg, so each placed leg keeps the win
-  chance saved when it was placed and that is used once its game starts.
+- Placed tickets = every open BFA teaser, from the tool or not (section 5):
+  fixed P&L in the objective, +toWin when every leg wins and -stake
+  otherwise (push = loss), until the ticket's LAST game starts. New tickets
+  never use a started game, but a placed ticket whose 10:00 legs are live
+  still rides on its 1:05 leg, so a started leg — and a leg no board game
+  matches — counts as still alive. Conservative: the ticket keeps its full
+  weight on the legs still to play, and no fair has to be saved.
 - A game with a placed leg at another number (Buckeye moved the line) gets
   rows between all its cuts, as in `condkelly.js`, so the two legs are the
   same game, not independent. A game with a placed leg only offers new legs
   on the same market (spread or total).
 - The list holds still: it is rebuilt only when a Buckeye number moves, a
-  game joins or leaves, a ticket is placed or undone, a setting changes, or
+  game joins or leaves, an open BFA teaser appears or closes, a setting
+  changes, or
   a leg in the list moves `REBUILD_FAIR_MOVE = 1` point or more since the
   last build. Smaller ticks update the EVs in place. Why: many 4-leg combos
   are near-tied, so rebuilding on every tick gave lists sharing 1 of 7
@@ -77,13 +84,22 @@ already placed instead of suggesting them again.
   variance is how many legs cover. The Kelly multiplier is the variance dial.
 - 9/27 board at $20k x 0.25, push = loss: 7 tickets, $1,292, expected +$324.
 
-## 5. Placed tickets — `chrome.storage.local.teaserPlaced`
+## 5. Placed tickets — BFA open bets from the bets service
 
-`[{ id, placedAt, stake, legs: [{ key, eventId, leagueId, betTypeId,
-sideIndex, basePoints, teasedPoints, label, eventStartMs, win }] }]`. `win`
-is the leg's fair when placed. Written by the Placed button, removed by
-Undo, dropped once every leg's game has started. Nothing leaves the browser
-(Buckeye bets are not in the bets service).
+- The panel already polls `/bets.json` every 30 s. An open BFA teaser arrives
+  as one record per leg (`isParlayLeg`, `parlayId`, `legCount`, the ticket's
+  `stake` / `toWin` on every leg, `raw.headerDescription` "4 TEAM TEASERS",
+  the leg's teased `points`, `rotation` and `eventStart`). Sunday's 8 tickets
+  came through this way, legs at the teased numbers.
+- Legs are grouped by `parlayId` into tickets and joined to board games with
+  `bets.js`'s matcher (rotation + start; BFA rotations are Unabated's own).
+  `bets.js` gains `teaserLegPositionOf(bet, line)`: `positionOf` without the
+  parlay-leg and stake guards (a leg's dollars are the ticket's).
+- BFA is pulled every 300 s today (open bets + history in one poll), so a
+  ticket could take 5.5 min to show and be suggested again meanwhile. The
+  bets service splits it: open bets every 60 s, history every 300 s
+  (`sources/bfa.py`, `config.py`). The tab shows how old the last BFA pull
+  is; the bets service down -> red banner, the list stays up.
 
 ## 6. Scanner — football always loaded
 
@@ -96,8 +112,10 @@ sports you ticked.
 - Tab "Teasers" after Bets, count = tickets to bet.
 - Summary line: tickets, dollars, expected profit, chance to make money,
   chance every ticket loses.
-- Ticket cards in greedy order: legs, stake, EV, Copy, Placed. Placed
-  tickets collapse into a "Placed" section with Undo.
+- Ticket cards in greedy order: legs, stake, EV, Copy. Open BFA teasers
+  are listed read-only under "Open at BFA" with the age of the last BFA
+  pull. Change from the approved mockup: frame 2's Placed button and Undo
+  are gone — BFA says what is placed.
 - Legs list: teased number, from Buckeye's line, win chance, line age,
   "in N tickets"; grey rows with the reason for unpriced legs.
 - Empty states: feed loading; fewer than 4 priced games on Buckeye's board;
@@ -110,22 +128,27 @@ Synthetic ladders, no live snapshots: away/home/Over/Under teased numbers;
 a whole number reads the half-point one step against you; the moneyline left
 out of the spread ladder; no rung, flat; grading (all four win, anything
 else loses); one ticket under the cap equals the single-bet Kelly stake; the
-greedy never exceeds $200 per ticket nor repeats a ticket; a placed ticket
-lowers the next suggestion; a placed ticket with a started game still counts
-with its saved win chance; a moved line on a placed game shares rows; the
-list is not rebuilt when only fairs move; `selectEdges` league filter.
+greedy never exceeds $200 per ticket nor repeats a ticket; open BFA teaser
+legs group into tickets and join their games by rotation; a placed ticket
+lowers the next suggestion; a started or unmatched leg counts as alive; a
+moved line on a placed game shares rows; the list is not rebuilt when only
+fairs move; `selectEdges` league filter. pytest: BFA open bets every 60 s,
+history every 300 s.
 
 ## 9. Version control
 
 - Branch `feature/unabated-ticket-teasers`, worktree
   `.claude/worktrees/buckeye-teasers` (from local `main`, which is 10
   commits ahead of `origin/main`).
-- Commits: (1) this plan; (2) `teaser.js` + tests; (3) scanner leagues +
-  `selectEdges` filter + test; (4) panel tab, CSS, manifest; (5) README +
-  `CLAUDE.md`.
+- Commits: (1) this plan; (2) `teaser.js` + `bets.js` leg position + tests;
+  (3) scanner leagues + `selectEdges` filter + test; (4) BFA open bets every
+  60 s + pytest; (5) panel tab, CSS, manifest; (6) README + `CLAUDE.md`.
 - New: `extension/teaser.js`, `tests/teaser.test.js`, this plan. Modified:
-  `feed.js`, `panel.js`, `panel.html`, `panel.css`, `manifest.json`,
-  `tests/feed.test.js`, `unabated_ticket/README.md`, root `CLAUDE.md`.
+  `feed.js`, `bets.js`, `panel.js`, `panel.html`, `panel.css`,
+  `manifest.json`, `tests/feed.test.js`, `tests/bets.test.js`,
+  `bets_service/sources/bfa.py`, `bets_service/config.py`,
+  `bets_service/tests/test_bfa.py`, `unabated_ticket/README.md`, root
+  `CLAUDE.md`. The bets service must be restarted after merge.
 - `./unabated_ticket/check.sh` on the branch, pre-merge review, then ask. No
   merge, no push without an explicit yes.
 
@@ -138,9 +161,10 @@ path and `git branch -d feature/unabated-ticket-teasers`.
 ## 11. Documentation
 
 Same branch, after the code is final: `unabated_ticket/README.md` — Teasers
-section (legs, grading, portfolio, placed tickets, limits), Tests counts,
-decisions log (Unabated fair over exchanges; $200 cap; 4-team only; push =
-loss; one leg per game); root `CLAUDE.md` Unabated Ticket blurb; manifest
+section (legs, grading, portfolio, placed tickets from BFA, limits), the
+bets service's BFA cadence, Tests counts, decisions log (Unabated fair over
+exchanges; $200 cap; 4-team only; push = loss; one leg per game; BFA is
+Buckeye, no marking); root `CLAUDE.md` Unabated Ticket blurb; manifest
 description.
 
 ## 12. Known limits
@@ -152,4 +176,5 @@ description.
 - One leg per game: same-game spread + total correlation is not modelled.
 - Football, full game, 6 points only.
 - Straight bets held elsewhere on the same games are not in the math.
-- Placed tickets live in this browser only.
+- A ticket placed in the last ~90 s may not be in the tab yet (BFA every
+  60 s + panel poll 30 s); the pull age is on screen.
