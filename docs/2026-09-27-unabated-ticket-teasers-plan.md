@@ -29,7 +29,11 @@ already placed instead of suggesting them again.
   spreads disagree by about 2.5 points near zero (SEA @ WAS 77.1% vs 79.5%),
   which put -0.1% on "Seattle by exactly 1".
 - Half-point number: win = P(above) or 1 - P(above), no push. Whole number
-  `k`: push = P(above k-0.5) - P(above k+0.5), win from the far rung.
+  `k`: push = P(above k-0.5) - P(above k+0.5); win vs lose from Unabated's
+  own fair AT `k` (a straight-bet price, so conditional on no push): win =
+  p(k) x (1 - push). Keeps each leg on the exact price Unabated shows for
+  its number (user, 2026-09-28); Bills -1: -316 -> 74.2% win, 2.3% push.
+  No rung at `k` -> win from the far half-point rung, as the ladder gives it.
 - A leg with no rung, a flat rung (`ladder.probAbove` reasons) or a push below
   -0.005 is listed grey with its reason and never used.
 
@@ -37,10 +41,12 @@ already placed instead of suggesting them again.
 
 - Pool: the best leg per game (one leg per game, so legs are independent),
   top `POOL_SIZE = 8` by win chance. 3^8 = 6,561 joint outcomes.
-- Candidate tickets: every combination of the leg counts Buckeye pays
-  (`BUCKEYE_PAYOUTS`; 4 teams +300 known, others pending).
-- Grading per outcome: any leg lost -> -1; ties by `BUCKEYE_TIE_RULE`
-  (pending; e.g. "reduce": a 4-teamer with one push pays the 3-team price).
+- Candidate tickets: every 4-leg combination. 4 teams at +300 is Buckeye's
+  best teaser price (user, 2026-09-27), so no 2- or 3-team tickets are built.
+- Grading per outcome: any leg lost -> -1; a push drops its leg and the
+  ticket pays the price for the legs left ("ties reduce", pending Buckeye's
+  confirmation). Buckeye's 3- and 2-team prices are unknown, so the lowest
+  common ones stand in (+160, -120); pushes run ~2% a whole-number leg.
 - Ticket EV and "fair" (the full-ticket payout that makes EV zero with the
   other outcomes graded as usual; closed form, EV is linear in it).
 
@@ -54,11 +60,16 @@ already placed instead of suggesting them again.
 - Placed tickets are fixed P&L in the objective. A game with a placed leg at
   another number (Buckeye's line moved) gets rows between ALL its cuts, as in
   `condkelly.js`, so the two legs are the same game, not independent. A
-  placed total and a new spread on one game cannot be combined: that game
-  leaves the pool.
-- Today's board (prototype, $30k x 0.25, 4-teamers only): 12 tickets, $2,275,
-  expected +$711 (31%), wins money 52%, all lose 14%; each leg in 4-8
-  tickets; solved in 53 ms.
+  game with a placed leg only offers new legs on the same market (spread or
+  total): the joint spread-and-total outcome is not modelled.
+- Splitting finer does not cut the swing (measured 9/27): 12, 23, 44 and 69
+  tickets all land at a standard deviation of about 4x the expected profit,
+  because 92-97% of the variance is how many of the 8 legs cover. The
+  Kelly multiplier is the variance dial.
+- 9/27 board (prototype, 4-teamers, reduced tickets at +160/-120): $30k x
+  0.25 -> 12 tickets, $2,246, expected +$661 (29%), wins money 50%, all lose
+  15%; $20k x 0.25 (what was bet) -> 8 tickets, $1,460, +$418; each leg in
+  3-8 tickets; solved in ~50 ms.
 
 ## 5. Placed tickets — `chrome.storage.local.teaserPlaced`
 
