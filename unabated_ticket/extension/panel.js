@@ -159,7 +159,7 @@
   let scannerStatus = null;
   let scannerState = null;
   // The scanner's per-line history (edgemove.js, #132): what each line was
-  // worth on every snapshot and stream update, read for the edge-move tag.
+  // worth on every snapshot, read for the edge-move tag.
   let scannerHistory = {};
   let boardLinesCache = null;
   // Unabated's fair ladders for sizing against held bets (#130): the feed's
@@ -279,9 +279,8 @@
   // cell as an alt does not decide which key the feed filed the line under
   // (live 2026-09-12: an Under 46.5 +213 Novig rung the Edges tab listed came
   // back "no copy" through the key). Normally one line: the feed drops an alt
-  // sitting on its main line's points. Two means two MARKETS — the changes
-  // stream tags an event's team totals bt3 like its game total, and only the
-  // marketId the ticket may lack tells them apart — so the caller refuses.
+  // sitting on its main line's points. Two means two MARKETS that only the
+  // marketId the ticket may lack tells apart, so the caller refuses.
   function feedLinesFor(ticket, points) {
     if (!scannerState || !ticket.watch || ticket.eventId == null) return [];
     const matches = [];
@@ -807,7 +806,7 @@
   function recentMoveText(move) {
     if (move.kind === "none") return "last 10 min: nothing moved";
     const lag = move.kind === "book_away" ? " \u2014 Unabated's fair runs ~1-2 min behind the book; wait a snapshot" : "";
-    return `last 10 min: ${edgemove.MOVE_LABELS[move.kind]}, ${fmtMoveNumbers(move)}, moved ${fmtAge(move.sinceMs)} (${move.source})${lag}`;
+    return `last 10 min: ${edgemove.MOVE_LABELS[move.kind]}, ${fmtMoveNumbers(move)}, moved ${fmtAge(move.sinceMs)}${lag}`;
   }
 
   // What the tag reads on a line held in this direction: {move, baseline,
@@ -829,15 +828,14 @@
   // The numbers behind the tag. Since a fill: "since your Novig +208 bet
   // (Sep 23, 12:03 PM): fair 36.0% → 34.7% · price … | last 10 min: … |
   // opened +185". Ten minutes only: "fair 33.7% → 35.6% · price +199 → +215
-  // · moved 2m ago (snapshot) · opened +185" — "ago" is when the panel first
-  // SAW the move and by what: a snapshot observation can be up to one
-  // refresh interval after the book moved (the stream misses most exchange
-  // moves and never carries an alt rung).
+  // · moved 2m ago · opened +185" — "ago" is when the panel first SAW the
+  // move: a snapshot observation can be up to one refresh interval after the
+  // book moved.
   function moveTooltip(reading, line) {
     const opener = openerText(line);
     if (!reading.baseline) {
       const move = reading.move;
-      return [fmtMoveNumbers(move), `moved ${fmtAge(move.sinceMs)} (${move.source})`, opener].filter(Boolean).join(" \u00b7 ");
+      return [fmtMoveNumbers(move), `moved ${fmtAge(move.sinceMs)}`, opener].filter(Boolean).join(" \u00b7 ");
     }
     const bet = reading.baseline.bet;
     const placed = new Date(reading.baseline.placedMs).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });

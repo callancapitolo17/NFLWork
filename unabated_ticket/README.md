@@ -105,8 +105,7 @@ re-injection could not reach still needs one).
   panel the Edges feed's copy of the same line, matched on game, bet type,
   period, side, book and points — never on the feed key, since an alt rung's
   cell object can lack `marketId`; two feed lines at that number are two
-  markets (a team total the changes stream tagged `bt3`) and the panel
-  refuses rather than guess — **only at the same price**; an edge is for
+  markets and the panel refuses rather than guess — **only at the same price**; an edge is for
   one price. A ticket
   sized from the feed says so in the warning strip with the feed copy's
   age. When none of the three has an edge the panel shows **No Unabated
@@ -293,8 +292,7 @@ choose x >= 0 to maximize  sum over outcome rows of  prob * ln(1 + pnl / K)
 - **The new bet's win chance** comes from Unabated's edge, as above:
   `p = (1 + edge) / decimal`. **A held bet's** comes from Unabated's fair
   today at its number: the median `bacr` across books at that half-point rung
-  (`extension/ladder.js`, snapshot lines only — the changes stream files team
-  totals under the game total's bet type). Its payoff is `toWin` / `-stake`
+  (`extension/ladder.js`). Its payoff is `toWin` / `-stake`
   from the record. No fees are added: Unabated's prices already include them.
 - **Same market, same period: exact.** Spreads, moneylines and every alt
   number are cuts on the margin (away minus home: an away bet at `a` wins above
@@ -411,20 +409,14 @@ pauses it, and a pause over 2 min resyncs on return. Before 2026-09-27 the
 changes stream topped this up every 10 s, but even then it was incomplete
 anonymously (2026-09-10, 3 min: 69 of 191 NFL line changes; Kalshi, Caesars,
 ProphetX, Polymarket and Underdog mostly missing), which is why the
-per-league cadence exists. `feed.parseChanges` / `applyChanges` remain for
-now (the tests use `applyChanges` to move a line); the scanner no longer
-calls them.
+per-league cadence exists. Its parser was deleted after the 410; tests move
+a line with `tests/helpers.js::moveLine`.
 
 Parsing (`extension/feed.js`, node-tested on real slices under
 `tests/fixtures/`):
 
 - A line is keyed `(marketId, book, sideKey)`. Snapshot game rows are unique
-  per event, period and bet type, but the changes stream tags other markets
-  of the same event with the same `bt` key (team totals under `bt3`), so for
-  updates event + bet type is **not** a key; only `marketId` tells them apart.
-- An update is applied only when its `sequenceNumber` is newer than the line
-  held. The stream replays old lines, and a snapshot can already be ahead of
-  a batch.
+  per event, period and bet type; a refresh replaces the league's lines whole.
 - Only pregame moneyline/spread/total rows (`pt*:pregame:bt{1,2,3}:e*`).
   Props, team totals (`bt4`) and live rows are skipped.
 - Books list when `isActive` and enabled for game odds in `marketSources`.
@@ -450,17 +442,15 @@ Parsing (`extension/feed.js`, node-tested on real slices under
   `Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU36` (contract side + market ticker; the
   other side reads `N-…`; 12,318 of 12,318 rungs fit that shape), Novig
   rungs `sourceData` = the Novig outcome id (a UUID), ProphetX a 32-hex id.
-  Main lines never carry either field, and the changes stream has neither,
-  so they refresh with the snapshot only. Each event collects them in
+  Main lines never carry either field; they refresh with the snapshot. Each event collects them in
   `event.venueIds`: `kalshiEventSuffixes` (e.g. `["26SEP19DUQWSU"]`, kept
   whole — Kalshi's team codes are not Unabated's abbreviations),
   `kalshiContracts` and `novigOutcomes` (id → `{lineKey, mainKey,
   points, sideIndex}` — `points` / `sideIndex` are the contract's own strike
   and Unabated side, fixed for the id; `lineKey` is the listed line at that number — the main line
   when a Kalshi or Novig rung sits on the main number (priced or not), else
-  null for an unpriced rung; the map rebuilds only with the snapshot while
-  the stream can move a main line, so a join checks `points` against the
-  line's current number). An id
+  null for an unpriced rung; a join checks `points` against the line's
+  current number). An id
   of any other shape is "no id", never an error. Coverage that day: 95 of
   319 NFL/CFB/WNBA events had Kalshi ids, 98 Novig ids. `describeLine` hands
   every row its event's map by reference (`row.venueIds`), which is how the
@@ -480,21 +470,14 @@ extrapolated:
   main-line points. 0 = no limit.
 
 An alt sitting on the main line's current number is hidden (it would be
-the same bet twice; when a main line moves onto an alt's number via the
-stream, that alt hides until the next snapshot replaces the ladder). A
-main line the stream takes off the board leaves its ladder listed until
-that refresh too. On the grid, an alt cell's book is read by object
+the same bet twice). On the grid, an alt cell's book is read by object
 identity in the row's ladders, then the column, before the line's own
 `marketSourceId` (Sports Interaction's alts carry BetMGM's id).
 Rows carry an `alt` badge and say `alt of -2.5` (the book's main number);
 the header counts alts apart (`3,120 lines (+40,278 alts)`).
 
-**Freshness.** The anonymous changes stream carries **no alt updates**
-(2,603 keys in a live page, all `an0`, none with `alternateLines`; only a
-`bestAlt*` summary rides on the main line), so alts are exactly as fresh as
-the league's last snapshot refresh — 60 s / 2 min / 5 min by file size —
-and a main line that moves between refreshes leaves its ladder stale until
-the next one. Every alt's `modifiedOn` is the feed's `0001-01-01T00:00:00`
+**Freshness.** Alts are exactly as fresh as the league's last snapshot
+refresh — 60 s / 2 min / 5 min by file size. Every alt's `modifiedOn` is the feed's `0001-01-01T00:00:00`
 sentinel; its `sequenceNumber` is the change time in epoch ms (on 10,182
 main lines it trailed `modifiedOn` by a median 1.2 s), so **Max line age**
 applies to alts through that (`feed.lineChangedMs`). Caveat: on ~1% of
@@ -541,8 +524,7 @@ hid longshots whose whole Kelly bet is small; a Novig Portland Fire +809
 main moneyline with $17 behind it listed with "add $32.58" under it, and
 now lists (it can win $137) as "add $17". Books with no figure pass, 0 =
 off. Liquidity is read as dollars you can stake (not verified against
-payout) and comes from the league snapshot only (the changes stream
-carries none), so it can lag a price move by up to a snapshot cycle. Sort by edge,
+payout) and comes from the league snapshot, so it can lag a price move by up to a snapshot cycle. Sort by edge,
 stake or start time. Settings (sports, periods, bets, books, minimum edge,
 minimum suggested bet, max line age, min liq to win, sort) persist in `chrome.storage.local` under `edges` (sports
 as league ids; a sport checkbox toggles all of its leagues).
@@ -556,7 +538,7 @@ have that league selected for the row to be found.
 
 The header shows leagues loaded, lines held, when the newest snapshot was
 built (its `Last-Modified`; minutes or more means a stale edge copy),
-stream age, and the filter in effect. A league that fails to load is named in a red banner while the rest
+and the filter in effect. A league that fails to load is named in a red banner while the rest
 keep working; if every league fails the tab says **feed unavailable** rather
 than showing an empty list.
 
@@ -633,12 +615,9 @@ number than they opened, measured 2026-09-22).
 Under the tag, one small line names the mover: `fair 33.7% → 35.6%` when
 the fair decided (green or red), `price +125 → +141` when it was the book
 (amber). The tooltip carries everything: `fair 33.7% → 35.6% · price +199 →
-+215 · moved 2m ago (snapshot) · opened +185`. "ago" is when the panel first *saw*
-the move and by what. The anonymous changes stream misses most exchange
-moves and never carries an alt rung, so for Kalshi, Novig and every alt the
-observation is a snapshot, up to one refresh interval (60 s / 2 min / 5 min
-by league) after the book actually moved; a `(stream)` observation is within
-10 s. `opened` is the book's own opening price (`openerPrice`, on every main
++215 · moved 2m ago · opened +185`. "ago" is when the panel first *saw*
+the move: every observation is a snapshot, up to one refresh interval
+(60 s / 2 min / 5 min by league) after the book actually moved. `opened` is the book's own opening price (`openerPrice`, on every main
 line and no alt rung, per book — #126, measured 2026-09-22); when the book
 has moved its number since open it reads `opened -120 at -3`, because the
 price is not comparable across numbers. The opener's fair is not in the feed,
@@ -684,9 +663,7 @@ with a saved fair adds `fair then 36.0%`.
 How a fill's fair is saved (`extension/fillfair.js`): after every bets poll
 and every scanner update, each open bet without one is read off the
 scanner's history — the newest observation of its line at or before
-`placedAt`, from snapshot lines only (as for the fair ladder: the changes
-stream files an event's team totals under its game total's bet type, so a
-stream-only line at the number can be another market). A Kalshi NO that
+`placedAt`. A Kalshi NO that
 also wins on a tie is refused — no line's fair is its payoff — and a
 placement up to a minute past the panel's clock (a venue clock running
 ahead) waits a pass, while one further out is refused as a time-zone error.
@@ -700,7 +677,7 @@ only when the history is a gap-free record of the fill: the scanner has
 watched since before `placedAt` (`status.observingSince` — set when the
 first load after the panel opens lands, cleared when the panel hides, set
 again only once the catch-up after it reappears has landed, and restarted
-after more than two minutes without a successful snapshot or stream poll),
+after more than two minutes without a successful snapshot),
 the line's own league has loaded without a gap since before it too
 (`status.leagueObservingSince`: one league's snapshot can keep failing
 while the others land, and its exchange lines move on the snapshot only —
@@ -868,9 +845,9 @@ Novig moneylines have no rungs at all, a number the ladder dropped) falls
 through to the name rule below. Malformed or missing ids are no id, never an
 error. BetOnline records carry no ids. The join decides the GAME; the tier
 still reads the bet's own market, side and number against the row's CURRENT
-line (so a -35.5 bet on a line the changes stream has since moved to -36.5
-is `same_side`), and the id map's `lineKey` / `mainKey` are never read — the
-map is as old as the last snapshot, and a Novig lay's outcome id names the
+line (so a -35.5 bet on a line that has since moved to -36.5 is
+`same_side`), and the id map's `lineKey` / `mainKey` are never read — a
+Novig lay's outcome id names the
 side the bet is against. All three surfaces — the Edges rows, the Ticket banner
 and the unmatched list — decide the game on the whole board (one row per
 event), so a bet whose id event has no listed edge row never flags a listed
@@ -1545,8 +1522,7 @@ past it, held risk above K, and loud failures on a missing rung, a quarter
 line and a bad probability. `ladder.test.js` covers the fair ladder: totals
 and margin cuts (away `-a`, home `h`, moneyline `±0.5`), the median across
 books with both sides counted, the flat-tail guard and its moneyline-pair
-exemption, no rung / whole number / other period, changes-stream lines
-ignored (`fromSnapshot`), soccer moneylines feeding no cut, and the period
+exemption, no rung / whole number / other period, soccer moneylines feeding no cut, and the period
 name → id map.
 
 `edgemove.test.js` pins the why-it-grew tag (#132): fair up with the price
@@ -1562,11 +1538,9 @@ price; pruning keeps one baseline; bad input fails loudly; `classifyMove`
 reads the same four cases off any two observations and is exactly what
 `edgeMove` returns over its window. `scanner.test.js`
 adds the history's plumbing on the fixtures: one snapshot observation per
-line on start and a clean slate on restart; a stream update on the same
-number is a `(stream)` amber while the fixture's number move resets the
-line; a re-downloaded snapshot records a fair move and an alt rung's price
-move as `(snapshot)` observations and forgets the lines it no longer lists
-(the stream re-adds the ones it carries, as first sightings). Its
+line on start and a clean slate on restart; a re-downloaded snapshot
+records a fair move and an alt rung's price move and forgets the lines it
+no longer lists. Its
 `observingSince` cases: set when the first load lands, cleared by
 `pause()`, set again when the catch-up after `resume()` lands (not when
 `resume()` ran — every request takes 5 s on the test clock), a pass that
@@ -1585,8 +1559,7 @@ refusal with its reason (before the panel was watching, first seen after,
 no fair, a Kalshi NO that also wins on a tie, a prop or Kalshi F5 the board
 never lists, placed in the future, no placed time, and a fill inside a gap
 in its own league's snapshots); a bet with no line yet, and one a venue
-clock 30 s ahead placed "after now", left for the next pass; a line only
-the changes stream carries never read; the other side of the number never
+clock 30 s ahead placed "after now", left for the next pass; the other side of the number never
 read; saved, settled and unmatchable bets skipped. On the display side: a
 reply that lacks a held row keeps it, for the bets still held; the earliest
 open `same_line` straight bet with a saved fair is the baseline (a
@@ -1603,7 +1576,7 @@ Novig's probability, a sportsbook's American price).
 with unrecognisable team names on `fixtures/v2_venue_ids_slice.json`'s ids
 (#118 step 3): the Kalshi spread YES and NO and the moneyline through the
 suffix, the Novig bid and its lay on the outcome id, a main line moved off
-the id's number by the changes stream (`same_side`), a suffix on two events
+the id's number (`same_side`), a suffix on two events
 (ambiguous), id vs team names pointing at different events (id wins),
 malformed / missing / other-league ids, the two-tier unmatched wording, and
 BetOnline staying on the name path. Its crosswalk cases (#118 step 4): a
@@ -1673,18 +1646,17 @@ use `sourcePrice`. `feed.test.js` parses the fixture slices (NFL event
 125807, captured 2026-09-10; its `alternateLines` are real rungs from the
 2026-09-11 file for the same event, one `null` entry added): `ge`/`bacr`/
 `sourcePrice`/liquidity/side keys, the live-book flag, edge selection and
-sorting, cursor extraction, that an update overwrites a snapshot line only
-with a newer sequence number, and the alt path — keys, `mainPoints`,
+sorting, and the alt path — keys, `mainPoints`,
 `includeAlts` off by default, the distance / liquidity / same-number gates
 following a moved main line, age through `sequenceNumber`, a pulled
 ladder disappearing on the next parse, the rung venue ids on
 `fixtures/v2_venue_ids_slice.json` (real CFB rows of 2026-09-15 with the
 ids intact: per-event suffixes and id maps, the Novig rung on its main
-number pointing at the main line, malformed ids ignored, the changes
-stream leaving them alone), and `groupEdges` (card keys, book
+number pointing at the main line, malformed ids ignored, a re-parse
+replacing them), and `groupEdges` (card keys, book
 and line counts, best by edge vs by stake, cards following their best).
-`scanner.test.js` drives the loop with an injected fetch: cursor from
-`Last-Modified`, poll, rejected-cursor resync, per-league failure, resume,
+`scanner.test.js` drives the loop with an injected fetch: snapshot-only
+refresh (nothing goes to the retired stream), per-league failure, resume,
 and a league switch while a snapshot is still downloading. `bets.test.js`
 pins the Kalshi normaliser and the matcher on
 `fixtures/bets/kalshi_fixture.json`; the pytest suite covers the service
@@ -1787,10 +1759,6 @@ in red.
 - **Edges: "feed unavailable for CFB (HTTP 403)"**: Unabated blocked or moved
   the public feed for that league. The other leagues keep updating; check
   the URL in `scanner.js` against what the odds page requests.
-- **Edges: "changes cursor rejected; resyncing"**: the laptop slept or the
-  panel was hidden for minutes; the scanner reloads the snapshots by
-  itself. Persistent repeats mean the cursor format changed
-  (`feed.cursorFromDate`).
 - **"No Unabated tab is running the capture script"** (Ticket warning or
   Edges header): open an odds tab, or reload the one you have. The worker
   re-injects on an extension reload, but a tab opened before the extension
@@ -1811,7 +1779,7 @@ in red.
   and look for the number; if it is there, the expand path needs the real
   DOM (`altCellShellFor`).
 - **Edges alt rows look stale**: they only refresh with the league snapshot
-  (60 s–5 min); the stream never carries alts. The row's line age comes
+  (60 s–5 min). The row's line age comes
   from the alt's `sequenceNumber`.
 - **No notifications**: they only fire while the panel is open and the
   toggle is on; the first pass after enabling is silent by design. Check
