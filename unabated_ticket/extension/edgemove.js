@@ -34,14 +34,12 @@
   const MOVE_THRESHOLD = 0.005;
   // Novig prices in half cents: 0.565 - 0.56 is 0.00499999... in floats.
   const FLOAT_EPSILON = 1e-9;
-  const SOURCES = ["snapshot", "stream"];
   const MOVE_LABELS = Object.freeze({ fair_to_you: "fair moved to you", book_away: "book moved away", fair_against: "fair moved against you" });
-  const NO_MOVE = Object.freeze({ kind: "none", fairDelta: null, priceDelta: null, sinceMs: null, source: null, from: null, to: null });
+  const NO_MOVE = Object.freeze({ kind: "none", fairDelta: null, priceDelta: null, sinceMs: null, from: null, to: null });
 
-  function entryOf(line, at, source) {
+  function entryOf(line, at) {
     return {
       at,
-      source,
       points: line.points ?? null,
       price: line.price,
       sourceFormat: line.sourceFormat ?? 1,
@@ -73,17 +71,14 @@
   // last). An entry is added only when the price, the exchange source price
   // or the fair differ from the last one. A line whose NUMBER moved starts
   // afresh: a price at 48.5 is not comparable to one at 47.5, so it reads as
-  // first seen rather than as a move. `source` says what observed it — the
-  // anonymous changes stream misses most exchange moves and never carries an
-  // alt rung, so for those every entry is a snapshot, up to one refresh
-  // interval after the book moved.
-  function observe(history, line, { at, source }) {
+  // first seen rather than as a move. Every observation is a snapshot, so an
+  // entry can land up to one refresh interval after the book moved.
+  function observe(history, line, { at }) {
     if (!history || typeof history !== "object") throw new Error(`observe: expected a history object, got ${history}`);
     if (!line || typeof line.key !== "string") throw new Error(`observe: expected a line with a key, got ${line && line.key}`);
     if (typeof line.price !== "number" || !Number.isFinite(line.price)) throw new Error(`observe: expected a numeric price on ${line.key}, got ${line.price}`);
     if (typeof at !== "number" || !Number.isFinite(at)) throw new Error(`observe: expected a numeric time, got ${at}`);
-    if (!SOURCES.includes(source)) throw new Error(`observe: expected source ${SOURCES.join("|")}, got ${source}`);
-    const entry = entryOf(line, at, source);
+    const entry = entryOf(line, at);
     const entries = history[line.key];
     if (!entries || entries[entries.length - 1].points !== entry.points) {
       history[line.key] = [entry];
@@ -153,8 +148,8 @@
   // The tag for one line's entries at `now`: classifyMove from the reference
   // — the newest entry at or before now - window, else the first sighting —
   // to the newest entry. The reference being the current entry, or one entry
-  // in all, is `none`. `sinceMs` and `source` are the first entry after the
-  // reference: when the move was first observed, and by what.
+  // in all, is `none`. `sinceMs` is when the move was first observed: the
+  // first entry after the reference.
   function edgeMove(entries, now) {
     if (entries == null) return NO_MOVE;
     if (!Array.isArray(entries)) throw new Error(`edgeMove: expected an array of entries, got ${typeof entries}`);
@@ -166,7 +161,7 @@
     const to = entries[entries.length - 1];
     const firstChange = entries[reference + 1];
     const { kind, fairDelta, priceDelta } = classifyMove(from, to);
-    return { kind, fairDelta, priceDelta, sinceMs: now - firstChange.at, source: firstChange.source, from, to };
+    return { kind, fairDelta, priceDelta, sinceMs: now - firstChange.at, from, to };
   }
 
   const api = { EDGE_MOVE_WINDOW_MS, MOVE_THRESHOLD, MOVE_LABELS, observe, forget, classifyMove, edgeMove };

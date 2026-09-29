@@ -101,7 +101,7 @@ not after — see the [Launch runbook](#launch-runbook) preflight step.
 ```
 unabated_edge/
   config.py          # constants + .env loader (BANKROLL, KELLY_FRACTION, paths …)
-  feed.py            # Unabated feeds: v2 per-league polling (current) + legacy snapshot/deltas
+  feed.py            # Unabated feeds: v2 per-league polling (current) + legacy snapshot
   pricing.py         # american_to_prob, devig (probit, wraps kalshi_common)
   ev.py              # edge_for_yes — net of Kalshi taker fees
   sizing.py          # kelly_contracts — fractional Kelly with per-match cap
@@ -125,7 +125,7 @@ unabated_edge/
 **Generic core, per-sport adapters.** Everything inside `feed.py`, `pricing.py`, `ev.py`, `sizing.py`, `mapping.py`, `storage.py`, `runner.py`, and `maker/ledger.py` is sport-agnostic. `sports/totals.py::TotalsLadderAdapter` holds the pricing logic every totals sport shares (anchor-ladder devig, rung matching) — a concrete sport adapter (`soccer.py`, `mlb.py`) subclasses it and implements only identity: `canon_team`, `kalshi_series`, `event_teams`, and optionally `event_date` (see [Multi-sport onboarding](#multi-sport-onboarding)). Adding a sport whose Kalshi market is a totals ladder = one adapter subclass + one registry line; a sport priced a different way (e.g. moneyline) would instead subclass `SportAdapter` directly.
 
 **Data flow per tick (every `V2_POLL_SEC`, default 5s):**
-1. `feed.fetch_v2(league_id, league_prefix)` re-fetches Unabated's **v2 per-league odds file** (`content.unabated.com/markets/v2/league/<id>/odds.json`). Anchors are **unblurred anonymously** in this file — no token needed — and each line carries its full `alternateLines` ladder. (The legacy `changes/query` delta feed does not carry soccer at all; the legacy snapshot's anchors are blurred. Both legacy functions remain in `feed.py` for future US-league adapters.)
+1. `feed.fetch_v2(league_id, league_prefix)` re-fetches Unabated's **v2 per-league odds file** (`content.unabated.com/markets/v2/league/<id>/odds.json`). Anchors are **unblurred anonymously** in this file — no token needed — and each line carries its full `alternateLines` ladder. (The legacy snapshot's anchors are blurred; `feed.fetch_snapshot` remains for future US-league adapters. The `changes/query` delta feed answers HTTP 410 since 2026-09-27 and its code is gone.)
 2. `mapping.pair_events` matches Unabated events to open Kalshi events by canonical team-pair (parsed from the Kalshi event title).
 3. `adapter.price_event()` calls `_anchor_totals` to devig the bt3 over/under ladder from the first complete anchor book, then emits candidates at every Kalshi rung matching a ladder line by `floor_strike`. Every rung passes the [feed-integrity overround gate](#feed-integrity-the-overround-gate) before devig.
 4. **Kalshi microstructure capture:** for every paired pre-kickoff event, each market's full orderbook is fetched **once** per tick (`venues.kalshi.get_book`) and written to `book_snapshots` — top-of-book bid/ask/size columns plus the full depth ladder as JSON, and the market's `volume_fp`/`open_interest_fp`. Every `TRADES_POLL_SEC` (default 30s) the executed-trades tape is polled per market into `kalshi_trades` (PK `trade_id`, overlapping poll windows dedup via `INSERT OR IGNORE`; a >100-trade burst inside one window loses the excess). Both stop at kickoff, same close semantics as `line_snapshots`. This is the maker-design dataset: spread width, re-centering speed after anchor moves, and where flow trades.
@@ -494,28 +494,13 @@ settlement first.
 
 ## Authentication
 
-### Unabated token (NOT needed for soccer)
+### Unabated (no credentials)
 
-The v2 per-league odds file the engine polls is **anonymous — anchors are unblurred without any login**, so the soccer path runs with no Unabated credentials at all.
-
-The token below is only needed for the **legacy** changes endpoint (`/api/markets/changes/query`, used by future US-league adapters): a premium-account JWT passed as a cookie named `unabated_at_prod`, valid ~30 days.
-
-**Capture steps:**
-1. Log in to [unabated.com](https://unabated.com) in a browser.
-2. Open DevTools → Network tab. Trigger a line update or navigate to any odds page.
-3. Find a `changes/query` request. Right-click → Copy → Copy as cURL.
-4. Extract the value of the `unabated_at_prod` cookie from the cURL command.
-5. Store it in `unabated_edge/.env`:
-
-```
-UNABATED_AT_PROD=<paste token here>
-```
-
-**Refresh:** the token expires after ~30 days. When it does, the deltas endpoint returns HTTP 401. Recapture by repeating the steps above and updating `.env`.
+The v2 per-league odds file the engine polls is **anonymous — anchors are unblurred without any login**, so the engine needs no Unabated credentials. (The `UNABATED_AT_PROD` cookie was only for the `changes/query` delta endpoint, which answers HTTP 410 since 2026-09-27 and whose code is gone.)
 
 ### Kalshi credentials
 
-Stored in `.env` alongside the Unabated token:
+Stored in `unabated_edge/.env`:
 
 ```
 KALSHI_API_KEY_ID=<your key id>
@@ -729,11 +714,8 @@ build a model to derive prices for markets the anchor doesn't quote.
 
 ## Troubleshooting
 
-**`401` from the deltas endpoint**
-Token expired. Recapture `unabated_at_prod` from a logged-in browser session and update `unabated_edge/.env`.
-
 **No edges flagged / `_anchor_total` returns None**
-Anchor books may not be quoting bt3 for these events yet, or both Over and Under must appear at the same line value. Check `state.lines` keys for `|bt3|` entries. If every event returns None, the token is likely blurred (logged-out) — re-authenticate. The heartbeat log line shows `events`/`lines`/`kalshi_events` counts so you can tell "broken" (zeros) from "healthy, no edges today".
+Anchor books may not be quoting bt3 for these events yet, or both Over and Under must appear at the same line value. Check `state.lines` keys for `|bt3|` entries. If every event returns None, check whether the v2 file now blurs anchors (`isBlurred: true` lines are dropped at parse). The heartbeat log line shows `events`/`lines`/`kalshi_events` counts so you can tell "broken" (zeros) from "healthy, no edges today".
 
 **No Kalshi market matched (fail closed)**
 The anchor quoted a line (e.g. 2.5) but `KXWCTOTAL` has no market with `floor_strike=2.5`. This is expected when Kalshi's rung ladder doesn't cover that line — nothing to trade against.

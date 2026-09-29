@@ -450,3 +450,122 @@ test("shape check: rows that mount a moment before their price cells do not rais
   page.runTimeouts();
   assert.deepEqual(shapeVerdicts(page), ["checking", "ok"]);
 });
+
+// ---- live rows: the screen's between-quarters in-game fair ----
+//
+// Shapes from Unabated's app bundle (2026-09-27): a live row carries
+// `live: true` and `inGameFairPrice {status, producedUtc, checkpointType}`,
+// and every line of it `edge {edge, linePrice, simulatedPrice}` while the
+// fair is ready.
+
+// vm-sandbox arrays have another realm's prototype; compare plain copies.
+const plain = (value) => JSON.parse(JSON.stringify(value));
+
+const FAIR_READY = { status: "ready", producedUtc: "2026-09-28T00:52:10.000", checkpointType: "EndOfPeriod", lines: {} };
+
+function liveLine(points, price, edgePct, fair, extra = {}) {
+  return { points, price, statusId: 1, modifiedOn: "2026-09-28T00:52:30.000", edge: { edge: edgePct, linePrice: price, simulatedPrice: fair }, ...extra };
+}
+
+function liveSpreadRow({ fair = FAIR_READY, statusId = 2, home = {}, away = {} } = {}) {
+  return {
+    gridKey: "eid:125807:pid:tid5:eid:tid5:bt2:pt1:bst:livetrue:proj0",
+    eventId: 125807, betTypeId: 2, periodTypeId: 1, live: true, statusId,
+    eventPeriodTypeId: 4, gameClock: "00:00", inGameFairPrice: fair,
+    eventName: "Chicago Bears @ Carolina Panthers", eventStart: "2026-09-27T17:00:00",
+    eventTeams: [{ id: 1, rotationNumber: 465 }, { id: 2, rotationNumber: 466 }],
+    sides: { "si0:tid1": away, "si1:tid2": home },
+  };
+}
+
+test("live: a ready fair lists every book line and rung with the screen's edge; ms49, off-board and edgeless lines are skipped", () => {
+  const page = loadPage();
+  const rung = liveLine(-9.5, 240, 3.1, 215);
+  const row = liveSpreadRow({
+    home: {
+      [BOOK_KEY]: liveLine(-7.5, -110, 5.8, -124, { alternateLines: [rung, liveLine(-7.5, -110, 5.8, -124), null] }),
+      ms49: liveLine(-7.5, -124, 0, -124),
+      ms1: liveLine(-7.5, -118, 1.2, -124, { statusId: 2 }),
+      ms2: { points: -7.5, price: -115, statusId: 1, edge: null },
+    },
+  });
+  const { games, rows } = page.readLiveEdges([gridApi([topNode(row, "live")])], CONTEXT);
+  assert.equal(games.length, 1);
+  assert.equal(games[0].fairStatus, "ready");
+  assert.equal(games[0].awayTeam, "Chicago Bears");
+  assert.deepEqual(plain(rows.map((r) => [r.bookId, r.points, r.isAlt, r.edgePct, r.fair])), [[BOOK, -7.5, false, 5.8, -124], [BOOK, -9.5, true, 3.1, 215]]);
+  assert.equal(rows[0].sideLabel, "Carolina Panthers -7.5");
+  assert.equal(rows[0].bookName, "Novig");
+  assert.equal(rows[1].mainPoints, -7.5);
+});
+
+test("live: an expired fair keeps the game (the panel says 'in play') but lists nothing; a final game is dropped", () => {
+  const page = loadPage();
+  const expired = liveSpreadRow({ fair: { ...FAIR_READY, status: "Expired" }, home: { [BOOK_KEY]: liveLine(-7.5, -110, 5.8, -124) } });
+  const final = { ...liveSpreadRow({ home: { [BOOK_KEY]: liveLine(-3.5, -110, 9.9, -150) } }), eventId: 999, statusId: 3 };
+  const pregame = { ...spreadRow(liveLine(-7.5, -110, 5.8, -124)), live: false };
+  const { games, rows } = page.readLiveEdges([gridApi([topNode(expired, "a"), topNode(final, "b"), topNode(pregame, "c")])], CONTEXT);
+  assert.deepEqual(plain(games.map((g) => [g.eventId, g.fairStatus])), [[125807, "expired"]]);
+  assert.equal(rows.length, 0);
+});
+
+test("live: a line on two grids (market row and its Alts section) is listed once", () => {
+  const page = loadPage();
+  const row = liveSpreadRow({ home: { [BOOK_KEY]: liveLine(-7.5, -110, 5.8, -124) } });
+  const { rows } = page.readLiveEdges([gridApi([topNode(row, "a")]), gridApi([topNode(row, "b")])], CONTEXT);
+  assert.equal(rows.length, 1);
+});
+
+test("live: scanLive posts on change and otherwise every 5 s, keyed to the league in the URL", () => {
+  const page = loadPage("/nfl/odds");
+  const before = page.posted.filter((m) => m.type === "live_edges").length;
+  page.scanLive();
+  page.scanLive();
+  const posts = page.posted.filter((m) => m.type === "live_edges");
+  assert.equal(posts.length - before, 1, "an unchanged read inside the heartbeat window posts nothing");
+  assert.equal(posts[posts.length - 1].payload.league, "nfl");
+  assert.deepEqual(plain(posts[posts.length - 1].payload.rows), []);
+});
+
+test("live: a live click's ticket carries the screen's live fair and its checkpoint", () => {
+  const page = loadPage();
+  const entry = liveLine(-7.5, -110, 5.8, -124);
+  const row = liveSpreadRow({ home: { [BOOK_KEY]: entry } });
+  const ticket = capture(page, gridApi([topNode(row, "live")]), row, entry);
+  assert.equal(ticket.edgePct, 5.8);
+  assert.equal(ticket.fair, -124);
+  assert.equal(ticket.live.fairStatus, "ready");
+  assert.equal(ticket.live.eventPeriodTypeId, 4);
+  assert.equal(ticket.watch.live, true);
+});
+
+test("live: a live ticket watches the live row, never the pregame row of the same market", () => {
+  const page = loadPage();
+  const entry = liveLine(-7.5, -110, 5.8, -124);
+  const liveRow = liveSpreadRow({ home: { [BOOK_KEY]: entry } });
+  const pregameRow = { ...spreadRow({ points: -3.5, price: -105 }), live: false };
+  const api = gridApi([topNode(pregameRow, "pre"), topNode(liveRow, "live")]);
+  capture(page, api, liveRow, entry);
+  liveRow.gridKey = "rekeyed"; // force the identity rescan
+  const read = page.readWatchedLine();
+  assert.equal(read.offBoard, false, read.row);
+  assert.equal(read.points, -7.5);
+  assert.equal(read.price, -110);
+});
+
+test("live: a grid update scans at once, so a throttled background tab still posts the break", async () => {
+  const listeners = {};
+  const row = liveSpreadRow({ home: { [BOOK_KEY]: liveLine(-7.5, -110, 5.8, -124) } });
+  const api = { ...gridApi([topNode(row, "live")]), addEventListener(type, fn) { listeners[type] = fn; } };
+  const page = loadPage("/nfl/odds", { gridRoots: [gridRoot(api)] });
+  page.scanLive();
+  assert.equal(typeof listeners.modelUpdated, "function", "subscribed to the grid's updates");
+  row.sides["si1:tid2"][BOOK_KEY] = liveLine(-7.5, -105, 7.9, -124);
+  await new Promise((resolve) => setTimeout(resolve, 260)); // past the 250 ms floor
+  listeners.modelUpdated();
+  const posts = page.posted.filter((m) => m.type === "live_edges");
+  const last = posts[posts.length - 1].payload;
+  assert.equal(last.rows[0].edgePct, 7.9, "the update posted without waiting for the interval");
+  assert.equal(typeof last.instanceId, "string");
+  assert.equal(last.visible, true);
+});

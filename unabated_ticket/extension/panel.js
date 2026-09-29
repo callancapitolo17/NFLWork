@@ -2,7 +2,7 @@
 // Edges tab (every positive-edge line across the enabled leagues).
 //
 // Reads: chrome.storage.local {ticket, error, watchStatus, pageCheck, pageReady,
-// booksFilter, locateResult} (written by content.js) and {bankroll,
+// booksFilter, locateResult, "liveEdges:<league>"} (written by content.js) and {bankroll,
 // multiplier, edges, alerts, alertLog, activeTab, betsService, betsSettings}
 // (written here).
 // Writes: chrome.storage.local settings, {locate} (row click, via locate.js,
@@ -13,7 +13,7 @@
 // DELETE it on Clear (#118 step 4); POST /fill_fairs.json with the fair a
 // new bet's line had when it was placed (fillfair.js, the service stores it
 // once per bet, insert-only). Re-renders on storage.onChanged.
-// Network: the scanner (scanner.js) fetches Unabated's public feeds while this
+// Network: the scanner (scanner.js) fetches Unabated's public snapshots while this
 // page is open; it pauses when the panel is hidden and stops when it closes.
 // The bets tab (#114) polls the local bets service (betsSettings.serviceUrl,
 // default http://127.0.0.1:8094) every 30 s on the same visibility rule —
@@ -32,6 +32,7 @@
   const betsView = globalThis.UnabatedBetsView;
   const attachLib = globalThis.UnabatedAttach;
   const ladderLib = globalThis.UnabatedLadder;
+  const live = globalThis.UnabatedLive;
   const bet105 = globalThis.UnabatedBet105;
   // Bets service poll cadence while the panel is visible (plan § Storage).
   const BETS_POLL_MS = 30 * 1000;
@@ -75,6 +76,9 @@
   // page.js republishes the books filter every 10s while an Unabated tab is open.
   const BOOKS_FILTER_STALE_MS = 6 * 60 * 60 * 1000;
   const MAX_EDGE_ROWS = 200;
+  // Open bets never net against a live line: conditional Kelly needs a live
+  // fair ladder, which the screen does not expose (plan 2026-09-27, § Sizing).
+  const LIVE_NOT_SIZED_NOTE = "live · not sized";
 
   const el = (id) => document.getElementById(id);
   const view = {
@@ -100,6 +104,8 @@
     booksDefault: el("books-default"), booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMinStake: el("edges-min-stake"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
     edgesIncludeAlts: el("edges-include-alts"), edgesAltDistance: el("edges-alt-distance"), edgesMinToWin: el("edges-min-to-win"), edgesGroup: el("edges-group"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
+    edgesLive: el("edges-live"), edgesLiveHead: el("edges-live-head"), edgesLiveList: el("edges-live-list"),
+    edgesLiveCount: el("edges-live-count"), edgesPregameLabel: el("edges-pregame-label"),
     alertsEnabled: el("alerts-enabled"), alertsMin: el("alerts-min"),
     betsHeader: el("bets-header"), betsBanner: el("bets-banner"),
     tabBets: el("tab-bets"), betsService: el("bets-service"), betsSources: el("bets-sources"),
@@ -157,7 +163,7 @@
   let scannerStatus = null;
   let scannerState = null;
   // The scanner's per-line history (edgemove.js, #132): what each line was
-  // worth on every snapshot and stream update, read for the edge-move tag.
+  // worth on every snapshot, read for the edge-move tag.
   let scannerHistory = {};
   let boardLinesCache = null;
   // Unabated's fair ladders for sizing against held bets (#130): the feed's
@@ -277,9 +283,8 @@
   // cell as an alt does not decide which key the feed filed the line under
   // (live 2026-09-12: an Under 46.5 +213 Novig rung the Edges tab listed came
   // back "no copy" through the key). Normally one line: the feed drops an alt
-  // sitting on its main line's points. Two means two MARKETS — the changes
-  // stream tags an event's team totals bt3 like its game total, and only the
-  // marketId the ticket may lack tells them apart — so the caller refuses.
+  // sitting on its main line's points. Two means two MARKETS that only the
+  // marketId the ticket may lack tells apart, so the caller refuses.
   function feedLinesFor(ticket, points) {
     if (!scannerState || !ticket.watch || ticket.eventId == null) return [];
     const matches = [];
@@ -509,7 +514,8 @@
     view.sideLabel.textContent = ticket.sideLabel;
     view.betLine.textContent = `${describeSide(ticket)}${periodSuffix(ticket)}${ticket.isAlt ? " \u00b7 alt line" : ""}`;
     view.eventLine.textContent = describeMatchup(ticket);
-    view.startLine.textContent = fmtStart(ticket.eventStart);
+    // A live capture names the break its fair was set at instead of a kickoff long past.
+    view.startLine.textContent = ticket.live ? `live · ${live.checkpointLabel(ticket.live)}` : fmtStart(ticket.eventStart);
     const betFlag = ticketBetFlag(ticket, line);
     renderBetBanner(betFlag);
 
@@ -517,6 +523,7 @@
     view.price.textContent = fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice));
     // The fair is Unabated's own American number; there is no more exact source for it.
     view.fair.textContent = line.fair == null ? "unknown" : fmtPriceBoth(asBookLine(line.fair, 1, null));
+    if (ticket.live && line.fair != null) view.fair.append(` · Unabated live fair, ${live.checkpointLabel(ticket.live)}`);
     // The edge-move tag reads the feed's copy of this line, and only at the
     // price being sized: the feed's history says nothing about another price.
     const feedCopy = feedLineFor(ticket, line.points);
@@ -744,6 +751,14 @@
     return `line ${Math.round(ms / 86400000)}d old`;
   }
 
+  // A live line's last price change: seconds matter between quarters.
+  function fmtChangedAgo(modifiedMs) {
+    if (modifiedMs == null) return null;
+    const seconds = Math.max(0, Math.round((Date.now() - modifiedMs) / 1000));
+    if (seconds < 90) return `changed ${seconds}s ago`;
+    return `changed ${Math.round(seconds / 60)}m ago`;
+  }
+
   function fmtLiquidity(value) {
     return value == null ? "" : `liq ${value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}`;
   }
@@ -795,7 +810,7 @@
   function recentMoveText(move) {
     if (move.kind === "none") return "last 10 min: nothing moved";
     const lag = move.kind === "book_away" ? " \u2014 Unabated's fair runs ~1-2 min behind the book; wait a snapshot" : "";
-    return `last 10 min: ${edgemove.MOVE_LABELS[move.kind]}, ${fmtMoveNumbers(move)}, moved ${fmtAge(move.sinceMs)} (${move.source})${lag}`;
+    return `last 10 min: ${edgemove.MOVE_LABELS[move.kind]}, ${fmtMoveNumbers(move)}, moved ${fmtAge(move.sinceMs)}${lag}`;
   }
 
   // What the tag reads on a line held in this direction: {move, baseline,
@@ -817,15 +832,14 @@
   // The numbers behind the tag. Since a fill: "since your Novig +208 bet
   // (Sep 23, 12:03 PM): fair 36.0% → 34.7% · price … | last 10 min: … |
   // opened +185". Ten minutes only: "fair 33.7% → 35.6% · price +199 → +215
-  // · moved 2m ago (snapshot) · opened +185" — "ago" is when the panel first
-  // SAW the move and by what: a snapshot observation can be up to one
-  // refresh interval after the book moved (the stream misses most exchange
-  // moves and never carries an alt rung).
+  // · moved 2m ago · opened +185" — "ago" is when the panel first SAW the
+  // move: a snapshot observation can be up to one refresh interval after the
+  // book moved.
   function moveTooltip(reading, line) {
     const opener = openerText(line);
     if (!reading.baseline) {
       const move = reading.move;
-      return [fmtMoveNumbers(move), `moved ${fmtAge(move.sinceMs)} (${move.source})`, opener].filter(Boolean).join(" \u00b7 ");
+      return [fmtMoveNumbers(move), `moved ${fmtAge(move.sinceMs)}`, opener].filter(Boolean).join(" \u00b7 ");
     }
     const bet = reading.baseline.bet;
     const placed = new Date(reading.baseline.placedMs).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -1106,6 +1120,95 @@
     return rows;
   }
 
+  // ---- live edges (the Unabated live screen, between quarters) -------------
+
+  // league path -> the latest live_edges payload page.js posted for it.
+  const liveStore = {};
+
+  function livePayloads() {
+    return Object.values(liveStore);
+  }
+
+  // Held bets on the game show on a live row, but none is netted: the stake
+  // is the line's own quarter-Kelly (LIVE_NOT_SIZED_NOTE says why).
+  function withLiveBetFlags(rows) {
+    let flags = null;
+    try {
+      flags = betsLib.annotateRows(rows, state.betRecords, { lines: boardLines() });
+    } catch (error) {
+      console.info("[unabated-ticket] live bet flags skipped:", error.message);
+    }
+    return rows.map((row, index) => {
+      const flag = flags ? flags[index] : { tier: null, matches: [] };
+      const advice = betsView.stakeAdvice({
+        line: row, price: row.price, edgePct: row.edgePct,
+        bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
+        matches: [], ladderOf: null, liquidity: row.liquidity,
+      });
+      const matches = (flag.matches || []).map((match) => ({ ...match, inMath: false, note: LIVE_NOT_SIZED_NOTE }));
+      return { ...row, bet: { tier: flag.tier, matches, advice } };
+    });
+  }
+
+  function liveRowsAt(minEdgePct) {
+    const options = { ...edgeSelectionOptions(effectiveFilter()), minEdgePct, now: Date.now() };
+    const selected = live.selectLiveEdges(livePayloads(), options).map((row) => ({ ...row, stake: stakeFor(row) }));
+    return withLiveBetFlags(selected);
+  }
+
+  function currentLiveRows() {
+    return liveRowsAt(state.edgeSettings.minEdgePct).filter(meetsMinStake);
+  }
+
+  function fmtAgoShort(ms) {
+    const seconds = Math.max(0, Math.round(ms / 1000));
+    return seconds < 90 ? `0:${String(seconds).padStart(2, "0")}` : `${Math.round(seconds / 60)}m`;
+  }
+
+  // The Live block's one-line header: what the screen is doing right now.
+  function liveHeadText(liveState, rows) {
+    if (liveState.stale) return `last read ${fmtAgoShort(liveState.readAgoMs)} ago · bring the Unabated live tab to the front`;
+    const ready = liveState.games.filter((game) => game.fairReady);
+    if (!ready.length) {
+      const names = liveState.games.length === 1 ? liveState.games[0].matchup : `${liveState.games.length} games`;
+      return `${names} · in play · edges return at the next break`;
+    }
+    const newestFairMs = ready.reduce((max, game) => {
+      const produced = Date.parse(/[zZ]$/.test(game.producedUtc || "") ? game.producedUtc : `${game.producedUtc}Z`);
+      return Number.isFinite(produced) ? Math.max(max, produced) : max;
+    }, 0);
+    const games = ready.map((game) => `${game.matchup} · ${game.checkpoint}`).join("; ");
+    const fairAge = newestFairMs ? ` · fair set ${fmtAgoShort(Date.now() - newestFairMs)} ago` : "";
+    const none = rows.length ? "" : ` · nothing at ${state.edgeSettings.minEdgePct}% or more`;
+    return `${games}${fairAge}${none}`;
+  }
+
+  // Rendered on every Edges render and once a second while a live game is on
+  // a screen, so the staleness clock moves on its own.
+  function renderLive() {
+    const liveState = live.liveView(livePayloads(), Date.now());
+    const shown = liveState.games.length > 0;
+    view.edgesLive.hidden = !shown;
+    view.edgesPregameLabel.hidden = !shown;
+    const rows = shown ? currentLiveRows() : [];
+    view.edgesLiveCount.hidden = rows.length === 0 || liveState.stale;
+    view.edgesLiveCount.textContent = `${rows.length} live`;
+    if (!shown) {
+      view.edgesLiveList.replaceChildren();
+      return;
+    }
+    const anyReady = liveState.games.some((game) => game.fairReady);
+    view.edgesLiveHead.className = `live-head${liveState.stale ? " stale" : anyReady ? "" : " inplay"}`;
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    const label = document.createElement("b");
+    label.textContent = "Live";
+    const text = document.createElement("span");
+    text.append(label, ` · ${liveHeadText(liveState, rows)}`);
+    view.edgesLiveHead.replaceChildren(dot, text);
+    view.edgesLiveList.replaceChildren(...rows.slice(0, MAX_EDGE_ROWS).map((row) => renderEdgeRow({ ...row, liveStale: liveState.stale })));
+  }
+
   // Cards: the best line of each (game, market, side) is always the highest
   // stake; the panel's sort orders the cards through that line.
   function groupsOf(rows) {
@@ -1144,6 +1247,11 @@
   // stake would be with nothing held. "add $250" is not the same instruction
   // as "bet $250" and must not look like it.
   function fillStakeCell(cell, row) {
+    // A live row from a tab that stopped reading: the number may be gone.
+    if (row.liveStale) {
+      cell.textContent = "—";
+      return;
+    }
     const advice = row.bet ? row.bet.advice : null;
     const words = betsView.stakeAdviceWords(advice);
     cell.classList.toggle("at-size", Boolean(words) && advice.bet === 0);
@@ -1218,7 +1326,7 @@
   function renderEdgeRow(row) {
     const li = document.createElement("li");
     const tier = edgeTier(row.edgePct);
-    li.className = `edge-row tier-${tier}${row.isBlurred ? " blurred" : ""}${row.key === lastClickedKey ? " last-clicked" : ""}`;
+    li.className = `edge-row tier-${tier}${row.isBlurred ? " blurred" : ""}${row.liveStale ? " stale" : ""}${row.key === lastClickedKey ? " last-clicked" : ""}`;
     li.dataset.key = row.key;
     li.append(...rowParts(row, tier));
     return li;
@@ -1231,6 +1339,13 @@
 
     const side = document.createElement("div");
     side.className = "edge-side";
+    if (row.live) {
+      const liveTag = document.createElement("span");
+      liveTag.className = "tag live";
+      liveTag.textContent = "live";
+      liveTag.title = `Priced off Unabated's in-game fair at the ${row.live.checkpoint}`;
+      side.append(liveTag);
+    }
     side.append(...betBadges(row.bet));
     if (row.isAlt) {
       const badge = document.createElement("span");
@@ -1243,12 +1358,10 @@
 
     const meta = document.createElement("div");
     meta.className = "edge-meta";
-    meta.append(
-      `${row.betType}${row.period === "FG" ? "" : ` · ${row.period}`}${row.isAlt ? ` · alt of ${fmtPoints(row.mainPoints)}` : ""}`
-        + `${row.rotation != null ? ` · rot ${row.rotation}` : ""} · `,
-      `${describeMatchup(row)} · ${fmtStart(row.eventStart)} · `,
-      untilEl(row.eventStartMs),
-    );
+    const marketText = `${row.betType}${row.period === "FG" ? "" : ` · ${row.period}`}${row.isAlt ? ` · alt of ${fmtPoints(row.mainPoints)}` : ""}`
+      + `${row.rotation != null ? ` · rot ${row.rotation}` : ""} · `;
+    if (row.live) meta.append(marketText, `${row.live.matchup} · ${row.live.checkpoint}`);
+    else meta.append(marketText, `${describeMatchup(row)} · ${fmtStart(row.eventStart)} · `, untilEl(row.eventStartMs));
 
     const book = document.createElement("div");
     book.className = "edge-book";
@@ -1257,7 +1370,10 @@
     price.textContent = `${row.book.name} ${fmtPriceBoth(asBookLine(row.price, row.sourceFormat, row.sourcePrice))}`;
     const age = document.createElement("span");
     age.className = "age";
-    age.textContent = ` · ${[fmtLineAge(row.modifiedMs), fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ")}`;
+    const ageParts = row.live
+      ? [`fair ${fmtAmerican(row.fair)}`, fmtChangedAgo(row.modifiedMs), fmtLiquidity(row.liquidity)]
+      : [fmtLineAge(row.modifiedMs), fmtLiquidity(row.liquidity)];
+    age.textContent = ` · ${ageParts.filter(Boolean).join(" · ")}`;
     book.append(price, age);
     main.append(side, meta, book);
 
@@ -1269,7 +1385,8 @@
     const stake = document.createElement("span");
     stake.className = "edge-stake";
     fillStakeCell(stake, row);
-    rail.append(pct, ...moveParts(row, row.bet), stake);
+    // The edge-move tag reads the pregame history; a live line has none.
+    rail.append(pct, ...(row.live ? [] : moveParts(row, row.bet)), stake);
 
     return [main, rail, ...[relatedBlock(row.bet)].filter(Boolean)];
   }
@@ -1353,12 +1470,10 @@
       ? ` (${status.staleLeagues.length} stale: ${status.staleLeagues.map((id) => (feed.LEAGUES[id] || { label: id }).label).join(", ")})`
       : "";
     const built = status.snapshotBuiltAt ? `snapshot built ${fmtAge(Date.now() - status.snapshotBuiltAt)}${stale}` : "no data yet";
-    const updated = status.lastUpdateAt ? `${built} · stream ${fmtAge(Date.now() - status.lastUpdateAt)}` : built;
-    const polled = status.lastPollAt ? ` · polled ${fmtAge(Date.now() - status.lastPollAt)}` : "";
     const loading = status.loading ? ` · loading ${status.loading.done}/${status.loading.total} leagues` : "";
     view.edgesStatus.textContent = status.phase === "loading" && !status.leaguesLoaded.length
       ? `Loading snapshots…${loading}`
-      : `${leagues.join(" · ") || "no leagues"} · ${status.lineCount.toLocaleString()} lines${status.altLineCount ? ` (+${status.altLineCount.toLocaleString()} alts)` : ""} · ${updated}${polled}${loading}`;
+      : `${leagues.join(" · ") || "no leagues"} · ${status.lineCount.toLocaleString()} lines${status.altLineCount ? ` (+${status.altLineCount.toLocaleString()} alts)` : ""} · ${built}${loading}`;
     view.edgesError.hidden = !status.error;
     view.edgesError.textContent = status.error || "";
     view.edgesCount.hidden = rows.length === 0;
@@ -1406,6 +1521,7 @@
   }
 
   function renderEdges() {
+    renderLive();
     const rows = currentEdgeRows();
     const grouped = state.edgeSettings.groupByMarket;
     const items = grouped ? groupsOf(rows) : rows;
@@ -1443,6 +1559,8 @@
       bookId: row.book.id, bookName: row.book.name, marketId: row.marketId, points: row.points, price: row.price,
       isAlt: row.isAlt === true, mainPoints: row.mainPoints,
       sideLabel: row.sideLabel, matchup: describeMatchup(row),
+      // Only a live row says so: page.js then looks among the live grid rows.
+      ...(row.live ? { live: true } : {}),
     };
   }
 
@@ -1463,6 +1581,26 @@
     }
     view.edgesLocate.hidden = true;
   }
+
+  view.edgesLiveList.addEventListener("click", async (event) => {
+    const li = event.target.closest("li.edge-row");
+    if (!li) return;
+    const row = currentLiveRows().find((r) => r.key === li.dataset.key);
+    if (!row) return;
+    lastClickedKey = row.key;
+    const request = locateRequestOf(row);
+    state.locating = { ...request, at: Date.now() };
+    state.locateResult = null;
+    renderLocate();
+    renderLive();
+    try {
+      await globalThis.UnabatedLocate.locateLine(request);
+    } catch (error) {
+      state.locating = null;
+      state.locateResult = { ...request, at: Date.now(), ok: false, message: `could not focus an Unabated tab (${error.message})` };
+      renderLocate();
+    }
+  });
 
   view.edgesList.addEventListener("click", async (event) => {
     const more = event.target.closest("button.group-more");
@@ -1569,7 +1707,7 @@
       stake == null ? null : `stake ${fmtDollars(stake)}`,
       summary,
       describeMatchup(row),
-      fmtUntil(row.eventStartMs),
+      row.live ? null : fmtUntil(row.eventStartMs),
     ].filter(Boolean).join(" · ");
     await new Promise((resolve) => {
       chrome.notifications.create(notificationId, {
@@ -1617,9 +1755,18 @@
     }
   }
 
+  // Live edges alert once per line per break (live.liveAlertKey carries the
+  // fair's production time); a tab that stopped reading alerts nothing.
+  function liveAlertItems() {
+    if (live.liveView(livePayloads(), Date.now()).stale) return [];
+    return liveRowsAt(state.alertSettings.minEdgePct)
+      .filter((row) => betsView.suggestedBetAmount(row.bet.advice) > 0 && meetsMinStake(row))
+      .map((row) => ({ key: `live:${live.liveAlertKey(row)}`, row, summary: `live · ${row.live.checkpoint}`, improvedOn: () => false }));
+  }
+
   async function processAlertsOnce() {
     const now = Date.now();
-    const items = alertItems();
+    const items = alertItems().concat(liveAlertItems());
     pruneAlertLog(now);
     if (!alertsBaselined) {
       for (const item of items) alertLog[item.key] = { price: item.row.price, stake: item.row.stake, at: now, baseline: true };
@@ -2577,6 +2724,11 @@
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
     const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex"]);
+    const leaguePaths = Array.from(new Set(Object.values(feed.LEAGUES).map((league) => league.path)));
+    const storedLive = await chrome.storage.local.get(leaguePaths.map(live.storageKeyOf));
+    for (const [key, payload] of Object.entries(storedLive)) {
+      if (payload) liveStore[key.slice(live.STORAGE_PREFIX.length)] = payload;
+    }
     // The team index from the last session, so bet records resolve before the first snapshot lands.
     teamsLib.loadIndex(relay.teamsIndex);
     teamsSpellingCount = teamsLib.spellingCount();
@@ -2640,6 +2792,17 @@
       state.booksFilter = changes.booksFilter.newValue || null;
       renderEdges();
     }
+    const liveKeys = Object.keys(changes).filter((key) => key.startsWith(live.STORAGE_PREFIX));
+    if (liveKeys.length) {
+      for (const key of liveKeys) {
+        const payload = changes[key].newValue || null;
+        const league = key.slice(live.STORAGE_PREFIX.length);
+        if (payload) liveStore[league] = payload;
+        else delete liveStore[league];
+      }
+      renderLive();
+      processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
+    }
     if ("locateResult" in changes) {
       state.locateResult = changes.locateResult.newValue || null;
       if (state.locateResult && state.locating && state.locateResult.at >= state.locating.at) state.locating = null;
@@ -2700,6 +2863,12 @@
     }
     if (state.activeTab === "bets") renderBets();
   }, 5000);
+
+  // The Live block's clock: staleness and "fair set 0:38 ago" move without a
+  // new payload. Idle (no DOM work) unless a live game is on a screen.
+  setInterval(() => {
+    if (state.activeTab === "edges" && livePayloads().length) renderLive();
+  }, 1000);
 
   load().catch((error) => {
     view.errorDetail.textContent = error.message;

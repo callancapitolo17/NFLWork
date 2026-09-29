@@ -534,9 +534,8 @@
   //
   // The join decides WHICH GAME; the tier still comes from the bet's own
   // betType / period / side / points against the row's current line
-  // (tierOf). The id map's lineKey / mainKey are not read: the map is as old
-  // as the last snapshot while the changes stream moves main lines, and a
-  // Novig lay's outcome id names the side the bet is AGAINST. Only the
+  // (tierOf). The id map's lineKey / mainKey are not read: a Novig lay's
+  // outcome id names the side the bet is AGAINST. Only the
   // contract's fixed strike and side are read, to orient a spread bet whose
   // team names do not resolve (sideIndexByVenueId).
 

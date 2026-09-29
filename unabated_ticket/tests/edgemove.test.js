@@ -15,10 +15,10 @@ function line(overrides = {}) {
   return { key: "m1:ms4:si0:tid6", points: 47.5, price: 199, sourceFormat: 1, sourcePrice: null, bacr: -150, ...overrides };
 }
 
-// Observe a sequence of {at, source, ...line fields} on one key.
+// Observe a sequence of {at, ...line fields} on one key.
 function historyOf(observations) {
   const history = {};
-  for (const { at, source = "snapshot", ...fields } of observations) observe(history, line(fields), { at, source });
+  for (const { at, ...fields } of observations) observe(history, line(fields), { at });
   return history;
 }
 
@@ -31,19 +31,17 @@ test("fair moved toward the side, price flat: fair moved to you", () => {
   assert.equal(pts(move.fairDelta), 1.5);
   assert.equal(move.priceDelta, 0);
   assert.equal(move.sinceMs, 3 * MIN);
-  assert.equal(move.source, "snapshot");
   assert.equal(move.from.bacr, -150);
   assert.equal(move.to.bacr, -160);
   assert.equal(MOVE_LABELS[move.kind], "fair moved to you");
 });
 
 test("price got better, fair flat: book moved away", () => {
-  const history = historyOf([{ at: T0, price: 199 }, { at: T0 + 2 * MIN, price: 215, source: "stream" }]);
+  const history = historyOf([{ at: T0, price: 199 }, { at: T0 + 2 * MIN, price: 215 }]);
   const move = edgeMove(history["m1:ms4:si0:tid6"], NOW);
   assert.equal(move.kind, "book_away");
   assert.equal(move.fairDelta, 0);
   assert.equal(pts(move.priceDelta), 1.7);
-  assert.equal(move.source, "stream");
   assert.equal(MOVE_LABELS[move.kind], "book moved away");
 });
 
@@ -60,7 +58,7 @@ test("fair moved against the side while the price got better: red, even with the
   // Fair 60.0% -> 58.3% (-1.7 pts); price +199 -> +250 (33.4% -> 28.6%, +4.9 pts):
   // EV per $1 grows from 0.60*2.99-1 = 0.79 to 0.583*3.5-1 = 1.04 and the row
   // would read as an improvement. It is the adverse-selection case.
-  const history = historyOf([{ at: T0 }, { at: T0 + MIN, bacr: -140, price: 250, source: "stream" }]);
+  const history = historyOf([{ at: T0 }, { at: T0 + MIN, bacr: -140, price: 250 }]);
   const move = edgeMove(history["m1:ms4:si0:tid6"], NOW);
   assert.equal(move.kind, "fair_against");
   assert.equal(pts(move.fairDelta), -1.7);
@@ -76,7 +74,7 @@ test("fair moved against the side with the price flat is red too", () => {
 test("the amber tag turns red once the fair follows the book", () => {
   const history = historyOf([{ at: T0 }, { at: T0 + MIN, price: 215 }]);
   assert.equal(edgeMove(history["m1:ms4:si0:tid6"], T0 + 2 * MIN).kind, "book_away");
-  observe(history, line({ price: 215, bacr: -140 }), { at: T0 + 3 * MIN, source: "snapshot" });
+  observe(history, line({ price: 215, bacr: -140 }), { at: T0 + 3 * MIN });
   const move = edgeMove(history["m1:ms4:si0:tid6"], T0 + 4 * MIN);
   assert.equal(move.kind, "fair_against");
   assert.equal(move.sinceMs, 3 * MIN); // the book's move was first, and is what "ago" counts from
@@ -114,20 +112,19 @@ test("a Novig half-cent is a move (float boundary)", () => {
 });
 
 test("first sighting and nothing moved read as no tag", () => {
-  assert.deepEqual(edgeMove(undefined, NOW), { kind: "none", fairDelta: null, priceDelta: null, sinceMs: null, source: null, from: null, to: null });
+  assert.deepEqual(edgeMove(undefined, NOW), { kind: "none", fairDelta: null, priceDelta: null, sinceMs: null, from: null, to: null });
   const history = historyOf([{ at: T0 }, { at: T0 + MIN }, { at: T0 + 2 * MIN }]);
   assert.equal(history["m1:ms4:si0:tid6"].length, 1);
   assert.equal(edgeMove(history["m1:ms4:si0:tid6"], NOW).kind, "none");
 });
 
-test("an alt rung's history is snapshot-only and the tag says so", () => {
+test("an alt rung's move is tagged like a main line's", () => {
   const altKey = "m1:ms4:si0:tid6:alt48.5";
   const history = {};
-  observe(history, line({ key: altKey, points: 48.5, price: 150, isAlt: true }), { at: T0, source: "snapshot" });
-  observe(history, line({ key: altKey, points: 48.5, price: 165, isAlt: true }), { at: T0 + 2 * MIN, source: "snapshot" });
+  observe(history, line({ key: altKey, points: 48.5, price: 150, isAlt: true }), { at: T0 });
+  observe(history, line({ key: altKey, points: 48.5, price: 165, isAlt: true }), { at: T0 + 2 * MIN });
   const move = edgeMove(history[altKey], NOW);
   assert.equal(move.kind, "book_away");
-  assert.equal(move.source, "snapshot");
   assert.equal(move.sinceMs, 3 * MIN);
 });
 
@@ -181,10 +178,9 @@ test("forget drops a key; observe and edgeMove fail loudly on bad input", () => 
   const history = historyOf([{ at: T0 }]);
   forget(history, "m1:ms4:si0:tid6");
   assert.deepEqual(history, {});
-  assert.throws(() => observe(history, line({ price: null }), { at: T0, source: "snapshot" }), /expected a numeric price/);
-  assert.throws(() => observe(history, line(), { at: T0, source: "page" }), /expected source snapshot\|stream/);
-  assert.throws(() => observe(history, line(), { at: "now", source: "stream" }), /expected a numeric time/);
-  assert.throws(() => observe(null, line(), { at: T0, source: "stream" }), /expected a history object/);
+  assert.throws(() => observe(history, line({ price: null }), { at: T0 }), /expected a numeric price/);
+  assert.throws(() => observe(history, line(), { at: "now" }), /expected a numeric time/);
+  assert.throws(() => observe(null, line(), { at: T0 }), /expected a history object/);
   assert.throws(() => edgeMove({}, NOW), /expected an array/);
   assert.throws(() => edgeMove([], NaN), /expected a numeric time/);
 });

@@ -46,7 +46,6 @@ class FeedState:
     teams: dict = field(default_factory=dict)
     lines: dict = field(default_factory=dict)
     events: dict = field(default_factory=dict)
-    cursor: int | None = None
 
 def _dt(s):
     d = datetime.datetime.fromisoformat(s)
@@ -94,7 +93,7 @@ def events_for_league(st, league_prefix):
 
 
 # ---------------------------------------------------------------------------
-# v2 per-league feed (current app path; supersedes snapshot+changes for soccer).
+# v2 per-league feed (current app path; supersedes the legacy snapshot).
 # Shape: {odds: {"lg21:pt1:pregame": [row, ...], ...}, teams: {tid: {name}}, ...}
 # Each row = one event x betType: {eventId, eventStart, eventName ("Away @ Home"),
 # betTypeId, sides: {"si0:tid<away>": {"ms<book>": line}, "si1:tid<home>": {...}}}.
@@ -186,23 +185,3 @@ def fetch_snapshot(league_prefixes, session=None) -> FeedState:
     r.raise_for_status()
     return parse_snapshot(r.json(), set(league_prefixes))
 
-def fetch_deltas(token, cursor, session=None):
-    s = session or requests
-    if cursor is None:
-        now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z")
-        url = f"{config.UNABATED_CHANGES_URL}?full_refresh_ISO={now}"
-    else:
-        url = f"{config.UNABATED_CHANGES_URL}/{cursor}"
-    r = s.get(url, headers=_HEADERS, cookies={"unabated_at_prod": token}, timeout=30)
-    r.raise_for_status(); body = r.json()
-    ev = [mlc["gameOdds"]["gameOddsEvents"]
-          for batch in body.get("results", []) for mlc in batch.get("marketLineChanges", [])
-          if "gameOddsEvents" in mlc.get("gameOdds", {})]
-    return ev, body.get("latestTimestamp")
-
-def apply_deltas(st, event_dicts, league_prefixes):
-    pref = set(league_prefixes)
-    for evmap in event_dicts:
-        for lk, events in evmap.items():
-            if _league_prefix(lk) not in pref: continue
-            for ev in events: _safe_ingest(st, ev, lk)

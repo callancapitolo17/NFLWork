@@ -174,7 +174,7 @@ test("bets.js and ladder.js name the two market axes the same: a position's axis
 });
 
 test("stakeAdvice: the real ladder feeds it — fairs read off feed lines, a rung the feed lacks is no fair", () => {
-  const over = (points, bacr) => ({ eventId: 700001, leagueId: 1, periodTypeId: 1, betTypeId: 3, sideIndex: 0, points, bacr, fromSnapshot: true });
+  const over = (points, bacr) => ({ eventId: 700001, leagueId: 1, periodTypeId: 1, betTypeId: 3, sideIndex: 0, points, bacr });
   const eventLines = [over(50.5, -156), over(51.5, -135), over(52.5, -117)];
   const ladderOf = (period, axis) => ladderLib.buildLadder(eventLines, { periodTypeId: ladderLib.periodTypeIdOf(period), axis });
   const sized = adviceFor(nflLine(), 213, 7.19, LIONS_BILLS_HELD, ladderOf);
