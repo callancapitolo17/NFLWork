@@ -1322,8 +1322,14 @@ GETs; no order placement.
   .NET default date would parse), and `lastModification` — the grading time —
   as `closedAt`; a parlay or teaser has one `settledDate` for the ticket, so
   its legs are dateless (`game_date_unknown`, matched by rotation). Team
-  totals, a teaser short of its declared legs and unparsed selections fail
-  closed with the reason. What an OPEN straight bet's `settledDate` holds is
+  totals and unparsed selections fail closed with the reason. A parlay or
+  teaser the history cannot read — a leg count off its type (`4 TEAM TEASERS
+  names 4 legs but carries 3`), a leg that does not parse, or a type it does
+  not know that carries `picks` — still comes back one record per leg,
+  `:leg0` up to the declared count, each unmatchable with the reason and on
+  the ticket's status: the open list stored the ticket under those ids, and
+  a lone `bfa:<id>` would leave them open forever (the store never closes a
+  record a poll does not name). What an OPEN straight bet's `settledDate` holds is
   unobserved (the pull had none pending): a null or placeholder falls to the
   dateless window, so nothing is lost either way.
 - **Wagerzon source** (`sources/wagerzon.py`, 2026-09-23, the C account): every
@@ -1481,8 +1487,8 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 310 tests) and
-the bets service's pytest suite (239 tests, on the `kalshi_draft/venv`
+the node suite (`npm test` = `node --test tests/*.test.js`, 304 tests) and
+the bets service's pytest suite (246 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`
@@ -1866,6 +1872,24 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-09-29 — BFA: a ticket the history cannot read still settles its
+legs.** The open list stores a BFA parlay or teaser as one record per leg
+(`bfa:<id>:leg0` …), and once it is graded only the history can settle those
+rows. When the history could not read the ticket — its type names a leg count
+it does not carry, or a leg does not parse — it wrote one unmatchable
+`bfa:<id>` instead, which settled nothing: the leg rows stayed open for good
+(the store is upsert-only and serves every open row), on the Bets tab and in
+the Teasers tab's open tickets. Now such a ticket comes back one record per
+leg up to the count its type declares (the open list has one row per leg),
+each unmatchable with the reason and on the ticket's status: never a lone
+record, never a partial ticket. A type the grammar does not know that carries
+picks (an if-bet, say) takes the same path with the legs it carries; it used
+to read as a straight bet on its first leg. While the ticket is open, the open
+list's legs replace these one for one, which also removes the extra
+unmatchable record listed beside them. Nothing to clean up: on 2026-09-29 the
+live store's 61 BFA records (12 graded teasers and parlays) held no such
+ticket.
 
 **2026-09-26 — Novig's `unabatedId` no longer beats the team name.** An
 open Novig over on Southern @ Jackson State never matched its game. Novig
