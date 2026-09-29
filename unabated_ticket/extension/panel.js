@@ -18,7 +18,10 @@
 // The bets tab (#114) polls the local bets service (betsSettings.serviceUrl,
 // default http://127.0.0.1:8094) every 30 s on the same visibility rule —
 // never from the service worker. Matching is bets.js; presentation helpers
-// are betsview.js.
+// are betsview.js. Bet105 (2026-09-29) is the one venue this page reads
+// itself: every 5 min while visible it fetches the account's open bets from
+// app.bet105.ag on Cal's own login in this Chrome (bet105.js) and POSTs them
+// to the service's /bet105.json, which parses and stores them like any other.
 
 (function () {
   "use strict";
@@ -30,6 +33,7 @@
   const attachLib = globalThis.UnabatedAttach;
   const ladderLib = globalThis.UnabatedLadder;
   const live = globalThis.UnabatedLive;
+  const bet105 = globalThis.UnabatedBet105;
   // Bets service poll cadence while the panel is visible (plan § Storage).
   const BETS_POLL_MS = 30 * 1000;
   const DEFAULT_SETTINGS = { bankroll: 30000, multiplier: 0.25 };
@@ -2036,6 +2040,52 @@
     renderBetsFlags();
     learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
     captureFillFairs().catch((error) => console.error("[unabated-ticket] fill fair capture failed", error));
+    pollBet105().catch((error) => console.error("[unabated-ticket] bet105 poll failed", error));
+  }
+
+  // ---- Bet105 (read here, stored by the service) -----------------------------
+  //
+  // On the bets tick, at most every bet105.POLL_MS: the account's open bets
+  // from both LinePros feeds, then one POST to the service. A read that fails
+  // (not logged in, Cloudflare, the site down) is POSTed as an error so the
+  // Bets tab's Bet105 row turns red with the fix; nothing half-read is ever
+  // pushed (the service closes an open bet a complete push no longer lists).
+  let bet105Busy = false;
+  let bet105LastRunAt = 0;
+  let bet105LastError = null;
+
+  async function pollBet105() {
+    if (bet105Busy || document.hidden || !bet105.isDue(bet105LastRunAt, Date.now())) return;
+    bet105Busy = true;
+    bet105LastRunAt = Date.now();
+    try {
+      const push = await readBet105();
+      const reply = await serviceRequest("POST", bet105.SERVICE_PATH, push);
+      if (bet105LastError !== null) console.info("[unabated-ticket] bet105: reading again", reply);
+      bet105LastError = null;
+    } catch (error) {
+      if (bet105LastError !== error.message) console.warn("[unabated-ticket] bet105:", error.message);
+      bet105LastError = error.message;
+      await serviceRequest("POST", bet105.SERVICE_PATH, bet105.errorBody(error.message)).catch(() => {});
+    } finally {
+      bet105Busy = false;
+    }
+  }
+
+  // The session check (its reply carries the CSRF token the history POST
+  // needs), then getHistory on each feed. Throws with the reason on any step.
+  async function readBet105() {
+    const customers = await fetch(bet105.CUSTOMERS_URL, bet105.customersRequest());
+    const session = bet105.csrfTokenOf(customers.status, await customers.json().catch(() => null));
+    if (session.error) throw new Error(session.error);
+    const groupsByFeed = {};
+    for (const feedName of bet105.FEEDS) {
+      const response = await fetch(bet105.historyUrl(feedName), bet105.historyRequest(session.csrfToken));
+      const result = bet105.betGroupsOf(feedName, response.status, await response.json().catch(() => null));
+      if (result.error) throw new Error(result.error);
+      groupsByFeed[feedName] = result.betGroups;
+    }
+    return bet105.pushBody(new Date().toISOString(), groupsByFeed);
   }
 
   // The records, the service state, the crosswalk, the pins and the saved fill fairs, as one stored object.
