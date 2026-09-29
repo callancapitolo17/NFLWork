@@ -42,9 +42,12 @@
 //     the $200 ticket that most raises it, repeat until none does; the last
 //     may be partial (whole dollars); no ticket twice. Open teasers count as
 //     part of the set: an open ticket's own four legs are never offered
-//     again, and once a ticket under $200 is open no partial one is.
+//     again, and once an open 4-team ticket under $200 is in play (the
+//     list's partial, placed) no second partial is.
 //   - An open BFA teaser is fixed P&L in that objective (+toWin when every
-//     leg wins, -stake otherwise) until its last game starts. A started leg,
+//     leg wins, -stake otherwise) until its last game starts. Its legs join
+//     their games through bets.js's matcher, else by rotation within 12 h of
+//     BFA's start. A started leg,
 //     a leg no board game matches and a leg with no fair count as won: the
 //     ticket keeps its full weight on the legs still to play, and no fair
 //     has to be saved. A game with an open leg offers new legs only on that
@@ -105,6 +108,11 @@
   const UPPER_BOUND_SHRINK = 1 - 1e-9;
   const BFA_VENUE = "bfa";
   const TEASER_HEADER_RE = /TEASER/i;
+  // How far BFA's start may sit from the board's for a rotation-only join:
+  // wide enough for a shifted clock (7 h once), narrow enough that next
+  // week's game with the same rotation never fits (bets.js's own
+  // "start time differs" window).
+  const ROTATION_JOIN_WINDOW_MS = 12 * 3600 * 1000;
   // An open teaser's leg: still to play and priced (in the math), or counted as won.
   const LEG_LIVE = "live";
   const LEG_STARTED = "started";
@@ -310,7 +318,8 @@
   }
 
   // bet id -> the board row of its game, through bets.js's matcher (rotation
-  // + start: BFA rotations are Unabated's own). A leg on two board games, or
+  // + start: BFA rotations are Unabated's own), else by rotation alone within
+  // ROTATION_JOIN_WINDOW_MS (rowByRotation). A leg on two board games, or
   // none, has no row.
   function boardRowsByBetId(legRecords, boardLines) {
     const rows = boardLines || [];
@@ -318,7 +327,31 @@
     bets.annotateRows(rows, legRecords, { lines: rows }).forEach((flag, index) => {
       for (const match of flag.matches) rowByBetId.set(match.bet.id, rows[index]);
     });
+    for (const record of legRecords) {
+      if (rowByBetId.has(record.id)) continue;
+      const row = rowByRotation(record, rows);
+      if (row) rowByBetId.set(record.id, row);
+    }
     return rowByBetId;
+  }
+
+  // The one board game of the leg's league whose away or home rotation is
+  // the leg's and whose start is within ROTATION_JOIN_WINDOW_MS of BFA's,
+  // or null. A leg the matcher could not place — BFA's clock more than 30
+  // min off the board's (it moved once already), a team name resolving to
+  // another team — would otherwise count as won, and the ticket it is on
+  // would come back into the list as if never placed.
+  function rowByRotation(record, rows) {
+    const startMs = record.eventStart ? Date.parse(record.eventStart) : NaN;
+    if (record.rotation == null || !Number.isFinite(startMs)) return null;
+    const found = new Map();
+    for (const row of rows) {
+      if (row.league !== record.league || row.eventId == null || typeof row.eventStartMs !== "number") continue;
+      if (row.awayRotation !== record.rotation && row.homeRotation !== record.rotation) continue;
+      if (Math.abs(row.eventStartMs - startMs) > ROTATION_JOIN_WINDOW_MS) continue;
+      found.set(row.eventId, row);
+    }
+    return found.size === 1 ? found.values().next().value : null;
   }
 
   // "San Francisco 49ers -1.5" on the board's spelling when the leg joined a
@@ -694,9 +727,11 @@
     return stake >= 1 && growthAt(stake) > base ? stake : 0;
   }
 
-  // Greedy Kelly over the set: {tickets: [{legIndexes, stake}], reason}.
+  // Greedy Kelly over the set: {tickets: [{legIndexes, stake}], reason,
+  // partialHeldBack} — the last the partial ticket's stake when one is due
+  // but not allowed, else 0.
   //   takenCombos     "i,j,k,l" pool-index keys already open at BFA: no ticket twice
-  //   partialAllowed  false once a ticket under $200 is open (one partial per set)
+  //   partialAllowed  false once this list's partial is open (one partial per set)
   function greedyTickets(structure, prob, heldPnl, kellyBankroll, { takenCombos, partialAllowed }) {
     const combos = legCombinations(structure.poolWins.length, LEGS_PER_TICKET);
     const winning = combos.map((combo) => winningOutcomes(combo, structure.poolWins, structure.outcomeCount));
@@ -714,7 +749,7 @@
     };
     for (;;) {
       const room = worstWealth(pnl, prob, kellyBankroll);
-      if (room <= 0) return { tickets, reason: tickets.length ? null : REASON_HELD_RISK };
+      if (room <= 0) return { tickets, reason: tickets.length ? null : REASON_HELD_RISK, partialHeldBack: 0 };
       const base = expectedLogGrowth(pnl, prob, kellyBankroll);
       // A full ticket only while losing it everywhere keeps every wealth positive.
       const cap = Math.min(TICKET_MAX_STAKE, room * UPPER_BOUND_SHRINK);
@@ -725,29 +760,31 @@
         add(best.index, TICKET_MAX_STAKE);
         continue;
       }
-      if (!partialAllowed) break;
       const stake = partialStake(winning[best.index], pnl, prob, kellyBankroll, base, cap);
+      if (!partialAllowed) return { tickets, reason: null, partialHeldBack: stake };
       if (stake > 0) add(best.index, stake);
       break;
     }
-    return { tickets, reason: null };
+    return { tickets, reason: null, partialHeldBack: 0 };
   }
 
   function legIdentity(leg) {
     return `${leg.eventId}|${leg.axis}|${leg.winCut}|${leg.direction}`;
   }
 
-  // The pool combinations open teasers already are — a ticket whose live
-  // legs are exactly four pool legs (same game, market, number and side) — as
-  // "i,j,k,l" keys. The greedy never offers one again: without this, a
-  // ticket placed at BFA came back at the top of the list on a board with
-  // standout legs, and following the list stacked one combination 4 times.
+  // The pool combinations open teasers already are — a 4-leg ticket whose
+  // legs are all live and exactly four pool legs (same game, market, number
+  // and side) — as "i,j,k,l" keys. The greedy never offers one again:
+  // without this, a ticket placed at BFA came back at the top of the list on
+  // a board with standout legs, and following the list stacked one
+  // combination 4 times. A 5-team ticket with a leg started is not one.
   function openComboKeys(poolLegs, placedTickets) {
     const poolIndexByLeg = new Map(poolLegs.map((leg, index) => [legIdentity(leg), index]));
     const keys = new Set();
     for (const ticket of placedTickets) {
+      if (ticket.legs.length !== LEGS_PER_TICKET || liveLegsOf(ticket).length !== LEGS_PER_TICKET) continue;
       const indexes = liveLegsOf(ticket).map((leg) => poolIndexByLeg.get(legIdentity(leg)));
-      if (indexes.length !== LEGS_PER_TICKET || indexes.includes(undefined)) continue;
+      if (indexes.includes(undefined)) continue;
       const distinct = Array.from(new Set(indexes)).sort((a, b) => a - b);
       if (distinct.length === LEGS_PER_TICKET) keys.add(distinct.join(","));
     }
@@ -775,11 +812,13 @@
   }
 
   // One build: {key, refs, kellyBankroll, pool, placed, structure, tickets,
-  // reason}. `tickets` index into `pool`; `refs` is the valuation it was built on.
+  // reason, partialHeldBack}. `tickets` index into `pool`; `refs` is the
+  // valuation it was built on; `partialHeldBack` the partial ticket's stake
+  // when one is due but this list's partial is already open, else 0.
   function buildTeaserSet(inputs, kellyBankroll, key) {
     const build = {
       key, refs: inputs.valuation, kellyBankroll, pool: inputs.pool.map(({ leg }) => leg), placed: inputs.placed,
-      structure: null, tickets: [], reason: null,
+      structure: null, tickets: [], reason: null, partialHeldBack: 0,
     };
     if (build.pool.length < LEGS_PER_TICKET) return { ...build, reason: REASON_FEW_LEGS };
     const fitted = structureWithinBudget(build.pool, inputs.placed);
@@ -789,13 +828,16 @@
     const pool = fitted.legs;
     const probs = outcomeProbs(fitted.structure, inputs.valuation);
     if (probs.reason) return { ...build, pool, reason: probs.reason };
-    // One partial ticket per set, open teasers included: once a ticket under
-    // $200 is open, only full tickets are offered — else placing the list's
-    // partial last ticket brought another, smaller one, and so on.
-    const partialAllowed = !inputs.placed.some((ticket) => ticket.stake < TICKET_MAX_STAKE);
+    // One partial ticket per set: an open 4-team ticket under $200 still in
+    // play is taken to be this list's partial, placed, and no second one is
+    // offered — else placing it brought a smaller one, and so on. Another
+    // kind of teaser under $200 (a 2-team) holds nothing back.
+    const partialAllowed = !inputs.placed.some((ticket) => ticket.legCount === LEGS_PER_TICKET && ticket.stake < TICKET_MAX_STAKE);
     const picked = greedyTickets(fitted.structure, probs.prob, placedPnl(fitted.structure, inputs.placed), kellyBankroll,
       { takenCombos: openComboKeys(pool, inputs.placed), partialAllowed });
-    return { ...build, pool, structure: fitted.structure, tickets: picked.tickets, reason: picked.reason };
+    return {
+      ...build, pool, structure: fitted.structure, tickets: picked.tickets, reason: picked.reason, partialHeldBack: picked.partialHeldBack,
+    };
   }
 
   // The list to show: `previous` kept while what it is built on is unchanged
@@ -913,7 +955,7 @@
 
   const api = {
     TEASER_LEAGUE_IDS, TEASER_POINTS, LEGS_PER_TICKET, TICKET_NET_ODDS, TICKET_MAX_STAKE, POOL_SIZE, BREAK_EVEN_WIN,
-    LEG_LIVE,
+    LEG_LIVE, LEG_STARTED,
     STANDING_POOL, STANDING_OUT, STANDING_BELOW, STANDING_OTHER_MARKET, STANDING_UNPRICED,
     REASON_FEW_LEGS,
     teaserBoardOf, teaserLegs, openTeasers, planTeasers, describePlan, describeLegs,

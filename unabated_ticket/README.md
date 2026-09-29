@@ -1200,9 +1200,11 @@ that raises the score most, again and again, until no $200 ticket raises it;
 that ticket's best stake below $200 (whole dollars) is the last, partial one.
 No ticket twice, and no per-leg cap (user decision 2026-09-28: "no leg on more
 than half the tickets" cost 6% of the value after risk). Open teasers are part
-of the set: an open ticket's own four legs are never offered again, and once a
-ticket under $200 is open no partial one is — so placing the list in order
-leaves the rest of it, and placing all of it leaves nothing. Open teasers on
+of the set: an open 4-team ticket whose four legs are all live is never
+offered again, and once an open 4-team ticket under $200 is in play (the
+list's partial, placed — a 2-team teaser does not count) no second partial
+is; the empty state says so, with the partial it held back. So placing the
+list in order leaves the rest of it, and placing all of it leaves nothing. Open teasers on
 many games outside the pool cost the pool its weakest free legs (the joint
 outcomes stay under 16,384, a build under ~0.3 s) rather than the list. Two ways to see what
 it does, on Sunday's board (2026-09-27 16:37 UTC, $20,000 at quarter Kelly,
@@ -1251,8 +1253,12 @@ open BFA teaser the bets service reports, from this tab or not, is a placed
 ticket. Its legs arrive one record per leg (`isParlayLeg`, `parlayId`, the
 ticket's stake and to-win on each, `raw.headerDescription` "4 TEAM TEASERS",
 the leg's teased number, rotation and start), are grouped by `parlayId` and
-joined to their games through `bets.js`'s matcher (rotation + start; BFA's
-rotations are Unabated's); `bets.teaserLegPositionOf` places a leg on its
+joined to their games through `bets.js`'s matcher (rotation + start within
+30 min; BFA's rotations are Unabated's), else by rotation alone within 12 h
+of BFA's start — a leg the matcher misses (BFA's clock off, as it once was
+by 7 h; a team name resolving elsewhere) would otherwise count as won and
+its ticket come back into the list; past 12 h it could be next week's game
+with the same rotation. `bets.teaserLegPositionOf` places a leg on its
 game's axis without the parlay-leg and stake guards straight bets have. A
 placed ticket is fixed P&L in the score — +to win when every leg covers,
 −stake otherwise, a push losing — until its last game starts. A started leg,
@@ -1273,7 +1279,12 @@ only when that leg moves 1 point or more, and it is rebuilt only when what it
 is built on changes: the pool, a pool leg's number, an open BFA teaser, K, or
 a 1-point move. Smaller ticks move the win chances, EVs and summary in place.
 Built on the same fairs, the list after you place its first ticket is the
-same list less that ticket. A frozen list alone would miss news: the 49ers
+same list less that ticket. The reference fairs are kept in
+`chrome.storage.local` (`teaserRefs`, rewritten on each rebuild), so a
+reopened panel builds the list it last showed; and after a start or a
+scanner restart (ticking a sport on the Edges tab) the tab waits for both
+NFL and CFB (or their errors) before building — a list off NFL alone while
+CFB, loaded last, is still coming would not be the list. A frozen list alone would miss news: the 49ers
 leg down 5 points halves the 9:37 list's value after risk ($141 → $71) —
 that move rebuilds it.
 
@@ -1285,8 +1296,12 @@ read-only, its legs at their current fairs or why they count as won, and the
 age of the last BFA pull), the ticket cards in the order to bet them (legs,
 stake, EV, **Copy**: `[rotation] side` per leg, BFA's own form) and the legs
 (each game's best leg: teased number, Buckeye's line, win chance, line age,
-how many tickets use it; the break-even line; games below break-even, on an
-open teaser's other market or with no fair behind a fold). Empty states: the
+how many tickets use it; the break-even line, which a pool leg can sit
+below; the other games below break-even, on an open teaser's other market or
+with no fair behind a fold). An open ticket out of the math says why: every
+game started, or no leg priced on the board. The Placed figure in the
+summary is the open tickets still in the math; the Open at BFA line says
+both when they differ. Empty states: the
 board loading, fewer than 4 priced games, no ticket worth betting. The bets
 service down puts a red banner up and the list stays (an open teaser may be
 missing from it). The scanner always loads NFL and CFB for this tab; the
@@ -1633,7 +1648,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 329 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 333 tests) and
 the bets service's pytest suite (244 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -1805,7 +1820,13 @@ offered again, so placing the top ticket leaves the list less it (a board
 with four standout legs, where it used to come back at the top); the whole
 list open leaving nothing (one partial ticket per set); open teasers on
 eight games outside the pool shedding four pool legs to stay at 2^14
-outcomes rather than going dark; a started leg and a leg no board
+outcomes rather than going dark; a leg whose BFA start is 3 h off the board's
+joining by rotation so its ticket stays taken (13 h off: counted as won); a
+5-team teaser with a leg counted as won blocking no 4-leg combination; the
+partial rule ($63 alone, $45 with a 2-team $110 teaser open, none and $32
+held back with a 4-team $150 ticket open); a reopened panel's saved
+reference fairs rebuilding the list it showed where a 0.08-point tick
+changes the list on live fairs; a started leg and a leg no board
 game matches counted as won, and a ticket with none still to play out of the
 math; a game with an open leg offering only that market; an open leg at
 another number sharing its game's rows with the new leg; the list holding
@@ -2062,7 +2083,11 @@ in red.
   the tab within about 90 s (the bets service reads BFA's open bets every
   60 s, the panel polls the service every 30 s); "Open at BFA" says how old
   the last BFA pull is. Much older means the service is down (red banner) or
-  still on the old 300 s cadence — restart it after updating.
+  still on the old 300 s cadence — restart it after updating. If the ticket
+  is listed there but a leg reads "no board game; counted as won", that leg
+  did not join its game (BFA's start more than 12 h off the board's, or the
+  game off Buckeye's board), so the ticket is not recognised as the list's:
+  attach the leg to its game on the Bets tab.
 - **Teasers: "Fewer than 4 games with a priced Buckeye leg"**: Buckeye's
   NFL/CFB board is thin (Monday night, or before the week's lines post), or
   its lines are older than **Max line age h** in the Edges controls.
@@ -2103,7 +2128,13 @@ stacked one combination four times. Now an open ticket's own four legs are
 never offered again, and once a ticket under $200 is open no partial one is
 (else placing the list's partial last ticket brought a smaller one, $42,
 $25, $13, $5). Past 2^14 joint outcomes the pool sheds free legs instead of
-the tab going dark. BFA's open bets moved
+the tab going dark. A second review found the same bug through a leg that
+missed the board join (BFA's clock off, a name resolving elsewhere): counted
+as won, it left its ticket unrecognised — now such a leg joins by rotation
+within 12 h. It also found the frozen list lost on a panel reopen or a
+scanner restart (now the reference fairs persist and the tab waits for both
+football boards), a 5-team or 2-team teaser tripping the combination and
+partial rules (now 4-team only), and the Open at BFA wording and totals. BFA's open bets moved
 from every 300 s to every 60 s (history stays at 300 s) so a placed ticket
 shows within ~90 s. The scanner always loads NFL and CFB; `selectEdges`
 gained `leagueIds` so the Edges tab still lists only the ticked sports.

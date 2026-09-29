@@ -5,8 +5,9 @@
 //
 // Reads: chrome.storage.local {ticket, error, watchStatus, pageCheck, pageReady,
 // booksFilter, locateResult, "liveEdges:<league>"} (written by content.js) and {bankroll,
-// multiplier, edges, alerts, alertLog, activeTab, betsService, betsSettings}
-// (written here).
+// multiplier, edges, alerts, alertLog, activeTab, betsService, betsSettings,
+// teaserRefs} (written here; teaserRefs = the Teasers list's reference fairs,
+// rewritten on each rebuild).
 // Writes: chrome.storage.local settings, {locate} (row click, via locate.js,
 // which also focuses the Unabated tab), {alertLog, alertTargets} and Chrome
 // notifications for new edges; {betsService} after every bets-service poll
@@ -2707,14 +2708,32 @@
     return teaserBoard;
   }
 
+  // Both football boards in, or failed. Before that a list would be NFL's
+  // alone while CFB — loaded last, the biggest file — is still coming, and a
+  // scanner restart's empty board would throw the list's reference fairs away.
+  function teaserBoardReady() {
+    if (!scannerStatus) return false;
+    return teaserLib.TEASER_LEAGUE_IDS.every((id) => scannerStatus.leaguesLoaded.includes(id)
+      || Boolean(scannerStatus.leagueErrors && scannerStatus.leagueErrors[id]));
+  }
+
+  // The reference fairs of the last build in chrome.storage.local
+  // ("teaserRefs": [cut key, P(above)] pairs), so a reopened panel builds on
+  // the same fairs and the list holds still across a reopen too.
+  function persistTeaserRefs(refs) {
+    chrome.storage.local.set({ teaserRefs: Array.from(refs) });
+  }
+
   function teaserModel() {
-    if (!scannerState) return null;
+    if (!scannerState || !teaserBoardReady()) return null;
     const now = Date.now();
     const board = currentTeaserBoard();
     const legs = teaserLib.teaserLegs(scannerState, { now, maxLineAgeMs: state.edgeSettings.maxLineAgeHours * HOUR_MS, board });
     const placed = teaserLib.openTeasers(state.betRecords, boardLines(), { now, ladderOf: board.ladderOf });
     const kellyBankroll = state.settings.bankroll * state.settings.multiplier;
-    teaserBuild = teaserLib.planTeasers({ legs, placed, kellyBankroll, previous: teaserBuild }).build;
+    const planned = teaserLib.planTeasers({ legs, placed, kellyBankroll, previous: teaserBuild });
+    teaserBuild = planned.build;
+    if (planned.rebuilt) persistTeaserRefs(teaserBuild.refs);
     return {
       legs, placed, build: teaserBuild,
       plan: teaserLib.describePlan(teaserBuild, legs, placed),
@@ -2759,10 +2778,6 @@
   function bfaSourceRow(now) {
     if (!state.betsService || state.betsService.okAt == null) return null;
     return betsView.sourceRows(betsPayload(), now).find((row) => row.venue === "bfa") || null;
-  }
-
-  function footballLoaded() {
-    return Boolean(scannerStatus) && teaserLib.TEASER_LEAGUE_IDS.some((id) => scannerStatus.leaguesLoaded.includes(id));
   }
 
   function renderTeasers() {
@@ -2811,9 +2826,9 @@
     view.teasersWarning.textContent = amber || "";
   }
 
-  // "NFL · CFB loading · 15 games on Buckeye's board · 56 of 56 legs priced".
+  // "NFL · CFB loading", then "NFL · CFB · 15 games on Buckeye's board · 56 of 56 legs priced".
   function renderTeasersStatus(model) {
-    if (!scannerStatus || !model) {
+    if (!scannerStatus) {
       view.teasersStatus.textContent = "Starting the scanner…";
       return;
     }
@@ -2822,17 +2837,24 @@
       if (scannerStatus.leaguesLoaded.includes(id)) return label;
       return scannerStatus.leagueErrors && scannerStatus.leagueErrors[id] ? `${label} unavailable` : `${label} loading`;
     });
+    if (!model) {
+      view.teasersStatus.textContent = leagues.join(" · ");
+      return;
+    }
     const games = new Set(model.legs.map((leg) => leg.eventId)).size;
     const priced = model.legs.filter((leg) => leg.win != null).length;
     view.teasersStatus.textContent = `${leagues.join(" · ")} · ${plural(games, "game")} on Buckeye's board · ${priced} of ${plural(model.legs.length, "leg")} priced`;
   }
 
   function teasersEmptyText(model) {
-    if (!model || !footballLoaded()) return "Waiting for Buckeye's NFL and CFB board…";
+    if (!model) return "Waiting for Buckeye's NFL and CFB board…";
     const { plan, build } = model;
     if (plan.tickets.length) return null;
     if (build.reason === teaserLib.REASON_FEW_LEGS) return `Fewer than ${teaserLib.LEGS_PER_TICKET} games with a priced Buckeye leg right now: nothing to tease.`;
     if (build.reason) return `No tickets: ${build.reason}.`;
+    if (build.partialHeldBack > 0) {
+      return `Nothing more to bet: the next ticket would be a partial ${fmtWholeDollars(build.partialHeldBack)}, and a 4-team ticket under $200 is already open at BFA (one partial ticket per set).`;
+    }
     return build.placed.length
       ? "Nothing more to bet: no other ticket raises the Kelly growth with the open teasers held."
       : "No ticket worth betting right now: no 4-team ticket raises the Kelly growth at these fairs.";
@@ -2861,8 +2883,9 @@
     view.teasersSummaryStake.textContent = fmtWholeDollars(summary.stake);
     const cells = [];
     if (summary.placedCount) {
-      // The count is in the Open at BFA header right below.
-      cells.push(summaryCell("Placed", fmtWholeDollars(summary.placedStake)));
+      // The open tickets still in the math; the Open at BFA header below counts every open one.
+      const allOpen = model.placed.length === summary.placedCount;
+      cells.push(summaryCell(allOpen ? "Placed" : "Placed, in play", fmtWholeDollars(summary.placedStake)));
       if (summary.expectedAll != null) cells.push(summaryCell(`Expected, all ${summary.count + summary.placedCount}`, fmtSignedDollars(summary.expectedAll)));
     } else {
       cells.push(summaryCell("Expected", fmtSignedDollars(summary.expected), summary.stake > 0 ? fmtWholePct(summary.expected / summary.stake) : null));
@@ -2931,10 +2954,19 @@
       legs.append(row);
     }
     const actions = makeEl("div", "tk-actions");
-    if (!ticket.inPlay) actions.append(makeEl("span", "muted", hasDollars ? "no game still to play: out of the math" : `${ticket.reason}: out of the math`));
+    if (!ticket.inPlay) actions.append(makeEl("span", "muted", outOfMathText(ticket)));
     actions.append(makeEl("span", "tag held", ticket.placedAt ? `placed ${betsLib.formatPlacedAt(ticket.placedAt)}` : "placed"));
     card.append(head, legs, actions);
     return card;
+  }
+
+  // Why an open ticket is not in the math, by its legs: every game started,
+  // or no leg joined a game Buckeye's board prices (a basketball teaser, CFB
+  // not loaded, a start the board disagrees with by over 12 h).
+  function outOfMathText(ticket) {
+    if (ticket.reason) return `${ticket.reason}: out of the math`;
+    if (ticket.legs.every((leg) => leg.state === teaserLib.LEG_STARTED)) return "every game has started: out of the math";
+    return "no leg priced on the board: out of the math";
   }
 
   // Always shown once the board is up, so "none open · BFA pulled 41 s ago"
@@ -2947,9 +2979,12 @@
     const pull = !bfa ? "bets service not reached yet"
       : !bfa.configured ? "no BFA account read"
         : bfa.fetchedAt ? `BFA pulled ${bfa.ageText} ago` : "no BFA pull yet";
-    const stake = placed.reduce((sum, ticket) => sum + (typeof ticket.stake === "number" ? ticket.stake : 0), 0);
+    const dollars = (tickets) => tickets.reduce((sum, ticket) => sum + (typeof ticket.stake === "number" ? ticket.stake : 0), 0);
+    const inPlay = placed.filter((ticket) => ticket.inPlay);
+    const amount = inPlay.length === placed.length ? fmtWholeDollars(dollars(placed))
+      : `${fmtWholeDollars(dollars(placed))}, ${fmtWholeDollars(dollars(inPlay))} in play`;
     view.teasersOpenCount.textContent = placed.length ? String(placed.length) : "";
-    view.teasersOpenNote.textContent = [placed.length ? `${fmtWholeDollars(stake)} · until each ticket's last game starts` : "none open", pull].join(" · ");
+    view.teasersOpenNote.textContent = [placed.length ? `${amount} · each until its last game starts` : "none open", pull].join(" · ");
     view.teasersOpenList.replaceChildren(...placed.map(openTeaserCard));
   }
 
@@ -3059,7 +3094,14 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex", "teaserRefs"]);
+    // The reference fairs the last Teasers list was built on: a seed with no
+    // key, so the first plan rebuilds — on these fairs, where still within a
+    // point of the live ones — and the list is the one this panel last showed.
+    if (Array.isArray(relay.teaserRefs)) {
+      const pairs = relay.teaserRefs.filter((pair) => Array.isArray(pair) && typeof pair[0] === "string" && typeof pair[1] === "number");
+      teaserBuild = { key: null, refs: new Map(pairs) };
+    }
     const leaguePaths = Array.from(new Set(Object.values(feed.LEAGUES).map((league) => league.path)));
     const storedLive = await chrome.storage.local.get(leaguePaths.map(live.storageKeyOf));
     for (const [key, payload] of Object.entries(storedLive)) {

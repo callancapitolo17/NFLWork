@@ -346,6 +346,57 @@ test("once the whole list is open at BFA, nothing more is offered (one partial t
   assert.equal(all.build.reason, null);
 });
 
+test("a leg whose BFA start is hours off the board's joins its game by rotation, so its ticket stays taken", () => {
+  const state = awayLegBoard(STANDOUT_BOARD);
+  const first = plan(state);
+  const records = openTicketOf(first.build, first.build.tickets[0], 1);
+  // BFA's clock 3 h off (it moved once before): bets.js's 30-min match misses this leg.
+  records[3].eventStart = new Date(KICKOFF + 3 * HOUR).toISOString();
+  const placed = openTeasersOf(state, records);
+  assert.deepEqual(placed[0].legs.map((leg) => leg.state), ["live", "live", "live", "live"]);
+  const second = plan(state, { placed, previous: first.build });
+  assert.deepEqual(ticketList(second.build), ticketList(first.build).slice(1));
+  // Past 12 h it could be next week's game with the same rotation: counted as won.
+  const farOff = openTeasersOf(state, [bfaLeg(2, 0, { rotation: 401, eventStart: new Date(KICKOFF + 13 * HOUR).toISOString() })]);
+  assert.equal(farOff[0].legs[0].state, "off_board");
+});
+
+test("a 5-team teaser with a leg counted as won blocks no 4-leg combination", () => {
+  const state = awayLegBoard([-400, -400, -400, -400]);
+  // Its four live legs are the board's only combination; its fifth is on no board game.
+  const records = [401, 403, 405, 407].map((rotation, index) => bfaLeg(5, index, { rotation, legCount: 5 }))
+    .concat(bfaLeg(5, 4, { rotation: 999, legCount: 5 }));
+  const { build } = plan(state, { placed: openTeasersOf(state, records), kellyBankroll: 100000 });
+  assert.deepEqual(build.tickets.map((ticket) => ticket.stake), [200]);
+});
+
+test("one partial per set: an open 4-team ticket under $200 holds the partial back, a 2-team teaser does not", () => {
+  // Four 80% legs and six 60% ones, K = $300: alone, one partial ticket on the four.
+  const state = awayLegBoard([-400, -400, -400, -400, -150, -150, -150, -150, -150, -150]);
+  const stakesOf = (build) => build.tickets.map((ticket) => ticket.stake);
+  assert.deepEqual(stakesOf(plan(state, { kellyBankroll: 300 }).build), [63]);
+  const twoTeam = [409, 411].map((rotation, index) => bfaLeg(8, index, {
+    rotation, legCount: 2, stake: 110, toWin: 150, raw: { headerDescription: "2 TEAM TEASERS" },
+  }));
+  assert.deepEqual(stakesOf(plan(state, { kellyBankroll: 300, placed: openTeasersOf(state, twoTeam) }).build), [45]);
+  const fourTeam = [409, 411, 413, 415].map((rotation, index) => bfaLeg(9, index, { rotation, stake: 150, toWin: 450 }));
+  const heldBack = plan(state, { kellyBankroll: 300, placed: openTeasersOf(state, fourTeam) }).build;
+  assert.deepEqual(stakesOf(heldBack), []);
+  assert.equal(heldBack.partialHeldBack, 32);
+});
+
+test("a reopened panel builds on the saved reference fairs: a sub-point tick leaves the list it showed", () => {
+  // Leg 5 a hair under the other four; a 0.08-point tick makes it the best leg.
+  const state = awayLegBoard([-400, -400, -400, -400, -399]);
+  const first = plan(state, { kellyBankroll: 300 });
+  const rung = Object.values(state.lines).find((line) => line.eventId === 105 && line.bookId === FAIR_BOOK && line.points === 8.5);
+  rung.bacr = -401;
+  const onLiveFairs = plan(state, { kellyBankroll: 300 });
+  assert.notDeepEqual(ticketList(onLiveFairs.build), ticketList(first.build));
+  const reopened = plan(state, { kellyBankroll: 300, previous: { key: null, refs: first.build.refs } });
+  assert.deepEqual(ticketList(reopened.build), ticketList(first.build));
+});
+
 test("past the outcome budget the pool sheds its weakest legs on games no open teaser rides on, not the list", () => {
   // Ten 80% games, then eight 60% ones that two open teasers ride on: 18 games
   // would be 2^18 outcomes, so four of the ten free pool legs go.
