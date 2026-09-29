@@ -295,15 +295,68 @@ test("open BFA teasers: legs group into tickets and join their games by rotation
   nearly(two.legs[0].win, 1 - probOf(150));
 });
 
-test("an open ticket on the list's own legs lowers the next suggestion by what it holds", () => {
-  const state = awayLegBoard([-400, -400, -400, -400]);
-  const alone = plan(state, { kellyBankroll: 300 });
-  assert.deepEqual(alone.build.tickets.map((ticket) => ticket.stake), [63]);
-  const records = [0, 1, 2, 3].map((index) => bfaLeg(9, index, { rotation: 401 + 2 * index, stake: 40, toWin: 120 }));
-  const withOpen = plan(state, { kellyBankroll: 300, placed: openTeasersOf(state, records), previous: alone.build });
+test("an open ticket lowers the next suggestion on the legs it shares", () => {
+  // Five 80% legs, K = $1,000: alone, $200 on legs 1-2-3-4 then $84 on 1-2-3-5.
+  const state = awayLegBoard([-400, -400, -400, -400, -400]);
+  const alone = plan(state, { kellyBankroll: 1000 });
+  const stakesOf = (build) => build.tickets.map((ticket) => [ticket.legIndexes.join(""), ticket.stake]);
+  assert.deepEqual(stakesOf(alone.build), [["0123", 200], ["0124", 84]]);
+  // With $200 open on 1-2-3-5, legs 1-2-3 already ride: 1-2-3-4 drops to $84.
+  const records = [401, 403, 405, 409].map((rotation, index) => bfaLeg(9, index, { rotation }));
+  const withOpen = plan(state, { kellyBankroll: 1000, placed: openTeasersOf(state, records), previous: alone.build });
   assert.equal(withOpen.rebuilt, true);
-  // Kelly on the whole ticket is $63.84: $40 held leaves $23.
-  assert.deepEqual(withOpen.build.tickets.map((ticket) => ticket.stake), [23]);
+  assert.deepEqual(stakesOf(withOpen.build), [["0123", 84]]);
+});
+
+// Four standout legs (86-83%) and six ordinary ones (76-71%): the board where
+// an open ticket's own combination came back at the top of the list.
+const STANDOUT_BOARD = [-614, -567, -525, -488, -317, -300, -285, -270, -257, -245];
+
+// A build's ticket as BFA's open list serves it once placed: awayLegBoard's
+// away +8.5 legs, joined back to their games by rotation.
+function openTicketOf(build, ticket, parlayId) {
+  return ticket.legIndexes.map((poolIndex, legIndex) => {
+    const leg = build.pool[poolIndex];
+    return bfaLeg(parlayId, legIndex, { rotation: 401 + 2 * (leg.eventId - 101), stake: ticket.stake, toWin: ticket.stake * 3 });
+  });
+}
+
+function ticketList(build) {
+  return build.tickets.map((ticket) => `${ticket.legIndexes.map((index) => build.pool[index].key).join("/")} $${ticket.stake}`);
+}
+
+test("an open ticket's own four legs are never offered again: placing the top ticket leaves the list less that ticket", () => {
+  const state = awayLegBoard(STANDOUT_BOARD);
+  const first = plan(state);
+  const before = ticketList(first.build);
+  assert.ok(before.length >= 3, `expected a list, got ${before.length}`);
+  const placed = openTeasersOf(state, openTicketOf(first.build, first.build.tickets[0], 1));
+  const second = plan(state, { placed, previous: first.build });
+  assert.equal(second.rebuilt, true);
+  assert.deepEqual(ticketList(second.build), before.slice(1));
+});
+
+test("once the whole list is open at BFA, nothing more is offered (one partial ticket per set)", () => {
+  const state = awayLegBoard(STANDOUT_BOARD);
+  const first = plan(state);
+  assert.ok(first.build.tickets.at(-1).stake < teaser.TICKET_MAX_STAKE, "the list ends on a partial ticket");
+  const records = first.build.tickets.flatMap((ticket, index) => openTicketOf(first.build, ticket, 100 + index));
+  const all = plan(state, { placed: openTeasersOf(state, records), previous: first.build });
+  assert.deepEqual(all.build.tickets, []);
+  assert.equal(all.build.reason, null);
+});
+
+test("past the outcome budget the pool sheds its weakest legs on games no open teaser rides on, not the list", () => {
+  // Ten 80% games, then eight 60% ones that two open teasers ride on: 18 games
+  // would be 2^18 outcomes, so four of the ten free pool legs go.
+  const state = awayLegBoard([...Array(10).fill(-400), ...Array(8).fill(-150)]);
+  const records = [0, 1, 2, 3].map((index) => bfaLeg(1, index, { rotation: 421 + 2 * index }))
+    .concat([0, 1, 2, 3].map((index) => bfaLeg(2, index, { rotation: 429 + 2 * index })));
+  const { build } = plan(state, { placed: openTeasersOf(state, records) });
+  assert.equal(build.reason, null);
+  assert.equal(build.pool.length, 6);
+  assert.equal(build.structure.outcomeCount, 2 ** 14);
+  assert.ok(build.tickets.length > 0);
 });
 
 test("a started leg and a leg no board game matches count as won; a ticket with none still to play leaves the math", () => {

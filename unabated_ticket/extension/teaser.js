@@ -40,7 +40,9 @@
 //     the pool is a candidate ticket.
 //   - The set maximizes E[ln(1 + pnl / K)], K = bankroll x multiplier: add
 //     the $200 ticket that most raises it, repeat until none does; the last
-//     may be partial (whole dollars); no ticket twice.
+//     may be partial (whole dollars); no ticket twice. Open teasers count as
+//     part of the set: an open ticket's own four legs are never offered
+//     again, and once a ticket under $200 is open no partial one is.
 //   - An open BFA teaser is fixed P&L in that objective (+toWin when every
 //     leg wins, -stake otherwise) until its last game starts. A started leg,
 //     a leg no board game matches and a leg with no fair count as won: the
@@ -93,8 +95,9 @@
   // neighbouring rungs can cross by a hair; past this the ladder is wrong.
   const MAX_NEGATIVE_SLICE = 0.005;
   // The joint outcomes one build may enumerate: the pool's 1,024 and room for
-  // six more games that open teasers still ride on.
-  const MAX_OUTCOMES = 1 << 16;
+  // four more games open teasers still ride on (past it the pool sheds legs).
+  // A build at 2^16 took 0.8-1.5 s on the panel's thread; 2^14 stays under ~0.3 s.
+  const MAX_OUTCOMES = 1 << 14;
   const GOLDEN_RATIO = (Math.sqrt(5) - 1) / 2;
   const SEARCH_MAX_ITERATIONS = 200;
   const SEARCH_TOLERANCE_DOLLARS = 1e-7;
@@ -692,10 +695,15 @@
   }
 
   // Greedy Kelly over the set: {tickets: [{legIndexes, stake}], reason}.
-  function greedyTickets(structure, prob, heldPnl, kellyBankroll) {
+  //   takenCombos     "i,j,k,l" pool-index keys already open at BFA: no ticket twice
+  //   partialAllowed  false once a ticket under $200 is open (one partial per set)
+  function greedyTickets(structure, prob, heldPnl, kellyBankroll, { takenCombos, partialAllowed }) {
     const combos = legCombinations(structure.poolWins.length, LEGS_PER_TICKET);
     const winning = combos.map((combo) => winningOutcomes(combo, structure.poolWins, structure.outcomeCount));
     const used = new Uint8Array(combos.length);
+    combos.forEach((combo, index) => {
+      if (takenCombos.has(combo.join(","))) used[index] = 1;
+    });
     const pnl = Float64Array.from(heldPnl);
     const tickets = [];
     const add = (index, stake) => {
@@ -717,11 +725,53 @@
         add(best.index, TICKET_MAX_STAKE);
         continue;
       }
+      if (!partialAllowed) break;
       const stake = partialStake(winning[best.index], pnl, prob, kellyBankroll, base, cap);
       if (stake > 0) add(best.index, stake);
       break;
     }
     return { tickets, reason: null };
+  }
+
+  function legIdentity(leg) {
+    return `${leg.eventId}|${leg.axis}|${leg.winCut}|${leg.direction}`;
+  }
+
+  // The pool combinations open teasers already are — a ticket whose live
+  // legs are exactly four pool legs (same game, market, number and side) — as
+  // "i,j,k,l" keys. The greedy never offers one again: without this, a
+  // ticket placed at BFA came back at the top of the list on a board with
+  // standout legs, and following the list stacked one combination 4 times.
+  function openComboKeys(poolLegs, placedTickets) {
+    const poolIndexByLeg = new Map(poolLegs.map((leg, index) => [legIdentity(leg), index]));
+    const keys = new Set();
+    for (const ticket of placedTickets) {
+      const indexes = liveLegsOf(ticket).map((leg) => poolIndexByLeg.get(legIdentity(leg)));
+      if (indexes.length !== LEGS_PER_TICKET || indexes.includes(undefined)) continue;
+      const distinct = Array.from(new Set(indexes)).sort((a, b) => a - b);
+      if (distinct.length === LEGS_PER_TICKET) keys.add(distinct.join(","));
+    }
+    return keys;
+  }
+
+  // The joint outcomes within MAX_OUTCOMES: while over it, the pool gives up
+  // its weakest leg on a game no open teaser rides on (dropping one on an open
+  // game saves nothing, its rows stay). {legs, structure}, or {overBudget}
+  // when even four pool legs do not fit.
+  function structureWithinBudget(poolLegs, placedTickets) {
+    const openGames = new Set();
+    for (const ticket of placedTickets) for (const leg of liveLegsOf(ticket)) openGames.add(factorKey(leg.eventId, leg.axis));
+    let legs = poolLegs;
+    for (;;) {
+      const structure = outcomeStructure(legs, placedTickets);
+      if (structure.outcomeCount <= MAX_OUTCOMES) return { legs, structure };
+      let drop = -1;
+      for (let index = legs.length - 1; index >= 0 && drop < 0; index -= 1) {
+        if (!openGames.has(factorKey(legs[index].eventId, legs[index].axis))) drop = index;
+      }
+      if (drop < 0 || legs.length <= LEGS_PER_TICKET) return { overBudget: structure };
+      legs = legs.filter((_, index) => index !== drop);
+    }
   }
 
   // One build: {key, refs, kellyBankroll, pool, placed, structure, tickets,
@@ -732,14 +782,20 @@
       structure: null, tickets: [], reason: null,
     };
     if (build.pool.length < LEGS_PER_TICKET) return { ...build, reason: REASON_FEW_LEGS };
-    const structure = outcomeStructure(build.pool, inputs.placed);
-    if (structure.outcomeCount > MAX_OUTCOMES) {
-      return { ...build, reason: `open teasers ride on too many games to size with the pool (${structure.factors.length} games, ${structure.outcomeCount} outcomes)` };
+    const fitted = structureWithinBudget(build.pool, inputs.placed);
+    if (fitted.overBudget) {
+      return { ...build, reason: `open teasers ride on too many games to size with ${LEGS_PER_TICKET} pool legs (${fitted.overBudget.factors.length} games, ${fitted.overBudget.outcomeCount} outcomes)` };
     }
-    const probs = outcomeProbs(structure, inputs.valuation);
-    if (probs.reason) return { ...build, reason: probs.reason };
-    const picked = greedyTickets(structure, probs.prob, placedPnl(structure, inputs.placed), kellyBankroll);
-    return { ...build, structure, tickets: picked.tickets, reason: picked.reason };
+    const pool = fitted.legs;
+    const probs = outcomeProbs(fitted.structure, inputs.valuation);
+    if (probs.reason) return { ...build, pool, reason: probs.reason };
+    // One partial ticket per set, open teasers included: once a ticket under
+    // $200 is open, only full tickets are offered — else placing the list's
+    // partial last ticket brought another, smaller one, and so on.
+    const partialAllowed = !inputs.placed.some((ticket) => ticket.stake < TICKET_MAX_STAKE);
+    const picked = greedyTickets(fitted.structure, probs.prob, placedPnl(fitted.structure, inputs.placed), kellyBankroll,
+      { takenCombos: openComboKeys(pool, inputs.placed), partialAllowed });
+    return { ...build, pool, structure: fitted.structure, tickets: picked.tickets, reason: picked.reason };
   }
 
   // The list to show: `previous` kept while what it is built on is unchanged
@@ -840,7 +896,7 @@
       } else if (offered.length) {
         const best = offered[0];
         const standing = best.win >= BREAK_EVEN_WIN ? STANDING_OUT : STANDING_BELOW;
-        rows.push({ leg: best, standing, inTickets: 0, openTickets, note: standing === STANDING_OUT ? `not in the top ${POOL_SIZE}` : "below break-even" });
+        rows.push({ leg: best, standing, inTickets: 0, openTickets, note: standing === STANDING_OUT ? `not in the top ${build.pool.length}` : "below break-even" });
       } else if (priced.length) {
         rows.push({ leg: priced[0], standing: STANDING_OTHER_MARKET, inTickets: 0, openTickets, note: "open teasers use the game's other market" });
       } else {

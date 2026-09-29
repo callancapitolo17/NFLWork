@@ -1199,7 +1199,12 @@ held bets). Starting from the open BFA teasers, the tab adds the $200 ticket
 that raises the score most, again and again, until no $200 ticket raises it;
 that ticket's best stake below $200 (whole dollars) is the last, partial one.
 No ticket twice, and no per-leg cap (user decision 2026-09-28: "no leg on more
-than half the tickets" cost 6% of the value after risk). Two ways to see what
+than half the tickets" cost 6% of the value after risk). Open teasers are part
+of the set: an open ticket's own four legs are never offered again, and once a
+ticket under $200 is open no partial one is — so placing the list in order
+leaves the rest of it, and placing all of it leaves nothing. Open teasers on
+many games outside the pool cost the pool its weakest free legs (the joint
+outcomes stay under 16,384, a build under ~0.3 s) rather than the list. Two ways to see what
 it does, on Sunday's board (2026-09-27 16:37 UTC, $20,000 at quarter Kelly,
 K = $5,000):
 
@@ -1628,7 +1633,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 326 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 329 tests) and
 the bets service's pytest suite (244 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -1794,8 +1799,13 @@ in whole dollars; the greedy never above $200 a ticket nor taking a ticket
 twice; the pool as each game's best leg, top 10; fewer than 4 priced games;
 open BFA teaser legs grouping into tickets and joining their games by
 rotation (a BFA parlay, a settled teaser and another venue's leg ignored);
-an open ticket on the list's own legs lowering the next suggestion by what
-it holds ($63 alone, $23 with $40 held); a started leg and a leg no board
+an open ticket lowering the next suggestion on the legs it shares ($200 → $84
+with $200 open on three of its legs); an open ticket's own four legs never
+offered again, so placing the top ticket leaves the list less it (a board
+with four standout legs, where it used to come back at the top); the whole
+list open leaving nothing (one partial ticket per set); open teasers on
+eight games outside the pool shedding four pool legs to stay at 2^14
+outcomes rather than going dark; a started leg and a leg no board
 game matches counted as won, and a ticket with none still to play out of the
 math; a game with an open leg offering only that market; an open leg at
 another number sharing its game's rows with the new leg; the list holding
@@ -2086,7 +2096,14 @@ list less that ticket. The greedy is the prototype's: a full $200 ticket
 while one still raises the score, then one partial ticket at its own best
 stake (on 9/27 its sixth $200 ticket is past that ticket's own best, $129,
 yet the set is worth $141 after risk against $140 for stopping there at
-$129). BFA's open bets moved
+$129). The pre-merge review found a placed ticket coming back: open
+teasers entered the score only as P&L, so on a board with four standout legs
+the ticket just placed was the best $200 ticket again, and following the list
+stacked one combination four times. Now an open ticket's own four legs are
+never offered again, and once a ticket under $200 is open no partial one is
+(else placing the list's partial last ticket brought a smaller one, $42,
+$25, $13, $5). Past 2^14 joint outcomes the pool sheds free legs instead of
+the tab going dark. BFA's open bets moved
 from every 300 s to every 60 s (history stays at 300 s) so a placed ticket
 shows within ~90 s. The scanner always loads NFL and CFB; `selectEdges`
 gained `leagueIds` so the Edges tab still lists only the ticked sports.
