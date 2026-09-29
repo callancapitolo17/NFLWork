@@ -315,6 +315,13 @@ def test_a_ticket_the_history_cannot_read_still_settles_every_open_list_leg(hist
     assert all(record["unmatchable"] == reason and record["legCount"] == 4 for record in stored)
 
 
+def test_a_type_declaring_no_legs_is_one_unmatchable_record_never_dropped():
+    wager = settled(history_ticket(990000011, "PARLAY (0 TEAMS)", TEASER_LEGS[:2]))
+    [record] = normalize_wager(wager, FETCHED_AT)
+    assert (record["id"], record["status"], record["isParlayLeg"]) == ("bfa:990000011", "lost", False)
+    assert record["unmatchable"] == "PARLAY (0 TEAMS) names 0 legs but carries 2"
+
+
 @pytest.mark.parametrize("text, expected", [
     ("[1340] TOTAL u24EV \r(ARIZONA 1H vrs BYU 1H)", ("total", "under", 24, 100, "1H", "ARIZONA", "BYU")),
     ("[1117] TOTAL O35-110 \r(KENT STATE 1H VRS OHIO STATE 1H)", ("total", "over", 35, -110, "1H", "KENT STATE", "OHIO STATE")),

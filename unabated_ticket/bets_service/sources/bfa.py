@@ -493,6 +493,9 @@ def _unreadable_ticket(wager: dict, native_id: str, fetched_at: str | None, leg_
     list only a history record with the same id settles them: a lone bfa:<id>
     would leave them open for good. No leg is read even where its own text
     parses — never a partial ticket."""
+    if leg_count < 2:
+        # A type declaring 0 or 1 legs: the open list's id for a one-row wager, never nothing.
+        return [json_clean(_unmatchable(_base_record(wager, native_id, fetched_at), reason))]
     return [json_clean(_unmatchable(_leg_record(wager, native_id, fetched_at, index, leg_count), reason))
             for index in range(leg_count)]
 
