@@ -119,7 +119,7 @@ function bfaLeg(parlayId, legIndex, fields) {
 }
 
 function openTeasersOf(state, records, now) {
-  return teaser.openTeasers(records, boardLinesOf(state), { now: now ?? NOW, ladderOf: teaser.ladderReaderOf(state) });
+  return teaser.openTeasers(records, boardLinesOf(state), { now: now ?? NOW, ladderOf: teaser.teaserBoardOf(state).ladderOf });
 }
 
 function plan(state, options) {

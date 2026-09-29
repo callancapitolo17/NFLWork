@@ -1628,7 +1628,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 325 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 326 tests) and
 the bets service's pytest suite (244 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -1694,7 +1694,9 @@ no longer lists. Its
 lands while hidden starting no run, and a 110 s outage keeping the run
 while a 140 s one restarts it; `leagueObservingSince` keeps CFB's run
 through one missed refresh and starts it over after five minutes of failed
-loads while NFL's run and the global one go on.
+loads while NFL's run and the global one go on; `leagueLoadedAt` records when
+each league's last snapshot landed (a failed load keeps it, `start()` clears
+it) — the Teasers tab redoes its board pass only when NFL's or CFB's changes.
 
 `fillfair.test.js` pins the since-your-first-fill capture and reading on
 the 49ers card that motivated it (Seahawks @ 49ers, a 49ers -14.5 alt held

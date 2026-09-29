@@ -181,11 +181,12 @@
   let linesByEventCache = null;
   let ladderCache = new Map();
   // The Teasers tab: the ticket list as last built (teaser.planTeasers keeps
-  // it while nothing real changes), and the fair-ladder reader and Buckeye
-  // lines of the current scanner state, dropped on every scanner update.
+  // it while nothing real changes), and teaser.teaserBoardOf's one pass over
+  // the board with the NFL/CFB load times it was made at — redone only when
+  // one of those leagues' snapshots lands, not on every league's refresh.
   let teaserBuild = null;
-  let teaserLadderReader = null;
-  let teaserLinesCache = null;
+  let teaserBoard = null;
+  let teaserBoardLoadedAt = null;
   const teamsLib = globalThis.UnabatedTeams;
   let teamsSpellingCount = 0;
   const fillfair = globalThis.UnabatedFillFair;
@@ -227,8 +228,6 @@
       boardLinesCache = null;
       linesByEventCache = null;
       ladderCache = new Map();
-      teaserLadderReader = null;
-      teaserLinesCache = null;
       registerFeedTeams(feedState);
       learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
       captureFillFairs().catch((error) => console.error("[unabated-ticket] fill fair capture failed", error));
@@ -2694,16 +2693,26 @@
   const TEASER_TICKETS_SHOWN = 3;
   // Ticket number -> the text its Copy button puts on the clipboard.
   const teaserCopyTexts = new Map();
+  // The last failure logged, so a persistent one is logged once, not every 5 s.
+  let teaserLastError = null;
+
+  // The board pass, redone when an NFL or CFB snapshot has landed since (a
+  // scanner restart clears the load times, so it counts too).
+  function currentTeaserBoard() {
+    const loadedAt = teaserLib.TEASER_LEAGUE_IDS.map((id) => (scannerStatus && scannerStatus.leagueLoadedAt[id]) || 0).join(",");
+    if (!teaserBoard || loadedAt !== teaserBoardLoadedAt) {
+      teaserBoard = teaserLib.teaserBoardOf(scannerState);
+      teaserBoardLoadedAt = loadedAt;
+    }
+    return teaserBoard;
+  }
 
   function teaserModel() {
     if (!scannerState) return null;
     const now = Date.now();
-    if (!teaserLadderReader) teaserLadderReader = teaserLib.ladderReaderOf(scannerState);
-    if (!teaserLinesCache) teaserLinesCache = teaserLib.buckeyeLines(scannerState);
-    const legs = teaserLib.teaserLegs(scannerState, {
-      now, maxLineAgeMs: state.edgeSettings.maxLineAgeHours * HOUR_MS, ladderOf: teaserLadderReader, lines: teaserLinesCache,
-    });
-    const placed = teaserLib.openTeasers(state.betRecords, boardLines(), { now, ladderOf: teaserLadderReader });
+    const board = currentTeaserBoard();
+    const legs = teaserLib.teaserLegs(scannerState, { now, maxLineAgeMs: state.edgeSettings.maxLineAgeHours * HOUR_MS, board });
+    const placed = teaserLib.openTeasers(state.betRecords, boardLines(), { now, ladderOf: board.ladderOf });
     const kellyBankroll = state.settings.bankroll * state.settings.multiplier;
     teaserBuild = teaserLib.planTeasers({ legs, placed, kellyBankroll, previous: teaserBuild }).build;
     return {
@@ -2761,9 +2770,11 @@
     let failure = null;
     try {
       model = teaserModel();
+      teaserLastError = null;
     } catch (error) {
       failure = error;
-      console.error("[unabated-ticket] teasers failed", error);
+      if (teaserLastError !== error.message) console.error("[unabated-ticket] teasers failed", error);
+      teaserLastError = error.message;
     }
     const count = model ? model.plan.tickets.length : 0;
     view.teasersCount.hidden = count === 0;

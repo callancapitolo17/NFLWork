@@ -14,6 +14,8 @@
 //   boardLines  one feed.describeLine row per board event (the panel's
 //               boardLines()): what bets.js joins a leg to its game on.
 // Outputs
+//   teaserBoardOf one pass over the board: Buckeye's lines and each game's
+//                 fair ladder (the panel redoes it only when NFL or CFB reloads)
 //   teaserLegs    every Buckeye side on the board teased 6 points, with its
 //                 win chance or the reason it has none
 //   openTeasers   the open BFA teasers as tickets, each leg joined to its game
@@ -192,29 +194,34 @@
       && typeof line.points === "number" && Number.isFinite(line.points);
   }
 
-  // Every candidate line, once per scanner update: the panel caches this so a
-  // re-render does not walk every league's lines.
-  function buckeyeLines(feedState) {
-    return Object.values(feedState.lines).filter(isBuckeyeTeaserLine);
-  }
-
-  // (eventId, axis) -> Unabated's fair ladder for that game and market,
-  // built from the event's lines of that bet type alone — no moneyline in the
-  // spread ladder. Built on first use and cached for the reader's lifetime:
-  // the panel makes one reader per scanner update.
-  function ladderReaderOf(feedState) {
-    let linesByEvent = null;
-    const cache = new Map();
-    return (eventId, axis) => {
+  // One pass over the board, done once per NFL or CFB snapshot (the panel
+  // keeps it while other leagues refresh; a pass over NFL + CFB is ~100 ms):
+  // Buckeye's candidate lines, and ladderOf(eventId, axis) — Unabated's fair
+  // ladder for that game and market, built on first use from the game's
+  // full-game lines of that bet type alone (no moneyline in the spread
+  // ladder). A game outside NFL and CFB has no ladder: its legs read "no fair".
+  //   {lines, ladderOf}
+  function teaserBoardOf(feedState) {
+    const lines = [];
+    const spreadAndTotalLinesByEvent = new Map();
+    for (const line of Object.values(feedState.lines)) {
+      if (!TEASER_LEAGUE_IDS.includes(line.leagueId) || line.periodTypeId !== FULL_GAME_PERIOD_ID) continue;
+      if (line.betTypeId !== BET_TYPE_SPREAD && line.betTypeId !== BET_TYPE_TOTAL) continue;
+      if (!spreadAndTotalLinesByEvent.has(line.eventId)) spreadAndTotalLinesByEvent.set(line.eventId, []);
+      spreadAndTotalLinesByEvent.get(line.eventId).push(line);
+      if (isBuckeyeTeaserLine(line)) lines.push(line);
+    }
+    const ladders = new Map();
+    const ladderOf = (eventId, axis) => {
       const key = factorKey(eventId, axis);
-      if (!cache.has(key)) {
-        if (!linesByEvent) linesByEvent = ladderLib.groupLinesByEvent(Object.values(feedState.lines));
+      if (!ladders.has(key)) {
         const betTypeId = axis === ladderLib.AXIS_TOTAL ? BET_TYPE_TOTAL : BET_TYPE_SPREAD;
-        const lines = (linesByEvent.get(eventId) || []).filter((line) => line.betTypeId === betTypeId);
-        cache.set(key, ladderLib.buildLadder(lines, { periodTypeId: FULL_GAME_PERIOD_ID, axis }));
+        const marketLines = (spreadAndTotalLinesByEvent.get(eventId) || []).filter((line) => line.betTypeId === betTypeId);
+        ladders.set(key, ladderLib.buildLadder(marketLines, { periodTypeId: FULL_GAME_PERIOD_ID, axis }));
       }
-      return cache.get(key);
+      return ladders.get(key);
     };
+    return { lines, ladderOf };
   }
 
   // ladder.probAbove's reason code in words, at the number the leg is priced at.
@@ -271,21 +278,20 @@
   // board, game not started, and — with maxLineAgeMs — changed by Buckeye
   // within that window (the Edges "Max line age h": a dead feed keeps old
   // numbers). Priced legs carry `win`; the others `reason`. Best first.
-  //   options  {now, maxLineAgeMs, ladderOf?, lines?} — `lines` defaults to
-  //            buckeyeLines(feedState), `ladderOf` to ladderReaderOf(feedState)
+  //   options  {now, maxLineAgeMs, board?} — `board` is teaserBoardOf(feedState),
+  //            made here when not passed
   function teaserLegs(feedState, options) {
     const { now, maxLineAgeMs } = options;
-    const readLadder = options.ladderOf || ladderReaderOf(feedState);
-    const lines = options.lines || buckeyeLines(feedState);
+    const board = options.board || teaserBoardOf(feedState);
     const legs = [];
-    for (const line of lines) {
+    for (const line of board.lines) {
       const event = feedState.events[line.eventId];
       if (!event || event.eventStart == null || event.eventStart <= now) continue;
       if (maxLineAgeMs != null) {
         const changedMs = feed.lineChangedMs(line);
         if (changedMs == null || now - changedMs > maxLineAgeMs) continue;
       }
-      legs.push(legOf(line, feedState, readLadder));
+      legs.push(legOf(line, feedState, board.ladderOf));
     }
     return legs.sort(byWinThenKey);
   }
@@ -850,12 +856,11 @@
   }
 
   const api = {
-    BUCKEYE_BOOK_ID, TEASER_LEAGUE_IDS, TEASER_POINTS, LEGS_PER_TICKET, TICKET_NET_ODDS, TICKET_MAX_STAKE, POOL_SIZE,
-    REBUILD_FAIR_MOVE, BREAK_EVEN_WIN,
-    LEG_LIVE, LEG_STARTED, LEG_OFF_BOARD, LEG_UNPRICED,
+    TEASER_LEAGUE_IDS, TEASER_POINTS, LEGS_PER_TICKET, TICKET_NET_ODDS, TICKET_MAX_STAKE, POOL_SIZE, BREAK_EVEN_WIN,
+    LEG_LIVE,
     STANDING_POOL, STANDING_OUT, STANDING_BELOW, STANDING_OTHER_MARKET, STANDING_UNPRICED,
-    REASON_FEW_LEGS, REASON_HELD_RISK,
-    buckeyeLines, ladderReaderOf, teaserLegs, openTeasers, planTeasers, describePlan, describeLegs,
+    REASON_FEW_LEGS,
+    teaserBoardOf, teaserLegs, openTeasers, planTeasers, describePlan, describeLegs,
   };
 
   if (inNode) {
