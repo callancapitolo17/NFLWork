@@ -1,5 +1,7 @@
-// Unabated Ticket — side panel: the Ticket tab (one captured bet) and the
-// Edges tab (every positive-edge line across the enabled leagues).
+// Unabated Ticket — side panel: the Ticket tab (one captured bet), the Edges
+// tab (every positive-edge line across the enabled leagues), the Bets tab
+// (open bets from the bets service) and the Teasers tab (Buckeye 6-point
+// teasers, teaser.js).
 //
 // Reads: chrome.storage.local {ticket, error, watchStatus, pageCheck, pageReady,
 // booksFilter, locateResult, "liveEdges:<league>"} (written by content.js) and {bankroll,
@@ -114,6 +116,15 @@
     betsCrosswalk: el("bets-crosswalk"), betsCrosswalkCount: el("bets-crosswalk-count"), betsCrosswalkEmpty: el("bets-crosswalk-empty"),
     betsCrosswalkClear: el("bets-crosswalk-clear"),
     shapeBanner: el("shape-banner"),
+    tabTeasers: el("tab-teasers"), teasersCount: el("teasers-count"),
+    teasersService: el("teasers-service"), teasersWarning: el("teasers-warning"), teasersStatus: el("teasers-status"), teasersEmpty: el("teasers-empty"),
+    teasersSummary: el("teasers-summary"), teasersSummaryLabel: el("teasers-summary-label"), teasersSummaryStake: el("teasers-summary-stake"),
+    teasersSummaryCells: el("teasers-summary-cells"), teasersSummaryNote: el("teasers-summary-note"),
+    teasersOpen: el("teasers-open"), teasersOpenCount: el("teasers-open-count"), teasersOpenNote: el("teasers-open-note"), teasersOpenList: el("teasers-open-list"),
+    teasersListLabel: el("teasers-list-label"), teasersListCount: el("teasers-list-count"), teasersList: el("teasers-list"),
+    teasersMore: el("teasers-more"), teasersMoreLabel: el("teasers-more-label"), teasersMoreList: el("teasers-more-list"),
+    teasersLegsLabel: el("teasers-legs-label"), teasersLegsCount: el("teasers-legs-count"), teasersLegs: el("teasers-legs"),
+    teasersLegsMore: el("teasers-legs-more"), teasersLegsMoreLabel: el("teasers-legs-more-label"), teasersLegsMoreList: el("teasers-legs-more-list"),
   };
   // page.js heartbeats every 10s; past this it is not running on any Unabated tab.
   const PAGE_READY_STALE_MS = 25000;
@@ -169,6 +180,12 @@
   // them on first use. Both are dropped on every scanner update.
   let linesByEventCache = null;
   let ladderCache = new Map();
+  // The Teasers tab: the ticket list as last built (teaser.planTeasers keeps
+  // it while nothing real changes), and the fair-ladder reader and Buckeye
+  // lines of the current scanner state, dropped on every scanner update.
+  let teaserBuild = null;
+  let teaserLadderReader = null;
+  let teaserLinesCache = null;
   const teamsLib = globalThis.UnabatedTeams;
   let teamsSpellingCount = 0;
   const fillfair = globalThis.UnabatedFillFair;
@@ -210,10 +227,13 @@
       boardLinesCache = null;
       linesByEventCache = null;
       ladderCache = new Map();
+      teaserLadderReader = null;
+      teaserLinesCache = null;
       registerFeedTeams(feedState);
       learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
       captureFillFairs().catch((error) => console.error("[unabated-ticket] fill fair capture failed", error));
       renderEdges();
+      renderTeasers();
       // A ticket sized from the feed (or waiting for it) follows the feed's
       // updates; one the screen priced is left alone (a re-render clears the copy status).
       if (state.ticket && !state.error && pricedLine(state.ticket).edgeFrom !== "screen") render();
@@ -1822,13 +1842,13 @@
 
   // ---- tabs ----------------------------------------------------------------
 
-  const TABS = ["ticket", "edges", "bets"];
-  const paneOf = { ticket: view.tabTicket, edges: view.tabEdges, bets: view.tabBets };
+  const TABS = ["ticket", "edges", "bets", "teasers"];
+  const paneOf = { ticket: view.tabTicket, edges: view.tabEdges, bets: view.tabBets, teasers: view.tabTeasers };
   // Each pane scrolls on its own, but a hidden element is not guaranteed to
   // keep its scrollTop, so the position is remembered explicitly. Without this
   // the Edges list went back to the top every time a capture brought the
   // Ticket tab forward, which is the whole reason for the split panes.
-  const paneScroll = { ticket: 0, edges: 0, bets: 0 };
+  const paneScroll = { ticket: 0, edges: 0, bets: 0, teasers: 0 };
 
   function showTab(name) {
     const next = TABS.includes(name) ? name : "ticket";
@@ -1879,6 +1899,7 @@
     chrome.storage.local.set({ activeTab: state.activeTab });
     if (state.activeTab === "edges") renderEdges();
     if (state.activeTab === "bets") renderBets();
+    if (state.activeTab === "teasers") renderTeasers();
   });
 
   // ---- edge settings -------------------------------------------------------
@@ -1949,6 +1970,8 @@
       scanner.start(scannerLeaguesOf(parsed.settings.leagues)).catch((error) => console.error("[unabated-ticket] scanner restart failed", error));
     }
     renderEdges();
+    // Max line age decides which Buckeye legs can be teased.
+    renderTeasers();
     // A restarted scanner runs the alert pass on its first snapshot.
     if (scopeChanged && !scannerLeaguesChanged) processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
   }
@@ -2056,12 +2079,14 @@
     return chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords, crosswalk: state.crosswalk, pins: state.pins, fillFairs: state.fillFairs } });
   }
 
-  // Every surface that shows a bet flag, after the records or the crosswalk changed.
+  // Every surface that shows a bet flag, after the records or the crosswalk
+  // changed — the Teasers tab too: open BFA teasers are its placed tickets.
   function renderBetsFlags() {
     renderBetsHeader();
     if (!state.error) render();
     renderEdges();
     if (state.activeTab === "bets") renderBets();
+    renderTeasers();
   }
 
   // ---- team crosswalk (#118 step 4) -----------------------------------------
@@ -2655,6 +2680,342 @@
     if (urlChanged) pollBets().catch((error) => console.error("[unabated-ticket] bets poll failed", error));
   }
 
+  // ---- Teasers tab (Buckeye 6-point teasers, teaser.js) ----------------------
+  //
+  // Every render recomputes the legs and the open BFA teasers; the ticket list
+  // is rebuilt only when teaser.planTeasers says what it is built on changed,
+  // so it holds still while the EVs move. It is computed on every scanner
+  // update, bets poll and 5 s tick even with the tab hidden, so the tab's
+  // count stays current. Placed tickets come from the bets service's BFA
+  // open bets (BFA is Buckeye): nothing to mark here.
+
+  const HOUR_MS = 3600 * 1000;
+  // Ticket cards shown before the fold; the rest sit behind "N more tickets".
+  const TEASER_TICKETS_SHOWN = 3;
+  // Ticket number -> the text its Copy button puts on the clipboard.
+  const teaserCopyTexts = new Map();
+
+  function teaserModel() {
+    if (!scannerState) return null;
+    const now = Date.now();
+    if (!teaserLadderReader) teaserLadderReader = teaserLib.ladderReaderOf(scannerState);
+    if (!teaserLinesCache) teaserLinesCache = teaserLib.buckeyeLines(scannerState);
+    const legs = teaserLib.teaserLegs(scannerState, {
+      now, maxLineAgeMs: state.edgeSettings.maxLineAgeHours * HOUR_MS, ladderOf: teaserLadderReader, lines: teaserLinesCache,
+    });
+    const placed = teaserLib.openTeasers(state.betRecords, boardLines(), { now, ladderOf: teaserLadderReader });
+    const kellyBankroll = state.settings.bankroll * state.settings.multiplier;
+    teaserBuild = teaserLib.planTeasers({ legs, placed, kellyBankroll, previous: teaserBuild }).build;
+    return {
+      legs, placed, build: teaserBuild,
+      plan: teaserLib.describePlan(teaserBuild, legs, placed),
+      legRows: teaserLib.describeLegs(legs, teaserBuild, placed),
+    };
+  }
+
+  function fmtWholeDollars(value) {
+    return value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+  }
+
+  function fmtSignedDollars(value) {
+    return `${value >= 0 ? "+" : "-"}${fmtWholeDollars(Math.abs(value))}`;
+  }
+
+  function fmtWin(win) {
+    return `${(win * 100).toFixed(1)}%`;
+  }
+
+  function fmtEv(ev) {
+    return `EV ${ev >= 0 ? "+" : ""}${(ev * 100).toFixed(1)}%`;
+  }
+
+  function fmtWholePct(fraction) {
+    return `${Math.round(fraction * 100)}%`;
+  }
+
+  function kellyWords(multiplier) {
+    const names = { 1: "Full", 0.5: "Half", 0.25: "Quarter" };
+    return `${names[multiplier] || `${multiplier}x`} Kelly`;
+  }
+
+  function plural(count, word) {
+    return `${count} ${word}${count === 1 ? "" : "s"}`;
+  }
+
+  function teaserTicketSize() {
+    return `${teaserLib.LEGS_PER_TICKET}-team · pays +${teaserLib.TICKET_NET_ODDS * 100}`;
+  }
+
+  // The bets service's BFA row (betsview.sourceRows), or null before the service has been reached.
+  function bfaSourceRow(now) {
+    if (!state.betsService || state.betsService.okAt == null) return null;
+    return betsView.sourceRows(betsPayload(), now).find((row) => row.venue === "bfa") || null;
+  }
+
+  function footballLoaded() {
+    return Boolean(scannerStatus) && teaserLib.TEASER_LEAGUE_IDS.some((id) => scannerStatus.leaguesLoaded.includes(id));
+  }
+
+  function renderTeasers() {
+    let model = null;
+    let failure = null;
+    try {
+      model = teaserModel();
+    } catch (error) {
+      failure = error;
+      console.error("[unabated-ticket] teasers failed", error);
+    }
+    const count = model ? model.plan.tickets.length : 0;
+    view.teasersCount.hidden = count === 0;
+    view.teasersCount.textContent = String(count);
+    if (state.activeTab !== "teasers") return;
+    const scrollTop = view.tabTeasers.scrollTop;
+    renderTeasersBanners(failure);
+    renderTeasersStatus(model);
+    renderTeasersSummary(model);
+    renderTeasersOpen(model);
+    renderTeasersTickets(model);
+    renderTeasersLegs(model);
+    view.tabTeasers.scrollTop = scrollTop;
+  }
+
+  // Red: the tab failed, or the bets service is down (the list stays up, but
+  // an open teaser may be missing from it). Amber: no BFA account is read, or
+  // BFA's last pull failed.
+  function renderTeasersBanners(failure) {
+    const now = Date.now();
+    const red = [];
+    if (failure) red.push(`Teasers failed: ${failure.message}`);
+    const service = betsView.serviceStatus(state.betsService, now);
+    if (service.unreachable) {
+      red.push(`${service.text.charAt(0).toUpperCase()}${service.text.slice(1)}. Open BFA teasers may be missing, so a ticket already placed may be suggested again.`);
+    }
+    view.teasersService.hidden = red.length === 0;
+    view.teasersService.textContent = red.join(" ");
+    const bfa = bfaSourceRow(now);
+    const amber = !bfa || service.unreachable ? null
+      : !bfa.configured ? "The bets service reads no BFA account, so tickets already placed at Buckeye are not known here."
+        : bfa.error ? `BFA's last pull failed (${bfa.error}); open teasers are as of ${bfa.ageText} ago.` : null;
+    view.teasersWarning.hidden = !amber;
+    view.teasersWarning.textContent = amber || "";
+  }
+
+  // "NFL · CFB loading · 15 games on Buckeye's board · 56 of 56 legs priced".
+  function renderTeasersStatus(model) {
+    if (!scannerStatus || !model) {
+      view.teasersStatus.textContent = "Starting the scanner…";
+      return;
+    }
+    const leagues = teaserLib.TEASER_LEAGUE_IDS.map((id) => {
+      const label = feed.LEAGUES[id].label;
+      if (scannerStatus.leaguesLoaded.includes(id)) return label;
+      return scannerStatus.leagueErrors && scannerStatus.leagueErrors[id] ? `${label} unavailable` : `${label} loading`;
+    });
+    const games = new Set(model.legs.map((leg) => leg.eventId)).size;
+    const priced = model.legs.filter((leg) => leg.win != null).length;
+    view.teasersStatus.textContent = `${leagues.join(" · ")} · ${plural(games, "game")} on Buckeye's board · ${priced} of ${plural(model.legs.length, "leg")} priced`;
+  }
+
+  function teasersEmptyText(model) {
+    if (!model || !footballLoaded()) return "Waiting for Buckeye's NFL and CFB board…";
+    const { plan, build } = model;
+    if (plan.tickets.length) return null;
+    if (build.reason === teaserLib.REASON_FEW_LEGS) return `Fewer than ${teaserLib.LEGS_PER_TICKET} games with a priced Buckeye leg right now: nothing to tease.`;
+    if (build.reason) return `No tickets: ${build.reason}.`;
+    return build.placed.length
+      ? "Nothing more to bet: no other ticket raises the Kelly growth with the open teasers held."
+      : "No ticket worth betting right now: no 4-team ticket raises the Kelly growth at these fairs.";
+  }
+
+  function summaryCell(label, value, small) {
+    const cell = makeEl("div", "payout-cell");
+    const valueEl = makeEl("div", "payout-value", value);
+    if (small) valueEl.append(" ", makeEl("small", null, small));
+    cell.append(makeEl("div", "payout-label", label), valueEl);
+    return cell;
+  }
+
+  // Tickets, dollars, expected profit, the chance to make money and the
+  // chance every ticket loses — over the open teasers too when there are any.
+  function renderTeasersSummary(model) {
+    const empty = teasersEmptyText(model);
+    view.teasersEmpty.hidden = !empty;
+    view.teasersEmpty.textContent = empty || "";
+    const summary = model ? model.plan.summary : null;
+    const shown = Boolean(summary) && (summary.count > 0 || summary.placedCount > 0);
+    view.teasersSummary.hidden = !shown;
+    if (!shown) return;
+    view.teasersSummaryLabel.textContent = summary.count === 0 ? "Nothing more to bet"
+      : summary.placedCount ? `Bet ${summary.count} more` : `Bet ${plural(summary.count, "ticket")}`;
+    view.teasersSummaryStake.textContent = fmtWholeDollars(summary.stake);
+    const cells = [];
+    if (summary.placedCount) {
+      // The count is in the Open at BFA header right below.
+      cells.push(summaryCell("Placed", fmtWholeDollars(summary.placedStake)));
+      if (summary.expectedAll != null) cells.push(summaryCell(`Expected, all ${summary.count + summary.placedCount}`, fmtSignedDollars(summary.expectedAll)));
+    } else {
+      cells.push(summaryCell("Expected", fmtSignedDollars(summary.expected), summary.stake > 0 ? fmtWholePct(summary.expected / summary.stake) : null));
+    }
+    if (summary.makesMoney != null) cells.push(summaryCell("Makes money", fmtWholePct(summary.makesMoney)));
+    if (summary.allLose != null) cells.push(summaryCell("All lose", fmtWholePct(summary.allLose)));
+    view.teasersSummaryCells.replaceChildren(...cells);
+    view.teasersSummaryNote.textContent = `${kellyWords(state.settings.multiplier)} on ${fmtWholeDollars(state.settings.bankroll)} · `
+      + (summary.placedCount ? "open BFA teasers held fixed" : "tickets that share a leg are sized together");
+  }
+
+  // What Copy puts on the clipboard: BFA's own "[rotation] side" for each leg.
+  function teaserCopyText(ticket) {
+    const legs = ticket.legs.map((leg) => `${leg.rotation != null ? `[${leg.rotation}] ` : ""}${leg.label}`).join(" / ");
+    return `Buckeye ${teaserLib.LEGS_PER_TICKET}-team ${teaserLib.TEASER_POINTS}-pt teaser ${fmtWholeDollars(ticket.stake)}: ${legs} | ${fmtEv(ticket.ev)}`;
+  }
+
+  function teaserTicketCard(ticket) {
+    const card = makeEl("li", "ticket-card");
+    const head = makeEl("div", "tk-head");
+    const rail = makeEl("span", "tk-rail");
+    rail.append(makeEl("span", "tk-stake", fmtWholeDollars(ticket.stake)), makeEl("span", "tk-ev", fmtEv(ticket.ev)));
+    head.append(makeEl("span", "tk-num", `#${ticket.number}`), makeEl("span", "tk-size", teaserTicketSize()), rail);
+    const legs = makeEl("ol", "tk-legs");
+    for (const leg of ticket.legs) {
+      const row = makeEl("li");
+      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.fromLabel), makeEl("span", "tl-win", fmtWin(leg.win)));
+      legs.append(row);
+    }
+    const actions = makeEl("div", "tk-actions");
+    const copy = makeEl("button", "btn sm", "Copy");
+    copy.type = "button";
+    copy.dataset.copyTicket = String(ticket.number);
+    actions.append(makeEl("span", "tk-copied"), copy);
+    card.append(head, legs, actions);
+    teaserCopyTexts.set(ticket.number, teaserCopyText(ticket));
+    return card;
+  }
+
+  function renderTeasersTickets(model) {
+    teaserCopyTexts.clear();
+    const tickets = model ? model.plan.tickets : [];
+    view.teasersListLabel.hidden = tickets.length === 0;
+    view.teasersListCount.textContent = tickets.length ? String(tickets.length) : "";
+    view.teasersList.replaceChildren(...tickets.slice(0, TEASER_TICKETS_SHOWN).map(teaserTicketCard));
+    const rest = tickets.slice(TEASER_TICKETS_SHOWN);
+    view.teasersMore.hidden = rest.length === 0;
+    view.teasersMoreLabel.textContent = `${plural(rest.length, "more ticket")} · ${fmtWholeDollars(rest.reduce((sum, ticket) => sum + ticket.stake, 0))}`;
+    view.teasersMoreList.replaceChildren(...rest.map(teaserTicketCard));
+  }
+
+  // One open BFA teaser, read-only: its legs at BFA's numbers, each at its
+  // current fair or why it counts as won.
+  function openTeaserCard(ticket) {
+    const card = makeEl("li", `ticket-card placed${ticket.inPlay ? "" : " done"}`);
+    const head = makeEl("div", "tk-head");
+    const rail = makeEl("span", "tk-rail");
+    const hasDollars = ticket.reason == null;
+    if (ticket.inPlay) rail.append(makeEl("span", "tk-ev", fmtEv(ticket.winAll * (1 + ticket.toWin / ticket.stake) - 1)));
+    const size = hasDollars ? `${ticket.legCount}-team · ${fmtWholeDollars(ticket.stake)} to win ${fmtWholeDollars(ticket.toWin)}` : `${ticket.legCount}-team`;
+    head.append(makeEl("span", "tk-size", size), rail);
+    const legs = makeEl("ol", "tk-legs");
+    for (const leg of ticket.legs) {
+      const row = makeEl("li", leg.state === teaserLib.LEG_LIVE ? null : "counted");
+      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.note || ""), makeEl("span", "tl-win", leg.win == null ? "—" : fmtWin(leg.win)));
+      legs.append(row);
+    }
+    const actions = makeEl("div", "tk-actions");
+    if (!ticket.inPlay) actions.append(makeEl("span", "muted", hasDollars ? "no game still to play: out of the math" : `${ticket.reason}: out of the math`));
+    actions.append(makeEl("span", "tag held", ticket.placedAt ? `placed ${betsLib.formatPlacedAt(ticket.placedAt)}` : "placed"));
+    card.append(head, legs, actions);
+    return card;
+  }
+
+  // Always shown once the board is up, so "none open · BFA pulled 41 s ago"
+  // says how fresh the answer is right after a ticket is placed.
+  function renderTeasersOpen(model) {
+    view.teasersOpen.hidden = !model;
+    if (!model) return;
+    const placed = model.placed;
+    const bfa = bfaSourceRow(Date.now());
+    const pull = !bfa ? "bets service not reached yet"
+      : !bfa.configured ? "no BFA account read"
+        : bfa.fetchedAt ? `BFA pulled ${bfa.ageText} ago` : "no BFA pull yet";
+    const stake = placed.reduce((sum, ticket) => sum + (typeof ticket.stake === "number" ? ticket.stake : 0), 0);
+    view.teasersOpenCount.textContent = placed.length ? String(placed.length) : "";
+    view.teasersOpenNote.textContent = [placed.length ? `${fmtWholeDollars(stake)} · until each ticket's last game starts` : "none open", pull].join(" · ");
+    view.teasersOpenList.replaceChildren(...placed.map(openTeaserCard));
+  }
+
+  function legStandingText(row) {
+    const open = row.openTickets ? ` · ${row.openTickets} open` : "";
+    if (row.standing !== teaserLib.STANDING_POOL) return `${row.note}${open}`;
+    return `${row.inTickets ? `in ${plural(row.inTickets, "ticket")}` : "in no ticket"}${open}`;
+  }
+
+  function teaserLegRow(row) {
+    const { leg } = row;
+    const pool = row.standing === teaserLib.STANDING_POOL;
+    const item = makeEl("li", `edge-row leg-row ${pool ? "tier-hot" : "tier-thin out"}`);
+    const main = makeEl("div");
+    const meta = makeEl("div", "edge-meta");
+    meta.append(`${leg.matchup} · ${leg.leagueLabel} · ${fmtStart(new Date(leg.eventStartMs).toISOString())} · `, untilEl(leg.eventStartMs));
+    const book = makeEl("div", "edge-book");
+    book.append(makeEl("span", "price", `Buckeye ${leg.bookLabel}`),
+      makeEl("span", "age", ` · teased ${teaserLib.TEASER_POINTS} · ${fmtLineAge(leg.modifiedMs)}`));
+    main.append(makeEl("div", "edge-side", leg.label), meta, book);
+    const rail = makeEl("div", "edge-rail");
+    rail.append(makeEl("span", `edge-pct tier-${pool ? "hot" : "thin"}`, leg.win == null ? "—" : fmtWin(leg.win)),
+      makeEl("span", "leg-in", legStandingText(row)));
+    item.append(main, rail);
+    return item;
+  }
+
+  function breakEvenDivider() {
+    const divider = makeEl("li", "be-divider");
+    divider.setAttribute("role", "separator");
+    divider.append(makeEl("span", null, `${fmtWin(teaserLib.BREAK_EVEN_WIN)} a leg breaks even at +${teaserLib.TICKET_NET_ODDS * 100}`));
+    return divider;
+  }
+
+  // The pool's legs and the priced legs above break-even, best first, with
+  // the break-even line where it falls; the rest of the games behind a fold.
+  function renderTeasersLegs(model) {
+    const rows = model ? model.legRows : [];
+    view.teasersLegsLabel.hidden = rows.length === 0;
+    view.teasersLegsCount.textContent = rows.length ? String(rows.length) : "";
+    const shownStandings = [teaserLib.STANDING_POOL, teaserLib.STANDING_OUT];
+    const shown = rows.filter((row) => shownStandings.includes(row.standing));
+    const folded = rows.filter((row) => !shownStandings.includes(row.standing));
+    const items = [];
+    let dividerPlaced = false;
+    for (const row of shown) {
+      if (!dividerPlaced && row.leg.win < teaserLib.BREAK_EVEN_WIN) {
+        items.push(breakEvenDivider());
+        dividerPlaced = true;
+      }
+      items.push(teaserLegRow(row));
+    }
+    if (!dividerPlaced && folded.length) items.push(breakEvenDivider());
+    view.teasersLegs.replaceChildren(...items);
+    view.teasersLegsMore.hidden = folded.length === 0;
+    const counts = [
+      [teaserLib.STANDING_BELOW, "below break-even"],
+      [teaserLib.STANDING_OTHER_MARKET, "on an open teaser's other market"],
+      [teaserLib.STANDING_UNPRICED, "with no fair"],
+    ].map(([standing, words]) => [folded.filter((row) => row.standing === standing).length, words])
+      .filter(([count]) => count > 0).map(([count, words]) => `${count} ${words}`);
+    view.teasersLegsMoreLabel.textContent = `${plural(folded.length, "more game")}: ${counts.join(", ")}`;
+    view.teasersLegsMoreList.replaceChildren(...folded.map(teaserLegRow));
+  }
+
+  view.tabTeasers.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-copy-ticket]");
+    if (!button) return;
+    const status = button.parentElement.querySelector(".tk-copied");
+    try {
+      await navigator.clipboard.writeText(teaserCopyTexts.get(Number(button.dataset.copyTicket)) || "");
+      status.textContent = "Copied";
+    } catch (error) {
+      status.textContent = `Copy failed: ${error.message}`;
+    }
+  });
+
   // ---- settings ------------------------------------------------------------
 
   function readSettingInputs() {
@@ -2673,6 +3034,7 @@
     chrome.storage.local.set(parsed.settings);
     render();
     renderEdges();
+    renderTeasers();
   }
 
   function fillSettingInputs() {
@@ -2729,6 +3091,7 @@
     renderEdges();
     renderLocate();
     if (state.activeTab === "bets") renderBets();
+    renderTeasers();
     startBetsPolling();
     await scanner.start(scannerLeaguesOf(state.edgeSettings.leagues));
   }
@@ -2825,6 +3188,8 @@
       renderLocate();
     }
     if (state.activeTab === "bets") renderBets();
+    // Even hidden: a game that starts leaves the list, and the tab's count follows.
+    renderTeasers();
   }, 5000);
 
   // The Live block's clock: staleness and "fair set 0:38 ago" move without a

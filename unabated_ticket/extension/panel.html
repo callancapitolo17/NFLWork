@@ -18,6 +18,7 @@
       <button type="button" data-tab="edges">Edges <span id="edges-count" class="count" hidden></span><span id="edges-live-count" class="count live" hidden></span></button>
       <button type="button" data-tab="ticket" class="active">Ticket</button>
       <button type="button" data-tab="bets" id="bets-tab-button">Bets <span id="bets-count" class="count" hidden></span><span id="bets-alert" class="count alert" hidden></span></button>
+      <button type="button" data-tab="teasers">Teasers <span id="teasers-count" class="count" hidden></span></button>
       <button type="button" id="settings-toggle" class="gear" title="Bankroll and Kelly multiplier">&#9881;</button>
     </nav>
 
@@ -207,6 +208,43 @@
     <div class="muted pane-note">What each venue calls a team, learned whenever a bet joins the board by its Kalshi or Novig id, or when you attach a bet by hand. Applied before name matching, so a later bet on that team matches even where the venue lists no ladder.</div>
     <ol id="bets-crosswalk" class="bets-list crosswalk"></ol>
     <div id="bets-crosswalk-empty" class="muted pane-note" hidden></div>
+  </section>
+
+  <!-- Buckeye 6-point teasers (teaser.js): the 4-team tickets to bet, sized
+       with Kelly over the whole set under Buckeye's $200 limit, around the
+       open BFA teasers the bets service reports (BFA is Buckeye). -->
+  <section id="tab-teasers" class="tabpane" hidden>
+    <div id="teasers-service" class="warning bad" hidden></div>
+    <div id="teasers-warning" class="warning" hidden></div>
+    <div class="teaser-menu muted">Buckeye · 6-pt football · 4 teams +300 · max $200 a ticket · Unabated fair · a push loses</div>
+    <div id="teasers-status" class="muted teaser-status"></div>
+    <div id="teasers-empty" class="muted pane-note" hidden></div>
+
+    <div id="teasers-summary" class="stake-block teaser-summary" hidden>
+      <div class="stake-label" id="teasers-summary-label"></div>
+      <div class="stake" id="teasers-summary-stake"></div>
+      <div class="payout-row" id="teasers-summary-cells"></div>
+      <div class="muted" id="teasers-summary-note"></div>
+    </div>
+
+    <details id="teasers-open" class="offboard placed-block" open hidden>
+      <summary><span class="section-label inline">Open at BFA <span id="teasers-open-count" class="num"></span></span> <span id="teasers-open-note" class="muted"></span></summary>
+      <ol id="teasers-open-list" class="ticket-list"></ol>
+    </details>
+
+    <h2 class="section-label" id="teasers-list-label" hidden>To bet · in this order <span id="teasers-list-count" class="num"></span></h2>
+    <ol id="teasers-list" class="ticket-list"></ol>
+    <details id="teasers-more" class="more-tickets" hidden>
+      <summary id="teasers-more-label"></summary>
+      <ol id="teasers-more-list" class="ticket-list"></ol>
+    </details>
+
+    <h2 class="section-label" id="teasers-legs-label" hidden>Legs · best per game <span id="teasers-legs-count" class="num"></span></h2>
+    <ol id="teasers-legs" class="edges-list legs-list"></ol>
+    <details id="teasers-legs-more" class="more-tickets" hidden>
+      <summary id="teasers-legs-more-label"></summary>
+      <ol id="teasers-legs-more-list" class="edges-list legs-list"></ol>
+    </details>
   </section>
 
   <script src="kelly.js"></script>
