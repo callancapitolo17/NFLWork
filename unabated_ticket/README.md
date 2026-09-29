@@ -1,6 +1,6 @@
 # Unabated Ticket
 
-Chrome extension (Manifest V3, plain JS, no build step). Three tabs in one
+Chrome extension (Manifest V3, plain JS, no build step). Four tabs in one
 side panel:
 
 - **Ticket** — click a price on the Unabated odds screen and the panel shows
@@ -17,11 +17,16 @@ side panel:
   `docs/2026-09-10-unabated-edge-scanner-plan.md`. Alternate spreads and
   totals (every rung Unabated prices, not just the main number) list too
   behind an **Include alt lines** toggle — issue #113, see *Alt lines*.
-- **Bets** — your own open bets (Kalshi today; BetOnline, Novig and ProphetX
-  are separate tickets) read from a local service, matched against the
+- **Bets** — your own open bets (Kalshi, Novig, BetOnline, BFA, Wagerzon,
+  Polymarket US) read from a local service, matched against the
   board so the Ticket tab says when you already have this line, the other
   side of it, or a bet on the game, and the Edges list flags the same. Issue
   #114; plan in `docs/2026-09-11-issue-114-bet-history-plan.md`. See *Bets*.
+- **Teasers** — the Buckeye 6-point 4-team teasers to bet right now, each at
+  or under Buckeye's $200 limit, priced off Unabated's fair and sized with
+  Kelly over the whole set, around the teasers already open at BFA (BFA is
+  Buckeye). Plan in `docs/2026-09-27-unabated-ticket-teasers-plan.md`. See
+  *Teasers*.
 
 One ticket at a time. No overlay on the Unabated page, no rounding of the
 stake, no order placement.
@@ -693,9 +698,9 @@ changes, so a poll that left before a save landed cannot drop it). **No backfill
 bet placed before the panel was watching — every bet open when this shipped,
 one placed with the panel hidden or closed — gets no saved fair and keeps
 the ten-minute tag. A new bet reaches the panel well inside the ten minutes
-the history keeps: the service polls Kalshi and Novig every 60 s and
-BetOnline, BFA and Wagerzon every 300 s, and the panel polls the service
-every 30 s. Record quirks that shape the reading: a Kalshi record is one per
+the history keeps: the service polls Kalshi, Novig and BFA's open bets every
+60 s and BetOnline, BFA's history and Wagerzon every 300 s, and the panel
+polls the service every 30 s. Record quirks that shape the reading: a Kalshi record is one per
 contract, with the FIRST fill's time and the VWAP of every fill, so its
 baseline is the fair at the first fill against the average price; a Novig
 order's time is its placement, resting or not; and Unabated's Kalshi price
@@ -809,7 +814,7 @@ Two kinds of source feed the flags:
 | Kalshi | `bets_service/sources/kalshi.py` (local service, signed REST) | every 60 s while the service runs |
 | Novig | `bets_service/sources/novig.py` (local service, the app's Portfolio REST feed on the account's own Auth0 refresh token, #116) | every 60 s while the service runs; no tab needed |
 | BetOnline | — (#115) | shows "no source configured" |
-| BFA (Betfastaction) | `bets_service/sources/bfa.py` (local service, the account's own Keycloak password login from `bet_logger/.env`; 2026-09-23) | every 300 s while the service runs |
+| BFA (Betfastaction) | `bets_service/sources/bfa.py` (local service, the account's own Keycloak password login from `bet_logger/.env`; 2026-09-23) | open bets every 60 s, history every 300 s, while the service runs |
 | Wagerzon (the C account) | `bets_service/sources/wagerzon.py` (local service, the site's form login from `bet_logger/.env`; 2026-09-23) | every 300 s while the service runs |
 | Polymarket US (the CFTC app) | `bets_service/sources/polymarket_us.py` (local service, the account's own API key from `bet_logger/.env`, Ed25519-signed; 2026-09-23) | every 60 s while the service runs |
 | ProphetX | — (#117) | shows "no source configured" |
@@ -1158,6 +1163,140 @@ feed's own shapes:
   matched). Novig sends no rotation number, so a Novig bet reaches a line
   by its outcome id or its team pair only.
 
+## Teasers
+
+Buckeye 6-point teasers on NFL and CFB: the set of 4-team tickets to bet right
+now, each at or under Buckeye's $200 limit, sized with the panel's Kelly
+settings. Unabated's own teaser calculator prices one hand-built ticket at a
+typed-in price; this prices every Buckeye leg on the board and spreads the
+Kelly amount over as many $200 tickets as it is worth. Plan:
+`docs/2026-09-27-unabated-ticket-teasers-plan.md`. Code: `extension/teaser.js`
+(pure, node-tested) and the Teasers tab in `panel.js`.
+
+**Legs.** Every Buckeye (Unabated source 59) main full-game spread and total on
+the board, game not started, line changed within the Edges tab's **Max line
+age h** (a dead feed keeps old numbers). Teased 6 points: a spread's own number
++6, an Over −6, an Under +6. Buckeye's price is ignored: −120 and +100 tease
+the same. **A push loses** (Buckeye's tie rule is unconfirmed), so a leg wins
+exactly when the half-point one step against it wins: Bills −1 (from −7) is
+priced at −1.5, Browns +8 at +7.5, Over 38 at 38.5. The win chance is
+Unabated's fair at that half-point, read off the game's ladder (`ladder.js`)
+built from that bet type's lines alone — the spread ladder leaves the
+moneyline out, since Unabated's moneyline fair and its alt spreads disagree by
+about 2.5 points near zero (SEA @ WAS 77.1% vs 79.5%). A leg with no rung at
+its number, or a rung that repeats its neighbour's fair (Unabated flat-lines
+deep tails), is listed grey with the reason and never used.
+
+**Tickets.** The pool is each game's best leg — one leg per game, so legs are
+independent — the top 10 by win chance (2^10 = 1,024 joint outcomes; 12 legs
+added nothing). Every 4-leg combination of the pool (210) is a candidate. All
+four legs win: +3 per dollar (+300); anything else loses the stake. A leg
+breaks even at 70.7% (0.25^¼).
+
+**The set.** One score decides everything: E[ln(1 + P&L / K)], K = bankroll ×
+Kelly multiplier (the ⚙ settings; the objective conditional Kelly uses for
+held bets). Starting from the open BFA teasers, the tab adds the $200 ticket
+that raises the score most, again and again, until no $200 ticket raises it;
+that ticket's best stake below $200 (whole dollars) is the last, partial one.
+No ticket twice, and no per-leg cap (user decision 2026-09-28: "no leg on more
+than half the tickets" cost 6% of the value after risk). Two ways to see what
+it does, on Sunday's board (2026-09-27 16:37 UTC, $20,000 at quarter Kelly,
+K = $5,000):
+
+*Each leg lands near its target.* A leg inside a +300 4-teamer carries −241
+(the 70.7% break-even); its target is quarter Kelly as a straight bet at
+−241, and the set puts about that much on it:
+
+| Leg | Win | Target | In the set |
+|---|---|---|---|
+| 49ers −1.5 | 77.1% | $1,089 | $892 |
+| Seahawks −2.5 | 76.0% | $911 | $800 |
+| Colts +7.5 | 74.7% | $684 | $600 |
+| Titans +8.5 | 74.7% | $684 | $600 |
+| Bills −1 | 74.0% | $571 | $492 |
+| Browns +8 | 73.9% | $548 | $600 |
+| Broncos +7.5 | 73.9% | $548 | $492 |
+| Lions −1 | 72.8% | $354 | $400 |
+| Patriots +9 | 72.3% | $277 | $292 |
+| Steelers +9 | 70.7% | $0 | $0 |
+
+*Every extra ticket on a leg is scored against the tickets already riding on
+it.* Step by step, the ticket bet and the best one the other way on the 49ers,
+with what each adds to the value after risk:
+
+| Step | Bet | EV | Adds | Best the other way | EV | Adds |
+|---|---|---|---|---|---|---|
+| 1 | 49ers / Seahawks / Colts / Titans | 30.7% | $48.0 | Seahawks / Colts / Titans / Bills | 25.6% | $38.0 |
+| 2 | 49ers / Seahawks / Bills / Browns | 28.2% | $34.8 | Seahawks / Bills / Browns / Broncos | 22.9% | $29.3 |
+| 3 | 49ers / Titans / Broncos / Lions | 23.8% | $23.2 | Colts / Titans / Bills / Broncos | 22.0% | $19.8 |
+| 4 | Seahawks / Colts / Bills / Broncos | 24.2% | $16.9 | 49ers / Seahawks / Colts / Broncos | 29.3% | $15.5 |
+| 5 | 49ers / Colts / Browns / Patriots | 23.0% | $12.1 | Colts / Titans / Browns / Patriots | 19.2% | $8.8 |
+| 6 | Seahawks / Titans / Browns / Lions | 22.1% | $3.5 | 49ers / Seahawks / Titans / Patriots | 26.5% | $1.2 |
+| 7 | 49ers / Bills / Broncos / Patriots, $92 | 21.9% | $2.5 | Titans / Bills / Broncos / Patriots | 18.1% | $1.7 |
+
+At step 4 the better ticket by EV (29.3%, with the 49ers) adds less than a
+24.2% one without them: the 49ers already ride on three tickets. The set: 7
+tickets, $1,292, +$324 expected (25%), worth $141 after risk, 47% to make
+money, 22% that every ticket loses. Splitting finer does not cut the swing
+(measured 9/27): 92–97% of the variance is how many legs cover. The Kelly
+multiplier is the variance dial.
+
+**Placed tickets come from BFA — nothing to mark.** BFA is Buckeye, so every
+open BFA teaser the bets service reports, from this tab or not, is a placed
+ticket. Its legs arrive one record per leg (`isParlayLeg`, `parlayId`, the
+ticket's stake and to-win on each, `raw.headerDescription` "4 TEAM TEASERS",
+the leg's teased number, rotation and start), are grouped by `parlayId` and
+joined to their games through `bets.js`'s matcher (rotation + start; BFA's
+rotations are Unabated's); `bets.teaserLegPositionOf` places a leg on its
+game's axis without the parlay-leg and stake guards straight bets have. A
+placed ticket is fixed P&L in the score — +to win when every leg covers,
+−stake otherwise, a push losing — until its last game starts. A started leg,
+a leg no board game matches and a leg with no fair count as won: the ticket
+keeps its full weight on the legs still to play, and no fair has to be saved.
+A game with a placed leg offers new legs only on that leg's market (spread or
+total); when Buckeye has moved the number since, the placed and the new leg
+share the game's rows — the game is one outcome cut at both numbers, as in
+conditional Kelly — rather than counting as two independent legs. The bets
+service polls BFA's open bets every 60 s, so a ticket shows within about 90
+s of being placed; the tab says how old the last BFA pull is.
+
+**The list holds still.** Many 4-leg combinations are near-tied: rebuilding
+on every tick gave lists at 9:06 and 9:37 on 9/27 that shared 1 of 7 tickets
+(no leg had moved more than half a point) and were worth the same (+$326 vs
++$324). So the list is built on each leg's fair as of the build, replaced
+only when that leg moves 1 point or more, and it is rebuilt only when what it
+is built on changes: the pool, a pool leg's number, an open BFA teaser, K, or
+a 1-point move. Smaller ticks move the win chances, EVs and summary in place.
+Built on the same fairs, the list after you place its first ticket is the
+same list less that ticket. A frozen list alone would miss news: the 49ers
+leg down 5 points halves the 9:37 list's value after risk ($141 → $71) —
+that move rebuilds it.
+
+**The tab.** The count on the tab is the tickets to bet. A summary (tickets
+and dollars to bet, expected profit, the chance to make money and the chance
+every ticket loses — with open BFA teasers, what is placed and the expected
+profit of all of them together), then **Open at BFA** (each open teaser
+read-only, its legs at their current fairs or why they count as won, and the
+age of the last BFA pull), the ticket cards in the order to bet them (legs,
+stake, EV, **Copy**: `[rotation] side` per leg, BFA's own form) and the legs
+(each game's best leg: teased number, Buckeye's line, win chance, line age,
+how many tickets use it; the break-even line; games below break-even, on an
+open teaser's other market or with no fair behind a fold). Empty states: the
+board loading, fewer than 4 priced games, no ticket worth betting. The bets
+service down puts a red banner up and the list stays (an open teaser may be
+missing from it). The scanner always loads NFL and CFB for this tab; the
+Edges tab and its alerts still list only the sports you tick
+(`feed.selectEdges`'s `leagueIds`).
+
+**Limits.** Unabated's fair at teaser numbers runs up to 3 points above the
+exchanges (Kalshi, Novig, Polymarket, ProphetX); EVs and stakes are as good as
+that fair (user decision to price off Unabated anyway, 2026-09-27). Push = loss
+understates a ticket if Buckeye really drops a push to the 3-team price (9/27:
++$329 vs +$418 expected on the same board). Same-game spread + total
+correlation is not modelled (one leg per game). Football, full game, 6 points,
+4 teams only. Straight bets held elsewhere on the same games are not in the
+math. A ticket placed in the last ~90 s may not be in the tab yet.
+
 ## Bets service
 
 A local Python service that turns the user's own bet history into normalised
@@ -1274,9 +1413,17 @@ GETs; no order placement.
   legs do not parse fail closed as unmatchable with the reason. Same Game
   Parlay rows have not been seen live yet; their leg grammar is a guess the
   parser refuses rather than misreads.
-- **BFA source** (`sources/bfa.py`, 2026-09-23): every 300 s logs in to
+- **BFA source** (`sources/bfa.py`, 2026-09-23): logs in to
   Betfastaction's Keycloak with the password in `bet_logger/.env`
-  (`BFA_USERNAME` / `BFA_PASSWORD`) and reads the **open bets first** —
+  (`BFA_USERNAME` / `BFA_PASSWORD`) and reads the **open bets every 60 s**
+  (`BFA_POLL_SEC`; BFA is Buckeye, and a teaser placed there must reach the
+  Teasers tab before it is suggested again — this plus the panel's 30 s poll
+  is about 90 s) and the history every 300 s (`BFA_HISTORY_POLL_SEC`).
+  Between history pulls a poll serves the open list plus the last pull's
+  settled bets, so the venue's count holds still; the history's pending
+  copies stay out, so a bet that has just left the open list keeps its
+  open-list record (league, start) until the next pull settles it. The open
+  bets are
   `GET api.bfagaming.com/history/api/GetPlayerOpenBets?playerId`, one object
   per wager with `betDetails[]` per leg carrying `idSport` (the league: `CBB`,
   `CFB`, `NFL`, …, so an open college bet IS placed), `gameDateTime` (the
@@ -1286,8 +1433,8 @@ GETs; no order placement.
   are stripped); its timestamps are naive on the account's **Pacific** clock,
   the same as the history's (checked live 2026-09-26: a bet stamped 12:42
   first showed on the 12:43 PT poll, and its `16:00` kickoff is the board's
-  23:00 UTC start) —
-  then `GET …/GetPlayerHistory` for the last 31 days through tomorrow, which
+  23:00 UTC start). The history is
+  `GET …/GetPlayerHistory` for the last 31 days through tomorrow, which
   settles an open record once it leaves the open list (a store row stays open
   until a poll says otherwise); an open-bets record replaces the history's
   pending copy of the same wager. The session is this process's
@@ -1481,8 +1628,8 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 310 tests) and
-the bets service's pytest suite (239 tests, on the `kalshi_draft/venv`
+the node suite (`npm test` = `node --test tests/*.test.js`, 325 tests) and
+the bets service's pytest suite (244 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`
@@ -1631,6 +1778,43 @@ margin, rotation persisted with 0600, missing/broken token file, callback
 state/error parsing) and the source (both Portfolio lists cursor-paged to
 the end with the bearer on every GET, the URL grammar, and a page without
 `items` / an unended list / an HTTP error / an auth failure all raising).
+
+`teaser.test.js` builds synthetic boards (fair rungs whose `bacr` lands on
+round win chances) and pins the Teasers rules: the teased number and cut of
+an away / home spread, an Over and an Under; a whole number read at the
+half-point one step against the bet (the rung the other way carries another
+fair, so reading it would show); the moneyline left out of the spread
+ladder; no rung and a flat rung grey with their reasons; started games,
+lines off the board, stale lines and other books never teased; grading (the
+one ticket's EV, expected profit, chance to make money and chance every
+ticket loses); one ticket under the cap sized at the single-bet Kelly stake
+in whole dollars; the greedy never above $200 a ticket nor taking a ticket
+twice; the pool as each game's best leg, top 10; fewer than 4 priced games;
+open BFA teaser legs grouping into tickets and joining their games by
+rotation (a BFA parlay, a settled teaser and another venue's leg ignored);
+an open ticket on the list's own legs lowering the next suggestion by what
+it holds ($63 alone, $23 with $40 held); a started leg and a leg no board
+game matches counted as won, and a ticket with none still to play out of the
+math; a game with an open leg offering only that market; an open leg at
+another number sharing its game's rows with the new leg; the list holding
+still on a half-point tick (the EV moving in place) and rebuilt on a 1-point
+move, on a new K and on a pool leg's number (not on +2.5 → +3, which a
+push-loses leg wins on alike); and the Legs list's standings.
+`bets.test.js` adds `teaserLegPositionOf` (the leg at its own teased number,
+no stake guard, the parlay-leg guard kept for straight sizing),
+`feed.test.js` the `leagueIds` filter, and `test_bfa.py` the cadence: open
+bets every poll, the history every 300 s (not at 299), the open list plus the
+last pull's settled bets in between, and a failed history pull retried on
+the next poll.
+
+The Teasers smoke run (2026-09-28, a scratch Playwright harness, not
+committed) loaded the unpacked extension with Sunday's saved NFL board
+shifted to a future kickoff and a bets payload built by the real BFA
+open-bets normaliser: with nothing open the tab showed the plan's 7 tickets,
+$1,292, +$324 (25%), 47% to make money; with ticket #1 and an outside $60
+ticket (one leg on no board game, "counted as won") open, "Bet 6 more",
+both tickets under Open at BFA with the pull age, and the legs with their
+ticket and open counts, in light and dark.
 
 The #130 smoke run (2026-09-19, a scratch Playwright harness, not committed)
 loaded the unpacked extension with the NFL slice at a future kickoff and four
@@ -1862,10 +2046,48 @@ in red.
 - **Bets: unmatched "no event on the board yet" / "league not on the
   scanner"**: the game is not in any loaded league snapshot — untick fewer
   sports in the Edges controls, or wait for Unabated to list it.
+- **Teasers: a ticket just placed at BFA is suggested again**: it reaches
+  the tab within about 90 s (the bets service reads BFA's open bets every
+  60 s, the panel polls the service every 30 s); "Open at BFA" says how old
+  the last BFA pull is. Much older means the service is down (red banner) or
+  still on the old 300 s cadence — restart it after updating.
+- **Teasers: "Fewer than 4 games with a priced Buckeye leg"**: Buckeye's
+  NFL/CFB board is thin (Monday night, or before the week's lines post), or
+  its lines are older than **Max line age h** in the Edges controls.
 
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-09-28 — Buckeye teasers (the Teasers tab, 0.14.0).** Cal bets Buckeye
+6-point 4-team teasers at BFA and wanted the set built for him. Decided with
+him 2026-09-27/28 (plan: `docs/2026-09-27-unabated-ticket-teasers-plan.md`):
+Buckeye only; legs priced off **Unabated's fair, not the exchanges** —
+decided right after being shown that at teaser numbers Unabated sits up to 3
+points above Kalshi / Novig / Polymarket / ProphetX, for consistency with
+every other edge in the panel; **$200 a ticket** (Buckeye's limit), hence a
+set of tickets rather than one; **4 teams only** (+300 is Buckeye's best
+teaser price); **a push loses** (conservative while Buckeye's tie rule is
+unconfirmed), which makes every leg win-or-lose at the half-point one step
+against it; **one leg per game** (independent legs); the panel's own
+bankroll and multiplier; **BFA is Buckeye**, so placed tickets are read from
+the bets service's BFA open bets and there is no Placed button to press —
+the approved mockup's Placed and Undo are gone; **no per-leg cap** (declined
+after seeing "no leg on more than half the tickets" cost 6% of the value
+after risk; Sunday's Seahawks leg on 5 of 8 tickets sank 5 of them while the
+other 7 legs covered); the list rebuilt only on real changes or a 1-point
+leg move (near-tied combinations reshuffled a rebuild-every-tick list for no
+value). Built: the list is built on reference fairs that move only by a
+point, so a rebuild on any other trigger — an open teaser appearing — does
+not reshuffle it, and the list after placing its first ticket is the same
+list less that ticket. The greedy is the prototype's: a full $200 ticket
+while one still raises the score, then one partial ticket at its own best
+stake (on 9/27 its sixth $200 ticket is past that ticket's own best, $129,
+yet the set is worth $141 after risk against $140 for stopping there at
+$129). BFA's open bets moved
+from every 300 s to every 60 s (history stays at 300 s) so a placed ticket
+shows within ~90 s. The scanner always loads NFL and CFB; `selectEdges`
+gained `leagueIds` so the Edges tab still lists only the ticked sports.
 
 **2026-09-26 — Novig's `unabatedId` no longer beats the team name.** An
 open Novig over on Southern @ Jackson State never matched its game. Novig
