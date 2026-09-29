@@ -1,4 +1,4 @@
-// Parsers for Unabated's two public market feeds. Pure functions: no DOM, no
+// Parser for Unabated's public per-league market snapshot. Pure functions: no DOM, no
 // fetch, no chrome.* — loaded as a plain <script> in panel.html (exposes
 // globalThis.UnabatedFeed) and via require() in tests/feed.test.js.
 //
@@ -7,26 +7,17 @@
 //             {odds: {"lg1:pt1:pregame": [row, ...]}, teams: {id: {name}}, marketSources: [{id, name, ...}]}
 //             row.sides["si0:tid6"]["ms4"] = line {marketId, points, americanPrice, price, sourcePrice,
 //             sourceFormat, bacr, ge, liquidity, statusId, sequenceNumber}
-//   Changes   https://api-k.unabated.com/api/markets/changes/query[/{cursor}]
-//             {latestTimestamp, resultCode, results: [{latestTimestamp, marketLineChanges: [{gameOdds:
-//             {gameOddsEvents: {"lg1:pt1:pregame": [{eventId, eventStart, gameOddsMarketSourcesLines:
-//             {"si0:ms4:an0": {"bt2": line}}}]}}}]}]}
+//   The polling changes stream (api-k.unabated.com/api/markets/changes)
+//   answers HTTP 410 since 2026-09-27, so a refresh is a whole new snapshot.
 //
 // One line is identified by (marketId, book, sideKey). Snapshot game rows are
-// unique per (event, period, bet type), but the changes stream tags OTHER
-// markets of the same event with the same bt key (e.g. team totals under
-// bt3) — only the marketId tells them apart, so event+betType is NOT a key
-// for updates. Updates apply only when their sequenceNumber is newer than the
-// line we hold — the stream replays old lines and the snapshot may already be
-// ahead.
+// unique per (event, period, bet type).
 //
 // Alternate lines (issue #113): each snapshot line carries alternateLines[]
 // with the same price/edge fields at other points. They are expanded into
 // lines keyed (marketId, book, sideKey, points) — `<mainKey>:alt<points>` —
 // flagged isAlt with mainPoints = the book's own main-line points. Facts
 // measured on the live NFL file 2026-09-11 that shape the parsing:
-//   - the changes stream carries NO alt updates (2,603 keys, all an0, no
-//     alternateLines), so alts refresh only with the per-league snapshot;
 //   - every alt's modifiedOn is the sentinel "0001-01-01T00:00:00", but its
 //     sequenceNumber is the change time in epoch ms (on 10,182 main lines it
 //     trailed modifiedOn by a median 1.2 s), so alt freshness reads from it;
@@ -41,8 +32,7 @@
 // own openerPrice / openerPoints (live NFL file 2026-09-22: 2,720 of 2,720
 // spread/total and 1,393 of 1,393 moneyline lines, and on every side priced
 // by three or more books the openers differed across books); alt rungs carry
-// none (0 of 40,499) and the changes stream carries none, so an update keeps
-// the snapshot line's. 1,466 of those 2,720 lines sat on a different number
+// none (0 of 40,499). 1,466 of those 2,720 lines sat on a different number
 // than they opened, so an opener price only compares when its points match.
 
 (function (root) {
@@ -100,22 +90,16 @@
   // The feed writes this in place of an unknown modifiedOn (every alt line).
   const MODIFIED_ON_UNKNOWN_PREFIX = "0001-";
   // A sequenceNumber below this cannot be an epoch-ms change time (2021-01-06,
-  // the changes cursor epoch); anything older is a counter, not a clock.
+  // Unabated's own epoch); anything older is a counter, not a clock.
   const SEQUENCE_AS_EPOCH_MS_MIN = Date.UTC(2021, 0, 6);
-  // Cursor = nanoseconds since 2021-01-06T00:00:00Z (decoded from the feed's own
-  // latestTimestamp vs modifiedOn pairs, 2026-09-10). Kept as a STRING: it is
-  // above 2^53 and JSON.parse would round it.
-  const CURSOR_EPOCH_MS = Date.UTC(2021, 0, 6);
   const GAME_ROW_KEY = /^pt(\d+):pregame:bt([123]):e(\d+)$/;
   const LEAGUE_KEY = /^lg(\d+):pt(\d+):(pregame|live)$/;
-  const LINE_KEY_RE = /^si(\d):ms(\d+):an(\d+)$/;
   // Venue ids on alternate-line rungs (#118 step 2; measured on the live NFL
   // and CFB files 2026-09-15). Every Kalshi rung's sourceKey is the contract
   // side + full market ticker, "Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU36" (the
   // other side of the same contract reads "N-…"; 12,318 of 12,318 matched the
   // pattern below); every Novig rung's sourceData is the Novig outcome id (a
-  // UUID). Main lines never carry either field and the changes stream has
-  // neither, so venue ids refresh with the snapshot only. The fields are
+  // UUID). Main lines never carry either field. The fields are
   // undocumented: any other shape is "no id", never an error.
   const KALSHI_BOOK_ID = 105;
   const NOVIG_BOOK_ID = 89;
@@ -138,7 +122,7 @@
     return { leagueId: Number(match[1]), periodTypeId: Number(match[2]), phase: match[3] };
   }
 
-  // "2026-09-13T17:00:00" (snapshot, naive UTC) or "2026-09-13T17:00:00+00:00" (changes).
+  // "2026-09-13T17:00:00" (snapshot, naive UTC) or with an explicit offset.
   function parseEventStart(value) {
     if (typeof value !== "string" || !value) return null;
     const hasZone = /(?:Z|[+-]\d\d:\d\d)$/.test(value);
@@ -174,13 +158,6 @@
     if (!line.isAlt) return null;
     const sequence = line.sequenceNumber;
     return typeof sequence === "number" && sequence >= SEQUENCE_AS_EPOCH_MS_MIN ? sequence : null;
-  }
-
-  // Sequence numbers are monotonic per line (the same feed cannot go backwards).
-  function isNewer(candidateSeq, heldSeq) {
-    if (typeof candidateSeq !== "number") return false;
-    if (typeof heldSeq !== "number") return true;
-    return candidateSeq > heldSeq;
   }
 
   function emptyState() {
@@ -252,9 +229,7 @@
   // rung, but its id is exactly what a main-line bet joins on) — or null when
   // the rung is not listed (unpriced); the id still names the event and
   // market, so it is kept. `alt` is normalizeAltLine's result for the rung.
-  // Applies to Kalshi and Novig alike. The map is rebuilt only by the next
-  // snapshot, while the changes stream can move a main line off `points`, so
-  // a joiner must check `points` against the line's current points.
+  // Applies to Kalshi and Novig alike. The map is rebuilt with every snapshot.
   function noteRungVenueIds(venueIds, rung, mainLine, alt) {
     if (!rung || typeof rung !== "object") return;
     const points = numberOrNull(rung.points);
@@ -279,10 +254,6 @@
     return {
       key: lineKeyOf({ marketId: raw.marketId, bookId: context.bookId, sideKey: context.sideKey }),
       isAlt: false,
-      // A snapshot game row is the game's own market. The changes stream is
-      // not: it files team totals under the game total's bt3 (see the header),
-      // so only snapshot lines may feed a fair ladder (ladder.js, #130).
-      fromSnapshot: true,
       leagueId: context.leagueId,
       periodTypeId: context.periodTypeId,
       betTypeId: context.betTypeId,
@@ -319,7 +290,6 @@
     return {
       key: altLineKeyOf({ marketId: mainLine.marketId, bookId: mainLine.bookId, sideKey: mainLine.sideKey, points }),
       isAlt: true,
-      fromSnapshot: true,
       mainKey: mainLine.key,
       mainPoints: mainLine.points,
       leagueId: mainLine.leagueId,
@@ -466,142 +436,6 @@
       Object.assign(merged.lines, state.lines);
     }
     return merged;
-  }
-
-  // ---- changes -------------------------------------------------------------
-
-  // The top-level latestTimestamp is the next cursor. Read it from the raw text
-  // so it stays exact (it does not fit in a double).
-  function extractCursor(text) {
-    const match = /"latestTimestamp"\s*:\s*(\d+)/.exec(text);
-    return match ? match[1] : null;
-  }
-
-  function cursorFromDate(date) {
-    const ms = date instanceof Date ? date.getTime() : Number(date);
-    if (!Number.isFinite(ms) || ms < CURSOR_EPOCH_MS) return null;
-    // Whole seconds only: the ms part would need BigInt to stay exact and the
-    // server is happy with a cursor up to ~3 minutes old.
-    return `${Math.floor((ms - CURSOR_EPOCH_MS) / 1000)}000000000`;
-  }
-
-  function normalizeChangeLine(raw, context) {
-    const price = numberOrNull(raw.price);
-    if (price == null || raw.marketId == null || typeof raw.sideKey !== "string") return null;
-    return {
-      key: lineKeyOf({ marketId: raw.marketId, bookId: context.bookId, sideKey: raw.sideKey }),
-      isAlt: false,
-      leagueId: context.leagueId,
-      periodTypeId: context.periodTypeId,
-      betTypeId: context.betTypeId,
-      eventId: context.eventId,
-      eventStart: context.eventStart,
-      marketId: raw.marketId,
-      bookId: context.bookId,
-      sideKey: raw.sideKey,
-      sideIndex: sideIndexOf(raw.sideKey),
-      points: numberOrNull(raw.points),
-      price,
-      sourceFormat: numberOrNull(raw.sourceFormat) ?? 1,
-      sourcePrice: numberOrNull(raw.sourcePrice),
-      bacr: numberOrNull(raw.bacr),
-      ge: numberOrNull(raw.ge),
-      statusId: numberOrNull(raw.statusId),
-      sequenceNumber: numberOrNull(raw.sequenceNumber),
-      isBlurred: raw.isBlurred === true,
-      modifiedOn: raw.modifiedOn ?? null,
-    };
-  }
-
-  // Parse one changes response (object or raw text). `ok` is false when the
-  // server rejected the cursor (resultCode "Failed": too old, > ~3 min) — the
-  // caller must resync from a snapshot.
-  function parseChanges(input) {
-    const text = typeof input === "string" ? input : null;
-    const json = text ? JSON.parse(text) : input;
-    if (!json || typeof json !== "object" || !Array.isArray(json.results)) {
-      throw new Error("changes: expected an object with a `results` array");
-    }
-    const cursor = text ? extractCursor(text) : (json.latestTimestamp != null ? String(json.latestTimestamp) : null);
-    const lines = [];
-    let batches = 0;
-    for (const result of json.results) {
-      if (!result || !Array.isArray(result.marketLineChanges)) continue;
-      batches += 1;
-      for (const change of result.marketLineChanges) {
-        const events = change && change.gameOdds && change.gameOdds.gameOddsEvents;
-        if (!events || typeof events !== "object") continue;
-        for (const [leagueKey, eventList] of Object.entries(events)) {
-          const parsed = parseLeagueKey(leagueKey);
-          if (!parsed || parsed.phase !== "pregame" || !Array.isArray(eventList)) continue;
-          for (const event of eventList) {
-            if (!event || event.eventId == null) continue;
-            const eventStart = parseEventStart(event.eventStart);
-            for (const [lineKey, byBetType] of Object.entries(event.gameOddsMarketSourcesLines || {})) {
-              const keyMatch = LINE_KEY_RE.exec(lineKey);
-              if (!keyMatch || !byBetType) continue;
-              const bookId = Number(keyMatch[2]);
-              for (const [betTypeKey, raw] of Object.entries(byBetType)) {
-                const betTypeId = Number(betTypeKey.replace(/^bt/, ""));
-                if (!BET_TYPES[betTypeId] || !raw) continue;
-                const line = normalizeChangeLine(raw, {
-                  leagueId: parsed.leagueId, periodTypeId: parsed.periodTypeId, betTypeId,
-                  eventId: event.eventId, eventStart, bookId,
-                });
-                if (line) lines.push(line);
-              }
-            }
-          }
-        }
-      }
-    }
-    return { ok: json.resultCode === "Success", resultCode: json.resultCode ?? null, cursor, batches, lines };
-  }
-
-  // Apply parsed changes to a merged state in place. Lines for events the
-  // snapshot never listed are skipped (we have no teams/name for them); lines
-  // for known events are added when new and replaced when their sequence
-  // number is newer. Snapshot-only fields (liquidity, fromSnapshot) carry over
-  // on replace: an update shares its snapshot line's key, so it is the same
-  // market; a line the stream ADDS may be another market of the event.
-  // Alt lines are never in the stream, so they stay as the last snapshot left
-  // them; selectEdges reads the main line's CURRENT points for the distance
-  // gate and the same-points dedupe, so a main line that moves onto an alt's
-  // number hides that alt until the next snapshot refresh replaces it.
-  // `appliedKeys` lists every line replaced or added, so the scanner can
-  // record them in the per-line history (#132) without re-diffing the state.
-  function applyChanges(state, changes) {
-    const counts = { applied: 0, added: 0, stale: 0, unknownEvent: 0, otherLeague: 0, appliedKeys: [] };
-    const leagues = new Set(state.leagues);
-    for (const line of changes.lines) {
-      if (!leagues.has(line.leagueId)) {
-        counts.otherLeague += 1;
-        continue;
-      }
-      const event = state.events[line.eventId];
-      if (!event) {
-        counts.unknownEvent += 1;
-        continue;
-      }
-      if (line.eventStart != null && event.eventStart !== line.eventStart) event.eventStart = line.eventStart;
-      const held = state.lines[line.key];
-      if (held && !isNewer(line.sequenceNumber, held.sequenceNumber)) {
-        counts.stale += 1;
-        continue;
-      }
-      const { eventStart, ...fields } = line;
-      state.lines[line.key] = {
-        liquidity: held ? held.liquidity : null,
-        fromSnapshot: held ? held.fromSnapshot === true : false,
-        openerPrice: held ? held.openerPrice ?? null : null,
-        openerPoints: held ? held.openerPoints ?? null : null,
-        ...fields,
-      };
-      counts.applied += 1;
-      counts.appliedKeys.push(line.key);
-      if (!held) counts.added += 1;
-    }
-    return counts;
   }
 
   // ---- edge selection ------------------------------------------------------
@@ -836,10 +670,10 @@
   }
 
   const api = {
-    LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID, CURSOR_EPOCH_MS,
+    LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID,
     kalshiEventSuffixOf,
     parseLeagueKey, parseEventStart, parseModifiedOn, lineChangedMs, lineKeyOf, altLineKeyOf, emptyState, teamSpellingsFromEventName,
-    parseSnapshot, mergeStates, extractCursor, cursorFromDate, parseChanges, applyChanges,
+    parseSnapshot, mergeStates,
     describeLine, selectEdges, groupEdges, groupKeyOf, countLines, countAltLines,
   };
 

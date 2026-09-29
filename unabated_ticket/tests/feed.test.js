@@ -1,15 +1,15 @@
 // Run: node --test unabated_ticket/tests
-// Fixtures are real slices of both feeds captured 2026-09-10 (NFL event
+// Fixtures are real slices of the snapshot feed captured 2026-09-10 (NFL event
 // 125807, Chicago Bears @ Carolina Panthers, kickoff 2026-09-13T17:00:00Z).
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const feed = require("../extension/feed.js");
+const { moveLine } = require("./helpers.js");
 
 const fixture = (name) => fs.readFileSync(path.join(__dirname, "fixtures", name), "utf8");
 const snapshotJson = () => JSON.parse(fixture("v2_slice.json"));
-const changesText = () => fixture("changes_slice.json");
 
 const KICKOFF_MS = Date.parse("2026-09-13T17:00:00Z");
 const BEFORE_KICKOFF = KICKOFF_MS - 3600 * 1000;
@@ -179,104 +179,21 @@ test("selectEdges: periods, bet types and the threshold are honoured", () => {
   assert.deepEqual(strict.map((r) => r.edgePct), [5.3]);
 });
 
-test("changes: cursor is read exactly from the text, lines are flattened per bet type", () => {
-  const text = changesText();
-  const parsed = feed.parseChanges(text);
-  assert.equal(parsed.ok, true);
-  assert.equal(parsed.cursor, "179164041314243100");
-  assert.equal(feed.extractCursor(text), "179164041314243100");
-  assert.equal(parsed.batches, 2);
-  assert.equal(parsed.lines.length, 15);
-  const mgmSpread = parsed.lines.find((l) => l.key === "289357360:ms4:si0:tid6");
-  assert.equal(mgmSpread.points, -3.5);
-  assert.equal(mgmSpread.price, -105);
-  assert.equal(mgmSpread.ge, -0.0961);
-  assert.equal(mgmSpread.sideIndex, 0);
-  assert.equal(mgmSpread.eventStart, KICKOFF_MS);
-  assert.equal(mgmSpread.betTypeId, 2);
-  assert.equal(mgmSpread.periodTypeId, 1);
-  const failed = feed.parseChanges(JSON.stringify({ latestTimestamp: 1, resultCode: "Failed", results: [] }));
-  assert.equal(failed.ok, false);
-  assert.throws(() => feed.parseChanges("{}"), /expected an object with a `results` array/);
-});
-
-test("cursorFromDate encodes whole seconds since 2021-01-06 in nanoseconds", () => {
-  assert.equal(feed.cursorFromDate(new Date("2026-09-10T15:41:22.637Z")), "179163682000000000");
-  assert.equal(feed.cursorFromDate(new Date("2020-01-01T00:00:00Z")), null);
-});
-
-test("applyChanges overwrites newer lines, adds new ones, skips other leagues and replays", () => {
-  const state = loadedState();
-  const before = state.lines["289357360:ms4:si0:tid6"];
-  assert.equal(before.points, -14);
-  assert.equal(before.price, 400);
-  const changes = feed.parseChanges(changesText());
-  const { appliedKeys, ...counts } = feed.applyChanges(state, changes);
-  assert.deepEqual(counts, { applied: 14, added: 4, stale: 0, unknownEvent: 0, otherLeague: 1 });
-  // Every replaced or added line is named, so the scanner can record it (#132).
-  assert.equal(appliedKeys.length, 14);
-  assert.ok(appliedKeys.includes("289357360:ms4:si0:tid6"));
-  assert.ok(appliedKeys.includes("366866367:ms4:si0:tid6"));
-  const after = state.lines["289357360:ms4:si0:tid6"];
-  assert.equal(after.points, -3.5);
-  assert.equal(after.price, -105);
-  assert.equal(after.ge, -0.0961);
-  assert.equal(after.sequenceNumber, 1789055238590);
-  assert.equal(after.liquidity, null);
-  // A first-quarter line the snapshot slice never carried is now known.
-  assert.equal(state.lines["366866367:ms4:si0:tid6"].periodTypeId, 4);
-  // An update is the snapshot's own market; a line the stream added may be
-  // another market of the event (a team total under bt3), so it is not marked.
-  assert.equal(before.fromSnapshot, true);
-  assert.equal(after.fromSnapshot, true);
-  assert.equal(state.lines["366866367:ms4:si0:tid6"].fromSnapshot, false);
-  assert.ok(Object.values(loadedState().lines).every((line) => line.fromSnapshot === true));
-  // Replaying the same batch changes nothing.
-  assert.deepEqual(feed.applyChanges(state, changes), { applied: 0, added: 0, stale: 14, unknownEvent: 0, otherLeague: 1, appliedKeys: [] });
-  // The edge list is unaffected: the moved lines were all negative edge.
-  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF }).length, 4);
-});
-
-test("openers: the book's own opening price and number on main lines, none on alts, kept across a stream update (#126, #132)", () => {
+test("openers: the book's own opening price and number on main lines, none on alts (#126, #132)", () => {
   const state = loadedState();
   const novigMoneyline = state.lines["289357353:ms89:si0:tid6"];
   assert.equal(novigMoneyline.openerPrice, -167);
   assert.equal(novigMoneyline.openerPoints, null);
   assert.ok(Object.values(state.lines).filter((line) => line.isAlt).every((line) => line.openerPrice === undefined));
-  const changes = feed.parseChanges(changesText());
-  const nflLine = changes.lines.find((line) => line.eventId === novigMoneyline.eventId);
-  const withOpener = { ...nflLine, key: novigMoneyline.key, marketId: novigMoneyline.marketId, bookId: 89, sequenceNumber: 9e12 };
-  feed.applyChanges(state, { ...changes, lines: [withOpener] });
-  assert.equal(state.lines[novigMoneyline.key].openerPrice, -167);
-  assert.equal(state.lines[novigMoneyline.key].sequenceNumber, 9e12);
-  const row = feed.describeLine(state.lines[novigMoneyline.key], state);
+  const row = feed.describeLine(novigMoneyline, state);
   assert.equal(row.openerPrice, -167);
   assert.equal(row.openerPoints, null);
-  // A line the stream added has no opener to keep.
-  assert.equal(state.lines["366866367:ms4:si0:tid6"], undefined);
-  feed.applyChanges(state, changes);
-  assert.equal(state.lines["366866367:ms4:si0:tid6"].openerPrice, null);
 });
 
-test("applyChanges ignores an older sequence number and lines for unknown events", () => {
+test("a line whose edge existed but is now null lists nothing", () => {
   const state = loadedState();
-  const changes = feed.parseChanges(changesText());
-  const stale = { ...changes, lines: changes.lines.map((l) => ({ ...l, sequenceNumber: 1 })) };
-  const counts = feed.applyChanges(state, stale);
-  assert.equal(counts.stale, 10); // every line that already existed
-  assert.equal(counts.added, 4);
-  assert.equal(state.lines["289357360:ms4:si0:tid6"].points, -14);
-  const unknown = { ...changes, lines: changes.lines.map((l) => ({ ...l, eventId: 1 })) };
-  assert.equal(feed.applyChanges(loadedState(), unknown).unknownEvent, 14);
-});
-
-test("a changes line whose snapshot edge existed but is now null lists nothing", () => {
-  const state = loadedState();
-  const changes = feed.parseChanges(changesText());
   const southPointKey = "289357360:ms99:si0:tid6";
-  const overwrite = { ...changes.lines[1], key: southPointKey, bookId: 99, ge: null, bacr: null, sequenceNumber: 9e12 };
-  feed.applyChanges(state, { ...changes, lines: [overwrite] });
-  assert.equal(state.lines[southPointKey].ge, null);
+  moveLine(state, southPointKey, { ge: null, bacr: null });
   assert.ok(!feed.selectEdges(state, { now: BEFORE_KICKOFF }).some((r) => r.key === southPointKey));
 });
 
@@ -418,17 +335,14 @@ test("an alt is hidden while the main line sits on its number, and distance foll
   const state = loadedState();
   const opts = { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 7 };
   assert.ok(feed.selectEdges(state, opts).some((r) => r.key === "289357360:ms89:si0:tid6:alt-4.5"));
-  // Novig moves its Bears main line from -2.5 to -4.5 (a changes-stream update).
-  const main = state.lines["289357360:ms89:si0:tid6"];
-  feed.applyChanges(state, { lines: [{ ...main, points: -4.5, price: 130, sequenceNumber: main.sequenceNumber + 1, eventStart: null }] });
-  assert.equal(state.lines["289357360:ms89:si0:tid6"].points, -4.5);
+  // Novig moves its Bears main line from -2.5 to -4.5; its alts stay as they were.
+  moveLine(state, "289357360:ms89:si0:tid6", { points: -4.5, price: 130 });
   const rows = feed.selectEdges(state, opts);
   assert.ok(!rows.some((r) => r.key === "289357360:ms89:si0:tid6:alt-4.5"));
   // -9.5 is now 5 from the main number; -13.5 (9 away) is still out; mainPoints reports the current main.
   const nineHalf = rows.find((r) => r.key === "289357360:ms89:si0:tid6:alt-9.5");
   assert.equal(nineHalf.mainPoints, -4.5);
   assert.ok(!rows.some((r) => r.key === "289357360:ms89:si0:tid6:alt-13.5"));
-  // The stream never carries alts, so the alt itself is untouched.
   assert.equal(state.lines["289357360:ms89:si0:tid6:alt-9.5"].price, 245);
 });
 
@@ -548,12 +462,8 @@ test("describeLine hands every row its event's venue id map by reference", () =>
   assert.ok(rows.every((row) => row.venueIds === state.events[VENUE_EVENT].venueIds));
 });
 
-test("venue ids refresh with the snapshot: the changes stream leaves them alone, a re-parse replaces them", () => {
+test("venue ids refresh with the snapshot: a re-parse replaces them", () => {
   const state = feed.parseSnapshot(venueSnapshotJson(), { leagueId: CFB });
-  const before = JSON.stringify(state.events[VENUE_EVENT].venueIds);
-  const main = state.lines["420942308:ms105:si1:tid717"];
-  feed.applyChanges(state, { lines: [{ ...main, points: -35.5, price: -150, sequenceNumber: main.sequenceNumber + 1, eventStart: null }] });
-  assert.equal(JSON.stringify(state.events[VENUE_EVENT].venueIds), before);
   assert.equal(state.lines["420942308:ms105:si1:tid717:alt-35.5"].sourceKey, "Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU36");
   const pulled = venueSnapshotJson();
   for (const row of pulled.odds["lg2:pt1:pregame"]) {

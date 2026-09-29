@@ -10,7 +10,9 @@
 // (resumed from the stored ticket on load, so a navigation does not end it),
 // and a 10s heartbeat that also publishes the user's Unabated book selection
 // (read from the grid's React context) as the Edges tab's default book filter.
-// Once per load it also publishes a shape check: whether the price cells on a
+// Once a second it reads the live rows the screen priced off Unabated's
+// between-quarters in-game fair and posts them as `live_edges` (on change,
+// else every 5 s). Once per load it also publishes a shape check: whether the price cells on a
 // grid that has rows still carry the React props a ticket is read from, so a
 // new Unabated bundle shows in the panel on arrival instead of mid-click.
 // The only DOM touch is the locate flash:
@@ -92,14 +94,18 @@
   }
 
   // bacr = Unabated fair American price at this book's points; shown for
-  // information only, the stake is sized from Unabated's edge.
+  // information only, the stake is sized from Unabated's edge. Live lines
+  // never carry bacr: their fair is the screen's own in-game fair at the
+  // line's points, edge.simulatedPrice (see readLiveEdges).
   function fairPriceOrNull(marketLine) {
     const fair = marketLine.bacr;
-    return typeof fair === "number" && Number.isFinite(fair) ? fair : null;
+    if (typeof fair === "number" && Number.isFinite(fair)) return fair;
+    const simulated = marketLine.edge && marketLine.edge.simulatedPrice;
+    return typeof simulated === "number" && Number.isFinite(simulated) ? simulated : null;
   }
 
   // Script build, so a stale copy of page.js in an old tab shows itself in the panel.
-  const PAGE_SCRIPT_BUILD = "0.6.6";
+  const PAGE_SCRIPT_BUILD = "0.7.0";
 
   // What the clicked object actually carried, for the panel's no-edge detail:
   // decides between "Unabated never priced it" and "the field moved". Space
@@ -311,7 +317,10 @@
     return !!entry && Array.isArray(entry.alternateLines) && entry.alternateLines.some(Boolean);
   }
 
+  // `b.live` set (a live capture, watch or Edges row) keeps the match on the
+  // same side of the pregame/live split; a request without it matches both.
   function sameMarketRow(a, b) {
+    if (typeof b.live === "boolean" && (a.live === true) !== b.live) return false;
     return a.eventId === b.eventId && a.betTypeId === b.betTypeId && (a.periodTypeId ?? 1) === (b.periodTypeId ?? 1);
   }
 
@@ -506,6 +515,9 @@
       edgePct: edge.edgePct,
       noEdgeDetail: edge.edgePct == null ? `script ${PAGE_SCRIPT_BUILD}; cell fields ${describeLineFields(marketLine)}` : null,
       isAlt: altPoints != null,
+      // A live-row capture: the in-game fair's checkpoint ("end of Q1") the
+      // edge and fair were priced at. Null on a pregame row.
+      live: rowData.live === true ? liveFairOf(rowData) : null,
       // Which grid row the ticket was classified and priced against, and the
       // rows it was chosen from; the panel shows it when the watched number
       // is not the captured one, or when the pick was not a lone top-level row.
@@ -523,6 +535,7 @@
         points,
         // Row identity for when the grid key stops resolving (rebuilt grid, re-keyed row).
         eventId: rowData.eventId ?? null, betTypeId, periodTypeId: rowData.periodTypeId ?? 1,
+        live: rowData.live === true,
       },
       current: null,
       // The grid API the ladder row lives on: what the watcher must poll.
@@ -651,6 +664,8 @@
     if (!gridKey && eventId == null) throw new Error("no gridKey on the ticket");
     const { sideKey, bookKey } = ticket.watch;
     const identity = { eventId, betTypeId, periodTypeId: periodTypeId ?? 1 };
+    // A ticket stored before live capture existed carries no flag and matches both.
+    if (typeof ticket.watch.live === "boolean") identity.live = ticket.watch.live;
     // The key lookup is trusted only when it answers with a row of the SAME
     // shape capture picked: a re-keyed grid can answer with an Alts child row,
     // whose entry for the book is one rung. Compared rather than forced to
@@ -1161,6 +1176,7 @@
     for (const timer of intervals) clearInterval(timer);
     document.removeEventListener("pointerdown", onClickCapture, true);
     document.removeEventListener("click", onClickCapture, true);
+    window.removeEventListener("pagehide", onPageHide);
     console.info("[unabated-ticket] page.js retired (a newer copy took over)");
   }
 
@@ -1173,6 +1189,204 @@
     if (data.type === "locate") onLocateMessage(data.payload);
     if (data.type === "resume") onResumeMessage(data.payload);
   });
+
+  // ---- live edges (the screen's between-quarters in-game fair) --------------
+  //
+  // Read from Unabated's app bundle, 2026-09-27: on a live row the screen sets
+  // row.inGameFairPrice = {status, producedUtc, checkpointType, ...} from a
+  // per-game fair that arrives over the logged-in stream (the free v2 file
+  // never carries it), and on every line of that row, alt rungs included,
+  // line.edge = {edge: EV %, linePrice, simulatedPrice: fair American at the
+  // line's points}. The fair is "ready" only at a break between quarters and
+  // "expired" once play resumes. This reader copies what the screen computed;
+  // it never prices anything itself.
+  const LIVE_SCAN_MS = 1000;
+  // Posted at least this often while nothing changes, so the panel can tell
+  // a quiet break from a tab that stopped reading.
+  const LIVE_HEARTBEAT_MS = 5000;
+  const FAIR_READY = "ready";
+  const UNABATED_LINE_BOOK_KEY = "ms49";
+  const LINE_ON_BOARD = 1;
+  const EVENT_FINAL = 3;
+
+  function liveFairOf(rowData) {
+    const fair = rowData.inGameFairPrice || null;
+    return {
+      fairStatus: fair && typeof fair.status === "string" ? fair.status.toLowerCase() : null,
+      checkpointType: fair ? fair.checkpointType ?? null : null,
+      producedUtc: fair ? fair.producedUtc ?? null : null,
+      eventPeriodTypeId: rowData.eventPeriodTypeId ?? null,
+      gameClock: rowData.gameClock ?? null,
+    };
+  }
+
+  function finiteOrNull(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+
+  // One listable line: on the board, a real price, and a screen-computed edge.
+  function liveLineFields(line) {
+    if (!line || line.statusId !== LINE_ON_BOARD || line.isBlurred === true) return null;
+    const edgePct = finiteOrNull(line.edge && line.edge.edge);
+    const fair = finiteOrNull(line.edge && line.edge.simulatedPrice);
+    const price = finiteOrNull(line.americanPrice ?? line.price);
+    if (edgePct == null || fair == null || price == null) return null;
+    return {
+      points: finiteOrNull(line.points),
+      price,
+      ...sourcePriceOf(line),
+      fair,
+      edgePct,
+      liquidity: finiteOrNull(line.liquidity),
+      modifiedOn: typeof line.modifiedOn === "string" ? line.modifiedOn : null,
+      marketId: line.marketId ?? null,
+    };
+  }
+
+  function sideLabelOrNull(betType, sideIndex, points, rowData, context) {
+    try { return sideLabelOf(betType, sideIndex, points, rowData, context); } catch (_error) { return null; }
+  }
+
+  // The rows of one live grid row whose fair is ready: every book's main
+  // line and ladder rung that carries an edge. Unabated's own column (ms49)
+  // is the fair, not a bet.
+  function liveRowsOf(rowData, context) {
+    const betType = BET_TYPE_NAMES[rowData.betTypeId];
+    if (!betType || !rowData.sides) return [];
+    const rows = [];
+    for (const [sideKey, books] of Object.entries(rowData.sides)) {
+      const sideMatch = /^si(\d+):/.exec(sideKey);
+      if (!sideMatch || !books) continue;
+      const sideIndex = Number(sideMatch[1]);
+      for (const [bookKey, main] of Object.entries(books)) {
+        if (!main || bookKey === UNABATED_LINE_BOOK_KEY) continue;
+        const bookId = bookIdOfKey(bookKey);
+        if (bookId == null) continue;
+        const ladder = Array.isArray(main.alternateLines) ? main.alternateLines : [];
+        for (const line of [main, ...ladder]) {
+          const fields = liveLineFields(line);
+          if (!fields) continue;
+          const isAlt = line !== main;
+          if (isAlt && fields.points === main.points) continue;
+          rows.push({
+            key: `live:${rowData.eventId}:pt${rowData.periodTypeId ?? 1}:bt${rowData.betTypeId}:si${sideIndex}:${bookKey}${isAlt ? `:alt${fields.points}` : ""}`,
+            eventId: rowData.eventId,
+            eventName: rowData.eventName ?? null,
+            periodTypeId: rowData.periodTypeId ?? 1,
+            betTypeId: rowData.betTypeId,
+            sideIndex,
+            sideKey,
+            sideLabel: sideLabelOrNull(betType, sideIndex, fields.points, rowData, context),
+            bookId,
+            bookName: bookNameOf(bookId, context, null),
+            isAlt,
+            mainPoints: isAlt ? finiteOrNull(main.points) : null,
+            ...fields,
+          });
+        }
+      }
+    }
+    return rows;
+  }
+
+  function liveGameOf(rowData, context) {
+    return {
+      eventId: rowData.eventId,
+      eventName: rowData.eventName ?? null,
+      eventStart: rowData.eventStart ?? null,
+      awayTeam: teamNameOrNull(0, rowData, context),
+      homeTeam: teamNameOrNull(1, rowData, context),
+      awayTeamId: rowData.eventTeams && rowData.eventTeams[0] ? rowData.eventTeams[0].id ?? null : null,
+      homeTeamId: rowData.eventTeams && rowData.eventTeams[1] ? rowData.eventTeams[1].id ?? null : null,
+      ...liveFairOf(rowData),
+    };
+  }
+
+  // Every live game on the screen and, for the games whose fair is ready,
+  // their edges. A line listed on two grid rows (a market row and its Alts
+  // section) is kept once.
+  function readLiveEdges(apis, context) {
+    const games = new Map();
+    const rows = new Map();
+    for (const api of apis) {
+      api.forEachNode((node) => {
+        const data = node.data;
+        if (!data || data.live !== true || data.eventId == null) return;
+        if (data.statusId === EVENT_FINAL) return;
+        const game = liveGameOf(data, context);
+        const known = games.get(data.eventId);
+        if (!known || (known.fairStatus !== FAIR_READY && game.fairStatus === FAIR_READY)) games.set(data.eventId, game);
+        if (game.fairStatus !== FAIR_READY) return;
+        for (const row of liveRowsOf(data, context)) {
+          if (!rows.has(row.key)) rows.set(row.key, row);
+        }
+      });
+    }
+    return { games: [...games.values()], rows: [...rows.values()] };
+  }
+
+  let lastLiveSignature = null;
+  let lastLivePostAt = 0;
+  // Chrome throttles a hidden tab's timers to about once a minute after five
+  // minutes in the background, which is where this tab sits while a bet is
+  // placed elsewhere. The grid's own update events are not throttled (the
+  // app's stream keeps feeding it), so they trigger a scan too, at most
+  // this often.
+  const LIVE_EVENT_SCAN_MIN_MS = 250;
+  const LIVE_GRID_EVENTS = ["modelUpdated", "cellValueChanged", "rowDataUpdated"];
+  const subscribedGridApis = new WeakSet();
+
+  function subscribeToGridUpdates(apis) {
+    for (const api of apis) {
+      if (subscribedGridApis.has(api) || typeof api.addEventListener !== "function") continue;
+      subscribedGridApis.add(api);
+      for (const type of LIVE_GRID_EVENTS) api.addEventListener(type, onGridUpdated);
+    }
+  }
+
+  function onGridUpdated() {
+    if (Date.now() - lastLiveScanAt >= LIVE_EVENT_SCAN_MIN_MS) scanLive();
+  }
+
+  let lastLiveScanAt = 0;
+
+  // `visible` lets the panel allow a hidden tab its throttled heartbeat
+  // before calling it stale; `instanceId` lets content.js keep one tab's
+  // live game from being blanked by another tab of the same league.
+  function postLive(payload, now) {
+    post("live_edges", {
+      league: leagueFromUrl(), url: window.location.href, at: now, instanceId: INSTANCE_ID,
+      visible: document.visibilityState !== "hidden", ...payload,
+    });
+  }
+
+  function scanLive() {
+    if (retired) return;
+    const now = Date.now();
+    lastLiveScanAt = now;
+    let payload;
+    try {
+      let context = null;
+      try { context = anyGridApi().context; } catch (_error) { /* no rendered cell yet */ }
+      const apis = allGridApis(null);
+      subscribeToGridUpdates(apis);
+      payload = { ...readLiveEdges(apis, context), error: null };
+    } catch (error) {
+      payload = { games: [], rows: [], error: error.message };
+    }
+    const signature = JSON.stringify(payload);
+    if (signature === lastLiveSignature && now - lastLivePostAt < LIVE_HEARTBEAT_MS) return;
+    lastLiveSignature = signature;
+    lastLivePostAt = now;
+    postLive(payload, now);
+  }
+
+  // A closing tab says so, so the panel drops its rows at once instead of
+  // waiting out the staleness clock. Best effort: the page may be gone first.
+  function onPageHide() {
+    if (retired) return;
+    postLive({ games: [], rows: [], error: null, closing: true }, Date.now());
+  }
 
   // ---- click capture -------------------------------------------------------
 
@@ -1214,7 +1428,7 @@
   // this flag on its fake window before loading the file. Never set on
   // tools.unabated.com, so production exposes nothing.
   if (window.__unabatedTicketExposeInternals === true) {
-    window.__unabatedTicketInternals = { buildTicket, startWatching, readWatchedLine, shapeCheckResult };
+    window.__unabatedTicketInternals = { buildTicket, startWatching, readWatchedLine, shapeCheckResult, readLiveEdges, scanLive };
   }
   // Heartbeat so the panel can show whether this script is alive on the tab,
   // plus the books/bet-type filter for the Edges tab (grid may not be up yet
@@ -1234,5 +1448,7 @@
   publishShapeCheck({ status: "checking", rows: null, shells: null, readable: null, message: null, detail: null });
   runShapeCheck(0, false);
   intervals.push(setInterval(heartbeat, HEARTBEAT_MS));
+  intervals.push(setInterval(scanLive, LIVE_SCAN_MS));
+  window.addEventListener("pagehide", onPageHide);
   console.info("[unabated-ticket] page.js active on", window.location.href);
 })();

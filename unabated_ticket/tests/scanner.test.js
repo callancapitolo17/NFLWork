@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { createScanner, SNAPSHOT_URL, SNAPSHOT_BASE_URL, CHANGES_URL } = require("../extension/scanner.js");
+const { createScanner, SNAPSHOT_URL, SNAPSHOT_BASE_URL } = require("../extension/scanner.js");
 const edgemove = require("../extension/edgemove.js");
 
 const fixture = (name) => fs.readFileSync(path.join(__dirname, "fixtures", name), "utf8");
@@ -21,8 +21,8 @@ function response({ status = 200, body = "", headers = {} }) {
   };
 }
 
-// A fetch that serves the NFL snapshot (built 20s before NOW) and the changes
-// fixture, records every URL, and lets a test script the next responses.
+// A fetch that serves the NFL snapshot (built 20s before NOW), records every
+// URL, and lets a test script the next responses.
 function fakeFetch(overrides = {}) {
   const calls = [];
   const snapshotBuilt = new Date(NOW - 20 * 1000).toUTCString();
@@ -32,7 +32,6 @@ function fakeFetch(overrides = {}) {
     calls.push(base(url));
     if (overrides[base(url)]) return overrides[base(url)]();
     if (base(url) === SNAPSHOT_BASE_URL(1)) return response({ body: fixture("v2_slice.json"), headers: { "last-modified": snapshotBuilt, "content-length": String(overrides.nflBytes || 1000) } });
-    if (url.startsWith(CHANGES_URL)) return response({ body: fixture("changes_slice.json") });
     return response({ status: 404, body: "not found" });
   };
   impl.calls = calls;
@@ -41,56 +40,20 @@ function fakeFetch(overrides = {}) {
 
 const noTimers = { setInterval: () => 1, clearInterval: () => {} };
 
-test("start loads the snapshot, seeds the cursor from Last-Modified, then polls", async () => {
+test("start loads the snapshot; a tick before the league is due fetches nothing, and nothing ever goes to the retired stream", async () => {
   const fetchImpl = fakeFetch();
   const seen = [];
   const scanner = createScanner({ fetchImpl, now: () => NOW, timers: noTimers, onChange: (status) => seen.push(status.phase) });
   await scanner.start([1]);
-  let status = scanner.getStatus();
+  const status = scanner.getStatus();
   assert.equal(status.phase, "live");
   assert.equal(status.error, null);
   assert.deepEqual(status.leaguesLoaded, [1]);
   assert.equal(status.lineCount, 62);
-  // Cursor = whole seconds of (NOW - 20s) since 2021-01-06, in ns.
-  const expectedCursor = `${Math.floor((NOW - 20 * 1000 - Date.UTC(2021, 0, 6)) / 1000)}000000000`;
-  assert.equal(status.cursor, expectedCursor);
-
   await scanner.tick();
-  status = scanner.getStatus();
-  assert.equal(fetchImpl.calls[1], `${CHANGES_URL}/${expectedCursor}`);
-  assert.equal(status.pollCount, 1);
-  assert.equal(status.lastPollLines, 14);
-  assert.equal(status.cursor, "179164041314243100");
-  assert.equal(status.lineCount, 66);
-  assert.equal(scanner.getState().lines["289357360:ms4:si0:tid6"].points, -3.5);
-  assert.deepEqual(seen, ["loading", "live", "live"]); // NFL landed, load complete, first poll
-});
-
-test("a stale snapshot leaves the cursor null so the first poll uses the server default", async () => {
-  const fetchImpl = fakeFetch();
-  const scanner = createScanner({ fetchImpl, now: () => NOW + 10 * 60 * 1000, timers: noTimers });
-  await scanner.start([1]);
-  assert.equal(scanner.getStatus().cursor, null);
-  await scanner.tick();
-  assert.equal(fetchImpl.calls[1], CHANGES_URL);
-});
-
-test("a rejected cursor triggers a resync from snapshots", async () => {
-  let failNext = true;
-  const fetchImpl = fakeFetch({
-    [`${CHANGES_URL}/179164041314243100`]: () => {
-      if (!failNext) return response({ body: fixture("changes_slice.json") });
-      failNext = false;
-      return response({ body: JSON.stringify({ latestTimestamp: 1, resultCode: "Failed", results: [] }) });
-    },
-  });
-  const scanner = createScanner({ fetchImpl, now: () => NOW, timers: noTimers });
-  await scanner.start([1]);
-  await scanner.tick(); // moves the cursor to the fixture's latestTimestamp
-  await scanner.tick(); // Failed -> resync
-  const snapshotLoads = fetchImpl.calls.filter((url) => url === SNAPSHOT_BASE_URL(1)).length;
-  assert.equal(snapshotLoads, 2);
-  assert.equal(scanner.getStatus().phase, "live");
+  assert.deepEqual(fetchImpl.calls, [SNAPSHOT_BASE_URL(1)]);
+  assert.ok(!fetchImpl.calls.some((url) => url.includes("api-k.unabated.com")));
+  assert.deepEqual(seen, ["loading", "live"]); // NFL landed, load complete
 });
 
 test("a league that fails to load is reported by name and the rest keep working", async () => {
@@ -101,8 +64,6 @@ test("a league that fails to load is reported by name and the rest keep working"
   assert.equal(status.phase, "live");
   assert.deepEqual(status.leaguesLoaded, [1]);
   assert.match(status.error, /feed unavailable for CFB \(HTTP 503\)/);
-  await scanner.tick();
-  assert.equal(scanner.getStatus().pollCount, 1);
 });
 
 test("every league failing is a loud error, not an empty list", async () => {
@@ -115,20 +76,26 @@ test("every league failing is a loud error, not an empty list", async () => {
   assert.equal(status.lineCount, 0);
 });
 
-test("a network error mid-stream keeps the last state and surfaces the message", async () => {
-  const fetchImpl = fakeFetch({
-    [CHANGES_URL]: () => { throw new Error("offline"); },
-  });
-  const scanner = createScanner({ fetchImpl, now: () => NOW + 10 * 60 * 1000, timers: noTimers });
+test("a failed re-download keeps the last state and surfaces the message", async () => {
+  let clock = NOW;
+  let offline = false;
+  const serve = fakeFetch();
+  const fetchImpl = async (url, options) => {
+    if (offline) throw new Error("offline");
+    return serve(url, options);
+  };
+  const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers });
   await scanner.start([1]);
+  offline = true;
+  clock += 61 * 1000; // past the 60 s tier of a small file
   await scanner.tick();
   const status = scanner.getStatus();
   assert.equal(status.phase, "live");
-  assert.match(status.error, /feed unavailable: offline/);
+  assert.match(status.error, /feed unavailable: NFL \(offline\)/);
   assert.equal(status.lineCount, 62);
 });
 
-test("resume after a long pause resyncs; after a short one it just polls", async () => {
+test("resume after a long pause resyncs; after a short one it only tops up leagues that are due", async () => {
   let clock = NOW;
   const fetchImpl = fakeFetch();
   const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers });
@@ -290,7 +257,6 @@ function snapshotWith(edit) {
 
 const NOVIG_ML_KEY = "289357353:ms89:si0:tid6";
 const KALSHI_ALT_KEY = "289357360:ms105:si0:tid6:alt-3.5";
-const TOTAL_KEY = "289357343:ms4:si1:tid5";
 
 test("history: every snapshot line gets one observation on start, and start clears it", async () => {
   let clock = NOW;
@@ -298,47 +264,12 @@ test("history: every snapshot line gets one observation on start, and start clea
   await scanner.start([1]);
   const history = scanner.getHistory();
   assert.equal(Object.keys(history).length, 62 + 27);
-  assert.ok(Object.values(history).every((entries) => entries.length === 1 && entries[0].source === "snapshot" && entries[0].at === NOW));
+  assert.ok(Object.values(history).every((entries) => entries.length === 1 && entries[0].at === NOW));
   assert.equal(edgemove.edgeMove(history[NOVIG_ML_KEY], NOW).kind, "none");
   assert.equal(history[NOVIG_ML_KEY][0].bacr, -156);
   clock += 60 * 1000;
   await scanner.start([1]);
   assert.ok(Object.values(scanner.getHistory()).every((entries) => entries.length === 1 && entries[0].at === clock));
-});
-
-test("history: a stream update records a stream observation; a number move resets the line", async () => {
-  let clock = NOW;
-  const fetchImpl = fakeFetch({
-    [`${CHANGES_URL}/${`${Math.floor((NOW - 20 * 1000 - Date.UTC(2021, 0, 6)) / 1000)}000000000`}`]: () => response({
-      // The total's price gets better on the same number (-110 -> -100, +2.4 pts); the fair holds.
-      body: fixture("changes_slice.json").replace(/("marketId":289357343,"points":47\.0,"price":)-110\.0/g, "$1-100.0"),
-    }),
-  });
-  const seen = [];
-  const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers, onChange: (status, state, history) => seen.push(history) });
-  await scanner.start([1]);
-  clock += 10 * 1000;
-  await scanner.tick();
-  const history = scanner.getHistory();
-  assert.equal(seen[seen.length - 1], history); // the panel is handed the same object
-  // Spread -14 -> -3.5: a number move, so the line reads as first seen (on the stream).
-  const spread = history["289357360:ms4:si0:tid6"];
-  assert.equal(spread.length, 1);
-  assert.equal(spread[0].source, "stream");
-  assert.equal(spread[0].points, -3.5);
-  assert.equal(edgemove.edgeMove(spread, clock).kind, "none");
-  // The total moved on its number: amber, seen on the stream 10s ago.
-  const move = edgemove.edgeMove(history[TOTAL_KEY], clock);
-  assert.equal(move.kind, "book_away");
-  assert.equal(move.source, "stream");
-  assert.equal(move.sinceMs, 0);
-  assert.equal(move.from.price, -110);
-  assert.equal(move.to.price, -100);
-  // A line the stream added is a first sighting.
-  assert.equal(history["366866367:ms4:si0:tid6"].length, 1);
-  assert.equal(history["366866367:ms4:si0:tid6"][0].source, "stream");
-  // An unchanged replay adds nothing.
-  assert.equal(history[NOVIG_ML_KEY].length, 1);
 });
 
 test("history: a re-downloaded snapshot records fair and alt-rung moves as snapshot observations and forgets pulled lines", async () => {
@@ -378,24 +309,16 @@ test("history: a re-downloaded snapshot records fair and alt-rung moves as snaps
   const history = scanner.getHistory();
   const fair = edgemove.edgeMove(history[NOVIG_ML_KEY], clock);
   assert.equal(fair.kind, "fair_to_you");
-  assert.equal(fair.source, "snapshot");
   assert.equal(fair.sinceMs, 0);
   assert.equal(fair.from.bacr, -156);
   assert.equal(fair.to.bacr, -166);
   const alt = edgemove.edgeMove(history[KALSHI_ALT_KEY], clock);
   assert.equal(alt.kind, "book_away");
-  assert.equal(alt.source, "snapshot");
   assert.equal(alt.from.price, 113);
   assert.equal(alt.to.price, 125);
-  // The stream then re-adds the 1H lines it carries (a first sighting on the
-  // stream); every other 1H line is gone from the state and from the history.
+  // Every 1H line is gone from the state and from the history.
   const lines = scanner.getState().lines;
-  const gone = firstHalfKeys.filter((key) => lines[key] === undefined);
-  const readded = firstHalfKeys.filter((key) => lines[key] !== undefined);
-  assert.equal(gone.length, 8);
-  assert.equal(readded.length, 4);
-  assert.ok(gone.every((key) => history[key] === undefined));
-  assert.ok(readded.every((key) => history[key].length === 1 && history[key][0].source === "stream"));
+  assert.ok(firstHalfKeys.every((key) => lines[key] === undefined && history[key] === undefined));
 });
 
 // ---- observingSince: since when the history has no gap (fillfair.js) ------------------
@@ -413,15 +336,18 @@ test("observingSince: set when the first load lands, cleared by pause, set again
   assert.equal(scanner.getStatus().observingSince, null);
   await loading;
   assert.equal(scanner.getStatus().observingSince, NOW + 5000);
-  clock += 10 * 1000;
-  await scanner.tick(); // a stream poll inside the run keeps it
+  clock += 61 * 1000;
+  await scanner.tick(); // a due re-download inside the run keeps it
   assert.equal(scanner.getStatus().observingSince, NOW + 5000);
   scanner.pause();
   assert.equal(scanner.getStatus().observingSince, null);
   clock += 30 * 1000;
-  const shortResumeAt = clock;
-  await scanner.resume(); // short pause: one stream poll
-  assert.equal(scanner.getStatus().observingSince, shortResumeAt + 5000);
+  await scanner.resume(); // short pause, nothing due: no request, so no run yet
+  assert.equal(scanner.getStatus().observingSince, null);
+  clock += 61 * 1000;
+  const dueAt = clock;
+  await scanner.tick(); // the next due re-download starts the run
+  assert.equal(scanner.getStatus().observingSince, dueAt + 5000);
   scanner.pause();
   clock += 5 * 60 * 1000;
   const longResumeAt = clock;
@@ -433,21 +359,24 @@ test("observingSince: set when the first load lands, cleared by pause, set again
 
 test("observingSince: a pass that lands while the panel is hidden does not start a run", async () => {
   let clock = NOW;
-  let releaseChanges = null;
+  let releaseSnapshot = null;
+  let hold = false;
   const serve = fakeFetch();
   const fetchImpl = async (url, options) => {
-    if (url.startsWith(CHANGES_URL)) await new Promise((resolve) => { releaseChanges = resolve; });
+    if (hold) await new Promise((resolve) => { releaseSnapshot = resolve; });
     return serve(url, options);
   };
   const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers });
   await scanner.start([1]);
+  hold = true;
+  clock += 61 * 1000;
   const inFlight = scanner.tick();
-  await new Promise(setImmediate); // the stream poll is now waiting on the network
+  await new Promise(setImmediate); // the re-download is now waiting on the network
   scanner.pause();
   clock += 10 * 1000;
-  releaseChanges();
+  releaseSnapshot();
   await inFlight;
-  assert.equal(scanner.getStatus().pollCount, 1);
+  assert.equal(scanner.getStatus().lastSnapshotAt, clock);
   assert.equal(scanner.getStatus().observingSince, null);
 });
 
@@ -471,7 +400,7 @@ test("leagueObservingSince: a league whose loads keep failing while another land
   clock += 31 * 1000;
   await scanner.tick();
   assert.deepEqual(scanner.getStatus().leagueObservingSince, { 1: NOW, 2: NOW });
-  // Down for five minutes while NFL and the stream keep landing: CFB's run starts over, NFL's does not.
+  // Down for five minutes while NFL keeps landing: CFB's run starts over, NFL's does not.
   cfbDown = true;
   for (let step = 0; step < 10; step += 1) {
     clock += 31 * 1000;

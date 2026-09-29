@@ -5,7 +5,7 @@
 // only the last ten minutes.
 //
 // Capture (captureFillFairs): the scanner's in-memory history (edgemove.js)
-// holds what every line was worth on every snapshot and stream update. A
+// holds what every line was worth on every snapshot. A
 // new open bet's fill-time fair is the newest observation of its line at or
 // before placedAt, read only when the history is a gap-free record of that
 // moment: the scanner has watched without a gap since before placedAt
@@ -108,11 +108,7 @@
     if (!betsByEvent.size) return out;
     const rows = [];
     for (const line of Object.values(state.lines)) {
-      // Snapshot lines only, as the fair ladder (ladder.js): the changes
-      // stream files an event's team totals under its game total's bet type
-      // (feed.js), so a stream-only line at the bet's number can be another
-      // market — and a saved fair is permanent.
-      if (line.bookId === feed.UNABATED_LINE_BOOK_ID || line.fromSnapshot !== true) continue;
+      if (line.bookId === feed.UNABATED_LINE_BOOK_ID) continue;
       const onEvent = betsByEvent.get(line.eventId);
       if (onEvent && onEvent.some((bet) => couldBeSameLine(bet, line))) rows.push(feed.describeLine(line, state));
     }
