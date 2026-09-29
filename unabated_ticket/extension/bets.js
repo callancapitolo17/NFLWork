@@ -19,7 +19,8 @@
 //          shaped by hand (a captured ticket) has none and still matches
 //          through the board rows passed as options.lines.
 // Outputs matches per line ({tier, bet, label, position}), per-row annotations for the
-//          Edges list, the unmatched list with a reason per bet and whether it
+//          Edges list, a teaser leg's position in its game (teaser.js), the
+//          unmatched list with a reason per bet and whether it
 //          needs a game (the Bets tab's red flag), the retention prune, the
 //          native-id dedupe, the team-crosswalk rows an id join teaches (#118
 //          step 4; the bets service stores them), and Cal's manual attaches
@@ -883,6 +884,17 @@
     if (bet.isParlayLeg) return { reason: REASON_PARLAY_LEG };
     if (!hasPeriodName(bet.period)) return { reason: REASON_NO_PERIOD };
     if (!(typeof bet.stake === "number" && bet.stake > 0) || !(typeof bet.toWin === "number" && bet.toWin > 0)) return { reason: REASON_NO_STAKE };
+    const position = teaserLegPositionOf(bet, line);
+    return position.reason ? position : { ...position, stake: bet.stake, toWin: bet.toWin };
+  }
+
+  // A teaser leg's position in the row's game: {axis, period, cut,
+  // direction} at the leg's own (teased) number, or {reason}. positionOf
+  // without the parlay-leg and stake guards: a leg's dollars are the
+  // ticket's, and teaser.js sizes the ticket, never the leg.
+  function teaserLegPositionOf(bet, line) {
+    if (AXIS_OF_BET_TYPE[bet.betType] == null) return { reason: REASON_BET_TYPE };
+    if (!hasPeriodName(bet.period)) return { reason: REASON_NO_PERIOD };
     if (bet.betType === "moneyline") {
       if (Array.isArray(bet.approx) && bet.approx.includes(TIE_CAVEAT)) return { reason: REASON_TIE_CAVEAT };
       if (bet.league === LEAGUE_WITH_THREE_WAY_MONEYLINE) return { reason: REASON_THREE_WAY };
@@ -890,7 +902,7 @@
     const sideIndex = betSideIndexOn(bet, line);
     if (sideIndex == null) return { reason: REASON_NO_SIDE };
     const position = axisPosition(bet.betType, sideIndex, bet.points);
-    return position.reason ? position : { ...position, period: bet.period, stake: bet.stake, toWin: bet.toWin };
+    return position.reason ? position : { ...position, period: bet.period };
   }
 
   // ---- public API ------------------------------------------------------------
@@ -1320,7 +1332,7 @@
     TIE_CAVEAT, GAME_SERIES, RETENTION_DAYS_DEFAULT,
     normalizeKalshi, parseEventSuffix, centsToAmerican,
     AXIS_TOTAL, AXIS_MARGIN,
-    matchBets, annotateRows, linePosition, unmatchedReasons, pruneForRetention, dedupeByNativeId, resolveTeamKeys,
+    matchBets, annotateRows, linePosition, teaserLegPositionOf, unmatchedReasons, pruneForRetention, dedupeByNativeId, resolveTeamKeys,
     rekeyRecords, learnCrosswalk, venueTeamOf, applyPins, samePoints,
     describeBet, formatPlacedAt, formatStake, tierLabel, venueLabel, easternDateOf, betDateWindow,
   };
