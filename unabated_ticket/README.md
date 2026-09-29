@@ -812,6 +812,7 @@ Two kinds of source feed the flags:
 | BFA (Betfastaction) | `bets_service/sources/bfa.py` (local service, the account's own Keycloak password login from `bet_logger/.env`; 2026-09-23) | every 300 s while the service runs |
 | Wagerzon (the C account) | `bets_service/sources/wagerzon.py` (local service, the site's form login from `bet_logger/.env`; 2026-09-23) | every 300 s while the service runs |
 | Polymarket US (the CFTC app) | `bets_service/sources/polymarket_us.py` (local service, the account's own API key from `bet_logger/.env`, Ed25519-signed; 2026-09-23) | every 60 s while the service runs |
+| Bet105 | the panel itself (`extension/bet105.js`, your own login at app.bet105.ag in this Chrome — Cloudflare challenges anything else) → `POST /bet105.json`, parsed by `bets_service/sources/bet105.py`; 2026-09-29 | every 5 min while the panel is open; open bets only |
 | ProphetX | — (#117) | shows "no source configured" |
 
 Start the service (next section), keep the panel open. Every 30 s while the
@@ -1207,7 +1208,11 @@ GETs; no order placement.
   placed (*Since your first fill* above), INSERT only: a bet that has one
   keeps it, so `saved` counts only new bets. A row is refused with a 400
   that names it unless `fairAmerican` is a whole American price, both times
-  are ISO and the fair was observed at or before `placedAt`. The write routes require `Content-Type:
+  are ISO and the fair was observed at or before `placedAt`. `POST
+  /bet105.json` with `{fetchedAt, feeds: {prematch: [betGroup], live:
+  [betGroup]}}` (both feeds, at most 2000 groups) → `{ok, count, closed}`, or
+  `{error}` → `{ok, recorded: "error"}` — the panel's read of Bet105 (the Bet105
+  source bullet), stored as that source's run. The write routes require `Content-Type:
   application/json` (415 otherwise): the service sends no CORS headers, so a
   web page can only reach it with a "simple" cross-origin request (a form or
   `text/plain` POST, which is refused) and never with JSON or DELETE (both
@@ -1404,6 +1409,35 @@ GETs; no order placement.
   "Ottawa Senators") and `name` elsewhere. Team totals, player props, soccer,
   unsupported leagues and combos (`caoc-…` parlays, listed as one record with
   their legs in `raw.comboLegs`) fail closed with the reason.
+- **Bet105 source** (`sources/bet105.py` + `extension/bet105.js`, 2026-09-29):
+  the one PUSHED venue. Bet105 (a LinePros white-label) sits behind Cloudflare,
+  which challenges any request that is not the browser session's own, so the
+  panel reads the account from your own login in this Chrome and the service
+  only parses and stores. Every 5 min while the panel is visible: `GET /__bff/api/customers`
+  (401 = not logged in; its `csrfToken` goes in `X-Broker-CSRF`), then the
+  site's own `getHistory` (`{a: "getHistory", state: "0"}` = open bets) on both
+  LinePros feeds, `/__bff/__partner-prematch/betLobbyV2/logic/` and
+  `…/__partner-live/…`, POSTed as `{fetchedAt, feeds: {prematch, live}}` to
+  `POST /bet105.json`; a read that fails is POSTed as `{error}` so the Bets tab
+  row turns red with the fix (log in at app.bet105.ag in this Chrome). Never a
+  half push: both feeds or an error. Record ids are `bet105:<feed>:<betGroupId>`
+  (`:legN` per leg of a parlay, on the ticket's stake and price). A leg names
+  the selection by id, not text (`description` is empty): `marketId` 5 total /
+  6 spread / 3 moneyline (the LinePros wager types; 7 / 8 team totals, 1 = 1X2
+  and props fail closed), `key` the line — the total, or the AWAY spread number,
+  negated for the home side — and `subKey` the side, `1` = Over or the away
+  team, `2` = Under or home, the same ids `bet105_odds/scraper.py` reads off the
+  odds feed (`team1` / `team2` are away / home there too); `periodId` `m` = FG,
+  `h1` / `h2`, `f5`, `q1`–`q4`; `leagueName` (`NFL`, the pro leagues; a college
+  name fails closed until seen); `eventStartTime` epoch seconds; `finalOdds`
+  decimal. Verified on the 2026-09-29 capture: three NFL first-half totals,
+  side `1`. **Unobserved**, pinned by hand-written fixture rows only: an
+  Under, a spread's sign, a moneyline, a parlay, the live feed. Bet105 shows no
+  settled list (My Plays only ever asks for state 0), so an open record a
+  complete push no longer carries is marked `closed` with no result — never
+  guessed won or lost — and the store keeps it. No credentials and no poll in
+  the service; `service.PUSHED_SOURCES` lists the venue so the panel reads "no
+  completed poll yet" until the first push.
 - **Store** (`store.py`, `bets.duckdb`, gitignored): `bets` upserts on the
   record id and is never pruned (the CLV work needs the history), but only
   rows whose content actually CHANGED are written (#125): a source re-sends
@@ -1457,7 +1491,11 @@ GETs; no order placement.
   `bets_service/sources/` with `name`, `poll_sec` and `fetch() -> list[record]`
   (the `Source` protocol in `sources/__init__.py`), registered in
   `service.main()`. `fetch()` returns every record the venue knows and raises
-  on failure — never a partial list. Records follow the contract in the plan
+  on failure — never a partial list. A venue no script can reach (Cloudflare
+  challenging anything but the browser's own session — Bet105) is read by the
+  panel instead and PUSHED to a route of its own (`POST /bet105.json`), the
+  parser still a module in `sources/` and the venue listed in
+  `service.PUSHED_SOURCES`. Records follow the contract in the plan
   (`id` = `"<venue>:<native id>"`, `side`/`points` in the side's own number,
   raw team names, keys `null`). A venue with no game date sets `eventStart`
   and `eventDate` null, carries `rotation` and `approx: ["game_date_unknown"]`,
@@ -1487,8 +1525,8 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 304 tests) and
-the bets service's pytest suite (247 tests, on the `kalshi_draft/venv`
+the node suite (`npm test` = `node --test tests/*.test.js`, 309 tests) and
+the bets service's pytest suite (296 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`
@@ -1890,6 +1928,21 @@ list's legs replace these one for one, which also removes the extra
 unmatchable record listed beside them. Nothing to clean up: on 2026-09-29 the
 live store's 61 BFA records (12 graded teasers and parlays) held no such
 ticket.
+
+**2026-09-29 — Bet105 is read by the panel, not the service.** Bet105 is a
+LinePros white-label (the odds scraper already reads its socket) behind
+Cloudflare, which challenges any request that is not the browser session's
+own, so no script route exists and none is attempted. The panel, running in
+Cal's own logged-in Chrome, makes the site's own `getHistory` call and pushes
+the answer to the service (`POST /bet105.json`); the service parses and stores
+it like every other venue so pins, attach and freshness work unchanged. Open
+bets only (the site shows no settled list); a bet a complete push no longer
+lists is marked `closed` with no result. The selection ids (`marketId`,
+`key`, `subKey`, `periodId`) are read the way `bet105_odds/scraper.py` reads
+the same feed, and only the captured shape (NFL first-half totals, side `1`)
+is verified; the rest is pinned by hand-written fixture rows and fails closed
+on anything unseen. Rejected: a Pikkit-mediated read (its terms forbid it and
+its data is only as fresh as the phone app's last sync).
 
 **2026-09-26 — Novig's `unabatedId` no longer beats the team name.** An
 open Novig over on Southern @ Jackson State never matched its game. Novig

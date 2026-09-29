@@ -73,6 +73,7 @@ report.html
 # Session files
 .pikkit_session.json
 .bet105_session.json
+.bet105_recon_api.json
 
 # Browser profiles (Playwright/Chrome)
 .betonline_profile/

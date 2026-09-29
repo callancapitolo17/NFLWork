@@ -32,7 +32,13 @@ Requires in `.env`:
 - `BET105_USER_ID`
 - `BET105_GROUP_ID`
 
-Prematch key rotates periodically. Run `recon_bet105.py` to capture fresh params from browser.
+Prematch key rotates periodically. Run `recon_bet105.py` to capture fresh params:
+it opens a plain Chrome on the persistent profile (`.bet105_profile/`), you log
+in yourself, and it attaches over CDP only afterwards (a Playwright launch
+crawled: every odds-socket frame was relayed to Python). It also records the
+bets API calls My Plays makes to `.bet105_recon_api.json` — the shapes
+`unabated_ticket/bets_service/sources/bet105.py` is pinned to. It saves no
+cookies; the bets service reads Bet105 through the Unabated Ticket extension.
 
 ## Storage
 
