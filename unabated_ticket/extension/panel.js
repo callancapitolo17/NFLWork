@@ -13,8 +13,9 @@
 // DELETE it on Clear (#118 step 4); POST /fill_fairs.json with the fair a
 // new bet's line had when it was placed (fillfair.js, the service stores it
 // once per bet, insert-only). Re-renders on storage.onChanged.
-// Network: the scanner (scanner.js) fetches Unabated's public snapshots while this
-// page is open; it pauses when the panel is hidden and stops when it closes.
+// Network: the scanner (scanner.js) fetches Unabated's public snapshots — the
+// Edges tab's leagues plus NFL and CFB for the Teasers tab — while this page
+// is open; it pauses when the panel is hidden and stops when it closes.
 // The bets tab (#114) polls the local bets service (betsSettings.serviceUrl,
 // default http://127.0.0.1:8094) every 30 s on the same visibility rule —
 // never from the service worker. Matching is bets.js; presentation helpers
@@ -30,6 +31,7 @@
   const attachLib = globalThis.UnabatedAttach;
   const ladderLib = globalThis.UnabatedLadder;
   const live = globalThis.UnabatedLive;
+  const teaserLib = globalThis.UnabatedTeaser;
   // Bets service poll cadence while the panel is visible (plan § Storage).
   const BETS_POLL_MS = 30 * 1000;
   const DEFAULT_SETTINGS = { bankroll: 30000, multiplier: 0.25 };
@@ -1044,10 +1046,13 @@
     }
   }
 
-  // Everything selectEdges needs except the edge threshold (list and alerts differ there).
+  // Everything selectEdges needs except the edge threshold (list and alerts
+  // differ there). leagueIds: the scanner also holds NFL and CFB for the
+  // Teasers tab, which the Edges tab lists only when Football is ticked.
   function edgeSelectionOptions(effective) {
     const settings = state.edgeSettings;
     return {
+      leagueIds: new Set(settings.leagues),
       periods: new Set(settings.periods),
       betTypes: effective.betTypeIds,
       bookIds: effective.bookIds,
@@ -1938,11 +1943,19 @@
     state.edgeSettings = parsed.settings;
     chrome.storage.local.set({ edges: parsed.settings });
     if (scopeChanged) alertsBaselined = false;
-    if (leaguesChanged) {
-      scanner.start(parsed.settings.leagues).catch((error) => console.error("[unabated-ticket] scanner restart failed", error));
+    // Ticking Football on or off leaves the scanner's leagues as they are: it loads football for the Teasers tab anyway.
+    const scannerLeaguesChanged = scannerLeaguesOf(parsed.settings.leagues).join(",") !== scannerLeaguesOf(before.leagues).join(",");
+    if (scannerLeaguesChanged) {
+      scanner.start(scannerLeaguesOf(parsed.settings.leagues)).catch((error) => console.error("[unabated-ticket] scanner restart failed", error));
     }
     renderEdges();
-    if (scopeChanged && !leaguesChanged) processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
+    // A restarted scanner runs the alert pass on its first snapshot.
+    if (scopeChanged && !scannerLeaguesChanged) processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
+  }
+
+  // The leagues the scanner loads: the Edges tab's, plus NFL and CFB for the Teasers tab.
+  function scannerLeaguesOf(edgeLeagues) {
+    return Array.from(new Set([...edgeLeagues, ...teaserLib.TEASER_LEAGUE_IDS])).sort((a, b) => a - b);
   }
 
   function sanitizeEdgeSettings(stored) {
@@ -2717,7 +2730,7 @@
     renderLocate();
     if (state.activeTab === "bets") renderBets();
     startBetsPolling();
-    await scanner.start(state.edgeSettings.leagues);
+    await scanner.start(scannerLeaguesOf(state.edgeSettings.leagues));
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {

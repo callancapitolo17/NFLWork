@@ -168,6 +168,15 @@ test("selectEdges: started games drop out; user book filter replaces the live-bo
   assert.deepEqual(onlyMgm.map((r) => r.key), ["289357353:ms4:si0:tid6"]);
 });
 
+test("selectEdges: leagueIds lists only the leagues the Edges tab ticks (the scanner loads NFL and CFB for the Teasers tab either way)", () => {
+  const state = loadedState();
+  const everything = feed.selectEdges(state, { now: BEFORE_KICKOFF });
+  assert.ok(everything.length > 0);
+  assert.deepEqual(feed.selectEdges(state, { now: BEFORE_KICKOFF, leagueIds: new Set([NFL]) }).map((r) => r.key), everything.map((r) => r.key));
+  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, leagueIds: new Set([2, 5]) }).length, 0);
+  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, leagueIds: new Set() }).length, 0);
+});
+
 test("selectEdges: periods, bet types and the threshold are honoured", () => {
   const state = loadedState();
   const withFirstHalf = feed.selectEdges(state, { now: BEFORE_KICKOFF, minEdge: 0.005, periods: new Set([1, 2]) });

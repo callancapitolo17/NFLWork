@@ -550,6 +550,8 @@
   }
 
   // Lines worth listing: on the board, edge known and >= minEdge (a fraction),
+  // league ticked (leagueIds: the state can hold leagues the Edges tab does
+  // not show — the scanner always loads NFL and CFB for the Teasers tab),
   // period/bet type enabled, book allowed, game not started, and — when
   // maxLineAgeMs is set — changed by the book within that window (a 96-day-old
   // line at a "live" book is a dead feed, and its 36% "edge" is not bettable;
@@ -559,6 +561,7 @@
   function selectEdges(state, options) {
     const opts = options || {};
     const minEdge = typeof opts.minEdge === "number" ? opts.minEdge : 0.01;
+    const leagueIds = opts.leagueIds instanceof Set ? opts.leagueIds : null;
     const periods = opts.periods instanceof Set ? opts.periods : new Set([1]);
     const betTypes = opts.betTypes instanceof Set ? opts.betTypes : new Set([1, 2, 3]);
     const bookIds = opts.bookIds instanceof Set ? opts.bookIds : null;
@@ -572,6 +575,7 @@
     const rows = [];
     for (const line of Object.values(state.lines)) {
       if (line.bookId === UNABATED_LINE_BOOK_ID) continue;
+      if (leagueIds && !leagueIds.has(line.leagueId)) continue;
       if (line.isAlt && !altPassesGates(line, state, altOpts)) continue;
       if (line.statusId !== STATUS_ON_BOARD) continue;
       if (line.ge == null || line.ge < minEdge) continue;
