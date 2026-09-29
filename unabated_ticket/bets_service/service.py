@@ -6,7 +6,7 @@ Inputs:  each registered Source (sources/kalshi.py; sources/betonline.py when
          its cookie file exists; sources/novig.py when its token file exists;
          sources/bfa.py and sources/wagerzon.py when their logins are configured;
          sources/polymarket_us.py when its API key is configured)
-         on its own poll_sec.
+         on its own poll_sec; plus the extension's pushes for Bet105 (below).
 Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
            GET /bets.json[?days=N]  {generatedAt, sources: {name: {fetchedAt, ok,
                                     error, count}}, bets: [records open + settled
@@ -37,6 +37,13 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     (the fair a new bet's line had when it was placed,
                                     read by the panel off its line history; same
                                     Content-Type guard as the crosswalk)
+           POST /bet105.json        body {fetchedAt, feeds: {prematch: [betGroup], live:
+                                    [betGroup]}} -> {ok, count, closed}, or {error} ->
+                                    {ok, recorded: "error"} (the one PUSHED source: the
+                                    extension reads Bet105 from Cal's own Chrome because
+                                    Cloudflare challenges anything else — sources/bet105.py
+                                    parses, an open bet a complete push no longer lists is
+                                    closed, and the push is logged as that source's run)
          Every verb refuses a request whose Host header is not the loopback
          name the service is serving on (403): a page at evil.example whose
          DNS flips to 127.0.0.1 is SAME-ORIGIN with this server, so neither
@@ -63,7 +70,7 @@ from urllib.parse import parse_qs, urlparse
 from unabated_ticket.bets_service import config
 from unabated_ticket.bets_service.log_setup import setup_logging
 from unabated_ticket.bets_service.normalize import parse_iso_ms
-from unabated_ticket.bets_service.sources import Source
+from unabated_ticket.bets_service.sources import Source, bet105
 from unabated_ticket.bets_service.sources.betonline import source_if_configured as betonline_source_if_configured
 from unabated_ticket.bets_service.sources.bfa import source_if_configured as bfa_source_if_configured
 from unabated_ticket.bets_service.sources.kalshi import KalshiSource
@@ -93,6 +100,10 @@ PIN_OPTIONAL_TEXT_FIELDS = ("eventStart", "awayTeamName", "homeTeamName")
 MAX_FILL_FAIR_ROWS_PER_POST = 1000
 # American odds run from -100 down and +100 up; the gap between is no price.
 MIN_AMERICAN_MAGNITUDE = 100
+# Sources with no poll here: the extension POSTs their records (/bet105.json).
+# Listed so the panel reads "no completed poll yet" before the first push, not
+# "no source configured".
+PUSHED_SOURCES = (bet105.VENUE,)
 
 
 def _now() -> datetime:
@@ -366,7 +377,7 @@ def make_handler(store: BetsStore, started_at: float,
             if self._refused_foreign_host():
                 return
             url = urlparse(self.path)
-            if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json"):
+            if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/bet105.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
@@ -378,6 +389,9 @@ def make_handler(store: BetsStore, started_at: float,
                 return
             if url.path == "/fill_fairs.json":
                 self._save_fill_fairs(body)
+                return
+            if url.path == "/bet105.json":
+                self._push_bet105(body)
                 return
             rows = validate_crosswalk_rows(body)
             if isinstance(rows, str):
@@ -415,6 +429,26 @@ def make_handler(store: BetsStore, started_at: float,
             saved = store.save_fill_fairs(rows, now)
             self._send_json(200, {"ok": True, "saved": saved,
                                   "fillFairs": store.load_fill_fairs(config.RETENTION_DAYS, now)})
+
+        # POST /bet105.json: the extension's read of the account, as one source
+        # run — a complete push UPSERTs its records and closes the open ones it
+        # no longer lists; an error push is a failed run and the records stand.
+        def _push_bet105(self, body: object) -> None:
+            push = bet105.validate_push(body)
+            if isinstance(push, str):
+                self._send_json(400, {"error": push})
+                return
+            started_at = _now()
+            if "error" in push:
+                store.log_source_run(bet105.VENUE, started_at, _now(), False, push["error"], 0)
+                self._send_json(200, {"ok": True, "recorded": "error"})
+                return
+            records = bet105.normalize_bet105(push["feeds"], push["fetchedAt"])
+            closed = bet105.closed_by_absence(store.load_bets(config.RETENTION_DAYS, started_at),
+                                              {record["id"] for record in records}, _iso(started_at))
+            store.upsert_bets(records + closed, started_at)
+            store.log_source_run(bet105.VENUE, started_at, _now(), True, None, len(records))
+            self._send_json(200, {"ok": True, "count": len(records), "closed": len(closed)})
 
         def do_DELETE(self) -> None:  # noqa: N802 — http.server's name
             if self._refused_foreign_host():
@@ -489,7 +523,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
     """Run the poll thread and the HTTP server until SIGINT/SIGTERM."""
     stop = threading.Event()
     started_at = time.monotonic()
-    source_names = [source.name for source in sources]
+    source_names = [source.name for source in sources] + list(PUSHED_SOURCES)
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names))
     server.daemon_threads = True
     poller = threading.Thread(target=poll_loop, args=(sources, store, stop), name="poll", daemon=True)
