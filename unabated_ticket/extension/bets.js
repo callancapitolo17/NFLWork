@@ -987,25 +987,23 @@
     return { startsMs: Array.from(starts.values()).sort((a, b) => a - b), byRotation };
   }
 
-  // Why the name rule found no event for a bet: {reason, fixable,
-  // boardSaysNotStarted}. Fixable means attaching it to a game would fix it
-  // (a name the team table does not know, a start the board disagrees
-  // with); not fixable means it is not on the board (a league off the
-  // scanner, a game not posted yet or over). boardSaysNotStarted: the bet's
+  // Why the name rule found no event for a bet: {reason,
+  // boardSaysNotStarted}. The reason explains the miss; it does not decide
+  // the red flag (unmatchedEntry does, 2026-09-28). boardSaysNotStarted: the bet's
   // own rotation is on a not-started board event, so the bet's clock — the
   // one in doubt — cannot say its game has started (BFA's open-bets clock
   // read 7 h early on 2026-09-26, before the bet was even placed).
   function nameMiss(bet, leaguesOnBoard, lines, nowMs) {
     const unresolved = unresolvedTeamNames(bet);
-    if (unresolved.length) return { reason: `team not recognised (${unresolved.join(", ")})`, fixable: true };
-    if (!leaguesOnBoard.has(bet.league)) return { reason: REASON_LEAGUE_OFF, fixable: false };
+    if (unresolved.length) return { reason: `team not recognised (${unresolved.join(", ")})` };
+    if (!leaguesOnBoard.has(bet.league)) return { reason: REASON_LEAGUE_OFF };
     const other = sameGameAtAnotherStart(bet, lines, nowMs);
     if (other.startsMs.length) {
       const board = other.startsMs.map((ms) => formatPlacedAt(new Date(ms).toISOString())).join(", ");
-      return { reason: `start time differs (bet ${formatPlacedAt(bet.eventStart)}, board ${board})`, fixable: true,
+      return { reason: `start time differs (bet ${formatPlacedAt(bet.eventStart)}, board ${board})`,
         boardSaysNotStarted: other.byRotation };
     }
-    return { reason: REASON_NO_EVENT, fixable: false };
+    return { reason: REASON_NO_EVENT };
   }
 
   // Whether the bet's own game has started, by what the bet knows: its
@@ -1055,16 +1053,20 @@
     return bet.league == null ? leaguesOnBoard.size > 0 : leaguesOnBoard.has(bet.league);
   }
 
-  // One unmatched list entry. It needs a game (the red flag) only when an
-  // attach can fix it NOW: attachable, fixable, its game not started, and
-  // the board already lists a game of its league around its date — a bet on
-  // a game two weeks out, not posted yet, stays grey until there is one.
-  // `miss` is nameMiss's {reason, fixable, boardSaysNotStarted}.
+  // One unmatched list entry. It needs a game (the red flag) when it is an
+  // attachable game bet whose game has not started and whose league has a
+  // game on the board around its date — whatever the reason for the miss
+  // (Cal, 2026-09-28: a rule that flagged only named causes let a wrong
+  // venue team id read "not posted yet" and stay grey). A bet on a game
+  // two weeks out, with nothing of its league on the board that week, stays
+  // grey. Cal can dismiss a flag (context.dismissedIds): the entry keeps its
+  // reason and Attach, and stops flagging. `miss` is {reason, boardSaysNotStarted}.
   function unmatchedEntry(bet, miss, context) {
     const attachable = isAttachable(bet, context.leaguesOnBoard);
     const started = !miss.boardSaysNotStarted && betGameStarted(bet, context.nowMs);
-    const needsGame = attachable && miss.fixable && !started && boardHasGameInWindow(bet, context.lines);
-    return { bet, reason: miss.reason, attachable, needsGame, needsFix: false };
+    const dismissed = context.dismissedIds.has(bet.id);
+    const needsGame = attachable && !started && !dismissed && boardHasGameInWindow(bet, context.lines);
+    return { bet, reason: miss.reason, attachable, needsGame, needsFix: false, dismissed };
   }
 
   // A game bet its source could not read: the venue's own league code named
@@ -1075,40 +1077,44 @@
     return Boolean(bet.unmatchable) && Boolean(bet.raw) && bet.raw.parseFailed === true;
   }
 
-  // It needs a code fix (the red flag) while it is open, whatever the board
-  // holds: the record names no game, team or line, so Attach cannot help.
-  function parseFailureEntry(bet) {
-    return { bet, reason: bet.unmatchable, attachable: false, needsGame: false, needsFix: true };
+  // It needs a code fix (the red flag) while it is open and not dismissed,
+  // whatever the board holds: the record names no game, team or line, so
+  // Attach cannot help.
+  function parseFailureEntry(bet, context) {
+    const dismissed = context.dismissedIds.has(bet.id);
+    return { bet, reason: bet.unmatchable, attachable: false, needsGame: false, needsFix: !dismissed, dismissed };
   }
 
   // Every OPEN bet that matches no line on the board: {bet, reason,
-  // attachable, needsGame, needsFix}. needsGame and needsFix are the Bets
-  // tab's red flag. needsGame: a game bet whose game has not started, whose
-  // league has a game on the board around its date, and whose miss an attach
-  // would fix (a name not recognised, two possible games, a start the board
-  // disagrees with). needsFix: a parse failure (isParseFailure). Futures,
-  // leagues off the scanner, games not posted yet or already over are listed
-  // but never flag. Closed and settled bets are not problems, so
+  // attachable, needsGame, needsFix, dismissed}. needsGame and needsFix are
+  // the Bets tab's red flag. needsGame: a game bet whose game has not
+  // started and whose league has a game on the board around its date, for
+  // any reason (unmatchedEntry). needsFix: a parse failure (isParseFailure).
+  // Futures, leagues off the scanner, games two weeks out or already over
+  // are listed but never flag, and neither does a bet Cal dismissed
+  // (options.dismissedIds, bet ids; its `dismissed` is true). Closed and
+  // settled bets are not problems, so
   // they are not listed. `now` (ms) defaults to the clock. A bet that carries
   // a venue id says both tiers failed — "by id: Kalshi event 26SEP19DUQWSU
   // not on any board ladder; by name: team not recognised (…)" — since an id
   // misses when the venue lists no ladder for the game (Kalshi rungs sat on
   // 126 of 346 CFB events, 2026-09-12) while the name rule may still see it.
-  function unmatchedReasons(bets, lines, now) {
+  function unmatchedReasons(bets, lines, now, options) {
     const nowMs = typeof now === "number" ? now : Date.now();
     const leaguesOnBoard = new Set(lines.map((line) => line.league));
-    const context = { leaguesOnBoard, lines, nowMs };
+    const dismissedIds = new Set(options && Array.isArray(options.dismissedIds) ? options.dismissedIds : []);
+    const context = { leaguesOnBoard, lines, nowMs, dismissedIds };
     const board = boardOf(lines);
     const out = [];
     for (const bet of bets) {
       if (bet.status !== "open") continue;
-      if (isParseFailure(bet)) { out.push(parseFailureEntry(bet)); continue; }
-      if (bet.unmatchable) { out.push(unmatchedEntry(bet, { reason: bet.unmatchable, fixable: false }, context)); continue; }
+      if (isParseFailure(bet)) { out.push(parseFailureEntry(bet, context)); continue; }
+      if (bet.unmatchable) { out.push(unmatchedEntry(bet, { reason: bet.unmatchable }, context)); continue; }
       // Matched (by pin, id, team pair or rotation) is not a problem, whatever
       // the team table makes of the names; the diagnoses below explain a miss.
       const game = gameOf(bet, board);
       if (game.events.size === 1) continue;
-      if (game.events.size > 1) { out.push(unmatchedEntry(bet, { reason: ambiguousReason(game), fixable: true }, context)); continue; }
+      if (game.events.size > 1) { out.push(unmatchedEntry(bet, { reason: ambiguousReason(game) }, context)); continue; }
       const miss = nameMiss(bet, leaguesOnBoard, lines, nowMs);
       if (!game.venueId || miss.reason === REASON_LEAGUE_OFF) { out.push(unmatchedEntry(bet, miss, context)); continue; }
       const idMiss = game.idInOtherLeague ? "only on another league's board ladder" : "not on any board ladder";

@@ -908,8 +908,11 @@ it is flagged, attached by hand and learned from:
   Eastern time, else no date at all), the board listing at least one game
   of its league in its date window (`bets.betDateWindow`, the same dates
   the picker lists — so a bet on a game two weeks out stays grey until
-  there is something to attach it to), and a miss an attach fixes —
-  `team not recognised`, `ambiguous game`, or **start time differs** (the
+  there is something to attach it to) — **whatever the reason** for the
+  miss (the broad rule, Cal 2026-09-28: the old rule flagged only named
+  causes, and a wrong Novig team id that made its game read "not posted
+  yet" stayed grey). The reason explains the miss: `team not recognised`,
+  `ambiguous game`, `no event on the board yet`, or **start time differs** (the
   bet's game on the board — its team pair, or, for a bet that names one
   team (BFA, Wagerzon and BetOnline spreads and moneylines), its rotation
   on a row where that team fits — not started yet, within 12 h of the
@@ -923,8 +926,10 @@ it is flagged, attached by hand and learned from:
   game 2. Bets needing a game turn the Bets tab label red
   with a red count, add "N not matched to a game" to the header line, and
   put a red banner at the top of the Bets tab. Futures and props, leagues
-  off the scanner, games not posted yet and games over but not yet settled
-  never flag; they fold into **Not on the board**. Started games keep their
+  off the scanner, games two weeks out and games over but not yet settled
+  never flag; they fold into **Not on the board**. Measured on the live
+  board of 2026-09-28 (437 events, 39 open bets): 6 unmatched, all futures
+  and props, 0 red. Started games keep their
   pregame rows on the board until they end (9 MLB events 0–6 h past their
   start were still listed, 2026-09-23), so a bet in play stays matched.
 - *Needs a code fix* (2026-09-26). An open bet its source could not read —

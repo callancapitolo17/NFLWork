@@ -1252,14 +1252,19 @@ test("needsGame: a date-only bet flags through its Eastern date; a bet with no d
   assert.equal(bets.unmatchedReasons([undated], [ACU_AT_TARLETON], AFTER_KICKOFF)[0].needsGame, true);
 });
 
-test("needsGame: two possible games flag; a game not posted yet does not", () => {
+test("needsGame: two possible games flag, and so does a game missing from a board that lists its league that day", () => {
   const known = openBet({ id: "bfa:2", awayTeam: "Abilene Christian", homeTeam: "Tarleton State", eventStart: null, eventDate: "2026-09-26" });
   const twice = [ACU_AT_TARLETON, idRow({ ...ACU_AT_TARLETON, eventId: 7002, eventStart: "2026-09-26T19:00:00Z" })];
   assert.deepEqual(bets.unmatchedReasons([known], twice, BEFORE_KICKOFF).map((u) => [u.reason, u.needsGame]), [["ambiguous game", true]]);
   const elsewhere = [idRow({ league: "cfb", eventId: 7003, awayTeam: "Lamar", homeTeam: "Northwestern State",
     awayTeamId: 1160, homeTeamId: 1177, eventStart: "2026-09-26T23:00:00Z" })];
+  // The broad rule (2026-09-28): the reason explains, it does not decide. A wrong venue team id
+  // (Novig's Jackson State, 2026-09-26) reads exactly like this, so it flags.
   assert.deepEqual(bets.unmatchedReasons([known], elsewhere, BEFORE_KICKOFF).map((u) => [u.reason, u.needsGame]),
-    [["no event on the board yet", false]]);
+    [["no event on the board yet", true]]);
+  // Nothing of its league on the board around its date: nothing to attach to, so it stays grey.
+  const nextWeek = [idRow({ ...elsewhere[0], eventStart: "2026-10-03T23:00:00Z" })];
+  assert.equal(bets.unmatchedReasons([known], nextWeek, BEFORE_KICKOFF)[0].needsGame, false);
 });
 
 test("start time differs: the same pair on the board within 12 h at another start flags; the next day's game does not", () => {
@@ -1286,7 +1291,8 @@ test("start time differs: a doubleheader's game 1 in progress is not the game-2 
     eventStart: "2026-09-27T04:00:00Z" });
   const gameOneInProgress = Date.parse("2026-09-27T00:30:00Z");
   const [miss] = bets.unmatchedReasons([gameTwo], [ACU_AT_TARLETON], gameOneInProgress);
-  assert.deepEqual([miss.reason, miss.needsGame], ["no event on the board yet", false]);
+  // Never pointed at game 1; game 2 missing from the board flags under the broad rule.
+  assert.deepEqual([miss.reason, miss.needsGame], ["no event on the board yet", true]);
   // Before game 1 starts the disagreement is still reported.
   assert.equal(bets.unmatchedReasons([gameTwo], [ACU_AT_TARLETON], BEFORE_KICKOFF)[0].reason,
     "start time differs (bet Sep 27 12:00 AM, board Sep 26 8:00 PM)");
@@ -1371,4 +1377,16 @@ test("betDateWindow: a day either side of the start or date; the placed window w
   assert.deepEqual(bets.betDateWindow({ eventDate: "2026-09-26" }), { fromDate: "2026-09-25", toDate: "2026-09-27" });
   assert.deepEqual(bets.betDateWindow({ placedAt: "2026-09-23T20:00:00Z" }), { fromDate: "2026-09-23", toDate: "2026-10-07" });
   assert.equal(bets.betDateWindow({}), null);
+});
+
+test("dismissed: a flagged bet Cal dismissed keeps its reason and Attach and stops flagging; a code fix too", () => {
+  const unknownName = openBet({ id: "bfa:1", awayTeam: "Abilene Chr", homeTeam: "Tarleton St" });
+  const unreadable = { id: "bfa:9", status: "open", venue: "bfa", league: null, unmatchable: "unrecognised selection (…)", raw: { parseFailed: true } };
+  const flagged = bets.unmatchedReasons([unknownName, unreadable], [ACU_AT_TARLETON], BEFORE_KICKOFF);
+  assert.deepEqual(flagged.map((u) => [u.bet.id, u.needsGame, u.needsFix, u.dismissed]), [["bfa:1", true, false, false], ["bfa:9", false, true, false]]);
+  const quiet = bets.unmatchedReasons([unknownName, unreadable], [ACU_AT_TARLETON], BEFORE_KICKOFF, { dismissedIds: ["bfa:1", "bfa:9"] });
+  assert.deepEqual(quiet.map((u) => [u.bet.id, u.reason, u.attachable, u.needsGame, u.needsFix, u.dismissed]), [
+    ["bfa:1", "team not recognised (Abilene Chr)", true, false, false, true],
+    ["bfa:9", "unrecognised selection (…)", false, false, false, true],
+  ]);
 });
