@@ -1872,6 +1872,52 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   files land in `~/Downloads/bets_recon/` (`--out DIR`). It writes no token,
   cookie or password, and leaves `bet_logger/recon_bfa_auth.json` alone.
 
+## Running on a server (Oracle)
+
+Work in progress toward using the panel from a phone with the Mac closed
+(plan agreed 2026-09-30): the bets service and the Edges scan move to an
+always-on Oracle Cloud VM, reached privately over Tailscale, with the Mac as
+the fallback for any book that refuses a data-center login. **Step 0 is the
+login check below**; nothing is served from the server yet.
+
+### Step 0: does each book accept a login from the server?
+
+1. **Use the existing VM if there is one.** The MLB cloud-migration work
+   (local branch `worktree-cloud-migration-mlb`, `deploy/cloud/ORACLE_SETUP.md`)
+   created an A1.Flex VM `mlb-stack` with the key `~/.ssh/oracle_mlb.key`. It
+   takes the whole Always Free A1 allowance (4 OCPU / 24 GB), so a second free
+   VM is not possible; run this on that one. Only if it no longer exists:
+   Oracle Cloud > Compute > Instances > Create, Ubuntu, shape
+   `VM.Standard.A1.Flex`, a US region, your SSH public key, only SSH open.
+2. **Get the code on it.** The repo is private, so add a read-only deploy key:
+   on the VM `ssh-keygen -t ed25519 -f ~/.ssh/nflwork -N ""`, paste
+   `~/.ssh/nflwork.pub` into GitHub > repo Settings > Deploy keys (read
+   access only), then
+   `GIT_SSH_COMMAND="ssh -i ~/.ssh/nflwork" git clone git@github.com:callancapitolo17/NFLWork.git`.
+3. **Install.**
+   `sudo apt install -y python3-venv && cd NFLWork && python3 -m venv venv && venv/bin/pip install -r unabated_ticket/bets_service/requirements.txt`
+4. **Credentials.** From the Mac, `scp` into the same paths on the VM:
+   `bet_logger/.env` (BFA, Wagerzon, Polymarket US), `kalshi_draft/.env` plus
+   the Kalshi `.pem` its `KALSHI_PRIVATE_KEY_PATH` names (fix that path in the
+   VM's copy). Then `chmod 600` each.
+   - **Novig: don't copy the token.** Auth0 revokes the whole chain when a
+     rotated refresh token is reused, so the VM needs its own login:
+     `venv/bin/python -m unabated_ticket.bets_service.sources.novig_auth connect`
+     (the paste flow; open the printed URL on any device, log in, paste back
+     the URL you land on).
+   - **BetOnline: move the cookie file, don't copy it.** Every refresh
+     rotates its token and Keycloak kills a reused one. Stop the Mac's bets
+     service and BetOnline scraper, `scp` `bet_logger/recon_betonline_cookies.json`
+     over, run the check, then `scp` it back and restart the Mac side.
+5. **Run it** from the repo root:
+   `venv/bin/python -m unabated_ticket.bets_service.check_sources`
+
+It prints one line per venue: `ok` with a record count, `not configured`, or
+`FAILED` with the error, and a last line for Unabated's public NFL feed
+(what the Edges scan needs). Bet contents are never printed. Exit code 1 when
+anything failed. A book that fails here with a block or a 403 stays on the
+Mac; one that is `ok` can move.
+
 ## Tests
 
 One command runs everything and exits non-zero if any part fails:

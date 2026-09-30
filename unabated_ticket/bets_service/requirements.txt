@@ -1,0 +1,7 @@
+# The bets service's third-party imports. On the Mac the kalshi_draft venv
+# already has these; a fresh server (see README § Running on a server) installs
+# them into its own venv with: pip install -r unabated_ticket/bets_service/requirements.txt
+duckdb>=1.0
+cryptography>=41.0
+requests>=2.31
+pytest>=8.0
