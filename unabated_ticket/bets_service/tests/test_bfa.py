@@ -11,6 +11,7 @@ from unabated_ticket.bets_service.sources import bfa
 from unabated_ticket.bets_service.sources.bfa import (
     BFASource, game_rotation_of, merge_open_over_history, normalize_bfa, normalize_open_bets, normalize_wager,
     parse_leg)
+from unabated_ticket.bets_service.store import BetsStore
 
 FIXTURE_PATH = Path(__file__).parents[2] / "tests" / "fixtures" / "bets" / "bfa_history.json"
 FETCHED_AT = "2026-09-23T05:00:00Z"
@@ -137,15 +138,28 @@ def test_baseball_total_reads_past_the_pitchers_bracket(records):
 
 def test_team_total_short_teaser_and_prop_fail_closed_with_a_reason(records):
     assert by_id(records, "bfa:990000006")["unmatchable"] == "team total"
-    short_teaser = by_id(records, "bfa:990000009")
-    assert short_teaser["unmatchable"] == "4 TEAM TEASERS names 4 legs but carries 3"
-    assert not short_teaser["isParlayLeg"] and not any("bfa:990000009:" in record["id"] for record in records)
     assert by_id(records, "bfa:990000010")["unmatchable"].startswith("unrecognised selection (GIANTS SUPERFECTA")
 
 
+def test_short_teaser_is_still_one_unmatchable_record_per_declared_leg(records):
+    # The open list stored it as :leg0..:leg3, so those are the ids that must settle — never a lone bfa:990000009.
+    legs = [record for record in records if record["parlayId"] == "bfa:990000009"]
+    assert [record["id"] for record in legs] == [f"bfa:990000009:leg{index}" for index in range(4)]
+    assert not any(record["id"] == "bfa:990000009" for record in records)
+    assert all(record["unmatchable"] == "4 TEAM TEASERS names 4 legs but carries 3" for record in legs)
+    assert all(record["isParlayLeg"] and record["legCount"] == 4 and record["status"] == "open"
+               and record["betType"] == "other" and record["league"] is None for record in legs)
+    assert all(record["stake"] == 100 and record["toWin"] == 300 and record["raw"]["parlayPrice"] == 300
+               for record in legs)
+    assert [record["raw"]["legDescription"] for record in legs] == [
+        "[471] DETROIT LIONS +9-110 (B+6)", "[473] LOS ANGELES RAMS +8½-110 (B+6)",
+        "[475] KANSAS CITY CHIEFS +2-110 (B+6)", None]
+    assert [record["raw"]["legResult"] for record in legs] == [None, "PENDING", "PENDING", None]
+
+
 def test_every_fixture_record_carries_the_contract_keys(records):
-    # 18 wagers: the 4-leg teaser, two 2-leg parlays, the short teaser as one record, 14 straight bets.
-    assert len(records) == 23
+    # 18 wagers: two 4-leg teasers (one short of its legs), two 2-leg parlays, 14 straight bets.
+    assert len(records) == 26
     for record in records:
         assert set(record) == CONTRACT_KEYS, record["id"]
         assert record["id"].startswith("bfa:")
@@ -233,6 +247,79 @@ def test_open_records_replace_the_historys_pending_copy():
     merged = merge_open_over_history(normalize_bfa([pending], FETCHED_AT), normalize_open_bets([open_wager], FETCHED_AT))
     [record] = merged
     assert (record["league"], record["unmatchable"], record["status"]) == ("cbb", None, "open")
+
+
+# ---- a ticket the history cannot read -------------------------------------------------
+
+TEASER_LEGS = ["[471] DETROIT LIONS +9-110 (B+6)", "[473] LOS ANGELES RAMS +8½-110 (B+6)",
+               "[475] KANSAS CITY CHIEFS +2-110 (B+6)", "[479] NEW ORLEANS SAINTS +7½-110 (B+6)"]
+
+
+def open_list_ticket(native_id: int, header: str) -> dict:
+    """GetPlayerOpenBets' copy of a 4-leg NFL ticket: one betDetails row per leg."""
+    return {"idWager": native_id, "headerDescription": header, "riskAmount": 100.0, "winAmount": 300.0,
+            "placedDate": "2026-09-27T08:05:00",
+            "betDetails": [{"idSport": "NFL", "gameDateTime": "2026-09-27T13:00:00", "idGame": 36810201 + index,
+                            "detailDescription": f"NFL - Teasers <br> {text} [Sport:Football][League:NFL]"}
+                           for index, text in enumerate(TEASER_LEGS)]}
+
+
+def history_ticket(native_id: int, wager_type: str, texts: list[str]) -> dict:
+    """GetPlayerHistory's pending copy: the first text is the ticket's description, the rest its picks."""
+    return {"id": native_id, "type": wager_type, "description": texts[0], "placedDate": "2026-09-27T08:05:00",
+            "lastModification": "2026-09-27T08:05:00", "settledDate": "2026-09-27T08:05:00",
+            "result": "PENDING", "risk": 100.0, "win": 300.0, "amount": 0.0,
+            "picks": [{"description": text, "result": "PENDING"} for text in texts[1:]]}
+
+
+def settled(wager: dict) -> dict:
+    """The same history wager once the ticket lost: graded 16:40 Pacific."""
+    return {**wager, "result": "LOSE", "lastModification": "2026-09-27T16:40:00", "amount": -100.0,
+            "picks": [{**pick, "result": "LOSE"} for pick in wager.get("picks") or []]}
+
+
+def unreadable_history_copy(case: str, history: dict) -> tuple[dict, str]:
+    """(the history's pending copy, the reason it cannot be read) for a 4-leg ticket."""
+    if case == "short of its legs":  # the fixture's own: 4 TEAM TEASERS carrying 3
+        [wager] = [wager for wager in history["wagers"] if wager["id"] == 990000009]
+        return wager, "4 TEAM TEASERS names 4 legs but carries 3"
+    if case == "a leg that does not parse":
+        texts = TEASER_LEGS[:3] + ["NEW ORLEANS SAINTS +7½-110 (B+6)"]
+        return (history_ticket(990000009, "4 TEAM TEASERS", texts),
+                "leg not parsed: no '[rotation]' prefix (NEW ORLEANS SAINTS +7½-110)")
+    return (history_ticket(990000009, "IF WIN OR PUSH (4 TEAMS)", TEASER_LEGS),
+            "unrecognised multi-leg type (IF WIN OR PUSH (4 TEAMS))")
+
+
+@pytest.mark.parametrize("case", ["short of its legs", "a leg that does not parse", "an unrecognised type"])
+def test_a_ticket_the_history_cannot_read_still_settles_every_open_list_leg(history, tmp_path, case):
+    pending_copy, reason = unreadable_history_copy(case, history)
+    open_copy = open_list_ticket(990000009, pending_copy["type"])
+    leg_ids = [f"bfa:990000009:leg{index}" for index in range(4)]
+    store = BetsStore(tmp_path / "bets.duckdb", source_runs_retention_days=7)
+    try:
+        # While open, the open list's legs replace the history's pending copies one for one: no extra record.
+        while_open = merge_open_over_history(normalize_bfa([pending_copy], FETCHED_AT),
+                                             normalize_open_bets([open_copy], FETCHED_AT))
+        assert [record["id"] for record in while_open] == leg_ids
+        assert all(record["unmatchable"] is None and record["league"] == "nfl" for record in while_open)
+        store.upsert_bets(while_open, datetime(2026, 9, 27, 15, 10, tzinfo=timezone.utc))
+        # Graded: it has left the open list, and the history's copy is the only one.
+        after = merge_open_over_history(normalize_bfa([settled(pending_copy)], FETCHED_AT), normalize_open_bets([], FETCHED_AT))
+        store.upsert_bets(after, datetime(2026, 9, 28, 0, 0, tzinfo=timezone.utc))
+        stored = store.load_bets(30, datetime(2026, 9, 28, 0, 5, tzinfo=timezone.utc))
+    finally:
+        store.close()
+    assert sorted(record["id"] for record in stored) == leg_ids  # never a lone bfa:990000009
+    assert all(record["status"] == "lost" and record["closedAt"] == "2026-09-27T23:40:00Z" for record in stored)
+    assert all(record["unmatchable"] == reason and record["legCount"] == 4 for record in stored)
+
+
+def test_a_type_declaring_no_legs_is_one_unmatchable_record_never_dropped():
+    wager = settled(history_ticket(990000011, "PARLAY (0 TEAMS)", TEASER_LEGS[:2]))
+    [record] = normalize_wager(wager, FETCHED_AT)
+    assert (record["id"], record["status"], record["isParlayLeg"]) == ("bfa:990000011", "lost", False)
+    assert record["unmatchable"] == "PARLAY (0 TEAMS) names 0 legs but carries 2"
 
 
 @pytest.mark.parametrize("text, expected", [
@@ -384,8 +471,8 @@ def test_fetch_logs_in_once_reads_the_open_list_and_the_paged_history(history, m
     session = FakeSession(history["wagers"], open_wagers=history["openBets"])
     source = make_source(session, clock=lambda: CLOCK)
     records = source.fetch()
-    assert len(records) == 30 and records[0]["id"] == "bfa:354669433"  # 23 history + 7 open
-    assert sum(1 for record in records if record["status"] == "open") == 13  # 6 pending in the weeks + 7 open
+    assert len(records) == 33 and records[0]["id"] == "bfa:354669433"  # 26 history + 7 open
+    assert sum(1 for record in records if record["status"] == "open") == 16  # 9 pending in the weeks + 7 open
     assert session.logins == 1 and session.passwords_seen == ["secret"]
     # 18 wagers in pages of 5, then the empty page that ends a total padded by transactions.
     assert [call["page"] for call in session.history_calls] == [0, 1, 2, 3, 4]
