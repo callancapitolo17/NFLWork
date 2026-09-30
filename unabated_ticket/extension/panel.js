@@ -145,6 +145,10 @@
     // Bet ids Cal dismissed from the red flag (the Dismiss chip): panel view
     // state, kept with the records in chrome.storage.local, pruned to open bets.
     dismissedBetIds: [],
+    // {betId: startMs}: the start of the board event each open bet last
+    // matched (bets.matchedStarts), so a bet with no start of its own reads as
+    // started once its finished game leaves the board. Kept like dismissals.
+    knownStarts: {},
     // The fair each bet's line had when it was placed, as the bets service
     // serves it (bets.duckdb::bet_fill_fairs): [{betId, lineKey, points,
     // fairAmerican, fairObservedAt, placedAt, capturedAt}]. Set through
@@ -217,6 +221,7 @@
       linesByEventCache = null;
       ladderCache = new Map();
       registerFeedTeams(feedState);
+      if (noteMatchedStarts()) persistBets().catch((error) => console.error("[unabated-ticket] bets persist failed", error));
       learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
       captureFillFairs().catch((error) => console.error("[unabated-ticket] fill fair capture failed", error));
       renderEdges();
@@ -2025,6 +2030,7 @@
       if (Array.isArray(payload.pins)) state.pins = payload.pins;
       state.betRecords = betsView.mergeServicePayload(state.betRecords, { ...payload, crosswalk: state.crosswalk, pins: state.pins }, now);
       state.dismissedBetIds = betsView.keepDismissedOpen(state.dismissedBetIds, state.betRecords);
+      noteMatchedStarts();
       // Saved fill fairs never change, so the served rows are merged into the
       // held ones, not swapped in; an older service without the key keeps them.
       if (Array.isArray(payload.fillFairs)) setFillFairs(fillfair.mergeFillFairs(state.fillFairs, payload.fillFairs, state.betRecords));
@@ -2095,7 +2101,7 @@
 
   // The records, the service state, the crosswalk, the pins and the saved fill fairs, as one stored object.
   function persistBets() {
-    return chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords, crosswalk: state.crosswalk, pins: state.pins, fillFairs: state.fillFairs, dismissed: state.dismissedBetIds } });
+    return chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords, crosswalk: state.crosswalk, pins: state.pins, fillFairs: state.fillFairs, dismissed: state.dismissedBetIds, knownStarts: state.knownStarts } });
   }
 
   // Every surface that shows a bet flag, after the records or the crosswalk changed.
@@ -2351,7 +2357,16 @@
   // is empty and nothing is attachable, so until the board is known only a
   // bet its source could not read flags.
   function unmatchedNow() {
-    return betsLib.unmatchedReasons(state.betRecords, boardLines(), Date.now(), { dismissedIds: state.dismissedBetIds });
+    return betsLib.unmatchedReasons(state.betRecords, boardLines(), Date.now(),
+      { dismissedIds: state.dismissedBetIds, knownStarts: state.knownStarts });
+  }
+
+  // Remember the start of the board event each open bet matches now; true
+  // when that changed what is held (the caller persists it).
+  function noteMatchedStarts() {
+    const before = JSON.stringify(state.knownStarts);
+    state.knownStarts = betsView.keepKnownStartsOpen(state.knownStarts, betsLib.matchedStarts(state.betRecords, boardLines()), state.betRecords);
+    return JSON.stringify(state.knownStarts) !== before;
   }
 
   // Dismiss stops a bet flagging red; Restore flags it again. Both are panel
@@ -2585,14 +2600,13 @@
     return panel;
   }
 
-  // One bet row. options: {reason, unmatched, attachable, quiet}. `reason`
+  // One bet row. options: {reason, unmatched, attachable, quiet, flagged, dismissed}. `reason`
   // (an unmatched list row) adds the reason chip and, when attachable, the
   // Attach button and panel; `unmatched` colours the left edge, so an
   // unmatched bet is visible in the open list too; `quiet` greys a row that
-  // does not flag. A pinned, matched open bet says "attached" with an Undo.
-  // One bet row. options: {reason, unmatched, attachable, quiet, flagged,
-  // dismissed}. flagged (a red row) adds the Dismiss chip; dismissed (a row
-  // Cal dismissed, in the folded list) adds the tag and Restore.
+  // does not flag; `flagged` (a red row) adds the Dismiss chip; `dismissed`
+  // (a row Cal dismissed, in the folded list) adds the tag and Restore. A
+  // pinned, matched open bet says "attached" with an Undo.
   function betItem(bet, options) {
     const { reason = null, unmatched = false, attachable = false, quiet = false, flagged = false, dismissed = false } = options || {};
     const li = makeEl("li", unmatched ? "unmatched" : "matched");
@@ -2797,6 +2811,7 @@
       const storedRecords = Array.isArray(storedBets.bets) ? storedBets.bets : [];
       state.betRecords = betsLib.pruneForRetention(betsLib.rekeyRecords(betsLib.applyPins(storedRecords, state.pins), state.crosswalk), Date.now());
       state.dismissedBetIds = betsView.keepDismissedOpen(storedBets.dismissed, state.betRecords);
+      state.knownStarts = betsView.keepKnownStartsOpen(storedBets.knownStarts, {}, state.betRecords);
       setFillFairs(fillfair.mergeFillFairs([], Array.isArray(storedBets.fillFairs) ? storedBets.fillFairs : [], state.betRecords));
       state.betsService = {
         payload: storedBets.payload || null, okAt: storedBets.okAt ?? null,

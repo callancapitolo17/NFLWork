@@ -126,11 +126,28 @@
     return `${count} open bets are not matched to a game. They are left out when the panel sizes your next bet on that game. Attach them below.`;
   }
 
+  function openBetIds(records) {
+    return new Set((records || []).filter((record) => record.status === "open").map((record) => record.id));
+  }
+
   // The dismissed bet ids still worth keeping: those of open records. A
   // dismissal ends when its bet settles, closes or leaves the store.
   function keepDismissedOpen(dismissedIds, records) {
-    const openIds = new Set((records || []).filter((record) => record.status === "open").map((record) => record.id));
+    const openIds = openBetIds(records);
     return (Array.isArray(dismissedIds) ? dismissedIds : []).filter((id) => openIds.has(id));
+  }
+
+  // The remembered game starts ({betId: startMs}, bets.matchedStarts) still
+  // worth keeping: those of open records, with the latest match of each
+  // (`learned`) laid over what was held. A start ends when its bet settles.
+  function keepKnownStartsOpen(knownStarts, learned, records) {
+    const openIds = openBetIds(records);
+    const merged = { ...(knownStarts && typeof knownStarts === "object" ? knownStarts : {}), ...(learned || {}) };
+    const kept = {};
+    for (const [betId, startMs] of Object.entries(merged)) {
+      if (openIds.has(betId) && typeof startMs === "number" && Number.isFinite(startMs)) kept[betId] = startMs;
+    }
+    return kept;
   }
 
   // The Bets tab's red banner for bets the bets service could not read, or "" when there are none.
@@ -453,7 +470,7 @@
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badges, relatedLines, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, needsFixBanner, keepDismissedOpen, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badges, relatedLines, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, needsFixBanner, keepDismissedOpen, keepKnownStartsOpen, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

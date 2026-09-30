@@ -904,11 +904,16 @@ it is flagged, attached by hand and learned from:
   open bet `attachable` (a game bet — not `unmatchable` — whose league is on
   the board; a bet with no league counts when any league is) and
   `needsGame`: attachable, its game not started by what the bet knows
-  (`eventStart` in the future, else an `eventDate` today or later in
-  Eastern time, else no date at all), the board listing at least one game
-  of its league in its date window (`bets.betDateWindow`, the same dates
-  the picker lists — so a bet on a game two weeks out stays grey until
-  there is something to attach it to) — **whatever the reason** for the
+  (the start of the board event it last matched, remembered by the panel
+  from `bets.matchedStarts` in `betsService.knownStarts` — so a BetOnline
+  bet with no date, or a Kalshi football bet with only one, reads as
+  started once its finished game leaves the board, not red until the
+  venue settles it; else `eventStart` in the future, else an `eventDate`
+  today or later in Eastern time, else no date at all), not a parlay or
+  teaser leg (a leg sizes nothing either way), the board listing at least
+  one game of its league on the bet's own Eastern day (a bet with no date:
+  its placed window — so an MLB bet on tomorrow's game, placed before
+  tomorrow's slate is posted, stays grey until it is) — **whatever the reason** for the
   miss (the broad rule, Cal 2026-09-28: the old rule flagged only named
   causes, and a wrong Novig team id that made its game read "not posted
   yet" stayed grey). The reason explains the miss: `team not recognised`,
@@ -926,7 +931,7 @@ it is flagged, attached by hand and learned from:
   game 2. Bets needing a game turn the Bets tab label red
   with a red count, add "N not matched to a game" to the header line, and
   put a red banner at the top of the Bets tab. Futures and props, leagues
-  off the scanner, games two weeks out and games over but not yet settled
+  off the scanner, days the board has not posted, parlay legs and games over but not yet settled
   never flag; they fold into **Not on the board**. Measured on the live
   board of 2026-09-28 (437 events, 39 open bets): 6 unmatched, all futures
   and props, 0 red. Started games keep their

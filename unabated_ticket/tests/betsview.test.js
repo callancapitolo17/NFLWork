@@ -470,6 +470,13 @@ test("keepDismissedOpen: a dismissal lasts while its bet is open, and ends when 
   assert.deepEqual(view.keepDismissedOpen(["bfa:1"], []), []);
 });
 
+test("keepKnownStartsOpen: the latest match wins, and only open bets keep a start", () => {
+  const records = [record("bol:1", "open", {}), record("bol:2", "won", {}), record("bol:3", "open", {})];
+  const held = { "bol:1": 100, "bol:2": 200, "gone:9": 300 };
+  assert.deepEqual(view.keepKnownStartsOpen(held, { "bol:1": 150, "bol:3": 400 }, records), { "bol:1": 150, "bol:3": 400 });
+  assert.deepEqual(view.keepKnownStartsOpen(undefined, { "bol:3": Number.NaN }, records), {});
+});
+
 test("needsGameBanner: singular, plural, and nothing when no bet needs a game", () => {
   assert.equal(view.needsGameBanner(1), "1 open bet is not matched to a game. It is left out when the panel sizes your next bet on that game. Attach it below.");
   assert.equal(view.needsGameBanner(2), "2 open bets are not matched to a game. They are left out when the panel sizes your next bet on that game. Attach them below.");

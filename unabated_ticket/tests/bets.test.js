@@ -1287,15 +1287,16 @@ test("needsGame: a name not recognised on a game not posted yet stays grey until
 });
 
 test("start time differs: a doubleheader's game 1 in progress is not the game-2 bet's game", () => {
+  // Game 2 at 10:30 PM ET, the same Eastern day as game 1's 8 PM start.
   const gameTwo = openBet({ id: "wz:2", venue: "wagerzon", awayTeam: "Abilene Christian", homeTeam: "Tarleton State",
-    eventStart: "2026-09-27T04:00:00Z" });
+    eventStart: "2026-09-27T02:30:00Z" });
   const gameOneInProgress = Date.parse("2026-09-27T00:30:00Z");
   const [miss] = bets.unmatchedReasons([gameTwo], [ACU_AT_TARLETON], gameOneInProgress);
   // Never pointed at game 1; game 2 missing from the board flags under the broad rule.
   assert.deepEqual([miss.reason, miss.needsGame], ["no event on the board yet", true]);
   // Before game 1 starts the disagreement is still reported.
   assert.equal(bets.unmatchedReasons([gameTwo], [ACU_AT_TARLETON], BEFORE_KICKOFF)[0].reason,
-    "start time differs (bet Sep 27 12:00 AM, board Sep 26 8:00 PM)");
+    "start time differs (bet Sep 26 10:30 PM, board Sep 26 8:00 PM)");
 });
 
 // The 2026-09-26 bet's shape: BFA "[309011] EASTERN ILLINOIS +35½-110", $220, names
@@ -1389,4 +1390,29 @@ test("dismissed: a flagged bet Cal dismissed keeps its reason and Attach and sto
     ["bfa:1", "team not recognised (Abilene Chr)", true, false, false, true],
     ["bfa:9", "unrecognised selection (…)", false, false, false, true],
   ]);
+});
+
+test("started: a bet with no start of its own reads as started from the board event it matched, once that game leaves the board", () => {
+  // BetOnline: no game date at all; it matches by rotation within its placed window.
+  const dateless = openBet({ id: "bol:7", venue: "betonline", eventStart: null, eventDate: null, placedAt: "2026-09-26T16:00:00Z",
+    awayTeam: "Abilene Christian", homeTeam: null, rotation: 371, side: "away", betType: "spread", points: 7.5,
+    approx: ["game_date_unknown"] });
+  const starts = bets.matchedStarts([dateless], [ACU_AT_TARLETON]);
+  assert.deepEqual(starts, { "bol:7": Date.parse("2026-09-27T00:00:00Z") });
+  // The game ends and leaves the board while the bet waits to settle; another game keeps the league on it.
+  const afterTheGame = [idRow({ ...ACU_AT_TARLETON, eventId: 7002, awayTeam: "Lamar", homeTeam: "Northwestern State",
+    awayTeamId: 1160, homeTeamId: 1177, awayRotation: 367, homeRotation: 368, eventStart: "2026-09-27T20:00:00Z" })];
+  const late = Date.parse("2026-09-27T04:00:00Z");
+  assert.equal(bets.unmatchedReasons([dateless], afterTheGame, late)[0].needsGame, true); // the bug the memory fixes
+  assert.equal(bets.unmatchedReasons([dateless], afterTheGame, late, { knownStarts: starts })[0].needsGame, false);
+});
+
+test("needsGame: a parlay leg never flags; a bet on a day the board has not posted stays grey", () => {
+  const leg = openBet({ id: "bfa:5:leg1", awayTeam: "Abilene Chr", homeTeam: "Tarleton St", isParlayLeg: true });
+  const [entry] = bets.unmatchedReasons([leg], [ACU_AT_TARLETON], BEFORE_KICKOFF);
+  assert.deepEqual([entry.attachable, entry.needsGame], [true, false]);
+  // Tomorrow's game, placed before tomorrow's slate is posted: today's games do not make it red.
+  const tomorrow = openBet({ id: "nv:3", venue: "novig", awayTeam: "Lamar", homeTeam: "Northwestern State",
+    eventStart: "2026-09-27T20:00:00Z" });
+  assert.equal(bets.unmatchedReasons([tomorrow], [ACU_AT_TARLETON], BEFORE_KICKOFF)[0].needsGame, false);
 });
