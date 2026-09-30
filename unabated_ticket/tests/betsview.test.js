@@ -112,8 +112,8 @@ test("headerLine: open count, then every venue with its age or a dash", () => {
   assert.equal(view.headerLine([], null, NOW), "bets: 0 open · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
   assert.equal(view.headerLine([], null, NOW, 2), "bets: 0 open · 2 not matched to a game · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
   assert.equal(view.headerLine([], null, NOW, 0), view.headerLine([], null, NOW));
-  assert.equal(view.headerLine([], null, NOW, 1, 1), "bets: 0 open · 1 not matched to a game · 1 needs a code fix · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us —");
-  assert.equal(view.headerLine([], null, NOW, 0, 2), "bets: 0 open · 2 need a code fix · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us —");
+  assert.equal(view.headerLine([], null, NOW, 1, 1), "bets: 0 open · 1 not matched to a game · 1 needs a code fix · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
+  assert.equal(view.headerLine([], null, NOW, 0, 2), "bets: 0 open · 2 need a code fix · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
 });
 
 test("bannerLines: at most five, strongest first as given, and the count of the rest", () => {
