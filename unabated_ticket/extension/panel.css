@@ -434,6 +434,15 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 }
 .reason-row.quiet .attach-btn { border-color: var(--border); color: var(--ink-2); }
 .attach-btn.open { border-color: var(--border); color: var(--ink-2); }
+/* Dismiss: a quiet chip beside Attach on a red row; alone on a Needs a code fix row. */
+.dismiss-chip {
+  margin-left: auto; flex: none; appearance: none; cursor: pointer;
+  font: 500 11px system-ui, sans-serif; border-radius: 999px; padding: 3px 10px;
+  background: var(--chip); color: var(--ink-2); border: 1px solid transparent;
+}
+.dismiss-chip:hover { border-color: var(--border); color: var(--ink); }
+.dismiss-chip + .attach-btn { margin-left: 0; }
+.tag.dismissed { vertical-align: middle; margin-left: 4px; }
 .attach-panel {
   grid-column: 1 / -1; margin-top: 8px; padding: 10px; border-radius: 8px;
   background: var(--surface-2); border: 1px solid var(--border); display: grid; gap: 8px; min-width: 0;

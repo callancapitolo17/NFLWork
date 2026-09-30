@@ -126,6 +126,13 @@
     return `${count} open bets are not matched to a game. They are left out when the panel sizes your next bet on that game. Attach them below.`;
   }
 
+  // The dismissed bet ids still worth keeping: those of open records. A
+  // dismissal ends when its bet settles, closes or leaves the store.
+  function keepDismissedOpen(dismissedIds, records) {
+    const openIds = new Set((records || []).filter((record) => record.status === "open").map((record) => record.id));
+    return (Array.isArray(dismissedIds) ? dismissedIds : []).filter((id) => openIds.has(id));
+  }
+
   // The Bets tab's red banner for bets the bets service could not read, or "" when there are none.
   function needsFixBanner(count) {
     if (!(count > 0)) return "";
@@ -446,7 +453,7 @@
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badges, relatedLines, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, needsFixBanner, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badges, relatedLines, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, needsFixBanner, keepDismissedOpen, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

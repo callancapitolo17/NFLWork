@@ -958,6 +958,16 @@ it is flagged, attached by hand and learned from:
   as crosswalk rows marked with the pin, which replace a held key — a
   manual lesson outranks an id join, and automatic learning stays
   insert-only, so it never overwrites one.
+- *Dismiss* (2026-09-28). Every red row — Needs a game or Needs a code
+  fix — carries a **Dismiss** chip (beside Attach, or alone): for a game
+  Unabated never lists, or a bet Cal has decided to live with. The bet
+  leaves the red count, banner and header, and moves into Not on the board
+  tagged **dismissed**, keeping its reason and Attach; **Restore** flags it
+  again. It still does not size the next bet. Dismissals are panel view
+  state — the bet ids in `chrome.storage.local` (`betsService.dismissed`),
+  passed to `bets.unmatchedReasons(…, {dismissedIds})` — and
+  `betsview.keepDismissedOpen` drops a dismissal once its bet settles,
+  closes or leaves the store, so it never hides a later bet.
 - *After.* `bets.applyPins` puts each served pin on its record (`pin`; a
   record with no league takes the pin's, marked `leagueFromPin`, and gives
   it back on Undo) and `resolveGame` reads the pin before the id join and

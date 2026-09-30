@@ -142,6 +142,9 @@
     // league, eventId, eventStart, awayTeamId, homeTeamId, awayTeamName,
     // homeTeamName, pinnedAt}]. A pin decides its bet's game (bets.applyPins).
     pins: [],
+    // Bet ids Cal dismissed from the red flag (the Dismiss chip): panel view
+    // state, kept with the records in chrome.storage.local, pruned to open bets.
+    dismissedBetIds: [],
     // The fair each bet's line had when it was placed, as the bets service
     // serves it (bets.duckdb::bet_fill_fairs): [{betId, lineKey, points,
     // fairAmerican, fairObservedAt, placedAt, capturedAt}]. Set through
@@ -2021,6 +2024,7 @@
       // Likewise the pins (an older service serves none and keeps the stored ones).
       if (Array.isArray(payload.pins)) state.pins = payload.pins;
       state.betRecords = betsView.mergeServicePayload(state.betRecords, { ...payload, crosswalk: state.crosswalk, pins: state.pins }, now);
+      state.dismissedBetIds = betsView.keepDismissedOpen(state.dismissedBetIds, state.betRecords);
       // Saved fill fairs never change, so the served rows are merged into the
       // held ones, not swapped in; an older service without the key keeps them.
       if (Array.isArray(payload.fillFairs)) setFillFairs(fillfair.mergeFillFairs(state.fillFairs, payload.fillFairs, state.betRecords));
@@ -2091,7 +2095,7 @@
 
   // The records, the service state, the crosswalk, the pins and the saved fill fairs, as one stored object.
   function persistBets() {
-    return chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords, crosswalk: state.crosswalk, pins: state.pins, fillFairs: state.fillFairs } });
+    return chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords, crosswalk: state.crosswalk, pins: state.pins, fillFairs: state.fillFairs, dismissed: state.dismissedBetIds } });
   }
 
   // Every surface that shows a bet flag, after the records or the crosswalk changed.
@@ -2347,7 +2351,16 @@
   // is empty and nothing is attachable, so until the board is known only a
   // bet its source could not read flags.
   function unmatchedNow() {
-    return betsLib.unmatchedReasons(state.betRecords, boardLines(), Date.now());
+    return betsLib.unmatchedReasons(state.betRecords, boardLines(), Date.now(), { dismissedIds: state.dismissedBetIds });
+  }
+
+  // Dismiss stops a bet flagging red; Restore flags it again. Both are panel
+  // view state (persisted with the records), so they take effect at once.
+  async function setDismissed(betId, dismissed) {
+    const others = state.dismissedBetIds.filter((id) => id !== betId);
+    state.dismissedBetIds = dismissed ? [...others, betId] : others;
+    await persistBets();
+    renderBetsFlags();
   }
 
   function renderBetsHeader() {
@@ -2577,13 +2590,17 @@
   // Attach button and panel; `unmatched` colours the left edge, so an
   // unmatched bet is visible in the open list too; `quiet` greys a row that
   // does not flag. A pinned, matched open bet says "attached" with an Undo.
+  // One bet row. options: {reason, unmatched, attachable, quiet, flagged,
+  // dismissed}. flagged (a red row) adds the Dismiss chip; dismissed (a row
+  // Cal dismissed, in the folded list) adds the tag and Restore.
   function betItem(bet, options) {
-    const { reason = null, unmatched = false, attachable = false, quiet = false } = options || {};
+    const { reason = null, unmatched = false, attachable = false, quiet = false, flagged = false, dismissed = false } = options || {};
     const li = makeEl("li", unmatched ? "unmatched" : "matched");
     const main = makeEl("div");
     const what = makeEl("div", "bet-what", betsLib.describeBet(bet));
     const pinned = Boolean(bet.pin) && !unmatched;
     if (pinned) what.append(makeEl("span", "tag pinned", "attached"));
+    if (dismissed && reason) what.append(makeEl("span", "tag dismissed", "dismissed"));
     const meta = makeEl("div", "bet-meta");
     const venue = bet.venue ? betsLib.venueLabel(bet.venue) : "unknown venue";
     const game = pinned && bet.pin.awayTeamName && bet.pin.homeTeamName ? `${bet.pin.awayTeamName} @ ${bet.pin.homeTeamName}`
@@ -2593,6 +2610,12 @@
     if (pinned) {
       meta.append(document.createTextNode(" · "));
       meta.append(makeButton("linkbtn", "Undo", () => undoAttach(bet)));
+    }
+    if (dismissed && reason) {
+      meta.append(document.createTextNode(" · "));
+      const restore = makeButton("linkbtn", "Restore", () => setDismissed(bet.id, false));
+      restore.title = "Flag this bet again.";
+      meta.append(restore);
     }
     main.append(what, meta);
 
@@ -2604,6 +2627,11 @@
 
     const reasonRow = makeEl("div", quiet ? "reason-row quiet" : "reason-row");
     reasonRow.append(makeEl("span", "bet-reason", reason));
+    if (flagged) {
+      const dismiss = makeButton("dismiss-chip", "Dismiss", () => setDismissed(bet.id, true));
+      dismiss.title = "Stop flagging this bet. It moves to Not on the board and still does not size your next bet.";
+      reasonRow.append(dismiss);
+    }
     const panelOpen = attachState != null && attachState.betId === bet.id;
     if (attachable && panelOpen) {
       // Not while the attach is being saved: its reply, or its error, lands in this panel.
@@ -2651,12 +2679,12 @@
     view.betsNeedsBanner.textContent = betsView.needsGameBanner(needsGame.length);
     view.betsNeedsBlock.hidden = needsGame.length === 0;
     view.betsNeedsCount.textContent = needsGame.length ? String(needsGame.length) : "";
-    view.betsNeeds.replaceChildren(...needsGame.map(({ bet, reason, attachable }) => betItem(bet, { reason, unmatched: true, attachable })));
+    view.betsNeeds.replaceChildren(...needsGame.map(({ bet, reason, attachable }) => betItem(bet, { reason, unmatched: true, attachable, flagged: true })));
     view.betsFixBanner.hidden = needsFix.length === 0;
     view.betsFixBanner.textContent = betsView.needsFixBanner(needsFix.length);
     view.betsFixBlock.hidden = needsFix.length === 0;
     view.betsFixCount.textContent = needsFix.length ? String(needsFix.length) : "";
-    view.betsFix.replaceChildren(...needsFix.map(({ bet, reason }) => betItem(bet, { reason, unmatched: true })));
+    view.betsFix.replaceChildren(...needsFix.map(({ bet, reason }) => betItem(bet, { reason, unmatched: true, flagged: true })));
 
     view.betsOpenCount.textContent = open.length ? String(open.length) : "";
     view.betsOpen.replaceChildren(...open.map((bet) => betItem(bet, { unmatched: unmatchedIds.has(bet.id) })));
@@ -2674,7 +2702,7 @@
 
     view.betsOffboard.hidden = offBoard.length === 0;
     view.betsOffboardCount.textContent = offBoard.length ? String(offBoard.length) : "";
-    view.betsOffboardList.replaceChildren(...offBoard.map(({ bet, reason, attachable }) => betItem(bet, { reason, unmatched: true, attachable, quiet: true })));
+    view.betsOffboardList.replaceChildren(...offBoard.map(({ bet, reason, attachable, dismissed }) => betItem(bet, { reason, unmatched: true, attachable, quiet: true, dismissed })));
     // An Attach opened from the folded list keeps the fold open.
     if (attachState && offBoard.some((entry) => entry.bet.id === attachState.betId)) view.betsOffboard.open = true;
 
@@ -2768,6 +2796,7 @@
       state.pins = Array.isArray(storedBets.pins) ? storedBets.pins : [];
       const storedRecords = Array.isArray(storedBets.bets) ? storedBets.bets : [];
       state.betRecords = betsLib.pruneForRetention(betsLib.rekeyRecords(betsLib.applyPins(storedRecords, state.pins), state.crosswalk), Date.now());
+      state.dismissedBetIds = betsView.keepDismissedOpen(storedBets.dismissed, state.betRecords);
       setFillFairs(fillfair.mergeFillFairs([], Array.isArray(storedBets.fillFairs) ? storedBets.fillFairs : [], state.betRecords));
       state.betsService = {
         payload: storedBets.payload || null, okAt: storedBets.okAt ?? null,

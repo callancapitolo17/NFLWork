@@ -463,6 +463,13 @@ test("mergeServicePayload: the payload's pins attach their bets, and a pin can g
   assert.deepEqual(view.pinsOf({ bets: [] }), []);
 });
 
+test("keepDismissedOpen: a dismissal lasts while its bet is open, and ends when it settles or leaves the store", () => {
+  const records = [record("bfa:1", "open", {}), record("bfa:2", "won", {}), record("bfa:3", "open", {})];
+  assert.deepEqual(view.keepDismissedOpen(["bfa:1", "bfa:2", "gone:9"], records), ["bfa:1"]);
+  assert.deepEqual(view.keepDismissedOpen(undefined, records), []);
+  assert.deepEqual(view.keepDismissedOpen(["bfa:1"], []), []);
+});
+
 test("needsGameBanner: singular, plural, and nothing when no bet needs a game", () => {
   assert.equal(view.needsGameBanner(1), "1 open bet is not matched to a game. It is left out when the panel sizes your next bet on that game. Attach it below.");
   assert.equal(view.needsGameBanner(2), "2 open bets are not matched to a game. They are left out when the panel sizes your next bet on that game. Attach them below.");
