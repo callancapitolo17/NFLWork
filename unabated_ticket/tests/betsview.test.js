@@ -112,6 +112,8 @@ test("headerLine: open count, then every venue with its age or a dash", () => {
   assert.equal(view.headerLine([], null, NOW), "bets: 0 open · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
   assert.equal(view.headerLine([], null, NOW, 2), "bets: 0 open · 2 not matched to a game · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
   assert.equal(view.headerLine([], null, NOW, 0), view.headerLine([], null, NOW));
+  assert.equal(view.headerLine([], null, NOW, 1, 1), "bets: 0 open · 1 not matched to a game · 1 needs a code fix · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
+  assert.equal(view.headerLine([], null, NOW, 0, 2), "bets: 0 open · 2 need a code fix · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
 });
 
 test("bannerLines: at most five, strongest first as given, and the count of the rest", () => {
@@ -461,10 +463,30 @@ test("mergeServicePayload: the payload's pins attach their bets, and a pin can g
   assert.deepEqual(view.pinsOf({ bets: [] }), []);
 });
 
+test("keepDismissedOpen: a dismissal lasts while its bet is open, and ends when it settles or leaves the store", () => {
+  const records = [record("bfa:1", "open", {}), record("bfa:2", "won", {}), record("bfa:3", "open", {})];
+  assert.deepEqual(view.keepDismissedOpen(["bfa:1", "bfa:2", "gone:9"], records), ["bfa:1"]);
+  assert.deepEqual(view.keepDismissedOpen(undefined, records), []);
+  assert.deepEqual(view.keepDismissedOpen(["bfa:1"], []), []);
+});
+
+test("keepKnownStartsOpen: the latest match wins, and only open bets keep a start", () => {
+  const records = [record("bol:1", "open", {}), record("bol:2", "won", {}), record("bol:3", "open", {})];
+  const held = { "bol:1": 100, "bol:2": 200, "gone:9": 300 };
+  assert.deepEqual(view.keepKnownStartsOpen(held, { "bol:1": 150, "bol:3": 400 }, records), { "bol:1": 150, "bol:3": 400 });
+  assert.deepEqual(view.keepKnownStartsOpen(undefined, { "bol:3": Number.NaN }, records), {});
+});
+
 test("needsGameBanner: singular, plural, and nothing when no bet needs a game", () => {
   assert.equal(view.needsGameBanner(1), "1 open bet is not matched to a game. It is left out when the panel sizes your next bet on that game. Attach it below.");
   assert.equal(view.needsGameBanner(2), "2 open bets are not matched to a game. They are left out when the panel sizes your next bet on that game. Attach them below.");
   assert.equal(view.needsGameBanner(0), "");
+});
+
+test("needsFixBanner: singular, plural, and nothing when every open bet was read", () => {
+  assert.equal(view.needsFixBanner(1), "1 open bet could not be read by the bets service. It is left out when the panel sizes your next bet on its game. The venue's parser needs a code fix; Attach cannot help.");
+  assert.equal(view.needsFixBanner(2), "2 open bets could not be read by the bets service. They are left out when the panel sizes your next bet on their games. The venue parsers need a code fix; Attach cannot help.");
+  assert.equal(view.needsFixBanner(0), "");
 });
 
 test("crosswalkRows: one Bets-tab line per served row — venue spelling, Unabated name, venue, league, when", () => {

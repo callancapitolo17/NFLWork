@@ -51,6 +51,10 @@ with one; a list, one object per wager):
                  bet "placed 22:33" in a response dated 18:50 PST), so BFA has moved this clock
                  once; a wrong one shows as bets missing the board by whole hours.
   GetPlayerOpenBetsWithOpenSpot (if-bets awaiting a leg) answered [] and is not read.
+An open leg whose idSport names a game league (OPEN_BET_LEAGUES) but whose description does
+not parse is marked raw.parseFailed (normalize.mark_parse_failed): the panel flags it as
+needing a code fix. A team total is left out on purpose and stays unmarked, as do props and
+codes the table does not list.
 
 History wager grammar (live pull 2026-09-22, 16 wagers; the parser fails closed on anything
 else, listing the record as unmatchable with the reason and the raw description):
@@ -116,7 +120,8 @@ from zoneinfo import ZoneInfo
 import requests
 
 from unabated_ticket.bets_service import config
-from unabated_ticket.bets_service.normalize import EASTERN, json_clean, round_cents, utc_now_iso
+from unabated_ticket.bets_service.normalize import (
+    EASTERN, json_clean, mark_parse_failed, round_cents, utc_now_iso)
 from unabated_ticket.bets_service.sources.betonline import (
     APPROX_DATE_UNKNOWN, APPROX_SIDE_PARITY, SHEET_LABEL_TO_LEAGUE, american_from_payout, parse_points,
     parse_sport, side_from_rotation)
@@ -163,6 +168,8 @@ EVENT_START_DAYS_BEFORE_PLACED = 1
 EVENT_START_DAYS_AFTER_PLACED = 60
 REASON_LEAGUE_UNKNOWN = "league unknown (BFA names no sport; a college game cannot be placed)"
 REASON_TEAM_TOTAL = "team total"
+# What parse_leg returns for a leg left out on purpose; any other reason is a failure.
+DELIBERATE_LEG_REASONS = {REASON_TEAM_TOTAL}
 FIRST_HALF_ROTATION_PREFIX = "1"
 # A game rotation has at least three digits, so a prefixed one has at least four.
 FIRST_HALF_ROTATION_MIN_DIGITS = 4
@@ -622,8 +629,17 @@ def _open_leg_record(record: dict, leg_row: dict) -> dict:
         return _unmatchable(record, reason)
     leg = parse_leg(description)
     if isinstance(leg, str):
-        return _unmatchable(record, leg)
+        return _open_leg_not_read(record, leg, leg_row.get("idSport"))
     return _apply_leg(record, league, leg, parse_account_time(leg_row.get("gameDateTime")))
+
+
+def _open_leg_not_read(record: dict, reason: str, sport_code: object) -> dict:
+    """A parse failure when the leg's own idSport names a game league (module docstring);
+    a deliberate exclusion, or a league read off a team nickname, is only unmatchable."""
+    code = str(sport_code or "").strip().upper()
+    if code in OPEN_BET_LEAGUES and reason not in DELIBERATE_LEG_REASONS:
+        return mark_parse_failed(record, reason)
+    return _unmatchable(record, reason)
 
 
 def normalize_open_wager(wager: dict, fetched_at: str | None) -> list[dict]:

@@ -66,6 +66,9 @@ the matcher uses the 30-minute time rule; a settled bet's closedAt is its event 
 time is served; the placed time is the fallback). A spread or moneyline names one team, placed
 by rotation parity (odd = away, approx side_from_rotation_parity) unless a "(AWAY vrs HOME)"
 bracket follows it (not seen live; honoured when present).
+A leg whose IdSport names a game league (LEAGUES) but whose description does not parse is
+marked raw.parseFailed (normalize.mark_parse_failed): the panel flags it as needing a code
+fix. A postponed leg is the venue's own verdict and stays unmarked, as do props.
 """
 import logging
 import re
@@ -76,7 +79,8 @@ from datetime import datetime, timezone
 import requests
 
 from unabated_ticket.bets_service import config
-from unabated_ticket.bets_service.normalize import EASTERN, json_clean, round_cents, utc_now_iso
+from unabated_ticket.bets_service.normalize import (
+    EASTERN, json_clean, mark_parse_failed, round_cents, utc_now_iso)
 from unabated_ticket.bets_service.sources.betonline import (
     APPROX_SIDE_PARITY, american_from_payout, parse_points, side_from_rotation)
 from unabated_ticket.bets_service.sources.bfa import (
@@ -108,6 +112,8 @@ STATUS_MAP = {"": "open", "win": "won", "lose": "lost", "push": "push", "cancell
               "canceled": "void", "void": "void", "no action": "void", "no bet": "void"}
 PERIODS = {"1H": "1H", "2H": "2H", "1Q": "1Q", "2Q": "2Q", "3Q": "3Q", "4Q": "4Q"}
 POSTPONED_MARKER = "POSTPONED"
+# How parse_leg's reason for a postponed leg starts: the one leg left out on purpose.
+REASON_POSTPONED = "postponed"
 REASON_NO_LEGS = "wager carries no legs"
 OPEN_BET_ROW_KEYS = ("TicketNumber", "DetailDescription")
 HELPER_DATETIME_FORMATS = ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %I:%M %p")
@@ -217,7 +223,7 @@ def parse_leg(raw_description: str) -> dict | str:
         rotation = int(rotation_match.group("rotation"))
         body = rotation_match.group("body").strip()
     if POSTPONED_MARKER in body.upper():
-        return f"postponed ({body[:60]})"
+        return f"{REASON_POSTPONED} ({body[:60]})"
     total = TOTAL_RE.match(body)
     if total:
         pair = parse_team_pair(total.group("context"))
@@ -376,6 +382,14 @@ def _unmatchable(record: dict, reason: str) -> dict:
     return record
 
 
+def _leg_not_read(record: dict, reason: str) -> dict:
+    """A leg of a game league whose description did not parse: a parse failure, unless
+    the venue postponed it (module docstring)."""
+    if reason.startswith(REASON_POSTPONED):
+        return _unmatchable(record, reason)
+    return mark_parse_failed(record, reason)
+
+
 def _leg_record(record: dict, leg_row: dict) -> dict:
     """The record for one leg row: league from IdSport, then the description."""
     _describe_leg(record, leg_row)
@@ -387,7 +401,7 @@ def _leg_record(record: dict, leg_row: dict) -> dict:
         return _unmatchable(record, f"league not supported (IdSport {sport_code or 'blank'})")
     leg = parse_leg(str(leg_row.get("DetailDesc") or ""))
     if isinstance(leg, str):
-        return _unmatchable(record, leg)
+        return _leg_not_read(record, leg)
     return _apply_leg(record, league, leg, parse_eastern(leg_row.get("GameDate"), leg_row.get("GameTime")))
 
 
@@ -498,7 +512,7 @@ def _open_leg_record(record: dict, row: dict) -> dict:
         return _unmatchable(record, f"league not supported (IdSport {sport_code or 'blank'})")
     leg = parse_leg(description)
     if isinstance(leg, str):
-        return _unmatchable(record, leg)
+        return _leg_not_read(record, leg)
     return _apply_leg(record, league, leg, parse_helper_datetime(row.get("GameDateTime")))
 
 

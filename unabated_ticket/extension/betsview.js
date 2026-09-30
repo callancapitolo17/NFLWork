@@ -110,12 +110,13 @@
     return records.filter((record) => record.status === "open").length;
   }
 
-  // "bets: 14 open · 2 not matched to a game · kalshi 20 s · betonline —"
-  // needsGame is how many open bets need a game (bets.unmatchedReasons).
-  function headerLine(records, payload, now, needsGame) {
+  // "bets: 14 open · 2 not matched to a game · 1 needs a code fix · kalshi 20 s · betonline —"
+  // needsGame / needsFix: how many open bets need a game / a code fix (bets.unmatchedReasons).
+  function headerLine(records, payload, now, needsGame, needsFix) {
     const venues = sourceRows(payload, now).map((row) => `${row.venue} ${row.configured ? row.ageText : "—"}`);
     const flagged = needsGame > 0 ? `${needsGame} not matched to a game` : null;
-    return [`bets: ${openCount(records)} open`, flagged, ...venues].filter(Boolean).join(" · ");
+    const unreadable = needsFix > 0 ? `${needsFix} ${needsFix === 1 ? "needs" : "need"} a code fix` : null;
+    return [`bets: ${openCount(records)} open`, flagged, unreadable, ...venues].filter(Boolean).join(" · ");
   }
 
   // The Bets tab's red banner, or "" when no open bet needs a game.
@@ -123,6 +124,37 @@
     if (!(count > 0)) return "";
     if (count === 1) return "1 open bet is not matched to a game. It is left out when the panel sizes your next bet on that game. Attach it below.";
     return `${count} open bets are not matched to a game. They are left out when the panel sizes your next bet on that game. Attach them below.`;
+  }
+
+  function openBetIds(records) {
+    return new Set((records || []).filter((record) => record.status === "open").map((record) => record.id));
+  }
+
+  // The dismissed bet ids still worth keeping: those of open records. A
+  // dismissal ends when its bet settles, closes or leaves the store.
+  function keepDismissedOpen(dismissedIds, records) {
+    const openIds = openBetIds(records);
+    return (Array.isArray(dismissedIds) ? dismissedIds : []).filter((id) => openIds.has(id));
+  }
+
+  // The remembered game starts ({betId: startMs}, bets.matchedStarts) still
+  // worth keeping: those of open records, with the latest match of each
+  // (`learned`) laid over what was held. A start ends when its bet settles.
+  function keepKnownStartsOpen(knownStarts, learned, records) {
+    const openIds = openBetIds(records);
+    const merged = { ...(knownStarts && typeof knownStarts === "object" ? knownStarts : {}), ...(learned || {}) };
+    const kept = {};
+    for (const [betId, startMs] of Object.entries(merged)) {
+      if (openIds.has(betId) && typeof startMs === "number" && Number.isFinite(startMs)) kept[betId] = startMs;
+    }
+    return kept;
+  }
+
+  // The Bets tab's red banner for bets the bets service could not read, or "" when there are none.
+  function needsFixBanner(count) {
+    if (!(count > 0)) return "";
+    if (count === 1) return "1 open bet could not be read by the bets service. It is left out when the panel sizes your next bet on its game. The venue's parser needs a code fix; Attach cannot help.";
+    return `${count} open bets could not be read by the bets service. They are left out when the panel sizes your next bet on their games. The venue parsers need a code fix; Attach cannot help.`;
   }
 
   // At most `max` matches for the banner, strongest first (matchBets already
@@ -438,7 +470,7 @@
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badges, relatedLines, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badges, relatedLines, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, needsFixBanner, keepDismissedOpen, keepKnownStartsOpen, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

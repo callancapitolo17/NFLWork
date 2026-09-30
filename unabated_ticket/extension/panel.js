@@ -112,6 +112,7 @@
     betsUrl: el("bets-url"), betsSettingsError: el("bets-settings-error"),
     betsOpen: el("bets-open"), betsOpenCount: el("bets-open-count"), betsOpenEmpty: el("bets-open-empty"), betsMatchNote: el("bets-match-note"),
     betsNeedsBanner: el("bets-needs-banner"), betsNeedsBlock: el("bets-needs-block"), betsNeeds: el("bets-needs"), betsNeedsCount: el("bets-needs-count"),
+    betsFixBanner: el("bets-fix-banner"), betsFixBlock: el("bets-fix-block"), betsFix: el("bets-fix"), betsFixCount: el("bets-fix-count"),
     betsOffboard: el("bets-offboard"), betsOffboardList: el("bets-offboard-list"), betsOffboardCount: el("bets-offboard-count"),
     betsCrosswalk: el("bets-crosswalk"), betsCrosswalkCount: el("bets-crosswalk-count"), betsCrosswalkEmpty: el("bets-crosswalk-empty"),
     betsCrosswalkClear: el("bets-crosswalk-clear"),
@@ -141,6 +142,13 @@
     // league, eventId, eventStart, awayTeamId, homeTeamId, awayTeamName,
     // homeTeamName, pinnedAt}]. A pin decides its bet's game (bets.applyPins).
     pins: [],
+    // Bet ids Cal dismissed from the red flag (the Dismiss chip): panel view
+    // state, kept with the records in chrome.storage.local, pruned to open bets.
+    dismissedBetIds: [],
+    // {betId: startMs}: the start of the board event each open bet last
+    // matched (bets.matchedStarts), so a bet with no start of its own reads as
+    // started once its finished game leaves the board. Kept like dismissals.
+    knownStarts: {},
     // The fair each bet's line had when it was placed, as the bets service
     // serves it (bets.duckdb::bet_fill_fairs): [{betId, lineKey, points,
     // fairAmerican, fairObservedAt, placedAt, capturedAt}]. Set through
@@ -213,6 +221,7 @@
       linesByEventCache = null;
       ladderCache = new Map();
       registerFeedTeams(feedState);
+      if (noteMatchedStarts()) persistBets().catch((error) => console.error("[unabated-ticket] bets persist failed", error));
       learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
       captureFillFairs().catch((error) => console.error("[unabated-ticket] fill fair capture failed", error));
       renderEdges();
@@ -2020,6 +2029,8 @@
       // Likewise the pins (an older service serves none and keeps the stored ones).
       if (Array.isArray(payload.pins)) state.pins = payload.pins;
       state.betRecords = betsView.mergeServicePayload(state.betRecords, { ...payload, crosswalk: state.crosswalk, pins: state.pins }, now);
+      state.dismissedBetIds = betsView.keepDismissedOpen(state.dismissedBetIds, state.betRecords);
+      noteMatchedStarts();
       // Saved fill fairs never change, so the served rows are merged into the
       // held ones, not swapped in; an older service without the key keeps them.
       if (Array.isArray(payload.fillFairs)) setFillFairs(fillfair.mergeFillFairs(state.fillFairs, payload.fillFairs, state.betRecords));
@@ -2090,7 +2101,7 @@
 
   // The records, the service state, the crosswalk, the pins and the saved fill fairs, as one stored object.
   function persistBets() {
-    return chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords, crosswalk: state.crosswalk, pins: state.pins, fillFairs: state.fillFairs } });
+    return chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords, crosswalk: state.crosswalk, pins: state.pins, fillFairs: state.fillFairs, dismissed: state.dismissedBetIds, knownStarts: state.knownStarts } });
   }
 
   // Every surface that shows a bet flag, after the records or the crosswalk changed.
@@ -2342,24 +2353,49 @@
   }
 
   // Every open bet no board line matches, with why and whether it needs a
-  // game (the red flag). Before the first snapshot the board is empty and
-  // nothing is attachable, so nothing flags until the board is known.
+  // game or a code fix (the red flag). Before the first snapshot the board
+  // is empty and nothing is attachable, so until the board is known only a
+  // bet its source could not read flags.
   function unmatchedNow() {
-    return betsLib.unmatchedReasons(state.betRecords, boardLines(), Date.now());
+    return betsLib.unmatchedReasons(state.betRecords, boardLines(), Date.now(),
+      { dismissedIds: state.dismissedBetIds, knownStarts: state.knownStarts });
+  }
+
+  // Remember the start of the board event each open bet matches now; true
+  // when that changed what is held (the caller persists it).
+  function noteMatchedStarts() {
+    const before = JSON.stringify(state.knownStarts);
+    state.knownStarts = betsView.keepKnownStartsOpen(state.knownStarts, betsLib.matchedStarts(state.betRecords, boardLines()), state.betRecords);
+    return JSON.stringify(state.knownStarts) !== before;
+  }
+
+  // Dismiss stops a bet flagging red; Restore flags it again. Both are panel
+  // view state (persisted with the records), so they take effect at once.
+  async function setDismissed(betId, dismissed) {
+    const others = state.dismissedBetIds.filter((id) => id !== betId);
+    state.dismissedBetIds = dismissed ? [...others, betId] : others;
+    await persistBets();
+    renderBetsFlags();
   }
 
   function renderBetsHeader() {
     const now = Date.now();
     const open = state.betRecords.filter((bet) => bet.status === "open").length;
-    const needsGame = unmatchedNow().filter((entry) => entry.needsGame).length;
+    const unmatched = unmatchedNow();
+    const needsGame = unmatched.filter((entry) => entry.needsGame).length;
+    const needsFix = unmatched.filter((entry) => entry.needsFix).length;
+    const flagged = needsGame + needsFix;
     view.betsCount.hidden = open === 0;
     view.betsCount.textContent = String(open);
-    view.betsAlert.hidden = needsGame === 0;
-    view.betsAlert.textContent = String(needsGame);
-    view.betsAlert.title = needsGame ? `${needsGame} open bet${needsGame === 1 ? "" : "s"} not matched to a game` : "";
-    view.betsTabButton.classList.toggle("needs-game", needsGame > 0);
-    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now, needsGame);
-    view.betsHeader.classList.toggle("bad", needsGame > 0 || betsView.serviceStatus(state.betsService, now).unreachable);
+    view.betsAlert.hidden = flagged === 0;
+    view.betsAlert.textContent = String(flagged);
+    view.betsAlert.title = [
+      needsGame ? `${needsGame} open bet${needsGame === 1 ? "" : "s"} not matched to a game` : null,
+      needsFix ? `${needsFix} open bet${needsFix === 1 ? "" : "s"} needing a code fix` : null,
+    ].filter(Boolean).join(" · ");
+    view.betsTabButton.classList.toggle("flagged", flagged > 0);
+    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now, needsGame, needsFix);
+    view.betsHeader.classList.toggle("bad", flagged > 0 || betsView.serviceStatus(state.betsService, now).unreachable);
   }
 
   // One line per venue: a dot for freshness, what it holds, how old the last
@@ -2396,8 +2432,9 @@
   // ---- Bets tab rows and the Attach flow ------------------------------------
   //
   // An open bet no board line matches is listed twice: in the open list with
-  // a red edge, and in "Needs a game" (the red flag, bets.unmatchedReasons
-  // needsGame) or the folded "Not on the board" with its reason. Attach opens
+  // a red edge, and in "Needs a game" or "Needs a code fix" (the red flag,
+  // bets.unmatchedReasons needsGame / needsFix) or the folded "Not on the
+  // board" with its reason. A code fix has no Attach. Attach opens
   // a two-step panel under the listed row (attach.js): pick the game, then
   // confirm what the venue's names mean. The attach is POSTed to the bets
   // service (/pins.json), whose reply — every pin and the whole crosswalk —
@@ -2563,18 +2600,21 @@
     return panel;
   }
 
-  // One bet row. options: {reason, unmatched, attachable, quiet}. `reason`
+  // One bet row. options: {reason, unmatched, attachable, quiet, flagged, dismissed}. `reason`
   // (an unmatched list row) adds the reason chip and, when attachable, the
   // Attach button and panel; `unmatched` colours the left edge, so an
   // unmatched bet is visible in the open list too; `quiet` greys a row that
-  // does not flag. A pinned, matched open bet says "attached" with an Undo.
+  // does not flag; `flagged` (a red row) adds the Dismiss chip; `dismissed`
+  // (a row Cal dismissed, in the folded list) adds the tag and Restore. A
+  // pinned, matched open bet says "attached" with an Undo.
   function betItem(bet, options) {
-    const { reason = null, unmatched = false, attachable = false, quiet = false } = options || {};
+    const { reason = null, unmatched = false, attachable = false, quiet = false, flagged = false, dismissed = false } = options || {};
     const li = makeEl("li", unmatched ? "unmatched" : "matched");
     const main = makeEl("div");
     const what = makeEl("div", "bet-what", betsLib.describeBet(bet));
     const pinned = Boolean(bet.pin) && !unmatched;
     if (pinned) what.append(makeEl("span", "tag pinned", "attached"));
+    if (dismissed && reason) what.append(makeEl("span", "tag dismissed", "dismissed"));
     const meta = makeEl("div", "bet-meta");
     const venue = bet.venue ? betsLib.venueLabel(bet.venue) : "unknown venue";
     const game = pinned && bet.pin.awayTeamName && bet.pin.homeTeamName ? `${bet.pin.awayTeamName} @ ${bet.pin.homeTeamName}`
@@ -2584,6 +2624,12 @@
     if (pinned) {
       meta.append(document.createTextNode(" · "));
       meta.append(makeButton("linkbtn", "Undo", () => undoAttach(bet)));
+    }
+    if (dismissed && reason) {
+      meta.append(document.createTextNode(" · "));
+      const restore = makeButton("linkbtn", "Restore", () => setDismissed(bet.id, false));
+      restore.title = "Flag this bet again.";
+      meta.append(restore);
     }
     main.append(what, meta);
 
@@ -2595,6 +2641,11 @@
 
     const reasonRow = makeEl("div", quiet ? "reason-row quiet" : "reason-row");
     reasonRow.append(makeEl("span", "bet-reason", reason));
+    if (flagged) {
+      const dismiss = makeButton("dismiss-chip", "Dismiss", () => setDismissed(bet.id, true));
+      dismiss.title = "Stop flagging this bet. It moves to Not on the board and still does not size your next bet.";
+      reasonRow.append(dismiss);
+    }
     const panelOpen = attachState != null && attachState.betId === bet.id;
     if (attachable && panelOpen) {
       // Not while the attach is being saved: its reply, or its error, lands in this panel.
@@ -2621,7 +2672,8 @@
     const unmatched = unmatchedNow();
     const unmatchedIds = new Set(unmatched.map(({ bet }) => bet.id));
     const needsGame = unmatched.filter((entry) => entry.needsGame);
-    const offBoard = unmatched.filter((entry) => !entry.needsGame);
+    const needsFix = unmatched.filter((entry) => entry.needsFix);
+    const offBoard = unmatched.filter((entry) => !entry.needsGame && !entry.needsFix);
     // A bet that matched, settled or stopped being attachable closes its panel (never mid-POST).
     if (attachState && !attachState.busy && !unmatched.some((entry) => entry.attachable && entry.bet.id === attachState.betId)) attachState = null;
 
@@ -2641,23 +2693,30 @@
     view.betsNeedsBanner.textContent = betsView.needsGameBanner(needsGame.length);
     view.betsNeedsBlock.hidden = needsGame.length === 0;
     view.betsNeedsCount.textContent = needsGame.length ? String(needsGame.length) : "";
-    view.betsNeeds.replaceChildren(...needsGame.map(({ bet, reason, attachable }) => betItem(bet, { reason, unmatched: true, attachable })));
+    view.betsNeeds.replaceChildren(...needsGame.map(({ bet, reason, attachable }) => betItem(bet, { reason, unmatched: true, attachable, flagged: true })));
+    view.betsFixBanner.hidden = needsFix.length === 0;
+    view.betsFixBanner.textContent = betsView.needsFixBanner(needsFix.length);
+    view.betsFixBlock.hidden = needsFix.length === 0;
+    view.betsFixCount.textContent = needsFix.length ? String(needsFix.length) : "";
+    view.betsFix.replaceChildren(...needsFix.map(({ bet, reason }) => betItem(bet, { reason, unmatched: true, flagged: true })));
 
     view.betsOpenCount.textContent = open.length ? String(open.length) : "";
     view.betsOpen.replaceChildren(...open.map((bet) => betItem(bet, { unmatched: unmatchedIds.has(bet.id) })));
     view.betsOpenEmpty.hidden = open.length > 0;
     view.betsOpenEmpty.textContent = state.betsService && state.betsService.okAt != null ? "No open bets." : "No bets loaded yet.";
     // Say so when nothing is wrong, so "all matched" never looks like "not checked".
-    const matchable = open.filter((bet) => !bet.unmatchable).length;
-    const unmatchedGameBets = unmatched.filter((entry) => !entry.bet.unmatchable).length;
-    view.betsMatchNote.hidden = matchable === 0;
+    // A bet its source could not read is still a game bet; a prop or a future is not.
+    const isGameBet = (bet) => !bet.unmatchable || betsLib.isParseFailure(bet);
+    const gameBets = open.filter(isGameBet).length;
+    const unmatchedGameBets = unmatched.filter((entry) => isGameBet(entry.bet)).length;
+    view.betsMatchNote.hidden = gameBets === 0;
     view.betsMatchNote.textContent = boardLines().length === 0 ? "Waiting for the board to load before checking which game each bet is on."
       : unmatchedGameBets === 0 ? "Every open game bet matches a game on the board."
-        : `${matchable - unmatchedGameBets} of ${matchable} open game bets match a game on the board.`;
+        : `${gameBets - unmatchedGameBets} of ${gameBets} open game bets match a game on the board.`;
 
     view.betsOffboard.hidden = offBoard.length === 0;
     view.betsOffboardCount.textContent = offBoard.length ? String(offBoard.length) : "";
-    view.betsOffboardList.replaceChildren(...offBoard.map(({ bet, reason, attachable }) => betItem(bet, { reason, unmatched: true, attachable, quiet: true })));
+    view.betsOffboardList.replaceChildren(...offBoard.map(({ bet, reason, attachable, dismissed }) => betItem(bet, { reason, unmatched: true, attachable, quiet: true, dismissed })));
     // An Attach opened from the folded list keeps the fold open.
     if (attachState && offBoard.some((entry) => entry.bet.id === attachState.betId)) view.betsOffboard.open = true;
 
@@ -2751,6 +2810,8 @@
       state.pins = Array.isArray(storedBets.pins) ? storedBets.pins : [];
       const storedRecords = Array.isArray(storedBets.bets) ? storedBets.bets : [];
       state.betRecords = betsLib.pruneForRetention(betsLib.rekeyRecords(betsLib.applyPins(storedRecords, state.pins), state.crosswalk), Date.now());
+      state.dismissedBetIds = betsView.keepDismissedOpen(storedBets.dismissed, state.betRecords);
+      state.knownStarts = betsView.keepKnownStartsOpen(storedBets.knownStarts, {}, state.betRecords);
       setFillFairs(fillfair.mergeFillFairs([], Array.isArray(storedBets.fillFairs) ? storedBets.fillFairs : [], state.betRecords));
       state.betsService = {
         payload: storedBets.payload || null, okAt: storedBets.okAt ?? null,
