@@ -645,9 +645,18 @@
     const advice = betsView.stakeAdvice({
       line: matchLine, price: line.price, edgePct: line.edgePct,
       bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
-      matches, ladderOf: ladderReader(ticket.eventId), liquidity,
+      matches, ladderOf: ladderReader(ticket.eventId), liquidity, teasers: openTeasersNow(),
     });
     return { tier: matches.length ? matches[0].tier : null, matches: advice.matches, advice };
+  }
+
+  // The open BFA teasers, each leg joined to its board game and priced
+  // (teaser.openTeasers): the Edges rows, alerts and the Ticket size the next
+  // bet against the ones on its game (teasers plan section 14). None before
+  // the board has loaded.
+  function openTeasersNow() {
+    if (!scannerState) return [];
+    return teaserLib.openTeasers(state.betRecords, boardLines(), { now: Date.now(), ladderOf: currentTeaserBoard().ladderOf });
   }
 
   // Every open bet on this line's game, bets in the math first: this line,
@@ -659,6 +668,7 @@
       const div = document.createElement("div");
       const against = related.tier === "opposite" || related.tier === "related_opposite";
       div.className = `bet-match tier-${related.tier}${!related.inMath ? " not-sized" : against ? " bad" : ""}`;
+      if (related.title) div.title = related.title;
       const kind = document.createElement("span");
       kind.className = "k";
       kind.textContent = related.tag;
@@ -1118,20 +1128,24 @@
   // there after you bet it is information, and the stake column carries the top-up.
   function withBetFlags(rows) {
     const flags = betsLib.annotateRows(rows, state.betRecords, { lines: boardLines() });
+    const teasers = openTeasersNow();
     return rows.map((row, index) => {
       const flag = flags[index];
       const advice = betsView.stakeAdvice({
         line: row, price: row.price, edgePct: row.edgePct,
         bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
-        matches: flag.matches, ladderOf: ladderReader(row.eventId), liquidity: row.liquidity,
+        matches: flag.matches, ladderOf: ladderReader(row.eventId), liquidity: row.liquidity, teasers,
       });
       return { ...row, bet: { tier: flag.tier, matches: advice.matches, advice } };
     });
   }
 
-  // Sort key for "by my exposure": dollars in the math on the market, held or against.
+  // Sort key for "by my exposure": dollars in the math on the market, held or
+  // against, straight bets and teaser stakes alike.
   function exposureDollars(row) {
-    return row.bet ? row.bet.advice.held + row.bet.advice.against : 0;
+    if (!row.bet) return 0;
+    const { held, against, teasers } = row.bet.advice;
+    return held + against + (teasers ? teasers.held + teasers.against : 0);
   }
 
   // Min suggested bet: gates on what the rail says to bet now (the stake
@@ -1257,13 +1271,14 @@
   // Cards the user has opened; survives the 5s re-render, not a panel reload.
   const expandedGroups = new Set();
 
-  // "held $300" and/or "against $200", or "game", with every match's label as the tooltip.
+  // "held $300" and/or "against $200", "teasers $600", or "game"; the tooltip
+  // is every match's label, a teasers chip's its tickets.
   function betBadges(flag) {
-    return betsView.badges(flag).map(({ kind, text }) => {
+    return betsView.badges(flag).map(({ kind, text, title }) => {
       const badge = document.createElement("span");
       badge.className = `tag ${kind}`;
       badge.textContent = text;
-      badge.title = flag.matches.map((match) => match.label).join("\n");
+      badge.title = title || flag.matches.map((match) => match.label).join("\n");
       return badge;
     });
   }
@@ -1331,6 +1346,8 @@
     block.append(head, ...lines.map((line) => {
       const div = document.createElement("div");
       div.className = `related-line tier-${line.tier}${line.inMath ? "" : " not-sized"}`;
+      // A teasers line lists its tickets on hover.
+      if (line.title) div.title = line.title;
       const tag = document.createElement("span");
       tag.className = "related-tag";
       tag.textContent = line.tag;
