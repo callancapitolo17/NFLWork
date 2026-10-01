@@ -510,14 +510,15 @@ Parsing (`extension/feed.js`, node-tested on real slices under
 
 Off by default. Tick **Include alt lines** in the filter box and every
 book's alternate spreads and totals join the list under the same gates as
-main lines (board, book, bet type, period, edge, start, line age) plus
-one of their own — most alt "edges" are deep longshots (live 2026-09-11 the
-median NFL alt edge sat 13 points off the number at +400 and up; -18.5 at
-+800 for +3.6% and a few-dollar stake is typical) where Unabated's fair is
-extrapolated:
-
-- **Max pts from main** (default 7): distance from the book's *current*
-  main-line points. 0 = no limit.
+main lines (board, book, bet type, period, edge, start, line age, liquidity).
+The depth cap is in probability, not points: an alt lists only while
+BOTH Unabated's fair and the book's own price put its side between **15% and
+85%** (about +567 / −567; `feed.altWithinDepthCap`, a constant in code, no
+setting), so it means the same depth in every sport. A rung whose Unabated
+fair equals the next rung's on the same side is a flat-lined tail, not a
+fair, and never lists (`feed.flatFairRungKeys`). It replaced the 7-point **Max pts from
+main** setting on 2026-09-30. Inside the cap a deep rung is ranked down by
+the tail flex (below), not hidden.
 
 An alt sitting on the main line's current number is hidden (it would be
 the same bet twice). On the grid, an alt cell's book is read by object
@@ -541,15 +542,53 @@ soft ladder yields 4–10 rows that all say one thing, so the list shows one
 **card per (game, period, bet type, side)** — a +EV opinion is directional,
 so the two sides of a market are two cards. The card's head is the side and
 its best edge; under it the market, matchup and start; then the **best
-line**, which is the highest Kelly stake (stake = edge / (decimal − 1)
-already taxes longshots), so a -110 main line at +5% outranks a +944 rung at
-+6%; then `▸ 2 books · 7 lines (+6)`, which opens the other books and rungs.
+line**, which is the highest **tail-flex rank score** — EV dollars after
+flex, below — so a -14.5 at +270 for 13.9% outranks a -27.5 at +1300 for
+17.3%; then `▸ 2 books · 7 lines (+6)`, which opens the other books and rungs.
 The card is its best line — it carries that line's own number, and a rung
 behind the expander names its own when it differs. Every line is clickable
 (locate) as before. The count badge counts cards,
 sort orders cards through their best line, and `feed.groupEdges` (pure,
-node-tested) does the grouping; the panel passes the stake as the rank.
+node-tested) does the grouping; the panel passes the rank score as the rank.
 Turning the toggle off gives the flat list.
+
+### Tail flex (rank score)
+
+Unabated's fair is solid at the main number and flexes in the tails (the
+host on Unabated Live, 2026-09-11, 49:26: the fuselage is solid, the wings
+flex). The panel prices that flex to **rank** lines only — the edge and the
+stake on every row stay Unabated's (`kelly.kellyStakeFromEdge` on `ge`,
+conditional Kelly untouched). Per line (`extension/tailflex.js`, pure,
+node-tested), with Unabated fair p = (1 + edge) / decimal:
+
+- `dist_sd = |qnorm(p) − qnorm(fair of the same side at Unabated's main
+  number)|` (Unabated's own line, book 49; even money when it has none; 0 on
+  a moneyline);
+- `sigma_z = sqrt(DZ_MAIN² + (c × dist_sd)²)`, `DZ_MAIN` = one cent at the
+  median in probit;
+- `sigma_e = decimal × dnorm(z) × sigma_z`, `keep = edge² / (edge² + sigma_e²)`
+  (Baker & McHale 2013);
+- **rank score = keep × edge × stake** — EV dollars after flex, the stake
+  being the row's own Kelly stake. It picks a card's best line and orders
+  the lines inside it. It is not shown: the row shows the edge and the bet.
+  The "by stake" sort still sorts cards by their best line's stake.
+
+**c is measured live** per (league, period, bet type) on every scanner
+update from exchanges (`hasLiquidity` books) quoting BOTH sides of a rung at
+the mirrored number, fresh (on the board, inside **Max line age**) with an
+implied sum in [0.995, 1.20]: probit-devig the pair, take the probit gap to
+Unabated's fair, remove the RMS gap the exchanges show at Unabated's main
+number, divide by `dist_sd` for rungs ≥ 0.3 SD out, drop the top 1% (stale
+quotes), take the RMS — c is a standard deviation, so not the median. Fewer
+than 100 such rungs → `c = 10%`. No floor on a measured c (user, 2026-09-30). Exchanges are a measuring stick only; no
+fair is blended. The Edges header shows the c in use for every spread/total
+market on the list (`tail flex: NFL spr 7.6% · CFB spr 9.3% · MLB tot 10%`).
+Measured c, NFL + CFB full game, 2026-09-30: NFL spr 7.6% / tot 5.6%, CFB
+spr 9.3% / tot 9.2% (~100 ms per measure over 194k lines).
+
+A line whose fair is Unabated's ±999900 placeholder (a clamp, not a fair)
+never lists, never measures, and never prices a rung of the conditional-Kelly
+ladder (`feed.isClampedFair`; a held bet there is left out and named).
 
 ### What is listed
 
@@ -1842,7 +1881,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 375 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 390 tests) and
 the bets service's pytest suite (308 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -2364,7 +2403,11 @@ as won $1,104. Cal's call: exact; open BFA teasers only (the Teasers tab's
 own read; other parlays stay `parlay leg`); a `teasers $X` chip after the
 approved mockup. A leg on another game that started counts as won — BFA
 closed the five Seahawks tickets ten minutes after that game ended, so an
-open ticket's finished legs won. The other-side lift applies as for
+open ticket's finished legs won. The pre-merge review caught two
+departures, both fixed before merge: a leg still to play with no board game
+yet (CFB loading) counted as won too ($361 → $1,301 on its board) — now it
+leaves its ticket out; and a decline the teasers alone cause threw out the
+straights — now they still size the row. The other-side lift applies as for
 straights (Commanders +6.5 $381 → $743), per the standing decision.
 
 **2026-09-30 — Teasers sized around straight bets on the same games.** Cal's
@@ -2388,6 +2431,50 @@ greedy now scores the 2^10 "which legs win" states instead of every outcome
 2^17; exact ties go to the first combination in order. The screen (held /
 against / game tags on the legs, the note under the summary) was approved
 from a render of the 9/27 board.
+
+**2026-09-30 — Alt cap on price too, 15-85%; flat tails out; EV line gone
+(0.15.1).** On the first live run of 0.15.0 the list showed Under 2.5 1H at
+Kalshi +2242 (4.3c) as a "554% edge" in two CFB games: Unabated's fair for
+that total was flat at +258 (27.9%) on every rung from 2.5 to 16.5, inside
+the 10-90% fair cap. The user: it should be out anyway because it's 4.3c.
+So the cap now applies to the book's price as well as the fair, raised to
+15-85% (user), and a rung whose fair equals its neighbour's is dropped from
+the list and from the tail-flex measurement (ladder.js already dropped it
+from sizing). The `EV $` line on each row was removed as repetitive next to
+the edge and the bet (user); it still ranks lines.
+
+**2026-09-30 — Tail flex ranks alt lines; the 7-point cap becomes a 10-90% fair cap (0.15.0).**
+The card's best line was the highest Kelly stake, which takes Unabated's
+deep-rung fairs at face value; the Unabated host's own pick (-12 at 4% over
+-24 at 10%, main -8.5) only holds if tail fairs are discounted. The user
+kept Unabated as the truth for edge and stake and rejected blending its
+fair with the exchanges ("I don't want to blend"), so the discount is
+used only to rank: rank score = keep × edge × stake (EV dollars after
+flex), keep = edge² / (edge² + sigma_e²), sigma_e growing with the line's
+distance from the main number at a rate c measured live off two-sided
+exchange alt quotes (fallback 10% under 100 rungs). The video's check
+holds: -24 wins below c ≈ 5.5%, -12 above. The cap was first removed
+outright; on one NFL+CFB board that moved suggested stake on best lines
+priced -200 or shorter from $1.4k to $6.4k (that bucket ran -16.8% on 13
+settled bets; +180 to +399, where the profit is, ran +19.6% on 281) and
+added 79 longshot cards at +400 or longer with no track record. The user
+kept a cap but in probability so it fits every sport (points mean
+different things in an MLB total and a CFB spread; a share of the total
+breaks on spreads; a max book price would hide the soft books' mispricing):
+an alt lists only while Unabated's fair is 10-90%. c is the RMS of the per-rung
+ratios with the top 1% dropped: the first build took the median, which
+runs about a third low for a standard deviation and floored a quarter of
+rungs at zero (NFL spreads 2.7% median vs 7.1% RMS — the median flipped the
+video's pick). Removed: the **Max pts from
+main** setting (stored values are ignored); `feed.altPassesGates` and the
+live block now gate alts on the fair instead. Not shown on cards: the uncertainty
+and the discounted edge; the header shows c per market and each row its
+`EV $` rank score. No floor on a measured c (user decision). Card alerts
+re-fire when the best line's rank score improves AND the line itself
+changed (another line, or its price or edge moved) — the score also moves
+with every re-measure of c, which is not news. Lines on Unabated's ±999900
+fair clamp no longer list: removing the cap had surfaced Vanderbilt +46 at
+-1800, "5.55%", a $2,497 quarter-Kelly stake, ranked #2 overall.
 
 **2026-09-29 — BFA: a ticket the history cannot read still settles its
 legs.** The open list stores a BFA parlay or teaser as one record per leg
@@ -2422,7 +2509,7 @@ is verified; the rest is pinned by hand-written fixture rows and fails closed
 on anything unseen. Rejected: a Pikkit-mediated read (its terms forbid it and
 its data is only as fresh as the phone app's last sync).
 
-**2026-09-28 — Buckeye teasers (the Teasers tab, 0.15.0).** Cal bets Buckeye
+**2026-09-28 — Buckeye teasers (the Teasers tab, 0.16.0).** Cal bets Buckeye
 6-point 4-team teasers at BFA and wanted the set built for him. Decided with
 him 2026-09-27/28 (plan: `docs/2026-09-27-unabated-ticket-teasers-plan.md`):
 Buckeye only; legs priced off **Unabated's fair, not the exchanges** —

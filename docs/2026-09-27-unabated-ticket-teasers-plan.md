@@ -345,6 +345,8 @@ averaged $492, counted as won $1,104.
 - **Worktree** — `.claude/worktrees/buckeye-teasers`; no DuckDB touched.
   After an approved merge: `git worktree remove` + `git branch -d`, restart
   the bets service (launchd `kickstart`), reload the unpacked extension.
+  Local main took the tail-flex work (0.15.1) while this was built; it was
+  merged into the branch before the merge to main, manifest 0.16.0.
 - **Documentation** — README Stake section: an "Open teasers count too"
   paragraph with the 9/27 numbers; the Teasers Limits line; Tests counts;
   a decisions-log entry; root `CLAUDE.md` Unabated Ticket blurb.
