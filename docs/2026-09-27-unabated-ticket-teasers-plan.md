@@ -186,8 +186,8 @@ description.
 - Straight bets on the same games are in the math since section 13, but only
   on the leg's own market and full game: a total held under a spread leg, a
   1H bet, and a bet on a game no new ticket can use are left out.
-- The Edges tab still sizes a straight bet without the open teasers on its
-  game (conditional Kelly leaves parlay legs out).
+- The Edges tab sizes a straight bet with the open BFA teasers on its game
+  since section 14; other parlays are still left out.
 - A ticket placed in the last ~90 s may not be in the tab yet (BFA every
   60 s + panel poll 30 s); the pull age is on screen.
 
@@ -268,3 +268,76 @@ $800 -> $400); the other side grows it (Steelers +9 $0 -> $200 with Bengals
 - **Documentation** — README Teasers: a "Straight bets on the same games"
   paragraph with the 9/27 numbers, the Limits line, Tests counts, a
   decisions-log entry; root `CLAUDE.md` Unabated Ticket blurb.
+
+## 14. Open teasers on the Edges tab (2026-09-30)
+
+The one-way gap section 12 listed: the Edges tab (and the Ticket tab and
+alerts) sized a straight bet without the open teasers on its game, because
+conditional Kelly (#130) leaves every parlay leg out. User decisions
+2026-09-30, after the 9/27 walk-through below and the mockup: count them
+exactly (a ticket's other legs enumerated — not averaged, not counted as
+won); open BFA teasers only; a `teasers $X` chip.
+
+Measured on 9/27 (16:46 UTC board, right after Cal's 8 teasers, K $5,000):
+all 14 Novig/Kalshi/ProphetX rows that said bet something on the same side
+as a teaser leg go to $0 — Colts +7.5 −270 at Novig (+2.3%, 3 legs on Colts
++7.5) $316 → $0: the teasers already carry those sides at about Kelly size
+at a better price (a leg inside +300 is −241). The other side grows, the
+standing lift rule: Chargers +6.5 +120 (4 legs on Bills −1) $137 → $426,
+Commanders +6.5 $381 → $743. Shortcuts on the Chargers row: other legs
+averaged $492, counted as won $1,104.
+
+- **Which tickets** — `teaser.openTeasers`' tickets (the open BFA teasers
+  the Teasers tab reads), in play, with a live leg on the row's game. In the
+  math when that leg sits on the row's market (spread / moneyline vs
+  total), with a fair at its number on the row's ladder; a 1H row takes a
+  full-game leg on its own direction (worst-case pairing, as a straight)
+  and leaves the other direction out. Else left out and named: `game · not
+  sized`, `other period · not sized`, `no fair at …`. Other parlays stay
+  `parlay leg`. A leg on another game that started, matches no board game
+  or has no fair counts as won: BFA closes a teaser within minutes of a
+  losing leg's game ending (9/27: the five Seahawks tickets at 20:30 UTC,
+  ~10 min after that game, with the 49ers leg still to play), so an open
+  ticket's finished legs won; only a leg in progress is assumed.
+- **How they count** — `condkelly.solveStake` gains `tickets` [{group, cut,
+  direction, stake, toWin, others: [{factor, cut, direction}]}] and
+  `factors` {factor: [[cut, P(above)], ...]}. The ticket's leg cuts the
+  game's rows like a held bet (a half-point: a teaser push loses); its other
+  legs sit on other games, independent of this one: their rows are
+  enumerated (each game cut at every number an other leg needs) and grouped
+  by which tickets they leave alive (legs shared across tickets make those
+  joint), and the score is the probability-weighted sum of today's growth
+  (per period worst-case pairing unchanged) over those groups. No ticket:
+  one group, today's number to the cent. Budget: 2^16 joint other-game
+  states, past it the calc is declined with the reason (9/27: at most 128
+  states, 20 groups per row).
+- **On the row** (mockup approved 2026-09-30) — chip `teasers $X`: the
+  stakes of the tickets in the math, green (`held` style) on the row's
+  direction, red (`against`) on the other, its tooltip each ticket's legs.
+  Related bets: one line per leg number — "3 teasers on Colts +7.5 · $600 ·
+  BFA · other legs win 40–44%" ("rides on this leg alone" when no other leg
+  is still to play) — tagged like a straight (this line / same side / other
+  side); the ticket's own leg records leave the list. The rail is
+  unchanged; the verb is `add` when a straight or a teaser in the math is
+  on the row's direction. Same on the Ticket tab, alerts and the Min
+  suggested bet filter; the "by my exposure" sort counts teaser dollars.
+- **Tests** — `tests/condkelly.test.js`: no ticket unchanged; a ticket with
+  no other leg = a half-point straight; one and two other legs match a
+  brute-force growth grid; shared other legs are joint; same side lowers,
+  other side raises; budget and non-monotone declines; a whole-number
+  ticket cut throws. `tests/betsview.test.js`: chips, related lines, verb,
+  leg records dropped, other market / other period / no fair notes, a
+  decline zeroes the teaser dollars, a ticket on another game ignored.
+- **Version control** — same branch `feature/unabated-ticket-teasers`.
+  Commits: (1) this section; (2) `condkelly.js` tickets + tests; (3)
+  `betsview.js` + `teaser.js` leg reason + tests; (4) `panel.js` chip,
+  related line, exposure sort; (5) README + root `CLAUDE.md`. Files:
+  `extension/condkelly.js`, `extension/betsview.js`, `extension/teaser.js`,
+  `extension/panel.js`, `tests/condkelly.test.js`, `tests/betsview.test.js`,
+  `unabated_ticket/README.md`, `CLAUDE.md`, this plan.
+- **Worktree** — `.claude/worktrees/buckeye-teasers`; no DuckDB touched.
+  After an approved merge: `git worktree remove` + `git branch -d`, restart
+  the bets service (launchd `kickstart`), reload the unpacked extension.
+- **Documentation** — README Stake section: an "Open teasers count too"
+  paragraph with the 9/27 numbers; the Teasers Limits line; Tests counts;
+  a decisions-log entry; root `CLAUDE.md` Unabated Ticket blurb.
