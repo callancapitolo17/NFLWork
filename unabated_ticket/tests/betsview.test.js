@@ -52,8 +52,8 @@ test("sourceRows: one row per venue; unconfigured venues say so; a failed poll k
     kalshi: { fetchedAt: iso(20e3), ok: true, error: null, count: 14 },
     novig: { fetchedAt: iso(90 * 60e3), ok: false, error: "HTTP 401", count: 3 },
   }), NOW);
-  assert.deepEqual(rows.map((row) => row.venue), ["kalshi", "betonline", "novig", "prophetx", "bfa", "wagerzon", "polymarket_us"]);
-  const [kalshi, betonline, novig, prophetx, bfa, wagerzon, polymarketUs] = rows;
+  assert.deepEqual(rows.map((row) => row.venue), ["kalshi", "betonline", "novig", "prophetx", "bfa", "wagerzon", "polymarket_us", "bet105"]);
+  const [kalshi, betonline, novig, prophetx, bfa, wagerzon, polymarketUs, bet105] = rows;
   assert.equal(kalshi.configured, true);
   assert.equal(kalshi.level, "green");
   assert.equal(kalshi.ageText, "20 s");
@@ -69,6 +69,7 @@ test("sourceRows: one row per venue; unconfigured venues say so; a failed poll k
   assert.equal(bfa.configured, false);
   assert.equal(wagerzon.configured, false);
   assert.equal(polymarketUs.configured, false);
+  assert.equal(bet105.configured, false);
 });
 
 test("sourceRows: a configured source that never succeeded is red with 'never'", () => {
@@ -78,9 +79,9 @@ test("sourceRows: a configured source that never succeeded is red with 'never'",
   assert.equal(kalshi.error, "boom");
 });
 
-test("sourceRows: no payload at all is seven unconfigured rows", () => {
+test("sourceRows: no payload at all is eight unconfigured rows", () => {
   const rows = view.sourceRows(null, NOW);
-  assert.equal(rows.length, 7);
+  assert.equal(rows.length, 8);
   assert.equal(rows.filter((row) => row.configured).length, 0);
 });
 
@@ -107,10 +108,12 @@ test("sourcesUnavailable: true with no sources or every source red; false while 
 test("headerLine: open count, then every venue with its age or a dash", () => {
   const records = [record("a", "open"), record("b", "open"), record("c", "won"), record("d", "closed")];
   const payload = payloadWith({ kalshi: { fetchedAt: iso(20e3), ok: true, error: null, count: 4 } });
-  assert.equal(view.headerLine(records, payload, NOW), "bets: 2 open · kalshi 20 s · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us —");
-  assert.equal(view.headerLine([], null, NOW), "bets: 0 open · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us —");
-  assert.equal(view.headerLine([], null, NOW, 2), "bets: 0 open · 2 not matched to a game · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us —");
+  assert.equal(view.headerLine(records, payload, NOW), "bets: 2 open · kalshi 20 s · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
+  assert.equal(view.headerLine([], null, NOW), "bets: 0 open · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
+  assert.equal(view.headerLine([], null, NOW, 2), "bets: 0 open · 2 not matched to a game · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
   assert.equal(view.headerLine([], null, NOW, 0), view.headerLine([], null, NOW));
+  assert.equal(view.headerLine([], null, NOW, 1, 1), "bets: 0 open · 1 not matched to a game · 1 needs a code fix · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
+  assert.equal(view.headerLine([], null, NOW, 0, 2), "bets: 0 open · 2 need a code fix · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
 });
 
 test("bannerLines: at most five, strongest first as given, and the count of the rest", () => {
@@ -460,10 +463,30 @@ test("mergeServicePayload: the payload's pins attach their bets, and a pin can g
   assert.deepEqual(view.pinsOf({ bets: [] }), []);
 });
 
+test("keepDismissedOpen: a dismissal lasts while its bet is open, and ends when it settles or leaves the store", () => {
+  const records = [record("bfa:1", "open", {}), record("bfa:2", "won", {}), record("bfa:3", "open", {})];
+  assert.deepEqual(view.keepDismissedOpen(["bfa:1", "bfa:2", "gone:9"], records), ["bfa:1"]);
+  assert.deepEqual(view.keepDismissedOpen(undefined, records), []);
+  assert.deepEqual(view.keepDismissedOpen(["bfa:1"], []), []);
+});
+
+test("keepKnownStartsOpen: the latest match wins, and only open bets keep a start", () => {
+  const records = [record("bol:1", "open", {}), record("bol:2", "won", {}), record("bol:3", "open", {})];
+  const held = { "bol:1": 100, "bol:2": 200, "gone:9": 300 };
+  assert.deepEqual(view.keepKnownStartsOpen(held, { "bol:1": 150, "bol:3": 400 }, records), { "bol:1": 150, "bol:3": 400 });
+  assert.deepEqual(view.keepKnownStartsOpen(undefined, { "bol:3": Number.NaN }, records), {});
+});
+
 test("needsGameBanner: singular, plural, and nothing when no bet needs a game", () => {
   assert.equal(view.needsGameBanner(1), "1 open bet is not matched to a game. It is left out when the panel sizes your next bet on that game. Attach it below.");
   assert.equal(view.needsGameBanner(2), "2 open bets are not matched to a game. They are left out when the panel sizes your next bet on that game. Attach them below.");
   assert.equal(view.needsGameBanner(0), "");
+});
+
+test("needsFixBanner: singular, plural, and nothing when every open bet was read", () => {
+  assert.equal(view.needsFixBanner(1), "1 open bet could not be read by the bets service. It is left out when the panel sizes your next bet on its game. The venue's parser needs a code fix; Attach cannot help.");
+  assert.equal(view.needsFixBanner(2), "2 open bets could not be read by the bets service. They are left out when the panel sizes your next bet on their games. The venue parsers need a code fix; Attach cannot help.");
+  assert.equal(view.needsFixBanner(0), "");
 });
 
 test("crosswalkRows: one Bets-tab line per served row — venue spelling, Unabated name, venue, league, when", () => {

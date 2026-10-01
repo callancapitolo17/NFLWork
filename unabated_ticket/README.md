@@ -817,6 +817,7 @@ Two kinds of source feed the flags:
 | BFA (Betfastaction) | `bets_service/sources/bfa.py` (local service, the account's own Keycloak password login from `bet_logger/.env`; 2026-09-23) | open bets every 60 s, history every 300 s, while the service runs |
 | Wagerzon (the C account) | `bets_service/sources/wagerzon.py` (local service, the site's form login from `bet_logger/.env`; 2026-09-23) | every 300 s while the service runs |
 | Polymarket US (the CFTC app) | `bets_service/sources/polymarket_us.py` (local service, the account's own API key from `bet_logger/.env`, Ed25519-signed; 2026-09-23) | every 60 s while the service runs |
+| Bet105 | the panel itself (`extension/bet105.js`, your own login at app.bet105.ag in this Chrome — Cloudflare challenges anything else) → `POST /bet105.json`, parsed by `bets_service/sources/bet105.py`; 2026-09-29 | every 5 min while the panel is open; open bets only |
 | ProphetX | — (#117) | shows "no source configured" |
 
 Start the service (next section), keep the panel open. Every 30 s while the
@@ -908,22 +909,50 @@ it is flagged, attached by hand and learned from:
   open bet `attachable` (a game bet — not `unmatchable` — whose league is on
   the board; a bet with no league counts when any league is) and
   `needsGame`: attachable, its game not started by what the bet knows
-  (`eventStart` in the future, else an `eventDate` today or later in
-  Eastern time, else no date at all), the board listing at least one game
-  of its league in its date window (`bets.betDateWindow`, the same dates
-  the picker lists — so a bet on a game two weeks out stays grey until
-  there is something to attach it to), and a miss an attach fixes —
-  `team not recognised`, `ambiguous game`, or **start time differs** (the
-  same team pair on the board, not started yet, within 12 h of the bet's
-  start at another time; 12 h is under the gap between two games of one
-  MLB series, and a doubleheader's game 1 in progress is left out so a
-  game-2 bet is never pointed at it). Bets needing a game turn the Bets tab label red
+  (the start of the board event it last matched, remembered by the panel
+  from `bets.matchedStarts` in `betsService.knownStarts` — so a BetOnline
+  bet with no date, or a Kalshi football bet with only one, reads as
+  started once its finished game leaves the board, not red until the
+  venue settles it; else `eventStart` in the future, else an `eventDate`
+  today or later in Eastern time, else no date at all), not a parlay or
+  teaser leg (a leg sizes nothing either way), the board listing at least
+  one game of its league on the bet's own Eastern day (a bet with no date:
+  its placed window — so an MLB bet on tomorrow's game, placed before
+  tomorrow's slate is posted, stays grey until it is) — **whatever the reason** for the
+  miss (the broad rule, Cal 2026-09-28: the old rule flagged only named
+  causes, and a wrong Novig team id that made its game read "not posted
+  yet" stayed grey). The reason explains the miss: `team not recognised`,
+  `ambiguous game`, `no event on the board yet`, or **start time differs** (the
+  bet's game on the board — its team pair, or, for a bet that names one
+  team (BFA, Wagerzon and BetOnline spreads and moneylines), its rotation
+  on a row where that team fits — not started yet, within 12 h of the
+  bet's start at another time; 12 h is under the gap between two games of
+  one MLB series, and a doubleheader's game 1 in progress is left out so a
+  game-2 bet is never pointed at it). When the bet's rotation is on that
+  board event, the board's clock decides whether the game has started — the
+  bet's own is the one in doubt (BFA's read 7 h early on 2026-09-26, a
+  start before the bet was placed); a match by team pair alone keeps the
+  bet's own clock, so a finished doubleheader game 1 never flags against
+  game 2. Bets needing a game turn the Bets tab label red
   with a red count, add "N not matched to a game" to the header line, and
   put a red banner at the top of the Bets tab. Futures and props, leagues
-  off the scanner, games not posted yet and games over but not yet settled
-  never flag; they fold into **Not on the board**. Started games keep their
+  off the scanner, days the board has not posted, parlay legs and games over but not yet settled
+  never flag; they fold into **Not on the board**. Measured on the live
+  board of 2026-09-28 (437 events, 39 open bets): 6 unmatched, all futures
+  and props, 0 red. Started games keep their
   pregame rows on the board until they end (9 MLB events 0–6 h past their
   start were still listed, 2026-09-23), so a bet in play stays matched.
+- *Needs a code fix* (2026-09-26). An open bet its source could not read —
+  the venue's own league code named a game league and the selection did not
+  parse, so the source marked it `raw.parseFailed` (BFA and Wagerzon, see
+  Bets service) — is `needsFix`: red from the poll that serves it, board or
+  no board, until the parser is fixed and the service restarted, or the bet
+  settles. It has its own **Needs a code fix** block, banner and "N needs a
+  code fix" in the header line, and no Attach: the record names no game,
+  team or line. Deliberate exclusions — props, team totals, a league not
+  supported, a postponed leg — carry no marker and stay grey. A record with
+  no parsed pick reads the venue's own text (`raw.description`, markup tags
+  as " · ") where it used to read its id.
 - *Attach* (`attach.js`, pure, node-tested). Step 1 lists the board's games
   in the bet's league whose Eastern date is within a day of the bet's (no
   date: from the day it was placed to 14 days later), games where one of
@@ -939,6 +968,16 @@ it is flagged, attached by hand and learned from:
   as crosswalk rows marked with the pin, which replace a held key — a
   manual lesson outranks an id join, and automatic learning stays
   insert-only, so it never overwrites one.
+- *Dismiss* (2026-09-28). Every red row — Needs a game or Needs a code
+  fix — carries a **Dismiss** chip (beside Attach, or alone): for a game
+  Unabated never lists, or a bet Cal has decided to live with. The bet
+  leaves the red count, banner and header, and moves into Not on the board
+  tagged **dismissed**, keeping its reason and Attach; **Restore** flags it
+  again. It still does not size the next bet. Dismissals are panel view
+  state — the bet ids in `chrome.storage.local` (`betsService.dismissed`),
+  passed to `bets.unmatchedReasons(…, {dismissedIds})` — and
+  `betsview.keepDismissedOpen` drops a dismissal once its bet settles,
+  closes or leaves the store, so it never hides a later bet.
 - *After.* `bets.applyPins` puts each served pin on its record (`pin`; a
   record with no league takes the pin's, marked `leagueFromPin`, and gives
   it back on Undo) and `resolveGame` reads the pin before the id join and
@@ -1054,7 +1093,9 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   line under the list says how many open game bets match, or "Every open
   game bet matches a game on the board").
   Unmatched open bets are listed with why in two places (above): **Needs a
-  game**, right under the money with an **Attach** button on each row, and
+  game**, right under the money with an **Attach** button on each row (a bet
+  its source could not read sits under it in **Needs a code fix**, with the
+  parser's reason and no Attach), and
   the folded **Not on the board** under the open list (Attach there too when
   the bet is a game bet). The reasons: team
   not recognised (the raw name, so `teams.js` can grow), ambiguous game,
@@ -1325,10 +1366,28 @@ records the panel can match against a line (issue #114; plan in
 signs Kalshi requests — the private key never enters the extension. Read-only
 GETs; no order placement.
 
+It runs as a launchd agent (`bets_service/com.nflwork.bets-service.plist`):
+it starts at login and restarts itself if it dies. A copy started from a
+Claude session dies with the app (an app update killed one 2026-09-30).
+
 ```bash
-./unabated_ticket/bets_service/run.sh        # http://127.0.0.1:8094
+# install once (or again after editing the plist)
+cp unabated_ticket/bets_service/com.nflwork.bets-service.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.plist
+# restart onto new code (after a merge that touches the service)
+launchctl kickstart -k gui/$(id -u)/com.nflwork.bets-service
+# stop and remove
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.plist
 ```
 
+- **Never start `run.sh` by hand while the agent is loaded**: the second copy
+  fails on the `bets.duckdb` lock. The agent runs the main checkout's
+  `run.sh`; a worktree test copy has its own `bets.duckdb` but needs another
+  `BETS_SERVICE_PORT`.
+- **Logs**: `bets_service.log` (rotating); crash tracebacks go to
+  `bets_service.stderr.log`. After a hand kill, the first relaunch can fail
+  with "Conflicting lock" while the old process lets go; launchd retries 30 s
+  later.
 - **Install**: nothing beyond the `kalshi_draft/venv` (duckdb, cryptography);
   `run.sh` uses it when present, else `python3`. Launch from the repo root.
 - **Credentials**: `KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY_PATH`, read from
@@ -1366,7 +1425,11 @@ GETs; no order placement.
   placed (*Since your first fill* above), INSERT only: a bet that has one
   keeps it, so `saved` counts only new bets. A row is refused with a 400
   that names it unless `fairAmerican` is a whole American price, both times
-  are ISO and the fair was observed at or before `placedAt`. The write routes require `Content-Type:
+  are ISO and the fair was observed at or before `placedAt`. `POST
+  /bet105.json` with `{fetchedAt, feeds: {prematch: [betGroup], live:
+  [betGroup]}}` (both feeds, at most 2000 groups) → `{ok, count, closed}`, or
+  `{error}` → `{ok, recorded: "error"}` — the panel's read of Bet105 (the Bet105
+  source bullet), stored as that source's run. The write routes require `Content-Type:
   application/json` (415 otherwise): the service sends no CORS headers, so a
   web page can only reach it with a "simple" cross-origin request (a form or
   `text/plain` POST, which is refused) and never with JSON or DELETE (both
@@ -1489,8 +1552,19 @@ GETs; no order placement.
   .NET default date would parse), and `lastModification` — the grading time —
   as `closedAt`; a parlay or teaser has one `settledDate` for the ticket, so
   its legs are dateless (`game_date_unknown`, matched by rotation). Team
-  totals, a teaser short of its declared legs and unparsed selections fail
-  closed with the reason. What an OPEN straight bet's `settledDate` holds is
+  totals and unparsed selections fail closed with the reason. A parlay or
+  teaser the history cannot read — a leg count off its type (`4 TEAM TEASERS
+  names 4 legs but carries 3`), a leg that does not parse, or a type it does
+  not know that carries `picks` — still comes back one record per leg,
+  `:leg0` up to the declared count, each unmatchable with the reason and on
+  the ticket's status: the open list stored the ticket under those ids, and
+  a lone `bfa:<id>` would leave them open forever (the store never closes a
+  record a poll does not name). An OPEN leg whose `idSport` is a game code (`CBB
+  CFB NFL NBA WNBA MLB NHL SOC`) but whose description does not parse is
+  also marked `raw.parseFailed` (`normalize.mark_parse_failed`), which the
+  panel flags as needing a code fix; a team total, a prop code and a code
+  only the nickname scan resolves are never marked, nor is the history
+  (it names no league). What an OPEN straight bet's `settledDate` holds is
   unobserved (the pull had none pending): a null or placeholder falls to the
   dateless window, so nothing is lost either way.
 - **Wagerzon source** (`sources/wagerzon.py`, 2026-09-23, the C account): every
@@ -1526,7 +1600,9 @@ GETs; no order placement.
   a doubleheader (kept in `raw.gameNumber`), `EV` = +100; MLB `1H` is the first
   five innings (`F5`, Novig's rule). A postponed leg ("( NYM vs COL Has Been
   Postponed. NO Action )"), an unsupported sport and an unparsed selection fail
-  closed per leg with the reason.
+  closed per leg with the reason; an unparsed selection on a game `IdSport`,
+  open or in the history, is also marked `raw.parseFailed` (the panel's
+  code-fix flag), a postponed leg or a prop never.
 - **Polymarket US source** (`sources/polymarket_us.py`, 2026-09-23; the CFTC
   app at polymarket.us, not the international polymarket.com — Unabated lists
   them as two books, so the venue key is `polymarket_us`): every 60 s two
@@ -1565,6 +1641,35 @@ GETs; no order placement.
   "Ottawa Senators") and `name` elsewhere. Team totals, player props, soccer,
   unsupported leagues and combos (`caoc-…` parlays, listed as one record with
   their legs in `raw.comboLegs`) fail closed with the reason.
+- **Bet105 source** (`sources/bet105.py` + `extension/bet105.js`, 2026-09-29):
+  the one PUSHED venue. Bet105 (a LinePros white-label) sits behind Cloudflare,
+  which challenges any request that is not the browser session's own, so the
+  panel reads the account from your own login in this Chrome and the service
+  only parses and stores. Every 5 min while the panel is visible: `GET /__bff/api/customers`
+  (401 = not logged in; its `csrfToken` goes in `X-Broker-CSRF`), then the
+  site's own `getHistory` (`{a: "getHistory", state: "0"}` = open bets) on both
+  LinePros feeds, `/__bff/__partner-prematch/betLobbyV2/logic/` and
+  `…/__partner-live/…`, POSTed as `{fetchedAt, feeds: {prematch, live}}` to
+  `POST /bet105.json`; a read that fails is POSTed as `{error}` so the Bets tab
+  row turns red with the fix (log in at app.bet105.ag in this Chrome). Never a
+  half push: both feeds or an error. Record ids are `bet105:<feed>:<betGroupId>`
+  (`:legN` per leg of a parlay, on the ticket's stake and price). A leg names
+  the selection by id, not text (`description` is empty): `marketId` 5 total /
+  6 spread / 3 moneyline (the LinePros wager types; 7 / 8 team totals, 1 = 1X2
+  and props fail closed), `key` the line — the total, or the AWAY spread number,
+  negated for the home side — and `subKey` the side, `1` = Over or the away
+  team, `2` = Under or home, the same ids `bet105_odds/scraper.py` reads off the
+  odds feed (`team1` / `team2` are away / home there too); `periodId` `m` = FG,
+  `h1` / `h2`, `f5`, `q1`–`q4`; `leagueName` (`NFL`, the pro leagues; a college
+  name fails closed until seen); `eventStartTime` epoch seconds; `finalOdds`
+  decimal. Verified on the 2026-09-29 capture: three NFL first-half totals,
+  side `1`. **Unobserved**, pinned by hand-written fixture rows only: an
+  Under, a spread's sign, a moneyline, a parlay, the live feed. Bet105 shows no
+  settled list (My Plays only ever asks for state 0), so an open record a
+  complete push no longer carries is marked `closed` with no result — never
+  guessed won or lost — and the store keeps it. No credentials and no poll in
+  the service; `service.PUSHED_SOURCES` lists the venue so the panel reads "no
+  completed poll yet" until the first push.
 - **Store** (`store.py`, `bets.duckdb`, gitignored): `bets` upserts on the
   record id and is never pruned (the CLV work needs the history), but only
   rows whose content actually CHANGED are written (#125): a source re-sends
@@ -1618,7 +1723,11 @@ GETs; no order placement.
   `bets_service/sources/` with `name`, `poll_sec` and `fetch() -> list[record]`
   (the `Source` protocol in `sources/__init__.py`), registered in
   `service.main()`. `fetch()` returns every record the venue knows and raises
-  on failure — never a partial list. Records follow the contract in the plan
+  on failure — never a partial list. A venue no script can reach (Cloudflare
+  challenging anything but the browser's own session — Bet105) is read by the
+  panel instead and PUSHED to a route of its own (`POST /bet105.json`), the
+  parser still a module in `sources/` and the venue listed in
+  `service.PUSHED_SOURCES`. Records follow the contract in the plan
   (`id` = `"<venue>:<native id>"`, `side`/`points` in the side's own number,
   raw team names, keys `null`). A venue with no game date sets `eventStart`
   and `eventDate` null, carries `rotation` and `approx: ["game_date_unknown"]`,
@@ -1648,8 +1757,8 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 333 tests) and
-the bets service's pytest suite (244 tests, on the `kalshi_draft/venv`
+the node suite (`npm test` = `node --test tests/*.test.js`, 349 tests) and
+the bets service's pytest suite (308 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`
@@ -1946,7 +2055,8 @@ in red.
   seen after the bet` / `no Unabated fair on its line at the fill` / `the
   board lists no market of its bet type and period`. A
   `service write failed: HTTP 404` means the bets service predates the
-  route: restart it (`bets_service/run.sh`) and reload the extension; the
+  route: restart it (`launchctl kickstart -k gui/$(id -u)/com.nflwork.bets-service`)
+  and reload the extension; the
   captured row is retried every minute until the panel closes.
 - **No Unabated fair for this line**: Unabated has no edge for that line
   (common on lopsided moneylines and exchange-only lines), so there is
@@ -2002,8 +2112,9 @@ in red.
   toggle is on; the first pass after enabling is silent by design. Check
   Chrome's notification permission for the extension in System Settings.
 - **Bets: "bets service unreachable since …"** (red header, Bets tab
-  banner): nothing is listening on the service URL. Start it with
-  `./unabated_ticket/bets_service/run.sh` from the repo root and check
+  banner): nothing is listening on the service URL. Check the agent with
+  `launchctl print gui/$(id -u)/com.nflwork.bets-service` (not loaded: install
+  it, Bets service above) and read `bets_service.stderr.log` then
   `bets_service.log`; the panel keeps the last records it fetched and
   retries every 30 s. A URL on another port needs a matching
   `host_permissions` entry in `manifest.json` (only `127.0.0.1:8094` ships).
@@ -2063,13 +2174,23 @@ in red.
   sits on two board events. The panel refuses to guess; the bet still counts
   in the header. **Attach** it to the right game: nothing is learned when
   both names already resolve, the pin alone decides the game.
-- **Bets: "start time differs (bet …, board …)"**: the same two teams are on
-  the board within 12 h of the bet's start at another time — a rescheduled
-  game or a venue clock read in the wrong zone. Attach it; if every bet of
-  one venue shows it, fix that source's clock.
+- **Bets: "start time differs (bet …, board …)"**: the bet's game — the same
+  two teams, or its rotation for a bet naming one team — is on the board
+  within 12 h of the bet's start at another time: a rescheduled game or a
+  venue clock read in the wrong zone. Attach it; if every bet of one venue
+  shows it, fix that source's clock (whole hours off: suspect the clock
+  first — BFA moved its open-bets clock once, and a DST slip is 1 h).
+- **Bets: "Needs a code fix"**: the bets service could not read an open bet
+  on a game league — the venue changed its text (BFA's two-bracket suffix,
+  2026-09-26) or sent a form the parser never saw. The row shows the venue's
+  own text and the parser's reason. Teach `bets_service/sources/<venue>.py`
+  the new form with a pytest case and restart the service; the flag clears on
+  its next poll. Attach cannot help: the record has no game, team or line. An
+  unreadable bet that sits grey under Not on the board instead means the
+  running service predates the marker (0.12.1): restart it.
 - **Bets: "Attach failed: HTTP 404: no route for POST /pins.json"**: the
-  bets service predates attach (0.11.0). Restart it from `main`
-  (`./unabated_ticket/bets_service/run.sh`). "HTTP 404: no bet with id …"
+  bets service predates attach (0.11.0). Restart it
+  (`launchctl kickstart -k gui/$(id -u)/com.nflwork.bets-service`). "HTTP 404: no bet with id …"
   means the service has not stored that record yet; wait for its next poll.
 - **Bets: unmatched "by id: … not on any board ladder; by name: …"**: the
   bet carries a Kalshi / Novig id no board rung carries (the venue lists no
@@ -2096,7 +2217,40 @@ in red.
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
 
-**2026-09-28 — Buckeye teasers (the Teasers tab, 0.14.0).** Cal bets Buckeye
+**2026-09-29 — BFA: a ticket the history cannot read still settles its
+legs.** The open list stores a BFA parlay or teaser as one record per leg
+(`bfa:<id>:leg0` …), and once it is graded only the history can settle those
+rows. When the history could not read the ticket — its type names a leg count
+it does not carry, or a leg does not parse — it wrote one unmatchable
+`bfa:<id>` instead, which settled nothing: the leg rows stayed open for good
+(the store is upsert-only and serves every open row), on the Bets tab and in
+the Teasers tab's open tickets. Now such a ticket comes back one record per
+leg up to the count its type declares (the open list has one row per leg),
+each unmatchable with the reason and on the ticket's status: never a lone
+record, never a partial ticket. A type the grammar does not know that carries
+picks (an if-bet, say) takes the same path with the legs it carries; it used
+to read as a straight bet on its first leg. While the ticket is open, the open
+list's legs replace these one for one, which also removes the extra
+unmatchable record listed beside them. Nothing to clean up: on 2026-09-29 the
+live store's 61 BFA records (12 graded teasers and parlays) held no such
+ticket.
+
+**2026-09-29 — Bet105 is read by the panel, not the service.** Bet105 is a
+LinePros white-label (the odds scraper already reads its socket) behind
+Cloudflare, which challenges any request that is not the browser session's
+own, so no script route exists and none is attempted. The panel, running in
+Cal's own logged-in Chrome, makes the site's own `getHistory` call and pushes
+the answer to the service (`POST /bet105.json`); the service parses and stores
+it like every other venue so pins, attach and freshness work unchanged. Open
+bets only (the site shows no settled list); a bet a complete push no longer
+lists is marked `closed` with no result. The selection ids (`marketId`,
+`key`, `subKey`, `periodId`) are read the way `bet105_odds/scraper.py` reads
+the same feed, and only the captured shape (NFL first-half totals, side `1`)
+is verified; the rest is pinned by hand-written fixture rows and fails closed
+on anything unseen. Rejected: a Pikkit-mediated read (its terms forbid it and
+its data is only as fresh as the phone app's last sync).
+
+**2026-09-28 — Buckeye teasers (the Teasers tab, 0.15.0).** Cal bets Buckeye
 6-point 4-team teasers at BFA and wanted the set built for him. Decided with
 him 2026-09-27/28 (plan: `docs/2026-09-27-unabated-ticket-teasers-plan.md`):
 Buckeye only; legs priced off **Unabated's fair, not the exchanges** —
@@ -2150,6 +2304,34 @@ every other Novig side (38 CFB, 38 NFL) agreed with its name. The id never
 rescued a name that failed. Now the name goes first, and the id keys a side
 only when the name resolves nowhere and the id is a team of the bet's
 league (`teams.hasTeam`). A learned crosswalk row still wins over both.
+
+**2026-09-26 — Loud when an open bet cannot be read, or its clock is off.**
+The Eastern Illinois bet (below) exposed two ways an open game bet fell off
+the board with the Bets tab quiet; Cal had to notice it himself. (1) A
+source's parse failure read exactly like a deliberate exclusion: both were
+`unmatchable`, grey under Not on the board. The sources now mark
+`raw.parseFailed` where the venue's own league code named a game league and
+the selection did not parse, and the panel flags those red in a new **Needs
+a code fix** block (no Attach: the record has no game, team or line) until
+the parser is fixed or the bet settles. A marker from the source rather than
+string-matching reasons in JS (Cal's preference): only the source knows
+which of its reasons are on purpose (BFA: a team total; Wagerzon: a
+postponed leg). Wired for BFA open bets and Wagerzon legs, the two
+description grammars with a per-leg league code; BetOnline reads its league
+off team nicknames and Kalshi, Novig and Polymarket read structured
+payloads, so they stay unmarked until one breaks the same way (a
+`mark_parse_failed` call). Rows with no parsed pick now read the venue's
+text instead of their id. (2) BFA and BetOnline spreads and moneylines name
+only their own team, and **start time differs** needed both team keys, so
+the bet with its clock 7 h off read "no event on the board yet". The rule
+now also takes the bet's rotation on a not-started board event within 12 h
+where its named team fits (`knownTeamFits` — BetOnline's reused rotations
+are a week apart, outside the window anyway). A rotation match also lets
+the board's clock say "not started": that bet's own start, 9 AM PT, was
+before it was even placed, so the old started-check would have kept it grey
+too; a match by team pair alone keeps the bet's clock, so a finished
+doubleheader game 1 never flags against game 2. Cal approved the mockup
+before the build.
 
 **2026-09-26 — BFA open bets: a two-bracket suffix, and the open list is on
 Pacific time.** The first live BFA open bet (Eastern Illinois +35½, CFB) never

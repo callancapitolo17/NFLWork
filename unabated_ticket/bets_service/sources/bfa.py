@@ -54,6 +54,10 @@ with one; a list, one object per wager):
                  bet "placed 22:33" in a response dated 18:50 PST), so BFA has moved this clock
                  once; a wrong one shows as bets missing the board by whole hours.
   GetPlayerOpenBetsWithOpenSpot (if-bets awaiting a leg) answered [] and is not read.
+An open leg whose idSport names a game league (OPEN_BET_LEAGUES) but whose description does
+not parse is marked raw.parseFailed (normalize.mark_parse_failed): the panel flags it as
+needing a code fix. A team total is left out on purpose and stays unmarked, as do props and
+codes the table does not list.
 
 History wager grammar (live pull 2026-09-22, 16 wagers; the parser fails closed on anything
 else, listing the record as unmatchable with the reason and the raw description):
@@ -61,7 +65,12 @@ else, listing the record as unmatchable with the reason and the raw description)
   type          STRAIGHT BET | STRAIGHT BET (FP) (free play: risk 0) | PARLAY (2 TEAMS) |
                 4 TEAM TEASERS. A parlay or teaser's `description` is its FIRST leg and
                 `picks[]` the rest (each with a description and its own result); one record
-                per leg like BetOnline, every leg on the ticket's status.
+                per leg like BetOnline, every leg on the ticket's status. A ticket the
+                grammar cannot read — a leg count off its type, a leg that does not parse,
+                a type it does not know that carries picks (a straight bet's are []) — is
+                still one record per leg, each unmatchable with the reason: the open list
+                stored its legs as bfa:<id>:legN, only those ids settle them, and the store
+                never closes a record a poll does not name.
   description   "[1340] TOTAL u24EV \\r(ARIZONA 1H vrs BYU 1H)"   total: rotation, o/u + number,
                     price (EV = +100), "(AWAY vrs HOME)" away first, "1H" on the names = 1H;
                     a baseball total carries the pitchers in a second bracket, ignored
@@ -114,7 +123,8 @@ from zoneinfo import ZoneInfo
 import requests
 
 from unabated_ticket.bets_service import config
-from unabated_ticket.bets_service.normalize import EASTERN, json_clean, round_cents, utc_now_iso
+from unabated_ticket.bets_service.normalize import (
+    EASTERN, json_clean, mark_parse_failed, round_cents, utc_now_iso)
 from unabated_ticket.bets_service.sources.betonline import (
     APPROX_DATE_UNKNOWN, APPROX_SIDE_PARITY, SHEET_LABEL_TO_LEAGUE, american_from_payout, parse_points,
     parse_sport, side_from_rotation)
@@ -161,6 +171,8 @@ EVENT_START_DAYS_BEFORE_PLACED = 1
 EVENT_START_DAYS_AFTER_PLACED = 60
 REASON_LEAGUE_UNKNOWN = "league unknown (BFA names no sport; a college game cannot be placed)"
 REASON_TEAM_TOTAL = "team total"
+# What parse_leg returns for a leg left out on purpose; any other reason is a failure.
+DELIBERATE_LEG_REASONS = {REASON_TEAM_TOTAL}
 FIRST_HALF_ROTATION_PREFIX = "1"
 # A game rotation has at least three digits, so a prefixed one has at least four.
 FIRST_HALF_ROTATION_MIN_DIGITS = 4
@@ -466,28 +478,51 @@ def _leg_texts(wager: dict) -> list[str]:
     return [str(wager.get("description") or "")] + [str(pick.get("description") or "") for pick in picks]
 
 
+def _leg_record(wager: dict, native_id: str, fetched_at: str | None, index: int, leg_count: int) -> dict:
+    """Leg `index` of a parlay or teaser, id bfa:<id>:leg<index>: the ticket's
+    status, dollars and dates, with the leg's own text and result where the
+    history carries them."""
+    record = _base_record(wager, native_id, fetched_at)
+    leg_texts = _leg_texts(wager)
+    picks = wager.get("picks") or []
+    record["id"] = f"{VENUE}:{native_id}:leg{index}"
+    record["raw"]["parlayPrice"] = american_from_payout(record["stake"] or 0, record["toWin"] or 0)
+    record["raw"]["legDescription"] = leg_texts[index] if index < len(leg_texts) else None
+    # The ticket's own leg has no result of its own; each pick carries one.
+    record["raw"]["legResult"] = picks[index - 1].get("result") if 0 < index <= len(picks) else None
+    record.update({"isParlayLeg": True, "parlayId": f"{VENUE}:{native_id}", "legIndex": index,
+                   "legCount": leg_count})
+    return record
+
+
+def _unreadable_ticket(wager: dict, native_id: str, fetched_at: str | None, leg_count: int,
+                       reason: str) -> list[dict]:
+    """A parlay or teaser the grammar cannot read -> bfa:<id>:leg0 .. leg<leg_count-1>,
+    each unmatchable with the reason, on the ticket's status. The open list stored
+    the wager under those ids (one per betDetails row), and once it leaves that
+    list only a history record with the same id settles them: a lone bfa:<id>
+    would leave them open for good. No leg is read even where its own text
+    parses — never a partial ticket."""
+    if leg_count < 2:
+        # A type declaring 0 or 1 legs: the open list's id for a one-row wager, never nothing.
+        return [json_clean(_unmatchable(_base_record(wager, native_id, fetched_at), reason))]
+    return [json_clean(_unmatchable(_leg_record(wager, native_id, fetched_at, index, leg_count), reason))
+            for index in range(leg_count)]
+
+
 def _normalize_multi_leg(wager: dict, native_id: str, fetched_at: str | None, declared_legs: int) -> list[dict]:
-    base = _base_record(wager, native_id, fetched_at)
-    parlay_price = american_from_payout(base["stake"] or 0, base["toWin"] or 0)
-    base["raw"]["parlayPrice"] = parlay_price
     leg_texts = _leg_texts(wager)
     if len(leg_texts) != declared_legs:
-        return [json_clean(_unmatchable(
-            base, f"{wager.get('type')} names {declared_legs} legs but carries {len(leg_texts)}"))]
+        # The type's count, not the texts': the open list has one row per leg of the ticket.
+        return _unreadable_ticket(wager, native_id, fetched_at, declared_legs,
+                                  f"{wager.get('type')} names {declared_legs} legs but carries {len(leg_texts)}")
     legs = [parse_leg(text) for text in leg_texts]
     failed = next((leg for leg in legs if isinstance(leg, str)), None)
     if failed is not None:
-        return [json_clean(_unmatchable(base, f"leg not parsed: {failed}"))]
-    picks = wager.get("picks") or []
+        return _unreadable_ticket(wager, native_id, fetched_at, declared_legs, f"leg not parsed: {failed}")
     records = []
     for index, (text, leg) in enumerate(zip(leg_texts, legs)):
-        record = _base_record(wager, native_id, fetched_at)
-        record["id"] = f"{base['id']}:leg{index}"
-        record["raw"]["parlayPrice"] = parlay_price
-        record["raw"]["legDescription"] = text
-        # The ticket's own leg has no result of its own; each pick carries one.
-        record["raw"]["legResult"] = None if index == 0 else picks[index - 1].get("result")
-        record.update({"isParlayLeg": True, "parlayId": base["id"], "legIndex": index, "legCount": len(legs)})
+        record = _leg_record(wager, native_id, fetched_at, index, declared_legs)
         league = league_of(text)
         if league is None:
             records.append(json_clean(_unmatchable(record, REASON_LEAGUE_UNKNOWN)))
@@ -503,6 +538,11 @@ def normalize_wager(wager: dict, fetched_at: str | None) -> list[dict]:
     if multi_leg:
         return _normalize_multi_leg(wager, native_id, fetched_at,
                                     int(multi_leg.group("parlay") or multi_leg.group("teaser")))
+    if wager.get("picks"):
+        # Picks on a type the grammar does not know (an if-bet?): read as a straight
+        # bet it would be its first leg alone, and the open list's legs would never settle.
+        return _unreadable_ticket(wager, native_id, fetched_at, len(_leg_texts(wager)),
+                                  f"unrecognised multi-leg type ({wager.get('type')})")
     base = _base_record(wager, native_id, fetched_at)
     description = str(wager.get("description") or "")
     leg = parse_leg(description)
@@ -592,8 +632,17 @@ def _open_leg_record(record: dict, leg_row: dict) -> dict:
         return _unmatchable(record, reason)
     leg = parse_leg(description)
     if isinstance(leg, str):
-        return _unmatchable(record, leg)
+        return _open_leg_not_read(record, leg, leg_row.get("idSport"))
     return _apply_leg(record, league, leg, parse_account_time(leg_row.get("gameDateTime")))
+
+
+def _open_leg_not_read(record: dict, reason: str, sport_code: object) -> dict:
+    """A parse failure when the leg's own idSport names a game league (module docstring);
+    a deliberate exclusion, or a league read off a team nickname, is only unmatchable."""
+    code = str(sport_code or "").strip().upper()
+    if code in OPEN_BET_LEAGUES and reason not in DELIBERATE_LEG_REASONS:
+        return mark_parse_failed(record, reason)
+    return _unmatchable(record, reason)
 
 
 def normalize_open_wager(wager: dict, fetched_at: str | None) -> list[dict]:

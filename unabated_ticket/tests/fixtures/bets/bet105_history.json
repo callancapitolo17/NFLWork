@@ -1,0 +1,189 @@
+{
+ "provenance": "The POST /bet105.json body the extension sends: `betGroups` of the site's own getHistory (state 0 = open) call on each LinePros feed, as captured from My Plays on 2026-09-29 (three open NFL first-half totals on the prematch feed, ids 91000001-91000003; the live feed answered []). Kept verbatim from the capture: team names, league, period, market / key / subKey, finalOdds and eventStartTime (the leg's description was empty on every capture). Replaced: betGroupId, ticketNumber, betId (synthetic 9xxxxxxx / 8xxxxxxx / 7xxxxxxx ids) and risk / toWin (round numbers at the same price). Ids 91000004+ and the live group are hand-written on the same shape for what the capture had none of: an Under, a full-game period, both spread sides, a moneyline, and every fail-closed reason (team total, an unknown side code, an unknown period code, a college league name, a styled market, a prop leg inside a parlay, a group without legs).",
+ "fetchedAt": "2026-09-29T04:00:00Z",
+ "feeds": {
+  "prematch": [
+   {
+    "acceptTime": 1790560831.784, "betGroupId": 91000001, "betType": 0, "currency": "USD",
+    "finalOdds": 1.9523799419403076, "isFreePlay": false, "isWin": 0, "openParlay": null,
+    "premiumizedOdds": 1.9523799419403076, "result": 0, "risk": 105, "rrSizeMap": 1, "state": 0,
+    "ticketNumber": 81000001, "toWin": 100,
+    "componentBets": [
+     {"betId": 71000001, "betType": 0, "canCashout": true, "countryId": 6, "description": "", "eventId": 194317641,
+      "eventStartTime": 1791133200, "finalOdds": 1.9523799419403076, "key": "24", "leagueId": 4, "leagueName": "NFL",
+      "logTime": 1790560832, "marketId": "5", "marketStyleId": 0, "periodId": "h1", "premiumizedOdds": 1.9523799419403076,
+      "sportId": 3, "state": 0, "subKey": "1", "team1": "Jacksonville Jaguars", "team2": "Cincinnati Bengals", "uncorrFinalOdds": 0}
+    ]
+   },
+   {
+    "acceptTime": 1790560869.938, "betGroupId": 91000002, "betType": 0, "currency": "USD",
+    "finalOdds": 1.854699969291687, "isFreePlay": false, "isWin": 0, "openParlay": null,
+    "premiumizedOdds": 1.854699969291687, "result": 0, "risk": 117, "rrSizeMap": 1, "state": 0,
+    "ticketNumber": 81000002, "toWin": 100,
+    "componentBets": [
+     {"betId": 71000002, "betType": 0, "canCashout": true, "countryId": 6, "description": "", "eventId": 194318121,
+      "eventStartTime": 1791245700, "finalOdds": 1.854699969291687, "key": "22.5", "leagueId": 4, "leagueName": "NFL",
+      "logTime": 1790560870, "marketId": "5", "marketStyleId": 0, "periodId": "h1", "premiumizedOdds": 1.854699969291687,
+      "sportId": 3, "state": 0, "subKey": "1", "team1": "Atlanta Falcons", "team2": "New Orleans Saints", "uncorrFinalOdds": 0}
+    ]
+   },
+   {
+    "acceptTime": 1790569414.833, "betGroupId": 91000003, "betType": 0, "currency": "USD",
+    "finalOdds": 1.9090900421142578, "isFreePlay": false, "isWin": 0, "openParlay": null,
+    "premiumizedOdds": 1.9090900421142578, "result": 0, "risk": 110, "rrSizeMap": 1, "state": 0,
+    "ticketNumber": 81000003, "toWin": 100,
+    "componentBets": [
+     {"betId": 71000003, "betType": 0, "canCashout": true, "countryId": 6, "description": "", "eventId": 194317771,
+      "eventStartTime": 1791133200, "finalOdds": 1.9090900421142578, "key": "23", "leagueId": 4, "leagueName": "NFL",
+      "logTime": 1790569415, "marketId": "5", "marketStyleId": 0, "periodId": "h1", "premiumizedOdds": 1.9090900421142578,
+      "sportId": 3, "state": 0, "subKey": "1", "team1": "Dallas Cowboys", "team2": "Houston Texans", "uncorrFinalOdds": 0}
+    ]
+   },
+   {
+    "acceptTime": 1790570000.0, "betGroupId": 91000004, "betType": 0, "currency": "USD",
+    "finalOdds": 1.9090900421142578, "isFreePlay": false, "isWin": 0, "openParlay": null,
+    "premiumizedOdds": 1.9090900421142578, "result": 0, "risk": 110, "rrSizeMap": 1, "state": 0,
+    "ticketNumber": 81000004, "toWin": 100,
+    "componentBets": [
+     {"betId": 71000004, "betType": 0, "canCashout": true, "countryId": 6, "description": "", "eventId": 194317900,
+      "eventStartTime": 1791136800, "finalOdds": 1.9090900421142578, "key": "47.5", "leagueId": 4, "leagueName": "NFL",
+      "logTime": 1790570001, "marketId": "5", "marketStyleId": 0, "periodId": "m", "premiumizedOdds": 1.9090900421142578,
+      "sportId": 3, "state": 0, "subKey": "2", "team1": "Green Bay Packers", "team2": "Detroit Lions", "uncorrFinalOdds": 0}
+    ]
+   },
+   {
+    "acceptTime": 1790570100.0, "betGroupId": 91000005, "betType": 0, "currency": "USD",
+    "finalOdds": 1.9090900421142578, "isFreePlay": false, "isWin": 0, "openParlay": null,
+    "premiumizedOdds": 1.9090900421142578, "result": 0, "risk": 110, "rrSizeMap": 1, "state": 0,
+    "ticketNumber": 81000005, "toWin": 100,
+    "componentBets": [
+     {"betId": 71000005, "betType": 0, "canCashout": true, "countryId": 6, "description": "", "eventId": 194317901,
+      "eventStartTime": 1791136800, "finalOdds": 1.9090900421142578, "key": "-3.5", "leagueId": 4, "leagueName": "NFL",
+      "logTime": 1790570101, "marketId": "6", "marketStyleId": 0, "periodId": "m", "premiumizedOdds": 1.9090900421142578,
+      "sportId": 3, "state": 0, "subKey": "1", "team1": "Los Angeles Rams", "team2": "San Francisco 49ers", "uncorrFinalOdds": 0}
+    ]
+   },
+   {
+    "acceptTime": 1790570200.0, "betGroupId": 91000006, "betType": 0, "currency": "USD",
+    "finalOdds": 1.9090900421142578, "isFreePlay": false, "isWin": 0, "openParlay": null,
+    "premiumizedOdds": 1.9090900421142578, "result": 0, "risk": 110, "rrSizeMap": 1, "state": 0,
+    "ticketNumber": 81000006, "toWin": 100,
+    "componentBets": [
+     {"betId": 71000006, "betType": 0, "canCashout": true, "countryId": 6, "description": "", "eventId": 194317901,
+      "eventStartTime": 1791136800, "finalOdds": 1.9090900421142578, "key": "-3.5", "leagueId": 4, "leagueName": "NFL",
+      "logTime": 1790570201, "marketId": "6", "marketStyleId": 0, "periodId": "m", "premiumizedOdds": 1.9090900421142578,
+      "sportId": 3, "state": 0, "subKey": "2", "team1": "Los Angeles Rams", "team2": "San Francisco 49ers", "uncorrFinalOdds": 0}
+    ]
+   },
+   {
+    "acceptTime": 1790570300.0, "betGroupId": 91000007, "betType": 0, "currency": "USD",
+    "finalOdds": 2.35, "isFreePlay": false, "isWin": 0, "openParlay": null,
+    "premiumizedOdds": 2.35, "result": 0, "risk": 100, "rrSizeMap": 1, "state": 0,
+    "ticketNumber": 81000007, "toWin": 135,
+    "componentBets": [
+     {"betId": 71000007, "betType": 0, "canCashout": true, "countryId": 6, "description": "", "eventId": 194317902,
+      "eventStartTime": 1791136800, "finalOdds": 2.35, "key": "", "leagueId": 4, "leagueName": "NFL",
+      "logTime": 1790570301, "marketId": "3", "marketStyleId": 0, "periodId": "m", "premiumizedOdds": 2.35,
+      "sportId": 3, "state": 0, "subKey": "2", "team1": "Buffalo Bills", "team2": "New England Patriots", "uncorrFinalOdds": 0}
+    ]
+   },
+   {
+    "acceptTime": 1790570400.0, "betGroupId": 91000008, "betType": 0, "currency": "USD",
+    "finalOdds": 1.9090900421142578, "isFreePlay": false, "isWin": 0, "openParlay": null,
+    "premiumizedOdds": 1.9090900421142578, "result": 0, "risk": 110, "rrSizeMap": 1, "state": 0,
+    "ticketNumber": 81000008, "toWin": 100,
+    "componentBets": [
+     {"betId": 71000008, "betType": 0, "canCashout": true, "countryId": 6, "description": "", "eventId": 194317900,
+      "eventStartTime": 1791136800, "finalOdds": 1.9090900421142578, "key": "24.5", "leagueId": 4, "leagueName": "NFL",
+      "logTime": 1790570401, "marketId": "7", "marketStyleId": 0, "periodId": "m", "premiumizedOdds": 1.9090900421142578,
+      "sportId": 3, "state": 0, "subKey": "1", "team1": "Green Bay Packers", "team2": "Detroit Lions", "uncorrFinalOdds": 0}
+    ]
+   },
+   {
+    "acceptTime": 1790570500.0, "betGroupId": 91000009, "betType": 0, "currency": "USD",
+    "finalOdds": 1.9090900421142578, "isFreePlay": false, "isWin": 0, "openParlay": null,
+    "premiumizedOdds": 1.9090900421142578, "result": 0, "risk": 110, "rrSizeMap": 1, "state": 0,
+    "ticketNumber": 81000009, "toWin": 100,
+    "componentBets": [
+     {"betId": 71000009, "betType": 0, "canCashout": true, "countryId": 6, "description": "", "eventId": 194317900,
+      "eventStartTime": 1791136800, "finalOdds": 1.9090900421142578, "key": "47.5", "leagueId": 4, "leagueName": "NFL",
+      "logTime": 1790570501, "marketId": "5", "marketStyleId": 0, "periodId": "m", "premiumizedOdds": 1.9090900421142578,
+      "sportId": 3, "state": 0, "subKey": "3", "team1": "Green Bay Packers", "team2": "Detroit Lions", "uncorrFinalOdds": 0}
+    ]
+   },
+   {
+    "acceptTime": 1790570600.0, "betGroupId": 91000010, "betType": 0, "currency": "USD",
+    "finalOdds": 1.9090900421142578, "isFreePlay": false, "isWin": 0, "openParlay": null,
+    "premiumizedOdds": 1.9090900421142578, "result": 0, "risk": 110, "rrSizeMap": 1, "state": 0,
+    "ticketNumber": 81000010, "toWin": 100,
+    "componentBets": [
+     {"betId": 71000010, "betType": 0, "canCashout": true, "countryId": 6, "description": "", "eventId": 194317900,
+      "eventStartTime": 1791136800, "finalOdds": 1.9090900421142578, "key": "10.5", "leagueId": 4, "leagueName": "NFL",
+      "logTime": 1790570601, "marketId": "5", "marketStyleId": 0, "periodId": "x9", "premiumizedOdds": 1.9090900421142578,
+      "sportId": 3, "state": 0, "subKey": "1", "team1": "Green Bay Packers", "team2": "Detroit Lions", "uncorrFinalOdds": 0}
+    ]
+   },
+   {
+    "acceptTime": 1790570700.0, "betGroupId": 91000011, "betType": 0, "currency": "USD",
+    "finalOdds": 1.9090900421142578, "isFreePlay": false, "isWin": 0, "openParlay": null,
+    "premiumizedOdds": 1.9090900421142578, "result": 0, "risk": 110, "rrSizeMap": 1, "state": 0,
+    "ticketNumber": 81000011, "toWin": 100,
+    "componentBets": [
+     {"betId": 71000011, "betType": 0, "canCashout": true, "countryId": 6, "description": "", "eventId": 194320000,
+      "eventStartTime": 1791223200, "finalOdds": 1.9090900421142578, "key": "55.5", "leagueId": 9, "leagueName": "NCAA Football",
+      "logTime": 1790570701, "marketId": "5", "marketStyleId": 0, "periodId": "m", "premiumizedOdds": 1.9090900421142578,
+      "sportId": 3, "state": 0, "subKey": "1", "team1": "Rice", "team2": "Notre Dame", "uncorrFinalOdds": 0}
+    ]
+   },
+   {
+    "acceptTime": 1790570800.0, "betGroupId": 91000012, "betType": 0, "currency": "USD",
+    "finalOdds": 1.9090900421142578, "isFreePlay": false, "isWin": 0, "openParlay": null,
+    "premiumizedOdds": 1.9090900421142578, "result": 0, "risk": 110, "rrSizeMap": 1, "state": 0,
+    "ticketNumber": 81000012, "toWin": 100,
+    "componentBets": [
+     {"betId": 71000012, "betType": 0, "canCashout": true, "countryId": 6, "description": "", "eventId": 194317900,
+      "eventStartTime": 1791136800, "finalOdds": 1.9090900421142578, "key": "47.5", "leagueId": 4, "leagueName": "NFL",
+      "logTime": 1790570801, "marketId": "5", "marketStyleId": 616, "periodId": "m", "premiumizedOdds": 1.9090900421142578,
+      "sportId": 3, "state": 0, "subKey": "1", "team1": "Green Bay Packers", "team2": "Detroit Lions", "uncorrFinalOdds": 0}
+    ]
+   },
+   {
+    "acceptTime": 1790570900.0, "betGroupId": 91000013, "betType": 1, "currency": "USD",
+    "finalOdds": 3.64, "isFreePlay": false, "isWin": 0, "openParlay": null,
+    "premiumizedOdds": 3.64, "result": 0, "risk": 100, "rrSizeMap": 1, "state": 0,
+    "ticketNumber": 81000013, "toWin": 264,
+    "componentBets": [
+     {"betId": 71000013, "betType": 0, "canCashout": false, "countryId": 6, "description": "", "eventId": 194317903,
+      "eventStartTime": 1791136800, "finalOdds": 1.9090900421142578, "key": "44.5", "leagueId": 4, "leagueName": "NFL",
+      "logTime": 1790570901, "marketId": "5", "marketStyleId": 0, "periodId": "m", "premiumizedOdds": 1.9090900421142578,
+      "sportId": 3, "state": 0, "subKey": "1", "team1": "Kansas City Chiefs", "team2": "Los Angeles Chargers", "uncorrFinalOdds": 0},
+     {"betId": 71000014, "betType": 0, "canCashout": false, "countryId": 6, "description": "", "eventId": 194330000,
+      "eventStartTime": 1802000000, "finalOdds": 1.9, "key": "", "leagueId": 4, "leagueName": "NFL",
+      "logTime": 1790570901, "marketId": "30", "marketStyleId": 0, "periodId": "m", "premiumizedOdds": 1.9,
+      "sportId": 3, "state": 0, "subKey": "12", "team1": "Super Bowl Winner", "team2": "", "uncorrFinalOdds": 0}
+    ]
+   },
+   {
+    "acceptTime": 1790571000.0, "betGroupId": 91000014, "betType": 0, "currency": "USD",
+    "finalOdds": 1.9090900421142578, "isFreePlay": false, "isWin": 0, "openParlay": null,
+    "premiumizedOdds": 1.9090900421142578, "result": 0, "risk": 110, "rrSizeMap": 1, "state": 0,
+    "ticketNumber": 81000014, "toWin": 100,
+    "componentBets": []
+   }
+  ],
+  "live": [
+   {
+    "acceptTime": 1790571100.0, "betGroupId": 92000001, "betType": 0, "currency": "USD",
+    "finalOdds": 1.87, "isFreePlay": false, "isWin": 0, "openParlay": null,
+    "premiumizedOdds": 1.87, "result": 0, "risk": 115, "rrSizeMap": 1, "state": 0,
+    "ticketNumber": 82000001, "toWin": 100,
+    "componentBets": [
+     {"betId": 72000001, "betType": 0, "canCashout": true, "countryId": 6, "description": "", "eventId": 194317904,
+      "eventStartTime": 1790571000, "finalOdds": 1.87, "key": "21.5", "leagueId": 4, "leagueName": "NFL",
+      "logTime": 1790571101, "marketId": "5", "marketStyleId": 0, "periodId": "h1", "premiumizedOdds": 1.87,
+      "sportId": 3, "state": 0, "subKey": "1", "team1": "Seattle Seahawks", "team2": "Arizona Cardinals", "uncorrFinalOdds": 0}
+    ]
+   }
+  ]
+ }
+}

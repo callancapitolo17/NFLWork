@@ -131,6 +131,11 @@ POLYMARKET_US_SECRET_KEY = _get("POLYMARKET_US_SECRET_KEY")
 POLYMARKET_US_POLL_SEC = 60.0
 POLYMARKET_US_HISTORY_DAYS = RETENTION_DAYS + 1
 
+# Bet105 (2026-09-29): no credentials and no poll here. Cloudflare challenges any
+# request that is not the browser session's own, so the extension reads the account
+# from Cal's logged-in Chrome (extension/bet105.js, every 5 min while the panel is
+# open) and POSTs it to /bet105.json; sources/bet105.py parses it.
+
 # Logging
 LOG_PATH = Path(_get("BETS_SERVICE_LOG_PATH", str(PKG_DIR / "bets_service.log")))
 LOG_LEVEL = _get("BETS_SERVICE_LOG_LEVEL", "INFO")

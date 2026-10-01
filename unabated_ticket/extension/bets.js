@@ -21,7 +21,7 @@
 // Outputs matches per line ({tier, bet, label, position}), per-row annotations for the
 //          Edges list, a teaser leg's position in its game (teaser.js), the
 //          unmatched list with a reason per bet and whether it
-//          needs a game (the Bets tab's red flag), the retention prune, the
+//          needs a game or a code fix (the Bets tab's red flag), the retention prune, the
 //          native-id dedupe, the team-crosswalk rows an id join teaches (#118
 //          step 4; the bets service stores them), and Cal's manual attaches
 //          (pins) applied to the records. Nothing here writes anywhere.
@@ -225,7 +225,7 @@
   }
 
   // Venues whose display name is not the capitalised key.
-  const VENUE_LABELS = { bfa: "BFA", polymarket_us: "Polymarket US" };
+  const VENUE_LABELS = { bfa: "BFA", polymarket_us: "Polymarket US", bet105: "Bet105" };
 
   function venueLabel(venue) {
     if (!venue) return "unknown venue";
@@ -500,11 +500,16 @@
     return known.every((key) => key === keys.away || key === keys.home);
   }
 
+  // The game rule without the clock: the bet's team pair, or its rotation on
+  // a row whose teams fit every team the bet names.
+  function sameGame(bet, line) {
+    const keys = lineTeamKeys(line);
+    return sameTeamPair(bet, keys) || (rotationMatches(bet, line) && knownTeamFits(bet, keys));
+  }
+
   function gameMatches(bet, line) {
     if (bet.unmatchable || bet.league !== line.league) return false;
-    const keys = lineTeamKeys(line);
-    if (!sameTeamPair(bet, keys) && !(rotationMatches(bet, line) && knownTeamFits(bet, keys))) return false;
-    return timeMatches(bet, line);
+    return sameGame(bet, line) && timeMatches(bet, line);
   }
 
   function isMatchable(bet) {
@@ -765,7 +770,21 @@
     return side === "away" ? bet.awayTeam : bet.homeTeam;
   }
 
+  const MARKUP_TAG_RE = /<[^>]+>/g;
+  const WHITESPACE_RE = /\s+/g;
+
+  // The venue's own words for a record with no parsed pick (BFA, Wagerzon and
+  // BetOnline keep them in raw.description), markup tags as " · ": "College
+  // Football FCS · [309011] EASTERN ILLINOIS +35½-110 [Sport:Football]…".
+  // Null when there are none.
+  function venueText(bet) {
+    const description = bet.raw && typeof bet.raw.description === "string" ? bet.raw.description : "";
+    const pieces = description.split(MARKUP_TAG_RE).map((piece) => piece.replace(WHITESPACE_RE, " ").trim()).filter(Boolean);
+    return pieces.length ? pieces.join(" · ") : null;
+  }
+
   // "Chattanooga -5.5 +138", "1H Under 22.5 -104", "NO PIT Steelers ≈ NE Patriots or tie -178".
+  // A record with no parsed pick reads its market title, else the venue's own text, else its id.
   function describeBet(bet) {
     const period = bet.period && bet.period !== "FG" ? `${bet.period} ` : "";
     let pick;
@@ -774,7 +793,7 @@
     } else if (bet.betType === "spread") {
       pick = `${betTeamName(bet, bet.side)} ${signedNumber(bet.points)}`;
     } else if (bet.betType === "other") {
-      pick = (bet.raw && bet.raw.marketTitle) || bet.id;
+      pick = (bet.raw && bet.raw.marketTitle) || venueText(bet) || bet.id;
     } else if (bet.approx && bet.approx.includes(TIE_CAVEAT)) {
       const yesTeam = betTeamName(bet, bet.side === "away" ? "home" : "away");
       pick = `NO ${yesTeam} ≈ ${betTeamName(bet, bet.side)} or tie`;
@@ -956,44 +975,56 @@
     return names;
   }
 
-  // The start of every OTHER board event of the bet's team pair within
-  // START_DIFFERS_WINDOW_MS of the bet's own start that has not started yet:
-  // the board has the game, the clocks disagree. A started one is left out —
-  // a doubleheader's game 1 in progress is not the game-2 bet's game. Needs
-  // a start and both team keys.
-  function sameTeamsAtAnotherStart(bet, lines, nowMs) {
+  // Every OTHER board event of the bet's game (sameGame: its team pair, or
+  // its rotation where the team it names fits — BFA and BetOnline name only
+  // their own team on a spread or moneyline) that has not started and starts
+  // within START_DIFFERS_WINDOW_MS of the bet's own start: the board has the
+  // game, the clocks disagree. A started one is left out — a doubleheader's
+  // game 1 in progress is not the game-2 bet's game. Needs the bet's start.
+  // {startsMs, byRotation}: byRotation when one of them carries the bet's
+  // rotation, which names the game outright.
+  function sameGameAtAnotherStart(bet, lines, nowMs) {
     const betMs = bet.eventStart ? Date.parse(bet.eventStart) : NaN;
-    if (!Number.isFinite(betMs) || !bet.awayKey || !bet.homeKey) return [];
+    if (!Number.isFinite(betMs)) return { startsMs: [], byRotation: false };
     const starts = new Map();
+    let byRotation = false;
     for (const line of lines) {
       if (line.league !== bet.league || typeof line.eventStartMs !== "number") continue;
       if (line.eventStartMs <= nowMs) continue;
       if (Math.abs(line.eventStartMs - betMs) > START_DIFFERS_WINDOW_MS) continue;
-      if (!sameTeamPair(bet, lineTeamKeys(line))) continue;
+      if (!sameGame(bet, line)) continue;
       starts.set(eventIdentity(line), line.eventStartMs);
+      if (rotationMatches(bet, line)) byRotation = true;
     }
-    return Array.from(starts.values()).sort((a, b) => a - b);
+    return { startsMs: Array.from(starts.values()).sort((a, b) => a - b), byRotation };
   }
 
-  // Why the name rule found no event for a bet: {reason, fixable}. Fixable
-  // means attaching it to a game would fix it (a name the team table does
-  // not know, a start the board disagrees with); not fixable means it is not
-  // on the board (a league off the scanner, a game not posted yet or over).
+  // Why the name rule found no event for a bet: {reason,
+  // boardSaysNotStarted}. The reason explains the miss; it does not decide
+  // the red flag (unmatchedEntry does, 2026-09-28). boardSaysNotStarted: the bet's
+  // own rotation is on a not-started board event, so the bet's clock — the
+  // one in doubt — cannot say its game has started (BFA's open-bets clock
+  // read 7 h early on 2026-09-26, before the bet was even placed).
   function nameMiss(bet, leaguesOnBoard, lines, nowMs) {
     const unresolved = unresolvedTeamNames(bet);
-    if (unresolved.length) return { reason: `team not recognised (${unresolved.join(", ")})`, fixable: true };
-    if (!leaguesOnBoard.has(bet.league)) return { reason: REASON_LEAGUE_OFF, fixable: false };
-    const otherStarts = sameTeamsAtAnotherStart(bet, lines, nowMs);
-    if (otherStarts.length) {
-      const board = otherStarts.map((ms) => formatPlacedAt(new Date(ms).toISOString())).join(", ");
-      return { reason: `start time differs (bet ${formatPlacedAt(bet.eventStart)}, board ${board})`, fixable: true };
+    if (unresolved.length) return { reason: `team not recognised (${unresolved.join(", ")})` };
+    if (!leaguesOnBoard.has(bet.league)) return { reason: REASON_LEAGUE_OFF };
+    const other = sameGameAtAnotherStart(bet, lines, nowMs);
+    if (other.startsMs.length) {
+      const board = other.startsMs.map((ms) => formatPlacedAt(new Date(ms).toISOString())).join(", ");
+      return { reason: `start time differs (bet ${formatPlacedAt(bet.eventStart)}, board ${board})`,
+        boardSaysNotStarted: other.byRotation };
     }
-    return { reason: REASON_NO_EVENT, fixable: false };
+    return { reason: REASON_NO_EVENT };
   }
 
-  // Whether the bet's own game has started, by what the bet knows: its
-  // start, else an Eastern date before today. A bet with neither has not.
-  function betGameStarted(bet, nowMs) {
+  // Whether the bet's game has started: by the start of the board event it
+  // last matched (knownStartMs, matchedStarts) — the board's clock, which a
+  // bet with no start of its own (BetOnline) or only a date (Kalshi
+  // football) needs once its finished game leaves the board — else its own
+  // start, else an Eastern date before today. A bet with none of them has not.
+  function betGameStarted(bet, nowMs, knownStartMs) {
+    if (typeof knownStartMs === "number" && Number.isFinite(knownStartMs)) return knownStartMs <= nowMs;
     const startMs = bet.eventStart ? Date.parse(bet.eventStart) : NaN;
     if (Number.isFinite(startMs)) return startMs <= nowMs;
     if (typeof bet.eventDate === "string" && bet.eventDate) return bet.eventDate < easternDateOf(nowMs);
@@ -1017,17 +1048,50 @@
     return { fromDate: easternDateOf(placedMs - PLACED_WINDOW_BEFORE_MS), toDate: easternDateOf(placedMs + PLACED_WINDOW_AFTER_MS) };
   }
 
+  // The bet's own Eastern date, from its start or its date, or null.
+  function betEasternDate(bet) {
+    const startMs = bet.eventStart ? Date.parse(bet.eventStart) : NaN;
+    if (Number.isFinite(startMs)) return easternDateOf(startMs);
+    return typeof bet.eventDate === "string" && bet.eventDate ? bet.eventDate : null;
+  }
+
   // Whether the board lists any game of the bet's league (any league when it
-  // has none) in its date window: an attach needs something to attach to.
-  function boardHasGameInWindow(bet, lines) {
-    const window = betDateWindow(bet);
+  // has none) on the bet's own Eastern date — so the board has posted that
+  // day's slate and the bet's game should be on it (an MLB bet on tomorrow's
+  // game, placed before tomorrow is posted, stays grey). A bet with no date
+  // takes its placed window (betDateWindow). No window at all: any game.
+  function boardHasGameOnBetDay(bet, lines) {
+    const date = betEasternDate(bet);
+    const window = date ? { fromDate: date, toDate: date } : betDateWindow(bet);
     return lines.some((line) => {
       if (bet.league != null && line.league !== bet.league) return false;
       if (!window) return true;
       if (typeof line.eventStartMs !== "number") return false;
-      const date = easternDateOf(line.eventStartMs);
-      return date >= window.fromDate && date <= window.toDate;
+      const lineDate = easternDateOf(line.eventStartMs);
+      return lineDate >= window.fromDate && lineDate <= window.toDate;
     });
+  }
+
+  // The start of the board event each open bet matches now, {betId:
+  // startMs}. The panel keeps the latest per bet (matchedStarts in
+  // chrome.storage.local) and passes it back as unmatchedReasons'
+  // options.knownStarts, so a bet whose finished game has left the board
+  // still reads as started until its venue settles it.
+  function matchedStarts(bets, lines) {
+    const board = boardOf(lines);
+    const startByEvent = new Map();
+    for (const line of lines) {
+      if (line.eventId != null && typeof line.eventStartMs === "number") startByEvent.set(eventIdentity(line), line.eventStartMs);
+    }
+    const starts = {};
+    for (const bet of bets) {
+      if (!isMatchable(bet)) continue;
+      const game = gameOf(bet, board);
+      if (game.events.size !== 1) continue;
+      const startMs = startByEvent.get(game.events.values().next().value);
+      if (typeof startMs === "number") starts[bet.id] = startMs;
+    }
+    return starts;
   }
 
   // A game bet the Attach picker can offer games for: not a future/prop/
@@ -1038,46 +1102,76 @@
     return bet.league == null ? leaguesOnBoard.size > 0 : leaguesOnBoard.has(bet.league);
   }
 
-  // One unmatched list entry. It needs a game (the red flag) only when an
-  // attach can fix it NOW: attachable, fixable, its game not started, and
-  // the board already lists a game of its league around its date — a bet on
-  // a game two weeks out, not posted yet, stays grey until there is one.
-  function unmatchedEntry(bet, reason, fixable, context) {
+  // One unmatched list entry. It needs a game (the red flag) when it is an
+  // attachable game bet whose game has not started and whose league has a
+  // game on the board on its day — whatever the reason for the miss (Cal,
+  // 2026-09-28: a rule that flagged only named causes let a wrong venue team
+  // id read "not posted yet" and stay grey). A bet on a day the board has
+  // not posted stays grey. A parlay or teaser leg never flags: it sizes
+  // nothing matched or not. Cal can dismiss a flag (context.dismissedIds):
+  // the entry keeps its reason and Attach, and stops flagging. `miss` is
+  // {reason, boardSaysNotStarted}.
+  function unmatchedEntry(bet, miss, context) {
     const attachable = isAttachable(bet, context.leaguesOnBoard);
-    const needsGame = attachable && fixable && !betGameStarted(bet, context.nowMs) && boardHasGameInWindow(bet, context.lines);
-    return { bet, reason, attachable, needsGame };
+    const started = !miss.boardSaysNotStarted && betGameStarted(bet, context.nowMs, context.knownStarts[bet.id]);
+    const dismissed = context.dismissedIds.has(bet.id);
+    const needsGame = attachable && !bet.isParlayLeg && !started && !dismissed && boardHasGameOnBetDay(bet, context.lines);
+    return { bet, reason: miss.reason, attachable, needsGame, needsFix: false, dismissed };
+  }
+
+  // A game bet its source could not read: the venue's own league code named
+  // a game league, the selection did not parse (raw.parseFailed, set by the
+  // bets service's normalize.mark_parse_failed). A deliberate exclusion — a
+  // prop, a team total, a league not supported — never carries the marker.
+  function isParseFailure(bet) {
+    return Boolean(bet.unmatchable) && Boolean(bet.raw) && bet.raw.parseFailed === true;
+  }
+
+  // It needs a code fix (the red flag) while it is open and not dismissed,
+  // whatever the board holds: the record names no game, team or line, so
+  // Attach cannot help.
+  function parseFailureEntry(bet, context) {
+    const dismissed = context.dismissedIds.has(bet.id);
+    return { bet, reason: bet.unmatchable, attachable: false, needsGame: false, needsFix: !dismissed, dismissed };
   }
 
   // Every OPEN bet that matches no line on the board: {bet, reason,
-  // attachable, needsGame}. needsGame is the Bets tab's red flag: a game bet
-  // whose game has not started, whose league has a game on the board around
-  // its date, and whose miss an attach would fix (a name not recognised, two
-  // possible games, a start the board disagrees with). Futures, leagues off
-  // the scanner, games not posted yet or already over are listed but never
-  // flag. Closed and settled bets are not problems, so
+  // attachable, needsGame, needsFix, dismissed}. needsGame and needsFix are
+  // the Bets tab's red flag. needsGame: a game bet whose game has not
+  // started and whose league has a game on the board around its date, for
+  // any reason (unmatchedEntry). needsFix: a parse failure (isParseFailure).
+  // Futures, leagues off the scanner, days the board has not posted, games
+  // already over (options.knownStarts, from matchedStarts, says when a bet
+  // with no start of its own started) and parlay legs are listed but never
+  // flag, and neither does a bet Cal dismissed (options.dismissedIds, bet
+  // ids; its `dismissed` is true). Closed and
+  // settled bets are not problems, so
   // they are not listed. `now` (ms) defaults to the clock. A bet that carries
   // a venue id says both tiers failed — "by id: Kalshi event 26SEP19DUQWSU
   // not on any board ladder; by name: team not recognised (…)" — since an id
   // misses when the venue lists no ladder for the game (Kalshi rungs sat on
   // 126 of 346 CFB events, 2026-09-12) while the name rule may still see it.
-  function unmatchedReasons(bets, lines, now) {
+  function unmatchedReasons(bets, lines, now, options) {
     const nowMs = typeof now === "number" ? now : Date.now();
     const leaguesOnBoard = new Set(lines.map((line) => line.league));
-    const context = { leaguesOnBoard, lines, nowMs };
+    const dismissedIds = new Set(options && Array.isArray(options.dismissedIds) ? options.dismissedIds : []);
+    const knownStarts = options && options.knownStarts && typeof options.knownStarts === "object" ? options.knownStarts : {};
+    const context = { leaguesOnBoard, lines, nowMs, dismissedIds, knownStarts };
     const board = boardOf(lines);
     const out = [];
     for (const bet of bets) {
       if (bet.status !== "open") continue;
-      if (bet.unmatchable) { out.push(unmatchedEntry(bet, bet.unmatchable, false, context)); continue; }
+      if (isParseFailure(bet)) { out.push(parseFailureEntry(bet, context)); continue; }
+      if (bet.unmatchable) { out.push(unmatchedEntry(bet, { reason: bet.unmatchable }, context)); continue; }
       // Matched (by pin, id, team pair or rotation) is not a problem, whatever
       // the team table makes of the names; the diagnoses below explain a miss.
       const game = gameOf(bet, board);
       if (game.events.size === 1) continue;
-      if (game.events.size > 1) { out.push(unmatchedEntry(bet, ambiguousReason(game), true, context)); continue; }
+      if (game.events.size > 1) { out.push(unmatchedEntry(bet, { reason: ambiguousReason(game) }, context)); continue; }
       const miss = nameMiss(bet, leaguesOnBoard, lines, nowMs);
-      if (!game.venueId || miss.reason === REASON_LEAGUE_OFF) { out.push(unmatchedEntry(bet, miss.reason, miss.fixable, context)); continue; }
+      if (!game.venueId || miss.reason === REASON_LEAGUE_OFF) { out.push(unmatchedEntry(bet, miss, context)); continue; }
       const idMiss = game.idInOtherLeague ? "only on another league's board ladder" : "not on any board ladder";
-      out.push(unmatchedEntry(bet, `by id: ${venueIdLabel(game.venueId)} ${idMiss}; by name: ${miss.reason}`, miss.fixable, context));
+      out.push(unmatchedEntry(bet, { ...miss, reason: `by id: ${venueIdLabel(game.venueId)} ${idMiss}; by name: ${miss.reason}` }, context));
     }
     return out;
   }
@@ -1332,7 +1426,7 @@
     TIE_CAVEAT, GAME_SERIES, RETENTION_DAYS_DEFAULT,
     normalizeKalshi, parseEventSuffix, centsToAmerican,
     AXIS_TOTAL, AXIS_MARGIN,
-    matchBets, annotateRows, linePosition, teaserLegPositionOf, unmatchedReasons, pruneForRetention, dedupeByNativeId, resolveTeamKeys,
+    matchBets, annotateRows, linePosition, teaserLegPositionOf, unmatchedReasons, matchedStarts, isParseFailure, pruneForRetention, dedupeByNativeId, resolveTeamKeys,
     rekeyRecords, learnCrosswalk, venueTeamOf, applyPins, samePoints,
     describeBet, formatPlacedAt, formatStake, tierLabel, venueLabel, easternDateOf, betDateWindow,
   };
