@@ -390,11 +390,24 @@
     return { ...base, state, reason: note, note: `${note}; counted as won` };
   }
 
-  // One leg of an open teaser: live (priced, still to play) or counted as won.
+  // BFA's own clock says the leg's game has started: for a leg the board
+  // does not hold, that decides whether the Edges tab may count it as won.
+  function venueSaysStarted(record, now) {
+    const startMs = record.eventStart ? Date.parse(record.eventStart) : NaN;
+    return Number.isFinite(startMs) && startMs <= now;
+  }
+
+  // One leg of an open teaser: live (priced, still to play) or counted as
+  // won. `started` says its game has begun (the board's clock, else BFA's):
+  // the Teasers tab counts every leg that is not live as won, the Edges tab
+  // only a started one (betsview.js).
   function placedLegOf(record, row, now, ladderOf) {
-    const base = { record, row, eventId: row ? row.eventId : null, label: placedLegLabel(record, row, null), win: null };
-    if (!row) return counted(base, LEG_OFF_BOARD, record.unmatchable ? `not matched (${record.unmatchable})` : "no board game");
-    if (!(row.eventStartMs > now)) return counted(base, LEG_STARTED, "started");
+    const base = { record, row, eventId: row ? row.eventId : null, label: placedLegLabel(record, row, null), win: null, started: false };
+    if (!row) {
+      const offBoard = counted(base, LEG_OFF_BOARD, record.unmatchable ? `not matched (${record.unmatchable})` : "no board game");
+      return { ...offBoard, started: venueSaysStarted(record, now) };
+    }
+    if (!(row.eventStartMs > now)) return { ...counted(base, LEG_STARTED, "started"), started: true };
     const position = bets.teaserLegPositionOf(record, row);
     if (position.reason) return counted(base, LEG_UNPRICED, position.reason);
     const sideIndex = position.direction === "above" ? SIDE_AWAY_OR_OVER : 1;
@@ -434,7 +447,9 @@
 
   // Every open BFA teaser as a ticket {id, stake, toWin, legCount, placedAt,
   // legs, inPlay, winAll, reason}, oldest first. `winAll` is the chance
-  // every live leg covers. options {now, ladderOf}.
+  // every live leg covers. Each leg carries its `state` (live, started,
+  // off_board, unpriced), `started`, and on a live leg its axis, winCut,
+  // direction, probAbove and win. options {now, ladderOf}.
   function openTeasers(records, boardLines, options) {
     const { now, ladderOf } = options;
     const legsByTicket = new Map();
@@ -443,6 +458,8 @@
       if (!legsByTicket.has(record.parlayId)) legsByTicket.set(record.parlayId, []);
       legsByTicket.get(record.parlayId).push(record);
     }
+    // The Edges tab asks on every render: with nothing open, skip the board join.
+    if (legsByTicket.size === 0) return [];
     const rowByBetId = boardRowsByBetId(Array.from(legsByTicket.values()).flat(), boardLines);
     return Array.from(legsByTicket, ([id, legRecords]) => placedTicketOf(id, legRecords, rowByBetId, now, ladderOf))
       .sort((a, b) => compareText(a.placedAt || "", b.placedAt || "") || compareText(a.id, b.id));

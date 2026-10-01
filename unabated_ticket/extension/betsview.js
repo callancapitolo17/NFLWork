@@ -253,15 +253,17 @@
   // An open BFA teaser with a leg on the row's game is held like a bet whose
   // payout also needs its other legs: the leg cuts the game's rows at its
   // half-point (a teaser push loses) and the other legs — other games, each
-  // independent — decide whether the ticket is still alive; condkelly
-  // enumerates them rather than averaging them. A leg on another game that
-  // started, matches no board game or has no fair counts as won (teaser.js's
-  // rule): BFA closes a teaser within minutes of a losing leg's game ending,
-  // so an open ticket's finished legs won. Same rules as a straight for the
-  // leg itself: another market is not sized, nor the other direction in
-  // another period. `teasers` is teaser.openTeasers' output: [{id, stake,
-  // toWin, inPlay, reason, legs: [{eventId, state, axis, winCut, direction,
-  // probAbove, win, label, reason, record}]}].
+  // independent (a leg on this game's other market too) — decide whether the
+  // ticket is still alive; condkelly enumerates them rather than averaging
+  // them. A leg on another game counts as won once its game has started:
+  // BFA closes a teaser within minutes of a losing leg's game ending, so an
+  // open ticket's finished legs won. One still to play that is not priced
+  // (no board game yet — CFB still loading, a league that failed — or no
+  // fair) is unknown, not won, and leaves its ticket out. Same rules as a
+  // straight for the leg itself: another market is not sized, nor the other
+  // direction in another period. `teasers` is teaser.openTeasers' output:
+  // [{id, stake, toWin, inPlay, reason, legs: [{eventId, state, started,
+  // axis, winCut, direction, probAbove, win, label, reason, record}]}].
 
   function teasersOnGame(teasers, eventId) {
     if (!Array.isArray(teasers) || eventId == null) return [];
@@ -302,6 +304,8 @@
     if (position.period !== rowPosition.period && position.direction !== rowPosition.direction) return { ...placed, note: NOTE_OTHER_PERIOD_HEDGE };
     const found = ladderPairsFor(position, rowPosition, readLadder);
     if (found.reason) return { ...placed, note: `no fair at ${leg.label}` };
+    const unknown = ticket.legs.find((other) => other !== leg && other.state !== TEASER_LEG_LIVE && !other.started);
+    if (unknown) return { ...placed, note: `other leg not priced: ${unknown.label} (${unknown.reason || unknown.state})` };
     const others = ticket.legs.filter((other) => other !== leg && other.state === TEASER_LEG_LIVE);
     return { ...placed, pairs: found.pairs, others, otherWins: others.reduce((product, other) => product * other.win, 1) };
   }
@@ -449,8 +453,7 @@
     addPairs(rowPosition.period, push.pairs);
     for (const match of inMath) addPairs(match.position.period, match.pairs);
     for (const entry of teasersInMath) addPairs(entry.position.period, entry.pairs);
-    const { tickets, factors } = condkellyTicketsOf(teasersInMath);
-    const solved = condkelly.solveStake({
+    const solveWith = (teaserEntries) => condkelly.solveStake({
       kellyBankroll: bankroll * multiplier,
       candidate: {
         group: rowPosition.period, cut: rowPosition.cut, direction: rowPosition.direction,
@@ -458,13 +461,26 @@
         prob: winProb,
       },
       held: inMath.map((match) => heldBetOf(match.position)),
-      tickets,
-      factors,
+      ...condkellyTicketsOf(teaserEntries),
       ladders,
     });
+    let solved = solveWith(teasersInMath);
+    let shownEntries = entries;
+    // A decline the teasers alone cause (their other games past the budget or
+    // out of line, their risk past K) must not throw the straights out too:
+    // the straights size the row and the teasers say why they do not.
+    if (solved.reason && teasersInMath.length > 0 && inMath.length > 0) {
+      const straightsOnly = solveWith([]);
+      if (!straightsOnly.reason) {
+        const teaserReason = solved.reason;
+        solved = straightsOnly;
+        shownEntries = entries.map((entry) => (entry.note === null ? { ...entry, note: teaserReason } : entry));
+        Object.assign(advice, { teasers: { held: 0, against: 0 }, verb: held > 0 ? "add" : "bet" });
+      }
+    }
     if (solved.reason) return decline(solved.reason);
     Object.assign(advice, { kind: "sized", bet: roundCents(solved.stake) });
-    return finish(annotated, entries);
+    return finish(annotated, shownEntries);
   }
 
   // In-math bets first, each group in the matcher's order (strongest tier,

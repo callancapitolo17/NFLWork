@@ -653,7 +653,9 @@
   // The open BFA teasers, each leg joined to its board game and priced
   // (teaser.openTeasers): the Edges rows, alerts and the Ticket size the next
   // bet against the ones on its game (teasers plan section 14). None before
-  // the board has loaded.
+  // the scanner holds a board; a leg whose game is not on it yet (CFB still
+  // loading, a league that failed) leaves its ticket out (betsview.js) until
+  // it is, unless BFA says that game has started.
   function openTeasersNow() {
     if (!scannerState) return [];
     return teaserLib.openTeasers(state.betRecords, boardLines(), { now: Date.now(), ladderOf: currentTeaserBoard().ladderOf });

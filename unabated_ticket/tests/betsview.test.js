@@ -498,7 +498,7 @@ test("teasers: 9/27 Chargers +6.5 +120 — $137.48 on the straights, $425.65 wit
 });
 
 test("teasers: a ticket with no other leg still to play rides on this leg alone, like a straight", () => {
-  const started = { eventId: 9002, label: "Tennessee Titans +8.5", state: "started", reason: "started", win: null, record: { venue: "bfa" } };
+  const started = { eventId: 9002, label: "Tennessee Titans +8.5", state: "started", started: true, reason: "started", win: null, record: { venue: "bfa" } };
   const ticket = openTeaser("bfa:1", [started, legOf("Colts", teaserLegRecord("bfa:1", { awayTeam: "Houston Texans", homeTeam: "Indianapolis Colts", side: "home", points: 7.5 }))]);
   const advice = coltsAdvice([ticket]);
   assert.equal(advice.kind, "sized");
@@ -525,6 +525,41 @@ test("teasers: another market, the other direction in another period and a leg w
   assert.equal(noRung.kind, "none");
   assert.deepEqual(noRung.teaserGroups.map((group) => [group.inMath, group.note]), [[false, "no fair at Indianapolis Colts +7.5"]]);
   assert.deepEqual(view.badges({ tier: null, matches: [], advice: noRung }), [{ kind: "held", text: "held" }]);
+});
+
+test("teasers: an other leg still to play with no board game or no fair leaves its ticket out — unknown, not won", () => {
+  const coltsLeg = () => legOf("Colts", teaserLegRecord("bfa:4", { awayTeam: "Houston Texans", homeTeam: "Indianapolis Colts", side: "home", points: 7.5 }));
+  // CFB still loading: the leg's game is not on the board and BFA's clock has it still to play.
+  const notLoaded = { eventId: null, label: "OHIO STATE -3", state: "off_board", started: false, reason: "no board game", win: null, record: { venue: "bfa" } };
+  const left = coltsAdvice([openTeaser("bfa:4", [legOf("Titans"), notLoaded, coltsLeg()])]);
+  assert.deepEqual([left.kind, Math.round(left.bet * 100) / 100, left.teasers.held], ["none", 315.9, 0]);
+  assert.deepEqual(left.teaserGroups.map((group) => [group.inMath, group.note]), [[false, "other leg not priced: OHIO STATE -3 (no board game)"]]);
+  // The same leg once BFA's clock says its game has begun counts as won.
+  const begun = coltsAdvice([openTeaser("bfa:4", [legOf("Titans"), { ...notLoaded, started: true }, coltsLeg()])]);
+  assert.deepEqual([begun.kind, begun.teasers.held], ["sized", 200]);
+  // A game on the board with no fair at the leg's number is unknown too.
+  const noFair = { eventId: 9005, label: "Cleveland Browns +8", state: "unpriced", started: false, reason: "no Unabated fair at +7.5", win: null, record: { venue: "bfa" } };
+  const unpriced = coltsAdvice([openTeaser("bfa:4", [legOf("Titans"), noFair, coltsLeg()])]);
+  assert.deepEqual(unpriced.teaserGroups.map((group) => group.note), ["other leg not priced: Cleveland Browns +8 (no Unabated fair at +7.5)"]);
+});
+
+test("teasers: a decline the teasers alone cause leaves the straights sizing the row", () => {
+  // Colts +3.5 $600 held: add $0. Six tickets on 18 other games pass the 2^16 budget.
+  const line = coltsRow();
+  const straight = heldRecord("colts+3.5", { awayTeam: "Houston Texans", homeTeam: "Indianapolis Colts", venue: "novig", betType: "spread", side: "home", points: 3.5, price: -120, stake: 600, toWin: 500 });
+  const { matches } = betsLib.matchBets(line, [straight]);
+  const ladderOf = ladderStub({ "FG margin": [[3.5, 0.4], [7.5, 0.27]] });
+  const farLeg = (eventId) => liveTeaserLeg(eventId, `game ${eventId} +8.5`, -8.5, "above", -300);
+  const coltsLeg = liveTeaserLeg(COLTS_GAME, "Indianapolis Colts +7.5", 7.5, "below", -270);
+  const tickets = Array.from({ length: 6 }, (_, t) => openTeaser(`bfa:${t}`, [coltsLeg, farLeg(9100 + 3 * t), farLeg(9101 + 3 * t), farLeg(9102 + 3 * t)]));
+  const advise = (teasers) => view.stakeAdvice({ line, price: -270, edgePct: 2.34, ...TEASER_SIZING, matches, ladderOf, teasers });
+  const straightOnly = advise([]);
+  const advice = advise(tickets);
+  assert.deepEqual([advice.kind, advice.bet, advice.verb, advice.held], [straightOnly.kind, straightOnly.bet, "add", 600]);
+  assert.equal(advice.bet, 0);
+  assert.deepEqual(advice.teasers, { held: 0, against: 0 });
+  assert.ok(advice.matches.every((match) => match.inMath));
+  assert.deepEqual(advice.teaserGroups.map((group) => [group.inMath, group.note]), [[false, "the open teasers ride on too many other games to size"]]);
 });
 
 test("teasers: a declined calc zeroes the teaser dollars; a teaser on another game changes nothing", () => {

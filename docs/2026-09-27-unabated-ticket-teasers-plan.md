@@ -294,11 +294,15 @@ averaged $492, counted as won $1,104.
   full-game leg on its own direction (worst-case pairing, as a straight)
   and leaves the other direction out. Else left out and named: `game · not
   sized`, `other period · not sized`, `no fair at …`. Other parlays stay
-  `parlay leg`. A leg on another game that started, matches no board game
-  or has no fair counts as won: BFA closes a teaser within minutes of a
-  losing leg's game ending (9/27: the five Seahawks tickets at 20:30 UTC,
-  ~10 min after that game, with the 49ers leg still to play), so an open
-  ticket's finished legs won; only a leg in progress is assumed.
+  `parlay leg`. A leg on another game counts as won once its game has
+  started (the board's clock, else BFA's): BFA closes a teaser within
+  minutes of a losing leg's game ending (9/27: the five Seahawks tickets at
+  20:30 UTC, ~10 min after that game, with the 49ers leg still to play), so
+  an open ticket's finished legs won; only a leg in progress is assumed. A
+  leg still to play with no board game (CFB still loading, a failed league)
+  or no fair is unknown, not won: the ticket is left out, `other leg not
+  priced: …` (pre-merge review: counted as won, it sized $1,301 where the
+  loaded board says $361).
 - **How they count** — `condkelly.solveStake` gains `tickets` [{group, cut,
   direction, stake, toWin, others: [{factor, cut, direction}]}] and
   `factors` {factor: [[cut, P(above)], ...]}. The ticket's leg cuts the
@@ -310,7 +314,10 @@ averaged $492, counted as won $1,104.
   (per period worst-case pairing unchanged) over those groups. No ticket:
   one group, today's number to the cent. Budget: 2^16 joint other-game
   states, past it the calc is declined with the reason (9/27: at most 128
-  states, 20 groups per row).
+  states, 20 groups per row). A decline the teasers alone cause (budget, an
+  other game's ladder out of line, their risk past K) re-solves on the
+  straights and names the reason on the teasers, so adding teasers never
+  leaves the row worse sized than ignoring them.
 - **On the row** (mockup approved 2026-09-30) — chip `teasers $X`: the
   stakes of the tickets in the math, green (`held` style) on the row's
   direction, red (`against`) on the other, its tooltip each ticket's legs.

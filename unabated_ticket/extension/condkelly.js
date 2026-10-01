@@ -420,7 +420,9 @@
       if (bound.reason) return { stake: null, reason: bound.reason };
       upper = Math.min(upper, bound.upper);
     }
-    // A sum of single hills is a single hill, so the search below still holds.
+    // Each class's growth is concave in the stake (a minimum of concave
+    // functions, as above) and a sum of concave functions is concave, so the
+    // search below still finds the top.
     const score = (stake) => {
       let total = 0;
       for (const scenario of scenarios) {

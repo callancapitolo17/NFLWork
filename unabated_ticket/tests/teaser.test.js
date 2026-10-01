@@ -449,6 +449,18 @@ test("a started leg and a leg no board game matches count as won; a ticket with 
   nearly(seven.winAll, 0.8 * 0.8);
   assert.deepEqual(eight.legs.map((leg) => leg.state), ["started", "off_board"]);
   assert.equal(eight.inPlay, false);
+  // `started` (the Edges tab counts only those as won): the board's clock,
+  // else BFA's for a leg the board does not hold.
+  assert.deepEqual(seven.legs.map((leg) => leg.started), [false, false, true, false]);
+  const [nine] = openTeasersOf(state, [bfaLeg(9, 0, { rotation: 401 }), bfaLeg(9, 1, { rotation: 997, eventStart: new Date(NOW - HOUR).toISOString() })]);
+  assert.deepEqual(nine.legs.map((leg) => [leg.state, leg.started, leg.reason]), [["live", false, undefined], ["off_board", true, "no board game"]]);
+});
+
+test("no open teaser: openTeasers is empty without joining the board", () => {
+  const state = awayLegBoard([-400, -400, -400, -400]);
+  const straight = { ...bfaLeg(1, 0, { rotation: 401 }), isParlayLeg: false, parlayId: null };
+  assert.deepEqual(openTeasersOf(state, [straight]), []);
+  assert.deepEqual(teaser.openTeasers([], null, { now: NOW, ladderOf: () => null }), []);
 });
 
 test("a game with an open leg offers new legs on that market only", () => {

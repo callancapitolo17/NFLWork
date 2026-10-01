@@ -353,15 +353,23 @@ choose x >= 0 to maximize  sum over outcome rows of  prob * ln(1 + pnl / K)
   legs win", so `condkelly.solveStake` enumerates the other games (each cut
   at every number a leg needs), pools the outcomes by which tickets they
   leave alive (legs shared across tickets are joint) and sums the growth
-  over those pools; at most 2^16 other-game outcomes, past it the calc is
-  declined. A leg on another game that started, matches no board game or
-  has no fair counts as won — BFA closes a teaser within minutes of a
-  losing leg's game ending (9/27: the five Seahawks tickets at 20:30 UTC,
-  ~10 min after that game, the 49ers leg still to play), so an open
-  ticket's finished legs won. The leg itself follows a straight's rules:
-  another market is `game · not sized`, the other direction in another
-  period is left out, a leg with no rung on the row's ladder is `no fair at
-  …`. Other parlays stay out as `parlay leg`. Cal's 8 teasers on 9/27 (16:46
+  over those pools; at most 2^16 other-game outcomes. A leg on another game
+  counts as won once its game has started (the board's clock, else BFA's)
+  — BFA closes a teaser within minutes of a losing leg's game ending (9/27:
+  the five Seahawks tickets at 20:30 UTC, ~10 min after that game, the
+  49ers leg still to play), so an open ticket's finished legs won; one in
+  progress is assumed to. A leg still to play that is not priced — no board
+  game yet (CFB still loading, a league that failed) or no fair at its
+  number — is unknown, not won: its ticket is left out, `other leg not
+  priced: …`. A decline the teasers alone cause (their other games past the
+  budget or out of line, their risk past `K`) does not throw the straights
+  out: they size the row and the teasers say why they do not. The leg
+  itself follows a straight's rules: another market is `game · not sized`,
+  the other direction in another period is left out, a leg with no rung on
+  the row's ladder is `no fair at …`. A ticket's leg on the row's game but
+  the other market (a total under a spread row) is treated as an
+  independent game, like every spread–total pair here. Other parlays stay
+  out as `parlay leg`. Cal's 8 teasers on 9/27 (16:46
   UTC board, K $5,000): Colts +7.5 −270 at Novig (+2.3%, three legs on Colts
   +7.5) $315.90 alone → `add $0` — the teasers already carry that side at
   about Kelly size at a better price (a leg inside +300 is −241); all 14
@@ -1834,7 +1842,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 372 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 375 tests) and
 the bets service's pytest suite (308 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -2054,9 +2062,14 @@ other-game rung). `betsview.test.js` runs the same two rows through
 dropped from the matches, one related line per leg sorted among the
 straights by tier and dollars, `add` with only teasers held, "rides on this
 leg alone" with its other legs started, another market / the other
-direction in another period / no rung each left out and named, a declined
-calc zeroing the teaser dollars, and a teaser on another game changing
-nothing.
+direction in another period / no rung each left out and named, an other
+leg still to play with no board game or no fair leaving its ticket out
+(and counting as won once BFA's clock says its game began), a decline the
+teasers alone cause (six tickets on 18 other games) leaving the straight
+sizing the row (add $0), a declined calc zeroing the teaser dollars, and a
+teaser on another game changing nothing. `teaser.test.js` adds each leg's
+`started` (the board's clock, else BFA's) and an empty result with no open
+teaser.
 
 The Edges-with-teasers smoke run (2026-09-30, a scratch Playwright harness,
 not committed) loaded the unpacked extension with Sunday's saved NFL board
