@@ -21,10 +21,12 @@
 // bet at points h = below h, a moneyline = above +0.5 / below -0.5.
 // A whole-number cut k pushes between k-0.5 and k+0.5.
 // Output { stake, reason }: `reason` is set (and stake null) when the calc is
-// declined. Nothing here writes anywhere.
+// declined. Nothing here writes anywhere. teaser.js reads cutsNeeded and
+// resultAt to put a straight bet held under a teaser leg on its game's rows.
 //
 // Loaded two ways: as a plain <script> in panel.html (exposes
-// globalThis.UnabatedCondKelly) and via require() in tests/condkelly.test.js.
+// globalThis.UnabatedCondKelly), before teaser.js, and via require() in
+// tests/condkelly.test.js.
 
 (function (root) {
   "use strict";
@@ -281,7 +283,7 @@
     return { stake: goldenSectionMax(score, upper), reason: null };
   }
 
-  const api = { REASON_NOT_MONOTONE, REASON_HELD_RISK, cutsNeeded, solveStake };
+  const api = { REASON_NOT_MONOTONE, REASON_HELD_RISK, cutsNeeded, resultAt, solveStake };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

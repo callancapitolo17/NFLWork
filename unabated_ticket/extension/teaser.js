@@ -1,8 +1,8 @@
 // Buckeye 6-point teasers for the Unabated Ticket panel's Teasers tab
 // (docs/2026-09-27-unabated-ticket-teasers-plan.md). Pure: no DOM, no fetch,
-// no chrome.* — loaded as a plain <script> in panel.html after bets.js and
-// ladder.js (exposes globalThis.UnabatedTeaser) and via require() in
-// tests/teaser.test.js. Nothing here writes anywhere.
+// no chrome.* — loaded as a plain <script> in panel.html after bets.js,
+// ladder.js and condkelly.js (exposes globalThis.UnabatedTeaser) and via
+// require() in tests/teaser.test.js. Nothing here writes anywhere.
 //
 // Inputs
 //   feedState   the scanner's state (feed.js): events and every book's lines.
@@ -10,18 +10,23 @@
 //               teaser is a placed ticket. It arrives as one record per leg:
 //               isParlayLeg, parlayId, legCount, the ticket's stake and toWin
 //               on every leg, the leg's teased points, rotation and
-//               eventStart, raw.headerDescription "4 TEAM TEASERS".
+//               eventStart, raw.headerDescription "4 TEAM TEASERS". Every
+//               other open record that is not a parlay leg is a straight bet
+//               the set is sized around when it sits on a pool leg's game.
 //   boardLines  one feed.describeLine row per board event (the panel's
-//               boardLines()): what bets.js joins a leg to its game on.
+//               boardLines()): what bets.js joins a bet to its game on.
 // Outputs
 //   teaserBoardOf one pass over the board: Buckeye's lines and each game's
 //                 fair ladder (the panel redoes it only when NFL or CFB reloads)
 //   teaserLegs    every Buckeye side on the board teased 6 points, with its
 //                 win chance or the reason it has none
 //   openTeasers   the open BFA teasers as tickets, each leg joined to its game
+//   heldStraights the open straight bets on football games still to play,
+//                 each placed on its market or with the reason it never counts
 //   planTeasers   the tickets to bet, kept while nothing real changes
 //   describePlan  those tickets' EVs and the summary at the current fairs
-//   describeLegs  the Legs list: the best leg of each game and its standing
+//   describeLegs  the Legs list: the best leg of each game, its standing and
+//                 the straight dollars held on it
 //
 // The rules (user decisions 2026-09-27/28):
 //   - A leg is Buckeye's main full-game spread or total, NFL or CFB, teased
@@ -53,10 +58,19 @@
 //     has to be saved. A game with an open leg offers new legs only on that
 //     leg's market, and its legs at different numbers share rows — the game
 //     is one outcome cut at every number, as in condkelly.js.
+//   - A straight bet held at any venue (user decision 2026-09-30) is fixed
+//     P&L the same way, the conditional Kelly method: on a pool leg's game,
+//     the leg's market and the full game, its numbers cut the game's rows
+//     and it pays +toWin / 0 on a push / -stake in each. Same side as a leg
+//     means fewer tickets on it, the other side more. Another market,
+//     another period and a game no new ticket uses are left out, as on the
+//     Edges tab; a straight never adds a game nor changes the leg a game
+//     offers.
 //   - The list holds still: it is built on reference fairs, each leg's fair
 //     as of the build, replaced only when the leg moves REBUILD_FAIR_MOVE.
 //     The list is rebuilt only when what it is built on changes: the pool,
-//     a pool leg's number, an open teaser, K, or a reference fair. Smaller
+//     a pool leg's number, an open teaser, a straight in the math, K, or a
+//     reference fair. Smaller
 //     ticks move the EVs in place (describePlan). Built on the same fairs,
 //     the list after placing its first ticket is the same list less that
 //     ticket.
@@ -68,6 +82,7 @@
   const feed = inNode ? require("./feed.js") : root.UnabatedFeed;
   const ladderLib = inNode ? require("./ladder.js") : root.UnabatedLadder;
   const bets = inNode ? require("./bets.js") : root.UnabatedBets;
+  const condkelly = inNode ? require("./condkelly.js") : root.UnabatedCondKelly;
 
   // Unabated's market source id for Buckeye, the book the BFA account bets at.
   const BUCKEYE_BOOK_ID = 59;
@@ -97,10 +112,11 @@
   // condkelly.js's tolerance: Unabated's fairs are whole American prices, so
   // neighbouring rungs can cross by a hair; past this the ladder is wrong.
   const MAX_NEGATIVE_SLICE = 0.005;
-  // The joint outcomes one build may enumerate: the pool's 1,024 and room for
-  // four more games open teasers still ride on (past it the pool sheds legs).
-  // A build at 2^16 took 0.8-1.5 s on the panel's thread; 2^14 stays under ~0.3 s.
-  const MAX_OUTCOMES = 1 << 14;
+  // The joint outcomes one build may enumerate (past it the pool sheds legs).
+  // Straight bets multiply a game's rows: 9/27's 15 straights on 9 pool
+  // games made 69,984 outcomes. The greedy works per pool-leg state, not
+  // per outcome, so a build stays well under a second here.
+  const MAX_OUTCOMES = 1 << 17;
   const GOLDEN_RATIO = (Math.sqrt(5) - 1) / 2;
   const SEARCH_MAX_ITERATIONS = 200;
   const SEARCH_TOLERANCE_DOLLARS = 1e-7;
@@ -125,8 +141,13 @@
   const STANDING_OTHER_MARKET = "other_market";
   const STANDING_UNPRICED = "unpriced";
   const REASON_FEW_LEGS = `fewer than ${LEGS_PER_TICKET} games with a priced Buckeye leg`;
-  const REASON_HELD_RISK = "open teasers can already lose the Kelly bankroll";
+  const REASON_HELD_RISK = "the open teasers and straight bets on these games can already lose the Kelly bankroll";
   const REASON_NO_STAKE = "no stake on the record";
+  // A straight bet on a pool game but not on its leg's market (spread vs total).
+  const STRAIGHT_OTHER_MARKET = "other market";
+  // A gap between two growths this small is floating-point noise, not a
+  // better ticket: the first combination in order keeps a tie.
+  const GROWTH_TIE_TOLERANCE = 1e-12;
 
   // ---- small helpers -------------------------------------------------------
 
@@ -425,14 +446,131 @@
       .sort((a, b) => compareText(a.placedAt || "", b.placedAt || "") || compareText(a.id, b.id));
   }
 
+  // ---- straight bets held on the same games ---------------------------------------
+
+  function isOpenStraight(record) {
+    return Boolean(record) && record.status === "open" && !record.isParlayLeg && !record.unmatchable;
+  }
+
+  // "Chattanooga -5.5 +138 · 42.0¢ · $150 · Novig": bets.js's own words for
+  // the bet, as the Edges tab lists it.
+  function straightLabel(record) {
+    return [bets.describeBet(record), bets.formatStake(record.stake), bets.venueLabel(record.venue)].join(" · ");
+  }
+
+  // The bet's number as its own side writes it: "-14.5", "44.5", "the moneyline".
+  function straightNumberLabel(record) {
+    if (record.betType === "moneyline") return "the moneyline";
+    return record.betType === "spread" ? signedPoints(record.points) : `${record.points}`;
+  }
+
+  // One straight bet in its game: placed on its market's axis with the fair
+  // at every half-point it splits the axis at, or the reason it never counts.
+  function straightOf(record, row, position, ladderOf) {
+    const base = { id: record.id, record, eventId: row.eventId, label: straightLabel(record), stake: record.stake, toWin: record.toWin, reason: null };
+    if (position.reason) return { ...base, reason: position.reason };
+    const placed = { ...base, axis: position.axis, cut: position.cut, direction: position.direction, stake: position.stake, toWin: position.toWin };
+    if (position.period !== FULL_GAME) return { ...placed, reason: `${position.period} bet` };
+    const fairs = [];
+    for (const cut of condkelly.cutsNeeded(position)) {
+      const fair = ladderLib.probAbove(ladderOf(row.eventId, position.axis), cut);
+      if (fair.reason) return { ...placed, reason: `no fair at ${straightNumberLabel(record)}` };
+      fairs.push([cut, fair.prob]);
+    }
+    return { ...placed, fairs };
+  }
+
+  // Every open straight bet on an NFL or CFB game still to play: {id,
+  // record, eventId, label, stake, toWin, axis, cut, direction, fairs,
+  // reason}. Joined to its game by bets.js's matcher — the Edges tab's:
+  // pins, venue ids, names, rotation — and placed on its market by
+  // bets.positionOf; `fairs` is [cut, P(result > cut)] at every half-point
+  // it splits its market at (condkelly.cutsNeeded: a whole number both
+  // sides of its push), off the same ladder the legs read, so a moneyline
+  // reads the spread ladder's +/-0.5 rungs. `reason` instead when it can
+  // never count: positionOf's (no stake, side unknown, quarter line, ...),
+  // a period other than the full game, or no fair at its number. Whether
+  // it counts in a build is countedStraights': only on a pool leg's game and
+  // market. options {now, ladderOf}.
+  function heldStraights(records, boardLines, options) {
+    const { now, ladderOf } = options;
+    const straights = (records || []).filter(isOpenStraight);
+    if (straights.length === 0) return [];
+    const rows = (boardLines || []).filter((row) => TEASER_LEAGUE_IDS.includes(row.leagueId));
+    const held = [];
+    bets.annotateRows(rows, straights, { lines: rows }).forEach((flag, index) => {
+      const row = rows[index];
+      if (!(row.eventStartMs > now)) return;
+      for (const match of flag.matches) held.push(straightOf(match.bet, row, match.position, ladderOf));
+    });
+    return held.sort((a, b) => compareText(a.id, b.id));
+  }
+
+  // P(result > cut) has to fall as the cut rises: Unabated's fairs are whole
+  // American prices, so neighbouring rungs may cross by MAX_NEGATIVE_SLICE
+  // and no more (factorRowProbs' rule).
+  function isMonotone(probByCut) {
+    const sorted = Array.from(probByCut).sort((a, b) => a[0] - b[0]);
+    for (let index = 1; index < sorted.length; index += 1) {
+      if (sorted[index][1] - sorted[index - 1][1] > MAX_NEGATIVE_SLICE) return false;
+    }
+    return true;
+  }
+
+  // The straights in the math for this pool, and why the others on a pool
+  // game are not: {counted, leftOut: Map(id -> reason)}. A straight counts on
+  // a pool leg's game and market, each in turn only while its numbers leave
+  // that game's ladder monotone with the cuts already there — one bad rung
+  // leaves that bet out instead of failing the build.
+  function countedStraights(straights, pool, placed, valuation) {
+    const cutsByFactor = new Map();
+    const poolEvents = new Set();
+    const addCut = (eventId, axis, cut) => {
+      const key = factorKey(eventId, axis);
+      if (!cutsByFactor.has(key)) cutsByFactor.set(key, new Map());
+      cutsByFactor.get(key).set(cut, valuation.get(cutKey(eventId, axis, cut)));
+    };
+    for (const { leg } of pool) {
+      addCut(leg.eventId, leg.axis, leg.winCut);
+      poolEvents.add(leg.eventId);
+    }
+    for (const ticket of placed) {
+      for (const leg of liveLegsOf(ticket)) if (cutsByFactor.has(factorKey(leg.eventId, leg.axis))) addCut(leg.eventId, leg.axis, leg.winCut);
+    }
+    const counted = [];
+    const leftOut = new Map();
+    for (const straight of straights) {
+      if (straight.reason || !poolEvents.has(straight.eventId)) continue;
+      const cuts = cutsByFactor.get(factorKey(straight.eventId, straight.axis));
+      if (!cuts) {
+        leftOut.set(straight.id, STRAIGHT_OTHER_MARKET);
+        continue;
+      }
+      const merged = new Map(cuts);
+      for (const [cut] of straight.fairs) merged.set(cut, valuation.get(cutKey(straight.eventId, straight.axis, cut)));
+      if (!isMonotone(merged)) {
+        leftOut.set(straight.id, `Unabated's fair at ${straightNumberLabel(straight.record)} is out of line with its neighbours`);
+        continue;
+      }
+      for (const [cut, prob] of merged) cuts.set(cut, prob);
+      counted.push(straight);
+    }
+    return { counted, leftOut };
+  }
+
   // ---- what a build is made of ---------------------------------------------------
 
-  // cut key -> P(result > cut) at every number a leg is priced at now.
-  function liveValuation(legs, placed) {
+  // cut key -> P(result > cut) at every number a leg or a straight bet is
+  // priced at now.
+  function liveValuation(legs, placed, straights) {
     const valuation = new Map();
     for (const leg of legs) if (leg.probAbove != null) valuation.set(cutKey(leg.eventId, leg.axis, leg.winCut), leg.probAbove);
     for (const ticket of placed) {
       for (const leg of liveLegsOf(ticket)) valuation.set(cutKey(leg.eventId, leg.axis, leg.winCut), leg.probAbove);
+    }
+    for (const straight of straights || []) {
+      if (straight.reason) continue;
+      for (const [cut, prob] of straight.fairs) valuation.set(cutKey(straight.eventId, straight.axis, cut), prob);
     }
     return valuation;
   }
@@ -473,8 +611,9 @@
   }
 
   // What a build is made of, on one valuation: the pool ({leg, win} per
-  // game, the top POOL_SIZE), the open teasers in play, and the valuation.
-  function selectInputs(legs, placed, valuation) {
+  // game, the top POOL_SIZE), the open teasers in play, the straight bets in
+  // the math (and why the others on a pool game are not), and the valuation.
+  function selectInputs(legs, placed, straights, valuation) {
     const inPlay = placed.filter((ticket) => ticket.inPlay);
     const openMarkets = openMarketsByEvent(inPlay);
     const bestByEvent = new Map();
@@ -485,32 +624,42 @@
       if (!held || byPoolOrder(candidate, held) < 0) bestByEvent.set(leg.eventId, candidate);
     }
     const pool = Array.from(bestByEvent.values()).sort(byPoolOrder).slice(0, POOL_SIZE);
-    return { pool, placed: inPlay, valuation };
+    const { counted, leftOut } = countedStraights(straights, pool, inPlay, valuation);
+    return { pool, placed: inPlay, straights: counted, straightsLeftOut: leftOut, valuation };
   }
 
   // Everything a build is made of, as text: equal keys build equal lists.
   function inputKey(inputs, kellyBankroll) {
+    const fairAt = (eventId, axis, cut) => inputs.valuation.get(cutKey(eventId, axis, cut));
     return JSON.stringify({
       kellyBankroll,
       pool: inputs.pool.map(({ leg, win }) => [leg.key, leg.winCut, win]),
       placed: inputs.placed.map((ticket) => [ticket.id, ticket.stake, ticket.toWin,
-        liveLegsOf(ticket).map((leg) => [leg.eventId, leg.axis, leg.winCut, leg.direction, inputs.valuation.get(cutKey(leg.eventId, leg.axis, leg.winCut))])]),
+        liveLegsOf(ticket).map((leg) => [leg.eventId, leg.axis, leg.winCut, leg.direction, fairAt(leg.eventId, leg.axis, leg.winCut)])]),
+      straights: inputs.straights.map((straight) => [straight.id, straight.stake, straight.toWin, straight.eventId, straight.axis, straight.cut,
+        straight.direction, straight.fairs.map(([cut]) => fairAt(straight.eventId, straight.axis, cut))]),
     });
   }
 
   // ---- joint outcomes ------------------------------------------------------------
   //
   // Every game a pool leg or a live open leg is on is one factor, cut at every
-  // number a leg there is priced at; a factor's rows are the gaps between its
-  // cuts, and games are independent. An outcome picks one row per factor
-  // (mixed radix: row = floor(outcome / stride) % rows).
+  // number a leg there is priced at and every number a straight bet in the
+  // math splits it at; a factor's rows are the gaps between its cuts, and
+  // games are independent. An outcome picks one row per factor (mixed radix:
+  // row = floor(outcome / stride) % rows).
 
-  // The rows of a factor a leg wins: row r holds the results between
-  // cuts[r - 1] and cuts[r].
+  // A result strictly inside row r (between cuts[r - 1] and cuts[r]): every
+  // cut is a half-point, so a quarter-point in from either edge.
+  function rowValue(cuts, row) {
+    return row === 0 ? cuts[0] - QUARTER_POINT : cuts[row - 1] + QUARTER_POINT;
+  }
+
+  // The rows of a factor a leg wins.
   function rowsWon(cuts, leg) {
     const won = new Uint8Array(cuts.length + 1);
     for (let row = 0; row <= cuts.length; row += 1) {
-      const value = row === 0 ? cuts[0] - QUARTER_POINT : cuts[row - 1] + QUARTER_POINT;
+      const value = rowValue(cuts, row);
       won[row] = (leg.direction === "above" ? value > leg.winCut : value < leg.winCut) ? 1 : 0;
     }
     return won;
@@ -523,17 +672,36 @@
     return wins;
   }
 
-  // {factors, outcomeCount, poolWins, placedWins}: which outcomes each pool
-  // leg wins, and which each open ticket wins (all of its live legs).
-  function outcomeStructure(poolLegs, placedTickets) {
+  // outcome -> a bit per pool leg, set where that leg wins: every ticket
+  // wins exactly in the outcomes whose state holds all four of its bits.
+  // POOL_SIZE legs fit a Uint16.
+  function legStatesOf(poolWins, outcomeCount) {
+    const states = new Uint16Array(outcomeCount);
+    poolWins.forEach((wins, leg) => {
+      for (let outcome = 0; outcome < outcomeCount; outcome += 1) if (wins[outcome]) states[outcome] |= 1 << leg;
+    });
+    return states;
+  }
+
+  // {factors, outcomeCount, legStates, stateCount, placedWins}: each
+  // outcome's pool-leg state, and which outcomes each open ticket wins (all
+  // of its live legs). Straight bets add their cuts (they must sit on a
+  // pool leg's factor); their P&L is straightsPnl's.
+  function outcomeStructure(poolLegs, placedTickets, straights) {
     const byKey = new Map();
-    const addCut = (leg) => {
-      const key = factorKey(leg.eventId, leg.axis);
-      if (!byKey.has(key)) byKey.set(key, { eventId: leg.eventId, axis: leg.axis, matchup: leg.matchup, cuts: new Set() });
-      byKey.get(key).cuts.add(leg.winCut);
+    const addCut = (eventId, axis, matchup, cut) => {
+      const key = factorKey(eventId, axis);
+      if (!byKey.has(key)) byKey.set(key, { eventId, axis, matchup, cuts: new Set() });
+      byKey.get(key).cuts.add(cut);
     };
-    poolLegs.forEach(addCut);
-    for (const ticket of placedTickets) liveLegsOf(ticket).forEach(addCut);
+    for (const leg of poolLegs) addCut(leg.eventId, leg.axis, leg.matchup, leg.winCut);
+    for (const ticket of placedTickets) for (const leg of liveLegsOf(ticket)) addCut(leg.eventId, leg.axis, leg.matchup, leg.winCut);
+    for (const straight of straights) {
+      if (!byKey.has(factorKey(straight.eventId, straight.axis))) {
+        throw new Error(`teaser: straight ${straight.id} sits on event ${straight.eventId} (${straight.axis}), where no leg rides`);
+      }
+      for (const [cut] of straight.fairs) addCut(straight.eventId, straight.axis, null, cut);
+    }
     let outcomeCount = 1;
     const factors = Array.from(byKey.values()).map((factor) => {
       const cuts = Array.from(factor.cuts).sort((a, b) => a - b);
@@ -541,11 +709,11 @@
       outcomeCount *= shaped.rows;
       return shaped;
     });
-    const structure = { factors, outcomeCount, poolWins: [], placedWins: [] };
+    const structure = { factors, outcomeCount, legStates: null, stateCount: 1 << poolLegs.length, placedWins: [] };
     if (outcomeCount > MAX_OUTCOMES) return structure;
     const factorOf = new Map(factors.map((factor) => [factorKey(factor.eventId, factor.axis), factor]));
     const winsOf = (leg) => outcomesWon(factorOf.get(factorKey(leg.eventId, leg.axis)), leg, outcomeCount);
-    structure.poolWins = poolLegs.map(winsOf);
+    structure.legStates = legStatesOf(poolLegs.map(winsOf), outcomeCount);
     structure.placedWins = placedTickets.map((ticket) => {
       const wins = new Uint8Array(outcomeCount).fill(1);
       for (const leg of liveLegsOf(ticket)) {
@@ -607,6 +775,24 @@
     return pnl;
   }
 
+  // The straight bets' P&L in every outcome: +toWin / 0 on a push / -stake
+  // in each row of the bet's game (condkelly.resultAt, the rule conditional
+  // Kelly sizes held bets by).
+  function straightsPnl(structure, straights) {
+    const pnl = new Float64Array(structure.outcomeCount);
+    const factorOf = new Map(structure.factors.map((factor) => [factorKey(factor.eventId, factor.axis), factor]));
+    for (const straight of straights) {
+      const factor = factorOf.get(factorKey(straight.eventId, straight.axis));
+      const rowPnl = [];
+      for (let row = 0; row < factor.rows; row += 1) {
+        const result = condkelly.resultAt(straight, rowValue(factor.cuts, row));
+        rowPnl.push(result > 0 ? straight.toWin : result < 0 ? -straight.stake : 0);
+      }
+      for (let outcome = 0; outcome < pnl.length; outcome += 1) pnl[outcome] += rowPnl[Math.floor(outcome / factor.stride) % factor.rows];
+    }
+    return pnl;
+  }
+
   // ---- the greedy ------------------------------------------------------------------
 
   // Every `size`-leg combination of `count` pool legs, in lexicographic order.
@@ -628,21 +814,14 @@
     return combos;
   }
 
-  // The outcomes a ticket wins: all of its legs win.
-  function winningOutcomes(combo, poolWins, outcomeCount) {
-    const indexes = [];
-    for (let outcome = 0; outcome < outcomeCount; outcome += 1) {
-      let allWin = 1;
-      for (const leg of combo) allWin &= poolWins[leg][outcome];
-      if (allWin) indexes.push(outcome);
-    }
-    return Int32Array.from(indexes);
+  // A ticket as the bits of its pool legs: it wins in every outcome whose
+  // leg state holds them all.
+  function comboMask(legIndexes) {
+    return legIndexes.reduce((mask, leg) => mask | (1 << leg), 0);
   }
 
-  function membership(indexes, outcomeCount) {
-    const member = new Uint8Array(outcomeCount);
-    for (const outcome of indexes) member[outcome] = 1;
-    return member;
+  function ticketWins(legStates, mask, outcome) {
+    return (legStates[outcome] & mask) === mask;
   }
 
   // K plus the P&L of the worst outcome that can happen.
@@ -663,23 +842,27 @@
 
   // The unused ticket that raises the growth most at `stake`: {index,
   // growth}, or null. Each outcome's lose term is shared by every ticket, so
-  // a ticket's growth is their sum plus its own winning outcomes' gains.
-  function bestTicketAt(stake, winning, used, pnl, prob, kellyBankroll) {
-    const gain = new Float64Array(pnl.length);
+  // a ticket's growth is their sum plus the gains (win minus lose) of the
+  // outcomes it wins. Those are the outcomes whose leg state holds its four
+  // legs, so the gains are summed per state once and each ticket reads the
+  // 2^pool states, not every outcome. A near-tie keeps the earlier ticket.
+  function bestTicketAt(stake, masks, used, pnl, prob, kellyBankroll, structure) {
+    const gainByState = new Float64Array(structure.stateCount);
     let loseTotal = 0;
     for (let outcome = 0; outcome < pnl.length; outcome += 1) {
       if (prob[outcome] === 0) continue;
       const lose = prob[outcome] * Math.log(1 + (pnl[outcome] - stake) / kellyBankroll);
       const win = prob[outcome] * Math.log(1 + (pnl[outcome] + stake * TICKET_NET_ODDS) / kellyBankroll);
       loseTotal += lose;
-      gain[outcome] = win - lose;
+      gainByState[structure.legStates[outcome]] += win - lose;
     }
     let best = null;
-    for (let index = 0; index < winning.length; index += 1) {
+    for (let index = 0; index < masks.length; index += 1) {
       if (used[index]) continue;
+      const mask = masks[index];
       let growth = loseTotal;
-      for (const outcome of winning[index]) growth += gain[outcome];
-      if (!best || growth > best.growth) best = { index, growth };
+      for (let state = 0; state < structure.stateCount; state += 1) if ((state & mask) === mask) growth += gainByState[state];
+      if (!best || growth > best.growth + GROWTH_TIE_TOLERANCE) best = { index, growth };
     }
     return best;
   }
@@ -712,13 +895,12 @@
 
   // The partial last ticket: the whole-dollar stake up to `upper` that
   // maximizes the growth, or 0 when a dollar does not raise it above `base`.
-  function partialStake(winningIndexes, pnl, prob, kellyBankroll, base, upper) {
-    const wins = membership(winningIndexes, pnl.length);
+  function partialStake(mask, pnl, prob, kellyBankroll, base, upper, legStates) {
     const growthAt = (stake) => {
       let total = 0;
       for (let outcome = 0; outcome < pnl.length; outcome += 1) {
         if (prob[outcome] === 0) continue;
-        const ticketPnl = wins[outcome] ? stake * TICKET_NET_ODDS : -stake;
+        const ticketPnl = ticketWins(legStates, mask, outcome) ? stake * TICKET_NET_ODDS : -stake;
         total += prob[outcome] * Math.log(1 + (pnl[outcome] + ticketPnl) / kellyBankroll);
       }
       return total;
@@ -730,11 +912,12 @@
   // Greedy Kelly over the set: {tickets: [{legIndexes, stake}], reason,
   // partialHeldBack} — the last the partial ticket's stake when one is due
   // but not allowed, else 0.
+  //   heldPnl         the open teasers' and straight bets' P&L in every outcome
   //   takenCombos     "i,j,k,l" pool-index keys already open at BFA: no ticket twice
   //   partialAllowed  false once this list's partial is open (one partial per set)
-  function greedyTickets(structure, prob, heldPnl, kellyBankroll, { takenCombos, partialAllowed }) {
-    const combos = legCombinations(structure.poolWins.length, LEGS_PER_TICKET);
-    const winning = combos.map((combo) => winningOutcomes(combo, structure.poolWins, structure.outcomeCount));
+  function greedyTickets(structure, poolSize, prob, heldPnl, kellyBankroll, { takenCombos, partialAllowed }) {
+    const combos = legCombinations(poolSize, LEGS_PER_TICKET);
+    const masks = combos.map(comboMask);
     const used = new Uint8Array(combos.length);
     combos.forEach((combo, index) => {
       if (takenCombos.has(combo.join(","))) used[index] = 1;
@@ -744,8 +927,9 @@
     const add = (index, stake) => {
       used[index] = 1;
       tickets.push({ legIndexes: combos[index], stake });
-      const wins = membership(winning[index], pnl.length);
-      for (let outcome = 0; outcome < pnl.length; outcome += 1) pnl[outcome] += wins[outcome] ? stake * TICKET_NET_ODDS : -stake;
+      for (let outcome = 0; outcome < pnl.length; outcome += 1) {
+        pnl[outcome] += ticketWins(structure.legStates, masks[index], outcome) ? stake * TICKET_NET_ODDS : -stake;
+      }
     };
     for (;;) {
       const room = worstWealth(pnl, prob, kellyBankroll);
@@ -754,13 +938,13 @@
       // A full ticket only while losing it everywhere keeps every wealth positive.
       const cap = Math.min(TICKET_MAX_STAKE, room * UPPER_BOUND_SHRINK);
       const full = cap === TICKET_MAX_STAKE;
-      const best = bestTicketAt(full ? TICKET_MAX_STAKE : cap / 2, winning, used, pnl, prob, kellyBankroll);
+      const best = bestTicketAt(full ? TICKET_MAX_STAKE : cap / 2, masks, used, pnl, prob, kellyBankroll, structure);
       if (!best) break;
       if (full && best.growth > base) {
         add(best.index, TICKET_MAX_STAKE);
         continue;
       }
-      const stake = partialStake(winning[best.index], pnl, prob, kellyBankroll, base, cap);
+      const stake = partialStake(masks[best.index], pnl, prob, kellyBankroll, base, cap, structure.legStates);
       if (!partialAllowed) return { tickets, reason: null, partialHeldBack: stake };
       if (stake > 0) add(best.index, stake);
       break;
@@ -791,17 +975,25 @@
     return keys;
   }
 
+  // The straight bets whose game and market a remaining pool leg is on.
+  function straightsOnLegs(straights, legs) {
+    const factors = new Set(legs.map((leg) => factorKey(leg.eventId, leg.axis)));
+    return straights.filter((straight) => factors.has(factorKey(straight.eventId, straight.axis)));
+  }
+
   // The joint outcomes within MAX_OUTCOMES: while over it, the pool gives up
   // its weakest leg on a game no open teaser rides on (dropping one on an open
-  // game saves nothing, its rows stay). {legs, structure}, or {overBudget}
-  // when even four pool legs do not fit.
-  function structureWithinBudget(poolLegs, placedTickets) {
+  // game saves nothing, its rows stay), and the straight bets on that game go
+  // with it. {legs, straights, structure}, or {overBudget} when even four
+  // pool legs do not fit.
+  function structureWithinBudget(poolLegs, placedTickets, straights) {
     const openGames = new Set();
     for (const ticket of placedTickets) for (const leg of liveLegsOf(ticket)) openGames.add(factorKey(leg.eventId, leg.axis));
     let legs = poolLegs;
     for (;;) {
-      const structure = outcomeStructure(legs, placedTickets);
-      if (structure.outcomeCount <= MAX_OUTCOMES) return { legs, structure };
+      const counted = straightsOnLegs(straights, legs);
+      const structure = outcomeStructure(legs, placedTickets, counted);
+      if (structure.outcomeCount <= MAX_OUTCOMES) return { legs, straights: counted, structure };
       let drop = -1;
       for (let index = legs.length - 1; index >= 0 && drop < 0; index -= 1) {
         if (!openGames.has(factorKey(legs[index].eventId, legs[index].axis))) drop = index;
@@ -811,32 +1003,38 @@
     }
   }
 
-  // One build: {key, refs, kellyBankroll, pool, placed, structure, tickets,
-  // reason, partialHeldBack}. `tickets` index into `pool`; `refs` is the
-  // valuation it was built on; `partialHeldBack` the partial ticket's stake
-  // when one is due but this list's partial is already open, else 0.
+  // One build: {key, refs, kellyBankroll, pool, placed, straights,
+  // straightsLeftOut, structure, tickets, reason, partialHeldBack}.
+  // `tickets` index into `pool`; `refs` is the valuation it was built on;
+  // `straights` the straight bets in the math, `straightsLeftOut` id ->
+  // why one on a pool game is not; `partialHeldBack` the partial ticket's
+  // stake when one is due but this list's partial is already open, else 0.
   function buildTeaserSet(inputs, kellyBankroll, key) {
     const build = {
       key, refs: inputs.valuation, kellyBankroll, pool: inputs.pool.map(({ leg }) => leg), placed: inputs.placed,
-      structure: null, tickets: [], reason: null, partialHeldBack: 0,
+      straights: [], straightsLeftOut: inputs.straightsLeftOut, structure: null, tickets: [], reason: null, partialHeldBack: 0,
     };
     if (build.pool.length < LEGS_PER_TICKET) return { ...build, reason: REASON_FEW_LEGS };
-    const fitted = structureWithinBudget(build.pool, inputs.placed);
+    const fitted = structureWithinBudget(build.pool, inputs.placed, inputs.straights);
     if (fitted.overBudget) {
       return { ...build, reason: `open teasers ride on too many games to size with ${LEGS_PER_TICKET} pool legs (${fitted.overBudget.factors.length} games, ${fitted.overBudget.outcomeCount} outcomes)` };
     }
     const pool = fitted.legs;
+    const straights = fitted.straights;
     const probs = outcomeProbs(fitted.structure, inputs.valuation);
-    if (probs.reason) return { ...build, pool, reason: probs.reason };
+    if (probs.reason) return { ...build, pool, straights, reason: probs.reason };
     // One partial ticket per set: an open 4-team ticket under $200 still in
     // play is taken to be this list's partial, placed, and no second one is
     // offered — else placing it brought a smaller one, and so on. Another
     // kind of teaser under $200 (a 2-team) holds nothing back.
     const partialAllowed = !inputs.placed.some((ticket) => ticket.legCount === LEGS_PER_TICKET && ticket.stake < TICKET_MAX_STAKE);
-    const picked = greedyTickets(fitted.structure, probs.prob, placedPnl(fitted.structure, inputs.placed), kellyBankroll,
+    const heldPnl = placedPnl(fitted.structure, inputs.placed);
+    const straightPnl = straightsPnl(fitted.structure, straights);
+    for (let outcome = 0; outcome < heldPnl.length; outcome += 1) heldPnl[outcome] += straightPnl[outcome];
+    const picked = greedyTickets(fitted.structure, pool.length, probs.prob, heldPnl, kellyBankroll,
       { takenCombos: openComboKeys(pool, inputs.placed), partialAllowed });
     return {
-      ...build, pool, structure: fitted.structure, tickets: picked.tickets, reason: picked.reason, partialHeldBack: picked.partialHeldBack,
+      ...build, pool, straights, structure: fitted.structure, tickets: picked.tickets, reason: picked.reason, partialHeldBack: picked.partialHeldBack,
     };
   }
 
@@ -845,15 +1043,18 @@
   // reference fairs. Returns {build, rebuilt}.
   //   legs          teaserLegs(...) now
   //   placed        openTeasers(...) now
+  //   straights     heldStraights(...) now (none when absent)
   //   kellyBankroll K = bankroll x multiplier
   //   previous      the last build, or null
-  function planTeasers({ legs, placed, kellyBankroll, previous }) {
-    const valuation = referenceValuation(previous ? previous.refs : null, liveValuation(legs, placed));
-    const inputs = selectInputs(legs, placed, valuation);
+  function planTeasers({ legs, placed, straights, kellyBankroll, previous }) {
+    const held = straights || [];
+    const valuation = referenceValuation(previous ? previous.refs : null, liveValuation(legs, placed, held));
+    const inputs = selectInputs(legs, placed, held, valuation);
     const key = inputKey(inputs, kellyBankroll);
     // Carrying the valuation forward freezes a number that is not in the
     // list too, so a leg ticking around the pool's edge cannot flip it in and out.
-    if (previous && previous.key === key) return { build: { ...previous, refs: valuation }, rebuilt: false };
+    // A straight left out (another market, a bad rung) is not in the key, so its reason is refreshed here.
+    if (previous && previous.key === key) return { build: { ...previous, refs: valuation, straightsLeftOut: inputs.straightsLeftOut }, rebuilt: false };
     return { build: buildTeaserSet(inputs, kellyBankroll, key), rebuilt: true };
   }
 
@@ -863,8 +1064,11 @@
   // still while the win chances, EVs and summary move with every tick.
   //   {tickets: [{number, legs, stake, winAll, ev}], summary, reason}
   //   summary {count, stake, expected, placedCount, placedStake, expectedAll,
-  //            makesMoney, allLose} — the last three over the tickets to bet
-  //            and every open teaser in play; null without a build to size.
+  //            makesMoney, allLose, straights} — expectedAll, makesMoney and
+  //            allLose over the tickets to bet and every open teaser in play
+  //            (null without a build to size); straights {count, stake,
+  //            games}: the straight bets the set was sized around, whose own
+  //            P&L is in none of the figures.
   function describePlan(build, legs, placed) {
     const liveLegByKey = new Map(legs.map((leg) => [leg.key, leg]));
     const poolNow = build.pool.map((leg) => liveLegByKey.get(leg.key) || leg);
@@ -876,11 +1080,22 @@
     return { tickets, summary: summaryOf(build, tickets, legs, placed), reason: build.reason };
   }
 
+  function straightsSummary(straights) {
+    return {
+      count: straights.length,
+      stake: straights.reduce((sum, straight) => sum + straight.stake, 0),
+      games: new Set(straights.map((straight) => straight.eventId)).size,
+    };
+  }
+
   function summaryOf(build, tickets, legs, placed) {
     const stake = tickets.reduce((sum, ticket) => sum + ticket.stake, 0);
     const expected = tickets.reduce((sum, ticket) => sum + ticket.stake * ticket.ev, 0);
     const placedStake = build.placed.reduce((sum, ticket) => sum + ticket.stake, 0);
-    const summary = { count: tickets.length, stake, expected, placedCount: build.placed.length, placedStake, expectedAll: null, makesMoney: null, allLose: null };
+    const summary = {
+      count: tickets.length, stake, expected, placedCount: build.placed.length, placedStake,
+      expectedAll: null, makesMoney: null, allLose: null, straights: straightsSummary(build.straights || []),
+    };
     if (!build.structure || tickets.length + build.placed.length === 0) return summary;
     // Live fairs where the numbers are still priced, the build's own elsewhere.
     const valuation = new Map([...build.refs, ...liveValuation(legs, placed)]);
@@ -890,10 +1105,11 @@
     const anyWin = new Uint8Array(build.structure.outcomeCount);
     build.structure.placedWins.forEach((wins) => wins.forEach((won, outcome) => { anyWin[outcome] |= won; }));
     for (const ticket of build.tickets) {
-      const wins = membership(winningOutcomes(ticket.legIndexes, build.structure.poolWins, build.structure.outcomeCount), pnl.length);
+      const mask = comboMask(ticket.legIndexes);
       for (let outcome = 0; outcome < pnl.length; outcome += 1) {
-        pnl[outcome] += wins[outcome] ? ticket.stake * TICKET_NET_ODDS : -ticket.stake;
-        anyWin[outcome] |= wins[outcome];
+        const won = ticketWins(build.structure.legStates, mask, outcome);
+        pnl[outcome] += won ? ticket.stake * TICKET_NET_ODDS : -ticket.stake;
+        if (won) anyWin[outcome] = 1;
       }
     }
     let expectedAll = 0;
@@ -907,11 +1123,36 @@
     return { ...summary, expectedAll, makesMoney, allLose };
   }
 
+  // What a pool leg's row says about the straight bets on its game: the
+  // dollars in the math on the leg's direction (held) and against it, the
+  // bets themselves, and the ones on the game left out with why.
+  //   {held, against, counted: [{label, direction}], leftOut: [{label, reason}]}
+  function straightsOnRow(leg, build, straights) {
+    const countedIds = new Set((build.straights || []).map((straight) => straight.id));
+    const onGame = (straights || []).filter((straight) => straight.eventId === leg.eventId);
+    const out = { held: 0, against: 0, counted: [], leftOut: [] };
+    for (const straight of onGame) {
+      if (countedIds.has(straight.id)) {
+        const sameWay = straight.direction === leg.direction;
+        if (sameWay) out.held += straight.stake;
+        else out.against += straight.stake;
+        out.counted.push({ label: straight.label, sameWay });
+        continue;
+      }
+      const reason = straight.reason || (straight.axis !== leg.axis ? STRAIGHT_OTHER_MARKET : (build.straightsLeftOut && build.straightsLeftOut.get(straight.id)) || "not counted");
+      out.leftOut.push({ label: straight.label, reason });
+    }
+    return out;
+  }
+
   // The Legs list: one row per game — its pool leg, else its best priced leg
   // (on the open teasers' market when the game has one), else a leg with
-  // the reason it has no fair. Priced rows best first, then the unpriced.
-  //   rows [{leg, standing, inTickets, openTickets, note}]
-  function describeLegs(legs, build, placed) {
+  // the reason it has no fair. Priced rows best first, then the unpriced. A
+  // pool row carries the straight bets on its game (straightsOnRow); other
+  // rows' games are in no ticket, so their straights size nothing.
+  //   straights  heldStraights(...) now, or absent
+  //   rows [{leg, standing, inTickets, openTickets, note, straights}]
+  function describeLegs(legs, build, placed, straights) {
     const inPlay = placed.filter((ticket) => ticket.inPlay);
     const openMarkets = openMarketsByEvent(inPlay);
     const poolIndexByKey = new Map(build.pool.map((leg, index) => [leg.key, index]));
@@ -934,15 +1175,15 @@
       const offered = priced.filter((leg) => isOffered(leg, openMarkets));
       if (poolLeg) {
         const inTickets = ticketsByPoolIndex.get(poolIndexByKey.get(poolLeg.key)) || 0;
-        rows.push({ leg: poolLeg, standing: STANDING_POOL, inTickets, openTickets, note: null });
+        rows.push({ leg: poolLeg, standing: STANDING_POOL, inTickets, openTickets, note: null, straights: straightsOnRow(poolLeg, build, straights) });
       } else if (offered.length) {
         const best = offered[0];
         const standing = best.win >= BREAK_EVEN_WIN ? STANDING_OUT : STANDING_BELOW;
-        rows.push({ leg: best, standing, inTickets: 0, openTickets, note: standing === STANDING_OUT ? `not in the top ${build.pool.length}` : "below break-even" });
+        rows.push({ leg: best, standing, inTickets: 0, openTickets, note: standing === STANDING_OUT ? `not in the top ${build.pool.length}` : "below break-even", straights: null });
       } else if (priced.length) {
-        rows.push({ leg: priced[0], standing: STANDING_OTHER_MARKET, inTickets: 0, openTickets, note: "open teasers use the game's other market" });
+        rows.push({ leg: priced[0], standing: STANDING_OTHER_MARKET, inTickets: 0, openTickets, note: "open teasers use the game's other market", straights: null });
       } else {
-        rows.push({ leg: eventLegs[0], standing: STANDING_UNPRICED, inTickets: 0, openTickets, note: eventLegs[0].reason });
+        rows.push({ leg: eventLegs[0], standing: STANDING_UNPRICED, inTickets: 0, openTickets, note: eventLegs[0].reason, straights: null });
       }
     }
     return rows.sort((a, b) => {
@@ -957,8 +1198,8 @@
     TEASER_LEAGUE_IDS, TEASER_POINTS, LEGS_PER_TICKET, TICKET_NET_ODDS, TICKET_MAX_STAKE, POOL_SIZE, BREAK_EVEN_WIN,
     LEG_LIVE, LEG_STARTED,
     STANDING_POOL, STANDING_OUT, STANDING_BELOW, STANDING_OTHER_MARKET, STANDING_UNPRICED,
-    REASON_FEW_LEGS,
-    teaserBoardOf, teaserLegs, openTeasers, planTeasers, describePlan, describeLegs,
+    REASON_FEW_LEGS, REASON_HELD_RISK, STRAIGHT_OTHER_MARKET,
+    teaserBoardOf, teaserLegs, openTeasers, heldStraights, planTeasers, describePlan, describeLegs,
   };
 
   if (inNode) {

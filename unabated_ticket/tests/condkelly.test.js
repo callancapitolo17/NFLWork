@@ -125,6 +125,15 @@ test("whole number: the push row comes from the two neighbouring half-point rung
   assert.deepEqual(condkelly.cutsNeeded({ cut: 52.5, direction: "below" }), [52.5]);
 });
 
+test("resultAt: win, push and loss of a bet at a result between its cuts", () => {
+  const over52 = { cut: 52, direction: "above" };
+  assert.deepEqual([51.25, 51.75, 52.75].map((value) => condkelly.resultAt(over52, value)), [-1, 0, 1]);
+  const homeMinus3 = { cut: -3, direction: "below" };
+  assert.deepEqual([-3.75, -3.25, -2.25].map((value) => condkelly.resultAt(homeMinus3, value)), [1, 0, -1]);
+  const under44Half = { cut: 44.5, direction: "below" };
+  assert.deepEqual([44.25, 44.75].map((value) => condkelly.resultAt(under44Half, value)), [1, -1]);
+});
+
 test("whole-number candidate with nothing held is still the standalone stake", () => {
   const prob = 1.04 / 2;
   const ladders = { FG: [[51.5, 0.55], [52.5, 0.49]] };
