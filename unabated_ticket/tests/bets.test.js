@@ -538,6 +538,27 @@ test("#130 guards: a row or bet that cannot be placed on its axis says why", () 
   assert.deepEqual(bets.matchBets(cfbRow({ sideIndex: 0, points: -5.5, rotation: 300 }), [unkeyed]).matches[0].position, { reason: "side not resolved" });
 });
 
+test("teaserLegPositionOf: a teaser leg sits at its own teased number; the ticket, not the leg, carries the dollars", () => {
+  const row = cfbRow({ sideIndex: 0, points: -5.5 });
+  const leg = {
+    venue: "bfa", league: "cfb", betType: "spread", period: "FG", side: "away", points: 0.5,
+    awayTeam: "Chattanooga", homeTeam: null, awayKey: key("cfb", "Chattanooga"), homeKey: null,
+    isParlayLeg: true, parlayId: "bfa:1", stake: 200, toWin: 600, approx: [],
+  };
+  assert.ok(leg.awayKey, "fixture team index resolves Chattanooga");
+  const atPlusHalf = { axis: "margin", cut: -0.5, direction: "above", period: "FG" };
+  assert.deepEqual(bets.teaserLegPositionOf(leg, row), atPlusHalf);
+  // Every leg carries the ticket's stake; a leg's own dollars are never read.
+  assert.deepEqual(bets.teaserLegPositionOf({ ...leg, stake: null, toWin: null }, row), atPlusHalf);
+  assert.deepEqual(bets.teaserLegPositionOf({ ...leg, betType: "total", side: "under", points: 61 }, row),
+    { axis: "total", cut: 61, direction: "below", period: "FG" });
+  assert.deepEqual(bets.teaserLegPositionOf({ ...leg, period: null }, row), { reason: "no period on the record" });
+  assert.deepEqual(bets.teaserLegPositionOf({ ...leg, awayKey: null }, row), { reason: "side not resolved" });
+  // A straight bet's sizing still refuses a parlay leg.
+  const matched = { ...leg, id: "bfa:1:leg0", status: "open", homeKey: key("cfb", "Eastern Kentucky"), eventStart: row.eventStart };
+  assert.deepEqual(bets.matchBets(row, [matched]).matches[0].position, { reason: "parlay leg" });
+});
+
 test("unmatchedReasons: every open bet with no match, with why", () => {
   const nbaFill = [fill("KXNBAGAME-26OCT20LALBOS-BOS", "yes", 10, 0.50, "2026-09-11T12:00:00Z")];
   const records = normalizedFixture({ fills: nbaFill }).concat([

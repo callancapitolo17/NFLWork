@@ -417,6 +417,27 @@ test("leagueObservingSince: a league whose loads keep failing while another land
   assert.deepEqual(scanner.getStatus().leagueObservingSince, { 1: clock });
 });
 
+test("leagueLoadedAt: when each league's last snapshot landed; a failed load keeps it; start() clears it", async () => {
+  let clock = NOW;
+  let cfbDown = false;
+  const fetchImpl = fakeFetch({
+    [SNAPSHOT_BASE_URL(2)]: () => {
+      if (cfbDown) throw new Error("timed out");
+      return response({ body: fixture("v2_venue_ids_slice.json"), headers: { "content-length": "1000" } });
+    },
+  });
+  const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers });
+  await scanner.start([1, 2]);
+  assert.deepEqual(scanner.getStatus().leagueLoadedAt, { 1: NOW, 2: NOW });
+  cfbDown = true;
+  clock += 61 * 1000;
+  await scanner.tick();
+  assert.deepEqual(scanner.getStatus().leagueLoadedAt, { 1: clock, 2: NOW });
+  cfbDown = false;
+  await scanner.start([1]);
+  assert.deepEqual(scanner.getStatus().leagueLoadedAt, { 1: clock });
+});
+
 test("observingSince: more than two minutes without a successful observation starts a new run", async () => {
   let clock = NOW;
   let offline = false;

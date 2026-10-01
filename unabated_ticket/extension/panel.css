@@ -491,6 +491,55 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 .offboard[open] summary::before { content: "\25BE"; }
 .offboard .bets-list { margin-top: 6px; }
 
+/* ---- Teasers: the tickets to bet, the open BFA teasers, the legs ---- */
+#tab-teasers { padding: 12px 12px 20px; }
+#tab-teasers .warning { margin: 0 0 10px; }
+.teaser-menu { padding: 0 0 2px; }
+.teaser-status { padding: 0 0 8px; }
+.teaser-summary { margin-top: 2px; }
+/* Four cells when tickets are open at BFA: tighter than the Ticket tab's two. */
+.teaser-summary .payout-row { gap: 8px 14px; }
+.teaser-summary .payout-value small { font: 400 11.5px system-ui, sans-serif; color: var(--muted); margin-left: 3px; }
+.ticket-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.ticket-card { border: 1px solid var(--border); border-left: 3px solid var(--edge-strong); border-radius: 8px; padding: 8px 10px; display: grid; gap: 6px; min-width: 0; }
+/* Open at BFA: placed, read-only; a ticket whose games have all started is out of the math. */
+.ticket-card.placed { border-left-color: var(--border); background: var(--surface-2); }
+.ticket-card.placed.done { opacity: .6; }
+.tk-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.tk-num { font: 700 13px var(--figure); color: var(--ink); }
+.tk-size { font-size: 11.5px; color: var(--muted); }
+.tk-rail { margin-left: auto; display: flex; align-items: baseline; gap: 8px; }
+.tk-stake { font: 700 16px var(--figure); color: var(--ink); }
+.tk-ev { font: 600 12px var(--figure); color: var(--edge-mid); }
+.ticket-card.placed .tk-ev { color: var(--muted); }
+.tk-legs { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+.tk-legs li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; align-items: baseline; font-size: 12.5px; }
+.tk-legs .tl-leg { font-weight: 600; overflow-wrap: anywhere; }
+.tk-legs .tl-from { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.tk-legs .tl-win { font: 500 12px var(--figure); color: var(--ink-2); }
+/* A leg counted as won: started, on no board game, or with no fair. */
+.tk-legs li.counted, .tk-legs li.counted .tl-win { color: var(--muted); }
+.tk-legs li.counted .tl-leg { font-weight: 500; }
+.tk-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.tk-copied { font-size: 11px; color: var(--edge-mid); }
+.more-tickets { margin: 8px 0 0; }
+.more-tickets > summary {
+  cursor: pointer; list-style: none; font: 500 11.5px system-ui, sans-serif; color: var(--muted);
+}
+.more-tickets > summary::-webkit-details-marker { display: none; }
+.more-tickets > summary::before { content: "\25B8  "; }
+.more-tickets[open] > summary::before { content: "\25BE  "; }
+.more-tickets > .ticket-list, .more-tickets > .legs-list { margin-top: 8px; }
+.legs-list .leg-row { padding-left: 9px; padding-right: 2px; cursor: default; }
+.legs-list .leg-row:hover { background: none; }
+.leg-row .leg-in { font-size: 11px; color: var(--ink-2); }
+.leg-row.out .edge-side { color: var(--ink-2); font-weight: 600; }
+.leg-row.out .leg-in { color: var(--muted); }
+.be-divider { display: flex; align-items: center; gap: 8px; margin: 6px 0 2px; font-size: 11px; color: var(--muted); list-style: none; }
+.be-divider::before, .be-divider::after { content: ""; flex: 1; border-top: 1px dashed var(--border); }
+.placed-block { margin-top: 12px; }
+.placed-block .ticket-list { margin-top: 8px; }
+
 :where(button, select, input, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--edge-strong); outline-offset: 2px;
 }

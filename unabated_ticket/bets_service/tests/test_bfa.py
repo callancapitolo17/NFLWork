@@ -459,6 +459,7 @@ class FakeSession:
         self.tokens_minted = 0
         self.refresh_tokens_seen: list[str] = []
         self.history_calls: list[dict] = []
+        self.open_calls = 0
         self.passwords_seen: list[str] = []
 
     def _tokens(self) -> dict:
@@ -472,6 +473,7 @@ class FakeSession:
             return FakeResponse(200, text=f'<form action="{self.LOGIN_ACTION.replace("&", "&amp;")}" method="post">')
         if url == bfa.OPEN_BETS_URL:
             assert headers["Authorization"] == f"Bearer {jwt_with('777')}" and params == {"playerId": "777"}
+            self.open_calls += 1
             return FakeResponse(200, self.open_wagers)
         if url == bfa.HISTORY_URL:
             assert headers["Authorization"] == f"Bearer {jwt_with('777')}" and params["playerId"] == "777"
@@ -504,7 +506,8 @@ class FakeSession:
 
 
 def make_source(session: FakeSession, clock) -> BFASource:
-    return BFASource(username="user", password="secret", history_days=31, poll_sec=300,
+    # The history cadence is config's own (300 s): the tests below pin it.
+    return BFASource(username="user", password="secret", history_days=31, poll_sec=60,
                      session_factory=lambda: session, clock=clock)
 
 
@@ -519,6 +522,46 @@ def test_fetch_logs_in_once_reads_the_open_list_and_the_paged_history(history, m
     # 18 wagers in pages of 5, then the empty page that ends a total padded by transactions.
     assert [call["page"] for call in session.history_calls] == [0, 1, 2, 3, 4]
     assert (session.history_calls[0]["startDate"], session.history_calls[0]["endDate"]) == ("2026-08-22", "2026-09-23")
+
+
+def test_open_bets_every_poll_and_the_history_every_300s(history):
+    session = FakeSession(history["wagers"], open_wagers=history["openBets"])
+    now = [CLOCK]
+    source = make_source(session, clock=lambda: now[0])
+    first = source.fetch()
+    history_pages = len(session.history_calls)
+    assert (session.open_calls, history_pages > 0) == (1, True)
+
+    now[0] += 60  # a minute on: the open list again, no history
+    between = source.fetch()
+    assert (session.open_calls, len(session.history_calls)) == (2, history_pages)
+    # The open list plus the last pull's settled bets; its 9 pending copies stay out.
+    settled_ids = {record["id"] for record in first if record["status"] != "open"}
+    open_ids = {record["id"] for record in normalize_open_bets(history["openBets"], FETCHED_AT)}
+    assert {record["id"] for record in between} == settled_ids | open_ids
+    assert len(between) == 33 - 9
+
+    now[0] += 239  # 299 s since the pull: still not due
+    source.fetch()
+    assert len(session.history_calls) == history_pages
+    now[0] += 1  # 300 s: the history again
+    after = source.fetch()
+    assert (session.open_calls, len(session.history_calls)) == (4, 2 * history_pages)
+    assert len(after) == 33
+
+
+def test_a_failed_history_pull_fails_the_poll_and_is_retried_on_the_next(history):
+    session = FakeSession(history["wagers"], open_wagers=history["openBets"])
+    now = [CLOCK]
+    source = make_source(session, clock=lambda: now[0])
+    source.fetch()
+    now[0] += 300
+    session.history_status = 503
+    with pytest.raises(RuntimeError, match="history page 0 failed"):
+        source.fetch()
+    session.history_status = 200
+    now[0] += 60
+    assert len(source.fetch()) == 33  # due since the failed pull: pulled again, the full list
 
 
 def test_access_token_is_reused_then_refreshed_within_60s_of_expiry_and_a_refused_refresh_logs_in_again(history):
@@ -563,4 +606,4 @@ def test_source_if_configured_needs_both_credentials(monkeypatch):
     assert bfa.source_if_configured() is None
     monkeypatch.setattr(bfa.config, "BFA_PASSWORD", "secret")
     source = bfa.source_if_configured()
-    assert isinstance(source, BFASource) and (source.name, source.poll_sec) == ("bfa", 300.0)
+    assert isinstance(source, BFASource) and (source.name, source.poll_sec) == ("bfa", 60.0)
