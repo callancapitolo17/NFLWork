@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Unabated Ticket bets service (127.0.0.1:8094) as a launchd agent: starts
+       at login, restarts if it dies (a Claude app update killed a hand-started
+       copy 2026-09-30). Install/restart/remove: unabated_ticket/README.md
+       "Bets service". Paths point at the main checkout, never a worktree. -->
+  <key>Label</key>
+  <string>com.nflwork.bets-service</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/callancapitolo/NFLWork/unabated_ticket/bets_service/run.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- A restart right after a kill can hit the old process's bets.duckdb lock;
+       launchd retries after this many seconds. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <!-- Only crash tracebacks land here: the service logs to bets_service.log
+       itself and adds no console handler when stderr is not a TTY. -->
+  <key>StandardOutPath</key>
+  <string>/Users/callancapitolo/NFLWork/unabated_ticket/bets_service/bets_service.stderr.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/callancapitolo/NFLWork/unabated_ticket/bets_service/bets_service.stderr.log</string>
+</dict>
+</plist>

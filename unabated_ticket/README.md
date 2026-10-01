@@ -1207,10 +1207,28 @@ records the panel can match against a line (issue #114; plan in
 signs Kalshi requests — the private key never enters the extension. Read-only
 GETs; no order placement.
 
+It runs as a launchd agent (`bets_service/com.nflwork.bets-service.plist`):
+it starts at login and restarts itself if it dies. A copy started from a
+Claude session dies with the app (an app update killed one 2026-09-30).
+
 ```bash
-./unabated_ticket/bets_service/run.sh        # http://127.0.0.1:8094
+# install once (or again after editing the plist)
+cp unabated_ticket/bets_service/com.nflwork.bets-service.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.plist
+# restart onto new code (after a merge that touches the service)
+launchctl kickstart -k gui/$(id -u)/com.nflwork.bets-service
+# stop and remove
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.plist
 ```
 
+- **Never start `run.sh` by hand while the agent is loaded**: the second copy
+  fails on the `bets.duckdb` lock. The agent runs the main checkout's
+  `run.sh`; a worktree test copy has its own `bets.duckdb` but needs another
+  `BETS_SERVICE_PORT`.
+- **Logs**: `bets_service.log` (rotating); crash tracebacks go to
+  `bets_service.stderr.log`. After a hand kill, the first relaunch can fail
+  with "Conflicting lock" while the old process lets go; launchd retries 30 s
+  later.
 - **Install**: nothing beyond the `kalshi_draft/venv` (duckdb, cryptography);
   `run.sh` uses it when present, else `python3`. Launch from the repo root.
 - **Credentials**: `KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY_PATH`, read from
@@ -1820,7 +1838,8 @@ in red.
   seen after the bet` / `no Unabated fair on its line at the fill` / `the
   board lists no market of its bet type and period`. A
   `service write failed: HTTP 404` means the bets service predates the
-  route: restart it (`bets_service/run.sh`) and reload the extension; the
+  route: restart it (`launchctl kickstart -k gui/$(id -u)/com.nflwork.bets-service`)
+  and reload the extension; the
   captured row is retried every minute until the panel closes.
 - **No Unabated fair for this line**: Unabated has no edge for that line
   (common on lopsided moneylines and exchange-only lines), so there is
@@ -1876,8 +1895,9 @@ in red.
   toggle is on; the first pass after enabling is silent by design. Check
   Chrome's notification permission for the extension in System Settings.
 - **Bets: "bets service unreachable since …"** (red header, Bets tab
-  banner): nothing is listening on the service URL. Start it with
-  `./unabated_ticket/bets_service/run.sh` from the repo root and check
+  banner): nothing is listening on the service URL. Check the agent with
+  `launchctl print gui/$(id -u)/com.nflwork.bets-service` (not loaded: install
+  it, Bets service above) and read `bets_service.stderr.log` then
   `bets_service.log`; the panel keeps the last records it fetched and
   retries every 30 s. A URL on another port needs a matching
   `host_permissions` entry in `manifest.json` (only `127.0.0.1:8094` ships).
@@ -1952,8 +1972,8 @@ in red.
   unreadable bet that sits grey under Not on the board instead means the
   running service predates the marker (0.12.1): restart it.
 - **Bets: "Attach failed: HTTP 404: no route for POST /pins.json"**: the
-  bets service predates attach (0.11.0). Restart it from `main`
-  (`./unabated_ticket/bets_service/run.sh`). "HTTP 404: no bet with id …"
+  bets service predates attach (0.11.0). Restart it
+  (`launchctl kickstart -k gui/$(id -u)/com.nflwork.bets-service`). "HTTP 404: no bet with id …"
   means the service has not stored that record yet; wait for its next poll.
 - **Bets: unmatched "by id: … not on any board ladder; by name: …"**: the
   bet carries a Kalshi / Novig id no board rung carries (the venue lists no
