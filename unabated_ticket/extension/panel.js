@@ -155,7 +155,7 @@
     // setFillFairs, which keeps fillFairIndex in step.
     fillFairs: [],
   };
-  // key -> {price, at}: what has been alerted (or seen at baseline); persisted.
+  // key -> alertLogEntry {lineKey, price, edgePct, stake, rankScore, at}: what has been alerted (or seen at baseline); persisted.
   let alertLog = {};
   let eventAlertAt = {};
   // The first pass after a scanner (re)start records what is already on the
@@ -1718,9 +1718,16 @@
       summary: `${group.bookCount} book${group.bookCount === 1 ? "" : "s"} \u00b7 ${group.rows.length} line${group.rows.length === 1 ? "" : "s"}`,
       // A card pings again only when its best line got better by the card's
       // own ranking, the rank score: the best rung pulled and a +944 longshot
-      // taking over is a worse card, not news, whatever its edge %.
-      improvedOn: (previous) => typeof previous.rankScore === "number" && typeof group.best.rankScore === "number" && group.best.rankScore > previous.rankScore,
+      // taking over is a worse card, not news, whatever its edge %. The line
+      // itself must have changed (another line, or its price or edge moved):
+      // the score also moves with every re-measure of c, which is not news.
+      improvedOn: (previous) => cardLineChanged(group.best, previous)
+        && typeof previous.rankScore === "number" && typeof group.best.rankScore === "number" && group.best.rankScore > previous.rankScore,
     }));
+  }
+
+  function cardLineChanged(best, previous) {
+    return best.key !== previous.lineKey || best.price !== previous.price || best.edgePct !== previous.edgePct;
   }
 
   function priceImproved(newPrice, oldPrice) {
@@ -1828,12 +1835,18 @@
       .map((row) => ({ key: `live:${live.liveAlertKey(row)}`, row, summary: `live · ${row.live.checkpoint}`, improvedOn: () => false }));
   }
 
+  // What the next pass compares against: the line, its price and edge, and the card's rank score.
+  function alertLogEntry(row, now, baseline) {
+    const entry = { lineKey: row.key, price: row.price, edgePct: row.edgePct, stake: row.stake, rankScore: row.rankScore ?? null, at: now };
+    return baseline ? { ...entry, baseline: true } : entry;
+  }
+
   async function processAlertsOnce() {
     const now = Date.now();
     const items = alertItems().concat(liveAlertItems());
     pruneAlertLog(now);
     if (!alertsBaselined) {
-      for (const item of items) alertLog[item.key] = { price: item.row.price, stake: item.row.stake, rankScore: item.row.rankScore ?? null, at: now, baseline: true };
+      for (const item of items) alertLog[item.key] = alertLogEntry(item.row, now, true);
       alertsBaselined = true;
       await chrome.storage.local.set({ alertLog });
       return;
@@ -1845,7 +1858,7 @@
       const lastForEvent = eventAlertAt[item.row.eventId] || 0;
       if (now - lastForEvent < ALERT_EVENT_COOLDOWN_MS) continue;
       await notifyEdge(item.row, item.summary);
-      alertLog[item.key] = { price: item.row.price, stake: item.row.stake, rankScore: item.row.rankScore ?? null, at: now };
+      alertLog[item.key] = alertLogEntry(item.row, now, false);
       eventAlertAt[item.row.eventId] = now;
       fired += 1;
     }

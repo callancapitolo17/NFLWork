@@ -522,13 +522,16 @@ update from exchanges (`hasLiquidity` books) quoting BOTH sides of a rung at
 the mirrored number, fresh (on the board, inside **Max line age**) with an
 implied sum in [0.995, 1.20]: probit-devig the pair, take the probit gap to
 Unabated's fair, remove the RMS gap the exchanges show at Unabated's main
-number, divide by `dist_sd` for rungs ≥ 0.3 SD out, take the median. Fewer
-than 100 such rungs → `c = 10%`. Exchanges are a measuring stick only; no
+number, divide by `dist_sd` for rungs ≥ 0.3 SD out, drop the top 1% (stale
+quotes), take the RMS — c is a standard deviation, so not the median. Fewer
+than 100 such rungs → `c = 10%`. No floor on a measured c (user, 2026-09-30). Exchanges are a measuring stick only; no
 fair is blended. The Edges header shows the c in use for every spread/total
-market on the list (`tail flex: NFL spr 3.3% · CFB spr 5.9% · MLB tot 10%`).
-Measured c, NFL + CFB full game: 2026-09-29 NFL spr ~6%, CFB spr ~9-10%;
-2026-09-30 NFL spr 3.3% / tot 3.1%, CFB spr 5.9% / tot 7.5% (~100 ms per
-measure over 194k lines).
+market on the list (`tail flex: NFL spr 7.6% · CFB spr 9.3% · MLB tot 10%`).
+Measured c, NFL + CFB full game, 2026-09-30: NFL spr 7.6% / tot 5.6%, CFB
+spr 9.3% / tot 9.2% (~100 ms per measure over 194k lines).
+
+A line whose fair is Unabated's ±999900 placeholder (a clamp, not a fair)
+never lists and never measures (`feed.isClampedFair`).
 
 ### What is listed
 
@@ -1619,7 +1622,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 332 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 333 tests) and
 the bets service's pytest suite (306 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -2027,13 +2030,20 @@ used only to rank: rank score = keep × edge × stake (EV dollars after
 flex), keep = edge² / (edge² + sigma_e²), sigma_e growing with the line's
 distance from the main number at a rate c measured live off two-sided
 exchange alt quotes (fallback 10% under 100 rungs). The video's check
-holds: -24 wins below c ≈ 5.5%, -12 above. Removed: the **Max pts from
+holds: -24 wins below c ≈ 5.5%, -12 above. c is the RMS of the per-rung
+ratios with the top 1% dropped: the first build took the median, which
+runs about a third low for a standard deviation and floored a quarter of
+rungs at zero (NFL spreads 2.7% median vs 7.1% RMS — the median flipped the
+video's pick). Removed: the **Max pts from
 main** setting (stored values are ignored), `feed.altPassesGates`' distance
 gate and the live block's copy of it. Not shown on cards: the uncertainty
 and the discounted edge; the header shows c per market and each row its
-`EV $` rank score. No floor on a measured c (open question for the user:
-a 10% floor would pin NFL at the fallback). Card alerts now re-fire when
-the best line's rank score improves (was its stake).
+`EV $` rank score. No floor on a measured c (user decision). Card alerts
+re-fire when the best line's rank score improves AND the line itself
+changed (another line, or its price or edge moved) — the score also moves
+with every re-measure of c, which is not news. Lines on Unabated's ±999900
+fair clamp no longer list: removing the cap had surfaced Vanderbilt +46 at
+-1800, "5.55%", a $2,497 quarter-Kelly stake, ranked #2 overall.
 
 **2026-09-29 — BFA: a ticket the history cannot read still settles its
 legs.** The open list stores a BFA parlay or teaser as one record per leg

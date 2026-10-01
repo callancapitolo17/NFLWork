@@ -18,8 +18,11 @@
 // c is measured live per (league, period, bet type) from exchanges quoting
 // BOTH sides of a rung: devig the pair (probit additive shift), take the
 // probit gap to Unabated's fair, remove the gap the same exchanges show at
-// the main number, and divide by the rung's distance. Measured 2026-09-29:
-// NFL spreads ~6%, CFB spreads ~9-10%. Exchanges are a measuring stick only;
+// the main number, divide by the rung's distance, and take the RMS (c is a
+// standard deviation; a median of |miss| runs about a third low and floored
+// a quarter of rungs at zero). Measured 2026-09-30, RMS with the top 1%
+// dropped: NFL spreads 7.1%, totals 5.5%; CFB spreads 9.4%, totals 9.5%
+// (the median had said 2.7 / 3.0 / 5.8 / 7.2). Exchanges are a measuring stick only;
 // no fair is ever blended with an exchange price (user decision 2026-09-30).
 //
 // Inputs   scannerState (feed.js): lines {bookId, eventId, leagueId,
@@ -39,8 +42,11 @@
   const DZ_MAIN = 0.01 / dnorm(0);
   // Used for a market with too few two-sided exchange rungs to measure c.
   const C_FALLBACK = 0.10;
-  // A median of fewer ratios than this swings by points from slate to slate.
+  // An RMS of fewer ratios than this swings by points from slate to slate.
   const MIN_RUNGS = 100;
+  // The largest ratios dropped before the RMS: one stale quote (live max 0.94
+  // vs an RMS of 0.10 on CFB spreads) would otherwise move c by points.
+  const TRIM_TOP_SHARE = 0.01;
   // ratio = excess gap / dist_sd; near the main number the division blows up.
   const MIN_DIST_SD = 0.3;
   // An exchange pair whose implied probabilities sum outside this is crossed
@@ -136,7 +142,7 @@
   // (event, period, bet type, side). Its price is its fair.
   function noteUnabatedMainFair(fairs, line) {
     const fairAmerican = line.bacr ?? line.price;
-    if (!kelly.isAmericanPrice(fairAmerican)) return;
+    if (!kelly.isAmericanPrice(fairAmerican) || feed.isClampedFair(fairAmerican)) return;
     fairs.set(sideKeyOf(line), { points: line.points, fairProb: kelly.americanToProb(fairAmerican) });
   }
 
@@ -183,7 +189,7 @@
       if (side0.sideIndex !== 0) continue;
       const side1 = exchangeLines.get(`${side0.bookId}|${sideKeyOf({ ...side0, sideIndex: 1 })}|${mirroredPoints(side0)}`);
       const main = mainFairs.get(sideKeyOf(side0));
-      if (!side1 || !main || !kelly.isAmericanPrice(side0.bacr)) continue;
+      if (!side1 || !main || !kelly.isAmericanPrice(side0.bacr) || feed.isClampedFair(side0.bacr)) continue;
       const implied0 = impliedProbOf(side0);
       const implied1 = impliedProbOf(side1);
       if (implied0 == null || implied1 == null) continue;
@@ -200,11 +206,15 @@
     return { rungs, mainFairs };
   }
 
-  function median(values) {
-    if (!values.length) return null;
+  function rootMeanSquare(values) {
+    return Math.sqrt(values.reduce((sum, value) => sum + value * value, 0) / values.length);
+  }
+
+  // RMS of the values after dropping the largest TRIM_TOP_SHARE of them.
+  function trimmedRootMeanSquare(values) {
     const sorted = [...values].sort((a, b) => a - b);
-    const middle = Math.floor(sorted.length / 2);
-    return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+    const keepCount = sorted.length - Math.floor(sorted.length * TRIM_TOP_SHARE);
+    return rootMeanSquare(sorted.slice(0, keepCount));
   }
 
   // c for one market from its rungs: the gap at the main number is the
@@ -212,11 +222,11 @@
   // of distance, is the flex. Fewer than MIN_RUNGS usable ratios -> fallback.
   function cOfRungs(rungs) {
     const mainGaps = rungs.filter((rung) => rung.onMain).map((rung) => rung.gap);
-    const baseline = mainGaps.length ? Math.sqrt(mainGaps.reduce((sum, gap) => sum + gap * gap, 0) / mainGaps.length) : 0;
+    const baseline = mainGaps.length ? rootMeanSquare(mainGaps) : 0;
     const ratios = rungs.filter((rung) => !rung.onMain && rung.distSd >= MIN_DIST_SD)
       .map((rung) => Math.sqrt(Math.max(0, rung.gap * rung.gap - baseline * baseline)) / rung.distSd);
     const measured = ratios.length >= MIN_RUNGS;
-    return { c: measured ? median(ratios) : C_FALLBACK, measured, rungCount: ratios.length, baseline };
+    return { c: measured ? trimmedRootMeanSquare(ratios) : C_FALLBACK, measured, rungCount: ratios.length, baseline };
   }
 
   // {markets: {marketKey: {c, measured, rungCount, baseline}}, mainFairs}.
@@ -282,7 +292,7 @@
   }
 
   const api = {
-    DZ_MAIN, C_FALLBACK, MIN_RUNGS, MIN_DIST_SD, IMPLIED_SUM_MIN, IMPLIED_SUM_MAX,
+    DZ_MAIN, C_FALLBACK, MIN_RUNGS, TRIM_TOP_SHARE, MIN_DIST_SD, IMPLIED_SUM_MIN, IMPLIED_SUM_MAX,
     dnorm, pnorm, qnorm, impliedProbOf, devigProbitTwoWay, marketKeyOf,
     unabatedMainFairs, cOfRungs, measureTailFlex, cOf, isMeasured, keepFactor, rankOfRow,
   };

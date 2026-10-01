@@ -291,6 +291,20 @@ test("no distance cap on alts: a rung 9+ points from the main number lists (cap 
   assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 7 }).filter((r) => r.isAlt).length, 16);
 });
 
+test("a line whose fair is Unabated's ±999900 clamp never lists; a genuine deep fair does", () => {
+  const state = loadedState();
+  const mainRow = feed.selectEdges(state, { now: BEFORE_KICKOFF })[0];
+  const listed = () => feed.selectEdges(state, { now: BEFORE_KICKOFF }).some((r) => r.key === mainRow.key);
+  moveLine(state, mainRow.key, { bacr: -999900 });
+  assert.equal(listed(), false);
+  moveLine(state, mainRow.key, { bacr: 999900 });
+  assert.equal(listed(), false);
+  moveLine(state, mainRow.key, { bacr: 119499 });
+  assert.equal(listed(), true);
+  assert.equal(feed.isClampedFair(-999900), true);
+  assert.equal(feed.isClampedFair(null), false);
+});
+
 test("minLiquidityToWin: $20 resting at +2000 wins $400 and lists, $20 at +100 wins $20 and does not", () => {
   // Cal, 2026-09-23: thin liquidity on a longshot is worth a look, on a favorite it is not.
   const state = loadedState();

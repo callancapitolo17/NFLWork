@@ -111,14 +111,17 @@ test("fewer than 100 rungs past 0.3 SD falls back to 10%; an unmeasured market f
   assert.equal(tailflex.isMeasured(measurement, { leagueId: 2, periodTypeId: FULL_GAME, betTypeId: SPREAD }), false);
 });
 
-test("cOfRungs: rungs inside 0.3 SD never divide; the median ignores a wild ratio; noise below baseline is zero", () => {
+test("cOfRungs: an RMS, not a median; rungs inside 0.3 SD never divide; the top 1% is dropped; noise below baseline is zero", () => {
   const rungs = [{ onMain: true, gap: 0.03, distSd: 0 }];
-  for (let i = 0; i < 101; i += 1) rungs.push({ onMain: false, gap: Math.hypot(0.05 * 0.5, 0.03), distSd: 0.5 });
+  for (let i = 0; i < 99; i += 1) rungs.push({ onMain: false, gap: Math.hypot(0.05 * 0.5, 0.03), distSd: 0.5 });
   rungs.push({ onMain: false, gap: 0.5, distSd: 0.05 }); // ratio 10 if it counted
-  rungs.push({ onMain: false, gap: 2, distSd: 0.6 }); // a wild rung the median shrugs off
+  rungs.push({ onMain: false, gap: 2, distSd: 0.6 }); // a stale quote: the top 1% of 100 ratios, dropped
   const result = tailflex.cOfRungs(rungs);
-  assert.equal(result.rungCount, 102);
-  assert.ok(Math.abs(result.c - 0.05) < 1e-12);
+  assert.equal(result.rungCount, 100);
+  assert.ok(Math.abs(result.c - 0.05) < 1e-12, `c = ${result.c}`);
+  // Half the rungs at 0.02 and half at 0.10: the median would say about 0.06, the RMS sqrt((0.02^2 + 0.10^2) / 2).
+  const mixed = Array.from({ length: 200 }, (_, i) => ({ onMain: false, gap: i % 2 ? 0.02 : 0.10, distSd: 1 }));
+  assert.ok(Math.abs(tailflex.cOfRungs(mixed).c - Math.sqrt((0.02 ** 2 + 0.10 ** 2) / 2)) < 0.001);
   const quiet = tailflex.cOfRungs([{ onMain: true, gap: 0.05, distSd: 0 }, ...Array.from({ length: 100 }, () => ({ onMain: false, gap: 0.01, distSd: 1 }))]);
   assert.equal(quiet.c, 0);
 });

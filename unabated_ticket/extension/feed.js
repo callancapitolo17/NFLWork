@@ -86,6 +86,11 @@
   const PERIODS = { 1: "FG", 2: "1H", 3: "2H", 4: "1Q", 5: "2Q", 6: "3Q", 7: "4Q" };
   // ms49 is Unabated's own line, not a book anyone can bet.
   const UNABATED_LINE_BOOK_ID = 49;
+  // Unabated's bacr placeholder for a fair past its range: live 2026-09-30,
+  // ±999900 (99.99%) on 4 deep CFB rungs, one listed as Vanderbilt +46 at
+  // -1800 "5.55% edge" with a $2,497 quarter-Kelly stake. A clamp is not a
+  // fair, so its line never lists (genuine deep fairs such as +119499 do).
+  const UNABATED_FAIR_CLAMP = 999900;
   const STATUS_ON_BOARD = 1;
   // The feed writes this in place of an unknown modifiedOn (every alt line).
   const MODIFIED_ON_UNKNOWN_PREFIX = "0001-";
@@ -158,6 +163,10 @@
     if (!line.isAlt) return null;
     const sequence = line.sequenceNumber;
     return typeof sequence === "number" && sequence >= SEQUENCE_AS_EPOCH_MS_MIN ? sequence : null;
+  }
+
+  function isClampedFair(bacr) {
+    return typeof bacr === "number" && Math.abs(bacr) === UNABATED_FAIR_CLAMP;
   }
 
   function emptyState() {
@@ -567,6 +576,7 @@
       if (line.isAlt && !altPassesGates(line, state, altOpts)) continue;
       if (line.statusId !== STATUS_ON_BOARD) continue;
       if (line.ge == null || line.ge < minEdge) continue;
+      if (isClampedFair(line.bacr)) continue;
       if (!periods.has(line.periodTypeId) || !betTypes.has(line.betTypeId)) continue;
       const book = state.books[line.bookId];
       if (bookIds ? !bookIds.has(line.bookId) : !(book && book.isLive)) continue;
@@ -662,7 +672,7 @@
   }
 
   const api = {
-    LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID,
+    LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID, isClampedFair,
     kalshiEventSuffixOf,
     parseLeagueKey, parseEventStart, parseModifiedOn, lineChangedMs, lineKeyOf, altLineKeyOf, emptyState, teamSpellingsFromEventName,
     parseSnapshot, mergeStates,
