@@ -327,7 +327,8 @@ choose x >= 0 to maximize  sum over outcome rows of  prob * ln(1 + pnl / K)
   grey `game` line. Open question in #129.
 - **Left out and named, never guessed:** no rung at the bet's number or a rung
   whose fair repeats a neighbour's (Unabated flat-lines deep tails; the two
-  moneyline cuts are exempt), no stake on the record, parlay legs, a Kalshi NO
+  moneyline cuts are exempt), no stake on the record, parlay legs (an open
+  BFA teaser counts as its ticket, below), a Kalshi NO
   moneyline (also wins on a tie), a soccer three-way moneyline, quarter lines,
   a period Unabated has no ladder for (`F5`, `I1`). A ladder that crosses by
   more than half a point of probability, held bets that can already lose `K`,
@@ -342,6 +343,42 @@ choose x >= 0 to maximize  sum over outcome rows of  prob * ln(1 + pnl / K)
 - **Not sized: hedges.** A price with no edge of its own is `$0` even when a
   held bet on the other side would make the math want some (deferred, user
   decision 2026-09-19).
+- **Open teasers count too (2026-09-30, teasers plan section 14).** An open
+  BFA teaser (the tickets the Teasers tab reads, `teaser.openTeasers`) with a
+  leg on the row's game and market is held like a bet whose payout also
+  needs its other legs: the leg cuts the game's rows at its half-point (a
+  teaser push loses), and the other legs — other games, independent, each
+  at Unabated's fair — decide whether the ticket is still alive. Under the
+  log objective a ticket cannot be replaced by its average or by "the other
+  legs win", so `condkelly.solveStake` enumerates the other games (each cut
+  at every number a leg needs), pools the outcomes by which tickets they
+  leave alive (legs shared across tickets are joint) and sums the growth
+  over those pools; at most 2^16 other-game outcomes, past it the calc is
+  declined. A leg on another game that started, matches no board game or
+  has no fair counts as won — BFA closes a teaser within minutes of a
+  losing leg's game ending (9/27: the five Seahawks tickets at 20:30 UTC,
+  ~10 min after that game, the 49ers leg still to play), so an open
+  ticket's finished legs won. The leg itself follows a straight's rules:
+  another market is `game · not sized`, the other direction in another
+  period is left out, a leg with no rung on the row's ladder is `no fair at
+  …`. Other parlays stay out as `parlay leg`. Cal's 8 teasers on 9/27 (16:46
+  UTC board, K $5,000): Colts +7.5 −270 at Novig (+2.3%, three legs on Colts
+  +7.5) $315.90 alone → `add $0` — the teasers already carry that side at
+  about Kelly size at a better price (a leg inside +300 is −241); all 14
+  Novig/Kalshi/ProphetX rows that said bet something on the same side as a
+  teaser leg went to $0. The other side grows (the lift above): Chargers
+  +6.5 +120 against four Bills −1 legs $137.48 → $425.65 (averaging the
+  other legs would say $492, counting them as won $1,104); Commanders +6.5
+  $381 → $743. On the row a `teasers $600` chip (green on the row's
+  direction, red on the other; the tickets in its tooltip) sits beside
+  `held` / `against`, the related bets list one line per leg — "3 teasers
+  on Indianapolis Colts +7.5 · $600 · BFA · other legs win 40–44%" ("rides
+  on this leg alone" when no other leg is still to play) — instead of each
+  leg record, and the verb is `add` when a teaser in the math is on the
+  row's direction (so the edge-move tag shows there). The same advice sizes
+  alerts, the Min suggested bet filter and the Ticket, whose position line
+  reads `teasers $600` / `teasers against $800`; the "by my exposure" sort
+  counts teaser stakes.
 
 Measured on four live cards, 2026-09-17/18, K $8,000:
 
@@ -1393,9 +1430,10 @@ understates a ticket if Buckeye really drops a push to the 3-team price (9/27:
 correlation is not modelled (one leg per game). Football, full game, 6 points,
 4 teams only. A straight bet counts only on its leg's market and the full
 game: Unabated gives no spread–total or full-game–1H link, so a total held
-under a spread leg and a 1H bet size nothing. The Edges tab still sizes a
-straight bet without the open teasers on its game (conditional Kelly leaves
-parlay legs out). A ticket placed in the last ~90 s may not be in the tab yet.
+under a spread leg and a 1H bet size nothing. The other way round, the Edges
+tab sizes a straight bet with the open teasers on its game (Stake, "Open
+teasers count too"); its other parlays are still left out. A ticket placed
+in the last ~90 s may not be in the tab yet.
 
 ## Bets service
 
@@ -1796,7 +1834,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 359 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 372 tests) and
 the bets service's pytest suite (308 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -2001,6 +2039,34 @@ no stake guard, the parlay-leg guard kept for straight sizing),
 bets every poll, the history every 300 s (not at 299), the open list plus the
 last pull's settled bets in between, and a failed history pull retried on
 the next poll.
+
+Open teasers in the Edges stake (2026-09-30): `condkelly.test.js` checks a
+ticket with no other leg sizing like a straight at its half-point, one other
+leg and two tickets on one other game (joint) against two on separate games
+(independent) each matching the log growth written out by hand and topped
+cent by cent (and not the averaged ticket), Cal's 9/27 Colts +7.5 ($315.90 →
+$0) and Chargers +6.5 ($137.48 → $425.65) on that board's fairs, and the
+declines (17 other games past the 2^16 budget, an other game's ladder rising
+with the cut) and loud failures (a whole-number ticket leg, a missing
+other-game rung). `betsview.test.js` runs the same two rows through
+`stakeAdvice` with `teaser.openTeasers`-shaped tickets: the `teasers $600` /
+`teasers $800` chips with their tickets in the tooltip, the leg records
+dropped from the matches, one related line per leg sorted among the
+straights by tier and dollars, `add` with only teasers held, "rides on this
+leg alone" with its other legs started, another market / the other
+direction in another period / no rung each left out and named, a declined
+calc zeroing the teaser dollars, and a teaser on another game changing
+nothing.
+
+The Edges-with-teasers smoke run (2026-09-30, a scratch Playwright harness,
+not committed) loaded the unpacked extension with Sunday's saved NFL board
+shifted to a future kickoff, Cal's 8 teasers built by the real BFA
+open-bets normaliser and his straights of that morning: the Novig rows read
+`teasers $600` / `add $0.00` / `$315.90 alone` on Colts +7.5, `held $400` ·
+`against $445` · `teasers $800` / `add $425.65` on Chargers +6.5 and
+`against $1040` · `teasers $860` on Commanders +6.5 (capped at its $415 of
+liquidity), with each teasers line's tickets on hover, as in the approved
+mockup.
 
 The Teasers smoke run (2026-09-28, a scratch Playwright harness, not
 committed) loaded the unpacked extension with Sunday's saved NFL board
@@ -2269,6 +2335,24 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-09-30 — The Edges tab sizes against the open teasers on a game.** The
+reverse of the entry below, the last gap before the Teasers merge: a
+straight on a game with open BFA teasers was sized as if they did not exist
+(#130 leaves parlay legs out). A ticket's P&L on a row of the game also
+depends on its other legs, and under the log objective that gamble cannot be
+replaced by its average, so the choice was between the exact joint (enumerate
+the other games, pool by which tickets survive) and a shortcut. Walked
+through on Cal's 9/27 teasers (16:46 UTC board, K $5,000): every same-side
+row goes to $0 whichever way (Colts +7.5 −270 $316 → $0 with three Colts
+legs), so the method only matters on the other side — Chargers +6.5 against
+four Bills −1 legs: exact $426, other legs averaged $492, other legs counted
+as won $1,104. Cal's call: exact; open BFA teasers only (the Teasers tab's
+own read; other parlays stay `parlay leg`); a `teasers $X` chip after the
+approved mockup. A leg on another game that started counts as won — BFA
+closed the five Seahawks tickets ten minutes after that game ended, so an
+open ticket's finished legs won. The other-side lift applies as for
+straights (Commanders +6.5 $381 → $743), per the standing decision.
 
 **2026-09-30 — Teasers sized around straight bets on the same games.** Cal's
 last item before the Teasers merge ("incorporate previously placed bets").
