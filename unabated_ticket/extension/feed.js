@@ -86,6 +86,19 @@
   const PERIODS = { 1: "FG", 2: "1H", 3: "2H", 4: "1Q", 5: "2Q", 6: "3Q", 7: "4Q" };
   // ms49 is Unabated's own line, not a book anyone can bet.
   const UNABATED_LINE_BOOK_ID = 49;
+  // Unabated's bacr placeholder for a fair past its range: live 2026-09-30,
+  // ±999900 (99.99%) on 4 deep CFB rungs, one listed as Vanderbilt +46 at
+  // -1800 "5.55% edge" with a $2,497 quarter-Kelly stake. A clamp is not a
+  // fair, so its line never lists (genuine deep fairs such as +119499 do).
+  const UNABATED_FAIR_CLAMP = 999900;
+  // An alt lists only while Unabated gives its side between 10% and 90% (fair
+  // odds about +900 / -900). A cap in probability, not points, means the same
+  // depth in every sport (10 points is modest in a CFB spread, absurd in an
+  // MLB total). It replaces the 7-point cap (user, 2026-09-30): beyond it sit
+  // the deep favorites (the -200-or-shorter bucket ran -16.8% on 13 bets to
+  // 2026-09-30, and without a cap took $6.4k of suggested stake on one NFL+CFB
+  // board) and untested longshots.
+  const ALT_MIN_FAIR_PROB = 0.10;
   const STATUS_ON_BOARD = 1;
   // The feed writes this in place of an unknown modifiedOn (every alt line).
   const MODIFIED_ON_UNKNOWN_PREFIX = "0001-";
@@ -158,6 +171,22 @@
     if (!line.isAlt) return null;
     const sequence = line.sequenceNumber;
     return typeof sequence === "number" && sequence >= SEQUENCE_AS_EPOCH_MS_MIN ? sequence : null;
+  }
+
+  function isClampedFair(bacr) {
+    return typeof bacr === "number" && Math.abs(bacr) === UNABATED_FAIR_CLAMP;
+  }
+
+  // Unabated's fair (American) as a probability, or null when it is no price.
+  function fairProbOf(americanFair) {
+    if (typeof americanFair !== "number" || !Number.isFinite(americanFair) || Math.abs(americanFair) < 100) return null;
+    return americanFair > 0 ? 100 / (americanFair + 100) : -americanFair / (-americanFair + 100);
+  }
+
+  // The alt depth cap (ALT_MIN_FAIR_PROB). An alt with no fair fails closed.
+  function altFairInRange(americanFair) {
+    const prob = fairProbOf(americanFair);
+    return prob != null && prob >= ALT_MIN_FAIR_PROB && prob <= 1 - ALT_MIN_FAIR_PROB;
   }
 
   function emptyState() {
@@ -520,18 +549,14 @@
   }
 
   // Alt-only gates. An alt is listed only when includeAlts is on, the main
-  // line is not currently sitting on the same number (same bet twice), and it
-  // is within altMaxDistance points of the book's current main number (deep
-  // ladders are extrapolated fairs and a few-dollar stake).
+  // line is not currently sitting on the same number (same bet twice), and
+  // Unabated's fair for it is inside the depth cap (altFairInRange). Inside
+  // the cap the panel ranks deep rungs down with the tail flex (tailflex.js).
   function altPassesGates(line, state, opts) {
     if (!opts.includeAlts) return false;
     const main = state.lines[line.mainKey];
     if (main && main.points === line.points) return false;
-    if (opts.altMaxDistance != null) {
-      const mainPoints = currentMainPoints(line, state);
-      if (mainPoints == null || Math.abs(line.points - mainPoints) > opts.altMaxDistance) return false;
-    }
-    return true;
+    return altFairInRange(line.bacr);
   }
 
   // Dollars won per dollar staked at an American price: +2000 -> 20, -110 -> 0.909.
@@ -565,16 +590,14 @@
     const now = typeof opts.now === "number" ? opts.now : Date.now();
     const maxLineAgeMs = positiveNumberOrNull(opts.maxLineAgeMs);
     const minLiquidityToWin = positiveNumberOrNull(opts.minLiquidityToWin);
-    const altOpts = {
-      includeAlts: opts.includeAlts === true,
-      altMaxDistance: positiveNumberOrNull(opts.altMaxDistance),
-    };
+    const altOpts = { includeAlts: opts.includeAlts === true };
     const rows = [];
     for (const line of Object.values(state.lines)) {
       if (line.bookId === UNABATED_LINE_BOOK_ID) continue;
       if (line.isAlt && !altPassesGates(line, state, altOpts)) continue;
       if (line.statusId !== STATUS_ON_BOARD) continue;
       if (line.ge == null || line.ge < minEdge) continue;
+      if (isClampedFair(line.bacr)) continue;
       if (!periods.has(line.periodTypeId) || !betTypes.has(line.betTypeId)) continue;
       const book = state.books[line.bookId];
       if (bookIds ? !bookIds.has(line.bookId) : !(book && book.isLive)) continue;
@@ -609,9 +632,9 @@
 
   // One card per (game, period, bet type, side): a +EV opinion is
   // directional, so the two sides of a market are two cards. Rows inside a
-  // card sort by rankOf(row) descending (the panel passes the Kelly stake,
-  // which already taxes longshots), edge as the tie-break; `best` is the
-  // first. Cards come back in the same order by their best line. Rows are
+  // card sort by rankOf(row) descending (the panel passes the tail-flex rank
+  // score, EV dollars after flex — tailflex.js), edge as the tie-break; `best`
+  // is the first. Cards come back in the same order by their best line. Rows are
   // the selectEdges output (any extra fields, e.g. stake, ride along).
   function groupEdges(rows, rankOf) {
     const rank = typeof rankOf === "function" ? rankOf : (row) => row.edgePct;
@@ -670,7 +693,7 @@
   }
 
   const api = {
-    LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID,
+    LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID, ALT_MIN_FAIR_PROB, isClampedFair, altFairInRange,
     kalshiEventSuffixOf,
     parseLeagueKey, parseEventStart, parseModifiedOn, lineChangedMs, lineKeyOf, altLineKeyOf, emptyState, teamSpellingsFromEventName,
     parseSnapshot, mergeStates,

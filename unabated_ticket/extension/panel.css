@@ -169,6 +169,7 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
 }
 .feed-status { padding: 8px 12px 2px; }
 #edges-filter { padding: 0 12px 8px; cursor: pointer; }
+#edges-tailflex { padding: 0 12px 8px; }
 #edges-empty { padding: 12px; }
 .debug {
   white-space: pre-wrap; word-break: break-all; font-size: 11px; max-height: 260px;
@@ -208,6 +209,7 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
 .edge-row .edge-stake { font: 600 13px var(--figure); color: var(--ink-2); }
 .edge-row .edge-stake small { display: block; font: 400 11.5px system-ui, sans-serif; color: var(--muted); margin-top: 1px; }
 .edge-row .edge-stake.at-size { color: var(--muted); }
+.edge-row .edge-ev { font: 400 11.5px var(--figure); color: var(--muted); }
 .edge-row.blurred .edge-pct, .group-line.blurred .gl-edge { color: var(--muted); }
 
 .tag {
@@ -290,6 +292,7 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
 .group-line .gl-rail { text-align: right; }
 .group-line .gl-edge { font-family: var(--figure); color: var(--edge-mid); font-weight: 600; }
 .group-line .gl-stake { display: block; font-family: var(--figure); color: var(--muted); }
+.group-line .gl-ev { display: block; font: 400 11.5px var(--figure); color: var(--muted); }
 
 /* Multi-select book picker: a <details> that opens IN FLOW. It used to float
    over the list, but the header is its own scroll container now, so an
