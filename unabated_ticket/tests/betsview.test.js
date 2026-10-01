@@ -191,7 +191,10 @@ test("stakeAdvice: the real ladder feeds it — fairs read off feed lines, a run
 test("stakeAdvice: nothing held is the standalone Kelly stake, exactly", () => {
   const advice = adviceFor(nflLine(), 213, 7.19, [], LIONS_BILLS_LADDER);
   const standalone = kelly.kellyStakeFromEdge({ bookPrice: 213, edgePct: 7.19, ...SIZING }).stake;
-  assert.deepEqual(advice, { kind: "none", bet: standalone, alone: standalone, verb: "bet", held: 0, against: 0, reason: null, matches: [], cappedAt: null });
+  assert.deepEqual(advice, {
+    kind: "none", bet: standalone, alone: standalone, verb: "bet", held: 0, against: 0, teasers: { held: 0, against: 0 }, reason: null,
+    matches: [], teaserGroups: [], cappedAt: null,
+  });
   assert.equal(view.stakeAdviceWords(advice), null);
   assert.equal(view.suggestedBetAmount(advice), standalone);
 });
@@ -376,6 +379,165 @@ test("badges: a plain game marker for another market, nothing with no match", ()
   assert.deepEqual(view.badges({ tier: "same_game", matches: advice.matches, advice }), [{ kind: "game", text: "game" }]);
   assert.deepEqual(view.badges({ tier: null, matches: [], advice }), []);
   assert.deepEqual(view.badges(null), []);
+});
+
+// ---- open teasers on the row's game (2026-09-30, teasers plan section 14) ---------
+//
+// Sunday 9/27, 16:46 UTC board, Cal's real BFA teasers, $20,000 x 0.25. The
+// tickets are teaser.openTeasers' output shape; each other leg is Unabated's
+// fair at its teased number, a whole American price on the leg's side.
+
+const TEASER_SIZING = { bankroll: 20000, multiplier: 0.25 };
+const COLTS_GAME = 9001;
+const BILLS_GAME = 9100;
+// eventId, label, cut, direction, the leg's own fair.
+const OTHER_TEASER_LEGS = {
+  Titans: [9002, "Tennessee Titans +8.5", -8.5, "above", -295],
+  "49ers": [9003, "San Francisco 49ers -1.5", -1.5, "below", -336],
+  Seahawks: [9004, "Seattle Seahawks -2.5", 2.5, "above", -317],
+  Browns: [9005, "Cleveland Browns +8", 7.5, "below", -283],
+  Lions: [9006, "Detroit Lions -1", -1.5, "below", -267],
+  Bills: [BILLS_GAME, "Buffalo Bills -1", -1.5, "below", -285],
+  Broncos: [9008, "Denver Broncos +7.5", 7.5, "below", -283],
+  Colts: [COLTS_GAME, "Indianapolis Colts +7.5", 7.5, "below", -295],
+};
+
+function liveTeaserLeg(eventId, label, winCut, direction, american, record) {
+  const win = kelly.americanToProb(american);
+  return {
+    eventId, label, state: "live", axis: "margin", winCut, direction, win,
+    probAbove: direction === "above" ? win : 1 - win, record: record || { venue: "bfa" },
+  };
+}
+
+function legOf(team, record) {
+  const [eventId, label, winCut, direction, american] = OTHER_TEASER_LEGS[team];
+  return liveTeaserLeg(eventId, label, winCut, direction, american, record);
+}
+
+function openTeaser(id, legs) {
+  return { id, stake: 200, toWin: 600, inPlay: true, reason: null, legs };
+}
+
+// The leg record the bets service sends for a teaser leg on this game.
+function teaserLegRecord(parlayId, overrides) {
+  return heldRecord(`${parlayId}:leg0`, Object.assign({
+    venue: "bfa", isParlayLeg: true, parlayId, betType: "spread", price: -110, stake: 200, toWin: 600,
+  }, overrides));
+}
+
+function coltsRow() {
+  return nflLine({ eventId: COLTS_GAME, awayTeam: "Houston Texans", homeTeam: "Indianapolis Colts", betType: "Spread", sideIndex: 1, points: 7.5 });
+}
+
+function coltsTeasers() {
+  const coltsLeg = (id) => legOf("Colts", teaserLegRecord(id, { awayTeam: "Houston Texans", homeTeam: "Indianapolis Colts", side: "home", points: 7.5 }));
+  return [
+    openTeaser("bfa:355938771", [legOf("Titans"), legOf("49ers"), legOf("Seahawks"), coltsLeg("bfa:355938771")]),
+    openTeaser("bfa:355940664", [legOf("Titans"), legOf("Browns"), coltsLeg("bfa:355940664"), legOf("Lions")]),
+    openTeaser("bfa:355941777", [legOf("Lions"), legOf("Seahawks"), legOf("Bills"), coltsLeg("bfa:355941777")]),
+  ];
+}
+
+function coltsAdvice(teasers, ladderOf) {
+  const line = coltsRow();
+  const legRecords = teasers.flatMap((ticket) => ticket.legs.map((leg) => leg.record).filter((record) => record.id));
+  const { matches } = betsLib.matchBets(line, legRecords);
+  return view.stakeAdvice({ line, price: -270, edgePct: 2.34, ...TEASER_SIZING, matches, ladderOf: ladderOf || (() => null), teasers });
+}
+
+test("teasers: 9/27 Colts +7.5 -270 — $315.90 alone, $0 with three Colts +7.5 teasers riding", () => {
+  const without = coltsAdvice([]);
+  assert.equal(Math.round(without.bet * 100) / 100, 315.9);
+  const advice = coltsAdvice(coltsTeasers());
+  assert.deepEqual([advice.kind, advice.bet, advice.verb, advice.held, advice.against], ["sized", 0, "add", 0, 0]);
+  assert.deepEqual(advice.teasers, { held: 600, against: 0 });
+  // The tickets' own leg records are listed once, as the tickets.
+  assert.deepEqual(advice.matches, []);
+  const chips = view.badges({ tier: "same_line", matches: advice.matches, advice });
+  assert.deepEqual(chips.map(({ kind, text }) => [kind, text]), [["held", "teasers $600"]]);
+  assert.match(chips[0].title, /^\$200: Tennessee Titans \+8\.5 74\.7% \+ San Francisco 49ers -1\.5 77\.1% \+ Seattle Seahawks -2\.5 76\.0% \+ Indianapolis Colts \+7\.5 74\.7%\n/);
+  assert.deepEqual(view.relatedLines({ matches: advice.matches, advice }).map(({ tag, text }) => [tag, text]), [
+    ["this line", "3 teasers on Indianapolis Colts +7.5 · $600 · BFA · other legs win 40–44%"],
+  ]);
+  assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$0", alone: "$315.90 alone", cap: null });
+});
+
+test("teasers: 9/27 Chargers +6.5 +120 — $137.48 on the straights, $425.65 with four Bills -1 teasers against", () => {
+  const line = nflLine({ eventId: BILLS_GAME, awayTeam: "Los Angeles Chargers", homeTeam: "Buffalo Bills", betType: "Spread", sideIndex: 0, points: 6.5 });
+  const game = { awayTeam: "Los Angeles Chargers", homeTeam: "Buffalo Bills" };
+  const straights = [
+    heldRecord("chargers+3.5", { ...game, venue: "novig", betType: "spread", side: "away", points: 3.5, price: 122, stake: 400, toWin: 488.88 }),
+    heldRecord("bills-14.5-a", { ...game, venue: "novig", betType: "spread", side: "home", points: -14.5, price: 264, stake: 375, toWin: 988.63 }),
+    heldRecord("bills-14.5-b", { ...game, venue: "novig", betType: "spread", side: "home", points: -14.5, price: 257, stake: 70, toWin: 179.99 }),
+  ];
+  // P(margin above the cut) = the Chargers at +14.5 (-235), +3.5 (+173), +1.5 (+285).
+  const ladderOf = ladderStub({ "FG margin": [[-14.5, kelly.americanToProb(-235)], [-3.5, kelly.americanToProb(173)], [-1.5, kelly.americanToProb(285)]] });
+  const billsLeg = (id) => legOf("Bills", teaserLegRecord(id, { ...game, side: "home", points: -1 }));
+  const teasers = [
+    openTeaser("bfa:355938356", [legOf("Browns"), legOf("49ers"), legOf("Seahawks"), billsLeg("bfa:355938356")]),
+    openTeaser("bfa:355939213", [legOf("Lions"), legOf("49ers"), billsLeg("bfa:355939213"), legOf("Broncos")]),
+    openTeaser("bfa:355941777", [legOf("Lions"), legOf("Seahawks"), billsLeg("bfa:355941777"), legOf("Colts")]),
+    openTeaser("bfa:355942357", [legOf("Broncos"), legOf("Titans"), billsLeg("bfa:355942357"), legOf("Browns")]),
+  ];
+  const records = straights.concat(teasers.map((ticket) => ticket.legs.find((leg) => leg.eventId === BILLS_GAME).record));
+  const { matches } = betsLib.matchBets(line, records);
+  const advise = (withTeasers) => view.stakeAdvice({ line, price: 120, edgePct: 2.33, ...TEASER_SIZING, matches, ladderOf, teasers: withTeasers });
+  assert.equal(advise([]).bet, 137.48);
+  const advice = advise(teasers);
+  assert.deepEqual([advice.kind, advice.bet, advice.verb, advice.held, advice.against], ["sized", 425.65, "add", 400, 445]);
+  assert.deepEqual(advice.teasers, { held: 0, against: 800 });
+  assert.deepEqual(view.badges({ tier: "same_side", matches: advice.matches, advice }).map(({ kind, text }) => [kind, text]),
+    [["held", "held $400"], ["against", "against $445"], ["against", "teasers $800"]]);
+  assert.deepEqual(view.relatedLines({ matches: advice.matches, advice }).map(({ tag, text }) => [tag, text.split(" · ").slice(0, 2).join(" · ")]), [
+    ["same side", "Los Angeles Chargers +3.5 +122 · 45.0¢"],
+    ["other side", "4 teasers on Buffalo Bills -1 · $800"],
+    ["other side", "Buffalo Bills -14.5 +264 · 27.5¢"],
+    ["other side", "Buffalo Bills -14.5 +257 · 28.0¢"],
+  ]);
+});
+
+test("teasers: a ticket with no other leg still to play rides on this leg alone, like a straight", () => {
+  const started = { eventId: 9002, label: "Tennessee Titans +8.5", state: "started", reason: "started", win: null, record: { venue: "bfa" } };
+  const ticket = openTeaser("bfa:1", [started, legOf("Colts", teaserLegRecord("bfa:1", { awayTeam: "Houston Texans", homeTeam: "Indianapolis Colts", side: "home", points: 7.5 }))]);
+  const advice = coltsAdvice([ticket]);
+  assert.equal(advice.kind, "sized");
+  assert.match(view.relatedLines({ matches: [], advice })[0].text, /^1 teaser on Indianapolis Colts \+7\.5 · \$200 · BFA · rides on this leg alone$/);
+  assert.match(view.badges({ tier: null, matches: [], advice })[0].title, /Tennessee Titans \+8\.5 \(started, counted as won\)/);
+});
+
+test("teasers: another market, the other direction in another period and a leg with no fair are left out and named", () => {
+  const totalLeg = { ...liveTeaserLeg(COLTS_GAME, "Over 38", 38.5, "above", -250), axis: "total" };
+  const otherMarket = coltsAdvice([openTeaser("bfa:2", [legOf("Titans"), totalLeg])]);
+  assert.deepEqual([otherMarket.kind, Math.round(otherMarket.bet * 100) / 100, otherMarket.teasers.held], ["none", 315.9, 0]);
+  assert.deepEqual(view.relatedLines({ matches: [], advice: otherMarket }).map(({ inMath, tag }) => [inMath, tag]), [[false, "game · not sized"]]);
+  assert.deepEqual(view.badges({ tier: null, matches: [], advice: otherMarket }), [{ kind: "game", text: "game" }]);
+
+  // A 1H Texans row (away, the other direction) against a full-game Colts leg.
+  const firstHalf = nflLine({ eventId: COLTS_GAME, awayTeam: "Houston Texans", homeTeam: "Indianapolis Colts", betType: "Spread", period: "1H", sideIndex: 0, points: 3.5 });
+  const hedge = view.stakeAdvice({ line: firstHalf, price: 110, edgePct: 4, ...TEASER_SIZING, matches: [], ladderOf: () => null, teasers: coltsTeasers() });
+  assert.equal(hedge.kind, "none");
+  assert.ok(hedge.teaserGroups.every((group) => !group.inMath && group.note === "other period · not sized"));
+
+  // Colts +3.5 at Novig: the +7.5 legs need a rung the ladder lacks.
+  const line = coltsRow();
+  const noRung = view.stakeAdvice({ line: { ...line, points: 3.5 }, price: 120, edgePct: 4, ...TEASER_SIZING, matches: [], ladderOf: ladderStub({ "FG margin": [[2.5, 0.6], [3.5, 0.55]] }), teasers: coltsTeasers() });
+  assert.equal(noRung.kind, "none");
+  assert.deepEqual(noRung.teaserGroups.map((group) => [group.inMath, group.note]), [[false, "no fair at Indianapolis Colts +7.5"]]);
+  assert.deepEqual(view.badges({ tier: null, matches: [], advice: noRung }), [{ kind: "held", text: "held" }]);
+});
+
+test("teasers: a declined calc zeroes the teaser dollars; a teaser on another game changes nothing", () => {
+  const line = coltsRow();
+  // The row's own chance puts 52.7% above 3.5; 60% above 7.5 cannot be.
+  const notMonotone = ladderStub({ "FG margin": [[3.5, 0.2], [7.5, 0.6]] });
+  const declined = view.stakeAdvice({ line: { ...line, points: 3.5 }, price: 120, edgePct: 4, ...TEASER_SIZING, matches: [], ladderOf: notMonotone, teasers: coltsTeasers() });
+  assert.deepEqual([declined.kind, declined.reason, declined.verb], ["declined", "ladder not monotone", "bet"]);
+  assert.deepEqual(declined.teasers, { held: 0, against: 0 });
+  assert.ok(declined.teaserGroups.every((group) => !group.inMath && group.note === "ladder not monotone"));
+
+  const elsewhere = [openTeaser("bfa:3", [legOf("Titans"), legOf("49ers"), legOf("Seahawks"), legOf("Lions")])];
+  assert.deepEqual(coltsAdvice(elsewhere), coltsAdvice([]));
 });
 
 test("stakeAdviceWords: no `alone` line when the held bets left the number where it was", () => {

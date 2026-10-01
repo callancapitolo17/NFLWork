@@ -835,6 +835,11 @@
     return TIER_LABELS[tier] || tier;
   }
 
+  // Strongest relation first — the order matchBets lists bets in; an unknown tier last.
+  function tierRank(tier) {
+    return tier in TIER_RANK ? TIER_RANK[tier] : Object.keys(TIER_RANK).length;
+  }
+
   // The line's number as the BET's side would write it. The row's number is in
   // the row's frame, and on a spread the two sides are negatives of each other
   // — printing "now +14" beside a bet on "Chicago -13.5" reads as a 27.5-point
@@ -1428,7 +1433,7 @@
     AXIS_TOTAL, AXIS_MARGIN,
     matchBets, annotateRows, linePosition, teaserLegPositionOf, unmatchedReasons, matchedStarts, isParseFailure, pruneForRetention, dedupeByNativeId, resolveTeamKeys,
     rekeyRecords, learnCrosswalk, venueTeamOf, applyPins, samePoints,
-    describeBet, formatPlacedAt, formatStake, tierLabel, venueLabel, easternDateOf, betDateWindow,
+    describeBet, formatPlacedAt, formatStake, tierLabel, tierRank, venueLabel, easternDateOf, betDateWindow,
   };
 
   if (typeof module !== "undefined" && module.exports) {

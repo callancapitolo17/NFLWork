@@ -384,8 +384,10 @@
     return typeof record.points === "number" ? `${team} ${signedPoints(record.points)}` : team;
   }
 
+  // `reason` is why the leg is not priced, without the Teasers tab's
+  // "counted as won": the Edges tab names it when the leg is on its row's game.
   function counted(base, state, note) {
-    return { ...base, state, note: `${note}; counted as won` };
+    return { ...base, state, reason: note, note: `${note}; counted as won` };
   }
 
   // One leg of an open teaser: live (priced, still to play) or counted as won.
