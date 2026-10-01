@@ -519,19 +519,14 @@
     return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
   }
 
-  // Alt-only gates. An alt is listed only when includeAlts is on, the main
-  // line is not currently sitting on the same number (same bet twice), and it
-  // is within altMaxDistance points of the book's current main number (deep
-  // ladders are extrapolated fairs and a few-dollar stake).
+  // Alt-only gates. An alt is listed only when includeAlts is on and the main
+  // line is not currently sitting on the same number (same bet twice). There
+  // is no distance cap (removed 2026-09-30): the panel ranks deep rungs down
+  // with the tail flex (tailflex.js) instead of hiding them.
   function altPassesGates(line, state, opts) {
     if (!opts.includeAlts) return false;
     const main = state.lines[line.mainKey];
-    if (main && main.points === line.points) return false;
-    if (opts.altMaxDistance != null) {
-      const mainPoints = currentMainPoints(line, state);
-      if (mainPoints == null || Math.abs(line.points - mainPoints) > opts.altMaxDistance) return false;
-    }
-    return true;
+    return !(main && main.points === line.points);
   }
 
   // Dollars won per dollar staked at an American price: +2000 -> 20, -110 -> 0.909.
@@ -565,10 +560,7 @@
     const now = typeof opts.now === "number" ? opts.now : Date.now();
     const maxLineAgeMs = positiveNumberOrNull(opts.maxLineAgeMs);
     const minLiquidityToWin = positiveNumberOrNull(opts.minLiquidityToWin);
-    const altOpts = {
-      includeAlts: opts.includeAlts === true,
-      altMaxDistance: positiveNumberOrNull(opts.altMaxDistance),
-    };
+    const altOpts = { includeAlts: opts.includeAlts === true };
     const rows = [];
     for (const line of Object.values(state.lines)) {
       if (line.bookId === UNABATED_LINE_BOOK_ID) continue;
@@ -609,9 +601,9 @@
 
   // One card per (game, period, bet type, side): a +EV opinion is
   // directional, so the two sides of a market are two cards. Rows inside a
-  // card sort by rankOf(row) descending (the panel passes the Kelly stake,
-  // which already taxes longshots), edge as the tie-break; `best` is the
-  // first. Cards come back in the same order by their best line. Rows are
+  // card sort by rankOf(row) descending (the panel passes the tail-flex rank
+  // score, EV dollars after flex — tailflex.js), edge as the tie-break; `best`
+  // is the first. Cards come back in the same order by their best line. Rows are
   // the selectEdges output (any extra fields, e.g. stake, ride along).
   function groupEdges(rows, rankOf) {
     const rank = typeof rankOf === "function" ? rankOf : (row) => row.edgePct;

@@ -72,8 +72,9 @@ test("selectLiveEdges: the Edges tab's filters apply", () => {
   ];
   const keys = (opts) => live.selectLiveEdges([payload({ rows })], { now: NOW, ...opts }).map((r) => r.key).sort();
   assert.deepEqual(keys({ minEdgePct: 1, bookIds: new Set([1]), betTypes: new Set([2]), periods: new Set([1]), minLiquidityToWin: 100 }), ["live:125807:pt1:bt2:si1:ms1"]);
-  assert.deepEqual(keys({ includeAlts: true, altMaxDistance: 7, bookIds: new Set([1]), betTypes: new Set([2]), periods: new Set([1]) }),
-    ["k-alt-near", "k-thin", "k-thin-liq", "live:125807:pt1:bt2:si1:ms1"]);
+  // No distance cap on alts (removed 2026-09-30): the 10-point rung lists too.
+  assert.deepEqual(keys({ includeAlts: true, bookIds: new Set([1]), betTypes: new Set([2]), periods: new Set([1]) }),
+    ["k-alt-far", "k-alt-near", "k-thin", "k-thin-liq", "live:125807:pt1:bt2:si1:ms1"]);
 });
 
 test("selectLiveEdges: best edge first across leagues", () => {

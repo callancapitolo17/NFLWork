@@ -43,16 +43,16 @@
   // bookIds undefined (never ticked) = DEFAULT_BOOK_NAMES; null = follow the
   // Unabated selection page.js publishes (all live books until one exists),
   // set by its button; an array = the user's own ticks in the panel.
-  // Alt lines (#113) are off until asked for; altMaxDistance 7 points keeps
-  // NFL/CFB spreads to about a touchdown off the number (live 2026-09-11 the
-  // median NFL alt "edge" sat 13 points out, +400 and up). minLiquidityToWin
+  // Alt lines (#113) are off until asked for; there is no distance cap (the
+  // 7-point cap went 2026-09-30): a deep rung's edge is discounted by the tail
+  // flex (tailflex.js) when ranking, never hidden. minLiquidityToWin
   // $100: an exchange line is listed when its resting money can win $100
   // (feed.liquidityCanWin), so a thin longshot stays and a thin favorite goes. 0 = off.
   const DEFAULT_EDGE_SETTINGS = {
     leagues: ALL_LEAGUE_IDS, periods: [1], betTypes: [1, 2, 3], bookIds: undefined, minEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge",
     minStake: 0,
     minLiquidityToWin: 100,
-    includeAlts: false, altMaxDistance: 7,
+    includeAlts: false,
     // One card per (game, market, side) with its best line; the flat list is the toggle off.
     groupByMarket: true,
   };
@@ -99,10 +99,10 @@
     backToEdges: el("back-to-edges"), stakeLabel: el("stake-label"), betsBannerHead: el("bets-banner-head"),
     betsCount: el("bets-count"), betsAlert: el("bets-alert"), betsTabButton: el("bets-tab-button"),
     betsRisk: el("bets-risk"), betsRiskCaption: el("bets-risk-caption"),
-    edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
+    edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesTailFlex: el("edges-tailflex"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
     edgesSports: el("edges-sports"), edgesBetTypes: el("edges-bettypes"), edgesBooks: el("edges-books"), edgesBooksMode: el("edges-books-mode"),
     booksDefault: el("books-default"), booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMinStake: el("edges-min-stake"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
-    edgesIncludeAlts: el("edges-include-alts"), edgesAltDistance: el("edges-alt-distance"), edgesMinToWin: el("edges-min-to-win"), edgesGroup: el("edges-group"),
+    edgesIncludeAlts: el("edges-include-alts"), edgesMinToWin: el("edges-min-to-win"), edgesGroup: el("edges-group"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
     edgesLive: el("edges-live"), edgesLiveHead: el("edges-live-head"), edgesLiveList: el("edges-live-list"),
     edgesLiveCount: el("edges-live-count"), edgesPregameLabel: el("edges-pregame-label"),
@@ -179,6 +179,11 @@
   // them on first use. Both are dropped on every scanner update.
   let linesByEventCache = null;
   let ladderCache = new Map();
+  // The tail-flex c per (league, period, bet type), measured off the
+  // exchanges' two-sided rungs (tailflex.js); dropped on every scanner update
+  // and when the max line age changes.
+  const tailflex = globalThis.UnabatedTailFlex;
+  let tailFlexCache = null;
   const teamsLib = globalThis.UnabatedTeams;
   let teamsSpellingCount = 0;
   const fillfair = globalThis.UnabatedFillFair;
@@ -220,6 +225,7 @@
       boardLinesCache = null;
       linesByEventCache = null;
       ladderCache = new Map();
+      tailFlexCache = null;
       registerFeedTeams(feedState);
       if (noteMatchedStarts()) persistBets().catch((error) => console.error("[unabated-ticket] bets persist failed", error));
       learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
@@ -983,11 +989,27 @@
     return parts.join(" · ");
   }
 
+  // "tail flex: NFL spr 6.2% · CFB 1H tot 10%": the c in use for every
+  // spread/total market on the list, in list order; a market too thin to
+  // measure shows the fallback.
+  function describeTailFlex(rows) {
+    if (!scannerState || !rows.length) return "";
+    const measurement = tailFlexMeasurement();
+    const parts = new Map();
+    for (const row of rows) {
+      if (row.betTypeId === 1) continue;
+      const key = tailflex.marketKeyOf(row);
+      if (parts.has(key)) continue;
+      const c = tailflex.cOf(measurement, row);
+      const cText = tailflex.isMeasured(measurement, row) ? `${(c * 100).toFixed(1)}%` : `${Math.round(c * 100)}%`;
+      const period = row.period === "FG" ? "" : `${row.period} `;
+      parts.set(key, `${row.leagueLabel} ${period}${row.betTypeId === 2 ? "spr" : "tot"} ${cText}`);
+    }
+    return parts.size ? `tail flex: ${Array.from(parts.values()).join(" · ")}` : "";
+  }
+
   function describeAltFilter(settings) {
-    if (!settings.includeAlts) return "alts: off";
-    const gates = [];
-    if (settings.altMaxDistance > 0) gates.push(`within ${settings.altMaxDistance} pts of main`);
-    return `alts: on${gates.length ? ` (${gates.join(", ")})` : " (no gates)"}`;
+    return settings.includeAlts ? "alts: on" : "alts: off";
   }
 
   // ---- books checkboxes ----------------------------------------------------
@@ -1067,7 +1089,6 @@
       now: Date.now(),
       maxLineAgeMs: settings.maxLineAgeHours * 3600 * 1000,
       includeAlts: settings.includeAlts,
-      altMaxDistance: settings.altMaxDistance,
       minLiquidityToWin: settings.minLiquidityToWin,
     };
   }
@@ -1116,12 +1137,31 @@
     return minStake === 0 || betsView.suggestedBetAmount(row.bet.advice) >= minStake;
   }
 
+  // Measured once per scanner update, on the same line-age gate as the list.
+  function tailFlexMeasurement() {
+    const maxLineAgeMs = state.edgeSettings.maxLineAgeHours * 3600 * 1000;
+    if (!tailFlexCache || tailFlexCache.maxLineAgeMs !== maxLineAgeMs) {
+      tailFlexCache = { maxLineAgeMs, measurement: tailflex.measureTailFlex(scannerState, { now: Date.now(), maxLineAgeMs }) };
+    }
+    return tailFlexCache.measurement;
+  }
+
+  // The standalone stake (sized on Unabated's raw edge, never on the flexed
+  // one) and the tail-flex rank score: EV dollars after flex, which picks a
+  // card's best line and orders the lines inside it.
+  function withStakeAndRank(row, measurement) {
+    const sized = { ...row, stake: stakeFor(row) };
+    const rank = tailflex.rankOfRow(sized, measurement);
+    return { ...sized, rankScore: rank ? rank.score : null };
+  }
+
   function currentEdgeRows() {
     if (!scannerState) return [];
     const effective = effectiveFilter();
     const settings = state.edgeSettings;
+    const measurement = tailFlexMeasurement();
     const selected = feed.selectEdges(scannerState, { ...edgeSelectionOptions(effective), minEdge: settings.minEdgePct / 100 })
-      .map((row) => ({ ...row, stake: stakeFor(row) }));
+      .map((row) => withStakeAndRank(row, measurement));
     const rows = withBetFlags(selected).filter(meetsMinStake);
     if (settings.sortBy === "stake") rows.sort((a, b) => (b.stake ?? -1) - (a.stake ?? -1) || b.edgePct - a.edgePct);
     if (settings.sortBy === "start") rows.sort((a, b) => a.eventStartMs - b.eventStartMs || b.edgePct - a.edgePct);
@@ -1219,10 +1259,12 @@
   }
 
   // Cards: the best line of each (game, market, side) is always the highest
-  // stake; the panel's sort orders the cards through that line.
+  // tail-flex rank score (EV dollars after flex); the panel's sort orders the
+  // cards through that line.
   function groupsOf(rows) {
-    const groups = feed.groupEdges(rows, (row) => row.stake);
+    const groups = feed.groupEdges(rows, (row) => row.rankScore);
     const sortBy = state.edgeSettings.sortBy;
+    if (sortBy === "stake") groups.sort((a, b) => (b.best.stake ?? -1) - (a.best.stake ?? -1) || b.best.edgePct - a.best.edgePct);
     if (sortBy === "edge") groups.sort((a, b) => b.best.edgePct - a.best.edgePct || a.eventStartMs - b.eventStartMs);
     if (sortBy === "start") groups.sort((a, b) => a.eventStartMs - b.eventStartMs || b.best.edgePct - a.best.edgePct);
     if (sortBy === "exposure") groups.sort((a, b) => exposureDollars(b.best) - exposureDollars(a.best) || b.best.edgePct - a.best.edgePct);
@@ -1395,9 +1437,19 @@
     stake.className = "edge-stake";
     fillStakeCell(stake, row);
     // The edge-move tag reads the pregame history; a live line has none.
-    rail.append(pct, ...(row.live ? [] : moveParts(row, row.bet)), stake);
+    rail.append(pct, ...(row.live ? [] : moveParts(row, row.bet)), stake, ...evParts(row, "edge-ev"));
 
     return [main, rail, ...[relatedBlock(row.bet)].filter(Boolean)];
+  }
+
+  // The tail-flex rank score as "EV $11.72"; nothing for a row without one (live rows).
+  function evParts(row, className) {
+    if (typeof row.rankScore !== "number") return [];
+    const ev = document.createElement("span");
+    ev.className = className;
+    ev.textContent = `EV ${fmtDollars(row.rankScore)}`;
+    ev.title = "EV dollars after tail flex (Unabated's edge discounted for distance from the main number): picks the card's best line and orders its lines. The stake stays on Unabated's edge.";
+    return [ev];
   }
 
   // A line inside a card's expander: price and edge only.
@@ -1425,7 +1477,7 @@
     const stake = document.createElement("span");
     stake.className = "gl-stake";
     stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
-    rail.append(edge, ...moveParts(row, row.bet), stake);
+    rail.append(edge, ...moveParts(row, row.bet), stake, ...evParts(row, "gl-ev"));
 
     li.append(main, rail);
     return li;
@@ -1537,6 +1589,8 @@
     renderEdgesStatus(items);
     const effective = effectiveFilter();
     view.edgesFilter.textContent = describeFilter(effective);
+    view.edgesTailFlex.textContent = describeTailFlex(rows);
+    view.edgesTailFlex.hidden = view.edgesTailFlex.textContent === "";
     view.filtersSummary.textContent = summariseFilter(effective);
     renderBooksList(effective);
     renderFilterDebug();
@@ -1663,9 +1717,9 @@
       key: `group:${group.key}`, row: group.best,
       summary: `${group.bookCount} book${group.bookCount === 1 ? "" : "s"} \u00b7 ${group.rows.length} line${group.rows.length === 1 ? "" : "s"}`,
       // A card pings again only when its best line got better by the card's
-      // own ranking, the stake: the best rung pulled and a +944 longshot
+      // own ranking, the rank score: the best rung pulled and a +944 longshot
       // taking over is a worse card, not news, whatever its edge %.
-      improvedOn: (previous) => typeof previous.stake === "number" && typeof group.best.stake === "number" && group.best.stake > previous.stake,
+      improvedOn: (previous) => typeof previous.rankScore === "number" && typeof group.best.rankScore === "number" && group.best.rankScore > previous.rankScore,
     }));
   }
 
@@ -1739,8 +1793,9 @@
   }
 
   function alertRows() {
+    const measurement = tailFlexMeasurement();
     const selected = feed.selectEdges(scannerState, { ...edgeSelectionOptions(effectiveFilter()), minEdge: state.alertSettings.minEdgePct / 100 })
-      .map((row) => ({ ...row, stake: stakeFor(row) }));
+      .map((row) => withStakeAndRank(row, measurement));
     // A line whose stake against what you hold is $0 has nothing to act on, and
     // one below the Min suggested bet is hidden from the list, so neither alerts.
     return withBetFlags(selected).filter((row) => betsView.suggestedBetAmount(row.bet.advice) > 0 && meetsMinStake(row));
@@ -1778,7 +1833,7 @@
     const items = alertItems().concat(liveAlertItems());
     pruneAlertLog(now);
     if (!alertsBaselined) {
-      for (const item of items) alertLog[item.key] = { price: item.row.price, stake: item.row.stake, at: now, baseline: true };
+      for (const item of items) alertLog[item.key] = { price: item.row.price, stake: item.row.stake, rankScore: item.row.rankScore ?? null, at: now, baseline: true };
       alertsBaselined = true;
       await chrome.storage.local.set({ alertLog });
       return;
@@ -1790,7 +1845,7 @@
       const lastForEvent = eventAlertAt[item.row.eventId] || 0;
       if (now - lastForEvent < ALERT_EVENT_COOLDOWN_MS) continue;
       await notifyEdge(item.row, item.summary);
-      alertLog[item.key] = { price: item.row.price, stake: item.row.stake, at: now };
+      alertLog[item.key] = { price: item.row.price, stake: item.row.stake, rankScore: item.row.rankScore ?? null, at: now };
       eventAlertAt[item.row.eventId] = now;
       fired += 1;
     }
@@ -1898,19 +1953,17 @@
     const minEdgePct = Number(view.edgesMin.value);
     const minStake = Number(view.edgesMinStake.value);
     const maxLineAgeHours = Number(view.edgesMaxAge.value);
-    const altMaxDistance = Number(view.edgesAltDistance.value);
     const minLiquidityToWin = Number(view.edgesMinToWin.value);
     if (!Number.isFinite(minEdgePct) || minEdgePct < 0) return { error: "Minimum edge must be zero or more." };
     if (!Number.isFinite(minStake) || minStake < 0) return { error: "Minimum suggested bet must be zero (off) or more." };
     if (!Number.isFinite(maxLineAgeHours) || maxLineAgeHours <= 0) return { error: "Max line age must be above zero hours." };
-    if (!Number.isFinite(altMaxDistance) || altMaxDistance < 0) return { error: "Max points from main must be zero (off) or more." };
     if (!Number.isFinite(minLiquidityToWin) || minLiquidityToWin < 0) return { error: "Min liq to win must be zero (off) or more." };
     if (!periods.length) return { error: "Pick at least one period." };
     if (!betTypes.length) return { error: "Pick at least one bet type." };
     return {
       settings: {
         ...state.edgeSettings, leagues, periods, betTypes, minEdgePct, minStake, maxLineAgeHours, minLiquidityToWin, sortBy: view.edgesSort.value,
-        includeAlts: view.edgesIncludeAlts.checked, altMaxDistance,
+        includeAlts: view.edgesIncludeAlts.checked,
         groupByMarket: view.edgesGroup.checked,
       },
     };
@@ -1929,7 +1982,6 @@
     view.edgesMinToWin.value = settings.minLiquidityToWin;
     view.edgesSort.value = settings.sortBy;
     view.edgesIncludeAlts.checked = settings.includeAlts;
-    view.edgesAltDistance.value = settings.altMaxDistance;
     view.edgesGroup.checked = settings.groupByMarket;
   }
 
@@ -1939,12 +1991,11 @@
     if (parsed.error) return;
     const before = state.edgeSettings;
     const leaguesChanged = parsed.settings.leagues.join(",") !== before.leagues.join(",");
-    // Widening periods, bet types, the liquidity floor or the alt gates exposes lines the alert log has never seen.
+    // Widening periods, bet types, the liquidity floor or the alts toggle exposes lines the alert log has never seen.
     const scopeChanged = leaguesChanged
       || parsed.settings.periods.join(",") !== before.periods.join(",")
       || parsed.settings.betTypes.join(",") !== before.betTypes.join(",")
       || parsed.settings.includeAlts !== before.includeAlts
-      || parsed.settings.altMaxDistance !== before.altMaxDistance
       || parsed.settings.minLiquidityToWin !== before.minLiquidityToWin
       // Alert keys differ between the flat list and cards.
       || parsed.settings.groupByMarket !== before.groupByMarket;
@@ -1974,7 +2025,6 @@
     if (typeof stored.minLiquidityToWin === "number" && stored.minLiquidityToWin >= 0) base.minLiquidityToWin = stored.minLiquidityToWin;
     if (["edge", "stake", "start", "exposure"].includes(stored.sortBy)) base.sortBy = stored.sortBy;
     if (typeof stored.includeAlts === "boolean") base.includeAlts = stored.includeAlts;
-    if (typeof stored.altMaxDistance === "number" && stored.altMaxDistance >= 0) base.altMaxDistance = stored.altMaxDistance;
     if (typeof stored.groupByMarket === "boolean") base.groupByMarket = stored.groupByMarket;
     return base;
   }
@@ -2879,7 +2929,6 @@
   view.edgesMaxAge.addEventListener("input", onEdgeSettingsInput);
   view.edgesSort.addEventListener("change", onEdgeSettingsInput);
   view.edgesIncludeAlts.addEventListener("change", onEdgeSettingsInput);
-  view.edgesAltDistance.addEventListener("input", onEdgeSettingsInput);
   view.edgesMinToWin.addEventListener("input", onEdgeSettingsInput);
   view.edgesGroup.addEventListener("change", onEdgeSettingsInput);
   view.alertsEnabled.addEventListener("change", onAlertSettingsInput);

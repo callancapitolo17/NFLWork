@@ -281,21 +281,14 @@ test("selectEdges lists no alt unless includeAlts is on", () => {
   assert.equal(rows.find((r) => !r.isAlt).mainPoints, null);
 });
 
-test("altMaxDistance keeps alts within N points of the book's main number", () => {
+test("no distance cap on alts: a rung 9+ points from the main number lists (cap removed 2026-09-30)", () => {
   const state = loadedState();
-  const within7 = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 7 }).filter((r) => r.isAlt);
-  assert.deepEqual(within7.map((r) => [r.sideLabel, r.mainPoints]), [
-    ["Carolina Panthers -2.5", 2.5],
-    ["Carolina Panthers -4.5", 2.5],
-    ["Over 54.5", 47.5], // exactly 7 away is kept
-    ["Over 50.5", 47.5],
-    ["Chicago Bears -4.5", -2.5],
-    ["Chicago Bears -9.5", -2.5],
-  ]);
-  const within2 = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 2 }).filter((r) => r.isAlt);
-  assert.deepEqual(within2.map((r) => r.sideLabel), ["Chicago Bears -4.5"]);
-  // 0 or a non-number means no distance gate.
-  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 0 }).filter((r) => r.isAlt).length, 16);
+  const alts = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true }).filter((r) => r.isAlt);
+  assert.equal(alts.length, 16);
+  const far = alts.filter((r) => Math.abs(r.points - r.mainPoints) > 7);
+  assert.ok(far.length > 0, "expected at least one alt more than 7 points from its main number");
+  // A stale opts.altMaxDistance from an old caller is ignored.
+  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 7 }).filter((r) => r.isAlt).length, 16);
 });
 
 test("minLiquidityToWin: $20 resting at +2000 wins $400 and lists, $20 at +100 wins $20 and does not", () => {
@@ -333,16 +326,16 @@ test("minLiquidityToWin gates alts too, and leaves books with no liquidity figur
 
 test("an alt is hidden while the main line sits on its number, and distance follows the moved main line", () => {
   const state = loadedState();
-  const opts = { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 7 };
+  const opts = { now: BEFORE_KICKOFF, includeAlts: true };
   assert.ok(feed.selectEdges(state, opts).some((r) => r.key === "289357360:ms89:si0:tid6:alt-4.5"));
   // Novig moves its Bears main line from -2.5 to -4.5; its alts stay as they were.
   moveLine(state, "289357360:ms89:si0:tid6", { points: -4.5, price: 130 });
   const rows = feed.selectEdges(state, opts);
   assert.ok(!rows.some((r) => r.key === "289357360:ms89:si0:tid6:alt-4.5"));
-  // -9.5 is now 5 from the main number; -13.5 (9 away) is still out; mainPoints reports the current main.
+  // mainPoints reports the current main; -13.5, 9 points from it, lists (no distance cap).
   const nineHalf = rows.find((r) => r.key === "289357360:ms89:si0:tid6:alt-9.5");
   assert.equal(nineHalf.mainPoints, -4.5);
-  assert.ok(!rows.some((r) => r.key === "289357360:ms89:si0:tid6:alt-13.5"));
+  assert.equal(rows.find((r) => r.key === "289357360:ms89:si0:tid6:alt-13.5").mainPoints, -4.5);
   assert.equal(state.lines["289357360:ms89:si0:tid6:alt-9.5"].price, 245);
 });
 

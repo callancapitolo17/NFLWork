@@ -89,11 +89,7 @@
     if (opts.periods && !opts.periods.has(row.periodTypeId)) return false;
     if (opts.betTypes && !opts.betTypes.has(row.betTypeId)) return false;
     if (opts.bookIds && !opts.bookIds.has(row.bookId)) return false;
-    if (row.isAlt) {
-      if (!opts.includeAlts) return false;
-      if (opts.altMaxDistance != null && opts.altMaxDistance > 0 && row.mainPoints != null
-        && Math.abs(row.points - row.mainPoints) > opts.altMaxDistance) return false;
-    }
+    if (row.isAlt && !opts.includeAlts) return false;
     // Not a valid American price: nothing downstream (Kelly, cents) can use it.
     if (Math.abs(row.price) < 100) return false;
     if (opts.minLiquidityToWin != null && opts.minLiquidityToWin > 0 && row.liquidity != null) {
@@ -162,7 +158,7 @@
   // best edge first. Stale payloads still list (greyed by the panel); a
   // payload past LIVE_DROP_MS lists nothing.
   //   opts  {minEdgePct, periods, betTypes, bookIds, includeAlts,
-  //          altMaxDistance, minLiquidityToWin, now}
+  //          minLiquidityToWin, now}
   function selectLiveEdges(payloads, opts) {
     const options = opts || {};
     const now = typeof options.now === "number" ? options.now : Date.now();
