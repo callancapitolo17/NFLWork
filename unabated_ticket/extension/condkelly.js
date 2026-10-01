@@ -13,13 +13,26 @@
 //   candidate      { group, cut, direction, netOdds, prob } — the new bet
 //   held           [{ group, cut, direction, stake, toWin }] — all on the
 //                  candidate's market axis (the caller filters)
+//   tickets        [{ group, cut, direction, stake, toWin, others }] — open
+//                  teasers with a leg on this axis (2026-09-30). The leg wins
+//                  past its half-point `cut` (a teaser push loses); the
+//                  ticket pays +toWin only when that leg AND every leg in
+//                  `others` win, else -stake. An other leg { factor, cut,
+//                  direction } sits on another game, named by `factor` and
+//                  independent of this one. Optional.
+//   factors        { [factor]: [[cut, probAbove], ...] } — P(result > cut) on
+//                  each other game, at every cut its legs need. Optional.
 //   ladders        { [group]: [[cut, probAbove], ...] } — P(result > cut) at
-//                  half-point cuts, for every cut a held bet needs
+//                  half-point cuts, for every cut a held bet or ticket needs
 // A `group` is one period of the axis ("FG", "1H"). `cut` + `direction`
 // ("above" | "below") say when a bet wins: Over 52.5 = above 52.5; on the
 // margin axis (away minus home) an away bet at points a = above -a, a home
 // bet at points h = below h, a moneyline = above +0.5 / below -0.5.
 // A whole-number cut k pushes between k-0.5 and k+0.5.
+// A ticket's other legs make its P&L on a row of this game a gamble, and
+// under the log objective a gamble cannot be replaced by its average: the
+// other games are enumerated, grouped by which tickets they leave alive, and
+// the score is the chance-weighted sum of the growth over those groups.
 // Output { stake, reason }: `reason` is set (and stake null) when the calc is
 // declined. Nothing here writes anywhere. teaser.js reads cutsNeeded and
 // resultAt to put a straight bet held under a teaser leg on its game's rows.
@@ -40,6 +53,11 @@
   // A clamped ladder can leave the new bet no losing row; there is no
   // maximum to find, so the calc is declined rather than sized to infinity.
   const REASON_NO_LOSING_ROW = "ladder leaves the new bet no losing outcome";
+  // The joint outcomes of the other games under the tickets one calc may
+  // enumerate. A 4-team ticket rides on three other games; 9/27's eight
+  // tickets put seven under one row (128 outcomes).
+  const MAX_OTHER_GAME_OUTCOMES = 1 << 16;
+  const REASON_TOO_MANY_GAMES = "the open teasers ride on too many other games to size";
   const GOLDEN_RATIO = (Math.sqrt(5) - 1) / 2;
   const SEARCH_MAX_ITERATIONS = 200;
   const SEARCH_TOLERANCE_DOLLARS = 1e-7;
@@ -76,6 +94,32 @@
 
   function isWholeNumber(cut) {
     return Number.isInteger(cut);
+  }
+
+  // A teaser leg loses on a push, so the caller passes the half-point one
+  // step against it (Bills -1 -> -1.5): a whole number here is a caller bug.
+  function assertHalfPointLeg(leg, label) {
+    assertFinite(leg.cut, `${label}.cut`);
+    if (!Number.isInteger(leg.cut * 2) || isWholeNumber(leg.cut)) {
+      throw new Error(`condkelly ${label}.cut: expected a half-point number (a teaser push loses), got ${leg.cut}`);
+    }
+    if (leg.direction !== "above" && leg.direction !== "below") {
+      throw new Error(`condkelly ${label}.direction: expected "above" or "below", got ${leg.direction}`);
+    }
+  }
+
+  function assertTicketShape(ticket, label) {
+    assertBetShape(ticket, label);
+    assertHalfPointLeg(ticket, label);
+    assertPositive(ticket.stake, `${label}.stake`);
+    assertPositive(ticket.toWin, `${label}.toWin`);
+    if (!Array.isArray(ticket.others)) throw new Error(`condkelly ${label}.others: expected an array, got ${ticket.others}`);
+    ticket.others.forEach((leg, i) => {
+      if (typeof leg.factor !== "string" || leg.factor === "") {
+        throw new Error(`condkelly ${label}.others[${i}].factor: expected a game name, got ${leg.factor}`);
+      }
+      assertHalfPointLeg(leg, `${label}.others[${i}]`);
+    });
   }
 
   // Where a bet stops losing and starts winning. A half-point number is one
@@ -130,19 +174,11 @@
     return [[lower, 1 - winProb], [upper, 1 - winProb - pushProb]];
   }
 
-  // One group's outcome rows: the gaps between its sorted cuts. Each row
-  // carries its chance, the held bets' P&L there, and whether the candidate
-  // wins (+1), pushes (0) or loses (-1) there — null when the candidate is in
-  // another group. Returns { rows } or { reason }.
-  function groupRows(group, heldBets, candidate, ladders) {
-    const ladder = ladderMap(ladders, group);
-    const overrides = new Map(candidate ? candidateOverrides(candidate, ladder) : []);
-    const probAboveByCut = new Map(overrides);
-    for (const bet of heldBets) {
-      for (const cut of cutsNeeded(bet)) {
-        if (!overrides.has(cut)) probAboveByCut.set(cut, ladderProbAbove(ladder, group, cut));
-      }
-    }
+  // The outcome rows of one axis cut at every cut in `probAboveByCut` (cut
+  // -> P(result > cut)): the gaps between the sorted cuts, each with its
+  // chance and a value strictly inside it. {rows: [{prob, value}]} or
+  // {reason} when the chances do not fall as the cut rises.
+  function rowsBetweenCuts(probAboveByCut) {
     const cuts = Array.from(probAboveByCut.keys()).sort((a, b) => a - b);
     const edges = [-Infinity, ...cuts, Infinity];
     const probsAbove = [1, ...cuts.map((cut) => probAboveByCut.get(cut)), 0];
@@ -156,17 +192,108 @@
       // Any value strictly inside the gap: every cut is a half-point, so a
       // quarter past the lower edge (or before the upper) is inside.
       const value = edges[i] === -Infinity ? edges[i + 1] - HALF_POINT / 2 : edges[i] + HALF_POINT / 2;
-      let heldPnl = 0;
-      for (const bet of heldBets) {
-        const result = resultAt(bet, value);
-        heldPnl += result > 0 ? bet.toWin : result < 0 ? -bet.stake : 0;
-      }
-      rows.push({ prob, heldPnl, candidateResult: candidate ? resultAt(candidate, value) : null });
+      rows.push({ prob, value });
     }
     // Clamped slices leave the total a hair over 1.
     const live = rows.filter((row) => row.prob > PROB_EPSILON);
     for (const row of live) row.prob /= totalProb;
     return { rows: live };
+  }
+
+  // The held bets' P&L at a result `value`: +toWin, 0 on a push, -stake.
+  function heldPnlAt(heldBets, value) {
+    let pnl = 0;
+    for (const bet of heldBets) {
+      const result = resultAt(bet, value);
+      pnl += result > 0 ? bet.toWin : result < 0 ? -bet.stake : 0;
+    }
+    return pnl;
+  }
+
+  // One group's outcome rows: the gaps between its sorted cuts — the
+  // candidate's, the held bets' and the tickets' legs'. Each row carries its
+  // chance, its value (the tickets' P&L is added per survival class), the
+  // held bets' P&L there, and whether the candidate wins (+1), pushes (0) or
+  // loses (-1) there — null when the candidate is in another group. Returns
+  // { rows } or { reason }.
+  function groupRows(group, heldBets, groupTickets, candidate, ladders) {
+    const ladder = ladderMap(ladders, group);
+    const overrides = new Map(candidate ? candidateOverrides(candidate, ladder) : []);
+    const probAboveByCut = new Map(overrides);
+    const cutsHeld = [...heldBets.flatMap(cutsNeeded), ...groupTickets.map((ticket) => ticket.cut)];
+    for (const cut of cutsHeld) {
+      if (!overrides.has(cut)) probAboveByCut.set(cut, ladderProbAbove(ladder, group, cut));
+    }
+    const built = rowsBetweenCuts(probAboveByCut);
+    if (built.reason) return built;
+    return {
+      rows: built.rows.map((row) => ({
+        prob: row.prob, value: row.value, heldPnl: heldPnlAt(heldBets, row.value),
+        candidateResult: candidate ? resultAt(candidate, row.value) : null,
+      })),
+    };
+  }
+
+  // The other games under the tickets, each cut at every number one of their
+  // legs needs: {games: [{factor, rows}]} or {reason}.
+  function otherGames(tickets, factors) {
+    const cutsByFactor = new Map();
+    for (const ticket of tickets) {
+      for (const leg of ticket.others) {
+        if (!cutsByFactor.has(leg.factor)) cutsByFactor.set(leg.factor, new Set());
+        cutsByFactor.get(leg.factor).add(leg.cut);
+      }
+    }
+    const games = [];
+    let outcomeCount = 1;
+    for (const [factor, cuts] of cutsByFactor) {
+      const ladder = ladderMap(factors, factor);
+      const built = rowsBetweenCuts(new Map(Array.from(cuts, (cut) => [cut, ladderProbAbove(ladder, factor, cut)])));
+      if (built.reason) return built;
+      outcomeCount *= built.rows.length;
+      if (outcomeCount > MAX_OTHER_GAME_OUTCOMES) return { reason: REASON_TOO_MANY_GAMES };
+      games.push({ factor, rows: built.rows });
+    }
+    return { games };
+  }
+
+  // Which tickets the other games leave alive, and how likely each way is.
+  // The games are independent, so a joint outcome's chance is the product of
+  // its rows'; outcomes leaving the same tickets alive are pooled, since that
+  // is all the score reads. A ticket with no other leg is always alive.
+  //   {classes: [{prob, alive: [bool per ticket]}]} or {reason}
+  function survivalClasses(tickets, factors) {
+    const found = otherGames(tickets, factors);
+    if (found.reason) return found;
+    const games = found.games;
+    const byAlive = new Map();
+    const valueByFactor = new Map();
+    const visit = (gameIndex, prob) => {
+      if (gameIndex === games.length) {
+        const alive = tickets.map((ticket) => ticket.others.every((leg) => resultAt(leg, valueByFactor.get(leg.factor)) > 0));
+        const key = alive.map(Number).join("");
+        if (byAlive.has(key)) byAlive.get(key).prob += prob;
+        else byAlive.set(key, { prob, alive });
+        return;
+      }
+      for (const row of games[gameIndex].rows) {
+        valueByFactor.set(games[gameIndex].factor, row.value);
+        visit(gameIndex + 1, prob * row.prob);
+      }
+    };
+    visit(0, 1);
+    return { classes: Array.from(byAlive.values()) };
+  }
+
+  // The tickets' P&L at a result `value` of this game in `group`: +toWin
+  // where the leg wins and the other games left the ticket alive, else -stake.
+  function ticketsPnlAt(tickets, alive, group, value) {
+    let pnl = 0;
+    tickets.forEach((ticket, index) => {
+      if (ticket.group !== group) return;
+      pnl += resultAt(ticket, value) > 0 && alive[index] ? ticket.toWin : -ticket.stake;
+    });
+    return pnl;
   }
 
   function rowPnl(row, stake, netOdds) {
@@ -250,7 +377,7 @@
     return (lo + hi) / 2;
   }
 
-  function solveStake({ kellyBankroll, candidate, held, ladders }) {
+  function solveStake({ kellyBankroll, candidate, held, tickets, factors, ladders }) {
     assertPositive(kellyBankroll, "kellyBankroll");
     assertBetShape(candidate, "candidate");
     assertPositive(candidate.netOdds, "candidate.netOdds");
@@ -264,26 +391,51 @@
       assertPositive(bet.stake, `held[${i}].stake`);
       assertPositive(bet.toWin, `held[${i}].toWin`);
     });
+    const heldTickets = Array.isArray(tickets) ? tickets : [];
+    heldTickets.forEach((ticket, i) => assertTicketShape(ticket, `tickets[${i}]`));
 
     const groupNames = [candidate.group];
-    for (const bet of heldBets) if (!groupNames.includes(bet.group)) groupNames.push(bet.group);
+    for (const bet of [...heldBets, ...heldTickets]) if (!groupNames.includes(bet.group)) groupNames.push(bet.group);
     const groups = [];
     for (const name of groupNames) {
-      const built = groupRows(name, heldBets.filter((bet) => bet.group === name), name === candidate.group ? candidate : null, ladders);
+      const built = groupRows(name, heldBets.filter((bet) => bet.group === name), heldTickets.filter((ticket) => ticket.group === name),
+        name === candidate.group ? candidate : null, ladders);
       if (built.reason) return { stake: null, reason: built.reason };
-      groups.push(built.rows);
+      groups.push({ name, rows: built.rows });
     }
+    const survival = survivalClasses(heldTickets, factors);
+    if (survival.reason) return { stake: null, reason: survival.reason };
+    // One outcome table per survival class: every row with the tickets' P&L in.
+    const scenarios = survival.classes.map((survivalClass) => ({
+      prob: survivalClass.prob,
+      groups: groups.map(({ name, rows }) => rows.map((row) => ({
+        prob: row.prob, candidateResult: row.candidateResult,
+        heldPnl: row.heldPnl + ticketsPnlAt(heldTickets, survivalClass.alive, name, row.value),
+      }))),
+    }));
 
-    const bound = stakeUpperBound(kellyBankroll, groups, 0);
-    if (bound.reason) return { stake: null, reason: bound.reason };
-    const upper = bound.upper;
-    const score = (stake) => expectedLogGrowth(kellyBankroll, groups, stake, candidate.netOdds);
+    let upper = Infinity;
+    for (const scenario of scenarios) {
+      const bound = stakeUpperBound(kellyBankroll, scenario.groups, 0);
+      if (bound.reason) return { stake: null, reason: bound.reason };
+      upper = Math.min(upper, bound.upper);
+    }
+    // A sum of single hills is a single hill, so the search below still holds.
+    const score = (stake) => {
+      let total = 0;
+      for (const scenario of scenarios) {
+        const growth = expectedLogGrowth(kellyBankroll, scenario.groups, stake, candidate.netOdds);
+        if (growth === -Infinity) return -Infinity;
+        total += scenario.prob * growth;
+      }
+      return total;
+    };
     const probe = Math.min(kellyBankroll * SLOPE_PROBE_FRACTION, upper / 2);
     if (score(probe) <= score(0)) return { stake: 0, reason: null };
     return { stake: goldenSectionMax(score, upper), reason: null };
   }
 
-  const api = { REASON_NOT_MONOTONE, REASON_HELD_RISK, cutsNeeded, resultAt, solveStake };
+  const api = { REASON_NOT_MONOTONE, REASON_HELD_RISK, REASON_TOO_MANY_GAMES, cutsNeeded, resultAt, solveStake };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
