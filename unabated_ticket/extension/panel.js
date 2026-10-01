@@ -699,13 +699,17 @@
   // would be alone.
   function renderStakeExposure(advice) {
     const words = betsView.stakeAdviceWords(advice);
+    const teasers = advice.teasers || { held: 0, against: 0 };
     const position = [
       advice.held > 0 ? `held ${betsLib.formatStake(advice.held)}` : null,
       advice.against > 0 ? `against ${betsLib.formatStake(advice.against)}` : null,
+      teasers.held > 0 ? `teasers ${betsLib.formatStake(teasers.held)}` : null,
+      teasers.against > 0 ? `teasers against ${betsLib.formatStake(teasers.against)}` : null,
       words ? words.cap : null,
       words ? words.alone : null,
     ].filter(Boolean);
-    view.stakeExposure.classList.toggle("against", advice.against > 0 && advice.held === 0);
+    const onlyAgainst = advice.held === 0 && teasers.held === 0 && (advice.against > 0 || teasers.against > 0);
+    view.stakeExposure.classList.toggle("against", onlyAgainst);
     view.stakeExposure.hidden = position.length === 0;
     view.stakeExposure.textContent = position.join(" \u00b7 ");
     view.stakeLabel.textContent = !words ? "Bet"
