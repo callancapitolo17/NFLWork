@@ -535,7 +535,8 @@ Measured c, NFL + CFB full game, 2026-09-30: NFL spr 7.6% / tot 5.6%, CFB
 spr 9.3% / tot 9.2% (~100 ms per measure over 194k lines).
 
 A line whose fair is Unabated's ±999900 placeholder (a clamp, not a fair)
-never lists and never measures (`feed.isClampedFair`).
+never lists, never measures, and never prices a rung of the conditional-Kelly
+ladder (`feed.isClampedFair`; a held bet there is left out and named).
 
 ### What is listed
 
@@ -1626,7 +1627,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 333 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 334 tests) and
 the bets service's pytest suite (306 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one

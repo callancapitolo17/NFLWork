@@ -146,13 +146,6 @@
     fairs.set(sideKeyOf(line), { points: line.points, fairProb: kelly.americanToProb(fairAmerican) });
   }
 
-  // Map(sideKey -> {points, fairProb}) over a list of lines.
-  function unabatedMainFairs(lines) {
-    const fairs = new Map();
-    for (const line of lines) if (isUnabatedMainLine(line)) noteUnabatedMainFair(fairs, line);
-    return fairs;
-  }
-
   // ---- measuring c -----------------------------------------------------------
 
   function isFresh(line, now, maxLineAgeMs) {
@@ -294,7 +287,7 @@
   const api = {
     DZ_MAIN, C_FALLBACK, MIN_RUNGS, TRIM_TOP_SHARE, MIN_DIST_SD, IMPLIED_SUM_MIN, IMPLIED_SUM_MAX,
     dnorm, pnorm, qnorm, impliedProbOf, devigProbitTwoWay, marketKeyOf,
-    unabatedMainFairs, cOfRungs, measureTailFlex, cOf, isMeasured, keepFactor, rankOfRow,
+    cOfRungs, measureTailFlex, cOf, isMeasured, keepFactor, rankOfRow,
   };
 
   if (typeof module !== "undefined" && module.exports) {
