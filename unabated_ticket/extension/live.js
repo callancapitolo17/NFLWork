@@ -89,7 +89,7 @@
     if (opts.periods && !opts.periods.has(row.periodTypeId)) return false;
     if (opts.betTypes && !opts.betTypes.has(row.betTypeId)) return false;
     if (opts.bookIds && !opts.bookIds.has(row.bookId)) return false;
-    if (row.isAlt && !(opts.includeAlts && feed.altFairInRange(row.fair))) return false;
+    if (row.isAlt && !(opts.includeAlts && feed.altWithinDepthCap(row.fair, row.price))) return false;
     // Not a valid American price: nothing downstream (Kelly, cents) can use it.
     if (Math.abs(row.price) < 100) return false;
     if (opts.minLiquidityToWin != null && opts.minLiquidityToWin > 0 && row.liquidity != null) {

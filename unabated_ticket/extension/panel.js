@@ -44,7 +44,7 @@
   // Unabated selection page.js publishes (all live books until one exists),
   // set by its button; an array = the user's own ticks in the panel.
   // Alt lines (#113) are off until asked for; an alt lists only while
-  // Unabated's fair for it is 10-90% (feed.altFairInRange; the 7-point cap
+  // Unabated's fair and the book's price are 15-85% (feed.altWithinDepthCap; the 7-point cap
   // went 2026-09-30), and inside that the tail flex (tailflex.js) ranks deep
   // rungs down. minLiquidityToWin
   // $100: an exchange line is listed when its resting money can win $100
@@ -1011,8 +1011,8 @@
 
   function describeAltFilter(settings) {
     if (!settings.includeAlts) return "alts: off";
-    const minPct = Math.round(feed.ALT_MIN_FAIR_PROB * 100);
-    return `alts: on (fair ${minPct}-${100 - minPct}%)`;
+    const minPct = Math.round(feed.ALT_MIN_PROB * 100);
+    return `alts: on (fair and price ${minPct}-${100 - minPct}%)`;
   }
 
   // ---- books checkboxes ----------------------------------------------------
@@ -1440,19 +1440,9 @@
     stake.className = "edge-stake";
     fillStakeCell(stake, row);
     // The edge-move tag reads the pregame history; a live line has none.
-    rail.append(pct, ...(row.live ? [] : moveParts(row, row.bet)), stake, ...evParts(row, "edge-ev"));
+    rail.append(pct, ...(row.live ? [] : moveParts(row, row.bet)), stake);
 
     return [main, rail, ...[relatedBlock(row.bet)].filter(Boolean)];
-  }
-
-  // The tail-flex rank score as "EV $11.72"; nothing for a row without one (live rows).
-  function evParts(row, className) {
-    if (typeof row.rankScore !== "number") return [];
-    const ev = document.createElement("span");
-    ev.className = className;
-    ev.textContent = `EV ${fmtDollars(row.rankScore)}`;
-    ev.title = "EV dollars after tail flex (Unabated's edge discounted for distance from the main number): picks the card's best line and orders its lines. The stake stays on Unabated's edge.";
-    return [ev];
   }
 
   // A line inside a card's expander: price and edge only.
@@ -1480,7 +1470,7 @@
     const stake = document.createElement("span");
     stake.className = "gl-stake";
     stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
-    rail.append(edge, ...moveParts(row, row.bet), stake, ...evParts(row, "gl-ev"));
+    rail.append(edge, ...moveParts(row, row.bet), stake);
 
     li.append(main, rail);
     return li;
