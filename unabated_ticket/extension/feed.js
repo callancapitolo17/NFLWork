@@ -91,14 +91,15 @@
   // -1800 "5.55% edge" with a $2,497 quarter-Kelly stake. A clamp is not a
   // fair, so its line never lists (genuine deep fairs such as +119499 do).
   const UNABATED_FAIR_CLAMP = 999900;
-  // An alt lists only while Unabated gives its side between 10% and 90% (fair
-  // odds about +900 / -900). A cap in probability, not points, means the same
+  // An alt lists only while BOTH Unabated's fair and the book's own price put
+  // its side between 15% and 85% (about +567 / -567): a 4.3c Kalshi rung is
+  // out whatever Unabated says (user, 2026-09-30; first 10%, raised to 15%). A cap in probability, not points, means the same
   // depth in every sport (10 points is modest in a CFB spread, absurd in an
   // MLB total). It replaces the 7-point cap (user, 2026-09-30): beyond it sit
   // the deep favorites (the -200-or-shorter bucket ran -16.8% on 13 bets to
   // 2026-09-30, and without a cap took $6.4k of suggested stake on one NFL+CFB
   // board) and untested longshots.
-  const ALT_MIN_FAIR_PROB = 0.10;
+  const ALT_MIN_PROB = 0.15;
   const STATUS_ON_BOARD = 1;
   // The feed writes this in place of an unknown modifiedOn (every alt line).
   const MODIFIED_ON_UNKNOWN_PREFIX = "0001-";
@@ -177,16 +178,51 @@
     return typeof bacr === "number" && Math.abs(bacr) === UNABATED_FAIR_CLAMP;
   }
 
-  // Unabated's fair (American) as a probability, or null when it is no price.
-  function fairProbOf(americanFair) {
-    if (typeof americanFair !== "number" || !Number.isFinite(americanFair) || Math.abs(americanFair) < 100) return null;
-    return americanFair > 0 ? 100 / (americanFair + 100) : -americanFair / (-americanFair + 100);
+  // An American price (a fair or a book's) as a probability, or null when it is no price.
+  function probOfAmerican(americanOdds) {
+    if (typeof americanOdds !== "number" || !Number.isFinite(americanOdds) || Math.abs(americanOdds) < 100) return null;
+    return americanOdds > 0 ? 100 / (americanOdds + 100) : -americanOdds / (-americanOdds + 100);
   }
 
-  // The alt depth cap (ALT_MIN_FAIR_PROB). An alt with no fair fails closed.
-  function altFairInRange(americanFair) {
-    const prob = fairProbOf(americanFair);
-    return prob != null && prob >= ALT_MIN_FAIR_PROB && prob <= 1 - ALT_MIN_FAIR_PROB;
+  function probInAltDepthCap(americanOdds) {
+    const prob = probOfAmerican(americanOdds);
+    return prob != null && prob >= ALT_MIN_PROB && prob <= 1 - ALT_MIN_PROB;
+  }
+
+  // The alt depth cap (ALT_MIN_PROB) on Unabated's fair and on the book's
+  // price. An alt with no fair fails closed.
+  function altWithinDepthCap(americanFair, americanPrice) {
+    return probInAltDepthCap(americanFair) && probInAltDepthCap(americanPrice);
+  }
+
+  // Unabated flat-lines deep tails: Michigan State @ Wisconsin 1H total read
+  // Under +258 (27.9%) on every rung from 2.5 to 16.5 (2026-09-30), which
+  // listed Under 2.5 at Kalshi +2242 as a "554% edge". A fair can only change
+  // with the number, so a rung whose fair equals the next rung's on the same
+  // side is not a fair (ladder.js drops the same rungs from sizing). Returns
+  // the set of `${event}:${period}:${betType}:${side}|${points}` keys.
+  function flatFairRungKeys(lines) {
+    const fairsBySide = new Map();
+    for (const line of lines) {
+      if (line.betTypeId === 1 || line.points == null || typeof line.bacr !== "number") continue;
+      const sideKey = `${line.eventId}:${line.periodTypeId}:${line.betTypeId}:${line.sideIndex}`;
+      if (!fairsBySide.has(sideKey)) fairsBySide.set(sideKey, new Map());
+      fairsBySide.get(sideKey).set(line.points, line.bacr);
+    }
+    const flat = new Set();
+    for (const [sideKey, fairByPoints] of fairsBySide) {
+      const rungs = Array.from(fairByPoints.entries()).sort((a, b) => a[0] - b[0]);
+      for (let i = 1; i < rungs.length; i += 1) {
+        if (rungs[i][1] !== rungs[i - 1][1]) continue;
+        flat.add(`${sideKey}|${rungs[i - 1][0]}`);
+        flat.add(`${sideKey}|${rungs[i][0]}`);
+      }
+    }
+    return flat;
+  }
+
+  function rungKeyOf(line) {
+    return `${line.eventId}:${line.periodTypeId}:${line.betTypeId}:${line.sideIndex}|${line.points}`;
   }
 
   function emptyState() {
@@ -549,14 +585,16 @@
   }
 
   // Alt-only gates. An alt is listed only when includeAlts is on, the main
-  // line is not currently sitting on the same number (same bet twice), and
-  // Unabated's fair for it is inside the depth cap (altFairInRange). Inside
-  // the cap the panel ranks deep rungs down with the tail flex (tailflex.js).
+  // line is not currently sitting on the same number (same bet twice), its
+  // fair and price are inside the depth cap (altWithinDepthCap), and its fair
+  // is not a flat-lined tail (flatFairRungKeys). Inside the cap the panel
+  // ranks deep rungs down with the tail flex (tailflex.js).
   function altPassesGates(line, state, opts) {
     if (!opts.includeAlts) return false;
     const main = state.lines[line.mainKey];
     if (main && main.points === line.points) return false;
-    return altFairInRange(line.bacr);
+    if (!altWithinDepthCap(line.bacr, line.price)) return false;
+    return !opts.flatRungKeys.has(rungKeyOf(line));
   }
 
   // Dollars won per dollar staked at an American price: +2000 -> 20, -110 -> 0.909.
@@ -590,9 +628,11 @@
     const now = typeof opts.now === "number" ? opts.now : Date.now();
     const maxLineAgeMs = positiveNumberOrNull(opts.maxLineAgeMs);
     const minLiquidityToWin = positiveNumberOrNull(opts.minLiquidityToWin);
-    const altOpts = { includeAlts: opts.includeAlts === true };
+    const lines = Object.values(state.lines);
+    const includeAlts = opts.includeAlts === true;
+    const altOpts = { includeAlts, flatRungKeys: includeAlts ? flatFairRungKeys(lines) : new Set() };
     const rows = [];
-    for (const line of Object.values(state.lines)) {
+    for (const line of lines) {
       if (line.bookId === UNABATED_LINE_BOOK_ID) continue;
       if (line.isAlt && !altPassesGates(line, state, altOpts)) continue;
       if (line.statusId !== STATUS_ON_BOARD) continue;
@@ -693,7 +733,7 @@
   }
 
   const api = {
-    LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID, ALT_MIN_FAIR_PROB, isClampedFair, altFairInRange,
+    LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID, ALT_MIN_PROB, isClampedFair, altWithinDepthCap, flatFairRungKeys, rungKeyOf,
     kalshiEventSuffixOf,
     parseLeagueKey, parseEventStart, parseModifiedOn, lineChangedMs, lineKeyOf, altLineKeyOf, emptyState, teamSpellingsFromEventName,
     parseSnapshot, mergeStates,

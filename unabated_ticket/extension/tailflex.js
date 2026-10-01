@@ -177,9 +177,11 @@
       if (isUnabatedMainLine(line)) noteUnabatedMainFair(mainFairs, line);
       else if (isMeasurableExchangeLine(line, state, now, maxLineAgeMs)) exchangeLines.set(`${line.bookId}|${sideKeyOf(line)}|${line.points}`, line);
     }
+    // A flat-lined Unabated tail is no fair to measure against (feed.flatFairRungKeys).
+    const flatRungKeys = feed.flatFairRungKeys(Object.values(state.lines));
     const rungs = [];
     for (const side0 of exchangeLines.values()) {
-      if (side0.sideIndex !== 0) continue;
+      if (side0.sideIndex !== 0 || flatRungKeys.has(feed.rungKeyOf(side0))) continue;
       const side1 = exchangeLines.get(`${side0.bookId}|${sideKeyOf({ ...side0, sideIndex: 1 })}|${mirroredPoints(side0)}`);
       const main = mainFairs.get(sideKeyOf(side0));
       if (!side1 || !main || !kelly.isAmericanPrice(side0.bacr) || feed.isClampedFair(side0.bacr)) continue;

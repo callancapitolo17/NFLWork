@@ -462,9 +462,11 @@ Off by default. Tick **Include alt lines** in the filter box and every
 book's alternate spreads and totals join the list under the same gates as
 main lines (board, book, bet type, period, edge, start, line age, liquidity).
 The depth cap is in probability, not points: an alt lists only while
-Unabated's fair for its side is between **10% and 90%** (fair odds about
-+900 / −900; `feed.altFairInRange`, a constant in code, no setting), so it
-means the same depth in every sport. It replaced the 7-point **Max pts from
+BOTH Unabated's fair and the book's own price put its side between **15% and
+85%** (about +567 / −567; `feed.altWithinDepthCap`, a constant in code, no
+setting), so it means the same depth in every sport. A rung whose Unabated
+fair equals the next rung's on the same side is a flat-lined tail, not a
+fair, and never lists (`feed.flatFairRungKeys`). It replaced the 7-point **Max pts from
 main** setting on 2026-09-30. Inside the cap a deep rung is ranked down by
 the tail flex (below), not hidden.
 
@@ -518,7 +520,7 @@ node-tested), with Unabated fair p = (1 + edge) / decimal:
   (Baker & McHale 2013);
 - **rank score = keep × edge × stake** — EV dollars after flex, the stake
   being the row's own Kelly stake. It picks a card's best line and orders
-  the lines inside it; each row shows it as `EV $x.xx` under the stake.
+  the lines inside it. It is not shown: the row shows the edge and the bet.
   The "by stake" sort still sorts cards by their best line's stake.
 
 **c is measured live** per (league, period, bet type) on every scanner
@@ -1627,7 +1629,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 334 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 335 tests) and
 the bets service's pytest suite (306 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -2024,6 +2026,17 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-09-30 — Alt cap on price too, 15-85%; flat tails out; EV line gone
+(0.15.1).** On the first live run of 0.15.0 the list showed Under 2.5 1H at
+Kalshi +2242 (4.3c) as a "554% edge" in two CFB games: Unabated's fair for
+that total was flat at +258 (27.9%) on every rung from 2.5 to 16.5, inside
+the 10-90% fair cap. The user: it should be out anyway because it's 4.3c.
+So the cap now applies to the book's price as well as the fair, raised to
+15-85% (user), and a rung whose fair equals its neighbour's is dropped from
+the list and from the tail-flex measurement (ladder.js already dropped it
+from sizing). The `EV $` line on each row was removed as repetitive next to
+the edge and the bet (user); it still ranks lines.
 
 **2026-09-30 — Tail flex ranks alt lines; the 7-point cap becomes a 10-90% fair cap (0.15.0).**
 The card's best line was the highest Kelly stake, which takes Unabated's
