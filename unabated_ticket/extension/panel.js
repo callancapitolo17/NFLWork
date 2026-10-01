@@ -2839,14 +2839,15 @@
     const board = currentTeaserBoard();
     const legs = teaserLib.teaserLegs(scannerState, { now, maxLineAgeMs: state.edgeSettings.maxLineAgeHours * HOUR_MS, board });
     const placed = teaserLib.openTeasers(state.betRecords, boardLines(), { now, ladderOf: board.ladderOf });
+    const straights = teaserLib.heldStraights(state.betRecords, boardLines(), { now, ladderOf: board.ladderOf });
     const kellyBankroll = state.settings.bankroll * state.settings.multiplier;
-    const planned = teaserLib.planTeasers({ legs, placed, kellyBankroll, previous: teaserBuild });
+    const planned = teaserLib.planTeasers({ legs, placed, straights, kellyBankroll, previous: teaserBuild });
     teaserBuild = planned.build;
     if (planned.rebuilt) persistTeaserRefs(teaserBuild.refs);
     return {
       legs, placed, build: teaserBuild,
       plan: teaserLib.describePlan(teaserBuild, legs, placed),
-      legRows: teaserLib.describeLegs(legs, teaserBuild, placed),
+      legRows: teaserLib.describeLegs(legs, teaserBuild, placed, straights),
     };
   }
 
@@ -3002,8 +3003,10 @@
     if (summary.makesMoney != null) cells.push(summaryCell("Makes money", fmtWholePct(summary.makesMoney)));
     if (summary.allLose != null) cells.push(summaryCell("All lose", fmtWholePct(summary.allLose)));
     view.teasersSummaryCells.replaceChildren(...cells);
+    const straights = summary.straights;
     view.teasersSummaryNote.textContent = `${kellyWords(state.settings.multiplier)} on ${fmtWholeDollars(state.settings.bankroll)} · `
-      + (summary.placedCount ? "open BFA teasers held fixed" : "tickets that share a leg are sized together");
+      + (summary.placedCount ? "open BFA teasers held fixed" : "tickets that share a leg are sized together")
+      + (straights.count ? ` · counts ${fmtWholeDollars(straights.stake)} of straight bets on ${plural(straights.games, "game")}` : "");
   }
 
   // What Copy puts on the clipboard: BFA's own "[rotation] side" for each leg.
@@ -3103,6 +3106,25 @@
     return `${row.inTickets ? `in ${plural(row.inTickets, "ticket")}` : "in no ticket"}${open}`;
   }
 
+  // The straight bets on a pool leg's game, the Edges tab's tags: `held $X`
+  // on the leg's side, `against $Y` on the other, or a bare `game` when the
+  // game has straights and none of them counts. Every bet in the tooltip.
+  function teaserStraightTags(straights) {
+    if (!straights) return [];
+    const tooltip = straights.counted.map((bet) => bet.label)
+      .concat(straights.leftOut.map((bet) => `${bet.label} — not counted: ${bet.reason}`)).join("\n");
+    const tag = (kind, text) => {
+      const el = makeEl("span", `tag ${kind}`, text);
+      el.title = tooltip;
+      return el;
+    };
+    const tags = [];
+    if (straights.held > 0) tags.push(tag("held", `held ${betsLib.formatStake(straights.held)}`));
+    if (straights.against > 0) tags.push(tag("against", `against ${betsLib.formatStake(straights.against)}`));
+    if (tags.length === 0 && straights.leftOut.length > 0) tags.push(tag("game", "game"));
+    return tags;
+  }
+
   function teaserLegRow(row) {
     const { leg } = row;
     const pool = row.standing === teaserLib.STANDING_POOL;
@@ -3116,7 +3138,7 @@
     main.append(makeEl("div", "edge-side", leg.label), meta, book);
     const rail = makeEl("div", "edge-rail");
     rail.append(makeEl("span", `edge-pct tier-${pool ? "hot" : "thin"}`, leg.win == null ? "—" : fmtWin(leg.win)),
-      makeEl("span", "leg-in", legStandingText(row)));
+      makeEl("span", "leg-in", legStandingText(row)), ...teaserStraightTags(row.straights));
     item.append(main, rail);
     return item;
   }
