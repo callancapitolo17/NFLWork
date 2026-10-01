@@ -1236,7 +1236,8 @@ breaks even at 70.7% (0.25^¼).
 
 **The set.** One score decides everything: E[ln(1 + P&L / K)], K = bankroll ×
 Kelly multiplier (the ⚙ settings; the objective conditional Kelly uses for
-held bets). Starting from the open BFA teasers, the tab adds the $200 ticket
+held bets). Starting from the open BFA teasers and the straight bets held on
+the same games, the tab adds the $200 ticket
 that raises the score most, again and again, until no $200 ticket raises it;
 that ticket's best stake below $200 (whole dollars) is the last, partial one.
 No ticket twice, and no per-leg cap (user decision 2026-09-28: "no leg on more
@@ -1245,11 +1246,17 @@ of the set: an open 4-team ticket whose four legs are all live is never
 offered again, and once an open 4-team ticket under $200 is in play (the
 list's partial, placed — a 2-team teaser does not count) no second partial
 is; the empty state says so, with the partial it held back. So placing the
-list in order leaves the rest of it, and placing all of it leaves nothing. Open teasers on
-many games outside the pool cost the pool its weakest free legs (the joint
-outcomes stay under 16,384, a build under ~0.3 s) rather than the list. Two ways to see what
-it does, on Sunday's board (2026-09-27 16:37 UTC, $20,000 at quarter Kelly,
-K = $5,000):
+list in order leaves the rest of it, and placing all of it leaves nothing.
+The joint outcomes stay under 131,072: open teasers on many games outside the
+pool, or straight bets splitting many games into more rows, cost the pool its
+weakest free legs (and the straights on their games) rather than the list.
+Every ticket wins exactly where its four legs do, so the search scores the
+2^10 states of "which pool legs win", not every outcome: 9/27 with its 15
+straights (69,984 outcomes) builds in ~0.2 s. Two legs with the same fair
+(Colts +7.5 and Titans +8.5 are both 74.7% on 9/27) make tickets that tie
+exactly; a tie goes to the first combination in the pool's order. Two ways
+to see what it does, on Sunday's board (2026-09-27 16:37 UTC, $20,000 at
+quarter Kelly, K = $5,000, before counting straights):
 
 *Each leg lands near its target.* A leg inside a +300 4-teamer carries −241
 (the 70.7% break-even); its target is quarter Kelly as a straight bet at
@@ -1276,11 +1283,11 @@ with what each adds to the value after risk:
 |---|---|---|---|---|---|---|
 | 1 | 49ers / Seahawks / Colts / Titans | 30.7% | $48.0 | Seahawks / Colts / Titans / Bills | 25.6% | $38.0 |
 | 2 | 49ers / Seahawks / Bills / Browns | 28.2% | $34.8 | Seahawks / Bills / Browns / Broncos | 22.9% | $29.3 |
-| 3 | 49ers / Titans / Broncos / Lions | 23.8% | $23.2 | Colts / Titans / Bills / Broncos | 22.0% | $19.8 |
-| 4 | Seahawks / Colts / Bills / Broncos | 24.2% | $16.9 | 49ers / Seahawks / Colts / Broncos | 29.3% | $15.5 |
-| 5 | 49ers / Colts / Browns / Patriots | 23.0% | $12.1 | Colts / Titans / Browns / Patriots | 19.2% | $8.8 |
-| 6 | Seahawks / Titans / Browns / Lions | 22.1% | $3.5 | 49ers / Seahawks / Titans / Patriots | 26.5% | $1.2 |
-| 7 | 49ers / Bills / Broncos / Patriots, $92 | 21.9% | $2.5 | Titans / Bills / Broncos / Patriots | 18.1% | $1.7 |
+| 3 | 49ers / Colts / Broncos / Lions | 23.8% | $23.2 | Colts / Titans / Bills / Broncos | 22.0% | $19.8 |
+| 4 | Seahawks / Titans / Bills / Broncos | 24.2% | $16.9 | 49ers / Seahawks / Titans / Broncos | 29.3% | $15.5 |
+| 5 | 49ers / Titans / Browns / Patriots | 23.0% | $12.1 | Colts / Titans / Browns / Patriots | 19.2% | $8.8 |
+| 6 | Seahawks / Colts / Browns / Lions | 22.1% | $3.5 | 49ers / Seahawks / Colts / Patriots | 26.5% | $1.2 |
+| 7 | 49ers / Bills / Broncos / Patriots, $92 | 21.9% | $2.5 | Colts / Bills / Broncos / Patriots | 18.1% | $1.7 |
 
 At step 4 the better ticket by EV (29.3%, with the 49ers) adds less than a
 24.2% one without them: the 49ers already ride on three tickets. The set: 7
@@ -1312,13 +1319,39 @@ conditional Kelly — rather than counting as two independent legs. The bets
 service polls BFA's open bets every 60 s, so a ticket shows within about 90
 s of being placed; the tab says how old the last BFA pull is.
 
+**Straight bets on the same games count too (2026-09-30).** Every open
+straight bet the bets service reads — any venue, spread, total or moneyline,
+not a parlay leg — that sits on a pool leg's game and market, full game, is
+fixed P&L in the score the way conditional Kelly sizes a held bet: its
+numbers cut the game's rows (a whole number both sides of its push) and it
+pays +to win, 0 on a push or −stake in each, priced off the same ladder as
+the leg (a moneyline at the spread ladder's ±0.5 rungs). No correlation
+number: where the two numbers sit on the game's fair ladder is the link.
+`teaser.heldStraights` joins each bet to its game with `bets.js`'s matcher
+(the Edges tab's: pins, venue ids, names, rotation). A straight on the leg's
+own side means fewer tickets on that leg (its losses get deeper), one on the
+other side means more. On 9/27 Cal held 15 straights on 9 of the 10 pool
+games ($4,542): counted, the set goes from 7 tickets / $1,292 to 4 / $676,
+and the set's value after risk on top of the straights from −$8 to +$62 —
+the Lions and Patriots legs drop out, the 49ers ($892 → $476) and Seahawks
+($800 → $400) halve, and Steelers +9 comes in ($0 → $200) with Bengals −3.5
+held. Left out, as on the Edges tab: a bet on the game's other market (a
+total under a spread leg), a 1H bet, a bet on a game no ticket uses, and one
+with no fair at its number; a bet whose rung is out of line with its game's
+ladder is left out rather than failing the build. A straight never adds a
+game or changes the leg a game offers. If the open teasers and straights on
+these games could already lose K, there are no tickets and the tab says why.
+Their own P&L is in none of the summary's figures; the note under it says
+how much straight money the set is sized around.
+
 **The list holds still.** Many 4-leg combinations are near-tied: rebuilding
 on every tick gave lists at 9:06 and 9:37 on 9/27 that shared 1 of 7 tickets
 (no leg had moved more than half a point) and were worth the same (+$326 vs
 +$324). So the list is built on each leg's fair as of the build, replaced
 only when that leg moves 1 point or more, and it is rebuilt only when what it
-is built on changes: the pool, a pool leg's number, an open BFA teaser, K, or
-a 1-point move. Smaller ticks move the win chances, EVs and summary in place.
+is built on changes: the pool, a pool leg's number, an open BFA teaser, a
+straight bet placed or closed on a pool game, K, or a 1-point move (a
+straight's own number counts). Smaller ticks move the win chances, EVs and summary in place.
 Built on the same fairs, the list after you place its first ticket is the
 same list less that ticket. The reference fairs are kept in
 `chrome.storage.local` (`teaserRefs`, rewritten on each rebuild), so a
@@ -1337,7 +1370,10 @@ read-only, its legs at their current fairs or why they count as won, and the
 age of the last BFA pull), the ticket cards in the order to bet them (legs,
 stake, EV, **Copy**: `[rotation] side` per leg, BFA's own form) and the legs
 (each game's best leg: teased number, Buckeye's line, win chance, line age,
-how many tickets use it; the break-even line, which a pool leg can sit
+how many tickets use it, and on a pool leg the Edges tab's tags for the
+straights on its game — `held $X` on the leg's side, `against $Y` on the
+other, a bare `game` when none of them counts, every bet and why in the
+tooltip; the break-even line, which a pool leg can sit
 below; the other games below break-even, on an open teaser's other market or
 with no fair behind a fold). An open ticket out of the math says why: every
 game started, or no leg priced on the board. The Placed figure in the
@@ -1355,8 +1391,11 @@ that fair (user decision to price off Unabated anyway, 2026-09-27). Push = loss
 understates a ticket if Buckeye really drops a push to the 3-team price (9/27:
 +$329 vs +$418 expected on the same board). Same-game spread + total
 correlation is not modelled (one leg per game). Football, full game, 6 points,
-4 teams only. Straight bets held elsewhere on the same games are not in the
-math. A ticket placed in the last ~90 s may not be in the tab yet.
+4 teams only. A straight bet counts only on its leg's market and the full
+game: Unabated gives no spread–total or full-game–1H link, so a total held
+under a spread leg and a 1H bet size nothing. The Edges tab still sizes a
+straight bet without the open teasers on its game (conditional Kelly leaves
+parlay legs out). A ticket placed in the last ~90 s may not be in the tab yet.
 
 ## Bets service
 
@@ -1757,7 +1796,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 349 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 359 tests) and
 the bets service's pytest suite (308 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -1928,7 +1967,7 @@ with $200 open on three of its legs); an open ticket's own four legs never
 offered again, so placing the top ticket leaves the list less it (a board
 with four standout legs, where it used to come back at the top); the whole
 list open leaving nothing (one partial ticket per set); open teasers on
-eight games outside the pool shedding four pool legs to stay at 2^14
+eight games outside the pool shedding one pool leg to stay at 2^17
 outcomes rather than going dark; a leg whose BFA start is 3 h off the board's
 joining by rotation so its ticket stays taken (13 h off: counted as won); a
 5-team teaser with a leg counted as won blocking no 4-leg combination; the
@@ -1941,7 +1980,21 @@ math; a game with an open leg offering only that market; an open leg at
 another number sharing its game's rows with the new leg; the list holding
 still on a half-point tick (the EV moving in place) and rebuilt on a 1-point
 move, on a new K and on a pool leg's number (not on +2.5 → +3, which a
-push-loses leg wins on alike); and the Legs list's standings.
+push-loses leg wins on alike); and the Legs list's standings. Straight bets
+held on the same games: `heldStraights` placing an away spread, a home whole
+number (two cuts), an Over and a moneyline (the +0.5 rung) and naming a 1H
+bet, no fair and no stake (parlay legs, settled bets and started games
+dropped); a same-side straight lowering the dollars on its leg ($284 alone)
+and an other-side one raising them; another market, another period and a
+game outside the pool changing nothing (the row says why); a whole number
+splitting its game at both sides of the push; straights that can lose K
+giving no tickets with the reason; a rung out of line with its game's
+ladder leaving that straight out while the list stands; the list rebuilt on
+a straight placed on a pool game and on its 1-point move, not on one off the
+pool nor a sub-point tick; the summary leaving the straights' P&L out and
+counting them for the note, with the row's held / against dollars; and the
+outcome budget shedding the two weakest legs with their games' straights.
+`condkelly.test.js` adds `resultAt` (win, push, loss either side).
 `bets.test.js` adds `teaserLegPositionOf` (the leg at its own teased number,
 no stake guard, the parlay-leg guard kept for straight sizing),
 `feed.test.js` the `leagueIds` filter, and `test_bfa.py` the cadence: open
@@ -2216,6 +2269,28 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-09-30 — Teasers sized around straight bets on the same games.** Cal's
+last item before the Teasers merge ("incorporate previously placed bets").
+Asked what he meant, he picked open straight bets — spreads, totals,
+moneylines at any venue — on the games the teasers ride on (not every open
+bet on any game: $14.6k open on NFL/CFB against a $5,000 Kelly bankroll
+would leave the tab nothing to offer; no teasers or parlays are held outside
+BFA). Same method as conditional Kelly (#130), no correlation number: the
+straight's numbers cut its game's fair-ladder rows and its P&L is fixed in
+the score, so the same side shrinks a leg and the other side grows it (the
+#130 other-side lift Cal kept three times). Decided by walking 9/27 through:
+the 49ers −14.5 straights ($414) made a 49ers ticket's loss −$614 instead of
+−$200 and flipped the second pick to a ticket without the 49ers; all 15
+straights cut the set from $1,292 to $676 and lifted its value after risk
+from −$8 to +$62. Other market and other period left out, as on the Edges
+tab (#129: Unabated gives no spread–total or cross-period link; all of Cal's
+1H bets are totals anyway). Built: straights multiply a game's rows, so the
+greedy now scores the 2^10 "which legs win" states instead of every outcome
+(9/27: 69,984 outcomes, 164 ms vs 412 ms) and the budget went from 2^14 to
+2^17; exact ties go to the first combination in order. The screen (held /
+against / game tags on the legs, the note under the summary) was approved
+from a render of the 9/27 board.
 
 **2026-09-29 — BFA: a ticket the history cannot read still settles its
 legs.** The open list stores a BFA parlay or teaser as one record per leg
