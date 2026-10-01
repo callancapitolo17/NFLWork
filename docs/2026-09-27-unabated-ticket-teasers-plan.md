@@ -183,6 +183,88 @@ description.
   3-team price (9/27: +$329 vs +$418 expected on the same board).
 - One leg per game: same-game spread + total correlation is not modelled.
 - Football, full game, 6 points only.
-- Straight bets held elsewhere on the same games are not in the math.
+- Straight bets on the same games are in the math since section 13, but only
+  on the leg's own market and full game: a total held under a spread leg, a
+  1H bet, and a bet on a game no new ticket can use are left out.
+- The Edges tab still sizes a straight bet without the open teasers on its
+  game (conditional Kelly leaves parlay legs out).
 - A ticket placed in the last ~90 s may not be in the tab yet (BFA every
   60 s + panel poll 30 s); the pull age is on screen.
+
+## 13. Straight bets on the same games (2026-09-30)
+
+Cal's last item before merge: size the teasers around the straight bets he
+already holds. User decisions 2026-09-30: "bets already placed" means open
+straight bets (spreads, totals, moneylines) at every venue the bets service
+reads, on the same games; same method as conditional Kelly (#130) — no
+correlation number, the game's fair ladder split into results; design below
+approved after the 9/27 walk-through.
+
+Measured on 9/27 (16:37 UTC board, K $5,000): 15 open straights on 9 of the
+10 pool games ($4,542) cut the set from 7 tickets / $1,292 to 4 / $676, and
+the set's value after risk from -$8 to +$62 on top of the straights. Same
+side shrinks a leg (Lions and Patriots out, 49ers $892 -> $476, Seahawks
+$800 -> $400); the other side grows it (Steelers +9 $0 -> $200 with Bengals
+-3.5 held).
+
+- **Which bets** — `teaser.heldStraights(records, boardLines, {now,
+  ladderOf})`: every open record that is not a parlay leg, joined to its
+  game by `bets.annotateRows` (the Edges tab's matcher: pins, venue ids,
+  names, rotation), placed by `bets.positionOf` (its reasons: bet type, no
+  stake, no side, quarter line, Kalshi NO + tie, three-way), full game only
+  (else "1H bet"), priced at `condkelly.cutsNeeded` off the teaser ladder of
+  its market (spread-only margin ladder, so a moneyline reads the ±0.5
+  rungs; 28 of 28 present on 9/27). Started games drop out; no fair at a
+  needed number -> left out, named.
+- **Which count** — only on a game a pool leg rides on, on that leg's
+  market (axis). Other market, other period, games outside the pool: left
+  out, as on the Edges tab (#129). A straight never adds a game, never
+  changes which leg a game offers, never restricts a game's market.
+- **How they count** — the game's factor gets the straight's cuts (a whole
+  number both sides of its push); its P&L per row is +toWin / 0 / -stake
+  (condkelly's win/push/lose rule, `resultAt` exported for it), added to the
+  fixed P&L like an open teaser's. The score, the greedy, the $200 cap and
+  the one-partial rule are unchanged. A straight whose cut makes its game's
+  ladder non-monotone is left out with the reason (one bad rung must not
+  blank the list). Straights and open teasers that can already lose K ->
+  no tickets, with that reason (today's rule for open teasers).
+- **Speed** — straights multiply a game's rows (9/27: 1,024 -> 69,984
+  outcomes; the unchanged greedy took 412 ms in node). The greedy groups
+  outcomes by which pool legs win (a 10-bit state, 1,024 states): a
+  ticket's growth is a sum over states, not outcomes, and the per-combo
+  outcome lists go. `MAX_OUTCOMES` 2^14 -> 2^17. Past it the weakest pool
+  leg on a game no open teaser rides on is shed, and its game's straights
+  with it.
+- **The list holds still** — the straights in the math and their reference
+  fairs join `inputKey`: a straight placed or closed on a pool game, or its
+  fair moving `REBUILD_FAIR_MOVE`, rebuilds; one on another game does not.
+- **Summary** — the tickets' and open teasers' figures stay teaser-only (a
+  straight's P&L is not in Expected / Makes money / All lose);
+  `summary.straights` {count, stake, games} feeds the note line.
+- **Legs list** — a pool row carries `held $X` (straights on the leg's
+  direction) and `against $Y` (the other), the Edges tab's tags; a bare
+  `game` when the game has straights but none counts. Mockup approved
+  before the panel is touched.
+- **Tests** (`tests/teaser.test.js`) — heldStraights positions (away, home,
+  Over, Under, moneyline, whole number = two cuts) and reasons (1H, no
+  fair, parlay leg, started); same side lowers a leg's dollars, other side
+  raises them; other market and non-pool games change nothing; a push row
+  pays 0; rebuild on a placed straight / a 1-point move, not on another
+  game or a 0.5-point move; held risk >= K -> no tickets; a non-monotone
+  straight is left out and the list stands; the grouped greedy matches the
+  existing tests unchanged; the summary leaves straights out.
+- **Version control** — same branch `feature/unabated-ticket-teasers`
+  (local main merged in first: c709fe34, manifest 0.15.0 since main is
+  0.14.0). Commits: (1) this section; (2) `teaser.js` grouped greedy +
+  straights, `condkelly.js` export, tests; (3) panel tags + note, CSS if
+  needed; (4) README + root `CLAUDE.md`. Files: `extension/teaser.js`,
+  `extension/condkelly.js`, `extension/panel.js`, `tests/teaser.test.js`,
+  `tests/condkelly.test.js` (export), `unabated_ticket/README.md`,
+  `CLAUDE.md`, this plan.
+- **Worktree** — `.claude/worktrees/buckeye-teasers` as before; no DuckDB
+  touched. After an approved merge: `git worktree remove` + `git branch -d`,
+  restart the bets service (launchd `kickstart`, BFA open bets every 60 s)
+  and reload the unpacked extension.
+- **Documentation** — README Teasers: a "Straight bets on the same games"
+  paragraph with the 9/27 numbers, the Limits line, Tests counts, a
+  decisions-log entry; root `CLAUDE.md` Unabated Ticket blurb.
