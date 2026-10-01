@@ -281,14 +281,24 @@ test("selectEdges lists no alt unless includeAlts is on", () => {
   assert.equal(rows.find((r) => !r.isAlt).mainPoints, null);
 });
 
-test("no distance cap on alts: a rung 9+ points from the main number lists (cap removed 2026-09-30)", () => {
+test("alts are capped by Unabated's fair (10-90%), not by points from the main number", () => {
   const state = loadedState();
-  const alts = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true }).filter((r) => r.isAlt);
-  assert.equal(alts.length, 16);
-  const far = alts.filter((r) => Math.abs(r.points - r.mainPoints) > 7);
-  assert.ok(far.length > 0, "expected at least one alt more than 7 points from its main number");
-  // A stale opts.altMaxDistance from an old caller is ignored.
-  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 7 }).filter((r) => r.isAlt).length, 16);
+  const altKeys = () => feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true }).filter((r) => r.isAlt).map((r) => r.key);
+  const deep = "289357360:ms105:si0:tid6:alt-20.5"; // Bears -20.5, 18 points off a -2.5 main, fair +881 = 10.2%
+  assert.equal(altKeys().length, 16);
+  assert.ok(altKeys().includes(deep), "a rung 18 points out lists while its fair is inside 10-90%");
+  moveLine(state, deep, { bacr: 1000 }); // 9.1%
+  assert.ok(!altKeys().includes(deep));
+  moveLine(state, deep, { bacr: 900 }); // exactly 10%
+  assert.ok(altKeys().includes(deep));
+  moveLine(state, deep, { bacr: -1000 }); // a 90.9% favorite
+  assert.ok(!altKeys().includes(deep));
+  moveLine(state, deep, { bacr: null }); // no fair: fails closed
+  assert.ok(!altKeys().includes(deep));
+  // A stale opts.altMaxDistance from an old caller is ignored; main lines are never capped.
+  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 2 }).filter((r) => r.isAlt).length, 15);
+  assert.equal(feed.altFairInRange(-900), true);
+  assert.equal(feed.altFairInRange(50), false);
 });
 
 test("a line whose fair is Unabated's ±999900 clamp never lists; a genuine deep fair does", () => {
@@ -346,7 +356,7 @@ test("an alt is hidden while the main line sits on its number, and distance foll
   moveLine(state, "289357360:ms89:si0:tid6", { points: -4.5, price: 130 });
   const rows = feed.selectEdges(state, opts);
   assert.ok(!rows.some((r) => r.key === "289357360:ms89:si0:tid6:alt-4.5"));
-  // mainPoints reports the current main; -13.5, 9 points from it, lists (no distance cap).
+  // mainPoints reports the current main; -13.5, 9 points from it, lists (its fair, +369, is inside the cap).
   const nineHalf = rows.find((r) => r.key === "289357360:ms89:si0:tid6:alt-9.5");
   assert.equal(nineHalf.mainPoints, -4.5);
   assert.equal(rows.find((r) => r.key === "289357360:ms89:si0:tid6:alt-13.5").mainPoints, -4.5);

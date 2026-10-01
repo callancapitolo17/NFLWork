@@ -43,9 +43,10 @@
   // bookIds undefined (never ticked) = DEFAULT_BOOK_NAMES; null = follow the
   // Unabated selection page.js publishes (all live books until one exists),
   // set by its button; an array = the user's own ticks in the panel.
-  // Alt lines (#113) are off until asked for; there is no distance cap (the
-  // 7-point cap went 2026-09-30): a deep rung's edge is discounted by the tail
-  // flex (tailflex.js) when ranking, never hidden. minLiquidityToWin
+  // Alt lines (#113) are off until asked for; an alt lists only while
+  // Unabated's fair for it is 10-90% (feed.altFairInRange; the 7-point cap
+  // went 2026-09-30), and inside that the tail flex (tailflex.js) ranks deep
+  // rungs down. minLiquidityToWin
   // $100: an exchange line is listed when its resting money can win $100
   // (feed.liquidityCanWin), so a thin longshot stays and a thin favorite goes. 0 = off.
   const DEFAULT_EDGE_SETTINGS = {
@@ -1009,7 +1010,9 @@
   }
 
   function describeAltFilter(settings) {
-    return settings.includeAlts ? "alts: on" : "alts: off";
+    if (!settings.includeAlts) return "alts: off";
+    const minPct = Math.round(feed.ALT_MIN_FAIR_PROB * 100);
+    return `alts: on (fair ${minPct}-${100 - minPct}%)`;
   }
 
   // ---- books checkboxes ----------------------------------------------------

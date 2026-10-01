@@ -68,11 +68,12 @@ test("selectLiveEdges: the Edges tab's filters apply", () => {
     row({ key: "k-1q", periodTypeId: 4 }),
     row({ key: "k-alt-near", isAlt: true, mainPoints: 7.5, points: 10.5 }),
     row({ key: "k-alt-far", isAlt: true, mainPoints: 7.5, points: 17.5 }),
+    row({ key: "k-alt-deep", isAlt: true, mainPoints: 7.5, points: 24.5, fair: 1500 }),
     row({ key: "k-thin-liq", liquidity: 50 }),
   ];
   const keys = (opts) => live.selectLiveEdges([payload({ rows })], { now: NOW, ...opts }).map((r) => r.key).sort();
   assert.deepEqual(keys({ minEdgePct: 1, bookIds: new Set([1]), betTypes: new Set([2]), periods: new Set([1]), minLiquidityToWin: 100 }), ["live:125807:pt1:bt2:si1:ms1"]);
-  // No distance cap on alts (removed 2026-09-30): the 10-point rung lists too.
+  // Alts are capped by the fair (10-90%), not points: the 10-point rung at -124 lists, the +1500 one does not.
   assert.deepEqual(keys({ includeAlts: true, bookIds: new Set([1]), betTypes: new Set([2]), periods: new Set([1]) }),
     ["k-alt-far", "k-alt-near", "k-thin", "k-thin-liq", "live:125807:pt1:bt2:si1:ms1"]);
 });
