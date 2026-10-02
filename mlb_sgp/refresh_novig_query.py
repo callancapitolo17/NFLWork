@@ -133,13 +133,17 @@ def build_query(bundle: str) -> str:
 
 
 def find_live_event_id(session) -> str:
+    """A posted pregame game's eventId (an in-play game's markets can be
+    locked, which would fail the live check for the wrong reason)."""
     for league in VERIFY_LEAGUES:
         page = session.get(TRADING_PAGE.format(league=league), timeout=20).json()
         for section in page.get("sections") or []:
             for card in (section.get("content") or {}).get("components") or []:
-                if card.get("type") == "game_event_card" and card.get("eventId"):
+                if (card.get("type") == "game_event_card"
+                        and card.get("eventStatus") == "OPEN_PREGAME"
+                        and card.get("eventId")):
                     return card["eventId"]
-    raise RuntimeError(f"no posted game in any of {VERIFY_LEAGUES} to verify against")
+    raise RuntimeError(f"no pregame game in any of {VERIFY_LEAGUES} to verify against")
 
 
 def count_live_markets(session, payload: dict, event_id: str) -> int:

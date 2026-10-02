@@ -95,6 +95,29 @@ def test_parse_events_keeps_only_pregame_games_inside_the_window():
     assert [e.event_id for e in events] == ["keep"]
 
 
+def test_parse_events_reads_game_cards_in_any_section():
+    """Cards are keyed on their type: renaming the "Games" section (display
+    text) must not turn a full slate into an apparent off-day."""
+    raw = {"sections": [{"title": "Upcoming Matchups",
+                         "content": {"type": "components",
+                                     "components": [_card("renamed")]}}]}
+    events = _parse_events_response(raw, now=FIXTURE_NOW,
+                                    window_hours=WINDOW_HOURS)
+    assert [e.event_id for e in events] == ["renamed"]
+
+
+def test_parse_events_dedupes_a_game_listed_in_two_sections():
+    """Two Events for one game make the on-demand matcher decline it as
+    ambiguous, so a game shown twice must come back once."""
+    raw = _games_page(_card("dup"))
+    raw["sections"].append({"title": "Featured",
+                            "content": {"type": "components",
+                                        "components": [_card("dup")]}})
+    events = _parse_events_response(raw, now=FIXTURE_NOW,
+                                    window_hours=WINDOW_HOURS)
+    assert [e.event_id for e in events] == ["dup"]
+
+
 def test_parse_events_off_season_page_is_empty():
     """An off-season league answers {"sections": []} — valid, no games."""
     assert _parse_events_response({"sections": []}, now=FIXTURE_NOW,

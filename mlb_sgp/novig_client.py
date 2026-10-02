@@ -7,10 +7,11 @@ line matching here at the client level — interpolation/fallback logic
 lives in the orchestrator, not the HTTP layer.
 
 Novig does not originate SGP prices: it routes each combo to one vendor
-book and returns that book's price, naming it per leg (`vendor`). Until
-2026-09 every leg said DRAFTKINGS; on 2026-10-02 spread x total came back
-DRAFTKINGS, ML x total FANDUEL, and BETMGM also appears. A Novig price
-therefore duplicates one of the other books' prices for that combo.
+book, naming it per leg (`vendor`), and returns that book's price shaded
+slightly short. Until 2026-09 every leg said DRAFTKINGS; on 2026-10-02
+spread x total came back DRAFTKINGS, ML x total FANDUEL (each 0.5-2%
+shorter than FanDuel's own quote), and BETMGM also appears. A Novig price
+is therefore its vendor's opinion, not an independent one.
 
 Since 2026-09-22 the GraphQL endpoint runs an allowlist: it executes only
 operations the novig.com app ships and answers anything else with HTTP 200
@@ -88,7 +89,6 @@ NOVIG_PARLAY = "https://api.novig.us/nbx/v1/parlay/request/unauthenticated"
 # game Novig has posted (NFL's page spanned 8 weeks on 2026-10-02), so
 # list_events applies the time window itself.
 NOVIG_MLB_PAGE = "https://api.novig.us/nbx/v1/trading/MLB/page"
-GAMES_SECTION_TITLE = "Games"
 GAME_CARD_TYPE = "game_event_card"
 PREGAME_STATUS = "OPEN_PREGAME"
 
@@ -257,10 +257,14 @@ def _parse_events_response(raw: dict, now: datetime,
                            window_hours: float) -> list[Event]:
     """Parse Novig's MLB league page into upcoming pregame Events.
 
-    Reads sections[title="Games"].content.components[type="game_event_card"]
-    (shape in the module docstring) and keeps what the retired GraphQL
-    events query's WHERE clause kept: eventStatus OPEN_PREGAME and a
-    scheduledStart inside [now, now + window_hours].
+    Reads every `game_event_card` component (shape in the module docstring;
+    today they all sit in the "Games" section) and keeps what the retired
+    GraphQL events query's WHERE clause kept: eventStatus OPEN_PREGAME and
+    a scheduledStart inside [now, now + window_hours]. Cards are matched by
+    their type, not by the section title: the title is display text, and a
+    renamed section would otherwise read as an off-day. One Event per
+    eventId, so a game shown in two sections cannot match twice (two
+    matches make the on-demand path decline the game as ambiguous).
 
     The team key is `symbol`, not `shortName`: the market tree's outcome
     competitors carry `symbol`, and the two differ — the White Sox are
@@ -278,9 +282,8 @@ def _parse_events_response(raw: dict, now: datetime,
 
     window_end = now + timedelta(hours=window_hours)
     out: list[Event] = []
+    seen_event_ids: set[str] = set()
     for section in sections:
-        if section.get("title") != GAMES_SECTION_TITLE:
-            continue
         for card in (section.get("content") or {}).get("components") or []:
             if card.get("type") != GAME_CARD_TYPE:
                 continue
@@ -293,6 +296,9 @@ def _parse_events_response(raw: dict, now: datetime,
             away = card.get("awayTeam") or {}
             if not (card.get("eventId") and home.get("name") and away.get("name")):
                 continue
+            if str(card["eventId"]) in seen_event_ids:
+                continue
+            seen_event_ids.add(str(card["eventId"]))
             out.append(Event(
                 event_id=str(card["eventId"]),
                 home_team=home["name"],

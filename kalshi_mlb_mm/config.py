@@ -115,9 +115,10 @@ SIGMA_Z_MAX = float(_get("SIGMA_Z_MAX", "0.07"))
 # ~5 quotable tuples @3 vs ~40-47 @2 books (~8×). Trade-off: 2-book consensus
 # is weaker (more model risk); caveat: Novig does not originate SGP prices —
 # it routes each combo to one vendor book (DraftKings, FanDuel and BetMGM all
-# seen 2026-10-02; see mlb_sgp/README.md), so Novig + its vendor is ONE
-# independent source, not two. A Novig-vs-vendor independence guard is a
-# noted follow-up if those pairs dominate fills.
+# seen 2026-10-02; see mlb_sgp/README.md) and shades that book's price, so
+# Novig + its vendor is ONE independent source, not two (a FanDuel-routed
+# Novig grid devigs to within ~0.3 prob pts of FanDuel's own). A
+# Novig-vs-vendor independence guard is a noted follow-up.
 MIN_AGREEING_BOOKS = int(_get("MIN_AGREEING_BOOKS", "2"))
 
 # Correlation sanity vs Kalshi's own single-leg markets (issue #23, spec §13).

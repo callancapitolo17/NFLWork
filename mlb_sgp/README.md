@@ -1020,14 +1020,16 @@ slate, not a dead book. No bot ran between 2026-09-21 and the fix, so
 
 **Events come from REST now.** `NovigClient.list_events()` reads
 `GET https://api.novig.us/nbx/v1/trading/MLB/page`, the call novig.com's MLB
-screen makes: `sections[title="Games"].content.components[type="game_event_card"]`
-→ `eventId`, `scheduledStart`, `homeTeam` / `awayTeam` `{name, symbol}`. The
-page lists every posted game (NFL's spanned 8 weeks), so the client keeps what
-the old GraphQL `WHERE` kept: `eventStatus == "OPEN_PREGAME"` and a start
-inside `[now, now + 48h]`. The team key is `symbol`, not `shortName`: market
-outcomes carry `symbol`, and the White Sox are `CHI` there but `CWS` in
-`shortName`. An off-season league answers `{"sections": []}` (→ no events); a
-body with no `sections` list raises `BookTransportError(stage="events")`.
+screen makes: every `sections[].content.components[type="game_event_card"]`
+(today all in the "Games" section) → `eventId`, `scheduledStart`, `homeTeam` /
+`awayTeam` `{name, symbol}`. Cards are keyed on their type, not the section
+title (display text), and deduped by `eventId`. The page lists every posted
+game (NFL's spanned 8 weeks), so the client keeps what the old GraphQL `WHERE`
+kept: `eventStatus == "OPEN_PREGAME"` and a start inside `[now, now + 48h]`.
+The team key is `symbol`, not `shortName`: market outcomes carry `symbol`, and
+the White Sox are `CHI` there but `CWS` in `shortName`. An off-season league
+answers `{"sections": []}` (→ no events); a body with no `sections` list
+raises `BookTransportError(stage="events")`.
 
 **The market tree must match the app.** `novig_event_markets_query.json` is
 Novig's own `EventMarkets_Query`. Hasura compares the parsed query with
@@ -1061,10 +1063,13 @@ every exception into an empty market tree. A 404 still skips just that game.
 **Novig is not an independent price.** Each parlay leg names the vendor that
 priced it. Until 2026-09 it was always `DRAFTKINGS`; on 2026-10-02 spread ×
 total came back `DRAFTKINGS`, ML × total `FANDUEL`, and `BETMGM` also appears.
-A Novig price duplicates one of the other books' prices for that combo, so
-Novig plus its vendor is one source in any consensus count (see the
-`MIN_AGREEING_BOOKS` note in `kalshi_mlb_mm/config.py`). The status field now
-reads `Unfilled`; nothing keys on it.
+Novig shades the vendor's price slightly short: on CWS @ CLE its four
+FanDuel-routed ML × total prices were 0.5–2% below FanDuel's own quotes
+(Home ML + Over: FD 2.8313, Novig 2.809), and the two grids devig to within
+~0.3 probability points. Novig plus its vendor is therefore one source in any
+consensus count (see the `MIN_AGREEING_BOOKS` note in
+`kalshi_mlb_mm/config.py`). The status field now reads `Unfilled`; nothing
+keys on it.
 
 Verified live 2026-10-02 (CWS @ CLE, 2026-10-03): `verify_books.py --books
 novig --pacing 12` → `priced` (spread × total fair 0.1788, ML × total 0.2407,
