@@ -136,9 +136,15 @@ class DraftKingsBook:
         return float(resp.json()["true_odds"])
 
 
+# The sidecar is single-threaded: /health waits behind an in-flight price
+# call or page reload (~10 s worst case), so a short timeout reads "down".
+SIDECAR_HEALTH_TIMEOUT_SECONDS = 15
+
+
 def sidecar_is_up(sidecar_url: str) -> bool:
     try:
-        return requests.get(f"{sidecar_url.rstrip('/')}/health", timeout=3).json().get("ok") is True
+        response = requests.get(f"{sidecar_url.rstrip('/')}/health", timeout=SIDECAR_HEALTH_TIMEOUT_SECONDS)
+        return response.json().get("ok") is True
     except (requests.RequestException, ValueError):
         return False
 

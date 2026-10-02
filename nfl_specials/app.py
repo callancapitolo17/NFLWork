@@ -28,7 +28,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from nfl_specials import config, wz
 from nfl_specials.board import Board, refresh_board, size_board
 from nfl_specials.books import parse_start
-from nfl_specials.dk_book import sidecar_is_up
 from nfl_specials.pricing import decimal_to_american
 from nfl_specials.store import Store
 
@@ -97,7 +96,6 @@ class SpecialsApp:
             "last_error": self._last_error,
             "settings": settings,
             "accounts": wz.account_labels(),
-            "dk_sidecar_up": sidecar_is_up(config.DK_SIDECAR_URL),
             "placements": [_placement_json(p) for p in placements],
             "board": None,
         }

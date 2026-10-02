@@ -268,11 +268,16 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _send(self, status: int, payload: dict) -> None:
         body = json.dumps(payload).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # The caller timed out while this single-threaded server was busy
+            # with another request; nothing is left to answer.
+            logger.info("client went away before the %s response", self.path)
 
     def do_GET(self):
         if self.path != "/health":
