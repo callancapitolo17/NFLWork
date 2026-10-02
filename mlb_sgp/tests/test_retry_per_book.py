@@ -135,7 +135,7 @@ def _nv_client(session):
 
 
 def test_nv_list_events_recovers_from_a_transient_dns_failure(recorded_sleeps):
-    session = FlakySession(FakeResponse(200, {"data": {"event": []}}),
+    session = FlakySession(FakeResponse(200, {"sections": []}),
                            failure=ConnectionError("nodename nor servname"))
     assert _nv_client(session).list_events() == []
     assert session.calls == 2

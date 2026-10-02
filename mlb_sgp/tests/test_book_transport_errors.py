@@ -179,10 +179,22 @@ def test_nv_list_events_raises_on_malformed_json():
 
 
 def test_nv_list_events_valid_empty_returns_empty_list():
+    """Novig's off-season league page: 200 with no sections."""
     from mlb_sgp.novig_client import NovigClient
-    ok = FakeResponse(200, {"data": {"event": []}})
+    ok = FakeResponse(200, {"sections": []})
     client = _client(NovigClient, FakeSession(ok))
     assert client.list_events() == []
+
+
+def test_nv_list_events_raises_on_unrecognised_page():
+    """A 200 JSON body without `sections` is a changed page, not an empty
+    slate — the retired GraphQL shape is the realistic example."""
+    from mlb_sgp.novig_client import NovigClient
+    old_shape = FakeResponse(200, {"data": {"event": []}})
+    client = _client(NovigClient, FakeSession(old_shape))
+    with pytest.raises(BookTransportError) as exc:
+        client.list_events()
+    assert exc.value.stage == "events"
 
 
 def test_nv_fetch_event_legs_raises_on_500():
@@ -198,6 +210,55 @@ def test_nv_fetch_event_legs_404_skips_event_without_raising():
     client = _client(NovigClient, FakeSession(NOT_FOUND))
     legs = client.fetch_event_legs("gone")
     assert legs.spread_legs == [] and legs.total_legs == []
+
+
+# Novig's allowlist answers a stale query with a 200 GraphQL error body
+# (2026-09-22). Before this was checked it parsed as "no markets".
+QUERY_NOT_ALLOWED = FakeResponse(200, {"errors": [{
+    "message": "query is not allowed",
+    "extensions": {"path": "$", "code": "validation-failed"}}]})
+
+
+def test_nv_fetch_event_legs_raises_on_graphql_error():
+    from mlb_sgp.novig_client import NovigClient
+    client = _client(NovigClient, FakeSession(QUERY_NOT_ALLOWED))
+    with pytest.raises(BookTransportError) as exc:
+        client.fetch_event_legs("uuid-1")
+    assert exc.value.stage == "structure"
+    assert "query is not allowed" in str(exc.value)
+
+
+def _nv_game():
+    return {"game_id": "g1", "nv_event_id": "uuid-1",
+            "nv_home_sym": "CLE", "nv_away_sym": "CHI",
+            "fg_spread_line": None, "fg_total_line": None,
+            "f5_spread_line": None, "f5_total_line": None}
+
+
+def test_nv_sweep_fetch_event_legs_raises_on_graphql_error():
+    """The sweep and on-demand paths fetch through scraper_novig_sgp; a
+    rejected query there must raise too, never return an empty tree."""
+    import scraper_novig_sgp
+    with pytest.raises(BookTransportError) as exc:
+        scraper_novig_sgp.fetch_event_legs(FakeSession(QUERY_NOT_ALLOWED),
+                                           _nv_game())
+    assert exc.value.book == "novig"
+    assert exc.value.stage == "structure"
+
+
+def test_nv_sweep_fetch_event_legs_raises_on_403():
+    import scraper_novig_sgp
+    with pytest.raises(BookTransportError) as exc:
+        scraper_novig_sgp.fetch_event_legs(FakeSession(FORBIDDEN), _nv_game())
+    assert exc.value.status_code == 403
+
+
+def test_nv_sweep_fetch_event_legs_404_skips_event_without_raising():
+    import scraper_novig_sgp
+    legs, markets = scraper_novig_sgp.fetch_event_legs(FakeSession(NOT_FOUND),
+                                                       _nv_game())
+    assert markets == []
+    assert all(v is None for period in legs.values() for v in period.values())
 
 
 # --------------------------------------------------------------------------- #

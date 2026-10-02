@@ -1,11 +1,23 @@
 """Novig HTTP client — extracted from scraper_novig_sgp.py.
 
-Anonymous Hasura GraphQL endpoint (no auth required — the parlay endpoint
-is literally named /unauthenticated). Novig sources legs from DraftKings
-(every observed leg returns vendor="DRAFTKINGS"), so its line set is a
-strict subset of DK's. We do strict line matching here at the client
-level — interpolation/fallback logic lives in the orchestrator, not the
-HTTP layer.
+No auth anywhere: events come from the REST page novig.com's MLB screen
+loads, the market tree from Novig's Hasura GraphQL endpoint, and prices
+from the parlay endpoint (literally named /unauthenticated). We do strict
+line matching here at the client level — interpolation/fallback logic
+lives in the orchestrator, not the HTTP layer.
+
+Novig does not originate SGP prices: it routes each combo to one vendor
+book and returns that book's price, naming it per leg (`vendor`). Until
+2026-09 every leg said DRAFTKINGS; on 2026-10-02 spread x total came back
+DRAFTKINGS, ML x total FANDUEL, and BETMGM also appears. A Novig price
+therefore duplicates one of the other books' prices for that combo.
+
+Since 2026-09-22 the GraphQL endpoint runs an allowlist: it executes only
+operations the novig.com app ships and answers anything else with HTTP 200
+`{"errors": [{"message": "query is not allowed"}]}`. That killed the
+hand-written events query (events moved to REST) and the committed
+EventMarkets_Query, which must now track the app — refresh it with
+`python mlb_sgp/refresh_novig_query.py`.
 
 Exposes three thin methods, mirroring dk_client.py / fd_client.py /
 prophetx_client.py:
@@ -16,20 +28,22 @@ prophetx_client.py:
 Pure helpers `_parse_events_response` and `_parse_event_legs_response`
 are at module level so tests can exercise the parsers without a session.
 
-Real Novig response shape (captured 2026-05-13 from live API):
+Real Novig response shapes:
 
-    POST https://api.novig.us/v1/graphql  (MLBEvents query)
-      -> {"data": {"event": [
-            {"id": "<uuid>",
-             "scheduled_start": "2026-05-13T23:40:00+00:00",
-             "game": {
-                "homeTeam": {"name": "...", "symbol": "MIN", "short_name": "MIN"},
-                "awayTeam": {"name": "...", "symbol": "MIA", "short_name": "MIA"}
-             }},
-            ...
-         ]}}
+    GET https://api.novig.us/nbx/v1/trading/MLB/page  (captured 2026-10-02)
+      -> {"sections": [
+            {"title": "Games", "content": {"type": "components", "components": [
+                {"type": "game_event_card", "eventId": "<uuid>",
+                 "scheduledStart": "2026-10-03T17:00:00.000Z",
+                 "eventStatus": "OPEN_PREGAME",
+                 "homeTeam": {"name": "Cleveland Guardians", "symbol": "CLE", ...},
+                 "awayTeam": {"name": "Chicago White Sox", "symbol": "CHI",
+                              "shortName": "CWS", ...}},
+                ...]}},
+            {"title": "Featured Parlays", ...}, {"title": "Series", ...}, ...]}
+       (an off-season league answers {"sections": []})
 
-    POST https://api.novig.us/v1/graphql  (EventMarkets_Query)
+    POST https://api.novig.us/v1/graphql  (EventMarkets_Query, captured 2026-05-13)
       -> {"data": {"event": [
             {"id": "<uuid>",
              "markets": [
@@ -48,26 +62,35 @@ Real Novig response shape (captured 2026-05-13 from live API):
       -> [{"price": "0.35088", "status": "OPEN", ...}, ...]
        (a *list* of offer dicts — top offer at [0])
 
-The parsers below tolerate both the real `{"data": {"event": [...]}}` shape
-and a flat `{"event": [...]}` / `{"events": [...]}` fallback so synthetic
-fixtures stay simple.
+The market-tree parser tolerates both the real `{"data": {"event": [...]}}`
+shape and a flat `{"event": [...]}` / `{"markets": [...]}` fallback so
+synthetic fixtures stay simple.
 """
 from __future__ import annotations
 import logging
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, BookTransportError,
                              PriceCallTallyMixin, RetryProfile, check_response,
-                             json_or_raise, request_with_retry)
+                             json_or_raise, raise_on_graphql_errors,
+                             request_with_retry)
 
 logger = logging.getLogger(__name__)
 
 BOOK = "novig"
 NOVIG_GRAPHQL = "https://api.novig.us/v1/graphql"
 NOVIG_PARLAY = "https://api.novig.us/nbx/v1/parlay/request/unauthenticated"
+# The REST call novig.com's MLB league screen makes. It lists every upcoming
+# game Novig has posted (NFL's page spanned 8 weeks on 2026-10-02), so
+# list_events applies the time window itself.
+NOVIG_MLB_PAGE = "https://api.novig.us/nbx/v1/trading/MLB/page"
+GAMES_SECTION_TITLE = "Games"
+GAME_CARD_TYPE = "game_event_card"
+PREGAME_STATUS = "OPEN_PREGAME"
 
 
 @dataclass
@@ -113,34 +136,22 @@ class NovigClient(PriceCallTallyMixin):
         self.verbose = verbose
 
     def list_events(self, profile: RetryProfile = RETRY_BACKGROUND) -> list[Event]:
-        """List upcoming MLB events. Uses the same query the legacy scraper does."""
-        from datetime import datetime, timezone, timedelta
-        from scraper_novig_sgp import MLB_EVENTS_QUERY, EVENT_WINDOW_HOURS
+        """Upcoming pregame MLB events from Novig's MLB league page (REST).
 
-        now = datetime.now(timezone.utc)
-        cutoff = (now + timedelta(hours=EVENT_WINDOW_HOURS)).isoformat()
-        body = json.dumps({
-            "query": MLB_EVENTS_QUERY,
-            "variables": {"start_gte": now.isoformat(), "start_lte": cutoff},
-        })
-        def _post():
-            try:
-                return self.session.post(
-                    NOVIG_GRAPHQL, data=body,
-                    headers={"Content-Type": "application/json"},
-                    timeout=20,
-                )
-            except TypeError:
-                # FakeSession in unit tests may not accept all kwargs
-                return self.session.post(NOVIG_GRAPHQL, data=body)
+        Side effects: one GET to NOVIG_MLB_PAGE. Raises BookTransportError
+        on a non-200, a non-JSON body, or a page without a `sections` list.
+        """
+        from scraper_novig_sgp import EVENT_WINDOW_HOURS
 
         # A connection failure that survives the retries is a dead book, not
         # an off-day. (The 2026-07 "api.novig.us unresolvable" reports were a
         # transient blip — the host resolves and answers; see issue #40.)
-        r = request_with_retry(_post, profile=profile, book=BOOK,
-                               stage="events")
+        r = request_with_retry(lambda: self.session.get(NOVIG_MLB_PAGE, timeout=20),
+                               profile=profile, book=BOOK, stage="events")
         check_response(BOOK, "events", r)
-        return _parse_events_response(json_or_raise(BOOK, "events", r))
+        return _parse_events_response(json_or_raise(BOOK, "events", r),
+                                      now=datetime.now(timezone.utc),
+                                      window_hours=EVENT_WINDOW_HOURS)
 
     def fetch_event_legs(self, event_id: str,
                          profile: RetryProfile = RETRY_BACKGROUND) -> EventLegs:
@@ -167,6 +178,7 @@ class NovigClient(PriceCallTallyMixin):
         if not check_response(BOOK, "structure", r, allow_404=True):
             return EventLegs(event_id=event_id)
         data = json_or_raise(BOOK, "structure", r)
+        raise_on_graphql_errors(BOOK, "structure", data)
         return _parse_event_legs_response(data, event_id_fallback=event_id)
 
     def submit_parlay(self, outcome_ids: list[str], stake: float = 1.0) -> dict:
@@ -241,34 +253,68 @@ class NovigClient(PriceCallTallyMixin):
 # Pure parser helpers — exposed at module level for tests
 # ---------------------------------------------------------------------------
 
-def _parse_events_response(raw: dict) -> list[Event]:
-    """Parse a Novig MLBEvents response into Event dataclasses.
+def _parse_events_response(raw: dict, now: datetime,
+                           window_hours: float) -> list[Event]:
+    """Parse Novig's MLB league page into upcoming pregame Events.
 
-    Tolerates both shapes:
-      - {"data": {"event": [...]}}   (real Hasura response)
-      - {"event":  [...]}            (synthetic fixture fallback)
-      - {"events": [...]}            (alternate fallback)
+    Reads sections[title="Games"].content.components[type="game_event_card"]
+    (shape in the module docstring) and keeps what the retired GraphQL
+    events query's WHERE clause kept: eventStatus OPEN_PREGAME and a
+    scheduledStart inside [now, now + window_hours].
+
+    The team key is `symbol`, not `shortName`: the market tree's outcome
+    competitors carry `symbol`, and the two differ — the White Sox are
+    symbol "CHI", shortName "CWS".
+
+    An off-season league answers {"sections": []} -> []. A body without a
+    `sections` list is a page we no longer understand -> BookTransportError,
+    so a shape change reads as a dead book, not as an empty slate.
     """
-    events_raw = (raw.get("data") or {}).get("event")
-    if events_raw is None:
-        events_raw = raw.get("event") or raw.get("events") or []
+    sections = raw.get("sections") if isinstance(raw, dict) else None
+    if not isinstance(sections, list):
+        raise BookTransportError(
+            BOOK, "events",
+            detail=f"MLB page has no 'sections' list (got {str(raw)[:120]!r})")
 
+    window_end = now + timedelta(hours=window_hours)
     out: list[Event] = []
-    for e in events_raw:
-        g = e.get("game") or {}
-        ht = g.get("homeTeam") or {}
-        at = g.get("awayTeam") or {}
-        if not (ht.get("name") and at.get("name")):
+    for section in sections:
+        if section.get("title") != GAMES_SECTION_TITLE:
             continue
-        out.append(Event(
-            event_id=str(e.get("id", "")),
-            home_team=ht.get("name", "") or "",
-            away_team=at.get("name", "") or "",
-            home_sym=ht.get("symbol") or ht.get("short_name") or "",
-            away_sym=at.get("symbol") or at.get("short_name") or "",
-            start_time=e.get("scheduled_start", "") or "",
-        ))
+        for card in (section.get("content") or {}).get("components") or []:
+            if card.get("type") != GAME_CARD_TYPE:
+                continue
+            if card.get("eventStatus") != PREGAME_STATUS:
+                continue
+            start = _parse_iso_utc(card.get("scheduledStart"))
+            if start is None or not (now <= start <= window_end):
+                continue
+            home = card.get("homeTeam") or {}
+            away = card.get("awayTeam") or {}
+            if not (card.get("eventId") and home.get("name") and away.get("name")):
+                continue
+            out.append(Event(
+                event_id=str(card["eventId"]),
+                home_team=home["name"],
+                away_team=away["name"],
+                home_sym=home.get("symbol") or home.get("shortName") or "",
+                away_sym=away.get("symbol") or away.get("shortName") or "",
+                start_time=card["scheduledStart"],
+            ))
     return out
+
+
+def _parse_iso_utc(text) -> datetime | None:
+    """'2026-10-03T17:00:00.000Z' -> aware UTC datetime; None if unparseable."""
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
 
 
 def _parse_event_legs_response(raw: dict, event_id_fallback: str = "") -> EventLegs:

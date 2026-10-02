@@ -1,12 +1,12 @@
 """Unit tests for NovigClient — fixture-based, no network.
 
 Fixtures:
-  - nv_events.json:     REAL response captured 2026-05-13 from
-                        POST https://api.novig.us/v1/graphql (MLBEvents query).
-                        18 upcoming MLB events.
+  - nv_trading_page_mlb.json: REAL response captured 2026-10-02 from
+                        GET https://api.novig.us/nbx/v1/trading/MLB/page.
+                        4 pregame games on 2026-10-03 plus the Featured
+                        Parlays / Series / Futures sections.
   - nv_event_legs.json: REAL response captured 2026-05-13 from
-                        POST https://api.novig.us/v1/graphql (EventMarkets_Query
-                        for the first event id from nv_events.json).
+                        POST https://api.novig.us/v1/graphql (EventMarkets_Query).
                         259 markets including SPREAD, TOTAL, SPREAD_1H, TOTAL_1H.
   - nv_parlay_response.json: SYNTHETIC — actual parlay submission needs valid
                         outcome UUIDs that move on every line update. Shape
@@ -14,8 +14,12 @@ Fixtures:
                         ...}]` list-of-offers response.
 """
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
+from mlb_sgp._shared import BookTransportError
 from mlb_sgp.novig_client import (
     NovigClient,
     Event,
@@ -27,68 +31,92 @@ from mlb_sgp.novig_client import (
 
 FIX = Path(__file__).parent / "fixtures"
 
+# Two hours before the fixture's first game (2026-10-03T17:00Z).
+FIXTURE_NOW = datetime(2026, 10, 3, 15, 0, tzinfo=timezone.utc)
+WINDOW_HOURS = 48
+
+
+def _games_page(*cards):
+    """A trading page whose Games section holds ``cards``."""
+    return {"sections": [{"title": "Games",
+                          "content": {"type": "components",
+                                      "components": list(cards)}}]}
+
+
+def _card(event_id, start="2026-10-03T20:00:00.000Z", status="OPEN_PREGAME",
+          card_type="game_event_card", home=("Home Team", "HOM", "HOM"),
+          away=("Away Team", "AWY", "AWY")):
+    return {"type": card_type, "eventId": event_id, "scheduledStart": start,
+            "eventStatus": status,
+            "homeTeam": {"name": home[0], "symbol": home[1], "shortName": home[2]},
+            "awayTeam": {"name": away[0], "symbol": away[1], "shortName": away[2]}}
+
 
 def test_parse_events_response_real_fixture():
-    """Real captured response should yield Event dataclasses for every MLB game."""
-    raw = json.loads((FIX / "nv_events.json").read_text())
-    events = _parse_events_response(raw)
-    assert len(events) > 0, "fixture should contain MLB events"
+    """The captured MLB page yields one Event per game card."""
+    raw = json.loads((FIX / "nv_trading_page_mlb.json").read_text())
+    events = _parse_events_response(raw, now=FIXTURE_NOW,
+                                    window_hours=WINDOW_HOURS)
+    assert len(events) == 4
     for e in events:
         assert isinstance(e, Event)
         assert e.event_id
         assert e.home_team
         assert e.away_team
-        assert e.home_sym, "Novig events always have a competitor symbol"
-        assert e.away_sym
-        # ISO-style timestamp
-        assert "T" in e.start_time and (e.start_time.endswith("Z")
-                                        or "+" in e.start_time)
+        assert e.home_sym and e.away_sym
+        assert e.start_time.startswith("2026-10-0") and e.start_time.endswith("Z")
+    cle = next(e for e in events if e.home_team == "Cleveland Guardians")
+    assert cle.event_id == "01a0f758-1b00-79d2-a2ad-323e9c1dbc11"
+    assert cle.away_team == "Chicago White Sox"
+    assert cle.start_time == "2026-10-03T17:00:00.000Z"
 
 
-def test_parse_events_tolerates_flat_shape():
-    """Synthetic fallback shape: {"event": [...]} without the data envelope."""
-    raw = {
-        "event": [
-            {
-                "id": "test-1",
-                "scheduled_start": "2026-05-14T00:00:00+00:00",
-                "game": {
-                    "homeTeam": {"name": "Test Home", "symbol": "TH"},
-                    "awayTeam": {"name": "Test Away", "symbol": "TA"},
-                },
-            }
-        ]
-    }
-    events = _parse_events_response(raw)
-    assert len(events) == 1
-    assert events[0].home_sym == "TH"
-    assert events[0].away_sym == "TA"
+def test_parse_events_uses_symbol_not_short_name():
+    """Market-tree outcomes carry `symbol`; the White Sox are CHI there and
+    CWS only in shortName, so shortName would orphan every White Sox leg."""
+    raw = json.loads((FIX / "nv_trading_page_mlb.json").read_text())
+    events = _parse_events_response(raw, now=FIXTURE_NOW,
+                                    window_hours=WINDOW_HOURS)
+    cle = next(e for e in events if e.home_team == "Cleveland Guardians")
+    assert (cle.home_sym, cle.away_sym) == ("CLE", "CHI")
+
+
+def test_parse_events_keeps_only_pregame_games_inside_the_window():
+    """Same filter the retired GraphQL WHERE clause applied server-side."""
+    raw = _games_page(
+        _card("keep"),
+        _card("live", status="OPEN_LIVE"),
+        _card("started", start="2026-10-03T14:00:00.000Z"),
+        _card("too-far", start="2026-10-06T20:00:00.000Z"),
+        _card("series", card_type="future_event_card"),
+    )
+    events = _parse_events_response(raw, now=FIXTURE_NOW,
+                                    window_hours=WINDOW_HOURS)
+    assert [e.event_id for e in events] == ["keep"]
+
+
+def test_parse_events_off_season_page_is_empty():
+    """An off-season league answers {"sections": []} — valid, no games."""
+    assert _parse_events_response({"sections": []}, now=FIXTURE_NOW,
+                                  window_hours=WINDOW_HOURS) == []
+
+
+def test_parse_events_raises_on_unrecognised_page():
+    """No `sections` list = a page we no longer understand: the book is
+    down, not empty (the issue #33 contract)."""
+    with pytest.raises(BookTransportError) as exc:
+        _parse_events_response({"data": {"event": []}}, now=FIXTURE_NOW,
+                               window_hours=WINDOW_HOURS)
+    assert exc.value.stage == "events"
 
 
 def test_parse_events_skips_missing_team_names():
-    """Defensive: drop events whose game.homeTeam.name is missing."""
-    raw = {
-        "data": {
-            "event": [
-                {
-                    "id": "bad-1",
-                    "scheduled_start": "2026-05-14T00:00:00+00:00",
-                    "game": {"homeTeam": {}, "awayTeam": {"name": "Away"}},
-                },
-                {
-                    "id": "good-1",
-                    "scheduled_start": "2026-05-14T00:00:00+00:00",
-                    "game": {
-                        "homeTeam": {"name": "Home", "symbol": "H"},
-                        "awayTeam": {"name": "Away", "symbol": "A"},
-                    },
-                },
-            ]
-        }
-    }
-    events = _parse_events_response(raw)
-    assert len(events) == 1
-    assert events[0].event_id == "good-1"
+    """Defensive: drop cards whose homeTeam.name is missing."""
+    bad = _card("bad-1", home=(None, "H", "H"))
+    raw = _games_page(bad, _card("good-1"))
+    events = _parse_events_response(raw, now=FIXTURE_NOW,
+                                    window_hours=WINDOW_HOURS)
+    assert [e.event_id for e in events] == ["good-1"]
 
 
 def test_parse_event_legs_response_real_fixture():
