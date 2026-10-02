@@ -121,6 +121,7 @@ body {
   background: var(--ground); border: 1px solid var(--border); border-radius: 6px; padding: 3.5px 6px;
 }
 .toolbar input { width: 54px; text-align: right; font-family: var(--figure); }
+.toolbar-label { font: 500 11.5px system-ui, sans-serif; color: var(--muted); white-space: nowrap; }
 
 .edges-controls {
   display: grid; gap: 5px; padding: 2px 10px 10px;

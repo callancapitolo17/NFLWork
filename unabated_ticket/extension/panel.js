@@ -54,8 +54,9 @@
   // rungs down. minLiquidityToWin
   // $100: an exchange line is listed when its resting money can win $100
   // (feed.liquidityCanWin), so a thin longshot stays and a thin favorite goes. 0 = off.
+  // minEdgePct 2.5 since 0.16.1 (user, 2026-10-02; was 1.0).
   const DEFAULT_EDGE_SETTINGS = {
-    leagues: ALL_LEAGUE_IDS, periods: [1], betTypes: [1, 2, 3], bookIds: undefined, minEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge",
+    leagues: ALL_LEAGUE_IDS, periods: [1], betTypes: [1, 2, 3], bookIds: undefined, minEdgePct: 2.5, maxLineAgeHours: 168, sortBy: "edge",
     minStake: 0,
     minLiquidityToWin: 100,
     includeAlts: false,
