@@ -46,8 +46,8 @@ module.exports = [
     },
   },
   {
-    // node --test suites and this config file.
-    files: ["tests/**/*.js", "eslint.config.js"],
+    // node --test suites, the server runner (server/, plain Node) and this config file.
+    files: ["tests/**/*.js", "server/**/*.js", "eslint.config.js"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "commonjs",
