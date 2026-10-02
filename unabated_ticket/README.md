@@ -234,8 +234,8 @@ scanner's rebuild every few seconds. The row you last clicked keeps a tint, and
 the Ticket tab shows a **← Back to edges** link to it.
 
 The filter controls sit behind one chip that states the filter in words
-(`Football · FG · Moneyline/Spread/Total · 12 books · ≥1.0%`) and opens the
-drawer in place; sort and minimum edge stay out on the toolbar. Bankroll and
+(`Football · FG · Moneyline/Spread/Total · 12 books · ≥2.5%`) and opens the
+drawer in place; sort and minimum edge (labelled `min edge [2.5] %`, default 2.5%) stay out on the toolbar. Bankroll and
 the Kelly multiplier sit at the foot of the Ticket tab under **Sizing**, where
 the stake they size is; the **⚙** at the right of the tab bar jumps there from
 any tab. The filter drawer also has **Min suggested bet $**: zero is off;
@@ -2387,6 +2387,11 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-02 — Min edge default 2.5%, labelled on the toolbar (0.16.1).** The
+minimum-edge box sat on the toolbar with no visible label, so Cal did not know
+it was there. It now reads `min edge [x] %`, and its default moved from 1.0% to
+2.5% (user). A value already saved in the panel is kept.
 
 **2026-09-30 — The Edges tab sizes against the open teasers on a game.** The
 reverse of the entry below, the last gap before the Teasers merge: a
