@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NFL Fectas</title>
+<style>
+  :root {
+    --bg: #ffffff; --text: #1f1e1d; --muted: #6b6a66; --faint: #9a9893; --border: #e4e2dc;
+    --row-hover: #f6f5f1; --good: #2f6f1f; --good-bg: #eaf3de; --bad: #a32d2d; --warn: #7a5300;
+    --warn-bg: #faeeda; --accent: #185fa5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1a1a19; --text: #ecebe6; --muted: #a8a69f; --faint: #77756f; --border: #34332f;
+      --row-hover: #232321; --good: #97c459; --good-bg: #27370f; --bad: #f09595; --warn: #fac775;
+      --warn-bg: #4a3608; --accent: #85b7eb;
+    }
+  }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 12px; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0; }
+  .muted { color: var(--muted); } .faint { color: var(--faint); }
+  .spacer { flex: 1; }
+  input, select, button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; height: 30px; padding: 0 8px; }
+  button { cursor: pointer; } button:hover { background: var(--row-hover); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .chip { padding: 2px 10px; border-radius: 6px; font-size: 13px; }
+  .chip.ok { background: var(--good-bg); color: var(--good); }
+  .chip.warn { background: var(--warn-bg); color: var(--warn); }
+  .grid { display: grid; grid-template-columns: minmax(0, 2.6fr) 0.7fr 0.8fr 0.7fr 1.4fr; gap: 8px; align-items: center; padding: 10px; border-bottom: 1px solid var(--border); }
+  .grid.head { color: var(--muted); padding: 6px 10px; }
+  .grid:not(.head):hover { background: var(--row-hover); }
+  .desc { font-weight: 600; }
+  .meta { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+  .ev-pos { color: var(--good); font-weight: 600; } .ev-neg { color: var(--bad); }
+  .stake { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .stake input { width: 64px; }
+  .result { font-size: 12px; overflow-wrap: anywhere; }
+  .result.ok { color: var(--good); } .result.err { color: var(--bad); }
+  h2 { font-size: 14px; font-weight: 600; color: var(--muted); margin: 20px 0 6px; }
+  .placed { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .banner { padding: 8px 10px; border-radius: 6px; background: var(--warn-bg); color: var(--warn); margin-bottom: 12px; }
+  @media (max-width: 700px) {
+    .grid { grid-template-columns: 1fr 1fr 1fr; }
+    .grid > :first-child, .grid > .stake { grid-column: 1 / -1; }
+    .grid.head { display: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>NFL fectas</h1>
+    <span class="muted" id="summary">Loading…</span>
+    <span class="spacer"></span>
+    <label class="muted">Bankroll <input id="bankroll" type="number" min="1" step="1" style="width:90px"></label>
+    <label class="muted">Kelly <input id="kelly" type="number" min="0.01" max="1" step="0.05" style="width:70px"></label>
+    <select id="account" aria-label="Wagerzon account"></select>
+    <button id="refresh">Refresh</button>
+  </header>
+  <div id="banner"></div>
+  <div class="chips" id="chips"></div>
+  <div class="grid head"><span>Special</span><span>WZ</span><span>Fair</span><span>EV</span><span>Stake</span></div>
+  <div id="rows"></div>
+  <h2>Placed this week</h2>
+  <div id="placed"><div class="placed faint">Nothing placed yet.</div></div>
+</main>
+<script>
+const BOOK_SHORT = { FanDuel: "FD", BetMGM: "MGM", DraftKings: "DK" };
+let lastPayload = null;
+let pollTimer = null;
+let editingStake = new Map();   // wz_game_id -> value the user typed (survives re-renders)
+
+function signed(n) { return n == null ? "–" : (n > 0 ? "+" : "") + n; }
+function pct(x) { return x == null ? "–" : (x > 0 ? "+" : "") + (x * 100).toFixed(1) + "%"; }
+function el(tag, attrs = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v; else if (k === "text") node.textContent = v; else node.setAttribute(k, v);
+  }
+  for (const c of [].concat(children)) if (c != null) node.append(c);
+  return node;
+}
+function kickoff(iso) {
+  if (!iso) return "";
+  const d = new Date(iso.replace(/(\.\d{3})\d+/, "$1"));
+  return d.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+}
+
+async function api(path, body) {
+  const opts = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  const resp = await fetch(path, opts);
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
+  return data;
+}
+
+function renderHeader(p) {
+  const b = p.board;
+  const bankroll = document.getElementById("bankroll"), kelly = document.getElementById("kelly");
+  if (document.activeElement !== bankroll) bankroll.value = Math.round(p.settings.bankroll);
+  if (document.activeElement !== kelly) kelly.value = p.settings.kelly_fraction;
+  const account = document.getElementById("account");
+  if (account.options.length !== p.accounts.length) {
+    account.replaceChildren(...p.accounts.map(a => el("option", { value: a, text: a })));
+  }
+  let summary = "No board yet";
+  if (b) {
+    const when = new Date(b.finished_at || b.started_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    summary = `${b.lines.length} specials · ${b.finished_at ? "updated " + when : "pricing since " + when}`;
+  }
+  document.getElementById("summary").textContent = summary;
+  document.getElementById("refresh").textContent = p.refreshing ? "Pricing…" : "Refresh";
+  const banner = document.getElementById("banner");
+  banner.replaceChildren(p.last_error ? el("div", { class: "banner", text: "Last refresh failed: " + p.last_error }) : "");
+}
+
+function renderChips(p) {
+  const chips = [];
+  const status = (p.board && p.board.book_status) || {};
+  for (const name of ["FanDuel", "BetMGM", "DraftKings"]) {
+    const s = status[name];
+    if (s === undefined) continue;
+    chips.push(el("span", { class: "chip " + (s === "ok" ? "ok" : "warn"), text: s === "ok" ? `${name} ok` : `${name}: ${s}` }));
+  }
+  if (p.board && !p.board.finished_at) {
+    chips.push(el("span", { class: "chip warn", text: `pricing ${p.board.progress_done} / ${p.board.progress_total}` }));
+  }
+  document.getElementById("chips").replaceChildren(...chips);
+}
+
+function bookLine(line) {
+  return Object.entries(line.books).map(([name, f]) =>
+    `${BOOK_SHORT[name] || name} ${f.fair_american != null ? signed(f.fair_american) : "–"}`).join(" · ");
+}
+
+function stakeCell(line) {
+  if (line.status === "pricing" && line.fair_prob == null) return el("span", { class: "faint", text: "pricing…" });
+  if (line.fair_prob == null) return el("span", { class: "faint", text: "unpriced" });
+  if (line.ev <= 0) return el("span", { class: "faint", text: "no bet" });
+  const typed = editingStake.get(line.wz_game_id);
+  const input = el("input", { type: "number", min: "1", step: "1", "aria-label": "Risk in dollars" });
+  input.value = typed !== undefined ? typed : (line.recommended_stake || "");
+  input.addEventListener("input", () => editingStake.set(line.wz_game_id, input.value));
+  const result = el("span", { class: "result" });
+  const button = el("button", { text: "Place" });
+  button.addEventListener("click", () => place(line, input, result, button));
+  const children = [input, button, result];
+  if (line.yields_to) children.unshift(el("span", { class: "faint", text: `overlaps ${line.yields_to}` }));
+  return el("span", { class: "stake" }, children);
+}
+
+async function place(line, input, result, button) {
+  const risk = Number(input.value);
+  const account = document.getElementById("account").value;
+  if (!(risk > 0)) { result.className = "result err"; result.textContent = "Enter a stake first"; return; }
+  const ok = confirm(`Place $${risk} on ${line.description} at ${signed(line.wz_american)} (Wagerzon: ${account})?`);
+  if (!ok) return;
+  button.textContent = "Placing…";
+  try {
+    const r = await api("/api/place", { wz_game_id: line.wz_game_id, wz_american: line.wz_american, risk, account });
+    result.className = "result " + (r.status === "placed" ? "ok" : "err");
+    result.textContent = r.status === "placed" ? `placed · ticket ${r.ticket_number}` : `${r.status}: ${r.error || ""}`;
+    if (r.status === "placed") editingStake.delete(line.wz_game_id);
+  } catch (e) {
+    result.className = "result err"; result.textContent = e.message;
+  } finally {
+    button.textContent = "Place";
+    load();
+  }
+}
+
+function renderRows(p) {
+  const rows = document.getElementById("rows");
+  if (!p.board) { rows.replaceChildren(el("div", { class: "grid faint", text: "Waiting for the first refresh…" })); return; }
+  const lines = [...p.board.lines].sort((a, b) => (b.ev ?? -9) - (a.ev ?? -9));
+  rows.replaceChildren(...lines.map(line => {
+    const game = line.home ? `${line.away} @ ${line.home} · ${kickoff(line.game_start_time)}` : "";
+    const meta = [line.rotation, game, bookLine(line), line.fair_prob == null ? line.note : null].filter(Boolean).join(" · ");
+    const evClass = line.ev == null ? "faint" : line.ev > 0 ? "ev-pos" : "ev-neg";
+    return el("div", { class: "grid" }, [
+      el("div", {}, [el("div", { class: "desc", text: line.description }), el("div", { class: "meta", text: meta })]),
+      el("span", { text: signed(line.wz_american) }),
+      el("span", { text: line.fair_american != null ? signed(line.fair_american) : "–" }),
+      el("span", { class: evClass, text: pct(line.ev) }),
+      stakeCell(line),
+    ]);
+  }));
+}
+
+function renderPlaced(p) {
+  const placed = document.getElementById("placed");
+  if (!p.placements.length) { placed.replaceChildren(el("div", { class: "placed faint", text: "Nothing placed yet." })); return; }
+  placed.replaceChildren(...p.placements.map(r => el("div", { class: "placed" }, [
+    el("span", { text: `${r.rotation} ${r.description}` }),
+    el("span", { text: `$${r.risk} at ${signed(r.wz_american)}` }),
+    el("span", { class: r.status === "placed" ? "ev-pos" : "ev-neg", text: r.status === "placed" ? `placed · ticket ${r.ticket_number}` : `${r.status}: ${r.error || ""}` }),
+    el("span", { class: "faint", text: new Date(r.placed_at).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) }),
+  ])));
+}
+
+async function load() {
+  try {
+    const p = await api("/api/board");
+    lastPayload = p;
+    renderHeader(p); renderChips(p); renderRows(p); renderPlaced(p);
+  } catch (e) {
+    document.getElementById("banner").replaceChildren(el("div", { class: "banner", text: "Can't reach the pricer: " + e.message }));
+  }
+  const busy = lastPayload && (lastPayload.refreshing || (lastPayload.board && !lastPayload.board.finished_at));
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(load, busy ? 4000 : 30000);
+}
+
+async function saveSettings() {
+  const bankroll = Number(document.getElementById("bankroll").value);
+  const kelly_fraction = Number(document.getElementById("kelly").value);
+  try { await api("/api/settings", { bankroll, kelly_fraction }); editingStake.clear(); }
+  catch (e) { alert(e.message); }
+  load();
+}
+
+document.getElementById("bankroll").addEventListener("change", saveSettings);
+document.getElementById("kelly").addEventListener("change", saveSettings);
+document.getElementById("refresh").addEventListener("click", async () => {
+  await api("/api/refresh", {}); load();
+});
+load();
+</script>
+</body>
+</html>
