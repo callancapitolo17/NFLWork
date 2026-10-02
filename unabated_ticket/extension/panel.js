@@ -22,10 +22,12 @@
 // The bets tab (#114) polls the local bets service (betsSettings.serviceUrl,
 // default http://127.0.0.1:8094) every 30 s on the same visibility rule —
 // never from the service worker. Matching is bets.js; presentation helpers
-// are betsview.js. Bet105 (2026-09-29) is the one venue this page reads
-// itself: every 5 min while visible it fetches the account's open bets from
-// app.bet105.ag on Cal's own login in this Chrome (bet105.js) and POSTs them
-// to the service's /bet105.json, which parses and stores them like any other.
+// are betsview.js; the Edges rows' selection, sizing, sort and words are
+// edgerows.js (shared with the server runner). Bet105 (2026-09-29) is the
+// one venue this page reads itself: every 5 min while visible it fetches the
+// account's open bets from app.bet105.ag on Cal's own login in this Chrome
+// (bet105.js) and POSTs them to the service's /bet105.json, which parses and
+// stores them like any other.
 
 (function () {
   "use strict";
@@ -35,44 +37,18 @@
   const betsLib = globalThis.UnabatedBets;
   const betsView = globalThis.UnabatedBetsView;
   const attachLib = globalThis.UnabatedAttach;
-  const ladderLib = globalThis.UnabatedLadder;
   const live = globalThis.UnabatedLive;
   const teaserLib = globalThis.UnabatedTeaser;
   const bet105 = globalThis.UnabatedBet105;
   // Bets service poll cadence while the panel is visible (plan § Storage).
   const BETS_POLL_MS = 30 * 1000;
-  const DEFAULT_SETTINGS = { bankroll: 30000, multiplier: 0.25 };
-  // maxLineAgeHours: a "live" book's line unchanged for a week is a dead feed
-  // (live 2026-09-10: Buckeye -110 on a 44.5 total, 96 days old, "+36.67%").
-  const ALL_LEAGUE_IDS = Object.keys(feed.LEAGUES).map(Number);
-  // bookIds undefined (never ticked) = DEFAULT_BOOK_NAMES; null = follow the
-  // Unabated selection page.js publishes (all live books until one exists),
-  // set by its button; an array = the user's own ticks in the panel.
-  // Alt lines (#113) are off until asked for; an alt lists only while
-  // Unabated's fair and the book's price are 15-85% (feed.altWithinDepthCap; the 7-point cap
-  // went 2026-09-30), and inside that the tail flex (tailflex.js) ranks deep
-  // rungs down. minLiquidityToWin
-  // $100: an exchange line is listed when its resting money can win $100
-  // (feed.liquidityCanWin), so a thin longshot stays and a thin favorite goes. 0 = off.
-  // minEdgePct 2.5 since 0.16.1 (user, 2026-10-02; was 1.0).
-  const DEFAULT_EDGE_SETTINGS = {
-    leagues: ALL_LEAGUE_IDS, periods: [1], betTypes: [1, 2, 3], bookIds: undefined, minEdgePct: 2.5, maxLineAgeHours: 168, sortBy: "edge",
-    minStake: 0,
-    minLiquidityToWin: 100,
-    includeAlts: false,
-    // One card per (game, market, side) with its best line; the flat list is the toggle off.
-    groupByMarket: true,
-  };
-  // The books the Edges list starts on until you tick your own (the user's
-  // list, 2026-09-15). By NAME, not id: BetOnline Direct, Bookmaker-Internal,
-  // Poly US Ing and Polymarket US are listed in the panel but absent from the
-  // anonymous feed their ids could be read from. A name the feed does not
-  // carry (a book not listed today) simply ticks nothing.
-  const DEFAULT_BOOK_NAMES = [
-    "Bet105", "BetOnline", "BetOnline Direct", "Bookmaker", "Bookmaker-Internal", "Buckeye", "Kalshi",
-    "Novig", "NoVig-Internal", "Poly US Ing", "Polymarket", "Polymarket US", "Prophet Exchange",
-    "Underdog Prediction Market",
-  ];
+  // The Edges list's defaults, book list and row logic (selection, sizing,
+  // tail-flex rank, sort, cards, edge-move reading) live in edgerows.js,
+  // shared with the headless server runner so both list the same lines at
+  // the same stakes.
+  const edgeRows = globalThis.UnabatedEdgeRows;
+  const DEFAULT_SETTINGS = edgeRows.DEFAULT_STAKE_SETTINGS;
+  const DEFAULT_EDGE_SETTINGS = edgeRows.DEFAULT_EDGE_SETTINGS;
   // Off until the list has been watched for a session (plan, 2026-09-10).
   const DEFAULT_ALERT_SETTINGS = { enabled: false, minEdgePct: 2.0 };
   const ALERT_EVENT_COOLDOWN_MS = 5 * 60 * 1000;
@@ -82,7 +58,7 @@
   const WATCH_STALE_MS = 15000;
   // page.js republishes the books filter every 10s while an Unabated tab is open.
   const BOOKS_FILTER_STALE_MS = 6 * 60 * 60 * 1000;
-  const MAX_EDGE_ROWS = 200;
+  const MAX_EDGE_ROWS = edgeRows.MAX_EDGE_ROWS;
   // Open bets never net against a live line: conditional Kelly needs a live
   // fair ladder, which the screen does not expose (plan 2026-09-27, § Sizing).
   const LIVE_NOT_SIZED_NOTE = "live · not sized";
@@ -190,11 +166,10 @@
   // worth on every snapshot, read for the edge-move tag.
   let scannerHistory = {};
   let boardLinesCache = null;
-  // Unabated's fair ladders for sizing against held bets (#130): the feed's
-  // lines grouped by event, and each (event, period, axis) ladder built from
-  // them on first use. Both are dropped on every scanner update.
-  let linesByEventCache = null;
-  let ladderCache = new Map();
+  // Unabated's fair ladders for sizing against held bets (#130):
+  // edgeRows.createLadderReaders over the current feed state, built on first
+  // use and dropped on every scanner update.
+  let ladderReaders = null;
   // The Teasers tab: the ticket list as last built (teaser.planTeasers keeps
   // it while nothing real changes), and teaser.teaserBoardOf's one pass over
   // the board with the NFL/CFB load times it was made at — redone only when
@@ -226,13 +201,7 @@
   // team already indexed must persist and re-resolve too.
   function registerFeedTeams(feedState) {
     if (!feedState || !feedState.teamIndex) return;
-    const byLeague = {};
-    for (const team of Object.values(feedState.teamIndex)) {
-      const league = feed.LEAGUES[team.leagueId];
-      if (!league) continue;
-      (byLeague[league.path] ||= []).push(team);
-    }
-    for (const [league, list] of Object.entries(byLeague)) teamsLib.registerTeams(league, list);
+    for (const [league, list] of Object.entries(edgeRows.feedTeamsByLeague(feedState))) teamsLib.registerTeams(league, list);
     const spellings = teamsLib.spellingCount();
     if (spellings === teamsSpellingCount) return;
     teamsSpellingCount = spellings;
@@ -246,8 +215,7 @@
       scannerState = feedState;
       scannerHistory = history || {};
       boardLinesCache = null;
-      linesByEventCache = null;
-      ladderCache = new Map();
+      ladderReaders = null;
       tailFlexCache = null;
       registerFeedTeams(feedState);
       if (noteMatchedStarts()) persistBets().catch((error) => console.error("[unabated-ticket] bets persist failed", error));
@@ -264,9 +232,7 @@
 
   // ---- formatting ----------------------------------------------------------
 
-  function fmtAmerican(price) {
-    return price > 0 ? `+${price}` : `${price}`;
-  }
+  const fmtAmerican = edgeRows.fmtAmerican;
 
   // Prediction-market style: implied probability in cents (what Kalshi/Novig
   // show). Uses the exchange's exact source price when the line carries one, so
@@ -283,9 +249,7 @@
     return { bookPrice: price, sourceFormat, sourcePrice };
   }
 
-  function fmtDollars(value) {
-    return value.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
+  const fmtDollars = edgeRows.fmtDollars;
 
   function fmtPct(fraction) {
     const pct = fraction * 100;
@@ -823,18 +787,13 @@
   const edgemove = globalThis.UnabatedEdgeMove;
   const MOVE_TAG_CLASS = { fair_to_you: "move-fair", book_away: "move-book", fair_against: "move-against" };
 
-  // The line's move since the previous observation inside the window, or kind "none".
-  function moveFor(key) {
-    return edgemove.edgeMove(scannerHistory[key], Date.now());
-  }
+  const fmtFairEntry = edgeRows.fmtFairEntry;
+  const fmtBetPrice = edgeRows.fmtBetPrice;
 
-  function fmtFairEntry(entry) {
-    if (entry.bacr == null) return "?";
-    try {
-      return `${(kelly.americanToProb(entry.bacr) * 100).toFixed(1)}%`;
-    } catch (_error) {
-      return fmtAmerican(entry.bacr);
-    }
+  // What the edge-move reading needs from the panel: the scanner's history,
+  // the saved fill fairs and the clock.
+  function moveContext() {
+    return { history: scannerHistory, fillFairIndex, now: Date.now() };
   }
 
   // "fair 33.7% → 35.6% · price +199 · 33.4¢ → +215 · 31.7¢": a move's two ends.
@@ -854,11 +813,6 @@
     return `opened ${fmtAmerican(openerPrice)}${sameNumber ? "" : ` at ${fmtPoints(openerPoints)}`}`;
   }
 
-  // " +208" for a fill's price, "" for a record with none.
-  function fmtBetPrice(bet) {
-    return typeof bet.price === "number" ? ` ${fmtAmerican(bet.price)}` : "";
-  }
-
   // The last ten minutes, for the since-fill tooltip: the tag it would show
   // on its own and its numbers. An amber there is the fair lag itself: the
   // book moved and Unabated's fair (~1-2 min behind, #126) has not answered.
@@ -866,22 +820,6 @@
     if (move.kind === "none") return "last 10 min: nothing moved";
     const lag = move.kind === "book_away" ? " \u2014 Unabated's fair runs ~1-2 min behind the book; wait a snapshot" : "";
     return `last 10 min: ${edgemove.MOVE_LABELS[move.kind]}, ${fmtMoveNumbers(move)}, moved ${fmtAge(move.sinceMs)}${lag}`;
-  }
-
-  // What the tag reads on a line held in this direction: {move, baseline,
-  // recent}. With a saved fill fair on the line (fillfair.baselineOf: the
-  // earliest open bet on this very line that has one) the move is since that
-  // fill; without one it is the last ten minutes, as before. `recent` is
-  // always the ten-minute move. `line` needs key, points and the openers (an
-  // Edges row or a raw feed line); `bet` is its {tier, matches, advice}.
-  function tagReading(line, bet) {
-    const recent = moveFor(line.key);
-    const baseline = fillfair.baselineOf(bet.matches, fillFairIndex, line.marketId);
-    const entries = scannerHistory[line.key];
-    if (!baseline || !entries || entries.length === 0) return { move: recent, baseline: null, recent };
-    // An Edges row carries its book as `book`; the Ticket's raw feed line as `bookId`.
-    const rowBookId = line.book ? line.book.id : line.bookId;
-    return { move: fillfair.moveSinceFill(baseline, entries[entries.length - 1], rowBookId), baseline, recent };
   }
 
   // The numbers behind the tag. Since a fill: "since your Novig +208 bet
@@ -905,45 +843,21 @@
     return [since, recentMoveText(reading.recent), opener].filter(Boolean).join(" | ");
   }
 
-  // The mover, on the card under the tag: the fair then and now when the
-  // fair decided (green / red), the price when it was the book (amber),
-  // named from your fill when the tag reads since one. Both ends with cents,
-  // the last ten minutes and the opener stay in the tooltip.
-  function moveDetail(reading) {
-    const move = reading.move;
-    const fromPrice = typeof move.from.price === "number" ? fmtAmerican(move.from.price) : "?";
-    const what = move.kind === "book_away"
-      ? `price ${fromPrice} \u2192 ${fmtAmerican(move.to.price)}`
-      : `fair ${fmtFairEntry(move.from)} \u2192 ${fmtFairEntry(move.to)}`;
-    return reading.baseline ? `since your${fmtBetPrice(reading.baseline.bet)} bet: ${what}` : what;
-  }
-
-  // The tag shows only on a line the user already holds in the same direction
-  // (user decision, 2026-09-23): it exists for the adverse selection of ADDING
-  // to a position, and a first bet is not a top-up. stakeAdvice says "add"
-  // exactly when held dollars are on the row's direction. The history behind
-  // the tag is still recorded for every line (scanner.js), so a line bet later
-  // is tagged at once.
-  function heldInThisDirection(bet) {
-    return Boolean(bet && bet.advice && bet.advice.verb === "add");
-  }
-
   // One small tag naming why the edge on this line is what it is (the fair
   // decides — see edgemove.js), its detail line under it and the numbers in
   // the tooltip, for a rail or the Ticket's Edge fact; [] when the line is
   // not held in this direction or nothing moved. `bet` is the row's {tier,
   // matches, advice} (withBetFlags / ticketBetFlag).
   function moveParts(line, bet) {
-    if (!heldInThisDirection(bet)) return [];
-    const reading = tagReading(line, bet);
-    if (reading.move.kind === "none") return [];
+    const moveTag = edgeRows.moveTag(line, bet, moveContext());
+    if (!moveTag) return [];
     const tag = document.createElement("span");
-    tag.className = `tag ${MOVE_TAG_CLASS[reading.move.kind]}`;
-    tag.textContent = edgemove.MOVE_LABELS[reading.move.kind];
-    tag.title = moveTooltip(reading, line);
+    tag.className = `tag ${MOVE_TAG_CLASS[moveTag.kind]}`;
+    tag.textContent = moveTag.label;
+    tag.title = moveTooltip(moveTag.reading, line);
     const detail = document.createElement("small");
     detail.className = "move-detail";
-    detail.textContent = moveDetail(reading);
+    detail.textContent = moveTag.detail;
     detail.title = tag.title;
     return [tag, detail];
   }
@@ -951,11 +865,7 @@
   // The tag's words for an alert body, or null; alert rows come through
   // withBetFlags, so row.bet is set.
   function moveWords(row) {
-    if (!heldInThisDirection(row.bet)) return null;
-    const reading = tagReading(row, row.bet);
-    if (reading.move.kind === "none") return null;
-    const label = edgemove.MOVE_LABELS[reading.move.kind];
-    return reading.baseline ? `${label} since your${fmtBetPrice(reading.baseline.bet)} bet` : label;
+    return edgeRows.moveWords(row, moveContext());
   }
 
   function pageScriptAlive() {
@@ -964,9 +874,7 @@
   }
 
   function liveBooks() {
-    if (!scannerState) return [];
-    return Object.values(scannerState.books).filter((book) => book.isLive && book.id !== feed.UNABATED_LINE_BOOK_ID)
-      .sort((a, b) => a.name.localeCompare(b.name));
+    return edgeRows.liveBooks(scannerState);
   }
 
   function unabatedSelection() {
@@ -975,35 +883,11 @@
     return fresh && Array.isArray(filter.bookIds) && filter.bookIds.length ? filter.bookIds : null;
   }
 
-  function defaultBookIds() {
-    if (!scannerState) return [];
-    const wanted = new Set(DEFAULT_BOOK_NAMES);
-    return Object.values(scannerState.books).filter((book) => wanted.has(book.name)).map((book) => book.id);
-  }
-
-  // Which books the list is restricted to: the user's own ticks when they
-  // have made any, else the default books until "My Unabated selection" is
-  // chosen, which follows the selection page.js published, else every live
-  // book. Bet types are the panel's own checkboxes.
+  // Which books the list is restricted to (edgeRows.effectiveFilter): the
+  // user's ticks, the default books, the Unabated selection page.js read off
+  // the open tab, or every live book.
   function effectiveFilter() {
-    const settings = state.edgeSettings;
-    const selection = unabatedSelection();
-    let mode;
-    let bookIds;
-    if (Array.isArray(settings.bookIds)) {
-      mode = "custom";
-      bookIds = new Set(settings.bookIds);
-    } else if (settings.bookIds === undefined) {
-      mode = "default";
-      bookIds = new Set(defaultBookIds());
-    } else if (selection) {
-      mode = "unabated";
-      bookIds = new Set(selection);
-    } else {
-      mode = "all";
-      bookIds = null;
-    }
-    return { mode, bookIds, betTypeIds: new Set(settings.betTypes), filter: state.booksFilter };
+    return edgeRows.effectiveFilter(state.edgeSettings, scannerState, unabatedSelection(), state.booksFilter);
   }
 
   function describeFilter(effective) {
@@ -1034,18 +918,7 @@
   // measure shows the fallback.
   function describeTailFlex(rows) {
     if (!scannerState || !rows.length) return "";
-    const measurement = tailFlexMeasurement();
-    const parts = new Map();
-    for (const row of rows) {
-      if (row.betTypeId === 1) continue;
-      const key = tailflex.marketKeyOf(row);
-      if (parts.has(key)) continue;
-      const c = tailflex.cOf(measurement, row);
-      const cText = tailflex.isMeasured(measurement, row) ? `${(c * 100).toFixed(1)}%` : `${Math.round(c * 100)}%`;
-      const period = row.period === "FG" ? "" : `${row.period} `;
-      parts.set(key, `${row.leagueLabel} ${period}${row.betTypeId === 2 ? "spr" : "tot"} ${cText}`);
-    }
-    return parts.size ? `tail flex: ${Array.from(parts.values()).join(" · ")}` : "";
+    return edgeRows.describeTailFlex(rows, tailFlexMeasurement());
   }
 
   function describeAltFilter(settings) {
@@ -1109,81 +982,35 @@
   view.booksAll.addEventListener("click", () => setBookIds(liveBooks().map((book) => book.id)));
   view.booksNone.addEventListener("click", () => setBookIds([]));
 
-  // Quarter-Kelly with nothing held, never more than the line's resting
-  // liquidity: it picks a card's best line and sorts "by stake".
+  // Quarter-Kelly with nothing held, never more than the line's resting liquidity.
   function stakeFor(row) {
-    if (row.edgePct == null) return null;
-    try {
-      const kellyStake = kelly.kellyStakeFromEdge({ bookPrice: row.price, edgePct: row.edgePct, bankroll: state.settings.bankroll, multiplier: state.settings.multiplier }).stake;
-      return betsView.capAtLiquidity(kellyStake, row.liquidity).stake;
-    } catch (_error) {
-      return null;
-    }
+    return edgeRows.stakeFor(row, state.settings);
   }
 
-  // Everything selectEdges needs except the edge threshold (list and alerts
-  // differ there). leagueIds: the scanner also holds NFL and CFB for the
-  // Teasers tab, which the Edges tab lists only when Football is ticked.
+  // Everything selectEdges needs except the edge threshold (list and alerts differ there).
   function edgeSelectionOptions(effective) {
-    const settings = state.edgeSettings;
-    return {
-      leagueIds: new Set(settings.leagues),
-      periods: new Set(settings.periods),
-      betTypes: effective.betTypeIds,
-      bookIds: effective.bookIds,
-      now: Date.now(),
-      maxLineAgeMs: settings.maxLineAgeHours * 3600 * 1000,
-      includeAlts: settings.includeAlts,
-      minLiquidityToWin: settings.minLiquidityToWin,
-    };
+    return edgeRows.edgeSelectionOptions(state.edgeSettings, effective, Date.now());
   }
 
-  // (period, axis) -> Unabated's fair ladder for one event, built from the
-  // feed's lines on first use and kept until the next scanner update.
+  // (period, axis) -> Unabated's fair ladder for one event, kept until the next scanner update.
   function ladderReader(eventId) {
-    return (period, axis) => {
-      const periodTypeId = ladderLib.periodTypeIdOf(period);
-      if (!scannerState || eventId == null || periodTypeId == null) return null;
-      const cacheKey = `${eventId}|${periodTypeId}|${axis}`;
-      if (!ladderCache.has(cacheKey)) {
-        if (!linesByEventCache) linesByEventCache = ladderLib.groupLinesByEvent(Object.values(scannerState.lines));
-        ladderCache.set(cacheKey, ladderLib.buildLadder(linesByEventCache.get(eventId), { periodTypeId, axis }));
-      }
-      return ladderCache.get(cacheKey);
-    };
+    if (!ladderReaders) ladderReaders = edgeRows.createLadderReaders(scannerState);
+    return ladderReaders(eventId);
   }
 
-  // Each row gets `bet` = {tier, matches, advice} from the open bet records:
-  // what you hold on that market and the stake sized against it (conditional
-  // Kelly, #130). No row is ever hidden for being bet — the edge still being
-  // there after you bet it is information, and the stake column carries the top-up.
+  // What conditional Kelly sizes a row against: the open bets, the board, the
+  // bankroll, the fair ladders and the open BFA teasers.
+  function betFlagContext() {
+    return { records: state.betRecords, boardLines: boardLines(), stakeSettings: state.settings, ladderReaderOf: ladderReader, teasers: openTeasersNow() };
+  }
+
+  // Each row gets `bet` = {tier, matches, advice} (edgeRows.withBetFlags).
   function withBetFlags(rows) {
-    const flags = betsLib.annotateRows(rows, state.betRecords, { lines: boardLines() });
-    const teasers = openTeasersNow();
-    return rows.map((row, index) => {
-      const flag = flags[index];
-      const advice = betsView.stakeAdvice({
-        line: row, price: row.price, edgePct: row.edgePct,
-        bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
-        matches: flag.matches, ladderOf: ladderReader(row.eventId), liquidity: row.liquidity, teasers,
-      });
-      return { ...row, bet: { tier: flag.tier, matches: advice.matches, advice } };
-    });
+    return edgeRows.withBetFlags(rows, betFlagContext());
   }
 
-  // Sort key for "by my exposure": dollars in the math on the market, held or
-  // against, straight bets and teaser stakes alike.
-  function exposureDollars(row) {
-    if (!row.bet) return 0;
-    const { held, against, teasers } = row.bet.advice;
-    return held + against + (teasers ? teasers.held + teasers.against : 0);
-  }
-
-  // Min suggested bet: gates on what the rail says to bet now (the stake
-  // sized against what is held), not the standalone size. The list and alerts share it.
   function meetsMinStake(row) {
-    const minStake = state.edgeSettings.minStake;
-    return minStake === 0 || betsView.suggestedBetAmount(row.bet.advice) >= minStake;
+    return edgeRows.meetsMinStake(row, state.edgeSettings.minStake);
   }
 
   // Measured once per scanner update, on the same line-age gate as the list.
@@ -1195,27 +1022,16 @@
     return tailFlexCache.measurement;
   }
 
-  // The standalone stake (sized on Unabated's raw edge, never on the flexed
-  // one) and the tail-flex rank score: EV dollars after flex, which picks a
-  // card's best line and orders the lines inside it.
+  // The standalone stake and the tail-flex rank score (edgeRows.withStakeAndRank).
   function withStakeAndRank(row, measurement) {
-    const sized = { ...row, stake: stakeFor(row) };
-    const rank = tailflex.rankOfRow(sized, measurement);
-    return { ...sized, rankScore: rank ? rank.score : null };
+    return edgeRows.withStakeAndRank(row, measurement, state.settings);
   }
 
   function currentEdgeRows() {
     if (!scannerState) return [];
-    const effective = effectiveFilter();
-    const settings = state.edgeSettings;
-    const measurement = tailFlexMeasurement();
-    const selected = feed.selectEdges(scannerState, { ...edgeSelectionOptions(effective), minEdge: settings.minEdgePct / 100 })
-      .map((row) => withStakeAndRank(row, measurement));
-    const rows = withBetFlags(selected).filter(meetsMinStake);
-    if (settings.sortBy === "stake") rows.sort((a, b) => (b.stake ?? -1) - (a.stake ?? -1) || b.edgePct - a.edgePct);
-    if (settings.sortBy === "start") rows.sort((a, b) => a.eventStartMs - b.eventStartMs || b.edgePct - a.edgePct);
-    if (settings.sortBy === "exposure") rows.sort((a, b) => exposureDollars(b) - exposureDollars(a) || b.edgePct - a.edgePct);
-    return rows;
+    return edgeRows.listedEdgeRows(scannerState, {
+      ...betFlagContext(), edgeSettings: state.edgeSettings, effective: effectiveFilter(), measurement: tailFlexMeasurement(), now: Date.now(),
+    });
   }
 
   // ---- live edges (the Unabated live screen, between quarters) -------------
@@ -1311,13 +1127,7 @@
   // tail-flex rank score (EV dollars after flex); the panel's sort orders the
   // cards through that line.
   function groupsOf(rows) {
-    const groups = feed.groupEdges(rows, (row) => row.rankScore);
-    const sortBy = state.edgeSettings.sortBy;
-    if (sortBy === "stake") groups.sort((a, b) => (b.best.stake ?? -1) - (a.best.stake ?? -1) || b.best.edgePct - a.best.edgePct);
-    if (sortBy === "edge") groups.sort((a, b) => b.best.edgePct - a.best.edgePct || a.eventStartMs - b.eventStartMs);
-    if (sortBy === "start") groups.sort((a, b) => a.eventStartMs - b.eventStartMs || b.best.edgePct - a.best.edgePct);
-    if (sortBy === "exposure") groups.sort((a, b) => exposureDollars(b.best) - exposureDollars(a.best) || b.best.edgePct - a.best.edgePct);
-    return groups;
+    return edgeRows.groupEdgeRows(rows, state.edgeSettings.sortBy);
   }
 
   // Cards the user has opened; survives the 5s re-render, not a panel reload.
@@ -1335,36 +1145,24 @@
     });
   }
 
-  // Edge magnitude in three steps, so a +6% and a +1.1% never read the same:
-  // the row's left stripe and the figure both take their colour from here.
-  function edgeTier(edgePct) {
-    if (edgePct >= 4) return "hot";
-    if (edgePct >= 2) return "warm";
-    return "thin";
-  }
+  // Edge magnitude in three steps (hot / warm / thin): the row's stripe and figure colour.
+  const edgeTier = edgeRows.edgeTier;
 
-  // The rail under the edge: the number to act on, with the verb on it, then
-  // one small line — that it is all the liquidity there is, and what the
-  // stake would be with nothing held. "add $250" is not the same instruction
-  // as "bet $250" and must not look like it.
+  // The rail under the edge (edgeRows.stakeRail): the number to act on with
+  // its verb, then one small line — all the liquidity there is, and what the
+  // stake would be with nothing held.
   function fillStakeCell(cell, row) {
     // A live row from a tab that stopped reading: the number may be gone.
     if (row.liveStale) {
       cell.textContent = "—";
       return;
     }
-    const advice = row.bet ? row.bet.advice : null;
-    const words = betsView.stakeAdviceWords(advice);
-    cell.classList.toggle("at-size", Boolean(words) && advice.bet === 0);
-    if (!words) {
-      cell.textContent = row.stake == null ? "—" : `bet ${fmtDollars(row.stake)}`;
-      return;
-    }
-    cell.append(`${words.verb} ${fmtDollars(advice.bet)}`);
-    const noteText = [words.cap, words.alone].filter(Boolean).join(" · ");
-    if (!noteText) return;
+    const rail = edgeRows.stakeRail(row);
+    cell.classList.toggle("at-size", rail.atSize);
+    cell.append(rail.text);
+    if (!rail.note) return;
     const note = document.createElement("small");
-    note.textContent = noteText;
+    note.textContent = rail.note;
     cell.append(" ", note);
   }
 
@@ -2075,25 +1873,7 @@
     return Array.from(new Set([...edgeLeagues, ...teaserLib.TEASER_LEAGUE_IDS])).sort((a, b) => a - b);
   }
 
-  function sanitizeEdgeSettings(stored) {
-    const base = { ...DEFAULT_EDGE_SETTINGS };
-    if (!stored || typeof stored !== "object") return base;
-    if (Array.isArray(stored.leagues)) base.leagues = stored.leagues.filter((id) => feed.LEAGUES[id]);
-    if (Array.isArray(stored.periods) && stored.periods.length) base.periods = stored.periods.filter((id) => feed.PERIODS[id]);
-    if (Array.isArray(stored.betTypes) && stored.betTypes.length) base.betTypes = stored.betTypes.filter((id) => feed.BET_TYPES[id]);
-    // A stored null is the Unabated-selection choice; no key at all is the default books.
-    if (Array.isArray(stored.bookIds)) base.bookIds = stored.bookIds.filter((id) => Number.isInteger(id));
-    else if (stored.bookIds === null) base.bookIds = null;
-    if (typeof stored.minEdgePct === "number" && stored.minEdgePct >= 0) base.minEdgePct = stored.minEdgePct;
-    if (typeof stored.minStake === "number" && stored.minStake >= 0) base.minStake = stored.minStake;
-    if (typeof stored.maxLineAgeHours === "number" && stored.maxLineAgeHours > 0) base.maxLineAgeHours = stored.maxLineAgeHours;
-    // The old altMinLiquidity was a stake floor, not a to-win one, so it does not carry over.
-    if (typeof stored.minLiquidityToWin === "number" && stored.minLiquidityToWin >= 0) base.minLiquidityToWin = stored.minLiquidityToWin;
-    if (["edge", "stake", "start", "exposure"].includes(stored.sortBy)) base.sortBy = stored.sortBy;
-    if (typeof stored.includeAlts === "boolean") base.includeAlts = stored.includeAlts;
-    if (typeof stored.groupByMarket === "boolean") base.groupByMarket = stored.groupByMarket;
-    return base;
-  }
+  const sanitizeEdgeSettings = edgeRows.sanitizeEdgeSettings;
 
   // ---- bets (#114) ---------------------------------------------------------
 
@@ -2109,15 +1889,8 @@
   function boardLines() {
     if (!scannerState) return [];
     if (boardLinesCache) return boardLinesCache;
-    const seen = new Set();
-    const rows = [];
-    for (const line of Object.values(scannerState.lines)) {
-      if (line.isAlt || seen.has(line.eventId)) continue;
-      seen.add(line.eventId);
-      rows.push(feed.describeLine(line, scannerState));
-    }
-    boardLinesCache = rows;
-    return rows;
+    boardLinesCache = edgeRows.boardLines(scannerState);
+    return boardLinesCache;
   }
 
   function betsPayload() {
@@ -2138,20 +1911,17 @@
     try {
       const response = await fetch(`${state.betsSettings.serviceUrl}/bets.json`, { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const payload = await response.json();
-      if (!payload || !Array.isArray(payload.bets)) throw new Error("bets.json has no bets array");
-      // The service's crosswalk is the truth; a payload without one (an older service) keeps the stored rows.
-      if (Array.isArray(payload.crosswalk)) state.crosswalk = payload.crosswalk;
-      // Likewise the pins (an older service serves none and keeps the stored ones).
-      if (Array.isArray(payload.pins)) state.pins = payload.pins;
-      state.betRecords = betsView.mergeServicePayload(state.betRecords, { ...payload, crosswalk: state.crosswalk, pins: state.pins }, now);
+      // Records merged, crosswalk / pins / fill fairs taken (edgeRows.applyBetsPayload); throws on a body with no bets.
+      const held = { records: state.betRecords, crosswalk: state.crosswalk, pins: state.pins, fillFairs: state.fillFairs };
+      const applied = edgeRows.applyBetsPayload(held, await response.json(), now);
+      state.crosswalk = applied.crosswalk;
+      state.pins = applied.pins;
+      state.betRecords = applied.records;
       state.dismissedBetIds = betsView.keepDismissedOpen(state.dismissedBetIds, state.betRecords);
       noteMatchedStarts();
-      // Saved fill fairs never change, so the served rows are merged into the
-      // held ones, not swapped in; an older service without the key keeps them.
-      if (Array.isArray(payload.fillFairs)) setFillFairs(fillfair.mergeFillFairs(state.fillFairs, payload.fillFairs, state.betRecords));
+      if (applied.fillFairs !== state.fillFairs) setFillFairs(applied.fillFairs);
       state.betsService = {
-        payload: { generatedAt: payload.generatedAt ?? null, sources: payload.sources && typeof payload.sources === "object" ? payload.sources : {} },
+        payload: { generatedAt: applied.generatedAt, sources: applied.sources },
         okAt: now, error: null, errorAt: null, unreachableSince: null,
       };
     } catch (error) {
@@ -3304,7 +3074,7 @@
 
   async function load() {
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
-    state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
+    state.settings = edgeRows.sanitizeStakeSettings(local);
     fillSettingInputs();
     const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex", "teaserRefs"]);
     // The reference fairs the last Teasers list was built on: a seed with no
