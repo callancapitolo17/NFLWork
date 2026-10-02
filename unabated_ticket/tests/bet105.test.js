@@ -19,6 +19,8 @@ test("historyUrl and the two requests: credentials go along, the CSRF header rid
   assert.equal(history.credentials, "include");
   assert.equal(history.headers["X-Broker-CSRF"], "tok-1");
   assert.deepEqual(JSON.parse(history.body), { a: "getHistory", state: "0" });
+  assert.ok(customers.signal instanceof AbortSignal, "the session check gives up instead of hanging the poll");
+  assert.ok(history.signal instanceof AbortSignal, "getHistory gives up instead of hanging the poll");
 });
 
 test("csrfTokenOf: the token on 200; the fix on 401; Cloudflare on 403; a tokenless body is an error", () => {

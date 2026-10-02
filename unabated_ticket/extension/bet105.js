@@ -26,6 +26,9 @@
   // The site's own My Plays view is polled by hand; every 5 min while the
   // panel is open keeps the flags current without hammering the account.
   const POLL_MS = 5 * 60 * 1000;
+  // A request Bet105 never answers would hold the poll's busy flag forever and
+  // stop every later read (2026-10-01: 17 h with no push), so each one gives up.
+  const FETCH_TIMEOUT_MS = 30 * 1000;
   const SERVICE_PATH = "/bet105.json";
   const HTTP_UNAUTHORIZED = 401;
   const HTTP_FORBIDDEN = 403;
@@ -36,7 +39,10 @@
   }
 
   function customersRequest() {
-    return { method: "GET", credentials: "include", cache: "no-store", headers: { Accept: "application/json" } };
+    return {
+      method: "GET", credentials: "include", cache: "no-store", headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    };
   }
 
   function historyRequest(csrfToken) {
@@ -44,6 +50,7 @@
       method: "POST", credentials: "include", cache: "no-store",
       headers: { "Content-Type": "application/json;charset=UTF-8", "X-Broker-CSRF": csrfToken },
       body: JSON.stringify({ a: "getHistory", state: HISTORY_STATE_OPEN }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     };
   }
 
@@ -92,7 +99,7 @@
   }
 
   const api = {
-    ORIGIN, CUSTOMERS_URL, FEEDS, POLL_MS, SERVICE_PATH, NOT_LOGGED_IN,
+    ORIGIN, CUSTOMERS_URL, FEEDS, POLL_MS, FETCH_TIMEOUT_MS, SERVICE_PATH, NOT_LOGGED_IN,
     historyUrl, customersRequest, historyRequest, csrfTokenOf, betGroupsOf, pushBody, errorBody, isDue,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

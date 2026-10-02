@@ -2388,6 +2388,13 @@ in red.
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
 
+**2026-10-02 — Bet105 reads time out after 30 s (0.16.2).** Bet105 stopped
+pushing at 17:27 PT on 2026-10-01 while every other venue stayed fresh. Its
+fetches had no timeout, so one request Bet105 never answered held the poll's
+busy flag and every later 5-min read was skipped until the panel reloaded.
+Each request now gives up after 30 s and the Bets tab shows "Bet105 did not
+answer within 30s"; the next read runs 5 min later.
+
 **2026-10-02 — Min edge default 2.5%, labelled on the toolbar (0.16.1).** The
 minimum-edge box sat on the toolbar with no visible label, so Cal did not know
 it was there. It now reads `min edge [x] %`, and its default moved from 1.0% to
