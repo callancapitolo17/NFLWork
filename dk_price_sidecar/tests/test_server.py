@@ -67,3 +67,54 @@ def test_thrown_fetch_is_status_zero():
 def test_non_json_200_is_not_a_price():
     out = parse_calculate_bets(200, "<html>challenge</html>", n_legs=2)
     assert out["true_odds"] is None and out["error"] == "non-JSON body"
+
+
+class _ScriptedBrowser:
+    """DkBrowser with the page replaced by a script of fetch statuses."""
+
+    def __new__(cls, statuses):
+        from dk_price_sidecar.server import DkBrowser
+
+        class Scripted(DkBrowser):
+            def __init__(self):
+                super().__init__()
+                self._page = object()          # ready() -> True
+                self.statuses = list(statuses)
+                self.events = []
+
+            def _reload(self):
+                self.events.append("reload")
+                self.reloads += 1
+                self.calls_since_reload = 0
+
+            def _call(self, selection_ids):
+                self.events.append("call")
+                self.calls_since_reload += 1
+                status = self.statuses.pop(0)
+                text = YOURBET_200 if status == 200 else "TypeError: Failed to fetch"
+                return parse_calculate_bets(status, text, len(selection_ids))
+
+        browser = Scripted()
+        browser._page_loaded_at = float("inf")  # never reload on the timer
+        return browser
+
+
+def test_reloads_before_the_page_budget_runs_out():
+    from dk_price_sidecar.server import CALLS_PER_PAGE_LOAD
+    browser = _ScriptedBrowser([200] * (CALLS_PER_PAGE_LOAD + 1))
+    for _ in range(CALLS_PER_PAGE_LOAD + 1):
+        assert browser.price(["a", "b"])["true_odds"] == 7.5
+    assert browser.events == ["call"] * CALLS_PER_PAGE_LOAD + ["reload", "call"]
+
+
+def test_a_denied_call_reloads_and_retries_once():
+    browser = _ScriptedBrowser([0, 200])
+    assert browser.price(["a", "b"])["true_odds"] == 7.5
+    assert browser.events == ["call", "reload", "call"]
+    assert browser.blocks == 1
+
+
+def test_a_second_denial_is_returned_not_retried_forever():
+    browser = _ScriptedBrowser([0, 0])
+    assert browser.price(["a", "b"])["status"] == 0
+    assert browser.events == ["call", "reload", "call"]

@@ -27,8 +27,8 @@ fills in as it goes.
    Quarter and half wins are **3-way**: a tied quarter or half loses. With
    integer scores that is the same bet as -0.5, so either market works.
 2. **Partition.** At each book every combination of the legs' outcomes is
-   priced as an SGP (8 cells when every leg is two-way; 18 for a trifecta
-   off 3-way period markets; 36 for a DK superfecta).
+   priced as an SGP (8 cells when every leg is two-way; 12-18 for a trifecta
+   off 3-way period markets).
 3. **Devig.** Probit devig across the whole partition (`kalshi_common`'s
    n-way probit). The implied sum is the book's real SGP hold — 1.24-1.40
    measured on 2026-10-02, far above compounded single-leg vig — so pricing
@@ -36,6 +36,14 @@ fills in as it goes.
    edge. A partition with a declined cell or an implied sum outside
    `[1, 1 + 0.25 x legs]` gives that book no fair.
 4. **Consensus** = mean of the books that priced the full partition.
+   **Superfectas** = P(trifecta part) x P(scores first | trifecta part). The
+   first factor is step 3 at FanDuel + BetMGM; the second comes from TWO
+   DraftKings SGPs — (team scores first + the trifecta legs) and (opponent
+   scores first + the same legs) — whose vig cancels in the ratio. DK's
+   shares on 2026-10-02 were 0.83-0.85; history (2011-2025, 1,970 team-games
+   that won 1Q, 1H and the game) says 0.893 ± 0.007, so DK's number is the
+   conservative one. Two calls per superfecta keep DK (denies a page after
+   ~6 calls) usable: a full refresh is ~12 DK calls.
 5. **Stake** = bankroll x Kelly fraction x full Kelly at Wagerzon's price.
    Per (game, team) only the best special by expected log growth keeps a
    stake ("overlaps" on the rest): a team's fectas win together.
@@ -44,7 +52,7 @@ fills in as it goes.
 |---|---|---|---|
 | FanDuel | yes | no — "Team to Score First" is not SGP-eligible | 3-way period winners + ML / spreads, `implyBets` |
 | BetMGM | yes | no — no first-to-score market | ±0.5 period spreads + ML / spreads, `tv2Picks` |
-| DraftKings | yes | yes ("1st to Score") | 3-way period markets via the sidecar's real Chrome |
+| DraftKings | not used (calls are scarce) | scores-first share only ("1st to Score") | via the sidecar's real Chrome |
 
 ## Placing
 
@@ -83,8 +91,10 @@ $10 (a $25 preview passes).
   your own terminal (a sandboxed process cannot draw Chrome's window and its
   price calls hang).
 - **DraftKings chip shows HTTP 502 "Failed to fetch"** — DK denied the page. The
-  sidecar reloads and retries once; if it keeps happening, check its `/health`
-  (`blocks`, `reloads`, `calls_since_reload`).
+  sidecar reloads every 5 calls and retries once after a denial; if it keeps
+  happening, check its `/health` (`blocks`, `reloads`, `calls_since_reload`).
+- **Restarting the sidecar fails with "Opening in existing browser session"** — an
+  old sidecar (or its Chrome) still holds `~/.dk_price_sidecar/profile`; stop it first.
 - **A superfecta says "no SGP market for '... scores first'"** at FD/BetMGM — expected;
   only DK prices superfectas.
 - **Nothing on the board** — Wagerzon posts the specials Thursday-ish; the league is

@@ -9,6 +9,14 @@ devig spreads that margin across the cells. Pricing only the special's own
 SGP and dividing out single-leg vig would leave most of that margin in and
 overstate every edge.
 
+Superfectas add "scores first", which only DraftKings lets into an SGP. A
+superfecta is priced as P(trifecta part) x P(scores first | trifecta part):
+the first factor is the partition fair above from the HTTP books, the second
+comes from TWO DraftKings SGPs — (team scores first + the trifecta legs) and
+(opponent scores first + the same legs). They share every other leg, so DK's
+margin cancels in their ratio. Two calls instead of a 36-cell partition
+keeps DraftKings, which denies a page after ~6 price calls, usable.
+
 Consensus = mean of the books that priced the full partition. Stake = Kelly
 fraction x full Kelly at Wagerzon's price; within one game only the best
 special per team gets a stake, because a team's fectas win together.
@@ -27,6 +35,14 @@ from nfl_specials.special_parser import Fecta
 # cell is stale or mispriced and the devig would be garbage (same envelope as
 # kalshi_common.fair_value.PARTITION_OVERROUND_PER_LEG).
 PARTITION_OVERROUND_PER_LEG = 0.25
+
+
+@dataclass(frozen=True)
+class ScoresFirstShare:
+    book: str
+    share: float | None            # P(team scores first | the special's other legs)
+    n_calls: int
+    reason: str | None = None      # why share is None
 
 
 @dataclass(frozen=True)
@@ -110,3 +126,47 @@ def log_growth(fair_prob: float, wz_american: int, stake: float, bankroll: float
     fraction = stake / bankroll
     net_odds = american_to_decimal(wz_american) - 1.0
     return fair_prob * math.log1p(net_odds * fraction) + (1 - fair_prob) * math.log1p(-fraction)
+
+
+def trifecta_part(fecta: Fecta) -> Fecta:
+    """A superfecta without its leading 'scores first' leg."""
+    if fecta.prop_type != "SUPERFECTA" or fecta.legs[0].kind != "scores_first":
+        raise ValueError(f"expected a superfecta led by scores_first, got {fecta}")
+    return Fecta(team=fecta.team, prop_type="TRIFECTA", legs=fecta.legs[1:])
+
+
+def scores_first_share(book: SgpBook, game: BookGame, role: str, fecta: Fecta) -> ScoresFirstShare:
+    """P(team scores first | the superfecta's other legs) from `book`'s SGPs.
+
+    Prices (team scores first + rest) and (opponent scores first + rest);
+    a rest leg that wins on two outcomes (a +0.5 read off a 3-way market)
+    sums its cells. Assumes the book's margin is the same multiple on both
+    SGPs — they differ only in the scores-first side — so it cancels.
+    A 0-0 game (no first score) is ignored (~0.1% of NFL games).
+    """
+    first_score = book.leg_market(game, role, fecta.legs[0])
+    if first_score is None or len(first_score.group) != 2:
+        return ScoresFirstShare(book.name, None, 0, reason="no SGP 'scores first' market")
+    team_scores_first = next(iter(first_score.winning))
+    opponent_scores_first = next(o for o in first_score.group if o != team_scores_first)
+
+    rest_markets = []
+    for leg in fecta.legs[1:]:
+        market = book.leg_market(game, role, leg)
+        if market is None:
+            return ScoresFirstShare(book.name, None, 0, reason=f"no SGP market for '{leg.describe(fecta.team)}'")
+        rest_markets.append(market)
+    rest_cells = list(itertools.product(*(sorted(m.winning, key=lambda o: o.label) for m in rest_markets)))
+
+    implied = {team_scores_first: 0.0, opponent_scores_first: 0.0}
+    calls = 0
+    for first in (team_scores_first, opponent_scores_first):
+        for cell in rest_cells:
+            decimal = book.price(game, (first.ref,) + tuple(outcome.ref for outcome in cell))
+            calls += 1
+            if decimal is None:
+                labels = " + ".join([first.label] + [outcome.label for outcome in cell])
+                return ScoresFirstShare(book.name, None, calls, reason=f"declined: {labels}")
+            implied[first] += 1.0 / decimal
+    share = implied[team_scores_first] / (implied[team_scores_first] + implied[opponent_scores_first])
+    return ScoresFirstShare(book.name, share, calls)

@@ -92,3 +92,38 @@ def test_next_game_skips_started_and_later_weeks():
              BookGame("next", "ARI", "SEA", "2099-01-01T00:00:00Z")]
     assert next_game(games, "SEA").book_event_id == "next"
     assert next_game(games, "KC") is None
+
+
+class ScoresFirstBook:
+    """Independent legs; the SGP price is the true joint probability times a
+    flat margin, so the scores-first ratio must come back exact."""
+
+    name = "Fake"
+    TRUE = {"sf": 0.55, "Q1": 0.6, "H1": 0.65, "GM": 0.75}
+
+    def leg_market(self, game, role, leg):
+        key = "sf" if leg.kind == "scores_first" else leg.period
+        win, lose = Outcome((key, True), f"{key} yes"), Outcome((key, False), f"{key} no")
+        return LegMarket.single(win, (win, lose))
+
+    def price(self, game, refs):
+        prob = 1.0
+        for key, side in refs:
+            prob *= self.TRUE[key] if side else 1 - self.TRUE[key]
+        return 1.0 / (prob * 1.3)
+
+
+def test_scores_first_share_cancels_the_margin():
+    from nfl_specials.pricing import scores_first_share
+    superfecta = Fecta("SEA", "SUPERFECTA", (Leg("scores_first"),) + TRIFECTA.legs)
+    result = scores_first_share(ScoresFirstBook(), GAME, "home", superfecta)
+    assert result.n_calls == 2
+    assert result.share == pytest.approx(0.55)
+
+
+def test_trifecta_part_drops_scores_first():
+    from nfl_specials.pricing import trifecta_part
+    superfecta = Fecta("SEA", "SUPERFECTA", (Leg("scores_first"),) + TRIFECTA.legs)
+    assert trifecta_part(superfecta) == TRIFECTA
+    with pytest.raises(ValueError):
+        trifecta_part(TRIFECTA)

@@ -132,8 +132,11 @@ function renderChips(p) {
 }
 
 function bookLine(line) {
-  return Object.entries(line.books).map(([name, f]) =>
+  const books = Object.entries(line.books).map(([name, f]) =>
     `${BOOK_SHORT[name] || name} ${f.fair_american != null ? signed(f.fair_american) : "–"}`).join(" · ");
+  if (!line.is_superfecta) return books;
+  const share = line.sf_share != null ? `${(line.sf_share * 100).toFixed(0)}%` : "–";
+  return `1Q/1H/GM part ${books || "–"} · DK scores first ${share}`;
 }
 
 function stakeCell(line) {

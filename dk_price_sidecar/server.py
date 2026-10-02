@@ -46,6 +46,11 @@ PROFILE_DIR = Path(os.environ.get(
 MIN_INTERVAL_SEC = float(os.environ.get("DK_SIDECAR_MIN_INTERVAL_SEC", "1.5"))
 # Reload the sportsbook page so Akamai's cookies stay fresh.
 PAGE_RELOAD_SEC = float(os.environ.get("DK_SIDECAR_PAGE_RELOAD_SEC", "600"))
+# Measured 2026-10-02: DK denied a page from its ~6th price call on, and the
+# 2026-09-02 cookie-transplant runs found the same ~6-call budget per minted
+# _abck. Reloading before the budget runs out costs ~6 s; a denied call
+# costs a reload anyway plus a request DK has already refused.
+CALLS_PER_PAGE_LOAD = 5
 MINIMIZE_WINDOW = os.environ.get("DK_SIDECAR_MINIMIZE", "1") != "0"
 
 # Any DK sportsbook page gives the origin + Akamai cookies the price call
@@ -207,7 +212,8 @@ class DkBrowser:
 
     # -- the one DK-facing call -------------------------------------------
     def price(self, selection_ids: list[str]) -> dict:
-        """One DK price, with one reload-and-retry when DK denies the page.
+        """One DK price. Reloads the page every CALLS_PER_PAGE_LOAD calls, and
+        once more (then retries) if DK denies the page anyway.
 
         Akamai's denial page carries no CORS header, so a block surfaces in
         the page as a thrown fetch (status 0). Measured 2026-10-02: after
@@ -217,7 +223,8 @@ class DkBrowser:
         """
         if not self.ready():
             self.launch()
-        if time.monotonic() - self._page_loaded_at > PAGE_RELOAD_SEC:
+        if (time.monotonic() - self._page_loaded_at > PAGE_RELOAD_SEC
+                or self.calls_since_reload >= CALLS_PER_PAGE_LOAD):
             self._reload()
         result = self._call(selection_ids)
         if result["status"] == 0 and self.ready():
@@ -308,7 +315,8 @@ def serve() -> None:
     # must never be reachable off the machine.
     httpd = HTTPServer(("127.0.0.1", PORT), _Handler)
     logger.info("dk_price_sidecar listening on http://127.0.0.1:%d "
-                "(min_interval=%.1fs, reload=%.0fs)", PORT, MIN_INTERVAL_SEC, PAGE_RELOAD_SEC)
+                "(min_interval=%.1fs, reload=%.0fs or every %d calls)",
+                PORT, MIN_INTERVAL_SEC, PAGE_RELOAD_SEC, CALLS_PER_PAGE_LOAD)
     try:
         httpd.serve_forever()
     finally:

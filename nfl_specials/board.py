@@ -10,8 +10,10 @@ Side effects: APPENDS every (special, book) result to fecta_quotes.
 Sizing (size_board) runs at read time with the current settings, so a new
 bankroll or Kelly fraction applies without re-pricing.
 
-Order: the fast HTTP books price every special first; DraftKings goes last
-because its calls are paced ~1 s apart and a superfecta is 36 of them.
+Order: FanDuel and BetMGM price every trifecta, and every superfecta's
+trifecta part, over plain HTTP first. DraftKings goes last and only prices
+each superfecta's scores-first share (2 calls; pricing.scores_first_share):
+its calls go through a real browser, paced, and DK denies a page after ~6.
 """
 from __future__ import annotations
 
@@ -25,15 +27,19 @@ from nfl_specials.books import BookGame, SgpBook
 from nfl_specials.dk_book import DraftKingsBook, sidecar_is_up
 from nfl_specials.fd_book import FanDuelBook
 from nfl_specials.mgm_book import BetMgmBook
-from nfl_specials.pricing import (BookFair, consensus_fair, expected_value, kelly_stake,
-                                  log_growth, price_fecta_at_book)
+from nfl_specials.pricing import (BookFair, ScoresFirstShare, consensus_fair, expected_value,
+                                  kelly_stake, log_growth, price_fecta_at_book, scores_first_share,
+                                  trifecta_part)
 from nfl_specials.special_parser import Fecta, ParseFailure, parse_fecta
 from nfl_specials.store import Store
 
 log = logging.getLogger("nfl_specials.board")
 
-# Pricing order: fast HTTP books first, DraftKings (paced, slow) last.
-BOOK_ORDER = ("FanDuel", "BetMGM", "DraftKings")
+# Books that price trifectas (and superfectas' trifecta parts) by partition.
+PARTITION_BOOKS = ("FanDuel", "BetMGM")
+# The one book that lets "scores first" into an SGP.
+SCORES_FIRST_BOOK = "DraftKings"
+BOOK_ORDER = PARTITION_BOOKS + (SCORES_FIRST_BOOK,)
 # Whose kickoff time the board shows: DK and BetMGM list the real kickoff,
 # FanDuel lists it a minute late.
 GAME_SOURCE_ORDER = ("DraftKings", "BetMGM", "FanDuel")
@@ -46,7 +52,21 @@ class FectaLine:
     status: str                     # 'pricing' | 'priced' | 'unpriced' | 'unparsed' | 'no_game'
     note: str | None = None         # parse failure / why unpriced
     game: BookGame | None = None
+    # Trifecta: the special's fair by book. Superfecta: its TRIFECTA PART's
+    # fair by book, multiplied by sf_share at sizing time.
     book_fairs: dict[str, BookFair] = field(default_factory=dict)
+    sf_share: ScoresFirstShare | None = None
+
+    def is_superfecta(self) -> bool:
+        return self.fecta is not None and self.fecta.prop_type == "SUPERFECTA"
+
+    def fair_prob(self) -> float | None:
+        base = consensus_fair(list(self.book_fairs.values()))
+        if base is None or not self.is_superfecta():
+            return base
+        if self.sf_share is None or self.sf_share.share is None:
+            return None
+        return base * self.sf_share.share
 
 
 @dataclass
@@ -109,7 +129,7 @@ def size_board(board: Board, bankroll: float, kelly_fraction: float) -> list[Siz
     """
     raw = []
     for line in board.lines:
-        fair = consensus_fair(list(line.book_fairs.values()))
+        fair = line.fair_prob()
         if fair is None:
             raw.append((None, None, 0.0))
             continue
@@ -138,16 +158,40 @@ def size_board(board: Board, bankroll: float, kelly_fraction: float) -> list[Siz
     return sized
 
 
-def _quote_row(line: FectaLine, fair: BookFair, quoted_at: datetime) -> dict:
+def _quote_row(line: FectaLine, quoted_at: datetime, *, book: str, quote_kind: str,
+               fair: BookFair | None = None, share: ScoresFirstShare | None = None) -> dict:
     return {
         "quoted_at": quoted_at, "wz_game_id": line.special.wz_game_id,
         "rotation": line.special.rotation, "description": line.special.description,
         "team": line.fecta.team, "prop_type": line.fecta.prop_type,
         "home_team": line.game.home, "away_team": line.game.away,
         "game_start_time": line.game.game_start_time, "wz_american": line.special.wz_american,
-        "book": fair.book, "fair_prob": fair.fair_prob, "sgp_decimal": fair.sgp_decimal,
-        "overround": fair.overround, "n_cells": fair.n_cells, "reason": fair.reason,
+        "book": book, "quote_kind": quote_kind,
+        "fair_prob": fair.fair_prob if fair else None,
+        "sgp_decimal": fair.sgp_decimal if fair else None,
+        "overround": fair.overround if fair else None,
+        "n_cells": fair.n_cells if fair else (share.n_calls if share else None),
+        "sf_share": share.share if share else None,
+        "reason": (fair.reason if fair else share.reason if share else None),
     }
+
+
+def _price_partition(book: SgpBook, line: FectaLine) -> BookFair:
+    """The special's fair at `book` — for a superfecta, its trifecta part's."""
+    target = trifecta_part(line.fecta) if line.is_superfecta() else line.fecta
+    game = book.find_game(target.team)
+    if game is None:
+        return BookFair(book.name, None, None, None, 0, reason="game not listed")
+    role = "home" if game.home == target.team else "away"
+    return price_fecta_at_book(book, game, role, target)
+
+
+def _price_scores_first(book: SgpBook, line: FectaLine) -> ScoresFirstShare:
+    game = book.find_game(line.fecta.team)
+    if game is None:
+        return ScoresFirstShare(book.name, None, 0, reason="game not listed")
+    role = "home" if game.home == line.fecta.team else "away"
+    return scores_first_share(book, game, role, line.fecta)
 
 
 def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
@@ -167,37 +211,49 @@ def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
         lines.append(FectaLine(special, parsed, "pricing", game=game))
 
     board = Board(started_at, None, lines, book_status)
-    work = [(name, line) for name in BOOK_ORDER if name in books
-            for line in lines if line.status == "pricing"]
+    pricing = [line for line in lines if line.status == "pricing"]
+    work = [(name, line) for name in PARTITION_BOOKS if name in books for line in pricing]
+    if SCORES_FIRST_BOOK in books:
+        work += [(SCORES_FIRST_BOOK, line) for line in pricing if line.is_superfecta()]
     board.progress_total = len(work)
     publish(board.snapshot())
 
     for name, line in work:
         book = books[name]
-        game = book.find_game(line.fecta.team)
-        if game is None:
-            fair = BookFair(name, None, None, None, 0, reason="game not listed")
-        else:
-            role = "home" if game.home == line.fecta.team else "away"
-            try:
-                fair = price_fecta_at_book(book, game, role, line.fecta)
-            except Exception as exc:  # transport failure on one book/special
-                log.warning("%s pricing %s failed: %s", name, line.special.description, exc)
-                fair = BookFair(name, None, None, None, 0, reason=f"error: {exc}"[:200])
-                board.book_status[name] = f"error: {exc}"[:200]
-        line.book_fairs[name] = fair
-        store.append_quotes([_quote_row(line, fair, datetime.now(timezone.utc))])
+        now = datetime.now(timezone.utc)
+        try:
+            if name == SCORES_FIRST_BOOK:
+                line.sf_share = _price_scores_first(book, line)
+                row = _quote_row(line, now, book=name, quote_kind="scores_first_share", share=line.sf_share)
+            else:
+                fair = _price_partition(book, line)
+                line.book_fairs[name] = fair
+                kind = "trifecta_part" if line.is_superfecta() else "full"
+                row = _quote_row(line, now, book=name, quote_kind=kind, fair=fair)
+        except Exception as exc:  # transport failure on one book/special
+            log.warning("%s pricing %s failed: %s", name, line.special.description, exc)
+            reason = f"error: {exc}"[:200]
+            board.book_status[name] = reason
+            if name == SCORES_FIRST_BOOK:
+                line.sf_share = ScoresFirstShare(name, None, 0, reason=reason)
+                row = _quote_row(line, now, book=name, quote_kind="scores_first_share", share=line.sf_share)
+            else:
+                line.book_fairs[name] = BookFair(name, None, None, None, 0, reason=reason)
+                row = _quote_row(line, now, book=name, quote_kind="full", fair=line.book_fairs[name])
+        store.append_quotes([row])
         board.progress_done += 1
         publish(board.snapshot())
 
-    for line in lines:
-        if line.status != "pricing":
-            continue
-        if consensus_fair(list(line.book_fairs.values())) is not None:
+    for line in pricing:
+        if line.fair_prob() is not None:
             line.status = "priced"
-        else:
-            line.status = "unpriced"
-            line.note = "; ".join(f"{b}: {f.reason}" for b, f in line.book_fairs.items()) or "no book priced it"
+            continue
+        line.status = "unpriced"
+        reasons = [f"{b}: {f.reason}" for b, f in line.book_fairs.items() if f.reason]
+        if line.is_superfecta() and (line.sf_share is None or line.sf_share.share is None):
+            why = line.sf_share.reason if line.sf_share else book_status.get(SCORES_FIRST_BOOK, "not priced")
+            reasons.append(f"scores first needs DraftKings: {why}")
+        line.note = "; ".join(reasons) or "no book priced it"
     board.finished_at = datetime.now(timezone.utc)
     publish(board.snapshot())
     return board

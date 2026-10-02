@@ -1,9 +1,10 @@
 """DuckDB state for the NFL fecta pricer (config.STATE_DB_PATH).
 
 Tables:
-    fecta_quotes   APPEND — one row per (refresh, special, book): the book's
-                   partition fair or the reason it has none. The history that
-                   lets us check later whether these fairs were right.
+    fecta_quotes   APPEND — one row per (refresh, special, book): a partition
+                   fair (the special's, or a superfecta's trifecta part's) or
+                   DraftKings' scores-first share, or the reason there is none.
+                   The history that lets us check later whether fairs were right.
     placed_fectas  APPEND — one row per placement ATTEMPT, whatever Wagerzon said.
     settings       UPSERT — bankroll and Kelly fraction.
 Each call opens and closes its own read-write connection: the app's threads
@@ -32,10 +33,12 @@ SCHEMA = [
         game_start_time TIMESTAMPTZ,
         wz_american     INTEGER,
         book            VARCHAR,
-        fair_prob       DOUBLE,
+        quote_kind      VARCHAR,     -- 'full' | 'trifecta_part' | 'scores_first_share'
+        fair_prob       DOUBLE,      -- fair of what quote_kind names
         sgp_decimal     DOUBLE,
         overround       DOUBLE,
-        n_cells         INTEGER,
+        n_cells         INTEGER,     -- SGP calls made
+        sf_share        DOUBLE,      -- P(scores first | trifecta part), DK rows only
         reason          VARCHAR
     )""",
     """CREATE TABLE IF NOT EXISTS placed_fectas (
@@ -60,8 +63,8 @@ SCHEMA = [
 ]
 
 QUOTE_COLUMNS = ("quoted_at", "wz_game_id", "rotation", "description", "team", "prop_type",
-                 "home_team", "away_team", "game_start_time", "wz_american", "book",
-                 "fair_prob", "sgp_decimal", "overround", "n_cells", "reason")
+                 "home_team", "away_team", "game_start_time", "wz_american", "book", "quote_kind",
+                 "fair_prob", "sgp_decimal", "overround", "n_cells", "sf_share", "reason")
 PLACEMENT_COLUMNS = ("placed_at", "account", "wz_game_id", "rotation", "description",
                      "game_start_time", "wz_american", "risk", "fair_prob", "ev",
                      "status", "ticket_number", "error")

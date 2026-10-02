@@ -50,3 +50,11 @@ def test_consensus_is_mean_of_books():
     line.book_fairs["BetMGM"] = BookFair("BetMGM", 0.10, None, 1.4, 8)
     line.book_fairs["DraftKings"] = BookFair("DraftKings", None, None, None, 18, reason="declined cell")
     assert size_board(_board(line), 1000, 0.25)[0].fair_prob == 0.09
+
+
+def test_superfecta_fair_is_trifecta_part_times_scores_first_share():
+    from nfl_specials.pricing import ScoresFirstShare
+    line = _line(1, "SEAHAWKS SUPERFECTA (SCR 1ST, 1Q, 1H & GM -7½)", 180, 0.40)
+    assert size_board(_board(line), 1000, 0.25)[0].fair_prob is None   # no DK share yet
+    line.sf_share = ScoresFirstShare("DraftKings", 0.6, 2)
+    assert size_board(_board(line), 1000, 0.25)[0].fair_prob == 0.40 * 0.6
