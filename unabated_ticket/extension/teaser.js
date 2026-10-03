@@ -26,7 +26,10 @@
 //   planTeasers   the tickets to bet, kept while nothing real changes
 //   describePlan  those tickets' EVs and the summary at the current fairs
 //   describeLegs  the Legs list: the best leg of each game, its standing and
-//                 the straight dollars held on it
+//                 the straight dollars held on it, plus a row per market
+//                 marked can't tease
+//   marketKeyOf, marketNameOf, canBlock  what a can't-tease mark covers,
+//                 its name, and which legs can carry one (CFB only)
 //
 // The rules (user decisions 2026-09-27/28):
 //   - A leg is Buckeye's main full-game spread or total, NFL or CFB, teased

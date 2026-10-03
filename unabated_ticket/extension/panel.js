@@ -2700,7 +2700,8 @@
   }
 
   // Can't tease marks the leg's market (its spread or total, both sides);
-  // Restore removes the mark. Either way the list rebuilds on the next render.
+  // Restore removes the mark. The tab re-renders now: the list rebuilds when
+  // the market held a pool leg, otherwise only the Legs list changes.
   function setTeaserBlocked(leg, blocked) {
     const next = { ...teaserBlocked };
     if (blocked) next[teaserLib.marketKeyOf(leg)] = leg.eventStartMs;

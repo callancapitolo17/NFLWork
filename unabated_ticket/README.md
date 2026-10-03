@@ -1315,8 +1315,9 @@ deep tails), is listed grey with the reason and never used.
 **Can't tease (college only, 2026-10-03).** Buckeye keeps some college games
 off its teaser menu; every NFL game teases. A CFB leg in the pool or above
 break-even carries a **Can't tease** chip: it takes that game's spread or
-total, both sides (`teaser.marketKeyOf`), out of the pool, the game's other
-market can still step in, and the list rebuilds. The marked market sits in the
+total, both sides (`teaser.marketKeyOf`), out of the pool, and the game's other
+market can still step in. The list rebuilds when the market held a pool leg;
+otherwise only the Legs list changes. The marked market sits in the
 fold (`can't tease`, `spread blocked` / `total blocked`) with **Restore**;
 restoring on the same fairs brings the same list back. Marks live in
 `chrome.storage.local` (`teaserBlocked`: market key → the game's start) and

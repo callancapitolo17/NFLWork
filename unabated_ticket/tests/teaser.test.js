@@ -580,6 +580,33 @@ test("planTeasers: a market marked can't tease leaves the pool, the game's other
   assert.deepEqual(restored.build.tickets, first.build.tickets);
 });
 
+test("planTeasers: marking or restoring a market no pool leg is on leaves the list as it was", () => {
+  const state = collegeBoard();
+  const first = plan(state, { kellyBankroll: 300 });
+  const totalMarket = teaser.marketKeyOf(legByLabel(legsOf(state), "Under 56.5"));
+  const marked = plan(state, { kellyBankroll: 300, previous: first.build, blocked: new Set([totalMarket]) });
+  assert.equal(marked.rebuilt, false);
+  const restored = plan(state, { kellyBankroll: 300, previous: marked.build });
+  assert.equal(restored.rebuilt, false);
+  assert.deepEqual(restored.build.tickets, first.build.tickets);
+});
+
+test("an open teaser leg on a marked market stays in the math; its game offers nothing new and lists a blocked and an other-market row", () => {
+  const state = collegeBoard();
+  const legs = legsOf(state);
+  const blocked = new Set([teaser.marketKeyOf(legByLabel(legs, "College Away +8.5"))]);
+  const records = [0, 1, 2].map((index) => bfaLeg(7, index, { rotation: 401 + 2 * index }))
+    .concat(bfaLeg(7, 3, { rotation: 301, league: "cfb" }));
+  const placed = openTeasersOf(state, records);
+  assert.ok(placed[0].legs.some((leg) => leg.eventId === 201 && leg.state === "live"));
+  const { build } = plan(state, { placed, blocked, kellyBankroll: 300 });
+  assert.deepEqual(build.placed.map((ticket) => ticket.id), [placed[0].id]);
+  assert.equal(build.pool.some((leg) => leg.eventId === 201), false);
+  const collegeRows = teaser.describeLegs(legs, build, placed, [], blocked)
+    .filter((row) => row.leg.eventId === 201).map((row) => [row.leg.label, row.standing, row.openTickets]);
+  assert.deepEqual(collegeRows, [["College Away +8.5", "blocked", 1], ["Under 56.5", "other_market", 1]]);
+});
+
 test("describeLegs: a marked market is its own blocked row; the game keeps a row on its other market, none when both are marked", () => {
   const state = collegeBoard();
   const legs = legsOf(state);
