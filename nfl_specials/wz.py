@@ -11,11 +11,14 @@ checkout's copy is found from a worktree too). No DB writes here.
 """
 from __future__ import annotations
 
+import logging
 import re
 import sys
+import time
 from dataclasses import dataclass
-from pathlib import Path
+from typing import Callable, TypeVar
 
+import requests
 from dotenv import load_dotenv
 
 from nfl_specials import config
@@ -38,8 +41,15 @@ import wagerzon_auth  # noqa: E402
 from scraper_v2 import fetch_active_leagues  # noqa: E402
 from wagerzon_accounts import list_accounts  # noqa: E402
 
+log = logging.getLogger("nfl_specials.wz")
+
 SCHEDULE_URL = config.WZ_BASE_URL + "/wager/NewScheduleHelper.aspx?WT=0&lg={league_id}"
 FECTA_WORDS = re.compile(r"\b(TRIFECTA|SUPERFECTA)\b")
+# Reads only. Wagerzon's login page occasionally stalls past the 15 s read
+# timeout and answers in under a second on the next try (2026-10-02).
+READ_ATTEMPTS = 3
+READ_RETRY_PAUSE_SECONDS = 5
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -70,8 +80,27 @@ def specials_league_id(session) -> int:
     raise RuntimeError("no 'NFL WEEK <n> - SPECIALS' league in Wagerzon's catalog")
 
 
+def _retry_reads(read: Callable[[], T]) -> T:
+    """Retry a READ on timeouts / dropped connections. Never wrap a placement:
+    a retried submission can place the bet twice."""
+    for attempt in range(1, READ_ATTEMPTS + 1):
+        try:
+            return read()
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            if attempt == READ_ATTEMPTS:
+                raise
+            log.warning("Wagerzon read failed (%s), attempt %d/%d; retrying in %ds",
+                        type(exc).__name__, attempt, READ_ATTEMPTS, READ_RETRY_PAUSE_SECONDS)
+            time.sleep(READ_RETRY_PAUSE_SECONDS)
+    raise AssertionError("unreachable")
+
+
 def fetch_fecta_specials() -> list[WzSpecial]:
     """Every trifecta/superfecta currently posted in the week's specials."""
+    return _retry_reads(_fetch_fecta_specials_once)
+
+
+def _fetch_fecta_specials_once() -> list[WzSpecial]:
     session = _session()
     url = SCHEDULE_URL.format(league_id=specials_league_id(session))
     resp = session.get(url, timeout=30, headers={"Accept": "application/json",

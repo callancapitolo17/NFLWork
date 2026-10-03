@@ -39,3 +39,5 @@ DEFAULT_KELLY_FRACTION = 0.25
 
 # --- Scheduler -------------------------------------------------------------------
 REFRESH_INTERVAL_SECONDS = 15 * 60
+# After a failed refresh (a book or Wagerzon down), try again sooner.
+RETRY_AFTER_FAILURE_SECONDS = 60

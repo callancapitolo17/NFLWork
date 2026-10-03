@@ -60,29 +60,39 @@ class SpecialsApp:
         with self._lock:
             self._board = board
 
-    def start_refresh(self) -> bool:
+    def _claim_refresh(self) -> bool:
+        """Mark a refresh as running; False if one already is."""
         with self._lock:
             if self._refreshing:
                 return False
             self._refreshing = True
-        threading.Thread(target=self._run_refresh, name="refresh", daemon=True).start()
-        return True
+            return True
 
-    def _run_refresh(self) -> None:
+    def _run_claimed_refresh(self) -> bool:
+        """Run the refresh this caller claimed. True if it succeeded."""
         try:
             refresh_board(self.store, self.publish)
             self._last_error = None
+            return True
         except Exception as exc:
             log.exception("refresh failed")
             self._last_error = f"{type(exc).__name__}: {exc}"[:300]
+            return False
         finally:
             with self._lock:
                 self._refreshing = False
 
+    def start_refresh(self) -> bool:
+        """Manual refresh in the background; False if one is already running."""
+        if not self._claim_refresh():
+            return False
+        threading.Thread(target=self._run_claimed_refresh, name="refresh", daemon=True).start()
+        return True
+
     def schedule(self, stop: threading.Event) -> None:
         while not stop.is_set():
-            self.start_refresh()
-            stop.wait(config.REFRESH_INTERVAL_SECONDS)
+            succeeded = self._run_claimed_refresh() if self._claim_refresh() else True
+            stop.wait(config.REFRESH_INTERVAL_SECONDS if succeeded else config.RETRY_AFTER_FAILURE_SECONDS)
 
     # --- read --------------------------------------------------------------
     def board_payload(self) -> dict:
