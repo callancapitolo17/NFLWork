@@ -54,14 +54,4 @@ module.exports = [
       globals: { ...globals.node },
     },
   },
-  {
-    // The phone page's browser scripts, served by server/runner.js. Classic
-    // scripts like the extension's; phone_view.js is also require()d by tests.
-    files: ["server/phone/**/*.js"],
-    languageOptions: {
-      ecmaVersion: "latest",
-      sourceType: "script",
-      globals: { ...globals.browser, ...globals.commonjs },
-    },
-  },
 ];
