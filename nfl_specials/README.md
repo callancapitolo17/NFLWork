@@ -24,6 +24,11 @@ filling in as it goes.
 
 ## How a special is priced
 
+0. **Game.** Every book's game must be the special's: kickoff inside the
+   Wagerzon week (Thursday to Monday night around the specials' date) and, at
+   each book, the same two teams within 12 hours of the board's kickoff —
+   books list future weeks, so otherwise a started or missing game would be
+   priced off next week's.
 1. **Legs.** `special_parser.py` reads `SEAHAWKS TRIFECTA (1Q -½, 1H -4½ & GM -7½)`.
    Quarter and half wins are **3-way**: a tied quarter or half loses. With
    integer scores that is the same bet as -0.5, so either market works.
@@ -52,7 +57,8 @@ filling in as it goes.
    Per (game, team) only the best special by expected log growth keeps a
    stake ("overlaps" on the rest): a team's fectas win together. The stakes
    are then **fitted to the Wagerzon balance available** (read live from
-   Wagerzon, so pending bets and the week's results already count): if they
+   Wagerzon when a refresh starts and ends, so pending bets and the week's
+   results already count; an unreadable balance recommends nothing): if they
    add up past it, every bet's marginal log growth must clear one common
    hurdle, raised until they fit — weaker edges shrink first and drop to
    zero. A stake under Wagerzon's $20 minimum for specials (measured: $15-19
@@ -68,7 +74,10 @@ filling in as it goes.
 ## Placing
 
 **Place submits a real Wagerzon bet.** The server re-checks the special is on
-the board at the price the page showed and that the game has not started, then
+the board at the price the page showed, that the game has not started, that
+the stake is at least $20 and within the available balance, and that the same
+special was not placed in the last 2 minutes (a slow answer invites a second
+click; the button is also disabled while a placement is in flight), then
 `wagerzon_odds/single_placer.place_single` previews it (`ConfirmWagerHelper`,
 win must match to $0.01 or it refuses) and submits it. A special is a one-sided
 prop on the "home" slot, so it goes in as Play=5 with no points. Every attempt
@@ -108,8 +117,10 @@ balance right away. Wagerzon's minimum online wager on a special is $20.
   old sidecar (or its Chrome) still holds `~/.dk_price_sidecar/profile`; stop it first.
 - **A superfecta says "no SGP market for '... scores first'"** at FD/BetMGM — expected;
   only DK prices superfectas.
-- **Nothing on the board** — Wagerzon posts the specials Thursday-ish; the league is
-  found by name (`NFL WEEK <n> - SPECIALS`).
+- **Nothing on the board** — Wagerzon posts the specials Thursday-ish; every league
+  named `NFL WEEK <n> - SPECIALS` is read (two can be up at once).
+- **"Available: unknown"** — the Wagerzon balance read failed, so no stakes are
+  recommended; click Refresh.
 
 ## Not done yet
 

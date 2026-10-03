@@ -16,6 +16,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Callable, TypeVar
 
 import requests
@@ -59,6 +60,8 @@ class WzSpecial:
     rotation: int          # Wagerzon rotation number (hnum)
     description: str       # e.g. "SEAHAWKS TRIFECTA (1Q, 1H & GM)"
     wz_american: int       # posted price
+    week_date: date        # Wagerzon's date for the specials (the week's
+                           # Sunday; its clock time is a placeholder)
 
 
 def account_labels() -> list[str]:
@@ -80,12 +83,15 @@ def _session(account_label: str | None = None):
     return wagerzon_auth.get_session(account)
 
 
-def specials_league_id(session) -> int:
-    catalog = fetch_active_leagues(session) or []
-    for row in catalog:
-        if re.match(config.WZ_SPECIALS_DESCRIPTION_RE, (row.get("Description") or "").strip()):
-            return int(row["IdLeague"])
-    raise RuntimeError("no 'NFL WEEK <n> - SPECIALS' league in Wagerzon's catalog")
+def specials_league_ids(catalog: list[dict]) -> list[int]:
+    """Every 'NFL WEEK <n> - SPECIALS' league: two can be up at once (Monday
+    night's week n beside week n+1), and the catalog lists a league once per
+    menu it appears under."""
+    ids = {int(row["IdLeague"]) for row in catalog
+           if re.match(config.WZ_SPECIALS_DESCRIPTION_RE, (row.get("Description") or "").strip())}
+    if not ids:
+        raise RuntimeError("no 'NFL WEEK <n> - SPECIALS' league in Wagerzon's catalog")
+    return sorted(ids)
 
 
 def _retry_reads(read: Callable[[], T]) -> T:
@@ -110,24 +116,31 @@ def fetch_fecta_specials() -> list[WzSpecial]:
 
 def _fetch_fecta_specials_once() -> list[WzSpecial]:
     session = _session()
-    url = SCHEDULE_URL.format(league_id=specials_league_id(session))
-    resp = session.get(url, timeout=30, headers={"Accept": "application/json",
-                                                 "X-Requested-With": "XMLHttpRequest"})
-    resp.raise_for_status()
-    leagues = (resp.json().get("result") or {}).get("listLeagues") or [[]]
-    specials = []
-    for league in leagues[0]:
-        for game in league.get("Games", []):
-            description = (game.get("htm") or "").strip()
-            if not FECTA_WORDS.search(description.upper()):
-                continue
-            line = (game.get("GameLines") or [{}])[0] or {}
-            posted = line.get("oddsh") or line.get("odds")
-            if not posted:
-                continue
-            specials.append(WzSpecial(wz_game_id=int(game["idgm"]), rotation=int(game["hnum"]),
-                                      description=description, wz_american=int(posted)))
-    return specials
+    specials: dict[int, WzSpecial] = {}
+    for league_id in specials_league_ids(fetch_active_leagues(session) or []):
+        resp = session.get(SCHEDULE_URL.format(league_id=league_id), timeout=30,
+                           headers={"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"})
+        resp.raise_for_status()
+        leagues = (resp.json().get("result") or {}).get("listLeagues") or [[]]
+        for league in leagues[0]:
+            for game in league.get("Games", []):
+                special = _parse_special(game)
+                if special is not None:
+                    specials[special.wz_game_id] = special
+    return list(specials.values())
+
+
+def _parse_special(game: dict) -> WzSpecial | None:
+    description = (game.get("htm") or "").strip()
+    if not FECTA_WORDS.search(description.upper()):
+        return None
+    line = (game.get("GameLines") or [{}])[0] or {}
+    posted = line.get("oddsh") or line.get("odds")
+    if not posted or not game.get("gmdt"):
+        return None
+    return WzSpecial(wz_game_id=int(game["idgm"]), rotation=int(game["hnum"]),
+                     description=description, wz_american=int(posted),
+                     week_date=datetime.strptime(game["gmdt"], "%Y%m%d").date())
 
 
 def place_fecta(account_label: str, special: WzSpecial, risk: float) -> dict:

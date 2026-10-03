@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from nfl_specials.board import Board, FectaLine, size_board
+from nfl_specials.board import Board, FectaLine, book_game, in_special_week, size_board
 from nfl_specials.books import BookGame
 from nfl_specials.pricing import BookFair, ScoresFirstShare
 from nfl_specials.special_parser import parse_fecta
@@ -11,7 +11,7 @@ GAME = BookGame("evt", home="SEA", away="LAC", game_start_time="2099-01-01T00:00
 
 def _line(rotation: int, description: str, wz_american: int, fair_prob: float | None) -> FectaLine:
     special = WzSpecial(wz_game_id=rotation, rotation=rotation, description=description,
-                        wz_american=wz_american)
+                        wz_american=wz_american, week_date=date(2098, 12, 31))
     fairs = {} if fair_prob is None else {"FanDuel": BookFair("FanDuel", fair_prob, None, 1.3, 8)}
     return FectaLine(special, parse_fecta(description), "priced", game=GAME, book_fairs=fairs)
 
@@ -68,3 +68,32 @@ def test_budget_goes_to_the_strongest_edges():
     assert sum(s.recommended_stake for s in sized) <= 500
     assert sized[0].recommended_stake > sized[1].recommended_stake
     assert sized[0].kelly_stake > sized[0].recommended_stake   # the budget bound
+
+
+class _ListingBook:
+    name = "Fake"
+
+    def __init__(self, game):
+        self.game = game
+
+    def find_game(self, team):
+        return self.game
+
+
+def test_book_game_must_be_the_same_game():
+    line = _line(1, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 120, 0.37)
+    same = BookGame("x", home="SEA", away="LAC", game_start_time="2099-01-01T00:01:00Z")
+    next_week = BookGame("y", home="SEA", away="LAC", game_start_time="2099-01-08T00:00:00Z")
+    other_team = BookGame("z", home="SEA", away="SF", game_start_time="2099-01-01T00:00:00Z")
+    assert book_game(_ListingBook(same), line) is same
+    assert book_game(_ListingBook(next_week), line) is None   # a rematch weeks later
+    assert book_game(_ListingBook(other_team), line) is None
+
+
+def test_special_week_is_thursday_through_monday_night():
+    special = _line(1, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 120, 0.37).special   # Sunday 2098-12-31
+    thursday = BookGame("t", "SEA", "LAC", "2098-12-28T01:15:00Z")
+    monday_night = BookGame("m", "SEA", "LAC", "2099-01-02T01:15:00Z")
+    next_thursday = BookGame("n", "SEA", "LAC", "2099-01-05T01:15:00Z")
+    assert in_special_week(thursday, special) and in_special_week(monday_night, special)
+    assert not in_special_week(next_thursday, special)

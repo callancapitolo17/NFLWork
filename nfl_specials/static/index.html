@@ -108,8 +108,9 @@ function renderHeader(p) {
     account.replaceChildren(...p.accounts.map(a => el("option", { value: a, text: a })));
     account.value = p.account;
   }
-  document.getElementById("available").textContent =
-    p.available_balance == null ? "" : `Available $${Math.round(p.available_balance)}`;
+  document.getElementById("available").textContent = !p.board ? "" :
+    p.available_balance == null ? "Available: unknown — no stakes until Refresh reads it"
+                                : `Available $${Math.round(p.available_balance)}`;
   let summary = "Click Refresh to price the board";
   if (b) {
     const when = new Date(b.finished_at || b.started_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -174,6 +175,7 @@ async function place(line, input, result, button) {
   const ok = confirm(`Place $${risk} on ${line.description} at ${signed(line.wz_american)} (Wagerzon: ${account})?`);
   if (!ok) return;
   button.textContent = "Placing…";
+  button.disabled = true;
   try {
     const r = await api("/api/place", { wz_game_id: line.wz_game_id, wz_american: line.wz_american, risk, account });
     result.className = "result " + (r.status === "placed" ? "ok" : "err");
@@ -183,6 +185,7 @@ async function place(line, input, result, button) {
     result.className = "result err"; result.textContent = e.message;
   } finally {
     button.textContent = "Place";
+    button.disabled = false;
     load();
   }
 }

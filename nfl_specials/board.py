@@ -20,11 +20,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Callable
 
 from nfl_specials import config, wz
-from nfl_specials.books import BookGame, SgpBook
+from nfl_specials.books import BookGame, SgpBook, parse_start
 from nfl_specials.dk_book import DraftKingsBook, sidecar_is_up
 from nfl_specials.fd_book import FanDuelBook
 from nfl_specials.mgm_book import BetMgmBook
@@ -44,6 +44,14 @@ BOOK_ORDER = TRIFECTA_BOOKS + (SUPERFECTA_BOOK,)
 # Whose kickoff time the board shows: DK and BetMGM list the real kickoff,
 # FanDuel lists it a minute late.
 GAME_SOURCE_ORDER = ("DraftKings", "BetMGM", "FanDuel")
+# A special's game is in its Wagerzon week: Thursday night through Monday
+# night around the week's Sunday. Books list future weeks too, so a team whose
+# game is missing or started at a book would otherwise be priced off NEXT
+# week's game. Monday night kicks off Tuesday ~00:15-01:15 UTC.
+WEEK_STARTS_BEFORE_SUNDAY = timedelta(days=4)
+WEEK_ENDS_AFTER_SUNDAY = timedelta(days=2, hours=12)
+# Books' kickoff clocks for the same game differ by a minute or so.
+SAME_GAME_KICKOFF_TOLERANCE = timedelta(hours=12)
 
 
 @dataclass
@@ -78,14 +86,10 @@ class Board:
     book_status: dict[str, str]     # book -> 'ok' | 'error: ...' | 'sidecar not running ...'
     progress_done: int = 0
     progress_total: int = 0
-    # Wagerzon account -> available balance, read at the start and end of the
-    # refresh and lowered by the app after each placement. None = unknown.
-    available_balance: dict[str, float | None] = field(default_factory=dict)
 
     def snapshot(self) -> "Board":
         lines = [replace(line, book_fairs=dict(line.book_fairs)) for line in self.lines]
-        return replace(self, lines=lines, book_status=dict(self.book_status),
-                       available_balance=dict(self.available_balance))
+        return replace(self, lines=lines, book_status=dict(self.book_status))
 
 
 @dataclass(frozen=True)
@@ -115,13 +119,31 @@ def open_books(sidecar_url: str) -> tuple[dict[str, SgpBook], dict[str, str]]:
     return books, status
 
 
-def _locate_game(fecta: Fecta, books: dict[str, SgpBook]) -> BookGame | None:
+def in_special_week(game: BookGame, special: wz.WzSpecial) -> bool:
+    sunday = datetime.combine(special.week_date, time(0, 0), tzinfo=timezone.utc)
+    kickoff = parse_start(game.game_start_time)
+    return sunday - WEEK_STARTS_BEFORE_SUNDAY <= kickoff <= sunday + WEEK_ENDS_AFTER_SUNDAY
+
+
+def _locate_game(fecta: Fecta, special: wz.WzSpecial, books: dict[str, SgpBook]) -> BookGame | None:
+    """The special's game, from the first book (GAME_SOURCE_ORDER) whose next
+    game for the team falls in the special's week."""
     for name in GAME_SOURCE_ORDER:
         if name in books:
             game = books[name].find_game(fecta.team)
-            if game is not None:
+            if game is not None and in_special_week(game, special):
                 return game
     return None
+
+
+def book_game(book: SgpBook, line: "FectaLine") -> BookGame | None:
+    """`book`'s listing of the line's game: same two teams, same kickoff
+    (within tolerance). None when the book lists another game for the team."""
+    game = book.find_game(line.fecta.team)
+    if game is None or {game.home, game.away} != {line.game.home, line.game.away}:
+        return None
+    gap = abs(parse_start(game.game_start_time) - parse_start(line.game.game_start_time))
+    return game if gap <= SAME_GAME_KICKOFF_TOLERANCE else None
 
 
 def size_board(board: Board, bankroll: float, kelly_fraction: float,
@@ -188,17 +210,17 @@ def _quote_row(line: FectaLine, quoted_at: datetime, *, book: str, quote_kind: s
 def _price_partition(book: SgpBook, line: FectaLine) -> BookFair:
     """The special's fair at `book` — for a superfecta, its trifecta part's."""
     target = trifecta_part(line.fecta) if line.is_superfecta() else line.fecta
-    game = book.find_game(target.team)
+    game = book_game(book, line)
     if game is None:
-        return BookFair(book.name, None, None, None, 0, reason="game not listed")
+        return BookFair(book.name, None, None, None, 0, reason="this game is not listed")
     role = "home" if game.home == target.team else "away"
     return price_fecta_at_book(book, game, role, target)
 
 
 def _price_scores_first(book: SgpBook, line: FectaLine) -> ScoresFirstShare:
-    game = book.find_game(line.fecta.team)
+    game = book_game(book, line)
     if game is None:
-        return ScoresFirstShare(book.name, None, 0, reason="game not listed")
+        return ScoresFirstShare(book.name, None, 0, reason="this game is not listed")
     role = "home" if game.home == line.fecta.team else "away"
     return scores_first_share(book, game, role, line.fecta)
 
@@ -213,13 +235,14 @@ def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
         if isinstance(parsed, ParseFailure):
             lines.append(FectaLine(special, None, "unparsed", note=parsed.reason))
             continue
-        game = _locate_game(parsed, books)
+        game = _locate_game(parsed, special, books)
         if game is None:
-            lines.append(FectaLine(special, parsed, "no_game", note="no book lists this team's next game"))
+            lines.append(FectaLine(special, parsed, "no_game",
+                                   note="no book lists this team's game in the specials' week (started?)"))
             continue
         lines.append(FectaLine(special, parsed, "pricing", game=game))
 
-    board = Board(started_at, None, lines, book_status, available_balance=wz.available_balances())
+    board = Board(started_at, None, lines, book_status)
     pricing = [line for line in lines if line.status == "pricing"]
     work = [("partition", name, line) for name in TRIFECTA_BOOKS if name in books
             for line in pricing if not line.is_superfecta()]
@@ -266,7 +289,6 @@ def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
         elif line.is_superfecta() and (line.sf_share is None or line.sf_share.share is None):
             reasons.append(f"DraftKings scores first: {line.sf_share.reason if line.sf_share else 'not priced'}")
         line.note = "; ".join(reasons) or "no book priced it"
-    board.available_balance = wz.available_balances()   # bets may have settled meanwhile
     board.finished_at = datetime.now(timezone.utc)
     publish(board.snapshot())
     return board

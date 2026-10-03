@@ -37,7 +37,9 @@ log = logging.getLogger("nfl_specials.app")
 
 INDEX_HTML = config.PACKAGE_DIR / "static" / "index.html"
 PLACEMENT_HISTORY_DAYS = 7
-PLACED_STATUS = "placed"
+# A second placement on the same special within this window is refused: a
+# slow Wagerzon answer invites a second click, and each click is a real bet.
+DUPLICATE_PLACEMENT_WINDOW = timedelta(minutes=2)
 
 
 def _american(prob: float | None) -> int | None:
@@ -56,6 +58,9 @@ class SpecialsApp:
         self._refreshing = False
         self._last_error: str | None = None
         self._place_lock = threading.Lock()   # one Wagerzon submission at a time
+        # Wagerzon account -> 'available' (the budget), read when a refresh
+        # starts and ends, lowered after each placement. None = unknown.
+        self._balances: dict[str, float | None] = {}
 
     # --- refresh -----------------------------------------------------------
     def publish(self, board: Board) -> None:
@@ -71,9 +76,16 @@ class SpecialsApp:
         threading.Thread(target=self._run_refresh, name="refresh", daemon=True).start()
         return True
 
+    def _read_balances(self) -> None:
+        balances = wz.available_balances()
+        with self._lock:
+            self._balances = balances
+
     def _run_refresh(self) -> None:
         try:
+            self._read_balances()
             refresh_board(self.store, self.publish)
+            self._read_balances()   # bets may have settled while it priced
             self._last_error = None
         except Exception as exc:
             log.exception("refresh failed")
@@ -83,6 +95,12 @@ class SpecialsApp:
                 self._refreshing = False
 
     # --- read --------------------------------------------------------------
+    def budget(self, account: str) -> float | None:
+        """Wagerzon 'available' for `account`, floored at 0; None = unknown."""
+        with self._lock:
+            available = self._balances.get(account)
+        return None if available is None else max(0.0, available)
+
     def board_payload(self, account: str | None) -> dict:
         with self._lock:
             board, refreshing = self._board, self._refreshing
@@ -103,9 +121,11 @@ class SpecialsApp:
         }
         if board is None:
             return payload
-        budget = board.available_balance.get(account)
+        budget = self.budget(account)
         payload["available_balance"] = budget
-        sized = size_board(board, settings["bankroll"], settings["kelly_fraction"], budget)
+        # Unknown balance: recommend nothing rather than uncapped Kelly.
+        sized = size_board(board, settings["bankroll"], settings["kelly_fraction"],
+                           0.0 if budget is None else budget)
         payload["board"] = {
             "started_at": board.started_at.isoformat(),
             "finished_at": board.finished_at.isoformat() if board.finished_at else None,
@@ -130,8 +150,10 @@ class SpecialsApp:
         """Submit one real Wagerzon bet after re-checking it against the board."""
         wz_game_id, risk = body.get("wz_game_id"), body.get("risk")
         shown_american, account = body.get("wz_american"), body.get("account")
-        if not isinstance(risk, (int, float)) or risk <= 0:
-            raise ValueError(f"risk must be a positive number, got {risk!r}")
+        if not isinstance(wz_game_id, int) or not isinstance(shown_american, int):
+            raise ValueError("wz_game_id and wz_american must be whole numbers")
+        if not isinstance(risk, (int, float)) or risk < config.WZ_MIN_STAKE:
+            raise ValueError(f"risk must be at least ${config.WZ_MIN_STAKE:.0f} (Wagerzon's minimum), got {risk!r}")
         if account not in wz.account_labels():
             raise ValueError(f"unknown Wagerzon account {account!r}")
         with self._lock:
@@ -145,24 +167,33 @@ class SpecialsApp:
         if parse_start(line.game.game_start_time) <= datetime.now(timezone.utc):
             raise ValueError("game has started")
         settings = self.store.settings()
-        budget = board.available_balance.get(account)
+        budget = self.budget(account)
         if budget is not None and risk > budget:
             raise ValueError(f"risk ${risk:.2f} is more than the ${budget:.2f} Wagerzon shows available")
-        sizing = size_board(board, settings["bankroll"], settings["kelly_fraction"], budget)[board.lines.index(line)]
+        sizing = size_board(board, settings["bankroll"], settings["kelly_fraction"],
+                            budget)[board.lines.index(line)]
 
         with self._place_lock:
+            # Checked inside the lock so a double click waits for the first
+            # placement to land, then sees it.
+            since = datetime.now(timezone.utc) - DUPLICATE_PLACEMENT_WINDOW
+            recent = self.store.last_placed(account, wz_game_id, since)
+            if recent is not None:
+                raise ValueError(f"${recent['risk']:.0f} already placed on this special at "
+                                 f"{recent['placed_at']:%H:%M:%S} (ticket {recent['ticket_number']}); "
+                                 f"wait 2 minutes to add more")
             result = wz.place_fecta(account, line.special, float(risk))
-        if result.get("status") == "placed":
-            self._lower_balance(account, float(risk), result.get("balance_after"))
-        self.store.record_placement({
-            "placed_at": datetime.now(timezone.utc), "account": account,
-            "wz_game_id": line.special.wz_game_id, "rotation": line.special.rotation,
-            "description": line.special.description, "game_start_time": line.game.game_start_time,
-            "wz_american": line.special.wz_american, "risk": float(risk),
-            "fair_prob": sizing.fair_prob, "ev": sizing.ev,
-            "status": result.get("status"), "ticket_number": result.get("ticket_number"),
-            "error": result.get("error_msg"),
-        })
+            if result.get("status") == "placed":
+                self._lower_balance(account, float(risk), result.get("balance_after"))
+            self.store.record_placement({
+                "placed_at": datetime.now(timezone.utc), "account": account,
+                "wz_game_id": line.special.wz_game_id, "rotation": line.special.rotation,
+                "description": line.special.description, "game_start_time": line.game.game_start_time,
+                "wz_american": line.special.wz_american, "risk": float(risk),
+                "fair_prob": sizing.fair_prob, "ev": sizing.ev,
+                "status": result.get("status"), "ticket_number": result.get("ticket_number"),
+                "error": result.get("error_msg"),
+            })
         return {"status": result.get("status"), "ticket_number": result.get("ticket_number"),
                 "error": result.get("error_msg"), "balance_after": result.get("balance_after")}
 
@@ -170,13 +201,11 @@ class SpecialsApp:
         """Keep the budget right between refreshes: Wagerzon's reported
         balance after the bet, else the old balance less the risk."""
         with self._lock:
-            if self._board is None:
-                return
-            before = self._board.available_balance.get(account)
+            before = self._balances.get(account)
             if balance_after is not None:
-                self._board.available_balance[account] = float(balance_after)
+                self._balances[account] = float(balance_after)
             elif before is not None:
-                self._board.available_balance[account] = before - risk
+                self._balances[account] = before - risk
 
 
 def _line_json(line, sizing) -> dict:

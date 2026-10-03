@@ -154,6 +154,8 @@ def budgeted_stakes(bets: list[tuple[float, int]], bankroll: float, kelly_fracti
     `min_stake` cannot be placed, so the smallest such bet is dropped and the
     rest re-fit. budget=None means no cap.
     """
+    if budget is not None:
+        budget = max(0.0, budget)   # Wagerzon can report a negative 'available'
     active = [i for i, (p, a) in enumerate(bets) if expected_value(p, a) > 0]
     while True:
         stakes = _fit(bets, active, bankroll, kelly_fraction, budget)

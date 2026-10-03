@@ -149,3 +149,8 @@ def test_stakes_under_the_minimum_are_dropped_and_refit():
     from nfl_specials.pricing import budgeted_stakes
     assert budgeted_stakes([(0.12, 1730), (0.081, 1600)], 1000, 0.25, None, 20) == [0.0, 0.0]
     assert budgeted_stakes([(0.12, 1730)], 35000, 0.25, 15, 20) == [0.0]
+
+
+def test_negative_budget_means_no_stakes_not_a_crash():
+    from nfl_specials.pricing import budgeted_stakes
+    assert budgeted_stakes([(0.12, 1730), (0.17, 855)], 35000, 0.25, -50, 20) == [0.0, 0.0]

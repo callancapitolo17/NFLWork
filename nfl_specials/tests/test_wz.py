@@ -39,3 +39,13 @@ def test_other_errors_are_not_retried(monkeypatch):
     with pytest.raises(ValueError):
         wz._retry_reads(broken_read)
     assert len(attempts) == 1
+
+
+def test_every_specials_league_once():
+    catalog = [{"IdLeague": 1135, "Description": "NFL WEEK 4 - SPECIALS"},
+               {"IdLeague": 1135, "Description": "NFL WEEK 4 - SPECIALS"},   # listed under 2 menus
+               {"IdLeague": 1140, "Description": "NFL WEEK 5 - SPECIALS"},
+               {"IdLeague": 586, "Description": "NFL - TEAM TO SCORE 1ST"}]
+    assert wz.specials_league_ids(catalog) == [1135, 1140]
+    with pytest.raises(RuntimeError):
+        wz.specials_league_ids([{"IdLeague": 586, "Description": "NFL - TEAM TO SCORE 1ST"}])

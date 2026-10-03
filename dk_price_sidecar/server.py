@@ -221,18 +221,27 @@ class DkBrowser:
         a combo it had just priced. A reload re-runs DK's own page scripts
         and fresh cookies come back, so the call is retried once after one.
         """
-        if not self.ready():
-            self.launch()
-        if (time.monotonic() - self._page_loaded_at > PAGE_RELOAD_SEC
-                or self.calls_since_reload >= CALLS_PER_PAGE_LOAD):
-            self._reload()
-        result = self._call(selection_ids)
-        if result["status"] == 0 and self.ready():
-            self.blocks += 1
-            logger.warning("DK denied the page after %d calls; reloading", self.calls_since_reload)
-            self._reload()
+        try:
+            if not self.ready():
+                self.launch()
+            if (time.monotonic() - self._page_loaded_at > PAGE_RELOAD_SEC
+                    or self.calls_since_reload >= CALLS_PER_PAGE_LOAD):
+                self._reload()
             result = self._call(selection_ids)
-        return result
+            if result["status"] == 0 and self.ready():
+                self.blocks += 1
+                logger.warning("DK denied the page after %d calls; reloading", self.calls_since_reload)
+                self._reload()
+                result = self._call(selection_ids)
+            return result
+        except Exception as e:
+            # A launch or reload that fails (page.goto timeout, Chrome gone)
+            # must still answer the caller; the next call relaunches.
+            logger.error("browser launch/reload failed, will relaunch: %s", e)
+            self.relaunches += 1
+            self.close()
+            return {"status": 503, "true_odds": None, "display": None,
+                    "restrictions": None, "error": f"browser: {e}"[:200]}
 
     def _reload(self) -> None:
         self._load_page()

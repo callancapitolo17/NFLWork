@@ -107,6 +107,18 @@ class Store:
         finally:
             con.close()
 
+    def last_placed(self, account: str, wz_game_id: int, since: datetime) -> dict | None:
+        """The newest successful placement on this special by `account` since `since`."""
+        con = duckdb.connect(str(self.db_path))
+        try:
+            row = con.execute(
+                f"SELECT {', '.join(PLACEMENT_COLUMNS)} FROM placed_fectas "
+                "WHERE account = ? AND wz_game_id = ? AND status = 'placed' AND placed_at >= ? "
+                "ORDER BY placed_at DESC LIMIT 1", [account, wz_game_id, since]).fetchone()
+            return dict(zip(PLACEMENT_COLUMNS, row)) if row else None
+        finally:
+            con.close()
+
     def settings(self) -> dict[str, float]:
         values = {"bankroll": config.DEFAULT_BANKROLL, "kelly_fraction": config.DEFAULT_KELLY_FRACTION}
         con = duckdb.connect(str(self.db_path))
