@@ -59,8 +59,10 @@ def test_unknown_balance_recommends_nothing(app):
 
 
 def test_under_the_minimum_or_a_changed_price_is_refused(app):
-    with pytest.raises(ValueError, match="at least"):
+    with pytest.raises(ValueError, match="limits"):
         app.place(_bet(15))
+    with pytest.raises(ValueError, match="limits"):
+        app.place(_bet(300))
     with pytest.raises(ValueError, match="refresh the page"):
         app.place({**_bet(), "wz_american": 1500})
     assert app.placements == []

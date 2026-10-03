@@ -132,25 +132,32 @@ def test_trifecta_part_drops_scores_first():
 def test_budgeted_stakes_are_plain_fractional_kelly_when_they_fit():
     from nfl_specials.pricing import budgeted_stakes
     bets = [(0.12, 1730), (0.17, 855)]
-    uncapped = budgeted_stakes(bets, 35000, 0.25, None, 20)
+    uncapped = budgeted_stakes(bets, 35000, 0.25, None, 20, 1e9)
     assert uncapped == [float(int(kelly_stake(p, a, 35000, 0.25))) for p, a in bets]
-    assert budgeted_stakes(bets, 35000, 0.25, 10_000, 20) == uncapped
+    assert budgeted_stakes(bets, 35000, 0.25, 10_000, 20, 1e9) == uncapped
 
 
 def test_budgeted_stakes_trim_the_weakest_first_and_fit():
     from nfl_specials.pricing import budgeted_stakes
     strong, weak = (0.115, 1730), (0.081, 1600)        # EV +111% vs +38%
-    stakes = budgeted_stakes([strong, weak], 35000, 0.25, 300, 20)
+    stakes = budgeted_stakes([strong, weak], 35000, 0.25, 300, 20, 1e9)
     assert sum(stakes) <= 300
     assert stakes[0] > 0 and stakes[1] == 0.0
 
 
 def test_stakes_under_the_minimum_are_dropped_and_refit():
     from nfl_specials.pricing import budgeted_stakes
-    assert budgeted_stakes([(0.12, 1730), (0.081, 1600)], 1000, 0.25, None, 20) == [0.0, 0.0]
-    assert budgeted_stakes([(0.12, 1730)], 35000, 0.25, 15, 20) == [0.0]
+    assert budgeted_stakes([(0.12, 1730), (0.081, 1600)], 1000, 0.25, None, 20, 250) == [0.0, 0.0]
+    assert budgeted_stakes([(0.12, 1730)], 35000, 0.25, 15, 20, 250) == [0.0]
 
 
 def test_negative_budget_means_no_stakes_not_a_crash():
     from nfl_specials.pricing import budgeted_stakes
-    assert budgeted_stakes([(0.12, 1730), (0.17, 855)], 35000, 0.25, -50, 20) == [0.0, 0.0]
+    assert budgeted_stakes([(0.12, 1730), (0.17, 855)], 35000, 0.25, -50, 20, 250) == [0.0, 0.0]
+
+
+def test_stakes_cap_at_the_max_and_the_rest_flows_to_the_next_edge():
+    from nfl_specials.pricing import budgeted_stakes
+    stakes = budgeted_stakes([(1 / 7.92, 1730), (1 / 6.04, 855)], 35000, 0.25, 500, 20, 250)
+    assert stakes[0] == 250.0
+    assert 240 <= stakes[1] <= 250

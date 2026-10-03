@@ -115,6 +115,7 @@ class SpecialsApp:
             "accounts": accounts,
             "account": account,
             "min_stake": config.WZ_MIN_STAKE,
+            "max_stake": config.WZ_MAX_STAKE,
             "available_balance": None,
             "placements": [_placement_json(p) for p in self.store.placements_since(since)],
             "board": None,
@@ -152,8 +153,9 @@ class SpecialsApp:
         shown_american, account = body.get("wz_american"), body.get("account")
         if not isinstance(wz_game_id, int) or not isinstance(shown_american, int):
             raise ValueError("wz_game_id and wz_american must be whole numbers")
-        if not isinstance(risk, (int, float)) or risk < config.WZ_MIN_STAKE:
-            raise ValueError(f"risk must be at least ${config.WZ_MIN_STAKE:.0f} (Wagerzon's minimum), got {risk!r}")
+        if not isinstance(risk, (int, float)) or not config.WZ_MIN_STAKE <= risk <= config.WZ_MAX_STAKE:
+            raise ValueError(f"risk must be ${config.WZ_MIN_STAKE:.0f}-${config.WZ_MAX_STAKE:.0f} "
+                             f"(Wagerzon's limits), got {risk!r}")
         if account not in wz.account_labels():
             raise ValueError(f"unknown Wagerzon account {account!r}")
         with self._lock:

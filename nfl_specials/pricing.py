@@ -144,7 +144,7 @@ def _kelly_fraction_at_hurdle(fair_prob: float, net_odds: float, hurdle: float) 
 
 
 def budgeted_stakes(bets: list[tuple[float, int]], bankroll: float, kelly_fraction: float,
-                    budget: float | None, min_stake: float) -> list[float]:
+                    budget: float | None, min_stake: float, max_stake: float) -> list[float]:
     """Whole-dollar stakes for (fair_prob, wz_american) bets that fit `budget`.
 
     Uncapped, each stake is kelly_fraction x full Kelly x bankroll. When those
@@ -152,23 +152,25 @@ def budgeted_stakes(bets: list[tuple[float, int]], bankroll: float, kelly_fracti
     common hurdle, raised until the stakes fit: weaker edges shrink first and
     drop to zero, and the budget lands on the strongest. A stake under
     `min_stake` cannot be placed, so the smallest such bet is dropped and the
-    rest re-fit. budget=None means no cap.
+    rest re-fit. Each stake is capped at `max_stake` (the book's limit); the
+    hurdle then hands what a capped bet can't take to the next-best edge.
+    budget=None means no cap.
     """
     if budget is not None:
         budget = max(0.0, budget)   # Wagerzon can report a negative 'available'
     active = [i for i, (p, a) in enumerate(bets) if expected_value(p, a) > 0]
     while True:
-        stakes = _fit(bets, active, bankroll, kelly_fraction, budget)
+        stakes = _fit(bets, active, bankroll, kelly_fraction, budget, max_stake)
         too_small = [i for i in active if stakes[i] < min_stake]
         if not too_small:
             return [float(stakes.get(i, 0)) for i in range(len(bets))]
         active.remove(min(too_small, key=lambda i: stakes[i]))
 
 
-def _fit(bets, active, bankroll, kelly_fraction, budget) -> dict[int, int]:
+def _fit(bets, active, bankroll, kelly_fraction, budget, max_stake) -> dict[int, int]:
     def stakes_at(hurdle: float) -> dict[int, float]:
-        return {i: kelly_fraction * bankroll *
-                   _kelly_fraction_at_hurdle(bets[i][0], american_to_decimal(bets[i][1]) - 1.0, hurdle)
+        return {i: min(max_stake, kelly_fraction * bankroll *
+                       _kelly_fraction_at_hurdle(bets[i][0], american_to_decimal(bets[i][1]) - 1.0, hurdle))
                 for i in active}
 
     uncapped = stakes_at(0.0)

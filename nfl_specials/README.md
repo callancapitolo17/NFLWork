@@ -62,7 +62,8 @@ filling in as it goes.
    add up past it, every bet's marginal log growth must clear one common
    hurdle, raised until they fit — weaker edges shrink first and drop to
    zero. A stake under Wagerzon's $20 minimum for specials (measured: $15-19
-   rejected) is dropped and the rest re-fit. The page shows the uncapped
+   rejected) is dropped and the rest re-fit; each stake is capped at the
+   $250 maximum, and what a capped bet can't take goes to the next edge. The page shows the uncapped
    Kelly stake next to any trimmed one.
 
 | Book | Trifecta | Superfecta | How |

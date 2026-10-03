@@ -176,7 +176,7 @@ def size_board(board: Board, bankroll: float, kelly_fraction: float,
 
     candidates = sorted(index for _growth, index in best_by_team.values())
     fitted = budgeted_stakes([(raw[i][0], board.lines[i].special.wz_american) for i in candidates],
-                             bankroll, kelly_fraction, budget, config.WZ_MIN_STAKE)
+                             bankroll, kelly_fraction, budget, config.WZ_MIN_STAKE, config.WZ_MAX_STAKE)
     recommended = dict(zip(candidates, fitted))
 
     sized = []

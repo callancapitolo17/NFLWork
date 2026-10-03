@@ -39,3 +39,5 @@ DEFAULT_KELLY_FRACTION = 0.25
 # Measured 2026-10-02 with preview-only ConfirmWagerHelper calls on a special:
 # $15-$19 -> MINWAGERONLINE, $20 accepted.
 WZ_MIN_STAKE = 20.0
+# Wagerzon's maximum risk per special (Cal, 2026-10-02).
+WZ_MAX_STAKE = 250.0

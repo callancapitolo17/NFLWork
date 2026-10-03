@@ -153,7 +153,7 @@ function stakeCell(line) {
   if (line.fair_prob == null) return el("span", { class: "faint", text: "unpriced" });
   if (line.ev <= 0) return el("span", { class: "faint", text: "no bet" });
   const typed = editingStake.get(line.wz_game_id);
-  const input = el("input", { type: "number", min: String(lastPayload.min_stake), step: "1", "aria-label": "Risk in dollars" });
+  const input = el("input", { type: "number", min: String(lastPayload.min_stake), max: String(lastPayload.max_stake), step: "1", "aria-label": "Risk in dollars" });
   input.value = typed !== undefined ? typed : (line.recommended_stake || "");
   input.addEventListener("input", () => editingStake.set(line.wz_game_id, input.value));
   const result = el("span", { class: "result" });
