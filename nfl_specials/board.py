@@ -2,7 +2,7 @@
 plus the pure sizing step that turns a board into EV and stakes.
 
 Inputs:  wz.fetch_fecta_specials(); FanDuel and BetMGM over plain HTTP;
-         DraftKings through dk_price_sidecar when it is running.
+         DraftKings over plain HTTP (its SGP builder's price endpoint).
 Outputs: a Board (returned, and a COPY published after every special/book
          through `publish`, so the page fills in while DraftKings works and
          never reads a board mid-write).
@@ -13,8 +13,7 @@ bankroll or Kelly fraction applies without re-pricing.
 Order: FanDuel and BetMGM price the trifectas over plain HTTP first.
 DraftKings goes last and prices the superfectas alone (user decision
 2026-10-02: only DK lets "scores first" into an SGP, so only DK prices them)
-— its trifecta-part partition, then its scores-first share — through a real
-browser, paced, with the page reloaded every 5 calls.
+— its trifecta-part partition, then its scores-first share.
 """
 from __future__ import annotations
 
@@ -25,7 +24,7 @@ from typing import Callable
 
 from nfl_specials import config, wz
 from nfl_specials.books import BookGame, SgpBook, parse_start
-from nfl_specials.dk_book import DraftKingsBook, sidecar_is_up
+from nfl_specials.dk_book import DraftKingsBook
 from nfl_specials.fd_book import FanDuelBook
 from nfl_specials.mgm_book import BetMgmBook
 from nfl_specials.pricing import (BookFair, ScoresFirstShare, budgeted_stakes, expected_value,
@@ -83,7 +82,7 @@ class Board:
     started_at: datetime
     finished_at: datetime | None
     lines: list[FectaLine]
-    book_status: dict[str, str]     # book -> 'ok' | 'error: ...' | 'sidecar not running ...'
+    book_status: dict[str, str]     # book -> 'ok' | 'error: ...'
     progress_done: int = 0
     progress_total: int = 0
     # book -> {'done': n, 'total': n} price calls this refresh, for the page's progress bar
@@ -104,15 +103,11 @@ class Sizing:
     yields_to: int | None           # rotation of the better special on the same team
 
 
-def open_books(sidecar_url: str) -> tuple[dict[str, SgpBook], dict[str, str]]:
+def open_books() -> tuple[dict[str, SgpBook], dict[str, str]]:
     books: dict[str, SgpBook] = {}
     status: dict[str, str] = {}
-    constructors = {"FanDuel": FanDuelBook, "BetMGM": BetMgmBook,
-                    "DraftKings": lambda: DraftKingsBook(sidecar_url)}
+    constructors = {"FanDuel": FanDuelBook, "BetMGM": BetMgmBook, "DraftKings": DraftKingsBook}
     for name in BOOK_ORDER:
-        if name == "DraftKings" and not sidecar_is_up(sidecar_url):
-            status[name] = "sidecar not running (dk_price_sidecar/run.sh)"
-            continue
         try:
             books[name] = constructors[name]()
             status[name] = "ok"
@@ -243,7 +238,7 @@ def _price_scores_first(book: SgpBook, line: FectaLine) -> ScoresFirstShare:
 
 def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
     started_at = datetime.now(timezone.utc)
-    books, book_status = open_books(config.DK_SIDECAR_URL)
+    books, book_status = open_books()
 
     lines = []
     for special in wz.fetch_fecta_specials():

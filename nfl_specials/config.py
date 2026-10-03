@@ -19,11 +19,6 @@ STATE_DB_PATH = Path(os.environ.get("NFL_SPECIALS_DB", str(PACKAGE_DIR / "nfl_sp
 APP_HOST = "127.0.0.1"
 APP_PORT = 8096
 
-# DraftKings prices SGPs only to a real, non-headless Chrome (issue #102), so
-# calculateBets goes through dk_price_sidecar/ (loopback service owning that
-# Chrome). Start it with dk_price_sidecar/run.sh before refreshing.
-DK_SIDECAR_URL = os.environ.get("DK_SIDECAR_URL", "http://127.0.0.1:8095")
-
 # --- Wagerzon ---------------------------------------------------------------
 WZ_BASE_URL = "https://backend.wagerzon.com"
 # "NFL WEEK 4 - SPECIALS": the week number changes, so the league id is

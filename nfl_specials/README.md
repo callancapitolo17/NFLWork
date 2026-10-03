@@ -7,20 +7,18 @@ places the bet on Wagerzon from the page.
 
 ```
 Wagerzon "NFL WEEK n - SPECIALS" ──▶ parse legs ──▶ FanDuel / BetMGM (HTTP) ─┐
-                                                 └▶ DraftKings (dk_price_sidecar) ┴▶ fair, EV, stake ──▶ page :8096 ──▶ Place
+                                                 └▶ DraftKings (HTTP) ────────┴▶ fair, EV, stake ──▶ page :8096 ──▶ Place
 ```
 
 ## Run
 
 ```bash
-dk_price_sidecar/run.sh     # own terminal; needed for superfectas (DK only)
 nfl_specials/run.sh         # http://127.0.0.1:8096
 ```
 
 The board prices only when you click **Refresh** (no auto-refresh). FanDuel and
 BetMGM price the trifectas in ~90 s; DraftKings then prices the superfectas
-(~20 calls each, paced 1.5 s, page reloaded every 5 calls), ~7 more minutes,
-filling in as it goes.
+(7-10 requests each, 0.5 s apart), ~40 s for six, filling in as it goes.
 
 ## The page
 
@@ -30,7 +28,7 @@ filling in as it goes.
   available) and the expected profit of those stakes at the worst-case fair.
 - **Progress:** while a refresh runs the page polls every 3 s and shows done /
   total overall and per book (FD / MGM / DK); it stops polling when the refresh
-  ends. Afterwards only a book that failed (e.g. the DK sidecar down) shows.
+  ends. Afterwards only a book that failed shows.
 - **Board:** grouped by game in kickoff order (started games and specials with
   no game last), or one list by EV ("Best EV"); filter All / Trifectas /
   Superfectas and "+EV only" (remembered in the browser). Each row: legs as
@@ -94,7 +92,26 @@ filling in as it goes.
 |---|---|---|---|
 | FanDuel | yes | no — "Team to Score First" is not SGP-eligible | 3-way period winners + ML / spreads, `implyBets` |
 | BetMGM | yes | no — no first-to-score market | ±0.5 period spreads + ML / spreads, `tv2Picks` |
-| DraftKings | not used (calls are scarce) | yes — the only book ("1st to Score") | via the sidecar's real Chrome |
+| DraftKings | not used | yes — the only book ("1st to Score") | its SGP builder's price endpoint (below) |
+
+**DraftKings, without a browser (2026-10-02).** DK's betslip price call
+(`calculateBets`) answers only a real Chrome (issue #102). DK's SGP *builder*
+widget prices through a different, ungated call:
+
+```
+GET https://sportsbook-nash.draftkings.com/sites/US-WV-SB/api/sportscontent/sgp/dkuswv/sportsdata/v2/sgp
+    ?eventId=<event>&selections=<base ids, comma>&marketCandidates=<market id>&oddsStyle=american
+    header X-SportId: 3        (404 without it)
+```
+
+It returns the base SGP's `trueOdds` and, under `compatibleMarkets`, the
+`trueOdds` of base + each outcome of the candidate market — so one request
+prices every partition cell that differs only in its last leg, and both
+sides of "scores first". Verified against `calculateBets` the same minute:
+10/10 cells identical, and all six Week 5 superfectas' fairs identical to 4
+decimals. **If DK cannot combine a base leg it drops it and prices the rest**
+(`selectionsNotMapped`); the adapter treats that as a decline, never as a
+price.
 
 ## Placing
 
@@ -134,14 +151,10 @@ balance right away. Wagerzon's minimum online wager on a special is $20.
 
 ## Troubleshooting
 
-- **DraftKings chip says sidecar not running** — start `dk_price_sidecar/run.sh` from
-  your own terminal (a sandboxed process cannot draw Chrome's window and its
-  price calls hang).
-- **DraftKings chip shows HTTP 502 "Failed to fetch"** — DK denied the page. The
-  sidecar reloads every 5 calls and retries once after a denial; if it keeps
-  happening, check its `/health` (`blocks`, `reloads`, `calls_since_reload`).
-- **Restarting the sidecar fails with "Opening in existing browser session"** — an
-  old sidecar (or its Chrome) still holds `~/.dk_price_sidecar/profile`; stop it first.
+- **DraftKings chip shows "DK SGP price ... returned HTTP 404"** — the request lost
+  its `X-SportId` header, or DK moved its SGP widget's API. Re-read the widget
+  (`dk-same-game-parlay/<version>/samegameparlayweb-external.js`, linked from the
+  sportsbook page's `sameGameParlayConfig`) for `getYourbetRequestParameters`.
 - **A superfecta says "no SGP market for '... scores first'"** at FD/BetMGM — expected;
   only DK prices superfectas.
 - **Nothing on the board** — Wagerzon posts the specials Thursday-ish; every league
@@ -151,6 +164,6 @@ balance right away. Wagerzon's minimum online wager on a special is $20.
 
 ## Not done yet
 
-- **Cloud.** DK only prices to a real Google Chrome; Playwright's Linux Chromium under
-  Xvfb was denied (2026-10-02). Running remotely needs a host with real Chrome, untested.
+- **Cloud.** Every book is plain HTTP now, but only the home IP has been tested;
+  Wagerzon logins from a data-center IP are untested.
 - Correlation across games is ignored (cross-game NFL correlation measured ~0).
