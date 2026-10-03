@@ -6,8 +6,9 @@
 // Reads: chrome.storage.local {ticket, error, watchStatus, pageCheck, pageReady,
 // booksFilter, locateResult, "liveEdges:<league>"} (written by content.js) and {bankroll,
 // multiplier, edges, alerts, alertLog, activeTab, betsService, betsSettings,
-// teaserRefs} (written here; teaserRefs = the Teasers list's reference fairs,
-// rewritten on each rebuild).
+// teaserRefs, teaserBlocked} (written here; teaserRefs = the Teasers list's
+// reference fairs, rewritten on each rebuild; teaserBlocked = the CFB markets
+// marked can't tease, each dropped once its game starts).
 // Writes: chrome.storage.local settings, {locate} (row click, via locate.js,
 // which also focuses the Unabated tab), {alertLog, alertTargets} and Chrome
 // notifications for new edges; {betsService} after every bets-service poll
@@ -177,6 +178,10 @@
   let teaserBuild = null;
   let teaserBoard = null;
   let teaserBoardLoadedAt = null;
+  // The CFB markets Cal marked can't tease (teaser.marketKeyOf -> the game's
+  // start in ms), kept in chrome.storage.local ("teaserBlocked"): Buckeye
+  // keeps some college games off its teaser menu. A mark ends when its game starts.
+  let teaserBlocked = {};
   // The tail-flex c per (league, period, bet type), measured off the
   // exchanges' two-sided rungs (tailflex.js); dropped on every scanner update
   // and when the max line age changes.
@@ -2684,21 +2689,44 @@
     chrome.storage.local.set({ teaserRefs: Array.from(refs) });
   }
 
+  // The can't-tease marks whose game is still to start; the rest leave storage too.
+  function liveTeaserBlocks(now) {
+    const live = Object.fromEntries(Object.entries(teaserBlocked).filter(([, startMs]) => startMs > now));
+    if (Object.keys(live).length !== Object.keys(teaserBlocked).length) {
+      teaserBlocked = live;
+      chrome.storage.local.set({ teaserBlocked });
+    }
+    return new Set(Object.keys(live));
+  }
+
+  // Can't tease marks the leg's market (its spread or total, both sides);
+  // Restore removes the mark. The tab re-renders now: the list rebuilds when
+  // the market held a pool leg, otherwise only the Legs list changes.
+  function setTeaserBlocked(leg, blocked) {
+    const next = { ...teaserBlocked };
+    if (blocked) next[teaserLib.marketKeyOf(leg)] = leg.eventStartMs;
+    else delete next[teaserLib.marketKeyOf(leg)];
+    teaserBlocked = next;
+    chrome.storage.local.set({ teaserBlocked });
+    renderTeasers();
+  }
+
   function teaserModel() {
     if (!scannerState || !teaserBoardReady()) return null;
     const now = Date.now();
     const board = currentTeaserBoard();
+    const blocked = liveTeaserBlocks(now);
     const legs = teaserLib.teaserLegs(scannerState, { now, maxLineAgeMs: state.edgeSettings.maxLineAgeHours * HOUR_MS, board });
     const placed = teaserLib.openTeasers(state.betRecords, boardLines(), { now, ladderOf: board.ladderOf });
     const straights = teaserLib.heldStraights(state.betRecords, boardLines(), { now, ladderOf: board.ladderOf });
     const kellyBankroll = state.settings.bankroll * state.settings.multiplier;
-    const planned = teaserLib.planTeasers({ legs, placed, straights, kellyBankroll, previous: teaserBuild });
+    const planned = teaserLib.planTeasers({ legs, placed, straights, kellyBankroll, previous: teaserBuild, blocked });
     teaserBuild = planned.build;
     if (planned.rebuilt) persistTeaserRefs(teaserBuild.refs);
     return {
       legs, placed, build: teaserBuild,
       plan: teaserLib.describePlan(teaserBuild, legs, placed),
-      legRows: teaserLib.describeLegs(legs, teaserBuild, placed, straights),
+      legRows: teaserLib.describeLegs(legs, teaserBuild, placed, straights, blocked),
     };
   }
 
@@ -2976,6 +3004,18 @@
     return tags;
   }
 
+  // A college leg on show (in the pool or above break-even) offers Can't
+  // tease; a marked one shows the tag and Restore. NFL legs never: Buckeye
+  // teases every NFL game.
+  function teaserBlockControl(row) {
+    if (row.standing === teaserLib.STANDING_BLOCKED) return makeButton("linkbtn", "Restore", () => setTeaserBlocked(row.leg, false));
+    const onShow = row.standing === teaserLib.STANDING_POOL || row.standing === teaserLib.STANDING_OUT;
+    if (!onShow || !teaserLib.canBlock(row.leg)) return null;
+    const chip = makeButton("dismiss-chip", "Can't tease", () => setTeaserBlocked(row.leg, true));
+    chip.title = `Buckeye won't tease this. Takes the game's ${teaserLib.marketNameOf(row.leg)} (both sides) out of the tickets until the game starts.`;
+    return chip;
+  }
+
   function teaserLegRow(row) {
     const { leg } = row;
     const pool = row.standing === teaserLib.STANDING_POOL;
@@ -2986,10 +3026,14 @@
     const book = makeEl("div", "edge-book");
     book.append(makeEl("span", "price", `Buckeye ${leg.bookLabel}`),
       makeEl("span", "age", ` · teased ${teaserLib.TEASER_POINTS} · ${fmtLineAge(leg.modifiedMs)}`));
-    main.append(makeEl("div", "edge-side", leg.label), meta, book);
+    const side = makeEl("div", "edge-side", leg.label);
+    if (row.standing === teaserLib.STANDING_BLOCKED) side.append(makeEl("span", "tag dismissed", "can't tease"));
+    main.append(side, meta, book);
     const rail = makeEl("div", "edge-rail");
     rail.append(makeEl("span", `edge-pct tier-${pool ? "hot" : "thin"}`, leg.win == null ? "—" : fmtWin(leg.win)),
       makeEl("span", "leg-in", legStandingText(row)), ...teaserStraightTags(row.straights));
+    const blockControl = teaserBlockControl(row);
+    if (blockControl) rail.append(blockControl);
     item.append(main, rail);
     return item;
   }
@@ -3002,14 +3046,18 @@
   }
 
   // The pool's legs and the priced legs above break-even, best first, with
-  // the break-even line where it falls; the rest of the games behind a fold.
+  // the break-even line where it falls; the rest of the games behind a fold,
+  // the markets marked can't tease first.
   function renderTeasersLegs(model) {
     const rows = model ? model.legRows : [];
+    const gameCount = new Set(rows.map((row) => row.leg.eventId)).size;
     view.teasersLegsLabel.hidden = rows.length === 0;
-    view.teasersLegsCount.textContent = rows.length ? String(rows.length) : "";
+    view.teasersLegsCount.textContent = gameCount ? String(gameCount) : "";
     const shownStandings = [teaserLib.STANDING_POOL, teaserLib.STANDING_OUT];
     const shown = rows.filter((row) => shownStandings.includes(row.standing));
-    const folded = rows.filter((row) => !shownStandings.includes(row.standing));
+    const blockedRows = rows.filter((row) => row.standing === teaserLib.STANDING_BLOCKED);
+    const otherFolded = rows.filter((row) => !shownStandings.includes(row.standing) && row.standing !== teaserLib.STANDING_BLOCKED);
+    const folded = [...blockedRows, ...otherFolded];
     const items = [];
     let dividerPlaced = false;
     for (const row of shown) {
@@ -3026,9 +3074,12 @@
       [teaserLib.STANDING_BELOW, "below break-even"],
       [teaserLib.STANDING_OTHER_MARKET, "on an open teaser's other market"],
       [teaserLib.STANDING_UNPRICED, "with no fair"],
-    ].map(([standing, words]) => [folded.filter((row) => row.standing === standing).length, words])
+    ].map(([standing, words]) => [otherFolded.filter((row) => row.standing === standing).length, words])
       .filter(([count]) => count > 0).map(([count, words]) => `${count} ${words}`);
-    view.teasersLegsMoreLabel.textContent = `${plural(folded.length, "more game")}: ${counts.join(", ")}`;
+    const labelParts = [];
+    if (otherFolded.length) labelParts.push(`${plural(otherFolded.length, "more game")}: ${counts.join(", ")}`);
+    if (blockedRows.length) labelParts.push(`${blockedRows.length} can't tease`);
+    view.teasersLegsMoreLabel.textContent = labelParts.join(" · ");
     view.teasersLegsMoreList.replaceChildren(...folded.map(teaserLegRow));
   }
 
@@ -3076,13 +3127,16 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = edgeRows.sanitizeStakeSettings(local);
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex", "teaserRefs"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex", "teaserRefs", "teaserBlocked"]);
     // The reference fairs the last Teasers list was built on: a seed with no
     // key, so the first plan rebuilds — on these fairs, where still within a
     // point of the live ones — and the list is the one this panel last showed.
     if (Array.isArray(relay.teaserRefs)) {
       const pairs = relay.teaserRefs.filter((pair) => Array.isArray(pair) && typeof pair[0] === "string" && typeof pair[1] === "number");
       teaserBuild = { key: null, refs: new Map(pairs) };
+    }
+    if (relay.teaserBlocked && typeof relay.teaserBlocked === "object") {
+      teaserBlocked = Object.fromEntries(Object.entries(relay.teaserBlocked).filter(([, startMs]) => typeof startMs === "number"));
     }
     const leaguePaths = Array.from(new Set(Object.values(feed.LEAGUES).map((league) => league.path)));
     const storedLive = await chrome.storage.local.get(leaguePaths.map(live.storageKeyOf));

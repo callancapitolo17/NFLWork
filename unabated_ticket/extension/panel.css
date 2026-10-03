@@ -536,6 +536,8 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 .leg-row .leg-in { font-size: 11px; color: var(--ink-2); }
 .leg-row.out .edge-side { color: var(--ink-2); font-weight: 600; }
 .leg-row.out .leg-in { color: var(--muted); }
+/* Can't tease on a college leg, and Restore on a marked one, under its standing. */
+.leg-row .edge-rail .dismiss-chip, .leg-row .edge-rail .linkbtn { justify-self: end; margin: 4px 0 0; }
 .be-divider { display: flex; align-items: center; gap: 8px; margin: 6px 0 2px; font-size: 11px; color: var(--muted); list-style: none; }
 .be-divider::before, .be-divider::after { content: ""; flex: 1; border-top: 1px dashed var(--border); }
 .placed-block { margin-top: 12px; }
