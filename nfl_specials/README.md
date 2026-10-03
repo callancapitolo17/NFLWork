@@ -70,8 +70,8 @@ BetMGM price the trifectas in ~90 s; DraftKings then prices the superfectas
    first + the trifecta legs) and (opponent scores first + the same legs) —
    whose vig cancels in the ratio. DK's shares on 2026-10-02 were 0.83-0.85;
    history (2011-2025, 1,970 team-games that won 1Q, 1H and the game) says
-   0.893 ± 0.007, so DK's number is the conservative one. ~20 DK calls per
-   superfecta instead of a 36-cell partition.
+   0.893 ± 0.007, so DK's number is the conservative one. 7-10 DK requests
+   per superfecta: each prices every outcome of the cell's last leg.
 5. **Stake** = bankroll x Kelly fraction x full Kelly at Wagerzon's price.
    Per (game, team) only the best special by expected log growth keeps a
    stake ("overlaps" on the rest): a team's fectas win together. The stakes
