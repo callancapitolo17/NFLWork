@@ -297,13 +297,24 @@ def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
     for task, name, line in work:
         lanes[name].append((task, line))
     board_lock = threading.Lock()
-    threads = [threading.Thread(target=_price_lane, name=f"price-{name}", daemon=True,
-                                args=(name, books[name], tasks, board, board_lock, store, publish))
+    lane_crashes: list[tuple[str, Exception]] = []
+
+    def run_lane(name: str, tasks: list[tuple[str, FectaLine]]) -> None:
+        try:
+            _price_lane(name, books[name], tasks, board, board_lock, store, publish)
+        except Exception as exc:  # e.g. the quote append failed: surface it, never swallow
+            log.exception("%s pricing lane crashed", name)
+            lane_crashes.append((name, exc))
+
+    threads = [threading.Thread(target=run_lane, args=(name, tasks), name=f"price-{name}", daemon=True)
                for name, tasks in lanes.items() if tasks]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
+    if lane_crashes:
+        name, exc = lane_crashes[0]
+        raise RuntimeError(f"{name} pricing lane crashed: {exc}") from exc
 
     for line in pricing:
         if line.fair_prob() is not None:
