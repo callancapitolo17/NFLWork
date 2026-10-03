@@ -22,6 +22,7 @@ No network anywhere — price_selection_set is exercised with a fake client.
 """
 from kalshi_common.legset import CanonicalLeg
 from mlb_sgp._shared import ResolvedLeg
+from mlb_sgp._shared import UNKNOWN_VENDOR, RelayedVendors
 from mlb_sgp.novig import price_selection_set, resolve_legs
 
 
@@ -355,6 +356,50 @@ def test_price_selection_set_empty_refs_returns_none():
     client = _FakeClient({"decimal": 2.0})
     assert price_selection_set(client, []) is None
     assert client.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Relayed vendors — every Novig price names the vendor book behind it
+# ---------------------------------------------------------------------------
+
+def test_price_selection_set_records_the_vendor_as_our_book_key():
+    relayed = RelayedVendors()
+    client = _FakeClient({"decimal": 2.85, "vendors": ["FANDUEL", "FANDUEL"]})
+    assert price_selection_set(client, ["u1", "u2"], relayed=relayed) == 2.85
+    assert relayed.books() == ("fanduel",)
+
+
+def test_price_selection_set_unions_vendors_across_calls():
+    """Partition cells route independently; the call's record is the union."""
+    relayed = RelayedVendors()
+    price_selection_set(_FakeClient({"decimal": 3.0, "vendors": ["DRAFTKINGS"] * 2}),
+                        ["u1", "u2"], relayed=relayed)
+    price_selection_set(_FakeClient({"decimal": 4.0, "vendors": ["BETMGM"] * 2}),
+                        ["o1", "u2"], relayed=relayed)
+    assert relayed.books() == ("betmgm", "draftkings")
+
+
+def test_price_selection_set_declined_records_nothing():
+    relayed = RelayedVendors()
+    assert price_selection_set(_FakeClient({}), ["u1", "u2"],
+                               relayed=relayed) is None
+    assert price_selection_set(_FakeClient({"decimal": 1.0, "vendors": ["FANDUEL"]}),
+                               ["u1"], relayed=relayed) is None
+    assert relayed.books() == ()
+
+
+def test_price_with_no_vendor_records_unknown():
+    """A price whose source Novig does not name is recorded, not skipped —
+    the maker refuses to count a price it cannot attribute."""
+    relayed = RelayedVendors()
+    price_selection_set(_FakeClient({"decimal": 2.0}), ["u1", "u2"],
+                        relayed=relayed)
+    assert relayed.books() == (UNKNOWN_VENDOR,)
+
+    relayed = RelayedVendors()
+    price_selection_set(_FakeClient({"decimal": 2.0, "vendors": ["FANDUEL", None]}),
+                        ["u1", "u2"], relayed=relayed)
+    assert relayed.books() == ("fanduel", UNKNOWN_VENDOR)
 
 
 # ---------------------------------------------------------------------------
