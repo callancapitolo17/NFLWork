@@ -35,6 +35,12 @@ writer). Tables:
                is never rewritten, and nothing is ever backfilled. Never pruned
                (~14 bets a day). Served with /bets.json for the bets in its
                window (see load_fill_fairs).
+  edge_settings  at most ONE row (settings_id = 1): the Edges settings the
+               server runner (unabated_ticket/server/runner.js, phone page plan
+               step 1) reads every cycle, written by PUT /settings.json and
+               UPSERTed whole on every write. Each column is an override; NULL
+               means "the panel's default", and the defaults live only in
+               extension/edgerows.js, never here. Never pruned (one row).
 A failed poll writes a source_runs row and touches nothing in `bets`, so a
 dark source keeps serving its previous records.
 
@@ -110,6 +116,24 @@ CREATE TABLE IF NOT EXISTS bet_fill_fairs (
     fair_observed_at  TIMESTAMPTZ NOT NULL,  -- when the panel saw that fair: at or before placed_at
     placed_at         TIMESTAMPTZ NOT NULL,  -- the bet's placedAt
     captured_at       TIMESTAMPTZ NOT NULL   -- when this service stored the row
+);
+CREATE TABLE IF NOT EXISTS edge_settings (
+    settings_id           INTEGER PRIMARY KEY CHECK (settings_id = 1),  -- one row
+    bankroll              DOUBLE,      -- dollars; NULL = the default (edgerows.js)
+    kelly_multiplier      DOUBLE,      -- 0 < m <= 1
+    league_ids            INTEGER[],   -- Unabated league ids (feed.LEAGUES)
+    period_type_ids       INTEGER[],   -- feed.PERIODS ids, 1 = full game
+    bet_type_ids          INTEGER[],   -- 1 moneyline, 2 spread, 3 total
+    book_mode             VARCHAR,     -- 'default' (the default books) | 'all' (every live book) | 'custom'
+    book_ids              INTEGER[],   -- the books ticked; set exactly when book_mode = 'custom'
+    min_edge_pct          DOUBLE,
+    min_stake             DOUBLE,      -- Min suggested bet, dollars; 0 = off
+    max_line_age_hours    DOUBLE,
+    min_liquidity_to_win  DOUBLE,      -- dollars; 0 = off
+    include_alts          BOOLEAN,
+    sort_by               VARCHAR,     -- 'edge' | 'stake' | 'start' | 'exposure'
+    group_by_market       BOOLEAN,
+    updated_at            TIMESTAMPTZ NOT NULL
 );
 """
 
@@ -196,6 +220,36 @@ FROM bet_fill_fairs f
 JOIN bets b ON b.id = f.bet_id
 WHERE b.status = 'open' OR b.closed_at IS NULL OR b.closed_at >= ?
 ORDER BY f.placed_at, f.bet_id
+"""
+
+# The settings fields in the API's camelCase, in column order: the shape
+# GET/PUT /settings.json speaks and the order of every statement below.
+EDGE_SETTINGS_FIELDS = (
+    "bankroll", "multiplier", "leagues", "periods", "betTypes", "bookMode", "bookIds", "minEdgePct",
+    "minStake", "maxLineAgeHours", "minLiquidityToWin", "includeAlts", "sortBy", "groupByMarket",
+)
+
+_UPSERT_EDGE_SETTINGS = """
+INSERT INTO edge_settings (settings_id, bankroll, kelly_multiplier, league_ids, period_type_ids, bet_type_ids,
+                           book_mode, book_ids, min_edge_pct, min_stake, max_line_age_hours,
+                           min_liquidity_to_win, include_alts, sort_by, group_by_market, updated_at)
+VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (settings_id) DO UPDATE SET
+    bankroll = excluded.bankroll, kelly_multiplier = excluded.kelly_multiplier,
+    league_ids = excluded.league_ids, period_type_ids = excluded.period_type_ids,
+    bet_type_ids = excluded.bet_type_ids, book_mode = excluded.book_mode, book_ids = excluded.book_ids,
+    min_edge_pct = excluded.min_edge_pct, min_stake = excluded.min_stake,
+    max_line_age_hours = excluded.max_line_age_hours, min_liquidity_to_win = excluded.min_liquidity_to_win,
+    include_alts = excluded.include_alts, sort_by = excluded.sort_by,
+    group_by_market = excluded.group_by_market, updated_at = excluded.updated_at
+"""
+
+_SELECT_EDGE_SETTINGS = """
+SELECT bankroll, kelly_multiplier, league_ids, period_type_ids, bet_type_ids, book_mode, book_ids,
+       min_edge_pct, min_stake, max_line_age_hours, min_liquidity_to_win, include_alts, sort_by,
+       group_by_market, epoch(updated_at)
+FROM edge_settings
+WHERE settings_id = 1
 """
 
 # Keeps every source's latest run AND latest successful run whatever their
@@ -542,6 +596,28 @@ class BetsStore:
             "fairObservedAt": _epoch_to_iso(fair_observed_at), "placedAt": _epoch_to_iso(placed_at),
             "capturedAt": _epoch_to_iso(captured_at),
         } for bet_id, line_key, points, fair_american, fair_observed_at, placed_at, captured_at in rows]
+
+    def load_edge_settings(self) -> dict:
+        """{settings: {field: value or None}, updatedAt: ISO or None} — every
+        field of EDGE_SETTINGS_FIELDS, None where nothing overrides the
+        default; all None and updatedAt None before the first write."""
+        with self._lock:
+            row = self._con.execute(_SELECT_EDGE_SETTINGS).fetchone()
+        if row is None:
+            return {"settings": dict.fromkeys(EDGE_SETTINGS_FIELDS), "updatedAt": None}
+        *values, updated_at = row
+        return {"settings": dict(zip(EDGE_SETTINGS_FIELDS, values)), "updatedAt": _epoch_to_iso(updated_at)}
+
+    def save_edge_settings(self, settings: dict, updated_at: datetime) -> None:
+        """UPSERT the one settings row whole (validated shape: see
+        service.validate_settings_update). `settings` must carry every field
+        of EDGE_SETTINGS_FIELDS; None stores NULL, i.e. the default."""
+        missing = [field for field in EDGE_SETTINGS_FIELDS if field not in settings]
+        if missing:
+            raise ValueError(f"save_edge_settings: expected every settings field, missing {missing}")
+        with self._lock:
+            self._con.execute(_UPSERT_EDGE_SETTINGS, [settings[field] for field in EDGE_SETTINGS_FIELDS] + [updated_at])
+        log.info("edge settings: saved %s", {field: value for field, value in settings.items() if value is not None})
 
     def source_status(self) -> dict[str, dict]:
         """{source: {fetchedAt, ok, error, count}} — fetchedAt/count from the

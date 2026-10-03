@@ -6,7 +6,7 @@
 // would bury the one diff line that matters in a pre-merge review.
 //
 // The pure modules (feed.js, bets.js, teams.js, kelly.js, edgemove.js,
-// fillfair.js, betsview.js, scanner.js, locate.js) are dual-loaded: as a plain <script>
+// fillfair.js, betsview.js, edgerows.js, scanner.js, locate.js) are dual-loaded: as a plain <script>
 // in panel.html, where they publish onto globalThis.UnabatedX, and via
 // require() in tests/. That is why extension files get the CommonJS globals
 // (module, require) next to the browser + chrome.* ones — one config for
@@ -46,8 +46,8 @@ module.exports = [
     },
   },
   {
-    // node --test suites and this config file.
-    files: ["tests/**/*.js", "eslint.config.js"],
+    // node --test suites, the server runner (server/, plain Node) and this config file.
+    files: ["tests/**/*.js", "server/**/*.js", "eslint.config.js"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "commonjs",
