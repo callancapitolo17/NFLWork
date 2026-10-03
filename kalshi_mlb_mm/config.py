@@ -113,12 +113,11 @@ SIGMA_Z_MAX = float(_get("SIGMA_Z_MAX", "0.07"))
 # Lowered 3→2 (2026-06-18, user-approved): at 3 books we quoted ~13 times in
 # 8 days (0 fills) — too few to test competitiveness or gather data. Measured
 # ~5 quotable tuples @3 vs ~40-47 @2 books (~8×). Trade-off: 2-book consensus
-# is weaker (more model risk); caveat: Novig does not originate SGP prices —
-# it routes each combo to one vendor book (DraftKings, FanDuel and BetMGM all
-# seen 2026-10-02; see mlb_sgp/README.md) and shades that book's price, so
-# Novig + its vendor is ONE independent source, not two (a FanDuel-routed
-# Novig grid devigs to within ~0.3 prob pts of FanDuel's own). A
-# Novig-vs-vendor independence guard is a noted follow-up.
+# is weaker (more model risk). The count is of INDEPENDENT books: Novig does
+# not originate SGP prices — it relays each partition cell from a vendor book
+# (DraftKings, FanDuel, BetMGM, Caesars; see mlb_sgp/README.md), so
+# router.drop_relayed_novig removes Novig from a flight that already holds a
+# book it relayed (2026-10-02, user-approved; no knob).
 MIN_AGREEING_BOOKS = int(_get("MIN_AGREEING_BOOKS", "2"))
 
 # Correlation sanity vs Kalshi's own single-leg markets (issue #23, spec §13).

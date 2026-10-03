@@ -3,6 +3,7 @@ import pytest
 from kalshi_common import legset
 from kalshi_mlb_mm import router
 from kalshi_mlb_mm.tests.conftest import leg
+from mlb_sgp._shared import UNKNOWN_VENDOR
 
 
 EVT = "25JUN271905NYYBOS"
@@ -19,6 +20,53 @@ def _grid_rows(book, game_id, spread_line, total_line, family_decimals):
 # A balanced 4-cell grid (~4.0 decimal each => ~0.25 raw, sums ~1.0 -> tiny vig)
 ST_CELLS = {"Home Spread + Over": 4.2, "Home Spread + Under": 4.2,
             "Away Spread + Over": 3.8, "Away Spread + Under": 3.8}
+
+# --- drop_relayed_novig: Novig relays its SGP prices from other books ---
+
+def test_novig_relaying_a_book_in_the_flight_is_dropped():
+    fairs = {"fanduel": 0.300, "novig": 0.302}
+    assert router.drop_relayed_novig(fairs, ("fanduel",)) == {"fanduel": 0.300}
+
+
+def test_novig_mixing_vendors_is_dropped_if_any_one_landed():
+    """One Novig grid routinely mixes 2-3 vendors (2026-10-02: 88%)."""
+    fairs = {"betmgm": 0.31, "caesars": 0.30, "novig": 0.305}
+    assert router.drop_relayed_novig(fairs, ("betmgm", "draftkings")) \
+        == {"betmgm": 0.31, "caesars": 0.30}
+
+
+def test_novig_stays_when_its_vendors_are_absent():
+    """Novig relaying DraftKings is our only DraftKings read (#102)."""
+    fairs = {"fanduel": 0.30, "novig": 0.31}
+    assert router.drop_relayed_novig(fairs, ("draftkings",)) == fairs
+
+
+def test_novig_with_an_unnamed_vendor_is_dropped():
+    fairs = {"fanduel": 0.30, "novig": 0.31}
+    assert router.drop_relayed_novig(fairs, ("draftkings", UNKNOWN_VENDOR)) \
+        == {"fanduel": 0.30}
+
+
+def test_novig_that_relayed_nothing_counts():
+    fairs = {"fanduel": 0.30, "novig": 0.31}
+    assert router.drop_relayed_novig(fairs, ()) == fairs
+
+
+def test_flight_without_novig_is_unchanged_and_copied():
+    fairs = {"fanduel": 0.30, "betmgm": 0.31}
+    out = router.drop_relayed_novig(fairs, ("fanduel",))
+    assert out == fairs and out is not fairs
+
+
+def test_relayed_copy_no_longer_makes_a_quorum():
+    """The defect this guards: {FanDuel, Novig-relaying-FanDuel} passed both
+    gates as two books."""
+    fairs = {"fanduel": 0.300, "novig": 0.302}
+    cons, reason = router.consensus(
+        router.drop_relayed_novig(fairs, ("fanduel",)), min_books=2,
+        sigma_z_max=0.07)
+    assert cons is None and reason == "too_few_books"
+
 
 def test_consensus_returns_none_below_min():
     cons, reason = router.consensus({"dk": 0.30}, min_books=2, sigma_z_max=0.07)

@@ -111,6 +111,43 @@ def test_lookup_results_exposes_routes_for_research():
     assert res["draftkings"].route == "partition"
 
 
+class RelayingNovigService(FakeService):
+    """FanDuel and BetMGM price their own combos; Novig relays `vendors`."""
+    def __init__(self, vendors):
+        super().__init__(books=("fanduel", "betmgm", "novig"))
+        self.vendors = tuple(vendors)
+
+    def price_on_demand(self, book, game, legs):
+        result = super().price_on_demand(book, game, legs)
+        if book != "novig":
+            return result
+        return OnDemandBookResult(book=book, fair=0.15, route="partition",
+                                  n_cells_priced=4, latency_sec=0.1,
+                                  vendors=self.vendors)
+
+
+def _landed_engine(svc):
+    eng = OnDemandEngine(svc, now_fn=FakeClock(), autostart=False)
+    h = legset.leg_set_hash(_legs())
+    eng.ensure_fetch(h, GAME, _legs())
+    eng._drain_once()
+    return eng, h
+
+
+def test_lookup_drops_novig_relaying_a_book_in_the_flight():
+    """lookup() is what the quote, the confirm last look and the risk sweep
+    price from, so the relayed copy must be gone there; research still sees
+    every landed book."""
+    eng, h = _landed_engine(RelayingNovigService(["draftkings", "fanduel"]))
+    assert eng.lookup(h) == {"fanduel": 0.14, "betmgm": 0.14}
+    assert set(eng.lookup_results(h)) == {"fanduel", "betmgm", "novig"}
+
+
+def test_lookup_keeps_novig_relaying_only_absent_books():
+    eng, h = _landed_engine(RelayingNovigService(["draftkings"]))
+    assert eng.lookup(h) == {"fanduel": 0.14, "betmgm": 0.14, "novig": 0.15}
+
+
 def test_worker_thread_processes_queue():
     svc = FakeService()
     eng = OnDemandEngine(svc)                          # real thread, real clock

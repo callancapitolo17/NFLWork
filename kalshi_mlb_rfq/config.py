@@ -118,6 +118,11 @@ BOT_MARKET_DB = Path(_get("BOT_MARKET_DB",
 MLB_SGP_DIR = Path(_get("MLB_SGP_DIR", str(PROJECT_ROOT / "mlb_sgp")))
 
 # Cross-book book-count gate (drop candidate if fewer than N books priced).
+# KNOWN FLAW, fix before reviving this bot (off since 2026-06-29): Novig
+# relays its SGP prices from vendor books (DraftKings/FanDuel/BetMGM, chosen
+# per cell), so {fanduel, novig} can be ONE opinion counted twice. The maker
+# drops a relayed Novig via kalshi_mlb_mm.router.drop_relayed_novig; this
+# bot can't yet — its mlb_sgp_odds rows don't carry Novig's vendors.
 MIN_BOOK_COUNT_FOR_BLEND = int(_get("MIN_BOOK_COUNT_FOR_BLEND", "2"))
 
 # Run-time book-health alerting (issue #37). Keys on consecutive FAILED
