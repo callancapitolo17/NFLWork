@@ -10,6 +10,7 @@ Side effects: none — pure constants; auth_client.configure() happens in the
 Kalshi source.
 """
 import os
+import re
 from pathlib import Path
 
 PKG_DIR = Path(__file__).parent
@@ -30,7 +31,6 @@ def main_checkout_root(raw_root: Path) -> Path:
 
 
 PROJECT_ROOT = main_checkout_root(_RAW_ROOT)
-DB_PATH = PKG_DIR / "bets.duckdb"
 
 
 def _load_env(path: Path) -> dict[str, str]:
@@ -65,9 +65,49 @@ KALSHI_PRIVATE_KEY_PATH = _get("KALSHI_PRIVATE_KEY_PATH")
 KALSHI_BASE_URL = _get("KALSHI_BASE_URL",
                        "https://api.elections.kalshi.com/trade-api/v2")
 
+# Where the store lives. The server deploy (unabated_ticket/deploy/) points it
+# at a writable data directory, since the repo is mounted read-only there.
+DB_PATH = Path(_get("BETS_DB_PATH", str(PKG_DIR / "bets.duckdb")))
+
 # HTTP. Loopback only: the service has no auth and serves the user's own bets.
+# Not configurable on purpose: on the server, `tailscale serve` on the host
+# proxies the tailnet name to this loopback port, so nothing listens publicly.
 BIND_HOST = "127.0.0.1"
 PORT = int(_get("BETS_SERVICE_PORT", "8094"))
+
+# A host name: dot-separated labels of lowercase letters, digits and inner
+# hyphens. No scheme, port, path, wildcard or IPv6 literal.
+_HOST_NAME_PATTERN = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*")
+
+
+def parse_extra_allowed_hosts(raw: str | None) -> tuple[str, ...]:
+    """BETS_EXTRA_ALLOWED_HOSTS ("a.ts.net,b.ts.net") as a tuple of host names.
+
+    Empty or unset is (). Raises ValueError naming the first bad entry: the
+    service must refuse to start rather than run with an allowlist it misread.
+    """
+    names: list[str] = []
+    for entry in (raw or "").split(","):
+        name = entry.strip()
+        if not name:
+            continue
+        if name != name.lower():
+            raise ValueError(f"BETS_EXTRA_ALLOWED_HOSTS: expected a lowercase host name, got {name!r}")
+        if not _HOST_NAME_PATTERN.fullmatch(name) or len(name) > 253:
+            raise ValueError(
+                "BETS_EXTRA_ALLOWED_HOSTS: expected a bare host name like mlb-stack.tail1234.ts.net "
+                f"(no scheme, port, path or wildcard), got {name!r}")
+        if name not in names:
+            names.append(name)
+    return tuple(names)
+
+
+# Extra names a request's Host may carry besides the loopback ones (#125
+# allowlist). On the server, `tailscale serve` proxies
+# https://<vm>.<tailnet>.ts.net to 127.0.0.1:PORT and forwards the browser's
+# Host header unchanged, so the tailnet name must be listed here or the phone
+# gets a 403. Each name is accepted bare (browsers omit :443) and with :443.
+EXTRA_ALLOWED_HOSTS = parse_extra_allowed_hosts(_get("BETS_EXTRA_ALLOWED_HOSTS", ""))
 
 # The server runner (unabated_ticket/server/runner.js) whose /edges.json the
 # service proxies for the phone page, so the page has one origin. Short
@@ -147,3 +187,9 @@ LOG_PATH = Path(_get("BETS_SERVICE_LOG_PATH", str(PKG_DIR / "bets_service.log"))
 LOG_LEVEL = _get("BETS_SERVICE_LOG_LEVEL", "INFO")
 LOG_ROTATE_MAX_BYTES = int(_get("BETS_SERVICE_LOG_ROTATE_MAX_BYTES", str(10 * 1024 * 1024)))
 LOG_ROTATE_BACKUPS = int(_get("BETS_SERVICE_LOG_ROTATE_BACKUPS", "3"))
+# Also log to stderr: "1" yes, "0" no, unset = only when stderr is a terminal.
+# The container sets 1 so `docker compose logs` shows the service.
+_LOG_CONSOLE_RAW = _get("BETS_SERVICE_LOG_CONSOLE", "")
+if _LOG_CONSOLE_RAW not in ("", "0", "1"):
+    raise ValueError(f"BETS_SERVICE_LOG_CONSOLE: expected 0, 1 or unset, got {_LOG_CONSOLE_RAW!r}")
+LOG_CONSOLE = None if _LOG_CONSOLE_RAW == "" else _LOG_CONSOLE_RAW == "1"
