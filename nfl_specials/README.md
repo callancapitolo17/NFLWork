@@ -40,7 +40,8 @@ filling in as it goes.
   recommended stake, "to win", and the uncapped Kelly when trimmed.
 - **Place:** a confirm sheet (risk, to win, price, fair, EV, account), then the
   button shows "Placing…" until Wagerzon answers; the ticket or the error shows
-  on the row and in **Placed this week**.
+  on the row. **Placed this week** lists only bets Wagerzon took (refused
+  attempts stay in `placed_fectas`).
 
 ## How a special is priced
 

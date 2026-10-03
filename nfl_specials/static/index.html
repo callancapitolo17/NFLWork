@@ -142,9 +142,8 @@
   .placed-list { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
   .placed-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto auto; gap: 4px 12px; align-items: baseline; padding: 9px 14px; border-top: 1px solid var(--border); font-size: 13px; }
   .placed-row:first-child { border-top: 0; }
-  .placed-row .status-ok { color: var(--good); } .placed-row .status-err { color: var(--bad); }
+  .placed-row .status-ok { color: var(--good); }
   .placed-detail { grid-column: 2 / -1; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
-  .placed-detail.err { color: var(--bad); }
 
   /* --- confirm dialog --- */
   dialog { border: 1px solid var(--border-strong); border-radius: 14px; padding: 0; width: min(420px, calc(100vw - 32px)); background: var(--surface); color: var(--text); }
@@ -709,29 +708,28 @@ function renderBoard(p) {
 function showAll() { prefs.type = "all"; prefs.evOnly = false; savePrefs(); render(); }
 
 // --- placed this week -----------------------------------------------------------
+// Only bets Wagerzon took; a refused attempt shows on its row when it happens.
 function renderPlaced(p) {
   const list = document.getElementById("placed");
   const placed = p.placements.filter(r => r.status === "placed");
   const risked = placed.reduce((sum, r) => sum + r.risk, 0);
   document.getElementById("placed-summary").textContent =
     placed.length ? `${placed.length} placed · ${money(risked)} risked` : "";
-  if (!p.placements.length) {
+  if (!placed.length) {
     list.replaceChildren(el("div", { class: "placed-row" }, el("span", { class: "faint", style: "grid-column: 1 / -1", text: "Nothing placed yet." })));
     return;
   }
   const showAccount = p.accounts.length > 1;
-  list.replaceChildren(...p.placements.map(r => {
-    const ok = r.status === "placed";
+  list.replaceChildren(...placed.map(r => {
     const when = dayClock(parseTime(r.placed_at));
-    const detail = ok
-      ? `Ticket ${r.ticket_number} · to win ${money(toWin(r.risk, r.wz_american))}` + (showAccount ? ` · ${r.account}` : "")
-      : `${r.status}: ${r.error || "no reason given"}` + (showAccount ? ` · ${r.account}` : "");
+    const detail = `Ticket ${r.ticket_number} · to win ${money(toWin(r.risk, r.wz_american))}` +
+      (showAccount ? ` · ${r.account}` : "");
     return el("div", { class: "placed-row" }, [
-      el("span", { class: ok ? "status-ok" : "status-err", "aria-label": ok ? "placed" : "not placed", text: ok ? "✓" : "✕" }),
-      el("span", { text: `${r.description}`, title: String(r.rotation) }),
+      el("span", { class: "status-ok", "aria-label": "placed", text: "✓" }),
+      el("span", { text: r.description, title: String(r.rotation) }),
       el("span", { class: "num", text: `${money(r.risk)} at ${signed(r.wz_american)}` }),
       el("span", { class: "faint small placed-when", text: when }),
-      el("div", { class: "placed-detail" + (ok ? "" : " err"), text: detail + " · " + when }),
+      el("div", { class: "placed-detail", text: detail + " · " + when }),
     ]);
   }));
 }
