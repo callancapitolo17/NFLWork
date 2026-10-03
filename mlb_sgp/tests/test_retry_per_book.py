@@ -142,8 +142,14 @@ def test_nv_list_events_recovers_from_a_transient_dns_failure(recorded_sleeps):
 
 
 def test_nv_fetch_event_legs_recovers_from_a_transient_500(recorded_sleeps):
+    """Every Novig path fetches the market tree through this function."""
+    import scraper_novig_sgp
     session = FlakySession(FakeResponse(200, {"data": {"event": [{}]}}))
-    _nv_client(session).fetch_event_legs("e1")
+    game = {"game_id": "g1", "nv_event_id": "e1",
+            "nv_home_sym": "CLE", "nv_away_sym": "CHI",
+            "fg_spread_line": None, "fg_total_line": None,
+            "f5_spread_line": None, "f5_total_line": None}
+    scraper_novig_sgp.fetch_event_legs(session, game)
     assert session.calls == 2
 
 

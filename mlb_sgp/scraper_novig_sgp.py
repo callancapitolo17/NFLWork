@@ -6,16 +6,12 @@ MLB_SGP_DB_PATH env var). Calls mlb_sgp.novig.price_sgps() with the
 periods configured via MLB_SGP_PERIODS env var (default: FG,F5).
 Writes PricedRow results back to MLB_DB via mlb_sgp.db.upsert_priced_rows.
 
-Legacy helpers (init_session, match_events, fetch_event_legs,
-submit_parlay, try_integer_fallback_nv, _load_event_markets_query,
-load_parlay_lines, _find_outcome_in_spread / _total, _empty_legs,
-_utc_bucket, _float_eq, decimal_to_american, prob_to_decimal, _gql, and
-the EVENT_MARKETS_QUERY / EVENT_MARKETS_PATH / SPREAD_TYPE / TOTAL_TYPE /
-NOVIG_GRAPHQL / NOVIG_PARLAY / RFQ_TIMEOUT / GQL_TIMEOUT /
-EVENT_WINDOW_HOURS / SANITY_MULT_RATIO constants) are preserved in this
-file because mlb_sgp/novig.py and mlb_sgp/novig_client.py import them lazily.
-They stay here during the transition; a follow-up refactor can lift
-them into the library module.
+The helpers below (session, event matching, the EventMarkets GraphQL
+fetch, outcome extraction, parlay pricing, the integer-line fallback)
+are imported by mlb_sgp/novig.py, mlb_sgp/novig_client.py,
+mlb_sgp/refresh_novig_query.py and kalshi_common/sgp_service.py, mostly
+lazily — grep for a name before deleting it. A follow-up refactor can
+lift them into the library module.
 
 Final scraper in the DK/FD/PX/NV shim sequence — all four now route
 through their library orchestrators with the same shim contract:
@@ -25,8 +21,8 @@ Note on dropped legacy orchestration
 ------------------------------------
 The previous orchestrator (1) post-filtered by ``scheduled > now_utc``
 and deduped events by ``(home, away, hour)``, (2) ran phase-1 market
-fetches in a ``ThreadPoolExecutor(max_workers=PARALLEL_MARKETS)`` and
-phase-2 RFQ pricing in another pool of size ``PARALLEL_PRICING``, and
+fetches in a 4-worker ``ThreadPoolExecutor`` and phase-2 RFQ pricing
+in another 4-worker pool, and
 (3) retried failed RFQ combos once after an 0.8-1.6s jitter. The shim
 intentionally drops all three:
 
@@ -63,9 +59,6 @@ _ANSWER_KEYS = _REPO_ROOT / "Answer Keys"
 sys.path.insert(0, str(_ANSWER_KEYS))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
 
-# Preserved helpers below (load_parlay_lines) still read mlb_parlay_lines via
-# the legacy db.py helpers. The shim's main() uses mlb_sgp.db separately.
-from db import MLB_DB, _connect_with_retry
 from integer_line_derivation import is_integer_line, derive_fair_probs
 
 # Import via the PACKAGE path, never `from _shared import ...`: this file is
@@ -82,9 +75,9 @@ logger = logging.getLogger(__name__)
 # dashboard shims all still pass them; #49 (shim cleanup) removes them and
 # every call site together.
 
-from mlb_sgp._shared import (RETRY_BACKGROUND, RetryProfile, check_response,
-                             json_or_raise, raise_on_graphql_errors,
-                             request_with_retry)
+from mlb_sgp._shared import (RETRY_BACKGROUND, BookTransportError,
+                             RetryProfile, check_response, json_or_raise,
+                             raise_on_graphql_errors, request_with_retry)
 
 # ---------------------------------------------------------------------------
 # Novig API config
@@ -98,7 +91,6 @@ NOVIG_PARLAY  = "https://api.novig.us/nbx/v1/parlay/request/unauthenticated"
 # executes only operations the novig.com app ships, so this file must track
 # the app — refresh_novig_query.py rebuilds it from the live bundle. Returns
 # the full market tree; we only use the markets[] array.
-EVENT_MARKETS_QUERY = None  # populated at runtime from EVENT_MARKETS_PATH
 EVENT_MARKETS_PATH = _THIS_DIR / "novig_event_markets_query.json"
 
 # Market type names (Novig uses SPREAD_1H / TOTAL_1H for F5). "i1" is the
@@ -114,18 +106,8 @@ TOTAL_TYPE  = {"fg": "TOTAL",     "f5": "TOTAL_1H",  "i1": "FIRST_INNING_TOTAL"}
 # the FG moneyline (ML_TOTAL_FAMILY is FG-only, matching DK/FD/PX).
 MONEY_TYPE  = {"fg": "MONEY",     "f5": "MONEY_1H",  "i1": "FIRST_INNING_MONEY"}
 
-PARALLEL_MARKETS = 4
-PARALLEL_PRICING = 4
 RFQ_TIMEOUT = 15
 GQL_TIMEOUT = 20
-
-EVENT_WINDOW_HOURS = 48   # how far ahead to look for upcoming games
-
-# Sanity filter: drop combos where the parlay decimal exceeds this multiplier
-# times the naive independent multiply of the two legs. Legitimate anti-correlation
-# tops out around ~1.15×; 1.5× gives headroom while still catching systematic
-# mispricings (5×+ ratios observed on ProphetX — same pattern could occur here).
-SANITY_MULT_RATIO = 1.5
 
 
 # ---------------------------------------------------------------------------
@@ -154,21 +136,22 @@ def _utc_bucket(ts) -> str:
 # GraphQL loading: EventMarkets_Query
 # ---------------------------------------------------------------------------
 def _load_event_markets_query() -> str:
-    """Load the committed EventMarkets_Query payload (JSON text).
+    """The committed EventMarkets_Query payload (JSON text), read on every call.
 
-    Only the committed file is read. The older fallbacks (a hidden cache and
-    the recon capture) could only ever supply a pre-allowlist query that
-    Novig now rejects.
+    Never cached: refresh_novig_query.py rewrites this file during an
+    allowlist outage, and a process-lifetime cache kept the maker, taker
+    and leg surface sending the rejected query until a restart. The file is
+    ~7 KB and every caller json.loads it per fetch anyway.
     """
-    global EVENT_MARKETS_QUERY
-    if EVENT_MARKETS_QUERY is not None:
-        return EVENT_MARKETS_QUERY
-    if not EVENT_MARKETS_PATH.exists():
+    try:
+        return EVENT_MARKETS_PATH.read_text()
+    except FileNotFoundError:
         raise RuntimeError(
             f"EventMarkets_Query payload missing at {EVENT_MARKETS_PATH} — "
-            "rebuild it with: python mlb_sgp/refresh_novig_query.py")
-    EVENT_MARKETS_QUERY = EVENT_MARKETS_PATH.read_text()
-    return EVENT_MARKETS_QUERY
+            "restore it with `git checkout -- mlb_sgp/"
+            f"{EVENT_MARKETS_PATH.name}`, then run "
+            "`python3 mlb_sgp/refresh_novig_query.py` if Novig rejects it"
+        ) from None
 
 
 # ---------------------------------------------------------------------------
@@ -187,16 +170,21 @@ def init_session() -> cffi_requests.Session:
 
 
 def _gql(session, body: str,
-         profile: RetryProfile = RETRY_BACKGROUND) -> dict | None:
-    """POST a raw GraphQL payload string. Returns parsed JSON, or None on 404.
+         profile: RetryProfile = RETRY_BACKGROUND) -> dict:
+    """POST a raw GraphQL payload string and return the parsed JSON object.
 
     Retries transient failures per ``profile`` (issue #34); only 5xx/429/
-    connection blips cost extra attempts. Everything else that is not a
-    usable answer raises ``BookTransportError(stage="structure")``: a
-    non-200 other than 404, a non-JSON body, and a GraphQL ``errors`` body —
-    which is how Novig's allowlist rejects a stale query (HTTP 200,
-    "query is not allowed"). A 404 means Novig dropped the event; callers
-    skip that game and keep the cycle.
+    connection blips cost extra attempts. Anything that is not a usable
+    answer raises ``BookTransportError(stage="structure")``: any non-200, a
+    body that is not a JSON object, and a GraphQL ``errors`` body — which is
+    how Novig's allowlist rejects a stale query (HTTP 200, "query is not
+    allowed").
+
+    No 404 carve-out (unlike the REST books' per-event URLs): this URL is
+    the same for every event, and Hasura answers an unknown event id with
+    200 {"data": {"event": []}} (checked live 2026-10-02), which callers
+    already skip as one game with no markets. A 404 here can only mean the
+    endpoint is gone — a dead book.
     """
     resp = request_with_retry(
         lambda: session.post(
@@ -205,9 +193,12 @@ def _gql(session, body: str,
             timeout=GQL_TIMEOUT,
         ),
         profile=profile, book=NV_BOOK, stage="structure")
-    if not check_response(NV_BOOK, "structure", resp, allow_404=True):
-        return None
+    check_response(NV_BOOK, "structure", resp)
     data = json_or_raise(NV_BOOK, "structure", resp)
+    if not isinstance(data, dict):
+        raise BookTransportError(
+            NV_BOOK, "structure",
+            detail=f"GraphQL body is not a JSON object: {str(data)[:120]!r}")
     raise_on_graphql_errors(NV_BOOK, "structure", data)
     return data
 
@@ -215,35 +206,6 @@ def _gql(session, body: str,
 # ---------------------------------------------------------------------------
 # Canonical game matching
 # ---------------------------------------------------------------------------
-def load_parlay_lines() -> dict:
-    # Use _connect_with_retry so parallel scraper runs don't lose the read
-    # to another scraper's brief write lock on mlb_mm.duckdb.
-    con = _connect_with_retry(str(MLB_DB), read_only=True)
-    try:
-        tables = [t[0] for t in con.execute("SHOW TABLES").fetchall()]
-        if "mlb_parlay_lines" not in tables:
-            # WARNING: a missing table is an upstream pipeline fault, not an
-            # empty slate — exactly the confusion issue #32 exists to remove.
-            logger.warning("no mlb_parlay_lines table — run the MLB pipeline first")
-            return {}
-        rows = con.execute("""
-            SELECT game_id, home_team, away_team,
-                   fg_spread, fg_total, f5_spread, f5_total, commence_time
-            FROM mlb_parlay_lines
-        """).fetchall()
-        return {
-            row[0]: {
-                "home_team": row[1], "away_team": row[2],
-                "fg_spread_line": row[3], "fg_total_line": row[4],
-                "f5_spread_line": row[5], "f5_total_line": row[6],
-                "commence_time": row[7],
-            }
-            for row in rows
-        }
-    finally:
-        con.close()
-
-
 def match_events(nv_events: list[dict], parlay_lines: dict) -> list[dict]:
     team_dict = load_team_dict("mlb")
     canonical_games = load_canonical_games("mlb")
@@ -283,7 +245,14 @@ def _find_outcome_in_spread(market, home_sym, away_sym) -> tuple[dict | None, di
     """Return (home_leg, away_leg) from a SPREAD or SPREAD_1H market.
     Each leg is {"id": uuid, "available": implied_prob}. `available` used for
     the naive-multiply sanity check in _price. Identifies via competitor.symbol.
+
+    Returns (None, None) when the two symbols are equal: Novig gives both
+    Chicago clubs symbol "CHI", so a Cubs–White Sox market cannot be split
+    by symbol, and matching anyway hands one side the other team's outcome.
+    Declining drops Novig's spread/ML legs for that game; totals still price.
     """
+    if home_sym == away_sym:
+        return None, None
     home_leg = None
     away_leg = None
     for o in market.get("outcomes") or []:
@@ -331,7 +300,8 @@ def fetch_event_legs(session, game: dict,
 
     Raises ``BookTransportError`` when the fetch fails (see ``_gql``) — an
     unreachable or rejecting endpoint must read as a dead book, never as an
-    event with no markets. A 404 (event dropped) returns empty legs.
+    event with no markets. An event Novig has dropped comes back as
+    ``event: []`` and yields empty legs.
     """
     query_text = _load_event_markets_query()
     # The committed payload is a full JSON blob (operationName, variables,
@@ -339,10 +309,6 @@ def fetch_event_legs(session, game: dict,
     q_obj = json.loads(query_text)
     q_obj["variables"]["eventId"] = game["nv_event_id"]
     data = _gql(session, json.dumps(q_obj), profile)
-    if data is None:
-        logger.debug("      EventMarkets 404 for %s — event dropped, skipping",
-                     game["nv_event_id"])
-        return _empty_legs(), []
 
     ev = ((data.get("data") or {}).get("event") or [{}])[0]
     markets = ev.get("markets") or []
