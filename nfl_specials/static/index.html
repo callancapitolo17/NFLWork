@@ -341,7 +341,10 @@ async function api(path, body) {
 }
 
 function currentAccount() { return document.getElementById("account").value || (lastPayload && lastPayload.account); }
-function isBusy(p) { return refreshRequested || p.refreshing || (p.board != null && !p.board.finished_at); }
+// The server clears `refreshing` only after publishing the finished board, so
+// it alone says a refresh is running. A board left unfinished by a crashed
+// refresh must not keep the page polling or the Refresh button locked.
+function isBusy(p) { return refreshRequested || p.refreshing; }
 function teamKey(line) { return line.home ? `${line.away}@${line.home}@${line.team}` : null; }
 // This account's placed bets this week on the line's (game, team) — the
 // server recommends no new stake there.
@@ -377,7 +380,7 @@ function renderHeader(p) {
   refresh.disabled = busy;
   refresh.replaceChildren(...(busy
     ? [el("span", { class: "spinner", "aria-hidden": "true" }),
-       b && b.progress_total ? `Pricing ${b.progress_done}/${b.progress_total}` : "Starting…"]
+       b && !b.finished_at && b.progress_total ? `Pricing ${b.progress_done}/${b.progress_total}` : "Starting…"]
     : ["Refresh"]));
 
   let summary = "Not priced yet";
@@ -452,7 +455,7 @@ function renderProgress(p) {
 
   box.hidden = !busy;
   if (busy) {
-    if (!b || p.refreshing && b.finished_at) {
+    if (!b || b.finished_at) {
       box.replaceChildren(el("div", { class: "progress-head" }, [
         el("span", {}, [el("strong", { text: "Starting" }), el("span", { class: "muted", text: " · reading Wagerzon and opening the books" })]),
       ]), el("div", { class: "meter accent" }, el("span", { style: "width:2%" })));
@@ -584,8 +587,10 @@ function stakeCell(line, p, byRotation) {
 
   const typed = editingStake.get(id);
   const value = typed !== undefined ? typed : (line.recommended_stake ? String(Math.round(line.recommended_stake)) : "");
-  const input = el("input", { type: "number", inputmode: "decimal", min: String(p.min_stake), max: String(p.max_stake),
-                              step: "1", "aria-label": `Risk on ${line.description}`, "data-stake-id": String(id) });
+  // type=text, not number: a number box changes on a scroll-wheel tick and
+  // can't keep its caret across the 3 s progress re-renders.
+  const input = el("input", { type: "text", inputmode: "decimal", autocomplete: "off",
+                              "aria-label": `Risk on ${line.description}`, "data-stake-id": String(id) });
   input.value = value;
   const sub = el("div", { class: "stake-sub num" });
   const updateSub = () => {
@@ -788,12 +793,15 @@ async function place(line, risk, account) {
 function render() {
   const p = lastPayload;
   if (!p) return;
-  // Re-rendering replaces the stake inputs; keep the one being typed in focused.
-  const focusedId = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.stakeId : null;
+  // Re-rendering replaces the stake inputs; keep the one being typed in
+  // focused with its caret where it was.
+  const active = document.activeElement;
+  const focusedId = active && active.dataset ? active.dataset.stakeId : null;
+  const caret = focusedId ? [active.selectionStart, active.selectionEnd] : null;
   renderHeader(p); renderTiles(p); renderProgress(p); renderToolbar(p); renderBoard(p); renderPlaced(p);
   if (focusedId) {
     const again = document.querySelector(`input[data-stake-id="${focusedId}"]`);
-    if (again) again.focus();
+    if (again) { again.focus(); again.setSelectionRange(caret[0], caret[1]); }
   }
 }
 
