@@ -289,3 +289,137 @@ test("HTTP: /edges.json and /health on loopback; a foreign Host is 403, another 
     runner.stop();
   }
 });
+
+test("HTTP: the phone page's four files under the CSP; the Host rule and 405 cover them; nothing else on disk is reachable", async () => {
+  const { runner } = await startedRunner({ "/bets.json": betsBody([]), "/settings.json": { settings: OPEN_SETTINGS, updatedAt: null } });
+  const server = runnerLib.createHttpServer(runner, { host: "127.0.0.1" });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const get = (route, options) => new Promise((resolve, reject) => {
+    const request = require("node:http").request({ host: "127.0.0.1", port, path: route, method: "GET", ...options }, (reply) => {
+      let body = "";
+      reply.on("data", (chunk) => { body += chunk; });
+      reply.on("end", () => resolve({ status: reply.statusCode, headers: reply.headers, body }));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+  try {
+    const page = await get("/");
+    assert.equal(page.status, 200);
+    assert.match(page.headers["content-type"], /^text\/html/);
+    assert.equal(page.headers["content-security-policy"], runnerLib.PHONE_CSP);
+    assert.equal(page.headers["cache-control"], "no-store");
+    assert.match(page.body, /<script src="phone_view.js"><\/script>/);
+    for (const [route, type] of [["/phone.css", /^text\/css/], ["/phone_view.js", /^text\/javascript/], ["/phone.js", /^text\/javascript/]]) {
+      const asset = await get(route);
+      assert.deepEqual([asset.status, asset.headers["x-content-type-options"]], [200, "nosniff"], route);
+      assert.match(asset.headers["content-type"], type, route);
+    }
+    assert.equal((await get("/", { headers: { Host: "evil.example" } })).status, 403);
+    assert.equal((await get("/", { method: "POST" })).status, 405);
+    for (const route of ["/index.html", "/runner.js", "/../runner.js", "/phone/phone.js", "/%2e%2e/runner.js"]) {
+      assert.equal((await get(route)).status, 404, route);
+    }
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    runner.stop();
+  }
+});
+
+test("the phone page's files load only from this origin: no URL in them names another host", () => {
+  const dir = path.join(__dirname, "..", "server", "phone");
+  for (const file of ["index.html", "phone.css", "phone.js", "phone_view.js"]) {
+    const text = fs.readFileSync(path.join(dir, file), "utf8");
+    assert.doesNotMatch(text, /https?:\/\//, file);
+    assert.doesNotMatch(text, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/, file);
+  }
+  const loaded = runnerLib.loadPhoneFiles();
+  assert.deepEqual(Object.keys(loaded).sort(), ["/", "/phone.css", "/phone.js", "/phone_view.js"]);
+});
+
+// ---- the phone page's view (server/phone/phone_view.js) ---------------------
+
+const phoneView = require("../server/phone/phone_view.js");
+
+test("phone view: the runner's real payload becomes cards carrying its own stake, edge and words — nothing re-derived", async () => {
+  const { runner } = await startedRunner({ "/bets.json": betsBody([BEARS_HELD]), "/settings.json": { settings: OPEN_SETTINGS, updatedAt: null } });
+  try {
+    const payload = JSON.parse(JSON.stringify(runner.edgesPayload()));
+    assert.ok(payload.items.length > 0, "the slice lists edges");
+    const page = phoneView.pageView(payload, Date.parse(payload.generatedAt) + 12 * 1000, "America/Los_Angeles");
+    assert.equal(page.updated, "updated 12s ago");
+    assert.equal(page.stale, false);
+    assert.equal(page.cards.length, payload.items.length);
+    payload.items.forEach((card, index) => {
+      const shown = page.cards[index];
+      assert.equal(shown.stake, card.best.rail.text);
+      assert.equal(shown.stakeNote, card.best.rail.note);
+      assert.equal(shown.edge, `${card.best.edgePct.toFixed(2)}%`);
+      assert.equal(shown.matchup, `${card.awayTeam} @ ${card.homeTeam}`);
+      assert.equal(shown.badges.length, card.best.badges.length);
+    });
+    const bears = page.cards.find((card) => card.matchup === "Chicago Bears @ Carolina Panthers" && card.header.includes("Spread"));
+    assert.ok(bears, "the held Bears spread is listed");
+    assert.match(bears.when, /^Sun Sep 13 · 10:00 AM$/);
+    // The slice serves NFL only, so CFB (loaded for the teasers) fails: a warning, not an alarm.
+    assert.deepEqual(page.chips.map((chip) => chip.tone), ["warn", "ok", "plain"]);
+    assert.match(page.chips[0].text, /^Feed ok · 1 leagues · feed unavailable for /);
+  } finally {
+    runner.stop();
+  }
+});
+
+const MINIMAL_PAYLOAD = {
+  generatedAt: "2026-10-03T17:26:10Z", grouped: true, unit: "cards", total: 0, items: [], tailFlex: "",
+  scanner: { phase: "live", error: null, leaguesLoaded: [1, 3], leagueErrors: {}, snapshotBuiltAt: Date.parse("2026-10-03T17:25:00Z"), loading: { done: 2, total: 2 } },
+  betsService: { okAt: Date.parse("2026-10-03T17:26:00Z"), error: null, unreachableSince: null, openBets: 210, sources: { kalshi: { ok: true }, novig: { ok: true } } },
+  settings: { source: "service", error: null, stake: { bankroll: 30000, multiplier: 0.25 }, edges: { minEdgePct: 2.5 } },
+};
+const AT = Date.parse("2026-10-03T17:26:22Z");
+
+test("phone view: the status chips name what is wrong — bets down is the loudest, a failing venue and a slow feed warn", () => {
+  const healthy = phoneView.pageView(MINIMAL_PAYLOAD, AT);
+  assert.deepEqual(healthy.chips.map((chip) => chip.text), ["Feed ok · 2 leagues", "Bets ok · 210 open", "$30,000 · ¼ Kelly · 2.5% min"]);
+  assert.equal(healthy.empty, "No edges pass your filters right now.");
+  assert.equal(healthy.summary, "0 cards · pregame");
+
+  const betsDown = phoneView.pageView({ ...MINIMAL_PAYLOAD, betsService: { ...MINIMAL_PAYLOAD.betsService, error: "HTTP 500", unreachableSince: AT - 5 * 60 * 1000 } }, AT);
+  assert.deepEqual(betsDown.chips[1], { text: "Bets service down 5 min ago — stakes use bets as of then", tone: "bad" });
+  const neverRead = phoneView.pageView({ ...MINIMAL_PAYLOAD, betsService: { okAt: null, error: "connect ECONNREFUSED" } }, AT);
+  assert.deepEqual(neverRead.chips[1], { text: "Bets service not read — stakes ignore open bets", tone: "bad" });
+  const venueFailing = phoneView.pageView({ ...MINIMAL_PAYLOAD, betsService: { ...MINIMAL_PAYLOAD.betsService, sources: { kalshi: { ok: true }, novig: { ok: false } } } }, AT);
+  assert.deepEqual(venueFailing.chips[1], { text: "Bets ok · novig failing", tone: "warn" });
+
+  const loading = phoneView.pageView({ ...MINIMAL_PAYLOAD, scanner: { ...MINIMAL_PAYLOAD.scanner, loading: { done: 1, total: 2 } } }, AT);
+  assert.deepEqual(loading.chips[0], { text: "Feed loading 1/2", tone: "warn" });
+  const oldFeed = phoneView.pageView({ ...MINIMAL_PAYLOAD, scanner: { ...MINIMAL_PAYLOAD.scanner, snapshotBuiltAt: AT - 15 * 60 * 1000 } }, AT);
+  assert.deepEqual(oldFeed.chips[0], { text: "Feed old · built 15 min ago", tone: "warn" });
+  const feedError = phoneView.pageView({ ...MINIMAL_PAYLOAD, scanner: { ...MINIMAL_PAYLOAD.scanner, leaguesLoaded: [], error: "HTTP 403" } }, AT);
+  assert.deepEqual(feedError.chips[0], { text: "Feed error: HTTP 403", tone: "bad" });
+  const partly = phoneView.pageView({ ...MINIMAL_PAYLOAD, scanner: { ...MINIMAL_PAYLOAD.scanner, error: "feed unavailable for CFB" } }, AT);
+  assert.deepEqual(partly.chips[0], { text: "Feed ok · 2 leagues · feed unavailable for CFB", tone: "warn" });
+});
+
+test("phone view: a list older than two minutes says so; an ungrouped list shows each line as a card of one", () => {
+  const stale = phoneView.pageView(MINIMAL_PAYLOAD, Date.parse(MINIMAL_PAYLOAD.generatedAt) + 3 * 60 * 1000);
+  assert.deepEqual([stale.updated, stale.stale], ["data from 3 min ago", true]);
+
+  const line = {
+    key: "k1", sideName: "Under", leagueLabel: "NFL", betType: "Total", period: "1H", eventStartMs: Date.parse("2026-10-04T17:00:00Z"),
+    awayTeam: "New England Patriots", homeTeam: "Buffalo Bills", sideLabel: "Under 24.5", book: { id: 89, name: "Novig" }, price: 122, fair: -105,
+    liquidity: 997.4, edgePct: 3.26, edgeTier: "warm", move: { kind: "book_away", label: "book moved away" },
+    rail: { text: "add $88.10", note: "$200.41 alone", atSize: false },
+    badges: [{ kind: "held", text: "held $112" }, { kind: "against", text: "against" }],
+    related: [{ text: "Buffalo Bills -14.5 +292 · $390 · Novig", tag: "game · not sized" }],
+  };
+  const page = phoneView.pageView({ ...MINIMAL_PAYLOAD, grouped: false, unit: "lines", total: 5, items: [line] }, AT, "America/Los_Angeles");
+  assert.equal(page.summary, "5 lines (top 1) · pregame");
+  assert.deepEqual(page.cards[0], {
+    key: "k1", header: "NFL · Total · 1st half", when: "Sun Oct 4 · 10:00 AM", matchup: "New England Patriots @ Buffalo Bills",
+    badges: [{ text: "held $112", tone: "warn" }, { text: "against", tone: "bad" }],
+    side: "Under 24.5", priceLine: "Novig +122 · fair −105", liquidity: "liq to win $997", edge: "3.26%", edgeTier: "warm",
+    moveLabel: "book moved away", related: ["Buffalo Bills -14.5 +292 · $390 · Novig — game · not sized"],
+    stake: "add $88.10", stakeNote: "$200.41 alone", atSize: false, othersText: "no other lines",
+  });
+});

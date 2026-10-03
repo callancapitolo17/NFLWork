@@ -1,0 +1,67 @@
+/* Unabated Ticket phone page. System fonts only: the page loads nothing but
+   the runner's own files (its CSP allows nothing else). */
+:root {
+  --ground: #0F1317;
+  --card: #161C22;
+  --line: #252D35;
+  --inset: #12171C;
+  --text: #E6EAEE;
+  --soft: #B7C0CA;
+  --muted: #9AA5B1;
+  --ok-bg: #16271E; --ok: #8FD6A8;
+  --warn-bg: #2A2417; --warn: #F2B05E;
+  --bad-bg: #2E1A1A; --bad: #F08A8A;
+  --plain-bg: #1C2229;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.tiny { font-size: 11px; }
+
+.top { padding: 18px 16px 12px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+.title-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+h1 { margin: 0; font-size: 22px; font-weight: 600; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { padding: 4px 8px; border-radius: 999px; font-size: 12px; }
+.chip.tone-ok { background: var(--ok-bg); color: var(--ok); }
+.chip.tone-warn { background: var(--warn-bg); color: var(--warn); }
+.chip.tone-bad { background: var(--bad-bg); color: var(--bad); }
+.chip.tone-plain { background: var(--plain-bg); color: var(--soft); }
+#updated.tone-bad { color: var(--bad); }
+
+.error { margin: 10px 12px 0; padding: 10px 12px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); font-size: 13px; }
+.list-head { padding: 10px 16px 4px; display: flex; justify-content: space-between; gap: 12px; }
+.cards { padding: 4px 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+.empty { padding: 24px 4px; text-align: center; }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.card-top { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); }
+.matchup { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--soft); }
+.badge { padding: 2px 6px; border-radius: 6px; font-size: 11px; }
+.badge.tone-warn { background: var(--warn-bg); color: var(--warn); }
+.badge.tone-bad { background: var(--bad-bg); color: var(--bad); }
+.card-main { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.side-block { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.side { font-size: 18px; font-weight: 600; }
+.price { font-size: 13px; color: var(--soft); }
+.edge-block { text-align: right; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+.edge { font-size: 18px; font-weight: 600; }
+.tier-hot { color: var(--warn); }
+.tier-warm { color: var(--text); }
+.tier-thin { color: var(--muted); }
+.move { color: var(--soft); }
+.related { font-size: 12px; color: var(--muted); background: var(--inset); border-radius: 8px; padding: 8px 10px; line-height: 1.45; display: flex; flex-direction: column; gap: 4px; }
+.rail { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.stake-block { display: flex; flex-direction: column; gap: 2px; }
+.stake { font-size: 16px; font-weight: 600; color: var(--ok); }
+.stake.at-size { color: var(--muted); }
+
+.foot { padding: 14px 16px 24px; border-top: 1px solid var(--line); line-height: 1.5; }
