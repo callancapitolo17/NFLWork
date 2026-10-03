@@ -118,7 +118,7 @@ def _patch_refresh(monkeypatch, descriptions: list[str]) -> None:
     specials = [WzSpecial(wz_game_id=i, rotation=i, description=d, wz_american=400,
                           week_date=date(2098, 12, 31)) for i, d in enumerate(descriptions, start=1)]
     books = {"FanDuel": object(), "BetMGM": object()}
-    monkeypatch.setattr(board_module, "open_books", lambda url: (books, {name: "ok" for name in books}))
+    monkeypatch.setattr(board_module, "open_books", lambda: (books, {name: "ok" for name in books}))
     monkeypatch.setattr(board_module.wz, "fetch_fecta_specials", lambda: specials)
     monkeypatch.setattr(board_module, "_locate_game", lambda fecta, special, books: GAME)
     monkeypatch.setattr(board_module, "_price_partition",
