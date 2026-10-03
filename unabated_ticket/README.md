@@ -1909,9 +1909,9 @@ Work in progress toward using the panel from a phone with the Mac closed
 (plan agreed 2026-09-30): the bets service and the Edges scan move to an
 always-on Oracle Cloud VM, reached privately over Tailscale, with the Mac as
 the fallback for any book that refuses a data-center login. **Step 0** is the
-login check, **step 1** the headless Edges runner (both below); the phone
-page (step 2), the Mac relay (3) and the deploy (4: systemd, Tailscale
-binding) are still to come. Plan: `phone_page_plan.md` in the project files.
+login check, **step 1** the headless Edges runner, **step 2** the phone page
+it serves (all below); the Mac relay (3) and the deploy (4: systemd,
+Tailscale binding) are still to come. Plan: `phone_page_plan.md` in the project files.
 
 ### Step 0: does each book accept a login from the server?
 
@@ -2033,6 +2033,34 @@ node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json
   stdout/stderr. Unlike the panel it does not POST fill fairs or crosswalk
   lessons — the Mac panel keeps doing that.
 
+### Step 2: the phone page (`server/phone/`)
+
+The runner also serves a read-only page at `GET /` — open
+`http://127.0.0.1:8095/` (after the deploy step, the VM's Tailscale address)
+on a phone. It fetches `edges.json` from the same runner every 30 s and when
+the tab comes back into view, and shows one card per market: league, bet
+type, period, start time in the phone's time zone, the matchup, the side,
+book price against Unabated's fair, liquidity, the edge (coloured by the
+panel's tier), the edge-move tag, the held / against / game badges, the
+related bets on the game, and the stake rail (`bet $X` / `add $X`, with its
+note). Three chips on top say whether the feed loaded (a league failing
+warns), whether the bets service was read (unreadable is red: the stakes
+then ignore open bets) and the bankroll, Kelly and minimum edge in use; the
+header turns red once the list is over 2 minutes old. Pregame only (the Live
+block needs the logged-in Unabated tab on the Mac); no bet buttons, no
+settings — those stay `PUT /settings.json` on the bets service.
+
+- `phone_view.js` turns one `/edges.json` body into what is shown (pure,
+  tested in `tests/runner.test.js` on the runner's own payload); it only
+  picks fields and words, never re-derives an edge or a stake. `phone.js`
+  fetches and draws it with `textContent` only. `index.html` + `phone.css`
+  use system fonts.
+- The four files are a fixed URL map read once at start (a missing file
+  stops the runner), served `no-store` with a CSP that allows only the
+  runner's own origin (`default-src 'none'; script-src 'self'; connect-src
+  'self'; …; frame-ancestors 'none'`) and `nosniff`; any other path is 404,
+  and the Host rule and GET-only rule apply as for `/edges.json`.
+
 ## Tests
 
 One command runs everything and exits non-zero if any part fails:
@@ -2042,7 +2070,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 415 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 425 tests) and
 the bets service's pytest suite (338 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one

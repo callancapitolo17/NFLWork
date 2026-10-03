@@ -27,6 +27,10 @@
 //       books, minimum edge, line age, min liq to win, alts, sort, cards
 //       (bets.duckdb::edge_settings; null fields are the panel's defaults).
 // Serves (HTTP on UNABATED_RUNNER_HOST:UNABATED_RUNNER_PORT, no auth):
+//   GET /            the phone page (server/phone/, step 2): the Edges list
+//                    read-only, fetched from /edges.json every 30 s; its
+//                    three files are read once at start and served with a
+//                    CSP that allows only this origin
 //   GET /edges.json  the Edges list the panel would show for those settings
 //                    (server/edges_payload.js documents the shape)
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings}
@@ -38,7 +42,9 @@
 
 "use strict";
 
+const fs = require("node:fs");
 const http = require("node:http");
+const nodePath = require("node:path");
 const scannerLib = require("../extension/scanner.js");
 const teams = require("../extension/teams.js");
 const betsLib = require("../extension/bets.js");
@@ -325,16 +331,52 @@ function createRunner(deps) {
   return { start, stop, pollBets, pollSettings, scanLoaded: () => scanLoad, edgesPayload: edgesPayloadNow, health, scanner };
 }
 
+// The phone page's files, by URL path. A fixed map, never a path built from
+// the request, so no URL reaches any other file on disk.
+const PHONE_DIR = nodePath.join(__dirname, "phone");
+const PHONE_FILES = Object.freeze({
+  "/": { file: "index.html", contentType: "text/html; charset=utf-8" },
+  "/phone.css": { file: "phone.css", contentType: "text/css; charset=utf-8" },
+  "/phone_view.js": { file: "phone_view.js", contentType: "text/javascript; charset=utf-8" },
+  "/phone.js": { file: "phone.js", contentType: "text/javascript; charset=utf-8" },
+});
+// Only this origin's own files and its own /edges.json: the page loads no
+// fonts, scripts or images from anywhere else, and no other site may frame it.
+const PHONE_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+//   {"/": {body: Buffer, contentType}, ...} — read once, so a missing file
+//   fails the runner at start instead of on the phone.
+function loadPhoneFiles(dir = PHONE_DIR) {
+  const loaded = {};
+  for (const [urlPath, entry] of Object.entries(PHONE_FILES)) {
+    loaded[urlPath] = { body: fs.readFileSync(nodePath.join(dir, entry.file)), contentType: entry.contentType };
+  }
+  return loaded;
+}
+
+function sendStatic(response, asset) {
+  response.writeHead(200, {
+    "Content-Type": asset.contentType,
+    "Content-Length": asset.body.length,
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": PHONE_CSP,
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+  });
+  response.end(asset.body);
+}
+
 function sendJson(response, status, body) {
   const text = JSON.stringify(body);
   response.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(text), "Cache-Control": "no-store" });
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json and /health, the Host allowlist first on
-// every request. The port comes from the socket, not config, so a runner on
-// an ephemeral or non-default port guards itself (as the bets service does).
-function createHttpServer(runner, { host }) {
+// The HTTP side: the phone page, GET /edges.json and /health, the Host
+// allowlist first on every request. The port comes from the socket, not
+// config, so a runner on an ephemeral or non-default port guards itself (as
+// the bets service does).
+function createHttpServer(runner, { host }, phoneFiles = loadPhoneFiles()) {
   const server = http.createServer((request, response) => {
     const allowed = allowedHosts(host, server.address().port);
     if (!hostAllowed(request.headers.host, allowed)) {
@@ -346,6 +388,7 @@ function createHttpServer(runner, { host }) {
       return;
     }
     const path = new URL(request.url, "http://runner.invalid").pathname;
+    if (Object.hasOwn(phoneFiles, path)) return sendStatic(response, phoneFiles[path]);
     try {
       if (path === "/edges.json") return sendJson(response, 200, runner.edgesPayload());
       if (path === "/health") return sendJson(response, 200, runner.health());
@@ -366,7 +409,7 @@ async function main() {
     server.once("error", reject);
     server.listen(config.port, config.host, resolve);
   });
-  log(`serving http://${config.host}:${config.port}/edges.json (bets service ${config.betsServiceUrl})`);
+  log(`serving http://${config.host}:${config.port}/ (phone page) and /edges.json (bets service ${config.betsServiceUrl})`);
   const shutdown = (signal) => {
     log(`stopping (${signal})`);
     runner.stop();
@@ -386,5 +429,6 @@ if (require.main === module) {
 
 module.exports = {
   DEFAULT_HOST, DEFAULT_PORT, DEFAULT_BETS_SERVICE_URL, BETS_POLL_MS, SETTINGS_POLL_MS,
-  configFromEnv, allowedHosts, hostAllowed, scannerLeaguesOf, nodeFetch, createRunner, createHttpServer,
+  PHONE_FILES, PHONE_CSP, configFromEnv, allowedHosts, hostAllowed, scannerLeaguesOf, nodeFetch, createRunner,
+  createHttpServer, loadPhoneFiles,
 };
