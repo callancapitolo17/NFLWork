@@ -97,3 +97,55 @@ def test_special_week_is_thursday_through_monday_night():
     next_thursday = BookGame("n", "SEA", "LAC", "2099-01-05T01:15:00Z")
     assert in_special_week(thursday, special) and in_special_week(monday_night, special)
     assert not in_special_week(next_thursday, special)
+
+
+def test_refresh_counts_progress_per_book(monkeypatch):
+    from nfl_specials import board as board_module
+
+    specials = [WzSpecial(wz_game_id=r, rotation=r, description=d, wz_american=900, week_date=date(2098, 12, 31))
+                for r, d in [(1, "CHARGERS TRIFECTA (1Q, 1H & GM)"),
+                             (2, "CHARGERS SUPERFECTA (SCR 1ST, 1Q, 1H & GM)")]]
+    books = {"FanDuel": object(), "BetMGM": object(), "DraftKings": object()}
+    monkeypatch.setattr(board_module, "open_books", lambda url: (books, {name: "ok" for name in books}))
+    monkeypatch.setattr(board_module.wz, "fetch_fecta_specials", lambda: specials)
+    monkeypatch.setattr(board_module, "_locate_game", lambda fecta, special, books: GAME)
+    monkeypatch.setattr(board_module, "_price_partition",
+                        lambda book, line: BookFair("x", 0.1, None, 1.3, 8))
+    monkeypatch.setattr(board_module, "_price_scores_first",
+                        lambda book, line: ScoresFirstShare("DraftKings", 0.85, 2))
+
+    class NoStore:
+        def append_quotes(self, rows):
+            pass
+
+    published = []
+    board_module.refresh_board(NoStore(), published.append)
+    # Trifecta at FD + MGM; superfecta's partition + scores-first share at DK.
+    assert published[0].book_progress == {"FanDuel": {"done": 0, "total": 1}, "BetMGM": {"done": 0, "total": 1},
+                                           "DraftKings": {"done": 0, "total": 2}}
+    assert published[-1].book_progress == {"FanDuel": {"done": 1, "total": 1}, "BetMGM": {"done": 1, "total": 1},
+                                            "DraftKings": {"done": 2, "total": 2}}
+    # Snapshots are copies: a later count never rewrites an earlier publish.
+    assert published[1].book_progress["FanDuel"]["done"] == 1
+    assert published[1].book_progress["BetMGM"]["done"] == 0
+
+
+def test_a_started_game_takes_no_stake_or_budget():
+    started = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.09)
+    later = _line(2, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 400, 0.30)
+    later.game = BookGame("evt2", home="SEA", away="LAC", game_start_time="2099-01-02T00:00:00Z")
+    after_first_kickoff = datetime(2099, 1, 1, 1, tzinfo=timezone.utc)
+    alone = size_board(_board(later), 10_000, 0.25, 300, now=after_first_kickoff)
+    sized = size_board(_board(started, later), 10_000, 0.25, 300, now=after_first_kickoff)
+    assert sized[0].recommended_stake == 0 and sized[0].yields_to is None
+    assert sized[1].recommended_stake == alone[0].recommended_stake > 0
+
+
+def test_a_team_already_bet_gets_no_new_stake():
+    placed = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.09)
+    same_team = _line(2, "CHARGERS TRIFECTA (1Q +½, 1H +4½ & GM +7½)", 400, 0.30)
+    other_team = _line(3, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 400, 0.30)
+    sized = size_board(_board(placed, same_team, other_team), 10_000, 0.25, None, placed_ids=frozenset({1}))
+    assert [s.recommended_stake for s in sized[:2]] == [0, 0]
+    assert [s.yields_to for s in sized[:2]] == [None, None]
+    assert sized[2].recommended_stake > 0

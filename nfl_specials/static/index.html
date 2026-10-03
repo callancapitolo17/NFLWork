@@ -2,93 +2,335 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
 <title>NFL Fectas</title>
 <style>
   :root {
-    --bg: #ffffff; --text: #1f1e1d; --muted: #6b6a66; --faint: #9a9893; --border: #e4e2dc;
-    --row-hover: #f6f5f1; --good: #2f6f1f; --good-bg: #eaf3de; --bad: #a32d2d; --warn: #7a5300;
-    --warn-bg: #faeeda; --accent: #185fa5;
+    --bg: #f7f6f3; --surface: #ffffff; --surface-2: #f1efe8; --text: #1f1e1d; --muted: #6b6a66;
+    --faint: #9a9893; --border: #e4e2dc; --border-strong: #cfccc3;
+    --accent: #185fa5; --accent-bg: #e6f1fb; --primary-bg: #185fa5; --primary-text: #ffffff;
+    --good: #3b6d11; --good-bg: #eaf3de; --bad: #a32d2d; --bad-bg: #fcebeb;
+    --warn: #7a5300; --warn-bg: #faeeda; --pro: #534ab7; --pro-bg: #eeedfe;
+    --ev3-bg: #3b6d11; --ev3-text: #ffffff; --ev2-bg: #c0dd97; --ev2-text: #27500a;
+    --ev1-bg: #eaf3de; --ev1-text: #3b6d11; --backdrop: rgba(20, 20, 19, 0.45);
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --bg: #1a1a19; --text: #ecebe6; --muted: #a8a69f; --faint: #77756f; --border: #34332f;
-      --row-hover: #232321; --good: #97c459; --good-bg: #27370f; --bad: #f09595; --warn: #fac775;
-      --warn-bg: #4a3608; --accent: #85b7eb;
+      --bg: #141413; --surface: #1d1d1b; --surface-2: #262624; --text: #ecebe6; --muted: #a8a69f;
+      --faint: #77756f; --border: #34332f; --border-strong: #4a4944;
+      --accent: #85b7eb; --accent-bg: #0c2b4a; --primary-bg: #2a6fb8; --primary-text: #ffffff;
+      --good: #97c459; --good-bg: #1f2e0d; --bad: #f09595; --bad-bg: #3d1515;
+      --warn: #fac775; --warn-bg: #3d2c08; --pro: #afa9ec; --pro-bg: #26215c;
+      --ev3-bg: #97c459; --ev3-text: #173404; --ev2-bg: #3b6d11; --ev2-text: #eaf3de;
+      --ev1-bg: #27370f; --ev1-text: #c0dd97; --backdrop: rgba(0, 0, 0, 0.6);
     }
   }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, system-ui, sans-serif; }
-  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
-  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 12px; }
-  h1 { font-size: 18px; font-weight: 600; margin: 0; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; -webkit-text-size-adjust: 100%; }
+  .num { font-variant-numeric: tabular-nums; }
   .muted { color: var(--muted); } .faint { color: var(--faint); }
-  .spacer { flex: 1; }
-  input, select, button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; height: 30px; padding: 0 8px; }
-  button { cursor: pointer; } button:hover { background: var(--row-hover); }
-  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-  .chip { padding: 2px 10px; border-radius: 6px; font-size: 13px; }
+  .small { font-size: 12px; }
+  [hidden] { display: none !important; }
+
+  /* --- controls --- */
+  input, select, button { font: inherit; color: var(--text); }
+  input, select { background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; height: 34px; padding: 0 10px; }
+  input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button { cursor: pointer; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; height: 34px; padding: 0 12px; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+  button:hover:not(:disabled) { background: var(--surface-2); }
+  button:disabled { cursor: default; opacity: 0.7; }
+  button.primary { background: var(--primary-bg); color: var(--primary-text); border-color: transparent; font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: var(--primary-bg); filter: brightness(1.08); }
+  .spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin 0.8s linear infinite; flex: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* --- top bar --- */
+  .topbar { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--border); }
+  .topbar-inner { max-width: 1100px; margin: 0 auto; padding: 10px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .brand { display: flex; align-items: baseline; gap: 10px; flex: 1; min-width: 0; }
+  h1 { font-size: 18px; font-weight: 650; margin: 0; white-space: nowrap; }
+  #summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .settings-wrap { position: relative; }
+  .popover { position: absolute; right: 0; top: 40px; width: 280px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 12px; padding: 14px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14); display: grid; gap: 10px; z-index: 10; }
+  .popover label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+  .popover input { width: 100%; }
+
+  main { max-width: 1100px; margin: 0 auto; padding: 14px 16px 48px; }
+
+  /* --- banner, tiles, progress --- */
+  .banner { padding: 10px 12px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); margin-bottom: 12px; overflow-wrap: anywhere; }
+  .banner.err { background: var(--bad-bg); color: var(--bad); }
+  .tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; min-width: 0; }
+  .tile-label { color: var(--muted); font-size: 12px; }
+  .tile-value { font-size: 22px; font-weight: 650; line-height: 1.25; }
+  .tile-sub { color: var(--faint); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tile .meter { margin: 4px 0 2px; }
+  .meter { height: 5px; border-radius: 3px; background: var(--surface-2); margin-top: 6px; overflow: hidden; }
+  .meter > span { display: block; height: 100%; border-radius: 3px; background: var(--good); transition: width 0.4s ease; }
+  .meter.accent > span { background: var(--accent); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; margin-bottom: 12px; }
+  .progress-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .progress-head > :first-child { flex: 1; min-width: 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; font-size: 12px; background: var(--surface-2); color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chip.ok { background: var(--good-bg); color: var(--good); }
+  .chip.busy { background: var(--accent-bg); color: var(--accent); }
   .chip.warn { background: var(--warn-bg); color: var(--warn); }
-  .grid { display: grid; grid-template-columns: minmax(0, 2.6fr) 0.7fr 0.8fr 0.7fr 1.4fr; gap: 8px; align-items: center; padding: 10px; border-bottom: 1px solid var(--border); }
-  .grid.head { color: var(--muted); padding: 6px 10px; }
-  .grid:not(.head):hover { background: var(--row-hover); }
-  .desc { font-weight: 600; }
-  .meta { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-  .ev-pos { color: var(--good); font-weight: 600; } .ev-neg { color: var(--bad); }
-  .stake { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-  .stake input { width: 64px; }
-  .result { font-size: 12px; overflow-wrap: anywhere; }
-  .result.ok { color: var(--good); } .result.err { color: var(--bad); }
-  h2 { font-size: 14px; font-weight: 600; color: var(--muted); margin: 20px 0 6px; }
-  .placed { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
-  .banner { padding: 8px 10px; border-radius: 6px; background: var(--warn-bg); color: var(--warn); margin-bottom: 12px; }
-  @media (max-width: 700px) {
-    .grid { grid-template-columns: 1fr 1fr 1fr; }
-    .grid > :first-child, .grid > .stake { grid-column: 1 / -1; }
-    .grid.head { display: none; }
+  .progress .meter { margin: 8px 0; }
+  .book-warnings { margin-bottom: 12px; }
+
+  /* --- toolbar --- */
+  .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 10px; }
+  .seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; background: var(--surface); }
+  .seg button { border: 0; border-radius: 0; height: 30px; padding: 0 11px; background: transparent; color: var(--muted); }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button[aria-pressed="true"] { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .toggle { height: 32px; color: var(--muted); }
+  .toggle[aria-pressed="true"] { background: var(--good-bg); color: var(--good); border-color: transparent; font-weight: 600; }
+  .count { color: var(--faint); font-weight: 400; margin-left: 2px; }
+  .spacer { flex: 1; }
+
+  /* --- board --- */
+  .group { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
+  .group-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 9px 14px; background: var(--surface-2); flex-wrap: wrap; }
+  .matchup { font-weight: 650; }
+  .row { display: grid; grid-template-columns: minmax(0, 1fr) 170px 250px; gap: 14px; align-items: center; padding: 12px 14px; border-top: 1px solid var(--border); }
+  .group-head + .row { border-top: 0; }
+  .row.dim .title, .row.dim .price-main { color: var(--muted); font-weight: 500; }
+  .row.dim .ev:not(.neg) { background: var(--surface-2); color: var(--muted); }
+  .title-line { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+  .title { font-weight: 650; }
+  .tag { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; background: var(--surface-2); color: var(--muted); letter-spacing: 0.02em; }
+  .tag.sf { background: var(--pro-bg); color: var(--pro); }
+  .tag.pending { background: var(--accent-bg); color: var(--accent); }
+  .legs { display: flex; flex-wrap: wrap; gap: 4px; margin: 5px 0 4px; }
+  .leg { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text); white-space: nowrap; }
+  .books-line { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .books-line .worst { color: var(--text); font-weight: 600; }
+  .books-line .none { color: var(--warn); }
+  .note { font-size: 12px; color: var(--warn); overflow-wrap: anywhere; margin-top: 2px; }
+  .price-main { font-size: 15px; font-weight: 600; }
+  .price-sub { font-size: 12px; color: var(--muted); }
+  .ev { display: inline-block; font-weight: 650; padding: 2px 8px; border-radius: 6px; margin-top: 4px; }
+  .ev.ev3 { background: var(--ev3-bg); color: var(--ev3-text); }
+  .ev.ev2 { background: var(--ev2-bg); color: var(--ev2-text); }
+  .ev.ev1 { background: var(--ev1-bg); color: var(--ev1-text); }
+  .ev.neg { color: var(--bad); padding-left: 0; }
+  .stake-col { min-width: 0; }
+  .stake-form { display: flex; gap: 6px; align-items: center; }
+  .money-input { position: relative; flex: 1; min-width: 0; max-width: 120px; }
+  .money-input span { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
+  .money-input input { width: 100%; padding-left: 20px; }
+  .stake-sub { font-size: 12px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
+  .stake-note { font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+  .stake-none { color: var(--faint); font-size: 13px; }
+  .msg-ok { color: var(--good); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
+  .msg-err { color: var(--bad); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
+  .empty { text-align: center; padding: 36px 16px; }
+  .empty h2 { font-size: 16px; margin: 0 0 6px; }
+  .empty p { color: var(--muted); margin: 0 auto 14px; max-width: 460px; }
+  .hidden-note { text-align: center; color: var(--muted); font-size: 13px; margin: 4px 0 18px; }
+  .linkish { border: 0; background: none; color: var(--accent); height: auto; padding: 0; text-decoration: underline; }
+  .linkish:hover:not(:disabled) { background: none; }
+
+  /* --- placed --- */
+  .section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin: 26px 0 8px; flex-wrap: wrap; }
+  h2.section { font-size: 15px; font-weight: 650; margin: 0; }
+  .placed-list { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .placed-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto auto; gap: 4px 12px; align-items: baseline; padding: 9px 14px; border-top: 1px solid var(--border); font-size: 13px; }
+  .placed-row:first-child { border-top: 0; }
+  .placed-row .status-ok { color: var(--good); } .placed-row .status-err { color: var(--bad); }
+  .placed-detail { grid-column: 2 / -1; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .placed-detail.err { color: var(--bad); }
+
+  /* --- confirm dialog --- */
+  dialog { border: 1px solid var(--border-strong); border-radius: 14px; padding: 0; width: min(420px, calc(100vw - 32px)); background: var(--surface); color: var(--text); }
+  dialog::backdrop { background: var(--backdrop); }
+  .dialog-body { padding: 18px 18px 6px; }
+  .dialog-body h2 { font-size: 16px; margin: 0 0 2px; }
+  .confirm-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 14px 0 6px; }
+  .confirm-grid dt { color: var(--muted); }
+  .confirm-grid dd { margin: 0; text-align: right; font-weight: 600; }
+  .warning-line { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 8px 10px; font-size: 12px; margin-top: 10px; }
+  .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 18px 18px; }
+
+  /* --- phone --- */
+  @media (max-width: 720px) {
+    .topbar-inner { padding: 8px 12px; }
+    .controls { width: 100%; }
+    .controls select { flex: 1; min-width: 0; }
+    #refresh { flex: 1; justify-content: center; }
+    .popover { position: fixed; left: 12px; right: 12px; top: auto; width: auto; }
+    main { padding: 12px 12px 48px; }
+    .tiles { gap: 6px; }
+    .tile { padding: 8px 10px; }
+    .tile-value { font-size: 17px; }
+    .tile-sub:not(.keep), .wide-only { display: none; }
+    .tile-sub.keep { white-space: normal; }
+    .row { grid-template-columns: 1fr; gap: 8px; padding: 12px; }
+    .price-col { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .price-col .ev { margin-top: 0; }
+    .price-col .price-sub::before { content: "· "; }
+    .stake-form input, .stake-form button { height: 44px; font-size: 16px; }
+    .money-input { max-width: none; }
+    .stake-form button { min-width: 112px; justify-content: center; }
+    .toolbar .spacer { display: none; }
+    .placed-row { grid-template-columns: 18px minmax(0, 1fr) auto; }
+    .placed-row .placed-when { display: none; }
+    dialog { margin: auto auto 0; width: 100vw; max-width: 100vw; border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); }
+    .dialog-actions button { flex: 1; height: 46px; justify-content: center; font-size: 16px; }
   }
 </style>
 </head>
 <body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <h1>NFL fectas</h1>
+      <span class="muted small" id="summary">Loading…</span>
+    </div>
+    <div class="controls">
+      <select id="account" aria-label="Wagerzon account"></select>
+      <div class="settings-wrap">
+        <button id="settings-btn" aria-expanded="false" aria-controls="settings-pop" title="Bankroll and Kelly fraction">
+          <span id="settings-label">Settings</span>
+        </button>
+        <div class="popover" id="settings-pop" hidden>
+          <label>Bankroll ($)<input id="bankroll" type="number" min="1" step="100" inputmode="decimal"></label>
+          <label>Kelly fraction<input id="kelly" type="number" min="0.01" max="1" step="0.05" inputmode="decimal"></label>
+          <div class="small muted" id="settings-help"></div>
+          <div class="small" id="settings-status" aria-live="polite"></div>
+        </div>
+      </div>
+      <button id="refresh" class="primary">Refresh</button>
+    </div>
+  </div>
+</header>
+
 <main>
-  <header>
-    <h1>NFL fectas</h1>
-    <span class="muted" id="summary">Loading…</span>
-    <span class="spacer"></span>
-    <label class="muted">Bankroll <input id="bankroll" type="number" min="1" step="1" style="width:90px"></label>
-    <label class="muted">Kelly <input id="kelly" type="number" min="0.01" max="1" step="0.05" style="width:70px"></label>
-    <select id="account" aria-label="Wagerzon account"></select>
-    <span class="muted" id="available"></span>
-    <button id="refresh">Refresh</button>
-  </header>
   <div id="banner"></div>
-  <div class="chips" id="chips"></div>
-  <div class="grid head"><span>Special</span><span>WZ</span><span>Fair</span><span>EV</span><span>Stake</span></div>
-  <div id="rows"></div>
-  <h2>Placed this week</h2>
-  <div id="placed"><div class="placed faint">Nothing placed yet.</div></div>
+  <section id="tiles" class="tiles" hidden></section>
+  <section id="progress" class="card progress" aria-live="polite" hidden></section>
+  <div id="book-warnings" class="chips book-warnings" hidden></div>
+  <div class="toolbar" id="toolbar" hidden>
+    <div class="seg" role="group" aria-label="Special type" id="type-seg"></div>
+    <button class="toggle" id="ev-only" aria-pressed="false">+EV only</button>
+    <span class="spacer"></span>
+    <div class="seg" role="group" aria-label="Layout" id="view-seg"></div>
+  </div>
+  <div id="board"></div>
+
+  <div class="section-head">
+    <h2 class="section">Placed this week</h2>
+    <span class="muted small num" id="placed-summary"></span>
+  </div>
+  <div id="placed" class="placed-list"></div>
 </main>
+
+<dialog id="confirm" aria-labelledby="confirm-title">
+  <form method="dialog">
+    <div class="dialog-body">
+      <h2 id="confirm-title">Place this bet?</h2>
+      <div class="muted small" id="confirm-desc"></div>
+      <dl class="confirm-grid num" id="confirm-grid"></dl>
+      <div class="warning-line">Submits a real Wagerzon bet.</div>
+    </div>
+    <div class="dialog-actions">
+      <button value="cancel" id="confirm-cancel">Cancel</button>
+      <button value="place" class="primary" id="confirm-ok">Place</button>
+    </div>
+  </form>
+</dialog>
+
 <script>
+const BOOK_ORDER = ["FanDuel", "BetMGM", "DraftKings"];
 const BOOK_SHORT = { FanDuel: "FD", BetMGM: "MGM", DraftKings: "DK" };
+const PERIOD_LABEL = { Q1: "1Q", H1: "1H", GM: "GM" };
+const KELLY_LABEL = { 1: "Full", 0.75: "¾", 0.5: "½", 0.33: "⅓", 0.25: "¼", 0.2: "⅕", 0.125: "⅛", 0.1: "⅒" };
+const POLL_MS = 3000;
+const PREFS_KEY = "nfl_fectas_view";
+
 let lastPayload = null;
 let pollTimer = null;
-let editingStake = new Map();   // wz_game_id -> value the user typed (survives re-renders)
+let refreshRequested = false;          // Refresh clicked, server not yet reporting it
+const editingStake = new Map();        // wz_game_id -> what the user typed (survives re-renders)
+const placing = new Set();             // wz_game_id with a placement in flight
+const placeMessages = new Map();       // wz_game_id -> {ok, text} from the last Place on this page
+let prefs = loadPrefs();
 
-function signed(n) { return n == null ? "–" : (n > 0 ? "+" : "") + n; }
-function pct(x) { return x == null ? "–" : (x > 0 ? "+" : "") + (x * 100).toFixed(1) + "%"; }
+// --- formatting -------------------------------------------------------------
+function signed(n) { return n == null ? "–" : (n > 0 ? "+" : n < 0 ? "−" : "") + Math.abs(n); }
+function pct(x) { return x == null ? "–" : (x > 0 ? "+" : x < 0 ? "−" : "") + Math.abs(x * 100).toFixed(1) + "%"; }
+function money(x) { return "$" + Math.round(x).toLocaleString("en-US"); }
+function compactMoney(x) {
+  if (x >= 1000) return "$" + (x / 1000).toFixed(x % 1000 === 0 ? 0 : 1) + "k";
+  return money(x);
+}
+function kellyLabel(k) { return (KELLY_LABEL[k] || k + "×") + " Kelly"; }
+function halfPoints(line) {
+  const whole = Math.trunc(Math.abs(line));
+  const half = Math.abs(line) % 1 === 0.5;
+  const body = half ? (whole === 0 ? "½" : whole + "½") : String(Math.abs(line));
+  return (line > 0 ? "+" : "−") + body;
+}
+function legLabel(leg) {
+  const period = PERIOD_LABEL[leg.period] || leg.period;
+  if (leg.kind === "scores_first") return "scores first";
+  if (leg.kind === "win") return "wins " + period;
+  return halfPoints(leg.line) + " " + period;
+}
+function specialTitle(description) {
+  const head = description.split("(")[0].trim().toLowerCase();
+  return head.charAt(0).toUpperCase() + head.slice(1);
+}
+function toWin(risk, american) { return american > 0 ? risk * american / 100 : risk * 100 / Math.abs(american); }
+function parseTime(iso) { return iso ? new Date(iso.replace(/(\.\d{3})\d+/, "$1")) : null; }
+function clock(d) { return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
+function dayClock(d) { return d.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }); }
+function hasStarted(line) { const d = parseTime(line.game_start_time); return d != null && d <= new Date(); }
+function untilKickoff(d) {
+  const minutes = Math.round((d - new Date()) / 60000);
+  if (minutes <= 0) return "started";
+  const days = Math.floor(minutes / 1440), hours = Math.floor((minutes % 1440) / 60), mins = minutes % 60;
+  if (days > 0) return `in ${days}d ${hours}h`;
+  if (hours > 0) return `in ${hours}h ${mins}m`;
+  return `in ${mins}m`;
+}
+function elapsed(since) {
+  const seconds = Math.max(0, Math.round((new Date() - since) / 1000));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+function evClass(ev) {
+  if (ev == null) return "";
+  if (ev >= 0.25) return "ev3";
+  if (ev >= 0.10) return "ev2";
+  if (ev > 0) return "ev1";
+  return "neg";
+}
+
+// --- small DOM helper ---------------------------------------------------------
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (k === "class") node.className = v; else if (k === "text") node.textContent = v; else node.setAttribute(k, v);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value == null || value === false) continue;
+    if (key === "class") node.className = value;
+    else if (key === "text") node.textContent = value;
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value === true ? "" : value);
   }
-  for (const c of [].concat(children)) if (c != null) node.append(c);
+  for (const child of [].concat(children)) if (child != null && child !== false) node.append(child);
   return node;
 }
-function kickoff(iso) {
-  if (!iso) return "";
-  const d = new Date(iso.replace(/(\.\d{3})\d+/, "$1"));
-  return d.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+
+function loadPrefs() {
+  const defaults = { type: "all", evOnly: false, view: "game" };
+  try { return { ...defaults, ...JSON.parse(localStorage.getItem(PREFS_KEY) || "{}") }; }
+  catch (e) { return defaults; }
 }
+function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) { /* view prefs only */ } }
 
 async function api(path, body) {
   const opts = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
@@ -98,157 +340,533 @@ async function api(path, body) {
   return data;
 }
 
+function currentAccount() { return document.getElementById("account").value || (lastPayload && lastPayload.account); }
+// The server clears `refreshing` only after publishing the finished board, so
+// it alone says a refresh is running. A board left unfinished by a crashed
+// refresh must not keep the page polling or the Refresh button locked.
+function isBusy(p) { return refreshRequested || p.refreshing; }
+function teamKey(line) { return line.home ? `${line.away}@${line.home}@${line.team}` : null; }
+// This account's placed bets this week on the line's (game, team) — the
+// server recommends no new stake there.
+function teamPlacements(p, line) {
+  const key = teamKey(line);
+  if (!key) return [];
+  const byId = new Map(p.board.lines.map(l => [l.wz_game_id, l]));
+  return p.placements.filter(r => r.status === "placed" && r.account === p.account &&
+    byId.has(r.wz_game_id) && teamKey(byId.get(r.wz_game_id)) === key);
+}
+
+// --- header -----------------------------------------------------------------
 function renderHeader(p) {
-  const b = p.board;
   const bankroll = document.getElementById("bankroll"), kelly = document.getElementById("kelly");
   if (document.activeElement !== bankroll) bankroll.value = Math.round(p.settings.bankroll);
   if (document.activeElement !== kelly) kelly.value = p.settings.kelly_fraction;
+  document.getElementById("settings-label").textContent =
+    `${compactMoney(p.settings.bankroll)} · ${kellyLabel(p.settings.kelly_fraction)}`;
+  document.getElementById("settings-help").textContent =
+    `Stake = bankroll × Kelly fraction × full Kelly, fitted to the Wagerzon available, ` +
+    `${money(p.min_stake)}–${money(p.max_stake)} per bet.`;
+
   const account = document.getElementById("account");
-  if (account.options.length !== p.accounts.length) {
+  const optionValues = [...account.options].map(o => o.value).join("|");
+  if (optionValues !== p.accounts.join("|")) {
     account.replaceChildren(...p.accounts.map(a => el("option", { value: a, text: a })));
-    account.value = p.account;
   }
-  document.getElementById("available").textContent = !p.board ? "" :
-    p.available_balance == null ? "Available: unknown — no stakes until Refresh reads it"
-                                : `Available $${Math.round(p.available_balance)}`;
-  let summary = "Click Refresh to price the board";
+  if (p.account && account.value !== p.account) account.value = p.account;
+  account.hidden = p.accounts.length < 2;
+
+  const busy = isBusy(p), b = p.board;
+  const refresh = document.getElementById("refresh");
+  refresh.disabled = busy;
+  refresh.replaceChildren(...(busy
+    ? [el("span", { class: "spinner", "aria-hidden": "true" }),
+       b && !b.finished_at && b.progress_total ? `Pricing ${b.progress_done}/${b.progress_total}` : "Starting…"]
+    : ["Refresh"]));
+
+  let summary = "Not priced yet";
   if (b) {
-    const when = new Date(b.finished_at || b.started_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    summary = `${b.lines.length} specials · ${b.finished_at ? "updated " + when : "pricing since " + when}`;
+    const n = b.lines.length;
+    summary = `${n} special${n === 1 ? "" : "s"} · ` +
+      (b.finished_at ? "updated " + clock(parseTime(b.finished_at)) : "pricing since " + clock(parseTime(b.started_at)));
   }
   document.getElementById("summary").textContent = summary;
-  document.getElementById("refresh").textContent = p.refreshing ? "Pricing…" : "Refresh";
-  const banner = document.getElementById("banner");
-  banner.replaceChildren(p.last_error ? el("div", { class: "banner", text: "Last refresh failed: " + p.last_error }) : "");
+
+  document.getElementById("banner").replaceChildren(
+    p.last_error ? el("div", { class: "banner err", text: "Last refresh failed: " + p.last_error }) : "");
 }
 
-function renderChips(p) {
-  const chips = [];
-  const status = (p.board && p.board.book_status) || {};
-  for (const name of ["FanDuel", "BetMGM", "DraftKings"]) {
-    const s = status[name];
-    if (s === undefined) continue;
-    chips.push(el("span", { class: "chip " + (s === "ok" ? "ok" : "warn"), text: s === "ok" ? `${name} ok` : `${name}: ${s}` }));
-  }
-  if (p.board && !p.board.finished_at) {
-    chips.push(el("span", { class: "chip warn", text: `pricing ${p.board.progress_done} / ${p.board.progress_total}` }));
-  }
-  document.getElementById("chips").replaceChildren(...chips);
+// --- money tiles ------------------------------------------------------------
+function renderTiles(p) {
+  const tiles = document.getElementById("tiles");
+  tiles.hidden = !p.board;
+  if (!p.board) return;
+  const recommended = p.board.lines.filter(l => l.recommended_stake > 0);
+  const totalStake = recommended.reduce((sum, l) => sum + l.recommended_stake, 0);
+  const expectedProfit = recommended.reduce((sum, l) => sum + l.recommended_stake * l.ev, 0);
+  const available = p.available_balance;
+  const share = available ? Math.min(1, totalStake / available) : 0;
+
+  const availableTile = available == null
+    ? el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Available" }),
+        el("div", { class: "tile-value", text: "Unknown" }),
+        el("div", { class: "tile-sub keep", text: "No stakes until Refresh reads it" })])
+    : el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Available" }),
+        el("div", { class: "tile-value num", text: money(available) }),
+        el("div", { class: "tile-sub", text: p.accounts.length > 1 ? "Wagerzon · " + p.account : "Wagerzon" })]);
+  tiles.replaceChildren(
+    availableTile,
+    el("div", { class: "tile" }, [
+      el("div", { class: "tile-label", text: "Recommended" }),
+      el("div", { class: "tile-value num", text: money(totalStake) }),
+      el("div", { class: "meter", title: `${Math.round(share * 100)}% of available` },
+        el("span", { style: `width:${(share * 100).toFixed(1)}%` })),
+      el("div", { class: "tile-sub", text: `${recommended.length} bet${recommended.length === 1 ? "" : "s"}` +
+        (available ? ` · ${Math.round(share * 100)}% of available` : "") }),
+    ]),
+    el("div", { class: "tile" }, [
+      el("div", { class: "tile-label", text: "Expected profit" }),
+      el("div", { class: "tile-value num", style: expectedProfit > 0 ? "color:var(--good)" : null,
+                  text: (expectedProfit > 0 ? "+" : "") + money(expectedProfit) }),
+      el("div", { class: "tile-sub", text: "at worst-case fair" }),
+    ]),
+  );
 }
 
-function bookLine(line) {
-  if (!line.is_superfecta) {
-    return Object.entries(line.books).map(([name, f]) =>
-      `${BOOK_SHORT[name] || name} ${f.fair_american != null ? signed(f.fair_american) : "–"}`).join(" · ");
+// --- refresh progress + book status -------------------------------------------
+function bookChip(name, status, progress, busy) {
+  const short = BOOK_SHORT[name] || name;
+  if (status !== "ok") {
+    return el("span", { class: "chip warn", title: status, text: `${short}: ${status}` });
   }
-  const part = line.books.DraftKings;
-  const parts = [`DK 1Q/1H/GM part ${part && part.fair_american != null ? signed(part.fair_american) : "–"}`];
-  parts.push(`${line.team} score first ${line.sf_share != null ? (line.sf_share * 100).toFixed(0) + "%" : "–"}`);
-  if (line.dk_price_with_vig != null) parts.push(`DK price ${signed(line.dk_price_with_vig)} incl. vig`);
-  return parts.join(" · ");
+  if (!progress || progress.total === 0) {
+    return el("span", { class: "chip", text: `${short} · nothing to price` });
+  }
+  const label = `${short} ${progress.done}/${progress.total}`;
+  if (progress.done >= progress.total) return el("span", { class: "chip ok", text: "✓ " + label });
+  return el("span", { class: busy ? "chip busy" : "chip warn", text: label });
 }
 
-function stakeCell(line) {
-  if (line.status === "pricing" && line.fair_prob == null) return el("span", { class: "faint", text: "pricing…" });
-  if (line.fair_prob == null) return el("span", { class: "faint", text: "unpriced" });
-  if (line.ev <= 0) return el("span", { class: "faint", text: "no bet" });
-  const typed = editingStake.get(line.wz_game_id);
-  const input = el("input", { type: "number", min: String(lastPayload.min_stake), max: String(lastPayload.max_stake), step: "1", "aria-label": "Risk in dollars" });
-  input.value = typed !== undefined ? typed : (line.recommended_stake || "");
-  input.addEventListener("input", () => editingStake.set(line.wz_game_id, input.value));
-  const result = el("span", { class: "result" });
-  const button = el("button", { text: "Place" });
-  button.addEventListener("click", () => place(line, input, result, button));
-  const children = [input, button, result];
-  if (line.yields_to) {
-    children.unshift(el("span", { class: "faint", text: `overlaps ${line.yields_to}` }));
-  } else if (line.kelly_stake > line.recommended_stake) {
-    children.push(el("span", { class: "faint", text: `Kelly $${Math.round(line.kelly_stake)}` }));
+function renderProgress(p) {
+  const box = document.getElementById("progress");
+  const warnings = document.getElementById("book-warnings");
+  const busy = isBusy(p), b = p.board;
+  const status = (b && b.book_status) || {};
+  const progress = (b && b.book_progress) || {};
+
+  box.hidden = !busy;
+  if (busy) {
+    if (!b || b.finished_at) {
+      box.replaceChildren(el("div", { class: "progress-head" }, [
+        el("span", {}, [el("strong", { text: "Starting" }), el("span", { class: "muted", text: " · reading Wagerzon and opening the books" })]),
+      ]), el("div", { class: "meter accent" }, el("span", { style: "width:2%" })));
+    } else {
+      const share = b.progress_total ? b.progress_done / b.progress_total : 0;
+      box.replaceChildren(
+        el("div", { class: "progress-head" }, [
+          el("span", {}, [el("strong", { class: "num", text: `Pricing ${b.progress_done} / ${b.progress_total}` }),
+            el("span", { class: "muted", text: ` · ${elapsed(parseTime(b.started_at))} so far` }),
+            el("span", { class: "muted wide-only", text: " · trifectas ~90 s, DK superfectas ~7 min" })]),
+          el("span", { class: "muted num", text: Math.round(share * 100) + "%" }),
+        ]),
+        el("div", { class: "meter accent" }, el("span", { style: `width:${(share * 100).toFixed(1)}%` })),
+        el("div", { class: "chips" }, BOOK_ORDER.filter(n => n in status).map(n => bookChip(n, status[n], progress[n], true))),
+      );
+    }
   }
-  return el("span", { class: "stake" }, children);
+
+  // After a refresh, only a book that failed is worth the space.
+  const failed = busy ? [] : BOOK_ORDER.filter(n => n in status && status[n] !== "ok");
+  warnings.hidden = failed.length === 0;
+  warnings.replaceChildren(...failed.map(n => bookChip(n, status[n], progress[n], false)));
 }
 
-async function place(line, input, result, button) {
-  const risk = Number(input.value);
-  const account = document.getElementById("account").value;
-  if (!(risk > 0)) { result.className = "result err"; result.textContent = "Enter a stake first"; return; }
-  const ok = confirm(`Place $${risk} on ${line.description} at ${signed(line.wz_american)} (Wagerzon: ${account})?`);
-  if (!ok) return;
-  button.textContent = "Placing…";
-  button.disabled = true;
-  try {
-    const r = await api("/api/place", { wz_game_id: line.wz_game_id, wz_american: line.wz_american, risk, account });
-    result.className = "result " + (r.status === "placed" ? "ok" : "err");
-    result.textContent = r.status === "placed" ? `placed · ticket ${r.ticket_number}` : `${r.status}: ${r.error || ""}`;
-    if (r.status === "placed") editingStake.delete(line.wz_game_id);
-  } catch (e) {
-    result.className = "result err"; result.textContent = e.message;
-  } finally {
-    button.textContent = "Place";
-    button.disabled = false;
-    load();
-  }
+// --- toolbar ----------------------------------------------------------------
+function renderToolbar(p) {
+  const bar = document.getElementById("toolbar");
+  bar.hidden = !p.board || p.board.lines.length === 0;
+  if (bar.hidden) return;
+  const lines = p.board.lines;
+  const counts = {
+    all: lines.length,
+    TRIFECTA: lines.filter(l => l.prop_type === "TRIFECTA").length,
+    SUPERFECTA: lines.filter(l => l.prop_type === "SUPERFECTA").length,
+  };
+  const typeButtons = [["all", "All"], ["TRIFECTA", "Trifectas"], ["SUPERFECTA", "Superfectas"]].map(([key, label]) =>
+    el("button", { "aria-pressed": String(prefs.type === key), onclick: () => setPref("type", key) },
+      [label, el("span", { class: "count", text: counts[key] })]));
+  document.getElementById("type-seg").replaceChildren(...typeButtons);
+  const viewButtons = [["game", "By game"], ["ev", "Best EV"]].map(([key, label]) =>
+    el("button", { "aria-pressed": String(prefs.view === key), text: label, onclick: () => setPref("view", key) }));
+  document.getElementById("view-seg").replaceChildren(...viewButtons);
+  document.getElementById("ev-only").setAttribute("aria-pressed", String(prefs.evOnly));
 }
 
-function renderRows(p) {
-  const rows = document.getElementById("rows");
-  if (!p.board) { rows.replaceChildren(el("div", { class: "grid faint", text: "Click Refresh to price this week’s fectas." })); return; }
-  const lines = [...p.board.lines].sort((a, b) => (b.ev ?? -9) - (a.ev ?? -9));
-  rows.replaceChildren(...lines.map(line => {
-    const game = line.home ? `${line.away} @ ${line.home} · ${kickoff(line.game_start_time)}` : "";
-    const meta = [line.rotation, game, bookLine(line), line.fair_prob == null ? line.note : null].filter(Boolean).join(" · ");
-    const evClass = line.ev == null ? "faint" : line.ev > 0 ? "ev-pos" : "ev-neg";
-    return el("div", { class: "grid" }, [
-      el("div", {}, [el("div", { class: "desc", text: line.description }), el("div", { class: "meta", text: meta })]),
-      el("span", { text: signed(line.wz_american) }),
-      el("span", { text: line.fair_american != null ? signed(line.fair_american) : "–" }),
-      el("span", { class: evClass, text: pct(line.ev) }),
-      stakeCell(line),
+function setPref(key, value) {
+  prefs[key] = value;
+  savePrefs();
+  render();
+}
+
+// --- one special --------------------------------------------------------------
+function booksLine(line) {
+  if (line.is_superfecta) {
+    const part = line.books.DraftKings;
+    const periods = line.legs.filter(l => l.kind !== "scores_first").map(l => PERIOD_LABEL[l.period] || l.period).join("/");
+    const pieces = [
+      `DK ${periods} part ${part && part.fair_american != null ? signed(part.fair_american) : "–"}`,
+      `× ${line.team} scores first ${line.sf_share != null ? Math.round(line.sf_share * 100) + "%" : "–"}`,
+    ];
+    if (line.dk_price_with_vig != null) pieces.push(`· DK price ${signed(line.dk_price_with_vig)} incl. vig`);
+    return el("div", { class: "books-line num", text: pieces.join(" ") });
+  }
+  const names = BOOK_ORDER.filter(n => n in line.books);
+  const priced = names.filter(n => line.books[n].fair_prob != null);
+  const parts = [];
+  names.forEach((name, i) => {
+    const fair = line.books[name];
+    if (i > 0) parts.push(" · ");
+    if (fair.fair_american == null) {
+      parts.push(el("span", { class: "none", title: fair.reason || "", text: `${BOOK_SHORT[name]} –` }));
+    } else if (priced.length > 1 && fair.fair_prob === line.fair_prob) {
+      parts.push(el("span", { class: "worst", title: "Worst case — the fair this row uses",
+                              text: `${BOOK_SHORT[name]} ${signed(fair.fair_american)} (worst)` }));
+    } else {
+      parts.push(`${BOOK_SHORT[name]} ${signed(fair.fair_american)}`);
+    }
+  });
+  return parts.length ? el("div", { class: "books-line num" }, parts) : null;
+}
+
+function infoCell(line, p, showMatchup) {
+  const title = line.prop_type ? specialTitle(line.description) : line.description;
+  const tags = [];
+  if (line.prop_type === "SUPERFECTA") tags.push(el("span", { class: "tag sf", text: "SF" }));
+  if (line.prop_type === "TRIFECTA") tags.push(el("span", { class: "tag", text: "TRI" }));
+  if (line.status === "pricing") tags.push(el("span", { class: "tag pending", text: "pricing" }));
+  const meta = [String(line.rotation)];
+  if (showMatchup && line.home) meta.push(`${line.away} @ ${line.home} · ${dayClock(parseTime(line.game_start_time))}`);
+  const unpriced = line.fair_prob == null && line.status !== "pricing";
+  return el("div", { class: "info-col" }, [
+    el("div", { class: "title-line" }, [el("span", { class: "title", title: line.description, text: title }), ...tags,
+      el("span", { class: "faint small num", text: meta.join(" · ") })]),
+    line.legs.length ? el("div", { class: "legs" }, line.legs.map(leg => el("span", { class: "leg", title: leg.text, text: legLabel(leg) }))) : null,
+    booksLine(line),
+    unpriced && line.note ? el("div", { class: "note", text: line.note }) : null,
+  ]);
+}
+
+function priceCell(line) {
+  return el("div", { class: "price-col num" }, [
+    el("div", {}, [el("span", { class: "price-main", text: signed(line.wz_american) }), el("span", { class: "faint small", text: " WZ" })]),
+    el("div", { class: "price-sub", text: line.fair_american != null ? `fair ${signed(line.fair_american)}` : "fair –" }),
+    line.ev != null ? el("span", { class: "ev " + evClass(line.ev), text: pct(line.ev) }) : null,
+  ]);
+}
+
+function stakeCell(line, p, byRotation) {
+  if (line.fair_prob == null) {
+    return el("div", { class: "stake-col stake-none", text: line.status === "pricing" ? "Pricing…" : "Unpriced" });
+  }
+  if (line.ev <= 0) return el("div", { class: "stake-col stake-none", text: "No bet" });
+  if (hasStarted(line)) return el("div", { class: "stake-col stake-none", text: "Game started" });
+
+  const id = line.wz_game_id;
+  const teamBets = teamPlacements(p, line);
+  const ownBets = teamBets.filter(r => r.wz_game_id === id);
+  const otherBets = teamBets.filter(r => r.wz_game_id !== id);
+  const children = [];
+  if (otherBets.length) {
+    const other = p.board.lines.find(l => l.wz_game_id === otherBets[0].wz_game_id);
+    children.push(el("div", { class: "stake-note",
+      text: `${line.team} already bet: ${specialTitle(other.description)} (${other.rotation}), ${money(otherBets.reduce((sum, r) => sum + r.risk, 0))}` }));
+  } else if (line.yields_to) {
+    const other = byRotation.get(line.yields_to);
+    const label = other ? `${specialTitle(other.description)} (${line.yields_to})` : String(line.yields_to);
+    children.push(el("div", { class: "stake-note", text: "Overlaps " + label }));
+  }
+
+  const typed = editingStake.get(id);
+  const value = typed !== undefined ? typed : (line.recommended_stake ? String(Math.round(line.recommended_stake)) : "");
+  // type=text, not number: a number box changes on a scroll-wheel tick and
+  // can't keep its caret across the 3 s progress re-renders.
+  const input = el("input", { type: "text", inputmode: "decimal", autocomplete: "off",
+                              "aria-label": `Risk on ${line.description}`, "data-stake-id": String(id) });
+  input.value = value;
+  const sub = el("div", { class: "stake-sub num" });
+  const updateSub = () => {
+    const risk = Number(input.value);
+    const pieces = [];
+    if (risk > 0) pieces.push(`to win ${money(toWin(risk, line.wz_american))}`);
+    if (!line.yields_to && !teamBets.length && line.kelly_stake > line.recommended_stake + 0.5) pieces.push(`Kelly ${money(line.kelly_stake)}`);
+    if (!line.yields_to && p.available_balance == null) pieces.push("no stake until Refresh reads the balance");
+    sub.textContent = pieces.join(" · ");
+  };
+  input.addEventListener("input", () => { editingStake.set(id, input.value); placeMessages.delete(id); updateSub(); });
+  input.addEventListener("keydown", e => { if (e.key === "Enter") button.click(); });
+  updateSub();
+
+  const inFlight = placing.has(id);
+  const button = el("button", { disabled: inFlight, onclick: () => askToPlace(line, input) },
+    inFlight ? [el("span", { class: "spinner", "aria-hidden": "true" }), "Placing…"] : ["Place"]);
+  children.push(el("div", { class: "stake-form" }, [el("div", { class: "money-input" }, [el("span", { text: "$" }), input]), button]));
+  children.push(sub);
+
+  const message = placeMessages.get(id);
+  if (message) children.push(el("div", { class: message.ok ? "msg-ok" : "msg-err", role: "status", text: message.text }));
+  if (ownBets.length && !(message && message.ok)) {
+    const total = ownBets.reduce((sum, r) => sum + r.risk, 0);
+    children.push(el("div", { class: "msg-ok", text: `Placed ${money(total)} this week · ticket ${ownBets[0].ticket_number}` }));
+  }
+  return el("div", { class: "stake-col" }, children);
+}
+
+function rowFor(line, p, byRotation, showMatchup) {
+  const dim = line.fair_prob == null || line.ev <= 0 || hasStarted(line);
+  return el("div", { class: "row" + (dim ? " dim" : ""), "data-id": String(line.wz_game_id) }, [
+    infoCell(line, p, showMatchup), priceCell(line), stakeCell(line, p, byRotation),
+  ]);
+}
+
+// --- board ------------------------------------------------------------------
+// Best EV first; a started game can't be bet, so it sorts last.
+function byEvDesc(a, b) {
+  return hasStarted(a) - hasStarted(b) || (b.ev ?? -Infinity) - (a.ev ?? -Infinity) || a.rotation - b.rotation;
+}
+
+function visibleLines(lines) {
+  return lines.filter(line => {
+    if (prefs.type !== "all" && line.prop_type !== prefs.type) return false;
+    if (prefs.evOnly && !(line.ev > 0 && !hasStarted(line))) return false;
+    return true;
+  });
+}
+
+function groupByGame(lines) {
+  const groups = new Map();
+  for (const line of lines) {
+    const key = line.home ? `${line.away}@${line.home}@${line.game_start_time}` : "none";
+    if (!groups.has(key)) groups.set(key, { line, lines: [] });
+    groups.get(key).lines.push(line);
+  }
+  // Upcoming games by kickoff, then started games, then specials with no game.
+  const list = [...groups.entries()].map(([key, group]) => ({ key, ...group }));
+  const rank = group => group.key === "none" ? 2 : hasStarted(group.line) ? 1 : 0;
+  const kickoffMs = group => group.key === "none" ? 0 : parseTime(group.line.game_start_time).getTime();
+  return list.sort((a, b) => rank(a) - rank(b) || kickoffMs(a) - kickoffMs(b));
+}
+
+function emptyState(title, body, withRefresh) {
+  return el("div", { class: "card empty" }, [
+    el("h2", { text: title }), el("p", { text: body }),
+    withRefresh ? el("button", { class: "primary", text: "Refresh", onclick: startRefresh }) : null,
+  ]);
+}
+
+function renderBoard(p) {
+  const root = document.getElementById("board");
+  if (!p.board) {
+    root.replaceChildren(isBusy(p) ? "" : emptyState("Price this week’s fectas",
+      "FanDuel and BetMGM price the trifectas in about 90 seconds; DraftKings fills in the superfectas over about " +
+      "7 minutes (start dk_price_sidecar/run.sh first).", true));
+    return;
+  }
+  if (p.board.lines.length === 0) {
+    root.replaceChildren(emptyState("No specials on Wagerzon yet",
+      "Wagerzon usually posts the NFL WEEK n - SPECIALS around Thursday.", false));
+    return;
+  }
+  const byRotation = new Map(p.board.lines.map(l => [l.rotation, l]));
+  const lines = visibleLines(p.board.lines);
+  const hiddenCount = p.board.lines.length - lines.length;
+  const parts = [];
+
+  if (prefs.view === "ev") {
+    if (lines.length) {
+      parts.push(el("div", { class: "group" }, [...lines].sort(byEvDesc).map(l => rowFor(l, p, byRotation, true))));
+    }
+  } else {
+    for (const group of groupByGame(lines)) {
+      const head = group.key === "none"
+        ? el("div", { class: "group-head" }, [el("span", { class: "matchup", text: "No game found" }),
+            el("span", { class: "muted small", text: "not priced" })])
+        : el("div", { class: "group-head" }, [
+            el("span", { class: "matchup", text: `${group.line.away} @ ${group.line.home}` }),
+            el("span", { class: "muted small num", text: `${dayClock(parseTime(group.line.game_start_time))} · ${untilKickoff(parseTime(group.line.game_start_time))}` }),
+          ]);
+      parts.push(el("div", { class: "group" }, [head, ...group.lines.sort(byEvDesc).map(l => rowFor(l, p, byRotation, false))]));
+    }
+  }
+  if (lines.length === 0) {
+    parts.push(el("div", { class: "card empty" }, [el("h2", { text: "Nothing matches these filters" }),
+      el("button", { text: "Show all", onclick: showAll })]));
+  } else if (hiddenCount > 0) {
+    parts.push(el("div", { class: "hidden-note" }, [`${hiddenCount} hidden by filters · `,
+      el("button", { class: "linkish", text: "Show all", onclick: showAll })]));
+  }
+  root.replaceChildren(...parts);
+}
+
+function showAll() { prefs.type = "all"; prefs.evOnly = false; savePrefs(); render(); }
+
+// --- placed this week -----------------------------------------------------------
+function renderPlaced(p) {
+  const list = document.getElementById("placed");
+  const placed = p.placements.filter(r => r.status === "placed");
+  const risked = placed.reduce((sum, r) => sum + r.risk, 0);
+  document.getElementById("placed-summary").textContent =
+    placed.length ? `${placed.length} placed · ${money(risked)} risked` : "";
+  if (!p.placements.length) {
+    list.replaceChildren(el("div", { class: "placed-row" }, el("span", { class: "faint", style: "grid-column: 1 / -1", text: "Nothing placed yet." })));
+    return;
+  }
+  const showAccount = p.accounts.length > 1;
+  list.replaceChildren(...p.placements.map(r => {
+    const ok = r.status === "placed";
+    const when = dayClock(parseTime(r.placed_at));
+    const detail = ok
+      ? `Ticket ${r.ticket_number} · to win ${money(toWin(r.risk, r.wz_american))}` + (showAccount ? ` · ${r.account}` : "")
+      : `${r.status}: ${r.error || "no reason given"}` + (showAccount ? ` · ${r.account}` : "");
+    return el("div", { class: "placed-row" }, [
+      el("span", { class: ok ? "status-ok" : "status-err", "aria-label": ok ? "placed" : "not placed", text: ok ? "✓" : "✕" }),
+      el("span", { text: `${r.description}`, title: String(r.rotation) }),
+      el("span", { class: "num", text: `${money(r.risk)} at ${signed(r.wz_american)}` }),
+      el("span", { class: "faint small placed-when", text: when }),
+      el("div", { class: "placed-detail" + (ok ? "" : " err"), text: detail + " · " + when }),
     ]);
   }));
 }
 
-function renderPlaced(p) {
-  const placed = document.getElementById("placed");
-  if (!p.placements.length) { placed.replaceChildren(el("div", { class: "placed faint", text: "Nothing placed yet." })); return; }
-  placed.replaceChildren(...p.placements.map(r => el("div", { class: "placed" }, [
-    el("span", { text: `${r.rotation} ${r.description}` }),
-    el("span", { text: `$${r.risk} at ${signed(r.wz_american)}` }),
-    el("span", { class: r.status === "placed" ? "ev-pos" : "ev-neg", text: r.status === "placed" ? `placed · ticket ${r.ticket_number}` : `${r.status}: ${r.error || ""}` }),
-    el("span", { class: "faint", text: new Date(r.placed_at).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) }),
-  ])));
+// --- placing ----------------------------------------------------------------
+function askToPlace(line, input) {
+  const p = lastPayload, id = line.wz_game_id;
+  const risk = Number(input.value);
+  if (!(risk >= p.min_stake && risk <= p.max_stake)) {
+    placeMessages.set(id, { ok: false, text: `Enter ${money(p.min_stake)}–${money(p.max_stake)} (Wagerzon's limits)` });
+    render();
+    return;
+  }
+  if (p.available_balance != null && risk > p.available_balance) {
+    placeMessages.set(id, { ok: false, text: `Only ${money(p.available_balance)} available` });
+    render();
+    return;
+  }
+  const account = currentAccount();
+  document.getElementById("confirm-title").textContent = specialTitle(line.description);
+  document.getElementById("confirm-desc").textContent = `${line.description} · ${line.rotation}` +
+    (line.home ? ` · ${line.away} @ ${line.home} ${dayClock(parseTime(line.game_start_time))}` : "");
+  const rows = [
+    ["Risk", money(risk)], ["To win", money(toWin(risk, line.wz_american))], ["Wagerzon price", signed(line.wz_american)],
+    ["Fair · EV", `${signed(line.fair_american)} · ${pct(line.ev)}`], ["Account", account],
+  ];
+  document.getElementById("confirm-grid").replaceChildren(...rows.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]));
+  document.getElementById("confirm-ok").textContent = `Place ${money(risk)}`;
+  const dialog = document.getElementById("confirm");
+  dialog.returnValue = "";
+  dialog.onclose = () => { if (dialog.returnValue === "place") place(line, risk, account); };
+  dialog.showModal();
+  document.getElementById("confirm-cancel").focus();
+}
+
+async function place(line, risk, account) {
+  const id = line.wz_game_id;
+  if (placing.has(id)) return;
+  placing.add(id);
+  placeMessages.delete(id);
+  render();
+  try {
+    const r = await api("/api/place", { wz_game_id: id, wz_american: line.wz_american, risk, account });
+    if (r.status === "placed") {
+      placeMessages.set(id, { ok: true, text: `Placed ${money(risk)} · ticket ${r.ticket_number}` });
+      editingStake.delete(id);
+    } else {
+      placeMessages.set(id, { ok: false, text: `Not placed — ${r.status}: ${r.error || "no reason given"}` });
+    }
+  } catch (e) {
+    placeMessages.set(id, { ok: false, text: "Not placed — " + e.message });
+  } finally {
+    placing.delete(id);
+    load();
+  }
+}
+
+// --- load / render loop ---------------------------------------------------------
+function render() {
+  const p = lastPayload;
+  if (!p) return;
+  // Re-rendering replaces the stake inputs; keep the one being typed in
+  // focused with its caret where it was.
+  const active = document.activeElement;
+  const focusedId = active && active.dataset ? active.dataset.stakeId : null;
+  const caret = focusedId ? [active.selectionStart, active.selectionEnd] : null;
+  renderHeader(p); renderTiles(p); renderProgress(p); renderToolbar(p); renderBoard(p); renderPlaced(p);
+  if (focusedId) {
+    const again = document.querySelector(`input[data-stake-id="${focusedId}"]`);
+    if (again) { again.focus(); again.setSelectionRange(caret[0], caret[1]); }
+  }
 }
 
 async function load() {
   try {
-    const account = document.getElementById("account").value;
+    const account = currentAccount();
     const p = await api("/api/board" + (account ? "?account=" + encodeURIComponent(account) : ""));
     lastPayload = p;
-    renderHeader(p); renderChips(p); renderRows(p); renderPlaced(p);
+    render();
   } catch (e) {
-    document.getElementById("banner").replaceChildren(el("div", { class: "banner", text: "Can't reach the pricer: " + e.message }));
+    document.getElementById("banner").replaceChildren(el("div", { class: "banner err", text: "Can't reach the pricer: " + e.message }));
   }
   // Poll only while a refresh is pricing; otherwise the page sits still
   // until you click Refresh (user decision 2026-10-02).
-  const busy = lastPayload && (lastPayload.refreshing || (lastPayload.board && !lastPayload.board.finished_at));
   clearTimeout(pollTimer);
-  if (busy) pollTimer = setTimeout(load, 3000);
+  if (lastPayload && isBusy(lastPayload)) pollTimer = setTimeout(load, POLL_MS);
+}
+
+async function startRefresh() {
+  refreshRequested = true;
+  if (lastPayload) render();
+  try {
+    await api("/api/refresh", {});
+  } catch (e) {
+    document.getElementById("banner").replaceChildren(el("div", { class: "banner err", text: "Refresh failed to start: " + e.message }));
+  }
+  // The server marks itself refreshing before it answers, so the next load sees it.
+  refreshRequested = false;
+  load();
 }
 
 async function saveSettings() {
   const bankroll = Number(document.getElementById("bankroll").value);
   const kelly_fraction = Number(document.getElementById("kelly").value);
-  try { await api("/api/settings", { bankroll, kelly_fraction }); editingStake.clear(); }
-  catch (e) { alert(e.message); }
+  const status = document.getElementById("settings-status");
+  try {
+    await api("/api/settings", { bankroll, kelly_fraction });
+    editingStake.clear();
+    status.className = "small msg-ok"; status.textContent = "Saved — stakes re-sized";
+  } catch (e) {
+    status.className = "small msg-err"; status.textContent = e.message;
+  }
   load();
+}
+
+function toggleSettings(open) {
+  const pop = document.getElementById("settings-pop"), btn = document.getElementById("settings-btn");
+  pop.hidden = !open;
+  btn.setAttribute("aria-expanded", String(open));
+  if (open) { document.getElementById("settings-status").textContent = ""; document.getElementById("bankroll").focus(); }
 }
 
 document.getElementById("bankroll").addEventListener("change", saveSettings);
 document.getElementById("kelly").addEventListener("change", saveSettings);
-document.getElementById("account").addEventListener("change", () => { editingStake.clear(); load(); });
-document.getElementById("refresh").addEventListener("click", async () => {
-  await api("/api/refresh", {}); load();
+document.getElementById("settings-btn").addEventListener("click", () =>
+  toggleSettings(document.getElementById("settings-pop").hidden));
+document.addEventListener("click", e => {
+  if (!e.target.closest(".settings-wrap")) toggleSettings(false);
 });
+document.addEventListener("keydown", e => { if (e.key === "Escape") toggleSettings(false); });
+document.getElementById("account").addEventListener("change", () => {
+  editingStake.clear(); placeMessages.clear(); load();
+});
+document.getElementById("ev-only").addEventListener("click", () => setPref("evOnly", !prefs.evOnly));
+document.getElementById("refresh").addEventListener("click", startRefresh);
 load();
 </script>
 </body>
