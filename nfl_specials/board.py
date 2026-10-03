@@ -10,15 +10,17 @@ Side effects: APPENDS every (special, book) result to fecta_quotes.
 Sizing (size_board) runs at read time with the current settings, so a new
 bankroll or Kelly fraction applies without re-pricing.
 
-Order: FanDuel and BetMGM price the trifectas over plain HTTP first.
-DraftKings goes last and prices the superfectas alone (user decision
-2026-10-02: only DK lets "scores first" into an SGP, so only DK prices them)
-— its trifecta-part partition, then its scores-first share — through a real
-browser, paced, with the page reloaded every 5 calls.
+Books: FanDuel and BetMGM price the trifectas over plain HTTP. DraftKings
+prices the superfectas alone (user decision 2026-10-02: only DK lets "scores
+first" into an SGP, so only DK prices them) — its trifecta-part partition,
+then its scores-first share — through a real browser, paced, with the page
+reloaded every 5 calls. The three books price in parallel, one thread per
+book; each book's own calls stay sequential, so DK's pacing holds.
 """
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field, replace
 from datetime import datetime, time, timedelta, timezone
 from typing import Callable
@@ -225,6 +227,40 @@ def _price_scores_first(book: SgpBook, line: FectaLine) -> ScoresFirstShare:
     return scores_first_share(book, game, role, line.fecta)
 
 
+def _price_lane(name: str, book: SgpBook, tasks: list[tuple[str, FectaLine]], board: Board,
+                board_lock: threading.Lock, store: Store, publish: Callable[[Board], None]) -> None:
+    """Price one book's tasks in order. Network calls run outside the lock;
+    every board mutation, quote append and publish happens inside it."""
+    for task, line in tasks:
+        now = datetime.now(timezone.utc)
+        error: str | None = None
+        try:
+            if task == "scores_first":
+                result = _price_scores_first(book, line)
+            else:
+                result = _price_partition(book, line)
+        except Exception as exc:  # transport failure on one book/special
+            log.warning("%s pricing %s failed: %s", name, line.special.description, exc)
+            error = f"error: {exc}"[:200]
+            if task == "scores_first":
+                result = ScoresFirstShare(name, None, 0, reason=error)
+            else:
+                result = BookFair(name, None, None, None, 0, reason=error)
+        with board_lock:
+            if error is not None:
+                board.book_status[name] = error
+            if task == "scores_first":
+                line.sf_share = result
+                row = _quote_row(line, now, book=name, quote_kind="scores_first_share", share=result)
+            else:
+                line.book_fairs[name] = result
+                kind = "trifecta_part" if line.is_superfecta() else "full"
+                row = _quote_row(line, now, book=name, quote_kind=kind, fair=result)
+            store.append_quotes([row])
+            board.progress_done += 1
+            publish(board.snapshot())
+
+
 def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
     started_at = datetime.now(timezone.utc)
     books, book_status = open_books(config.DK_SIDECAR_URL)
@@ -253,30 +289,21 @@ def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
     board.progress_total = len(work)
     publish(board.snapshot())
 
+    # One lane per book, run side by side: each book's calls stay sequential
+    # (DK's sidecar paces itself; FD/MGM sessions are single-threaded), but
+    # the books no longer wait for each other, so the refresh takes about as
+    # long as the slowest book (DraftKings) instead of the sum of all three.
+    lanes: dict[str, list[tuple[str, FectaLine]]] = {name: [] for name in books}
     for task, name, line in work:
-        book = books[name]
-        now = datetime.now(timezone.utc)
-        try:
-            if task == "scores_first":
-                line.sf_share = _price_scores_first(book, line)
-            else:
-                line.book_fairs[name] = _price_partition(book, line)
-        except Exception as exc:  # transport failure on one book/special
-            log.warning("%s pricing %s failed: %s", name, line.special.description, exc)
-            reason = f"error: {exc}"[:200]
-            board.book_status[name] = reason
-            if task == "scores_first":
-                line.sf_share = ScoresFirstShare(name, None, 0, reason=reason)
-            else:
-                line.book_fairs[name] = BookFair(name, None, None, None, 0, reason=reason)
-        if task == "scores_first":
-            row = _quote_row(line, now, book=name, quote_kind="scores_first_share", share=line.sf_share)
-        else:
-            kind = "trifecta_part" if line.is_superfecta() else "full"
-            row = _quote_row(line, now, book=name, quote_kind=kind, fair=line.book_fairs[name])
-        store.append_quotes([row])
-        board.progress_done += 1
-        publish(board.snapshot())
+        lanes[name].append((task, line))
+    board_lock = threading.Lock()
+    threads = [threading.Thread(target=_price_lane, name=f"price-{name}", daemon=True,
+                                args=(name, books[name], tasks, board, board_lock, store, publish))
+               for name, tasks in lanes.items() if tasks]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
 
     for line in pricing:
         if line.fair_prob() is not None:

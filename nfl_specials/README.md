@@ -17,10 +17,11 @@ dk_price_sidecar/run.sh     # own terminal; needed for superfectas (DK only)
 nfl_specials/run.sh         # http://127.0.0.1:8096
 ```
 
-The board prices only when you click **Refresh** (no auto-refresh). FanDuel and
-BetMGM price the trifectas in ~90 s; DraftKings then prices the superfectas
-(~20 calls each, paced 1.5 s, page reloaded every 5 calls), ~7 more minutes,
-filling in as it goes.
+The board prices only when you click **Refresh** (no auto-refresh). The three
+books price side by side, one thread each (`board.py::_price_lane`), so the
+refresh takes about as long as the slowest book: FanDuel and BetMGM finish the
+trifectas in ~2 min; DraftKings' superfectas (~20 calls each, paced 1.5 s,
+page reloaded every 5 calls) fill in over ~10 min.
 
 ## How a special is priced
 
