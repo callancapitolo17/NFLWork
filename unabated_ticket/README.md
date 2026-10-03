@@ -1918,10 +1918,14 @@ binding) are still to come. Plan: `phone_page_plan.md` in the project files.
    `GIT_SSH_COMMAND="ssh -i ~/.ssh/nflwork" git clone git@github.com:callancapitolo17/NFLWork.git`.
 3. **Install.**
    `sudo apt install -y python3-venv && cd NFLWork && python3 -m venv venv && venv/bin/pip install -r unabated_ticket/bets_service/requirements.txt`
-4. **Credentials.** From the Mac, `scp` into the same paths on the VM:
-   `bet_logger/.env` (BFA, Wagerzon, Polymarket US), `kalshi_draft/.env` plus
-   the Kalshi `.pem` its `KALSHI_PRIVATE_KEY_PATH` names (fix that path in the
-   VM's copy). Then `chmod 600` each.
+4. **Credentials: API keys only.** Never `scp` `bet_logger/.env`: it holds
+   the BFA and Wagerzon passwords, which stay off the server until you decide
+   to move those books (a data-center login may flag the account). Copy the
+   Kalshi key ID and the `.pem` its `KALSHI_PRIVATE_KEY_PATH` names (fix that
+   path on the VM), and put only the Polymarket US key lines in
+   `unabated_ticket/bets_service/.env` on the VM. Then `chmod 600` each.
+   Result on the VM, 2026-10-01: Kalshi, Polymarket US and the Unabated feed
+   `ok`; Novig awaiting its own login; BFA, Wagerzon and BetOnline untested.
    - **Novig: don't copy the token.** Auth0 revokes the whole chain when a
      rotated refresh token is reused, so the VM needs its own login:
      `venv/bin/python -m unabated_ticket.bets_service.sources.novig_auth connect`
