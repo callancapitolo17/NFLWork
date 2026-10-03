@@ -255,6 +255,28 @@ def test_universe_stats(monkeypatch, tmp_path):
     assert per_book["novig"] == (1, 1)
 
 
+def test_universe_stats_counts_a_relayed_novig_once(monkeypatch, tmp_path):
+    """A landing of {fanduel, novig relaying fanduel} is ONE opinion, so it
+    does not pass the 2-book gate — the live rule, applied to the payload.
+    Novig still shows in the per-book coverage table: it did land."""
+    from kalshi_mlb_mm import report
+    state, research = _setup_dbs(monkeypatch, tmp_path)
+    copy = _od_result("h_copy", ["fanduel", "novig"])
+    copy["books"]["novig"]["vendors"] = ["fanduel"]
+    proxy = _od_result("h_proxy", ["betmgm", "novig"])
+    proxy["books"]["novig"]["vendors"] = ["draftkings"]   # DK absent: counts
+    _insert_event(research, "on_demand_result", NOW - timedelta(minutes=2),
+                  copy)
+    _insert_event(research, "on_demand_result", NOW - timedelta(minutes=1),
+                  proxy)
+
+    stats = report.universe_stats(research, NOW - timedelta(days=7), NOW)
+    assert [(passing, total) for _d, passing, total in stats["per_day"]] \
+        == [(1, 2)]
+    per_book = {b: combos for b, _days, combos, _age in stats["per_book"]}
+    assert per_book["novig"] == 2
+
+
 def test_universe_empty(monkeypatch, tmp_path):
     from kalshi_mlb_mm import report
     state, research = _setup_dbs(monkeypatch, tmp_path)

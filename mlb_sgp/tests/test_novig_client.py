@@ -189,6 +189,29 @@ def test_parse_parlay_response_list_shape():
     assert parsed["status"] == "OPEN"
 
 
+def test_parse_parlay_response_keeps_each_legs_vendor():
+    """Novig relays every parlay from a vendor book and names it per leg
+    (shape captured 2026-10-02, trimmed)."""
+    raw = [{"price": "0.36000", "status": "Unfilled",
+            "legs": [{"price": "0.57100", "vendor": "FANDUEL",
+                      "outcomeId": "o-1"},
+                     {"price": "0.60900", "vendor": "FANDUEL",
+                      "outcomeId": "o-2"}]}]
+    parsed = _parse_parlay_response(raw)
+    assert parsed["vendors"] == ["FANDUEL", "FANDUEL"]
+    assert parsed["decimal"] == pytest.approx(2.7778)
+
+
+def test_parse_parlay_response_leg_without_vendor_reads_none():
+    raw = [{"price": "0.36000", "legs": [{"vendor": "BETMGM"}, {"price": "0.5"}]}]
+    assert _parse_parlay_response(raw)["vendors"] == ["BETMGM", None]
+
+
+def test_parse_parlay_response_without_legs_names_no_vendors():
+    raw = json.loads((FIX / "nv_parlay_response.json").read_text())
+    assert _parse_parlay_response(raw)["vendors"] == []
+
+
 def test_parse_parlay_response_empty():
     """Empty list / missing price / out-of-range price -> {}."""
     assert _parse_parlay_response([]) == {}

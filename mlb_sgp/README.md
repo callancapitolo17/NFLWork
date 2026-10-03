@@ -1091,15 +1091,34 @@ A 404 can only mean the endpoint is gone. (The client's unused copy of this
 fetch, `NovigClient.fetch_event_legs`, was deleted.)
 
 **Novig is not an independent price.** Each parlay leg names the vendor that
-priced it. Until 2026-09 it was always `DRAFTKINGS`; on 2026-10-02 spread ×
-total came back `DRAFTKINGS`, ML × total `FANDUEL`, and `BETMGM` also appears.
-Novig shades the vendor's price slightly short: on CWS @ CLE its four
-FanDuel-routed ML × total prices were 0.5–2% below FanDuel's own quotes
-(Home ML + Over: FD 2.8313, Novig 2.809), and the two grids devig to within
-~0.3 probability points. Novig plus its vendor is therefore one source in any
-consensus count (see the `MIN_AGREEING_BOOKS` note in
-`kalshi_mlb_mm/config.py`). The status field now reads `Unfilled`; nothing
-keys on it.
+priced it (`legs[].vendor`). Until 2026-09 it was always `DRAFTKINGS`. On
+2026-10-02 (4 games, 112 combos priced at all books through
+`price_on_demand`, two passes 20 minutes apart) the vendor was chosen **per
+selection set, i.e. per partition cell**:
+
+- 88% of Novig's 2^N grids mixed 2–3 vendors; cells were `DRAFTKINGS` 60%,
+  `FANDUEL` 29%, `BETMGM` 11%, `CAESARS` <1%. Every leg of one cell names the
+  same vendor.
+- 30% of cells had switched vendor 20 minutes later — the routing moves with
+  prices (the routed vendor was the cheaper of FanDuel/BetMGM in 78% of
+  cells), so no static shape → vendor map works.
+- A relayed cell is the vendor's price shaded: FanDuel cells at 0.990 of
+  FanDuel's own decimal (IQR 0.983–0.994), BetMGM cells unshaded (1.000).
+- Novig's fair sat inside the maker's `SIGMA_Z_MAX` of a book it relayed in
+  96 of 99 combos (median σ_z 0.016); FanDuel vs BetMGM, two independent
+  books, in 58 of 70 (median 0.039).
+
+So `NovigClient.submit_parlay` returns the per-leg `vendors`, and on the
+on-demand path `price_selection_set(relayed=...)` records them into a
+per-call `RelayedVendors` (`_shared.py`); `OnDemandBookResult.vendors` carries
+the union as our book keys (`NOVIG_VENDOR_BOOKS`: `"FANDUEL"` → `"fanduel"`;
+a priced leg naming no vendor, or a name not in that map, → `"unknown"`, so
+a renamed enum fails closed instead of reading as an independent book). The maker then counts Novig only when none of those
+vendors landed in the same flight (`kalshi_mlb_mm.router.drop_relayed_novig`).
+Novig's exchange singles are its own book, not relayed: CLE ML read
+`available` 0.585 on the market tree while the DK-relayed leg in the same
+parlay said 0.571. The sweep path (`price_sgps`, taker/dashboard) does not
+carry vendors yet. The status field now reads `Unfilled`; nothing keys on it.
 
 Verified live 2026-10-02 (CWS @ CLE, 2026-10-03): `verify_books.py --books
 novig --pacing 12` → `priced` (spread × total fair 0.1788, ML × total 0.2407,

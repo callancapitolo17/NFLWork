@@ -1,6 +1,10 @@
 from datetime import date, datetime, timezone
 
-from nfl_specials.board import Board, FectaLine, book_game, in_special_week, size_board
+import pytest
+
+from nfl_specials import board as board_module
+from nfl_specials.board import (Board, FectaLine, book_game, in_special_week, refresh_board,
+                                 size_board)
 from nfl_specials.books import BookGame
 from nfl_specials.pricing import BookFair, ScoresFirstShare
 from nfl_specials.special_parser import parse_fecta
@@ -99,9 +103,46 @@ def test_special_week_is_thursday_through_monday_night():
     assert not in_special_week(next_thursday, special)
 
 
-def test_refresh_counts_progress_per_book(monkeypatch):
-    from nfl_specials import board as board_module
+class _FakeStore:
+    def __init__(self, fail_for_book: str | None = None) -> None:
+        self.rows: list[dict] = []
+        self.fail_for_book = fail_for_book
 
+    def append_quotes(self, rows: list[dict]) -> None:
+        if rows[0]["book"] == self.fail_for_book:
+            raise RuntimeError("database is locked")
+        self.rows.extend(rows)
+
+
+def _patch_refresh(monkeypatch, descriptions: list[str]) -> None:
+    specials = [WzSpecial(wz_game_id=i, rotation=i, description=d, wz_american=400,
+                          week_date=date(2098, 12, 31)) for i, d in enumerate(descriptions, start=1)]
+    books = {"FanDuel": object(), "BetMGM": object()}
+    monkeypatch.setattr(board_module, "open_books", lambda url: (books, {name: "ok" for name in books}))
+    monkeypatch.setattr(board_module.wz, "fetch_fecta_specials", lambda: specials)
+    monkeypatch.setattr(board_module, "_locate_game", lambda fecta, special, books: GAME)
+    monkeypatch.setattr(board_module, "_price_partition",
+                        lambda book, line: BookFair("FanDuel" if book is books["FanDuel"] else "BetMGM",
+                                                    0.1, None, 1.3, 8))
+
+
+def test_refresh_prices_every_book_in_its_own_lane(monkeypatch):
+    _patch_refresh(monkeypatch, ["CHARGERS TRIFECTA (1Q, 1H & GM)", "SEAHAWKS TRIFECTA (1Q, 1H & GM)"])
+    store = _FakeStore()
+    board = refresh_board(store, lambda snapshot: None)
+    assert board.progress_done == board.progress_total == 4
+    assert sorted((row["book"], row["rotation"]) for row in store.rows) == [
+        ("BetMGM", 1), ("BetMGM", 2), ("FanDuel", 1), ("FanDuel", 2)]
+    assert all(line.status == "priced" for line in board.lines)
+
+
+def test_a_crashed_lane_fails_the_refresh(monkeypatch):
+    _patch_refresh(monkeypatch, ["CHARGERS TRIFECTA (1Q, 1H & GM)"])
+    with pytest.raises(RuntimeError, match="BetMGM pricing lane crashed"):
+        refresh_board(_FakeStore(fail_for_book="BetMGM"), lambda snapshot: None)
+
+
+def test_refresh_counts_progress_per_book(monkeypatch):
     specials = [WzSpecial(wz_game_id=r, rotation=r, description=d, wz_american=900, week_date=date(2098, 12, 31))
                 for r, d in [(1, "CHARGERS TRIFECTA (1Q, 1H & GM)"),
                              (2, "CHARGERS SUPERFECTA (SCR 1ST, 1Q, 1H & GM)")]]
@@ -125,9 +166,10 @@ def test_refresh_counts_progress_per_book(monkeypatch):
                                            "DraftKings": {"done": 0, "total": 2}}
     assert published[-1].book_progress == {"FanDuel": {"done": 1, "total": 1}, "BetMGM": {"done": 1, "total": 1},
                                             "DraftKings": {"done": 2, "total": 2}}
-    # Snapshots are copies: a later count never rewrites an earlier publish.
-    assert published[1].book_progress["FanDuel"]["done"] == 1
-    assert published[1].book_progress["BetMGM"]["done"] == 0
+    # Snapshots are copies: each publish holds the count at its own moment
+    # (the lanes run in parallel, so which book lands first is not fixed);
+    # the last publish is the finished board.
+    assert [sum(c["done"] for c in snap.book_progress.values()) for snap in published] == [0, 1, 2, 3, 4, 4]
 
 
 def test_a_started_game_takes_no_stake_or_budget():
