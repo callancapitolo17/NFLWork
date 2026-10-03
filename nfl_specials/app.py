@@ -192,6 +192,7 @@ def _line_json(line, sizing) -> dict:
         "kelly_stake": round(sizing.kelly_stake, 2),
         "recommended_stake": sizing.recommended_stake,
         "yields_to": sizing.yields_to,
+        "books_split": sizing.books_split,
     }
 
 

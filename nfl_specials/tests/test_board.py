@@ -58,3 +58,14 @@ def test_superfecta_fair_is_trifecta_part_times_scores_first_share():
     assert size_board(_board(line), 1000, 0.25)[0].fair_prob is None   # no DK share yet
     line.sf_share = ScoresFirstShare("DraftKings", 0.6, 2)
     assert size_board(_board(line), 1000, 0.25)[0].fair_prob == 0.40 * 0.6
+
+
+def test_split_books_are_flagged_not_dropped():
+    falcons = _line(1, "FALCONS TRIFECTA (1Q, 1H & GM)", 490, 0.189)
+    falcons.book_fairs["BetMGM"] = BookFair("BetMGM", 0.222, None, 1.3, 8)
+    chargers = _line(2, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.094)
+    chargers.book_fairs["BetMGM"] = BookFair("BetMGM", 0.081, None, 1.4, 8)
+    lone = _line(3, "SAINTS TRIFECTA (1Q, 1H & GM)", 250, 0.24)
+    sized = size_board(_board(falcons, chargers, lone), 1000, 0.25)
+    assert [s.books_split for s in sized] == [True, False, False]
+    assert sized[0].fair_prob is not None
