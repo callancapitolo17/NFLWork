@@ -37,9 +37,7 @@ fills in as it goes.
    `[1, 1 + 0.25 x legs]` gives that book no fair.
 4. **Fair = worst case**: the lowest probability among the books that priced
    the full partition (a special is only ever backed; user decision
-   2026-10-02). A row is flagged **books split** when the books' fairs differ
-   by more than 0.07 in probit space (sample stddev) — the level
-   kalshi_mlb_mm uses as its consensus gate; it only flags.
+   2026-10-02).
    **Superfectas** = P(trifecta part) x P(scores first | trifecta part). The
    first factor is the worst case of step 3 at FanDuel + BetMGM; the second comes from TWO
    DraftKings SGPs — (team scores first + the trifecta legs) and (opponent

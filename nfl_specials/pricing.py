@@ -26,20 +26,11 @@ from __future__ import annotations
 
 import itertools
 import math
-import statistics
 from dataclasses import dataclass
-
-from scipy.stats import norm
 
 from kalshi_common.fair_value import _probit_devig_n as probit_devig_n
 from nfl_specials.books import BookGame, SgpBook
 from nfl_specials.special_parser import Fecta
-
-# Books "split" when the sample stddev of their fairs in probit space exceeds
-# this — the same dispersion measure and level kalshi_mlb_mm uses as its
-# consensus gate (config.SIGMA_Z_MAX). Here it only flags the row; the row is
-# already priced at the worst-case book.
-SPLIT_BOOKS_SIGMA_Z = 0.07
 
 # A partition's implied sum must sit in [1, 1 + this x legs]; outside it a
 # cell is stale or mispriced and the devig would be garbage (same envelope as
@@ -121,15 +112,6 @@ def worst_case_fair(book_fairs: list[BookFair]) -> float | None:
     if not priced:
         return None
     return min(priced)
-
-
-def books_split(book_fairs: list[BookFair]) -> bool:
-    """True when two or more books priced it and their probit-space fairs
-    disagree by more than SPLIT_BOOKS_SIGMA_Z (sample stddev)."""
-    priced = [b.fair_prob for b in book_fairs if b.fair_prob is not None]
-    if len(priced) < 2:
-        return False
-    return statistics.stdev(norm.ppf(p) for p in priced) > SPLIT_BOOKS_SIGMA_Z
 
 
 def expected_value(fair_prob: float, wz_american: int) -> float:

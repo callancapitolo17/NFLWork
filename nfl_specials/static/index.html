@@ -35,7 +35,6 @@
   .desc { font-weight: 600; }
   .meta { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
   .ev-pos { color: var(--good); font-weight: 600; } .ev-neg { color: var(--bad); }
-  .split { font-size: 12px; font-weight: 400; color: var(--warn); }
   .stake { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .stake input { width: 64px; }
   .result { font-size: 12px; overflow-wrap: anywhere; }
@@ -188,7 +187,7 @@ function renderRows(p) {
       el("div", {}, [el("div", { class: "desc", text: line.description }), el("div", { class: "meta", text: meta })]),
       el("span", { text: signed(line.wz_american) }),
       el("span", { text: line.fair_american != null ? signed(line.fair_american) : "–" }),
-      el("span", { class: evClass }, [pct(line.ev), line.books_split ? el("div", { class: "split", text: "books split" }) : null]),
+      el("span", { class: evClass, text: pct(line.ev) }),
       stakeCell(line),
     ]);
   }));

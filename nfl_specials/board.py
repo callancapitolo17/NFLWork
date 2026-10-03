@@ -27,7 +27,7 @@ from nfl_specials.books import BookGame, SgpBook
 from nfl_specials.dk_book import DraftKingsBook, sidecar_is_up
 from nfl_specials.fd_book import FanDuelBook
 from nfl_specials.mgm_book import BetMgmBook
-from nfl_specials.pricing import (BookFair, ScoresFirstShare, books_split, expected_value,
+from nfl_specials.pricing import (BookFair, ScoresFirstShare, expected_value,
                                   kelly_stake, log_growth, price_fecta_at_book, scores_first_share,
                                   trifecta_part, worst_case_fair)
 from nfl_specials.special_parser import Fecta, ParseFailure, parse_fecta
@@ -90,7 +90,6 @@ class Sizing:
     kelly_stake: float
     recommended_stake: float
     yields_to: int | None           # rotation of the better special on the same team
-    books_split: bool               # the books' fairs disagree (pricing.books_split)
 
 
 def open_books(sidecar_url: str) -> tuple[dict[str, SgpBook], dict[str, str]]:
@@ -155,8 +154,7 @@ def size_board(board: Board, bankroll: float, kelly_fraction: float) -> list[Siz
                 recommended = float(round(stake))
             else:
                 yields_to = board.lines[winner_index].special.rotation
-        split = books_split(list(line.book_fairs.values()))
-        sized.append(Sizing(fair, ev, stake, recommended, yields_to, split))
+        sized.append(Sizing(fair, ev, stake, recommended, yields_to))
     return sized
 
 
