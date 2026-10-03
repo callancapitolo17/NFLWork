@@ -50,8 +50,7 @@ def test_fetch_event_legs_extracts_ml(monkeypatch):
     """fetch_event_legs pulls home_ml/away_ml from the MONEY market by symbol."""
     import scraper_novig_sgp as nv
     # NB: do NOT bind a local named `_markets` here — it would shadow the
-    # module-level `_markets()` helper that the mock lambda closes over, and
-    # the resulting NameError would be swallowed by fetch_event_legs' try/except.
+    # module-level `_markets()` helper that the mock lambda closes over.
     monkeypatch.setattr(nv, "_gql",
                         lambda *_a, **_k: {"data": {"event": [{"markets": _markets()}]}})
     game = {

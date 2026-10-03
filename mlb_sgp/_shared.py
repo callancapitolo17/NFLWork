@@ -105,6 +105,26 @@ def json_or_raise(book: str, stage: str, resp):
                                  detail="response body is not JSON") from e
 
 
+def raise_on_graphql_errors(book: str, stage: str, payload) -> None:
+    """Raise ``BookTransportError`` if a GraphQL body carries ``errors``.
+
+    GraphQL reports a rejected query as HTTP 200 with an ``errors`` array
+    (Hasura sends no ``data`` alongside it). Novig's allowlist rejection
+    ("query is not allowed", 2026-09-22) arrived exactly that way, and a
+    parser reading ``data.event`` saw "no markets" — a dead book that looked
+    like an off-day.
+    """
+    if not isinstance(payload, dict) or not payload.get("errors"):
+        return
+    errors = payload["errors"]
+    # The spec says a list of objects; tolerate a lone object or string so
+    # an off-spec body still reads as a transport failure, not a KeyError.
+    first = errors[0] if isinstance(errors, list) else errors
+    message = first.get("message") if isinstance(first, dict) else first
+    raise BookTransportError(book, stage,
+                             detail=f"GraphQL error: {message}")
+
+
 # --------------------------------------------------------------------------- #
 # Bounded retry / backoff (issue #34)                                          #
 # --------------------------------------------------------------------------- #

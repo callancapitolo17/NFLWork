@@ -30,8 +30,8 @@ def test_price_sgps_period_filter_drops_excluded():
     """If periods=('FG',), F5 TargetLines are filtered out before any HTTP.
 
     The MagicMock client proves the function never reaches the client's
-    list_events()/fetch_event_legs()/submit_parlay() methods once the
-    period filter empties the targets list.
+    list_events()/submit_parlay() methods once the period filter empties
+    the targets list.
     """
     targets = [
         TargetLine(
@@ -44,7 +44,6 @@ def test_price_sgps_period_filter_drops_excluded():
     out = price_sgps(targets, periods=("FG",), client=mock_client)
     assert out == []
     mock_client.list_events.assert_not_called()
-    mock_client.fetch_event_legs.assert_not_called()
     mock_client.submit_parlay.assert_not_called()
 
 

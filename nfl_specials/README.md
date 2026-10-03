@@ -19,9 +19,30 @@ nfl_specials/run.sh         # http://127.0.0.1:8096
 
 The board prices only when you click **Refresh** (no auto-refresh). The three
 books price side by side, one thread each (`board.py::_price_lane`), so the
-refresh takes about as long as the slowest book: FanDuel and BetMGM finish the
-trifectas in ~2 min; DraftKings' superfectas (~20 calls each, paced 1.5 s,
-page reloaded every 5 calls) fill in over ~10 min.
+refresh takes about as long as the slowest book. Measured 2026-10-02 (17
+specials): BetMGM done in 0.5 min, FanDuel in 0.9 min, DraftKings' superfectas
+(~14 calls each, paced 1.5 s, page reloaded every 5 calls) in ~6 min.
+
+## The page
+
+- **Top bar:** Wagerzon account (hidden with one account), bankroll and Kelly
+  fraction behind one button (saved on change), Refresh.
+- **Tiles:** Wagerzon available, the recommended total (with its share of
+  available) and the expected profit of those stakes at the worst-case fair.
+- **Progress:** while a refresh runs the page polls every 3 s and shows done /
+  total overall and per book (FD / MGM / DK); it stops polling when the refresh
+  ends. Afterwards only a book that failed (e.g. the DK sidecar down) shows.
+- **Board:** grouped by game in kickoff order (started games and specials with
+  no game last), or one list by EV ("Best EV"); filter All / Trifectas /
+  Superfectas and "+EV only" (remembered in the browser). Each row: legs as
+  chips, every book's fair with the worst case marked (a superfecta shows DK's
+  1Q/1H/GM part, the team-scores-first %, and DK's own price incl. vig), WZ
+  price, fair, EV (shaded by size), and the stake box prefilled with the
+  recommended stake, "to win", and the uncapped Kelly when trimmed.
+- **Place:** a confirm sheet (risk, to win, price, fair, EV, account), then the
+  button shows "Placing…" until Wagerzon answers; the ticket or the error shows
+  on the row. **Placed this week** lists only bets Wagerzon took (refused
+  attempts stay in `placed_fectas`).
 
 ## How a special is priced
 
@@ -65,7 +86,10 @@ page reloaded every 5 calls) fill in over ~10 min.
    zero. A stake under Wagerzon's $20 minimum for specials (measured: $15-19
    rejected) is dropped and the rest re-fit; each stake is capped at the
    $250 maximum, and what a capped bet can't take goes to the next edge. The page shows the uncapped
-   Kelly stake next to any trimmed one.
+   Kelly stake next to any trimmed one. No stake (and no budget) goes to a
+   special whose game has started, or to any special of a team the account
+   already has a placed bet on this week (that bet is already in Wagerzon's
+   available; a second stake would double one position).
 
 | Book | Trifecta | Superfecta | How |
 |---|---|---|---|
@@ -81,8 +105,10 @@ the stake is at least $20 and within the available balance, and that the same
 special was not placed in the last 2 minutes (a slow answer invites a second
 click; the button is also disabled while a placement is in flight), then
 `wagerzon_odds/single_placer.place_single` previews it (`ConfirmWagerHelper`,
-win must match to $0.01 or it refuses) and submits it. A special is a one-sided
-prop on the "home" slot, so it goes in as Play=5 with no points. Every attempt
+win must match to $0.01 or it refuses) and submits it. A special is a PROP game,
+so it goes in with its rotation number as the Play and no points — what
+Wagerzon's own site sends. (Play=5 passes the preview but the submit fails
+"Couldn't find Game Line".) Every attempt
 is logged, whatever Wagerzon answered; a placed bet lowers the page's available
 balance right away. Wagerzon's minimum online wager on a special is $20.
 
