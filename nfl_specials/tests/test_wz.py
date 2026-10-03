@@ -66,3 +66,12 @@ def test_a_fecta_is_placed_with_its_rotation_as_the_play(monkeypatch):
     assert wz.single_placer.build_sel_for_single(sent[0]) == "777043_6008644_0_1730"
     detail = json.loads(wz.single_placer._build_confirm_payload(sent[0])["detailData"])[0]
     assert (detail["IdGame"], detail["Play"], detail["Amount"]) == (6008644, 777043, "250")
+
+
+def test_the_expected_win_is_whole_dollars_like_wagerzon_quotes():
+    # 2026-10-03: $204 at +855 is $1,744.20 exact; Wagerzon quoted $1,744 and
+    # the cents figure was refused as a moved price.
+    assert wz.wagerzon_to_win(204.0, 855) == 1744.0
+    assert wz.wagerzon_to_win(250.0, 1730) == 4325.0
+    assert wz.wagerzon_to_win(100.0, 1550) == 1550.0
+    assert wz.wagerzon_to_win(21.0, 250) == 53.0  # 52.50 rounds up

@@ -12,6 +12,7 @@ checkout's copy is found from a worktree too). No DB writes here.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import sys
 import time
@@ -144,6 +145,18 @@ def _parse_special(game: dict) -> WzSpecial | None:
                      week_date=datetime.strptime(game["gmdt"], "%Y%m%d").date())
 
 
+def wagerzon_to_win(risk: float, american_odds: int) -> float:
+    """The to-win Wagerzon quotes for `risk` at `american_odds`.
+
+    Wagerzon pays whole dollars, rounded half up: $204 at +855 quotes $1,744
+    (exact $1,744.20); 44.55 quoted 45 and 222.35 quoted 222 (placement debug
+    logs, 2026-06 to 2026-10). The placer checks Wagerzon's Win to the cent, so
+    sending the cents figure read every non-whole payout as a moved price.
+    """
+    exact_win = risk * american_odds / 100 if american_odds > 0 else risk * 100 / -american_odds
+    return float(math.floor(exact_win + 0.5))
+
+
 def place_fecta(account_label: str, special: WzSpecial, risk: float) -> dict:
     """Place `risk` dollars on `special` at its posted price.
 
@@ -161,6 +174,7 @@ def place_fecta(account_label: str, special: WzSpecial, risk: float) -> dict:
         "american_odds": special.wz_american,
         "wz_odds_at_place": special.wz_american,
         "actual_size": risk,
+        "expected_win": wagerzon_to_win(risk, special.wz_american),
         "bet_hash": f"nfl-fecta-{special.wz_game_id}",
         "market": "nfl_fecta",
         "bet_on": special.description,
