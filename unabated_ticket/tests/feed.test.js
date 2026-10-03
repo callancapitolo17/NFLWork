@@ -168,6 +168,15 @@ test("selectEdges: started games drop out; user book filter replaces the live-bo
   assert.deepEqual(onlyMgm.map((r) => r.key), ["289357353:ms4:si0:tid6"]);
 });
 
+test("selectEdges: leagueIds lists only the leagues the Edges tab ticks (the scanner loads NFL and CFB for the Teasers tab either way)", () => {
+  const state = loadedState();
+  const everything = feed.selectEdges(state, { now: BEFORE_KICKOFF });
+  assert.ok(everything.length > 0);
+  assert.deepEqual(feed.selectEdges(state, { now: BEFORE_KICKOFF, leagueIds: new Set([NFL]) }).map((r) => r.key), everything.map((r) => r.key));
+  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, leagueIds: new Set([2, 5]) }).length, 0);
+  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, leagueIds: new Set() }).length, 0);
+});
+
 test("selectEdges: periods, bet types and the threshold are honoured", () => {
   const state = loadedState();
   const withFirstHalf = feed.selectEdges(state, { now: BEFORE_KICKOFF, minEdge: 0.005, periods: new Set([1, 2]) });
@@ -264,38 +273,71 @@ test("selectEdges lists no alt unless includeAlts is on", () => {
   const rows = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true });
   const alts = rows.filter((r) => r.isAlt);
   assert.equal(rows.length - alts.length, 4); // the four main-line edges are still there
+  // Kalshi's deeper rungs (+573 to +944) sit past the 15-85% price cap.
   assert.deepEqual(alts.slice(0, 4).map((r) => [r.book.name, r.sideLabel, r.price, r.edgePct, r.mainPoints]), [
-    ["Kalshi", "Carolina Panthers -9.5", 625, 12.58, 2.5],
-    ["Kalshi", "Over 64.5", 840, 9.56, 46.5],
-    ["Kalshi", "Over 61.5", 573, 6.83, 46.5],
-    ["Kalshi", "Chicago Bears -20.5", 944, 6.42, -2.5],
+    ["Novig", "Carolina Panthers -2.5", 190, 5.45, 2.5],
+    ["Novig", "Carolina Panthers -6.5", 376, 5.31, 2.5],
+    ["Novig", "Carolina Panthers -4.5", 292, 4.26, 2.5],
+    ["Novig", "Carolina Panthers -5.5", 317, 4.25, 2.5],
   ]);
-  assert.equal(alts.length, 16);
+  assert.equal(alts.length, 10);
   // Matchbook's Over 8.5 at +112 (ge 1.1193) is a dead feed: the book is not live.
   assert.ok(!alts.some((r) => r.book.id === 52));
   const top = alts[0];
   assert.equal(top.isAlt, true);
-  assert.equal(top.key, "289357357:ms105:si1:tid5:alt-9.5");
+  assert.equal(top.key, "289357357:ms89:si1:tid5:alt-2.5");
   assert.equal(top.marketId, 289357357);
-  assert.equal(top.modifiedMs, 1789147708929);
+  assert.equal(top.modifiedMs, 1789147791999);
   assert.equal(rows.find((r) => !r.isAlt).mainPoints, null);
 });
 
-test("altMaxDistance keeps alts within N points of the book's main number", () => {
+test("alts are capped at 15-85% on both Unabated's fair and the book's price, not by points", () => {
   const state = loadedState();
-  const within7 = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 7 }).filter((r) => r.isAlt);
-  assert.deepEqual(within7.map((r) => [r.sideLabel, r.mainPoints]), [
-    ["Carolina Panthers -2.5", 2.5],
-    ["Carolina Panthers -4.5", 2.5],
-    ["Over 54.5", 47.5], // exactly 7 away is kept
-    ["Over 50.5", 47.5],
-    ["Chicago Bears -4.5", -2.5],
-    ["Chicago Bears -9.5", -2.5],
-  ]);
-  const within2 = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 2 }).filter((r) => r.isAlt);
-  assert.deepEqual(within2.map((r) => r.sideLabel), ["Chicago Bears -4.5"]);
-  // 0 or a non-number means no distance gate.
-  assert.equal(feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 0 }).filter((r) => r.isAlt).length, 16);
+  const altKeys = () => feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true }).filter((r) => r.isAlt).map((r) => r.key);
+  const deep = "289357360:ms89:si0:tid6:alt-13.5"; // Novig Bears -13.5 +376, 11 points off a -2.5 main, fair +369 = 21.3%
+  assert.ok(altKeys().includes(deep), "a rung 11 points out lists while fair and price are inside 15-85%");
+  // Kalshi Panthers -9.5: fair +544 (15.5%) is inside, price +625 (13.8c) is not.
+  assert.ok(!altKeys().includes("289357357:ms105:si1:tid5:alt-9.5"));
+  moveLine(state, deep, { bacr: 600 }); // fair 14.3%
+  assert.ok(!altKeys().includes(deep));
+  moveLine(state, deep, { bacr: 369, price: 2242 }); // a 4.3c price
+  assert.ok(!altKeys().includes(deep));
+  moveLine(state, deep, { bacr: -600, price: 376 }); // an 85.7% favourite fair
+  assert.ok(!altKeys().includes(deep));
+  moveLine(state, deep, { bacr: null }); // no fair: fails closed
+  assert.ok(!altKeys().includes(deep));
+  assert.equal(feed.altWithinDepthCap(-560, 500), true);
+  assert.equal(feed.altWithinDepthCap(-560, 600), false);
+  assert.equal(feed.altWithinDepthCap(50, 100), false);
+});
+
+test("a flat-lined Unabated tail never lists: a rung whose fair equals its neighbour's", () => {
+  const state = loadedState();
+  const altKeys = () => feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true }).filter((r) => r.isAlt).map((r) => r.key);
+  const a = "289357360:ms89:si0:tid6:alt-9.5";
+  const b = "289357360:ms89:si0:tid6:alt-13.5";
+  assert.ok(altKeys().includes(a) && altKeys().includes(b));
+  // Unabated's fair is one number per rung across books: flatten -9.5 and -13.5 on every book.
+  for (const line of Object.values(state.lines)) {
+    if (line.eventId === state.lines[a].eventId && line.periodTypeId === 1 && line.betTypeId === 2 && line.sideIndex === 0
+      && (line.points === -9.5 || line.points === -13.5)) line.bacr = 300;
+  }
+  assert.ok(!altKeys().includes(a) && !altKeys().includes(b));
+  assert.ok(feed.flatFairRungKeys(Object.values(state.lines)).has(feed.rungKeyOf(state.lines[a])));
+});
+
+test("a line whose fair is Unabated's ±999900 clamp never lists; a genuine deep fair does", () => {
+  const state = loadedState();
+  const mainRow = feed.selectEdges(state, { now: BEFORE_KICKOFF })[0];
+  const listed = () => feed.selectEdges(state, { now: BEFORE_KICKOFF }).some((r) => r.key === mainRow.key);
+  moveLine(state, mainRow.key, { bacr: -999900 });
+  assert.equal(listed(), false);
+  moveLine(state, mainRow.key, { bacr: 999900 });
+  assert.equal(listed(), false);
+  moveLine(state, mainRow.key, { bacr: 119499 });
+  assert.equal(listed(), true);
+  assert.equal(feed.isClampedFair(-999900), true);
+  assert.equal(feed.isClampedFair(null), false);
 });
 
 test("minLiquidityToWin: $20 resting at +2000 wins $400 and lists, $20 at +100 wins $20 and does not", () => {
@@ -321,8 +363,8 @@ test("minLiquidityToWin gates alts too, and leaves books with no liquidity figur
   const state = loadedState();
   const alts = (minLiquidityToWin) => feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, minLiquidityToWin }).filter((r) => r.isAlt);
   const all = alts(0);
-  const thinKalshi = all.find((r) => r.key === "289357357:ms105:si1:tid5:alt-9.5");
-  assert.equal(thinKalshi.liquidity, 35.36);
+  const thinKalshi = all.find((r) => r.key === "289357360:ms105:si0:tid6:alt-14.5");
+  assert.equal(thinKalshi.liquidity, 296.82);
   const winnable = (row) => row.liquidity * (row.price > 0 ? row.price / 100 : 100 / Math.abs(row.price));
   const kept = alts(1e6);
   // Everything that reports liquidity is gone at a $1M floor; Novig's alts carry no figure and stay.
@@ -333,16 +375,16 @@ test("minLiquidityToWin gates alts too, and leaves books with no liquidity figur
 
 test("an alt is hidden while the main line sits on its number, and distance follows the moved main line", () => {
   const state = loadedState();
-  const opts = { now: BEFORE_KICKOFF, includeAlts: true, altMaxDistance: 7 };
+  const opts = { now: BEFORE_KICKOFF, includeAlts: true };
   assert.ok(feed.selectEdges(state, opts).some((r) => r.key === "289357360:ms89:si0:tid6:alt-4.5"));
   // Novig moves its Bears main line from -2.5 to -4.5; its alts stay as they were.
   moveLine(state, "289357360:ms89:si0:tid6", { points: -4.5, price: 130 });
   const rows = feed.selectEdges(state, opts);
   assert.ok(!rows.some((r) => r.key === "289357360:ms89:si0:tid6:alt-4.5"));
-  // -9.5 is now 5 from the main number; -13.5 (9 away) is still out; mainPoints reports the current main.
+  // mainPoints reports the current main; -13.5, 9 points from it, lists (its fair, +369, is inside the cap).
   const nineHalf = rows.find((r) => r.key === "289357360:ms89:si0:tid6:alt-9.5");
   assert.equal(nineHalf.mainPoints, -4.5);
-  assert.ok(!rows.some((r) => r.key === "289357360:ms89:si0:tid6:alt-13.5"));
+  assert.equal(rows.find((r) => r.key === "289357360:ms89:si0:tid6:alt-13.5").mainPoints, -4.5);
   assert.equal(state.lines["289357360:ms89:si0:tid6:alt-9.5"].price, 245);
 });
 
@@ -351,23 +393,23 @@ test("maxLineAgeMs applies to alts through their sequenceNumber", () => {
   const DAY = 86400 * 1000;
   // Alts changed 2026-09-11; kickoff-1h is 2026-09-13T16:00Z, so they are ~46h old.
   const fresh = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, maxLineAgeMs: 3 * DAY }).filter((r) => r.isAlt);
-  assert.equal(fresh.length, 16);
+  assert.equal(fresh.length, 10);
   const strict = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, maxLineAgeMs: DAY }).filter((r) => r.isAlt);
   assert.equal(strict.length, 0);
-  state.lines["289357357:ms105:si1:tid5:alt-9.5"].sequenceNumber = null;
+  state.lines["289357360:ms105:si0:tid6:alt-14.5"].sequenceNumber = null;
   const unknowable = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, maxLineAgeMs: 3 * DAY }).filter((r) => r.isAlt);
-  assert.equal(unknowable.length, 15);
-  assert.ok(!unknowable.some((r) => r.key === "289357357:ms105:si1:tid5:alt-9.5"));
+  assert.equal(unknowable.length, 9);
+  assert.ok(!unknowable.some((r) => r.key === "289357360:ms105:si0:tid6:alt-14.5"));
 });
 
 test("alt lines honour the same board, book, bet-type, period and price gates as main lines", () => {
   const state = loadedState();
-  state.lines["289357357:ms105:si1:tid5:alt-9.5"].statusId = 2;
+  state.lines["289357360:ms105:si0:tid6:alt-14.5"].statusId = 2;
   const rows = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true });
-  assert.ok(!rows.some((r) => r.key === "289357357:ms105:si1:tid5:alt-9.5"));
+  assert.ok(!rows.some((r) => r.key === "289357360:ms105:si0:tid6:alt-14.5"));
   const totalsOnly = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, betTypes: new Set([3]) });
   assert.ok(totalsOnly.every((r) => r.betType === "Total"));
-  assert.equal(totalsOnly.filter((r) => r.isAlt).length, 4);
+  assert.equal(totalsOnly.filter((r) => r.isAlt).length, 2);
   const novigOnly = feed.selectEdges(state, { now: BEFORE_KICKOFF, includeAlts: true, bookIds: new Set([89]) });
   assert.ok(novigOnly.every((r) => r.book.id === 89));
   assert.equal(feed.selectEdges(state, { now: KICKOFF_MS, includeAlts: true }).length, 0);
@@ -484,13 +526,13 @@ test("groupEdges: one card per (game, period, bet type, side) with books and lin
   const rows = feed.selectEdges(loadedState(), { now: BEFORE_KICKOFF, includeAlts: true });
   const groups = feed.groupEdges(rows);
   assert.deepEqual(groups.map((g) => [g.key, g.sideName, g.betType, g.bookCount, g.rows.length]), [
-    ["125807:pt1:bt2:si1", "Carolina Panthers", "Spread", 2, 6],
-    ["125807:pt1:bt3:si0", "Over", "Total", 2, 4],
-    ["125807:pt1:bt2:si0", "Chicago Bears", "Spread", 3, 7],
+    ["125807:pt1:bt2:si1", "Carolina Panthers", "Spread", 1, 4],
+    ["125807:pt1:bt2:si0", "Chicago Bears", "Spread", 3, 5],
     ["125807:pt1:bt1:si0", "Chicago Bears", "Moneyline", 3, 3],
+    ["125807:pt1:bt3:si0", "Over", "Total", 1, 2],
   ]);
   assert.equal(rows.length, groups.reduce((n, g) => n + g.rows.length, 0));
-  const bears = groups[2];
+  const bears = groups[1];
   assert.equal(bears.league, "nfl");
   assert.equal(bears.awayTeam, "Chicago Bears");
   assert.equal(bears.homeTeam, "Carolina Panthers");
@@ -503,22 +545,22 @@ test("groupEdges: with no rank function the best line is the highest edge; cards
   const rows = feed.selectEdges(loadedState(), { now: BEFORE_KICKOFF, includeAlts: true });
   const groups = feed.groupEdges(rows);
   assert.deepEqual(groups.map((g) => [g.best.sideLabel, g.best.book.name, g.best.edgePct]), [
-    ["Carolina Panthers -9.5", "Kalshi", 12.58],
-    ["Over 64.5", "Kalshi", 9.56],
-    ["Chicago Bears -20.5", "Kalshi", 6.42],
+    ["Carolina Panthers -2.5", "Novig", 5.45],
+    ["Chicago Bears -2.5", "SouthPoint", 5.3],
     ["Chicago Bears", "BetMGM", 2.96],
+    ["Over 54.5", "Novig", 2.63],
   ]);
-  assert.ok(groups[2].rows.every((row, i, all) => i === 0 || all[i - 1].edgePct >= row.edgePct));
+  assert.ok(groups[1].rows.every((row, i, all) => i === 0 || all[i - 1].edgePct >= row.edgePct));
 });
 
-test("groupEdges ranked by Kelly stake picks the bettable main line over the +944 rung", () => {
+test("groupEdges ranked by Kelly stake picks the bettable main line over the deeper rungs", () => {
   const rows = feed.selectEdges(loadedState(), { now: BEFORE_KICKOFF, includeAlts: true }).map((row) => ({ ...row, stake: stakeOf(row) }));
   const groups = feed.groupEdges(rows, (row) => row.stake);
   assert.deepEqual(groups.map((g) => [g.sideName, g.betType, g.best.sideLabel, g.best.book.name, g.best.isAlt]), [
     ["Chicago Bears", "Spread", "Chicago Bears -2.5", "SouthPoint", false],
     ["Chicago Bears", "Moneyline", "Chicago Bears", "BetMGM", false],
     ["Carolina Panthers", "Spread", "Carolina Panthers -2.5", "Novig", true],
-    ["Over", "Total", "Over 61.5", "Kalshi", true],
+    ["Over", "Total", "Over 54.5", "Novig", true],
   ]);
   // Inside a card the lines fall by stake, and the rows keep their extra fields.
   const bears = groups[0];

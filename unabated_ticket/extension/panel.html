@@ -18,6 +18,7 @@
       <button type="button" data-tab="edges">Edges <span id="edges-count" class="count" hidden></span><span id="edges-live-count" class="count live" hidden></span></button>
       <button type="button" data-tab="ticket" class="active">Ticket</button>
       <button type="button" data-tab="bets" id="bets-tab-button">Bets <span id="bets-count" class="count" hidden></span><span id="bets-alert" class="count alert" hidden></span></button>
+      <button type="button" data-tab="teasers">Teasers <span id="teasers-count" class="count" hidden></span></button>
       <button type="button" id="settings-toggle" class="gear" title="Bankroll and Kelly multiplier">&#9881;</button>
     </nav>
 
@@ -35,8 +36,7 @@
         <option value="start">start</option>
         <option value="exposure">my exposure</option>
       </select>
-      <label class="sr-only" for="edges-min">Minimum edge %</label>
-      <input id="edges-min" type="number" min="0" max="50" step="0.1" title="Minimum edge %">
+      <label class="toolbar-label" for="edges-min" title="Hide lines whose edge % (the green number) is below this">min edge <input id="edges-min" type="number" min="0" max="50" step="0.1"> %</label>
     </div>
 
     <div class="edges-controls" id="edges-controls" hidden>
@@ -82,7 +82,6 @@
       </div>
       <div class="control-row" id="edges-alts">
         <label title="Also list each book's alternate spreads and totals (Unabated prices every rung). They refresh only with the league snapshot (1-5 min), never with the stream."><input type="checkbox" id="edges-include-alts"> Include alt lines</label>
-        <label class="control-inline" title="Hide alts further than this many points from the book's own main number; deep rungs are extrapolated fairs and a few-dollar stake. 0 = no limit.">Max pts from main <input id="edges-alt-distance" type="number" min="0" step="0.5"></label>
       </div>
       <div class="control-row" id="edges-alerts">
         <label><input type="checkbox" id="alerts-enabled"> Notify on new edges at or above</label>
@@ -158,6 +157,7 @@
     <div id="edges-locate" class="locate-strip" hidden></div>
     <div id="edges-status" class="muted feed-status"></div>
     <div id="edges-filter" class="muted" title="Click to show what the Unabated selection was read from"></div>
+    <div id="edges-tailflex" class="muted" title="How much Unabated's edge is trusted per SD from the main number, measured off the exchanges' two-sided alt quotes (10% where too few to measure). It only ranks lines: a card's best line is the highest EV after flex. Edges and stakes stay Unabated's." hidden></div>
     <pre id="edges-filter-debug" class="muted debug" hidden></pre>
 
     <!-- Live edges: the Unabated live screen's between-quarters in-game fair,
@@ -176,6 +176,8 @@
     <div id="bets-service" class="warning bad" hidden></div>
     <!-- Open bets that match no game and need one (bets.unmatchedReasons needsGame). -->
     <div id="bets-needs-banner" class="warning bad banner-tight" hidden></div>
+    <!-- Open bets the bets service could not read (bets.unmatchedReasons needsFix). -->
+    <div id="bets-fix-banner" class="warning bad banner-tight" hidden></div>
 
     <div class="bets-summary">
       <span class="risk" id="bets-risk"></span>
@@ -185,6 +187,11 @@
       <h2 class="section-label needs">Needs a game <span id="bets-needs-count" class="num"></span></h2>
       <div class="muted pane-note">Attach each bet to its game. The venue's team names are learned, so the next bet like it matches on its own.</div>
       <ol id="bets-needs" class="bets-list"></ol>
+    </div>
+    <div id="bets-fix-block" class="needs-block" hidden>
+      <h2 class="section-label needs">Needs a code fix <span id="bets-fix-count" class="num"></span></h2>
+      <div class="muted pane-note">The bets service could not read these bets, so the panel knows no game, team or line for them. Fix the venue's parser in unabated_ticket/bets_service/sources/ and restart the service; the flag clears on its next poll.</div>
+      <ol id="bets-fix" class="bets-list"></ol>
     </div>
     <div class="venues" id="bets-sources"></div>
     <div class="settings service-url">
@@ -198,7 +205,7 @@
     <div id="bets-match-note" class="muted pane-note" hidden></div>
 
     <details id="bets-offboard" class="offboard" hidden>
-      <summary><span class="section-label inline">Not on the board <span id="bets-offboard-count" class="num"></span></span> <span class="muted">futures, props, leagues the scanner does not cover, games not posted yet or already over</span></summary>
+      <summary><span class="section-label inline">Not on the board <span id="bets-offboard-count" class="num"></span></span> <span class="muted">futures, props, leagues the scanner does not cover, games not posted yet or already over, and bets you dismissed</span></summary>
       <ol id="bets-offboard-list" class="bets-list"></ol>
     </details>
 
@@ -209,9 +216,47 @@
     <div id="bets-crosswalk-empty" class="muted pane-note" hidden></div>
   </section>
 
+  <!-- Buckeye 6-point teasers (teaser.js): the 4-team tickets to bet, sized
+       with Kelly over the whole set under Buckeye's $200 limit, around the
+       open BFA teasers the bets service reports (BFA is Buckeye). -->
+  <section id="tab-teasers" class="tabpane" hidden>
+    <div id="teasers-service" class="warning bad" hidden></div>
+    <div id="teasers-warning" class="warning" hidden></div>
+    <div class="teaser-menu muted">Buckeye · 6-pt football · 4 teams +300 · max $200 a ticket · Unabated fair · a push loses</div>
+    <div id="teasers-status" class="muted teaser-status"></div>
+    <div id="teasers-empty" class="muted pane-note" hidden></div>
+
+    <div id="teasers-summary" class="stake-block teaser-summary" hidden>
+      <div class="stake-label" id="teasers-summary-label"></div>
+      <div class="stake" id="teasers-summary-stake"></div>
+      <div class="payout-row" id="teasers-summary-cells"></div>
+      <div class="muted" id="teasers-summary-note"></div>
+    </div>
+
+    <details id="teasers-open" class="offboard placed-block" open hidden>
+      <summary><span class="section-label inline">Open at BFA <span id="teasers-open-count" class="num"></span></span> <span id="teasers-open-note" class="muted"></span></summary>
+      <ol id="teasers-open-list" class="ticket-list"></ol>
+    </details>
+
+    <h2 class="section-label" id="teasers-list-label" hidden>To bet · in this order <span id="teasers-list-count" class="num"></span></h2>
+    <ol id="teasers-list" class="ticket-list"></ol>
+    <details id="teasers-more" class="more-tickets" hidden>
+      <summary id="teasers-more-label"></summary>
+      <ol id="teasers-more-list" class="ticket-list"></ol>
+    </details>
+
+    <h2 class="section-label" id="teasers-legs-label" hidden>Legs · best per game <span id="teasers-legs-count" class="num"></span></h2>
+    <ol id="teasers-legs" class="edges-list legs-list"></ol>
+    <details id="teasers-legs-more" class="more-tickets" hidden>
+      <summary id="teasers-legs-more-label"></summary>
+      <ol id="teasers-legs-more-list" class="edges-list legs-list"></ol>
+    </details>
+  </section>
+
   <script src="kelly.js"></script>
   <script src="edgemove.js"></script>
   <script src="feed.js"></script>
+  <script src="tailflex.js"></script>
   <script src="live.js"></script>
   <script src="scanner.js"></script>
   <script src="locate.js"></script>
@@ -220,6 +265,7 @@
   <script src="attach.js"></script>
   <script src="ladder.js"></script>
   <script src="condkelly.js"></script>
+  <script src="teaser.js"></script>
   <script src="betsview.js"></script>
   <script src="fillfair.js"></script>
   <script src="bet105.js"></script>

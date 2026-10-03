@@ -31,6 +31,16 @@ test("groupLinesByEvent files every line under its event and skips lines with no
   assert.equal(byEvent.get(1).length, 2);
 });
 
+test("a rung on Unabated's ±999900 fair clamp is no rung, never a 99.99% fair", () => {
+  const built = ladder.buildLadder([
+    feedLine({ betTypeId: TOTAL, sideIndex: AWAY_OR_OVER, points: 47.5, bacr: -150 }),
+    feedLine({ betTypeId: TOTAL, sideIndex: AWAY_OR_OVER, points: 80.5, bacr: 999900 }),
+    feedLine({ betTypeId: TOTAL, sideIndex: HOME_OR_UNDER, points: 80.5, bacr: -999900 }),
+  ], { periodTypeId: FULL_GAME, axis: ladder.AXIS_TOTAL });
+  assert.deepEqual(built.rungs.map(([cut]) => cut), [47.5]);
+  assert.equal(probAt(built, 80.5).reason, ladder.REASON_NO_RUNG);
+});
+
 test("totals: the cut is the number, an Over fair is P(above), an Under fair its complement", () => {
   const built = ladder.buildLadder([
     feedLine({ betTypeId: TOTAL, sideIndex: AWAY_OR_OVER, points: 47.5, bacr: -150 }),

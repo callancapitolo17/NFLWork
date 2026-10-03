@@ -322,6 +322,48 @@ def test_a_type_declaring_no_legs_is_one_unmatchable_record_never_dropped():
     assert record["unmatchable"] == "PARLAY (0 TEAMS) names 0 legs but carries 2"
 
 
+def open_straight(id_sport: str, description: str) -> dict:
+    """A one-leg GetPlayerOpenBets wager in the 2026-09-26 live shape."""
+    return {"idWager": 355820026, "headerDescription": "STRAIGHT BET", "riskAmount": 220.0, "winAmount": 200.0,
+            "placedDate": "2026-09-26T12:42:10",
+            "betDetails": [{"idSport": id_sport, "gameDateTime": "2026-09-26T16:00:00", "detailDescription": description}]}
+
+
+def test_an_open_game_leg_that_does_not_parse_is_marked_a_parse_failure():
+    # A suffix BFA has not sent yet: SPORT_SUFFIX_RE strips only [Sport:…] / [League:…] brackets.
+    wager = open_straight("CFB", "College Football FCS <br> [309011] EASTERN ILLINOIS +35½-110 "
+                                 "[Sport:Football][League:NCAA][Region:US]")
+    [record] = normalize_open_bets([wager], FETCHED_AT)
+    assert record["unmatchable"].startswith("unrecognised selection (EASTERN ILLINOIS +35½-110")
+    assert record["raw"]["parseFailed"] is True
+    assert (record["status"], record["league"], record["betType"], record["raw"]["idSport"]) == \
+        ("open", None, "other", "CFB")
+
+
+@pytest.mark.parametrize("id_sport, description, reason", [
+    ("CFB", "College Football <br> [1117] TOTAL o17½-115 \r(KENT STATE 1H TEAM PTS vrs OHIO STATE 1H) "
+            "[Sport:Football][League:NCAA]", "team total"),
+    ("PROP", "NFL Specials <br> [777045] GIANTS SUPERFECTA (SCR 1ST, 1Q, 1H & GM +7½) +1935 "
+             "[Sport:Football][League:NFL]", "not a game market (idSport PROP)"),
+    ("TNS", "Tennis <br> [5001] DJOKOVIC -150 [Sport:Tennis][League:ATP]", "league not supported (idSport TNS)"),
+    # A code the table does not list, its league read off a team nickname: a guess, never marked.
+    ("FB", "Pro Football <br> [101] PITTSBURGH STEELERS SPRING SPECIAL [Sport:Football][League:NFL]",
+     "unrecognised selection"),
+])
+def test_deliberate_exclusions_and_guessed_leagues_are_not_marked(id_sport, description, reason):
+    [record] = normalize_open_bets([open_straight(id_sport, description)], FETCHED_AT)
+    assert record["unmatchable"].startswith(reason), record["unmatchable"]
+    assert "parseFailed" not in record["raw"]
+
+
+def test_a_history_wager_that_does_not_parse_is_not_marked():
+    # The history names no league code, so its parse failure is never flagged.
+    wager = {"id": 1, "type": "STRAIGHT BET", "description": "[1] SOMETHING NEW", "result": "PENDING",
+             "placedDate": "2026-09-26T12:42:10", "risk": 110.0, "win": 100.0}
+    [record] = normalize_wager(wager, FETCHED_AT)
+    assert record["unmatchable"].startswith("unrecognised selection") and "parseFailed" not in record["raw"]
+
+
 @pytest.mark.parametrize("text, expected", [
     ("[1340] TOTAL u24EV \r(ARIZONA 1H vrs BYU 1H)", ("total", "under", 24, 100, "1H", "ARIZONA", "BYU")),
     ("[1117] TOTAL O35-110 \r(KENT STATE 1H VRS OHIO STATE 1H)", ("total", "over", 35, -110, "1H", "KENT STATE", "OHIO STATE")),
@@ -417,6 +459,7 @@ class FakeSession:
         self.tokens_minted = 0
         self.refresh_tokens_seen: list[str] = []
         self.history_calls: list[dict] = []
+        self.open_calls = 0
         self.passwords_seen: list[str] = []
 
     def _tokens(self) -> dict:
@@ -430,6 +473,7 @@ class FakeSession:
             return FakeResponse(200, text=f'<form action="{self.LOGIN_ACTION.replace("&", "&amp;")}" method="post">')
         if url == bfa.OPEN_BETS_URL:
             assert headers["Authorization"] == f"Bearer {jwt_with('777')}" and params == {"playerId": "777"}
+            self.open_calls += 1
             return FakeResponse(200, self.open_wagers)
         if url == bfa.HISTORY_URL:
             assert headers["Authorization"] == f"Bearer {jwt_with('777')}" and params["playerId"] == "777"
@@ -462,7 +506,8 @@ class FakeSession:
 
 
 def make_source(session: FakeSession, clock) -> BFASource:
-    return BFASource(username="user", password="secret", history_days=31, poll_sec=300,
+    # The history cadence is config's own (300 s): the tests below pin it.
+    return BFASource(username="user", password="secret", history_days=31, poll_sec=60,
                      session_factory=lambda: session, clock=clock)
 
 
@@ -477,6 +522,46 @@ def test_fetch_logs_in_once_reads_the_open_list_and_the_paged_history(history, m
     # 18 wagers in pages of 5, then the empty page that ends a total padded by transactions.
     assert [call["page"] for call in session.history_calls] == [0, 1, 2, 3, 4]
     assert (session.history_calls[0]["startDate"], session.history_calls[0]["endDate"]) == ("2026-08-22", "2026-09-23")
+
+
+def test_open_bets_every_poll_and_the_history_every_300s(history):
+    session = FakeSession(history["wagers"], open_wagers=history["openBets"])
+    now = [CLOCK]
+    source = make_source(session, clock=lambda: now[0])
+    first = source.fetch()
+    history_pages = len(session.history_calls)
+    assert (session.open_calls, history_pages > 0) == (1, True)
+
+    now[0] += 60  # a minute on: the open list again, no history
+    between = source.fetch()
+    assert (session.open_calls, len(session.history_calls)) == (2, history_pages)
+    # The open list plus the last pull's settled bets; its 9 pending copies stay out.
+    settled_ids = {record["id"] for record in first if record["status"] != "open"}
+    open_ids = {record["id"] for record in normalize_open_bets(history["openBets"], FETCHED_AT)}
+    assert {record["id"] for record in between} == settled_ids | open_ids
+    assert len(between) == 33 - 9
+
+    now[0] += 239  # 299 s since the pull: still not due
+    source.fetch()
+    assert len(session.history_calls) == history_pages
+    now[0] += 1  # 300 s: the history again
+    after = source.fetch()
+    assert (session.open_calls, len(session.history_calls)) == (4, 2 * history_pages)
+    assert len(after) == 33
+
+
+def test_a_failed_history_pull_fails_the_poll_and_is_retried_on_the_next(history):
+    session = FakeSession(history["wagers"], open_wagers=history["openBets"])
+    now = [CLOCK]
+    source = make_source(session, clock=lambda: now[0])
+    source.fetch()
+    now[0] += 300
+    session.history_status = 503
+    with pytest.raises(RuntimeError, match="history page 0 failed"):
+        source.fetch()
+    session.history_status = 200
+    now[0] += 60
+    assert len(source.fetch()) == 33  # due since the failed pull: pulled again, the full list
 
 
 def test_access_token_is_reused_then_refreshed_within_60s_of_expiry_and_a_refused_refresh_logs_in_again(history):
@@ -521,4 +606,4 @@ def test_source_if_configured_needs_both_credentials(monkeypatch):
     assert bfa.source_if_configured() is None
     monkeypatch.setattr(bfa.config, "BFA_PASSWORD", "secret")
     source = bfa.source_if_configured()
-    assert isinstance(source, BFASource) and (source.name, source.poll_sec) == ("bfa", 300.0)
+    assert isinstance(source, BFASource) and (source.name, source.poll_sec) == ("bfa", 60.0)

@@ -91,6 +91,9 @@
     for (const line of eventLines || []) {
       if (line.periodTypeId !== periodTypeId) continue;
       if (typeof line.bacr !== "number" || Math.abs(line.bacr) < 100) continue;
+      // Unabated's ±999900 placeholder is not a fair: the rung stays unpriced
+      // (no_rung), so a held bet there is left out and named, never sized off 99.99%.
+      if (feed.isClampedFair(line.bacr)) continue;
       const position = cutOfLine(line);
       if (!position || position.axis !== axis || !isHalfPoint(position.cut)) continue;
       const probWin = kelly.americanToProb(line.bacr);

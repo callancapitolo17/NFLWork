@@ -15,7 +15,8 @@
 // each line was worth on every snapshot (edgemove.js, #132), also in memory only. `status.observingSince`
 // says since when that record has no gap, and `status.leagueObservingSince`
 // the same per league (fillfair.js reads a bet's fill off it only when the
-// bet was placed after both).
+// bet was placed after both). `status.leagueLoadedAt` is when each league's
+// last snapshot landed.
 //
 // Loaded as a plain <script> in panel.html (globalThis.UnabatedScanner) and via
 // require() in tests, where fetch and timers are injected.
@@ -102,6 +103,10 @@
       // gap. One league can keep failing while the others land, which the
       // clock above cannot see.
       leagueObservingSince: {},
+      // leagueId -> when its last snapshot landed: a reader of one league's
+      // lines (the Teasers tab reads NFL and CFB) redoes its work only when
+      // that league changed, not on every league's refresh.
+      leagueLoadedAt: {},
     };
     // The last successful snapshot load, paused or not.
     let lastObservedAt = null;
@@ -240,6 +245,7 @@
         loadedCount += 1;
         const previousLoadAt = leagueMeta[leagueId] ? leagueMeta[leagueId].loadedAt : null;
         leagueMeta[leagueId] = { loadedAt: now(), bytes: loaded.bytes, builtAt: loaded.builtAt };
+        status.leagueLoadedAt = { ...status.leagueLoadedAt, [leagueId]: leagueMeta[leagueId].loadedAt };
         if (loaded.builtAt != null) {
           status.snapshotBuiltAt = Math.max(status.snapshotBuiltAt || 0, loaded.builtAt);
         }
@@ -343,6 +349,7 @@
       history = {};
       status.observingSince = null;
       status.leagueObservingSince = {};
+      status.leagueLoadedAt = {};
       lastObservedAt = null;
       status.leaguesLoaded = [];
       status.leagueErrors = {};

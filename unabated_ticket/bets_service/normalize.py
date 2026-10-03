@@ -1,6 +1,7 @@
 """Shared record helpers for every bet source: price, money and Eastern-time
 conventions of the normalised bet record (contract in
-docs/2026-09-11-issue-114-bet-history-plan.md).
+docs/2026-09-11-issue-114-bet-history-plan.md), and the parse-failure marker
+(PARSE_FAILED, mark_parse_failed).
 
 Pure functions, no I/O. They mirror the helpers in extension/bets.js exactly,
 including JavaScript's Math.round (half toward +infinity, not Python's
@@ -12,7 +13,12 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 EASTERN = ZoneInfo("America/New_York")
-
+# raw.parseFailed: the source knew the bet was a game market in a game league —
+# the venue's own league code said so — and could not read its selection. The
+# panel flags an OPEN record carrying it as needing a code fix (extension/bets.js
+# unmatchedReasons). A deliberate exclusion (a prop, a team total, a league not
+# supported, a postponed leg) never carries it and stays quiet.
+PARSE_FAILED = "parseFailed"
 
 
 def js_round(value: float) -> int:
@@ -72,6 +78,13 @@ def json_clean(value: object) -> object:
     if isinstance(value, list):
         return [json_clean(item) for item in value]
     return value
+
+
+def mark_parse_failed(record: dict, reason: str) -> dict:
+    """The record unmatchable with `reason`, marked raw.parseFailed (PARSE_FAILED)."""
+    record["unmatchable"] = reason
+    record["raw"][PARSE_FAILED] = True
+    return record
 
 
 def utc_now_iso() -> str:

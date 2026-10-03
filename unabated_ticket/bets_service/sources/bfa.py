@@ -11,9 +11,12 @@ Two halves, like sources/betonline.py:
                                            login (PKCE) this process owns — access and refresh
                                            token in memory only, the access token refreshed within
                                            REFRESH_MARGIN_SEC of expiry and a failed refresh
-                                           replaced by a new login — then the open bets, then the
-                                           paged history over the retention window; an open-bets
-                                           record replaces the history's copy of the same wager.
+                                           replaced by a new login — then the open bets every poll
+                                           (config.BFA_POLL_SEC, 60 s) and the paged history over
+                                           the retention window every BFA_HISTORY_POLL_SEC (300 s);
+                                           an open-bets record replaces the history's copy of the
+                                           same wager. Between history pulls a poll serves the open
+                                           list plus the last pull's settled bets.
 
 Inputs:  BFA_USERNAME / BFA_PASSWORD (config: the environment, bets_service/.env,
          kalshi_draft/.env, then bet_logger/.env in the main checkout — the sheet scraper's
@@ -51,6 +54,10 @@ with one; a list, one object per wager):
                  bet "placed 22:33" in a response dated 18:50 PST), so BFA has moved this clock
                  once; a wrong one shows as bets missing the board by whole hours.
   GetPlayerOpenBetsWithOpenSpot (if-bets awaiting a leg) answered [] and is not read.
+An open leg whose idSport names a game league (OPEN_BET_LEAGUES) but whose description does
+not parse is marked raw.parseFailed (normalize.mark_parse_failed): the panel flags it as
+needing a code fix. A team total is left out on purpose and stays unmarked, as do props and
+codes the table does not list.
 
 History wager grammar (live pull 2026-09-22, 16 wagers; the parser fails closed on anything
 else, listing the record as unmatchable with the reason and the raw description):
@@ -116,7 +123,8 @@ from zoneinfo import ZoneInfo
 import requests
 
 from unabated_ticket.bets_service import config
-from unabated_ticket.bets_service.normalize import EASTERN, json_clean, round_cents, utc_now_iso
+from unabated_ticket.bets_service.normalize import (
+    EASTERN, json_clean, mark_parse_failed, round_cents, utc_now_iso)
 from unabated_ticket.bets_service.sources.betonline import (
     APPROX_DATE_UNKNOWN, APPROX_SIDE_PARITY, SHEET_LABEL_TO_LEAGUE, american_from_payout, parse_points,
     parse_sport, side_from_rotation)
@@ -163,6 +171,8 @@ EVENT_START_DAYS_BEFORE_PLACED = 1
 EVENT_START_DAYS_AFTER_PLACED = 60
 REASON_LEAGUE_UNKNOWN = "league unknown (BFA names no sport; a college game cannot be placed)"
 REASON_TEAM_TOTAL = "team total"
+# What parse_leg returns for a leg left out on purpose; any other reason is a failure.
+DELIBERATE_LEG_REASONS = {REASON_TEAM_TOTAL}
 FIRST_HALF_ROTATION_PREFIX = "1"
 # A game rotation has at least three digits, so a prefixed one has at least four.
 FIRST_HALF_ROTATION_MIN_DIGITS = 4
@@ -622,8 +632,17 @@ def _open_leg_record(record: dict, leg_row: dict) -> dict:
         return _unmatchable(record, reason)
     leg = parse_leg(description)
     if isinstance(leg, str):
-        return _unmatchable(record, leg)
+        return _open_leg_not_read(record, leg, leg_row.get("idSport"))
     return _apply_leg(record, league, leg, parse_account_time(leg_row.get("gameDateTime")))
+
+
+def _open_leg_not_read(record: dict, reason: str, sport_code: object) -> dict:
+    """A parse failure when the leg's own idSport names a game league (module docstring);
+    a deliberate exclusion, or a league read off a team nickname, is only unmatchable."""
+    code = str(sport_code or "").strip().upper()
+    if code in OPEN_BET_LEAGUES and reason not in DELIBERATE_LEG_REASONS:
+        return mark_parse_failed(record, reason)
+    return _unmatchable(record, reason)
 
 
 def normalize_open_wager(wager: dict, fetched_at: str | None) -> list[dict]:
@@ -700,9 +719,11 @@ class BFASource:
 
     def __init__(self, username: str | None = None, password: str | None = None,
                  history_days: int | None = None, poll_sec: float | None = None,
+                 history_poll_sec: float | None = None,
                  session_factory: Callable[[], object] = new_session,
                  clock: Callable[[], float] = time.time):
         self.poll_sec = poll_sec if poll_sec is not None else config.BFA_POLL_SEC
+        self._history_poll_sec = history_poll_sec if history_poll_sec is not None else config.BFA_HISTORY_POLL_SEC
         self._username = username if username is not None else config.BFA_USERNAME
         self._password = password if password is not None else config.BFA_PASSWORD
         self._history_days = history_days if history_days is not None else config.BFA_HISTORY_DAYS
@@ -713,6 +734,10 @@ class BFASource:
         self._refresh_token: str | None = None
         self._player_id: str | None = None
         self._token_lock = threading.Lock()
+        # The last history pull: when, and its records (served again, settled ones only,
+        # by the open-bets polls in between).
+        self._history_pulled_at: float | None = None
+        self._history_records: list[dict] = []
 
     # -- Keycloak session -------------------------------------------------------------
 
@@ -829,17 +854,33 @@ class BFASource:
 
     # -- Source protocol --------------------------------------------------------------
 
+    def _history_due(self) -> bool:
+        return (self._history_pulled_at is None
+                or self._clock() - self._history_pulled_at >= self._history_poll_sec)
+
     def fetch(self) -> list[dict]:
+        """The open bets every poll; the history too when it is due. Between history
+        pulls the records are the open list plus the last pull's SETTLED bets — the
+        list holds its size, and its pending copies stay out: a bet that has just
+        left the open list keeps its open-list record (league, start) until the next
+        history pull settles it, rather than the history's poorer pending copy."""
         self._ensure_access_token()
         fetched_at = utc_now_iso()
         open_wagers = self._fetch_open_bets()
-        history_wagers = self._fetch_history()
-        records = merge_open_over_history(normalize_bfa(history_wagers, fetched_at),
-                                          normalize_open_bets(open_wagers, fetched_at))
+        open_records = normalize_open_bets(open_wagers, fetched_at)
+        if self._history_due():
+            history_wagers = self._fetch_history()
+            self._history_records = normalize_bfa(history_wagers, fetched_at)
+            self._history_pulled_at = self._clock()
+            records = merge_open_over_history(self._history_records, open_records)
+            what = f"{len(open_wagers)} open + {len(history_wagers)} history wagers"
+        else:
+            settled = [record for record in self._history_records if record["status"] != "open"]
+            records = merge_open_over_history(settled, open_records)
+            what = f"{len(open_wagers)} open wagers + {len(settled)} settled from the last history pull"
         n_open = sum(1 for record in records if record["status"] == "open")
         n_unmatchable = sum(1 for record in records if record["unmatchable"])
-        log.info("bfa: %d open + %d history wagers -> %d records (%d open, %d unmatchable)",
-                 len(open_wagers), len(history_wagers), len(records), n_open, n_unmatchable)
+        log.info("bfa: %s -> %d records (%d open, %d unmatchable)", what, len(records), n_open, n_unmatchable)
         return records
 
 

@@ -1,10 +1,13 @@
-// Unabated Ticket — side panel: the Ticket tab (one captured bet) and the
-// Edges tab (every positive-edge line across the enabled leagues).
+// Unabated Ticket — side panel: the Ticket tab (one captured bet), the Edges
+// tab (every positive-edge line across the enabled leagues), the Bets tab
+// (open bets from the bets service) and the Teasers tab (Buckeye 6-point
+// teasers, teaser.js).
 //
 // Reads: chrome.storage.local {ticket, error, watchStatus, pageCheck, pageReady,
 // booksFilter, locateResult, "liveEdges:<league>"} (written by content.js) and {bankroll,
-// multiplier, edges, alerts, alertLog, activeTab, betsService, betsSettings}
-// (written here).
+// multiplier, edges, alerts, alertLog, activeTab, betsService, betsSettings,
+// teaserRefs} (written here; teaserRefs = the Teasers list's reference fairs,
+// rewritten on each rebuild).
 // Writes: chrome.storage.local settings, {locate} (row click, via locate.js,
 // which also focuses the Unabated tab), {alertLog, alertTargets} and Chrome
 // notifications for new edges; {betsService} after every bets-service poll
@@ -13,8 +16,9 @@
 // DELETE it on Clear (#118 step 4); POST /fill_fairs.json with the fair a
 // new bet's line had when it was placed (fillfair.js, the service stores it
 // once per bet, insert-only). Re-renders on storage.onChanged.
-// Network: the scanner (scanner.js) fetches Unabated's public snapshots while this
-// page is open; it pauses when the panel is hidden and stops when it closes.
+// Network: the scanner (scanner.js) fetches Unabated's public snapshots — the
+// Edges tab's leagues plus NFL and CFB for the Teasers tab — while this page
+// is open; it pauses when the panel is hidden and stops when it closes.
 // The bets tab (#114) polls the local bets service (betsSettings.serviceUrl,
 // default http://127.0.0.1:8094) every 30 s on the same visibility rule —
 // never from the service worker. Matching is bets.js; presentation helpers
@@ -33,6 +37,7 @@
   const attachLib = globalThis.UnabatedAttach;
   const ladderLib = globalThis.UnabatedLadder;
   const live = globalThis.UnabatedLive;
+  const teaserLib = globalThis.UnabatedTeaser;
   const bet105 = globalThis.UnabatedBet105;
   // Bets service poll cadence while the panel is visible (plan § Storage).
   const BETS_POLL_MS = 30 * 1000;
@@ -43,16 +48,18 @@
   // bookIds undefined (never ticked) = DEFAULT_BOOK_NAMES; null = follow the
   // Unabated selection page.js publishes (all live books until one exists),
   // set by its button; an array = the user's own ticks in the panel.
-  // Alt lines (#113) are off until asked for; altMaxDistance 7 points keeps
-  // NFL/CFB spreads to about a touchdown off the number (live 2026-09-11 the
-  // median NFL alt "edge" sat 13 points out, +400 and up). minLiquidityToWin
+  // Alt lines (#113) are off until asked for; an alt lists only while
+  // Unabated's fair and the book's price are 15-85% (feed.altWithinDepthCap; the 7-point cap
+  // went 2026-09-30), and inside that the tail flex (tailflex.js) ranks deep
+  // rungs down. minLiquidityToWin
   // $100: an exchange line is listed when its resting money can win $100
   // (feed.liquidityCanWin), so a thin longshot stays and a thin favorite goes. 0 = off.
+  // minEdgePct 2.5 since 0.16.1 (user, 2026-10-02; was 1.0).
   const DEFAULT_EDGE_SETTINGS = {
-    leagues: ALL_LEAGUE_IDS, periods: [1], betTypes: [1, 2, 3], bookIds: undefined, minEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge",
+    leagues: ALL_LEAGUE_IDS, periods: [1], betTypes: [1, 2, 3], bookIds: undefined, minEdgePct: 2.5, maxLineAgeHours: 168, sortBy: "edge",
     minStake: 0,
     minLiquidityToWin: 100,
-    includeAlts: false, altMaxDistance: 7,
+    includeAlts: false,
     // One card per (game, market, side) with its best line; the flat list is the toggle off.
     groupByMarket: true,
   };
@@ -99,10 +106,10 @@
     backToEdges: el("back-to-edges"), stakeLabel: el("stake-label"), betsBannerHead: el("bets-banner-head"),
     betsCount: el("bets-count"), betsAlert: el("bets-alert"), betsTabButton: el("bets-tab-button"),
     betsRisk: el("bets-risk"), betsRiskCaption: el("bets-risk-caption"),
-    edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
+    edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesTailFlex: el("edges-tailflex"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
     edgesSports: el("edges-sports"), edgesBetTypes: el("edges-bettypes"), edgesBooks: el("edges-books"), edgesBooksMode: el("edges-books-mode"),
     booksDefault: el("books-default"), booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMinStake: el("edges-min-stake"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
-    edgesIncludeAlts: el("edges-include-alts"), edgesAltDistance: el("edges-alt-distance"), edgesMinToWin: el("edges-min-to-win"), edgesGroup: el("edges-group"),
+    edgesIncludeAlts: el("edges-include-alts"), edgesMinToWin: el("edges-min-to-win"), edgesGroup: el("edges-group"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
     edgesLive: el("edges-live"), edgesLiveHead: el("edges-live-head"), edgesLiveList: el("edges-live-list"),
     edgesLiveCount: el("edges-live-count"), edgesPregameLabel: el("edges-pregame-label"),
@@ -112,10 +119,20 @@
     betsUrl: el("bets-url"), betsSettingsError: el("bets-settings-error"),
     betsOpen: el("bets-open"), betsOpenCount: el("bets-open-count"), betsOpenEmpty: el("bets-open-empty"), betsMatchNote: el("bets-match-note"),
     betsNeedsBanner: el("bets-needs-banner"), betsNeedsBlock: el("bets-needs-block"), betsNeeds: el("bets-needs"), betsNeedsCount: el("bets-needs-count"),
+    betsFixBanner: el("bets-fix-banner"), betsFixBlock: el("bets-fix-block"), betsFix: el("bets-fix"), betsFixCount: el("bets-fix-count"),
     betsOffboard: el("bets-offboard"), betsOffboardList: el("bets-offboard-list"), betsOffboardCount: el("bets-offboard-count"),
     betsCrosswalk: el("bets-crosswalk"), betsCrosswalkCount: el("bets-crosswalk-count"), betsCrosswalkEmpty: el("bets-crosswalk-empty"),
     betsCrosswalkClear: el("bets-crosswalk-clear"),
     shapeBanner: el("shape-banner"),
+    tabTeasers: el("tab-teasers"), teasersCount: el("teasers-count"),
+    teasersService: el("teasers-service"), teasersWarning: el("teasers-warning"), teasersStatus: el("teasers-status"), teasersEmpty: el("teasers-empty"),
+    teasersSummary: el("teasers-summary"), teasersSummaryLabel: el("teasers-summary-label"), teasersSummaryStake: el("teasers-summary-stake"),
+    teasersSummaryCells: el("teasers-summary-cells"), teasersSummaryNote: el("teasers-summary-note"),
+    teasersOpen: el("teasers-open"), teasersOpenCount: el("teasers-open-count"), teasersOpenNote: el("teasers-open-note"), teasersOpenList: el("teasers-open-list"),
+    teasersListLabel: el("teasers-list-label"), teasersListCount: el("teasers-list-count"), teasersList: el("teasers-list"),
+    teasersMore: el("teasers-more"), teasersMoreLabel: el("teasers-more-label"), teasersMoreList: el("teasers-more-list"),
+    teasersLegsLabel: el("teasers-legs-label"), teasersLegsCount: el("teasers-legs-count"), teasersLegs: el("teasers-legs"),
+    teasersLegsMore: el("teasers-legs-more"), teasersLegsMoreLabel: el("teasers-legs-more-label"), teasersLegsMoreList: el("teasers-legs-more-list"),
   };
   // page.js heartbeats every 10s; past this it is not running on any Unabated tab.
   const PAGE_READY_STALE_MS = 25000;
@@ -141,13 +158,20 @@
     // league, eventId, eventStart, awayTeamId, homeTeamId, awayTeamName,
     // homeTeamName, pinnedAt}]. A pin decides its bet's game (bets.applyPins).
     pins: [],
+    // Bet ids Cal dismissed from the red flag (the Dismiss chip): panel view
+    // state, kept with the records in chrome.storage.local, pruned to open bets.
+    dismissedBetIds: [],
+    // {betId: startMs}: the start of the board event each open bet last
+    // matched (bets.matchedStarts), so a bet with no start of its own reads as
+    // started once its finished game leaves the board. Kept like dismissals.
+    knownStarts: {},
     // The fair each bet's line had when it was placed, as the bets service
     // serves it (bets.duckdb::bet_fill_fairs): [{betId, lineKey, points,
     // fairAmerican, fairObservedAt, placedAt, capturedAt}]. Set through
     // setFillFairs, which keeps fillFairIndex in step.
     fillFairs: [],
   };
-  // key -> {price, at}: what has been alerted (or seen at baseline); persisted.
+  // key -> alertLogEntry {lineKey, price, edgePct, stake, rankScore, at}: what has been alerted (or seen at baseline); persisted.
   let alertLog = {};
   let eventAlertAt = {};
   // The first pass after a scanner (re)start records what is already on the
@@ -171,6 +195,18 @@
   // them on first use. Both are dropped on every scanner update.
   let linesByEventCache = null;
   let ladderCache = new Map();
+  // The Teasers tab: the ticket list as last built (teaser.planTeasers keeps
+  // it while nothing real changes), and teaser.teaserBoardOf's one pass over
+  // the board with the NFL/CFB load times it was made at — redone only when
+  // one of those leagues' snapshots lands, not on every league's refresh.
+  let teaserBuild = null;
+  let teaserBoard = null;
+  let teaserBoardLoadedAt = null;
+  // The tail-flex c per (league, period, bet type), measured off the
+  // exchanges' two-sided rungs (tailflex.js); dropped on every scanner update
+  // and when the max line age changes.
+  const tailflex = globalThis.UnabatedTailFlex;
+  let tailFlexCache = null;
   const teamsLib = globalThis.UnabatedTeams;
   let teamsSpellingCount = 0;
   const fillfair = globalThis.UnabatedFillFair;
@@ -212,10 +248,13 @@
       boardLinesCache = null;
       linesByEventCache = null;
       ladderCache = new Map();
+      tailFlexCache = null;
       registerFeedTeams(feedState);
+      if (noteMatchedStarts()) persistBets().catch((error) => console.error("[unabated-ticket] bets persist failed", error));
       learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
       captureFillFairs().catch((error) => console.error("[unabated-ticket] fill fair capture failed", error));
       renderEdges();
+      renderTeasers();
       // A ticket sized from the feed (or waiting for it) follows the feed's
       // updates; one the screen priced is left alone (a re-render clears the copy status).
       if (state.ticket && !state.error && pricedLine(state.ticket).edgeFrom !== "screen") render();
@@ -614,9 +653,20 @@
     const advice = betsView.stakeAdvice({
       line: matchLine, price: line.price, edgePct: line.edgePct,
       bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
-      matches, ladderOf: ladderReader(ticket.eventId), liquidity,
+      matches, ladderOf: ladderReader(ticket.eventId), liquidity, teasers: openTeasersNow(),
     });
     return { tier: matches.length ? matches[0].tier : null, matches: advice.matches, advice };
+  }
+
+  // The open BFA teasers, each leg joined to its board game and priced
+  // (teaser.openTeasers): the Edges rows, alerts and the Ticket size the next
+  // bet against the ones on its game (teasers plan section 14). None before
+  // the scanner holds a board; a leg whose game is not on it yet (CFB still
+  // loading, a league that failed) leaves its ticket out (betsview.js) until
+  // it is, unless BFA says that game has started.
+  function openTeasersNow() {
+    if (!scannerState) return [];
+    return teaserLib.openTeasers(state.betRecords, boardLines(), { now: Date.now(), ladderOf: currentTeaserBoard().ladderOf });
   }
 
   // Every open bet on this line's game, bets in the math first: this line,
@@ -628,6 +678,7 @@
       const div = document.createElement("div");
       const against = related.tier === "opposite" || related.tier === "related_opposite";
       div.className = `bet-match tier-${related.tier}${!related.inMath ? " not-sized" : against ? " bad" : ""}`;
+      if (related.title) div.title = related.title;
       const kind = document.createElement("span");
       kind.className = "k";
       kind.textContent = related.tag;
@@ -658,13 +709,17 @@
   // would be alone.
   function renderStakeExposure(advice) {
     const words = betsView.stakeAdviceWords(advice);
+    const teasers = advice.teasers || { held: 0, against: 0 };
     const position = [
       advice.held > 0 ? `held ${betsLib.formatStake(advice.held)}` : null,
       advice.against > 0 ? `against ${betsLib.formatStake(advice.against)}` : null,
+      teasers.held > 0 ? `teasers ${betsLib.formatStake(teasers.held)}` : null,
+      teasers.against > 0 ? `teasers against ${betsLib.formatStake(teasers.against)}` : null,
       words ? words.cap : null,
       words ? words.alone : null,
     ].filter(Boolean);
-    view.stakeExposure.classList.toggle("against", advice.against > 0 && advice.held === 0);
+    const onlyAgainst = advice.held === 0 && teasers.held === 0 && (advice.against > 0 || teasers.against > 0);
+    view.stakeExposure.classList.toggle("against", onlyAgainst);
     view.stakeExposure.hidden = position.length === 0;
     view.stakeExposure.textContent = position.join(" \u00b7 ");
     view.stakeLabel.textContent = !words ? "Bet"
@@ -974,11 +1029,29 @@
     return parts.join(" · ");
   }
 
+  // "tail flex: NFL spr 6.2% · CFB 1H tot 10%": the c in use for every
+  // spread/total market on the list, in list order; a market too thin to
+  // measure shows the fallback.
+  function describeTailFlex(rows) {
+    if (!scannerState || !rows.length) return "";
+    const measurement = tailFlexMeasurement();
+    const parts = new Map();
+    for (const row of rows) {
+      if (row.betTypeId === 1) continue;
+      const key = tailflex.marketKeyOf(row);
+      if (parts.has(key)) continue;
+      const c = tailflex.cOf(measurement, row);
+      const cText = tailflex.isMeasured(measurement, row) ? `${(c * 100).toFixed(1)}%` : `${Math.round(c * 100)}%`;
+      const period = row.period === "FG" ? "" : `${row.period} `;
+      parts.set(key, `${row.leagueLabel} ${period}${row.betTypeId === 2 ? "spr" : "tot"} ${cText}`);
+    }
+    return parts.size ? `tail flex: ${Array.from(parts.values()).join(" · ")}` : "";
+  }
+
   function describeAltFilter(settings) {
     if (!settings.includeAlts) return "alts: off";
-    const gates = [];
-    if (settings.altMaxDistance > 0) gates.push(`within ${settings.altMaxDistance} pts of main`);
-    return `alts: on${gates.length ? ` (${gates.join(", ")})` : " (no gates)"}`;
+    const minPct = Math.round(feed.ALT_MIN_PROB * 100);
+    return `alts: on (fair and price ${minPct}-${100 - minPct}%)`;
   }
 
   // ---- books checkboxes ----------------------------------------------------
@@ -1048,17 +1121,19 @@
     }
   }
 
-  // Everything selectEdges needs except the edge threshold (list and alerts differ there).
+  // Everything selectEdges needs except the edge threshold (list and alerts
+  // differ there). leagueIds: the scanner also holds NFL and CFB for the
+  // Teasers tab, which the Edges tab lists only when Football is ticked.
   function edgeSelectionOptions(effective) {
     const settings = state.edgeSettings;
     return {
+      leagueIds: new Set(settings.leagues),
       periods: new Set(settings.periods),
       betTypes: effective.betTypeIds,
       bookIds: effective.bookIds,
       now: Date.now(),
       maxLineAgeMs: settings.maxLineAgeHours * 3600 * 1000,
       includeAlts: settings.includeAlts,
-      altMaxDistance: settings.altMaxDistance,
       minLiquidityToWin: settings.minLiquidityToWin,
     };
   }
@@ -1084,20 +1159,24 @@
   // there after you bet it is information, and the stake column carries the top-up.
   function withBetFlags(rows) {
     const flags = betsLib.annotateRows(rows, state.betRecords, { lines: boardLines() });
+    const teasers = openTeasersNow();
     return rows.map((row, index) => {
       const flag = flags[index];
       const advice = betsView.stakeAdvice({
         line: row, price: row.price, edgePct: row.edgePct,
         bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
-        matches: flag.matches, ladderOf: ladderReader(row.eventId), liquidity: row.liquidity,
+        matches: flag.matches, ladderOf: ladderReader(row.eventId), liquidity: row.liquidity, teasers,
       });
       return { ...row, bet: { tier: flag.tier, matches: advice.matches, advice } };
     });
   }
 
-  // Sort key for "by my exposure": dollars in the math on the market, held or against.
+  // Sort key for "by my exposure": dollars in the math on the market, held or
+  // against, straight bets and teaser stakes alike.
   function exposureDollars(row) {
-    return row.bet ? row.bet.advice.held + row.bet.advice.against : 0;
+    if (!row.bet) return 0;
+    const { held, against, teasers } = row.bet.advice;
+    return held + against + (teasers ? teasers.held + teasers.against : 0);
   }
 
   // Min suggested bet: gates on what the rail says to bet now (the stake
@@ -1107,12 +1186,31 @@
     return minStake === 0 || betsView.suggestedBetAmount(row.bet.advice) >= minStake;
   }
 
+  // Measured once per scanner update, on the same line-age gate as the list.
+  function tailFlexMeasurement() {
+    const maxLineAgeMs = state.edgeSettings.maxLineAgeHours * 3600 * 1000;
+    if (!tailFlexCache || tailFlexCache.maxLineAgeMs !== maxLineAgeMs) {
+      tailFlexCache = { maxLineAgeMs, measurement: tailflex.measureTailFlex(scannerState, { now: Date.now(), maxLineAgeMs }) };
+    }
+    return tailFlexCache.measurement;
+  }
+
+  // The standalone stake (sized on Unabated's raw edge, never on the flexed
+  // one) and the tail-flex rank score: EV dollars after flex, which picks a
+  // card's best line and orders the lines inside it.
+  function withStakeAndRank(row, measurement) {
+    const sized = { ...row, stake: stakeFor(row) };
+    const rank = tailflex.rankOfRow(sized, measurement);
+    return { ...sized, rankScore: rank ? rank.score : null };
+  }
+
   function currentEdgeRows() {
     if (!scannerState) return [];
     const effective = effectiveFilter();
     const settings = state.edgeSettings;
+    const measurement = tailFlexMeasurement();
     const selected = feed.selectEdges(scannerState, { ...edgeSelectionOptions(effective), minEdge: settings.minEdgePct / 100 })
-      .map((row) => ({ ...row, stake: stakeFor(row) }));
+      .map((row) => withStakeAndRank(row, measurement));
     const rows = withBetFlags(selected).filter(meetsMinStake);
     if (settings.sortBy === "stake") rows.sort((a, b) => (b.stake ?? -1) - (a.stake ?? -1) || b.edgePct - a.edgePct);
     if (settings.sortBy === "start") rows.sort((a, b) => a.eventStartMs - b.eventStartMs || b.edgePct - a.edgePct);
@@ -1210,10 +1308,12 @@
   }
 
   // Cards: the best line of each (game, market, side) is always the highest
-  // stake; the panel's sort orders the cards through that line.
+  // tail-flex rank score (EV dollars after flex); the panel's sort orders the
+  // cards through that line.
   function groupsOf(rows) {
-    const groups = feed.groupEdges(rows, (row) => row.stake);
+    const groups = feed.groupEdges(rows, (row) => row.rankScore);
     const sortBy = state.edgeSettings.sortBy;
+    if (sortBy === "stake") groups.sort((a, b) => (b.best.stake ?? -1) - (a.best.stake ?? -1) || b.best.edgePct - a.best.edgePct);
     if (sortBy === "edge") groups.sort((a, b) => b.best.edgePct - a.best.edgePct || a.eventStartMs - b.eventStartMs);
     if (sortBy === "start") groups.sort((a, b) => a.eventStartMs - b.eventStartMs || b.best.edgePct - a.best.edgePct);
     if (sortBy === "exposure") groups.sort((a, b) => exposureDollars(b.best) - exposureDollars(a.best) || b.best.edgePct - a.best.edgePct);
@@ -1223,13 +1323,14 @@
   // Cards the user has opened; survives the 5s re-render, not a panel reload.
   const expandedGroups = new Set();
 
-  // "held $300" and/or "against $200", or "game", with every match's label as the tooltip.
+  // "held $300" and/or "against $200", "teasers $600", or "game"; the tooltip
+  // is every match's label, a teasers chip's its tickets.
   function betBadges(flag) {
-    return betsView.badges(flag).map(({ kind, text }) => {
+    return betsView.badges(flag).map(({ kind, text, title }) => {
       const badge = document.createElement("span");
       badge.className = `tag ${kind}`;
       badge.textContent = text;
-      badge.title = flag.matches.map((match) => match.label).join("\n");
+      badge.title = title || flag.matches.map((match) => match.label).join("\n");
       return badge;
     });
   }
@@ -1297,6 +1398,8 @@
     block.append(head, ...lines.map((line) => {
       const div = document.createElement("div");
       div.className = `related-line tier-${line.tier}${line.inMath ? "" : " not-sized"}`;
+      // A teasers line lists its tickets on hover.
+      if (line.title) div.title = line.title;
       const tag = document.createElement("span");
       tag.className = "related-tag";
       tag.textContent = line.tag;
@@ -1528,6 +1631,8 @@
     renderEdgesStatus(items);
     const effective = effectiveFilter();
     view.edgesFilter.textContent = describeFilter(effective);
+    view.edgesTailFlex.textContent = describeTailFlex(rows);
+    view.edgesTailFlex.hidden = view.edgesTailFlex.textContent === "";
     view.filtersSummary.textContent = summariseFilter(effective);
     renderBooksList(effective);
     renderFilterDebug();
@@ -1654,10 +1759,17 @@
       key: `group:${group.key}`, row: group.best,
       summary: `${group.bookCount} book${group.bookCount === 1 ? "" : "s"} \u00b7 ${group.rows.length} line${group.rows.length === 1 ? "" : "s"}`,
       // A card pings again only when its best line got better by the card's
-      // own ranking, the stake: the best rung pulled and a +944 longshot
-      // taking over is a worse card, not news, whatever its edge %.
-      improvedOn: (previous) => typeof previous.stake === "number" && typeof group.best.stake === "number" && group.best.stake > previous.stake,
+      // own ranking, the rank score: the best rung pulled and a +944 longshot
+      // taking over is a worse card, not news, whatever its edge %. The line
+      // itself must have changed (another line, or its price or edge moved):
+      // the score also moves with every re-measure of c, which is not news.
+      improvedOn: (previous) => cardLineChanged(group.best, previous)
+        && typeof previous.rankScore === "number" && typeof group.best.rankScore === "number" && group.best.rankScore > previous.rankScore,
     }));
+  }
+
+  function cardLineChanged(best, previous) {
+    return best.key !== previous.lineKey || best.price !== previous.price || best.edgePct !== previous.edgePct;
   }
 
   function priceImproved(newPrice, oldPrice) {
@@ -1730,8 +1842,9 @@
   }
 
   function alertRows() {
+    const measurement = tailFlexMeasurement();
     const selected = feed.selectEdges(scannerState, { ...edgeSelectionOptions(effectiveFilter()), minEdge: state.alertSettings.minEdgePct / 100 })
-      .map((row) => ({ ...row, stake: stakeFor(row) }));
+      .map((row) => withStakeAndRank(row, measurement));
     // A line whose stake against what you hold is $0 has nothing to act on, and
     // one below the Min suggested bet is hidden from the list, so neither alerts.
     return withBetFlags(selected).filter((row) => betsView.suggestedBetAmount(row.bet.advice) > 0 && meetsMinStake(row));
@@ -1764,12 +1877,18 @@
       .map((row) => ({ key: `live:${live.liveAlertKey(row)}`, row, summary: `live · ${row.live.checkpoint}`, improvedOn: () => false }));
   }
 
+  // What the next pass compares against: the line, its price and edge, and the card's rank score.
+  function alertLogEntry(row, now, baseline) {
+    const entry = { lineKey: row.key, price: row.price, edgePct: row.edgePct, stake: row.stake, rankScore: row.rankScore ?? null, at: now };
+    return baseline ? { ...entry, baseline: true } : entry;
+  }
+
   async function processAlertsOnce() {
     const now = Date.now();
     const items = alertItems().concat(liveAlertItems());
     pruneAlertLog(now);
     if (!alertsBaselined) {
-      for (const item of items) alertLog[item.key] = { price: item.row.price, stake: item.row.stake, at: now, baseline: true };
+      for (const item of items) alertLog[item.key] = alertLogEntry(item.row, now, true);
       alertsBaselined = true;
       await chrome.storage.local.set({ alertLog });
       return;
@@ -1781,7 +1900,7 @@
       const lastForEvent = eventAlertAt[item.row.eventId] || 0;
       if (now - lastForEvent < ALERT_EVENT_COOLDOWN_MS) continue;
       await notifyEdge(item.row, item.summary);
-      alertLog[item.key] = { price: item.row.price, stake: item.row.stake, at: now };
+      alertLog[item.key] = alertLogEntry(item.row, now, false);
       eventAlertAt[item.row.eventId] = now;
       fired += 1;
     }
@@ -1821,13 +1940,13 @@
 
   // ---- tabs ----------------------------------------------------------------
 
-  const TABS = ["ticket", "edges", "bets"];
-  const paneOf = { ticket: view.tabTicket, edges: view.tabEdges, bets: view.tabBets };
+  const TABS = ["ticket", "edges", "bets", "teasers"];
+  const paneOf = { ticket: view.tabTicket, edges: view.tabEdges, bets: view.tabBets, teasers: view.tabTeasers };
   // Each pane scrolls on its own, but a hidden element is not guaranteed to
   // keep its scrollTop, so the position is remembered explicitly. Without this
   // the Edges list went back to the top every time a capture brought the
   // Ticket tab forward, which is the whole reason for the split panes.
-  const paneScroll = { ticket: 0, edges: 0, bets: 0 };
+  const paneScroll = { ticket: 0, edges: 0, bets: 0, teasers: 0 };
 
   function showTab(name) {
     const next = TABS.includes(name) ? name : "ticket";
@@ -1878,6 +1997,7 @@
     chrome.storage.local.set({ activeTab: state.activeTab });
     if (state.activeTab === "edges") renderEdges();
     if (state.activeTab === "bets") renderBets();
+    if (state.activeTab === "teasers") renderTeasers();
   });
 
   // ---- edge settings -------------------------------------------------------
@@ -1889,19 +2009,17 @@
     const minEdgePct = Number(view.edgesMin.value);
     const minStake = Number(view.edgesMinStake.value);
     const maxLineAgeHours = Number(view.edgesMaxAge.value);
-    const altMaxDistance = Number(view.edgesAltDistance.value);
     const minLiquidityToWin = Number(view.edgesMinToWin.value);
     if (!Number.isFinite(minEdgePct) || minEdgePct < 0) return { error: "Minimum edge must be zero or more." };
     if (!Number.isFinite(minStake) || minStake < 0) return { error: "Minimum suggested bet must be zero (off) or more." };
     if (!Number.isFinite(maxLineAgeHours) || maxLineAgeHours <= 0) return { error: "Max line age must be above zero hours." };
-    if (!Number.isFinite(altMaxDistance) || altMaxDistance < 0) return { error: "Max points from main must be zero (off) or more." };
     if (!Number.isFinite(minLiquidityToWin) || minLiquidityToWin < 0) return { error: "Min liq to win must be zero (off) or more." };
     if (!periods.length) return { error: "Pick at least one period." };
     if (!betTypes.length) return { error: "Pick at least one bet type." };
     return {
       settings: {
         ...state.edgeSettings, leagues, periods, betTypes, minEdgePct, minStake, maxLineAgeHours, minLiquidityToWin, sortBy: view.edgesSort.value,
-        includeAlts: view.edgesIncludeAlts.checked, altMaxDistance,
+        includeAlts: view.edgesIncludeAlts.checked,
         groupByMarket: view.edgesGroup.checked,
       },
     };
@@ -1920,7 +2038,6 @@
     view.edgesMinToWin.value = settings.minLiquidityToWin;
     view.edgesSort.value = settings.sortBy;
     view.edgesIncludeAlts.checked = settings.includeAlts;
-    view.edgesAltDistance.value = settings.altMaxDistance;
     view.edgesGroup.checked = settings.groupByMarket;
   }
 
@@ -1930,23 +2047,32 @@
     if (parsed.error) return;
     const before = state.edgeSettings;
     const leaguesChanged = parsed.settings.leagues.join(",") !== before.leagues.join(",");
-    // Widening periods, bet types, the liquidity floor or the alt gates exposes lines the alert log has never seen.
+    // Widening periods, bet types, the liquidity floor or the alts toggle exposes lines the alert log has never seen.
     const scopeChanged = leaguesChanged
       || parsed.settings.periods.join(",") !== before.periods.join(",")
       || parsed.settings.betTypes.join(",") !== before.betTypes.join(",")
       || parsed.settings.includeAlts !== before.includeAlts
-      || parsed.settings.altMaxDistance !== before.altMaxDistance
       || parsed.settings.minLiquidityToWin !== before.minLiquidityToWin
       // Alert keys differ between the flat list and cards.
       || parsed.settings.groupByMarket !== before.groupByMarket;
     state.edgeSettings = parsed.settings;
     chrome.storage.local.set({ edges: parsed.settings });
     if (scopeChanged) alertsBaselined = false;
-    if (leaguesChanged) {
-      scanner.start(parsed.settings.leagues).catch((error) => console.error("[unabated-ticket] scanner restart failed", error));
+    // Ticking Football on or off leaves the scanner's leagues as they are: it loads football for the Teasers tab anyway.
+    const scannerLeaguesChanged = scannerLeaguesOf(parsed.settings.leagues).join(",") !== scannerLeaguesOf(before.leagues).join(",");
+    if (scannerLeaguesChanged) {
+      scanner.start(scannerLeaguesOf(parsed.settings.leagues)).catch((error) => console.error("[unabated-ticket] scanner restart failed", error));
     }
     renderEdges();
-    if (scopeChanged && !leaguesChanged) processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
+    // Max line age decides which Buckeye legs can be teased.
+    renderTeasers();
+    // A restarted scanner runs the alert pass on its first snapshot.
+    if (scopeChanged && !scannerLeaguesChanged) processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
+  }
+
+  // The leagues the scanner loads: the Edges tab's, plus NFL and CFB for the Teasers tab.
+  function scannerLeaguesOf(edgeLeagues) {
+    return Array.from(new Set([...edgeLeagues, ...teaserLib.TEASER_LEAGUE_IDS])).sort((a, b) => a - b);
   }
 
   function sanitizeEdgeSettings(stored) {
@@ -1965,7 +2091,6 @@
     if (typeof stored.minLiquidityToWin === "number" && stored.minLiquidityToWin >= 0) base.minLiquidityToWin = stored.minLiquidityToWin;
     if (["edge", "stake", "start", "exposure"].includes(stored.sortBy)) base.sortBy = stored.sortBy;
     if (typeof stored.includeAlts === "boolean") base.includeAlts = stored.includeAlts;
-    if (typeof stored.altMaxDistance === "number" && stored.altMaxDistance >= 0) base.altMaxDistance = stored.altMaxDistance;
     if (typeof stored.groupByMarket === "boolean") base.groupByMarket = stored.groupByMarket;
     return base;
   }
@@ -2020,6 +2145,8 @@
       // Likewise the pins (an older service serves none and keeps the stored ones).
       if (Array.isArray(payload.pins)) state.pins = payload.pins;
       state.betRecords = betsView.mergeServicePayload(state.betRecords, { ...payload, crosswalk: state.crosswalk, pins: state.pins }, now);
+      state.dismissedBetIds = betsView.keepDismissedOpen(state.dismissedBetIds, state.betRecords);
+      noteMatchedStarts();
       // Saved fill fairs never change, so the served rows are merged into the
       // held ones, not swapped in; an older service without the key keeps them.
       if (Array.isArray(payload.fillFairs)) setFillFairs(fillfair.mergeFillFairs(state.fillFairs, payload.fillFairs, state.betRecords));
@@ -2064,9 +2191,10 @@
       if (bet105LastError !== null) console.info("[unabated-ticket] bet105: reading again", reply);
       bet105LastError = null;
     } catch (error) {
-      if (bet105LastError !== error.message) console.warn("[unabated-ticket] bet105:", error.message);
-      bet105LastError = error.message;
-      await serviceRequest("POST", bet105.SERVICE_PATH, bet105.errorBody(error.message)).catch(() => {});
+      const message = error.name === "TimeoutError" ? `Bet105 did not answer within ${bet105.FETCH_TIMEOUT_MS / 1000}s` : error.message;
+      if (bet105LastError !== message) console.warn("[unabated-ticket] bet105:", message);
+      bet105LastError = message;
+      await serviceRequest("POST", bet105.SERVICE_PATH, bet105.errorBody(message)).catch(() => {});
     } finally {
       bet105Busy = false;
     }
@@ -2090,15 +2218,17 @@
 
   // The records, the service state, the crosswalk, the pins and the saved fill fairs, as one stored object.
   function persistBets() {
-    return chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords, crosswalk: state.crosswalk, pins: state.pins, fillFairs: state.fillFairs } });
+    return chrome.storage.local.set({ betsService: { ...state.betsService, bets: state.betRecords, crosswalk: state.crosswalk, pins: state.pins, fillFairs: state.fillFairs, dismissed: state.dismissedBetIds, knownStarts: state.knownStarts } });
   }
 
-  // Every surface that shows a bet flag, after the records or the crosswalk changed.
+  // Every surface that shows a bet flag, after the records or the crosswalk
+  // changed — the Teasers tab too: open BFA teasers are its placed tickets.
   function renderBetsFlags() {
     renderBetsHeader();
     if (!state.error) render();
     renderEdges();
     if (state.activeTab === "bets") renderBets();
+    renderTeasers();
   }
 
   // ---- team crosswalk (#118 step 4) -----------------------------------------
@@ -2342,24 +2472,49 @@
   }
 
   // Every open bet no board line matches, with why and whether it needs a
-  // game (the red flag). Before the first snapshot the board is empty and
-  // nothing is attachable, so nothing flags until the board is known.
+  // game or a code fix (the red flag). Before the first snapshot the board
+  // is empty and nothing is attachable, so until the board is known only a
+  // bet its source could not read flags.
   function unmatchedNow() {
-    return betsLib.unmatchedReasons(state.betRecords, boardLines(), Date.now());
+    return betsLib.unmatchedReasons(state.betRecords, boardLines(), Date.now(),
+      { dismissedIds: state.dismissedBetIds, knownStarts: state.knownStarts });
+  }
+
+  // Remember the start of the board event each open bet matches now; true
+  // when that changed what is held (the caller persists it).
+  function noteMatchedStarts() {
+    const before = JSON.stringify(state.knownStarts);
+    state.knownStarts = betsView.keepKnownStartsOpen(state.knownStarts, betsLib.matchedStarts(state.betRecords, boardLines()), state.betRecords);
+    return JSON.stringify(state.knownStarts) !== before;
+  }
+
+  // Dismiss stops a bet flagging red; Restore flags it again. Both are panel
+  // view state (persisted with the records), so they take effect at once.
+  async function setDismissed(betId, dismissed) {
+    const others = state.dismissedBetIds.filter((id) => id !== betId);
+    state.dismissedBetIds = dismissed ? [...others, betId] : others;
+    await persistBets();
+    renderBetsFlags();
   }
 
   function renderBetsHeader() {
     const now = Date.now();
     const open = state.betRecords.filter((bet) => bet.status === "open").length;
-    const needsGame = unmatchedNow().filter((entry) => entry.needsGame).length;
+    const unmatched = unmatchedNow();
+    const needsGame = unmatched.filter((entry) => entry.needsGame).length;
+    const needsFix = unmatched.filter((entry) => entry.needsFix).length;
+    const flagged = needsGame + needsFix;
     view.betsCount.hidden = open === 0;
     view.betsCount.textContent = String(open);
-    view.betsAlert.hidden = needsGame === 0;
-    view.betsAlert.textContent = String(needsGame);
-    view.betsAlert.title = needsGame ? `${needsGame} open bet${needsGame === 1 ? "" : "s"} not matched to a game` : "";
-    view.betsTabButton.classList.toggle("needs-game", needsGame > 0);
-    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now, needsGame);
-    view.betsHeader.classList.toggle("bad", needsGame > 0 || betsView.serviceStatus(state.betsService, now).unreachable);
+    view.betsAlert.hidden = flagged === 0;
+    view.betsAlert.textContent = String(flagged);
+    view.betsAlert.title = [
+      needsGame ? `${needsGame} open bet${needsGame === 1 ? "" : "s"} not matched to a game` : null,
+      needsFix ? `${needsFix} open bet${needsFix === 1 ? "" : "s"} needing a code fix` : null,
+    ].filter(Boolean).join(" · ");
+    view.betsTabButton.classList.toggle("flagged", flagged > 0);
+    view.betsHeader.textContent = betsView.headerLine(state.betRecords, betsPayload(), now, needsGame, needsFix);
+    view.betsHeader.classList.toggle("bad", flagged > 0 || betsView.serviceStatus(state.betsService, now).unreachable);
   }
 
   // One line per venue: a dot for freshness, what it holds, how old the last
@@ -2396,8 +2551,9 @@
   // ---- Bets tab rows and the Attach flow ------------------------------------
   //
   // An open bet no board line matches is listed twice: in the open list with
-  // a red edge, and in "Needs a game" (the red flag, bets.unmatchedReasons
-  // needsGame) or the folded "Not on the board" with its reason. Attach opens
+  // a red edge, and in "Needs a game" or "Needs a code fix" (the red flag,
+  // bets.unmatchedReasons needsGame / needsFix) or the folded "Not on the
+  // board" with its reason. A code fix has no Attach. Attach opens
   // a two-step panel under the listed row (attach.js): pick the game, then
   // confirm what the venue's names mean. The attach is POSTed to the bets
   // service (/pins.json), whose reply — every pin and the whole crosswalk —
@@ -2563,18 +2719,21 @@
     return panel;
   }
 
-  // One bet row. options: {reason, unmatched, attachable, quiet}. `reason`
+  // One bet row. options: {reason, unmatched, attachable, quiet, flagged, dismissed}. `reason`
   // (an unmatched list row) adds the reason chip and, when attachable, the
   // Attach button and panel; `unmatched` colours the left edge, so an
   // unmatched bet is visible in the open list too; `quiet` greys a row that
-  // does not flag. A pinned, matched open bet says "attached" with an Undo.
+  // does not flag; `flagged` (a red row) adds the Dismiss chip; `dismissed`
+  // (a row Cal dismissed, in the folded list) adds the tag and Restore. A
+  // pinned, matched open bet says "attached" with an Undo.
   function betItem(bet, options) {
-    const { reason = null, unmatched = false, attachable = false, quiet = false } = options || {};
+    const { reason = null, unmatched = false, attachable = false, quiet = false, flagged = false, dismissed = false } = options || {};
     const li = makeEl("li", unmatched ? "unmatched" : "matched");
     const main = makeEl("div");
     const what = makeEl("div", "bet-what", betsLib.describeBet(bet));
     const pinned = Boolean(bet.pin) && !unmatched;
     if (pinned) what.append(makeEl("span", "tag pinned", "attached"));
+    if (dismissed && reason) what.append(makeEl("span", "tag dismissed", "dismissed"));
     const meta = makeEl("div", "bet-meta");
     const venue = bet.venue ? betsLib.venueLabel(bet.venue) : "unknown venue";
     const game = pinned && bet.pin.awayTeamName && bet.pin.homeTeamName ? `${bet.pin.awayTeamName} @ ${bet.pin.homeTeamName}`
@@ -2584,6 +2743,12 @@
     if (pinned) {
       meta.append(document.createTextNode(" · "));
       meta.append(makeButton("linkbtn", "Undo", () => undoAttach(bet)));
+    }
+    if (dismissed && reason) {
+      meta.append(document.createTextNode(" · "));
+      const restore = makeButton("linkbtn", "Restore", () => setDismissed(bet.id, false));
+      restore.title = "Flag this bet again.";
+      meta.append(restore);
     }
     main.append(what, meta);
 
@@ -2595,6 +2760,11 @@
 
     const reasonRow = makeEl("div", quiet ? "reason-row quiet" : "reason-row");
     reasonRow.append(makeEl("span", "bet-reason", reason));
+    if (flagged) {
+      const dismiss = makeButton("dismiss-chip", "Dismiss", () => setDismissed(bet.id, true));
+      dismiss.title = "Stop flagging this bet. It moves to Not on the board and still does not size your next bet.";
+      reasonRow.append(dismiss);
+    }
     const panelOpen = attachState != null && attachState.betId === bet.id;
     if (attachable && panelOpen) {
       // Not while the attach is being saved: its reply, or its error, lands in this panel.
@@ -2621,7 +2791,8 @@
     const unmatched = unmatchedNow();
     const unmatchedIds = new Set(unmatched.map(({ bet }) => bet.id));
     const needsGame = unmatched.filter((entry) => entry.needsGame);
-    const offBoard = unmatched.filter((entry) => !entry.needsGame);
+    const needsFix = unmatched.filter((entry) => entry.needsFix);
+    const offBoard = unmatched.filter((entry) => !entry.needsGame && !entry.needsFix);
     // A bet that matched, settled or stopped being attachable closes its panel (never mid-POST).
     if (attachState && !attachState.busy && !unmatched.some((entry) => entry.attachable && entry.bet.id === attachState.betId)) attachState = null;
 
@@ -2641,23 +2812,30 @@
     view.betsNeedsBanner.textContent = betsView.needsGameBanner(needsGame.length);
     view.betsNeedsBlock.hidden = needsGame.length === 0;
     view.betsNeedsCount.textContent = needsGame.length ? String(needsGame.length) : "";
-    view.betsNeeds.replaceChildren(...needsGame.map(({ bet, reason, attachable }) => betItem(bet, { reason, unmatched: true, attachable })));
+    view.betsNeeds.replaceChildren(...needsGame.map(({ bet, reason, attachable }) => betItem(bet, { reason, unmatched: true, attachable, flagged: true })));
+    view.betsFixBanner.hidden = needsFix.length === 0;
+    view.betsFixBanner.textContent = betsView.needsFixBanner(needsFix.length);
+    view.betsFixBlock.hidden = needsFix.length === 0;
+    view.betsFixCount.textContent = needsFix.length ? String(needsFix.length) : "";
+    view.betsFix.replaceChildren(...needsFix.map(({ bet, reason }) => betItem(bet, { reason, unmatched: true, flagged: true })));
 
     view.betsOpenCount.textContent = open.length ? String(open.length) : "";
     view.betsOpen.replaceChildren(...open.map((bet) => betItem(bet, { unmatched: unmatchedIds.has(bet.id) })));
     view.betsOpenEmpty.hidden = open.length > 0;
     view.betsOpenEmpty.textContent = state.betsService && state.betsService.okAt != null ? "No open bets." : "No bets loaded yet.";
     // Say so when nothing is wrong, so "all matched" never looks like "not checked".
-    const matchable = open.filter((bet) => !bet.unmatchable).length;
-    const unmatchedGameBets = unmatched.filter((entry) => !entry.bet.unmatchable).length;
-    view.betsMatchNote.hidden = matchable === 0;
+    // A bet its source could not read is still a game bet; a prop or a future is not.
+    const isGameBet = (bet) => !bet.unmatchable || betsLib.isParseFailure(bet);
+    const gameBets = open.filter(isGameBet).length;
+    const unmatchedGameBets = unmatched.filter((entry) => isGameBet(entry.bet)).length;
+    view.betsMatchNote.hidden = gameBets === 0;
     view.betsMatchNote.textContent = boardLines().length === 0 ? "Waiting for the board to load before checking which game each bet is on."
       : unmatchedGameBets === 0 ? "Every open game bet matches a game on the board."
-        : `${matchable - unmatchedGameBets} of ${matchable} open game bets match a game on the board.`;
+        : `${gameBets - unmatchedGameBets} of ${gameBets} open game bets match a game on the board.`;
 
     view.betsOffboard.hidden = offBoard.length === 0;
     view.betsOffboardCount.textContent = offBoard.length ? String(offBoard.length) : "";
-    view.betsOffboardList.replaceChildren(...offBoard.map(({ bet, reason, attachable }) => betItem(bet, { reason, unmatched: true, attachable, quiet: true })));
+    view.betsOffboardList.replaceChildren(...offBoard.map(({ bet, reason, attachable, dismissed }) => betItem(bet, { reason, unmatched: true, attachable, quiet: true, dismissed })));
     // An Attach opened from the folded list keeps the fold open.
     if (attachState && offBoard.some((entry) => entry.bet.id === attachState.betId)) view.betsOffboard.open = true;
 
@@ -2692,6 +2870,410 @@
     if (urlChanged) pollBets().catch((error) => console.error("[unabated-ticket] bets poll failed", error));
   }
 
+  // ---- Teasers tab (Buckeye 6-point teasers, teaser.js) ----------------------
+  //
+  // Every render recomputes the legs and the open BFA teasers; the ticket list
+  // is rebuilt only when teaser.planTeasers says what it is built on changed,
+  // so it holds still while the EVs move. It is computed on every scanner
+  // update, bets poll and 5 s tick even with the tab hidden, so the tab's
+  // count stays current. Placed tickets come from the bets service's BFA
+  // open bets (BFA is Buckeye): nothing to mark here.
+
+  const HOUR_MS = 3600 * 1000;
+  // Ticket cards shown before the fold; the rest sit behind "N more tickets".
+  const TEASER_TICKETS_SHOWN = 3;
+  // Ticket number -> the text its Copy button puts on the clipboard.
+  const teaserCopyTexts = new Map();
+  // The last failure logged, so a persistent one is logged once, not every 5 s.
+  let teaserLastError = null;
+
+  // The board pass, redone when an NFL or CFB snapshot has landed since (a
+  // scanner restart clears the load times, so it counts too).
+  function currentTeaserBoard() {
+    const loadedAt = teaserLib.TEASER_LEAGUE_IDS.map((id) => (scannerStatus && scannerStatus.leagueLoadedAt[id]) || 0).join(",");
+    if (!teaserBoard || loadedAt !== teaserBoardLoadedAt) {
+      teaserBoard = teaserLib.teaserBoardOf(scannerState);
+      teaserBoardLoadedAt = loadedAt;
+    }
+    return teaserBoard;
+  }
+
+  // Both football boards in, or failed. Before that a list would be NFL's
+  // alone while CFB — loaded last, the biggest file — is still coming, and a
+  // scanner restart's empty board would throw the list's reference fairs away.
+  function teaserBoardReady() {
+    if (!scannerStatus) return false;
+    return teaserLib.TEASER_LEAGUE_IDS.every((id) => scannerStatus.leaguesLoaded.includes(id)
+      || Boolean(scannerStatus.leagueErrors && scannerStatus.leagueErrors[id]));
+  }
+
+  // The reference fairs of the last build in chrome.storage.local
+  // ("teaserRefs": [cut key, P(above)] pairs), so a reopened panel builds on
+  // the same fairs and the list holds still across a reopen too.
+  function persistTeaserRefs(refs) {
+    chrome.storage.local.set({ teaserRefs: Array.from(refs) });
+  }
+
+  function teaserModel() {
+    if (!scannerState || !teaserBoardReady()) return null;
+    const now = Date.now();
+    const board = currentTeaserBoard();
+    const legs = teaserLib.teaserLegs(scannerState, { now, maxLineAgeMs: state.edgeSettings.maxLineAgeHours * HOUR_MS, board });
+    const placed = teaserLib.openTeasers(state.betRecords, boardLines(), { now, ladderOf: board.ladderOf });
+    const straights = teaserLib.heldStraights(state.betRecords, boardLines(), { now, ladderOf: board.ladderOf });
+    const kellyBankroll = state.settings.bankroll * state.settings.multiplier;
+    const planned = teaserLib.planTeasers({ legs, placed, straights, kellyBankroll, previous: teaserBuild });
+    teaserBuild = planned.build;
+    if (planned.rebuilt) persistTeaserRefs(teaserBuild.refs);
+    return {
+      legs, placed, build: teaserBuild,
+      plan: teaserLib.describePlan(teaserBuild, legs, placed),
+      legRows: teaserLib.describeLegs(legs, teaserBuild, placed, straights),
+    };
+  }
+
+  function fmtWholeDollars(value) {
+    return value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+  }
+
+  function fmtSignedDollars(value) {
+    return `${value >= 0 ? "+" : "-"}${fmtWholeDollars(Math.abs(value))}`;
+  }
+
+  function fmtWin(win) {
+    return `${(win * 100).toFixed(1)}%`;
+  }
+
+  function fmtEv(ev) {
+    return `EV ${ev >= 0 ? "+" : ""}${(ev * 100).toFixed(1)}%`;
+  }
+
+  function fmtWholePct(fraction) {
+    return `${Math.round(fraction * 100)}%`;
+  }
+
+  function kellyWords(multiplier) {
+    const names = { 1: "Full", 0.5: "Half", 0.25: "Quarter" };
+    return `${names[multiplier] || `${multiplier}x`} Kelly`;
+  }
+
+  function plural(count, word) {
+    return `${count} ${word}${count === 1 ? "" : "s"}`;
+  }
+
+  function teaserTicketSize() {
+    return `${teaserLib.LEGS_PER_TICKET}-team · pays +${teaserLib.TICKET_NET_ODDS * 100}`;
+  }
+
+  // The bets service's BFA row (betsview.sourceRows), or null before the service has been reached.
+  function bfaSourceRow(now) {
+    if (!state.betsService || state.betsService.okAt == null) return null;
+    return betsView.sourceRows(betsPayload(), now).find((row) => row.venue === "bfa") || null;
+  }
+
+  function renderTeasers() {
+    let model = null;
+    let failure = null;
+    try {
+      model = teaserModel();
+      teaserLastError = null;
+    } catch (error) {
+      failure = error;
+      if (teaserLastError !== error.message) console.error("[unabated-ticket] teasers failed", error);
+      teaserLastError = error.message;
+    }
+    const count = model ? model.plan.tickets.length : 0;
+    view.teasersCount.hidden = count === 0;
+    view.teasersCount.textContent = String(count);
+    if (state.activeTab !== "teasers") return;
+    const scrollTop = view.tabTeasers.scrollTop;
+    renderTeasersBanners(failure);
+    renderTeasersStatus(model);
+    renderTeasersSummary(model);
+    renderTeasersOpen(model);
+    renderTeasersTickets(model);
+    renderTeasersLegs(model);
+    view.tabTeasers.scrollTop = scrollTop;
+  }
+
+  // Red: the tab failed, or the bets service is down (the list stays up, but
+  // an open teaser may be missing from it). Amber: no BFA account is read, or
+  // BFA's last pull failed.
+  function renderTeasersBanners(failure) {
+    const now = Date.now();
+    const red = [];
+    if (failure) red.push(`Teasers failed: ${failure.message}`);
+    const service = betsView.serviceStatus(state.betsService, now);
+    if (service.unreachable) {
+      red.push(`${service.text.charAt(0).toUpperCase()}${service.text.slice(1)}. Open BFA teasers may be missing, so a ticket already placed may be suggested again.`);
+    }
+    view.teasersService.hidden = red.length === 0;
+    view.teasersService.textContent = red.join(" ");
+    const bfa = bfaSourceRow(now);
+    const amber = !bfa || service.unreachable ? null
+      : !bfa.configured ? "The bets service reads no BFA account, so tickets already placed at Buckeye are not known here."
+        : bfa.error ? `BFA's last pull failed (${bfa.error}); open teasers are as of ${bfa.ageText} ago.` : null;
+    view.teasersWarning.hidden = !amber;
+    view.teasersWarning.textContent = amber || "";
+  }
+
+  // "NFL · CFB loading", then "NFL · CFB · 15 games on Buckeye's board · 56 of 56 legs priced".
+  function renderTeasersStatus(model) {
+    if (!scannerStatus) {
+      view.teasersStatus.textContent = "Starting the scanner…";
+      return;
+    }
+    const leagues = teaserLib.TEASER_LEAGUE_IDS.map((id) => {
+      const label = feed.LEAGUES[id].label;
+      if (scannerStatus.leaguesLoaded.includes(id)) return label;
+      return scannerStatus.leagueErrors && scannerStatus.leagueErrors[id] ? `${label} unavailable` : `${label} loading`;
+    });
+    if (!model) {
+      view.teasersStatus.textContent = leagues.join(" · ");
+      return;
+    }
+    const games = new Set(model.legs.map((leg) => leg.eventId)).size;
+    const priced = model.legs.filter((leg) => leg.win != null).length;
+    view.teasersStatus.textContent = `${leagues.join(" · ")} · ${plural(games, "game")} on Buckeye's board · ${priced} of ${plural(model.legs.length, "leg")} priced`;
+  }
+
+  function teasersEmptyText(model) {
+    if (!model) return "Waiting for Buckeye's NFL and CFB board…";
+    const { plan, build } = model;
+    if (plan.tickets.length) return null;
+    if (build.reason === teaserLib.REASON_FEW_LEGS) return `Fewer than ${teaserLib.LEGS_PER_TICKET} games with a priced Buckeye leg right now: nothing to tease.`;
+    if (build.reason) return `No tickets: ${build.reason}.`;
+    if (build.partialHeldBack > 0) {
+      return `Nothing more to bet: the next ticket would be a partial ${fmtWholeDollars(build.partialHeldBack)}, and a 4-team ticket under $200 is already open at BFA (one partial ticket per set).`;
+    }
+    return build.placed.length
+      ? "Nothing more to bet: no other ticket raises the Kelly growth with the open teasers held."
+      : "No ticket worth betting right now: no 4-team ticket raises the Kelly growth at these fairs.";
+  }
+
+  function summaryCell(label, value, small) {
+    const cell = makeEl("div", "payout-cell");
+    const valueEl = makeEl("div", "payout-value", value);
+    if (small) valueEl.append(" ", makeEl("small", null, small));
+    cell.append(makeEl("div", "payout-label", label), valueEl);
+    return cell;
+  }
+
+  // Tickets, dollars, expected profit, the chance to make money and the
+  // chance every ticket loses — over the open teasers too when there are any.
+  function renderTeasersSummary(model) {
+    const empty = teasersEmptyText(model);
+    view.teasersEmpty.hidden = !empty;
+    view.teasersEmpty.textContent = empty || "";
+    const summary = model ? model.plan.summary : null;
+    const shown = Boolean(summary) && (summary.count > 0 || summary.placedCount > 0);
+    view.teasersSummary.hidden = !shown;
+    if (!shown) return;
+    view.teasersSummaryLabel.textContent = summary.count === 0 ? "Nothing more to bet"
+      : summary.placedCount ? `Bet ${summary.count} more` : `Bet ${plural(summary.count, "ticket")}`;
+    view.teasersSummaryStake.textContent = fmtWholeDollars(summary.stake);
+    const cells = [];
+    if (summary.placedCount) {
+      // The open tickets still in the math; the Open at BFA header below counts every open one.
+      const allOpen = model.placed.length === summary.placedCount;
+      cells.push(summaryCell(allOpen ? "Placed" : "Placed, in play", fmtWholeDollars(summary.placedStake)));
+      if (summary.expectedAll != null) cells.push(summaryCell(`Expected, all ${summary.count + summary.placedCount}`, fmtSignedDollars(summary.expectedAll)));
+    } else {
+      cells.push(summaryCell("Expected", fmtSignedDollars(summary.expected), summary.stake > 0 ? fmtWholePct(summary.expected / summary.stake) : null));
+    }
+    if (summary.makesMoney != null) cells.push(summaryCell("Makes money", fmtWholePct(summary.makesMoney)));
+    if (summary.allLose != null) cells.push(summaryCell("All lose", fmtWholePct(summary.allLose)));
+    view.teasersSummaryCells.replaceChildren(...cells);
+    const straights = summary.straights;
+    view.teasersSummaryNote.textContent = `${kellyWords(state.settings.multiplier)} on ${fmtWholeDollars(state.settings.bankroll)} · `
+      + (summary.placedCount ? "open BFA teasers held fixed" : "tickets that share a leg are sized together")
+      + (straights.count ? ` · counts ${fmtWholeDollars(straights.stake)} of straight bets on ${plural(straights.games, "game")}` : "");
+  }
+
+  // What Copy puts on the clipboard: BFA's own "[rotation] side" for each leg.
+  function teaserCopyText(ticket) {
+    const legs = ticket.legs.map((leg) => `${leg.rotation != null ? `[${leg.rotation}] ` : ""}${leg.label}`).join(" / ");
+    return `Buckeye ${teaserLib.LEGS_PER_TICKET}-team ${teaserLib.TEASER_POINTS}-pt teaser ${fmtWholeDollars(ticket.stake)}: ${legs} | ${fmtEv(ticket.ev)}`;
+  }
+
+  function teaserTicketCard(ticket) {
+    const card = makeEl("li", "ticket-card");
+    const head = makeEl("div", "tk-head");
+    const rail = makeEl("span", "tk-rail");
+    rail.append(makeEl("span", "tk-stake", fmtWholeDollars(ticket.stake)), makeEl("span", "tk-ev", fmtEv(ticket.ev)));
+    head.append(makeEl("span", "tk-num", `#${ticket.number}`), makeEl("span", "tk-size", teaserTicketSize()), rail);
+    const legs = makeEl("ol", "tk-legs");
+    for (const leg of ticket.legs) {
+      const row = makeEl("li");
+      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.fromLabel), makeEl("span", "tl-win", fmtWin(leg.win)));
+      legs.append(row);
+    }
+    const actions = makeEl("div", "tk-actions");
+    const copy = makeEl("button", "btn sm", "Copy");
+    copy.type = "button";
+    copy.dataset.copyTicket = String(ticket.number);
+    actions.append(makeEl("span", "tk-copied"), copy);
+    card.append(head, legs, actions);
+    teaserCopyTexts.set(ticket.number, teaserCopyText(ticket));
+    return card;
+  }
+
+  function renderTeasersTickets(model) {
+    teaserCopyTexts.clear();
+    const tickets = model ? model.plan.tickets : [];
+    view.teasersListLabel.hidden = tickets.length === 0;
+    view.teasersListCount.textContent = tickets.length ? String(tickets.length) : "";
+    view.teasersList.replaceChildren(...tickets.slice(0, TEASER_TICKETS_SHOWN).map(teaserTicketCard));
+    const rest = tickets.slice(TEASER_TICKETS_SHOWN);
+    view.teasersMore.hidden = rest.length === 0;
+    view.teasersMoreLabel.textContent = `${plural(rest.length, "more ticket")} · ${fmtWholeDollars(rest.reduce((sum, ticket) => sum + ticket.stake, 0))}`;
+    view.teasersMoreList.replaceChildren(...rest.map(teaserTicketCard));
+  }
+
+  // One open BFA teaser, read-only: its legs at BFA's numbers, each at its
+  // current fair or why it counts as won.
+  function openTeaserCard(ticket) {
+    const card = makeEl("li", `ticket-card placed${ticket.inPlay ? "" : " done"}`);
+    const head = makeEl("div", "tk-head");
+    const rail = makeEl("span", "tk-rail");
+    const hasDollars = ticket.reason == null;
+    if (ticket.inPlay) rail.append(makeEl("span", "tk-ev", fmtEv(ticket.winAll * (1 + ticket.toWin / ticket.stake) - 1)));
+    const size = hasDollars ? `${ticket.legCount}-team · ${fmtWholeDollars(ticket.stake)} to win ${fmtWholeDollars(ticket.toWin)}` : `${ticket.legCount}-team`;
+    head.append(makeEl("span", "tk-size", size), rail);
+    const legs = makeEl("ol", "tk-legs");
+    for (const leg of ticket.legs) {
+      const row = makeEl("li", leg.state === teaserLib.LEG_LIVE ? null : "counted");
+      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.note || ""), makeEl("span", "tl-win", leg.win == null ? "—" : fmtWin(leg.win)));
+      legs.append(row);
+    }
+    const actions = makeEl("div", "tk-actions");
+    if (!ticket.inPlay) actions.append(makeEl("span", "muted", outOfMathText(ticket)));
+    actions.append(makeEl("span", "tag held", ticket.placedAt ? `placed ${betsLib.formatPlacedAt(ticket.placedAt)}` : "placed"));
+    card.append(head, legs, actions);
+    return card;
+  }
+
+  // Why an open ticket is not in the math, by its legs: every game started,
+  // or no leg joined a game Buckeye's board prices (a basketball teaser, CFB
+  // not loaded, a start the board disagrees with by over 12 h).
+  function outOfMathText(ticket) {
+    if (ticket.reason) return `${ticket.reason}: out of the math`;
+    if (ticket.legs.every((leg) => leg.state === teaserLib.LEG_STARTED)) return "every game has started: out of the math";
+    return "no leg priced on the board: out of the math";
+  }
+
+  // Always shown once the board is up, so "none open · BFA pulled 41 s ago"
+  // says how fresh the answer is right after a ticket is placed.
+  function renderTeasersOpen(model) {
+    view.teasersOpen.hidden = !model;
+    if (!model) return;
+    const placed = model.placed;
+    const bfa = bfaSourceRow(Date.now());
+    const pull = !bfa ? "bets service not reached yet"
+      : !bfa.configured ? "no BFA account read"
+        : bfa.fetchedAt ? `BFA pulled ${bfa.ageText} ago` : "no BFA pull yet";
+    const dollars = (tickets) => tickets.reduce((sum, ticket) => sum + (typeof ticket.stake === "number" ? ticket.stake : 0), 0);
+    const inPlay = placed.filter((ticket) => ticket.inPlay);
+    const amount = inPlay.length === placed.length ? fmtWholeDollars(dollars(placed))
+      : `${fmtWholeDollars(dollars(placed))}, ${fmtWholeDollars(dollars(inPlay))} in play`;
+    view.teasersOpenCount.textContent = placed.length ? String(placed.length) : "";
+    view.teasersOpenNote.textContent = [placed.length ? `${amount} · each until its last game starts` : "none open", pull].join(" · ");
+    view.teasersOpenList.replaceChildren(...placed.map(openTeaserCard));
+  }
+
+  function legStandingText(row) {
+    const open = row.openTickets ? ` · ${row.openTickets} open` : "";
+    if (row.standing !== teaserLib.STANDING_POOL) return `${row.note}${open}`;
+    return `${row.inTickets ? `in ${plural(row.inTickets, "ticket")}` : "in no ticket"}${open}`;
+  }
+
+  // The straight bets on a pool leg's game, the Edges tab's tags: `held $X`
+  // on the leg's side, `against $Y` on the other, or a bare `game` when the
+  // game has straights and none of them counts. Every bet in the tooltip.
+  function teaserStraightTags(straights) {
+    if (!straights) return [];
+    const tooltip = straights.counted.map((bet) => bet.label)
+      .concat(straights.leftOut.map((bet) => `${bet.label} — not counted: ${bet.reason}`)).join("\n");
+    const tag = (kind, text) => {
+      const el = makeEl("span", `tag ${kind}`, text);
+      el.title = tooltip;
+      return el;
+    };
+    const tags = [];
+    if (straights.held > 0) tags.push(tag("held", `held ${betsLib.formatStake(straights.held)}`));
+    if (straights.against > 0) tags.push(tag("against", `against ${betsLib.formatStake(straights.against)}`));
+    if (tags.length === 0 && straights.leftOut.length > 0) tags.push(tag("game", "game"));
+    return tags;
+  }
+
+  function teaserLegRow(row) {
+    const { leg } = row;
+    const pool = row.standing === teaserLib.STANDING_POOL;
+    const item = makeEl("li", `edge-row leg-row ${pool ? "tier-hot" : "tier-thin out"}`);
+    const main = makeEl("div");
+    const meta = makeEl("div", "edge-meta");
+    meta.append(`${leg.matchup} · ${leg.leagueLabel} · ${fmtStart(new Date(leg.eventStartMs).toISOString())} · `, untilEl(leg.eventStartMs));
+    const book = makeEl("div", "edge-book");
+    book.append(makeEl("span", "price", `Buckeye ${leg.bookLabel}`),
+      makeEl("span", "age", ` · teased ${teaserLib.TEASER_POINTS} · ${fmtLineAge(leg.modifiedMs)}`));
+    main.append(makeEl("div", "edge-side", leg.label), meta, book);
+    const rail = makeEl("div", "edge-rail");
+    rail.append(makeEl("span", `edge-pct tier-${pool ? "hot" : "thin"}`, leg.win == null ? "—" : fmtWin(leg.win)),
+      makeEl("span", "leg-in", legStandingText(row)), ...teaserStraightTags(row.straights));
+    item.append(main, rail);
+    return item;
+  }
+
+  function breakEvenDivider() {
+    const divider = makeEl("li", "be-divider");
+    divider.setAttribute("role", "separator");
+    divider.append(makeEl("span", null, `${fmtWin(teaserLib.BREAK_EVEN_WIN)} a leg breaks even at +${teaserLib.TICKET_NET_ODDS * 100}`));
+    return divider;
+  }
+
+  // The pool's legs and the priced legs above break-even, best first, with
+  // the break-even line where it falls; the rest of the games behind a fold.
+  function renderTeasersLegs(model) {
+    const rows = model ? model.legRows : [];
+    view.teasersLegsLabel.hidden = rows.length === 0;
+    view.teasersLegsCount.textContent = rows.length ? String(rows.length) : "";
+    const shownStandings = [teaserLib.STANDING_POOL, teaserLib.STANDING_OUT];
+    const shown = rows.filter((row) => shownStandings.includes(row.standing));
+    const folded = rows.filter((row) => !shownStandings.includes(row.standing));
+    const items = [];
+    let dividerPlaced = false;
+    for (const row of shown) {
+      if (!dividerPlaced && row.leg.win < teaserLib.BREAK_EVEN_WIN) {
+        items.push(breakEvenDivider());
+        dividerPlaced = true;
+      }
+      items.push(teaserLegRow(row));
+    }
+    if (!dividerPlaced && folded.length) items.push(breakEvenDivider());
+    view.teasersLegs.replaceChildren(...items);
+    view.teasersLegsMore.hidden = folded.length === 0;
+    const counts = [
+      [teaserLib.STANDING_BELOW, "below break-even"],
+      [teaserLib.STANDING_OTHER_MARKET, "on an open teaser's other market"],
+      [teaserLib.STANDING_UNPRICED, "with no fair"],
+    ].map(([standing, words]) => [folded.filter((row) => row.standing === standing).length, words])
+      .filter(([count]) => count > 0).map(([count, words]) => `${count} ${words}`);
+    view.teasersLegsMoreLabel.textContent = `${plural(folded.length, "more game")}: ${counts.join(", ")}`;
+    view.teasersLegsMoreList.replaceChildren(...folded.map(teaserLegRow));
+  }
+
+  view.tabTeasers.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-copy-ticket]");
+    if (!button) return;
+    const status = button.parentElement.querySelector(".tk-copied");
+    try {
+      await navigator.clipboard.writeText(teaserCopyTexts.get(Number(button.dataset.copyTicket)) || "");
+      status.textContent = "Copied";
+    } catch (error) {
+      status.textContent = `Copy failed: ${error.message}`;
+    }
+  });
+
   // ---- settings ------------------------------------------------------------
 
   function readSettingInputs() {
@@ -2710,6 +3292,7 @@
     chrome.storage.local.set(parsed.settings);
     render();
     renderEdges();
+    renderTeasers();
   }
 
   function fillSettingInputs() {
@@ -2723,7 +3306,14 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = { bankroll: Number(local.bankroll) || DEFAULT_SETTINGS.bankroll, multiplier: Number(local.multiplier) || DEFAULT_SETTINGS.multiplier };
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex", "teaserRefs"]);
+    // The reference fairs the last Teasers list was built on: a seed with no
+    // key, so the first plan rebuilds — on these fairs, where still within a
+    // point of the live ones — and the list is the one this panel last showed.
+    if (Array.isArray(relay.teaserRefs)) {
+      const pairs = relay.teaserRefs.filter((pair) => Array.isArray(pair) && typeof pair[0] === "string" && typeof pair[1] === "number");
+      teaserBuild = { key: null, refs: new Map(pairs) };
+    }
     const leaguePaths = Array.from(new Set(Object.values(feed.LEAGUES).map((league) => league.path)));
     const storedLive = await chrome.storage.local.get(leaguePaths.map(live.storageKeyOf));
     for (const [key, payload] of Object.entries(storedLive)) {
@@ -2751,6 +3341,8 @@
       state.pins = Array.isArray(storedBets.pins) ? storedBets.pins : [];
       const storedRecords = Array.isArray(storedBets.bets) ? storedBets.bets : [];
       state.betRecords = betsLib.pruneForRetention(betsLib.rekeyRecords(betsLib.applyPins(storedRecords, state.pins), state.crosswalk), Date.now());
+      state.dismissedBetIds = betsView.keepDismissedOpen(storedBets.dismissed, state.betRecords);
+      state.knownStarts = betsView.keepKnownStartsOpen(storedBets.knownStarts, {}, state.betRecords);
       setFillFairs(fillfair.mergeFillFairs([], Array.isArray(storedBets.fillFairs) ? storedBets.fillFairs : [], state.betRecords));
       state.betsService = {
         payload: storedBets.payload || null, okAt: storedBets.okAt ?? null,
@@ -2766,8 +3358,9 @@
     renderEdges();
     renderLocate();
     if (state.activeTab === "bets") renderBets();
+    renderTeasers();
     startBetsPolling();
-    await scanner.start(state.edgeSettings.leagues);
+    await scanner.start(scannerLeaguesOf(state.edgeSettings.leagues));
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -2818,7 +3411,6 @@
   view.edgesMaxAge.addEventListener("input", onEdgeSettingsInput);
   view.edgesSort.addEventListener("change", onEdgeSettingsInput);
   view.edgesIncludeAlts.addEventListener("change", onEdgeSettingsInput);
-  view.edgesAltDistance.addEventListener("input", onEdgeSettingsInput);
   view.edgesMinToWin.addEventListener("input", onEdgeSettingsInput);
   view.edgesGroup.addEventListener("change", onEdgeSettingsInput);
   view.alertsEnabled.addEventListener("change", onAlertSettingsInput);
@@ -2862,6 +3454,8 @@
       renderLocate();
     }
     if (state.activeTab === "bets") renderBets();
+    // Even hidden: a game that starts leaves the list, and the tab's count follows.
+    renderTeasers();
   }, 5000);
 
   // The Live block's clock: staleness and "fair set 0:38 ago" move without a

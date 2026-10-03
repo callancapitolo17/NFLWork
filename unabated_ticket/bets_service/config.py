@@ -104,10 +104,14 @@ BETONLINE_HISTORY_DAYS = int(_get("BETS_BETONLINE_HISTORY_DAYS", str(RETENTION_D
 
 # BFA (2026-09-23): the account's own Keycloak password login — the sheet scraper's
 # credentials in bet_logger/.env, no token file (see sources/bfa.py). Cadence and
-# window are constants: the history is one GET per 100 wagers.
+# window are constants. The open bets every BFA_POLL_SEC: BFA is Buckeye, and a teaser
+# placed there must reach the panel's Teasers tab before it is suggested again (this
+# plus the panel's 30 s poll: ~90 s). The history — what settles a bet once it leaves
+# the open list, one GET per 100 wagers — every BFA_HISTORY_POLL_SEC.
 BFA_USERNAME = _get("BFA_USERNAME")
 BFA_PASSWORD = _get("BFA_PASSWORD")
-BFA_POLL_SEC = 300.0
+BFA_POLL_SEC = 60.0
+BFA_HISTORY_POLL_SEC = 300.0
 BFA_HISTORY_DAYS = RETENTION_DAYS + 1
 
 # Wagerzon (2026-09-23): the C account. Its login has sat in the primary WAGERZON_*

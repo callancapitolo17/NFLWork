@@ -86,6 +86,20 @@
   const PERIODS = { 1: "FG", 2: "1H", 3: "2H", 4: "1Q", 5: "2Q", 6: "3Q", 7: "4Q" };
   // ms49 is Unabated's own line, not a book anyone can bet.
   const UNABATED_LINE_BOOK_ID = 49;
+  // Unabated's bacr placeholder for a fair past its range: live 2026-09-30,
+  // ±999900 (99.99%) on 4 deep CFB rungs, one listed as Vanderbilt +46 at
+  // -1800 "5.55% edge" with a $2,497 quarter-Kelly stake. A clamp is not a
+  // fair, so its line never lists (genuine deep fairs such as +119499 do).
+  const UNABATED_FAIR_CLAMP = 999900;
+  // An alt lists only while BOTH Unabated's fair and the book's own price put
+  // its side between 15% and 85% (about +567 / -567): a 4.3c Kalshi rung is
+  // out whatever Unabated says (user, 2026-09-30; first 10%, raised to 15%). A cap in probability, not points, means the same
+  // depth in every sport (10 points is modest in a CFB spread, absurd in an
+  // MLB total). It replaces the 7-point cap (user, 2026-09-30): beyond it sit
+  // the deep favorites (the -200-or-shorter bucket ran -16.8% on 13 bets to
+  // 2026-09-30, and without a cap took $6.4k of suggested stake on one NFL+CFB
+  // board) and untested longshots.
+  const ALT_MIN_PROB = 0.15;
   const STATUS_ON_BOARD = 1;
   // The feed writes this in place of an unknown modifiedOn (every alt line).
   const MODIFIED_ON_UNKNOWN_PREFIX = "0001-";
@@ -158,6 +172,57 @@
     if (!line.isAlt) return null;
     const sequence = line.sequenceNumber;
     return typeof sequence === "number" && sequence >= SEQUENCE_AS_EPOCH_MS_MIN ? sequence : null;
+  }
+
+  function isClampedFair(bacr) {
+    return typeof bacr === "number" && Math.abs(bacr) === UNABATED_FAIR_CLAMP;
+  }
+
+  // An American price (a fair or a book's) as a probability, or null when it is no price.
+  function probOfAmerican(americanOdds) {
+    if (typeof americanOdds !== "number" || !Number.isFinite(americanOdds) || Math.abs(americanOdds) < 100) return null;
+    return americanOdds > 0 ? 100 / (americanOdds + 100) : -americanOdds / (-americanOdds + 100);
+  }
+
+  function probInAltDepthCap(americanOdds) {
+    const prob = probOfAmerican(americanOdds);
+    return prob != null && prob >= ALT_MIN_PROB && prob <= 1 - ALT_MIN_PROB;
+  }
+
+  // The alt depth cap (ALT_MIN_PROB) on Unabated's fair and on the book's
+  // price. An alt with no fair fails closed.
+  function altWithinDepthCap(americanFair, americanPrice) {
+    return probInAltDepthCap(americanFair) && probInAltDepthCap(americanPrice);
+  }
+
+  // Unabated flat-lines deep tails: Michigan State @ Wisconsin 1H total read
+  // Under +258 (27.9%) on every rung from 2.5 to 16.5 (2026-09-30), which
+  // listed Under 2.5 at Kalshi +2242 as a "554% edge". A fair can only change
+  // with the number, so a rung whose fair equals the next rung's on the same
+  // side is not a fair (ladder.js drops the same rungs from sizing). Returns
+  // the set of `${event}:${period}:${betType}:${side}|${points}` keys.
+  function flatFairRungKeys(lines) {
+    const fairsBySide = new Map();
+    for (const line of lines) {
+      if (line.betTypeId === 1 || line.points == null || typeof line.bacr !== "number") continue;
+      const sideKey = `${line.eventId}:${line.periodTypeId}:${line.betTypeId}:${line.sideIndex}`;
+      if (!fairsBySide.has(sideKey)) fairsBySide.set(sideKey, new Map());
+      fairsBySide.get(sideKey).set(line.points, line.bacr);
+    }
+    const flat = new Set();
+    for (const [sideKey, fairByPoints] of fairsBySide) {
+      const rungs = Array.from(fairByPoints.entries()).sort((a, b) => a[0] - b[0]);
+      for (let i = 1; i < rungs.length; i += 1) {
+        if (rungs[i][1] !== rungs[i - 1][1]) continue;
+        flat.add(`${sideKey}|${rungs[i - 1][0]}`);
+        flat.add(`${sideKey}|${rungs[i][0]}`);
+      }
+    }
+    return flat;
+  }
+
+  function rungKeyOf(line) {
+    return `${line.eventId}:${line.periodTypeId}:${line.betTypeId}:${line.sideIndex}|${line.points}`;
   }
 
   function emptyState() {
@@ -520,18 +585,16 @@
   }
 
   // Alt-only gates. An alt is listed only when includeAlts is on, the main
-  // line is not currently sitting on the same number (same bet twice), and it
-  // is within altMaxDistance points of the book's current main number (deep
-  // ladders are extrapolated fairs and a few-dollar stake).
+  // line is not currently sitting on the same number (same bet twice), its
+  // fair and price are inside the depth cap (altWithinDepthCap), and its fair
+  // is not a flat-lined tail (flatFairRungKeys). Inside the cap the panel
+  // ranks deep rungs down with the tail flex (tailflex.js).
   function altPassesGates(line, state, opts) {
     if (!opts.includeAlts) return false;
     const main = state.lines[line.mainKey];
     if (main && main.points === line.points) return false;
-    if (opts.altMaxDistance != null) {
-      const mainPoints = currentMainPoints(line, state);
-      if (mainPoints == null || Math.abs(line.points - mainPoints) > opts.altMaxDistance) return false;
-    }
-    return true;
+    if (!altWithinDepthCap(line.bacr, line.price)) return false;
+    return !opts.flatRungKeys.has(rungKeyOf(line));
   }
 
   // Dollars won per dollar staked at an American price: +2000 -> 20, -110 -> 0.909.
@@ -550,6 +613,8 @@
   }
 
   // Lines worth listing: on the board, edge known and >= minEdge (a fraction),
+  // league ticked (leagueIds: the state can hold leagues the Edges tab does
+  // not show — the scanner always loads NFL and CFB for the Teasers tab),
   // period/bet type enabled, book allowed, game not started, and — when
   // maxLineAgeMs is set — changed by the book within that window (a 96-day-old
   // line at a "live" book is a dead feed, and its 36% "edge" is not bettable;
@@ -559,22 +624,24 @@
   function selectEdges(state, options) {
     const opts = options || {};
     const minEdge = typeof opts.minEdge === "number" ? opts.minEdge : 0.01;
+    const leagueIds = opts.leagueIds instanceof Set ? opts.leagueIds : null;
     const periods = opts.periods instanceof Set ? opts.periods : new Set([1]);
     const betTypes = opts.betTypes instanceof Set ? opts.betTypes : new Set([1, 2, 3]);
     const bookIds = opts.bookIds instanceof Set ? opts.bookIds : null;
     const now = typeof opts.now === "number" ? opts.now : Date.now();
     const maxLineAgeMs = positiveNumberOrNull(opts.maxLineAgeMs);
     const minLiquidityToWin = positiveNumberOrNull(opts.minLiquidityToWin);
-    const altOpts = {
-      includeAlts: opts.includeAlts === true,
-      altMaxDistance: positiveNumberOrNull(opts.altMaxDistance),
-    };
+    const lines = Object.values(state.lines);
+    const includeAlts = opts.includeAlts === true;
+    const altOpts = { includeAlts, flatRungKeys: includeAlts ? flatFairRungKeys(lines) : new Set() };
     const rows = [];
-    for (const line of Object.values(state.lines)) {
+    for (const line of lines) {
       if (line.bookId === UNABATED_LINE_BOOK_ID) continue;
+      if (leagueIds && !leagueIds.has(line.leagueId)) continue;
       if (line.isAlt && !altPassesGates(line, state, altOpts)) continue;
       if (line.statusId !== STATUS_ON_BOARD) continue;
       if (line.ge == null || line.ge < minEdge) continue;
+      if (isClampedFair(line.bacr)) continue;
       if (!periods.has(line.periodTypeId) || !betTypes.has(line.betTypeId)) continue;
       const book = state.books[line.bookId];
       if (bookIds ? !bookIds.has(line.bookId) : !(book && book.isLive)) continue;
@@ -609,9 +676,9 @@
 
   // One card per (game, period, bet type, side): a +EV opinion is
   // directional, so the two sides of a market are two cards. Rows inside a
-  // card sort by rankOf(row) descending (the panel passes the Kelly stake,
-  // which already taxes longshots), edge as the tie-break; `best` is the
-  // first. Cards come back in the same order by their best line. Rows are
+  // card sort by rankOf(row) descending (the panel passes the tail-flex rank
+  // score, EV dollars after flex — tailflex.js), edge as the tie-break; `best`
+  // is the first. Cards come back in the same order by their best line. Rows are
   // the selectEdges output (any extra fields, e.g. stake, ride along).
   function groupEdges(rows, rankOf) {
     const rank = typeof rankOf === "function" ? rankOf : (row) => row.edgePct;
@@ -670,7 +737,7 @@
   }
 
   const api = {
-    LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID,
+    LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID, ALT_MIN_PROB, isClampedFair, altWithinDepthCap, flatFairRungKeys, rungKeyOf,
     kalshiEventSuffixOf,
     parseLeagueKey, parseEventStart, parseModifiedOn, lineChangedMs, lineKeyOf, altLineKeyOf, emptyState, teamSpellingsFromEventName,
     parseSnapshot, mergeStates,
