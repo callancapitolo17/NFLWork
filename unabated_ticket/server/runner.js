@@ -42,6 +42,7 @@ const http = require("node:http");
 const scannerLib = require("../extension/scanner.js");
 const teams = require("../extension/teams.js");
 const betsLib = require("../extension/bets.js");
+const betsView = require("../extension/betsview.js");
 const fillfair = require("../extension/fillfair.js");
 const tailflex = require("../extension/tailflex.js");
 const teaser = require("../extension/teaser.js");
@@ -157,6 +158,10 @@ function createRunner(deps) {
   let teamsSpellingCount = teams.spellingCount();
   let held = { records: [], crosswalk: [], pins: [], fillFairs: [] };
   let fillFairIndex = new Map();
+  // {betId: startMs} of the board game each open bet last matched (the
+  // panel's knownStarts): a bet with no start of its own whose game has
+  // started stops flagging as needing a game.
+  let knownStarts = {};
   const betsStatus = { okAt: null, error: null, unreachableSince: null, generatedAt: null, sources: {} };
   let settings = { ...edgesPayload.settingsFromService(null), source: "defaults", error: null, okAt: null, updatedAt: null };
   let scannedLeagues = null;
@@ -191,8 +196,14 @@ function createRunner(deps) {
       ladderReaders = null;
       tailFlexCache = null;
       registerFeedTeams();
+      noteMatchedStarts();
     },
   });
+
+  // Remember each open bet's matched game start, as the panel's noteMatchedStarts does.
+  function noteMatchedStarts() {
+    knownStarts = betsView.keepKnownStartsOpen(knownStarts, betsLib.matchedStarts(held.records, boardLines()), held.records);
+  }
 
   function boardLines() {
     if (!feedState) return [];
@@ -241,6 +252,7 @@ function createRunner(deps) {
       const applied = edgeRows.applyBetsPayload(held, await getServiceJson(serviceFetch, `${deps.betsServiceUrl}/bets.json`), at);
       held = { records: applied.records, crosswalk: applied.crosswalk, pins: applied.pins, fillFairs: applied.fillFairs };
       fillFairIndex = fillfair.fairsByBetId(held.fillFairs);
+      noteMatchedStarts();
       if (betsStatus.error) logInfo("bets service reachable again");
       Object.assign(betsStatus, { okAt: at, error: null, unreachableSince: null, generatedAt: applied.generatedAt, sources: applied.sources });
     } catch (error) {
@@ -305,7 +317,7 @@ function createRunner(deps) {
 
   function edgesPayloadNow() {
     return edgesPayload.buildEdgesPayload({
-      feedState, scannerStatus, history, betRecords: held.records, fillFairIndex,
+      feedState, scannerStatus, history, betRecords: held.records, fillFairIndex, knownStarts,
       stakeSettings: settings.stakeSettings, edgeSettings: settings.edgeSettings,
       settingsStatus: { source: settings.source, error: settings.error, okAt: settings.okAt, updatedAt: settings.updatedAt },
       betsStatus: { ...betsStatus }, boardLines: boardLines(), ladderReaderOf,
