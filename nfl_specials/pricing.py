@@ -9,24 +9,27 @@ devig spreads that margin across the cells. Pricing only the special's own
 SGP and dividing out single-leg vig would leave most of that margin in and
 overstate every edge.
 
-Superfectas add "scores first", which only DraftKings lets into an SGP. A
-superfecta is priced as P(trifecta part) x P(scores first | trifecta part):
-the first factor is the partition fair above from the HTTP books, the second
-comes from TWO DraftKings SGPs — (team scores first + the trifecta legs) and
-(opponent scores first + the same legs). They share every other leg, so DK's
-margin cancels in their ratio. Two calls instead of a 36-cell partition
-keeps DraftKings, which denies a page after ~6 price calls, usable.
+Superfectas add "scores first", which only DraftKings lets into an SGP, so
+they price at DraftKings alone: P(trifecta part) x P(scores first | trifecta
+part). The first factor is DK's own partition fair for the other three legs;
+the second comes from TWO DK SGPs — (team scores first + the trifecta legs)
+and (opponent scores first + the same legs) — which share every other leg,
+so DK's margin cancels in their ratio. That is ~20 DK calls per superfecta
+instead of a 36-cell partition, at a book that denies a page after ~6 calls.
 
 Fair = the WORST case (lowest probability) among the books that priced the
-full partition — a special is only ever backed. Stake = Kelly
-fraction x full Kelly at Wagerzon's price; within one game only the best
-special per team gets a stake, because a team's fectas win together.
+full partition — a special is only ever backed. Stake = Kelly fraction x full
+Kelly at Wagerzon's price, fitted to the Wagerzon balance available
+(budgeted_stakes); within one game only the best special per team gets a
+stake, because a team's fectas win together.
 """
 from __future__ import annotations
 
 import itertools
 import math
 from dataclasses import dataclass
+
+from scipy.optimize import brentq
 
 from kalshi_common.fair_value import _probit_devig_n as probit_devig_n
 from nfl_specials.books import BookGame, SgpBook
@@ -44,6 +47,8 @@ class ScoresFirstShare:
     share: float | None            # P(team scores first | the special's other legs)
     n_calls: int
     reason: str | None = None      # why share is None
+    sgp_decimal: float | None = None  # the book's own (vigged) price for the whole
+                                      # special, when it is a single SGP
 
 
 @dataclass(frozen=True)
@@ -125,6 +130,58 @@ def kelly_stake(fair_prob: float, wz_american: int, bankroll: float, kelly_fract
     return max(0.0, full_kelly) * kelly_fraction * bankroll
 
 
+def _kelly_fraction_at_hurdle(fair_prob: float, net_odds: float, hurdle: float) -> float:
+    """Full-Kelly fraction f at which the bet's marginal log growth
+    p*b/(1+b*f) - q/(1-f) has fallen to `hurdle` (hurdle 0 = plain Kelly)."""
+    q = 1.0 - fair_prob
+    marginal = lambda f: fair_prob * net_odds / (1 + net_odds * f) - q / (1 - f) - hurdle
+    full_kelly = (fair_prob * net_odds - q) / net_odds
+    if full_kelly <= 0 or marginal(0.0) <= 0:
+        return 0.0
+    if hurdle <= 0:
+        return full_kelly
+    return brentq(marginal, 0.0, full_kelly)
+
+
+def budgeted_stakes(bets: list[tuple[float, int]], bankroll: float, kelly_fraction: float,
+                    budget: float | None, min_stake: float) -> list[float]:
+    """Whole-dollar stakes for (fair_prob, wz_american) bets that fit `budget`.
+
+    Uncapped, each stake is kelly_fraction x full Kelly x bankroll. When those
+    add up past the budget, every bet's marginal log growth must clear one
+    common hurdle, raised until the stakes fit: weaker edges shrink first and
+    drop to zero, and the budget lands on the strongest. A stake under
+    `min_stake` cannot be placed, so the smallest such bet is dropped and the
+    rest re-fit. budget=None means no cap.
+    """
+    active = [i for i, (p, a) in enumerate(bets) if expected_value(p, a) > 0]
+    while True:
+        stakes = _fit(bets, active, bankroll, kelly_fraction, budget)
+        too_small = [i for i in active if stakes[i] < min_stake]
+        if not too_small:
+            return [float(stakes.get(i, 0)) for i in range(len(bets))]
+        active.remove(min(too_small, key=lambda i: stakes[i]))
+
+
+def _fit(bets, active, bankroll, kelly_fraction, budget) -> dict[int, int]:
+    def stakes_at(hurdle: float) -> dict[int, float]:
+        return {i: kelly_fraction * bankroll *
+                   _kelly_fraction_at_hurdle(bets[i][0], american_to_decimal(bets[i][1]) - 1.0, hurdle)
+                for i in active}
+
+    uncapped = stakes_at(0.0)
+    if budget is None or sum(uncapped.values()) <= budget:
+        return {i: math.floor(s) for i, s in uncapped.items()}
+    low, high = 0.0, max(expected_value(*bets[i]) for i in active)
+    for _ in range(60):   # bisection: the total is decreasing in the hurdle
+        mid = (low + high) / 2
+        if sum(stakes_at(mid).values()) > budget:
+            low = mid
+        else:
+            high = mid
+    return {i: math.floor(s) for i, s in stakes_at(high).items()}
+
+
 def log_growth(fair_prob: float, wz_american: int, stake: float, bankroll: float) -> float:
     """Expected log bankroll growth of one bet; ranks overlapping specials."""
     if stake <= 0 or bankroll <= 0:
@@ -175,4 +232,5 @@ def scores_first_share(book: SgpBook, game: BookGame, role: str, fecta: Fecta) -
                 return ScoresFirstShare(book.name, None, calls, reason=f"declined: {labels}")
             implied[first] += 1.0 / decimal
     share = implied[team_scores_first] / (implied[team_scores_first] + implied[opponent_scores_first])
-    return ScoresFirstShare(book.name, share, calls)
+    own_price = 1.0 / implied[team_scores_first] if len(rest_cells) == 1 else None
+    return ScoresFirstShare(book.name, share, calls, sgp_decimal=own_price)

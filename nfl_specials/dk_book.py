@@ -113,6 +113,12 @@ class DraftKingsBook:
         if leg.kind == "win" and leg.period == "GM":
             return _outcome_market(markets.get("Moneyline"), dk_role)
         if leg.kind == "win":
+            # Wins the period (a tie loses) = -0.5. A 2-way -0.5 spread, when DK
+            # posts one, halves the cells this leg adds to a partition.
+            for name in (SPREAD_MAIN[leg.period], SPREAD_ALT[leg.period]):
+                found = _spread_market(markets.get(name), dk_role, -0.5)
+                if found:
+                    return found
             return _outcome_market(markets.get(THREE_WAY_WIN[leg.period]), dk_role)
         if leg.kind == "spread":
             for name in (SPREAD_MAIN[leg.period], SPREAD_ALT[leg.period]):

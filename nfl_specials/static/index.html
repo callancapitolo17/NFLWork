@@ -58,6 +58,7 @@
     <label class="muted">Bankroll <input id="bankroll" type="number" min="1" step="1" style="width:90px"></label>
     <label class="muted">Kelly <input id="kelly" type="number" min="0.01" max="1" step="0.05" style="width:70px"></label>
     <select id="account" aria-label="Wagerzon account"></select>
+    <span class="muted" id="available"></span>
     <button id="refresh">Refresh</button>
   </header>
   <div id="banner"></div>
@@ -68,7 +69,6 @@
   <div id="placed"><div class="placed faint">Nothing placed yet.</div></div>
 </main>
 <script>
-const BOOK_SHORT = { FanDuel: "FD", BetMGM: "MGM", DraftKings: "DK" };
 let lastPayload = null;
 let pollTimer = null;
 let editingStake = new Map();   // wz_game_id -> value the user typed (survives re-renders)
@@ -105,8 +105,11 @@ function renderHeader(p) {
   const account = document.getElementById("account");
   if (account.options.length !== p.accounts.length) {
     account.replaceChildren(...p.accounts.map(a => el("option", { value: a, text: a })));
+    account.value = p.account;
   }
-  let summary = "No board yet";
+  document.getElementById("available").textContent =
+    p.available_balance == null ? "" : `Available $${Math.round(p.available_balance)}`;
+  let summary = "Click Refresh to price the board";
   if (b) {
     const when = new Date(b.finished_at || b.started_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     summary = `${b.lines.length} specials · ${b.finished_at ? "updated " + when : "pricing since " + when}`;
@@ -132,11 +135,15 @@ function renderChips(p) {
 }
 
 function bookLine(line) {
-  const books = Object.entries(line.books).map(([name, f]) =>
-    `${BOOK_SHORT[name] || name} ${f.fair_american != null ? signed(f.fair_american) : "–"}`).join(" · ");
-  if (!line.is_superfecta) return books;
-  const share = line.sf_share != null ? `${(line.sf_share * 100).toFixed(0)}%` : "–";
-  return `1Q/1H/GM part ${books || "–"} · DK scores first ${share}`;
+  if (!line.is_superfecta) {
+    return Object.entries(line.books).map(([name, f]) =>
+      `${name} ${f.fair_american != null ? signed(f.fair_american) : "–"}`).join(" · ");
+  }
+  const part = line.books.DraftKings;
+  const parts = [`DraftKings: 1Q/1H/GM part ${part && part.fair_american != null ? signed(part.fair_american) : "–"}`];
+  parts.push(`${line.team} score first ${line.sf_share != null ? (line.sf_share * 100).toFixed(0) + "%" : "–"}`);
+  if (line.dk_price_with_vig != null) parts.push(`DraftKings price ${signed(line.dk_price_with_vig)} incl. vig`);
+  return parts.join(" · ");
 }
 
 function stakeCell(line) {
@@ -144,14 +151,18 @@ function stakeCell(line) {
   if (line.fair_prob == null) return el("span", { class: "faint", text: "unpriced" });
   if (line.ev <= 0) return el("span", { class: "faint", text: "no bet" });
   const typed = editingStake.get(line.wz_game_id);
-  const input = el("input", { type: "number", min: "1", step: "1", "aria-label": "Risk in dollars" });
+  const input = el("input", { type: "number", min: String(lastPayload.min_stake), step: "1", "aria-label": "Risk in dollars" });
   input.value = typed !== undefined ? typed : (line.recommended_stake || "");
   input.addEventListener("input", () => editingStake.set(line.wz_game_id, input.value));
   const result = el("span", { class: "result" });
   const button = el("button", { text: "Place" });
   button.addEventListener("click", () => place(line, input, result, button));
   const children = [input, button, result];
-  if (line.yields_to) children.unshift(el("span", { class: "faint", text: `overlaps ${line.yields_to}` }));
+  if (line.yields_to) {
+    children.unshift(el("span", { class: "faint", text: `overlaps ${line.yields_to}` }));
+  } else if (line.kelly_stake > line.recommended_stake) {
+    children.push(el("span", { class: "faint", text: `Kelly $${Math.round(line.kelly_stake)}` }));
+  }
   return el("span", { class: "stake" }, children);
 }
 
@@ -177,7 +188,7 @@ async function place(line, input, result, button) {
 
 function renderRows(p) {
   const rows = document.getElementById("rows");
-  if (!p.board) { rows.replaceChildren(el("div", { class: "grid faint", text: "Waiting for the first refresh…" })); return; }
+  if (!p.board) { rows.replaceChildren(el("div", { class: "grid faint", text: "Click Refresh to price this week’s fectas." })); return; }
   const lines = [...p.board.lines].sort((a, b) => (b.ev ?? -9) - (a.ev ?? -9));
   rows.replaceChildren(...lines.map(line => {
     const game = line.home ? `${line.away} @ ${line.home} · ${kickoff(line.game_start_time)}` : "";
@@ -206,15 +217,18 @@ function renderPlaced(p) {
 
 async function load() {
   try {
-    const p = await api("/api/board");
+    const account = document.getElementById("account").value;
+    const p = await api("/api/board" + (account ? "?account=" + encodeURIComponent(account) : ""));
     lastPayload = p;
     renderHeader(p); renderChips(p); renderRows(p); renderPlaced(p);
   } catch (e) {
     document.getElementById("banner").replaceChildren(el("div", { class: "banner", text: "Can't reach the pricer: " + e.message }));
   }
+  // Poll only while a refresh is pricing; otherwise the page sits still
+  // until you click Refresh (user decision 2026-10-02).
   const busy = lastPayload && (lastPayload.refreshing || (lastPayload.board && !lastPayload.board.finished_at));
   clearTimeout(pollTimer);
-  pollTimer = setTimeout(load, busy ? 4000 : 30000);
+  if (busy) pollTimer = setTimeout(load, 3000);
 }
 
 async function saveSettings() {
@@ -227,6 +241,7 @@ async function saveSettings() {
 
 document.getElementById("bankroll").addEventListener("change", saveSettings);
 document.getElementById("kelly").addEventListener("change", saveSettings);
+document.getElementById("account").addEventListener("change", () => { editingStake.clear(); load(); });
 document.getElementById("refresh").addEventListener("click", async () => {
   await api("/api/refresh", {}); load();
 });

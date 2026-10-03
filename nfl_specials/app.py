@@ -7,12 +7,13 @@ recommended stake, and a Place button.
 Routes (loopback only; every verb refuses a foreign Host header, and POSTs
 must be application/json, which no other site can send here without a
 preflight this server never answers):
-    GET  /                 the page (static/index.html)
-    GET  /api/board        latest board + sizing at the current settings
-    POST /api/refresh      start a refresh now (no-op while one is running)
-    POST /api/settings     {bankroll, kelly_fraction}
-    POST /api/place        {wz_game_id, wz_american, risk, account}
-Background: a refresh every config.REFRESH_INTERVAL_SECONDS.
+    GET  /                       the page (static/index.html)
+    GET  /api/board?account=X    latest board, sized at the current settings
+                                 and fitted to account X's Wagerzon balance
+    POST /api/refresh            start a refresh now (no-op while one is running)
+    POST /api/settings           {bankroll, kelly_fraction}
+    POST /api/place              {wz_game_id, wz_american, risk, account}
+Refreshes run only when asked (Refresh button; user decision 2026-10-02).
 Side effects: fecta_quotes APPEND (each refresh), placed_fectas APPEND (each
 placement attempt), settings UPSERT — all in config.STATE_DB_PATH. A Place
 click submits a REAL Wagerzon bet (wz.place_fecta).
@@ -24,6 +25,7 @@ import logging
 import threading
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 from nfl_specials import config, wz
 from nfl_specials.board import Board, refresh_board, size_board
@@ -60,58 +62,50 @@ class SpecialsApp:
         with self._lock:
             self._board = board
 
-    def _claim_refresh(self) -> bool:
-        """Mark a refresh as running; False if one already is."""
+    def start_refresh(self) -> bool:
+        """Start a refresh in the background; False if one is already running."""
         with self._lock:
             if self._refreshing:
                 return False
             self._refreshing = True
-            return True
+        threading.Thread(target=self._run_refresh, name="refresh", daemon=True).start()
+        return True
 
-    def _run_claimed_refresh(self) -> bool:
-        """Run the refresh this caller claimed. True if it succeeded."""
+    def _run_refresh(self) -> None:
         try:
             refresh_board(self.store, self.publish)
             self._last_error = None
-            return True
         except Exception as exc:
             log.exception("refresh failed")
             self._last_error = f"{type(exc).__name__}: {exc}"[:300]
-            return False
         finally:
             with self._lock:
                 self._refreshing = False
 
-    def start_refresh(self) -> bool:
-        """Manual refresh in the background; False if one is already running."""
-        if not self._claim_refresh():
-            return False
-        threading.Thread(target=self._run_claimed_refresh, name="refresh", daemon=True).start()
-        return True
-
-    def schedule(self, stop: threading.Event) -> None:
-        while not stop.is_set():
-            succeeded = self._run_claimed_refresh() if self._claim_refresh() else True
-            stop.wait(config.REFRESH_INTERVAL_SECONDS if succeeded else config.RETRY_AFTER_FAILURE_SECONDS)
-
     # --- read --------------------------------------------------------------
-    def board_payload(self) -> dict:
+    def board_payload(self, account: str | None) -> dict:
         with self._lock:
             board, refreshing = self._board, self._refreshing
         settings = self.store.settings()
+        accounts = wz.account_labels()
+        account = account if account in accounts else (accounts[0] if accounts else None)
         since = datetime.now(timezone.utc) - timedelta(days=PLACEMENT_HISTORY_DAYS)
-        placements = self.store.placements_since(since)
         payload = {
             "refreshing": refreshing,
             "last_error": self._last_error,
             "settings": settings,
-            "accounts": wz.account_labels(),
-            "placements": [_placement_json(p) for p in placements],
+            "accounts": accounts,
+            "account": account,
+            "min_stake": config.WZ_MIN_STAKE,
+            "available_balance": None,
+            "placements": [_placement_json(p) for p in self.store.placements_since(since)],
             "board": None,
         }
         if board is None:
             return payload
-        sized = size_board(board, settings["bankroll"], settings["kelly_fraction"])
+        budget = board.available_balance.get(account)
+        payload["available_balance"] = budget
+        sized = size_board(board, settings["bankroll"], settings["kelly_fraction"], budget)
         payload["board"] = {
             "started_at": board.started_at.isoformat(),
             "finished_at": board.finished_at.isoformat() if board.finished_at else None,
@@ -150,12 +144,16 @@ class SpecialsApp:
                              f"{shown_american:+d} — refresh the page")
         if parse_start(line.game.game_start_time) <= datetime.now(timezone.utc):
             raise ValueError("game has started")
-        sizing = size_board(board, *self._sizing_settings())[board.lines.index(line)]
-        if risk > self.store.settings()["bankroll"]:
-            raise ValueError(f"risk ${risk:.2f} is more than the bankroll setting")
+        settings = self.store.settings()
+        budget = board.available_balance.get(account)
+        if budget is not None and risk > budget:
+            raise ValueError(f"risk ${risk:.2f} is more than the ${budget:.2f} Wagerzon shows available")
+        sizing = size_board(board, settings["bankroll"], settings["kelly_fraction"], budget)[board.lines.index(line)]
 
         with self._place_lock:
             result = wz.place_fecta(account, line.special, float(risk))
+        if result.get("status") == "placed":
+            self._lower_balance(account, float(risk), result.get("balance_after"))
         self.store.record_placement({
             "placed_at": datetime.now(timezone.utc), "account": account,
             "wz_game_id": line.special.wz_game_id, "rotation": line.special.rotation,
@@ -168,9 +166,17 @@ class SpecialsApp:
         return {"status": result.get("status"), "ticket_number": result.get("ticket_number"),
                 "error": result.get("error_msg"), "balance_after": result.get("balance_after")}
 
-    def _sizing_settings(self) -> tuple[float, float]:
-        settings = self.store.settings()
-        return settings["bankroll"], settings["kelly_fraction"]
+    def _lower_balance(self, account: str, risk: float, balance_after: float | None) -> None:
+        """Keep the budget right between refreshes: Wagerzon's reported
+        balance after the bet, else the old balance less the risk."""
+        with self._lock:
+            if self._board is None:
+                return
+            before = self._board.available_balance.get(account)
+            if balance_after is not None:
+                self._board.available_balance[account] = float(balance_after)
+            elif before is not None:
+                self._board.available_balance[account] = before - risk
 
 
 def _line_json(line, sizing) -> dict:
@@ -196,6 +202,8 @@ def _line_json(line, sizing) -> dict:
         "books": books,
         "is_superfecta": line.is_superfecta(),
         "sf_share": line.sf_share.share if line.sf_share else None,
+        "dk_price_with_vig": (decimal_to_american(line.sf_share.sgp_decimal)
+                              if line.sf_share and line.sf_share.sgp_decimal else None),
         "fair_prob": sizing.fair_prob,
         "fair_american": _american(sizing.fair_prob),
         "ev": sizing.ev,
@@ -225,8 +233,9 @@ def make_handler(app: SpecialsApp, port: int):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-            elif self.path == "/api/board":
-                self._send_json(200, app.board_payload())
+            elif self.path.split("?")[0] == "/api/board":
+                query = parse_qs(urlparse(self.path).query)
+                self._send_json(200, app.board_payload((query.get("account") or [None])[0]))
             else:
                 self._send_json(404, {"error": "not found"})
 
@@ -278,14 +287,11 @@ def make_handler(app: SpecialsApp, port: int):
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     app = SpecialsApp(Store())
-    stop = threading.Event()
-    threading.Thread(target=app.schedule, args=(stop,), name="scheduler", daemon=True).start()
     server = ThreadingHTTPServer((config.APP_HOST, config.APP_PORT), make_handler(app, config.APP_PORT))
-    log.info("NFL fecta pricer on http://%s:%d", config.APP_HOST, config.APP_PORT)
+    log.info("NFL fecta pricer on http://%s:%d (click Refresh to price)", config.APP_HOST, config.APP_PORT)
     try:
         server.serve_forever()
     finally:
-        stop.set()
         server.server_close()
 
 

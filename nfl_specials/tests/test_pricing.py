@@ -127,3 +127,25 @@ def test_trifecta_part_drops_scores_first():
     assert trifecta_part(superfecta) == TRIFECTA
     with pytest.raises(ValueError):
         trifecta_part(TRIFECTA)
+
+
+def test_budgeted_stakes_are_plain_fractional_kelly_when_they_fit():
+    from nfl_specials.pricing import budgeted_stakes
+    bets = [(0.12, 1730), (0.17, 855)]
+    uncapped = budgeted_stakes(bets, 35000, 0.25, None, 20)
+    assert uncapped == [float(int(kelly_stake(p, a, 35000, 0.25))) for p, a in bets]
+    assert budgeted_stakes(bets, 35000, 0.25, 10_000, 20) == uncapped
+
+
+def test_budgeted_stakes_trim_the_weakest_first_and_fit():
+    from nfl_specials.pricing import budgeted_stakes
+    strong, weak = (0.115, 1730), (0.081, 1600)        # EV +111% vs +38%
+    stakes = budgeted_stakes([strong, weak], 35000, 0.25, 300, 20)
+    assert sum(stakes) <= 300
+    assert stakes[0] > 0 and stakes[1] == 0.0
+
+
+def test_stakes_under_the_minimum_are_dropped_and_refit():
+    from nfl_specials.pricing import budgeted_stakes
+    assert budgeted_stakes([(0.12, 1730), (0.081, 1600)], 1000, 0.25, None, 20) == [0.0, 0.0]
+    assert budgeted_stakes([(0.12, 1730)], 35000, 0.25, 15, 20) == [0.0]

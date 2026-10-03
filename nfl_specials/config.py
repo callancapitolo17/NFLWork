@@ -36,8 +36,6 @@ WZ_SPECIAL_PLAY = 5
 # --- Sizing -------------------------------------------------------------------
 DEFAULT_BANKROLL = 1000.0
 DEFAULT_KELLY_FRACTION = 0.25
-
-# --- Scheduler -------------------------------------------------------------------
-REFRESH_INTERVAL_SECONDS = 15 * 60
-# After a failed refresh (a book or Wagerzon down), try again sooner.
-RETRY_AFTER_FAILURE_SECONDS = 60
+# Measured 2026-10-02 with preview-only ConfirmWagerHelper calls on a special:
+# $15-$19 -> MINWAGERONLINE, $20 accepted.
+WZ_MIN_STAKE = 20.0

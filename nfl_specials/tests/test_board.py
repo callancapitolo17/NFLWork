@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from nfl_specials.board import Board, FectaLine, size_board
 from nfl_specials.books import BookGame
-from nfl_specials.pricing import BookFair
+from nfl_specials.pricing import BookFair, ScoresFirstShare
 from nfl_specials.special_parser import parse_fecta
 from nfl_specials.wz import WzSpecial
 
@@ -23,7 +23,7 @@ def _board(*lines: FectaLine) -> Board:
 def test_same_team_specials_share_one_stake():
     plain = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.09)
     spread = _line(2, "CHARGERS TRIFECTA (1Q +½, 1H +4½ & GM +7½)", 400, 0.30)
-    sized = size_board(_board(plain, spread), 1000, 0.25)
+    sized = size_board(_board(plain, spread), 35000, 0.25, None)
     staked = [s for s in sized if s.recommended_stake > 0]
     assert len(staked) == 1
     loser = next(s for s in sized if s.recommended_stake == 0)
@@ -33,14 +33,14 @@ def test_same_team_specials_share_one_stake():
 def test_opposite_teams_are_sized_independently():
     lac = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.09)
     sea = _line(2, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 300, 0.40)
-    sized = size_board(_board(lac, sea), 1000, 0.25)
+    sized = size_board(_board(lac, sea), 35000, 0.25, None)
     assert all(s.recommended_stake > 0 for s in sized)
 
 
 def test_negative_ev_and_unpriced_get_no_stake():
     bad = _line(1, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 120, 0.37)
     unpriced = _line(2, "SEAHAWKS SUPERFECTA (SCR 1ST, 1Q, 1H & GM -7½)", 180, None)
-    sized = size_board(_board(bad, unpriced), 1000, 0.25)
+    sized = size_board(_board(bad, unpriced), 35000, 0.25, None)
     assert sized[0].ev < 0 and sized[0].recommended_stake == 0
     assert sized[1].fair_prob is None and sized[1].recommended_stake == 0
 
@@ -49,13 +49,22 @@ def test_fair_is_the_worst_case_book():
     line = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.10)
     line.book_fairs["BetMGM"] = BookFair("BetMGM", 0.08, None, 1.4, 8)
     line.book_fairs["DraftKings"] = BookFair("DraftKings", None, None, None, 18, reason="declined cell")
-    assert size_board(_board(line), 1000, 0.25)[0].fair_prob == 0.08
+    assert size_board(_board(line), 35000, 0.25, None)[0].fair_prob == 0.08
 
 
 def test_superfecta_fair_is_trifecta_part_times_scores_first_share():
-    from nfl_specials.pricing import ScoresFirstShare
     line = _line(1, "SEAHAWKS SUPERFECTA (SCR 1ST, 1Q, 1H & GM -7½)", 180, 0.40)
-    assert size_board(_board(line), 1000, 0.25)[0].fair_prob is None   # no DK share yet
+    assert size_board(_board(line), 35000, 0.25, None)[0].fair_prob is None   # no DK share yet
     line.sf_share = ScoresFirstShare("DraftKings", 0.6, 2)
-    assert size_board(_board(line), 1000, 0.25)[0].fair_prob == 0.40 * 0.6
+    assert size_board(_board(line), 35000, 0.25, None)[0].fair_prob == 0.40 * 0.6
 
+
+
+def test_budget_goes_to_the_strongest_edges():
+    raiders = _line(1, "RAIDERS SUPERFECTA (SCR 1ST, 1Q, 1H & GM)", 1730, 0.40)
+    raiders.sf_share = ScoresFirstShare("DraftKings", 0.288, 20)
+    chargers = _line(2, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.081)
+    sized = size_board(_board(raiders, chargers), 35000, 0.25, 500)
+    assert sum(s.recommended_stake for s in sized) <= 500
+    assert sized[0].recommended_stake > sized[1].recommended_stake
+    assert sized[0].kelly_stake > sized[0].recommended_stake   # the budget bound

@@ -10,10 +10,11 @@ Side effects: APPENDS every (special, book) result to fecta_quotes.
 Sizing (size_board) runs at read time with the current settings, so a new
 bankroll or Kelly fraction applies without re-pricing.
 
-Order: FanDuel and BetMGM price every trifecta, and every superfecta's
-trifecta part, over plain HTTP first. DraftKings goes last and only prices
-each superfecta's scores-first share (2 calls; pricing.scores_first_share):
-its calls go through a real browser, paced, and DK denies a page after ~6.
+Order: FanDuel and BetMGM price the trifectas over plain HTTP first.
+DraftKings goes last and prices the superfectas alone (user decision
+2026-10-02: only DK lets "scores first" into an SGP, so only DK prices them)
+— its trifecta-part partition, then its scores-first share — through a real
+browser, paced, with the page reloaded every 5 calls.
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ from nfl_specials.books import BookGame, SgpBook
 from nfl_specials.dk_book import DraftKingsBook, sidecar_is_up
 from nfl_specials.fd_book import FanDuelBook
 from nfl_specials.mgm_book import BetMgmBook
-from nfl_specials.pricing import (BookFair, ScoresFirstShare, expected_value,
+from nfl_specials.pricing import (BookFair, ScoresFirstShare, budgeted_stakes, expected_value,
                                   kelly_stake, log_growth, price_fecta_at_book, scores_first_share,
                                   trifecta_part, worst_case_fair)
 from nfl_specials.special_parser import Fecta, ParseFailure, parse_fecta
@@ -35,11 +36,11 @@ from nfl_specials.store import Store
 
 log = logging.getLogger("nfl_specials.board")
 
-# Books that price trifectas (and superfectas' trifecta parts) by partition.
-PARTITION_BOOKS = ("FanDuel", "BetMGM")
-# The one book that lets "scores first" into an SGP.
-SCORES_FIRST_BOOK = "DraftKings"
-BOOK_ORDER = PARTITION_BOOKS + (SCORES_FIRST_BOOK,)
+# Trifectas price at the HTTP books; superfectas only at DraftKings, the one
+# book that lets "scores first" into an SGP.
+TRIFECTA_BOOKS = ("FanDuel", "BetMGM")
+SUPERFECTA_BOOK = "DraftKings"
+BOOK_ORDER = TRIFECTA_BOOKS + (SUPERFECTA_BOOK,)
 # Whose kickoff time the board shows: DK and BetMGM list the real kickoff,
 # FanDuel lists it a minute late.
 GAME_SOURCE_ORDER = ("DraftKings", "BetMGM", "FanDuel")
@@ -52,8 +53,8 @@ class FectaLine:
     status: str                     # 'pricing' | 'priced' | 'unpriced' | 'unparsed' | 'no_game'
     note: str | None = None         # parse failure / why unpriced
     game: BookGame | None = None
-    # Trifecta: the special's fair by book. Superfecta: its TRIFECTA PART's
-    # fair by book, multiplied by sf_share at sizing time.
+    # Trifecta: the special's fair by book. Superfecta: DraftKings' fair for
+    # its TRIFECTA PART, multiplied by sf_share at sizing time.
     book_fairs: dict[str, BookFair] = field(default_factory=dict)
     sf_share: ScoresFirstShare | None = None
 
@@ -77,18 +78,22 @@ class Board:
     book_status: dict[str, str]     # book -> 'ok' | 'error: ...' | 'sidecar not running ...'
     progress_done: int = 0
     progress_total: int = 0
+    # Wagerzon account -> available balance, read at the start and end of the
+    # refresh and lowered by the app after each placement. None = unknown.
+    available_balance: dict[str, float | None] = field(default_factory=dict)
 
     def snapshot(self) -> "Board":
         lines = [replace(line, book_fairs=dict(line.book_fairs)) for line in self.lines]
-        return replace(self, lines=lines, book_status=dict(self.book_status))
+        return replace(self, lines=lines, book_status=dict(self.book_status),
+                       available_balance=dict(self.available_balance))
 
 
 @dataclass(frozen=True)
 class Sizing:
     fair_prob: float | None
     ev: float | None
-    kelly_stake: float
-    recommended_stake: float
+    kelly_stake: float              # fractional Kelly, before the budget
+    recommended_stake: float        # fitted to the Wagerzon budget, whole dollars
     yields_to: int | None           # rotation of the better special on the same team
 
 
@@ -119,13 +124,15 @@ def _locate_game(fecta: Fecta, books: dict[str, SgpBook]) -> BookGame | None:
     return None
 
 
-def size_board(board: Board, bankroll: float, kelly_fraction: float) -> list[Sizing]:
-    """Worst-case fair, EV and Kelly stake per line (same order as board.lines).
+def size_board(board: Board, bankroll: float, kelly_fraction: float,
+               budget: float | None) -> list[Sizing]:
+    """Worst-case fair, EV and stakes per line (same order as board.lines).
 
-    Per (game, team) only the line with the best expected log growth keeps a
-    recommended stake: a team's trifecta and superfecta mostly win together,
-    so staking both is one oversized bet. Opposite teams' fectas exclude each
-    other and are sized independently.
+    Per (game, team) only the line with the best expected log growth is a
+    candidate: a team's trifecta and superfecta mostly win together, so
+    staking both is one oversized bet. Opposite teams' fectas exclude each
+    other and stay separate candidates. The candidates' stakes are then
+    fitted to `budget` (pricing.budgeted_stakes; None = no cap).
     """
     raw = []
     for line in board.lines:
@@ -145,16 +152,18 @@ def size_board(board: Board, bankroll: float, kelly_fraction: float) -> list[Siz
         if key not in best_by_team or growth > best_by_team[key][0]:
             best_by_team[key] = (growth, index)
 
+    candidates = sorted(index for _growth, index in best_by_team.values())
+    fitted = budgeted_stakes([(raw[i][0], board.lines[i].special.wz_american) for i in candidates],
+                             bankroll, kelly_fraction, budget, config.WZ_MIN_STAKE)
+    recommended = dict(zip(candidates, fitted))
+
     sized = []
     for index, (line, (fair, ev, stake)) in enumerate(zip(board.lines, raw)):
-        recommended, yields_to = 0.0, None
-        if stake > 0 and line.game is not None:
+        yields_to = None
+        if stake > 0 and line.game is not None and index not in recommended:
             winner_index = best_by_team[(line.game.home, line.game.away, line.fecta.team)][1]
-            if winner_index == index:
-                recommended = float(round(stake))
-            else:
-                yields_to = board.lines[winner_index].special.rotation
-        sized.append(Sizing(fair, ev, stake, recommended, yields_to))
+            yields_to = board.lines[winner_index].special.rotation
+        sized.append(Sizing(fair, ev, stake, recommended.get(index, 0.0), yields_to))
     return sized
 
 
@@ -210,36 +219,38 @@ def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
             continue
         lines.append(FectaLine(special, parsed, "pricing", game=game))
 
-    board = Board(started_at, None, lines, book_status)
+    board = Board(started_at, None, lines, book_status, available_balance=wz.available_balances())
     pricing = [line for line in lines if line.status == "pricing"]
-    work = [(name, line) for name in PARTITION_BOOKS if name in books for line in pricing]
-    if SCORES_FIRST_BOOK in books:
-        work += [(SCORES_FIRST_BOOK, line) for line in pricing if line.is_superfecta()]
+    work = [("partition", name, line) for name in TRIFECTA_BOOKS if name in books
+            for line in pricing if not line.is_superfecta()]
+    if SUPERFECTA_BOOK in books:
+        for line in pricing:
+            if line.is_superfecta():
+                work += [("partition", SUPERFECTA_BOOK, line), ("scores_first", SUPERFECTA_BOOK, line)]
     board.progress_total = len(work)
     publish(board.snapshot())
 
-    for name, line in work:
+    for task, name, line in work:
         book = books[name]
         now = datetime.now(timezone.utc)
         try:
-            if name == SCORES_FIRST_BOOK:
+            if task == "scores_first":
                 line.sf_share = _price_scores_first(book, line)
-                row = _quote_row(line, now, book=name, quote_kind="scores_first_share", share=line.sf_share)
             else:
-                fair = _price_partition(book, line)
-                line.book_fairs[name] = fair
-                kind = "trifecta_part" if line.is_superfecta() else "full"
-                row = _quote_row(line, now, book=name, quote_kind=kind, fair=fair)
+                line.book_fairs[name] = _price_partition(book, line)
         except Exception as exc:  # transport failure on one book/special
             log.warning("%s pricing %s failed: %s", name, line.special.description, exc)
             reason = f"error: {exc}"[:200]
             board.book_status[name] = reason
-            if name == SCORES_FIRST_BOOK:
+            if task == "scores_first":
                 line.sf_share = ScoresFirstShare(name, None, 0, reason=reason)
-                row = _quote_row(line, now, book=name, quote_kind="scores_first_share", share=line.sf_share)
             else:
                 line.book_fairs[name] = BookFair(name, None, None, None, 0, reason=reason)
-                row = _quote_row(line, now, book=name, quote_kind="full", fair=line.book_fairs[name])
+        if task == "scores_first":
+            row = _quote_row(line, now, book=name, quote_kind="scores_first_share", share=line.sf_share)
+        else:
+            kind = "trifecta_part" if line.is_superfecta() else "full"
+            row = _quote_row(line, now, book=name, quote_kind=kind, fair=line.book_fairs[name])
         store.append_quotes([row])
         board.progress_done += 1
         publish(board.snapshot())
@@ -250,10 +261,12 @@ def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
             continue
         line.status = "unpriced"
         reasons = [f"{b}: {f.reason}" for b, f in line.book_fairs.items() if f.reason]
-        if line.is_superfecta() and (line.sf_share is None or line.sf_share.share is None):
-            why = line.sf_share.reason if line.sf_share else book_status.get(SCORES_FIRST_BOOK, "not priced")
-            reasons.append(f"scores first needs DraftKings: {why}")
+        if line.is_superfecta() and SUPERFECTA_BOOK not in books:
+            reasons.append(f"superfectas price at DraftKings only: {book_status.get(SUPERFECTA_BOOK)}")
+        elif line.is_superfecta() and (line.sf_share is None or line.sf_share.share is None):
+            reasons.append(f"DraftKings scores first: {line.sf_share.reason if line.sf_share else 'not priced'}")
         line.note = "; ".join(reasons) or "no book priced it"
+    board.available_balance = wz.available_balances()   # bets may have settled meanwhile
     board.finished_at = datetime.now(timezone.utc)
     publish(board.snapshot())
     return board

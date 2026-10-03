@@ -38,6 +38,7 @@ _load_wagerzon_env()
 sys.path.insert(0, str(config.REPO_ROOT / "wagerzon_odds"))
 import single_placer  # noqa: E402
 import wagerzon_auth  # noqa: E402
+import wagerzon_balance  # noqa: E402
 from scraper_v2 import fetch_active_leagues  # noqa: E402
 from wagerzon_accounts import list_accounts  # noqa: E402
 
@@ -62,6 +63,13 @@ class WzSpecial:
 
 def account_labels() -> list[str]:
     return [account.label for account in list_accounts()]
+
+
+def available_balances() -> dict[str, float | None]:
+    """Each account's Wagerzon 'available' (credit left after pending bets
+    and the week's results) — the budget new bets must fit. None = unknown."""
+    return {snapshot.label: snapshot.available
+            for snapshot in wagerzon_balance.fetch_all(list_accounts())}
 
 
 def _session(account_label: str | None = None):

@@ -17,9 +17,10 @@ dk_price_sidecar/run.sh     # own terminal; needed for superfectas (DK only)
 nfl_specials/run.sh         # http://127.0.0.1:8096
 ```
 
-The board re-prices every 15 min; Refresh forces one now. FanDuel and BetMGM
-price every trifecta in ~90 s; DraftKings goes last, paced 1.5 s per call, and
-fills in as it goes.
+The board prices only when you click **Refresh** (no auto-refresh). FanDuel and
+BetMGM price the trifectas in ~90 s; DraftKings then prices the superfectas
+(~20 calls each, paced 1.5 s, page reloaded every 5 calls), ~7 more minutes,
+filling in as it goes.
 
 ## How a special is priced
 
@@ -38,23 +39,31 @@ fills in as it goes.
 4. **Fair = worst case**: the lowest probability among the books that priced
    the full partition (a special is only ever backed; user decision
    2026-10-02).
-   **Superfectas** = P(trifecta part) x P(scores first | trifecta part). The
-   first factor is the worst case of step 3 at FanDuel + BetMGM; the second comes from TWO
-   DraftKings SGPs — (team scores first + the trifecta legs) and (opponent
-   scores first + the same legs) — whose vig cancels in the ratio. DK's
-   shares on 2026-10-02 were 0.83-0.85; history (2011-2025, 1,970 team-games
-   that won 1Q, 1H and the game) says 0.893 ± 0.007, so DK's number is the
-   conservative one. Two calls per superfecta keep DK (denies a page after
-   ~6 calls) usable: a full refresh is ~12 DK calls.
+   **Superfectas price at DraftKings only** (user decision 2026-10-02: only DK
+   lets "scores first" into an SGP): P(trifecta part) x P(scores first |
+   trifecta part). The first factor is DK's own partition fair for the other
+   three legs (12-18 cells); the second comes from TWO DK SGPs — (team scores
+   first + the trifecta legs) and (opponent scores first + the same legs) —
+   whose vig cancels in the ratio. DK's shares on 2026-10-02 were 0.83-0.85;
+   history (2011-2025, 1,970 team-games that won 1Q, 1H and the game) says
+   0.893 ± 0.007, so DK's number is the conservative one. ~20 DK calls per
+   superfecta instead of a 36-cell partition.
 5. **Stake** = bankroll x Kelly fraction x full Kelly at Wagerzon's price.
    Per (game, team) only the best special by expected log growth keeps a
-   stake ("overlaps" on the rest): a team's fectas win together.
+   stake ("overlaps" on the rest): a team's fectas win together. The stakes
+   are then **fitted to the Wagerzon balance available** (read live from
+   Wagerzon, so pending bets and the week's results already count): if they
+   add up past it, every bet's marginal log growth must clear one common
+   hurdle, raised until they fit — weaker edges shrink first and drop to
+   zero. A stake under Wagerzon's $20 minimum for specials (measured: $15-19
+   rejected) is dropped and the rest re-fit. The page shows the uncapped
+   Kelly stake next to any trimmed one.
 
 | Book | Trifecta | Superfecta | How |
 |---|---|---|---|
 | FanDuel | yes | no — "Team to Score First" is not SGP-eligible | 3-way period winners + ML / spreads, `implyBets` |
 | BetMGM | yes | no — no first-to-score market | ±0.5 period spreads + ML / spreads, `tv2Picks` |
-| DraftKings | not used (calls are scarce) | scores-first share only ("1st to Score") | via the sidecar's real Chrome |
+| DraftKings | not used (calls are scarce) | yes — the only book ("1st to Score") | via the sidecar's real Chrome |
 
 ## Placing
 
@@ -63,8 +72,8 @@ the board at the price the page showed and that the game has not started, then
 `wagerzon_odds/single_placer.place_single` previews it (`ConfirmWagerHelper`,
 win must match to $0.01 or it refuses) and submits it. A special is a one-sided
 prop on the "home" slot, so it goes in as Play=5 with no points. Every attempt
-is logged, whatever Wagerzon answered. Wagerzon's minimum online wager is above
-$10 (a $25 preview passes).
+is logged, whatever Wagerzon answered; a placed bet lowers the page's available
+balance right away. Wagerzon's minimum online wager on a special is $20.
 
 ## Files
 
