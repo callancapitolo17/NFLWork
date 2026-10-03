@@ -1,12 +1,15 @@
 """DraftKings adapter (books.SgpBook) for NFL fecta legs.
 
-Reads, plain HTTP (curl_cffi Chrome TLS; these endpoints are not gated):
+Plain HTTP throughout (curl_cffi Chrome TLS; none of these is Akamai-gated):
     league listing   sportsbook-nash .../leagueSubcategory/v1/markets
     SGP payload      sportsbook-nash .../parlays/v1/sgp/events/{event_id}
-Prices through dk_price_sidecar (POST {DK_SIDECAR_URL}/price): DK's
-calculateBets answers only a real, non-headless Chrome, one call at a time
-(issue #102), so that call is made by the sidecar's browser, never from here.
-No DB writes.
+    SGP price        sportsbook-nash .../sgp/dkuswv/sportsdata/v2/sgp   (GET)
+The price endpoint is the one DK's own SGP builder widget calls as you click
+legs (dk-same-game-parlay 9.0.1). Given base legs and a candidate market it
+returns the SGP price of base + EACH outcome of that market, so one request
+prices every cell that differs only in its last leg. Verified 2026-10-02:
+10/10 superfecta cells identical to the betslip's calculateBets (the call
+issue #102 locked behind a real Chrome). No DB writes.
 
 Leg -> DK market:
     scores_first   "1st to Score"                     (home, away)
@@ -18,9 +21,9 @@ Leg -> DK market:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Hashable
 
-import requests
 from curl_cffi import requests as cffi_requests
 
 from nfl_specials.books import BookGame, LegMarket, Outcome, next_game, is_half_point, widen_with_tie
@@ -35,15 +38,20 @@ DK_LEAGUE_URL = ("https://sportsbook-nash.draftkings.com/sites/US-SB/api/sportsc
                  "controldata/league/leagueSubcategory/v1/markets")
 DK_SGP_EVENT_URL = ("https://sportsbook-nash.draftkings.com/sites/US-SB/api/sportscontent/"
                     "parlays/v1/sgp/events/{event_id}")
+DK_SGP_PRICE_URL = ("https://sportsbook-nash.draftkings.com/sites/US-WV-SB/api/sportscontent/"
+                    "sgp/dkuswv/sportsdata/v2/sgp")
 DK_WARMUP_URL = "https://sportsbook.draftkings.com/leagues/football/nfl"
+# DK's sport id for football. The price endpoint answers 404 without the header.
+DK_FOOTBALL_SPORT_ID = "3"
+# DK's own SGP widget throttles its price requests to one per 500 ms; never
+# go faster than a person clicking legs.
+MIN_SECONDS_BETWEEN_PRICE_CALLS = 0.5
 
 SPREAD_MAIN = {"GM": "Spread", "Q1": "Spread 1st Quarter", "H1": "Spread 1st Half"}
 SPREAD_ALT = {"GM": "Spread Alternate", "Q1": "Spread Alternate - 1st Quarter",
               "H1": "Spread Alternate - 1st Half"}
 THREE_WAY_WIN = {"Q1": "1st Quarter (3 Way)", "H1": "1st Half (3 Way)"}
 ROLE_TO_DK = {"home": "Home", "away": "Away"}
-# The sidecar paces calls >= 1 s apart; a 3-4 leg price can take a few seconds.
-SIDECAR_TIMEOUT_SECONDS = 30
 
 
 def dk_team_to_abbr(dk_name: str) -> str | None:
@@ -55,12 +63,16 @@ def dk_team_to_abbr(dk_name: str) -> str | None:
 class DraftKingsBook:
     name = "DraftKings"
 
-    def __init__(self, sidecar_url: str) -> None:
-        self.sidecar_url = sidecar_url.rstrip("/")
+    def __init__(self) -> None:
         self.session = cffi_requests.Session(impersonate="chrome")
         self.session.get(DK_WARMUP_URL, timeout=30)
         self._games = self._list_games()
         self._markets: dict[str, dict[str, dict]] = {}
+        self._market_of_selection: dict[str, str] = {}
+        # (event id, base selection ids, candidate market id) -> decimal odds of
+        # base + each candidate selection DK can combine with it
+        self._added_leg_odds: dict[tuple[str, frozenset[str], str], dict[str, float]] = {}
+        self._last_price_call_at = 0.0
 
     # --- discovery ---------------------------------------------------------
     def _list_games(self) -> list[BookGame]:
@@ -102,6 +114,9 @@ class DraftKingsBook:
             self._markets[game.book_event_id] = {
                 m["name"]: m for m in markets
                 if "SGP" in (m.get("tags") or []) and m.get("selections")}
+            for market in self._markets[game.book_event_id].values():
+                for selection in market["selections"]:
+                    self._market_of_selection[selection["id"]] = market["id"]
         return self._markets[game.book_event_id]
 
     # --- legs --------------------------------------------------------------
@@ -133,26 +148,57 @@ class DraftKingsBook:
 
     # --- pricing -----------------------------------------------------------
     def price(self, game: BookGame, refs: tuple[Hashable, ...]) -> float | None:
-        resp = requests.post(f"{self.sidecar_url}/price", json={"selections": list(refs)},
-                             timeout=SIDECAR_TIMEOUT_SECONDS)
-        if resp.status_code == 422 or (resp.status_code == 200 and resp.json().get("true_odds") is None):
-            return None                              # DK declined this combination
+        """DK's SGP price for `refs`, or None when DK will not combine them.
+
+        The last ref is priced as an addition to the others, so cells that
+        share every leg but the last (consecutive cells of a partition) cost
+        one request between them.
+        """
+        if len(refs) < 2:
+            raise ValueError(f"an SGP needs at least 2 legs, got {len(refs)}")
+        base, last = frozenset(refs[:-1]), refs[-1]
+        self._event_markets(game)                    # fills _market_of_selection
+        key = (game.book_event_id, base, self._market_of_selection[last])
+        if key not in self._added_leg_odds:
+            self._added_leg_odds[key] = self._fetch_added_leg_odds(*key)
+        return self._added_leg_odds[key].get(last)
+
+    def _fetch_added_leg_odds(self, event_id: str, base: frozenset[str],
+                              candidate_market_id: str) -> dict[str, float]:
+        """One GET: decimal odds of base + each selection of the candidate
+        market that DK can combine with the base. Raises on HTTP failure."""
+        wait = MIN_SECONDS_BETWEEN_PRICE_CALLS - (time.monotonic() - self._last_price_call_at)
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            resp = self.session.get(DK_SGP_PRICE_URL, timeout=30,
+                                    headers={"X-SportId": DK_FOOTBALL_SPORT_ID},
+                                    params={"eventId": event_id, "selections": ",".join(sorted(base)),
+                                            "marketCandidates": candidate_market_id,
+                                            "oddsStyle": "american"})
+        finally:
+            self._last_price_call_at = time.monotonic()
         if resp.status_code != 200:
-            raise RuntimeError(f"DK sidecar answered HTTP {resp.status_code}: {resp.text[:200]}")
-        return float(resp.json()["true_odds"])
+            raise RuntimeError(f"DK SGP price for event {event_id} returned HTTP "
+                               f"{resp.status_code}: {resp.text[:200]}")
+        return parse_added_leg_odds(resp.json(), base)
 
 
-# The sidecar is single-threaded: /health waits behind an in-flight price
-# call or page reload (~10 s worst case), so a short timeout reads "down".
-SIDECAR_HEALTH_TIMEOUT_SECONDS = 15
+def parse_added_leg_odds(body: dict, base: frozenset[str]) -> dict[str, float]:
+    """Map DK's SGP-builder answer to {candidate selection id: decimal odds}.
 
-
-def sidecar_is_up(sidecar_url: str) -> bool:
-    try:
-        response = requests.get(f"{sidecar_url.rstrip('/')}/health", timeout=SIDECAR_HEALTH_TIMEOUT_SECONDS)
-        return response.json().get("ok") is True
-    except (requests.RequestException, ValueError):
-        return False
+    DK does not refuse a base it cannot combine: it drops the offending legs
+    (`selectionsNotMapped`) and prices the rest. A price on a smaller base
+    would be a silent wrong number, so a base DK did not take whole prices
+    nothing. A candidate absent from `compatibleMarkets` is one DK declines.
+    """
+    data = body.get("data") or {}
+    if data.get("selectionsNotMapped") or set(data.get("selectionsMapped") or []) != base:
+        return {}
+    return {selection["id"]: float(selection["trueOdds"])
+            for market in data.get("compatibleMarkets") or []
+            for selection in market.get("selections") or []
+            if selection.get("trueOdds")}
 
 
 def _live(market: dict | None) -> list[dict]:

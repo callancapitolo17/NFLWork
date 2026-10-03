@@ -14,8 +14,7 @@ they price at DraftKings alone: P(trifecta part) x P(scores first | trifecta
 part). The first factor is DK's own partition fair for the other three legs;
 the second comes from TWO DK SGPs — (team scores first + the trifecta legs)
 and (opponent scores first + the same legs) — which share every other leg,
-so DK's margin cancels in their ratio. That is ~20 DK calls per superfecta
-instead of a 36-cell partition, at a book that denies a page after ~6 calls.
+so DK's margin cancels in their ratio.
 
 Fair = the WORST case (lowest probability) among the books that priced the
 full partition — a special is only ever backed. Stake = Kelly fraction x full
@@ -229,7 +228,9 @@ def scores_first_share(book: SgpBook, game: BookGame, role: str, fecta: Fecta) -
     calls = 0
     for first in (team_scores_first, opponent_scores_first):
         for cell in rest_cells:
-            decimal = book.price(game, (first.ref,) + tuple(outcome.ref for outcome in cell))
+            # Scores first goes LAST: DraftKings prices every outcome of the
+            # last leg in one request, so both sides cost one call.
+            decimal = book.price(game, tuple(outcome.ref for outcome in cell) + (first.ref,))
             calls += 1
             if decimal is None:
                 labels = " + ".join([first.label] + [outcome.label for outcome in cell])
