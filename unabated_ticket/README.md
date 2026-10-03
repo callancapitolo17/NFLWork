@@ -1553,7 +1553,20 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   /bet105.json` with `{fetchedAt, feeds: {prematch: [betGroup], live:
   [betGroup]}}` (both feeds, at most 2000 groups) → `{ok, count, closed}`, or
   `{error}` → `{ok, recorded: "error"}` — the panel's read of Bet105 (the Bet105
-  source bullet), stored as that source's run. The write routes require `Content-Type:
+  source bullet), stored as that source's run. **Settings** (the server
+  runner, Running on a server below): `GET /settings.json` → `{settings:
+  {bankroll, multiplier, leagues, periods, betTypes, bookMode, bookIds,
+  minEdgePct, minStake, maxLineAgeHours, minLiquidityToWin, includeAlts,
+  sortBy, groupByMarket}, updatedAt}`, every field `null`
+  until set — null is the panel's default, read from `extension/edgerows.js`
+  by the runner, never copied into Python; `PUT /settings.json` with
+  `{settings: {<some of those>: value or null}}` → `{ok, settings,
+  updatedAt}` sets the fields it names, null resets one, and a field it
+  leaves out keeps its value. `bookMode` is `default` (the default books),
+  `all` (every live book) or `custom`, and `bookIds` is a list exactly when
+  it is `custom`. An unknown field or a value the panel's inputs would refuse
+  (bankroll ≤ 0, multiplier outside (0, 1], no period, a bet type outside
+  1–3, …) is a 400 naming it. The write routes require `Content-Type:
   application/json` (415 otherwise): the service sends no CORS headers, so a
   web page can only reach it with a "simple" cross-origin request (a form or
   `text/plain` POST, which is refused) and never with JSON or DELETE (both
@@ -1833,7 +1846,14 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   per bet, INSERT-only with `ON CONFLICT DO NOTHING` (the first capture wins;
   a request repeating a bet keeps its first row and logs it), never pruned
   (~14 bets a day) and never backfilled; `/bets.json` serves the rows of the
-  bets in its window only, so the table's growth never reaches the poll. A failed poll writes a failed
+  bets in its window only, so the table's growth never reaches the poll.
+  `edge_settings` holds at most one row (`settings_id` = 1, checked) of the
+  settings above, one explicit column each (`bankroll`, `kelly_multiplier`,
+  `league_ids` / `period_type_ids` / `bet_type_ids` / `book_ids` as
+  `INTEGER[]`, `book_mode`, `min_edge_pct`, `min_stake`,
+  `max_line_age_hours`, `min_liquidity_to_win`, `include_alts`,
+  `sort_by`, `group_by_market`, `updated_at`), UPSERTed
+  whole by each PUT; NULL = the default. A failed poll writes a failed
   `source_runs` row and touches nothing else, so a dark source keeps serving
   its previous records; a store write that raises (disk full) is logged and
   retried next poll, never killing the poll thread. Until a source's first
@@ -1872,6 +1892,126 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   files land in `~/Downloads/bets_recon/` (`--out DIR`). It writes no token,
   cookie or password, and leaves `bet_logger/recon_bfa_auth.json` alone.
 
+## Running on a server (Oracle)
+
+Work in progress toward using the panel from a phone with the Mac closed
+(plan agreed 2026-09-30): the bets service and the Edges scan move to an
+always-on Oracle Cloud VM, reached privately over Tailscale, with the Mac as
+the fallback for any book that refuses a data-center login. **Step 0** is the
+login check, **step 1** the headless Edges runner (both below); the phone
+page (step 2), the Mac relay (3) and the deploy (4: systemd, Tailscale
+binding) are still to come. Plan: `phone_page_plan.md` in the project files.
+
+### Step 0: does each book accept a login from the server?
+
+1. **Use the existing VM if there is one.** The MLB cloud-migration work
+   (local branch `worktree-cloud-migration-mlb`, `deploy/cloud/ORACLE_SETUP.md`)
+   created an A1.Flex VM `mlb-stack` with the key `~/.ssh/oracle_mlb.key`. It
+   takes the whole Always Free A1 allowance (4 OCPU / 24 GB), so a second free
+   VM is not possible; run this on that one. Only if it no longer exists:
+   Oracle Cloud > Compute > Instances > Create, Ubuntu, shape
+   `VM.Standard.A1.Flex`, a US region, your SSH public key, only SSH open.
+2. **Get the code on it.** The repo is private, so add a read-only deploy key:
+   on the VM `ssh-keygen -t ed25519 -f ~/.ssh/nflwork -N ""`, paste
+   `~/.ssh/nflwork.pub` into GitHub > repo Settings > Deploy keys (read
+   access only), then
+   `GIT_SSH_COMMAND="ssh -i ~/.ssh/nflwork" git clone git@github.com:callancapitolo17/NFLWork.git`.
+3. **Install.**
+   `sudo apt install -y python3-venv && cd NFLWork && python3 -m venv venv && venv/bin/pip install -r unabated_ticket/bets_service/requirements.txt`
+4. **Credentials.** From the Mac, `scp` into the same paths on the VM:
+   `bet_logger/.env` (BFA, Wagerzon, Polymarket US), `kalshi_draft/.env` plus
+   the Kalshi `.pem` its `KALSHI_PRIVATE_KEY_PATH` names (fix that path in the
+   VM's copy). Then `chmod 600` each.
+   - **Novig: don't copy the token.** Auth0 revokes the whole chain when a
+     rotated refresh token is reused, so the VM needs its own login:
+     `venv/bin/python -m unabated_ticket.bets_service.sources.novig_auth connect`
+     (the paste flow; open the printed URL on any device, log in, paste back
+     the URL you land on).
+   - **BetOnline: move the cookie file, don't copy it.** Every refresh
+     rotates its token and Keycloak kills a reused one. Stop the Mac's bets
+     service and BetOnline scraper, `scp` `bet_logger/recon_betonline_cookies.json`
+     over, run the check, then `scp` it back and restart the Mac side.
+5. **Run it** from the repo root:
+   `venv/bin/python -m unabated_ticket.bets_service.check_sources`
+
+It prints one line per venue: `ok` with a record count, `not configured`, or
+`FAILED` with the error, and a last line for Unabated's public NFL feed
+(what the Edges scan needs). Bet contents are never printed. Exit code 1 when
+anything failed. A book that fails here with a block or a 403 stays on the
+Mac; one that is `ok` can move.
+
+### Step 1: the Edges list, headless (`server/runner.js`)
+
+A Node process runs the panel's own Edges scan with no browser and serves
+the list as JSON for the phone page. It `require`s the extension's pure
+modules unchanged — `scanner.js` (the same loop and cadence: the settings'
+leagues plus NFL and CFB, which the panel always loads for its Teasers tab,
+each league again every 60 s / 2 min / 5 min by snapshot size, a full
+resync every 10 min, never paused), `edgerows.js` (the list's selection,
+conditional-Kelly sizing against your open bets and open BFA teasers, the
+stake capped at liquidity, the Min liq to win / min edge / max line age /
+books / alts toggle, the sort, the market cards with their best line picked
+by the tail-flex rank, the stake rail's words, the held / against / teasers
+badges and the edge-move tag), `tailflex.js` (c measured off the same
+snapshot), `teaser.js` (the open teasers joined to the board, as the panel's
+`openTeasersNow`), `betsview.js`, `bets.js`, `teams.js`, `ladder.js`,
+`condkelly.js`, `kelly.js`, `edgemove.js`, `fillfair.js` — so `/edges.json`
+is what the panel's Edges tab shows for the same settings, bets and
+snapshot. Pregame only: the Live block reads the logged-in Unabated
+screen, which a server does not have.
+
+```bash
+# Node 18+ (Ubuntu 22.04's apt node is v12 — install 20 or 22 from NodeSource or nvm). No npm install.
+node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json
+```
+
+| Env | Default | |
+|---|---|---|
+| `UNABATED_RUNNER_HOST` | `127.0.0.1` | bind address; loopback until the deploy step binds the tailnet address |
+| `UNABATED_RUNNER_PORT` | `8095` | |
+| `BETS_SERVICE_URL` | `http://127.0.0.1:8094` | where `/bets.json` and `/settings.json` come from |
+
+- **Reads**: Unabated's public league snapshots (no login, ~6–8 MB/min with
+  every league on, as the panel); the bets service's `/bets.json` every 30 s
+  (the panel's cadence), applied exactly as the panel applies it
+  (`edgeRows.applyBetsPayload`); `/settings.json` every 10 s. A league change
+  in the settings restarts the scan, as the panel's checkboxes do (NFL and
+  CFB stay loaded either way).
+- **Settings**: one row in `bets.duckdb::edge_settings`, edited with `PUT
+  /settings.json` on the bets service (Bets service above), e.g.
+  `curl -X PUT -H 'Content-Type: application/json' -d '{"settings":{"bankroll":8000,"minEdgePct":2}}' http://127.0.0.1:8094/settings.json`.
+  A field never set is the panel's default (`edgerows.DEFAULT_STAKE_SETTINGS`
+  / `DEFAULT_EDGE_SETTINGS`: $30,000 at 0.25 Kelly, 2.5% edge, 168 h, $100 to
+  win, the default books, no alts, cards). The panel's own settings stay in
+  `chrome.storage` — the two are not synced. `bookMode: "all"` is every live
+  book (the panel's "My Unabated selection" has no Unabated tab to follow
+  here). While the service cannot be read the runner keeps the last settings
+  it read (the defaults before the first) and says so.
+- **Serves**: `GET /edges.json` → `{generatedAt, settings {source, error,
+  okAt, updatedAt, stake, edges}, scanner {phase, error, leaguesLoaded,
+  leagueErrors, lineCount, altLineCount, snapshotBuiltAt, staleLeagues, …},
+  betsService {okAt, error, unreachableSince, openBets, sources}, books
+  {mode, ids, names, liveCount}, tailFlex, grouped, unit, total, maxShown,
+  items}` — the top 200 cards (`{key, sideName, …, bookCount, lineCount,
+  best, others}`, best the highest tail-flex rank, others in rank order) or
+  lines; `tailFlex` is the panel's header line ("tail flex: NFL spr 7.1% ·
+  …"). Each line carries the feed fields the panel renders plus `edgeTier`,
+  `stake` (standalone, capped at liquidity), `rankScore`, `advice` (`kind`,
+  `bet`, `alone`, `verb`, `held`, `against`, `teasers {held, against}`,
+  `cappedAt`), `rail`
+  (`{text: "add $237.25", note: "$437.25 alone", atSize}`), `badges`,
+  `related` (the bets on the game with their tags and `fair then`) and
+  `move` (`{kind, label, detail, sinceFill}` or null). The full shape is
+  documented at the top of `server/edges_payload.js`. `GET /health` →
+  `{ok, uptimeSec, scanner, betsService, settings}`. Any verb but GET is
+  405; a request whose `Host` is not `127.0.0.1:<port>`, `localhost:<port>`
+  or the bound address with the port is 403 (the bets service's #125 rule).
+- **Side effects**: none on disk and no writes to the bets service; feed,
+  line history and bets live in memory and rebuild on restart (so the
+  edge-move tag starts empty, as when the panel opens). Logs state changes to
+  stdout/stderr. Unlike the panel it does not POST fill fairs or crosswalk
+  lessons — the Mac panel keeps doing that.
+
 ## Tests
 
 One command runs everything and exits non-zero if any part fails:
@@ -1880,9 +2020,9 @@ One command runs everything and exits non-zero if any part fails:
 ./unabated_ticket/check.sh
 ```
 
-It runs, in order, ESLint over `extension/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 390 tests) and
-the bets service's pytest suite (308 tests, on the `kalshi_draft/venv`
+It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
+the node suite (`npm test` = `node --test tests/*.test.js`, 415 tests) and
+the bets service's pytest suite (338 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`
@@ -1894,6 +2034,23 @@ rethrow that drops its cause — and has no style rules; it knows the
 modules are dual-loaded (plain `<script>` publishing `globalThis.UnabatedX`
 in the panel, `require()` in tests), so no file needs a disable comment.
 The extension itself has no build step and stays loaded unpacked.
+
+`edgerows.test.js` pins the Edges list's rows on the real NFL slice an hour
+before kickoff — the panel's defaults, the book modes, quarter Kelly with
+nothing held and each row's tail-flex rank score, the gates, the sorts, the
+cards (best line by rank), the tail-flex header, a held Bears -2.5 that
+turns the same line into `add $237.25` (`$437.25 alone`) and the Panthers
+side into `bet $328.86`, and an open $400 BFA teaser on the Panthers +3.5
+that puts the Panthers lines at size — and the edge-move tag only on a held
+line. `runner.test.js` drives `server/runner.js` with the slice behind an
+injected fetch and a scripted bets service: `/edges.json` equals what
+`edgerows.js` lists for the same state and settings (with and without the
+teaser), a flat list and the settings row's minimum edge and sort, the
+defaults and named errors while the service is down, NFL and CFB always
+scanned, a league change restarting the scan, and the HTTP Host / verb /
+path guards. `bets_service/tests/test_edge_settings.py`
+covers `edge_settings` and `GET/PUT /settings.json` (validation, partial
+updates, the Content-Type and Host guards).
 
 `betsview.test.js` covers the panel's bet-history presentation helpers:
 freshness colours at the 5 / 60 min bounds, the per-venue rows (unconfigured,

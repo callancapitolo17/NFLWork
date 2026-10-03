@@ -44,6 +44,17 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     Cloudflare challenges anything else — sources/bet105.py
                                     parses, an open bet a complete push no longer lists is
                                     closed, and the push is logged as that source's run)
+           GET /settings.json       {settings: {bankroll, multiplier, leagues, periods, betTypes,
+                                    bookMode, bookIds, minEdgePct, minStake, maxLineAgeHours,
+                                    minLiquidityToWin, includeAlts, sortBy, groupByMarket},
+                                    updatedAt} — the Edges settings the server
+                                    runner (unabated_ticket/server/runner.js) reads every cycle;
+                                    null = the panel's default (extension/edgerows.js)
+           PUT /settings.json       body {settings: {<any of those fields>: value or null}} ->
+                                    {ok, settings, updatedAt}; a field left out keeps its value,
+                                    null resets it to the default, an unknown field or a bad
+                                    value is a 400 naming it (same Content-Type guard as the
+                                    POSTs: a web page cannot send JSON cross-origin)
          Every verb refuses a request whose Host header is not the loopback
          name the service is serving on (403): a page at evil.example whose
          DNS flips to 127.0.0.1 is SAME-ORIGIN with this server, so neither
@@ -55,7 +66,8 @@ bets.duckdb::bet_pins and the crosswalk rows a pin taught on the two pin
 routes; INSERTs into bets.duckdb::bet_fill_fairs on POST /fill_fairs.json —
 insert-only, a bet that has a saved fair keeps it; rotating log at
 bets_service.log. A poll that raises writes a failed source_runs row and
-leaves `bets` untouched — a dark source never blanks the list.
+leaves `bets` untouched — a dark source never blanks the list. PUT
+/settings.json UPSERTs the one row of bets.duckdb::edge_settings.
 """
 import json
 import logging
@@ -63,6 +75,7 @@ import math
 import signal
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -77,7 +90,7 @@ from unabated_ticket.bets_service.sources.kalshi import KalshiSource
 from unabated_ticket.bets_service.sources.novig import source_if_connected as novig_source_if_connected
 from unabated_ticket.bets_service.sources.polymarket_us import source_if_configured as polymarket_us_source_if_configured
 from unabated_ticket.bets_service.sources.wagerzon import source_if_configured as wagerzon_source_if_configured
-from unabated_ticket.bets_service.store import BetsStore
+from unabated_ticket.bets_service.store import EDGE_SETTINGS_FIELDS, BetsStore
 
 log = logging.getLogger(__name__)
 
@@ -100,6 +113,13 @@ PIN_OPTIONAL_TEXT_FIELDS = ("eventStart", "awayTeamName", "homeTeamName")
 MAX_FILL_FAIR_ROWS_PER_POST = 1000
 # American odds run from -100 down and +100 up; the gap between is no price.
 MIN_AMERICAN_MAGNITUDE = 100
+# The Edges settings' allowed values, as the panel's inputs enforce them
+# (panel.js readSettingInputs / readEdgeSettingInputs). feed.PERIODS ids run
+# 1 (full game) to 7 (4Q); feed.BET_TYPES are 1 moneyline, 2 spread, 3 total.
+SETTINGS_PERIOD_IDS = range(1, 8)
+SETTINGS_BET_TYPE_IDS = (1, 2, 3)
+SETTINGS_BOOK_MODES = ("default", "all", "custom")
+SETTINGS_SORT_KEYS = ("edge", "stake", "start", "exposure")
 # Sources with no poll here: the extension POSTs their records (/bet105.json).
 # Listed so the panel reads "no completed poll yet" before the first push, not
 # "no source configured".
@@ -333,6 +353,69 @@ def validate_fill_fair_rows(body: object) -> list[dict] | str:
     return rows
 
 
+def _is_whole_number(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _id_list_error(field: str, value: object, allowed: object = None, non_empty: bool = False) -> str | None:
+    """Why `value` is not a list of whole ids (within `allowed` when given), or None."""
+    if not isinstance(value, list) or not all(_is_whole_number(item) and item >= 0 for item in value):
+        return f"settings.{field} must be a list of whole ids, got {value!r}"
+    if non_empty and not value:
+        return f"settings.{field} must name at least one id, got []"
+    if allowed is not None and any(item not in allowed for item in value):
+        return f"settings.{field} must hold only {list(allowed)}, got {value!r}"
+    return None
+
+
+def _settings_value_error(field: str, value: object) -> str | None:
+    """Why `value` is not a valid non-null value of settings `field`, or None."""
+    if field == "bankroll" or field == "maxLineAgeHours":
+        return None if _is_number(value) and value > 0 else f"settings.{field} must be a number above 0, got {value!r}"
+    if field == "multiplier":
+        return None if _is_number(value) and 0 < value <= 1 else f"settings.multiplier must be above 0 and at most 1, got {value!r}"
+    if field in ("minEdgePct", "minStake", "minLiquidityToWin"):
+        return None if _is_number(value) and value >= 0 else f"settings.{field} must be a number, 0 or more, got {value!r}"
+    if field in ("includeAlts", "groupByMarket"):
+        return None if isinstance(value, bool) else f"settings.{field} must be true or false, got {value!r}"
+    if field == "leagues":
+        return _id_list_error(field, value)
+    if field == "periods":
+        return _id_list_error(field, value, SETTINGS_PERIOD_IDS, non_empty=True)
+    if field == "betTypes":
+        return _id_list_error(field, value, SETTINGS_BET_TYPE_IDS, non_empty=True)
+    if field == "bookIds":
+        return _id_list_error(field, value)
+    if field == "bookMode":
+        return None if value in SETTINGS_BOOK_MODES else f"settings.bookMode must be one of {list(SETTINGS_BOOK_MODES)}, got {value!r}"
+    if field == "sortBy":
+        return None if value in SETTINGS_SORT_KEYS else f"settings.sortBy must be one of {list(SETTINGS_SORT_KEYS)}, got {value!r}"
+    raise AssertionError(f"no validator for settings field {field!r}")
+
+
+def validate_settings_update(body: object, held: dict) -> dict | str:
+    """The full settings row after applying a PUT /settings.json body to the
+    `held` one, or an error naming the first problem. Fields left out keep
+    their held value; null resets one to the default. bookIds is set exactly
+    when bookMode is 'custom' (the panel's own ticks), checked on the result."""
+    if not isinstance(body, dict) or not isinstance(body.get("settings"), dict):
+        return f"body must be an object with a `settings` object, got {type(body).__name__}"
+    update = body["settings"]
+    unknown = sorted(set(update) - set(EDGE_SETTINGS_FIELDS))
+    if unknown:
+        return f"unknown settings field(s) {unknown}; expected some of {list(EDGE_SETTINGS_FIELDS)}"
+    for field, value in update.items():
+        error = None if value is None else _settings_value_error(field, value)
+        if error:
+            return error
+    merged = {field: held.get(field) for field in EDGE_SETTINGS_FIELDS}
+    merged.update(update)
+    if (merged["bookMode"] == "custom") != (merged["bookIds"] is not None):
+        return (f"settings.bookIds must be a list exactly when bookMode is 'custom', "
+                f"got bookMode {merged['bookMode']!r} with bookIds {merged['bookIds']!r}")
+    return merged
+
+
 def health_payload(store: BetsStore, started_at: float, source_names: list[str] = ()) -> dict:
     return {"ok": True, "generatedAt": _iso(_now()), "uptimeSec": int(time.monotonic() - started_at),
             "sources": source_status(store, list(source_names))}
@@ -363,6 +446,9 @@ def make_handler(store: BetsStore, started_at: float,
             url = urlparse(self.path)
             if url.path == "/health":
                 self._send_json(200, health_payload(store, started_at, names))
+                return
+            if url.path == "/settings.json":
+                self._send_json(200, store.load_edge_settings())
                 return
             if url.path == "/bets.json":
                 days = parse_days(url.query)
@@ -400,6 +486,26 @@ def make_handler(store: BetsStore, started_at: float,
             result = store.learn_crosswalk(rows, _now())
             self._send_json(200, {"ok": True, "learned": result["learned"], "conflicts": result["conflicts"],
                                   "crosswalk": store.load_crosswalk()})
+
+        # PUT /settings.json: merge the body into the held row, UPSERT it, and
+        # reply with what is now stored.
+        def do_PUT(self) -> None:  # noqa: N802 — http.server's name
+            if self._refused_foreign_host():
+                return
+            url = urlparse(self.path)
+            if url.path != "/settings.json":
+                self._send_json(404, {"error": f"no route for PUT {url.path}"})
+                return
+            body = self._read_json_body()
+            if isinstance(body, tuple):
+                self._send_json(*body)
+                return
+            merged = validate_settings_update(body, store.load_edge_settings()["settings"])
+            if isinstance(merged, str):
+                self._send_json(400, {"error": merged})
+                return
+            store.save_edge_settings(merged, _now())
+            self._send_json(200, {"ok": True, **store.load_edge_settings()})
 
         def _post_pin(self, body: object) -> None:
             request = validate_pin_request(body)
@@ -546,12 +652,24 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
         store.close()
 
 
+# Venues polled only when their credentials are present; each factory returns
+# None (logging the fix) when they are not. check_sources.py reads this same
+# list, so the login check can never test a different set than the service runs.
+OPTIONAL_SOURCE_FACTORIES: tuple[tuple[str, Callable[[], Source | None]], ...] = (
+    ("betonline", betonline_source_if_configured),
+    ("novig", novig_source_if_connected),
+    ("bfa", bfa_source_if_configured),
+    ("wagerzon", wagerzon_source_if_configured),
+    ("polymarket_us", polymarket_us_source_if_configured),
+)
+
+
 def main() -> None:
     setup_logging()
     store = BetsStore(config.DB_PATH, config.SOURCE_RUNS_RETENTION_DAYS)
     sources: list[Source] = [KalshiSource()]
-    for optional in (betonline_source_if_configured(), novig_source_if_connected(), bfa_source_if_configured(),
-                     wagerzon_source_if_configured(), polymarket_us_source_if_configured()):
+    for _venue, factory in OPTIONAL_SOURCE_FACTORIES:
+        optional = factory()
         if optional is not None:
             sources.append(optional)
     serve(sources, store, config.BIND_HOST, config.PORT)
