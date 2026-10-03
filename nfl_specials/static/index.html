@@ -69,6 +69,7 @@
   <div id="placed"><div class="placed faint">Nothing placed yet.</div></div>
 </main>
 <script>
+const BOOK_SHORT = { FanDuel: "FD", BetMGM: "MGM", DraftKings: "DK" };
 let lastPayload = null;
 let pollTimer = null;
 let editingStake = new Map();   // wz_game_id -> value the user typed (survives re-renders)
@@ -137,12 +138,12 @@ function renderChips(p) {
 function bookLine(line) {
   if (!line.is_superfecta) {
     return Object.entries(line.books).map(([name, f]) =>
-      `${name} ${f.fair_american != null ? signed(f.fair_american) : "–"}`).join(" · ");
+      `${BOOK_SHORT[name] || name} ${f.fair_american != null ? signed(f.fair_american) : "–"}`).join(" · ");
   }
   const part = line.books.DraftKings;
-  const parts = [`DraftKings: 1Q/1H/GM part ${part && part.fair_american != null ? signed(part.fair_american) : "–"}`];
+  const parts = [`DK 1Q/1H/GM part ${part && part.fair_american != null ? signed(part.fair_american) : "–"}`];
   parts.push(`${line.team} score first ${line.sf_share != null ? (line.sf_share * 100).toFixed(0) + "%" : "–"}`);
-  if (line.dk_price_with_vig != null) parts.push(`DraftKings price ${signed(line.dk_price_with_vig)} incl. vig`);
+  if (line.dk_price_with_vig != null) parts.push(`DK price ${signed(line.dk_price_with_vig)} incl. vig`);
   return parts.join(" · ");
 }
 
