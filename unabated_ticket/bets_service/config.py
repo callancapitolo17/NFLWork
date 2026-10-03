@@ -69,6 +69,12 @@ KALSHI_BASE_URL = _get("KALSHI_BASE_URL",
 BIND_HOST = "127.0.0.1"
 PORT = int(_get("BETS_SERVICE_PORT", "8094"))
 
+# The server runner (unabated_ticket/server/runner.js) whose /edges.json the
+# service proxies for the phone page, so the page has one origin. Short
+# timeout: the runner answers from memory, so a slow reply means it is stuck.
+RUNNER_URL = _get("UNABATED_RUNNER_URL", "http://127.0.0.1:8095").rstrip("/")
+RUNNER_TIMEOUT_SEC = float(_get("UNABATED_RUNNER_TIMEOUT_SEC", "5"))
+
 # /bets.json returns open bets plus settled/closed ones within this window.
 RETENTION_DAYS = int(_get("BETS_RETENTION_DAYS", "30"))
 # How long a source_runs row is kept. Only the latest run per source is ever
