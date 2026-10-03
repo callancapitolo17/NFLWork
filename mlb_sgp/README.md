@@ -307,7 +307,7 @@ this to `on_demand` when every quote is live-priced; config, not code).
 | `sportsbook-nash.../event/eventSubcategory/v1/markets` | None | Main market IDs per game |
 | `sportsbook-nash.../parlays/v1/sgp/events/{id}` | curl_cffi | **All selection IDs** (2MB response) |
 | `gaming-us-nj.../en/api/wager/v1/calculateBets` | curl_cffi | **SGP pricing** (POST, returns trueOdds) — **BLOCKED since ~2026-08-20**, see § DraftKings price host |
-| `sportsbook-nash.../sgp/dkusnj/sportsdata/v2/sgp` | Full Akamai | SGP pricing (DK frontend only — **inaccessible** via REST) |
+| `sportsbook-nash.../sgp/dkuswv/sportsdata/v2/sgp` | curl_cffi | SGP pricing, GET — **reachable over plain HTTP as of 2026-10-02** (`X-SportId` header required; see `nfl_specials/README.md` § DraftKings, without a browser). Not wired into the MLB bots yet |
 
 ### Why curl_cffi?
 
@@ -452,6 +452,11 @@ different TLS stacks, all 403 with controls stable). A proxy would have
 bought nothing, and so would swapping the imitation library.
 
 ### Decision: DK stays OFF the same-game path (2026-09-02)
+
+**2026-10-02:** DK's SGP-builder endpoint (table above) prices same-game
+combos over plain HTTP, identical to `calculateBets`; `nfl_specials` uses it
+and the `dk_price_sidecar/` browser service was deleted. Re-test it on MLB
+(sport id, burst tolerance) before wiring it into the bots.
 
 A browser-backed sidecar (`dk_price_sidecar/`, commit ac9ecf3) was built,
 verified end to end (`true_odds=7.75` 4/4) and **reverted the same day by

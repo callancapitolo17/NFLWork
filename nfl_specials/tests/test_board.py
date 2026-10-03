@@ -118,7 +118,7 @@ def _patch_refresh(monkeypatch, descriptions: list[str]) -> None:
     specials = [WzSpecial(wz_game_id=i, rotation=i, description=d, wz_american=400,
                           week_date=date(2098, 12, 31)) for i, d in enumerate(descriptions, start=1)]
     books = {"FanDuel": object(), "BetMGM": object()}
-    monkeypatch.setattr(board_module, "open_books", lambda url: (books, {name: "ok" for name in books}))
+    monkeypatch.setattr(board_module, "open_books", lambda: (books, {name: "ok" for name in books}))
     monkeypatch.setattr(board_module.wz, "fetch_fecta_specials", lambda: specials)
     monkeypatch.setattr(board_module, "_locate_game", lambda fecta, special, books: GAME)
     monkeypatch.setattr(board_module, "_price_partition",
@@ -147,7 +147,7 @@ def test_refresh_counts_progress_per_book(monkeypatch):
                 for r, d in [(1, "CHARGERS TRIFECTA (1Q, 1H & GM)"),
                              (2, "CHARGERS SUPERFECTA (SCR 1ST, 1Q, 1H & GM)")]]
     books = {"FanDuel": object(), "BetMGM": object(), "DraftKings": object()}
-    monkeypatch.setattr(board_module, "open_books", lambda url: (books, {name: "ok" for name in books}))
+    monkeypatch.setattr(board_module, "open_books", lambda: (books, {name: "ok" for name in books}))
     monkeypatch.setattr(board_module.wz, "fetch_fecta_specials", lambda: specials)
     monkeypatch.setattr(board_module, "_locate_game", lambda fecta, special, books: GAME)
     monkeypatch.setattr(board_module, "_price_partition",

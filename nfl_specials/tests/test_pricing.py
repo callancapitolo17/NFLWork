@@ -106,7 +106,11 @@ class ScoresFirstBook:
         win, lose = Outcome((key, True), f"{key} yes"), Outcome((key, False), f"{key} no")
         return LegMarket.single(win, (win, lose))
 
+    def __init__(self):
+        self.priced = []
+
     def price(self, game, refs):
+        self.priced.append(refs)
         prob = 1.0
         for key, side in refs:
             prob *= self.TRUE[key] if side else 1 - self.TRUE[key]
@@ -116,9 +120,12 @@ class ScoresFirstBook:
 def test_scores_first_share_cancels_the_margin():
     from nfl_specials.pricing import scores_first_share
     superfecta = Fecta("SEA", "SUPERFECTA", (Leg("scores_first"),) + TRIFECTA.legs)
-    result = scores_first_share(ScoresFirstBook(), GAME, "home", superfecta)
+    book = ScoresFirstBook()
+    result = scores_first_share(book, GAME, "home", superfecta)
     assert result.n_calls == 2
     assert result.share == pytest.approx(0.55)
+    # Scores first is the last leg, so DraftKings prices both sides in one request.
+    assert [refs[-1][0] for refs in book.priced] == ["sf", "sf"]
 
 
 def test_trifecta_part_drops_scores_first():

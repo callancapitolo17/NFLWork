@@ -464,7 +464,7 @@ function renderProgress(p) {
         el("div", { class: "progress-head" }, [
           el("span", {}, [el("strong", { class: "num", text: `Pricing ${b.progress_done} / ${b.progress_total}` }),
             el("span", { class: "muted", text: ` · ${elapsed(parseTime(b.started_at))} so far` }),
-            el("span", { class: "muted wide-only", text: " · trifectas ~90 s, DK superfectas ~7 min" })]),
+            el("span", { class: "muted wide-only", text: " · trifectas ~90 s, DK superfectas <1 min" })]),
           el("span", { class: "muted num", text: Math.round(share * 100) + "%" }),
         ]),
         el("div", { class: "meter accent" }, el("span", { style: `width:${(share * 100).toFixed(1)}%` })),
@@ -665,8 +665,8 @@ function renderBoard(p) {
   const root = document.getElementById("board");
   if (!p.board) {
     root.replaceChildren(isBusy(p) ? "" : emptyState("Price this week’s fectas",
-      "FanDuel and BetMGM price the trifectas in about 90 seconds; DraftKings fills in the superfectas over about " +
-      "7 minutes (start dk_price_sidecar/run.sh first).", true));
+      "FanDuel and BetMGM price the trifectas in about 90 seconds; DraftKings then fills in the superfectas " +
+      "in under a minute.", true));
     return;
   }
   if (p.board.lines.length === 0) {
