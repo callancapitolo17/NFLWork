@@ -1,0 +1,99 @@
+from datetime import date, datetime, timezone
+
+from nfl_specials.board import Board, FectaLine, book_game, in_special_week, size_board
+from nfl_specials.books import BookGame
+from nfl_specials.pricing import BookFair, ScoresFirstShare
+from nfl_specials.special_parser import parse_fecta
+from nfl_specials.wz import WzSpecial
+
+GAME = BookGame("evt", home="SEA", away="LAC", game_start_time="2099-01-01T00:00:00Z")
+
+
+def _line(rotation: int, description: str, wz_american: int, fair_prob: float | None) -> FectaLine:
+    special = WzSpecial(wz_game_id=rotation, rotation=rotation, description=description,
+                        wz_american=wz_american, week_date=date(2098, 12, 31))
+    fairs = {} if fair_prob is None else {"FanDuel": BookFair("FanDuel", fair_prob, None, 1.3, 8)}
+    return FectaLine(special, parse_fecta(description), "priced", game=GAME, book_fairs=fairs)
+
+
+def _board(*lines: FectaLine) -> Board:
+    return Board(datetime.now(timezone.utc), None, list(lines), {})
+
+
+def test_same_team_specials_share_one_stake():
+    plain = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.09)
+    spread = _line(2, "CHARGERS TRIFECTA (1Q +½, 1H +4½ & GM +7½)", 400, 0.30)
+    sized = size_board(_board(plain, spread), 35000, 0.25, None)
+    staked = [s for s in sized if s.recommended_stake > 0]
+    assert len(staked) == 1
+    loser = next(s for s in sized if s.recommended_stake == 0)
+    assert loser.yields_to in (1, 2) and loser.kelly_stake > 0
+
+
+def test_opposite_teams_are_sized_independently():
+    lac = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.09)
+    sea = _line(2, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 300, 0.40)
+    sized = size_board(_board(lac, sea), 35000, 0.25, None)
+    assert all(s.recommended_stake > 0 for s in sized)
+
+
+def test_negative_ev_and_unpriced_get_no_stake():
+    bad = _line(1, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 120, 0.37)
+    unpriced = _line(2, "SEAHAWKS SUPERFECTA (SCR 1ST, 1Q, 1H & GM -7½)", 180, None)
+    sized = size_board(_board(bad, unpriced), 35000, 0.25, None)
+    assert sized[0].ev < 0 and sized[0].recommended_stake == 0
+    assert sized[1].fair_prob is None and sized[1].recommended_stake == 0
+
+
+def test_fair_is_the_worst_case_book():
+    line = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.10)
+    line.book_fairs["BetMGM"] = BookFair("BetMGM", 0.08, None, 1.4, 8)
+    line.book_fairs["DraftKings"] = BookFair("DraftKings", None, None, None, 18, reason="declined cell")
+    assert size_board(_board(line), 35000, 0.25, None)[0].fair_prob == 0.08
+
+
+def test_superfecta_fair_is_trifecta_part_times_scores_first_share():
+    line = _line(1, "SEAHAWKS SUPERFECTA (SCR 1ST, 1Q, 1H & GM -7½)", 180, 0.40)
+    assert size_board(_board(line), 35000, 0.25, None)[0].fair_prob is None   # no DK share yet
+    line.sf_share = ScoresFirstShare("DraftKings", 0.6, 2)
+    assert size_board(_board(line), 35000, 0.25, None)[0].fair_prob == 0.40 * 0.6
+
+
+
+def test_budget_goes_to_the_strongest_edges():
+    raiders = _line(1, "RAIDERS SUPERFECTA (SCR 1ST, 1Q, 1H & GM)", 1730, 0.40)
+    raiders.sf_share = ScoresFirstShare("DraftKings", 0.288, 20)
+    chargers = _line(2, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.081)
+    sized = size_board(_board(raiders, chargers), 35000, 0.25, 500)
+    assert sum(s.recommended_stake for s in sized) <= 500
+    assert sized[0].recommended_stake > sized[1].recommended_stake
+    assert sized[0].kelly_stake > sized[0].recommended_stake   # the budget bound
+
+
+class _ListingBook:
+    name = "Fake"
+
+    def __init__(self, game):
+        self.game = game
+
+    def find_game(self, team):
+        return self.game
+
+
+def test_book_game_must_be_the_same_game():
+    line = _line(1, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 120, 0.37)
+    same = BookGame("x", home="SEA", away="LAC", game_start_time="2099-01-01T00:01:00Z")
+    next_week = BookGame("y", home="SEA", away="LAC", game_start_time="2099-01-08T00:00:00Z")
+    other_team = BookGame("z", home="SEA", away="SF", game_start_time="2099-01-01T00:00:00Z")
+    assert book_game(_ListingBook(same), line) is same
+    assert book_game(_ListingBook(next_week), line) is None   # a rematch weeks later
+    assert book_game(_ListingBook(other_team), line) is None
+
+
+def test_special_week_is_thursday_through_monday_night():
+    special = _line(1, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 120, 0.37).special   # Sunday 2098-12-31
+    thursday = BookGame("t", "SEA", "LAC", "2098-12-28T01:15:00Z")
+    monday_night = BookGame("m", "SEA", "LAC", "2099-01-02T01:15:00Z")
+    next_thursday = BookGame("n", "SEA", "LAC", "2099-01-05T01:15:00Z")
+    assert in_special_week(thursday, special) and in_special_week(monday_night, special)
+    assert not in_special_week(next_thursday, special)
