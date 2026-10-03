@@ -1872,6 +1872,62 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   files land in `~/Downloads/bets_recon/` (`--out DIR`). It writes no token,
   cookie or password, and leaves `bet_logger/recon_bfa_auth.json` alone.
 
+## Running on a server (Oracle)
+
+Work in progress toward using the panel from a phone with the Mac closed
+(plan agreed 2026-09-30): the bets service and the Edges scan move to an
+always-on Oracle Cloud VM, reached privately over Tailscale, with the Mac as
+the fallback for any book that refuses a data-center login. **Step 0 is the
+login check below**; nothing is served from the server yet.
+
+### Step 0: does each book accept a login from the server?
+
+1. **Use the existing VM if there is one.** The MLB cloud-migration work
+   (local branch `worktree-cloud-migration-mlb`, `deploy/cloud/ORACLE_SETUP.md`)
+   created an A1.Flex VM `mlb-stack` with the key `~/.ssh/oracle_mlb.key`. It
+   takes the whole Always Free A1 allowance (4 OCPU / 24 GB), so a second free
+   VM is not possible; run this on that one. Only if it no longer exists:
+   Oracle Cloud > Compute > Instances > Create, Ubuntu, shape
+   `VM.Standard.A1.Flex`, a US region, your SSH public key, only SSH open.
+2. **Get the code on it.** The repo is private, so add a read-only deploy key:
+   on the VM `ssh-keygen -t ed25519 -f ~/.ssh/nflwork -N ""`, paste
+   `~/.ssh/nflwork.pub` into GitHub > repo Settings > Deploy keys (read
+   access only), then
+   `GIT_SSH_COMMAND="ssh -i ~/.ssh/nflwork" git clone git@github.com:callancapitolo17/NFLWork.git`.
+3. **Install.**
+   `sudo apt install -y python3-venv && cd NFLWork && python3 -m venv venv && venv/bin/pip install -r unabated_ticket/bets_service/requirements.txt`
+4. **Credentials.** Copy only the API-key venues: `KALSHI_API_KEY_ID`, the
+   Kalshi `.pem` (with `KALSHI_PRIVATE_KEY_PATH` pointing at the VM's copy) and
+   `POLYMARKET_US_KEY_ID` / `POLYMARKET_US_SECRET_KEY`, into
+   `unabated_ticket/bets_service/.env` on the VM, then `chmod 600` each. Their
+   keys are built for server use. **Leave BFA, Wagerzon and BetOnline off the
+   VM** (user decision, 2026-10-01): they log in with a password, and an
+   offshore book can flag or limit an account that suddenly logs in from a
+   data-center address; they stay on the Mac until that risk is accepted.
+   - **Novig: don't copy the token.** Auth0 revokes the whole chain when a
+     rotated refresh token is reused, so the VM needs its own login:
+     `venv/bin/python -m unabated_ticket.bets_service.sources.novig_auth connect`
+     (the paste flow; open the printed URL on any device, log in, paste back
+     the URL you land on).
+   - **BetOnline (only once its risk is accepted): move the cookie file, don't copy it.** Every refresh
+     rotates its token and Keycloak kills a reused one. Stop the Mac's bets
+     service and BetOnline scraper, `scp` `bet_logger/recon_betonline_cookies.json`
+     over, run the check, then `scp` it back and restart the Mac side.
+5. **Run it** from the repo root:
+   `venv/bin/python -m unabated_ticket.bets_service.check_sources`
+
+It prints one line per venue: `ok` with a record count, `not configured`, or
+`FAILED` with the error, and a last line for Unabated's public NFL feed
+(what the Edges scan needs). Bet contents are never printed. Exit code 1 when
+anything failed. A book that fails here with a block or a 403 stays on the
+Mac; one that is `ok` can move.
+
+**Result on the VM (2026-10-01):** Kalshi ok (221 records; 341 s on a first
+read, its per-market lookups are paced 0.6 s apart), Polymarket US ok, the
+Unabated feed ok. Novig awaits its own login; BFA, Wagerzon and BetOnline were
+not tested (see step 4). The VM has no `python3-venv`; running the check in a
+`python:3.12-slim` container with the repo mounted works without it.
+
 ## Tests
 
 One command runs everything and exits non-zero if any part fails:
@@ -2387,6 +2443,13 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-02 — Bet105 reads time out after 30 s (0.16.2).** Bet105 stopped
+pushing at 17:27 PT on 2026-10-01 while every other venue stayed fresh. Its
+fetches had no timeout, so one request Bet105 never answered held the poll's
+busy flag and every later 5-min read was skipped until the panel reloaded.
+Each request now gives up after 30 s and the Bets tab shows "Bet105 did not
+answer within 30s"; the next read runs 5 min later.
 
 **2026-10-02 — Min edge default 2.5%, labelled on the toolbar (0.16.1).** The
 minimum-edge box sat on the toolbar with no visible label, so Cal did not know

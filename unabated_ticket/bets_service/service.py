@@ -63,6 +63,7 @@ import math
 import signal
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -546,12 +547,24 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
         store.close()
 
 
+# Venues polled only when their credentials are present; each factory returns
+# None (logging the fix) when they are not. check_sources.py reads this same
+# list, so the login check can never test a different set than the service runs.
+OPTIONAL_SOURCE_FACTORIES: tuple[tuple[str, Callable[[], Source | None]], ...] = (
+    ("betonline", betonline_source_if_configured),
+    ("novig", novig_source_if_connected),
+    ("bfa", bfa_source_if_configured),
+    ("wagerzon", wagerzon_source_if_configured),
+    ("polymarket_us", polymarket_us_source_if_configured),
+)
+
+
 def main() -> None:
     setup_logging()
     store = BetsStore(config.DB_PATH, config.SOURCE_RUNS_RETENTION_DAYS)
     sources: list[Source] = [KalshiSource()]
-    for optional in (betonline_source_if_configured(), novig_source_if_connected(), bfa_source_if_configured(),
-                     wagerzon_source_if_configured(), polymarket_us_source_if_configured()):
+    for _venue, factory in OPTIONAL_SOURCE_FACTORIES:
+        optional = factory()
         if optional is not None:
             sources.append(optional)
     serve(sources, store, config.BIND_HOST, config.PORT)

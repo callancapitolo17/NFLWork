@@ -2191,9 +2191,10 @@
       if (bet105LastError !== null) console.info("[unabated-ticket] bet105: reading again", reply);
       bet105LastError = null;
     } catch (error) {
-      if (bet105LastError !== error.message) console.warn("[unabated-ticket] bet105:", error.message);
-      bet105LastError = error.message;
-      await serviceRequest("POST", bet105.SERVICE_PATH, bet105.errorBody(error.message)).catch(() => {});
+      const message = error.name === "TimeoutError" ? `Bet105 did not answer within ${bet105.FETCH_TIMEOUT_MS / 1000}s` : error.message;
+      if (bet105LastError !== message) console.warn("[unabated-ticket] bet105:", message);
+      bet105LastError = message;
+      await serviceRequest("POST", bet105.SERVICE_PATH, bet105.errorBody(message)).catch(() => {});
     } finally {
       bet105Busy = false;
     }
