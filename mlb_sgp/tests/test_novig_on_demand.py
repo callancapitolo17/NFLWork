@@ -402,6 +402,15 @@ def test_price_with_no_vendor_records_unknown():
     assert relayed.books() == ("fanduel", UNKNOWN_VENDOR)
 
 
+def test_unrecognised_vendor_name_records_unknown():
+    """A renamed enum must not read as some other, independent book."""
+    relayed = RelayedVendors()
+    relayed.record(["FAN_DUEL", "fanduel", "BET365"])
+    assert relayed.books() == (UNKNOWN_VENDOR,)
+    relayed.record(["CAESARS"])
+    assert relayed.books() == ("caesars", UNKNOWN_VENDOR)
+
+
 # ---------------------------------------------------------------------------
 # build_line_structure — raw NV market tree -> per-line FG bucket
 # ---------------------------------------------------------------------------

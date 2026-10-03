@@ -1106,8 +1106,9 @@ selection set, i.e. per partition cell**:
 So `NovigClient.submit_parlay` returns the per-leg `vendors`, and on the
 on-demand path `price_selection_set(relayed=...)` records them into a
 per-call `RelayedVendors` (`_shared.py`); `OnDemandBookResult.vendors` carries
-the union as our book keys (`"FANDUEL"` → `"fanduel"`; a priced leg naming no
-vendor → `"unknown"`). The maker then counts Novig only when none of those
+the union as our book keys (`NOVIG_VENDOR_BOOKS`: `"FANDUEL"` → `"fanduel"`;
+a priced leg naming no vendor, or a name not in that map, → `"unknown"`, so
+a renamed enum fails closed instead of reading as an independent book). The maker then counts Novig only when none of those
 vendors landed in the same flight (`kalshi_mlb_mm.router.drop_relayed_novig`).
 Novig's exchange singles are its own book, not relayed: CLE ML read
 `available` 0.585 on the market tree while the DK-relayed leg in the same

@@ -1024,9 +1024,16 @@ class OnDemandBookResult:
     vendors: tuple[str, ...] = ()
 
 
-# A priced Novig leg that names no vendor. Recorded rather than skipped, so a
-# consumer can refuse a price whose source it cannot name.
+# A priced Novig leg whose vendor we cannot name. Recorded rather than
+# skipped, so a consumer can refuse a price whose source it does not know.
 UNKNOWN_VENDOR = "unknown"
+
+# Novig's vendor names (``legs[].vendor``; every value seen on 2026-10-02) ->
+# our book keys. Any other name records UNKNOWN_VENDOR: a renamed enum must
+# not read as some other, independent book (that would quietly re-open the
+# double count the maker's guard closes).
+NOVIG_VENDOR_BOOKS = {"DRAFTKINGS": "draftkings", "FANDUEL": "fanduel",
+                      "BETMGM": "betmgm", "CAESARS": "caesars"}
 
 
 class RelayedVendors:
@@ -1049,12 +1056,12 @@ class RelayedVendors:
 
     def record(self, leg_vendors) -> None:
         """Add one priced parlay's per-leg vendor names as our book keys
-        ("FANDUEL" -> "fanduel"). No legs listed, or a leg naming no vendor,
-        records ``UNKNOWN_VENDOR``."""
+        (``NOVIG_VENDOR_BOOKS``). No legs listed, or a leg naming no vendor
+        or one not in that map, records ``UNKNOWN_VENDOR``."""
         if not leg_vendors:
             names = {UNKNOWN_VENDOR}
         else:
-            names = {str(v).strip().lower() if v else UNKNOWN_VENDOR
+            names = {NOVIG_VENDOR_BOOKS.get(v, UNKNOWN_VENDOR)
                      for v in leg_vendors}
         with self._lock:
             self._books.update(names)
