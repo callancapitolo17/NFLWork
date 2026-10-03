@@ -103,8 +103,10 @@ the stake is at least $20 and within the available balance, and that the same
 special was not placed in the last 2 minutes (a slow answer invites a second
 click; the button is also disabled while a placement is in flight), then
 `wagerzon_odds/single_placer.place_single` previews it (`ConfirmWagerHelper`,
-win must match to $0.01 or it refuses) and submits it. A special is a one-sided
-prop on the "home" slot, so it goes in as Play=5 with no points. Every attempt
+win must match to $0.01 or it refuses) and submits it. A special is a PROP game,
+so it goes in with its rotation number as the Play and no points — what
+Wagerzon's own site sends. (Play=5 passes the preview but the submit fails
+"Couldn't find Game Line".) Every attempt
 is logged, whatever Wagerzon answered; a placed bet lowers the page's available
 balance right away. Wagerzon's minimum online wager on a special is $20.
 

@@ -4,8 +4,8 @@ Reads:  ActiveLeaguesHelper (find "NFL WEEK <n> - SPECIALS"), then
         NewScheduleHelper for that league (JSON; needs the XHR header).
 Places: wagerzon_odds/single_placer.place_single — ConfirmWagerHelper
         preflight with a $0.01 win-drift check, then PostWagerMultipleHelper.
-        A special is a one-sided prop on the "home" slot, so it goes in as
-        Play=5 with no points (verified against the preflight echo).
+        A special is a PROP game: its Play is the prop's rotation number
+        (vnum), not a side code, with no points.
 Credentials: WAGERZON[_X]_USERNAME / _PASSWORD from bet_logger/.env (the main
 checkout's copy is found from a worktree too). No DB writes here.
 """
@@ -57,7 +57,8 @@ T = TypeVar("T")
 @dataclass(frozen=True)
 class WzSpecial:
     wz_game_id: int        # Wagerzon idgm — what a bet is placed against
-    rotation: int          # Wagerzon rotation number (hnum)
+    rotation: int          # Wagerzon rotation number (vnum); also the
+                           # Play a bet on this prop is placed with
     description: str       # e.g. "SEAHAWKS TRIFECTA (1Q, 1H & GM)"
     wz_american: int       # posted price
     week_date: date        # Wagerzon's date for the specials (the week's
@@ -138,7 +139,7 @@ def _parse_special(game: dict) -> WzSpecial | None:
     posted = line.get("oddsh") or line.get("odds")
     if not posted or not game.get("gmdt"):
         return None
-    return WzSpecial(wz_game_id=int(game["idgm"]), rotation=int(game["hnum"]),
+    return WzSpecial(wz_game_id=int(game["idgm"]), rotation=int(game["vnum"]),
                      description=description, wz_american=int(posted),
                      week_date=datetime.strptime(game["gmdt"], "%Y%m%d").date())
 
@@ -152,7 +153,10 @@ def place_fecta(account_label: str, special: WzSpecial, risk: float) -> dict:
     """
     bet = {
         "idgm": special.wz_game_id,
-        "play": config.WZ_SPECIAL_PLAY,
+        # Wagerzon's own web app bets a PROP game with play = its vnum. Play=5
+        # (home moneyline) passes the ConfirmWagerHelper preview but the
+        # submit then fails "Couldn't find Game Line for IdGame" (2026-10-02).
+        "play": special.rotation,
         "line": None,
         "american_odds": special.wz_american,
         "wz_odds_at_place": special.wz_american,

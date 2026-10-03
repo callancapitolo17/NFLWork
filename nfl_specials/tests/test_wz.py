@@ -1,3 +1,5 @@
+import json
+
 import pytest
 import requests
 
@@ -49,3 +51,18 @@ def test_every_specials_league_once():
     assert wz.specials_league_ids(catalog) == [1135, 1140]
     with pytest.raises(RuntimeError):
         wz.specials_league_ids([{"IdLeague": 586, "Description": "NFL - TEAM TO SCORE 1ST"}])
+
+
+def test_a_fecta_is_placed_with_its_rotation_as_the_play(monkeypatch):
+    # Wagerzon's web app bets a PROP game as "<vnum>_<idgm>_0_<odds>"; Play=5
+    # passes the preview, then the submit fails "Couldn't find Game Line".
+    special = wz._parse_special({"idgm": "6008644", "hnum": 777043, "vnum": 777043, "gmdt": "20261004",
+                                 "htm": "RAIDERS SUPERFECTA (SCR 1ST, 1Q, 1H & GM)",
+                                 "GameLines": [{"odds": "1730", "oddsh": "+1730"}]})
+    sent = []
+    monkeypatch.setattr(wz.single_placer, "place_single", lambda account, bet: sent.append(bet) or {})
+    wz.place_fecta("Wagerzon", special, 250.0)
+    assert sent[0]["play"] == 777043
+    assert wz.single_placer.build_sel_for_single(sent[0]) == "777043_6008644_0_1730"
+    detail = json.loads(wz.single_placer._build_confirm_payload(sent[0])["detailData"])[0]
+    assert (detail["IdGame"], detail["Play"], detail["Amount"]) == (6008644, 777043, "250")

@@ -29,9 +29,6 @@ WZ_BASE_URL = "https://backend.wagerzon.com"
 # "NFL WEEK 4 - SPECIALS": the week number changes, so the league id is
 # resolved from the live catalog by this pattern on every scrape.
 WZ_SPECIALS_DESCRIPTION_RE = r"^NFL WEEK \d+ - SPECIALS$"
-# A special is a one-sided prop on the "home" slot; Wagerzon's preflight
-# echoes Play=5 (home moneyline) with the posted odds.
-WZ_SPECIAL_PLAY = 5
 
 # --- Sizing -------------------------------------------------------------------
 DEFAULT_BANKROLL = 1000.0
