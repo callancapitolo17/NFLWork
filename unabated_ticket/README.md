@@ -1909,8 +1909,8 @@ Work in progress toward using the panel from a phone with the Mac closed
 (plan agreed 2026-09-30): the bets service and the Edges scan move to an
 always-on Oracle Cloud VM, reached privately over Tailscale, with the Mac as
 the fallback for any book that refuses a data-center login. **Step 0** is the
-login check, **step 1** the headless Edges runner (both below); the phone
-page (step 2), the Mac relay (3) and the deploy (4: systemd, Tailscale
+login check, **step 1** the headless Edges runner, **step 2** the phone
+page (all below); the Mac relay (3) and the deploy (4: systemd, Tailscale
 binding) are still to come. Plan: `phone_page_plan.md` in the project files.
 
 ### Step 0: does each book accept a login from the server?
@@ -2032,6 +2032,50 @@ node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json
   edge-move tag starts empty, as when the panel opens). Logs state changes to
   stdout/stderr. Unlike the panel it does not POST fill fairs or crosswalk
   lessons — the Mac panel keeps doing that.
+
+### Step 2: the phone page (`server/phone/`)
+
+A phone-sized, read-only page (Edges, Bets and Settings tabs and a ticket
+sheet) served by the bets service, so the page, its reads and its one write
+share one origin. You bet in the book's own app; nothing on the page places
+anything.
+
+```bash
+venv/bin/python -m unabated_ticket.bets_service.service   # or bets_service/run.sh  (:8094)
+node unabated_ticket/server/runner.js                     # must be running too    (:8095)
+# then open http://127.0.0.1:8094/
+```
+
+- **Routes on the bets service**: `GET /` serves `server/phone/index.html`;
+  its CSS/JS and the extension's pure modules (under `/ext/`) come from a
+  fixed allowlist of paths (`service.STATIC_FILES`; anything else, traversal
+  included, is a 404), `Cache-Control: no-store`, a same-origin CSP.
+  `GET /edges.json` proxies the runner (`UNABATED_RUNNER_URL`, default
+  `http://127.0.0.1:8095`; `UNABATED_RUNNER_TIMEOUT_SEC`, default 5) and
+  answers 502 `{error, runnerUrl}` when it is down, slow or not 200. The
+  Host allowlist covers every route, so until the deploy step adds the
+  tailnet name the page opens only on the machine itself.
+- **Edges**: the runner's cards as the panel draws them: badges, side, market,
+  game and kickoff, book price with cents, line age, edge in its tier colour,
+  the stake rail and its note, the move tag, related bets, the tail-flex line.
+  Tap a card for the ticket: price, fair, edge, the number to act on with the
+  panel's label, position line, contracts (exchange lines), to win / payout,
+  every related bet and the card's other lines. Freshness and errors (edges or
+  bets service unreachable since …, scanner errors, settings fallback) sit at
+  the top.
+- **Bets**: money at risk, Needs a game / Needs a code fix / Not on the board
+  (the runner now adds `betsService.unmatched`, `bets.unmatchedReasons` over
+  its board, to `/edges.json`), venue freshness, open bets. Attach and
+  Dismiss stay on the desktop panel.
+- **Settings**: every `/settings.json` field, its default shown when unset;
+  Save sends only what changed (`PUT`, JSON), a 400's text is shown, and each
+  set field has Reset (sends null). The runner picks a change up within 10 s.
+- **Polling**: `/edges.json` every 15 s and `/bets.json` every 30 s, only while
+  the page is visible; at once on becoming visible and after a save.
+- **Reuse**: `phoneview.js` (pure, tested in `tests/phoneview.test.js`) formats
+  on top of the extension's `kelly.js`, `feed.js`, `teams.js`, `bets.js`,
+  `ladder.js`, `condkelly.js`, `betsview.js`, `edgemove.js`, `fillfair.js`,
+  `tailflex.js` and `edgerows.js`, loaded unchanged as plain scripts.
 
 ## Tests
 
