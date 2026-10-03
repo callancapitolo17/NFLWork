@@ -5,15 +5,13 @@ Fixtures:
                         GET https://api.novig.us/nbx/v1/trading/MLB/page.
                         4 pregame games on 2026-10-03 plus the Featured
                         Parlays / Series / Futures sections.
-  - nv_event_legs.json: REAL response captured 2026-05-13 from
-                        POST https://api.novig.us/v1/graphql (EventMarkets_Query).
-                        259 markets including SPREAD, TOTAL, SPREAD_1H, TOTAL_1H.
   - nv_parlay_response.json: SYNTHETIC — actual parlay submission needs valid
                         outcome UUIDs that move on every line update. Shape
                         matches Novig's `[{"price": "0.35088", "status": "OPEN",
                         ...}]` list-of-offers response.
 """
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,11 +19,10 @@ import pytest
 
 from mlb_sgp._shared import BookTransportError
 from mlb_sgp.novig_client import (
+    EVENT_WINDOW_HOURS,
     NovigClient,
     Event,
-    EventLegs,
     _parse_events_response,
-    _parse_event_legs_response,
     _parse_parlay_response,
 )
 
@@ -33,7 +30,7 @@ FIX = Path(__file__).parent / "fixtures"
 
 # Two hours before the fixture's first game (2026-10-03T17:00Z).
 FIXTURE_NOW = datetime(2026, 10, 3, 15, 0, tzinfo=timezone.utc)
-WINDOW_HOURS = 48
+WINDOW_HOURS = EVENT_WINDOW_HOURS
 
 
 def _games_page(*cards):
@@ -64,11 +61,12 @@ def test_parse_events_response_real_fixture():
         assert e.home_team
         assert e.away_team
         assert e.home_sym and e.away_sym
-        assert e.start_time.startswith("2026-10-0") and e.start_time.endswith("Z")
+        assert e.start_time.startswith("2026-10-0")
+        assert e.start_time.endswith("+00:00")
     cle = next(e for e in events if e.home_team == "Cleveland Guardians")
     assert cle.event_id == "01a0f758-1b00-79d2-a2ad-323e9c1dbc11"
     assert cle.away_team == "Chicago White Sox"
-    assert cle.start_time == "2026-10-03T17:00:00.000Z"
+    assert cle.start_time == "2026-10-03T17:00:00+00:00"
 
 
 def test_parse_events_uses_symbol_not_short_name():
@@ -106,6 +104,44 @@ def test_parse_events_reads_game_cards_in_any_section():
     assert [e.event_id for e in events] == ["renamed"]
 
 
+def test_parse_events_reads_game_cards_nested_in_subsections():
+    """The page already nests Futures as content.type="subsections"; Games
+    regrouped by day the same way must still parse."""
+    raw = {"sections": [{"title": "Games", "content": {
+        "type": "subsections",
+        "subSections": [{"title": "Saturday", "components": [_card("sat")]},
+                        {"title": "Sunday", "components": [_card(
+                            "sun", start="2026-10-04T20:00:00.000Z")]}]}}]}
+    events = _parse_events_response(raw, now=FIXTURE_NOW,
+                                    window_hours=WINDOW_HOURS)
+    assert [e.event_id for e in events] == ["sat", "sun"]
+
+
+def test_parse_events_normalises_start_time_to_utc():
+    """match_events buckets on start_time[:13] as a UTC hour, so an offset
+    timestamp must come out in UTC."""
+    raw = _games_page(_card("offset", start="2026-10-03T13:00:00.000-04:00"))
+    events = _parse_events_response(raw, now=FIXTURE_NOW,
+                                    window_hours=WINDOW_HOURS)
+    assert events[0].start_time == "2026-10-03T17:00:00+00:00"
+
+
+def test_parse_events_reads_a_naive_start_as_utc():
+    raw = _games_page(_card("naive", start="2026-10-03T20:00:00"))
+    events = _parse_events_response(raw, now=FIXTURE_NOW,
+                                    window_hours=WINDOW_HOURS)
+    assert events[0].start_time == "2026-10-03T20:00:00+00:00"
+
+
+def test_parse_events_warns_and_skips_an_unparseable_start(caplog):
+    raw = _games_page(_card("epoch", start=1791046800000), _card("ok"))
+    with caplog.at_level(logging.WARNING, logger="mlb_sgp.novig_client"):
+        events = _parse_events_response(raw, now=FIXTURE_NOW,
+                                        window_hours=WINDOW_HOURS)
+    assert [e.event_id for e in events] == ["ok"]
+    assert "unparseable scheduledStart" in caplog.text
+
+
 def test_parse_events_dedupes_a_game_listed_in_two_sections():
     """Two Events for one game make the on-demand matcher decline it as
     ambiguous, so a game shown twice must come back once."""
@@ -140,89 +176,6 @@ def test_parse_events_skips_missing_team_names():
     events = _parse_events_response(raw, now=FIXTURE_NOW,
                                     window_hours=WINDOW_HOURS)
     assert [e.event_id for e in events] == ["good-1"]
-
-
-def test_parse_event_legs_response_real_fixture():
-    """Real captured market tree should yield spread + total legs."""
-    raw = json.loads((FIX / "nv_event_legs.json").read_text())
-    legs = _parse_event_legs_response(raw)
-    assert isinstance(legs, EventLegs)
-    assert legs.event_id  # came from the captured event[0].id
-    assert legs.spread_legs, "Novig event must yield spread legs"
-    assert legs.total_legs, "Novig event must yield total legs"
-
-    # Spot-check a spread leg
-    sp = legs.spread_legs[0]
-    assert sp["id"]
-    assert sp["period"] in {"fg", "f5"}
-    assert sp["strike"] is not None
-    assert sp["competitor_symbol"], "spread leg must carry competitor symbol"
-
-    # Spot-check a total leg
-    to = legs.total_legs[0]
-    assert to["id"]
-    assert to["period"] in {"fg", "f5"}
-    assert to["side"] in {"over", "under"}, \
-        f"total leg side should be over/under; got {to['side']!r}"
-
-
-def test_parse_event_legs_covers_fg_and_f5_periods():
-    """The captured fixture has both full-game and first-5 markets."""
-    raw = json.loads((FIX / "nv_event_legs.json").read_text())
-    legs = _parse_event_legs_response(raw)
-    spread_periods = {l["period"] for l in legs.spread_legs}
-    total_periods = {l["period"] for l in legs.total_legs}
-    assert "fg" in spread_periods, "expected at least one FG spread"
-    assert "fg" in total_periods, "expected at least one FG total"
-    # f5 may or may not be present depending on the matchup; we don't assert it.
-
-
-def test_parse_event_legs_ignores_non_spread_total_markets():
-    """Player props (BATTING_STRIKEOUTS, HITS, etc.) must NOT leak through."""
-    raw = json.loads((FIX / "nv_event_legs.json").read_text())
-    legs = _parse_event_legs_response(raw)
-    # All spread legs should have a competitor symbol (player props don't)
-    for l in legs.spread_legs:
-        assert l["competitor_symbol"], \
-            f"non-spread market leaked: {l!r}"
-    # All total legs should have over/under side
-    for l in legs.total_legs:
-        assert l["side"] in {"over", "under"}, \
-            f"non-total market leaked (no over/under desc): {l['description']!r}"
-
-
-def test_parse_event_legs_tolerates_flat_shape():
-    """Synthetic fixture without `data.event` envelope still parses."""
-    raw = {
-        "markets": [
-            {
-                "type": "SPREAD",
-                "strike": -1.5,
-                "is_consensus": True,
-                "outcomes": [
-                    {"id": "u1", "description": "MIN -1.5", "available": 0.45,
-                     "competitor": {"symbol": "MIN"}},
-                    {"id": "u2", "description": "MIA +1.5", "available": 0.55,
-                     "competitor": {"symbol": "MIA"}},
-                ],
-            },
-            {
-                "type": "TOTAL",
-                "strike": 8.5,
-                "is_consensus": True,
-                "outcomes": [
-                    {"id": "u3", "description": "Over 8.5", "available": 0.5},
-                    {"id": "u4", "description": "Under 8.5", "available": 0.5},
-                ],
-            },
-        ]
-    }
-    legs = _parse_event_legs_response(raw, event_id_fallback="synthetic-event")
-    assert legs.event_id == "synthetic-event"
-    assert len(legs.spread_legs) == 2
-    assert len(legs.total_legs) == 2
-    over = next(l for l in legs.total_legs if l["side"] == "over")
-    assert over["id"] == "u3"
 
 
 def test_parse_parlay_response_list_shape():

@@ -99,7 +99,7 @@ bet105_odds/venv
 mlb_sgp/venv
 
 # Runtime caches
-mlb_sgp/.novig_event_markets_query.json
+mlb_sgp/novig_event_markets_query.json.tmp
 
 # Logs
 logs/

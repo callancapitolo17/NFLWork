@@ -116,7 +116,10 @@ def raise_on_graphql_errors(book: str, stage: str, payload) -> None:
     """
     if not isinstance(payload, dict) or not payload.get("errors"):
         return
-    first = payload["errors"][0]
+    errors = payload["errors"]
+    # The spec says a list of objects; tolerate a lone object or string so
+    # an off-spec body still reads as a transport failure, not a KeyError.
+    first = errors[0] if isinstance(errors, list) else errors
     message = first.get("message") if isinstance(first, dict) else first
     raise BookTransportError(book, stage,
                              detail=f"GraphQL error: {message}")

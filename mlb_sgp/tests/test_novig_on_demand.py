@@ -530,3 +530,20 @@ def test_builder_feeds_resolve_legs_end_to_end():
     assert out is not None
     assert [rl.ref for rl in out] == ["as", "ov", "hml"]
     assert [rl.opposite_ref for rl in out] == ["hs", "un", "aml"]
+
+
+def test_builder_declines_sides_when_both_teams_share_a_symbol():
+    """Novig gives both Chicago clubs symbol "CHI". Matching by symbol in a
+    Cubs–White Sox game handed the home side the away team's outcome (a
+    wrong-team price on Route B); the sides must decline instead, while
+    totals still resolve."""
+    spread = {"type": "SPREAD", "strike": -1.5, "is_consensus": True,
+              "outcomes": [_out_spread("cubs-1.5", 0.40, "CHI"),
+                           _out_spread("sox+1.5", 0.62, "CHI")]}
+    money = {"type": "MONEY", "strike": None,
+             "outcomes": [_out_spread("cubs-ml", 0.55, "CHI"),
+                          _out_spread("sox-ml", 0.48, "CHI")]}
+    s = build_line_structure([spread, money, _total_mkt(8.5)], "CHI", "CHI")
+    assert s["home_spread"] == {} and s["away_spread"] == {}
+    assert s["home_ml"] is None and s["away_ml"] is None
+    assert s["over"][8.5]["id"] == "ov" and s["under"][8.5]["id"] == "un"

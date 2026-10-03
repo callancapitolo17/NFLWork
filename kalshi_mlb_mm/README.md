@@ -826,7 +826,9 @@ budget — a chronically-dropped book is a de facto non-participant for
 `quorum_size`, `quorum_addon_pts`, `refine_action`
 (initial/hold/replace) and `resting_quote_id`, `quote_pulled` on a
 dispersion-bust pull, and fill payloads gain per-book `route` +
-`consensus_books` (DK+Novig-only fills are a named risk metric). New
+`consensus_books` (fills whose consensus is only Novig plus the vendor book
+it routed that combo to — DraftKings, FanDuel or BetMGM, see
+`mlb_sgp/README.md` — are a named risk metric: one source, not two). New
 `quote_decisions` reasons: `live_fetch_timeout`, `live_too_few_books`,
 and decision `pulled` / reason `quorum_dispersion_bust` (the monitor
 reads reason vocabularies from data — no dashboard change).

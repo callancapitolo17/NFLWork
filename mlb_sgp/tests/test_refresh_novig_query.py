@@ -35,11 +35,13 @@ AST_LITERAL = (
 )
 
 
-def _bundle(map_sources=(QUERY_SRC, FRAG_B_SRC, FRAG_A_SRC), ast=AST_LITERAL):
+def _bundle(map_sources=(QUERY_SRC, FRAG_B_SRC, FRAG_A_SRC), ast=AST_LITERAL,
+            raw_entries=()):
     names = {QUERY_SRC: "EventMarkets_QueryDocument",
              FRAG_A_SRC: "A_FragFragmentDoc", FRAG_B_SRC: "B_FragFragmentDoc"}
-    entries = ",".join(f"{json.dumps(src)}:_.{names[src]}" for src in map_sources)
-    return f"var docs={{{entries}}};{ast};"
+    entries = [f"{json.dumps(src)}:_.{names[src]}" for src in map_sources]
+    entries.extend(raw_entries)
+    return f"var docs={{{','.join(entries)}}};{ast};"
 
 
 def test_definition_order_comes_from_the_ast_literal():
@@ -60,3 +62,41 @@ def test_build_query_fails_when_a_fragment_source_is_missing():
 def test_definition_order_fails_without_the_ast_literal():
     with pytest.raises(RuntimeError, match="found 0"):
         refresh.definition_order(_bundle(ast="ht={}"))
+
+
+def test_an_undecodable_unrelated_document_does_not_block_the_refresh():
+    """The minifier writes Latin-1 characters as JS-only \\xNN escapes,
+    which JSON rejects; one in a document we don't need is skipped."""
+    other = r'"\n  query Other_Query {\n    caf\xe9\n  }\n":_.Other_QueryDocument'
+    bundle = _bundle(raw_entries=(other,))
+    assert refresh.build_query(bundle) == refresh.build_query(_bundle())
+
+
+def test_declared_variables_reads_the_operation_header():
+    query = ("query EventMarkets_Query($eventId: uuid, $marketVisibleWhere: "
+             "market_bool_exp) @cached(ttl: 5) {\n  event(where: {id: "
+             "{_eq: $eventId}}) { id }\n}")
+    assert refresh.declared_variables(query) == {"eventId", "marketVisibleWhere"}
+
+
+def _leg(leg_id, available=0.5):
+    return {"id": leg_id, "available": available}
+
+
+def _structure(**overrides):
+    structure = {"home_spread": {-1.5: _leg("hs")}, "away_spread": {1.5: _leg("as")},
+                 "over": {8.5: _leg("ov")}, "under": {8.5: _leg("un")},
+                 "home_ml": None, "away_ml": None}
+    structure.update(overrides)
+    return structure
+
+
+def test_two_sided_rungs_accepts_a_priceable_tree():
+    assert refresh.has_two_sided_rungs(_structure())
+
+
+def test_two_sided_rungs_rejects_a_tree_missing_prices_or_a_side():
+    no_prices = _structure(over={8.5: _leg("ov", available=None)})
+    one_sided_spread = _structure(away_spread={})
+    assert not refresh.has_two_sided_rungs(no_prices)
+    assert not refresh.has_two_sided_rungs(one_sided_spread)
