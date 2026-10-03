@@ -27,9 +27,9 @@ from nfl_specials.books import BookGame, SgpBook
 from nfl_specials.dk_book import DraftKingsBook, sidecar_is_up
 from nfl_specials.fd_book import FanDuelBook
 from nfl_specials.mgm_book import BetMgmBook
-from nfl_specials.pricing import (BookFair, ScoresFirstShare, books_split, consensus_fair, expected_value,
+from nfl_specials.pricing import (BookFair, ScoresFirstShare, books_split, expected_value,
                                   kelly_stake, log_growth, price_fecta_at_book, scores_first_share,
-                                  trifecta_part)
+                                  trifecta_part, worst_case_fair)
 from nfl_specials.special_parser import Fecta, ParseFailure, parse_fecta
 from nfl_specials.store import Store
 
@@ -61,7 +61,7 @@ class FectaLine:
         return self.fecta is not None and self.fecta.prop_type == "SUPERFECTA"
 
     def fair_prob(self) -> float | None:
-        base = consensus_fair(list(self.book_fairs.values()))
+        base = worst_case_fair(list(self.book_fairs.values()))
         if base is None or not self.is_superfecta():
             return base
         if self.sf_share is None or self.sf_share.share is None:
@@ -121,7 +121,7 @@ def _locate_game(fecta: Fecta, books: dict[str, SgpBook]) -> BookGame | None:
 
 
 def size_board(board: Board, bankroll: float, kelly_fraction: float) -> list[Sizing]:
-    """Consensus fair, EV and Kelly stake per line (same order as board.lines).
+    """Worst-case fair, EV and Kelly stake per line (same order as board.lines).
 
     Per (game, team) only the line with the best expected log growth keeps a
     recommended stake: a team's trifecta and superfecta mostly win together,

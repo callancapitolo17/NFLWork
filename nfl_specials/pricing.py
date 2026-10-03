@@ -17,7 +17,8 @@ comes from TWO DraftKings SGPs — (team scores first + the trifecta legs) and
 margin cancels in their ratio. Two calls instead of a 36-cell partition
 keeps DraftKings, which denies a page after ~6 price calls, usable.
 
-Consensus = mean of the books that priced the full partition. Stake = Kelly
+Fair = the WORST case (lowest probability) among the books that priced the
+full partition — a special is only ever backed. Stake = Kelly
 fraction x full Kelly at Wagerzon's price; within one game only the best
 special per team gets a stake, because a team's fectas win together.
 """
@@ -36,7 +37,8 @@ from nfl_specials.special_parser import Fecta
 
 # Books "split" when the sample stddev of their fairs in probit space exceeds
 # this — the same dispersion measure and level kalshi_mlb_mm uses as its
-# consensus gate (config.SIGMA_Z_MAX). Here it only flags the row.
+# consensus gate (config.SIGMA_Z_MAX). Here it only flags the row; the row is
+# already priced at the worst-case book.
 SPLIT_BOOKS_SIGMA_Z = 0.07
 
 # A partition's implied sum must sit in [1, 1 + this x legs]; outside it a
@@ -109,11 +111,16 @@ def price_fecta_at_book(book: SgpBook, game: BookGame, role: str, fecta: Fecta) 
     return BookFair(book.name, float(fair), sgp_decimal, overround, len(cells))
 
 
-def consensus_fair(book_fairs: list[BookFair]) -> float | None:
+def worst_case_fair(book_fairs: list[BookFair]) -> float | None:
+    """The LOWEST fair among books that priced the full partition.
+
+    A Wagerzon special is only ever backed, never laid, so the book giving it
+    the smallest chance is the conservative price (user decision 2026-10-02,
+    replacing the mean)."""
     priced = [b.fair_prob for b in book_fairs if b.fair_prob is not None]
     if not priced:
         return None
-    return sum(priced) / len(priced)
+    return min(priced)
 
 
 def books_split(book_fairs: list[BookFair]) -> bool:

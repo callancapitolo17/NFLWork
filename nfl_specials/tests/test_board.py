@@ -45,11 +45,11 @@ def test_negative_ev_and_unpriced_get_no_stake():
     assert sized[1].fair_prob is None and sized[1].recommended_stake == 0
 
 
-def test_consensus_is_mean_of_books():
-    line = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.08)
-    line.book_fairs["BetMGM"] = BookFair("BetMGM", 0.10, None, 1.4, 8)
+def test_fair_is_the_worst_case_book():
+    line = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.10)
+    line.book_fairs["BetMGM"] = BookFair("BetMGM", 0.08, None, 1.4, 8)
     line.book_fairs["DraftKings"] = BookFair("DraftKings", None, None, None, 18, reason="declined cell")
-    assert size_board(_board(line), 1000, 0.25)[0].fair_prob == 0.09
+    assert size_board(_board(line), 1000, 0.25)[0].fair_prob == 0.08
 
 
 def test_superfecta_fair_is_trifecta_part_times_scores_first_share():

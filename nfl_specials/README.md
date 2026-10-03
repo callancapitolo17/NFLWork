@@ -35,12 +35,13 @@ fills in as it goes.
    the special's own SGP and stripping single-leg vig would overstate every
    edge. A partition with a declined cell or an implied sum outside
    `[1, 1 + 0.25 x legs]` gives that book no fair.
-4. **Consensus** = mean of the books that priced the full partition. A row is
-   flagged **books split** when the books' fairs differ by more than 0.07 in
-   probit space (sample stddev) — the level kalshi_mlb_mm uses as its
-   consensus gate; here it only flags, the mean still prices the row.
+4. **Fair = worst case**: the lowest probability among the books that priced
+   the full partition (a special is only ever backed; user decision
+   2026-10-02). A row is flagged **books split** when the books' fairs differ
+   by more than 0.07 in probit space (sample stddev) — the level
+   kalshi_mlb_mm uses as its consensus gate; it only flags.
    **Superfectas** = P(trifecta part) x P(scores first | trifecta part). The
-   first factor is step 3 at FanDuel + BetMGM; the second comes from TWO
+   first factor is the worst case of step 3 at FanDuel + BetMGM; the second comes from TWO
    DraftKings SGPs — (team scores first + the trifecta legs) and (opponent
    scores first + the same legs) — whose vig cancels in the ratio. DK's
    shares on 2026-10-02 were 0.83-0.85; history (2011-2025, 1,970 team-games
