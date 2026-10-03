@@ -19,11 +19,14 @@ totals, derived from adjacent half-point alts) are tagged
 ``source IN (..._direct)``, so preserving these labels keeps the
 existing dashboard behavior byte-identical post-refactor.
 
-Note: Novig sources its legs from DraftKings (every observed leg
-returns ``vendor=DRAFTKINGS``), so its line set is a strict subset
-of DK's. Strict line matching at the client level means a missing
-leg here typically reflects an off-main target — that's exactly when
-the integer-line fallback path is useful.
+Note: Novig does not originate SGP prices. It routes each combo to one
+vendor book and names it per leg (``vendor``): DRAFTKINGS on every leg
+until 2026-09, then DRAFTKINGS, FANDUEL and BETMGM by 2026-10-02 — so a
+Novig price is its vendor's price shaded slightly short, not an
+independent opinion.
+Strict line matching at the client level means a missing leg here
+typically reflects an off-main target — that's exactly when the
+integer-line fallback path is useful.
 
 Sanity filter
 -------------

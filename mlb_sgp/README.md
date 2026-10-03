@@ -920,7 +920,7 @@ MLB RFQ bot (writes to a sibling `kalshi_mlb_rfq_market.duckdb`).
   - `dk_client.py` — DK leagues / event-markets / parlays / `calculateBets`
   - `fd_client.py` — FD scan / event-page / `implyBets`
   - `prophetx_client.py` — ProphetX RFQ endpoint
-  - `novig_client.py` — Novig anonymous `/unauthenticated` SGP endpoint
+  - `novig_client.py` — Novig REST MLB page (events) and anonymous `/unauthenticated` parlay endpoint; the allowlisted GraphQL market tree is fetched by `scraper_novig_sgp.fetch_event_legs`
 - **Per-book SGP orchestrators** — `price_sgps(targets) -> List[PricedRow]`:
   - `draftkings.py`, `fanduel.py`, `prophetx.py`, `novig.py`
   - Each loads its client, walks the target `(game_id, period, spread_line, total_line)` tuples, prices all 4 combos per tuple, devigs, returns `PricedRow`s.
@@ -1006,6 +1006,101 @@ Two consequences worth knowing:
   looked up at `fg_total_line`, so the label names the line actually priced,
   but which rung of the ladder that is remains arbitrary.
 
+### Novig: GraphQL allowlist, REST events, multi-vendor prices (2026-10-02)
+
+**What broke.** On 2026-09-22 Novig moved its app to novig.com and turned on a
+Hasura allowlist on `api.novig.us/v1/graphql`: it now runs only the
+operations the novig.com app ships. Our hand-written events query and the
+committed `EventMarkets_Query` were both answered with HTTP 200
+`{"errors":[{"message":"query is not allowed","extensions":{"path":"$","code":"validation-failed"}}]}`.
+Both parsed as "no events / no markets", so Novig would have read as an empty
+slate, not a dead book. No bot ran between 2026-09-21 and the fix, so
+`sgp_fetch_health` never recorded it (last healthy maker fetch: 2026-09-20
+23:44 PT).
+
+**Events come from REST now.** `NovigClient.list_events()` reads
+`GET https://api.novig.us/nbx/v1/trading/MLB/page`, the call novig.com's MLB
+screen makes: every `type="game_event_card"` component (today all in the
+"Games" section) → `eventId`, `scheduledStart`, `homeTeam` / `awayTeam`
+`{name, symbol}`. Cards are found by type wherever they are nested — the page
+already nests Futures as `content.type="subsections"`, so a regrouped Games
+section still parses — and deduped by `eventId`. The page lists every posted
+game (NFL's spanned 8 weeks), so the client keeps what the old GraphQL `WHERE`
+kept: `eventStatus == "OPEN_PREGAME"` and a start inside `[now, now + 48h]`;
+`start_time` is normalized to UTC (`+00:00`) because `match_events` buckets on
+its first 13 characters. A card whose start does not parse is skipped with a
+WARNING. The team key is `symbol`, not `shortName`: market outcomes carry
+`symbol`, and the White Sox are `CHI` there but `CWS` in `shortName`. An
+off-season league answers `{"sections": []}` (→ no events); a body with no
+`sections` list raises `BookTransportError(stage="events")`.
+
+**Cubs vs White Sox: Novig declines the sides.** Novig gives both Chicago
+clubs symbol `CHI`, so a Cubs–White Sox market cannot be split by symbol;
+matching anyway handed the home side the away team's outcome (a wrong-team
+price on the on-demand path). `_find_outcome_in_spread` now returns no legs
+when the two symbols are equal, so Novig prices only totals for that game.
+
+**The market tree must match the app.** `novig_event_markets_query.json` is
+Novig's own `EventMarkets_Query`. Hasura compares the parsed query with
+`__typename` stripped, so whitespace and Apollo's `__typename` fields do not
+matter — but the selections and the **order of the definitions** do (measured:
+the app's order passes; reversed or sorted fragments are rejected). The
+2026-10-02 refresh added the 5 fields the app had gained: `country` under
+`player_competitors.competitor`, and `down`, `distance`, `yardLine`,
+`yardline_territory` on `game`.
+
+**When Novig ships a new app build that edits the query, refresh it:**
+
+```bash
+python3 mlb_sgp/refresh_novig_query.py
+```
+
+It reads the novig.com bundle (Expo + graphql-codegen), takes each
+operation/fragment's source text from the codegen documents map and the
+definition order from the pre-parsed AST, and checks the operation still
+declares the variables the JSON sends. It then POSTs the result through the
+bots' own transport (`scraper_novig_sgp._gql`) and requires a two-sided total
+and spread rung to parse (`build_line_structure`) on one of the first 3 posted
+games — the soonest may be locked at first pitch. Only then does it replace
+the JSON atomically (keeping `variables`) and print the diff; it writes
+nothing if the query is unchanged or any check fails. Running bots re-read
+the JSON on every Novig structure fetch, so no restart is needed — commit
+the file so other checkouts get it. If the JSON itself is missing, restore it
+with `git checkout -- mlb_sgp/novig_event_markets_query.json` first.
+
+The signal to run it is `GraphQL error: query is not allowed` at
+`stage=structure` in `bot.log`. `sgp_fetch_health.error_class` records only
+`BookTransportError:structure`, the same label as a non-JSON (WAF) body or
+exhausted connection retries, so read bot.log to tell them apart.
+
+**Structure failures are loud.** `scraper_novig_sgp._gql` — the one GraphQL
+transport; sweep, on-demand, warming and the leg surface all go through
+`scraper_novig_sgp.fetch_event_legs` — raises
+`BookTransportError(stage="structure")` on any non-200, a body that is not a
+JSON object, or a GraphQL `errors` body. Before this, `fetch_event_legs`
+swallowed every exception into an empty market tree. Unlike the REST books
+there is **no per-event 404 carve-out**: the GraphQL URL is the same for every
+event, and an event Novig has dropped comes back as 200
+`{"data":{"event":[]}}` (checked live 2026-10-02), which skips just that game.
+A 404 can only mean the endpoint is gone. (The client's unused copy of this
+fetch, `NovigClient.fetch_event_legs`, was deleted.)
+
+**Novig is not an independent price.** Each parlay leg names the vendor that
+priced it. Until 2026-09 it was always `DRAFTKINGS`; on 2026-10-02 spread ×
+total came back `DRAFTKINGS`, ML × total `FANDUEL`, and `BETMGM` also appears.
+Novig shades the vendor's price slightly short: on CWS @ CLE its four
+FanDuel-routed ML × total prices were 0.5–2% below FanDuel's own quotes
+(Home ML + Over: FD 2.8313, Novig 2.809), and the two grids devig to within
+~0.3 probability points. Novig plus its vendor is therefore one source in any
+consensus count (see the `MIN_AGREEING_BOOKS` note in
+`kalshi_mlb_mm/config.py`). The status field now reads `Unfilled`; nothing
+keys on it.
+
+Verified live 2026-10-02 (CWS @ CLE, 2026-10-03): `verify_books.py --books
+novig --pacing 12` → `priced` (spread × total fair 0.1788, ML × total 0.2407,
+both full partitions); the sweep priced 12/12 combos (FG spread × total,
+FG ML × total, F5 spread × total).
+
 ### The contract
 
 | Situation | Client returns / raises | Caller must |
@@ -1020,7 +1115,10 @@ Two consequences worth knowing:
 `json_or_raise()` do the raising so the six clients don't hand-roll it.
 
 The 404 carve-out matters: without it, one postponed or delisted game would
-abort a whole book's cycle.
+abort a whole book's cycle. It applies to per-event URLs only. Novig's
+structure fetch is a GraphQL POST to one fixed URL, where a dropped event is
+200 `{"data":{"event":[]}}` and a 404 means the endpoint itself is gone, so
+Novig raises on 404 (see the Novig allowlist section above).
 
 ### Orchestrators never catch it
 
@@ -1462,6 +1560,8 @@ within hours and could never pass on an ordinary day.
 | `scraper_fanduel_sgp.py` | FD SGP scraper shim (calls `fanduel.price_sgps`) |
 | `scraper_prophetx_sgp.py` | ProphetX SGP scraper shim |
 | `scraper_novig_sgp.py` | Novig SGP scraper shim |
+| `novig_event_markets_query.json` | Novig's allowlisted `EventMarkets_Query` payload |
+| `refresh_novig_query.py` | Rebuilds that payload from the live novig.com bundle (run on `query is not allowed`) |
 | `draftkings.py` / `fanduel.py` / `prophetx.py` / `novig.py` | Per-book orchestrators (`price_sgps`) |
 | `dk_client.py` / `fd_client.py` / `prophetx_client.py` / `novig_client.py` | Per-book HTTP clients |
 | `_shared.py` | `TargetLine` / `PricedRow` dataclasses, `load_target_lines`, `upsert_priced_rows`, decimal/american helpers, `BookTransportError` + `PriceCallTally` (see "Failure semantics"), `request_with_retry` + the two `RetryProfile`s (see "Retry & backoff") |
