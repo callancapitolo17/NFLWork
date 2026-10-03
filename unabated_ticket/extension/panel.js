@@ -2668,6 +2668,9 @@
   // TEASER_CONFIRM_MS falls back to Place.
   const teaserPlaceStates = new Map();
   const TEASER_CONFIRM_MS = 6000;
+  // Bet $X sits where Place was: a confirm this soon after arming is the
+  // second click of a double-click, not a decision, and is ignored.
+  const TEASER_CONFIRM_MIN_MS = 600;
   // The last failure logged, so a persistent one is logged once, not every 5 s.
   let teaserLastError = null;
 
@@ -2985,7 +2988,7 @@
     if (next.phase === "placed") pollBets().catch((error) => console.error("[unabated-ticket] bets poll failed", error));
   }
 
-  function onTeaserPlaceClick(button) {
+  function onTeaserPlaceClick(button, event) {
     const signature = button.dataset.placeTicket;
     const action = button.dataset.placeAction;
     if (action === "arm") {
@@ -3007,9 +3010,9 @@
       return;
     }
     const held = teaserPlaceStates.get(signature);
-    if (action === "confirm" && held && held.phase === "confirm") {
-      placeTeaser(signature).catch((error) => console.error("[unabated-ticket] place teaser failed", error));
-    }
+    if (action !== "confirm" || !held || held.phase !== "confirm") return;
+    if (event.detail > 1 || Date.now() - held.armedAt < TEASER_CONFIRM_MIN_MS) return;
+    placeTeaser(signature).catch((error) => console.error("[unabated-ticket] place teaser failed", error));
   }
 
   function renderTeasersTickets(model) {
@@ -3187,7 +3190,7 @@
   view.tabTeasers.addEventListener("click", async (event) => {
     const placeButton = event.target.closest("button[data-place-action]");
     if (placeButton) {
-      onTeaserPlaceClick(placeButton);
+      onTeaserPlaceClick(placeButton, event);
       return;
     }
     const button = event.target.closest("button[data-copy-ticket]");

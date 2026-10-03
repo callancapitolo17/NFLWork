@@ -1486,13 +1486,15 @@ Edges tab and its alerts still list only the sports you tick
 Copy. One click arms it — **Cancel** / **Bet $200 at BFA** for 6 s — and the
 confirm sends the ticket to the bets service (`POST /place_teaser.json`,
 `bets_service/bfa_teaser.py`), which bets it at BFA on the BFA source's own
-login and answers within ~25 s:
+login and answers, usually in a few seconds (up to about a minute when BFA
+is slow). A confirm within 0.6 s of arming — the second click of a
+double-click — is ignored:
 
 | Card reads | What happened |
 | --- | --- |
 | `Placed · ticket N` (green) | BFA lists the new teaser; the bets list re-polls and the ticket moves to Open at BFA |
 | `Not placed: …` (red), Place again | nothing was bet — a leg's number moved on BFA (`BFA has +3 now, the list has +2.5`), a game started, the ticket is already open, another ticket was placing, or BFA answered 4xx |
-| `Sent to BFA, but no ticket showed …` (red), no Place | the wager went out and no ticket appeared in 20 s, or the reply was lost: it may be booked. Check BFA's open bets; the service refuses the same four legs for 15 min |
+| `Sent to BFA, but …` (red), no Place | the wager went out and no ticket appeared in 20 s, the reply was lost, or reading the open bets failed: it may be booked. Check BFA's open bets; the service refuses the same four sides, at any numbers, for 15 min (held in memory: a service restart drops the hold, and then only the already-open check guards) |
 
 Before anything is sent the service checks, in order: the account's own
 4-team 6-point teaser type (from BFA's account metadata; it must pay +300,

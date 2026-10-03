@@ -132,6 +132,7 @@ def test_a_good_request_validates_to_its_clean_shape():
     (lambda body: body["legs"][2].update(rotation="276"), "legs[2].rotation"),
     (lambda body: body["legs"][2].update(points=None), "legs[2].points"),
     (lambda body: body["legs"][3].update(eventStart="tomorrow"), "legs[3].eventStart"),
+    (lambda body: body["legs"][3].update(eventStart=None), "legs[3].eventStart"),
     (lambda body: body["legs"][3].update(label=""), "legs[3].label"),
 ])
 def test_a_bad_request_names_the_first_problem(change, error):
@@ -192,6 +193,17 @@ def test_no_game_a_started_game_a_closed_market_and_a_start_far_off_refuse():
     assert match_leg(closed, leg, NOW) == "Old Dominion +8.5: BFA has the spread closed"
     next_week = {**leg, "eventStart": "2026-10-10T19:30:00Z"}
     assert "lists no game with rotation 143" in match_leg(CFB_BOARD, next_week, NOW)
+
+
+def test_an_odds_row_without_a_game_id_and_a_non_game_entry_refuse():
+    no_game_id = copy.deepcopy(CFB_BOARD)
+    for odds_row in no_game_id[0]["markets"][0]["odds"]:
+        del odds_row["dGmId"]
+    leg = REQUEST["legs"][3]
+    assert match_leg(no_game_id, leg, NOW) == "Old Dominion +8.5: BFA's odds row carries no price, sport, game type or game id"
+    not_a_game = copy.deepcopy(CFB_BOARD)
+    not_a_game[0]["type"] = 2
+    assert "lists no game with rotation 143" in match_leg(not_a_game, leg, NOW)
 
 
 # ---- the placer against a fake BFA -------------------------------------------------------
@@ -435,3 +447,49 @@ def test_an_error_before_the_post_reads_not_placed(serve_with):
     status, reply = post_place(url, REQUEST)
     assert status == 200
     assert reply == {"ok": False, "status": "refused", "message": "Not placed: RuntimeError: BFA NFL board: HTTP 503"}
+
+
+def test_a_5xx_or_an_odd_reply_is_unconfirmed_and_holds_the_legs():
+    session, clock = FakeSession(wager_reply={"error": "busy"}, wager_status=503), Clock()
+    placer = make_placer(FakeBFA([[OLDER_TICKET]]), session, clock)
+    result = placer.place(validate_place_request(REQUEST))
+    assert result["status"] == "unconfirmed" and "BFA answered HTTP 503" in result["message"]
+    assert placer.place(validate_place_request(REQUEST))["status"] == "refused"
+    assert len(session.posts) == 1
+
+
+def test_a_failure_after_the_post_is_unconfirmed_never_not_placed():
+    class BrokenAfterPost(FakeBFA):
+        def open_wagers(self):
+            if self.open_calls:
+                raise AssertionError("never reached: the confirm read swallows its own errors")
+            self.open_calls += 1
+            return [OLDER_TICKET]
+
+    session, clock = FakeSession(), Clock()
+    placer = make_placer(BrokenAfterPost([]), session, clock)
+    placer._confirm = lambda *args: {}["boom"]  # a bug inside the confirmation itself
+    result = placer.place(validate_place_request(REQUEST))
+    assert result["status"] == "unconfirmed" and "reading the open bets failed (KeyError)" in result["message"]
+    assert placer.place(validate_place_request(REQUEST))["status"] == "refused"  # held
+    assert len(session.posts) == 1
+
+
+def test_the_hold_covers_the_same_sides_at_a_moved_number():
+    session, clock = FakeSession(wager_raises=True), Clock()
+    placer = make_placer(FakeBFA([[OLDER_TICKET]]), session, clock)
+    assert placer.place(validate_place_request(REQUEST))["status"] == "unconfirmed"
+    moved = copy.deepcopy(REQUEST)
+    moved["legs"][0]["points"] = 3.0
+    again = placer.place(validate_place_request(moved))
+    assert again["status"] == "refused" and "no ticket has shown yet" in again["message"]
+    assert len(session.posts) == 1
+
+
+def test_a_second_ticket_while_one_is_placing_is_refused():
+    session = FakeSession()
+    placer = make_placer(FakeBFA([[]]), session, Clock())
+    placer._placing.acquire()
+    result = placer.place(validate_place_request(REQUEST))
+    assert result == {"status": "refused", "message": "Not placed: another ticket is being placed at BFA right now"}
+    assert session.posts == [] and session.gets == []

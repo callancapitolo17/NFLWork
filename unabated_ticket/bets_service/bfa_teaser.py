@@ -73,6 +73,8 @@ WAGER_TYPE_TEASER = 2
 # The teaser points a type gives each sport's sides and totals.
 TYPE_POINTS_FIELDS = {"NFL": ("nflSide", "nflTotal"), "CFB": ("cfbSide", "cfbTotal")}
 
+# A board entry's type: 1 is a game (bfa_odds/scraper.py keeps only these).
+GAME_TYPE_MATCH = 1
 MARKET_SPREAD = 2
 MARKET_TOTAL = 3
 FULL_GAME_PERIOD = 0
@@ -130,9 +132,8 @@ def _leg_error(index: int, raw: object) -> str | None:
         return f"legs[{index}].rotation must be a positive whole number, got {rotation!r}"
     if not _is_number(raw.get("points")):
         return f"legs[{index}].points must be a number (Buckeye's number before the teaser), got {raw.get('points')!r}"
-    start = raw.get("eventStart")
-    if start is not None and _parse_iso(start) is None:
-        return f"legs[{index}].eventStart must be an ISO time or null, got {start!r}"
+    if _parse_iso(raw.get("eventStart")) is None:
+        return f"legs[{index}].eventStart must be an ISO time with a zone, got {raw.get('eventStart')!r}"
     label = raw.get("label")
     if not isinstance(label, str) or not label or len(label) > MAX_LABEL_CHARS:
         return f"legs[{index}].label must be a non-empty string of at most {MAX_LABEL_CHARS} characters"
@@ -154,7 +155,8 @@ def validate_place_request(body: object) -> dict | str:
 
     body {stake: whole dollars, legs: [{league "nfl"|"cfb", betType "spread"|"total",
           side "away"|"home"|"over"|"under", rotation (the side's own, a total's either team's),
-          points (Buckeye's number BEFORE the teaser), eventStart (ISO) or null, label}]}
+          points (Buckeye's number BEFORE the teaser), eventStart (ISO, required: a rotation
+          repeats week to week), label}]}
     Four legs on four different games (teaser.js: one leg per game)."""
     if not isinstance(body, dict):
         return f"body must be an object, got {type(body).__name__}"
@@ -170,14 +172,15 @@ def validate_place_request(body: object) -> dict | str:
         if error:
             return error
     clean = [{"league": raw["league"], "betType": raw["betType"], "side": raw["side"], "rotation": raw["rotation"],
-              "points": float(raw["points"]), "eventStart": raw.get("eventStart"), "label": raw["label"]}
+              "points": float(raw["points"]), "eventStart": raw["eventStart"], "label": raw["label"]}
              for raw in legs]
     return {"stake": stake, "legs": clean}
 
 
 def ticket_key(legs: list[dict]) -> tuple:
-    """The same four sides at the same numbers, whatever order the panel sent them in."""
-    return tuple(sorted((leg["league"], leg["rotation"], leg["betType"], leg["side"], leg["points"]) for leg in legs))
+    """The same four sides, whatever order the panel sent them in and whatever their numbers:
+    a booked ticket BFA has not listed yet must hold its legs even after Buckeye moves one."""
+    return tuple(sorted((leg["league"], leg["rotation"], leg["betType"], leg["side"]) for leg in legs))
 
 
 # ---- the account's teaser type ------------------------------------------------------
@@ -237,6 +240,8 @@ def _games_with_rotation(games: list[dict], rotation: int) -> list[tuple[dict, d
     """(game, main fixture, contestant) for every game listing a team at `rotation`."""
     found = []
     for game in games:
+        if game.get("type") != GAME_TYPE_MATCH:
+            continue
         for fixture in game.get("fixtures") or []:
             if not fixture.get("isMain"):
                 continue
@@ -271,12 +276,10 @@ def match_leg(games: list[dict], leg: dict, now: datetime) -> dict | str:
     within START_WINDOW_SEC of the list's start and not yet started; the odds row is the main
     full-game line, open, at the very number the list was built on (AcceptChanges 0 would
     refuse any other, so the check here only says why first)."""
-    found = _games_with_rotation(games, leg["rotation"])
     expected_start = _parse_iso(leg["eventStart"])
-    if expected_start is not None:
-        found = [item for item in found
-                 if (start := _parse_iso(item[1].get("date"))) is not None
-                 and abs((start - expected_start).total_seconds()) <= START_WINDOW_SEC]
+    found = [item for item in _games_with_rotation(games, leg["rotation"])
+             if (start := _parse_iso(item[1].get("date"))) is not None
+             and abs((start - expected_start).total_seconds()) <= START_WINDOW_SEC]
     if not found:
         return f"{leg['label']}: BFA's board lists no game with rotation {leg['rotation']}"
     if len(found) > 1:
@@ -294,8 +297,11 @@ def match_leg(games: list[dict], leg: dict, now: datetime) -> dict | str:
     if not _is_number(odds.get("line")) or odds["line"] != leg["points"]:
         return (f"{leg['label']}: BFA has {_number_text(leg['betType'], odds.get('line') or 0)} now, "
                 f"the list has {_number_text(leg['betType'], leg['points'])}")
-    if not _is_number(odds.get("price")) or not odds.get("dSpId") or odds.get("dGtId") is None:
-        return f"{leg['label']}: BFA's odds row carries no price, sport or game type"
+    # dGmId is the game id the open bets carry: without it neither the already-open check
+    # nor the confirmation could ever see this ticket.
+    if (not _is_number(odds.get("price")) or not odds.get("dSpId") or odds.get("dGtId") is None
+            or odds.get("dGmId") is None):
+        return f"{leg['label']}: BFA's odds row carries no price, sport, game type or game id"
     return {"game": game, "fixture": fixture, "market": market, "odds": odds}
 
 
@@ -453,8 +459,15 @@ class BFATeaserPlacer:
             del self._sent[key]
             log.warning("bfa teaser: transaction %s refused: %s", transaction_id, posted["refused"])
             return _refused(posted["refused"])
-        game_ids = {match["odds"].get("dGmId") for match in matches}
-        return self._confirm(key, game_ids, {wager.get("idWager") for wager in open_before}, transaction_id, posted["note"])
+        game_ids = {match["odds"]["dGmId"] for match in matches}
+        try:
+            return self._confirm(key, game_ids, {wager.get("idWager") for wager in open_before}, transaction_id,
+                                 posted["note"])
+        except Exception as error:  # noqa: BLE001 — the wager went out: never "Not placed" from here
+            log.exception("bfa teaser: confirming transaction %s failed", transaction_id)
+            return {"status": STATUS_UNCONFIRMED,
+                    "message": (f"Sent to BFA, but reading the open bets failed ({type(error).__name__}). "
+                                "Check BFA's open bets before placing it again.")}
 
     def _recent(self, key: tuple) -> str | None:
         """Why the same legs cannot go out again yet, or None."""

@@ -584,7 +584,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             try:
                 result = teaser_placer.place(request)
-            except Exception as error:  # noqa: BLE001 — before the POST: nothing was bet
+            except Exception as error:  # noqa: BLE001 — place() answers for itself once the POST is out
                 log.exception("bfa teaser: placement failed before the wager went out")
                 result = {"status": bfa_teaser.STATUS_REFUSED, "message": f"Not placed: {type(error).__name__}: {error}"}
             open_wagers = result.pop("openWagers", None)
