@@ -9,6 +9,7 @@ const feed = require("../extension/feed.js");
 const teaser = require("../extension/teaser.js");
 
 const NFL = 1;
+const CFB = 2;
 const FULL_GAME = 1;
 const MONEYLINE = 1;
 const SPREAD = 2;
@@ -40,12 +41,12 @@ function addGame(state, game) {
   state.teams[awayTeamId] = away;
   state.teams[homeTeamId] = home;
   state.events[eventId] = {
-    eventId, leagueId: NFL, eventName: `${away} @ ${home}`, eventStart: game.startMs ?? KICKOFF,
+    eventId, leagueId: game.leagueId ?? NFL, eventName: `${away} @ ${home}`, eventStart: game.startMs ?? KICKOFF,
     awayTeamId, homeTeamId, awayRotation, homeRotation, venueIds: { kalshiEventSuffixes: [], kalshiContracts: {}, novigOutcomes: {} },
   };
   const put = (fields) => {
     const line = {
-      isAlt: false, leagueId: NFL, periodTypeId: FULL_GAME, eventId, marketId: eventId * 100 + fields.betTypeId,
+      isAlt: false, leagueId: game.leagueId ?? NFL, periodTypeId: FULL_GAME, eventId, marketId: eventId * 100 + fields.betTypeId,
       price: -110, sourceFormat: 1, sourcePrice: null, bacr: null, ge: null, liquidity: null, statusId: 1,
       sequenceNumber: null, isBlurred: false, modifiedOn: new Date(NOW - HOUR).toISOString().slice(0, 19), ...fields,
     };
@@ -142,7 +143,10 @@ function plan(state, options) {
   const legs = legsOf(state);
   const placed = options && options.placed ? options.placed : [];
   const straights = options && options.straights ? options.straights : [];
-  return teaser.planTeasers({ legs, placed, straights, kellyBankroll: (options && options.kellyBankroll) || 5000, previous: (options && options.previous) || null });
+  return teaser.planTeasers({
+    legs, placed, straights, kellyBankroll: (options && options.kellyBankroll) || 5000, previous: (options && options.previous) || null,
+    blocked: (options && options.blocked) || null,
+  });
 }
 
 // The dollars of a build's tickets that ride on a game.
@@ -535,6 +539,63 @@ test("describeLegs: each game's pool leg with its ticket count, then the rest, t
     ["Away 11 +8.5", "not in the top 10"], ["Away 12 +8.5", "below break-even"], ["No Fair +8.5", "no Unabated fair at +8.5"],
   ]);
   assert.deepEqual(rows.slice(0, 5).map((row) => row.inTickets), [1, 1, 1, 1, 0]);
+});
+
+// ---- college markets marked can't tease ------------------------------------
+
+// Six NFL games (away +8.5 wins 80%) and one college game whose best leg is
+// its spread (College Away +8.5, 85%) and next its total (Under 56.5, 75%).
+function collegeBoard() {
+  const state = awayLegBoard(Array(6).fill(-400));
+  return addGame(state, {
+    eventId: 201, leagueId: CFB, away: "College Away", home: "College Home", awayRotation: 301, homeRotation: 302,
+    spread: 2.5, total: 50.5, marginRungs: [[-8.5, -567], [3.5, 150]], totalRungs: [[56.5, 300]],
+  });
+}
+
+test("canBlock and marketKeyOf: only a college leg can be marked, and the mark covers both sides of its market", () => {
+  const legs = legsOf(collegeBoard());
+  const collegeSpread = legByLabel(legs, "College Away +8.5");
+  assert.equal(teaser.canBlock(collegeSpread), true);
+  assert.equal(teaser.canBlock(legByLabel(legs, "Away 1 +8.5")), false);
+  assert.equal(teaser.marketKeyOf(collegeSpread), teaser.marketKeyOf(legByLabel(legs, "College Home +3.5")));
+  assert.notEqual(teaser.marketKeyOf(collegeSpread), teaser.marketKeyOf(legByLabel(legs, "Under 56.5")));
+});
+
+test("planTeasers: a market marked can't tease leaves the pool, the game's other market takes its place, and Restore brings the list back", () => {
+  const state = collegeBoard();
+  const collegeSpread = legByLabel(legsOf(state), "College Away +8.5");
+  const first = plan(state, { kellyBankroll: 300 });
+  assert.deepEqual(first.build.pool.filter((leg) => leg.eventId === 201).map((leg) => leg.label), ["College Away +8.5"]);
+
+  const blocked = new Set([teaser.marketKeyOf(collegeSpread)]);
+  const marked = plan(state, { kellyBankroll: 300, previous: first.build, blocked });
+  assert.equal(marked.rebuilt, true);
+  assert.deepEqual(marked.build.pool.filter((leg) => leg.eventId === 201).map((leg) => leg.label), ["Under 56.5"]);
+  assert.ok(marked.build.tickets.length > 0);
+
+  const restored = plan(state, { kellyBankroll: 300, previous: marked.build });
+  assert.equal(restored.rebuilt, true);
+  assert.deepEqual(restored.build.pool.map((leg) => leg.key), first.build.pool.map((leg) => leg.key));
+  assert.deepEqual(restored.build.tickets, first.build.tickets);
+});
+
+test("describeLegs: a marked market is its own blocked row; the game keeps a row on its other market, none when both are marked", () => {
+  const state = collegeBoard();
+  const legs = legsOf(state);
+  const spreadMarket = teaser.marketKeyOf(legByLabel(legs, "College Away +8.5"));
+  const totalMarket = teaser.marketKeyOf(legByLabel(legs, "Under 56.5"));
+  const collegeRows = (blocked) => {
+    const { build } = plan(state, { kellyBankroll: 300, blocked });
+    return teaser.describeLegs(legs, build, [], [], blocked)
+      .filter((row) => row.leg.eventId === 201).map((row) => [row.leg.label, row.standing, row.note]);
+  };
+  assert.deepEqual(collegeRows(new Set([spreadMarket])), [
+    ["College Away +8.5", "blocked", "spread blocked"], ["Under 56.5", "pool", null],
+  ]);
+  assert.deepEqual(collegeRows(new Set([spreadMarket, totalMarket])), [
+    ["College Away +8.5", "blocked", "spread blocked"], ["Under 56.5", "blocked", "total blocked"],
+  ]);
 });
 
 // ---- straight bets held on the same games (plan section 13) ----------------

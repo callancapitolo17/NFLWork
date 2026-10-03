@@ -1312,6 +1312,16 @@ about 2.5 points near zero (SEA @ WAS 77.1% vs 79.5%). A leg with no rung at
 its number, or a rung that repeats its neighbour's fair (Unabated flat-lines
 deep tails), is listed grey with the reason and never used.
 
+**Can't tease (college only, 2026-10-03).** Buckeye keeps some college games
+off its teaser menu; every NFL game teases. A CFB leg in the pool or above
+break-even carries a **Can't tease** chip: it takes that game's spread or
+total, both sides (`teaser.marketKeyOf`), out of the pool, the game's other
+market can still step in, and the list rebuilds. The marked market sits in the
+fold (`can't tease`, `spread blocked` / `total blocked`) with **Restore**;
+restoring on the same fairs brings the same list back. Marks live in
+`chrome.storage.local` (`teaserBlocked`: market key → the game's start) and
+each ends when its game starts.
+
 **Tickets.** The pool is each game's best leg — one leg per game, so legs are
 independent — the top 10 by win chance (2^10 = 1,024 joint outcomes; 12 legs
 added nothing). Every 4-leg combination of the pool (210) is a candidate. All
@@ -1459,7 +1469,7 @@ straights on its game — `held $X` on the leg's side, `against $Y` on the
 other, a bare `game` when none of them counts, every bet and why in the
 tooltip; the break-even line, which a pool leg can sit
 below; the other games below break-even, on an open teaser's other market or
-with no fair behind a fold). An open ticket out of the math says why: every
+with no fair behind a fold, the markets marked can't tease first). An open ticket out of the math says why: every
 game started, or no leg priced on the board. The Placed figure in the
 summary is the open tickets still in the math; the Open at BFA line says
 both when they differ. Empty states: the
@@ -2554,6 +2564,17 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-03 — Can't tease on college legs (0.17.0).** Some teaser legs the
+tab suggested could not be bet: Buckeye keeps some college games off its
+teaser menu, while every NFL game teases (user). Cal marks one by hand — a
+chip on CFB legs only, mockup approved — rather than a rule, since no rule for
+which games Buckeye drops is known. A mark covers the game's spread or total,
+both sides, not the whole game: a bettable leg is never dropped by mistake,
+and a game shut off entirely costs a second click. Marks end when the game
+starts, so nothing carries into the next week. Checked on the 2026-10-03
+board: marking Norfolk State +8.5 (in 4 tickets) rebuilt the list
+without it, and Restore brought back the identical list.
 
 **2026-10-02 — Bet105 reads time out after 30 s (0.16.2).** Bet105 stopped
 pushing at 17:27 PT on 2026-10-01 while every other venue stayed fresh. Its

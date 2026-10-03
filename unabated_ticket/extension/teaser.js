@@ -66,6 +66,10 @@
 //     another period and a game no new ticket uses are left out, as on the
 //     Edges tab; a straight never adds a game nor changes the leg a game
 //     offers.
+//   - Buckeye keeps some college games off its teaser menu; every NFL game
+//     teases (user, 2026-10-03). A CFB game's spread or total that Cal
+//     marks "can't tease" (both sides, marketKeyOf) never enters the pool;
+//     the game's other market still can. The panel keeps the marks.
 //   - The list holds still: it is built on reference fairs, each leg's fair
 //     as of the build, replaced only when the leg moves REBUILD_FAIR_MOVE.
 //     The list is rebuilt only when what it is built on changes: the pool,
@@ -88,6 +92,8 @@
   const BUCKEYE_BOOK_ID = 59;
   // NFL and CFB: the scanner loads them whatever the Edges tab shows.
   const TEASER_LEAGUE_IDS = [1, 2];
+  // Only a college leg can be marked can't tease: Buckeye teases every NFL game.
+  const CFB_LEAGUE_ID = 2;
   const FULL_GAME_PERIOD_ID = 1;
   const FULL_GAME = "FG";
   const BET_TYPE_SPREAD = 2;
@@ -140,6 +146,7 @@
   const STANDING_BELOW = "below_break_even";
   const STANDING_OTHER_MARKET = "other_market";
   const STANDING_UNPRICED = "unpriced";
+  const STANDING_BLOCKED = "blocked";
   const REASON_FEW_LEGS = `fewer than ${LEGS_PER_TICKET} games with a priced Buckeye leg`;
   const REASON_HELD_RISK = "the open teasers and straight bets on these games can already lose the Kelly bankroll";
   const REASON_NO_STAKE = "no stake on the record";
@@ -625,19 +632,33 @@
     return !markets || (markets.size === 1 && markets.has(leg.axis));
   }
 
+  // A game's spread or its total, both sides: what one "can't tease" mark covers.
+  function marketKeyOf(leg) {
+    return `${leg.eventId}:bt${leg.betTypeId}`;
+  }
+
+  function marketNameOf(leg) {
+    return leg.betTypeId === BET_TYPE_TOTAL ? "total" : "spread";
+  }
+
+  function canBlock(leg) {
+    return leg.leagueId === CFB_LEAGUE_ID;
+  }
+
   function byPoolOrder(a, b) {
     return b.win - a.win || compareText(a.leg.key, b.leg.key);
   }
 
   // What a build is made of, on one valuation: the pool ({leg, win} per
-  // game, the top POOL_SIZE), the open teasers in play, the straight bets in
-  // the math (and why the others on a pool game are not), and the valuation.
-  function selectInputs(legs, placed, straights, valuation) {
+  // game, the top POOL_SIZE, never a blocked market), the open teasers in
+  // play, the straight bets in the math (and why the others on a pool game
+  // are not), and the valuation.
+  function selectInputs(legs, placed, straights, valuation, blocked) {
     const inPlay = placed.filter((ticket) => ticket.inPlay);
     const openMarkets = openMarketsByEvent(inPlay);
     const bestByEvent = new Map();
     for (const leg of legs) {
-      if (leg.probAbove == null || !isOffered(leg, openMarkets)) continue;
+      if (leg.probAbove == null || blocked.has(marketKeyOf(leg)) || !isOffered(leg, openMarkets)) continue;
       const candidate = { leg, win: winOf(valuation.get(cutKey(leg.eventId, leg.axis, leg.winCut)), leg.direction) };
       const held = bestByEvent.get(leg.eventId);
       if (!held || byPoolOrder(candidate, held) < 0) bestByEvent.set(leg.eventId, candidate);
@@ -1065,10 +1086,11 @@
   //   straights     heldStraights(...) now (none when absent)
   //   kellyBankroll K = bankroll x multiplier
   //   previous      the last build, or null
-  function planTeasers({ legs, placed, straights, kellyBankroll, previous }) {
+  //   blocked       Set of marketKeyOf keys marked can't tease (none when absent)
+  function planTeasers({ legs, placed, straights, kellyBankroll, previous, blocked }) {
     const held = straights || [];
     const valuation = referenceValuation(previous ? previous.refs : null, liveValuation(legs, placed, held));
-    const inputs = selectInputs(legs, placed, held, valuation);
+    const inputs = selectInputs(legs, placed, held, valuation, blocked || new Set());
     const key = inputKey(inputs, kellyBankroll);
     // Carrying the valuation forward freezes a number that is not in the
     // list too, so a leg ticking around the pool's edge cannot flip it in and out.
@@ -1164,14 +1186,33 @@
     return out;
   }
 
+  // One row per market of the game marked can't tease: its best side.
+  function blockedRowsOf(eventLegs, blockedMarkets, openTickets) {
+    const bestByMarket = new Map();
+    for (const leg of eventLegs) {
+      const market = marketKeyOf(leg);
+      if (!blockedMarkets.has(market)) continue;
+      const held = bestByMarket.get(market);
+      if (!held || byWinThenKey(leg, held) < 0) bestByMarket.set(market, leg);
+    }
+    return Array.from(bestByMarket.values()).map((leg) => ({
+      leg, standing: STANDING_BLOCKED, inTickets: 0, openTickets, straights: null,
+      note: `${marketNameOf(leg)} blocked`,
+    }));
+  }
+
   // The Legs list: one row per game — its pool leg, else its best priced leg
   // (on the open teasers' market when the game has one), else a leg with
-  // the reason it has no fair. Priced rows best first, then the unpriced. A
-  // pool row carries the straight bets on its game (straightsOnRow); other
-  // rows' games are in no ticket, so their straights size nothing.
+  // the reason it has no fair — leaving out markets marked can't tease, and
+  // one row per such market (its best side). Priced rows best first, then
+  // the unpriced. A pool row carries the straight bets on its game
+  // (straightsOnRow); other rows' games are in no ticket, so their
+  // straights size nothing.
   //   straights  heldStraights(...) now, or absent
+  //   blocked    Set of marketKeyOf keys marked can't tease, or absent
   //   rows [{leg, standing, inTickets, openTickets, note, straights}]
-  function describeLegs(legs, build, placed, straights) {
+  function describeLegs(legs, build, placed, straights, blocked) {
+    const blockedMarkets = blocked || new Set();
     const inPlay = placed.filter((ticket) => ticket.inPlay);
     const openMarkets = openMarketsByEvent(inPlay);
     const poolIndexByKey = new Map(build.pool.map((leg, index) => [leg.key, index]));
@@ -1189,8 +1230,11 @@
     const rows = [];
     for (const [eventId, eventLegs] of legsByEvent) {
       const openTickets = openTicketsByEvent.get(eventId) || 0;
-      const poolLeg = eventLegs.find((leg) => poolIndexByKey.has(leg.key));
-      const priced = eventLegs.filter((leg) => leg.win != null).sort(byWinThenKey);
+      const teasable = eventLegs.filter((leg) => !blockedMarkets.has(marketKeyOf(leg)));
+      rows.push(...blockedRowsOf(eventLegs, blockedMarkets, openTickets));
+      if (teasable.length === 0) continue;
+      const poolLeg = teasable.find((leg) => poolIndexByKey.has(leg.key));
+      const priced = teasable.filter((leg) => leg.win != null).sort(byWinThenKey);
       const offered = priced.filter((leg) => isOffered(leg, openMarkets));
       if (poolLeg) {
         const inTickets = ticketsByPoolIndex.get(poolIndexByKey.get(poolLeg.key)) || 0;
@@ -1202,7 +1246,7 @@
       } else if (priced.length) {
         rows.push({ leg: priced[0], standing: STANDING_OTHER_MARKET, inTickets: 0, openTickets, note: "open teasers use the game's other market", straights: null });
       } else {
-        rows.push({ leg: eventLegs[0], standing: STANDING_UNPRICED, inTickets: 0, openTickets, note: eventLegs[0].reason, straights: null });
+        rows.push({ leg: teasable[0], standing: STANDING_UNPRICED, inTickets: 0, openTickets, note: teasable[0].reason, straights: null });
       }
     }
     return rows.sort((a, b) => {
@@ -1216,9 +1260,9 @@
   const api = {
     TEASER_LEAGUE_IDS, TEASER_POINTS, LEGS_PER_TICKET, TICKET_NET_ODDS, TICKET_MAX_STAKE, POOL_SIZE, BREAK_EVEN_WIN,
     LEG_LIVE, LEG_STARTED,
-    STANDING_POOL, STANDING_OUT, STANDING_BELOW, STANDING_OTHER_MARKET, STANDING_UNPRICED,
+    STANDING_POOL, STANDING_OUT, STANDING_BELOW, STANDING_OTHER_MARKET, STANDING_UNPRICED, STANDING_BLOCKED,
     REASON_FEW_LEGS, REASON_HELD_RISK, STRAIGHT_OTHER_MARKET,
-    teaserBoardOf, teaserLegs, openTeasers, heldStraights, planTeasers, describePlan, describeLegs,
+    teaserBoardOf, teaserLegs, openTeasers, heldStraights, planTeasers, describePlan, describeLegs, marketKeyOf, marketNameOf, canBlock,
   };
 
   if (inNode) {
