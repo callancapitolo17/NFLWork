@@ -66,3 +66,19 @@ def test_under_the_minimum_or_a_changed_price_is_refused(app):
     with pytest.raises(ValueError, match="refresh the page"):
         app.place({**_bet(), "wz_american": 1500})
     assert app.placements == []
+
+
+def test_payload_carries_structured_legs_and_book_progress(app):
+    app._board.book_progress = {"FanDuel": {"done": 1, "total": 1}}
+    payload = app.board_payload("Wagerzon")
+    assert payload["board"]["book_progress"] == {"FanDuel": {"done": 1, "total": 1}}
+    assert payload["board"]["lines"][0]["legs"][0] == {"kind": "win", "period": "Q1", "line": None,
+                                                       "text": "LAC wins Q1"}
+
+
+def test_a_placed_special_is_not_recommended_again(app):
+    app.store.save_settings(35_000.0, 0.25)
+    assert app.board_payload("Wagerzon")["board"]["lines"][0]["recommended_stake"] > 0
+    app.place(_bet(25))
+    line = app.board_payload("Wagerzon")["board"]["lines"][0]
+    assert line["recommended_stake"] == 0 and line["kelly_stake"] > 0

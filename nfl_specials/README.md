@@ -22,6 +22,26 @@ BetMGM price the trifectas in ~90 s; DraftKings then prices the superfectas
 (~20 calls each, paced 1.5 s, page reloaded every 5 calls), ~7 more minutes,
 filling in as it goes.
 
+## The page
+
+- **Top bar:** Wagerzon account (hidden with one account), bankroll and Kelly
+  fraction behind one button (saved on change), Refresh.
+- **Tiles:** Wagerzon available, the recommended total (with its share of
+  available) and the expected profit of those stakes at the worst-case fair.
+- **Progress:** while a refresh runs the page polls every 3 s and shows done /
+  total overall and per book (FD / MGM / DK); it stops polling when the refresh
+  ends. Afterwards only a book that failed (e.g. the DK sidecar down) shows.
+- **Board:** grouped by game in kickoff order (started games and specials with
+  no game last), or one list by EV ("Best EV"); filter All / Trifectas /
+  Superfectas and "+EV only" (remembered in the browser). Each row: legs as
+  chips, every book's fair with the worst case marked (a superfecta shows DK's
+  1Q/1H/GM part, the team-scores-first %, and DK's own price incl. vig), WZ
+  price, fair, EV (shaded by size), and the stake box prefilled with the
+  recommended stake, "to win", and the uncapped Kelly when trimmed.
+- **Place:** a confirm sheet (risk, to win, price, fair, EV, account), then the
+  button shows "Placing…" until Wagerzon answers; the ticket or the error shows
+  on the row and in **Placed this week**.
+
 ## How a special is priced
 
 0. **Game.** Every book's game must be the special's: kickoff inside the
@@ -64,7 +84,10 @@ filling in as it goes.
    zero. A stake under Wagerzon's $20 minimum for specials (measured: $15-19
    rejected) is dropped and the rest re-fit; each stake is capped at the
    $250 maximum, and what a capped bet can't take goes to the next edge. The page shows the uncapped
-   Kelly stake next to any trimmed one.
+   Kelly stake next to any trimmed one. No stake (and no budget) goes to a
+   special whose game has started, or to any special of a team the account
+   already has a placed bet on this week (that bet is already in Wagerzon's
+   available; a second stake would double one position).
 
 | Book | Trifecta | Superfecta | How |
 |---|---|---|---|

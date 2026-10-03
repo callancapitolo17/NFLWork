@@ -108,6 +108,7 @@ class SpecialsApp:
         accounts = wz.account_labels()
         account = account if account in accounts else (accounts[0] if accounts else None)
         since = datetime.now(timezone.utc) - timedelta(days=PLACEMENT_HISTORY_DAYS)
+        placements = self.store.placements_since(since)
         payload = {
             "refreshing": refreshing,
             "last_error": self._last_error,
@@ -117,7 +118,7 @@ class SpecialsApp:
             "min_stake": config.WZ_MIN_STAKE,
             "max_stake": config.WZ_MAX_STAKE,
             "available_balance": None,
-            "placements": [_placement_json(p) for p in self.store.placements_since(since)],
+            "placements": [_placement_json(p) for p in placements],
             "board": None,
         }
         if board is None:
@@ -126,13 +127,15 @@ class SpecialsApp:
         payload["available_balance"] = budget
         # Unknown balance: recommend nothing rather than uncapped Kelly.
         sized = size_board(board, settings["bankroll"], settings["kelly_fraction"],
-                           0.0 if budget is None else budget)
+                           0.0 if budget is None else budget,
+                           placed_ids=_placed_ids(placements, account))
         payload["board"] = {
             "started_at": board.started_at.isoformat(),
             "finished_at": board.finished_at.isoformat() if board.finished_at else None,
             "progress_done": board.progress_done,
             "progress_total": board.progress_total,
             "book_status": board.book_status,
+            "book_progress": board.book_progress,
             "lines": [_line_json(line, sizing) for line, sizing in zip(board.lines, sized)],
         }
         return payload
@@ -224,7 +227,8 @@ def _line_json(line, sizing) -> dict:
         "wz_american": line.special.wz_american,
         "team": fecta.team if fecta else None,
         "prop_type": fecta.prop_type if fecta else None,
-        "legs": [leg.describe(fecta.team) for leg in fecta.legs] if fecta else [],
+        "legs": [{"kind": leg.kind, "period": leg.period, "line": leg.line, "text": leg.describe(fecta.team)}
+                 for leg in fecta.legs] if fecta else [],
         "home": line.game.home if line.game else None,
         "away": line.game.away if line.game else None,
         "game_start_time": line.game.game_start_time if line.game else None,
@@ -242,6 +246,12 @@ def _line_json(line, sizing) -> dict:
         "recommended_stake": sizing.recommended_stake,
         "yields_to": sizing.yields_to,
     }
+
+
+def _placed_ids(placements: list[dict], account: str | None) -> frozenset[int]:
+    """wz_game_ids `account` has a placed bet on, among `placements`."""
+    return frozenset(p["wz_game_id"] for p in placements
+                     if p["account"] == account and p["status"] == "placed")
 
 
 def _placement_json(row: dict) -> dict:

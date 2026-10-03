@@ -86,10 +86,13 @@ class Board:
     book_status: dict[str, str]     # book -> 'ok' | 'error: ...' | 'sidecar not running ...'
     progress_done: int = 0
     progress_total: int = 0
+    # book -> {'done': n, 'total': n} price calls this refresh, for the page's progress bar
+    book_progress: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def snapshot(self) -> "Board":
         lines = [replace(line, book_fairs=dict(line.book_fairs)) for line in self.lines]
-        return replace(self, lines=lines, book_status=dict(self.book_status))
+        book_progress = {name: dict(counts) for name, counts in self.book_progress.items()}
+        return replace(self, lines=lines, book_status=dict(self.book_status), book_progress=book_progress)
 
 
 @dataclass(frozen=True)
@@ -147,8 +150,15 @@ def book_game(book: SgpBook, line: "FectaLine") -> BookGame | None:
 
 
 def size_board(board: Board, bankroll: float, kelly_fraction: float,
-               budget: float | None) -> list[Sizing]:
+               budget: float | None, now: datetime | None = None,
+               placed_ids: frozenset[int] = frozenset()) -> list[Sizing]:
     """Worst-case fair, EV and stakes per line (same order as board.lines).
+
+    No stake for a line whose game has started (at `now`, default the clock;
+    Wagerzon refuses it, so it must not take budget from later games), nor
+    for any special of a (game, team) already bet — `placed_ids` are the
+    wz_game_ids placed this week. Those bets are in Wagerzon's available, and
+    a second stake on the same team would double one position.
 
     Per (game, team) only the line with the best expected log growth is a
     candidate: a team's trifecta and superfecta mostly win together, so
@@ -165,11 +175,16 @@ def size_board(board: Board, bankroll: float, kelly_fraction: float,
         raw.append((fair, expected_value(fair, line.special.wz_american),
                     kelly_stake(fair, line.special.wz_american, bankroll, kelly_fraction)))
 
+    now = now or datetime.now(timezone.utc)
+    held_teams = {(line.game.home, line.game.away, line.fecta.team) for line in board.lines
+                  if line.special.wz_game_id in placed_ids and line.game is not None}
     best_by_team: dict[tuple, tuple[float, int]] = {}
     for index, (line, (fair, _ev, stake)) in enumerate(zip(board.lines, raw)):
-        if stake <= 0 or line.game is None:
+        if stake <= 0 or line.game is None or parse_start(line.game.game_start_time) <= now:
             continue
         key = (line.game.home, line.game.away, line.fecta.team)
+        if key in held_teams:
+            continue
         growth = log_growth(fair, line.special.wz_american, stake, bankroll)
         if key not in best_by_team or growth > best_by_team[key][0]:
             best_by_team[key] = (growth, index)
@@ -182,8 +197,9 @@ def size_board(board: Board, bankroll: float, kelly_fraction: float,
     sized = []
     for index, (line, (fair, ev, stake)) in enumerate(zip(board.lines, raw)):
         yields_to = None
-        if stake > 0 and line.game is not None and index not in recommended:
-            winner_index = best_by_team[(line.game.home, line.game.away, line.fecta.team)][1]
+        key = (line.game.home, line.game.away, line.fecta.team) if line.game is not None else None
+        if stake > 0 and key in best_by_team and index not in recommended:
+            winner_index = best_by_team[key][1]
             yields_to = board.lines[winner_index].special.rotation
         sized.append(Sizing(fair, ev, stake, recommended.get(index, 0.0), yields_to))
     return sized
@@ -251,6 +267,8 @@ def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
             if line.is_superfecta():
                 work += [("partition", SUPERFECTA_BOOK, line), ("scores_first", SUPERFECTA_BOOK, line)]
     board.progress_total = len(work)
+    for _task, name, _line in work:
+        board.book_progress.setdefault(name, {"done": 0, "total": 0})["total"] += 1
     publish(board.snapshot())
 
     for task, name, line in work:
@@ -276,6 +294,7 @@ def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
             row = _quote_row(line, now, book=name, quote_kind=kind, fair=line.book_fairs[name])
         store.append_quotes([row])
         board.progress_done += 1
+        board.book_progress[name]["done"] += 1
         publish(board.snapshot())
 
     for line in pricing:
