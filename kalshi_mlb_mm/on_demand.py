@@ -27,6 +27,8 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
 from concurrent.futures import wait as futures_wait
 from dataclasses import dataclass, field
 
+from kalshi_mlb_mm import router
+
 log = logging.getLogger(__name__)
 
 # A result may back a NEW quote only this long after landing (one 2s
@@ -212,11 +214,21 @@ class OnDemandEngine:
         return ent.dropped_books if ent else ()
 
     def lookup(self, hash_: str):
-        """{book: fair} if landed within QUOTE_FRESH_SEC, else None."""
+        """{book: fair} of the INDEPENDENT books that landed within
+        QUOTE_FRESH_SEC, else None.
+
+        Novig is left out when it relayed a book that also landed in this
+        flight (router.drop_relayed_novig). Every pricing consumer — the
+        quote, the confirm last look, the risk-sweep drift check — reads live
+        fairs through here, so they all count one opinion once. Research
+        that wants every landed book reads lookup_results."""
         results = self.lookup_results(hash_)
         if not results:
             return None
-        return {b: r.fair for b, r in results.items()}
+        fairs = {b: r.fair for b, r in results.items()}
+        novig = results.get(router.RELAYING_BOOK)
+        novig_vendors = novig.vendors if novig is not None else ()
+        return router.drop_relayed_novig(fairs, novig_vendors)
 
     def lookup_results(self, hash_: str):
         """{book: OnDemandBookResult} while fresh, else None (research read).

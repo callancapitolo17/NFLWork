@@ -26,8 +26,8 @@ from kalshi_common.sgp_health import (FetchHealthRecorder,
                                       transport_error_class)
 from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, BookTransportError,
                              FetchCounters, OnDemandBookResult, PricedRow,
-                             RetryProfile, TargetLine, TTLCache,
-                             fetch_counters)
+                             RelayedVendors, RetryProfile, TargetLine,
+                             TTLCache, fetch_counters)
 
 log = logging.getLogger(__name__)
 
@@ -966,11 +966,16 @@ class SGPService:
         t0 = time.monotonic()
         st = self._state[book]
         verdict = verdict if verdict is not None else _Verdict()
+        # The vendor books behind this call's prices (Novig relays every
+        # SGP price it quotes); stamped on the result as `vendors`. Per
+        # call, never on self: two RFQs can price one book at once.
+        relayed = RelayedVendors()
         try:
             hooks = (self._on_demand_hooks or {}).get(book)
             if hooks is None:
                 self._ensure_client(book)
-                hooks = self._book_on_demand_hooks(book, counters=counters)
+                hooks = self._book_on_demand_hooks(book, counters=counters,
+                                                   relayed=relayed)
 
             event = hooks["match_event"](st.client, game)
             if event is None:
@@ -1017,7 +1022,8 @@ class SGPService:
                             book=book, fair=fair, route="single_two_way",
                             n_cells_priced=0,
                             latency_sec=time.monotonic() - t0,
-                            counters=counters.snapshot())
+                            counters=counters.snapshot(),
+                            vendors=relayed.books())
 
             def _price(refs):
                 # Counted here rather than inside the book modules so one
@@ -1098,7 +1104,8 @@ class SGPService:
                 n_cells_priced=n_cells_priced,
                 latency_sec=time.monotonic() - t0,
                 route_gap=route_gap,
-                counters=counters.snapshot())
+                counters=counters.snapshot(),
+                vendors=relayed.books())
         except BookTransportError as e:
             # Same strike path as the sweep, so on-demand and refresh share
             # one recovery (issue #33). A clean "book won't price this"
@@ -1266,11 +1273,16 @@ class SGPService:
         return ev, struct
 
     def _book_on_demand_hooks(self, book: str, *,
-                              counters: FetchCounters | None = None) -> dict:
+                              counters: FetchCounters | None = None,
+                              relayed: RelayedVendors | None = None) -> dict:
         """Per-book hook dict. ``counters`` (keyword-only) is threaded into
         each book's ``resolve_legs`` / ``price_selection_set`` so their
         fail-safe ``except`` blocks can record a NAMED parse failure instead
         of silently returning None (issue #35).
+
+        ``relayed`` (keyword-only) reaches Novig's ``price_selection_set``
+        only: Novig is the one book that relays its SGP prices, and it names
+        the vendor behind every priced parlay.
 
         Every cache read below passes ``miss_cb`` (#50): a wire-level
         events/structure fetch bumps ``structure_fetches``, and
@@ -1456,7 +1468,8 @@ class SGPService:
                                          counters=counters),
                     "price": lambda client, refs, event:
                         mod.price_selection_set(client, refs,
-                                                counters=counters)}
+                                                counters=counters,
+                                                relayed=relayed)}
 
         if book == "betmgm":
             from mlb_sgp import betmgm as mod

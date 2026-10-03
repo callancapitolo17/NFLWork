@@ -1018,6 +1018,57 @@ class OnDemandBookResult:
     # Per-fetch drop counters for THIS on-demand call (issue #35). Optional so
     # existing constructions keep working; #38 persists it to the health table.
     counters: "FetchCountersSnapshot | None" = None
+    # The books whose prices this result relays, as our book keys, sorted —
+    # ``RelayedVendors.books()``. Only Novig fills it: it relays every SGP
+    # price it quotes. Empty = the book priced the combo itself.
+    vendors: tuple[str, ...] = ()
+
+
+# A priced Novig leg whose vendor we cannot name. Recorded rather than
+# skipped, so a consumer can refuse a price whose source it does not know.
+UNKNOWN_VENDOR = "unknown"
+
+# Novig's vendor names (``legs[].vendor``; every value seen on 2026-10-02) ->
+# our book keys. Any other name records UNKNOWN_VENDOR: a renamed enum must
+# not read as some other, independent book (that would quietly re-open the
+# double count the maker's guard closes).
+NOVIG_VENDOR_BOOKS = {"DRAFTKINGS": "draftkings", "FANDUEL": "fanduel",
+                      "BETMGM": "betmgm", "CAESARS": "caesars"}
+
+
+class RelayedVendors:
+    """The vendor books behind a relaying book's prices over ONE on-demand call.
+
+    Novig does not originate SGP prices. Every parlay it prices names the
+    vendor book behind each leg (``legs[].vendor``), and the cells of one 2^N
+    partition route independently: on 2026-10-02 one 4-cell grid mixed
+    DraftKings, BetMGM and FanDuel, and 30% of cells had switched vendor 20
+    minutes later. So the vendors are read off every priced call, never
+    assumed per combo shape. The price hook records here; the service stamps
+    ``OnDemandBookResult.vendors`` from ``books()``.
+
+    Thread-safe: partition cells price concurrently (#93).
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._books: set[str] = set()
+
+    def record(self, leg_vendors) -> None:
+        """Add one priced parlay's per-leg vendor names as our book keys
+        (``NOVIG_VENDOR_BOOKS``). No legs listed, or a leg naming no vendor
+        or one not in that map, records ``UNKNOWN_VENDOR``."""
+        if not leg_vendors:
+            names = {UNKNOWN_VENDOR}
+        else:
+            names = {NOVIG_VENDOR_BOOKS.get(v, UNKNOWN_VENDOR)
+                     for v in leg_vendors}
+        with self._lock:
+            self._books.update(names)
+
+    def books(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(sorted(self._books))
 
 
 @dataclass(frozen=True)

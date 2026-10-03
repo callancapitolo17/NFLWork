@@ -951,9 +951,12 @@ def _maybe_emit_on_demand_result(rfq_id, ticker, hash_, legs=()):
                           # select fields by name and ignore it.
                           periods=sorted({l.period for l in legs}),
                           dropped_books=list(dropped or ()),
+                          # vendors: the books a relayed price came from
+                          # (Novig) — what the consensus guard read.
                           books={b: dict(fair=r.fair, route=r.route,
                                          n_cells=r.n_cells_priced,
-                                         latency_sec=r.latency_sec)
+                                         latency_sec=r.latency_sec,
+                                         vendors=list(r.vendors))
                                  for b, r in res.items()}))
     except Exception:                      # research must never break the tick
         pass
@@ -987,8 +990,12 @@ def _live_games_detail(by_game):
                 # key, safe for report.py's live_games readers.
                 periods=sorted({l.period for l in gl}),
                 books={b: dict(fair=r.fair, route=r.route,
-                               latency_sec=r.latency_sec)
-                       for b, r in res.items()})
+                               latency_sec=r.latency_sec,
+                               vendors=list(r.vendors))
+                       for b, r in res.items()},
+                # The books the consensus actually counted (Novig drops
+                # out when it relayed one of the others).
+                consensus_books=sorted(_ENGINE.lookup(h) or {}))
         return out or None
     except Exception:
         return None
@@ -1143,11 +1150,15 @@ def _on_demand_fill_info(canon):
             if not res:
                 out[h] = None
                 continue
-            fairs = {b: r.fair for b, r in res.items()}
+            # The quote path's fairs (relayed Novig removed), so the fill
+            # record names the books that actually priced it.
+            fairs = _ENGINE.lookup(h) or {}
             det = router.consensus_detail(fairs, config.MIN_AGREEING_BOOKS,
                                           config.SIGMA_Z_MAX)
             out[h] = dict(
-                books={b: dict(fair=r.fair, route=r.route) for b, r in res.items()},
+                books={b: dict(fair=r.fair, route=r.route,
+                               vendors=list(r.vendors))
+                       for b, r in res.items()},
                 consensus_books=det[1] if det else [])
         return out or None
     except Exception:

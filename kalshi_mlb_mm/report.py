@@ -23,7 +23,7 @@ from pathlib import Path
 
 import duckdb
 
-from kalshi_mlb_mm import config
+from kalshi_mlb_mm import config, router
 
 
 class _Sentinel:
@@ -260,9 +260,13 @@ def universe_stats(research_db: str, since: datetime,
     what the books priced is the `on_demand_result` event stream (one per
     completed flight, per-book fairs in the payload's `books` dict). A
     "combo" is a leg_set_hash; it PASSES on a day if ANY landing that day
-    carried >= MIN_AGREEING_BOOKS books (an approximation of the live
-    consensus gate, which also applies freshness + the agreement band at
-    price time). Python-side JSON parsing mirrors `on_demand_stats`.
+    carried >= MIN_AGREEING_BOOKS independent books (an approximation of
+    the live consensus gate, which also applies freshness + the agreement
+    band at price time). Independent = after router.drop_relayed_novig,
+    exactly as the live gate counts; landings recorded before the payload
+    carried `vendors` count Novig, as the gate did then. The per-book
+    coverage table still counts every book that landed. Python-side JSON
+    parsing mirrors `on_demand_stats`.
     """
     import json as _json
 
@@ -287,14 +291,20 @@ def universe_stats(research_db: str, since: datetime,
         try:
             data = _json.loads(payload)
             hash_ = data.get("leg_set_hash")
-            books = list((data.get("books") or {}))
-        except (TypeError, ValueError):
+            landed = data.get("books") or {}
+            novig_vendors = (landed.get(router.RELAYING_BOOK) or {}).get(
+                "vendors") or ()
+            independent = router.drop_relayed_novig(
+                {book: entry.get("fair") for book, entry in landed.items()},
+                novig_vendors)
+            books = list(landed)
+        except (TypeError, ValueError, AttributeError):
             continue
         if not hash_:
             continue
         day = ts.date()
         per_hash = day_hash_books.setdefault(day, {})
-        per_hash[hash_] = max(per_hash.get(hash_, 0), len(books))
+        per_hash[hash_] = max(per_hash.get(hash_, 0), len(independent))
         for book in books:
             book_days.setdefault(book, set()).add(day)
             book_hashes.setdefault(book, set()).add(hash_)

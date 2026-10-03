@@ -19,11 +19,13 @@ totals, derived from adjacent half-point alts) are tagged
 ``source IN (..._direct)``, so preserving these labels keeps the
 existing dashboard behavior byte-identical post-refactor.
 
-Note: Novig does not originate SGP prices. It routes each combo to one
-vendor book and names it per leg (``vendor``): DRAFTKINGS on every leg
-until 2026-09, then DRAFTKINGS, FANDUEL and BETMGM by 2026-10-02 — so a
-Novig price is its vendor's price shaded slightly short, not an
-independent opinion.
+Note: Novig does not originate SGP prices. It relays each selection set
+it prices from one vendor book and names it per leg (``vendor``):
+DRAFTKINGS on every leg until 2026-09, then DRAFTKINGS, FANDUEL, BETMGM and
+CAESARS by 2026-10-02, chosen per selection set — the cells of one 2^N
+partition often come from different vendors — so a Novig price is a
+vendor's price shaded 0-1% short, not an independent opinion. The on-demand
+path records the vendors on the result (``price_selection_set(relayed=)``).
 Strict line matching at the client level means a missing leg here
 typically reflects an off-main target — that's exactly when the
 integer-line fallback path is useful.
@@ -59,7 +61,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from mlb_sgp._shared import (BookTransportError, FetchCounters, PricedRow,
-                             TargetLine, accepts_on_decline,
+                             RelayedVendors, TargetLine, accepts_on_decline,
                              decimal_to_american, fetch_counters,
                              price_tally_for)
 from mlb_sgp.novig_client import NovigClient
@@ -782,6 +784,7 @@ def resolve_legs(structure, legs, home_team, away_team, *,
 
 def price_selection_set(client, refs, *,
                         counters: FetchCounters | None = None,
+                        relayed: RelayedVendors | None = None,
                         ) -> float | None:
     """Price one arbitrary selection set via Novig's anonymous parlay RFQ.
 
@@ -790,6 +793,10 @@ def price_selection_set(client, refs, *,
     (novig_client.py:157) returns ``{"decimal": ..., ...}`` or ``{}`` on
     any failure. Returns the float decimal when > 1.0, else None.
     Never raises.
+
+    ``relayed`` (on-demand path): every returned price also records the
+    vendor books Novig named on its legs, because a Novig price is a copy of
+    one of them (module docstring). A declined call records nothing.
     """
     try:
         if not refs:
@@ -804,7 +811,11 @@ def price_selection_set(client, refs, *,
         if dec_raw is None:
             return None
         dec = float(dec_raw)
-        return dec if dec > 1.0 else None
+        if dec <= 1.0:
+            return None
+        if relayed is not None:
+            relayed.record(priced.get("vendors"))
+        return dec
     except BookTransportError:
         # Counted, NOT re-raised — see caesars.price_selection_set.
         if counters is not None:

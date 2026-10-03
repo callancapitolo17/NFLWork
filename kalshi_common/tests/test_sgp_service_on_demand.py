@@ -18,7 +18,8 @@ import pytest
 from kalshi_common import fair_value
 from kalshi_common.legset import CanonicalLeg
 from kalshi_common.sgp_service import SGPService, ON_DEMAND_VIG_FALLBACK
-from mlb_sgp._shared import GameRef, OnDemandBookResult, ResolvedLeg
+from mlb_sgp._shared import (GameRef, OnDemandBookResult, RelayedVendors,
+                             ResolvedLeg)
 
 EVT = "KXMLBGAME-26JUL09NYYBOS"
 GAME = GameRef(game_id="g1", home_team="Boston Red Sox",
@@ -400,6 +401,58 @@ def test_matched_event_is_threaded_to_price_hook():
     res = svc.price_on_demand("novig", GAME, _legs(2))
     assert res is not None
     assert seen and all(e is sentinel for e in seen)
+
+
+# --------------------------------------------------------------------- #
+# Relayed vendors: Novig relays every SGP price it quotes                #
+# --------------------------------------------------------------------- #
+
+# 4 joint fair probs summing to 1.0 at a uniform 1.10 overround.
+CELL_DECS_2 = [1.0 / (1.10 * p) for p in (0.40, 0.20, 0.25, 0.15)]
+
+
+def test_result_names_every_vendor_behind_the_cells_it_priced(monkeypatch):
+    """Novig routes each partition cell to its own vendor (2026-10-02: one
+    grid mixed DraftKings, BetMGM and FanDuel), so the result carries the
+    union, as our book keys."""
+    vendor_by_cell = {0: "DRAFTKINGS", 1: "DRAFTKINGS", 2: "BETMGM",
+                      3: "FANDUEL"}
+
+    def fake_hooks(self, book, *, counters=None, relayed=None):
+        def price(client, refs, event):
+            relayed.record([vendor_by_cell[_cell_of(refs)]] * len(refs))
+            return CELL_DECS_2[_cell_of(refs)]
+        return _hooks(_resolved(2), price)
+
+    monkeypatch.setattr(SGPService, "_book_on_demand_hooks", fake_hooks)
+    svc = SGPService(books=("novig",))
+    svc._state["novig"].client = object()          # skip the real client
+    res = svc.price_on_demand("novig", GAME, _legs(2))
+    assert res.route == "partition"
+    assert res.vendors == ("betmgm", "draftkings", "fanduel")
+
+
+def test_book_that_prices_its_own_combos_relays_nothing():
+    svc = _svc("fanduel", _hooks(_resolved(2),
+                                 lambda c, refs, e: CELL_DECS_2[_cell_of(refs)]))
+    res = svc.price_on_demand("fanduel", GAME, _legs(2))
+    assert res is not None and res.vendors == ()
+
+
+def test_real_novig_price_hook_records_the_vendor():
+    """The real Novig hook hands the per-call collector to
+    price_selection_set; no other book's hook takes one."""
+    class FakeNovigClient:
+        def submit_parlay(self, outcome_ids, stake=1.0):
+            return {"decimal": 3.2, "vendors": ["BETMGM", "BETMGM"]}
+
+    svc = SGPService(books=("novig",))
+    st = svc._state["novig"]
+    st.client = FakeNovigClient()
+    relayed = RelayedVendors()
+    hooks = svc._book_on_demand_hooks("novig", relayed=relayed)
+    assert hooks["price"](st.client, ["u1", "u2"], "EV") == 3.2
+    assert relayed.books() == ("betmgm",)
 
 
 def test_mgm_real_price_hook_threads_fixture_id():

@@ -7,12 +7,15 @@ endpoint through scraper_novig_sgp.fetch_event_legs -> _gql, the one
 GraphQL transport every path (sweep, on-demand, warming, leg surface)
 uses.
 
-Novig does not originate SGP prices: it routes each combo to one vendor
-book, naming it per leg (`vendor`), and returns that book's price shaded
-slightly short. Until 2026-09 every leg said DRAFTKINGS; on 2026-10-02
-spread x total came back DRAFTKINGS, ML x total FANDUEL (each 0.5-2%
-shorter than FanDuel's own quote), and BETMGM also appears. A Novig price
-is therefore its vendor's opinion, not an independent one.
+Novig does not originate SGP prices: it relays each selection set from one
+vendor book, naming it per leg (`vendor`), and returns that book's price
+shaded slightly short. Until 2026-09 every leg said DRAFTKINGS. On
+2026-10-02 the vendor was chosen per selection set — 88% of 2^N partitions
+mixed 2-3 vendors (cells: DRAFTKINGS 60%, FANDUEL 29%, BETMGM 11%, CAESARS
+<1%), 30% of cells switched vendor within 20 minutes, FanDuel-relayed cells
+came back ~1% shorter than FanDuel's own quote and BetMGM's unshaded.
+A Novig price is therefore a vendor's opinion, not an independent one;
+`submit_parlay` returns the per-leg `vendors` so callers can tell which.
 
 Since 2026-09-22 the GraphQL endpoint runs an allowlist: it executes only
 operations the novig.com app ships and answers anything else with HTTP 200
@@ -46,8 +49,10 @@ Real Novig response shapes:
        (an off-season league answers {"sections": []})
 
     POST https://api.novig.us/nbx/v1/parlay/request/unauthenticated
-      -> [{"price": "0.35088", "status": "OPEN", ...}, ...]
-       (a *list* of offer dicts — top offer at [0])
+      -> [{"price": "0.36000", "status": "Unfilled",
+           "legs": [{"price": "0.57100", "vendor": "DRAFTKINGS",
+                     "outcomeId": "<uuid>", "outcome": {...}}, ...]}, ...]
+       (a *list* of offer dicts — top offer at [0]; captured 2026-10-02)
 """
 from __future__ import annotations
 import logging
@@ -118,7 +123,8 @@ class NovigClient(PriceCallTallyMixin):
 
         Returns a dict shaped like:
             {"decimal": 2.85, "american": -200, "price_str": "0.35088",
-             "status": "OPEN", "raw_offers": [...]}
+             "status": "OPEN", "vendors": ["FANDUEL", "FANDUEL"],
+             "raw_offers": [...]}
         or `{}` for any failure (HTTP non-2xx, empty response, malformed price).
 
         We use `submit_parlay` for the method name (not `submit_parlay_rfq`)
@@ -289,11 +295,27 @@ def _parse_iso_utc(text) -> datetime | None:
     return parsed
 
 
+def _leg_vendors(offer: dict) -> list:
+    """The vendor named on each leg of a priced offer, in leg order (None for
+    a leg that names none; [] when the offer lists no legs).
+
+    Real shape (2026-10-02): ``{"price": "0.36000", "legs": [{"price":
+    "0.57100", "vendor": "DRAFTKINGS", "outcomeId": "<uuid>", ...}, ...]}``.
+    """
+    legs = offer.get("legs")
+    if not isinstance(legs, list):
+        return []
+    return [leg.get("vendor") if isinstance(leg, dict) else None
+            for leg in legs]
+
+
 def _parse_parlay_response(offers: Any) -> dict:
     """Parse a Novig parlay response (list-of-offers) into a single result dict.
 
     Returns {"decimal": float, "american": int, "price_str": str,
-             "status": str, "raw_offers": list} or {} on malformed input.
+             "status": str, "vendors": list, "raw_offers": list} or {} on
+    malformed input. ``vendors`` is the top offer's per-leg vendor names
+    (see ``_leg_vendors``) — the book each leg's price was relayed from.
 
     Tolerates the rare BuildParlay-mutation shape {"data": {"parlay": {...}}}
     that the task spec mentions, in case Novig ever switches over.
@@ -317,6 +339,7 @@ def _parse_parlay_response(offers: Any) -> dict:
                 "american": am,
                 "price_str": str(dec_raw),
                 "status": parlay.get("status") or "",
+                "vendors": _leg_vendors(parlay),
                 "raw_offers": [parlay],
             }
         return {}
@@ -342,6 +365,7 @@ def _parse_parlay_response(offers: Any) -> dict:
         "american": _decimal_to_american(dec),
         "price_str": price_str,
         "status": top.get("status") or "",
+        "vendors": _leg_vendors(top),
         "raw_offers": offers,
     }
 

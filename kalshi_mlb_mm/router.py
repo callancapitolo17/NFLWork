@@ -15,6 +15,11 @@ books, quoted only when the sample stddev of the book fairs in probit space
 is <= sigma_z_max. No outlier removal — a dissenting book is as likely the
 informed one (news mid-propagation) as a broken scrape, so large dispersion
 declines the quote instead of outvoting the dissenter.
+
+"ALL books" means independent ones: Novig relays its SGP prices from other
+books, and `drop_relayed_novig` removes it from a live flight that already
+holds a book it relayed (applied by OnDemandEngine.lookup, the one place
+live fairs are served).
 """
 import math
 import statistics
@@ -25,10 +30,15 @@ from scipy.stats import norm
 from kalshi_common import legset
 from kalshi_common.fair_value import devig_book
 from kalshi_common.leg_types import SPREAD_TOTAL_FAMILY, ML_TOTAL_FAMILY
+from mlb_sgp._shared import UNKNOWN_VENDOR
 
 # Devig outputs live strictly inside (0,1); the clip only guards norm.ppf
 # against a pathological 0/1 input reaching +-inf.
 _PPF_CLIP = 1e-6
+
+# The one book whose SGP prices are relayed from other books rather than
+# originated (OnDemandBookResult.vendors names the source books).
+RELAYING_BOOK = "novig"
 
 # Issue #98: the ONE sub-combo route the cached leg surface may price. A game
 # contributing exactly one leg is, by construction, part of a CROSS-GAME combo
@@ -65,6 +75,36 @@ class Consensus:
     sigma_pts: float   # sample stddev (ddof=1) of book fairs, probability points
     sigma_z: float     # sample stddev (ddof=1) of norm.ppf(book fairs)
     n_books: int
+
+
+def drop_relayed_novig(book_fairs: dict[str, float],
+                       novig_vendors) -> dict[str, float]:
+    """``book_fairs`` without Novig when Novig's price is not an independent
+    opinion in this flight. Pure; returns a new dict.
+
+    Novig relays every SGP price from a vendor book, chosen per partition
+    cell (``mlb_sgp/README.md``), so it counts only if every cell it priced
+    named a vendor and none of those vendors priced the same combo here.
+    Otherwise it is one opinion counted twice: it fakes a 2-book quorum,
+    double-weights its vendor in the median and shrinks the dispersion
+    estimate (measured 2026-10-02: Novig sat inside SIGMA_Z_MAX of a book it
+    relayed in 96 of 99 combos, against 58 of 70 for FanDuel vs BetMGM). It
+    stays when its vendors are absent from the flight — it is then our only
+    read of them (DraftKings' own SGP endpoint is dark for us, #102).
+
+    ``novig_vendors`` is Novig's ``OnDemandBookResult.vendors``. Empty means
+    nothing was relayed (a price read off Novig's own exchange), so Novig
+    counts; ``UNKNOWN_VENDOR`` means a priced leg named no vendor, so it does
+    not.
+    """
+    if RELAYING_BOOK not in book_fairs:
+        return dict(book_fairs)
+    relayed = set(novig_vendors or ())
+    other_books = set(book_fairs) - {RELAYING_BOOK}
+    if UNKNOWN_VENDOR in relayed or relayed & other_books:
+        return {book: fair for book, fair in book_fairs.items()
+                if book != RELAYING_BOOK}
+    return dict(book_fairs)
 
 
 def _sigma_z(fairs: list[float]) -> float:
