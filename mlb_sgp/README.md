@@ -557,10 +557,14 @@ max 101 pricings per minute, so peaks queue and some decline.
 ~0.4% hang >= 8 s. It is DK-side, not throttling: the same request replays in
 0.2 s. The 3 s timeout keeps one hang from holding the lane.
 
-**Kill switch.** Any 403/429 from the GET in `sgp_fetch_health` (or
-`BookTransportError:price:403` in bot.log): drop `draftkings` from
-`SGP_BOOKS` (maker) / `RFI_BOOKS` (`kalshi_rfi`) and restart, before a rule
-can spread to DK's read endpoints, which feed the cross-game leg surface.
+**Kill switch.** A 403/429 from the GET logs `draftkings: SGP builder
+answered HTTP 403 — DK may be blocking us` at WARNING (at most once a minute)
+and counts `transport_errors` in `sgp_fetch_health.counters_json`. The
+on-demand row's outcome stays `empty`, which the book-health alert treats
+as healthy, so watch the log line, not the alert. On seeing it: drop
+`draftkings` from `SGP_BOOKS` (maker) / `RFI_BOOKS` (`kalshi_rfi`) and
+restart, before a rule can spread to DK's read endpoints, which feed the
+cross-game leg surface.
 
 Pinned by `mlb_sgp/tests/test_dk_sgp_builder_price.py`,
 `mlb_sgp/tests/test_draftkings_on_demand.py` and

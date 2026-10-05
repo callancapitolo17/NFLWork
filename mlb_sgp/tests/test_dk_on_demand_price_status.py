@@ -188,3 +188,15 @@ def test_price_selection_set_still_never_raises():
     flight, whatever the status."""
     assert draftkings.price_selection_set(_client(AKAMAI_DENY), _REFS,
                                           "evt1") is None
+
+
+def test_blocked_endpoint_logs_a_warning_at_most_once_a_minute(caplog):
+    """The on-demand outcome stays "empty" and the book-health alert treats
+    that as healthy, so this log line is the only loud signal that DK is
+    blocking the GET — the kill-switch trigger."""
+    client = _client(AKAMAI_DENY)
+    with caplog.at_level(logging.WARNING, logger="mlb_sgp.dk_client"):
+        for _ in range(3):
+            draftkings.price_selection_set(client, _REFS, "evt1")
+    blocked = [r for r in caplog.records if "HTTP 403" in r.getMessage()]
+    assert len(blocked) == 1

@@ -55,6 +55,11 @@ PRICE_CALL_TIMEOUT_SEC = 3.0
 SIBLING_ANSWER_TTL_SEC = 2.0
 # DK statuses that mean "DK refuses US", as opposed to "DK won't price this".
 BLOCKED_PRICE_STATUSES = frozenset({403, 429})
+# A blocked price call is otherwise silent: price_selection_set counts it
+# without raising, and an on-demand "empty" outcome never trips the
+# book-health alert. It is the kill-switch signal, so it is logged — at most
+# once a minute, since a blocked lane fails up to twice a second.
+BLOCKED_WARNING_INTERVAL_SEC = 60.0
 
 
 class PriceLane:
@@ -238,6 +243,7 @@ class DraftKingsClient(PriceCallTallyMixin):
                 timeout=PRICE_CALL_TIMEOUT_SEC),
             profile=RETRY_LIVE, book=BOOK, stage="price")
         if resp.status_code in BLOCKED_PRICE_STATUSES:
+            self._warn_blocked(resp.status_code)
             raise BookTransportError(
                 BOOK, "price", status_code=resp.status_code,
                 detail=(getattr(resp, "text", "") or "")[:200])
@@ -246,6 +252,18 @@ class DraftKingsClient(PriceCallTallyMixin):
                          resp.status_code, (resp.text or "")[:200])
             return {}
         return parse_added_leg_odds(json_or_raise(BOOK, "price", resp), base)
+
+    def _warn_blocked(self, status_code: int) -> None:
+        now = time.monotonic()
+        last = getattr(self, "_last_blocked_warning_at", None)
+        if last is not None and now - last < BLOCKED_WARNING_INTERVAL_SEC:
+            return
+        self._last_blocked_warning_at = now
+        logger.warning(
+            "draftkings: SGP builder answered HTTP %s — DK may be blocking "
+            "us. Drop draftkings from SGP_BOOKS / RFI_BOOKS and restart "
+            "before a rule reaches DK's read endpoints (mlb_sgp/README.md "
+            "§ DK same-game pricing via the SGP builder).", status_code)
 
     def list_events(self) -> list[Event]:
         """Returns one Event per MLB game today.
