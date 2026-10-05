@@ -2109,7 +2109,9 @@ fill fairs) every 60 s while visible; nothing is written.
   game's start, and BetOnline the time it was **placed** (its report has no
   settle time), so a BetOnline bet lands on the day you placed it. Kalshi's
   multivariate combos (`KXMVECROSSCATEGORY`, the MLB bots' RFQ fills on the
-  same account) are their own type, "Kalshi combo". Won pays
+  same account) are their own type, "Kalshi combo", and stay out of every
+  total unless the header's **Bot combos** toggle is on (Cal, 2026-10-05:
+  the bots have their own monitor). Won pays
   `toWin`, lost costs `stake`, push and void are 0. Open bets are exposure,
   not P&L; a Kalshi position sold before settlement (`closed`) and a bet whose
   result is gone (`unknown`, e.g. Bet105 once it leaves the open list) have no

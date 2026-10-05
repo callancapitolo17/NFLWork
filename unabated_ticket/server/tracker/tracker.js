@@ -32,8 +32,13 @@
   const state = Object.assign({
     view: "overview", range: "30D", units: false, unitSize: 100,
     groupBy: "venue", kind: "All", offVenues: [], offLeagues: [], query: "", logLimit: LOG_PAGE,
+    // Cal's decision 2026-10-05: the Kalshi bots' combo fills stay out of every
+    // total unless this is switched on (they have their own monitor, port 8092).
+    includeBotCombos: false,
   }, loadPrefs(), { view: location.hash === "#analysis" ? "analysis" : "overview" });
+  const BOT_COMBO_KIND = "Kalshi combo";
   let payload = null;
+  let allTickets = [];
   let tickets = [];
 
   // ---- prefs ----------------------------------------------------------------
@@ -44,6 +49,7 @@
       const prefs = {};
       if (RANGES.includes(saved.range)) prefs.range = saved.range;
       if (typeof saved.units === "boolean") prefs.units = saved.units;
+      if (typeof saved.includeBotCombos === "boolean") prefs.includeBotCombos = saved.includeBotCombos;
       if (Number.isFinite(saved.unitSize) && saved.unitSize > 0) prefs.unitSize = saved.unitSize;
       return prefs;
     } catch (_error) {
@@ -53,7 +59,7 @@
 
   function savePrefs() {
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, units: state.units, unitSize: state.unitSize }));
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, units: state.units, unitSize: state.unitSize, includeBotCombos: state.includeBotCombos }));
     } catch (_error) {
       // Private window or blocked storage: the choice lasts until reload.
     }
@@ -406,7 +412,7 @@
     const { first, last } = rangeDays();
     chips("f-venues", valuesByCount("venue"), "offVenues");
     chips("f-leagues", valuesByCount("league"), "offLeagues");
-    segButtons("f-kinds", KINDS, (k) => k === state.kind, (k) => { state.kind = k; state.logLimit = LOG_PAGE; render(); });
+    segButtons("f-kinds", KINDS.filter((k) => k !== BOT_COMBO_KIND || state.includeBotCombos), (k) => k === state.kind, (k) => { state.kind = k; state.logLimit = LOG_PAGE; render(); });
     segButtons("group-tabs", stats.GROUPS, (g) => g.key === state.groupBy, (g) => { state.groupBy = g.key; render(); });
 
     const settled = filteredSettled();
@@ -539,6 +545,7 @@
     document.getElementById("show-dollars").setAttribute("aria-pressed", String(!state.units));
     document.getElementById("show-units").setAttribute("aria-pressed", String(state.units));
     document.getElementById("unit-size-label").hidden = !state.units;
+    document.getElementById("bot-combos").setAttribute("aria-pressed", String(state.includeBotCombos));
     const unitInput = document.getElementById("unit-size");
     if (document.activeElement !== unitInput) unitInput.value = String(state.unitSize);
   }
@@ -569,12 +576,17 @@
     banner.textContent = text || "";
   }
 
+  function applyBotComboFilter() {
+    tickets = state.includeBotCombos ? allTickets : allTickets.filter((t) => t.kind !== BOT_COMBO_KIND);
+  }
+
   async function refresh() {
     try {
       const response = await fetch(BETS_URL, { cache: "no-store" });
       if (!response.ok) throw new Error("the bets service answered HTTP " + response.status);
       payload = await response.json();
-      tickets = stats.buildTickets(payload.bets, payload.fillFairs);
+      allTickets = stats.buildTickets(payload.bets, payload.fillFairs);
+      applyBotComboFilter();
       showBanner(null);
     } catch (error) {
       showBanner("Could not load bets: " + error.message + (payload ? ". Showing the last load." : "."));
@@ -592,6 +604,12 @@
     }
     document.getElementById("show-dollars").addEventListener("click", () => { state.units = false; savePrefs(); render(); });
     document.getElementById("show-units").addEventListener("click", () => { state.units = true; savePrefs(); render(); });
+    document.getElementById("bot-combos").addEventListener("click", () => {
+      state.includeBotCombos = !state.includeBotCombos;
+      if (!state.includeBotCombos && state.kind === BOT_COMBO_KIND) state.kind = "All";
+      state.logLimit = LOG_PAGE;
+      savePrefs(); applyBotComboFilter(); render();
+    });
     document.getElementById("unit-size").addEventListener("change", (event) => {
       const size = Number(event.target.value);
       if (Number.isFinite(size) && size > 0) { state.unitSize = size; savePrefs(); }
