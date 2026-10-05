@@ -2120,6 +2120,37 @@ fill fairs) every 60 s while visible; nothing is written.
   both `/tracker` and `/tracker/`) and sets per-element styles through the
   CSSOM, since the service's CSP blocks inline style attributes.
 
+#### On your phone, served from the Mac (current setup, 2026-10-05)
+
+The Mac is the primary host for now: it has every book's login, the full
+`bets.duckdb` and the Bet105 extension (the VM cannot pass BetMGM/ProphetX
+geo checks or mint Cloudflare cookies). `tailscale serve` puts the Mac's
+bets service on your tailnet, the same way the VM does, so the phone opens
+the tracker (and the Edges page at `/`) from anywhere while the Mac is awake.
+
+1. Install Tailscale on the Mac (Mac App Store or tailscale.com) and log in
+   with the account your phone uses. In the admin console's DNS page,
+   MagicDNS and **HTTPS Certificates** must be on.
+2. Serve the bets service (the CLI ships inside the app):
+   ```bash
+   TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale
+   $TS serve --bg 8094          # https://<mac>.<tailnet>.ts.net/ -> 127.0.0.1:8094, survives restarts
+   $TS serve status             # prints the https:// name
+   ```
+3. Let the service accept that name (the #125 Host guard 403s any other):
+   add `BETS_EXTRA_ALLOWED_HOSTS=<mac>.<tailnet>.ts.net` (lowercase, no
+   `https://`, no port) to `unabated_ticket/bets_service/.env`, then
+   `launchctl kickstart -k gui/$(id -u)/com.nflwork.bets-service`.
+4. On the phone (Tailscale app on, same account) open
+   `https://<mac>.<tailnet>.ts.net/tracker`.
+5. Keep the Mac reachable: on the charger, System Settings > Battery >
+   Options > "Prevent automatic sleeping when the display is off" (or
+   `sudo pmset -c sleep 0`). A closed lid still sleeps a laptop unless an
+   external display is attached.
+
+Nothing listens publicly: the service stays bound to 127.0.0.1 and only
+devices on your tailnet reach the name. `$TS serve reset` takes it off.
+
 ### Step 4: deploy (`deploy/`)
 
 Docker Compose on the VM runs both processes, each still bound to

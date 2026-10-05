@@ -90,7 +90,10 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
    `https://<name>/` (Edges) or `https://<name>/tracker` (Bet Tracker).
 10. **Book logins: BFA, Wagerzon, BetOnline** (2026-10-05, Cal's call: these
    books don't mind a data-center login). With all three on the VM the
-   tracker covers every polled book with the Mac off.
+   tracker covers every polled book with the Mac off. **Only when the VM
+   becomes the primary host:** while the Mac is (the current setup, main
+   README § Bet Tracker), skip this step, because moving BetOnline's token
+   takes it away from the Mac.
    - **BFA and Wagerzon** are plain password logins, so the Mac can keep its
      own. Add four lines to `~/NFLWork/unabated_ticket/bets_service/.env`
      with an editor: `BFA_USERNAME`, `BFA_PASSWORD`, `WAGERZONC_USERNAME`,
