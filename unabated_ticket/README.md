@@ -1962,7 +1962,8 @@ Mac; one that is `ok` can move.
 **Result on the VM (2026-10-01):** Kalshi ok (221 records; 341 s on a first
 read, its per-market lookups are paced 0.6 s apart), Polymarket US ok, the
 Unabated feed ok. Novig awaits its own login; BFA, Wagerzon and BetOnline were
-not tested (see step 4). The VM has no `python3-venv`; running the check in a
+not tested (see step 4). **2026-10-05:** Cal decided those three books don't
+mind a data-center login, so they move to the VM (`deploy/README.md` step 10). The VM has no `python3-venv`; running the check in a
 `python:3.12-slim` container with the repo mounted works without it.
 
 ### Step 1: the Edges list, headless (`server/runner.js`)
@@ -2081,6 +2082,83 @@ node unabated_ticket/server/runner.js                     # must be running too 
   `ladder.js`, `condkelly.js`, `betsview.js`, `edgemove.js`, `fillfair.js`,
   `tailflex.js` and `edgerows.js`, loaded unchanged as plain scripts.
 
+### Bet Tracker (`server/tracker/`)
+
+Daily P&L and bet analysis, read-only, served by the bets service at
+`/tracker` (on the VM: `https://<vm>.<tailnet>.ts.net/tracker`). It reads
+`GET /bets.json?days=3650` (every bet the service has stored, plus the saved
+fill fairs) every 60 s while visible; nothing is written.
+
+- **Overview**: net P&L, ROI, handle, record, open risk; expected P&L at
+  Unabated's fair at fill and actual vs expected with its z-score; cumulative
+  actual vs expected chart with daily bars; a 6-week calendar heatmap; daily
+  results; P&L by venue; open bets with price, fair and edge.
+- **Analysis**: filter by venue, league and type (straight, parlay, teaser),
+  group by venue, league, market, period, type, odds, edge at fill, timing
+  (hours placed before start), weekday or stake. Each group shows ROI with its
+  95% interval (proven only when the interval clears zero), expected ROI,
+  actual vs expected and z. Calibration of fair win probability against the
+  actual win rate (straights with a fair), and a searchable bet log.
+- **Header**: range (7D, 30D, 90D, YTD, All), $ / units with the unit size
+  (default $100; range, units and unit size are remembered in the browser),
+  and how many venues' last poll succeeded.
+- **Rules** (`trackerstats.js`, pure, tested in `tests/trackerstats.test.js`):
+  P&L lands on the **Pacific** day of the record's `closedAt`, which each
+  venue fills differently: Kalshi the market's expiration, Polymarket US its
+  resolution, Novig the ticket's settle time, BFA its grade time, Wagerzon the
+  game's start, and BetOnline the time it was **placed** (its report has no
+  settle time), so a BetOnline bet lands on the day you placed it. Kalshi's
+  multivariate combos (`KXMVECROSSCATEGORY`, the MLB bots' RFQ fills on the
+  same account) are their own type, "Kalshi combo", and count in every total
+  by default (Cal, 2026-10-05); switching off the header's **Bot combos**
+  toggle hides them. Won pays
+  `toWin`, lost costs `stake`, push and void are 0. Open bets are exposure,
+  not P&L; a Kalshi position sold before settlement (`closed`) and a bet whose
+  result is gone (`unknown`, e.g. Bet105 once it leaves the open list) have no
+  known P&L and are counted as "without a result". A parlay or teaser is one
+  ticket (its legs carry the ticket's stake and status). Edge = fair
+  probability × the ticket's actual payout − 1, so expected P&L, z and
+  calibration cover only bets with a saved fill fair; the rest group under
+  "No fair saved". Kalshi fees are not in Kalshi's `toWin`, so its P&L is
+  before fees.
+- **History** is whatever this service's `bets.duckdb` holds: sources pull
+  about 31 days back, and records are kept from then on. A service started on
+  a fresh database (the VM) starts its history there.
+- **CSP**: the page loads only its own files by absolute path (it is served at
+  both `/tracker` and `/tracker/`) and sets per-element styles through the
+  CSSOM, since the service's CSP blocks inline style attributes.
+
+#### On your phone, served from the Mac (current setup, 2026-10-05)
+
+The Mac is the primary host for now: it has every book's login, the full
+`bets.duckdb` and the Bet105 extension (the VM cannot pass BetMGM/ProphetX
+geo checks or mint Cloudflare cookies). `tailscale serve` puts the Mac's
+bets service on your tailnet, the same way the VM does, so the phone opens
+the tracker (and the Edges page at `/`) from anywhere while the Mac is awake.
+
+1. Install Tailscale on the Mac (Mac App Store or tailscale.com) and log in
+   with the account your phone uses. In the admin console's DNS page,
+   MagicDNS and **HTTPS Certificates** must be on.
+2. Serve the bets service (the CLI ships inside the app):
+   ```bash
+   TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale
+   $TS serve --bg 8094          # https://<mac>.<tailnet>.ts.net/ -> 127.0.0.1:8094, survives restarts
+   $TS serve status             # prints the https:// name
+   ```
+3. Let the service accept that name (the #125 Host guard 403s any other):
+   add `BETS_EXTRA_ALLOWED_HOSTS=<mac>.<tailnet>.ts.net` (lowercase, no
+   `https://`, no port) to `unabated_ticket/bets_service/.env`, then
+   `launchctl kickstart -k gui/$(id -u)/com.nflwork.bets-service`.
+4. On the phone (Tailscale app on, same account) open
+   `https://<mac>.<tailnet>.ts.net/tracker`.
+5. Keep the Mac reachable: on the charger, System Settings > Battery >
+   Options > "Prevent automatic sleeping when the display is off" (or
+   `sudo pmset -c sleep 0`). A closed lid still sleeps a laptop unless an
+   external display is attached.
+
+Nothing listens publicly: the service stays bound to 127.0.0.1 and only
+devices on your tailnet reach the name. `$TS serve reset` takes it off.
+
 ### Step 4: deploy (`deploy/`)
 
 Docker Compose on the VM runs both processes, each still bound to
@@ -2101,8 +2179,9 @@ the "nothing public listens" check: `deploy/README.md`.
   defaults next to the package.
 - **Secrets are files, never in an image**: the Kalshi `.pem` mounted
   read-only, `bets_service/.env` (Kalshi key id, Polymarket US keys) inside
-  the read-only repo mount. No `bet_logger/.env`: BFA, Wagerzon and
-  BetOnline are "not configured" there.
+  the read-only repo mount, with the BFA and Wagerzon logins since
+  2026-10-05; BetOnline's rotating token file is moved (never copied) into
+  the data dir (`deploy/README.md` step 10).
 - **`BETS_EXTRA_ALLOWED_HOSTS`** in `deploy/.env` is the tailnet name the
   #125 Host guard must accept (Bets service above).
 

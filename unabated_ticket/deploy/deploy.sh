@@ -99,10 +99,6 @@ main() {
   # Docker would create a missing bind source as root; the service runs as DEPLOY_UID.
   mkdir -p "$data_dir/logs"
   chmod 700 "$data_dir"
-  if [ -f "$repo_root/bet_logger/.env" ]; then
-    echo "WARN  ${repo_root}/bet_logger/.env exists: the bets service reads it, so BFA/Wagerzon" \
-         "would log in from this VM. Remove it unless you meant to move those books here." >&2
-  fi
 
   local compose=(docker compose --project-directory "$deploy_dir" -f "$deploy_dir/compose.yaml")
   echo "==> docker compose build"
@@ -115,6 +111,7 @@ main() {
   check "bets service"             /health     "$LOOPBACK_HOST" 200 || failed=1
   check "tailnet name allowed"     /health     "$tailnet_host"  200 || failed=1
   check "phone page"               /           "$tailnet_host"  200 || failed=1
+  check "bet tracker"              /tracker    "$tailnet_host"  200 || failed=1
   check "edges via the runner"     /edges.json "$tailnet_host"  200 || failed=1
   check "foreign Host refused"     /health     "$FOREIGN_HOST"  403 || failed=1
 
