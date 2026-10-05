@@ -17,7 +17,7 @@
   const PREFS_KEY = "betTracker.prefs";
   const RANGES = ["7D", "30D", "90D", "YTD", "All"];
   const RANGE_DAYS = { "7D": 7, "30D": 30, "90D": 90 };
-  const KINDS = ["All", "Straight", "Parlay", "Teaser"];
+  const KINDS = ["All", "Straight", "Parlay", "Teaser", "Kalshi combo"];
   const DAILY_ROWS = 14;
   const LOG_PAGE = 50;
   const CALENDAR_WEEKS = 6;

@@ -2103,7 +2103,13 @@ fill fairs) every 60 s while visible; nothing is written.
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
 - **Rules** (`trackerstats.js`, pure, tested in `tests/trackerstats.test.js`):
-  P&L lands on the **Pacific** day the bet settled (`closedAt`). Won pays
+  P&L lands on the **Pacific** day of the record's `closedAt`, which each
+  venue fills differently: Kalshi the market's expiration, Polymarket US its
+  resolution, Novig the ticket's settle time, BFA its grade time, Wagerzon the
+  game's start, and BetOnline the time it was **placed** (its report has no
+  settle time), so a BetOnline bet lands on the day you placed it. Kalshi's
+  multivariate combos (`KXMVECROSSCATEGORY`, the MLB bots' RFQ fills on the
+  same account) are their own type, "Kalshi combo". Won pays
   `toWin`, lost costs `stake`, push and void are 0. Open bets are exposure,
   not P&L; a Kalshi position sold before settlement (`closed`) and a bet whose
   result is gone (`unknown`, e.g. Bet105 once it leaves the open list) have no

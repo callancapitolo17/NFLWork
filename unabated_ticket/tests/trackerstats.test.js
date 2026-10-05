@@ -65,6 +65,17 @@ test("a parlay's legs collapse to one ticket on the ticket's stake; a teaser is 
   assert.equal(teaser.fairProb, null);
 });
 
+test("a Kalshi multivariate combo (the bots' RFQ fills) is its own type, not a straight", () => {
+  const [combo] = stats.buildTickets([straight({
+    id: "kalshi:KXMVECROSSCATEGORY-X:yes", venue: "kalshi", league: null, betType: "other", side: null,
+    raw: { series: "KXMVECROSSCATEGORY", marketTitle: "yes Dodgers, yes Over 8.5" },
+  })], []);
+  assert.equal(combo.kind, "Kalshi combo");
+  assert.equal(combo.market, "Kalshi combo");
+  assert.equal(combo.selection, "yes Dodgers, yes Over 8.5");
+  assert.deepEqual(stats.groupBy([combo], "kind").map((r) => r.label), ["Kalshi combo"]);
+});
+
 test("edge and expected P&L come from the saved fair and the ticket's actual payout", () => {
   // -110 pays 100 on 110 (decimal 1.909); a fair of -130 is p = 0.5652.
   const [ticket] = stats.buildTickets([straight()], [{ betId: "novig:1", fairAmerican: -130 }]);

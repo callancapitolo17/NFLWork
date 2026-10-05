@@ -34,7 +34,10 @@
     wagerzon: "Wagerzon", polymarket_us: "Polymarket US", bet105: "Bet105",
   };
   const BET_TYPE_NAMES = { moneyline: "Moneyline", spread: "Spread", total: "Total", other: "Other" };
-  const KIND_NAMES = { straight: "Straight", parlay: "Parlay", teaser: "Teaser" };
+  const KIND_NAMES = { straight: "Straight", parlay: "Parlay", teaser: "Teaser", kalshiCombo: "Kalshi combo" };
+  // Kalshi's multivariate combo series: the MLB bots' RFQ fills (kalshi_mlb_mm,
+  // kalshi_mlb_rfq) on the same account land in the bets service as these.
+  const KALSHI_COMBO_SERIES = "KXMVECROSSCATEGORY";
 
   const ODDS_BUCKETS = ["−200 or shorter", "−199 to −121", "−120 to +120", "+121 to +199", "+200 and up"];
   const EDGE_BUCKETS = ["Under 0%", "0 to 2%", "2 to 4%", "4 to 6%", "6% and up"];
@@ -49,7 +52,7 @@
     { key: "league", label: "League" },
     { key: "market", label: "Market" },
     { key: "period", label: "Period" },
-    { key: "kind", label: "Type", order: ["Straight", "Parlay", "Teaser"] },
+    { key: "kind", label: "Type", order: ["Straight", "Parlay", "Teaser", "Kalshi combo"] },
     { key: "oddsBucket", label: "Odds", order: ODDS_BUCKETS },
     { key: "edgeBucket", label: "Edge", order: EDGE_BUCKETS.concat(NO_FAIR) },
     { key: "timing", label: "Timing", order: TIMING_BUCKETS },
@@ -221,10 +224,16 @@
     });
   }
 
+  function isKalshiCombo(record) {
+    return record.venue === "kalshi" && (record.raw || {}).series === KALSHI_COMBO_SERIES;
+  }
+
   function straightTicket(record, fairAmerican) {
+    const combo = isKalshiCombo(record);
     return finishTicket({
       id: record.id, venueKey: record.venue, venue: venueName(record.venue), league: leagueName(record.league),
-      kind: KIND_NAMES.straight, market: BET_TYPE_NAMES[record.betType] || "Other",
+      kind: combo ? KIND_NAMES.kalshiCombo : KIND_NAMES.straight,
+      market: combo ? KIND_NAMES.kalshiCombo : BET_TYPE_NAMES[record.betType] || "Other",
       period: record.period || "FG", event: eventLabel(record), selection: selectionLabel(record),
       price: record.price, stake: Number(record.stake) || 0, toWin: record.toWin,
       status: record.status, placedAt: record.placedAt, closedAt: record.closedAt, eventStart: record.eventStart || null,
