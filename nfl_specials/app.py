@@ -236,9 +236,6 @@ def _line_json(line, sizing) -> dict:
         "note": line.note,
         "books": books,
         "is_superfecta": line.is_superfecta(),
-        "sf_share": line.sf_share.share if line.sf_share else None,
-        "dk_price_with_vig": (decimal_to_american(line.sf_share.sgp_decimal)
-                              if line.sf_share and line.sf_share.sgp_decimal else None),
         "fair_prob": sizing.fair_prob,
         "fair_american": _american(sizing.fair_prob),
         "ev": sizing.ev,

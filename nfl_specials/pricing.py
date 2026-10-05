@@ -46,8 +46,6 @@ class ScoresFirstShare:
     share: float | None            # P(team scores first | the special's other legs)
     n_calls: int
     reason: str | None = None      # why share is None
-    sgp_decimal: float | None = None  # the book's own (vigged) price for the whole
-                                      # special, when it is a single SGP
 
 
 @dataclass(frozen=True)
@@ -237,5 +235,4 @@ def scores_first_share(book: SgpBook, game: BookGame, role: str, fecta: Fecta) -
                 return ScoresFirstShare(book.name, None, calls, reason=f"declined: {labels}")
             implied[first] += 1.0 / decimal
     share = implied[team_scores_first] / (implied[team_scores_first] + implied[opponent_scores_first])
-    own_price = 1.0 / implied[team_scores_first] if len(rest_cells) == 1 else None
-    return ScoresFirstShare(book.name, share, calls, sgp_decimal=own_price)
+    return ScoresFirstShare(book.name, share, calls)

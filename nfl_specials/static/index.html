@@ -509,14 +509,9 @@ function setPref(key, value) {
 // --- one special --------------------------------------------------------------
 function booksLine(line) {
   if (line.is_superfecta) {
-    const part = line.books.DraftKings;
-    const periods = line.legs.filter(l => l.kind !== "scores_first").map(l => PERIOD_LABEL[l.period] || l.period).join("/");
-    const pieces = [
-      `DK ${periods} part ${part && part.fair_american != null ? signed(part.fair_american) : "–"}`,
-      `× ${line.team} scores first ${line.sf_share != null ? Math.round(line.sf_share * 100) + "%" : "–"}`,
-    ];
-    if (line.dk_price_with_vig != null) pieces.push(`· DK price ${signed(line.dk_price_with_vig)} incl. vig`);
-    return el("div", { class: "books-line num", text: pieces.join(" ") });
+    // DraftKings is the only superfecta book; its fair is the row's fair.
+    const text = line.fair_american != null ? `DK ${signed(line.fair_american)}` : "DK –";
+    return el("div", { class: "books-line num", text });
   }
   const names = BOOK_ORDER.filter(n => n in line.books);
   const priced = names.filter(n => line.books[n].fair_prob != null);
