@@ -55,9 +55,10 @@ def test_college_first_half_total_is_cfb_with_the_home_rotation(records):
     assert (record["status"], record["closedAt"]) == ("won", "2026-09-12T19:33:46Z")  # placed time: a lower bound
 
 
-def test_settled_row_closes_at_its_grade_time_when_the_report_fills_it(report):
+@pytest.mark.parametrize("field", betonline.GRADED_FIELD_CANDIDATES)
+def test_settled_row_closes_at_its_graded_date_when_the_report_fills_it(report, field):
     row = dict(next(r for r in report["Data"] if r["Id"] == "995445752-1"),
-               GradeDateTime="2026-09-12T20:05:00")
+               GradeDateTime=None, **{field: "2026-09-12T20:05:00"})
     (record,) = normalize_row(row, FETCHED_AT)
     assert record["closedAt"] == "2026-09-13T04:05:00Z"  # report clock is UTC-8
 

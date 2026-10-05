@@ -2106,7 +2106,7 @@ fill fairs) every 60 s while visible; nothing is written.
   P&L lands on the **Pacific** day of the record's `closedAt`, which each
   venue fills differently: Kalshi the market's expiration, Polymarket US its
   resolution, Novig the ticket's settle time, BFA its grade time, Wagerzon the
-  game's start, and BetOnline its `GradeDateTime` when the report fills it,
+  game's start, and BetOnline its graded date ("Graded Date") when the report fills it,
   else the time it was **placed** (that field was null on every settled row of
   the 2026-09-15 pull), so such a BetOnline bet lands on the day you placed it. Kalshi's
   multivariate combos (`KXMVECROSSCATEGORY`, the MLB bots' RFQ fills on the
