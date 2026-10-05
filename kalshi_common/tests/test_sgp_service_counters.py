@@ -259,4 +259,8 @@ def test_hooks_without_counters_still_work(monkeypatch):
 
 
 class _FakeEvent:
+    """Attribute-style (MGM/CZR Event) and dict-style (DK's event dict)."""
     event_id = "e1"
+
+    def __getitem__(self, key):
+        return {"dk_event_id": "e1"}[key]

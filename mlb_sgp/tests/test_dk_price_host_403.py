@@ -137,13 +137,18 @@ def test_trifecta_imports_the_shared_price_url():
     assert trifecta.DK_CALCULATE_BETS_URL == DK_CALCULATE_BETS_URL
 
 
-def test_on_demand_price_path_shares_the_same_url_constant():
-    """``price_selection_set`` is the on-demand (live quote) price call. It
-    must be fixed by the same constant, or on-demand stays dark while the
-    sweep recovers."""
-    from mlb_sgp import draftkings
-    src = inspect.getsource(draftkings.price_selection_set)
-    assert "DK_CALCULATE_BETS_URL" in src
+def test_on_demand_price_path_uses_the_sgp_builder_not_the_wager_host():
+    """``price_selection_set`` is the on-demand (live quote) price call. Since
+    2026-10-04 it prices through DK's SGP-builder GET on sportsbook-nash; the
+    Akamai-gated calculateBets (issue #102) stays with the sweep and the
+    trifecta scraper only."""
+    from mlb_sgp import dk_client, draftkings
+    assert "DK_CALCULATE_BETS_URL" not in inspect.getsource(
+        draftkings.price_selection_set)
+    assert "DK_SGP_PRICE_URL" in inspect.getsource(
+        dk_client.DraftKingsClient._get_added_leg_odds)
+    assert dk_client.DK_SGP_PRICE_URL.startswith(
+        "https://sportsbook-nash.draftkings.com/")
 
 
 # --------------------------------------------------------------------------- #
