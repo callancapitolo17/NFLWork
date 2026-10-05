@@ -708,7 +708,8 @@ def new_session() -> requests.Session:
 
 
 class BFASource:
-    """Source protocol implementation for the BFA account (history GETs only).
+    """Source protocol implementation for the BFA account (GETs only; bfa_teaser.py places
+    teasers on this same session through authorized() and open_wagers()).
 
     `session_factory()` builds an HTTP session with .get()/.post() (requests by
     default; tests inject a fake). The Keycloak session — access token with its
@@ -811,6 +812,19 @@ class BFASource:
             if self._refresh_token is not None and self._refresh():
                 return
             self._login()
+
+    # -- for the teaser placer (bfa_teaser.py) ------------------------------------------
+
+    def authorized(self) -> tuple[dict, str]:
+        """(request headers carrying the bearer token, player id) on this source's one
+        Keycloak session, for another caller of BFA's API in this process."""
+        self._ensure_access_token()
+        return {"Authorization": f"Bearer {self._access_token}", **BASE_HEADERS}, self._player_id
+
+    def open_wagers(self) -> list[dict]:
+        """The account's GetPlayerOpenBets rows, as fetched (not normalised)."""
+        self._ensure_access_token()
+        return self._fetch_open_bets()
 
     # -- history ----------------------------------------------------------------------
 
