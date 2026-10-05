@@ -13,9 +13,9 @@
 # novig_token.json (rewritten on every Auth0 rotation), logs/.
 # Secrets are files on the host, never in an image: the Kalshi .pem
 # (${KALSHI_PEM_PATH}, read-only) and unabated_ticket/bets_service/.env
-# (gitignored, inside the read-only repo mount: KALSHI_API_KEY_ID and the
-# POLYMARKET_US_* keys). bet_logger/.env is not used here, so BFA, Wagerzon
-# and BetOnline report "not configured".
+# (gitignored, inside the read-only repo mount: KALSHI_API_KEY_ID, the
+# POLYMARKET_US_* keys and the BFA / Wagerzon logins). BetOnline's rotating
+# token file lives in ${UNABATED_DATA_DIR} (README step 10).
 
 name: unabated-ticket
 
@@ -42,7 +42,7 @@ services:
       BETS_SERVICE_LOG_PATH: /data/logs/bets_service.log
       BETS_SERVICE_LOG_CONSOLE: "1"
       NOVIG_TOKEN_PATH: /data/novig_token.json
-      # Not configured unless a cookie file is moved here on purpose (README step 0).
+      # Moved here from the Mac, never copied: its refresh token rotates (README step 10).
       BETS_BETONLINE_COOKIES_PATH: /data/recon_betonline_cookies.json
       KALSHI_PRIVATE_KEY_PATH: /run/secrets/kalshi.pem
       BETS_EXTRA_ALLOWED_HOSTS: "${BETS_EXTRA_ALLOWED_HOSTS:?set BETS_EXTRA_ALLOWED_HOSTS in deploy/.env (the VM's MagicDNS name)}"

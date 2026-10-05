@@ -1962,7 +1962,8 @@ Mac; one that is `ok` can move.
 **Result on the VM (2026-10-01):** Kalshi ok (221 records; 341 s on a first
 read, its per-market lookups are paced 0.6 s apart), Polymarket US ok, the
 Unabated feed ok. Novig awaits its own login; BFA, Wagerzon and BetOnline were
-not tested (see step 4). The VM has no `python3-venv`; running the check in a
+not tested (see step 4). **2026-10-05:** Cal decided those three books don't
+mind a data-center login, so they move to the VM (`deploy/README.md` step 10). The VM has no `python3-venv`; running the check in a
 `python:3.12-slim` container with the repo mounted works without it.
 
 ### Step 1: the Edges list, headless (`server/runner.js`)
@@ -2139,8 +2140,9 @@ the "nothing public listens" check: `deploy/README.md`.
   defaults next to the package.
 - **Secrets are files, never in an image**: the Kalshi `.pem` mounted
   read-only, `bets_service/.env` (Kalshi key id, Polymarket US keys) inside
-  the read-only repo mount. No `bet_logger/.env`: BFA, Wagerzon and
-  BetOnline are "not configured" there.
+  the read-only repo mount, with the BFA and Wagerzon logins since
+  2026-10-05; BetOnline's rotating token file is moved (never copied) into
+  the data dir (`deploy/README.md` step 10).
 - **`BETS_EXTRA_ALLOWED_HOSTS`** in `deploy/.env` is the tailnet name the
   #125 Host guard must accept (Bets service above).
 
