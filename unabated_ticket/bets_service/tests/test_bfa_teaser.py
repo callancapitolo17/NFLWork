@@ -393,7 +393,8 @@ def serve_with(tmp_path):
 
     def start(placer):
         store = BetsStore(tmp_path / "bets.duckdb", 7)
-        server = ThreadingHTTPServer(("127.0.0.1", 0), service.make_handler(store, 0.0, ["bfa"], placer))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), service.make_handler(
+            store, 0.0, ["bfa"], extra_hosts=(TAILNET_HOST,), teaser_placer=placer))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         servers.append((server, store))
         return f"http://127.0.0.1:{server.server_address[1]}", store
@@ -405,9 +406,13 @@ def serve_with(tmp_path):
         store.close()
 
 
-def post_place(url: str, body: object) -> tuple[int, dict]:
+TAILNET_HOST = "mac.tail1234.ts.net"
+
+
+def post_place(url: str, body: object, host: str | None = None) -> tuple[int, dict]:
+    headers = {"Content-Type": "application/json", **({"Host": host} if host else {})}
     request = urllib.request.Request(f"{url}/place_teaser.json", data=json.dumps(body).encode(), method="POST",
-                                     headers={"Content-Type": "application/json"})
+                                     headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
             return response.status, json.loads(response.read())
@@ -493,3 +498,11 @@ def test_a_second_ticket_while_one_is_placing_is_refused():
     result = placer.place(validate_place_request(REQUEST))
     assert result == {"status": "refused", "message": "Not placed: another ticket is being placed at BFA right now"}
     assert session.posts == [] and session.gets == []
+
+
+def test_a_name_tailscale_serve_forwards_can_read_but_never_place(serve_with):
+    placer = StubPlacer({"status": "placed", "message": ""})
+    url, _store = serve_with(placer)
+    status, reply = post_place(url, REQUEST, host=TAILNET_HOST)
+    assert status == 403 and "placing is for this machine only" in reply["error"]
+    assert placer.requests == []

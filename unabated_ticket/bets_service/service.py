@@ -61,10 +61,22 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     null resets it to the default, an unknown field or a bad
                                     value is a 400 naming it (same Content-Type guard as the
                                     POSTs: a web page cannot send JSON cross-origin)
+           GET /edges.json          the server runner's Edges list (config.RUNNER_URL,
+                                    server/edges_payload.js documents it), passed through
+                                    as it came; 502 {error, runnerUrl} when the runner
+                                    cannot be reached within config.RUNNER_TIMEOUT_SEC or
+                                    answers anything but 200 (phone page plan step 2:
+                                    one origin for the page, its reads and its PUT)
+           GET / and the phone page's files   STATIC_FILES, a fixed map of URL path ->
+                                    file (server/phone/ and the extension's pure modules
+                                    the page loads under /ext/); any other path is a 404,
+                                    so no request can name a file outside it
          Every verb refuses a request whose Host header is not the loopback
-         name the service is serving on (403): a page at evil.example whose
-         DNS flips to 127.0.0.1 is SAME-ORIGIN with this server, so neither
-         CORS nor the JSON Content-Type guard applies to it.
+         name the service is serving on, or a name in BETS_EXTRA_ALLOWED_HOSTS
+         (the tailnet name `tailscale serve` forwards; bare or :443), with
+         403: a page at evil.example whose DNS flips to 127.0.0.1 is
+         SAME-ORIGIN with this server, so neither CORS nor the JSON
+         Content-Type guard applies to it.
 Side effects: UPSERTs records into bets.duckdb::bets and APPENDs a row to
 bets.duckdb::source_runs per poll (see store.py); INSERTs into / DELETEs from
 bets.duckdb::team_crosswalk on the two crosswalk routes; UPSERTs / DELETEs
@@ -84,9 +96,12 @@ import math
 import signal
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from unabated_ticket.bets_service import bfa_teaser, config
@@ -112,6 +127,10 @@ MAX_CROSSWALK_ROWS_PER_POST = 1000
 # The only Host headers a request can carry (DNS rebinding sends its own name).
 LOOPBACK_HOST_NAMES = ("127.0.0.1", "localhost")
 HTTP_DEFAULT_PORT = 80
+# config.EXTRA_ALLOWED_HOSTS names arrive through `tailscale serve`'s HTTPS
+# proxy, so the browser sends them bare (443 is the scheme's default) or, from
+# a client that spells it out, with :443 — never with this service's port.
+HTTPS_DEFAULT_PORT = 443
 CROSSWALK_REQUIRED_FIELDS = ("venue", "league", "venueTeamKey", "unabatedTeamId")
 CROSSWALK_OPTIONAL_FIELDS = ("venueTeamName", "unabatedTeamName", "learnedFrom")
 # A bet names at most two teams, so one attach teaches at most two rows.
@@ -130,6 +149,40 @@ SETTINGS_PERIOD_IDS = range(1, 8)
 SETTINGS_BET_TYPE_IDS = (1, 2, 3)
 SETTINGS_BOOK_MODES = ("default", "all", "custom")
 SETTINGS_SORT_KEYS = ("edge", "stake", "start", "exposure")
+# The phone page (phone page plan step 2): every file the service serves, by
+# exact URL path. Nothing is resolved from the request, so `..`, encoded
+# slashes or a symlink cannot reach any other file. The extension modules are
+# the panel's own pure ones, loaded by the page as plain <script>s in the
+# order their globals need (index.html).
+UNABATED_TICKET_DIR = Path(__file__).resolve().parent.parent
+PHONE_DIR = UNABATED_TICKET_DIR / "server" / "phone"
+EXTENSION_DIR = UNABATED_TICKET_DIR / "extension"
+PHONE_EXTENSION_MODULES = (
+    "kelly.js", "feed.js", "teams.js", "bets.js", "ladder.js", "condkelly.js", "betsview.js",
+    "edgemove.js", "fillfair.js", "tailflex.js", "edgerows.js",
+)
+STATIC_FILES: dict[str, Path] = {
+    "/": PHONE_DIR / "index.html",
+    "/index.html": PHONE_DIR / "index.html",
+    "/phone.css": PHONE_DIR / "phone.css",
+    "/phone.js": PHONE_DIR / "phone.js",
+    "/phoneview.js": PHONE_DIR / "phoneview.js",
+    **{f"/ext/{name}": EXTENSION_DIR / name for name in PHONE_EXTENSION_MODULES},
+}
+STATIC_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+}
+# The page loads only its own files and talks only to this origin.
+PAGE_SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+# The runner is local (or on the tailnet), never behind the sandbox's HTTP proxy.
+_RUNNER_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 # Sources with no poll here: the extension POSTs their records (/bet105.json).
 # Listed so the panel reads "no completed poll yet" before the first push, not
 # "no source configured".
@@ -144,18 +197,23 @@ def _iso(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def allowed_hosts(port: int) -> tuple[str, ...]:
+def allowed_hosts(port: int, extra_hosts: tuple[str, ...] = ()) -> tuple[str, ...]:
     """The Host values a request to this port can carry. A browser omits the
-    scheme's default port, so on 80 the bare names are valid too."""
+    scheme's default port, so on 80 the bare names are valid too.
+    `extra_hosts` (config.EXTRA_ALLOWED_HOSTS, validated there) are the names
+    a reverse proxy on this machine forwards — the tailnet name behind
+    `tailscale serve` — each bare and with :443."""
     with_port = tuple(f"{name}:{port}" for name in LOOPBACK_HOST_NAMES)
-    return with_port + LOOPBACK_HOST_NAMES if port == HTTP_DEFAULT_PORT else with_port
+    loopback = with_port + LOOPBACK_HOST_NAMES if port == HTTP_DEFAULT_PORT else with_port
+    proxied = tuple(value for name in extra_hosts for value in (name, f"{name}:{HTTPS_DEFAULT_PORT}"))
+    return loopback + proxied
 
 
-def host_allowed(host_header: str | None, port: int) -> bool:
-    """Whether a request's Host names this loopback service. A browser sends
-    the name the page was loaded from, so a rebound evil.example does not
-    match — the one check that survives the attacker being same-origin."""
-    return (host_header or "").strip().lower() in allowed_hosts(port)
+def host_allowed(host_header: str | None, port: int, extra_hosts: tuple[str, ...] = ()) -> bool:
+    """Whether a request's Host names this service. A browser sends the name
+    the page was loaded from, so a rebound evil.example does not match — the
+    one check that survives the attacker being same-origin."""
+    return (host_header or "").strip().lower() in allowed_hosts(port, extra_hosts)
 
 
 def run_source_once(source: Source, store: BetsStore) -> bool:
@@ -426,6 +484,23 @@ def validate_settings_update(body: object, held: dict) -> dict | str:
     return merged
 
 
+def fetch_runner_edges(runner_url: str, timeout_sec: float) -> tuple[int, bytes]:
+    """(status, body) for GET /edges.json: the runner's body as it came on a
+    200, else 502 with a JSON error naming the runner URL and what failed.
+    Network: one GET of <runner_url>/edges.json, no proxy, `timeout_sec`."""
+    url = f"{runner_url}/edges.json"
+    try:
+        with _RUNNER_OPENER.open(url, timeout=timeout_sec) as response:
+            return 200, response.read()
+    except urllib.error.HTTPError as error:
+        problem = f"answered HTTP {error.code}"
+    except (urllib.error.URLError, OSError) as error:  # refused, reset, DNS, timeout
+        problem = f"unreachable ({getattr(error, 'reason', None) or error})"
+    error_body = {"error": f"server runner at {runner_url} {problem} for /edges.json; start it with "
+                           f"node unabated_ticket/server/runner.js", "runnerUrl": runner_url}
+    return 502, json.dumps(error_body).encode()
+
+
 def health_payload(store: BetsStore, started_at: float, source_names: list[str] = ()) -> dict:
     return {"ok": True, "generatedAt": _iso(_now()), "uptimeSec": int(time.monotonic() - started_at),
             "sources": source_status(store, list(source_names))}
@@ -446,8 +521,17 @@ def parse_days(query: str) -> int | str:
 
 
 def make_handler(store: BetsStore, started_at: float, source_names: list[str] = (),
+                 runner_url: str | None = None, runner_timeout_sec: float | None = None,
+                 extra_hosts: tuple[str, ...] | None = None,
                  teaser_placer: bfa_teaser.BFATeaserPlacer | None = None) -> type[BaseHTTPRequestHandler]:
+    """The request handler class. `runner_url` / `runner_timeout_sec` /
+    `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
+    EXTRA_ALLOWED_HOSTS (the tests pass their own). `teaser_placer` is the
+    Place button's (None: no BFA account is read, POST /place_teaser.json 503s)."""
     names = list(source_names)
+    proxied_host_names = tuple(extra_hosts) if extra_hosts is not None else config.EXTRA_ALLOWED_HOSTS
+    edges_runner_url = (runner_url or config.RUNNER_URL).rstrip("/")
+    edges_timeout_sec = runner_timeout_sec if runner_timeout_sec is not None else config.RUNNER_TIMEOUT_SEC
 
     class BetsHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — http.server's name
@@ -467,7 +551,23 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                     return
                 self._send_json(200, bets_payload(store, days, names))
                 return
+            if url.path == "/edges.json":
+                status, body = fetch_runner_edges(edges_runner_url, edges_timeout_sec)
+                self._send_bytes(status, body, "application/json")
+                return
+            if url.path in STATIC_FILES:
+                self._send_static(STATIC_FILES[url.path])
+                return
             self._send_json(404, {"error": f"no route for {url.path}"})
+
+        def _send_static(self, path: Path) -> None:
+            try:
+                body = path.read_bytes()
+            except OSError as error:
+                log.error("phone page file %s unreadable: %s", path, error)
+                self._send_json(404, {"error": f"phone page file {path.name} is missing on this server"})
+                return
+            self._send_bytes(200, body, STATIC_CONTENT_TYPES[path.suffix], PAGE_SECURITY_HEADERS)
 
         def do_POST(self) -> None:  # noqa: N802 — http.server's name
             if self._refused_foreign_host():
@@ -574,6 +674,13 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
         # place() is raised before the wager goes out, so it reads "Not placed". The open
         # bets read while confirming are stored at once, the BFA source's own way.
         def _place_teaser(self, body: object) -> None:
+            # Bets go out only for the panel on this machine: a name `tailscale
+            # serve` forwards (the phone page's) reads, it never places.
+            port = self.server.server_address[1]
+            if not host_allowed(self.headers.get("Host"), port):
+                self._send_json(403, {"error": f"placing is for this machine only (Host one of "
+                                               f"{list(allowed_hosts(port))}), got {self.headers.get('Host')!r}"})
+                return
             if teaser_placer is None:
                 self._send_json(503, {"error": "no BFA account is read: set BFA_USERNAME and BFA_PASSWORD "
                                                "(bet_logger/.env in the main checkout)"})
@@ -627,9 +734,10 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
         def _refused_foreign_host(self) -> bool:
             port = self.server.server_address[1]
             host = self.headers.get("Host")
-            if host_allowed(host, port):
+            if host_allowed(host, port, proxied_host_names):
                 return False
-            self._send_json(403, {"error": f"Host must be one of {list(allowed_hosts(port))}, got {host!r}"})
+            allowed = list(allowed_hosts(port, proxied_host_names))
+            self._send_json(403, {"error": f"Host must be one of {allowed}, got {host!r}"})
             return True
 
         # The parsed JSON body, or a (status, error payload) tuple to send. The
@@ -653,11 +761,15 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return 400, {"error": f"body is not JSON: {error}"}
 
         def _send_json(self, status: int, payload: dict) -> None:
-            body = json.dumps(payload).encode()
+            self._send_bytes(status, json.dumps(payload).encode(), "application/json")
+
+        def _send_bytes(self, status: int, body: bytes, content_type: str, extra_headers: dict | None = None) -> None:
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            for name, value in (extra_headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
 
@@ -678,7 +790,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
     stop = threading.Event()
     started_at = time.monotonic()
     source_names = [source.name for source in sources] + list(PUSHED_SOURCES)
-    server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names, teaser_placer_for(sources)))
+    server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
+                                                            teaser_placer=teaser_placer_for(sources)))
     server.daemon_threads = True
     poller = threading.Thread(target=poll_loop, args=(sources, store, stop), name="poll", daemon=True)
 
@@ -690,7 +803,9 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
     poller.start()
-    log.info("bets service on http://%s:%d (sources: %s)", host, port, ", ".join(source_names))
+    log.info("bets service on http://%s:%d (sources: %s); phone page at / with /edges.json from %s; "
+             "extra allowed hosts: %s", host, port, ", ".join(source_names), config.RUNNER_URL,
+             ", ".join(config.EXTRA_ALLOWED_HOSTS) or "none")
     try:
         server.serve_forever()
     finally:

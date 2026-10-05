@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#161c23" media="(prefers-color-scheme: dark)">
+  <title>Unabated Ticket</title>
+  <link rel="stylesheet" href="phone.css">
+</head>
+<body>
+  <!-- Unabated Ticket on a phone (phone page plan step 2). Read-only: it lists
+       the server runner's Edges, your open bets and the runner's settings; you
+       bet in the book's own app. Served by the bets service, one origin. -->
+  <header class="top">
+    <div class="top-row">
+      <h1 class="brand">Unabated Ticket</h1>
+      <span id="fresh" class="fresh"></span>
+    </div>
+    <div id="banners" class="banners"></div>
+  </header>
+
+  <main>
+    <section id="view-edges" class="view" aria-labelledby="tab-edges">
+      <div id="edges-status" class="status-line"></div>
+      <div id="edges-books" class="status-line"></div>
+      <div id="edges-tailflex" class="status-line" hidden></div>
+      <ol id="edges-list" class="edges-list"></ol>
+      <div id="edges-empty" class="pane-note" hidden></div>
+    </section>
+
+    <section id="view-bets" class="view" aria-labelledby="tab-bets" hidden>
+      <div class="bets-summary">
+        <span class="risk" id="bets-risk"></span>
+        <span class="cap" id="bets-risk-caption"></span>
+      </div>
+      <div id="bets-needs-block" class="needs-block" hidden>
+        <h2 class="section-label needs">Needs a game <span id="bets-needs-count" class="num"></span></h2>
+        <div class="pane-note">Not matched to a game on the board, so left out of the next stake on its game. Attach it from the desktop panel.</div>
+        <ol id="bets-needs" class="bets-list"></ol>
+      </div>
+      <div id="bets-fix-block" class="needs-block" hidden>
+        <h2 class="section-label needs">Needs a code fix <span id="bets-fix-count" class="num"></span></h2>
+        <div class="pane-note">The bets service could not read these bets; the venue's parser needs a fix.</div>
+        <ol id="bets-fix" class="bets-list"></ol>
+      </div>
+      <h2 class="section-label">Venues</h2>
+      <div class="venues" id="bets-sources"></div>
+
+      <h2 class="section-label">Open <span id="bets-open-count" class="num"></span></h2>
+      <ol id="bets-open" class="bets-list"></ol>
+      <div id="bets-open-empty" class="pane-note" hidden></div>
+      <div id="bets-match-note" class="pane-note" hidden></div>
+
+      <details id="bets-offboard" class="offboard" hidden>
+        <summary><span class="section-label inline">Not on the board <span id="bets-offboard-count" class="num"></span></span></summary>
+        <div class="pane-note">Futures, props, leagues the scanner does not cover, games not posted yet or already over.</div>
+        <ol id="bets-offboard-list" class="bets-list"></ol>
+      </details>
+    </section>
+
+    <section id="view-settings" class="view" aria-labelledby="tab-settings" hidden>
+      <div class="pane-note">The server runner's settings (bets.duckdb). The desktop panel keeps its own; the two are not synced. A field you never set follows the panel's default.</div>
+      <form id="settings-form" class="settings-form" novalidate></form>
+      <div class="settings-actions">
+        <button type="button" id="settings-save" class="btn primary">Save</button>
+        <span id="settings-status" class="settings-status" role="status"></span>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar" role="tablist">
+    <button type="button" role="tab" id="tab-edges" data-view="edges" class="active" aria-selected="true">Edges <span id="edges-count" class="count" hidden></span></button>
+    <button type="button" role="tab" id="tab-bets" data-view="bets" aria-selected="false">Bets <span id="bets-count" class="count" hidden></span><span id="bets-alert" class="count alert" hidden></span></button>
+    <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false">Settings</button>
+  </nav>
+
+  <!-- The ticket: one line, read-only. Tapping a row opens it; Close, the
+       backdrop or Escape closes it. -->
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheet-backdrop" id="sheet-backdrop"></div>
+    <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="ticket-side">
+      <div class="sheet-grip" aria-hidden="true"></div>
+      <button type="button" id="sheet-close" class="sheet-close" aria-label="Close ticket">Close</button>
+      <div id="ticket-gone" class="warning" hidden>No longer listed: this is the line as it was last shown.</div>
+      <div class="side-caption">You are betting</div>
+      <div class="side" id="ticket-side"></div>
+      <div class="ticket-badges" id="ticket-badges"></div>
+      <div class="ticket-meta" id="ticket-bet-line"></div>
+      <div class="ticket-meta" id="ticket-matchup"></div>
+      <div class="ticket-meta" id="ticket-start"></div>
+      <dl class="facts">
+        <dt>Book</dt><dd id="ticket-book"></dd>
+        <dt>Price</dt><dd id="ticket-price"></dd>
+        <dt>Fair</dt><dd id="ticket-fair"></dd>
+        <dt>Edge</dt><dd id="ticket-edge"></dd>
+      </dl>
+      <div class="stake-block">
+        <div class="stake-label" id="ticket-stake-label">Bet</div>
+        <div class="stake" id="ticket-stake"></div>
+        <div class="stake-contracts" id="ticket-contracts" hidden></div>
+        <div class="stake-exposure" id="ticket-exposure" hidden></div>
+        <div class="payout-row" id="ticket-payout-row" hidden>
+          <div><div class="payout-label">To win</div><div class="payout-value" id="ticket-to-win"></div></div>
+          <div><div class="payout-label">Payout</div><div class="payout-value" id="ticket-payout"></div></div>
+        </div>
+      </div>
+      <div id="ticket-related-block" hidden>
+        <h2 class="section-label">Related bets</h2>
+        <div id="ticket-related" class="related-list"></div>
+      </div>
+      <div id="ticket-others-block" hidden>
+        <h2 class="section-label">Other lines in this card <span id="ticket-others-count" class="num"></span></h2>
+        <ol id="ticket-others" class="other-lines"></ol>
+      </div>
+      <div class="pane-note ticket-foot">Place it in the book's own app. Nothing here places a bet.</div>
+    </div>
+  </div>
+
+  <script src="ext/kelly.js"></script>
+  <script src="ext/feed.js"></script>
+  <script src="ext/teams.js"></script>
+  <script src="ext/bets.js"></script>
+  <script src="ext/ladder.js"></script>
+  <script src="ext/condkelly.js"></script>
+  <script src="ext/betsview.js"></script>
+  <script src="ext/edgemove.js"></script>
+  <script src="ext/fillfair.js"></script>
+  <script src="ext/tailflex.js"></script>
+  <script src="ext/edgerows.js"></script>
+  <script src="phoneview.js"></script>
+  <script src="phone.js"></script>
+</body>
+</html>

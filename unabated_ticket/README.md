@@ -1597,7 +1597,9 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   side "away"|"home"|"over"|"under", rotation, points (Buckeye's number
   before the teaser), eventStart, label}]}` → `{ok, status: placed | refused
   | unconfirmed, message, ticket?}` — **places a real wager at BFA**
-  (*Teasers → Place*); 400 on a bad body, 503 when no BFA account is read;
+  (*Teasers → Place*); 400 on a bad body, 503 when no BFA account is read,
+  403 through a `BETS_EXTRA_ALLOWED_HOSTS` name (the tailnet reads, it never
+  places);
   the open bets it read while confirming are UPSERTed into `bets` so the
   next `/bets.json` has the ticket. **Settings** (the server
   runner, Running on a server below): `GET /settings.json` → `{settings:
@@ -1630,7 +1632,11 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   Chrome prompts on public→loopback; Safari and Firefox do not. The port
   comes from the listening socket, so a non-default `BETS_SERVICE_PORT`
   guards itself (on port 80 the bare names pass too — browsers omit the
-  default port).
+  default port). `BETS_EXTRA_ALLOWED_HOSTS` (comma-separated, default empty)
+  adds names, each bare and with `:443`: on the server, `tailscale serve`
+  forwards the browser's `Host` (the VM's tailnet name) to the loopback
+  port. Entries must be bare lowercase host names — a scheme, port, path or
+  wildcard stops the service at startup.
 - **Kalshi source** (`sources/kalshi.py`): every 60 s pulls fills since the
   last poll with a 60 s overlap (deduped on `trade_id`) and unsettled
   positions, plus one cached public GET per market and per event; a full
@@ -1944,9 +1950,9 @@ Work in progress toward using the panel from a phone with the Mac closed
 (plan agreed 2026-09-30): the bets service and the Edges scan move to an
 always-on Oracle Cloud VM, reached privately over Tailscale, with the Mac as
 the fallback for any book that refuses a data-center login. **Step 0** is the
-login check, **step 1** the headless Edges runner (both below); the phone
-page (step 2), the Mac relay (3) and the deploy (4: systemd, Tailscale
-binding) are still to come. Plan: `phone_page_plan.md` in the project files.
+login check, **step 1** the headless Edges runner, **step 2** the phone
+page, **step 4** the deploy (Docker + `tailscale serve`; all below); the Mac
+relay (3) is still to come. Plan: `phone_page_plan.md` in the project files.
 
 ### Step 0: does each book accept a login from the server?
 
@@ -2023,7 +2029,7 @@ node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json
 
 | Env | Default | |
 |---|---|---|
-| `UNABATED_RUNNER_HOST` | `127.0.0.1` | bind address; loopback until the deploy step binds the tailnet address |
+| `UNABATED_RUNNER_HOST` | `127.0.0.1` | bind address; stays loopback on the server too (step 4) |
 | `UNABATED_RUNNER_PORT` | `8095` | |
 | `BETS_SERVICE_URL` | `http://127.0.0.1:8094` | where `/bets.json` and `/settings.json` come from |
 
@@ -2068,6 +2074,75 @@ node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json
   stdout/stderr. Unlike the panel it does not POST fill fairs or crosswalk
   lessons — the Mac panel keeps doing that.
 
+### Step 2: the phone page (`server/phone/`)
+
+A phone-sized, read-only page (Edges, Bets and Settings tabs and a ticket
+sheet) served by the bets service, so the page, its reads and its one write
+share one origin. You bet in the book's own app; nothing on the page places
+anything.
+
+```bash
+venv/bin/python -m unabated_ticket.bets_service.service   # or bets_service/run.sh  (:8094)
+node unabated_ticket/server/runner.js                     # must be running too    (:8095)
+# then open http://127.0.0.1:8094/
+```
+
+- **Routes on the bets service**: `GET /` serves `server/phone/index.html`;
+  its CSS/JS and the extension's pure modules (under `/ext/`) come from a
+  fixed allowlist of paths (`service.STATIC_FILES`; anything else, traversal
+  included, is a 404), `Cache-Control: no-store`, a same-origin CSP.
+  `GET /edges.json` proxies the runner (`UNABATED_RUNNER_URL`, default
+  `http://127.0.0.1:8095`; `UNABATED_RUNNER_TIMEOUT_SEC`, default 5) and
+  answers 502 `{error, runnerUrl}` when it is down, slow or not 200. The
+  Host allowlist covers every route, so the page opens only on the machine
+  itself unless `BETS_EXTRA_ALLOWED_HOSTS` lists the tailnet name (step 4).
+- **Edges**: the runner's cards as the panel draws them: badges, side, market,
+  game and kickoff, book price with cents, line age, edge in its tier colour,
+  the stake rail and its note, the move tag, related bets, the tail-flex line.
+  Tap a card for the ticket: price, fair, edge, the number to act on with the
+  panel's label, position line, contracts (exchange lines), to win / payout,
+  every related bet and the card's other lines. Freshness and errors (edges or
+  bets service unreachable since …, scanner errors, settings fallback) sit at
+  the top.
+- **Bets**: money at risk, Needs a game / Needs a code fix / Not on the board
+  (the runner now adds `betsService.unmatched`, `bets.unmatchedReasons` over
+  its board, to `/edges.json`), venue freshness, open bets. Attach and
+  Dismiss stay on the desktop panel.
+- **Settings**: every `/settings.json` field, its default shown when unset;
+  Save sends only what changed (`PUT`, JSON), a 400's text is shown, and each
+  set field has Reset (sends null). The runner picks a change up within 10 s.
+- **Polling**: `/edges.json` every 15 s and `/bets.json` every 30 s, only while
+  the page is visible; at once on becoming visible and after a save.
+- **Reuse**: `phoneview.js` (pure, tested in `tests/phoneview.test.js`) formats
+  on top of the extension's `kelly.js`, `feed.js`, `teams.js`, `bets.js`,
+  `ladder.js`, `condkelly.js`, `betsview.js`, `edgemove.js`, `fillfair.js`,
+  `tailflex.js` and `edgerows.js`, loaded unchanged as plain scripts.
+
+### Step 4: deploy (`deploy/`)
+
+Docker Compose on the VM runs both processes, each still bound to
+127.0.0.1 (`network_mode: host`, nothing published); `tailscale serve` on
+the host proxies `https://<vm>.<tailnet>.ts.net` to `127.0.0.1:8094`, so
+only devices on your tailnet reach the page. Setup, update, logs, stop and
+the "nothing public listens" check: `deploy/README.md`.
+
+- **Bets service** (`python:3.12-slim`, wheels only) and **runner**
+  (`node:22-slim`), `restart: unless-stopped`, json-file logs 10 MB × 3.
+- **Repo mounted read-only** at `/app`, so an update is `deploy/deploy.sh`
+  (pull `main`, rebuild, recreate, then PASS/FAIL checks of `/health`,
+  `/` and `/edges.json` with the tailnet `Host`, and a 403 for a foreign one).
+- **Writable data dir** (`UNABATED_DATA_DIR` → `/data`): `bets.duckdb`
+  (`BETS_DB_PATH`), `novig_token.json` (rotates), `logs/`
+  (`BETS_SERVICE_LOG_PATH`; `BETS_SERVICE_LOG_CONSOLE=1` also logs to
+  stderr for `docker compose logs`). Off the server all three keep their
+  defaults next to the package.
+- **Secrets are files, never in an image**: the Kalshi `.pem` mounted
+  read-only, `bets_service/.env` (Kalshi key id, Polymarket US keys) inside
+  the read-only repo mount. No `bet_logger/.env`: BFA, Wagerzon and
+  BetOnline are "not configured" there.
+- **`BETS_EXTRA_ALLOWED_HOSTS`** in `deploy/.env` is the tailnet name the
+  #125 Host guard must accept (Bets service above).
+
 ## Tests
 
 One command runs everything and exits non-zero if any part fails:
@@ -2077,8 +2152,8 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 415 tests) and
-the bets service's pytest suite (338 tests, on the `kalshi_draft/venv`
+the node suite (`npm test` = `node --test tests/*.test.js`, 428 tests) and
+the bets service's pytest suite (388 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`

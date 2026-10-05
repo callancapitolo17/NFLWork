@@ -17,8 +17,12 @@
 //    live book) | [ids]}}, scanner: {phase, error, leagues, leaguesLoaded,
 //    leagueErrors, lineCount, altLineCount, eventCount, snapshotBuiltAt,
 //    staleLeagues, loading, lastSnapshotAt}, betsService: {okAt, error,
-//    unreachableSince, generatedAt, openBets, sources}, books: {mode, ids,
-//    names, liveCount}, tailFlex ("tail flex: NFL spr 7.1% · …", the panel's
+//    unreachableSince, generatedAt, openBets, sources, boardLineCount,
+//    unmatched: [{betId, reason, attachable, needsGame, needsFix}] (the open
+//    bets no board game matches, bets.unmatchedReasons — the panel's Bets tab
+//    lists; nothing is dismissed here, Dismiss is panel view state)},
+//    books: {mode, ids, names, liveCount, live: [{id, name}] (every live
+//    book, for the phone's book picker)}, tailFlex ("tail flex: NFL spr 7.1% · …", the panel's
 //    header line, "" when nothing lists), grouped, unit: "cards" | "lines",
 //    total, maxShown, items: [card] when grouped else [row]}
 //   card  {key, sideName, eventId, league, leagueLabel, eventName, eventStart,
@@ -37,6 +41,7 @@
 "use strict";
 
 const kelly = require("../extension/kelly.js");
+const betsLib = require("../extension/bets.js");
 const betsView = require("../extension/betsview.js");
 const edgeRows = require("../extension/edgerows.js");
 
@@ -128,8 +133,17 @@ function scannerView(status) {
   };
 }
 
+// The open bets no board game matches, as the panel's Bets tab lists them
+// (bets.unmatchedReasons), by bet id: the phone joins them to its own
+// /bets.json. `knownStarts` is the runner's {betId: startMs} memory of each
+// bet's matched game (bets.matchedStarts), as the panel keeps it.
+function unmatchedView(betRecords, boardLines, knownStarts, now) {
+  return betsLib.unmatchedReasons(betRecords, boardLines, now, { dismissedIds: [], knownStarts: knownStarts || {} })
+    .map(({ bet, reason, attachable, needsGame, needsFix }) => ({ betId: bet.id, reason, attachable, needsGame, needsFix }));
+}
+
 // The /edges.json body.
-//   input  {feedState, scannerStatus, history, betRecords, fillFairIndex,
+//   input  {feedState, scannerStatus, history, betRecords, fillFairIndex, knownStarts,
 //           stakeSettings, edgeSettings, settingsStatus {source, error, okAt, updatedAt},
 //           betsStatus {okAt, error, unreachableSince, generatedAt, sources},
 //           boardLines, ladderReaderOf, teasers (teaser.openTeasers),
@@ -148,6 +162,7 @@ function buildEdgesPayload(input) {
   const moveContext = { history: input.history || {}, fillFairIndex: input.fillFairIndex, now };
   const bookName = (id) => (feedState && feedState.books[id] ? feedState.books[id].name : `book ${id}`);
   const ids = effective.bookIds ? Array.from(effective.bookIds).sort((a, b) => a - b) : null;
+  const liveBooks = edgeRows.liveBooks(feedState);
   return {
     generatedAt: new Date(now).toISOString(),
     settings: {
@@ -156,8 +171,14 @@ function buildEdgesPayload(input) {
       edges: { ...edgeSettings, bookIds: edgeSettings.bookIds === undefined ? "default" : edgeSettings.bookIds },
     },
     scanner: scannerView(input.scannerStatus),
-    betsService: { ...input.betsStatus, openBets: input.betRecords.filter((record) => record.status === "open").length },
-    books: { mode: effective.mode, ids, names: ids ? ids.map(bookName) : null, liveCount: edgeRows.liveBooks(feedState).length },
+    betsService: {
+      ...input.betsStatus, openBets: input.betRecords.filter((record) => record.status === "open").length,
+      boardLineCount: input.boardLines.length, unmatched: unmatchedView(input.betRecords, input.boardLines, input.knownStarts, now),
+    },
+    books: {
+      mode: effective.mode, ids, names: ids ? ids.map(bookName) : null, liveCount: liveBooks.length,
+      live: liveBooks.map((book) => ({ id: book.id, name: book.name })),
+    },
     tailFlex: feedState ? edgeRows.describeTailFlex(rows, input.measurement) : "",
     grouped,
     unit: grouped ? "cards" : "lines",
@@ -167,4 +188,4 @@ function buildEdgesPayload(input) {
   };
 }
 
-module.exports = { EDGE_SETTING_KEYS, settingsFromService, rowView, cardView, buildEdgesPayload };
+module.exports = { EDGE_SETTING_KEYS, settingsFromService, rowView, cardView, unmatchedView, buildEdgesPayload };

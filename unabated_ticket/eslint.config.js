@@ -54,4 +54,15 @@ module.exports = [
       globals: { ...globals.node },
     },
   },
+  {
+    // The phone page (server/phone/, served by the bets service): classic
+    // browser scripts like the extension's; phoneview.js is dual-loaded the
+    // same way (require() in tests/phoneview.test.js).
+    files: ["server/phone/**/*.js"],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "script",
+      globals: { ...globals.browser, ...globals.commonjs },
+    },
+  },
 ];
