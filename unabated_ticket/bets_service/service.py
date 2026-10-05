@@ -63,7 +63,8 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     one origin for the page, its reads and its PUT)
            GET / and the phone page's files   STATIC_FILES, a fixed map of URL path ->
                                     file (server/phone/ and the extension's pure modules
-                                    the page loads under /ext/); any other path is a 404,
+                                    the page loads under /ext/; the Bet Tracker,
+                                    server/tracker/, under /tracker/); any other path is a 404,
                                     so no request can name a file outside it
          Every verb refuses a request whose Host header is not the loopback
          name the service is serving on, or a name in BETS_EXTRA_ALLOWED_HOSTS
@@ -146,6 +147,7 @@ SETTINGS_SORT_KEYS = ("edge", "stake", "start", "exposure")
 # order their globals need (index.html).
 UNABATED_TICKET_DIR = Path(__file__).resolve().parent.parent
 PHONE_DIR = UNABATED_TICKET_DIR / "server" / "phone"
+TRACKER_DIR = UNABATED_TICKET_DIR / "server" / "tracker"
 EXTENSION_DIR = UNABATED_TICKET_DIR / "extension"
 PHONE_EXTENSION_MODULES = (
     "kelly.js", "feed.js", "teams.js", "bets.js", "ladder.js", "condkelly.js", "betsview.js",
@@ -158,6 +160,12 @@ STATIC_FILES: dict[str, Path] = {
     "/phone.js": PHONE_DIR / "phone.js",
     "/phoneview.js": PHONE_DIR / "phoneview.js",
     **{f"/ext/{name}": EXTENSION_DIR / name for name in PHONE_EXTENSION_MODULES},
+    # The Bet Tracker (server/tracker/): daily P&L and analysis off /bets.json.
+    "/tracker": TRACKER_DIR / "index.html",
+    "/tracker/": TRACKER_DIR / "index.html",
+    "/tracker/tracker.css": TRACKER_DIR / "tracker.css",
+    "/tracker/tracker.js": TRACKER_DIR / "tracker.js",
+    "/tracker/trackerstats.js": TRACKER_DIR / "trackerstats.js",
 }
 STATIC_CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",

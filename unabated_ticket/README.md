@@ -2081,6 +2081,44 @@ node unabated_ticket/server/runner.js                     # must be running too 
   `ladder.js`, `condkelly.js`, `betsview.js`, `edgemove.js`, `fillfair.js`,
   `tailflex.js` and `edgerows.js`, loaded unchanged as plain scripts.
 
+### Bet Tracker (`server/tracker/`)
+
+Daily P&L and bet analysis, read-only, served by the bets service at
+`/tracker` (on the VM: `https://<vm>.<tailnet>.ts.net/tracker`). It reads
+`GET /bets.json?days=3650` (every bet the service has stored, plus the saved
+fill fairs) every 60 s while visible; nothing is written.
+
+- **Overview**: net P&L, ROI, handle, record, open risk; expected P&L at
+  Unabated's fair at fill and actual vs expected with its z-score; cumulative
+  actual vs expected chart with daily bars; a 6-week calendar heatmap; daily
+  results; P&L by venue; open bets with price, fair and edge.
+- **Analysis**: filter by venue, league and type (straight, parlay, teaser),
+  group by venue, league, market, period, type, odds, edge at fill, timing
+  (hours placed before start), weekday or stake. Each group shows ROI with its
+  95% interval (proven only when the interval clears zero), expected ROI,
+  actual vs expected and z. Calibration of fair win probability against the
+  actual win rate (straights with a fair), and a searchable bet log.
+- **Header**: range (7D, 30D, 90D, YTD, All), $ / units with the unit size
+  (default $100; range, units and unit size are remembered in the browser),
+  and how many venues' last poll succeeded.
+- **Rules** (`trackerstats.js`, pure, tested in `tests/trackerstats.test.js`):
+  P&L lands on the **Pacific** day the bet settled (`closedAt`). Won pays
+  `toWin`, lost costs `stake`, push and void are 0. Open bets are exposure,
+  not P&L; a Kalshi position sold before settlement (`closed`) and a bet whose
+  result is gone (`unknown`, e.g. Bet105 once it leaves the open list) have no
+  known P&L and are counted as "without a result". A parlay or teaser is one
+  ticket (its legs carry the ticket's stake and status). Edge = fair
+  probability × the ticket's actual payout − 1, so expected P&L, z and
+  calibration cover only bets with a saved fill fair; the rest group under
+  "No fair saved". Kalshi fees are not in Kalshi's `toWin`, so its P&L is
+  before fees.
+- **History** is whatever this service's `bets.duckdb` holds: sources pull
+  about 31 days back, and records are kept from then on. A service started on
+  a fresh database (the VM) starts its history there.
+- **CSP**: the page loads only its own files by absolute path (it is served at
+  both `/tracker` and `/tracker/`) and sets per-element styles through the
+  CSSOM, since the service's CSP blocks inline style attributes.
+
 ### Step 4: deploy (`deploy/`)
 
 Docker Compose on the VM runs both processes, each still bound to

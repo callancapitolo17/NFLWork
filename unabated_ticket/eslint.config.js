@@ -55,10 +55,11 @@ module.exports = [
     },
   },
   {
-    // The phone page (server/phone/, served by the bets service): classic
-    // browser scripts like the extension's; phoneview.js is dual-loaded the
-    // same way (require() in tests/phoneview.test.js).
-    files: ["server/phone/**/*.js"],
+    // The phone page (server/phone/) and the Bet Tracker (server/tracker/),
+    // both served by the bets service: classic browser scripts like the
+    // extension's; phoneview.js and trackerstats.js are dual-loaded the same
+    // way (require() in tests/).
+    files: ["server/phone/**/*.js", "server/tracker/**/*.js"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "script",

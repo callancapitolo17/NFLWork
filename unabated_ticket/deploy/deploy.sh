@@ -115,6 +115,7 @@ main() {
   check "bets service"             /health     "$LOOPBACK_HOST" 200 || failed=1
   check "tailnet name allowed"     /health     "$tailnet_host"  200 || failed=1
   check "phone page"               /           "$tailnet_host"  200 || failed=1
+  check "bet tracker"              /tracker    "$tailnet_host"  200 || failed=1
   check "edges via the runner"     /edges.json "$tailnet_host"  200 || failed=1
   check "foreign Host refused"     /health     "$FOREIGN_HOST"  403 || failed=1
 

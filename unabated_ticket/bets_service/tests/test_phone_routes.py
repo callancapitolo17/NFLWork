@@ -112,6 +112,11 @@ def unused_port() -> int:
     ("/phoneview.js", "text/javascript; charset=utf-8"),
     ("/ext/kelly.js", "text/javascript; charset=utf-8"),
     ("/ext/edgerows.js", "text/javascript; charset=utf-8"),
+    ("/tracker", "text/html; charset=utf-8"),
+    ("/tracker/", "text/html; charset=utf-8"),
+    ("/tracker/tracker.css", "text/css; charset=utf-8"),
+    ("/tracker/tracker.js", "text/javascript; charset=utf-8"),
+    ("/tracker/trackerstats.js", "text/javascript; charset=utf-8"),
 ])
 def test_every_allowlisted_file_is_served_whole_with_its_type_and_no_cache(bets_port, path, content_type):
     status, headers, body = get(bets_port, path)
@@ -132,7 +137,20 @@ def test_the_page_loads_every_extension_module_it_is_served_and_nothing_else():
     assert loaded == list(service.PHONE_EXTENSION_MODULES)
 
 
+def test_the_tracker_page_loads_only_allowlisted_files_by_absolute_path():
+    """The tracker is served at both /tracker and /tracker/, so its assets must
+    be absolute paths (a relative one would resolve to / from the first) and
+    each must be on the allowlist."""
+    page = (service.TRACKER_DIR / "index.html").read_text()
+    assets = [chunk.split('"', 1)[0] for marker in ('<script src="', 'rel="stylesheet" href="')
+              for chunk in page.split(marker)[1:]]
+    assert sorted(assets) == ["/tracker/tracker.css", "/tracker/tracker.js", "/tracker/trackerstats.js"]
+    assert all(asset in service.STATIC_FILES for asset in assets)
+
+
 @pytest.mark.parametrize("path", [
+    "/tracker/../bets_service/service.py",
+    "/tracker/index.html",
     "/../bets_service/service.py",
     "/ext/../bets_service/config.py",
     "/ext/..%2fbets_service%2fconfig.py",

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0e1218">
+  <title>Bet Tracker</title>
+  <link rel="stylesheet" href="/tracker/tracker.css">
+</head>
+<body>
+  <!-- Bet Tracker: daily P&L and bet analysis off the bets service's
+       /bets.json. Read-only; served by the bets service, one origin. -->
+  <header class="top">
+    <div class="top-in">
+      <p class="brand">
+        <svg width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true"><rect x="1" y="1" width="24" height="24" rx="6" stroke="#6EA8FE" stroke-width="1.6"/><path d="M6 17 L10.5 12.5 L14 15 L20 8.5" stroke="#3DD68C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+        Bet Tracker
+      </p>
+      <nav class="nav" aria-label="Pages">
+        <button type="button" data-view="overview">Overview</button>
+        <button type="button" data-view="analysis">Analysis</button>
+      </nav>
+      <div class="spacer"></div>
+      <div class="controls">
+        <div class="seg" id="ranges" role="group" aria-label="Date range"></div>
+        <div class="seg" role="group" aria-label="Show money as">
+          <button type="button" id="show-dollars">$</button>
+          <button type="button" id="show-units">Units</button>
+        </div>
+        <label class="unit-size" id="unit-size-label" hidden>1u = $<input id="unit-size" type="number" min="1" step="1" inputmode="numeric"></label>
+        <span class="sync" id="sync"><span class="dot" id="sync-dot"></span><span id="sync-text">Loading…</span></span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div id="banner" class="banner" hidden></div>
+
+    <section id="view-overview" class="stack" aria-label="Overview">
+      <div class="title-row"><h1>Overview</h1><span id="ov-caption"></span></div>
+      <div class="kpis" id="ov-kpis"></div>
+      <div class="row">
+        <section class="panel pad grow stack" aria-label="Cumulative profit">
+          <div class="title-row">
+            <div class="stack tight">
+              <span class="lbl">Cumulative P&amp;L</span>
+              <div class="legend"><span><i class="swatch-line"></i>Actual</span><span><i class="swatch-dash"></i>Expected (bets with a saved fair)</span></div>
+            </div>
+            <div class="stats" id="ov-stats"></div>
+          </div>
+          <div id="ov-chart"></div>
+        </section>
+        <section class="panel pad side stack" aria-label="Daily calendar">
+          <div class="title-row"><span class="lbl">Daily P&amp;L calendar</span><span id="cal-caption"></span></div>
+          <div class="cal" id="ov-calendar"></div>
+          <div class="cal-key"><span>Loss</span><i class="k-neg2"></i><i class="k-neg1"></i><i class="k-flat"></i><i class="k-pos1"></i><i class="k-pos2"></i><span>Win</span></div>
+        </section>
+      </div>
+      <div class="row">
+        <section class="panel grow" aria-label="Daily results">
+          <div class="head"><span class="lbl">Daily results</span><span class="note">Pacific settle day</span></div>
+          <div class="scroll" id="ov-daily"></div>
+        </section>
+        <section class="panel side" aria-label="Results by venue">
+          <div class="head"><span class="lbl">By venue</span></div>
+          <div id="ov-venues"></div>
+        </section>
+      </div>
+      <section class="panel" aria-label="Open bets">
+        <div class="head"><span class="lbl">Open bets</span><span class="note" id="open-caption"></span></div>
+        <div class="scroll" id="ov-open"></div>
+      </section>
+    </section>
+
+    <section id="view-analysis" class="stack" aria-label="Analysis" hidden>
+      <div class="title-row"><h1>Analysis</h1><span id="an-caption"></span></div>
+      <section class="panel filters" aria-label="Filters">
+        <div class="filter-row"><span class="lbl">Venue</span><span class="filter-row" id="f-venues"></span></div>
+        <div class="filter-row">
+          <span class="lbl">League</span><span class="filter-row" id="f-leagues"></span>
+          <span class="spacer"></span>
+          <span class="lbl bare">Type</span><span class="seg" id="f-kinds" role="group" aria-label="Bet type"></span>
+        </div>
+      </section>
+      <div class="kpis" id="an-kpis"></div>
+      <section class="panel" aria-label="Breakdown">
+        <div class="head">
+          <div class="stack tight">
+            <span class="lbl">Breakdown</span>
+            <span class="note">ROI bar is the 95% interval (scale ±30%); a group is only proven when the whole interval clears zero.</span>
+          </div>
+          <span class="seg" id="group-tabs" role="group" aria-label="Group by"></span>
+        </div>
+        <div class="scroll" id="an-groups"></div>
+      </section>
+      <div class="row">
+        <section class="panel pad side stack" aria-label="Calibration">
+          <div class="stack tight">
+            <span class="lbl">Calibration</span>
+            <span class="note muted">Unabated's fair win probability at fill against how often those straight bets won. Points on the dashed line mean the fair is honest.</span>
+          </div>
+          <div id="an-calibration"></div>
+        </section>
+        <section class="panel side" aria-label="Calibration buckets">
+          <div class="head"><span class="lbl">Calibration buckets</span></div>
+          <div class="scroll" id="an-cal-table"></div>
+        </section>
+      </div>
+      <section class="panel stack flush" aria-label="Bet log">
+        <div class="head">
+          <div class="stack tight"><span class="lbl">Bet log</span><span class="note" id="log-caption"></span></div>
+          <label class="search">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="5" stroke="#8B96A5" stroke-width="1.5"/><path d="M11 11 L14 14" stroke="#8B96A5" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <span class="sr">Search bets</span>
+            <input id="log-search" type="search" placeholder="Team, market or venue" autocomplete="off">
+          </label>
+        </div>
+        <div class="scroll" id="an-log"></div>
+        <button type="button" class="more" id="log-more" hidden>Show more</button>
+      </section>
+    </section>
+  </main>
+
+  <script src="/tracker/trackerstats.js"></script>
+  <script src="/tracker/tracker.js"></script>
+</body>
+</html>
