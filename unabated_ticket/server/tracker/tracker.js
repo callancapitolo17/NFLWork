@@ -1,8 +1,11 @@
 // Bet Tracker page: fetches the bets service's /bets.json (all history),
-// builds tickets with trackerstats.js and renders the Overview and Analysis
-// views. Read-only: no writes to the service; the only state it keeps is the
-// viewer's own display choices (range, $ / units, unit size, view) in
-// localStorage, which may be unavailable and is never required.
+// builds tickets with trackerstats.js and renders the Overview, Analysis and
+// Bets views. Its one write is the Bets view's Remove / Restore: POST
+// /exclusions.json, which marks a BFA or Wagerzon bet as not Cal's
+// (bets.duckdb::bet_exclusions; the bet itself stays) and takes it out of
+// every number here. Otherwise it keeps only the viewer's own display choices
+// (range, $ / units, unit size) in localStorage, which may be unavailable and
+// is never required.
 //
 // The service's Content-Security-Policy blocks inline style attributes, so
 // every per-element value is set through element.style (the CSSOM), never
@@ -13,6 +16,11 @@
 
   const stats = globalThis.UnabatedTrackerStats;
   const BETS_URL = "/bets.json?days=3650";
+  const EXCLUSIONS_URL = "/exclusions.json";
+  const VIEWS = ["overview", "analysis", "bets"];
+  // Cal's ask (2026-10-05): only these books carry bets that are not his (service.EXCLUDABLE_VENUES).
+  const REMOVABLE_VENUES = ["BFA", "Wagerzon"];
+  const BET_FILTERS = ["All", "Counted", "Removed"];
   const POLL_MS = 60 * 1000;
   const PREFS_KEY = "betTracker.prefs";
   const RANGES = ["7D", "30D", "90D", "YTD", "All"];
@@ -32,14 +40,20 @@
   const state = Object.assign({
     view: "overview", range: "30D", units: false, unitSize: 100,
     groupBy: "venue", kind: "All", offVenues: [], offLeagues: [], query: "", logLimit: LOG_PAGE,
+    betsQuery: "", betsVenue: "All", betsFilter: "All", betsLimit: LOG_PAGE, saving: false,
     // Cal's decision 2026-10-05: the Kalshi bots' combo fills count in every
     // total by default; the header toggle hides them.
     includeBotCombos: true,
-  }, loadPrefs(), { view: location.hash === "#analysis" ? "analysis" : "overview" });
+  }, loadPrefs(), { view: viewOfHash() });
   const BOT_COMBO_KIND = "Kalshi combo";
   let payload = null;
   let allTickets = [];
   let tickets = [];
+
+  function viewOfHash() {
+    const view = location.hash.slice(1);
+    return VIEWS.includes(view) ? view : "overview";
+  }
 
   // ---- prefs ----------------------------------------------------------------
 
@@ -175,10 +189,10 @@
     ])));
   }
 
-  /** A table; each column {label, right?, cell(row) -> string | Node, className?(row)}. */
-  function table(columns, rows) {
+  /** A table; each column {label, right?, cell(row) -> string | Node, className?(row)}; rowClass?(row) -> class. */
+  function table(columns, rows, rowClass) {
     const head = el("tr", null, columns.map((col) => el("th", { className: col.right ? "r" : "", text: col.label })));
-    const body = rows.map((row) => el("tr", null, columns.map((col) => {
+    const body = rows.map((row) => el("tr", { className: rowClass ? rowClass(row) : "" }, columns.map((col) => {
       const value = col.cell(row);
       const classes = [col.right ? "r" : "", col.num ? "num" : "", col.className ? col.className(row) : ""].filter(Boolean).join(" ");
       const td = el("td", { className: classes });
@@ -229,13 +243,13 @@
     const luck = total.withFair ? total.fairPnl - total.expected : null;
     kpiTiles("ov-kpis", [
       { label: "Net P&L", value: money(total.pnl, true), color: toneColor(total.pnl),
-        sub: total.bets + " settled bets" + (missing ? " · " + missing + " without a result" : "") },
+        sub: total.bets + " settled · " + total.wins + "-" + total.losses + "-" + total.pushes + (missing ? " · " + missing + " without a result" : "") },
       { label: "ROI", value: pct(total.roi, true), color: toneColor(total.pnl), sub: "on " + money(total.handle) + " handle" },
       { label: "Expected P&L", value: total.withFair ? money(total.expected, true) : "—", color: COLORS.exp,
-        sub: total.withFair + " of " + total.bets + " bets have a saved fair" },
+        sub: total.withFair + " of " + total.bets + " bets have a fair (fill, else close)" },
       { label: "Actual vs expected", value: luck === null ? "—" : money(luck, true), color: luck === null ? COLORS.muted : toneColor(luck),
-        sub: total.z === null ? "needs bets with a saved fair" : "z = " + total.z.toFixed(2) + (Math.abs(total.z) < 1.96 ? ", within noise" : ", outside the 95% band") },
-      { label: "Record", value: total.wins + "-" + total.losses + "-" + total.pushes, sub: "win rate " + pct(total.winRate) },
+        sub: total.z === null ? "needs bets with a fair" : "z = " + total.z.toFixed(2) + (Math.abs(total.z) < 1.96 ? ", within noise" : ", outside the 95% band") },
+      clvTile(total),
       { label: "Open risk", value: money(openStake), sub: open.length + " open bets" + (openWithFair.length ? " · EV " + money(openEv, true) : "") },
     ]);
 
@@ -245,6 +259,20 @@
     renderDaily(series);
     renderVenues(settled);
     renderOpen(open, openStake);
+  }
+
+  /** CLV: expected return at Unabated's closing fair, stake-weighted, and how often the close was beaten. */
+  function clvTile(total) {
+    return { label: "CLV", value: pct(total.clvRoi, true), color: total.clvRoi === null ? COLORS.muted : toneColor(total.clvRoi),
+      sub: total.withClose ? "beat the close " + pct(total.beatRate) + " · " + total.withClose + " of " + total.bets + " bets" : "no closing fairs yet" };
+  }
+
+  function clvCell(ticket) {
+    return pct(ticket.clv, true);
+  }
+
+  function clvClass(ticket) {
+    return ticket.clv === null ? "muted" : toneClass(ticket.clv);
   }
 
   function renderChart(series) {
@@ -363,7 +391,7 @@
 
   function renderOpen(open, openStake) {
     const toWin = open.reduce((sum, t) => sum + (Number.isFinite(t.toWin) ? t.toWin : 0), 0);
-    setText("open-caption", open.length ? "Risking " + money(openStake) + " to win " + money(toWin) + " · fair is Unabated's at fill" : "");
+    setText("open-caption", open.length ? "Risking " + money(openStake) + " to win " + money(toWin) + " · fair is Unabated's at fill, else at close" : "");
     if (!open.length) { fill("ov-open", emptyNote("No open bets.")); return; }
     const sorted = open.slice().sort((a, b) => (Date.parse(a.eventStart) || Infinity) - (Date.parse(b.eventStart) || Infinity));
     fill("ov-open", table([
@@ -375,6 +403,7 @@
       { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice) },
       { label: "Fair", right: true, num: true, className: () => "exp", cell: (t) => american(t.fairAmerican) },
       { label: "Edge", right: true, num: true, className: (t) => (t.edge === null ? "muted" : toneClass(t.edge)), cell: (t) => pct(t.edge, true) },
+      { label: "CLV", right: true, num: true, className: clvClass, cell: clvCell },
       { label: "Stake", right: true, num: true, cell: (t) => money(t.stake) },
       { label: "To win", right: true, num: true, cell: (t) => (Number.isFinite(t.toWin) ? money(t.toWin) : "—") },
     ], sorted));
@@ -419,13 +448,13 @@
     const total = stats.summarize(settled);
     setText("an-caption", rangeCaption(first, last) + " · " + total.bets + " settled bets");
     kpiTiles("an-kpis", [
-      { label: "Bets", value: String(total.bets), sub: total.wins + "-" + total.losses + "-" + total.pushes + " W-L-P" },
-      { label: "Handle", value: money(total.handle), sub: "avg stake " + money(total.bets ? total.handle / total.bets : 0) },
-      { label: "P&L", value: money(total.pnl, true), color: toneColor(total.pnl), sub: total.withFair ? "expected " + money(total.expected, true) + " on " + total.withFair + " with a fair" : "no saved fairs" },
+      { label: "Bets", value: String(total.bets), sub: total.wins + "-" + total.losses + "-" + total.pushes + " W-L-P · " + money(total.handle) + " handle" },
+      { label: "P&L", value: money(total.pnl, true), color: toneColor(total.pnl), sub: total.withFair ? "expected " + money(total.expected, true) + " on " + total.withFair + " with a fair" : "no fairs" },
       { label: "ROI", value: pct(total.roi, true), color: toneColor(total.roi), sub: "95%: " + pct(total.roi - total.ciHalf, true) + " to " + pct(total.roi + total.ciHalf, true) },
-      { label: "Avg edge at fill", value: pct(total.expRoi, true), color: COLORS.exp, sub: "stake-weighted, Unabated fair" },
+      { label: "Avg edge", value: pct(total.expRoi, true), color: COLORS.exp, sub: "stake-weighted, fill fair else close" },
+      clvTile(total),
       { label: "Luck (z)", value: total.z === null ? "—" : total.z.toFixed(2), color: total.z !== null && Math.abs(total.z) >= 1.96 ? COLORS.warn : COLORS.text,
-        sub: total.z === null ? "needs bets with a saved fair" : Math.abs(total.z) < 1.96 ? "within normal variance" : "outside the 95% band" },
+        sub: total.z === null ? "needs bets with a fair" : Math.abs(total.z) < 1.96 ? "within normal variance" : "outside the 95% band" },
     ]);
     renderGroups(settled);
     renderCalibration(settled);
@@ -461,13 +490,15 @@
       { label: "Expected ROI", right: true, num: true, className: () => "exp", cell: (r) => pct(r.expRoi, true) },
       { label: "vs expected", right: true, num: true, className: (r) => (r.withFair ? toneClass(r.fairPnl - r.expected) : "muted"), cell: (r) => (r.withFair ? money(r.fairPnl - r.expected, true) : "—") },
       { label: "z", right: true, num: true, className: (r) => (r.z !== null && Math.abs(r.z) >= 1.96 ? "warn" : "muted"), cell: (r) => (r.z === null ? "—" : r.z.toFixed(2)) },
+      { label: "CLV", right: true, num: true, className: (r) => (r.clvRoi === null ? "muted" : toneClass(r.clvRoi)), cell: (r) => pct(r.clvRoi, true) },
+      { label: "Beat close", right: true, num: true, className: () => "muted", cell: (r) => (r.withClose ? pct(r.beatRate) + " of " + r.withClose : "—") },
     ], rows));
   }
 
   function renderCalibration(settled) {
     const bins = stats.calibration(settled);
     if (!bins.length) {
-      fill("an-calibration", emptyNote("No settled straight bets with a saved fair yet."));
+      fill("an-calibration", emptyNote("No settled straight bets with a fair yet."));
       fill("an-cal-table");
       return;
     }
@@ -498,7 +529,7 @@
     const yAxis = el("div", { className: "yaxis" }, axisLabels);
     const xAxis = el("div", { className: "xaxis" }, [low, (high + low) / 2, high].map((p) => el("span", { text: pct(p) })));
     fill("an-calibration", el("div", { className: "cal-plot" }, [el("div", { className: "plot" }, [yAxis, svg]), xAxis]),
-      el("div", { className: "muted", text: "Fair win probability at fill (x) against actual win rate (y); bars are 95% intervals." }));
+      el("div", { className: "muted", text: "Fair win probability, at fill or else at close (x), against actual win rate (y); bars are 95% intervals." }));
     fill("an-cal-table", table([
       { label: "Fair prob.", cell: (b) => Math.round(b.low * 100) + " to " + Math.round(b.high * 100) + "%" },
       { label: "Bets", right: true, num: true, cell: (b) => String(b.bets) },
@@ -526,10 +557,82 @@
       { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice) },
       { label: "Fair", right: true, num: true, className: () => "exp", cell: (t) => american(t.fairAmerican) },
       { label: "Edge", right: true, num: true, className: (t) => (t.edge === null ? "muted" : toneClass(t.edge)), cell: (t) => pct(t.edge, true) },
+      { label: "Close", right: true, num: true, className: () => "exp", cell: (t) => american(t.closeAmerican) },
+      { label: "CLV", right: true, num: true, className: clvClass, cell: clvCell },
       { label: "Stake", right: true, num: true, cell: (t) => money(t.stake) },
       { label: "Result", cell: (t) => el("span", { className: "result " + t.status, text: t.status[0].toUpperCase() + t.status.slice(1) }) },
       { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => money(t.pnl, true) },
     ], shown));
+  }
+
+  // ---- bets -----------------------------------------------------------------
+
+  function resultTag(ticket) {
+    return el("span", { className: "result " + ticket.status, text: ticket.status[0].toUpperCase() + ticket.status.slice(1) });
+  }
+
+  function betsShown() {
+    const query = state.betsQuery.trim().toLowerCase();
+    return allTickets.filter((t) => REMOVABLE_VENUES.includes(t.venue)
+      && (state.betsVenue === "All" || t.venue === state.betsVenue)
+      && (state.betsFilter === "All" || (state.betsFilter === "Removed") === t.excluded)
+      && (!query || [t.event, t.selection, t.league, t.kind, t.id].join(" ").toLowerCase().includes(query)));
+  }
+
+  // POST the ticket's record ids (every leg of a parlay), then rebuild from
+  // the service's answer so the page shows what is stored, not what was asked.
+  async function setExcluded(ticket, excluded) {
+    if (state.saving) return;
+    state.saving = true;
+    render();
+    try {
+      const response = await fetch(EXCLUSIONS_URL, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ betIds: ticket.betIds, excluded }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || "the bets service answered HTTP " + response.status);
+      payload = Object.assign({}, payload, { exclusions: body.exclusions });
+      rebuildTickets();
+      showBanner(null);
+    } catch (error) {
+      showBanner("Could not " + (excluded ? "remove" : "restore") + " the bet: " + error.message);
+    } finally {
+      state.saving = false;
+      render();
+    }
+  }
+
+  function renderBets() {
+    segButtons("b-venues", ["All"].concat(REMOVABLE_VENUES), (v) => v === state.betsVenue, (v) => { state.betsVenue = v; state.betsLimit = LOG_PAGE; render(); });
+    segButtons("b-filter", BET_FILTERS, (f) => f === state.betsFilter, (f) => { state.betsFilter = f; state.betsLimit = LOG_PAGE; render(); });
+    const all = allTickets.filter((t) => REMOVABLE_VENUES.includes(t.venue));
+    const removed = all.filter((t) => t.excluded);
+    setText("b-caption", all.length + " BFA and Wagerzon bets · " + removed.length + " removed"
+      + (removed.length ? " (" + money(removed.reduce((sum, t) => sum + (t.pnl || 0), 0), true) + " P&L left out)" : ""));
+    const matching = betsShown();
+    const shown = matching.slice(0, state.betsLimit);
+    setText("bets-caption", "Showing " + shown.length + " of " + matching.length + ", newest first");
+    document.getElementById("bets-more").hidden = matching.length <= shown.length;
+    if (!shown.length) { fill("b-list", emptyNote(state.betsQuery ? "No bets match that search." : "No bets here.")); return; }
+    // The button and the bet lead the row so a phone shows both without scrolling the table sideways.
+    fill("b-list", table([
+      { label: "", cell: (t) => el("button", {
+        className: "chip" + (t.excluded ? "" : " danger"), text: t.excluded ? "Restore" : "Remove",
+        title: t.excluded ? "Count this bet again" : "Not my bet: leave it out of every number",
+        attrs: Object.assign({ type: "button" }, state.saving ? { disabled: "" } : {}),
+        onClick: () => setExcluded(t, !t.excluded),
+      }) },
+      { label: "Bet", className: () => "wrap", cell: (t) => t.selection },
+      { label: "Event", cell: (t) => t.event || t.kind },
+      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice) },
+      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake) },
+      { label: "Result", cell: resultTag },
+      { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => (t.pnl === null ? "—" : money(t.pnl, true)) },
+      { label: "Placed", className: () => "muted", cell: (t) => (t.placedMs ? dayLabel(stats.pacificDay(t.placedMs), true) : "—") },
+      { label: "Venue", cell: (t) => t.venue },
+      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }) },
+    ], shown, (t) => (t.excluded ? "removed" : "")));
   }
 
   // ---- shell ----------------------------------------------------------------
@@ -539,8 +642,7 @@
       if (button.dataset.view === state.view) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     }
-    document.getElementById("view-overview").hidden = state.view !== "overview";
-    document.getElementById("view-analysis").hidden = state.view !== "analysis";
+    for (const view of VIEWS) document.getElementById("view-" + view).hidden = state.view !== view;
     segButtons("ranges", RANGES, (r) => r === state.range, (r) => { state.range = r; state.logLimit = LOG_PAGE; savePrefs(); render(); });
     document.getElementById("show-dollars").setAttribute("aria-pressed", String(!state.units));
     document.getElementById("show-units").setAttribute("aria-pressed", String(state.units));
@@ -567,7 +669,9 @@
     renderHeader();
     renderSync();
     if (!payload) return;
-    if (state.view === "overview") renderOverview(); else renderAnalysis();
+    if (state.view === "overview") renderOverview();
+    else if (state.view === "analysis") renderAnalysis();
+    else renderBets();
   }
 
   function showBanner(text) {
@@ -576,8 +680,14 @@
     banner.textContent = text || "";
   }
 
+  // Every number leaves out removed bets; the bot-combo toggle may leave out those too.
   function applyBotComboFilter() {
-    tickets = state.includeBotCombos ? allTickets : allTickets.filter((t) => t.kind !== BOT_COMBO_KIND);
+    tickets = allTickets.filter((t) => !t.excluded && (state.includeBotCombos || t.kind !== BOT_COMBO_KIND));
+  }
+
+  function rebuildTickets() {
+    allTickets = stats.buildTickets(payload.bets, payload.fillFairs, payload.closingFairs, payload.exclusions);
+    applyBotComboFilter();
   }
 
   async function refresh() {
@@ -585,8 +695,7 @@
       const response = await fetch(BETS_URL, { cache: "no-store" });
       if (!response.ok) throw new Error("the bets service answered HTTP " + response.status);
       payload = await response.json();
-      allTickets = stats.buildTickets(payload.bets, payload.fillFairs);
-      applyBotComboFilter();
+      rebuildTickets();
       showBanner(null);
     } catch (error) {
       showBanner("Could not load bets: " + error.message + (payload ? ". Showing the last load." : "."));
@@ -598,7 +707,7 @@
     for (const button of document.querySelectorAll(".nav button")) {
       button.addEventListener("click", () => {
         state.view = button.dataset.view;
-        history.replaceState(null, "", state.view === "analysis" ? "#analysis" : "#overview");
+        history.replaceState(null, "", "#" + state.view);
         render();
       });
     }
@@ -619,7 +728,11 @@
       state.query = event.target.value; state.logLimit = LOG_PAGE; render();
     });
     document.getElementById("log-more").addEventListener("click", () => { state.logLimit += LOG_PAGE; render(); });
-    window.addEventListener("hashchange", () => { state.view = location.hash === "#analysis" ? "analysis" : "overview"; render(); });
+    document.getElementById("bets-search").addEventListener("input", (event) => {
+      state.betsQuery = event.target.value; state.betsLimit = LOG_PAGE; render();
+    });
+    document.getElementById("bets-more").addEventListener("click", () => { state.betsLimit += LOG_PAGE; render(); });
+    window.addEventListener("hashchange", () => { state.view = viewOfHash(); render(); });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
     setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
   }

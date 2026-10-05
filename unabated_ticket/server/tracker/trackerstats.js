@@ -11,13 +11,22 @@
 //   records    /bets.json `bets` (the normalised record, docs/2026-09-11-issue-114-bet-history-plan.md)
 //   fillFairs  /bets.json `fillFairs` ({betId, fairAmerican, ...}): Unabated's
 //              fair for the bet's side when it was placed
+//   closingFairs /bets.json `closingFairs` ({betId, fairAmerican, fairObservedAt,
+//              eventStart}): Unabated's fair for the bet's own line on the last
+//              snapshot the server runner read before the game started
+//   exclusions /bets.json `exclusions` ({betId}): bets Cal removed on the Bets
+//              page; a ticket with any excluded record is marked `excluded`
 // Conventions
 //   P&L lands on the Pacific calendar day the bet SETTLED (closedAt).
 //   A bet counts toward P&L only when it is won, lost, push or void; an open
 //   bet is exposure, and a Kalshi position sold before settlement ("closed")
 //   or a bet whose result the venue no longer shows ("unknown", Bet105 once
 //   it leaves the open list) has no known P&L and is counted as excluded.
-//   Expected P&L, edge and calibration use only bets with a saved fair.
+//   Expected P&L, edge and calibration use the fill fair, else the closing
+//   fair; a bet with neither is left out of them.
+//   CLV is the expected return at the closing fair: closeProb × payout − 1. A
+//   close counts only when its last reading was within CLOSE_MAX_GAP_MS of the
+//   start (a runner that was down at kickoff leaves an older reading).
 
 (function (root) {
   "use strict";
@@ -44,6 +53,10 @@
   const TIMING_BUCKETS = ["Under 1h before", "1 to 6h before", "6 to 24h before", "1 day+ before", "Live or unknown"];
   const STAKE_BUCKETS = ["Under $150", "$150 to $299", "$300 to $449", "$450 and up"];
   const NO_FAIR = "No fair saved";
+  // Snapshots land every 1-5 min while the runner is up; 30 min of silence
+  // before the start means it was not, and the reading is not the close.
+  const CLOSE_MAX_GAP_MS = 30 * 60 * 1000;
+  const FAIR_SOURCES = { fill: "fill", close: "close" };
 
   // Group-by dimensions of the Analysis page; `order` fixes the row order of
   // ordinal ones, the rest sort by handle.
@@ -196,9 +209,24 @@
     return legs.some((leg) => /teaser/i.test(JSON.stringify(leg.raw || {})));
   }
 
+  /** The closing fair's American price when its last reading is near enough to the start, else null. */
+  function usableClose(close) {
+    if (!close) return null;
+    const observedMs = parseMs(close.fairObservedAt);
+    const startMs = parseMs(close.eventStart);
+    if (observedMs === null || startMs === null || startMs - observedMs > CLOSE_MAX_GAP_MS) return null;
+    return americanToDecimal(close.fairAmerican) ? close.fairAmerican : null;
+  }
+
   /** The ticket's fields that do not depend on whether it is a straight or a parlay. */
-  function finishTicket(ticket, fairAmerican) {
+  function finishTicket(ticket, fillAmerican, close) {
     const decimal = payoutDecimal(ticket.stake, ticket.toWin, ticket.price);
+    const closeAmerican = usableClose(close);
+    const closeDecimal = americanToDecimal(closeAmerican);
+    const closeProb = closeDecimal ? 1 / closeDecimal : null;
+    const clv = closeProb !== null && decimal ? closeProb * decimal - 1 : null;
+    const hasFill = americanToDecimal(fillAmerican) !== null;
+    const fairAmerican = hasFill ? fillAmerican : closeAmerican;
     const fairDecimal = americanToDecimal(fairAmerican);
     const fairProb = fairDecimal ? 1 / fairDecimal : null;
     const edge = fairProb !== null && decimal ? fairProb * decimal - 1 : null;
@@ -212,6 +240,8 @@
     const pnl = settled ? pnlOf(ticket.status, ticket.stake, ticket.toWin, decimal) : null;
     return Object.assign(ticket, {
       decimal, fairAmerican: fairDecimal ? fairAmerican : null, fairProb, edge,
+      fairSource: hasFill ? FAIR_SOURCES.fill : closeDecimal ? FAIR_SOURCES.close : null,
+      closeAmerican: closeDecimal ? closeAmerican : null, closeProb, clv,
       expected: edge !== null ? ticket.stake * edge : null,
       variance: decimal ? ticket.stake * ticket.stake * decimal * decimal * winProb * (1 - winProb) : 0,
       placedMs, closedMs, settled, settledDay, pnl,
@@ -228,7 +258,7 @@
     return record.venue === "kalshi" && (record.raw || {}).series === KALSHI_COMBO_SERIES;
   }
 
-  function straightTicket(record, fairAmerican) {
+  function straightTicket(record, fillAmerican, close) {
     const combo = isKalshiCombo(record);
     return finishTicket({
       id: record.id, venueKey: record.venue, venue: venueName(record.venue), league: leagueName(record.league),
@@ -237,8 +267,8 @@
       period: record.period || "FG", event: eventLabel(record), selection: selectionLabel(record),
       price: record.price, stake: Number(record.stake) || 0, toWin: record.toWin,
       status: record.status, placedAt: record.placedAt, closedAt: record.closedAt, eventStart: record.eventStart || null,
-      legCount: 1,
-    }, fairAmerican);
+      legCount: 1, betIds: [record.id],
+    }, fillAmerican, close);
   }
 
   /** One ticket from a parlay's or teaser's legs: every leg carries the ticket's stake, toWin and status. */
@@ -259,13 +289,15 @@
       stake: Number(first.stake) || 0, toWin: first.toWin,
       status: first.status, placedAt: first.placedAt, closedAt: first.closedAt,
       eventStart: starts.length ? new Date(Math.min(...starts)).toISOString() : null,
-      legCount,
-    }, null);
+      legCount, betIds: sorted.map((leg) => leg.id),
+    }, null, null);
   }
 
   /** /bets.json records -> tickets, newest placement first. */
-  function buildTickets(records, fillFairs) {
+  function buildTickets(records, fillFairs, closingFairs, exclusions) {
     const fairByBet = new Map((fillFairs || []).map((row) => [row.betId, row.fairAmerican]));
+    const closeByBet = new Map((closingFairs || []).map((row) => [row.betId, row]));
+    const excludedIds = new Set((exclusions || []).map((row) => row.betId));
     const legsByParlay = new Map();
     const tickets = [];
     for (const record of records || []) {
@@ -274,9 +306,10 @@
         legsByParlay.get(record.parlayId).push(record);
         continue;
       }
-      tickets.push(straightTicket(record, fairByBet.has(record.id) ? fairByBet.get(record.id) : null));
+      tickets.push(straightTicket(record, fairByBet.has(record.id) ? fairByBet.get(record.id) : null, closeByBet.get(record.id) || null));
     }
     for (const [parlayId, legs] of legsByParlay) tickets.push(multiLegTicket(parlayId, legs));
+    for (const ticket of tickets) ticket.excluded = ticket.betIds.some((id) => excludedIds.has(id));
     return tickets.sort((a, b) => (b.closedMs || b.placedMs || 0) - (a.closedMs || a.placedMs || 0));
   }
 
@@ -287,6 +320,7 @@
     const total = {
       bets: 0, wins: 0, losses: 0, pushes: 0, handle: 0, pnl: 0, variance: 0,
       withFair: 0, fairHandle: 0, fairPnl: 0, expected: 0, fairVariance: 0,
+      withClose: 0, closeHandle: 0, clvDollars: 0, beatClose: 0,
     };
     for (const ticket of tickets) {
       if (ticket.pnl === null) continue;
@@ -304,11 +338,19 @@
         total.expected += ticket.expected;
         total.fairVariance += ticket.variance;
       }
+      if (ticket.clv !== null) {
+        total.withClose += 1;
+        total.closeHandle += ticket.stake;
+        total.clvDollars += ticket.stake * ticket.clv;
+        if (ticket.clv > 0) total.beatClose += 1;
+      }
     }
     total.roi = total.handle ? total.pnl / total.handle : 0;
     total.ciHalf = total.handle ? (Z_95 * Math.sqrt(total.variance)) / total.handle : 0;
     total.expRoi = total.fairHandle ? total.expected / total.fairHandle : null;
     total.z = total.fairVariance > 0 ? (total.fairPnl - total.expected) / Math.sqrt(total.fairVariance) : null;
+    total.clvRoi = total.closeHandle ? total.clvDollars / total.closeHandle : null;
+    total.beatRate = total.withClose ? total.beatClose / total.withClose : null;
     total.winRate = total.wins + total.losses ? total.wins / (total.wins + total.losses) : null;
     return total;
   }
@@ -389,7 +431,7 @@
   }
 
   const api = {
-    PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR,
+    PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR, CLOSE_MAX_GAP_MS, FAIR_SOURCES,
     pacificDay, addDays, dayKeyToUtc, weekdayOf,
     americanToDecimal, decimalToAmerican,
     buildTickets, summarize, exclusions, inDayRange, dailySeries, firstSettledDay, groupBy, calibration,

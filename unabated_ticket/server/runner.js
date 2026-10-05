@@ -10,7 +10,8 @@
 // scan loop the panel runs while it is open and visible: a snapshot per
 // league on start — the settings' leagues plus NFL and CFB, which the panel
 // always loads for its Teasers tab and whose open BFA teasers size the Edges
-// rows — each league re-downloaded on its own size-based cadence, a full
+// rows, plus the leagues of open straight bets, whose closing fairs it saves —
+// each league re-downloaded on its own size-based cadence, a full
 // resync every 10 min (scanner.js). It never pauses — the panel pauses when
 // hidden; this is a panel that is always in view.
 //
@@ -26,14 +27,19 @@
 //   GET <bets service>/settings.json every 10 s — bankroll, Kelly multiplier,
 //       books, minimum edge, line age, min liq to win, alts, sort, cards
 //       (bets.duckdb::edge_settings; null fields are the panel's defaults).
+//   POST <bets service>/closing_fairs.json every 30 s, only the rows that
+//       changed — each open straight bet's Unabated fair on its own line
+//       while its game is still to start (server/closefair.js); the service
+//       keeps the newest pre-start one, the close CLV is measured against.
 // Serves (HTTP on UNABATED_RUNNER_HOST:UNABATED_RUNNER_PORT, no auth):
 //   GET /edges.json  the Edges list the panel would show for those settings
 //                    (server/edges_payload.js documents the shape)
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
-// Side effects: none on disk — no DuckDB, no files, no writes to the bets
-// service. State (feed, line history, bets) is in memory and rebuilt on
+// Side effects: none on disk — no DuckDB, no files. Its one write is the
+// closing-fair POST above (bets.duckdb::bet_closing_fairs, through the bets
+// service). State (feed, line history, bets) is in memory and rebuilt on
 // restart. Logs state changes (not every poll) to stdout/stderr.
 
 "use strict";
@@ -48,6 +54,7 @@ const tailflex = require("../extension/tailflex.js");
 const teaser = require("../extension/teaser.js");
 const edgeRows = require("../extension/edgerows.js");
 const edgesPayload = require("./edges_payload.js");
+const closefair = require("./closefair.js");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8095;
@@ -56,6 +63,8 @@ const DEFAULT_BETS_SERVICE_URL = "http://127.0.0.1:8094";
 const BETS_POLL_MS = 30 * 1000;
 // A phone setting change shows within one scanner tick.
 const SETTINGS_POLL_MS = 10 * 1000;
+// Snapshots land every 1-5 min per league, so a 30 s pass misses no change.
+const CLOSING_FAIRS_POST_MS = 30 * 1000;
 const SERVICE_TIMEOUT_MS = 10 * 1000;
 const LOOPBACK_HOST_NAMES = ["127.0.0.1", "localhost"];
 const WILDCARD_HOSTS = ["0.0.0.0", "::", ""];
@@ -105,9 +114,11 @@ function hostAllowed(hostHeader, allowed) {
 
 // The leagues the scanner loads: the Edges list's, plus NFL and CFB, as the
 // panel's scannerLeaguesOf does — the board the open teasers and the bets are
-// matched against must be the panel's, or the stakes would differ.
-function scannerLeaguesOf(edgeLeagues) {
-  return Array.from(new Set([...edgeLeagues, ...teaser.TEASER_LEAGUE_IDS])).sort((a, b) => a - b);
+// matched against must be the panel's, or the stakes would differ — plus the
+// open bets' leagues, so each has a closing fair. A league outside the
+// settings never reaches the Edges list (edgerows.js leagueIds).
+function scannerLeaguesOf(edgeLeagues, betLeagueIds = []) {
+  return Array.from(new Set([...edgeLeagues, ...teaser.TEASER_LEAGUE_IDS, ...betLeagueIds])).sort((a, b) => a - b);
 }
 
 // scanner.js passes the browser's fetch options ({cache: "no-cache",
@@ -119,10 +130,10 @@ function nodeFetch(url, options) {
 
 // One JSON GET of the bets service. Node's fetch says only "fetch failed" for
 // a refused or reset connection; the reason is in its cause, so it is named.
-async function getServiceJson(fetchImpl, url) {
+async function getServiceJson(fetchImpl, url, init = {}) {
   let response;
   try {
-    response = await fetchImpl(url, { signal: AbortSignal.timeout(SERVICE_TIMEOUT_MS) });
+    response = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(SERVICE_TIMEOUT_MS) });
   } catch (error) {
     const reason = error.cause ? ` (${error.cause.code || error.cause.message})` : "";
     throw new Error(`${url}: ${error.message}${reason}`, { cause: error });
@@ -170,6 +181,10 @@ function createRunner(deps) {
   let pollTimers = [];
   let betsBusy = false;
   let settingsBusy = false;
+  let closingBusy = false;
+  // betId -> what was last POSTed for it (closefair.unsentRows).
+  const sentClosingFairs = new Map();
+  const closingStatus = { okAt: null, error: null, rowsSent: 0 };
 
   // Every snapshot carries Unabated's team list; register it so bet records
   // resolve to the board's team ids, and re-resolve when it grew (as the panel does).
@@ -253,6 +268,8 @@ function createRunner(deps) {
       held = { records: applied.records, crosswalk: applied.crosswalk, pins: applied.pins, fillFairs: applied.fillFairs };
       fillFairIndex = fillfair.fairsByBetId(held.fillFairs);
       noteMatchedStarts();
+      // Before the first settings read the scan has not started; start() starts it.
+      if (scannedLeagues !== null) followLeagues();
       if (betsStatus.error) logInfo("bets service reachable again");
       Object.assign(betsStatus, { okAt: at, error: null, unreachableSince: null, generatedAt: applied.generatedAt, sources: applied.sources });
     } catch (error) {
@@ -268,7 +285,7 @@ function createRunner(deps) {
   // full load takes a while and must not hold the settings poll
   // (scanLoaded() waits for it).
   function followLeagues() {
-    const leagues = scannerLeaguesOf(settings.edgeSettings.leagues);
+    const leagues = scannerLeaguesOf(settings.edgeSettings.leagues, closefair.leagueIdsOfOpenBets(held.records));
     const signature = leagues.join(",");
     if (signature === scannedLeagues) return;
     scannedLeagues = signature;
@@ -295,6 +312,31 @@ function createRunner(deps) {
     followLeagues();
   }
 
+  // POST the closing-fair rows that changed since the last successful POST.
+  // A failure keeps them unsent, so the next pass retries them.
+  async function postClosingFairs() {
+    if (closingBusy || !feedState || !scannerStatus) return;
+    closingBusy = true;
+    try {
+      const rows = closefair.unsentRows(closefair.closingFairRows({
+        records: held.records, state: feedState, boardLines: boardLines(),
+        leagueLoadedAt: scannerStatus.leagueLoadedAt || {}, now: now(),
+      }), sentClosingFairs);
+      if (!rows.length) return;
+      await getServiceJson(serviceFetch, `${deps.betsServiceUrl}/closing_fairs.json`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rows }),
+      });
+      closefair.markSent(rows, sentClosingFairs);
+      if (closingStatus.error) logInfo("closing fairs saving again");
+      Object.assign(closingStatus, { okAt: now(), error: null, rowsSent: closingStatus.rowsSent + rows.length });
+    } catch (error) {
+      if (closingStatus.error !== error.message) logWarning(`closing fairs POST failed: ${error.message}`);
+      closingStatus.error = error.message;
+    } finally {
+      closingBusy = false;
+    }
+  }
+
   // Bets and settings first, so the first scan uses the right leagues and the
   // first list is sized against what is held; then the polls, and resolve
   // once the first full load has landed.
@@ -304,6 +346,7 @@ function createRunner(deps) {
     pollTimers = [
       timers.setInterval(() => pollBets(), BETS_POLL_MS),
       timers.setInterval(() => pollSettings(), SETTINGS_POLL_MS),
+      timers.setInterval(() => postClosingFairs(), CLOSING_FAIRS_POST_MS),
     ];
     await scanLoad;
   }
@@ -331,10 +374,11 @@ function createRunner(deps) {
       scanner: scannerStatus ? { phase: scannerStatus.phase, error: scannerStatus.error, lastSnapshotAt: scannerStatus.lastSnapshotAt } : { phase: "starting", error: null },
       betsService: { okAt: betsStatus.okAt, error: betsStatus.error },
       settings: { source: settings.source, okAt: settings.okAt, error: settings.error },
+      closingFairs: { ...closingStatus },
     };
   }
 
-  return { start, stop, pollBets, pollSettings, scanLoaded: () => scanLoad, edgesPayload: edgesPayloadNow, health, scanner };
+  return { start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, edgesPayload: edgesPayloadNow, health, scanner };
 }
 
 function sendJson(response, status, body) {
@@ -397,6 +441,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  DEFAULT_HOST, DEFAULT_PORT, DEFAULT_BETS_SERVICE_URL, BETS_POLL_MS, SETTINGS_POLL_MS,
+  DEFAULT_HOST, DEFAULT_PORT, DEFAULT_BETS_SERVICE_URL, BETS_POLL_MS, SETTINGS_POLL_MS, CLOSING_FAIRS_POST_MS,
   configFromEnv, allowedHosts, hostAllowed, scannerLeaguesOf, nodeFetch, createRunner, createHttpServer,
 };

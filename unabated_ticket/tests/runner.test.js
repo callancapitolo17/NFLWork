@@ -248,6 +248,8 @@ test("a settings change of leagues restarts the scan; a failed settings poll kee
 test("scannerLeaguesOf: the settings' leagues plus NFL and CFB, sorted, once each", () => {
   assert.deepEqual(runnerLib.scannerLeaguesOf([]), [1, 2]);
   assert.deepEqual(runnerLib.scannerLeaguesOf([5, 1]), [1, 2, 5]);
+  // The open bets' leagues load too, for their closing fairs.
+  assert.deepEqual(runnerLib.scannerLeaguesOf([1], [5, 12]), [1, 2, 5, 12]);
 });
 
 test("Football unticked: the scan still holds NFL for the teasers, the list shows none of it", async () => {
@@ -288,4 +290,36 @@ test("HTTP: /edges.json and /health on loopback; a foreign Host is 403, another 
     await new Promise((resolve) => server.close(resolve));
     runner.stop();
   }
+});
+
+test("closing fairs: the open bet's fair on its own line, POSTed once, again only when it changes, never after kickoff", async () => {
+  let clock = NOW;
+  const posts = [];
+  const service = async (url, init = {}) => {
+    const route = url.slice(SERVICE_URL.length);
+    if (route === "/closing_fairs.json") {
+      posts.push(JSON.parse(init.body).rows);
+      assert.deepEqual([init.method, init.headers["Content-Type"]], ["POST", "application/json"]);
+      return response({ body: JSON.stringify({ ok: true, saved: 1 }) });
+    }
+    if (route === "/bets.json") return response({ body: JSON.stringify(betsBody([BEARS_HELD])) });
+    if (route === "/settings.json") return response({ body: JSON.stringify({ settings: OPEN_SETTINGS, updatedAt: null }) });
+    return response({ status: 404, body: "{}" });
+  };
+  const runner = runnerLib.createRunner({ fetchImpl: unabatedFetch(), serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => clock, timers: noTimers, ...quiet });
+  await runner.start();
+  await runner.postClosingFairs();
+  assert.equal(posts.length, 1);
+  // BetOnline is not in the slice, so the most recently changed book at -2.5 carries the fair.
+  assert.deepEqual(posts[0], [{
+    betId: "bol-1", lineKey: "289357360:ms105:si0:tid6", points: -2.5, fairAmerican: -123,
+    fairObservedAt: new Date(NOW).toISOString(), eventStart: new Date(KICKOFF_MS).toISOString(),
+  }]);
+  await runner.postClosingFairs();
+  assert.equal(posts.length, 1, "nothing changed, nothing resent");
+  clock = KICKOFF_MS + 1000;
+  await runner.postClosingFairs();
+  assert.equal(posts.length, 1, "after kickoff the stored row is the close");
+  assert.equal(runner.health().closingFairs.rowsSent, 1);
+  runner.stop();
 });
