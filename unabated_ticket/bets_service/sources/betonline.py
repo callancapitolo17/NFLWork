@@ -65,9 +65,10 @@ The report carries NO game date, so eventStart / eventDate are null; a spread or
 moneyline side comes from rotation parity (odd = away, the US convention) — both
 recorded in `approx` ("game_date_unknown", "side_from_rotation_parity"); the
 matcher keys on the rotation number and the team names. The report carries no
-settle time either (GradeDateTime was null on every settled row): a settled bet's
-closedAt is its placed time (a lower bound; it only decides when the bet leaves
-the 30-day window, never a match).
+settle time on the 2026-09-15 pull (GradeDateTime was null on every settled row),
+so a settled bet's closedAt is its GradeDateTime when the report fills it and its
+placed time otherwise (a lower bound; it decides the tracker's P&L day and when the
+bet leaves the 30-day window, never a match).
 """
 import fcntl
 import importlib.util
@@ -326,6 +327,7 @@ def _money(value: object) -> float | None:
 def _base_record(row: dict, native_id: str, fetched_at: str | None) -> dict:
     status = status_of(row.get("WagerStatus"))
     placed_at = parse_placed_at(row.get("Date"))
+    graded_at = parse_placed_at(row.get("GradeDateTime"))
     return {
         "id": f"{VENUE}:{native_id}",
         "source": SOURCE,
@@ -339,8 +341,9 @@ def _base_record(row: dict, native_id: str, fetched_at: str | None) -> dict:
         "contracts": None,
         "placedAt": placed_at,
         "status": status,
-        # The report carries no settle time: the placed time is the lower bound.
-        "closedAt": None if status == "open" else placed_at,
+        # GradeDateTime was null on every settled row of the one live pull; when it
+        # is, the placed time is the lower bound.
+        "closedAt": None if status == "open" else (graded_at or placed_at),
         "isParlayLeg": False, "parlayId": None, "legIndex": None, "legCount": None,
         "approx": [],
         "unmatchable": None,
