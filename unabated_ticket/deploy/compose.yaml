@@ -1,0 +1,71 @@
+# Unabated Ticket on the server (phone page plan step 4): the bets service
+# (:8094, phone page + /bets.json + /settings.json + /edges.json proxy) and the
+# Edges runner (:8095), both on 127.0.0.1 only. network_mode: host keeps that
+# loopback binding meaning the VM's own loopback — nothing is published and
+# nothing listens on a public interface; the phone reaches :8094 through
+# `tailscale serve` on the host (deploy/README.md).
+#
+#   cd ~/NFLWork/unabated_ticket/deploy && docker compose up -d     (or ./deploy.sh)
+#
+# Code: the repo is mounted read-only at /app (the code resolves everything
+# from the repo root), so an update is `git pull` + a restart, not a rebuild.
+# Writes go only to ${UNABATED_DATA_DIR} (/data inside): bets.duckdb,
+# novig_token.json (rewritten on every Auth0 rotation), logs/.
+# Secrets are files on the host, never in an image: the Kalshi .pem
+# (${KALSHI_PEM_PATH}, read-only) and unabated_ticket/bets_service/.env
+# (gitignored, inside the read-only repo mount: KALSHI_API_KEY_ID and the
+# POLYMARKET_US_* keys). bet_logger/.env is not used here, so BFA, Wagerzon
+# and BetOnline report "not configured".
+
+name: unabated-ticket
+
+x-logging: &rotated-logs
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  bets:
+    build:
+      context: ..
+      dockerfile: deploy/bets_service.Dockerfile
+    image: unabated-ticket-bets:local
+    network_mode: host
+    restart: unless-stopped
+    init: true
+    user: "${DEPLOY_UID:-1000}:${DEPLOY_GID:-1000}"
+    working_dir: /app
+    environment:
+      HOME: /tmp
+      BETS_DB_PATH: /data/bets.duckdb
+      BETS_SERVICE_LOG_PATH: /data/logs/bets_service.log
+      BETS_SERVICE_LOG_CONSOLE: "1"
+      NOVIG_TOKEN_PATH: /data/novig_token.json
+      # Not configured unless a cookie file is moved here on purpose (README step 0).
+      BETS_BETONLINE_COOKIES_PATH: /data/recon_betonline_cookies.json
+      KALSHI_PRIVATE_KEY_PATH: /run/secrets/kalshi.pem
+      BETS_EXTRA_ALLOWED_HOSTS: "${BETS_EXTRA_ALLOWED_HOSTS:?set BETS_EXTRA_ALLOWED_HOSTS in deploy/.env (the VM's MagicDNS name)}"
+      UNABATED_RUNNER_URL: http://127.0.0.1:8095
+    volumes:
+      - ../..:/app:ro
+      - "${UNABATED_DATA_DIR:?set UNABATED_DATA_DIR in deploy/.env}:/data"
+      - "${KALSHI_PEM_PATH:?set KALSHI_PEM_PATH in deploy/.env}:/run/secrets/kalshi.pem:ro"
+    logging: *rotated-logs
+
+  runner:
+    image: node:22-slim
+    network_mode: host
+    restart: unless-stopped
+    init: true
+    user: "${DEPLOY_UID:-1000}:${DEPLOY_GID:-1000}"
+    working_dir: /app
+    command: ["node", "unabated_ticket/server/runner.js"]
+    environment:
+      HOME: /tmp
+      UNABATED_RUNNER_HOST: 127.0.0.1
+      UNABATED_RUNNER_PORT: "8095"
+      BETS_SERVICE_URL: http://127.0.0.1:8094
+    volumes:
+      - ../..:/app:ro
+    logging: *rotated-logs

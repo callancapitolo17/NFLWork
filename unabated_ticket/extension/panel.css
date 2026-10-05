@@ -523,6 +523,12 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 .tk-legs li.counted .tl-leg { font-weight: 500; }
 .tk-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
 .tk-copied { font-size: 11px; color: var(--edge-mid); }
+/* The Place button: Copy + Place, then Cancel + Bet $X at BFA, then what happened, left of the buttons. */
+.ticket-card .tk-actions { flex-wrap: wrap; }
+.tk-place-msg { font-size: 11.5px; margin-right: auto; overflow-wrap: anywhere; }
+.tk-place-msg.ok { color: var(--edge-strong); font-weight: 600; }
+.tk-place-msg.wait { color: var(--muted); }
+.tk-place-msg.bad { color: var(--against-fg); }
 .more-tickets { margin: 8px 0 0; }
 .more-tickets > summary {
   cursor: pointer; list-style: none; font: 500 11.5px system-ui, sans-serif; color: var(--muted);

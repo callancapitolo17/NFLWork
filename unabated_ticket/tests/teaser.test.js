@@ -780,3 +780,40 @@ test("past the outcome budget the straights on a shed leg's game go with it", ()
   assert.ok(!build.straights.some((straight) => straight.eventId === 109 || straight.eventId === 110));
   assert.ok(build.tickets.length > 0);
 });
+
+// ---- placing a ticket at BFA ----------------------------------------------------
+
+// A ticket of four Buckeye legs as describePlan hands it over: an away spread,
+// a home spread, an NFL Over and a CFB Under (the fairs do not matter here).
+function mixedTicket() {
+  const state = emptyBoard();
+  state.leagues = [NFL, CFB];
+  addGame(state, { eventId: 101, away: "Broncos", home: "49ers", awayRotation: 271, homeRotation: 272, spread: 2.5 });
+  addGame(state, { eventId: 102, away: "Chargers", home: "Seahawks", awayRotation: 275, homeRotation: 276, spread: 7 });
+  addGame(state, { eventId: 103, away: "Cardinals", home: "Giants", awayRotation: 257, homeRotation: 258, total: 44.5 });
+  addGame(state, { eventId: 104, leagueId: CFB, away: "Old Dominion", home: "Georgia State", awayRotation: 143, homeRotation: 144, total: 52.5 });
+  const legs = legsOf(state);
+  return { number: 1, stake: 200, legs: ["Broncos +8.5", "Seahawks -1", "Over 38.5", "Under 58.5"].map((label) => legByLabel(legs, label)) };
+}
+
+test("placeRequestOf: each leg at Buckeye's number before the teaser, its side, rotation and start", () => {
+  const { body, error } = teaser.placeRequestOf(mixedTicket());
+  assert.equal(error, undefined);
+  assert.equal(body.stake, 200);
+  const start = "2026-09-27T17:00:00.000Z";
+  assert.deepEqual(body.legs, [
+    { league: "nfl", betType: "spread", side: "away", rotation: 271, points: 2.5, eventStart: start, label: "Broncos +8.5" },
+    { league: "nfl", betType: "spread", side: "home", rotation: 276, points: -7, eventStart: start, label: "Seahawks -1" },
+    { league: "nfl", betType: "total", side: "over", rotation: 257, points: 44.5, eventStart: start, label: "Over 38.5" },
+    { league: "cfb", betType: "total", side: "under", rotation: 144, points: 52.5, eventStart: start, label: "Under 58.5" },
+  ]);
+});
+
+test("placeRequestOf refuses a partial-cent stake or a leg with no rotation; the signature ignores order and stake", () => {
+  const ticket = mixedTicket();
+  assert.match(teaser.placeRequestOf({ ...ticket, stake: 120.5 }).error, /not whole dollars/);
+  const noRotation = { ...ticket, legs: ticket.legs.map((leg, index) => (index === 0 ? { ...leg, rotation: null } : leg)) };
+  assert.match(teaser.placeRequestOf(noRotation).error, /Broncos \+8\.5: no rotation number/);
+  const reordered = { ...ticket, stake: 50, legs: [...ticket.legs].reverse() };
+  assert.equal(teaser.ticketSignatureOf(reordered), teaser.ticketSignatureOf(ticket));
+});

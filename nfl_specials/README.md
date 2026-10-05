@@ -34,8 +34,8 @@ superfectas (7-10 requests each, 0.5 s apart) took ~40 s over plain HTTP.
 - **Board:** grouped by game in kickoff order (started games and specials with
   no game last), or one list by EV ("Best EV"); filter All / Trifectas /
   Superfectas and "+EV only" (remembered in the browser). Each row: legs as
-  chips, every book's fair with the worst case marked (a superfecta shows DK's
-  1Q/1H/GM part, the team-scores-first %, and DK's own price incl. vig), WZ
+  chips, every book's fair with the worst case marked (a superfecta shows its
+  one DK fair), WZ
   price, fair, EV (shaded by size), and the stake box prefilled with the
   recommended stake, "to win", and the uncapped Kelly when trimmed.
 - **Place:** a confirm sheet (risk, to win, price, fair, EV, account), then the

@@ -30,6 +30,9 @@
 //                 marked can't tease
 //   marketKeyOf, marketNameOf, canBlock  what a can't-tease mark covers,
 //                 its name, and which legs can carry one (CFB only)
+//   ticketSignatureOf, placeRequestOf  a ticket's identity across renders, and
+//                 the body of the bets service's POST /place_teaser.json for it
+//                 (the Place button; bets_service/bfa_teaser.py places it at BFA)
 //
 // The rules (user decisions 2026-09-27/28):
 //   - A leg is Buckeye's main full-game spread or total, NFL or CFB, teased
@@ -1260,12 +1263,53 @@
     });
   }
 
+  // ---- placing a ticket at BFA ---------------------------------------------------
+
+  const LEAGUE_CODES = { 1: "nfl", 2: "cfb" };
+
+  // The same four legs whatever the stake: the Place button's state survives
+  // the 5 s re-render and a rebuild that only resizes the ticket.
+  function ticketSignatureOf(ticket) {
+    return ticket.legs.map((leg) => leg.key).sort().join("|");
+  }
+
+  function placeSideOf(leg) {
+    if (leg.betTypeId === BET_TYPE_SPREAD) return leg.sideIndex === SIDE_AWAY_OR_OVER ? "away" : "home";
+    return leg.sideIndex === SIDE_AWAY_OR_OVER ? "over" : "under";
+  }
+
+  // The POST /place_teaser.json body for a ticket of describePlan, or why it
+  // cannot be sent: {body} | {error}. Each leg goes at Buckeye's number BEFORE
+  // the teaser (bookPoints) — the bets service refuses it unless BFA's board
+  // shows that same number — with the side's rotation (a total's is its
+  // side's team's; either finds the game) and the board's start.
+  function placeRequestOf(ticket) {
+    if (!Number.isInteger(ticket.stake) || ticket.stake <= 0) return { error: `stake ${ticket.stake} is not whole dollars` };
+    if (ticket.legs.length !== LEGS_PER_TICKET) return { error: `${ticket.legs.length} legs, not ${LEGS_PER_TICKET}` };
+    const legs = [];
+    for (const leg of ticket.legs) {
+      if (!LEAGUE_CODES[leg.leagueId]) return { error: `${leg.label}: league ${leg.leagueId} is not NFL or CFB` };
+      if (!Number.isInteger(leg.rotation)) return { error: `${leg.label}: no rotation number on the board` };
+      legs.push({
+        league: LEAGUE_CODES[leg.leagueId],
+        betType: leg.betTypeId === BET_TYPE_SPREAD ? "spread" : "total",
+        side: placeSideOf(leg),
+        rotation: leg.rotation,
+        points: leg.bookPoints,
+        eventStart: Number.isFinite(leg.eventStartMs) ? new Date(leg.eventStartMs).toISOString() : null,
+        label: leg.label,
+      });
+    }
+    return { body: { stake: ticket.stake, legs } };
+  }
+
   const api = {
     TEASER_LEAGUE_IDS, TEASER_POINTS, LEGS_PER_TICKET, TICKET_NET_ODDS, TICKET_MAX_STAKE, POOL_SIZE, BREAK_EVEN_WIN,
     LEG_LIVE, LEG_STARTED,
     STANDING_POOL, STANDING_OUT, STANDING_BELOW, STANDING_OTHER_MARKET, STANDING_UNPRICED, STANDING_BLOCKED,
     REASON_FEW_LEGS, REASON_HELD_RISK, STRAIGHT_OTHER_MARKET,
     teaserBoardOf, teaserLegs, openTeasers, heldStraights, planTeasers, describePlan, describeLegs, marketKeyOf, marketNameOf, canBlock,
+    ticketSignatureOf, placeRequestOf,
   };
 
   if (inNode) {

@@ -2652,13 +2652,25 @@
   // so it holds still while the EVs move. It is computed on every scanner
   // update, bets poll and 5 s tick even with the tab hidden, so the tab's
   // count stays current. Placed tickets come from the bets service's BFA
-  // open bets (BFA is Buckeye): nothing to mark here.
+  // open bets (BFA is Buckeye): nothing to mark here. A ticket's Place
+  // button bets it at BFA through the bets service (POST /place_teaser.json).
 
   const HOUR_MS = 3600 * 1000;
   // Ticket cards shown before the fold; the rest sit behind "N more tickets".
   const TEASER_TICKETS_SHOWN = 3;
   // Ticket number -> the text its Copy button puts on the clipboard.
   const teaserCopyTexts = new Map();
+  // Ticket signature -> the ticket as last rendered, for its Place button.
+  const teaserTicketsShown = new Map();
+  // Ticket signature -> its Place button's state, kept across the 5 s
+  // re-render: {phase: "confirm" | "placing" | "placed" | "refused" |
+  // "unconfirmed", message}. A confirm not clicked within
+  // TEASER_CONFIRM_MS falls back to Place.
+  const teaserPlaceStates = new Map();
+  const TEASER_CONFIRM_MS = 6000;
+  // Bet $X sits where Place was: a confirm this soon after arming is the
+  // second click of a double-click, not a decision, and is ignored.
+  const TEASER_CONFIRM_MIN_MS = 600;
   // The last failure logged, so a persistent one is logged once, not every 5 s.
   let teaserLastError = null;
 
@@ -2911,13 +2923,101 @@
     copy.type = "button";
     copy.dataset.copyTicket = String(ticket.number);
     actions.append(makeEl("span", "tk-copied"), copy);
+    appendPlaceControls(actions, ticket, copy);
     card.append(head, legs, actions);
     teaserCopyTexts.set(ticket.number, teaserCopyText(ticket));
     return card;
   }
 
+  function teaserPlaceButton(className, text, action, signature) {
+    const button = makeEl("button", className, text);
+    button.type = "button";
+    button.dataset.placeAction = action;
+    button.dataset.placeTicket = signature;
+    return button;
+  }
+
+  // The Place button and what it last did, in the ticket's action row:
+  // Place -> Cancel / Bet $X at BFA -> Placing… -> placed, or the reason it
+  // was not. An unconfirmed ticket shows no Place: it may be booked (the
+  // service holds its legs for 15 min anyway).
+  function appendPlaceControls(actions, ticket, copy) {
+    const signature = teaserLib.ticketSignatureOf(ticket);
+    teaserTicketsShown.set(signature, ticket);
+    const placeState = teaserPlaceStates.get(signature) || null;
+    const phase = placeState ? placeState.phase : null;
+    if (placeState && placeState.message) {
+      const tone = phase === "placed" ? "ok" : phase === "placing" ? "wait" : "bad";
+      actions.prepend(makeEl("span", `tk-place-msg ${tone}`, placeState.message));
+    }
+    if (phase === "confirm") {
+      copy.hidden = true;
+      actions.append(teaserPlaceButton("btn sm", "Cancel", "cancel", signature),
+        teaserPlaceButton("btn sm primary", `Bet ${fmtWholeDollars(ticket.stake)} at BFA`, "confirm", signature));
+    } else if (phase === null || phase === "refused") {
+      actions.append(teaserPlaceButton("btn sm", "Place", "arm", signature));
+    }
+  }
+
+  // POST the ticket to the bets service, which places it at BFA and answers
+  // placed / refused / unconfirmed. An HTTP error is the service refusing
+  // the request before BFA (bad body, no BFA account); no reply at all may
+  // still have reached BFA, so it reads unconfirmed. A placed ticket's open
+  // bets are already stored: re-poll so it moves to Open at BFA now.
+  async function placeTeaser(signature) {
+    const ticket = teaserTicketsShown.get(signature);
+    const request = ticket ? teaserLib.placeRequestOf(ticket) : { error: "the ticket is no longer on the list" };
+    if (request.error) {
+      teaserPlaceStates.set(signature, { phase: "refused", message: `Not placed: ${request.error}` });
+      renderTeasers();
+      return;
+    }
+    teaserPlaceStates.set(signature, { phase: "placing", message: "Placing at BFA…" });
+    renderTeasers();
+    let next;
+    try {
+      const reply = await serviceRequest("POST", "/place_teaser.json", request.body);
+      next = { phase: reply.status, message: reply.message };
+    } catch (error) {
+      next = error.status
+        ? { phase: "refused", message: `Not placed: ${error.message}` }
+        : { phase: "unconfirmed", message: `The bets service did not answer (${error.message}). Check BFA's open bets before placing it again.` };
+    }
+    teaserPlaceStates.set(signature, next);
+    renderTeasers();
+    if (next.phase === "placed") pollBets().catch((error) => console.error("[unabated-ticket] bets poll failed", error));
+  }
+
+  function onTeaserPlaceClick(button, event) {
+    const signature = button.dataset.placeTicket;
+    const action = button.dataset.placeAction;
+    if (action === "arm") {
+      const armedAt = Date.now();
+      teaserPlaceStates.set(signature, { phase: "confirm", message: null, armedAt });
+      setTimeout(() => {
+        const held = teaserPlaceStates.get(signature);
+        if (held && held.phase === "confirm" && held.armedAt === armedAt) {
+          teaserPlaceStates.delete(signature);
+          renderTeasers();
+        }
+      }, TEASER_CONFIRM_MS);
+      renderTeasers();
+      return;
+    }
+    if (action === "cancel") {
+      teaserPlaceStates.delete(signature);
+      renderTeasers();
+      return;
+    }
+    const held = teaserPlaceStates.get(signature);
+    if (action !== "confirm" || !held || held.phase !== "confirm") return;
+    if (event.detail > 1 || Date.now() - held.armedAt < TEASER_CONFIRM_MIN_MS) return;
+    placeTeaser(signature).catch((error) => console.error("[unabated-ticket] place teaser failed", error));
+  }
+
   function renderTeasersTickets(model) {
     teaserCopyTexts.clear();
+    teaserTicketsShown.clear();
     const tickets = model ? model.plan.tickets : [];
     view.teasersListLabel.hidden = tickets.length === 0;
     view.teasersListCount.textContent = tickets.length ? String(tickets.length) : "";
@@ -2926,6 +3026,10 @@
     view.teasersMore.hidden = rest.length === 0;
     view.teasersMoreLabel.textContent = `${plural(rest.length, "more ticket")} · ${fmtWholeDollars(rest.reduce((sum, ticket) => sum + ticket.stake, 0))}`;
     view.teasersMoreList.replaceChildren(...rest.map(teaserTicketCard));
+    // A ticket gone from the list (placed and now open, or rebuilt away) takes its button state with it.
+    for (const [signature, placeState] of teaserPlaceStates) {
+      if (!teaserTicketsShown.has(signature) && placeState.phase !== "placing") teaserPlaceStates.delete(signature);
+    }
   }
 
   // One open BFA teaser, read-only: its legs at BFA's numbers, each at its
@@ -3084,6 +3188,11 @@
   }
 
   view.tabTeasers.addEventListener("click", async (event) => {
+    const placeButton = event.target.closest("button[data-place-action]");
+    if (placeButton) {
+      onTeaserPlaceClick(placeButton, event);
+      return;
+    }
     const button = event.target.closest("button[data-copy-ticket]");
     if (!button) return;
     const status = button.parentElement.querySelector(".tk-copied");

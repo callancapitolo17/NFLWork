@@ -25,11 +25,12 @@ side panel:
 - **Teasers** — the Buckeye 6-point 4-team teasers to bet right now, each at
   or under Buckeye's $200 limit, priced off Unabated's fair and sized with
   Kelly over the whole set, around the teasers already open at BFA (BFA is
-  Buckeye). Plan in `docs/2026-09-27-unabated-ticket-teasers-plan.md`. See
-  *Teasers*.
+  Buckeye). A **Place** button bets a ticket at BFA through the bets service.
+  Plan in `docs/2026-09-27-unabated-ticket-teasers-plan.md`. See *Teasers*.
 
 One ticket at a time. No overlay on the Unabated page, no rounding of the
-stake, no order placement.
+stake. The only order placement is the Teasers tab's Place button (one
+Buckeye teaser at BFA, after a confirm click).
 
 ## Install (load unpacked)
 
@@ -1463,7 +1464,8 @@ every ticket loses — with open BFA teasers, what is placed and the expected
 profit of all of them together), then **Open at BFA** (each open teaser
 read-only, its legs at their current fairs or why they count as won, and the
 age of the last BFA pull), the ticket cards in the order to bet them (legs,
-stake, EV, **Copy**: `[rotation] side` per leg, BFA's own form) and the legs
+stake, EV, **Copy**: `[rotation] side` per leg, BFA's own form, and
+**Place**, below) and the legs
 (each game's best leg: teased number, Buckeye's line, win chance, line age,
 how many tickets use it, and on a pool leg the Edges tab's tags for the
 straights on its game — `held $X` on the leg's side, `against $Y` on the
@@ -1479,6 +1481,31 @@ service down puts a red banner up and the list stays (an open teaser may be
 missing from it). The scanner always loads NFL and CFB for this tab; the
 Edges tab and its alerts still list only the sports you tick
 (`feed.selectEdges`'s `leagueIds`).
+
+**Place (2026-10-03, 0.18.0).** Each ticket card has a Place button next to
+Copy. One click arms it — **Cancel** / **Bet $200 at BFA** for 6 s — and the
+confirm sends the ticket to the bets service (`POST /place_teaser.json`,
+`bets_service/bfa_teaser.py`), which bets it at BFA on the BFA source's own
+login and answers, usually in a few seconds (up to about a minute when BFA
+is slow). A confirm within 0.6 s of arming — the second click of a
+double-click — is ignored:
+
+| Card reads | What happened |
+| --- | --- |
+| `Placed · ticket N` (green) | BFA lists the new teaser; the bets list re-polls and the ticket moves to Open at BFA |
+| `Not placed: …` (red), Place again | nothing was bet — a leg's number moved on BFA (`BFA has +3 now, the list has +2.5`), a game started, the ticket is already open, another ticket was placing, or BFA answered 4xx |
+| `Sent to BFA, but …` (red), no Place | the wager went out and no ticket appeared in 20 s, the reply was lost, or reading the open bets failed: it may be booked. Check BFA's open bets; the service refuses the same four sides, at any numbers, for 15 min (held in memory: a service restart drops the hold, and then only the already-open check guards) |
+
+Before anything is sent the service checks, in order: the account's own
+4-team 6-point teaser type (from BFA's account metadata; it must pay +300,
+what this tab prices), each leg on BFA's live board by rotation — main
+full-game line, open, at **the very number** the list was built on (Buckeye's
+number before the 6 points) — and that no open teaser already holds the same
+four sides. Then ONE POST with `AcceptChanges 0` (BFA refuses a moved number
+rather than taking it), never retried, and the open bets read every second
+until the ticket shows. The body is pinned by a test to the one the site sent
+for a ticket Cal placed by hand (356323496). Juice is not checked: in a
+Buckeye teaser it does not change the payout.
 
 **Limits.** Unabated's fair at teaser numbers runs up to 3 points above the
 exchanges (Kalshi, Novig, Polymarket, ProphetX); EVs and stakes are as good as
@@ -1499,7 +1526,8 @@ A local Python service that turns the user's own bet history into normalised
 records the panel can match against a line (issue #114; plan in
 `docs/2026-09-11-issue-114-bet-history-plan.md`). It is the only place that
 signs Kalshi requests — the private key never enters the extension. Read-only
-GETs; no order placement.
+GETs, except one bet at a book: `POST /place_teaser.json` places a Buckeye
+teaser at BFA (the Teasers tab's Place button).
 
 It runs as a launchd agent (`bets_service/com.nflwork.bets-service.plist`):
 it starts at login and restarts itself if it dies. A copy started from a
@@ -1564,7 +1592,16 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   /bet105.json` with `{fetchedAt, feeds: {prematch: [betGroup], live:
   [betGroup]}}` (both feeds, at most 2000 groups) → `{ok, count, closed}`, or
   `{error}` → `{ok, recorded: "error"}` — the panel's read of Bet105 (the Bet105
-  source bullet), stored as that source's run. **Settings** (the server
+  source bullet), stored as that source's run. `POST /place_teaser.json`
+  with `{stake, legs: [4 x {league "nfl"|"cfb", betType "spread"|"total",
+  side "away"|"home"|"over"|"under", rotation, points (Buckeye's number
+  before the teaser), eventStart, label}]}` → `{ok, status: placed | refused
+  | unconfirmed, message, ticket?}` — **places a real wager at BFA**
+  (*Teasers → Place*); 400 on a bad body, 503 when no BFA account is read,
+  403 through a `BETS_EXTRA_ALLOWED_HOSTS` name (the tailnet reads, it never
+  places);
+  the open bets it read while confirming are UPSERTed into `bets` so the
+  next `/bets.json` has the ticket. **Settings** (the server
   runner, Running on a server below): `GET /settings.json` → `{settings:
   {bankroll, multiplier, leagues, periods, betTypes, bookMode, bookIds,
   minEdgePct, minStake, maxLineAgeHours, minLiquidityToWin, includeAlts,
@@ -1595,7 +1632,11 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   Chrome prompts on public→loopback; Safari and Firefox do not. The port
   comes from the listening socket, so a non-default `BETS_SERVICE_PORT`
   guards itself (on port 80 the bare names pass too — browsers omit the
-  default port).
+  default port). `BETS_EXTRA_ALLOWED_HOSTS` (comma-separated, default empty)
+  adds names, each bare and with `:443`: on the server, `tailscale serve`
+  forwards the browser's `Host` (the VM's tailnet name) to the loopback
+  port. Entries must be bare lowercase host names — a scheme, port, path or
+  wildcard stops the service at startup.
 - **Kalshi source** (`sources/kalshi.py`): every 60 s pulls fills since the
   last poll with a 60 s overlap (deduped on `trade_id`) and unsettled
   positions, plus one cached public GET per market and per event; a full
@@ -1909,9 +1950,9 @@ Work in progress toward using the panel from a phone with the Mac closed
 (plan agreed 2026-09-30): the bets service and the Edges scan move to an
 always-on Oracle Cloud VM, reached privately over Tailscale, with the Mac as
 the fallback for any book that refuses a data-center login. **Step 0** is the
-login check, **step 1** the headless Edges runner (both below); the phone
-page (step 2), the Mac relay (3) and the deploy (4: systemd, Tailscale
-binding) are still to come. Plan: `phone_page_plan.md` in the project files.
+login check, **step 1** the headless Edges runner, **step 2** the phone
+page, **step 4** the deploy (Docker + `tailscale serve`; all below); the Mac
+relay (3) is still to come. Plan: `phone_page_plan.md` in the project files.
 
 ### Step 0: does each book accept a login from the server?
 
@@ -1988,7 +2029,7 @@ node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json
 
 | Env | Default | |
 |---|---|---|
-| `UNABATED_RUNNER_HOST` | `127.0.0.1` | bind address; loopback until the deploy step binds the tailnet address |
+| `UNABATED_RUNNER_HOST` | `127.0.0.1` | bind address; stays loopback on the server too (step 4) |
 | `UNABATED_RUNNER_PORT` | `8095` | |
 | `BETS_SERVICE_URL` | `http://127.0.0.1:8094` | where `/bets.json` and `/settings.json` come from |
 
@@ -2033,6 +2074,75 @@ node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json
   stdout/stderr. Unlike the panel it does not POST fill fairs or crosswalk
   lessons — the Mac panel keeps doing that.
 
+### Step 2: the phone page (`server/phone/`)
+
+A phone-sized, read-only page (Edges, Bets and Settings tabs and a ticket
+sheet) served by the bets service, so the page, its reads and its one write
+share one origin. You bet in the book's own app; nothing on the page places
+anything.
+
+```bash
+venv/bin/python -m unabated_ticket.bets_service.service   # or bets_service/run.sh  (:8094)
+node unabated_ticket/server/runner.js                     # must be running too    (:8095)
+# then open http://127.0.0.1:8094/
+```
+
+- **Routes on the bets service**: `GET /` serves `server/phone/index.html`;
+  its CSS/JS and the extension's pure modules (under `/ext/`) come from a
+  fixed allowlist of paths (`service.STATIC_FILES`; anything else, traversal
+  included, is a 404), `Cache-Control: no-store`, a same-origin CSP.
+  `GET /edges.json` proxies the runner (`UNABATED_RUNNER_URL`, default
+  `http://127.0.0.1:8095`; `UNABATED_RUNNER_TIMEOUT_SEC`, default 5) and
+  answers 502 `{error, runnerUrl}` when it is down, slow or not 200. The
+  Host allowlist covers every route, so the page opens only on the machine
+  itself unless `BETS_EXTRA_ALLOWED_HOSTS` lists the tailnet name (step 4).
+- **Edges**: the runner's cards as the panel draws them: badges, side, market,
+  game and kickoff, book price with cents, line age, edge in its tier colour,
+  the stake rail and its note, the move tag, related bets, the tail-flex line.
+  Tap a card for the ticket: price, fair, edge, the number to act on with the
+  panel's label, position line, contracts (exchange lines), to win / payout,
+  every related bet and the card's other lines. Freshness and errors (edges or
+  bets service unreachable since …, scanner errors, settings fallback) sit at
+  the top.
+- **Bets**: money at risk, Needs a game / Needs a code fix / Not on the board
+  (the runner now adds `betsService.unmatched`, `bets.unmatchedReasons` over
+  its board, to `/edges.json`), venue freshness, open bets. Attach and
+  Dismiss stay on the desktop panel.
+- **Settings**: every `/settings.json` field, its default shown when unset;
+  Save sends only what changed (`PUT`, JSON), a 400's text is shown, and each
+  set field has Reset (sends null). The runner picks a change up within 10 s.
+- **Polling**: `/edges.json` every 15 s and `/bets.json` every 30 s, only while
+  the page is visible; at once on becoming visible and after a save.
+- **Reuse**: `phoneview.js` (pure, tested in `tests/phoneview.test.js`) formats
+  on top of the extension's `kelly.js`, `feed.js`, `teams.js`, `bets.js`,
+  `ladder.js`, `condkelly.js`, `betsview.js`, `edgemove.js`, `fillfair.js`,
+  `tailflex.js` and `edgerows.js`, loaded unchanged as plain scripts.
+
+### Step 4: deploy (`deploy/`)
+
+Docker Compose on the VM runs both processes, each still bound to
+127.0.0.1 (`network_mode: host`, nothing published); `tailscale serve` on
+the host proxies `https://<vm>.<tailnet>.ts.net` to `127.0.0.1:8094`, so
+only devices on your tailnet reach the page. Setup, update, logs, stop and
+the "nothing public listens" check: `deploy/README.md`.
+
+- **Bets service** (`python:3.12-slim`, wheels only) and **runner**
+  (`node:22-slim`), `restart: unless-stopped`, json-file logs 10 MB × 3.
+- **Repo mounted read-only** at `/app`, so an update is `deploy/deploy.sh`
+  (pull `main`, rebuild, recreate, then PASS/FAIL checks of `/health`,
+  `/` and `/edges.json` with the tailnet `Host`, and a 403 for a foreign one).
+- **Writable data dir** (`UNABATED_DATA_DIR` → `/data`): `bets.duckdb`
+  (`BETS_DB_PATH`), `novig_token.json` (rotates), `logs/`
+  (`BETS_SERVICE_LOG_PATH`; `BETS_SERVICE_LOG_CONSOLE=1` also logs to
+  stderr for `docker compose logs`). Off the server all three keep their
+  defaults next to the package.
+- **Secrets are files, never in an image**: the Kalshi `.pem` mounted
+  read-only, `bets_service/.env` (Kalshi key id, Polymarket US keys) inside
+  the read-only repo mount. No `bet_logger/.env`: BFA, Wagerzon and
+  BetOnline are "not configured" there.
+- **`BETS_EXTRA_ALLOWED_HOSTS`** in `deploy/.env` is the tailnet name the
+  #125 Host guard must accept (Bets service above).
+
 ## Tests
 
 One command runs everything and exits non-zero if any part fails:
@@ -2042,8 +2152,8 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 415 tests) and
-the bets service's pytest suite (338 tests, on the `kalshi_draft/venv`
+the node suite (`npm test` = `node --test tests/*.test.js`, 428 tests) and
+the bets service's pytest suite (388 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`
@@ -2565,6 +2675,18 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-03 — Place teasers at BFA (0.18.0).** Cal asked to bet a Teasers
+ticket from the tab, the way the MLB dashboard places at Wagerzon. BFA's
+placement was recorded off a teaser Cal placed by hand in the app's browser
+pane: one JSON POST (`wagering/api/v1/wager`), no preflight, no captcha, the
+outcome on a SignalR hub. So it is pure HTTP in the bets service on the BFA
+source's existing login (no browser in the loop), confirmed off the open
+bets instead of the hub. The teaser type id (117608) is read from the
+account's metadata (`getplayermetadatabyplayerid` — lower case; the
+client's camel-case path 404s), not hard-coded. Two clicks (Place, then
+Bet $X) rather than one, mockup shown first. Nothing is ever retried: a lost
+reply may be a booked bet, so it reads unconfirmed and holds the legs 15 min.
 
 **2026-10-03 — Can't tease on college legs (0.17.0).** Some teaser legs the
 tab suggested could not be bet: Buckeye keeps some college games off its

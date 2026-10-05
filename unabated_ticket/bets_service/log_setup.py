@@ -14,7 +14,7 @@ _FORMAT = "%(asctime)s %(levelname)s %(name)s — %(message)s"
 def setup_logging(log_path: Path | None = None, console: bool | None = None) -> logging.Logger:
     log_path = Path(log_path) if log_path else config.LOG_PATH
     if console is None:
-        console = sys.stderr.isatty()
+        console = config.LOG_CONSOLE if config.LOG_CONSOLE is not None else sys.stderr.isatty()
 
     root = logging.getLogger()
     root.setLevel(getattr(logging, config.LOG_LEVEL.upper(), logging.INFO))

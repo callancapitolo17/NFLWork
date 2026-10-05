@@ -1,0 +1,5 @@
+# The build needs one file. Everything else in unabated_ticket/ (the .env with
+# API keys, novig_token.json, bets.duckdb, node_modules) stays out of the
+# build context, so it can never land in an image layer.
+*
+!bets_service/requirements.txt
