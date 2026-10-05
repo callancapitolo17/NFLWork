@@ -65,10 +65,9 @@ The report carries NO game date, so eventStart / eventDate are null; a spread or
 moneyline side comes from rotation parity (odd = away, the US convention) — both
 recorded in `approx` ("game_date_unknown", "side_from_rotation_parity"); the
 matcher keys on the rotation number and the team names. The report carries no
-settle time on the 2026-09-15 pull (GradeDateTime was null on every settled row),
-so a settled bet's closedAt is its graded date (GRADED_FIELD_CANDIDATES) when the report fills it and its
-placed time otherwise (a lower bound; it decides the tracker's P&L day and when the
-bet leaves the 30-day window, never a match).
+settle time either (GradeDateTime was null on every settled row): a settled bet's
+closedAt is its placed time (a lower bound; it only decides when the bet leaves
+the 30-day window, never a match).
 """
 import fcntl
 import importlib.util
@@ -121,9 +120,6 @@ DEFAULT_ACCESS_TTL_SEC = 300
 # row without it fails the poll loudly (never a hash of mutable fields — the
 # store upserts on the id).
 ID_FIELD_CANDIDATES = ("Id",)
-# The site labels the settle column "Graded Date"; the 2026-09-15 pull only showed
-# GradeDateTime (null), so the first populated name in this order wins.
-GRADED_FIELD_CANDIDATES = ("GradedDate", "GradeDate", "GradedDateTime", "GradeDateTime")
 
 SOURCE = "betonline_api"
 VENUE = "betonline"
@@ -307,15 +303,6 @@ def parse_placed_at(value: object) -> str | None:
     return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def graded_at_of(row: dict) -> str | None:
-    """The report's settle ("Graded Date") time as UTC, or None when no candidate is filled."""
-    for key in GRADED_FIELD_CANDIDATES:
-        graded_at = parse_placed_at(row.get(key))
-        if graded_at:
-            return graded_at
-    return None
-
-
 def status_of(wager_status: object) -> str:
     return STATUS_MAP.get(str(wager_status or "").strip().lower(), "unknown")
 
@@ -339,7 +326,6 @@ def _money(value: object) -> float | None:
 def _base_record(row: dict, native_id: str, fetched_at: str | None) -> dict:
     status = status_of(row.get("WagerStatus"))
     placed_at = parse_placed_at(row.get("Date"))
-    graded_at = graded_at_of(row)
     return {
         "id": f"{VENUE}:{native_id}",
         "source": SOURCE,
@@ -353,9 +339,8 @@ def _base_record(row: dict, native_id: str, fetched_at: str | None) -> dict:
         "contracts": None,
         "placedAt": placed_at,
         "status": status,
-        # GradeDateTime was null on every settled row of the one live pull; when it
-        # is, the placed time is the lower bound.
-        "closedAt": None if status == "open" else (graded_at or placed_at),
+        # The report carries no settle time: the placed time is the lower bound.
+        "closedAt": None if status == "open" else placed_at,
         "isParlayLeg": False, "parlayId": None, "legIndex": None, "legCount": None,
         "approx": [],
         "unmatchable": None,
