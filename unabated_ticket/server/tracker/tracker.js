@@ -32,9 +32,9 @@
   const state = Object.assign({
     view: "overview", range: "30D", units: false, unitSize: 100,
     groupBy: "venue", kind: "All", offVenues: [], offLeagues: [], query: "", logLimit: LOG_PAGE,
-    // Default: the Kalshi bots' combo fills stay out of every total unless this
-    // is switched on (they have their own monitor, port 8092).
-    includeBotCombos: false,
+    // Cal's decision 2026-10-05: the Kalshi bots' combo fills count in every
+    // total by default; the header toggle hides them.
+    includeBotCombos: true,
   }, loadPrefs(), { view: location.hash === "#analysis" ? "analysis" : "overview" });
   const BOT_COMBO_KIND = "Kalshi combo";
   let payload = null;
