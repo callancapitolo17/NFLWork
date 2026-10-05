@@ -18,12 +18,13 @@ Where things live on the VM:
 | Host path | In the container | Mode |
 |---|---|---|
 | `~/NFLWork` (the repo) | `/app` | read-only (code; an update is pull + restart) |
-| `~/NFLWork/unabated_ticket/bets_service/.env` | inside `/app` | read-only: `KALSHI_API_KEY_ID`, `POLYMARKET_US_KEY_ID`, `POLYMARKET_US_SECRET_KEY` |
+| `~/NFLWork/unabated_ticket/bets_service/.env` | inside `/app` | read-only: `KALSHI_API_KEY_ID`, `POLYMARKET_US_KEY_ID`, `POLYMARKET_US_SECRET_KEY`, and the book logins `BFA_USERNAME`, `BFA_PASSWORD`, `WAGERZONC_USERNAME`, `WAGERZONC_PASSWORD` (step 10) |
 | `KALSHI_PEM_PATH` (e.g. `~/unabated-secrets/kalshi.pem`) | `/run/secrets/kalshi.pem` | read-only |
-| `UNABATED_DATA_DIR` (e.g. `~/unabated-data`) | `/data` | read-write: `bets.duckdb`, `novig_token.json` (rotates; rewritten in place), `logs/bets_service.log` |
+| `UNABATED_DATA_DIR` (e.g. `~/unabated-data`) | `/data` | read-write: `bets.duckdb`, `novig_token.json` (rotates; rewritten in place), `recon_betonline_cookies.json` (BetOnline's refresh token; rotates, step 10), `logs/bets_service.log` |
 
-`bet_logger/.env` is never put on the VM, so BFA, Wagerzon and BetOnline log
-"not configured" and stay on the Mac. `deploy.sh` warns if that file appears.
+`bet_logger/.env` is never put on the VM: the BFA and Wagerzon logins go in
+`bets_service/.env` instead, and BetOnline's token file in the data dir
+(step 10). A book with neither reports "not configured".
 
 ## One-time setup
 
@@ -86,7 +87,35 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
    docker compose start bets
    ```
 9. **Phone:** install the Tailscale app, log in with the same account, open
-   `https://<name>/`.
+   `https://<name>/` (Edges) or `https://<name>/tracker` (Bet Tracker).
+10. **Book logins: BFA, Wagerzon, BetOnline** (2026-10-05, Cal's call: these
+   books don't mind a data-center login). With all three on the VM the
+   tracker covers every polled book with the Mac off. **Only when the VM
+   becomes the primary host:** while the Mac is (the current setup, main
+   README § Bet Tracker), skip this step, because moving BetOnline's token
+   takes it away from the Mac.
+   - **BFA and Wagerzon** are plain password logins, so the Mac can keep its
+     own. Add four lines to `~/NFLWork/unabated_ticket/bets_service/.env`
+     with an editor: `BFA_USERNAME`, `BFA_PASSWORD`, `WAGERZONC_USERNAME`,
+     `WAGERZONC_PASSWORD` (the values from the Mac's `bet_logger/.env`; the
+     Wagerzon C account, or `WAGERZON_*` if that is where its login sits).
+   - **BetOnline: move the token, never copy it.** Every refresh rotates its
+     Keycloak token and a reused one kills the chain, so only one machine
+     can hold it. On the Mac first stop everything that refreshes it: the
+     bets service (`launchctl bootout gui/$(id -u)/com.nflwork.bets-service`)
+     and the weekly sheet scraper (`launchctl unload ~/Library/LaunchAgents/com.callancapitolo.betlogger.plist`;
+     load it again afterwards if you still want the sheet). Then:
+     ```bash
+     scp ~/NFLWork/bet_logger/recon_betonline_cookies.json ubuntu@<vm>:~/unabated-data/
+     mv ~/NFLWork/bet_logger/recon_betonline_cookies.json ~/NFLWork/bet_logger/recon_betonline_cookies.json.moved-to-vm
+     ```
+     On the VM `chmod 600 ~/unabated-data/recon_betonline_cookies.json`. The
+     Mac's bets service then reports BetOnline "not configured" and can be
+     started again; the weekly sheet scraper's BetOnline step fails until the
+     file comes back.
+   - **Check, then restart:** the login check below. `ok` for all three means
+     done. If BetOnline fails on Cloudflare (its cookies were issued to the
+     Mac's IP), move the file back to the Mac the same way.
 
 ## Day to day
 
@@ -101,7 +130,7 @@ docker compose down                  # stop both (data kept); `up -d` or deploy.
 sudo tailscale serve reset           # take the page off the tailnet
 ```
 
-Login check on the VM, as step 0 but in the container — stop the service
+Login check on the VM (step 10 too), as step 0 but in the container — stop the service
 first, because a Novig check rotates the same refresh token the running
 service holds:
 
