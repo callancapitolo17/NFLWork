@@ -389,19 +389,25 @@
   }
 
   /**
-   * Open tickets split by whether their game has started: live = event start
-   * at or before nowMs (a parlay's is its earliest leg), upcoming = the rest,
-   * no start time included (futures sort last). Both by start, earliest first.
+   * Open tickets by whether their game has started: live = event start at or
+   * before nowMs (a parlay's is its earliest leg), upcoming = start after
+   * nowMs, noStart = no start time (BetOnline's report has none, Kalshi NFL
+   * and CFB tickers carry only a date, futures and Kalshi combos none), so
+   * they can't be placed in either. Live and upcoming by start, earliest first.
    */
   function splitOpenByStart(openTickets, nowMs) {
-    const startMs = (t) => {
-      const ms = parseMs(t.eventStart);
-      return ms === null ? Infinity : ms;
-    };
-    const sorted = openTickets.slice().sort((a, b) => startMs(a) - startMs(b));
+    const withStart = [];
+    const noStart = [];
+    for (const ticket of openTickets) {
+      const startMs = parseMs(ticket.eventStart);
+      if (startMs === null) noStart.push(ticket);
+      else withStart.push({ ticket, startMs });
+    }
+    withStart.sort((a, b) => a.startMs - b.startMs);
     return {
-      live: sorted.filter((t) => startMs(t) <= nowMs),
-      upcoming: sorted.filter((t) => startMs(t) > nowMs),
+      live: withStart.filter((row) => row.startMs <= nowMs).map((row) => row.ticket),
+      upcoming: withStart.filter((row) => row.startMs > nowMs).map((row) => row.ticket),
+      noStart,
     };
   }
 

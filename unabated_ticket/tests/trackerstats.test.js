@@ -24,7 +24,7 @@ test("P&L by status: won pays toWin, lost costs the stake, push and void are fla
   assert.deepEqual(byId, { a: 100, b: -110, c: 0, d: 0 });
 });
 
-test("open bets split into live (started) and upcoming; no start time sorts last in upcoming", () => {
+test("open bets split into live (started), upcoming, and no start time", () => {
   const now = Date.parse("2026-10-04T18:00:00Z");
   const tickets = stats.buildTickets([
     straight({ id: "later", status: "open", closedAt: null, eventStart: "2026-10-04T20:25:00Z" }),
@@ -32,9 +32,10 @@ test("open bets split into live (started) and upcoming; no start time sorts last
     straight({ id: "kickoff", status: "open", closedAt: null, eventStart: "2026-10-04T18:00:00Z" }),
     straight({ id: "future", status: "open", closedAt: null, eventStart: null }),
   ], []);
-  const { live, upcoming } = stats.splitOpenByStart(tickets, now);
+  const { live, upcoming, noStart } = stats.splitOpenByStart(tickets, now);
   assert.deepEqual(live.map((t) => t.id), ["early", "kickoff"]);
-  assert.deepEqual(upcoming.map((t) => t.id), ["later", "future"]);
+  assert.deepEqual(upcoming.map((t) => t.id), ["later"]);
+  assert.deepEqual(noStart.map((t) => t.id), ["future"]);
 });
 
 test("open, closed-early and unknown bets carry no P&L and stay out of the summary", () => {
