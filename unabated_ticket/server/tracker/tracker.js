@@ -23,8 +23,7 @@
   const BET_FILTERS = ["All", "Counted", "Removed"];
   const POLL_MS = 60 * 1000;
   const PREFS_KEY = "betTracker.prefs";
-  const RANGES = ["7D", "30D", "90D", "YTD", "All"];
-  const RANGE_DAYS = { "7D": 7, "30D": 30, "90D": 90 };
+  const RANGES = ["Today", "Yesterday", "7D", "30D", "90D", "YTD", "All", "Custom"];
   const KINDS = ["All", "Straight", "Parlay", "Teaser", "Kalshi combo"];
   const DAILY_ROWS = 14;
   const LOG_PAGE = 50;
@@ -38,7 +37,7 @@
   const COLORS = { pos: "#3dd68c", neg: "#ff6b6b", muted: "#8b96a5", exp: "#6ea8fe", text: "#e7ecf2", warn: "#f5b74f", dim: "#4e5866" };
 
   const state = Object.assign({
-    view: "overview", range: "30D", units: false, unitSize: 100,
+    view: "overview", range: "30D", customFirst: null, customLast: null, units: false, unitSize: 100,
     groupBy: "venue", kind: "All", offVenues: [], offLeagues: [], query: "", logLimit: LOG_PAGE,
     betsQuery: "", betsVenue: "All", betsFilter: "All", betsLimit: LOG_PAGE, saving: false,
     // Cal's decision 2026-10-05: the Kalshi bots' combo fills count in every
@@ -62,6 +61,8 @@
       const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
       const prefs = {};
       if (RANGES.includes(saved.range)) prefs.range = saved.range;
+      if (stats.isDayKey(saved.customFirst)) prefs.customFirst = saved.customFirst;
+      if (stats.isDayKey(saved.customLast)) prefs.customLast = saved.customLast;
       if (typeof saved.units === "boolean") prefs.units = saved.units;
       if (typeof saved.includeBotCombos === "boolean") prefs.includeBotCombos = saved.includeBotCombos;
       if (Number.isFinite(saved.unitSize) && saved.unitSize > 0) prefs.unitSize = saved.unitSize;
@@ -73,7 +74,7 @@
 
   function savePrefs() {
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, units: state.units, unitSize: state.unitSize, includeBotCombos: state.includeBotCombos }));
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, customFirst: state.customFirst, customLast: state.customLast, units: state.units, unitSize: state.unitSize, includeBotCombos: state.includeBotCombos }));
     } catch (_error) {
       // Private window or blocked storage: the choice lasts until reload.
     }
@@ -212,14 +213,12 @@
   // ---- range ----------------------------------------------------------------
 
   function rangeDays() {
-    const today = stats.pacificDay(Date.now());
-    if (RANGE_DAYS[state.range]) return { first: stats.addDays(today, 1 - RANGE_DAYS[state.range]), last: today };
-    if (state.range === "YTD") return { first: today.slice(0, 4) + "-01-01", last: today };
-    return { first: stats.firstSettledDay(tickets) || today, last: today };
+    return stats.rangeBounds(state.range, stats.pacificDay(Date.now()),
+      { first: state.customFirst, last: state.customLast }, stats.firstSettledDay(tickets));
   }
 
   function rangeCaption(first, last) {
-    return dayLabel(first) + " to " + dayLabel(last) + " · Pacific time";
+    return (first === last ? dayLabel(first) : dayLabel(first) + " to " + dayLabel(last)) + " · Pacific time";
   }
 
   function noResultCount(first, last) {
@@ -309,7 +308,8 @@
       ]);
     }));
     const mid = series[Math.floor((series.length - 1) / 2)];
-    const xAxis = el("div", { className: "xaxis" }, [series[0], mid, series[series.length - 1]].map((d) => el("span", { text: dayLabel(d.day) })));
+    const axisDays = [...new Set([series[0], mid, series[series.length - 1]].map((d) => d.day))];
+    const xAxis = el("div", { className: "xaxis" }, axisDays.map((day) => el("span", { text: dayLabel(day) })));
     fill("ov-chart", el("div", { className: "plot" }, [yAxis, svg]), bars, xAxis);
   }
 
@@ -640,13 +640,35 @@
       else button.removeAttribute("aria-current");
     }
     for (const view of VIEWS) document.getElementById("view-" + view).hidden = state.view !== view;
-    segButtons("ranges", RANGES, (r) => r === state.range, (r) => { state.range = r; state.logLimit = LOG_PAGE; savePrefs(); render(); });
+    segButtons("ranges", RANGES, (r) => r === state.range, pickRange);
+    renderCustomRange();
     document.getElementById("show-dollars").setAttribute("aria-pressed", String(!state.units));
     document.getElementById("show-units").setAttribute("aria-pressed", String(state.units));
     document.getElementById("unit-size-label").hidden = !state.units;
     document.getElementById("bot-combos").setAttribute("aria-pressed", String(state.includeBotCombos));
     const unitInput = document.getElementById("unit-size");
     if (document.activeElement !== unitInput) unitInput.value = String(state.unitSize);
+  }
+
+  /** Picking Custom starts from the range on screen, so the dates are never blank. */
+  function pickRange(range) {
+    if (range === "Custom" && state.range !== "Custom") {
+      const { first, last } = rangeDays();
+      state.customFirst = first; state.customLast = last;
+    }
+    state.range = range; state.logLimit = LOG_PAGE; savePrefs(); render();
+  }
+
+  function renderCustomRange() {
+    document.getElementById("custom-range").hidden = state.range !== "Custom";
+    if (state.range !== "Custom") return;
+    const { first, last } = rangeDays();
+    const today = stats.pacificDay(Date.now());
+    for (const [id, value] of [["custom-first", first], ["custom-last", last]]) {
+      const input = document.getElementById(id);
+      input.max = today;
+      if (document.activeElement !== input) input.value = value;
+    }
   }
 
   function renderSync() {
@@ -721,6 +743,12 @@
       if (Number.isFinite(size) && size > 0) { state.unitSize = size; savePrefs(); }
       render();
     });
+    for (const [id, key] of [["custom-first", "customFirst"], ["custom-last", "customLast"]]) {
+      document.getElementById(id).addEventListener("change", (event) => {
+        if (!stats.isDayKey(event.target.value)) return;
+        state[key] = event.target.value; state.logLimit = LOG_PAGE; savePrefs(); render();
+      });
+    }
     document.getElementById("log-search").addEventListener("input", (event) => {
       state.query = event.target.value; state.logLimit = LOG_PAGE; render();
     });

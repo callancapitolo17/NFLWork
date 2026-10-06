@@ -373,6 +373,39 @@
     return first;
   }
 
+  const RANGE_DAYS = { "7D": 7, "30D": 30, "90D": 90 };
+  const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+  function isDayKey(value) {
+    return typeof value === "string" && DAY_KEY_RE.test(value) && utcToDayKey(dayKeyToUtc(value)) === value;
+  }
+
+  /**
+   * The Pacific days [first, last] a date-range choice covers. `today` is a
+   * Pacific day key; `custom` is { first, last } (either may be missing, and
+   * they are swapped if entered backwards); `firstSettled` is the earliest
+   * settle day, which "All" starts from.
+   *
+   * Custom days are clamped to [firstSettled, today]: a date input reports
+   * half-typed years such as 0201-10-01, and an unclamped range would make
+   * the daily series (one bar per day) millions of days long and hang the page.
+   */
+  function rangeBounds(range, today, custom, firstSettled) {
+    if (range === "Today") return { first: today, last: today };
+    if (range === "Yesterday") { const day = addDays(today, -1); return { first: day, last: day }; }
+    if (RANGE_DAYS[range]) return { first: addDays(today, 1 - RANGE_DAYS[range]), last: today };
+    if (range === "YTD") return { first: today.slice(0, 4) + "-01-01", last: today };
+    if (range === "Custom") {
+      const floor = firstSettled && firstSettled < today ? firstSettled : today;
+      const clamp = (day) => (day < floor ? floor : day > today ? today : day);
+      const first = clamp(custom && isDayKey(custom.first) ? custom.first : floor);
+      const last = clamp(custom && isDayKey(custom.last) ? custom.last : today);
+      return first <= last ? { first, last } : { first: last, last: first };
+    }
+    if (range === "All") return { first: firstSettled || today, last: today };
+    throw new Error("unknown date range " + range + "; expected Today, Yesterday, 7D, 30D, 90D, YTD, All or Custom");
+  }
+
   /** Rows of the Analysis breakdown: one per value of `groupKey`, with totals. */
   function groupBy(tickets, groupKey) {
     const spec = GROUPS.find((g) => g.key === groupKey);
@@ -433,7 +466,7 @@
 
   const api = {
     PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR,
-    pacificDay, addDays, dayKeyToUtc, weekdayOf,
+    pacificDay, addDays, dayKeyToUtc, weekdayOf, isDayKey, rangeBounds,
     americanToDecimal, decimalToAmerican,
     buildTickets, summarize, exclusions, inDayRange, dailySeries, firstSettledDay, groupBy, calibration,
     venueName, splitOpenByStart,

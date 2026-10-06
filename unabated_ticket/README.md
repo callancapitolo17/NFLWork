@@ -2150,7 +2150,7 @@ page's Remove / Restore.
   `bets`) and it leaves every number on Overview and Analysis — a parlay or
   teaser goes as a whole; **Restore** counts it again. Only those two books
   (Cal, 2026-10-05); the service refuses any other venue's bet.
-- **Header**: range (7D, 30D, 90D, YTD, All), $ / units with the unit size
+- **Header**: range (Today, Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days), $ / units with the unit size
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
 - **Open bets** (Overview) are split into **Live now** (the game has started;
