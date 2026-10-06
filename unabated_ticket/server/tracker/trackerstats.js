@@ -248,6 +248,8 @@
     const kind = isTeaserTicket(sorted) ? KIND_NAMES.teaser : KIND_NAMES.parlay;
     const leagues = new Set(sorted.map((leg) => leagueName(leg.league)));
     const starts = sorted.map((leg) => parseMs(leg.eventStart)).filter((ms) => ms !== null);
+    // A ticket settles with its last leg, so its P&L lands on the latest leg's close.
+    const closes = sorted.map((leg) => parseMs(leg.closedAt)).filter((ms) => ms !== null);
     const legCount = first.legCount || sorted.length;
     const raw = first.raw || {};
     return finishTicket({
@@ -257,7 +259,8 @@
       selection: sorted.map(selectionLabel).filter(Boolean).join(" · "),
       price: Number.isFinite(raw.parlayPrice) ? raw.parlayPrice : null,
       stake: Number(first.stake) || 0, toWin: first.toWin,
-      status: first.status, placedAt: first.placedAt, closedAt: first.closedAt,
+      status: first.status, placedAt: first.placedAt,
+      closedAt: closes.length ? new Date(Math.max(...closes)).toISOString() : first.closedAt,
       eventStart: starts.length ? new Date(Math.min(...starts)).toISOString() : null,
       legCount,
     }, null);
