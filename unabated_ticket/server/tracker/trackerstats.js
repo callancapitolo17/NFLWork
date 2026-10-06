@@ -241,6 +241,20 @@
     }, fairAmerican);
   }
 
+  /** When a multi-leg ticket was decided: a lost one at its earliest losing leg's
+   * close (the venue's per-leg result, raw.legResult "LOSE"), any other at its
+   * latest leg's close; the first leg's closedAt when no leg says. */
+  function multiLegClosedAt(legs, status) {
+    const closeMs = (leg) => parseMs(leg.closedAt);
+    const losing = status === "lost"
+      ? legs.filter((leg) => String((leg.raw || {}).legResult || "").toUpperCase() === "LOSE")
+      : [];
+    const decidingCloses = (losing.length ? losing : legs).map(closeMs).filter((ms) => ms !== null);
+    if (!decidingCloses.length) return legs[0].closedAt;
+    const decidedMs = losing.length ? Math.min(...decidingCloses) : Math.max(...decidingCloses);
+    return new Date(decidedMs).toISOString();
+  }
+
   /** One ticket from a parlay's or teaser's legs: every leg carries the ticket's stake, toWin and status. */
   function multiLegTicket(parlayId, legs) {
     const sorted = legs.slice().sort((a, b) => (a.legIndex || 0) - (b.legIndex || 0));
@@ -248,6 +262,7 @@
     const kind = isTeaserTicket(sorted) ? KIND_NAMES.teaser : KIND_NAMES.parlay;
     const leagues = new Set(sorted.map((leg) => leagueName(leg.league)));
     const starts = sorted.map((leg) => parseMs(leg.eventStart)).filter((ms) => ms !== null);
+    const closedAt = multiLegClosedAt(sorted, first.status);
     const legCount = first.legCount || sorted.length;
     const raw = first.raw || {};
     return finishTicket({
@@ -257,7 +272,8 @@
       selection: sorted.map(selectionLabel).filter(Boolean).join(" · "),
       price: Number.isFinite(raw.parlayPrice) ? raw.parlayPrice : null,
       stake: Number(first.stake) || 0, toWin: first.toWin,
-      status: first.status, placedAt: first.placedAt, closedAt: first.closedAt,
+      status: first.status, placedAt: first.placedAt,
+      closedAt,
       eventStart: starts.length ? new Date(Math.min(...starts)).toISOString() : null,
       legCount,
     }, null);
