@@ -14,7 +14,8 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     crosswalk: [team_crosswalk rows, newest first],
                                     pins: [bet_pins rows, newest first],
                                     fillFairs: [bet_fill_fairs rows of those bets],
-                                    closingFairs: [bet_closing_fairs rows of those bets]}
+                                    closingFairs: [bet_closing_fairs rows of those bets],
+                                    exclusions: [bet_exclusions rows, newest first]}
            GET /health              {ok, generatedAt, uptimeSec, sources}
            POST /crosswalk.json     body {rows: [{venue, league, venueTeamKey,
                                     unabatedTeamId, venueTeamName?, unabatedTeamName?,
@@ -43,6 +44,11 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     (the server runner's pre-start read of each open bet's
                                     line, server/closefair.js; a row older than the stored
                                     one is ignored; same Content-Type guard)
+           POST /exclusions.json    body {betIds: [...], excluded: bool} -> {ok, changed,
+                                    exclusions} (the Bet Tracker's Bets page removing or
+                                    restoring bets that are not Cal's; BFA and Wagerzon
+                                    bets only — anything else is a 400, an unknown id a
+                                    404; same Content-Type guard)
            POST /bet105.json        body {fetchedAt, feeds: {prematch: [betGroup], live:
                                     [betGroup]}} -> {ok, count, closed}, or {error} ->
                                     {ok, recorded: "error"} (the one PUSHED source: the
@@ -56,6 +62,12 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     updatedAt} — the Edges settings the server
                                     runner (unabated_ticket/server/runner.js) reads every cycle;
                                     null = the panel's default (extension/edgerows.js)
+           POST /place_teaser.json  body {stake, legs: [4 x {league, betType, side, rotation, points,
+                                    eventStart, label}]} -> {ok, status: placed | refused |
+                                    unconfirmed, message, ticket?} (the Teasers tab's Place
+                                    button: ONE 4-team 6-point teaser at BFA, real money —
+                                    bfa_teaser.py checks every number on BFA's board first and
+                                    confirms off the open bets; 503 when no BFA account is read)
            PUT /settings.json       body {settings: {<any of those fields>: value or null}} ->
                                     {ok, settings, updatedAt}; a field left out keeps its value,
                                     null resets it to the default, an unknown field or a bad
@@ -85,10 +97,14 @@ bets.duckdb::bet_pins and the crosswalk rows a pin taught on the two pin
 routes; INSERTs into bets.duckdb::bet_fill_fairs on POST /fill_fairs.json —
 insert-only, a bet that has a saved fair keeps it; UPSERTs
 bets.duckdb::bet_closing_fairs on POST /closing_fairs.json (newest observation
-wins); rotating log at
+wins); INSERTs into / DELETEs from bets.duckdb::bet_exclusions on POST
+/exclusions.json; rotating log at
 bets_service.log. A poll that raises writes a failed source_runs row and
 leaves `bets` untouched — a dark source never blanks the list. PUT
-/settings.json UPSERTs the one row of bets.duckdb::edge_settings.
+/settings.json UPSERTs the one row of bets.duckdb::edge_settings. POST
+/place_teaser.json places a wager at BFA (money, not disk) and UPSERTs the BFA open
+bets it read while confirming into bets.duckdb::bets, so the panel's next poll has the
+ticket.
 """
 import json
 import logging
@@ -104,11 +120,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from unabated_ticket.bets_service import config
+from unabated_ticket.bets_service import bfa_teaser, config
 from unabated_ticket.bets_service.log_setup import setup_logging
-from unabated_ticket.bets_service.normalize import parse_iso_ms
+from unabated_ticket.bets_service.normalize import parse_iso_ms, utc_now_iso
 from unabated_ticket.bets_service.sources import Source, bet105
 from unabated_ticket.bets_service.sources.betonline import source_if_configured as betonline_source_if_configured
+from unabated_ticket.bets_service.sources.bfa import BFASource, normalize_open_bets
 from unabated_ticket.bets_service.sources.bfa import source_if_configured as bfa_source_if_configured
 from unabated_ticket.bets_service.sources.kalshi import KalshiSource
 from unabated_ticket.bets_service.sources.novig import source_if_connected as novig_source_if_connected
@@ -139,6 +156,10 @@ PIN_OPTIONAL_ID_FIELDS = ("awayTeamId", "homeTeamId")
 PIN_OPTIONAL_TEXT_FIELDS = ("eventStart", "awayTeamName", "homeTeamName")
 # A fill-fair POST carries the bets a capture pass decided: a handful.
 MAX_FILL_FAIR_ROWS_PER_POST = 1000
+# Cal's ask (2026-10-05): only these books carry bets that are not his.
+EXCLUDABLE_VENUES = ("bfa", "wagerzon")
+# A parlay's legs go in one request; a dozen is already a long ticket.
+MAX_EXCLUSION_IDS_PER_POST = 50
 # American odds run from -100 down and +100 up; the gap between is no price.
 MIN_AMERICAN_MAGNITUDE = 100
 # The Edges settings' allowed values, as the panel's inputs enforce them
@@ -275,7 +296,8 @@ def bets_payload(store: BetsStore, days: int, source_names: list[str] = ()) -> d
     now = _now()
     return {"generatedAt": _iso(now), "sources": source_status(store, list(source_names)),
             "bets": store.load_bets(days, now), "crosswalk": store.load_crosswalk(), "pins": store.load_pins(),
-            "fillFairs": store.load_fill_fairs(days, now), "closingFairs": store.load_closing_fairs(days, now)}
+            "fillFairs": store.load_fill_fairs(days, now), "closingFairs": store.load_closing_fairs(days, now),
+            "exclusions": store.load_exclusions()}
 
 
 def _non_empty_string(value: object) -> bool:
@@ -472,6 +494,21 @@ def validate_closing_fair_rows(body: object) -> list[dict] | str:
     return rows
 
 
+def validate_exclusion_request(body: object) -> tuple[list[str], bool] | str:
+    """(bet ids, excluded) of a POST /exclusions.json body, or what was
+    expected and what was found."""
+    if not isinstance(body, dict):
+        return f"body must be an object, got {type(body).__name__}"
+    bet_ids = body.get("betIds")
+    if not isinstance(bet_ids, list) or not bet_ids or not all(_non_empty_string(bet_id) for bet_id in bet_ids):
+        return f"betIds must be a non-empty list of bet ids, got {bet_ids!r}"
+    if len(bet_ids) > MAX_EXCLUSION_IDS_PER_POST:
+        return f"at most {MAX_EXCLUSION_IDS_PER_POST} betIds per request, got {len(bet_ids)}"
+    if not isinstance(body.get("excluded"), bool):
+        return f"excluded must be true or false, got {body.get('excluded')!r}"
+    return list(dict.fromkeys(bet_ids)), body["excluded"]
+
+
 def _is_whole_number(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -573,10 +610,12 @@ def parse_days(query: str) -> int | str:
 
 def make_handler(store: BetsStore, started_at: float, source_names: list[str] = (),
                  runner_url: str | None = None, runner_timeout_sec: float | None = None,
-                 extra_hosts: tuple[str, ...] | None = None) -> type[BaseHTTPRequestHandler]:
+                 extra_hosts: tuple[str, ...] | None = None,
+                 teaser_placer: bfa_teaser.BFATeaserPlacer | None = None) -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
-    EXTRA_ALLOWED_HOSTS (the tests pass their own)."""
+    EXTRA_ALLOWED_HOSTS (the tests pass their own). `teaser_placer` is the
+    Place button's (None: no BFA account is read, POST /place_teaser.json 503s)."""
     names = list(source_names)
     proxied_host_names = tuple(extra_hosts) if extra_hosts is not None else config.EXTRA_ALLOWED_HOSTS
     edges_runner_url = (runner_url or config.RUNNER_URL).rstrip("/")
@@ -623,7 +662,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             url = urlparse(self.path)
             if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/closing_fairs.json",
-                                "/bet105.json"):
+                                "/exclusions.json", "/bet105.json", "/place_teaser.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
@@ -639,8 +678,14 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if url.path == "/closing_fairs.json":
                 self._save_closing_fairs(body)
                 return
+            if url.path == "/exclusions.json":
+                self._set_exclusions(body)
+                return
             if url.path == "/bet105.json":
                 self._push_bet105(body)
+                return
+            if url.path == "/place_teaser.json":
+                self._place_teaser(body)
                 return
             rows = validate_crosswalk_rows(body)
             if isinstance(rows, str):
@@ -707,6 +752,27 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             self._send_json(200, {"ok": True, "saved": store.save_closing_fairs(rows, _now())})
 
+        # POST /exclusions.json: remove (or restore) BFA / Wagerzon bets from
+        # the tracker's numbers. Every id must be a stored bet at one of
+        # EXCLUDABLE_VENUES, or nothing changes.
+        def _set_exclusions(self, body: object) -> None:
+            request = validate_exclusion_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            bet_ids, excluded = request
+            venue_by_bet = {bet_id: store.bet_venue(bet_id) for bet_id in bet_ids}
+            unknown = [bet_id for bet_id, venue in venue_by_bet.items() if venue is None]
+            if unknown:
+                self._send_json(404, {"error": f"no bet with id(s) {unknown}"})
+                return
+            other = {bet_id: venue for bet_id, venue in venue_by_bet.items() if venue not in EXCLUDABLE_VENUES}
+            if other:
+                self._send_json(400, {"error": f"only {list(EXCLUDABLE_VENUES)} bets can be removed, got {other}"})
+                return
+            changed = store.set_exclusions(bet_ids, venue_by_bet, excluded, _now())
+            self._send_json(200, {"ok": True, "changed": changed, "exclusions": store.load_exclusions()})
+
         # POST /bet105.json: the extension's read of the account, as one source
         # run — a complete push UPSERTs its records and closes the open ones it
         # no longer lists; an error push is a failed run and the records stand.
@@ -726,6 +792,41 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             store.upsert_bets(records + closed, started_at)
             store.log_source_run(bet105.VENUE, started_at, _now(), True, None, len(records))
             self._send_json(200, {"ok": True, "count": len(records), "closed": len(closed)})
+
+        # POST /place_teaser.json: one teaser at BFA (bfa_teaser.py). An exception out of
+        # place() is raised before the wager goes out, so it reads "Not placed". The open
+        # bets read while confirming are stored at once, the BFA source's own way.
+        def _place_teaser(self, body: object) -> None:
+            # Bets go out only for the panel on this machine: a name `tailscale
+            # serve` forwards (the phone page's) reads, it never places.
+            port = self.server.server_address[1]
+            if not host_allowed(self.headers.get("Host"), port):
+                self._send_json(403, {"error": f"placing is for this machine only (Host one of "
+                                               f"{list(allowed_hosts(port))}), got {self.headers.get('Host')!r}"})
+                return
+            if teaser_placer is None:
+                self._send_json(503, {"error": "no BFA account is read: set BFA_USERNAME and BFA_PASSWORD "
+                                               "(bet_logger/.env in the main checkout)"})
+                return
+            request = bfa_teaser.validate_place_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            try:
+                result = teaser_placer.place(request)
+            except Exception as error:  # noqa: BLE001 — place() answers for itself once the POST is out
+                log.exception("bfa teaser: placement failed before the wager went out")
+                result = {"status": bfa_teaser.STATUS_REFUSED, "message": f"Not placed: {type(error).__name__}: {error}"}
+            open_wagers = result.pop("openWagers", None)
+            if open_wagers:
+                self._store_bfa_open_bets(open_wagers)
+            self._send_json(200, {"ok": result["status"] == bfa_teaser.STATUS_PLACED, **result})
+
+        def _store_bfa_open_bets(self, open_wagers: list[dict]) -> None:
+            try:
+                store.upsert_bets(normalize_open_bets(open_wagers, utc_now_iso()), _now())
+            except Exception:  # noqa: BLE001 — the ticket stands; the next BFA poll stores it
+                log.exception("bfa teaser: storing the open bets read at confirmation failed")
 
         def do_DELETE(self) -> None:  # noqa: N802 — http.server's name
             if self._refused_foreign_host():
@@ -801,12 +902,19 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
     return BetsHandler
 
 
+def teaser_placer_for(sources: list[Source]) -> bfa_teaser.BFATeaserPlacer | None:
+    """The Place button's placer on the BFA source's session, or None when BFA is not read."""
+    bfa_source = next((source for source in sources if isinstance(source, BFASource)), None)
+    return bfa_teaser.BFATeaserPlacer(bfa_source) if bfa_source is not None else None
+
+
 def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None:
     """Run the poll thread and the HTTP server until SIGINT/SIGTERM."""
     stop = threading.Event()
     started_at = time.monotonic()
     source_names = [source.name for source in sources] + list(PUSHED_SOURCES)
-    server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names))
+    server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
+                                                            teaser_placer=teaser_placer_for(sources)))
     server.daemon_threads = True
     poller = threading.Thread(target=poll_loop, args=(sources, store, stop), name="poll", daemon=True)
 

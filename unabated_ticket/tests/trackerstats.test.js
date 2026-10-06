@@ -24,6 +24,20 @@ test("P&L by status: won pays toWin, lost costs the stake, push and void are fla
   assert.deepEqual(byId, { a: 100, b: -110, c: 0, d: 0 });
 });
 
+test("open bets split into live (started), upcoming, and no start time", () => {
+  const now = Date.parse("2026-10-04T18:00:00Z");
+  const tickets = stats.buildTickets([
+    straight({ id: "later", status: "open", closedAt: null, eventStart: "2026-10-04T20:25:00Z" }),
+    straight({ id: "early", status: "open", closedAt: null, eventStart: "2026-10-04T17:00:00Z" }),
+    straight({ id: "kickoff", status: "open", closedAt: null, eventStart: "2026-10-04T18:00:00Z" }),
+    straight({ id: "future", status: "open", closedAt: null, eventStart: null }),
+  ], []);
+  const { live, upcoming, noStart } = stats.splitOpenByStart(tickets, now);
+  assert.deepEqual(live.map((t) => t.id), ["early", "kickoff"]);
+  assert.deepEqual(upcoming.map((t) => t.id), ["later"]);
+  assert.deepEqual(noStart.map((t) => t.id), ["future"]);
+});
+
 test("open, closed-early and unknown bets carry no P&L and stay out of the summary", () => {
   const tickets = stats.buildTickets([
     straight({ id: "open", status: "open", closedAt: null }), straight({ id: "sold", status: "closed" }),
@@ -63,6 +77,29 @@ test("a parlay's legs collapse to one ticket on the ticket's stake; a teaser is 
   const [teaser] = stats.buildTickets([leg(0, { headerDescription: "2 TEAM TEASERS" }), leg(1, {})], []);
   assert.equal(teaser.kind, "Teaser");
   assert.equal(teaser.fairProb, null);
+});
+
+test("a parlay settles with its last leg: Sunday and Monday legs land on Monday", () => {
+  const leg = (index, closedAt) => straight({
+    id: "wagerzon:5:leg" + index, venue: "wagerzon", isParlayLeg: true, parlayId: "wagerzon:5", legIndex: index,
+    legCount: 2, stake: 100, toWin: 260, status: "won", closedAt,
+  });
+  // Leg 0 kicks off Sunday 10:00 PDT, leg 1 Monday 17:15 PDT.
+  const [parlay] = stats.buildTickets([leg(0, "2026-10-04T17:00:00Z"), leg(1, "2026-10-06T00:15:00Z")], []);
+  assert.equal(parlay.settledDay, "2026-10-05");
+});
+
+test("a lost parlay is decided at its earliest losing leg, not its last game", () => {
+  const leg = (index, closedAt, legResult) => straight({
+    id: "wagerzon:6:leg" + index, venue: "wagerzon", isParlayLeg: true, parlayId: "wagerzon:6", legIndex: index,
+    legCount: 3, stake: 100, toWin: 500, status: "lost", closedAt, raw: { legResult },
+  });
+  // Sunday leg loses; Monday's leg (still to play) has no result yet.
+  const [parlay] = stats.buildTickets([
+    leg(0, "2026-10-04T17:00:00Z", "WIN"), leg(1, "2026-10-04T20:25:00Z", "LOSE"), leg(2, "2026-10-06T00:15:00Z", ""),
+  ], []);
+  assert.equal(parlay.settledDay, "2026-10-04");
+  assert.equal(parlay.closedAt, "2026-10-04T20:25:00.000Z");
 });
 
 test("a Kalshi multivariate combo (the bots' RFQ fills) is its own type, not a straight", () => {
@@ -169,4 +206,13 @@ test("expected P&L uses the fill fair, else the closing fair, and says which", (
   assert.deepEqual([byId.fill.fairSource, byId.fill.fairAmerican, byId.fill.closeAmerican], ["fill", -120, -140]);
   assert.deepEqual([byId.close.fairSource, byId.close.fairAmerican], ["close", -125]);
   assert.equal(stats.summarize(tickets).withFair, 2);
+});
+
+test("a removed record marks its ticket, and one removed leg marks the whole parlay", () => {
+  const leg = (index) => straight({ id: "bfa:9:leg" + index, venue: "bfa", isParlayLeg: true, parlayId: "bfa:9", legIndex: index, legCount: 2 });
+  const tickets = stats.buildTickets([straight({ id: "wz:1", venue: "wagerzon" }), straight({ id: "wz:2", venue: "wagerzon" }), leg(0), leg(1)],
+    [], [], [{ betId: "wz:1" }, { betId: "bfa:9:leg1" }]);
+  const byId = Object.fromEntries(tickets.map((t) => [t.id, t]));
+  assert.deepEqual([byId["wz:1"].excluded, byId["wz:2"].excluded, byId["bfa:9"].excluded], [true, false, true]);
+  assert.deepEqual(byId["bfa:9"].betIds, ["bfa:9:leg0", "bfa:9:leg1"]);
 });

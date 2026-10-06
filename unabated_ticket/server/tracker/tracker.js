@@ -1,8 +1,11 @@
 // Bet Tracker page: fetches the bets service's /bets.json (all history),
-// builds tickets with trackerstats.js and renders the Overview and Analysis
-// views. Read-only: no writes to the service; the only state it keeps is the
-// viewer's own display choices (range, $ / units, unit size) in localStorage,
-// which may be unavailable and is never required.
+// builds tickets with trackerstats.js and renders the Overview, Analysis and
+// Bets views. Its one write is the Bets view's Remove / Restore: POST
+// /exclusions.json, which marks a BFA or Wagerzon bet as not Cal's
+// (bets.duckdb::bet_exclusions; the bet itself stays) and takes it out of
+// every number here. Otherwise it keeps only the viewer's own display choices
+// (range, $ / units, unit size) in localStorage, which may be unavailable and
+// is never required.
 //
 // The service's Content-Security-Policy blocks inline style attributes, so
 // every per-element value is set through element.style (the CSSOM), never
@@ -13,7 +16,11 @@
 
   const stats = globalThis.UnabatedTrackerStats;
   const BETS_URL = "/bets.json?days=3650";
-  const VIEWS = ["overview", "analysis"];
+  const EXCLUSIONS_URL = "/exclusions.json";
+  const VIEWS = ["overview", "analysis", "bets"];
+  // Cal's ask (2026-10-05): only these books carry bets that are not his (service.EXCLUDABLE_VENUES).
+  const REMOVABLE_VENUES = ["BFA", "Wagerzon"];
+  const BET_FILTERS = ["All", "Counted", "Removed"];
   const POLL_MS = 60 * 1000;
   const PREFS_KEY = "betTracker.prefs";
   const RANGES = ["7D", "30D", "90D", "YTD", "All"];
@@ -33,6 +40,7 @@
   const state = Object.assign({
     view: "overview", range: "30D", units: false, unitSize: 100,
     groupBy: "venue", kind: "All", offVenues: [], offLeagues: [], query: "", logLimit: LOG_PAGE,
+    betsQuery: "", betsVenue: "All", betsFilter: "All", betsLimit: LOG_PAGE, saving: false,
     // Cal's decision 2026-10-05: the Kalshi bots' combo fills count in every
     // total by default; the header toggle hides them.
     includeBotCombos: true,
@@ -181,10 +189,10 @@
     ])));
   }
 
-  /** A table; each column {label, right?, cell(row) -> string | Node, className?(row)}. */
-  function table(columns, rows) {
+  /** A table; each column {label, right?, cell(row) -> string | Node, className?(row)}; rowClass?(row) -> class. */
+  function table(columns, rows, rowClass) {
     const head = el("tr", null, columns.map((col) => el("th", { className: col.right ? "r" : "", text: col.label })));
-    const body = rows.map((row) => el("tr", null, columns.map((col) => {
+    const body = rows.map((row) => el("tr", { className: rowClass ? rowClass(row) : "" }, columns.map((col) => {
       const value = col.cell(row);
       const classes = [col.right ? "r" : "", col.num ? "num" : "", col.className ? col.className(row) : ""].filter(Boolean).join(" ");
       const td = el("td", { className: classes });
@@ -385,9 +393,25 @@
     const toWin = open.reduce((sum, t) => sum + (Number.isFinite(t.toWin) ? t.toWin : 0), 0);
     setText("open-caption", open.length ? "Risking " + money(openStake) + " to win " + money(toWin) + " · fair is Unabated's at fill, else at close" : "");
     if (!open.length) { fill("ov-open", emptyNote("No open bets.")); return; }
-    const sorted = open.slice().sort((a, b) => (Date.parse(a.eventStart) || Infinity) - (Date.parse(b.eventStart) || Infinity));
-    fill("ov-open", table([
-      { label: "Starts", className: () => "muted", cell: (t) => startLabel(t.eventStart) },
+    const { live, upcoming, noStart } = stats.splitOpenByStart(open, Date.now());
+    fill("ov-open",
+      openGroup("Live now", live, "Started", "No games in progress."),
+      openGroup("Upcoming", upcoming, "Starts", "Nothing else open."),
+      noStart.length ? openGroup("No start time", noStart, "Starts", "",
+        "The venue sends no game time (BetOnline; Kalshi NFL and CFB), or it is a future or combo") : null);
+  }
+
+  /** One titled block of the Open bets panel: a count and stake line, then its table. */
+  function openGroup(title, group, startLabelText, emptyText, why) {
+    const stake = group.reduce((sum, t) => sum + t.stake, 0);
+    const head = el("div", { className: "open-group-head" }, [
+      el("span", { className: "open-group-title", text: title }),
+      el("span", { className: "note", text: group.length ? group.length + " · " + money(stake) + " at risk" : "" }),
+      why ? el("span", { className: "note muted", text: why }) : null,
+    ]);
+    if (!group.length) return el("div", { className: "open-group" }, [head, emptyNote(emptyText)]);
+    return el("div", { className: "open-group" }, [head, el("div", { className: "scroll" }, [table([
+      { label: startLabelText, className: () => "muted", cell: (t) => startLabel(t.eventStart) },
       { label: "Venue", cell: (t) => t.venue },
       { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }) },
       { label: "Event", cell: (t) => t.event || t.kind },
@@ -398,7 +422,7 @@
       { label: "CLV", right: true, num: true, className: clvClass, cell: clvCell },
       { label: "Stake", right: true, num: true, cell: (t) => money(t.stake) },
       { label: "To win", right: true, num: true, cell: (t) => (Number.isFinite(t.toWin) ? money(t.toWin) : "—") },
-    ], sorted));
+    ], group)])]);
   }
 
   // ---- analysis -------------------------------------------------------------
@@ -557,6 +581,76 @@
     ], shown));
   }
 
+  // ---- bets -----------------------------------------------------------------
+
+  function resultTag(ticket) {
+    return el("span", { className: "result " + ticket.status, text: ticket.status[0].toUpperCase() + ticket.status.slice(1) });
+  }
+
+  function betsShown() {
+    const query = state.betsQuery.trim().toLowerCase();
+    return allTickets.filter((t) => REMOVABLE_VENUES.includes(t.venue)
+      && (state.betsVenue === "All" || t.venue === state.betsVenue)
+      && (state.betsFilter === "All" || (state.betsFilter === "Removed") === t.excluded)
+      && (!query || [t.event, t.selection, t.league, t.kind, t.id].join(" ").toLowerCase().includes(query)));
+  }
+
+  // POST the ticket's record ids (every leg of a parlay), then rebuild from
+  // the service's answer so the page shows what is stored, not what was asked.
+  async function setExcluded(ticket, excluded) {
+    if (state.saving) return;
+    state.saving = true;
+    render();
+    try {
+      const response = await fetch(EXCLUSIONS_URL, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ betIds: ticket.betIds, excluded }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || "the bets service answered HTTP " + response.status);
+      payload = Object.assign({}, payload, { exclusions: body.exclusions });
+      rebuildTickets();
+      showBanner(null);
+    } catch (error) {
+      showBanner("Could not " + (excluded ? "remove" : "restore") + " the bet: " + error.message);
+    } finally {
+      state.saving = false;
+      render();
+    }
+  }
+
+  function renderBets() {
+    segButtons("b-venues", ["All"].concat(REMOVABLE_VENUES), (v) => v === state.betsVenue, (v) => { state.betsVenue = v; state.betsLimit = LOG_PAGE; render(); });
+    segButtons("b-filter", BET_FILTERS, (f) => f === state.betsFilter, (f) => { state.betsFilter = f; state.betsLimit = LOG_PAGE; render(); });
+    const all = allTickets.filter((t) => REMOVABLE_VENUES.includes(t.venue));
+    const removed = all.filter((t) => t.excluded);
+    setText("b-caption", all.length + " BFA and Wagerzon bets · " + removed.length + " removed"
+      + (removed.length ? " (" + money(removed.reduce((sum, t) => sum + (t.pnl || 0), 0), true) + " P&L left out)" : ""));
+    const matching = betsShown();
+    const shown = matching.slice(0, state.betsLimit);
+    setText("bets-caption", "Showing " + shown.length + " of " + matching.length + ", newest first");
+    document.getElementById("bets-more").hidden = matching.length <= shown.length;
+    if (!shown.length) { fill("b-list", emptyNote(state.betsQuery ? "No bets match that search." : "No bets here.")); return; }
+    // The button and the bet lead the row so a phone shows both without scrolling the table sideways.
+    fill("b-list", table([
+      { label: "", cell: (t) => el("button", {
+        className: "chip" + (t.excluded ? "" : " danger"), text: t.excluded ? "Restore" : "Remove",
+        title: t.excluded ? "Count this bet again" : "Not my bet: leave it out of every number",
+        attrs: Object.assign({ type: "button" }, state.saving ? { disabled: "" } : {}),
+        onClick: () => setExcluded(t, !t.excluded),
+      }) },
+      { label: "Bet", className: () => "wrap", cell: (t) => t.selection },
+      { label: "Event", cell: (t) => t.event || t.kind },
+      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice) },
+      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake) },
+      { label: "Result", cell: resultTag },
+      { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => (t.pnl === null ? "—" : money(t.pnl, true)) },
+      { label: "Placed", className: () => "muted", cell: (t) => (t.placedMs ? dayLabel(stats.pacificDay(t.placedMs), true) : "—") },
+      { label: "Venue", cell: (t) => t.venue },
+      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }) },
+    ], shown, (t) => (t.excluded ? "removed" : "")));
+  }
+
   // ---- shell ----------------------------------------------------------------
 
   function renderHeader() {
@@ -592,7 +686,8 @@
     renderSync();
     if (!payload) return;
     if (state.view === "overview") renderOverview();
-    else renderAnalysis();
+    else if (state.view === "analysis") renderAnalysis();
+    else renderBets();
   }
 
   function showBanner(text) {
@@ -601,12 +696,13 @@
     banner.textContent = text || "";
   }
 
+  // Every number leaves out removed bets; the bot-combo toggle may leave out those too.
   function applyBotComboFilter() {
-    tickets = state.includeBotCombos ? allTickets : allTickets.filter((t) => t.kind !== BOT_COMBO_KIND);
+    tickets = allTickets.filter((t) => !t.excluded && (state.includeBotCombos || t.kind !== BOT_COMBO_KIND));
   }
 
   function rebuildTickets() {
-    allTickets = stats.buildTickets(payload.bets, payload.fillFairs, payload.closingFairs);
+    allTickets = stats.buildTickets(payload.bets, payload.fillFairs, payload.closingFairs, payload.exclusions);
     applyBotComboFilter();
   }
 
@@ -648,6 +744,10 @@
       state.query = event.target.value; state.logLimit = LOG_PAGE; render();
     });
     document.getElementById("log-more").addEventListener("click", () => { state.logLimit += LOG_PAGE; render(); });
+    document.getElementById("bets-search").addEventListener("input", (event) => {
+      state.betsQuery = event.target.value; state.betsLimit = LOG_PAGE; render();
+    });
+    document.getElementById("bets-more").addEventListener("click", () => { state.betsLimit += LOG_PAGE; render(); });
     window.addEventListener("hashchange", () => { state.view = viewOfHash(); render(); });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
     setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
