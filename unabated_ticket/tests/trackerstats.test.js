@@ -142,3 +142,20 @@ test("selection labels: spread, total with period, moneyline, and the venue's te
   assert.equal(label({ betType: "moneyline", side: "away", points: null }), "Jets ML");
   assert.equal(label({ betType: "other", side: null, raw: { description: "Bills to score first" } }), "Bills to score first");
 });
+
+test("rangeBounds: Today and Yesterday are single Pacific days; presets end today", () => {
+  const today = "2026-10-06";
+  assert.deepEqual(stats.rangeBounds("Today", today, null, "2026-01-02"), { first: today, last: today });
+  assert.deepEqual(stats.rangeBounds("Yesterday", "2026-03-01", null, null), { first: "2026-02-28", last: "2026-02-28" });
+  assert.deepEqual(stats.rangeBounds("7D", today, null, null), { first: "2026-09-30", last: today });
+  assert.deepEqual(stats.rangeBounds("YTD", today, null, null), { first: "2026-01-01", last: today });
+  assert.deepEqual(stats.rangeBounds("All", today, null, "2026-01-02"), { first: "2026-01-02", last: today });
+  assert.throws(() => stats.rangeBounds("2W", today, null, null), /unknown date range 2W/);
+});
+
+test("rangeBounds: Custom takes the picked days, swaps a backwards pair, fills a blank end", () => {
+  const today = "2026-10-06";
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "2026-09-01", last: "2026-09-15" }, null), { first: "2026-09-01", last: "2026-09-15" });
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "2026-09-15", last: "2026-09-01" }, null), { first: "2026-09-01", last: "2026-09-15" });
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: null, last: "2026-02-30" }, "2026-01-02"), { first: "2026-01-02", last: today });
+});

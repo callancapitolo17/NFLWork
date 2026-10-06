@@ -2099,7 +2099,7 @@ fill fairs) every 60 s while visible; nothing is written.
   95% interval (proven only when the interval clears zero), expected ROI,
   actual vs expected and z. Calibration of fair win probability against the
   actual win rate (straights with a fair), and a searchable bet log.
-- **Header**: range (7D, 30D, 90D, YTD, All), $ / units with the unit size
+- **Header**: range (Today, Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days), $ / units with the unit size
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
 - **Rules** (`trackerstats.js`, pure, tested in `tests/trackerstats.test.js`):

@@ -48,6 +48,9 @@ button { font: inherit; color: inherit; }
 .seg button[aria-pressed="true"] { background: var(--active); color: var(--text); }
 .unit-size { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
 .unit-size input { width: 72px; min-height: 34px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 0 8px; font: 13px var(--mono); }
+.custom-range { display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px; color: var(--muted); }
+.custom-range label { display: flex; align-items: center; gap: 6px; }
+.custom-range input { min-height: 34px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 0 8px; font: 13px var(--mono); color-scheme: dark; }
 .sync { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--pos); flex: none; }
 .dot.bad { background: var(--warn); }
