@@ -1589,6 +1589,10 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   keeps it, so `saved` counts only new bets. A row is refused with a 400
   that names it unless `fairAmerican` is a whole American price, both times
   are ISO and the fair was observed at or before `placedAt`. `POST
+  /exclusions.json` with `{betIds: [...], excluded: true|false}` (at most
+  50) → `{ok, changed, exclusions}` — the Bet Tracker's Remove / Restore; a
+  bet not at BFA or Wagerzon is a 400, an unknown id a 404. `/bets.json` also
+  serves `exclusions` (all of them). `POST
   /bet105.json` with `{fetchedAt, feeds: {prematch: [betGroup], live:
   [betGroup]}}` (both feeds, at most 2000 groups) → `{ok, count, closed}`, or
   `{error}` → `{ok, recorded: "error"}` — the panel's read of Bet105 (the Bet105
@@ -1899,6 +1903,9 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   a request repeating a bet keeps its first row and logs it), never pruned
   (~14 bets a day) and never backfilled; `/bets.json` serves the rows of the
   bets in its window only, so the table's growth never reaches the poll.
+  `bet_exclusions` (primary key `bet_id`, plus `venue`, `excluded_at`) holds
+  the bets removed from the Bet Tracker; Restore deletes the row, and the bet
+  in `bets` is never touched.
   `edge_settings` holds at most one row (`settings_id` = 1, checked) of the
   settings above, one explicit column each (`bankroll`, `kelly_multiplier`,
   `league_ids` / `period_type_ids` / `bet_type_ids` / `book_ids` as
@@ -2121,10 +2128,11 @@ node unabated_ticket/server/runner.js                     # must be running too 
 
 ### Bet Tracker (`server/tracker/`)
 
-Daily P&L and bet analysis, read-only, served by the bets service at
-`/tracker` (on the VM: `https://<vm>.<tailnet>.ts.net/tracker`). It reads
-`GET /bets.json?days=3650` (every bet the service has stored, plus the saved
-fill fairs) every 60 s while visible; nothing is written.
+Daily P&L and bet analysis, served by the bets service at `/tracker` (on
+the VM: `https://<vm>.<tailnet>.ts.net/tracker`). It reads `GET
+/bets.json?days=3650` (every bet the service has stored, plus the saved fill
+fairs and removed bets) every 60 s while visible. Its one write is the Bets
+page's Remove / Restore.
 
 - **Overview**: net P&L, ROI, handle, record, open risk; expected P&L at
   Unabated's fair at fill and actual vs expected with its z-score; cumulative
@@ -2136,6 +2144,12 @@ fill fairs) every 60 s while visible; nothing is written.
   95% interval (proven only when the interval clears zero), expected ROI,
   actual vs expected and z. Calibration of fair win probability against the
   actual win rate (straights with a fair), and a searchable bet log.
+- **Bets**: every BFA and Wagerzon bet, newest first, searchable, filtered to
+  counted or removed. **Remove** marks a bet that isn't yours (`POST
+  /exclusions.json` → `bets.duckdb::bet_exclusions`; the bet itself stays in
+  `bets`) and it leaves every number on Overview and Analysis — a parlay or
+  teaser goes as a whole; **Restore** counts it again. Only those two books
+  (Cal, 2026-10-05); the service refuses any other venue's bet.
 - **Header**: range (7D, 30D, 90D, YTD, All), $ / units with the unit size
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
@@ -2162,7 +2176,7 @@ fill fairs) every 60 s while visible; nothing is written.
   ticket (its legs carry the ticket's stake and status). Edge = fair
   probability × the ticket's actual payout − 1, so expected P&L, z and
   calibration cover only bets with a saved fill fair; the rest group under
-  "No fair saved". Kalshi fees are not in Kalshi's `toWin`, so its P&L is
+  "No fair saved". A removed bet is in none of the numbers. Kalshi fees are not in Kalshi's `toWin`, so its P&L is
   before fees.
 - **History** is whatever this service's `bets.duckdb` holds: sources pull
   about 31 days back, and records are kept from then on. A service started on

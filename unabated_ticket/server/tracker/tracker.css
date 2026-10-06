@@ -135,6 +135,10 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .filter-row .lbl { min-width: 64px; }
 .chip { border-radius: 999px; padding: 0 14px; min-height: 34px; cursor: pointer; font-size: 13px; font-weight: 500; background: transparent; color: var(--muted); border: 1px solid #262e3a; }
 .chip[aria-pressed="true"] { background: #1e2a3b; color: var(--text); border-color: #3b5b86; }
+.chip.danger { color: var(--neg); border-color: rgba(255, 107, 107, .35); }
+.chip:disabled { opacity: .5; cursor: progress; }
+.tbl tr.removed td { opacity: .45; }
+.tbl tr.removed td:first-child { opacity: 1; }
 .ci { position: relative; height: 18px; min-width: 240px; }
 .ci > div { position: absolute; }
 .ci .base { left: 0; right: 0; top: 8px; height: 2px; background: var(--chip); }
