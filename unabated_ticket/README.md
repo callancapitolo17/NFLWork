@@ -2178,7 +2178,10 @@ page's Remove / Restore.
   (`closed` with a `pnl`: a gain is a win, a loss a loss); the other side's
   record carries `mergedInto` and is skipped. The Kalshi source reads
   `/historical/fills` too on every full pull (fills older than Kalshi's
-  history cutoff leave `/portfolio/fills`). Open bets are exposure, not P&L;
+  history cutoff leave `/portfolio/fills`), keeping only markets in the recent
+  fills or already stored — the account's older history is mostly the MLB
+  bots' trades. Checked 2026-10-06 against Kalshi's own realized P&L minus
+  fees: 290 of 290 markets to the cent (Kalshi +$16,784 → +$9,441). Open bets are exposure, not P&L;
   a closed bet with no `pnl` (Polymarket US sold early) and a bet whose
   result is gone (`unknown`, e.g. Bet105 once it leaves the open list) have no
   known P&L and are counted as "without a result". A parlay or teaser is one
