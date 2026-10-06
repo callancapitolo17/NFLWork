@@ -177,3 +177,8 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .cal-key .k-pos2 { background: rgba(61, 214, 140, .65); }
 .cal-plot { max-width: 466px; display: flex; flex-direction: column; gap: 6px; }
 .cal-plot svg { width: 100%; height: auto; aspect-ratio: 4 / 3; }
+
+/* sortable headers: the label is a button so it takes a click and a keypress */
+.tbl th button.sort { all: unset; cursor: pointer; font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; }
+.tbl th button.sort:hover, .tbl th button.sort.on { color: var(--text); }
+.tbl th button.sort:focus-visible { outline: 2px solid var(--exp); outline-offset: 2px; border-radius: 2px; }

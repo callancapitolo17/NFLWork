@@ -213,3 +213,13 @@ test("a removed record marks its ticket, and one removed leg marks the whole par
   assert.deepEqual([byId["wz:1"].excluded, byId["wz:2"].excluded, byId["bfa:9"].excluded], [true, false, true]);
   assert.deepEqual(byId["bfa:9"].betIds, ["bfa:9:leg0", "bfa:9:leg1"]);
 });
+
+test("sortRows: numbers and text both ways, missing keys last, ties stable", () => {
+  const rows = [{ id: "a", v: 2 }, { id: "b", v: null }, { id: "c", v: 10 }, { id: "d", v: 2 }, { id: "e", v: NaN }];
+  const ids = (list) => list.map((r) => r.id).join("");
+  assert.equal(ids(stats.sortRows(rows, (r) => r.v, "asc")), "adcbe");
+  assert.equal(ids(stats.sortRows(rows, (r) => r.v, "desc")), "cadbe");
+  const names = [{ n: "novig" }, { n: "BFA" }, { n: "Kalshi" }];
+  assert.deepEqual(stats.sortRows(names, (r) => r.n, "asc").map((r) => r.n), ["BFA", "Kalshi", "novig"]);
+  assert.equal(rows[0].id, "a", "the input is not reordered");
+});

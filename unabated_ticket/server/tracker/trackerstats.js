@@ -464,12 +464,34 @@
     };
   }
 
+  /**
+   * A copy of `rows` ordered by `keyOf(row)`: numbers numerically, strings
+   * case-insensitively, "asc" or "desc". Rows whose key is null, undefined or
+   * NaN go last in either direction, so a "—" never tops a sorted column.
+   * Stable: ties keep their incoming order.
+   */
+  function sortRows(rows, keyOf, direction) {
+    const sign = direction === "desc" ? -1 : 1;
+    const missing = (key) => key === null || key === undefined || (typeof key === "number" && Number.isNaN(key));
+    const keyed = rows.map((row, index) => ({ row, index, key: keyOf(row) }));
+    keyed.sort((a, b) => {
+      const aMissing = missing(a.key);
+      const bMissing = missing(b.key);
+      if (aMissing || bMissing) return aMissing === bMissing ? a.index - b.index : (aMissing ? 1 : -1);
+      const order = typeof a.key === "number" && typeof b.key === "number"
+        ? a.key - b.key
+        : String(a.key).localeCompare(String(b.key), undefined, { sensitivity: "base", numeric: true });
+      return order !== 0 ? sign * order : a.index - b.index;
+    });
+    return keyed.map((entry) => entry.row);
+  }
+
   const api = {
     PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR,
     pacificDay, addDays, dayKeyToUtc, weekdayOf, isDayKey, rangeBounds,
     americanToDecimal, decimalToAmerican,
     buildTickets, summarize, exclusions, inDayRange, dailySeries, firstSettledDay, groupBy, calibration,
-    venueName, splitOpenByStart,
+    venueName, splitOpenByStart, sortRows,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.UnabatedTrackerStats = api;
