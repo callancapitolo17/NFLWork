@@ -365,6 +365,10 @@
    * Pacific day key; `custom` is { first, last } (either may be missing, and
    * they are swapped if entered backwards); `firstSettled` is the earliest
    * settle day, which "All" starts from.
+   *
+   * Custom days are clamped to [firstSettled, today]: a date input reports
+   * half-typed years such as 0201-10-01, and an unclamped range would make
+   * the daily series (one bar per day) millions of days long and hang the page.
    */
   function rangeBounds(range, today, custom, firstSettled) {
     if (range === "Today") return { first: today, last: today };
@@ -372,8 +376,10 @@
     if (RANGE_DAYS[range]) return { first: addDays(today, 1 - RANGE_DAYS[range]), last: today };
     if (range === "YTD") return { first: today.slice(0, 4) + "-01-01", last: today };
     if (range === "Custom") {
-      const first = custom && isDayKey(custom.first) ? custom.first : (firstSettled || today);
-      const last = custom && isDayKey(custom.last) ? custom.last : today;
+      const floor = firstSettled && firstSettled < today ? firstSettled : today;
+      const clamp = (day) => (day < floor ? floor : day > today ? today : day);
+      const first = clamp(custom && isDayKey(custom.first) ? custom.first : floor);
+      const last = clamp(custom && isDayKey(custom.last) ? custom.last : today);
       return first <= last ? { first, last } : { first: last, last: first };
     }
     if (range === "All") return { first: firstSettled || today, last: today };

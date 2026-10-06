@@ -155,7 +155,15 @@ test("rangeBounds: Today and Yesterday are single Pacific days; presets end toda
 
 test("rangeBounds: Custom takes the picked days, swaps a backwards pair, fills a blank end", () => {
   const today = "2026-10-06";
-  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "2026-09-01", last: "2026-09-15" }, null), { first: "2026-09-01", last: "2026-09-15" });
-  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "2026-09-15", last: "2026-09-01" }, null), { first: "2026-09-01", last: "2026-09-15" });
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "2026-09-01", last: "2026-09-15" }, "2026-01-02"), { first: "2026-09-01", last: "2026-09-15" });
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "2026-09-15", last: "2026-09-01" }, "2026-01-02"), { first: "2026-09-01", last: "2026-09-15" });
   assert.deepEqual(stats.rangeBounds("Custom", today, { first: null, last: "2026-02-30" }, "2026-01-02"), { first: "2026-01-02", last: today });
+});
+
+test("rangeBounds: Custom clamps to [first settled day, today] so a half-typed year can't span millennia", () => {
+  const today = "2026-10-06";
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "0201-10-01", last: "2026-09-15" }, "2026-01-02"), { first: "2026-01-02", last: "2026-09-15" });
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "2026-09-01", last: "9999-01-01" }, "2026-01-02"), { first: "2026-09-01", last: today });
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "2026-09-15", last: "0201-01-01" }, "2026-01-02"), { first: "2026-01-02", last: "2026-09-15" });
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "2025-01-01", last: "2025-02-01" }, null), { first: today, last: today });
 });
