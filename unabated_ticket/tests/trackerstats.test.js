@@ -65,6 +65,29 @@ test("a parlay's legs collapse to one ticket on the ticket's stake; a teaser is 
   assert.equal(teaser.fairProb, null);
 });
 
+test("a parlay settles with its last leg: Sunday and Monday legs land on Monday", () => {
+  const leg = (index, closedAt) => straight({
+    id: "wagerzon:5:leg" + index, venue: "wagerzon", isParlayLeg: true, parlayId: "wagerzon:5", legIndex: index,
+    legCount: 2, stake: 100, toWin: 260, status: "won", closedAt,
+  });
+  // Leg 0 kicks off Sunday 10:00 PDT, leg 1 Monday 17:15 PDT.
+  const [parlay] = stats.buildTickets([leg(0, "2026-10-04T17:00:00Z"), leg(1, "2026-10-06T00:15:00Z")], []);
+  assert.equal(parlay.settledDay, "2026-10-05");
+});
+
+test("a lost parlay is decided at its earliest losing leg, not its last game", () => {
+  const leg = (index, closedAt, legResult) => straight({
+    id: "wagerzon:6:leg" + index, venue: "wagerzon", isParlayLeg: true, parlayId: "wagerzon:6", legIndex: index,
+    legCount: 3, stake: 100, toWin: 500, status: "lost", closedAt, raw: { legResult },
+  });
+  // Sunday leg loses; Monday's leg (still to play) has no result yet.
+  const [parlay] = stats.buildTickets([
+    leg(0, "2026-10-04T17:00:00Z", "WIN"), leg(1, "2026-10-04T20:25:00Z", "LOSE"), leg(2, "2026-10-06T00:15:00Z", ""),
+  ], []);
+  assert.equal(parlay.settledDay, "2026-10-04");
+  assert.equal(parlay.closedAt, "2026-10-04T20:25:00.000Z");
+});
+
 test("a Kalshi multivariate combo (the bots' RFQ fills) is its own type, not a straight", () => {
   const [combo] = stats.buildTickets([straight({
     id: "kalshi:KXMVECROSSCATEGORY-X:yes", venue: "kalshi", league: null, betType: "other", side: null,
