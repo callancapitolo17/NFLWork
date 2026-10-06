@@ -132,11 +132,17 @@ def test_full_pulls_read_the_historical_fills_and_price_the_net_position(kalshi_
     opening = fill("KXNFLGAME-26SEP20PITNE-NE", "yes", 100, 0.40, "2026-08-01T12:00:00Z", trade_id="h1")
     closing = fill("KXNFLGAME-26SEP20PITNE-NE", "no", 100, 0.45, "2026-09-11T12:00:00Z",
                    action="sell", trade_id="c1")
+    bot = fill("KXMLBGAME-26JUL01NYYBOS-NYY", "yes", 5, 0.5, "2026-07-01T12:00:00Z", trade_id="h2")
+    stored = fill("KXNCAAFTOTAL-26SEP12RICEND-60", "yes", 500, 0.32, "2026-07-02T12:00:00Z", trade_id="h3")
     api = FakeKalshiApi(kalshi_fixture, [closing], [])
-    api.historical_fills = [opening]
-    source = make_source(api, clock=lambda: 1_800_000_000.0)
+    api.historical_fills = [opening, bot, stored]
+    source = KalshiSource(api=api, configure_auth=False, lookup_gap_sec=0, clock=lambda: 1_800_000_000.0,
+                          known_tickers=lambda: {"KXNCAAFTOTAL-26SEP12RICEND-60"})
     records = {record["id"]: record for record in source.fetch()}
     assert api.count("/historical/fills?limit=200") == 1
+    # Only markets the bets touch: one in the recent fills, one the store holds; not the bot's.
+    assert {record["raw"]["ticker"] for record in records.values()} == {
+        "KXNFLGAME-26SEP20PITNE-NE", "KXNCAAFTOTAL-26SEP12RICEND-60"}
     entry = records["kalshi:KXNFLGAME-26SEP20PITNE-NE:yes"]
     assert entry["pnl"] == 5  # bought YES at 40c, closed at 45c
     assert records["kalshi:KXNFLGAME-26SEP20PITNE-NE:no"]["mergedInto"] == entry["id"]
@@ -309,6 +315,13 @@ def test_a_duplicated_id_in_one_poll_keeps_the_last_record_and_warns(store, capl
     # The count is the statement's own, not a scan keyed on seen_at: two polls
     # sharing a clock reading (two sources in one microsecond) do not add up.
     assert store.upsert_bets([record("kalshi:b:yes", "open", None)], seen) == 0
+
+
+def test_load_kalshi_tickers_reads_the_ticker_out_of_each_kalshi_id(store):
+    store.upsert_bets([{**record("kalshi:KXA-1:yes", "won", "2026-09-11T20:00:00Z"), "venue": "kalshi"},
+                       {**record("novig:x", "won", "2026-09-11T20:00:00Z"), "venue": "novig"}],
+                      datetime(2026, 9, 12, tzinfo=timezone.utc))
+    assert store.load_kalshi_tickers() == {"KXA-1"}
 
 
 def test_rows_from_before_the_content_hash_column_are_rewritten_once(store):

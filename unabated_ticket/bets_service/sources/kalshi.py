@@ -338,17 +338,21 @@ class KalshiSource:
     `api` is kalshi_common.auth_client.api by default; tests inject a fake.
     `configure_auth=True` calls auth_client.configure() from config — the only
     place credentials are read; they never enter a record or a log line.
+    `known_tickers` returns the tickers the store already holds Kalshi records
+    for (BetsStore.load_kalshi_tickers); their pre-cutoff fills are read.
     """
 
     name = "kalshi"
 
     def __init__(self, api: ApiCall | None = None, poll_sec: float | None = None,
                  reconcile_sec: float | None = None, configure_auth: bool = True,
-                 lookup_gap_sec: float | None = None, clock: Callable[[], float] = time.time):
+                 lookup_gap_sec: float | None = None, clock: Callable[[], float] = time.time,
+                 known_tickers: Callable[[], set[str]] = set):
         self.poll_sec = poll_sec if poll_sec is not None else config.KALSHI_POLL_SEC
         self._reconcile_sec = reconcile_sec if reconcile_sec is not None else config.KALSHI_RECONCILE_SEC
         self._lookup_gap_sec = lookup_gap_sec if lookup_gap_sec is not None else config.KALSHI_LOOKUP_GAP_SEC
         self._clock = clock
+        self._known_tickers = known_tickers
         if configure_auth:
             if not config.KALSHI_API_KEY_ID or not config.KALSHI_PRIVATE_KEY_PATH:
                 raise RuntimeError("KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PATH not set "
@@ -376,21 +380,37 @@ class KalshiSource:
         if not full:
             min_ts = int(self._last_poll_ts) - config.KALSHI_FILLS_OVERLAP_SEC
             path = f"{FILLS_PATH}?min_ts={min_ts}"
-        n_new = 0
-        paths = [path, HISTORICAL_FILLS_PATH] if full else [path]
-        for fill in (fill for page_path in paths for fill in _paginate(self._api, page_path, "fills")):
-            trade_id = fill.get("trade_id")
-            if not trade_id:
-                raise RuntimeError(f"fill without trade_id on {fill.get('ticker')}: cannot dedupe")
-            if trade_id not in self._fills_by_trade_id:
-                n_new += 1
-            self._fills_by_trade_id[trade_id] = fill
+        n_new = self._hold_fills(_paginate(self._api, path, "fills"))
+        if full:
+            n_new += self._hold_historical_fills()
         log.info("kalshi fills: %s pull, %d new, %d held", "full" if full else "incremental",
                  n_new, len(self._fills_by_trade_id))
         if full:
             self._last_full_pull_ts = now
             self._refresh_unsettled_markets()
         self._last_poll_ts = now
+
+    def _hold_fills(self, fills) -> int:
+        """Keep each fill by trade_id; returns how many were new."""
+        n_new = 0
+        for fill in fills:
+            trade_id = fill.get("trade_id")
+            if not trade_id:
+                raise RuntimeError(f"fill without trade_id on {fill.get('ticker')}: cannot dedupe")
+            if trade_id not in self._fills_by_trade_id:
+                n_new += 1
+            self._fills_by_trade_id[trade_id] = fill
+        return n_new
+
+    def _hold_historical_fills(self) -> int:
+        """The pre-cutoff fills of markets the bets already touch: one in the
+        recent fills, or one the store holds a record of. The account's whole
+        history (~6,900 fills on 2026-10-06, mostly the MLB bots' older trades)
+        is left out: it was never in the tracker, and looking up each of its
+        markets at the lookup gap stalls a full pull for over an hour."""
+        wanted = {fill["ticker"] for fill in self._fills_by_trade_id.values()} | self._known_tickers()
+        return self._hold_fills(fill for fill in _paginate(self._api, HISTORICAL_FILLS_PATH, "fills")
+                                if fill.get("ticker") in wanted)
 
     def _pull_positions(self) -> list[dict]:
         return list(_paginate(self._api, POSITIONS_PATH, "market_positions"))
