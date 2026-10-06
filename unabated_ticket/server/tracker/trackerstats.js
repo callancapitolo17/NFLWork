@@ -11,6 +11,8 @@
 //   records    /bets.json `bets` (the normalised record, docs/2026-09-11-issue-114-bet-history-plan.md)
 //   fillFairs  /bets.json `fillFairs` ({betId, fairAmerican, ...}): Unabated's
 //              fair for the bet's side when it was placed
+//   removedBets /bets.json `exclusions` ({betId}): bets Cal removed on the Bets
+//              page; a ticket with any removed record is marked `excluded`
 // Conventions
 //   P&L lands on the Pacific calendar day the bet SETTLED (closedAt).
 //   A bet counts toward P&L only when it is won, lost, push or void; an open
@@ -237,8 +239,22 @@
       period: record.period || "FG", event: eventLabel(record), selection: selectionLabel(record),
       price: record.price, stake: Number(record.stake) || 0, toWin: record.toWin,
       status: record.status, placedAt: record.placedAt, closedAt: record.closedAt, eventStart: record.eventStart || null,
-      legCount: 1,
+      legCount: 1, betIds: [record.id],
     }, fairAmerican);
+  }
+
+  /** When a multi-leg ticket was decided: a lost one at its earliest losing leg's
+   * close (the venue's per-leg result, raw.legResult "LOSE"), any other at its
+   * latest leg's close; the first leg's closedAt when no leg says. */
+  function multiLegClosedAt(legs, status) {
+    const closeMs = (leg) => parseMs(leg.closedAt);
+    const losing = status === "lost"
+      ? legs.filter((leg) => String((leg.raw || {}).legResult || "").toUpperCase() === "LOSE")
+      : [];
+    const decidingCloses = (losing.length ? losing : legs).map(closeMs).filter((ms) => ms !== null);
+    if (!decidingCloses.length) return legs[0].closedAt;
+    const decidedMs = losing.length ? Math.min(...decidingCloses) : Math.max(...decidingCloses);
+    return new Date(decidedMs).toISOString();
   }
 
   /** One ticket from a parlay's or teaser's legs: every leg carries the ticket's stake, toWin and status. */
@@ -248,6 +264,7 @@
     const kind = isTeaserTicket(sorted) ? KIND_NAMES.teaser : KIND_NAMES.parlay;
     const leagues = new Set(sorted.map((leg) => leagueName(leg.league)));
     const starts = sorted.map((leg) => parseMs(leg.eventStart)).filter((ms) => ms !== null);
+    const closedAt = multiLegClosedAt(sorted, first.status);
     const legCount = first.legCount || sorted.length;
     const raw = first.raw || {};
     return finishTicket({
@@ -257,15 +274,17 @@
       selection: sorted.map(selectionLabel).filter(Boolean).join(" · "),
       price: Number.isFinite(raw.parlayPrice) ? raw.parlayPrice : null,
       stake: Number(first.stake) || 0, toWin: first.toWin,
-      status: first.status, placedAt: first.placedAt, closedAt: first.closedAt,
+      status: first.status, placedAt: first.placedAt,
+      closedAt,
       eventStart: starts.length ? new Date(Math.min(...starts)).toISOString() : null,
-      legCount,
+      legCount, betIds: sorted.map((leg) => leg.id),
     }, null);
   }
 
   /** /bets.json records -> tickets, newest placement first. */
-  function buildTickets(records, fillFairs) {
+  function buildTickets(records, fillFairs, removedBets) {
     const fairByBet = new Map((fillFairs || []).map((row) => [row.betId, row.fairAmerican]));
+    const removedIds = new Set((removedBets || []).map((row) => row.betId));
     const legsByParlay = new Map();
     const tickets = [];
     for (const record of records || []) {
@@ -277,6 +296,7 @@
       tickets.push(straightTicket(record, fairByBet.has(record.id) ? fairByBet.get(record.id) : null));
     }
     for (const [parlayId, legs] of legsByParlay) tickets.push(multiLegTicket(parlayId, legs));
+    for (const ticket of tickets) ticket.excluded = ticket.betIds.some((id) => removedIds.has(id));
     return tickets.sort((a, b) => (b.closedMs || b.placedMs || 0) - (a.closedMs || a.placedMs || 0));
   }
 
@@ -421,12 +441,35 @@
     return bins;
   }
 
+  /**
+   * Open tickets by whether their game has started: live = event start at or
+   * before nowMs (a parlay's is its earliest leg), upcoming = start after
+   * nowMs, noStart = no start time (BetOnline's report has none, Kalshi NFL
+   * and CFB tickers carry only a date, futures and Kalshi combos none), so
+   * they can't be placed in either. Live and upcoming by start, earliest first.
+   */
+  function splitOpenByStart(openTickets, nowMs) {
+    const withStart = [];
+    const noStart = [];
+    for (const ticket of openTickets) {
+      const startMs = parseMs(ticket.eventStart);
+      if (startMs === null) noStart.push(ticket);
+      else withStart.push({ ticket, startMs });
+    }
+    withStart.sort((a, b) => a.startMs - b.startMs);
+    return {
+      live: withStart.filter((row) => row.startMs <= nowMs).map((row) => row.ticket),
+      upcoming: withStart.filter((row) => row.startMs > nowMs).map((row) => row.ticket),
+      noStart,
+    };
+  }
+
   const api = {
     PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR,
     pacificDay, addDays, dayKeyToUtc, weekdayOf, isDayKey, rangeBounds,
     americanToDecimal, decimalToAmerican,
     buildTickets, summarize, exclusions, inDayRange, dailySeries, firstSettledDay, groupBy, calibration,
-    venueName,
+    venueName, splitOpenByStart,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.UnabatedTrackerStats = api;

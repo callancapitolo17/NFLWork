@@ -25,11 +25,12 @@ side panel:
 - **Teasers** — the Buckeye 6-point 4-team teasers to bet right now, each at
   or under Buckeye's $200 limit, priced off Unabated's fair and sized with
   Kelly over the whole set, around the teasers already open at BFA (BFA is
-  Buckeye). Plan in `docs/2026-09-27-unabated-ticket-teasers-plan.md`. See
-  *Teasers*.
+  Buckeye). A **Place** button bets a ticket at BFA through the bets service.
+  Plan in `docs/2026-09-27-unabated-ticket-teasers-plan.md`. See *Teasers*.
 
 One ticket at a time. No overlay on the Unabated page, no rounding of the
-stake, no order placement.
+stake. The only order placement is the Teasers tab's Place button (one
+Buckeye teaser at BFA, after a confirm click).
 
 ## Install (load unpacked)
 
@@ -1463,7 +1464,8 @@ every ticket loses — with open BFA teasers, what is placed and the expected
 profit of all of them together), then **Open at BFA** (each open teaser
 read-only, its legs at their current fairs or why they count as won, and the
 age of the last BFA pull), the ticket cards in the order to bet them (legs,
-stake, EV, **Copy**: `[rotation] side` per leg, BFA's own form) and the legs
+stake, EV, **Copy**: `[rotation] side` per leg, BFA's own form, and
+**Place**, below) and the legs
 (each game's best leg: teased number, Buckeye's line, win chance, line age,
 how many tickets use it, and on a pool leg the Edges tab's tags for the
 straights on its game — `held $X` on the leg's side, `against $Y` on the
@@ -1479,6 +1481,31 @@ service down puts a red banner up and the list stays (an open teaser may be
 missing from it). The scanner always loads NFL and CFB for this tab; the
 Edges tab and its alerts still list only the sports you tick
 (`feed.selectEdges`'s `leagueIds`).
+
+**Place (2026-10-03, 0.18.0).** Each ticket card has a Place button next to
+Copy. One click arms it — **Cancel** / **Bet $200 at BFA** for 6 s — and the
+confirm sends the ticket to the bets service (`POST /place_teaser.json`,
+`bets_service/bfa_teaser.py`), which bets it at BFA on the BFA source's own
+login and answers, usually in a few seconds (up to about a minute when BFA
+is slow). A confirm within 0.6 s of arming — the second click of a
+double-click — is ignored:
+
+| Card reads | What happened |
+| --- | --- |
+| `Placed · ticket N` (green) | BFA lists the new teaser; the bets list re-polls and the ticket moves to Open at BFA |
+| `Not placed: …` (red), Place again | nothing was bet — a leg's number moved on BFA (`BFA has +3 now, the list has +2.5`), a game started, the ticket is already open, another ticket was placing, or BFA answered 4xx |
+| `Sent to BFA, but …` (red), no Place | the wager went out and no ticket appeared in 20 s, the reply was lost, or reading the open bets failed: it may be booked. Check BFA's open bets; the service refuses the same four sides, at any numbers, for 15 min (held in memory: a service restart drops the hold, and then only the already-open check guards) |
+
+Before anything is sent the service checks, in order: the account's own
+4-team 6-point teaser type (from BFA's account metadata; it must pay +300,
+what this tab prices), each leg on BFA's live board by rotation — main
+full-game line, open, at **the very number** the list was built on (Buckeye's
+number before the 6 points) — and that no open teaser already holds the same
+four sides. Then ONE POST with `AcceptChanges 0` (BFA refuses a moved number
+rather than taking it), never retried, and the open bets read every second
+until the ticket shows. The body is pinned by a test to the one the site sent
+for a ticket Cal placed by hand (356323496). Juice is not checked: in a
+Buckeye teaser it does not change the payout.
 
 **Limits.** Unabated's fair at teaser numbers runs up to 3 points above the
 exchanges (Kalshi, Novig, Polymarket, ProphetX); EVs and stakes are as good as
@@ -1499,7 +1526,8 @@ A local Python service that turns the user's own bet history into normalised
 records the panel can match against a line (issue #114; plan in
 `docs/2026-09-11-issue-114-bet-history-plan.md`). It is the only place that
 signs Kalshi requests — the private key never enters the extension. Read-only
-GETs; no order placement.
+GETs, except one bet at a book: `POST /place_teaser.json` places a Buckeye
+teaser at BFA (the Teasers tab's Place button).
 
 It runs as a launchd agent (`bets_service/com.nflwork.bets-service.plist`):
 it starts at login and restarts itself if it dies. A copy started from a
@@ -1561,10 +1589,23 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   keeps it, so `saved` counts only new bets. A row is refused with a 400
   that names it unless `fairAmerican` is a whole American price, both times
   are ISO and the fair was observed at or before `placedAt`. `POST
+  /exclusions.json` with `{betIds: [...], excluded: true|false}` (at most
+  50) → `{ok, changed, exclusions}` — the Bet Tracker's Remove / Restore; a
+  bet not at BFA or Wagerzon is a 400, an unknown id a 404. `/bets.json` also
+  serves `exclusions` (all of them). `POST
   /bet105.json` with `{fetchedAt, feeds: {prematch: [betGroup], live:
   [betGroup]}}` (both feeds, at most 2000 groups) → `{ok, count, closed}`, or
   `{error}` → `{ok, recorded: "error"}` — the panel's read of Bet105 (the Bet105
-  source bullet), stored as that source's run. **Settings** (the server
+  source bullet), stored as that source's run. `POST /place_teaser.json`
+  with `{stake, legs: [4 x {league "nfl"|"cfb", betType "spread"|"total",
+  side "away"|"home"|"over"|"under", rotation, points (Buckeye's number
+  before the teaser), eventStart, label}]}` → `{ok, status: placed | refused
+  | unconfirmed, message, ticket?}` — **places a real wager at BFA**
+  (*Teasers → Place*); 400 on a bad body, 503 when no BFA account is read,
+  403 through a `BETS_EXTRA_ALLOWED_HOSTS` name (the tailnet reads, it never
+  places);
+  the open bets it read while confirming are UPSERTed into `bets` so the
+  next `/bets.json` has the ticket. **Settings** (the server
   runner, Running on a server below): `GET /settings.json` → `{settings:
   {bankroll, multiplier, leagues, periods, betTypes, bookMode, bookIds,
   minEdgePct, minStake, maxLineAgeHours, minLiquidityToWin, includeAlts,
@@ -1862,6 +1903,9 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   a request repeating a bet keeps its first row and logs it), never pruned
   (~14 bets a day) and never backfilled; `/bets.json` serves the rows of the
   bets in its window only, so the table's growth never reaches the poll.
+  `bet_exclusions` (primary key `bet_id`, plus `venue`, `excluded_at`) holds
+  the bets removed from the Bet Tracker; Restore deletes the row, and the bet
+  in `bets` is never touched.
   `edge_settings` holds at most one row (`settings_id` = 1, checked) of the
   settings above, one explicit column each (`bankroll`, `kelly_multiplier`,
   `league_ids` / `period_type_ids` / `bet_type_ids` / `book_ids` as
@@ -2084,10 +2128,11 @@ node unabated_ticket/server/runner.js                     # must be running too 
 
 ### Bet Tracker (`server/tracker/`)
 
-Daily P&L and bet analysis, read-only, served by the bets service at
-`/tracker` (on the VM: `https://<vm>.<tailnet>.ts.net/tracker`). It reads
-`GET /bets.json?days=3650` (every bet the service has stored, plus the saved
-fill fairs) every 60 s while visible; nothing is written.
+Daily P&L and bet analysis, served by the bets service at `/tracker` (on
+the VM: `https://<vm>.<tailnet>.ts.net/tracker`). It reads `GET
+/bets.json?days=3650` (every bet the service has stored, plus the saved fill
+fairs and removed bets) every 60 s while visible. Its one write is the Bets
+page's Remove / Restore.
 
 - **Overview**: net P&L, ROI, handle, record, open risk; expected P&L at
   Unabated's fair at fill and actual vs expected with its z-score; cumulative
@@ -2099,9 +2144,21 @@ fill fairs) every 60 s while visible; nothing is written.
   95% interval (proven only when the interval clears zero), expected ROI,
   actual vs expected and z. Calibration of fair win probability against the
   actual win rate (straights with a fair), and a searchable bet log.
+- **Bets**: every BFA and Wagerzon bet, newest first, searchable, filtered to
+  counted or removed. **Remove** marks a bet that isn't yours (`POST
+  /exclusions.json` → `bets.duckdb::bet_exclusions`; the bet itself stays in
+  `bets`) and it leaves every number on Overview and Analysis — a parlay or
+  teaser goes as a whole; **Restore** counts it again. Only those two books
+  (Cal, 2026-10-05); the service refuses any other venue's bet.
 - **Header**: range (Today, Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days), $ / units with the unit size
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
+- **Open bets** (Overview) are split into **Live now** (the game has started;
+  a parlay's earliest leg), **Upcoming**, and, when any exist, **No start
+  time** (BetOnline's report carries no game time, Kalshi NFL/CFB tickers
+  only a date; futures and Kalshi combos none), each with its count and
+  stake at risk, re-split on every refresh. A game that has ended stays in
+  Live now until its venue grades the bet.
 - **Rules** (`trackerstats.js`, pure, tested in `tests/trackerstats.test.js`):
   P&L lands on the **Pacific** day of the record's `closedAt`, which each
   venue fills differently: Kalshi the market's expiration, Polymarket US its
@@ -2119,7 +2176,7 @@ fill fairs) every 60 s while visible; nothing is written.
   ticket (its legs carry the ticket's stake and status). Edge = fair
   probability × the ticket's actual payout − 1, so expected P&L, z and
   calibration cover only bets with a saved fill fair; the rest group under
-  "No fair saved". Kalshi fees are not in Kalshi's `toWin`, so its P&L is
+  "No fair saved". A removed bet is in none of the numbers. Kalshi fees are not in Kalshi's `toWin`, so its P&L is
   before fees.
 - **History** is whatever this service's `bets.duckdb` holds: sources pull
   about 31 days back, and records are kept from then on. A service started on
@@ -2717,6 +2774,18 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-03 — Place teasers at BFA (0.18.0).** Cal asked to bet a Teasers
+ticket from the tab, the way the MLB dashboard places at Wagerzon. BFA's
+placement was recorded off a teaser Cal placed by hand in the app's browser
+pane: one JSON POST (`wagering/api/v1/wager`), no preflight, no captcha, the
+outcome on a SignalR hub. So it is pure HTTP in the bets service on the BFA
+source's existing login (no browser in the loop), confirmed off the open
+bets instead of the hub. The teaser type id (117608) is read from the
+account's metadata (`getplayermetadatabyplayerid` — lower case; the
+client's camel-case path 404s), not hard-coded. Two clicks (Place, then
+Bet $X) rather than one, mockup shown first. Nothing is ever retried: a lost
+reply may be a booked bet, so it reads unconfirmed and holds the legs 15 min.
 
 **2026-10-03 — Can't tease on college legs (0.17.0).** Some teaser legs the
 tab suggested could not be bet: Buckeye keeps some college games off its

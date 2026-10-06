@@ -628,7 +628,7 @@ def test_http_bets_json_and_health_shape(store, http_server):
     service.run_source_once(ScriptedSource([[record("kalshi:a:yes", "open", None)]]), store)
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
-    assert set(payload) == {"generatedAt", "sources", "bets", "crosswalk", "pins", "fillFairs"}
+    assert set(payload) == {"generatedAt", "sources", "bets", "crosswalk", "pins", "fillFairs", "exclusions"}
     assert set(payload["sources"]["kalshi"]) == {"fetchedAt", "ok", "error", "count"}
     assert payload["sources"]["kalshi"]["ok"] is True
     assert payload["bets"][0]["id"] == "kalshi:a:yes"
@@ -646,7 +646,7 @@ def test_http_before_any_poll_serves_an_empty_list_with_the_source_pending(http_
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
     assert payload == {"generatedAt": payload["generatedAt"], "sources": {"kalshi": service.NO_POLL_YET}, "bets": [],
-                       "crosswalk": [], "pins": [], "fillFairs": []}
+                       "crosswalk": [], "pins": [], "fillFairs": [], "exclusions": []}
     status, payload = get_json(f"{http_server}/health")
     assert status == 200 and payload["sources"] == {"kalshi": service.NO_POLL_YET}
 
@@ -738,6 +738,36 @@ def test_http_fill_fairs_post_saves_once_and_bets_json_serves_them(store, http_s
     assert store._con.execute("SELECT count(*) FROM bet_fill_fairs").fetchone()[0] == 1
 
 
+def test_http_exclusions_remove_and_restore_only_bfa_and_wagerzon_bets(store, http_server):
+    service.run_source_once(ScriptedSource([[
+        {**record("bfa:1:leg0", "lost", "2026-09-20T20:00:00Z"), "venue": "bfa"},
+        {**record("bfa:1:leg1", "lost", "2026-09-20T20:00:00Z"), "venue": "bfa"},
+        record("kalshi:a:yes", "open", None),
+    ]]), store)
+    remove = json.dumps({"betIds": ["bfa:1:leg0", "bfa:1:leg1"], "excluded": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/exclusions.json", remove, "application/json")
+    assert status == 200 and reply["changed"] == 2
+    assert sorted(row["betId"] for row in reply["exclusions"]) == ["bfa:1:leg0", "bfa:1:leg1"]
+    assert len(get_json(f"{http_server}/bets.json")[1]["exclusions"]) == 2
+    # Removing again changes nothing; the bets themselves stay in `bets`.
+    status, reply = request_json("POST", f"{http_server}/exclusions.json", remove, "application/json")
+    assert reply["changed"] == 0
+    assert store._con.execute("SELECT count(*) FROM bets").fetchone()[0] == 3
+    kalshi = json.dumps({"betIds": ["kalshi:a:yes"], "excluded": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/exclusions.json", kalshi, "application/json")
+    assert status == 400 and reply["error"] == "only ['bfa', 'wagerzon'] bets can be removed, got {'kalshi:a:yes': 'kalshi'}"
+    unknown = json.dumps({"betIds": ["bfa:nope"], "excluded": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/exclusions.json", unknown, "application/json")
+    assert status == 404
+    status, reply = request_json("POST", f"{http_server}/exclusions.json", b'{"betIds": [], "excluded": true}', "application/json")
+    assert status == 400 and reply["error"] == "betIds must be a non-empty list of bet ids, got []"
+    status, reply = request_json("POST", f"{http_server}/exclusions.json", remove, "text/plain")
+    assert status == 415
+    restore = json.dumps({"betIds": ["bfa:1:leg0", "bfa:1:leg1"], "excluded": False}).encode()
+    status, reply = request_json("POST", f"{http_server}/exclusions.json", restore, "application/json")
+    assert (status, reply["changed"], reply["exclusions"]) == (200, 2, [])
+
+
 def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):
     """DNS rebinding: evil.example resolving to 127.0.0.1 is SAME-ORIGIN with
     this server, so CORS and the JSON Content-Type guard do not apply to it.
@@ -749,6 +779,7 @@ def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):
             ("GET", "/bets.json", None, None), ("GET", "/health", None, None),
             ("POST", "/crosswalk.json", body, "application/json"),
             ("POST", "/fill_fairs.json", json.dumps({"rows": [fill_fair_row("kalshi:a:yes")]}).encode(), "application/json"),
+            ("POST", "/exclusions.json", json.dumps({"betIds": ["kalshi:a:yes"], "excluded": True}).encode(), "application/json"),
             ("DELETE", "/crosswalk.json", None, None),
             ("POST", "/pins.json", json.dumps({"pin": pin_for("kalshi:a:yes")}).encode(), "application/json"),
             ("DELETE", "/pins.json?betId=kalshi:a:yes", None, None)]:
