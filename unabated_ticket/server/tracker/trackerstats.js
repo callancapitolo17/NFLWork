@@ -388,12 +388,29 @@
     return bins;
   }
 
+  /**
+   * Open tickets split by whether their game has started: live = event start
+   * at or before nowMs (a parlay's is its earliest leg), upcoming = the rest,
+   * no start time included (futures sort last). Both by start, earliest first.
+   */
+  function splitOpenByStart(openTickets, nowMs) {
+    const startMs = (t) => {
+      const ms = parseMs(t.eventStart);
+      return ms === null ? Infinity : ms;
+    };
+    const sorted = openTickets.slice().sort((a, b) => startMs(a) - startMs(b));
+    return {
+      live: sorted.filter((t) => startMs(t) <= nowMs),
+      upcoming: sorted.filter((t) => startMs(t) > nowMs),
+    };
+  }
+
   const api = {
     PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR,
     pacificDay, addDays, dayKeyToUtc, weekdayOf,
     americanToDecimal, decimalToAmerican,
     buildTickets, summarize, exclusions, inDayRange, dailySeries, firstSettledDay, groupBy, calibration,
-    venueName,
+    venueName, splitOpenByStart,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.UnabatedTrackerStats = api;
