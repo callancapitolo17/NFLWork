@@ -36,13 +36,15 @@ function closingCandidates(records) {
 
 // The first row, in preference order, with a whole American fair on a game
 // still to start that the bet was placed before, and its league's snapshot
-// time — {row, observedMs} or null.
-function pregameRow(rows, bet, leagueLoadedAt, now) {
+// time — {row, observedMs} or null. A league whose snapshot was built long
+// ago (scanner staleLeagues: a stale CDN copy) is skipped: its load time would
+// pass an old fair off as a fresh close.
+function pregameRow(rows, bet, leagueLoadedAt, staleLeagues, now) {
   const placedMs = Date.parse(bet.placedAt);
   for (const row of fillfair.byPreference(rows, bet)) {
     const startMs = row.eventStartMs;
     if (!Number.isFinite(startMs) || now >= startMs || placedMs >= startMs) continue;
-    if (!fillfair.isWholeAmerican(row.fair)) continue;
+    if (!fillfair.isWholeAmerican(row.fair) || staleLeagues.has(row.leagueId)) continue;
     const observedMs = leagueLoadedAt[row.leagueId];
     if (!Number.isFinite(observedMs) || observedMs >= startMs) continue;
     return { row, observedMs };
@@ -57,8 +59,9 @@ function pregameRow(rows, bet, leagueLoadedAt, now) {
 //   state          the scanner's feed state
 //   boardLines     one describeLine row per event (runner boardLines())
 //   leagueLoadedAt leagueId -> ms the league's last snapshot landed (scanner status)
+//   staleLeagues   league ids whose snapshot build is stale (scanner status)
 //   now            ms
-function closingFairRows({ records, state, boardLines, leagueLoadedAt, now }) {
+function closingFairRows({ records, state, boardLines, leagueLoadedAt, staleLeagues, now }) {
   if (!state) return [];
   const candidates = closingCandidates(records);
   if (!candidates.length) return [];
@@ -67,7 +70,7 @@ function closingFairRows({ records, state, boardLines, leagueLoadedAt, now }) {
   for (const bet of candidates) {
     const rows = rowsByBet.get(bet.id);
     if (!rows) continue;
-    const found = pregameRow(rows, bet, leagueLoadedAt || {}, now);
+    const found = pregameRow(rows, bet, leagueLoadedAt || {}, new Set(staleLeagues || []), now);
     if (!found) continue;
     out.push({
       betId: bet.id, lineKey: found.row.key, points: found.row.points ?? null, fairAmerican: found.row.fair,
@@ -87,6 +90,12 @@ function markSent(rows, sent) {
   for (const row of rows) sent.set(row.betId, signatureOf(row));
 }
 
+// Drop what was sent for bets no longer open, so the map stays the size of the open book.
+function forgetClosed(sent, records) {
+  const openIds = new Set((records || []).filter((bet) => bet.status === "open").map((bet) => bet.id));
+  for (const betId of sent.keys()) if (!openIds.has(betId)) sent.delete(betId);
+}
+
 // Unabated league ids of the open bets' leagues (bet.league is feed.LEAGUES'
 // `path`; one path can name several ids, e.g. every soccer league), so the
 // runner loads them even when the Edges settings leave them out.
@@ -95,4 +104,4 @@ function leagueIdsOfOpenBets(records) {
   return Object.entries(feed.LEAGUES).filter(([, league]) => paths.has(league.path)).map(([id]) => Number(id));
 }
 
-module.exports = { closingFairRows, unsentRows, markSent, leagueIdsOfOpenBets };
+module.exports = { closingFairRows, unsentRows, markSent, forgetClosed, leagueIdsOfOpenBets };

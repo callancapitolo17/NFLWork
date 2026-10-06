@@ -31,6 +31,12 @@ test("unsentRows resends a bet only when its line, fair or reading time changed"
   assert.deepEqual(closefair.unsentRows([newer, { ...row, betId: "b2" }], sent), [newer, { ...row, betId: "b2" }]);
 });
 
+test("forgetClosed keeps only what was sent for bets still open", () => {
+  const sent = new Map([["b1", "x"], ["b2", "y"]]);
+  closefair.forgetClosed(sent, [bet({ id: "b1" }), bet({ id: "b2", status: "won" })]);
+  assert.deepEqual([...sent.keys()], ["b1"]);
+});
+
 test("closingFairRows: nothing without a board, or without an open straight bet", () => {
   assert.deepEqual(closefair.closingFairRows({ records: [bet()], state: null, boardLines: [], leagueLoadedAt: {}, now: 0 }), []);
   assert.deepEqual(closefair.closingFairRows({ records: [bet({ status: "won" })], state: { lines: {} }, boardLines: [], leagueLoadedAt: {}, now: 0 }), []);

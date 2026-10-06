@@ -2049,7 +2049,10 @@ node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json
   405; a request whose `Host` is not `127.0.0.1:<port>`, `localhost:<port>`
   or the bound address with the port is 403 (the bets service's #125 rule).
 - **Closing fairs** (2026-10-05): it also loads the leagues of open straight
-  bets (an Edges list never shows a league its settings leave out) and every
+  bets (an Edges list never shows a league its settings leave out; a league
+  added this way stays loaded until the runner restarts, since every change
+  of leagues restarts the scan; a soccer bet loads every soccer league, as
+  the bet names no competition) and every
   30 s POSTs `/closing_fairs.json` with the rows that changed — each open
   bet's Unabated fair on its own line while its game is still to start
   (`server/closefair.js`; Bet Tracker, CLV).
@@ -2137,7 +2140,8 @@ is the Bets page's Remove / Restore.
   last, an alt rung when the market moved off the number) while the game is
   still to start, and the service keeps the newest reading per bet
   (`bets.duckdb::bet_closing_fairs`). A reading more than 30 min before the
-  start (the runner was down) is not a close. History starts the day the
+  start (the runner was down) is not a close, and a league whose snapshot
+  build is over 15 min old (a stale CDN copy) gives none. History starts the day the
   runner first ran: no backfill. No close for parlays, teasers, props,
   futures, Kalshi combos, leagues Unabated does not list, or a number the
   board stops carrying. **The runner must be running at kickoff** — on the

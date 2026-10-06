@@ -323,3 +323,42 @@ test("closing fairs: the open bet's fair on its own line, POSTed once, again onl
   assert.equal(runner.health().closingFairs.rowsSent, 1);
   runner.stop();
 });
+
+test("closing fairs: a league whose snapshot build is stale gives no close", async () => {
+  const posts = [];
+  const service = async (url, init = {}) => {
+    const route = url.slice(SERVICE_URL.length);
+    if (route === "/closing_fairs.json") { posts.push(JSON.parse(init.body).rows); return response({ body: "{}" }); }
+    if (route === "/bets.json") return response({ body: JSON.stringify(betsBody([BEARS_HELD])) });
+    if (route === "/settings.json") return response({ body: JSON.stringify({ settings: OPEN_SETTINGS, updatedAt: null }) });
+    return response({ status: 404, body: "{}" });
+  };
+  // The CDN serves an NFL snapshot built an hour ago: the scanner marks the league stale.
+  const staleFetch = async (url) => {
+    if (url.split("?")[0] !== SNAPSHOT_BASE_URL(1)) return response({ status: 404, body: "not found" });
+    return response({ body: sliceBody, headers: { "content-length": "1000", "last-modified": new Date(NOW - 3600 * 1000).toUTCString() } });
+  };
+  const runner = runnerLib.createRunner({ fetchImpl: staleFetch, serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => NOW, timers: noTimers, ...quiet });
+  await runner.start();
+  assert.deepEqual(runner.edgesPayload().scanner.staleLeagues, [1]);
+  await runner.postClosingFairs();
+  assert.deepEqual(posts, []);
+  runner.stop();
+});
+
+test("an open bet's league is loaded for its close, and stays loaded after the bet settles", async () => {
+  const mlbBet = { ...BEARS_HELD, id: "k-mlb", venue: "kalshi", league: "mlb", betType: "total", side: "over", points: 8.5 };
+  let bets = [mlbBet];
+  const fetchImpl = unabatedFetch();
+  const service = serviceFetch({ "/bets.json": () => betsBody(bets), "/settings.json": { settings: { ...OPEN_SETTINGS, leagues: [1] }, updatedAt: null } });
+  const runner = runnerLib.createRunner({ fetchImpl, serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => NOW, timers: noTimers, ...quiet });
+  await runner.start();
+  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 5, 12]);
+  const loads = fetchImpl.calls.length;
+  bets = [{ ...mlbBet, status: "won" }];
+  await runner.pollBets();
+  await runner.scanLoaded();
+  assert.equal(fetchImpl.calls.length, loads, "no restart when the last MLB bet settles");
+  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 5, 12]);
+  runner.stop();
+});

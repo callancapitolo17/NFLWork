@@ -185,6 +185,10 @@ function createRunner(deps) {
   // betId -> what was last POSTed for it (closefair.unsentRows).
   const sentClosingFairs = new Map();
   const closingStatus = { okAt: null, error: null, rowsSent: 0 };
+  // Leagues added for open bets' closing fairs. It only grows (until a
+  // restart): every change restarts the scan, which wipes the board and the
+  // line history, so a league is not dropped when its last bet settles.
+  const betLeagueIds = new Set();
 
   // Every snapshot carries Unabated's team list; register it so bet records
   // resolve to the board's team ids, and re-resolve when it grew (as the panel does).
@@ -285,7 +289,8 @@ function createRunner(deps) {
   // full load takes a while and must not hold the settings poll
   // (scanLoaded() waits for it).
   function followLeagues() {
-    const leagues = scannerLeaguesOf(settings.edgeSettings.leagues, closefair.leagueIdsOfOpenBets(held.records));
+    for (const id of closefair.leagueIdsOfOpenBets(held.records)) betLeagueIds.add(id);
+    const leagues = scannerLeaguesOf(settings.edgeSettings.leagues, betLeagueIds);
     const signature = leagues.join(",");
     if (signature === scannedLeagues) return;
     scannedLeagues = signature;
@@ -320,8 +325,9 @@ function createRunner(deps) {
     try {
       const rows = closefair.unsentRows(closefair.closingFairRows({
         records: held.records, state: feedState, boardLines: boardLines(),
-        leagueLoadedAt: scannerStatus.leagueLoadedAt || {}, now: now(),
+        leagueLoadedAt: scannerStatus.leagueLoadedAt || {}, staleLeagues: scannerStatus.staleLeagues, now: now(),
       }), sentClosingFairs);
+      closefair.forgetClosed(sentClosingFairs, held.records);
       if (!rows.length) return;
       await getServiceJson(serviceFetch, `${deps.betsServiceUrl}/closing_fairs.json`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rows }),
