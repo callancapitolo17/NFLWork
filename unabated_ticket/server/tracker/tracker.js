@@ -365,9 +365,25 @@
     const toWin = open.reduce((sum, t) => sum + (Number.isFinite(t.toWin) ? t.toWin : 0), 0);
     setText("open-caption", open.length ? "Risking " + money(openStake) + " to win " + money(toWin) + " · fair is Unabated's at fill" : "");
     if (!open.length) { fill("ov-open", emptyNote("No open bets.")); return; }
-    const sorted = open.slice().sort((a, b) => (Date.parse(a.eventStart) || Infinity) - (Date.parse(b.eventStart) || Infinity));
-    fill("ov-open", table([
-      { label: "Starts", className: () => "muted", cell: (t) => startLabel(t.eventStart) },
+    const { live, upcoming, noStart } = stats.splitOpenByStart(open, Date.now());
+    fill("ov-open",
+      openGroup("Live now", live, "Started", "No games in progress."),
+      openGroup("Upcoming", upcoming, "Starts", "Nothing else open."),
+      noStart.length ? openGroup("No start time", noStart, "Starts", "",
+        "The venue sends no game time (BetOnline; Kalshi NFL and CFB), or it is a future or combo") : null);
+  }
+
+  /** One titled block of the Open bets panel: a count and stake line, then its table. */
+  function openGroup(title, group, startLabelText, emptyText, why) {
+    const stake = group.reduce((sum, t) => sum + t.stake, 0);
+    const head = el("div", { className: "open-group-head" }, [
+      el("span", { className: "open-group-title", text: title }),
+      el("span", { className: "note", text: group.length ? group.length + " · " + money(stake) + " at risk" : "" }),
+      why ? el("span", { className: "note muted", text: why }) : null,
+    ]);
+    if (!group.length) return el("div", { className: "open-group" }, [head, emptyNote(emptyText)]);
+    return el("div", { className: "open-group" }, [head, el("div", { className: "scroll" }, [table([
+      { label: startLabelText, className: () => "muted", cell: (t) => startLabel(t.eventStart) },
       { label: "Venue", cell: (t) => t.venue },
       { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }) },
       { label: "Event", cell: (t) => t.event || t.kind },
@@ -377,7 +393,7 @@
       { label: "Edge", right: true, num: true, className: (t) => (t.edge === null ? "muted" : toneClass(t.edge)), cell: (t) => pct(t.edge, true) },
       { label: "Stake", right: true, num: true, cell: (t) => money(t.stake) },
       { label: "To win", right: true, num: true, cell: (t) => (Number.isFinite(t.toWin) ? money(t.toWin) : "—") },
-    ], sorted));
+    ], group)])]);
   }
 
   // ---- analysis -------------------------------------------------------------

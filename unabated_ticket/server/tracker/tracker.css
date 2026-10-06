@@ -115,6 +115,11 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .result.lost { background: rgba(255, 107, 107, .14); color: var(--neg); }
 .result.open { background: rgba(110, 168, 254, .14); color: var(--exp); }
 
+/* open bets: Live now / Upcoming */
+.open-group + .open-group { border-top: 1px solid var(--line); }
+.open-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; padding: 14px 14px 6px; }
+.open-group-title { font-weight: 600; }
+
 /* venue bars */
 .venues { padding: 4px 22px 18px; display: flex; flex-direction: column; gap: 14px; }
 .venue-top { display: flex; justify-content: space-between; gap: 12px; }
