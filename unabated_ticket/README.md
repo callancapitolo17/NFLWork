@@ -2102,6 +2102,12 @@ fill fairs) every 60 s while visible; nothing is written.
 - **Header**: range (7D, 30D, 90D, YTD, All), $ / units with the unit size
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
+- **Open bets** (Overview) are split into **Live now** (the game has started;
+  a parlay's earliest leg), **Upcoming**, and, when any exist, **No start
+  time** (BetOnline's report carries no game time, Kalshi NFL/CFB tickers
+  only a date; futures and Kalshi combos none), each with its count and
+  stake at risk, re-split on every refresh. A game that has ended stays in
+  Live now until its venue grades the bet.
 - **Rules** (`trackerstats.js`, pure, tested in `tests/trackerstats.test.js`):
   P&L lands on the **Pacific** day of the record's `closedAt`, which each
   venue fills differently: Kalshi the market's expiration, Polymarket US its

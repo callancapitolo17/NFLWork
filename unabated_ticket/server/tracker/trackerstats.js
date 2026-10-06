@@ -404,12 +404,35 @@
     return bins;
   }
 
+  /**
+   * Open tickets by whether their game has started: live = event start at or
+   * before nowMs (a parlay's is its earliest leg), upcoming = start after
+   * nowMs, noStart = no start time (BetOnline's report has none, Kalshi NFL
+   * and CFB tickers carry only a date, futures and Kalshi combos none), so
+   * they can't be placed in either. Live and upcoming by start, earliest first.
+   */
+  function splitOpenByStart(openTickets, nowMs) {
+    const withStart = [];
+    const noStart = [];
+    for (const ticket of openTickets) {
+      const startMs = parseMs(ticket.eventStart);
+      if (startMs === null) noStart.push(ticket);
+      else withStart.push({ ticket, startMs });
+    }
+    withStart.sort((a, b) => a.startMs - b.startMs);
+    return {
+      live: withStart.filter((row) => row.startMs <= nowMs).map((row) => row.ticket),
+      upcoming: withStart.filter((row) => row.startMs > nowMs).map((row) => row.ticket),
+      noStart,
+    };
+  }
+
   const api = {
     PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR,
     pacificDay, addDays, dayKeyToUtc, weekdayOf,
     americanToDecimal, decimalToAmerican,
     buildTickets, summarize, exclusions, inDayRange, dailySeries, firstSettledDay, groupBy, calibration,
-    venueName,
+    venueName, splitOpenByStart,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.UnabatedTrackerStats = api;
