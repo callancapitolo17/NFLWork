@@ -11,6 +11,8 @@
 //   records    /bets.json `bets` (the normalised record, docs/2026-09-11-issue-114-bet-history-plan.md)
 //   fillFairs  /bets.json `fillFairs` ({betId, fairAmerican, ...}): Unabated's
 //              fair for the bet's side when it was placed
+//   removedBets /bets.json `exclusions` ({betId}): bets Cal removed on the Bets
+//              page; a ticket with any removed record is marked `excluded`
 // Conventions
 //   P&L lands on the Pacific calendar day the bet SETTLED (closedAt).
 //   A bet counts toward P&L only when it is won, lost, push or void; an open
@@ -237,7 +239,7 @@
       period: record.period || "FG", event: eventLabel(record), selection: selectionLabel(record),
       price: record.price, stake: Number(record.stake) || 0, toWin: record.toWin,
       status: record.status, placedAt: record.placedAt, closedAt: record.closedAt, eventStart: record.eventStart || null,
-      legCount: 1,
+      legCount: 1, betIds: [record.id],
     }, fairAmerican);
   }
 
@@ -275,13 +277,14 @@
       status: first.status, placedAt: first.placedAt,
       closedAt,
       eventStart: starts.length ? new Date(Math.min(...starts)).toISOString() : null,
-      legCount,
+      legCount, betIds: sorted.map((leg) => leg.id),
     }, null);
   }
 
   /** /bets.json records -> tickets, newest placement first. */
-  function buildTickets(records, fillFairs) {
+  function buildTickets(records, fillFairs, removedBets) {
     const fairByBet = new Map((fillFairs || []).map((row) => [row.betId, row.fairAmerican]));
+    const removedIds = new Set((removedBets || []).map((row) => row.betId));
     const legsByParlay = new Map();
     const tickets = [];
     for (const record of records || []) {
@@ -293,6 +296,7 @@
       tickets.push(straightTicket(record, fairByBet.has(record.id) ? fairByBet.get(record.id) : null));
     }
     for (const [parlayId, legs] of legsByParlay) tickets.push(multiLegTicket(parlayId, legs));
+    for (const ticket of tickets) ticket.excluded = ticket.betIds.some((id) => removedIds.has(id));
     return tickets.sort((a, b) => (b.closedMs || b.placedMs || 0) - (a.closedMs || a.placedMs || 0));
   }
 

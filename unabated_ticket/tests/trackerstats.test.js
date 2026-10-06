@@ -179,3 +179,12 @@ test("selection labels: spread, total with period, moneyline, and the venue's te
   assert.equal(label({ betType: "moneyline", side: "away", points: null }), "Jets ML");
   assert.equal(label({ betType: "other", side: null, raw: { description: "Bills to score first" } }), "Bills to score first");
 });
+
+test("a removed record marks its ticket, and one removed leg marks the whole parlay", () => {
+  const leg = (index) => straight({ id: "bfa:9:leg" + index, venue: "bfa", isParlayLeg: true, parlayId: "bfa:9", legIndex: index, legCount: 2 });
+  const tickets = stats.buildTickets([straight({ id: "wz:1", venue: "wagerzon" }), straight({ id: "wz:2", venue: "wagerzon" }), leg(0), leg(1)],
+    [], [{ betId: "wz:1" }, { betId: "bfa:9:leg1" }]);
+  const byId = Object.fromEntries(tickets.map((t) => [t.id, t]));
+  assert.deepEqual([byId["wz:1"].excluded, byId["wz:2"].excluded, byId["bfa:9"].excluded], [true, false, true]);
+  assert.deepEqual(byId["bfa:9"].betIds, ["bfa:9:leg0", "bfa:9:leg1"]);
+});

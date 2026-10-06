@@ -10,7 +10,8 @@
 </head>
 <body>
   <!-- Bet Tracker: daily P&L and bet analysis off the bets service's
-       /bets.json. Read-only; served by the bets service, one origin. -->
+       /bets.json, served by the bets service, one origin. Its one write is
+       the Bets page's Remove / Restore (POST /exclusions.json). -->
   <header class="top">
     <div class="top-in">
       <p class="brand">
@@ -20,6 +21,7 @@
       <nav class="nav" aria-label="Pages">
         <button type="button" data-view="overview">Overview</button>
         <button type="button" data-view="analysis">Analysis</button>
+        <button type="button" data-view="bets">Bets</button>
       </nav>
       <div class="spacer"></div>
       <div class="controls">
@@ -119,6 +121,33 @@
         </div>
         <div class="scroll" id="an-log"></div>
         <button type="button" class="more" id="log-more" hidden>Show more</button>
+      </section>
+    </section>
+
+    <section id="view-bets" class="stack" aria-label="Bets" hidden>
+      <div class="title-row"><h1>Bets</h1><span id="b-caption"></span></div>
+      <section class="panel filters" aria-label="Bet filters">
+        <div class="filter-row">
+          <span class="lbl">Venue</span><span class="seg" id="b-venues" role="group" aria-label="Venue"></span>
+          <span class="spacer"></span>
+          <span class="lbl bare">Show</span><span class="seg" id="b-filter" role="group" aria-label="Counted or removed"></span>
+        </div>
+      </section>
+      <section class="panel stack flush" aria-label="BFA and Wagerzon bets">
+        <div class="head">
+          <div class="stack tight">
+            <span class="lbl">BFA and Wagerzon bets</span>
+            <span class="note">Remove a bet that isn't yours and it leaves every number on Overview and Analysis. Restore brings it back.</span>
+            <span class="note" id="bets-caption"></span>
+          </div>
+          <label class="search">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="5" stroke="#8B96A5" stroke-width="1.5"/><path d="M11 11 L14 14" stroke="#8B96A5" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <span class="sr">Search bets</span>
+            <input id="bets-search" type="search" placeholder="Team, market or ticket" autocomplete="off">
+          </label>
+        </div>
+        <div class="scroll" id="b-list"></div>
+        <button type="button" class="more" id="bets-more" hidden>Show more</button>
       </section>
     </section>
   </main>
