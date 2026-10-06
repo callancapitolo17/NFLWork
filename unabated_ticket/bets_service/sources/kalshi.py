@@ -1,10 +1,12 @@
 """Kalshi bet source: the account's fills + positions -> normalised bet records.
 
-Two halves:
+Three parts:
   normalize_kalshi(...)  pure port of extension/bets.js normalizeKalshi; the
                          node tests on tests/fixtures/bets/kalshi_fixture.json
                          pin its output and tests/test_parity.py holds the two
                          byte-equivalent.
+  apply_net_position_pnl Python only: each ticker's P&L off its NET position,
+                         after fees (`pnl`, `fees`); the Bet Tracker counts it.
   KalshiSource           the network half (Source protocol). Every poll: fills
                          since the last poll minus a 60 s overlap (trade_id
                          dedupe), unsettled positions, and one cached public
@@ -40,6 +42,13 @@ log = logging.getLogger(__name__)
 
 PAGE_LIMIT = 200
 FILLS_PATH = "/portfolio/fills"
+# Kalshi moves fills older than its history cutoff (2026-08-07 when first
+# checked) off /portfolio/fills; the opening trades of older positions live
+# only here, and the cutoff advances, so every full pull reads both.
+HISTORICAL_FILLS_PATH = "/historical/fills"
+# Contract counts are fractional strings ("1168.36"); below this a net
+# position is flat.
+FLAT_POSITION_EPSILON = 1e-6
 POSITIONS_PATH = "/portfolio/positions?settlement_status=unsettled"
 
 
@@ -208,6 +217,98 @@ def normalize_kalshi(fills: list[dict], positions: list[dict], markets: dict[str
     return records
 
 
+# ---- net-position P&L --------------------------------------------------------------
+#
+# Kalshi holds ONE net position per market: YES and NO contracts of the same
+# market cancel. A fill's `side` is the outcome it adds (a "sell no at 98c"
+# while holding YES closes YES at 2c), checked against Kalshi's own
+# realized_pnl_dollars to the cent on 2026-10-06. normalize_kalshi keeps one
+# record per (ticker, side) for the panel; apply_net_position_pnl then prices
+# each ticker off its net position so a closing trade on the other side no
+# longer leaves the opening record paying out its full original size.
+
+def _own_side_price(position_sign: int, yes_price: float) -> float:
+    """What one contract of the held side cost or sold for: YES at the yes
+    price, NO at one minus it."""
+    return yes_price if position_sign > 0 else 1 - yes_price
+
+
+def _sign(value: float) -> int:
+    return 1 if value > 0 else -1
+
+
+def net_position_pnl(fills: list[dict], market_result: str | None) -> dict:
+    """Realized P&L of one ticker's fills, average-cost, settled at the market
+    result when it has one. Pure.
+
+    Returns {entrySide, positionYes (signed: + YES, - NO), realized (dollars,
+    before fees), fees (dollars, Kalshi's fee_cost summed), final (no open
+    position left: settled, or flat)}."""
+    ordered = sorted(fills, key=lambda fill: (parse_iso_ms(fill.get("created_time") or "") or 0,
+                                              fill.get("trade_id") or ""))
+    position_yes = cost = realized = fees = 0.0
+    for fill in ordered:
+        fees += to_number(fill.get("fee_cost"))
+        count = to_number(fill.get("count_fp"))
+        yes_price = to_number(fill.get("yes_price_dollars"))
+        delta = count if fill.get("side") == "yes" else -count
+        if abs(position_yes) < FLAT_POSITION_EPSILON or _sign(delta) == _sign(position_yes):
+            cost += count * _own_side_price(_sign(delta), yes_price)
+            position_yes += delta
+            continue
+        closing = min(count, abs(position_yes))
+        average_cost = cost / abs(position_yes)
+        realized += closing * (_own_side_price(_sign(position_yes), yes_price) - average_cost)
+        cost -= closing * average_cost
+        position_yes += _sign(delta) * closing
+        remainder = count - closing
+        if remainder > FLAT_POSITION_EPSILON:
+            position_yes = _sign(delta) * remainder
+            cost = remainder * _own_side_price(_sign(delta), yes_price)
+    holding = abs(position_yes) >= FLAT_POSITION_EPSILON
+    if holding and market_result in ("yes", "no"):
+        held_side = "yes" if position_yes > 0 else "no"
+        payout = abs(position_yes) if held_side == market_result else 0.0
+        realized += payout - cost
+        holding = False
+    elif holding and market_result == "void":
+        holding = False  # a voided market refunds the cost of what was held
+    return {"entrySide": ordered[0].get("side") if ordered else None, "positionYes": position_yes,
+            "realized": realized, "fees": fees, "final": not holding}
+
+
+def apply_net_position_pnl(records: list[dict], fills: list[dict],
+                           markets: dict[str, dict]) -> list[dict]:
+    """Prices each ticker off its net position (net_position_pnl). The record
+    of the side that opened the position gets `pnl` (dollars after fees, once
+    final; None while a position is open) and `fees`; the other side's record,
+    if any, gets `mergedInto` = that record's id and status "closed", so it
+    never counts on its own. A position that flipped to the other side and is
+    still open is left as normalize_kalshi built it (logged). Mutates and
+    returns `records`."""
+    fills_by_ticker: dict[str, list[dict]] = {}
+    for fill in fills:
+        fills_by_ticker.setdefault(fill["ticker"], []).append(fill)
+    records_by_id = {record["id"]: record for record in records}
+    for ticker, ticker_fills in fills_by_ticker.items():
+        market = markets.get(ticker)
+        net = net_position_pnl(ticker_fills, market.get("result") if market else None)
+        entry_id = f"kalshi:{ticker}:{net['entrySide']}"
+        other_side = "no" if net["entrySide"] == "yes" else "yes"
+        other_id = f"kalshi:{ticker}:{other_side}"
+        open_side = "yes" if net["positionYes"] > 0 else "no"
+        if not net["final"] and open_side != net["entrySide"]:
+            log.warning("kalshi %s: position flipped to %s and is open; left unmerged", ticker, open_side)
+            continue
+        entry = records_by_id[entry_id]
+        entry["pnl"] = round_cents(net["realized"] - net["fees"]) if net["final"] else None
+        entry["fees"] = round_cents(net["fees"])
+        other = records_by_id.get(other_id)
+        if other is not None:
+            other.update({"status": "closed", "mergedInto": entry_id, "pnl": None, "fees": 0})
+    return records
+
+
 # ---- network half -----------------------------------------------------------------
 
 ApiCall = Callable[[str, str], tuple[int, object, dict]]
@@ -276,7 +377,8 @@ class KalshiSource:
             min_ts = int(self._last_poll_ts) - config.KALSHI_FILLS_OVERLAP_SEC
             path = f"{FILLS_PATH}?min_ts={min_ts}"
         n_new = 0
-        for fill in _paginate(self._api, path, "fills"):
+        paths = [path, HISTORICAL_FILLS_PATH] if full else [path]
+        for fill in (fill for page_path in paths for fill in _paginate(self._api, page_path, "fills")):
             trade_id = fill.get("trade_id")
             if not trade_id:
                 raise RuntimeError(f"fill without trade_id on {fill.get('ticker')}: cannot dedupe")
@@ -311,7 +413,10 @@ class KalshiSource:
 
     def _ensure_market_and_event(self, ticker: str) -> None:
         if ticker not in self._markets:
-            market = self._lookup(f"/markets/{ticker}", "market")
+            # A market settled before Kalshi's history cutoff may answer only
+            # under /historical (its fills do).
+            market = (self._lookup(f"/markets/{ticker}", "market")
+                      or self._lookup(f"/historical/markets/{ticker}", "market"))
             if market is None:
                 return
             self._markets[ticker] = market
@@ -340,6 +445,7 @@ class KalshiSource:
         for ticker in sorted({fill["ticker"] for fill in fills}):
             self._ensure_market_and_event(ticker)
         records = normalize_kalshi(fills, positions, self._markets, self._events, utc_now_iso())
+        records = [json_clean(record) for record in apply_net_position_pnl(records, fills, self._markets)]
         log.info("kalshi: %d fills, %d positions -> %d records", len(fills), len(positions),
                  len(records))
         return records

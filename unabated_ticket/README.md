@@ -2169,8 +2169,17 @@ page's Remove / Restore.
   same account) are their own type, "Kalshi combo", and count in every total
   by default (Cal, 2026-10-05); switching off the header's **Bot combos**
   toggle hides them. Won pays
-  `toWin`, lost costs `stake`, push and void are 0. Open bets are exposure,
-  not P&L; a Kalshi position sold before settlement (`closed`) and a bet whose
+  `toWin`, lost costs `stake`, push and void are 0, unless the record carries
+  the venue's own `pnl`: **Kalshi** records do (2026-10-06), priced off the
+  market's NET position after fees (`sources/kalshi.py::apply_net_position_pnl`;
+  Kalshi nets YES against NO, so a "sell no" while holding YES closes YES —
+  counting the two sides as separate bets overstated Kalshi by ~$7k, Rodri
+  Golden Ball alone by $5.5k), including a position sold before settlement
+  (`closed` with a `pnl`: a gain is a win, a loss a loss); the other side's
+  record carries `mergedInto` and is skipped. The Kalshi source reads
+  `/historical/fills` too on every full pull (fills older than Kalshi's
+  history cutoff leave `/portfolio/fills`). Open bets are exposure, not P&L;
+  a closed bet with no `pnl` (Polymarket US sold early) and a bet whose
   result is gone (`unknown`, e.g. Bet105 once it leaves the open list) have no
   known P&L and are counted as "without a result". A parlay or teaser is one
   ticket (its legs carry the ticket's stake and status). Edge = fair

@@ -28,6 +28,7 @@ class FakeKalshiApi:
         self.fixture = fixture
         self.fills = fills
         self.positions = positions
+        self.historical_fills: list[dict] = []
         self.paths: list[str] = []
         self.fail_paths: set[str] = set()
 
@@ -37,6 +38,10 @@ class FakeKalshiApi:
         url = urlparse(path)
         if url.path in self.fail_paths:
             return 503, "unavailable", {}
+        if url.path == "/historical/fills":
+            return 200, {"fills": self.historical_fills, "cursor": ""}, {}
+        if url.path.startswith("/historical/markets/"):
+            return 404, {"message": "not found"}, {}
         if url.path == "/portfolio/fills":
             min_ts = parse_qs(url.query).get("min_ts")
             fills = self.fills
@@ -121,6 +126,20 @@ def test_a_failed_market_lookup_fails_closed_for_that_record_only(kalshi_fixture
     assert records["kalshi:KXNFLGAME-26SEP20PITNE-NE:yes"]["unmatchable"] == (
         "unreadable Kalshi market (no market payload for KXNFLGAME-26SEP20PITNE-NE)")
     assert records["kalshi:KXNCAAFTOTAL-26SEP12RICEND-60:yes"]["unmatchable"] is None
+
+
+def test_full_pulls_read_the_historical_fills_and_price_the_net_position(kalshi_fixture):
+    opening = fill("KXNFLGAME-26SEP20PITNE-NE", "yes", 100, 0.40, "2026-08-01T12:00:00Z", trade_id="h1")
+    closing = fill("KXNFLGAME-26SEP20PITNE-NE", "no", 100, 0.45, "2026-09-11T12:00:00Z",
+                   action="sell", trade_id="c1")
+    api = FakeKalshiApi(kalshi_fixture, [closing], [])
+    api.historical_fills = [opening]
+    source = make_source(api, clock=lambda: 1_800_000_000.0)
+    records = {record["id"]: record for record in source.fetch()}
+    assert api.count("/historical/fills?limit=200") == 1
+    entry = records["kalshi:KXNFLGAME-26SEP20PITNE-NE:yes"]
+    assert entry["pnl"] == 5  # bought YES at 40c, closed at 45c
+    assert records["kalshi:KXNFLGAME-26SEP20PITNE-NE:no"]["mergedInto"] == entry["id"]
 
 
 def test_a_failed_fills_pull_raises(kalshi_fixture):
