@@ -1565,11 +1565,8 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   fairObservedAt, eventStart}]}` (at most 1000) → `{ok, saved}` — the server
   runner's pregame read of each open bet's line (Bet Tracker, CLV); a row
   observed at or after `eventStart` is a 400, and a row older than the stored
-  one is ignored. `POST /exclusions.json` with `{betIds: [...], excluded:
-  true|false}` (at most 50) → `{ok, changed, exclusions}` — the Bet
-  Tracker's Remove / Restore; a bet not at BFA or Wagerzon is a 400, an
-  unknown id a 404. `/bets.json` also serves `closingFairs` (the window's
-  bets) and `exclusions` (all). `POST
+  one is ignored. `/bets.json` also serves `closingFairs` (the window's
+  bets). `POST
   /bet105.json` with `{fetchedAt, feeds: {prematch: [betGroup], live:
   [betGroup]}}` (both feeds, at most 2000 groups) → `{ok, count, closed}`, or
   `{error}` → `{ok, recorded: "error"}` — the panel's read of Bet105 (the Bet105
@@ -1875,9 +1872,7 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   `fair_american`, `fair_observed_at`, `event_start`, `updated_at`) holds one
   closing fair per bet, UPSERTed only forward in time (`DO UPDATE ... WHERE
   excluded.fair_observed_at >` the stored one), never pruned, served for the
-  window's bets. `bet_exclusions` (primary key `bet_id`, plus `venue`,
-  `excluded_at`) holds the bets removed from the Bet Tracker; Restore deletes
-  the row, the bet in `bets` is never touched.
+  window's bets.
   `edge_settings` holds at most one row (`settings_id` = 1, checked) of the
   settings above, one explicit column each (`bankroll`, `kelly_multiplier`,
   `league_ids` / `period_type_ids` / `bet_type_ids` / `book_ids` as
@@ -2111,8 +2106,7 @@ node unabated_ticket/server/runner.js                     # must be running too 
 Daily P&L, CLV and bet analysis, served by the bets service at `/tracker`
 (on the VM: `https://<vm>.<tailnet>.ts.net/tracker`). It reads `GET
 /bets.json?days=3650` (every bet the service has stored, plus the saved fill
-fairs, closing fairs and removed bets) every 60 s while visible. Its one write
-is the Bets page's Remove / Restore.
+fairs and closing fairs) every 60 s while visible; nothing is written.
 
 - **Overview**: net P&L with the record, ROI, handle, open risk; expected
   P&L at Unabated's fair and actual vs expected with its z-score; CLV;
@@ -2126,12 +2120,6 @@ is the Bets page's Remove / Restore.
   actual vs expected, z, CLV and how often the close was beaten. Calibration of fair win probability against the
   actual win rate (straights with a fair), and a searchable bet log with each
   bet's closing fair and CLV.
-- **Bets**: every BFA and Wagerzon bet, newest first, searchable, filtered to
-  counted or removed. **Remove** marks a bet that isn't yours (`POST
-  /exclusions.json` → `bets.duckdb::bet_exclusions`; the bet itself stays in
-  `bets`) and it leaves every number on Overview and Analysis — a parlay or
-  teaser goes as a whole; **Restore** counts it again. Only those two books
-  (Cal, 2026-10-05); the service refuses any other venue's bet.
 - **CLV** (2026-10-05): the expected return at Unabated's **closing** fair,
   closing prob × the ticket's actual payout − 1, stake-weighted, plus the
   share of bets that beat the close. The close is read by the server runner
@@ -2174,8 +2162,7 @@ is the Bets page's Remove / Restore.
   ticket (its legs carry the ticket's stake and status). Edge = fair
   probability × the ticket's actual payout − 1, the fair being the fill fair
   when one was saved, else the closing fair; expected P&L, z and calibration
-  cover only bets with one, and the rest group under "No fair saved". A
-  removed bet is in none of the numbers. Kalshi fees are not in Kalshi's `toWin`, so its P&L is
+  cover only bets with one, and the rest group under "No fair saved". Kalshi fees are not in Kalshi's `toWin`, so its P&L is
   before fees.
 - **History** is whatever this service's `bets.duckdb` holds: sources pull
   about 31 days back, and records are kept from then on. A service started on

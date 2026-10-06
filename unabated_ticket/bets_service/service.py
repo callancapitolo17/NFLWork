@@ -14,8 +14,7 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     crosswalk: [team_crosswalk rows, newest first],
                                     pins: [bet_pins rows, newest first],
                                     fillFairs: [bet_fill_fairs rows of those bets],
-                                    closingFairs: [bet_closing_fairs rows of those bets],
-                                    exclusions: [bet_exclusions rows, newest first]}
+                                    closingFairs: [bet_closing_fairs rows of those bets]}
            GET /health              {ok, generatedAt, uptimeSec, sources}
            POST /crosswalk.json     body {rows: [{venue, league, venueTeamKey,
                                     unabatedTeamId, venueTeamName?, unabatedTeamName?,
@@ -44,11 +43,6 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     (the server runner's pre-start read of each open bet's
                                     line, server/closefair.js; a row older than the stored
                                     one is ignored; same Content-Type guard)
-           POST /exclusions.json    body {betIds: [...], excluded: bool} -> {ok, changed,
-                                    exclusions} (the Bet Tracker's Bets page removing or
-                                    restoring bets that are not Cal's; BFA and Wagerzon
-                                    bets only — anything else is a 400, an unknown id a
-                                    404; same Content-Type guard)
            POST /bet105.json        body {fetchedAt, feeds: {prematch: [betGroup], live:
                                     [betGroup]}} -> {ok, count, closed}, or {error} ->
                                     {ok, recorded: "error"} (the one PUSHED source: the
@@ -91,8 +85,7 @@ bets.duckdb::bet_pins and the crosswalk rows a pin taught on the two pin
 routes; INSERTs into bets.duckdb::bet_fill_fairs on POST /fill_fairs.json —
 insert-only, a bet that has a saved fair keeps it; UPSERTs
 bets.duckdb::bet_closing_fairs on POST /closing_fairs.json (newest observation
-wins); INSERTs into / DELETEs from bets.duckdb::bet_exclusions on POST
-/exclusions.json; rotating log at
+wins); rotating log at
 bets_service.log. A poll that raises writes a failed source_runs row and
 leaves `bets` untouched — a dark source never blanks the list. PUT
 /settings.json UPSERTs the one row of bets.duckdb::edge_settings.
@@ -148,10 +141,6 @@ PIN_OPTIONAL_TEXT_FIELDS = ("eventStart", "awayTeamName", "homeTeamName")
 MAX_FILL_FAIR_ROWS_PER_POST = 1000
 # American odds run from -100 down and +100 up; the gap between is no price.
 MIN_AMERICAN_MAGNITUDE = 100
-# Cal's ask (2026-10-05): only these books carry bets that are not his.
-EXCLUDABLE_VENUES = ("bfa", "wagerzon")
-# A parlay's legs go in one request; a dozen is already a long ticket.
-MAX_EXCLUSION_IDS_PER_POST = 50
 # The Edges settings' allowed values, as the panel's inputs enforce them
 # (panel.js readSettingInputs / readEdgeSettingInputs). feed.PERIODS ids run
 # 1 (full game) to 7 (4Q); feed.BET_TYPES are 1 moneyline, 2 spread, 3 total.
@@ -286,8 +275,7 @@ def bets_payload(store: BetsStore, days: int, source_names: list[str] = ()) -> d
     now = _now()
     return {"generatedAt": _iso(now), "sources": source_status(store, list(source_names)),
             "bets": store.load_bets(days, now), "crosswalk": store.load_crosswalk(), "pins": store.load_pins(),
-            "fillFairs": store.load_fill_fairs(days, now), "closingFairs": store.load_closing_fairs(days, now),
-            "exclusions": store.load_exclusions()}
+            "fillFairs": store.load_fill_fairs(days, now), "closingFairs": store.load_closing_fairs(days, now)}
 
 
 def _non_empty_string(value: object) -> bool:
@@ -484,21 +472,6 @@ def validate_closing_fair_rows(body: object) -> list[dict] | str:
     return rows
 
 
-def validate_exclusion_request(body: object) -> tuple[list[str], bool] | str:
-    """(bet ids, excluded) of a POST /exclusions.json body, or what was
-    expected and what was found."""
-    if not isinstance(body, dict):
-        return f"body must be an object, got {type(body).__name__}"
-    bet_ids = body.get("betIds")
-    if not isinstance(bet_ids, list) or not bet_ids or not all(_non_empty_string(bet_id) for bet_id in bet_ids):
-        return f"betIds must be a non-empty list of bet ids, got {bet_ids!r}"
-    if len(bet_ids) > MAX_EXCLUSION_IDS_PER_POST:
-        return f"at most {MAX_EXCLUSION_IDS_PER_POST} betIds per request, got {len(bet_ids)}"
-    if not isinstance(body.get("excluded"), bool):
-        return f"excluded must be true or false, got {body.get('excluded')!r}"
-    return list(dict.fromkeys(bet_ids)), body["excluded"]
-
-
 def _is_whole_number(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -650,7 +623,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             url = urlparse(self.path)
             if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/closing_fairs.json",
-                                "/exclusions.json", "/bet105.json"):
+                                "/bet105.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
@@ -665,9 +638,6 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/closing_fairs.json":
                 self._save_closing_fairs(body)
-                return
-            if url.path == "/exclusions.json":
-                self._set_exclusions(body)
                 return
             if url.path == "/bet105.json":
                 self._push_bet105(body)
@@ -736,27 +706,6 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 self._send_json(400, {"error": rows})
                 return
             self._send_json(200, {"ok": True, "saved": store.save_closing_fairs(rows, _now())})
-
-        # POST /exclusions.json: remove (or restore) BFA / Wagerzon bets from
-        # the tracker's numbers. Every id must be a stored bet at one of
-        # EXCLUDABLE_VENUES, or nothing changes.
-        def _set_exclusions(self, body: object) -> None:
-            request = validate_exclusion_request(body)
-            if isinstance(request, str):
-                self._send_json(400, {"error": request})
-                return
-            bet_ids, excluded = request
-            venue_by_bet = {bet_id: store.bet_venue(bet_id) for bet_id in bet_ids}
-            unknown = [bet_id for bet_id, venue in venue_by_bet.items() if venue is None]
-            if unknown:
-                self._send_json(404, {"error": f"no bet with id(s) {unknown}"})
-                return
-            other = {bet_id: venue for bet_id, venue in venue_by_bet.items() if venue not in EXCLUDABLE_VENUES}
-            if other:
-                self._send_json(400, {"error": f"only {list(EXCLUDABLE_VENUES)} bets can be removed, got {other}"})
-                return
-            changed = store.set_exclusions(bet_ids, venue_by_bet, excluded, _now())
-            self._send_json(200, {"ok": True, "changed": changed, "exclusions": store.load_exclusions()})
 
         # POST /bet105.json: the extension's read of the account, as one source
         # run — a complete push UPSERTs its records and closes the open ones it

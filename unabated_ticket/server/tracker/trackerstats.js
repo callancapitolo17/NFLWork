@@ -14,8 +14,6 @@
 //   closingFairs /bets.json `closingFairs` ({betId, fairAmerican, fairObservedAt,
 //              eventStart}): Unabated's fair for the bet's own line on the last
 //              snapshot the server runner read before the game started
-//   exclusions /bets.json `exclusions` ({betId}): bets Cal removed on the Bets
-//              page; a ticket with any excluded record is marked `excluded`
 // Conventions
 //   P&L lands on the Pacific calendar day the bet SETTLED (closedAt).
 //   A bet counts toward P&L only when it is won, lost, push or void; an open
@@ -267,7 +265,7 @@
       period: record.period || "FG", event: eventLabel(record), selection: selectionLabel(record),
       price: record.price, stake: Number(record.stake) || 0, toWin: record.toWin,
       status: record.status, placedAt: record.placedAt, closedAt: record.closedAt, eventStart: record.eventStart || null,
-      legCount: 1, betIds: [record.id],
+      legCount: 1,
     }, fillAmerican, close);
   }
 
@@ -289,15 +287,14 @@
       stake: Number(first.stake) || 0, toWin: first.toWin,
       status: first.status, placedAt: first.placedAt, closedAt: first.closedAt,
       eventStart: starts.length ? new Date(Math.min(...starts)).toISOString() : null,
-      legCount, betIds: sorted.map((leg) => leg.id),
+      legCount,
     }, null, null);
   }
 
   /** /bets.json records -> tickets, newest placement first. */
-  function buildTickets(records, fillFairs, closingFairs, exclusions) {
+  function buildTickets(records, fillFairs, closingFairs) {
     const fairByBet = new Map((fillFairs || []).map((row) => [row.betId, row.fairAmerican]));
     const closeByBet = new Map((closingFairs || []).map((row) => [row.betId, row]));
-    const excludedIds = new Set((exclusions || []).map((row) => row.betId));
     const legsByParlay = new Map();
     const tickets = [];
     for (const record of records || []) {
@@ -309,7 +306,6 @@
       tickets.push(straightTicket(record, fairByBet.has(record.id) ? fairByBet.get(record.id) : null, closeByBet.get(record.id) || null));
     }
     for (const [parlayId, legs] of legsByParlay) tickets.push(multiLegTicket(parlayId, legs));
-    for (const ticket of tickets) ticket.excluded = ticket.betIds.some((id) => excludedIds.has(id));
     return tickets.sort((a, b) => (b.closedMs || b.placedMs || 0) - (a.closedMs || a.placedMs || 0));
   }
 

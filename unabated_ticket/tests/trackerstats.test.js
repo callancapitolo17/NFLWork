@@ -170,12 +170,3 @@ test("expected P&L uses the fill fair, else the closing fair, and says which", (
   assert.deepEqual([byId.close.fairSource, byId.close.fairAmerican], ["close", -125]);
   assert.equal(stats.summarize(tickets).withFair, 2);
 });
-
-test("an excluded record marks its ticket, and one excluded leg marks the whole parlay", () => {
-  const leg = (index) => straight({ id: "bfa:9:leg" + index, venue: "bfa", isParlayLeg: true, parlayId: "bfa:9", legIndex: index, legCount: 2 });
-  const tickets = stats.buildTickets([straight({ id: "wz:1", venue: "wagerzon" }), straight({ id: "wz:2", venue: "wagerzon" }), leg(0), leg(1)],
-    [], [], [{ betId: "wz:1" }, { betId: "bfa:9:leg1" }]);
-  const byId = Object.fromEntries(tickets.map((t) => [t.id, t]));
-  assert.deepEqual([byId["wz:1"].excluded, byId["wz:2"].excluded, byId["bfa:9"].excluded], [true, false, true]);
-  assert.deepEqual(byId["bfa:9"].betIds, ["bfa:9:leg0", "bfa:9:leg1"]);
-});

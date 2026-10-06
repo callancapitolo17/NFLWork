@@ -44,11 +44,6 @@ writer). Tables:
                observed before its event_start (service.py validates). Never
                pruned (one row per straight bet). Served with /bets.json for
                the bets in its window (see load_closing_fairs).
-  bet_exclusions  one row per bet Cal removed from the Bet Tracker (its Bets
-               page: bets at BFA or Wagerzon that are not his). The bet stays in
-               `bets`; the tracker leaves an excluded bet, and a parlay any of
-               whose legs is excluded, out of every number. Restore deletes the
-               row. Never pruned.
   edge_settings  at most ONE row (settings_id = 1): the Edges settings the
                server runner (unabated_ticket/server/runner.js, phone page plan
                step 1) reads every cycle, written by PUT /settings.json and
@@ -139,11 +134,6 @@ CREATE TABLE IF NOT EXISTS bet_closing_fairs (
     fair_observed_at  TIMESTAMPTZ NOT NULL,  -- the league snapshot it was read off; before event_start
     event_start       TIMESTAMPTZ NOT NULL,  -- the board game's start
     updated_at        TIMESTAMPTZ NOT NULL   -- when this service last wrote the row
-);
-CREATE TABLE IF NOT EXISTS bet_exclusions (
-    bet_id       VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
-    venue        VARCHAR NOT NULL,
-    excluded_at  TIMESTAMPTZ NOT NULL
 );
 CREATE TABLE IF NOT EXISTS edge_settings (
     settings_id           INTEGER PRIMARY KEY CHECK (settings_id = 1),  -- one row
@@ -270,8 +260,6 @@ JOIN bets b ON b.id = c.bet_id
 WHERE b.status = 'open' OR b.closed_at IS NULL OR b.closed_at >= ?
 ORDER BY c.event_start, c.bet_id
 """
-
-_SELECT_EXCLUSIONS = "SELECT bet_id, venue, epoch(excluded_at) FROM bet_exclusions ORDER BY excluded_at DESC, bet_id"
 
 # The settings fields in the API's camelCase, in column order: the shape
 # GET/PUT /settings.json speaks and the order of every statement below.
@@ -671,29 +659,6 @@ class BetsStore:
             "betId": bet_id, "lineKey": line_key, "points": points, "fairAmerican": fair_american,
             "fairObservedAt": _epoch_to_iso(fair_observed_at), "eventStart": _epoch_to_iso(event_start),
         } for bet_id, line_key, points, fair_american, fair_observed_at, event_start in rows]
-
-    def set_exclusions(self, bet_ids: list[str], venue_by_bet: dict[str, str], excluded: bool,
-                       at: datetime) -> int:
-        """Exclude (INSERT, an already-excluded bet keeps its time) or restore
-        (DELETE) the bets. Returns how many rows changed."""
-        changed = 0
-        with self._lock:
-            for bet_id in bet_ids:
-                if excluded:
-                    statement = ("INSERT INTO bet_exclusions (bet_id, venue, excluded_at) VALUES (?, ?, ?) "
-                                 "ON CONFLICT (bet_id) DO NOTHING")
-                    [count] = self._con.execute(statement, [bet_id, venue_by_bet[bet_id], at]).fetchone()
-                else:
-                    [count] = self._con.execute("DELETE FROM bet_exclusions WHERE bet_id = ?", [bet_id]).fetchone()
-                changed += count
-        log.info("exclusions: %s %d of %d bet(s)", "excluded" if excluded else "restored", changed, len(bet_ids))
-        return changed
-
-    def load_exclusions(self) -> list[dict]:
-        with self._lock:
-            rows = self._con.execute(_SELECT_EXCLUSIONS).fetchall()
-        return [{"betId": bet_id, "venue": venue, "excludedAt": _epoch_to_iso(excluded_at)}
-                for bet_id, venue, excluded_at in rows]
 
     def load_edge_settings(self) -> dict:
         """{settings: {field: value or None}, updatedAt: ISO or None} — every
