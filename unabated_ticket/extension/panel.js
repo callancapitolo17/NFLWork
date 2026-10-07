@@ -2951,7 +2951,8 @@
     const placeState = teaserPlaceStates.get(signature) || null;
     const phase = placeState ? placeState.phase : null;
     if (placeState && placeState.message) {
-      const tone = phase === "placed" ? "ok" : phase === "placing" ? "wait" : "bad";
+      // A placed ticket whose legs BFA shows differently is red: it is booked, and wrong.
+      const tone = phase === "placed" && placeState.legsMatch !== false ? "ok" : phase === "placing" ? "wait" : "bad";
       actions.prepend(makeEl("span", `tk-place-msg ${tone}`, placeState.message));
     }
     if (phase === "confirm") {
@@ -2981,7 +2982,7 @@
     let next;
     try {
       const reply = await serviceRequest("POST", "/place_teaser.json", request.body);
-      next = { phase: reply.status, message: reply.message };
+      next = { phase: reply.status, message: reply.message, legsMatch: reply.legsMatch };
     } catch (error) {
       next = error.status
         ? { phase: "refused", message: `Not placed: ${error.message}` }

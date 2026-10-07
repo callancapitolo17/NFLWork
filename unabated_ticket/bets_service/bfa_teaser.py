@@ -30,10 +30,15 @@ place(request), in order — every check before the POST refuses with nothing se
      answer may still have booked the wager, so the open bets decide.
   7. the open bets every CONFIRM_POLL_SEC until a new teaser on those four games shows
      (placed) or CONFIRM_TIMEOUT_SEC passes (unconfirmed: check BFA before trying again).
+  8. the placed ticket checked leg by leg (leg_mismatches): each game's leg must read, in
+     BFA's own text, the sent rotation, market, full game, the over or under sent, the
+     number AFTER the 6 points and "(B+6)"; the ticket must risk the stake to win 3x it.
+     A difference cannot be undone — it is reported loudly (legsMatch false), never hidden.
 
 Inputs:  the BFA source (sources/bfa.py: its in-memory Keycloak session, one login per
          process) and the panel's request (validate_place_request).
-Outputs: {status: placed | refused | unconfirmed, message, ticket?, openWagers?}; openWagers is
+Outputs: {status: placed | refused | unconfirmed, message, ticket?, legsMatch?, legCheck?,
+         openWagers?} — legsMatch / legCheck (the differences, in words) on placed only; openWagers is
          the open-bets list read at confirmation, for the caller to store.
 Side effects: one wager at BFA when every check passes — real money. Nothing on disk here; the
 service's handler UPSERTs the returned open bets into bets.duckdb::bets so the panel sees the
@@ -47,7 +52,7 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 
-from unabated_ticket.bets_service.sources.bfa import BFASource, new_session
+from unabated_ticket.bets_service.sources.bfa import BFASource, new_session, parse_leg
 
 log = logging.getLogger(__name__)
 
@@ -102,6 +107,12 @@ METADATA_TTL_SEC = 3600.0
 RECENT_TICKET_SEC = 15 * 60
 TEASER_HEADER_RE = re.compile(r"TEASER", re.IGNORECASE)
 DETAIL_ROTATION_RE = re.compile(r"\[(\d+)\]")
+# A teaser leg's bought points as BFA writes them: "(B+6)".
+BOUGHT_POINTS_TAG_RE = re.compile(r"\(B\+(?P<points>\d+(?:\.\d+)?)\)")
+FULL_GAME_LABEL = "FG"
+# A +300 ticket returns 3 dollars of profit per dollar risked.
+TICKET_NET_ODDS = TICKET_PAYOUT_AMERICAN / 100
+MONEY_TOLERANCE = 0.005
 MAX_ERROR_TEXT = 300
 
 STATUS_PLACED = "placed"
@@ -371,14 +382,36 @@ def open_teaser_with_sides(open_wagers: list[dict], sides: set[tuple[int, int]])
     return None
 
 
-def new_teaser_on_games(open_wagers: list[dict], game_ids: set[int], known_ids: set) -> dict | None:
-    """A teaser not open before the POST whose legs sit on exactly these BFA games, or None."""
+def new_teasers_on_games(open_wagers: list[dict], game_ids: set[int], known_ids: set) -> list[dict]:
+    """The teasers not open before the POST whose legs sit on exactly these BFA games."""
+    found = []
     for wager in open_wagers:
         if wager.get("idWager") in known_ids or not _is_teaser(wager):
             continue
         if {detail.get("idGame") for detail in wager.get("betDetails") or []} == game_ids:
-            return wager
-    return None
+            found.append(wager)
+    return found
+
+
+def teased_points_of(leg: dict, untease_line: float) -> float:
+    """The number BFA shows on a teased leg: a spread +6 for either side, an Over -6, an Under +6."""
+    if leg["betType"] == "total" and leg["side"] == "over":
+        return untease_line - TEASER_POINTS
+    return untease_line + TEASER_POINTS
+
+
+def expected_legs(legs: list[dict], matches: list[dict]) -> list[dict]:
+    """What the placed ticket must show for each leg: {gameId, rotation, betType, side (a
+    total's; a spread's team is its rotation), teasedPoints, label}."""
+    return [{"gameId": match["odds"]["dGmId"], "rotation": leg["rotation"], "betType": leg["betType"],
+             "side": leg["side"] if leg["betType"] == "total" else None,
+             "teasedPoints": teased_points_of(leg, match["odds"]["line"]), "label": leg["label"]}
+            for leg, match in zip(legs, matches)]
+
+
+def _one_line(text: str) -> str:
+    """BFA's leg text on one line, its market-group prefix and sport suffix kept."""
+    return re.sub(r"\s+", " ", re.sub(r"<br\s*/?>", " · ", text)).strip()
 
 
 def ticket_of(wager: dict) -> dict:
@@ -388,6 +421,42 @@ def ticket_of(wager: dict) -> dict:
 
 def _short(text: str) -> str:
     return text if len(text) <= MAX_ERROR_TEXT else f"{text[:MAX_ERROR_TEXT]}…"
+
+
+def _leg_difference(want: dict, details: list[dict]) -> str | None:
+    """How BFA's leg on `want`'s game differs from it, in words, or None when it matches."""
+    if len(details) != 1:
+        return f"{want['label']}: BFA's ticket has {len(details)} legs on that game"
+    text = str(details[0].get("detailDescription") or "")
+    shown = _one_line(text)
+    got = parse_leg(text)
+    if isinstance(got, str):
+        return f"{want['label']}: BFA's leg could not be read ({got}): {shown}"
+    bought = BOUGHT_POINTS_TAG_RE.search(text)
+    if (got["rotation"] != want["rotation"] or got["betType"] != want["betType"] or got["period"] != FULL_GAME_LABEL
+            or (want["side"] is not None and got["side"] != want["side"]) or got["points"] != want["teasedPoints"]
+            or bought is None or float(bought.group("points")) != TEASER_POINTS):
+        return f"{want['label']}: BFA has {shown}"
+    return None
+
+
+def leg_mismatches(wager: dict, expected: list[dict], stake: int) -> list[str]:
+    """Every way a placed ticket differs from what was sent, in words; [] when it is exactly
+    the ticket: one leg per expected game reading the sent leg, the stake risked to win 3x it."""
+    details_by_game: dict = {}
+    for detail in wager.get("betDetails") or []:
+        details_by_game.setdefault(detail.get("idGame"), []).append(detail)
+    problems = [difference for want in expected
+                if (difference := _leg_difference(want, details_by_game.get(want["gameId"], []))) is not None]
+    leg_count = len(wager.get("betDetails") or [])
+    if leg_count != len(expected):
+        problems.append(f"BFA's ticket has {leg_count} legs, {len(expected)} were sent")
+    risk, to_win = wager.get("riskAmount"), wager.get("winAmount")
+    if (not _is_number(risk) or not _is_number(to_win) or abs(risk - stake) > MONEY_TOLERANCE
+            or abs(to_win - stake * TICKET_NET_ODDS) > MONEY_TOLERANCE):
+        problems.append(f"BFA's ticket risks {risk} to win {to_win}, ${stake} to win "
+                        f"${stake * TICKET_NET_ODDS:g} was sent")
+    return problems
 
 
 # ---- the placer ------------------------------------------------------------------------
@@ -459,10 +528,10 @@ class BFATeaserPlacer:
             del self._sent[key]
             log.warning("bfa teaser: transaction %s refused: %s", transaction_id, posted["refused"])
             return _refused(posted["refused"])
-        game_ids = {match["odds"]["dGmId"] for match in matches}
+        expected = expected_legs(request["legs"], matches)
         try:
-            return self._confirm(key, game_ids, {wager.get("idWager") for wager in open_before}, transaction_id,
-                                 posted["note"])
+            return self._confirm(key, expected, request["stake"], {wager.get("idWager") for wager in open_before},
+                                 transaction_id, posted["note"])
         except Exception as error:  # noqa: BLE001 — the wager went out: never "Not placed" from here
             log.exception("bfa teaser: confirming transaction %s failed", transaction_id)
             return {"status": STATUS_UNCONFIRMED,
@@ -539,7 +608,9 @@ class BFATeaserPlacer:
             return {"refused": None, "note": None}
         return {"refused": None, "note": f"BFA answered HTTP {response.status_code} {shown}"}
 
-    def _confirm(self, key: tuple, game_ids: set, known_ids: set, transaction_id: str, note: str | None) -> dict:
+    def _confirm(self, key: tuple, expected: list[dict], stake: int, known_ids: set, transaction_id: str,
+                 note: str | None) -> dict:
+        game_ids = {want["gameId"] for want in expected}
         deadline = self._clock() + CONFIRM_TIMEOUT_SEC
         open_wagers: list[dict] = []
         while True:
@@ -549,13 +620,9 @@ class BFATeaserPlacer:
             except Exception as error:  # noqa: BLE001 — a failed read is one more try, not a failed wager
                 log.warning("bfa teaser: open bets read failed while confirming %s: %s", transaction_id, error)
                 open_wagers = []
-            placed = new_teaser_on_games(open_wagers, game_ids, known_ids)
-            if placed:
-                ticket = ticket_of(placed)
-                self._sent[key]["ticket"] = ticket["ticketNumber"]
-                log.info("bfa teaser: transaction %s placed as ticket %s", transaction_id, ticket["ticketNumber"])
-                return {"status": STATUS_PLACED, "message": f"Placed · ticket {ticket['ticketNumber']}",
-                        "ticket": ticket, "openWagers": open_wagers}
+            candidates = new_teasers_on_games(open_wagers, game_ids, known_ids)
+            if candidates:
+                return self._placed(key, candidates, expected, stake, transaction_id, open_wagers)
             if self._clock() >= deadline:
                 log.warning("bfa teaser: transaction %s sent, no ticket after %.0f s (%s)", transaction_id,
                             CONFIRM_TIMEOUT_SEC, note or "BFA took it for processing")
@@ -564,6 +631,27 @@ class BFATeaserPlacer:
                         "message": (f"Sent to BFA{reply}, but no ticket showed in {CONFIRM_TIMEOUT_SEC:.0f} s. "
                                     "Check BFA's open bets before placing it again."),
                         "openWagers": open_wagers}
+
+    def _placed(self, key: tuple, candidates: list[dict], expected: list[dict], stake: int, transaction_id: str,
+                open_wagers: list[dict]) -> dict:
+        """The placed result for the new ticket that reads exactly as sent, else the first new
+        one on those games with every difference named (a booked bet cannot be undone)."""
+        checked = [(wager, leg_mismatches(wager, expected, stake)) for wager in candidates]
+        wager, problems = next(((wager, found) for wager, found in checked if not found), checked[0])
+        ticket = ticket_of(wager)
+        self._sent[key]["ticket"] = ticket["ticketNumber"]
+        result = {"status": STATUS_PLACED, "ticket": ticket, "legsMatch": not problems, "legCheck": problems,
+                  "openWagers": open_wagers}
+        if problems:
+            log.error("bfa teaser: transaction %s placed as ticket %s BUT it differs from what was sent: %s",
+                      transaction_id, ticket["ticketNumber"], " | ".join(problems))
+            result["message"] = (f"Placed · ticket {ticket['ticketNumber']}, but BFA's ticket differs from the one "
+                                 f"sent: {'; '.join(problems)}. Check it at BFA.")
+            return result
+        log.info("bfa teaser: transaction %s placed as ticket %s, all %d legs as sent", transaction_id,
+                 ticket["ticketNumber"], len(expected))
+        result["message"] = f"Placed · ticket {ticket['ticketNumber']} · all {len(expected)} legs match BFA"
+        return result
 
 
 def _refused(message: str) -> dict:
