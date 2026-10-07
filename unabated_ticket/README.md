@@ -270,7 +270,9 @@ stake uses the American price because that is what Unabated's edge was
 computed from.
 
 On an exchange line (Kalshi, Novig — any line Unabated marks `sourceFormat 4`,
-a probability) the panel also prints the **order** the stake means, under the
+a probability — and Polymarket, Polymarket US and Poly US Ing by book name,
+since Unabated does not mark them; their contract costs Unabated's price as-is,
++150 = 40.0¢, user decision 2026-10-07) the panel also prints the **order** the stake means, under the
 dollar figure: `1,127 contracts @ 23.2¢ · $261.48` (`kelly.contractOrder`).
 The price is Unabated's exact number for the book, taken as the all-in cost of
 one contract; the count is `floor(stake / price)`, never rounded up past
@@ -410,7 +412,12 @@ On an exchange line the number never passes what is resting at the price
 (the feed's liquidity, on the Edges row and on the Ticket when the feed
 holds the line at the ticket's price): `add $17 · all $17 liq · $71.06
 alone`. With nothing resting the Ticket reads "Nothing resting at this
-price" over `$0`.
+price" over `$0`. Because the reported liquidity is sometimes wrong, the
+Ticket (only the Ticket, on the panel and the phone page; not the Edges rows
+or Copy) adds one more line whenever liquidity cut the stake: what it would be
+with unlimited liquidity, sized the same way against what you hold, with its
+contracts on an exchange — `uncapped $240.00 · 752 contracts @ 31.9¢`
+(`betsview.uncappedLine`, 2026-10-07).
 
 Before acting on an `add`, read the tag next to the edge (Edges tab → [Why
 an edge grew](#why-an-edge-grew), issue #132): `fair moved to you` is the
@@ -2173,8 +2180,22 @@ page's Remove / Restore.
   same account) are their own type, "Kalshi combo", and count in every total
   by default (Cal, 2026-10-05); switching off the header's **Bot combos**
   toggle hides them. Won pays
-  `toWin`, lost costs `stake`, push and void are 0. Open bets are exposure,
-  not P&L; a Kalshi position sold before settlement (`closed`) and a bet whose
+  `toWin`, lost costs `stake`, push and void are 0, unless the record carries
+  the venue's own `pnl`: **Kalshi** records do (2026-10-06), priced off the
+  market's NET position after fees (`sources/kalshi.py::apply_net_position_pnl`;
+  Kalshi nets YES against NO, so a "sell no" while holding YES closes YES —
+  counting the two sides as separate bets overstated Kalshi by ~$7k, Rodri
+  Golden Ball alone by $5.5k), including a position sold before settlement
+  (`closed` with a `pnl`: a gain is a win, a loss a loss); the other side's
+  record carries `mergedInto` and is skipped. The Kalshi source also reads
+  `/historical/fills?ticker=` (fills older than Kalshi's history cutoff leave
+  `/portfolio/fills`), once per market per process, a failed read retried on
+  the next full pull, for markets in the recent fills, already stored, or settled since the cutoff (`/portfolio/settlements`
+  — the Sep-15 starting-QB markets were bought in March-May); the account's
+  whole older history is mostly the MLB bots' trades, and a page of it hung
+  34 minutes on Cal's Mac. Checked 2026-10-06 against Kalshi's own realized P&L minus
+  fees: 290 of 290 markets to the cent (Kalshi +$16,784 → +$9,441). Open bets are exposure, not P&L;
+  a closed bet with no `pnl` (Polymarket US sold early) and a bet whose
   result is gone (`unknown`, e.g. Bet105 once it leaves the open list) have no
   known P&L and are counted as "without a result". A parlay or teaser is one
   ticket (its legs carry the ticket's stake and status). Edge = fair
@@ -2778,6 +2799,15 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-07 — Uncapped stake on the Ticket; Polymarket contracts (0.19.0).**
+Cal: the liquidity a line reports is sometimes wrong, so he wants the stake
+with unlimited liquidity beside the capped one, on the Ticket only (not the
+Edges rows or Copy; the Min liq to win filter unchanged). And a Polymarket
+ticket gave no contract count, because Unabated does not mark Polymarket lines
+`sourceFormat 4`; they are now contract markets by book name, priced at
+Unabated's number as-is. Unverified: the exact format Unabated sends
+Polymarket in (the feed was unreachable from the build environment).
 
 **2026-10-03 — Place teasers at BFA (0.18.0).** Cal asked to bet a Teasers
 ticket from the tab, the way the MLB dashboard places at Wagerzon. BFA's
