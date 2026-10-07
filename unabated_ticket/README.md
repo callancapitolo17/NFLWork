@@ -270,7 +270,9 @@ stake uses the American price because that is what Unabated's edge was
 computed from.
 
 On an exchange line (Kalshi, Novig — any line Unabated marks `sourceFormat 4`,
-a probability) the panel also prints the **order** the stake means, under the
+a probability — and Polymarket, Polymarket US and Poly US Ing by book name,
+since Unabated does not mark them; their contract costs Unabated's price as-is,
++150 = 40.0¢, user decision 2026-10-07) the panel also prints the **order** the stake means, under the
 dollar figure: `1,127 contracts @ 23.2¢ · $261.48` (`kelly.contractOrder`).
 The price is Unabated's exact number for the book, taken as the all-in cost of
 one contract; the count is `floor(stake / price)`, never rounded up past
@@ -410,7 +412,12 @@ On an exchange line the number never passes what is resting at the price
 (the feed's liquidity, on the Edges row and on the Ticket when the feed
 holds the line at the ticket's price): `add $17 · all $17 liq · $71.06
 alone`. With nothing resting the Ticket reads "Nothing resting at this
-price" over `$0`.
+price" over `$0`. Because the reported liquidity is sometimes wrong, the
+Ticket (only the Ticket, on the panel and the phone page; not the Edges rows
+or Copy) adds one more line whenever liquidity cut the stake: what it would be
+with unlimited liquidity, sized the same way against what you hold, with its
+contracts on an exchange — `uncapped $240.00 · 752 contracts @ 31.9¢`
+(`betsview.uncappedLine`, 2026-10-07).
 
 Before acting on an `add`, read the tag next to the edge (Edges tab → [Why
 an edge grew](#why-an-edge-grew), issue #132): `fair moved to you` is the
@@ -2774,6 +2781,15 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-07 — Uncapped stake on the Ticket; Polymarket contracts (0.19.0).**
+Cal: the liquidity a line reports is sometimes wrong, so he wants the stake
+with unlimited liquidity beside the capped one, on the Ticket only (not the
+Edges rows or Copy; the Min liq to win filter unchanged). And a Polymarket
+ticket gave no contract count, because Unabated does not mark Polymarket lines
+`sourceFormat 4`; they are now contract markets by book name, priced at
+Unabated's number as-is. Unverified: the exact format Unabated sends
+Polymarket in (the feed was unreachable from the build environment).
 
 **2026-10-03 — Place teasers at BFA (0.18.0).** Cal asked to bet a Teasers
 ticket from the tab, the way the MLB dashboard places at Wagerzon. BFA's

@@ -193,7 +193,7 @@ test("stakeAdvice: nothing held is the standalone Kelly stake, exactly", () => {
   const standalone = kelly.kellyStakeFromEdge({ bookPrice: 213, edgePct: 7.19, ...SIZING }).stake;
   assert.deepEqual(advice, {
     kind: "none", bet: standalone, alone: standalone, verb: "bet", held: 0, against: 0, teasers: { held: 0, against: 0 }, reason: null,
-    matches: [], teaserGroups: [], cappedAt: null,
+    matches: [], teaserGroups: [], cappedAt: null, uncapped: standalone,
   });
   assert.equal(view.stakeAdviceWords(advice), null);
   assert.equal(view.suggestedBetAmount(advice), standalone);
@@ -250,6 +250,14 @@ test("stakeAdvice: a Novig line with $17 resting says add $17, never the $32.58 
   assert.equal(view.suggestedBetAmount(advice), 17);
   assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$17", alone: "$270.05 alone", cap: "all $17 liq" });
   assert.equal(view.stakeAdviceLine(advice), "add $17, all $17 liq, $270.05 alone");
+  // The Ticket also shows the sized stake before the cap, in case more is really resting.
+  assert.ok(advice.uncapped > 17);
+  const uncapped = Math.round(advice.uncapped * 100) / 100;
+  assert.equal(view.uncappedLine(advice, { price: 213, sourceFormat: 1, sourcePrice: 213, bookName: "BetOnline" }),
+    `uncapped $${uncapped.toFixed(2)}`);
+  // On an exchange it says the contracts too: floor(stake / 0.319).
+  assert.equal(view.uncappedLine(advice, { price: 213, sourceFormat: 4, sourcePrice: 0.319, bookName: "Novig" }),
+    `uncapped $${uncapped.toFixed(2)} \u00b7 ${Math.floor(uncapped / 0.319).toLocaleString("en-US")} contracts @ 31.9\u00a2`);
 });
 
 test("stakeAdvice: nothing held and thin liquidity still caps, and says so", () => {
@@ -257,6 +265,22 @@ test("stakeAdvice: nothing held and thin liquidity still caps, and says so", () 
   assert.equal(advice.kind, "none");
   assert.equal(advice.bet, 50);
   assert.deepEqual(view.stakeAdviceWords(advice), { verb: "bet", bet: "$50", alone: null, cap: "all $50 liq" });
+  assert.equal(advice.uncapped, advice.alone);
+});
+
+test("uncappedLine: a Polymarket line counts contracts at Unabated's American price", () => {
+  const advice = { bet: 40, cappedAt: 40, uncapped: 85.4 };
+  assert.equal(view.uncappedLine(advice, { price: 150, sourceFormat: 1, sourcePrice: 150, bookName: "Polymarket US" }),
+    "uncapped $85.40 \u00b7 213 contracts @ 40.0\u00a2");
+  assert.equal(view.uncappedLine({ bet: 900, cappedAt: 900, uncapped: 1240.5 }, { price: 150, sourceFormat: 1, sourcePrice: 150, bookName: "Bookmaker" }),
+    "uncapped $1,240.50");
+});
+
+test("uncappedLine: nothing when liquidity did not cut the stake", () => {
+  const advice = view.stakeAdvice({ line: nflLine(), price: 213, edgePct: 7.19, ...SIZING, matches: [], ladderOf: LIONS_BILLS_LADDER, liquidity: 100000 });
+  assert.equal(advice.cappedAt, null);
+  assert.equal(view.uncappedLine(advice, { price: 213, sourceFormat: 1, sourcePrice: 213, bookName: "Novig" }), null);
+  assert.equal(view.uncappedLine(null, { price: 213 }), null);
 });
 
 test("capAtLiquidity: deep or unreported liquidity leaves the stake alone", () => {

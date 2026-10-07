@@ -70,7 +70,7 @@
     warning: el("warning"), rowTrace: el("row-trace"), sideLabel: el("side-label"), betLine: el("bet-line"),
     eventLine: el("event-line"), startLine: el("start-line"),
     book: el("book"), price: el("price"), fair: el("fair"), edge: el("edge"),
-    stake: el("stake"), contracts: el("contracts"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
+    stake: el("stake"), contracts: el("contracts"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), stakeUncapped: el("stake-uncapped"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
     copy: el("copy"), copyStatus: el("copy-status"),
     errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
@@ -555,6 +555,10 @@
     // Sets view.stake to the number to act on when held bets changed it.
     const advice = betFlag.advice;
     renderStakeExposure(advice);
+    // With unlimited liquidity: the reported number is sometimes wrong.
+    const uncapped = betsView.uncappedLine(advice, { price: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice, bookName: ticket.book.name });
+    view.stakeUncapped.hidden = uncapped == null;
+    view.stakeUncapped.textContent = uncapped || "";
 
     // Payout = stake x decimal odds at the book's American price; "to win" is
     // the profit on top of it. Both describe the number shown above them, so a
@@ -568,7 +572,7 @@
       view.payoutRow.hidden = false;
       payoutText = ` | to win $${(payout - acted).toFixed(2)} | payout $${payout.toFixed(2)}`;
     }
-    const contractsText = renderContracts(acted, line);
+    const contractsText = renderContracts(acted, line, ticket.book.name);
 
     const stakeText = acted != null ? acted.toFixed(2) : "n/a";
     lastCopyText = `${ticket.sideLabel}${periodSuffix(ticket)} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${copyExposureText(advice)}${contractsText}${payoutText} | ${describeMatchup(ticket)}`;
@@ -579,16 +583,16 @@
   // Under the dollar figure, the order it means on an exchange: "1,127
   // contracts @ 23.2¢ · $261.48", sized straight off Unabated's price for the
   // book with the count floored so the cost never passes the stake
-  // (kelly.contractOrder). Only a line priced in contracts (Kalshi, Novig)
-  // gets the row; a sportsbook line keeps just the dollars. `acted` is the
-  // number to act on, so a top-up shows the top-up's contracts. Returns what
+  // (kelly.contractOrder). Only a line priced in contracts (Kalshi, Novig,
+  // Polymarket) gets the row; a sportsbook line keeps just the dollars.
+  // `acted` is the number to act on, so a top-up shows the top-up's contracts. Returns what
   // Copy appends, "" when there is no row.
-  function renderContracts(acted, line) {
+  function renderContracts(acted, line, bookName) {
     view.contracts.hidden = true;
     view.contracts.classList.remove("under");
     view.contracts.replaceChildren();
     if (acted == null || acted <= 0) return "";
-    const order = kelly.contractOrder({ stake: acted, bookPrice: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice });
+    const order = kelly.contractOrder({ stake: acted, bookPrice: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice, bookName });
     if (!order) return "";
     view.contracts.hidden = false;
     const priceText = `${order.priceCents.toFixed(1)}\u00a2`;
