@@ -2144,14 +2144,15 @@ page's Remove / Restore.
 - **Overview**: net P&L, ROI, handle, record, open risk; expected P&L at
   Unabated's fair at fill and actual vs expected with its z-score; cumulative
   actual vs expected chart with daily bars; a 6-week calendar heatmap; daily
-  results; P&L by venue; and **Settled today**: the bets that settled on the
-  current Pacific day whatever the header range says (P&L, record, expected,
-  handle, then each bet with its result), with ‹ › to step back a day
-  (2026-10-07). The Open risk tile links to the Open page.
+  results; P&L by venue; and **Settled bets**: every bet settled in the
+  header range, newest first, 50 at a time with Show more, under the
+  range's P&L, record, expected and handle (Cal, 2026-10-07; briefly a
+  today-only panel). The Open risk tile links to the Open page.
 - **Open** (2026-10-07; was Overview's bottom panel): open-bet count, stake
   at risk and to win, open EV (bets with a saved fair) and stake in live
-  games, then the open bets with price, fair and edge. The nav tab carries
-  the open count.
+  games, then the open bets with price, fair and edge, then **Settled
+  today** (bets settled on the current Pacific day, whatever the header
+  range says). The nav tab carries the open count.
 - **Analysis**: filter by venue, league and type (straight, parlay, teaser),
   group by venue, league, market, period, type, odds, edge at fill, timing
   (hours placed before start), weekday or stake. Each group shows ROI with its

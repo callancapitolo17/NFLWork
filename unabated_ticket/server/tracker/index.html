@@ -75,19 +75,16 @@
           <div id="ov-venues"></div>
         </section>
       </div>
-      <section class="panel" aria-label="Settled bets by day">
+      <section class="panel stack flush" aria-label="Settled bets">
         <div class="head">
           <div class="stack tight">
-            <span class="lbl" id="day-title">Settled today</span>
-            <span class="note" id="day-caption"></span>
+            <span class="lbl">Settled bets</span>
+            <span class="note" id="settled-caption"></span>
           </div>
-          <span class="day-nav">
-            <button type="button" class="chip" id="day-prev" aria-label="Previous day" title="Previous day">‹</button>
-            <button type="button" class="chip" id="day-next" aria-label="Next day" title="Next day">›</button>
-          </span>
         </div>
-        <div class="day-sum" id="day-sum"></div>
-        <div class="scroll" id="ov-day"></div>
+        <div class="settled-sum" id="settled-sum"></div>
+        <div class="scroll" id="ov-settled"></div>
+        <button type="button" class="more" id="settled-more" hidden>Show more</button>
       </section>
     </section>
 
@@ -97,6 +94,16 @@
       <section class="panel" aria-label="Open bets by start">
         <div class="head"><span class="lbl">Open bets</span><span class="note" id="open-caption"></span></div>
         <div id="op-groups"></div>
+      </section>
+      <section class="panel stack flush" aria-label="Settled today">
+        <div class="head">
+          <div class="stack tight">
+            <span class="lbl">Settled today</span>
+            <span class="note" id="today-caption"></span>
+          </div>
+        </div>
+        <div class="settled-sum" id="today-sum"></div>
+        <div class="scroll" id="op-today"></div>
       </section>
     </section>
 

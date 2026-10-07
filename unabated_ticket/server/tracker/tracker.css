@@ -126,15 +126,13 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .kpi.link:hover { border-color: var(--exp-line); }
 .kpi.link:focus-visible { outline: 2px solid var(--exp-line); outline-offset: 2px; }
 
-/* Overview: settled on one Pacific day */
-.day-nav { margin-left: auto; display: flex; gap: 6px; }
-.day-nav .chip:disabled { cursor: default; }
-.day-sum { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 10px 22px; border-bottom: 1px solid var(--line-soft); font-size: 13px; color: var(--muted); }
-.day-sum b { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); }
-.day-sum b.pos { color: var(--pos); }
-.day-sum b.neg { color: var(--neg); }
-.day-sum b.exp { color: var(--exp); }
-.day-sum:empty { display: none; }
+/* Overview: settled bets in the header range */
+.settled-sum { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 10px 22px; border-bottom: 1px solid var(--line-soft); font-size: 13px; color: var(--muted); }
+.settled-sum b { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); }
+.settled-sum b.pos { color: var(--pos); }
+.settled-sum b.neg { color: var(--neg); }
+.settled-sum b.exp { color: var(--exp); }
+.settled-sum:empty { display: none; }
 
 /* open bets: Live now / Upcoming */
 .open-group + .open-group { border-top: 1px solid var(--line); }
