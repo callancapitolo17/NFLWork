@@ -100,6 +100,9 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .cell .d { font-size: 11px; color: #4e5866; }
 .cell .v { font: 500 12px var(--mono); text-align: right; }
 .cell.today { border-color: var(--exp-line); }
+.cell.pickable { cursor: pointer; }
+.cell.pickable:hover { border-color: var(--muted); }
+.cell.picked, .cell.picked:hover { border-color: var(--text); box-shadow: 0 0 0 1px var(--text); }
 .cell.flat { background: #161b23; }
 .cal-key { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); justify-content: flex-end; }
 .cal-key i { width: 14px; height: 10px; border-radius: 2px; display: inline-block; }
