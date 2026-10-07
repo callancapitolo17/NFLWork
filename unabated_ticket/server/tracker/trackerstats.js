@@ -16,9 +16,10 @@
 // Conventions
 //   P&L lands on the Pacific calendar day the bet SETTLED (closedAt).
 //   A bet counts toward P&L only when it is won, lost, push or void; an open
-//   bet is exposure, and a Kalshi position sold before settlement ("closed")
-//   or a bet whose result the venue no longer shows ("unknown", Bet105 once
-//   it leaves the open list) has no known P&L and is counted as excluded.
+//   bet is exposure, and a position sold or cashed out before settlement, or
+//   a Bet105 bet that left the open list with no graded wager to settle it
+//   ("closed"), or a bet whose result the venue no longer shows ("unknown")
+//   has no known P&L and is counted as excluded.
 //   Expected P&L, edge and calibration use only bets with a saved fair.
 
 (function (root) {
