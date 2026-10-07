@@ -536,9 +536,11 @@
   function renderGroups(settled) {
     const rows = stats.groupBy(settled, state.groupBy);
     if (!rows.length) { fill("an-groups", emptyNote("No settled bets match these filters.")); return; }
-    const label = stats.GROUPS.find((g) => g.key === state.groupBy).label;
+    const group = stats.GROUPS.find((g) => g.key === state.groupBy);
+    // Bucketed groups (odds, edge, timing, weekday, stake) sort in their own order, not A to Z.
+    const groupSortKey = group.order ? (r) => group.order.indexOf(r.label) : (r) => r.label;
     fill("an-groups", table([
-      { label, cell: (r) => r.label, sort: (r) => r.label },
+      { label: group.label, cell: (r) => r.label, sort: groupSortKey },
       { label: "Bets", right: true, num: true, cell: (r) => String(r.bets), sort: (r) => r.bets },
       { label: "W-L-P", right: true, num: true, className: () => "muted", cell: (r) => r.wins + "-" + r.losses + "-" + r.pushes, sort: (r) => r.wins },
       { label: "Handle", right: true, num: true, cell: (r) => money(r.handle), sort: (r) => r.handle },
