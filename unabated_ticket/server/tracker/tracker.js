@@ -40,6 +40,8 @@
     view: "overview", range: "30D", customFirst: null, customLast: null, units: false, unitSize: 100,
     groupBy: "venue", kind: "All", offVenues: [], offLeagues: [], query: "", logLimit: LOG_PAGE,
     betsQuery: "", betsVenue: "All", betsFilter: "All", betsLimit: LOG_PAGE, saving: false,
+    // Per table: {col: column index, dir: "asc" | "desc"}; absent = the table's own order.
+    sorts: {},
     // Cal's decision 2026-10-05: the Kalshi bots' combo fills count in every
     // total by default; the header toggle hides them.
     includeBotCombos: true,
@@ -190,10 +192,18 @@
     ])));
   }
 
-  /** A table; each column {label, right?, cell(row) -> string | Node, className?(row)}; rowClass?(row) -> class. */
-  function table(columns, rows, rowClass) {
-    const head = el("tr", null, columns.map((col) => el("th", { className: col.right ? "r" : "", text: col.label })));
-    const body = rows.map((row) => el("tr", { className: rowClass ? rowClass(row) : "" }, columns.map((col) => {
+  /**
+   * A table; each column {label, right?, num?, cell(row) -> string | Node, className?(row),
+   * sort?(row) -> number | string | null, highFirst? (a left-aligned column whose first click sorts high to low)}.
+   * opts.sortKey names the table in state.sorts: columns with a `sort` get a
+   * clickable header (click sorts, click again reverses) and the rows are
+   * ordered by it. opts.rowClass?(row) -> class.
+   */
+  function table(columns, rows, opts) {
+    const { sortKey, rowClass } = opts || {};
+    const current = sortKey ? state.sorts[sortKey] : null;
+    const head = el("tr", null, columns.map((col, index) => headerCell(col, index, sortKey, current)));
+    const body = sortedRows(sortKey, columns, rows).map((row) => el("tr", { className: rowClass ? rowClass(row) : "" }, columns.map((col) => {
       const value = col.cell(row);
       const classes = [col.right ? "r" : "", col.num ? "num" : "", col.className ? col.className(row) : ""].filter(Boolean).join(" ");
       const td = el("td", { className: classes });
@@ -201,6 +211,53 @@
       return td;
     })));
     return el("table", { className: "tbl" }, [el("thead", null, [head]), el("tbody", null, body)]);
+  }
+
+  function headerCell(col, index, sortKey, current) {
+    const className = col.right ? "r" : "";
+    if (!sortKey || !col.sort) return el("th", { className, text: col.label });
+    const active = current && current.col === index;
+    const arrow = active ? (current.dir === "asc" ? " ▲" : " ▼") : "";
+    const button = el("button", {
+      className: "sort" + (active ? " on" : ""), text: col.label + arrow, title: "Sort by " + col.label.toLowerCase(),
+      attrs: { type: "button" }, onClick: () => toggleSort(sortKey, index, col),
+    });
+    const attrs = { "aria-sort": active ? (current.dir === "asc" ? "ascending" : "descending") : "none" };
+    return el("th", { className, attrs }, [button]);
+  }
+
+  function sortsHighFirst(col) {
+    return Boolean(col.right || col.highFirst);
+  }
+
+  // A number column sorts high to low first, a text column A to Z; the next click reverses.
+  function toggleSort(sortKey, index, col) {
+    const current = state.sorts[sortKey];
+    const dir = current && current.col === index ? (current.dir === "asc" ? "desc" : "asc") : (sortsHighFirst(col) ? "desc" : "asc");
+    state.sorts = Object.assign({}, state.sorts, { [sortKey]: { col: index, dir } });
+    render();
+  }
+
+  /** `rows` in the table's chosen order, or unchanged when it has none. Paginated tables call this before slicing. */
+  function sortedRows(sortKey, columns, rows) {
+    const current = sortKey ? state.sorts[sortKey] : null;
+    const col = current ? columns[current.col] : null;
+    if (!col || !col.sort) return rows;
+    return stats.sortRows(rows, col.sort, current.dir);
+  }
+
+  /** "sorted by P&L, high to low", or the table's own order when unsorted. */
+  function orderCaption(sortKey, columns, defaultOrder) {
+    const current = state.sorts[sortKey];
+    const col = current ? columns[current.col] : null;
+    if (!col || !col.sort) return defaultOrder;
+    const words = sortsHighFirst(col) ? { asc: "low to high", desc: "high to low" } : { asc: "A to Z", desc: "Z to A" };
+    return "sorted by " + col.label + ", " + words[current.dir];
+  }
+
+  function msOf(iso) {
+    const ms = iso ? Date.parse(iso) : NaN;
+    return Number.isFinite(ms) ? ms : null;
   }
 
   function segButtons(id, options, isActive, onPick) {
@@ -348,14 +405,14 @@
     const rows = series.filter((d) => d.bets > 0).slice(-DAILY_ROWS).reverse();
     if (!rows.length) { fill("ov-daily", emptyNote("No settled bets in this range.")); return; }
     fill("ov-daily", table([
-      { label: "Day", cell: (d) => dayLabel(d.day, true) },
-      { label: "Bets", right: true, num: true, cell: (d) => String(d.bets) },
-      { label: "W-L-P", right: true, num: true, className: () => "muted", cell: (d) => d.wins + "-" + d.losses + "-" + d.pushes },
-      { label: "Handle", right: true, num: true, cell: (d) => money(d.handle) },
-      { label: "P&L", right: true, num: true, className: (d) => toneClass(d.pnl), cell: (d) => money(d.pnl, true) },
-      { label: "ROI", right: true, num: true, className: (d) => toneClass(d.pnl), cell: (d) => pct(d.roi, true) },
-      { label: "Expected", right: true, num: true, className: () => "exp", cell: (d) => (d.withFair ? money(d.expected, true) : "—") },
-    ], rows));
+      { label: "Day", cell: (d) => dayLabel(d.day, true), sort: (d) => d.day },
+      { label: "Bets", right: true, num: true, cell: (d) => String(d.bets), sort: (d) => d.bets },
+      { label: "W-L-P", right: true, num: true, className: () => "muted", cell: (d) => d.wins + "-" + d.losses + "-" + d.pushes, sort: (d) => d.wins },
+      { label: "Handle", right: true, num: true, cell: (d) => money(d.handle), sort: (d) => d.handle },
+      { label: "P&L", right: true, num: true, className: (d) => toneClass(d.pnl), cell: (d) => money(d.pnl, true), sort: (d) => d.pnl },
+      { label: "ROI", right: true, num: true, className: (d) => toneClass(d.pnl), cell: (d) => pct(d.roi, true), sort: (d) => d.roi },
+      { label: "Expected", right: true, num: true, className: () => "exp", cell: (d) => (d.withFair ? money(d.expected, true) : "—"), sort: (d) => (d.withFair ? d.expected : null) },
+    ], rows, { sortKey: "daily" }));
   }
 
   function renderVenues(settled) {
@@ -397,17 +454,17 @@
     ]);
     if (!group.length) return el("div", { className: "open-group" }, [head, emptyNote(emptyText)]);
     return el("div", { className: "open-group" }, [head, el("div", { className: "scroll" }, [table([
-      { label: startLabelText, className: () => "muted", cell: (t) => startLabel(t.eventStart) },
-      { label: "Venue", cell: (t) => t.venue },
-      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }) },
-      { label: "Event", cell: (t) => t.event || t.kind },
-      { label: "Bet", className: () => "wrap", cell: (t) => t.selection },
-      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice) },
-      { label: "Fair", right: true, num: true, className: () => "exp", cell: (t) => american(t.fairAmerican) },
-      { label: "Edge", right: true, num: true, className: (t) => (t.edge === null ? "muted" : toneClass(t.edge)), cell: (t) => pct(t.edge, true) },
-      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake) },
-      { label: "To win", right: true, num: true, cell: (t) => (Number.isFinite(t.toWin) ? money(t.toWin) : "—") },
-    ], group)])]);
+      { label: startLabelText, className: () => "muted", cell: (t) => startLabel(t.eventStart), sort: (t) => msOf(t.eventStart) },
+      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
+      { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
+      { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
+      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice), sort: (t) => t.displayPrice },
+      { label: "Fair", right: true, num: true, className: () => "exp", cell: (t) => american(t.fairAmerican), sort: (t) => t.fairAmerican },
+      { label: "Edge", right: true, num: true, className: (t) => (t.edge === null ? "muted" : toneClass(t.edge)), cell: (t) => pct(t.edge, true), sort: (t) => t.edge },
+      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake), sort: (t) => t.stake },
+      { label: "To win", right: true, num: true, cell: (t) => (Number.isFinite(t.toWin) ? money(t.toWin) : "—"), sort: (t) => (Number.isFinite(t.toWin) ? t.toWin : null) },
+    ], group, { sortKey: "open" })])]);
   }
 
   // ---- analysis -------------------------------------------------------------
@@ -479,19 +536,22 @@
   function renderGroups(settled) {
     const rows = stats.groupBy(settled, state.groupBy);
     if (!rows.length) { fill("an-groups", emptyNote("No settled bets match these filters.")); return; }
-    const label = stats.GROUPS.find((g) => g.key === state.groupBy).label;
+    const group = stats.GROUPS.find((g) => g.key === state.groupBy);
+    // Bucketed groups (odds, edge, timing, weekday, stake) sort in their own order, not A to Z.
+    const groupSortKey = group.order ? (r) => group.order.indexOf(r.label) : (r) => r.label;
     fill("an-groups", table([
-      { label, cell: (r) => r.label },
-      { label: "Bets", right: true, num: true, cell: (r) => String(r.bets) },
-      { label: "W-L-P", right: true, num: true, className: () => "muted", cell: (r) => r.wins + "-" + r.losses + "-" + r.pushes },
-      { label: "Handle", right: true, num: true, cell: (r) => money(r.handle) },
-      { label: "P&L", right: true, num: true, className: (r) => toneClass(r.pnl), cell: (r) => money(r.pnl, true) },
-      { label: "ROI", right: true, num: true, className: (r) => toneClass(r.pnl), cell: (r) => pct(r.roi, true) },
-      { label: "ROI, 95% interval", cell: ciBar },
-      { label: "Expected ROI", right: true, num: true, className: () => "exp", cell: (r) => pct(r.expRoi, true) },
-      { label: "vs expected", right: true, num: true, className: (r) => (r.withFair ? toneClass(r.fairPnl - r.expected) : "muted"), cell: (r) => (r.withFair ? money(r.fairPnl - r.expected, true) : "—") },
-      { label: "z", right: true, num: true, className: (r) => (r.z !== null && Math.abs(r.z) >= 1.96 ? "warn" : "muted"), cell: (r) => (r.z === null ? "—" : r.z.toFixed(2)) },
-    ], rows));
+      { label: group.label, cell: (r) => r.label, sort: groupSortKey },
+      { label: "Bets", right: true, num: true, cell: (r) => String(r.bets), sort: (r) => r.bets },
+      { label: "W-L-P", right: true, num: true, className: () => "muted", cell: (r) => r.wins + "-" + r.losses + "-" + r.pushes, sort: (r) => r.wins },
+      { label: "Handle", right: true, num: true, cell: (r) => money(r.handle), sort: (r) => r.handle },
+      { label: "P&L", right: true, num: true, className: (r) => toneClass(r.pnl), cell: (r) => money(r.pnl, true), sort: (r) => r.pnl },
+      { label: "ROI", right: true, num: true, className: (r) => toneClass(r.pnl), cell: (r) => pct(r.roi, true), sort: (r) => r.roi },
+      // The interval sorts by its low end: high to low puts the most surely winning groups first.
+      { label: "ROI, 95% interval", highFirst: true, cell: ciBar, sort: (r) => r.roi - r.ciHalf },
+      { label: "Expected ROI", right: true, num: true, className: () => "exp", cell: (r) => pct(r.expRoi, true), sort: (r) => r.expRoi },
+      { label: "vs expected", right: true, num: true, className: (r) => (r.withFair ? toneClass(r.fairPnl - r.expected) : "muted"), cell: (r) => (r.withFair ? money(r.fairPnl - r.expected, true) : "—"), sort: (r) => (r.withFair ? r.fairPnl - r.expected : null) },
+      { label: "z", right: true, num: true, className: (r) => (r.z !== null && Math.abs(r.z) >= 1.96 ? "warn" : "muted"), cell: (r) => (r.z === null ? "—" : r.z.toFixed(2)), sort: (r) => r.z },
+    ], rows, { sortKey: "groups" }));
   }
 
   function renderCalibration(settled) {
@@ -530,12 +590,12 @@
     fill("an-calibration", el("div", { className: "cal-plot" }, [el("div", { className: "plot" }, [yAxis, svg]), xAxis]),
       el("div", { className: "muted", text: "Fair win probability at fill (x) against actual win rate (y); bars are 95% intervals." }));
     fill("an-cal-table", table([
-      { label: "Fair prob.", cell: (b) => Math.round(b.low * 100) + " to " + Math.round(b.high * 100) + "%" },
-      { label: "Bets", right: true, num: true, cell: (b) => String(b.bets) },
-      { label: "Expected win", right: true, num: true, className: () => "exp", cell: (b) => pct(b.expected) },
-      { label: "Actual win", right: true, num: true, cell: (b) => pct(b.actual) },
-      { label: "Diff", right: true, num: true, className: (b) => (Math.abs(b.actual - b.expected) > b.ciHalf ? "warn" : "muted"), cell: (b) => pct(b.actual - b.expected, true) },
-    ], bins));
+      { label: "Fair prob.", cell: (b) => Math.round(b.low * 100) + " to " + Math.round(b.high * 100) + "%", sort: (b) => b.low },
+      { label: "Bets", right: true, num: true, cell: (b) => String(b.bets), sort: (b) => b.bets },
+      { label: "Expected win", right: true, num: true, className: () => "exp", cell: (b) => pct(b.expected), sort: (b) => b.expected },
+      { label: "Actual win", right: true, num: true, cell: (b) => pct(b.actual), sort: (b) => b.actual },
+      { label: "Diff", right: true, num: true, className: (b) => (Math.abs(b.actual - b.expected) > b.ciHalf ? "warn" : "muted"), cell: (b) => pct(b.actual - b.expected, true), sort: (b) => b.actual - b.expected },
+    ], bins, { sortKey: "calibration" }));
   }
 
   function renderLog(settled) {
@@ -543,23 +603,24 @@
     const matching = query
       ? settled.filter((t) => [t.event, t.selection, t.venue, t.league, t.kind].join(" ").toLowerCase().includes(query))
       : settled;
-    const shown = matching.slice(0, state.logLimit);
-    setText("log-caption", "Showing " + shown.length + " of " + matching.length + " settled bets, newest first");
+    const columns = [
+      { label: "Settled", className: () => "muted", cell: (t) => dayLabel(t.settledDay, true), sort: (t) => t.closedMs },
+      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
+      { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
+      { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
+      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice), sort: (t) => t.displayPrice },
+      { label: "Fair", right: true, num: true, className: () => "exp", cell: (t) => american(t.fairAmerican), sort: (t) => t.fairAmerican },
+      { label: "Edge", right: true, num: true, className: (t) => (t.edge === null ? "muted" : toneClass(t.edge)), cell: (t) => pct(t.edge, true), sort: (t) => t.edge },
+      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake), sort: (t) => t.stake },
+      { label: "Result", cell: (t) => el("span", { className: "result " + t.status, text: t.status[0].toUpperCase() + t.status.slice(1) }), sort: (t) => t.status },
+      { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => money(t.pnl, true), sort: (t) => t.pnl },
+    ];
+    const shown = sortedRows("log", columns, matching).slice(0, state.logLimit);
+    setText("log-caption", "Showing " + shown.length + " of " + matching.length + " settled bets, " + orderCaption("log", columns, "newest first"));
     document.getElementById("log-more").hidden = matching.length <= shown.length;
     if (!shown.length) { fill("an-log", emptyNote(query ? "No bets match that search." : "No settled bets match these filters.")); return; }
-    fill("an-log", table([
-      { label: "Settled", className: () => "muted", cell: (t) => dayLabel(t.settledDay, true) },
-      { label: "Venue", cell: (t) => t.venue },
-      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }) },
-      { label: "Event", cell: (t) => t.event || t.kind },
-      { label: "Bet", className: () => "wrap", cell: (t) => t.selection },
-      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice) },
-      { label: "Fair", right: true, num: true, className: () => "exp", cell: (t) => american(t.fairAmerican) },
-      { label: "Edge", right: true, num: true, className: (t) => (t.edge === null ? "muted" : toneClass(t.edge)), cell: (t) => pct(t.edge, true) },
-      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake) },
-      { label: "Result", cell: (t) => el("span", { className: "result " + t.status, text: t.status[0].toUpperCase() + t.status.slice(1) }) },
-      { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => money(t.pnl, true) },
-    ], shown));
+    fill("an-log", table(columns, shown, { sortKey: "log" }));
   }
 
   // ---- bets -----------------------------------------------------------------
@@ -608,28 +669,29 @@
     setText("b-caption", all.length + " BFA and Wagerzon bets · " + removed.length + " removed"
       + (removed.length ? " (" + money(removed.reduce((sum, t) => sum + (t.pnl || 0), 0), true) + " P&L left out)" : ""));
     const matching = betsShown();
-    const shown = matching.slice(0, state.betsLimit);
-    setText("bets-caption", "Showing " + shown.length + " of " + matching.length + ", newest first");
-    document.getElementById("bets-more").hidden = matching.length <= shown.length;
-    if (!shown.length) { fill("b-list", emptyNote(state.betsQuery ? "No bets match that search." : "No bets here.")); return; }
     // The button and the bet lead the row so a phone shows both without scrolling the table sideways.
-    fill("b-list", table([
+    const columns = [
       { label: "", cell: (t) => el("button", {
         className: "chip" + (t.excluded ? "" : " danger"), text: t.excluded ? "Restore" : "Remove",
         title: t.excluded ? "Count this bet again" : "Not my bet: leave it out of every number",
         attrs: Object.assign({ type: "button" }, state.saving ? { disabled: "" } : {}),
         onClick: () => setExcluded(t, !t.excluded),
       }) },
-      { label: "Bet", className: () => "wrap", cell: (t) => t.selection },
-      { label: "Event", cell: (t) => t.event || t.kind },
-      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice) },
-      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake) },
-      { label: "Result", cell: resultTag },
-      { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => (t.pnl === null ? "—" : money(t.pnl, true)) },
-      { label: "Placed", className: () => "muted", cell: (t) => (t.placedMs ? dayLabel(stats.pacificDay(t.placedMs), true) : "—") },
-      { label: "Venue", cell: (t) => t.venue },
-      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }) },
-    ], shown, (t) => (t.excluded ? "removed" : "")));
+      { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
+      { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
+      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice), sort: (t) => t.displayPrice },
+      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake), sort: (t) => t.stake },
+      { label: "Result", cell: resultTag, sort: (t) => t.status },
+      { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => (t.pnl === null ? "—" : money(t.pnl, true)), sort: (t) => t.pnl },
+      { label: "Placed", className: () => "muted", cell: (t) => (t.placedMs ? dayLabel(stats.pacificDay(t.placedMs), true) : "—"), sort: (t) => t.placedMs },
+      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
+    ];
+    const shown = sortedRows("bets", columns, matching).slice(0, state.betsLimit);
+    setText("bets-caption", "Showing " + shown.length + " of " + matching.length + ", " + orderCaption("bets", columns, "newest first"));
+    document.getElementById("bets-more").hidden = matching.length <= shown.length;
+    if (!shown.length) { fill("b-list", emptyNote(state.betsQuery ? "No bets match that search." : "No bets here.")); return; }
+    fill("b-list", table(columns, shown, { sortKey: "bets", rowClass: (t) => (t.excluded ? "removed" : "") }));
   }
 
   // ---- shell ----------------------------------------------------------------
