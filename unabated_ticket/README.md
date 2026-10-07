@@ -1499,7 +1499,8 @@ double-click — is ignored:
 
 | Card reads | What happened |
 | --- | --- |
-| `Placed · ticket N` (green) | BFA lists the new teaser; the bets list re-polls and the ticket moves to Open at BFA |
+| `Placed · ticket N · all 4 legs match BFA` (green) | BFA lists the new teaser and every leg reads as sent; the bets list re-polls and the ticket moves to Open at BFA |
+| `Placed · ticket N, but BFA's ticket differs …` (red) | the ticket is booked but BFA shows a leg, a number or the money differently from what was sent (each difference named, BFA's own leg text quoted) — check it at BFA; a booked bet cannot be undone here |
 | `Not placed: …` (red), Place again | nothing was bet — a leg's number moved on BFA (`BFA has +3 now, the list has +2.5`), a game started, the ticket is already open, another ticket was placing, or BFA answered 4xx |
 | `Sent to BFA, but …` (red), no Place | the wager went out and no ticket appeared in 20 s, the reply was lost, or reading the open bets failed: it may be booked. Check BFA's open bets; the service refuses the same four sides, at any numbers, for 15 min (held in memory: a service restart drops the hold, and then only the already-open check guards) |
 
@@ -1510,7 +1511,13 @@ full-game line, open, at **the very number** the list was built on (Buckeye's
 number before the 6 points) — and that no open teaser already holds the same
 four sides. Then ONE POST with `AcceptChanges 0` (BFA refuses a moved number
 rather than taking it), never retried, and the open bets read every second
-until the ticket shows. The body is pinned by a test to the one the site sent
+until the ticket shows. The new ticket is then checked leg by leg against
+BFA's own text for it (`leg_mismatches`): each game's leg must read the sent
+rotation, market, full game, the over or under sent, the number after the 6
+points (a spread +6 either side, an Over -6, an Under +6) and `(B+6)`, and the
+ticket must risk the stake to win 3x it; anything else turns the card red
+(2026-10-07, 0.19.1 — the first live ticket, 356677821, reads clean). The body
+is pinned by a test to the one the site sent
 for a ticket Cal placed by hand (356323496). Juice is not checked: in a
 Buckeye teaser it does not change the payout.
 
