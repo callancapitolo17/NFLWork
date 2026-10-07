@@ -183,6 +183,28 @@ def test_a_moved_number_refuses_and_says_both_numbers():
     assert match_leg(NFL_BOARD, total, NOW) == "Over 39: BFA has 44.5 now, the list has 45"
 
 
+def test_a_spread_team_on_the_other_side_at_bfa_refuses():
+    giants_home = REQUEST["legs"][0]
+    assert match_leg(NFL_BOARD, {**giants_home, "side": "away"}, NOW) == (
+        "Giants +8.5: BFA lists New York Giants (rotation 258) as home, the list has the away team")
+    flipped = copy.deepcopy(NFL_BOARD)
+    for contestant in flipped[0]["fixtures"][0]["contestants"]:
+        contestant["side"] = 3 - contestant["side"]
+    assert match_leg(flipped, giants_home, NOW) == (
+        "Giants +8.5: BFA lists New York Giants (rotation 258) as away, the list has the home team")
+    total = {**giants_home, "betType": "total", "side": "under", "points": 44.5, "label": "Under 50.5"}
+    assert not isinstance(match_leg(flipped, total, NOW), str)  # a total's side is over / under
+
+
+def test_a_side_mismatch_sends_nothing():
+    body = copy.deepcopy(REQUEST)
+    body["legs"][1]["side"] = "home"
+    session = FakeSession()
+    result = make_placer(FakeBFA([[]]), session, Clock()).place(validate_place_request(body))
+    assert result["status"] == "refused" and "BFA lists Denver Broncos (rotation 271) as away" in result["message"]
+    assert session.posts == []
+
+
 def test_no_game_a_started_game_a_closed_market_and_a_start_far_off_refuse():
     leg = REQUEST["legs"][3]
     assert "lists no game with rotation 999" in match_leg(CFB_BOARD, {**leg, "rotation": 999}, NOW)
