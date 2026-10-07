@@ -50,6 +50,22 @@ test("open, closed-early and unknown bets carry no P&L and stay out of the summa
   assert.deepEqual(stats.exclusions(tickets), { open: 1, noResult: 2 });
 });
 
+test("the venue's own pnl wins over stake/toWin, a sold position with one counts, its merged side is skipped", () => {
+  const tickets = stats.buildTickets([
+    straight({ id: "kalshi:R:yes", venue: "kalshi", stake: 236, toWin: 10964, status: "won", pnl: 5449.46 }),
+    straight({ id: "kalshi:R:no", venue: "kalshi", status: "closed", stake: 0, toWin: 0, mergedInto: "kalshi:R:yes" }),
+    straight({ id: "kalshi:P:no", venue: "kalshi", status: "closed", stake: 194.01, pnl: 24.84 }),
+    straight({ id: "kalshi:M:no", venue: "kalshi", status: "closed", stake: 732.54, pnl: -632.67 }),
+  ], []);
+  assert.deepEqual(tickets.map((t) => t.id).sort(), ["kalshi:M:no", "kalshi:P:no", "kalshi:R:yes"]);
+  const total = stats.summarize(tickets);
+  assert.equal(total.bets, 3);
+  assert.equal(total.wins, 2);
+  assert.equal(total.losses, 1);
+  assert.equal(Math.round(total.pnl * 100) / 100, 4841.63);
+  assert.deepEqual(stats.exclusions(tickets), { open: 0, noResult: 0 });
+});
+
 test("a won bet with no toWin is paid off its American price", () => {
   const [ticket] = stats.buildTickets([straight({ price: 150, stake: 100, toWin: null })], []);
   assert.equal(ticket.pnl, 150);
