@@ -29,6 +29,7 @@ class FakeKalshiApi:
         self.fills = fills
         self.positions = positions
         self.historical_fills: list[dict] = []
+        self.settlements: list[dict] = []
         self.paths: list[str] = []
         self.fail_paths: set[str] = set()
 
@@ -49,6 +50,8 @@ class FakeKalshiApi:
                 fills = [f for f in fills if datetime.fromisoformat(
                     f["created_time"].replace("Z", "+00:00")).timestamp() >= int(min_ts[0])]
             return 200, {"fills": fills, "cursor": ""}, {}
+        if url.path == "/portfolio/settlements":
+            return 200, {"settlements": self.settlements, "cursor": ""}, {}
         if url.path == "/portfolio/positions":
             return 200, {"market_positions": self.positions, "cursor": ""}, {}
         if url.path.startswith("/markets/"):
@@ -135,14 +138,17 @@ def test_full_pulls_read_the_historical_fills_and_price_the_net_position(kalshi_
     bot = fill("KXMLBGAME-26JUL01NYYBOS-NYY", "yes", 5, 0.5, "2026-07-01T12:00:00Z", trade_id="h2")
     stored = fill("KXNCAAFTOTAL-26SEP12RICEND-60", "yes", 500, 0.32, "2026-07-02T12:00:00Z", trade_id="h3")
     api = FakeKalshiApi(kalshi_fixture, [closing], [])
-    api.historical_fills = [opening, bot, stored]
+    settled = fill("KXNFLGAME-26SEP20PITNE-PIT", "yes", 401, 0.39, "2026-04-01T14:53:00Z", trade_id="h4")
+    api.historical_fills = [opening, bot, stored, settled]
+    api.settlements = [{"ticker": "KXNFLGAME-26SEP20PITNE-PIT", "market_result": "yes"}]
     source = KalshiSource(api=api, configure_auth=False, lookup_gap_sec=0, clock=lambda: 1_800_000_000.0,
                           known_tickers=lambda: {"KXNCAAFTOTAL-26SEP12RICEND-60"})
     records = {record["id"]: record for record in source.fetch()}
     assert api.count("/historical/fills?limit=200") == 1
-    # Only markets the bets touch: one in the recent fills, one the store holds; not the bot's.
+    # Only markets the bets touch: in the recent fills, held by the store, or
+    # settled since the cutoff; not the bot's.
     assert {record["raw"]["ticker"] for record in records.values()} == {
-        "KXNFLGAME-26SEP20PITNE-NE", "KXNCAAFTOTAL-26SEP12RICEND-60"}
+        "KXNFLGAME-26SEP20PITNE-NE", "KXNCAAFTOTAL-26SEP12RICEND-60", "KXNFLGAME-26SEP20PITNE-PIT"}
     entry = records["kalshi:KXNFLGAME-26SEP20PITNE-NE:yes"]
     assert entry["pnl"] == 5  # bought YES at 40c, closed at 45c
     assert records["kalshi:KXNFLGAME-26SEP20PITNE-NE:no"]["mergedInto"] == entry["id"]

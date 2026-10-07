@@ -50,6 +50,10 @@ HISTORICAL_FILLS_PATH = "/historical/fills"
 # position is flat.
 FLAT_POSITION_EPSILON = 1e-6
 POSITIONS_PATH = "/portfolio/positions?settlement_status=unsettled"
+# Every market the account settled since Kalshi's history cutoff; a bet placed
+# before the cutoff and settled after it (the Sep-15 starting-QB markets,
+# bought in March-May) has fills only under /historical.
+SETTLEMENTS_PATH = "/portfolio/settlements"
 
 
 # ---- pure normaliser (port target) ------------------------------------------------
@@ -403,12 +407,14 @@ class KalshiSource:
         return n_new
 
     def _hold_historical_fills(self) -> int:
-        """The pre-cutoff fills of markets the bets already touch: one in the
-        recent fills, or one the store holds a record of. The account's whole
+        """The pre-cutoff fills of markets the bets touch: one in the recent
+        fills, one the store holds a record of, or one the account settled
+        since the cutoff (/portfolio/settlements). The account's whole
         history (~6,900 fills on 2026-10-06, mostly the MLB bots' older trades)
         is left out: it was never in the tracker, and looking up each of its
         markets at the lookup gap stalls a full pull for over an hour."""
-        wanted = {fill["ticker"] for fill in self._fills_by_trade_id.values()} | self._known_tickers()
+        wanted = ({fill["ticker"] for fill in self._fills_by_trade_id.values()} | self._known_tickers()
+                  | {settlement["ticker"] for settlement in _paginate(self._api, SETTLEMENTS_PATH, "settlements")})
         return self._hold_fills(fill for fill in _paginate(self._api, HISTORICAL_FILLS_PATH, "fills")
                                 if fill.get("ticker") in wanted)
 
