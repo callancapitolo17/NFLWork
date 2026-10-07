@@ -24,7 +24,8 @@ place(request), in order — every check before the POST refuses with nothing se
   3. the account's teaser type from its metadata (cached METADATA_TTL_SEC): the one 4-team type
      at TEASER_POINTS for every leg's sport, paying +300 — what teaser.js prices.
   4. BFA's board now (the leagues' popular lists, as the site reads them): each leg's game by
-     rotation, its main full-game market, open, and the SAME number the list was built on.
+     rotation, a spread's team on the same side (home or away) BFA lists it, its main
+     full-game market, open, and the SAME number the list was built on.
   5. the open bets before: an open teaser on the same four games and sides refuses the ticket.
   6. POST once, never retried. Only a 4xx reply counts as refused; a lost reply or any other
      answer may still have booked the wager, so the open bets decide.
@@ -84,9 +85,14 @@ MARKET_SPREAD = 2
 MARKET_TOTAL = 3
 FULL_GAME_PERIOD = 0
 MAIN_LINE_INDEX = 0
-# An odds row's side: a contestant's 1 home / 2 away; a total's 4 over / 5 under.
+# An odds row's side: a contestant's 1 home / 2 away; a total's 4 over / 5 under. A
+# contestant carries the same code (2026-10-07 board: 144 of 144 teams, away = odd rotation).
+SIDE_HOME = 1
+SIDE_AWAY = 2
 SIDE_OVER = 4
 SIDE_UNDER = 5
+CONTESTANT_SIDES = {"away": SIDE_AWAY, "home": SIDE_HOME}
+SIDE_WORDS = {SIDE_AWAY: "away", SIDE_HOME: "home"}
 MARKET_OPEN = 1
 ODDS_OPEN = 0
 BET_TYPE_MARKETS = {"spread": MARKET_SPREAD, "total": MARKET_TOTAL}
@@ -281,6 +287,21 @@ def _odds_row(market: dict, leg: dict, contestant: dict) -> dict | None:
     return None
 
 
+def _spread_side_problem(leg: dict, contestant: dict) -> str | None:
+    """Why a spread leg's team is not on the side the list has it, or None. The rotation finds
+    the team; BFA's own home/away for it must agree with the list's, so a rotation that points
+    at another team (or a game the two feeds lay out differently) bets nothing. A total's
+    rotation only finds the game: its side is the over or under."""
+    if leg["betType"] != "spread":
+        return None
+    expected = CONTESTANT_SIDES[leg["side"]]
+    if contestant.get("side") == expected:
+        return None
+    listed = SIDE_WORDS.get(contestant.get("side"), f"side {contestant.get('side')!r}")
+    return (f"{leg['label']}: BFA lists {contestant.get('name')} (rotation {leg['rotation']}) as {listed}, "
+            f"the list has the {leg['side']} team")
+
+
 def match_leg(games: list[dict], leg: dict, now: datetime) -> dict | str:
     """BFA's game, market and odds row for one leg, or why it cannot be bet as listed:
     {game, fixture, market, odds}. The game is the one listing the leg's rotation, starting
@@ -299,10 +320,17 @@ def match_leg(games: list[dict], leg: dict, now: datetime) -> dict | str:
     start = _parse_iso(fixture.get("date"))
     if start is None or start <= now or fixture.get("isLive") or game.get("isLive"):
         return f"{leg['label']}: the game has started"
+    side_problem = _spread_side_problem(leg, contestant)
+    if side_problem:
+        return side_problem
     market = _main_market(game, fixture, BET_TYPE_MARKETS[leg["betType"]])
     odds = _odds_row(market, leg, contestant) if market else None
     if market is None or odds is None:
         return f"{leg['label']}: BFA lists no full-game {leg['betType']} for {game.get('name')}"
+    # The pick sends the odds row's own Side: for a spread it must be the team's side too.
+    if leg["betType"] == "spread" and odds.get("side") != CONTESTANT_SIDES[leg["side"]]:
+        return (f"{leg['label']}: BFA's odds row for {contestant.get('name')} carries side {odds.get('side')!r}, "
+                f"the {leg['side']} team's is {CONTESTANT_SIDES[leg['side']]}")
     if market.get("status") != MARKET_OPEN or odds.get("status") != ODDS_OPEN:
         return f"{leg['label']}: BFA has the {leg['betType']} closed"
     if not _is_number(odds.get("line")) or odds["line"] != leg["points"]:

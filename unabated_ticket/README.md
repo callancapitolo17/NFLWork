@@ -1506,9 +1506,10 @@ double-click — is ignored:
 
 Before anything is sent the service checks, in order: the account's own
 4-team 6-point teaser type (from BFA's account metadata; it must pay +300,
-what this tab prices), each leg on BFA's live board by rotation — main
-full-game line, open, at **the very number** the list was built on (Buckeye's
-number before the 6 points) — and that no open teaser already holds the same
+what this tab prices), each leg on BFA's live board by rotation — a spread's
+team on the same side, home or away, that BFA lists it (2026-10-07: 144 of
+144 legs on that day's board agreed), main full-game line, open, at **the very
+number** the list was built on (Buckeye's number before the 6 points) — and that no open teaser already holds the same
 four sides. Then ONE POST with `AcceptChanges 0` (BFA refuses a moved number
 rather than taking it), never retried, and the open bets read every second
 until the ticket shows. The new ticket is then checked leg by leg against
