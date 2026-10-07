@@ -2159,11 +2159,10 @@ page's Remove / Restore.
   only a date; futures and Kalshi combos none), each with its count and
   stake at risk, re-split on every refresh. A game that has ended stays in
   Live now until its venue grades the bet.
-- **Sorting** (Breakdown, Bet log, Open bets; Cal 2026-10-07: only the
-  tables where it makes sense): click a column header to sort by it (numbers
+- **Sorting**: click any column header on any table to sort by it (numbers
   high to low first, text A to Z), click again to reverse. Blanks ("—") stay
-  last either way; the bet log sorts its whole match before paging. The
-  order lasts until the page reloads.
+  last either way; the bet log and the Bets list sort their whole match
+  before paging. The order lasts until the page reloads.
 - **Rules** (`trackerstats.js`, pure, tested in `tests/trackerstats.test.js`):
   P&L lands on the **Pacific** day of the record's `closedAt`, which each
   venue fills differently: Kalshi the market's expiration, Polymarket US its

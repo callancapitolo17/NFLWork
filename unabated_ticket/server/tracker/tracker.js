@@ -405,14 +405,14 @@
     const rows = series.filter((d) => d.bets > 0).slice(-DAILY_ROWS).reverse();
     if (!rows.length) { fill("ov-daily", emptyNote("No settled bets in this range.")); return; }
     fill("ov-daily", table([
-      { label: "Day", cell: (d) => dayLabel(d.day, true) },
-      { label: "Bets", right: true, num: true, cell: (d) => String(d.bets) },
-      { label: "W-L-P", right: true, num: true, className: () => "muted", cell: (d) => d.wins + "-" + d.losses + "-" + d.pushes },
-      { label: "Handle", right: true, num: true, cell: (d) => money(d.handle) },
-      { label: "P&L", right: true, num: true, className: (d) => toneClass(d.pnl), cell: (d) => money(d.pnl, true) },
-      { label: "ROI", right: true, num: true, className: (d) => toneClass(d.pnl), cell: (d) => pct(d.roi, true) },
-      { label: "Expected", right: true, num: true, className: () => "exp", cell: (d) => (d.withFair ? money(d.expected, true) : "—") },
-    ], rows));
+      { label: "Day", cell: (d) => dayLabel(d.day, true), sort: (d) => d.day },
+      { label: "Bets", right: true, num: true, cell: (d) => String(d.bets), sort: (d) => d.bets },
+      { label: "W-L-P", right: true, num: true, className: () => "muted", cell: (d) => d.wins + "-" + d.losses + "-" + d.pushes, sort: (d) => d.wins },
+      { label: "Handle", right: true, num: true, cell: (d) => money(d.handle), sort: (d) => d.handle },
+      { label: "P&L", right: true, num: true, className: (d) => toneClass(d.pnl), cell: (d) => money(d.pnl, true), sort: (d) => d.pnl },
+      { label: "ROI", right: true, num: true, className: (d) => toneClass(d.pnl), cell: (d) => pct(d.roi, true), sort: (d) => d.roi },
+      { label: "Expected", right: true, num: true, className: () => "exp", cell: (d) => (d.withFair ? money(d.expected, true) : "—"), sort: (d) => (d.withFair ? d.expected : null) },
+    ], rows, { sortKey: "daily" }));
   }
 
   function renderVenues(settled) {
@@ -588,12 +588,12 @@
     fill("an-calibration", el("div", { className: "cal-plot" }, [el("div", { className: "plot" }, [yAxis, svg]), xAxis]),
       el("div", { className: "muted", text: "Fair win probability at fill (x) against actual win rate (y); bars are 95% intervals." }));
     fill("an-cal-table", table([
-      { label: "Fair prob.", cell: (b) => Math.round(b.low * 100) + " to " + Math.round(b.high * 100) + "%" },
-      { label: "Bets", right: true, num: true, cell: (b) => String(b.bets) },
-      { label: "Expected win", right: true, num: true, className: () => "exp", cell: (b) => pct(b.expected) },
-      { label: "Actual win", right: true, num: true, cell: (b) => pct(b.actual) },
-      { label: "Diff", right: true, num: true, className: (b) => (Math.abs(b.actual - b.expected) > b.ciHalf ? "warn" : "muted"), cell: (b) => pct(b.actual - b.expected, true) },
-    ], bins));
+      { label: "Fair prob.", cell: (b) => Math.round(b.low * 100) + " to " + Math.round(b.high * 100) + "%", sort: (b) => b.low },
+      { label: "Bets", right: true, num: true, cell: (b) => String(b.bets), sort: (b) => b.bets },
+      { label: "Expected win", right: true, num: true, className: () => "exp", cell: (b) => pct(b.expected), sort: (b) => b.expected },
+      { label: "Actual win", right: true, num: true, cell: (b) => pct(b.actual), sort: (b) => b.actual },
+      { label: "Diff", right: true, num: true, className: (b) => (Math.abs(b.actual - b.expected) > b.ciHalf ? "warn" : "muted"), cell: (b) => pct(b.actual - b.expected, true), sort: (b) => b.actual - b.expected },
+    ], bins, { sortKey: "calibration" }));
   }
 
   function renderLog(settled) {
@@ -675,21 +675,21 @@
         attrs: Object.assign({ type: "button" }, state.saving ? { disabled: "" } : {}),
         onClick: () => setExcluded(t, !t.excluded),
       }) },
-      { label: "Bet", className: () => "wrap", cell: (t) => t.selection },
-      { label: "Event", cell: (t) => t.event || t.kind },
-      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice) },
-      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake) },
-      { label: "Result", cell: resultTag },
-      { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => (t.pnl === null ? "—" : money(t.pnl, true)) },
-      { label: "Placed", className: () => "muted", cell: (t) => (t.placedMs ? dayLabel(stats.pacificDay(t.placedMs), true) : "—") },
-      { label: "Venue", cell: (t) => t.venue },
-      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }) },
+      { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
+      { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
+      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice), sort: (t) => t.displayPrice },
+      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake), sort: (t) => t.stake },
+      { label: "Result", cell: resultTag, sort: (t) => t.status },
+      { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => (t.pnl === null ? "—" : money(t.pnl, true)), sort: (t) => t.pnl },
+      { label: "Placed", className: () => "muted", cell: (t) => (t.placedMs ? dayLabel(stats.pacificDay(t.placedMs), true) : "—"), sort: (t) => t.placedMs },
+      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
     ];
-    const shown = matching.slice(0, state.betsLimit);
-    setText("bets-caption", "Showing " + shown.length + " of " + matching.length + ", newest first");
+    const shown = sortedRows("bets", columns, matching).slice(0, state.betsLimit);
+    setText("bets-caption", "Showing " + shown.length + " of " + matching.length + ", " + orderCaption("bets", columns, "newest first"));
     document.getElementById("bets-more").hidden = matching.length <= shown.length;
     if (!shown.length) { fill("b-list", emptyNote(state.betsQuery ? "No bets match that search." : "No bets here.")); return; }
-    fill("b-list", table(columns, shown, { rowClass: (t) => (t.excluded ? "removed" : "") }));
+    fill("b-list", table(columns, shown, { sortKey: "bets", rowClass: (t) => (t.excluded ? "removed" : "") }));
   }
 
   // ---- shell ----------------------------------------------------------------
