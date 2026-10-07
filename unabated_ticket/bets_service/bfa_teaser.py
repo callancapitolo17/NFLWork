@@ -327,6 +327,10 @@ def match_leg(games: list[dict], leg: dict, now: datetime) -> dict | str:
     odds = _odds_row(market, leg, contestant) if market else None
     if market is None or odds is None:
         return f"{leg['label']}: BFA lists no full-game {leg['betType']} for {game.get('name')}"
+    # The pick sends the odds row's own Side: for a spread it must be the team's side too.
+    if leg["betType"] == "spread" and odds.get("side") != CONTESTANT_SIDES[leg["side"]]:
+        return (f"{leg['label']}: BFA's odds row for {contestant.get('name')} carries side {odds.get('side')!r}, "
+                f"the {leg['side']} team's is {CONTESTANT_SIDES[leg['side']]}")
     if market.get("status") != MARKET_OPEN or odds.get("status") != ODDS_OPEN:
         return f"{leg['label']}: BFA has the {leg['betType']} closed"
     if not _is_number(odds.get("line")) or odds["line"] != leg["points"]:

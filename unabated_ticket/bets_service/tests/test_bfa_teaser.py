@@ -196,6 +196,15 @@ def test_a_spread_team_on_the_other_side_at_bfa_refuses():
     assert not isinstance(match_leg(flipped, total, NOW), str)  # a total's side is over / under
 
 
+def test_an_odds_row_whose_side_disagrees_with_its_team_refuses():
+    odd_row = copy.deepcopy(NFL_BOARD)
+    giants_odds = odd_row[0]["markets"][0]["odds"][1]
+    assert giants_odds["contestantId"] == 64424829
+    giants_odds["side"] = 2
+    assert match_leg(odd_row, REQUEST["legs"][0], NOW) == (
+        "Giants +8.5: BFA's odds row for New York Giants carries side 2, the home team's is 1")
+
+
 def test_a_side_mismatch_sends_nothing():
     body = copy.deepcopy(REQUEST)
     body["legs"][1]["side"] = "home"
