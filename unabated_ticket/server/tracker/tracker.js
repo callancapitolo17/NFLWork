@@ -42,8 +42,7 @@
     betsQuery: "", betsVenue: "All", betsFilter: "All", betsLimit: LOG_PAGE, saving: false,
     // Per table: {col: column index, dir: "asc" | "desc"}; absent = the table's own order.
     sorts: {},
-    // The Pacific day Overview's settled panel shows; null = today (Cal, 2026-10-07).
-    shownDay: null,
+    settledLimit: LOG_PAGE,
     // Cal's decision 2026-10-05: the Kalshi bots' combo fills count in every
     // total by default; the header toggle hides them.
     includeBotCombos: true,
@@ -327,7 +326,7 @@
     renderCalendar(last);
     renderDaily(series);
     renderVenues(settled);
-    renderSettledDay();
+    renderSettledBets(settled, total, missing);
   }
 
   function renderChart(series) {
@@ -450,34 +449,49 @@
   }
 
   /**
-   * Overview's bottom panel: the bets that settled on one Pacific day (today
-   * unless the arrows stepped back), whatever the header range says.
+   * Overview's bottom panel: every bet settled in the header range (Cal,
+   * 2026-10-07), newest first, paged like the bet log.
    */
-  function renderSettledDay() {
-    const today = stats.pacificDay(Date.now());
-    const day = state.shownDay && state.shownDay < today ? state.shownDay : today;
-    const settled = stats.inDayRange(tickets, day, day);
-    const total = stats.summarize(settled);
-    const missing = noResultCount(day, day);
-    setText("day-title", day === today ? "Settled today" : "Settled " + dayLabel(day, true));
-    setText("day-caption", dayLabel(day, true) + " · Pacific settle day");
-    document.getElementById("day-next").disabled = day >= today;
+  function renderSettledBets(settled, total, missing) {
+    fillSettledSummary("settled-sum", settled, total, missing);
+    const columns = settledColumns((t) => dayLabel(t.settledDay, true) + " " + timeLabel(t.closedMs));
+    const newestFirst = settled.slice().sort((a, b) => b.closedMs - a.closedMs);
+    const shown = sortedRows("settled", columns, newestFirst).slice(0, state.settledLimit);
+    setText("settled-caption", settled.length
+      ? "Showing " + shown.length + " of " + settled.length + ", " + orderCaption("settled", columns, "newest first")
+      : "");
+    document.getElementById("settled-more").hidden = settled.length <= shown.length;
+    if (!shown.length) { fill("ov-settled", emptyNote("No settled bets in this range.")); return; }
+    fill("ov-settled", table(columns, shown, { sortKey: "settled" }));
+  }
 
+  /** The Open page's Settled today panel: bets settled on the current Pacific day, whatever the header range. */
+  function renderSettledToday() {
+    const today = stats.pacificDay(Date.now());
+    const settled = stats.inDayRange(tickets, today, today);
+    fillSettledSummary("today-sum", settled, stats.summarize(settled), noResultCount(today, today));
+    setText("today-caption", dayLabel(today, true) + " · Pacific settle day");
+    if (!settled.length) { fill("op-today", emptyNote("Nothing has settled yet today.")); return; }
+    const newestFirst = settled.slice().sort((a, b) => b.closedMs - a.closedMs);
+    fill("op-today", table(settledColumns((t) => timeLabel(t.closedMs)), newestFirst, { sortKey: "today" }));
+  }
+
+  /** P&L, record, expected and handle above a settled-bets table. */
+  function fillSettledSummary(id, settled, total, missing) {
     const part = (label, value, className) => el("span", null, [document.createTextNode(label + " "), el("b", { className: className || "", text: value })]);
-    fill("day-sum", ...(settled.length ? [
+    fill(id, ...(settled.length ? [
       part("P&L", money(total.pnl, true), toneClass(total.pnl)),
       part("Record", total.wins + "-" + total.losses + "-" + total.pushes),
       total.withFair ? part("Expected", money(total.expected, true), "exp") : null,
       part("Handle", money(total.handle)),
       missing ? part("Without a result", String(missing)) : null,
     ] : []));
+  }
 
-    if (!settled.length) {
-      fill("ov-day", emptyNote(day === today ? "Nothing has settled yet today." : "No bets settled on " + dayLabel(day, true) + "."));
-      return;
-    }
-    const columns = [
-      { label: "Settled", className: () => "muted", cell: (t) => timeLabel(t.closedMs), sort: (t) => t.closedMs },
+  /** Columns of a settled-bets table; settledCell formats the settle time. */
+  function settledColumns(settledCell) {
+    return [
+      { label: "Settled", className: () => "muted", cell: settledCell, sort: (t) => t.closedMs },
       { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
       { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
       { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
@@ -488,15 +502,6 @@
       { label: "Result", cell: resultTag, sort: (t) => t.status },
       { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => money(t.pnl, true), sort: (t) => t.pnl },
     ];
-    const newestFirst = settled.slice().sort((a, b) => b.closedMs - a.closedMs);
-    fill("ov-day", table(columns, newestFirst, { sortKey: "day" }));
-  }
-
-  function stepShownDay(days) {
-    const today = stats.pacificDay(Date.now());
-    const next = stats.addDays(state.shownDay || today, days);
-    state.shownDay = next >= today ? null : next;
-    render();
   }
 
   // ---- open -----------------------------------------------------------------
@@ -522,6 +527,7 @@
       { label: "Live now", value: money(liveStake), sub: live.length + (live.length === 1 ? " bet" : " bets") + " in progress" },
     ]);
     renderOpen(open, openStake, toWin, { live, upcoming, noStart });
+    renderSettledToday();
   }
 
   function renderOpen(open, openStake, toWin, split) {
@@ -575,7 +581,7 @@
   function toggleIn(listKey, value) {
     const list = state[listKey];
     state[listKey] = list.includes(value) ? list.filter((v) => v !== value) : list.concat(value);
-    state.logLimit = LOG_PAGE;
+    state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
     render();
   }
 
@@ -590,7 +596,7 @@
     const { first, last } = rangeDays();
     chips("f-venues", valuesByCount("venue"), "offVenues");
     chips("f-leagues", valuesByCount("league"), "offLeagues");
-    segButtons("f-kinds", KINDS.filter((k) => k !== BOT_COMBO_KIND || state.includeBotCombos), (k) => k === state.kind, (k) => { state.kind = k; state.logLimit = LOG_PAGE; render(); });
+    segButtons("f-kinds", KINDS.filter((k) => k !== BOT_COMBO_KIND || state.includeBotCombos), (k) => k === state.kind, (k) => { state.kind = k; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; render(); });
     segButtons("group-tabs", stats.GROUPS, (g) => g.key === state.groupBy, (g) => { state.groupBy = g.key; render(); });
 
     const settled = filteredSettled();
@@ -820,7 +826,7 @@
       const { first, last } = rangeDays();
       state.customFirst = first; state.customLast = last;
     }
-    state.range = range; state.logLimit = LOG_PAGE; savePrefs(); render();
+    state.range = range; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; savePrefs(); render();
   }
 
   function renderCustomRange() {
@@ -891,14 +897,13 @@
     for (const button of document.querySelectorAll(".nav button")) {
       button.addEventListener("click", () => showView(button.dataset.view));
     }
-    document.getElementById("day-prev").addEventListener("click", () => stepShownDay(-1));
-    document.getElementById("day-next").addEventListener("click", () => stepShownDay(1));
+    document.getElementById("settled-more").addEventListener("click", () => { state.settledLimit += LOG_PAGE; render(); });
     document.getElementById("show-dollars").addEventListener("click", () => { state.units = false; savePrefs(); render(); });
     document.getElementById("show-units").addEventListener("click", () => { state.units = true; savePrefs(); render(); });
     document.getElementById("bot-combos").addEventListener("click", () => {
       state.includeBotCombos = !state.includeBotCombos;
       if (!state.includeBotCombos && state.kind === BOT_COMBO_KIND) state.kind = "All";
-      state.logLimit = LOG_PAGE;
+      state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
       savePrefs(); applyBotComboFilter(); render();
     });
     document.getElementById("unit-size").addEventListener("change", (event) => {
@@ -909,11 +914,11 @@
     for (const [id, key] of [["custom-first", "customFirst"], ["custom-last", "customLast"]]) {
       document.getElementById(id).addEventListener("change", (event) => {
         if (!stats.isDayKey(event.target.value)) return;
-        state[key] = event.target.value; state.logLimit = LOG_PAGE; savePrefs(); render();
+        state[key] = event.target.value; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; savePrefs(); render();
       });
     }
     document.getElementById("log-search").addEventListener("input", (event) => {
-      state.query = event.target.value; state.logLimit = LOG_PAGE; render();
+      state.query = event.target.value; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; render();
     });
     document.getElementById("log-more").addEventListener("click", () => { state.logLimit += LOG_PAGE; render(); });
     document.getElementById("bets-search").addEventListener("input", (event) => {
