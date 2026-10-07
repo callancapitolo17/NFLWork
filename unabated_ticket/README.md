@@ -2144,7 +2144,14 @@ page's Remove / Restore.
 - **Overview**: net P&L, ROI, handle, record, open risk; expected P&L at
   Unabated's fair at fill and actual vs expected with its z-score; cumulative
   actual vs expected chart with daily bars; a 6-week calendar heatmap; daily
-  results; P&L by venue; open bets with price, fair and edge.
+  results; P&L by venue; and **Settled today**: the bets that settled on the
+  current Pacific day whatever the header range says (P&L, record, expected,
+  handle, then each bet with its result), with ‹ › to step back a day
+  (2026-10-07). The Open risk tile links to the Open page.
+- **Open** (2026-10-07; was Overview's bottom panel): open-bet count, stake
+  at risk and to win, open EV (bets with a saved fair) and stake in live
+  games, then the open bets with price, fair and edge. The nav tab carries
+  the open count.
 - **Analysis**: filter by venue, league and type (straight, parlay, teaser),
   group by venue, league, market, period, type, odds, edge at fill, timing
   (hours placed before start), weekday or stake. Each group shows ROI with its
@@ -2160,7 +2167,7 @@ page's Remove / Restore.
 - **Header**: range (Today, Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days), $ / units with the unit size
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
-- **Open bets** (Overview) are split into **Live now** (the game has started;
+- **Open bets** (Open page) are split into **Live now** (the game has started;
   a parlay's earliest leg), **Upcoming**, and, when any exist, **No start
   time** (BetOnline's report carries no game time, Kalshi NFL/CFB tickers
   only a date; futures and Kalshi combos none), each with its count and

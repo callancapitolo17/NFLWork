@@ -118,6 +118,24 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .result.lost { background: rgba(255, 107, 107, .14); color: var(--neg); }
 .result.open { background: rgba(110, 168, 254, .14); color: var(--exp); }
 
+/* nav badge: open bet count */
+.nav .badge { margin-left: 7px; font-size: 11px; padding: 1px 7px; border-radius: 9px; background: var(--line); color: var(--text); }
+
+/* kpi tile that links to another page */
+.kpi.link { cursor: pointer; }
+.kpi.link:hover { border-color: var(--exp-line); }
+.kpi.link:focus-visible { outline: 2px solid var(--exp-line); outline-offset: 2px; }
+
+/* Overview: settled on one Pacific day */
+.day-nav { margin-left: auto; display: flex; gap: 6px; }
+.day-nav .chip:disabled { cursor: default; }
+.day-sum { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 10px 22px; border-bottom: 1px solid var(--line-soft); font-size: 13px; color: var(--muted); }
+.day-sum b { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); }
+.day-sum b.pos { color: var(--pos); }
+.day-sum b.neg { color: var(--neg); }
+.day-sum b.exp { color: var(--exp); }
+.day-sum:empty { display: none; }
+
 /* open bets: Live now / Upcoming */
 .open-group + .open-group { border-top: 1px solid var(--line); }
 .open-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; padding: 14px 14px 6px; }
