@@ -33,7 +33,7 @@
 //   row   the selectEdges fields the panel renders, plus edgeTier, stake (the
 //         standalone, liquidity-capped Kelly stake), rankScore (tail-flex EV
 //         dollars, null when unranked), bookProb, advice {kind, bet, alone,
-//         verb, held, against, teasers {held, against}, reason, cappedAt},
+//         verb, held, against, teasers {held, against}, reason, cappedAt, uncapped},
 //         rail {text, note, atSize}, badges [{kind, text, title?}], related
 //         [{tier, inMath, tag, text, fairThen, title?}], move {kind, label,
 //         detail, sinceFill} | null
@@ -104,6 +104,7 @@ function rowView(row, moveContext) {
     advice: {
       kind: advice.kind, bet: advice.bet, alone: advice.alone, verb: advice.verb,
       held: advice.held, against: advice.against, teasers: advice.teasers, reason: advice.reason, cappedAt: advice.cappedAt,
+      uncapped: advice.uncapped ?? null,
     },
     rail: edgeRows.stakeRail(row),
     badges: betsView.badges(row.bet),
