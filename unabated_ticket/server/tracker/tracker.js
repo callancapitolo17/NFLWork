@@ -396,10 +396,14 @@
     setText("cal-caption", dayLabel(start) + " to " + dayLabel(end));
     const fullColorDollars = CAL_FULL_COLOR_PNL_UNITS * state.unitSize;
     const cells = stats.WEEKDAYS.map((name) => el("span", { className: "lbl wd", text: name }));
+    // Custom ranges clamp to [first settled day, today], so a click outside it
+    // would quietly filter to a different day; those days aren't clickable.
+    const realToday = stats.pacificDay(Date.now());
+    const firstPickable = stats.firstSettledDay(tickets) || realToday;
     for (let day = start; day <= end; day = stats.addDays(day, 1)) {
       const totals = byDay.get(day);
       const isPicked = day === pickedCalendarDay();
-      const isPickable = day <= stats.pacificDay(Date.now());
+      const isPickable = day >= firstPickable && day <= realToday;
       const cell = el("div", {
         className: "cell" + (day === today ? " today" : "") + (isPicked ? " picked" : "") + (isPickable ? " pickable" : ""),
         onClick: isPickable ? () => toggleCalendarDay(day, today) : null,
