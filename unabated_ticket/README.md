@@ -1698,10 +1698,12 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   from `bet_logger/utils.py parse_sport` (the report names the SPORT —
   "FOOTBALL" — never the league); a total names both teams, a spread or
   moneyline only its own team, placed by rotation parity (odd = away, `approx:
-  side_from_rotation_parity`); the report carries no game date or settle time,
-  so `eventStart`/`eventDate` are null and a settled bet's `closedAt` is its
-  placed time. Unknown periods, sports outside the scanner and parlays whose
-  legs do not parse fail closed as unmatchable with the reason. Same Game
+  side_from_rotation_parity`); the report carries no game date, so
+  `eventStart`/`eventDate` are null; a settled bet's `closedAt` is its
+  `GradeDateTime` (the settle time, on the same UTC-8 clock as `Date`; #139),
+  else its placed time when the report leaves it null. Unknown periods, sports
+  outside the scanner and parlays whose legs do not parse fail closed as
+  unmatchable with the reason. Same Game
   Parlay rows have not been seen live yet; their leg grammar is a guess the
   parser refuses rather than misreads.
 - **BFA source** (`sources/bfa.py`, 2026-09-23): logs in to
@@ -2192,8 +2194,8 @@ page's Remove / Restore.
   P&L lands on the **Pacific** day of the record's `closedAt`, which each
   venue fills differently: Kalshi the market's expiration, Polymarket US its
   resolution, Novig the ticket's settle time, BFA its grade time, Wagerzon the
-  game's start, and BetOnline the time it was **placed** (its report has no
-  settle time), so a BetOnline bet lands on the day you placed it. Kalshi's
+  game's start, and BetOnline its report's `GradeDateTime` (the placed time
+  only when the report leaves it null; #139). Kalshi's
   multivariate combos (`KXMVECROSSCATEGORY`, the MLB bots' RFQ fills on the
   same account) are their own type, "Kalshi combo", and count in every total
   by default (Cal, 2026-10-05); switching off the header's **Bot combos**
