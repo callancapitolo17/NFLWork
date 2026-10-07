@@ -2151,7 +2151,9 @@ page's Remove / Restore.
 
 - **Overview**: net P&L, ROI, handle, record, open risk; expected P&L at
   Unabated's fair at fill and actual vs expected with its z-score; cumulative
-  actual vs expected chart with daily bars; a 6-week calendar heatmap; daily
+  actual vs expected chart with daily bars; a 6-week calendar heatmap (click a
+  day to filter the whole Overview to it as a one-day Custom range; click it
+  again, or pick a range, to go back); daily
   results; P&L by venue; and **Settled bets**: every bet settled in the
   header range, newest first, 50 at a time with Show more, under the
   range's P&L, record, expected and handle (Cal, 2026-10-07; briefly a

@@ -43,6 +43,10 @@
     // Per table: {col: column index, dir: "asc" | "desc"}; absent = the table's own order.
     sorts: {},
     settledLimit: LOG_PAGE,
+    // A calendar-day click (Cal, 2026-10-07): { day, anchor, range, customFirst,
+    // customLast } so a second click restores the range it replaced and the
+    // calendar keeps its weeks instead of jumping to end on the picked day.
+    calendarPick: null,
     // Cal's decision 2026-10-05: the Kalshi bots' combo fills count in every
     // total by default; the header toggle hides them.
     includeBotCombos: true,
@@ -69,6 +73,8 @@
       if (typeof saved.units === "boolean") prefs.units = saved.units;
       if (typeof saved.includeBotCombos === "boolean") prefs.includeBotCombos = saved.includeBotCombos;
       if (Number.isFinite(saved.unitSize) && saved.unitSize > 0) prefs.unitSize = saved.unitSize;
+      const pick = saved.calendarPick;
+      if (pick && stats.isDayKey(pick.day) && stats.isDayKey(pick.anchor) && RANGES.includes(pick.range)) prefs.calendarPick = pick;
       return prefs;
     } catch (_error) {
       return {};
@@ -77,7 +83,7 @@
 
   function savePrefs() {
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, customFirst: state.customFirst, customLast: state.customLast, units: state.units, unitSize: state.unitSize, includeBotCombos: state.includeBotCombos }));
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, customFirst: state.customFirst, customLast: state.customLast, units: state.units, unitSize: state.unitSize, includeBotCombos: state.includeBotCombos, calendarPick: state.calendarPick }));
     } catch (_error) {
       // Private window or blocked storage: the choice lasts until reload.
     }
@@ -323,7 +329,7 @@
 
     const series = stats.dailySeries(tickets, first, last);
     renderChart(series);
-    renderCalendar(last);
+    renderCalendar(pickedCalendarDay() ? state.calendarPick.anchor : last);
     renderDaily(series);
     renderVenues(settled);
     renderSettledBets(settled, total, missing);
@@ -390,9 +396,18 @@
     setText("cal-caption", dayLabel(start) + " to " + dayLabel(end));
     const fullColorDollars = CAL_FULL_COLOR_PNL_UNITS * state.unitSize;
     const cells = stats.WEEKDAYS.map((name) => el("span", { className: "lbl wd", text: name }));
+    // Custom ranges clamp to [first settled day, today], so a click outside it
+    // would quietly filter to a different day; those days aren't clickable.
+    const realToday = stats.pacificDay(Date.now());
+    const firstPickable = stats.firstSettledDay(tickets) || realToday;
     for (let day = start; day <= end; day = stats.addDays(day, 1)) {
       const totals = byDay.get(day);
-      const cell = el("div", { className: "cell" + (day === today ? " today" : "") });
+      const isPicked = day === pickedCalendarDay();
+      const isPickable = day >= firstPickable && day <= realToday;
+      const cell = el("div", {
+        className: "cell" + (day === today ? " today" : "") + (isPicked ? " picked" : "") + (isPickable ? " pickable" : ""),
+        onClick: isPickable ? () => toggleCalendarDay(day, today) : null,
+      });
       const dayNumber = el("span", { className: "d", text: Number(day.slice(8)) });
       const value = el("span", { className: "v" });
       if (totals && totals.bets) {
@@ -407,10 +422,34 @@
         cell.title = dayLabel(day, true) + (day === today ? ": nothing settled yet" : day > today ? "" : ": no bets settled");
         if (day === today) value.textContent = "Today";
       }
+      if (isPickable) cell.title += isPicked ? " · click to clear" : " · click to filter to this day";
       cell.append(dayNumber, value);
       cells.push(cell);
     }
     fill("ov-calendar", ...cells);
+  }
+
+  /** The day a calendar click is filtering to, or null once the range has moved off it. */
+  function pickedCalendarDay() {
+    const pick = state.calendarPick;
+    if (!pick || state.range !== "Custom") return null;
+    const { first, last } = rangeDays();
+    return first === pick.day && last === pick.day ? pick.day : null;
+  }
+
+  /** Click a day: filter every Overview panel to it. Click it again: back to the range it replaced. */
+  function toggleCalendarDay(day, anchor) {
+    const pick = state.calendarPick;
+    if (day === pickedCalendarDay()) {
+      state.range = pick.range; state.customFirst = pick.customFirst; state.customLast = pick.customLast;
+      state.calendarPick = null;
+    } else {
+      const previous = pickedCalendarDay() ? pick
+        : { range: state.range, customFirst: state.customFirst, customLast: state.customLast };
+      state.calendarPick = { day, anchor, range: previous.range, customFirst: previous.customFirst, customLast: previous.customLast };
+      state.range = "Custom"; state.customFirst = day; state.customLast = day;
+    }
+    state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; savePrefs(); render();
   }
 
   function renderDaily(series) {
@@ -826,6 +865,7 @@
       const { first, last } = rangeDays();
       state.customFirst = first; state.customLast = last;
     }
+    state.calendarPick = null;
     state.range = range; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; savePrefs(); render();
   }
 
@@ -914,6 +954,7 @@
     for (const [id, key] of [["custom-first", "customFirst"], ["custom-last", "customLast"]]) {
       document.getElementById(id).addEventListener("change", (event) => {
         if (!stats.isDayKey(event.target.value)) return;
+        state.calendarPick = null;
         state[key] = event.target.value; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; savePrefs(); render();
       });
     }
