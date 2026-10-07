@@ -40,7 +40,8 @@ class FakeKalshiApi:
         if url.path in self.fail_paths:
             return 503, "unavailable", {}
         if url.path == "/historical/fills":
-            return 200, {"fills": self.historical_fills, "cursor": ""}, {}
+            ticker = parse_qs(url.query)["ticker"][0]
+            return 200, {"fills": [f for f in self.historical_fills if f["ticker"] == ticker], "cursor": ""}, {}
         if url.path.startswith("/historical/markets/"):
             return 404, {"message": "not found"}, {}
         if url.path == "/portfolio/fills":
@@ -144,7 +145,11 @@ def test_full_pulls_read_the_historical_fills_and_price_the_net_position(kalshi_
     source = KalshiSource(api=api, configure_auth=False, lookup_gap_sec=0, clock=lambda: 1_800_000_000.0,
                           known_tickers=lambda: {"KXNCAAFTOTAL-26SEP12RICEND-60"})
     records = {record["id"]: record for record in source.fetch()}
-    assert api.count("/historical/fills?limit=200") == 1
+    # One read per market the bets touch; the bot's market is never asked for.
+    assert sorted(p for p in api.paths if p.startswith("/historical/fills")) == [
+        "/historical/fills?ticker=KXNCAAFTOTAL-26SEP12RICEND-60&limit=200",
+        "/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-NE&limit=200",
+        "/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-PIT&limit=200"]
     # Only markets the bets touch: in the recent fills, held by the store, or
     # settled since the cutoff; not the bot's.
     assert {record["raw"]["ticker"] for record in records.values()} == {
@@ -152,6 +157,20 @@ def test_full_pulls_read_the_historical_fills_and_price_the_net_position(kalshi_
     entry = records["kalshi:KXNFLGAME-26SEP20PITNE-NE:yes"]
     assert entry["pnl"] == 5  # bought YES at 40c, closed at 45c
     assert records["kalshi:KXNFLGAME-26SEP20PITNE-NE:no"]["mergedInto"] == entry["id"]
+
+
+def test_a_failed_historical_read_skips_that_market_and_retries_next_full_pull(kalshi_fixture):
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL], [NE_POSITION])
+    api.fail_paths.add("/historical/fills")
+    now = [1_800_000_000.0]
+    source = make_source(api, clock=lambda: now[0])
+    assert len(source.fetch()) == 1  # the poll still succeeds
+    api.fail_paths.clear()
+    now[0] += 3600
+    source.fetch()
+    now[0] += 3600
+    source.fetch()
+    assert api.count("/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-NE") == 2  # failed, then read; the third pull reads nothing
 
 
 def test_a_failed_fills_pull_raises(kalshi_fixture):

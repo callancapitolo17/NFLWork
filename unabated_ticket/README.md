@@ -2176,12 +2176,13 @@ page's Remove / Restore.
   counting the two sides as separate bets overstated Kalshi by ~$7k, Rodri
   Golden Ball alone by $5.5k), including a position sold before settlement
   (`closed` with a `pnl`: a gain is a win, a loss a loss); the other side's
-  record carries `mergedInto` and is skipped. The Kalshi source reads
-  `/historical/fills` too on every full pull (fills older than Kalshi's
-  history cutoff leave `/portfolio/fills`), keeping only markets in the recent
-  fills, already stored, or settled since the cutoff (`/portfolio/settlements`
-  — the Sep-15 starting-QB markets were bought in March-May) — the account's
-  older history is mostly the MLB bots' trades. Checked 2026-10-06 against Kalshi's own realized P&L minus
+  record carries `mergedInto` and is skipped. The Kalshi source also reads
+  `/historical/fills?ticker=` (fills older than Kalshi's history cutoff leave
+  `/portfolio/fills`), once per market per process, a failed read retried on
+  the next full pull, for markets in the recent fills, already stored, or settled since the cutoff (`/portfolio/settlements`
+  — the Sep-15 starting-QB markets were bought in March-May); the account's
+  whole older history is mostly the MLB bots' trades, and a page of it hung
+  34 minutes on Cal's Mac. Checked 2026-10-06 against Kalshi's own realized P&L minus
   fees: 290 of 290 markets to the cent (Kalshi +$16,784 → +$9,441). Open bets are exposure, not P&L;
   a closed bet with no `pnl` (Polymarket US sold early) and a bet whose
   result is gone (`unknown`, e.g. Bet105 once it leaves the open list) have no

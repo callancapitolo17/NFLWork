@@ -357,6 +357,8 @@ class KalshiSource:
         self._lookup_gap_sec = lookup_gap_sec if lookup_gap_sec is not None else config.KALSHI_LOOKUP_GAP_SEC
         self._clock = clock
         self._known_tickers = known_tickers
+        # Tickers whose /historical/fills have been read; pre-cutoff fills never change.
+        self._historical_read: set[str] = set()
         if configure_auth:
             if not config.KALSHI_API_KEY_ID or not config.KALSHI_PRIVATE_KEY_PATH:
                 raise RuntimeError("KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PATH not set "
@@ -409,14 +411,25 @@ class KalshiSource:
     def _hold_historical_fills(self) -> int:
         """The pre-cutoff fills of markets the bets touch: one in the recent
         fills, one the store holds a record of, or one the account settled
-        since the cutoff (/portfolio/settlements). The account's whole
-        history (~6,900 fills on 2026-10-06, mostly the MLB bots' older trades)
-        is left out: it was never in the tracker, and looking up each of its
-        markets at the lookup gap stalls a full pull for over an hour."""
+        since the cutoff (/portfolio/settlements). Read one market at a time
+        (/historical/fills?ticker=), each once per process: the full history
+        (~6,900 fills on 2026-10-06, mostly the MLB bots' older trades) is ~33
+        pages, and on Cal's Mac a page of it hung for 34 minutes and reset.
+        A market whose read fails is logged and retried on the next full pull;
+        it never fails the poll."""
         wanted = ({fill["ticker"] for fill in self._fills_by_trade_id.values()} | self._known_tickers()
                   | {settlement["ticker"] for settlement in _paginate(self._api, SETTLEMENTS_PATH, "settlements")})
-        return self._hold_fills(fill for fill in _paginate(self._api, HISTORICAL_FILLS_PATH, "fills")
-                                if fill.get("ticker") in wanted)
+        n_new = 0
+        for ticker in sorted(wanted - self._historical_read):
+            time.sleep(self._lookup_gap_sec)
+            try:
+                fills = list(_paginate(self._api, f"{HISTORICAL_FILLS_PATH}?ticker={ticker}", "fills"))
+            except (RuntimeError, OSError) as error:
+                log.warning("kalshi historical fills for %s failed, retried next full pull: %s", ticker, error)
+                continue
+            n_new += self._hold_fills(fills)
+            self._historical_read.add(ticker)
+        return n_new
 
     def _pull_positions(self) -> list[dict]:
         return list(_paginate(self._api, POSITIONS_PATH, "market_positions"))
