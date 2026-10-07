@@ -1,6 +1,6 @@
 // Bet Tracker page: fetches the bets service's /bets.json (all history),
-// builds tickets with trackerstats.js and renders the Overview, Analysis and
-// Bets views. Its one write is the Bets view's Remove / Restore: POST
+// builds tickets with trackerstats.js and renders the Overview, Open, Analysis
+// and Bets views. Its one write is the Bets view's Remove / Restore: POST
 // /exclusions.json, which marks a BFA or Wagerzon bet as not Cal's
 // (bets.duckdb::bet_exclusions; the bet itself stays) and takes it out of
 // every number here. Otherwise it keeps only the viewer's own display choices
@@ -17,7 +17,7 @@
   const stats = globalThis.UnabatedTrackerStats;
   const BETS_URL = "/bets.json?days=3650";
   const EXCLUSIONS_URL = "/exclusions.json";
-  const VIEWS = ["overview", "analysis", "bets"];
+  const VIEWS = ["overview", "open", "analysis", "bets"];
   // Cal's ask (2026-10-05): only these books carry bets that are not his (service.EXCLUDABLE_VENUES).
   const REMOVABLE_VENUES = ["BFA", "Wagerzon"];
   const BET_FILTERS = ["All", "Counted", "Removed"];
@@ -42,6 +42,8 @@
     betsQuery: "", betsVenue: "All", betsFilter: "All", betsLimit: LOG_PAGE, saving: false,
     // Per table: {col: column index, dir: "asc" | "desc"}; absent = the table's own order.
     sorts: {},
+    // The Pacific day Overview's settled panel shows; null = today (Cal, 2026-10-07).
+    shownDay: null,
     // Cal's decision 2026-10-05: the Kalshi bots' combo fills count in every
     // total by default; the header toggle hides them.
     includeBotCombos: true,
@@ -184,12 +186,22 @@
     return el("div", { className: "empty", text });
   }
 
+  /** Tiles {label, value, sub, color?, onClick?}; a tile with onClick is a button-like link. */
   function kpiTiles(id, tiles) {
-    fill(id, ...tiles.map((tile) => el("div", { className: "panel kpi" }, [
-      el("span", { className: "lbl", text: tile.label }),
-      el("span", { className: "value", text: tile.value, style: { color: tile.color || COLORS.text } }),
-      el("span", { className: "sub", text: tile.sub }),
-    ])));
+    fill(id, ...tiles.map((tile) => {
+      const link = typeof tile.onClick === "function";
+      const node = el("div", {
+        className: "panel kpi" + (link ? " link" : ""),
+        attrs: link ? { role: "link", tabindex: "0" } : null,
+        onClick: link ? tile.onClick : null,
+      }, [
+        el("span", { className: "lbl", text: tile.label }),
+        el("span", { className: "value", text: tile.value, style: { color: tile.color || COLORS.text } }),
+        el("span", { className: "sub", text: tile.sub }),
+      ]);
+      if (link) node.addEventListener("keydown", (event) => { if (event.key === "Enter") tile.onClick(); });
+      return node;
+    }));
   }
 
   /**
@@ -289,7 +301,7 @@
     const { first, last } = rangeDays();
     const settled = stats.inDayRange(tickets, first, last);
     const total = stats.summarize(settled);
-    const open = tickets.filter((t) => t.status === "open");
+    const open = openTickets();
     const openStake = open.reduce((sum, t) => sum + t.stake, 0);
     const openWithFair = open.filter((t) => t.expected !== null);
     const openEv = openWithFair.reduce((sum, t) => sum + t.expected, 0);
@@ -306,7 +318,8 @@
       { label: "Actual vs expected", value: luck === null ? "—" : money(luck, true), color: luck === null ? COLORS.muted : toneColor(luck),
         sub: total.z === null ? "needs bets with a saved fair" : "z = " + total.z.toFixed(2) + (Math.abs(total.z) < 1.96 ? ", within noise" : ", outside the 95% band") },
       { label: "Record", value: total.wins + "-" + total.losses + "-" + total.pushes, sub: "win rate " + pct(total.winRate) },
-      { label: "Open risk", value: money(openStake), sub: open.length + " open bets" + (openWithFair.length ? " · EV " + money(openEv, true) : "") },
+      { label: "Open risk", value: money(openStake), sub: open.length + " open bets" + (openWithFair.length ? " · EV " + money(openEv, true) : "") + " · view →",
+        onClick: () => showView("open") },
     ]);
 
     const series = stats.dailySeries(tickets, first, last);
@@ -314,7 +327,7 @@
     renderCalendar(last);
     renderDaily(series);
     renderVenues(settled);
-    renderOpen(open, openStake);
+    renderSettledDay();
   }
 
   function renderChart(series) {
@@ -432,12 +445,90 @@
     })));
   }
 
-  function renderOpen(open, openStake) {
+  function timeLabel(ms) {
+    return new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: stats.PACIFIC_TZ });
+  }
+
+  /**
+   * Overview's bottom panel: the bets that settled on one Pacific day (today
+   * unless the arrows stepped back), whatever the header range says.
+   */
+  function renderSettledDay() {
+    const today = stats.pacificDay(Date.now());
+    const day = state.shownDay && state.shownDay < today ? state.shownDay : today;
+    const settled = stats.inDayRange(tickets, day, day);
+    const total = stats.summarize(settled);
+    const missing = noResultCount(day, day);
+    setText("day-title", day === today ? "Settled today" : "Settled " + dayLabel(day, true));
+    setText("day-caption", dayLabel(day, true) + " · Pacific settle day");
+    document.getElementById("day-next").disabled = day >= today;
+
+    const part = (label, value, className) => el("span", null, [document.createTextNode(label + " "), el("b", { className: className || "", text: value })]);
+    fill("day-sum", ...(settled.length ? [
+      part("P&L", money(total.pnl, true), toneClass(total.pnl)),
+      part("Record", total.wins + "-" + total.losses + "-" + total.pushes),
+      total.withFair ? part("Expected", money(total.expected, true), "exp") : null,
+      part("Handle", money(total.handle)),
+      missing ? part("Without a result", String(missing)) : null,
+    ] : []));
+
+    if (!settled.length) {
+      fill("ov-day", emptyNote(day === today ? "Nothing has settled yet today." : "No bets settled on " + dayLabel(day, true) + "."));
+      return;
+    }
+    const columns = [
+      { label: "Settled", className: () => "muted", cell: (t) => timeLabel(t.closedMs), sort: (t) => t.closedMs },
+      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
+      { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
+      { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
+      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice), sort: (t) => t.displayPrice },
+      { label: "Fair", right: true, num: true, className: () => "exp", cell: (t) => american(t.fairAmerican), sort: (t) => t.fairAmerican },
+      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake), sort: (t) => t.stake },
+      { label: "Result", cell: resultTag, sort: (t) => t.status },
+      { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => money(t.pnl, true), sort: (t) => t.pnl },
+    ];
+    const newestFirst = settled.slice().sort((a, b) => b.closedMs - a.closedMs);
+    fill("ov-day", table(columns, newestFirst, { sortKey: "day" }));
+  }
+
+  function stepShownDay(days) {
+    const today = stats.pacificDay(Date.now());
+    const next = stats.addDays(state.shownDay || today, days);
+    state.shownDay = next >= today ? null : next;
+    render();
+  }
+
+  // ---- open -----------------------------------------------------------------
+
+  function openTickets() {
+    return tickets.filter((t) => t.status === "open");
+  }
+
+  function renderOpenView() {
+    const open = openTickets();
+    const openStake = open.reduce((sum, t) => sum + t.stake, 0);
     const toWin = open.reduce((sum, t) => sum + (Number.isFinite(t.toWin) ? t.toWin : 0), 0);
-    setText("open-caption", open.length ? "Risking " + money(openStake) + " to win " + money(toWin) + " · fair is Unabated's at fill" : "");
-    if (!open.length) { fill("ov-open", emptyNote("No open bets.")); return; }
+    const withFair = open.filter((t) => t.expected !== null);
+    const openEv = withFair.reduce((sum, t) => sum + t.expected, 0);
     const { live, upcoming, noStart } = stats.splitOpenByStart(open, Date.now());
-    fill("ov-open",
+    const liveStake = live.reduce((sum, t) => sum + t.stake, 0);
+    kpiTiles("op-kpis", [
+      { label: "Open bets", value: String(open.length),
+        sub: live.length + " live · " + upcoming.length + " upcoming" + (noStart.length ? " · " + noStart.length + " no start time" : "") },
+      { label: "At risk", value: money(openStake), sub: "to win " + money(toWin) },
+      { label: "Open EV", value: withFair.length ? money(openEv, true) : "—", color: withFair.length ? COLORS.exp : COLORS.muted,
+        sub: withFair.length + " of " + open.length + " have a saved fair" },
+      { label: "Live now", value: money(liveStake), sub: live.length + (live.length === 1 ? " bet" : " bets") + " in progress" },
+    ]);
+    renderOpen(open, openStake, toWin, { live, upcoming, noStart });
+  }
+
+  function renderOpen(open, openStake, toWin, split) {
+    setText("open-caption", open.length ? "Risking " + money(openStake) + " to win " + money(toWin) : "");
+    if (!open.length) { fill("op-groups", emptyNote("No open bets.")); return; }
+    const { live, upcoming, noStart } = split;
+    fill("op-groups",
       openGroup("Live now", live, "Started", "No games in progress."),
       openGroup("Upcoming", upcoming, "Starts", "Nothing else open."),
       noStart.length ? openGroup("No start time", noStart, "Starts", "",
@@ -696,12 +787,23 @@
 
   // ---- shell ----------------------------------------------------------------
 
+  function showView(view) {
+    state.view = view;
+    history.replaceState(null, "", "#" + view);
+    window.scrollTo(0, 0);
+    render();
+  }
+
   function renderHeader() {
     for (const button of document.querySelectorAll(".nav button")) {
       if (button.dataset.view === state.view) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     }
     for (const view of VIEWS) document.getElementById("view-" + view).hidden = state.view !== view;
+    const openCount = payload ? openTickets().length : 0;
+    const badge = document.getElementById("open-count");
+    badge.hidden = !openCount;
+    badge.textContent = String(openCount);
     segButtons("ranges", RANGES, (r) => r === state.range, pickRange);
     renderCustomRange();
     document.getElementById("show-dollars").setAttribute("aria-pressed", String(!state.units));
@@ -751,6 +853,7 @@
     renderSync();
     if (!payload) return;
     if (state.view === "overview") renderOverview();
+    else if (state.view === "open") renderOpenView();
     else if (state.view === "analysis") renderAnalysis();
     else renderBets();
   }
@@ -786,12 +889,10 @@
 
   function wire() {
     for (const button of document.querySelectorAll(".nav button")) {
-      button.addEventListener("click", () => {
-        state.view = button.dataset.view;
-        history.replaceState(null, "", "#" + state.view);
-        render();
-      });
+      button.addEventListener("click", () => showView(button.dataset.view));
     }
+    document.getElementById("day-prev").addEventListener("click", () => stepShownDay(-1));
+    document.getElementById("day-next").addEventListener("click", () => stepShownDay(1));
     document.getElementById("show-dollars").addEventListener("click", () => { state.units = false; savePrefs(); render(); });
     document.getElementById("show-units").addEventListener("click", () => { state.units = true; savePrefs(); render(); });
     document.getElementById("bot-combos").addEventListener("click", () => {
