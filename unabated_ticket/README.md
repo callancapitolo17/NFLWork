@@ -2150,8 +2150,9 @@ page's Remove / Restore.
   today-only panel). The Open risk tile links to the Open page.
 - **Open** (2026-10-07; was Overview's bottom panel): open-bet count, stake
   at risk and to win, open EV (bets with a saved fair) and stake in live
-  games, then the open bets with price, fair and edge. The nav tab carries
-  the open count.
+  games, then the open bets with price, fair and edge, then **Settled
+  today** (bets settled on the current Pacific day, whatever the header
+  range says). The nav tab carries the open count.
 - **Analysis**: filter by venue, league and type (straight, parlay, teaser),
   group by venue, league, market, period, type, odds, edge at fill, timing
   (hours placed before start), weekday or stake. Each group shows ROI with its

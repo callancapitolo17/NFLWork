@@ -453,17 +453,45 @@
    * 2026-10-07), newest first, paged like the bet log.
    */
   function renderSettledBets(settled, total, missing) {
+    fillSettledSummary("settled-sum", settled, total, missing);
+    const columns = settledColumns((t) => dayLabel(t.settledDay, true) + " " + timeLabel(t.closedMs));
+    const newestFirst = settled.slice().sort((a, b) => b.closedMs - a.closedMs);
+    const shown = sortedRows("settled", columns, newestFirst).slice(0, state.settledLimit);
+    setText("settled-caption", settled.length
+      ? "Showing " + shown.length + " of " + settled.length + ", " + orderCaption("settled", columns, "newest first")
+      : "");
+    document.getElementById("settled-more").hidden = settled.length <= shown.length;
+    if (!shown.length) { fill("ov-settled", emptyNote("No settled bets in this range.")); return; }
+    fill("ov-settled", table(columns, shown, { sortKey: "settled" }));
+  }
+
+  /** The Open page's Settled today panel: bets settled on the current Pacific day, whatever the header range. */
+  function renderSettledToday() {
+    const today = stats.pacificDay(Date.now());
+    const settled = stats.inDayRange(tickets, today, today);
+    fillSettledSummary("today-sum", settled, stats.summarize(settled), noResultCount(today, today));
+    setText("today-caption", dayLabel(today, true) + " · Pacific settle day");
+    if (!settled.length) { fill("op-today", emptyNote("Nothing has settled yet today.")); return; }
+    const newestFirst = settled.slice().sort((a, b) => b.closedMs - a.closedMs);
+    fill("op-today", table(settledColumns((t) => timeLabel(t.closedMs)), newestFirst, { sortKey: "today" }));
+  }
+
+  /** P&L, record, expected and handle above a settled-bets table. */
+  function fillSettledSummary(id, settled, total, missing) {
     const part = (label, value, className) => el("span", null, [document.createTextNode(label + " "), el("b", { className: className || "", text: value })]);
-    fill("settled-sum", ...(settled.length ? [
+    fill(id, ...(settled.length ? [
       part("P&L", money(total.pnl, true), toneClass(total.pnl)),
       part("Record", total.wins + "-" + total.losses + "-" + total.pushes),
       total.withFair ? part("Expected", money(total.expected, true), "exp") : null,
       part("Handle", money(total.handle)),
       missing ? part("Without a result", String(missing)) : null,
     ] : []));
+  }
 
-    const columns = [
-      { label: "Settled", className: () => "muted", cell: (t) => dayLabel(t.settledDay, true) + " " + timeLabel(t.closedMs), sort: (t) => t.closedMs },
+  /** Columns of a settled-bets table; settledCell formats the settle time. */
+  function settledColumns(settledCell) {
+    return [
+      { label: "Settled", className: () => "muted", cell: settledCell, sort: (t) => t.closedMs },
       { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
       { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
       { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
@@ -474,14 +502,6 @@
       { label: "Result", cell: resultTag, sort: (t) => t.status },
       { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => money(t.pnl, true), sort: (t) => t.pnl },
     ];
-    const newestFirst = settled.slice().sort((a, b) => b.closedMs - a.closedMs);
-    const shown = sortedRows("settled", columns, newestFirst).slice(0, state.settledLimit);
-    setText("settled-caption", settled.length
-      ? "Showing " + shown.length + " of " + settled.length + ", " + orderCaption("settled", columns, "newest first")
-      : "");
-    document.getElementById("settled-more").hidden = settled.length <= shown.length;
-    if (!shown.length) { fill("ov-settled", emptyNote("No settled bets in this range.")); return; }
-    fill("ov-settled", table(columns, shown, { sortKey: "settled" }));
   }
 
   // ---- open -----------------------------------------------------------------
@@ -507,6 +527,7 @@
       { label: "Live now", value: money(liveStake), sub: live.length + (live.length === 1 ? " bet" : " bets") + " in progress" },
     ]);
     renderOpen(open, openStake, toWin, { live, upcoming, noStart });
+    renderSettledToday();
   }
 
   function renderOpen(open, openStake, toWin, split) {
