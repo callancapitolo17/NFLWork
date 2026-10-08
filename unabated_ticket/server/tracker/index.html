@@ -20,6 +20,7 @@
       </p>
       <nav class="nav" aria-label="Pages">
         <button type="button" data-view="overview">Overview</button>
+        <button type="button" data-view="open">Open<span class="badge num" id="open-count" hidden></span></button>
         <button type="button" data-view="analysis">Analysis</button>
         <button type="button" data-view="bets">Bets</button>
       </nav>
@@ -74,9 +75,35 @@
           <div id="ov-venues"></div>
         </section>
       </div>
-      <section class="panel" aria-label="Open bets">
+      <section class="panel stack flush" aria-label="Settled bets">
+        <div class="head">
+          <div class="stack tight">
+            <span class="lbl">Settled bets</span>
+            <span class="note" id="settled-caption"></span>
+          </div>
+        </div>
+        <div class="settled-sum" id="settled-sum"></div>
+        <div class="scroll" id="ov-settled"></div>
+        <button type="button" class="more" id="settled-more" hidden>Show more</button>
+      </section>
+    </section>
+
+    <section id="view-open" class="stack" aria-label="Open bets" hidden>
+      <div class="title-row"><h1>Open</h1><span class="note">Fair is Unabated's at fill</span></div>
+      <div class="kpis" id="op-kpis"></div>
+      <section class="panel" aria-label="Open bets by start">
         <div class="head"><span class="lbl">Open bets</span><span class="note" id="open-caption"></span></div>
-        <div id="ov-open"></div>
+        <div id="op-groups"></div>
+      </section>
+      <section class="panel stack flush" aria-label="Settled today">
+        <div class="head">
+          <div class="stack tight">
+            <span class="lbl">Settled today</span>
+            <span class="note" id="today-caption"></span>
+          </div>
+        </div>
+        <div class="settled-sum" id="today-sum"></div>
+        <div class="scroll" id="op-today"></div>
       </section>
     </section>
 

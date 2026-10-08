@@ -895,7 +895,7 @@ OPTIONAL_SOURCE_FACTORIES: tuple[tuple[str, Callable[[], Source | None]], ...] =
 def main() -> None:
     setup_logging()
     store = BetsStore(config.DB_PATH, config.SOURCE_RUNS_RETENTION_DAYS)
-    sources: list[Source] = [KalshiSource()]
+    sources: list[Source] = [KalshiSource(known_tickers=store.load_kalshi_tickers)]
     for _venue, factory in OPTIONAL_SOURCE_FACTORIES:
         optional = factory()
         if optional is not None:

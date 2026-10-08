@@ -270,7 +270,9 @@ stake uses the American price because that is what Unabated's edge was
 computed from.
 
 On an exchange line (Kalshi, Novig — any line Unabated marks `sourceFormat 4`,
-a probability) the panel also prints the **order** the stake means, under the
+a probability — and Polymarket, Polymarket US and Poly US Ing by book name,
+since Unabated does not mark them; their contract costs Unabated's price as-is,
++150 = 40.0¢, user decision 2026-10-07) the panel also prints the **order** the stake means, under the
 dollar figure: `1,127 contracts @ 23.2¢ · $261.48` (`kelly.contractOrder`).
 The price is Unabated's exact number for the book, taken as the all-in cost of
 one contract; the count is `floor(stake / price)`, never rounded up past
@@ -410,7 +412,12 @@ On an exchange line the number never passes what is resting at the price
 (the feed's liquidity, on the Edges row and on the Ticket when the feed
 holds the line at the ticket's price): `add $17 · all $17 liq · $71.06
 alone`. With nothing resting the Ticket reads "Nothing resting at this
-price" over `$0`.
+price" over `$0`. Because the reported liquidity is sometimes wrong, the
+Ticket (only the Ticket, on the panel and the phone page; not the Edges rows
+or Copy) adds one more line whenever liquidity cut the stake: what it would be
+with unlimited liquidity, sized the same way against what you hold, with its
+contracts on an exchange — `uncapped $240.00 · 752 contracts @ 31.9¢`
+(`betsview.uncappedLine`, 2026-10-07).
 
 Before acting on an `add`, read the tag next to the edge (Edges tab → [Why
 an edge grew](#why-an-edge-grew), issue #132): `fair moved to you` is the
@@ -1492,18 +1499,26 @@ double-click — is ignored:
 
 | Card reads | What happened |
 | --- | --- |
-| `Placed · ticket N` (green) | BFA lists the new teaser; the bets list re-polls and the ticket moves to Open at BFA |
+| `Placed · ticket N · all 4 legs match BFA` (green) | BFA lists the new teaser and every leg reads as sent; the bets list re-polls and the ticket moves to Open at BFA |
+| `Placed · ticket N, but BFA's ticket differs …` (red) | the ticket is booked but BFA shows a leg, a number or the money differently from what was sent (each difference named, BFA's own leg text quoted) — check it at BFA; a booked bet cannot be undone here |
 | `Not placed: …` (red), Place again | nothing was bet — a leg's number moved on BFA (`BFA has +3 now, the list has +2.5`), a game started, the ticket is already open, another ticket was placing, or BFA answered 4xx |
 | `Sent to BFA, but …` (red), no Place | the wager went out and no ticket appeared in 20 s, the reply was lost, or reading the open bets failed: it may be booked. Check BFA's open bets; the service refuses the same four sides, at any numbers, for 15 min (held in memory: a service restart drops the hold, and then only the already-open check guards) |
 
 Before anything is sent the service checks, in order: the account's own
 4-team 6-point teaser type (from BFA's account metadata; it must pay +300,
-what this tab prices), each leg on BFA's live board by rotation — main
-full-game line, open, at **the very number** the list was built on (Buckeye's
-number before the 6 points) — and that no open teaser already holds the same
+what this tab prices), each leg on BFA's live board by rotation — a spread's
+team on the same side, home or away, that BFA lists it (2026-10-07: 144 of
+144 legs on that day's board agreed), main full-game line, open, at **the very
+number** the list was built on (Buckeye's number before the 6 points) — and that no open teaser already holds the same
 four sides. Then ONE POST with `AcceptChanges 0` (BFA refuses a moved number
 rather than taking it), never retried, and the open bets read every second
-until the ticket shows. The body is pinned by a test to the one the site sent
+until the ticket shows. The new ticket is then checked leg by leg against
+BFA's own text for it (`leg_mismatches`): each game's leg must read the sent
+rotation, market, full game, the over or under sent, the number after the 6
+points (a spread +6 either side, an Over -6, an Under +6) and `(B+6)`, and the
+ticket must risk the stake to win 3x it; anything else turns the card red
+(2026-10-07, 0.19.1 — the first live ticket, 356677821, reads clean). The body
+is pinned by a test to the one the site sent
 for a ticket Cal placed by hand (356323496). Juice is not checked: in a
 Buckeye teaser it does not change the payout.
 
@@ -1684,10 +1699,12 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   from `bet_logger/utils.py parse_sport` (the report names the SPORT —
   "FOOTBALL" — never the league); a total names both teams, a spread or
   moneyline only its own team, placed by rotation parity (odd = away, `approx:
-  side_from_rotation_parity`); the report carries no game date or settle time,
-  so `eventStart`/`eventDate` are null and a settled bet's `closedAt` is its
-  placed time. Unknown periods, sports outside the scanner and parlays whose
-  legs do not parse fail closed as unmatchable with the reason. Same Game
+  side_from_rotation_parity`); the report carries no game date, so
+  `eventStart`/`eventDate` are null; a settled bet's `closedAt` is its
+  `GradeDateTime` (the settle time, on the same UTC-8 clock as `Date`; #139),
+  else its placed time when the report leaves it null. Unknown periods, sports
+  outside the scanner and parlays whose legs do not parse fail closed as
+  unmatchable with the reason. Same Game
   Parlay rows have not been seen live yet; their leg grammar is a guess the
   parser refuses rather than misreads.
 - **BFA source** (`sources/bfa.py`, 2026-09-23): logs in to
@@ -2170,8 +2187,18 @@ page's Remove / Restore.
 
 - **Overview**: net P&L, ROI, handle, record, open risk; expected P&L at
   Unabated's fair at fill and actual vs expected with its z-score; cumulative
-  actual vs expected chart with daily bars; a 6-week calendar heatmap; daily
-  results; P&L by venue; open bets with price, fair and edge.
+  actual vs expected chart with daily bars; a 6-week calendar heatmap (click a
+  day to filter the whole Overview to it as a one-day Custom range; click it
+  again, or pick a range, to go back); daily
+  results; P&L by venue; and **Settled bets**: every bet settled in the
+  header range, newest first, 50 at a time with Show more, under the
+  range's P&L, record, expected and handle (Cal, 2026-10-07; briefly a
+  today-only panel). The Open risk tile links to the Open page.
+- **Open** (2026-10-07; was Overview's bottom panel): open-bet count, stake
+  at risk and to win, open EV (bets with a saved fair) and stake in live
+  games, then the open bets with price, fair and edge, then **Settled
+  today** (bets settled on the current Pacific day, whatever the header
+  range says). The nav tab carries the open count.
 - **Analysis**: filter by venue, league and type (straight, parlay, teaser),
   group by venue, league, market, period, type, odds, edge at fill, timing
   (hours placed before start), weekday or stake. Each group shows ROI with its
@@ -2187,27 +2214,45 @@ page's Remove / Restore.
 - **Header**: range (Today, Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days), $ / units with the unit size
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
-- **Open bets** (Overview) are split into **Live now** (the game has started;
+- **Open bets** (Open page) are split into **Live now** (the game has started;
   a parlay's earliest leg), **Upcoming**, and, when any exist, **No start
   time** (BetOnline's report carries no game time, Kalshi NFL/CFB tickers
   only a date; futures and Kalshi combos none), each with its count and
   stake at risk, re-split on every refresh. A game that has ended stays in
   Live now until its venue grades the bet.
+- **Sorting**: click any column header on any table to sort by it (numbers
+  high to low first, text A to Z), click again to reverse. Blanks ("—") stay
+  last either way; the bet log and the Bets list sort their whole match
+  before paging. The order lasts until the page reloads.
 - **Rules** (`trackerstats.js`, pure, tested in `tests/trackerstats.test.js`):
   P&L lands on the **Pacific** day of the record's `closedAt`, which each
   venue fills differently: Kalshi the market's expiration, Polymarket US its
   resolution, Novig the ticket's settle time, BFA its grade time, Wagerzon the
-  game's start, Bet105 its grade time, and BetOnline the time it was
-  **placed** (its report has no settle time), so a BetOnline bet lands on the
-  day you placed it. Kalshi's
+  game's start, Bet105 its grade time, and BetOnline its report's
+  `GradeDateTime` (the placed time only when the report leaves it null;
+  #139). Kalshi's
   multivariate combos (`KXMVECROSSCATEGORY`, the MLB bots' RFQ fills on the
   same account) are their own type, "Kalshi combo", and count in every total
   by default (Cal, 2026-10-05); switching off the header's **Bot combos**
   toggle hides them. Won pays
-  `toWin`, lost costs `stake`, push and void are 0. Open bets are exposure,
-  not P&L; a position sold or cashed out before settlement (`closed`: Kalshi,
-  a Bet105 cash-out, or a Bet105 bet that left the open list with no graded
-  wager to settle it) and a bet whose result is gone (`unknown`) have no
+  `toWin`, lost costs `stake`, push and void are 0, unless the record carries
+  the venue's own `pnl`: **Kalshi** records do (2026-10-06), priced off the
+  market's NET position after fees (`sources/kalshi.py::apply_net_position_pnl`;
+  Kalshi nets YES against NO, so a "sell no" while holding YES closes YES —
+  counting the two sides as separate bets overstated Kalshi by ~$7k, Rodri
+  Golden Ball alone by $5.5k), including a position sold before settlement
+  (`closed` with a `pnl`: a gain is a win, a loss a loss); the other side's
+  record carries `mergedInto` and is skipped. The Kalshi source also reads
+  `/historical/fills?ticker=` (fills older than Kalshi's history cutoff leave
+  `/portfolio/fills`), once per market per process, a failed read retried on
+  the next full pull, for markets in the recent fills, already stored, or settled since the cutoff (`/portfolio/settlements`
+  — the Sep-15 starting-QB markets were bought in March-May); the account's
+  whole older history is mostly the MLB bots' trades, and a page of it hung
+  34 minutes on Cal's Mac. Checked 2026-10-06 against Kalshi's own realized P&L minus
+  fees: 290 of 290 markets to the cent (Kalshi +$16,784 → +$9,441). Open bets are exposure, not P&L;
+  a closed bet with no `pnl` (Polymarket US sold early, a Bet105 cash-out, or
+  a Bet105 bet that left the open list with no graded wager to settle it) and
+  a bet whose result is gone (`unknown`) have no
   known P&L and are counted as "without a result". A parlay or teaser is one
   ticket (its legs carry the ticket's stake and status). Edge = fair
   probability × the ticket's actual payout − 1, so expected P&L, z and
@@ -2811,7 +2856,7 @@ in red.
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
 
-**2026-10-07 — Bet105 settled bets (0.19.0).** A Bet105 bet that left the
+**2026-10-07 — Bet105 settled bets (0.20.0).** A Bet105 bet that left the
 open list was stored `closed` with no result, so the Bet Tracker dropped it.
 The probe (read-only, in Cal's logged-in Chrome) found `getHistory` answers
 no groups for any state but open, and that the My Bets page reads every wager
@@ -2823,6 +2868,15 @@ graded wagers since 2025-09-06 came in as history. Closed by absence stays,
 as the fallback for a bet neither list carries. The status rules are the
 site's own code plus the capture, never guessed; the P&L the tracker books
 equals the venue's `result` on every graded wager.
+
+**2026-10-07 — Uncapped stake on the Ticket; Polymarket contracts (0.19.0).**
+Cal: the liquidity a line reports is sometimes wrong, so he wants the stake
+with unlimited liquidity beside the capped one, on the Ticket only (not the
+Edges rows or Copy; the Min liq to win filter unchanged). And a Polymarket
+ticket gave no contract count, because Unabated does not mark Polymarket lines
+`sourceFormat 4`; they are now contract markets by book name, priced at
+Unabated's number as-is. Unverified: the exact format Unabated sends
+Polymarket in (the feed was unreachable from the build environment).
 
 **2026-10-03 — Place teasers at BFA (0.18.0).** Cal asked to bet a Teasers
 ticket from the tab, the way the MLB dashboard places at Wagerzon. BFA's

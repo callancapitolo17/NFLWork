@@ -48,7 +48,7 @@
     ticketSide: el("ticket-side"), ticketBadges: el("ticket-badges"), ticketBetLine: el("ticket-bet-line"),
     ticketMatchup: el("ticket-matchup"), ticketStart: el("ticket-start"),
     ticketBook: el("ticket-book"), ticketPrice: el("ticket-price"), ticketFair: el("ticket-fair"), ticketEdge: el("ticket-edge"),
-    ticketStakeLabel: el("ticket-stake-label"), ticketStake: el("ticket-stake"), ticketContracts: el("ticket-contracts"),
+    ticketStakeLabel: el("ticket-stake-label"), ticketStake: el("ticket-stake"), ticketContracts: el("ticket-contracts"), ticketUncapped: el("ticket-uncapped"),
     ticketExposure: el("ticket-exposure"), ticketPayoutRow: el("ticket-payout-row"), ticketToWin: el("ticket-to-win"), ticketPayout: el("ticket-payout"),
     ticketRelatedBlock: el("ticket-related-block"), ticketRelated: el("ticket-related"),
     ticketOthersBlock: el("ticket-others-block"), ticketOthers: el("ticket-others"), ticketOthersCount: el("ticket-others-count"),
@@ -337,6 +337,8 @@
     view.ticketExposure.hidden = !block.position;
     view.ticketExposure.textContent = block.position;
     view.ticketExposure.classList.toggle("against", block.positionAgainst);
+    view.ticketUncapped.hidden = !block.uncapped;
+    view.ticketUncapped.textContent = block.uncapped || "";
     view.ticketPayoutRow.hidden = block.toWin == null;
     view.ticketToWin.textContent = block.toWin || "";
     view.ticketPayout.textContent = block.payout || "";

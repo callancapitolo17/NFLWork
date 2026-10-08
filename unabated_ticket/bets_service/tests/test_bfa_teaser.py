@@ -183,6 +183,37 @@ def test_a_moved_number_refuses_and_says_both_numbers():
     assert match_leg(NFL_BOARD, total, NOW) == "Over 39: BFA has 44.5 now, the list has 45"
 
 
+def test_a_spread_team_on_the_other_side_at_bfa_refuses():
+    giants_home = REQUEST["legs"][0]
+    assert match_leg(NFL_BOARD, {**giants_home, "side": "away"}, NOW) == (
+        "Giants +8.5: BFA lists New York Giants (rotation 258) as home, the list has the away team")
+    flipped = copy.deepcopy(NFL_BOARD)
+    for contestant in flipped[0]["fixtures"][0]["contestants"]:
+        contestant["side"] = 3 - contestant["side"]
+    assert match_leg(flipped, giants_home, NOW) == (
+        "Giants +8.5: BFA lists New York Giants (rotation 258) as away, the list has the home team")
+    total = {**giants_home, "betType": "total", "side": "under", "points": 44.5, "label": "Under 50.5"}
+    assert not isinstance(match_leg(flipped, total, NOW), str)  # a total's side is over / under
+
+
+def test_an_odds_row_whose_side_disagrees_with_its_team_refuses():
+    odd_row = copy.deepcopy(NFL_BOARD)
+    giants_odds = odd_row[0]["markets"][0]["odds"][1]
+    assert giants_odds["contestantId"] == 64424829
+    giants_odds["side"] = 2
+    assert match_leg(odd_row, REQUEST["legs"][0], NOW) == (
+        "Giants +8.5: BFA's odds row for New York Giants carries side 2, the home team's is 1")
+
+
+def test_a_side_mismatch_sends_nothing():
+    body = copy.deepcopy(REQUEST)
+    body["legs"][1]["side"] = "home"
+    session = FakeSession()
+    result = make_placer(FakeBFA([[]]), session, Clock()).place(validate_place_request(body))
+    assert result["status"] == "refused" and "BFA lists Denver Broncos (rotation 271) as away" in result["message"]
+    assert session.posts == []
+
+
 def test_no_game_a_started_game_a_closed_market_and_a_start_far_off_refuse():
     leg = REQUEST["legs"][3]
     assert "lists no game with rotation 999" in match_leg(CFB_BOARD, {**leg, "rotation": 999}, NOW)
@@ -263,15 +294,34 @@ class FakeSession:
         return FakeResponse(self.wager_status, self.wager_reply)
 
 
-def open_teaser(ticket, legs):
-    return {"idWager": ticket, "ticketNumber": ticket, "headerDescription": "4 TEAM TEASERS", "riskAmount": 200.0,
-            "winAmount": 600.0, "placedDate": "2026-10-03T09:19:08.000",
-            "betDetails": [{"idGame": game_id, "detailDescription": f" [{rotation}] TEAM +8½-110 (B+6)"}
-                           for game_id, rotation in legs]}
+def open_teaser(ticket, legs, risk=200.0, to_win=600.0):
+    """An open BFA teaser as GetPlayerOpenBets lists it: legs are (idGame, rotation) with a
+    stock description, or (idGame, rotation, detailDescription) in BFA's own words."""
+    details = []
+    for leg in legs:
+        game_id, rotation = leg[0], leg[1]
+        text = leg[2] if len(leg) > 2 else f" [{rotation}] TEAM +8½-110 (B+6) [Sport:Football][League:NFL]"
+        details.append({"idGame": game_id, "detailDescription": text})
+    return {"idWager": ticket, "ticketNumber": ticket, "headerDescription": "4 TEAM TEASERS", "riskAmount": risk,
+            "winAmount": to_win, "placedDate": "2026-10-03T09:19:08.000", "betDetails": details}
 
 
-PLACED_LEGS = [(38431521, 258), (38431485, 271), (38431490, 276), (38502300, 143)]
+# The recorded ticket as BFA lists it, in its own words (live grammar, 2026-10-07).
+PLACED_LEGS = [
+    (38431521, 258, " [258] NEW YORK GIANTS +8½-110 (B+6) [Sport:Football][League:NFL]"),
+    (38431485, 271, " [271] DENVER BRONCOS +8½-105 (B+6) [Sport:Football][League:NFL]"),
+    (38431490, 276, " [276] SEATTLE SEAHAWKS -1-115 (B+6) [Sport:Football][League:NFL]"),
+    (38502300, 143, "College Football <br> [143] OLD DOMINION +8½-110 (B+6) [Sport:Football][League:NCAA]"),
+]
 OLDER_TICKET = open_teaser(356205894, [(38431480, 102), (38431485, 271), (38431517, 261), (38502187, 201)])
+
+
+def with_leg(index, text):
+    """PLACED_LEGS with leg `index` reading `text` at BFA."""
+    legs = list(PLACED_LEGS)
+    game_id, rotation, _ = legs[index]
+    legs[index] = (game_id, rotation, text)
+    return legs
 
 
 class Clock:
@@ -296,7 +346,8 @@ def test_placing_posts_the_recorded_body_once_and_confirms_off_the_open_bets():
     session, clock = FakeSession(), Clock()
     result = make_placer(bfa, session, clock).place(validate_place_request(REQUEST))
     assert session.posts == [RECORDED_BODY]
-    assert result["status"] == "placed" and result["message"] == "Placed · ticket 356323496"
+    assert result["status"] == "placed" and result["message"] == "Placed · ticket 356323496 · all 4 legs match BFA"
+    assert (result["legsMatch"], result["legCheck"]) == (True, [])
     assert result["ticket"] == {"ticketNumber": 356323496, "risk": 200.0, "toWin": 600.0,
                                 "placedDate": "2026-10-03T09:19:08.000"}
     assert result["openWagers"] == [OLDER_TICKET, placed]
@@ -506,3 +557,71 @@ def test_a_name_tailscale_serve_forwards_can_read_but_never_place(serve_with):
     status, reply = post_place(url, REQUEST, host=TAILNET_HOST)
     assert status == 403 and "placing is for this machine only" in reply["error"]
     assert placer.requests == []
+
+
+# ---- the placed ticket, leg by leg ---------------------------------------------------------
+
+def expected_for(request_body=REQUEST):
+    request = validate_place_request(request_body)
+    boards = {"nfl": NFL_BOARD, "cfb": CFB_BOARD}
+    matches = [match_leg(boards[leg["league"]], leg, NOW) for leg in request["legs"]]
+    return bfa_teaser.expected_legs(request["legs"], matches)
+
+
+def test_the_recorded_ticket_matches_leg_by_leg():
+    assert bfa_teaser.leg_mismatches(open_teaser(356323496, PLACED_LEGS), expected_for(), 200) == []
+
+
+@pytest.mark.parametrize("index, text, problem", [
+    (0, " [258] NEW YORK GIANTS +9-110 (B+6) [Sport:Football][League:NFL]",
+     "Giants +8.5: BFA has [258] NEW YORK GIANTS +9-110 (B+6) [Sport:Football][League:NFL]"),
+    (0, " [257] ARIZONA CARDINALS -8½-110 (B+6) [Sport:Football][League:NFL]", "Giants +8.5: BFA has [257] ARIZONA"),
+    (2, " [276] SEATTLE SEAHAWKS -1-115 (B+7) [Sport:Football][League:NFL]", "Seahawks -1: BFA has"),
+    (2, " [276] SEATTLE SEAHAWKS -7-115 [Sport:Football][League:NFL]", "Seahawks -1: BFA has"),
+    (1, " [1271] DENVER BRONCOS 1H +8½-105 (B+6) [Sport:Football][League:NFL]", "Broncos +8.5: BFA has"),
+    (3, "College Football <br> [143] OLD DOMINION SUPERFECTA (SCR 1ST) +1935", "Old Dominion +8.5: BFA's leg could not be read"),
+])
+def test_a_leg_bfa_shows_differently_is_named(index, text, problem):
+    problems = bfa_teaser.leg_mismatches(open_teaser(356323496, with_leg(index, text)), expected_for(), 200)
+    assert len(problems) == 1 and problems[0].startswith(problem), problems
+
+
+def test_a_ticket_short_a_leg_or_off_on_the_money_is_named():
+    three_legs = open_teaser(356323496, PLACED_LEGS[:3])
+    problems = bfa_teaser.leg_mismatches(three_legs, expected_for(), 200)
+    assert problems == ["Old Dominion +8.5: BFA's ticket has 0 legs on that game", "BFA's ticket has 3 legs, 4 were sent"]
+    paying_less = open_teaser(356323496, PLACED_LEGS, to_win=500.0)
+    assert bfa_teaser.leg_mismatches(paying_less, expected_for(), 200) == [
+        "BFA's ticket risks 200.0 to win 500.0, $200 to win $600 was sent"]
+
+
+def test_a_total_leg_is_checked_on_its_side_and_its_number_after_the_teaser():
+    body = copy.deepcopy(REQUEST)
+    body["legs"][0].update(betType="total", side="over", rotation=257, points=44.5, label="Over 38.5")
+    over = " [257] TOTAL o38½-110 (B+6) (ARIZONA CARDINALS vrs NEW YORK GIANTS) [Sport:Football][League:NFL]"
+    legs = with_leg(0, over)
+    legs[0] = (38431521, 257, over)
+    assert bfa_teaser.leg_mismatches(open_teaser(1, legs), expected_for(body), 200) == []
+    under = over.replace("o38½", "u38½")
+    legs[0] = (38431521, 257, under)
+    assert bfa_teaser.leg_mismatches(open_teaser(1, legs), expected_for(body), 200)[0].startswith("Over 38.5: BFA has")
+
+
+def test_a_placed_ticket_that_differs_is_placed_and_red_never_hidden():
+    wrong = open_teaser(356323496, with_leg(0, " [258] NEW YORK GIANTS +9-110 (B+6) [Sport:Football][League:NFL]"))
+    bfa = FakeBFA([[OLDER_TICKET], [OLDER_TICKET, wrong]])
+    session, clock = FakeSession(), Clock()
+    placer = make_placer(bfa, session, clock)
+    result = placer.place(validate_place_request(REQUEST))
+    assert result["status"] == "placed" and result["legsMatch"] is False
+    assert result["message"].startswith("Placed · ticket 356323496, but BFA's ticket differs from the one sent: Giants +8.5")
+    assert placer.place(validate_place_request(REQUEST))["status"] == "refused"  # still held: it is booked
+    assert len(session.posts) == 1
+
+
+def test_of_two_new_tickets_on_the_games_the_one_that_reads_as_sent_is_confirmed():
+    other = open_teaser(356323400, with_leg(0, " [258] NEW YORK GIANTS +9-110 (B+6) [Sport:Football][League:NFL]"))
+    ours = open_teaser(356323496, PLACED_LEGS)
+    bfa = FakeBFA([[], [other, ours]])
+    result = make_placer(bfa, FakeSession(), Clock()).place(validate_place_request(REQUEST))
+    assert (result["ticket"]["ticketNumber"], result["legsMatch"]) == (356323496, True)

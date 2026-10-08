@@ -21,6 +21,11 @@
 //   ("closed"), or a bet whose result the venue no longer shows ("unknown")
 //   has no known P&L and is counted as excluded.
 //   Expected P&L, edge and calibration use only bets with a saved fair.
+//   A record carrying the venue's own `pnl` (Kalshi: priced off the market's
+//   net position, after fees) counts that number, and a "closed" one with it
+//   (sold before settlement) counts too: a gain as a win, a loss as a loss.
+//   A record with `mergedInto` is the other side of such a position and is
+//   skipped; its trades are already in the record it names.
 
 (function (root) {
   "use strict";
@@ -210,9 +215,11 @@
     const winProb = fairProb !== null ? fairProb : decimal ? 1 / decimal : 0.5;
     const placedMs = parseMs(ticket.placedAt);
     const closedMs = parseMs(ticket.closedAt);
-    const settled = SETTLED_STATUSES.has(ticket.status);
+    const hasVenuePnl = Number.isFinite(ticket.venuePnl)
+      && (SETTLED_STATUSES.has(ticket.status) || ticket.status === "closed");
+    const settled = hasVenuePnl || SETTLED_STATUSES.has(ticket.status);
     const settledDay = settled && closedMs !== null ? pacificDay(closedMs) : null;
-    const pnl = settled ? pnlOf(ticket.status, ticket.stake, ticket.toWin, decimal) : null;
+    const pnl = !settled ? null : hasVenuePnl ? ticket.venuePnl : pnlOf(ticket.status, ticket.stake, ticket.toWin, decimal);
     return Object.assign(ticket, {
       decimal, fairAmerican: fairDecimal ? fairAmerican : null, fairProb, edge,
       expected: edge !== null ? ticket.stake * edge : null,
@@ -239,6 +246,7 @@
       market: combo ? KIND_NAMES.kalshiCombo : BET_TYPE_NAMES[record.betType] || "Other",
       period: record.period || "FG", event: eventLabel(record), selection: selectionLabel(record),
       price: record.price, stake: Number(record.stake) || 0, toWin: record.toWin,
+      venuePnl: Number.isFinite(record.pnl) ? record.pnl : null,
       status: record.status, placedAt: record.placedAt, closedAt: record.closedAt, eventStart: record.eventStart || null,
       legCount: 1, betIds: [record.id],
     }, fairAmerican);
@@ -289,6 +297,7 @@
     const legsByParlay = new Map();
     const tickets = [];
     for (const record of records || []) {
+      if (record.mergedInto) continue;
       if (record.isParlayLeg && record.parlayId) {
         if (!legsByParlay.has(record.parlayId)) legsByParlay.set(record.parlayId, []);
         legsByParlay.get(record.parlayId).push(record);
@@ -312,8 +321,9 @@
     for (const ticket of tickets) {
       if (ticket.pnl === null) continue;
       total.bets += 1;
-      if (ticket.status === "won") total.wins += 1;
-      else if (ticket.status === "lost") total.losses += 1;
+      const result = ticket.status === "closed" ? (ticket.pnl > 0 ? "won" : ticket.pnl < 0 ? "lost" : "push") : ticket.status;
+      if (result === "won") total.wins += 1;
+      else if (result === "lost") total.losses += 1;
       else total.pushes += 1;
       total.handle += ticket.stake;
       total.pnl += ticket.pnl;
@@ -465,12 +475,34 @@
     };
   }
 
+  /**
+   * A copy of `rows` ordered by `keyOf(row)`: numbers numerically, strings
+   * case-insensitively, "asc" or "desc". Rows whose key is null, undefined or
+   * NaN go last in either direction, so a "—" never tops a sorted column.
+   * Stable: ties keep their incoming order.
+   */
+  function sortRows(rows, keyOf, direction) {
+    const sign = direction === "desc" ? -1 : 1;
+    const missing = (key) => key === null || key === undefined || (typeof key === "number" && Number.isNaN(key));
+    const keyed = rows.map((row, index) => ({ row, index, key: keyOf(row) }));
+    keyed.sort((a, b) => {
+      const aMissing = missing(a.key);
+      const bMissing = missing(b.key);
+      if (aMissing || bMissing) return aMissing === bMissing ? a.index - b.index : (aMissing ? 1 : -1);
+      const order = typeof a.key === "number" && typeof b.key === "number"
+        ? a.key - b.key
+        : String(a.key).localeCompare(String(b.key), undefined, { sensitivity: "base", numeric: true });
+      return order !== 0 ? sign * order : a.index - b.index;
+    });
+    return keyed.map((entry) => entry.row);
+  }
+
   const api = {
     PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR,
     pacificDay, addDays, dayKeyToUtc, weekdayOf, isDayKey, rangeBounds,
     americanToDecimal, decimalToAmerican,
     buildTickets, summarize, exclusions, inDayRange, dailySeries, firstSettledDay, groupBy, calibration,
-    venueName, splitOpenByStart,
+    venueName, splitOpenByStart, sortRows,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.UnabatedTrackerStats = api;

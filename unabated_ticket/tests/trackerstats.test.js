@@ -50,6 +50,22 @@ test("open, closed-early and unknown bets carry no P&L and stay out of the summa
   assert.deepEqual(stats.exclusions(tickets), { open: 1, noResult: 2 });
 });
 
+test("the venue's own pnl wins over stake/toWin, a sold position with one counts, its merged side is skipped", () => {
+  const tickets = stats.buildTickets([
+    straight({ id: "kalshi:R:yes", venue: "kalshi", stake: 236, toWin: 10964, status: "won", pnl: 5449.46 }),
+    straight({ id: "kalshi:R:no", venue: "kalshi", status: "closed", stake: 0, toWin: 0, mergedInto: "kalshi:R:yes" }),
+    straight({ id: "kalshi:P:no", venue: "kalshi", status: "closed", stake: 194.01, pnl: 24.84 }),
+    straight({ id: "kalshi:M:no", venue: "kalshi", status: "closed", stake: 732.54, pnl: -632.67 }),
+  ], []);
+  assert.deepEqual(tickets.map((t) => t.id).sort(), ["kalshi:M:no", "kalshi:P:no", "kalshi:R:yes"]);
+  const total = stats.summarize(tickets);
+  assert.equal(total.bets, 3);
+  assert.equal(total.wins, 2);
+  assert.equal(total.losses, 1);
+  assert.equal(Math.round(total.pnl * 100) / 100, 4841.63);
+  assert.deepEqual(stats.exclusions(tickets), { open: 0, noResult: 0 });
+});
+
 test("a won bet with no toWin is paid off its American price", () => {
   const [ticket] = stats.buildTickets([straight({ price: 150, stake: 100, toWin: null })], []);
   assert.equal(ticket.pnl, 150);
@@ -212,4 +228,14 @@ test("a removed record marks its ticket, and one removed leg marks the whole par
   const byId = Object.fromEntries(tickets.map((t) => [t.id, t]));
   assert.deepEqual([byId["wz:1"].excluded, byId["wz:2"].excluded, byId["bfa:9"].excluded], [true, false, true]);
   assert.deepEqual(byId["bfa:9"].betIds, ["bfa:9:leg0", "bfa:9:leg1"]);
+});
+
+test("sortRows: numbers and text both ways, missing keys last, ties stable", () => {
+  const rows = [{ id: "a", v: 2 }, { id: "b", v: null }, { id: "c", v: 10 }, { id: "d", v: 2 }, { id: "e", v: NaN }];
+  const ids = (list) => list.map((r) => r.id).join("");
+  assert.equal(ids(stats.sortRows(rows, (r) => r.v, "asc")), "adcbe");
+  assert.equal(ids(stats.sortRows(rows, (r) => r.v, "desc")), "cadbe");
+  const names = [{ n: "novig" }, { n: "BFA" }, { n: "Kalshi" }];
+  assert.deepEqual(stats.sortRows(names, (r) => r.n, "asc").map((r) => r.n), ["BFA", "Kalshi", "novig"]);
+  assert.equal(rows[0].id, "a", "the input is not reordered");
 });

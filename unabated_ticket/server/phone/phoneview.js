@@ -148,7 +148,7 @@
   // (Kalshi, Novig, Polymarket); null for a sportsbook (panel.js renderContracts).
   function contractsView(acted, row) {
     if (acted == null || acted <= 0) return null;
-    const order = kelly.contractOrder({ stake: acted, bookPrice: row.price, sourceFormat: row.sourceFormat, sourcePrice: row.sourcePrice });
+    const order = kelly.contractOrder({ stake: acted, bookPrice: row.price, sourceFormat: row.sourceFormat, sourcePrice: row.sourcePrice, bookName: row.book ? row.book.name : null });
     if (!order) return null;
     const priceText = `${order.priceCents.toFixed(1)}¢`;
     if (order.contracts === 0) return { text: `under 1 contract @ ${priceText}`, cost: null, under: true };
@@ -158,7 +158,8 @@
 
   // The Ticket's stake block for a row (panel.js renderTicket +
   // renderStakeExposure): the label, the number to act on, the position line
-  // under it, the contracts and the payout of that number.
+  // under it, the uncapped stake when liquidity cut it, the contracts and the
+  // payout of that number.
   function stakeBlockView(row) {
     const advice = row.advice;
     const words = betsView.stakeAdviceWords(advice);
@@ -182,6 +183,7 @@
       position: position.join(" · "),
       positionAgainst: advice.held === 0 && teasers.held === 0 && (advice.against > 0 || teasers.against > 0),
       contracts: contractsView(acted, row),
+      uncapped: betsView.uncappedLine(advice, { price: row.price, sourceFormat: row.sourceFormat, sourcePrice: row.sourcePrice, bookName: row.book ? row.book.name : null }),
       toWin: payout == null ? null : fmtDollars(payout - acted),
       payout: payout == null ? null : fmtDollars(payout),
     };

@@ -276,6 +276,10 @@ WHERE started_at < ?
 
 # Open bets always; settled/closed ones within the window; a non-open bet with
 # no closedAt is kept (dropping it would be silent) — same rule as bets.js.
+_SELECT_KALSHI_IDS = """
+SELECT id FROM bets WHERE venue = 'kalshi'
+"""
+
 _SELECT_WINDOW = """
 SELECT record FROM bets
 WHERE status = 'open' OR closed_at IS NULL OR closed_at >= ?
@@ -463,6 +467,13 @@ class BetsStore:
         if deleted:
             log.info("source_runs: pruned %d row(s) older than %s", deleted, cutoff.isoformat())
         return deleted
+
+    def load_kalshi_tickers(self) -> set[str]:
+        """Every Kalshi market ticker a stored record names (ids are
+        kalshi:<ticker>:<side>), so the Kalshi source reads their pre-cutoff fills."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_KALSHI_IDS).fetchall()
+        return {record_id.split(":")[1] for (record_id,) in rows}
 
     def load_bets(self, days: int, now: datetime) -> list[dict]:
         """Records in the retention window: open, or closed within `days` of `now`."""

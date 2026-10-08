@@ -100,6 +100,9 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .cell .d { font-size: 11px; color: #4e5866; }
 .cell .v { font: 500 12px var(--mono); text-align: right; }
 .cell.today { border-color: var(--exp-line); }
+.cell.pickable { cursor: pointer; }
+.cell.pickable:hover { border-color: var(--muted); }
+.cell.picked, .cell.picked:hover { border-color: var(--text); box-shadow: 0 0 0 1px var(--text); }
 .cell.flat { background: #161b23; }
 .cal-key { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); justify-content: flex-end; }
 .cal-key i { width: 14px; height: 10px; border-radius: 2px; display: inline-block; }
@@ -117,6 +120,22 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .result.won { background: rgba(61, 214, 140, .14); color: var(--pos); }
 .result.lost { background: rgba(255, 107, 107, .14); color: var(--neg); }
 .result.open { background: rgba(110, 168, 254, .14); color: var(--exp); }
+
+/* nav badge: open bet count */
+.nav .badge { margin-left: 7px; font-size: 11px; padding: 1px 7px; border-radius: 9px; background: var(--line); color: var(--text); }
+
+/* kpi tile that links to another page */
+.kpi.link { cursor: pointer; }
+.kpi.link:hover { border-color: var(--exp-line); }
+.kpi.link:focus-visible { outline: 2px solid var(--exp-line); outline-offset: 2px; }
+
+/* Overview: settled bets in the header range */
+.settled-sum { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 10px 22px; border-bottom: 1px solid var(--line-soft); font-size: 13px; color: var(--muted); }
+.settled-sum b { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); }
+.settled-sum b.pos { color: var(--pos); }
+.settled-sum b.neg { color: var(--neg); }
+.settled-sum b.exp { color: var(--exp); }
+.settled-sum:empty { display: none; }
 
 /* open bets: Live now / Upcoming */
 .open-group + .open-group { border-top: 1px solid var(--line); }
@@ -177,3 +196,8 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .cal-key .k-pos2 { background: rgba(61, 214, 140, .65); }
 .cal-plot { max-width: 466px; display: flex; flex-direction: column; gap: 6px; }
 .cal-plot svg { width: 100%; height: auto; aspect-ratio: 4 / 3; }
+
+/* sortable headers: the label is a button so it takes a click and a keypress */
+.tbl th button.sort { all: unset; cursor: pointer; font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; }
+.tbl th button.sort:hover, .tbl th button.sort.on { color: var(--text); }
+.tbl th button.sort:focus-visible { outline: 2px solid var(--exp); outline-offset: 2px; border-radius: 2px; }

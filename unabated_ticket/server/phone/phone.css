@@ -310,6 +310,7 @@ button, select, input { font: inherit; color: inherit; }
 .stake-contracts.under { font-weight: 400; color: var(--muted); }
 .stake-exposure { margin-top: 4px; font-size: 13px; color: var(--ink-2); }
 .stake-exposure.against { color: var(--against-fg); }
+.stake-uncapped { margin-top: 2px; font: 400 14px var(--figure); color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .payout-row {
   display: flex; flex-wrap: wrap; gap: 24px; margin-top: 10px; padding-top: 10px;
   border-top: 1px dashed color-mix(in srgb, var(--edge-strong) 30%, transparent);
