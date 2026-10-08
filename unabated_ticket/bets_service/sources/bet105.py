@@ -11,12 +11,15 @@ or not). This module is the pure half plus the service rules:
 
   normalize_bet105(feeds, fetched_at)  every open bet group of both feeds -> records, one
                                        per leg of a parlay.
-  normalize_settled(wagers, fetched_at)
+  normalize_settled(wagers, fetched_at, known_feeds)
                                        every GRADED wager of wagers/search -> records with
                                        the venue's result, plus the reasons for the ones it
                                        could not read. Pending wagers are left to the open
                                        read (the venue also keeps a few never-graded March
                                        2026 wagers Pending, which getHistory does not list).
+  feeds_by_native_id(records)          the feed each known ticket's record sits under
+                                       (stored, or open in this push) — normalize_settled's
+                                       known_feeds.
   merge_settled(open_records, settled_records)
                                        a ticket the settled read carries is settled: its
                                        open records give way.
@@ -55,8 +58,10 @@ Settled read — POST /__bff/api/wagers/search {} with the same X-Broker-CSRF he
 2026-09-28, all productCode "PreMatch", category "SPORTS". The extension sends each wager
 cut to the fields read here (extension/bet105.js settledWagerOf).
 Wager: ticketNumber (a string: getHistory's betGroupId — so the record id is the open
-  record's), wagerId (getHistory's ticketNumber; the number My Bets shows), productCode
-  ("PreMatch" -> the prematch feed), wagerStatus ("Win" 117, "Loss" 104, "Push" 4,
+  record's; one sequence across products, 230 of 230 unique), wagerId (getHistory's
+  ticketNumber; the number My Bets shows), productCode ("PreMatch" -> the prematch feed;
+  the feed comes first from the ticket's own open record, under whichever feed it sits),
+  wagerStatus ("Win" 117, "Loss" 104, "Push" 4,
   "Pending" 5), placeTime / gradeTime (ISO UTC; gradeTime is the settle time, set on every
   graded wager), risk, toWin, result (the money the bet made: toWin on a win — to the tenth
   of a cent — minus risk on a loss, 0 on a push, 0 on a lost free play), isFreePlay,
@@ -75,14 +80,14 @@ Status: the site's own My Bets code (its Te(): isCashout first, then PENDING, CA
   "no known P&L" status). A free play stakes nothing (the BFA convention), so a lost one
   costs 0, as its result says. A won record's toWin is the venue's `result`, what it paid.
   With those, won -> toWin, lost -> -stake, push / void -> 0 reproduces `result` on every
-  graded wager captured.
+  graded wager captured. The record also carries `pnl` = `result`, the venue's own P&L
+  (the field the tracker counts first, as for Kalshi), so a cash-out books its result.
 
 Verified on the captures: totals of both sides, both spread sides, moneylines of both sides,
 1st / 4th quarters, a 3-leg parlay (a $0 free bet), a free play, pushes; NFL, MLB and the
 college leagues. Unobserved, pinned only by hand-written fixture rows: a void, a cash-out,
-an open parlay, the live feed, a productCode other than PreMatch (its settled wager is
-skipped with the reason, so a stored open record falls back to closed-by-absence — the open
-record's feed cannot be told from the wager). Everything else fails closed with the reason
+an open parlay, the live feed, a productCode other than PreMatch (it settles under its open
+record's feed; with no open record ever seen it is skipped with the reason). Everything else fails closed with the reason
 and the codes: a market other than 3 / 5 / 6, a styled market, a side code other than
 1 / 2, a period or league name the tables do not know (a league name is added once it is
 seen on a bet, never guessed; soccer stays out).
@@ -424,6 +429,7 @@ def _settled_base_record(wager: dict, feed: str, native_id: str, status: str, fe
     record.update({
         "stake": stake_of(wager.get("risk"), wager.get("isFreePlay")),
         "toWin": _money(paid),
+        "pnl": _money(wager.get("result")),
         "placedAt": iso_utc(moment_of_iso(wager.get("placeTime"))),
         "status": status,
         "closedAt": iso_utc(moment_of_iso(wager.get("gradeTime"))),
@@ -487,36 +493,47 @@ def normalize_settled_wager(wager: dict, feed: str, status: str, fetched_at: str
     return records
 
 
-def normalize_settled(wagers: list[dict], fetched_at: str | None) -> tuple[list[dict], list[str]]:
+def feeds_by_native_id(records: list[dict]) -> dict[str, str]:
+    """nativeId -> the feed its Bet105 record sits under, for every record given (the
+    stored ones, then this push's open ones, which win). Ticket numbers are one sequence
+    across both feeds, so the native id alone names the ticket."""
+    feeds: dict[str, str] = {}
+    for record in records:
+        raw = record.get("raw") or {}
+        if record.get("venue") == VENUE and raw.get("nativeId") and raw.get("feed") in FEEDS:
+            feeds[str(raw["nativeId"])] = raw["feed"]
+    return feeds
+
+
+def normalize_settled(wagers: list[dict], fetched_at: str | None,
+                      known_feeds: dict[str, str]) -> tuple[list[dict], list[str]]:
     """Every graded wager -> records; plus, for each graded-looking wager it cannot read,
-    the reason (the service logs them). Pending wagers are skipped silently: the open read
-    owns open bets."""
+    the reason (the service logs them). A wager settles under the feed its ticket's record
+    already sits under (`known_feeds`, feeds_by_native_id), else its productCode's — so it
+    lands on its open record's id. Pending wagers are skipped silently: the open read owns
+    open bets."""
     records: list[dict] = []
     skipped: list[str] = []
     for wager in wagers:
         status = settled_status_of(wager)
-        ticket = wager.get("ticketNumber")
+        ticket = str(wager.get("ticketNumber")).strip()
         if status is None:
             if _text(wager.get("wagerStatus")).upper() != WAGER_STATUS_PENDING:
                 skipped.append(f"ticket {ticket}: unknown wagerStatus {wager.get('wagerStatus')!r}")
             continue
-        feed = FEED_BY_PRODUCT.get(_text(wager.get("productCode")))
+        feed = known_feeds.get(ticket) or FEED_BY_PRODUCT.get(_text(wager.get("productCode")))
         if feed is None:
-            skipped.append(f"ticket {ticket}: unknown productCode {wager.get('productCode')!r} — its open record's feed cannot be told")
+            skipped.append(f"ticket {ticket}: unknown productCode {wager.get('productCode')!r} and no open record to take the feed from")
             continue
         records.extend(normalize_settled_wager(wager, feed, status, fetched_at))
     return records, skipped
 
 
-def _ticket_of(record: dict) -> tuple[str, str]:
-    return record["raw"]["feed"], record["raw"]["nativeId"]
-
-
 def merge_settled(open_records: list[dict], settled_records: list[dict]) -> list[dict]:
     """The settled read's records over the open read's: a ticket the venue has graded is
     settled even while getHistory still lists it, so every open record of it gives way."""
-    settled_tickets = {_ticket_of(record) for record in settled_records}
-    still_open = [record for record in open_records if _ticket_of(record) not in settled_tickets]
+    settled_tickets = {record["raw"]["nativeId"] for record in settled_records}
+    still_open = [record for record in open_records if record["raw"]["nativeId"] not in settled_tickets]
     return still_open + settled_records
 
 

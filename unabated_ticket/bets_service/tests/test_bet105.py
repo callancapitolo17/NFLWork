@@ -16,8 +16,8 @@ import pytest
 from unabated_ticket.bets_service import service
 from unabated_ticket.bets_service.sources import bet105
 from unabated_ticket.bets_service.sources.bet105 import (
-    american_from_decimal, american_from_text, closed_by_absence, merge_settled, moment_of_iso, normalize_bet105,
-    normalize_group, normalize_settled, settled_status_of, status_of, validate_push)
+    american_from_decimal, american_from_text, closed_by_absence, feeds_by_native_id, merge_settled, moment_of_iso,
+    normalize_bet105, normalize_group, normalize_settled, settled_status_of, status_of, validate_push)
 from unabated_ticket.bets_service.store import BetsStore
 
 FIXTURE_PATH = Path(__file__).parents[2] / "tests" / "fixtures" / "bets" / "bet105_history.json"
@@ -49,7 +49,7 @@ def records(push) -> list[dict]:
 
 @pytest.fixture
 def settled(push) -> list[dict]:
-    records, _skipped = normalize_settled(push["settled"], push["fetchedAt"])
+    records, _skipped = normalize_settled(push["settled"], push["fetchedAt"], {})
     return records
 
 
@@ -210,8 +210,9 @@ def test_a_graded_open_bet_settles_on_the_same_id_with_the_venues_result_and_set
 
 def test_every_graded_wager_books_exactly_the_venues_result(settled):
     for record in settled:
+        assert record["pnl"] == record["raw"]["result"], record["id"]  # the venue's own P&L, counted first
         if record["status"] == "closed":
-            continue  # a cash-out: the store's "no known P&L"
+            continue  # a cash-out: only its pnl says what it made
         assert tracker_pnl(record) == record["raw"]["result"], record["id"]
 
 
@@ -273,24 +274,43 @@ def test_void_and_cash_out_come_from_the_sites_own_status_rules(settled):
     void = by_id(settled, "bet105:prematch:94000001")
     assert (void["status"], void["closedAt"], tracker_pnl(void)) == ("void", "2026-09-28T17:00:00Z", 0)
     cashed_out = by_id(settled, "bet105:prematch:94000002")
-    assert (cashed_out["status"], cashed_out["closedAt"], cashed_out["raw"]["result"]) == ("closed", "2026-09-28T01:30:00Z", 40)
+    assert (cashed_out["status"], cashed_out["closedAt"], cashed_out["pnl"]) == ("closed", "2026-09-28T01:30:00Z", 40)
 
 
 def test_pending_wagers_are_left_to_the_open_read_and_unreadable_ones_name_the_reason(push):
-    records, skipped = normalize_settled(push["settled"], push["fetchedAt"])
+    records, skipped = normalize_settled(push["settled"], push["fetchedAt"], {})
     assert len(records) == SETTLED_RECORDS
     assert not [record for record in records if record["raw"]["nativeId"] == "93000010"]  # the March Pending wager
     assert skipped == [
-        "ticket 94000003: unknown productCode 'Unseen' — its open record's feed cannot be told",
+        "ticket 94000003: unknown productCode 'Unseen' and no open record to take the feed from",
         "ticket 94000004: unknown wagerStatus 'Unseen'",
     ]
     assert len(skipped) == SETTLED_SKIPPED
 
 
-def test_settled_records_carry_the_contract_keys_and_ids_are_unique(settled):
+def test_a_wager_settles_under_the_feed_its_tickets_record_sits_under(push):
+    # 94000003's productCode names no feed; held under the live feed, it settles there.
+    records, skipped = normalize_settled(push["settled"], push["fetchedAt"], {"94000003": "live", "91000002": "live"})
+    assert by_id(records, "bet105:live:94000003")["status"] == "won"
+    assert by_id(records, "bet105:live:91000002")["status"] == "won"  # the record's feed beats the productCode's
+    assert skipped == ["ticket 94000004: unknown wagerStatus 'Unseen'"]
+
+
+def test_feeds_by_native_id_reads_bet105_records_and_the_later_one_wins():
+    records = [
+        {"venue": "bet105", "raw": {"nativeId": "1", "feed": "prematch"}},
+        {"venue": "bet105", "raw": {"nativeId": "1", "feed": "live"}},
+        {"venue": "bet105", "raw": {"nativeId": "2", "feed": "prematch"}},
+        {"venue": "kalshi", "raw": {"nativeId": "3", "feed": "prematch"}},
+        {"venue": "bet105", "raw": {"nativeId": "4"}},
+    ]
+    assert feeds_by_native_id(records) == {"1": "live", "2": "prematch"}
+
+
+def test_settled_records_carry_the_contract_keys_and_pnl_and_ids_are_unique(settled):
     assert len({record["id"] for record in settled}) == SETTLED_RECORDS
     for record in settled:
-        assert set(record) == CONTRACT_KEYS, record["id"]
+        assert set(record) == CONTRACT_KEYS | {"pnl"}, record["id"]
 
 
 def test_merge_settled_lets_a_graded_ticket_replace_its_open_records(records, settled):
@@ -298,6 +318,10 @@ def test_merge_settled_lets_a_graded_ticket_replace_its_open_records(records, se
     assert len(merged) == MERGED_RECORDS and len({record["id"] for record in merged}) == MERGED_RECORDS
     assert by_id(merged, "bet105:prematch:91000002")["status"] == "won"
     assert by_id(merged, "bet105:prematch:91000004")["status"] == "open"
+    # The ticket decides, not the feed: an open record under the other feed gives way too.
+    live_open = {**by_id(records, "bet105:prematch:91000001"), "id": "bet105:live:91000001"}
+    live_open["raw"] = {**live_open["raw"], "feed": "live"}
+    assert "bet105:live:91000001" not in {record["id"] for record in merge_settled([live_open], settled)}
 
 
 @pytest.mark.parametrize("wager, status", [
@@ -425,12 +449,16 @@ def test_http_push_settles_from_the_venue_closes_only_what_neither_read_lists_an
 
     # Graded: 91000001-91000003 leave the open list and the wager list carries their results.
     # 91000004 leaves the open list too, but no wager carries it: the closed-by-absence fallback.
+    # The live group 92000001 is graded under a productCode that names no feed: it settles
+    # under the live feed its stored record sits under, not closed with no result.
     graded = {91000001, 91000002, 91000003, 91000004}
     push["feeds"]["prematch"] = [group for group in push["feeds"]["prematch"] if group["betGroupId"] not in graded]
-    push["settled"] = settled_list
+    push["feeds"]["live"] = []
+    live_wager = {**settled_list[1], "ticketNumber": "92000001", "productCode": "Unseen"}
+    push["settled"] = settled_list + [live_wager]
     status, reply = request_json("POST", f"{http_server}/bet105.json", push)
-    count = FIXTURE_RECORDS - len(graded) + SETTLED_RECORDS
-    assert (status, reply) == (200, {"ok": True, "count": count, "settled": SETTLED_RECORDS, "closed": 1,
+    count = FIXTURE_RECORDS - len(graded) - 1 + SETTLED_RECORDS + 1
+    assert (status, reply) == (200, {"ok": True, "count": count, "settled": SETTLED_RECORDS + 1, "closed": 1,
                                      "skipped": SETTLED_SKIPPED})
     bets = bet105_bets(request_json("GET", f"{http_server}/bets.json?days=3650")[1])
     won = bets["bet105:prematch:91000002"]
@@ -441,6 +469,9 @@ def test_http_push_settles_from_the_venue_closes_only_what_neither_read_lists_an
     fallback = bets["bet105:prematch:91000004"]
     assert (fallback["status"], fallback["raw"]["closedReason"]) == ("closed", bet105.REASON_CLOSED_BY_ABSENCE)
     assert fallback["closedAt"] is not None and bets["bet105:prematch:91000005"]["status"] == "open"
+    live = bets["bet105:live:92000001"]
+    assert (live["status"], live["pnl"], live["closedAt"]) == ("won", 100, "2026-10-06T01:56:19Z")
+    assert "bet105:prematch:92000001" not in bets
     assert len(bets) == FIXTURE_RECORDS - 3 + SETTLED_RECORDS  # history the store never saw open is kept too
 
     # An error push is a failed run: the panel shows the text; the records stand.

@@ -1894,24 +1894,30 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   older ones). **Settled** (the 2026-10-07 capture: 230 wagers from
   2025-09-06, all `productCode` `PreMatch`): `wagerStatus` `Win` → won,
   `Loss` → lost, `Push` → push; `Cancel` / `NO_ACTION` → void and a cash-out
-  (`isCashout`) → `closed` (no known P&L) come from the site's own My Bets
-  code, unseen on a bet. `closedAt` is the venue's `gradeTime` (never the
-  push's clock), so the tracker books the day it settled; a won record's
-  `toWin` is the venue's `result` (what it paid); a free play stakes 0, so a
-  lost one costs nothing, as its `result` says. With those, the tracker's
-  rule reproduces `result` on all 225 graded wagers. A failed-closed leg (a
+  (`isCashout`) → `closed` come from the site's own My Bets code, unseen on a
+  bet. `closedAt` is the venue's `gradeTime` (never the push's clock), so the
+  tracker books the day it settled; every settled record carries `pnl` =
+  the venue's `result` (the field the tracker counts first, as for Kalshi —
+  so a cash-out books its result too); a won record's `toWin` is also the
+  venue's `result` (what it paid); a free play stakes 0, so a lost one costs
+  nothing, as its `result` says. With those, the tracker's status rule
+  reproduces `result` on all 225 graded wagers as well. A failed-closed leg (a
   team total, soccer) keeps its result: only the line is unread. `Pending`
   wagers are left to the open read (the venue also keeps five never-graded
   March 2026 college bets `Pending`; `getHistory` does not list them, so they
-  never show as open). A graded wager the parser cannot read — a
-  `productCode` other than `PreMatch` (its open record's feed cannot be told
-  from the wager) or a `wagerStatus` nobody names — is skipped and logged
+  never show as open). A wager settles under the feed its ticket's record
+  already sits under (ticket numbers are one sequence across both feeds), so
+  a live bet held as `bet105:live:<id>` settles there whatever its
+  `productCode`; with no record held, `PreMatch` → prematch. A graded wager
+  the parser cannot read — a `productCode` other than `PreMatch` with no
+  record held, or a `wagerStatus` nobody names — is skipped and logged
   (`bet105: N settled wager(s) not read: …` in `bets_service.log`; the reply's
   `skipped`). **Closed by absence is the fallback only**: an open record that
   neither the open list nor the settled list carries is marked `closed` with
   no result — never guessed won or lost. **Unobserved**, pinned by
   hand-written fixture rows only: a void, a cash-out, an open parlay, the
-  live feed and a live bet's `productCode`. No credentials and no poll in the
+  live feed and a live bet's `productCode` (settled by its held record's
+  feed, so its value does not matter once the bet was seen open). No credentials and no poll in the
   service; `service.PUSHED_SOURCES` lists the venue so the panel reads "no
   completed poll yet" until the first push.
 - **Store** (`store.py`, `bets.duckdb`, gitignored): `bets` upserts on the
@@ -2236,7 +2242,8 @@ page's Remove / Restore.
   by default (Cal, 2026-10-05); switching off the header's **Bot combos**
   toggle hides them. Won pays
   `toWin`, lost costs `stake`, push and void are 0, unless the record carries
-  the venue's own `pnl`: **Kalshi** records do (2026-10-06), priced off the
+  the venue's own `pnl`: **Bet105** graded records carry its `result`
+  (2026-10-07); **Kalshi** records do (2026-10-06), priced off the
   market's NET position after fees (`sources/kalshi.py::apply_net_position_pnl`;
   Kalshi nets YES against NO, so a "sell no" while holding YES closes YES —
   counting the two sides as separate bets overstated Kalshi by ~$7k, Rodri
@@ -2250,9 +2257,9 @@ page's Remove / Restore.
   whole older history is mostly the MLB bots' trades, and a page of it hung
   34 minutes on Cal's Mac. Checked 2026-10-06 against Kalshi's own realized P&L minus
   fees: 290 of 290 markets to the cent (Kalshi +$16,784 → +$9,441). Open bets are exposure, not P&L;
-  a closed bet with no `pnl` (Polymarket US sold early, a Bet105 cash-out, or
-  a Bet105 bet that left the open list with no graded wager to settle it) and
-  a bet whose result is gone (`unknown`) have no
+  a closed bet with no `pnl` (Polymarket US sold early, or a Bet105 bet that
+  left the open list with no graded wager to settle it) and a bet whose
+  result is gone (`unknown`) have no
   known P&L and are counted as "without a result". A parlay or teaser is one
   ticket (its legs carry the ticket's stake and status). Edge = fair
   probability × the ticket's actual payout − 1, so expected P&L, z and
@@ -2863,9 +2870,11 @@ no groups for any state but open, and that the My Bets page reads every wager
 the account has from `POST /__bff/api/wagers/search` — status, result, grade
 time, legs on the same LinePros ids. The panel now adds that read to its push,
 and the service settles each graded wager on its open record's id with the
-venue's result and `gradeTime` (the tracker's Pacific settle day); the 225
-graded wagers since 2025-09-06 came in as history. Closed by absence stays,
-as the fallback for a bet neither list carries. The status rules are the
+venue's result (as `pnl`) and `gradeTime` (the tracker's Pacific settle
+day); the 225 graded wagers since 2025-09-06 came in as history. A wager takes
+its feed from the ticket's held record before its `productCode`, so a live
+bet settles on its own id. Closed by absence stays, as the fallback for a bet
+neither list carries. The status rules are the
 site's own code plus the capture, never guessed; the P&L the tracker books
 equals the venue's `result` on every graded wager.
 

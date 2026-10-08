@@ -724,12 +724,14 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 store.log_source_run(bet105.VENUE, started_at, _now(), False, push["error"], 0)
                 self._send_json(200, {"ok": True, "recorded": "error"})
                 return
-            settled, skipped = bet105.normalize_settled(push["settled"], push["fetchedAt"])
+            stored = store.load_bets(config.RETENTION_DAYS, started_at)
+            open_records = bet105.normalize_bet105(push["feeds"], push["fetchedAt"])
+            known_feeds = bet105.feeds_by_native_id(stored + open_records)
+            settled, skipped = bet105.normalize_settled(push["settled"], push["fetchedAt"], known_feeds)
             if skipped:
                 log.warning("bet105: %d settled wager(s) not read: %s", len(skipped), "; ".join(skipped))
-            records = bet105.merge_settled(bet105.normalize_bet105(push["feeds"], push["fetchedAt"]), settled)
-            closed = bet105.closed_by_absence(store.load_bets(config.RETENTION_DAYS, started_at),
-                                              {record["id"] for record in records}, _iso(started_at))
+            records = bet105.merge_settled(open_records, settled)
+            closed = bet105.closed_by_absence(stored, {record["id"] for record in records}, _iso(started_at))
             store.upsert_bets(records + closed, started_at)
             store.log_source_run(bet105.VENUE, started_at, _now(), True, None, len(records))
             self._send_json(200, {"ok": True, "count": len(records), "settled": len(settled),
