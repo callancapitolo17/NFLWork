@@ -2092,6 +2092,21 @@ screen, which a server does not have.
 node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json
 ```
 
+On the Mac it runs as a launchd agent next to the bets service (the Bet
+Tracker's Live tab needs it running before each game starts):
+
+```bash
+cp unabated_ticket/server/com.nflwork.edges-runner.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.edges-runner.plist
+curl -s http://127.0.0.1:8095/health                                    # ok: true
+launchctl kickstart -k gui/$(id -u)/com.nflwork.edges-runner           # restart after a pull
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.edges-runner.plist   # remove
+```
+
+It needs `node` (18+) at `/opt/homebrew/bin` or `/usr/local/bin` (the
+plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
+(gitignored; state changes only).
+
 | Env | Default | |
 |---|---|---|
 | `UNABATED_RUNNER_HOST` | `127.0.0.1` | bind address; stays loopback on the server too (step 4) |
