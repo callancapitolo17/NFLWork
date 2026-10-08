@@ -75,6 +75,9 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     cannot be reached within config.RUNNER_TIMEOUT_SEC or
                                     answers anything but 200 (phone page plan step 2:
                                     one origin for the page, its reads and its PUT)
+           GET /scenarios.json      the server runner's Live-tab scenarios (server/scenarios.js
+                                    documents them), passed through the same way, with the
+                                    same 502 (the Bet Tracker's Live tab)
            GET / and the phone page's files   STATIC_FILES, a fixed map of URL path ->
                                     file (server/phone/ and the extension's pure modules
                                     the page loads under /ext/; the Bet Tracker,
@@ -520,11 +523,15 @@ def validate_settings_update(body: object, held: dict) -> dict | str:
     return merged
 
 
-def fetch_runner_edges(runner_url: str, timeout_sec: float) -> tuple[int, bytes]:
-    """(status, body) for GET /edges.json: the runner's body as it came on a
-    200, else 502 with a JSON error naming the runner URL and what failed.
-    Network: one GET of <runner_url>/edges.json, no proxy, `timeout_sec`."""
-    url = f"{runner_url}/edges.json"
+# The runner's JSON routes the bets service passes through (one origin for the pages).
+RUNNER_ROUTES = ("/edges.json", "/scenarios.json")
+
+
+def fetch_runner_json(runner_url: str, path: str, timeout_sec: float) -> tuple[int, bytes]:
+    """(status, body) for GET <path> (one of RUNNER_ROUTES): the runner's body
+    as it came on a 200, else 502 with a JSON error naming the runner URL and
+    what failed. Network: one GET of <runner_url><path>, no proxy, `timeout_sec`."""
+    url = f"{runner_url}{path}"
     try:
         with _RUNNER_OPENER.open(url, timeout=timeout_sec) as response:
             return 200, response.read()
@@ -532,7 +539,7 @@ def fetch_runner_edges(runner_url: str, timeout_sec: float) -> tuple[int, bytes]
         problem = f"answered HTTP {error.code}"
     except (urllib.error.URLError, OSError) as error:  # refused, reset, DNS, timeout
         problem = f"unreachable ({getattr(error, 'reason', None) or error})"
-    error_body = {"error": f"server runner at {runner_url} {problem} for /edges.json; start it with "
+    error_body = {"error": f"server runner at {runner_url} {problem} for {path}; start it with "
                            f"node unabated_ticket/server/runner.js", "runnerUrl": runner_url}
     return 502, json.dumps(error_body).encode()
 
@@ -587,8 +594,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                     return
                 self._send_json(200, bets_payload(store, days, names))
                 return
-            if url.path == "/edges.json":
-                status, body = fetch_runner_edges(edges_runner_url, edges_timeout_sec)
+            if url.path in RUNNER_ROUTES:
+                status, body = fetch_runner_json(edges_runner_url, url.path, edges_timeout_sec)
                 self._send_bytes(status, body, "application/json")
                 return
             if url.path in STATIC_FILES:

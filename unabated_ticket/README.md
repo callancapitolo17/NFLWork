@@ -2129,13 +2129,18 @@ node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json
   (`{text: "add $237.25", note: "$437.25 alone", atSize}`), `badges`,
   `related` (the bets on the game with their tags and `fair then`) and
   `move` (`{kind, label, detail, sinceFill}` or null). The full shape is
-  documented at the top of `server/edges_payload.js`. `GET /health` →
+  documented at the top of `server/edges_payload.js`. `GET /scenarios.json`
+  → `{generatedAt, scanner, betsService, games, coveredBetIds}`, the Bet
+  Tracker's Live tab cards (`server/scenarios.js` documents the shape; the
+  bets service passes it through at its own `/scenarios.json`). `GET /health` →
   `{ok, uptimeSec, scanner, betsService, settings}`. Any verb but GET is
   405; a request whose `Host` is not `127.0.0.1:<port>`, `localhost:<port>`
   or the bound address with the port is 403 (the bets service's #125 rule).
 - **Side effects**: none on disk and no writes to the bets service; feed,
-  line history and bets live in memory and rebuild on restart (so the
-  edge-move tag starts empty, as when the panel opens). Logs state changes to
+  line history, bets and each game's kickoff odds (the Live tab's chances)
+  live in memory and rebuild on restart (so the edge-move tag starts empty,
+  as when the panel opens, and a game already under way has no kickoff
+  chances). Logs state changes to
   stdout/stderr. Unlike the panel it does not POST fill fairs or crosswalk
   lessons — the Mac panel keeps doing that.
 
@@ -2188,8 +2193,9 @@ node unabated_ticket/server/runner.js                     # must be running too 
 Daily P&L and bet analysis, served by the bets service at `/tracker` (on
 the VM: `https://<vm>.<tailnet>.ts.net/tracker`). It reads `GET
 /bets.json?days=3650` (every bet the service has stored, plus the saved fill
-fairs and removed bets) every 60 s while visible. Its one write is the Bets
-page's Remove / Restore.
+fairs and removed bets) and `GET /scenarios.json` (the Live tab's game
+cards, from the server runner through the bets service) every 60 s while
+visible. Its one write is the Bets page's Remove / Restore.
 
 - **Overview**: net P&L, ROI, handle, record, open risk; expected P&L at
   Unabated's fair at fill and actual vs expected with its z-score; cumulative
@@ -2200,11 +2206,35 @@ page's Remove / Restore.
   header range, newest first, 50 at a time with Show more, under the
   range's P&L, record, expected and handle (Cal, 2026-10-07; briefly a
   today-only panel). The Open risk tile links to the Open page.
+- **Live** (2026-10-08, Cal's "scenarios" idea): one card per game in
+  progress holding open bets, cut into the results that change the money —
+  "Chiefs by 2-3: +$410" — with each result's chance and P&L, one ladder
+  per market and period (result, total), and the card's range and EV. The
+  cuts come from the bets themselves: every bet's number splits its market
+  (a whole number adds its push), neighbouring results with the same P&L
+  merge. A parlay or teaser leg on the game adds its own cut and is tagged
+  where it loses or pushes; its ticket's dollars stay out of the game's
+  P&L (its other legs are other games) and the ticket is listed under
+  **Parlays and teasers riding**. **The chance is Unabated's fair at
+  kickoff** (the median fair ladder from the last snapshot before the
+  start, the ladder the Edges sizing reads), not the live score: no scores
+  feed is wired yet. Started bets the runner could not place on a game
+  (futures, props, a name or time the board doesn't share) are listed under
+  **Not on a game card**; when `/scenarios.json` cannot be read the tab says
+  why and lists every live bet there. Built by `server/scenarios.js` (pure,
+  `tests/scenarios.test.js`) in the server runner, which matches bets to
+  games with the panel's own matcher (`bets.js`: pins, venue ids, names,
+  rotation), so a BetOnline bet with no start time lands on its game's card.
+  The runner keeps each game's kickoff odds **in memory** for 12 h after its
+  start, whether or not the board still lists it: a game already under way
+  when the runner (re)starts gets its card with "—" for every chance. The
+  nav tab carries the live bet count.
 - **Open** (2026-10-07; was Overview's bottom panel): open-bet count, stake
   at risk and to win, open EV (bets with a saved fair) and stake in live
-  games, then the open bets with price, fair and edge, then **Settled
-  today** (bets settled on the current Pacific day, whatever the header
-  range says). The nav tab carries the open count.
+  games (links to Live), then the open bets that are not live with price,
+  fair and edge, then **Settled today** (bets settled on the current
+  Pacific day, whatever the header range says). The nav tab carries the
+  count of open bets not on the Live tab.
 - **Analysis**: filter by venue, league and type (straight, parlay, teaser),
   group by venue, league, market, period, type, odds, edge at fill, timing
   (hours placed before start), weekday or stake. Each group shows ROI with its
@@ -2220,12 +2250,13 @@ page's Remove / Restore.
 - **Header**: range (Today, Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days), $ / units with the unit size
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
-- **Open bets** (Open page) are split into **Live now** (the game has started;
-  a parlay's earliest leg), **Upcoming**, and, when any exist, **No start
-  time** (BetOnline's report carries no game time, Kalshi NFL/CFB tickers
-  only a date; futures and Kalshi combos none), each with its count and
-  stake at risk, re-split on every refresh. A game that has ended stays in
-  Live now until its venue grades the bet.
+- **Open bets** (Open page) are split into **Upcoming** and, when any
+  exist, **No start time** (BetOnline's report carries no game time, Kalshi
+  NFL/CFB tickers only a date; futures and Kalshi combos none), each with
+  its count and stake at risk, re-split on every refresh. Bets whose game
+  has started (a parlay's earliest leg), or that the runner placed on a live
+  game card, are on the Live tab instead (`trackerstats.splitOpenForLive`).
+  A game that has ended stays live until its venue grades the bet.
 - **Sorting**: click any column header on any table to sort by it (numbers
   high to low first, text A to Z), click again to reverse. Blanks ("—") stay
   last either way; the bet log and the Bets list sort their whole match

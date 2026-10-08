@@ -20,6 +20,7 @@
       </p>
       <nav class="nav" aria-label="Pages">
         <button type="button" data-view="overview">Overview</button>
+        <button type="button" data-view="live">Live<span class="badge num" id="live-count" hidden></span></button>
         <button type="button" data-view="open">Open<span class="badge num" id="open-count" hidden></span></button>
         <button type="button" data-view="analysis">Analysis</button>
         <button type="button" data-view="bets">Bets</button>
@@ -85,6 +86,26 @@
         <div class="settled-sum" id="settled-sum"></div>
         <div class="scroll" id="ov-settled"></div>
         <button type="button" class="more" id="settled-more" hidden>Show more</button>
+      </section>
+    </section>
+
+    <section id="view-live" class="stack" aria-label="Live" hidden>
+      <div class="title-row"><h1>Live</h1><span class="note" id="live-caption"></span></div>
+      <div class="kpis" id="lv-kpis"></div>
+      <p class="note muted">Each game in progress, cut into the results that change your money. Chance is Unabated's fair before the start, not the live score. Parlay and teaser dollars stay out of a game's P&amp;L; a leg shows where it loses.</p>
+      <div class="stack" id="lv-cards"></div>
+      <section class="panel" id="lv-tickets-panel" aria-label="Parlays and teasers riding" hidden>
+        <div class="head"><span class="lbl">Parlays and teasers riding</span></div>
+        <div id="lv-tickets"></div>
+      </section>
+      <section class="panel" id="lv-off-panel" aria-label="Live bets not on a game card" hidden>
+        <div class="head">
+          <div class="stack tight">
+            <span class="lbl">Not on a game card</span>
+            <span class="note">Started, but not matched to a game on Unabated's board (a futures or prop market, a name or time the board doesn't share, or the runner isn't reachable).</span>
+          </div>
+        </div>
+        <div id="lv-off"></div>
       </section>
     </section>
 

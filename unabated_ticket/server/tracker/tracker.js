@@ -1,6 +1,7 @@
-// Bet Tracker page: fetches the bets service's /bets.json (all history),
-// builds tickets with trackerstats.js and renders the Overview, Open, Analysis
-// and Bets views. Its one write is the Bets view's Remove / Restore: POST
+// Bet Tracker page: fetches the bets service's /bets.json (all history) and
+// /scenarios.json (the server runner's live game cards, passed through by the
+// bets service), builds tickets with trackerstats.js and renders the
+// Overview, Live, Open, Analysis and Bets views. Its one write is the Bets view's Remove / Restore: POST
 // /exclusions.json, which marks a BFA or Wagerzon bet as not Cal's
 // (bets.duckdb::bet_exclusions; the bet itself stays) and takes it out of
 // every number here. Otherwise it keeps only the viewer's own display choices
@@ -17,7 +18,8 @@
   const stats = globalThis.UnabatedTrackerStats;
   const BETS_URL = "/bets.json?days=3650";
   const EXCLUSIONS_URL = "/exclusions.json";
-  const VIEWS = ["overview", "open", "analysis", "bets"];
+  const SCENARIOS_URL = "/scenarios.json";
+  const VIEWS = ["overview", "live", "open", "analysis", "bets"];
   // Cal's ask (2026-10-05): only these books carry bets that are not his (service.EXCLUDABLE_VENUES).
   const REMOVABLE_VENUES = ["BFA", "Wagerzon"];
   const BET_FILTERS = ["All", "Counted", "Removed"];
@@ -53,6 +55,10 @@
   }, loadPrefs(), { view: viewOfHash() });
   const BOT_COMBO_KIND = "Kalshi combo";
   let payload = null;
+  // The runner's live game cards ({games, coveredBetIds, ...}) and why the
+  // last read failed; the Live tab falls back to a plain list without them.
+  let scenarios = null;
+  let scenariosError = null;
   let allTickets = [];
   let tickets = [];
 
@@ -555,7 +561,8 @@
     const toWin = open.reduce((sum, t) => sum + (Number.isFinite(t.toWin) ? t.toWin : 0), 0);
     const withFair = open.filter((t) => t.expected !== null);
     const openEv = withFair.reduce((sum, t) => sum + t.expected, 0);
-    const { live, upcoming, noStart } = stats.splitOpenByStart(open, Date.now());
+    const { upcoming, noStart } = liveSplit();
+    const live = liveTickets();
     const liveStake = live.reduce((sum, t) => sum + t.stake, 0);
     kpiTiles("op-kpis", [
       { label: "Open bets", value: String(open.length),
@@ -563,25 +570,27 @@
       { label: "At risk", value: money(openStake), sub: "to win " + money(toWin) },
       { label: "Open EV", value: withFair.length ? money(openEv, true) : "—", color: withFair.length ? COLORS.exp : COLORS.muted,
         sub: withFair.length + " of " + open.length + " have a saved fair" },
-      { label: "Live now", value: money(liveStake), sub: live.length + (live.length === 1 ? " bet" : " bets") + " in progress" },
+      { label: "Live now", value: money(liveStake), sub: live.length + (live.length === 1 ? " bet" : " bets") + " in progress · view →",
+        onClick: () => showView("live") },
     ]);
-    renderOpen(open, openStake, toWin, { live, upcoming, noStart });
+    renderOpen(upcoming.concat(noStart), { upcoming, noStart });
     renderSettledToday();
   }
 
-  function renderOpen(open, openStake, toWin, split) {
-    setText("open-caption", open.length ? "Risking " + money(openStake) + " to win " + money(toWin) : "");
-    if (!open.length) { fill("op-groups", emptyNote("No open bets.")); return; }
-    const { live, upcoming, noStart } = split;
+  function renderOpen(notLive, split) {
+    const stake = notLive.reduce((sum, t) => sum + t.stake, 0);
+    const toWin = notLive.reduce((sum, t) => sum + (Number.isFinite(t.toWin) ? t.toWin : 0), 0);
+    setText("open-caption", notLive.length ? "Risking " + money(stake) + " to win " + money(toWin) + " · live bets are on the Live tab" : "");
+    if (!notLive.length) { fill("op-groups", emptyNote(liveTickets().length ? "Everything open is live. See the Live tab." : "No open bets.")); return; }
+    const { upcoming, noStart } = split;
     fill("op-groups",
-      openGroup("Live now", live, "Started", "No games in progress."),
       openGroup("Upcoming", upcoming, "Starts", "Nothing else open."),
       noStart.length ? openGroup("No start time", noStart, "Starts", "",
         "The venue sends no game time (BetOnline; Kalshi NFL and CFB), or it is a future or combo") : null);
   }
 
   /** One titled block of the Open bets panel: a count and stake line, then its table. */
-  function openGroup(title, group, startLabelText, emptyText, why) {
+  function openGroup(title, group, startLabelText, emptyText, why, sortKey) {
     const stake = group.reduce((sum, t) => sum + t.stake, 0);
     const head = el("div", { className: "open-group-head" }, [
       el("span", { className: "open-group-title", text: title }),
@@ -600,7 +609,102 @@
       { label: "Edge", right: true, num: true, className: (t) => (t.edge === null ? "muted" : toneClass(t.edge)), cell: (t) => pct(t.edge, true), sort: (t) => t.edge },
       { label: "Stake", right: true, num: true, cell: (t) => money(t.stake), sort: (t) => t.stake },
       { label: "To win", right: true, num: true, cell: (t) => (Number.isFinite(t.toWin) ? money(t.toWin) : "—"), sort: (t) => (Number.isFinite(t.toWin) ? t.toWin : null) },
-    ], group, { sortKey: "open" })])]);
+    ], group, { sortKey: sortKey || "open" })])]);
+  }
+
+  // ---- live -----------------------------------------------------------------
+
+  /** Open tickets split for the Live and Open tabs off the runner's covered bet ids. */
+  function liveSplit() {
+    return stats.splitOpenForLive(openTickets(), scenarios ? scenarios.coveredBetIds : [], Date.now());
+  }
+
+  function liveTickets() {
+    const split = liveSplit();
+    return split.onCard.concat(split.tickets, split.offCard);
+  }
+
+  function renderLiveView() {
+    const split = liveSplit();
+    const games = scenarios ? scenarios.games : [];
+    const live = split.onCard.concat(split.tickets, split.offCard);
+    const stake = live.reduce((sum, t) => sum + t.stake, 0);
+    const pricedGroups = games.flatMap((game) => game.groups).filter((group) => group.ev !== null);
+    const ev = pricedGroups.reduce((sum, group) => sum + group.ev, 0);
+    const best = games.flatMap((game) => game.groups).reduce((sum, group) => sum + group.best, 0);
+    const worst = games.flatMap((game) => game.groups).reduce((sum, group) => sum + group.worst, 0);
+    setText("live-caption", scenarios ? "Updated " + ago(scenarios.generatedAt) : "");
+    kpiTiles("lv-kpis", [
+      { label: "Live bets", value: String(live.length), sub: games.length + (games.length === 1 ? " game" : " games") + " in progress · " + money(stake) + " at risk" },
+      { label: "Best case", value: games.length ? money(best, true) : "—", color: games.length ? COLORS.pos : COLORS.muted, sub: "every game lands your way (straight bets)" },
+      { label: "Worst case", value: games.length ? money(worst, true) : "—", color: games.length ? COLORS.neg : COLORS.muted, sub: "nothing lands" },
+      { label: "EV at kickoff", value: pricedGroups.length ? money(ev, true) : "—", color: pricedGroups.length ? COLORS.exp : COLORS.muted,
+        sub: "Unabated's fair before the start" },
+    ]);
+    const problem = scenariosError
+      ? el("div", { className: "banner", text: "Game cards are unavailable: " + scenariosError + ". Live bets are listed below without them." })
+      : null;
+    fill("lv-cards", problem, ...(games.length ? games.map(gameCard) : [problem ? null : emptyNote(live.length ? "No live bet could be placed on a game card." : "No games in progress.")]));
+    const ticketRows = split.tickets;
+    document.getElementById("lv-tickets-panel").hidden = !ticketRows.length;
+    fill("lv-tickets", ticketRows.length ? openGroup("", ticketRows, "First leg", "", null, "liveTickets") : null);
+    document.getElementById("lv-off-panel").hidden = !split.offCard.length;
+    fill("lv-off", split.offCard.length ? openGroup("", split.offCard, "Started", "", null, "liveOff") : null);
+  }
+
+  /** One game in progress: its bets, then one outcome ladder per market and period. */
+  function gameCard(game) {
+    const placedBets = game.bets.map((bet) => el("span", { className: "bet-chip" + (bet.reason ? " off" : ""), title: bet.reason ? "Not on the ladder: " + bet.reason : "" }, [
+      el("span", { text: bet.label }),
+      el("span", { className: "muted", text: " · " + bet.venue + (Number.isFinite(bet.stake) ? " · " + money(bet.stake) : "") + (bet.reason ? " · " + bet.reason : "") }),
+    ]));
+    const legChips = game.legs.map((leg) => el("span", { className: "bet-chip leg", title: leg.reason ? "Not on the ladder: " + leg.reason : "" }, [
+      el("span", { text: leg.label }),
+      el("span", { className: "muted", text: " · " + leg.kind + " leg · " + leg.venue + (Number.isFinite(leg.ticketStake) ? " · " + money(leg.ticketStake) + " ticket" : "") + (leg.reason ? " · " + leg.reason : "") }),
+    ]));
+    const best = game.groups.reduce((sum, group) => sum + group.best, 0);
+    const worst = game.groups.reduce((sum, group) => sum + group.worst, 0);
+    const priced = game.groups.filter((group) => group.ev !== null);
+    const ev = priced.reduce((sum, group) => sum + group.ev, 0);
+    const summary = el("div", { className: "note" }, [
+      el("span", { text: "Range " }), el("span", { className: "num " + toneClass(worst), text: money(worst, true) }),
+      el("span", { text: " to " }), el("span", { className: "num " + toneClass(best), text: money(best, true) }),
+      priced.length === game.groups.length && priced.length ? el("span", { text: " · EV at kickoff " }) : null,
+      priced.length === game.groups.length && priced.length ? el("span", { className: "num exp", text: money(ev, true) }) : null,
+      game.oddsAt === null ? el("span", { text: " · no kickoff odds (the runner started after this game did)" }) : null,
+    ]);
+    return el("section", { className: "panel game-card", attrs: { "aria-label": game.awayTeam + " at " + game.homeTeam } }, [
+      el("div", { className: "game-head" }, [
+        el("div", null, [
+          el("span", { className: "game-teams", text: (game.awayTeam || "Away") + " @ " + (game.homeTeam || "Home") }),
+          el("span", { className: "tag", text: String(game.league).toUpperCase() }),
+        ]),
+        el("span", { className: "note", text: "Started " + startLabel(new Date(game.startMs).toISOString()) }),
+      ]),
+      el("div", { className: "game-body" }, [
+        el("div", { className: "bet-chips" }, placedBets.concat(legChips)),
+        el("div", { className: "ladders" }, game.groups.map(outcomeLadder)),
+        game.groups.length ? summary : null,
+      ]),
+    ]);
+  }
+
+  /** One market's results: what has to happen, its chance at kickoff, and the P&L. */
+  function outcomeLadder(group) {
+    const rows = group.bands.map((band) => {
+      const bar = el("span", { className: "prob" }, [el("i", { style: { width: band.prob === null ? "0%" : (band.prob * 100).toFixed(1) + "%" } })]);
+      const lost = band.legs.filter((leg) => leg.result !== "won");
+      const legTags = lost.map((leg) => el("span", { className: "leg-tag " + leg.result, text: leg.label + " " + leg.kind + " leg " + (leg.result === "push" ? "pushes" : "loses") }));
+      return el("div", { className: "band" }, [
+        el("span", { className: "band-what" }, [el("span", { text: band.label })].concat(legTags)),
+        bar,
+        el("span", { className: "num muted band-pct", text: band.prob === null ? "—" : Math.round(band.prob * 100) + "%" }),
+        el("span", { className: "num band-pnl " + toneClass(band.pnl), text: money(band.pnl, true) }),
+      ]);
+    });
+    return el("div", { className: "ladder" }, [
+      el("div", { className: "ladder-head" }, [el("span", { className: "lbl", text: group.title }), el("span", { className: "lbl", text: "Chance · P&L" })]),
+    ].concat(rows));
   }
 
   // ---- analysis -------------------------------------------------------------
@@ -845,7 +949,11 @@
       else button.removeAttribute("aria-current");
     }
     for (const view of VIEWS) document.getElementById("view-" + view).hidden = state.view !== view;
-    const openCount = payload ? openTickets().length : 0;
+    const liveCount = payload ? liveTickets().length : 0;
+    const liveBadge = document.getElementById("live-count");
+    liveBadge.hidden = !liveCount;
+    liveBadge.textContent = String(liveCount);
+    const openCount = payload ? openTickets().length - liveCount : 0;
     const badge = document.getElementById("open-count");
     badge.hidden = !openCount;
     badge.textContent = String(openCount);
@@ -899,6 +1007,7 @@
     renderSync();
     if (!payload) return;
     if (state.view === "overview") renderOverview();
+    else if (state.view === "live") renderLiveView();
     else if (state.view === "open") renderOpenView();
     else if (state.view === "analysis") renderAnalysis();
     else renderBets();
@@ -920,7 +1029,22 @@
     applyBotComboFilter();
   }
 
+  // The live game cards; a failure keeps the last cards read and says why.
+  async function refreshScenarios() {
+    try {
+      const response = await fetch(SCENARIOS_URL, { cache: "no-store" });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error((body && body.error) || "the bets service answered HTTP " + response.status);
+      if (!body || !Array.isArray(body.games) || !Array.isArray(body.coveredBetIds)) throw new Error("scenarios.json has no games list");
+      scenarios = body;
+      scenariosError = null;
+    } catch (error) {
+      scenariosError = error.message;
+    }
+  }
+
   async function refresh() {
+    const scenariosRead = refreshScenarios();
     try {
       const response = await fetch(BETS_URL, { cache: "no-store" });
       if (!response.ok) throw new Error("the bets service answered HTTP " + response.status);
@@ -930,6 +1054,7 @@
     } catch (error) {
       showBanner("Could not load bets: " + error.message + (payload ? ". Showing the last load." : "."));
     }
+    await scenariosRead;
     render();
   }
 
