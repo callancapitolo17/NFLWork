@@ -26,9 +26,9 @@
 // are betsview.js; the Edges rows' selection, sizing, sort and words are
 // edgerows.js (shared with the server runner). Bet105 (2026-09-29) is the
 // one venue this page reads itself: every 5 min while visible it fetches the
-// account's open bets from app.bet105.ag on Cal's own login in this Chrome
-// (bet105.js) and POSTs them to the service's /bet105.json, which parses and
-// stores them like any other.
+// account's open bets and its graded wagers (2026-10-07) from app.bet105.ag
+// on Cal's own login in this Chrome (bet105.js) and POSTs them to the
+// service's /bet105.json, which parses and stores them like any other.
 
 (function () {
   "use strict";
@@ -1952,10 +1952,11 @@
   // ---- Bet105 (read here, stored by the service) -----------------------------
   //
   // On the bets tick, at most every bet105.POLL_MS: the account's open bets
-  // from both LinePros feeds, then one POST to the service. A read that fails
+  // from both LinePros feeds and its wager list (graded bets carry their
+  // result and settle time), then one POST to the service. A read that fails
   // (not logged in, Cloudflare, the site down) is POSTed as an error so the
   // Bets tab's Bet105 row turns red with the fix; nothing half-read is ever
-  // pushed (the service closes an open bet a complete push no longer lists).
+  // pushed (the service closes an open bet a complete push lists nowhere).
   let bet105Busy = false;
   let bet105LastRunAt = 0;
   let bet105LastError = null;
@@ -1979,8 +1980,9 @@
     }
   }
 
-  // The session check (its reply carries the CSRF token the history POST
-  // needs), then getHistory on each feed. Throws with the reason on any step.
+  // The session check (its reply carries the CSRF token the other POSTs
+  // need), getHistory on each feed, then wagers/search. Throws with the
+  // reason on any step.
   async function readBet105() {
     const customers = await fetch(bet105.CUSTOMERS_URL, bet105.customersRequest());
     const session = bet105.csrfTokenOf(customers.status, await customers.json().catch(() => null));
@@ -1992,7 +1994,10 @@
       if (result.error) throw new Error(result.error);
       groupsByFeed[feedName] = result.betGroups;
     }
-    return bet105.pushBody(new Date().toISOString(), groupsByFeed);
+    const settledResponse = await fetch(bet105.SETTLED_URL, bet105.settledRequest(session.csrfToken));
+    const settled = bet105.wagersOf(settledResponse.status, await settledResponse.json().catch(() => null));
+    if (settled.error) throw new Error(settled.error);
+    return bet105.pushBody(new Date().toISOString(), groupsByFeed, settled.wagers);
   }
 
   // The records, the service state, the crosswalk, the pins and the saved fill fairs, as one stored object.

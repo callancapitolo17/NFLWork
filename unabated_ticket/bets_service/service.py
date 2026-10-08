@@ -44,12 +44,14 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     bets only — anything else is a 400, an unknown id a
                                     404; same Content-Type guard)
            POST /bet105.json        body {fetchedAt, feeds: {prematch: [betGroup], live:
-                                    [betGroup]}} -> {ok, count, closed}, or {error} ->
-                                    {ok, recorded: "error"} (the one PUSHED source: the
-                                    extension reads Bet105 from Cal's own Chrome because
-                                    Cloudflare challenges anything else — sources/bet105.py
-                                    parses, an open bet a complete push no longer lists is
-                                    closed, and the push is logged as that source's run)
+                                    [betGroup]}, settled: [wager]} -> {ok, count, settled,
+                                    closed, skipped}, or {error} -> {ok, recorded: "error"}
+                                    (the one PUSHED source: the extension reads Bet105 from
+                                    Cal's own Chrome because Cloudflare challenges anything
+                                    else — sources/bet105.py parses; a graded wager settles
+                                    its bet with the venue's result and settle time, an open
+                                    bet neither read lists is closed with no result, and the
+                                    push is logged as that source's run)
            GET /settings.json       {settings: {bankroll, multiplier, leagues, periods, betTypes,
                                     bookMode, bookIds, minEdgePct, minStake, maxLineAgeHours,
                                     minLiquidityToWin, includeAlts, sortBy, groupByMarket},
@@ -709,8 +711,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             self._send_json(200, {"ok": True, "changed": changed, "exclusions": store.load_exclusions()})
 
         # POST /bet105.json: the extension's read of the account, as one source
-        # run — a complete push UPSERTs its records and closes the open ones it
-        # no longer lists; an error push is a failed run and the records stand.
+        # run — a complete push UPSERTs its records (a graded wager over its open
+        # record) and closes the open ones neither read lists; an error push is a
+        # failed run and the records stand.
         def _push_bet105(self, body: object) -> None:
             push = bet105.validate_push(body)
             if isinstance(push, str):
@@ -721,12 +724,18 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 store.log_source_run(bet105.VENUE, started_at, _now(), False, push["error"], 0)
                 self._send_json(200, {"ok": True, "recorded": "error"})
                 return
-            records = bet105.normalize_bet105(push["feeds"], push["fetchedAt"])
-            closed = bet105.closed_by_absence(store.load_bets(config.RETENTION_DAYS, started_at),
-                                              {record["id"] for record in records}, _iso(started_at))
+            stored = store.load_bets(config.RETENTION_DAYS, started_at)
+            open_records = bet105.normalize_bet105(push["feeds"], push["fetchedAt"])
+            known_feeds = bet105.feeds_by_native_id(stored + open_records)
+            settled, skipped = bet105.normalize_settled(push["settled"], push["fetchedAt"], known_feeds)
+            if skipped:
+                log.warning("bet105: %d settled wager(s) not read: %s", len(skipped), "; ".join(skipped))
+            records = bet105.merge_settled(open_records, settled)
+            closed = bet105.closed_by_absence(stored, {record["id"] for record in records}, _iso(started_at))
             store.upsert_bets(records + closed, started_at)
             store.log_source_run(bet105.VENUE, started_at, _now(), True, None, len(records))
-            self._send_json(200, {"ok": True, "count": len(records), "closed": len(closed)})
+            self._send_json(200, {"ok": True, "count": len(records), "settled": len(settled),
+                                  "closed": len(closed), "skipped": len(skipped)})
 
         # POST /place_teaser.json: one teaser at BFA (bfa_teaser.py). An exception out of
         # place() is raised before the wager goes out, so it reads "Not placed". The open
