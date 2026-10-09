@@ -2259,7 +2259,7 @@ the open panel used to do.
   tease, until the game starts). `/bets.json` serves `dismissals` and
   `teaserBlocks`; `POST /dismissals.json {betIds, dismissed}` and
   `POST /teaser_blocks.json {marketKey, eventStartMs, blocked}` write them.
-- **The panel (0.21.0)** writes its settings to the service the first time
+- **The panel (0.22.0)** writes its settings to the service the first time
   it reaches a Service URL, PUTs every edit (`edgerows.serviceSettingsOf`),
   and applies a row changed elsewhere (`settingsSync` in
   `chrome.storage.local` holds the URL and `updatedAt` it last saw). Its own
@@ -2489,7 +2489,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 489 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 505 tests) and
 the bets service's pytest suite (388 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one

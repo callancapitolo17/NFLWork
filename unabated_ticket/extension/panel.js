@@ -2191,7 +2191,7 @@
   // last wrote or read it (the phone's Settings) is applied here.
   // settingsSync {serviceUrl, updatedAt} in chrome.storage.local says which.
   // Marks: a service that serves them is the truth; the first time, the
-  // panel's own (kept in chrome.storage.local before 0.21.0) are sent up once.
+  // panel's own (kept in chrome.storage.local before 0.22.0) are sent up once.
   // An older service with no marks leaves them panel state, as before.
   const SETTINGS_PUSH_DELAY_MS = 800;
   let settingsSync = null;
