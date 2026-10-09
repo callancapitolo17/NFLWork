@@ -289,3 +289,42 @@ test("HTTP: /edges.json and /health on loopback; a foreign Host is 403, another 
     runner.stop();
   }
 });
+
+// ---- /scenarios.json (the Bet Tracker's Live tab) ----------------------------------------
+
+async function runnerOnClock(clock, bets, extra) {
+  const runner = runnerLib.createRunner({
+    fetchImpl: unabatedFetch(), betsServiceUrl: SERVICE_URL, now: () => clock.ms, timers: noTimers, ...quiet,
+    serviceFetch: serviceFetch({ "/bets.json": { ...betsBody(bets), ...extra }, "/settings.json": { settings: OPEN_SETTINGS } }),
+  });
+  await runner.start();
+  return runner;
+}
+
+test("scenarios: a game seen before kickoff keeps its kickoff chances once it is under way", async () => {
+  const clock = { ms: NOW };
+  const runner = await runnerOnClock(clock, [BEARS_HELD]);
+  assert.deepEqual(runner.scenariosPayload().games, [], "nothing has started yet");
+  clock.ms = KICKOFF_MS + 3600 * 1000;
+  const payload = runner.scenariosPayload();
+  assert.equal(payload.games.length, 1);
+  const [card] = payload.games;
+  assert.deepEqual([card.awayTeam, card.homeTeam, card.oddsAt], ["Chicago Bears", "Carolina Panthers", NOW]);
+  assert.deepEqual(payload.coveredBetIds, ["bol-1"]);
+  const [group] = card.groups;
+  assert.deepEqual(group.bands.map((band) => band.pnl), [-200, 181.82]);
+  assert.ok(group.bands.every((band) => band.prob > 0 && band.prob < 1), "both results priced off the kickoff ladder");
+  runner.stop();
+});
+
+test("scenarios: started before the runner saw it, the card has no chances; a removed bet is never on a card", async () => {
+  const clock = { ms: KICKOFF_MS + 3600 * 1000 };
+  const runner = await runnerOnClock(clock, [BEARS_HELD]);
+  const [card] = runner.scenariosPayload().games;
+  assert.equal(card.oddsAt, null);
+  assert.ok(card.groups[0].bands.every((band) => band.prob === null));
+  runner.stop();
+  const removed = await runnerOnClock(clock, [BEARS_HELD], { exclusions: [{ betId: "bol-1", venue: "betonline", excludedAt: "2026-09-13T16:00:00Z" }] });
+  assert.deepEqual(removed.scenariosPayload().games, []);
+  removed.stop();
+});

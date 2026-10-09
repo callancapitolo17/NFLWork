@@ -145,6 +145,7 @@
     return {
       records, crosswalk, pins, fillFairs,
       generatedAt: payload.generatedAt ?? null,
+      exclusions: Array.isArray(payload.exclusions) ? payload.exclusions : null,
       sources: payload.sources && typeof payload.sources === "object" ? payload.sources : {},
     };
   }

@@ -477,6 +477,36 @@
   }
 
   /**
+   * Open tickets for the Live and Open tabs, given the bet ids the runner put
+   * on a live game card (/scenarios.json coveredBetIds; empty when it could
+   * not be read). onCard: straights on a card, whatever their own start says
+   * (a BetOnline bet has none). tickets: parlays and teasers with a leg on a
+   * card or whose first leg has started. offCard: started straights the
+   * runner could not place on a card. upcoming / noStart: the rest, as
+   * splitOpenByStart files them.
+   */
+  function splitOpenForLive(openTickets, coveredBetIds, nowMs) {
+    const covered = new Set(coveredBetIds || []);
+    const tickets = [];
+    const onCard = [];
+    const rest = [];
+    for (const ticket of openTickets) {
+      const isCovered = ticket.betIds.some((id) => covered.has(id));
+      if (!isCovered) rest.push(ticket);
+      else if (ticket.legCount > 1) tickets.push(ticket);
+      else onCard.push(ticket);
+    }
+    const { live, upcoming, noStart } = splitOpenByStart(rest, nowMs);
+    const offCard = [];
+    for (const ticket of live) {
+      if (ticket.legCount > 1) tickets.push(ticket);
+      else offCard.push(ticket);
+    }
+    const byStart = (a, b) => (parseMs(a.eventStart) ?? Infinity) - (parseMs(b.eventStart) ?? Infinity);
+    return { onCard, tickets: tickets.sort(byStart), offCard, upcoming, noStart };
+  }
+
+  /**
    * A copy of `rows` ordered by `keyOf(row)`: numbers numerically, strings
    * case-insensitively, "asc" or "desc". Rows whose key is null, undefined or
    * NaN go last in either direction, so a "—" never tops a sorted column.
@@ -503,7 +533,7 @@
     pacificDay, addDays, dayKeyToUtc, weekdayOf, isDayKey, rangeBounds,
     americanToDecimal, decimalToAmerican,
     buildTickets, summarize, exclusions, inDayRange, dailySeries, firstSettledDay, groupBy, calibration,
-    venueName, splitOpenByStart, sortRows,
+    venueName, splitOpenByStart, splitOpenForLive, sortRows,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.UnabatedTrackerStats = api;
