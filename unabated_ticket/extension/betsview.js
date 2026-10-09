@@ -559,13 +559,6 @@
     return `${dollars} \u00b7 ${order.contracts.toLocaleString("en-US")} contract${order.contracts === 1 ? "" : "s"} @ ${priceText}`;
   }
 
-  // One line for the clipboard: "add $188.32, $183 alone", "add $17, all $17 liq, $71.06 alone".
-  function stakeAdviceLine(advice) {
-    const words = stakeAdviceWords(advice);
-    if (!words) return null;
-    return [`${words.verb} ${words.bet}`, words.cap, words.alone].filter(Boolean).join(", ");
-  }
-
   // The related bets for one line: the bet itself and a tag. A bet in the
   // math carries how it relates (`this line`, `same side`, `other side`); one
   // that is not carries why (`game · not sized`, `no fair at 36.5`) and is
@@ -678,7 +671,7 @@
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badges, relatedLines, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, uncappedLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, needsFixBanner, keepDismissedOpen, keepKnownStartsOpen, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badges, relatedLines, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, uncappedLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, needsFixBanner, keepDismissedOpen, keepKnownStartsOpen, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

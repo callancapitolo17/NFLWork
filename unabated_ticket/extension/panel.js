@@ -71,7 +71,6 @@
     eventLine: el("event-line"), startLine: el("start-line"),
     book: el("book"), price: el("price"), fair: el("fair"), edge: el("edge"),
     stake: el("stake"), contracts: el("contracts"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), stakeUncapped: el("stake-uncapped"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
-    copy: el("copy"), copyStatus: el("copy-status"),
     errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
     pageStatus: el("page-status"),
@@ -157,7 +156,6 @@
   // processAlerts awaits storage + notifications; a poll landing mid-run must
   // not start a second pass that notifies the same line twice.
   let alertsBusy = false;
-  let lastCopyText = "";
   // The row a locate (or a capture) last came from, so returning to the Edges
   // list shows where you were rather than only restoring the scroll offset.
   let lastClickedKey = null;
@@ -229,7 +227,7 @@
       renderEdges();
       renderTeasers();
       // A ticket sized from the feed (or waiting for it) follows the feed's
-      // updates; one the screen priced is left alone (a re-render clears the copy status).
+      // updates; one the screen priced is left alone.
       if (state.ticket && !state.error && pricedLine(state.ticket).edgeFrom !== "screen") render();
       processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
     },
@@ -563,20 +561,15 @@
     // Payout = stake x decimal odds at the book's American price; "to win" is
     // the profit on top of it. Both describe the number shown above them, so a
     // top-up prices the top-up and an at-size line shows no payout at all.
-    let payoutText = "";
     const acted = result ? betsView.suggestedBetAmount(advice) : null;
     if (acted != null && acted > 0) {
       const payout = acted * kelly.americanToDecimal(line.price);
       view.profit.textContent = fmtDollars(payout - acted);
       view.payout.textContent = fmtDollars(payout);
       view.payoutRow.hidden = false;
-      payoutText = ` | to win $${(payout - acted).toFixed(2)} | payout $${payout.toFixed(2)}`;
     }
-    const contractsText = renderContracts(acted, line, ticket.book.name);
+    renderContracts(acted, line, ticket.book.name);
 
-    const stakeText = acted != null ? acted.toFixed(2) : "n/a";
-    lastCopyText = `${ticket.sideLabel}${periodSuffix(ticket)} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${copyExposureText(advice)}${contractsText}${payoutText} | ${describeMatchup(ticket)}`;
-    view.copyStatus.textContent = "";
     show("ticket");
   }
 
@@ -585,21 +578,20 @@
   // book with the count floored so the cost never passes the stake
   // (kelly.contractOrder). Only a line priced in contracts (Kalshi, Novig,
   // Polymarket) gets the row; a sportsbook line keeps just the dollars.
-  // `acted` is the number to act on, so a top-up shows the top-up's contracts. Returns what
-  // Copy appends, "" when there is no row.
+  // `acted` is the number to act on, so a top-up shows the top-up's contracts.
   function renderContracts(acted, line, bookName) {
     view.contracts.hidden = true;
     view.contracts.classList.remove("under");
     view.contracts.replaceChildren();
-    if (acted == null || acted <= 0) return "";
+    if (acted == null || acted <= 0) return;
     const order = kelly.contractOrder({ stake: acted, bookPrice: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice, bookName });
-    if (!order) return "";
+    if (!order) return;
     view.contracts.hidden = false;
     const priceText = `${order.priceCents.toFixed(1)}\u00a2`;
     if (order.contracts === 0) {
       view.contracts.classList.add("under");
       view.contracts.textContent = `under 1 contract @ ${priceText}`;
-      return ` | under 1 contract @ ${priceText}`;
+      return;
     }
     const count = document.createElement("span");
     count.textContent = `${order.contracts.toLocaleString("en-US")} contract${order.contracts === 1 ? "" : "s"} @ ${priceText}`;
@@ -607,7 +599,6 @@
     cost.className = "cost";
     cost.textContent = ` \u00b7 ${fmtDollars(order.costDollars)}`;
     view.contracts.append(count, cost);
-    return ` | ${order.contracts} contract${order.contracts === 1 ? "" : "s"} @ ${priceText}`;
   }
 
   // The ticket's open bets and what they do to its stake: the row-style flag
@@ -667,13 +658,6 @@
     view.betsBanner.replaceChildren(...items);
     view.betsBanner.hidden = items.length === 0;
     view.betsBannerHead.hidden = items.length === 0;
-  }
-
-  // What the Copy button adds after "stake $X": the verb and the standalone
-  // size, so the clipboard says the number was sized against held bets.
-  function copyExposureText(advice) {
-    const line = betsView.stakeAdviceLine(advice);
-    return line ? ` (${line})` : "";
   }
 
   // Under the stake, the same pieces as the Edges rail: the position in
@@ -3374,15 +3358,6 @@
 
   view.bankroll.addEventListener("input", onSettingsInput);
   view.multiplier.addEventListener("input", onSettingsInput);
-
-  view.copy.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(lastCopyText);
-      view.copyStatus.textContent = "Copied";
-    } catch (error) {
-      view.copyStatus.textContent = `Copy failed: ${error.message}`;
-    }
-  });
 
   // Re-evaluate the "not watching" state and the edge ages even when no event arrives.
   setInterval(() => {

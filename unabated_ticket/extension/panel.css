@@ -364,7 +364,6 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 .payout-value { font: 600 15px var(--figure); }
 #full-kelly { margin-top: 6px; }
 
-.ticket-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
 .btn {
   appearance: none; cursor: pointer; font: 600 13px system-ui, sans-serif;
   border-radius: 7px; padding: 8px 14px; border: 1px solid var(--border);
