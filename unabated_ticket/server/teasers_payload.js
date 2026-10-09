@@ -15,6 +15,7 @@
 //    empty, or null), ticketCount, summary (teaserview.summaryView, or null),
 //    open: [ticket] (open BFA teasers; [] before the board is ready),
 //    tickets: [{...pendingTicketView, signature, place: {body} | {error}}],
+//    moreLabel (the fold under the first teaserview.TICKETS_SHOWN, "" when none),
 //    legs: {gameCount, items: [{divider: true} | {row}], folded: [row],
 //    foldLabel}, breakEven}
 //   open ticket  teaserview.openTicketView plus {stake, inPlay}, so the page
@@ -73,6 +74,7 @@ function buildTeasersPayload(input) {
     summary: model ? teaserView.summaryView(model.plan.summary, model.placed.length, stakeSettings) : null,
     open: model ? model.placed.map(openTicketOf) : [],
     tickets: tickets.map(pendingTicketOf),
+    moreLabel: tickets.length > teaserView.TICKETS_SHOWN ? teaserView.moreTicketsText(tickets.slice(teaserView.TICKETS_SHOWN)) : "",
     legs: legsOf(model ? model.legRows : []),
     breakEven: teaserView.breakEvenText(),
   };

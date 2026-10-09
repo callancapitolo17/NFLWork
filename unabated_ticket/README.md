@@ -2206,10 +2206,10 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
 
 ### Step 2: the phone page (`server/phone/`)
 
-A phone-sized, read-only page (Edges, Bets and Settings tabs and a ticket
-sheet) served by the bets service, so the page, its reads and its one write
+A phone-sized page (Edges, Teasers, Bets and Settings tabs and a ticket
+sheet) served by the bets service, so the page, its reads and its writes
 share one origin. You bet in the book's own app; nothing on the page places
-anything.
+anything. Step 3 (below) brought it level with the panel.
 
 ```bash
 venv/bin/python -m unabated_ticket.bets_service.service   # or bets_service/run.sh  (:8094)
@@ -2235,9 +2235,9 @@ node unabated_ticket/server/runner.js                     # must be running too 
   bets service unreachable since …, scanner errors, settings fallback) sit at
   the top.
 - **Bets**: money at risk, Needs a game / Needs a code fix / Not on the board
-  (the runner now adds `betsService.unmatched`, `bets.unmatchedReasons` over
-  its board, to `/edges.json`), venue freshness, open bets. Attach and
-  Dismiss stay on the desktop panel.
+  (the runner adds `betsService.unmatched`, `bets.unmatchedReasons` over
+  its board, to `/edges.json`), venue freshness, open bets; Attach, Undo,
+  Dismiss, Restore and the learned team names with Clear since step 3.
 - **Settings**: every `/settings.json` field, its default shown when unset;
   Save sends only what changed (`PUT`, JSON), a 400's text is shown, and each
   set field has Reset (sends null). The runner picks a change up within 10 s.
@@ -2247,6 +2247,47 @@ node unabated_ticket/server/runner.js                     # must be running too 
   on top of the extension's `kelly.js`, `feed.js`, `teams.js`, `bets.js`,
   `ladder.js`, `condkelly.js`, `betsview.js`, `edgemove.js`, `fillfair.js`,
   `tailflex.js` and `edgerows.js`, loaded unchanged as plain scripts.
+
+### Step 3: the phone works like the panel, with no Mac
+
+Cal's rule (2026-10-05): nothing relies on the Mac. Everything the panel
+keeps or learns now lives on the bets service, and the runner does what only
+the open panel used to do.
+
+- **One set of settings and marks** in `bets.duckdb`: `edge_settings`,
+  `bet_dismissals` (Dismiss, open bets only) and `teaser_blocks` (Can't
+  tease, until the game starts). `/bets.json` serves `dismissals` and
+  `teaserBlocks`; `POST /dismissals.json {betIds, dismissed}` and
+  `POST /teaser_blocks.json {marketKey, eventStartMs, blocked}` write them.
+- **The panel (0.21.0)** writes its settings to the service the first time
+  it reaches a Service URL, PUTs every edit (`edgerows.serviceSettingsOf`),
+  and applies a row changed elsewhere (`settingsSync` in
+  `chrome.storage.local` holds the URL and `updatedAt` it last saw). Its own
+  Dismiss and Can't tease marks go up once (`sharedMarksMigratedTo`); after
+  that the service's are the truth. An older service with no marks leaves
+  them panel state. The manifest allows `https://*.ts.net/*`, so set the
+  Bets tab's Service URL to `https://<vm>.<tailnet>.ts.net` to run the panel
+  off the VM and stop the Mac's own service. Placing a teaser stays
+  loopback-only (`/place_teaser.json`).
+- **The runner** learns all the time: after each bets poll and scanner
+  update it POSTs team names the board joined by venue id
+  (`/crosswalk.json`) and each new open bet's fill-time fair
+  (`/fill_fairs.json`), both insert-only, as the panel does. It serves
+  `GET /teasers.json` (the Teasers tab as words, `server/teasers_payload.js`
+  on `extension/teaserview.js`, the module the panel renders from too) and
+  `GET /attach.json?betId=&query=` (pick a game) /
+  `?betId=&eventId=&swapped=0|1` (the plan and the `/pins.json` body).
+  `?fresh=1` on `/edges.json` or `/teasers.json` re-reads `/bets.json` first,
+  so a mark or pin the page just wrote shows at once. The bets service
+  proxies both routes with the query string and passes the runner's own
+  400/404 through.
+- **The phone** gains the Teasers tab (Can't tease / Restore on college
+  legs, no Copy, no Place), Attach (search, pick, names and Swap, Attach and
+  learn), Undo, Dismiss / Restore, the learned team names with a two-tap
+  Clear, a Line moved note on the ticket, and move tags and alt numbers on
+  the card's other lines.
+- **Still Mac-only**: in-game Live edges and Bet105 need the logged-in
+  Chrome tab; desktop alerts; clicking a price on Unabated's screen.
 
 ### Bet Tracker (`server/tracker/`)
 

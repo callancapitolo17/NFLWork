@@ -2202,6 +2202,7 @@
   // Set by a poll that found the service serving marks before this panel sent its own up.
   let sharedMarksDue = false;
   let sharedMarksMigratedTo = null;
+  let sharedMarksMigrating = false;
 
   // The marks /bets.json carried, unless the panel's own are still to go up first.
   function takeSharedMarks(applied) {
@@ -2216,18 +2217,26 @@
   // service does not hold is a 404 and is left behind), then the next poll
   // takes the service's set.
   async function migrateSharedMarks() {
+    if (sharedMarksMigrating) return;
+    sharedMarksMigrating = true;
     const serviceUrl = state.betsSettings.serviceUrl;
-    sharedMarksDue = false;
-    for (const betId of state.dismissedBetIds) {
-      await serviceRequest("POST", "/dismissals.json", { betIds: [betId], dismissed: true })
-        .catch((error) => console.warn(`[unabated-ticket] dismissal of ${betId} not sent up: ${error.message}`));
+    // A refusal (a bet the service does not hold) leaves that mark behind; no answer at all stops here and tries again next poll.
+    const refusedOnly = (what) => (error) => {
+      if (!error.status) throw error;
+      console.warn(`[unabated-ticket] ${what} not sent up: ${error.message}`);
+    };
+    try {
+      for (const betId of state.dismissedBetIds) {
+        await serviceRequest("POST", "/dismissals.json", { betIds: [betId], dismissed: true }).catch(refusedOnly(`dismissal of ${betId}`));
+      }
+      for (const [marketKey, eventStartMs] of Object.entries(liveTeaserMarks(Date.now()))) {
+        await serviceRequest("POST", "/teaser_blocks.json", { marketKey, eventStartMs, blocked: true }).catch(refusedOnly(`can't tease ${marketKey}`));
+      }
+      sharedMarksMigratedTo = serviceUrl;
+      await chrome.storage.local.set({ sharedMarksMigratedTo });
+    } finally {
+      sharedMarksMigrating = false;
     }
-    for (const [marketKey, eventStartMs] of Object.entries(liveTeaserMarks(Date.now()))) {
-      await serviceRequest("POST", "/teaser_blocks.json", { marketKey, eventStartMs, blocked: true })
-        .catch((error) => console.warn(`[unabated-ticket] can't tease ${marketKey} not sent up: ${error.message}`));
-    }
-    sharedMarksMigratedTo = serviceUrl;
-    await chrome.storage.local.set({ sharedMarksMigratedTo });
     await pollBets();
   }
 

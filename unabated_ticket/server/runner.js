@@ -41,6 +41,8 @@
 //   GET /edges.json  the Edges list the panel would show for those settings
 //                    (server/edges_payload.js documents the shape)
 //   GET /teasers.json  the panel's Teasers tab, as words (server/teasers_payload.js)
+//   ?fresh=1 on /edges.json or /teasers.json reads /bets.json first, so a
+//                    Dismiss, Can't tease or Attach the page just wrote shows at once
 //   GET /attach.json?betId=..&query=..  Attach step 1: the board games to pick
 //                    from for an open bet, best fit first (attach.js)
 //   GET /attach.json?betId=..&eventId=..&swapped=0|1  Attach step 2: the plan
@@ -677,7 +679,7 @@ function sendJson(response, status, body) {
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
-  const server = http.createServer((request, response) => {
+  const server = http.createServer(async (request, response) => {
     const allowed = allowedHosts(host, server.address().port);
     if (!hostAllowed(request.headers.host, allowed)) {
       sendJson(response, 403, { error: `Host must be one of ${JSON.stringify(allowed)}, got ${JSON.stringify(request.headers.host ?? null)}` });
@@ -690,6 +692,8 @@ function createHttpServer(runner, { host }) {
     const url = new URL(request.url, "http://runner.invalid");
     const path = url.pathname;
     try {
+      // A page that just wrote a mark or a pin asks for the list on bets read now, not up to 30 s ago.
+      if (url.searchParams.get("fresh") === "1" && (path === "/edges.json" || path === "/teasers.json")) await runner.pollBets();
       if (path === "/edges.json") return sendJson(response, 200, runner.edgesPayload());
       if (path === "/teasers.json") return sendJson(response, 200, runner.teasersPayload());
       if (path === "/attach.json") return sendJson(response, 200, runner.attachPayload(url.searchParams));

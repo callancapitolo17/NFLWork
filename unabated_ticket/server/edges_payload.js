@@ -18,9 +18,9 @@
 //    leagueErrors, lineCount, altLineCount, eventCount, snapshotBuiltAt,
 //    staleLeagues, loading, lastSnapshotAt}, betsService: {okAt, error,
 //    unreachableSince, generatedAt, openBets, sources, boardLineCount,
-//    unmatched: [{betId, reason, attachable, needsGame, needsFix, dismissed}]
-//    (the open bets no board game matches, bets.unmatchedReasons — the
-//    panel's Bets tab lists; a dismissed one never needs a game)},
+//    unmatched: [{betId, reason, attachable, needsGame, needsFix, dismissed,
+//    flagUnlessDismissed}] (the open bets no board game matches,
+//    bets.unmatchedReasons — the panel's Bets tab lists; see unmatchedView)},
 //    books: {mode, ids, names, liveCount, live: [{id, name}] (every live
 //    book, for the phone's book picker)}, tailFlex ("tail flex: NFL spr 7.1% · …", the panel's
 //    header line, "" when nothing lists), grouped, unit: "cards" | "lines",
@@ -121,11 +121,20 @@ function scannerView(status) {
 // (bets.unmatchedReasons), by bet id: the phone joins them to its own
 // /bets.json. `knownStarts` is the runner's {betId: startMs} memory of each
 // bet's matched game (bets.matchedStarts), as the panel keeps it;
-// `dismissedIds` the bets Dismissed on either page (bets.duckdb::bet_dismissals),
-// which stop flagging red and list folded with Restore.
+// `dismissedIds` the bets Dismissed on either page (bets.duckdb::bet_dismissals).
+// A dismissed bet never flags; `flagUnlessDismissed` ("game", "fix" or null)
+// is the flag it would raise, so the page can apply a Dismiss or Restore it
+// made itself before this list catches up.
 function unmatchedView(betRecords, boardLines, knownStarts, now, dismissedIds) {
-  return betsLib.unmatchedReasons(betRecords, boardLines, now, { dismissedIds: dismissedIds || [], knownStarts: knownStarts || {} })
-    .map(({ bet, reason, attachable, needsGame, needsFix, dismissed }) => ({ betId: bet.id, reason, attachable, needsGame, needsFix, dismissed: Boolean(dismissed) }));
+  const dismissed = new Set(dismissedIds || []);
+  return betsLib.unmatchedReasons(betRecords, boardLines, now, { dismissedIds: [], knownStarts: knownStarts || {} })
+    .map(({ bet, reason, attachable, needsGame, needsFix }) => {
+      const isDismissed = dismissed.has(bet.id);
+      return {
+        betId: bet.id, reason, attachable, needsGame: needsGame && !isDismissed, needsFix: needsFix && !isDismissed,
+        dismissed: isDismissed, flagUnlessDismissed: needsGame ? "game" : needsFix ? "fix" : null,
+      };
+    });
 }
 
 // The /edges.json body.

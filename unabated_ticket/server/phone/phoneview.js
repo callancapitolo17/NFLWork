@@ -1,5 +1,5 @@
 // Unabated Ticket phone page — its words and numbers, without the DOM (phone
-// page plan step 2). Read-only: nothing here places, sends or stores
+// page plan steps 2-3). Pure: nothing here places, sends or stores
 // anything. Every stake, edge tier, badge and rail word is already in the
 // /edges.json row (server/edges_payload.js, from the panel's own
 // edgerows.js / betsview.js); this module only formats what the panel's
@@ -416,11 +416,59 @@
     return sports.flatMap((sport) => feed.leagueIdsOfSport(sport));
   }
 
+  // The runner's unmatched list with the page's own Dismiss / Restore marks
+  // laid over it, so a mark shows at once rather than when the runner next
+  // reads the bets service. `dismissedIds` null (an older service) keeps the
+  // runner's flags as they are.
+  function applyDismissals(unmatched, dismissedIds) {
+    if (!Array.isArray(unmatched) || !Array.isArray(dismissedIds)) return unmatched;
+    const dismissed = new Set(dismissedIds);
+    return unmatched.map((entry) => {
+      const isDismissed = dismissed.has(entry.betId);
+      const flag = entry.flagUnlessDismissed;
+      return { ...entry, dismissed: isDismissed, needsGame: flag === "game" && !isDismissed, needsFix: flag === "fix" && !isDismissed };
+    });
+  }
+
+  // ---- ticket extras ------------------------------------------------------------
+
+  // The panel's "Line moved" note: the ticket's line now at another price or
+  // number than when it was opened, or null. `opened` {price, points}.
+  function lineMovedText(opened, row) {
+    if (!opened || !row) return null;
+    if (opened.price === row.price && opened.points === row.points) return null;
+    const at = (points) => (points != null ? ` at ${fmtPoints(points)}` : "");
+    return `Line moved: now ${fmtAmerican(row.price)}${at(row.points)} (opened ${fmtAmerican(opened.price)}${at(opened.points)}). Stake re-sized.`;
+  }
+
+  // ---- Teasers tab ---------------------------------------------------------------
+
+  // "Bills @ Jets · NFL · Sun, Oct 11, 1:00 PM · " (the time to kickoff follows).
+  function teaserLegMeta(rowView) {
+    const start = Number.isFinite(rowView.eventStartMs) ? fmtStart(new Date(rowView.eventStartMs).toISOString()) : "";
+    return `${rowView.matchup} · ${rowView.leagueLabel} · ${start} · `;
+  }
+
+  // The bets service's BFA row (betsview.sourceRows), or null before /bets.json was read.
+  function bfaRowOf(betsPoll, now) {
+    if (!betsPoll || betsPoll.okAt == null) return null;
+    return betsView.sourceRows(betsPoll.payload, now).find((row) => row.venue === "bfa") || null;
+  }
+
+  // The Teasers tab's amber note (panel.js renderTeasersBanners), or null.
+  function teasersWarningText(bfaRow) {
+    if (!bfaRow) return null;
+    if (!bfaRow.configured) return "The bets service reads no BFA account, so tickets already placed at Buckeye are not known here.";
+    if (bfaRow.error) return `BFA's last pull failed (${bfaRow.error}); open teasers are as of ${bfaRow.ageText} ago.`;
+    return null;
+  }
+
   const api = {
     EDGES_POLL_MS, BETS_POLL_MS, EDGES_STALE_MS,
     fmtEdgePct, fmtPriceBoth, fmtPoints, fmtStart, fmtUntil, untilLevel, fmtAge, fmtLineAge, fmtLiquidity, fmtClock,
     marketText, describeMatchup, bookPriceText, lineAgeText, contractsView, stakeBlockView, ticketView,
-    scannerText, booksText, banners, freshnessText, betItemView, betsTabView,
+    scannerText, booksText, banners, freshnessText, betItemView, betsTabView, applyDismissals,
+    lineMovedText, teaserLegMeta, bfaRowOf, teasersWarningText,
     settingsDefaults, effectiveSettings, settingsUpdate, resetUpdate, defaultText, sportsOfLeagues, leaguesForSports,
     fmtDollars, fmtAmerican,
   };
