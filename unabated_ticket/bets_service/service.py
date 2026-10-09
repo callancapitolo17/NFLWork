@@ -50,12 +50,14 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     bets only — anything else is a 400, an unknown id a
                                     404; same Content-Type guard)
            POST /bet105.json        body {fetchedAt, feeds: {prematch: [betGroup], live:
-                                    [betGroup]}} -> {ok, count, closed}, or {error} ->
-                                    {ok, recorded: "error"} (the one PUSHED source: the
-                                    extension reads Bet105 from Cal's own Chrome because
-                                    Cloudflare challenges anything else — sources/bet105.py
-                                    parses, an open bet a complete push no longer lists is
-                                    closed, and the push is logged as that source's run)
+                                    [betGroup]}, settled: [wager]} -> {ok, count, settled,
+                                    closed, skipped}, or {error} -> {ok, recorded: "error"}
+                                    (the one PUSHED source: the extension reads Bet105 from
+                                    Cal's own Chrome because Cloudflare challenges anything
+                                    else — sources/bet105.py parses; a graded wager settles
+                                    its bet with the venue's result and settle time, an open
+                                    bet neither read lists is closed with no result, and the
+                                    push is logged as that source's run)
            GET /settings.json       {settings: {bankroll, multiplier, leagues, periods, betTypes,
                                     bookMode, bookIds, minEdgePct, minStake, maxLineAgeHours,
                                     minLiquidityToWin, includeAlts, sortBy, groupByMarket},
@@ -79,6 +81,9 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     cannot be reached within config.RUNNER_TIMEOUT_SEC or
                                     answers anything but 200 (phone page plan step 2:
                                     one origin for the page, its reads and its PUT)
+           GET /scenarios.json      the server runner's Live-tab scenarios (server/scenarios.js
+                                    documents them), passed through the same way, with the
+                                    same 502 (the Bet Tracker's Live tab)
            GET / and the phone page's files   STATIC_FILES, a fixed map of URL path ->
                                     file (server/phone/ and the extension's pure modules
                                     the page loads under /ext/; the Bet Tracker,
@@ -572,11 +577,15 @@ def validate_settings_update(body: object, held: dict) -> dict | str:
     return merged
 
 
-def fetch_runner_edges(runner_url: str, timeout_sec: float) -> tuple[int, bytes]:
-    """(status, body) for GET /edges.json: the runner's body as it came on a
-    200, else 502 with a JSON error naming the runner URL and what failed.
-    Network: one GET of <runner_url>/edges.json, no proxy, `timeout_sec`."""
-    url = f"{runner_url}/edges.json"
+# The runner's JSON routes the bets service passes through (one origin for the pages).
+RUNNER_ROUTES = ("/edges.json", "/scenarios.json")
+
+
+def fetch_runner_json(runner_url: str, path: str, timeout_sec: float) -> tuple[int, bytes]:
+    """(status, body) for GET <path> (one of RUNNER_ROUTES): the runner's body
+    as it came on a 200, else 502 with a JSON error naming the runner URL and
+    what failed. Network: one GET of <runner_url><path>, no proxy, `timeout_sec`."""
+    url = f"{runner_url}{path}"
     try:
         with _RUNNER_OPENER.open(url, timeout=timeout_sec) as response:
             return 200, response.read()
@@ -584,7 +593,7 @@ def fetch_runner_edges(runner_url: str, timeout_sec: float) -> tuple[int, bytes]
         problem = f"answered HTTP {error.code}"
     except (urllib.error.URLError, OSError) as error:  # refused, reset, DNS, timeout
         problem = f"unreachable ({getattr(error, 'reason', None) or error})"
-    error_body = {"error": f"server runner at {runner_url} {problem} for /edges.json; start it with "
+    error_body = {"error": f"server runner at {runner_url} {problem} for {path}; start it with "
                            f"node unabated_ticket/server/runner.js", "runnerUrl": runner_url}
     return 502, json.dumps(error_body).encode()
 
@@ -639,8 +648,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                     return
                 self._send_json(200, bets_payload(store, days, names))
                 return
-            if url.path == "/edges.json":
-                status, body = fetch_runner_edges(edges_runner_url, edges_timeout_sec)
+            if url.path in RUNNER_ROUTES:
+                status, body = fetch_runner_json(edges_runner_url, url.path, edges_timeout_sec)
                 self._send_bytes(status, body, "application/json")
                 return
             if url.path in STATIC_FILES:
@@ -774,8 +783,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             self._send_json(200, {"ok": True, "changed": changed, "exclusions": store.load_exclusions()})
 
         # POST /bet105.json: the extension's read of the account, as one source
-        # run — a complete push UPSERTs its records and closes the open ones it
-        # no longer lists; an error push is a failed run and the records stand.
+        # run — a complete push UPSERTs its records (a graded wager over its open
+        # record) and closes the open ones neither read lists; an error push is a
+        # failed run and the records stand.
         def _push_bet105(self, body: object) -> None:
             push = bet105.validate_push(body)
             if isinstance(push, str):
@@ -786,12 +796,18 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 store.log_source_run(bet105.VENUE, started_at, _now(), False, push["error"], 0)
                 self._send_json(200, {"ok": True, "recorded": "error"})
                 return
-            records = bet105.normalize_bet105(push["feeds"], push["fetchedAt"])
-            closed = bet105.closed_by_absence(store.load_bets(config.RETENTION_DAYS, started_at),
-                                              {record["id"] for record in records}, _iso(started_at))
+            stored = store.load_bets(config.RETENTION_DAYS, started_at)
+            open_records = bet105.normalize_bet105(push["feeds"], push["fetchedAt"])
+            known_feeds = bet105.feeds_by_native_id(stored + open_records)
+            settled, skipped = bet105.normalize_settled(push["settled"], push["fetchedAt"], known_feeds)
+            if skipped:
+                log.warning("bet105: %d settled wager(s) not read: %s", len(skipped), "; ".join(skipped))
+            records = bet105.merge_settled(open_records, settled)
+            closed = bet105.closed_by_absence(stored, {record["id"] for record in records}, _iso(started_at))
             store.upsert_bets(records + closed, started_at)
             store.log_source_run(bet105.VENUE, started_at, _now(), True, None, len(records))
-            self._send_json(200, {"ok": True, "count": len(records), "closed": len(closed)})
+            self._send_json(200, {"ok": True, "count": len(records), "settled": len(settled),
+                                  "closed": len(closed), "skipped": len(skipped)})
 
         # POST /place_teaser.json: one teaser at BFA (bfa_teaser.py). An exception out of
         # place() is raised before the wager goes out, so it reads "Not placed". The open
@@ -953,7 +969,7 @@ OPTIONAL_SOURCE_FACTORIES: tuple[tuple[str, Callable[[], Source | None]], ...] =
 def main() -> None:
     setup_logging()
     store = BetsStore(config.DB_PATH, config.SOURCE_RUNS_RETENTION_DAYS)
-    sources: list[Source] = [KalshiSource()]
+    sources: list[Source] = [KalshiSource(known_tickers=store.load_kalshi_tickers)]
     for _venue, factory in OPTIONAL_SOURCE_FACTORIES:
         optional = factory()
         if optional is not None:

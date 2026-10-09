@@ -1,6 +1,7 @@
-// Bet Tracker page: fetches the bets service's /bets.json (all history),
-// builds tickets with trackerstats.js and renders the Overview, Analysis and
-// Bets views. Its one write is the Bets view's Remove / Restore: POST
+// Bet Tracker page: fetches the bets service's /bets.json (all history) and
+// /scenarios.json (the server runner's live game cards, passed through by the
+// bets service), builds tickets with trackerstats.js and renders the
+// Overview, Live, Open, Analysis and Bets views. Its one write is the Bets view's Remove / Restore: POST
 // /exclusions.json, which marks a BFA or Wagerzon bet as not Cal's
 // (bets.duckdb::bet_exclusions; the bet itself stays) and takes it out of
 // every number here. Otherwise it keeps only the viewer's own display choices
@@ -17,14 +18,14 @@
   const stats = globalThis.UnabatedTrackerStats;
   const BETS_URL = "/bets.json?days=3650";
   const EXCLUSIONS_URL = "/exclusions.json";
-  const VIEWS = ["overview", "analysis", "bets"];
+  const SCENARIOS_URL = "/scenarios.json";
+  const VIEWS = ["overview", "live", "open", "analysis", "bets"];
   // Cal's ask (2026-10-05): only these books carry bets that are not his (service.EXCLUDABLE_VENUES).
   const REMOVABLE_VENUES = ["BFA", "Wagerzon"];
   const BET_FILTERS = ["All", "Counted", "Removed"];
   const POLL_MS = 60 * 1000;
   const PREFS_KEY = "betTracker.prefs";
-  const RANGES = ["7D", "30D", "90D", "YTD", "All"];
-  const RANGE_DAYS = { "7D": 7, "30D": 30, "90D": 90 };
+  const RANGES = ["Today", "Yesterday", "7D", "30D", "90D", "YTD", "All", "Custom"];
   const KINDS = ["All", "Straight", "Parlay", "Teaser", "Kalshi combo"];
   const DAILY_ROWS = 14;
   const LOG_PAGE = 50;
@@ -38,15 +39,26 @@
   const COLORS = { pos: "#3dd68c", neg: "#ff6b6b", muted: "#8b96a5", exp: "#6ea8fe", text: "#e7ecf2", warn: "#f5b74f", dim: "#4e5866" };
 
   const state = Object.assign({
-    view: "overview", range: "30D", units: false, unitSize: 100,
+    view: "overview", range: "30D", customFirst: null, customLast: null, units: false, unitSize: 100,
     groupBy: "venue", kind: "All", offVenues: [], offLeagues: [], query: "", logLimit: LOG_PAGE,
     betsQuery: "", betsVenue: "All", betsFilter: "All", betsLimit: LOG_PAGE, saving: false,
+    // Per table: {col: column index, dir: "asc" | "desc"}; absent = the table's own order.
+    sorts: {},
+    settledLimit: LOG_PAGE,
+    // A calendar-day click (Cal, 2026-10-07): { day, anchor, range, customFirst,
+    // customLast } so a second click restores the range it replaced and the
+    // calendar keeps its weeks instead of jumping to end on the picked day.
+    calendarPick: null,
     // Cal's decision 2026-10-05: the Kalshi bots' combo fills count in every
     // total by default; the header toggle hides them.
     includeBotCombos: true,
   }, loadPrefs(), { view: viewOfHash() });
   const BOT_COMBO_KIND = "Kalshi combo";
   let payload = null;
+  // The runner's live game cards ({games, coveredBetIds, ...}) and why the
+  // last read failed; the Live tab falls back to a plain list without them.
+  let scenarios = null;
+  let scenariosError = null;
   let allTickets = [];
   let tickets = [];
 
@@ -62,9 +74,13 @@
       const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
       const prefs = {};
       if (RANGES.includes(saved.range)) prefs.range = saved.range;
+      if (stats.isDayKey(saved.customFirst)) prefs.customFirst = saved.customFirst;
+      if (stats.isDayKey(saved.customLast)) prefs.customLast = saved.customLast;
       if (typeof saved.units === "boolean") prefs.units = saved.units;
       if (typeof saved.includeBotCombos === "boolean") prefs.includeBotCombos = saved.includeBotCombos;
       if (Number.isFinite(saved.unitSize) && saved.unitSize > 0) prefs.unitSize = saved.unitSize;
+      const pick = saved.calendarPick;
+      if (pick && stats.isDayKey(pick.day) && stats.isDayKey(pick.anchor) && RANGES.includes(pick.range)) prefs.calendarPick = pick;
       return prefs;
     } catch (_error) {
       return {};
@@ -73,7 +89,7 @@
 
   function savePrefs() {
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, units: state.units, unitSize: state.unitSize, includeBotCombos: state.includeBotCombos }));
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, customFirst: state.customFirst, customLast: state.customLast, units: state.units, unitSize: state.unitSize, includeBotCombos: state.includeBotCombos, calendarPick: state.calendarPick }));
     } catch (_error) {
       // Private window or blocked storage: the choice lasts until reload.
     }
@@ -181,18 +197,36 @@
     return el("div", { className: "empty", text });
   }
 
+  /** Tiles {label, value, sub, color?, onClick?}; a tile with onClick is a button-like link. */
   function kpiTiles(id, tiles) {
-    fill(id, ...tiles.map((tile) => el("div", { className: "panel kpi" }, [
-      el("span", { className: "lbl", text: tile.label }),
-      el("span", { className: "value", text: tile.value, style: { color: tile.color || COLORS.text } }),
-      el("span", { className: "sub", text: tile.sub }),
-    ])));
+    fill(id, ...tiles.map((tile) => {
+      const link = typeof tile.onClick === "function";
+      const node = el("div", {
+        className: "panel kpi" + (link ? " link" : ""),
+        attrs: link ? { role: "link", tabindex: "0" } : null,
+        onClick: link ? tile.onClick : null,
+      }, [
+        el("span", { className: "lbl", text: tile.label }),
+        el("span", { className: "value", text: tile.value, style: { color: tile.color || COLORS.text } }),
+        el("span", { className: "sub", text: tile.sub }),
+      ]);
+      if (link) node.addEventListener("keydown", (event) => { if (event.key === "Enter") tile.onClick(); });
+      return node;
+    }));
   }
 
-  /** A table; each column {label, right?, cell(row) -> string | Node, className?(row)}; rowClass?(row) -> class. */
-  function table(columns, rows, rowClass) {
-    const head = el("tr", null, columns.map((col) => el("th", { className: col.right ? "r" : "", text: col.label })));
-    const body = rows.map((row) => el("tr", { className: rowClass ? rowClass(row) : "" }, columns.map((col) => {
+  /**
+   * A table; each column {label, right?, num?, cell(row) -> string | Node, className?(row),
+   * sort?(row) -> number | string | null, highFirst? (a left-aligned column whose first click sorts high to low)}.
+   * opts.sortKey names the table in state.sorts: columns with a `sort` get a
+   * clickable header (click sorts, click again reverses) and the rows are
+   * ordered by it. opts.rowClass?(row) -> class.
+   */
+  function table(columns, rows, opts) {
+    const { sortKey, rowClass } = opts || {};
+    const current = sortKey ? state.sorts[sortKey] : null;
+    const head = el("tr", null, columns.map((col, index) => headerCell(col, index, sortKey, current)));
+    const body = sortedRows(sortKey, columns, rows).map((row) => el("tr", { className: rowClass ? rowClass(row) : "" }, columns.map((col) => {
       const value = col.cell(row);
       const classes = [col.right ? "r" : "", col.num ? "num" : "", col.className ? col.className(row) : ""].filter(Boolean).join(" ");
       const td = el("td", { className: classes });
@@ -200,6 +234,53 @@
       return td;
     })));
     return el("table", { className: "tbl" }, [el("thead", null, [head]), el("tbody", null, body)]);
+  }
+
+  function headerCell(col, index, sortKey, current) {
+    const className = col.right ? "r" : "";
+    if (!sortKey || !col.sort) return el("th", { className, text: col.label });
+    const active = current && current.col === index;
+    const arrow = active ? (current.dir === "asc" ? " ▲" : " ▼") : "";
+    const button = el("button", {
+      className: "sort" + (active ? " on" : ""), text: col.label + arrow, title: "Sort by " + col.label.toLowerCase(),
+      attrs: { type: "button" }, onClick: () => toggleSort(sortKey, index, col),
+    });
+    const attrs = { "aria-sort": active ? (current.dir === "asc" ? "ascending" : "descending") : "none" };
+    return el("th", { className, attrs }, [button]);
+  }
+
+  function sortsHighFirst(col) {
+    return Boolean(col.right || col.highFirst);
+  }
+
+  // A number column sorts high to low first, a text column A to Z; the next click reverses.
+  function toggleSort(sortKey, index, col) {
+    const current = state.sorts[sortKey];
+    const dir = current && current.col === index ? (current.dir === "asc" ? "desc" : "asc") : (sortsHighFirst(col) ? "desc" : "asc");
+    state.sorts = Object.assign({}, state.sorts, { [sortKey]: { col: index, dir } });
+    render();
+  }
+
+  /** `rows` in the table's chosen order, or unchanged when it has none. Paginated tables call this before slicing. */
+  function sortedRows(sortKey, columns, rows) {
+    const current = sortKey ? state.sorts[sortKey] : null;
+    const col = current ? columns[current.col] : null;
+    if (!col || !col.sort) return rows;
+    return stats.sortRows(rows, col.sort, current.dir);
+  }
+
+  /** "sorted by P&L, high to low", or the table's own order when unsorted. */
+  function orderCaption(sortKey, columns, defaultOrder) {
+    const current = state.sorts[sortKey];
+    const col = current ? columns[current.col] : null;
+    if (!col || !col.sort) return defaultOrder;
+    const words = sortsHighFirst(col) ? { asc: "low to high", desc: "high to low" } : { asc: "A to Z", desc: "Z to A" };
+    return "sorted by " + col.label + ", " + words[current.dir];
+  }
+
+  function msOf(iso) {
+    const ms = iso ? Date.parse(iso) : NaN;
+    return Number.isFinite(ms) ? ms : null;
   }
 
   function segButtons(id, options, isActive, onPick) {
@@ -212,14 +293,12 @@
   // ---- range ----------------------------------------------------------------
 
   function rangeDays() {
-    const today = stats.pacificDay(Date.now());
-    if (RANGE_DAYS[state.range]) return { first: stats.addDays(today, 1 - RANGE_DAYS[state.range]), last: today };
-    if (state.range === "YTD") return { first: today.slice(0, 4) + "-01-01", last: today };
-    return { first: stats.firstSettledDay(tickets) || today, last: today };
+    return stats.rangeBounds(state.range, stats.pacificDay(Date.now()),
+      { first: state.customFirst, last: state.customLast }, stats.firstSettledDay(tickets));
   }
 
   function rangeCaption(first, last) {
-    return dayLabel(first) + " to " + dayLabel(last) + " · Pacific time";
+    return (first === last ? dayLabel(first) : dayLabel(first) + " to " + dayLabel(last)) + " · Pacific time";
   }
 
   function noResultCount(first, last) {
@@ -233,7 +312,7 @@
     const { first, last } = rangeDays();
     const settled = stats.inDayRange(tickets, first, last);
     const total = stats.summarize(settled);
-    const open = tickets.filter((t) => t.status === "open");
+    const open = openTickets();
     const openStake = open.reduce((sum, t) => sum + t.stake, 0);
     const openWithFair = open.filter((t) => t.expected !== null);
     const openEv = openWithFair.reduce((sum, t) => sum + t.expected, 0);
@@ -243,22 +322,24 @@
     const luck = total.withFair ? total.fairPnl - total.expected : null;
     kpiTiles("ov-kpis", [
       { label: "Net P&L", value: money(total.pnl, true), color: toneColor(total.pnl),
-        sub: total.bets + " settled · " + total.wins + "-" + total.losses + "-" + total.pushes + (missing ? " · " + missing + " without a result" : "") },
+        sub: total.bets + " settled · " + total.wins + "-" + total.losses + "-" + total.pushes
+          + (total.winRate === null ? "" : " (" + pct(total.winRate) + ")") + (missing ? " · " + missing + " without a result" : "") },
       { label: "ROI", value: pct(total.roi, true), color: toneColor(total.pnl), sub: "on " + money(total.handle) + " handle" },
       { label: "Expected P&L", value: total.withFair ? money(total.expected, true) : "—", color: COLORS.exp,
         sub: total.withFair + " of " + total.bets + " bets have a fair (fill, else close)" },
       { label: "Actual vs expected", value: luck === null ? "—" : money(luck, true), color: luck === null ? COLORS.muted : toneColor(luck),
         sub: total.z === null ? "needs bets with a fair" : "z = " + total.z.toFixed(2) + (Math.abs(total.z) < 1.96 ? ", within noise" : ", outside the 95% band") },
       clvTile(total),
-      { label: "Open risk", value: money(openStake), sub: open.length + " open bets" + (openWithFair.length ? " · EV " + money(openEv, true) : "") },
+      { label: "Open risk", value: money(openStake), sub: open.length + " open bets" + (openWithFair.length ? " · EV " + money(openEv, true) : "") + " · view →",
+        onClick: () => showView("open") },
     ]);
 
     const series = stats.dailySeries(tickets, first, last);
     renderChart(series);
-    renderCalendar(last);
+    renderCalendar(pickedCalendarDay() ? state.calendarPick.anchor : last);
     renderDaily(series);
     renderVenues(settled);
-    renderOpen(open, openStake);
+    renderSettledBets(settled, total, missing);
   }
 
   /** CLV: expected return at Unabated's closing fair, stake-weighted, and how often the close was beaten. */
@@ -323,7 +404,8 @@
       ]);
     }));
     const mid = series[Math.floor((series.length - 1) / 2)];
-    const xAxis = el("div", { className: "xaxis" }, [series[0], mid, series[series.length - 1]].map((d) => el("span", { text: dayLabel(d.day) })));
+    const axisDays = [...new Set([series[0], mid, series[series.length - 1]].map((d) => d.day))];
+    const xAxis = el("div", { className: "xaxis" }, axisDays.map((day) => el("span", { text: dayLabel(day) })));
     fill("ov-chart", el("div", { className: "plot" }, [yAxis, svg]), bars, xAxis);
   }
 
@@ -335,9 +417,18 @@
     setText("cal-caption", dayLabel(start) + " to " + dayLabel(end));
     const fullColorDollars = CAL_FULL_COLOR_PNL_UNITS * state.unitSize;
     const cells = stats.WEEKDAYS.map((name) => el("span", { className: "lbl wd", text: name }));
+    // Custom ranges clamp to [first settled day, today], so a click outside it
+    // would quietly filter to a different day; those days aren't clickable.
+    const realToday = stats.pacificDay(Date.now());
+    const firstPickable = stats.firstSettledDay(tickets) || realToday;
     for (let day = start; day <= end; day = stats.addDays(day, 1)) {
       const totals = byDay.get(day);
-      const cell = el("div", { className: "cell" + (day === today ? " today" : "") });
+      const isPicked = day === pickedCalendarDay();
+      const isPickable = day >= firstPickable && day <= realToday;
+      const cell = el("div", {
+        className: "cell" + (day === today ? " today" : "") + (isPicked ? " picked" : "") + (isPickable ? " pickable" : ""),
+        onClick: isPickable ? () => toggleCalendarDay(day, today) : null,
+      });
       const dayNumber = el("span", { className: "d", text: Number(day.slice(8)) });
       const value = el("span", { className: "v" });
       if (totals && totals.bets) {
@@ -352,24 +443,48 @@
         cell.title = dayLabel(day, true) + (day === today ? ": nothing settled yet" : day > today ? "" : ": no bets settled");
         if (day === today) value.textContent = "Today";
       }
+      if (isPickable) cell.title += isPicked ? " · click to clear" : " · click to filter to this day";
       cell.append(dayNumber, value);
       cells.push(cell);
     }
     fill("ov-calendar", ...cells);
   }
 
+  /** The day a calendar click is filtering to, or null once the range has moved off it. */
+  function pickedCalendarDay() {
+    const pick = state.calendarPick;
+    if (!pick || state.range !== "Custom") return null;
+    const { first, last } = rangeDays();
+    return first === pick.day && last === pick.day ? pick.day : null;
+  }
+
+  /** Click a day: filter every Overview panel to it. Click it again: back to the range it replaced. */
+  function toggleCalendarDay(day, anchor) {
+    const pick = state.calendarPick;
+    if (day === pickedCalendarDay()) {
+      state.range = pick.range; state.customFirst = pick.customFirst; state.customLast = pick.customLast;
+      state.calendarPick = null;
+    } else {
+      const previous = pickedCalendarDay() ? pick
+        : { range: state.range, customFirst: state.customFirst, customLast: state.customLast };
+      state.calendarPick = { day, anchor, range: previous.range, customFirst: previous.customFirst, customLast: previous.customLast };
+      state.range = "Custom"; state.customFirst = day; state.customLast = day;
+    }
+    state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; savePrefs(); render();
+  }
+
   function renderDaily(series) {
     const rows = series.filter((d) => d.bets > 0).slice(-DAILY_ROWS).reverse();
     if (!rows.length) { fill("ov-daily", emptyNote("No settled bets in this range.")); return; }
     fill("ov-daily", table([
-      { label: "Day", cell: (d) => dayLabel(d.day, true) },
-      { label: "Bets", right: true, num: true, cell: (d) => String(d.bets) },
-      { label: "W-L-P", right: true, num: true, className: () => "muted", cell: (d) => d.wins + "-" + d.losses + "-" + d.pushes },
-      { label: "Handle", right: true, num: true, cell: (d) => money(d.handle) },
-      { label: "P&L", right: true, num: true, className: (d) => toneClass(d.pnl), cell: (d) => money(d.pnl, true) },
-      { label: "ROI", right: true, num: true, className: (d) => toneClass(d.pnl), cell: (d) => pct(d.roi, true) },
-      { label: "Expected", right: true, num: true, className: () => "exp", cell: (d) => (d.withFair ? money(d.expected, true) : "—") },
-    ], rows));
+      { label: "Day", cell: (d) => dayLabel(d.day, true), sort: (d) => d.day },
+      { label: "Bets", right: true, num: true, cell: (d) => String(d.bets), sort: (d) => d.bets },
+      { label: "W-L-P", right: true, num: true, className: () => "muted", cell: (d) => d.wins + "-" + d.losses + "-" + d.pushes, sort: (d) => d.wins },
+      { label: "Handle", right: true, num: true, cell: (d) => money(d.handle), sort: (d) => d.handle },
+      { label: "P&L", right: true, num: true, className: (d) => toneClass(d.pnl), cell: (d) => money(d.pnl, true), sort: (d) => d.pnl },
+      { label: "ROI", right: true, num: true, className: (d) => toneClass(d.pnl), cell: (d) => pct(d.roi, true), sort: (d) => d.roi },
+      { label: "Expected", right: true, num: true, className: () => "exp", cell: (d) => (d.withFair ? money(d.expected, true) : "—"), sort: (d) => (d.withFair ? d.expected : null) },
+    ], rows, { sortKey: "daily" }));
   }
 
   function renderVenues(settled) {
@@ -389,20 +504,110 @@
     })));
   }
 
-  function renderOpen(open, openStake) {
+  function timeLabel(ms) {
+    return new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: stats.PACIFIC_TZ });
+  }
+
+  /**
+   * Overview's bottom panel: every bet settled in the header range (Cal,
+   * 2026-10-07), newest first, paged like the bet log.
+   */
+  function renderSettledBets(settled, total, missing) {
+    fillSettledSummary("settled-sum", settled, total, missing);
+    const columns = settledColumns((t) => dayLabel(t.settledDay, true) + " " + timeLabel(t.closedMs));
+    const newestFirst = settled.slice().sort((a, b) => b.closedMs - a.closedMs);
+    const shown = sortedRows("settled", columns, newestFirst).slice(0, state.settledLimit);
+    setText("settled-caption", settled.length
+      ? "Showing " + shown.length + " of " + settled.length + ", " + orderCaption("settled", columns, "newest first")
+      : "");
+    document.getElementById("settled-more").hidden = settled.length <= shown.length;
+    if (!shown.length) { fill("ov-settled", emptyNote("No settled bets in this range.")); return; }
+    fill("ov-settled", table(columns, shown, { sortKey: "settled" }));
+  }
+
+  /** The Open page's Settled today panel: bets settled on the current Pacific day, whatever the header range. */
+  function renderSettledToday() {
+    const today = stats.pacificDay(Date.now());
+    const settled = stats.inDayRange(tickets, today, today);
+    fillSettledSummary("today-sum", settled, stats.summarize(settled), noResultCount(today, today));
+    setText("today-caption", dayLabel(today, true) + " · Pacific settle day");
+    if (!settled.length) { fill("op-today", emptyNote("Nothing has settled yet today.")); return; }
+    const newestFirst = settled.slice().sort((a, b) => b.closedMs - a.closedMs);
+    fill("op-today", table(settledColumns((t) => timeLabel(t.closedMs)), newestFirst, { sortKey: "today" }));
+  }
+
+  /** P&L, record, expected and handle above a settled-bets table. */
+  function fillSettledSummary(id, settled, total, missing) {
+    const part = (label, value, className) => el("span", null, [document.createTextNode(label + " "), el("b", { className: className || "", text: value })]);
+    fill(id, ...(settled.length ? [
+      part("P&L", money(total.pnl, true), toneClass(total.pnl)),
+      part("Record", total.wins + "-" + total.losses + "-" + total.pushes),
+      total.withFair ? part("Expected", money(total.expected, true), "exp") : null,
+      part("Handle", money(total.handle)),
+      missing ? part("Without a result", String(missing)) : null,
+    ] : []));
+  }
+
+  /** Columns of a settled-bets table; settledCell formats the settle time. */
+  function settledColumns(settledCell) {
+    return [
+      { label: "Settled", className: () => "muted", cell: settledCell, sort: (t) => t.closedMs },
+      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
+      { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
+      { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
+      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice), sort: (t) => t.displayPrice },
+      { label: "Fair", right: true, num: true, className: () => "exp", cell: (t) => american(t.fairAmerican), sort: (t) => t.fairAmerican },
+      { label: "Close", right: true, num: true, className: () => "exp", cell: (t) => american(t.closeAmerican), sort: (t) => t.closeAmerican },
+      { label: "CLV", right: true, num: true, className: clvClass, cell: clvCell, sort: (t) => t.clv },
+      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake), sort: (t) => t.stake },
+      { label: "Result", cell: resultTag, sort: (t) => t.status },
+      { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => money(t.pnl, true), sort: (t) => t.pnl },
+    ];
+  }
+
+  // ---- open -----------------------------------------------------------------
+
+  function openTickets() {
+    return tickets.filter((t) => t.status === "open");
+  }
+
+  function renderOpenView() {
+    const open = openTickets();
+    const openStake = open.reduce((sum, t) => sum + t.stake, 0);
     const toWin = open.reduce((sum, t) => sum + (Number.isFinite(t.toWin) ? t.toWin : 0), 0);
-    setText("open-caption", open.length ? "Risking " + money(openStake) + " to win " + money(toWin) + " · fair is Unabated's at fill, else at close" : "");
-    if (!open.length) { fill("ov-open", emptyNote("No open bets.")); return; }
-    const { live, upcoming, noStart } = stats.splitOpenByStart(open, Date.now());
-    fill("ov-open",
-      openGroup("Live now", live, "Started", "No games in progress."),
+    const withFair = open.filter((t) => t.expected !== null);
+    const openEv = withFair.reduce((sum, t) => sum + t.expected, 0);
+    const { upcoming, noStart } = liveSplit();
+    const live = liveTickets();
+    const liveStake = live.reduce((sum, t) => sum + t.stake, 0);
+    kpiTiles("op-kpis", [
+      { label: "Open bets", value: String(open.length),
+        sub: live.length + " live · " + upcoming.length + " upcoming" + (noStart.length ? " · " + noStart.length + " no start time" : "") },
+      { label: "At risk", value: money(openStake), sub: "to win " + money(toWin) },
+      { label: "Open EV", value: withFair.length ? money(openEv, true) : "—", color: withFair.length ? COLORS.exp : COLORS.muted,
+        sub: withFair.length + " of " + open.length + " have a saved fair" },
+      { label: "Live now", value: money(liveStake), sub: live.length + (live.length === 1 ? " bet" : " bets") + " in progress · view →",
+        onClick: () => showView("live") },
+    ]);
+    renderOpen(upcoming.concat(noStart), { upcoming, noStart });
+    renderSettledToday();
+  }
+
+  function renderOpen(notLive, split) {
+    const stake = notLive.reduce((sum, t) => sum + t.stake, 0);
+    const toWin = notLive.reduce((sum, t) => sum + (Number.isFinite(t.toWin) ? t.toWin : 0), 0);
+    setText("open-caption", notLive.length ? "Risking " + money(stake) + " to win " + money(toWin) + " · live bets are on the Live tab" : "");
+    if (!notLive.length) { fill("op-groups", emptyNote(liveTickets().length ? "Everything open is live. See the Live tab." : "No open bets.")); return; }
+    const { upcoming, noStart } = split;
+    fill("op-groups",
       openGroup("Upcoming", upcoming, "Starts", "Nothing else open."),
       noStart.length ? openGroup("No start time", noStart, "Starts", "",
         "The venue sends no game time (BetOnline; Kalshi NFL and CFB), or it is a future or combo") : null);
   }
 
   /** One titled block of the Open bets panel: a count and stake line, then its table. */
-  function openGroup(title, group, startLabelText, emptyText, why) {
+  function openGroup(title, group, startLabelText, emptyText, why, sortKey) {
     const stake = group.reduce((sum, t) => sum + t.stake, 0);
     const head = el("div", { className: "open-group-head" }, [
       el("span", { className: "open-group-title", text: title }),
@@ -411,18 +616,113 @@
     ]);
     if (!group.length) return el("div", { className: "open-group" }, [head, emptyNote(emptyText)]);
     return el("div", { className: "open-group" }, [head, el("div", { className: "scroll" }, [table([
-      { label: startLabelText, className: () => "muted", cell: (t) => startLabel(t.eventStart) },
-      { label: "Venue", cell: (t) => t.venue },
-      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }) },
-      { label: "Event", cell: (t) => t.event || t.kind },
-      { label: "Bet", className: () => "wrap", cell: (t) => t.selection },
-      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice) },
-      { label: "Fair", right: true, num: true, className: () => "exp", cell: (t) => american(t.fairAmerican) },
-      { label: "Edge", right: true, num: true, className: (t) => (t.edge === null ? "muted" : toneClass(t.edge)), cell: (t) => pct(t.edge, true) },
-      { label: "CLV", right: true, num: true, className: clvClass, cell: clvCell },
-      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake) },
-      { label: "To win", right: true, num: true, cell: (t) => (Number.isFinite(t.toWin) ? money(t.toWin) : "—") },
-    ], group)])]);
+      { label: startLabelText, className: () => "muted", cell: (t) => startLabel(t.eventStart), sort: (t) => msOf(t.eventStart) },
+      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
+      { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
+      { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
+      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice), sort: (t) => t.displayPrice },
+      { label: "Fair", right: true, num: true, className: () => "exp", cell: (t) => american(t.fairAmerican), sort: (t) => t.fairAmerican },
+      { label: "Edge", right: true, num: true, className: (t) => (t.edge === null ? "muted" : toneClass(t.edge)), cell: (t) => pct(t.edge, true), sort: (t) => t.edge },
+      { label: "CLV", right: true, num: true, className: clvClass, cell: clvCell, sort: (t) => t.clv },
+      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake), sort: (t) => t.stake },
+      { label: "To win", right: true, num: true, cell: (t) => (Number.isFinite(t.toWin) ? money(t.toWin) : "—"), sort: (t) => (Number.isFinite(t.toWin) ? t.toWin : null) },
+    ], group, { sortKey: sortKey || "open" })])]);
+  }
+
+  // ---- live -----------------------------------------------------------------
+
+  /** Open tickets split for the Live and Open tabs off the runner's covered bet ids. */
+  function liveSplit() {
+    return stats.splitOpenForLive(openTickets(), scenarios ? scenarios.coveredBetIds : [], Date.now());
+  }
+
+  function liveTickets() {
+    const split = liveSplit();
+    return split.onCard.concat(split.tickets, split.offCard);
+  }
+
+  function renderLiveView() {
+    const split = liveSplit();
+    const games = scenarios ? scenarios.games : [];
+    const live = split.onCard.concat(split.tickets, split.offCard);
+    const stake = live.reduce((sum, t) => sum + t.stake, 0);
+    const pricedGroups = games.flatMap((game) => game.groups).filter((group) => group.ev !== null);
+    const ev = pricedGroups.reduce((sum, group) => sum + group.ev, 0);
+    const best = games.flatMap((game) => game.groups).reduce((sum, group) => sum + group.best, 0);
+    const worst = games.flatMap((game) => game.groups).reduce((sum, group) => sum + group.worst, 0);
+    setText("live-caption", scenarios ? "Updated " + ago(scenarios.generatedAt) : "");
+    kpiTiles("lv-kpis", [
+      { label: "Live bets", value: String(live.length), sub: games.length + (games.length === 1 ? " game" : " games") + " in progress · " + money(stake) + " at risk" },
+      { label: "Best case", value: games.length ? money(best, true) : "—", color: games.length ? COLORS.pos : COLORS.muted, sub: "every game lands your way (straight bets)" },
+      { label: "Worst case", value: games.length ? money(worst, true) : "—", color: games.length ? COLORS.neg : COLORS.muted, sub: "nothing lands" },
+      { label: "EV at kickoff", value: pricedGroups.length ? money(ev, true) : "—", color: pricedGroups.length ? COLORS.exp : COLORS.muted,
+        sub: "Unabated's fair before the start" },
+    ]);
+    const problem = scenariosError
+      ? el("div", { className: "banner", text: "Game cards are unavailable: " + scenariosError + ". Live bets are listed below without them." })
+      : null;
+    fill("lv-cards", problem, ...(games.length ? games.map(gameCard) : [problem ? null : emptyNote(live.length ? "No live bet could be placed on a game card." : "No games in progress.")]));
+    const ticketRows = split.tickets;
+    document.getElementById("lv-tickets-panel").hidden = !ticketRows.length;
+    fill("lv-tickets", ticketRows.length ? openGroup("", ticketRows, "First leg", "", null, "liveTickets") : null);
+    document.getElementById("lv-off-panel").hidden = !split.offCard.length;
+    fill("lv-off", split.offCard.length ? openGroup("", split.offCard, "Started", "", null, "liveOff") : null);
+  }
+
+  /** One game in progress: its bets, then one outcome ladder per market and period. */
+  function gameCard(game) {
+    const placedBets = game.bets.map((bet) => el("span", { className: "bet-chip" + (bet.reason ? " off" : ""), title: bet.reason ? "Not on the ladder: " + bet.reason : "" }, [
+      el("span", { text: bet.label }),
+      el("span", { className: "muted", text: " · " + bet.venue + (Number.isFinite(bet.stake) ? " · " + money(bet.stake) : "") + (bet.reason ? " · " + bet.reason : "") }),
+    ]));
+    const legChips = game.legs.map((leg) => el("span", { className: "bet-chip leg", title: leg.reason ? "Not on the ladder: " + leg.reason : "" }, [
+      el("span", { text: leg.label }),
+      el("span", { className: "muted", text: " · " + leg.kind + " leg · " + leg.venue + (Number.isFinite(leg.ticketStake) ? " · " + money(leg.ticketStake) + " ticket" : "") + (leg.reason ? " · " + leg.reason : "") }),
+    ]));
+    const best = game.groups.reduce((sum, group) => sum + group.best, 0);
+    const worst = game.groups.reduce((sum, group) => sum + group.worst, 0);
+    const priced = game.groups.filter((group) => group.ev !== null);
+    const ev = priced.reduce((sum, group) => sum + group.ev, 0);
+    const summary = el("div", { className: "note" }, [
+      el("span", { text: "Range " }), el("span", { className: "num " + toneClass(worst), text: money(worst, true) }),
+      el("span", { text: " to " }), el("span", { className: "num " + toneClass(best), text: money(best, true) }),
+      priced.length === game.groups.length && priced.length ? el("span", { text: " · EV at kickoff " }) : null,
+      priced.length === game.groups.length && priced.length ? el("span", { className: "num exp", text: money(ev, true) }) : null,
+      game.oddsAt === null ? el("span", { text: " · no kickoff odds (the runner started after this game did)" }) : null,
+    ]);
+    return el("section", { className: "panel game-card", attrs: { "aria-label": game.awayTeam + " at " + game.homeTeam } }, [
+      el("div", { className: "game-head" }, [
+        el("div", null, [
+          el("span", { className: "game-teams", text: (game.awayTeam || "Away") + " @ " + (game.homeTeam || "Home") }),
+          el("span", { className: "tag", text: String(game.league).toUpperCase() }),
+        ]),
+        el("span", { className: "note", text: "Started " + startLabel(new Date(game.startMs).toISOString()) }),
+      ]),
+      el("div", { className: "game-body" }, [
+        el("div", { className: "bet-chips" }, placedBets.concat(legChips)),
+        el("div", { className: "ladders" }, game.groups.map(outcomeLadder)),
+        game.groups.length ? summary : null,
+      ]),
+    ]);
+  }
+
+  /** One market's results: what has to happen, its chance at kickoff, and the P&L. */
+  function outcomeLadder(group) {
+    const rows = group.bands.map((band) => {
+      const bar = el("span", { className: "prob" }, [el("i", { style: { width: band.prob === null ? "0%" : (band.prob * 100).toFixed(1) + "%" } })]);
+      const lost = band.legs.filter((leg) => leg.result !== "won");
+      const legTags = lost.map((leg) => el("span", { className: "leg-tag " + leg.result, text: leg.label + " " + leg.kind + " leg " + (leg.result === "push" ? "pushes" : "loses") }));
+      return el("div", { className: "band" }, [
+        el("span", { className: "band-what" }, [el("span", { text: band.label })].concat(legTags)),
+        bar,
+        el("span", { className: "num muted band-pct", text: band.prob === null ? "—" : Math.round(band.prob * 100) + "%" }),
+        el("span", { className: "num band-pnl " + toneClass(band.pnl), text: money(band.pnl, true) }),
+      ]);
+    });
+    return el("div", { className: "ladder" }, [
+      el("div", { className: "ladder-head" }, [el("span", { className: "lbl", text: group.title }), el("span", { className: "lbl", text: "Chance · P&L" })]),
+    ].concat(rows));
   }
 
   // ---- analysis -------------------------------------------------------------
@@ -442,7 +742,7 @@
   function toggleIn(listKey, value) {
     const list = state[listKey];
     state[listKey] = list.includes(value) ? list.filter((v) => v !== value) : list.concat(value);
-    state.logLimit = LOG_PAGE;
+    state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
     render();
   }
 
@@ -457,7 +757,7 @@
     const { first, last } = rangeDays();
     chips("f-venues", valuesByCount("venue"), "offVenues");
     chips("f-leagues", valuesByCount("league"), "offLeagues");
-    segButtons("f-kinds", KINDS.filter((k) => k !== BOT_COMBO_KIND || state.includeBotCombos), (k) => k === state.kind, (k) => { state.kind = k; state.logLimit = LOG_PAGE; render(); });
+    segButtons("f-kinds", KINDS.filter((k) => k !== BOT_COMBO_KIND || state.includeBotCombos), (k) => k === state.kind, (k) => { state.kind = k; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; render(); });
     segButtons("group-tabs", stats.GROUPS, (g) => g.key === state.groupBy, (g) => { state.groupBy = g.key; render(); });
 
     const settled = filteredSettled();
@@ -494,21 +794,24 @@
   function renderGroups(settled) {
     const rows = stats.groupBy(settled, state.groupBy);
     if (!rows.length) { fill("an-groups", emptyNote("No settled bets match these filters.")); return; }
-    const label = stats.GROUPS.find((g) => g.key === state.groupBy).label;
+    const group = stats.GROUPS.find((g) => g.key === state.groupBy);
+    // Bucketed groups (odds, edge, timing, weekday, stake) sort in their own order, not A to Z.
+    const groupSortKey = group.order ? (r) => group.order.indexOf(r.label) : (r) => r.label;
     fill("an-groups", table([
-      { label, cell: (r) => r.label },
-      { label: "Bets", right: true, num: true, cell: (r) => String(r.bets) },
-      { label: "W-L-P", right: true, num: true, className: () => "muted", cell: (r) => r.wins + "-" + r.losses + "-" + r.pushes },
-      { label: "Handle", right: true, num: true, cell: (r) => money(r.handle) },
-      { label: "P&L", right: true, num: true, className: (r) => toneClass(r.pnl), cell: (r) => money(r.pnl, true) },
-      { label: "ROI", right: true, num: true, className: (r) => toneClass(r.pnl), cell: (r) => pct(r.roi, true) },
-      { label: "ROI, 95% interval", cell: ciBar },
-      { label: "Expected ROI", right: true, num: true, className: () => "exp", cell: (r) => pct(r.expRoi, true) },
-      { label: "vs expected", right: true, num: true, className: (r) => (r.withFair ? toneClass(r.fairPnl - r.expected) : "muted"), cell: (r) => (r.withFair ? money(r.fairPnl - r.expected, true) : "—") },
-      { label: "z", right: true, num: true, className: (r) => (r.z !== null && Math.abs(r.z) >= 1.96 ? "warn" : "muted"), cell: (r) => (r.z === null ? "—" : r.z.toFixed(2)) },
-      { label: "CLV", right: true, num: true, className: (r) => (r.clvRoi === null ? "muted" : toneClass(r.clvRoi)), cell: (r) => pct(r.clvRoi, true) },
-      { label: "Beat close", right: true, num: true, className: () => "muted", cell: (r) => (r.withClose ? pct(r.beatRate) + " of " + r.withClose : "—") },
-    ], rows));
+      { label: group.label, cell: (r) => r.label, sort: groupSortKey },
+      { label: "Bets", right: true, num: true, cell: (r) => String(r.bets), sort: (r) => r.bets },
+      { label: "W-L-P", right: true, num: true, className: () => "muted", cell: (r) => r.wins + "-" + r.losses + "-" + r.pushes, sort: (r) => r.wins },
+      { label: "Handle", right: true, num: true, cell: (r) => money(r.handle), sort: (r) => r.handle },
+      { label: "P&L", right: true, num: true, className: (r) => toneClass(r.pnl), cell: (r) => money(r.pnl, true), sort: (r) => r.pnl },
+      { label: "ROI", right: true, num: true, className: (r) => toneClass(r.pnl), cell: (r) => pct(r.roi, true), sort: (r) => r.roi },
+      // The interval sorts by its low end: high to low puts the most surely winning groups first.
+      { label: "ROI, 95% interval", highFirst: true, cell: ciBar, sort: (r) => r.roi - r.ciHalf },
+      { label: "Expected ROI", right: true, num: true, className: () => "exp", cell: (r) => pct(r.expRoi, true), sort: (r) => r.expRoi },
+      { label: "vs expected", right: true, num: true, className: (r) => (r.withFair ? toneClass(r.fairPnl - r.expected) : "muted"), cell: (r) => (r.withFair ? money(r.fairPnl - r.expected, true) : "—"), sort: (r) => (r.withFair ? r.fairPnl - r.expected : null) },
+      { label: "z", right: true, num: true, className: (r) => (r.z !== null && Math.abs(r.z) >= 1.96 ? "warn" : "muted"), cell: (r) => (r.z === null ? "—" : r.z.toFixed(2)), sort: (r) => r.z },
+      { label: "CLV", right: true, num: true, className: (r) => (r.clvRoi === null ? "muted" : toneClass(r.clvRoi)), cell: (r) => pct(r.clvRoi, true), sort: (r) => r.clvRoi },
+      { label: "Beat close", right: true, num: true, className: () => "muted", cell: (r) => (r.withClose ? pct(r.beatRate) + " of " + r.withClose : "—"), sort: (r) => (r.withClose ? r.beatRate : null) },
+    ], rows, { sortKey: "groups" }));
   }
 
   function renderCalibration(settled) {
@@ -547,12 +850,12 @@
     fill("an-calibration", el("div", { className: "cal-plot" }, [el("div", { className: "plot" }, [yAxis, svg]), xAxis]),
       el("div", { className: "muted", text: "Fair win probability, at fill or else at close (x), against actual win rate (y); bars are 95% intervals." }));
     fill("an-cal-table", table([
-      { label: "Fair prob.", cell: (b) => Math.round(b.low * 100) + " to " + Math.round(b.high * 100) + "%" },
-      { label: "Bets", right: true, num: true, cell: (b) => String(b.bets) },
-      { label: "Expected win", right: true, num: true, className: () => "exp", cell: (b) => pct(b.expected) },
-      { label: "Actual win", right: true, num: true, cell: (b) => pct(b.actual) },
-      { label: "Diff", right: true, num: true, className: (b) => (Math.abs(b.actual - b.expected) > b.ciHalf ? "warn" : "muted"), cell: (b) => pct(b.actual - b.expected, true) },
-    ], bins));
+      { label: "Fair prob.", cell: (b) => Math.round(b.low * 100) + " to " + Math.round(b.high * 100) + "%", sort: (b) => b.low },
+      { label: "Bets", right: true, num: true, cell: (b) => String(b.bets), sort: (b) => b.bets },
+      { label: "Expected win", right: true, num: true, className: () => "exp", cell: (b) => pct(b.expected), sort: (b) => b.expected },
+      { label: "Actual win", right: true, num: true, cell: (b) => pct(b.actual), sort: (b) => b.actual },
+      { label: "Diff", right: true, num: true, className: (b) => (Math.abs(b.actual - b.expected) > b.ciHalf ? "warn" : "muted"), cell: (b) => pct(b.actual - b.expected, true), sort: (b) => b.actual - b.expected },
+    ], bins, { sortKey: "calibration" }));
   }
 
   function renderLog(settled) {
@@ -560,25 +863,24 @@
     const matching = query
       ? settled.filter((t) => [t.event, t.selection, t.venue, t.league, t.kind].join(" ").toLowerCase().includes(query))
       : settled;
-    const shown = matching.slice(0, state.logLimit);
-    setText("log-caption", "Showing " + shown.length + " of " + matching.length + " settled bets, newest first");
+    const columns = [
+      { label: "Settled", className: () => "muted", cell: (t) => dayLabel(t.settledDay, true), sort: (t) => t.closedMs },
+      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
+      { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
+      { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
+      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice), sort: (t) => t.displayPrice },
+      { label: "Fair", right: true, num: true, className: () => "exp", cell: (t) => american(t.fairAmerican), sort: (t) => t.fairAmerican },
+      { label: "Edge", right: true, num: true, className: (t) => (t.edge === null ? "muted" : toneClass(t.edge)), cell: (t) => pct(t.edge, true), sort: (t) => t.edge },
+      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake), sort: (t) => t.stake },
+      { label: "Result", cell: (t) => el("span", { className: "result " + t.status, text: t.status[0].toUpperCase() + t.status.slice(1) }), sort: (t) => t.status },
+      { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => money(t.pnl, true), sort: (t) => t.pnl },
+    ];
+    const shown = sortedRows("log", columns, matching).slice(0, state.logLimit);
+    setText("log-caption", "Showing " + shown.length + " of " + matching.length + " settled bets, " + orderCaption("log", columns, "newest first"));
     document.getElementById("log-more").hidden = matching.length <= shown.length;
     if (!shown.length) { fill("an-log", emptyNote(query ? "No bets match that search." : "No settled bets match these filters.")); return; }
-    fill("an-log", table([
-      { label: "Settled", className: () => "muted", cell: (t) => dayLabel(t.settledDay, true) },
-      { label: "Venue", cell: (t) => t.venue },
-      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }) },
-      { label: "Event", cell: (t) => t.event || t.kind },
-      { label: "Bet", className: () => "wrap", cell: (t) => t.selection },
-      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice) },
-      { label: "Fair", right: true, num: true, className: () => "exp", cell: (t) => american(t.fairAmerican) },
-      { label: "Edge", right: true, num: true, className: (t) => (t.edge === null ? "muted" : toneClass(t.edge)), cell: (t) => pct(t.edge, true) },
-      { label: "Close", right: true, num: true, className: () => "exp", cell: (t) => american(t.closeAmerican) },
-      { label: "CLV", right: true, num: true, className: clvClass, cell: clvCell },
-      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake) },
-      { label: "Result", cell: (t) => el("span", { className: "result " + t.status, text: t.status[0].toUpperCase() + t.status.slice(1) }) },
-      { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => money(t.pnl, true) },
-    ], shown));
+    fill("an-log", table(columns, shown, { sortKey: "log" }));
   }
 
   // ---- bets -----------------------------------------------------------------
@@ -627,31 +929,39 @@
     setText("b-caption", all.length + " BFA and Wagerzon bets · " + removed.length + " removed"
       + (removed.length ? " (" + money(removed.reduce((sum, t) => sum + (t.pnl || 0), 0), true) + " P&L left out)" : ""));
     const matching = betsShown();
-    const shown = matching.slice(0, state.betsLimit);
-    setText("bets-caption", "Showing " + shown.length + " of " + matching.length + ", newest first");
-    document.getElementById("bets-more").hidden = matching.length <= shown.length;
-    if (!shown.length) { fill("b-list", emptyNote(state.betsQuery ? "No bets match that search." : "No bets here.")); return; }
     // The button and the bet lead the row so a phone shows both without scrolling the table sideways.
-    fill("b-list", table([
+    const columns = [
       { label: "", cell: (t) => el("button", {
         className: "chip" + (t.excluded ? "" : " danger"), text: t.excluded ? "Restore" : "Remove",
         title: t.excluded ? "Count this bet again" : "Not my bet: leave it out of every number",
         attrs: Object.assign({ type: "button" }, state.saving ? { disabled: "" } : {}),
         onClick: () => setExcluded(t, !t.excluded),
       }) },
-      { label: "Bet", className: () => "wrap", cell: (t) => t.selection },
-      { label: "Event", cell: (t) => t.event || t.kind },
-      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice) },
-      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake) },
-      { label: "Result", cell: resultTag },
-      { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => (t.pnl === null ? "—" : money(t.pnl, true)) },
-      { label: "Placed", className: () => "muted", cell: (t) => (t.placedMs ? dayLabel(stats.pacificDay(t.placedMs), true) : "—") },
-      { label: "Venue", cell: (t) => t.venue },
-      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }) },
-    ], shown, (t) => (t.excluded ? "removed" : "")));
+      { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
+      { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
+      { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice), sort: (t) => t.displayPrice },
+      { label: "Stake", right: true, num: true, cell: (t) => money(t.stake), sort: (t) => t.stake },
+      { label: "Result", cell: resultTag, sort: (t) => t.status },
+      { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => (t.pnl === null ? "—" : money(t.pnl, true)), sort: (t) => t.pnl },
+      { label: "Placed", className: () => "muted", cell: (t) => (t.placedMs ? dayLabel(stats.pacificDay(t.placedMs), true) : "—"), sort: (t) => t.placedMs },
+      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
+    ];
+    const shown = sortedRows("bets", columns, matching).slice(0, state.betsLimit);
+    setText("bets-caption", "Showing " + shown.length + " of " + matching.length + ", " + orderCaption("bets", columns, "newest first"));
+    document.getElementById("bets-more").hidden = matching.length <= shown.length;
+    if (!shown.length) { fill("b-list", emptyNote(state.betsQuery ? "No bets match that search." : "No bets here.")); return; }
+    fill("b-list", table(columns, shown, { sortKey: "bets", rowClass: (t) => (t.excluded ? "removed" : "") }));
   }
 
   // ---- shell ----------------------------------------------------------------
+
+  function showView(view) {
+    state.view = view;
+    history.replaceState(null, "", "#" + view);
+    window.scrollTo(0, 0);
+    render();
+  }
 
   function renderHeader() {
     for (const button of document.querySelectorAll(".nav button")) {
@@ -659,13 +969,44 @@
       else button.removeAttribute("aria-current");
     }
     for (const view of VIEWS) document.getElementById("view-" + view).hidden = state.view !== view;
-    segButtons("ranges", RANGES, (r) => r === state.range, (r) => { state.range = r; state.logLimit = LOG_PAGE; savePrefs(); render(); });
+    const liveCount = payload ? liveTickets().length : 0;
+    const liveBadge = document.getElementById("live-count");
+    liveBadge.hidden = !liveCount;
+    liveBadge.textContent = String(liveCount);
+    const openCount = payload ? openTickets().length - liveCount : 0;
+    const badge = document.getElementById("open-count");
+    badge.hidden = !openCount;
+    badge.textContent = String(openCount);
+    segButtons("ranges", RANGES, (r) => r === state.range, pickRange);
+    renderCustomRange();
     document.getElementById("show-dollars").setAttribute("aria-pressed", String(!state.units));
     document.getElementById("show-units").setAttribute("aria-pressed", String(state.units));
     document.getElementById("unit-size-label").hidden = !state.units;
     document.getElementById("bot-combos").setAttribute("aria-pressed", String(state.includeBotCombos));
     const unitInput = document.getElementById("unit-size");
     if (document.activeElement !== unitInput) unitInput.value = String(state.unitSize);
+  }
+
+  /** Picking Custom starts from the range on screen, so the dates are never blank. */
+  function pickRange(range) {
+    if (range === "Custom" && state.range !== "Custom") {
+      const { first, last } = rangeDays();
+      state.customFirst = first; state.customLast = last;
+    }
+    state.calendarPick = null;
+    state.range = range; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; savePrefs(); render();
+  }
+
+  function renderCustomRange() {
+    document.getElementById("custom-range").hidden = state.range !== "Custom";
+    if (state.range !== "Custom") return;
+    const { first, last } = rangeDays();
+    const today = stats.pacificDay(Date.now());
+    for (const [id, value] of [["custom-first", first], ["custom-last", last]]) {
+      const input = document.getElementById(id);
+      input.max = today;
+      if (document.activeElement !== input) input.value = value;
+    }
   }
 
   function renderSync() {
@@ -686,6 +1027,8 @@
     renderSync();
     if (!payload) return;
     if (state.view === "overview") renderOverview();
+    else if (state.view === "live") renderLiveView();
+    else if (state.view === "open") renderOpenView();
     else if (state.view === "analysis") renderAnalysis();
     else renderBets();
   }
@@ -706,7 +1049,22 @@
     applyBotComboFilter();
   }
 
+  // The live game cards; a failure keeps the last cards read and says why.
+  async function refreshScenarios() {
+    try {
+      const response = await fetch(SCENARIOS_URL, { cache: "no-store" });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error((body && body.error) || "the bets service answered HTTP " + response.status);
+      if (!body || !Array.isArray(body.games) || !Array.isArray(body.coveredBetIds)) throw new Error("scenarios.json has no games list");
+      scenarios = body;
+      scenariosError = null;
+    } catch (error) {
+      scenariosError = error.message;
+    }
+  }
+
   async function refresh() {
+    const scenariosRead = refreshScenarios();
     try {
       const response = await fetch(BETS_URL, { cache: "no-store" });
       if (!response.ok) throw new Error("the bets service answered HTTP " + response.status);
@@ -716,23 +1074,21 @@
     } catch (error) {
       showBanner("Could not load bets: " + error.message + (payload ? ". Showing the last load." : "."));
     }
+    await scenariosRead;
     render();
   }
 
   function wire() {
     for (const button of document.querySelectorAll(".nav button")) {
-      button.addEventListener("click", () => {
-        state.view = button.dataset.view;
-        history.replaceState(null, "", "#" + state.view);
-        render();
-      });
+      button.addEventListener("click", () => showView(button.dataset.view));
     }
+    document.getElementById("settled-more").addEventListener("click", () => { state.settledLimit += LOG_PAGE; render(); });
     document.getElementById("show-dollars").addEventListener("click", () => { state.units = false; savePrefs(); render(); });
     document.getElementById("show-units").addEventListener("click", () => { state.units = true; savePrefs(); render(); });
     document.getElementById("bot-combos").addEventListener("click", () => {
       state.includeBotCombos = !state.includeBotCombos;
       if (!state.includeBotCombos && state.kind === BOT_COMBO_KIND) state.kind = "All";
-      state.logLimit = LOG_PAGE;
+      state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
       savePrefs(); applyBotComboFilter(); render();
     });
     document.getElementById("unit-size").addEventListener("change", (event) => {
@@ -740,8 +1096,15 @@
       if (Number.isFinite(size) && size > 0) { state.unitSize = size; savePrefs(); }
       render();
     });
+    for (const [id, key] of [["custom-first", "customFirst"], ["custom-last", "customLast"]]) {
+      document.getElementById(id).addEventListener("change", (event) => {
+        if (!stats.isDayKey(event.target.value)) return;
+        state.calendarPick = null;
+        state[key] = event.target.value; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; savePrefs(); render();
+      });
+    }
     document.getElementById("log-search").addEventListener("input", (event) => {
-      state.query = event.target.value; state.logLimit = LOG_PAGE; render();
+      state.query = event.target.value; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; render();
     });
     document.getElementById("log-more").addEventListener("click", () => { state.logLimit += LOG_PAGE; render(); });
     document.getElementById("bets-search").addEventListener("input", (event) => {

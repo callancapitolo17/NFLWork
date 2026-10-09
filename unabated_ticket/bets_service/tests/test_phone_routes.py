@@ -26,6 +26,7 @@ class StubRunnerHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 — http.server's name
         mode = self.server.mode
         self.server.hosts_seen.append(self.headers.get("Host"))
+        self.server.paths_seen.append(self.path)
         if mode == "slow":
             time.sleep(SLOW_RUNNER_DELAY_SEC)
         status = 500 if mode == "error" else 200
@@ -55,6 +56,7 @@ def stub_runner():
     server = ThreadingHTTPServer(("127.0.0.1", 0), StubRunnerHandler)
     server.mode = "ok"
     server.hosts_seen = []
+    server.paths_seen = []
     start_server(server)
     yield server
     server.shutdown()
@@ -204,6 +206,25 @@ def test_edges_json_is_a_502_naming_the_runner_when_it_is_down(store):
     assert reply["runnerUrl"] == runner_url
     assert reply["error"].startswith(f"server runner at {runner_url} unreachable (")
     assert "node unabated_ticket/server/runner.js" in reply["error"]
+
+
+def test_scenarios_json_passes_the_runner_body_through(bets_port, stub_runner):
+    status, _headers, body = get(bets_port, "/scenarios.json")
+    assert status == 200
+    assert json.loads(body) == RUNNER_BODY
+    assert stub_runner.paths_seen == ["/scenarios.json"]
+
+
+def test_scenarios_json_502_names_its_own_path(store):
+    runner_url = f"http://127.0.0.1:{unused_port()}"
+    server = serve_bets(store, runner_url)
+    try:
+        status, _headers, body = get(server.server_address[1], "/scenarios.json")
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert status == 502
+    assert "for /scenarios.json;" in json.loads(body)["error"]
 
 
 def test_edges_json_is_a_502_when_the_runner_is_slower_than_the_timeout(bets_port, stub_runner):

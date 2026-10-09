@@ -107,6 +107,20 @@ test("the stake block's label at size, with nothing resting, and an against-only
   assert.deepEqual([against.position, against.positionAgainst, against.payout], ["against $200 · $100 alone", true, "$350.00"]);
 });
 
+test("the stake block shows the uncapped stake beside a liquidity cap", () => {
+  const row = { price: 150, sourceFormat: 1, sourcePrice: 150 };
+  const capped = phoneView.stakeBlockView({ ...row, advice: { kind: "none", bet: 17, alone: 240, verb: "bet", held: 0, against: 0, teasers: { held: 0, against: 0 }, cappedAt: 17, uncapped: 240 } });
+  assert.equal(capped.position, "all $17 liq");
+  assert.equal(capped.uncapped, "uncapped $240.00");
+  const novig = phoneView.stakeBlockView({ ...row, sourceFormat: 4, sourcePrice: 0.319, book: { id: 89, name: "Novig" }, advice: { kind: "none", bet: 17, alone: 240, verb: "bet", held: 0, against: 0, teasers: { held: 0, against: 0 }, cappedAt: 17, uncapped: 240 } });
+  assert.equal(novig.uncapped, "uncapped $240.00 · 752 contracts @ 31.9¢");
+});
+
+test("a Polymarket ticket shows contracts at Unabated's price", () => {
+  const row = { price: 150, sourceFormat: 1, sourcePrice: 150, book: { id: 0, name: "Polymarket US" } };
+  assert.deepEqual(phoneView.contractsView(100, row), { text: "250 contracts @ 40.0¢", cost: "$100.00", under: false });
+});
+
 test("the runner names the open bets no board game matches; the Bets tab groups them as the panel does", async () => {
   const { payload, betsBody } = await payloadFor(OPEN_SETTINGS, [BEARS_HELD, UNKNOWN_TEAM, A_FUTURE]);
   const unmatched = payload.betsService.unmatched;

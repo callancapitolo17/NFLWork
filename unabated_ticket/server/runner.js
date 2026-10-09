@@ -34,13 +34,18 @@
 // Serves (HTTP on UNABATED_RUNNER_HOST:UNABATED_RUNNER_PORT, no auth):
 //   GET /edges.json  the Edges list the panel would show for those settings
 //                    (server/edges_payload.js documents the shape)
+//   GET /scenarios.json  the Bet Tracker's Live tab: every game in progress
+//                    with open bets, its results and the P&L and kickoff
+//                    chance of each (server/scenarios.js documents the shape)
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
 // Side effects: none on disk — no DuckDB, no files. Its one write is the
 // closing-fair POST above (bets.duckdb::bet_closing_fairs, through the bets
-// service). State (feed, line history, bets) is in memory and rebuilt on
-// restart. Logs state changes (not every poll) to stdout/stderr.
+// service). State (feed, line history, bets, each game's last pregame odds for
+// the Live tab) is in memory and rebuilt on restart: a game already under way
+// when the runner starts has its card but no kickoff chances. Logs state
+// changes (not every poll) to stdout/stderr.
 
 "use strict";
 
@@ -55,6 +60,8 @@ const teaser = require("../extension/teaser.js");
 const edgeRows = require("../extension/edgerows.js");
 const edgesPayload = require("./edges_payload.js");
 const closefair = require("./closefair.js");
+const ladderLib = require("../extension/ladder.js");
+const scenarios = require("./scenarios.js");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8095;
@@ -71,6 +78,9 @@ const WILDCARD_HOSTS = ["0.0.0.0", "::", ""];
 const HTTP_DEFAULT_PORT = 80;
 const MAX_PORT = 65535;
 const HOUR_MS = 3600 * 1000;
+// A started game keeps its card this long after its start, whether or not
+// it is still on the board: past any game's length plus a slow grader's lag.
+const KICKOFF_MEMO_HOURS = 12;
 
 function log(message) {
   console.log(`${new Date().toISOString()} [runner] ${message}`);
@@ -168,6 +178,12 @@ function createRunner(deps) {
   let teaserBoardLoadedAt = null;
   let teamsSpellingCount = teams.spellingCount();
   let held = { records: [], crosswalk: [], pins: [], fillFairs: [] };
+  // Bet ids the tracker's Bets page removed (not Cal's): never on a card.
+  let excludedBetIds = new Set();
+  // eventId -> {row, lines, oddsAt}: each game's board row and its lines as
+  // of the last snapshot before it started (lines null when the runner never
+  // saw it pregame). The Live tab's chances are these kickoff odds.
+  const kickoffMemo = new Map();
   let fillFairIndex = new Map();
   // {betId: startMs} of the board game each open bet last matched (the
   // panel's knownStarts): a bet with no start of its own whose game has
@@ -216,8 +232,27 @@ function createRunner(deps) {
       tailFlexCache = null;
       registerFeedTeams();
       noteMatchedStarts();
+      rememberKickoffOdds();
     },
   });
+
+  // Keep every board game's row, and its lines while it has not started, so
+  // a game in progress keeps its card and its kickoff chances whether or not
+  // the board still lists it. Games started more than KICKOFF_MEMO_HOURS ago go.
+  function rememberKickoffOdds() {
+    const at = now();
+    const linesByEvent = feedState ? ladderLib.groupLinesByEvent(Object.values(feedState.lines)) : new Map();
+    for (const row of boardLines()) {
+      if (typeof row.eventStartMs !== "number") continue;
+      const pregame = row.eventStartMs > at;
+      const known = kickoffMemo.get(row.eventId);
+      if (pregame) kickoffMemo.set(row.eventId, { row, lines: linesByEvent.get(row.eventId) || [], oddsAt: at });
+      else if (!known) kickoffMemo.set(row.eventId, { row, lines: null, oddsAt: null });
+    }
+    for (const [eventId, entry] of kickoffMemo) {
+      if (at - entry.row.eventStartMs > KICKOFF_MEMO_HOURS * HOUR_MS) kickoffMemo.delete(eventId);
+    }
+  }
 
   // Remember each open bet's matched game start, as the panel's noteMatchedStarts does.
   function noteMatchedStarts() {
@@ -270,6 +305,7 @@ function createRunner(deps) {
     try {
       const applied = edgeRows.applyBetsPayload(held, await getServiceJson(serviceFetch, `${deps.betsServiceUrl}/bets.json`), at);
       held = { records: applied.records, crosswalk: applied.crosswalk, pins: applied.pins, fillFairs: applied.fillFairs };
+      if (Array.isArray(applied.exclusions)) excludedBetIds = new Set(applied.exclusions.map((row) => row.betId));
       fillFairIndex = fillfair.fairsByBetId(held.fillFairs);
       noteMatchedStarts();
       // Before the first settings read the scan has not started; start() starts it.
@@ -374,6 +410,29 @@ function createRunner(deps) {
     });
   }
 
+  // The Live tab's cards, off the remembered games (scenarios.js).
+  function scenariosPayloadNow() {
+    const at = now();
+    const games = Array.from(kickoffMemo.values(), (entry) => {
+      const ladders = new Map();
+      const ladderOf = entry.lines === null ? null : (period, axis) => {
+        const periodTypeId = ladderLib.periodTypeIdOf(period);
+        if (periodTypeId == null) return null;
+        const key = `${periodTypeId}|${axis}`;
+        if (!ladders.has(key)) ladders.set(key, ladderLib.buildLadder(entry.lines, { periodTypeId, axis }));
+        return ladders.get(key);
+      };
+      return { row: entry.row, ladderOf, oddsAt: entry.oddsAt };
+    });
+    const records = held.records.filter((record) => !excludedBetIds.has(record.id));
+    return {
+      generatedAt: new Date(at).toISOString(),
+      scanner: scannerStatus ? { phase: scannerStatus.phase, error: scannerStatus.error } : { phase: "starting", error: null },
+      betsService: { okAt: betsStatus.okAt, error: betsStatus.error },
+      ...scenarios.buildScenarios({ records, games, now: at }),
+    };
+  }
+
   function health() {
     return {
       ok: true, generatedAt: new Date(now()).toISOString(), uptimeSec: Math.round((now() - startedAt) / 1000),
@@ -384,7 +443,8 @@ function createRunner(deps) {
     };
   }
 
-  return { start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, edgesPayload: edgesPayloadNow, health, scanner };
+  return { start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, edgesPayload: edgesPayloadNow,
+    scenariosPayload: scenariosPayloadNow, health, scanner };
 }
 
 function sendJson(response, status, body) {
@@ -393,7 +453,7 @@ function sendJson(response, status, body) {
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json and /health, the Host allowlist first on
+// The HTTP side: GET /edges.json, /scenarios.json and /health, the Host allowlist first on
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
@@ -410,6 +470,7 @@ function createHttpServer(runner, { host }) {
     const path = new URL(request.url, "http://runner.invalid").pathname;
     try {
       if (path === "/edges.json") return sendJson(response, 200, runner.edgesPayload());
+      if (path === "/scenarios.json") return sendJson(response, 200, runner.scenariosPayload());
       if (path === "/health") return sendJson(response, 200, runner.health());
     } catch (error) {
       logError(`${path} failed: ${error.stack || error.message}`);

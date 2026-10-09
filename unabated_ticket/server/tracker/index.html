@@ -20,12 +20,18 @@
       </p>
       <nav class="nav" aria-label="Pages">
         <button type="button" data-view="overview">Overview</button>
+        <button type="button" data-view="live">Live<span class="badge num" id="live-count" hidden></span></button>
+        <button type="button" data-view="open">Open<span class="badge num" id="open-count" hidden></span></button>
         <button type="button" data-view="analysis">Analysis</button>
         <button type="button" data-view="bets">Bets</button>
       </nav>
       <div class="spacer"></div>
       <div class="controls">
         <div class="seg" id="ranges" role="group" aria-label="Date range"></div>
+        <div class="custom-range" id="custom-range" hidden>
+          <label>From <input id="custom-first" type="date"></label>
+          <label>To <input id="custom-last" type="date"></label>
+        </div>
         <div class="seg" role="group" aria-label="Show money as">
           <button type="button" id="show-dollars">$</button>
           <button type="button" id="show-units">Units</button>
@@ -70,9 +76,55 @@
           <div id="ov-venues"></div>
         </section>
       </div>
-      <section class="panel" aria-label="Open bets">
+      <section class="panel stack flush" aria-label="Settled bets">
+        <div class="head">
+          <div class="stack tight">
+            <span class="lbl">Settled bets</span>
+            <span class="note" id="settled-caption"></span>
+          </div>
+        </div>
+        <div class="settled-sum" id="settled-sum"></div>
+        <div class="scroll" id="ov-settled"></div>
+        <button type="button" class="more" id="settled-more" hidden>Show more</button>
+      </section>
+    </section>
+
+    <section id="view-live" class="stack" aria-label="Live" hidden>
+      <div class="title-row"><h1>Live</h1><span class="note" id="live-caption"></span></div>
+      <div class="kpis" id="lv-kpis"></div>
+      <p class="note muted">Each game in progress, cut into the results that change your money. Chance is Unabated's fair before the start, not the live score. Parlay and teaser dollars stay out of a game's P&amp;L; a leg shows where it loses.</p>
+      <div class="stack" id="lv-cards"></div>
+      <section class="panel" id="lv-tickets-panel" aria-label="Parlays and teasers riding" hidden>
+        <div class="head"><span class="lbl">Parlays and teasers riding</span></div>
+        <div id="lv-tickets"></div>
+      </section>
+      <section class="panel" id="lv-off-panel" aria-label="Live bets not on a game card" hidden>
+        <div class="head">
+          <div class="stack tight">
+            <span class="lbl">Not on a game card</span>
+            <span class="note">Started, but not matched to a game on Unabated's board (a futures or prop market, a name or time the board doesn't share, or the runner isn't reachable).</span>
+          </div>
+        </div>
+        <div id="lv-off"></div>
+      </section>
+    </section>
+
+    <section id="view-open" class="stack" aria-label="Open bets" hidden>
+      <div class="title-row"><h1>Open</h1><span class="note">Fair is Unabated's at fill</span></div>
+      <div class="kpis" id="op-kpis"></div>
+      <section class="panel" aria-label="Open bets by start">
         <div class="head"><span class="lbl">Open bets</span><span class="note" id="open-caption"></span></div>
-        <div id="ov-open"></div>
+        <div id="op-groups"></div>
+      </section>
+      <section class="panel stack flush" aria-label="Settled today">
+        <div class="head">
+          <div class="stack tight">
+            <span class="lbl">Settled today</span>
+            <span class="note" id="today-caption"></span>
+          </div>
+        </div>
+        <div class="settled-sum" id="today-sum"></div>
+        <div class="scroll" id="op-today"></div>
       </section>
     </section>
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Launch the Unabated Ticket server runner (the headless Edges scan, and the
-# closing fairs it saves for the Bet Tracker's CLV) from the repo root.
+# Bet Tracker's Live tab cards and the closing fairs its CLV needs) from the
+# repo root.
 #
 #   ./unabated_ticket/server/run.sh        # http://127.0.0.1:8095/edges.json
 #

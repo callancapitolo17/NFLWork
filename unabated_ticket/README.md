@@ -270,7 +270,9 @@ stake uses the American price because that is what Unabated's edge was
 computed from.
 
 On an exchange line (Kalshi, Novig — any line Unabated marks `sourceFormat 4`,
-a probability) the panel also prints the **order** the stake means, under the
+a probability — and Polymarket, Polymarket US and Poly US Ing by book name,
+since Unabated does not mark them; their contract costs Unabated's price as-is,
++150 = 40.0¢, user decision 2026-10-07) the panel also prints the **order** the stake means, under the
 dollar figure: `1,127 contracts @ 23.2¢ · $261.48` (`kelly.contractOrder`).
 The price is Unabated's exact number for the book, taken as the all-in cost of
 one contract; the count is `floor(stake / price)`, never rounded up past
@@ -410,7 +412,12 @@ On an exchange line the number never passes what is resting at the price
 (the feed's liquidity, on the Edges row and on the Ticket when the feed
 holds the line at the ticket's price): `add $17 · all $17 liq · $71.06
 alone`. With nothing resting the Ticket reads "Nothing resting at this
-price" over `$0`.
+price" over `$0`. Because the reported liquidity is sometimes wrong, the
+Ticket (only the Ticket, on the panel and the phone page; not the Edges rows
+or Copy) adds one more line whenever liquidity cut the stake: what it would be
+with unlimited liquidity, sized the same way against what you hold, with its
+contracts on an exchange — `uncapped $240.00 · 752 contracts @ 31.9¢`
+(`betsview.uncappedLine`, 2026-10-07).
 
 Before acting on an `add`, read the tag next to the edge (Edges tab → [Why
 an edge grew](#why-an-edge-grew), issue #132): `fair moved to you` is the
@@ -902,7 +909,7 @@ Two kinds of source feed the flags:
 | BFA (Betfastaction) | `bets_service/sources/bfa.py` (local service, the account's own Keycloak password login from `bet_logger/.env`; 2026-09-23) | open bets every 60 s, history every 300 s, while the service runs |
 | Wagerzon (the C account) | `bets_service/sources/wagerzon.py` (local service, the site's form login from `bet_logger/.env`; 2026-09-23) | every 300 s while the service runs |
 | Polymarket US (the CFTC app) | `bets_service/sources/polymarket_us.py` (local service, the account's own API key from `bet_logger/.env`, Ed25519-signed; 2026-09-23) | every 60 s while the service runs |
-| Bet105 | the panel itself (`extension/bet105.js`, your own login at app.bet105.ag in this Chrome — Cloudflare challenges anything else) → `POST /bet105.json`, parsed by `bets_service/sources/bet105.py`; 2026-09-29 | every 5 min while the panel is open; open bets only |
+| Bet105 | the panel itself (`extension/bet105.js`, your own login at app.bet105.ag in this Chrome — Cloudflare challenges anything else) → `POST /bet105.json`, parsed by `bets_service/sources/bet105.py`; open bets 2026-09-29, graded bets 2026-10-07 | every 5 min while the panel is open; open bets plus every graded wager with its result and settle time |
 | ProphetX | — (#117) | shows "no source configured" |
 
 Start the service (next section), keep the panel open. Every 30 s while the
@@ -1492,18 +1499,26 @@ double-click — is ignored:
 
 | Card reads | What happened |
 | --- | --- |
-| `Placed · ticket N` (green) | BFA lists the new teaser; the bets list re-polls and the ticket moves to Open at BFA |
+| `Placed · ticket N · all 4 legs match BFA` (green) | BFA lists the new teaser and every leg reads as sent; the bets list re-polls and the ticket moves to Open at BFA |
+| `Placed · ticket N, but BFA's ticket differs …` (red) | the ticket is booked but BFA shows a leg, a number or the money differently from what was sent (each difference named, BFA's own leg text quoted) — check it at BFA; a booked bet cannot be undone here |
 | `Not placed: …` (red), Place again | nothing was bet — a leg's number moved on BFA (`BFA has +3 now, the list has +2.5`), a game started, the ticket is already open, another ticket was placing, or BFA answered 4xx |
 | `Sent to BFA, but …` (red), no Place | the wager went out and no ticket appeared in 20 s, the reply was lost, or reading the open bets failed: it may be booked. Check BFA's open bets; the service refuses the same four sides, at any numbers, for 15 min (held in memory: a service restart drops the hold, and then only the already-open check guards) |
 
 Before anything is sent the service checks, in order: the account's own
 4-team 6-point teaser type (from BFA's account metadata; it must pay +300,
-what this tab prices), each leg on BFA's live board by rotation — main
-full-game line, open, at **the very number** the list was built on (Buckeye's
-number before the 6 points) — and that no open teaser already holds the same
+what this tab prices), each leg on BFA's live board by rotation — a spread's
+team on the same side, home or away, that BFA lists it (2026-10-07: 144 of
+144 legs on that day's board agreed), main full-game line, open, at **the very
+number** the list was built on (Buckeye's number before the 6 points) — and that no open teaser already holds the same
 four sides. Then ONE POST with `AcceptChanges 0` (BFA refuses a moved number
 rather than taking it), never retried, and the open bets read every second
-until the ticket shows. The body is pinned by a test to the one the site sent
+until the ticket shows. The new ticket is then checked leg by leg against
+BFA's own text for it (`leg_mismatches`): each game's leg must read the sent
+rotation, market, full game, the over or under sent, the number after the 6
+points (a spread +6 either side, an Over -6, an Under +6) and `(B+6)`, and the
+ticket must risk the stake to win 3x it; anything else turns the card red
+(2026-10-07, 0.19.1 — the first live ticket, 356677821, reads clean). The body
+is pinned by a test to the one the site sent
 for a ticket Cal placed by hand (356323496). Juice is not checked: in a
 Buckeye teaser it does not change the payout.
 
@@ -1600,9 +1615,10 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   bet not at BFA or Wagerzon is a 400, an unknown id a 404. `/bets.json` also
   serves `exclusions` (all of them). `POST
   /bet105.json` with `{fetchedAt, feeds: {prematch: [betGroup], live:
-  [betGroup]}}` (both feeds, at most 2000 groups) → `{ok, count, closed}`, or
-  `{error}` → `{ok, recorded: "error"}` — the panel's read of Bet105 (the Bet105
-  source bullet), stored as that source's run. `POST /place_teaser.json`
+  [betGroup]}, settled: [wager]}` (both feeds, at most 2000 groups, and the
+  wager list) → `{ok, count, settled, closed, skipped}`, or `{error}` → `{ok,
+  recorded: "error"}` — the panel's read of Bet105 (the Bet105 source bullet),
+  stored as that source's run. `POST /place_teaser.json`
   with `{stake, legs: [4 x {league "nfl"|"cfb", betType "spread"|"total",
   side "away"|"home"|"over"|"under", rotation, points (Buckeye's number
   before the teaser), eventStart, label}]}` → `{ok, status: placed | refused
@@ -1689,10 +1705,12 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   from `bet_logger/utils.py parse_sport` (the report names the SPORT —
   "FOOTBALL" — never the league); a total names both teams, a spread or
   moneyline only its own team, placed by rotation parity (odd = away, `approx:
-  side_from_rotation_parity`); the report carries no game date or settle time,
-  so `eventStart`/`eventDate` are null and a settled bet's `closedAt` is its
-  placed time. Unknown periods, sports outside the scanner and parlays whose
-  legs do not parse fail closed as unmatchable with the reason. Same Game
+  side_from_rotation_parity`); the report carries no game date, so
+  `eventStart`/`eventDate` are null; a settled bet's `closedAt` is its
+  `GradeDateTime` (the settle time, on the same UTC-8 clock as `Date`; #139),
+  else its placed time when the report leaves it null. Unknown periods, sports
+  outside the scanner and parlays whose legs do not parse fail closed as
+  unmatchable with the reason. Same Game
   Parlay rows have not been seen live yet; their leg grammar is a guess the
   parser refuses rather than misreads.
 - **BFA source** (`sources/bfa.py`, 2026-09-23): logs in to
@@ -1840,34 +1858,73 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   "Ottawa Senators") and `name` elsewhere. Team totals, player props, soccer,
   unsupported leagues and combos (`caoc-…` parlays, listed as one record with
   their legs in `raw.comboLegs`) fail closed with the reason.
-- **Bet105 source** (`sources/bet105.py` + `extension/bet105.js`, 2026-09-29):
-  the one PUSHED venue. Bet105 (a LinePros white-label) sits behind Cloudflare,
-  which challenges any request that is not the browser session's own, so the
-  panel reads the account from your own login in this Chrome and the service
-  only parses and stores. Every 5 min while the panel is visible: `GET /__bff/api/customers`
-  (401 = not logged in; its `csrfToken` goes in `X-Broker-CSRF`), then the
-  site's own `getHistory` (`{a: "getHistory", state: "0"}` = open bets) on both
-  LinePros feeds, `/__bff/__partner-prematch/betLobbyV2/logic/` and
-  `…/__partner-live/…`, POSTed as `{fetchedAt, feeds: {prematch, live}}` to
-  `POST /bet105.json`; a read that fails is POSTed as `{error}` so the Bets tab
-  row turns red with the fix (log in at app.bet105.ag in this Chrome). Never a
-  half push: both feeds or an error. Record ids are `bet105:<feed>:<betGroupId>`
-  (`:legN` per leg of a parlay, on the ticket's stake and price). A leg names
-  the selection by id, not text (`description` is empty): `marketId` 5 total /
-  6 spread / 3 moneyline (the LinePros wager types; 7 / 8 team totals, 1 = 1X2
-  and props fail closed), `key` the line — the total, or the AWAY spread number,
-  negated for the home side — and `subKey` the side, `1` = Over or the away
-  team, `2` = Under or home, the same ids `bet105_odds/scraper.py` reads off the
-  odds feed (`team1` / `team2` are away / home there too); `periodId` `m` = FG,
-  `h1` / `h2`, `f5`, `q1`–`q4`; `leagueName` (`NFL`, the pro leagues; a college
-  name fails closed until seen); `eventStartTime` epoch seconds; `finalOdds`
-  decimal. Verified on the 2026-09-29 capture: three NFL first-half totals,
-  side `1`. **Unobserved**, pinned by hand-written fixture rows only: an
-  Under, a spread's sign, a moneyline, a parlay, the live feed. Bet105 shows no
-  settled list (My Plays only ever asks for state 0), so an open record a
-  complete push no longer carries is marked `closed` with no result — never
-  guessed won or lost — and the store keeps it. No credentials and no poll in
-  the service; `service.PUSHED_SOURCES` lists the venue so the panel reads "no
+- **Bet105 source** (`sources/bet105.py` + `extension/bet105.js`; open bets
+  2026-09-29, graded bets 2026-10-07): the one PUSHED venue. Bet105 (a LinePros
+  white-label) sits behind Cloudflare, which challenges any request that is
+  not the browser session's own, so the panel reads the account from your own
+  login in this Chrome and the service only parses and stores. Every 5 min
+  while the panel is visible: `GET /__bff/api/customers` (401 = not logged in;
+  its `csrfToken` goes in `X-Broker-CSRF` on both POSTs), the site's own
+  `getHistory` (`{a: "getHistory", state: "0"}` = open bets) on both LinePros
+  feeds, `/__bff/__partner-prematch/betLobbyV2/logic/` and
+  `…/__partner-live/…`, then the My Bets page's own `POST
+  /__bff/api/wagers/search` with `{}` (every wager the account has, graded or
+  not; 403 `{code: "CSRF_FAILED"}` without the header), POSTed as
+  `{fetchedAt, feeds: {prematch, live}, settled}` to `POST /bet105.json`; a
+  read that fails is POSTed as `{error}` so the Bets tab row turns red with
+  the fix (log in at app.bet105.ag in this Chrome). Never a half push: all
+  three reads or an error. `getHistory` answers no groups for every other
+  state, so it has no settled list; `wagers/search` is the one. The panel
+  sends each wager cut to the fields the service reads (`settledWagerOf`: no
+  balances, no account names; 230 wagers ≈ 170 KB against the service's 1 MB
+  body cap). Record ids are `bet105:<feed>:<betGroupId>` (`:legN` per leg of
+  a parlay, on the ticket's stake and price); a wager's `ticketNumber` is
+  `getHistory`'s `betGroupId` (and its `wagerId` getHistory's
+  `ticketNumber`, the number My Bets shows), so a graded bet lands on its open
+  record's id. A leg names the selection by id, not text (`description` is
+  empty): `marketId` 5 total / 6 spread / 3 moneyline (the LinePros wager
+  types; 7 / 8 team totals, 1 = 1X2 and props fail closed), `key` (the
+  settled leg's `figure`) the line — the total, or the AWAY spread number,
+  negated for the home side, checked on six real spreads against each bet's
+  own text — and `subKey` (the settled leg's `side`) the side, `1` = Over or
+  the away team, `2` = Under or home, the same ids `bet105_odds/scraper.py`
+  reads off the odds feed (`team1` / `team2` are away / home there too);
+  `periodId` `m` = FG, `h1` / `h2`, `f5`, `s1` / `s4` (the 1st / 4th quarter,
+  seen on bets; `s2` / `s3` fail closed until seen); `leagueName` (the
+  settled leg's `league`: the pro leagues, `College Football`, `College
+  Football - FCS` → cfb, `College Basketball`, `College Basketball Extra` →
+  cbb, `NBA Preseason` → nba; soccer and anything unseen fail closed);
+  `eventStartTime` epoch seconds (settled: `startTime`, ISO with its zone);
+  the price from `finalOdds` decimal (settled: `fmtOdds`, the American
+  string — the settled `odds` is decimal on newer legs and American text on
+  older ones). **Settled** (the 2026-10-07 capture: 230 wagers from
+  2025-09-06, all `productCode` `PreMatch`): `wagerStatus` `Win` → won,
+  `Loss` → lost, `Push` → push; `Cancel` / `NO_ACTION` → void and a cash-out
+  (`isCashout`) → `closed` come from the site's own My Bets code, unseen on a
+  bet. `closedAt` is the venue's `gradeTime` (never the push's clock), so the
+  tracker books the day it settled; every settled record carries `pnl` =
+  the venue's `result` (the field the tracker counts first, as for Kalshi —
+  so a cash-out books its result too); a won record's `toWin` is also the
+  venue's `result` (what it paid); a free play stakes 0, so a lost one costs
+  nothing, as its `result` says. With those, the tracker's status rule
+  reproduces `result` on all 225 graded wagers as well. A failed-closed leg (a
+  team total, soccer) keeps its result: only the line is unread. `Pending`
+  wagers are left to the open read (the venue also keeps five never-graded
+  March 2026 college bets `Pending`; `getHistory` does not list them, so they
+  never show as open). A wager settles under the feed its ticket's record
+  already sits under (ticket numbers are one sequence across both feeds), so
+  a live bet held as `bet105:live:<id>` settles there whatever its
+  `productCode`; with no record held, `PreMatch` → prematch. A graded wager
+  the parser cannot read — a `productCode` other than `PreMatch` with no
+  record held, or a `wagerStatus` nobody names — is skipped and logged
+  (`bet105: N settled wager(s) not read: …` in `bets_service.log`; the reply's
+  `skipped`). **Closed by absence is the fallback only**: an open record that
+  neither the open list nor the settled list carries is marked `closed` with
+  no result — never guessed won or lost. **Unobserved**, pinned by
+  hand-written fixture rows only: a void, a cash-out, an open parlay, the
+  live feed and a live bet's `productCode` (settled by its held record's
+  feed, so its value does not matter once the bet was seen open). No credentials and no poll in the
+  service; `service.PUSHED_SOURCES` lists the venue so the panel reads "no
   completed poll yet" until the first push.
 - **Store** (`store.py`, `bets.duckdb`, gitignored): `bets` upserts on the
   record id and is never pruned (the CLV work needs the history), but only
@@ -2046,6 +2103,21 @@ screen, which a server does not have.
 node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json
 ```
 
+On the Mac it runs as a launchd agent next to the bets service (the Bet
+Tracker's Live tab and CLV need it running before each game starts):
+
+```bash
+cp unabated_ticket/server/com.nflwork.edges-runner.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.edges-runner.plist
+curl -s http://127.0.0.1:8095/health                                    # ok: true
+launchctl kickstart -k gui/$(id -u)/com.nflwork.edges-runner           # restart after a pull
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.edges-runner.plist   # remove
+```
+
+It needs `node` (18+) at `/opt/homebrew/bin` or `/usr/local/bin` (the
+plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
+(gitignored; state changes only).
+
 | Env | Default | |
 |---|---|---|
 | `UNABATED_RUNNER_HOST` | `127.0.0.1` | bind address; stays loopback on the server too (step 4) |
@@ -2083,7 +2155,10 @@ node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json
   (`{text: "add $237.25", note: "$437.25 alone", atSize}`), `badges`,
   `related` (the bets on the game with their tags and `fair then`) and
   `move` (`{kind, label, detail, sinceFill}` or null). The full shape is
-  documented at the top of `server/edges_payload.js`. `GET /health` →
+  documented at the top of `server/edges_payload.js`. `GET /scenarios.json`
+  → `{generatedAt, scanner, betsService, games, coveredBetIds}`, the Bet
+  Tracker's Live tab cards (`server/scenarios.js` documents the shape; the
+  bets service passes it through at its own `/scenarios.json`). `GET /health` →
   `{ok, uptimeSec, scanner, betsService, settings, closingFairs}`. Any verb but GET is
   405; a request whose `Host` is not `127.0.0.1:<port>`, `localhost:<port>`
   or the bound address with the port is 403 (the bets service's #125 rule).
@@ -2096,9 +2171,11 @@ node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json
   bet's Unabated fair on its own line while its game is still to start
   (`server/closefair.js`; Bet Tracker, CLV).
 - **Side effects**: none on disk; its one write to the bets service is that
-  POST. Feed, line history and bets live in memory and rebuild on restart (so
-  the edge-move tag starts empty, as when the panel opens). Logs state changes
-  to stdout/stderr. Unlike the panel it does not POST fill fairs or crosswalk
+  POST. Feed, line history, bets and each game's kickoff odds (the Live
+  tab's chances) live in memory and rebuild on restart (so the edge-move tag
+  starts empty, as when the panel opens, and a game already under way has
+  no kickoff chances). Logs state changes to
+  stdout/stderr. Unlike the panel it does not POST fill fairs or crosswalk
   lessons — the Mac panel keeps doing that.
 
 ### Step 2: the phone page (`server/phone/`)
@@ -2150,14 +2227,49 @@ node unabated_ticket/server/runner.js                     # must be running too 
 Daily P&L, CLV and bet analysis, served by the bets service at `/tracker`
 (on the VM: `https://<vm>.<tailnet>.ts.net/tracker`). It reads `GET
 /bets.json?days=3650` (every bet the service has stored, plus the saved fill
-fairs, closing fairs and removed bets) every 60 s while visible. Its one
-write is the Bets page's Remove / Restore.
+fairs and removed bets) and `GET /scenarios.json` (the Live tab's game
+cards, from the server runner through the bets service) every 60 s while
+visible. Its one write is the Bets page's Remove / Restore.
 
 - **Overview**: net P&L with the record, ROI, handle, open risk; expected
-  P&L at Unabated's fair and actual vs expected with its z-score; CLV;
-  cumulative
-  actual vs expected chart with daily bars; a 6-week calendar heatmap; daily
-  results; P&L by venue; open bets with price, fair, edge and CLV.
+  P&L at Unabated's fair (fill, else close) and actual vs expected with its
+  z-score; CLV; cumulative
+  actual vs expected chart with daily bars; a 6-week calendar heatmap (click a
+  day to filter the whole Overview to it as a one-day Custom range; click it
+  again, or pick a range, to go back); daily
+  results; P&L by venue; and **Settled bets**: every bet settled in the
+  header range, newest first, 50 at a time with Show more, under the
+  range's P&L, record, expected and handle (Cal, 2026-10-07; briefly a
+  today-only panel). The Open risk tile links to the Open page.
+- **Live** (2026-10-08, Cal's "scenarios" idea): one card per game in
+  progress holding open bets, cut into the results that change the money —
+  "Chiefs by 2-3: +$410" — with each result's chance and P&L, one ladder
+  per market and period (result, total), and the card's range and EV. The
+  cuts come from the bets themselves: every bet's number splits its market
+  (a whole number adds its push), neighbouring results with the same P&L
+  merge. A parlay or teaser leg on the game adds its own cut and is tagged
+  where it loses or pushes; its ticket's dollars stay out of the game's
+  P&L (its other legs are other games) and the ticket is listed under
+  **Parlays and teasers riding**. **The chance is Unabated's fair at
+  kickoff** (the median fair ladder from the last snapshot before the
+  start, the ladder the Edges sizing reads), not the live score: no scores
+  feed is wired yet. Started bets the runner could not place on a game
+  (futures, props, a name or time the board doesn't share) are listed under
+  **Not on a game card**; when `/scenarios.json` cannot be read the tab says
+  why and lists every live bet there. Built by `server/scenarios.js` (pure,
+  `tests/scenarios.test.js`) in the server runner, which matches bets to
+  games with the panel's own matcher (`bets.js`: pins, venue ids, names,
+  rotation), so a BetOnline bet with no start time lands on its game's card.
+  The runner keeps each game's kickoff odds **in memory** for 12 h after its
+  start, whether or not the board still lists it: a game already under way
+  when the runner (re)starts gets its card with "—" for every chance. The
+  nav tab carries the live bet count.
+- **Open** (2026-10-07; was Overview's bottom panel): open-bet count, stake
+  at risk and to win, open EV (bets with a saved fair) and stake in live
+  games (links to Live), then the open bets that are not live with price,
+  fair, edge and CLV, then **Settled today** (bets settled on the current
+  Pacific day, whatever the header range says). The nav tab carries the
+  count of open bets not on the Live tab.
 - **Analysis**: filter by venue, league and type (straight, parlay, teaser),
   group by venue, league, market, period, type, odds, edge at fill, timing
   (hours placed before start), weekday or stake. Each group shows ROI with its
@@ -2177,44 +2289,59 @@ write is the Bets page's Remove / Restore.
   build is over 15 min old (a stale CDN copy) gives none. History starts the day the
   runner first ran: no backfill. No close for parlays, teasers, props,
   futures, Kalshi combos, leagues Unabated does not list, or a number the
-  board stops carrying. **The runner must be running at kickoff** — on the
-  Mac, its launchd agent:
-  ```bash
-  cp unabated_ticket/server/com.nflwork.edges-runner.plist ~/Library/LaunchAgents/
-  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.edges-runner.plist
-  launchctl kickstart -k gui/$(id -u)/com.nflwork.edges-runner      # restart after a pull
-  curl -s http://127.0.0.1:8095/health                              # closingFairs {okAt, error, rowsSent}
-  ```
-  It needs `node` 18+ on Homebrew's PATH (`/opt/homebrew/bin`); logs go to
-  `unabated_ticket/server/edges_runner.log`.
+  board stops carrying. **The runner must be running at kickoff**: on the
+  Mac, its launchd agent (install steps under the server runner above;
+  `/health` reports `closingFairs {okAt, error, rowsSent}`).
 - **Bets**: every BFA and Wagerzon bet, newest first, searchable, filtered to
   counted or removed. **Remove** marks a bet that isn't yours (`POST
   /exclusions.json` → `bets.duckdb::bet_exclusions`; the bet itself stays in
   `bets`) and it leaves every number on Overview and Analysis — a parlay or
   teaser goes as a whole; **Restore** counts it again. Only those two books
   (Cal, 2026-10-05); the service refuses any other venue's bet.
-- **Header**: range (7D, 30D, 90D, YTD, All), $ / units with the unit size
+- **Header**: range (Today, Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days), $ / units with the unit size
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
-- **Open bets** (Overview) are split into **Live now** (the game has started;
-  a parlay's earliest leg), **Upcoming**, and, when any exist, **No start
-  time** (BetOnline's report carries no game time, Kalshi NFL/CFB tickers
-  only a date; futures and Kalshi combos none), each with its count and
-  stake at risk, re-split on every refresh. A game that has ended stays in
-  Live now until its venue grades the bet.
+- **Open bets** (Open page) are split into **Upcoming** and, when any
+  exist, **No start time** (BetOnline's report carries no game time, Kalshi
+  NFL/CFB tickers only a date; futures and Kalshi combos none), each with
+  its count and stake at risk, re-split on every refresh. Bets whose game
+  has started (a parlay's earliest leg), or that the runner placed on a live
+  game card, are on the Live tab instead (`trackerstats.splitOpenForLive`).
+  A game that has ended stays live until its venue grades the bet.
+- **Sorting**: click any column header on any table to sort by it (numbers
+  high to low first, text A to Z), click again to reverse. Blanks ("—") stay
+  last either way; the bet log and the Bets list sort their whole match
+  before paging. The order lasts until the page reloads.
 - **Rules** (`trackerstats.js`, pure, tested in `tests/trackerstats.test.js`):
   P&L lands on the **Pacific** day of the record's `closedAt`, which each
   venue fills differently: Kalshi the market's expiration, Polymarket US its
   resolution, Novig the ticket's settle time, BFA its grade time, Wagerzon the
-  game's start, and BetOnline the time it was **placed** (its report has no
-  settle time), so a BetOnline bet lands on the day you placed it. Kalshi's
+  game's start, Bet105 its grade time, and BetOnline its report's
+  `GradeDateTime` (the placed time only when the report leaves it null;
+  #139). Kalshi's
   multivariate combos (`KXMVECROSSCATEGORY`, the MLB bots' RFQ fills on the
   same account) are their own type, "Kalshi combo", and count in every total
   by default (Cal, 2026-10-05); switching off the header's **Bot combos**
   toggle hides them. Won pays
-  `toWin`, lost costs `stake`, push and void are 0. Open bets are exposure,
-  not P&L; a Kalshi position sold before settlement (`closed`) and a bet whose
-  result is gone (`unknown`, e.g. Bet105 once it leaves the open list) have no
+  `toWin`, lost costs `stake`, push and void are 0, unless the record carries
+  the venue's own `pnl`: **Bet105** graded records carry its `result`
+  (2026-10-07); **Kalshi** records do (2026-10-06), priced off the
+  market's NET position after fees (`sources/kalshi.py::apply_net_position_pnl`;
+  Kalshi nets YES against NO, so a "sell no" while holding YES closes YES —
+  counting the two sides as separate bets overstated Kalshi by ~$7k, Rodri
+  Golden Ball alone by $5.5k), including a position sold before settlement
+  (`closed` with a `pnl`: a gain is a win, a loss a loss); the other side's
+  record carries `mergedInto` and is skipped. The Kalshi source also reads
+  `/historical/fills?ticker=` (fills older than Kalshi's history cutoff leave
+  `/portfolio/fills`), once per market per process, a failed read retried on
+  the next full pull, for markets in the recent fills, already stored, or settled since the cutoff (`/portfolio/settlements`
+  — the Sep-15 starting-QB markets were bought in March-May); the account's
+  whole older history is mostly the MLB bots' trades, and a page of it hung
+  34 minutes on Cal's Mac. Checked 2026-10-06 against Kalshi's own realized P&L minus
+  fees: 290 of 290 markets to the cent (Kalshi +$16,784 → +$9,441). Open bets are exposure, not P&L;
+  a closed bet with no `pnl` (Polymarket US sold early, or a Bet105 bet that
+  left the open list with no graded wager to settle it) and a bet whose
+  result is gone (`unknown`) have no
   known P&L and are counted as "without a result". A parlay or teaser is one
   ticket (its legs carry the ticket's stake and status). Edge = fair
   probability × the ticket's actual payout − 1, the fair being the fill fair
@@ -2818,6 +2945,30 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-07 — Bet105 settled bets (0.20.0).** A Bet105 bet that left the
+open list was stored `closed` with no result, so the Bet Tracker dropped it.
+The probe (read-only, in Cal's logged-in Chrome) found `getHistory` answers
+no groups for any state but open, and that the My Bets page reads every wager
+the account has from `POST /__bff/api/wagers/search` — status, result, grade
+time, legs on the same LinePros ids. The panel now adds that read to its push,
+and the service settles each graded wager on its open record's id with the
+venue's result (as `pnl`) and `gradeTime` (the tracker's Pacific settle
+day); the 225 graded wagers since 2025-09-06 came in as history. A wager takes
+its feed from the ticket's held record before its `productCode`, so a live
+bet settles on its own id. Closed by absence stays, as the fallback for a bet
+neither list carries. The status rules are the
+site's own code plus the capture, never guessed; the P&L the tracker books
+equals the venue's `result` on every graded wager.
+
+**2026-10-07 — Uncapped stake on the Ticket; Polymarket contracts (0.19.0).**
+Cal: the liquidity a line reports is sometimes wrong, so he wants the stake
+with unlimited liquidity beside the capped one, on the Ticket only (not the
+Edges rows or Copy; the Min liq to win filter unchanged). And a Polymarket
+ticket gave no contract count, because Unabated does not mark Polymarket lines
+`sourceFormat 4`; they are now contract markets by book name, priced at
+Unabated's number as-is. Unverified: the exact format Unabated sends
+Polymarket in (the feed was unreachable from the build environment).
 
 **2026-10-03 — Place teasers at BFA (0.18.0).** Cal asked to bet a Teasers
 ticket from the tab, the way the MLB dashboard places at Wagerzon. BFA's

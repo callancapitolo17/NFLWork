@@ -19,14 +19,21 @@
 // Conventions
 //   P&L lands on the Pacific calendar day the bet SETTLED (closedAt).
 //   A bet counts toward P&L only when it is won, lost, push or void; an open
-//   bet is exposure, and a Kalshi position sold before settlement ("closed")
-//   or a bet whose result the venue no longer shows ("unknown", Bet105 once
-//   it leaves the open list) has no known P&L and is counted as excluded.
+//   bet is exposure, and a position sold before settlement or a Bet105 bet
+//   that left the open list with no graded wager to settle it ("closed"), or
+//   a bet whose result the venue no longer shows ("unknown"), has no known
+//   P&L and is counted as excluded.
 //   Expected P&L, edge and calibration use the fill fair, else the closing
 //   fair; a bet with neither is left out of them.
 //   CLV is the expected return at the closing fair: closeProb × payout − 1. A
 //   close counts only when its last reading was within CLOSE_MAX_GAP_MS of the
 //   start (a runner that was down at kickoff leaves an older reading).
+//   A record carrying the venue's own `pnl` (Kalshi: priced off the market's
+//   net position, after fees; Bet105: the graded wager's result) counts that
+//   number, and a "closed" one with it (sold or cashed out before settlement)
+//   counts too: a gain as a win, a loss as a loss.
+//   A record with `mergedInto` is the other side of such a position and is
+//   skipped; its trades are already in the record it names.
 
 (function (root) {
   "use strict";
@@ -235,9 +242,11 @@
     const winProb = fairProb !== null ? fairProb : decimal ? 1 / decimal : 0.5;
     const placedMs = parseMs(ticket.placedAt);
     const closedMs = parseMs(ticket.closedAt);
-    const settled = SETTLED_STATUSES.has(ticket.status);
+    const hasVenuePnl = Number.isFinite(ticket.venuePnl)
+      && (SETTLED_STATUSES.has(ticket.status) || ticket.status === "closed");
+    const settled = hasVenuePnl || SETTLED_STATUSES.has(ticket.status);
     const settledDay = settled && closedMs !== null ? pacificDay(closedMs) : null;
-    const pnl = settled ? pnlOf(ticket.status, ticket.stake, ticket.toWin, decimal) : null;
+    const pnl = !settled ? null : hasVenuePnl ? ticket.venuePnl : pnlOf(ticket.status, ticket.stake, ticket.toWin, decimal);
     return Object.assign(ticket, {
       decimal, fairAmerican: fairDecimal ? fairAmerican : null, fairProb, edge,
       fairSource: hasFill ? FAIR_SOURCES.fill : closeDecimal ? FAIR_SOURCES.close : null,
@@ -266,6 +275,7 @@
       market: combo ? KIND_NAMES.kalshiCombo : BET_TYPE_NAMES[record.betType] || "Other",
       period: record.period || "FG", event: eventLabel(record), selection: selectionLabel(record),
       price: record.price, stake: Number(record.stake) || 0, toWin: record.toWin,
+      venuePnl: Number.isFinite(record.pnl) ? record.pnl : null,
       status: record.status, placedAt: record.placedAt, closedAt: record.closedAt, eventStart: record.eventStart || null,
       legCount: 1, betIds: [record.id],
     }, fillAmerican, close);
@@ -317,6 +327,7 @@
     const legsByParlay = new Map();
     const tickets = [];
     for (const record of records || []) {
+      if (record.mergedInto) continue;
       if (record.isParlayLeg && record.parlayId) {
         if (!legsByParlay.has(record.parlayId)) legsByParlay.set(record.parlayId, []);
         legsByParlay.get(record.parlayId).push(record);
@@ -341,8 +352,9 @@
     for (const ticket of tickets) {
       if (ticket.pnl === null) continue;
       total.bets += 1;
-      if (ticket.status === "won") total.wins += 1;
-      else if (ticket.status === "lost") total.losses += 1;
+      const result = ticket.status === "closed" ? (ticket.pnl > 0 ? "won" : ticket.pnl < 0 ? "lost" : "push") : ticket.status;
+      if (result === "won") total.wins += 1;
+      else if (result === "lost") total.losses += 1;
       else total.pushes += 1;
       total.handle += ticket.stake;
       total.pnl += ticket.pnl;
@@ -411,6 +423,39 @@
     return first;
   }
 
+  const RANGE_DAYS = { "7D": 7, "30D": 30, "90D": 90 };
+  const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+  function isDayKey(value) {
+    return typeof value === "string" && DAY_KEY_RE.test(value) && utcToDayKey(dayKeyToUtc(value)) === value;
+  }
+
+  /**
+   * The Pacific days [first, last] a date-range choice covers. `today` is a
+   * Pacific day key; `custom` is { first, last } (either may be missing, and
+   * they are swapped if entered backwards); `firstSettled` is the earliest
+   * settle day, which "All" starts from.
+   *
+   * Custom days are clamped to [firstSettled, today]: a date input reports
+   * half-typed years such as 0201-10-01, and an unclamped range would make
+   * the daily series (one bar per day) millions of days long and hang the page.
+   */
+  function rangeBounds(range, today, custom, firstSettled) {
+    if (range === "Today") return { first: today, last: today };
+    if (range === "Yesterday") { const day = addDays(today, -1); return { first: day, last: day }; }
+    if (RANGE_DAYS[range]) return { first: addDays(today, 1 - RANGE_DAYS[range]), last: today };
+    if (range === "YTD") return { first: today.slice(0, 4) + "-01-01", last: today };
+    if (range === "Custom") {
+      const floor = firstSettled && firstSettled < today ? firstSettled : today;
+      const clamp = (day) => (day < floor ? floor : day > today ? today : day);
+      const first = clamp(custom && isDayKey(custom.first) ? custom.first : floor);
+      const last = clamp(custom && isDayKey(custom.last) ? custom.last : today);
+      return first <= last ? { first, last } : { first: last, last: first };
+    }
+    if (range === "All") return { first: firstSettled || today, last: today };
+    throw new Error("unknown date range " + range + "; expected Today, Yesterday, 7D, 30D, 90D, YTD, All or Custom");
+  }
+
   /** Rows of the Analysis breakdown: one per value of `groupKey`, with totals. */
   function groupBy(tickets, groupKey) {
     const spec = GROUPS.find((g) => g.key === groupKey);
@@ -469,12 +514,64 @@
     };
   }
 
+  /**
+   * Open tickets for the Live and Open tabs, given the bet ids the runner put
+   * on a live game card (/scenarios.json coveredBetIds; empty when it could
+   * not be read). onCard: straights on a card, whatever their own start says
+   * (a BetOnline bet has none). tickets: parlays and teasers with a leg on a
+   * card or whose first leg has started. offCard: started straights the
+   * runner could not place on a card. upcoming / noStart: the rest, as
+   * splitOpenByStart files them.
+   */
+  function splitOpenForLive(openTickets, coveredBetIds, nowMs) {
+    const covered = new Set(coveredBetIds || []);
+    const tickets = [];
+    const onCard = [];
+    const rest = [];
+    for (const ticket of openTickets) {
+      const isCovered = ticket.betIds.some((id) => covered.has(id));
+      if (!isCovered) rest.push(ticket);
+      else if (ticket.legCount > 1) tickets.push(ticket);
+      else onCard.push(ticket);
+    }
+    const { live, upcoming, noStart } = splitOpenByStart(rest, nowMs);
+    const offCard = [];
+    for (const ticket of live) {
+      if (ticket.legCount > 1) tickets.push(ticket);
+      else offCard.push(ticket);
+    }
+    const byStart = (a, b) => (parseMs(a.eventStart) ?? Infinity) - (parseMs(b.eventStart) ?? Infinity);
+    return { onCard, tickets: tickets.sort(byStart), offCard, upcoming, noStart };
+  }
+
+  /**
+   * A copy of `rows` ordered by `keyOf(row)`: numbers numerically, strings
+   * case-insensitively, "asc" or "desc". Rows whose key is null, undefined or
+   * NaN go last in either direction, so a "—" never tops a sorted column.
+   * Stable: ties keep their incoming order.
+   */
+  function sortRows(rows, keyOf, direction) {
+    const sign = direction === "desc" ? -1 : 1;
+    const missing = (key) => key === null || key === undefined || (typeof key === "number" && Number.isNaN(key));
+    const keyed = rows.map((row, index) => ({ row, index, key: keyOf(row) }));
+    keyed.sort((a, b) => {
+      const aMissing = missing(a.key);
+      const bMissing = missing(b.key);
+      if (aMissing || bMissing) return aMissing === bMissing ? a.index - b.index : (aMissing ? 1 : -1);
+      const order = typeof a.key === "number" && typeof b.key === "number"
+        ? a.key - b.key
+        : String(a.key).localeCompare(String(b.key), undefined, { sensitivity: "base", numeric: true });
+      return order !== 0 ? sign * order : a.index - b.index;
+    });
+    return keyed.map((entry) => entry.row);
+  }
+
   const api = {
     PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR, CLOSE_MAX_GAP_MS, FAIR_SOURCES,
-    pacificDay, addDays, dayKeyToUtc, weekdayOf,
+    pacificDay, addDays, dayKeyToUtc, weekdayOf, isDayKey, rangeBounds,
     americanToDecimal, decimalToAmerican,
     buildTickets, summarize, exclusions, inDayRange, dailySeries, firstSettledDay, groupBy, calibration,
-    venueName, splitOpenByStart,
+    venueName, splitOpenByStart, splitOpenForLive, sortRows,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.UnabatedTrackerStats = api;

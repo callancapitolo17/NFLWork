@@ -26,9 +26,9 @@
 // are betsview.js; the Edges rows' selection, sizing, sort and words are
 // edgerows.js (shared with the server runner). Bet105 (2026-09-29) is the
 // one venue this page reads itself: every 5 min while visible it fetches the
-// account's open bets from app.bet105.ag on Cal's own login in this Chrome
-// (bet105.js) and POSTs them to the service's /bet105.json, which parses and
-// stores them like any other.
+// account's open bets and its graded wagers (2026-10-07) from app.bet105.ag
+// on Cal's own login in this Chrome (bet105.js) and POSTs them to the
+// service's /bet105.json, which parses and stores them like any other.
 
 (function () {
   "use strict";
@@ -70,7 +70,7 @@
     warning: el("warning"), rowTrace: el("row-trace"), sideLabel: el("side-label"), betLine: el("bet-line"),
     eventLine: el("event-line"), startLine: el("start-line"),
     book: el("book"), price: el("price"), fair: el("fair"), edge: el("edge"),
-    stake: el("stake"), contracts: el("contracts"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
+    stake: el("stake"), contracts: el("contracts"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), stakeUncapped: el("stake-uncapped"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
     copy: el("copy"), copyStatus: el("copy-status"),
     errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
@@ -555,6 +555,10 @@
     // Sets view.stake to the number to act on when held bets changed it.
     const advice = betFlag.advice;
     renderStakeExposure(advice);
+    // With unlimited liquidity: the reported number is sometimes wrong.
+    const uncapped = betsView.uncappedLine(advice, { price: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice, bookName: ticket.book.name });
+    view.stakeUncapped.hidden = uncapped == null;
+    view.stakeUncapped.textContent = uncapped || "";
 
     // Payout = stake x decimal odds at the book's American price; "to win" is
     // the profit on top of it. Both describe the number shown above them, so a
@@ -568,7 +572,7 @@
       view.payoutRow.hidden = false;
       payoutText = ` | to win $${(payout - acted).toFixed(2)} | payout $${payout.toFixed(2)}`;
     }
-    const contractsText = renderContracts(acted, line);
+    const contractsText = renderContracts(acted, line, ticket.book.name);
 
     const stakeText = acted != null ? acted.toFixed(2) : "n/a";
     lastCopyText = `${ticket.sideLabel}${periodSuffix(ticket)} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${copyExposureText(advice)}${contractsText}${payoutText} | ${describeMatchup(ticket)}`;
@@ -579,16 +583,16 @@
   // Under the dollar figure, the order it means on an exchange: "1,127
   // contracts @ 23.2¢ · $261.48", sized straight off Unabated's price for the
   // book with the count floored so the cost never passes the stake
-  // (kelly.contractOrder). Only a line priced in contracts (Kalshi, Novig)
-  // gets the row; a sportsbook line keeps just the dollars. `acted` is the
-  // number to act on, so a top-up shows the top-up's contracts. Returns what
+  // (kelly.contractOrder). Only a line priced in contracts (Kalshi, Novig,
+  // Polymarket) gets the row; a sportsbook line keeps just the dollars.
+  // `acted` is the number to act on, so a top-up shows the top-up's contracts. Returns what
   // Copy appends, "" when there is no row.
-  function renderContracts(acted, line) {
+  function renderContracts(acted, line, bookName) {
     view.contracts.hidden = true;
     view.contracts.classList.remove("under");
     view.contracts.replaceChildren();
     if (acted == null || acted <= 0) return "";
-    const order = kelly.contractOrder({ stake: acted, bookPrice: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice });
+    const order = kelly.contractOrder({ stake: acted, bookPrice: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice, bookName });
     if (!order) return "";
     view.contracts.hidden = false;
     const priceText = `${order.priceCents.toFixed(1)}\u00a2`;
@@ -1948,10 +1952,11 @@
   // ---- Bet105 (read here, stored by the service) -----------------------------
   //
   // On the bets tick, at most every bet105.POLL_MS: the account's open bets
-  // from both LinePros feeds, then one POST to the service. A read that fails
+  // from both LinePros feeds and its wager list (graded bets carry their
+  // result and settle time), then one POST to the service. A read that fails
   // (not logged in, Cloudflare, the site down) is POSTed as an error so the
   // Bets tab's Bet105 row turns red with the fix; nothing half-read is ever
-  // pushed (the service closes an open bet a complete push no longer lists).
+  // pushed (the service closes an open bet a complete push lists nowhere).
   let bet105Busy = false;
   let bet105LastRunAt = 0;
   let bet105LastError = null;
@@ -1975,8 +1980,9 @@
     }
   }
 
-  // The session check (its reply carries the CSRF token the history POST
-  // needs), then getHistory on each feed. Throws with the reason on any step.
+  // The session check (its reply carries the CSRF token the other POSTs
+  // need), getHistory on each feed, then wagers/search. Throws with the
+  // reason on any step.
   async function readBet105() {
     const customers = await fetch(bet105.CUSTOMERS_URL, bet105.customersRequest());
     const session = bet105.csrfTokenOf(customers.status, await customers.json().catch(() => null));
@@ -1988,7 +1994,10 @@
       if (result.error) throw new Error(result.error);
       groupsByFeed[feedName] = result.betGroups;
     }
-    return bet105.pushBody(new Date().toISOString(), groupsByFeed);
+    const settledResponse = await fetch(bet105.SETTLED_URL, bet105.settledRequest(session.csrfToken));
+    const settled = bet105.wagersOf(settledResponse.status, await settledResponse.json().catch(() => null));
+    if (settled.error) throw new Error(settled.error);
+    return bet105.pushBody(new Date().toISOString(), groupsByFeed, settled.wagers);
   }
 
   // The records, the service state, the crosswalk, the pins and the saved fill fairs, as one stored object.
@@ -2947,7 +2956,8 @@
     const placeState = teaserPlaceStates.get(signature) || null;
     const phase = placeState ? placeState.phase : null;
     if (placeState && placeState.message) {
-      const tone = phase === "placed" ? "ok" : phase === "placing" ? "wait" : "bad";
+      // A placed ticket whose legs BFA shows differently is red: it is booked, and wrong.
+      const tone = phase === "placed" && placeState.legsMatch !== false ? "ok" : phase === "placing" ? "wait" : "bad";
       actions.prepend(makeEl("span", `tk-place-msg ${tone}`, placeState.message));
     }
     if (phase === "confirm") {
@@ -2977,7 +2987,7 @@
     let next;
     try {
       const reply = await serviceRequest("POST", "/place_teaser.json", request.body);
-      next = { phase: reply.status, message: reply.message };
+      next = { phase: reply.status, message: reply.message, legsMatch: reply.legsMatch };
     } catch (error) {
       next = error.status
         ? { phase: "refused", message: `Not placed: ${error.message}` }

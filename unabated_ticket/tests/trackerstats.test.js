@@ -38,6 +38,30 @@ test("open bets split into live (started), upcoming, and no start time", () => {
   assert.deepEqual(noStart.map((t) => t.id), ["future"]);
 });
 
+test("Live tab split: straights on a game card, tickets riding, started bets off any card; the rest stay on Open", () => {
+  const now = Date.parse("2026-10-04T18:00:00Z");
+  const open = { status: "open", closedAt: null };
+  const tickets = stats.buildTickets([
+    straight({ id: "carded", ...open, eventStart: "2026-10-04T17:00:00Z" }),
+    straight({ id: "betonline-carded", ...open, eventStart: null }),
+    straight({ id: "started-off-card", ...open, eventStart: "2026-10-04T17:30:00Z" }),
+    straight({ id: "later", ...open, eventStart: "2026-10-04T20:25:00Z" }),
+    straight({ id: "future", ...open, eventStart: null }),
+    straight({ id: "t1:leg0", ...open, isParlayLeg: true, parlayId: "t1", legIndex: 0, legCount: 2, eventStart: "2026-10-04T21:00:00Z" }),
+    straight({ id: "t1:leg1", ...open, isParlayLeg: true, parlayId: "t1", legIndex: 1, legCount: 2, eventStart: "2026-10-04T22:00:00Z" }),
+    straight({ id: "t2:leg0", ...open, isParlayLeg: true, parlayId: "t2", legIndex: 0, legCount: 2, eventStart: "2026-10-04T23:00:00Z" }),
+    straight({ id: "t2:leg1", ...open, isParlayLeg: true, parlayId: "t2", legIndex: 1, legCount: 2, eventStart: "2026-10-05T00:00:00Z" }),
+  ], []);
+  const split = stats.splitOpenForLive(tickets, ["carded", "betonline-carded", "t1:leg1"], now);
+  assert.deepEqual(split.onCard.map((t) => t.id).sort(), ["betonline-carded", "carded"]);
+  assert.deepEqual(split.tickets.map((t) => t.id), ["t1"]);
+  assert.deepEqual(split.offCard.map((t) => t.id), ["started-off-card"]);
+  assert.deepEqual(split.upcoming.map((t) => t.id), ["later", "t2"]);
+  assert.deepEqual(split.noStart.map((t) => t.id), ["future"]);
+  const unread = stats.splitOpenForLive(tickets, [], now);
+  assert.deepEqual(unread.offCard.map((t) => t.id), ["carded", "started-off-card"]);
+});
+
 test("open, closed-early and unknown bets carry no P&L and stay out of the summary", () => {
   const tickets = stats.buildTickets([
     straight({ id: "open", status: "open", closedAt: null }), straight({ id: "sold", status: "closed" }),
@@ -48,6 +72,22 @@ test("open, closed-early and unknown bets carry no P&L and stay out of the summa
   assert.equal(total.bets, 1);
   assert.equal(total.pnl, 100);
   assert.deepEqual(stats.exclusions(tickets), { open: 1, noResult: 2 });
+});
+
+test("the venue's own pnl wins over stake/toWin, a sold position with one counts, its merged side is skipped", () => {
+  const tickets = stats.buildTickets([
+    straight({ id: "kalshi:R:yes", venue: "kalshi", stake: 236, toWin: 10964, status: "won", pnl: 5449.46 }),
+    straight({ id: "kalshi:R:no", venue: "kalshi", status: "closed", stake: 0, toWin: 0, mergedInto: "kalshi:R:yes" }),
+    straight({ id: "kalshi:P:no", venue: "kalshi", status: "closed", stake: 194.01, pnl: 24.84 }),
+    straight({ id: "kalshi:M:no", venue: "kalshi", status: "closed", stake: 732.54, pnl: -632.67 }),
+  ], []);
+  assert.deepEqual(tickets.map((t) => t.id).sort(), ["kalshi:M:no", "kalshi:P:no", "kalshi:R:yes"]);
+  const total = stats.summarize(tickets);
+  assert.equal(total.bets, 3);
+  assert.equal(total.wins, 2);
+  assert.equal(total.losses, 1);
+  assert.equal(Math.round(total.pnl * 100) / 100, 4841.63);
+  assert.deepEqual(stats.exclusions(tickets), { open: 0, noResult: 0 });
 });
 
 test("a won bet with no toWin is paid off its American price", () => {
@@ -208,6 +248,31 @@ test("expected P&L uses the fill fair, else the closing fair, and says which", (
   assert.equal(stats.summarize(tickets).withFair, 2);
 });
 
+test("rangeBounds: Today and Yesterday are single Pacific days; presets end today", () => {
+  const today = "2026-10-06";
+  assert.deepEqual(stats.rangeBounds("Today", today, null, "2026-01-02"), { first: today, last: today });
+  assert.deepEqual(stats.rangeBounds("Yesterday", "2026-03-01", null, null), { first: "2026-02-28", last: "2026-02-28" });
+  assert.deepEqual(stats.rangeBounds("7D", today, null, null), { first: "2026-09-30", last: today });
+  assert.deepEqual(stats.rangeBounds("YTD", today, null, null), { first: "2026-01-01", last: today });
+  assert.deepEqual(stats.rangeBounds("All", today, null, "2026-01-02"), { first: "2026-01-02", last: today });
+  assert.throws(() => stats.rangeBounds("2W", today, null, null), /unknown date range 2W/);
+});
+
+test("rangeBounds: Custom takes the picked days, swaps a backwards pair, fills a blank end", () => {
+  const today = "2026-10-06";
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "2026-09-01", last: "2026-09-15" }, "2026-01-02"), { first: "2026-09-01", last: "2026-09-15" });
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "2026-09-15", last: "2026-09-01" }, "2026-01-02"), { first: "2026-09-01", last: "2026-09-15" });
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: null, last: "2026-02-30" }, "2026-01-02"), { first: "2026-01-02", last: today });
+});
+
+test("rangeBounds: Custom clamps to [first settled day, today] so a half-typed year can't span millennia", () => {
+  const today = "2026-10-06";
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "0201-10-01", last: "2026-09-15" }, "2026-01-02"), { first: "2026-01-02", last: "2026-09-15" });
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "2026-09-01", last: "9999-01-01" }, "2026-01-02"), { first: "2026-09-01", last: today });
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "2026-09-15", last: "0201-01-01" }, "2026-01-02"), { first: "2026-01-02", last: "2026-09-15" });
+  assert.deepEqual(stats.rangeBounds("Custom", today, { first: "2025-01-01", last: "2025-02-01" }, null), { first: today, last: today });
+});
+
 test("a removed record marks its ticket, and one removed leg marks the whole parlay", () => {
   const leg = (index) => straight({ id: "bfa:9:leg" + index, venue: "bfa", isParlayLeg: true, parlayId: "bfa:9", legIndex: index, legCount: 2 });
   const tickets = stats.buildTickets([straight({ id: "wz:1", venue: "wagerzon" }), straight({ id: "wz:2", venue: "wagerzon" }), leg(0), leg(1)],
@@ -215,4 +280,14 @@ test("a removed record marks its ticket, and one removed leg marks the whole par
   const byId = Object.fromEntries(tickets.map((t) => [t.id, t]));
   assert.deepEqual([byId["wz:1"].excluded, byId["wz:2"].excluded, byId["bfa:9"].excluded], [true, false, true]);
   assert.deepEqual(byId["bfa:9"].betIds, ["bfa:9:leg0", "bfa:9:leg1"]);
+});
+
+test("sortRows: numbers and text both ways, missing keys last, ties stable", () => {
+  const rows = [{ id: "a", v: 2 }, { id: "b", v: null }, { id: "c", v: 10 }, { id: "d", v: 2 }, { id: "e", v: NaN }];
+  const ids = (list) => list.map((r) => r.id).join("");
+  assert.equal(ids(stats.sortRows(rows, (r) => r.v, "asc")), "adcbe");
+  assert.equal(ids(stats.sortRows(rows, (r) => r.v, "desc")), "cadbe");
+  const names = [{ n: "novig" }, { n: "BFA" }, { n: "Kalshi" }];
+  assert.deepEqual(stats.sortRows(names, (r) => r.n, "asc").map((r) => r.n), ["BFA", "Kalshi", "novig"]);
+  assert.equal(rows[0].id, "a", "the input is not reordered");
 });
