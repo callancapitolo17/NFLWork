@@ -258,6 +258,7 @@ button, select, input { font: inherit; color: inherit; }
 }
 .btn.primary { background: var(--edge-strong); border-color: transparent; color: var(--ground); }
 .btn:disabled { opacity: .6; cursor: default; }
+.btn.sm { min-height: 40px; padding: 0 16px; font-size: 14px; }
 
 /* ---- bottom tab bar ---- */
 .tabbar {
@@ -382,6 +383,10 @@ button, select, input { font: inherit; color: inherit; }
 .tk-legs li.counted, .tk-legs li.counted .tl-win { color: var(--muted); }
 .tk-legs li.counted .tl-leg { font-weight: 500; }
 .tk-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+.tk-place-msg { font-size: 12.5px; margin-right: auto; overflow-wrap: anywhere; }
+.tk-place-msg.ok { color: var(--edge-strong); font-weight: 600; }
+.tk-place-msg.wait { color: var(--muted); }
+.tk-place-msg.bad { color: var(--against-fg); }
 .more-tickets { margin: 10px 0 0; }
 .more-tickets > summary { cursor: pointer; list-style: none; min-height: 44px; display: flex; align-items: center; color: var(--ink-2); font-size: 13.5px; }
 .more-tickets > summary::-webkit-details-marker { display: none; }

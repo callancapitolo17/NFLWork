@@ -908,14 +908,10 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
         # POST /place_teaser.json: one teaser at BFA (bfa_teaser.py). An exception out of
         # place() is raised before the wager goes out, so it reads "Not placed". The open
         # bets read while confirming are stored at once, the BFA source's own way.
+        # The phone page and a panel pointed at the server place through the
+        # tailnet name `tailscale serve` forwards (Cal, 2026-10-09); do_POST's
+        # Host allowlist has already refused every other name.
         def _place_teaser(self, body: object) -> None:
-            # Bets go out only for the panel on this machine: a name `tailscale
-            # serve` forwards (the phone page's) reads, it never places.
-            port = self.server.server_address[1]
-            if not host_allowed(self.headers.get("Host"), port):
-                self._send_json(403, {"error": f"placing is for this machine only (Host one of "
-                                               f"{list(allowed_hosts(port))}), got {self.headers.get('Host')!r}"})
-                return
             if teaser_placer is None:
                 self._send_json(503, {"error": "no BFA account is read: set BFA_USERNAME and BFA_PASSWORD "
                                                "(bet_logger/.env in the main checkout)"})

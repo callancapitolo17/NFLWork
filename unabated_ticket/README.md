@@ -1649,9 +1649,9 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   side "away"|"home"|"over"|"under", rotation, points (Buckeye's number
   before the teaser), eventStart, label}]}` → `{ok, status: placed | refused
   | unconfirmed, message, ticket?}` — **places a real wager at BFA**
-  (*Teasers → Place*); 400 on a bad body, 503 when no BFA account is read,
-  403 through a `BETS_EXTRA_ALLOWED_HOSTS` name (the tailnet reads, it never
-  places);
+  (*Teasers → Place*, panel or phone; through a `BETS_EXTRA_ALLOWED_HOSTS`
+  name too since 0.22.0, Cal's call 2026-10-09); 400 on a bad body, 503 when
+  no BFA account is read;
   the open bets it read while confirming are UPSERTed into `bets` so the
   next `/bets.json` has the ticket. **Settings** (the server
   runner, Running on a server below): `GET /settings.json` → `{settings:
@@ -2267,8 +2267,9 @@ the open panel used to do.
   that the service's are the truth. An older service with no marks leaves
   them panel state. The manifest allows `https://*.ts.net/*`, so set the
   Bets tab's Service URL to `https://<vm>.<tailnet>.ts.net` to run the panel
-  off the VM and stop the Mac's own service. Placing a teaser stays
-  loopback-only (`/place_teaser.json`).
+  off the VM and stop the Mac's own service. Place works through it too:
+  `/place_teaser.json` takes the tailnet name (Cal, 2026-10-09), so the VM
+  places on its own BFA login.
 - **The runner** learns all the time: after each bets poll and scanner
   update it POSTs team names the board joined by venue id
   (`/crosswalk.json`) and each new open bet's fill-time fair
@@ -2282,7 +2283,7 @@ the open panel used to do.
   proxies both routes with the query string and passes the runner's own
   400/404 through.
 - **The phone** gains the Teasers tab (Can't tease / Restore on college
-  legs, no Copy, no Place), Attach (search, pick, names and Swap, Attach and
+  legs and the same Place / Bet $X at BFA confirm as the panel, no Copy), Attach (search, pick, names and Swap, Attach and
   learn), Undo, Dismiss / Restore, the learned team names with a two-tap
   Clear, a Line moved note on the ticket, and move tags and alt numbers on
   the card's other lines.

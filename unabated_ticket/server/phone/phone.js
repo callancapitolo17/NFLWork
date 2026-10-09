@@ -1,5 +1,7 @@
 // Unabated Ticket phone page — the DOM side (phone page plan steps 2-3).
-// No order placement anywhere: you bet in the book's own app.
+// One order route: a Teasers ticket's Place (POST /place_teaser.json, a real
+// teaser at BFA, the panel's same two-step confirm). Everything else you bet
+// in the book's own app.
 //
 // Reads (same origin, the bets service that served this page):
 //   GET /edges.json     every 15 s — the server runner's Edges list, proxied
@@ -19,6 +21,7 @@
 //   POST /teaser_blocks.json   Can't tease / Restore a college teaser market
 //   POST /pins.json, DELETE /pins.json?betId=   Attach a bet to a game / Undo
 //   DELETE /crosswalk.json     Clear the learned team names (two taps)
+//   POST /place_teaser.json    Place a Teasers ticket at BFA (money, not just rows)
 // Nothing is stored in the browser.
 // Words and numbers come from phoneview.js and the extension's own pure
 // modules (edgerows.js, teaserview.js, betsview.js, bets.js, kelly.js, feed.js).
@@ -34,6 +37,13 @@
   const teaserView = globalThis.UnabatedTeaserView;
 
   const FETCH_TIMEOUT_MS = 10 * 1000;
+  // BFA usually answers a placement in seconds but can take about a minute; a
+  // timeout here reads "unconfirmed", never "not placed".
+  const PLACE_TIMEOUT_MS = 90 * 1000;
+  // The panel's Place timings: Bet $X stays armed 6 s, and a confirm within
+  // 0.6 s of arming (the second tap of a double tap) is ignored.
+  const TEASER_CONFIRM_MS = 6000;
+  const TEASER_CONFIRM_MIN_MS = 600;
   // The runner reads /settings.json every 10 s; one more edges read after that shows a save's effect.
   const RUNNER_SETTINGS_LAG_MS = 11 * 1000;
   const RELATED_LINES_ON_A_ROW = 3;
@@ -99,6 +109,10 @@
     dismissedIds: null,
     // Market keys whose Can't tease / Restore is being saved.
     teaserMarksSaving: new Set(),
+    // Ticket signature -> its Place button's state across re-renders:
+    // {phase: "confirm" | "placing" | "placed" | "refused" | "unconfirmed",
+    // message, legsMatch, armedAt}.
+    teaserPlace: new Map(),
     // Bet ids whose Dismiss, Restore or Undo is being saved.
     betsSaving: new Set(),
     // The open Attach: {betId, step: "pick" | "confirm", query, picks (the
@@ -133,8 +147,8 @@
   // ---- reads ------------------------------------------------------------------------
 
   // One same-origin JSON request; a non-2xx is an Error carrying the body's `error`.
-  async function requestJson(method, path, body) {
-    const options = { method, cache: "no-store", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) };
+  async function requestJson(method, path, body, timeoutMs = FETCH_TIMEOUT_MS) {
+    const options = { method, cache: "no-store", signal: AbortSignal.timeout(timeoutMs) };
     if (body !== undefined) {
       options.headers = { "Content-Type": "application/json" };
       options.body = JSON.stringify(body);
@@ -143,7 +157,7 @@
     try {
       response = await fetch(path, options);
     } catch (error) {
-      throw new Error(error.name === "TimeoutError" ? `no answer in ${FETCH_TIMEOUT_MS / 1000} s` : error.message, { cause: error });
+      throw new Error(error.name === "TimeoutError" ? `no answer in ${timeoutMs / 1000} s` : error.message, { cause: error });
     }
     let parsed;
     try {
@@ -499,8 +513,90 @@
       row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-win", leg.win), makeEl("span", "tl-from", leg.from));
       legs.append(row);
     }
-    card.append(head, legs);
+    const actions = makeEl("div", "tk-actions");
+    appendPlaceControls(actions, ticket);
+    card.append(head, legs, actions);
     return card;
+  }
+
+  function placeButton(className, text, action, signature) {
+    const button = makeEl("button", className, text);
+    button.type = "button";
+    Object.assign(button.dataset, { placeAction: action, placeTicket: signature });
+    return button;
+  }
+
+  // The panel's Place row: Place -> Cancel / Bet $X at BFA -> Placing… ->
+  // placed, or why not. An unconfirmed ticket shows no Place: it may be booked.
+  function appendPlaceControls(actions, ticket) {
+    const placeState = state.teaserPlace.get(ticket.signature) || null;
+    const phase = placeState ? placeState.phase : null;
+    if (placeState && placeState.message) {
+      // A placed ticket whose legs BFA shows differently is red: it is booked, and wrong.
+      const tone = phase === "placed" && placeState.legsMatch !== false ? "ok" : phase === "placing" ? "wait" : "bad";
+      actions.append(makeEl("span", `tk-place-msg ${tone}`, placeState.message));
+    }
+    if (phase === "confirm") {
+      actions.append(placeButton("btn sm", "Cancel", "cancel", ticket.signature),
+        placeButton("btn sm primary", `Bet ${ticket.stake} at BFA`, "confirm", ticket.signature));
+    } else if (phase === null || phase === "refused") {
+      actions.append(placeButton("btn sm", "Place", "arm", ticket.signature));
+    }
+  }
+
+  // POST the ticket's request (the runner built it with teaser.placeRequestOf)
+  // to the bets service, which bets it at BFA and answers placed / refused /
+  // unconfirmed. An HTTP error is a refusal before BFA; no answer at all may
+  // still have reached BFA, so it reads unconfirmed.
+  async function placeTeaser(signature) {
+    const ticket = (state.teasers.payload ? state.teasers.payload.tickets : []).find((shown) => shown.signature === signature);
+    const request = ticket ? ticket.place : { error: "the ticket is no longer on the list" };
+    if (request.error) {
+      state.teaserPlace.set(signature, { phase: "refused", message: `Not placed: ${request.error}` });
+      renderAll();
+      return;
+    }
+    state.teaserPlace.set(signature, { phase: "placing", message: "Placing at BFA…" });
+    renderAll();
+    let next;
+    try {
+      const reply = await requestJson("POST", "/place_teaser.json", request.body, PLACE_TIMEOUT_MS);
+      next = { phase: reply.status, message: reply.message, legsMatch: reply.legsMatch };
+    } catch (error) {
+      next = error.status
+        ? { phase: "refused", message: `Not placed: ${error.message}` }
+        : { phase: "unconfirmed", message: `The bets service did not answer (${error.message}). Check BFA's open bets before placing it again.` };
+    }
+    state.teaserPlace.set(signature, next);
+    renderAll();
+    if (next.phase === "placed") await Promise.all([pollBets(), pollTeasers(true)]);
+  }
+
+  function onTeaserPlaceClick(button, event) {
+    const signature = button.dataset.placeTicket;
+    const action = button.dataset.placeAction;
+    if (action === "arm") {
+      const armedAt = Date.now();
+      state.teaserPlace.set(signature, { phase: "confirm", message: null, armedAt });
+      setTimeout(() => {
+        const held = state.teaserPlace.get(signature);
+        if (held && held.phase === "confirm" && held.armedAt === armedAt) {
+          state.teaserPlace.delete(signature);
+          renderAll();
+        }
+      }, TEASER_CONFIRM_MS);
+      renderAll();
+      return;
+    }
+    if (action === "cancel") {
+      state.teaserPlace.delete(signature);
+      renderAll();
+      return;
+    }
+    const held = state.teaserPlace.get(signature);
+    if (action !== "confirm" || !held || held.phase !== "confirm") return;
+    if (event.detail > 1 || Date.now() - held.armedAt < TEASER_CONFIRM_MIN_MS) return;
+    placeTeaser(signature).catch((error) => console.error("[unabated-ticket] place teaser failed", error));
   }
 
   function openTeaserEl(ticket) {
@@ -597,6 +693,11 @@
     view.teasersMore.hidden = rest.length === 0;
     view.teasersMoreLabel.textContent = payload.moreLabel;
     view.teasersMoreList.replaceChildren(...rest.map(teaserTicketEl));
+    // A ticket gone from the list (placed and now open, or rebuilt away) takes its button state with it.
+    const shownSignatures = new Set(tickets.map((ticket) => ticket.signature));
+    for (const [signature, placeState] of state.teaserPlace) {
+      if (!shownSignatures.has(signature) && placeState.phase !== "placing") state.teaserPlace.delete(signature);
+    }
 
     const legs = payload.legs;
     view.teasersLegsLabel.hidden = legs.items.length + legs.folded.length === 0;
@@ -1182,6 +1283,11 @@
   });
 
   view.viewTeasers.addEventListener("click", (event) => {
+    const placeButtonHit = event.target.closest("button[data-place-action]");
+    if (placeButtonHit) {
+      onTeaserPlaceClick(placeButtonHit, event);
+      return;
+    }
     const button = event.target.closest("button[data-teaser-mark]");
     if (button && !button.disabled) setTeaserMark(button);
   });
