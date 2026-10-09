@@ -26,6 +26,9 @@
   const RUNNER_SETTINGS_LAG_MS = 11 * 1000;
   const RELATED_LINES_ON_A_ROW = 3;
   const MOVE_TAG_CLASS = { fair_to_you: "move-fair", book_away: "move-book", fair_against: "move-against" };
+  const PRICE_CHECK_TAG_CLASS = { best: "check-best", better: "", skip: "check-skip", outlier: "check-outlier" };
+  // How many worse books the ticket lists before folding the rest into "N more".
+  const OTHERS_WORSE_SHOWN = 3;
   // The panel offers full game and first half; a stored other period is shown too.
   const OFFERED_PERIODS = [1, 2];
   const SORT_LABELS = { edge: "edge", stake: "stake", start: "start", exposure: "my exposure" };
@@ -34,7 +37,7 @@
   const el = (id) => document.getElementById(id);
   const view = {
     fresh: el("fresh"), banners: el("banners"),
-    edgesStatus: el("edges-status"), edgesBooks: el("edges-books"), edgesTailFlex: el("edges-tailflex"),
+    edgesStatus: el("edges-status"), edgesBooks: el("edges-books"), edgesTailFlex: el("edges-tailflex"), edgesPriceCheck: el("edges-pricecheck"),
     edgesList: el("edges-list"), edgesEmpty: el("edges-empty"), edgesCount: el("edges-count"),
     betsCount: el("bets-count"), betsAlert: el("bets-alert"), betsTab: el("tab-bets"),
     betsRisk: el("bets-risk"), betsRiskCaption: el("bets-risk-caption"),
@@ -47,6 +50,7 @@
     sheet: el("sheet"), sheetBackdrop: el("sheet-backdrop"), sheetClose: el("sheet-close"), ticketGone: el("ticket-gone"),
     ticketSide: el("ticket-side"), ticketBadges: el("ticket-badges"), ticketBetLine: el("ticket-bet-line"),
     ticketMatchup: el("ticket-matchup"), ticketStart: el("ticket-start"),
+    ticketBooksLabel: el("ticket-books-label"), ticketBooks: el("ticket-books"),
     ticketBook: el("ticket-book"), ticketPrice: el("ticket-price"), ticketFair: el("ticket-fair"), ticketEdge: el("ticket-edge"),
     ticketStakeLabel: el("ticket-stake-label"), ticketStake: el("ticket-stake"), ticketContracts: el("ticket-contracts"), ticketUncapped: el("ticket-uncapped"),
     ticketExposure: el("ticket-exposure"), ticketPayoutRow: el("ticket-payout-row"), ticketToWin: el("ticket-to-win"), ticketPayout: el("ticket-payout"),
@@ -226,7 +230,40 @@
     const book = makeEl("div", "edge-book");
     book.append(makeEl("span", "price", phoneView.bookPriceText(row)), makeEl("span", "age", ` · ${phoneView.lineAgeText(row, now)}`));
     main.append(side, meta, book);
+    const checkTag = priceCheckTagEl(row);
+    if (checkTag) {
+      const checkLine = makeEl("div", "edge-pricecheck");
+      checkLine.append(checkTag);
+      main.append(checkLine);
+    }
     return main;
+  }
+
+  // The other-books tag the runner computed (pricecheck.priceCheckTag), or null.
+  function priceCheckTagEl(row) {
+    const tag = row.priceCheckTag;
+    return tag ? tagEl(PRICE_CHECK_TAG_CLASS[tag.kind] ?? "", tag.label) : null;
+  }
+
+  // The ticket's "Others" row: every other book at the number, best first, yours in its place.
+  function renderTicketBooks(row) {
+    const check = row.priceCheck;
+    const tag = priceCheckTagEl(row);
+    view.ticketBooksLabel.hidden = !tag;
+    view.ticketBooks.hidden = !tag;
+    view.ticketBooks.replaceChildren();
+    if (!tag) return;
+    const lineEl = (name, price, className) => {
+      const div = makeEl("div", className);
+      div.append(makeEl("span", null, name), makeEl("span", null, phoneView.fmtAmerican(price)));
+      return div;
+    };
+    const list = makeEl("div", "others-list");
+    for (const entry of check.better) list.append(lineEl(entry.bookName, entry.price, "better"));
+    list.append(lineEl(`${row.book.name} (you)${check.same ? ` +${check.same} same` : ""}`, row.price, "yours"));
+    for (const entry of check.worse.slice(0, OTHERS_WORSE_SHOWN)) list.append(lineEl(entry.bookName, entry.price, "worse"));
+    if (check.worse.length > OTHERS_WORSE_SHOWN) list.append(makeEl("div", "worse", `${check.worse.length - OTHERS_WORSE_SHOWN} more, worse`));
+    view.ticketBooks.append(tag, list);
   }
 
   function edgeItem(row, card, now) {
@@ -261,6 +298,8 @@
     ].filter(Boolean).join(" · ");
     view.edgesTailFlex.textContent = payload.tailFlex || "";
     view.edgesTailFlex.hidden = !payload.tailFlex;
+    view.edgesPriceCheck.textContent = payload.priceCheck || "";
+    view.edgesPriceCheck.hidden = !payload.priceCheck;
     const items = payload.items.map((item) => (payload.grouped ? edgeItem(item.best, item, now) : edgeItem(item, null, now)));
     view.edgesList.replaceChildren(...items);
     view.edgesCount.hidden = payload.total === 0;
@@ -322,6 +361,7 @@
     if (row.move) {
       view.ticketEdge.append(tagEl(MOVE_TAG_CLASS[row.move.kind] || "", row.move.label), makeEl("span", "sub", row.move.detail));
     }
+    renderTicketBooks(row);
 
     const block = ticket.stakeBlock;
     view.ticketStakeLabel.textContent = block.label;

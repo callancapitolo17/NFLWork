@@ -113,6 +113,7 @@
         <dt>Price</dt><dd id="price"></dd>
         <dt>Fair</dt><dd id="fair"></dd>
         <dt>Edge</dt><dd id="edge"></dd>
+        <dt id="others-label" hidden>Others</dt><dd id="others" hidden></dd>
       </dl>
 
       <div class="stake-block">
@@ -154,6 +155,7 @@
     <div id="edges-status" class="muted feed-status"></div>
     <div id="edges-filter" class="muted" title="Click to show what the Unabated selection was read from"></div>
     <div id="edges-tailflex" class="muted" title="How much Unabated's edge is trusted per SD from the main number, measured off the exchanges' two-sided alt quotes (10% where too few to measure). It only ranks lines: a card's best line is the highest EV after flex. Edges and stakes stay Unabated's." hidden></div>
+    <div id="edges-pricecheck" class="muted" title="Lines where 2 or more books post a better price at the same number would be skipped, and outliers beat every other book by more than 10 probability points. Test mode: nothing is hidden yet." hidden></div>
     <pre id="edges-filter-debug" class="muted debug" hidden></pre>
 
     <!-- Live edges: the Unabated live screen's between-quarters in-game fair,
@@ -264,6 +266,7 @@
   <script src="teaser.js"></script>
   <script src="betsview.js"></script>
   <script src="fillfair.js"></script>
+  <script src="pricecheck.js"></script>
   <script src="edgerows.js"></script>
   <script src="bet105.js"></script>
   <script src="panel.js"></script>
