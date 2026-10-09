@@ -98,8 +98,10 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
            GET /teasers.json        the server runner's Teasers list (server/teasers_payload.js
                                     documents it), passed through the same way (the phone's
                                     Teasers tab)
-           GET /board.json          the server runner's board games, one row per game
-                                    (the phone's Attach picker), passed through the same way
+           GET /attach.json?...     the server runner's Attach picker (step 1: games for a
+                                    bet and a search; step 2: the plan and the /pins.json
+                                    body), query string passed on; the runner's own 400/404
+                                    (no such open bet, a game gone) passes through as it came
            GET / and the phone page's files   STATIC_FILES, a fixed map of URL path ->
                                     file (server/phone/ and the extension's pure modules
                                     the page loads under /ext/; the Bet Tracker,
@@ -633,18 +635,24 @@ def validate_settings_update(body: object, held: dict) -> dict | str:
 
 
 # The runner's JSON routes the bets service passes through (one origin for the pages).
-RUNNER_ROUTES = ("/edges.json", "/scenarios.json", "/teasers.json", "/board.json")
+RUNNER_ROUTES = ("/edges.json", "/scenarios.json", "/teasers.json", "/attach.json")
+# The runner's own answer about the request (no such open bet, a game gone
+# from the board) passes through as it came; any other failure is a 502.
+RUNNER_PASSTHROUGH_ERRORS = (400, 404)
 
 
-def fetch_runner_json(runner_url: str, path: str, timeout_sec: float) -> tuple[int, bytes]:
-    """(status, body) for GET <path> (one of RUNNER_ROUTES): the runner's body
-    as it came on a 200, else 502 with a JSON error naming the runner URL and
-    what failed. Network: one GET of <runner_url><path>, no proxy, `timeout_sec`."""
-    url = f"{runner_url}{path}"
+def fetch_runner_json(runner_url: str, path: str, timeout_sec: float, query: str = "") -> tuple[int, bytes]:
+    """(status, body) for GET <path>?<query> (path one of RUNNER_ROUTES): the
+    runner's body as it came on a 200 or a 400/404, else 502 with a JSON error
+    naming the runner URL and what failed. Network: one GET of
+    <runner_url><path>, no proxy, `timeout_sec`."""
+    url = f"{runner_url}{path}{'?' + query if query else ''}"
     try:
         with _RUNNER_OPENER.open(url, timeout=timeout_sec) as response:
             return 200, response.read()
     except urllib.error.HTTPError as error:
+        if error.code in RUNNER_PASSTHROUGH_ERRORS:
+            return error.code, error.read()
         problem = f"answered HTTP {error.code}"
     except (urllib.error.URLError, OSError) as error:  # refused, reset, DNS, timeout
         problem = f"unreachable ({getattr(error, 'reason', None) or error})"
@@ -704,7 +712,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 self._send_json(200, bets_payload(store, days, names))
                 return
             if url.path in RUNNER_ROUTES:
-                status, body = fetch_runner_json(edges_runner_url, url.path, edges_timeout_sec)
+                status, body = fetch_runner_json(edges_runner_url, url.path, edges_timeout_sec, url.query)
                 self._send_bytes(status, body, "application/json")
                 return
             if url.path in STATIC_FILES:

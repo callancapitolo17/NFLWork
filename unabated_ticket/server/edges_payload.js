@@ -18,9 +18,9 @@
 //    leagueErrors, lineCount, altLineCount, eventCount, snapshotBuiltAt,
 //    staleLeagues, loading, lastSnapshotAt}, betsService: {okAt, error,
 //    unreachableSince, generatedAt, openBets, sources, boardLineCount,
-//    unmatched: [{betId, reason, attachable, needsGame, needsFix}] (the open
-//    bets no board game matches, bets.unmatchedReasons — the panel's Bets tab
-//    lists; nothing is dismissed here, Dismiss is panel view state)},
+//    unmatched: [{betId, reason, attachable, needsGame, needsFix, dismissed}]
+//    (the open bets no board game matches, bets.unmatchedReasons — the
+//    panel's Bets tab lists; a dismissed one never needs a game)},
 //    books: {mode, ids, names, liveCount, live: [{id, name}] (every live
 //    book, for the phone's book picker)}, tailFlex ("tail flex: NFL spr 7.1% · …", the panel's
 //    header line, "" when nothing lists), grouped, unit: "cards" | "lines",
@@ -46,30 +46,9 @@ const betsView = require("../extension/betsview.js");
 const edgeRows = require("../extension/edgerows.js");
 const pricecheck = require("../extension/pricecheck.js");
 
-// Edges settings the bets service stores under the panel's own names; bookIds
-// is carried by bookMode instead (see settingsFromService).
-const EDGE_SETTING_KEYS = [
-  "leagues", "periods", "betTypes", "minEdgePct", "minStake", "maxLineAgeHours", "minLiquidityToWin",
-  "includeAlts", "sortBy", "groupByMarket",
-];
-
-// The bets service's settings row ({field: value or null}, null = default)
-// as the panel's two settings objects, defaults filled by edgerows.js.
-// bookMode "default" (or null) = the default books, "all" = every live book
-// (the panel's "follow Unabated" with no Unabated tab to follow), "custom" =
-// bookIds.
-//   {stakeSettings: {bankroll, multiplier}, edgeSettings: DEFAULT_EDGE_SETTINGS shape}
-function settingsFromService(serviceSettings) {
-  const held = serviceSettings && typeof serviceSettings === "object" ? serviceSettings : {};
-  const storedEdges = {};
-  for (const key of EDGE_SETTING_KEYS) if (held[key] != null) storedEdges[key] = held[key];
-  if (held.bookMode === "all") storedEdges.bookIds = null;
-  if (held.bookMode === "custom") storedEdges.bookIds = held.bookIds;
-  return {
-    stakeSettings: edgeRows.sanitizeStakeSettings({ bankroll: held.bankroll ?? undefined, multiplier: held.multiplier ?? undefined }),
-    edgeSettings: edgeRows.sanitizeEdgeSettings(storedEdges),
-  };
-}
+// The settings row as the panel's settings objects (edgerows.js, shared with
+// the panel's sync); re-exported here for the runner and its tests.
+const { settingsFromService } = edgeRows;
 
 function bookProbOrNull(row) {
   try {
@@ -141,14 +120,16 @@ function scannerView(status) {
 // The open bets no board game matches, as the panel's Bets tab lists them
 // (bets.unmatchedReasons), by bet id: the phone joins them to its own
 // /bets.json. `knownStarts` is the runner's {betId: startMs} memory of each
-// bet's matched game (bets.matchedStarts), as the panel keeps it.
-function unmatchedView(betRecords, boardLines, knownStarts, now) {
-  return betsLib.unmatchedReasons(betRecords, boardLines, now, { dismissedIds: [], knownStarts: knownStarts || {} })
-    .map(({ bet, reason, attachable, needsGame, needsFix }) => ({ betId: bet.id, reason, attachable, needsGame, needsFix }));
+// bet's matched game (bets.matchedStarts), as the panel keeps it;
+// `dismissedIds` the bets Dismissed on either page (bets.duckdb::bet_dismissals),
+// which stop flagging red and list folded with Restore.
+function unmatchedView(betRecords, boardLines, knownStarts, now, dismissedIds) {
+  return betsLib.unmatchedReasons(betRecords, boardLines, now, { dismissedIds: dismissedIds || [], knownStarts: knownStarts || {} })
+    .map(({ bet, reason, attachable, needsGame, needsFix, dismissed }) => ({ betId: bet.id, reason, attachable, needsGame, needsFix, dismissed: Boolean(dismissed) }));
 }
 
 // The /edges.json body.
-//   input  {feedState, scannerStatus, history, betRecords, fillFairIndex, knownStarts,
+//   input  {feedState, scannerStatus, history, betRecords, fillFairIndex, knownStarts, dismissedIds,
 //           stakeSettings, edgeSettings, settingsStatus {source, error, okAt, updatedAt},
 //           betsStatus {okAt, error, unreachableSince, generatedAt, sources},
 //           boardLines, ladderReaderOf, teasers (teaser.openTeasers),
@@ -178,7 +159,7 @@ function buildEdgesPayload(input) {
     scanner: scannerView(input.scannerStatus),
     betsService: {
       ...input.betsStatus, openBets: input.betRecords.filter((record) => record.status === "open").length,
-      boardLineCount: input.boardLines.length, unmatched: unmatchedView(input.betRecords, input.boardLines, input.knownStarts, now),
+      boardLineCount: input.boardLines.length, unmatched: unmatchedView(input.betRecords, input.boardLines, input.knownStarts, now, input.dismissedIds),
     },
     books: {
       mode: effective.mode, ids, names: ids ? ids.map(bookName) : null, liveCount: liveBooks.length,
@@ -194,4 +175,4 @@ function buildEdgesPayload(input) {
   };
 }
 
-module.exports = { EDGE_SETTING_KEYS, settingsFromService, rowView, cardView, unmatchedView, buildEdgesPayload };
+module.exports = { EDGE_SETTING_KEYS: edgeRows.EDGE_SETTING_KEYS, settingsFromService, rowView, cardView, unmatchedView, buildEdgesPayload };

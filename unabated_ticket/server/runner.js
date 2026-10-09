@@ -31,18 +31,30 @@
 //       changed — each open straight bet's Unabated fair on its own line
 //       while its game is still to start (server/closefair.js); the service
 //       keeps the newest pre-start one, the close CLV is measured against.
+//   POST <bets service>/crosswalk.json and /fill_fairs.json — what the panel
+//       learns while it is open, learned here all the time: after every bets
+//       poll and scanner update, the team names of open bets the board joined
+//       by venue id (bets.learnCrosswalk) and each new open bet's fill-time
+//       fair off the line history (fillfair.captureFillFairs). Both tables are
+//       insert-only on the service, so the panel learning the same rows is harmless.
 // Serves (HTTP on UNABATED_RUNNER_HOST:UNABATED_RUNNER_PORT, no auth):
 //   GET /edges.json  the Edges list the panel would show for those settings
 //                    (server/edges_payload.js documents the shape)
+//   GET /teasers.json  the panel's Teasers tab, as words (server/teasers_payload.js)
+//   GET /attach.json?betId=..&query=..  Attach step 1: the board games to pick
+//                    from for an open bet, best fit first (attach.js)
+//   GET /attach.json?betId=..&eventId=..&swapped=0|1  Attach step 2: the plan
+//                    and the POST /pins.json body the page sends the bets service
 //   GET /scenarios.json  the Bet Tracker's Live tab: every game in progress
 //                    with open bets, its results and the P&L and kickoff
 //                    chance of each (server/scenarios.js documents the shape)
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
-// Side effects: none on disk — no DuckDB, no files. Its one write is the
-// closing-fair POST above (bets.duckdb::bet_closing_fairs, through the bets
-// service). State (feed, line history, bets, each game's last pregame odds for
+// Side effects: none on disk — no DuckDB, no files. Its writes go through the
+// bets service: the closing fairs (bets.duckdb::bet_closing_fairs) and the
+// crosswalk rows and fill fairs above (insert-only tables). State (feed, line
+// history, bets, each game's last pregame odds for
 // the Live tab) is in memory and rebuilt on restart: a game already under way
 // when the runner starts has its card but no kickoff chances. Logs state
 // changes (not every poll) to stdout/stderr.
@@ -62,6 +74,8 @@ const edgesPayload = require("./edges_payload.js");
 const closefair = require("./closefair.js");
 const ladderLib = require("../extension/ladder.js");
 const scenarios = require("./scenarios.js");
+const teasersPayload = require("./teasers_payload.js");
+const attachLib = require("../extension/attach.js");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8095;
@@ -81,6 +95,9 @@ const HOUR_MS = 3600 * 1000;
 // A started game keeps its card this long after its start, whether or not
 // it is still on the board: past any game's length plus a slow grader's lag.
 const KICKOFF_MEMO_HOURS = 12;
+// A failed crosswalk or fill-fair write waits this long before the next try (panel.js).
+const SERVICE_WRITE_RETRY_MS = 60 * 1000;
+const HTTP_BAD_REQUEST = 400;
 
 function log(message) {
   console.log(`${new Date().toISOString()} [runner] ${message}`);
@@ -152,11 +169,33 @@ async function getServiceJson(fetchImpl, url, init = {}) {
   return response.json();
 }
 
+// One JSON request to a bets-service write route: the parsed reply, or an
+// Error carrying the HTTP status and the service's own error text.
+async function sendServiceJson(fetchImpl, url, method, body) {
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(SERVICE_TIMEOUT_MS),
+    });
+  } catch (error) {
+    const reason = error.cause ? ` (${error.cause.code || error.cause.message})` : "";
+    throw new Error(`${method} ${url}: ${error.message}${reason}`, { cause: error });
+  }
+  const reply = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = new Error(`HTTP ${response.status} from ${method} ${url}${reply && reply.error ? `: ${reply.error}` : ""}`);
+    error.status = response.status;
+    throw error;
+  }
+  return reply;
+}
+
 // The scan loop, the bets poll and the settings poll, held in memory.
 //   deps  {fetchImpl (Unabated snapshots), serviceFetch (the bets service),
 //          betsServiceUrl, now, timers {setInterval, clearInterval},
 //          logInfo / logWarning (message) -> void, default stdout / stderr}
-// Returns {start, stop, pollBets, pollSettings, scanLoaded, edgesPayload, health, scanner}.
+// Returns {start, stop, pollBets, pollSettings, scanLoaded, learn, edgesPayload,
+//          teasersPayload, attachPayload, scenariosPayload, health, scanner}.
 function createRunner(deps) {
   const now = deps.now || (() => Date.now());
   const timers = deps.timers || { setInterval: (fn, ms) => setInterval(fn, ms), clearInterval: (id) => clearInterval(id) };
@@ -189,6 +228,25 @@ function createRunner(deps) {
   // panel's knownStarts): a bet with no start of its own whose game has
   // started stops flagging as needing a game.
   let knownStarts = {};
+  // The shared Dismiss and Can't tease marks (bets.duckdb::bet_dismissals,
+  // teaser_blocks), as /bets.json last served them.
+  let dismissedIds = [];
+  let teaserBlocks = [];
+  // The Teasers list's last build (teaser.planTeasers `previous`): the list
+  // is rebuilt only when what it is built on changed, so it holds still.
+  let teaserBuild = null;
+  let teaserLastError = null;
+  // Learning (panel.js learnCrosswalk / captureFillFairs): one pass at a time,
+  // a minute's wait after a failed write, each conflict logged once, each bet
+  // looked at until its fill fair is decided, unsent rows kept for the retry.
+  let learnBusy = false;
+  let crosswalkRetryAt = 0;
+  let crosswalkLastError = null;
+  const crosswalkConflictsLogged = new Set();
+  let fillFairsRetryAt = 0;
+  let fillFairsLastError = null;
+  const fillFairsDecided = new Set();
+  const fillFairsUnsent = new Map();
   const betsStatus = { okAt: null, error: null, unreachableSince: null, generatedAt: null, sources: {} };
   let settings = { ...edgesPayload.settingsFromService(null), source: "defaults", error: null, okAt: null, updatedAt: null };
   let scannedLeagues = null;
@@ -233,6 +291,7 @@ function createRunner(deps) {
       registerFeedTeams();
       noteMatchedStarts();
       rememberKickoffOdds();
+      learn();
     },
   });
 
@@ -306,6 +365,8 @@ function createRunner(deps) {
       const applied = edgeRows.applyBetsPayload(held, await getServiceJson(serviceFetch, `${deps.betsServiceUrl}/bets.json`), at);
       held = { records: applied.records, crosswalk: applied.crosswalk, pins: applied.pins, fillFairs: applied.fillFairs };
       if (Array.isArray(applied.exclusions)) excludedBetIds = new Set(applied.exclusions.map((row) => row.betId));
+      if (Array.isArray(applied.dismissals)) dismissedIds = applied.dismissals.map((row) => row.betId);
+      if (Array.isArray(applied.teaserBlocks)) teaserBlocks = applied.teaserBlocks;
       fillFairIndex = fillfair.fairsByBetId(held.fillFairs);
       noteMatchedStarts();
       // Before the first settings read the scan has not started; start() starts it.
@@ -317,6 +378,83 @@ function createRunner(deps) {
       Object.assign(betsStatus, { error: error.message, unreachableSince: betsStatus.unreachableSince ?? at });
     } finally {
       betsBusy = false;
+    }
+    learn();
+  }
+
+  // Crosswalk rows, then fill fairs; never throws (a failure is logged and retried later).
+  function learn() {
+    if (learnBusy || !feedState) return;
+    learnBusy = true;
+    learnCrosswalk()
+      .then(() => captureFillFairs())
+      .catch((error) => logWarning(`learning failed: ${error.stack || error.message}`))
+      .finally(() => { learnBusy = false; });
+  }
+
+  // The open bets the board joined by venue id teach what their venue calls
+  // both teams; the service's reply is the whole table, and the records are
+  // re-keyed through it (panel.js learnCrosswalk + applyServiceTables).
+  async function learnCrosswalk() {
+    if (now() < crosswalkRetryAt) return;
+    const { learned, conflicts } = betsLib.learnCrosswalk(held.records, boardLines(), held.crosswalk);
+    for (const conflict of conflicts) {
+      const tag = `${conflict.betId}:${conflict.side}`;
+      if (crosswalkConflictsLogged.has(tag)) continue;
+      crosswalkConflictsLogged.add(tag);
+      logInfo(`crosswalk: not learning ${conflict.venue} ${conflict.league} "${conflict.venueTeamKey}" from ${conflict.betId}: ${conflict.reason}`);
+    }
+    if (!learned.length) return;
+    try {
+      const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/crosswalk.json`, "POST", { rows: learned });
+      if (!reply || !Array.isArray(reply.crosswalk)) throw new Error("crosswalk.json reply has no crosswalk array");
+      logInfo(`crosswalk: learned ${reply.learned} row(s), ${(reply.conflicts || []).length} refused by the service, ${reply.crosswalk.length} held`);
+      held = { ...held, crosswalk: reply.crosswalk, records: betsLib.rekeyRecords(betsLib.applyPins(held.records, held.pins), reply.crosswalk) };
+      crosswalkLastError = null;
+    } catch (error) {
+      crosswalkRetryAt = now() + SERVICE_WRITE_RETRY_MS;
+      if (crosswalkLastError !== error.message) logWarning(`crosswalk: service write failed: ${error.message}`);
+      crosswalkLastError = error.message;
+    }
+  }
+
+  // Each new open bet's fair when it was placed, read off the line history
+  // while the scanner watched through the fill (fillfair.js), one row per
+  // POST: the service refuses a whole request on its first bad row. A 400
+  // drops the row; any other failure keeps every unsent row for a minute.
+  async function captureFillFairs() {
+    const liveStatus = scanner.getStatus();
+    const { saves, refusals } = fillfair.captureFillFairs({
+      records: held.records, skipIds: new Set([...fillFairIndex.keys(), ...fillFairsDecided]),
+      state: feedState, boardLines: boardLines(), history,
+      observingSince: liveStatus.observingSince, leagueObservingSince: liveStatus.leagueObservingSince, now: now(),
+    });
+    for (const save of saves) {
+      fillFairsDecided.add(save.betId);
+      fillFairsUnsent.set(save.betId, save);
+    }
+    for (const refusal of refusals) fillFairsDecided.add(refusal.betId);
+    if (saves.length) logInfo(`fill fairs: ${saves.length} captured`);
+    if (fillFairsUnsent.size === 0 || now() < fillFairsRetryAt) return;
+    for (const row of Array.from(fillFairsUnsent.values())) {
+      try {
+        const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/fill_fairs.json`, "POST", { rows: [row] });
+        if (!reply || !Array.isArray(reply.fillFairs)) throw new Error("fill_fairs.json reply has no fillFairs array");
+        fillFairsUnsent.delete(row.betId);
+        fillFairsLastError = null;
+        held = { ...held, fillFairs: fillfair.mergeFillFairs(held.fillFairs, reply.fillFairs, held.records) };
+        fillFairIndex = fillfair.fairsByBetId(held.fillFairs);
+      } catch (error) {
+        if (error.status === HTTP_BAD_REQUEST) {
+          fillFairsUnsent.delete(row.betId);
+          logWarning(`fill fairs: the service refused ${row.betId}, dropped: ${error.message}`);
+          continue;
+        }
+        fillFairsRetryAt = now() + SERVICE_WRITE_RETRY_MS;
+        if (fillFairsLastError !== error.message) logWarning(`fill fairs: service write failed: ${error.message}`);
+        fillFairsLastError = error.message;
+        return;
+      }
     }
   }
 
@@ -407,7 +545,80 @@ function createRunner(deps) {
       settingsStatus: { source: settings.source, error: settings.error, okAt: settings.okAt, updatedAt: settings.updatedAt },
       betsStatus: { ...betsStatus }, boardLines: boardLines(), ladderReaderOf,
       teasers: openTeasersNow(), measurement: feedState ? tailFlexMeasurement() : null, now: now(),
+      dismissedIds,
     });
+  }
+
+  // Both football boards in, or failed (panel.js teaserBoardReady): before
+  // that a list would be NFL's alone while CFB is still coming.
+  function teaserBoardReady() {
+    if (!scannerStatus || !feedState) return false;
+    return teaser.TEASER_LEAGUE_IDS.every((id) => scannerStatus.leaguesLoaded.includes(id)
+      || Boolean(scannerStatus.leagueErrors && scannerStatus.leagueErrors[id]));
+  }
+
+  // The Teasers tab's model, built as panel.js teaserModel builds it, with
+  // the Can't tease marks whose game is still to start.
+  function teaserModel(at) {
+    if (!teaserBoardReady()) return null;
+    const board = currentTeaserBoard();
+    const blocked = new Set(teaserBlocks.filter((block) => block.eventStartMs > at).map((block) => block.marketKey));
+    const legs = teaser.teaserLegs(feedState, { now: at, maxLineAgeMs: settings.edgeSettings.maxLineAgeHours * HOUR_MS, board });
+    const placed = teaser.openTeasers(held.records, boardLines(), { now: at, ladderOf: board.ladderOf });
+    const straights = teaser.heldStraights(held.records, boardLines(), { now: at, ladderOf: board.ladderOf });
+    const kellyBankroll = settings.stakeSettings.bankroll * settings.stakeSettings.multiplier;
+    const planned = teaser.planTeasers({ legs, placed, straights, kellyBankroll, previous: teaserBuild, blocked });
+    teaserBuild = planned.build;
+    return {
+      legs, placed, build: teaserBuild,
+      plan: teaser.describePlan(teaserBuild, legs, placed),
+      legRows: teaser.describeLegs(legs, teaserBuild, placed, straights, blocked),
+    };
+  }
+
+  function teasersPayloadNow() {
+    const at = now();
+    let model = null;
+    let error = null;
+    try {
+      model = teaserModel(at);
+      teaserLastError = null;
+    } catch (thrown) {
+      error = `Teasers failed: ${thrown.message}`;
+      if (teaserLastError !== thrown.message) logWarning(`teasers failed: ${thrown.stack || thrown.message}`);
+      teaserLastError = thrown.message;
+    }
+    return teasersPayload.buildTeasersPayload({ model, error, scannerStatus, stakeSettings: settings.stakeSettings, now: at });
+  }
+
+  // The Bets tab's Attach, off the board this runner holds (attach.js):
+  // step 1 lists the games for `query`; with `eventId`, step 2 is the plan
+  // for that game and the POST /pins.json body. Throws a 400/404-tagged
+  // Error naming what was wrong.
+  //   params  URLSearchParams {betId, query?, eventId?, swapped?}
+  function attachPayloadNow(params) {
+    const betId = params.get("betId");
+    const bet = held.records.find((record) => record.id === betId && record.status === "open");
+    if (!bet) throw httpError(404, `no open bet ${JSON.stringify(betId)}`);
+    const lines = boardLines();
+    const eventIdText = params.get("eventId");
+    if (eventIdText == null) {
+      const { scope, events, more } = attachLib.attachCandidates(bet, lines, { query: params.get("query") || "" });
+      return {
+        betId, scope, more,
+        events: events.map(({ event, why }) => ({ eventId: event.eventId, label: attachLib.gameLabel(event), meta: attachLib.gameMeta(event), why: why || null })),
+      };
+    }
+    const game = attachLib.boardGames(lines, null).find((candidate) => String(candidate.eventId) === eventIdText);
+    if (!game) throw httpError(404, `game ${eventIdText} has left the board`);
+    const swapped = params.get("swapped") === "1";
+    const plan = attachLib.attachPlan(bet, game, { swapped, lines });
+    return {
+      betId, eventId: game.eventId, swapped, label: attachLib.gameLabel(game), meta: attachLib.gameMeta(game),
+      venueLabel: betsLib.venueLabel(bet.venue), names: plan.names, betOnGame: plan.betOnGame,
+      learnCount: plan.crosswalk.length, learnedNames: plan.crosswalk.map((row) => row.venueTeamName),
+      pinRequest: attachLib.pinRequest(bet, game, plan),
+    };
   }
 
   // The Live tab's cards, off the remembered games (scenarios.js).
@@ -443,8 +654,17 @@ function createRunner(deps) {
     };
   }
 
-  return { start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, edgesPayload: edgesPayloadNow,
-    scenariosPayload: scenariosPayloadNow, health, scanner };
+  return {
+    start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, learn,
+    edgesPayload: edgesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow,
+    scenariosPayload: scenariosPayloadNow, health, scanner,
+  };
+}
+
+function httpError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
 }
 
 function sendJson(response, status, body) {
@@ -453,7 +673,7 @@ function sendJson(response, status, body) {
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json, /scenarios.json and /health, the Host allowlist first on
+// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json and /health, the Host allowlist first on
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
@@ -467,12 +687,16 @@ function createHttpServer(runner, { host }) {
       sendJson(response, 405, { error: `only GET is served, got ${request.method}` });
       return;
     }
-    const path = new URL(request.url, "http://runner.invalid").pathname;
+    const url = new URL(request.url, "http://runner.invalid");
+    const path = url.pathname;
     try {
       if (path === "/edges.json") return sendJson(response, 200, runner.edgesPayload());
+      if (path === "/teasers.json") return sendJson(response, 200, runner.teasersPayload());
+      if (path === "/attach.json") return sendJson(response, 200, runner.attachPayload(url.searchParams));
       if (path === "/scenarios.json") return sendJson(response, 200, runner.scenariosPayload());
       if (path === "/health") return sendJson(response, 200, runner.health());
     } catch (error) {
+      if (error.status) return sendJson(response, error.status, { error: error.message });
       logError(`${path} failed: ${error.stack || error.message}`);
       return sendJson(response, 500, { error: `${path} failed: ${error.message}` });
     }
