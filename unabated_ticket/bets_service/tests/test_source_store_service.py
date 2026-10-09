@@ -685,7 +685,8 @@ def test_http_bets_json_and_health_shape(store, http_server):
     service.run_source_once(ScriptedSource([[record("kalshi:a:yes", "open", None)]]), store)
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
-    assert set(payload) == {"generatedAt", "sources", "bets", "crosswalk", "pins", "fillFairs", "exclusions"}
+    assert set(payload) == {"generatedAt", "sources", "bets", "crosswalk", "pins", "fillFairs", "closingFairs",
+                            "exclusions"}
     assert set(payload["sources"]["kalshi"]) == {"fetchedAt", "ok", "error", "count"}
     assert payload["sources"]["kalshi"]["ok"] is True
     assert payload["bets"][0]["id"] == "kalshi:a:yes"
@@ -703,7 +704,7 @@ def test_http_before_any_poll_serves_an_empty_list_with_the_source_pending(http_
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
     assert payload == {"generatedAt": payload["generatedAt"], "sources": {"kalshi": service.NO_POLL_YET}, "bets": [],
-                       "crosswalk": [], "pins": [], "fillFairs": [], "exclusions": []}
+                       "crosswalk": [], "pins": [], "fillFairs": [], "closingFairs": [], "exclusions": []}
     status, payload = get_json(f"{http_server}/health")
     assert status == 200 and payload["sources"] == {"kalshi": service.NO_POLL_YET}
 
@@ -795,6 +796,47 @@ def test_http_fill_fairs_post_saves_once_and_bets_json_serves_them(store, http_s
     assert store._con.execute("SELECT count(*) FROM bet_fill_fairs").fetchone()[0] == 1
 
 
+def closing_fair_row(bet_id: str, fair_american: int = -123, observed: str = "2026-09-13T16:55:00Z", **extra) -> dict:
+    return {"betId": bet_id, "lineKey": "289357360:ms105:si0:tid6", "points": -2.5, "fairAmerican": fair_american,
+            "fairObservedAt": observed, "eventStart": "2026-09-13T17:00:00Z", **extra}
+
+
+def test_closing_fairs_keep_the_newest_pregame_observation_and_serve_for_the_window(store):
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    service.run_source_once(ScriptedSource([[record("kalshi:open", "open", None), record("kalshi:old", "won", old)]]), store)
+    at = datetime(2026, 9, 13, 16, 56, tzinfo=timezone.utc)
+    assert store.save_closing_fairs([closing_fair_row("kalshi:open", observed="2026-09-13T16:50:00Z"),
+                                     closing_fair_row("kalshi:old")], at) == 2
+    # Newer moves the row forward; an older reading arriving late is ignored.
+    assert store.save_closing_fairs([closing_fair_row("kalshi:open", -130, "2026-09-13T16:58:00Z")], at) == 1
+    assert store.save_closing_fairs([closing_fair_row("kalshi:open", -110, "2026-09-13T16:52:00Z")], at) == 0
+    served = store.load_closing_fairs(30, now)
+    assert served == [{"betId": "kalshi:open", "lineKey": "289357360:ms105:si0:tid6", "points": -2.5, "fairAmerican": -130,
+                       "fairObservedAt": "2026-09-13T16:58:00Z", "eventStart": "2026-09-13T17:00:00Z"}]
+    assert service.bets_payload(store, days=30)["closingFairs"] == served
+
+
+def test_validate_closing_fair_rows_refuses_a_reading_at_or_after_the_start():
+    good = closing_fair_row("kalshi:1")
+    assert service.validate_closing_fair_rows({"rows": [good]}) == [good]
+    assert service.validate_closing_fair_rows({"rows": [{**good, "eventStart": None}]}) == "rows[0].eventStart must be an ISO time, got None"
+    assert service.validate_closing_fair_rows({"rows": [{**good, "fairAmerican": 50}]}).startswith("rows[0].fairAmerican must be")
+    assert service.validate_closing_fair_rows({"rows": [closing_fair_row("kalshi:1", observed="2026-09-13T17:00:00Z")]}) == (
+        "rows[0].fairObservedAt must be before eventStart (a close is read pregame), "
+        "got 2026-09-13T17:00:00Z at or after 2026-09-13T17:00:00Z")
+
+
+def test_http_closing_fairs_post_and_bets_json_serves_them(store, http_server):
+    service.run_source_once(ScriptedSource([[record("kalshi:1", "open", None)]]), store)
+    body = json.dumps({"rows": [closing_fair_row("kalshi:1")]}).encode()
+    status, reply = request_json("POST", f"{http_server}/closing_fairs.json", body, "application/json")
+    assert (status, reply) == (200, {"ok": True, "saved": 1})
+    assert [row["fairAmerican"] for row in get_json(f"{http_server}/bets.json")[1]["closingFairs"]] == [-123]
+    status, _ = request_json("POST", f"{http_server}/closing_fairs.json", body, "text/plain")
+    assert status == 415
+
+
 def test_http_exclusions_remove_and_restore_only_bfa_and_wagerzon_bets(store, http_server):
     service.run_source_once(ScriptedSource([[
         {**record("bfa:1:leg0", "lost", "2026-09-20T20:00:00Z"), "venue": "bfa"},
@@ -836,6 +878,7 @@ def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):
             ("GET", "/bets.json", None, None), ("GET", "/health", None, None),
             ("POST", "/crosswalk.json", body, "application/json"),
             ("POST", "/fill_fairs.json", json.dumps({"rows": [fill_fair_row("kalshi:a:yes")]}).encode(), "application/json"),
+            ("POST", "/closing_fairs.json", json.dumps({"rows": [closing_fair_row("kalshi:a:yes")]}).encode(), "application/json"),
             ("POST", "/exclusions.json", json.dumps({"betIds": ["kalshi:a:yes"], "excluded": True}).encode(), "application/json"),
             ("DELETE", "/crosswalk.json", None, None),
             ("POST", "/pins.json", json.dumps({"pin": pin_for("kalshi:a:yes")}).encode(), "application/json"),

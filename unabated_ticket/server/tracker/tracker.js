@@ -322,13 +322,14 @@
     const luck = total.withFair ? total.fairPnl - total.expected : null;
     kpiTiles("ov-kpis", [
       { label: "Net P&L", value: money(total.pnl, true), color: toneColor(total.pnl),
-        sub: total.bets + " settled bets" + (missing ? " · " + missing + " without a result" : "") },
+        sub: total.bets + " settled · " + total.wins + "-" + total.losses + "-" + total.pushes
+          + (total.winRate === null ? "" : " (" + pct(total.winRate) + ")") + (missing ? " · " + missing + " without a result" : "") },
       { label: "ROI", value: pct(total.roi, true), color: toneColor(total.pnl), sub: "on " + money(total.handle) + " handle" },
       { label: "Expected P&L", value: total.withFair ? money(total.expected, true) : "—", color: COLORS.exp,
-        sub: total.withFair + " of " + total.bets + " bets have a saved fair" },
+        sub: total.withFair + " of " + total.bets + " bets have a fair (fill, else close)" },
       { label: "Actual vs expected", value: luck === null ? "—" : money(luck, true), color: luck === null ? COLORS.muted : toneColor(luck),
-        sub: total.z === null ? "needs bets with a saved fair" : "z = " + total.z.toFixed(2) + (Math.abs(total.z) < 1.96 ? ", within noise" : ", outside the 95% band") },
-      { label: "Record", value: total.wins + "-" + total.losses + "-" + total.pushes, sub: "win rate " + pct(total.winRate) },
+        sub: total.z === null ? "needs bets with a fair" : "z = " + total.z.toFixed(2) + (Math.abs(total.z) < 1.96 ? ", within noise" : ", outside the 95% band") },
+      clvTile(total),
       { label: "Open risk", value: money(openStake), sub: open.length + " open bets" + (openWithFair.length ? " · EV " + money(openEv, true) : "") + " · view →",
         onClick: () => showView("open") },
     ]);
@@ -339,6 +340,20 @@
     renderDaily(series);
     renderVenues(settled);
     renderSettledBets(settled, total, missing);
+  }
+
+  /** CLV: expected return at Unabated's closing fair, stake-weighted, and how often the close was beaten. */
+  function clvTile(total) {
+    return { label: "CLV", value: pct(total.clvRoi, true), color: total.clvRoi === null ? COLORS.muted : toneColor(total.clvRoi),
+      sub: total.withClose ? "beat the close " + pct(total.beatRate) + " · " + total.withClose + " of " + total.bets + " bets" : "no closing fairs yet" };
+  }
+
+  function clvCell(ticket) {
+    return pct(ticket.clv, true);
+  }
+
+  function clvClass(ticket) {
+    return ticket.clv === null ? "muted" : toneClass(ticket.clv);
   }
 
   function renderChart(series) {
@@ -543,6 +558,8 @@
       { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
       { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice), sort: (t) => t.displayPrice },
       { label: "Fair", right: true, num: true, className: () => "exp", cell: (t) => american(t.fairAmerican), sort: (t) => t.fairAmerican },
+      { label: "Close", right: true, num: true, className: () => "exp", cell: (t) => american(t.closeAmerican), sort: (t) => t.closeAmerican },
+      { label: "CLV", right: true, num: true, className: clvClass, cell: clvCell, sort: (t) => t.clv },
       { label: "Stake", right: true, num: true, cell: (t) => money(t.stake), sort: (t) => t.stake },
       { label: "Result", cell: resultTag, sort: (t) => t.status },
       { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => money(t.pnl, true), sort: (t) => t.pnl },
@@ -607,6 +624,7 @@
       { label: "Price", right: true, num: true, cell: (t) => american(t.displayPrice), sort: (t) => t.displayPrice },
       { label: "Fair", right: true, num: true, className: () => "exp", cell: (t) => american(t.fairAmerican), sort: (t) => t.fairAmerican },
       { label: "Edge", right: true, num: true, className: (t) => (t.edge === null ? "muted" : toneClass(t.edge)), cell: (t) => pct(t.edge, true), sort: (t) => t.edge },
+      { label: "CLV", right: true, num: true, className: clvClass, cell: clvCell, sort: (t) => t.clv },
       { label: "Stake", right: true, num: true, cell: (t) => money(t.stake), sort: (t) => t.stake },
       { label: "To win", right: true, num: true, cell: (t) => (Number.isFinite(t.toWin) ? money(t.toWin) : "—"), sort: (t) => (Number.isFinite(t.toWin) ? t.toWin : null) },
     ], group, { sortKey: sortKey || "open" })])]);
@@ -746,13 +764,13 @@
     const total = stats.summarize(settled);
     setText("an-caption", rangeCaption(first, last) + " · " + total.bets + " settled bets");
     kpiTiles("an-kpis", [
-      { label: "Bets", value: String(total.bets), sub: total.wins + "-" + total.losses + "-" + total.pushes + " W-L-P" },
-      { label: "Handle", value: money(total.handle), sub: "avg stake " + money(total.bets ? total.handle / total.bets : 0) },
-      { label: "P&L", value: money(total.pnl, true), color: toneColor(total.pnl), sub: total.withFair ? "expected " + money(total.expected, true) + " on " + total.withFair + " with a fair" : "no saved fairs" },
+      { label: "Bets", value: String(total.bets), sub: total.wins + "-" + total.losses + "-" + total.pushes + " W-L-P · " + money(total.handle) + " handle" },
+      { label: "P&L", value: money(total.pnl, true), color: toneColor(total.pnl), sub: total.withFair ? "expected " + money(total.expected, true) + " on " + total.withFair + " with a fair" : "no fairs" },
       { label: "ROI", value: pct(total.roi, true), color: toneColor(total.roi), sub: "95%: " + pct(total.roi - total.ciHalf, true) + " to " + pct(total.roi + total.ciHalf, true) },
-      { label: "Avg edge at fill", value: pct(total.expRoi, true), color: COLORS.exp, sub: "stake-weighted, Unabated fair" },
+      { label: "Avg edge", value: pct(total.expRoi, true), color: COLORS.exp, sub: "stake-weighted, fill fair else close" },
+      clvTile(total),
       { label: "Luck (z)", value: total.z === null ? "—" : total.z.toFixed(2), color: total.z !== null && Math.abs(total.z) >= 1.96 ? COLORS.warn : COLORS.text,
-        sub: total.z === null ? "needs bets with a saved fair" : Math.abs(total.z) < 1.96 ? "within normal variance" : "outside the 95% band" },
+        sub: total.z === null ? "needs bets with a fair" : Math.abs(total.z) < 1.96 ? "within normal variance" : "outside the 95% band" },
     ]);
     renderGroups(settled);
     renderCalibration(settled);
@@ -791,13 +809,15 @@
       { label: "Expected ROI", right: true, num: true, className: () => "exp", cell: (r) => pct(r.expRoi, true), sort: (r) => r.expRoi },
       { label: "vs expected", right: true, num: true, className: (r) => (r.withFair ? toneClass(r.fairPnl - r.expected) : "muted"), cell: (r) => (r.withFair ? money(r.fairPnl - r.expected, true) : "—"), sort: (r) => (r.withFair ? r.fairPnl - r.expected : null) },
       { label: "z", right: true, num: true, className: (r) => (r.z !== null && Math.abs(r.z) >= 1.96 ? "warn" : "muted"), cell: (r) => (r.z === null ? "—" : r.z.toFixed(2)), sort: (r) => r.z },
+      { label: "CLV", right: true, num: true, className: (r) => (r.clvRoi === null ? "muted" : toneClass(r.clvRoi)), cell: (r) => pct(r.clvRoi, true), sort: (r) => r.clvRoi },
+      { label: "Beat close", right: true, num: true, className: () => "muted", cell: (r) => (r.withClose ? pct(r.beatRate) + " of " + r.withClose : "—"), sort: (r) => (r.withClose ? r.beatRate : null) },
     ], rows, { sortKey: "groups" }));
   }
 
   function renderCalibration(settled) {
     const bins = stats.calibration(settled);
     if (!bins.length) {
-      fill("an-calibration", emptyNote("No settled straight bets with a saved fair yet."));
+      fill("an-calibration", emptyNote("No settled straight bets with a fair yet."));
       fill("an-cal-table");
       return;
     }
@@ -828,7 +848,7 @@
     const yAxis = el("div", { className: "yaxis" }, axisLabels);
     const xAxis = el("div", { className: "xaxis" }, [low, (high + low) / 2, high].map((p) => el("span", { text: pct(p) })));
     fill("an-calibration", el("div", { className: "cal-plot" }, [el("div", { className: "plot" }, [yAxis, svg]), xAxis]),
-      el("div", { className: "muted", text: "Fair win probability at fill (x) against actual win rate (y); bars are 95% intervals." }));
+      el("div", { className: "muted", text: "Fair win probability, at fill or else at close (x), against actual win rate (y); bars are 95% intervals." }));
     fill("an-cal-table", table([
       { label: "Fair prob.", cell: (b) => Math.round(b.low * 100) + " to " + Math.round(b.high * 100) + "%", sort: (b) => b.low },
       { label: "Bets", right: true, num: true, cell: (b) => String(b.bets), sort: (b) => b.bets },
@@ -1025,7 +1045,7 @@
   }
 
   function rebuildTickets() {
-    allTickets = stats.buildTickets(payload.bets, payload.fillFairs, payload.exclusions);
+    allTickets = stats.buildTickets(payload.bets, payload.fillFairs, payload.closingFairs, payload.exclusions);
     applyBotComboFilter();
   }
 

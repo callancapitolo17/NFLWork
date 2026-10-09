@@ -1599,6 +1599,12 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   keeps it, so `saved` counts only new bets. A row is refused with a 400
   that names it unless `fairAmerican` is a whole American price, both times
   are ISO and the fair was observed at or before `placedAt`. `POST
+  /closing_fairs.json` with `{rows: [{betId, lineKey, points, fairAmerican,
+  fairObservedAt, eventStart}]}` (at most 1000) → `{ok, saved}` — the server
+  runner's pregame read of each open bet's line (Bet Tracker, CLV); a row
+  observed at or after `eventStart` is a 400, and a row older than the stored
+  one is ignored. `/bets.json` also serves `closingFairs` (the window's
+  bets). `POST
   /exclusions.json` with `{betIds: [...], excluded: true|false}` (at most
   50) → `{ok, changed, exclusions}` — the Bet Tracker's Remove / Restore; a
   bet not at BFA or Wagerzon is a 400, an unknown id a 404. `/bets.json` also
@@ -1955,6 +1961,11 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   a request repeating a bet keeps its first row and logs it), never pruned
   (~14 bets a day) and never backfilled; `/bets.json` serves the rows of the
   bets in its window only, so the table's growth never reaches the poll.
+  `bet_closing_fairs` (primary key `bet_id`, plus `line_key`, `points`,
+  `fair_american`, `fair_observed_at`, `event_start`, `updated_at`) holds one
+  closing fair per bet, UPSERTed only forward in time (`DO UPDATE ... WHERE
+  excluded.fair_observed_at >` the stored one), never pruned, served for the
+  window's bets.
   `bet_exclusions` (primary key `bet_id`, plus `venue`, `excluded_at`) holds
   the bets removed from the Bet Tracker; Restore deletes the row, and the bet
   in `bets` is never touched.
@@ -2088,7 +2099,7 @@ node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json
 ```
 
 On the Mac it runs as a launchd agent next to the bets service (the Bet
-Tracker's Live tab needs it running before each game starts):
+Tracker's Live tab and CLV need it running before each game starts):
 
 ```bash
 cp unabated_ticket/server/com.nflwork.edges-runner.plist ~/Library/LaunchAgents/
@@ -2143,14 +2154,22 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
   → `{generatedAt, scanner, betsService, games, coveredBetIds}`, the Bet
   Tracker's Live tab cards (`server/scenarios.js` documents the shape; the
   bets service passes it through at its own `/scenarios.json`). `GET /health` →
-  `{ok, uptimeSec, scanner, betsService, settings}`. Any verb but GET is
+  `{ok, uptimeSec, scanner, betsService, settings, closingFairs}`. Any verb but GET is
   405; a request whose `Host` is not `127.0.0.1:<port>`, `localhost:<port>`
   or the bound address with the port is 403 (the bets service's #125 rule).
-- **Side effects**: none on disk and no writes to the bets service; feed,
-  line history, bets and each game's kickoff odds (the Live tab's chances)
-  live in memory and rebuild on restart (so the edge-move tag starts empty,
-  as when the panel opens, and a game already under way has no kickoff
-  chances). Logs state changes to
+- **Closing fairs** (2026-10-05): it also loads the leagues of open straight
+  bets (an Edges list never shows a league its settings leave out; a league
+  added this way stays loaded until the runner restarts, since every change
+  of leagues restarts the scan; a soccer bet loads every soccer league, as
+  the bet names no competition) and every
+  30 s POSTs `/closing_fairs.json` with the rows that changed — each open
+  bet's Unabated fair on its own line while its game is still to start
+  (`server/closefair.js`; Bet Tracker, CLV).
+- **Side effects**: none on disk; its one write to the bets service is that
+  POST. Feed, line history, bets and each game's kickoff odds (the Live
+  tab's chances) live in memory and rebuild on restart (so the edge-move tag
+  starts empty, as when the panel opens, and a game already under way has
+  no kickoff chances). Logs state changes to
   stdout/stderr. Unlike the panel it does not POST fill fairs or crosswalk
   lessons — the Mac panel keeps doing that.
 
@@ -2200,15 +2219,16 @@ node unabated_ticket/server/runner.js                     # must be running too 
 
 ### Bet Tracker (`server/tracker/`)
 
-Daily P&L and bet analysis, served by the bets service at `/tracker` (on
-the VM: `https://<vm>.<tailnet>.ts.net/tracker`). It reads `GET
+Daily P&L, CLV and bet analysis, served by the bets service at `/tracker`
+(on the VM: `https://<vm>.<tailnet>.ts.net/tracker`). It reads `GET
 /bets.json?days=3650` (every bet the service has stored, plus the saved fill
 fairs and removed bets) and `GET /scenarios.json` (the Live tab's game
 cards, from the server runner through the bets service) every 60 s while
 visible. Its one write is the Bets page's Remove / Restore.
 
-- **Overview**: net P&L, ROI, handle, record, open risk; expected P&L at
-  Unabated's fair at fill and actual vs expected with its z-score; cumulative
+- **Overview**: net P&L with the record, ROI, handle, open risk; expected
+  P&L at Unabated's fair (fill, else close) and actual vs expected with its
+  z-score; CLV; cumulative
   actual vs expected chart with daily bars; a 6-week calendar heatmap (click a
   day to filter the whole Overview to it as a one-day Custom range; click it
   again, or pick a range, to go back); daily
@@ -2242,15 +2262,31 @@ visible. Its one write is the Bets page's Remove / Restore.
 - **Open** (2026-10-07; was Overview's bottom panel): open-bet count, stake
   at risk and to win, open EV (bets with a saved fair) and stake in live
   games (links to Live), then the open bets that are not live with price,
-  fair and edge, then **Settled today** (bets settled on the current
+  fair, edge and CLV, then **Settled today** (bets settled on the current
   Pacific day, whatever the header range says). The nav tab carries the
   count of open bets not on the Live tab.
 - **Analysis**: filter by venue, league and type (straight, parlay, teaser),
   group by venue, league, market, period, type, odds, edge at fill, timing
   (hours placed before start), weekday or stake. Each group shows ROI with its
   95% interval (proven only when the interval clears zero), expected ROI,
-  actual vs expected and z. Calibration of fair win probability against the
-  actual win rate (straights with a fair), and a searchable bet log.
+  actual vs expected, z, CLV and how often the close was beaten. Calibration of fair win probability against the
+  actual win rate (straights with a fair), and a searchable bet log with each
+  bet's closing fair and CLV.
+- **CLV** (2026-10-05): the expected return at Unabated's **closing** fair,
+  closing prob × the ticket's actual payout − 1, stake-weighted, plus the
+  share of bets that beat the close. The close is read by the server runner
+  (`server/closefair.js`): every 30 s it POSTs each open straight bet's fair
+  on its own line and number (the bet's venue first, else the book that moved
+  last, an alt rung when the market moved off the number) while the game is
+  still to start, and the service keeps the newest reading per bet
+  (`bets.duckdb::bet_closing_fairs`). A reading more than 30 min before the
+  start (the runner was down) is not a close, and a league whose snapshot
+  build is over 15 min old (a stale CDN copy) gives none. History starts the day the
+  runner first ran: no backfill. No close for parlays, teasers, props,
+  futures, Kalshi combos, leagues Unabated does not list, or a number the
+  board stops carrying. **The runner must be running at kickoff**: on the
+  Mac, its launchd agent (install steps under the server runner above;
+  `/health` reports `closingFairs {okAt, error, rowsSent}`).
 - **Bets**: every BFA and Wagerzon bet, newest first, searchable, filtered to
   counted or removed. **Remove** marks a bet that isn't yours (`POST
   /exclusions.json` → `bets.duckdb::bet_exclusions`; the bet itself stays in
@@ -2303,9 +2339,10 @@ visible. Its one write is the Bets page's Remove / Restore.
   result is gone (`unknown`) have no
   known P&L and are counted as "without a result". A parlay or teaser is one
   ticket (its legs carry the ticket's stake and status). Edge = fair
-  probability × the ticket's actual payout − 1, so expected P&L, z and
-  calibration cover only bets with a saved fill fair; the rest group under
-  "No fair saved". A removed bet is in none of the numbers. Kalshi fees are not in Kalshi's `toWin`, so its P&L is
+  probability × the ticket's actual payout − 1, the fair being the fill fair
+  when one was saved, else the closing fair; expected P&L, z and calibration
+  cover only bets with one, and the rest group under "No fair saved". A
+  removed bet is in none of the numbers. Kalshi fees are not in Kalshi's `toWin`, so its P&L is
   before fees.
 - **History** is whatever this service's `bets.duckdb` holds: sources pull
   about 31 days back, and records are kept from then on. A service started on

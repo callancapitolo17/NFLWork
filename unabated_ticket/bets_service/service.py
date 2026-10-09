@@ -14,6 +14,7 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     crosswalk: [team_crosswalk rows, newest first],
                                     pins: [bet_pins rows, newest first],
                                     fillFairs: [bet_fill_fairs rows of those bets],
+                                    closingFairs: [bet_closing_fairs rows of those bets],
                                     exclusions: [bet_exclusions rows, newest first]}
            GET /health              {ok, generatedAt, uptimeSec, sources}
            POST /crosswalk.json     body {rows: [{venue, league, venueTeamKey,
@@ -38,6 +39,11 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     (the fair a new bet's line had when it was placed,
                                     read by the panel off its line history; same
                                     Content-Type guard as the crosswalk)
+           POST /closing_fairs.json body {rows: [{betId, lineKey, points, fairAmerican,
+                                    fairObservedAt, eventStart}]} -> {ok, saved}
+                                    (the server runner's pre-start read of each open bet's
+                                    line, server/closefair.js; a row older than the stored
+                                    one is ignored; same Content-Type guard)
            POST /exclusions.json    body {betIds: [...], excluded: bool} -> {ok, changed,
                                     exclusions} (the Bet Tracker's Bets page removing or
                                     restoring bets that are not Cal's; BFA and Wagerzon
@@ -94,8 +100,10 @@ bets.duckdb::source_runs per poll (see store.py); INSERTs into / DELETEs from
 bets.duckdb::team_crosswalk on the two crosswalk routes; UPSERTs / DELETEs
 bets.duckdb::bet_pins and the crosswalk rows a pin taught on the two pin
 routes; INSERTs into bets.duckdb::bet_fill_fairs on POST /fill_fairs.json —
-insert-only, a bet that has a saved fair keeps it; INSERTs into / DELETEs from
-bets.duckdb::bet_exclusions on POST /exclusions.json; rotating log at
+insert-only, a bet that has a saved fair keeps it; UPSERTs
+bets.duckdb::bet_closing_fairs on POST /closing_fairs.json (newest observation
+wins); INSERTs into / DELETEs from bets.duckdb::bet_exclusions on POST
+/exclusions.json; rotating log at
 bets_service.log. A poll that raises writes a failed source_runs row and
 leaves `bets` untouched — a dark source never blanks the list. PUT
 /settings.json UPSERTs the one row of bets.duckdb::edge_settings. POST
@@ -293,7 +301,8 @@ def bets_payload(store: BetsStore, days: int, source_names: list[str] = ()) -> d
     now = _now()
     return {"generatedAt": _iso(now), "sources": source_status(store, list(source_names)),
             "bets": store.load_bets(days, now), "crosswalk": store.load_crosswalk(), "pins": store.load_pins(),
-            "fillFairs": store.load_fill_fairs(days, now), "exclusions": store.load_exclusions()}
+            "fillFairs": store.load_fill_fairs(days, now), "closingFairs": store.load_closing_fairs(days, now),
+            "exclusions": store.load_exclusions()}
 
 
 def _non_empty_string(value: object) -> bool:
@@ -439,6 +448,51 @@ def validate_fill_fair_rows(body: object) -> list[dict] | str:
     rows: list[dict] = []
     for index, raw in enumerate(raw_rows):
         row = _validate_fill_fair_row(index, raw)
+        if isinstance(row, str):
+            return row
+        rows.append(row)
+    return rows
+
+
+def _validate_closing_fair_row(index: int, raw: object) -> dict | str:
+    """One row of a POST /closing_fairs.json body in the store's shape, or what
+    was expected and what was found."""
+    if not isinstance(raw, dict):
+        return f"rows[{index}] must be an object, got {type(raw).__name__}"
+    for field in ("betId", "lineKey"):
+        if not _non_empty_string(raw.get(field)):
+            return f"rows[{index}].{field} must be a non-empty string, got {raw.get(field)!r}"
+    points = raw.get("points")
+    if points is not None and not _is_number(points):
+        return f"rows[{index}].points must be a number or null, got {points!r}"
+    fair = raw.get("fairAmerican")
+    if not _is_whole_american(fair):
+        return f"rows[{index}].fairAmerican must be a whole American price (an integer <= -100 or >= 100), got {fair!r}"
+    observed_ms = _iso_ms(raw.get("fairObservedAt"))
+    start_ms = _iso_ms(raw.get("eventStart"))
+    if observed_ms is None:
+        return f"rows[{index}].fairObservedAt must be an ISO time, got {raw.get('fairObservedAt')!r}"
+    if start_ms is None:
+        return f"rows[{index}].eventStart must be an ISO time, got {raw.get('eventStart')!r}"
+    if observed_ms >= start_ms:
+        return (f"rows[{index}].fairObservedAt must be before eventStart (a close is read pregame), "
+                f"got {raw['fairObservedAt']} at or after {raw['eventStart']}")
+    return {"betId": raw["betId"], "lineKey": raw["lineKey"], "points": points, "fairAmerican": fair,
+            "fairObservedAt": raw["fairObservedAt"], "eventStart": raw["eventStart"]}
+
+
+def validate_closing_fair_rows(body: object) -> list[dict] | str:
+    """The rows of a POST /closing_fairs.json body, or an error naming the
+    first bad row: the fill-fair shape with eventStart in place of placedAt,
+    each observed before its game's start."""
+    if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
+        return f"body must be an object with a `rows` array, got {type(body).__name__}"
+    raw_rows = body["rows"]
+    if len(raw_rows) > MAX_FILL_FAIR_ROWS_PER_POST:
+        return f"at most {MAX_FILL_FAIR_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
+    rows: list[dict] = []
+    for index, raw in enumerate(raw_rows):
+        row = _validate_closing_fair_row(index, raw)
         if isinstance(row, str):
             return row
         rows.append(row)
@@ -616,8 +670,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if self._refused_foreign_host():
                 return
             url = urlparse(self.path)
-            if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/exclusions.json",
-                                "/bet105.json", "/place_teaser.json"):
+            if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/closing_fairs.json",
+                                "/exclusions.json", "/bet105.json", "/place_teaser.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
@@ -629,6 +683,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/fill_fairs.json":
                 self._save_fill_fairs(body)
+                return
+            if url.path == "/closing_fairs.json":
+                self._save_closing_fairs(body)
                 return
             if url.path == "/exclusions.json":
                 self._set_exclusions(body)
@@ -695,6 +752,14 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             saved = store.save_fill_fairs(rows, now)
             self._send_json(200, {"ok": True, "saved": saved,
                                   "fillFairs": store.load_fill_fairs(config.RETENTION_DAYS, now)})
+
+        # POST /closing_fairs.json: UPSERT the rows, each kept only when newer.
+        def _save_closing_fairs(self, body: object) -> None:
+            rows = validate_closing_fair_rows(body)
+            if isinstance(rows, str):
+                self._send_json(400, {"error": rows})
+                return
+            self._send_json(200, {"ok": True, "saved": store.save_closing_fairs(rows, _now())})
 
         # POST /exclusions.json: remove (or restore) BFA / Wagerzon bets from
         # the tracker's numbers. Every id must be a stored bet at one of

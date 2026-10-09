@@ -3,8 +3,9 @@
 <plist version="1.0">
 <dict>
   <!-- Unabated Ticket server runner (127.0.0.1:8095) as a launchd agent next
-       to the bets service: the phone page's Edges list and the Bet Tracker's
-       Live tab, whose kickoff chances it can only keep while it runs before
+       to the bets service: the phone page's Edges list, the Bet Tracker's Live
+       tab and the closing fairs its CLV needs, which it can only keep while it
+       runs before
        each game's start. Install/restart/remove: unabated_ticket/README.md
        "Bet Tracker". Paths point at the main checkout, never a worktree. -->
   <key>Label</key>

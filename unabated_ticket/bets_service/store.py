@@ -35,6 +35,15 @@ writer). Tables:
                is never rewritten, and nothing is ever backfilled. Never pruned
                (~14 bets a day). Served with /bets.json for the bets in its
                window (see load_fill_fairs).
+  bet_closing_fairs  one row per bet: Unabated's fair for the bet's own line on
+               the newest snapshot before its game started — the close CLV is
+               measured against. POSTed to /closing_fairs.json by the server
+               runner (server/closefair.js) while the game is still to start;
+               UPSERT keeps the row with the LATEST fair_observed_at, so a late
+               or repeated POST never moves it backwards, and every row is
+               observed before its event_start (service.py validates). Never
+               pruned (one row per straight bet). Served with /bets.json for
+               the bets in its window (see load_closing_fairs).
   bet_exclusions  one row per bet Cal removed from the Bet Tracker (its Bets
                page: bets at BFA or Wagerzon that are not his). The bet stays in
                `bets`; the tracker leaves an excluded bet, and a parlay any of
@@ -121,6 +130,15 @@ CREATE TABLE IF NOT EXISTS bet_fill_fairs (
     fair_observed_at  TIMESTAMPTZ NOT NULL,  -- when the panel saw that fair: at or before placed_at
     placed_at         TIMESTAMPTZ NOT NULL,  -- the bet's placedAt
     captured_at       TIMESTAMPTZ NOT NULL   -- when this service stored the row
+);
+CREATE TABLE IF NOT EXISTS bet_closing_fairs (
+    bet_id            VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
+    line_key          VARCHAR NOT NULL,      -- the Unabated feed line the fair was read from
+    points            DOUBLE,                -- that line's number; NULL on a moneyline
+    fair_american     INTEGER NOT NULL,      -- Unabated's fair (bacr) for the bet's side
+    fair_observed_at  TIMESTAMPTZ NOT NULL,  -- the league snapshot it was read off; before event_start
+    event_start       TIMESTAMPTZ NOT NULL,  -- the board game's start
+    updated_at        TIMESTAMPTZ NOT NULL   -- when this service last wrote the row
 );
 CREATE TABLE IF NOT EXISTS bet_exclusions (
     bet_id       VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
@@ -230,6 +248,27 @@ FROM bet_fill_fairs f
 JOIN bets b ON b.id = f.bet_id
 WHERE b.status = 'open' OR b.closed_at IS NULL OR b.closed_at >= ?
 ORDER BY f.placed_at, f.bet_id
+"""
+
+# Newest observation wins: a row only moves forward in time, so a POST that
+# lands late (or twice) never replaces a later reading of the same bet.
+_UPSERT_CLOSING_FAIR = """
+INSERT INTO bet_closing_fairs (bet_id, line_key, points, fair_american, fair_observed_at, event_start, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (bet_id) DO UPDATE SET
+    line_key = excluded.line_key, points = excluded.points, fair_american = excluded.fair_american,
+    fair_observed_at = excluded.fair_observed_at, event_start = excluded.event_start,
+    updated_at = excluded.updated_at
+WHERE excluded.fair_observed_at > bet_closing_fairs.fair_observed_at
+"""
+
+# The same window as _SELECT_FILL_FAIRS.
+_SELECT_CLOSING_FAIRS = """
+SELECT c.bet_id, c.line_key, c.points, c.fair_american, epoch(c.fair_observed_at), epoch(c.event_start)
+FROM bet_closing_fairs c
+JOIN bets b ON b.id = c.bet_id
+WHERE b.status = 'open' OR b.closed_at IS NULL OR b.closed_at >= ?
+ORDER BY c.event_start, c.bet_id
 """
 
 _SELECT_EXCLUSIONS = "SELECT bet_id, venue, epoch(excluded_at) FROM bet_exclusions ORDER BY excluded_at DESC, bet_id"
@@ -619,6 +658,30 @@ class BetsStore:
             "fairObservedAt": _epoch_to_iso(fair_observed_at), "placedAt": _epoch_to_iso(placed_at),
             "capturedAt": _epoch_to_iso(captured_at),
         } for bet_id, line_key, points, fair_american, fair_observed_at, placed_at, captured_at in rows]
+
+    def save_closing_fairs(self, rows: list[dict], updated_at: datetime) -> int:
+        """UPSERT the closing fairs (validated shape: see
+        service.validate_closing_fair_rows), each kept only when it is newer
+        than the stored one. Returns how many rows were written."""
+        written = 0
+        with self._lock:
+            for row in rows:
+                [count] = self._con.execute(_UPSERT_CLOSING_FAIR, [
+                    row["betId"], row["lineKey"], row["points"], row["fairAmerican"],
+                    _parse_iso(row["fairObservedAt"]), _parse_iso(row["eventStart"]), updated_at,
+                ]).fetchone()
+                written += count
+        return written
+
+    def load_closing_fairs(self, days: int, now: datetime) -> list[dict]:
+        """The closing fairs of the bets load_bets(days, now) serves, earliest game first."""
+        cutoff = now - timedelta(days=days)
+        with self._lock:
+            rows = self._con.execute(_SELECT_CLOSING_FAIRS, [cutoff]).fetchall()
+        return [{
+            "betId": bet_id, "lineKey": line_key, "points": points, "fairAmerican": fair_american,
+            "fairObservedAt": _epoch_to_iso(fair_observed_at), "eventStart": _epoch_to_iso(event_start),
+        } for bet_id, line_key, points, fair_american, fair_observed_at, event_start in rows]
 
     def set_exclusions(self, bet_ids: list[str], venue_by_bet: dict[str, str], excluded: bool,
                        at: datetime) -> int:
