@@ -15,7 +15,10 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     pins: [bet_pins rows, newest first],
                                     fillFairs: [bet_fill_fairs rows of those bets],
                                     closingFairs: [bet_closing_fairs rows of those bets],
-                                    exclusions: [bet_exclusions rows, newest first]}
+                                    exclusions: [bet_exclusions rows, newest first],
+                                    dismissals: [{betId, dismissedAt}] (open bets only),
+                                    teaserBlocks: [{marketKey, eventStartMs, blockedAt}]
+                                    (games still to start)}
            GET /health              {ok, generatedAt, uptimeSec, sources}
            POST /crosswalk.json     body {rows: [{venue, league, venueTeamKey,
                                     unabatedTeamId, venueTeamName?, unabatedTeamName?,
@@ -49,6 +52,14 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     restoring bets that are not Cal's; BFA and Wagerzon
                                     bets only — anything else is a 400, an unknown id a
                                     404; same Content-Type guard)
+           POST /dismissals.json    body {betIds: [...], dismissed: bool} -> {ok, changed,
+                                    dismissals} (the panel's and the phone's Dismiss /
+                                    Restore on an open bet no board game matches: stop or
+                                    resume flagging it; an unknown id is a 404; same
+                                    Content-Type guard)
+           POST /teaser_blocks.json body {marketKey, eventStartMs, blocked: bool} -> {ok,
+                                    changed, teaserBlocks} (the Teasers tab's Can't tease /
+                                    Restore on a spread or total; same Content-Type guard)
            POST /bet105.json        body {fetchedAt, feeds: {prematch: [betGroup], live:
                                     [betGroup]}, settled: [wager]} -> {ok, count, settled,
                                     closed, skipped}, or {error} -> {ok, recorded: "error"}
@@ -84,6 +95,11 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
            GET /scenarios.json      the server runner's Live-tab scenarios (server/scenarios.js
                                     documents them), passed through the same way, with the
                                     same 502 (the Bet Tracker's Live tab)
+           GET /teasers.json        the server runner's Teasers list (server/teasers_payload.js
+                                    documents it), passed through the same way (the phone's
+                                    Teasers tab)
+           GET /board.json          the server runner's board games, one row per game
+                                    (the phone's Attach picker), passed through the same way
            GET / and the phone page's files   STATIC_FILES, a fixed map of URL path ->
                                     file (server/phone/ and the extension's pure modules
                                     the page loads under /ext/; the Bet Tracker,
@@ -103,7 +119,9 @@ routes; INSERTs into bets.duckdb::bet_fill_fairs on POST /fill_fairs.json —
 insert-only, a bet that has a saved fair keeps it; UPSERTs
 bets.duckdb::bet_closing_fairs on POST /closing_fairs.json (newest observation
 wins); INSERTs into / DELETEs from bets.duckdb::bet_exclusions on POST
-/exclusions.json; rotating log at
+/exclusions.json; INSERTs into / DELETEs from bets.duckdb::bet_dismissals on
+POST /dismissals.json; UPSERTs / DELETEs bets.duckdb::teaser_blocks on POST
+/teaser_blocks.json; rotating log at
 bets_service.log. A poll that raises writes a failed source_runs row and
 leaves `bets` untouched — a dark source never blanks the list. PUT
 /settings.json UPSERTs the one row of bets.duckdb::edge_settings. POST
@@ -114,6 +132,7 @@ ticket.
 import json
 import logging
 import math
+import re
 import signal
 import threading
 import time
@@ -165,6 +184,10 @@ MAX_FILL_FAIR_ROWS_PER_POST = 1000
 EXCLUDABLE_VENUES = ("bfa", "wagerzon")
 # A parlay's legs go in one request; a dozen is already a long ticket.
 MAX_EXCLUSION_IDS_PER_POST = 50
+# The panel's first sync sends every bet it had dismissed locally: a handful.
+MAX_DISMISSAL_IDS_PER_POST = 200
+# teaser.js marketKeyOf: "<Unabated eventId>:bt2" (spread) or ":bt3" (total).
+TEASER_MARKET_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}:bt[23]$")
 # American odds run from -100 down and +100 up; the gap between is no price.
 MIN_AMERICAN_MAGNITUDE = 100
 # The Edges settings' allowed values, as the panel's inputs enforce them
@@ -302,7 +325,8 @@ def bets_payload(store: BetsStore, days: int, source_names: list[str] = ()) -> d
     return {"generatedAt": _iso(now), "sources": source_status(store, list(source_names)),
             "bets": store.load_bets(days, now), "crosswalk": store.load_crosswalk(), "pins": store.load_pins(),
             "fillFairs": store.load_fill_fairs(days, now), "closingFairs": store.load_closing_fairs(days, now),
-            "exclusions": store.load_exclusions()}
+            "exclusions": store.load_exclusions(), "dismissals": store.load_dismissals(),
+            "teaserBlocks": store.load_teaser_blocks(now)}
 
 
 def _non_empty_string(value: object) -> bool:
@@ -514,6 +538,37 @@ def validate_exclusion_request(body: object) -> tuple[list[str], bool] | str:
     return list(dict.fromkeys(bet_ids)), body["excluded"]
 
 
+def validate_dismissal_request(body: object) -> tuple[list[str], bool] | str:
+    """(bet ids, dismissed) of a POST /dismissals.json body, or what was
+    expected and what was found."""
+    if not isinstance(body, dict):
+        return f"body must be an object, got {type(body).__name__}"
+    bet_ids = body.get("betIds")
+    if not isinstance(bet_ids, list) or not bet_ids or not all(_non_empty_string(bet_id) for bet_id in bet_ids):
+        return f"betIds must be a non-empty list of bet ids, got {bet_ids!r}"
+    if len(bet_ids) > MAX_DISMISSAL_IDS_PER_POST:
+        return f"at most {MAX_DISMISSAL_IDS_PER_POST} betIds per request, got {len(bet_ids)}"
+    if not isinstance(body.get("dismissed"), bool):
+        return f"dismissed must be true or false, got {body.get('dismissed')!r}"
+    return list(dict.fromkeys(bet_ids)), body["dismissed"]
+
+
+def validate_teaser_block_request(body: object) -> tuple[str, datetime, bool] | str:
+    """(market key, game start, blocked) of a POST /teaser_blocks.json body,
+    or what was expected and what was found."""
+    if not isinstance(body, dict):
+        return f"body must be an object, got {type(body).__name__}"
+    market_key = body.get("marketKey")
+    if not isinstance(market_key, str) or not TEASER_MARKET_KEY_PATTERN.match(market_key):
+        return f"marketKey must look like '<eventId>:bt2' or '<eventId>:bt3', got {market_key!r}"
+    event_start_ms = body.get("eventStartMs")
+    if not _is_whole_number(event_start_ms) or event_start_ms <= 0:
+        return f"eventStartMs must be the game's start in whole epoch milliseconds, got {event_start_ms!r}"
+    if not isinstance(body.get("blocked"), bool):
+        return f"blocked must be true or false, got {body.get('blocked')!r}"
+    return market_key, datetime.fromtimestamp(event_start_ms / 1000, timezone.utc), body["blocked"]
+
+
 def _is_whole_number(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -578,7 +633,7 @@ def validate_settings_update(body: object, held: dict) -> dict | str:
 
 
 # The runner's JSON routes the bets service passes through (one origin for the pages).
-RUNNER_ROUTES = ("/edges.json", "/scenarios.json")
+RUNNER_ROUTES = ("/edges.json", "/scenarios.json", "/teasers.json", "/board.json")
 
 
 def fetch_runner_json(runner_url: str, path: str, timeout_sec: float) -> tuple[int, bytes]:
@@ -671,7 +726,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             url = urlparse(self.path)
             if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/closing_fairs.json",
-                                "/exclusions.json", "/bet105.json", "/place_teaser.json"):
+                                "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/bet105.json",
+                                "/place_teaser.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
@@ -689,6 +745,12 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/exclusions.json":
                 self._set_exclusions(body)
+                return
+            if url.path == "/dismissals.json":
+                self._set_dismissals(body)
+                return
+            if url.path == "/teaser_blocks.json":
+                self._set_teaser_block(body)
                 return
             if url.path == "/bet105.json":
                 self._push_bet105(body)
@@ -781,6 +843,32 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             changed = store.set_exclusions(bet_ids, venue_by_bet, excluded, _now())
             self._send_json(200, {"ok": True, "changed": changed, "exclusions": store.load_exclusions()})
+
+        # POST /dismissals.json: stop (or resume) flagging open bets no board
+        # game matches. Every id must be a stored bet, or nothing changes.
+        def _set_dismissals(self, body: object) -> None:
+            request = validate_dismissal_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            bet_ids, dismissed = request
+            unknown = [bet_id for bet_id in bet_ids if store.bet_venue(bet_id) is None]
+            if unknown:
+                self._send_json(404, {"error": f"no bet with id(s) {unknown}"})
+                return
+            changed = store.set_dismissals(bet_ids, dismissed, _now())
+            self._send_json(200, {"ok": True, "changed": changed, "dismissals": store.load_dismissals()})
+
+        # POST /teaser_blocks.json: mark (or clear) one market Can't tease.
+        def _set_teaser_block(self, body: object) -> None:
+            request = validate_teaser_block_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            market_key, event_start, blocked = request
+            now = _now()
+            changed = store.set_teaser_block(market_key, event_start, blocked, now)
+            self._send_json(200, {"ok": True, "changed": changed, "teaserBlocks": store.load_teaser_blocks(now)})
 
         # POST /bet105.json: the extension's read of the account, as one source
         # run — a complete push UPSERTs its records (a graded wager over its open
