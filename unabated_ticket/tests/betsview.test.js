@@ -210,7 +210,6 @@ test("stakeAdvice: Lions @ Bills — the same over held and two unders at anothe
   assert.deepEqual(view.badges({ tier: "same_line", matches: advice.matches, advice }),
     [{ kind: "held", text: "held $270" }, { kind: "against", text: "against $413" }]);
   assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$188.32", alone: "$270.05 alone", cap: null });
-  assert.equal(view.stakeAdviceLine(advice), "add $188.32, $270.05 alone");
   assert.equal(view.suggestedBetAmount(advice), 188.32);
 });
 
@@ -249,7 +248,6 @@ test("stakeAdvice: a Novig line with $17 resting says add $17, never the $32.58 
   assert.equal(advice.cappedAt, 17);
   assert.equal(view.suggestedBetAmount(advice), 17);
   assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$17", alone: "$270.05 alone", cap: "all $17 liq" });
-  assert.equal(view.stakeAdviceLine(advice), "add $17, all $17 liq, $270.05 alone");
   // The Ticket also shows the sized stake before the cap, in case more is really resting.
   assert.ok(advice.uncapped > 17);
   const uncapped = Math.round(advice.uncapped * 100) / 100;
@@ -300,7 +298,7 @@ test("stakeAdvice: a 1H over held sizes the FG over on the worst case, $408.39 n
   assert.equal(advice.matches[0].tier, "related_same");
   assert.equal(advice.bet, 408.39);
   assert.equal(advice.held, 300);
-  assert.equal(view.stakeAdviceLine(advice), "add $408.39, $666.67 alone");
+  assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$408.39", alone: "$666.67 alone", cap: null });
 });
 
 test("stakeAdvice: the OTHER direction in another period is left out — no hedge credit, no worst-case penalty", () => {
@@ -601,8 +599,7 @@ test("teasers: a declined calc zeroes the teaser dollars; a teaser on another ga
 
 test("stakeAdviceWords: no `alone` line when the held bets left the number where it was", () => {
   assert.deepEqual(view.stakeAdviceWords({ kind: "sized", verb: "bet", bet: 183.04, alone: 183.0412 }), { verb: "bet", bet: "$183.04", alone: null, cap: null });
-  assert.equal(view.stakeAdviceLine({ kind: "sized", verb: "bet", bet: 183.04, alone: 183.0412 }), "bet $183.04");
-  assert.equal(view.stakeAdviceLine({ kind: "none", bet: 183.04, alone: 183.04 }), null);
+  assert.equal(view.stakeAdviceWords({ kind: "none", bet: 183.04, alone: 183.04 }), null);
 });
 
 test("relatedLines: bets in the math carry their tier's tag, the rest carry why they are not", () => {

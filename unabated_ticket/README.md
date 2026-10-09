@@ -413,8 +413,8 @@ On an exchange line the number never passes what is resting at the price
 holds the line at the ticket's price): `add $17 · all $17 liq · $71.06
 alone`. With nothing resting the Ticket reads "Nothing resting at this
 price" over `$0`. Because the reported liquidity is sometimes wrong, the
-Ticket (only the Ticket, on the panel and the phone page; not the Edges rows
-or Copy) adds one more line whenever liquidity cut the stake: what it would be
+Ticket (only the Ticket, on the panel and the phone page; not the Edges rows)
+adds one more line whenever liquidity cut the stake: what it would be
 with unlimited liquidity, sized the same way against what you hold, with its
 contracts on an exchange — `uncapped $240.00 · 752 contracts @ 31.9¢`
 (`betsview.uncappedLine`, 2026-10-07).
@@ -430,11 +430,6 @@ Settings (bankroll, Kelly multiplier) sit at the foot of the Ticket tab under
 **Sizing**, reachable from any tab via the ⚙, and persist in
 `chrome.storage.local`. Defaults 30000 and 0.25. The bets service URL is on
 the Bets tab, under the venue strip it feeds.
-
-Copy puts one line on the clipboard:
-`Seattle Mariners -133 · 57.0¢ @ Novig | fair -139 · 58.2¢ | edge +1.89% | stake $188.55 | to win $141.77 | payout $330.32 | Texas Rangers @ Seattle Mariners · MLB`.
-When held bets changed the number the stake reads `stake $188.32 (add $188.32, $270.05 alone)`.
-On an exchange line the contract order follows the stake: `stake $261.69 | 1127 contracts @ 23.2¢ | to win ...`.
 
 ## Edges tab
 
@@ -1131,7 +1126,7 @@ row's direction and `against` the dollars on the other one.
 
 Both badges show when both exist. To win and Payout describe the number shown
 above them, so a top-up prices the top-up and a $0 line shows no payout at
-all; the Copy line carries the same figure. Rows and cards carry a labelled
+all. Rows and cards carry a labelled
 **Related bets** block, one line per position, bets in the math first: a tag
 and the bet itself, "Chattanooga -5.5 +138 · 42.0¢ · $168 · Kalshi", plus
 `· now -6.5` when the line has moved off the number you bet. A **coloured**
@@ -2945,6 +2940,10 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-09 — Ticket Copy button removed (0.20.1).** Cal never used it. The
+Ticket's **Copy ticket** button, its clipboard line and `betsview.stakeAdviceLine`
+(which only built that line) are gone; the Teasers tab's per-ticket Copy stays.
 
 **2026-10-07 — Bet105 settled bets (0.20.0).** A Bet105 bet that left the
 open list was stored `closed` with no result, so the Bet Tracker dropped it.
