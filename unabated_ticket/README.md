@@ -2448,7 +2448,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 480 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 489 tests) and
 the bets service's pytest suite (388 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
