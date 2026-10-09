@@ -16,7 +16,8 @@
     "https://content.unabated.com/*",
     "https://api-k.unabated.com/*",
     "https://app.bet105.ag/*",
-    "http://127.0.0.1:8094/*"
+    "http://127.0.0.1:8094/*",
+    "https://*.ts.net/*"
   ],
   "background": {
     "service_worker": "background.js"

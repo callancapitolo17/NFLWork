@@ -1009,6 +1009,7 @@
   function setBookIds(bookIds) {
     state.edgeSettings = { ...state.edgeSettings, bookIds };
     chrome.storage.local.set({ edges: state.edgeSettings });
+    queueSettingsPush();
     // A newly ticked book brings lines the alert log has never seen: baseline them, don't ping.
     alertsBaselined = false;
     renderEdges();
@@ -1946,6 +1947,7 @@
       || parsed.settings.groupByMarket !== before.groupByMarket;
     state.edgeSettings = parsed.settings;
     chrome.storage.local.set({ edges: parsed.settings });
+    queueSettingsPush();
     if (scopeChanged) alertsBaselined = false;
     // Ticking Football on or off leaves the scanner's leagues as they are: it loads football for the Teasers tab anyway.
     const scannerLeaguesChanged = scannerLeaguesOf(parsed.settings.leagues).join(",") !== scannerLeaguesOf(before.leagues).join(",");
@@ -2008,6 +2010,7 @@
       state.crosswalk = applied.crosswalk;
       state.pins = applied.pins;
       state.betRecords = applied.records;
+      takeSharedMarks(applied);
       state.dismissedBetIds = betsView.keepDismissedOpen(state.dismissedBetIds, state.betRecords);
       noteMatchedStarts();
       if (applied.fillFairs !== state.fillFairs) setFillFairs(applied.fillFairs);
@@ -2029,6 +2032,10 @@
     learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
     captureFillFairs().catch((error) => console.error("[unabated-ticket] fill fair capture failed", error));
     pollBet105().catch((error) => console.error("[unabated-ticket] bet105 poll failed", error));
+    if (state.betsService.error == null) {
+      syncSettings().catch((error) => console.error("[unabated-ticket] settings sync failed", error));
+      if (sharedMarksDue) migrateSharedMarks().catch((error) => console.error("[unabated-ticket] marks migration failed", error));
+    }
   }
 
   // ---- Bet105 (read here, stored by the service) -----------------------------
@@ -2171,6 +2178,115 @@
     state.betRecords = betsLib.rekeyRecords(betsLib.applyPins(state.betRecords, state.pins), state.crosswalk);
     await persistBets();
     renderBetsFlags();
+  }
+
+  // ---- one set of settings and marks, shared with the phone -----------------
+  //
+  // The bets service holds the settings (bets.duckdb::edge_settings), the
+  // Dismiss marks (bet_dismissals) and the Can't tease marks (teaser_blocks),
+  // so the panel and the phone page show the same list. Settings: the first
+  // time the panel reaches a service URL, its own settings are written there
+  // (they were set here); after that a change on either side wins — a panel
+  // edit PUTs the whole row, and a row the service changed since the panel
+  // last wrote or read it (the phone's Settings) is applied here.
+  // settingsSync {serviceUrl, updatedAt} in chrome.storage.local says which.
+  // Marks: a service that serves them is the truth; the first time, the
+  // panel's own (kept in chrome.storage.local before 0.21.0) are sent up once.
+  // An older service with no marks leaves them panel state, as before.
+  const SETTINGS_PUSH_DELAY_MS = 800;
+  let settingsSync = null;
+  let settingsPushTimer = null;
+  let settingsSyncBusy = false;
+  // The service serves the marks (its last /bets.json carried them).
+  let sharedMarks = false;
+  // Set by a poll that found the service serving marks before this panel sent its own up.
+  let sharedMarksDue = false;
+  let sharedMarksMigratedTo = null;
+
+  // The marks /bets.json carried, unless the panel's own are still to go up first.
+  function takeSharedMarks(applied) {
+    sharedMarks = applied.dismissals !== null && applied.teaserBlocks !== null;
+    sharedMarksDue = sharedMarks && sharedMarksMigratedTo !== state.betsSettings.serviceUrl;
+    if (!sharedMarks || sharedMarksDue) return;
+    state.dismissedBetIds = applied.dismissals.map((row) => row.betId);
+    teaserBlocked = Object.fromEntries(applied.teaserBlocks.map((row) => [row.marketKey, row.eventStartMs]));
+  }
+
+  // Each of the panel's own marks POSTed once, one per request (a bet the
+  // service does not hold is a 404 and is left behind), then the next poll
+  // takes the service's set.
+  async function migrateSharedMarks() {
+    const serviceUrl = state.betsSettings.serviceUrl;
+    sharedMarksDue = false;
+    for (const betId of state.dismissedBetIds) {
+      await serviceRequest("POST", "/dismissals.json", { betIds: [betId], dismissed: true })
+        .catch((error) => console.warn(`[unabated-ticket] dismissal of ${betId} not sent up: ${error.message}`));
+    }
+    for (const [marketKey, eventStartMs] of Object.entries(liveTeaserMarks(Date.now()))) {
+      await serviceRequest("POST", "/teaser_blocks.json", { marketKey, eventStartMs, blocked: true })
+        .catch((error) => console.warn(`[unabated-ticket] can't tease ${marketKey} not sent up: ${error.message}`));
+    }
+    sharedMarksMigratedTo = serviceUrl;
+    await chrome.storage.local.set({ sharedMarksMigratedTo });
+    await pollBets();
+  }
+
+  // A panel settings edit: written to the service once the typing stops.
+  function queueSettingsPush() {
+    clearTimeout(settingsPushTimer);
+    settingsPushTimer = setTimeout(() => {
+      settingsPushTimer = null;
+      pushSettings().catch((error) => console.warn("[unabated-ticket] settings not saved to the bets service:", error.message));
+    }, SETTINGS_PUSH_DELAY_MS);
+  }
+
+  async function pushSettings() {
+    const serviceUrl = state.betsSettings.serviceUrl;
+    const reply = await serviceRequest("PUT", "/settings.json", { settings: edgeRows.serviceSettingsOf(state.settings, state.edgeSettings) });
+    settingsSync = { serviceUrl, updatedAt: reply.updatedAt ?? null };
+    await chrome.storage.local.set({ settingsSync });
+  }
+
+  // On every good bets poll: the service's row, applied here when it changed
+  // since the panel last saw it. Skipped while a panel edit waits to be written.
+  async function syncSettings() {
+    if (settingsSyncBusy || settingsPushTimer !== null) return;
+    settingsSyncBusy = true;
+    try {
+      const serviceUrl = state.betsSettings.serviceUrl;
+      if (!settingsSync || settingsSync.serviceUrl !== serviceUrl) {
+        await pushSettings();
+        return;
+      }
+      const body = await serviceRequest("GET", "/settings.json");
+      if (!body || typeof body.settings !== "object" || body.settings === null) throw new Error("settings.json has no settings object");
+      if ((body.updatedAt ?? null) === settingsSync.updatedAt || settingsPushTimer !== null) return;
+      applyServiceSettings(body.settings);
+      settingsSync = { serviceUrl, updatedAt: body.updatedAt ?? null };
+      await chrome.storage.local.set({ settingsSync, ...state.settings, edges: state.edgeSettings });
+    } finally {
+      settingsSyncBusy = false;
+    }
+  }
+
+  // Settings changed elsewhere (the phone), as if typed here: the inputs
+  // refilled, the scanner restarted when its leagues changed, the alert log
+  // re-baselined so a widened list is not a burst of pings.
+  function applyServiceSettings(row) {
+    const { stakeSettings, edgeSettings } = edgeRows.settingsFromService(row);
+    const scannerLeaguesChanged = scannerLeaguesOf(edgeSettings.leagues).join(",") !== scannerLeaguesOf(state.edgeSettings.leagues).join(",");
+    state.settings = stakeSettings;
+    state.edgeSettings = edgeSettings;
+    console.info("[unabated-ticket] settings changed on the bets service; applied here");
+    fillSettingInputs();
+    fillEdgeSettingInputs();
+    alertsBaselined = false;
+    if (scannerLeaguesChanged) {
+      scanner.start(scannerLeaguesOf(edgeSettings.leagues)).catch((error) => console.error("[unabated-ticket] scanner restart failed", error));
+    }
+    render();
+    renderEdges();
+    renderTeasers();
   }
 
   // Clear is two clicks: the first arms the button ("Clear 68 rows?") for a
@@ -2354,11 +2470,26 @@
     return JSON.stringify(state.knownStarts) !== before;
   }
 
-  // Dismiss stops a bet flagging red; Restore flags it again. Both are panel
-  // view state (persisted with the records), so they take effect at once.
+  // Dismiss stops a bet flagging red; Restore flags it again. Shown at once;
+  // on a service that holds the marks it is written there too (the phone
+  // shows it), and a refused write puts the row back as it was.
   async function setDismissed(betId, dismissed) {
-    const others = state.dismissedBetIds.filter((id) => id !== betId);
+    const before = state.dismissedBetIds;
+    const others = before.filter((id) => id !== betId);
     state.dismissedBetIds = dismissed ? [...others, betId] : others;
+    await persistBets();
+    renderBetsFlags();
+    if (!sharedMarks || sharedMarksDue) return;
+    try {
+      const reply = await serviceRequest("POST", "/dismissals.json", { betIds: [betId], dismissed });
+      if (!reply || !Array.isArray(reply.dismissals)) throw new Error("dismissals.json reply has no dismissals array");
+      state.dismissedBetIds = betsView.keepDismissedOpen(reply.dismissals.map((row) => row.betId), state.betRecords);
+      view.betsSettingsError.textContent = "";
+    } catch (error) {
+      console.warn("[unabated-ticket] dismiss not saved:", error.message);
+      state.dismissedBetIds = before;
+      view.betsSettingsError.textContent = `${dismissed ? "Dismiss" : "Restore"} failed: ${error.message}`;
+    }
     await persistBets();
     renderBetsFlags();
   }
@@ -2762,6 +2893,8 @@
   const TEASER_CONFIRM_MIN_MS = 600;
   // The last failure logged, so a persistent one is logged once, not every 5 s.
   let teaserLastError = null;
+  // A Can't tease or Restore the bets service refused, shown until the next one goes through.
+  let teaserMarkError = null;
 
   // The board pass, redone when an NFL or CFB snapshot has landed since (a
   // scanner restart clears the load times, so it counts too).
@@ -2790,24 +2923,48 @@
     chrome.storage.local.set({ teaserRefs: Array.from(refs) });
   }
 
-  // The can't-tease marks whose game is still to start; the rest leave storage too.
-  function liveTeaserBlocks(now) {
+  // The can't-tease marks whose game is still to start ({marketKey: startMs});
+  // the rest leave storage too.
+  function liveTeaserMarks(now) {
     const live = Object.fromEntries(Object.entries(teaserBlocked).filter(([, startMs]) => startMs > now));
     if (Object.keys(live).length !== Object.keys(teaserBlocked).length) {
       teaserBlocked = live;
       chrome.storage.local.set({ teaserBlocked });
     }
-    return new Set(Object.keys(live));
+    return live;
+  }
+
+  function liveTeaserBlocks(now) {
+    return new Set(Object.keys(liveTeaserMarks(now)));
   }
 
   // Can't tease marks the leg's market (its spread or total, both sides);
   // Restore removes the mark. The tab re-renders now: the list rebuilds when
-  // the market held a pool leg, otherwise only the Legs list changes.
-  function setTeaserBlocked(leg, blocked) {
+  // the market held a pool leg, otherwise only the Legs list changes. On a
+  // service that holds the marks it is written there too; a refused write
+  // puts the mark back as it was.
+  async function setTeaserBlocked(leg, blocked) {
+    const before = teaserBlocked;
+    const marketKey = teaserLib.marketKeyOf(leg);
     const next = { ...teaserBlocked };
-    if (blocked) next[teaserLib.marketKeyOf(leg)] = leg.eventStartMs;
-    else delete next[teaserLib.marketKeyOf(leg)];
+    if (blocked) next[marketKey] = leg.eventStartMs;
+    else delete next[marketKey];
     teaserBlocked = next;
+    chrome.storage.local.set({ teaserBlocked });
+    renderTeasers();
+    if (!sharedMarks || sharedMarksDue) return;
+    try {
+      const reply = await serviceRequest("POST", "/teaser_blocks.json", { marketKey, eventStartMs: leg.eventStartMs, blocked });
+      if (!reply || !Array.isArray(reply.teaserBlocks)) throw new Error("teaser_blocks.json reply has no teaserBlocks array");
+      teaserBlocked = Object.fromEntries(reply.teaserBlocks.map((row) => [row.marketKey, row.eventStartMs]));
+    } catch (error) {
+      console.warn("[unabated-ticket] can't tease not saved:", error.message);
+      teaserBlocked = before;
+      teaserMarkError = `${blocked ? "Can't tease" : "Restore"} failed: ${error.message}`;
+      renderTeasers();
+      return;
+    }
+    teaserMarkError = null;
     chrome.storage.local.set({ teaserBlocked });
     renderTeasers();
   }
@@ -2869,6 +3026,7 @@
     const now = Date.now();
     const red = [];
     if (failure) red.push(`Teasers failed: ${failure.message}`);
+    if (teaserMarkError) red.push(teaserMarkError);
     const service = betsView.serviceStatus(state.betsService, now);
     if (service.unreachable) {
       red.push(`${service.text.charAt(0).toUpperCase()}${service.text.slice(1)}. Open BFA teasers may be missing, so a ticket already placed may be suggested again.`);
@@ -3150,6 +3308,7 @@
     if (parsed.error) return;
     state.settings = parsed.settings;
     chrome.storage.local.set(parsed.settings);
+    queueSettingsPush();
     render();
     renderEdges();
     renderTeasers();
@@ -3166,7 +3325,9 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = edgeRows.sanitizeStakeSettings(local);
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex", "teaserRefs", "teaserBlocked"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex", "teaserRefs", "teaserBlocked", "settingsSync", "sharedMarksMigratedTo"]);
+    if (relay.settingsSync && typeof relay.settingsSync === "object" && typeof relay.settingsSync.serviceUrl === "string") settingsSync = relay.settingsSync;
+    if (typeof relay.sharedMarksMigratedTo === "string") sharedMarksMigratedTo = relay.sharedMarksMigratedTo;
     // The reference fairs the last Teasers list was built on: a seed with no
     // key, so the first plan rebuilds — on these fairs, where still within a
     // point of the live ones — and the list is the one this panel last showed.
