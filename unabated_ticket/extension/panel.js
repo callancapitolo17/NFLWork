@@ -40,6 +40,7 @@
   const attachLib = globalThis.UnabatedAttach;
   const live = globalThis.UnabatedLive;
   const teaserLib = globalThis.UnabatedTeaser;
+  const teaserView = globalThis.UnabatedTeaserView;
   const bet105 = globalThis.UnabatedBet105;
   // Bets service poll cadence while the panel is visible (plan § Storage).
   const BETS_POLL_MS = 30 * 1000;
@@ -2746,8 +2747,6 @@
   // button bets it at BFA through the bets service (POST /place_teaser.json).
 
   const HOUR_MS = 3600 * 1000;
-  // Ticket cards shown before the fold; the rest sit behind "N more tickets".
-  const TEASER_TICKETS_SHOWN = 3;
   // Ticket number -> the text its Copy button puts on the clipboard.
   const teaserCopyTexts = new Map();
   // Ticket signature -> the ticket as last rendered, for its Place button.
@@ -2832,39 +2831,6 @@
     };
   }
 
-  function fmtWholeDollars(value) {
-    return value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-  }
-
-  function fmtSignedDollars(value) {
-    return `${value >= 0 ? "+" : "-"}${fmtWholeDollars(Math.abs(value))}`;
-  }
-
-  function fmtWin(win) {
-    return `${(win * 100).toFixed(1)}%`;
-  }
-
-  function fmtEv(ev) {
-    return `EV ${ev >= 0 ? "+" : ""}${(ev * 100).toFixed(1)}%`;
-  }
-
-  function fmtWholePct(fraction) {
-    return `${Math.round(fraction * 100)}%`;
-  }
-
-  function kellyWords(multiplier) {
-    const names = { 1: "Full", 0.5: "Half", 0.25: "Quarter" };
-    return `${names[multiplier] || `${multiplier}x`} Kelly`;
-  }
-
-  function plural(count, word) {
-    return `${count} ${word}${count === 1 ? "" : "s"}`;
-  }
-
-  function teaserTicketSize() {
-    return `${teaserLib.LEGS_PER_TICKET}-team · pays +${teaserLib.TICKET_NET_ODDS * 100}`;
-  }
-
   // The bets service's BFA row (betsview.sourceRows), or null before the service has been reached.
   function bfaSourceRow(now) {
     if (!state.betsService || state.betsService.okAt == null) return null;
@@ -2888,7 +2854,7 @@
     if (state.activeTab !== "teasers") return;
     const scrollTop = view.tabTeasers.scrollTop;
     renderTeasersBanners(failure);
-    renderTeasersStatus(model);
+    view.teasersStatus.textContent = teaserView.statusText(scannerStatus, model ? model.legs : null);
     renderTeasersSummary(model);
     renderTeasersOpen(model);
     renderTeasersTickets(model);
@@ -2917,95 +2883,44 @@
     view.teasersWarning.textContent = amber || "";
   }
 
-  // "NFL · CFB loading", then "NFL · CFB · 15 games on Buckeye's board · 56 of 56 legs priced".
-  function renderTeasersStatus(model) {
-    if (!scannerStatus) {
-      view.teasersStatus.textContent = "Starting the scanner…";
-      return;
-    }
-    const leagues = teaserLib.TEASER_LEAGUE_IDS.map((id) => {
-      const label = feed.LEAGUES[id].label;
-      if (scannerStatus.leaguesLoaded.includes(id)) return label;
-      return scannerStatus.leagueErrors && scannerStatus.leagueErrors[id] ? `${label} unavailable` : `${label} loading`;
-    });
-    if (!model) {
-      view.teasersStatus.textContent = leagues.join(" · ");
-      return;
-    }
-    const games = new Set(model.legs.map((leg) => leg.eventId)).size;
-    const priced = model.legs.filter((leg) => leg.win != null).length;
-    view.teasersStatus.textContent = `${leagues.join(" · ")} · ${plural(games, "game")} on Buckeye's board · ${priced} of ${plural(model.legs.length, "leg")} priced`;
-  }
-
-  function teasersEmptyText(model) {
-    if (!model) return "Waiting for Buckeye's NFL and CFB board…";
-    const { plan, build } = model;
-    if (plan.tickets.length) return null;
-    if (build.reason === teaserLib.REASON_FEW_LEGS) return `Fewer than ${teaserLib.LEGS_PER_TICKET} games with a priced Buckeye leg right now: nothing to tease.`;
-    if (build.reason) return `No tickets: ${build.reason}.`;
-    if (build.partialHeldBack > 0) {
-      return `Nothing more to bet: the next ticket would be a partial ${fmtWholeDollars(build.partialHeldBack)}, and a 4-team ticket under $200 is already open at BFA (one partial ticket per set).`;
-    }
-    return build.placed.length
-      ? "Nothing more to bet: no other ticket raises the Kelly growth with the open teasers held."
-      : "No ticket worth betting right now: no 4-team ticket raises the Kelly growth at these fairs.";
-  }
-
-  function summaryCell(label, value, small) {
+  function summaryCell(cellView) {
     const cell = makeEl("div", "payout-cell");
-    const valueEl = makeEl("div", "payout-value", value);
-    if (small) valueEl.append(" ", makeEl("small", null, small));
-    cell.append(makeEl("div", "payout-label", label), valueEl);
+    const valueEl = makeEl("div", "payout-value", cellView.value);
+    if (cellView.small) valueEl.append(" ", makeEl("small", null, cellView.small));
+    cell.append(makeEl("div", "payout-label", cellView.label), valueEl);
     return cell;
   }
 
-  // Tickets, dollars, expected profit, the chance to make money and the
-  // chance every ticket loses — over the open teasers too when there are any.
   function renderTeasersSummary(model) {
-    const empty = teasersEmptyText(model);
+    const empty = teaserView.emptyText(model ? teaserView.planStateOf(model.plan, model.build) : null);
     view.teasersEmpty.hidden = !empty;
     view.teasersEmpty.textContent = empty || "";
-    const summary = model ? model.plan.summary : null;
-    const shown = Boolean(summary) && (summary.count > 0 || summary.placedCount > 0);
-    view.teasersSummary.hidden = !shown;
-    if (!shown) return;
-    view.teasersSummaryLabel.textContent = summary.count === 0 ? "Nothing more to bet"
-      : summary.placedCount ? `Bet ${summary.count} more` : `Bet ${plural(summary.count, "ticket")}`;
-    view.teasersSummaryStake.textContent = fmtWholeDollars(summary.stake);
-    const cells = [];
-    if (summary.placedCount) {
-      // The open tickets still in the math; the Open at BFA header below counts every open one.
-      const allOpen = model.placed.length === summary.placedCount;
-      cells.push(summaryCell(allOpen ? "Placed" : "Placed, in play", fmtWholeDollars(summary.placedStake)));
-      if (summary.expectedAll != null) cells.push(summaryCell(`Expected, all ${summary.count + summary.placedCount}`, fmtSignedDollars(summary.expectedAll)));
-    } else {
-      cells.push(summaryCell("Expected", fmtSignedDollars(summary.expected), summary.stake > 0 ? fmtWholePct(summary.expected / summary.stake) : null));
-    }
-    if (summary.makesMoney != null) cells.push(summaryCell("Makes money", fmtWholePct(summary.makesMoney)));
-    if (summary.allLose != null) cells.push(summaryCell("All lose", fmtWholePct(summary.allLose)));
-    view.teasersSummaryCells.replaceChildren(...cells);
-    const straights = summary.straights;
-    view.teasersSummaryNote.textContent = `${kellyWords(state.settings.multiplier)} on ${fmtWholeDollars(state.settings.bankroll)} · `
-      + (summary.placedCount ? "open BFA teasers held fixed" : "tickets that share a leg are sized together")
-      + (straights.count ? ` · counts ${fmtWholeDollars(straights.stake)} of straight bets on ${plural(straights.games, "game")}` : "");
+    const summary = model ? teaserView.summaryView(model.plan.summary, model.placed.length, state.settings) : null;
+    view.teasersSummary.hidden = !summary;
+    if (!summary) return;
+    view.teasersSummaryLabel.textContent = summary.label;
+    view.teasersSummaryStake.textContent = summary.stake;
+    view.teasersSummaryCells.replaceChildren(...summary.cells.map(summaryCell));
+    view.teasersSummaryNote.textContent = summary.note;
   }
 
   // What Copy puts on the clipboard: BFA's own "[rotation] side" for each leg.
   function teaserCopyText(ticket) {
     const legs = ticket.legs.map((leg) => `${leg.rotation != null ? `[${leg.rotation}] ` : ""}${leg.label}`).join(" / ");
-    return `Buckeye ${teaserLib.LEGS_PER_TICKET}-team ${teaserLib.TEASER_POINTS}-pt teaser ${fmtWholeDollars(ticket.stake)}: ${legs} | ${fmtEv(ticket.ev)}`;
+    return `Buckeye ${teaserLib.LEGS_PER_TICKET}-team ${teaserLib.TEASER_POINTS}-pt teaser ${teaserView.fmtWholeDollars(ticket.stake)}: ${legs} | ${teaserView.fmtEv(ticket.ev)}`;
   }
 
   function teaserTicketCard(ticket) {
+    const ticketView = teaserView.pendingTicketView(ticket);
     const card = makeEl("li", "ticket-card");
     const head = makeEl("div", "tk-head");
     const rail = makeEl("span", "tk-rail");
-    rail.append(makeEl("span", "tk-stake", fmtWholeDollars(ticket.stake)), makeEl("span", "tk-ev", fmtEv(ticket.ev)));
-    head.append(makeEl("span", "tk-num", `#${ticket.number}`), makeEl("span", "tk-size", teaserTicketSize()), rail);
+    rail.append(makeEl("span", "tk-stake", ticketView.stake), makeEl("span", "tk-ev", ticketView.ev));
+    head.append(makeEl("span", "tk-num", `#${ticketView.number}`), makeEl("span", "tk-size", ticketView.size), rail);
     const legs = makeEl("ol", "tk-legs");
-    for (const leg of ticket.legs) {
+    for (const leg of ticketView.legs) {
       const row = makeEl("li");
-      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.fromLabel), makeEl("span", "tl-win", fmtWin(leg.win)));
+      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.from), makeEl("span", "tl-win", leg.win));
       legs.append(row);
     }
     const actions = makeEl("div", "tk-actions");
@@ -3044,7 +2959,7 @@
     if (phase === "confirm") {
       copy.hidden = true;
       actions.append(teaserPlaceButton("btn sm", "Cancel", "cancel", signature),
-        teaserPlaceButton("btn sm primary", `Bet ${fmtWholeDollars(ticket.stake)} at BFA`, "confirm", signature));
+        teaserPlaceButton("btn sm primary", `Bet ${teaserView.fmtWholeDollars(ticket.stake)} at BFA`, "confirm", signature));
     } else if (phase === null || phase === "refused") {
       actions.append(teaserPlaceButton("btn sm", "Place", "arm", signature));
     }
@@ -3112,10 +3027,10 @@
     const tickets = model ? model.plan.tickets : [];
     view.teasersListLabel.hidden = tickets.length === 0;
     view.teasersListCount.textContent = tickets.length ? String(tickets.length) : "";
-    view.teasersList.replaceChildren(...tickets.slice(0, TEASER_TICKETS_SHOWN).map(teaserTicketCard));
-    const rest = tickets.slice(TEASER_TICKETS_SHOWN);
+    view.teasersList.replaceChildren(...tickets.slice(0, teaserView.TICKETS_SHOWN).map(teaserTicketCard));
+    const rest = tickets.slice(teaserView.TICKETS_SHOWN);
     view.teasersMore.hidden = rest.length === 0;
-    view.teasersMoreLabel.textContent = `${plural(rest.length, "more ticket")} · ${fmtWholeDollars(rest.reduce((sum, ticket) => sum + ticket.stake, 0))}`;
+    view.teasersMoreLabel.textContent = teaserView.moreTicketsText(rest);
     view.teasersMoreList.replaceChildren(...rest.map(teaserTicketCard));
     // A ticket gone from the list (placed and now open, or rebuilt away) takes its button state with it.
     for (const [signature, placeState] of teaserPlaceStates) {
@@ -3123,159 +3038,83 @@
     }
   }
 
-  // One open BFA teaser, read-only: its legs at BFA's numbers, each at its
-  // current fair or why it counts as won.
   function openTeaserCard(ticket) {
-    const card = makeEl("li", `ticket-card placed${ticket.inPlay ? "" : " done"}`);
+    const ticketView = teaserView.openTicketView(ticket);
+    const card = makeEl("li", `ticket-card placed${ticketView.inPlay ? "" : " done"}`);
     const head = makeEl("div", "tk-head");
     const rail = makeEl("span", "tk-rail");
-    const hasDollars = ticket.reason == null;
-    if (ticket.inPlay) rail.append(makeEl("span", "tk-ev", fmtEv(ticket.winAll * (1 + ticket.toWin / ticket.stake) - 1)));
-    const size = hasDollars ? `${ticket.legCount}-team · ${fmtWholeDollars(ticket.stake)} to win ${fmtWholeDollars(ticket.toWin)}` : `${ticket.legCount}-team`;
-    head.append(makeEl("span", "tk-size", size), rail);
+    if (ticketView.ev) rail.append(makeEl("span", "tk-ev", ticketView.ev));
+    head.append(makeEl("span", "tk-size", ticketView.size), rail);
     const legs = makeEl("ol", "tk-legs");
-    for (const leg of ticket.legs) {
-      const row = makeEl("li", leg.state === teaserLib.LEG_LIVE ? null : "counted");
-      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.note || ""), makeEl("span", "tl-win", leg.win == null ? "—" : fmtWin(leg.win)));
+    for (const leg of ticketView.legs) {
+      const row = makeEl("li", leg.counted ? "counted" : null);
+      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.note), makeEl("span", "tl-win", leg.win));
       legs.append(row);
     }
     const actions = makeEl("div", "tk-actions");
-    if (!ticket.inPlay) actions.append(makeEl("span", "muted", outOfMathText(ticket)));
-    actions.append(makeEl("span", "tag held", ticket.placedAt ? `placed ${betsLib.formatPlacedAt(ticket.placedAt)}` : "placed"));
+    if (ticketView.outOfMath) actions.append(makeEl("span", "muted", ticketView.outOfMath));
+    actions.append(makeEl("span", "tag held", ticketView.placedTag));
     card.append(head, legs, actions);
     return card;
   }
 
-  // Why an open ticket is not in the math, by its legs: every game started,
-  // or no leg joined a game Buckeye's board prices (a basketball teaser, CFB
-  // not loaded, a start the board disagrees with by over 12 h).
-  function outOfMathText(ticket) {
-    if (ticket.reason) return `${ticket.reason}: out of the math`;
-    if (ticket.legs.every((leg) => leg.state === teaserLib.LEG_STARTED)) return "every game has started: out of the math";
-    return "no leg priced on the board: out of the math";
-  }
-
-  // Always shown once the board is up, so "none open · BFA pulled 41 s ago"
-  // says how fresh the answer is right after a ticket is placed.
   function renderTeasersOpen(model) {
     view.teasersOpen.hidden = !model;
     if (!model) return;
-    const placed = model.placed;
-    const bfa = bfaSourceRow(Date.now());
-    const pull = !bfa ? "bets service not reached yet"
-      : !bfa.configured ? "no BFA account read"
-        : bfa.fetchedAt ? `BFA pulled ${bfa.ageText} ago` : "no BFA pull yet";
-    const dollars = (tickets) => tickets.reduce((sum, ticket) => sum + (typeof ticket.stake === "number" ? ticket.stake : 0), 0);
-    const inPlay = placed.filter((ticket) => ticket.inPlay);
-    const amount = inPlay.length === placed.length ? fmtWholeDollars(dollars(placed))
-      : `${fmtWholeDollars(dollars(placed))}, ${fmtWholeDollars(dollars(inPlay))} in play`;
-    view.teasersOpenCount.textContent = placed.length ? String(placed.length) : "";
-    view.teasersOpenNote.textContent = [placed.length ? `${amount} · each until its last game starts` : "none open", pull].join(" · ");
-    view.teasersOpenList.replaceChildren(...placed.map(openTeaserCard));
-  }
-
-  function legStandingText(row) {
-    const open = row.openTickets ? ` · ${row.openTickets} open` : "";
-    if (row.standing !== teaserLib.STANDING_POOL) return `${row.note}${open}`;
-    return `${row.inTickets ? `in ${plural(row.inTickets, "ticket")}` : "in no ticket"}${open}`;
-  }
-
-  // The straight bets on a pool leg's game, the Edges tab's tags: `held $X`
-  // on the leg's side, `against $Y` on the other, or a bare `game` when the
-  // game has straights and none of them counts. Every bet in the tooltip.
-  function teaserStraightTags(straights) {
-    if (!straights) return [];
-    const tooltip = straights.counted.map((bet) => bet.label)
-      .concat(straights.leftOut.map((bet) => `${bet.label} — not counted: ${bet.reason}`)).join("\n");
-    const tag = (kind, text) => {
-      const el = makeEl("span", `tag ${kind}`, text);
-      el.title = tooltip;
-      return el;
-    };
-    const tags = [];
-    if (straights.held > 0) tags.push(tag("held", `held ${betsLib.formatStake(straights.held)}`));
-    if (straights.against > 0) tags.push(tag("against", `against ${betsLib.formatStake(straights.against)}`));
-    if (tags.length === 0 && straights.leftOut.length > 0) tags.push(tag("game", "game"));
-    return tags;
-  }
-
-  // A college leg on show (in the pool or above break-even) offers Can't
-  // tease; a marked one shows the tag and Restore. NFL legs never: Buckeye
-  // teases every NFL game.
-  function teaserBlockControl(row) {
-    if (row.standing === teaserLib.STANDING_BLOCKED) return makeButton("linkbtn", "Restore", () => setTeaserBlocked(row.leg, false));
-    const onShow = row.standing === teaserLib.STANDING_POOL || row.standing === teaserLib.STANDING_OUT;
-    if (!onShow || !teaserLib.canBlock(row.leg)) return null;
-    const chip = makeButton("dismiss-chip", "Can't tease", () => setTeaserBlocked(row.leg, true));
-    chip.title = `Buckeye won't tease this. Takes the game's ${teaserLib.marketNameOf(row.leg)} (both sides) out of the tickets until the game starts.`;
-    return chip;
+    const openView = teaserView.openBlockView(model.placed, bfaSourceRow(Date.now()));
+    view.teasersOpenCount.textContent = openView.count;
+    view.teasersOpenNote.textContent = openView.note;
+    view.teasersOpenList.replaceChildren(...model.placed.map(openTeaserCard));
   }
 
   function teaserLegRow(row) {
-    const { leg } = row;
-    const pool = row.standing === teaserLib.STANDING_POOL;
-    const item = makeEl("li", `edge-row leg-row ${pool ? "tier-hot" : "tier-thin out"}`);
+    const rowView = teaserView.legRowView(row);
+    const item = makeEl("li", `edge-row leg-row ${rowView.pool ? "tier-hot" : "tier-thin out"}`);
     const main = makeEl("div");
     const meta = makeEl("div", "edge-meta");
-    meta.append(`${leg.matchup} · ${leg.leagueLabel} · ${fmtStart(new Date(leg.eventStartMs).toISOString())} · `, untilEl(leg.eventStartMs));
+    meta.append(`${rowView.matchup} · ${rowView.leagueLabel} · ${fmtStart(new Date(rowView.eventStartMs).toISOString())} · `, untilEl(rowView.eventStartMs));
     const book = makeEl("div", "edge-book");
-    book.append(makeEl("span", "price", `Buckeye ${leg.bookLabel}`),
-      makeEl("span", "age", ` · teased ${teaserLib.TEASER_POINTS} · ${fmtLineAge(leg.modifiedMs)}`));
-    const side = makeEl("div", "edge-side", leg.label);
-    if (row.standing === teaserLib.STANDING_BLOCKED) side.append(makeEl("span", "tag dismissed", "can't tease"));
+    book.append(makeEl("span", "price", rowView.book),
+      makeEl("span", "age", ` · ${rowView.teased} · ${fmtLineAge(rowView.modifiedMs)}`));
+    const side = makeEl("div", "edge-side", rowView.side);
+    if (rowView.blocked) side.append(makeEl("span", "tag dismissed", "can't tease"));
     main.append(side, meta, book);
     const rail = makeEl("div", "edge-rail");
-    rail.append(makeEl("span", `edge-pct tier-${pool ? "hot" : "thin"}`, leg.win == null ? "—" : fmtWin(leg.win)),
-      makeEl("span", "leg-in", legStandingText(row)), ...teaserStraightTags(row.straights));
-    const blockControl = teaserBlockControl(row);
-    if (blockControl) rail.append(blockControl);
+    const tags = rowView.tags.map((tag) => {
+      const el = makeEl("span", `tag ${tag.kind}`, tag.text);
+      el.title = tag.title;
+      return el;
+    });
+    rail.append(makeEl("span", `edge-pct tier-${rowView.pool ? "hot" : "thin"}`, rowView.win),
+      makeEl("span", "leg-in", rowView.standing), ...tags);
+    if (rowView.control) rail.append(teaserBlockButton(row, rowView.control));
     item.append(main, rail);
     return item;
+  }
+
+  // Can't tease on a college leg on show; Restore on a marked one.
+  function teaserBlockButton(row, control) {
+    if (control.action === "restore") return makeButton("linkbtn", "Restore", () => setTeaserBlocked(row.leg, false));
+    const chip = makeButton("dismiss-chip", "Can't tease", () => setTeaserBlocked(row.leg, true));
+    chip.title = control.title;
+    return chip;
   }
 
   function breakEvenDivider() {
     const divider = makeEl("li", "be-divider");
     divider.setAttribute("role", "separator");
-    divider.append(makeEl("span", null, `${fmtWin(teaserLib.BREAK_EVEN_WIN)} a leg breaks even at +${teaserLib.TICKET_NET_ODDS * 100}`));
+    divider.append(makeEl("span", null, teaserView.breakEvenText()));
     return divider;
   }
 
-  // The pool's legs and the priced legs above break-even, best first, with
-  // the break-even line where it falls; the rest of the games behind a fold,
-  // the markets marked can't tease first.
   function renderTeasersLegs(model) {
-    const rows = model ? model.legRows : [];
-    const gameCount = new Set(rows.map((row) => row.leg.eventId)).size;
-    view.teasersLegsLabel.hidden = rows.length === 0;
-    view.teasersLegsCount.textContent = gameCount ? String(gameCount) : "";
-    const shownStandings = [teaserLib.STANDING_POOL, teaserLib.STANDING_OUT];
-    const shown = rows.filter((row) => shownStandings.includes(row.standing));
-    const blockedRows = rows.filter((row) => row.standing === teaserLib.STANDING_BLOCKED);
-    const otherFolded = rows.filter((row) => !shownStandings.includes(row.standing) && row.standing !== teaserLib.STANDING_BLOCKED);
-    const folded = [...blockedRows, ...otherFolded];
-    const items = [];
-    let dividerPlaced = false;
-    for (const row of shown) {
-      if (!dividerPlaced && row.leg.win < teaserLib.BREAK_EVEN_WIN) {
-        items.push(breakEvenDivider());
-        dividerPlaced = true;
-      }
-      items.push(teaserLegRow(row));
-    }
-    if (!dividerPlaced && folded.length) items.push(breakEvenDivider());
-    view.teasersLegs.replaceChildren(...items);
-    view.teasersLegsMore.hidden = folded.length === 0;
-    const counts = [
-      [teaserLib.STANDING_BELOW, "below break-even"],
-      [teaserLib.STANDING_OTHER_MARKET, "on an open teaser's other market"],
-      [teaserLib.STANDING_UNPRICED, "with no fair"],
-    ].map(([standing, words]) => [otherFolded.filter((row) => row.standing === standing).length, words])
-      .filter(([count]) => count > 0).map(([count, words]) => `${count} ${words}`);
-    const labelParts = [];
-    if (otherFolded.length) labelParts.push(`${plural(otherFolded.length, "more game")}: ${counts.join(", ")}`);
-    if (blockedRows.length) labelParts.push(`${blockedRows.length} can't tease`);
-    view.teasersLegsMoreLabel.textContent = labelParts.join(" · ");
-    view.teasersLegsMoreList.replaceChildren(...folded.map(teaserLegRow));
+    const layout = teaserView.legsLayout(model ? model.legRows : []);
+    view.teasersLegsLabel.hidden = !model || model.legRows.length === 0;
+    view.teasersLegsCount.textContent = layout.gameCount ? String(layout.gameCount) : "";
+    view.teasersLegs.replaceChildren(...layout.items.map((item) => (item.divider ? breakEvenDivider() : teaserLegRow(item.row))));
+    view.teasersLegsMore.hidden = layout.folded.length === 0;
+    view.teasersLegsMoreLabel.textContent = layout.foldLabel;
+    view.teasersLegsMoreList.replaceChildren(...layout.folded.map(teaserLegRow));
   }
 
   view.tabTeasers.addEventListener("click", async (event) => {
