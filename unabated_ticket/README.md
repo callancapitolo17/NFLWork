@@ -670,6 +670,37 @@ instead, so the row is still found. The expand-and-match path is verified
 against the scripted grid only (see Tests); the real screen's Alts row was
 not reachable from the harness, so the first real click is the check.
 
+### Other books at the same number
+
+Every pregame Edges row, card line and Ticket compares its price with every
+other book on Unabated at the **same game, period, market, side and number**
+(`extension/pricecheck.js`, pure; Cal's picks 2026-10-09). Prices are
+Unabated's as shown, so an exchange's is already all-in of its fee. Only a
+live book's line on the board counts; a blurred price, Unabated's own line
+and a line older than **Max line age h** never do, so a dead feed can't
+read as "better". A book on the number twice (main and alt) counts once, at
+its better price. Another number is never compared.
+
+| Tag | When |
+|---|---|
+| `best of N books` (green) | no other book beats the price; `best, tied` when one matches it |
+| `1 book better` (plain) | exactly one book beats it |
+| `N books better · would skip` (amber) | 2 or more books beat it (`BOOKS_BETTER_TO_SKIP`) |
+| `outlier, check · next best X` (red) | it beats every other book by more than 10 probability points (`OUTLIER_PROB_GAP`): more likely a bad price than a gift (the 2026-10-03 Jackson St ML at Novig +300 on a -309 fair). Tagged, never skipped |
+
+No tag when no other book posts the number. The tooltip lists the books.
+A line above the list counts them: "3 would skip: 2+ books better · 1
+outlier (test mode, nothing hidden)". The Ticket's **Others** row lists every
+book that beats you, yours in its place, and the first three worse ones.
+
+**Test mode (0.21.0):** nothing is hidden. Cal is watching the tags in main
+first; once he says so, rows tagged *would skip* fold into one "N skipped"
+line you can open, and a row comes back on its own as soon as fewer than 2
+books beat it (the check reruns on every snapshot). The phone page shows the
+same tags, header count and Ticket row, computed by the runner
+(`/edges.json` rows carry `priceCheck` and `priceCheckTag`, the body carries
+`priceCheck`).
+
 ### Why an edge grew
 
 Next to the edge figure of a line you already hold in the same direction —
@@ -2417,7 +2448,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 428 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 480 tests) and
 the bets service's pytest suite (388 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -2940,6 +2971,15 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-09 — Other books at the same number (0.21.0).** Cal wanted to
+skip a bet when several books beat the price he is about to take. His picks:
+same number only, compared by price (not edge at other numbers); every book
+on Unabated counts; 2+ books better = would skip; an outlier is tagged, not
+skipped (a stale line is a real edge); skipped rows will fold into an
+openable count and come back live, no timer. Shipped as tags only, so he can
+watch it in main before anything is hidden. See Edges tab § Other books at
+the same number.
 
 **2026-10-09 — Ticket Copy button removed (0.20.1).** Cal never used it. The
 Ticket's **Copy ticket** button, its clipboard line and `betsview.stakeAdviceLine`

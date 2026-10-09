@@ -245,6 +245,19 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
 .move-detail { font: 400 11px system-ui, sans-serif; color: var(--muted); white-space: nowrap; }
 .edge-row .edge-rail .move-detail, .group-line .gl-rail .move-detail { display: block; }
 .facts dd .move-detail { margin-left: 6px; }
+/* Other books at the same number (pricecheck.js): green best price, plain one
+   book better, amber 2+ better (would skip), red outlier. */
+.tag.check-best { background: color-mix(in srgb, var(--edge-strong) 15%, transparent); border-color: transparent; color: var(--edge-mid); }
+.tag.check-skip { background: var(--warn-bg); border-color: transparent; color: var(--warn-fg); }
+.tag.check-outlier { background: var(--against-bg); border-color: transparent; color: var(--against-fg); }
+.edge-row .edge-pricecheck { margin-top: 3px; }
+#edges-pricecheck { padding: 0 12px 8px; }
+.facts dd#others .tag { margin-left: 0; }
+.others-list { margin-top: 3px; font-size: 12.5px; max-width: 260px; }
+.others-list > div { display: flex; justify-content: space-between; gap: 12px; }
+.others-list .better { color: var(--warn-fg); }
+.others-list .yours { font-weight: 700; color: var(--ink); }
+.others-list .worse { color: var(--muted); }
 
 /* The bets you already have on this game, as a section of the row. */
 .related-block {

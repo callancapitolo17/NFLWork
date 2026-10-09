@@ -69,7 +69,7 @@
     ticket: el("ticket"), error: el("error"), empty: el("empty"),
     warning: el("warning"), rowTrace: el("row-trace"), sideLabel: el("side-label"), betLine: el("bet-line"),
     eventLine: el("event-line"), startLine: el("start-line"),
-    book: el("book"), price: el("price"), fair: el("fair"), edge: el("edge"),
+    book: el("book"), price: el("price"), fair: el("fair"), edge: el("edge"), othersLabel: el("others-label"), others: el("others"),
     stake: el("stake"), contracts: el("contracts"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), stakeUncapped: el("stake-uncapped"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
     errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
@@ -82,7 +82,7 @@
     backToEdges: el("back-to-edges"), stakeLabel: el("stake-label"), betsBannerHead: el("bets-banner-head"),
     betsCount: el("bets-count"), betsAlert: el("bets-alert"), betsTabButton: el("bets-tab-button"),
     betsRisk: el("bets-risk"), betsRiskCaption: el("bets-risk-caption"),
-    edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesTailFlex: el("edges-tailflex"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
+    edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesTailFlex: el("edges-tailflex"), edgesPriceCheck: el("edges-pricecheck"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
     edgesSports: el("edges-sports"), edgesBetTypes: el("edges-bettypes"), edgesBooks: el("edges-books"), edgesBooksMode: el("edges-books-mode"),
     booksDefault: el("books-default"), booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMinStake: el("edges-min-stake"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
     edgesIncludeAlts: el("edges-include-alts"), edgesMinToWin: el("edges-min-to-win"), edgesGroup: el("edges-group"),
@@ -185,6 +185,10 @@
   // and when the max line age changes.
   const tailflex = globalThis.UnabatedTailFlex;
   let tailFlexCache = null;
+  // Every book's price at every number (pricecheck.js), for the "N books
+  // better" tags: built once per scanner update and max line age.
+  const pricecheck = globalThis.UnabatedPriceCheck;
+  let priceIndexCache = null;
   const teamsLib = globalThis.UnabatedTeams;
   let teamsSpellingCount = 0;
   const fillfair = globalThis.UnabatedFillFair;
@@ -220,6 +224,7 @@
       boardLinesCache = null;
       ladderReaders = null;
       tailFlexCache = null;
+      priceIndexCache = null;
       registerFeedTeams(feedState);
       if (noteMatchedStarts()) persistBets().catch((error) => console.error("[unabated-ticket] bets persist failed", error));
       learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
@@ -229,6 +234,9 @@
       // A ticket sized from the feed (or waiting for it) follows the feed's
       // updates; one the screen priced is left alone.
       if (state.ticket && !state.error && pricedLine(state.ticket).edgeFrom !== "screen") render();
+      // A screen-priced ticket keeps its numbers, but the other books' prices
+      // are the feed's, so that one row follows every update.
+      else if (state.ticket && !state.error) renderOtherBooks(state.ticket, pricedLine(state.ticket));
       processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
     },
   });
@@ -535,6 +543,7 @@
     const feedCopy = feedLineFor(ticket, line.points);
     const ticketMoveParts = feedCopy && feedCopy.price === line.price ? moveParts(feedCopy, betFlag) : [];
     view.edge.replaceChildren(line.edgePct == null ? "\u2014" : fmtPct(line.edgePct / 100), ...ticketMoveParts.flatMap((part) => [" ", part]));
+    renderOtherBooks(ticket, line);
 
     view.stake.classList.remove("no-edge");
     view.payoutRow.hidden = true;
@@ -571,6 +580,51 @@
     renderContracts(acted, line, ticket.book.name);
 
     show("ticket");
+  }
+
+  // How many worse books the Ticket's Others row lists; the rest fold into "N more, worse".
+  const OTHERS_WORSE_SHOWN = 3;
+
+  // The Ticket's "Others" row: every other book at the priced number, best
+  // first, with yours in its place (pricecheck.comparePrice, same rules as the
+  // Edges tag). Hidden for a live ticket (the feed is pregame) or when no
+  // other book posts the number.
+  function renderOtherBooks(ticket, line) {
+    view.othersLabel.hidden = true;
+    view.others.hidden = true;
+    view.others.replaceChildren();
+    if (ticket.live || !ticket.watch || ticket.eventId == null || !scannerState) return;
+    const check = pricecheck.comparePrice(priceIndex(), {
+      eventId: ticket.eventId, periodTypeId: ticket.watch.periodTypeId, betTypeId: ticket.watch.betTypeId,
+      sideIndex: ticket.sideIndex, points: line.points, bookId: ticket.book.id, price: line.price,
+    });
+    const tagEl = priceCheckTagEl(check);
+    if (!tagEl) return;
+    const listEl = document.createElement("div");
+    listEl.className = "others-list";
+    const lineEl = (name, price, className) => {
+      const div = document.createElement("div");
+      div.className = className;
+      const nameEl = document.createElement("span");
+      nameEl.textContent = name;
+      const priceEl = document.createElement("span");
+      priceEl.textContent = fmtAmerican(price);
+      div.append(nameEl, priceEl);
+      return div;
+    };
+    for (const entry of check.better) listEl.append(lineEl(entry.bookName, entry.price, "better"));
+    listEl.append(lineEl(`${ticket.book.name} (you)${check.same ? ` +${check.same} same` : ""}`, line.price, "yours"));
+    for (const entry of check.worse.slice(0, OTHERS_WORSE_SHOWN)) listEl.append(lineEl(entry.bookName, entry.price, "worse"));
+    const rest = check.worse.length - OTHERS_WORSE_SHOWN;
+    if (rest > 0) {
+      const more = document.createElement("div");
+      more.className = "worse";
+      more.textContent = `${rest} more, worse`;
+      listEl.append(more);
+    }
+    view.others.append(tagEl, listEl);
+    view.othersLabel.hidden = false;
+    view.others.hidden = false;
   }
 
   // Under the dollar figure, the order it means on an exchange: "1,127
@@ -1015,6 +1069,14 @@
     return tailFlexCache.measurement;
   }
 
+  function priceIndex() {
+    const maxLineAgeHours = state.edgeSettings.maxLineAgeHours;
+    if (!priceIndexCache || priceIndexCache.maxLineAgeHours !== maxLineAgeHours) {
+      priceIndexCache = { maxLineAgeHours, index: edgeRows.createPriceIndex(scannerState, state.edgeSettings, Date.now()) };
+    }
+    return priceIndexCache.index;
+  }
+
   // The standalone stake and the tail-flex rank score (edgeRows.withStakeAndRank).
   function withStakeAndRank(row, measurement) {
     return edgeRows.withStakeAndRank(row, measurement, state.settings);
@@ -1023,7 +1085,7 @@
   function currentEdgeRows() {
     if (!scannerState) return [];
     return edgeRows.listedEdgeRows(scannerState, {
-      ...betFlagContext(), edgeSettings: state.edgeSettings, effective: effectiveFilter(), measurement: tailFlexMeasurement(), now: Date.now(),
+      ...betFlagContext(), edgeSettings: state.edgeSettings, effective: effectiveFilter(), measurement: tailFlexMeasurement(), priceIndex: priceIndex(), now: Date.now(),
     });
   }
 
@@ -1216,6 +1278,30 @@
     return span;
   }
 
+  // The other-books tag (pricecheck.priceCheckTag), with every book at the
+  // number in its tooltip; null when no other book posts it (or a live row).
+  const PRICE_CHECK_TAG_CLASS = { best: "check-best", better: "check-better", skip: "check-skip", outlier: "check-outlier" };
+  function priceCheckTagEl(check) {
+    const tag = pricecheck.priceCheckTag(check);
+    if (!tag) return null;
+    const el = document.createElement("span");
+    el.className = `tag ${PRICE_CHECK_TAG_CLASS[tag.kind]}`;
+    el.textContent = tag.label;
+    el.title = describeOtherBooks(check);
+    return el;
+  }
+
+  // "Better: Circa -105, Pinnacle -107 · worse: DraftKings -115 · same number only".
+  function describeOtherBooks(check) {
+    const list = (entries) => entries.map((entry) => `${entry.bookName} ${fmtAmerican(entry.price)}`).join(", ");
+    const parts = [];
+    if (check.better.length) parts.push(`better: ${list(check.better)}`);
+    if (check.same) parts.push(`${check.same} at the same price`);
+    if (check.worse.length) parts.push(`worse: ${list(check.worse)}`);
+    parts.push("same number only");
+    return parts.join(" · ");
+  }
+
   // One book's line, as a full row.
   function renderEdgeRow(row) {
     const li = document.createElement("li");
@@ -1270,6 +1356,13 @@
     age.textContent = ` · ${ageParts.filter(Boolean).join(" · ")}`;
     book.append(price, age);
     main.append(side, meta, book);
+    const checkTag = priceCheckTagEl(row.priceCheck);
+    if (checkTag) {
+      const checkLine = document.createElement("div");
+      checkLine.className = "edge-pricecheck";
+      checkLine.append(checkTag);
+      main.append(checkLine);
+    }
 
     const rail = document.createElement("div");
     rail.className = "edge-rail";
@@ -1301,6 +1394,8 @@
     age.className = "gl-age";
     age.textContent = [fmtLineAge(row.modifiedMs), fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ");
     main.append(price, age);
+    const checkTag = priceCheckTagEl(row.priceCheck);
+    if (checkTag) main.append(" ", checkTag);
 
     const rail = document.createElement("div");
     rail.className = "gl-rail";
@@ -1424,6 +1519,8 @@
     view.edgesFilter.textContent = describeFilter(effective);
     view.edgesTailFlex.textContent = describeTailFlex(rows);
     view.edgesTailFlex.hidden = view.edgesTailFlex.textContent === "";
+    view.edgesPriceCheck.textContent = pricecheck.describePriceChecks(rows);
+    view.edgesPriceCheck.hidden = view.edgesPriceCheck.textContent === "";
     view.filtersSummary.textContent = summariseFilter(effective);
     renderBooksList(effective);
     renderFilterDebug();

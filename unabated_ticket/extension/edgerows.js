@@ -35,6 +35,7 @@
   const edgemove = inNode ? require("./edgemove.js") : root.UnabatedEdgeMove;
   const fillfair = inNode ? require("./fillfair.js") : root.UnabatedFillFair;
   const tailflex = inNode ? require("./tailflex.js") : root.UnabatedTailFlex;
+  const pricecheck = inNode ? require("./pricecheck.js") : root.UnabatedPriceCheck;
 
   const DEFAULT_STAKE_SETTINGS = { bankroll: 30000, multiplier: 0.25 };
   // maxLineAgeHours: a "live" book's line unchanged for a week is a dead feed
@@ -308,9 +309,28 @@
   //             records, boardLines, ladderReaderOf, teasers, now}
   function sizedEdgeRows(feedState, context) {
     if (!feedState) return [];
+    const priceIndex = context.priceIndex || createPriceIndex(feedState, context.edgeSettings, context.now);
     const selected = feed.selectEdges(feedState, { ...edgeSelectionOptions(context.edgeSettings, context.effective, context.now), minEdge: context.minEdgePct / 100 })
-      .map((row) => withStakeAndRank(row, context.measurement, context.stakeSettings));
+      .map((row) => withPriceCheck(withStakeAndRank(row, context.measurement, context.stakeSettings), priceIndex));
     return withBetFlags(selected, context);
+  }
+
+  // Every book's price at every number (pricecheck.buildPriceIndex), aged by
+  // the list's own max line age so a dead feed never reads as a better price.
+  // Callers that render often build it once per feed update and pass it as
+  // context.priceIndex.
+  function createPriceIndex(feedState, edgeSettings, now) {
+    return pricecheck.buildPriceIndex(feedState, { now, maxLineAgeMs: edgeSettings.maxLineAgeHours * 3600 * 1000 });
+  }
+
+  // The row with `priceCheck`: how its price compares with every other book
+  // at the same number (pricecheck.comparePrice), null when unusable.
+  function withPriceCheck(row, priceIndex) {
+    const priceCheck = pricecheck.comparePrice(priceIndex, {
+      eventId: row.eventId, periodTypeId: row.periodTypeId, betTypeId: row.betTypeId, sideIndex: row.sideIndex,
+      points: row.points, bookId: row.book.id, price: row.price,
+    });
+    return { ...row, priceCheck };
   }
 
   // Rows in the list's order, in place: selectEdges already sorts by edge.
@@ -474,7 +494,7 @@
     sanitizeStakeSettings, sanitizeEdgeSettings, feedTeamsByLeague, applyBetsPayload,
     liveBooks, defaultBookIds, effectiveFilter, edgeSelectionOptions,
     stakeFor, withStakeAndRank, boardLines, createLadderReaders, withBetFlags, exposureDollars, meetsMinStake,
-    sizedEdgeRows, sortEdgeRows, listedEdgeRows, groupEdgeRows, describeTailFlex, edgeTier, fmtDollars, stakeRail,
+    sizedEdgeRows, createPriceIndex, withPriceCheck, sortEdgeRows, listedEdgeRows, groupEdgeRows, describeTailFlex, edgeTier, fmtDollars, stakeRail,
     fmtAmerican, fmtFairEntry, fmtBetPrice, heldInThisDirection, tagReading, moveDetail, moveTag, moveWords,
   };
 

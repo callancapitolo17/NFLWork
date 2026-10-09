@@ -44,6 +44,7 @@ const kelly = require("../extension/kelly.js");
 const betsLib = require("../extension/bets.js");
 const betsView = require("../extension/betsview.js");
 const edgeRows = require("../extension/edgerows.js");
+const pricecheck = require("../extension/pricecheck.js");
 
 // Edges settings the bets service stores under the panel's own names; bookIds
 // is carried by bookMode instead (see settingsFromService).
@@ -110,6 +111,9 @@ function rowView(row, moveContext) {
     badges: betsView.badges(row.bet),
     related: betsView.relatedLines(row.bet, moveContext.fillFairIndex),
     move: moveView(row, moveContext),
+    // Other books at the same number (pricecheck.js): the comparison and its tag.
+    priceCheck: row.priceCheck ?? null,
+    priceCheckTag: pricecheck.priceCheckTag(row.priceCheck),
   };
 }
 
@@ -181,6 +185,7 @@ function buildEdgesPayload(input) {
       live: liveBooks.map((book) => ({ id: book.id, name: book.name })),
     },
     tailFlex: feedState ? edgeRows.describeTailFlex(rows, input.measurement) : "",
+    priceCheck: pricecheck.describePriceChecks(rows),
     grouped,
     unit: grouped ? "cards" : "lines",
     total: items.length,
