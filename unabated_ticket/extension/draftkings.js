@@ -96,11 +96,17 @@
     };
   }
 
+  // Settled newest-settled first (the bundle's sort keys include settlementDate),
+  // so a bet held for months still lands in the window the day it settles.
+  function orderByOf(list) {
+    return list === "Settled" ? "settlementDate" : "placementDate";
+  }
+
   function betsMessage(id, list, skip) {
     return {
       jsonrpc: "2.0", method: "BetsRequest", id,
       params: {
-        filter: { status: list }, orderCriteria: { orderBy: "placementDate", direction: "DESC" },
+        filter: { status: list }, orderCriteria: { orderBy: orderByOf(list), direction: "DESC" },
         pagination: { count: PAGE_SIZE, skip }, locale: "en", ScoreboardType: "EventScore",
       },
     };
@@ -117,17 +123,17 @@
     return { bets: result.bets, events };
   }
 
-  function placedMs(bet) {
-    const ms = Date.parse(bet && bet.placementDate);
+  function settledMs(bet) {
+    const ms = Date.parse(bet && bet.settlementDate);
     return Number.isFinite(ms) ? ms : null;
   }
 
-  // Done with a list: a short page, or (settled, newest first) a page that
-  // reaches back past the service's window.
+  // Done with a list: a short page, or (settled, newest-settled first) a page
+  // that reaches back past the service's window.
   function isLastPage(list, bets, nowMs) {
     if (bets.length < PAGE_SIZE) return true;
     if (list !== "Settled") return false;
-    const oldest = placedMs(bets[bets.length - 1]);
+    const oldest = settledMs(bets[bets.length - 1]);
     return oldest !== null && oldest < nowMs - SETTLED_LOOKBACK_MS;
   }
 
@@ -158,6 +164,7 @@
     const bonus = bet && bet.bonus && typeof bet.bonus === "object" ? bet.bonus : null;
     return {
       ...pick(bet, BET_FIELDS),
+      bonusType: bonus && typeof bonus.bonusType === "string" ? bonus.bonusType : null,
       freeBetAmount: bonus && Number(bonus.freeBetAmount) > 0 ? Number(bonus.freeBetAmount) : 0,
       combinationCount: Array.isArray(bet && bet.combinations) ? bet.combinations.length : 0,
       selections: (Array.isArray(bet && bet.selections) ? bet.selections : []).map(trimSelection),

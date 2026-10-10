@@ -27,8 +27,9 @@ Bet: betId (the native id), receiptId, type ("Single" seen; parlays carry severa
   WonDeadHeat, Placed, PladedDeadHeat, None), numberOfBets (> 1 = a round robin / system
   bet), displayOdds ("+566"; DraftKings writes a minus as U+2212), placementDate /
   settlementDate (ISO UTC), stake, potentialReturns (stake included: $75 at +566 ->
-  499.5), returns (what it paid, stake included), plus the extension's freeBetAmount
-  (bonus.freeBetAmount) and combinationCount.
+  499.5), returns (what it paid, stake included), plus the extension's bonusType and
+  freeBetAmount (bonus.*: FreeBet, RiskFreeBet, BetBoost, ... — the bundle reads
+  freeBetAmount for risk-free bets too) and combinationCount.
 Selection: eventId, marketId, displayOdds, selectionDisplayName ("Temple -17.5"),
   marketDisplayName ("Spread Alternate"), participants [{id, name}] (the picked team;
   empty on a total), nestedSelectionCount (an SGP group inside a parlay).
@@ -76,6 +77,8 @@ REASON_CLOSED_BY_ABSENCE = "left the open list and the settled list does not car
 REASON_NO_SELECTIONS = "bet carries no selections"
 REASON_ROUND_ROBIN = "round robin / system bet (several bets on one ticket)"
 REASON_SGP_GROUP = "SGP group inside a parlay"
+# Only a FreeBet stakes none of Cal's money; a RiskFreeBet ("No Sweat") is his cash.
+BONUS_FREE_BET = "FreeBet"
 UNICODE_MINUS = "−"
 TOTAL_SELECTION = re.compile(r"^(over|under)\s+(\d+(?:\.\d+)?)$", re.IGNORECASE)
 SPREAD_SELECTION = re.compile(r"^(.+?)\s+([+-]\d+(?:\.\d+)?)$")
@@ -228,13 +231,20 @@ def status_of(bet: dict) -> str:
     return STATUS_BY_SETTLEMENT.get(settlement, "unknown")
 
 
+def free_bet_amount_of(bet: dict) -> float:
+    """The free-bet token's value on a FreeBet; 0 on every other bonus (a risk-free bet's
+    freeBetAmount is the refund it may earn, not money it did not stake)."""
+    if _text(bet.get("bonusType")) != BONUS_FREE_BET:
+        return 0
+    return _number(bet.get("freeBetAmount")) or 0
+
+
 def stake_of(bet: dict) -> float | None:
     """A free bet stakes nothing of Cal's (the BFA / Bet105 convention)."""
     stake = _money(bet.get("stake"))
-    free = _number(bet.get("freeBetAmount")) or 0
     if stake is None:
         return None
-    return round_cents(max(stake - free, 0))
+    return round_cents(max(stake - free_bet_amount_of(bet), 0))
 
 
 def to_win_of(bet: dict, status: str) -> float | None:
@@ -243,7 +253,7 @@ def to_win_of(bet: dict, status: str) -> float | None:
     paid = _money(bet.get("returns")) if status == "won" else _money(bet.get("potentialReturns"))
     if stake is None or paid is None:
         return None
-    if (_number(bet.get("freeBetAmount")) or 0) > 0:
+    if free_bet_amount_of(bet) > 0:
         # A free bet's returns carry no stake back.
         return paid
     return round_cents(paid - stake)
@@ -273,7 +283,9 @@ def _empty_record(record_id: str, fetched_at: str | None) -> dict:
 
 
 def _base_record(bet: dict, native_id: str, read: str, fetched_at: str | None) -> dict:
-    status = status_of(bet)
+    # A bet on the open list is open, whatever its settlementStatus says mid-change
+    # (a partial cash-out stays live); the settled list alone settles a bet.
+    status = "open" if read == "open" else status_of(bet)
     record = _empty_record(f"{VENUE}:{native_id}", fetched_at)
     record.update({
         "stake": stake_of(bet),
@@ -287,7 +299,8 @@ def _base_record(bet: dict, native_id: str, read: str, fetched_at: str | None) -
             "betStatus": bet.get("status"), "settlementStatus": bet.get("settlementStatus"),
             "numberOfBets": bet.get("numberOfBets"), "displayOdds": bet.get("displayOdds"),
             "stake": bet.get("stake"), "potentialReturns": bet.get("potentialReturns"),
-            "returns": bet.get("returns"), "freeBetAmount": bet.get("freeBetAmount"),
+            "returns": bet.get("returns"), "bonusType": bet.get("bonusType"),
+            "freeBetAmount": bet.get("freeBetAmount"),
             "placementDate": bet.get("placementDate"), "settlementDate": bet.get("settlementDate"),
         },
     })
@@ -376,9 +389,18 @@ def _validate_bets(name: str, bets: object) -> str | None:
         bet_id = bet.get("betId")
         if isinstance(bet_id, bool) or not isinstance(bet_id, (str, int)) or str(bet_id).strip() in ("", "0"):
             return f"{name}[{index}] carries no betId; keys seen: {sorted(bet.keys())}"
-        if not isinstance(bet.get("selections", []), list):
-            return f"{name}[{index}].selections must be a list"
+        selections = bet.get("selections", [])
+        if not isinstance(selections, list) or not all(_is_object_with_participants(item) for item in selections):
+            return f"{name}[{index}].selections must be a list of objects with a participants list"
     return None
+
+
+def _is_object_with_participants(item: object) -> bool:
+    """A selection or event: an object whose participants, when present, are objects."""
+    if not isinstance(item, dict):
+        return False
+    participants = item.get("participants", [])
+    return isinstance(participants, list) and all(isinstance(p, dict) for p in participants)
 
 
 def validate_push(body: object) -> dict | str:
@@ -401,8 +423,8 @@ def validate_push(body: object) -> dict | str:
     if len(body["open"]) + len(body["settled"]) > MAX_BETS_PER_PUSH:
         return f"at most {MAX_BETS_PER_PUSH} bets per push, got {len(body['open']) + len(body['settled'])}"
     events = body.get("events")
-    if not isinstance(events, dict) or not all(isinstance(event, dict) for event in events.values()):
-        return f"events must be an object of objects, got {type(events).__name__}"
+    if not isinstance(events, dict) or not all(_is_object_with_participants(event) for event in events.values()):
+        return "events must be an object of event objects, each with a participants list of objects"
     return {"fetchedAt": fetched_at, "open": body["open"], "settled": body["settled"], "events": events}
 
 

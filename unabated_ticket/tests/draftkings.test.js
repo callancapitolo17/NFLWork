@@ -57,11 +57,12 @@ test("socketUrl puts the token in the query, encoded", () => {
     "wss://gateway.northamerica-northeast2.prod.dkapis.com/dkusma/shelby/api/v1/websocket?format=json&jwt=a.b%2Bc");
 });
 
-test("betsMessage is the page's own BetsRequest, newest first, 25 at a time", () => {
+test("betsMessage is the page's own BetsRequest, 25 at a time: open newest placed, settled newest settled", () => {
+  assert.equal(dk.betsMessage("id-0", "Open", 0).params.orderCriteria.orderBy, "placementDate");
   assert.deepEqual(dk.betsMessage("id-1", "Settled", 50), {
     jsonrpc: "2.0", method: "BetsRequest", id: "id-1",
     params: {
-      filter: { status: "Settled" }, orderCriteria: { orderBy: "placementDate", direction: "DESC" },
+      filter: { status: "Settled" }, orderCriteria: { orderBy: "settlementDate", direction: "DESC" },
       pagination: { count: 25, skip: 50 }, locale: "en", ScoreboardType: "EventScore",
     },
   });
@@ -77,12 +78,15 @@ test("pageOf: a BetsRequest reply, the initial page's nesting, a refusal and a b
   assert.equal(dk.pageOf(null).error, "DraftKings bets reply is not JSON");
 });
 
-test("isLastPage: a short page ends a list; a settled page past the window ends it too", () => {
-  const full = (placedMs) => Array.from({ length: 25 }, (_, index) => bet(`b${index}`, placedMs));
+test("isLastPage: a short page ends a list; a settled page settled past the window ends it too", () => {
+  const full = (placedMs, settledMs) => Array.from({ length: 25 }, (_, index) => bet(`b${index}`, placedMs,
+    settledMs === undefined ? {} : { settlementDate: new Date(settledMs).toISOString() }));
   assert.equal(dk.isLastPage("Open", [bet("1", NOW)], NOW), true);
   assert.equal(dk.isLastPage("Open", full(NOW - 90 * DAY), NOW), false);
-  assert.equal(dk.isLastPage("Settled", full(NOW - DAY), NOW), false);
-  assert.equal(dk.isLastPage("Settled", full(NOW - 32 * DAY), NOW), true);
+  assert.equal(dk.isLastPage("Settled", full(NOW - 2 * DAY, NOW - DAY), NOW), false);
+  // A future placed 90 days ago that settled yesterday is still inside the window.
+  assert.equal(dk.isLastPage("Settled", full(NOW - 90 * DAY, NOW - DAY), NOW), false);
+  assert.equal(dk.isLastPage("Settled", full(NOW - 40 * DAY, NOW - 32 * DAY), NOW), true);
 });
 
 test("pushBody keeps what the service reads and drops the rest", () => {
@@ -92,6 +96,7 @@ test("pushBody keeps what the service reads and drops the rest", () => {
   const [open] = body.open;
   assert.equal(open.betId, "1");
   assert.equal(open.freeBetAmount, 25);
+  assert.equal(open.bonusType, null);
   assert.equal(open.combinationCount, 0);
   assert.equal(open.liveActivity, undefined);
   assert.deepEqual(open.selections[0].participants, [{ id: "139685", name: "North Dakota State", venueRole: undefined }]);

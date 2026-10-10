@@ -1966,9 +1966,10 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   JSON-RPC websocket, `wss://gateway.northamerica-northeast2.prod.dkapis.com/dkusma/shelby/api/v1/websocket?format=json&jwt=<token>`.
   Every 5 min while the panel is visible the panel does the same: the page's
   own first message (`InitializeBetsPageRequest`), then `BetsRequest` pages of
-  25 (`filter.status` `Open`, then `Settled`, newest first) until a short page
-  — the settled list also stops at a page reaching back past 31 days, one past
-  the service's window — and one POST of `{fetchedAt, open, settled, events}`
+  25 (`filter.status` `Open` newest placed first, then `Settled` newest
+  settled first — so a future held for months lands the day it settles)
+  until a short page — the settled list also stops at a page settled more than
+  31 days ago, one past the service's window — and one POST of `{fetchedAt, open, settled, events}`
   (each bet and event cut to the fields the service reads). Never a half
   push: both lists or an `{error}`, which turns the Bets tab row red with the
   fix (log in at sportsbook.draftkings.com in this Chrome). The hosts name the
@@ -1988,14 +1989,23 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   `Draw` → push, `Cancelled` / `NonRunner` → void, `CashOut` /
   `PartialCashOut` and the dead-heat / half results → `closed`; every settled
   record carries `pnl` = `returns` − stake (the venue's payout includes the
-  stake), and a free bet (`bonus.freeBetAmount`) stakes nothing of Cal's. A
-  settled bet replaces its open copy; a settled status the table does not
+  stake), and a free bet (`bonusType` `FreeBet`) stakes nothing of Cal's — a
+  risk-free ("No Sweat") bet's `freeBetAmount` is a refund it may earn, so its
+  stake stays his; a boost's extra payout is not read (`raw.bonusType` shows
+  it). A bet on the open list is open whatever its `settlementStatus` says
+  mid-change; only the settled list settles it. A settled bet replaces its open copy; a settled status the table does not
   name is skipped and logged (`draftkings: N settled bet(s) not read`); an
   open record neither list carries is closed with no result. Fails closed
   with the reason: team totals, props, an unlisted league, an SGP group inside
   a parlay, a round robin. **Seen on real bets**: three open CFB alternate
   spreads (away and home); everything settled, totals, moneylines, halves and
   parlays are pinned by hand-written fixture rows until a real one settles.
+  **Untested until the first run in Chrome**: the extension's requests carry
+  its own `Origin`, not the site's; if DraftKings refuses that, the read fails
+  loudly as an error push (the Bets tab row says so), never silently.
+  **Known gap**: with more than 25 open bets, a bet that settles between two
+  page reads can shift the list so one other open bet is missed for one push
+  (closed by absence, then open again on the next push, 5 min later).
 - **Store** (`store.py`, `bets.duckdb`, gitignored): `bets` upserts on the
   record id and is never pruned (the CLV work needs the history), but only
   rows whose content actually CHANGED are written (#125): a source re-sends
@@ -3065,7 +3075,8 @@ a new login, and a login from the VM (or abroad) risks a flag on the account,
 so Cal picked the Bet105 route: the panel reads My Bets from his own Chrome
 and the service parses. His HAR showed the bets ride a JSON-RPC websocket,
 not HTTP, on a token the session cookies mint; the panel opens that socket
-itself, no DraftKings tab needed. Rotation is left null (DraftKings numbers
+itself, no DraftKings tab needed (untested until the first live run).
+Rotation is left null (DraftKings numbers
 are its own). Only open alternate spreads were seen live; settled shapes
 follow the page bundle's status table and fail closed on anything else.
 

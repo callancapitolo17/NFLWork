@@ -23,10 +23,10 @@ CONTRACT_KEYS = {"id", "source", "venue", "league", "eventStart", "eventDate", "
                  "awayKey", "homeKey", "rotation", "betType", "period", "side", "points", "price", "stake",
                  "toWin", "contracts", "placedAt", "status", "closedAt", "isParlayLeg", "parlayId",
                  "legIndex", "legCount", "approx", "unmatchable", "sourceFetchedAt", "raw"}
-# 12 open bets, two of them 2-leg parlays, one also in the settled list (settled wins): 13.
-OPEN_RECORDS = 13
-# 10 settled bets, one a 2-leg parlay, one skipped (settlementStatus None): 10.
-SETTLED_RECORDS = 10
+# 13 open bets, two of them 2-leg parlays, one also in the settled list (settled wins): 14.
+OPEN_RECORDS = 14
+# 11 settled bets, one a 2-leg parlay, one skipped (settlementStatus None): 11.
+SETTLED_RECORDS = 11
 ALL_RECORDS = OPEN_RECORDS + SETTLED_RECORDS
 NOW_ISO = "2026-10-10T19:05:00Z"
 
@@ -129,6 +129,18 @@ def test_a_free_bet_stakes_nothing_so_its_loss_costs_nothing_and_its_win_is_all_
     assert (won["stake"], won["toWin"], won["pnl"], won["status"]) == (0, 50, 50, "won")
 
 
+def test_a_risk_free_bet_is_cals_own_stake_so_its_loss_costs_it(records):
+    risk_free = by_id(records, "draftkings:700000000000000019")
+    assert (risk_free["stake"], risk_free["toWin"], risk_free["pnl"], risk_free["status"]) == (100, 90.91, -100, "lost")
+    assert risk_free["raw"]["bonusType"] == "RiskFreeBet"
+
+
+def test_a_bet_on_the_open_list_stays_open_whatever_its_settlement_status_says(records):
+    partial = by_id(records, "draftkings:700000000000000020")
+    assert (partial["status"], partial["closedAt"], partial["pnl"]) == ("open", None, None)
+    assert partial["raw"]["settlementStatus"] == "PartialCashOut"
+
+
 def test_a_settled_status_the_table_does_not_name_is_skipped_with_the_reason(push):
     _records, skipped = normalize_draftkings(push)
     assert skipped == ["bet 700000000000000017: settlementStatus 'None' in the settled list"]
@@ -180,7 +192,11 @@ def test_validate_push_accepts_a_complete_push_and_an_error(push):
     ({"fetchedAt": NOW_ISO, "open": [], "events": {}}, "settled must be a list, got NoneType"),
     ({"fetchedAt": NOW_ISO, "open": [{"stake": 1}], "settled": [], "events": {}},
      "open[0] carries no betId; keys seen: ['stake']"),
-    ({"fetchedAt": NOW_ISO, "open": [], "settled": [], "events": []}, "events must be an object of objects, got list"),
+    ({"fetchedAt": NOW_ISO, "open": [], "settled": [], "events": []}, "events must be an object of event objects, each with a participants list of objects"),
+    ({"fetchedAt": NOW_ISO, "open": [{"betId": "1", "selections": ["x"]}], "settled": [], "events": {}},
+     "open[0].selections must be a list of objects with a participants list"),
+    ({"fetchedAt": NOW_ISO, "open": [], "settled": [], "events": {"1": {"participants": ["x"]}}},
+     "events must be an object of event objects, each with a participants list of objects"),
 ])
 def test_validate_push_says_what_is_wrong(body, message):
     assert validate_push(body) == message
