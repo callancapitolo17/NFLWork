@@ -49,6 +49,15 @@ writer). Tables:
                `bets`; the tracker leaves an excluded bet, and a parlay any of
                whose legs is excluded, out of every number. Restore deletes the
                row. Never pruned.
+  bet_dismissals  one row per open bet Cal dismissed from the unmatched list
+               (the panel's or the phone's Dismiss: "stop flagging this bet").
+               INSERT on Dismiss (a dismissed bet keeps its first time), DELETE
+               on Restore. Served only while the bet is open — the flag ends
+               when it settles — and never pruned (a few a week).
+  teaser_blocks  one row per market (`<eventId>:bt<2|3>`, teaser.js
+               marketKeyOf) Cal marked "Can't tease" (Buckeye keeps some CFB
+               games off its teaser menu), UPSERT on the key, DELETE on
+               Restore. Served only until the game starts; never pruned.
   edge_settings  at most ONE row (settings_id = 1): the Edges settings the
                server runner (unabated_ticket/server/runner.js, phone page plan
                step 1) reads every cycle, written by PUT /settings.json and
@@ -144,6 +153,15 @@ CREATE TABLE IF NOT EXISTS bet_exclusions (
     bet_id       VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
     venue        VARCHAR NOT NULL,
     excluded_at  TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE IF NOT EXISTS bet_dismissals (
+    bet_id        VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
+    dismissed_at  TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE IF NOT EXISTS teaser_blocks (
+    market_key   VARCHAR PRIMARY KEY,    -- teaser.js marketKeyOf: '<eventId>:bt2' spread, ':bt3' total
+    event_start  TIMESTAMPTZ NOT NULL,   -- the game's start: the block is served until then
+    blocked_at   TIMESTAMPTZ NOT NULL
 );
 CREATE TABLE IF NOT EXISTS edge_settings (
     settings_id           INTEGER PRIMARY KEY CHECK (settings_id = 1),  -- one row
@@ -272,6 +290,28 @@ ORDER BY c.event_start, c.bet_id
 """
 
 _SELECT_EXCLUSIONS = "SELECT bet_id, venue, epoch(excluded_at) FROM bet_exclusions ORDER BY excluded_at DESC, bet_id"
+
+# A dismissal ends when its bet settles, so only open bets' rows are served.
+_SELECT_DISMISSALS = """
+SELECT d.bet_id, epoch(d.dismissed_at)
+FROM bet_dismissals d
+JOIN bets b ON b.id = d.bet_id
+WHERE b.status = 'open'
+ORDER BY d.dismissed_at DESC, d.bet_id
+"""
+
+_UPSERT_TEASER_BLOCK = """
+INSERT INTO teaser_blocks (market_key, event_start, blocked_at) VALUES (?, ?, ?)
+ON CONFLICT (market_key) DO UPDATE SET event_start = excluded.event_start, blocked_at = excluded.blocked_at
+"""
+
+# A block is moot once its game has started (the panel's liveTeaserBlocks rule).
+_SELECT_TEASER_BLOCKS = """
+SELECT market_key, epoch_ms(event_start), epoch(blocked_at)
+FROM teaser_blocks
+WHERE event_start > ?
+ORDER BY event_start, market_key
+"""
 
 # The settings fields in the API's camelCase, in column order: the shape
 # GET/PUT /settings.json speaks and the order of every statement below.
@@ -705,6 +745,46 @@ class BetsStore:
             rows = self._con.execute(_SELECT_EXCLUSIONS).fetchall()
         return [{"betId": bet_id, "venue": venue, "excludedAt": _epoch_to_iso(excluded_at)}
                 for bet_id, venue, excluded_at in rows]
+
+    def set_dismissals(self, bet_ids: list[str], dismissed: bool, at: datetime) -> int:
+        """Dismiss (INSERT, an already-dismissed bet keeps its time) or
+        restore (DELETE) the bets. Returns how many rows changed."""
+        changed = 0
+        with self._lock:
+            for bet_id in bet_ids:
+                if dismissed:
+                    statement = ("INSERT INTO bet_dismissals (bet_id, dismissed_at) VALUES (?, ?) "
+                                 "ON CONFLICT (bet_id) DO NOTHING")
+                    [count] = self._con.execute(statement, [bet_id, at]).fetchone()
+                else:
+                    [count] = self._con.execute("DELETE FROM bet_dismissals WHERE bet_id = ?", [bet_id]).fetchone()
+                changed += count
+        log.info("dismissals: %s %d of %d bet(s)", "dismissed" if dismissed else "restored", changed, len(bet_ids))
+        return changed
+
+    def load_dismissals(self) -> list[dict]:
+        """[{betId, dismissedAt}] of the dismissed bets still open, newest first."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_DISMISSALS).fetchall()
+        return [{"betId": bet_id, "dismissedAt": _epoch_to_iso(dismissed_at)} for bet_id, dismissed_at in rows]
+
+    def set_teaser_block(self, market_key: str, event_start: datetime, blocked: bool, at: datetime) -> int:
+        """Mark (UPSERT) or clear (DELETE) one market's Can't tease. Returns
+        how many rows changed (an UPSERT always counts 1)."""
+        with self._lock:
+            if blocked:
+                [count] = self._con.execute(_UPSERT_TEASER_BLOCK, [market_key, event_start, at]).fetchone()
+            else:
+                [count] = self._con.execute("DELETE FROM teaser_blocks WHERE market_key = ?", [market_key]).fetchone()
+        log.info("teaser blocks: %s %s", "blocked" if blocked else "restored", market_key)
+        return count
+
+    def load_teaser_blocks(self, now: datetime) -> list[dict]:
+        """[{marketKey, eventStartMs, blockedAt}] of the blocks whose game is still to start."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_TEASER_BLOCKS, [now]).fetchall()
+        return [{"marketKey": market_key, "eventStartMs": int(event_start_ms), "blockedAt": _epoch_to_iso(blocked_at)}
+                for market_key, event_start_ms, blocked_at in rows]
 
     def load_edge_settings(self) -> dict:
         """{settings: {field: value or None}, updatedAt: ISO or None} — every

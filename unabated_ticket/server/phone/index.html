@@ -10,9 +10,10 @@
   <link rel="stylesheet" href="phone.css">
 </head>
 <body>
-  <!-- Unabated Ticket on a phone (phone page plan step 2). Read-only: it lists
-       the server runner's Edges, your open bets and the runner's settings; you
-       bet in the book's own app. Served by the bets service, one origin. -->
+  <!-- Unabated Ticket on a phone (phone page plan steps 2-3): the server
+       runner's Edges and Teasers, your open bets with Attach / Dismiss, and
+       the settings the desktop panel shares. You bet in the book's own app.
+       Served by the bets service, one origin. -->
   <header class="top">
     <div class="top-row">
       <h1 class="brand">Unabated Ticket</h1>
@@ -31,6 +32,42 @@
       <div id="edges-empty" class="pane-note" hidden></div>
     </section>
 
+    <!-- Buckeye 6-point teasers: the panel's Teasers tab, built by the runner
+         (server/teasers_payload.js) in teaserview.js's words. -->
+    <section id="view-teasers" class="view" aria-labelledby="tab-teasers" hidden>
+      <div id="teasers-error" class="warning bad" hidden></div>
+      <div id="teasers-warning" class="warning" hidden></div>
+      <div class="status-line">Buckeye · 6-pt football · 4 teams +300 · max $200 a ticket · Unabated fair · a push loses</div>
+      <div id="teasers-status" class="status-line"></div>
+      <div id="teasers-empty" class="pane-note teasers-pad" hidden></div>
+
+      <div id="teasers-summary" class="stake-block teaser-summary" hidden>
+        <div class="stake-label" id="teasers-summary-label"></div>
+        <div class="stake" id="teasers-summary-stake"></div>
+        <div class="payout-row" id="teasers-summary-cells"></div>
+        <div class="pane-note" id="teasers-summary-note"></div>
+      </div>
+
+      <details id="teasers-open" class="offboard teasers-pad" open hidden>
+        <summary><span class="section-label inline">Open at BFA <span id="teasers-open-count" class="num"></span></span> <span id="teasers-open-note" class="pane-note"></span></summary>
+        <ol id="teasers-open-list" class="ticket-list"></ol>
+      </details>
+
+      <h2 class="section-label teasers-pad" id="teasers-list-label" hidden>To bet · in this order <span id="teasers-list-count" class="num"></span></h2>
+      <ol id="teasers-list" class="ticket-list teasers-pad"></ol>
+      <details id="teasers-more" class="more-tickets teasers-pad" hidden>
+        <summary id="teasers-more-label"></summary>
+        <ol id="teasers-more-list" class="ticket-list"></ol>
+      </details>
+
+      <h2 class="section-label teasers-pad" id="teasers-legs-label" hidden>Legs · best per game <span id="teasers-legs-count" class="num"></span></h2>
+      <ol id="teasers-legs" class="edges-list legs-list"></ol>
+      <details id="teasers-legs-more" class="more-tickets teasers-pad" hidden>
+        <summary id="teasers-legs-more-label"></summary>
+        <ol id="teasers-legs-more-list" class="edges-list legs-list"></ol>
+      </details>
+    </section>
+
     <section id="view-bets" class="view" aria-labelledby="tab-bets" hidden>
       <div class="bets-summary">
         <span class="risk" id="bets-risk"></span>
@@ -38,7 +75,7 @@
       </div>
       <div id="bets-needs-block" class="needs-block" hidden>
         <h2 class="section-label needs">Needs a game <span id="bets-needs-count" class="num"></span></h2>
-        <div class="pane-note">Not matched to a game on the board, so left out of the next stake on its game. Attach it from the desktop panel.</div>
+        <div class="pane-note">Not matched to a game on the board, so left out of the next stake on its game. Attach picks its game; Dismiss stops the flag.</div>
         <ol id="bets-needs" class="bets-list"></ol>
       </div>
       <div id="bets-fix-block" class="needs-block" hidden>
@@ -59,10 +96,18 @@
         <div class="pane-note">Futures, props, leagues the scanner does not cover, games not posted yet or already over.</div>
         <ol id="bets-offboard-list" class="bets-list"></ol>
       </details>
+
+      <details id="bets-crosswalk-block" class="offboard">
+        <summary><span class="section-label inline">Learned team names <span id="bets-crosswalk-count" class="num"></span></span></summary>
+        <div class="pane-note">What each venue calls a team, learned whenever a bet joins the board by its Kalshi or Novig id, or when you attach a bet by hand. Applied before name matching.</div>
+        <div class="crosswalk-actions"><button type="button" id="bets-crosswalk-clear" class="reset-btn">Clear</button> <span id="bets-crosswalk-error" class="settings-status bad"></span></div>
+        <ol id="bets-crosswalk" class="bets-list"></ol>
+        <div id="bets-crosswalk-empty" class="pane-note" hidden></div>
+      </details>
     </section>
 
     <section id="view-settings" class="view" aria-labelledby="tab-settings" hidden>
-      <div class="pane-note">The server runner's settings (bets.duckdb). The desktop panel keeps its own; the two are not synced. A field you never set follows the panel's default.</div>
+      <div class="pane-note">The settings the desktop panel and this page share (bets.duckdb): a change here reaches the panel on its next bets poll, and a change there shows here. A field never set follows the panel's default.</div>
       <form id="settings-form" class="settings-form" novalidate></form>
       <div class="settings-actions">
         <button type="button" id="settings-save" class="btn primary">Save</button>
@@ -73,6 +118,7 @@
 
   <nav class="tabbar" role="tablist">
     <button type="button" role="tab" id="tab-edges" data-view="edges" class="active" aria-selected="true">Edges <span id="edges-count" class="count" hidden></span></button>
+    <button type="button" role="tab" id="tab-teasers" data-view="teasers" aria-selected="false">Teasers <span id="teasers-count" class="count" hidden></span></button>
     <button type="button" role="tab" id="tab-bets" data-view="bets" aria-selected="false">Bets <span id="bets-count" class="count" hidden></span><span id="bets-alert" class="count alert" hidden></span></button>
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false">Settings</button>
   </nav>
@@ -85,6 +131,7 @@
       <div class="sheet-grip" aria-hidden="true"></div>
       <button type="button" id="sheet-close" class="sheet-close" aria-label="Close ticket">Close</button>
       <div id="ticket-gone" class="warning" hidden>No longer listed: this is the line as it was last shown.</div>
+      <div id="ticket-moved" class="warning" hidden></div>
       <div class="side-caption">You are betting</div>
       <div class="side" id="ticket-side"></div>
       <div class="ticket-badges" id="ticket-badges"></div>
@@ -132,6 +179,8 @@
   <script src="ext/fillfair.js"></script>
   <script src="ext/tailflex.js"></script>
   <script src="ext/edgerows.js"></script>
+  <script src="ext/teaser.js"></script>
+  <script src="ext/teaserview.js"></script>
   <script src="phoneview.js"></script>
   <script src="phone.js"></script>
 </body>

@@ -551,11 +551,19 @@ def test_a_second_ticket_while_one_is_placing_is_refused():
     assert session.posts == [] and session.gets == []
 
 
-def test_a_name_tailscale_serve_forwards_can_read_but_never_place(serve_with):
+def test_a_name_tailscale_serve_forwards_places_too(serve_with):
     placer = StubPlacer({"status": "placed", "message": ""})
     url, _store = serve_with(placer)
     status, reply = post_place(url, REQUEST, host=TAILNET_HOST)
-    assert status == 403 and "placing is for this machine only" in reply["error"]
+    assert status == 200 and reply["ok"] is True
+    assert len(placer.requests) == 1
+
+
+def test_any_other_host_never_places(serve_with):
+    placer = StubPlacer({"status": "placed", "message": ""})
+    url, _store = serve_with(placer)
+    status, reply = post_place(url, REQUEST, host="evil.example")
+    assert status == 403 and "Host must be one of" in reply["error"]
     assert placer.requests == []
 
 

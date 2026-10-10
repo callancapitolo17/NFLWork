@@ -196,3 +196,30 @@ test("leagues follow the sports ticked, and a stored NFL-only list survives a sa
   assert.deepEqual(phoneView.leaguesForSports(["football", "hockey"], [1]), [1, 2, 6, 11]);
   assert.deepEqual(phoneView.leaguesForSports([], [1]), []);
 });
+
+test("applyDismissals: the page's own Dismiss / Restore laid over the runner's list; no marks from the service keeps it", () => {
+  const unmatched = [
+    { betId: "a", needsGame: true, needsFix: false, dismissed: false, flagUnlessDismissed: "game" },
+    { betId: "b", needsGame: false, needsFix: false, dismissed: true, flagUnlessDismissed: "fix" },
+    { betId: "c", needsGame: false, needsFix: false, dismissed: false, flagUnlessDismissed: null },
+  ];
+  assert.equal(phoneView.applyDismissals(unmatched, null), unmatched);
+  const laid = phoneView.applyDismissals(unmatched, ["a"]);
+  assert.deepEqual(laid.map((entry) => [entry.betId, entry.needsGame, entry.needsFix, entry.dismissed]),
+    [["a", false, false, true], ["b", false, true, false], ["c", false, false, false]]);
+});
+
+test("lineMovedText: the panel's Line moved note when the ticket's line changed since it was opened", () => {
+  assert.equal(phoneView.lineMovedText({ price: 120, points: -2.5 }, { price: 120, points: -2.5 }), null);
+  assert.equal(phoneView.lineMovedText({ price: 130, points: -3 }, { price: 120, points: -2.5 }),
+    "Line moved: now +120 at -2.5 (opened +130 at -3). Stake re-sized.");
+  assert.equal(phoneView.lineMovedText({ price: -110, points: null }, { price: -105, points: null }),
+    "Line moved: now -105 (opened -110). Stake re-sized.");
+});
+
+test("teasersWarningText: no BFA account read, or BFA's last pull failed", () => {
+  assert.equal(phoneView.teasersWarningText(null), null);
+  assert.match(phoneView.teasersWarningText({ configured: false }), /reads no BFA account/);
+  assert.equal(phoneView.teasersWarningText({ configured: true, error: "HTTP 500", ageText: "3m" }), "BFA's last pull failed (HTTP 500); open teasers are as of 3m ago.");
+  assert.equal(phoneView.teasersWarningText({ configured: true, error: null }), null);
+});

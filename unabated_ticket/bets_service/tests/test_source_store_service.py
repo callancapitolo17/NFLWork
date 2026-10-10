@@ -686,7 +686,7 @@ def test_http_bets_json_and_health_shape(store, http_server):
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
     assert set(payload) == {"generatedAt", "sources", "bets", "crosswalk", "pins", "fillFairs", "closingFairs",
-                            "exclusions"}
+                            "exclusions", "dismissals", "teaserBlocks"}
     assert set(payload["sources"]["kalshi"]) == {"fetchedAt", "ok", "error", "count"}
     assert payload["sources"]["kalshi"]["ok"] is True
     assert payload["bets"][0]["id"] == "kalshi:a:yes"
@@ -704,7 +704,8 @@ def test_http_before_any_poll_serves_an_empty_list_with_the_source_pending(http_
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
     assert payload == {"generatedAt": payload["generatedAt"], "sources": {"kalshi": service.NO_POLL_YET}, "bets": [],
-                       "crosswalk": [], "pins": [], "fillFairs": [], "closingFairs": [], "exclusions": []}
+                       "crosswalk": [], "pins": [], "fillFairs": [], "closingFairs": [], "exclusions": [],
+                       "dismissals": [], "teaserBlocks": []}
     status, payload = get_json(f"{http_server}/health")
     assert status == 200 and payload["sources"] == {"kalshi": service.NO_POLL_YET}
 
@@ -865,6 +866,59 @@ def test_http_exclusions_remove_and_restore_only_bfa_and_wagerzon_bets(store, ht
     restore = json.dumps({"betIds": ["bfa:1:leg0", "bfa:1:leg1"], "excluded": False}).encode()
     status, reply = request_json("POST", f"{http_server}/exclusions.json", restore, "application/json")
     assert (status, reply["changed"], reply["exclusions"]) == (200, 2, [])
+
+
+def test_http_dismissals_dismiss_and_restore_open_bets(store, http_server):
+    service.run_source_once(ScriptedSource([[
+        record("kalshi:a:yes", "open", None),
+        record("kalshi:b:yes", "won", "2026-09-20T20:00:00Z"),
+    ]]), store)
+    dismiss = json.dumps({"betIds": ["kalshi:a:yes", "kalshi:b:yes"], "dismissed": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", dismiss, "application/json")
+    assert status == 200 and reply["changed"] == 2
+    # Only the open bet's dismissal is served: the flag ends when a bet settles.
+    assert [row["betId"] for row in reply["dismissals"]] == ["kalshi:a:yes"]
+    assert [row["betId"] for row in get_json(f"{http_server}/bets.json")[1]["dismissals"]] == ["kalshi:a:yes"]
+    # Dismissing again keeps the first time and changes nothing.
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", dismiss, "application/json")
+    assert reply["changed"] == 0
+    unknown = json.dumps({"betIds": ["kalshi:nope"], "dismissed": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", unknown, "application/json")
+    assert status == 404 and reply["error"] == "no bet with id(s) ['kalshi:nope']"
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", b'{"betIds": ["kalshi:a:yes"]}', "application/json")
+    assert status == 400 and reply["error"] == "dismissed must be true or false, got None"
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", dismiss, "text/plain")
+    assert status == 415
+    restore = json.dumps({"betIds": ["kalshi:a:yes"], "dismissed": False}).encode()
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", restore, "application/json")
+    assert (status, reply["changed"], reply["dismissals"]) == (200, 1, [])
+
+
+def test_http_teaser_blocks_mark_and_restore_until_the_game_starts(store, http_server):
+    future_ms = int((datetime.now(timezone.utc) + timedelta(days=2)).timestamp() * 1000)
+    past_ms = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() * 1000)
+    block = json.dumps({"marketKey": "123456:bt2", "eventStartMs": future_ms, "blocked": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json", block, "application/json")
+    assert status == 200 and reply["changed"] == 1
+    assert [(row["marketKey"], row["eventStartMs"]) for row in reply["teaserBlocks"]] == [("123456:bt2", future_ms)]
+    assert get_json(f"{http_server}/bets.json")[1]["teaserBlocks"] == reply["teaserBlocks"]
+    # A started game's block is no longer served.
+    started = json.dumps({"marketKey": "999:bt3", "eventStartMs": past_ms, "blocked": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json", started, "application/json")
+    assert status == 200 and [row["marketKey"] for row in reply["teaserBlocks"]] == ["123456:bt2"]
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json",
+                                 json.dumps({"marketKey": "123456:bt1", "eventStartMs": future_ms, "blocked": True}).encode(),
+                                 "application/json")
+    assert status == 400 and reply["error"].startswith("marketKey must look like")
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json",
+                                 json.dumps({"marketKey": "123456:bt2", "eventStartMs": "soon", "blocked": True}).encode(),
+                                 "application/json")
+    assert status == 400 and reply["error"].startswith("eventStartMs must be")
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json", block, "text/plain")
+    assert status == 415
+    restore = json.dumps({"marketKey": "123456:bt2", "eventStartMs": future_ms, "blocked": False}).encode()
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json", restore, "application/json")
+    assert (status, reply["changed"], reply["teaserBlocks"]) == (200, 1, [])
 
 
 def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):

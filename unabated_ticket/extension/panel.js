@@ -40,6 +40,7 @@
   const attachLib = globalThis.UnabatedAttach;
   const live = globalThis.UnabatedLive;
   const teaserLib = globalThis.UnabatedTeaser;
+  const teaserView = globalThis.UnabatedTeaserView;
   const bet105 = globalThis.UnabatedBet105;
   // Bets service poll cadence while the panel is visible (plan § Storage).
   const BETS_POLL_MS = 30 * 1000;
@@ -1008,6 +1009,7 @@
   function setBookIds(bookIds) {
     state.edgeSettings = { ...state.edgeSettings, bookIds };
     chrome.storage.local.set({ edges: state.edgeSettings });
+    queueSettingsPush();
     // A newly ticked book brings lines the alert log has never seen: baseline them, don't ping.
     alertsBaselined = false;
     renderEdges();
@@ -1945,6 +1947,7 @@
       || parsed.settings.groupByMarket !== before.groupByMarket;
     state.edgeSettings = parsed.settings;
     chrome.storage.local.set({ edges: parsed.settings });
+    queueSettingsPush();
     if (scopeChanged) alertsBaselined = false;
     // Ticking Football on or off leaves the scanner's leagues as they are: it loads football for the Teasers tab anyway.
     const scannerLeaguesChanged = scannerLeaguesOf(parsed.settings.leagues).join(",") !== scannerLeaguesOf(before.leagues).join(",");
@@ -2007,6 +2010,7 @@
       state.crosswalk = applied.crosswalk;
       state.pins = applied.pins;
       state.betRecords = applied.records;
+      takeSharedMarks(applied);
       state.dismissedBetIds = betsView.keepDismissedOpen(state.dismissedBetIds, state.betRecords);
       noteMatchedStarts();
       if (applied.fillFairs !== state.fillFairs) setFillFairs(applied.fillFairs);
@@ -2028,6 +2032,10 @@
     learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
     captureFillFairs().catch((error) => console.error("[unabated-ticket] fill fair capture failed", error));
     pollBet105().catch((error) => console.error("[unabated-ticket] bet105 poll failed", error));
+    if (state.betsService.error == null) {
+      syncSettings().catch((error) => console.error("[unabated-ticket] settings sync failed", error));
+      if (sharedMarksDue) migrateSharedMarks().catch((error) => console.error("[unabated-ticket] marks migration failed", error));
+    }
   }
 
   // ---- Bet105 (read here, stored by the service) -----------------------------
@@ -2170,6 +2178,124 @@
     state.betRecords = betsLib.rekeyRecords(betsLib.applyPins(state.betRecords, state.pins), state.crosswalk);
     await persistBets();
     renderBetsFlags();
+  }
+
+  // ---- one set of settings and marks, shared with the phone -----------------
+  //
+  // The bets service holds the settings (bets.duckdb::edge_settings), the
+  // Dismiss marks (bet_dismissals) and the Can't tease marks (teaser_blocks),
+  // so the panel and the phone page show the same list. Settings: the first
+  // time the panel reaches a service URL, its own settings are written there
+  // (they were set here); after that a change on either side wins — a panel
+  // edit PUTs the whole row, and a row the service changed since the panel
+  // last wrote or read it (the phone's Settings) is applied here.
+  // settingsSync {serviceUrl, updatedAt} in chrome.storage.local says which.
+  // Marks: a service that serves them is the truth; the first time, the
+  // panel's own (kept in chrome.storage.local before 0.22.0) are sent up once.
+  // An older service with no marks leaves them panel state, as before.
+  const SETTINGS_PUSH_DELAY_MS = 800;
+  let settingsSync = null;
+  let settingsPushTimer = null;
+  let settingsSyncBusy = false;
+  // The service serves the marks (its last /bets.json carried them).
+  let sharedMarks = false;
+  // Set by a poll that found the service serving marks before this panel sent its own up.
+  let sharedMarksDue = false;
+  let sharedMarksMigratedTo = null;
+  let sharedMarksMigrating = false;
+
+  // The marks /bets.json carried, unless the panel's own are still to go up first.
+  function takeSharedMarks(applied) {
+    sharedMarks = applied.dismissals !== null && applied.teaserBlocks !== null;
+    sharedMarksDue = sharedMarks && sharedMarksMigratedTo !== state.betsSettings.serviceUrl;
+    if (!sharedMarks || sharedMarksDue) return;
+    state.dismissedBetIds = applied.dismissals.map((row) => row.betId);
+    teaserBlocked = Object.fromEntries(applied.teaserBlocks.map((row) => [row.marketKey, row.eventStartMs]));
+  }
+
+  // Each of the panel's own marks POSTed once, one per request (a bet the
+  // service does not hold is a 404 and is left behind), then the next poll
+  // takes the service's set.
+  async function migrateSharedMarks() {
+    if (sharedMarksMigrating) return;
+    sharedMarksMigrating = true;
+    const serviceUrl = state.betsSettings.serviceUrl;
+    // A refusal (a bet the service does not hold) leaves that mark behind; no answer at all stops here and tries again next poll.
+    const refusedOnly = (what) => (error) => {
+      if (!error.status) throw error;
+      console.warn(`[unabated-ticket] ${what} not sent up: ${error.message}`);
+    };
+    try {
+      for (const betId of state.dismissedBetIds) {
+        await serviceRequest("POST", "/dismissals.json", { betIds: [betId], dismissed: true }).catch(refusedOnly(`dismissal of ${betId}`));
+      }
+      for (const [marketKey, eventStartMs] of Object.entries(liveTeaserMarks(Date.now()))) {
+        await serviceRequest("POST", "/teaser_blocks.json", { marketKey, eventStartMs, blocked: true }).catch(refusedOnly(`can't tease ${marketKey}`));
+      }
+      sharedMarksMigratedTo = serviceUrl;
+      await chrome.storage.local.set({ sharedMarksMigratedTo });
+    } finally {
+      sharedMarksMigrating = false;
+    }
+    await pollBets();
+  }
+
+  // A panel settings edit: written to the service once the typing stops.
+  function queueSettingsPush() {
+    clearTimeout(settingsPushTimer);
+    settingsPushTimer = setTimeout(() => {
+      settingsPushTimer = null;
+      pushSettings().catch((error) => console.warn("[unabated-ticket] settings not saved to the bets service:", error.message));
+    }, SETTINGS_PUSH_DELAY_MS);
+  }
+
+  async function pushSettings() {
+    const serviceUrl = state.betsSettings.serviceUrl;
+    const reply = await serviceRequest("PUT", "/settings.json", { settings: edgeRows.serviceSettingsOf(state.settings, state.edgeSettings) });
+    settingsSync = { serviceUrl, updatedAt: reply.updatedAt ?? null };
+    await chrome.storage.local.set({ settingsSync });
+  }
+
+  // On every good bets poll: the service's row, applied here when it changed
+  // since the panel last saw it. Skipped while a panel edit waits to be written.
+  async function syncSettings() {
+    if (settingsSyncBusy || settingsPushTimer !== null) return;
+    settingsSyncBusy = true;
+    try {
+      const serviceUrl = state.betsSettings.serviceUrl;
+      if (!settingsSync || settingsSync.serviceUrl !== serviceUrl) {
+        await pushSettings();
+        return;
+      }
+      const body = await serviceRequest("GET", "/settings.json");
+      if (!body || typeof body.settings !== "object" || body.settings === null) throw new Error("settings.json has no settings object");
+      if ((body.updatedAt ?? null) === settingsSync.updatedAt || settingsPushTimer !== null) return;
+      applyServiceSettings(body.settings);
+      settingsSync = { serviceUrl, updatedAt: body.updatedAt ?? null };
+      await chrome.storage.local.set({ settingsSync, ...state.settings, edges: state.edgeSettings });
+    } finally {
+      settingsSyncBusy = false;
+    }
+  }
+
+  // Settings changed elsewhere (the phone), as if typed here: the inputs
+  // refilled, the scanner restarted when its leagues changed, the alert log
+  // re-baselined so a widened list is not a burst of pings.
+  function applyServiceSettings(row) {
+    const { stakeSettings, edgeSettings } = edgeRows.settingsFromService(row);
+    const scannerLeaguesChanged = scannerLeaguesOf(edgeSettings.leagues).join(",") !== scannerLeaguesOf(state.edgeSettings.leagues).join(",");
+    state.settings = stakeSettings;
+    state.edgeSettings = edgeSettings;
+    console.info("[unabated-ticket] settings changed on the bets service; applied here");
+    fillSettingInputs();
+    fillEdgeSettingInputs();
+    alertsBaselined = false;
+    if (scannerLeaguesChanged) {
+      scanner.start(scannerLeaguesOf(edgeSettings.leagues)).catch((error) => console.error("[unabated-ticket] scanner restart failed", error));
+    }
+    render();
+    renderEdges();
+    renderTeasers();
   }
 
   // Clear is two clicks: the first arms the button ("Clear 68 rows?") for a
@@ -2353,11 +2479,26 @@
     return JSON.stringify(state.knownStarts) !== before;
   }
 
-  // Dismiss stops a bet flagging red; Restore flags it again. Both are panel
-  // view state (persisted with the records), so they take effect at once.
+  // Dismiss stops a bet flagging red; Restore flags it again. Shown at once;
+  // on a service that holds the marks it is written there too (the phone
+  // shows it), and a refused write puts the row back as it was.
   async function setDismissed(betId, dismissed) {
-    const others = state.dismissedBetIds.filter((id) => id !== betId);
+    const before = state.dismissedBetIds;
+    const others = before.filter((id) => id !== betId);
     state.dismissedBetIds = dismissed ? [...others, betId] : others;
+    await persistBets();
+    renderBetsFlags();
+    if (!sharedMarks || sharedMarksDue) return;
+    try {
+      const reply = await serviceRequest("POST", "/dismissals.json", { betIds: [betId], dismissed });
+      if (!reply || !Array.isArray(reply.dismissals)) throw new Error("dismissals.json reply has no dismissals array");
+      state.dismissedBetIds = betsView.keepDismissedOpen(reply.dismissals.map((row) => row.betId), state.betRecords);
+      view.betsSettingsError.textContent = "";
+    } catch (error) {
+      console.warn("[unabated-ticket] dismiss not saved:", error.message);
+      state.dismissedBetIds = before;
+      view.betsSettingsError.textContent = `${dismissed ? "Dismiss" : "Restore"} failed: ${error.message}`;
+    }
     await persistBets();
     renderBetsFlags();
   }
@@ -2746,8 +2887,6 @@
   // button bets it at BFA through the bets service (POST /place_teaser.json).
 
   const HOUR_MS = 3600 * 1000;
-  // Ticket cards shown before the fold; the rest sit behind "N more tickets".
-  const TEASER_TICKETS_SHOWN = 3;
   // Ticket number -> the text its Copy button puts on the clipboard.
   const teaserCopyTexts = new Map();
   // Ticket signature -> the ticket as last rendered, for its Place button.
@@ -2763,6 +2902,8 @@
   const TEASER_CONFIRM_MIN_MS = 600;
   // The last failure logged, so a persistent one is logged once, not every 5 s.
   let teaserLastError = null;
+  // A Can't tease or Restore the bets service refused, shown until the next one goes through.
+  let teaserMarkError = null;
 
   // The board pass, redone when an NFL or CFB snapshot has landed since (a
   // scanner restart clears the load times, so it counts too).
@@ -2791,24 +2932,48 @@
     chrome.storage.local.set({ teaserRefs: Array.from(refs) });
   }
 
-  // The can't-tease marks whose game is still to start; the rest leave storage too.
-  function liveTeaserBlocks(now) {
+  // The can't-tease marks whose game is still to start ({marketKey: startMs});
+  // the rest leave storage too.
+  function liveTeaserMarks(now) {
     const live = Object.fromEntries(Object.entries(teaserBlocked).filter(([, startMs]) => startMs > now));
     if (Object.keys(live).length !== Object.keys(teaserBlocked).length) {
       teaserBlocked = live;
       chrome.storage.local.set({ teaserBlocked });
     }
-    return new Set(Object.keys(live));
+    return live;
+  }
+
+  function liveTeaserBlocks(now) {
+    return new Set(Object.keys(liveTeaserMarks(now)));
   }
 
   // Can't tease marks the leg's market (its spread or total, both sides);
   // Restore removes the mark. The tab re-renders now: the list rebuilds when
-  // the market held a pool leg, otherwise only the Legs list changes.
-  function setTeaserBlocked(leg, blocked) {
+  // the market held a pool leg, otherwise only the Legs list changes. On a
+  // service that holds the marks it is written there too; a refused write
+  // puts the mark back as it was.
+  async function setTeaserBlocked(leg, blocked) {
+    const before = teaserBlocked;
+    const marketKey = teaserLib.marketKeyOf(leg);
     const next = { ...teaserBlocked };
-    if (blocked) next[teaserLib.marketKeyOf(leg)] = leg.eventStartMs;
-    else delete next[teaserLib.marketKeyOf(leg)];
+    if (blocked) next[marketKey] = leg.eventStartMs;
+    else delete next[marketKey];
     teaserBlocked = next;
+    chrome.storage.local.set({ teaserBlocked });
+    renderTeasers();
+    if (!sharedMarks || sharedMarksDue) return;
+    try {
+      const reply = await serviceRequest("POST", "/teaser_blocks.json", { marketKey, eventStartMs: leg.eventStartMs, blocked });
+      if (!reply || !Array.isArray(reply.teaserBlocks)) throw new Error("teaser_blocks.json reply has no teaserBlocks array");
+      teaserBlocked = Object.fromEntries(reply.teaserBlocks.map((row) => [row.marketKey, row.eventStartMs]));
+    } catch (error) {
+      console.warn("[unabated-ticket] can't tease not saved:", error.message);
+      teaserBlocked = before;
+      teaserMarkError = `${blocked ? "Can't tease" : "Restore"} failed: ${error.message}`;
+      renderTeasers();
+      return;
+    }
+    teaserMarkError = null;
     chrome.storage.local.set({ teaserBlocked });
     renderTeasers();
   }
@@ -2830,39 +2995,6 @@
       plan: teaserLib.describePlan(teaserBuild, legs, placed),
       legRows: teaserLib.describeLegs(legs, teaserBuild, placed, straights, blocked),
     };
-  }
-
-  function fmtWholeDollars(value) {
-    return value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-  }
-
-  function fmtSignedDollars(value) {
-    return `${value >= 0 ? "+" : "-"}${fmtWholeDollars(Math.abs(value))}`;
-  }
-
-  function fmtWin(win) {
-    return `${(win * 100).toFixed(1)}%`;
-  }
-
-  function fmtEv(ev) {
-    return `EV ${ev >= 0 ? "+" : ""}${(ev * 100).toFixed(1)}%`;
-  }
-
-  function fmtWholePct(fraction) {
-    return `${Math.round(fraction * 100)}%`;
-  }
-
-  function kellyWords(multiplier) {
-    const names = { 1: "Full", 0.5: "Half", 0.25: "Quarter" };
-    return `${names[multiplier] || `${multiplier}x`} Kelly`;
-  }
-
-  function plural(count, word) {
-    return `${count} ${word}${count === 1 ? "" : "s"}`;
-  }
-
-  function teaserTicketSize() {
-    return `${teaserLib.LEGS_PER_TICKET}-team · pays +${teaserLib.TICKET_NET_ODDS * 100}`;
   }
 
   // The bets service's BFA row (betsview.sourceRows), or null before the service has been reached.
@@ -2888,7 +3020,7 @@
     if (state.activeTab !== "teasers") return;
     const scrollTop = view.tabTeasers.scrollTop;
     renderTeasersBanners(failure);
-    renderTeasersStatus(model);
+    view.teasersStatus.textContent = teaserView.statusText(scannerStatus, model ? model.legs : null);
     renderTeasersSummary(model);
     renderTeasersOpen(model);
     renderTeasersTickets(model);
@@ -2903,6 +3035,7 @@
     const now = Date.now();
     const red = [];
     if (failure) red.push(`Teasers failed: ${failure.message}`);
+    if (teaserMarkError) red.push(teaserMarkError);
     const service = betsView.serviceStatus(state.betsService, now);
     if (service.unreachable) {
       red.push(`${service.text.charAt(0).toUpperCase()}${service.text.slice(1)}. Open BFA teasers may be missing, so a ticket already placed may be suggested again.`);
@@ -2917,95 +3050,44 @@
     view.teasersWarning.textContent = amber || "";
   }
 
-  // "NFL · CFB loading", then "NFL · CFB · 15 games on Buckeye's board · 56 of 56 legs priced".
-  function renderTeasersStatus(model) {
-    if (!scannerStatus) {
-      view.teasersStatus.textContent = "Starting the scanner…";
-      return;
-    }
-    const leagues = teaserLib.TEASER_LEAGUE_IDS.map((id) => {
-      const label = feed.LEAGUES[id].label;
-      if (scannerStatus.leaguesLoaded.includes(id)) return label;
-      return scannerStatus.leagueErrors && scannerStatus.leagueErrors[id] ? `${label} unavailable` : `${label} loading`;
-    });
-    if (!model) {
-      view.teasersStatus.textContent = leagues.join(" · ");
-      return;
-    }
-    const games = new Set(model.legs.map((leg) => leg.eventId)).size;
-    const priced = model.legs.filter((leg) => leg.win != null).length;
-    view.teasersStatus.textContent = `${leagues.join(" · ")} · ${plural(games, "game")} on Buckeye's board · ${priced} of ${plural(model.legs.length, "leg")} priced`;
-  }
-
-  function teasersEmptyText(model) {
-    if (!model) return "Waiting for Buckeye's NFL and CFB board…";
-    const { plan, build } = model;
-    if (plan.tickets.length) return null;
-    if (build.reason === teaserLib.REASON_FEW_LEGS) return `Fewer than ${teaserLib.LEGS_PER_TICKET} games with a priced Buckeye leg right now: nothing to tease.`;
-    if (build.reason) return `No tickets: ${build.reason}.`;
-    if (build.partialHeldBack > 0) {
-      return `Nothing more to bet: the next ticket would be a partial ${fmtWholeDollars(build.partialHeldBack)}, and a 4-team ticket under $200 is already open at BFA (one partial ticket per set).`;
-    }
-    return build.placed.length
-      ? "Nothing more to bet: no other ticket raises the Kelly growth with the open teasers held."
-      : "No ticket worth betting right now: no 4-team ticket raises the Kelly growth at these fairs.";
-  }
-
-  function summaryCell(label, value, small) {
+  function summaryCell(cellView) {
     const cell = makeEl("div", "payout-cell");
-    const valueEl = makeEl("div", "payout-value", value);
-    if (small) valueEl.append(" ", makeEl("small", null, small));
-    cell.append(makeEl("div", "payout-label", label), valueEl);
+    const valueEl = makeEl("div", "payout-value", cellView.value);
+    if (cellView.small) valueEl.append(" ", makeEl("small", null, cellView.small));
+    cell.append(makeEl("div", "payout-label", cellView.label), valueEl);
     return cell;
   }
 
-  // Tickets, dollars, expected profit, the chance to make money and the
-  // chance every ticket loses — over the open teasers too when there are any.
   function renderTeasersSummary(model) {
-    const empty = teasersEmptyText(model);
+    const empty = teaserView.emptyText(model ? teaserView.planStateOf(model.plan, model.build) : null);
     view.teasersEmpty.hidden = !empty;
     view.teasersEmpty.textContent = empty || "";
-    const summary = model ? model.plan.summary : null;
-    const shown = Boolean(summary) && (summary.count > 0 || summary.placedCount > 0);
-    view.teasersSummary.hidden = !shown;
-    if (!shown) return;
-    view.teasersSummaryLabel.textContent = summary.count === 0 ? "Nothing more to bet"
-      : summary.placedCount ? `Bet ${summary.count} more` : `Bet ${plural(summary.count, "ticket")}`;
-    view.teasersSummaryStake.textContent = fmtWholeDollars(summary.stake);
-    const cells = [];
-    if (summary.placedCount) {
-      // The open tickets still in the math; the Open at BFA header below counts every open one.
-      const allOpen = model.placed.length === summary.placedCount;
-      cells.push(summaryCell(allOpen ? "Placed" : "Placed, in play", fmtWholeDollars(summary.placedStake)));
-      if (summary.expectedAll != null) cells.push(summaryCell(`Expected, all ${summary.count + summary.placedCount}`, fmtSignedDollars(summary.expectedAll)));
-    } else {
-      cells.push(summaryCell("Expected", fmtSignedDollars(summary.expected), summary.stake > 0 ? fmtWholePct(summary.expected / summary.stake) : null));
-    }
-    if (summary.makesMoney != null) cells.push(summaryCell("Makes money", fmtWholePct(summary.makesMoney)));
-    if (summary.allLose != null) cells.push(summaryCell("All lose", fmtWholePct(summary.allLose)));
-    view.teasersSummaryCells.replaceChildren(...cells);
-    const straights = summary.straights;
-    view.teasersSummaryNote.textContent = `${kellyWords(state.settings.multiplier)} on ${fmtWholeDollars(state.settings.bankroll)} · `
-      + (summary.placedCount ? "open BFA teasers held fixed" : "tickets that share a leg are sized together")
-      + (straights.count ? ` · counts ${fmtWholeDollars(straights.stake)} of straight bets on ${plural(straights.games, "game")}` : "");
+    const summary = model ? teaserView.summaryView(model.plan.summary, model.placed.length, state.settings) : null;
+    view.teasersSummary.hidden = !summary;
+    if (!summary) return;
+    view.teasersSummaryLabel.textContent = summary.label;
+    view.teasersSummaryStake.textContent = summary.stake;
+    view.teasersSummaryCells.replaceChildren(...summary.cells.map(summaryCell));
+    view.teasersSummaryNote.textContent = summary.note;
   }
 
   // What Copy puts on the clipboard: BFA's own "[rotation] side" for each leg.
   function teaserCopyText(ticket) {
     const legs = ticket.legs.map((leg) => `${leg.rotation != null ? `[${leg.rotation}] ` : ""}${leg.label}`).join(" / ");
-    return `Buckeye ${teaserLib.LEGS_PER_TICKET}-team ${teaserLib.TEASER_POINTS}-pt teaser ${fmtWholeDollars(ticket.stake)}: ${legs} | ${fmtEv(ticket.ev)}`;
+    return `Buckeye ${teaserLib.LEGS_PER_TICKET}-team ${teaserLib.TEASER_POINTS}-pt teaser ${teaserView.fmtWholeDollars(ticket.stake)}: ${legs} | ${teaserView.fmtEv(ticket.ev)}`;
   }
 
   function teaserTicketCard(ticket) {
+    const ticketView = teaserView.pendingTicketView(ticket);
     const card = makeEl("li", "ticket-card");
     const head = makeEl("div", "tk-head");
     const rail = makeEl("span", "tk-rail");
-    rail.append(makeEl("span", "tk-stake", fmtWholeDollars(ticket.stake)), makeEl("span", "tk-ev", fmtEv(ticket.ev)));
-    head.append(makeEl("span", "tk-num", `#${ticket.number}`), makeEl("span", "tk-size", teaserTicketSize()), rail);
+    rail.append(makeEl("span", "tk-stake", ticketView.stake), makeEl("span", "tk-ev", ticketView.ev));
+    head.append(makeEl("span", "tk-num", `#${ticketView.number}`), makeEl("span", "tk-size", ticketView.size), rail);
     const legs = makeEl("ol", "tk-legs");
-    for (const leg of ticket.legs) {
+    for (const leg of ticketView.legs) {
       const row = makeEl("li");
-      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.fromLabel), makeEl("span", "tl-win", fmtWin(leg.win)));
+      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.from), makeEl("span", "tl-win", leg.win));
       legs.append(row);
     }
     const actions = makeEl("div", "tk-actions");
@@ -3044,7 +3126,7 @@
     if (phase === "confirm") {
       copy.hidden = true;
       actions.append(teaserPlaceButton("btn sm", "Cancel", "cancel", signature),
-        teaserPlaceButton("btn sm primary", `Bet ${fmtWholeDollars(ticket.stake)} at BFA`, "confirm", signature));
+        teaserPlaceButton("btn sm primary", `Bet ${teaserView.fmtWholeDollars(ticket.stake)} at BFA`, "confirm", signature));
     } else if (phase === null || phase === "refused") {
       actions.append(teaserPlaceButton("btn sm", "Place", "arm", signature));
     }
@@ -3112,10 +3194,10 @@
     const tickets = model ? model.plan.tickets : [];
     view.teasersListLabel.hidden = tickets.length === 0;
     view.teasersListCount.textContent = tickets.length ? String(tickets.length) : "";
-    view.teasersList.replaceChildren(...tickets.slice(0, TEASER_TICKETS_SHOWN).map(teaserTicketCard));
-    const rest = tickets.slice(TEASER_TICKETS_SHOWN);
+    view.teasersList.replaceChildren(...tickets.slice(0, teaserView.TICKETS_SHOWN).map(teaserTicketCard));
+    const rest = tickets.slice(teaserView.TICKETS_SHOWN);
     view.teasersMore.hidden = rest.length === 0;
-    view.teasersMoreLabel.textContent = `${plural(rest.length, "more ticket")} · ${fmtWholeDollars(rest.reduce((sum, ticket) => sum + ticket.stake, 0))}`;
+    view.teasersMoreLabel.textContent = teaserView.moreTicketsText(rest);
     view.teasersMoreList.replaceChildren(...rest.map(teaserTicketCard));
     // A ticket gone from the list (placed and now open, or rebuilt away) takes its button state with it.
     for (const [signature, placeState] of teaserPlaceStates) {
@@ -3123,159 +3205,83 @@
     }
   }
 
-  // One open BFA teaser, read-only: its legs at BFA's numbers, each at its
-  // current fair or why it counts as won.
   function openTeaserCard(ticket) {
-    const card = makeEl("li", `ticket-card placed${ticket.inPlay ? "" : " done"}`);
+    const ticketView = teaserView.openTicketView(ticket);
+    const card = makeEl("li", `ticket-card placed${ticketView.inPlay ? "" : " done"}`);
     const head = makeEl("div", "tk-head");
     const rail = makeEl("span", "tk-rail");
-    const hasDollars = ticket.reason == null;
-    if (ticket.inPlay) rail.append(makeEl("span", "tk-ev", fmtEv(ticket.winAll * (1 + ticket.toWin / ticket.stake) - 1)));
-    const size = hasDollars ? `${ticket.legCount}-team · ${fmtWholeDollars(ticket.stake)} to win ${fmtWholeDollars(ticket.toWin)}` : `${ticket.legCount}-team`;
-    head.append(makeEl("span", "tk-size", size), rail);
+    if (ticketView.ev) rail.append(makeEl("span", "tk-ev", ticketView.ev));
+    head.append(makeEl("span", "tk-size", ticketView.size), rail);
     const legs = makeEl("ol", "tk-legs");
-    for (const leg of ticket.legs) {
-      const row = makeEl("li", leg.state === teaserLib.LEG_LIVE ? null : "counted");
-      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.note || ""), makeEl("span", "tl-win", leg.win == null ? "—" : fmtWin(leg.win)));
+    for (const leg of ticketView.legs) {
+      const row = makeEl("li", leg.counted ? "counted" : null);
+      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.note), makeEl("span", "tl-win", leg.win));
       legs.append(row);
     }
     const actions = makeEl("div", "tk-actions");
-    if (!ticket.inPlay) actions.append(makeEl("span", "muted", outOfMathText(ticket)));
-    actions.append(makeEl("span", "tag held", ticket.placedAt ? `placed ${betsLib.formatPlacedAt(ticket.placedAt)}` : "placed"));
+    if (ticketView.outOfMath) actions.append(makeEl("span", "muted", ticketView.outOfMath));
+    actions.append(makeEl("span", "tag held", ticketView.placedTag));
     card.append(head, legs, actions);
     return card;
   }
 
-  // Why an open ticket is not in the math, by its legs: every game started,
-  // or no leg joined a game Buckeye's board prices (a basketball teaser, CFB
-  // not loaded, a start the board disagrees with by over 12 h).
-  function outOfMathText(ticket) {
-    if (ticket.reason) return `${ticket.reason}: out of the math`;
-    if (ticket.legs.every((leg) => leg.state === teaserLib.LEG_STARTED)) return "every game has started: out of the math";
-    return "no leg priced on the board: out of the math";
-  }
-
-  // Always shown once the board is up, so "none open · BFA pulled 41 s ago"
-  // says how fresh the answer is right after a ticket is placed.
   function renderTeasersOpen(model) {
     view.teasersOpen.hidden = !model;
     if (!model) return;
-    const placed = model.placed;
-    const bfa = bfaSourceRow(Date.now());
-    const pull = !bfa ? "bets service not reached yet"
-      : !bfa.configured ? "no BFA account read"
-        : bfa.fetchedAt ? `BFA pulled ${bfa.ageText} ago` : "no BFA pull yet";
-    const dollars = (tickets) => tickets.reduce((sum, ticket) => sum + (typeof ticket.stake === "number" ? ticket.stake : 0), 0);
-    const inPlay = placed.filter((ticket) => ticket.inPlay);
-    const amount = inPlay.length === placed.length ? fmtWholeDollars(dollars(placed))
-      : `${fmtWholeDollars(dollars(placed))}, ${fmtWholeDollars(dollars(inPlay))} in play`;
-    view.teasersOpenCount.textContent = placed.length ? String(placed.length) : "";
-    view.teasersOpenNote.textContent = [placed.length ? `${amount} · each until its last game starts` : "none open", pull].join(" · ");
-    view.teasersOpenList.replaceChildren(...placed.map(openTeaserCard));
-  }
-
-  function legStandingText(row) {
-    const open = row.openTickets ? ` · ${row.openTickets} open` : "";
-    if (row.standing !== teaserLib.STANDING_POOL) return `${row.note}${open}`;
-    return `${row.inTickets ? `in ${plural(row.inTickets, "ticket")}` : "in no ticket"}${open}`;
-  }
-
-  // The straight bets on a pool leg's game, the Edges tab's tags: `held $X`
-  // on the leg's side, `against $Y` on the other, or a bare `game` when the
-  // game has straights and none of them counts. Every bet in the tooltip.
-  function teaserStraightTags(straights) {
-    if (!straights) return [];
-    const tooltip = straights.counted.map((bet) => bet.label)
-      .concat(straights.leftOut.map((bet) => `${bet.label} — not counted: ${bet.reason}`)).join("\n");
-    const tag = (kind, text) => {
-      const el = makeEl("span", `tag ${kind}`, text);
-      el.title = tooltip;
-      return el;
-    };
-    const tags = [];
-    if (straights.held > 0) tags.push(tag("held", `held ${betsLib.formatStake(straights.held)}`));
-    if (straights.against > 0) tags.push(tag("against", `against ${betsLib.formatStake(straights.against)}`));
-    if (tags.length === 0 && straights.leftOut.length > 0) tags.push(tag("game", "game"));
-    return tags;
-  }
-
-  // A college leg on show (in the pool or above break-even) offers Can't
-  // tease; a marked one shows the tag and Restore. NFL legs never: Buckeye
-  // teases every NFL game.
-  function teaserBlockControl(row) {
-    if (row.standing === teaserLib.STANDING_BLOCKED) return makeButton("linkbtn", "Restore", () => setTeaserBlocked(row.leg, false));
-    const onShow = row.standing === teaserLib.STANDING_POOL || row.standing === teaserLib.STANDING_OUT;
-    if (!onShow || !teaserLib.canBlock(row.leg)) return null;
-    const chip = makeButton("dismiss-chip", "Can't tease", () => setTeaserBlocked(row.leg, true));
-    chip.title = `Buckeye won't tease this. Takes the game's ${teaserLib.marketNameOf(row.leg)} (both sides) out of the tickets until the game starts.`;
-    return chip;
+    const openView = teaserView.openBlockView(model.placed, bfaSourceRow(Date.now()));
+    view.teasersOpenCount.textContent = openView.count;
+    view.teasersOpenNote.textContent = openView.note;
+    view.teasersOpenList.replaceChildren(...model.placed.map(openTeaserCard));
   }
 
   function teaserLegRow(row) {
-    const { leg } = row;
-    const pool = row.standing === teaserLib.STANDING_POOL;
-    const item = makeEl("li", `edge-row leg-row ${pool ? "tier-hot" : "tier-thin out"}`);
+    const rowView = teaserView.legRowView(row);
+    const item = makeEl("li", `edge-row leg-row ${rowView.pool ? "tier-hot" : "tier-thin out"}`);
     const main = makeEl("div");
     const meta = makeEl("div", "edge-meta");
-    meta.append(`${leg.matchup} · ${leg.leagueLabel} · ${fmtStart(new Date(leg.eventStartMs).toISOString())} · `, untilEl(leg.eventStartMs));
+    meta.append(`${rowView.matchup} · ${rowView.leagueLabel} · ${fmtStart(new Date(rowView.eventStartMs).toISOString())} · `, untilEl(rowView.eventStartMs));
     const book = makeEl("div", "edge-book");
-    book.append(makeEl("span", "price", `Buckeye ${leg.bookLabel}`),
-      makeEl("span", "age", ` · teased ${teaserLib.TEASER_POINTS} · ${fmtLineAge(leg.modifiedMs)}`));
-    const side = makeEl("div", "edge-side", leg.label);
-    if (row.standing === teaserLib.STANDING_BLOCKED) side.append(makeEl("span", "tag dismissed", "can't tease"));
+    book.append(makeEl("span", "price", rowView.book),
+      makeEl("span", "age", ` · ${rowView.teased} · ${fmtLineAge(rowView.modifiedMs)}`));
+    const side = makeEl("div", "edge-side", rowView.side);
+    if (rowView.blocked) side.append(makeEl("span", "tag dismissed", "can't tease"));
     main.append(side, meta, book);
     const rail = makeEl("div", "edge-rail");
-    rail.append(makeEl("span", `edge-pct tier-${pool ? "hot" : "thin"}`, leg.win == null ? "—" : fmtWin(leg.win)),
-      makeEl("span", "leg-in", legStandingText(row)), ...teaserStraightTags(row.straights));
-    const blockControl = teaserBlockControl(row);
-    if (blockControl) rail.append(blockControl);
+    const tags = rowView.tags.map((tag) => {
+      const el = makeEl("span", `tag ${tag.kind}`, tag.text);
+      el.title = tag.title;
+      return el;
+    });
+    rail.append(makeEl("span", `edge-pct tier-${rowView.pool ? "hot" : "thin"}`, rowView.win),
+      makeEl("span", "leg-in", rowView.standing), ...tags);
+    if (rowView.control) rail.append(teaserBlockButton(row, rowView.control));
     item.append(main, rail);
     return item;
+  }
+
+  // Can't tease on a college leg on show; Restore on a marked one.
+  function teaserBlockButton(row, control) {
+    if (control.action === "restore") return makeButton("linkbtn", "Restore", () => setTeaserBlocked(row.leg, false));
+    const chip = makeButton("dismiss-chip", "Can't tease", () => setTeaserBlocked(row.leg, true));
+    chip.title = control.title;
+    return chip;
   }
 
   function breakEvenDivider() {
     const divider = makeEl("li", "be-divider");
     divider.setAttribute("role", "separator");
-    divider.append(makeEl("span", null, `${fmtWin(teaserLib.BREAK_EVEN_WIN)} a leg breaks even at +${teaserLib.TICKET_NET_ODDS * 100}`));
+    divider.append(makeEl("span", null, teaserView.breakEvenText()));
     return divider;
   }
 
-  // The pool's legs and the priced legs above break-even, best first, with
-  // the break-even line where it falls; the rest of the games behind a fold,
-  // the markets marked can't tease first.
   function renderTeasersLegs(model) {
-    const rows = model ? model.legRows : [];
-    const gameCount = new Set(rows.map((row) => row.leg.eventId)).size;
-    view.teasersLegsLabel.hidden = rows.length === 0;
-    view.teasersLegsCount.textContent = gameCount ? String(gameCount) : "";
-    const shownStandings = [teaserLib.STANDING_POOL, teaserLib.STANDING_OUT];
-    const shown = rows.filter((row) => shownStandings.includes(row.standing));
-    const blockedRows = rows.filter((row) => row.standing === teaserLib.STANDING_BLOCKED);
-    const otherFolded = rows.filter((row) => !shownStandings.includes(row.standing) && row.standing !== teaserLib.STANDING_BLOCKED);
-    const folded = [...blockedRows, ...otherFolded];
-    const items = [];
-    let dividerPlaced = false;
-    for (const row of shown) {
-      if (!dividerPlaced && row.leg.win < teaserLib.BREAK_EVEN_WIN) {
-        items.push(breakEvenDivider());
-        dividerPlaced = true;
-      }
-      items.push(teaserLegRow(row));
-    }
-    if (!dividerPlaced && folded.length) items.push(breakEvenDivider());
-    view.teasersLegs.replaceChildren(...items);
-    view.teasersLegsMore.hidden = folded.length === 0;
-    const counts = [
-      [teaserLib.STANDING_BELOW, "below break-even"],
-      [teaserLib.STANDING_OTHER_MARKET, "on an open teaser's other market"],
-      [teaserLib.STANDING_UNPRICED, "with no fair"],
-    ].map(([standing, words]) => [otherFolded.filter((row) => row.standing === standing).length, words])
-      .filter(([count]) => count > 0).map(([count, words]) => `${count} ${words}`);
-    const labelParts = [];
-    if (otherFolded.length) labelParts.push(`${plural(otherFolded.length, "more game")}: ${counts.join(", ")}`);
-    if (blockedRows.length) labelParts.push(`${blockedRows.length} can't tease`);
-    view.teasersLegsMoreLabel.textContent = labelParts.join(" · ");
-    view.teasersLegsMoreList.replaceChildren(...folded.map(teaserLegRow));
+    const layout = teaserView.legsLayout(model ? model.legRows : []);
+    view.teasersLegsLabel.hidden = !model || model.legRows.length === 0;
+    view.teasersLegsCount.textContent = layout.gameCount ? String(layout.gameCount) : "";
+    view.teasersLegs.replaceChildren(...layout.items.map((item) => (item.divider ? breakEvenDivider() : teaserLegRow(item.row))));
+    view.teasersLegsMore.hidden = layout.folded.length === 0;
+    view.teasersLegsMoreLabel.textContent = layout.foldLabel;
+    view.teasersLegsMoreList.replaceChildren(...layout.folded.map(teaserLegRow));
   }
 
   view.tabTeasers.addEventListener("click", async (event) => {
@@ -3311,6 +3317,7 @@
     if (parsed.error) return;
     state.settings = parsed.settings;
     chrome.storage.local.set(parsed.settings);
+    queueSettingsPush();
     render();
     renderEdges();
     renderTeasers();
@@ -3327,7 +3334,9 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = edgeRows.sanitizeStakeSettings(local);
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex", "teaserRefs", "teaserBlocked"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex", "teaserRefs", "teaserBlocked", "settingsSync", "sharedMarksMigratedTo"]);
+    if (relay.settingsSync && typeof relay.settingsSync === "object" && typeof relay.settingsSync.serviceUrl === "string") settingsSync = relay.settingsSync;
+    if (typeof relay.sharedMarksMigratedTo === "string") sharedMarksMigratedTo = relay.sharedMarksMigratedTo;
     // The reference fairs the last Teasers list was built on: a seed with no
     // key, so the first plan rebuilds — on these fairs, where still within a
     // point of the live ones — and the list is the one this panel last showed.

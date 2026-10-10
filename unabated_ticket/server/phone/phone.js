@@ -1,18 +1,30 @@
-// Unabated Ticket phone page — the DOM side (phone page plan step 2).
-// Read-only: no order placement anywhere; the one write is the Settings form.
+// Unabated Ticket phone page — the DOM side (phone page plan steps 2-3).
+// One order route: a Teasers ticket's Place (POST /place_teaser.json, a real
+// teaser at BFA, the panel's same two-step confirm). Everything else you bet
+// in the book's own app.
 //
 // Reads (same origin, the bets service that served this page):
 //   GET /edges.json     every 15 s — the server runner's Edges list, proxied
 //                       by the bets service (502 {error} when the runner is down)
-//   GET /bets.json      every 30 s — open bets and each venue's last poll
+//   GET /teasers.json   every 15 s — the runner's Teasers tab (teasers_payload.js)
+//   GET /bets.json      every 30 s — open bets, each venue's last poll, the
+//                       crosswalk and the shared Dismiss marks
+//   GET /attach.json    while an Attach is open — the runner's games and plan
 //   GET /settings.json  on load, on opening Settings and after a save
-// Both polls run only while the page is visible, and refresh at once when it
-// becomes visible again.
-// Writes: PUT /settings.json (Content-Type application/json) from the
-// Settings form — only the changed fields, or null to reset one to the
-// panel's default. Nothing is stored in the browser.
+// The polls run only while the page is visible, and refresh at once when it
+// becomes visible again. After a write the lists are read with ?fresh=1, so
+// the runner re-reads the bets service first and the change shows at once.
+// Writes (Content-Type application/json, all on bets.duckdb through the
+// bets service, the same rows the desktop panel writes):
+//   PUT /settings.json         the Settings form: changed fields, or null to reset one
+//   POST /dismissals.json      Dismiss / Restore an unmatched bet's red flag
+//   POST /teaser_blocks.json   Can't tease / Restore a college teaser market
+//   POST /pins.json, DELETE /pins.json?betId=   Attach a bet to a game / Undo
+//   DELETE /crosswalk.json     Clear the learned team names (two taps)
+//   POST /place_teaser.json    Place a Teasers ticket at BFA (money, not just rows)
+// Nothing is stored in the browser.
 // Words and numbers come from phoneview.js and the extension's own pure
-// modules (edgerows.js, betsview.js, bets.js, kelly.js, feed.js).
+// modules (edgerows.js, teaserview.js, betsview.js, bets.js, kelly.js, feed.js).
 
 (function () {
   "use strict";
@@ -20,8 +32,18 @@
   const phoneView = globalThis.UnabatedPhoneView;
   const edgeRows = globalThis.UnabatedEdgeRows;
   const feed = globalThis.UnabatedFeed;
+  const betsLib = globalThis.UnabatedBets;
+  const betsView = globalThis.UnabatedBetsView;
+  const teaserView = globalThis.UnabatedTeaserView;
 
   const FETCH_TIMEOUT_MS = 10 * 1000;
+  // BFA usually answers a placement in seconds but can take about a minute; a
+  // timeout here reads "unconfirmed", never "not placed".
+  const PLACE_TIMEOUT_MS = 90 * 1000;
+  // The panel's Place timings: Bet $X stays armed 6 s, and a confirm within
+  // 0.6 s of arming (the second tap of a double tap) is ignored.
+  const TEASER_CONFIRM_MS = 6000;
+  const TEASER_CONFIRM_MIN_MS = 600;
   // The runner reads /settings.json every 10 s; one more edges read after that shows a save's effect.
   const RUNNER_SETTINGS_LAG_MS = 11 * 1000;
   const RELATED_LINES_ON_A_ROW = 3;
@@ -33,6 +55,10 @@
   const OFFERED_PERIODS = [1, 2];
   const SORT_LABELS = { edge: "edge", stake: "stake", start: "start", exposure: "my exposure" };
   const BOOK_MODE_LABELS = { default: "Default books", all: "All live books", custom: "Pick books" };
+  // Typing in Attach's search asks the runner once the typing pauses.
+  const ATTACH_SEARCH_DELAY_MS = 250;
+  // Clear is two taps: the first arms it for this long (panel.js).
+  const CROSSWALK_CLEAR_ARM_MS = 6000;
 
   const el = (id) => document.getElementById(id);
   const view = {
@@ -56,14 +82,44 @@
     ticketExposure: el("ticket-exposure"), ticketPayoutRow: el("ticket-payout-row"), ticketToWin: el("ticket-to-win"), ticketPayout: el("ticket-payout"),
     ticketRelatedBlock: el("ticket-related-block"), ticketRelated: el("ticket-related"),
     ticketOthersBlock: el("ticket-others-block"), ticketOthers: el("ticket-others"), ticketOthersCount: el("ticket-others-count"),
+    ticketMoved: el("ticket-moved"),
+    teasersTab: el("tab-teasers"), teasersCount: el("teasers-count"), viewTeasers: el("view-teasers"),
+    teasersError: el("teasers-error"), teasersWarning: el("teasers-warning"), teasersStatus: el("teasers-status"), teasersEmpty: el("teasers-empty"),
+    teasersSummary: el("teasers-summary"), teasersSummaryLabel: el("teasers-summary-label"), teasersSummaryStake: el("teasers-summary-stake"),
+    teasersSummaryCells: el("teasers-summary-cells"), teasersSummaryNote: el("teasers-summary-note"),
+    teasersOpen: el("teasers-open"), teasersOpenCount: el("teasers-open-count"), teasersOpenNote: el("teasers-open-note"), teasersOpenList: el("teasers-open-list"),
+    teasersListLabel: el("teasers-list-label"), teasersListCount: el("teasers-list-count"), teasersList: el("teasers-list"),
+    teasersMore: el("teasers-more"), teasersMoreLabel: el("teasers-more-label"), teasersMoreList: el("teasers-more-list"),
+    teasersLegsLabel: el("teasers-legs-label"), teasersLegsCount: el("teasers-legs-count"), teasersLegs: el("teasers-legs"),
+    teasersLegsMore: el("teasers-legs-more"), teasersLegsMoreLabel: el("teasers-legs-more-label"), teasersLegsMoreList: el("teasers-legs-more-list"),
+    viewBets: el("view-bets"),
+    betsCrosswalkCount: el("bets-crosswalk-count"), betsCrosswalkClear: el("bets-crosswalk-clear"), betsCrosswalkError: el("bets-crosswalk-error"),
+    betsCrosswalk: el("bets-crosswalk"), betsCrosswalkEmpty: el("bets-crosswalk-empty"),
   };
 
   const state = {
     activeView: "edges",
     // What each poll left: {payload, okAt, error, errorAt, failingSince}.
     edges: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
+    teasers: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
     bets: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
     held: { records: [], crosswalk: [], pins: [], fillFairs: [] },
+    // The shared Dismiss marks (bet ids) /bets.json or a Dismiss reply last
+    // carried; null from a service that has none.
+    dismissedIds: null,
+    // Market keys whose Can't tease / Restore is being saved.
+    teaserMarksSaving: new Set(),
+    // Ticket signature -> its Place button's state across re-renders:
+    // {phase: "confirm" | "placing" | "placed" | "refused" | "unconfirmed",
+    // message, legsMatch, armedAt}.
+    teaserPlace: new Map(),
+    // Bet ids whose Dismiss, Restore or Undo is being saved.
+    betsSaving: new Set(),
+    // The open Attach: {betId, step: "pick" | "confirm", query, picks (the
+    // runner's step-1 reply), eventId, swapped, plan (its step-2 reply), busy, error}.
+    attach: null,
+    betsError: null,
+    crosswalkArmedUntil: 0,
     // GET /settings.json: {settings: {field: value | null}, updatedAt}.
     settingsHeld: null,
     settingsDirty: false,
@@ -91,8 +147,8 @@
   // ---- reads ------------------------------------------------------------------------
 
   // One same-origin JSON request; a non-2xx is an Error carrying the body's `error`.
-  async function requestJson(method, path, body) {
-    const options = { method, cache: "no-store", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) };
+  async function requestJson(method, path, body, timeoutMs = FETCH_TIMEOUT_MS) {
+    const options = { method, cache: "no-store", signal: AbortSignal.timeout(timeoutMs) };
     if (body !== undefined) {
       options.headers = { "Content-Type": "application/json" };
       options.body = JSON.stringify(body);
@@ -101,7 +157,7 @@
     try {
       response = await fetch(path, options);
     } catch (error) {
-      throw new Error(error.name === "TimeoutError" ? `no answer in ${FETCH_TIMEOUT_MS / 1000} s` : error.message, { cause: error });
+      throw new Error(error.name === "TimeoutError" ? `no answer in ${timeoutMs / 1000} s` : error.message, { cause: error });
     }
     let parsed;
     try {
@@ -126,11 +182,21 @@
     Object.assign(poll, { error: error.message, errorAt: now, failingSince: poll.failingSince ?? now });
   }
 
-  async function pollEdges() {
+  // `fresh` asks the runner to re-read the bets service first (after a write here).
+  async function pollEdges(fresh) {
     try {
-      pollSucceeded(state.edges, await requestJson("GET", "/edges.json"));
+      pollSucceeded(state.edges, await requestJson("GET", fresh === true ? "/edges.json?fresh=1" : "/edges.json"));
     } catch (error) {
       pollFailed(state.edges, error);
+    }
+    renderAll();
+  }
+
+  async function pollTeasers(fresh) {
+    try {
+      pollSucceeded(state.teasers, await requestJson("GET", fresh === true ? "/teasers.json?fresh=1" : "/teasers.json"));
+    } catch (error) {
+      pollFailed(state.teasers, error);
     }
     renderAll();
   }
@@ -141,11 +207,18 @@
       const body = await requestJson("GET", "/bets.json");
       const applied = edgeRows.applyBetsPayload(state.held, body, Date.now());
       state.held = { records: applied.records, crosswalk: applied.crosswalk, pins: applied.pins, fillFairs: applied.fillFairs };
+      if (state.betsSaving.size === 0) state.dismissedIds = applied.dismissals ? applied.dismissals.map((row) => row.betId) : null;
       pollSucceeded(state.bets, { generatedAt: applied.generatedAt, sources: applied.sources });
     } catch (error) {
       pollFailed(state.bets, error);
     }
     renderAll();
+  }
+
+  // After a write: the bets now, then both lists on bets the runner read now.
+  async function refreshAfterWrite() {
+    await pollBets();
+    await Promise.all([pollEdges(true), pollTeasers(true)]);
   }
 
   async function loadSettings() {
@@ -159,6 +232,7 @@
 
   function refreshNow() {
     pollEdges();
+    pollTeasers();
     pollBets();
   }
 
@@ -168,7 +242,10 @@
     timers = [];
     if (document.visibilityState !== "visible") return;
     refreshNow();
-    timers = [setInterval(pollEdges, phoneView.EDGES_POLL_MS), setInterval(pollBets, phoneView.BETS_POLL_MS)];
+    timers = [
+      setInterval(pollEdges, phoneView.EDGES_POLL_MS), setInterval(pollTeasers, phoneView.EDGES_POLL_MS),
+      setInterval(pollBets, phoneView.BETS_POLL_MS),
+    ];
   }
 
   // ---- header ------------------------------------------------------------------------
@@ -325,7 +402,7 @@
   }
 
   function openTicket(rowKey, cardKey) {
-    state.ticket = { rowKey, cardKey, last: null };
+    state.ticket = { rowKey, cardKey, last: null, opened: null };
     view.sheet.hidden = false;
     document.body.classList.add("sheet-open");
     renderTicket(Date.now());
@@ -348,6 +425,10 @@
       return;
     }
     const { row, card } = shown;
+    if (!state.ticket.opened) state.ticket.opened = { price: row.price, points: row.points };
+    const moved = found ? phoneView.lineMovedText(state.ticket.opened, row) : null;
+    view.ticketMoved.hidden = !moved;
+    view.ticketMoved.textContent = moved || "";
     const ticket = phoneView.ticketView(row, now);
     view.ticketSide.textContent = ticket.sideLabel;
     view.ticketBadges.replaceChildren(...(row.badges || []).map((badge) => tagEl(badge.kind, badge.text, badge.title)));
@@ -400,29 +481,505 @@
     li.dataset.card = cardKey;
     const main = makeEl("div");
     const rung = other.sideLabel !== sideLabel ? `${other.sideLabel} · ` : "";
-    main.append(makeEl("span", "ol-price", `${rung}${phoneView.bookPriceText(other)}`), makeEl("span", "ol-age", phoneView.lineAgeText(other, now)));
+    const alt = other.isAlt ? ` · alt of ${phoneView.fmtPoints(other.mainPoints)}` : "";
+    main.append(makeEl("span", "ol-price", `${rung}${phoneView.bookPriceText(other)}${alt}`), makeEl("span", "ol-age", phoneView.lineAgeText(other, now)));
     const rail = makeEl("div", "ol-rail");
-    rail.append(makeEl("span", "ol-edge", phoneView.fmtEdgePct(other.edgePct)), makeEl("span", "ol-stake", other.stake == null ? "—" : phoneView.fmtDollars(other.stake)));
+    rail.append(makeEl("span", "ol-edge", phoneView.fmtEdgePct(other.edgePct)));
+    if (other.move) rail.append(tagEl(MOVE_TAG_CLASS[other.move.kind] || "", other.move.label, other.move.detail));
+    rail.append(makeEl("span", "ol-stake", other.stake == null ? "—" : phoneView.fmtDollars(other.stake)));
     li.append(main, rail);
     return li;
   }
 
+  // ---- Teasers --------------------------------------------------------------------------
+
+  function summaryCellEl(cell) {
+    const div = makeEl("div");
+    const value = makeEl("div", "payout-value", cell.value);
+    if (cell.small) value.append(" ", makeEl("small", null, cell.small));
+    div.append(makeEl("div", "payout-label", cell.label), value);
+    return div;
+  }
+
+  function teaserTicketEl(ticket) {
+    const card = makeEl("li", "ticket-card");
+    const head = makeEl("div", "tk-head");
+    const rail = makeEl("span", "tk-rail");
+    rail.append(makeEl("span", "tk-stake", ticket.stake), makeEl("span", "tk-ev", ticket.ev));
+    head.append(makeEl("span", "tk-num", `#${ticket.number}`), makeEl("span", "tk-size", ticket.size), rail);
+    const legs = makeEl("ol", "tk-legs");
+    for (const leg of ticket.legs) {
+      const row = makeEl("li");
+      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-win", leg.win), makeEl("span", "tl-from", leg.from));
+      legs.append(row);
+    }
+    const actions = makeEl("div", "tk-actions");
+    appendPlaceControls(actions, ticket);
+    card.append(head, legs, actions);
+    return card;
+  }
+
+  function placeButton(className, text, action, signature) {
+    const button = makeEl("button", className, text);
+    button.type = "button";
+    Object.assign(button.dataset, { placeAction: action, placeTicket: signature });
+    return button;
+  }
+
+  // The panel's Place row: Place -> Cancel / Bet $X at BFA -> Placing… ->
+  // placed, or why not. An unconfirmed ticket shows no Place: it may be booked.
+  function appendPlaceControls(actions, ticket) {
+    const placeState = state.teaserPlace.get(ticket.signature) || null;
+    const phase = placeState ? placeState.phase : null;
+    if (placeState && placeState.message) {
+      // A placed ticket whose legs BFA shows differently is red: it is booked, and wrong.
+      const tone = phase === "placed" && placeState.legsMatch !== false ? "ok" : phase === "placing" ? "wait" : "bad";
+      actions.append(makeEl("span", `tk-place-msg ${tone}`, placeState.message));
+    }
+    if (phase === "confirm") {
+      actions.append(placeButton("btn sm", "Cancel", "cancel", ticket.signature),
+        placeButton("btn sm primary", `Bet ${ticket.stake} at BFA`, "confirm", ticket.signature));
+    } else if (phase === null || phase === "refused") {
+      actions.append(placeButton("btn sm", "Place", "arm", ticket.signature));
+    }
+  }
+
+  // POST the ticket's request (the runner built it with teaser.placeRequestOf)
+  // to the bets service, which bets it at BFA and answers placed / refused /
+  // unconfirmed. An HTTP error is a refusal before BFA; no answer at all may
+  // still have reached BFA, so it reads unconfirmed.
+  async function placeTeaser(signature) {
+    const ticket = (state.teasers.payload ? state.teasers.payload.tickets : []).find((shown) => shown.signature === signature);
+    const request = ticket ? ticket.place : { error: "the ticket is no longer on the list" };
+    if (request.error) {
+      state.teaserPlace.set(signature, { phase: "refused", message: `Not placed: ${request.error}` });
+      renderAll();
+      return;
+    }
+    state.teaserPlace.set(signature, { phase: "placing", message: "Placing at BFA…" });
+    renderAll();
+    let next;
+    try {
+      const reply = await requestJson("POST", "/place_teaser.json", request.body, PLACE_TIMEOUT_MS);
+      next = { phase: reply.status, message: reply.message, legsMatch: reply.legsMatch };
+    } catch (error) {
+      next = error.status
+        ? { phase: "refused", message: `Not placed: ${error.message}` }
+        : { phase: "unconfirmed", message: `The bets service did not answer (${error.message}). Check BFA's open bets before placing it again.` };
+    }
+    state.teaserPlace.set(signature, next);
+    renderAll();
+    if (next.phase === "placed") await Promise.all([pollBets(), pollTeasers(true)]);
+  }
+
+  function onTeaserPlaceClick(button, event) {
+    const signature = button.dataset.placeTicket;
+    const action = button.dataset.placeAction;
+    if (action === "arm") {
+      const armedAt = Date.now();
+      state.teaserPlace.set(signature, { phase: "confirm", message: null, armedAt });
+      setTimeout(() => {
+        const held = state.teaserPlace.get(signature);
+        if (held && held.phase === "confirm" && held.armedAt === armedAt) {
+          state.teaserPlace.delete(signature);
+          renderAll();
+        }
+      }, TEASER_CONFIRM_MS);
+      renderAll();
+      return;
+    }
+    if (action === "cancel") {
+      state.teaserPlace.delete(signature);
+      renderAll();
+      return;
+    }
+    const held = state.teaserPlace.get(signature);
+    if (action !== "confirm" || !held || held.phase !== "confirm") return;
+    if (event.detail > 1 || Date.now() - held.armedAt < TEASER_CONFIRM_MIN_MS) return;
+    placeTeaser(signature).catch((error) => console.error("[unabated-ticket] place teaser failed", error));
+  }
+
+  function openTeaserEl(ticket) {
+    const card = makeEl("li", `ticket-card placed${ticket.inPlay ? "" : " done"}`);
+    const head = makeEl("div", "tk-head");
+    const rail = makeEl("span", "tk-rail");
+    if (ticket.ev) rail.append(makeEl("span", "tk-ev", ticket.ev));
+    head.append(makeEl("span", "tk-size", ticket.size), rail);
+    const legs = makeEl("ol", "tk-legs");
+    for (const leg of ticket.legs) {
+      const row = makeEl("li", leg.counted ? "counted" : null);
+      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-win", leg.win), makeEl("span", "tl-from", leg.note));
+      legs.append(row);
+    }
+    const actions = makeEl("div", "tk-actions");
+    if (ticket.outOfMath) actions.append(makeEl("span", null, ticket.outOfMath));
+    actions.append(tagEl("held", ticket.placedTag));
+    card.append(head, legs, actions);
+    return card;
+  }
+
+  function teaserLegEl(row, now) {
+    const item = makeEl("li", `edge-row leg-row ${row.pool ? "tier-hot" : "tier-thin out"}`);
+    const main = makeEl("div");
+    const side = makeEl("div", "edge-side", row.side);
+    if (row.blocked) side.append(tagEl("dismissed", "can't tease"));
+    const meta = makeEl("div", "edge-meta", phoneView.teaserLegMeta(row));
+    meta.append(makeEl("span", phoneView.untilLevel(row.eventStartMs, now), phoneView.fmtUntil(row.eventStartMs, now)));
+    const book = makeEl("div", "edge-book");
+    book.append(makeEl("span", "price", row.book), makeEl("span", "age", ` · ${row.teased} · ${phoneView.fmtLineAge(row.modifiedMs, now)}`));
+    main.append(side, meta, book);
+    const rail = makeEl("div", "edge-rail");
+    rail.append(makeEl("span", `edge-pct tier-${row.pool ? "hot" : "thin"}`, row.win), makeEl("span", "leg-in", row.standing));
+    for (const tag of row.tags) rail.append(tagEl(tag.kind, tag.text, tag.title));
+    if (row.control) {
+      const saving = state.teaserMarksSaving.has(row.marketKey);
+      const restore = row.control.action === "restore";
+      const button = makeEl("button", restore ? "link-btn" : "chip-btn", saving ? "Saving…" : restore ? "Restore" : "Can't tease");
+      button.type = "button";
+      button.title = row.control.title;
+      button.disabled = saving;
+      Object.assign(button.dataset, { teaserMark: restore ? "restore" : "block", marketKey: row.marketKey, eventStartMs: String(row.eventStartMs) });
+      rail.append(button);
+    }
+    item.append(main, rail);
+    return item;
+  }
+
+  function breakEvenEl(text) {
+    const divider = makeEl("li", "be-divider");
+    divider.setAttribute("role", "separator");
+    divider.append(makeEl("span", null, text));
+    return divider;
+  }
+
+  function renderTeasers(now) {
+    const payload = state.teasers.payload;
+    const count = payload ? payload.ticketCount : 0;
+    view.teasersCount.hidden = count === 0;
+    view.teasersCount.textContent = String(count);
+    view.teasersError.hidden = !(payload && payload.error);
+    view.teasersError.textContent = payload && payload.error ? payload.error : "";
+    const warning = phoneView.teasersWarningText(phoneView.bfaRowOf(state.bets, now));
+    view.teasersWarning.hidden = !warning;
+    view.teasersWarning.textContent = warning || "";
+    if (!payload) {
+      view.teasersStatus.textContent = state.teasers.error ? "No Teasers list yet." : "Loading the Teasers list…";
+      return;
+    }
+    view.teasersStatus.textContent = payload.status;
+    view.teasersEmpty.hidden = !payload.empty;
+    view.teasersEmpty.textContent = payload.empty || "";
+
+    const summary = payload.summary;
+    view.teasersSummary.hidden = !summary;
+    if (summary) {
+      view.teasersSummaryLabel.textContent = summary.label;
+      view.teasersSummaryStake.textContent = summary.stake;
+      view.teasersSummaryCells.replaceChildren(...summary.cells.map(summaryCellEl));
+      view.teasersSummaryNote.textContent = summary.note;
+    }
+
+    view.teasersOpen.hidden = !payload.ready;
+    const openBlock = teaserView.openBlockView(payload.open, phoneView.bfaRowOf(state.bets, now));
+    view.teasersOpenCount.textContent = openBlock.count;
+    view.teasersOpenNote.textContent = openBlock.note;
+    view.teasersOpenList.replaceChildren(...payload.open.map(openTeaserEl));
+
+    const tickets = payload.tickets;
+    view.teasersListLabel.hidden = tickets.length === 0;
+    view.teasersListCount.textContent = tickets.length ? String(tickets.length) : "";
+    view.teasersList.replaceChildren(...tickets.slice(0, teaserView.TICKETS_SHOWN).map(teaserTicketEl));
+    const rest = tickets.slice(teaserView.TICKETS_SHOWN);
+    view.teasersMore.hidden = rest.length === 0;
+    view.teasersMoreLabel.textContent = payload.moreLabel;
+    view.teasersMoreList.replaceChildren(...rest.map(teaserTicketEl));
+    // A ticket gone from the list (placed and now open, or rebuilt away) takes its button state with it.
+    const shownSignatures = new Set(tickets.map((ticket) => ticket.signature));
+    for (const [signature, placeState] of state.teaserPlace) {
+      if (!shownSignatures.has(signature) && placeState.phase !== "placing") state.teaserPlace.delete(signature);
+    }
+
+    const legs = payload.legs;
+    view.teasersLegsLabel.hidden = legs.items.length + legs.folded.length === 0;
+    view.teasersLegsCount.textContent = legs.gameCount ? String(legs.gameCount) : "";
+    view.teasersLegs.replaceChildren(...legs.items.map((item) => (item.divider ? breakEvenEl(payload.breakEven) : teaserLegEl(item.row, now))));
+    view.teasersLegsMore.hidden = legs.folded.length === 0;
+    view.teasersLegsMoreLabel.textContent = legs.foldLabel;
+    view.teasersLegsMoreList.replaceChildren(...legs.folded.map((row) => teaserLegEl(row, now)));
+  }
+
+  // Can't tease (both sides of the game's spread or total, until it starts) or Restore.
+  async function setTeaserMark(button) {
+    const { marketKey } = button.dataset;
+    const blocked = button.dataset.teaserMark === "block";
+    state.teaserMarksSaving.add(marketKey);
+    renderAll();
+    try {
+      await requestJson("POST", "/teaser_blocks.json", { marketKey, eventStartMs: Number(button.dataset.eventStartMs), blocked });
+      await pollTeasers(true);
+    } catch (error) {
+      if (state.teasers.payload) state.teasers.payload = { ...state.teasers.payload, error: `${blocked ? "Can't tease" : "Restore"} failed: ${error.message}` };
+    } finally {
+      state.teaserMarksSaving.delete(marketKey);
+      renderAll();
+    }
+  }
+
   // ---- Bets -----------------------------------------------------------------------------
 
+  function actionButton(className, text, data, title) {
+    const button = makeEl("button", className, text);
+    button.type = "button";
+    Object.assign(button.dataset, data);
+    if (title) button.title = title;
+    return button;
+  }
+
+  // One bet. options {unmatched, reason, quiet, flagged, attachable, dismissed}:
+  // a flagged row offers Dismiss, an attachable one Attach (its panel opens
+  // under it), a dismissed one Restore; a matched bet attached by hand, Undo.
   function betEl(entry, options) {
-    const { unmatched = false, reason = null, quiet = false } = options || {};
+    const { unmatched = false, reason = null, quiet = false, flagged = false, attachable = false, dismissed = false } = options || {};
     const item = entry.item;
+    const saving = state.betsSaving.has(item.id);
     const li = makeEl("li", unmatched ? "unmatched" : "matched");
     const main = makeEl("div");
     const what = makeEl("div", "bet-what", item.what);
-    if (item.pinned) what.append(" ", tagEl("held", "attached"));
-    main.append(what, makeEl("div", "bet-meta", item.meta));
+    const pinned = item.pinned && !unmatched;
+    if (pinned) what.append(" ", tagEl("held", "attached"));
+    if (dismissed && reason) what.append(" ", tagEl("dismissed", "dismissed"));
+    const meta = makeEl("div", "bet-meta", item.meta);
+    if (pinned) meta.append(" · ", actionButton("link-btn", saving ? "Saving…" : "Undo", { betAction: "undo", betId: item.id }, "Remove this attach and the names it taught."));
+    if (dismissed && reason) meta.append(" · ", actionButton("link-btn", saving ? "Saving…" : "Restore", { betAction: "restore", betId: item.id }, "Flag this bet again."));
+    main.append(what, meta);
     const rail = makeEl("div");
     rail.append(makeEl("span", "bet-stake", item.stake));
     if (item.when) rail.append(makeEl("small", "bet-when", item.when));
     li.append(main, rail);
-    if (reason) li.append(makeEl("div", `bet-reason${quiet ? " quiet" : ""}`, reason));
+    if (!reason) return li;
+    const actions = makeEl("div", "bet-actions");
+    actions.append(makeEl("span", `bet-reason${quiet ? " quiet" : ""}`, reason));
+    if (flagged) {
+      actions.append(actionButton("chip-btn", saving ? "Saving…" : "Dismiss", { betAction: "dismiss", betId: item.id },
+        "Stop flagging this bet. It moves to Not on the board and still does not size your next bet."));
+    }
+    const attachOpen = state.attach && state.attach.betId === item.id;
+    if (attachable) actions.append(actionButton(`chip-btn${attachOpen ? "" : " primary"}`, attachOpen ? "Cancel" : "Attach", { betAction: attachOpen ? "attach-cancel" : "attach", betId: item.id }));
+    li.append(actions);
+    if (attachable && attachOpen) li.append(attachPanelEl(item.id));
     return li;
+  }
+
+  // ---- Attach (attach.js, run by the runner on its board) ----
+
+  function attachPanelEl(betId) {
+    const panel = makeEl("div", "attach-panel");
+    panel.dataset.attachFor = betId;
+    if (state.attach.step === "confirm") attachConfirmStep(panel);
+    else attachPickStep(panel);
+    if (state.attach.error) panel.append(makeEl("div", "attach-error", state.attach.error));
+    return panel;
+  }
+
+  function attachPickStep(panel) {
+    const picks = state.attach.picks;
+    const head = makeEl("div", "attach-head", "Which game?");
+    head.append(makeEl("span", "scope", picks ? picks.scope : "Loading the board…"));
+    const search = makeEl("input", "attach-search");
+    Object.assign(search, { type: "search", placeholder: "Search a team", value: state.attach.query, autocomplete: "off" });
+    search.dataset.attachSearch = "1";
+    const list = makeEl("ol", "candidates");
+    for (const event of picks ? picks.events : []) {
+      const item = makeEl("li", event.why ? "candidate best" : "candidate");
+      item.dataset.attachPick = String(event.eventId);
+      item.append(makeEl("div", "c-game", event.label), makeEl("div", "c-meta", event.meta));
+      if (event.why) item.append(tagEl("held", event.why));
+      list.append(item);
+    }
+    panel.append(head, search, list);
+    if (picks && !picks.events.length) panel.append(makeEl("div", "muted", "No game on the board fits. Search a team by name."));
+    if (picks && picks.more) panel.append(makeEl("div", "muted", `${picks.more} more: type to narrow the list.`));
+    panel.append(makeEl("div", "muted", "Not listed? The game may not be on the board yet. The bet stays flagged until you attach it."));
+  }
+
+  function attachConfirmStep(panel) {
+    const plan = state.attach.plan;
+    const gameHead = makeEl("div", "attach-head", "Game");
+    gameHead.append(actionButton("link-btn", "Change", { betAction: "attach-change", betId: state.attach.betId }));
+    panel.append(gameHead);
+    if (!plan) {
+      panel.append(makeEl("div", "muted", "Loading…"));
+      return;
+    }
+    const chosen = makeEl("div", "c-game", plan.label);
+    chosen.append(makeEl("span", "muted", ` · ${plan.meta}`));
+    panel.append(chosen);
+    if (plan.names.length) {
+      const namesHead = makeEl("div", "attach-head", `${plan.venueLabel} calls them`);
+      namesHead.append(actionButton("link-btn", "Swap", { betAction: "attach-swap", betId: state.attach.betId }));
+      panel.append(namesHead);
+      for (const name of plan.names) {
+        const row = makeEl("div", "map-row");
+        const target = makeEl("span", null, `${name.unabatedTeamName} `);
+        target.append(makeEl("span", "muted", name.was ? `${name.eventSide}, was ${name.was}` : name.eventSide));
+        row.append(makeEl("span", null, name.venueTeamName), makeEl("span", "muted", "→"), target, tagEl(name.status === "known" ? "" : name.status, name.status));
+        panel.append(row);
+      }
+    } else {
+      panel.append(makeEl("div", "muted", "The bet names no team, so nothing is learned. The attach pins the game."));
+    }
+    const yourBet = makeEl("div");
+    yourBet.append(makeEl("span", "muted", "Your bet "), plan.betOnGame);
+    const submit = actionButton("btn primary", state.attach.busy ? "Saving…" : plan.learnCount ? "Attach and learn" : "Attach", { betAction: "attach-submit", betId: state.attach.betId });
+    submit.disabled = state.attach.busy;
+    const learned = plan.learnedNames.map((name) => `"${name}"`).join(" and ");
+    panel.append(yourBet, submit, makeEl("div", "muted", plan.learnCount
+      ? `Next time ${plan.venueLabel} writes ${learned}, it matches on its own.`
+      : "Nothing to learn: every name already matches. This pins the bet to this game."));
+  }
+
+  let attachSearchTimer = null;
+
+  async function loadAttachPicks() {
+    const { betId, query } = state.attach;
+    try {
+      const picks = await requestJson("GET", `/attach.json?betId=${encodeURIComponent(betId)}&query=${encodeURIComponent(query)}`);
+      if (state.attach && state.attach.betId === betId && state.attach.query === query) state.attach = { ...state.attach, picks, error: null };
+    } catch (error) {
+      if (state.attach && state.attach.betId === betId) state.attach = { ...state.attach, error: `Could not load the games: ${error.message}` };
+    }
+    renderBetsKeepingSearch();
+  }
+
+  async function loadAttachPlan() {
+    const { betId, eventId, swapped } = state.attach;
+    try {
+      const plan = await requestJson("GET", `/attach.json?betId=${encodeURIComponent(betId)}&eventId=${encodeURIComponent(eventId)}&swapped=${swapped ? 1 : 0}`);
+      if (state.attach && state.attach.eventId === eventId && state.attach.swapped === swapped) state.attach = { ...state.attach, plan, error: null };
+    } catch (error) {
+      if (state.attach && state.attach.betId === betId) state.attach = { ...state.attach, error: `Could not load that game: ${error.message}` };
+    }
+    renderAll();
+  }
+
+  async function submitAttach() {
+    const plan = state.attach.plan;
+    if (!plan || state.attach.busy) return;
+    state.attach = { ...state.attach, busy: true, error: null };
+    renderAll();
+    try {
+      await requestJson("POST", "/pins.json", plan.pinRequest);
+      state.attach = null;
+      await refreshAfterWrite();
+    } catch (error) {
+      if (state.attach) state.attach = { ...state.attach, busy: false, error: `Attach failed: ${error.message}` };
+      renderAll();
+    }
+  }
+
+  // The Bets view is redrawn on every poll; keep Attach's search box focused where the caret was.
+  function renderBetsKeepingSearch() {
+    const active = document.activeElement;
+    const caret = active && active.dataset && active.dataset.attachSearch ? active.selectionStart : null;
+    renderAll();
+    if (caret == null) return;
+    const search = view.viewBets.querySelector("[data-attach-search]");
+    if (!search) return;
+    search.focus();
+    search.setSelectionRange(caret, caret);
+  }
+
+  // Dismiss / Restore (bets.duckdb::bet_dismissals) and Undo (DELETE /pins.json).
+  async function onBetAction(button) {
+    const { betAction, betId } = button.dataset;
+    if (betAction === "attach") {
+      state.attach = { betId, step: "pick", query: "", picks: null, eventId: null, swapped: false, plan: null, busy: false, error: null };
+      renderAll();
+      loadAttachPicks();
+      return;
+    }
+    if (betAction === "attach-cancel") {
+      state.attach = null;
+      renderAll();
+      return;
+    }
+    if (betAction === "attach-change") {
+      state.attach = { ...state.attach, step: "pick", eventId: null, plan: null, error: null };
+      renderAll();
+      return;
+    }
+    if (betAction === "attach-swap") {
+      state.attach = { ...state.attach, swapped: !state.attach.swapped, plan: null };
+      renderAll();
+      loadAttachPlan();
+      return;
+    }
+    if (betAction === "attach-submit") {
+      submitAttach();
+      return;
+    }
+    await saveBetMark(betId, betAction);
+  }
+
+  async function saveBetMark(betId, betAction) {
+    state.betsSaving.add(betId);
+    state.betsError = null;
+    renderAll();
+    try {
+      if (betAction === "undo") {
+        await requestJson("DELETE", `/pins.json?betId=${encodeURIComponent(betId)}`);
+      } else {
+        const reply = await requestJson("POST", "/dismissals.json", { betIds: [betId], dismissed: betAction === "dismiss" });
+        state.dismissedIds = reply.dismissals.map((row) => row.betId);
+      }
+    } catch (error) {
+      state.betsError = `${{ undo: "Undo", dismiss: "Dismiss", restore: "Restore" }[betAction]} failed: ${error.message}`;
+    } finally {
+      state.betsSaving.delete(betId);
+    }
+    await refreshAfterWrite();
+  }
+
+  // ---- learned team names ----
+
+  function crosswalkArmed() {
+    return Date.now() < state.crosswalkArmedUntil;
+  }
+
+  function renderCrosswalk() {
+    const rows = betsView.crosswalkRows(state.held.crosswalk);
+    view.betsCrosswalkCount.textContent = rows.length ? String(rows.length) : "";
+    view.betsCrosswalkClear.disabled = rows.length === 0;
+    view.betsCrosswalkClear.classList.toggle("armed", crosswalkArmed());
+    view.betsCrosswalkClear.textContent = crosswalkArmed() ? `Clear ${rows.length} row${rows.length === 1 ? "" : "s"}?` : "Clear";
+    view.betsCrosswalk.replaceChildren(...rows.map((row) => {
+      const li = makeEl("li", "matched");
+      li.title = row.title;
+      const main = makeEl("div");
+      main.append(makeEl("div", "bet-what", row.what), makeEl("div", "bet-meta", row.meta));
+      li.append(main);
+      return li;
+    }));
+    view.betsCrosswalkEmpty.hidden = rows.length > 0;
+    view.betsCrosswalkEmpty.textContent = "Nothing learned yet. Rows appear when an open bet joins the board by its Kalshi event or Novig outcome id, or when you attach one.";
+  }
+
+  async function clearCrosswalk() {
+    if (!crosswalkArmed()) {
+      state.crosswalkArmedUntil = Date.now() + CROSSWALK_CLEAR_ARM_MS;
+      setTimeout(renderAll, CROSSWALK_CLEAR_ARM_MS);
+      renderAll();
+      return;
+    }
+    state.crosswalkArmedUntil = 0;
+    view.betsCrosswalkClear.disabled = true;
+    try {
+      await requestJson("DELETE", "/crosswalk.json");
+      view.betsCrosswalkError.textContent = "";
+    } catch (error) {
+      view.betsCrosswalkError.textContent = `Could not clear: ${error.message}`;
+    }
+    await refreshAfterWrite();
   }
 
   function venueEl(row) {
@@ -431,7 +988,7 @@
     const trouble = row.error || row.note;
     const note = trouble ? [bets, trouble].filter(Boolean).join(" · ") : bets || "no bets";
     const name = makeEl("span");
-    name.append(makeEl("span", "vname", globalThis.UnabatedBets.venueLabel(row.venue)), makeEl("span", "vnote", note));
+    name.append(makeEl("span", "vname", betsLib.venueLabel(row.venue)), makeEl("span", "vnote", note));
     div.append(makeEl("span", "vdot"), name, makeEl("span", "vage", row.configured ? row.ageText : "—"));
     return div;
   }
@@ -439,16 +996,20 @@
   function renderBets(now) {
     const edgesPayload = state.edges.payload;
     const service = edgesPayload ? edgesPayload.betsService : null;
-    const unmatched = service && Array.isArray(service.unmatched) ? service.unmatched : null;
+    const runnerUnmatched = service && Array.isArray(service.unmatched) ? service.unmatched : null;
+    const unmatched = phoneView.applyDismissals(runnerUnmatched, state.dismissedIds);
     const tab = phoneView.betsTabView(state.held.records, unmatched, service ? service.boardLineCount : 0, state.bets.payload, now);
+    // An Attach whose bet matched, settled or is no longer attachable closes (never mid-save).
+    const attachableIds = new Set([...tab.needsGame, ...tab.offBoard].filter((entry) => entry.attachable).map((entry) => entry.betId));
+    if (state.attach && !state.attach.busy && !attachableIds.has(state.attach.betId)) state.attach = null;
     view.betsRisk.textContent = tab.atRisk;
-    view.betsRiskCaption.textContent = tab.caption;
+    view.betsRiskCaption.textContent = state.betsError ? `${tab.caption} · ${state.betsError}` : tab.caption;
     view.betsNeedsBlock.hidden = tab.needsGame.length === 0;
     view.betsNeedsCount.textContent = String(tab.needsGame.length);
-    view.betsNeeds.replaceChildren(...tab.needsGame.map((entry) => betEl(entry, { unmatched: true, reason: entry.reason })));
+    view.betsNeeds.replaceChildren(...tab.needsGame.map((entry) => betEl(entry, { unmatched: true, reason: entry.reason, flagged: true, attachable: entry.attachable })));
     view.betsFixBlock.hidden = tab.needsFix.length === 0;
     view.betsFixCount.textContent = String(tab.needsFix.length);
-    view.betsFix.replaceChildren(...tab.needsFix.map((entry) => betEl(entry, { unmatched: true, reason: entry.reason })));
+    view.betsFix.replaceChildren(...tab.needsFix.map((entry) => betEl(entry, { unmatched: true, reason: entry.reason, flagged: true })));
     view.betsSources.replaceChildren(...tab.venueRows.map(venueEl));
     view.betsOpenCount.textContent = tab.open.length ? String(tab.open.length) : "";
     view.betsOpen.replaceChildren(...tab.open.map((entry) => betEl(entry, { unmatched: entry.unmatched })));
@@ -458,7 +1019,11 @@
     view.betsMatchNote.textContent = tab.matchNote || "";
     view.betsOffboard.hidden = tab.offBoard.length === 0;
     view.betsOffboardCount.textContent = String(tab.offBoard.length);
-    view.betsOffboardList.replaceChildren(...tab.offBoard.map((entry) => betEl(entry, { unmatched: true, reason: entry.reason, quiet: true })));
+    view.betsOffboardList.replaceChildren(...tab.offBoard.map((entry) => betEl(entry, {
+      unmatched: true, reason: entry.reason, quiet: true, attachable: entry.attachable, dismissed: entry.dismissed,
+    })));
+    if (state.attach && tab.offBoard.some((entry) => entry.betId === state.attach.betId)) view.betsOffboard.open = true;
+    renderCrosswalk();
 
     const flagged = tab.needsGame.length + tab.needsFix.length;
     view.betsCount.hidden = tab.open.length === 0;
@@ -683,6 +1248,7 @@
     const now = Date.now();
     renderTop(now);
     renderEdges(now);
+    renderTeasers(now);
     renderBets(now);
     renderTicket(now);
   }
@@ -694,7 +1260,7 @@
       button.classList.toggle("active", active);
       button.setAttribute("aria-selected", String(active));
     }
-    for (const viewName of ["edges", "bets", "settings"]) el(`view-${viewName}`).hidden = viewName !== name;
+    for (const viewName of ["edges", "teasers", "bets", "settings"]) el(`view-${viewName}`).hidden = viewName !== name;
     if (name === "settings" && !state.settingsDirty) loadSettings();
     window.scrollTo(0, 0);
   }
@@ -715,6 +1281,37 @@
     openTicket(line.dataset.key, line.dataset.card || null);
     view.sheet.querySelector(".sheet-panel").scrollTop = 0;
   });
+
+  view.viewTeasers.addEventListener("click", (event) => {
+    const placeButtonHit = event.target.closest("button[data-place-action]");
+    if (placeButtonHit) {
+      onTeaserPlaceClick(placeButtonHit, event);
+      return;
+    }
+    const button = event.target.closest("button[data-teaser-mark]");
+    if (button && !button.disabled) setTeaserMark(button);
+  });
+
+  view.viewBets.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-bet-action]");
+    if (button && !button.disabled) {
+      onBetAction(button);
+      return;
+    }
+    const pick = event.target.closest("[data-attach-pick]");
+    if (pick && state.attach) {
+      state.attach = { ...state.attach, step: "confirm", eventId: pick.dataset.attachPick, swapped: false, plan: null, error: null };
+      renderAll();
+      loadAttachPlan();
+    }
+  });
+  view.viewBets.addEventListener("input", (event) => {
+    if (!event.target.dataset.attachSearch || !state.attach) return;
+    state.attach = { ...state.attach, query: event.target.value };
+    clearTimeout(attachSearchTimer);
+    attachSearchTimer = setTimeout(loadAttachPicks, ATTACH_SEARCH_DELAY_MS);
+  });
+  view.betsCrosswalkClear.addEventListener("click", clearCrosswalk);
 
   view.sheetClose.addEventListener("click", closeTicket);
   view.sheetBackdrop.addEventListener("click", closeTicket);
