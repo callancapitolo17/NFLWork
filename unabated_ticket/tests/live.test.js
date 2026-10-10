@@ -8,6 +8,7 @@ const path = require("node:path");
 const teams = require("../extension/teams.js");
 const betsLib = require("../extension/bets.js");
 const edgeRows = require("../extension/edgerows.js");
+const kelly = require("../extension/kelly.js");
 // Real Unabated team ids (teams_index.json), so a bet's team names resolve.
 teams.loadIndex(JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "teams_index.json"), "utf8")).leagues);
 
@@ -16,7 +17,7 @@ const NOW = Date.parse("2026-09-28T00:53:00Z");
 function game(overrides = {}) {
   return {
     eventId: 125807, eventName: "Eagles Philadelphia PHI @ Bears Chicago CHI", eventStart: "2026-09-28T00:15:00",
-    awayTeam: "Philadelphia Eagles", homeTeam: "Chicago Bears", awayTeamId: 21, homeTeamId: 6,
+    awayTeam: "Philadelphia Eagles", homeTeam: "Chicago Bears", awayTeamId: 24, homeTeamId: 6,
     fairStatus: "ready", checkpointType: "EndOfPeriod", producedUtc: "2026-09-28T00:52:10.000",
     eventPeriodTypeId: 4, gameClock: "00:00",
     ...overrides,
@@ -137,80 +138,120 @@ test("liveFairState: every line of a ready game as a ladder line, the in-game fa
 
 // ---- live stakes sized against the open bets (conditional Kelly on the in-game ladder)
 
-const EAGLES_ID = 24;
-const BEARS_ID = 6;
-
-// Novig's full-game total at halftime: main 44.5, alt rungs 41.5 and 47.5,
-// both sides, fair P(over) 62% / 50% / 38%.
-function totalRow(sideIndex, points, fair, price, edgePct) {
-  const isAlt = points !== 44.5;
+// One Novig line at halftime: the main number, or an alt rung off it.
+function novigRow(betTypeId, sideIndex, points, mainPoints, fair, price, edgePct) {
+  const isAlt = points !== mainPoints;
   return row({
-    key: `live:125807:pt1:bt3:si${sideIndex}:ms89${isAlt ? `:alt${points}` : ""}`, betTypeId: 3, sideIndex, sideKey: `si${sideIndex}`,
-    sideLabel: `${sideIndex === 0 ? "Over" : "Under"} ${points}`, bookId: 89, bookName: "Novig",
-    isAlt, mainPoints: isAlt ? 44.5 : null, points, price, fair, edgePct, marketId: 3,
+    key: `live:125807:pt1:bt${betTypeId}:si${sideIndex}:ms89${isAlt ? `:alt${points}` : ""}`, betTypeId, sideIndex, sideKey: `si${sideIndex}`,
+    sideLabel: null, bookId: 89, bookName: "Novig", isAlt, mainPoints: isAlt ? mainPoints : null, points, price, fair, edgePct, marketId: betTypeId,
   });
 }
 
-function halftimeTotals() {
+// Both sides of three numbers, fair 62% / 50% / 38% past them: the total
+// around 44.5 and the Eagles spread around -7.5. The candidate is the far
+// number's first side at +185 against a +163 fair.
+function halftimeLadders() {
+  const total = (sideIndex, points, fair, price, edgePct) => novigRow(3, sideIndex, points, 44.5, fair, price, edgePct);
+  const spread = (sideIndex, points, fair, price, edgePct) => novigRow(2, sideIndex, points, sideIndex === 0 ? -7.5 : 7.5, fair, price, edgePct);
   return payload({
-    games: [game({ awayTeamId: EAGLES_ID, homeTeamId: BEARS_ID, eventPeriodTypeId: 5 })],
+    games: [game({ eventPeriodTypeId: 5 })],
     rows: [
-      totalRow(0, 41.5, -163, -170, -1.5), totalRow(1, 41.5, 163, 150, -4.9),
-      totalRow(0, 44.5, 100, -105, -2.4), totalRow(1, 44.5, 100, -105, -2.4),
-      totalRow(0, 47.5, 163, 185, 8.4), totalRow(1, 47.5, -163, -210, -4.2),
+      total(0, 41.5, -163, -170, -1.5), total(1, 41.5, 163, 150, -4.9),
+      total(0, 44.5, 100, -105, -2.4), total(1, 44.5, 100, -105, -2.4),
+      total(0, 47.5, 163, 185, 8.4), total(1, 47.5, -163, -210, -4.2),
+      spread(0, -4.5, -163, -170, -1.5), spread(1, 4.5, 163, 150, -4.9),
+      spread(0, -7.5, 100, -105, -2.4), spread(1, 7.5, 100, -105, -2.4),
+      spread(0, -10.5, 163, 185, 8.4), spread(1, 10.5, -163, -210, -4.2),
     ],
   });
 }
 
-// A $300 Kalshi total bet placed at the break. Kalshi names no start time,
-// only the Eastern date, and the game has left the pregame board.
-function kalshiTotalHeld(side, points) {
+// A $300 open bet on the game at even money, team keys resolved. Kalshi
+// names no start time, only the Eastern date; the game has left the
+// pregame board (boardLines is empty below).
+function heldBet(fields) {
   return betsLib.resolveTeamKeys([{
-    id: `kalshi:${side}${points}`, source: "kalshi_api", venue: "kalshi", league: "nfl", status: "open", sourceFetchedAt: "2026-09-28T00:50:00Z",
+    source: "kalshi_api", venue: "kalshi", league: "nfl", status: "open", sourceFetchedAt: "2026-09-28T00:50:00Z",
     awayTeam: "PHI Eagles", homeTeam: "CHI Bears", awayKey: null, homeKey: null,
-    betType: "total", period: "FG", side, points, price: 100, stake: 300, toWin: 300,
+    betType: "total", period: "FG", price: 100, stake: 300, toWin: 300,
     placedAt: "2026-09-28T00:40:00Z", closedAt: null, eventStart: null, eventDate: "2026-09-27", isParlayLeg: false, unmatchable: null, approx: [],
-    venueIds: { eventTicker: "KXNFLTOTAL-26SEP27PHICHI", marketTicker: `KXNFLTOTAL-26SEP27PHICHI-${Math.floor(points)}` },
+    venueIds: { eventTicker: "KXNFLTOTAL-26SEP27PHICHI", marketTicker: "KXNFLTOTAL-26SEP27PHICHI-44" },
+    ...fields,
   }]);
 }
 
-// The Over 47.5 (+185 at a +163 fair) sized against `records` on the in-game ladder.
-function sizedOver475(records) {
-  const listed = live.selectLiveEdges([halftimeTotals()], { now: NOW, includeAlts: true, minEdgePct: 1 });
-  assert.deepEqual(listed.map((r) => r.key), ["live:125807:pt1:bt3:si0:ms89:alt47.5"]);
-  const [sized] = edgeRows.withBetFlags(listed, {
-    records, boardLines: [], stakeSettings: { bankroll: 30000, multiplier: 0.25 },
-    ladderReaderOf: edgeRows.createLadderReaders(live.liveFairState([halftimeTotals()], NOW)), teasers: [],
+// The listed row with `key`, sized against `records` on the in-game ladder.
+function sizedLive(key, records) {
+  const listed = live.selectLiveEdges([halftimeLadders()], { now: NOW, includeAlts: true, minEdgePct: 1 });
+  const [sized] = edgeRows.withBetFlags(listed.filter((r) => r.key === key), {
+    records, boardLines: [], stakeSettings: edgeRows.DEFAULT_STAKE_SETTINGS,
+    ladderReaderOf: edgeRows.createLadderReaders(live.liveFairState([halftimeLadders()], NOW)), teasers: [],
   });
-  const { kind, bet, alone, verb, held, against, reason } = sized.bet.advice;
   return {
-    tier: sized.bet.tier, advice: { kind, bet, alone, verb, held, against, reason },
+    tier: sized.bet.tier, advice: { ...sized.bet.advice, matches: undefined },
     matches: sized.bet.matches.map((match) => ({ id: match.bet.id, tier: match.tier, inMath: match.inMath, note: match.note })),
   };
 }
 
-const OVER_475_ALONE = 340.5405405405406;
+const OVER_475 = "live:125807:pt1:bt3:si0:ms89:alt47.5";
+const EAGLES_MINUS_105 = "live:125807:pt1:bt2:si0:ms89:alt-10.5";
+const ALONE = kelly.kellyStakeFromEdge({ bookPrice: 185, edgePct: 8.4, ...edgeRows.DEFAULT_STAKE_SETTINGS }).stake;
 
-test("live sizing: a held Over 44.5 cuts the Over 47.5 from $341 to $167", () => {
-  assert.deepEqual(sizedOver475(kalshiTotalHeld("over", 44.5)), {
-    tier: "same_side",
-    advice: { kind: "sized", bet: 167.18, alone: OVER_475_ALONE, verb: "add", held: 300, against: 0, reason: null },
-    matches: [{ id: "kalshi:over44.5", tier: "same_side", inMath: true, note: null }],
+function sizedAdvice(bet, verb, held, against) {
+  const kind = bet === ALONE ? "none" : "sized";
+  return {
+    kind, bet, alone: ALONE, verb, held, against, teasers: { held: 0, against: 0 }, reason: null,
+    matches: undefined, teaserGroups: [], cappedAt: null, uncapped: bet,
+  };
+}
+
+test("live sizing: the listed rows are the two far numbers", () => {
+  assert.deepEqual(live.selectLiveEdges([halftimeLadders()], { now: NOW, includeAlts: true, minEdgePct: 1 }).map((r) => r.key).sort(), [EAGLES_MINUS_105, OVER_475]);
+  assert.equal(ALONE, 340.5405405405406);
+});
+
+test("live sizing: a held Over 44.5 (Kalshi, placed at the break) cuts the Over 47.5 from $341 to $167", () => {
+  assert.deepEqual(sizedLive(OVER_475, heldBet({ id: "k-over", side: "over", points: 44.5 })), {
+    tier: "same_side", advice: sizedAdvice(167.18, "add", 300, 0),
+    matches: [{ id: "k-over", tier: "same_side", inMath: true, note: null }],
   });
 });
 
 test("live sizing: a held Under 44.5 lifts the Over 47.5 to $508", () => {
-  assert.deepEqual(sizedOver475(kalshiTotalHeld("under", 44.5)), {
-    tier: "opposite",
-    advice: { kind: "sized", bet: 507.93, alone: OVER_475_ALONE, verb: "bet", held: 0, against: 300, reason: null },
-    matches: [{ id: "kalshi:under44.5", tier: "opposite", inMath: true, note: null }],
+  assert.deepEqual(sizedLive(OVER_475, heldBet({ id: "k-under", side: "under", points: 44.5 })), {
+    tier: "opposite", advice: sizedAdvice(507.93, "bet", 0, 300),
+    matches: [{ id: "k-under", tier: "opposite", inMath: true, note: null }],
+  });
+});
+
+test("live sizing: a pregame Over 44.5 (Novig, with a start time) counts the same as a live one", () => {
+  const pregame = heldBet({
+    id: "n-over", source: "novig_rest", venue: "novig", awayTeam: "Philadelphia Eagles", homeTeam: "Chicago Bears",
+    side: "over", points: 44.5, placedAt: "2026-09-27T18:00:00Z", eventStart: "2026-09-28T00:15:00.000Z", venueIds: null,
+  });
+  assert.deepEqual(sizedLive(OVER_475, pregame), {
+    tier: "same_side", advice: sizedAdvice(167.18, "add", 300, 0),
+    matches: [{ id: "n-over", tier: "same_side", inMath: true, note: null }],
+  });
+});
+
+test("live sizing: spreads read the same way: a held Eagles -7.5 cuts the Eagles -10.5 to $167, a held Bears +7.5 lifts it to $508", () => {
+  const spreadBet = (id, side, points) => heldBet({
+    id, betType: "spread", side, points, venueIds: { eventTicker: "KXNFLSPREAD-26SEP27PHICHI", marketTicker: "KXNFLSPREAD-26SEP27PHICHI-PHI7" },
+  });
+  assert.deepEqual(sizedLive(EAGLES_MINUS_105, spreadBet("k-eagles", "away", -7.5)), {
+    tier: "same_side", advice: sizedAdvice(167.18, "add", 300, 0),
+    matches: [{ id: "k-eagles", tier: "same_side", inMath: true, note: null }],
+  });
+  assert.deepEqual(sizedLive(EAGLES_MINUS_105, spreadBet("k-bears", "home", 7.5)), {
+    tier: "opposite", advice: sizedAdvice(507.93, "bet", 0, 300),
+    matches: [{ id: "k-bears", tier: "opposite", inMath: true, note: null }],
   });
 });
 
 test("live sizing: a held bet at a number the screen has no fair for is named and left out", () => {
-  assert.deepEqual(sizedOver475(kalshiTotalHeld("over", 51.5)), {
-    tier: "same_side",
-    advice: { kind: "none", bet: OVER_475_ALONE, alone: OVER_475_ALONE, verb: "bet", held: 0, against: 0, reason: null },
-    matches: [{ id: "kalshi:over51.5", tier: "same_side", inMath: false, note: "no fair at 51.5" }],
+  assert.deepEqual(sizedLive(OVER_475, heldBet({ id: "k-over-515", side: "over", points: 51.5 })), {
+    tier: "same_side", advice: sizedAdvice(ALONE, "bet", 0, 0),
+    matches: [{ id: "k-over-515", tier: "same_side", inMath: false, note: "no fair at 51.5" }],
   });
 });

@@ -872,8 +872,8 @@ live tab's game while that tab is still posting (`content.js`).
 The Edges filters apply as they do to pregame (Books, Bets, Periods, min
 edge, min suggested bet, min liquidity to win, alt lines and their distance);
 there are no live-only settings. Stakes are conditional Kelly against every
-open bet on the game, pregame and live alike, exactly as on a pregame row,
-but on the **in-game fair ladder**: every line `page.js` posts for a game
+open bet on the game, pregame and live alike, but on the **in-game fair
+ladder**: every line `page.js` posts for a game
 whose fair is ready (every book, main and alt, both sides, edge or not)
 carries the screen's fair at its own number, and `live.liveFairState` hands
 those to `edgeRows.createLadderReaders` as the ladder (2026-10-09). The
@@ -883,8 +883,10 @@ $300, a live Over 47.5 at +185 (fair +163) is $167 instead of $341 alone;
 holding the Under instead lifts it to $508. A bet at a number no book shows
 live is left out and named (`no fair at 51.5`), as on pregame rows; a 1H bet
 at halftime has no live rung either. Open BFA teasers with a leg on the live
-game are left out and named (`started`): their leg is not repriced live. The
-header ends `bets: Kalshi 20 s · Novig 45 s · Polymarket US 12 s`, how old
+game are left out: their leg is not repriced live. The related line names
+them `started` while the game is still on the pregame board, and once it
+leaves the board they are not listed at all. The header ends
+`bets: kalshi 20 s · novig 45 s · polymarket_us 12 s`, how old
 each live venue's last good pull is (`betsview.liveSyncText`): a bet placed
 at a break is in the stake only after its venue's next pull (every 60 s), so
 wait for that before stacking a second bet in the same break. The Ticket
@@ -2292,7 +2294,7 @@ visible. Its one write is the Bets page's Remove / Restore.
   P&L (its other legs are other games) and the ticket is listed under
   **Parlays and teasers riding**. **The chance is Unabated's fair at
   kickoff** (the median fair ladder from the last snapshot before the
-  start, the ladder the Edges sizing reads), not the live score: no scores
+  start, the ladder the Edges sizing reads before kickoff), not the live score: no scores
   feed is wired yet. Started bets the runner could not place on a game
   (futures, props, a name or time the board doesn't share) are listed under
   **Not on a game card**; when `/scenarios.json` cannot be read the tab says
@@ -2462,7 +2464,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 494 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 497 tests) and
 the bets service's pytest suite (388 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -2986,7 +2988,7 @@ in red.
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
 
-**2026-10-09 — Live stakes count open bets (0.22.0).** The Live block sized
+**2026-10-09: Live stakes count open bets (0.22.0).** The Live block sized
 every line as if nothing were held: a halftime Over after an end-of-Q1 Over
 got a second full quarter-Kelly on nearly the same outcome. The 2026-09-27
 plan assumed the screen exposes no live fair ladder; it does: every line

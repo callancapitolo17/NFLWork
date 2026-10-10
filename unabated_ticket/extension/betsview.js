@@ -32,8 +32,7 @@
   const FRESH_MS = 5 * 60 * 1000;
   const STALE_MS = 60 * 60 * 1000;
   const BANNER_MAX_LINES = 5;
-  // The venues Cal bets live at (2026-10-09): a bet placed at a break reaches
-  // the live stake only after its venue's next pull.
+  // The venues Cal bets live at.
   const LIVE_BET_VENUES = ["kalshi", "novig", "polymarket_us"];
   const DEFAULT_BETS_SETTINGS = { serviceUrl: "http://127.0.0.1:8094" };
   // Tiers on the row's own direction and on the other one; same_game is neither.
@@ -95,12 +94,12 @@
     });
   }
 
-  // "bets: Kalshi 20 s · Novig 45 s · Polymarket US 12 s": how old each live
+  // "bets: kalshi 20 s · novig 45 s · polymarket_us 12 s": how old each live
   // venue's last good pull is. Null when none of them has a source.
   function liveSyncText(payload, now) {
     const parts = sourceRows(payload, now)
       .filter((row) => row.configured && LIVE_BET_VENUES.includes(row.venue))
-      .map((row) => `${bets.venueLabel(row.venue)} ${row.ageText}`);
+      .map((row) => `${row.venue} ${row.ageText}`);
     return parts.length ? `bets: ${parts.join(" \u00b7 ")}` : null;
   }
 

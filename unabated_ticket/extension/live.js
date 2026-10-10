@@ -154,6 +154,21 @@
     };
   }
 
+  // {raw, game, payload} for every posted line of a game whose fair is
+  // ready, in the payloads not yet past LIVE_DROP_MS.
+  function readyLiveRows(payloads, now) {
+    const ready = [];
+    for (const payload of payloads || []) {
+      if (!isFresh(payload, now)) continue;
+      const games = new Map((payload.games || []).map((game) => [game.eventId, game]));
+      for (const raw of payload.rows || []) {
+        const game = games.get(raw.eventId);
+        if (game && game.fairStatus === FAIR_READY) ready.push({ raw, game, payload });
+      }
+    }
+    return ready;
+  }
+
   // The listable live rows across every stored payload whose fair is ready,
   // best edge first. Stale payloads still list (greyed by the panel); a
   // payload past LIVE_DROP_MS lists nothing.
@@ -163,38 +178,24 @@
     const options = opts || {};
     const now = typeof options.now === "number" ? options.now : Date.now();
     const rows = [];
-    for (const payload of payloads || []) {
-      if (!isFresh(payload, now)) continue;
-      const games = new Map((payload.games || []).map((game) => [game.eventId, game]));
-      for (const raw of payload.rows || []) {
-        const game = games.get(raw.eventId);
-        if (!game || game.fairStatus !== FAIR_READY) continue;
-        const row = describeLiveRow(raw, game, payload);
-        if (!passesFilters({ ...row, bookId: raw.bookId }, options)) continue;
-        rows.push(row);
-      }
+    for (const { raw, game, payload } of readyLiveRows(payloads, now)) {
+      const row = describeLiveRow(raw, game, payload);
+      if (!passesFilters({ ...row, bookId: raw.bookId }, options)) continue;
+      rows.push(row);
     }
     rows.sort((a, b) => b.edgePct - a.edgePct);
     return rows;
   }
 
-  // The screen's in-game fairs in a scanner state's shape ({lines}), so
-  // edgeRows.createLadderReaders builds the live fair ladder from them: every
-  // book's line, edge or not, on a game whose fair is ready, with `bacr` (the
-  // field ladder.buildLadder reads) set to the in-game fair at its points.
+  // Every line of a game whose fair is ready, edge or not, in a scanner
+  // state's {lines} shape, its `bacr` the in-game fair at its points.
   function liveFairState(payloads, now) {
     const lines = {};
-    for (const payload of payloads || []) {
-      if (!isFresh(payload, now)) continue;
-      const leagueId = leagueIdOfPath(payload.league);
-      const readyEventIds = new Set((payload.games || []).filter((game) => game.fairStatus === FAIR_READY).map((game) => game.eventId));
-      for (const raw of payload.rows || []) {
-        if (!readyEventIds.has(raw.eventId)) continue;
-        lines[raw.key] = {
-          eventId: raw.eventId, leagueId, periodTypeId: raw.periodTypeId, betTypeId: raw.betTypeId,
-          sideIndex: raw.sideIndex, points: raw.points, bacr: raw.fair,
-        };
-      }
+    for (const { raw, payload } of readyLiveRows(payloads, now)) {
+      lines[raw.key] = {
+        eventId: raw.eventId, leagueId: leagueIdOfPath(payload.league), periodTypeId: raw.periodTypeId, betTypeId: raw.betTypeId,
+        sideIndex: raw.sideIndex, points: raw.points, bacr: raw.fair,
+      };
     }
     return { lines };
   }

@@ -92,7 +92,7 @@ test("liveSyncText: each live venue's last good pull, failed ones included; othe
     polymarket_us: { fetchedAt: iso(41e3), ok: true, error: null, count: 17 },
     bfa: { fetchedAt: iso(5e3), ok: true, error: null, count: 153 },
   }), NOW);
-  assert.equal(text, "bets: Kalshi 3 h · Novig 20 s · Polymarket US 41 s");
+  assert.equal(text, "bets: kalshi 3 h · novig 20 s · polymarket_us 41 s");
   assert.equal(view.liveSyncText(payloadWith({ bfa: { fetchedAt: iso(5e3), ok: true, error: null, count: 1 } }), NOW), null);
   assert.equal(view.liveSyncText(null, NOW), null);
 });
