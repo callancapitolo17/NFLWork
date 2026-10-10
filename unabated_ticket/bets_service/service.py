@@ -6,7 +6,8 @@ Inputs:  each registered Source (sources/kalshi.py; sources/betonline.py when
          its cookie file exists; sources/novig.py when its token file exists;
          sources/bfa.py and sources/wagerzon.py when their logins are configured;
          sources/polymarket_us.py when its API key is configured)
-         on its own poll_sec; plus the extension's pushes for Bet105 (below).
+         on its own poll_sec; plus the extension's pushes for Bet105 and DraftKings
+         (below).
 Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
            GET /bets.json[?days=N]  {generatedAt, sources: {name: {fetchedAt, ok,
                                     error, count}}, bets: [records open + settled
@@ -63,12 +64,20 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
            POST /bet105.json        body {fetchedAt, feeds: {prematch: [betGroup], live:
                                     [betGroup]}, settled: [wager]} -> {ok, count, settled,
                                     closed, skipped}, or {error} -> {ok, recorded: "error"}
-                                    (the one PUSHED source: the extension reads Bet105 from
+                                    (a PUSHED source: the extension reads Bet105 from
                                     Cal's own Chrome because Cloudflare challenges anything
                                     else — sources/bet105.py parses; a graded wager settles
                                     its bet with the venue's result and settle time, an open
                                     bet neither read lists is closed with no result, and the
                                     push is logged as that source's run)
+           POST /draftkings.json    body {fetchedAt, open: [bet], settled: [bet], events:
+                                    {eventId: event}} -> {ok, count, closed, skipped}, or
+                                    {error} -> {ok, recorded: "error"} (pushed like Bet105:
+                                    the extension reads DraftKings' My Bets socket from Cal's
+                                    own Chrome because Akamai and a login code stop anything
+                                    else — sources/draftkings.py parses; a settled bet
+                                    carries the venue's result, an open bet neither list
+                                    carries is closed with no result)
            GET /settings.json       {settings: {bankroll, multiplier, leagues, periods, betTypes,
                                     bookMode, bookIds, minEdgePct, minStake, maxLineAgeHours,
                                     minLiquidityToWin, includeAlts, sortBy, groupByMarket},
@@ -149,7 +158,7 @@ from urllib.parse import parse_qs, urlparse
 from unabated_ticket.bets_service import bfa_teaser, config
 from unabated_ticket.bets_service.log_setup import setup_logging
 from unabated_ticket.bets_service.normalize import parse_iso_ms, utc_now_iso
-from unabated_ticket.bets_service.sources import Source, bet105
+from unabated_ticket.bets_service.sources import Source, bet105, draftkings
 from unabated_ticket.bets_service.sources.betonline import source_if_configured as betonline_source_if_configured
 from unabated_ticket.bets_service.sources.bfa import BFASource, normalize_open_bets
 from unabated_ticket.bets_service.sources.bfa import source_if_configured as bfa_source_if_configured
@@ -240,10 +249,11 @@ PAGE_SECURITY_HEADERS = {
 # The runner is local (or on the tailnet), never behind the sandbox's HTTP proxy.
 _RUNNER_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-# Sources with no poll here: the extension POSTs their records (/bet105.json).
+# Sources with no poll here: the extension POSTs their records (/bet105.json,
+# /draftkings.json).
 # Listed so the panel reads "no completed poll yet" before the first push, not
 # "no source configured".
-PUSHED_SOURCES = (bet105.VENUE,)
+PUSHED_SOURCES = (bet105.VENUE, draftkings.VENUE)
 
 
 def _now() -> datetime:
@@ -735,7 +745,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             url = urlparse(self.path)
             if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/closing_fairs.json",
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/bet105.json",
-                                "/place_teaser.json"):
+                                "/draftkings.json", "/place_teaser.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
@@ -762,6 +772,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/bet105.json":
                 self._push_bet105(body)
+                return
+            if url.path == "/draftkings.json":
+                self._push_draftkings(body)
                 return
             if url.path == "/place_teaser.json":
                 self._place_teaser(body)
@@ -904,6 +917,29 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             store.log_source_run(bet105.VENUE, started_at, _now(), True, None, len(records))
             self._send_json(200, {"ok": True, "count": len(records), "settled": len(settled),
                                   "closed": len(closed), "skipped": len(skipped)})
+
+        # POST /draftkings.json: the extension's read of the account, as one source run —
+        # a complete push UPSERTs its records (a settled bet over its open copy) and
+        # closes the open ones neither list carries; an error push is a failed run and
+        # the records stand.
+        def _push_draftkings(self, body: object) -> None:
+            push = draftkings.validate_push(body)
+            if isinstance(push, str):
+                self._send_json(400, {"error": push})
+                return
+            started_at = _now()
+            if "error" in push:
+                store.log_source_run(draftkings.VENUE, started_at, _now(), False, push["error"], 0)
+                self._send_json(200, {"ok": True, "recorded": "error"})
+                return
+            records, skipped = draftkings.normalize_draftkings(push)
+            if skipped:
+                log.warning("draftkings: %d settled bet(s) not read: %s", len(skipped), "; ".join(skipped))
+            stored = store.load_bets(config.RETENTION_DAYS, started_at)
+            closed = draftkings.closed_by_absence(stored, {record["id"] for record in records}, _iso(started_at))
+            store.upsert_bets(records + closed, started_at)
+            store.log_source_run(draftkings.VENUE, started_at, _now(), True, None, len(records))
+            self._send_json(200, {"ok": True, "count": len(records), "closed": len(closed), "skipped": len(skipped)})
 
         # POST /place_teaser.json: one teaser at BFA (bfa_teaser.py). An exception out of
         # place() is raised before the wager goes out, so it reads "Not placed". The open

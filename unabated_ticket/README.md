@@ -936,6 +936,7 @@ Two kinds of source feed the flags:
 | Wagerzon (the C account) | `bets_service/sources/wagerzon.py` (local service, the site's form login from `bet_logger/.env`; 2026-09-23) | every 300 s while the service runs |
 | Polymarket US (the CFTC app) | `bets_service/sources/polymarket_us.py` (local service, the account's own API key from `bet_logger/.env`, Ed25519-signed; 2026-09-23) | every 60 s while the service runs |
 | Bet105 | the panel itself (`extension/bet105.js`, your own login at app.bet105.ag in this Chrome — Cloudflare challenges anything else) → `POST /bet105.json`, parsed by `bets_service/sources/bet105.py`; open bets 2026-09-29, graded bets 2026-10-07 | every 5 min while the panel is open; open bets plus every graded wager with its result and settle time |
+| DraftKings | the panel itself (`extension/draftkings.js`, your own login at sportsbook.draftkings.com in this Chrome — Akamai's bot checks and a login code stop anything else) → `POST /draftkings.json`, parsed by `bets_service/sources/draftkings.py`; 2026-10-10 | every 5 min while the panel is open; every open bet plus the last 31 days of settled bets with their result |
 | ProphetX | — (#117) | shows "no source configured" |
 
 Start the service (next section), keep the panel open. Every 30 s while the
@@ -1644,7 +1645,10 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   [betGroup]}, settled: [wager]}` (both feeds, at most 2000 groups, and the
   wager list) → `{ok, count, settled, closed, skipped}`, or `{error}` → `{ok,
   recorded: "error"}` — the panel's read of Bet105 (the Bet105 source bullet),
-  stored as that source's run. `POST /place_teaser.json`
+  stored as that source's run. `POST /draftkings.json` with `{fetchedAt, open:
+  [bet], settled: [bet], events: {eventId: event}}` (at most 2000 bets) →
+  `{ok, count, closed, skipped}`, or `{error}` → `{ok, recorded: "error"}` —
+  the panel's read of DraftKings (the DraftKings source bullet). `POST /place_teaser.json`
   with `{stake, legs: [4 x {league "nfl"|"cfb", betType "spread"|"total",
   side "away"|"home"|"over"|"under", rotation, points (Buckeye's number
   before the teaser), eventStart, label}]}` → `{ok, status: placed | refused
@@ -1952,6 +1956,46 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   feed, so its value does not matter once the bet was seen open). No credentials and no poll in the
   service; `service.PUSHED_SOURCES` lists the venue so the panel reads "no
   completed poll yet" until the first push.
+- **DraftKings source** (`sources/draftkings.py` + `extension/draftkings.js`;
+  2026-10-10): PUSHED like Bet105 — Akamai's bot checks and a code on every new
+  login stop any script, so the panel reads the account from your own login in
+  this Chrome. My Bets makes no HTTP call for the bets (Cal's HAR, 2026-10-10):
+  it mints a token (`GET
+  https://gaming-us-ma.draftkings.com/api/wager/v1/generateEnterpriseJWT` on the
+  session cookies → `{token, expiresIn}`; 401 / 403 = not logged in) and asks a
+  JSON-RPC websocket, `wss://gateway.northamerica-northeast2.prod.dkapis.com/dkusma/shelby/api/v1/websocket?format=json&jwt=<token>`.
+  Every 5 min while the panel is visible the panel does the same: the page's
+  own first message (`InitializeBetsPageRequest`), then `BetsRequest` pages of
+  25 (`filter.status` `Open`, then `Settled`, newest first) until a short page
+  — the settled list also stops at a page reaching back past 31 days, one past
+  the service's window — and one POST of `{fetchedAt, open, settled, events}`
+  (each bet and event cut to the fields the service reads). Never a half
+  push: both lists or an `{error}`, which turns the Bets tab row red with the
+  fix (log in at sportsbook.draftkings.com in this Chrome). The hosts name the
+  account's state (`us-ma`, `dkusma`: Massachusetts). Record ids are
+  `draftkings:<betId>` (`:legN` per leg of a parlay, every leg on the
+  ticket's stake and status). A selection reads from its text and its event:
+  `marketDisplayName` = an optional period phrase (`1st Half` 1H, `2nd Half`,
+  `1st`–`4th Quarter`, `1st 5 Innings` F5) plus `Spread` / `Spread Alternate` /
+  `Run Line` / `Puck Line` (spread), `Total` / `Total Alternate` / `Total Runs`
+  (total) or `Moneyline`; `selectionDisplayName` `Temple -17.5` / `Over 44.5` /
+  `Temple` (a minus may be U+2212); the side by the picked participant's id
+  against the event's `venueRole`, else by name; teams, `eventStartDate` and
+  `leagueId` (88808 nfl, 87637 cfb, 84240 mlb, 42648 nba, 92483 cbb, 42133
+  nhl, 94682 wnba) from the event. Rotation stays null (DraftKings' own
+  numbers, `retailRotNumber`, are not Unabated's). Status from the bet's
+  `settlementStatus`, the page bundle's table: `Open` → open, `Won`, `Lost`,
+  `Draw` → push, `Cancelled` / `NonRunner` → void, `CashOut` /
+  `PartialCashOut` and the dead-heat / half results → `closed`; every settled
+  record carries `pnl` = `returns` − stake (the venue's payout includes the
+  stake), and a free bet (`bonus.freeBetAmount`) stakes nothing of Cal's. A
+  settled bet replaces its open copy; a settled status the table does not
+  name is skipped and logged (`draftkings: N settled bet(s) not read`); an
+  open record neither list carries is closed with no result. Fails closed
+  with the reason: team totals, props, an unlisted league, an SGP group inside
+  a parlay, a round robin. **Seen on real bets**: three open CFB alternate
+  spreads (away and home); everything settled, totals, moneylines, halves and
+  parlays are pinned by hand-written fixture rows until a real one settles.
 - **Store** (`store.py`, `bets.duckdb`, gitignored): `bets` upserts on the
   record id and is never pruned (the CLV work needs the history), but only
   rows whose content actually CHANGED are written (#125): a source re-sends
@@ -2021,8 +2065,9 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   (the `Source` protocol in `sources/__init__.py`), registered in
   `service.main()`. `fetch()` returns every record the venue knows and raises
   on failure — never a partial list. A venue no script can reach (Cloudflare
-  challenging anything but the browser's own session — Bet105) is read by the
-  panel instead and PUSHED to a route of its own (`POST /bet105.json`), the
+  challenging anything but the browser's own session — Bet105; Akamai and a
+  login code — DraftKings) is read by the panel instead and PUSHED to a route
+  of its own (`POST /bet105.json`, `POST /draftkings.json`), the
   parser still a module in `sources/` and the venue listed in
   `service.PUSHED_SOURCES`. Records follow the contract in the plan
   (`id` = `"<venue>:<native id>"`, `side`/`points` in the side's own number,
@@ -2287,8 +2332,8 @@ the open panel used to do.
   learn), Undo, Dismiss / Restore, the learned team names with a two-tap
   Clear, a Line moved note on the ticket, and move tags and alt numbers on
   the card's other lines.
-- **Still Mac-only**: in-game Live edges and Bet105 need the logged-in
-  Chrome tab; desktop alerts; clicking a price on Unabated's screen.
+- **Still Mac-only**: in-game Live edges, Bet105 and DraftKings need the
+  logged-in Chrome; desktop alerts; clicking a price on Unabated's screen.
 
 ### Bet Tracker (`server/tracker/`)
 
@@ -3013,6 +3058,16 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-10 — DraftKings bets in the Bets tab (0.23.0).** Cal wanted his
+DraftKings bets flagged. DraftKings sits behind Akamai and asks for a code on
+a new login, and a login from the VM (or abroad) risks a flag on the account,
+so Cal picked the Bet105 route: the panel reads My Bets from his own Chrome
+and the service parses. His HAR showed the bets ride a JSON-RPC websocket,
+not HTTP, on a token the session cookies mint; the panel opens that socket
+itself, no DraftKings tab needed. Rotation is left null (DraftKings numbers
+are its own). Only open alternate spreads were seen live; settled shapes
+follow the page bundle's status table and fail closed on anything else.
 
 **2026-10-09 — Other books at the same number (0.21.0).** Cal wanted to
 skip a bet when several books beat the price he is about to take. His picks:

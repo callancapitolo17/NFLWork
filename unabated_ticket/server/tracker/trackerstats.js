@@ -47,7 +47,7 @@
 
   const VENUE_NAMES = {
     kalshi: "Kalshi", novig: "Novig", betonline: "BetOnline", bfa: "BFA",
-    wagerzon: "Wagerzon", polymarket_us: "Polymarket US", bet105: "Bet105",
+    wagerzon: "Wagerzon", polymarket_us: "Polymarket US", bet105: "Bet105", draftkings: "DraftKings",
   };
   const BET_TYPE_NAMES = { moneyline: "Moneyline", spread: "Spread", total: "Total", other: "Other" };
   const KIND_NAMES = { straight: "Straight", parlay: "Parlay", teaser: "Teaser", kalshiCombo: "Kalshi combo" };

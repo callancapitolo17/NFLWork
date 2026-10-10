@@ -1,0 +1,960 @@
+{
+  "fetchedAt": "2026-10-10T19:00:44.000Z",
+  "open": [
+    {
+      "betId": "639272551505388534",
+      "receiptId": "639272551505388533",
+      "type": "Single",
+      "status": "Unsettled",
+      "settlementStatus": "Open",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "+566",
+      "currency": "USD",
+      "placementDate": "2026-10-10T18:52:30.706Z",
+      "stake": 75,
+      "potentialReturns": 499.5,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "0HC86600982N1450_3",
+          "eventId": "34749110",
+          "marketId": "2_86600982",
+          "status": "Unsettled",
+          "settlementStatus": "Open",
+          "displayOdds": "+566",
+          "selectionDisplayName": "North Dakota State -14.5",
+          "marketDisplayName": "Spread Alternate",
+          "participants": [
+            {
+              "id": "139685",
+              "name": "North Dakota State"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "639272551036408222",
+      "receiptId": "639272551036408221",
+      "type": "Single",
+      "status": "Unsettled",
+      "settlementStatus": "Open",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "+485",
+      "currency": "USD",
+      "placementDate": "2026-10-10T18:51:43.882Z",
+      "stake": 100,
+      "potentialReturns": 585,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "0HC86597866N1750_1",
+          "eventId": "34746033",
+          "marketId": "2_86597866",
+          "status": "Unsettled",
+          "settlementStatus": "Open",
+          "displayOdds": "+485",
+          "selectionDisplayName": "Temple -17.5",
+          "marketDisplayName": "Spread Alternate",
+          "participants": [
+            {
+              "id": "5857",
+              "name": "Temple"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "639272549945262625",
+      "receiptId": "639272549945262624",
+      "type": "Single",
+      "status": "Unsettled",
+      "settlementStatus": "Open",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "+543",
+      "currency": "USD",
+      "placementDate": "2026-10-10T18:49:55.145Z",
+      "stake": 225,
+      "potentialReturns": 1446.75,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "0HC86597386N2250_3",
+          "eventId": "34745984",
+          "marketId": "2_86597386",
+          "status": "Unsettled",
+          "settlementStatus": "Open",
+          "displayOdds": "+543",
+          "selectionDisplayName": "James Madison -22.5",
+          "marketDisplayName": "Spread Alternate",
+          "participants": [
+            {
+              "id": "282041",
+              "name": "James Madison"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000001",
+      "receiptId": "700000000000000000",
+      "type": "Single",
+      "status": "Unsettled",
+      "settlementStatus": "Open",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "−110",
+      "currency": "USD",
+      "placementDate": "2026-10-10T15:00:00.000Z",
+      "stake": 110,
+      "potentialReturns": 210,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900001-Over 44.5",
+          "eventId": "900001",
+          "marketId": "m-900001-Total",
+          "status": "Unsettled",
+          "settlementStatus": "Open",
+          "displayOdds": "−110",
+          "selectionDisplayName": "Over 44.5",
+          "marketDisplayName": "Total",
+          "participants": []
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000002",
+      "receiptId": "700000000000000001",
+      "type": "Single",
+      "status": "Unsettled",
+      "settlementStatus": "Open",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "+135",
+      "currency": "USD",
+      "placementDate": "2026-10-10T15:01:00.000Z",
+      "stake": 50,
+      "potentialReturns": 117.5,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900001-Chicago Bears",
+          "eventId": "900001",
+          "marketId": "m-900001-Moneyline",
+          "status": "Unsettled",
+          "settlementStatus": "Open",
+          "displayOdds": "+135",
+          "selectionDisplayName": "Chicago Bears",
+          "marketDisplayName": "Moneyline",
+          "participants": [
+            {
+              "id": "p-chi",
+              "name": "Chicago Bears",
+              "venueRole": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000003",
+      "receiptId": "700000000000000002",
+      "type": "Single",
+      "status": "Unsettled",
+      "settlementStatus": "Open",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "−105",
+      "currency": "USD",
+      "placementDate": "2026-10-10T15:02:00.000Z",
+      "stake": 105,
+      "potentialReturns": 205,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900001-Green Bay Packers -3",
+          "eventId": "900001",
+          "marketId": "m-900001-1st Half Spread",
+          "status": "Unsettled",
+          "settlementStatus": "Open",
+          "displayOdds": "−105",
+          "selectionDisplayName": "Green Bay Packers -3",
+          "marketDisplayName": "1st Half Spread",
+          "participants": [
+            {
+              "id": "p-gb",
+              "name": "Green Bay Packers",
+              "venueRole": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000004",
+      "receiptId": "700000000000000003",
+      "type": "Parlay",
+      "status": "Unsettled",
+      "settlementStatus": "Open",
+      "numberOfBets": 1,
+      "numberOfSelections": 2,
+      "displayOdds": "+264",
+      "currency": "USD",
+      "placementDate": "2026-10-10T15:03:00.000Z",
+      "stake": 20,
+      "potentialReturns": 72.8,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900001-Under 44.5",
+          "eventId": "900001",
+          "marketId": "m-900001-Total",
+          "status": "Unsettled",
+          "settlementStatus": "Open",
+          "displayOdds": "−110",
+          "selectionDisplayName": "Under 44.5",
+          "marketDisplayName": "Total",
+          "participants": []
+        },
+        {
+          "selectionId": "sel-34746033-Temple -17.5",
+          "eventId": "34746033",
+          "marketId": "m-34746033-Spread Alternate",
+          "status": "Unsettled",
+          "settlementStatus": "Open",
+          "displayOdds": "+485",
+          "selectionDisplayName": "Temple -17.5",
+          "marketDisplayName": "Spread Alternate",
+          "participants": [
+            {
+              "id": "5857",
+              "name": "Temple",
+              "venueRole": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000005",
+      "receiptId": "700000000000000004",
+      "type": "RoundRobin",
+      "status": "Unsettled",
+      "settlementStatus": "Open",
+      "numberOfBets": 3,
+      "numberOfSelections": 1,
+      "displayOdds": "+300",
+      "currency": "USD",
+      "placementDate": "2026-10-10T15:04:00.000Z",
+      "stake": 30,
+      "potentialReturns": 120,
+      "freeBetAmount": 0,
+      "combinationCount": 3,
+      "selections": [
+        {
+          "selectionId": "sel-900001-Chicago Bears",
+          "eventId": "900001",
+          "marketId": "m-900001-Moneyline",
+          "status": "Unsettled",
+          "settlementStatus": "Open",
+          "displayOdds": "+135",
+          "selectionDisplayName": "Chicago Bears",
+          "marketDisplayName": "Moneyline",
+          "participants": [
+            {
+              "id": "p-chi",
+              "name": "Chicago Bears",
+              "venueRole": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000006",
+      "receiptId": "700000000000000005",
+      "type": "Single",
+      "status": "Unsettled",
+      "settlementStatus": "Open",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "−120",
+      "currency": "USD",
+      "placementDate": "2026-10-10T15:05:00.000Z",
+      "stake": 60,
+      "potentialReturns": 110,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900001-Chicago Bears Over 20.5",
+          "eventId": "900001",
+          "marketId": "m-900001-Team Total Points",
+          "status": "Unsettled",
+          "settlementStatus": "Open",
+          "displayOdds": "−120",
+          "selectionDisplayName": "Chicago Bears Over 20.5",
+          "marketDisplayName": "Team Total Points",
+          "participants": []
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000007",
+      "receiptId": "700000000000000006",
+      "type": "Single",
+      "status": "Unsettled",
+      "settlementStatus": "Open",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "+150",
+      "currency": "USD",
+      "placementDate": "2026-10-10T15:06:00.000Z",
+      "stake": 10,
+      "potentialReturns": 25,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900004-Arsenal",
+          "eventId": "900004",
+          "marketId": "m-900004-Moneyline",
+          "status": "Unsettled",
+          "settlementStatus": "Open",
+          "displayOdds": "+150",
+          "selectionDisplayName": "Arsenal",
+          "marketDisplayName": "Moneyline",
+          "participants": [
+            {
+              "id": "p-ars",
+              "name": "Arsenal",
+              "venueRole": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000008",
+      "receiptId": "700000000000000007",
+      "type": "Parlay",
+      "status": "Unsettled",
+      "settlementStatus": "Open",
+      "numberOfBets": 1,
+      "numberOfSelections": 2,
+      "displayOdds": "+400",
+      "currency": "USD",
+      "placementDate": "2026-10-10T15:07:00.000Z",
+      "stake": 10,
+      "potentialReturns": 50,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900001-Chicago Bears",
+          "eventId": "900001",
+          "marketId": "m-900001-Moneyline",
+          "status": "Unsettled",
+          "settlementStatus": "Open",
+          "displayOdds": "+135",
+          "selectionDisplayName": "Chicago Bears",
+          "marketDisplayName": "Moneyline",
+          "participants": [
+            {
+              "id": "p-chi",
+              "name": "Chicago Bears",
+              "venueRole": null
+            }
+          ],
+          "nestedSelectionCount": 2
+        },
+        {
+          "selectionId": "sel-34746033-Temple -17.5",
+          "eventId": "34746033",
+          "marketId": "m-34746033-Spread Alternate",
+          "status": "Unsettled",
+          "settlementStatus": "Open",
+          "displayOdds": "+485",
+          "selectionDisplayName": "Temple -17.5",
+          "marketDisplayName": "Spread Alternate",
+          "participants": [
+            {
+              "id": "5857",
+              "name": "Temple",
+              "venueRole": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000009",
+      "receiptId": "700000000000000008",
+      "type": "Single",
+      "status": "Unsettled",
+      "settlementStatus": "Open",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "−110",
+      "currency": "USD",
+      "placementDate": "2026-10-02T15:00:00.000Z",
+      "stake": 55,
+      "potentialReturns": 105,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900002-Dallas Cowboys +3.5",
+          "eventId": "900002",
+          "marketId": "m-900002-Spread",
+          "status": "Unsettled",
+          "settlementStatus": "Open",
+          "displayOdds": "−110",
+          "selectionDisplayName": "Dallas Cowboys +3.5",
+          "marketDisplayName": "Spread",
+          "participants": [
+            {
+              "id": "p-dal",
+              "name": "Dallas Cowboys",
+              "venueRole": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settled": [
+    {
+      "betId": "700000000000000009",
+      "receiptId": "700000000000000008",
+      "type": "Single",
+      "status": "Settled",
+      "settlementStatus": "Won",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "−110",
+      "currency": "USD",
+      "placementDate": "2026-10-02T15:00:00.000Z",
+      "settlementDate": "2026-10-04T23:40:00.000Z",
+      "stake": 55,
+      "potentialReturns": 105,
+      "returns": 105,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900002-Dallas Cowboys +3.5",
+          "eventId": "900002",
+          "marketId": "m-900002-Spread",
+          "status": "Settled",
+          "settlementStatus": "Won",
+          "displayOdds": "−110",
+          "selectionDisplayName": "Dallas Cowboys +3.5",
+          "marketDisplayName": "Spread",
+          "participants": [
+            {
+              "id": "p-dal",
+              "name": "Dallas Cowboys",
+              "venueRole": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000010",
+      "receiptId": "700000000000000009",
+      "type": "Single",
+      "status": "Settled",
+      "settlementStatus": "Lost",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "−110",
+      "currency": "USD",
+      "placementDate": "2026-10-02T15:01:00.000Z",
+      "settlementDate": "2026-10-04T23:41:00.000Z",
+      "stake": 110,
+      "potentialReturns": 210,
+      "returns": 0,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900002-Under 47.5",
+          "eventId": "900002",
+          "marketId": "m-900002-Total",
+          "status": "Settled",
+          "settlementStatus": "Lost",
+          "displayOdds": "−110",
+          "selectionDisplayName": "Under 47.5",
+          "marketDisplayName": "Total",
+          "participants": []
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000011",
+      "receiptId": "700000000000000010",
+      "type": "Single",
+      "status": "Settled",
+      "settlementStatus": "Draw",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "−110",
+      "currency": "USD",
+      "placementDate": "2026-10-02T15:02:00.000Z",
+      "settlementDate": "2026-10-04T23:42:00.000Z",
+      "stake": 110,
+      "potentialReturns": 210,
+      "returns": 110,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900002-New York Giants -3",
+          "eventId": "900002",
+          "marketId": "m-900002-Spread",
+          "status": "Settled",
+          "settlementStatus": "Draw",
+          "displayOdds": "−110",
+          "selectionDisplayName": "New York Giants -3",
+          "marketDisplayName": "Spread",
+          "participants": [
+            {
+              "id": "p-nyg",
+              "name": "New York Giants",
+              "venueRole": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000012",
+      "receiptId": "700000000000000011",
+      "type": "Single",
+      "status": "Settled",
+      "settlementStatus": "Cancelled",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "+120",
+      "currency": "USD",
+      "placementDate": "2026-10-02T15:03:00.000Z",
+      "settlementDate": "2026-10-03T23:00:00.000Z",
+      "stake": 25,
+      "potentialReturns": 55,
+      "returns": 25,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900003-NY Yankees",
+          "eventId": "900003",
+          "marketId": "m-900003-Moneyline",
+          "status": "Settled",
+          "settlementStatus": "Cancelled",
+          "displayOdds": "+120",
+          "selectionDisplayName": "NY Yankees",
+          "marketDisplayName": "Moneyline",
+          "participants": [
+            {
+              "id": "p-nyy",
+              "name": "NY Yankees",
+              "venueRole": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000013",
+      "receiptId": "700000000000000012",
+      "type": "Single",
+      "status": "Settled",
+      "settlementStatus": "CashOut",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "−150",
+      "currency": "USD",
+      "placementDate": "2026-10-02T15:04:00.000Z",
+      "settlementDate": "2026-10-04T01:00:00.000Z",
+      "stake": 150,
+      "potentialReturns": 250,
+      "returns": 180.5,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900003-BOS Red Sox -1.5",
+          "eventId": "900003",
+          "marketId": "m-900003-Run Line",
+          "status": "Settled",
+          "settlementStatus": "CashOut",
+          "displayOdds": "+130",
+          "selectionDisplayName": "BOS Red Sox -1.5",
+          "marketDisplayName": "Run Line",
+          "participants": [
+            {
+              "id": "p-bos",
+              "name": "BOS Red Sox",
+              "venueRole": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000014",
+      "receiptId": "700000000000000013",
+      "type": "Single",
+      "status": "Settled",
+      "settlementStatus": "HalfWon",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "+100",
+      "currency": "USD",
+      "placementDate": "2026-10-02T15:05:00.000Z",
+      "settlementDate": "2026-10-04T02:00:00.000Z",
+      "stake": 100,
+      "potentialReturns": 200,
+      "returns": 150,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900003-Over 8.25",
+          "eventId": "900003",
+          "marketId": "m-900003-Total Runs",
+          "status": "Settled",
+          "settlementStatus": "HalfWon",
+          "displayOdds": "+100",
+          "selectionDisplayName": "Over 8.25",
+          "marketDisplayName": "Total Runs",
+          "participants": []
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000015",
+      "receiptId": "700000000000000014",
+      "type": "Single",
+      "status": "Settled",
+      "settlementStatus": "Lost",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "+200",
+      "currency": "USD",
+      "placementDate": "2026-10-02T15:06:00.000Z",
+      "settlementDate": "2026-10-04T02:01:00.000Z",
+      "stake": 25,
+      "potentialReturns": 50,
+      "returns": 0,
+      "freeBetAmount": 25,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900003-NY Yankees -1.5",
+          "eventId": "900003",
+          "marketId": "m-900003-Run Line",
+          "status": "Settled",
+          "settlementStatus": "Lost",
+          "displayOdds": "+200",
+          "selectionDisplayName": "NY Yankees -1.5",
+          "marketDisplayName": "Run Line",
+          "participants": [
+            {
+              "id": "p-nyy",
+              "name": "NY Yankees",
+              "venueRole": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000016",
+      "receiptId": "700000000000000015",
+      "type": "Single",
+      "status": "Settled",
+      "settlementStatus": "Won",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "+200",
+      "currency": "USD",
+      "placementDate": "2026-10-02T15:07:00.000Z",
+      "settlementDate": "2026-10-04T02:02:00.000Z",
+      "stake": 25,
+      "potentialReturns": 50,
+      "returns": 50,
+      "freeBetAmount": 25,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900003-BOS Red Sox",
+          "eventId": "900003",
+          "marketId": "m-900003-Moneyline",
+          "status": "Settled",
+          "settlementStatus": "Won",
+          "displayOdds": "+200",
+          "selectionDisplayName": "BOS Red Sox",
+          "marketDisplayName": "Moneyline",
+          "participants": [
+            {
+              "id": "p-bos",
+              "name": "BOS Red Sox",
+              "venueRole": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000017",
+      "receiptId": "700000000000000016",
+      "type": "Single",
+      "status": "Settled",
+      "settlementStatus": "None",
+      "numberOfBets": 1,
+      "numberOfSelections": 1,
+      "displayOdds": "+100",
+      "currency": "USD",
+      "placementDate": "2026-10-02T15:08:00.000Z",
+      "settlementDate": "2026-10-04T02:03:00.000Z",
+      "stake": 10,
+      "potentialReturns": 20,
+      "returns": 0,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900003-BOS Red Sox",
+          "eventId": "900003",
+          "marketId": "m-900003-Moneyline",
+          "status": "Settled",
+          "settlementStatus": "None",
+          "displayOdds": "+100",
+          "selectionDisplayName": "BOS Red Sox",
+          "marketDisplayName": "Moneyline",
+          "participants": [
+            {
+              "id": "p-bos",
+              "name": "BOS Red Sox",
+              "venueRole": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "betId": "700000000000000018",
+      "receiptId": "700000000000000017",
+      "type": "Parlay",
+      "status": "Settled",
+      "settlementStatus": "Won",
+      "numberOfBets": 1,
+      "numberOfSelections": 2,
+      "displayOdds": "+264",
+      "currency": "USD",
+      "placementDate": "2026-10-02T15:09:00.000Z",
+      "settlementDate": "2026-10-04T02:04:00.000Z",
+      "stake": 20,
+      "potentialReturns": 72.8,
+      "returns": 72.8,
+      "freeBetAmount": 0,
+      "combinationCount": 0,
+      "selections": [
+        {
+          "selectionId": "sel-900002-Under 47.5",
+          "eventId": "900002",
+          "marketId": "m-900002-Total",
+          "status": "Settled",
+          "settlementStatus": "Won",
+          "displayOdds": "−110",
+          "selectionDisplayName": "Under 47.5",
+          "marketDisplayName": "Total",
+          "participants": []
+        },
+        {
+          "selectionId": "sel-900003-Over 8.25",
+          "eventId": "900003",
+          "marketId": "m-900003-Total Runs",
+          "status": "Settled",
+          "settlementStatus": "Won",
+          "displayOdds": "+100",
+          "selectionDisplayName": "Over 8.25",
+          "marketDisplayName": "Total Runs",
+          "participants": []
+        }
+      ]
+    }
+  ],
+  "events": {
+    "34745984": {
+      "eventId": "34745984",
+      "sportId": "3",
+      "leagueId": "87637",
+      "eventStartDate": "2026-10-10T23:30:00.000Z",
+      "eventDisplayName": "James Madison @ Georgia Southern",
+      "homeTeamName": "Georgia Southern",
+      "awayTeamName": "James Madison",
+      "status": "NotStarted",
+      "participants": [
+        {
+          "id": "220384",
+          "name": "Georgia Southern",
+          "venueRole": "Home"
+        },
+        {
+          "id": "282041",
+          "name": "James Madison",
+          "venueRole": "Away"
+        }
+      ]
+    },
+    "34746033": {
+      "eventId": "34746033",
+      "sportId": "3",
+      "leagueId": "87637",
+      "eventStartDate": "2026-10-10T19:45:00.000Z",
+      "eventDisplayName": "UConn @ Temple",
+      "homeTeamName": "Temple",
+      "awayTeamName": "UConn",
+      "status": "NotStarted",
+      "participants": [
+        {
+          "id": "5857",
+          "name": "Temple",
+          "venueRole": "Home"
+        },
+        {
+          "id": "5862",
+          "name": "UConn",
+          "venueRole": "Away"
+        }
+      ]
+    },
+    "34749110": {
+      "eventId": "34749110",
+      "sportId": "3",
+      "leagueId": "87637",
+      "eventStartDate": "2026-10-10T23:00:00.000Z",
+      "eventDisplayName": "North Dakota State @ UNLV",
+      "homeTeamName": "UNLV",
+      "awayTeamName": "North Dakota State",
+      "status": "NotStarted",
+      "participants": [
+        {
+          "id": "6310",
+          "name": "UNLV",
+          "venueRole": "Home"
+        },
+        {
+          "id": "139685",
+          "name": "North Dakota State",
+          "venueRole": "Away"
+        }
+      ]
+    },
+    "900001": {
+      "eventId": "900001",
+      "sportId": "1",
+      "leagueId": "88808",
+      "eventStartDate": "2026-10-11T17:00:00.000Z",
+      "eventDisplayName": "Chicago Bears @ Green Bay Packers",
+      "homeTeamName": "Green Bay Packers",
+      "awayTeamName": "Chicago Bears",
+      "status": "NotStarted",
+      "participants": [
+        {
+          "id": "p-gb",
+          "name": "Green Bay Packers",
+          "venueRole": "Home"
+        },
+        {
+          "id": "p-chi",
+          "name": "Chicago Bears",
+          "venueRole": "Away"
+        }
+      ]
+    },
+    "900002": {
+      "eventId": "900002",
+      "sportId": "1",
+      "leagueId": "88808",
+      "eventStartDate": "2026-10-04T20:25:00.000Z",
+      "eventDisplayName": "Dallas Cowboys @ New York Giants",
+      "homeTeamName": "New York Giants",
+      "awayTeamName": "Dallas Cowboys",
+      "status": "NotStarted",
+      "participants": [
+        {
+          "id": "p-nyg",
+          "name": "New York Giants",
+          "venueRole": "Home"
+        },
+        {
+          "id": "p-dal",
+          "name": "Dallas Cowboys",
+          "venueRole": "Away"
+        }
+      ]
+    },
+    "900003": {
+      "eventId": "900003",
+      "sportId": "1",
+      "leagueId": "84240",
+      "eventStartDate": "2026-10-03T23:05:00.000Z",
+      "eventDisplayName": "NY Yankees @ BOS Red Sox",
+      "homeTeamName": "BOS Red Sox",
+      "awayTeamName": "NY Yankees",
+      "status": "NotStarted",
+      "participants": [
+        {
+          "id": "p-bos",
+          "name": "BOS Red Sox",
+          "venueRole": "Home"
+        },
+        {
+          "id": "p-nyy",
+          "name": "NY Yankees",
+          "venueRole": "Away"
+        }
+      ]
+    },
+    "900004": {
+      "eventId": "900004",
+      "sportId": "1",
+      "leagueId": "40253",
+      "eventStartDate": "2026-10-12T19:00:00.000Z",
+      "eventDisplayName": "Arsenal @ Chelsea",
+      "homeTeamName": "Chelsea",
+      "awayTeamName": "Arsenal",
+      "status": "NotStarted",
+      "participants": [
+        {
+          "id": "p-che",
+          "name": "Chelsea",
+          "venueRole": "Home"
+        },
+        {
+          "id": "p-ars",
+          "name": "Arsenal",
+          "venueRole": "Away"
+        }
+      ]
+    }
+  }
+}

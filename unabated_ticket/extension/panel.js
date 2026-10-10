@@ -24,11 +24,13 @@
 // default http://127.0.0.1:8094) every 30 s on the same visibility rule —
 // never from the service worker. Matching is bets.js; presentation helpers
 // are betsview.js; the Edges rows' selection, sizing, sort and words are
-// edgerows.js (shared with the server runner). Bet105 (2026-09-29) is the
-// one venue this page reads itself: every 5 min while visible it fetches the
-// account's open bets and its graded wagers (2026-10-07) from app.bet105.ag
-// on Cal's own login in this Chrome (bet105.js) and POSTs them to the
-// service's /bet105.json, which parses and stores them like any other.
+// edgerows.js (shared with the server runner). Bet105 (2026-09-29) and
+// DraftKings (2026-10-10) are the venues this page reads itself: every 5 min
+// while visible it fetches the account's open bets and its graded wagers
+// (2026-10-07) from app.bet105.ag, and the open and settled bets from
+// DraftKings' My Bets socket, on Cal's own logins in this Chrome (bet105.js,
+// draftkings.js) and POSTs them to the service's /bet105.json and
+// /draftkings.json, which parse and store them like any other.
 
 (function () {
   "use strict";
@@ -42,6 +44,7 @@
   const teaserLib = globalThis.UnabatedTeaser;
   const teaserView = globalThis.UnabatedTeaserView;
   const bet105 = globalThis.UnabatedBet105;
+  const draftkings = globalThis.UnabatedDraftKings;
   // Bets service poll cadence while the panel is visible (plan § Storage).
   const BETS_POLL_MS = 30 * 1000;
   // The Edges list's defaults, book list and row logic (selection, sizing,
@@ -2032,6 +2035,7 @@
     learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
     captureFillFairs().catch((error) => console.error("[unabated-ticket] fill fair capture failed", error));
     pollBet105().catch((error) => console.error("[unabated-ticket] bet105 poll failed", error));
+    pollDraftKings().catch((error) => console.error("[unabated-ticket] draftkings poll failed", error));
     if (state.betsService.error == null) {
       syncSettings().catch((error) => console.error("[unabated-ticket] settings sync failed", error));
       if (sharedMarksDue) migrateSharedMarks().catch((error) => console.error("[unabated-ticket] marks migration failed", error));
@@ -2087,6 +2091,36 @@
     const settled = bet105.wagersOf(settledResponse.status, await settledResponse.json().catch(() => null));
     if (settled.error) throw new Error(settled.error);
     return bet105.pushBody(new Date().toISOString(), groupsByFeed, settled.wagers);
+  }
+
+  // ---- DraftKings (read here, stored by the service) -------------------------
+  //
+  // The Bet105 pattern (above): on the bets tick, at most every
+  // draftkings.POLL_MS, the account's open and settled bets read from Cal's own
+  // login in this Chrome (draftkings.js), then one POST to the service. A read
+  // that fails is POSTed as an error so the Bets tab's DraftKings row turns red
+  // with the fix; nothing half-read is ever pushed.
+  let draftkingsBusy = false;
+  let draftkingsLastRunAt = 0;
+  let draftkingsLastError = null;
+
+  async function pollDraftKings() {
+    if (draftkingsBusy || document.hidden || !draftkings.isDue(draftkingsLastRunAt, Date.now())) return;
+    draftkingsBusy = true;
+    draftkingsLastRunAt = Date.now();
+    try {
+      const push = await draftkings.readAccount({ fetchImpl: fetch.bind(globalThis), WebSocketImpl: WebSocket });
+      const reply = await serviceRequest("POST", draftkings.SERVICE_PATH, push);
+      if (draftkingsLastError !== null) console.info("[unabated-ticket] draftkings: reading again", reply);
+      draftkingsLastError = null;
+    } catch (error) {
+      const message = error.name === "TimeoutError" ? `DraftKings did not answer within ${draftkings.FETCH_TIMEOUT_MS / 1000}s` : error.message;
+      if (draftkingsLastError !== message) console.warn("[unabated-ticket] draftkings:", message);
+      draftkingsLastError = message;
+      await serviceRequest("POST", draftkings.SERVICE_PATH, draftkings.errorBody(message)).catch(() => {});
+    } finally {
+      draftkingsBusy = false;
+    }
   }
 
   // The records, the service state, the crosswalk, the pins and the saved fill fairs, as one stored object.
