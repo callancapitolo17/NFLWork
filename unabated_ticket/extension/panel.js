@@ -60,9 +60,6 @@
   // page.js republishes the books filter every 10s while an Unabated tab is open.
   const BOOKS_FILTER_STALE_MS = 6 * 60 * 60 * 1000;
   const MAX_EDGE_ROWS = edgeRows.MAX_EDGE_ROWS;
-  // Open bets never net against a live line: conditional Kelly needs a live
-  // fair ladder, which the screen does not expose (plan 2026-09-27, § Sizing).
-  const LIVE_NOT_SIZED_NOTE = "live · not sized";
 
   const el = (id) => document.getElementById(id);
   const view = {
@@ -668,10 +665,11 @@
     // line at the price being sized caps the stake, as it does on the Edges row.
     const feedCopy = feedLineFor(ticket, line.points);
     const liquidity = feedCopy && feedCopy.price === line.price ? feedCopy.liquidity : null;
+    const ladderOf = ticket.live ? liveLadderReaders(Date.now())(ticket.eventId) : ladderReader(ticket.eventId);
     const advice = betsView.stakeAdvice({
       line: matchLine, price: line.price, edgePct: line.edgePct,
       bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
-      matches, ladderOf: ladderReader(ticket.eventId), liquidity, teasers: openTeasersNow(),
+      matches, ladderOf, liquidity, teasers: openTeasersNow(),
     });
     return { tier: matches.length ? matches[0].tier : null, matches: advice.matches, advice };
   }
@@ -1098,31 +1096,23 @@
     return Object.values(liveStore);
   }
 
-  // Held bets on the game show on a live row, but none is netted: the stake
-  // is the line's own quarter-Kelly (LIVE_NOT_SIZED_NOTE says why).
-  function withLiveBetFlags(rows) {
-    let flags = null;
-    try {
-      flags = betsLib.annotateRows(rows, state.betRecords, { lines: boardLines() });
-    } catch (error) {
-      console.info("[unabated-ticket] live bet flags skipped:", error.message);
-    }
-    return rows.map((row, index) => {
-      const flag = flags ? flags[index] : { tier: null, matches: [] };
-      const advice = betsView.stakeAdvice({
-        line: row, price: row.price, edgePct: row.edgePct,
-        bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
-        matches: [], ladderOf: null, liquidity: row.liquidity,
-      });
-      const matches = (flag.matches || []).map((match) => ({ ...match, inMath: false, note: LIVE_NOT_SIZED_NOTE }));
-      return { ...row, bet: { tier: flag.tier, matches, advice } };
-    });
+  // eventId -> (period, axis) -> the in-game fair ladder the screen shows now.
+  function liveLadderReaders(now) {
+    return edgeRows.createLadderReaders(live.liveFairState(livePayloads(), now));
+  }
+
+  // Sized like an Edges row, against every open bet on the game, pregame or
+  // live, on the in-game fair ladder: the pregame one is a game that no
+  // longer exists.
+  function withLiveBetFlags(rows, now) {
+    return edgeRows.withBetFlags(rows, { ...betFlagContext(), ladderReaderOf: liveLadderReaders(now) });
   }
 
   function liveRowsAt(minEdgePct) {
-    const options = { ...edgeSelectionOptions(effectiveFilter()), minEdgePct, now: Date.now() };
+    const now = Date.now();
+    const options = { ...edgeSelectionOptions(effectiveFilter()), minEdgePct, now };
     const selected = live.selectLiveEdges(livePayloads(), options).map((row) => ({ ...row, stake: stakeFor(row) }));
-    return withLiveBetFlags(selected);
+    return withLiveBetFlags(selected, now);
   }
 
   function currentLiveRows() {
@@ -1149,7 +1139,9 @@
     const games = ready.map((game) => `${game.matchup} · ${game.checkpoint}`).join("; ");
     const fairAge = newestFairMs ? ` · fair set ${fmtAgoShort(Date.now() - newestFairMs)} ago` : "";
     const none = rows.length ? "" : ` · nothing at ${state.edgeSettings.minEdgePct}% or more`;
-    return `${games}${fairAge}${none}`;
+    const syncText = betsView.liveSyncText(betsPayload(), Date.now());
+    const sync = syncText ? ` · ${syncText}` : "";
+    return `${games}${fairAge}${none}${sync}`;
   }
 
   // Rendered on every Edges render and once a second while a live game is on

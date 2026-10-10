@@ -178,6 +178,27 @@
     return rows;
   }
 
+  // The screen's in-game fairs in a scanner state's shape ({lines}), so
+  // edgeRows.createLadderReaders builds the live fair ladder from them: every
+  // book's line, edge or not, on a game whose fair is ready, with `bacr` (the
+  // field ladder.buildLadder reads) set to the in-game fair at its points.
+  function liveFairState(payloads, now) {
+    const lines = {};
+    for (const payload of payloads || []) {
+      if (!isFresh(payload, now)) continue;
+      const leagueId = leagueIdOfPath(payload.league);
+      const readyEventIds = new Set((payload.games || []).filter((game) => game.fairStatus === FAIR_READY).map((game) => game.eventId));
+      for (const raw of payload.rows || []) {
+        if (!readyEventIds.has(raw.eventId)) continue;
+        lines[raw.key] = {
+          eventId: raw.eventId, leagueId, periodTypeId: raw.periodTypeId, betTypeId: raw.betTypeId,
+          sideIndex: raw.sideIndex, points: raw.points, bacr: raw.fair,
+        };
+      }
+    }
+    return { lines };
+  }
+
   // One alert per line per break: the fair's production time is in the key,
   // so the next break alerts again on the same line.
   function liveAlertKey(row) {
@@ -186,7 +207,7 @@
 
   const api = {
     LIVE_STALE_MS, LIVE_STALE_HIDDEN_MS, LIVE_DROP_MS, STORAGE_PREFIX,
-    storageKeyOf, checkpointLabel, liveView, selectLiveEdges, liveAlertKey,
+    storageKeyOf, checkpointLabel, liveView, selectLiveEdges, liveFairState, liveAlertKey,
   };
 
   if (typeof module !== "undefined" && module.exports) {

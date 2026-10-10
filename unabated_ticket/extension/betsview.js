@@ -32,6 +32,9 @@
   const FRESH_MS = 5 * 60 * 1000;
   const STALE_MS = 60 * 60 * 1000;
   const BANNER_MAX_LINES = 5;
+  // The venues Cal bets live at (2026-10-09): a bet placed at a break reaches
+  // the live stake only after its venue's next pull.
+  const LIVE_BET_VENUES = ["kalshi", "novig", "polymarket_us"];
   const DEFAULT_BETS_SETTINGS = { serviceUrl: "http://127.0.0.1:8094" };
   // Tiers on the row's own direction and on the other one; same_game is neither.
   const HELD_TIERS = new Set(["same_line", "same_side", "related_same"]);
@@ -90,6 +93,15 @@
         note: null,
       };
     });
+  }
+
+  // "bets: Kalshi 20 s · Novig 45 s · Polymarket US 12 s": how old each live
+  // venue's last good pull is. Null when none of them has a source.
+  function liveSyncText(payload, now) {
+    const parts = sourceRows(payload, now)
+      .filter((row) => row.configured && LIVE_BET_VENUES.includes(row.venue))
+      .map((row) => `${bets.venueLabel(row.venue)} ${row.ageText}`);
+    return parts.length ? `bets: ${parts.join(" \u00b7 ")}` : null;
   }
 
   // The service itself: reachable, or unreachable since when and why.
@@ -670,7 +682,7 @@
 
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
-    fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
+    fmtAgeShort, freshnessLevel, sourceRows, liveSyncText, serviceStatus, sourcesUnavailable, openCount, headerLine,
     bannerLines, badges, relatedLines, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, uncappedLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, needsFixBanner, keepDismissedOpen, keepKnownStartsOpen, ticketAsLine, sanitizeBetsSettings,
   };
 

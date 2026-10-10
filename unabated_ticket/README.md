@@ -871,12 +871,26 @@ live tab's game while that tab is still posting (`content.js`).
 
 The Edges filters apply as they do to pregame (Books, Bets, Periods, min
 edge, min suggested bet, min liquidity to win, alt lines and their distance);
-there are no live-only settings. Stakes are the line's own quarter-Kelly off
-the live edge: open bets on the game show on the row as `live · not sized`
-but are never netted, since conditional Kelly needs a fair ladder the screen
-does not expose (the fair set carries per-market probabilities; a
-follow-up). Clicking a live row outlines the cell on the screen (`locate`
-with `live: true`, so `page.js` looks only among live rows). Alerts use the
+there are no live-only settings. Stakes are conditional Kelly against every
+open bet on the game, pregame and live alike, exactly as on a pregame row,
+but on the **in-game fair ladder**: every line `page.js` posts for a game
+whose fair is ready (every book, main and alt, both sides, edge or not)
+carries the screen's fair at its own number, and `live.liveFairState` hands
+those to `edgeRows.createLadderReaders` as the ladder (2026-10-09). The
+pregame ladder is never used once the game is live: it prices a game that no
+longer exists. Example (`tests/live.test.js`): holding Kalshi Over 44.5 for
+$300, a live Over 47.5 at +185 (fair +163) is $167 instead of $341 alone;
+holding the Under instead lifts it to $508. A bet at a number no book shows
+live is left out and named (`no fair at 51.5`), as on pregame rows; a 1H bet
+at halftime has no live rung either. Open BFA teasers with a leg on the live
+game are left out and named (`started`): their leg is not repriced live. The
+header ends `bets: Kalshi 20 s · Novig 45 s · Polymarket US 12 s`, how old
+each live venue's last good pull is (`betsview.liveSyncText`): a bet placed
+at a break is in the stake only after its venue's next pull (every 60 s), so
+wait for that before stacking a second bet in the same break. The Ticket
+sizes a live capture on the same in-game ladder. Clicking a live row
+outlines the cell on the screen (`locate` with `live: true`, so `page.js`
+looks only among live rows). Alerts use the
 same threshold, one per line per break (the key carries the fair's
 `producedUtc`), and nothing alerts while the tab is not reading.
 
@@ -2448,7 +2462,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 489 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 494 tests) and
 the bets service's pytest suite (388 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -2971,6 +2985,18 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-09 — Live stakes count open bets (0.22.0).** The Live block sized
+every line as if nothing were held: a halftime Over after an end-of-Q1 Over
+got a second full quarter-Kelly on nearly the same outcome. The 2026-09-27
+plan assumed the screen exposes no live fair ladder; it does: every line
+`page.js` reads carries the in-game fair at its own number. Cal's calls: count
+pregame and live bets alike (a bet's payoff by final score is what matters,
+not when it was placed), never a flat subtraction of the old stake (it
+over-cuts bets that barely overlap and gets the other side backwards), and
+show each live venue's sync age, since a bet placed at a break counts only
+after its venue's next pull. The Ticket's live capture had been sizing on
+the pregame ladder; it now uses the live one too.
 
 **2026-10-09 — Other books at the same number (0.21.0).** Cal wanted to
 skip a bet when several books beat the price he is about to take. His picks:
