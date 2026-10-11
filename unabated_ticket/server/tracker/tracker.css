@@ -183,6 +183,9 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
   .kpi .value { font-size: 20px; }
   .stats { gap: 16px; }
   .stats div { align-items: flex-start; }
+  /* Calendar cells are ~40px wide on a phone; "+12.34K" needs a smaller face and less padding to fit. */
+  .cell { padding: 5px 3px; min-height: 50px; }
+  .cell .v { font-size: 9px; letter-spacing: -0.2px; }
 }
 /* index.html carries no style attributes: the page's CSP blocks inline styles
    in markup (tracker.js sets per-element values through the CSSOM, which it allows). */
