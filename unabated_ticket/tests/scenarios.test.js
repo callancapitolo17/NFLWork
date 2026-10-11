@@ -137,17 +137,46 @@ test("a middle: Bills +3.5 and Chiefs -1.5 cut the margin into three results, ea
   assert.deepEqual([group.best, group.worst], [410, -10]);
 });
 
-test("a teaser leg adds its own cut and says where it dies; the ticket's dollars stay out of the P&L", () => {
+test("a teaser leg adds its own cut; the result that kills it loses the ticket's stake, the rest leave it alive", () => {
   const records = [straightBet("bills"), teaserLeg("t1", 0, { points: 9.5 })];
   const [card] = scenarios.buildScenarios({ records, games: gamesOf(billsChiefs()), now: NOW }).games;
   const [group] = card.groups;
   assert.deepEqual(bandRows(group), [
-    ["Kansas City Chiefs by 10+", -220],
+    ["Kansas City Chiefs by 10+", -420],
     ["Kansas City Chiefs by 4-9", -220],
     ["Kansas City Chiefs by 3 or less, tie or Buffalo Bills win", 200],
   ]);
   assert.deepEqual(group.bands.map((band) => band.legs.map((leg) => leg.result)), [["lost"], ["won"], ["won"]]);
+  assert.deepEqual(group.bands.map((band) => band.tickets), [
+    { killed: 1, killedStake: 200, alive: 0, aliveToWin: 0 },
+    { killed: 0, killedStake: 0, alive: 1, aliveToWin: 600 },
+    { killed: 0, killedStake: 0, alive: 1, aliveToWin: 600 },
+  ]);
+  assert.deepEqual([group.best, group.worst], [200, -420]);
+  nearly(group.ev, group.bands.reduce((sum, band) => sum + band.prob * band.straightPnl, 0));
   assert.deepEqual(card.legs.map((leg) => [leg.label, leg.kind, leg.ticketStake, leg.ticketToWin, leg.group]), [["BILLS +9.5", "teaser", 200, 600, "FG:margin"]]);
+});
+
+test("a BFA teaser leg that lands on its number loses, and every ticket on it is counted", () => {
+  const state = addGame(billsChiefs(), { eventId: 101, away: "Buffalo Bills", home: "Kansas City Chiefs", awayRotation: 401, homeRotation: 402, marginRungs: [[-2.5, -140]] });
+  const records = [
+    teaserLeg("t1", 0, { points: 3 }),
+    teaserLeg("t2", 1, { points: 3 }),
+    teaserLeg("t3", 2, { points: 3, stake: 100, toWin: 300 }),
+  ];
+  const [group] = scenarios.buildScenarios({ records, games: gamesOf(state), now: NOW }).games[0].groups;
+  assert.deepEqual(group.bands.map((band) => [band.label, band.pnl, band.legs.map((leg) => leg.result)[0], band.tickets]), [
+    ["Kansas City Chiefs by 3+", -500, "lost", { killed: 3, killedStake: 500, alive: 0, aliveToWin: 0 }],
+    ["Kansas City Chiefs by 2 or less, tie or Buffalo Bills win", 0, "won", { killed: 0, killedStake: 0, alive: 3, aliveToWin: 1500 }],
+  ]);
+});
+
+test("a parlay leg that pushes is not a loss", () => {
+  const state = addGame(billsChiefs(), { eventId: 101, away: "Buffalo Bills", home: "Kansas City Chiefs", awayRotation: 401, homeRotation: 402, marginRungs: [[-2.5, -140]] });
+  const records = [teaserLeg("p1", 0, { points: 3, raw: { headerDescription: "PARLAY (2 TEAMS)" } })];
+  const [group] = scenarios.buildScenarios({ records, games: gamesOf(state), now: NOW }).games[0].groups;
+  assert.deepEqual(group.bands.map((band) => band.legs[0].result), ["lost", "push", "won"]);
+  assert.deepEqual(group.bands[1].tickets, { killed: 0, killedStake: 0, alive: 1, aliveToWin: 600 });
 });
 
 test("a whole number gets its own push band; a total is its own group", () => {

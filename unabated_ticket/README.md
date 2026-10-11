@@ -2370,10 +2370,18 @@ visible. Its one write is the Bets page's Remove / Restore.
   per market and period (result, total), and the card's range and EV. The
   cuts come from the bets themselves: every bet's number splits its market
   (a whole number adds its push), neighbouring results with the same P&L
-  merge. A parlay or teaser leg on the game adds its own cut and is tagged
-  where it loses or pushes; its ticket's dollars stay out of the game's
-  P&L (its other legs are other games) and the ticket is listed under
-  **Parlays and teasers riding**. **The chance is Unabated's fair at
+  merge. A parlay or teaser leg on the game adds its own cut (a BFA
+  teaser leg that lands on its number loses — Buckeye's rule; a parlay
+  push does not). A result that kills a leg puts every ticket on it in
+  that result's P&L at minus its stake ("kills 4 tickets (-$800)"), since
+  that loss is certain; a result the leg survives adds nothing and says
+  "4 tickets alive, $2,400 to win", since the tickets still need their
+  other games (2026-10-11, Cal). The card's EV stays the straight bets
+  only, because counting kills without the live tickets' value would bias
+  it down. Tickets already dead from an earlier game are not dropped yet.
+  One chip per leg however many tickets carry it ("BROWNS +8.5 · in 4
+  teasers · BFA · $800"); the tickets are listed under **Parlays and
+  teasers riding**. **The chance is Unabated's fair at
   kickoff** (the median fair ladder from the last snapshot before the
   start, the ladder the Edges sizing reads), not the live score: no scores
   feed is wired yet. Started bets the runner could not place on a game

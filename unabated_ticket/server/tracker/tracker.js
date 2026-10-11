@@ -655,10 +655,10 @@
     setText("live-caption", scenarios ? "Updated " + ago(scenarios.generatedAt) : "");
     kpiTiles("lv-kpis", [
       { label: "Live bets", value: String(live.length), sub: games.length + (games.length === 1 ? " game" : " games") + " in progress · " + money(stake) + " at risk" },
-      { label: "Best case", value: games.length ? money(best, true) : "—", color: games.length ? COLORS.pos : COLORS.muted, sub: "every game lands your way (straight bets)" },
+      { label: "Best case", value: games.length ? money(best, true) : "—", color: games.length ? COLORS.pos : COLORS.muted, sub: "every game lands your way; open tickets not counted" },
       { label: "Worst case", value: games.length ? money(worst, true) : "—", color: games.length ? COLORS.neg : COLORS.muted, sub: "nothing lands" },
       { label: "EV at kickoff", value: pricedGroups.length ? money(ev, true) : "—", color: pricedGroups.length ? COLORS.exp : COLORS.muted,
-        sub: "Unabated's fair before the start" },
+        sub: "Unabated's fair before the start; straight bets" },
     ]);
     const problem = scenariosError
       ? el("div", { className: "banner", text: "Game cards are unavailable: " + scenariosError + ". Live bets are listed below without them." })
@@ -672,14 +672,28 @@
   }
 
   /** One game in progress: its bets, then one outcome ladder per market and period. */
+  // One chip per leg however many tickets carry it: "BROWNS +8.5 · in 4 teasers · BFA · $800".
+  function sameLegs(legs) {
+    const byKey = new Map();
+    for (const leg of legs) {
+      const key = [leg.label, leg.kind, leg.venue, leg.reason].join("|");
+      const same = byKey.get(key) || { label: leg.label, kind: leg.kind, venue: leg.venue, reason: leg.reason, count: 0, stake: 0 };
+      same.count += 1;
+      same.stake += Number.isFinite(leg.ticketStake) ? leg.ticketStake : 0;
+      byKey.set(key, same);
+    }
+    return Array.from(byKey.values());
+  }
+
   function gameCard(game) {
     const placedBets = game.bets.map((bet) => el("span", { className: "bet-chip" + (bet.reason ? " off" : ""), title: bet.reason ? "Not on the ladder: " + bet.reason : "" }, [
       el("span", { text: bet.label }),
       el("span", { className: "muted", text: " · " + bet.venue + (Number.isFinite(bet.stake) ? " · " + money(bet.stake) : "") + (bet.reason ? " · " + bet.reason : "") }),
     ]));
-    const legChips = game.legs.map((leg) => el("span", { className: "bet-chip leg", title: leg.reason ? "Not on the ladder: " + leg.reason : "" }, [
-      el("span", { text: leg.label }),
-      el("span", { className: "muted", text: " · " + leg.kind + " leg · " + leg.venue + (Number.isFinite(leg.ticketStake) ? " · " + money(leg.ticketStake) + " ticket" : "") + (leg.reason ? " · " + leg.reason : "") }),
+    const legChips = sameLegs(game.legs).map((same) => el("span", { className: "bet-chip leg", title: same.reason ? "Not on the ladder: " + same.reason : "" }, [
+      el("span", { text: same.label }),
+      el("span", { className: "muted", text: " · in " + same.count + " " + same.kind + (same.count === 1 ? "" : "s") + " · " + same.venue
+        + (same.stake ? " · " + money(same.stake) : "") + (same.reason ? " · " + same.reason : "") }),
     ]));
     const best = game.groups.reduce((sum, group) => sum + group.best, 0);
     const worst = game.groups.reduce((sum, group) => sum + group.worst, 0);
@@ -688,7 +702,7 @@
     const summary = el("div", { className: "note" }, [
       el("span", { text: "Range " }), el("span", { className: "num " + toneClass(worst), text: money(worst, true) }),
       el("span", { text: " to " }), el("span", { className: "num " + toneClass(best), text: money(best, true) }),
-      priced.length === game.groups.length && priced.length ? el("span", { text: " · EV at kickoff " }) : null,
+      priced.length === game.groups.length && priced.length ? el("span", { text: " · EV at kickoff, straight bets " }) : null,
       priced.length === game.groups.length && priced.length ? el("span", { className: "num exp", text: money(ev, true) }) : null,
       game.oddsAt === null ? el("span", { text: " · no kickoff odds (the runner started after this game did)" }) : null,
     ]);
@@ -708,14 +722,26 @@
     ]);
   }
 
+  // What a result does to the parlays and teasers riding on it: "kills 3
+  // tickets (-$600, in the P&L)" / "3 tickets alive, $1,800 to win"; the leg
+  // names in the tooltip.
+  function ticketTags(band) {
+    const t = band.tickets;
+    if (!t || t.killed + t.alive === 0) return [];
+    const names = (wanted) => band.legs.filter((leg) => (leg.result === "lost") === wanted).map((leg) => leg.label + " " + leg.kind + " leg " + leg.result).join("\n");
+    const plural = (n) => n + (n === 1 ? " ticket" : " tickets");
+    const tags = [];
+    if (t.killed) tags.push(el("span", { className: "leg-tag", text: "kills " + plural(t.killed) + " (" + money(-t.killedStake, true) + ", in the P&L)", attrs: { title: names(true) } }));
+    if (t.alive) tags.push(el("span", { className: "leg-tag alive", text: plural(t.alive) + " alive, " + money(t.aliveToWin) + " to win", attrs: { title: names(false) } }));
+    return tags;
+  }
+
   /** One market's results: what has to happen, its chance at kickoff, and the P&L. */
   function outcomeLadder(group) {
     const rows = group.bands.map((band) => {
       const bar = el("span", { className: "prob" }, [el("i", { style: { width: band.prob === null ? "0%" : (band.prob * 100).toFixed(1) + "%" } })]);
-      const lost = band.legs.filter((leg) => leg.result !== "won");
-      const legTags = lost.map((leg) => el("span", { className: "leg-tag " + leg.result, text: leg.label + " " + leg.kind + " leg " + (leg.result === "push" ? "pushes" : "loses") }));
       return el("div", { className: "band" }, [
-        el("span", { className: "band-what" }, [el("span", { text: band.label })].concat(legTags)),
+        el("span", { className: "band-what" }, [el("span", { text: band.label })].concat(ticketTags(band))),
         bar,
         el("span", { className: "num muted band-pct", text: band.prob === null ? "—" : Math.round(band.prob * 100) + "%" }),
         el("span", { className: "num band-pnl " + toneClass(band.pnl), text: money(band.pnl, true) }),
