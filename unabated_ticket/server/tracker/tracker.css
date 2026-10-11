@@ -227,6 +227,7 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .band-pnl { text-align: right; font-weight: 600; }
 .leg-tag { font-size: 11.5px; padding: 1px 6px; border-radius: 4px; background: rgba(255, 107, 107, .12); color: var(--neg); }
 .leg-tag.push { background: rgba(245, 183, 79, .12); color: var(--warn); }
+.leg-tag.alive { background: transparent; color: var(--muted); padding-left: 0; }
 @media (max-width: 560px) {
   .band { grid-template-columns: minmax(0, 1fr) 40px 70px; }
   .band .prob { display: none; }
