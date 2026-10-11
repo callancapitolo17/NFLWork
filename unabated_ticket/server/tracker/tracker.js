@@ -111,11 +111,12 @@
     return (dollars ? sign(value, signed) : "") + "$" + dollars.toLocaleString("en-US");
   }
 
+  /** A calendar cell's P&L: thousands as 3.21K (Cal, 2026-10-11), under $1K in whole dollars. */
   function moneyShort(value) {
     const abs = Math.abs(value);
     if (state.units) return sign(value, true) + (abs / state.unitSize).toFixed(1) + "u";
     if (Math.round(abs) === 0) return "0";
-    return sign(value, true) + (abs >= 1000 ? (abs / 1000).toFixed(1) + "k" : String(Math.round(abs)));
+    return sign(value, true) + (abs >= 999.5 ? (abs / 1000).toFixed(2) + "K" : String(Math.round(abs)));
   }
 
   function pct(value, signed) {
