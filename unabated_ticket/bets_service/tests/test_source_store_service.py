@@ -274,7 +274,7 @@ def test_upsert_replaces_a_record_by_id(store):
                              [record("kalshi:a:yes", "won", "2026-09-12T00:00:00Z")]])
     service.run_source_once(source, store)
     service.run_source_once(source, store)
-    [bet] = service.bets_payload(store, days=30)["bets"]
+    [bet] = service.bets_payload(store, days=3650)["bets"]  # the window is not under test; a fixed date ages out of 30
     assert bet["status"] == "won"
     assert store._con.execute("SELECT count(*) FROM bets").fetchone()[0] == 1
 
