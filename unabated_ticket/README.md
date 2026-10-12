@@ -2445,7 +2445,15 @@ visible. Its one write is the Bets page's Remove / Restore.
   multivariate combos (`KXMVECROSSCATEGORY`, the MLB bots' RFQ fills on the
   same account) are their own type, "Kalshi combo", and count in every total
   by default (Cal, 2026-10-05); switching off the header's **Bot combos**
-  toggle hides them. Won pays
+  toggle hides them. **Market** is the record's `betType`; a record its
+  source left as `other` (no scanner game to place it on: BFA college
+  lines, Bet105 team totals, Kalshi futures, Wagerzon fectas, props) is typed
+  off the venue's own text (`otherMarketName`: Team total, Player prop,
+  Special, Future, Parlay, or a game line), and one no rule names stays
+  **Other** and is counted in the header's amber **N untyped** chip (hidden
+  at zero; tooltip lists them) so a venue renaming a market shows the same
+  day (2026-10-12: Novig's "Moneyline" had become "Winner", and every Novig
+  moneyline fell through for weeks). Won pays
   `toWin`, lost costs `stake`, push and void are 0, unless the record carries
   the venue's own `pnl`: **Bet105** graded records carry its `result`
   (2026-10-07); **Kalshi** records do (2026-10-06), priced off the

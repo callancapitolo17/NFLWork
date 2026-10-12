@@ -173,12 +173,29 @@ test("a bet the source could not place gets its market from the venue's own text
     ["bet105", { market: "Point spread" }, "Spread"],
     ["polymarket_us", { marketType: "hockey_team_full_game_spread" }, "Spread"],
     ["polymarket_us", { marketType: null, comboLegs: [{ slug: "aec-nfl-gb-min-2026-09-13" }] }, "Parlay"],
+    ["novig", { outcomeSubtitle: "Passing Yards" }, "Player prop"],
+    ["novig", { outcomeSubtitle: "Series Winner" }, "Other"],
     ["novig", {}, "Other"],
   ];
   for (const [venue, raw, market] of cases) {
     const [ticket] = stats.buildTickets([straight({ id: venue + ":x", venue, league: null, betType: "other", side: null, raw })], []);
     assert.equal(ticket.market, market, venue + " " + JSON.stringify(raw));
   }
+});
+
+test("untypedSummary counts kept bets with no market, by venue", () => {
+  const tickets = stats.buildTickets([
+    straight({ id: "novig:a", venue: "novig", betType: "other", side: null, raw: { outcomeSubtitle: "Receiving Yards" } }),
+    straight({ id: "novig:b", venue: "novig", betType: "other", side: null, raw: {} }),
+    straight({ id: "kalshi:c", venue: "kalshi", betType: "other", side: null, raw: {} }),
+    straight({ id: "bfa:d", venue: "bfa", betType: "other", side: null, raw: { description: "[1] Q -3-110" } }),
+    straight({ id: "novig:e", venue: "novig", betType: "spread" }),
+  ], [], [], [{ betId: "bfa:d" }]);
+  const summary = stats.untypedSummary(tickets);
+  // novig:a is a player prop; bfa:d is Other but removed by Cal.
+  assert.equal(summary.count, 2);
+  assert.deepEqual(summary.venues, [{ venue: "Novig", count: 1 }, { venue: "Kalshi", count: 1 }]);
+  assert.equal(stats.untypedSummary([]).count, 0);
 });
 
 test("edge and expected P&L come from the saved fair and the ticket's actual payout", () => {

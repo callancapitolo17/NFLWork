@@ -227,10 +227,11 @@
         // outcomeSubtitle: "Winner", "First 5 Winner", "1st Half Total", "Passing Yards", ...
         const subtitle = String(raw.outcomeSubtitle || "");
         if (!subtitle) return names.other;
-        if (/(Winner|Moneyline)$/.test(subtitle)) return names.moneyline;
-        if (/Spread$/.test(subtitle)) return names.spread;
-        if (/Total$/.test(subtitle)) return names.total;
-        return names.playerProp;
+        // Game markets only (the source's own label set); "Series Winner" and the like stay Other.
+        const game = /^(1st Half |First 5 )?(Winner|Moneyline|Spread|Total)$/.exec(subtitle);
+        if (game) return game[2] === "Spread" ? names.spread : game[2] === "Total" ? names.total : names.moneyline;
+        if (/Yards|Touchdown|Receptions|Points|Rebounds|Assists|Strikeouts|Hits|Goals/i.test(subtitle)) return names.playerProp;
+        return names.other;
       }
       case "bfa": {
         // "[309141] TOTAL o61½-110 (A vrs B)", "[308945] ILLINOIS ST -3-110"; props carry no rotation.
@@ -464,6 +465,18 @@
     return { open, noResult };
   }
 
+  /** Kept tickets whose market no rule could name ("Other"), so a venue that renames a
+   * market or a new kind of bet shows up instead of piling up untyped.
+   * -> {count, venues: [{venue, count}] most first, examples: ["Venue: selection", ...]} */
+  function untypedSummary(tickets, maxExamples) {
+    const untyped = tickets.filter((t) => !t.excluded && t.market === BET_TYPE_NAMES.other);
+    const countByVenue = new Map();
+    for (const ticket of untyped) countByVenue.set(ticket.venue, (countByVenue.get(ticket.venue) || 0) + 1);
+    const venues = [...countByVenue].map(([venue, count]) => ({ venue, count })).sort((a, b) => b.count - a.count);
+    const examples = untyped.slice(0, maxExamples || 10).map((t) => t.venue + ": " + (t.selection || t.id));
+    return { count: untyped.length, venues, examples };
+  }
+
   /** Settled tickets whose Pacific settle day is in [firstDay, lastDay]. */
   function inDayRange(tickets, firstDay, lastDay) {
     return tickets.filter((t) => t.settledDay !== null && t.pnl !== null
@@ -641,7 +654,7 @@
     PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR, CLOSE_MAX_GAP_MS, FAIR_SOURCES,
     pacificDay, addDays, dayKeyToUtc, weekdayOf, isDayKey, rangeBounds,
     americanToDecimal, decimalToAmerican,
-    buildTickets, summarize, exclusions, inDayRange, dailySeries, firstSettledDay, groupBy, calibration,
+    buildTickets, summarize, exclusions, untypedSummary, inDayRange, dailySeries, firstSettledDay, groupBy, calibration,
     venueName, splitOpenByStart, splitOpenForLive, sortRows,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
