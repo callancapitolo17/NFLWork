@@ -531,11 +531,6 @@
     setText("settled-caption", settled.length
       ? "Showing " + shown.length + " of " + settled.length + ", " + orderCaption("settled", columns, "newest first")
       : "");
-    document.getElementById("f-reset").addEventListener("click", () => {
-      for (const filter of FILTERS) state.off[filter.key] = [];
-      state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
-      render();
-    });
     document.getElementById("settled-more").hidden = settled.length <= shown.length;
     if (!shown.length) { fill("ov-settled", emptyNote("No settled bets in this range.")); return; }
     fill("ov-settled", table(columns, shown, { sortKey: "settled" }));
@@ -790,10 +785,6 @@
     return stats.inDayRange(tickets, first, last).filter(passesFilters);
   }
 
-  function anyFilterOff() {
-    return FILTERS.some((f) => state.off[f.key].length > 0);
-  }
-
   function setOff(key, values) {
     state.off[key] = values;
     state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
@@ -826,7 +817,9 @@
   function renderFilters(first, last) {
     const inRange = stats.inDayRange(tickets, first, last);
     fill("f-rows", ...FILTERS.map((filter) => filterRow(filter, inRange)));
-    document.getElementById("f-reset").hidden = !anyFilterOff();
+    // Only values still on the page count: a "Kalshi combo" switched off and then hidden by the header toggle shows no Reset.
+    const anyOff = FILTERS.some((f) => tickets.some((t) => state.off[f.key].includes(f.value(t))));
+    document.getElementById("f-reset").hidden = !anyOff;
   }
 
   function renderAnalysis() {
@@ -1193,6 +1186,11 @@
       button.addEventListener("click", () => showView(button.dataset.view));
     }
     document.getElementById("settled-more").addEventListener("click", () => { state.settledLimit += LOG_PAGE; render(); });
+    document.getElementById("f-reset").addEventListener("click", () => {
+      for (const filter of FILTERS) state.off[filter.key] = [];
+      state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
+      render();
+    });
     document.getElementById("show-dollars").addEventListener("click", () => { state.units = false; savePrefs(); render(); });
     document.getElementById("show-units").addEventListener("click", () => { state.units = true; savePrefs(); render(); });
     document.getElementById("bot-combos").addEventListener("click", () => {
