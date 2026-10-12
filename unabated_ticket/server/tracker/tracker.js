@@ -26,7 +26,16 @@
   const POLL_MS = 60 * 1000;
   const PREFS_KEY = "betTracker.prefs";
   const RANGES = ["Yesterday", "7D", "30D", "90D", "YTD", "All", "Custom"];
-  const KINDS = ["All", "Straight", "Parlay", "Teaser", "Kalshi combo"];
+  // The Analysis filter bar, one chip row per entry (Cal, 2026-10-12): every
+  // value a ticket carries is a chip, all on by default; state.off[key] holds
+  // the ones switched off, so a value new to the data shows up on.
+  const FILTERS = [
+    { key: "venue", label: "Venue", value: (t) => t.venue },
+    { key: "league", label: "League", value: (t) => t.league },
+    { key: "kind", label: "Type", value: (t) => t.kind },
+    { key: "market", label: "Market", value: (t) => t.market },
+    { key: "period", label: "Period", value: (t) => (t.period === "FG" ? "Full game" : "Partial") },
+  ];
   const DAILY_ROWS = 14;
   const LOG_PAGE = 50;
   const CALENDAR_WEEKS = 6;
@@ -40,7 +49,7 @@
 
   const state = Object.assign({
     view: "overview", range: "30D", customFirst: null, customLast: null, units: false, unitSize: 100,
-    groupBy: "venue", kind: "All", offVenues: [], offLeagues: [], query: "", logLimit: LOG_PAGE,
+    groupBy: "venue", off: Object.fromEntries(FILTERS.map((f) => [f.key, []])), query: "", logLimit: LOG_PAGE,
     betsQuery: "", betsVenue: "All", betsFilter: "All", betsLimit: LOG_PAGE, saving: false,
     // Per table: {col: column index, dir: "asc" | "desc"}; absent = the table's own order.
     sorts: {},
@@ -766,37 +775,55 @@
 
   // ---- analysis -------------------------------------------------------------
 
+  function passesFilters(ticket) {
+    return FILTERS.every((f) => !state.off[f.key].includes(f.value(ticket)));
+  }
+
   function filteredSettled() {
     const { first, last } = rangeDays();
-    return stats.inDayRange(tickets, first, last).filter((t) => !state.offVenues.includes(t.venue)
-      && !state.offLeagues.includes(t.league) && (state.kind === "All" || t.kind === state.kind));
+    return stats.inDayRange(tickets, first, last).filter(passesFilters);
   }
 
-  function valuesByCount(key) {
-    const counts = new Map();
-    for (const ticket of tickets) counts.set(ticket[key], (counts.get(ticket[key]) || 0) + 1);
-    return [...counts].sort((a, b) => b[1] - a[1]).map(([value]) => value);
-  }
-
-  function toggleIn(listKey, value) {
-    const list = state[listKey];
-    state[listKey] = list.includes(value) ? list.filter((v) => v !== value) : list.concat(value);
+  function setOff(key, values) {
+    state.off[key] = values;
     state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
     render();
   }
 
-  function chips(id, values, offKey) {
-    fill(id, ...values.map((value) => el("button", {
-      className: "chip", text: value, attrs: { type: "button", "aria-pressed": String(!state[offKey].includes(value)) },
-      onClick: () => toggleIn(offKey, value),
-    })));
+  /** [value, count] pairs over these tickets, most bets first. */
+  function valuesByCount(list, valueOf) {
+    const counts = new Map();
+    for (const ticket of list) counts.set(valueOf(ticket), (counts.get(valueOf(ticket)) || 0) + 1);
+    return [...counts].sort((a, b) => b[1] - a[1]);
+  }
+
+  /** One filter row: label, All / None, then a chip per value (most bets first) with its count in the range. */
+  function filterRow(filter, inRange) {
+    const allValues = valuesByCount(tickets, filter.value).map(([value]) => value);
+    const inRangeCounts = new Map(valuesByCount(inRange, filter.value));
+    const off = state.off[filter.key];
+    const quick = el("span", { className: "quick" }, [
+      el("button", { text: "All", attrs: { type: "button", "aria-pressed": String(off.length === 0) }, onClick: () => setOff(filter.key, []) }),
+      el("button", { text: "None", attrs: { type: "button", "aria-pressed": String(allValues.every((v) => off.includes(v))) }, onClick: () => setOff(filter.key, allValues.slice()) }),
+    ]);
+    const chipNodes = allValues.map((value) => el("button", {
+      className: "fchip", attrs: { type: "button", "aria-pressed": String(!off.includes(value)) },
+      onClick: () => setOff(filter.key, off.includes(value) ? off.filter((v) => v !== value) : off.concat(value)),
+    }, [document.createTextNode(value), el("span", { className: "n", text: String(inRangeCounts.get(value) || 0) })]));
+    return el("div", { className: "filter-row" }, [el("span", { className: "lbl", text: filter.label }), quick, ...chipNodes]);
+  }
+
+  function renderFilters(first, last) {
+    const inRange = stats.inDayRange(tickets, first, last);
+    fill("f-rows", ...FILTERS.map((filter) => filterRow(filter, inRange)));
+    // Only values still on the page count: a "Kalshi combo" switched off and then hidden by the header toggle shows no Reset.
+    const anyOff = FILTERS.some((f) => tickets.some((t) => state.off[f.key].includes(f.value(t))));
+    document.getElementById("f-reset").hidden = !anyOff;
   }
 
   function renderAnalysis() {
     const { first, last } = rangeDays();
-    chips("f-venues", valuesByCount("venue"), "offVenues");
-    chips("f-leagues", valuesByCount("league"), "offLeagues");
-    segButtons("f-kinds", KINDS.filter((k) => k !== BOT_COMBO_KIND || state.includeBotCombos), (k) => k === state.kind, (k) => { state.kind = k; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; render(); });
+    renderFilters(first, last);
     segButtons("group-tabs", stats.GROUPS, (g) => g.key === state.groupBy, (g) => { state.groupBy = g.key; render(); });
 
     const settled = filteredSettled();
@@ -1161,11 +1188,15 @@
       button.addEventListener("click", () => showView(button.dataset.view));
     }
     document.getElementById("settled-more").addEventListener("click", () => { state.settledLimit += LOG_PAGE; render(); });
+    document.getElementById("f-reset").addEventListener("click", () => {
+      for (const filter of FILTERS) state.off[filter.key] = [];
+      state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
+      render();
+    });
     document.getElementById("show-dollars").addEventListener("click", () => { state.units = false; savePrefs(); render(); });
     document.getElementById("show-units").addEventListener("click", () => { state.units = true; savePrefs(); render(); });
     document.getElementById("bot-combos").addEventListener("click", () => {
       state.includeBotCombos = !state.includeBotCombos;
-      if (!state.includeBotCombos && state.kind === BOT_COMBO_KIND) state.kind = "All";
       state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
       savePrefs(); applyBotComboFilter(); render();
     });

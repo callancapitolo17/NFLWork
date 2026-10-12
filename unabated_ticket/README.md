@@ -2406,7 +2406,10 @@ visible. Its one write is the Bets page's Remove / Restore.
   games (links to Live), then the open bets that are not live with price,
   fair, edge and CLV. The nav tab carries the count of open bets not on the
   Live tab. (Its **Settled today** panel went with the change below.)
-- **Analysis**: filter by venue, league and type (straight, parlay, teaser);
+- **Analysis**: filter by venue, league, type (straight, parlay, teaser), market
+  and period (full game vs partial): every value is a chip (on = solid with a
+  check, with its bet count in the range), each row has All / None, and
+  Reset filters clears them all; choices last until reload;
   a cumulative P&L chart (actual vs expected, daily bars, best/worst day) like
   Overview's, drawn from the filtered bets only; group by venue, league, market, period, type, odds, edge at fill, timing
   (hours placed before start), weekday or stake, or **League × Market**: a
