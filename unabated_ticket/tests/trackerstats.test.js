@@ -153,6 +153,34 @@ test("a Kalshi multivariate combo (the bots' RFQ fills) is its own type, not a s
   assert.deepEqual(stats.groupBy([combo], "kind").map((r) => r.label), ["Kalshi combo"]);
 });
 
+test("a bet the source could not place gets its market from the venue's own text", () => {
+  // Raw shapes copied from bets.duckdb (2026-10-12), one per pattern.
+  const cases = [
+    ["kalshi", { series: "KXWNBASPREAD", marketTitle: "Atlanta wins the game by over 3.5 points" }, "Spread"],
+    ["kalshi", { series: "KXNHLTOTAL", marketTitle: "Full Game: Over 3.5 goals scored" }, "Total"],
+    ["kalshi", { series: "KXJOINCLUB", marketTitle: "Where will Rodri go next?" }, "Future"],
+    ["novig", { outcomeSubtitle: "Winner", marketTitle: "Clemson @ LSU · Winner · CLEM" }, "Moneyline"],
+    ["novig", { outcomeSubtitle: "First 5 Winner" }, "Moneyline"],
+    ["bfa", { description: "[309141] TOTAL o61½-110 \r(MOREHEAD ST vrs WESTERN ILLINOIS)" }, "Total"],
+    ["bfa", { description: "[1340] TOTAL u24EV \r(ARIZONA 1H vrs BYU 1H)" }, "Total"],
+    ["bfa", { description: "[1201] TOTAL u38½-115 (SAINT LOUIS 1H TEAM PTS vrs DAYTON 1H)" }, "Team total"],
+    ["bfa", { description: "[309011] EASTERN ILLINOIS +35½-110" }, "Spread"],
+    ["bfa", { description: "Detroit Lions vs Carolina Panthers Bryce Young (CAR) 234+ Passing Yards" }, "Player prop"],
+    ["bfa", { description: "Florida Panthers vs San Jose Sharks First Goalscorer - Will Smith (FLA @ SJ)" }, "Player prop"],
+    ["wagerzon", { sportCode: "PROP", description: "[777045] GIANTS SUPERFECTA (SCR 1ST, 1Q, 1H & GM +7½) +1935" }, "Special"],
+    ["wagerzon", { sportCode: "RBL", description: "George Kittle (SF) 1+ Touchdowns <br /> Miami Dolphins vs San Francisco 49Ers" }, "Player prop"],
+    ["bet105", { market: "Tulsa team total" }, "Team total"],
+    ["bet105", { market: "Point spread" }, "Spread"],
+    ["polymarket_us", { marketType: "hockey_team_full_game_spread" }, "Spread"],
+    ["polymarket_us", { marketType: null, comboLegs: [{ slug: "aec-nfl-gb-min-2026-09-13" }] }, "Parlay"],
+    ["novig", {}, "Other"],
+  ];
+  for (const [venue, raw, market] of cases) {
+    const [ticket] = stats.buildTickets([straight({ id: venue + ":x", venue, league: null, betType: "other", side: null, raw })], []);
+    assert.equal(ticket.market, market, venue + " " + JSON.stringify(raw));
+  }
+});
+
 test("edge and expected P&L come from the saved fair and the ticket's actual payout", () => {
   // -110 pays 100 on 110 (decimal 1.909); a fair of -130 is p = 0.5652.
   const [ticket] = stats.buildTickets([straight()], [{ betId: "novig:1", fairAmerican: -130 }]);

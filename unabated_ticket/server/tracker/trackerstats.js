@@ -50,6 +50,11 @@
     wagerzon: "Wagerzon", polymarket_us: "Polymarket US", bet105: "Bet105", draftkings: "DraftKings",
   };
   const BET_TYPE_NAMES = { moneyline: "Moneyline", spread: "Spread", total: "Total", other: "Other" };
+  // Markets of bets the sources leave as betType "other" (no game on the
+  // scanner's board to place them on), read off the venue's own text.
+  const OTHER_MARKET_NAMES = {
+    teamTotal: "Team total", playerProp: "Player prop", special: "Special", future: "Future", parlay: "Parlay",
+  };
   const KIND_NAMES = { straight: "Straight", parlay: "Parlay", teaser: "Teaser", kalshiCombo: "Kalshi combo" };
   // Kalshi's multivariate combo series: the MLB bots' RFQ fills (kalshi_mlb_mm,
   // kalshi_mlb_rfq) on the same account land in the bets service as these.
@@ -204,6 +209,72 @@
     return prefix + team + (Number.isFinite(record.points) ? " " + signedNumber(record.points) : "");
   }
 
+  /** The market of a record the source typed "other", from the venue's text (formats checked
+   * against bets.duckdb 2026-10-12); "Other" when nothing matches. */
+  function otherMarketName(record) {
+    const raw = record.raw || {};
+    const names = Object.assign({}, BET_TYPE_NAMES, OTHER_MARKET_NAMES);
+    switch (record.venue) {
+      case "kalshi": {
+        // Game series end in the market (KXWNBASPREAD, KXNHLTOTAL); every other
+        // non-combo series held is a future (next club, awards, starting QB).
+        const series = String(raw.series || "");
+        if (/SPREAD$/.test(series)) return names.spread;
+        if (/TOTAL$/.test(series)) return names.total;
+        return series ? names.future : names.other;
+      }
+      case "novig": {
+        // outcomeSubtitle: "Winner", "First 5 Winner", "1st Half Total", "Passing Yards", ...
+        const subtitle = String(raw.outcomeSubtitle || "");
+        if (!subtitle) return names.other;
+        if (/(Winner|Moneyline)$/.test(subtitle)) return names.moneyline;
+        if (/Spread$/.test(subtitle)) return names.spread;
+        if (/Total$/.test(subtitle)) return names.total;
+        return names.playerProp;
+      }
+      case "bfa": {
+        // "[309141] TOTAL o61½-110 (A vrs B)", "[308945] ILLINOIS ST -3-110"; props carry no rotation.
+        const text = String(raw.description || "");
+        if (/^\[\d+\]\s+TOTAL\b/.test(text)) return /TEAM PTS/.test(text) ? names.teamTotal : names.total;
+        if (/^\[\d+\]\s+.+\s[+-]\d+½?(-|\+|EV)/.test(text)) return names.spread;
+        if (/^\[\d+\]/.test(text)) return names.other;
+        return /\d\+ |Over \d|Under \d|Goalscorer/.test(text) ? names.playerProp : names.other;
+      }
+      case "wagerzon": {
+        // "[777045] GIANTS SUPERFECTA (...)" specials; RBL rows are player props ("1+ Touchdowns").
+        const text = String(raw.description || "");
+        if (/TRIFECTA|SUPERFECTA/i.test(text)) return names.special;
+        return raw.sportCode === "RBL" ? names.playerProp : names.other;
+      }
+      case "bet105": {
+        // market: "Point spread", "Moneyline", "Total", "<team> team total".
+        const market = String(raw.market || "");
+        if (/team total/i.test(market)) return names.teamTotal;
+        if (/spread/i.test(market)) return names.spread;
+        if (/total/i.test(market)) return names.total;
+        if (/moneyline/i.test(market)) return names.moneyline;
+        return names.other;
+      }
+      case "polymarket_us": {
+        // marketType: "hockey_team_full_game_spread", "football_team_full_game_total"; a combo has comboLegs.
+        if (Array.isArray(raw.comboLegs) && raw.comboLegs.length) return names.parlay;
+        const marketType = String(raw.marketType || "");
+        if (/spread$/.test(marketType)) return names.spread;
+        if (/total$/.test(marketType)) return names.total;
+        if (/moneyline$/.test(marketType)) return names.moneyline;
+        return names.other;
+      }
+      default:
+        return names.other;
+    }
+  }
+
+  function marketName(record) {
+    if (isKalshiCombo(record)) return KIND_NAMES.kalshiCombo;
+    if (record.betType && record.betType !== "other" && BET_TYPE_NAMES[record.betType]) return BET_TYPE_NAMES[record.betType];
+    return otherMarketName(record);
+  }
+
   function pnlOf(status, stake, toWin, decimal) {
     if (status === "lost") return -stake;
     if (status === "push" || status === "void") return 0;
@@ -272,7 +343,7 @@
     return finishTicket({
       id: record.id, venueKey: record.venue, venue: venueName(record.venue), league: leagueName(record.league),
       kind: combo ? KIND_NAMES.kalshiCombo : KIND_NAMES.straight,
-      market: combo ? KIND_NAMES.kalshiCombo : BET_TYPE_NAMES[record.betType] || "Other",
+      market: marketName(record),
       period: record.period || "FG", event: eventLabel(record), selection: selectionLabel(record),
       price: record.price, stake: Number(record.stake) || 0, toWin: record.toWin,
       venuePnl: Number.isFinite(record.pnl) ? record.pnl : null,
