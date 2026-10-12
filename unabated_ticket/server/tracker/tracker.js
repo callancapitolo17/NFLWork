@@ -1017,7 +1017,9 @@
     const failing = sources.filter(([, s]) => !s.ok);
     dot.classList.toggle("bad", failing.length > 0);
     const okCount = sources.length - failing.length;
-    setText("sync-text", okCount + " of " + sources.length + " venues ok · " + ago(payload.generatedAt));
+    const failingNames = failing.map(([name]) => stats.venueName(name)).join(", ");
+    setText("sync-text", okCount + " of " + sources.length + " venues ok · "
+      + (failing.length ? failingNames + " down · " : "") + ago(payload.generatedAt));
     document.getElementById("sync").title = failing.length
       ? failing.map(([name, s]) => stats.venueName(name) + ": " + (s.error || "no completed poll yet")).join("\n")
       : "Every venue's last poll succeeded";
