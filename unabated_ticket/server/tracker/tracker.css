@@ -193,6 +193,20 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .stack.tight { gap: 4px; }
 .stack.flush { gap: 0; }
 .filter-row .lbl.bare { min-width: 0; }
+/* Analysis filter chips: on = solid with a check, off = dim outline, so the selection reads at a glance. */
+#f-rows .filter-row { gap: 8px; }
+.quick { display: inline-flex; gap: 2px; margin-right: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.quick button { border: 0; border-radius: 6px; padding: 0 10px; min-height: 30px; cursor: pointer; background: transparent; color: var(--muted); font-size: 12px; font-weight: 500; }
+.quick button[aria-pressed="true"] { background: var(--active); color: var(--text); }
+.fchip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 0 12px; min-height: 32px; cursor: pointer; font-size: 13px; font-weight: 500; background: transparent; color: #5d6876; border: 1px dashed #2a323e; }
+.fchip .n { font-size: 11px; opacity: .75; font-variant-numeric: tabular-nums; }
+.fchip[aria-pressed="true"] { background: #3b6fb6; border: 1px solid #3b6fb6; color: #fff; }
+.fchip[aria-pressed="true"]::before { content: "\2713"; font-size: 12px; }
+.reset { align-self: flex-start; border: 0; background: transparent; color: var(--exp, #6ea8fe); cursor: pointer; font-size: 13px; padding: 0; }
+@media (max-width: 640px) {
+  #view-analysis .filters { padding: 14px 16px; }
+  #f-rows .filter-row .lbl { min-width: 100%; }
+}
 .cal-key .k-neg2 { background: rgba(255, 107, 107, .65); }
 .cal-key .k-neg1 { background: rgba(255, 107, 107, .25); }
 .cal-key .k-flat { background: #161b23; }

@@ -132,12 +132,8 @@
     <section id="view-analysis" class="stack" aria-label="Analysis" hidden>
       <div class="title-row"><h1>Analysis</h1><span id="an-caption"></span></div>
       <section class="panel filters" aria-label="Filters">
-        <div class="filter-row"><span class="lbl">Venue</span><span class="filter-row" id="f-venues"></span></div>
-        <div class="filter-row">
-          <span class="lbl">League</span><span class="filter-row" id="f-leagues"></span>
-          <span class="spacer"></span>
-          <span class="lbl bare">Type</span><span class="seg" id="f-kinds" role="group" aria-label="Bet type"></span>
-        </div>
+        <div id="f-rows" class="stack"></div>
+        <button type="button" class="reset" id="f-reset" hidden>Reset filters</button>
       </section>
       <div class="kpis" id="an-kpis"></div>
       <section class="panel pad stack" aria-label="Cumulative profit for these filters">
