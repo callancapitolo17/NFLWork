@@ -2400,7 +2400,9 @@ visible. Its one write is the Bets page's Remove / Restore.
   count of open bets not on the Live tab.
 - **Analysis**: filter by venue, league and type (straight, parlay, teaser),
   group by venue, league, market, period, type, odds, edge at fill, timing
-  (hours placed before start), weekday or stake. Each group shows ROI with its
+  (hours placed before start), weekday or stake, or **League × Market**: a
+  section per league (its totals in the header) with its markets as rows, to
+  compare spreads, totals and moneylines within a sport. Each group shows ROI with its
   95% interval (proven only when the interval clears zero), expected ROI,
   actual vs expected, z, CLV and how often the close was beaten. Calibration of fair win probability against the
   actual win rate (straights with a fair), and a searchable bet log with each

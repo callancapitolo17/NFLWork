@@ -831,13 +831,34 @@
   }
 
   function renderGroups(settled) {
+    const group = stats.GROUPS.find((g) => g.key === state.groupBy);
+    if (group.outer) { renderGroupSections(settled, group); return; }
     const rows = stats.groupBy(settled, state.groupBy);
     if (!rows.length) { fill("an-groups", emptyNote("No settled bets match these filters.")); return; }
-    const group = stats.GROUPS.find((g) => g.key === state.groupBy);
     // Bucketed groups (odds, edge, timing, weekday, stake) sort in their own order, not A to Z.
     const groupSortKey = group.order ? (r) => group.order.indexOf(r.label) : (r) => r.label;
-    fill("an-groups", table([
-      { label: group.label, cell: (r) => r.label, sort: groupSortKey },
+    fill("an-groups", groupTable(group.label, groupSortKey, rows));
+  }
+
+  /** League × Market: a header with each league's totals, then its markets as rows. All sections share one sort. */
+  function renderGroupSections(settled, group) {
+    const sections = stats.groupSections(settled, group.key);
+    if (!sections.length) { fill("an-groups", emptyNote("No settled bets match these filters.")); return; }
+    const innerLabel = stats.GROUPS.find((g) => g.key === group.inner).label;
+    fill("an-groups", ...sections.map((section) => el("div", { className: "open-group group-section" }, [
+      el("div", { className: "open-group-head" }, [
+        el("span", { className: "open-group-title", text: section.label }),
+        el("span", { className: "note", text: section.bets + " bets · " + money(section.handle) + " handle · " }),
+        el("span", { className: "num " + toneClass(section.pnl), text: money(section.pnl, true) + " · " + pct(section.roi, true) }),
+      ]),
+      groupTable(innerLabel, (r) => r.label, section.rows),
+    ])));
+  }
+
+  /** One breakdown table: a row per group with the Analysis metrics. */
+  function groupTable(firstLabel, firstSort, rows) {
+    return table([
+      { label: firstLabel, cell: (r) => r.label, sort: firstSort },
       { label: "Bets", right: true, num: true, cell: (r) => String(r.bets), sort: (r) => r.bets },
       { label: "W-L-P", right: true, num: true, className: () => "muted", cell: (r) => r.wins + "-" + r.losses + "-" + r.pushes, sort: (r) => r.wins },
       { label: "Handle", right: true, num: true, cell: (r) => money(r.handle), sort: (r) => r.handle },
@@ -850,7 +871,7 @@
       { label: "z", right: true, num: true, className: (r) => (r.z !== null && Math.abs(r.z) >= 1.96 ? "warn" : "muted"), cell: (r) => (r.z === null ? "—" : r.z.toFixed(2)), sort: (r) => r.z },
       { label: "CLV", right: true, num: true, className: (r) => (r.clvRoi === null ? "muted" : toneClass(r.clvRoi)), cell: (r) => pct(r.clvRoi, true), sort: (r) => r.clvRoi },
       { label: "Beat close", right: true, num: true, className: () => "muted", cell: (r) => (r.withClose ? pct(r.beatRate) + " of " + r.withClose : "—"), sort: (r) => (r.withClose ? r.beatRate : null) },
-    ], rows, { sortKey: "groups" }));
+    ], rows, { sortKey: "groups" });
   }
 
   function renderCalibration(settled) {
