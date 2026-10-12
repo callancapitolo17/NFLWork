@@ -2393,8 +2393,9 @@ visible. Its one write is the Bets page's Remove / Restore.
   fair, edge and CLV, then **Settled today** (bets settled on the current
   Pacific day, whatever the header range says). The nav tab carries the
   count of open bets not on the Live tab.
-- **Analysis**: filter by venue, league and type (straight, parlay, teaser),
-  group by venue, league, market, period, type, odds, edge at fill, timing
+- **Analysis**: filter by venue, league and type (straight, parlay, teaser);
+  a cumulative P&L chart (actual vs expected, daily bars, best/worst day) like
+  Overview's, drawn from the filtered bets only; group by venue, league, market, period, type, odds, edge at fill, timing
   (hours placed before start), weekday or stake, or **League × Market**: a
   section per league (its totals in the header) with its markets as rows, to
   compare spreads, totals and moneylines within a sport. Each group shows ROI with its
