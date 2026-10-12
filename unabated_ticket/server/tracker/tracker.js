@@ -651,14 +651,14 @@
     const pricedGroups = games.flatMap((game) => game.groups).filter((group) => group.ev !== null);
     const ev = pricedGroups.reduce((sum, group) => sum + group.ev, 0);
     const best = games.flatMap((game) => game.groups).reduce((sum, group) => sum + group.best, 0);
-    const worst = games.flatMap((game) => game.groups).reduce((sum, group) => sum + group.worst, 0);
+    const worst = worstCase(games.flatMap((game) => game.groups));
     setText("live-caption", scenarios ? "Updated " + ago(scenarios.generatedAt) : "");
     kpiTiles("lv-kpis", [
       { label: "Live bets", value: String(live.length), sub: games.length + (games.length === 1 ? " game" : " games") + " in progress · " + money(stake) + " at risk" },
       { label: "Best case", value: games.length ? money(best, true) : "—", color: games.length ? COLORS.pos : COLORS.muted, sub: "every game lands your way (straight bets)" },
-      { label: "Worst case", value: games.length ? money(worst, true) : "—", color: games.length ? COLORS.neg : COLORS.muted, sub: "nothing lands" },
+      { label: "Worst case", value: games.length ? money(worst, true) : "—", color: games.length ? COLORS.neg : COLORS.muted, sub: "nothing lands, every live teaser dies" },
       { label: "EV at kickoff", value: pricedGroups.length ? money(ev, true) : "—", color: pricedGroups.length ? COLORS.exp : COLORS.muted,
-        sub: "Unabated's fair before the start" },
+        sub: "Unabated's fair before the start (straight bets)" },
     ]);
     const problem = scenariosError
       ? el("div", { className: "banner", text: "Game cards are unavailable: " + scenariosError + ". Live bets are listed below without them." })
@@ -671,24 +671,58 @@
     fill("lv-off", split.offCard.length ? openGroup("", split.offCard, "Started", "", null, "liveOff") : null);
   }
 
+  /** Each group's worst result added up, a ticket the worst results of several groups kill counted once. */
+  function worstCase(groups) {
+    let total = 0;
+    const killsByTicket = new Map();
+    for (const group of groups) {
+      total += group.worst;
+      const worstBand = group.bands.find((band) => band.pnl === group.worst);
+      const killed = new Map(worstBand.legs.filter((leg) => leg.result === "lost" && Number.isFinite(leg.ticketStake)).map((leg) => [leg.parlayId, leg.ticketStake]));
+      for (const [ticket, stake] of killed) killsByTicket.set(ticket, { stake, count: (killsByTicket.get(ticket)?.count || 0) + 1 });
+    }
+    for (const { stake, count } of killsByTicket.values()) total += stake * (count - 1);
+    return total;
+  }
+
+  /** Legs with the same label, kind and result, one entry each with their distinct tickets' count, stake and to-win. */
+  function legsByTicket(legs, keyOf) {
+    const byKey = new Map();
+    for (const leg of legs) {
+      const key = keyOf(leg);
+      if (!byKey.has(key)) byKey.set(key, { leg, tickets: new Map() });
+      byKey.get(key).tickets.set(leg.parlayId, leg);
+    }
+    return Array.from(byKey.values()).map(({ leg, tickets }) => {
+      const all = Array.from(tickets.values());
+      const total = (field) => all.reduce((sum, ticket) => sum + (Number.isFinite(ticket[field]) ? ticket[field] : 0), 0);
+      return { leg, count: all.length, stake: total("ticketStake"), toWin: total("ticketToWin") };
+    });
+  }
+
+  function ticketWord(kind, count) {
+    return count + " " + kind + (count === 1 ? "" : "s");
+  }
+
   /** One game in progress: its bets, then one outcome ladder per market and period. */
   function gameCard(game) {
     const placedBets = game.bets.map((bet) => el("span", { className: "bet-chip" + (bet.reason ? " off" : ""), title: bet.reason ? "Not on the ladder: " + bet.reason : "" }, [
       el("span", { text: bet.label }),
       el("span", { className: "muted", text: " · " + bet.venue + (Number.isFinite(bet.stake) ? " · " + money(bet.stake) : "") + (bet.reason ? " · " + bet.reason : "") }),
     ]));
-    const legChips = game.legs.map((leg) => el("span", { className: "bet-chip leg", title: leg.reason ? "Not on the ladder: " + leg.reason : "" }, [
+    const legEntries = legsByTicket(game.legs, (leg) => [leg.label, leg.kind, leg.venue, leg.reason].join("|"));
+    const legChips = legEntries.map(({ leg, count, stake }) => el("span", { className: "bet-chip leg", title: leg.reason ? "Not on the ladder: " + leg.reason : "" }, [
       el("span", { text: leg.label }),
-      el("span", { className: "muted", text: " · " + leg.kind + " leg · " + leg.venue + (Number.isFinite(leg.ticketStake) ? " · " + money(leg.ticketStake) + " ticket" : "") + (leg.reason ? " · " + leg.reason : "") }),
+      el("span", { className: "muted", text: " · in " + ticketWord(leg.kind, count) + " · " + leg.venue + (stake ? " · " + money(stake) : "") + (leg.reason ? " · " + leg.reason : "") }),
     ]));
     const best = game.groups.reduce((sum, group) => sum + group.best, 0);
-    const worst = game.groups.reduce((sum, group) => sum + group.worst, 0);
+    const worst = worstCase(game.groups);
     const priced = game.groups.filter((group) => group.ev !== null);
     const ev = priced.reduce((sum, group) => sum + group.ev, 0);
     const summary = el("div", { className: "note" }, [
       el("span", { text: "Range " }), el("span", { className: "num " + toneClass(worst), text: money(worst, true) }),
       el("span", { text: " to " }), el("span", { className: "num " + toneClass(best), text: money(best, true) }),
-      priced.length === game.groups.length && priced.length ? el("span", { text: " · EV at kickoff " }) : null,
+      priced.length === game.groups.length && priced.length ? el("span", { text: " · EV at kickoff (straight bets) " }) : null,
       priced.length === game.groups.length && priced.length ? el("span", { className: "num exp", text: money(ev, true) }) : null,
       game.oddsAt === null ? el("span", { text: " · no kickoff odds (the runner started after this game did)" }) : null,
     ]);
@@ -712,8 +746,12 @@
   function outcomeLadder(group) {
     const rows = group.bands.map((band) => {
       const bar = el("span", { className: "prob" }, [el("i", { style: { width: band.prob === null ? "0%" : (band.prob * 100).toFixed(1) + "%" } })]);
-      const lost = band.legs.filter((leg) => leg.result !== "won");
-      const legTags = lost.map((leg) => el("span", { className: "leg-tag " + leg.result, text: leg.label + " " + leg.kind + " leg " + (leg.result === "push" ? "pushes" : "loses") }));
+      const legTags = legsByTicket(band.legs, (leg) => [leg.label, leg.kind, leg.result].join("|")).map(({ leg, count, stake, toWin }) => {
+        const tickets = ticketWord(leg.kind, count);
+        if (leg.result === "won") return el("span", { className: "leg-tag alive", text: leg.label + " holds: " + tickets + " alive, " + money(toWin) + " to win" });
+        if (leg.result === "push") return el("span", { className: "leg-tag push", text: leg.label + " pushes: " + tickets });
+        return el("span", { className: "leg-tag", text: leg.label + " loses: " + tickets + ", " + money(-stake, true) });
+      });
       return el("div", { className: "band" }, [
         el("span", { className: "band-what" }, [el("span", { text: band.label })].concat(legTags)),
         bar,
@@ -793,13 +831,34 @@
   }
 
   function renderGroups(settled) {
+    const group = stats.GROUPS.find((g) => g.key === state.groupBy);
+    if (group.outer) { renderGroupSections(settled, group); return; }
     const rows = stats.groupBy(settled, state.groupBy);
     if (!rows.length) { fill("an-groups", emptyNote("No settled bets match these filters.")); return; }
-    const group = stats.GROUPS.find((g) => g.key === state.groupBy);
     // Bucketed groups (odds, edge, timing, weekday, stake) sort in their own order, not A to Z.
     const groupSortKey = group.order ? (r) => group.order.indexOf(r.label) : (r) => r.label;
-    fill("an-groups", table([
-      { label: group.label, cell: (r) => r.label, sort: groupSortKey },
+    fill("an-groups", groupTable(group.label, groupSortKey, rows));
+  }
+
+  /** League × Market: a header with each league's totals, then its markets as rows. All sections share one sort. */
+  function renderGroupSections(settled, group) {
+    const sections = stats.groupSections(settled, group.key);
+    if (!sections.length) { fill("an-groups", emptyNote("No settled bets match these filters.")); return; }
+    const innerLabel = stats.GROUPS.find((g) => g.key === group.inner).label;
+    fill("an-groups", ...sections.map((section) => el("div", { className: "open-group group-section" }, [
+      el("div", { className: "open-group-head" }, [
+        el("span", { className: "open-group-title", text: section.label }),
+        el("span", { className: "note", text: section.bets + " bets · " + money(section.handle) + " handle · " }),
+        el("span", { className: "num " + toneClass(section.pnl), text: money(section.pnl, true) + " · " + pct(section.roi, true) }),
+      ]),
+      groupTable(innerLabel, (r) => r.label, section.rows),
+    ])));
+  }
+
+  /** One breakdown table: a row per group with the Analysis metrics. */
+  function groupTable(firstLabel, firstSort, rows) {
+    return table([
+      { label: firstLabel, cell: (r) => r.label, sort: firstSort },
       { label: "Bets", right: true, num: true, cell: (r) => String(r.bets), sort: (r) => r.bets },
       { label: "W-L-P", right: true, num: true, className: () => "muted", cell: (r) => r.wins + "-" + r.losses + "-" + r.pushes, sort: (r) => r.wins },
       { label: "Handle", right: true, num: true, cell: (r) => money(r.handle), sort: (r) => r.handle },
@@ -812,7 +871,7 @@
       { label: "z", right: true, num: true, className: (r) => (r.z !== null && Math.abs(r.z) >= 1.96 ? "warn" : "muted"), cell: (r) => (r.z === null ? "—" : r.z.toFixed(2)), sort: (r) => r.z },
       { label: "CLV", right: true, num: true, className: (r) => (r.clvRoi === null ? "muted" : toneClass(r.clvRoi)), cell: (r) => pct(r.clvRoi, true), sort: (r) => r.clvRoi },
       { label: "Beat close", right: true, num: true, className: () => "muted", cell: (r) => (r.withClose ? pct(r.beatRate) + " of " + r.withClose : "—"), sort: (r) => (r.withClose ? r.beatRate : null) },
-    ], rows, { sortKey: "groups" }));
+    ], rows, { sortKey: "groups" });
   }
 
   function renderCalibration(settled) {

@@ -246,6 +246,21 @@ test("groupBy orders ordinal groups by their scale and others by handle; an unkn
   assert.throws(() => stats.groupBy(tickets, "nope"), /unknown group nope/);
 });
 
+test("League × Market: a section per league by handle, its markets as rows; groupBy refuses the nested key", () => {
+  const tickets = stats.buildTickets([
+    straight({ id: "a", league: "nfl", betType: "spread", stake: 300, toWin: 270 }),
+    straight({ id: "b", league: "nfl", betType: "total", stake: 110, toWin: 100, status: "lost" }),
+    straight({ id: "c", league: "nfl", betType: "spread", stake: 110, toWin: 100 }),
+    straight({ id: "d", league: "cfb", betType: "moneyline", stake: 50, toWin: 45 }),
+  ], []);
+  const sections = stats.groupSections(tickets, "leagueMarket");
+  assert.deepEqual(sections.map((s) => [s.label, s.bets]), [[tickets[0].league, 3], [tickets[3].league, 1]]);
+  assert.deepEqual(sections[0].rows.map((r) => [r.label, r.bets]), [[tickets[0].market, 2], [tickets[1].market, 1]]);
+  assert.equal(sections[0].pnl, 270 - 110 + 100);
+  assert.throws(() => stats.groupBy(tickets, "leagueMarket"), /nested/);
+  assert.throws(() => stats.groupSections(tickets, "venue"), /expected a nested group/);
+});
+
 test("calibration bins straight bets with a fair by fair probability, pushes left out", () => {
   const records = [
     straight({ id: "a", status: "won" }), straight({ id: "b", status: "lost" }), straight({ id: "c", status: "push" }),

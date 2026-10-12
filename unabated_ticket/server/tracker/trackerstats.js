@@ -76,6 +76,8 @@
     { key: "venue", label: "Venue" },
     { key: "league", label: "League" },
     { key: "market", label: "Market" },
+    // Nested: one section per league, its markets as rows (spreads vs totals vs moneylines within a sport).
+    { key: "leagueMarket", label: "League × Market", outer: "league", inner: "market" },
     { key: "period", label: "Period" },
     { key: "kind", label: "Type", order: ["Straight", "Parlay", "Teaser", "Kalshi combo"] },
     { key: "oddsBucket", label: "Odds", order: ODDS_BUCKETS },
@@ -544,6 +546,7 @@
   function groupBy(tickets, groupKey) {
     const spec = GROUPS.find((g) => g.key === groupKey);
     if (!spec) throw new Error("unknown group " + groupKey + "; expected one of " + GROUPS.map((g) => g.key).join(", "));
+    if (spec.outer) throw new Error("group " + groupKey + " is nested; use groupSections");
     const buckets = new Map();
     for (const ticket of tickets) {
       if (ticket.pnl === null) continue;
@@ -557,6 +560,19 @@
       return rows.sort((a, b) => rank(a.label) - rank(b.label));
     }
     return rows.sort((a, b) => b.handle - a.handle);
+  }
+
+  /**
+   * Sections of a nested breakdown (League × Market): one per value of the
+   * spec's `outer` key, largest handle first, each with its own totals and its
+   * rows grouped by `inner`.
+   */
+  function groupSections(tickets, groupKey) {
+    const spec = GROUPS.find((g) => g.key === groupKey);
+    if (!spec || !spec.outer) throw new Error("expected a nested group (" + GROUPS.filter((g) => g.outer).map((g) => g.key).join(", ") + "), got " + groupKey);
+    return groupBy(tickets, spec.outer).map((section) => Object.assign(section, {
+      rows: groupBy(tickets.filter((t) => (t[spec.outer] || "Unknown") === section.label), spec.inner),
+    }));
   }
 
   /** Straight bets with a fair, push/void left out, in 10-point fair-probability bins. */
@@ -654,7 +670,7 @@
     PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR, CLOSE_MAX_GAP_MS, FAIR_SOURCES,
     pacificDay, addDays, dayKeyToUtc, weekdayOf, isDayKey, rangeBounds,
     americanToDecimal, decimalToAmerican,
-    buildTickets, summarize, exclusions, untypedSummary, inDayRange, dailySeries, firstSettledDay, groupBy, calibration,
+    buildTickets, summarize, exclusions, untypedSummary, inDayRange, dailySeries, firstSettledDay, groupBy, groupSections, calibration,
     venueName, splitOpenByStart, splitOpenForLive, sortRows,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

@@ -2371,8 +2371,13 @@ visible. Its one write is the Bets page's Remove / Restore.
   cuts come from the bets themselves: every bet's number splits its market
   (a whole number adds its push), neighbouring results with the same P&L
   merge. A parlay or teaser leg on the game adds its own cut and is tagged
-  where it loses or pushes; its ticket's dollars stay out of the game's
-  P&L (its other legs are other games) and the ticket is listed under
+  where it loses or pushes (a teaser leg's push loses: Buckeye grades it
+  so). Where a leg loses, every ticket it sits on loses its stake in that
+  result's P&L, the card's range and the Worst case tile (a ticket counted
+  once across games); where it holds, the result only notes "N teasers
+  alive, $X to win", since the ticket's other legs are other games. The EV
+  counts the straight bets only. One chip per leg names how many tickets
+  ride on it ("in 4 teasers · $800"), and the tickets are listed under
   **Parlays and teasers riding**. **The chance is Unabated's fair at
   kickoff** (the median fair ladder from the last snapshot before the
   start, the ladder the Edges sizing reads), not the live score: no scores
@@ -2395,7 +2400,9 @@ visible. Its one write is the Bets page's Remove / Restore.
   count of open bets not on the Live tab.
 - **Analysis**: filter by venue, league and type (straight, parlay, teaser),
   group by venue, league, market, period, type, odds, edge at fill, timing
-  (hours placed before start), weekday or stake. Each group shows ROI with its
+  (hours placed before start), weekday or stake, or **League × Market**: a
+  section per league (its totals in the header) with its markets as rows, to
+  compare spreads, totals and moneylines within a sport. Each group shows ROI with its
   95% interval (proven only when the interval clears zero), expected ROI,
   actual vs expected, z, CLV and how often the close was beaten. Calibration of fair win probability against the
   actual win rate (straights with a fair), and a searchable bet log with each
