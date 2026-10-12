@@ -1086,9 +1086,21 @@
       : "Every venue's last poll succeeded";
   }
 
+  // Bets no rule could give a market: hidden at zero, else the count and venues.
+  function renderUntyped() {
+    const element = document.getElementById("untyped");
+    const summary = stats.untypedSummary(allTickets);
+    element.hidden = summary.count === 0;
+    if (!summary.count) return;
+    setText("untyped-text", summary.count + " untyped · " + summary.venues.map((v) => v.venue).join(", "));
+    element.title = "Bets with no market type (counted as Other); the bet type rules in trackerstats.js need a case for them:\n"
+      + summary.examples.join("\n") + (summary.count > summary.examples.length ? "\n…" : "");
+  }
+
   function render() {
     renderHeader();
     renderSync();
+    renderUntyped();
     if (!payload) return;
     if (state.view === "overview") renderOverview();
     else if (state.view === "live") renderLiveView();

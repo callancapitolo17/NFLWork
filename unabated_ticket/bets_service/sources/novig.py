@@ -41,7 +41,7 @@ the GraphQL-era normaliser had already recorded):
     matched line is the bet; a Canceled line is a bet only when the order
     never matched at all (void, $0)
   * outcome.index 0 = home / Over; competitor.id is the team; subtitle is
-    "Moneyline" / "Spread" / "Total", prefixed "1st Half " for the first half
+    "Winner" (moneyline; "Moneyline" in older captures) / "Spread" / "Total", prefixed "1st Half " for the first half
     or "First 5 " for MLB's first five innings; anything else is a prop — not
     a game market
   * every team carries `unabatedId`, Unabated's own team id: it rides in
@@ -91,9 +91,13 @@ LEAGUES = {
     "Ligue 1": "soccer", "Champions League": "soccer", "Europa League": "soccer", "FIFA Club World Cup": "soccer",
 }
 # outcome.subtitle of a game market: an optional period prefix + the bet type.
-GAME_MARKET_RE = re.compile(r"^(1st Half |First 5 )?(Moneyline|Spread|Total)$")
+# Novig relabelled moneylines "Moneyline" -> "Winner" after the 2026-09-22
+# capture in the test fixture: by 2026-10-12 every Novig moneyline in
+# bets.duckdb (orders 2026-08-10 to 2026-10-11) read "Winner" / "First 5
+# Winner" and fell out as "not a game market". Both labels are accepted.
+GAME_MARKET_RE = re.compile(r"^(1st Half |First 5 )?(Moneyline|Winner|Spread|Total)$")
 PERIOD_BY_PREFIX = {None: "FG", "1st Half ": "1H", "First 5 ": "F5"}
-BET_TYPE_BY_SUBTITLE = {"Moneyline": "moneyline", "Spread": "spread", "Total": "total"}
+BET_TYPE_BY_SUBTITLE = {"Moneyline": "moneyline", "Winner": "moneyline", "Spread": "spread", "Total": "total"}
 TRAILING_NUMBER_RE = re.compile(r"([+-]?\d+(?:\.\d+)?)\s*$")
 LEADING_NUMBER_RE = re.compile(r"^\s*([+-]?\d+(?:\.\d+)?)")
 REASON_NOT_GAME = "not a game market"
