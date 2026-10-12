@@ -2354,6 +2354,15 @@ fairs and removed bets) and `GET /scenarios.json` (the Live tab's game
 cards, from the server runner through the bets service) every 60 s while
 visible. Its one write is the Bets page's Remove / Restore.
 
+- **Today's results stay hidden** (Cal, 2026-10-12): a bet settled on the
+  current Pacific day leaves every page until midnight Pacific
+  (`trackerstats.hideSettledFrom`, applied once where the tickets are
+  built), so there is no running P&L to watch during the day; the first poll
+  after midnight brings the day in. Ranges end yesterday (there is no Today
+  range), today's calendar cell reads "Tomorrow", and a bet a book grades
+  after midnight counts on that later day. Open bets, open EV and the Live
+  tab are unaffected. No reveal switch: it's a hard lock in the tracker
+  only, so the books' own sites still show results.
 - **Overview**: net P&L with the record, ROI, handle, open risk; expected
   P&L at Unabated's fair (fill, else close) and actual vs expected with its
   z-score; CLV; cumulative
@@ -2395,9 +2404,8 @@ visible. Its one write is the Bets page's Remove / Restore.
 - **Open** (2026-10-07; was Overview's bottom panel): open-bet count, stake
   at risk and to win, open EV (bets with a saved fair) and stake in live
   games (links to Live), then the open bets that are not live with price,
-  fair, edge and CLV, then **Settled today** (bets settled on the current
-  Pacific day, whatever the header range says). The nav tab carries the
-  count of open bets not on the Live tab.
+  fair, edge and CLV. The nav tab carries the count of open bets not on the
+  Live tab. (Its **Settled today** panel went with the change below.)
 - **Analysis**: filter by venue, league and type (straight, parlay, teaser);
   a cumulative P&L chart (actual vs expected, daily bars, best/worst day) like
   Overview's, drawn from the filtered bets only; group by venue, league, market, period, type, odds, edge at fill, timing
