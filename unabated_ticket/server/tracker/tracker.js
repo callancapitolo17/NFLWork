@@ -336,7 +336,7 @@
     ]);
 
     const series = stats.dailySeries(tickets, first, last);
-    renderChart(series);
+    renderChart(series, "ov-chart", "ov-stats", "No settled bets in this range.");
     renderCalendar(pickedCalendarDay() ? state.calendarPick.anchor : last);
     renderDaily(series);
     renderVenues(settled);
@@ -357,17 +357,18 @@
     return ticket.clv === null ? "muted" : toneClass(ticket.clv);
   }
 
-  function renderChart(series) {
+  /** Cumulative actual vs expected P&L line with daily bars; drawn into chartId, best/worst/up-days into statsId. */
+  function renderChart(series, chartId, statsId, emptyText) {
     const withBets = series.filter((d) => d.bets > 0);
     if (!withBets.length) {
-      fill("ov-stats");
-      fill("ov-chart", emptyNote("No settled bets in this range."));
+      fill(statsId);
+      fill(chartId, emptyNote(emptyText));
       return;
     }
     const best = withBets.reduce((a, b) => (b.pnl > a.pnl ? b : a));
     const worst = withBets.reduce((a, b) => (b.pnl < a.pnl ? b : a));
     const stat = (label, text, color) => el("div", null, [el("span", { className: "lbl", text: label }), el("span", { className: "num", text, style: { color } })]);
-    fill("ov-stats",
+    fill(statsId,
       stat("Best day", money(best.pnl, true) + " " + dayLabel(best.day), COLORS.pos),
       stat("Worst day", money(worst.pnl, true) + " " + dayLabel(worst.day), COLORS.neg),
       stat("Up days", withBets.filter((d) => d.pnl > 0).length + " / " + withBets.length, COLORS.text));
@@ -407,7 +408,7 @@
     const mid = series[Math.floor((series.length - 1) / 2)];
     const axisDays = [...new Set([series[0], mid, series[series.length - 1]].map((d) => d.day))];
     const xAxis = el("div", { className: "xaxis" }, axisDays.map((day) => el("span", { text: dayLabel(day) })));
-    fill("ov-chart", el("div", { className: "plot" }, [yAxis, svg]), bars, xAxis);
+    fill(chartId, el("div", { className: "plot" }, [yAxis, svg]), bars, xAxis);
   }
 
   function renderCalendar(today) {
@@ -811,6 +812,7 @@
       { label: "Luck (z)", value: total.z === null ? "—" : total.z.toFixed(2), color: total.z !== null && Math.abs(total.z) >= 1.96 ? COLORS.warn : COLORS.text,
         sub: total.z === null ? "needs bets with a fair" : Math.abs(total.z) < 1.96 ? "within normal variance" : "outside the 95% band" },
     ]);
+    renderChart(stats.dailySeries(settled, first, last), "an-chart", "an-stats", "No settled bets match these filters.");
     renderGroups(settled);
     renderCalibration(settled);
     renderLog(settled);
