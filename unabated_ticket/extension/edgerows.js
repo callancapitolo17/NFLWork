@@ -378,7 +378,7 @@
   function withPriceCheck(row, priceIndex) {
     const priceCheck = pricecheck.comparePrice(priceIndex, {
       eventId: row.eventId, periodTypeId: row.periodTypeId, betTypeId: row.betTypeId, sideIndex: row.sideIndex,
-      points: row.points, bookId: row.book.id, price: row.price,
+      points: row.points, bookId: row.book.id, bookName: row.book.name, price: row.price,
     });
     return { ...row, priceCheck };
   }

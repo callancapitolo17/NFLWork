@@ -11,6 +11,9 @@
 //   - same number only, compared by price (Unabated's price as-is, so an
 //     exchange's is already all-in of its fee);
 //   - every book on Unabated counts, not only the ticked ones;
+//   - one book under two country names (TheScore US and TheScore CA post one
+//     feed) counts once when both post the same price at the number (Cal,
+//     2026-10-13: "books with the same name should be matched");
 //   - would skip = 2 or more books beat the price;
 //   - outlier = the price beats the next best book by more than
 //     OUTLIER_PROB_GAP in implied probability; it is tagged, never skipped.
@@ -61,6 +64,33 @@
     return changedMs != null && now - changedMs <= maxLineAgeMs;
   }
 
+  // A book's name without a trailing country tag: "TheScore US" and
+  // "TheScore CA" are one book. Two books sharing it count once only where
+  // they post the same price (Polymarket and Polymarket US price differently).
+  const COUNTRY_SUFFIX = /\s*\(?\b(us|usa|ca|canada)\)?\s*$/i;
+  function sameNameKey(bookName) {
+    return String(bookName || "").replace(COUNTRY_SUFFIX, "").trim().toLowerCase();
+  }
+
+  // Drops each book that repeats a same-name book's price at this number,
+  // naming the survivor after both ("TheScore US / CA"). yours, when given,
+  // drops the same-name copy of your own price.
+  function mergeSameNameBooks(entries, yours) {
+    const kept = new Map();
+    for (const entry of entries) {
+      const key = `${sameNameKey(entry.bookName)}|${entry.price}`;
+      if (yours && key === `${sameNameKey(yours.bookName)}|${yours.price}`) continue;
+      const held = kept.get(key);
+      if (!held) {
+        kept.set(key, { ...entry });
+        continue;
+      }
+      const suffix = entry.bookName.slice(sameNameKey(entry.bookName).length).trim();
+      held.bookName = suffix ? `${held.bookName} / ${suffix}` : held.bookName;
+    }
+    return Array.from(kept.values());
+  }
+
   // rung key -> Map(bookId -> {bookId, bookName, price}), every book's best
   // price at each number (a book can sit on a number twice: main and alt).
   // Build once per feed update.
@@ -83,7 +113,7 @@
   }
 
   // How the price compares with every other book at the same number.
-  //   spec  {eventId, periodTypeId, betTypeId, sideIndex, points, bookId, price}
+  //   spec  {eventId, periodTypeId, betTypeId, sideIndex, points, bookId, bookName, price}
   // Returns null when the price is unusable, else
   //   {better: [{bookName, price}] best first, worse: [...] best first, same: n,
   //    bookCount (books at the number, yours included), wouldSkip, outlier: {nextBest}|null}
@@ -91,8 +121,10 @@
   function comparePrice(index, spec) {
     const yourProb = impliedProb(spec.price);
     if (yourProb == null) return null;
-    const others = Array.from((index.get(rungKeyOf(spec)) || new Map()).values())
-      .filter((entry) => entry.bookId !== spec.bookId)
+    const atNumber = Array.from((index.get(rungKeyOf(spec)) || new Map()).values())
+      .filter((entry) => entry.bookId !== spec.bookId);
+    const yours = spec.bookName ? { bookName: spec.bookName, price: spec.price } : null;
+    const others = mergeSameNameBooks(atNumber, yours)
       .sort((a, b) => impliedProb(a.price) - impliedProb(b.price));
     const better = [];
     const worse = [];
@@ -147,7 +179,7 @@
 
   const api = {
     BOOKS_BETTER_TO_SKIP, OUTLIER_PROB_GAP,
-    impliedProb, rungKeyOf, buildPriceIndex, comparePrice, priceCheckTag, describePriceChecks,
+    impliedProb, rungKeyOf, sameNameKey, buildPriceIndex, comparePrice, priceCheckTag, describePriceChecks,
   };
 
   if (inNode) {

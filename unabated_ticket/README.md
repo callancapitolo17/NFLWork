@@ -679,7 +679,10 @@ Unabated's as shown, so an exchange's is already all-in of its fee. Only a
 live book's line on the board counts; a blurred price, Unabated's own line
 and a line older than **Max line age h** never do, so a dead feed can't
 read as "better". A book on the number twice (main and alt) counts once, at
-its better price. Another number is never compared.
+its better price. One book under two country names (TheScore US and
+TheScore CA post one feed) counts once where both post the same price, shown
+as "TheScore US / CA"; Polymarket and Polymarket US price differently, so they
+still count apart (Cal, 2026-10-13). Another number is never compared.
 
 | Tag | When |
 |---|---|
@@ -2564,7 +2567,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 505 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 522 tests) and
 the bets service's pytest suite (388 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -3087,6 +3090,14 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-13 — Same-name books count once (0.23.1).** Cal saw theScore
+counted twice: Unabated carries TheScore US and TheScore CA, which posted the
+same price on 310 of 310 NFL sides, so one price could read "2 books better ·
+would skip". His rule: books with the same name are matched. A trailing
+country tag is ignored and two such books count once where their prices
+match. Mirrors under different names (BetMGM = Sports Interaction; BetRivers =
+Sugarhouse = Parx) are left as they are. The skip rule is unchanged.
 
 **2026-10-10 — DraftKings bets in the Bets tab (0.23.0).** Cal wanted his
 DraftKings bets flagged. DraftKings sits behind Akamai and asks for a code on

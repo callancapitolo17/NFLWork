@@ -92,6 +92,25 @@ test("a book on the number twice (main and alt) counts once at its better price"
   assert.equal(check.bookCount, 3);
 });
 
+test("one book under two country names counts once at a shared price; a different price still counts", () => {
+  const books = {
+    1: { id: 1, name: "Circa", isLive: true }, 36: { id: 36, name: "TheScore US", isLive: true },
+    60: { id: 60, name: "TheScore CA", isLive: true }, 107: { id: 107, name: "Polymarket", isLive: true },
+    111: { id: 111, name: "Polymarket US", isLive: true },
+  };
+  const state = stateWith([[1, 0, 47.5, -112], [36, 0, 47.5, -105], [60, 0, 47.5, -105], [107, 0, 47.5, -104], [111, 0, 47.5, -103]], books);
+  const index = pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: null });
+  const check = pricecheck.comparePrice(index, { ...overSpec(1, -112), bookName: "Circa" });
+  assert.deepEqual(check.better, [
+    { bookName: "Polymarket US", price: -103 }, { bookName: "Polymarket", price: -104 }, { bookName: "TheScore US / CA", price: -105 },
+  ]);
+  assert.equal(check.bookCount, 4);
+  // Betting theScore US: its CA copy is you, not another book.
+  const own = pricecheck.comparePrice(index, { ...overSpec(36, -105), bookName: "TheScore US" });
+  assert.equal(own.bookCount, 4);
+  assert.ok(!own.better.concat(own.worse).some((entry) => entry.bookName.startsWith("TheScore")));
+});
+
 test("the Jackson St case: +300 against a -290 market is an outlier, tagged and never a skip", () => {
   const state = stateWith([[1, 0, null, +300], [2, 0, null, -290], [3, 0, null, -300], [4, 0, null, -310]]);
   const index = pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: null });

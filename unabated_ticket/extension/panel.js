@@ -600,7 +600,7 @@
     if (ticket.live || !ticket.watch || ticket.eventId == null || !scannerState) return;
     const check = pricecheck.comparePrice(priceIndex(), {
       eventId: ticket.eventId, periodTypeId: ticket.watch.periodTypeId, betTypeId: ticket.watch.betTypeId,
-      sideIndex: ticket.sideIndex, points: line.points, bookId: ticket.book.id, price: line.price,
+      sideIndex: ticket.sideIndex, points: line.points, bookId: ticket.book.id, bookName: ticket.book.name, price: line.price,
     });
     const tagEl = priceCheckTagEl(check);
     if (!tagEl) return;
