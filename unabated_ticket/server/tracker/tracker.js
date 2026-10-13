@@ -33,21 +33,26 @@
   // filter (Cal, 2026-10-13: drill down like a BI tool); `fromGroup` maps a
   // group label to the filter's value where the two differ. Rows without
   // `primary` stay folded under More filters until one is in use.
+  // A ticket's value for a group key, labelled exactly as trackerstats.groupBy
+  // labels it (missing -> "Unknown"), so a clicked "Unknown" row filters to it.
+  function groupValue(key) {
+    return (ticket) => ticket[key] || "Unknown";
+  }
   const FILTERS = [
-    { key: "venue", label: "Venue", primary: true, value: (t) => t.venue },
-    { key: "league", label: "League", primary: true, value: (t) => t.league },
-    { key: "kind", label: "Type", primary: true, value: (t) => t.kind },
-    { key: "market", label: "Market", primary: true, value: (t) => t.market },
+    { key: "venue", label: "Venue", primary: true, value: groupValue("venue") },
+    { key: "league", label: "League", primary: true, value: groupValue("league") },
+    { key: "kind", label: "Type", primary: true, value: groupValue("kind") },
+    { key: "market", label: "Market", primary: true, value: groupValue("market") },
     { key: "period", label: "Period", primary: true, value: (t) => periodFilterValue(t.period), fromGroup: periodFilterValue },
-    { key: "side", label: "Side", primary: true, value: (t) => t.side },
-    { key: "closeResult", label: "Close", primary: true, value: (t) => t.closeResult },
-    { key: "favDog", label: "Fav / Dog", value: (t) => t.favDog },
-    { key: "oddsBucket", label: "Odds", value: (t) => t.oddsBucket },
-    { key: "edgeBucket", label: "Edge", value: (t) => t.edgeBucket },
-    { key: "timing", label: "Timing", value: (t) => t.timing },
-    { key: "weekday", label: "Weekday", value: (t) => t.weekday },
-    { key: "stakeBucket", label: "Stake", value: (t) => t.stakeBucket },
-    { key: "number", label: "Number", value: (t) => t.number },
+    { key: "side", label: "Side", primary: true, value: groupValue("side") },
+    { key: "closeResult", label: "Close", primary: true, value: groupValue("closeResult") },
+    { key: "favDog", label: "Fav / Dog", value: groupValue("favDog") },
+    { key: "oddsBucket", label: "Odds", value: groupValue("oddsBucket") },
+    { key: "edgeBucket", label: "Edge", value: groupValue("edgeBucket") },
+    { key: "timing", label: "Timing", value: groupValue("timing") },
+    { key: "weekday", label: "Weekday", value: groupValue("weekday") },
+    { key: "stakeBucket", label: "Stake", value: groupValue("stakeBucket") },
+    { key: "number", label: "Number", value: groupValue("number") },
   ];
   const PIVOT_METRICS = [
     { key: "roi", label: "ROI" }, { key: "pnl", label: "P&L" }, { key: "clv", label: "CLV" }, { key: "bets", label: "Bets" },
