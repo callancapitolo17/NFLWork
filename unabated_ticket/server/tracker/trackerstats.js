@@ -500,6 +500,16 @@
     return days;
   }
 
+  /**
+   * The tickets without those settled on `day` or later (Cal, 2026-10-12): a
+   * Pacific day's results stay hidden until the next day, so the tracker never
+   * shows a running P&L for today. Open tickets, and settled ones with no
+   * settle time, are kept.
+   */
+  function hideSettledFrom(tickets, day) {
+    return tickets.filter((t) => t.settledDay === null || t.settledDay < day);
+  }
+
   /** The earliest settle day among the tickets, or null. */
   function firstSettledDay(tickets) {
     let first = null;
@@ -527,7 +537,6 @@
    * the daily series (one bar per day) millions of days long and hang the page.
    */
   function rangeBounds(range, today, custom, firstSettled) {
-    if (range === "Today") return { first: today, last: today };
     if (range === "Yesterday") { const day = addDays(today, -1); return { first: day, last: day }; }
     if (RANGE_DAYS[range]) return { first: addDays(today, 1 - RANGE_DAYS[range]), last: today };
     if (range === "YTD") return { first: today.slice(0, 4) + "-01-01", last: today };
@@ -539,7 +548,7 @@
       return first <= last ? { first, last } : { first: last, last: first };
     }
     if (range === "All") return { first: firstSettled || today, last: today };
-    throw new Error("unknown date range " + range + "; expected Today, Yesterday, 7D, 30D, 90D, YTD, All or Custom");
+    throw new Error("unknown date range " + range + "; expected Yesterday, 7D, 30D, 90D, YTD, All or Custom");
   }
 
   /** Rows of the Analysis breakdown: one per value of `groupKey`, with totals. */
@@ -670,7 +679,7 @@
     PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR, CLOSE_MAX_GAP_MS, FAIR_SOURCES,
     pacificDay, addDays, dayKeyToUtc, weekdayOf, isDayKey, rangeBounds,
     americanToDecimal, decimalToAmerican,
-    buildTickets, summarize, exclusions, untypedSummary, inDayRange, dailySeries, firstSettledDay, groupBy, groupSections, calibration,
+    buildTickets, summarize, exclusions, untypedSummary, inDayRange, hideSettledFrom, dailySeries, firstSettledDay, groupBy, groupSections, calibration,
     venueName, splitOpenByStart, splitOpenForLive, sortRows,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

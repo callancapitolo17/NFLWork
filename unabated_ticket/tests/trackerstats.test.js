@@ -308,9 +308,19 @@ test("expected P&L uses the fill fair, else the closing fair, and says which", (
   assert.equal(stats.summarize(tickets).withFair, 2);
 });
 
-test("rangeBounds: Today and Yesterday are single Pacific days; presets end today", () => {
+test("hideSettledFrom drops bets settled on the day or later, keeps open and undated ones", () => {
+  const tickets = [
+    { id: "open", settledDay: null },
+    { id: "yesterday", settledDay: "2026-10-11" },
+    { id: "today", settledDay: "2026-10-12" },
+    { id: "later", settledDay: "2026-10-13" },
+  ];
+  assert.deepEqual(stats.hideSettledFrom(tickets, "2026-10-12").map((t) => t.id), ["open", "yesterday"]);
+});
+
+test("rangeBounds: Yesterday is a single Pacific day; presets end today", () => {
   const today = "2026-10-06";
-  assert.deepEqual(stats.rangeBounds("Today", today, null, "2026-01-02"), { first: today, last: today });
+  assert.throws(() => stats.rangeBounds("Today", today, null, null), /unknown date range Today/);
   assert.deepEqual(stats.rangeBounds("Yesterday", "2026-03-01", null, null), { first: "2026-02-28", last: "2026-02-28" });
   assert.deepEqual(stats.rangeBounds("7D", today, null, null), { first: "2026-09-30", last: today });
   assert.deepEqual(stats.rangeBounds("YTD", today, null, null), { first: "2026-01-01", last: today });
