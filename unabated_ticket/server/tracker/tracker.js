@@ -307,10 +307,15 @@
     return stats.addDays(stats.pacificDay(Date.now()), -1);
   }
 
-  /** The header range's days, ending no later than yesterday (today's results are hidden). */
+  /**
+   * The header range's days, ending no later than yesterday (today's results
+   * are hidden). The 7D / 30D / 90D windows end yesterday so they still hold
+   * that many days of results; Yesterday is counted back from the real today.
+   */
   function rangeDays() {
     const lastShown = lastShownDay();
-    const bounds = stats.rangeBounds(state.range, stats.pacificDay(Date.now()),
+    const rollingWindow = ["7D", "30D", "90D"].includes(state.range);
+    const bounds = stats.rangeBounds(state.range, rollingWindow ? lastShown : stats.pacificDay(Date.now()),
       { first: state.customFirst, last: state.customLast }, stats.firstSettledDay(tickets));
     const last = bounds.last > lastShown ? lastShown : bounds.last;
     return { first: bounds.first > last ? last : bounds.first, last };
