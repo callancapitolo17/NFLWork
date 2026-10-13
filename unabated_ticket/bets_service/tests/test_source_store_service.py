@@ -274,7 +274,7 @@ def test_upsert_replaces_a_record_by_id(store):
                              [record("kalshi:a:yes", "won", "2026-09-12T00:00:00Z")]])
     service.run_source_once(source, store)
     service.run_source_once(source, store)
-    [bet] = service.bets_payload(store, days=30)["bets"]
+    [bet] = service.bets_payload(store, days=3650)["bets"]  # the window is not under test; a fixed date ages out of 30
     assert bet["status"] == "won"
     assert store._con.execute("SELECT count(*) FROM bets").fetchone()[0] == 1
 
@@ -686,7 +686,7 @@ def test_http_bets_json_and_health_shape(store, http_server):
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
     assert set(payload) == {"generatedAt", "sources", "bets", "crosswalk", "pins", "fillFairs", "closingFairs",
-                            "exclusions", "dismissals", "teaserBlocks"}
+                            "exclusions", "dismissals", "teaserBlocks", "edgeSkips"}
     assert set(payload["sources"]["kalshi"]) == {"fetchedAt", "ok", "error", "count"}
     assert payload["sources"]["kalshi"]["ok"] is True
     assert payload["bets"][0]["id"] == "kalshi:a:yes"
@@ -705,7 +705,7 @@ def test_http_before_any_poll_serves_an_empty_list_with_the_source_pending(http_
     assert status == 200
     assert payload == {"generatedAt": payload["generatedAt"], "sources": {"kalshi": service.NO_POLL_YET}, "bets": [],
                        "crosswalk": [], "pins": [], "fillFairs": [], "closingFairs": [], "exclusions": [],
-                       "dismissals": [], "teaserBlocks": []}
+                       "dismissals": [], "teaserBlocks": [], "edgeSkips": []}
     status, payload = get_json(f"{http_server}/health")
     assert status == 200 and payload["sources"] == {"kalshi": service.NO_POLL_YET}
 
@@ -919,6 +919,34 @@ def test_http_teaser_blocks_mark_and_restore_until_the_game_starts(store, http_s
     restore = json.dumps({"marketKey": "123456:bt2", "eventStartMs": future_ms, "blocked": False}).encode()
     status, reply = request_json("POST", f"{http_server}/teaser_blocks.json", restore, "application/json")
     assert (status, reply["changed"], reply["teaserBlocks"]) == (200, 1, [])
+
+
+def test_http_edge_skips_skip_and_restore_until_the_game_starts(store, http_server):
+    future_ms = int((datetime.now(timezone.utc) + timedelta(days=2)).timestamp() * 1000)
+    past_ms = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() * 1000)
+    key = "125791:1:3:0|47.5@4"
+    skip = json.dumps({"skipKey": key, "eventStartMs": future_ms, "skipped": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", skip, "application/json")
+    assert status == 200 and reply["changed"] == 1
+    assert [(row["skipKey"], row["eventStartMs"]) for row in reply["edgeSkips"]] == [(key, future_ms)]
+    assert get_json(f"{http_server}/bets.json")[1]["edgeSkips"] == reply["edgeSkips"]
+    # A moneyline and a negative spread key are fine; a started game's skip is not served.
+    started = json.dumps({"skipKey": "999:1:2:1|-3.5@17", "eventStartMs": past_ms, "skipped": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", started, "application/json")
+    assert status == 200 and [row["skipKey"] for row in reply["edgeSkips"]] == [key]
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json",
+                                 json.dumps({"skipKey": "125791:1:1:0|ml", "eventStartMs": future_ms, "skipped": True}).encode(),
+                                 "application/json")
+    assert status == 400 and reply["error"].startswith("skipKey must look like")
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json",
+                                 json.dumps({"skipKey": key, "eventStartMs": future_ms, "skipped": "yes"}).encode(),
+                                 "application/json")
+    assert status == 400 and reply["error"].startswith("skipped must be")
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", skip, "text/plain")
+    assert status == 415
+    restore = json.dumps({"skipKey": key, "eventStartMs": future_ms, "skipped": False}).encode()
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", restore, "application/json")
+    assert (status, reply["changed"], reply["edgeSkips"]) == (200, 1, [])
 
 
 def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):

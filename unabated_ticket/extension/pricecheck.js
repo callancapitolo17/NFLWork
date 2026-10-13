@@ -4,14 +4,19 @@
 // outlier that beats every other book by a mile (the 2026-10-03 Jackson St
 // ML at Novig +300 against a -309 fair: almost certainly a bad price).
 //
-// Test mode for now: the panel and the phone only TAG rows ("3 books better ·
-// would skip"); nothing is hidden until Cal has watched it and says so.
+// A row a book beats gets a Skip chip (Cal, 2026-10-13: he decides, nothing
+// is skipped for him). A skipped row folds into the Edges tab's "N skipped"
+// line until no book beats its price any more or its game starts, whichever
+// comes first; Restore brings it back at once (splitSkipped).
 //
 // Rules (Cal's picks 1a 2a 5a 6a):
 //   - same number only, compared by price (Unabated's price as-is, so an
 //     exchange's is already all-in of its fee);
 //   - every book on Unabated counts, not only the ticked ones;
-//   - would skip = 2 or more books beat the price;
+//   - one book under two country names (TheScore US and TheScore CA post one
+//     feed) counts once when both post the same price at the number (Cal,
+//     2026-10-13: "books with the same name should be matched");
+//   - 2 or more books beating the price reads amber ("3 books better");
 //   - outlier = the price beats the next best book by more than
 //     OUTLIER_PROB_GAP in implied probability; it is tagged, never skipped.
 //
@@ -26,7 +31,7 @@
   const feed = inNode ? require("./feed.js") : root.UnabatedFeed;
 
   const STATUS_ON_BOARD = 1;
-  // "Multiple books" beating the price is Cal's skip rule (2026-10-09).
+  // "Multiple books" beating the price reads amber (Cal, 2026-10-09).
   const BOOKS_BETTER_TO_SKIP = 2;
   // A normal best price leads the next book by a few probability points; a
   // stale-but-real line by maybe 5. Beyond 10 points the price is more likely
@@ -61,6 +66,33 @@
     return changedMs != null && now - changedMs <= maxLineAgeMs;
   }
 
+  // A book's name without a trailing country tag: "TheScore US" and
+  // "TheScore CA" are one book. Two books sharing it count once only where
+  // they post the same price (Polymarket and Polymarket US price differently).
+  const COUNTRY_SUFFIX = /\s*\(?\b(us|usa|ca|canada)\)?\s*$/i;
+  function sameNameKey(bookName) {
+    return String(bookName || "").replace(COUNTRY_SUFFIX, "").trim().toLowerCase();
+  }
+
+  // Drops each book that repeats a same-name book's price at this number,
+  // naming the survivor after both ("TheScore US / CA"). yours, when given,
+  // drops the same-name copy of your own price.
+  function mergeSameNameBooks(entries, yours) {
+    const kept = new Map();
+    for (const entry of entries) {
+      const key = `${sameNameKey(entry.bookName)}|${entry.price}`;
+      if (yours && key === `${sameNameKey(yours.bookName)}|${yours.price}`) continue;
+      const held = kept.get(key);
+      if (!held) {
+        kept.set(key, { ...entry });
+        continue;
+      }
+      const suffix = entry.bookName.slice(sameNameKey(entry.bookName).length).trim();
+      held.bookName = suffix ? `${held.bookName} / ${suffix}` : held.bookName;
+    }
+    return Array.from(kept.values());
+  }
+
   // rung key -> Map(bookId -> {bookId, bookName, price}), every book's best
   // price at each number (a book can sit on a number twice: main and alt).
   // Build once per feed update.
@@ -83,33 +115,37 @@
   }
 
   // How the price compares with every other book at the same number.
-  //   spec  {eventId, periodTypeId, betTypeId, sideIndex, points, bookId, price}
+  //   spec  {eventId, periodTypeId, betTypeId, sideIndex, points, bookId, bookName, price}
   // Returns null when the price is unusable, else
   //   {better: [{bookName, price}] best first, worse: [...] best first, same: n,
+  //    sameAs: [...] (the n books at your price),
   //    bookCount (books at the number, yours included), wouldSkip, outlier: {nextBest}|null}
   // "better" means a strictly lower implied probability for the same bet.
   function comparePrice(index, spec) {
     const yourProb = impliedProb(spec.price);
     if (yourProb == null) return null;
-    const others = Array.from((index.get(rungKeyOf(spec)) || new Map()).values())
-      .filter((entry) => entry.bookId !== spec.bookId)
+    const atNumber = Array.from((index.get(rungKeyOf(spec)) || new Map()).values())
+      .filter((entry) => entry.bookId !== spec.bookId);
+    const yours = spec.bookName ? { bookName: spec.bookName, price: spec.price } : null;
+    const others = mergeSameNameBooks(atNumber, yours)
       .sort((a, b) => impliedProb(a.price) - impliedProb(b.price));
     const better = [];
     const worse = [];
-    let same = 0;
+    const sameAs = [];
     for (const entry of others) {
       const prob = impliedProb(entry.price);
       const shown = { bookName: entry.bookName, price: entry.price };
       if (prob < yourProb) better.push(shown);
       else if (prob > yourProb) worse.push(shown);
-      else same += 1;
+      else sameAs.push(shown);
     }
     const nextBest = others.length ? others[0] : null;
     const isOutlier = better.length === 0 && nextBest != null && impliedProb(nextBest.price) - yourProb > OUTLIER_PROB_GAP;
     return {
       better,
       worse,
-      same,
+      same: sameAs.length,
+      sameAs,
       bookCount: others.length + 1,
       wouldSkip: better.length >= BOOKS_BETTER_TO_SKIP,
       outlier: isOutlier ? { nextBest: { bookName: nextBest.bookName, price: nextBest.price } } : null,
@@ -124,30 +160,50 @@
     if (check.outlier) return { kind: "outlier", label: `outlier, check · next best ${fmt(check.outlier.nextBest.price)}` };
     const n = check.better.length;
     if (n === 0) return { kind: "best", label: check.same > 0 ? `best, tied · ${check.bookCount} books` : `best of ${check.bookCount} books` };
-    if (check.wouldSkip) return { kind: "skip", label: `${n} books better · would skip` };
+    if (check.wouldSkip) return { kind: "skip", label: `${n} books better` };
     return { kind: "better", label: "1 book better" };
   }
 
-  // The Edges header's count over the listed rows: "3 would skip: 2+ books
-  // better · 1 outlier (test mode)", or "" when there is neither.
+  // The Edges header's count of outliers over the listed rows: "1 outlier to
+  // check", or "" when there is none.
   function describePriceChecks(rows) {
-    let skip = 0;
-    let outliers = 0;
+    const outliers = rows.filter((row) => row.priceCheck && row.priceCheck.outlier).length;
+    if (outliers === 0) return "";
+    return `${outliers} outlier${outliers === 1 ? "" : "s"} to check`;
+  }
+
+  // One line at one book: what a Skip is keyed on (bets.duckdb::edge_skips).
+  // A different number or a different book is a different line.
+  function skipKeyOf(line, bookId) {
+    return `${rungKeyOf(line)}@${bookId}`;
+  }
+
+  // A Skip is offered only where a book beats the price.
+  function canSkip(check) {
+    return Boolean(check && check.better.length > 0);
+  }
+
+  // The rows Cal skipped, apart from the rest. A skip holds only while a book
+  // still beats the row's price and its game is still to start; after that the
+  // row lists again by itself (the restore rule, Cal 2026-10-09/13).
+  //   rows   Edges rows carrying priceCheck, book.id and eventStartMs
+  //   skips  {skipKey: eventStartMs}; now  epoch ms
+  // Returns {listed, skipped}, each in the rows' order.
+  function splitSkipped(rows, skips, now) {
+    const listed = [];
+    const skipped = [];
     for (const row of rows) {
-      if (!row.priceCheck) continue;
-      if (row.priceCheck.wouldSkip) skip += 1;
-      if (row.priceCheck.outlier) outliers += 1;
+      const eventStartMs = skips[skipKeyOf(row, row.book.id)];
+      const held = typeof eventStartMs === "number" && eventStartMs > now && canSkip(row.priceCheck);
+      (held ? skipped : listed).push(row);
     }
-    if (skip === 0 && outliers === 0) return "";
-    const parts = [];
-    if (skip) parts.push(`${skip} would skip: 2+ books better`);
-    if (outliers) parts.push(`${outliers} outlier${outliers === 1 ? "" : "s"}`);
-    return `${parts.join(" · ")} (test mode, nothing hidden)`;
+    return { listed, skipped };
   }
 
   const api = {
     BOOKS_BETTER_TO_SKIP, OUTLIER_PROB_GAP,
-    impliedProb, rungKeyOf, buildPriceIndex, comparePrice, priceCheckTag, describePriceChecks,
+    impliedProb, rungKeyOf, sameNameKey, buildPriceIndex, comparePrice, priceCheckTag, describePriceChecks,
+    skipKeyOf, canSkip, splitSkipped,
   };
 
   if (inNode) {

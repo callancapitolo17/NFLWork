@@ -38,6 +38,7 @@
         </div>
         <button type="button" class="chip" id="bot-combos" aria-pressed="true" title="Include the Kalshi MLB bots' combo fills in every total">Bot combos</button>
         <label class="unit-size" id="unit-size-label" hidden>1u = $<input id="unit-size" type="number" min="1" step="1" inputmode="numeric"></label>
+        <span class="sync" id="untyped" hidden><span class="dot bad"></span><span id="untyped-text"></span></span>
         <span class="sync" id="sync"><span class="dot" id="sync-dot"></span><span id="sync-text">Loading…</span></span>
       </div>
     </div>
@@ -116,29 +117,25 @@
         <div class="head"><span class="lbl">Open bets</span><span class="note" id="open-caption"></span></div>
         <div id="op-groups"></div>
       </section>
-      <section class="panel stack flush" aria-label="Settled today">
-        <div class="head">
-          <div class="stack tight">
-            <span class="lbl">Settled today</span>
-            <span class="note" id="today-caption"></span>
-          </div>
-        </div>
-        <div class="settled-sum" id="today-sum"></div>
-        <div class="scroll" id="op-today"></div>
-      </section>
     </section>
 
     <section id="view-analysis" class="stack" aria-label="Analysis" hidden>
       <div class="title-row"><h1>Analysis</h1><span id="an-caption"></span></div>
       <section class="panel filters" aria-label="Filters">
-        <div class="filter-row"><span class="lbl">Venue</span><span class="filter-row" id="f-venues"></span></div>
-        <div class="filter-row">
-          <span class="lbl">League</span><span class="filter-row" id="f-leagues"></span>
-          <span class="spacer"></span>
-          <span class="lbl bare">Type</span><span class="seg" id="f-kinds" role="group" aria-label="Bet type"></span>
-        </div>
+        <div id="f-rows" class="stack"></div>
+        <button type="button" class="reset" id="f-reset" hidden>Reset filters</button>
       </section>
       <div class="kpis" id="an-kpis"></div>
+      <section class="panel pad stack" aria-label="Cumulative profit for these filters">
+        <div class="title-row">
+          <div class="stack tight">
+            <span class="lbl">Cumulative P&amp;L</span>
+            <div class="legend"><span><i class="swatch-line"></i>Actual</span><span><i class="swatch-dash"></i>Expected (bets with a fair)</span></div>
+          </div>
+          <div class="stats" id="an-stats"></div>
+        </div>
+        <div id="an-chart"></div>
+      </section>
       <section class="panel" aria-label="Breakdown">
         <div class="head">
           <div class="stack tight">

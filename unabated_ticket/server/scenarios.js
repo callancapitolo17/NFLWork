@@ -20,8 +20,11 @@
 //   worst} and each band {label, low, high, prob, pnl, legs}. `low` / `high`
 //   are the half-point cuts the band sits between (null = open-ended); `prob`
 //   is null when a rung is missing. `legs` per band are the parlay and teaser
-//   legs on that market and how each fares there (won / lost / push); their
-//   tickets' dollars are never in `pnl` (the other legs are other games).
+//   legs on that market and how each fares there (won / lost / push; a teaser
+//   leg's push is lost). `pnl` counts the straight bets plus `ticketLoss`, the
+//   stake of every ticket a leg loses there; a ticket whose leg survives adds
+//   nothing, since its other legs are other games. The group's `ev` counts the
+//   straight bets only.
 //   `bets` lists every open straight bet on the game, each placed on a group
 //   or with the `reason` it is not; `coveredBetIds` is every bet id shown on
 //   a card, so the tracker can list the rest on their own.
@@ -42,6 +45,8 @@ const PERIOD_WORDS = { FG: "", "1H": "1st half ", "2H": "2nd half ", "1Q": "1st 
 const RESULT_WON = "won";
 const RESULT_LOST = "lost";
 const RESULT_PUSH = "push";
+const KIND_TEASER = "teaser";
+const KIND_PARLAY = "parlay";
 // Two P&L values within a cent are the same band.
 const SAME_PNL_TOLERANCE = 0.005;
 
@@ -51,6 +56,21 @@ function isOpen(record) {
 
 function resultWord(result) {
   return result > 0 ? RESULT_WON : result < 0 ? RESULT_LOST : RESULT_PUSH;
+}
+
+// Buckeye's teasers (BFA) grade a push as a loss.
+function legResultWord(leg, value) {
+  const word = resultWord(condkelly.resultAt(leg, value));
+  return word === RESULT_PUSH && leg.kind === KIND_TEASER ? RESULT_LOST : word;
+}
+
+// The stake of every ticket with a lost leg in the band, each ticket once.
+function ticketLossOf(legResults) {
+  const stakeByTicket = new Map();
+  for (const leg of legResults) {
+    if (leg.result === RESULT_LOST && Number.isFinite(leg.ticketStake)) stakeByTicket.set(leg.parlayId, leg.ticketStake);
+  }
+  return Array.from(stakeByTicket.values()).reduce((sum, stake) => sum + stake, 0);
 }
 
 // ---- labels -------------------------------------------------------------------
@@ -167,20 +187,24 @@ function groupOf(game, period, axis, straights, legs, ladder) {
     const low = edges[index];
     const high = edges[index + 1];
     const value = sampleValue(low, high);
-    let pnl = 0;
+    let straightPnl = 0;
     for (const bet of straights) {
       const result = condkelly.resultAt(bet, value);
-      pnl += result > 0 ? bet.toWin : result < 0 ? -bet.stake : 0;
+      straightPnl += result > 0 ? bet.toWin : result < 0 ? -bet.stake : 0;
     }
-    const legResults = legs.map((leg) => ({ id: leg.id, label: leg.label, kind: leg.kind, result: resultWord(condkelly.resultAt(leg, value)) }));
-    raw.push({ low, high, pnl, prob: bandProb(ladder, low, high), legs: legResults });
+    const legResults = legs.map((leg) => ({
+      id: leg.id, parlayId: leg.parlayId, label: leg.label, kind: leg.kind,
+      ticketStake: leg.ticketStake, ticketToWin: leg.ticketToWin, result: legResultWord(leg, value),
+    }));
+    const ticketLoss = ticketLossOf(legResults);
+    raw.push({ low, high, pnl: straightPnl - ticketLoss, ticketLoss, prob: bandProb(ladder, low, high), legs: legResults });
   }
   const label = axis === AXIS_TOTAL ? totalLabel : marginLabel;
   const bands = mergeBands(raw).map((band) => ({ ...band, label: label(band.low, band.high, game) }));
   const priced = bands.every((band) => band.prob !== null);
   return {
     key: `${period}:${axis}`, period, axis, title: groupTitle(period, axis, game), bands,
-    ev: priced ? bands.reduce((sum, band) => sum + band.prob * band.pnl, 0) : null,
+    ev: priced ? bands.reduce((sum, band) => sum + band.prob * (band.pnl + band.ticketLoss), 0) : null,
     best: Math.max(...bands.map((band) => band.pnl)),
     worst: Math.min(...bands.map((band) => band.pnl)),
   };
@@ -205,7 +229,7 @@ function legView(record, extra) {
   return {
     id: record.id, parlayId: record.parlayId, label: legLabel(record), venue: betsLib.venueLabel(record.venue),
     ticketStake: record.stake ?? null, ticketToWin: record.toWin ?? null, legCount: record.legCount ?? null,
-    kind: /teaser/i.test(String((record.raw && (record.raw.headerDescription || record.raw.type)) || "")) ? "teaser" : "parlay",
+    kind: /teaser/i.test(String((record.raw && (record.raw.headerDescription || record.raw.type)) || "")) ? KIND_TEASER : KIND_PARLAY,
     ...extra,
   };
 }
@@ -228,7 +252,9 @@ function gameCard(game, matches) {
       const legPosition = betsLib.teaserLegPositionOf(bet, row);
       const view = legView(bet, { group: legPosition.reason ? null : `${legPosition.period}:${legPosition.axis}`, reason: legPosition.reason || null });
       legs.push(view);
-      if (!legPosition.reason) groupFor(legPosition.period, legPosition.axis).legs.push({ ...legPosition, id: bet.id, label: view.label, kind: view.kind });
+      if (!legPosition.reason) groupFor(legPosition.period, legPosition.axis).legs.push({
+          ...legPosition, id: bet.id, parlayId: view.parlayId, label: view.label, kind: view.kind, ticketStake: view.ticketStake, ticketToWin: view.ticketToWin,
+        });
       continue;
     }
     if (position.reason) {

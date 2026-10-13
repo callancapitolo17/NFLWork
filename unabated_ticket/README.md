@@ -679,27 +679,39 @@ Unabated's as shown, so an exchange's is already all-in of its fee. Only a
 live book's line on the board counts; a blurred price, Unabated's own line
 and a line older than **Max line age h** never do, so a dead feed can't
 read as "better". A book on the number twice (main and alt) counts once, at
-its better price. Another number is never compared.
+its better price. One book under two country names (TheScore US and
+TheScore CA post one feed) counts once where both post the same price, shown
+as "TheScore US / CA"; Polymarket and Polymarket US price differently, so they
+still count apart (Cal, 2026-10-13). Another number is never compared.
 
 | Tag | When |
 |---|---|
 | `best of N books` (green) | no other book beats the price; `best, tied` when one matches it |
 | `1 book better` (plain) | exactly one book beats it |
-| `N books better · would skip` (amber) | 2 or more books beat it (`BOOKS_BETTER_TO_SKIP`) |
-| `outlier, check · next best X` (red) | it beats every other book by more than 10 probability points (`OUTLIER_PROB_GAP`): more likely a bad price than a gift (the 2026-10-03 Jackson St ML at Novig +300 on a -309 fair). Tagged, never skipped |
+| `N books better` (amber) | 2 or more books beat it (`BOOKS_BETTER_TO_SKIP`) |
+| `outlier, check · next best X` (red) | it beats every other book by more than 10 probability points (`OUTLIER_PROB_GAP`): more likely a bad price than a gift (the 2026-10-03 Jackson St ML at Novig +300 on a -309 fair). Tagged; no Skip, since no book beats it |
 
-No tag when no other book posts the number. The tooltip lists the books.
-A line above the list counts them: "3 would skip: 2+ books better · 1
-outlier (test mode, nothing hidden)". The Ticket's **Others** row lists every
-book that beats you, yours in its place, and the first three worse ones.
+No tag when no other book posts the number. Tap the tag (▸) to open every
+book at the number under the row, best first, yours in its place; the
+tooltip lists them too. A line above the list counts outliers ("1 outlier to
+check"). The Ticket's **Others** row lists every book at the number.
 
-**Test mode (0.21.0):** nothing is hidden. Cal is watching the tags in main
-first; once he says so, rows tagged *would skip* fold into one "N skipped"
-line you can open, and a row comes back on its own as soon as fewer than 2
-books beat it (the check reruns on every snapshot). The phone page shows the
-same tags, header count and Ticket row, computed by the runner
-(`/edges.json` rows carry `priceCheck` and `priceCheckTag`, the body carries
-`priceCheck`).
+**Skip (0.24.0, Cal 2026-10-13):** nothing is skipped for you. A row a book
+beats gets a **Skip** chip (and the Ticket a **Skip this bet** button); a
+skipped line folds into the "N skipped" line under the Edges list, where
+**Restore** lists it again. A skip holds only while a book still beats the
+price and the game is still to start: once no book beats it (the check
+reruns on every snapshot) or the game starts, the row lists again by itself
+(`pricecheck.splitSkipped`). A skipped line never alerts. The skip is keyed
+on the line at the book (`pricecheck.skipKeyOf`: game, period, market, side,
+number, book), so a new number is a new line. Skips live on the bets service
+(`bets.duckdb::edge_skips`, `POST /edge_skips.json {skipKey, eventStartMs,
+skipped}`, served as `edgeSkips` in `/bets.json`), shared by the panel and
+the phone; an older service leaves them panel-only in `chrome.storage.local`.
+The phone page shows the same tags, list, Skip and fold, computed by the
+runner (`/edges.json` rows carry `priceCheck`, `priceCheckTag` and
+`skipKey`; the body carries `priceCheck` and `skipped`); a tap on the phone
+shows at once and the runner's list catches up on its next bets read (30 s).
 
 ### Why an edge grew
 
@@ -2310,10 +2322,12 @@ keeps or learns now lives on the bets service, and the runner does what only
 the open panel used to do.
 
 - **One set of settings and marks** in `bets.duckdb`: `edge_settings`,
-  `bet_dismissals` (Dismiss, open bets only) and `teaser_blocks` (Can't
-  tease, until the game starts). `/bets.json` serves `dismissals` and
-  `teaserBlocks`; `POST /dismissals.json {betIds, dismissed}` and
-  `POST /teaser_blocks.json {marketKey, eventStartMs, blocked}` write them.
+  `bet_dismissals` (Dismiss, open bets only), `teaser_blocks` (Can't
+  tease, until the game starts) and `edge_skips` (Skip, until the game
+  starts; 0.24.0). `/bets.json` serves `dismissals`, `teaserBlocks` and
+  `edgeSkips`; `POST /dismissals.json {betIds, dismissed}`,
+  `POST /teaser_blocks.json {marketKey, eventStartMs, blocked}` and
+  `POST /edge_skips.json {skipKey, eventStartMs, skipped}` write them.
 - **The panel (0.22.0)** writes its settings to the service the first time
   it reaches a Service URL, PUTs every edit (`edgerows.serviceSettingsOf`),
   and applies a row changed elsewhere (`settingsSync` in
@@ -2354,6 +2368,15 @@ fairs and removed bets) and `GET /scenarios.json` (the Live tab's game
 cards, from the server runner through the bets service) every 60 s while
 visible. Its one write is the Bets page's Remove / Restore.
 
+- **Today's results stay hidden** (Cal, 2026-10-12): a bet settled on the
+  current Pacific day leaves every page until midnight Pacific
+  (`trackerstats.hideSettledFrom`, applied once where the tickets are
+  built), so there is no running P&L to watch during the day; the first poll
+  after midnight brings the day in. Ranges end yesterday (there is no Today
+  range), today's calendar cell reads "Tomorrow", and a bet a book grades
+  after midnight counts on that later day. Open bets, open EV and the Live
+  tab are unaffected. No reveal switch: it's a hard lock in the tracker
+  only, so the books' own sites still show results.
 - **Overview**: net P&L with the record, ROI, handle, open risk; expected
   P&L at Unabated's fair (fill, else close) and actual vs expected with its
   z-score; CLV; cumulative
@@ -2371,8 +2394,13 @@ visible. Its one write is the Bets page's Remove / Restore.
   cuts come from the bets themselves: every bet's number splits its market
   (a whole number adds its push), neighbouring results with the same P&L
   merge. A parlay or teaser leg on the game adds its own cut and is tagged
-  where it loses or pushes; its ticket's dollars stay out of the game's
-  P&L (its other legs are other games) and the ticket is listed under
+  where it loses or pushes (a teaser leg's push loses: Buckeye grades it
+  so). Where a leg loses, every ticket it sits on loses its stake in that
+  result's P&L, the card's range and the Worst case tile (a ticket counted
+  once across games); where it holds, the result only notes "N teasers
+  alive, $X to win", since the ticket's other legs are other games. The EV
+  counts the straight bets only. One chip per leg names how many tickets
+  ride on it ("in 4 teasers · $800"), and the tickets are listed under
   **Parlays and teasers riding**. **The chance is Unabated's fair at
   kickoff** (the median fair ladder from the last snapshot before the
   start, the ladder the Edges sizing reads), not the live score: no scores
@@ -2390,11 +2418,14 @@ visible. Its one write is the Bets page's Remove / Restore.
 - **Open** (2026-10-07; was Overview's bottom panel): open-bet count, stake
   at risk and to win, open EV (bets with a saved fair) and stake in live
   games (links to Live), then the open bets that are not live with price,
-  fair, edge and CLV, then **Settled today** (bets settled on the current
-  Pacific day, whatever the header range says). The nav tab carries the
-  count of open bets not on the Live tab.
-- **Analysis**: filter by venue, league and type (straight, parlay, teaser),
-  group by venue, league, market, period, type, odds, edge at fill, timing
+  fair, edge and CLV. The nav tab carries the count of open bets not on the
+  Live tab. (Its **Settled today** panel went with the change below.)
+- **Analysis**: filter by venue, league, type (straight, parlay, teaser), market
+  and period (full game vs partial): every value is a chip (on = solid with a
+  check, with its bet count in the range), each row has All / None, and
+  Reset filters clears them all; choices last until reload;
+  a cumulative P&L chart (actual vs expected, daily bars, best/worst day) like
+  Overview's, drawn from the filtered bets only; group by venue, league, market, period, type, odds, edge at fill, timing
   (hours placed before start), weekday or stake, or **League × Market**: a
   section per league (its totals in the header) with its markets as rows, to
   compare spreads, totals and moneylines within a sport. Each group shows ROI with its
@@ -2447,7 +2478,15 @@ visible. Its one write is the Bets page's Remove / Restore.
   multivariate combos (`KXMVECROSSCATEGORY`, the MLB bots' RFQ fills on the
   same account) are their own type, "Kalshi combo", and count in every total
   by default (Cal, 2026-10-05); switching off the header's **Bot combos**
-  toggle hides them. Won pays
+  toggle hides them. **Market** is the record's `betType`; a record its
+  source left as `other` (no scanner game to place it on: BFA college
+  lines, Bet105 team totals, Kalshi futures, Wagerzon fectas, props) is typed
+  off the venue's own text (`otherMarketName`: Team total, Player prop,
+  Special, Future, Parlay, or a game line), and one no rule names stays
+  **Other** and is counted in the header's amber **N untyped** chip (hidden
+  at zero; tooltip lists them) so a venue renaming a market shows the same
+  day (2026-10-12: Novig's "Moneyline" had become "Winner", and every Novig
+  moneyline fell through for weeks). Won pays
   `toWin`, lost costs `stake`, push and void are 0, unless the record carries
   the venue's own `pnl`: **Bet105** graded records carry its `result`
   (2026-10-07); **Kalshi** records do (2026-10-06), priced off the
@@ -2547,7 +2586,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 505 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 523 tests) and
 the bets service's pytest suite (388 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -3070,6 +3109,21 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-13 — Skip button; same-name books count once (0.24.0).** Cal
+dropped the automatic skip: he wants to decide. A row a book beats gets a
+Skip chip (rows, card lines, the Ticket, the phone); a skipped line folds
+into "N skipped" and comes back by itself once no book beats the price or
+the game starts, the restore rule agreed 2026-10-09. The "would skip" wording
+is gone, the tag opens every book at the number, and skips are shared on the
+bets service (`edge_skips`). He was not sure about a minimum gap for
+"clearly better", so any better price still counts. He also saw theScore
+counted twice: Unabated carries TheScore US and TheScore CA, which posted the
+same price on 310 of 310 NFL sides, so one price could read "2 books better ·
+would skip". His rule: books with the same name are matched. A trailing
+country tag is ignored and two such books count once where their prices
+match. Mirrors under different names (BetMGM = Sports Interaction; BetRivers =
+Sugarhouse = Parx) are left as they are.
 
 **2026-10-10 — DraftKings bets in the Bets tab (0.23.0).** Cal wanted his
 DraftKings bets flagged. DraftKings sits behind Akamai and asks for a code on

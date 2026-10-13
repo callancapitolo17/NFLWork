@@ -25,8 +25,17 @@
   const BET_FILTERS = ["All", "Counted", "Removed"];
   const POLL_MS = 60 * 1000;
   const PREFS_KEY = "betTracker.prefs";
-  const RANGES = ["Today", "Yesterday", "7D", "30D", "90D", "YTD", "All", "Custom"];
-  const KINDS = ["All", "Straight", "Parlay", "Teaser", "Kalshi combo"];
+  const RANGES = ["Yesterday", "7D", "30D", "90D", "YTD", "All", "Custom"];
+  // The Analysis filter bar, one chip row per entry (Cal, 2026-10-12): every
+  // value a ticket carries is a chip, all on by default; state.off[key] holds
+  // the ones switched off, so a value new to the data shows up on.
+  const FILTERS = [
+    { key: "venue", label: "Venue", value: (t) => t.venue },
+    { key: "league", label: "League", value: (t) => t.league },
+    { key: "kind", label: "Type", value: (t) => t.kind },
+    { key: "market", label: "Market", value: (t) => t.market },
+    { key: "period", label: "Period", value: (t) => (t.period === "FG" ? "Full game" : "Partial") },
+  ];
   const DAILY_ROWS = 14;
   const LOG_PAGE = 50;
   const CALENDAR_WEEKS = 6;
@@ -40,7 +49,7 @@
 
   const state = Object.assign({
     view: "overview", range: "30D", customFirst: null, customLast: null, units: false, unitSize: 100,
-    groupBy: "venue", kind: "All", offVenues: [], offLeagues: [], query: "", logLimit: LOG_PAGE,
+    groupBy: "venue", off: Object.fromEntries(FILTERS.map((f) => [f.key, []])), query: "", logLimit: LOG_PAGE,
     betsQuery: "", betsVenue: "All", betsFilter: "All", betsLimit: LOG_PAGE, saving: false,
     // Per table: {col: column index, dir: "asc" | "desc"}; absent = the table's own order.
     sorts: {},
@@ -293,9 +302,23 @@
 
   // ---- range ----------------------------------------------------------------
 
+  /** The last Pacific day whose results show: yesterday, since today's stay hidden until midnight. */
+  function lastShownDay() {
+    return stats.addDays(stats.pacificDay(Date.now()), -1);
+  }
+
+  /**
+   * The header range's days, ending no later than yesterday (today's results
+   * are hidden). The 7D / 30D / 90D windows end yesterday so they still hold
+   * that many days of results; Yesterday is counted back from the real today.
+   */
   function rangeDays() {
-    return stats.rangeBounds(state.range, stats.pacificDay(Date.now()),
+    const lastShown = lastShownDay();
+    const rollingWindow = ["7D", "30D", "90D"].includes(state.range);
+    const bounds = stats.rangeBounds(state.range, rollingWindow ? lastShown : stats.pacificDay(Date.now()),
       { first: state.customFirst, last: state.customLast }, stats.firstSettledDay(tickets));
+    const last = bounds.last > lastShown ? lastShown : bounds.last;
+    return { first: bounds.first > last ? last : bounds.first, last };
   }
 
   function rangeCaption(first, last) {
@@ -336,8 +359,9 @@
     ]);
 
     const series = stats.dailySeries(tickets, first, last);
-    renderChart(series);
-    renderCalendar(pickedCalendarDay() ? state.calendarPick.anchor : last);
+    renderChart(series, "ov-chart", "ov-stats", "No settled bets in this range.");
+    // A range ending yesterday still shows this week's calendar, today's cell included.
+    renderCalendar(pickedCalendarDay() ? state.calendarPick.anchor : last === lastShownDay() ? stats.pacificDay(Date.now()) : last);
     renderDaily(series);
     renderVenues(settled);
     renderSettledBets(settled, total, missing);
@@ -357,17 +381,18 @@
     return ticket.clv === null ? "muted" : toneClass(ticket.clv);
   }
 
-  function renderChart(series) {
+  /** Cumulative actual vs expected P&L line with daily bars; drawn into chartId, best/worst/up-days into statsId. */
+  function renderChart(series, chartId, statsId, emptyText) {
     const withBets = series.filter((d) => d.bets > 0);
     if (!withBets.length) {
-      fill("ov-stats");
-      fill("ov-chart", emptyNote("No settled bets in this range."));
+      fill(statsId);
+      fill(chartId, emptyNote(emptyText));
       return;
     }
     const best = withBets.reduce((a, b) => (b.pnl > a.pnl ? b : a));
     const worst = withBets.reduce((a, b) => (b.pnl < a.pnl ? b : a));
     const stat = (label, text, color) => el("div", null, [el("span", { className: "lbl", text: label }), el("span", { className: "num", text, style: { color } })]);
-    fill("ov-stats",
+    fill(statsId,
       stat("Best day", money(best.pnl, true) + " " + dayLabel(best.day), COLORS.pos),
       stat("Worst day", money(worst.pnl, true) + " " + dayLabel(worst.day), COLORS.neg),
       stat("Up days", withBets.filter((d) => d.pnl > 0).length + " / " + withBets.length, COLORS.text));
@@ -407,28 +432,29 @@
     const mid = series[Math.floor((series.length - 1) / 2)];
     const axisDays = [...new Set([series[0], mid, series[series.length - 1]].map((d) => d.day))];
     const xAxis = el("div", { className: "xaxis" }, axisDays.map((day) => el("span", { text: dayLabel(day) })));
-    fill("ov-chart", el("div", { className: "plot" }, [yAxis, svg]), bars, xAxis);
+    fill(chartId, el("div", { className: "plot" }, [yAxis, svg]), bars, xAxis);
   }
 
-  function renderCalendar(today) {
-    const todayIndex = stats.WEEKDAYS.indexOf(stats.weekdayOf(today));
-    const start = stats.addDays(today, -todayIndex - (CALENDAR_WEEKS - 1) * 7);
+  function renderCalendar(anchor) {
+    const anchorIndex = stats.WEEKDAYS.indexOf(stats.weekdayOf(anchor));
+    const start = stats.addDays(anchor, -anchorIndex - (CALENDAR_WEEKS - 1) * 7);
     const end = stats.addDays(start, CALENDAR_WEEKS * 7 - 1);
-    const byDay = new Map(stats.dailySeries(tickets, start, today).map((d) => [d.day, d]));
+    const byDay = new Map(stats.dailySeries(tickets, start, anchor).map((d) => [d.day, d]));
     setText("cal-caption", dayLabel(start) + " to " + dayLabel(end));
     const fullColorDollars = CAL_FULL_COLOR_PNL_UNITS * state.unitSize;
     const cells = stats.WEEKDAYS.map((name) => el("span", { className: "lbl wd", text: name }));
-    // Custom ranges clamp to [first settled day, today], so a click outside it
+    // Ranges clamp to [first settled day, yesterday], so a click outside it
     // would quietly filter to a different day; those days aren't clickable.
     const realToday = stats.pacificDay(Date.now());
-    const firstPickable = stats.firstSettledDay(tickets) || realToday;
+    const lastPickable = lastShownDay();
+    const firstPickable = stats.firstSettledDay(tickets) || lastPickable;
     for (let day = start; day <= end; day = stats.addDays(day, 1)) {
       const totals = byDay.get(day);
       const isPicked = day === pickedCalendarDay();
-      const isPickable = day >= firstPickable && day <= realToday;
+      const isPickable = day >= firstPickable && day <= lastPickable;
       const cell = el("div", {
-        className: "cell" + (day === today ? " today" : "") + (isPicked ? " picked" : "") + (isPickable ? " pickable" : ""),
-        onClick: isPickable ? () => toggleCalendarDay(day, today) : null,
+        className: "cell" + (day === realToday ? " today" : "") + (isPicked ? " picked" : "") + (isPickable ? " pickable" : ""),
+        onClick: isPickable ? () => toggleCalendarDay(day, anchor) : null,
       });
       const dayNumber = el("span", { className: "d", text: Number(day.slice(8)) });
       const value = el("span", { className: "v" });
@@ -441,8 +467,8 @@
         dayNumber.style.color = strength > 0.55 ? "rgba(11,14,19,0.7)" : COLORS.muted;
         cell.title = dayLabel(day, true) + ": " + money(totals.pnl, true) + " on " + totals.bets + " bets";
       } else {
-        cell.title = dayLabel(day, true) + (day === today ? ": nothing settled yet" : day > today ? "" : ": no bets settled");
-        if (day === today) value.textContent = "Today";
+        cell.title = dayLabel(day, true) + (day === realToday ? ": results show after midnight Pacific" : day > realToday ? "" : ": no bets settled");
+        if (day === realToday) value.textContent = "Tomorrow";
       }
       if (isPickable) cell.title += isPicked ? " · click to clear" : " · click to filter to this day";
       cell.append(dayNumber, value);
@@ -526,17 +552,6 @@
     fill("ov-settled", table(columns, shown, { sortKey: "settled" }));
   }
 
-  /** The Open page's Settled today panel: bets settled on the current Pacific day, whatever the header range. */
-  function renderSettledToday() {
-    const today = stats.pacificDay(Date.now());
-    const settled = stats.inDayRange(tickets, today, today);
-    fillSettledSummary("today-sum", settled, stats.summarize(settled), noResultCount(today, today));
-    setText("today-caption", dayLabel(today, true) + " · Pacific settle day");
-    if (!settled.length) { fill("op-today", emptyNote("Nothing has settled yet today.")); return; }
-    const newestFirst = settled.slice().sort((a, b) => b.closedMs - a.closedMs);
-    fill("op-today", table(settledColumns((t) => timeLabel(t.closedMs)), newestFirst, { sortKey: "today" }));
-  }
-
   /** P&L, record, expected and handle above a settled-bets table. */
   function fillSettledSummary(id, settled, total, missing) {
     const part = (label, value, className) => el("span", null, [document.createTextNode(label + " "), el("b", { className: className || "", text: value })]);
@@ -592,7 +607,6 @@
         onClick: () => showView("live") },
     ]);
     renderOpen(upcoming.concat(noStart), { upcoming, noStart });
-    renderSettledToday();
   }
 
   function renderOpen(notLive, split) {
@@ -651,14 +665,14 @@
     const pricedGroups = games.flatMap((game) => game.groups).filter((group) => group.ev !== null);
     const ev = pricedGroups.reduce((sum, group) => sum + group.ev, 0);
     const best = games.flatMap((game) => game.groups).reduce((sum, group) => sum + group.best, 0);
-    const worst = games.flatMap((game) => game.groups).reduce((sum, group) => sum + group.worst, 0);
+    const worst = worstCase(games.flatMap((game) => game.groups));
     setText("live-caption", scenarios ? "Updated " + ago(scenarios.generatedAt) : "");
     kpiTiles("lv-kpis", [
       { label: "Live bets", value: String(live.length), sub: games.length + (games.length === 1 ? " game" : " games") + " in progress · " + money(stake) + " at risk" },
       { label: "Best case", value: games.length ? money(best, true) : "—", color: games.length ? COLORS.pos : COLORS.muted, sub: "every game lands your way (straight bets)" },
-      { label: "Worst case", value: games.length ? money(worst, true) : "—", color: games.length ? COLORS.neg : COLORS.muted, sub: "nothing lands" },
+      { label: "Worst case", value: games.length ? money(worst, true) : "—", color: games.length ? COLORS.neg : COLORS.muted, sub: "nothing lands, every live teaser dies" },
       { label: "EV at kickoff", value: pricedGroups.length ? money(ev, true) : "—", color: pricedGroups.length ? COLORS.exp : COLORS.muted,
-        sub: "Unabated's fair before the start" },
+        sub: "Unabated's fair before the start (straight bets)" },
     ]);
     const problem = scenariosError
       ? el("div", { className: "banner", text: "Game cards are unavailable: " + scenariosError + ". Live bets are listed below without them." })
@@ -671,24 +685,58 @@
     fill("lv-off", split.offCard.length ? openGroup("", split.offCard, "Started", "", null, "liveOff") : null);
   }
 
+  /** Each group's worst result added up, a ticket the worst results of several groups kill counted once. */
+  function worstCase(groups) {
+    let total = 0;
+    const killsByTicket = new Map();
+    for (const group of groups) {
+      total += group.worst;
+      const worstBand = group.bands.find((band) => band.pnl === group.worst);
+      const killed = new Map(worstBand.legs.filter((leg) => leg.result === "lost" && Number.isFinite(leg.ticketStake)).map((leg) => [leg.parlayId, leg.ticketStake]));
+      for (const [ticket, stake] of killed) killsByTicket.set(ticket, { stake, count: (killsByTicket.get(ticket)?.count || 0) + 1 });
+    }
+    for (const { stake, count } of killsByTicket.values()) total += stake * (count - 1);
+    return total;
+  }
+
+  /** Legs with the same label, kind and result, one entry each with their distinct tickets' count, stake and to-win. */
+  function legsByTicket(legs, keyOf) {
+    const byKey = new Map();
+    for (const leg of legs) {
+      const key = keyOf(leg);
+      if (!byKey.has(key)) byKey.set(key, { leg, tickets: new Map() });
+      byKey.get(key).tickets.set(leg.parlayId, leg);
+    }
+    return Array.from(byKey.values()).map(({ leg, tickets }) => {
+      const all = Array.from(tickets.values());
+      const total = (field) => all.reduce((sum, ticket) => sum + (Number.isFinite(ticket[field]) ? ticket[field] : 0), 0);
+      return { leg, count: all.length, stake: total("ticketStake"), toWin: total("ticketToWin") };
+    });
+  }
+
+  function ticketWord(kind, count) {
+    return count + " " + kind + (count === 1 ? "" : "s");
+  }
+
   /** One game in progress: its bets, then one outcome ladder per market and period. */
   function gameCard(game) {
     const placedBets = game.bets.map((bet) => el("span", { className: "bet-chip" + (bet.reason ? " off" : ""), title: bet.reason ? "Not on the ladder: " + bet.reason : "" }, [
       el("span", { text: bet.label }),
       el("span", { className: "muted", text: " · " + bet.venue + (Number.isFinite(bet.stake) ? " · " + money(bet.stake) : "") + (bet.reason ? " · " + bet.reason : "") }),
     ]));
-    const legChips = game.legs.map((leg) => el("span", { className: "bet-chip leg", title: leg.reason ? "Not on the ladder: " + leg.reason : "" }, [
+    const legEntries = legsByTicket(game.legs, (leg) => [leg.label, leg.kind, leg.venue, leg.reason].join("|"));
+    const legChips = legEntries.map(({ leg, count, stake }) => el("span", { className: "bet-chip leg", title: leg.reason ? "Not on the ladder: " + leg.reason : "" }, [
       el("span", { text: leg.label }),
-      el("span", { className: "muted", text: " · " + leg.kind + " leg · " + leg.venue + (Number.isFinite(leg.ticketStake) ? " · " + money(leg.ticketStake) + " ticket" : "") + (leg.reason ? " · " + leg.reason : "") }),
+      el("span", { className: "muted", text: " · in " + ticketWord(leg.kind, count) + " · " + leg.venue + (stake ? " · " + money(stake) : "") + (leg.reason ? " · " + leg.reason : "") }),
     ]));
     const best = game.groups.reduce((sum, group) => sum + group.best, 0);
-    const worst = game.groups.reduce((sum, group) => sum + group.worst, 0);
+    const worst = worstCase(game.groups);
     const priced = game.groups.filter((group) => group.ev !== null);
     const ev = priced.reduce((sum, group) => sum + group.ev, 0);
     const summary = el("div", { className: "note" }, [
       el("span", { text: "Range " }), el("span", { className: "num " + toneClass(worst), text: money(worst, true) }),
       el("span", { text: " to " }), el("span", { className: "num " + toneClass(best), text: money(best, true) }),
-      priced.length === game.groups.length && priced.length ? el("span", { text: " · EV at kickoff " }) : null,
+      priced.length === game.groups.length && priced.length ? el("span", { text: " · EV at kickoff (straight bets) " }) : null,
       priced.length === game.groups.length && priced.length ? el("span", { className: "num exp", text: money(ev, true) }) : null,
       game.oddsAt === null ? el("span", { text: " · no kickoff odds (the runner started after this game did)" }) : null,
     ]);
@@ -712,8 +760,12 @@
   function outcomeLadder(group) {
     const rows = group.bands.map((band) => {
       const bar = el("span", { className: "prob" }, [el("i", { style: { width: band.prob === null ? "0%" : (band.prob * 100).toFixed(1) + "%" } })]);
-      const lost = band.legs.filter((leg) => leg.result !== "won");
-      const legTags = lost.map((leg) => el("span", { className: "leg-tag " + leg.result, text: leg.label + " " + leg.kind + " leg " + (leg.result === "push" ? "pushes" : "loses") }));
+      const legTags = legsByTicket(band.legs, (leg) => [leg.label, leg.kind, leg.result].join("|")).map(({ leg, count, stake, toWin }) => {
+        const tickets = ticketWord(leg.kind, count);
+        if (leg.result === "won") return el("span", { className: "leg-tag alive", text: leg.label + " holds: " + tickets + " alive, " + money(toWin) + " to win" });
+        if (leg.result === "push") return el("span", { className: "leg-tag push", text: leg.label + " pushes: " + tickets });
+        return el("span", { className: "leg-tag", text: leg.label + " loses: " + tickets + ", " + money(-stake, true) });
+      });
       return el("div", { className: "band" }, [
         el("span", { className: "band-what" }, [el("span", { text: band.label })].concat(legTags)),
         bar,
@@ -728,37 +780,55 @@
 
   // ---- analysis -------------------------------------------------------------
 
+  function passesFilters(ticket) {
+    return FILTERS.every((f) => !state.off[f.key].includes(f.value(ticket)));
+  }
+
   function filteredSettled() {
     const { first, last } = rangeDays();
-    return stats.inDayRange(tickets, first, last).filter((t) => !state.offVenues.includes(t.venue)
-      && !state.offLeagues.includes(t.league) && (state.kind === "All" || t.kind === state.kind));
+    return stats.inDayRange(tickets, first, last).filter(passesFilters);
   }
 
-  function valuesByCount(key) {
-    const counts = new Map();
-    for (const ticket of tickets) counts.set(ticket[key], (counts.get(ticket[key]) || 0) + 1);
-    return [...counts].sort((a, b) => b[1] - a[1]).map(([value]) => value);
-  }
-
-  function toggleIn(listKey, value) {
-    const list = state[listKey];
-    state[listKey] = list.includes(value) ? list.filter((v) => v !== value) : list.concat(value);
+  function setOff(key, values) {
+    state.off[key] = values;
     state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
     render();
   }
 
-  function chips(id, values, offKey) {
-    fill(id, ...values.map((value) => el("button", {
-      className: "chip", text: value, attrs: { type: "button", "aria-pressed": String(!state[offKey].includes(value)) },
-      onClick: () => toggleIn(offKey, value),
-    })));
+  /** [value, count] pairs over these tickets, most bets first. */
+  function valuesByCount(list, valueOf) {
+    const counts = new Map();
+    for (const ticket of list) counts.set(valueOf(ticket), (counts.get(valueOf(ticket)) || 0) + 1);
+    return [...counts].sort((a, b) => b[1] - a[1]);
+  }
+
+  /** One filter row: label, All / None, then a chip per value (most bets first) with its count in the range. */
+  function filterRow(filter, inRange) {
+    const allValues = valuesByCount(tickets, filter.value).map(([value]) => value);
+    const inRangeCounts = new Map(valuesByCount(inRange, filter.value));
+    const off = state.off[filter.key];
+    const quick = el("span", { className: "quick" }, [
+      el("button", { text: "All", attrs: { type: "button", "aria-pressed": String(off.length === 0) }, onClick: () => setOff(filter.key, []) }),
+      el("button", { text: "None", attrs: { type: "button", "aria-pressed": String(allValues.every((v) => off.includes(v))) }, onClick: () => setOff(filter.key, allValues.slice()) }),
+    ]);
+    const chipNodes = allValues.map((value) => el("button", {
+      className: "fchip", attrs: { type: "button", "aria-pressed": String(!off.includes(value)) },
+      onClick: () => setOff(filter.key, off.includes(value) ? off.filter((v) => v !== value) : off.concat(value)),
+    }, [document.createTextNode(value), el("span", { className: "n", text: String(inRangeCounts.get(value) || 0) })]));
+    return el("div", { className: "filter-row" }, [el("span", { className: "lbl", text: filter.label }), quick, ...chipNodes]);
+  }
+
+  function renderFilters(first, last) {
+    const inRange = stats.inDayRange(tickets, first, last);
+    fill("f-rows", ...FILTERS.map((filter) => filterRow(filter, inRange)));
+    // Only values still on the page count: a "Kalshi combo" switched off and then hidden by the header toggle shows no Reset.
+    const anyOff = FILTERS.some((f) => tickets.some((t) => state.off[f.key].includes(f.value(t))));
+    document.getElementById("f-reset").hidden = !anyOff;
   }
 
   function renderAnalysis() {
     const { first, last } = rangeDays();
-    chips("f-venues", valuesByCount("venue"), "offVenues");
-    chips("f-leagues", valuesByCount("league"), "offLeagues");
-    segButtons("f-kinds", KINDS.filter((k) => k !== BOT_COMBO_KIND || state.includeBotCombos), (k) => k === state.kind, (k) => { state.kind = k; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; render(); });
+    renderFilters(first, last);
     segButtons("group-tabs", stats.GROUPS, (g) => g.key === state.groupBy, (g) => { state.groupBy = g.key; render(); });
 
     const settled = filteredSettled();
@@ -773,6 +843,7 @@
       { label: "Luck (z)", value: total.z === null ? "—" : total.z.toFixed(2), color: total.z !== null && Math.abs(total.z) >= 1.96 ? COLORS.warn : COLORS.text,
         sub: total.z === null ? "needs bets with a fair" : Math.abs(total.z) < 1.96 ? "within normal variance" : "outside the 95% band" },
     ]);
+    renderChart(stats.dailySeries(settled, first, last), "an-chart", "an-stats", "No settled bets match these filters.");
     renderGroups(settled);
     renderCalibration(settled);
     renderLog(settled);
@@ -1023,10 +1094,10 @@
     document.getElementById("custom-range").hidden = state.range !== "Custom";
     if (state.range !== "Custom") return;
     const { first, last } = rangeDays();
-    const today = stats.pacificDay(Date.now());
+    const lastShown = lastShownDay();
     for (const [id, value] of [["custom-first", first], ["custom-last", last]]) {
       const input = document.getElementById(id);
-      input.max = today;
+      input.max = lastShown;
       if (document.activeElement !== input) input.value = value;
     }
   }
@@ -1046,9 +1117,21 @@
       : "Every venue's last poll succeeded";
   }
 
+  // Bets no rule could give a market: hidden at zero, else the count and venues.
+  function renderUntyped() {
+    const element = document.getElementById("untyped");
+    const summary = stats.untypedSummary(allTickets);
+    element.hidden = summary.count === 0;
+    if (!summary.count) return;
+    setText("untyped-text", summary.count + " untyped · " + summary.venues.map((v) => v.venue).join(", "));
+    element.title = "Bets with no market type (counted as Other); the bet type rules in trackerstats.js need a case for them:\n"
+      + summary.examples.join("\n") + (summary.count > summary.examples.length ? "\n…" : "");
+  }
+
   function render() {
     renderHeader();
     renderSync();
+    renderUntyped();
     if (!payload) return;
     if (state.view === "overview") renderOverview();
     else if (state.view === "live") renderLiveView();
@@ -1068,8 +1151,11 @@
     tickets = allTickets.filter((t) => !t.excluded && (state.includeBotCombos || t.kind !== BOT_COMBO_KIND));
   }
 
+  // Today's settled bets leave every page here until Pacific midnight; the next
+  // poll after midnight brings them back.
   function rebuildTickets() {
-    allTickets = stats.buildTickets(payload.bets, payload.fillFairs, payload.closingFairs, payload.exclusions);
+    const built = stats.buildTickets(payload.bets, payload.fillFairs, payload.closingFairs, payload.exclusions);
+    allTickets = stats.hideSettledFrom(built, stats.pacificDay(Date.now()));
     applyBotComboFilter();
   }
 
@@ -1107,11 +1193,15 @@
       button.addEventListener("click", () => showView(button.dataset.view));
     }
     document.getElementById("settled-more").addEventListener("click", () => { state.settledLimit += LOG_PAGE; render(); });
+    document.getElementById("f-reset").addEventListener("click", () => {
+      for (const filter of FILTERS) state.off[filter.key] = [];
+      state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
+      render();
+    });
     document.getElementById("show-dollars").addEventListener("click", () => { state.units = false; savePrefs(); render(); });
     document.getElementById("show-units").addEventListener("click", () => { state.units = true; savePrefs(); render(); });
     document.getElementById("bot-combos").addEventListener("click", () => {
       state.includeBotCombos = !state.includeBotCombos;
-      if (!state.includeBotCombos && state.kind === BOT_COMBO_KIND) state.kind = "All";
       state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
       savePrefs(); applyBotComboFilter(); render();
     });

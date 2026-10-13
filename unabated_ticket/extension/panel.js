@@ -184,6 +184,12 @@
   // start in ms), kept in chrome.storage.local ("teaserBlocked"): Buckeye
   // keeps some college games off its teaser menu. A mark ends when its game starts.
   let teaserBlocked = {};
+  // The Edges lines Cal skipped (pricecheck.skipKeyOf -> the game's start in
+  // ms), kept in chrome.storage.local ("edgeSkips") and, on a service that
+  // serves them, the service's set (bets.duckdb::edge_skips, shared with the
+  // phone). pricecheck.splitSkipped decides which still fold.
+  let edgeSkips = {};
+  let edgeSkipsShared = false;
   // The tail-flex c per (league, period, bet type), measured off the
   // exchanges' two-sided rungs (tailflex.js); dropped on every scanner update
   // and when the max line age changes.
@@ -586,24 +592,9 @@
     show("ticket");
   }
 
-  // How many worse books the Ticket's Others row lists; the rest fold into "N more, worse".
-  const OTHERS_WORSE_SHOWN = 3;
-
-  // The Ticket's "Others" row: every other book at the priced number, best
-  // first, with yours in its place (pricecheck.comparePrice, same rules as the
-  // Edges tag). Hidden for a live ticket (the feed is pregame) or when no
-  // other book posts the number.
-  function renderOtherBooks(ticket, line) {
-    view.othersLabel.hidden = true;
-    view.others.hidden = true;
-    view.others.replaceChildren();
-    if (ticket.live || !ticket.watch || ticket.eventId == null || !scannerState) return;
-    const check = pricecheck.comparePrice(priceIndex(), {
-      eventId: ticket.eventId, periodTypeId: ticket.watch.periodTypeId, betTypeId: ticket.watch.betTypeId,
-      sideIndex: ticket.sideIndex, points: line.points, bookId: ticket.book.id, price: line.price,
-    });
-    const tagEl = priceCheckTagEl(check);
-    if (!tagEl) return;
+  // Every book at the number, best first, yours in its place: the Ticket's
+  // Others row and a row's opened price-check tag share it.
+  function otherBooksListEl(check, yourBookName, yourPrice) {
     const listEl = document.createElement("div");
     listEl.className = "others-list";
     const lineEl = (name, price, className) => {
@@ -617,16 +608,54 @@
       return div;
     };
     for (const entry of check.better) listEl.append(lineEl(entry.bookName, entry.price, "better"));
-    listEl.append(lineEl(`${ticket.book.name} (you)${check.same ? ` +${check.same} same` : ""}`, line.price, "yours"));
-    for (const entry of check.worse.slice(0, OTHERS_WORSE_SHOWN)) listEl.append(lineEl(entry.bookName, entry.price, "worse"));
-    const rest = check.worse.length - OTHERS_WORSE_SHOWN;
-    if (rest > 0) {
-      const more = document.createElement("div");
-      more.className = "worse";
-      more.textContent = `${rest} more, worse`;
-      listEl.append(more);
+    listEl.append(lineEl(`${yourBookName} (you)`, yourPrice, "yours"));
+    for (const entry of check.sameAs) listEl.append(lineEl(entry.bookName, entry.price, "same"));
+    for (const entry of check.worse) listEl.append(lineEl(entry.bookName, entry.price, "worse"));
+    return listEl;
+  }
+
+  // The Skip / Restore chip on a line a book beats (pricecheck.canSkip); null otherwise.
+  function skipChipEl(skipKey, eventStartMs, skipped, label) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "dismiss-chip skip-chip";
+    button.dataset.skipKey = skipKey;
+    button.dataset.eventStartMs = String(eventStartMs);
+    button.dataset.skip = skipped ? "restore" : "skip";
+    button.textContent = skipped ? "Restore" : label;
+    button.title = skipped
+      ? "List this line again now"
+      : "Fold this line into Skipped. It comes back by itself once no book beats this price, or when the game starts.";
+    return button;
+  }
+
+  // The Ticket's "Others" row: every other book at the priced number, best
+  // first, with yours in its place (pricecheck.comparePrice, same rules as the
+  // Edges tag), and a Skip button when a book beats you. Hidden for a live
+  // ticket (the feed is pregame) or when no other book posts the number.
+  function renderOtherBooks(ticket, line) {
+    view.othersLabel.hidden = true;
+    view.others.hidden = true;
+    view.others.replaceChildren();
+    if (ticket.live || !ticket.watch || ticket.eventId == null || !scannerState) return;
+    const spec = {
+      eventId: ticket.eventId, periodTypeId: ticket.watch.periodTypeId, betTypeId: ticket.watch.betTypeId,
+      sideIndex: ticket.sideIndex, points: line.points, bookId: ticket.book.id, bookName: ticket.book.name, price: line.price,
+    };
+    const check = pricecheck.comparePrice(priceIndex(), spec);
+    const tagEl = priceCheckTagEl(check);
+    if (!tagEl) return;
+    view.others.append(tagEl, otherBooksListEl(check, ticket.book.name, line.price));
+    const eventStartMs = ticket.eventStart ? Date.parse(ticket.eventStart.endsWith("Z") ? ticket.eventStart : `${ticket.eventStart}Z`) : NaN;
+    if (pricecheck.canSkip(check) && Number.isFinite(eventStartMs)) {
+      const skipKey = pricecheck.skipKeyOf(spec, ticket.book.id);
+      const skipped = liveEdgeSkips(Date.now())[skipKey] != null;
+      const actions = document.createElement("div");
+      actions.className = "others-actions";
+      actions.append(skipChipEl(skipKey, eventStartMs, skipped, "Skip this bet"));
+      if (skipped) actions.append(" skipped on the Edges tab");
+      view.others.append(actions);
     }
-    view.others.append(tagEl, listEl);
     view.othersLabel.hidden = false;
     view.others.hidden = false;
   }
@@ -1296,6 +1325,29 @@
     return el;
   }
 
+  // Edges rows whose price-check list is open (row keys); tapping the tag toggles it.
+  const openPriceChecks = new Set();
+
+  // A row's price-check line: the tag (tap to open every book at the number)
+  // and, where a book beats the price, Skip, or Restore on a skipped row.
+  // null when no other book posts the number.
+  function priceCheckLineEl(row, skipped) {
+    const tagEl = priceCheckTagEl(row.priceCheck);
+    if (!tagEl) return null;
+    const open = openPriceChecks.has(row.key);
+    tagEl.classList.add("check-toggle");
+    tagEl.dataset.checkKey = row.key;
+    tagEl.textContent = `${tagEl.textContent} ${open ? "▾" : "▸"}`;
+    const line = document.createElement("div");
+    line.className = "edge-pricecheck";
+    line.append(tagEl);
+    if (pricecheck.canSkip(row.priceCheck)) {
+      line.append(skipChipEl(pricecheck.skipKeyOf(row, row.book.id), row.eventStartMs, skipped, "Skip"));
+    }
+    if (!open) return [line];
+    return [line, otherBooksListEl(row.priceCheck, row.book.name, row.price)];
+  }
+
   // "Better: Circa -105, Pinnacle -107 · worse: DraftKings -115 · same number only".
   function describeOtherBooks(check) {
     const list = (entries) => entries.map((entry) => `${entry.bookName} ${fmtAmerican(entry.price)}`).join(", ");
@@ -1307,19 +1359,20 @@
     return parts.join(" · ");
   }
 
-  // One book's line, as a full row.
-  function renderEdgeRow(row) {
+  // One book's line, as a full row; skipped = it sits in the Skipped fold.
+  function renderEdgeRow(row, skipped = false) {
     const li = document.createElement("li");
     const tier = edgeTier(row.edgePct);
-    li.className = `edge-row tier-${tier}${row.isBlurred ? " blurred" : ""}${row.liveStale ? " stale" : ""}${row.key === lastClickedKey ? " last-clicked" : ""}`;
+    li.className = `edge-row tier-${tier}${row.isBlurred ? " blurred" : ""}${row.liveStale ? " stale" : ""}`
+      + `${row.key === lastClickedKey ? " last-clicked" : ""}${skipped ? " skipped" : ""}`;
     li.dataset.key = row.key;
-    li.append(...rowParts(row, tier));
+    li.append(...rowParts(row, tier, skipped));
     return li;
   }
 
   // The two columns every row and card share: content, then the rail of
   // numbers that line up down the list.
-  function rowParts(row, tier) {
+  function rowParts(row, tier, skipped = false) {
     const main = document.createElement("div");
 
     const side = document.createElement("div");
@@ -1361,13 +1414,7 @@
     age.textContent = ` · ${ageParts.filter(Boolean).join(" · ")}`;
     book.append(price, age);
     main.append(side, meta, book);
-    const checkTag = priceCheckTagEl(row.priceCheck);
-    if (checkTag) {
-      const checkLine = document.createElement("div");
-      checkLine.className = "edge-pricecheck";
-      checkLine.append(checkTag);
-      main.append(checkLine);
-    }
+    if (!row.live) main.append(...(priceCheckLineEl(row, skipped) || []));
 
     const rail = document.createElement("div");
     rail.className = "edge-rail";
@@ -1399,8 +1446,7 @@
     age.className = "gl-age";
     age.textContent = [fmtLineAge(row.modifiedMs), fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ");
     main.append(price, age);
-    const checkTag = priceCheckTagEl(row.priceCheck);
-    if (checkTag) main.append(" ", checkTag);
+    main.append(...(priceCheckLineEl(row, false) || []));
 
     const rail = document.createElement("div");
     rail.className = "gl-rail";
@@ -1514,9 +1560,29 @@
     ].filter(Boolean).join(" · ");
   }
 
+  // The Skipped fold under the Edges list: one line that opens the skipped
+  // rows, each with Restore. Empty when nothing is skipped.
+  let skippedFoldOpen = false;
+  function skippedFoldItems(skippedRows) {
+    if (skippedRows.length === 0) return [];
+    const li = document.createElement("li");
+    li.className = "skip-fold";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "skip-fold-toggle";
+    button.textContent = `${skippedFoldOpen ? "▾" : "▸"} ${skippedRows.length} skipped`;
+    const note = document.createElement("span");
+    note.className = "muted";
+    note.textContent = skippedFoldOpen ? "back by itself once no book beats the price" : "open";
+    li.append(button, note);
+    if (!skippedFoldOpen) return [li];
+    return [li, ...skippedRows.map((row) => renderEdgeRow(row, true))];
+  }
+
   function renderEdges() {
     renderLive();
-    const rows = currentEdgeRows();
+    const now = Date.now();
+    const { listed: rows, skipped: skippedRows } = pricecheck.splitSkipped(currentEdgeRows(), liveEdgeSkips(now), now);
     const grouped = state.edgeSettings.groupByMarket;
     const items = grouped ? groupsOf(rows) : rows;
     renderEdgesStatus(items);
@@ -1532,7 +1598,10 @@
     // The scanner rebuilds this list every few seconds; without this the reader
     // is thrown back to the top of it mid-scroll.
     const scrollTop = view.tabEdges.scrollTop;
-    view.edgesList.replaceChildren(...items.slice(0, MAX_EDGE_ROWS).map((item) => (grouped ? renderGroupCard(item) : renderEdgeRow(item))));
+    view.edgesList.replaceChildren(
+      ...items.slice(0, MAX_EDGE_ROWS).map((item) => (grouped ? renderGroupCard(item) : renderEdgeRow(item))),
+      ...skippedFoldItems(skippedRows),
+    );
     view.tabEdges.scrollTop = scrollTop;
     const status = scannerStatus;
     const unit = grouped ? "cards" : "lines";
@@ -1601,6 +1670,24 @@
   });
 
   view.edgesList.addEventListener("click", async (event) => {
+    const skipChip = event.target.closest("button.skip-chip");
+    if (skipChip) {
+      await setEdgeSkipped(skipChip.dataset.skipKey, Number(skipChip.dataset.eventStartMs), skipChip.dataset.skip === "skip");
+      return;
+    }
+    const checkToggle = event.target.closest(".check-toggle");
+    if (checkToggle) {
+      if (openPriceChecks.has(checkToggle.dataset.checkKey)) openPriceChecks.delete(checkToggle.dataset.checkKey);
+      else openPriceChecks.add(checkToggle.dataset.checkKey);
+      renderEdges();
+      return;
+    }
+    if (event.target.closest(".others-list")) return;
+    if (event.target.closest("button.skip-fold-toggle")) {
+      skippedFoldOpen = !skippedFoldOpen;
+      renderEdges();
+      return;
+    }
     const more = event.target.closest("button.group-more");
     if (more) {
       if (expandedGroups.has(more.dataset.group)) expandedGroups.delete(more.dataset.group);
@@ -1641,7 +1728,9 @@
   // What one notification is about: a line (flat list) or a card's best line
   // (grouped), with the rule for notifying the same key again.
   function alertItems() {
-    const rows = alertRows();
+    // A skipped line never alerts while it stays skipped.
+    const now = Date.now();
+    const rows = pricecheck.splitSkipped(alertRows(), liveEdgeSkips(now), now).listed;
     if (!state.edgeSettings.groupByMarket) {
       return rows.map((row) => ({
         key: alertKeyOf(row), row, summary: null,
@@ -1740,7 +1829,8 @@
       .map((row) => withStakeAndRank(row, measurement));
     // A line whose stake against what you hold is $0 has nothing to act on, and
     // one below the Min suggested bet is hidden from the list, so neither alerts.
-    return withBetFlags(selected).filter((row) => betsView.suggestedBetAmount(row.bet.advice) > 0 && meetsMinStake(row));
+    return withBetFlags(selected).filter((row) => betsView.suggestedBetAmount(row.bet.advice) > 0 && meetsMinStake(row))
+      .map((row) => edgeRows.withPriceCheck(row, priceIndex()));
   }
 
   // Runs after every scanner update. Baseline first, then one notification
@@ -2014,6 +2104,11 @@
       state.pins = applied.pins;
       state.betRecords = applied.records;
       takeSharedMarks(applied);
+      if (applied.edgeSkips !== null) {
+        edgeSkipsShared = true;
+        edgeSkips = Object.fromEntries(applied.edgeSkips.map((row) => [row.skipKey, row.eventStartMs]));
+        chrome.storage.local.set({ edgeSkips });
+      }
       state.dismissedBetIds = betsView.keepDismissedOpen(state.dismissedBetIds, state.betRecords);
       noteMatchedStarts();
       if (applied.fillFairs !== state.fillFairs) setFillFairs(applied.fillFairs);
@@ -3012,6 +3107,48 @@
     renderTeasers();
   }
 
+  // The skips whose game is still to start ({skipKey: startMs}); the rest leave storage too.
+  function liveEdgeSkips(now) {
+    const live = Object.fromEntries(Object.entries(edgeSkips).filter(([, startMs]) => startMs > now));
+    if (Object.keys(live).length !== Object.keys(edgeSkips).length) {
+      edgeSkips = live;
+      chrome.storage.local.set({ edgeSkips });
+    }
+    return live;
+  }
+
+  // Skip folds one line into the Edges tab's Skipped line; Restore lists it
+  // again. On a service that serves skips it is written there too (the phone
+  // sees it); a refused write puts the skip back as it was.
+  async function setEdgeSkipped(skipKey, eventStartMs, skipped) {
+    const before = edgeSkips;
+    const next = { ...edgeSkips };
+    if (skipped) next[skipKey] = eventStartMs;
+    else delete next[skipKey];
+    edgeSkips = next;
+    chrome.storage.local.set({ edgeSkips });
+    renderEdges();
+    if (state.ticket && !state.error) renderOtherBooks(state.ticket, pricedLine(state.ticket));
+    if (!edgeSkipsShared) return;
+    try {
+      const reply = await serviceRequest("POST", "/edge_skips.json", { skipKey, eventStartMs, skipped });
+      if (!reply || !Array.isArray(reply.edgeSkips)) throw new Error("edge_skips.json reply has no edgeSkips array");
+      edgeSkips = Object.fromEntries(reply.edgeSkips.map((row) => [row.skipKey, row.eventStartMs]));
+    } catch (error) {
+      console.warn("[unabated-ticket] skip not saved:", error.message);
+      edgeSkips = before;
+    }
+    chrome.storage.local.set({ edgeSkips });
+    renderEdges();
+    if (state.ticket && !state.error) renderOtherBooks(state.ticket, pricedLine(state.ticket));
+  }
+
+  view.others.addEventListener("click", async (event) => {
+    const skipChip = event.target.closest("button.skip-chip");
+    if (!skipChip) return;
+    await setEdgeSkipped(skipChip.dataset.skipKey, Number(skipChip.dataset.eventStartMs), skipChip.dataset.skip === "skip");
+  });
+
   function teaserModel() {
     if (!scannerState || !teaserBoardReady()) return null;
     const now = Date.now();
@@ -3368,7 +3505,7 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = edgeRows.sanitizeStakeSettings(local);
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex", "teaserRefs", "teaserBlocked", "settingsSync", "sharedMarksMigratedTo"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex", "teaserRefs", "teaserBlocked", "edgeSkips", "settingsSync", "sharedMarksMigratedTo"]);
     if (relay.settingsSync && typeof relay.settingsSync === "object" && typeof relay.settingsSync.serviceUrl === "string") settingsSync = relay.settingsSync;
     if (typeof relay.sharedMarksMigratedTo === "string") sharedMarksMigratedTo = relay.sharedMarksMigratedTo;
     // The reference fairs the last Teasers list was built on: a seed with no
@@ -3377,6 +3514,9 @@
     if (Array.isArray(relay.teaserRefs)) {
       const pairs = relay.teaserRefs.filter((pair) => Array.isArray(pair) && typeof pair[0] === "string" && typeof pair[1] === "number");
       teaserBuild = { key: null, refs: new Map(pairs) };
+    }
+    if (relay.edgeSkips && typeof relay.edgeSkips === "object") {
+      edgeSkips = Object.fromEntries(Object.entries(relay.edgeSkips).filter(([, startMs]) => typeof startMs === "number"));
     }
     if (relay.teaserBlocked && typeof relay.teaserBlocked === "object") {
       teaserBlocked = Object.fromEntries(Object.entries(relay.teaserBlocked).filter(([, startMs]) => typeof startMs === "number"));
