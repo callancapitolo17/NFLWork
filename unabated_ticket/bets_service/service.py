@@ -100,6 +100,10 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     null resets it to the default, an unknown field or a bad
                                     value is a 400 naming it (same Content-Type guard as the
                                     POSTs: a web page cannot send JSON cross-origin)
+           GET /balances.json       {generatedAt, balances: {venue: {cash, inBets, available,
+                                    creditLimit, fetchedAt, error}}}, the live per-venue
+                                    account balance read after each poll (balances.py;
+                                    memory only, a failed read keeps the last numbers)
            GET /edges.json          the server runner's Edges list (config.RUNNER_URL,
                                     server/edges_payload.js documents it), passed through
                                     as it came; 502 {error, runnerUrl} when the runner
@@ -162,6 +166,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from unabated_ticket.bets_service import bfa_teaser, config
+from unabated_ticket.bets_service.balances import BalanceBook, balances_payload, read_balance_once
 from unabated_ticket.bets_service.log_setup import setup_logging
 from unabated_ticket.bets_service.normalize import parse_iso_ms, utc_now_iso
 from unabated_ticket.bets_service.sources import Source, bet105, draftkings
@@ -308,7 +313,8 @@ def run_source_once(source: Source, store: BetsStore) -> bool:
         return False
 
 
-def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event) -> None:
+def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event,
+              balance_book: BalanceBook | None = None) -> None:
     """Run each source on its own cadence until `stop`. A store write that
     raises (disk full, a locked file) is logged and retried next poll — the
     thread must outlive it, or the HTTP side would serve ageing data with no
@@ -322,6 +328,8 @@ def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event) ->
                     run_source_once(source, store)
                 except Exception:  # noqa: BLE001 — the poll thread is the service's heartbeat
                     log.exception("store write failed for source %s; retrying next poll", source.name)
+                if balance_book is not None:
+                    read_balance_once(source, balance_book)
                 next_due[source.name] = time.monotonic() + source.poll_sec
         stop.wait(POLL_TICK_SEC)
 
@@ -717,7 +725,8 @@ def parse_days(query: str) -> int | str:
 def make_handler(store: BetsStore, started_at: float, source_names: list[str] = (),
                  runner_url: str | None = None, runner_timeout_sec: float | None = None,
                  extra_hosts: tuple[str, ...] | None = None,
-                 teaser_placer: bfa_teaser.BFATeaserPlacer | None = None) -> type[BaseHTTPRequestHandler]:
+                 teaser_placer: bfa_teaser.BFATeaserPlacer | None = None,
+                 balance_book: BalanceBook | None = None) -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
     EXTRA_ALLOWED_HOSTS (the tests pass their own). `teaser_placer` is the
@@ -737,6 +746,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/settings.json":
                 self._send_json(200, store.load_edge_settings())
+                return
+            if url.path == "/balances.json":
+                self._send_json(200, balances_payload(balance_book or BalanceBook()))
                 return
             if url.path == "/bets.json":
                 days = parse_days(url.query)
@@ -1095,10 +1107,12 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
     stop = threading.Event()
     started_at = time.monotonic()
     source_names = [source.name for source in sources] + list(PUSHED_SOURCES)
+    balance_book = BalanceBook()
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
-                                                            teaser_placer=teaser_placer_for(sources)))
+                                                            teaser_placer=teaser_placer_for(sources),
+                                                            balance_book=balance_book))
     server.daemon_threads = True
-    poller = threading.Thread(target=poll_loop, args=(sources, store, stop), name="poll", daemon=True)
+    poller = threading.Thread(target=poll_loop, args=(sources, store, stop, balance_book), name="poll", daemon=True)
 
     def request_stop(_signum, _frame) -> None:
         log.info("stopping")

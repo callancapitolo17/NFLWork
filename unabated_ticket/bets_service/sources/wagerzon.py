@@ -92,6 +92,9 @@ log = logging.getLogger(__name__)
 BASE_URL = "https://backend.wagerzon.com"
 HISTORY_URL = f"{BASE_URL}/wager/HistoryHelper.aspx"
 OPEN_BETS_URL = f"{BASE_URL}/wager/OpenBetsHelper.aspx"
+# Account figures as dollar strings like "2,075 " under `result` (verified 2026-10-13).
+# The same body also carries the plaintext password: only the fields named here are read.
+PLAYER_INFO_URL = f"{BASE_URL}/wager/PlayerInfoHelper.aspx"
 USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36")
 XHR_HEADERS = {"X-Requested-With": "XMLHttpRequest", "Accept": "application/json"}
@@ -663,6 +666,33 @@ class WagerzonSource:
         log.info("wagerzon: %d open tickets + %d history rows -> %d records (%d open, %d unmatchable)",
                  len(open_tickets), len(history), len(records), n_open, n_unmatchable)
         return records
+
+    def balance(self) -> dict:
+        """The account balance for the tracker's Balance by book card (balances.py)."""
+        return balance_of_player_info(self._get_json(PLAYER_INFO_URL, None))
+
+
+def dollars_of_text(value: object, field: str) -> float:
+    """A PlayerInfoHelper dollar string ("2,075 ", "-1,744 ") as a float; raises on anything else."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise RuntimeError(f"Wagerzon {field}: expected a dollar string, got {type(value).__name__}")
+    text = str(value).replace(",", "").strip()
+    try:
+        return round_cents(float(text))
+    except ValueError as error:
+        raise RuntimeError(f"Wagerzon {field}: expected a dollar string, got {value!r}") from error
+
+
+def balance_of_player_info(body: object) -> dict:
+    """cash = CurrentBalance, inBets = AmountAtRisk, available = RealAvailBalance
+    (credit included), creditLimit = CreditLimit."""
+    result = body.get("result") if isinstance(body, dict) else None
+    if not isinstance(result, dict):
+        raise RuntimeError("Wagerzon PlayerInfoHelper: expected a `result` object")
+    return {"cash": dollars_of_text(result.get("CurrentBalance"), "CurrentBalance"),
+            "inBets": dollars_of_text(result.get("AmountAtRisk"), "AmountAtRisk"),
+            "available": dollars_of_text(result.get("RealAvailBalance"), "RealAvailBalance"),
+            "creditLimit": dollars_of_text(result.get("CreditLimit"), "CreditLimit")}
 
 
 def source_if_configured() -> WagerzonSource | None:

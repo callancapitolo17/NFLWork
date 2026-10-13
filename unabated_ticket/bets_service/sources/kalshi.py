@@ -318,6 +318,21 @@ def apply_net_position_pnl(records: list[dict], fills: list[dict],
 ApiCall = Callable[[str, str], tuple[int, object, dict]]
 
 
+# Integer cents (verified 2026-10-13): `balance` is cash, open positions left out;
+# `portfolio_value` is what the open positions are worth now.
+BALANCE_PATH = "/portfolio/balance"
+
+
+def balance_of_kalshi(body: dict) -> dict:
+    cash_cents = body.get("balance")
+    positions_cents = body.get("portfolio_value")
+    for field, value in (("balance", cash_cents), ("portfolio_value", positions_cents)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RuntimeError(f"Kalshi {BALANCE_PATH}: expected integer cents in {field}, got {value!r}")
+    cash = cash_cents / 100
+    return {"cash": cash, "inBets": positions_cents / 100, "available": cash, "creditLimit": None}
+
+
 def _paginate(api: ApiCall, base_path: str, items_key: str) -> Iterator[dict]:
     """Walk a Kalshi list endpoint by cursor. Raises on any non-200 page so a
     partial pull is never mistaken for a complete one."""
@@ -488,3 +503,10 @@ class KalshiSource:
         log.info("kalshi: %d fills, %d positions -> %d records", len(fills), len(positions),
                  len(records))
         return records
+
+    def balance(self) -> dict:
+        """The account balance for the tracker's Balance by book card (balances.py)."""
+        status, body, _headers = self._api("GET", BALANCE_PATH)
+        if status != 200 or not isinstance(body, dict):
+            raise RuntimeError(f"GET {BALANCE_PATH} expected 200 with a JSON body, got {status}")
+        return balance_of_kalshi(body)

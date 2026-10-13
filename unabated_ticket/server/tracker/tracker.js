@@ -1,6 +1,6 @@
-// Bet Tracker page: fetches the bets service's /bets.json (all history) and
-// /scenarios.json (the server runner's live game cards, passed through by the
-// bets service), builds tickets with trackerstats.js and renders the
+// Bet Tracker page: fetches the bets service's /bets.json (all history),
+// /balances.json (each book's live balance) and /scenarios.json (the server
+// runner's live game cards, passed through by the bets service), builds tickets with trackerstats.js and renders the
 // Overview, Live, Open, Analysis and Bets views. Its one write is the Bets view's Remove / Restore: POST
 // /exclusions.json, which marks a BFA or Wagerzon bet as not Cal's
 // (bets.duckdb::bet_exclusions; the bet itself stays) and takes it out of
@@ -19,6 +19,9 @@
   const BETS_URL = "/bets.json?days=3650";
   const EXCLUSIONS_URL = "/exclusions.json";
   const SCENARIOS_URL = "/scenarios.json";
+  // Live per-book account balance (bets service balances.py). Cal chose live over
+  // a midnight snapshot (2026-10-13), knowing it shows today's swings.
+  const BALANCES_URL = "/balances.json";
   const VIEWS = ["overview", "live", "open", "analysis", "bets"];
   // Cal's ask (2026-10-05): only these books carry bets that are not his (service.EXCLUDABLE_VENUES).
   const REMOVABLE_VENUES = ["BFA", "Wagerzon"];
@@ -68,6 +71,8 @@
   // last read failed; the Live tab falls back to a plain list without them.
   let scenarios = null;
   let scenariosError = null;
+  let balances = null;
+  let balancesError = null;
   let allTickets = [];
   let tickets = [];
 
@@ -363,6 +368,7 @@
     // A range ending yesterday still shows this week's calendar, today's cell included.
     renderCalendar(pickedCalendarDay() ? state.calendarPick.anchor : last === lastShownDay() ? stats.pacificDay(Date.now()) : last);
     renderDaily(series);
+    renderBalances();
     renderVenues(settled);
     renderSettledBets(settled, total, missing);
   }
@@ -529,6 +535,51 @@
         ]),
       ]);
     })));
+  }
+
+  /**
+   * Balance by book (Cal, 2026-10-12): one row per book the service reads a
+   * balance for. A book never read shows "unavailable", never $0, and stays out
+   * of the total; a failed read keeps its last numbers and says how old they are.
+   */
+  function renderBalances() {
+    const rows = Object.entries((balances && balances.balances) || {})
+      .map(([venue, reading]) => ({ venue, label: stats.venueName(venue), ...reading }))
+      .sort((a, b) => (b.cash ?? -Infinity) - (a.cash ?? -Infinity));
+    setText("balances-caption", balancesError ? "Could not load: " + balancesError : "live");
+    if (!rows.length) {
+      fill("ov-balances", emptyNote(balances ? "No book reports a balance yet." : "Loading…"));
+      return;
+    }
+    const read = rows.filter((row) => row.cash !== null);
+    const sum = (values) => values.reduce((total, value) => total + (value ?? 0), 0);
+    const columns = [
+      { label: "Book", cell: (row) => row.label },
+      { label: "Cash", right: true, num: true, cell: (row) => row.cash === null ? unavailablePill(row) : balanceMoney(row.cash) },
+      { label: "In bets", right: true, num: true, cell: (row) => row.cash === null || row.inBets === null ? "" : balanceMoney(row.inBets) },
+      { label: "Available", right: true, num: true,
+        cell: (row) => row.cash === null ? "" : balanceMoney(row.available ?? row.cash) + (row.creditLimit ? "*" : "") },
+      { label: "Updated", right: true, className: (row) => row.error ? "warn" : "muted",
+        cell: (row) => row.isTotal ? "" : row.fetchedAt ? ago(row.fetchedAt) : "never" },
+    ];
+    const totalRow = { label: "Total", cash: sum(read.map((row) => row.cash)), inBets: sum(read.map((row) => row.inBets)),
+      available: sum(read.map((row) => row.available ?? row.cash)), creditLimit: null, fetchedAt: null, isTotal: true };
+    const tbl = table(columns, [...rows, totalRow], { rowClass: (row) => row.isTotal ? "total" : "" });
+    const credit = rows.filter((row) => row.creditLimit);
+    const notes = ["Cash leaves out money in open bets. Kalshi's in bets is what the positions are worth now."];
+    if (credit.length) notes.push("* Includes " + credit.map((row) => row.label + "'s " + balanceMoney(row.creditLimit)).join(", ") + " credit.");
+    if (read.length < rows.length) notes.push("The total leaves out books shown as unavailable.");
+    fill("ov-balances", el("div", { className: "scroll" }, [tbl]),
+      el("div", { className: "balance-notes" }, notes.map((text) => el("span", { text }))));
+  }
+
+  /** A balance can be negative (a credit book you owe); its sign always shows. */
+  function balanceMoney(value) {
+    return sign(value, false) + money(Math.abs(value));
+  }
+
+  function unavailablePill(row) {
+    return el("span", { className: "pill-warn", text: "unavailable", title: row.error || "no reading yet" });
   }
 
   function timeLabel(ms) {
@@ -1173,8 +1224,23 @@
     }
   }
 
+  // The balance card; a failure keeps the last balances read and says why.
+  async function refreshBalances() {
+    try {
+      const response = await fetch(BALANCES_URL, { cache: "no-store" });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error((body && body.error) || "the bets service answered HTTP " + response.status);
+      if (!body || typeof body.balances !== "object" || body.balances === null) throw new Error("balances.json has no balances");
+      balances = body;
+      balancesError = null;
+    } catch (error) {
+      balancesError = error.message;
+    }
+  }
+
   async function refresh() {
     const scenariosRead = refreshScenarios();
+    const balancesRead = refreshBalances();
     try {
       const response = await fetch(BETS_URL, { cache: "no-store" });
       if (!response.ok) throw new Error("the bets service answered HTTP " + response.status);
@@ -1184,7 +1250,7 @@
     } catch (error) {
       showBanner("Could not load bets: " + error.message + (payload ? ". Showing the last load." : "."));
     }
-    await scenariosRead;
+    await Promise.all([scenariosRead, balancesRead]);
     render();
   }
 

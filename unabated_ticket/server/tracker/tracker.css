@@ -249,3 +249,9 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
   .game-head, .game-body { padding-inline: 14px; }
 }
 #view-live .note { font-size: 13px; color: var(--muted); margin: 0; }
+
+/* Balance by book (Overview side column, above By venue) */
+.stack.gap { gap: 20px; }
+.tbl tr.total td { border-top: 1px solid var(--line); font-weight: 600; }
+.balance-notes { display: flex; flex-direction: column; gap: 4px; padding: 10px 22px 16px; font-size: 12px; color: var(--faint); }
+.pill-warn { font: 11px var(--sans); padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--warn); }
