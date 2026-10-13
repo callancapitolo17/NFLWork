@@ -19,6 +19,8 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     exclusions: [bet_exclusions rows, newest first],
                                     dismissals: [{betId, dismissedAt}] (open bets only),
                                     teaserBlocks: [{marketKey, eventStartMs, blockedAt}]
+                                    (games still to start),
+                                    edgeSkips: [{skipKey, eventStartMs, skippedAt}]
                                     (games still to start)}
            GET /health              {ok, generatedAt, uptimeSec, sources}
            POST /crosswalk.json     body {rows: [{venue, league, venueTeamKey,
@@ -61,6 +63,9 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
            POST /teaser_blocks.json body {marketKey, eventStartMs, blocked: bool} -> {ok,
                                     changed, teaserBlocks} (the Teasers tab's Can't tease /
                                     Restore on a spread or total; same Content-Type guard)
+           POST /edge_skips.json    body {skipKey, eventStartMs, skipped: bool} -> {ok,
+                                    changed, edgeSkips} (the Edges Skip / Restore on a
+                                    line a book beats; same Content-Type guard)
            POST /bet105.json        body {fetchedAt, feeds: {prematch: [betGroup], live:
                                     [betGroup]}, settled: [wager]} -> {ok, count, settled,
                                     closed, skipped}, or {error} -> {ok, recorded: "error"}
@@ -132,7 +137,8 @@ bets.duckdb::bet_closing_fairs on POST /closing_fairs.json (newest observation
 wins); INSERTs into / DELETEs from bets.duckdb::bet_exclusions on POST
 /exclusions.json; INSERTs into / DELETEs from bets.duckdb::bet_dismissals on
 POST /dismissals.json; UPSERTs / DELETEs bets.duckdb::teaser_blocks on POST
-/teaser_blocks.json; rotating log at
+/teaser_blocks.json and bets.duckdb::edge_skips on POST /edge_skips.json;
+rotating log at
 bets_service.log. A poll that raises writes a failed source_runs row and
 leaves `bets` untouched — a dark source never blanks the list. PUT
 /settings.json UPSERTs the one row of bets.duckdb::edge_settings. POST
@@ -199,6 +205,8 @@ MAX_EXCLUSION_IDS_PER_POST = 50
 MAX_DISMISSAL_IDS_PER_POST = 200
 # teaser.js marketKeyOf: "<Unabated eventId>:bt2" (spread) or ":bt3" (total).
 TEASER_MARKET_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}:bt[23]$")
+# pricecheck.js skipKeyOf: one line (game, period, market, side, number) at one book.
+EDGE_SKIP_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}:\d{1,4}:\d{1,4}:\d{1,2}\|(ml|-?\d{1,4}(\.\d{1,3})?)@\d{1,6}$")
 # American odds run from -100 down and +100 up; the gap between is no price.
 MIN_AMERICAN_MAGNITUDE = 100
 # The Edges settings' allowed values, as the panel's inputs enforce them
@@ -338,7 +346,7 @@ def bets_payload(store: BetsStore, days: int, source_names: list[str] = ()) -> d
             "bets": store.load_bets(days, now), "crosswalk": store.load_crosswalk(), "pins": store.load_pins(),
             "fillFairs": store.load_fill_fairs(days, now), "closingFairs": store.load_closing_fairs(days, now),
             "exclusions": store.load_exclusions(), "dismissals": store.load_dismissals(),
-            "teaserBlocks": store.load_teaser_blocks(now)}
+            "teaserBlocks": store.load_teaser_blocks(now), "edgeSkips": store.load_edge_skips(now)}
 
 
 def _non_empty_string(value: object) -> bool:
@@ -581,6 +589,22 @@ def validate_teaser_block_request(body: object) -> tuple[str, datetime, bool] | 
     return market_key, datetime.fromtimestamp(event_start_ms / 1000, timezone.utc), body["blocked"]
 
 
+def validate_edge_skip_request(body: object) -> tuple[str, datetime, bool] | str:
+    """(skip key, game start, skipped) of a POST /edge_skips.json body, or
+    what was expected and what was found."""
+    if not isinstance(body, dict):
+        return f"body must be an object, got {type(body).__name__}"
+    skip_key = body.get("skipKey")
+    if not isinstance(skip_key, str) or not EDGE_SKIP_KEY_PATTERN.match(skip_key):
+        return f"skipKey must look like '<eventId>:<period>:<betType>:<side>|<points|ml>@<bookId>', got {skip_key!r}"
+    event_start_ms = body.get("eventStartMs")
+    if not _is_whole_number(event_start_ms) or event_start_ms <= 0:
+        return f"eventStartMs must be the game's start in whole epoch milliseconds, got {event_start_ms!r}"
+    if not isinstance(body.get("skipped"), bool):
+        return f"skipped must be true or false, got {body.get('skipped')!r}"
+    return skip_key, datetime.fromtimestamp(event_start_ms / 1000, timezone.utc), body["skipped"]
+
+
 def _is_whole_number(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -744,7 +768,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             url = urlparse(self.path)
             if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/closing_fairs.json",
-                                "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/bet105.json",
+                                "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
                                 "/draftkings.json", "/place_teaser.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
@@ -769,6 +793,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/teaser_blocks.json":
                 self._set_teaser_block(body)
+                return
+            if url.path == "/edge_skips.json":
+                self._set_edge_skip(body)
                 return
             if url.path == "/bet105.json":
                 self._push_bet105(body)
@@ -890,6 +917,17 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             now = _now()
             changed = store.set_teaser_block(market_key, event_start, blocked, now)
             self._send_json(200, {"ok": True, "changed": changed, "teaserBlocks": store.load_teaser_blocks(now)})
+
+        # POST /edge_skips.json: skip (or restore) one Edges line.
+        def _set_edge_skip(self, body: object) -> None:
+            request = validate_edge_skip_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            skip_key, event_start, skipped = request
+            now = _now()
+            changed = store.set_edge_skip(skip_key, event_start, skipped, now)
+            self._send_json(200, {"ok": True, "changed": changed, "edgeSkips": store.load_edge_skips(now)})
 
         # POST /bet105.json: the extension's read of the account, as one source
         # run — a complete push UPSERTs its records (a graded wager over its open

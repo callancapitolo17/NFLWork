@@ -93,6 +93,8 @@ function rowView(row, moveContext) {
     // Other books at the same number (pricecheck.js): the comparison and its tag.
     priceCheck: row.priceCheck ?? null,
     priceCheckTag: pricecheck.priceCheckTag(row.priceCheck),
+    // The Skip key, only where a book beats the price (pricecheck.canSkip).
+    skipKey: pricecheck.canSkip(row.priceCheck) ? pricecheck.skipKeyOf(row, row.book.id) : null,
   };
 }
 
@@ -139,6 +141,7 @@ function unmatchedView(betRecords, boardLines, knownStarts, now, dismissedIds) {
 
 // The /edges.json body.
 //   input  {feedState, scannerStatus, history, betRecords, fillFairIndex, knownStarts, dismissedIds,
+//           edgeSkips ([{skipKey, eventStartMs}], bets.duckdb::edge_skips),
 //           stakeSettings, edgeSettings, settingsStatus {source, error, okAt, updatedAt},
 //           betsStatus {okAt, error, unreachableSince, generatedAt, sources},
 //           boardLines, ladderReaderOf, teasers (teaser.openTeasers),
@@ -147,11 +150,12 @@ function buildEdgesPayload(input) {
   const { feedState, edgeSettings, stakeSettings, now } = input;
   // No Unabated tab on a server, so "follow Unabated" is every live book.
   const effective = edgeRows.effectiveFilter(edgeSettings, feedState, null, null);
-  const rows = edgeRows.listedEdgeRows(feedState, {
+  const skips = Object.fromEntries((input.edgeSkips || []).map((skip) => [skip.skipKey, skip.eventStartMs]));
+  const { listed: rows, skipped: skippedRows } = pricecheck.splitSkipped(edgeRows.listedEdgeRows(feedState, {
     edgeSettings, stakeSettings, effective, records: input.betRecords,
     boardLines: input.boardLines, ladderReaderOf: input.ladderReaderOf, teasers: input.teasers,
     measurement: input.measurement, now,
-  });
+  }), skips, now);
   const grouped = edgeSettings.groupByMarket;
   const items = grouped ? edgeRows.groupEdgeRows(rows, edgeSettings.sortBy) : rows;
   const moveContext = { history: input.history || {}, fillFairIndex: input.fillFairIndex, now };
@@ -181,6 +185,8 @@ function buildEdgesPayload(input) {
     total: items.length,
     maxShown: edgeRows.MAX_EDGE_ROWS,
     items: items.slice(0, edgeRows.MAX_EDGE_ROWS).map((item) => (grouped ? cardView(item, moveContext) : rowView(item, moveContext))),
+    // The rows Skipped on either page, still beaten and still to start (pricecheck.splitSkipped).
+    skipped: skippedRows.map((row) => rowView(row, moveContext)),
   };
 }
 
