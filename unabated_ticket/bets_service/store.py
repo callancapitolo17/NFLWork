@@ -58,6 +58,10 @@ writer). Tables:
                marketKeyOf) Cal marked "Can't tease" (Buckeye keeps some CFB
                games off its teaser menu), UPSERT on the key, DELETE on
                Restore. Served only until the game starts; never pruned.
+  edge_skips   one row per Edges line Cal skipped (the Skip chip on a row a
+               book beats; pricecheck.js skipKeyOf: '<rung>@<bookId>'), UPSERT
+               on the key, DELETE on Restore. Served only until the game
+               starts; never pruned.
   edge_settings  at most ONE row (settings_id = 1): the Edges settings the
                server runner (unabated_ticket/server/runner.js, phone page plan
                step 1) reads every cycle, written by PUT /settings.json and
@@ -162,6 +166,11 @@ CREATE TABLE IF NOT EXISTS teaser_blocks (
     market_key   VARCHAR PRIMARY KEY,    -- teaser.js marketKeyOf: '<eventId>:bt2' spread, ':bt3' total
     event_start  TIMESTAMPTZ NOT NULL,   -- the game's start: the block is served until then
     blocked_at   TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE IF NOT EXISTS edge_skips (
+    skip_key     VARCHAR PRIMARY KEY,    -- pricecheck.js skipKeyOf: '<eventId>:<period>:<betType>:<side>|<points|ml>@<bookId>'
+    event_start  TIMESTAMPTZ NOT NULL,   -- the game's start: the skip is served until then
+    skipped_at   TIMESTAMPTZ NOT NULL
 );
 CREATE TABLE IF NOT EXISTS edge_settings (
     settings_id           INTEGER PRIMARY KEY CHECK (settings_id = 1),  -- one row
@@ -311,6 +320,19 @@ SELECT market_key, epoch_ms(event_start), epoch(blocked_at)
 FROM teaser_blocks
 WHERE event_start > ?
 ORDER BY event_start, market_key
+"""
+
+_UPSERT_EDGE_SKIP = """
+INSERT INTO edge_skips (skip_key, event_start, skipped_at) VALUES (?, ?, ?)
+ON CONFLICT (skip_key) DO UPDATE SET event_start = excluded.event_start, skipped_at = excluded.skipped_at
+"""
+
+# A skip is moot once its game has started, like a teaser block.
+_SELECT_EDGE_SKIPS = """
+SELECT skip_key, epoch_ms(event_start), epoch(skipped_at)
+FROM edge_skips
+WHERE event_start > ?
+ORDER BY event_start, skip_key
 """
 
 # The settings fields in the API's camelCase, in column order: the shape
@@ -785,6 +807,24 @@ class BetsStore:
             rows = self._con.execute(_SELECT_TEASER_BLOCKS, [now]).fetchall()
         return [{"marketKey": market_key, "eventStartMs": int(event_start_ms), "blockedAt": _epoch_to_iso(blocked_at)}
                 for market_key, event_start_ms, blocked_at in rows]
+
+    def set_edge_skip(self, skip_key: str, event_start: datetime, skipped: bool, at: datetime) -> int:
+        """Skip (UPSERT) or restore (DELETE) one Edges line. Returns how many
+        rows changed (an UPSERT always counts 1)."""
+        with self._lock:
+            if skipped:
+                [count] = self._con.execute(_UPSERT_EDGE_SKIP, [skip_key, event_start, at]).fetchone()
+            else:
+                [count] = self._con.execute("DELETE FROM edge_skips WHERE skip_key = ?", [skip_key]).fetchone()
+        log.info("edge skips: %s %s", "skipped" if skipped else "restored", skip_key)
+        return count
+
+    def load_edge_skips(self, now: datetime) -> list[dict]:
+        """[{skipKey, eventStartMs, skippedAt}] of the skips whose game is still to start."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_EDGE_SKIPS, [now]).fetchall()
+        return [{"skipKey": skip_key, "eventStartMs": int(event_start_ms), "skippedAt": _epoch_to_iso(skipped_at)}
+                for skip_key, event_start_ms, skipped_at in rows]
 
     def load_edge_settings(self) -> dict:
         """{settings: {field: value or None}, updatedAt: ISO or None} — every

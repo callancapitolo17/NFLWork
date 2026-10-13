@@ -175,10 +175,11 @@
   //   held     {records, crosswalk, pins, fillFairs} as last applied
   //   payload  the parsed /bets.json body; now  epoch ms (the retention prune)
   // Returns {records, crosswalk, pins, fillFairs, generatedAt, exclusions,
-  // dismissals, teaserBlocks, sources}: dismissals ([{betId, dismissedAt}],
-  // open bets only) and teaserBlocks ([{marketKey, eventStartMs, blockedAt}],
-  // games still to start) are the shared Dismiss and Can't tease marks, null
-  // from an older service that has none;
+  // dismissals, teaserBlocks, edgeSkips, sources}: dismissals ([{betId,
+  // dismissedAt}], open bets only), teaserBlocks ([{marketKey, eventStartMs,
+  // blockedAt}]) and edgeSkips ([{skipKey, eventStartMs, skippedAt}], both
+  // games still to start) are the shared Dismiss, Can't tease and Skip marks,
+  // null from an older service that has none;
   // records merged on native id (betsview.mergeServicePayload: pins applied,
   // team keys filled, pruned); the service's crosswalk and pins are the truth,
   // and a payload without them (an older service) keeps the held ones; saved
@@ -197,6 +198,7 @@
       exclusions: Array.isArray(payload.exclusions) ? payload.exclusions : null,
       dismissals: Array.isArray(payload.dismissals) ? payload.dismissals : null,
       teaserBlocks: Array.isArray(payload.teaserBlocks) ? payload.teaserBlocks : null,
+      edgeSkips: Array.isArray(payload.edgeSkips) ? payload.edgeSkips : null,
       sources: payload.sources && typeof payload.sources === "object" ? payload.sources : {},
     };
   }

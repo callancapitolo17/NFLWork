@@ -38,7 +38,7 @@ function overSpec(bookId, price, points) {
   return { eventId: 100, periodTypeId: 1, betTypeId: 3, sideIndex: 0, points: points ?? 47.5, bookId, price };
 }
 
-test("counts books that beat the price at the same number, best first; 2+ would skip", () => {
+test("counts books that beat the price at the same number, best first; 2+ reads amber", () => {
   const state = stateWith([
     [1, 0, 47.5, -112], [2, 0, 47.5, -105], [3, 0, 47.5, -107], [4, 0, 47.5, -115], [5, 0, 47.5, -112],
   ]);
@@ -50,7 +50,7 @@ test("counts books that beat the price at the same number, best first; 2+ would 
   assert.equal(check.bookCount, 5);
   assert.equal(check.wouldSkip, true);
   assert.equal(check.outlier, null);
-  assert.deepEqual(pricecheck.priceCheckTag(check), { kind: "skip", label: "2 books better · would skip" });
+  assert.deepEqual(pricecheck.priceCheckTag(check), { kind: "skip", label: "2 books better" });
 });
 
 test("one book better tags but does not skip; best price says so", () => {
@@ -134,13 +134,32 @@ test("a moneyline matches across books whatever points field they send", () => {
   assert.equal(check.better.length, 1);
 });
 
-test("the header counts would-skip rows and outliers; empty when there are none", () => {
+test("the header counts outliers; empty when there are none", () => {
   const rows = [
-    { priceCheck: { wouldSkip: true, outlier: null } }, { priceCheck: { wouldSkip: true, outlier: null } },
+    { priceCheck: { wouldSkip: true, outlier: null } },
     { priceCheck: { wouldSkip: false, outlier: { nextBest: {} } } }, { priceCheck: null },
   ];
-  assert.equal(pricecheck.describePriceChecks(rows), "2 would skip: 2+ books better · 1 outlier (test mode, nothing hidden)");
-  assert.equal(pricecheck.describePriceChecks([{ priceCheck: { wouldSkip: false, outlier: null } }]), "");
+  assert.equal(pricecheck.describePriceChecks(rows), "1 outlier to check");
+  assert.equal(pricecheck.describePriceChecks([{ priceCheck: { wouldSkip: true, outlier: null } }]), "");
+});
+
+test("a skipped row folds only while a book beats it and its game is still to start", () => {
+  const beaten = { better: [{ bookName: "Circa", price: -105 }] };
+  const row = (eventId, priceCheck, eventStartMs) => ({
+    eventId, periodTypeId: 1, betTypeId: 3, sideIndex: 0, points: 47.5, book: { id: 4 }, priceCheck, eventStartMs,
+  });
+  const skipped = row(1, beaten, NOW + HOUR);
+  const nowBest = row(2, { better: [] }, NOW + HOUR);
+  const started = row(3, beaten, NOW - HOUR);
+  const notSkipped = row(4, beaten, NOW + HOUR);
+  const skips = {};
+  for (const r of [skipped, nowBest, started]) skips[pricecheck.skipKeyOf(r, 4)] = r.eventStartMs;
+  assert.equal(pricecheck.skipKeyOf(skipped, 4), "1:1:3:0|47.5@4");
+  const { listed, skipped: folded } = pricecheck.splitSkipped([skipped, nowBest, started, notSkipped], skips, NOW);
+  assert.deepEqual(folded, [skipped]);
+  assert.deepEqual(listed, [nowBest, started, notSkipped]);
+  assert.equal(pricecheck.canSkip({ better: [] }), false);
+  assert.equal(pricecheck.canSkip(null), false);
 });
 
 test("every Edges row carries its price check, on the real NFL slice", () => {
@@ -177,7 +196,21 @@ test("the phone's /edges.json carries each row's check, its tag and the header c
   });
   // The slice's Bears ML: BetMGM and Sports Interaction -145 lead SouthPoint's -150.
   const southPoint = payload.items.find((row) => row.betTypeId === 1 && row.book.name === "SouthPoint" && row.sideIndex === 0);
-  assert.deepEqual(southPoint.priceCheckTag, { kind: "skip", label: "2 books better · would skip" });
+  assert.deepEqual(southPoint.priceCheckTag, { kind: "skip", label: "2 books better" });
   assert.deepEqual(southPoint.priceCheck.better.map((entry) => entry.price), [-145, -145]);
-  assert.equal(payload.priceCheck, "1 would skip: 2+ books better (test mode, nothing hidden)");
+  assert.equal(payload.priceCheck, "");
+  assert.equal(southPoint.skipKey, pricecheck.skipKeyOf(southPoint, southPoint.book.id));
+  assert.deepEqual(payload.skipped, []);
+
+  // Skipped on either page: the row leaves the list for payload.skipped while its game is to start.
+  const skipped = edgesPayload.buildEdgesPayload({
+    feedState: state, scannerStatus: null, history: {}, betRecords: [], fillFairIndex: new Map(), knownStarts: {},
+    stakeSettings: edgeRows.DEFAULT_STAKE_SETTINGS, edgeSettings, settingsStatus: {}, betsStatus: {},
+    boardLines: edgeRows.boardLines(state), ladderReaderOf: edgeRows.createLadderReaders(state), teasers: [],
+    measurement: tailflex.measureTailFlex(state, { now, maxLineAgeMs: 1e12 }), now,
+    edgeSkips: [{ skipKey: southPoint.skipKey, eventStartMs: southPoint.eventStartMs }],
+  });
+  assert.deepEqual(skipped.skipped.map((row) => row.key), [southPoint.key]);
+  assert.ok(!skipped.items.some((row) => row.key === southPoint.key));
+  assert.equal(skipped.total, payload.total - 1);
 });

@@ -19,6 +19,7 @@
 //   PUT /settings.json         the Settings form: changed fields, or null to reset one
 //   POST /dismissals.json      Dismiss / Restore an unmatched bet's red flag
 //   POST /teaser_blocks.json   Can't tease / Restore a college teaser market
+//   POST /edge_skips.json      Skip / Restore an Edges line a book beats
 //   POST /pins.json, DELETE /pins.json?betId=   Attach a bet to a game / Undo
 //   DELETE /crosswalk.json     Clear the learned team names (two taps)
 //   POST /place_teaser.json    Place a Teasers ticket at BFA (money, not just rows)
@@ -50,7 +51,6 @@
   const MOVE_TAG_CLASS = { fair_to_you: "move-fair", book_away: "move-book", fair_against: "move-against" };
   const PRICE_CHECK_TAG_CLASS = { best: "check-best", better: "", skip: "check-skip", outlier: "check-outlier" };
   // How many worse books the ticket lists before folding the rest into "N more".
-  const OTHERS_WORSE_SHOWN = 3;
   // The panel offers full game and first half; a stored other period is shown too.
   const OFFERED_PERIODS = [1, 2];
   const SORT_LABELS = { edge: "edge", stake: "stake", start: "start", exposure: "my exposure" };
@@ -109,6 +109,14 @@
     dismissedIds: null,
     // Market keys whose Can't tease / Restore is being saved.
     teaserMarksSaving: new Set(),
+    // Skip / Restore made here, until the runner's list carries it
+    // (skipKey -> true skipped, false restored); the runner reads the shared
+    // skips every 30 s, so without this a tap would take that long to show.
+    skipOverrides: new Map(),
+    skipError: null,
+    // Row keys whose every-book list is open; the Skipped fold's state.
+    openPriceChecks: new Set(),
+    skippedFoldOpen: false,
     // Ticket signature -> its Place button's state across re-renders:
     // {phase: "confirm" | "placing" | "placed" | "refused" | "unconfirmed",
     // message, legsMatch, armedAt}.
@@ -296,7 +304,7 @@
   }
 
   // The content column every row and card share: badges and side, market and game, book and price.
-  function mainEl(row, now) {
+  function mainEl(row, now, skipped = false) {
     const main = makeEl("div");
     const side = makeEl("div", "edge-side");
     for (const badge of row.badges || []) side.append(tagEl(badge.kind, badge.text, badge.title));
@@ -307,12 +315,7 @@
     const book = makeEl("div", "edge-book");
     book.append(makeEl("span", "price", phoneView.bookPriceText(row)), makeEl("span", "age", ` · ${phoneView.lineAgeText(row, now)}`));
     main.append(side, meta, book);
-    const checkTag = priceCheckTagEl(row);
-    if (checkTag) {
-      const checkLine = makeEl("div", "edge-pricecheck");
-      checkLine.append(checkTag);
-      main.append(checkLine);
-    }
+    main.append(...priceCheckLineEls(row, skipped));
     return main;
   }
 
@@ -322,14 +325,9 @@
     return tag ? tagEl(PRICE_CHECK_TAG_CLASS[tag.kind] ?? "", tag.label) : null;
   }
 
-  // The ticket's "Others" row: every other book at the number, best first, yours in its place.
-  function renderTicketBooks(row) {
+  // Every book at the number, best first, yours in its place.
+  function otherBooksListEl(row) {
     const check = row.priceCheck;
-    const tag = priceCheckTagEl(row);
-    view.ticketBooksLabel.hidden = !tag;
-    view.ticketBooks.hidden = !tag;
-    view.ticketBooks.replaceChildren();
-    if (!tag) return;
     const lineEl = (name, price, className) => {
       const div = makeEl("div", className);
       div.append(makeEl("span", null, name), makeEl("span", null, phoneView.fmtAmerican(price)));
@@ -337,17 +335,95 @@
     };
     const list = makeEl("div", "others-list");
     for (const entry of check.better) list.append(lineEl(entry.bookName, entry.price, "better"));
-    list.append(lineEl(`${row.book.name} (you)${check.same ? ` +${check.same} same` : ""}`, row.price, "yours"));
-    for (const entry of check.worse.slice(0, OTHERS_WORSE_SHOWN)) list.append(lineEl(entry.bookName, entry.price, "worse"));
-    if (check.worse.length > OTHERS_WORSE_SHOWN) list.append(makeEl("div", "worse", `${check.worse.length - OTHERS_WORSE_SHOWN} more, worse`));
-    view.ticketBooks.append(tag, list);
+    list.append(lineEl(`${row.book.name} (you)`, row.price, "yours"));
+    for (const entry of check.sameAs || []) list.append(lineEl(entry.bookName, entry.price, "same"));
+    for (const entry of check.worse) list.append(lineEl(entry.bookName, entry.price, "worse"));
+    return list;
   }
 
-  function edgeItem(row, card, now) {
-    const li = makeEl("li", `edge-row tier-${row.edgeTier}${row.isBlurred ? " blurred" : ""}`);
+  // Skip on a line a book beats (it carries a skipKey), Restore on a skipped one.
+  function skipChipEl(row, skipped, label) {
+    return actionButton("chip-btn skip-chip", skipped ? "Restore" : label,
+      { skipKey: row.skipKey, eventStartMs: String(row.eventStartMs), skip: skipped ? "restore" : "skip" },
+      skipped ? "List this line again now" : "Fold this line into Skipped until no book beats this price or the game starts");
+  }
+
+  // The tag (tap it to open every book at the number) and Skip / Restore.
+  function priceCheckLineEls(row, skipped) {
+    const tag = priceCheckTagEl(row);
+    if (!tag) return [];
+    const open = state.openPriceChecks.has(row.key);
+    tag.classList.add("check-toggle");
+    tag.dataset.checkKey = row.key;
+    tag.textContent = `${tag.textContent} ${open ? "▾" : "▸"}`;
+    const line = makeEl("div", "edge-pricecheck");
+    line.append(tag);
+    if (row.skipKey) line.append(skipChipEl(row, skipped, "Skip"));
+    return open ? [line, otherBooksListEl(row)] : [line];
+  }
+
+  // The ticket's "Others" row: every other book at the number, best first,
+  // yours in its place, and Skip when a book beats you.
+  function renderTicketBooks(row) {
+    const tag = priceCheckTagEl(row);
+    view.ticketBooksLabel.hidden = !tag;
+    view.ticketBooks.hidden = !tag;
+    view.ticketBooks.replaceChildren();
+    if (!tag) return;
+    view.ticketBooks.append(tag, otherBooksListEl(row));
+    if (!row.skipKey) return;
+    const skipped = isSkipped(row);
+    const actions = makeEl("div", "others-actions");
+    actions.append(skipChipEl(row, skipped, "Skip this bet"));
+    if (skipped) actions.append(" skipped on the Edges tab");
+    view.ticketBooks.append(actions);
+  }
+
+  // Whether a row is skipped: a tap made here wins until the runner's list agrees.
+  function isSkipped(row) {
+    if (row.skipKey && state.skipOverrides.has(row.skipKey)) return state.skipOverrides.get(row.skipKey);
+    const payload = state.edges.payload;
+    return Boolean(payload && (payload.skipped || []).some((skipped) => skipped.key === row.key));
+  }
+
+  // The listed items and the skipped rows, with this page's own taps applied;
+  // an override the runner's list already shows is dropped.
+  function edgesWithSkips(payload) {
+    const bestOf = (item) => (payload.grouped ? item.best : item);
+    const runnerSkipped = payload.skipped || [];
+    for (const [skipKey, skipped] of state.skipOverrides) {
+      const runnerHas = runnerSkipped.some((row) => row.skipKey === skipKey);
+      if (runnerHas === skipped) state.skipOverrides.delete(skipKey);
+    }
+    const overridden = (row, skipped) => row.skipKey && state.skipOverrides.get(row.skipKey) === skipped;
+    const items = payload.items.filter((item) => !overridden(bestOf(item), true));
+    const restored = runnerSkipped.filter((row) => overridden(row, false));
+    const skippedHere = payload.items.filter((item) => overridden(bestOf(item), true)).map(bestOf);
+    const skipped = runnerSkipped.filter((row) => !overridden(row, false)).concat(skippedHere);
+    const listed = items.concat(payload.grouped ? [] : restored);
+    return { items: listed, skipped, total: payload.total + listed.length - payload.items.length };
+  }
+
+  async function setEdgeSkip(button) {
+    const { skipKey } = button.dataset;
+    const skipped = button.dataset.skip === "skip";
+    state.skipOverrides.set(skipKey, skipped);
+    state.skipError = null;
+    renderAll();
+    try {
+      await requestJson("POST", "/edge_skips.json", { skipKey, eventStartMs: Number(button.dataset.eventStartMs), skipped });
+    } catch (error) {
+      state.skipOverrides.delete(skipKey);
+      state.skipError = `${skipped ? "Skip" : "Restore"} failed: ${error.message}`;
+    }
+    renderAll();
+  }
+
+  function edgeItem(row, card, now, skipped = false) {
+    const li = makeEl("li", `edge-row tier-${row.edgeTier}${row.isBlurred ? " blurred" : ""}${skipped ? " skipped" : ""}`);
     li.dataset.key = row.key;
     if (card) li.dataset.card = card.key;
-    li.append(mainEl(row, now), railEl(row, true));
+    li.append(mainEl(row, now, skipped), railEl(row, true));
     const related = relatedBlock(row);
     if (related) li.append(related);
     if (card && card.lineCount > 1) {
@@ -377,14 +453,28 @@
     view.edgesTailFlex.hidden = !payload.tailFlex;
     view.edgesPriceCheck.textContent = payload.priceCheck || "";
     view.edgesPriceCheck.hidden = !payload.priceCheck;
-    const items = payload.items.map((item) => (payload.grouped ? edgeItem(item.best, item, now) : edgeItem(item, null, now)));
-    view.edgesList.replaceChildren(...items);
-    view.edgesCount.hidden = payload.total === 0;
-    view.edgesCount.textContent = String(payload.total);
+    const { items: listed, skipped, total } = edgesWithSkips(payload);
+    const items = listed.map((item) => (payload.grouped ? edgeItem(item.best, item, now) : edgeItem(item, null, now)));
+    view.edgesList.replaceChildren(...items, ...skippedFoldEls(skipped, now));
+    view.edgesCount.hidden = total === 0;
+    view.edgesCount.textContent = String(total);
     view.edgesEmpty.hidden = payload.total > 0 && payload.total <= payload.maxShown;
     view.edgesEmpty.textContent = payload.total === 0
       ? (payload.scanner.phase === "live" ? `No line at or above ${settings.minEdgePct}% edge right now.` : "Waiting for the runner's first snapshot…")
       : `Showing the top ${payload.maxShown} of ${payload.total} ${payload.unit}; raise the minimum edge to see fewer.`;
+  }
+
+  // The Skipped line under the list: tap to open the skipped rows, each with Restore.
+  function skippedFoldEls(skipped, now) {
+    const fold = [];
+    if (state.skipError) fold.push(makeEl("li", "warning bad skip-error", state.skipError));
+    if (skipped.length === 0) return fold;
+    const li = makeEl("li", "skip-fold");
+    li.append(actionButton("skip-fold-toggle", `${state.skippedFoldOpen ? "▾" : "▸"} ${skipped.length} skipped`, { skipFold: "1" }),
+      makeEl("span", "muted", state.skippedFoldOpen ? "back by itself once no book beats the price" : "tap to open"));
+    fold.push(li);
+    if (state.skippedFoldOpen) fold.push(...skipped.map((row) => edgeItem(row, null, now, true)));
+    return fold;
   }
 
   // ---- the ticket sheet ---------------------------------------------------------------
@@ -393,6 +483,8 @@
   function findTicketRow(ticket) {
     const payload = state.edges.payload;
     if (!payload) return null;
+    const skippedRow = (payload.skipped || []).find((candidate) => candidate.key === ticket.rowKey);
+    if (skippedRow) return { row: skippedRow, card: null };
     for (const item of payload.items) {
       const rows = payload.grouped ? [item.best, ...item.others] : [item];
       const row = rows.find((candidate) => candidate.key === ticket.rowKey);
@@ -1271,8 +1363,32 @@
   });
 
   view.edgesList.addEventListener("click", (event) => {
+    const skipChip = event.target.closest("button.skip-chip");
+    if (skipChip) {
+      setEdgeSkip(skipChip);
+      return;
+    }
+    const checkToggle = event.target.closest(".check-toggle");
+    if (checkToggle) {
+      const key = checkToggle.dataset.checkKey;
+      if (state.openPriceChecks.has(key)) state.openPriceChecks.delete(key);
+      else state.openPriceChecks.add(key);
+      renderAll();
+      return;
+    }
+    if (event.target.closest(".others-list")) return;
+    if (event.target.closest("button.skip-fold-toggle")) {
+      state.skippedFoldOpen = !state.skippedFoldOpen;
+      renderAll();
+      return;
+    }
     const row = event.target.closest(".edge-row");
     if (row) openTicket(row.dataset.key, row.dataset.card || null);
+  });
+
+  view.ticketBooks.addEventListener("click", (event) => {
+    const skipChip = event.target.closest("button.skip-chip");
+    if (skipChip) setEdgeSkip(skipChip);
   });
 
   view.ticketOthers.addEventListener("click", (event) => {

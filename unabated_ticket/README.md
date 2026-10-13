@@ -688,21 +688,30 @@ still count apart (Cal, 2026-10-13). Another number is never compared.
 |---|---|
 | `best of N books` (green) | no other book beats the price; `best, tied` when one matches it |
 | `1 book better` (plain) | exactly one book beats it |
-| `N books better · would skip` (amber) | 2 or more books beat it (`BOOKS_BETTER_TO_SKIP`) |
-| `outlier, check · next best X` (red) | it beats every other book by more than 10 probability points (`OUTLIER_PROB_GAP`): more likely a bad price than a gift (the 2026-10-03 Jackson St ML at Novig +300 on a -309 fair). Tagged, never skipped |
+| `N books better` (amber) | 2 or more books beat it (`BOOKS_BETTER_TO_SKIP`) |
+| `outlier, check · next best X` (red) | it beats every other book by more than 10 probability points (`OUTLIER_PROB_GAP`): more likely a bad price than a gift (the 2026-10-03 Jackson St ML at Novig +300 on a -309 fair). Tagged; no Skip, since no book beats it |
 
-No tag when no other book posts the number. The tooltip lists the books.
-A line above the list counts them: "3 would skip: 2+ books better · 1
-outlier (test mode, nothing hidden)". The Ticket's **Others** row lists every
-book that beats you, yours in its place, and the first three worse ones.
+No tag when no other book posts the number. Tap the tag (▸) to open every
+book at the number under the row, best first, yours in its place; the
+tooltip lists them too. A line above the list counts outliers ("1 outlier to
+check"). The Ticket's **Others** row lists every book at the number.
 
-**Test mode (0.21.0):** nothing is hidden. Cal is watching the tags in main
-first; once he says so, rows tagged *would skip* fold into one "N skipped"
-line you can open, and a row comes back on its own as soon as fewer than 2
-books beat it (the check reruns on every snapshot). The phone page shows the
-same tags, header count and Ticket row, computed by the runner
-(`/edges.json` rows carry `priceCheck` and `priceCheckTag`, the body carries
-`priceCheck`).
+**Skip (0.24.0, Cal 2026-10-13):** nothing is skipped for you. A row a book
+beats gets a **Skip** chip (and the Ticket a **Skip this bet** button); a
+skipped line folds into the "N skipped" line under the Edges list, where
+**Restore** lists it again. A skip holds only while a book still beats the
+price and the game is still to start: once no book beats it (the check
+reruns on every snapshot) or the game starts, the row lists again by itself
+(`pricecheck.splitSkipped`). A skipped line never alerts. The skip is keyed
+on the line at the book (`pricecheck.skipKeyOf`: game, period, market, side,
+number, book), so a new number is a new line. Skips live on the bets service
+(`bets.duckdb::edge_skips`, `POST /edge_skips.json {skipKey, eventStartMs,
+skipped}`, served as `edgeSkips` in `/bets.json`), shared by the panel and
+the phone; an older service leaves them panel-only in `chrome.storage.local`.
+The phone page shows the same tags, list, Skip and fold, computed by the
+runner (`/edges.json` rows carry `priceCheck`, `priceCheckTag` and
+`skipKey`; the body carries `priceCheck` and `skipped`); a tap on the phone
+shows at once and the runner's list catches up on its next bets read (30 s).
 
 ### Why an edge grew
 
@@ -2313,10 +2322,12 @@ keeps or learns now lives on the bets service, and the runner does what only
 the open panel used to do.
 
 - **One set of settings and marks** in `bets.duckdb`: `edge_settings`,
-  `bet_dismissals` (Dismiss, open bets only) and `teaser_blocks` (Can't
-  tease, until the game starts). `/bets.json` serves `dismissals` and
-  `teaserBlocks`; `POST /dismissals.json {betIds, dismissed}` and
-  `POST /teaser_blocks.json {marketKey, eventStartMs, blocked}` write them.
+  `bet_dismissals` (Dismiss, open bets only), `teaser_blocks` (Can't
+  tease, until the game starts) and `edge_skips` (Skip, until the game
+  starts; 0.24.0). `/bets.json` serves `dismissals`, `teaserBlocks` and
+  `edgeSkips`; `POST /dismissals.json {betIds, dismissed}`,
+  `POST /teaser_blocks.json {marketKey, eventStartMs, blocked}` and
+  `POST /edge_skips.json {skipKey, eventStartMs, skipped}` write them.
 - **The panel (0.22.0)** writes its settings to the service the first time
   it reaches a Service URL, PUTs every edit (`edgerows.serviceSettingsOf`),
   and applies a row changed elsewhere (`settingsSync` in
@@ -2567,7 +2578,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 522 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 523 tests) and
 the bets service's pytest suite (388 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -3091,13 +3102,20 @@ in red.
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
 
-**2026-10-13 — Same-name books count once (0.23.1).** Cal saw theScore
+**2026-10-13 — Skip button; same-name books count once (0.24.0).** Cal
+dropped the automatic skip: he wants to decide. A row a book beats gets a
+Skip chip (rows, card lines, the Ticket, the phone); a skipped line folds
+into "N skipped" and comes back by itself once no book beats the price or
+the game starts, the restore rule agreed 2026-10-09. The "would skip" wording
+is gone, the tag opens every book at the number, and skips are shared on the
+bets service (`edge_skips`). He was not sure about a minimum gap for
+"clearly better", so any better price still counts. He also saw theScore
 counted twice: Unabated carries TheScore US and TheScore CA, which posted the
 same price on 310 of 310 NFL sides, so one price could read "2 books better ·
 would skip". His rule: books with the same name are matched. A trailing
 country tag is ignored and two such books count once where their prices
 match. Mirrors under different names (BetMGM = Sports Interaction; BetRivers =
-Sugarhouse = Parx) are left as they are. The skip rule is unchanged.
+Sugarhouse = Parx) are left as they are.
 
 **2026-10-10 — DraftKings bets in the Bets tab (0.23.0).** Cal wanted his
 DraftKings bets flagged. DraftKings sits behind Akamai and asks for a code on
