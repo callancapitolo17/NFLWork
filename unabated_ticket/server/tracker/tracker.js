@@ -25,7 +25,7 @@
   const BET_FILTERS = ["All", "Counted", "Removed"];
   const POLL_MS = 60 * 1000;
   const PREFS_KEY = "betTracker.prefs";
-  const RANGES = ["Today", "Yesterday", "7D", "30D", "90D", "YTD", "All", "Custom"];
+  const RANGES = ["Yesterday", "7D", "30D", "90D", "YTD", "All", "Custom"];
   // The Analysis filter bar, one chip row per entry (Cal, 2026-10-12): every
   // value a ticket carries is a chip, all on by default; state.off[key] holds
   // the ones switched off, so a value new to the data shows up on. Keys match
@@ -332,9 +332,23 @@
 
   // ---- range ----------------------------------------------------------------
 
+  /** The last Pacific day whose results show: yesterday, since today's stay hidden until midnight. */
+  function lastShownDay() {
+    return stats.addDays(stats.pacificDay(Date.now()), -1);
+  }
+
+  /**
+   * The header range's days, ending no later than yesterday (today's results
+   * are hidden). The 7D / 30D / 90D windows end yesterday so they still hold
+   * that many days of results; Yesterday is counted back from the real today.
+   */
   function rangeDays() {
-    return stats.rangeBounds(state.range, stats.pacificDay(Date.now()),
+    const lastShown = lastShownDay();
+    const rollingWindow = ["7D", "30D", "90D"].includes(state.range);
+    const bounds = stats.rangeBounds(state.range, rollingWindow ? lastShown : stats.pacificDay(Date.now()),
       { first: state.customFirst, last: state.customLast }, stats.firstSettledDay(tickets));
+    const last = bounds.last > lastShown ? lastShown : bounds.last;
+    return { first: bounds.first > last ? last : bounds.first, last };
   }
 
   function rangeCaption(first, last) {
@@ -376,7 +390,8 @@
 
     const series = stats.dailySeries(tickets, first, last);
     renderChart(series, "ov-chart", "ov-stats", "No settled bets in this range.");
-    renderCalendar(pickedCalendarDay() ? state.calendarPick.anchor : last);
+    // A range ending yesterday still shows this week's calendar, today's cell included.
+    renderCalendar(pickedCalendarDay() ? state.calendarPick.anchor : last === lastShownDay() ? stats.pacificDay(Date.now()) : last);
     renderDaily(series);
     renderVenues(settled);
     renderSettledBets(settled, total, missing);
@@ -450,25 +465,26 @@
     fill(chartId, el("div", { className: "plot" }, [yAxis, svg]), bars, xAxis);
   }
 
-  function renderCalendar(today) {
-    const todayIndex = stats.WEEKDAYS.indexOf(stats.weekdayOf(today));
-    const start = stats.addDays(today, -todayIndex - (CALENDAR_WEEKS - 1) * 7);
+  function renderCalendar(anchor) {
+    const anchorIndex = stats.WEEKDAYS.indexOf(stats.weekdayOf(anchor));
+    const start = stats.addDays(anchor, -anchorIndex - (CALENDAR_WEEKS - 1) * 7);
     const end = stats.addDays(start, CALENDAR_WEEKS * 7 - 1);
-    const byDay = new Map(stats.dailySeries(tickets, start, today).map((d) => [d.day, d]));
+    const byDay = new Map(stats.dailySeries(tickets, start, anchor).map((d) => [d.day, d]));
     setText("cal-caption", dayLabel(start) + " to " + dayLabel(end));
     const fullColorDollars = CAL_FULL_COLOR_PNL_UNITS * state.unitSize;
     const cells = stats.WEEKDAYS.map((name) => el("span", { className: "lbl wd", text: name }));
-    // Custom ranges clamp to [first settled day, today], so a click outside it
+    // Ranges clamp to [first settled day, yesterday], so a click outside it
     // would quietly filter to a different day; those days aren't clickable.
     const realToday = stats.pacificDay(Date.now());
-    const firstPickable = stats.firstSettledDay(tickets) || realToday;
+    const lastPickable = lastShownDay();
+    const firstPickable = stats.firstSettledDay(tickets) || lastPickable;
     for (let day = start; day <= end; day = stats.addDays(day, 1)) {
       const totals = byDay.get(day);
       const isPicked = day === pickedCalendarDay();
-      const isPickable = day >= firstPickable && day <= realToday;
+      const isPickable = day >= firstPickable && day <= lastPickable;
       const cell = el("div", {
-        className: "cell" + (day === today ? " today" : "") + (isPicked ? " picked" : "") + (isPickable ? " pickable" : ""),
-        onClick: isPickable ? () => toggleCalendarDay(day, today) : null,
+        className: "cell" + (day === realToday ? " today" : "") + (isPicked ? " picked" : "") + (isPickable ? " pickable" : ""),
+        onClick: isPickable ? () => toggleCalendarDay(day, anchor) : null,
       });
       const dayNumber = el("span", { className: "d", text: Number(day.slice(8)) });
       const value = el("span", { className: "v" });
@@ -481,8 +497,8 @@
         dayNumber.style.color = strength > 0.55 ? "rgba(11,14,19,0.7)" : COLORS.muted;
         cell.title = dayLabel(day, true) + ": " + money(totals.pnl, true) + " on " + totals.bets + " bets";
       } else {
-        cell.title = dayLabel(day, true) + (day === today ? ": nothing settled yet" : day > today ? "" : ": no bets settled");
-        if (day === today) value.textContent = "Today";
+        cell.title = dayLabel(day, true) + (day === realToday ? ": results show after midnight Pacific" : day > realToday ? "" : ": no bets settled");
+        if (day === realToday) value.textContent = "Tomorrow";
       }
       if (isPickable) cell.title += isPicked ? " · click to clear" : " · click to filter to this day";
       cell.append(dayNumber, value);
@@ -566,17 +582,6 @@
     fill("ov-settled", table(columns, shown, { sortKey: "settled" }));
   }
 
-  /** The Open page's Settled today panel: bets settled on the current Pacific day, whatever the header range. */
-  function renderSettledToday() {
-    const today = stats.pacificDay(Date.now());
-    const settled = stats.inDayRange(tickets, today, today);
-    fillSettledSummary("today-sum", settled, stats.summarize(settled), noResultCount(today, today));
-    setText("today-caption", dayLabel(today, true) + " · Pacific settle day");
-    if (!settled.length) { fill("op-today", emptyNote("Nothing has settled yet today.")); return; }
-    const newestFirst = settled.slice().sort((a, b) => b.closedMs - a.closedMs);
-    fill("op-today", table(settledColumns((t) => timeLabel(t.closedMs)), newestFirst, { sortKey: "today" }));
-  }
-
   /** P&L, record, expected and handle above a settled-bets table. */
   function fillSettledSummary(id, settled, total, missing) {
     const part = (label, value, className) => el("span", null, [document.createTextNode(label + " "), el("b", { className: className || "", text: value })]);
@@ -632,7 +637,6 @@
         onClick: () => showView("live") },
     ]);
     renderOpen(upcoming.concat(noStart), { upcoming, noStart });
-    renderSettledToday();
   }
 
   function renderOpen(notLive, split) {
@@ -1046,11 +1050,28 @@
 
   function renderGroups(settled) {
     const group = stats.GROUPS.find((g) => g.key === state.groupBy);
+    if (group.outer) { renderGroupSections(settled, group); return; }
     const rows = stats.groupBy(settled, state.groupBy);
     if (!rows.length) { fill("an-groups", emptyNote("No settled bets match these filters.")); return; }
     // Bucketed groups (odds, edge, timing, weekday, stake) sort in their own order, numbers by value, the rest A to Z.
     const groupSortKey = group.order ? (r) => group.order.indexOf(r.label) : group.numeric ? (r) => numberOrInfinity(r.label) : (r) => r.label;
     fill("an-groups", groupTable(group.label, groupSortKey, rows, (row) => drillTo([[group.key, row.label]])));
+  }
+
+  /** League × Market: a header with each league's totals, then its markets as rows. A row drills into both. */
+  function renderGroupSections(settled, group) {
+    const sections = stats.groupSections(settled, group.key);
+    if (!sections.length) { fill("an-groups", emptyNote("No settled bets match these filters.")); return; }
+    const innerLabel = stats.GROUPS.find((g) => g.key === group.inner).label;
+    fill("an-groups", ...sections.map((section) => el("div", { className: "open-group group-section" }, [
+      el("div", { className: "open-group-head" }, [
+        el("button", { className: "pv-head open-group-title", text: section.label, attrs: { type: "button" }, title: "Drill into " + section.label,
+          onClick: () => drillTo([[group.outer, section.label]]) }),
+        el("span", { className: "note", text: section.bets + " bets · " + money(section.handle) + " handle · " }),
+        el("span", { className: "num " + toneClass(section.pnl), text: money(section.pnl, true) + " · " + pct(section.roi, true) }),
+      ]),
+      groupTable(innerLabel, (r) => r.label, section.rows, (row) => drillTo([[group.outer, section.label], [group.inner, row.label]])),
+    ])));
   }
 
   function pivotValue(cell, metric) {
@@ -1071,7 +1092,7 @@
 
   function pivotSelect(id, current, onPick) {
     const select = el("select", { attrs: { id, "aria-label": id === "pivot-rows" ? "Pivot rows" : "Pivot columns" } },
-      stats.GROUPS.map((g) => el("option", { text: g.label, attrs: { value: g.key } })));
+      stats.GROUPS.filter((g) => !g.outer).map((g) => el("option", { text: g.label, attrs: { value: g.key } })));
     select.value = current;
     select.addEventListener("change", () => onPick(select.value));
     return select;
@@ -1313,10 +1334,10 @@
     document.getElementById("custom-range").hidden = state.range !== "Custom";
     if (state.range !== "Custom") return;
     const { first, last } = rangeDays();
-    const today = stats.pacificDay(Date.now());
+    const lastShown = lastShownDay();
     for (const [id, value] of [["custom-first", first], ["custom-last", last]]) {
       const input = document.getElementById(id);
-      input.max = today;
+      input.max = lastShown;
       if (document.activeElement !== input) input.value = value;
     }
   }
@@ -1370,8 +1391,11 @@
     tickets = allTickets.filter((t) => !t.excluded && (state.includeBotCombos || t.kind !== BOT_COMBO_KIND));
   }
 
+  // Today's settled bets leave every page here until Pacific midnight; the next
+  // poll after midnight brings them back.
   function rebuildTickets() {
-    allTickets = stats.buildTickets(payload.bets, payload.fillFairs, payload.closingFairs, payload.exclusions);
+    const built = stats.buildTickets(payload.bets, payload.fillFairs, payload.closingFairs, payload.exclusions);
+    allTickets = stats.hideSettledFrom(built, stats.pacificDay(Date.now()));
     applyBotComboFilter();
   }
 

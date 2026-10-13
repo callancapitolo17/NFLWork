@@ -83,6 +83,8 @@
     { key: "venue", label: "Venue" },
     { key: "league", label: "League" },
     { key: "market", label: "Market" },
+    // Nested: one section per league, its markets as rows (spreads vs totals vs moneylines within a sport).
+    { key: "leagueMarket", label: "League × Market", outer: "league", inner: "market" },
     { key: "side", label: "Side", order: Object.values(SIDE_NAMES).concat(NO_SIDE) },
     { key: "favDog", label: "Fav / Dog", order: FAV_DOG.concat(NO_FAV_DOG) },
     { key: "number", label: "Number", numeric: true },
@@ -542,6 +544,16 @@
     return days;
   }
 
+  /**
+   * The tickets without those settled on `day` or later (Cal, 2026-10-12): a
+   * Pacific day's results stay hidden until the next day, so the tracker never
+   * shows a running P&L for today. Open tickets, and settled ones with no
+   * settle time, are kept.
+   */
+  function hideSettledFrom(tickets, day) {
+    return tickets.filter((t) => t.settledDay === null || t.settledDay < day);
+  }
+
   /** The earliest settle day among the tickets, or null. */
   function firstSettledDay(tickets) {
     let first = null;
@@ -569,7 +581,6 @@
    * the daily series (one bar per day) millions of days long and hang the page.
    */
   function rangeBounds(range, today, custom, firstSettled) {
-    if (range === "Today") return { first: today, last: today };
     if (range === "Yesterday") { const day = addDays(today, -1); return { first: day, last: day }; }
     if (RANGE_DAYS[range]) return { first: addDays(today, 1 - RANGE_DAYS[range]), last: today };
     if (range === "YTD") return { first: today.slice(0, 4) + "-01-01", last: today };
@@ -581,7 +592,7 @@
       return first <= last ? { first, last } : { first: last, last: first };
     }
     if (range === "All") return { first: firstSettled || today, last: today };
-    throw new Error("unknown date range " + range + "; expected Today, Yesterday, 7D, 30D, 90D, YTD, All or Custom");
+    throw new Error("unknown date range " + range + "; expected Yesterday, 7D, 30D, 90D, YTD, All or Custom");
   }
 
   function groupSpec(groupKey) {
@@ -622,8 +633,22 @@
   /** Rows of the Analysis breakdown: one per value of `groupKey`, with totals. */
   function groupBy(tickets, groupKey) {
     const spec = groupSpec(groupKey);
+    if (spec.outer) throw new Error("group " + groupKey + " is nested; use groupSections");
     const rows = [...bucketsOf(tickets, groupKey)].map(([label, group]) => Object.assign({ label }, summarize(group)));
     return orderLabels(spec, rows);
+  }
+
+  /**
+   * Sections of a nested breakdown (League × Market): one per value of the
+   * spec's `outer` key, largest handle first, each with its own totals and its
+   * rows grouped by `inner`.
+   */
+  function groupSections(tickets, groupKey) {
+    const spec = GROUPS.find((g) => g.key === groupKey);
+    if (!spec || !spec.outer) throw new Error("expected a nested group (" + GROUPS.filter((g) => g.outer).map((g) => g.key).join(", ") + "), got " + groupKey);
+    return groupBy(tickets, spec.outer).map((section) => Object.assign(section, {
+      rows: groupBy(tickets.filter((t) => (t[spec.outer] || "Unknown") === section.label), spec.inner),
+    }));
   }
 
   /**
@@ -737,7 +762,7 @@
     PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR, CLOSE_MAX_GAP_MS, FAIR_SOURCES,
     pacificDay, addDays, dayKeyToUtc, weekdayOf, isDayKey, rangeBounds,
     americanToDecimal, decimalToAmerican,
-    buildTickets, summarize, exclusions, untypedSummary, inDayRange, dailySeries, firstSettledDay, groupBy, pivot, calibration,
+    buildTickets, summarize, exclusions, untypedSummary, inDayRange, hideSettledFrom, dailySeries, firstSettledDay, groupBy, groupSections, pivot, calibration,
     venueName, splitOpenByStart, splitOpenForLive, sortRows,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

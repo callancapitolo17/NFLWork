@@ -249,6 +249,8 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 }
 #view-live .note { font-size: 13px; color: var(--muted); margin: 0; }
 
+.group-section .tbl :is(th, td):first-child { width: 120px; }
+
 /* Analysis drill path and pivot (2026-10-13) */
 .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .crumb-all { border: 0; background: transparent; color: var(--exp); cursor: pointer; font-size: 13px; padding: 0; }
