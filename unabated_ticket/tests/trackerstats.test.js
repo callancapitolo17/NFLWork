@@ -246,19 +246,41 @@ test("groupBy orders ordinal groups by their scale and others by handle; an unkn
   assert.throws(() => stats.groupBy(tickets, "nope"), /unknown group nope/);
 });
 
-test("League × Market: a section per league by handle, its markets as rows; groupBy refuses the nested key", () => {
+test("pivot: rows and columns in their groups' order, a summary per cell, null where no bets", () => {
   const tickets = stats.buildTickets([
-    straight({ id: "a", league: "nfl", betType: "spread", stake: 300, toWin: 270 }),
-    straight({ id: "b", league: "nfl", betType: "total", stake: 110, toWin: 100, status: "lost" }),
-    straight({ id: "c", league: "nfl", betType: "spread", stake: 110, toWin: 100 }),
-    straight({ id: "d", league: "cfb", betType: "moneyline", stake: 50, toWin: 45 }),
+    straight({ id: "a", betType: "total", side: "under", points: 44.5, price: -110, stake: 110, toWin: 100, status: "lost" }),
+    straight({ id: "b", betType: "total", side: "over", points: 47, price: 105, stake: 100, toWin: 105 }),
+    straight({ id: "c", betType: "total", side: "under", points: 41, price: 110, stake: 100, toWin: 110, placedAt: "2026-10-03T15:00:00Z" }),
   ], []);
-  const sections = stats.groupSections(tickets, "leagueMarket");
-  assert.deepEqual(sections.map((s) => [s.label, s.bets]), [[tickets[0].league, 3], [tickets[3].league, 1]]);
-  assert.deepEqual(sections[0].rows.map((r) => [r.label, r.bets]), [[tickets[0].market, 2], [tickets[1].market, 1]]);
-  assert.equal(sections[0].pnl, 270 - 110 + 100);
-  assert.throws(() => stats.groupBy(tickets, "leagueMarket"), /nested/);
-  assert.throws(() => stats.groupSections(tickets, "venue"), /expected a nested group/);
+  const grid = stats.pivot(tickets, "side", "timing");
+  assert.deepEqual(grid.rows.map((r) => r.label), ["Over", "Under"]);
+  assert.deepEqual(grid.cols, ["1 to 6h before", "1 day+ before"]);
+  const under = grid.rows[1];
+  assert.equal(under.total.bets, 2);
+  assert.equal(under.cells[0].pnl, -110);
+  assert.equal(under.cells[1].pnl, 110);
+  assert.equal(grid.rows[0].cells[1], null);
+  assert.throws(() => stats.pivot(tickets, "side", "nope"), /unknown group nope/);
+});
+
+test("drill dimensions: side, fav/dog, the number and whether the close was beaten", () => {
+  const tickets = stats.buildTickets([
+    straight({ id: "spread-fav", points: -3.5 }),
+    straight({ id: "spread-dog", side: "away", points: 3.5 }),
+    straight({ id: "ml-dog", betType: "moneyline", side: "away", points: null, price: 140 }),
+    straight({ id: "total", betType: "total", side: "over", points: 44.5 }),
+  ], [], [
+    { betId: "spread-fav", fairAmerican: -130, fairObservedAt: "2026-10-04T16:55:00Z", eventStart: "2026-10-04T17:00:00Z" },
+    { betId: "spread-dog", fairAmerican: 105, fairObservedAt: "2026-10-04T16:55:00Z", eventStart: "2026-10-04T17:00:00Z" },
+  ]);
+  const byId = Object.fromEntries(tickets.map((t) => [t.id, [t.side, t.favDog, t.number, t.closeResult]]));
+  assert.deepEqual(byId, {
+    "spread-fav": ["Home", "Fav", "−3.5", "Beat close"],
+    "spread-dog": ["Away", "Dog", "+3.5", "Lost close"],
+    "ml-dog": ["Away", "Dog", "No number", "No close"],
+    total: ["Over", "Not fav/dog", "44.5", "No close"],
+  });
+  assert.deepEqual(stats.groupBy(tickets, "number").map((r) => r.label), ["−3.5", "+3.5", "44.5", "No number"]);
 });
 
 test("calibration bins straight bets with a fair by fair probability, pushes left out", () => {

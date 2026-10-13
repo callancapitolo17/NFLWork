@@ -132,6 +132,7 @@
     <section id="view-analysis" class="stack" aria-label="Analysis" hidden>
       <div class="title-row"><h1>Analysis</h1><span id="an-caption"></span></div>
       <section class="panel filters" aria-label="Filters">
+        <nav class="crumbs" id="f-crumbs" aria-label="Drill path"></nav>
         <div id="f-rows" class="stack"></div>
         <button type="button" class="reset" id="f-reset" hidden>Reset filters</button>
       </section>
@@ -150,11 +151,24 @@
         <div class="head">
           <div class="stack tight">
             <span class="lbl">Breakdown</span>
-            <span class="note">ROI bar is the 95% interval (scale ±30%); a group is only proven when the whole interval clears zero.</span>
+            <span class="note">Click a row to drill into it. ROI bar is the 95% interval (scale ±30%); a group is only proven when the whole interval clears zero.</span>
           </div>
           <span class="seg" id="group-tabs" role="group" aria-label="Group by"></span>
         </div>
         <div class="scroll" id="an-groups"></div>
+      </section>
+      <section class="panel" aria-label="Pivot">
+        <div class="head">
+          <div class="stack tight">
+            <span class="lbl">Pivot</span>
+            <span class="note">Any two dimensions; the small number is bets. Click a cell, row or column to drill in.</span>
+          </div>
+          <div class="pivot-pick">
+            <span id="pivot-pick" class="pivot-axes"></span>
+            <span class="seg" id="pivot-metric" role="group" aria-label="Pivot shows"></span>
+          </div>
+        </div>
+        <div class="scroll" id="an-pivot"></div>
       </section>
       <div class="row">
         <section class="panel pad side stack" aria-label="Calibration">

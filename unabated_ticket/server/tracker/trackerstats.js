@@ -65,23 +65,32 @@
   const TIMING_BUCKETS = ["Under 1h before", "1 to 6h before", "6 to 24h before", "1 day+ before", "Live or unknown"];
   const STAKE_BUCKETS = ["Under $150", "$150 to $299", "$300 to $449", "$450 and up"];
   const NO_FAIR = "No fair saved";
+  const SIDE_NAMES = { over: "Over", under: "Under", home: "Home", away: "Away" };
+  const NO_SIDE = "No side";
+  const FAV_DOG = ["Fav", "Pick", "Dog"];
+  const NO_FAV_DOG = "Not fav/dog";
+  const NO_NUMBER = "No number";
+  const CLOSE_RESULTS = ["Beat close", "Lost close", "No close"];
   // Snapshots land every 1-5 min while the runner is up; 30 min of silence
   // before the start means it was not, and the reading is not the close.
   const CLOSE_MAX_GAP_MS = 30 * 60 * 1000;
   const FAIR_SOURCES = { fill: "fill", close: "close" };
 
-  // Group-by dimensions of the Analysis page; `order` fixes the row order of
-  // ordinal ones, the rest sort by handle.
+  // Group-by dimensions of the Analysis page and its pivot grid; `order` fixes
+  // the row order of ordinal ones, `numeric` sorts by the number in the label,
+  // the rest sort by handle.
   const GROUPS = [
     { key: "venue", label: "Venue" },
     { key: "league", label: "League" },
     { key: "market", label: "Market" },
-    // Nested: one section per league, its markets as rows (spreads vs totals vs moneylines within a sport).
-    { key: "leagueMarket", label: "League × Market", outer: "league", inner: "market" },
+    { key: "side", label: "Side", order: Object.values(SIDE_NAMES).concat(NO_SIDE) },
+    { key: "favDog", label: "Fav / Dog", order: FAV_DOG.concat(NO_FAV_DOG) },
+    { key: "number", label: "Number", numeric: true },
     { key: "period", label: "Period" },
     { key: "kind", label: "Type", order: ["Straight", "Parlay", "Teaser", "Kalshi combo"] },
     { key: "oddsBucket", label: "Odds", order: ODDS_BUCKETS },
     { key: "edgeBucket", label: "Edge", order: EDGE_BUCKETS.concat(NO_FAIR) },
+    { key: "closeResult", label: "Close", order: CLOSE_RESULTS },
     { key: "timing", label: "Timing", order: TIMING_BUCKETS },
     { key: "weekday", label: "Weekday", order: WEEKDAYS },
     { key: "stakeBucket", label: "Stake", order: STAKE_BUCKETS },
@@ -188,6 +197,36 @@
 
   function signedNumber(points) {
     return (points > 0 ? "+" : points < 0 ? "−" : "") + Math.abs(points);
+  }
+
+  /** "Over" / "Under" on a total, "Home" / "Away" on a spread or moneyline. */
+  function sideOf(record) {
+    if (record.betType === "other") return NO_SIDE;
+    return SIDE_NAMES[record.side] || NO_SIDE;
+  }
+
+  /** Favourite or underdog: a spread by its points, a moneyline by its price; totals are neither. */
+  function favDogOf(record) {
+    if (record.betType === "spread" && Number.isFinite(record.points)) {
+      return record.points < 0 ? "Fav" : record.points > 0 ? "Dog" : "Pick";
+    }
+    if (record.betType === "moneyline" && Number.isFinite(record.price)) {
+      return record.price < 0 && record.price !== -100 ? "Fav" : record.price > 100 ? "Dog" : "Pick";
+    }
+    return NO_FAV_DOG;
+  }
+
+  /** The number bet: a total's points as is ("44.5"), a spread's signed ("−3.5"). */
+  function numberOf(record) {
+    if (!Number.isFinite(record.points)) return NO_NUMBER;
+    if (record.betType === "total") return String(record.points);
+    if (record.betType === "spread") return signedNumber(record.points);
+    return NO_NUMBER;
+  }
+
+  function closeResultOf(clv) {
+    if (clv === null) return CLOSE_RESULTS[2];
+    return clv > 0 ? CLOSE_RESULTS[0] : CLOSE_RESULTS[1];
   }
 
   function eventLabel(record) {
@@ -331,6 +370,7 @@
       displayPrice: Number.isFinite(ticket.price) ? ticket.price : decimalToAmerican(decimal),
       oddsBucket: oddsBucket(Number.isFinite(ticket.price) ? ticket.price : decimalToAmerican(decimal)),
       edgeBucket: edgeBucket(edge),
+      closeResult: closeResultOf(clv),
       timing: timingBucket(placedMs, parseMs(ticket.eventStart)),
       stakeBucket: stakeBucket(ticket.stake),
       weekday: settledDay ? weekdayOf(settledDay) : null,
@@ -348,6 +388,7 @@
       kind: combo ? KIND_NAMES.kalshiCombo : KIND_NAMES.straight,
       market: marketName(record),
       period: record.period || "FG", event: eventLabel(record), selection: selectionLabel(record),
+      side: sideOf(record), favDog: favDogOf(record), number: numberOf(record),
       price: record.price, stake: Number(record.stake) || 0, toWin: record.toWin,
       venuePnl: Number.isFinite(record.pnl) ? record.pnl : null,
       status: record.status, placedAt: record.placedAt, closedAt: record.closedAt, eventStart: record.eventStart || null,
@@ -383,6 +424,7 @@
       id: parlayId, venueKey: first.venue, venue: venueName(first.venue),
       league: leagues.size === 1 ? leagues.values().next().value : "Mixed",
       kind, market: kind, period: "FG", event: legCount + "-leg " + kind.toLowerCase(),
+      side: NO_SIDE, favDog: NO_FAV_DOG, number: NO_NUMBER,
       selection: sorted.map(selectionLabel).filter(Boolean).join(" · "),
       price: Number.isFinite(raw.parlayPrice) ? raw.parlayPrice : null,
       stake: Number(first.stake) || 0, toWin: first.toWin,
@@ -542,11 +584,31 @@
     throw new Error("unknown date range " + range + "; expected Today, Yesterday, 7D, 30D, 90D, YTD, All or Custom");
   }
 
-  /** Rows of the Analysis breakdown: one per value of `groupKey`, with totals. */
-  function groupBy(tickets, groupKey) {
+  function groupSpec(groupKey) {
     const spec = GROUPS.find((g) => g.key === groupKey);
     if (!spec) throw new Error("unknown group " + groupKey + "; expected one of " + GROUPS.map((g) => g.key).join(", "));
-    if (spec.outer) throw new Error("group " + groupKey + " is nested; use groupSections");
+    return spec;
+  }
+
+  /** The number in a "Number" label ("−3.5" -> -3.5); NaN for "No number". */
+  function labelNumber(label) {
+    return Number(String(label).replace("−", "-").replace("+", ""));
+  }
+
+  /** Labels in the group's own order: its fixed scale, by number, or as given (by handle). */
+  function orderLabels(spec, rows) {
+    if (spec.order) {
+      const rank = (label) => (spec.order.includes(label) ? spec.order.indexOf(label) : spec.order.length);
+      return rows.sort((a, b) => rank(a.label) - rank(b.label));
+    }
+    if (spec.numeric) {
+      const value = (label) => (Number.isNaN(labelNumber(label)) ? Infinity : labelNumber(label));
+      return rows.sort((a, b) => value(a.label) - value(b.label));
+    }
+    return rows.sort((a, b) => b.handle - a.handle);
+  }
+
+  function bucketsOf(tickets, groupKey) {
     const buckets = new Map();
     for (const ticket of tickets) {
       if (ticket.pnl === null) continue;
@@ -554,25 +616,30 @@
       if (!buckets.has(label)) buckets.set(label, []);
       buckets.get(label).push(ticket);
     }
-    const rows = [...buckets].map(([label, group]) => Object.assign({ label }, summarize(group)));
-    if (spec.order) {
-      const rank = (label) => (spec.order.includes(label) ? spec.order.indexOf(label) : spec.order.length);
-      return rows.sort((a, b) => rank(a.label) - rank(b.label));
-    }
-    return rows.sort((a, b) => b.handle - a.handle);
+    return buckets;
+  }
+
+  /** Rows of the Analysis breakdown: one per value of `groupKey`, with totals. */
+  function groupBy(tickets, groupKey) {
+    const spec = groupSpec(groupKey);
+    const rows = [...bucketsOf(tickets, groupKey)].map(([label, group]) => Object.assign({ label }, summarize(group)));
+    return orderLabels(spec, rows);
   }
 
   /**
-   * Sections of a nested breakdown (League × Market): one per value of the
-   * spec's `outer` key, largest handle first, each with its own totals and its
-   * rows grouped by `inner`.
+   * The Analysis pivot grid: rows by `rowKey`, columns by `colKey`, each in
+   * its group's order. Returns { cols: [label], rows: [{ label, total, cells }] }
+   * where `total` and each cell are summarize() results and a cell with no
+   * settled bets is null.
    */
-  function groupSections(tickets, groupKey) {
-    const spec = GROUPS.find((g) => g.key === groupKey);
-    if (!spec || !spec.outer) throw new Error("expected a nested group (" + GROUPS.filter((g) => g.outer).map((g) => g.key).join(", ") + "), got " + groupKey);
-    return groupBy(tickets, spec.outer).map((section) => Object.assign(section, {
-      rows: groupBy(tickets.filter((t) => (t[spec.outer] || "Unknown") === section.label), spec.inner),
-    }));
+  function pivot(tickets, rowKey, colKey) {
+    const cols = groupBy(tickets, colKey).map((col) => col.label);
+    const rows = groupBy(tickets, rowKey).map((row) => {
+      const inRow = tickets.filter((t) => (t[rowKey] || "Unknown") === row.label);
+      const byCol = bucketsOf(inRow, colKey);
+      return { label: row.label, total: row, cells: cols.map((col) => (byCol.has(col) ? summarize(byCol.get(col)) : null)) };
+    });
+    return { cols, rows };
   }
 
   /** Straight bets with a fair, push/void left out, in 10-point fair-probability bins. */
@@ -670,7 +737,7 @@
     PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR, CLOSE_MAX_GAP_MS, FAIR_SOURCES,
     pacificDay, addDays, dayKeyToUtc, weekdayOf, isDayKey, rangeBounds,
     americanToDecimal, decimalToAmerican,
-    buildTickets, summarize, exclusions, untypedSummary, inDayRange, dailySeries, firstSettledDay, groupBy, groupSections, calibration,
+    buildTickets, summarize, exclusions, untypedSummary, inDayRange, dailySeries, firstSettledDay, groupBy, pivot, calibration,
     venueName, splitOpenByStart, splitOpenForLive, sortRows,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
