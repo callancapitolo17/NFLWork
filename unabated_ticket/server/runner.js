@@ -234,6 +234,8 @@ function createRunner(deps) {
   // teaser_blocks), as /bets.json last served them.
   let dismissedIds = [];
   let teaserBlocks = [];
+  // The Edges lines Skipped on either page (bets.duckdb::edge_skips).
+  let edgeSkips = [];
   // The Teasers list's last build (teaser.planTeasers `previous`): the list
   // is rebuilt only when what it is built on changed, so it holds still.
   let teaserBuild = null;
@@ -369,6 +371,7 @@ function createRunner(deps) {
       if (Array.isArray(applied.exclusions)) excludedBetIds = new Set(applied.exclusions.map((row) => row.betId));
       if (Array.isArray(applied.dismissals)) dismissedIds = applied.dismissals.map((row) => row.betId);
       if (Array.isArray(applied.teaserBlocks)) teaserBlocks = applied.teaserBlocks;
+      if (Array.isArray(applied.edgeSkips)) edgeSkips = applied.edgeSkips;
       fillFairIndex = fillfair.fairsByBetId(held.fillFairs);
       noteMatchedStarts();
       // Before the first settings read the scan has not started; start() starts it.
@@ -547,7 +550,7 @@ function createRunner(deps) {
       settingsStatus: { source: settings.source, error: settings.error, okAt: settings.okAt, updatedAt: settings.updatedAt },
       betsStatus: { ...betsStatus }, boardLines: boardLines(), ladderReaderOf,
       teasers: openTeasersNow(), measurement: feedState ? tailFlexMeasurement() : null, now: now(),
-      dismissedIds,
+      dismissedIds, edgeSkips,
     });
   }
 
