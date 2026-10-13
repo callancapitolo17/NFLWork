@@ -202,7 +202,7 @@
 
   const api = {
     BOOKS_BETTER_TO_SKIP, OUTLIER_PROB_GAP,
-    impliedProb, rungKeyOf, sameNameKey, buildPriceIndex, comparePrice, priceCheckTag, describePriceChecks,
+    impliedProb, rungKeyOf, sameNameKey, mergeSameNameBooks, buildPriceIndex, comparePrice, priceCheckTag, describePriceChecks,
     skipKeyOf, canSkip, splitSkipped,
   };
 
