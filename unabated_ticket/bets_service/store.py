@@ -154,7 +154,7 @@ CREATE TABLE IF NOT EXISTS bet_fill_fairs (
 CREATE TABLE IF NOT EXISTS bet_fill_books (
     bet_id        VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
     placed_at     TIMESTAMPTZ NOT NULL,  -- the bet's placedAt
-    fill_price    DOUBLE NOT NULL,       -- the bet's own American price
+    fill_price    DOUBLE NOT NULL,       -- the bet's American price on Unabated's basis (Kalshi with its fee)
     book_count    INTEGER NOT NULL,      -- other books with a price at its number at the fill
     books_better  INTEGER NOT NULL,      -- of those, how many beat the price taken
     best_book     VARCHAR,               -- the best other book; NULL when book_count = 0

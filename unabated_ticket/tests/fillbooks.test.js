@@ -148,3 +148,17 @@ test("a venue Unabated lists by name only is its own book too", () => {
   const [row] = capture({ records: [bet("dk:1", { venue: "draftkings" })], lines: [line(DRAFTKINGS), line(KALSHI)], history }).saves;
   assert.deepEqual({ bookCount: row.bookCount, bestBook: row.bestBook }, { bookCount: 1, bestBook: "Kalshi" });
 });
+
+test("a Kalshi fill is compared all-in of its taker fee, as Unabated shows Kalshi", () => {
+  // 30c before the fee is 31.47c all-in (0.30 + 0.07 x 0.30 x 0.70), +217.76.
+  // DraftKings +220 (31.25%) beats the all-in price but not the pre-fee 30%;
+  // Novig +215 (31.75%) beats neither.
+  const history = historyOf({
+    [NINERS_ALT(DRAFTKINGS)]: [{ at: T0, price: 220 }],
+    [NINERS_ALT(NOVIG)]: [{ at: T0, price: 215 }],
+  });
+  const kalshiBet = bet("kalshi:1", { venue: "kalshi", price: 233, raw: { vwapCents: 30 } });
+  const [row] = capture({ records: [kalshiBet], lines: [line(DRAFTKINGS), line(NOVIG)], history }).saves;
+  assert.equal(row.fillPrice, 217.76);
+  assert.equal(row.booksBetter, 1);
+});

@@ -12,7 +12,8 @@
 //
 // Counted the Edges tab's way (pricecheck.js): every book on Unabated, by
 // price as Unabated shows it (an exchange's is already all-in of its fee),
-// one book under two country names once at a shared price. The bet's own
+// one book under two country names once at a shared price; a Kalshi fill is
+// compared with its taker fee added, as Unabated shows Kalshi. The bet's own
 // venue's line is left out of the other books. A book counts only while its
 // line is still on the board, unblurred, at a live book, and had been seen by
 // the fill; a book whose number moved since the fill is left out (the history
@@ -32,6 +33,10 @@ const STATUS_ON_BOARD = 1;
 // A placement up to this far past our clock is a venue clock running ahead;
 // it is looked at again next pass (fillfair.js uses the same grace).
 const CLOCK_SKEW_GRACE_MS = 60 * 1000;
+// Kalshi's taker fee per contract is 7% x P x (1 - P). Unabated shows Kalshi
+// all-in (ask + fee, matched to six decimals 2026-09-21), so a Kalshi fill is
+// put on that basis before it is compared with the board.
+const KALSHI_TAKER_FEE_RATE = 0.07;
 
 // Why a bet gets no row. Every one is final: the history never gains back
 // the moment of a fill.
@@ -45,12 +50,20 @@ const REFUSED = Object.freeze({
   leagueGap: "placed while its league's snapshot was not loading",
 });
 
-// The probability the bet was filled at: an exchange's exact fill when the
-// record keeps it, else its American price.
+// The probability the bet was filled at, on Unabated's basis: an exchange's
+// exact fill when the record keeps it, else its American price; a Kalshi fill
+// with its taker fee added.
 function fillProbOf(bet) {
   const exact = fillfair.fillPriceOf(bet);
-  if (exact && exact.sourcePrice != null) return exact.sourcePrice;
-  return pricecheck.impliedProb(bet.price);
+  const prob = exact && exact.sourcePrice != null ? exact.sourcePrice : pricecheck.impliedProb(bet.price);
+  if (prob == null || bet.venue !== "kalshi") return prob;
+  return prob + KALSHI_TAKER_FEE_RATE * prob * (1 - prob);
+}
+
+// A probability as an American price, to two decimals.
+function probToAmerican(prob) {
+  const american = prob >= 0.5 ? -100 * prob / (1 - prob) : 100 * (1 - prob) / prob;
+  return Math.round(american * 100) / 100;
 }
 
 function refusalOf(bet, placedMs, observingSince, now) {
@@ -107,7 +120,7 @@ function decide(bet, placedMs, rows, state, history, leagueObservingSince) {
   return { row: {
     betId: bet.id,
     placedAt: bet.placedAt,
-    fillPrice: bet.price,
+    fillPrice: probToAmerican(fillProb),
     bookCount: others.length,
     booksBetter: others.filter((entry) => pricecheck.impliedProb(entry.price) < fillProb).length,
     bestBook: best ? best.bookName : null,

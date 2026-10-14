@@ -2064,7 +2064,8 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   moment it was placed (Cal, 2026-10-13): how many books posted it, how many
   beat the price taken, and the best of them, counted the Edges tab's way
   (`pricecheck.js`: every book, the bet's own venue left out, TheScore US /
-  CA once). The server runner reads it off its line history
+  CA once; a Kalshi fill with its 7% x P x (1 - P) taker fee added, as
+  Unabated shows Kalshi). The server runner reads it off its line history
   (`server/fillbooks.js`) only when it watched through the fill, and POSTs
   `/fill_books.json`; INSERT-only, never backfilled, never pruned. Stored
   only: no page reads it yet, query it in DuckDB.
