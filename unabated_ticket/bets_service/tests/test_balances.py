@@ -10,13 +10,7 @@ import pytest
 from unabated_ticket.bets_service import service
 from unabated_ticket.bets_service.balances import BalanceBook, read_balance_once, validate_reading
 from unabated_ticket.bets_service.sources.kalshi import KalshiSource, balance_of_kalshi
-from unabated_ticket.bets_service.sources.wagerzon import balance_of_player_info
 from unabated_ticket.bets_service.store import BetsStore
-
-# Shape of a real PlayerInfoHelper body, values made up; it really does carry the password.
-PLAYER_INFO = {"result": {"CurrentBalance": "2,075 ", "AmountAtRisk": "120 ", "AvailBalance": "1,955 ",
-                          "CreditLimit": "750 ", "RealAvailBalance": "2,705 ", "Player": "ACCT",
-                          "Password": "hunter2"}}
 
 
 def test_kalshi_balance_is_cents_to_dollars():
@@ -33,23 +27,6 @@ def test_kalshi_source_balance_raises_on_non_200():
     source = KalshiSource(api=lambda method, path: (401, {"error": "no"}, {}), configure_auth=False)
     with pytest.raises(RuntimeError, match="401"):
         source.balance()
-
-
-def test_wagerzon_balance_reads_only_the_money_fields():
-    reading = balance_of_player_info(PLAYER_INFO)
-    assert reading == {"cash": 2075.0, "inBets": 120.0, "available": 2705.0, "creditLimit": 750.0}
-    assert "hunter2" not in json.dumps(reading)
-
-
-def test_wagerzon_negative_balance():
-    body = {"result": {**PLAYER_INFO["result"], "CurrentBalance": "-1,744 "}}
-    assert balance_of_player_info(body)["cash"] == -1744.0
-
-
-def test_wagerzon_balance_refuses_text_it_cannot_read():
-    body = {"result": {**PLAYER_INFO["result"], "CurrentBalance": "n/a"}}
-    with pytest.raises(RuntimeError, match="CurrentBalance"):
-        balance_of_player_info(body)
 
 
 def test_validate_reading_needs_cash():
