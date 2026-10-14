@@ -142,3 +142,9 @@ test("parlay legs and closed bets are skipped; a game the board has not resolved
   const offBoard = capture({ records: [bet("novig:3", { points: -20.5 })], lines: [line(KALSHI)], history });
   assert.deepEqual(offBoard, { saves: [], refusals: [] });
 });
+
+test("a venue Unabated lists by name only is its own book too", () => {
+  const history = historyOf({ [NINERS_ALT(DRAFTKINGS)]: [{ at: T0, price: 230 }], [NINERS_ALT(KALSHI)]: [{ at: T0, price: 200 }] });
+  const [row] = capture({ records: [bet("dk:1", { venue: "draftkings" })], lines: [line(DRAFTKINGS), line(KALSHI)], history }).saves;
+  assert.deepEqual({ bookCount: row.bookCount, bestBook: row.bestBook }, { bookCount: 1, bestBook: "Kalshi" });
+});

@@ -26,6 +26,7 @@
 const feed = require("../extension/feed.js");
 const fillfair = require("../extension/fillfair.js");
 const pricecheck = require("../extension/pricecheck.js");
+const bets = require("../extension/bets.js");
 
 const STATUS_ON_BOARD = 1;
 // A placement up to this far past our clock is a venue clock running ahead;
@@ -71,12 +72,20 @@ function entryAtFill(entries, placedMs) {
   return entry;
 }
 
+// The bet's own venue on the board: by Unabated's book id where fillfair.js
+// knows it, else by name (DraftKings, Polymarket US), so the price taken
+// never reads as another book's.
+function isOwnBook(line, book, venue) {
+  if (line.bookId === fillfair.BOOK_ID_OF_VENUE[venue]) return true;
+  return String(book.name || "").toLowerCase() === bets.venueLabel(venue).toLowerCase();
+}
+
 // Can this book's line stand as another book's price right now.
-function bookLineCounts(line, state, ownBookId) {
-  if (!line || line.bookId === ownBookId || line.bookId === feed.UNABATED_LINE_BOOK_ID) return false;
+function bookLineCounts(line, state, venue) {
+  if (!line || line.bookId === feed.UNABATED_LINE_BOOK_ID) return false;
   if (line.statusId !== STATUS_ON_BOARD || line.isBlurred) return false;
   const book = state.books[line.bookId];
-  return Boolean(book && book.isLive);
+  return Boolean(book && book.isLive) && !isOwnBook(line, book, venue);
 }
 
 // The row for one bet, from its same_line rows: {row} or {reason}.
@@ -84,10 +93,9 @@ function decide(bet, placedMs, rows, state, history, leagueObservingSince) {
   const leagueId = rows[0].leagueId;
   const leagueSince = leagueObservingSince[leagueId];
   if (typeof leagueSince !== "number" || placedMs < leagueSince) return { reason: REFUSED.leagueGap };
-  const ownBookId = fillfair.BOOK_ID_OF_VENUE[bet.venue];
   const prices = [];
   for (const row of rows) {
-    if (!bookLineCounts(state.lines[row.key], state, ownBookId)) continue;
+    if (!bookLineCounts(state.lines[row.key], state, bet.venue)) continue;
     const entry = entryAtFill(history[row.key], placedMs);
     if (!entry || pricecheck.impliedProb(entry.price) == null) continue;
     prices.push({ bookId: row.book.id, bookName: row.book.name, price: entry.price });
