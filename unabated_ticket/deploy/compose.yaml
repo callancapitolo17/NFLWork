@@ -39,6 +39,7 @@ services:
     environment:
       HOME: /tmp
       BETS_DB_PATH: /data/bets.duckdb
+      TAKER_DB_PATH: /data/taker.duckdb
       BETS_SERVICE_LOG_PATH: /data/logs/bets_service.log
       BETS_SERVICE_LOG_CONSOLE: "1"
       NOVIG_TOKEN_PATH: /data/novig_token.json

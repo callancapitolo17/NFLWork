@@ -20,6 +20,7 @@
 //                          the Tailscale address comes with the deploy step)
 //   UNABATED_RUNNER_PORT   default 8095
 //   BETS_SERVICE_URL       the bets service, default http://127.0.0.1:8094
+//   KALSHI_BASE_URL        Kalshi's API, default https://api.elections.kalshi.com/trade-api/v2
 // Network:
 //   GET content.unabated.com league snapshots (public, no login), as the panel does.
 //   GET <bets service>/bets.json every 30 s (the panel's cadence) — open bets
@@ -40,6 +41,10 @@
 //   POST <bets service>/fill_books.json — each new open bet's other books at
 //       its number when it was placed (server/fillbooks.js): how many posted
 //       it, how many beat the price taken, the best of them. Runner only.
+//   GET <Kalshi>/markets/<ticker>/orderbook every 30 s for each Kalshi Edges
+//       row the automated taker looks at (public, no key; server/taker.js).
+//   POST <bets service>/taker_decisions.json — each taker decision that
+//       changed since it was last logged (taker.duckdb::taker_decisions).
 // Serves (HTTP on UNABATED_RUNNER_HOST:UNABATED_RUNNER_PORT, no auth):
 //   GET /edges.json  the Edges list the panel would show for those settings
 //                    (server/edges_payload.js documents the shape)
@@ -53,12 +58,15 @@
 //   GET /scenarios.json  the Bet Tracker's Live tab: every game in progress
 //                    with open bets, its results and the P&L and kickoff
 //                    chance of each (server/scenarios.js documents the shape)
-//   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings}
+//   GET /taker.json  the automated taker's last pass: every Kalshi row it
+//                    looked at and what it would do (T1: places nothing)
+//   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
 // Side effects: none on disk — no DuckDB, no files. Its writes go through the
-// bets service: the closing fairs (bets.duckdb::bet_closing_fairs) and the
-// crosswalk rows, fill fairs and fill books above (insert-only tables). State (feed, line
+// bets service: the closing fairs (bets.duckdb::bet_closing_fairs), the
+// crosswalk rows, fill fairs and fill books above (insert-only tables) and
+// the taker's decisions (taker.duckdb::taker_decisions, append). State (feed, line
 // history, bets, each game's last pregame odds for
 // the Live tab) is in memory and rebuilt on restart: a game already under way
 // when the runner starts has its card but no kickoff chances. Logs state
@@ -82,10 +90,20 @@ const ladderLib = require("../extension/ladder.js");
 const scenarios = require("./scenarios.js");
 const teasersPayload = require("./teasers_payload.js");
 const attachLib = require("../extension/attach.js");
+const pricecheck = require("../extension/pricecheck.js");
+const taker = require("./taker.js");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8095;
 const DEFAULT_BETS_SERVICE_URL = "http://127.0.0.1:8094";
+const DEFAULT_KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2";
+// The taker decides on every Kalshi row this often; Kalshi's public reads allow far more.
+const TAKER_PASS_MS = 30 * 1000;
+// Two reads in flight stay well under Kalshi's 20 reads/s basic limit at ~100 ms a read.
+const KALSHI_BOOK_READS_AT_ONCE = 2;
+// Decisions held for the bets service while it is down; past this the oldest go (logged).
+const TAKER_LOG_MAX_UNSENT = 5000;
+const TAKER_LOG_ROWS_PER_POST = 200;
 // The panel polls the bets service every 30 s (panel.js BETS_POLL_MS).
 const BETS_POLL_MS = 30 * 1000;
 // A phone setting change shows within one scanner tick.
@@ -114,7 +132,7 @@ function logError(message) {
 }
 
 // The runner's config from the environment; throws naming the bad variable.
-//   {host, port, betsServiceUrl}
+//   {host, port, betsServiceUrl, kalshiBaseUrl}
 function configFromEnv(env) {
   const host = env.UNABATED_RUNNER_HOST || DEFAULT_HOST;
   const rawPort = env.UNABATED_RUNNER_PORT || String(DEFAULT_PORT);
@@ -126,7 +144,11 @@ function configFromEnv(env) {
   if (!/^https?:\/\/\S+$/.test(betsServiceUrl)) {
     throw new Error(`BETS_SERVICE_URL must be an http(s) URL, got ${JSON.stringify(env.BETS_SERVICE_URL)}`);
   }
-  return { host, port, betsServiceUrl };
+  const kalshiBaseUrl = (env.KALSHI_BASE_URL || DEFAULT_KALSHI_BASE_URL).replace(/\/+$/, "");
+  if (!/^https?:\/\/\S+$/.test(kalshiBaseUrl)) {
+    throw new Error(`KALSHI_BASE_URL must be an http(s) URL, got ${JSON.stringify(env.KALSHI_BASE_URL)}`);
+  }
+  return { host, port, betsServiceUrl, kalshiBaseUrl };
 }
 
 // The Host values a request to this runner can carry: the loopback names and
@@ -198,14 +220,18 @@ async function sendServiceJson(fetchImpl, url, method, body) {
 
 // The scan loop, the bets poll and the settings poll, held in memory.
 //   deps  {fetchImpl (Unabated snapshots), serviceFetch (the bets service),
+//          kalshiFetch (Kalshi's orderbooks, default serviceFetch), kalshiBaseUrl,
 //          betsServiceUrl, now, timers {setInterval, clearInterval},
 //          logInfo / logWarning (message) -> void, default stdout / stderr}
-// Returns {start, stop, pollBets, pollSettings, scanLoaded, learn, edgesPayload,
-//          teasersPayload, attachPayload, scenariosPayload, health, scanner}.
+// Returns {start, stop, pollBets, pollSettings, scanLoaded, learn, takerPass,
+//          postTakerDecisions, edgesPayload, teasersPayload, attachPayload,
+//          scenariosPayload, takerPayload, health, scanner}.
 function createRunner(deps) {
   const now = deps.now || (() => Date.now());
   const timers = deps.timers || { setInterval: (fn, ms) => setInterval(fn, ms), clearInterval: (id) => clearInterval(id) };
   const serviceFetch = deps.serviceFetch || deps.fetchImpl;
+  const kalshiFetch = deps.kalshiFetch || serviceFetch;
+  const kalshiBaseUrl = deps.kalshiBaseUrl || DEFAULT_KALSHI_BASE_URL;
   const logInfo = deps.logInfo || log;
   const logWarning = deps.logWarning || logError;
   const startedAt = now();
@@ -275,6 +301,16 @@ function createRunner(deps) {
   // restart): every change restarts the scan, which wipes the board and the
   // line history, so a league is not dropped when its last bet settles.
   const betLeagueIds = new Set();
+  // The automated taker (server/taker.js): the last pass's decisions, each
+  // row's last logged signature (a row logs again only when its decision
+  // changes), and the decisions the bets service has not taken yet.
+  let takerBusy = false;
+  let takerPostBusy = false;
+  let takerLastPass = { startedAt: null, finishedAt: null, skipped: "not run yet", rows: 0, byReason: {}, coverage: {} };
+  let takerDecisions = [];
+  const takerLogged = new Map();
+  let takerUnsent = [];
+  const takerLogStatus = { okAt: null, error: null, rowsSent: 0, dropped: 0 };
 
   // Every snapshot carries Unabated's team list; register it so bet records
   // resolve to the board's team ids, and re-resolve when it grew (as the panel does).
@@ -571,6 +607,171 @@ function createRunner(deps) {
     }
   }
 
+  // One Kalshi orderbook, parsed (taker.parseKalshiOrderbook). Throws naming
+  // the ticker and what went wrong; a 404 is a ticker Kalshi does not list.
+  async function readKalshiBook(ticker) {
+    const body = await getServiceJson(kalshiFetch, `${kalshiBaseUrl}/markets/${encodeURIComponent(ticker)}/orderbook`);
+    return taker.parseKalshiOrderbook(body);
+  }
+
+  // ticker -> {book} | {error}, KALSHI_BOOK_READS_AT_ONCE reads in flight.
+  async function readKalshiBooks(tickers) {
+    const books = new Map();
+    const queue = Array.from(tickers);
+    const worker = async () => {
+      while (queue.length) {
+        const ticker = queue.shift();
+        try {
+          books.set(ticker, { book: await readKalshiBook(ticker) });
+        } catch (error) {
+          books.set(ticker, { error: error.message });
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: KALSHI_BOOK_READS_AT_ONCE }, worker));
+    return books;
+  }
+
+  // Why the taker must not decide right now, or null: no live board, or the
+  // held bets are unknown (sizing is conditional on them). Fail closed.
+  function takerBlocker() {
+    if (!feedState || !scannerStatus || scannerStatus.phase !== "live") return "the board is not live";
+    if (betsStatus.okAt === null) return "the bets service has not been read yet";
+    if (betsStatus.error) return `the bets service is unreachable: ${betsStatus.error}`;
+    return null;
+  }
+
+  // One taker pass (server/taker.js): every Kalshi row at the bot's minimum
+  // edge, its contract, its live book, its decision. Places nothing. The
+  // decisions that changed since they were last logged are queued for the
+  // bets service.
+  async function takerPass() {
+    if (takerBusy) return;
+    takerBusy = true;
+    const startedAt = now();
+    try {
+      const blocker = takerBlocker();
+      if (blocker) {
+        takerLastPass = { ...takerLastPass, startedAt, finishedAt: now(), skipped: blocker };
+        return;
+      }
+      // The board as of the pass start: a snapshot landing during the book reads must not mix in.
+      const board = feedState;
+      const rows = taker.candidateRows(board, settings.edgeSettings, startedAt);
+      const staleLeagueIds = new Set([...(scannerStatus.staleLeagues || []), ...Object.keys(scannerStatus.leagueErrors || {}).map(Number)]);
+      const contracts = rows.map((row) => (staleLeagueIds.has(row.leagueId)
+        ? { reason: "stale_feed", detail: `league ${row.leagueId} snapshot is stale or failed to load` }
+        : taker.resolveKalshiContract(row, board)));
+      const books = await readKalshiBooks(new Set(contracts.filter((contract) => contract.ticker).map((contract) => contract.ticker)));
+      const priceIndex = pricecheck.buildPriceIndex(board, { now: startedAt, maxLineAgeMs: taker.MAX_LINE_AGE_MS });
+      const flags = betsLib.annotateRows(rows, held.records, { lines: boardLines() });
+      const teasers = openTeasersNow();
+      const decidedAt = now();
+      takerDecisions = rows.map((row, index) => {
+        const contract = contracts[index];
+        const read = contract.ticker ? books.get(contract.ticker) : null;
+        const quote = read && read.book ? taker.quoteOf(read.book, contract.side) : null;
+        const decision = taker.decideRow({
+          row, contract, quote, quoteError: read ? read.error || null : null, priceIndex,
+          sizing: { matches: flags[index].matches, ladderOf: ladderReaderOf(row.eventId), teasers },
+        });
+        return { ...takerRowFields(row), decidedAt: new Date(decidedAt).toISOString(), ...decision };
+      });
+      queueChangedDecisions(takerDecisions);
+      takerLastPass = {
+        startedAt, finishedAt: now(), skipped: null, rows: rows.length,
+        byReason: countBy(takerDecisions, (decision) => decision.reason),
+        coverage: takerCoverage(takerDecisions),
+      };
+    } catch (error) {
+      logWarning(`taker pass failed: ${error.stack || error.message}`);
+      takerLastPass = { ...takerLastPass, startedAt, finishedAt: now(), skipped: `the pass failed: ${error.message}` };
+    } finally {
+      takerBusy = false;
+    }
+    await postTakerDecisions();
+  }
+
+  // What a decision row says about the line, for the log and /taker.json.
+  function takerRowFields(row) {
+    return {
+      rowKey: row.key, leagueId: row.leagueId, league: row.leagueLabel, eventId: row.eventId, eventName: row.eventName,
+      eventStart: row.eventStart, period: row.period, betType: row.betType, sideLabel: row.sideLabel, points: row.points, isAlt: row.isAlt,
+    };
+  }
+
+  // Per league: rows looked at, rows with a ticker (derived moneylines apart),
+  // rows without one. T1's coverage check.
+  function takerCoverage(decisions) {
+    const byLeague = {};
+    for (const decision of decisions) {
+      const league = byLeague[decision.league] || (byLeague[decision.league] = { rows: 0, withTicker: 0, derivedTicker: 0, noTicker: 0 });
+      league.rows += 1;
+      if (decision.reason === "no_ticker") league.noTicker += 1;
+      else if (decision.ticker) league.withTicker += 1;
+      if (decision.derivedTicker) league.derivedTicker += 1;
+    }
+    return byLeague;
+  }
+
+  // Queue each decision whose signature changed; forget rows that left the
+  // list, so one coming back logs again.
+  function queueChangedDecisions(decisions) {
+    const present = new Set();
+    for (const decision of decisions) {
+      present.add(decision.rowKey);
+      const signature = taker.decisionSignature(decision);
+      if (takerLogged.get(decision.rowKey) === signature) continue;
+      takerLogged.set(decision.rowKey, signature);
+      takerUnsent.push(decision);
+    }
+    for (const rowKey of Array.from(takerLogged.keys())) if (!present.has(rowKey)) takerLogged.delete(rowKey);
+    if (takerUnsent.length > TAKER_LOG_MAX_UNSENT) {
+      const dropped = takerUnsent.length - TAKER_LOG_MAX_UNSENT;
+      takerUnsent = takerUnsent.slice(dropped);
+      takerLogStatus.dropped += dropped;
+      logWarning(`taker log: the bets service is behind, dropped the ${dropped} oldest unsent decision(s)`);
+    }
+  }
+
+  // POST the queued decisions, oldest first; a failure keeps the rest for the next pass.
+  async function postTakerDecisions() {
+    if (takerPostBusy || takerUnsent.length === 0) return;
+    takerPostBusy = true;
+    try {
+      while (takerUnsent.length) {
+        const chunk = takerUnsent.slice(0, TAKER_LOG_ROWS_PER_POST);
+        await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/taker_decisions.json`, "POST", { rows: chunk });
+        takerUnsent = takerUnsent.slice(chunk.length);
+        if (takerLogStatus.error) logInfo("taker log: saving again");
+        Object.assign(takerLogStatus, { okAt: now(), error: null, rowsSent: takerLogStatus.rowsSent + chunk.length });
+      }
+    } catch (error) {
+      if (takerLogStatus.error !== error.message) logWarning(`taker log: POST failed: ${error.message}`);
+      takerLogStatus.error = error.message;
+    } finally {
+      takerPostBusy = false;
+    }
+  }
+
+  // /taker.json: the rules, the last pass, its decisions (would-bets first,
+  // then by live edge) and the log's state.
+  function takerPayloadNow() {
+    const order = (decision) => (decision.reason === "bet" ? 0 : 1);
+    const decisions = takerDecisions.slice().sort((a, b) => order(a) - order(b) || (b.liveEdge ?? -Infinity) - (a.liveEdge ?? -Infinity));
+    return {
+      generatedAt: new Date(now()).toISOString(),
+      mode: "decide-only",
+      rules: {
+        bankroll: taker.BOT_BANKROLL, kelly: taker.BOT_KELLY, minLiveEdge: taker.MIN_LIVE_EDGE, maxLiveEdge: taker.MAX_LIVE_EDGE,
+        priceTolerance: taker.PRICE_TOLERANCE, maxLineAgeHours: taker.MAX_LINE_AGE_MS / HOUR_MS,
+      },
+      pass: { ...takerLastPass, startedAt: isoOrNull(takerLastPass.startedAt), finishedAt: isoOrNull(takerLastPass.finishedAt) },
+      decisions,
+      log: { ...takerLogStatus, unsent: takerUnsent.length },
+    };
+  }
+
   // Bets and settings first, so the first scan uses the right leagues and the
   // first list is sized against what is held; then the polls, and resolve
   // once the first full load has landed.
@@ -581,6 +782,7 @@ function createRunner(deps) {
       timers.setInterval(() => pollBets(), BETS_POLL_MS),
       timers.setInterval(() => pollSettings(), SETTINGS_POLL_MS),
       timers.setInterval(() => postClosingFairs(), CLOSING_FAIRS_POST_MS),
+      timers.setInterval(() => takerPass(), TAKER_PASS_MS),
     ];
     await scanLoad;
   }
@@ -705,14 +907,28 @@ function createRunner(deps) {
       betsService: { okAt: betsStatus.okAt, error: betsStatus.error },
       settings: { source: settings.source, okAt: settings.okAt, error: settings.error },
       closingFairs: { ...closingStatus },
+      taker: {
+        mode: "decide-only", lastPassAt: isoOrNull(takerLastPass.finishedAt), skipped: takerLastPass.skipped,
+        rows: takerLastPass.rows, byReason: takerLastPass.byReason, log: { okAt: takerLogStatus.okAt, error: takerLogStatus.error, unsent: takerUnsent.length },
+      },
     };
   }
 
   return {
-    start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, learn,
+    start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions,
     edgesPayload: edgesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow,
-    scenariosPayload: scenariosPayloadNow, health, scanner,
+    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, health, scanner,
   };
+}
+
+function isoOrNull(ms) {
+  return typeof ms === "number" ? new Date(ms).toISOString() : null;
+}
+
+function countBy(items, keyOf) {
+  const counts = {};
+  for (const item of items) counts[keyOf(item)] = (counts[keyOf(item)] || 0) + 1;
+  return counts;
 }
 
 function httpError(status, message) {
@@ -727,7 +943,7 @@ function sendJson(response, status, body) {
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json and /health, the Host allowlist first on
+// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json and /health, the Host allowlist first on
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
@@ -750,6 +966,7 @@ function createHttpServer(runner, { host }) {
       if (path === "/teasers.json") return sendJson(response, 200, runner.teasersPayload());
       if (path === "/attach.json") return sendJson(response, 200, runner.attachPayload(url.searchParams));
       if (path === "/scenarios.json") return sendJson(response, 200, runner.scenariosPayload());
+      if (path === "/taker.json") return sendJson(response, 200, runner.takerPayload());
       if (path === "/health") return sendJson(response, 200, runner.health());
     } catch (error) {
       if (error.status) return sendJson(response, error.status, { error: error.message });
@@ -763,7 +980,9 @@ function createHttpServer(runner, { host }) {
 
 async function main() {
   const config = configFromEnv(process.env);
-  const runner = createRunner({ fetchImpl: nodeFetch, serviceFetch: fetch, betsServiceUrl: config.betsServiceUrl });
+  const runner = createRunner({
+    fetchImpl: nodeFetch, serviceFetch: fetch, kalshiFetch: fetch, kalshiBaseUrl: config.kalshiBaseUrl, betsServiceUrl: config.betsServiceUrl,
+  });
   const server = createHttpServer(runner, config);
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -788,6 +1007,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  DEFAULT_HOST, DEFAULT_PORT, DEFAULT_BETS_SERVICE_URL, BETS_POLL_MS, SETTINGS_POLL_MS, CLOSING_FAIRS_POST_MS,
+  DEFAULT_HOST, DEFAULT_PORT, DEFAULT_BETS_SERVICE_URL, DEFAULT_KALSHI_BASE_URL, BETS_POLL_MS, SETTINGS_POLL_MS, CLOSING_FAIRS_POST_MS, TAKER_PASS_MS,
   configFromEnv, allowedHosts, hostAllowed, scannerLeaguesOf, nodeFetch, createRunner, createHttpServer,
 };

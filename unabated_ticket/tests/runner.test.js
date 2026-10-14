@@ -101,11 +101,12 @@ async function startedRunner(script) {
 }
 
 test("configFromEnv: loopback 8095 and the local bets service by default; a bad port or URL fails naming the variable", () => {
-  assert.deepEqual(runnerLib.configFromEnv({}), { host: "127.0.0.1", port: 8095, betsServiceUrl: "http://127.0.0.1:8094" });
+  assert.deepEqual(runnerLib.configFromEnv({}), { host: "127.0.0.1", port: 8095, betsServiceUrl: "http://127.0.0.1:8094", kalshiBaseUrl: "https://api.elections.kalshi.com/trade-api/v2" });
   assert.deepEqual(runnerLib.configFromEnv({ UNABATED_RUNNER_HOST: "100.64.0.7", UNABATED_RUNNER_PORT: "9000", BETS_SERVICE_URL: "http://127.0.0.1:8094/" }),
-    { host: "100.64.0.7", port: 9000, betsServiceUrl: "http://127.0.0.1:8094" });
+    { host: "100.64.0.7", port: 9000, betsServiceUrl: "http://127.0.0.1:8094", kalshiBaseUrl: "https://api.elections.kalshi.com/trade-api/v2" });
   assert.throws(() => runnerLib.configFromEnv({ UNABATED_RUNNER_PORT: "80a" }), /UNABATED_RUNNER_PORT must be a whole number from 1 to 65535, got "80a"/);
   assert.throws(() => runnerLib.configFromEnv({ BETS_SERVICE_URL: "ftp://x" }), /BETS_SERVICE_URL must be an http\(s\) URL/);
+  assert.throws(() => runnerLib.configFromEnv({ KALSHI_BASE_URL: "ftp://x" }), /KALSHI_BASE_URL must be an http\(s\) URL/);
 });
 
 test("allowedHosts: the loopback names and the bound address, with the port; bare names only on 80", () => {
@@ -448,4 +449,125 @@ test("a bet Dismissed on either page stops needing a game in edges.json, and lis
   const after = runner.edgesPayload().betsService.unmatched.find((entry) => entry.betId === "bol-stray");
   runner.stop();
   assert.deepEqual([after.needsGame, after.dismissed], [false, true]);
+});
+
+// ---- the automated taker (server/taker.js, T1: decides, places nothing) ----
+// The CFB venue-id slice (Duquesne @ Washington State, Kalshi rung ids) served
+// as league 2, the clock four days before its kickoff, a 5% Unabated edge set
+// on Kalshi's WSU -35.5 alt (-143, 0.587157 all-in) and every other book at
+// that number made worse, so the row is the best price.
+const TAKER_NOW = Date.parse("2026-09-15T19:00:00Z");
+const TAKER_TICKER = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36";
+
+function takerVenueSlice() {
+  const json = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "v2_venue_ids_slice.json"), "utf8"));
+  const spreadRow = json.odds["lg2:pt1:pregame"].find((row) => row.key === "pt1:pregame:bt2:e123742");
+  for (const [sideKey, books] of Object.entries(spreadRow.sides)) {
+    for (const [bookKey, book] of Object.entries(books)) {
+      for (const rung of book.alternateLines || []) {
+        if (!rung || rung.points !== -35.5 || sideKey !== "si1:tid717") continue;
+        if (bookKey === "ms105") Object.assign(rung, { ge: 0.05, bacr: -160, sequenceNumber: TAKER_NOW - 60000 });
+        else if (rung.americanPrice != null) Object.assign(rung, { americanPrice: -200, price: -200 });
+      }
+    }
+  }
+  return JSON.stringify(json);
+}
+
+function takerUnabatedFetch() {
+  const body = takerVenueSlice();
+  return async (url) => {
+    if (url.split("?")[0] === SNAPSHOT_BASE_URL(2)) return response({ body, headers: { "content-length": "1000", "last-modified": new Date(TAKER_NOW - 20000).toUTCString() } });
+    return response({ status: 404, body: "not found" });
+  };
+}
+
+// Kalshi: a 57c YES ask with 40 contracts behind it on the WSU -35.5 market.
+function kalshiFetch() {
+  const calls = [];
+  const impl = async (url) => {
+    calls.push(url);
+    if (url.endsWith(`/markets/${TAKER_TICKER}/orderbook`)) {
+      return response({ body: JSON.stringify({ orderbook_fp: { yes_dollars: [["0.5500", "100"]], no_dollars: [["0.4300", "40"]] } }) });
+    }
+    return response({ status: 404, body: JSON.stringify({ error: "not found" }) });
+  };
+  impl.calls = calls;
+  return impl;
+}
+
+function takerService(script) {
+  const posts = [];
+  const impl = async (url, init = {}) => {
+    const route = url.slice(SERVICE_URL.length);
+    if (init.method === "POST") {
+      posts.push({ route, body: JSON.parse(init.body) });
+      return response({ body: JSON.stringify({ ok: true, logged: JSON.parse(init.body).rows.length }) });
+    }
+    const answer = script[route];
+    if (answer instanceof Error) throw answer;
+    if (answer === undefined) return response({ status: 404, body: "{}" });
+    return response({ body: JSON.stringify(answer) });
+  };
+  impl.posts = posts;
+  return impl;
+}
+
+const TAKER_SETTINGS = { settings: { leagues: [2], periods: [1] }, updatedAt: null };
+
+test("taker: a best-price Kalshi edge at the live ask is a would-bet, logged once, never an order", async () => {
+  const kalshi = kalshiFetch();
+  const service = takerService({ "/bets.json": betsBody([]), "/settings.json": TAKER_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  const payload = runner.takerPayload();
+  assert.equal(payload.mode, "decide-only");
+  assert.equal(payload.pass.skipped, null);
+  const decision = payload.decisions.find((row) => row.ticker === TAKER_TICKER);
+  assert.equal(decision.reason, "bet", decision.detail);
+  assert.equal(decision.liveAsk, 0.57);
+  assert.ok(decision.contracts >= 1 && decision.contracts <= 40, String(decision.contracts));
+  assert.equal(payload.decisions[0], decision, "would-bets list first");
+  assert.ok(kalshi.calls.every((url) => url.startsWith("https://kalshi.test/v2/markets/") && url.endsWith("/orderbook")), "only orderbook reads");
+  const logged = service.posts.filter((post) => post.route === "/taker_decisions.json").flatMap((post) => post.body.rows);
+  assert.equal(logged.filter((row) => row.rowKey === decision.rowKey).length, 1);
+  // The same decision on the next pass is not logged again.
+  await runner.takerPass();
+  const loggedAgain = service.posts.filter((post) => post.route === "/taker_decisions.json").flatMap((post) => post.body.rows);
+  assert.equal(loggedAgain.length, logged.length);
+  assert.equal(runner.health().taker.byReason.bet >= 1, true);
+  runner.stop();
+});
+
+test("taker: holdings unknown (bets service down) decides nothing and reads no book", async () => {
+  const kalshi = kalshiFetch();
+  const service = takerService({ "/bets.json": new Error("connection refused"), "/settings.json": TAKER_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  assert.match(runner.takerPayload().pass.skipped, /bets service/);
+  assert.deepEqual(runner.takerPayload().decisions, []);
+  assert.equal(kalshi.calls.length, 0);
+  runner.stop();
+});
+
+test("taker: a failed orderbook read is no_book for that row, the pass goes on", async () => {
+  const service = takerService({ "/bets.json": betsBody([]), "/settings.json": TAKER_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: async () => { throw new Error("socket hang up"); },
+    kalshiBaseUrl: "https://kalshi.test/v2", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  const decision = runner.takerPayload().decisions.find((row) => row.ticker === TAKER_TICKER);
+  assert.equal(decision.reason, "no_book");
+  assert.match(decision.detail, /socket hang up/);
+  runner.stop();
 });

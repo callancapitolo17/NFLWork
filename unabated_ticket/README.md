@@ -2584,7 +2584,7 @@ the "nothing public listens" check: `deploy/README.md`.
   (pull `main`, rebuild, recreate, then PASS/FAIL checks of `/health`,
   `/` and `/edges.json` with the tailnet `Host`, and a 403 for a foreign one).
 - **Writable data dir** (`UNABATED_DATA_DIR` → `/data`): `bets.duckdb`
-  (`BETS_DB_PATH`), `novig_token.json` (rotates), `logs/`
+  (`BETS_DB_PATH`), `taker.duckdb` (`TAKER_DB_PATH`), `novig_token.json` (rotates), `logs/`
   (`BETS_SERVICE_LOG_PATH`; `BETS_SERVICE_LOG_CONSOLE=1` also logs to
   stderr for `docker compose logs`). Off the server all three keep their
   defaults next to the package.
@@ -2595,6 +2595,45 @@ the "nothing public listens" check: `deploy/README.md`.
   the data dir (`deploy/README.md` step 10).
 - **`BETS_EXTRA_ALLOWED_HOSTS`** in `deploy/.env` is the tailnet name the
   #125 Host guard must accept (Bets service above).
+
+### Automated taker, T1: decides, places nothing (`server/taker.js`)
+
+Plan: `automated_taker_plan.md` in the project folder. Every 30 s the runner
+looks at each Kalshi line Unabated shows at 3%+ (the settings' leagues and
+periods, every market, alts included), reads Kalshi's public orderbook for it,
+and decides what the bot **would** do. Nothing is ever ordered in T1.
+
+| Rule | Value |
+|---|---|
+| Bankroll / Kelly | $500 at 0.25, conditional on every open bet (the panel's sizing) |
+| Price | Kalshi's live ask + 7% fee no more than 0.1c worse than Unabated's shown price |
+| Edge | 3% to 20% at that live price (fair read off Unabated's cheaper of its two prices) |
+| Best price | no live book beats it at the number (one is enough to skip); outliers and Skips trade |
+| Line age | changed within 7 days; right up to the start |
+| Size | floor(stake / all-in), cut to the depth at the ask |
+
+Tickers: spreads and totals from the rung ids (`Y-` buys YES, `N-` NO);
+full-game moneylines derived from the spread rungs' team code
+(`KXNCAAFSPREAD-26SEP19DUQWSU-WSU36` → `KXNCAAFGAME-26SEP19DUQWSU-WSU`,
+marked `derivedTicker`, unverified until T1 runs live).
+
+Fail closed: no live board, or the bets service unread or unreachable, and
+the pass decides nothing and reads no book.
+
+- `GET :8095/taker.json`: the rules, the last pass (counts by reason, per-league
+  ticker coverage) and every decision, would-bets first.
+- `taker.duckdb::taker_decisions` (bets service, `POST /taker_decisions.json`,
+  append): one row each time a line's decision changes (reason, ticker,
+  ask, Unabated's price or contracts). Its own file, never `bets.duckdb`; if it
+  cannot open, the service runs on and the route 503s.
+
+```sql
+-- what the bot would have bet, newest first
+SELECT decided_at, ticker, contract_side, unabated_price, live_all_in, live_edge, contracts
+FROM taker_decisions WHERE reason = 'bet' ORDER BY decided_at DESC;
+-- why it skips
+SELECT reason, count(*) FROM taker_decisions GROUP BY reason ORDER BY 2 DESC;
+```
 
 ## Tests
 

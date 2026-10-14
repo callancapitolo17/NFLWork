@@ -68,6 +68,9 @@ KALSHI_BASE_URL = _get("KALSHI_BASE_URL",
 # Where the store lives. The server deploy (unabated_ticket/deploy/) points it
 # at a writable data directory, since the repo is mounted read-only there.
 DB_PATH = Path(_get("BETS_DB_PATH", str(PKG_DIR / "bets.duckdb")))
+# The automated taker's decision log (taker_store.py), its own file so the
+# bot's log never shares a write path with Cal's bet history.
+TAKER_DB_PATH = Path(_get("TAKER_DB_PATH", str(PKG_DIR / "taker.duckdb")))
 
 # HTTP. Loopback only: the service has no auth and serves the user's own bets.
 # Not configurable on purpose: on the server, `tailscale serve` on the host

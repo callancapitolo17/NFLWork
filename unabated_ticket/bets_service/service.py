@@ -150,7 +150,8 @@ leaves `bets` untouched — a dark source never blanks the list. PUT
 /settings.json UPSERTs the one row of bets.duckdb::edge_settings. POST
 /place_teaser.json places a wager at BFA (money, not disk) and UPSERTs the BFA open
 bets it read while confirming into bets.duckdb::bets, so the panel's next poll has the
-ticket.
+ticket. POST /taker_decisions.json APPENDs the server runner's taker decisions to
+taker.duckdb::taker_decisions (taker_store.py; a separate file from bets.duckdb).
 """
 import json
 import logging
@@ -179,6 +180,7 @@ from unabated_ticket.bets_service.sources.novig import source_if_connected as no
 from unabated_ticket.bets_service.sources.polymarket_us import source_if_configured as polymarket_us_source_if_configured
 from unabated_ticket.bets_service.sources.wagerzon import source_if_configured as wagerzon_source_if_configured
 from unabated_ticket.bets_service.store import EDGE_SETTINGS_FIELDS, BetsStore
+from unabated_ticket.bets_service.taker_store import DECISION_REASONS, TakerStore
 
 log = logging.getLogger(__name__)
 
@@ -203,6 +205,8 @@ PIN_OPTIONAL_ID_FIELDS = ("awayTeamId", "homeTeamId")
 PIN_OPTIONAL_TEXT_FIELDS = ("eventStart", "awayTeamName", "homeTeamName")
 # A fill-fair POST carries the bets a capture pass decided: a handful.
 MAX_FILL_FAIR_ROWS_PER_POST = 1000
+# The runner posts its taker decisions 200 at a time (runner.js TAKER_LOG_ROWS_PER_POST).
+MAX_TAKER_DECISION_ROWS_PER_POST = 1000
 # Cal's ask (2026-10-05): only these books carry bets that are not his.
 EXCLUDABLE_VENUES = ("bfa", "wagerzon")
 # A parlay's legs go in one request; a dozen is already a long ticket.
@@ -481,6 +485,58 @@ def _validate_fill_fair_row(index: int, raw: object) -> dict | str:
                 f"got {raw['fairObservedAt']} after {raw['placedAt']}")
     return {"betId": raw["betId"], "lineKey": raw["lineKey"], "points": points, "fairAmerican": fair,
             "fairObservedAt": raw["fairObservedAt"], "placedAt": raw["placedAt"]}
+
+
+def _iso_datetime(value: object) -> datetime | None:
+    """An aware datetime from an ISO time string, None for anything else."""
+    ms = _iso_ms(value)
+    return None if ms is None else datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+
+
+def _validate_taker_decision_row(index: int, raw: object) -> dict | str:
+    """One row of a POST /taker_decisions.json body as {decision (as sent),
+    decided_at, event_start (parsed)}, or what was expected and what was found. Only the columns taker_store.py
+    queries on are checked; the rest of the decision is kept as sent."""
+    if not isinstance(raw, dict):
+        return f"rows[{index}] must be an object, got {type(raw).__name__}"
+    if not _non_empty_string(raw.get("rowKey")):
+        return f"rows[{index}].rowKey must be a non-empty string, got {raw.get('rowKey')!r}"
+    if raw.get("reason") not in DECISION_REASONS:
+        return f"rows[{index}].reason must be one of {list(DECISION_REASONS)}, got {raw.get('reason')!r}"
+    decided_at = _iso_datetime(raw.get("decidedAt"))
+    if decided_at is None:
+        return f"rows[{index}].decidedAt must be an ISO time, got {raw.get('decidedAt')!r}"
+    event_start = _iso_datetime(raw.get("eventStart"))
+    if raw.get("eventStart") is not None and event_start is None:
+        return f"rows[{index}].eventStart must be an ISO time or null, got {raw.get('eventStart')!r}"
+    for field in ("eventId", "unabatedPrice", "contracts"):
+        value = raw.get(field)
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+            return f"rows[{index}].{field} must be an integer or null, got {value!r}"
+    for field in ("liveAllIn", "liveEdge"):
+        if raw.get(field) is not None and not _is_number(raw.get(field)):
+            return f"rows[{index}].{field} must be a number or null, got {raw.get(field)!r}"
+    for field in ("league", "ticker", "side"):
+        if raw.get(field) is not None and not isinstance(raw.get(field), str):
+            return f"rows[{index}].{field} must be a string or null, got {raw.get(field)!r}"
+    return {"decision": raw, "decided_at": decided_at, "event_start": event_start}
+
+
+def validate_taker_decisions(body: object) -> list[dict] | str:
+    """The rows of a POST /taker_decisions.json body, or an error naming the
+    first bad row (the whole request is refused; the runner keeps its queue)."""
+    if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
+        return f"body must be an object with a `rows` array, got {type(body).__name__}"
+    raw_rows = body["rows"]
+    if len(raw_rows) > MAX_TAKER_DECISION_ROWS_PER_POST:
+        return f"at most {MAX_TAKER_DECISION_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
+    rows: list[dict] = []
+    for index, raw in enumerate(raw_rows):
+        row = _validate_taker_decision_row(index, raw)
+        if isinstance(row, str):
+            return row
+        rows.append(row)
+    return rows
 
 
 def validate_fill_fair_rows(body: object) -> list[dict] | str:
@@ -777,11 +833,13 @@ def parse_days(query: str) -> int | str:
 def make_handler(store: BetsStore, started_at: float, source_names: list[str] = (),
                  runner_url: str | None = None, runner_timeout_sec: float | None = None,
                  extra_hosts: tuple[str, ...] | None = None,
-                 teaser_placer: bfa_teaser.BFATeaserPlacer | None = None) -> type[BaseHTTPRequestHandler]:
+                 teaser_placer: bfa_teaser.BFATeaserPlacer | None = None,
+                 taker_store: TakerStore | None = None) -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
     EXTRA_ALLOWED_HOSTS (the tests pass their own). `teaser_placer` is the
-    Place button's (None: no BFA account is read, POST /place_teaser.json 503s)."""
+    Place button's (None: no BFA account is read, POST /place_teaser.json 503s).
+    `taker_store` is the taker's decision log (None: POST /taker_decisions.json 503s)."""
     names = list(source_names)
     proxied_host_names = tuple(extra_hosts) if extra_hosts is not None else config.EXTRA_ALLOWED_HOSTS
     edges_runner_url = (runner_url or config.RUNNER_URL).rstrip("/")
@@ -829,7 +887,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             url = urlparse(self.path)
             if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/fill_books.json", "/closing_fairs.json",
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
-                                "/draftkings.json", "/place_teaser.json"):
+                                "/draftkings.json", "/place_teaser.json", "/taker_decisions.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
@@ -868,6 +926,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/place_teaser.json":
                 self._place_teaser(body)
+                return
+            if url.path == "/taker_decisions.json":
+                self._log_taker_decisions(body)
                 return
             rows = validate_crosswalk_rows(body)
             if isinstance(rows, str):
@@ -1004,6 +1065,16 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
         # run — a complete push UPSERTs its records (a graded wager over its open
         # record) and closes the open ones neither read lists; an error push is a
         # failed run and the records stand.
+        def _log_taker_decisions(self, body: object) -> None:
+            if taker_store is None:
+                self._send_json(503, {"error": "the taker log is not open on this service"})
+                return
+            rows = validate_taker_decisions(body)
+            if isinstance(rows, str):
+                self._send_json(400, {"error": rows})
+                return
+            self._send_json(200, {"ok": True, "logged": taker_store.append_decisions(rows, _now())})
+
         def _push_bet105(self, body: object) -> None:
             push = bet105.validate_push(body)
             if isinstance(push, str):
@@ -1161,13 +1232,26 @@ def teaser_placer_for(sources: list[Source]) -> bfa_teaser.BFATeaserPlacer | Non
     return bfa_teaser.BFATeaserPlacer(bfa_source) if bfa_source is not None else None
 
 
+def open_taker_store(db_path: Path) -> TakerStore | None:
+    """The taker's decision log, or None (logged) when its file cannot be
+    opened: the log is the bot's, so a bad path must not take Cal's bets down
+    with it; the runner keeps its decisions queued and /taker_decisions.json 503s."""
+    try:
+        return TakerStore(db_path)
+    except Exception as error:  # duckdb raises its own IOException family, not OSError
+        log.error("taker log %s could not be opened, POST /taker_decisions.json will 503: %s", db_path, error)
+        return None
+
+
 def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None:
     """Run the poll thread and the HTTP server until SIGINT/SIGTERM."""
     stop = threading.Event()
     started_at = time.monotonic()
     source_names = [source.name for source in sources] + list(PUSHED_SOURCES)
+    taker_store = open_taker_store(config.TAKER_DB_PATH)
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
-                                                            teaser_placer=teaser_placer_for(sources)))
+                                                            teaser_placer=teaser_placer_for(sources),
+                                                            taker_store=taker_store))
     server.daemon_threads = True
     poller = threading.Thread(target=poll_loop, args=(sources, store, stop), name="poll", daemon=True)
 
@@ -1189,6 +1273,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
         stop.set()
         poller.join(timeout=5)
         store.close()
+        if taker_store is not None:
+            taker_store.close()
 
 
 # Venues polled only when their credentials are present; each factory returns
