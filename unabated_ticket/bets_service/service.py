@@ -45,6 +45,11 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     (the fair a new bet's line had when it was placed,
                                     read by the panel off its line history; same
                                     Content-Type guard as the crosswalk)
+           POST /fill_books.json    body {rows: [{betId, placedAt, fillPrice, bookCount,
+                                    booksBetter, bestBook, bestPrice}]} -> {ok, saved}
+                                    (the other books at a new bet's number when it was
+                                    placed, server/fillbooks.js; insert-only; same
+                                    Content-Type guard)
            POST /closing_fairs.json body {rows: [{betId, lineKey, points, fairAmerican,
                                     fairObservedAt, eventStart}]} -> {ok, saved}
                                     (the server runner's pre-start read of each open bet's
@@ -132,7 +137,8 @@ bets.duckdb::source_runs per poll (see store.py); INSERTs into / DELETEs from
 bets.duckdb::team_crosswalk on the two crosswalk routes; UPSERTs / DELETEs
 bets.duckdb::bet_pins and the crosswalk rows a pin taught on the two pin
 routes; INSERTs into bets.duckdb::bet_fill_fairs on POST /fill_fairs.json —
-insert-only, a bet that has a saved fair keeps it; UPSERTs
+insert-only, a bet that has a saved fair keeps it; INSERTs into
+bets.duckdb::bet_fill_books on POST /fill_books.json (insert-only); UPSERTs
 bets.duckdb::bet_closing_fairs on POST /closing_fairs.json (newest observation
 wins); INSERTs into / DELETEs from bets.duckdb::bet_exclusions on POST
 /exclusions.json; INSERTs into / DELETEs from bets.duckdb::bet_dismissals on
@@ -498,6 +504,60 @@ def validate_fill_fair_rows(body: object) -> list[dict] | str:
     return rows
 
 
+def _is_american_price(value: object) -> bool:
+    return _is_number(value) and abs(value) >= MIN_AMERICAN_MAGNITUDE
+
+
+def _is_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _validate_fill_book_row(index: int, raw: object) -> dict | str:
+    """One row of a POST /fill_books.json body in the store's shape, or what
+    was expected and what was found."""
+    if not isinstance(raw, dict):
+        return f"rows[{index}] must be an object, got {type(raw).__name__}"
+    if not _non_empty_string(raw.get("betId")):
+        return f"rows[{index}].betId must be a non-empty string, got {raw.get('betId')!r}"
+    if _iso_ms(raw.get("placedAt")) is None:
+        return f"rows[{index}].placedAt must be an ISO time, got {raw.get('placedAt')!r}"
+    if not _is_american_price(raw.get("fillPrice")):
+        return f"rows[{index}].fillPrice must be an American price (<= -100 or >= 100), got {raw.get('fillPrice')!r}"
+    for field in ("bookCount", "booksBetter"):
+        if not _is_count(raw.get(field)):
+            return f"rows[{index}].{field} must be a whole number >= 0, got {raw.get(field)!r}"
+    if raw["booksBetter"] > raw["bookCount"]:
+        return f"rows[{index}].booksBetter must be at most bookCount, got {raw['booksBetter']} > {raw['bookCount']}"
+    best_book, best_price = raw.get("bestBook"), raw.get("bestPrice")
+    if raw["bookCount"] == 0:
+        if best_book is not None or best_price is not None:
+            return f"rows[{index}] with bookCount 0 must have null bestBook and bestPrice, got {best_book!r}, {best_price!r}"
+    else:
+        if not _non_empty_string(best_book):
+            return f"rows[{index}].bestBook must be a non-empty string, got {best_book!r}"
+        if not _is_american_price(best_price):
+            return f"rows[{index}].bestPrice must be an American price (<= -100 or >= 100), got {best_price!r}"
+    return {"betId": raw["betId"], "placedAt": raw["placedAt"], "fillPrice": raw["fillPrice"],
+            "bookCount": raw["bookCount"], "booksBetter": raw["booksBetter"], "bestBook": best_book, "bestPrice": best_price}
+
+
+def validate_fill_book_rows(body: object) -> list[dict] | str:
+    """The rows of a POST /fill_books.json body, or an error naming the first
+    bad row: a saved row is permanent, so a malformed one is refused."""
+    if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
+        return f"body must be an object with a `rows` array, got {type(body).__name__}"
+    raw_rows = body["rows"]
+    if len(raw_rows) > MAX_FILL_FAIR_ROWS_PER_POST:
+        return f"at most {MAX_FILL_FAIR_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
+    rows: list[dict] = []
+    for index, raw in enumerate(raw_rows):
+        row = _validate_fill_book_row(index, raw)
+        if isinstance(row, str):
+            return row
+        rows.append(row)
+    return rows
+
+
 def _validate_closing_fair_row(index: int, raw: object) -> dict | str:
     """One row of a POST /closing_fairs.json body in the store's shape, or what
     was expected and what was found."""
@@ -767,7 +827,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if self._refused_foreign_host():
                 return
             url = urlparse(self.path)
-            if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/closing_fairs.json",
+            if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/fill_books.json", "/closing_fairs.json",
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
                                 "/draftkings.json", "/place_teaser.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
@@ -781,6 +841,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/fill_fairs.json":
                 self._save_fill_fairs(body)
+                return
+            if url.path == "/fill_books.json":
+                self._save_fill_books(body)
                 return
             if url.path == "/closing_fairs.json":
                 self._save_closing_fairs(body)
@@ -862,6 +925,14 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             saved = store.save_fill_fairs(rows, now)
             self._send_json(200, {"ok": True, "saved": saved,
                                   "fillFairs": store.load_fill_fairs(config.RETENTION_DAYS, now)})
+
+        # POST /fill_books.json: INSERT the rows (first capture wins).
+        def _save_fill_books(self, body: object) -> None:
+            rows = validate_fill_book_rows(body)
+            if isinstance(rows, str):
+                self._send_json(400, {"error": rows})
+                return
+            self._send_json(200, {"ok": True, "saved": store.save_fill_books(rows, _now())})
 
         # POST /closing_fairs.json: UPSERT the rows, each kept only when newer.
         def _save_closing_fairs(self, body: object) -> None:

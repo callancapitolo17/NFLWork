@@ -2058,6 +2058,16 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   a request repeating a bet keeps its first row and logs it), never pruned
   (~14 bets a day) and never backfilled; `/bets.json` serves the rows of the
   bets in its window only, so the table's growth never reaches the poll.
+  `bet_fill_books` (primary key `bet_id`, plus `placed_at`, `fill_price`,
+  `book_count`, `books_better`, `best_book`, `best_price`, `captured_at`)
+  holds what the other books offered at each new straight bet's number the
+  moment it was placed (Cal, 2026-10-13): how many books posted it, how many
+  beat the price taken, and the best of them, counted the Edges tab's way
+  (`pricecheck.js`: every book, the bet's own venue left out, TheScore US /
+  CA once). The server runner reads it off its line history
+  (`server/fillbooks.js`) only when it watched through the fill, and POSTs
+  `/fill_books.json`; INSERT-only, never backfilled, never pruned. Stored
+  only: no page reads it yet, query it in DuckDB.
   `bet_closing_fairs` (primary key `bet_id`, plus `line_key`, `points`,
   `fair_american`, `fair_observed_at`, `event_start`, `updated_at`) holds one
   closing fair per bet, UPSERTed only forward in time (`DO UPDATE ... WHERE
