@@ -1734,15 +1734,15 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   changes nothing; it pays off on names teams.js cannot key.
 - **BetOnline source** (`sources/betonline.py`, #115): every 300 s pulls the
   account's paged bet-history report (`POST api.betonline.ag/report/api/report/get-bet-history`,
-  pure HTTP — the same endpoint `bet_logger/scraper_betonline.py` uses) for the
+  pure HTTP; `bet_logger/scraper_betonline.py` reads this service's `/bets.json` for the sheet since 2026-10-14) for the
   last 31 days and keeps **pending** bets. The Keycloak refresh token is the
   `krefresh` cookie in `bet_logger/recon_betonline_cookies.json` (main
   checkout; `BETS_BETONLINE_COOKIES_PATH`), written by `bet_logger/recon_betonline.py`
   — run it with `--interactive` and log in by hand when the poll reports
   "token refresh failed" (the token dies after 3 days unused). The access
   token is refreshed only within 60 s of expiry, under an exclusive lock on
-  `recon_betonline_cookies.json.lock` shared with the bet_logger scraper and
-  its LaunchAgent, and the rotated refresh token is written back atomically.
+  `recon_betonline_cookies.json.lock` (the bet_logger scraper no longer
+  refreshes the token), and the rotated refresh token is written back atomically.
   Record ids are `betonline:<TicketNumber>-<WagerNumber>`; the league comes
   from `bet_logger/utils.py parse_sport` (the report names the SPORT —
   "FOOTBALL" — never the league); a total names both teams, a spread or
