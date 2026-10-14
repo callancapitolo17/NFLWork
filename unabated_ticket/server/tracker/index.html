@@ -24,6 +24,7 @@
         <button type="button" data-view="open">Open<span class="badge num" id="open-count" hidden></span></button>
         <button type="button" data-view="analysis">Analysis</button>
         <button type="button" data-view="bets">Bets</button>
+        <button type="button" data-view="balances">Balances</button>
       </nav>
       <div class="spacer"></div>
       <div class="controls">
@@ -72,16 +73,10 @@
           <div class="head"><span class="lbl">Daily results</span><span class="note">Pacific settle day</span></div>
           <div class="scroll" id="ov-daily"></div>
         </section>
-        <div class="side stack gap">
-          <section class="panel" aria-label="Balance by book">
-            <div class="head"><span class="lbl">Balance by book</span><span class="note" id="balances-caption"></span></div>
-            <div id="ov-balances"></div>
-          </section>
-          <section class="panel" aria-label="Results by venue">
-            <div class="head"><span class="lbl">By venue</span></div>
-            <div id="ov-venues"></div>
-          </section>
-        </div>
+        <section class="panel side" aria-label="Results by venue">
+          <div class="head"><span class="lbl">By venue</span></div>
+          <div id="ov-venues"></div>
+        </section>
       </div>
       <section class="panel stack flush" aria-label="Settled bets">
         <div class="head">
@@ -203,6 +198,14 @@
         </div>
         <div class="scroll" id="b-list"></div>
         <button type="button" class="more" id="bets-more" hidden>Show more</button>
+      </section>
+    </section>
+
+    <section id="view-balances" class="stack" aria-label="Balances" hidden>
+      <div class="title-row"><h1>Balances</h1><span class="note" id="balances-caption"></span></div>
+      <section class="panel balances-panel" aria-label="Balance by book">
+        <div class="head"><span class="lbl">Balance by book</span></div>
+        <div id="bal-table"></div>
       </section>
     </section>
   </main>

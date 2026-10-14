@@ -1,7 +1,7 @@
 // Bet Tracker page: fetches the bets service's /bets.json (all history),
-// /balances.json (each book's live balance) and /scenarios.json (the server
+// /balances.json (each book's live balance, only while the Balances tab is open) and /scenarios.json (the server
 // runner's live game cards, passed through by the bets service), builds tickets with trackerstats.js and renders the
-// Overview, Live, Open, Analysis and Bets views. Its one write is the Bets view's Remove / Restore: POST
+// Overview, Live, Open, Analysis, Bets and Balances views. Its one write is the Bets view's Remove / Restore: POST
 // /exclusions.json, which marks a BFA or Wagerzon bet as not Cal's
 // (bets.duckdb::bet_exclusions; the bet itself stays) and takes it out of
 // every number here. Otherwise it keeps only the viewer's own display choices
@@ -20,9 +20,10 @@
   const EXCLUSIONS_URL = "/exclusions.json";
   const SCENARIOS_URL = "/scenarios.json";
   // Live per-book account balance (bets service balances.py). Cal chose live over
-  // a midnight snapshot (2026-10-13), knowing it shows today's swings.
+  // a midnight snapshot (2026-10-13); since a live balance shows today's swings,
+  // it lives on its own Balances tab and is fetched only while that tab is open (2026-10-14).
   const BALANCES_URL = "/balances.json";
-  const VIEWS = ["overview", "live", "open", "analysis", "bets"];
+  const VIEWS = ["overview", "live", "open", "analysis", "bets", "balances"];
   // Cal's ask (2026-10-05): only these books carry bets that are not his (service.EXCLUDABLE_VENUES).
   const REMOVABLE_VENUES = ["BFA", "Wagerzon"];
   const BET_FILTERS = ["All", "Counted", "Removed"];
@@ -368,7 +369,6 @@
     // A range ending yesterday still shows this week's calendar, today's cell included.
     renderCalendar(pickedCalendarDay() ? state.calendarPick.anchor : last === lastShownDay() ? stats.pacificDay(Date.now()) : last);
     renderDaily(series);
-    renderBalances();
     renderVenues(settled);
     renderSettledBets(settled, total, missing);
   }
@@ -548,7 +548,7 @@
       .sort((a, b) => (b.cash ?? -Infinity) - (a.cash ?? -Infinity));
     setText("balances-caption", balancesError ? "Could not load: " + balancesError : "live");
     if (!rows.length) {
-      fill("ov-balances", emptyNote(balances ? "No book reports a balance yet." : "Loading…"));
+      fill("bal-table", emptyNote(balances ? "No book reports a balance yet." : "Loading…"));
       return;
     }
     const read = rows.filter((row) => row.cash !== null);
@@ -569,7 +569,7 @@
     const notes = ["Cash leaves out money in open bets. Kalshi's in bets is what the positions are worth now."];
     if (credit.length) notes.push("* Includes " + credit.map((row) => row.label + "'s " + balanceMoney(row.creditLimit)).join(", ") + " credit.");
     if (read.length < rows.length) notes.push("The total leaves out books shown as unavailable.");
-    fill("ov-balances", el("div", { className: "scroll" }, [tbl]),
+    fill("bal-table", el("div", { className: "scroll" }, [tbl]),
       el("div", { className: "balance-notes" }, notes.map((text) => el("span", { text }))));
   }
 
@@ -1105,6 +1105,7 @@
     history.replaceState(null, "", "#" + view);
     window.scrollTo(0, 0);
     render();
+    if (view === "balances") refreshBalances().then(render);
   }
 
   function renderHeader() {
@@ -1183,6 +1184,7 @@
     renderHeader();
     renderSync();
     renderUntyped();
+    if (state.view === "balances") { renderBalances(); return; }
     if (!payload) return;
     if (state.view === "overview") renderOverview();
     else if (state.view === "live") renderLiveView();
@@ -1240,7 +1242,7 @@
 
   async function refresh() {
     const scenariosRead = refreshScenarios();
-    const balancesRead = refreshBalances();
+    const balancesRead = state.view === "balances" ? refreshBalances() : null;
     try {
       const response = await fetch(BETS_URL, { cache: "no-store" });
       if (!response.ok) throw new Error("the bets service answered HTTP " + response.status);
@@ -1291,7 +1293,11 @@
       state.betsQuery = event.target.value; state.betsLimit = LOG_PAGE; render();
     });
     document.getElementById("bets-more").addEventListener("click", () => { state.betsLimit += LOG_PAGE; render(); });
-    window.addEventListener("hashchange", () => { state.view = viewOfHash(); render(); });
+    window.addEventListener("hashchange", () => {
+      state.view = viewOfHash();
+      render();
+      if (state.view === "balances") refreshBalances().then(render);
+    });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
     setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
   }
