@@ -154,7 +154,9 @@ ticket. POST /taker_decisions.json APPENDs the server runner's taker decisions t
 taker.duckdb::taker_decisions (taker_store.py; a separate file from bets.duckdb).
 POST /taker/order.json places a bot order on Kalshi (money) on the bot's own
 key when one is configured, and INSERTs / UPDATEs taker.duckdb::taker_orders
-(taker_orders.py: stop file, $500 ceiling, limit at the ask, rest cancelled).
+(taker_orders.py: stop file, $500 ceiling, limit at the ask, rest cancelled);
+the desk's own thread cancels bot orders left resting on Kalshi, reads final
+fills and frees settled markets every 30 s, runner or no runner.
 """
 import json
 import logging
@@ -1306,12 +1308,15 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
     started_at = time.monotonic()
     source_names = [source.name for source in sources] + list(PUSHED_SOURCES)
     taker_store = open_taker_store(config.TAKER_DB_PATH)
+    taker_desk = open_taker_desk(taker_store)
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
                                                             teaser_placer=teaser_placer_for(sources),
-                                                            taker_store=taker_store,
-                                                            taker_desk=open_taker_desk(taker_store)))
+                                                            taker_store=taker_store, taker_desk=taker_desk))
     server.daemon_threads = True
     poller = threading.Thread(target=poll_loop, args=(sources, store, stop), name="poll", daemon=True)
+    # The desk sweeps its own orders (resting cancels, final fills, settlement) whether or not the runner sends any.
+    desk_sweep = (threading.Thread(target=taker_desk.run_refresh_loop, args=(stop,), name="taker-desk", daemon=True)
+                  if taker_desk is not None else None)
 
     def request_stop(_signum, _frame) -> None:
         log.info("stopping")
@@ -1321,6 +1326,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
     poller.start()
+    if desk_sweep is not None:
+        desk_sweep.start()
     log.info("bets service on http://%s:%d (sources: %s); phone page at / with /edges.json from %s; "
              "extra allowed hosts: %s", host, port, ", ".join(source_names), config.RUNNER_URL,
              ", ".join(config.EXTRA_ALLOWED_HOSTS) or "none")
@@ -1330,6 +1337,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
         server.server_close()
         stop.set()
         poller.join(timeout=5)
+        if desk_sweep is not None:
+            desk_sweep.join(timeout=5)
         store.close()
         if taker_store is not None:
             taker_store.close()

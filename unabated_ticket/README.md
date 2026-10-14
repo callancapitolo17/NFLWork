@@ -2609,18 +2609,22 @@ on Kalshi with **real money** on the bot's own key. No shadow mode (Cal,
 |---|---|
 | Bankroll / Kelly | $500 at 0.25, conditional on every open bet (the panel's sizing; bot fills reach it through the Kalshi source) |
 | Ceiling | open bot cost (unsettled markets) never above $500; contracts cut to fit, else refused |
-| Price | Kalshi's live ask + 7% fee no more than 0.1c worse than Unabated's shown price |
+| Price | Kalshi's live ask + 7% fee no more than 0.1c worse than Unabated's shown price, and no more than 1c better (a price that ran away from Unabated's snapshot is news its fair has not caught up with) |
 | Edge | 3% to 20% at that live price (fair read off Unabated's cheaper of its two prices) |
 | Best price | no live book beats it at the number (one is enough to skip; ties trade); outliers and Skips trade |
 | Line age | changed within 7 days; right up to the start |
 | Size | floor(stake / all-in), cut to the depth at the ask |
-| Order | limit buy at that ask, the rest cancelled at once; one order per game market (spread+moneyline, or total) per 5 min |
+| Market check | before every order Kalshi's market is read: it must be `active`, a spread's or total's `floor_strike` the row's number, a spread's or moneyline's YES title the team YES is on; else `market_mismatch`, nothing sent |
+| Order | limit buy at that ask; the rest cancelled at once **by market** (a bare cancel routes to exchange shard 0 and 404s while the order rests), a 404 checked against Kalshi's resting list; the desk's own 30 s sweep retries an unconfirmed cancel and cancels any `ubot-` order resting that no row knows |
+| Adds | a second order on a game goes only once the bot's earlier fill on it is among the held bets the stake was sized on (`unseen_fill` until the Kalshi poll has it): conditional Kelly must see the fill first |
 | Tag | every order's `client_order_id` starts `ubot-` (`taker.duckdb::taker_orders`) |
 
 Tickers: spreads and totals from the rung ids (`Y-` buys YES, `N-` NO);
 full-game moneylines derived from the spread rungs' team code
-(`KXNCAAFSPREAD-26SEP19DUQWSU-WSU36` → `KXNCAAFGAME-26SEP19DUQWSU-WSU`) and
-sent only when Kalshi's market title names the row's team and not the other.
+(`KXNCAAFSPREAD-26SEP19DUQWSU-WSU36` → `KXNCAAFGAME-26SEP19DUQWSU-WSU`); the
+market check above is what lets a derived ticker trade. A derived
+moneyline's fill never joins a board row (the feed carries no `GAME`
+tickers), so the bot adds to such a game only after its market settles.
 
 **Arming, stopping.** The bot trades only when the bets service has its own
 Kalshi key: `KALSHI_TAKER_API_KEY_ID` (in `bets_service/.env`) and the key
@@ -2633,7 +2637,13 @@ to resume. Revoking the key at kalshi.com stops it for good.
 **Fail closed:** no live board, or the bets service unread or unreachable,
 and the pass decides nothing and reads no book. The order row is written
 before the send; a send with no answer, or a fills read that fails, keeps the
-whole cost against the ceiling until a later read or settlement frees it.
+whole cost against the ceiling until a later read or settlement frees it. A
+send with no answer is looked for on Kalshi by `client_order_id` (adopted and
+cancelled when found; counted as never sent only when Kalshi's order list for
+the ticker, read 10 min on, does not carry it). Order statuses: `sending`,
+`unknown`, `sent`, `resting` (cancel unconfirmed, full cost held, retried),
+`filled` / `partial` / `unfilled` (`fills_final` 60 s after the cancel),
+`rejected`.
 
 - `GET :8095/taker.json`: the desk state, the rules, the last pass (counts by
   reason, per-league ticker coverage) and every decision with its `order`.
@@ -2643,10 +2653,12 @@ whole cost against the ceiling until a later read or settlement frees it.
 
 ```sql
 -- the bot's orders, newest first
-SELECT placed_at, ticker, contract_side, ask_price, count_requested, count_filled, cost_filled, status
+SELECT placed_at, ticker, contract_side, ask_price, count_requested, count_filled, cost_filled, status, cancelled_at
 FROM taker_orders ORDER BY placed_at DESC;
 -- open exposure (the ceiling's measure)
 SELECT sum(open_cost) FROM taker_orders WHERE settled_at IS NULL;
+-- orders that may still rest on Kalshi (the sweep retries their cancel every 30 s)
+SELECT client_order_id, kalshi_order_id, ticker, status, error FROM taker_orders WHERE status IN ('resting', 'sent', 'unknown');
 -- why it skips
 SELECT reason, count(*) FROM taker_decisions GROUP BY reason ORDER BY 2 DESC;
 ```
@@ -2660,8 +2672,8 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 523 tests) and
-the bets service's pytest suite (388 tests, on the `kalshi_draft/venv`
+the node suite (`npm test` = `node --test tests/*.test.js`, 546 tests) and
+the bets service's pytest suite (611 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`

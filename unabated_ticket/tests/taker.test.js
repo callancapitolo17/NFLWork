@@ -126,6 +126,21 @@ test("price rule: 0.1c worse than Unabated still trades, a cent worse is price_m
   assert.equal(decide(state, WSU_ALT_KEY, { ask: 0.58, depth: 1000 }).reason, "price_moved");
 });
 
+test("price rule: up to 1c better than Unabated trades (with the bigger edge); more is a stale fair, price_moved", () => {
+  const state = boardWithEdge(WSU_ALT_KEY, 0.05);
+  for (const key of Object.keys(state.lines)) {
+    if (!key.includes("ms105") && key.includes("si1:tid717:alt-35.5")) moveLine(state, key, { price: -200 });
+  }
+  // 56.1c ask: all-in 0.578288, 0.89c better than Unabated's 0.587157.
+  const better = decide(state, WSU_ALT_KEY, { ask: 0.561, depth: 1000 });
+  assert.equal(better.reason, "bet", better.detail);
+  assert.ok(better.liveEdge > 0.05, String(better.liveEdge));
+  // 55c ask: all-in 0.567325, 1.98c better: the market ran away from Unabated's snapshot.
+  const ranAway = decide(state, WSU_ALT_KEY, { ask: 0.55, depth: 1000 });
+  assert.equal(ranAway.reason, "price_moved");
+  assert.match(ranAway.detail, /better than Unabated/);
+});
+
 test("edge floor 3%, cap 20%, at the live price", () => {
   const short = boardWithEdge(WSU_ALT_KEY, 0.031);
   // 57.08c: inside the 0.1c tolerance, but 3.1% shrinks to 2.95% there.
@@ -162,6 +177,30 @@ test("a derived moneyline trades only when Kalshi's market names the row's team 
   // A shared first word names neither side for sure.
   const sameCity = { ...row, awayTeam: "Los Angeles Chargers", homeTeam: "Los Angeles Rams" };
   assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Los Angeles R" }, sameCity), false);
+});
+
+test("the market check: active, the row's strike, and the YES title's team on the contract's side", () => {
+  const state = boardWithEdge(WSU_ALT_KEY, 0.05);
+  const wsuRow = rowOf(state, WSU_ALT_KEY);
+  const spread = { status: "active", floor_strike: 35.5, yes_sub_title: "Washington St. wins by over 35.5 points" };
+  assert.equal(taker.marketMismatch(spread, wsuRow, { side: "yes" }), null);
+  assert.match(taker.marketMismatch({ ...spread, status: "closed" }, wsuRow, { side: "yes" }), /status "closed"/);
+  assert.match(taker.marketMismatch({ ...spread, floor_strike: 34.5 }, wsuRow, { side: "yes" }), /floor_strike 34.5, row is -35.5/);
+  assert.match(taker.marketMismatch({ ...spread, floor_strike: undefined }, wsuRow, { side: "yes" }), /floor_strike undefined/);
+  assert.match(taker.marketMismatch(null, wsuRow, { side: "yes" }), /no market object/);
+  // The Duquesne +35.5 row buys NO of the same market: YES must still name Washington State.
+  const duqState = boardWithEdge(DUQ_ALT_KEY, 0.05);
+  const duqRow = rowOf(duqState, DUQ_ALT_KEY);
+  assert.equal(taker.marketMismatch(spread, duqRow, { side: "no" }), null);
+  assert.match(taker.marketMismatch({ ...spread, yes_sub_title: "Duquesne wins by over 35.5 points" }, duqRow, { side: "no" }), /does not name side 1/);
+  // A total checks the strike only; a moneyline the team only.
+  const totalRow = { ...wsuRow, betTypeId: 3, points: 59.5 };
+  assert.equal(taker.marketMismatch({ status: "active", floor_strike: 59.5, yes_sub_title: "Over 59.5 points scored" }, totalRow, { side: "no" }), null);
+  assert.match(taker.marketMismatch({ status: "active", floor_strike: 60.5, yes_sub_title: "Over 60.5 points scored" }, totalRow, { side: "no" }), /floor_strike 60.5/);
+  const mlState = boardWithEdge(ML_WSU_KEY, 0.05, { price: -400 });
+  const mlRow = rowOf(mlState, ML_WSU_KEY);
+  assert.equal(taker.marketMismatch({ status: "active", yes_sub_title: "Washington St." }, mlRow, { side: "yes" }), null);
+  assert.match(taker.marketMismatch({ status: "active", yes_sub_title: "Duquesne" }, mlRow, { side: "yes" }), /is not/);
 });
 
 test("every bot order id starts ubot- and is fixed per ticker, side and pass", () => {

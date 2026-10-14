@@ -1,7 +1,9 @@
 """The bot's order desk (taker_orders.py) against a scripted Kalshi: the stop
 file, the $500 ceiling on open exposure, the row written before the send,
-limit-at-the-ask bodies, cancel-the-rest, the fills read, the final re-read
-and settlement freeing the money. No network."""
+limit-at-the-ask bodies, the cancel routed by market and verified on a 404,
+the fills read, the unseen-fill rule, lost-order recovery, the untracked
+resting sweep, the final re-read and settlement freeing the money. No network."""
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -12,33 +14,55 @@ from unabated_ticket.bets_service.taker_store import TakerStore
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
 TICKER = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36"
+OTHER_TICKER = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU42"
+EVENT_ID = 123742
 REQUEST_BODY = {"clientOrderId": "ubot-" + "a" * 32, "ticker": TICKER, "side": "yes", "ask": 0.57,
                 "allIn": 0.587157, "count": 10, "rowKey": "420942308:ms105:si1:tid717:alt-35.5",
-                "eventStart": "2026-10-15T19:30:00.000Z"}
+                "eventId": EVENT_ID, "heldIds": [], "eventStart": "2026-10-15T19:30:00.000Z"}
+HELD_FIRST = f"kalshi:{TICKER}:yes"
 
 
 class ScriptedKalshi:
-    """Answers POST/DELETE/GET by path; records every call."""
+    """Answers POST/DELETE/GET by path; records every call. `resting` is what
+    GET /portfolio/orders?status=resting lists; `listed` what the ticker
+    listing does; None for either makes that read fail."""
 
-    def __init__(self, filled: float = 10, market_status: str = "active", post_status: int = 201):
+    def __init__(self, filled: float = 10, market_status: str = "active", post_status: int = 201,
+                 delete_status: int = 200, resting=(), listed=(), exchange_index=None):
         self.calls = []
         self.filled = filled
         self.market_status = market_status
         self.post_status = post_status
+        self.delete_status = delete_status
+        self.resting = list(resting) if resting is not None else None
+        self.listed = list(listed) if listed is not None else None
+        self.exchange_index = exchange_index
 
     def request(self, method, path, body=None):
         self.calls.append((method, path, body))
         if method == "POST":
-            return (self.post_status, {"order_id": "k-1"}) if self.post_status == 201 else (self.post_status, {"error": "no"})
+            if self.post_status != 201:
+                return self.post_status, {"error": "no"}
+            order = {"order_id": "k-1"}
+            if self.exchange_index is not None:
+                order["exchange_index"] = self.exchange_index
+            return 201, {"order": order}
         if method == "DELETE":
-            return 404, {}
+            return self.delete_status, {}
         if path.startswith("/portfolio/fills"):
             fills = [{"count_fp": str(self.filled), "yes_price_dollars": "0.5700", "no_price_dollars": "0.4300",
                       "fee_cost": "0.17"}] if self.filled else []
             return 200, {"fills": fills}
+        if path.startswith("/portfolio/orders?status=resting"):
+            return (500, "down") if self.resting is None else (200, {"orders": self.resting, "cursor": ""})
+        if path.startswith("/portfolio/orders?ticker="):
+            return (500, "down") if self.listed is None else (200, {"orders": self.listed, "cursor": ""})
         if path.startswith("/markets/"):
             return 200, {"market": {"status": self.market_status}}
         raise AssertionError(f"unexpected {method} {path}")
+
+    def methods(self):
+        return [call[0] for call in self.calls]
 
 
 @pytest.fixture
@@ -58,6 +82,10 @@ def request(**overrides):
     return validated
 
 
+def order_row(store, client_order_id):
+    return next(order for order in store.open_orders() if order["client_order_id"] == client_order_id)
+
+
 def test_order_body_buys_yes_as_a_bid_and_no_as_an_ask_at_one_minus():
     assert order_body(TICKER, "yes", 0.57, 10, "ubot-x") == {
         "ticker": TICKER, "side": "bid", "price": "0.5700", "count": "10.00", "time_in_force": "good_till_canceled",
@@ -66,13 +94,17 @@ def test_order_body_buys_yes_as_a_bid_and_no_as_an_ask_at_one_minus():
     assert order_body(TICKER, "no", 0.43, 3, "ubot-y")["price"] == "0.5700"
 
 
-def test_a_filled_order_is_sent_once_cancelled_and_its_fills_recorded(store, tmp_path):
-    kalshi = ScriptedKalshi()
+def test_a_filled_order_is_sent_cancelled_by_market_and_its_fills_recorded(store, tmp_path):
+    kalshi = ScriptedKalshi(exchange_index=3)
     result = desk_for(store, kalshi, tmp_path).place(request())
     assert result["status"] == "filled" and result["filled"] == 10
     assert result["cost"] == pytest.approx(10 * 0.57 + 0.17, abs=1e-3)
-    assert [call[0] for call in kalshi.calls] == ["POST", "DELETE", "GET"]
+    assert kalshi.methods() == ["POST", "DELETE", "GET"]
     assert kalshi.calls[0][2]["client_order_id"] == REQUEST_BODY["clientOrderId"]
+    # The cancel names the market and the shard Kalshi's reply gave, never a bare id (shard-0 routing).
+    assert kalshi.calls[1][1] == f"/portfolio/events/orders/k-1?market_ticker={TICKER}&exchange_index=3"
+    row = order_row(store, REQUEST_BODY["clientOrderId"])
+    assert (row["exchange_index"], row["cancelled_at"], row["fills_final"]) == (3, NOW, False)
     # Until the final fills read the whole requested cost is held.
     assert store.open_exposure() == pytest.approx(10 * 0.587157 + 0.01, abs=1e-3)
 
@@ -82,7 +114,7 @@ def test_the_same_client_order_id_is_never_sent_twice(store, tmp_path):
     desk = desk_for(store, kalshi, tmp_path)
     desk.place(request())
     assert desk.place(request())["status"] == "duplicate"
-    assert [call[0] for call in kalshi.calls].count("POST") == 1
+    assert kalshi.methods().count("POST") == 1
 
 
 def test_the_stop_file_sends_nothing(store, tmp_path):
@@ -100,9 +132,9 @@ def test_the_ceiling_cuts_contracts_then_refuses(store, tmp_path, monkeypatch):
     # $10 - 1c slack at 0.587157 a contract: 17 contracts.
     assert first["count"] == 17
     assert kalshi.calls[0][2]["count"] == "17.00"
-    refused = desk.place(request(clientOrderId="ubot-" + "b" * 32))
+    refused = desk.place(request(clientOrderId="ubot-" + "b" * 32, eventId=EVENT_ID + 1))
     assert refused["status"] == "ceiling"
-    assert [call[0] for call in kalshi.calls].count("POST") == 1
+    assert kalshi.methods().count("POST") == 1
 
 
 def test_a_refused_order_holds_nothing(store, tmp_path):
@@ -116,16 +148,76 @@ def test_final_fills_then_settlement_free_the_money(store, tmp_path):
     kalshi = ScriptedKalshi(filled=4)
     desk = desk_for(store, kalshi, tmp_path, clock=lambda: clock["now"])
     assert desk.place(request())["status"] == "partial"
-    # A minute later the fills are final: only what filled is held.
+    # A minute after the cancel the fills are final: only what filled is held.
     clock["now"] = NOW + timedelta(seconds=61)
-    desk.place(request(clientOrderId="ubot-" + "c" * 32, count=1))
+    desk.place(request(clientOrderId="ubot-" + "c" * 32, count=1, ticker=OTHER_TICKER, heldIds=[HELD_FIRST]))
     first_cost = 4 * 0.57 + 0.17
     assert store.open_exposure() == pytest.approx(first_cost + 1 * 0.587157 + 0.01, abs=1e-3)
     # After the game starts and the market settles, both orders are freed.
     kalshi.market_status = "finalized"
     clock["now"] = datetime(2026, 10, 16, tzinfo=timezone.utc)
-    desk.place(request(clientOrderId="ubot-" + "d" * 32, count=1))
-    assert store.open_exposure() == pytest.approx(1 * 0.587157 + 0.01, abs=1e-3)
+    desk.refresh()
+    assert store.open_exposure() == 0
+
+
+def test_an_add_on_the_game_waits_until_the_earlier_fill_is_among_the_held_bets(store, tmp_path):
+    kalshi = ScriptedKalshi(filled=4)
+    desk = desk_for(store, kalshi, tmp_path)
+    assert desk.place(request())["status"] == "partial"
+    # The same game, another rung: the stake was sized without the first fill.
+    blind = desk.place(request(clientOrderId="ubot-" + "b" * 32, ticker=OTHER_TICKER))
+    assert blind["status"] == "unseen_fill"
+    assert HELD_FIRST in blind["detail"]
+    # Another game is not blocked; the same game is, once the fill is among the held ids.
+    assert desk.place(request(clientOrderId="ubot-" + "c" * 32, eventId=EVENT_ID + 1))["status"] == "partial"
+    seen = desk.place(request(clientOrderId="ubot-" + "d" * 32, ticker=OTHER_TICKER, heldIds=[HELD_FIRST]))
+    assert seen["status"] == "partial"
+    assert kalshi.methods().count("POST") == 3
+
+
+def test_an_unfilled_order_blocks_the_game_only_until_its_fills_are_final(store, tmp_path):
+    clock = {"now": NOW}
+    kalshi = ScriptedKalshi(filled=0)
+    desk = desk_for(store, kalshi, tmp_path, clock=lambda: clock["now"])
+    assert desk.place(request())["status"] == "unfilled"
+    # Right after the cancel a fill could still trail in: blocked.
+    assert desk.place(request(clientOrderId="ubot-" + "b" * 32, ticker=OTHER_TICKER))["status"] == "unseen_fill"
+    clock["now"] = NOW + timedelta(seconds=61)
+    assert desk.place(request(clientOrderId="ubot-" + "c" * 32, ticker=OTHER_TICKER))["status"] == "unfilled"
+
+
+def test_a_cancel_404_still_resting_holds_the_order_and_the_refresh_retries_it(store, tmp_path):
+    clock = {"now": NOW}
+    kalshi = ScriptedKalshi(filled=0, delete_status=404, resting=[{"order_id": "k-1", "ticker": TICKER, "exchange_index": 3}])
+    desk = desk_for(store, kalshi, tmp_path, clock=lambda: clock["now"])
+    result = desk.place(request())
+    assert result["status"] == "resting"
+    assert kalshi.methods() == ["POST", "DELETE", "GET"]
+    assert kalshi.calls[2][1].startswith("/portfolio/orders?status=resting")
+    assert order_row(store, REQUEST_BODY["clientOrderId"])["status"] == "resting"
+    assert store.open_exposure() == pytest.approx(10 * 0.587157 + 0.01, abs=1e-3)
+    # The next refresh: the cancel goes through, the fills are read, and a minute on they are final.
+    kalshi.delete_status = 200
+    kalshi.resting = []
+    clock["now"] = NOW + timedelta(seconds=30)
+    desk.refresh()
+    row = order_row(store, REQUEST_BODY["clientOrderId"])
+    assert (row["status"], row["cancelled_at"]) == ("unfilled", clock["now"])
+    clock["now"] = NOW + timedelta(seconds=95)
+    desk.refresh()
+    assert order_row(store, REQUEST_BODY["clientOrderId"])["fills_final"] is True
+    assert store.open_exposure() == 0
+
+
+def test_a_cancel_404_verified_gone_counts_as_cancelled(store, tmp_path):
+    kalshi = ScriptedKalshi(filled=10, delete_status=404, resting=[{"order_id": "someone-else", "ticker": TICKER}])
+    assert desk_for(store, kalshi, tmp_path).place(request())["status"] == "filled"
+    assert order_row(store, REQUEST_BODY["clientOrderId"])["cancelled_at"] == NOW
+
+
+def test_a_cancel_404_with_the_resting_list_down_holds(store, tmp_path):
+    kalshi = ScriptedKalshi(filled=10, delete_status=404, resting=None)
+    assert desk_for(store, kalshi, tmp_path).place(request())["status"] == "resting"
 
 
 def test_no_answer_to_the_send_holds_the_full_cost(store, tmp_path):
@@ -139,12 +231,92 @@ def test_no_answer_to_the_send_holds_the_full_cost(store, tmp_path):
     assert store.open_exposure() == pytest.approx(10 * 0.587157 + 0.01, abs=1e-3)
 
 
+class SilentPost(ScriptedKalshi):
+    def request(self, method, path, body=None):
+        if method == "POST":
+            self.calls.append((method, path, body))
+            raise OSError("timed out")
+        return super().request(method, path, body)
+
+
+def test_a_lost_order_found_resting_is_adopted_cancelled_and_read(store, tmp_path):
+    clock = {"now": NOW}
+    cid = REQUEST_BODY["clientOrderId"]
+    kalshi = SilentPost(filled=3, resting=[{"order_id": "k-9", "client_order_id": cid, "ticker": TICKER, "exchange_index": 0}])
+    desk = desk_for(store, kalshi, tmp_path, clock=lambda: clock["now"])
+    assert desk.place(request())["status"] == "unknown"
+    clock["now"] = NOW + timedelta(seconds=30)
+    desk.refresh()
+    row = order_row(store, cid)
+    assert (row["status"], row["kalshi_order_id"], row["exchange_index"], row["count_filled"]) == ("partial", "k-9", 0, 3)
+    assert ("DELETE", f"/portfolio/events/orders/k-9?market_ticker={TICKER}&exchange_index=0", None) in kalshi.calls
+
+
+def test_a_lost_order_listed_nowhere_after_ten_minutes_holds_nothing(store, tmp_path):
+    clock = {"now": NOW}
+    kalshi = SilentPost(resting=[], listed=[])
+    desk = desk_for(store, kalshi, tmp_path, clock=lambda: clock["now"])
+    desk.place(request())
+    clock["now"] = NOW + timedelta(minutes=5)
+    desk.refresh()
+    assert store.open_exposure() > 0, "too soon to give up on it"
+    clock["now"] = NOW + timedelta(minutes=11)
+    desk.refresh()
+    assert store.open_exposure() == 0
+    assert store.open_orders() == []
+    assert any(path.startswith(f"/portfolio/orders?ticker={TICKER}") for _, path, _ in kalshi.calls)
+
+
+def test_a_lost_order_holds_while_the_listing_is_down(store, tmp_path):
+    clock = {"now": NOW + timedelta(minutes=11)}
+    kalshi = SilentPost(resting=None, listed=None)
+    desk = desk_for(store, kalshi, tmp_path, clock=lambda: clock["now"])
+    desk.place(request())
+    clock["now"] += timedelta(seconds=30)
+    desk.refresh()
+    assert store.open_exposure() > 0
+
+
+def test_an_untracked_bot_order_resting_on_kalshi_is_cancelled_by_the_refresh(store, tmp_path):
+    stray = {"order_id": "k-stray", "client_order_id": "ubot-" + "f" * 32, "ticker": OTHER_TICKER, "exchange_index": 2}
+    mine = {"order_id": "k-1", "client_order_id": REQUEST_BODY["clientOrderId"], "ticker": TICKER}
+    theirs = {"order_id": "k-mm", "client_order_id": "mm-quote-1", "ticker": TICKER}
+    kalshi = ScriptedKalshi(filled=10, resting=[stray, mine, theirs])
+    desk = desk_for(store, kalshi, tmp_path)
+    desk.place(request())
+    desk.refresh()
+    cancelled = [path for method, path, _ in kalshi.calls if method == "DELETE"]
+    assert f"/portfolio/events/orders/k-stray?market_ticker={OTHER_TICKER}&exchange_index=2" in cancelled
+    assert not any("k-mm" in path for path in cancelled), "another client's order is not the bot's to cancel"
+
+
+def test_settlement_is_asked_once_per_five_minutes_per_market(store, tmp_path):
+    clock = {"now": NOW}
+    kalshi = ScriptedKalshi(filled=10)
+    desk = desk_for(store, kalshi, tmp_path, clock=lambda: clock["now"])
+    desk.place(request())
+    clock["now"] = datetime(2026, 10, 15, 22, 0, tzinfo=timezone.utc)
+    for _ in range(3):
+        desk.refresh()
+        clock["now"] += timedelta(seconds=30)
+    assert len([path for method, path, _ in kalshi.calls if path.startswith("/markets/")]) == 1
+
+
+def test_the_refresh_loop_stops_with_the_service(store, tmp_path):
+    stop = threading.Event()
+    stop.set()
+    desk_for(store, ScriptedKalshi(), tmp_path).run_refresh_loop(stop)
+
+
 @pytest.mark.parametrize("override, message", [
     ({"clientOrderId": "bot-1"}, "clientOrderId must be a 'ubot-' id"),
     ({"side": "maybe"}, "side must be 'yes' or 'no'"),
     ({"ask": 1.2}, "ask must be a price"),
     ({"allIn": 0.5}, "allIn must be at least the ask"),
     ({"count": 0}, "count must be a whole number"),
+    ({"eventId": "123742"}, "eventId must be Unabated's event id"),
+    ({"heldIds": "kalshi:x:yes"}, "heldIds must be a list"),
+    ({"heldIds": [7]}, "heldIds must be a list"),
     ({"eventStart": None}, "eventStart must be an ISO time"),
 ])
 def test_a_bad_request_names_the_field(override, message):
@@ -168,7 +340,6 @@ def test_the_client_signs_with_kalshis_rsa_pss_scheme(tmp_path):
 
 def test_the_order_route_refuses_the_tailnet_name(tmp_path):
     import json
-    import threading
     import urllib.error
     import urllib.request
     from http.server import ThreadingHTTPServer
@@ -198,5 +369,3 @@ def test_the_order_route_refuses_the_tailnet_name(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
-        bets_store.close()
-        taker_store.close()

@@ -18,9 +18,10 @@ Tables:
                `client_order_id` ("ubot-…", the tag that marks a bot bet).
                INSERTED before the order is sent (so a crash mid-send still
                counts it against the ceiling), then UPDATED as Kalshi
-               answers, its fills are read, and its market settles. The $500
-               ceiling is the sum of `open_cost` over rows not yet settled
-               (open_exposure). Never pruned (a handful a day).
+               answers, the rest is cancelled, its fills are read, and its
+               market settles (taker_orders.py has the status vocabulary).
+               The $500 ceiling is the sum of `open_cost` over rows not yet
+               settled (open_exposure). Never pruned (a handful a day).
 
 The DuckDB connection is shared between the HTTP handler threads behind one
 lock (DuckDB connections are not thread-safe).
@@ -34,7 +35,7 @@ import duckdb
 
 # taker.js REASONS: a reason outside it is a runner the service does not know.
 DECISION_REASONS = ("stale_feed", "no_ticker", "no_book", "price_moved", "edge_short", "not_best",
-                    "cap", "size_declined", "size_zero", "bet")
+                    "cap", "size_declined", "size_zero", "market_mismatch", "bet")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS taker_decisions (
@@ -57,17 +58,20 @@ CREATE TABLE IF NOT EXISTS taker_orders (
     client_order_id  VARCHAR PRIMARY KEY,  -- "ubot-<hash>", deterministic per (ticker, side, pass)
     placed_at        TIMESTAMPTZ NOT NULL,
     row_key          VARCHAR NOT NULL,
+    event_id         BIGINT NOT NULL,      -- Unabated's event: the game an add must see earlier fills on
     ticker           VARCHAR NOT NULL,
     contract_side    VARCHAR NOT NULL,     -- yes | no
     ask_price        DOUBLE NOT NULL,      -- the limit: the ask the decision was checked at
     all_in_price     DOUBLE NOT NULL,      -- ask + taker fee per contract
     count_requested  INTEGER NOT NULL,
     event_start      TIMESTAMPTZ,
-    status           VARCHAR NOT NULL,     -- sending | sent | filled | partial | unfilled | rejected | unknown
+    status           VARCHAR NOT NULL,     -- sending | unknown | sent | resting | filled | partial | unfilled | rejected
     kalshi_order_id  VARCHAR,
+    exchange_index   INTEGER,              -- Kalshi's shard for the order, when its reply named one; routes the cancel
+    cancelled_at     TIMESTAMPTZ,          -- when the cancel of the rest was confirmed; fills are final 60 s on
     count_filled     DOUBLE,               -- NULL until the fills are read
     cost_filled      DOUBLE,               -- dollars paid incl. fees, NULL until read
-    fills_final      BOOLEAN NOT NULL DEFAULT FALSE,  -- a fills read at least FILLS_SETTLE_SEC after placing
+    fills_final      BOOLEAN NOT NULL DEFAULT FALSE,  -- a fills read at least FILLS_SETTLE_SEC after the cancel
     open_cost        DOUBLE NOT NULL,      -- what counts against the ceiling while the market is open
     error            VARCHAR,
     settled_at       TIMESTAMPTZ           -- when its market was seen settled; frees open_cost
@@ -116,11 +120,12 @@ class TakerStore:
         """INSERT a new order row (status "sending", open_cost the full requested cost)."""
         with self._lock:
             self._con.execute(
-                "INSERT INTO taker_orders (client_order_id, placed_at, row_key, ticker, contract_side, ask_price, "
-                "all_in_price, count_requested, event_start, status, open_cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [order["client_order_id"], order["placed_at"], order["row_key"], order["ticker"], order["contract_side"],
-                 order["ask_price"], order["all_in_price"], order["count_requested"], order["event_start"],
-                 "sending", order["open_cost"]])
+                "INSERT INTO taker_orders (client_order_id, placed_at, row_key, event_id, ticker, contract_side, "
+                "ask_price, all_in_price, count_requested, event_start, status, open_cost) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [order["client_order_id"], order["placed_at"], order["row_key"], order["event_id"], order["ticker"],
+                 order["contract_side"], order["ask_price"], order["all_in_price"], order["count_requested"],
+                 order["event_start"], "sending", order["open_cost"]])
 
     def has_order(self, client_order_id: str) -> bool:
         with self._lock:
@@ -129,8 +134,8 @@ class TakerStore:
 
     def update_order(self, client_order_id: str, fields: dict) -> None:
         """UPDATE the named columns of one order (column names are this module's own, never caller text)."""
-        allowed = {"status", "kalshi_order_id", "count_filled", "cost_filled", "fills_final", "open_cost", "error",
-                   "settled_at"}
+        allowed = {"status", "kalshi_order_id", "exchange_index", "cancelled_at", "count_filled", "cost_filled",
+                   "fills_final", "open_cost", "error", "settled_at"}
         unknown = set(fields) - allowed
         if unknown:
             raise ValueError(f"update_order: unknown columns {sorted(unknown)}")
@@ -145,12 +150,14 @@ class TakerStore:
         with self._lock:
             rows = self._con.execute(
                 "SELECT client_order_id, epoch_ms(placed_at), ticker, contract_side, status, kalshi_order_id, "
-                "fills_final, open_cost, epoch_ms(event_start), all_in_price, count_requested "
+                "fills_final, open_cost, epoch_ms(event_start), all_in_price, count_requested, event_id, "
+                "exchange_index, epoch_ms(cancelled_at), count_filled "
                 "FROM taker_orders WHERE settled_at IS NULL ORDER BY placed_at").fetchall()
         return [{
             "client_order_id": row[0], "placed_at": _utc_from_ms(row[1]), "ticker": row[2], "contract_side": row[3],
             "status": row[4], "kalshi_order_id": row[5], "fills_final": row[6], "open_cost": row[7],
             "event_start": _utc_from_ms(row[8]), "all_in_price": row[9], "count_requested": row[10],
+            "event_id": row[11], "exchange_index": row[12], "cancelled_at": _utc_from_ms(row[13]), "count_filled": row[14],
         } for row in rows]
 
     def open_exposure(self) -> float:

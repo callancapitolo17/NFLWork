@@ -43,10 +43,12 @@
 //       it, how many beat the price taken, the best of them. Runner only.
 //   GET <Kalshi>/markets/<ticker>/orderbook every 30 s for each Kalshi Edges
 //       row the automated taker looks at, and GET <Kalshi>/markets/<ticker>
-//       for a derived moneyline before it is bet (public, no key; server/taker.js).
-//   POST <bets service>/taker/order.json — each "bet" decision: the bets
-//       service's order desk places it on Kalshi on the bot's own key (MONEY;
-//       stop file and $500 ceiling there; bets_service/taker_orders.py).
+//       before every order, so the market is active and its strike and team
+//       are the row's (public, no key; server/taker.js marketMismatch).
+//   POST <bets service>/taker/order.json — each "bet" decision, with the ids
+//       of the held bets its stake was sized on: the bets service's order
+//       desk places it on Kalshi on the bot's own key (MONEY; stop file, $500
+//       ceiling and the unseen-fill rule there; bets_service/taker_orders.py).
 //   POST <bets service>/taker_decisions.json — each taker decision that
 //       changed since it was last logged (taker.duckdb::taker_decisions).
 // Serves (HTTP on UNABATED_RUNNER_HOST:UNABATED_RUNNER_PORT, no auth):
@@ -105,16 +107,6 @@ const DEFAULT_KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2";
 const TAKER_PASS_MS = 30 * 1000;
 // Two reads in flight stay well under Kalshi's 20 reads/s basic limit at ~100 ms a read.
 const KALSHI_BOOK_READS_AT_ONCE = 2;
-// After an order on a market of a game, the bot leaves that market alone this
-// long: by then the bets service's Kalshi poll (60 s) has the fill, so the
-// next stake is sized against it (conditional Kelly). Keyed by game, period
-// and market (spread and moneyline together, as conditional Kelly counts them),
-// not by ticker: three alt rungs of one spread in one pass would otherwise
-// each get a full stake sized as if the others were not bought.
-const TAKER_MARKET_COOLDOWN_MS = 5 * 60 * 1000;
-// Order outcomes the desk says it never sent: no cooldown. "error" (no
-// answer from the desk) is not one of them: the order may have gone out.
-const ORDER_NOT_SENT = ["off", "stopped", "ceiling", "duplicate"];
 // The desk sends, cancels and reads fills, each up to 10 s at Kalshi.
 const TAKER_ORDER_TIMEOUT_MS = 45 * 1000;
 // Decisions held for the bets service while it is down; past this the oldest go (logged).
@@ -326,8 +318,6 @@ function createRunner(deps) {
   let takerDecisions = [];
   const takerLogged = new Map();
   let takerUnsent = [];
-  // market key (takerMarketKey) -> when the bot last sent an order on it (TAKER_MARKET_COOLDOWN_MS).
-  const takerOrderedAt = new Map();
   let takerDeskStatus = "not asked yet";
   const takerLogStatus = { okAt: null, error: null, rowsSent: 0, dropped: 0 };
 
@@ -661,9 +651,9 @@ function createRunner(deps) {
   }
 
   // One taker pass (server/taker.js): every Kalshi row at the bot's minimum
-  // edge, its contract, its live book, its decision. Places nothing. The
-  // decisions that changed since they were last logged are queued for the
-  // bets service.
+  // edge, its contract, its live book, its decision; each "bet" goes to the
+  // desk. The decisions that changed since they were last logged are queued
+  // for the bets service.
   async function takerPass() {
     if (takerBusy) return;
     takerBusy = true;
@@ -694,7 +684,10 @@ function createRunner(deps) {
           row, contract, quote, quoteError: read ? read.error || null : null, priceIndex,
           sizing: { matches: flags[index].matches, ladderOf: ladderReaderOf(row.eventId), teasers },
         });
-        return { ...takerRowFields(row), decidedAt: new Date(decidedAt).toISOString(), ...decision };
+        // The held bets the stake was sized on, by id: the desk refuses an add
+        // on a game whose earlier bot fill is not among them (taker_orders.py).
+        const heldIds = flags[index].matches.map((match) => match.bet.id);
+        return { ...takerRowFields(row), decidedAt: new Date(decidedAt).toISOString(), ...decision, heldIds };
       });
       await sendTakerOrders(takerDecisions, rows, startedAt);
       queueChangedDecisions(takerDecisions);
@@ -721,42 +714,33 @@ function createRunner(deps) {
 
   // Send every "bet" decision to the bets service's order desk, best live
   // edge first, one at a time (each changes the open exposure the next is
-  // capped by). A derived moneyline first has Kalshi's market name its team.
-  // The outcome rides on the decision as `order`. Mutates `decisions`.
+  // capped by), each after Kalshi's market is read and found to be the
+  // row's (taker.marketMismatch). The outcome rides on the decision as
+  // `order`. Mutates `decisions`.
   async function sendTakerOrders(decisions, rows, passStartedAt) {
     const rowByKey = new Map(rows.map((row) => [row.key, row]));
     const bets = decisions.filter((decision) => decision.reason === "bet").sort((a, b) => b.liveEdge - a.liveEdge);
     for (const decision of bets) {
-      const marketKey = takerMarketKey(decision);
-      const lastOrderAt = takerOrderedAt.get(marketKey);
-      if (lastOrderAt != null && now() - lastOrderAt < TAKER_MARKET_COOLDOWN_MS) {
-        decision.order = { status: "cooldown", detail: `ordered ${Math.round((now() - lastOrderAt) / 1000)} s ago` };
-        continue;
-      }
-      if (decision.derivedTicker && !(await derivedTickerConfirmed(decision, rowByKey.get(decision.rowKey)))) continue;
+      if (!(await marketConfirmed(decision, rowByKey.get(decision.rowKey)))) continue;
       decision.order = await sendTakerOrder(decision, passStartedAt);
-      if (!ORDER_NOT_SENT.includes(decision.order.status)) takerOrderedAt.set(marketKey, now());
       if (decision.order.status === "off") break;
     }
-    for (const [marketKey, at] of takerOrderedAt) if (now() - at >= TAKER_MARKET_COOLDOWN_MS) takerOrderedAt.delete(marketKey);
   }
 
-  function takerMarketKey(decision) {
-    return `${decision.eventId}|${decision.period}|${decision.betType === "Total" ? "total" : "side"}`;
-  }
-
-  // Kalshi's market for a derived moneyline names the row's team, else the
-  // decision becomes no_ticker (fail closed, read failures included).
-  async function derivedTickerConfirmed(decision, row) {
+  // Kalshi's market for the decision's ticker is active and prices the row
+  // (its strike, its YES team), else the decision becomes market_mismatch
+  // (fail closed, read failures included).
+  async function marketConfirmed(decision, row) {
     let market;
     try {
       market = await readKalshiMarket(decision.ticker);
     } catch (error) {
-      Object.assign(decision, { reason: "no_ticker", detail: `derived ${decision.ticker} unconfirmed: ${error.message}` });
+      Object.assign(decision, { reason: "market_mismatch", detail: `${decision.ticker} unread: ${error.message}` });
       return false;
     }
-    if (taker.moneylineTeamMatches(market, row)) return true;
-    Object.assign(decision, { reason: "no_ticker", detail: `derived ${decision.ticker} is "${market.yes_sub_title}", not ${row.sideLabel}` });
+    const mismatch = taker.marketMismatch(market, row, { side: decision.side });
+    if (mismatch === null) return true;
+    Object.assign(decision, { reason: "market_mismatch", detail: `${decision.ticker}: ${mismatch}` });
     return false;
   }
 
@@ -766,12 +750,13 @@ function createRunner(deps) {
     const body = {
       clientOrderId: taker.clientOrderIdOf(decision.ticker, decision.side, passStartedAt),
       ticker: decision.ticker, side: decision.side, ask: decision.liveAsk, allIn: decision.liveAllIn,
-      count: decision.contracts, rowKey: decision.rowKey, eventStart: decision.eventStart,
+      count: decision.contracts, rowKey: decision.rowKey, eventId: decision.eventId, eventStart: decision.eventStart,
+      heldIds: decision.heldIds,
     };
     try {
       const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/taker/order.json`, "POST", body, TAKER_ORDER_TIMEOUT_MS);
       takerDeskStatus = "armed";
-      if (reply.status !== "ceiling" && reply.status !== "stopped") logInfo(`taker order ${body.clientOrderId} ${decision.ticker} ${decision.side} x${decision.contracts} @ ${decision.liveAsk}: ${reply.status}`);
+      if (!["ceiling", "stopped", "unseen_fill"].includes(reply.status)) logInfo(`taker order ${body.clientOrderId} ${decision.ticker} ${decision.side} x${decision.contracts} @ ${decision.liveAsk}: ${reply.status}`);
       return { clientOrderId: body.clientOrderId, ...reply };
     } catch (error) {
       if (error.status === 503) {

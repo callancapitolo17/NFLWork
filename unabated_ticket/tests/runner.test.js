@@ -483,8 +483,9 @@ function takerUnabatedFetch() {
   };
 }
 
-// Kalshi: a 57c YES ask with 40 contracts behind it on the WSU -35.5 market.
-function kalshiFetch() {
+// Kalshi: a 57c YES ask with 40 contracts behind it on the WSU -35.5 market,
+// 46c on WSU -41.5, and both markets active at their strikes.
+function kalshiFetch(markets = {}) {
   const calls = [];
   const impl = async (url) => {
     calls.push(url);
@@ -494,20 +495,35 @@ function kalshiFetch() {
     if (url.endsWith(`/markets/${TAKER_TICKER}/orderbook`)) {
       return response({ body: JSON.stringify({ orderbook_fp: { yes_dollars: [["0.5500", "100"]], no_dollars: [["0.4300", "40"]] } }) });
     }
+    if (url.endsWith("/markets/KXNCAAFSPREAD-26SEP19DUQWSU-WSU42")) {
+      return response({ body: JSON.stringify({ market: { status: "active", floor_strike: 41.5, yes_sub_title: "Washington St. wins by over 41.5 points", ...markets.WSU42 } }) });
+    }
+    if (url.endsWith(`/markets/${TAKER_TICKER}`)) {
+      return response({ body: JSON.stringify({ market: { status: "active", floor_strike: 35.5, yes_sub_title: "Washington St. wins by over 35.5 points", ...markets.WSU36 } }) });
+    }
     return response({ status: 404, body: JSON.stringify({ error: "not found" }) });
   };
   impl.calls = calls;
   return impl;
 }
 
+// The bets service with the desk's unseen-fill rule (taker_orders.py): an
+// order on a game whose earlier filled bot order is not among the request's
+// heldIds is refused, else it fills in full.
 function takerService(script) {
   const posts = [];
+  const filledByEvent = new Map();
   const impl = async (url, init = {}) => {
     const route = url.slice(SERVICE_URL.length);
     if (init.method === "POST") {
       const body = JSON.parse(init.body);
       posts.push({ route, body });
-      if (route === "/taker/order.json") return response({ body: JSON.stringify({ status: "filled", count: body.count, filled: body.count, cost: body.count * body.allIn, orderId: "k-1" }) });
+      if (route === "/taker/order.json") {
+        const unseen = (filledByEvent.get(body.eventId) || []).find((heldId) => !body.heldIds.includes(heldId));
+        if (unseen) return response({ body: JSON.stringify({ status: "unseen_fill", detail: `${unseen} is not yet among the held bets` }) });
+        filledByEvent.set(body.eventId, [...(filledByEvent.get(body.eventId) || []), `kalshi:${body.ticker}:${body.side}`]);
+        return response({ body: JSON.stringify({ status: "filled", count: body.count, filled: body.count, cost: body.count * body.allIn, orderId: "k-1" }) });
+      }
       return response({ body: JSON.stringify({ ok: true, logged: body.rows.length }) });
     }
     const answer = script[route];
@@ -521,7 +537,7 @@ function takerService(script) {
 
 const TAKER_SETTINGS = { settings: { leagues: [2], periods: [1] }, updatedAt: null };
 
-test("taker: a best-price Kalshi edge at the live ask is sent as one ubot- limit order, then left alone 5 min", async () => {
+test("taker: a best-price Kalshi edge at the live ask is sent as one ubot- limit order; the game's next add waits for the fill to be held", async () => {
   const kalshi = kalshiFetch();
   const service = takerService({ "/bets.json": betsBody([]), "/settings.json": TAKER_SETTINGS });
   const runner = runnerLib.createRunner({
@@ -533,8 +549,8 @@ test("taker: a best-price Kalshi edge at the live ask is sent as one ubot- limit
   const payload = runner.takerPayload();
   assert.equal(payload.pass.skipped, null);
   assert.equal(payload.desk, "armed");
-  // WSU -35.5 and WSU -41.5 are both bets, but one order per game market per
-  // pass: the better live edge (-41.5) goes, -35.5 waits for its fill to be held.
+  // WSU -35.5 and WSU -41.5 are both bets: the better live edge (-41.5) goes
+  // first, and the desk refuses -35.5 until the -41.5 fill is among its held bets.
   const decision = payload.decisions.find((row) => row.ticker === "KXNCAAFSPREAD-26SEP19DUQWSU-WSU42");
   const waiting = payload.decisions.find((row) => row.ticker === TAKER_TICKER);
   assert.equal(decision.reason, "bet", decision.detail);
@@ -542,25 +558,46 @@ test("taker: a best-price Kalshi edge at the live ask is sent as one ubot- limit
   assert.equal(waiting.liveAsk, 0.57);
   assert.ok(decision.contracts >= 1 && decision.contracts <= 40, String(decision.contracts));
   assert.equal(payload.decisions[0], decision, "bets list first, best live edge first");
+  // Both reached the desk, best live edge first; only the first was sent.
   const orders = service.posts.filter((post) => post.route === "/taker/order.json").map((post) => post.body);
-  assert.equal(orders.length, 1);
+  assert.deepEqual(orders.map((order) => order.ticker), [decision.ticker, TAKER_TICKER]);
   assert.match(orders[0].clientOrderId, /^ubot-[0-9a-f]{32}$/);
   assert.deepEqual({ ticker: orders[0].ticker, side: orders[0].side, ask: orders[0].ask, count: orders[0].count },
     { ticker: decision.ticker, side: "yes", ask: decision.liveAsk, count: decision.contracts });
+  assert.deepEqual({ eventId: orders[0].eventId, heldIds: orders[0].heldIds }, { eventId: 123742, heldIds: [] });
   assert.equal(decision.order.status, "filled");
-  assert.equal(waiting.order.status, "cooldown");
-  assert.ok(kalshi.calls.every((url) => url.startsWith("https://kalshi.test/v2/markets/") && url.endsWith("/orderbook")), "only orderbook reads");
+  assert.equal(waiting.order.status, "unseen_fill");
+  // Each order was preceded by a read of its market; everything else was orderbooks.
+  assert.ok(kalshi.calls.includes("https://kalshi.test/v2/markets/KXNCAAFSPREAD-26SEP19DUQWSU-WSU42"));
+  assert.ok(kalshi.calls.every((url) => url.startsWith("https://kalshi.test/v2/markets/")), "only market and orderbook reads");
   const logged = service.posts.filter((post) => post.route === "/taker_decisions.json").flatMap((post) => post.body.rows);
   assert.equal(logged.filter((row) => row.rowKey === decision.rowKey).length, 1);
-  // The next pass leaves the ticker alone (the fill is not yet in the held bets).
+  // The next pass: the -41.5 fill is still not among the held bets, so the desk refuses every add on the game.
   await runner.takerPass();
-  assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 1);
-  assert.ok(runner.takerPayload().decisions.filter((row) => row.reason === "bet").every((row) => row.order.status === "cooldown"));
+  assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 4);
+  assert.ok(runner.takerPayload().decisions.filter((row) => row.reason === "bet").every((row) => row.order.status === "unseen_fill"));
   assert.equal(runner.health().taker.byReason.bet >= 1, true);
   runner.stop();
 });
 
-test("taker: a service without the bot key answers 503, the decision reads off and nothing cools down", async () => {
+test("taker: a market that is closed, or at another strike, is market_mismatch and nothing is sent", async () => {
+  const service = takerService({ "/bets.json": betsBody([]), "/settings.json": TAKER_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiBaseUrl: "https://kalshi.test/v2",
+    kalshiFetch: kalshiFetch({ WSU42: { status: "closed" }, WSU36: { floor_strike: 34.5 } }),
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  const byTicker = new Map(runner.takerPayload().decisions.map((row) => [row.ticker, row]));
+  assert.equal(byTicker.get("KXNCAAFSPREAD-26SEP19DUQWSU-WSU42").reason, "market_mismatch");
+  assert.match(byTicker.get("KXNCAAFSPREAD-26SEP19DUQWSU-WSU42").detail, /status "closed"/);
+  assert.match(byTicker.get(TAKER_TICKER).detail, /floor_strike 34.5, row is -35.5/);
+  assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 0);
+  runner.stop();
+});
+
+test("taker: a service without the bot key answers 503, the decision reads off", async () => {
   const service = takerService({ "/bets.json": betsBody([]), "/settings.json": TAKER_SETTINGS });
   const offService = async (url, init = {}) => (url.endsWith("/taker/order.json")
     ? response({ status: 503, body: JSON.stringify({ status: "off", error: "no bot Kalshi key is configured" }) })

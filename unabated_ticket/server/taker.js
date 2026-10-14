@@ -9,7 +9,9 @@
 //     settings scan (alts included, moneylines through a derived ticker);
 //   - fair = Unabated's own (`ge` on the row), no cross-check;
 //   - Kalshi's live all-in price (ask + the 7% taker fee, the way Unabated
-//     shows Kalshi) at most 0.1c worse than Unabated's shown price;
+//     shows Kalshi) at most 0.1c worse than Unabated's shown price, and at
+//     most 1c better: a price that ran away from Unabated's since its
+//     snapshot is news Unabated's fair has not caught up with, not an edge;
 //   - live edge at least 3% and at most 20%;
 //   - no live book beats the price at that number (pricecheck.js, strictly:
 //     one better book is enough to skip; outliers and Cal's Skips trade);
@@ -21,15 +23,17 @@
 //   stale_feed    the row's league snapshot is stale or its last load failed
 //   no_ticker     no Kalshi contract for the row (or an ambiguous one)
 //   no_book       the orderbook read failed or has no ask on the row's side
-//   price_moved   live all-in more than PRICE_TOLERANCE worse than Unabated's
+//   price_moved   live all-in more than PRICE_TOLERANCE worse than Unabated's,
+//                 or more than BETTER_PRICE_TOLERANCE better
 //   edge_short    live edge under MIN_LIVE_EDGE
 //   not_best      another live book beats the live price at the number
 //   cap           live edge over MAX_LIVE_EDGE
 //   size_declined conditional Kelly refused the held bets (fail closed)
 //   size_zero     the stake buys no contract at the ask, or no depth
+//   market_mismatch  at send time, Kalshi's market for the ticker is not
+//                 active, or its strike or its YES team is not the row's
+//                 (marketMismatch; the runner reads the market before every order)
 //   bet           buy `contracts` at `liveAsk` (the runner sends it)
-// A derived moneyline ticker is sent only after Kalshi's market names the
-// row's team (moneylineTeamMatches); else the runner turns it into no_ticker.
 //
 // Pure: no fetch, no clock (now comes in), no DOM. node-tested.
 
@@ -48,6 +52,12 @@ const MIN_LIVE_EDGE = 0.03;
 const MAX_LIVE_EDGE = 0.20;
 // Unabated's Kalshi price sometimes lags the book by a tick; 0.1c worse still trades (Cal, 2026-10-14).
 const PRICE_TOLERANCE = 0.001;
+// A live price more than this much BETTER than Unabated's shown price is a
+// market that moved since Unabated's snapshot (news), so its fair is stale:
+// the edge the bot would compute there is its own, not Unabated's.
+const BETTER_PRICE_TOLERANCE = 0.01;
+// Kalshi's market status that takes orders (GET /markets/<ticker>).
+const MARKET_STATUS_ACTIVE = "active";
 const MAX_LINE_AGE_MS = 7 * 24 * 3600 * 1000;
 // Kalshi's taker fee per contract is 0.07 * P * (1 - P); Unabated adds it unrounded.
 const KALSHI_TAKER_FEE_RATE = 0.07;
@@ -55,6 +65,7 @@ const KALSHI_TAKER_FEE_RATE = 0.07;
 const SOURCE_FORMAT_PROBABILITY = 4;
 const BET_TYPE_MONEYLINE = 1;
 const BET_TYPE_SPREAD = 2;
+const BET_TYPE_TOTAL = 3;
 const PERIOD_FULL_GAME = 1;
 const ALL_BET_TYPES = [1, 2, 3];
 // "WSU36" on a spread contract: Kalshi's team code, then the strike.
@@ -63,7 +74,7 @@ const KALSHI_CONTRACT_RE = /^([YN])-([A-Z0-9]+)-([A-Z0-9]+)-([A-Z0-9.]+)$/;
 const SPREAD_SERIES_RE = /^(KX[A-Z0-9]+?)SPREAD$/;
 const PRICE_DECIMALS = 1e4;
 
-const REASONS = ["stale_feed", "no_ticker", "no_book", "price_moved", "edge_short", "not_best", "cap", "size_declined", "size_zero", "bet"];
+const REASONS = ["stale_feed", "no_ticker", "no_book", "price_moved", "edge_short", "not_best", "cap", "size_declined", "size_zero", "market_mismatch", "bet"];
 
 function roundPrice(value) {
   return Math.round(value * PRICE_DECIMALS) / PRICE_DECIMALS;
@@ -237,6 +248,9 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing }) {
   if (liveAllIn > unabatedAllIn + PRICE_TOLERANCE) {
     return done("price_moved", `live ${(liveAllIn * 100).toFixed(2)}c vs Unabated ${(unabatedAllIn * 100).toFixed(2)}c`);
   }
+  if (liveAllIn < unabatedAllIn - BETTER_PRICE_TOLERANCE) {
+    return done("price_moved", `live ${(liveAllIn * 100).toFixed(2)}c is over ${BETTER_PRICE_TOLERANCE * 100}c better than Unabated's ${(unabatedAllIn * 100).toFixed(2)}c: its fair is stale`);
+  }
   if (liveEdge < MIN_LIVE_EDGE) return done("edge_short", `live edge ${(liveEdge * 100).toFixed(2)}%`);
 
   const liveAmerican = probToAmerican(liveAllIn);
@@ -269,17 +283,48 @@ function teamWords(name) {
   return String(name || "").toLowerCase().split(/[^a-z0-9]+/).filter((word) => word && !TEAM_FILLER_WORDS.has(word));
 }
 
-// Does Kalshi's market for a derived moneyline name the row's team? Its YES
-// title's first word must be a word of the row's team and not of the other
-// team ("Los Angeles R" against "Los Angeles C" fails: neither side is sure).
+// Does Kalshi's market's YES title name the row's game's team on `sideIndex`?
+// Its first word must be a word of that team and not of the other team
+// ("Los Angeles R" against "Los Angeles C" fails: neither side is sure).
 //   market  Kalshi's GET /markets/<ticker> `market` object (yes_sub_title)
-function moneylineTeamMatches(market, row) {
+function titleNamesSide(market, row, sideIndex) {
   const title = market && (market.yes_sub_title || market.title);
   const first = teamWords(title)[0];
   if (!first) return false;
-  const own = row.sideIndex === 0 ? row.awayTeam : row.homeTeam;
-  const other = row.sideIndex === 0 ? row.homeTeam : row.awayTeam;
-  return teamWords(own).includes(first) && !teamWords(other).includes(first);
+  const named = sideIndex === 0 ? row.awayTeam : row.homeTeam;
+  const other = sideIndex === 0 ? row.homeTeam : row.awayTeam;
+  return teamWords(named).includes(first) && !teamWords(other).includes(first);
+}
+
+// Does Kalshi's market for a derived moneyline name the row's team?
+function moneylineTeamMatches(market, row) {
+  return titleNamesSide(market, row, row.sideIndex);
+}
+
+// Why Kalshi's market is not the one the row prices, or null when it is:
+// the market must be active; a spread's or total's floor_strike must be the
+// row's number ("wins by over 35.5" for -35.5, "Over 59.5" for 59.5); a
+// spread's or moneyline's YES title must name the team YES is on (the row's
+// own on a Y- contract, the other on an N- one). Read before every order so
+// a ticker that drifted from the row (a re-keyed rung, a closed market) is
+// never paid for.
+//   market    Kalshi's GET /markets/<ticker> `market` object
+//   contract  resolveKalshiContract's {side}
+function marketMismatch(market, row, contract) {
+  if (!market || typeof market !== "object") return "no market object";
+  if (market.status !== MARKET_STATUS_ACTIVE) return `status "${market.status}"`;
+  if (row.betTypeId === BET_TYPE_MONEYLINE) {
+    return titleNamesSide(market, row, row.sideIndex) ? null : `"${market.yes_sub_title}" is not ${row.sideLabel}`;
+  }
+  const strike = Number(market.floor_strike);
+  if (!Number.isFinite(strike) || strike !== Math.abs(row.points)) return `floor_strike ${market.floor_strike}, row is ${row.points}`;
+  if (row.betTypeId === BET_TYPE_SPREAD) {
+    const yesSide = contract.side === "yes" ? row.sideIndex : 1 - row.sideIndex;
+    if (!titleNamesSide(market, row, yesSide)) return `"${market.yes_sub_title}" does not name side ${yesSide}'s team`;
+  } else if (row.betTypeId !== BET_TYPE_TOTAL) {
+    return `bet type ${row.betTypeId} has no market check`;
+  }
+  return null;
 }
 
 // The order's client_order_id: "ubot-" (every bot order carries it, Cal's
@@ -298,9 +343,9 @@ function decisionSignature(decision) {
 }
 
 module.exports = {
-  KALSHI_BOOK_ID, BOT_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, MAX_LINE_AGE_MS,
-  KALSHI_TAKER_FEE_RATE, REASONS,
+  KALSHI_BOOK_ID, BOT_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
+  MAX_LINE_AGE_MS, KALSHI_TAKER_FEE_RATE, REASONS,
   kalshiAllInPrice, probToAmerican, unabatedAllInOf, candidateRows,
   contractFromRungs, spreadTeamCodes, derivedMoneylineContract, resolveKalshiContract,
-  parseKalshiOrderbook, quoteOf, decideRow, decisionSignature, moneylineTeamMatches, clientOrderIdOf,
+  parseKalshiOrderbook, quoteOf, decideRow, decisionSignature, moneylineTeamMatches, marketMismatch, clientOrderIdOf,
 };
