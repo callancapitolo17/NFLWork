@@ -93,6 +93,8 @@ def report_rows_from_payload(payload: dict, from_date: str) -> list:
         if not wager_id:
             raise RuntimeError(f"BetOnline record {record.get('id')} carries no raw.nativeId")
         placed_date = str(raw.get("date") or "")[:10]
+        if not placed_date:
+            raise RuntimeError(f"BetOnline record {record.get('id')} carries no raw.date")
         if placed_date < from_date:
             continue
         rows_by_wager_id[wager_id] = {
