@@ -2420,14 +2420,22 @@ visible. Its one write is the Bets page's Remove / Restore.
   games (links to Live), then the open bets that are not live with price,
   fair, edge and CLV. The nav tab carries the count of open bets not on the
   Live tab. (Its **Settled today** panel went with the change below.)
-- **Analysis**: filter by venue, league, type (straight, parlay, teaser), market
-  and period (full game vs partial): every value is a chip (on = solid with a
-  check, with its bet count in the range), each row has All / None, and
-  Reset filters clears them all; choices last until reload;
+- **Analysis** (a click-to-drill page, 2026-10-13): filter by venue, league, type, market,
+  period, side (Over / Under / Home / Away) and close (beat / lost / no close), plus
+  fav / dog, odds, edge, timing, weekday, stake and the number itself under **More
+  filters**, and an exact **Price** range in American odds: every value is a chip (on =
+  solid with a check, with its bet count in the range), each row has All / None, and
+  Reset filters clears them all; choices last until reload. Clicking a breakdown row,
+  a pivot cell, or a pivot row or column header keeps only that value, and the
+  **drill path** above the filters lists the active filters in the order they were
+  set (click a crumb to back up to it, × to drop it, All bets to clear);
   a cumulative P&L chart (actual vs expected, daily bars, best/worst day) like
-  Overview's, drawn from the filtered bets only; group by venue, league, market, period, type, odds, edge at fill, timing
+  Overview's, drawn from the filtered bets only; group by venue, league, market, side,
+  fav / dog, number, period, type, odds, edge at fill, close, timing
   (hours placed before start), weekday or stake, or **League × Market**: a
-  section per league (its totals in the header) with its markets as rows, to
+  section per league (its totals in the header) with its markets as rows (a row
+  drills into both); a **Pivot** of any two dimensions (`trackerstats.pivot`, cells
+  show ROI, P&L, CLV or bets, shaded by ROI). Together they
   compare spreads, totals and moneylines within a sport. Each group shows ROI with its
   95% interval (proven only when the interval clears zero), expected ROI,
   actual vs expected, z, CLV and how often the close was beaten. Calibration of fair win probability against the
