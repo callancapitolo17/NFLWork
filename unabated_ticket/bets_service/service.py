@@ -152,6 +152,9 @@ leaves `bets` untouched — a dark source never blanks the list. PUT
 bets it read while confirming into bets.duckdb::bets, so the panel's next poll has the
 ticket. POST /taker_decisions.json APPENDs the server runner's taker decisions to
 taker.duckdb::taker_decisions (taker_store.py; a separate file from bets.duckdb).
+POST /taker/order.json places a bot order on Kalshi (money) on the bot's own
+key when one is configured, and INSERTs / UPDATEs taker.duckdb::taker_orders
+(taker_orders.py: stop file, $500 ceiling, limit at the ask, rest cancelled).
 """
 import json
 import logging
@@ -180,6 +183,7 @@ from unabated_ticket.bets_service.sources.novig import source_if_connected as no
 from unabated_ticket.bets_service.sources.polymarket_us import source_if_configured as polymarket_us_source_if_configured
 from unabated_ticket.bets_service.sources.wagerzon import source_if_configured as wagerzon_source_if_configured
 from unabated_ticket.bets_service.store import EDGE_SETTINGS_FIELDS, BetsStore
+from unabated_ticket.bets_service.taker_orders import KalshiOrderClient, TakerDesk, validate_order_request
 from unabated_ticket.bets_service.taker_store import DECISION_REASONS, TakerStore
 
 log = logging.getLogger(__name__)
@@ -834,12 +838,14 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  runner_url: str | None = None, runner_timeout_sec: float | None = None,
                  extra_hosts: tuple[str, ...] | None = None,
                  teaser_placer: bfa_teaser.BFATeaserPlacer | None = None,
-                 taker_store: TakerStore | None = None) -> type[BaseHTTPRequestHandler]:
+                 taker_store: TakerStore | None = None,
+                 taker_desk: TakerDesk | None = None) -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
     EXTRA_ALLOWED_HOSTS (the tests pass their own). `teaser_placer` is the
     Place button's (None: no BFA account is read, POST /place_teaser.json 503s).
-    `taker_store` is the taker's decision log (None: POST /taker_decisions.json 503s)."""
+    `taker_store` is the taker's decision log (None: POST /taker_decisions.json 503s).
+    `taker_desk` places the bot's orders (None: no bot key, POST /taker/order.json 503s)."""
     names = list(source_names)
     proxied_host_names = tuple(extra_hosts) if extra_hosts is not None else config.EXTRA_ALLOWED_HOSTS
     edges_runner_url = (runner_url or config.RUNNER_URL).rstrip("/")
@@ -887,7 +893,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             url = urlparse(self.path)
             if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/fill_books.json", "/closing_fairs.json",
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
-                                "/draftkings.json", "/place_teaser.json", "/taker_decisions.json"):
+                                "/draftkings.json", "/place_teaser.json", "/taker_decisions.json",
+                                "/taker/order.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
@@ -927,8 +934,13 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if url.path == "/place_teaser.json":
                 self._place_teaser(body)
                 return
+            if url.path in ("/taker_decisions.json", "/taker/order.json") and self._refused_non_loopback():
+                return
             if url.path == "/taker_decisions.json":
                 self._log_taker_decisions(body)
+                return
+            if url.path == "/taker/order.json":
+                self._place_taker_order(body)
                 return
             rows = validate_crosswalk_rows(body)
             if isinstance(rows, str):
@@ -1075,6 +1087,18 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             self._send_json(200, {"ok": True, "logged": taker_store.append_decisions(rows, _now())})
 
+        # POST /taker/order.json: one bot order (taker_orders.py). Its outcome
+        # is always a 200 with {status}; 503 only when the bot has no key.
+        def _place_taker_order(self, body: object) -> None:
+            if taker_desk is None:
+                self._send_json(503, {"status": "off", "error": "no bot Kalshi key is configured (KALSHI_TAKER_API_KEY_ID / KALSHI_TAKER_PRIVATE_KEY_PATH)"})
+                return
+            request = validate_order_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            self._send_json(200, taker_desk.place(request))
+
         def _push_bet105(self, body: object) -> None:
             push = bet105.validate_push(body)
             if isinstance(push, str):
@@ -1178,6 +1202,16 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
         # else here stops it reading every bet or clearing the crosswalk. Its
         # Host is still its own name. The port comes from the socket, not
         # config, so a service on a non-default port guards itself.
+        # The taker's routes are the runner's alone, which calls on loopback:
+        # the tailnet name (phone, any tailnet device) can never send a bot order.
+        def _refused_non_loopback(self) -> bool:
+            port = self.server.server_address[1]
+            host = self.headers.get("Host")
+            if host_allowed(host, port, ()):
+                return False
+            self._send_json(403, {"error": f"the taker's routes are loopback-only, got Host {host!r}"})
+            return True
+
         def _refused_foreign_host(self) -> bool:
             port = self.server.server_address[1]
             host = self.headers.get("Host")
@@ -1232,6 +1266,29 @@ def teaser_placer_for(sources: list[Source]) -> bfa_teaser.BFATeaserPlacer | Non
     return bfa_teaser.BFATeaserPlacer(bfa_source) if bfa_source is not None else None
 
 
+def open_taker_desk(store: TakerStore | None) -> TakerDesk | None:
+    """The bot's order desk, or None (logged) without its own key or its log:
+    no key, no orders."""
+    if not config.KALSHI_TAKER_API_KEY_ID or not config.KALSHI_TAKER_PRIVATE_KEY_PATH:
+        log.info("taker: no bot Kalshi key configured, the bot places no orders")
+        return None
+    if store is None:
+        log.error("taker: the taker log is not open, so the bot places no orders (its ceiling lives there)")
+        return None
+    if not Path(config.KALSHI_TAKER_PRIVATE_KEY_PATH).exists():
+        log.info("taker: no bot key file at %s yet, the bot places no orders", config.KALSHI_TAKER_PRIVATE_KEY_PATH)
+        return None
+    try:
+        client = KalshiOrderClient(config.KALSHI_TAKER_API_KEY_ID, config.KALSHI_TAKER_PRIVATE_KEY_PATH,
+                                   config.KALSHI_BASE_URL)
+    except (OSError, ValueError) as error:
+        log.error("taker: the bot key %s could not be read, the bot places no orders: %s",
+                  config.KALSHI_TAKER_PRIVATE_KEY_PATH, error)
+        return None
+    log.info("taker: ARMED on its own key; stop file %s", config.TAKER_STOP_PATH)
+    return TakerDesk(client, store, config.TAKER_STOP_PATH)
+
+
 def open_taker_store(db_path: Path) -> TakerStore | None:
     """The taker's decision log, or None (logged) when its file cannot be
     opened: the log is the bot's, so a bad path must not take Cal's bets down
@@ -1251,7 +1308,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
     taker_store = open_taker_store(config.TAKER_DB_PATH)
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
                                                             teaser_placer=teaser_placer_for(sources),
-                                                            taker_store=taker_store))
+                                                            taker_store=taker_store,
+                                                            taker_desk=open_taker_desk(taker_store)))
     server.daemon_threads = True
     poller = threading.Thread(target=poll_loop, args=(sources, store, stop), name="poll", daemon=True)
 

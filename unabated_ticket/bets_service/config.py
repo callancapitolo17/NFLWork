@@ -71,6 +71,12 @@ DB_PATH = Path(_get("BETS_DB_PATH", str(PKG_DIR / "bets.duckdb")))
 # The automated taker's decision log (taker_store.py), its own file so the
 # bot's log never shares a write path with Cal's bet history.
 TAKER_DB_PATH = Path(_get("TAKER_DB_PATH", str(PKG_DIR / "taker.duckdb")))
+# The bot's own Kalshi key (taker_orders.py): made for the bot alone so it can
+# be revoked alone. Both set = the bot places orders; either missing = it does not.
+KALSHI_TAKER_API_KEY_ID = _get("KALSHI_TAKER_API_KEY_ID")
+KALSHI_TAKER_PRIVATE_KEY_PATH = _get("KALSHI_TAKER_PRIVATE_KEY_PATH")
+# The stop switch: while this file exists the bot sends no order (`touch` it to stop, `rm` to resume).
+TAKER_STOP_PATH = Path(_get("TAKER_STOP_PATH", str(PKG_DIR / "taker.stop")))
 
 # HTTP. Loopback only: the service has no auth and serves the user's own bets.
 # Not configurable on purpose: on the server, `tailscale serve` on the host

@@ -40,6 +40,10 @@ services:
       HOME: /tmp
       BETS_DB_PATH: /data/bets.duckdb
       TAKER_DB_PATH: /data/taker.duckdb
+      # The bot trades only once this key file exists (its key id: KALSHI_TAKER_API_KEY_ID in bets_service/.env).
+      KALSHI_TAKER_PRIVATE_KEY_PATH: /data/kalshi_taker.pem
+      # touch to stop the bot, rm to resume.
+      TAKER_STOP_PATH: /data/taker.stop
       BETS_SERVICE_LOG_PATH: /data/logs/bets_service.log
       BETS_SERVICE_LOG_CONSOLE: "1"
       NOVIG_TOKEN_PATH: /data/novig_token.json

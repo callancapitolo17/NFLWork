@@ -42,7 +42,11 @@
 //       its number when it was placed (server/fillbooks.js): how many posted
 //       it, how many beat the price taken, the best of them. Runner only.
 //   GET <Kalshi>/markets/<ticker>/orderbook every 30 s for each Kalshi Edges
-//       row the automated taker looks at (public, no key; server/taker.js).
+//       row the automated taker looks at, and GET <Kalshi>/markets/<ticker>
+//       for a derived moneyline before it is bet (public, no key; server/taker.js).
+//   POST <bets service>/taker/order.json — each "bet" decision: the bets
+//       service's order desk places it on Kalshi on the bot's own key (MONEY;
+//       stop file and $500 ceiling there; bets_service/taker_orders.py).
 //   POST <bets service>/taker_decisions.json — each taker decision that
 //       changed since it was last logged (taker.duckdb::taker_decisions).
 // Serves (HTTP on UNABATED_RUNNER_HOST:UNABATED_RUNNER_PORT, no auth):
@@ -59,7 +63,7 @@
 //                    with open bets, its results and the P&L and kickoff
 //                    chance of each (server/scenarios.js documents the shape)
 //   GET /taker.json  the automated taker's last pass: every Kalshi row it
-//                    looked at and what it would do (T1: places nothing)
+//                    looked at, what it decided and what each order did
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
@@ -101,6 +105,18 @@ const DEFAULT_KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2";
 const TAKER_PASS_MS = 30 * 1000;
 // Two reads in flight stay well under Kalshi's 20 reads/s basic limit at ~100 ms a read.
 const KALSHI_BOOK_READS_AT_ONCE = 2;
+// After an order on a market of a game, the bot leaves that market alone this
+// long: by then the bets service's Kalshi poll (60 s) has the fill, so the
+// next stake is sized against it (conditional Kelly). Keyed by game, period
+// and market (spread and moneyline together, as conditional Kelly counts them),
+// not by ticker: three alt rungs of one spread in one pass would otherwise
+// each get a full stake sized as if the others were not bought.
+const TAKER_MARKET_COOLDOWN_MS = 5 * 60 * 1000;
+// Order outcomes the desk says it never sent: no cooldown. "error" (no
+// answer from the desk) is not one of them: the order may have gone out.
+const ORDER_NOT_SENT = ["off", "stopped", "ceiling", "duplicate"];
+// The desk sends, cancels and reads fills, each up to 10 s at Kalshi.
+const TAKER_ORDER_TIMEOUT_MS = 45 * 1000;
 // Decisions held for the bets service while it is down; past this the oldest go (logged).
 const TAKER_LOG_MAX_UNSENT = 5000;
 const TAKER_LOG_ROWS_PER_POST = 200;
@@ -199,11 +215,11 @@ async function getServiceJson(fetchImpl, url, init = {}) {
 
 // One JSON request to a bets-service write route: the parsed reply, or an
 // Error carrying the HTTP status and the service's own error text.
-async function sendServiceJson(fetchImpl, url, method, body) {
+async function sendServiceJson(fetchImpl, url, method, body, timeoutMs = SERVICE_TIMEOUT_MS) {
   let response;
   try {
     response = await fetchImpl(url, {
-      method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(SERVICE_TIMEOUT_MS),
+      method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
     const reason = error.cause ? ` (${error.cause.code || error.cause.message})` : "";
@@ -310,6 +326,9 @@ function createRunner(deps) {
   let takerDecisions = [];
   const takerLogged = new Map();
   let takerUnsent = [];
+  // market key (takerMarketKey) -> when the bot last sent an order on it (TAKER_MARKET_COOLDOWN_MS).
+  const takerOrderedAt = new Map();
+  let takerDeskStatus = "not asked yet";
   const takerLogStatus = { okAt: null, error: null, rowsSent: 0, dropped: 0 };
 
   // Every snapshot carries Unabated's team list; register it so bet records
@@ -677,6 +696,7 @@ function createRunner(deps) {
         });
         return { ...takerRowFields(row), decidedAt: new Date(decidedAt).toISOString(), ...decision };
       });
+      await sendTakerOrders(takerDecisions, rows, startedAt);
       queueChangedDecisions(takerDecisions);
       takerLastPass = {
         startedAt, finishedAt: now(), skipped: null, rows: rows.length,
@@ -690,6 +710,77 @@ function createRunner(deps) {
       takerBusy = false;
     }
     await postTakerDecisions();
+  }
+
+  // Kalshi's market object for a ticker (public GET /markets/<ticker>).
+  async function readKalshiMarket(ticker) {
+    const body = await getServiceJson(kalshiFetch, `${kalshiBaseUrl}/markets/${encodeURIComponent(ticker)}`);
+    if (!body || typeof body.market !== "object" || body.market === null) throw new Error(`Kalshi market ${ticker}: no market object`);
+    return body.market;
+  }
+
+  // Send every "bet" decision to the bets service's order desk, best live
+  // edge first, one at a time (each changes the open exposure the next is
+  // capped by). A derived moneyline first has Kalshi's market name its team.
+  // The outcome rides on the decision as `order`. Mutates `decisions`.
+  async function sendTakerOrders(decisions, rows, passStartedAt) {
+    const rowByKey = new Map(rows.map((row) => [row.key, row]));
+    const bets = decisions.filter((decision) => decision.reason === "bet").sort((a, b) => b.liveEdge - a.liveEdge);
+    for (const decision of bets) {
+      const marketKey = takerMarketKey(decision);
+      const lastOrderAt = takerOrderedAt.get(marketKey);
+      if (lastOrderAt != null && now() - lastOrderAt < TAKER_MARKET_COOLDOWN_MS) {
+        decision.order = { status: "cooldown", detail: `ordered ${Math.round((now() - lastOrderAt) / 1000)} s ago` };
+        continue;
+      }
+      if (decision.derivedTicker && !(await derivedTickerConfirmed(decision, rowByKey.get(decision.rowKey)))) continue;
+      decision.order = await sendTakerOrder(decision, passStartedAt);
+      if (!ORDER_NOT_SENT.includes(decision.order.status)) takerOrderedAt.set(marketKey, now());
+      if (decision.order.status === "off") break;
+    }
+    for (const [marketKey, at] of takerOrderedAt) if (now() - at >= TAKER_MARKET_COOLDOWN_MS) takerOrderedAt.delete(marketKey);
+  }
+
+  function takerMarketKey(decision) {
+    return `${decision.eventId}|${decision.period}|${decision.betType === "Total" ? "total" : "side"}`;
+  }
+
+  // Kalshi's market for a derived moneyline names the row's team, else the
+  // decision becomes no_ticker (fail closed, read failures included).
+  async function derivedTickerConfirmed(decision, row) {
+    let market;
+    try {
+      market = await readKalshiMarket(decision.ticker);
+    } catch (error) {
+      Object.assign(decision, { reason: "no_ticker", detail: `derived ${decision.ticker} unconfirmed: ${error.message}` });
+      return false;
+    }
+    if (taker.moneylineTeamMatches(market, row)) return true;
+    Object.assign(decision, { reason: "no_ticker", detail: `derived ${decision.ticker} is "${market.yes_sub_title}", not ${row.sideLabel}` });
+    return false;
+  }
+
+  // One POST /taker/order.json; never throws. {status, ...} as the desk
+  // answers it, "off" when the service has no bot key, "error" on no answer.
+  async function sendTakerOrder(decision, passStartedAt) {
+    const body = {
+      clientOrderId: taker.clientOrderIdOf(decision.ticker, decision.side, passStartedAt),
+      ticker: decision.ticker, side: decision.side, ask: decision.liveAsk, allIn: decision.liveAllIn,
+      count: decision.contracts, rowKey: decision.rowKey, eventStart: decision.eventStart,
+    };
+    try {
+      const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/taker/order.json`, "POST", body, TAKER_ORDER_TIMEOUT_MS);
+      takerDeskStatus = "armed";
+      if (reply.status !== "ceiling" && reply.status !== "stopped") logInfo(`taker order ${body.clientOrderId} ${decision.ticker} ${decision.side} x${decision.contracts} @ ${decision.liveAsk}: ${reply.status}`);
+      return { clientOrderId: body.clientOrderId, ...reply };
+    } catch (error) {
+      if (error.status === 503) {
+        takerDeskStatus = "off: the bets service has no bot Kalshi key";
+        return { status: "off", detail: error.message };
+      }
+      logWarning(`taker order ${body.clientOrderId} ${decision.ticker}: ${error.message}`);
+      return { status: "error", detail: error.message };
+    }
   }
 
   // What a decision row says about the line, for the log and /taker.json.
@@ -761,7 +852,7 @@ function createRunner(deps) {
     const decisions = takerDecisions.slice().sort((a, b) => order(a) - order(b) || (b.liveEdge ?? -Infinity) - (a.liveEdge ?? -Infinity));
     return {
       generatedAt: new Date(now()).toISOString(),
-      mode: "decide-only",
+      desk: takerDeskStatus,
       rules: {
         bankroll: taker.BOT_BANKROLL, kelly: taker.BOT_KELLY, minLiveEdge: taker.MIN_LIVE_EDGE, maxLiveEdge: taker.MAX_LIVE_EDGE,
         priceTolerance: taker.PRICE_TOLERANCE, maxLineAgeHours: taker.MAX_LINE_AGE_MS / HOUR_MS,
@@ -908,7 +999,7 @@ function createRunner(deps) {
       settings: { source: settings.source, okAt: settings.okAt, error: settings.error },
       closingFairs: { ...closingStatus },
       taker: {
-        mode: "decide-only", lastPassAt: isoOrNull(takerLastPass.finishedAt), skipped: takerLastPass.skipped,
+        desk: takerDeskStatus, lastPassAt: isoOrNull(takerLastPass.finishedAt), skipped: takerLastPass.skipped,
         rows: takerLastPass.rows, byReason: takerLastPass.byReason, log: { okAt: takerLogStatus.okAt, error: takerLogStatus.error, unsent: takerUnsent.length },
       },
     };

@@ -151,3 +151,23 @@ test("the decision signature changes with the ask, not with the clock", () => {
   assert.equal(taker.decisionSignature(base), taker.decisionSignature({ ...base, liveEdge: 0.051 }));
   assert.notEqual(taker.decisionSignature(base), taker.decisionSignature({ ...base, liveAsk: 0.58 }));
 });
+
+test("a derived moneyline trades only when Kalshi's market names the row's team and not the other", () => {
+  const state = boardWithEdge(ML_WSU_KEY, 0.05, { price: -400 });
+  const row = rowOf(state, ML_WSU_KEY);
+  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Washington St." }, row), true);
+  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Duquesne" }, row), false);
+  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "" }, row), false);
+  assert.equal(taker.moneylineTeamMatches(null, row), false);
+  // A shared first word names neither side for sure.
+  const sameCity = { ...row, awayTeam: "Los Angeles Chargers", homeTeam: "Los Angeles Rams" };
+  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Los Angeles R" }, sameCity), false);
+});
+
+test("every bot order id starts ubot- and is fixed per ticker, side and pass", () => {
+  const id = taker.clientOrderIdOf("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 1000);
+  assert.match(id, /^ubot-[0-9a-f]{32}$/);
+  assert.equal(taker.clientOrderIdOf("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 1000), id);
+  assert.notEqual(taker.clientOrderIdOf("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 31000), id);
+  assert.notEqual(taker.clientOrderIdOf("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "no", 1000), id);
+});

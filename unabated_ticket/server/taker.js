@@ -1,7 +1,8 @@
 // Unabated Ticket server — the automated taker's decision, per Edges row
-// (plan: automated_taker_plan.md, step T1 "read and decide"). Places nothing:
-// every decision ends in a reason, and a "bet" decision is only what the bot
-// WOULD buy. Orders come in T2.
+// (plan: automated_taker_plan.md). Every decision ends in a reason; a "bet"
+// decision is sent by the runner to the bets service's order desk
+// (bets_service/taker_orders.py), which holds the bot's Kalshi key, the stop
+// file and the $500 ceiling. Live from merge (Cal, 2026-10-14: no shadow run).
 //
 // Cal's rules (2026-10-01 and 2026-10-14), each a named constant below:
 //   - Kalshi rows Unabated shows an edge on, every league and market the
@@ -26,12 +27,15 @@
 //   cap           live edge over MAX_LIVE_EDGE
 //   size_declined conditional Kelly refused the held bets (fail closed)
 //   size_zero     the stake buys no contract at the ask, or no depth
-//   bet           would buy `contracts` at `liveAsk`
+//   bet           buy `contracts` at `liveAsk` (the runner sends it)
+// A derived moneyline ticker is sent only after Kalshi's market names the
+// row's team (moneylineTeamMatches); else the runner turns it into no_ticker.
 //
 // Pure: no fetch, no clock (now comes in), no DOM. node-tested.
 
 "use strict";
 
+const crypto = require("node:crypto");
 const feed = require("../extension/feed.js");
 const kelly = require("../extension/kelly.js");
 const betsView = require("../extension/betsview.js");
@@ -258,10 +262,39 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing }) {
   return done("bet");
 }
 
+// Words of a team name, lowercase, without the filler Kalshi and Unabated
+// spell differently ("Washington St." / "Washington State Cougars").
+const TEAM_FILLER_WORDS = new Set(["st", "state", "university", "univ", "the", "of", "u"]);
+function teamWords(name) {
+  return String(name || "").toLowerCase().split(/[^a-z0-9]+/).filter((word) => word && !TEAM_FILLER_WORDS.has(word));
+}
+
+// Does Kalshi's market for a derived moneyline name the row's team? Its YES
+// title's first word must be a word of the row's team and not of the other
+// team ("Los Angeles R" against "Los Angeles C" fails: neither side is sure).
+//   market  Kalshi's GET /markets/<ticker> `market` object (yes_sub_title)
+function moneylineTeamMatches(market, row) {
+  const title = market && (market.yes_sub_title || market.title);
+  const first = teamWords(title)[0];
+  if (!first) return false;
+  const own = row.sideIndex === 0 ? row.awayTeam : row.homeTeam;
+  const other = row.sideIndex === 0 ? row.homeTeam : row.awayTeam;
+  return teamWords(own).includes(first) && !teamWords(other).includes(first);
+}
+
+// The order's client_order_id: "ubot-" (every bot order carries it, Cal's
+// tag) and a hash of ticker, side and pass, so one pass can never send the
+// same order twice (the desk refuses a repeat id).
+function clientOrderIdOf(ticker, side, passStartedMs) {
+  const digest = crypto.createHash("sha256").update(`${ticker}|${side}|${passStartedMs}`).digest("hex");
+  return `ubot-${digest.slice(0, 32)}`;
+}
+
 // What makes a decision worth logging again: its outcome and the prices it
 // was taken at. The same row deciding the same way every pass logs once.
 function decisionSignature(decision) {
-  return [decision.reason, decision.ticker, decision.liveAsk, decision.unabatedPrice, decision.contracts].join("|");
+  const orderStatus = decision.order ? decision.order.status : "";
+  return [decision.reason, decision.ticker, decision.liveAsk, decision.unabatedPrice, decision.contracts, orderStatus].join("|");
 }
 
 module.exports = {
@@ -269,5 +302,5 @@ module.exports = {
   KALSHI_TAKER_FEE_RATE, REASONS,
   kalshiAllInPrice, probToAmerican, unabatedAllInOf, candidateRows,
   contractFromRungs, spreadTeamCodes, derivedMoneylineContract, resolveKalshiContract,
-  parseKalshiOrderbook, quoteOf, decideRow, decisionSignature,
+  parseKalshiOrderbook, quoteOf, decideRow, decisionSignature, moneylineTeamMatches, clientOrderIdOf,
 };

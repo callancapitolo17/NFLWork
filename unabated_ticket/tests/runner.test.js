@@ -465,6 +465,7 @@ function takerVenueSlice() {
   for (const [sideKey, books] of Object.entries(spreadRow.sides)) {
     for (const [bookKey, book] of Object.entries(books)) {
       for (const rung of book.alternateLines || []) {
+        if (rung && rung.points === -41.5 && sideKey === "si1:tid717" && bookKey === "ms105") Object.assign(rung, { ge: 0.06, bacr: 100, sequenceNumber: TAKER_NOW - 60000 });
         if (!rung || rung.points !== -35.5 || sideKey !== "si1:tid717") continue;
         if (bookKey === "ms105") Object.assign(rung, { ge: 0.05, bacr: -160, sequenceNumber: TAKER_NOW - 60000 });
         else if (rung.americanPrice != null) Object.assign(rung, { americanPrice: -200, price: -200 });
@@ -487,6 +488,9 @@ function kalshiFetch() {
   const calls = [];
   const impl = async (url) => {
     calls.push(url);
+    if (url.endsWith("/markets/KXNCAAFSPREAD-26SEP19DUQWSU-WSU42/orderbook")) {
+      return response({ body: JSON.stringify({ orderbook_fp: { yes_dollars: [["0.4400", "100"]], no_dollars: [["0.5400", "40"]] } }) });
+    }
     if (url.endsWith(`/markets/${TAKER_TICKER}/orderbook`)) {
       return response({ body: JSON.stringify({ orderbook_fp: { yes_dollars: [["0.5500", "100"]], no_dollars: [["0.4300", "40"]] } }) });
     }
@@ -501,8 +505,10 @@ function takerService(script) {
   const impl = async (url, init = {}) => {
     const route = url.slice(SERVICE_URL.length);
     if (init.method === "POST") {
-      posts.push({ route, body: JSON.parse(init.body) });
-      return response({ body: JSON.stringify({ ok: true, logged: JSON.parse(init.body).rows.length }) });
+      const body = JSON.parse(init.body);
+      posts.push({ route, body });
+      if (route === "/taker/order.json") return response({ body: JSON.stringify({ status: "filled", count: body.count, filled: body.count, cost: body.count * body.allIn, orderId: "k-1" }) });
+      return response({ body: JSON.stringify({ ok: true, logged: body.rows.length }) });
     }
     const answer = script[route];
     if (answer instanceof Error) throw answer;
@@ -515,7 +521,7 @@ function takerService(script) {
 
 const TAKER_SETTINGS = { settings: { leagues: [2], periods: [1] }, updatedAt: null };
 
-test("taker: a best-price Kalshi edge at the live ask is a would-bet, logged once, never an order", async () => {
+test("taker: a best-price Kalshi edge at the live ask is sent as one ubot- limit order, then left alone 5 min", async () => {
   const kalshi = kalshiFetch();
   const service = takerService({ "/bets.json": betsBody([]), "/settings.json": TAKER_SETTINGS });
   const runner = runnerLib.createRunner({
@@ -525,21 +531,49 @@ test("taker: a best-price Kalshi edge at the live ask is a would-bet, logged onc
   await runner.start();
   await runner.takerPass();
   const payload = runner.takerPayload();
-  assert.equal(payload.mode, "decide-only");
   assert.equal(payload.pass.skipped, null);
-  const decision = payload.decisions.find((row) => row.ticker === TAKER_TICKER);
+  assert.equal(payload.desk, "armed");
+  // WSU -35.5 and WSU -41.5 are both bets, but one order per game market per
+  // pass: the better live edge (-41.5) goes, -35.5 waits for its fill to be held.
+  const decision = payload.decisions.find((row) => row.ticker === "KXNCAAFSPREAD-26SEP19DUQWSU-WSU42");
+  const waiting = payload.decisions.find((row) => row.ticker === TAKER_TICKER);
   assert.equal(decision.reason, "bet", decision.detail);
-  assert.equal(decision.liveAsk, 0.57);
+  assert.equal(waiting.reason, "bet", waiting.detail);
+  assert.equal(waiting.liveAsk, 0.57);
   assert.ok(decision.contracts >= 1 && decision.contracts <= 40, String(decision.contracts));
-  assert.equal(payload.decisions[0], decision, "would-bets list first");
+  assert.equal(payload.decisions[0], decision, "bets list first, best live edge first");
+  const orders = service.posts.filter((post) => post.route === "/taker/order.json").map((post) => post.body);
+  assert.equal(orders.length, 1);
+  assert.match(orders[0].clientOrderId, /^ubot-[0-9a-f]{32}$/);
+  assert.deepEqual({ ticker: orders[0].ticker, side: orders[0].side, ask: orders[0].ask, count: orders[0].count },
+    { ticker: decision.ticker, side: "yes", ask: decision.liveAsk, count: decision.contracts });
+  assert.equal(decision.order.status, "filled");
+  assert.equal(waiting.order.status, "cooldown");
   assert.ok(kalshi.calls.every((url) => url.startsWith("https://kalshi.test/v2/markets/") && url.endsWith("/orderbook")), "only orderbook reads");
   const logged = service.posts.filter((post) => post.route === "/taker_decisions.json").flatMap((post) => post.body.rows);
   assert.equal(logged.filter((row) => row.rowKey === decision.rowKey).length, 1);
-  // The same decision on the next pass is not logged again.
+  // The next pass leaves the ticker alone (the fill is not yet in the held bets).
   await runner.takerPass();
-  const loggedAgain = service.posts.filter((post) => post.route === "/taker_decisions.json").flatMap((post) => post.body.rows);
-  assert.equal(loggedAgain.length, logged.length);
+  assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 1);
+  assert.ok(runner.takerPayload().decisions.filter((row) => row.reason === "bet").every((row) => row.order.status === "cooldown"));
   assert.equal(runner.health().taker.byReason.bet >= 1, true);
+  runner.stop();
+});
+
+test("taker: a service without the bot key answers 503, the decision reads off and nothing cools down", async () => {
+  const service = takerService({ "/bets.json": betsBody([]), "/settings.json": TAKER_SETTINGS });
+  const offService = async (url, init = {}) => (url.endsWith("/taker/order.json")
+    ? response({ status: 503, body: JSON.stringify({ status: "off", error: "no bot Kalshi key is configured" }) })
+    : service(url, init));
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: offService, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  await runner.takerPass();
+  assert.equal(runner.takerPayload().decisions[0].order.status, "off");
+  assert.match(runner.takerPayload().desk, /no bot Kalshi key/);
   runner.stop();
 });
 
