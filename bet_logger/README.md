@@ -61,10 +61,10 @@ Runs Wagerzon (logged as WagerzonC, last week by default), BFA primary ("Betfast
 - `--weeks N` — How many weeks back to fetch (0=this week, 1=last week, default: 1)
 - `--visible` — Show the browser window instead of running headless
 
-**BFA and BetOnline flags (API scrapers):**
+**BFA and BetOnline flags:**
 - `--days N` — Days of history to fetch (default: 7)
 - `--since-last` — Scrape from the date of the last bet for that platform in Google Sheets
-- `--refresh-only` — Just refresh the auth token and exit (keeps token alive)
+- `--refresh-only` — (BFA only) Just refresh the auth token and exit
 - `--account j` — (BFA only) Scrape the BFAJ second account instead of primary
 
 ### Automated Monday runs (launchd)
@@ -143,9 +143,7 @@ Duplicate detection uses (date + platform + description + bet amount) as the key
 
 **BFA Gaming** — Browser-free API scraper. Supports two accounts: primary ("Betfastaction") and second ("BFAJ"). The recon script (`recon_bfa.py`) performs a pure HTTP Keycloak OIDC login (no browser needed) to capture auth tokens. The scraper then hits BFA's REST API (`api.bfagaming.com/history/api/GetPlayerHistory`) directly with `requests`. Handles pagination automatically (100 records/page). For the BFAJ account, $15 is subtracted from each bet amount (adjusted bets go to Sheet1, raw bets go to the "Shared" tab for verification). Keycloak refresh tokens expire after ~1 hour of inactivity; `run_all_scrapers.sh` runs recon immediately before each scrape.
 
-**BetOnline** — Browser-free API scraper. Uses a one-time recon script (`recon_betonline.py`) to capture auth tokens via Chrome, then hits BetOnline's REST API directly with `requests`. Refresh token rotates on each use and expires after 3 days of inactivity. A daily LaunchAgent (`com.callancapitolo.betonline-token-refresh`) runs `--refresh-only` at noon to keep the token alive. If the token expires, re-run `recon_betonline.py` to re-authenticate.
-
-**The BetOnline refresh token is shared with the Unabated Ticket bets service** (`unabated_ticket/bets_service/sources/betonline.py`, issue #115): it reads the same `recon_betonline_cookies.json`, rotates `krefresh` when its access token is about to expire and writes the file back atomically. Two processes rotating the same token trip Keycloak's reuse detection and kill both, so every refresh here and in the service runs under an exclusive lock on `recon_betonline_cookies.json.lock` and re-reads the token from disk inside it — a race loser waits, then rotates the winner's token. The LaunchAgent stays loaded and unchanged; it is the keep-alive for when the service is not running.
+**BetOnline** — Reads from the Unabated Ticket bets service on the Oracle VM, not from BetOnline (since 2026-10-14). The BetOnline login (a rotating Keycloak refresh token) was moved to the VM at the phone cutover; a second login from this Mac would rotate the VM's token and Keycloak's reuse detection would kill both. So `scraper_betonline.py` calls `GET <BETS_SERVICE_URL>/bets.json?days=N` over Tailscale (default `https://mlb-stack.tail87ab2d.ts.net`; override with `BETS_SERVICE_URL` in `.env`), keeps the `betonline` records, rebuilds each wager's report row from the record's `raw` (one row per wager — a parlay comes back one record per leg) and parses it exactly as the old API scraper did, so sheet rows are unchanged. The VM never deletes bets, so `--since-last` catch-ups have no window limit. It fails (and the Monday run reports BetOnline FAILED) when the VM cannot be reached — Tailscale must be up on the Mac — or when the VM's last BetOnline poll failed, i.e. the token on the VM needs a new login (`unabated_ticket/deploy/README.md` step 10). The script never logs in to BetOnline, and `run_all_scrapers.sh` no longer re-runs `recon_betonline.py`. The daily LaunchAgent `com.callancapitolo.betonline-token-refresh` (`--refresh-only`) has nothing left to do and should be unloaded on the Mac.
 
 ### BFA/BetOnline: Initial Setup
 
@@ -157,21 +155,14 @@ Duplicate detection uses (date + platform + description + bet amount) as the key
 # Saves: recon_bfa_auth.json / recon_bfaj_auth.json
 ```
 
-**BetOnline** recon requires a one-time browser step to capture auth tokens:
-
-```bash
-./venv/bin/python3 recon_betonline.py
-# Saves: recon_betonline_cookies.json (refresh_token in cookies)
-```
-
-After recon, the scrapers work without a browser.
+**BetOnline** needs no setup here: its login lives on the VM (see above). `recon_betonline.py` still captures a fresh token when the VM's dies; follow `unabated_ticket/deploy/README.md` step 10 to move (never copy) it to the VM.
 
 ## Troubleshooting
 
 - **Login fails** — Check credentials in `.env`. If auto-login fails, run with `--visible` to log in manually.
 - **No bets found** — Check the time period filter. Verify bets exist on the site for that week.
 - **Token expired (BFA)** — BFA refresh tokens expire after ~1 hour. Re-run `recon_bfa.py` (or `--account j` for BFAJ). No browser needed.
-- **Token expired (BetOnline)** — BetOnline tokens expire after ~3 days. Re-run `recon_betonline.py`.
+- **BetOnline FAILED** — "could not reach the bets service": turn Tailscale on. "last BetOnline poll failed": the VM's token died; re-capture it with `recon_betonline.py` and move it to the VM (deploy README step 10).
 - **Duplicates still appearing** — Detection matches on exact (date, platform, description, amount). Any small difference bypasses it.
 - **Permission denied on Sheets** — Share the spreadsheet with the service account email from `credentials.json`.
 
@@ -182,9 +173,9 @@ run_all_scrapers.sh          # Entry point (runs 3: Wagerzon, BFA primary, BetOn
   scraper_wagerzon.py        # Wagerzon scraper (HTTP, supports --account j)
   scraper_hoop88.py          # Hoop88 scraper (headless Chromium)
   scraper_bfa.py             # BFA Gaming scraper (REST API, supports --account j)
-  scraper_betonline.py       # BetOnline scraper (REST API, no browser)
+  scraper_betonline.py       # BetOnline, read from the bets service on the VM (no login)
 recon_bfa.py                 # BFA auth via pure HTTP Keycloak login (supports --account j)
-recon_betonline.py           # One-time token capture for BetOnline via Chrome
+recon_betonline.py           # Token capture for BetOnline via Chrome (the token then moves to the VM)
 utils.py                     # Shared: odds calc, sport detection, parsing
 sheets.py                    # Google Sheets upload + duplicate detection
 ```

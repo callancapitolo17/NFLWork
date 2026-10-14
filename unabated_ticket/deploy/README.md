@@ -111,8 +111,9 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
      ```
      On the VM `chmod 600 ~/unabated-data/recon_betonline_cookies.json`. The
      Mac's bets service then reports BetOnline "not configured" and can be
-     started again; the weekly sheet scraper's BetOnline step fails until the
-     file comes back.
+     started again. The weekly sheet scraper (`bet_logger/scraper_betonline.py`)
+     reads BetOnline from this service's `/bets.json` over Tailscale, so it
+     keeps working; never run its old login on the Mac again.
    - **Check, then restart:** the login check below. `ok` for all three means
      done. If BetOnline fails on Cloudflare (its cookies were issued to the
      Mac's IP), move the file back to the Mac the same way.
