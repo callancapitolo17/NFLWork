@@ -3,7 +3,8 @@ import pytest
 
 from unabated_ticket.bets_service.normalize import cents_to_american, js_round
 from unabated_ticket.bets_service.sources import kalshi_ticker as tk
-from unabated_ticket.bets_service.sources.kalshi import aggregate_fills, normalize_kalshi
+from unabated_ticket.bets_service.sources.kalshi import (
+    aggregate_fills, apply_net_position_pnl, net_position_pnl, normalize_kalshi)
 from unabated_ticket.bets_service.tests.conftest import (
     FETCHED_AT, event, fill, market, position)
 
@@ -232,3 +233,58 @@ def test_rfi_is_an_i1_total_at_half_a_run(kalshi_fixture):
     assert record["eventDate"] == "2026-09-06"
     assert record["eventStart"] == "2026-09-07T02:10:00.000Z"  # 10:10 PM EDT
     assert record["status"] == "lost"
+
+
+# ---- net-position P&L (cases checked against Kalshi's realized_pnl, 2026-10-06) ----
+
+def fee_fill(ticker, side, count, yes_price, created_time, fee, action="buy"):
+    record = fill(ticker, side, count, yes_price, created_time, action=action)
+    record["fee_cost"] = f"{fee:.6f}"
+    return record
+
+
+def test_a_sell_on_the_other_side_closes_part_of_the_position_rodri():
+    # 11,200 YES at ~2.1c; "sell no" 5,625 at 98c is selling YES at 2c; 5,575 ride to a YES result.
+    fills = [
+        fee_fill("R", "yes", 1000, 0.03, "2026-07-18T10:00:00Z", 2.04),
+        fill("R", "yes", 10000, 0.02, "2026-07-18T11:00:00Z"),
+        fill("R", "yes", 200, 0.03, "2026-07-18T12:00:00Z"),
+        fill("R", "no", 25, 0.02, "2026-07-19T21:50:00Z"),
+        fill("R", "no", 5600, 0.02, "2026-07-19T21:51:00Z", action="sell"),
+    ]
+    net = net_position_pnl(fills, "yes")
+    assert net["entrySide"] == "yes" and net["final"]
+    assert net["realized"] - net["fees"] == pytest.approx(5449.46, abs=0.01)
+
+
+def test_cookucf_partial_close_then_settled_after_fees():
+    fills = [
+        fee_fill("C", "yes", 1168.36, 0.52, "2026-09-03T10:00:00Z", 20.41),
+        fill("C", "no", 600, 0.52, "2026-09-04T10:00:00Z", action="sell"),
+    ]
+    net = net_position_pnl(fills, "yes")
+    assert net["realized"] - net["fees"] == pytest.approx(252.40, abs=0.01)
+
+
+def test_a_flat_position_is_final_before_settlement_and_an_open_one_is_not():
+    flat = [fill("P", "no", 223, 0.13, "2026-05-28T10:00:00Z"),
+            fill("P", "yes", 223, 0.01, "2026-09-02T10:00:00Z", action="sell")]
+    assert net_position_pnl(flat, None)["realized"] == pytest.approx(26.76, abs=0.01)
+    assert net_position_pnl(flat, None)["final"]
+    assert not net_position_pnl(flat[:1], None)["final"]
+
+
+def test_apply_net_position_pnl_merges_the_other_side_into_the_entry_record():
+    records = [{"id": "kalshi:C:yes", "status": "won"}, {"id": "kalshi:C:no", "status": "lost"}]
+    fills = [fill("C", "yes", 10, 0.50, "2026-09-03T10:00:00Z"),
+             fill("C", "no", 4, 0.50, "2026-09-04T10:00:00Z")]
+    entry, other = apply_net_position_pnl(records, fills, {"C": {"result": "yes"}})
+    assert entry["pnl"] == 3  # 4 closed flat at 50c, 6 won 50c each
+    assert other == {"id": "kalshi:C:no", "status": "closed", "mergedInto": "kalshi:C:yes",
+                     "pnl": None, "fees": 0}
+
+
+def test_an_open_position_carries_no_pnl_yet():
+    records = [{"id": "kalshi:O:yes", "status": "open"}]
+    [entry] = apply_net_position_pnl(records, [fill("O", "yes", 10, 0.5, "2026-09-03T10:00:00Z")], {})
+    assert entry["pnl"] is None

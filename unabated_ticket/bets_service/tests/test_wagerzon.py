@@ -109,7 +109,9 @@ def test_props_unsupported_sports_and_a_postponed_leg_fail_closed_with_a_reason(
     special = by_id(records, "wagerzon:219337542")
     assert special["unmatchable"] == "not a game market (IdSport PROP)"
     assert (special["status"], special["stake"], special["toWin"], special["betType"]) == ("lost", 250, 4838, "other")
-    assert (special["placedAt"], special["closedAt"]) == ("2026-09-20T20:09:00Z", "2026-09-20T20:09:00Z")
+    # Placed Sunday for the Monday night game: settles at that game's start, never at placement.
+    assert (special["placedAt"], special["closedAt"]) == ("2026-09-20T20:09:00Z", "2026-09-22T00:15:00Z")
+    assert special["eventStart"] is None
     assert special["raw"]["headerDesc"] == "NFL WEEK 2 - SPECIALS"
     assert by_id(records, "wagerzon:219292648")["unmatchable"] == "not a game market (IdSport RBL)"
     assert by_id(records, "wagerzon:300000009")["unmatchable"] == "league not supported (IdSport TNS)"

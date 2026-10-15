@@ -35,6 +35,7 @@
   const edgemove = inNode ? require("./edgemove.js") : root.UnabatedEdgeMove;
   const fillfair = inNode ? require("./fillfair.js") : root.UnabatedFillFair;
   const tailflex = inNode ? require("./tailflex.js") : root.UnabatedTailFlex;
+  const pricecheck = inNode ? require("./pricecheck.js") : root.UnabatedPriceCheck;
 
   const DEFAULT_STAKE_SETTINGS = { bankroll: 30000, multiplier: 0.25 };
   // maxLineAgeHours: a "live" book's line unchanged for a week is a dead feed
@@ -108,6 +109,50 @@
     return base;
   }
 
+  // Edges settings the bets service stores under the panel's own names
+  // (bets.duckdb::edge_settings); bookIds is carried by bookMode instead.
+  const EDGE_SETTING_KEYS = [
+    "leagues", "periods", "betTypes", "minEdgePct", "minStake", "maxLineAgeHours", "minLiquidityToWin",
+    "includeAlts", "sortBy", "groupByMarket",
+  ];
+
+  // The bets service's settings row ({field: value or null}, null = default)
+  // as the panel's two settings objects, defaults filled in. bookMode
+  // "default" (or null) = the default books, "all" = bookIds null (follow
+  // Unabated's selection; every live book where there is none to follow),
+  // "custom" = bookIds.
+  //   {stakeSettings: {bankroll, multiplier}, edgeSettings: DEFAULT_EDGE_SETTINGS shape}
+  function settingsFromService(serviceSettings) {
+    const held = serviceSettings && typeof serviceSettings === "object" ? serviceSettings : {};
+    const storedEdges = {};
+    for (const key of EDGE_SETTING_KEYS) if (held[key] != null) storedEdges[key] = held[key];
+    if (held.bookMode === "all") storedEdges.bookIds = null;
+    if (held.bookMode === "custom") storedEdges.bookIds = held.bookIds;
+    return {
+      stakeSettings: sanitizeStakeSettings({ bankroll: held.bankroll ?? undefined, multiplier: held.multiplier ?? undefined }),
+      edgeSettings: sanitizeEdgeSettings(storedEdges),
+    };
+  }
+
+  // The panel's two settings objects as a PUT /settings.json `settings` body:
+  // every field, so the row the service holds is exactly the panel's.
+  // settingsFromService(serviceSettingsOf(a, b)) gives back a and b.
+  function serviceSettingsOf(stakeSettings, edgeSettings) {
+    const body = { bankroll: stakeSettings.bankroll, multiplier: stakeSettings.multiplier };
+    for (const key of EDGE_SETTING_KEYS) body[key] = edgeSettings[key];
+    if (edgeSettings.bookIds === undefined) {
+      body.bookMode = "default";
+      body.bookIds = null;
+    } else if (edgeSettings.bookIds === null) {
+      body.bookMode = "all";
+      body.bookIds = null;
+    } else {
+      body.bookMode = "custom";
+      body.bookIds = edgeSettings.bookIds.slice();
+    }
+    return body;
+  }
+
   // ---- feed teams and the bets service ---------------------------------------
 
   // The snapshot's team list by league path ("nfl" -> [team]), for
@@ -129,7 +174,12 @@
   // body has no bets array (an error page, a proxy) and then nothing changes.
   //   held     {records, crosswalk, pins, fillFairs} as last applied
   //   payload  the parsed /bets.json body; now  epoch ms (the retention prune)
-  // Returns {records, crosswalk, pins, fillFairs, generatedAt, sources}:
+  // Returns {records, crosswalk, pins, fillFairs, generatedAt, exclusions,
+  // dismissals, teaserBlocks, edgeSkips, sources}: dismissals ([{betId,
+  // dismissedAt}], open bets only), teaserBlocks ([{marketKey, eventStartMs,
+  // blockedAt}]) and edgeSkips ([{skipKey, eventStartMs, skippedAt}], both
+  // games still to start) are the shared Dismiss, Can't tease and Skip marks,
+  // null from an older service that has none;
   // records merged on native id (betsview.mergeServicePayload: pins applied,
   // team keys filled, pruned); the service's crosswalk and pins are the truth,
   // and a payload without them (an older service) keeps the held ones; saved
@@ -145,6 +195,10 @@
     return {
       records, crosswalk, pins, fillFairs,
       generatedAt: payload.generatedAt ?? null,
+      exclusions: Array.isArray(payload.exclusions) ? payload.exclusions : null,
+      dismissals: Array.isArray(payload.dismissals) ? payload.dismissals : null,
+      teaserBlocks: Array.isArray(payload.teaserBlocks) ? payload.teaserBlocks : null,
+      edgeSkips: Array.isArray(payload.edgeSkips) ? payload.edgeSkips : null,
       sources: payload.sources && typeof payload.sources === "object" ? payload.sources : {},
     };
   }
@@ -307,9 +361,28 @@
   //             records, boardLines, ladderReaderOf, teasers, now}
   function sizedEdgeRows(feedState, context) {
     if (!feedState) return [];
+    const priceIndex = context.priceIndex || createPriceIndex(feedState, context.edgeSettings, context.now);
     const selected = feed.selectEdges(feedState, { ...edgeSelectionOptions(context.edgeSettings, context.effective, context.now), minEdge: context.minEdgePct / 100 })
-      .map((row) => withStakeAndRank(row, context.measurement, context.stakeSettings));
+      .map((row) => withPriceCheck(withStakeAndRank(row, context.measurement, context.stakeSettings), priceIndex));
     return withBetFlags(selected, context);
+  }
+
+  // Every book's price at every number (pricecheck.buildPriceIndex), aged by
+  // the list's own max line age so a dead feed never reads as a better price.
+  // Callers that render often build it once per feed update and pass it as
+  // context.priceIndex.
+  function createPriceIndex(feedState, edgeSettings, now) {
+    return pricecheck.buildPriceIndex(feedState, { now, maxLineAgeMs: edgeSettings.maxLineAgeHours * 3600 * 1000 });
+  }
+
+  // The row with `priceCheck`: how its price compares with every other book
+  // at the same number (pricecheck.comparePrice), null when unusable.
+  function withPriceCheck(row, priceIndex) {
+    const priceCheck = pricecheck.comparePrice(priceIndex, {
+      eventId: row.eventId, periodTypeId: row.periodTypeId, betTypeId: row.betTypeId, sideIndex: row.sideIndex,
+      points: row.points, bookId: row.book.id, bookName: row.book.name, price: row.price,
+    });
+    return { ...row, priceCheck };
   }
 
   // Rows in the list's order, in place: selectEdges already sorts by edge.
@@ -470,10 +543,11 @@
 
   const api = {
     DEFAULT_STAKE_SETTINGS, ALL_LEAGUE_IDS, DEFAULT_EDGE_SETTINGS, DEFAULT_BOOK_NAMES, SORT_KEYS, MAX_EDGE_ROWS,
-    sanitizeStakeSettings, sanitizeEdgeSettings, feedTeamsByLeague, applyBetsPayload,
+    EDGE_SETTING_KEYS, sanitizeStakeSettings, sanitizeEdgeSettings, settingsFromService, serviceSettingsOf,
+    feedTeamsByLeague, applyBetsPayload,
     liveBooks, defaultBookIds, effectiveFilter, edgeSelectionOptions,
     stakeFor, withStakeAndRank, boardLines, createLadderReaders, withBetFlags, exposureDollars, meetsMinStake,
-    sizedEdgeRows, sortEdgeRows, listedEdgeRows, groupEdgeRows, describeTailFlex, edgeTier, fmtDollars, stakeRail,
+    sizedEdgeRows, createPriceIndex, withPriceCheck, sortEdgeRows, listedEdgeRows, groupEdgeRows, describeTailFlex, edgeTier, fmtDollars, stakeRail,
     fmtAmerican, fmtFairEntry, fmtBetPrice, heldInThisDirection, tagReading, moveDetail, moveTag, moveWords,
   };
 

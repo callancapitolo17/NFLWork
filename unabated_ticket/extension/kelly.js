@@ -77,7 +77,14 @@
   // that says a line trades in contracts.
   const EXCHANGE_PROBABILITY_FORMAT = 4;
 
-  function isContractMarket({ sourceFormat, sourcePrice }) {
+  // Polymarket trades $1 contracts too, but Unabated does not mark its lines
+  // sourceFormat 4, so the book's name says it. Its contract costs Unabated's
+  // number as-is (bookProbOf), the same no-rounding rule as Kalshi (user
+  // decision 2026-10-07).
+  const CONTRACT_BOOK_NAMES = new Set(["Polymarket", "Polymarket US", "Poly US Ing"]);
+
+  function isContractMarket({ sourceFormat, sourcePrice, bookName }) {
+    if (CONTRACT_BOOK_NAMES.has(bookName)) return true;
     return sourceFormat === EXCHANGE_PROBABILITY_FORMAT && sourcePrice > 0 && sourcePrice < 1;
   }
 
@@ -91,14 +98,15 @@
 
   // The order that spends `stake` on an exchange line: how many contracts at
   // Unabated's price, and what they cost. Null for a line that is not priced
-  // in contracts. The price is Unabated's exact number for the book, taken as
-  // the all-in cost of one contract (for Kalshi that number already carries
-  // Kalshi's fee: a 22¢ ask shows as 23.2¢ = +331; user decision 2026-09-22),
+  // in contracts (`bookName` is the line's book, for Polymarket). The price
+  // is Unabated's exact number for the book, taken as the all-in cost of one
+  // contract (for Kalshi that number already carries Kalshi's fee: a 22¢ ask
+  // shows as 23.2¢ = +331; user decision 2026-09-22),
   // so contracts = floor(stake / price), never rounded up past Kelly, and the
   // cost reconciles to the exchange's own Cost line. The leftover is under
   // one contract.
-  function contractOrder({ stake, bookPrice, sourceFormat, sourcePrice }) {
-    if (!isContractMarket({ sourceFormat, sourcePrice })) return null;
+  function contractOrder({ stake, bookPrice, sourceFormat, sourcePrice, bookName }) {
+    if (!isContractMarket({ sourceFormat, sourcePrice, bookName })) return null;
     if (typeof stake !== "number" || !Number.isFinite(stake) || stake < 0) {
       throw new Error(`contractOrder: expected a non-negative stake, got ${stake}`);
     }

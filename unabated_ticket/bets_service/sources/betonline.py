@@ -61,13 +61,16 @@ else, listing the row as unmatchable with the reason and the raw description):
                unmatchable).  WagerStatus  Pending | Won | Lost | Push | Cancelled.
   Risk, ToWin  USD.  Date  naive local time in the gmt-offset we send (-8, fixed,
                BASE_HEADERS) — read as UTC-8; it only feeds the placed-time window.
+  GradeDateTime  the settle time, on the same clock as Date: read as UTC-8 it
+               equals the report's own value at gmt-offset 0 (probed 2026-10-07,
+               5 of 5 rows); null while the bet is pending. It was null on every settled row of the 2026-09-15 pull
+               and populated on all 7 settled rows of 2026-10-05.
 The report carries NO game date, so eventStart / eventDate are null; a spread or
 moneyline side comes from rotation parity (odd = away, the US convention) — both
 recorded in `approx` ("game_date_unknown", "side_from_rotation_parity"); the
-matcher keys on the rotation number and the team names. The report carries no
-settle time either (GradeDateTime was null on every settled row): a settled bet's
-closedAt is its placed time (a lower bound; it only decides when the bet leaves
-the 30-day window, never a match).
+matcher keys on the rotation number and the team names. A settled bet's closedAt
+is its GradeDateTime (#139: the Bet Tracker puts P&L on the settle day), else its
+placed time (a lower bound) when the report leaves GradeDateTime null.
 """
 import fcntl
 import importlib.util
@@ -291,7 +294,9 @@ def native_id_of(row: dict) -> str:
         f"keys seen: {sorted(row.keys())}")
 
 
-def parse_placed_at(value: object) -> str | None:
+def parse_report_time(value: object) -> str | None:
+    """A report timestamp (Date, GradeDateTime) -> UTC ISO; a naive one is read
+    on the report's clock (REPORT_TZ)."""
     if not isinstance(value, str) or not value:
         return None
     try:
@@ -325,7 +330,8 @@ def _money(value: object) -> float | None:
 
 def _base_record(row: dict, native_id: str, fetched_at: str | None) -> dict:
     status = status_of(row.get("WagerStatus"))
-    placed_at = parse_placed_at(row.get("Date"))
+    placed_at = parse_report_time(row.get("Date"))
+    graded_at = parse_report_time(row.get("GradeDateTime"))
     return {
         "id": f"{VENUE}:{native_id}",
         "source": SOURCE,
@@ -339,8 +345,7 @@ def _base_record(row: dict, native_id: str, fetched_at: str | None) -> dict:
         "contracts": None,
         "placedAt": placed_at,
         "status": status,
-        # The report carries no settle time: the placed time is the lower bound.
-        "closedAt": None if status == "open" else placed_at,
+        "closedAt": None if status == "open" else (graded_at or placed_at),
         "isParlayLeg": False, "parlayId": None, "legIndex": None, "legCount": None,
         "approx": [],
         "unmatchable": None,
@@ -353,6 +358,7 @@ def _base_record(row: dict, native_id: str, fetched_at: str | None) -> dict:
             "risk": row.get("Risk"),
             "toWin": row.get("ToWin"),
             "date": row.get("Date"),
+            "gradeDateTime": row.get("GradeDateTime"),
             "ticketNumber": row.get("TicketNumber"),
             "wagerNumber": row.get("WagerNumber"),
         },

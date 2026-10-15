@@ -26,10 +26,11 @@ class StubRunnerHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 — http.server's name
         mode = self.server.mode
         self.server.hosts_seen.append(self.headers.get("Host"))
+        self.server.paths_seen.append(self.path)
         if mode == "slow":
             time.sleep(SLOW_RUNNER_DELAY_SEC)
-        status = 500 if mode == "error" else 200
-        body = json.dumps({"error": "boom"} if mode == "error" else RUNNER_BODY).encode()
+        status = {"error": 500, "missing": 404}.get(mode, 200)
+        body = json.dumps({"error": "boom"} if status != 200 else RUNNER_BODY).encode()
         try:
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -55,6 +56,7 @@ def stub_runner():
     server = ThreadingHTTPServer(("127.0.0.1", 0), StubRunnerHandler)
     server.mode = "ok"
     server.hosts_seen = []
+    server.paths_seen = []
     start_server(server)
     yield server
     server.shutdown()
@@ -112,6 +114,11 @@ def unused_port() -> int:
     ("/phoneview.js", "text/javascript; charset=utf-8"),
     ("/ext/kelly.js", "text/javascript; charset=utf-8"),
     ("/ext/edgerows.js", "text/javascript; charset=utf-8"),
+    ("/tracker", "text/html; charset=utf-8"),
+    ("/tracker/", "text/html; charset=utf-8"),
+    ("/tracker/tracker.css", "text/css; charset=utf-8"),
+    ("/tracker/tracker.js", "text/javascript; charset=utf-8"),
+    ("/tracker/trackerstats.js", "text/javascript; charset=utf-8"),
 ])
 def test_every_allowlisted_file_is_served_whole_with_its_type_and_no_cache(bets_port, path, content_type):
     status, headers, body = get(bets_port, path)
@@ -132,7 +139,20 @@ def test_the_page_loads_every_extension_module_it_is_served_and_nothing_else():
     assert loaded == list(service.PHONE_EXTENSION_MODULES)
 
 
+def test_the_tracker_page_loads_only_allowlisted_files_by_absolute_path():
+    """The tracker is served at both /tracker and /tracker/, so its assets must
+    be absolute paths (a relative one would resolve to / from the first) and
+    each must be on the allowlist."""
+    page = (service.TRACKER_DIR / "index.html").read_text()
+    assets = [chunk.split('"', 1)[0] for marker in ('<script src="', 'rel="stylesheet" href="')
+              for chunk in page.split(marker)[1:]]
+    assert sorted(assets) == ["/tracker/tracker.css", "/tracker/tracker.js", "/tracker/trackerstats.js"]
+    assert all(asset in service.STATIC_FILES for asset in assets)
+
+
 @pytest.mark.parametrize("path", [
+    "/tracker/../bets_service/service.py",
+    "/tracker/index.html",
     "/../bets_service/service.py",
     "/ext/../bets_service/config.py",
     "/ext/..%2fbets_service%2fconfig.py",
@@ -186,6 +206,42 @@ def test_edges_json_is_a_502_naming_the_runner_when_it_is_down(store):
     assert reply["runnerUrl"] == runner_url
     assert reply["error"].startswith(f"server runner at {runner_url} unreachable (")
     assert "node unabated_ticket/server/runner.js" in reply["error"]
+
+
+def test_scenarios_json_passes_the_runner_body_through(bets_port, stub_runner):
+    status, _headers, body = get(bets_port, "/scenarios.json")
+    assert status == 200
+    assert json.loads(body) == RUNNER_BODY
+    assert stub_runner.paths_seen == ["/scenarios.json"]
+
+
+def test_teasers_json_passes_the_runner_body_through(bets_port, stub_runner):
+    status, _headers, body = get(bets_port, "/teasers.json")
+    assert status == 200
+    assert json.loads(body) == RUNNER_BODY
+    assert stub_runner.paths_seen == ["/teasers.json"]
+
+
+def test_attach_json_passes_the_query_on_and_the_runner_404_back(bets_port, stub_runner):
+    status, _headers, _body = get(bets_port, "/attach.json?betId=bfa%3A1&query=duke")
+    assert status == 200
+    assert stub_runner.paths_seen == ["/attach.json?betId=bfa%3A1&query=duke"]
+    stub_runner.mode = "missing"
+    status, _headers, body = get(bets_port, "/attach.json?betId=gone")
+    assert status == 404
+    assert json.loads(body) == {"error": "boom"}
+
+
+def test_scenarios_json_502_names_its_own_path(store):
+    runner_url = f"http://127.0.0.1:{unused_port()}"
+    server = serve_bets(store, runner_url)
+    try:
+        status, _headers, body = get(server.server_address[1], "/scenarios.json")
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert status == 502
+    assert "for /scenarios.json;" in json.loads(body)["error"]
 
 
 def test_edges_json_is_a_502_when_the_runner_is_slower_than_the_timeout(bets_port, stub_runner):

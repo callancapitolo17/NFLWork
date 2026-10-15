@@ -62,8 +62,8 @@ listing the record as unmatchable with the reason and the raw description):
                  ½ ¼ ¾ fractions; HTML tags separate the brackets.
   MLB "1H" is the first five innings (Novig's rule in sources/novig.py): period F5.
 eventStart is the leg's own GameDate + GameTime (Eastern -> UTC) and eventDate its GameDate, so
-the matcher uses the 30-minute time rule; a settled bet's closedAt is its event start (no settle
-time is served; the placed time is the fallback). A spread or moneyline names one team, placed
+the matcher uses the 30-minute time rule; a settled bet's closedAt is its leg's GameDate + GameTime,
+props and unread legs included (no settle time is served; the placed time is the fallback). A spread or moneyline names one team, placed
 by rotation parity (odd = away, approx side_from_rotation_parity) unless a "(AWAY vrs HOME)"
 bracket follows it (not seen live; honoured when present).
 A leg whose IdSport names a game league (LEAGUES) but whose description does not parse is
@@ -328,7 +328,7 @@ def _base_record(wager: dict, native_id: str, fetched_at: str | None) -> dict:
         "placedAt": iso_utc(placed_at),
         "status": status,
         # No settle time is served: an open bet has none, a settled one closes at
-        # its event start once the leg is read (_apply_leg), else its placed time.
+        # its leg's game start (_leg_record), else its placed time.
         "closedAt": None if status == "open" else iso_utc(placed_at),
         "isParlayLeg": False, "parlayId": None, "legIndex": None, "legCount": None,
         "approx": [],
@@ -371,8 +371,6 @@ def _apply_leg(record: dict, league: str, leg: dict, event_start: datetime | Non
         "awayTeam": leg["awayTeam"], "homeTeam": leg["homeTeam"],
         "approx": [APPROX_SIDE_PARITY] if leg["sideFromParity"] else [],
     })
-    if record["status"] != "open" and event_start is not None:
-        record["closedAt"] = iso_utc(event_start)
     record["raw"]["gameNumber"] = leg["gameNumber"]
     return record
 
@@ -393,6 +391,12 @@ def _leg_not_read(record: dict, reason: str) -> dict:
 def _leg_record(record: dict, leg_row: dict) -> dict:
     """The record for one leg row: league from IdSport, then the description."""
     _describe_leg(record, leg_row)
+    # Every leg row carries its game's start, props and unparsed legs too: a settled
+    # record closes there, not at its placed time (a Saturday-placed Monday special
+    # otherwise lands its P&L on Saturday).
+    game_start = parse_eastern(leg_row.get("GameDate"), leg_row.get("GameTime"))
+    if record["status"] != "open" and game_start is not None:
+        record["closedAt"] = iso_utc(game_start)
     sport_code = str(leg_row.get("IdSport") or "").strip().upper()
     if sport_code in PROP_SPORT_CODES:
         return _unmatchable(record, f"not a game market (IdSport {sport_code})")

@@ -296,7 +296,18 @@
     return { ...edgemove.classifyMove(from, current), from, to: current };
   }
 
-  const api = { BOOK_ID_OF_VENUE, REFUSED, captureFillFairs, fillTimeEntry, mergeFillFairs, fairsByBetId, fillPriceOf, baselineOf, moveSinceFill };
+  // A bet the board can price at all: its market is one the board carries and
+  // it is not a Kalshi NO that also wins on a tie (server/closefair.js reads
+  // the closing fair through the same lookup as the fill).
+  function onBoardMarket(bet) {
+    if (!BOARD_BET_TYPES.has(bet.betType) || !BOARD_PERIODS.has(bet.period)) return false;
+    return !(Array.isArray(bet.approx) && bet.approx.includes(bets.TIE_CAVEAT));
+  }
+
+  const api = {
+    BOOK_ID_OF_VENUE, REFUSED, captureFillFairs, fillTimeEntry, mergeFillFairs, fairsByBetId, fillPriceOf, baselineOf, moveSinceFill,
+    isWholeAmerican, onBoardMarket, sameLineRows, byPreference,
+  };
 
   if (inNode) {
     module.exports = api;

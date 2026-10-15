@@ -6,14 +6,22 @@ Inputs:  each registered Source (sources/kalshi.py; sources/betonline.py when
          its cookie file exists; sources/novig.py when its token file exists;
          sources/bfa.py and sources/wagerzon.py when their logins are configured;
          sources/polymarket_us.py when its API key is configured)
-         on its own poll_sec; plus the extension's pushes for Bet105 (below).
+         on its own poll_sec; plus the extension's pushes for Bet105 and DraftKings
+         (below).
 Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
            GET /bets.json[?days=N]  {generatedAt, sources: {name: {fetchedAt, ok,
                                     error, count}}, bets: [records open + settled
                                     within N days (default RETENTION_DAYS=30)],
                                     crosswalk: [team_crosswalk rows, newest first],
                                     pins: [bet_pins rows, newest first],
-                                    fillFairs: [bet_fill_fairs rows of those bets]}
+                                    fillFairs: [bet_fill_fairs rows of those bets],
+                                    closingFairs: [bet_closing_fairs rows of those bets],
+                                    exclusions: [bet_exclusions rows, newest first],
+                                    dismissals: [{betId, dismissedAt}] (open bets only),
+                                    teaserBlocks: [{marketKey, eventStartMs, blockedAt}]
+                                    (games still to start),
+                                    edgeSkips: [{skipKey, eventStartMs, skippedAt}]
+                                    (games still to start)}
            GET /health              {ok, generatedAt, uptimeSec, sources}
            POST /crosswalk.json     body {rows: [{venue, league, venueTeamKey,
                                     unabatedTeamId, venueTeamName?, unabatedTeamName?,
@@ -37,13 +45,49 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     (the fair a new bet's line had when it was placed,
                                     read by the panel off its line history; same
                                     Content-Type guard as the crosswalk)
+           POST /fill_books.json    body {rows: [{betId, placedAt, fillPrice, bookCount,
+                                    booksBetter, bestBook, bestPrice}]} -> {ok, saved}
+                                    (the other books at a new bet's number when it was
+                                    placed, server/fillbooks.js; insert-only; same
+                                    Content-Type guard)
+           POST /closing_fairs.json body {rows: [{betId, lineKey, points, fairAmerican,
+                                    fairObservedAt, eventStart}]} -> {ok, saved}
+                                    (the server runner's pre-start read of each open bet's
+                                    line, server/closefair.js; a row older than the stored
+                                    one is ignored; same Content-Type guard)
+           POST /exclusions.json    body {betIds: [...], excluded: bool} -> {ok, changed,
+                                    exclusions} (the Bet Tracker's Bets page removing or
+                                    restoring bets that are not Cal's; BFA and Wagerzon
+                                    bets only — anything else is a 400, an unknown id a
+                                    404; same Content-Type guard)
+           POST /dismissals.json    body {betIds: [...], dismissed: bool} -> {ok, changed,
+                                    dismissals} (the panel's and the phone's Dismiss /
+                                    Restore on an open bet no board game matches: stop or
+                                    resume flagging it; an unknown id is a 404; same
+                                    Content-Type guard)
+           POST /teaser_blocks.json body {marketKey, eventStartMs, blocked: bool} -> {ok,
+                                    changed, teaserBlocks} (the Teasers tab's Can't tease /
+                                    Restore on a spread or total; same Content-Type guard)
+           POST /edge_skips.json    body {skipKey, eventStartMs, skipped: bool} -> {ok,
+                                    changed, edgeSkips} (the Edges Skip / Restore on a
+                                    line a book beats; same Content-Type guard)
            POST /bet105.json        body {fetchedAt, feeds: {prematch: [betGroup], live:
-                                    [betGroup]}} -> {ok, count, closed}, or {error} ->
-                                    {ok, recorded: "error"} (the one PUSHED source: the
-                                    extension reads Bet105 from Cal's own Chrome because
-                                    Cloudflare challenges anything else — sources/bet105.py
-                                    parses, an open bet a complete push no longer lists is
-                                    closed, and the push is logged as that source's run)
+                                    [betGroup]}, settled: [wager]} -> {ok, count, settled,
+                                    closed, skipped}, or {error} -> {ok, recorded: "error"}
+                                    (a PUSHED source: the extension reads Bet105 from
+                                    Cal's own Chrome because Cloudflare challenges anything
+                                    else — sources/bet105.py parses; a graded wager settles
+                                    its bet with the venue's result and settle time, an open
+                                    bet neither read lists is closed with no result, and the
+                                    push is logged as that source's run)
+           POST /draftkings.json    body {fetchedAt, open: [bet], settled: [bet], events:
+                                    {eventId: event}} -> {ok, count, closed, skipped}, or
+                                    {error} -> {ok, recorded: "error"} (pushed like Bet105:
+                                    the extension reads DraftKings' My Bets socket from Cal's
+                                    own Chrome because Akamai and a login code stop anything
+                                    else — sources/draftkings.py parses; a settled bet
+                                    carries the venue's result, an open bet neither list
+                                    carries is closed with no result)
            GET /settings.json       {settings: {bankroll, multiplier, leagues, periods, betTypes,
                                     bookMode, bookIds, minEdgePct, minStake, maxLineAgeHours,
                                     minLiquidityToWin, includeAlts, sortBy, groupByMarket},
@@ -67,9 +111,20 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     cannot be reached within config.RUNNER_TIMEOUT_SEC or
                                     answers anything but 200 (phone page plan step 2:
                                     one origin for the page, its reads and its PUT)
+           GET /scenarios.json      the server runner's Live-tab scenarios (server/scenarios.js
+                                    documents them), passed through the same way, with the
+                                    same 502 (the Bet Tracker's Live tab)
+           GET /teasers.json        the server runner's Teasers list (server/teasers_payload.js
+                                    documents it), passed through the same way (the phone's
+                                    Teasers tab)
+           GET /attach.json?...     the server runner's Attach picker (step 1: games for a
+                                    bet and a search; step 2: the plan and the /pins.json
+                                    body), query string passed on; the runner's own 400/404
+                                    (no such open bet, a game gone) passes through as it came
            GET / and the phone page's files   STATIC_FILES, a fixed map of URL path ->
                                     file (server/phone/ and the extension's pure modules
-                                    the page loads under /ext/); any other path is a 404,
+                                    the page loads under /ext/; the Bet Tracker,
+                                    server/tracker/, under /tracker/); any other path is a 404,
                                     so no request can name a file outside it
          Every verb refuses a request whose Host header is not the loopback
          name the service is serving on, or a name in BETS_EXTRA_ALLOWED_HOSTS
@@ -82,7 +137,14 @@ bets.duckdb::source_runs per poll (see store.py); INSERTs into / DELETEs from
 bets.duckdb::team_crosswalk on the two crosswalk routes; UPSERTs / DELETEs
 bets.duckdb::bet_pins and the crosswalk rows a pin taught on the two pin
 routes; INSERTs into bets.duckdb::bet_fill_fairs on POST /fill_fairs.json —
-insert-only, a bet that has a saved fair keeps it; rotating log at
+insert-only, a bet that has a saved fair keeps it; INSERTs into
+bets.duckdb::bet_fill_books on POST /fill_books.json (insert-only); UPSERTs
+bets.duckdb::bet_closing_fairs on POST /closing_fairs.json (newest observation
+wins); INSERTs into / DELETEs from bets.duckdb::bet_exclusions on POST
+/exclusions.json; INSERTs into / DELETEs from bets.duckdb::bet_dismissals on
+POST /dismissals.json; UPSERTs / DELETEs bets.duckdb::teaser_blocks on POST
+/teaser_blocks.json and bets.duckdb::edge_skips on POST /edge_skips.json;
+rotating log at
 bets_service.log. A poll that raises writes a failed source_runs row and
 leaves `bets` untouched — a dark source never blanks the list. PUT
 /settings.json UPSERTs the one row of bets.duckdb::edge_settings. POST
@@ -93,6 +155,7 @@ ticket.
 import json
 import logging
 import math
+import re
 import signal
 import threading
 import time
@@ -107,7 +170,7 @@ from urllib.parse import parse_qs, urlparse
 from unabated_ticket.bets_service import bfa_teaser, config
 from unabated_ticket.bets_service.log_setup import setup_logging
 from unabated_ticket.bets_service.normalize import parse_iso_ms, utc_now_iso
-from unabated_ticket.bets_service.sources import Source, bet105
+from unabated_ticket.bets_service.sources import Source, bet105, draftkings
 from unabated_ticket.bets_service.sources.betonline import source_if_configured as betonline_source_if_configured
 from unabated_ticket.bets_service.sources.bfa import BFASource, normalize_open_bets
 from unabated_ticket.bets_service.sources.bfa import source_if_configured as bfa_source_if_configured
@@ -140,6 +203,16 @@ PIN_OPTIONAL_ID_FIELDS = ("awayTeamId", "homeTeamId")
 PIN_OPTIONAL_TEXT_FIELDS = ("eventStart", "awayTeamName", "homeTeamName")
 # A fill-fair POST carries the bets a capture pass decided: a handful.
 MAX_FILL_FAIR_ROWS_PER_POST = 1000
+# Cal's ask (2026-10-05): only these books carry bets that are not his.
+EXCLUDABLE_VENUES = ("bfa", "wagerzon")
+# A parlay's legs go in one request; a dozen is already a long ticket.
+MAX_EXCLUSION_IDS_PER_POST = 50
+# The panel's first sync sends every bet it had dismissed locally: a handful.
+MAX_DISMISSAL_IDS_PER_POST = 200
+# teaser.js marketKeyOf: "<Unabated eventId>:bt2" (spread) or ":bt3" (total).
+TEASER_MARKET_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}:bt[23]$")
+# pricecheck.js skipKeyOf: one line (game, period, market, side, number) at one book.
+EDGE_SKIP_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}:\d{1,4}:\d{1,4}:\d{1,2}\|(ml|-?\d{1,4}(\.\d{1,3})?)@\d{1,6}$")
 # American odds run from -100 down and +100 up; the gap between is no price.
 MIN_AMERICAN_MAGNITUDE = 100
 # The Edges settings' allowed values, as the panel's inputs enforce them
@@ -156,10 +229,11 @@ SETTINGS_SORT_KEYS = ("edge", "stake", "start", "exposure")
 # order their globals need (index.html).
 UNABATED_TICKET_DIR = Path(__file__).resolve().parent.parent
 PHONE_DIR = UNABATED_TICKET_DIR / "server" / "phone"
+TRACKER_DIR = UNABATED_TICKET_DIR / "server" / "tracker"
 EXTENSION_DIR = UNABATED_TICKET_DIR / "extension"
 PHONE_EXTENSION_MODULES = (
     "kelly.js", "feed.js", "teams.js", "bets.js", "ladder.js", "condkelly.js", "betsview.js",
-    "edgemove.js", "fillfair.js", "tailflex.js", "edgerows.js",
+    "edgemove.js", "fillfair.js", "tailflex.js", "edgerows.js", "teaser.js", "teaserview.js",
 )
 STATIC_FILES: dict[str, Path] = {
     "/": PHONE_DIR / "index.html",
@@ -168,6 +242,12 @@ STATIC_FILES: dict[str, Path] = {
     "/phone.js": PHONE_DIR / "phone.js",
     "/phoneview.js": PHONE_DIR / "phoneview.js",
     **{f"/ext/{name}": EXTENSION_DIR / name for name in PHONE_EXTENSION_MODULES},
+    # The Bet Tracker (server/tracker/): daily P&L and analysis off /bets.json.
+    "/tracker": TRACKER_DIR / "index.html",
+    "/tracker/": TRACKER_DIR / "index.html",
+    "/tracker/tracker.css": TRACKER_DIR / "tracker.css",
+    "/tracker/tracker.js": TRACKER_DIR / "tracker.js",
+    "/tracker/trackerstats.js": TRACKER_DIR / "trackerstats.js",
 }
 STATIC_CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -183,10 +263,11 @@ PAGE_SECURITY_HEADERS = {
 # The runner is local (or on the tailnet), never behind the sandbox's HTTP proxy.
 _RUNNER_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-# Sources with no poll here: the extension POSTs their records (/bet105.json).
+# Sources with no poll here: the extension POSTs their records (/bet105.json,
+# /draftkings.json).
 # Listed so the panel reads "no completed poll yet" before the first push, not
 # "no source configured".
-PUSHED_SOURCES = (bet105.VENUE,)
+PUSHED_SOURCES = (bet105.VENUE, draftkings.VENUE)
 
 
 def _now() -> datetime:
@@ -269,7 +350,9 @@ def bets_payload(store: BetsStore, days: int, source_names: list[str] = ()) -> d
     now = _now()
     return {"generatedAt": _iso(now), "sources": source_status(store, list(source_names)),
             "bets": store.load_bets(days, now), "crosswalk": store.load_crosswalk(), "pins": store.load_pins(),
-            "fillFairs": store.load_fill_fairs(days, now)}
+            "fillFairs": store.load_fill_fairs(days, now), "closingFairs": store.load_closing_fairs(days, now),
+            "exclusions": store.load_exclusions(), "dismissals": store.load_dismissals(),
+            "teaserBlocks": store.load_teaser_blocks(now), "edgeSkips": store.load_edge_skips(now)}
 
 
 def _non_empty_string(value: object) -> bool:
@@ -421,6 +504,167 @@ def validate_fill_fair_rows(body: object) -> list[dict] | str:
     return rows
 
 
+def _is_american_price(value: object) -> bool:
+    return _is_number(value) and abs(value) >= MIN_AMERICAN_MAGNITUDE
+
+
+def _is_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _validate_fill_book_row(index: int, raw: object) -> dict | str:
+    """One row of a POST /fill_books.json body in the store's shape, or what
+    was expected and what was found."""
+    if not isinstance(raw, dict):
+        return f"rows[{index}] must be an object, got {type(raw).__name__}"
+    if not _non_empty_string(raw.get("betId")):
+        return f"rows[{index}].betId must be a non-empty string, got {raw.get('betId')!r}"
+    if _iso_ms(raw.get("placedAt")) is None:
+        return f"rows[{index}].placedAt must be an ISO time, got {raw.get('placedAt')!r}"
+    if not _is_american_price(raw.get("fillPrice")):
+        return f"rows[{index}].fillPrice must be an American price (<= -100 or >= 100), got {raw.get('fillPrice')!r}"
+    for field in ("bookCount", "booksBetter"):
+        if not _is_count(raw.get(field)):
+            return f"rows[{index}].{field} must be a whole number >= 0, got {raw.get(field)!r}"
+    if raw["booksBetter"] > raw["bookCount"]:
+        return f"rows[{index}].booksBetter must be at most bookCount, got {raw['booksBetter']} > {raw['bookCount']}"
+    best_book, best_price = raw.get("bestBook"), raw.get("bestPrice")
+    if raw["bookCount"] == 0:
+        if best_book is not None or best_price is not None:
+            return f"rows[{index}] with bookCount 0 must have null bestBook and bestPrice, got {best_book!r}, {best_price!r}"
+    else:
+        if not _non_empty_string(best_book):
+            return f"rows[{index}].bestBook must be a non-empty string, got {best_book!r}"
+        if not _is_american_price(best_price):
+            return f"rows[{index}].bestPrice must be an American price (<= -100 or >= 100), got {best_price!r}"
+    return {"betId": raw["betId"], "placedAt": raw["placedAt"], "fillPrice": raw["fillPrice"],
+            "bookCount": raw["bookCount"], "booksBetter": raw["booksBetter"], "bestBook": best_book, "bestPrice": best_price}
+
+
+def validate_fill_book_rows(body: object) -> list[dict] | str:
+    """The rows of a POST /fill_books.json body, or an error naming the first
+    bad row: a saved row is permanent, so a malformed one is refused."""
+    if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
+        return f"body must be an object with a `rows` array, got {type(body).__name__}"
+    raw_rows = body["rows"]
+    if len(raw_rows) > MAX_FILL_FAIR_ROWS_PER_POST:
+        return f"at most {MAX_FILL_FAIR_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
+    rows: list[dict] = []
+    for index, raw in enumerate(raw_rows):
+        row = _validate_fill_book_row(index, raw)
+        if isinstance(row, str):
+            return row
+        rows.append(row)
+    return rows
+
+
+def _validate_closing_fair_row(index: int, raw: object) -> dict | str:
+    """One row of a POST /closing_fairs.json body in the store's shape, or what
+    was expected and what was found."""
+    if not isinstance(raw, dict):
+        return f"rows[{index}] must be an object, got {type(raw).__name__}"
+    for field in ("betId", "lineKey"):
+        if not _non_empty_string(raw.get(field)):
+            return f"rows[{index}].{field} must be a non-empty string, got {raw.get(field)!r}"
+    points = raw.get("points")
+    if points is not None and not _is_number(points):
+        return f"rows[{index}].points must be a number or null, got {points!r}"
+    fair = raw.get("fairAmerican")
+    if not _is_whole_american(fair):
+        return f"rows[{index}].fairAmerican must be a whole American price (an integer <= -100 or >= 100), got {fair!r}"
+    observed_ms = _iso_ms(raw.get("fairObservedAt"))
+    start_ms = _iso_ms(raw.get("eventStart"))
+    if observed_ms is None:
+        return f"rows[{index}].fairObservedAt must be an ISO time, got {raw.get('fairObservedAt')!r}"
+    if start_ms is None:
+        return f"rows[{index}].eventStart must be an ISO time, got {raw.get('eventStart')!r}"
+    if observed_ms >= start_ms:
+        return (f"rows[{index}].fairObservedAt must be before eventStart (a close is read pregame), "
+                f"got {raw['fairObservedAt']} at or after {raw['eventStart']}")
+    return {"betId": raw["betId"], "lineKey": raw["lineKey"], "points": points, "fairAmerican": fair,
+            "fairObservedAt": raw["fairObservedAt"], "eventStart": raw["eventStart"]}
+
+
+def validate_closing_fair_rows(body: object) -> list[dict] | str:
+    """The rows of a POST /closing_fairs.json body, or an error naming the
+    first bad row: the fill-fair shape with eventStart in place of placedAt,
+    each observed before its game's start."""
+    if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
+        return f"body must be an object with a `rows` array, got {type(body).__name__}"
+    raw_rows = body["rows"]
+    if len(raw_rows) > MAX_FILL_FAIR_ROWS_PER_POST:
+        return f"at most {MAX_FILL_FAIR_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
+    rows: list[dict] = []
+    for index, raw in enumerate(raw_rows):
+        row = _validate_closing_fair_row(index, raw)
+        if isinstance(row, str):
+            return row
+        rows.append(row)
+    return rows
+
+
+def validate_exclusion_request(body: object) -> tuple[list[str], bool] | str:
+    """(bet ids, excluded) of a POST /exclusions.json body, or what was
+    expected and what was found."""
+    if not isinstance(body, dict):
+        return f"body must be an object, got {type(body).__name__}"
+    bet_ids = body.get("betIds")
+    if not isinstance(bet_ids, list) or not bet_ids or not all(_non_empty_string(bet_id) for bet_id in bet_ids):
+        return f"betIds must be a non-empty list of bet ids, got {bet_ids!r}"
+    if len(bet_ids) > MAX_EXCLUSION_IDS_PER_POST:
+        return f"at most {MAX_EXCLUSION_IDS_PER_POST} betIds per request, got {len(bet_ids)}"
+    if not isinstance(body.get("excluded"), bool):
+        return f"excluded must be true or false, got {body.get('excluded')!r}"
+    return list(dict.fromkeys(bet_ids)), body["excluded"]
+
+
+def validate_dismissal_request(body: object) -> tuple[list[str], bool] | str:
+    """(bet ids, dismissed) of a POST /dismissals.json body, or what was
+    expected and what was found."""
+    if not isinstance(body, dict):
+        return f"body must be an object, got {type(body).__name__}"
+    bet_ids = body.get("betIds")
+    if not isinstance(bet_ids, list) or not bet_ids or not all(_non_empty_string(bet_id) for bet_id in bet_ids):
+        return f"betIds must be a non-empty list of bet ids, got {bet_ids!r}"
+    if len(bet_ids) > MAX_DISMISSAL_IDS_PER_POST:
+        return f"at most {MAX_DISMISSAL_IDS_PER_POST} betIds per request, got {len(bet_ids)}"
+    if not isinstance(body.get("dismissed"), bool):
+        return f"dismissed must be true or false, got {body.get('dismissed')!r}"
+    return list(dict.fromkeys(bet_ids)), body["dismissed"]
+
+
+def validate_teaser_block_request(body: object) -> tuple[str, datetime, bool] | str:
+    """(market key, game start, blocked) of a POST /teaser_blocks.json body,
+    or what was expected and what was found."""
+    if not isinstance(body, dict):
+        return f"body must be an object, got {type(body).__name__}"
+    market_key = body.get("marketKey")
+    if not isinstance(market_key, str) or not TEASER_MARKET_KEY_PATTERN.match(market_key):
+        return f"marketKey must look like '<eventId>:bt2' or '<eventId>:bt3', got {market_key!r}"
+    event_start_ms = body.get("eventStartMs")
+    if not _is_whole_number(event_start_ms) or event_start_ms <= 0:
+        return f"eventStartMs must be the game's start in whole epoch milliseconds, got {event_start_ms!r}"
+    if not isinstance(body.get("blocked"), bool):
+        return f"blocked must be true or false, got {body.get('blocked')!r}"
+    return market_key, datetime.fromtimestamp(event_start_ms / 1000, timezone.utc), body["blocked"]
+
+
+def validate_edge_skip_request(body: object) -> tuple[str, datetime, bool] | str:
+    """(skip key, game start, skipped) of a POST /edge_skips.json body, or
+    what was expected and what was found."""
+    if not isinstance(body, dict):
+        return f"body must be an object, got {type(body).__name__}"
+    skip_key = body.get("skipKey")
+    if not isinstance(skip_key, str) or not EDGE_SKIP_KEY_PATTERN.match(skip_key):
+        return f"skipKey must look like '<eventId>:<period>:<betType>:<side>|<points|ml>@<bookId>', got {skip_key!r}"
+    event_start_ms = body.get("eventStartMs")
+    if not _is_whole_number(event_start_ms) or event_start_ms <= 0:
+        return f"eventStartMs must be the game's start in whole epoch milliseconds, got {event_start_ms!r}"
+    if not isinstance(body.get("skipped"), bool):
+        return f"skipped must be true or false, got {body.get('skipped')!r}"
+    return skip_key, datetime.fromtimestamp(event_start_ms / 1000, timezone.utc), body["skipped"]
+
+
 def _is_whole_number(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -484,19 +728,29 @@ def validate_settings_update(body: object, held: dict) -> dict | str:
     return merged
 
 
-def fetch_runner_edges(runner_url: str, timeout_sec: float) -> tuple[int, bytes]:
-    """(status, body) for GET /edges.json: the runner's body as it came on a
-    200, else 502 with a JSON error naming the runner URL and what failed.
-    Network: one GET of <runner_url>/edges.json, no proxy, `timeout_sec`."""
-    url = f"{runner_url}/edges.json"
+# The runner's JSON routes the bets service passes through (one origin for the pages).
+RUNNER_ROUTES = ("/edges.json", "/scenarios.json", "/teasers.json", "/attach.json")
+# The runner's own answer about the request (no such open bet, a game gone
+# from the board) passes through as it came; any other failure is a 502.
+RUNNER_PASSTHROUGH_ERRORS = (400, 404)
+
+
+def fetch_runner_json(runner_url: str, path: str, timeout_sec: float, query: str = "") -> tuple[int, bytes]:
+    """(status, body) for GET <path>?<query> (path one of RUNNER_ROUTES): the
+    runner's body as it came on a 200 or a 400/404, else 502 with a JSON error
+    naming the runner URL and what failed. Network: one GET of
+    <runner_url><path>, no proxy, `timeout_sec`."""
+    url = f"{runner_url}{path}{'?' + query if query else ''}"
     try:
         with _RUNNER_OPENER.open(url, timeout=timeout_sec) as response:
             return 200, response.read()
     except urllib.error.HTTPError as error:
+        if error.code in RUNNER_PASSTHROUGH_ERRORS:
+            return error.code, error.read()
         problem = f"answered HTTP {error.code}"
     except (urllib.error.URLError, OSError) as error:  # refused, reset, DNS, timeout
         problem = f"unreachable ({getattr(error, 'reason', None) or error})"
-    error_body = {"error": f"server runner at {runner_url} {problem} for /edges.json; start it with "
+    error_body = {"error": f"server runner at {runner_url} {problem} for {path}; start it with "
                            f"node unabated_ticket/server/runner.js", "runnerUrl": runner_url}
     return 502, json.dumps(error_body).encode()
 
@@ -551,8 +805,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                     return
                 self._send_json(200, bets_payload(store, days, names))
                 return
-            if url.path == "/edges.json":
-                status, body = fetch_runner_edges(edges_runner_url, edges_timeout_sec)
+            if url.path in RUNNER_ROUTES:
+                status, body = fetch_runner_json(edges_runner_url, url.path, edges_timeout_sec, url.query)
                 self._send_bytes(status, body, "application/json")
                 return
             if url.path in STATIC_FILES:
@@ -573,8 +827,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if self._refused_foreign_host():
                 return
             url = urlparse(self.path)
-            if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/bet105.json",
-                                "/place_teaser.json"):
+            if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/fill_books.json", "/closing_fairs.json",
+                                "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
+                                "/draftkings.json", "/place_teaser.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
@@ -587,8 +842,29 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if url.path == "/fill_fairs.json":
                 self._save_fill_fairs(body)
                 return
+            if url.path == "/fill_books.json":
+                self._save_fill_books(body)
+                return
+            if url.path == "/closing_fairs.json":
+                self._save_closing_fairs(body)
+                return
+            if url.path == "/exclusions.json":
+                self._set_exclusions(body)
+                return
+            if url.path == "/dismissals.json":
+                self._set_dismissals(body)
+                return
+            if url.path == "/teaser_blocks.json":
+                self._set_teaser_block(body)
+                return
+            if url.path == "/edge_skips.json":
+                self._set_edge_skip(body)
+                return
             if url.path == "/bet105.json":
                 self._push_bet105(body)
+                return
+            if url.path == "/draftkings.json":
+                self._push_draftkings(body)
                 return
             if url.path == "/place_teaser.json":
                 self._place_teaser(body)
@@ -650,9 +926,84 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             self._send_json(200, {"ok": True, "saved": saved,
                                   "fillFairs": store.load_fill_fairs(config.RETENTION_DAYS, now)})
 
+        # POST /fill_books.json: INSERT the rows (first capture wins).
+        def _save_fill_books(self, body: object) -> None:
+            rows = validate_fill_book_rows(body)
+            if isinstance(rows, str):
+                self._send_json(400, {"error": rows})
+                return
+            self._send_json(200, {"ok": True, "saved": store.save_fill_books(rows, _now())})
+
+        # POST /closing_fairs.json: UPSERT the rows, each kept only when newer.
+        def _save_closing_fairs(self, body: object) -> None:
+            rows = validate_closing_fair_rows(body)
+            if isinstance(rows, str):
+                self._send_json(400, {"error": rows})
+                return
+            self._send_json(200, {"ok": True, "saved": store.save_closing_fairs(rows, _now())})
+
+        # POST /exclusions.json: remove (or restore) BFA / Wagerzon bets from
+        # the tracker's numbers. Every id must be a stored bet at one of
+        # EXCLUDABLE_VENUES, or nothing changes.
+        def _set_exclusions(self, body: object) -> None:
+            request = validate_exclusion_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            bet_ids, excluded = request
+            venue_by_bet = {bet_id: store.bet_venue(bet_id) for bet_id in bet_ids}
+            unknown = [bet_id for bet_id, venue in venue_by_bet.items() if venue is None]
+            if unknown:
+                self._send_json(404, {"error": f"no bet with id(s) {unknown}"})
+                return
+            other = {bet_id: venue for bet_id, venue in venue_by_bet.items() if venue not in EXCLUDABLE_VENUES}
+            if other:
+                self._send_json(400, {"error": f"only {list(EXCLUDABLE_VENUES)} bets can be removed, got {other}"})
+                return
+            changed = store.set_exclusions(bet_ids, venue_by_bet, excluded, _now())
+            self._send_json(200, {"ok": True, "changed": changed, "exclusions": store.load_exclusions()})
+
+        # POST /dismissals.json: stop (or resume) flagging open bets no board
+        # game matches. Every id must be a stored bet, or nothing changes.
+        def _set_dismissals(self, body: object) -> None:
+            request = validate_dismissal_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            bet_ids, dismissed = request
+            unknown = [bet_id for bet_id in bet_ids if store.bet_venue(bet_id) is None]
+            if unknown:
+                self._send_json(404, {"error": f"no bet with id(s) {unknown}"})
+                return
+            changed = store.set_dismissals(bet_ids, dismissed, _now())
+            self._send_json(200, {"ok": True, "changed": changed, "dismissals": store.load_dismissals()})
+
+        # POST /teaser_blocks.json: mark (or clear) one market Can't tease.
+        def _set_teaser_block(self, body: object) -> None:
+            request = validate_teaser_block_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            market_key, event_start, blocked = request
+            now = _now()
+            changed = store.set_teaser_block(market_key, event_start, blocked, now)
+            self._send_json(200, {"ok": True, "changed": changed, "teaserBlocks": store.load_teaser_blocks(now)})
+
+        # POST /edge_skips.json: skip (or restore) one Edges line.
+        def _set_edge_skip(self, body: object) -> None:
+            request = validate_edge_skip_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            skip_key, event_start, skipped = request
+            now = _now()
+            changed = store.set_edge_skip(skip_key, event_start, skipped, now)
+            self._send_json(200, {"ok": True, "changed": changed, "edgeSkips": store.load_edge_skips(now)})
+
         # POST /bet105.json: the extension's read of the account, as one source
-        # run — a complete push UPSERTs its records and closes the open ones it
-        # no longer lists; an error push is a failed run and the records stand.
+        # run — a complete push UPSERTs its records (a graded wager over its open
+        # record) and closes the open ones neither read lists; an error push is a
+        # failed run and the records stand.
         def _push_bet105(self, body: object) -> None:
             push = bet105.validate_push(body)
             if isinstance(push, str):
@@ -663,24 +1014,49 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 store.log_source_run(bet105.VENUE, started_at, _now(), False, push["error"], 0)
                 self._send_json(200, {"ok": True, "recorded": "error"})
                 return
-            records = bet105.normalize_bet105(push["feeds"], push["fetchedAt"])
-            closed = bet105.closed_by_absence(store.load_bets(config.RETENTION_DAYS, started_at),
-                                              {record["id"] for record in records}, _iso(started_at))
+            stored = store.load_bets(config.RETENTION_DAYS, started_at)
+            open_records = bet105.normalize_bet105(push["feeds"], push["fetchedAt"])
+            known_feeds = bet105.feeds_by_native_id(stored + open_records)
+            settled, skipped = bet105.normalize_settled(push["settled"], push["fetchedAt"], known_feeds)
+            if skipped:
+                log.warning("bet105: %d settled wager(s) not read: %s", len(skipped), "; ".join(skipped))
+            records = bet105.merge_settled(open_records, settled)
+            closed = bet105.closed_by_absence(stored, {record["id"] for record in records}, _iso(started_at))
             store.upsert_bets(records + closed, started_at)
             store.log_source_run(bet105.VENUE, started_at, _now(), True, None, len(records))
-            self._send_json(200, {"ok": True, "count": len(records), "closed": len(closed)})
+            self._send_json(200, {"ok": True, "count": len(records), "settled": len(settled),
+                                  "closed": len(closed), "skipped": len(skipped)})
+
+        # POST /draftkings.json: the extension's read of the account, as one source run —
+        # a complete push UPSERTs its records (a settled bet over its open copy) and
+        # closes the open ones neither list carries; an error push is a failed run and
+        # the records stand.
+        def _push_draftkings(self, body: object) -> None:
+            push = draftkings.validate_push(body)
+            if isinstance(push, str):
+                self._send_json(400, {"error": push})
+                return
+            started_at = _now()
+            if "error" in push:
+                store.log_source_run(draftkings.VENUE, started_at, _now(), False, push["error"], 0)
+                self._send_json(200, {"ok": True, "recorded": "error"})
+                return
+            records, skipped = draftkings.normalize_draftkings(push)
+            if skipped:
+                log.warning("draftkings: %d settled bet(s) not read: %s", len(skipped), "; ".join(skipped))
+            stored = store.load_bets(config.RETENTION_DAYS, started_at)
+            closed = draftkings.closed_by_absence(stored, {record["id"] for record in records}, _iso(started_at))
+            store.upsert_bets(records + closed, started_at)
+            store.log_source_run(draftkings.VENUE, started_at, _now(), True, None, len(records))
+            self._send_json(200, {"ok": True, "count": len(records), "closed": len(closed), "skipped": len(skipped)})
 
         # POST /place_teaser.json: one teaser at BFA (bfa_teaser.py). An exception out of
         # place() is raised before the wager goes out, so it reads "Not placed". The open
         # bets read while confirming are stored at once, the BFA source's own way.
+        # The phone page and a panel pointed at the server place through the
+        # tailnet name `tailscale serve` forwards (Cal, 2026-10-09); do_POST's
+        # Host allowlist has already refused every other name.
         def _place_teaser(self, body: object) -> None:
-            # Bets go out only for the panel on this machine: a name `tailscale
-            # serve` forwards (the phone page's) reads, it never places.
-            port = self.server.server_address[1]
-            if not host_allowed(self.headers.get("Host"), port):
-                self._send_json(403, {"error": f"placing is for this machine only (Host one of "
-                                               f"{list(allowed_hosts(port))}), got {self.headers.get('Host')!r}"})
-                return
             if teaser_placer is None:
                 self._send_json(503, {"error": "no BFA account is read: set BFA_USERNAME and BFA_PASSWORD "
                                                "(bet_logger/.env in the main checkout)"})
@@ -830,7 +1206,7 @@ OPTIONAL_SOURCE_FACTORIES: tuple[tuple[str, Callable[[], Source | None]], ...] =
 def main() -> None:
     setup_logging()
     store = BetsStore(config.DB_PATH, config.SOURCE_RUNS_RETENTION_DAYS)
-    sources: list[Source] = [KalshiSource()]
+    sources: list[Source] = [KalshiSource(known_tickers=store.load_kalshi_tickers)]
     for _venue, factory in OPTIONAL_SOURCE_FACTORIES:
         optional = factory()
         if optional is not None:

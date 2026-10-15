@@ -248,6 +248,8 @@ test("a settings change of leagues restarts the scan; a failed settings poll kee
 test("scannerLeaguesOf: the settings' leagues plus NFL and CFB, sorted, once each", () => {
   assert.deepEqual(runnerLib.scannerLeaguesOf([]), [1, 2]);
   assert.deepEqual(runnerLib.scannerLeaguesOf([5, 1]), [1, 2, 5]);
+  // The open bets' leagues load too, for their closing fairs.
+  assert.deepEqual(runnerLib.scannerLeaguesOf([1], [5, 12]), [1, 2, 5, 12]);
 });
 
 test("Football unticked: the scan still holds NFL for the teasers, the list shows none of it", async () => {
@@ -284,8 +286,166 @@ test("HTTP: /edges.json and /health on loopback; a foreign Host is 403, another 
     assert.equal((await get("/edges.json", { headers: { Host: `localhost:${port}` } })).status, 200);
     assert.equal((await get("/edges.json", { method: "POST" })).status, 405);
     assert.equal((await get("/bets.json")).status, 404);
+    assert.deepEqual((await get("/teasers.json")).body, JSON.parse(JSON.stringify(runner.teasersPayload())));
+    const missing = await get("/attach.json?betId=nope");
+    assert.deepEqual([missing.status, missing.body.error], [404, 'no open bet "nope"']);
+    assert.equal((await get("/attach.json?betId=bol-1&query=bears")).body.events[0].eventId, 125807);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     runner.stop();
   }
+});
+
+test("closing fairs: the open bet's fair on its own line, POSTed once, again only when it changes, never after kickoff", async () => {
+  let clock = NOW;
+  const posts = [];
+  const service = async (url, init = {}) => {
+    const route = url.slice(SERVICE_URL.length);
+    if (route === "/closing_fairs.json") {
+      posts.push(JSON.parse(init.body).rows);
+      assert.deepEqual([init.method, init.headers["Content-Type"]], ["POST", "application/json"]);
+      return response({ body: JSON.stringify({ ok: true, saved: 1 }) });
+    }
+    if (route === "/bets.json") return response({ body: JSON.stringify(betsBody([BEARS_HELD])) });
+    if (route === "/settings.json") return response({ body: JSON.stringify({ settings: OPEN_SETTINGS, updatedAt: null }) });
+    return response({ status: 404, body: "{}" });
+  };
+  const runner = runnerLib.createRunner({ fetchImpl: unabatedFetch(), serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => clock, timers: noTimers, ...quiet });
+  await runner.start();
+  await runner.postClosingFairs();
+  assert.equal(posts.length, 1);
+  // BetOnline is not in the slice, so the most recently changed book at -2.5 carries the fair.
+  assert.deepEqual(posts[0], [{
+    betId: "bol-1", lineKey: "289357360:ms105:si0:tid6", points: -2.5, fairAmerican: -123,
+    fairObservedAt: new Date(NOW).toISOString(), eventStart: new Date(KICKOFF_MS).toISOString(),
+  }]);
+  await runner.postClosingFairs();
+  assert.equal(posts.length, 1, "nothing changed, nothing resent");
+  clock = KICKOFF_MS + 1000;
+  await runner.postClosingFairs();
+  assert.equal(posts.length, 1, "after kickoff the stored row is the close");
+  assert.equal(runner.health().closingFairs.rowsSent, 1);
+  runner.stop();
+});
+
+test("closing fairs: a league whose snapshot build is stale gives no close", async () => {
+  const posts = [];
+  const service = async (url, init = {}) => {
+    const route = url.slice(SERVICE_URL.length);
+    if (route === "/closing_fairs.json") { posts.push(JSON.parse(init.body).rows); return response({ body: "{}" }); }
+    if (route === "/bets.json") return response({ body: JSON.stringify(betsBody([BEARS_HELD])) });
+    if (route === "/settings.json") return response({ body: JSON.stringify({ settings: OPEN_SETTINGS, updatedAt: null }) });
+    return response({ status: 404, body: "{}" });
+  };
+  // The CDN serves an NFL snapshot built an hour ago: the scanner marks the league stale.
+  const staleFetch = async (url) => {
+    if (url.split("?")[0] !== SNAPSHOT_BASE_URL(1)) return response({ status: 404, body: "not found" });
+    return response({ body: sliceBody, headers: { "content-length": "1000", "last-modified": new Date(NOW - 3600 * 1000).toUTCString() } });
+  };
+  const runner = runnerLib.createRunner({ fetchImpl: staleFetch, serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => NOW, timers: noTimers, ...quiet });
+  await runner.start();
+  assert.deepEqual(runner.edgesPayload().scanner.staleLeagues, [1]);
+  await runner.postClosingFairs();
+  assert.deepEqual(posts, []);
+  runner.stop();
+});
+
+test("an open bet's league is loaded for its close, and stays loaded after the bet settles", async () => {
+  const mlbBet = { ...BEARS_HELD, id: "k-mlb", venue: "kalshi", league: "mlb", betType: "total", side: "over", points: 8.5 };
+  let bets = [mlbBet];
+  const fetchImpl = unabatedFetch();
+  const service = serviceFetch({ "/bets.json": () => betsBody(bets), "/settings.json": { settings: { ...OPEN_SETTINGS, leagues: [1] }, updatedAt: null } });
+  const runner = runnerLib.createRunner({ fetchImpl, serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => NOW, timers: noTimers, ...quiet });
+  await runner.start();
+  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 5, 12]);
+  const loads = fetchImpl.calls.length;
+  bets = [{ ...mlbBet, status: "won" }];
+  await runner.pollBets();
+  await runner.scanLoaded();
+  assert.equal(fetchImpl.calls.length, loads, "no restart when the last MLB bet settles");
+  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 5, 12]);
+  runner.stop();
+});
+
+// ---- /scenarios.json (the Bet Tracker's Live tab) ----------------------------------------
+
+async function runnerOnClock(clock, bets, extra) {
+  const runner = runnerLib.createRunner({
+    fetchImpl: unabatedFetch(), betsServiceUrl: SERVICE_URL, now: () => clock.ms, timers: noTimers, ...quiet,
+    serviceFetch: serviceFetch({ "/bets.json": { ...betsBody(bets), ...extra }, "/settings.json": { settings: OPEN_SETTINGS } }),
+  });
+  await runner.start();
+  return runner;
+}
+
+test("scenarios: a game seen before kickoff keeps its kickoff chances once it is under way", async () => {
+  const clock = { ms: NOW };
+  const runner = await runnerOnClock(clock, [BEARS_HELD]);
+  assert.deepEqual(runner.scenariosPayload().games, [], "nothing has started yet");
+  clock.ms = KICKOFF_MS + 3600 * 1000;
+  const payload = runner.scenariosPayload();
+  assert.equal(payload.games.length, 1);
+  const [card] = payload.games;
+  assert.deepEqual([card.awayTeam, card.homeTeam, card.oddsAt], ["Chicago Bears", "Carolina Panthers", NOW]);
+  assert.deepEqual(payload.coveredBetIds, ["bol-1"]);
+  const [group] = card.groups;
+  assert.deepEqual(group.bands.map((band) => band.pnl), [-200, 181.82]);
+  assert.ok(group.bands.every((band) => band.prob > 0 && band.prob < 1), "both results priced off the kickoff ladder");
+  runner.stop();
+});
+
+test("scenarios: started before the runner saw it, the card has no chances; a removed bet is never on a card", async () => {
+  const clock = { ms: KICKOFF_MS + 3600 * 1000 };
+  const runner = await runnerOnClock(clock, [BEARS_HELD]);
+  const [card] = runner.scenariosPayload().games;
+  assert.equal(card.oddsAt, null);
+  assert.ok(card.groups[0].bands.every((band) => band.prob === null));
+  runner.stop();
+  const removed = await runnerOnClock(clock, [BEARS_HELD], { exclusions: [{ betId: "bol-1", venue: "betonline", excludedAt: "2026-09-13T16:00:00Z" }] });
+  assert.deepEqual(removed.scenariosPayload().games, []);
+  removed.stop();
+});
+
+// ---- /teasers.json, Attach and the shared Dismiss marks ---------------------------------
+
+test("teasers.json: the panel's Teasers tab in its words, the open BFA teaser held fixed", async () => {
+  const { runner } = await startedRunner({ "/bets.json": betsBody([BEARS_HELD, ...PANTHERS_TEASER]), "/settings.json": { settings: OPEN_SETTINGS, updatedAt: null } });
+  const payload = runner.teasersPayload();
+  runner.stop();
+  assert.equal(payload.ready, true);
+  assert.equal(payload.error, null);
+  assert.equal(payload.status, "NFL · CFB unavailable · 0 games on Buckeye's board · 0 of 0 legs priced");
+  assert.match(payload.empty, /^Fewer than 4 games/);
+  assert.deepEqual(payload.summary.cells, [{ label: "Placed", value: "$400", small: null }]);
+  assert.equal(payload.open.length, 1);
+  assert.deepEqual([payload.open[0].size, payload.open[0].stake, payload.open[0].inPlay], ["2-team · $400 to win $1,200", 400, true]);
+  assert.deepEqual(payload.open[0].legs[1], { label: "Elsewhere +3.5", note: "no board game; counted as won", win: "—", counted: true });
+  assert.equal(payload.breakEven, "70.7% a leg breaks even at +300");
+});
+
+test("attach.json: step 1 lists the bet's games best first, step 2 the plan and the pins body; a settled or unknown bet is a 404", async () => {
+  const { runner } = await startedRunner({ "/bets.json": betsBody([BEARS_HELD]), "/settings.json": { settings: OPEN_SETTINGS, updatedAt: null } });
+  const pick = runner.attachPayload(new URLSearchParams({ betId: "bol-1", query: "" }));
+  assert.equal(pick.scope, "NFL · Sat Sep 12 to Mon Sep 14");
+  assert.deepEqual(pick.events[0], { eventId: 125807, label: "Chicago Bears @ Carolina Panthers", meta: "Sun Sep 13 1:00 PM ET · rot 465 / 466", why: "Chicago Bears matches" });
+  const confirm = runner.attachPayload(new URLSearchParams({ betId: "bol-1", eventId: "125807", swapped: "0" }));
+  assert.equal(confirm.label, "Chicago Bears @ Carolina Panthers");
+  assert.deepEqual([confirm.pinRequest.pin.betId, confirm.pinRequest.pin.eventId], ["bol-1", "125807"]);
+  assert.equal(confirm.venueLabel, betsLib.venueLabel("betonline"));
+  assert.throws(() => runner.attachPayload(new URLSearchParams({ betId: "nope" })), (error) => error.status === 404);
+  assert.throws(() => runner.attachPayload(new URLSearchParams({ betId: "bol-1", eventId: "1" })), /has left the board/);
+  runner.stop();
+});
+
+test("a bet Dismissed on either page stops needing a game in edges.json, and lists as dismissed", async () => {
+  const stray = { ...BEARS_HELD, id: "bol-stray", awayTeam: "Nowhere Owls", homeTeam: "Lost Llamas" };
+  const flagged = await startedRunner({ "/bets.json": betsBody([stray]), "/settings.json": { settings: OPEN_SETTINGS, updatedAt: null } });
+  const before = flagged.runner.edgesPayload().betsService.unmatched.find((entry) => entry.betId === "bol-stray");
+  flagged.runner.stop();
+  assert.deepEqual([before.needsGame, before.dismissed], [true, false]);
+  const body = { ...betsBody([stray]), dismissals: [{ betId: "bol-stray", dismissedAt: "2026-09-13T15:00:00Z" }] };
+  const { runner } = await startedRunner({ "/bets.json": body, "/settings.json": { settings: OPEN_SETTINGS, updatedAt: null } });
+  const after = runner.edgesPayload().betsService.unmatched.find((entry) => entry.betId === "bol-stray");
+  runner.stop();
+  assert.deepEqual([after.needsGame, after.dismissed], [false, true]);
 });

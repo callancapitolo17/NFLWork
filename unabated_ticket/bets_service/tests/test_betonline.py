@@ -52,7 +52,21 @@ def test_college_first_half_total_is_cfb_with_the_home_rotation(records):
     assert (record["league"], record["period"], record["side"], record["points"], record["price"]) == \
         ("cfb", "1H", "under", 26.5, 105)
     assert (record["awayTeam"], record["homeTeam"], record["rotation"]) == ("Tulsa", "Sam Houston St", 374)
-    assert (record["status"], record["closedAt"]) == ("won", "2026-09-12T19:33:46Z")  # placed time: a lower bound
+    assert record["status"] == "won"
+
+
+def test_settled_bet_closes_at_its_grade_time_on_the_report_clock(records):
+    # GradeDateTime "2026-09-12T18:02:11.43" is naive UTC-8, like Date (#139).
+    record = by_id(records, "betonline:995445752-1")
+    assert record["closedAt"] == "2026-09-13T02:02:11Z"
+    assert record["placedAt"] == "2026-09-12T19:33:46Z"
+    assert record["raw"]["gradeDateTime"] == "2026-09-12T18:02:11.43"
+
+
+def test_settled_bet_without_a_grade_time_closes_at_its_placed_time(records):
+    record = by_id(records, "betonline:990620101-1")
+    assert record["status"] == "won" and record["raw"]["gradeDateTime"] is None
+    assert record["closedAt"] == record["placedAt"] == "2026-08-25T22:42:35Z"
 
 
 def test_one_team_spread_is_placed_by_rotation_parity(records):

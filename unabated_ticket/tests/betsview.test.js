@@ -52,8 +52,8 @@ test("sourceRows: one row per venue; unconfigured venues say so; a failed poll k
     kalshi: { fetchedAt: iso(20e3), ok: true, error: null, count: 14 },
     novig: { fetchedAt: iso(90 * 60e3), ok: false, error: "HTTP 401", count: 3 },
   }), NOW);
-  assert.deepEqual(rows.map((row) => row.venue), ["kalshi", "betonline", "novig", "prophetx", "bfa", "wagerzon", "polymarket_us", "bet105"]);
-  const [kalshi, betonline, novig, prophetx, bfa, wagerzon, polymarketUs, bet105] = rows;
+  assert.deepEqual(rows.map((row) => row.venue), ["kalshi", "betonline", "novig", "prophetx", "bfa", "wagerzon", "polymarket_us", "bet105", "draftkings"]);
+  const [kalshi, betonline, novig, prophetx, bfa, wagerzon, polymarketUs, bet105, draftkings] = rows;
   assert.equal(kalshi.configured, true);
   assert.equal(kalshi.level, "green");
   assert.equal(kalshi.ageText, "20 s");
@@ -70,6 +70,7 @@ test("sourceRows: one row per venue; unconfigured venues say so; a failed poll k
   assert.equal(wagerzon.configured, false);
   assert.equal(polymarketUs.configured, false);
   assert.equal(bet105.configured, false);
+  assert.equal(draftkings.configured, false);
 });
 
 test("sourceRows: a configured source that never succeeded is red with 'never'", () => {
@@ -79,9 +80,9 @@ test("sourceRows: a configured source that never succeeded is red with 'never'",
   assert.equal(kalshi.error, "boom");
 });
 
-test("sourceRows: no payload at all is eight unconfigured rows", () => {
+test("sourceRows: no payload at all is nine unconfigured rows", () => {
   const rows = view.sourceRows(null, NOW);
-  assert.equal(rows.length, 8);
+  assert.equal(rows.length, 9);
   assert.equal(rows.filter((row) => row.configured).length, 0);
 });
 
@@ -108,12 +109,12 @@ test("sourcesUnavailable: true with no sources or every source red; false while 
 test("headerLine: open count, then every venue with its age or a dash", () => {
   const records = [record("a", "open"), record("b", "open"), record("c", "won"), record("d", "closed")];
   const payload = payloadWith({ kalshi: { fetchedAt: iso(20e3), ok: true, error: null, count: 4 } });
-  assert.equal(view.headerLine(records, payload, NOW), "bets: 2 open · kalshi 20 s · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
-  assert.equal(view.headerLine([], null, NOW), "bets: 0 open · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
-  assert.equal(view.headerLine([], null, NOW, 2), "bets: 0 open · 2 not matched to a game · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
+  assert.equal(view.headerLine(records, payload, NOW), "bets: 2 open · kalshi 20 s · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 — · draftkings —");
+  assert.equal(view.headerLine([], null, NOW), "bets: 0 open · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 — · draftkings —");
+  assert.equal(view.headerLine([], null, NOW, 2), "bets: 0 open · 2 not matched to a game · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 — · draftkings —");
   assert.equal(view.headerLine([], null, NOW, 0), view.headerLine([], null, NOW));
-  assert.equal(view.headerLine([], null, NOW, 1, 1), "bets: 0 open · 1 not matched to a game · 1 needs a code fix · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
-  assert.equal(view.headerLine([], null, NOW, 0, 2), "bets: 0 open · 2 need a code fix · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 —");
+  assert.equal(view.headerLine([], null, NOW, 1, 1), "bets: 0 open · 1 not matched to a game · 1 needs a code fix · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 — · draftkings —");
+  assert.equal(view.headerLine([], null, NOW, 0, 2), "bets: 0 open · 2 need a code fix · kalshi — · betonline — · novig — · prophetx — · bfa — · wagerzon — · polymarket_us — · bet105 — · draftkings —");
 });
 
 test("bannerLines: at most five, strongest first as given, and the count of the rest", () => {
@@ -193,7 +194,7 @@ test("stakeAdvice: nothing held is the standalone Kelly stake, exactly", () => {
   const standalone = kelly.kellyStakeFromEdge({ bookPrice: 213, edgePct: 7.19, ...SIZING }).stake;
   assert.deepEqual(advice, {
     kind: "none", bet: standalone, alone: standalone, verb: "bet", held: 0, against: 0, teasers: { held: 0, against: 0 }, reason: null,
-    matches: [], teaserGroups: [], cappedAt: null,
+    matches: [], teaserGroups: [], cappedAt: null, uncapped: standalone,
   });
   assert.equal(view.stakeAdviceWords(advice), null);
   assert.equal(view.suggestedBetAmount(advice), standalone);
@@ -210,7 +211,6 @@ test("stakeAdvice: Lions @ Bills — the same over held and two unders at anothe
   assert.deepEqual(view.badges({ tier: "same_line", matches: advice.matches, advice }),
     [{ kind: "held", text: "held $270" }, { kind: "against", text: "against $413" }]);
   assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$188.32", alone: "$270.05 alone", cap: null });
-  assert.equal(view.stakeAdviceLine(advice), "add $188.32, $270.05 alone");
   assert.equal(view.suggestedBetAmount(advice), 188.32);
 });
 
@@ -249,7 +249,14 @@ test("stakeAdvice: a Novig line with $17 resting says add $17, never the $32.58 
   assert.equal(advice.cappedAt, 17);
   assert.equal(view.suggestedBetAmount(advice), 17);
   assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$17", alone: "$270.05 alone", cap: "all $17 liq" });
-  assert.equal(view.stakeAdviceLine(advice), "add $17, all $17 liq, $270.05 alone");
+  // The Ticket also shows the sized stake before the cap, in case more is really resting.
+  assert.ok(advice.uncapped > 17);
+  const uncapped = Math.round(advice.uncapped * 100) / 100;
+  assert.equal(view.uncappedLine(advice, { price: 213, sourceFormat: 1, sourcePrice: 213, bookName: "BetOnline" }),
+    `uncapped $${uncapped.toFixed(2)}`);
+  // On an exchange it says the contracts too: floor(stake / 0.319).
+  assert.equal(view.uncappedLine(advice, { price: 213, sourceFormat: 4, sourcePrice: 0.319, bookName: "Novig" }),
+    `uncapped $${uncapped.toFixed(2)} \u00b7 ${Math.floor(uncapped / 0.319).toLocaleString("en-US")} contracts @ 31.9\u00a2`);
 });
 
 test("stakeAdvice: nothing held and thin liquidity still caps, and says so", () => {
@@ -257,6 +264,22 @@ test("stakeAdvice: nothing held and thin liquidity still caps, and says so", () 
   assert.equal(advice.kind, "none");
   assert.equal(advice.bet, 50);
   assert.deepEqual(view.stakeAdviceWords(advice), { verb: "bet", bet: "$50", alone: null, cap: "all $50 liq" });
+  assert.equal(advice.uncapped, advice.alone);
+});
+
+test("uncappedLine: a Polymarket line counts contracts at Unabated's American price", () => {
+  const advice = { bet: 40, cappedAt: 40, uncapped: 85.4 };
+  assert.equal(view.uncappedLine(advice, { price: 150, sourceFormat: 1, sourcePrice: 150, bookName: "Polymarket US" }),
+    "uncapped $85.40 \u00b7 213 contracts @ 40.0\u00a2");
+  assert.equal(view.uncappedLine({ bet: 900, cappedAt: 900, uncapped: 1240.5 }, { price: 150, sourceFormat: 1, sourcePrice: 150, bookName: "Bookmaker" }),
+    "uncapped $1,240.50");
+});
+
+test("uncappedLine: nothing when liquidity did not cut the stake", () => {
+  const advice = view.stakeAdvice({ line: nflLine(), price: 213, edgePct: 7.19, ...SIZING, matches: [], ladderOf: LIONS_BILLS_LADDER, liquidity: 100000 });
+  assert.equal(advice.cappedAt, null);
+  assert.equal(view.uncappedLine(advice, { price: 213, sourceFormat: 1, sourcePrice: 213, bookName: "Novig" }), null);
+  assert.equal(view.uncappedLine(null, { price: 213 }), null);
 });
 
 test("capAtLiquidity: deep or unreported liquidity leaves the stake alone", () => {
@@ -276,7 +299,7 @@ test("stakeAdvice: a 1H over held sizes the FG over on the worst case, $408.39 n
   assert.equal(advice.matches[0].tier, "related_same");
   assert.equal(advice.bet, 408.39);
   assert.equal(advice.held, 300);
-  assert.equal(view.stakeAdviceLine(advice), "add $408.39, $666.67 alone");
+  assert.deepEqual(view.stakeAdviceWords(advice), { verb: "add", bet: "$408.39", alone: "$666.67 alone", cap: null });
 });
 
 test("stakeAdvice: the OTHER direction in another period is left out — no hedge credit, no worst-case penalty", () => {
@@ -577,8 +600,7 @@ test("teasers: a declined calc zeroes the teaser dollars; a teaser on another ga
 
 test("stakeAdviceWords: no `alone` line when the held bets left the number where it was", () => {
   assert.deepEqual(view.stakeAdviceWords({ kind: "sized", verb: "bet", bet: 183.04, alone: 183.0412 }), { verb: "bet", bet: "$183.04", alone: null, cap: null });
-  assert.equal(view.stakeAdviceLine({ kind: "sized", verb: "bet", bet: 183.04, alone: 183.0412 }), "bet $183.04");
-  assert.equal(view.stakeAdviceLine({ kind: "none", bet: 183.04, alone: 183.04 }), null);
+  assert.equal(view.stakeAdviceWords({ kind: "none", bet: 183.04, alone: 183.04 }), null);
 });
 
 test("relatedLines: bets in the math carry their tier's tag, the rest carry why they are not", () => {

@@ -182,6 +182,11 @@ POLYMARKET_US_HISTORY_DAYS = RETENTION_DAYS + 1
 # from Cal's logged-in Chrome (extension/bet105.js, every 5 min while the panel is
 # open) and POSTs it to /bet105.json; sources/bet105.py parses it.
 
+# DraftKings (2026-10-10): the same — no credentials and no poll here. Akamai's bot
+# checks and a login code stop anything but Cal's own Chrome, so the extension reads
+# My Bets' socket there (extension/draftkings.js) and POSTs to /draftkings.json;
+# sources/draftkings.py parses it.
+
 # Logging
 LOG_PATH = Path(_get("BETS_SERVICE_LOG_PATH", str(PKG_DIR / "bets_service.log")))
 LOG_LEVEL = _get("BETS_SERVICE_LOG_LEVEL", "INFO")

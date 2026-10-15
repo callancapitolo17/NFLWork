@@ -46,7 +46,8 @@ superfectas (7-10 requests each, 0.5 s apart) took ~40 s over plain HTTP.
 ## How a special is priced
 
 0. **Game.** Every book's game must be the special's: kickoff inside the
-   Wagerzon week (Thursday to Monday night around the specials' date) and, at
+   Wagerzon week (Thursday to Monday night around the first Sunday on or after
+   the specials' date) and, at
    each book, the same two teams within 12 hours of the board's kickoff —
    books list future weeks, so otherwise a started or missing game would be
    priced off next week's.

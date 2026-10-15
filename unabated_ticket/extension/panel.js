@@ -24,11 +24,13 @@
 // default http://127.0.0.1:8094) every 30 s on the same visibility rule —
 // never from the service worker. Matching is bets.js; presentation helpers
 // are betsview.js; the Edges rows' selection, sizing, sort and words are
-// edgerows.js (shared with the server runner). Bet105 (2026-09-29) is the
-// one venue this page reads itself: every 5 min while visible it fetches the
-// account's open bets from app.bet105.ag on Cal's own login in this Chrome
-// (bet105.js) and POSTs them to the service's /bet105.json, which parses and
-// stores them like any other.
+// edgerows.js (shared with the server runner). Bet105 (2026-09-29) and
+// DraftKings (2026-10-10) are the venues this page reads itself: every 5 min
+// while visible it fetches the account's open bets and its graded wagers
+// (2026-10-07) from app.bet105.ag, and the open and settled bets from
+// DraftKings' My Bets socket, on Cal's own logins in this Chrome (bet105.js,
+// draftkings.js) and POSTs them to the service's /bet105.json and
+// /draftkings.json, which parse and store them like any other.
 
 (function () {
   "use strict";
@@ -40,7 +42,9 @@
   const attachLib = globalThis.UnabatedAttach;
   const live = globalThis.UnabatedLive;
   const teaserLib = globalThis.UnabatedTeaser;
+  const teaserView = globalThis.UnabatedTeaserView;
   const bet105 = globalThis.UnabatedBet105;
+  const draftkings = globalThis.UnabatedDraftKings;
   // Bets service poll cadence while the panel is visible (plan § Storage).
   const BETS_POLL_MS = 30 * 1000;
   // The Edges list's defaults, book list and row logic (selection, sizing,
@@ -69,9 +73,8 @@
     ticket: el("ticket"), error: el("error"), empty: el("empty"),
     warning: el("warning"), rowTrace: el("row-trace"), sideLabel: el("side-label"), betLine: el("bet-line"),
     eventLine: el("event-line"), startLine: el("start-line"),
-    book: el("book"), price: el("price"), fair: el("fair"), edge: el("edge"),
-    stake: el("stake"), contracts: el("contracts"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
-    copy: el("copy"), copyStatus: el("copy-status"),
+    book: el("book"), price: el("price"), fair: el("fair"), edge: el("edge"), othersLabel: el("others-label"), others: el("others"),
+    stake: el("stake"), contracts: el("contracts"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), stakeUncapped: el("stake-uncapped"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
     errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
     pageStatus: el("page-status"),
@@ -83,7 +86,7 @@
     backToEdges: el("back-to-edges"), stakeLabel: el("stake-label"), betsBannerHead: el("bets-banner-head"),
     betsCount: el("bets-count"), betsAlert: el("bets-alert"), betsTabButton: el("bets-tab-button"),
     betsRisk: el("bets-risk"), betsRiskCaption: el("bets-risk-caption"),
-    edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesTailFlex: el("edges-tailflex"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
+    edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesTailFlex: el("edges-tailflex"), edgesPriceCheck: el("edges-pricecheck"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
     edgesSports: el("edges-sports"), edgesBetTypes: el("edges-bettypes"), edgesBooks: el("edges-books"), edgesBooksMode: el("edges-books-mode"),
     booksDefault: el("books-default"), booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMinStake: el("edges-min-stake"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
     edgesIncludeAlts: el("edges-include-alts"), edgesMinToWin: el("edges-min-to-win"), edgesGroup: el("edges-group"),
@@ -157,7 +160,6 @@
   // processAlerts awaits storage + notifications; a poll landing mid-run must
   // not start a second pass that notifies the same line twice.
   let alertsBusy = false;
-  let lastCopyText = "";
   // The row a locate (or a capture) last came from, so returning to the Edges
   // list shows where you were rather than only restoring the scroll offset.
   let lastClickedKey = null;
@@ -182,11 +184,21 @@
   // start in ms), kept in chrome.storage.local ("teaserBlocked"): Buckeye
   // keeps some college games off its teaser menu. A mark ends when its game starts.
   let teaserBlocked = {};
+  // The Edges lines Cal skipped (pricecheck.skipKeyOf -> the game's start in
+  // ms), kept in chrome.storage.local ("edgeSkips") and, on a service that
+  // serves them, the service's set (bets.duckdb::edge_skips, shared with the
+  // phone). pricecheck.splitSkipped decides which still fold.
+  let edgeSkips = {};
+  let edgeSkipsShared = false;
   // The tail-flex c per (league, period, bet type), measured off the
   // exchanges' two-sided rungs (tailflex.js); dropped on every scanner update
   // and when the max line age changes.
   const tailflex = globalThis.UnabatedTailFlex;
   let tailFlexCache = null;
+  // Every book's price at every number (pricecheck.js), for the "N books
+  // better" tags: built once per scanner update and max line age.
+  const pricecheck = globalThis.UnabatedPriceCheck;
+  let priceIndexCache = null;
   const teamsLib = globalThis.UnabatedTeams;
   let teamsSpellingCount = 0;
   const fillfair = globalThis.UnabatedFillFair;
@@ -222,6 +234,7 @@
       boardLinesCache = null;
       ladderReaders = null;
       tailFlexCache = null;
+      priceIndexCache = null;
       registerFeedTeams(feedState);
       if (noteMatchedStarts()) persistBets().catch((error) => console.error("[unabated-ticket] bets persist failed", error));
       learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
@@ -229,8 +242,11 @@
       renderEdges();
       renderTeasers();
       // A ticket sized from the feed (or waiting for it) follows the feed's
-      // updates; one the screen priced is left alone (a re-render clears the copy status).
+      // updates; one the screen priced is left alone.
       if (state.ticket && !state.error && pricedLine(state.ticket).edgeFrom !== "screen") render();
+      // A screen-priced ticket keeps its numbers, but the other books' prices
+      // are the feed's, so that one row follows every update.
+      else if (state.ticket && !state.error) renderOtherBooks(state.ticket, pricedLine(state.ticket));
       processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
     },
   });
@@ -537,6 +553,7 @@
     const feedCopy = feedLineFor(ticket, line.points);
     const ticketMoveParts = feedCopy && feedCopy.price === line.price ? moveParts(feedCopy, betFlag) : [];
     view.edge.replaceChildren(line.edgePct == null ? "\u2014" : fmtPct(line.edgePct / 100), ...ticketMoveParts.flatMap((part) => [" ", part]));
+    renderOtherBooks(ticket, line);
 
     view.stake.classList.remove("no-edge");
     view.payoutRow.hidden = true;
@@ -555,47 +572,113 @@
     // Sets view.stake to the number to act on when held bets changed it.
     const advice = betFlag.advice;
     renderStakeExposure(advice);
+    // With unlimited liquidity: the reported number is sometimes wrong.
+    const uncapped = betsView.uncappedLine(advice, { price: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice, bookName: ticket.book.name });
+    view.stakeUncapped.hidden = uncapped == null;
+    view.stakeUncapped.textContent = uncapped || "";
 
     // Payout = stake x decimal odds at the book's American price; "to win" is
     // the profit on top of it. Both describe the number shown above them, so a
     // top-up prices the top-up and an at-size line shows no payout at all.
-    let payoutText = "";
     const acted = result ? betsView.suggestedBetAmount(advice) : null;
     if (acted != null && acted > 0) {
       const payout = acted * kelly.americanToDecimal(line.price);
       view.profit.textContent = fmtDollars(payout - acted);
       view.payout.textContent = fmtDollars(payout);
       view.payoutRow.hidden = false;
-      payoutText = ` | to win $${(payout - acted).toFixed(2)} | payout $${payout.toFixed(2)}`;
     }
-    const contractsText = renderContracts(acted, line);
+    renderContracts(acted, line, ticket.book.name);
 
-    const stakeText = acted != null ? acted.toFixed(2) : "n/a";
-    lastCopyText = `${ticket.sideLabel}${periodSuffix(ticket)} ${fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice))} @ ${ticket.book.name} | fair ${line.fair == null ? "?" : fmtPriceBoth(asBookLine(line.fair, 1, null))} | edge ${line.edgePct == null ? "?" : fmtPct(line.edgePct / 100)} | stake $${stakeText}${copyExposureText(advice)}${contractsText}${payoutText} | ${describeMatchup(ticket)}`;
-    view.copyStatus.textContent = "";
     show("ticket");
+  }
+
+  // Every book at the number, best first, yours in its place: the Ticket's
+  // Others row and a row's opened price-check tag share it.
+  function otherBooksListEl(check, yourBookName, yourPrice) {
+    const listEl = document.createElement("div");
+    listEl.className = "others-list";
+    const lineEl = (name, price, className) => {
+      const div = document.createElement("div");
+      div.className = className;
+      const nameEl = document.createElement("span");
+      nameEl.textContent = name;
+      const priceEl = document.createElement("span");
+      priceEl.textContent = fmtAmerican(price);
+      div.append(nameEl, priceEl);
+      return div;
+    };
+    for (const entry of check.better) listEl.append(lineEl(entry.bookName, entry.price, "better"));
+    listEl.append(lineEl(`${yourBookName} (you)`, yourPrice, "yours"));
+    for (const entry of check.sameAs) listEl.append(lineEl(entry.bookName, entry.price, "same"));
+    for (const entry of check.worse) listEl.append(lineEl(entry.bookName, entry.price, "worse"));
+    return listEl;
+  }
+
+  // The Skip / Restore chip on a line a book beats (pricecheck.canSkip); null otherwise.
+  function skipChipEl(skipKey, eventStartMs, skipped, label) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "dismiss-chip skip-chip";
+    button.dataset.skipKey = skipKey;
+    button.dataset.eventStartMs = String(eventStartMs);
+    button.dataset.skip = skipped ? "restore" : "skip";
+    button.textContent = skipped ? "Restore" : label;
+    button.title = skipped
+      ? "List this line again now"
+      : "Fold this line into Skipped. It comes back by itself once no book beats this price, or when the game starts.";
+    return button;
+  }
+
+  // The Ticket's "Others" row: every other book at the priced number, best
+  // first, with yours in its place (pricecheck.comparePrice, same rules as the
+  // Edges tag), and a Skip button when a book beats you. Hidden for a live
+  // ticket (the feed is pregame) or when no other book posts the number.
+  function renderOtherBooks(ticket, line) {
+    view.othersLabel.hidden = true;
+    view.others.hidden = true;
+    view.others.replaceChildren();
+    if (ticket.live || !ticket.watch || ticket.eventId == null || !scannerState) return;
+    const spec = {
+      eventId: ticket.eventId, periodTypeId: ticket.watch.periodTypeId, betTypeId: ticket.watch.betTypeId,
+      sideIndex: ticket.sideIndex, points: line.points, bookId: ticket.book.id, bookName: ticket.book.name, price: line.price,
+    };
+    const check = pricecheck.comparePrice(priceIndex(), spec);
+    const tagEl = priceCheckTagEl(check);
+    if (!tagEl) return;
+    view.others.append(tagEl, otherBooksListEl(check, ticket.book.name, line.price));
+    const eventStartMs = ticket.eventStart ? Date.parse(ticket.eventStart.endsWith("Z") ? ticket.eventStart : `${ticket.eventStart}Z`) : NaN;
+    if (pricecheck.canSkip(check) && Number.isFinite(eventStartMs)) {
+      const skipKey = pricecheck.skipKeyOf(spec, ticket.book.id);
+      const skipped = liveEdgeSkips(Date.now())[skipKey] != null;
+      const actions = document.createElement("div");
+      actions.className = "others-actions";
+      actions.append(skipChipEl(skipKey, eventStartMs, skipped, "Skip this bet"));
+      if (skipped) actions.append(" skipped on the Edges tab");
+      view.others.append(actions);
+    }
+    view.othersLabel.hidden = false;
+    view.others.hidden = false;
   }
 
   // Under the dollar figure, the order it means on an exchange: "1,127
   // contracts @ 23.2¢ · $261.48", sized straight off Unabated's price for the
   // book with the count floored so the cost never passes the stake
-  // (kelly.contractOrder). Only a line priced in contracts (Kalshi, Novig)
-  // gets the row; a sportsbook line keeps just the dollars. `acted` is the
-  // number to act on, so a top-up shows the top-up's contracts. Returns what
-  // Copy appends, "" when there is no row.
-  function renderContracts(acted, line) {
+  // (kelly.contractOrder). Only a line priced in contracts (Kalshi, Novig,
+  // Polymarket) gets the row; a sportsbook line keeps just the dollars.
+  // `acted` is the number to act on, so a top-up shows the top-up's contracts.
+  function renderContracts(acted, line, bookName) {
     view.contracts.hidden = true;
     view.contracts.classList.remove("under");
     view.contracts.replaceChildren();
-    if (acted == null || acted <= 0) return "";
-    const order = kelly.contractOrder({ stake: acted, bookPrice: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice });
-    if (!order) return "";
+    if (acted == null || acted <= 0) return;
+    const order = kelly.contractOrder({ stake: acted, bookPrice: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice, bookName });
+    if (!order) return;
     view.contracts.hidden = false;
     const priceText = `${order.priceCents.toFixed(1)}\u00a2`;
     if (order.contracts === 0) {
       view.contracts.classList.add("under");
       view.contracts.textContent = `under 1 contract @ ${priceText}`;
-      return ` | under 1 contract @ ${priceText}`;
+      return;
     }
     const count = document.createElement("span");
     count.textContent = `${order.contracts.toLocaleString("en-US")} contract${order.contracts === 1 ? "" : "s"} @ ${priceText}`;
@@ -603,7 +686,6 @@
     cost.className = "cost";
     cost.textContent = ` \u00b7 ${fmtDollars(order.costDollars)}`;
     view.contracts.append(count, cost);
-    return ` | ${order.contracts} contract${order.contracts === 1 ? "" : "s"} @ ${priceText}`;
   }
 
   // The ticket's open bets and what they do to its stake: the row-style flag
@@ -663,13 +745,6 @@
     view.betsBanner.replaceChildren(...items);
     view.betsBanner.hidden = items.length === 0;
     view.betsBannerHead.hidden = items.length === 0;
-  }
-
-  // What the Copy button adds after "stake $X": the verb and the standalone
-  // size, so the clipboard says the number was sized against held bets.
-  function copyExposureText(advice) {
-    const line = betsView.stakeAdviceLine(advice);
-    return line ? ` (${line})` : "";
   }
 
   // Under the stake, the same pieces as the Edges rail: the position in
@@ -966,6 +1041,7 @@
   function setBookIds(bookIds) {
     state.edgeSettings = { ...state.edgeSettings, bookIds };
     chrome.storage.local.set({ edges: state.edgeSettings });
+    queueSettingsPush();
     // A newly ticked book brings lines the alert log has never seen: baseline them, don't ping.
     alertsBaselined = false;
     renderEdges();
@@ -1027,6 +1103,14 @@
     return tailFlexCache.measurement;
   }
 
+  function priceIndex() {
+    const maxLineAgeHours = state.edgeSettings.maxLineAgeHours;
+    if (!priceIndexCache || priceIndexCache.maxLineAgeHours !== maxLineAgeHours) {
+      priceIndexCache = { maxLineAgeHours, index: edgeRows.createPriceIndex(scannerState, state.edgeSettings, Date.now()) };
+    }
+    return priceIndexCache.index;
+  }
+
   // The standalone stake and the tail-flex rank score (edgeRows.withStakeAndRank).
   function withStakeAndRank(row, measurement) {
     return edgeRows.withStakeAndRank(row, measurement, state.settings);
@@ -1035,7 +1119,7 @@
   function currentEdgeRows() {
     if (!scannerState) return [];
     return edgeRows.listedEdgeRows(scannerState, {
-      ...betFlagContext(), edgeSettings: state.edgeSettings, effective: effectiveFilter(), measurement: tailFlexMeasurement(), now: Date.now(),
+      ...betFlagContext(), edgeSettings: state.edgeSettings, effective: effectiveFilter(), measurement: tailFlexMeasurement(), priceIndex: priceIndex(), now: Date.now(),
     });
   }
 
@@ -1228,19 +1312,67 @@
     return span;
   }
 
-  // One book's line, as a full row.
-  function renderEdgeRow(row) {
+  // The other-books tag (pricecheck.priceCheckTag), with every book at the
+  // number in its tooltip; null when no other book posts it (or a live row).
+  const PRICE_CHECK_TAG_CLASS = { best: "check-best", better: "check-better", skip: "check-skip", outlier: "check-outlier" };
+  function priceCheckTagEl(check) {
+    const tag = pricecheck.priceCheckTag(check);
+    if (!tag) return null;
+    const el = document.createElement("span");
+    el.className = `tag ${PRICE_CHECK_TAG_CLASS[tag.kind]}`;
+    el.textContent = tag.label;
+    el.title = describeOtherBooks(check);
+    return el;
+  }
+
+  // Edges rows whose price-check list is open (row keys); tapping the tag toggles it.
+  const openPriceChecks = new Set();
+
+  // A row's price-check line: the tag (tap to open every book at the number)
+  // and, where a book beats the price, Skip, or Restore on a skipped row.
+  // null when no other book posts the number.
+  function priceCheckLineEl(row, skipped) {
+    const tagEl = priceCheckTagEl(row.priceCheck);
+    if (!tagEl) return null;
+    const open = openPriceChecks.has(row.key);
+    tagEl.classList.add("check-toggle");
+    tagEl.dataset.checkKey = row.key;
+    tagEl.textContent = `${tagEl.textContent} ${open ? "▾" : "▸"}`;
+    const line = document.createElement("div");
+    line.className = "edge-pricecheck";
+    line.append(tagEl);
+    if (pricecheck.canSkip(row.priceCheck)) {
+      line.append(skipChipEl(pricecheck.skipKeyOf(row, row.book.id), row.eventStartMs, skipped, "Skip"));
+    }
+    if (!open) return [line];
+    return [line, otherBooksListEl(row.priceCheck, row.book.name, row.price)];
+  }
+
+  // "Better: Circa -105, Pinnacle -107 · worse: DraftKings -115 · same number only".
+  function describeOtherBooks(check) {
+    const list = (entries) => entries.map((entry) => `${entry.bookName} ${fmtAmerican(entry.price)}`).join(", ");
+    const parts = [];
+    if (check.better.length) parts.push(`better: ${list(check.better)}`);
+    if (check.same) parts.push(`${check.same} at the same price`);
+    if (check.worse.length) parts.push(`worse: ${list(check.worse)}`);
+    parts.push("same number only");
+    return parts.join(" · ");
+  }
+
+  // One book's line, as a full row; skipped = it sits in the Skipped fold.
+  function renderEdgeRow(row, skipped = false) {
     const li = document.createElement("li");
     const tier = edgeTier(row.edgePct);
-    li.className = `edge-row tier-${tier}${row.isBlurred ? " blurred" : ""}${row.liveStale ? " stale" : ""}${row.key === lastClickedKey ? " last-clicked" : ""}`;
+    li.className = `edge-row tier-${tier}${row.isBlurred ? " blurred" : ""}${row.liveStale ? " stale" : ""}`
+      + `${row.key === lastClickedKey ? " last-clicked" : ""}${skipped ? " skipped" : ""}`;
     li.dataset.key = row.key;
-    li.append(...rowParts(row, tier));
+    li.append(...rowParts(row, tier, skipped));
     return li;
   }
 
   // The two columns every row and card share: content, then the rail of
   // numbers that line up down the list.
-  function rowParts(row, tier) {
+  function rowParts(row, tier, skipped = false) {
     const main = document.createElement("div");
 
     const side = document.createElement("div");
@@ -1282,6 +1414,7 @@
     age.textContent = ` · ${ageParts.filter(Boolean).join(" · ")}`;
     book.append(price, age);
     main.append(side, meta, book);
+    if (!row.live) main.append(...(priceCheckLineEl(row, skipped) || []));
 
     const rail = document.createElement("div");
     rail.className = "edge-rail";
@@ -1313,6 +1446,7 @@
     age.className = "gl-age";
     age.textContent = [fmtLineAge(row.modifiedMs), fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ");
     main.append(price, age);
+    main.append(...(priceCheckLineEl(row, false) || []));
 
     const rail = document.createElement("div");
     rail.className = "gl-rail";
@@ -1426,9 +1560,29 @@
     ].filter(Boolean).join(" · ");
   }
 
+  // The Skipped fold under the Edges list: one line that opens the skipped
+  // rows, each with Restore. Empty when nothing is skipped.
+  let skippedFoldOpen = false;
+  function skippedFoldItems(skippedRows) {
+    if (skippedRows.length === 0) return [];
+    const li = document.createElement("li");
+    li.className = "skip-fold";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "skip-fold-toggle";
+    button.textContent = `${skippedFoldOpen ? "▾" : "▸"} ${skippedRows.length} skipped`;
+    const note = document.createElement("span");
+    note.className = "muted";
+    note.textContent = skippedFoldOpen ? "back by itself once no book beats the price" : "open";
+    li.append(button, note);
+    if (!skippedFoldOpen) return [li];
+    return [li, ...skippedRows.map((row) => renderEdgeRow(row, true))];
+  }
+
   function renderEdges() {
     renderLive();
-    const rows = currentEdgeRows();
+    const now = Date.now();
+    const { listed: rows, skipped: skippedRows } = pricecheck.splitSkipped(currentEdgeRows(), liveEdgeSkips(now), now);
     const grouped = state.edgeSettings.groupByMarket;
     const items = grouped ? groupsOf(rows) : rows;
     renderEdgesStatus(items);
@@ -1436,13 +1590,18 @@
     view.edgesFilter.textContent = describeFilter(effective);
     view.edgesTailFlex.textContent = describeTailFlex(rows);
     view.edgesTailFlex.hidden = view.edgesTailFlex.textContent === "";
+    view.edgesPriceCheck.textContent = pricecheck.describePriceChecks(rows);
+    view.edgesPriceCheck.hidden = view.edgesPriceCheck.textContent === "";
     view.filtersSummary.textContent = summariseFilter(effective);
     renderBooksList(effective);
     renderFilterDebug();
     // The scanner rebuilds this list every few seconds; without this the reader
     // is thrown back to the top of it mid-scroll.
     const scrollTop = view.tabEdges.scrollTop;
-    view.edgesList.replaceChildren(...items.slice(0, MAX_EDGE_ROWS).map((item) => (grouped ? renderGroupCard(item) : renderEdgeRow(item))));
+    view.edgesList.replaceChildren(
+      ...items.slice(0, MAX_EDGE_ROWS).map((item) => (grouped ? renderGroupCard(item) : renderEdgeRow(item))),
+      ...skippedFoldItems(skippedRows),
+    );
     view.tabEdges.scrollTop = scrollTop;
     const status = scannerStatus;
     const unit = grouped ? "cards" : "lines";
@@ -1511,6 +1670,24 @@
   });
 
   view.edgesList.addEventListener("click", async (event) => {
+    const skipChip = event.target.closest("button.skip-chip");
+    if (skipChip) {
+      await setEdgeSkipped(skipChip.dataset.skipKey, Number(skipChip.dataset.eventStartMs), skipChip.dataset.skip === "skip");
+      return;
+    }
+    const checkToggle = event.target.closest(".check-toggle");
+    if (checkToggle) {
+      if (openPriceChecks.has(checkToggle.dataset.checkKey)) openPriceChecks.delete(checkToggle.dataset.checkKey);
+      else openPriceChecks.add(checkToggle.dataset.checkKey);
+      renderEdges();
+      return;
+    }
+    if (event.target.closest(".others-list")) return;
+    if (event.target.closest("button.skip-fold-toggle")) {
+      skippedFoldOpen = !skippedFoldOpen;
+      renderEdges();
+      return;
+    }
     const more = event.target.closest("button.group-more");
     if (more) {
       if (expandedGroups.has(more.dataset.group)) expandedGroups.delete(more.dataset.group);
@@ -1551,7 +1728,9 @@
   // What one notification is about: a line (flat list) or a card's best line
   // (grouped), with the rule for notifying the same key again.
   function alertItems() {
-    const rows = alertRows();
+    // A skipped line never alerts while it stays skipped.
+    const now = Date.now();
+    const rows = pricecheck.splitSkipped(alertRows(), liveEdgeSkips(now), now).listed;
     if (!state.edgeSettings.groupByMarket) {
       return rows.map((row) => ({
         key: alertKeyOf(row), row, summary: null,
@@ -1650,7 +1829,8 @@
       .map((row) => withStakeAndRank(row, measurement));
     // A line whose stake against what you hold is $0 has nothing to act on, and
     // one below the Min suggested bet is hidden from the list, so neither alerts.
-    return withBetFlags(selected).filter((row) => betsView.suggestedBetAmount(row.bet.advice) > 0 && meetsMinStake(row));
+    return withBetFlags(selected).filter((row) => betsView.suggestedBetAmount(row.bet.advice) > 0 && meetsMinStake(row))
+      .map((row) => edgeRows.withPriceCheck(row, priceIndex()));
   }
 
   // Runs after every scanner update. Baseline first, then one notification
@@ -1860,6 +2040,7 @@
       || parsed.settings.groupByMarket !== before.groupByMarket;
     state.edgeSettings = parsed.settings;
     chrome.storage.local.set({ edges: parsed.settings });
+    queueSettingsPush();
     if (scopeChanged) alertsBaselined = false;
     // Ticking Football on or off leaves the scanner's leagues as they are: it loads football for the Teasers tab anyway.
     const scannerLeaguesChanged = scannerLeaguesOf(parsed.settings.leagues).join(",") !== scannerLeaguesOf(before.leagues).join(",");
@@ -1922,6 +2103,12 @@
       state.crosswalk = applied.crosswalk;
       state.pins = applied.pins;
       state.betRecords = applied.records;
+      takeSharedMarks(applied);
+      if (applied.edgeSkips !== null) {
+        edgeSkipsShared = true;
+        edgeSkips = Object.fromEntries(applied.edgeSkips.map((row) => [row.skipKey, row.eventStartMs]));
+        chrome.storage.local.set({ edgeSkips });
+      }
       state.dismissedBetIds = betsView.keepDismissedOpen(state.dismissedBetIds, state.betRecords);
       noteMatchedStarts();
       if (applied.fillFairs !== state.fillFairs) setFillFairs(applied.fillFairs);
@@ -1943,15 +2130,21 @@
     learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
     captureFillFairs().catch((error) => console.error("[unabated-ticket] fill fair capture failed", error));
     pollBet105().catch((error) => console.error("[unabated-ticket] bet105 poll failed", error));
+    pollDraftKings().catch((error) => console.error("[unabated-ticket] draftkings poll failed", error));
+    if (state.betsService.error == null) {
+      syncSettings().catch((error) => console.error("[unabated-ticket] settings sync failed", error));
+      if (sharedMarksDue) migrateSharedMarks().catch((error) => console.error("[unabated-ticket] marks migration failed", error));
+    }
   }
 
   // ---- Bet105 (read here, stored by the service) -----------------------------
   //
   // On the bets tick, at most every bet105.POLL_MS: the account's open bets
-  // from both LinePros feeds, then one POST to the service. A read that fails
+  // from both LinePros feeds and its wager list (graded bets carry their
+  // result and settle time), then one POST to the service. A read that fails
   // (not logged in, Cloudflare, the site down) is POSTed as an error so the
   // Bets tab's Bet105 row turns red with the fix; nothing half-read is ever
-  // pushed (the service closes an open bet a complete push no longer lists).
+  // pushed (the service closes an open bet a complete push lists nowhere).
   let bet105Busy = false;
   let bet105LastRunAt = 0;
   let bet105LastError = null;
@@ -1975,8 +2168,9 @@
     }
   }
 
-  // The session check (its reply carries the CSRF token the history POST
-  // needs), then getHistory on each feed. Throws with the reason on any step.
+  // The session check (its reply carries the CSRF token the other POSTs
+  // need), getHistory on each feed, then wagers/search. Throws with the
+  // reason on any step.
   async function readBet105() {
     const customers = await fetch(bet105.CUSTOMERS_URL, bet105.customersRequest());
     const session = bet105.csrfTokenOf(customers.status, await customers.json().catch(() => null));
@@ -1988,7 +2182,40 @@
       if (result.error) throw new Error(result.error);
       groupsByFeed[feedName] = result.betGroups;
     }
-    return bet105.pushBody(new Date().toISOString(), groupsByFeed);
+    const settledResponse = await fetch(bet105.SETTLED_URL, bet105.settledRequest(session.csrfToken));
+    const settled = bet105.wagersOf(settledResponse.status, await settledResponse.json().catch(() => null));
+    if (settled.error) throw new Error(settled.error);
+    return bet105.pushBody(new Date().toISOString(), groupsByFeed, settled.wagers);
+  }
+
+  // ---- DraftKings (read here, stored by the service) -------------------------
+  //
+  // The Bet105 pattern (above): on the bets tick, at most every
+  // draftkings.POLL_MS, the account's open and settled bets read from Cal's own
+  // login in this Chrome (draftkings.js), then one POST to the service. A read
+  // that fails is POSTed as an error so the Bets tab's DraftKings row turns red
+  // with the fix; nothing half-read is ever pushed.
+  let draftkingsBusy = false;
+  let draftkingsLastRunAt = 0;
+  let draftkingsLastError = null;
+
+  async function pollDraftKings() {
+    if (draftkingsBusy || document.hidden || !draftkings.isDue(draftkingsLastRunAt, Date.now())) return;
+    draftkingsBusy = true;
+    draftkingsLastRunAt = Date.now();
+    try {
+      const push = await draftkings.readAccount({ fetchImpl: fetch.bind(globalThis), WebSocketImpl: WebSocket });
+      const reply = await serviceRequest("POST", draftkings.SERVICE_PATH, push);
+      if (draftkingsLastError !== null) console.info("[unabated-ticket] draftkings: reading again", reply);
+      draftkingsLastError = null;
+    } catch (error) {
+      const message = error.name === "TimeoutError" ? `DraftKings did not answer within ${draftkings.FETCH_TIMEOUT_MS / 1000}s` : error.message;
+      if (draftkingsLastError !== message) console.warn("[unabated-ticket] draftkings:", message);
+      draftkingsLastError = message;
+      await serviceRequest("POST", draftkings.SERVICE_PATH, draftkings.errorBody(message)).catch(() => {});
+    } finally {
+      draftkingsBusy = false;
+    }
   }
 
   // The records, the service state, the crosswalk, the pins and the saved fill fairs, as one stored object.
@@ -2080,6 +2307,124 @@
     state.betRecords = betsLib.rekeyRecords(betsLib.applyPins(state.betRecords, state.pins), state.crosswalk);
     await persistBets();
     renderBetsFlags();
+  }
+
+  // ---- one set of settings and marks, shared with the phone -----------------
+  //
+  // The bets service holds the settings (bets.duckdb::edge_settings), the
+  // Dismiss marks (bet_dismissals) and the Can't tease marks (teaser_blocks),
+  // so the panel and the phone page show the same list. Settings: the first
+  // time the panel reaches a service URL, its own settings are written there
+  // (they were set here); after that a change on either side wins — a panel
+  // edit PUTs the whole row, and a row the service changed since the panel
+  // last wrote or read it (the phone's Settings) is applied here.
+  // settingsSync {serviceUrl, updatedAt} in chrome.storage.local says which.
+  // Marks: a service that serves them is the truth; the first time, the
+  // panel's own (kept in chrome.storage.local before 0.22.0) are sent up once.
+  // An older service with no marks leaves them panel state, as before.
+  const SETTINGS_PUSH_DELAY_MS = 800;
+  let settingsSync = null;
+  let settingsPushTimer = null;
+  let settingsSyncBusy = false;
+  // The service serves the marks (its last /bets.json carried them).
+  let sharedMarks = false;
+  // Set by a poll that found the service serving marks before this panel sent its own up.
+  let sharedMarksDue = false;
+  let sharedMarksMigratedTo = null;
+  let sharedMarksMigrating = false;
+
+  // The marks /bets.json carried, unless the panel's own are still to go up first.
+  function takeSharedMarks(applied) {
+    sharedMarks = applied.dismissals !== null && applied.teaserBlocks !== null;
+    sharedMarksDue = sharedMarks && sharedMarksMigratedTo !== state.betsSettings.serviceUrl;
+    if (!sharedMarks || sharedMarksDue) return;
+    state.dismissedBetIds = applied.dismissals.map((row) => row.betId);
+    teaserBlocked = Object.fromEntries(applied.teaserBlocks.map((row) => [row.marketKey, row.eventStartMs]));
+  }
+
+  // Each of the panel's own marks POSTed once, one per request (a bet the
+  // service does not hold is a 404 and is left behind), then the next poll
+  // takes the service's set.
+  async function migrateSharedMarks() {
+    if (sharedMarksMigrating) return;
+    sharedMarksMigrating = true;
+    const serviceUrl = state.betsSettings.serviceUrl;
+    // A refusal (a bet the service does not hold) leaves that mark behind; no answer at all stops here and tries again next poll.
+    const refusedOnly = (what) => (error) => {
+      if (!error.status) throw error;
+      console.warn(`[unabated-ticket] ${what} not sent up: ${error.message}`);
+    };
+    try {
+      for (const betId of state.dismissedBetIds) {
+        await serviceRequest("POST", "/dismissals.json", { betIds: [betId], dismissed: true }).catch(refusedOnly(`dismissal of ${betId}`));
+      }
+      for (const [marketKey, eventStartMs] of Object.entries(liveTeaserMarks(Date.now()))) {
+        await serviceRequest("POST", "/teaser_blocks.json", { marketKey, eventStartMs, blocked: true }).catch(refusedOnly(`can't tease ${marketKey}`));
+      }
+      sharedMarksMigratedTo = serviceUrl;
+      await chrome.storage.local.set({ sharedMarksMigratedTo });
+    } finally {
+      sharedMarksMigrating = false;
+    }
+    await pollBets();
+  }
+
+  // A panel settings edit: written to the service once the typing stops.
+  function queueSettingsPush() {
+    clearTimeout(settingsPushTimer);
+    settingsPushTimer = setTimeout(() => {
+      settingsPushTimer = null;
+      pushSettings().catch((error) => console.warn("[unabated-ticket] settings not saved to the bets service:", error.message));
+    }, SETTINGS_PUSH_DELAY_MS);
+  }
+
+  async function pushSettings() {
+    const serviceUrl = state.betsSettings.serviceUrl;
+    const reply = await serviceRequest("PUT", "/settings.json", { settings: edgeRows.serviceSettingsOf(state.settings, state.edgeSettings) });
+    settingsSync = { serviceUrl, updatedAt: reply.updatedAt ?? null };
+    await chrome.storage.local.set({ settingsSync });
+  }
+
+  // On every good bets poll: the service's row, applied here when it changed
+  // since the panel last saw it. Skipped while a panel edit waits to be written.
+  async function syncSettings() {
+    if (settingsSyncBusy || settingsPushTimer !== null) return;
+    settingsSyncBusy = true;
+    try {
+      const serviceUrl = state.betsSettings.serviceUrl;
+      if (!settingsSync || settingsSync.serviceUrl !== serviceUrl) {
+        await pushSettings();
+        return;
+      }
+      const body = await serviceRequest("GET", "/settings.json");
+      if (!body || typeof body.settings !== "object" || body.settings === null) throw new Error("settings.json has no settings object");
+      if ((body.updatedAt ?? null) === settingsSync.updatedAt || settingsPushTimer !== null) return;
+      applyServiceSettings(body.settings);
+      settingsSync = { serviceUrl, updatedAt: body.updatedAt ?? null };
+      await chrome.storage.local.set({ settingsSync, ...state.settings, edges: state.edgeSettings });
+    } finally {
+      settingsSyncBusy = false;
+    }
+  }
+
+  // Settings changed elsewhere (the phone), as if typed here: the inputs
+  // refilled, the scanner restarted when its leagues changed, the alert log
+  // re-baselined so a widened list is not a burst of pings.
+  function applyServiceSettings(row) {
+    const { stakeSettings, edgeSettings } = edgeRows.settingsFromService(row);
+    const scannerLeaguesChanged = scannerLeaguesOf(edgeSettings.leagues).join(",") !== scannerLeaguesOf(state.edgeSettings.leagues).join(",");
+    state.settings = stakeSettings;
+    state.edgeSettings = edgeSettings;
+    console.info("[unabated-ticket] settings changed on the bets service; applied here");
+    fillSettingInputs();
+    fillEdgeSettingInputs();
+    alertsBaselined = false;
+    if (scannerLeaguesChanged) {
+      scanner.start(scannerLeaguesOf(edgeSettings.leagues)).catch((error) => console.error("[unabated-ticket] scanner restart failed", error));
+    }
+    render();
+    renderEdges();
+    renderTeasers();
   }
 
   // Clear is two clicks: the first arms the button ("Clear 68 rows?") for a
@@ -2263,11 +2608,26 @@
     return JSON.stringify(state.knownStarts) !== before;
   }
 
-  // Dismiss stops a bet flagging red; Restore flags it again. Both are panel
-  // view state (persisted with the records), so they take effect at once.
+  // Dismiss stops a bet flagging red; Restore flags it again. Shown at once;
+  // on a service that holds the marks it is written there too (the phone
+  // shows it), and a refused write puts the row back as it was.
   async function setDismissed(betId, dismissed) {
-    const others = state.dismissedBetIds.filter((id) => id !== betId);
+    const before = state.dismissedBetIds;
+    const others = before.filter((id) => id !== betId);
     state.dismissedBetIds = dismissed ? [...others, betId] : others;
+    await persistBets();
+    renderBetsFlags();
+    if (!sharedMarks || sharedMarksDue) return;
+    try {
+      const reply = await serviceRequest("POST", "/dismissals.json", { betIds: [betId], dismissed });
+      if (!reply || !Array.isArray(reply.dismissals)) throw new Error("dismissals.json reply has no dismissals array");
+      state.dismissedBetIds = betsView.keepDismissedOpen(reply.dismissals.map((row) => row.betId), state.betRecords);
+      view.betsSettingsError.textContent = "";
+    } catch (error) {
+      console.warn("[unabated-ticket] dismiss not saved:", error.message);
+      state.dismissedBetIds = before;
+      view.betsSettingsError.textContent = `${dismissed ? "Dismiss" : "Restore"} failed: ${error.message}`;
+    }
     await persistBets();
     renderBetsFlags();
   }
@@ -2656,8 +3016,6 @@
   // button bets it at BFA through the bets service (POST /place_teaser.json).
 
   const HOUR_MS = 3600 * 1000;
-  // Ticket cards shown before the fold; the rest sit behind "N more tickets".
-  const TEASER_TICKETS_SHOWN = 3;
   // Ticket number -> the text its Copy button puts on the clipboard.
   const teaserCopyTexts = new Map();
   // Ticket signature -> the ticket as last rendered, for its Place button.
@@ -2673,6 +3031,8 @@
   const TEASER_CONFIRM_MIN_MS = 600;
   // The last failure logged, so a persistent one is logged once, not every 5 s.
   let teaserLastError = null;
+  // A Can't tease or Restore the bets service refused, shown until the next one goes through.
+  let teaserMarkError = null;
 
   // The board pass, redone when an NFL or CFB snapshot has landed since (a
   // scanner restart clears the load times, so it counts too).
@@ -2701,27 +3061,93 @@
     chrome.storage.local.set({ teaserRefs: Array.from(refs) });
   }
 
-  // The can't-tease marks whose game is still to start; the rest leave storage too.
-  function liveTeaserBlocks(now) {
+  // The can't-tease marks whose game is still to start ({marketKey: startMs});
+  // the rest leave storage too.
+  function liveTeaserMarks(now) {
     const live = Object.fromEntries(Object.entries(teaserBlocked).filter(([, startMs]) => startMs > now));
     if (Object.keys(live).length !== Object.keys(teaserBlocked).length) {
       teaserBlocked = live;
       chrome.storage.local.set({ teaserBlocked });
     }
-    return new Set(Object.keys(live));
+    return live;
+  }
+
+  function liveTeaserBlocks(now) {
+    return new Set(Object.keys(liveTeaserMarks(now)));
   }
 
   // Can't tease marks the leg's market (its spread or total, both sides);
   // Restore removes the mark. The tab re-renders now: the list rebuilds when
-  // the market held a pool leg, otherwise only the Legs list changes.
-  function setTeaserBlocked(leg, blocked) {
+  // the market held a pool leg, otherwise only the Legs list changes. On a
+  // service that holds the marks it is written there too; a refused write
+  // puts the mark back as it was.
+  async function setTeaserBlocked(leg, blocked) {
+    const before = teaserBlocked;
+    const marketKey = teaserLib.marketKeyOf(leg);
     const next = { ...teaserBlocked };
-    if (blocked) next[teaserLib.marketKeyOf(leg)] = leg.eventStartMs;
-    else delete next[teaserLib.marketKeyOf(leg)];
+    if (blocked) next[marketKey] = leg.eventStartMs;
+    else delete next[marketKey];
     teaserBlocked = next;
     chrome.storage.local.set({ teaserBlocked });
     renderTeasers();
+    if (!sharedMarks || sharedMarksDue) return;
+    try {
+      const reply = await serviceRequest("POST", "/teaser_blocks.json", { marketKey, eventStartMs: leg.eventStartMs, blocked });
+      if (!reply || !Array.isArray(reply.teaserBlocks)) throw new Error("teaser_blocks.json reply has no teaserBlocks array");
+      teaserBlocked = Object.fromEntries(reply.teaserBlocks.map((row) => [row.marketKey, row.eventStartMs]));
+    } catch (error) {
+      console.warn("[unabated-ticket] can't tease not saved:", error.message);
+      teaserBlocked = before;
+      teaserMarkError = `${blocked ? "Can't tease" : "Restore"} failed: ${error.message}`;
+      renderTeasers();
+      return;
+    }
+    teaserMarkError = null;
+    chrome.storage.local.set({ teaserBlocked });
+    renderTeasers();
   }
+
+  // The skips whose game is still to start ({skipKey: startMs}); the rest leave storage too.
+  function liveEdgeSkips(now) {
+    const live = Object.fromEntries(Object.entries(edgeSkips).filter(([, startMs]) => startMs > now));
+    if (Object.keys(live).length !== Object.keys(edgeSkips).length) {
+      edgeSkips = live;
+      chrome.storage.local.set({ edgeSkips });
+    }
+    return live;
+  }
+
+  // Skip folds one line into the Edges tab's Skipped line; Restore lists it
+  // again. On a service that serves skips it is written there too (the phone
+  // sees it); a refused write puts the skip back as it was.
+  async function setEdgeSkipped(skipKey, eventStartMs, skipped) {
+    const before = edgeSkips;
+    const next = { ...edgeSkips };
+    if (skipped) next[skipKey] = eventStartMs;
+    else delete next[skipKey];
+    edgeSkips = next;
+    chrome.storage.local.set({ edgeSkips });
+    renderEdges();
+    if (state.ticket && !state.error) renderOtherBooks(state.ticket, pricedLine(state.ticket));
+    if (!edgeSkipsShared) return;
+    try {
+      const reply = await serviceRequest("POST", "/edge_skips.json", { skipKey, eventStartMs, skipped });
+      if (!reply || !Array.isArray(reply.edgeSkips)) throw new Error("edge_skips.json reply has no edgeSkips array");
+      edgeSkips = Object.fromEntries(reply.edgeSkips.map((row) => [row.skipKey, row.eventStartMs]));
+    } catch (error) {
+      console.warn("[unabated-ticket] skip not saved:", error.message);
+      edgeSkips = before;
+    }
+    chrome.storage.local.set({ edgeSkips });
+    renderEdges();
+    if (state.ticket && !state.error) renderOtherBooks(state.ticket, pricedLine(state.ticket));
+  }
+
+  view.others.addEventListener("click", async (event) => {
+    const skipChip = event.target.closest("button.skip-chip");
+    if (!skipChip) return;
+    await setEdgeSkipped(skipChip.dataset.skipKey, Number(skipChip.dataset.eventStartMs), skipChip.dataset.skip === "skip");
+  });
 
   function teaserModel() {
     if (!scannerState || !teaserBoardReady()) return null;
@@ -2740,39 +3166,6 @@
       plan: teaserLib.describePlan(teaserBuild, legs, placed),
       legRows: teaserLib.describeLegs(legs, teaserBuild, placed, straights, blocked),
     };
-  }
-
-  function fmtWholeDollars(value) {
-    return value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-  }
-
-  function fmtSignedDollars(value) {
-    return `${value >= 0 ? "+" : "-"}${fmtWholeDollars(Math.abs(value))}`;
-  }
-
-  function fmtWin(win) {
-    return `${(win * 100).toFixed(1)}%`;
-  }
-
-  function fmtEv(ev) {
-    return `EV ${ev >= 0 ? "+" : ""}${(ev * 100).toFixed(1)}%`;
-  }
-
-  function fmtWholePct(fraction) {
-    return `${Math.round(fraction * 100)}%`;
-  }
-
-  function kellyWords(multiplier) {
-    const names = { 1: "Full", 0.5: "Half", 0.25: "Quarter" };
-    return `${names[multiplier] || `${multiplier}x`} Kelly`;
-  }
-
-  function plural(count, word) {
-    return `${count} ${word}${count === 1 ? "" : "s"}`;
-  }
-
-  function teaserTicketSize() {
-    return `${teaserLib.LEGS_PER_TICKET}-team · pays +${teaserLib.TICKET_NET_ODDS * 100}`;
   }
 
   // The bets service's BFA row (betsview.sourceRows), or null before the service has been reached.
@@ -2798,7 +3191,7 @@
     if (state.activeTab !== "teasers") return;
     const scrollTop = view.tabTeasers.scrollTop;
     renderTeasersBanners(failure);
-    renderTeasersStatus(model);
+    view.teasersStatus.textContent = teaserView.statusText(scannerStatus, model ? model.legs : null);
     renderTeasersSummary(model);
     renderTeasersOpen(model);
     renderTeasersTickets(model);
@@ -2813,6 +3206,7 @@
     const now = Date.now();
     const red = [];
     if (failure) red.push(`Teasers failed: ${failure.message}`);
+    if (teaserMarkError) red.push(teaserMarkError);
     const service = betsView.serviceStatus(state.betsService, now);
     if (service.unreachable) {
       red.push(`${service.text.charAt(0).toUpperCase()}${service.text.slice(1)}. Open BFA teasers may be missing, so a ticket already placed may be suggested again.`);
@@ -2827,95 +3221,44 @@
     view.teasersWarning.textContent = amber || "";
   }
 
-  // "NFL · CFB loading", then "NFL · CFB · 15 games on Buckeye's board · 56 of 56 legs priced".
-  function renderTeasersStatus(model) {
-    if (!scannerStatus) {
-      view.teasersStatus.textContent = "Starting the scanner…";
-      return;
-    }
-    const leagues = teaserLib.TEASER_LEAGUE_IDS.map((id) => {
-      const label = feed.LEAGUES[id].label;
-      if (scannerStatus.leaguesLoaded.includes(id)) return label;
-      return scannerStatus.leagueErrors && scannerStatus.leagueErrors[id] ? `${label} unavailable` : `${label} loading`;
-    });
-    if (!model) {
-      view.teasersStatus.textContent = leagues.join(" · ");
-      return;
-    }
-    const games = new Set(model.legs.map((leg) => leg.eventId)).size;
-    const priced = model.legs.filter((leg) => leg.win != null).length;
-    view.teasersStatus.textContent = `${leagues.join(" · ")} · ${plural(games, "game")} on Buckeye's board · ${priced} of ${plural(model.legs.length, "leg")} priced`;
-  }
-
-  function teasersEmptyText(model) {
-    if (!model) return "Waiting for Buckeye's NFL and CFB board…";
-    const { plan, build } = model;
-    if (plan.tickets.length) return null;
-    if (build.reason === teaserLib.REASON_FEW_LEGS) return `Fewer than ${teaserLib.LEGS_PER_TICKET} games with a priced Buckeye leg right now: nothing to tease.`;
-    if (build.reason) return `No tickets: ${build.reason}.`;
-    if (build.partialHeldBack > 0) {
-      return `Nothing more to bet: the next ticket would be a partial ${fmtWholeDollars(build.partialHeldBack)}, and a 4-team ticket under $200 is already open at BFA (one partial ticket per set).`;
-    }
-    return build.placed.length
-      ? "Nothing more to bet: no other ticket raises the Kelly growth with the open teasers held."
-      : "No ticket worth betting right now: no 4-team ticket raises the Kelly growth at these fairs.";
-  }
-
-  function summaryCell(label, value, small) {
+  function summaryCell(cellView) {
     const cell = makeEl("div", "payout-cell");
-    const valueEl = makeEl("div", "payout-value", value);
-    if (small) valueEl.append(" ", makeEl("small", null, small));
-    cell.append(makeEl("div", "payout-label", label), valueEl);
+    const valueEl = makeEl("div", "payout-value", cellView.value);
+    if (cellView.small) valueEl.append(" ", makeEl("small", null, cellView.small));
+    cell.append(makeEl("div", "payout-label", cellView.label), valueEl);
     return cell;
   }
 
-  // Tickets, dollars, expected profit, the chance to make money and the
-  // chance every ticket loses — over the open teasers too when there are any.
   function renderTeasersSummary(model) {
-    const empty = teasersEmptyText(model);
+    const empty = teaserView.emptyText(model ? teaserView.planStateOf(model.plan, model.build) : null);
     view.teasersEmpty.hidden = !empty;
     view.teasersEmpty.textContent = empty || "";
-    const summary = model ? model.plan.summary : null;
-    const shown = Boolean(summary) && (summary.count > 0 || summary.placedCount > 0);
-    view.teasersSummary.hidden = !shown;
-    if (!shown) return;
-    view.teasersSummaryLabel.textContent = summary.count === 0 ? "Nothing more to bet"
-      : summary.placedCount ? `Bet ${summary.count} more` : `Bet ${plural(summary.count, "ticket")}`;
-    view.teasersSummaryStake.textContent = fmtWholeDollars(summary.stake);
-    const cells = [];
-    if (summary.placedCount) {
-      // The open tickets still in the math; the Open at BFA header below counts every open one.
-      const allOpen = model.placed.length === summary.placedCount;
-      cells.push(summaryCell(allOpen ? "Placed" : "Placed, in play", fmtWholeDollars(summary.placedStake)));
-      if (summary.expectedAll != null) cells.push(summaryCell(`Expected, all ${summary.count + summary.placedCount}`, fmtSignedDollars(summary.expectedAll)));
-    } else {
-      cells.push(summaryCell("Expected", fmtSignedDollars(summary.expected), summary.stake > 0 ? fmtWholePct(summary.expected / summary.stake) : null));
-    }
-    if (summary.makesMoney != null) cells.push(summaryCell("Makes money", fmtWholePct(summary.makesMoney)));
-    if (summary.allLose != null) cells.push(summaryCell("All lose", fmtWholePct(summary.allLose)));
-    view.teasersSummaryCells.replaceChildren(...cells);
-    const straights = summary.straights;
-    view.teasersSummaryNote.textContent = `${kellyWords(state.settings.multiplier)} on ${fmtWholeDollars(state.settings.bankroll)} · `
-      + (summary.placedCount ? "open BFA teasers held fixed" : "tickets that share a leg are sized together")
-      + (straights.count ? ` · counts ${fmtWholeDollars(straights.stake)} of straight bets on ${plural(straights.games, "game")}` : "");
+    const summary = model ? teaserView.summaryView(model.plan.summary, model.placed.length, state.settings) : null;
+    view.teasersSummary.hidden = !summary;
+    if (!summary) return;
+    view.teasersSummaryLabel.textContent = summary.label;
+    view.teasersSummaryStake.textContent = summary.stake;
+    view.teasersSummaryCells.replaceChildren(...summary.cells.map(summaryCell));
+    view.teasersSummaryNote.textContent = summary.note;
   }
 
   // What Copy puts on the clipboard: BFA's own "[rotation] side" for each leg.
   function teaserCopyText(ticket) {
     const legs = ticket.legs.map((leg) => `${leg.rotation != null ? `[${leg.rotation}] ` : ""}${leg.label}`).join(" / ");
-    return `Buckeye ${teaserLib.LEGS_PER_TICKET}-team ${teaserLib.TEASER_POINTS}-pt teaser ${fmtWholeDollars(ticket.stake)}: ${legs} | ${fmtEv(ticket.ev)}`;
+    return `Buckeye ${teaserLib.LEGS_PER_TICKET}-team ${teaserLib.TEASER_POINTS}-pt teaser ${teaserView.fmtWholeDollars(ticket.stake)}: ${legs} | ${teaserView.fmtEv(ticket.ev)}`;
   }
 
   function teaserTicketCard(ticket) {
+    const ticketView = teaserView.pendingTicketView(ticket);
     const card = makeEl("li", "ticket-card");
     const head = makeEl("div", "tk-head");
     const rail = makeEl("span", "tk-rail");
-    rail.append(makeEl("span", "tk-stake", fmtWholeDollars(ticket.stake)), makeEl("span", "tk-ev", fmtEv(ticket.ev)));
-    head.append(makeEl("span", "tk-num", `#${ticket.number}`), makeEl("span", "tk-size", teaserTicketSize()), rail);
+    rail.append(makeEl("span", "tk-stake", ticketView.stake), makeEl("span", "tk-ev", ticketView.ev));
+    head.append(makeEl("span", "tk-num", `#${ticketView.number}`), makeEl("span", "tk-size", ticketView.size), rail);
     const legs = makeEl("ol", "tk-legs");
-    for (const leg of ticket.legs) {
+    for (const leg of ticketView.legs) {
       const row = makeEl("li");
-      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.fromLabel), makeEl("span", "tl-win", fmtWin(leg.win)));
+      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.from), makeEl("span", "tl-win", leg.win));
       legs.append(row);
     }
     const actions = makeEl("div", "tk-actions");
@@ -2947,13 +3290,14 @@
     const placeState = teaserPlaceStates.get(signature) || null;
     const phase = placeState ? placeState.phase : null;
     if (placeState && placeState.message) {
-      const tone = phase === "placed" ? "ok" : phase === "placing" ? "wait" : "bad";
+      // A placed ticket whose legs BFA shows differently is red: it is booked, and wrong.
+      const tone = phase === "placed" && placeState.legsMatch !== false ? "ok" : phase === "placing" ? "wait" : "bad";
       actions.prepend(makeEl("span", `tk-place-msg ${tone}`, placeState.message));
     }
     if (phase === "confirm") {
       copy.hidden = true;
       actions.append(teaserPlaceButton("btn sm", "Cancel", "cancel", signature),
-        teaserPlaceButton("btn sm primary", `Bet ${fmtWholeDollars(ticket.stake)} at BFA`, "confirm", signature));
+        teaserPlaceButton("btn sm primary", `Bet ${teaserView.fmtWholeDollars(ticket.stake)} at BFA`, "confirm", signature));
     } else if (phase === null || phase === "refused") {
       actions.append(teaserPlaceButton("btn sm", "Place", "arm", signature));
     }
@@ -2977,7 +3321,7 @@
     let next;
     try {
       const reply = await serviceRequest("POST", "/place_teaser.json", request.body);
-      next = { phase: reply.status, message: reply.message };
+      next = { phase: reply.status, message: reply.message, legsMatch: reply.legsMatch };
     } catch (error) {
       next = error.status
         ? { phase: "refused", message: `Not placed: ${error.message}` }
@@ -3021,10 +3365,10 @@
     const tickets = model ? model.plan.tickets : [];
     view.teasersListLabel.hidden = tickets.length === 0;
     view.teasersListCount.textContent = tickets.length ? String(tickets.length) : "";
-    view.teasersList.replaceChildren(...tickets.slice(0, TEASER_TICKETS_SHOWN).map(teaserTicketCard));
-    const rest = tickets.slice(TEASER_TICKETS_SHOWN);
+    view.teasersList.replaceChildren(...tickets.slice(0, teaserView.TICKETS_SHOWN).map(teaserTicketCard));
+    const rest = tickets.slice(teaserView.TICKETS_SHOWN);
     view.teasersMore.hidden = rest.length === 0;
-    view.teasersMoreLabel.textContent = `${plural(rest.length, "more ticket")} · ${fmtWholeDollars(rest.reduce((sum, ticket) => sum + ticket.stake, 0))}`;
+    view.teasersMoreLabel.textContent = teaserView.moreTicketsText(rest);
     view.teasersMoreList.replaceChildren(...rest.map(teaserTicketCard));
     // A ticket gone from the list (placed and now open, or rebuilt away) takes its button state with it.
     for (const [signature, placeState] of teaserPlaceStates) {
@@ -3032,159 +3376,83 @@
     }
   }
 
-  // One open BFA teaser, read-only: its legs at BFA's numbers, each at its
-  // current fair or why it counts as won.
   function openTeaserCard(ticket) {
-    const card = makeEl("li", `ticket-card placed${ticket.inPlay ? "" : " done"}`);
+    const ticketView = teaserView.openTicketView(ticket);
+    const card = makeEl("li", `ticket-card placed${ticketView.inPlay ? "" : " done"}`);
     const head = makeEl("div", "tk-head");
     const rail = makeEl("span", "tk-rail");
-    const hasDollars = ticket.reason == null;
-    if (ticket.inPlay) rail.append(makeEl("span", "tk-ev", fmtEv(ticket.winAll * (1 + ticket.toWin / ticket.stake) - 1)));
-    const size = hasDollars ? `${ticket.legCount}-team · ${fmtWholeDollars(ticket.stake)} to win ${fmtWholeDollars(ticket.toWin)}` : `${ticket.legCount}-team`;
-    head.append(makeEl("span", "tk-size", size), rail);
+    if (ticketView.ev) rail.append(makeEl("span", "tk-ev", ticketView.ev));
+    head.append(makeEl("span", "tk-size", ticketView.size), rail);
     const legs = makeEl("ol", "tk-legs");
-    for (const leg of ticket.legs) {
-      const row = makeEl("li", leg.state === teaserLib.LEG_LIVE ? null : "counted");
-      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.note || ""), makeEl("span", "tl-win", leg.win == null ? "—" : fmtWin(leg.win)));
+    for (const leg of ticketView.legs) {
+      const row = makeEl("li", leg.counted ? "counted" : null);
+      row.append(makeEl("span", "tl-leg", leg.label), makeEl("span", "tl-from", leg.note), makeEl("span", "tl-win", leg.win));
       legs.append(row);
     }
     const actions = makeEl("div", "tk-actions");
-    if (!ticket.inPlay) actions.append(makeEl("span", "muted", outOfMathText(ticket)));
-    actions.append(makeEl("span", "tag held", ticket.placedAt ? `placed ${betsLib.formatPlacedAt(ticket.placedAt)}` : "placed"));
+    if (ticketView.outOfMath) actions.append(makeEl("span", "muted", ticketView.outOfMath));
+    actions.append(makeEl("span", "tag held", ticketView.placedTag));
     card.append(head, legs, actions);
     return card;
   }
 
-  // Why an open ticket is not in the math, by its legs: every game started,
-  // or no leg joined a game Buckeye's board prices (a basketball teaser, CFB
-  // not loaded, a start the board disagrees with by over 12 h).
-  function outOfMathText(ticket) {
-    if (ticket.reason) return `${ticket.reason}: out of the math`;
-    if (ticket.legs.every((leg) => leg.state === teaserLib.LEG_STARTED)) return "every game has started: out of the math";
-    return "no leg priced on the board: out of the math";
-  }
-
-  // Always shown once the board is up, so "none open · BFA pulled 41 s ago"
-  // says how fresh the answer is right after a ticket is placed.
   function renderTeasersOpen(model) {
     view.teasersOpen.hidden = !model;
     if (!model) return;
-    const placed = model.placed;
-    const bfa = bfaSourceRow(Date.now());
-    const pull = !bfa ? "bets service not reached yet"
-      : !bfa.configured ? "no BFA account read"
-        : bfa.fetchedAt ? `BFA pulled ${bfa.ageText} ago` : "no BFA pull yet";
-    const dollars = (tickets) => tickets.reduce((sum, ticket) => sum + (typeof ticket.stake === "number" ? ticket.stake : 0), 0);
-    const inPlay = placed.filter((ticket) => ticket.inPlay);
-    const amount = inPlay.length === placed.length ? fmtWholeDollars(dollars(placed))
-      : `${fmtWholeDollars(dollars(placed))}, ${fmtWholeDollars(dollars(inPlay))} in play`;
-    view.teasersOpenCount.textContent = placed.length ? String(placed.length) : "";
-    view.teasersOpenNote.textContent = [placed.length ? `${amount} · each until its last game starts` : "none open", pull].join(" · ");
-    view.teasersOpenList.replaceChildren(...placed.map(openTeaserCard));
-  }
-
-  function legStandingText(row) {
-    const open = row.openTickets ? ` · ${row.openTickets} open` : "";
-    if (row.standing !== teaserLib.STANDING_POOL) return `${row.note}${open}`;
-    return `${row.inTickets ? `in ${plural(row.inTickets, "ticket")}` : "in no ticket"}${open}`;
-  }
-
-  // The straight bets on a pool leg's game, the Edges tab's tags: `held $X`
-  // on the leg's side, `against $Y` on the other, or a bare `game` when the
-  // game has straights and none of them counts. Every bet in the tooltip.
-  function teaserStraightTags(straights) {
-    if (!straights) return [];
-    const tooltip = straights.counted.map((bet) => bet.label)
-      .concat(straights.leftOut.map((bet) => `${bet.label} — not counted: ${bet.reason}`)).join("\n");
-    const tag = (kind, text) => {
-      const el = makeEl("span", `tag ${kind}`, text);
-      el.title = tooltip;
-      return el;
-    };
-    const tags = [];
-    if (straights.held > 0) tags.push(tag("held", `held ${betsLib.formatStake(straights.held)}`));
-    if (straights.against > 0) tags.push(tag("against", `against ${betsLib.formatStake(straights.against)}`));
-    if (tags.length === 0 && straights.leftOut.length > 0) tags.push(tag("game", "game"));
-    return tags;
-  }
-
-  // A college leg on show (in the pool or above break-even) offers Can't
-  // tease; a marked one shows the tag and Restore. NFL legs never: Buckeye
-  // teases every NFL game.
-  function teaserBlockControl(row) {
-    if (row.standing === teaserLib.STANDING_BLOCKED) return makeButton("linkbtn", "Restore", () => setTeaserBlocked(row.leg, false));
-    const onShow = row.standing === teaserLib.STANDING_POOL || row.standing === teaserLib.STANDING_OUT;
-    if (!onShow || !teaserLib.canBlock(row.leg)) return null;
-    const chip = makeButton("dismiss-chip", "Can't tease", () => setTeaserBlocked(row.leg, true));
-    chip.title = `Buckeye won't tease this. Takes the game's ${teaserLib.marketNameOf(row.leg)} (both sides) out of the tickets until the game starts.`;
-    return chip;
+    const openView = teaserView.openBlockView(model.placed, bfaSourceRow(Date.now()));
+    view.teasersOpenCount.textContent = openView.count;
+    view.teasersOpenNote.textContent = openView.note;
+    view.teasersOpenList.replaceChildren(...model.placed.map(openTeaserCard));
   }
 
   function teaserLegRow(row) {
-    const { leg } = row;
-    const pool = row.standing === teaserLib.STANDING_POOL;
-    const item = makeEl("li", `edge-row leg-row ${pool ? "tier-hot" : "tier-thin out"}`);
+    const rowView = teaserView.legRowView(row);
+    const item = makeEl("li", `edge-row leg-row ${rowView.pool ? "tier-hot" : "tier-thin out"}`);
     const main = makeEl("div");
     const meta = makeEl("div", "edge-meta");
-    meta.append(`${leg.matchup} · ${leg.leagueLabel} · ${fmtStart(new Date(leg.eventStartMs).toISOString())} · `, untilEl(leg.eventStartMs));
+    meta.append(`${rowView.matchup} · ${rowView.leagueLabel} · ${fmtStart(new Date(rowView.eventStartMs).toISOString())} · `, untilEl(rowView.eventStartMs));
     const book = makeEl("div", "edge-book");
-    book.append(makeEl("span", "price", `Buckeye ${leg.bookLabel}`),
-      makeEl("span", "age", ` · teased ${teaserLib.TEASER_POINTS} · ${fmtLineAge(leg.modifiedMs)}`));
-    const side = makeEl("div", "edge-side", leg.label);
-    if (row.standing === teaserLib.STANDING_BLOCKED) side.append(makeEl("span", "tag dismissed", "can't tease"));
+    book.append(makeEl("span", "price", rowView.book),
+      makeEl("span", "age", ` · ${rowView.teased} · ${fmtLineAge(rowView.modifiedMs)}`));
+    const side = makeEl("div", "edge-side", rowView.side);
+    if (rowView.blocked) side.append(makeEl("span", "tag dismissed", "can't tease"));
     main.append(side, meta, book);
     const rail = makeEl("div", "edge-rail");
-    rail.append(makeEl("span", `edge-pct tier-${pool ? "hot" : "thin"}`, leg.win == null ? "—" : fmtWin(leg.win)),
-      makeEl("span", "leg-in", legStandingText(row)), ...teaserStraightTags(row.straights));
-    const blockControl = teaserBlockControl(row);
-    if (blockControl) rail.append(blockControl);
+    const tags = rowView.tags.map((tag) => {
+      const el = makeEl("span", `tag ${tag.kind}`, tag.text);
+      el.title = tag.title;
+      return el;
+    });
+    rail.append(makeEl("span", `edge-pct tier-${rowView.pool ? "hot" : "thin"}`, rowView.win),
+      makeEl("span", "leg-in", rowView.standing), ...tags);
+    if (rowView.control) rail.append(teaserBlockButton(row, rowView.control));
     item.append(main, rail);
     return item;
+  }
+
+  // Can't tease on a college leg on show; Restore on a marked one.
+  function teaserBlockButton(row, control) {
+    if (control.action === "restore") return makeButton("linkbtn", "Restore", () => setTeaserBlocked(row.leg, false));
+    const chip = makeButton("dismiss-chip", "Can't tease", () => setTeaserBlocked(row.leg, true));
+    chip.title = control.title;
+    return chip;
   }
 
   function breakEvenDivider() {
     const divider = makeEl("li", "be-divider");
     divider.setAttribute("role", "separator");
-    divider.append(makeEl("span", null, `${fmtWin(teaserLib.BREAK_EVEN_WIN)} a leg breaks even at +${teaserLib.TICKET_NET_ODDS * 100}`));
+    divider.append(makeEl("span", null, teaserView.breakEvenText()));
     return divider;
   }
 
-  // The pool's legs and the priced legs above break-even, best first, with
-  // the break-even line where it falls; the rest of the games behind a fold,
-  // the markets marked can't tease first.
   function renderTeasersLegs(model) {
-    const rows = model ? model.legRows : [];
-    const gameCount = new Set(rows.map((row) => row.leg.eventId)).size;
-    view.teasersLegsLabel.hidden = rows.length === 0;
-    view.teasersLegsCount.textContent = gameCount ? String(gameCount) : "";
-    const shownStandings = [teaserLib.STANDING_POOL, teaserLib.STANDING_OUT];
-    const shown = rows.filter((row) => shownStandings.includes(row.standing));
-    const blockedRows = rows.filter((row) => row.standing === teaserLib.STANDING_BLOCKED);
-    const otherFolded = rows.filter((row) => !shownStandings.includes(row.standing) && row.standing !== teaserLib.STANDING_BLOCKED);
-    const folded = [...blockedRows, ...otherFolded];
-    const items = [];
-    let dividerPlaced = false;
-    for (const row of shown) {
-      if (!dividerPlaced && row.leg.win < teaserLib.BREAK_EVEN_WIN) {
-        items.push(breakEvenDivider());
-        dividerPlaced = true;
-      }
-      items.push(teaserLegRow(row));
-    }
-    if (!dividerPlaced && folded.length) items.push(breakEvenDivider());
-    view.teasersLegs.replaceChildren(...items);
-    view.teasersLegsMore.hidden = folded.length === 0;
-    const counts = [
-      [teaserLib.STANDING_BELOW, "below break-even"],
-      [teaserLib.STANDING_OTHER_MARKET, "on an open teaser's other market"],
-      [teaserLib.STANDING_UNPRICED, "with no fair"],
-    ].map(([standing, words]) => [otherFolded.filter((row) => row.standing === standing).length, words])
-      .filter(([count]) => count > 0).map(([count, words]) => `${count} ${words}`);
-    const labelParts = [];
-    if (otherFolded.length) labelParts.push(`${plural(otherFolded.length, "more game")}: ${counts.join(", ")}`);
-    if (blockedRows.length) labelParts.push(`${blockedRows.length} can't tease`);
-    view.teasersLegsMoreLabel.textContent = labelParts.join(" · ");
-    view.teasersLegsMoreList.replaceChildren(...folded.map(teaserLegRow));
+    const layout = teaserView.legsLayout(model ? model.legRows : []);
+    view.teasersLegsLabel.hidden = !model || model.legRows.length === 0;
+    view.teasersLegsCount.textContent = layout.gameCount ? String(layout.gameCount) : "";
+    view.teasersLegs.replaceChildren(...layout.items.map((item) => (item.divider ? breakEvenDivider() : teaserLegRow(item.row))));
+    view.teasersLegsMore.hidden = layout.folded.length === 0;
+    view.teasersLegsMoreLabel.textContent = layout.foldLabel;
+    view.teasersLegsMoreList.replaceChildren(...layout.folded.map(teaserLegRow));
   }
 
   view.tabTeasers.addEventListener("click", async (event) => {
@@ -3220,6 +3488,7 @@
     if (parsed.error) return;
     state.settings = parsed.settings;
     chrome.storage.local.set(parsed.settings);
+    queueSettingsPush();
     render();
     renderEdges();
     renderTeasers();
@@ -3236,13 +3505,18 @@
     const local = await chrome.storage.local.get(DEFAULT_SETTINGS);
     state.settings = edgeRows.sanitizeStakeSettings(local);
     fillSettingInputs();
-    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex", "teaserRefs", "teaserBlocked"]);
+    const relay = await chrome.storage.local.get(["ticket", "error", "watchStatus", "pageReady", "pageCheck", "booksFilter", "edges", "alerts", "alertLog", "activeTab", "locateResult", "betsService", "betsSettings", "teamsIndex", "teaserRefs", "teaserBlocked", "edgeSkips", "settingsSync", "sharedMarksMigratedTo"]);
+    if (relay.settingsSync && typeof relay.settingsSync === "object" && typeof relay.settingsSync.serviceUrl === "string") settingsSync = relay.settingsSync;
+    if (typeof relay.sharedMarksMigratedTo === "string") sharedMarksMigratedTo = relay.sharedMarksMigratedTo;
     // The reference fairs the last Teasers list was built on: a seed with no
     // key, so the first plan rebuilds — on these fairs, where still within a
     // point of the live ones — and the list is the one this panel last showed.
     if (Array.isArray(relay.teaserRefs)) {
       const pairs = relay.teaserRefs.filter((pair) => Array.isArray(pair) && typeof pair[0] === "string" && typeof pair[1] === "number");
       teaserBuild = { key: null, refs: new Map(pairs) };
+    }
+    if (relay.edgeSkips && typeof relay.edgeSkips === "object") {
+      edgeSkips = Object.fromEntries(Object.entries(relay.edgeSkips).filter(([, startMs]) => typeof startMs === "number"));
     }
     if (relay.teaserBlocked && typeof relay.teaserBlocked === "object") {
       teaserBlocked = Object.fromEntries(Object.entries(relay.teaserBlocked).filter(([, startMs]) => typeof startMs === "number"));
@@ -3364,15 +3638,6 @@
 
   view.bankroll.addEventListener("input", onSettingsInput);
   view.multiplier.addEventListener("input", onSettingsInput);
-
-  view.copy.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(lastCopyText);
-      view.copyStatus.textContent = "Copied";
-    } catch (error) {
-      view.copyStatus.textContent = `Copy failed: ${error.message}`;
-    }
-  });
 
   // Re-evaluate the "not watching" state and the edge ages even when no event arrives.
   setInterval(() => {

@@ -245,6 +245,34 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
 .move-detail { font: 400 11px system-ui, sans-serif; color: var(--muted); white-space: nowrap; }
 .edge-row .edge-rail .move-detail, .group-line .gl-rail .move-detail { display: block; }
 .facts dd .move-detail { margin-left: 6px; }
+/* Other books at the same number (pricecheck.js): green best price, plain one
+   book better, amber 2+ better (would skip), red outlier. */
+.tag.check-best { background: color-mix(in srgb, var(--edge-strong) 15%, transparent); border-color: transparent; color: var(--edge-mid); }
+.tag.check-skip { background: var(--warn-bg); border-color: transparent; color: var(--warn-fg); }
+.tag.check-outlier { background: var(--against-bg); border-color: transparent; color: var(--against-fg); }
+.edge-row .edge-pricecheck { margin-top: 3px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.group-line .edge-pricecheck { margin-top: 2px; display: flex; align-items: center; gap: 6px; }
+.tag.check-toggle { cursor: pointer; }
+.skip-chip { margin-left: 0; }
+.edge-row .others-list, .group-line .others-list {
+  margin-top: 5px; padding: 5px 8px; border-radius: 6px; background: var(--surface-2); cursor: default;
+}
+.others-list .same { color: var(--ink-2); }
+.others-actions { margin-top: 6px; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+/* The Skipped fold under the Edges list and the rows inside it. */
+.skip-fold {
+  list-style: none; display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 12px; font-size: 12px; background: var(--surface-2); border-top: 1px solid var(--border-soft);
+}
+.skip-fold-toggle { appearance: none; border: 0; background: none; padding: 0; cursor: pointer; font: inherit; color: var(--ink-2); }
+.edge-row.skipped { opacity: 0.6; }
+#edges-pricecheck { padding: 0 12px 8px; }
+.facts dd#others .tag { margin-left: 0; }
+.others-list { margin-top: 3px; font-size: 12.5px; max-width: 260px; }
+.others-list > div { display: flex; justify-content: space-between; gap: 12px; }
+.others-list .better { color: var(--warn-fg); }
+.others-list .yours { font-weight: 700; color: var(--ink); }
+.others-list .worse { color: var(--muted); }
 
 /* The bets you already have on this game, as a section of the row. */
 .related-block {
@@ -355,6 +383,7 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 .stake-contracts.under { font-weight: 400; color: var(--muted); }
 .stake-exposure { margin-top: 2px; font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .stake-exposure.against { color: var(--against-fg); }
+.stake-uncapped { margin-top: 2px; font: 400 13px var(--figure); color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .payout-row {
   display: flex; flex-wrap: wrap; gap: 20px; margin-top: 8px; padding-top: 8px;
   border-top: 1px dashed color-mix(in srgb, var(--edge-strong) 30%, transparent);
@@ -363,7 +392,6 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 .payout-value { font: 600 15px var(--figure); }
 #full-kelly { margin-top: 6px; }
 
-.ticket-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
 .btn {
   appearance: none; cursor: pointer; font: 600 13px system-ui, sans-serif;
   border-radius: 7px; padding: 8px 14px; border: 1px solid var(--border);

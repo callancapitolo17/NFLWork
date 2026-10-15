@@ -35,6 +35,40 @@ writer). Tables:
                is never rewritten, and nothing is ever backfilled. Never pruned
                (~14 bets a day). Served with /bets.json for the bets in its
                window (see load_fill_fairs).
+  bet_fill_books  one row per bet: what the other books offered at its number
+               the moment it was placed — how many books posted it, how many
+               beat the price taken, and the best of them (server/fillbooks.js,
+               read off the runner's line history; Cal 2026-10-13). POSTed to
+               /fill_books.json by the server runner. INSERT only, first
+               capture wins (ON CONFLICT DO NOTHING); nothing is backfilled.
+               Stored only: nothing serves it back yet. Never pruned.
+  bet_closing_fairs  one row per bet: Unabated's fair for the bet's own line on
+               the newest snapshot before its game started — the close CLV is
+               measured against. POSTed to /closing_fairs.json by the server
+               runner (server/closefair.js) while the game is still to start;
+               UPSERT keeps the row with the LATEST fair_observed_at, so a late
+               or repeated POST never moves it backwards, and every row is
+               observed before its event_start (service.py validates). Never
+               pruned (one row per straight bet). Served with /bets.json for
+               the bets in its window (see load_closing_fairs).
+  bet_exclusions  one row per bet Cal removed from the Bet Tracker (its Bets
+               page: bets at BFA or Wagerzon that are not his). The bet stays in
+               `bets`; the tracker leaves an excluded bet, and a parlay any of
+               whose legs is excluded, out of every number. Restore deletes the
+               row. Never pruned.
+  bet_dismissals  one row per open bet Cal dismissed from the unmatched list
+               (the panel's or the phone's Dismiss: "stop flagging this bet").
+               INSERT on Dismiss (a dismissed bet keeps its first time), DELETE
+               on Restore. Served only while the bet is open — the flag ends
+               when it settles — and never pruned (a few a week).
+  teaser_blocks  one row per market (`<eventId>:bt<2|3>`, teaser.js
+               marketKeyOf) Cal marked "Can't tease" (Buckeye keeps some CFB
+               games off its teaser menu), UPSERT on the key, DELETE on
+               Restore. Served only until the game starts; never pruned.
+  edge_skips   one row per Edges line Cal skipped (the Skip chip on a row a
+               book beats; pricecheck.js skipKeyOf: '<rung>@<bookId>'), UPSERT
+               on the key, DELETE on Restore. Served only until the game
+               starts; never pruned.
   edge_settings  at most ONE row (settings_id = 1): the Edges settings the
                server runner (unabated_ticket/server/runner.js, phone page plan
                step 1) reads every cycle, written by PUT /settings.json and
@@ -116,6 +150,44 @@ CREATE TABLE IF NOT EXISTS bet_fill_fairs (
     fair_observed_at  TIMESTAMPTZ NOT NULL,  -- when the panel saw that fair: at or before placed_at
     placed_at         TIMESTAMPTZ NOT NULL,  -- the bet's placedAt
     captured_at       TIMESTAMPTZ NOT NULL   -- when this service stored the row
+);
+CREATE TABLE IF NOT EXISTS bet_fill_books (
+    bet_id        VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
+    placed_at     TIMESTAMPTZ NOT NULL,  -- the bet's placedAt
+    fill_price    DOUBLE NOT NULL,       -- the bet's American price on Unabated's basis (Kalshi with its fee)
+    book_count    INTEGER NOT NULL,      -- other books with a price at its number at the fill
+    books_better  INTEGER NOT NULL,      -- of those, how many beat the price taken
+    best_book     VARCHAR,               -- the best other book; NULL when book_count = 0
+    best_price    DOUBLE,                -- its American price at the fill; NULL when book_count = 0
+    captured_at   TIMESTAMPTZ NOT NULL   -- when this service stored the row
+);
+CREATE TABLE IF NOT EXISTS bet_closing_fairs (
+    bet_id            VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
+    line_key          VARCHAR NOT NULL,      -- the Unabated feed line the fair was read from
+    points            DOUBLE,                -- that line's number; NULL on a moneyline
+    fair_american     INTEGER NOT NULL,      -- Unabated's fair (bacr) for the bet's side
+    fair_observed_at  TIMESTAMPTZ NOT NULL,  -- the league snapshot it was read off; before event_start
+    event_start       TIMESTAMPTZ NOT NULL,  -- the board game's start
+    updated_at        TIMESTAMPTZ NOT NULL   -- when this service last wrote the row
+);
+CREATE TABLE IF NOT EXISTS bet_exclusions (
+    bet_id       VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
+    venue        VARCHAR NOT NULL,
+    excluded_at  TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE IF NOT EXISTS bet_dismissals (
+    bet_id        VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
+    dismissed_at  TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE IF NOT EXISTS teaser_blocks (
+    market_key   VARCHAR PRIMARY KEY,    -- teaser.js marketKeyOf: '<eventId>:bt2' spread, ':bt3' total
+    event_start  TIMESTAMPTZ NOT NULL,   -- the game's start: the block is served until then
+    blocked_at   TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE IF NOT EXISTS edge_skips (
+    skip_key     VARCHAR PRIMARY KEY,    -- pricecheck.js skipKeyOf: '<eventId>:<period>:<betType>:<side>|<points|ml>@<bookId>'
+    event_start  TIMESTAMPTZ NOT NULL,   -- the game's start: the skip is served until then
+    skipped_at   TIMESTAMPTZ NOT NULL
 );
 CREATE TABLE IF NOT EXISTS edge_settings (
     settings_id           INTEGER PRIMARY KEY CHECK (settings_id = 1),  -- one row
@@ -210,6 +282,13 @@ ON CONFLICT (bet_id) DO NOTHING
 
 _FILL_FAIR_ROW_PLACEHOLDERS = "(?, ?, ?, ?, ?, ?, ?)"
 
+# Insert-only, first capture wins, as bet_fill_fairs.
+_INSERT_FILL_BOOKS = """
+INSERT INTO bet_fill_books (bet_id, placed_at, fill_price, book_count, books_better, best_book, best_price, captured_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (bet_id) DO NOTHING
+"""
+
 # The saved fairs of the bets /bets.json serves — the same window as
 # _SELECT_WINDOW. The table is never pruned, so serving all of it would grow
 # every poll for good; the panel only reads the fairs of the bets it holds.
@@ -220,6 +299,64 @@ FROM bet_fill_fairs f
 JOIN bets b ON b.id = f.bet_id
 WHERE b.status = 'open' OR b.closed_at IS NULL OR b.closed_at >= ?
 ORDER BY f.placed_at, f.bet_id
+"""
+
+# Newest observation wins: a row only moves forward in time, so a POST that
+# lands late (or twice) never replaces a later reading of the same bet.
+_UPSERT_CLOSING_FAIR = """
+INSERT INTO bet_closing_fairs (bet_id, line_key, points, fair_american, fair_observed_at, event_start, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (bet_id) DO UPDATE SET
+    line_key = excluded.line_key, points = excluded.points, fair_american = excluded.fair_american,
+    fair_observed_at = excluded.fair_observed_at, event_start = excluded.event_start,
+    updated_at = excluded.updated_at
+WHERE excluded.fair_observed_at > bet_closing_fairs.fair_observed_at
+"""
+
+# The same window as _SELECT_FILL_FAIRS.
+_SELECT_CLOSING_FAIRS = """
+SELECT c.bet_id, c.line_key, c.points, c.fair_american, epoch(c.fair_observed_at), epoch(c.event_start)
+FROM bet_closing_fairs c
+JOIN bets b ON b.id = c.bet_id
+WHERE b.status = 'open' OR b.closed_at IS NULL OR b.closed_at >= ?
+ORDER BY c.event_start, c.bet_id
+"""
+
+_SELECT_EXCLUSIONS = "SELECT bet_id, venue, epoch(excluded_at) FROM bet_exclusions ORDER BY excluded_at DESC, bet_id"
+
+# A dismissal ends when its bet settles, so only open bets' rows are served.
+_SELECT_DISMISSALS = """
+SELECT d.bet_id, epoch(d.dismissed_at)
+FROM bet_dismissals d
+JOIN bets b ON b.id = d.bet_id
+WHERE b.status = 'open'
+ORDER BY d.dismissed_at DESC, d.bet_id
+"""
+
+_UPSERT_TEASER_BLOCK = """
+INSERT INTO teaser_blocks (market_key, event_start, blocked_at) VALUES (?, ?, ?)
+ON CONFLICT (market_key) DO UPDATE SET event_start = excluded.event_start, blocked_at = excluded.blocked_at
+"""
+
+# A block is moot once its game has started (the panel's liveTeaserBlocks rule).
+_SELECT_TEASER_BLOCKS = """
+SELECT market_key, epoch_ms(event_start), epoch(blocked_at)
+FROM teaser_blocks
+WHERE event_start > ?
+ORDER BY event_start, market_key
+"""
+
+_UPSERT_EDGE_SKIP = """
+INSERT INTO edge_skips (skip_key, event_start, skipped_at) VALUES (?, ?, ?)
+ON CONFLICT (skip_key) DO UPDATE SET event_start = excluded.event_start, skipped_at = excluded.skipped_at
+"""
+
+# A skip is moot once its game has started, like a teaser block.
+_SELECT_EDGE_SKIPS = """
+SELECT skip_key, epoch_ms(event_start), epoch(skipped_at)
+FROM edge_skips
+WHERE event_start > ?
+ORDER BY event_start, skip_key
 """
 
 # The settings fields in the API's camelCase, in column order: the shape
@@ -264,6 +401,10 @@ WHERE started_at < ?
 
 # Open bets always; settled/closed ones within the window; a non-open bet with
 # no closedAt is kept (dropping it would be silent) — same rule as bets.js.
+_SELECT_KALSHI_IDS = """
+SELECT id FROM bets WHERE venue = 'kalshi'
+"""
+
 _SELECT_WINDOW = """
 SELECT record FROM bets
 WHERE status = 'open' OR closed_at IS NULL OR closed_at >= ?
@@ -452,6 +593,13 @@ class BetsStore:
             log.info("source_runs: pruned %d row(s) older than %s", deleted, cutoff.isoformat())
         return deleted
 
+    def load_kalshi_tickers(self) -> set[str]:
+        """Every Kalshi market ticker a stored record names (ids are
+        kalshi:<ticker>:<side>), so the Kalshi source reads their pre-cutoff fills."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_KALSHI_IDS).fetchall()
+        return {record_id.split(":")[1] for (record_id,) in rows}
+
     def load_bets(self, days: int, now: datetime) -> list[dict]:
         """Records in the retention window: open, or closed within `days` of `now`."""
         cutoff = now - timedelta(days=days)
@@ -585,6 +733,22 @@ class BetsStore:
             log.info("fill fairs: saved %d of %d row(s)", saved, len(values))
         return saved
 
+    def save_fill_books(self, rows: list[dict], captured_at: datetime) -> int:
+        """INSERT the other-books rows of bets that have none (validated shape:
+        see service.validate_fill_book_rows). A bet that already has one keeps
+        it — ON CONFLICT DO NOTHING. Returns how many rows were inserted."""
+        saved = 0
+        with self._lock:
+            for row in rows:
+                [inserted] = self._con.execute(_INSERT_FILL_BOOKS, [
+                    row["betId"], _parse_iso(row["placedAt"]), row["fillPrice"], row["bookCount"],
+                    row["booksBetter"], row["bestBook"], row["bestPrice"], captured_at,
+                ]).fetchone()
+                saved += inserted
+        if saved:
+            log.info("fill books: saved %d of %d row(s)", saved, len(rows))
+        return saved
+
     def load_fill_fairs(self, days: int, now: datetime) -> list[dict]:
         """The saved fill fairs of the bets load_bets(days, now) serves, oldest
         placement first, in the panel's camelCase shape."""
@@ -596,6 +760,111 @@ class BetsStore:
             "fairObservedAt": _epoch_to_iso(fair_observed_at), "placedAt": _epoch_to_iso(placed_at),
             "capturedAt": _epoch_to_iso(captured_at),
         } for bet_id, line_key, points, fair_american, fair_observed_at, placed_at, captured_at in rows]
+
+    def save_closing_fairs(self, rows: list[dict], updated_at: datetime) -> int:
+        """UPSERT the closing fairs (validated shape: see
+        service.validate_closing_fair_rows), each kept only when it is newer
+        than the stored one. Returns how many rows were written."""
+        written = 0
+        with self._lock:
+            for row in rows:
+                [count] = self._con.execute(_UPSERT_CLOSING_FAIR, [
+                    row["betId"], row["lineKey"], row["points"], row["fairAmerican"],
+                    _parse_iso(row["fairObservedAt"]), _parse_iso(row["eventStart"]), updated_at,
+                ]).fetchone()
+                written += count
+        return written
+
+    def load_closing_fairs(self, days: int, now: datetime) -> list[dict]:
+        """The closing fairs of the bets load_bets(days, now) serves, earliest game first."""
+        cutoff = now - timedelta(days=days)
+        with self._lock:
+            rows = self._con.execute(_SELECT_CLOSING_FAIRS, [cutoff]).fetchall()
+        return [{
+            "betId": bet_id, "lineKey": line_key, "points": points, "fairAmerican": fair_american,
+            "fairObservedAt": _epoch_to_iso(fair_observed_at), "eventStart": _epoch_to_iso(event_start),
+        } for bet_id, line_key, points, fair_american, fair_observed_at, event_start in rows]
+
+    def set_exclusions(self, bet_ids: list[str], venue_by_bet: dict[str, str], excluded: bool,
+                       at: datetime) -> int:
+        """Exclude (INSERT, an already-excluded bet keeps its time) or restore
+        (DELETE) the bets. Returns how many rows changed."""
+        changed = 0
+        with self._lock:
+            for bet_id in bet_ids:
+                if excluded:
+                    statement = ("INSERT INTO bet_exclusions (bet_id, venue, excluded_at) VALUES (?, ?, ?) "
+                                 "ON CONFLICT (bet_id) DO NOTHING")
+                    [count] = self._con.execute(statement, [bet_id, venue_by_bet[bet_id], at]).fetchone()
+                else:
+                    [count] = self._con.execute("DELETE FROM bet_exclusions WHERE bet_id = ?", [bet_id]).fetchone()
+                changed += count
+        log.info("exclusions: %s %d of %d bet(s)", "excluded" if excluded else "restored", changed, len(bet_ids))
+        return changed
+
+    def load_exclusions(self) -> list[dict]:
+        with self._lock:
+            rows = self._con.execute(_SELECT_EXCLUSIONS).fetchall()
+        return [{"betId": bet_id, "venue": venue, "excludedAt": _epoch_to_iso(excluded_at)}
+                for bet_id, venue, excluded_at in rows]
+
+    def set_dismissals(self, bet_ids: list[str], dismissed: bool, at: datetime) -> int:
+        """Dismiss (INSERT, an already-dismissed bet keeps its time) or
+        restore (DELETE) the bets. Returns how many rows changed."""
+        changed = 0
+        with self._lock:
+            for bet_id in bet_ids:
+                if dismissed:
+                    statement = ("INSERT INTO bet_dismissals (bet_id, dismissed_at) VALUES (?, ?) "
+                                 "ON CONFLICT (bet_id) DO NOTHING")
+                    [count] = self._con.execute(statement, [bet_id, at]).fetchone()
+                else:
+                    [count] = self._con.execute("DELETE FROM bet_dismissals WHERE bet_id = ?", [bet_id]).fetchone()
+                changed += count
+        log.info("dismissals: %s %d of %d bet(s)", "dismissed" if dismissed else "restored", changed, len(bet_ids))
+        return changed
+
+    def load_dismissals(self) -> list[dict]:
+        """[{betId, dismissedAt}] of the dismissed bets still open, newest first."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_DISMISSALS).fetchall()
+        return [{"betId": bet_id, "dismissedAt": _epoch_to_iso(dismissed_at)} for bet_id, dismissed_at in rows]
+
+    def set_teaser_block(self, market_key: str, event_start: datetime, blocked: bool, at: datetime) -> int:
+        """Mark (UPSERT) or clear (DELETE) one market's Can't tease. Returns
+        how many rows changed (an UPSERT always counts 1)."""
+        with self._lock:
+            if blocked:
+                [count] = self._con.execute(_UPSERT_TEASER_BLOCK, [market_key, event_start, at]).fetchone()
+            else:
+                [count] = self._con.execute("DELETE FROM teaser_blocks WHERE market_key = ?", [market_key]).fetchone()
+        log.info("teaser blocks: %s %s", "blocked" if blocked else "restored", market_key)
+        return count
+
+    def load_teaser_blocks(self, now: datetime) -> list[dict]:
+        """[{marketKey, eventStartMs, blockedAt}] of the blocks whose game is still to start."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_TEASER_BLOCKS, [now]).fetchall()
+        return [{"marketKey": market_key, "eventStartMs": int(event_start_ms), "blockedAt": _epoch_to_iso(blocked_at)}
+                for market_key, event_start_ms, blocked_at in rows]
+
+    def set_edge_skip(self, skip_key: str, event_start: datetime, skipped: bool, at: datetime) -> int:
+        """Skip (UPSERT) or restore (DELETE) one Edges line. Returns how many
+        rows changed (an UPSERT always counts 1)."""
+        with self._lock:
+            if skipped:
+                [count] = self._con.execute(_UPSERT_EDGE_SKIP, [skip_key, event_start, at]).fetchone()
+            else:
+                [count] = self._con.execute("DELETE FROM edge_skips WHERE skip_key = ?", [skip_key]).fetchone()
+        log.info("edge skips: %s %s", "skipped" if skipped else "restored", skip_key)
+        return count
+
+    def load_edge_skips(self, now: datetime) -> list[dict]:
+        """[{skipKey, eventStartMs, skippedAt}] of the skips whose game is still to start."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_EDGE_SKIPS, [now]).fetchall()
+        return [{"skipKey": skip_key, "eventStartMs": int(event_start_ms), "skippedAt": _epoch_to_iso(skipped_at)}
+                for skip_key, event_start_ms, skipped_at in rows]
 
     def load_edge_settings(self) -> dict:
         """{settings: {field: value or None}, updatedAt: ISO or None} — every

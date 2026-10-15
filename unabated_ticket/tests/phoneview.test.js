@@ -107,6 +107,20 @@ test("the stake block's label at size, with nothing resting, and an against-only
   assert.deepEqual([against.position, against.positionAgainst, against.payout], ["against $200 · $100 alone", true, "$350.00"]);
 });
 
+test("the stake block shows the uncapped stake beside a liquidity cap", () => {
+  const row = { price: 150, sourceFormat: 1, sourcePrice: 150 };
+  const capped = phoneView.stakeBlockView({ ...row, advice: { kind: "none", bet: 17, alone: 240, verb: "bet", held: 0, against: 0, teasers: { held: 0, against: 0 }, cappedAt: 17, uncapped: 240 } });
+  assert.equal(capped.position, "all $17 liq");
+  assert.equal(capped.uncapped, "uncapped $240.00");
+  const novig = phoneView.stakeBlockView({ ...row, sourceFormat: 4, sourcePrice: 0.319, book: { id: 89, name: "Novig" }, advice: { kind: "none", bet: 17, alone: 240, verb: "bet", held: 0, against: 0, teasers: { held: 0, against: 0 }, cappedAt: 17, uncapped: 240 } });
+  assert.equal(novig.uncapped, "uncapped $240.00 · 752 contracts @ 31.9¢");
+});
+
+test("a Polymarket ticket shows contracts at Unabated's price", () => {
+  const row = { price: 150, sourceFormat: 1, sourcePrice: 150, book: { id: 0, name: "Polymarket US" } };
+  assert.deepEqual(phoneView.contractsView(100, row), { text: "250 contracts @ 40.0¢", cost: "$100.00", under: false });
+});
+
 test("the runner names the open bets no board game matches; the Bets tab groups them as the panel does", async () => {
   const { payload, betsBody } = await payloadFor(OPEN_SETTINGS, [BEARS_HELD, UNKNOWN_TEAM, A_FUTURE]);
   const unmatched = payload.betsService.unmatched;
@@ -181,4 +195,31 @@ test("leagues follow the sports ticked, and a stored NFL-only list survives a sa
   assert.deepEqual(phoneView.leaguesForSports(["football"], [1]), [1]);
   assert.deepEqual(phoneView.leaguesForSports(["football", "hockey"], [1]), [1, 2, 6, 11]);
   assert.deepEqual(phoneView.leaguesForSports([], [1]), []);
+});
+
+test("applyDismissals: the page's own Dismiss / Restore laid over the runner's list; no marks from the service keeps it", () => {
+  const unmatched = [
+    { betId: "a", needsGame: true, needsFix: false, dismissed: false, flagUnlessDismissed: "game" },
+    { betId: "b", needsGame: false, needsFix: false, dismissed: true, flagUnlessDismissed: "fix" },
+    { betId: "c", needsGame: false, needsFix: false, dismissed: false, flagUnlessDismissed: null },
+  ];
+  assert.equal(phoneView.applyDismissals(unmatched, null), unmatched);
+  const laid = phoneView.applyDismissals(unmatched, ["a"]);
+  assert.deepEqual(laid.map((entry) => [entry.betId, entry.needsGame, entry.needsFix, entry.dismissed]),
+    [["a", false, false, true], ["b", false, true, false], ["c", false, false, false]]);
+});
+
+test("lineMovedText: the panel's Line moved note when the ticket's line changed since it was opened", () => {
+  assert.equal(phoneView.lineMovedText({ price: 120, points: -2.5 }, { price: 120, points: -2.5 }), null);
+  assert.equal(phoneView.lineMovedText({ price: 130, points: -3 }, { price: 120, points: -2.5 }),
+    "Line moved: now +120 at -2.5 (opened +130 at -3). Stake re-sized.");
+  assert.equal(phoneView.lineMovedText({ price: -110, points: null }, { price: -105, points: null }),
+    "Line moved: now -105 (opened -110). Stake re-sized.");
+});
+
+test("teasersWarningText: no BFA account read, or BFA's last pull failed", () => {
+  assert.equal(phoneView.teasersWarningText(null), null);
+  assert.match(phoneView.teasersWarningText({ configured: false }), /reads no BFA account/);
+  assert.equal(phoneView.teasersWarningText({ configured: true, error: "HTTP 500", ageText: "3m" }), "BFA's last pull failed (HTTP 500); open teasers are as of 3m ago.");
+  assert.equal(phoneView.teasersWarningText({ configured: true, error: null }), null);
 });

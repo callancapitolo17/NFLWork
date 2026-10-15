@@ -28,6 +28,8 @@ class FakeKalshiApi:
         self.fixture = fixture
         self.fills = fills
         self.positions = positions
+        self.historical_fills: list[dict] = []
+        self.settlements: list[dict] = []
         self.paths: list[str] = []
         self.fail_paths: set[str] = set()
 
@@ -37,6 +39,11 @@ class FakeKalshiApi:
         url = urlparse(path)
         if url.path in self.fail_paths:
             return 503, "unavailable", {}
+        if url.path == "/historical/fills":
+            ticker = parse_qs(url.query)["ticker"][0]
+            return 200, {"fills": [f for f in self.historical_fills if f["ticker"] == ticker], "cursor": ""}, {}
+        if url.path.startswith("/historical/markets/"):
+            return 404, {"message": "not found"}, {}
         if url.path == "/portfolio/fills":
             min_ts = parse_qs(url.query).get("min_ts")
             fills = self.fills
@@ -44,6 +51,8 @@ class FakeKalshiApi:
                 fills = [f for f in fills if datetime.fromisoformat(
                     f["created_time"].replace("Z", "+00:00")).timestamp() >= int(min_ts[0])]
             return 200, {"fills": fills, "cursor": ""}, {}
+        if url.path == "/portfolio/settlements":
+            return 200, {"settlements": self.settlements, "cursor": ""}, {}
         if url.path == "/portfolio/positions":
             return 200, {"market_positions": self.positions, "cursor": ""}, {}
         if url.path.startswith("/markets/"):
@@ -121,6 +130,47 @@ def test_a_failed_market_lookup_fails_closed_for_that_record_only(kalshi_fixture
     assert records["kalshi:KXNFLGAME-26SEP20PITNE-NE:yes"]["unmatchable"] == (
         "unreadable Kalshi market (no market payload for KXNFLGAME-26SEP20PITNE-NE)")
     assert records["kalshi:KXNCAAFTOTAL-26SEP12RICEND-60:yes"]["unmatchable"] is None
+
+
+def test_full_pulls_read_the_historical_fills_and_price_the_net_position(kalshi_fixture):
+    opening = fill("KXNFLGAME-26SEP20PITNE-NE", "yes", 100, 0.40, "2026-08-01T12:00:00Z", trade_id="h1")
+    closing = fill("KXNFLGAME-26SEP20PITNE-NE", "no", 100, 0.45, "2026-09-11T12:00:00Z",
+                   action="sell", trade_id="c1")
+    bot = fill("KXMLBGAME-26JUL01NYYBOS-NYY", "yes", 5, 0.5, "2026-07-01T12:00:00Z", trade_id="h2")
+    stored = fill("KXNCAAFTOTAL-26SEP12RICEND-60", "yes", 500, 0.32, "2026-07-02T12:00:00Z", trade_id="h3")
+    api = FakeKalshiApi(kalshi_fixture, [closing], [])
+    settled = fill("KXNFLGAME-26SEP20PITNE-PIT", "yes", 401, 0.39, "2026-04-01T14:53:00Z", trade_id="h4")
+    api.historical_fills = [opening, bot, stored, settled]
+    api.settlements = [{"ticker": "KXNFLGAME-26SEP20PITNE-PIT", "market_result": "yes"}]
+    source = KalshiSource(api=api, configure_auth=False, lookup_gap_sec=0, clock=lambda: 1_800_000_000.0,
+                          known_tickers=lambda: {"KXNCAAFTOTAL-26SEP12RICEND-60"})
+    records = {record["id"]: record for record in source.fetch()}
+    # One read per market the bets touch; the bot's market is never asked for.
+    assert sorted(p for p in api.paths if p.startswith("/historical/fills")) == [
+        "/historical/fills?ticker=KXNCAAFTOTAL-26SEP12RICEND-60&limit=200",
+        "/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-NE&limit=200",
+        "/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-PIT&limit=200"]
+    # Only markets the bets touch: in the recent fills, held by the store, or
+    # settled since the cutoff; not the bot's.
+    assert {record["raw"]["ticker"] for record in records.values()} == {
+        "KXNFLGAME-26SEP20PITNE-NE", "KXNCAAFTOTAL-26SEP12RICEND-60", "KXNFLGAME-26SEP20PITNE-PIT"}
+    entry = records["kalshi:KXNFLGAME-26SEP20PITNE-NE:yes"]
+    assert entry["pnl"] == 5  # bought YES at 40c, closed at 45c
+    assert records["kalshi:KXNFLGAME-26SEP20PITNE-NE:no"]["mergedInto"] == entry["id"]
+
+
+def test_a_failed_historical_read_skips_that_market_and_retries_next_full_pull(kalshi_fixture):
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL], [NE_POSITION])
+    api.fail_paths.add("/historical/fills")
+    now = [1_800_000_000.0]
+    source = make_source(api, clock=lambda: now[0])
+    assert len(source.fetch()) == 1  # the poll still succeeds
+    api.fail_paths.clear()
+    now[0] += 3600
+    source.fetch()
+    now[0] += 3600
+    source.fetch()
+    assert api.count("/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-NE") == 2  # failed, then read; the third pull reads nothing
 
 
 def test_a_failed_fills_pull_raises(kalshi_fixture):
@@ -224,7 +274,7 @@ def test_upsert_replaces_a_record_by_id(store):
                              [record("kalshi:a:yes", "won", "2026-09-12T00:00:00Z")]])
     service.run_source_once(source, store)
     service.run_source_once(source, store)
-    [bet] = service.bets_payload(store, days=30)["bets"]
+    [bet] = service.bets_payload(store, days=3650)["bets"]  # the window is not under test; a fixed date ages out of 30
     assert bet["status"] == "won"
     assert store._con.execute("SELECT count(*) FROM bets").fetchone()[0] == 1
 
@@ -290,6 +340,13 @@ def test_a_duplicated_id_in_one_poll_keeps_the_last_record_and_warns(store, capl
     # The count is the statement's own, not a scan keyed on seen_at: two polls
     # sharing a clock reading (two sources in one microsecond) do not add up.
     assert store.upsert_bets([record("kalshi:b:yes", "open", None)], seen) == 0
+
+
+def test_load_kalshi_tickers_reads_the_ticker_out_of_each_kalshi_id(store):
+    store.upsert_bets([{**record("kalshi:KXA-1:yes", "won", "2026-09-11T20:00:00Z"), "venue": "kalshi"},
+                       {**record("novig:x", "won", "2026-09-11T20:00:00Z"), "venue": "novig"}],
+                      datetime(2026, 9, 12, tzinfo=timezone.utc))
+    assert store.load_kalshi_tickers() == {"KXA-1"}
 
 
 def test_rows_from_before_the_content_hash_column_are_rewritten_once(store):
@@ -628,7 +685,8 @@ def test_http_bets_json_and_health_shape(store, http_server):
     service.run_source_once(ScriptedSource([[record("kalshi:a:yes", "open", None)]]), store)
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
-    assert set(payload) == {"generatedAt", "sources", "bets", "crosswalk", "pins", "fillFairs"}
+    assert set(payload) == {"generatedAt", "sources", "bets", "crosswalk", "pins", "fillFairs", "closingFairs",
+                            "exclusions", "dismissals", "teaserBlocks", "edgeSkips"}
     assert set(payload["sources"]["kalshi"]) == {"fetchedAt", "ok", "error", "count"}
     assert payload["sources"]["kalshi"]["ok"] is True
     assert payload["bets"][0]["id"] == "kalshi:a:yes"
@@ -646,7 +704,8 @@ def test_http_before_any_poll_serves_an_empty_list_with_the_source_pending(http_
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
     assert payload == {"generatedAt": payload["generatedAt"], "sources": {"kalshi": service.NO_POLL_YET}, "bets": [],
-                       "crosswalk": [], "pins": [], "fillFairs": []}
+                       "crosswalk": [], "pins": [], "fillFairs": [], "closingFairs": [], "exclusions": [],
+                       "dismissals": [], "teaserBlocks": [], "edgeSkips": []}
     status, payload = get_json(f"{http_server}/health")
     assert status == 200 and payload["sources"] == {"kalshi": service.NO_POLL_YET}
 
@@ -738,6 +797,158 @@ def test_http_fill_fairs_post_saves_once_and_bets_json_serves_them(store, http_s
     assert store._con.execute("SELECT count(*) FROM bet_fill_fairs").fetchone()[0] == 1
 
 
+def closing_fair_row(bet_id: str, fair_american: int = -123, observed: str = "2026-09-13T16:55:00Z", **extra) -> dict:
+    return {"betId": bet_id, "lineKey": "289357360:ms105:si0:tid6", "points": -2.5, "fairAmerican": fair_american,
+            "fairObservedAt": observed, "eventStart": "2026-09-13T17:00:00Z", **extra}
+
+
+def test_closing_fairs_keep_the_newest_pregame_observation_and_serve_for_the_window(store):
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    service.run_source_once(ScriptedSource([[record("kalshi:open", "open", None), record("kalshi:old", "won", old)]]), store)
+    at = datetime(2026, 9, 13, 16, 56, tzinfo=timezone.utc)
+    assert store.save_closing_fairs([closing_fair_row("kalshi:open", observed="2026-09-13T16:50:00Z"),
+                                     closing_fair_row("kalshi:old")], at) == 2
+    # Newer moves the row forward; an older reading arriving late is ignored.
+    assert store.save_closing_fairs([closing_fair_row("kalshi:open", -130, "2026-09-13T16:58:00Z")], at) == 1
+    assert store.save_closing_fairs([closing_fair_row("kalshi:open", -110, "2026-09-13T16:52:00Z")], at) == 0
+    served = store.load_closing_fairs(30, now)
+    assert served == [{"betId": "kalshi:open", "lineKey": "289357360:ms105:si0:tid6", "points": -2.5, "fairAmerican": -130,
+                       "fairObservedAt": "2026-09-13T16:58:00Z", "eventStart": "2026-09-13T17:00:00Z"}]
+    assert service.bets_payload(store, days=30)["closingFairs"] == served
+
+
+def test_validate_closing_fair_rows_refuses_a_reading_at_or_after_the_start():
+    good = closing_fair_row("kalshi:1")
+    assert service.validate_closing_fair_rows({"rows": [good]}) == [good]
+    assert service.validate_closing_fair_rows({"rows": [{**good, "eventStart": None}]}) == "rows[0].eventStart must be an ISO time, got None"
+    assert service.validate_closing_fair_rows({"rows": [{**good, "fairAmerican": 50}]}).startswith("rows[0].fairAmerican must be")
+    assert service.validate_closing_fair_rows({"rows": [closing_fair_row("kalshi:1", observed="2026-09-13T17:00:00Z")]}) == (
+        "rows[0].fairObservedAt must be before eventStart (a close is read pregame), "
+        "got 2026-09-13T17:00:00Z at or after 2026-09-13T17:00:00Z")
+
+
+def test_http_closing_fairs_post_and_bets_json_serves_them(store, http_server):
+    service.run_source_once(ScriptedSource([[record("kalshi:1", "open", None)]]), store)
+    body = json.dumps({"rows": [closing_fair_row("kalshi:1")]}).encode()
+    status, reply = request_json("POST", f"{http_server}/closing_fairs.json", body, "application/json")
+    assert (status, reply) == (200, {"ok": True, "saved": 1})
+    assert [row["fairAmerican"] for row in get_json(f"{http_server}/bets.json")[1]["closingFairs"]] == [-123]
+    status, _ = request_json("POST", f"{http_server}/closing_fairs.json", body, "text/plain")
+    assert status == 415
+
+
+def test_http_exclusions_remove_and_restore_only_bfa_and_wagerzon_bets(store, http_server):
+    service.run_source_once(ScriptedSource([[
+        {**record("bfa:1:leg0", "lost", "2026-09-20T20:00:00Z"), "venue": "bfa"},
+        {**record("bfa:1:leg1", "lost", "2026-09-20T20:00:00Z"), "venue": "bfa"},
+        record("kalshi:a:yes", "open", None),
+    ]]), store)
+    remove = json.dumps({"betIds": ["bfa:1:leg0", "bfa:1:leg1"], "excluded": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/exclusions.json", remove, "application/json")
+    assert status == 200 and reply["changed"] == 2
+    assert sorted(row["betId"] for row in reply["exclusions"]) == ["bfa:1:leg0", "bfa:1:leg1"]
+    assert len(get_json(f"{http_server}/bets.json")[1]["exclusions"]) == 2
+    # Removing again changes nothing; the bets themselves stay in `bets`.
+    status, reply = request_json("POST", f"{http_server}/exclusions.json", remove, "application/json")
+    assert reply["changed"] == 0
+    assert store._con.execute("SELECT count(*) FROM bets").fetchone()[0] == 3
+    kalshi = json.dumps({"betIds": ["kalshi:a:yes"], "excluded": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/exclusions.json", kalshi, "application/json")
+    assert status == 400 and reply["error"] == "only ['bfa', 'wagerzon'] bets can be removed, got {'kalshi:a:yes': 'kalshi'}"
+    unknown = json.dumps({"betIds": ["bfa:nope"], "excluded": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/exclusions.json", unknown, "application/json")
+    assert status == 404
+    status, reply = request_json("POST", f"{http_server}/exclusions.json", b'{"betIds": [], "excluded": true}', "application/json")
+    assert status == 400 and reply["error"] == "betIds must be a non-empty list of bet ids, got []"
+    status, reply = request_json("POST", f"{http_server}/exclusions.json", remove, "text/plain")
+    assert status == 415
+    restore = json.dumps({"betIds": ["bfa:1:leg0", "bfa:1:leg1"], "excluded": False}).encode()
+    status, reply = request_json("POST", f"{http_server}/exclusions.json", restore, "application/json")
+    assert (status, reply["changed"], reply["exclusions"]) == (200, 2, [])
+
+
+def test_http_dismissals_dismiss_and_restore_open_bets(store, http_server):
+    service.run_source_once(ScriptedSource([[
+        record("kalshi:a:yes", "open", None),
+        record("kalshi:b:yes", "won", "2026-09-20T20:00:00Z"),
+    ]]), store)
+    dismiss = json.dumps({"betIds": ["kalshi:a:yes", "kalshi:b:yes"], "dismissed": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", dismiss, "application/json")
+    assert status == 200 and reply["changed"] == 2
+    # Only the open bet's dismissal is served: the flag ends when a bet settles.
+    assert [row["betId"] for row in reply["dismissals"]] == ["kalshi:a:yes"]
+    assert [row["betId"] for row in get_json(f"{http_server}/bets.json")[1]["dismissals"]] == ["kalshi:a:yes"]
+    # Dismissing again keeps the first time and changes nothing.
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", dismiss, "application/json")
+    assert reply["changed"] == 0
+    unknown = json.dumps({"betIds": ["kalshi:nope"], "dismissed": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", unknown, "application/json")
+    assert status == 404 and reply["error"] == "no bet with id(s) ['kalshi:nope']"
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", b'{"betIds": ["kalshi:a:yes"]}', "application/json")
+    assert status == 400 and reply["error"] == "dismissed must be true or false, got None"
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", dismiss, "text/plain")
+    assert status == 415
+    restore = json.dumps({"betIds": ["kalshi:a:yes"], "dismissed": False}).encode()
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", restore, "application/json")
+    assert (status, reply["changed"], reply["dismissals"]) == (200, 1, [])
+
+
+def test_http_teaser_blocks_mark_and_restore_until_the_game_starts(store, http_server):
+    future_ms = int((datetime.now(timezone.utc) + timedelta(days=2)).timestamp() * 1000)
+    past_ms = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() * 1000)
+    block = json.dumps({"marketKey": "123456:bt2", "eventStartMs": future_ms, "blocked": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json", block, "application/json")
+    assert status == 200 and reply["changed"] == 1
+    assert [(row["marketKey"], row["eventStartMs"]) for row in reply["teaserBlocks"]] == [("123456:bt2", future_ms)]
+    assert get_json(f"{http_server}/bets.json")[1]["teaserBlocks"] == reply["teaserBlocks"]
+    # A started game's block is no longer served.
+    started = json.dumps({"marketKey": "999:bt3", "eventStartMs": past_ms, "blocked": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json", started, "application/json")
+    assert status == 200 and [row["marketKey"] for row in reply["teaserBlocks"]] == ["123456:bt2"]
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json",
+                                 json.dumps({"marketKey": "123456:bt1", "eventStartMs": future_ms, "blocked": True}).encode(),
+                                 "application/json")
+    assert status == 400 and reply["error"].startswith("marketKey must look like")
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json",
+                                 json.dumps({"marketKey": "123456:bt2", "eventStartMs": "soon", "blocked": True}).encode(),
+                                 "application/json")
+    assert status == 400 and reply["error"].startswith("eventStartMs must be")
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json", block, "text/plain")
+    assert status == 415
+    restore = json.dumps({"marketKey": "123456:bt2", "eventStartMs": future_ms, "blocked": False}).encode()
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json", restore, "application/json")
+    assert (status, reply["changed"], reply["teaserBlocks"]) == (200, 1, [])
+
+
+def test_http_edge_skips_skip_and_restore_until_the_game_starts(store, http_server):
+    future_ms = int((datetime.now(timezone.utc) + timedelta(days=2)).timestamp() * 1000)
+    past_ms = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() * 1000)
+    key = "125791:1:3:0|47.5@4"
+    skip = json.dumps({"skipKey": key, "eventStartMs": future_ms, "skipped": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", skip, "application/json")
+    assert status == 200 and reply["changed"] == 1
+    assert [(row["skipKey"], row["eventStartMs"]) for row in reply["edgeSkips"]] == [(key, future_ms)]
+    assert get_json(f"{http_server}/bets.json")[1]["edgeSkips"] == reply["edgeSkips"]
+    # A moneyline and a negative spread key are fine; a started game's skip is not served.
+    started = json.dumps({"skipKey": "999:1:2:1|-3.5@17", "eventStartMs": past_ms, "skipped": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", started, "application/json")
+    assert status == 200 and [row["skipKey"] for row in reply["edgeSkips"]] == [key]
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json",
+                                 json.dumps({"skipKey": "125791:1:1:0|ml", "eventStartMs": future_ms, "skipped": True}).encode(),
+                                 "application/json")
+    assert status == 400 and reply["error"].startswith("skipKey must look like")
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json",
+                                 json.dumps({"skipKey": key, "eventStartMs": future_ms, "skipped": "yes"}).encode(),
+                                 "application/json")
+    assert status == 400 and reply["error"].startswith("skipped must be")
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", skip, "text/plain")
+    assert status == 415
+    restore = json.dumps({"skipKey": key, "eventStartMs": future_ms, "skipped": False}).encode()
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", restore, "application/json")
+    assert (status, reply["changed"], reply["edgeSkips"]) == (200, 1, [])
+
+
 def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):
     """DNS rebinding: evil.example resolving to 127.0.0.1 is SAME-ORIGIN with
     this server, so CORS and the JSON Content-Type guard do not apply to it.
@@ -749,6 +960,8 @@ def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):
             ("GET", "/bets.json", None, None), ("GET", "/health", None, None),
             ("POST", "/crosswalk.json", body, "application/json"),
             ("POST", "/fill_fairs.json", json.dumps({"rows": [fill_fair_row("kalshi:a:yes")]}).encode(), "application/json"),
+            ("POST", "/closing_fairs.json", json.dumps({"rows": [closing_fair_row("kalshi:a:yes")]}).encode(), "application/json"),
+            ("POST", "/exclusions.json", json.dumps({"betIds": ["kalshi:a:yes"], "excluded": True}).encode(), "application/json"),
             ("DELETE", "/crosswalk.json", None, None),
             ("POST", "/pins.json", json.dumps({"pin": pin_for("kalshi:a:yes")}).encode(), "application/json"),
             ("DELETE", "/pins.json?betId=kalshi:a:yes", None, None)]:
@@ -788,3 +1001,47 @@ def test_host_allowed():
 ])
 def test_main_checkout_root_finds_the_main_checkout_from_either_worktree_layout(raw_root: str, expected: str) -> None:
     assert config.main_checkout_root(Path(raw_root)) == Path(expected)
+
+
+def fill_book_row(bet_id: str, books_better: int = 1, **extra) -> dict:
+    return {"betId": bet_id, "placedAt": "2026-09-23T17:02:00Z", "fillPrice": 208, "bookCount": 2,
+            "booksBetter": books_better, "bestBook": "Kalshi", "bestPrice": 215, **extra}
+
+
+def test_fill_books_are_insert_only_first_capture_wins(store):
+    captured_at = datetime(2026, 9, 23, 17, 3, tzinfo=timezone.utc)
+    none_at_number = fill_book_row("novig:2", 0, bookCount=0, bestBook=None, bestPrice=None)
+    assert store.save_fill_books([fill_book_row("novig:1"), none_at_number], captured_at) == 2
+    assert store.save_fill_books([fill_book_row("novig:1", 2)], captured_at + timedelta(minutes=5)) == 0
+    held = store._con.execute(
+        "SELECT bet_id, fill_price, book_count, books_better, best_book, best_price FROM bet_fill_books ORDER BY bet_id").fetchall()
+    assert held == [("novig:1", 208.0, 2, 1, "Kalshi", 215.0), ("novig:2", 208.0, 0, 0, None, None)]
+
+
+def test_validate_fill_book_rows_says_what_was_expected_and_what_was_found():
+    good = fill_book_row("novig:1")
+    assert service.validate_fill_book_rows({"rows": [good]}) == [good]
+    assert service.validate_fill_book_rows([]) == "body must be an object with a `rows` array, got list"
+    assert service.validate_fill_book_rows({"rows": [{**good, "betId": ""}]}) == "rows[0].betId must be a non-empty string, got ''"
+    assert service.validate_fill_book_rows({"rows": [{**good, "placedAt": "x"}]}) == "rows[0].placedAt must be an ISO time, got 'x'"
+    assert service.validate_fill_book_rows({"rows": [{**good, "fillPrice": 50}]}) == (
+        "rows[0].fillPrice must be an American price (<= -100 or >= 100), got 50")
+    assert service.validate_fill_book_rows({"rows": [{**good, "bookCount": -1}]}) == "rows[0].bookCount must be a whole number >= 0, got -1"
+    assert service.validate_fill_book_rows({"rows": [{**good, "booksBetter": 3}]}) == "rows[0].booksBetter must be at most bookCount, got 3 > 2"
+    assert service.validate_fill_book_rows({"rows": [{**good, "bestBook": None}]}) == "rows[0].bestBook must be a non-empty string, got None"
+    assert service.validate_fill_book_rows({"rows": [{**good, "bookCount": 0, "booksBetter": 0}]}) == (
+        "rows[0] with bookCount 0 must have null bestBook and bestPrice, got 'Kalshi', 215")
+
+
+def test_http_fill_books_post_saves_once(store, http_server):
+    body = json.dumps({"rows": [fill_book_row("novig:1")]}).encode()
+    status, reply = request_json("POST", f"{http_server}/fill_books.json", body, "application/json")
+    assert (status, reply) == (200, {"ok": True, "saved": 1})
+    status, reply = request_json("POST", f"{http_server}/fill_books.json", body, "application/json")
+    assert (status, reply) == (200, {"ok": True, "saved": 0})
+    status, reply = request_json("POST", f"{http_server}/fill_books.json", body, "text/plain")
+    assert status == 415
+    bad = json.dumps({"rows": [fill_book_row("novig:2", 5)]}).encode()
+    status, reply = request_json("POST", f"{http_server}/fill_books.json", bad, "application/json")
+    assert status == 400 and reply["error"].startswith("rows[0].booksBetter must be at most bookCount")
+    assert store._con.execute("SELECT count(*) FROM bet_fill_books").fetchone()[0] == 1

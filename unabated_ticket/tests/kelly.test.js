@@ -113,3 +113,11 @@ test("contract order rejects a bad stake", () => {
   assert.throws(() => kelly.contractOrder({ stake: -5, bookPrice: -113, sourceFormat: 4, sourcePrice: 0.53 }), /non-negative stake/);
   assert.throws(() => kelly.contractOrder({ stake: NaN, bookPrice: -113, sourceFormat: 4, sourcePrice: 0.53 }), /non-negative stake/);
 });
+
+test("contract order: a Polymarket line is priced in contracts at Unabated's number as-is", () => {
+  // Unabated sends Polymarket in American odds, not sourceFormat 4: +150 is 40.0¢.
+  assert.deepEqual(kelly.contractOrder({ stake: 100, bookPrice: 150, sourceFormat: 1, sourcePrice: 150, bookName: "Polymarket US" }), { contracts: 250, priceCents: 40, costDollars: 100 });
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: -130, sourceFormat: 1, sourcePrice: -130, bookName: "Poly US Ing" }).contracts, 176);
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: 150, sourceFormat: 1, sourcePrice: 150, bookName: "BetOnline" }), null);
+  assert.equal(kelly.contractOrder({ stake: 100, bookPrice: 150, sourceFormat: 1, sourcePrice: 150 }), null);
+});

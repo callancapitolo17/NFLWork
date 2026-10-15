@@ -25,10 +25,11 @@
   const condkelly = inNode ? require("./condkelly.js") : root.UnabatedCondKelly;
 
   // Every venue the plan registers a source for (#117 ProphetX still to come;
-  // BFA, Wagerzon and Polymarket US added 2026-09-23; Bet105 2026-09-29, read
-  // by the panel itself from Cal's own login — bet105.js). Listing them keeps
+  // BFA, Wagerzon and Polymarket US added 2026-09-23; Bet105 2026-09-29 and
+  // DraftKings 2026-10-10, read by the panel itself from Cal's own logins —
+  // bet105.js, draftkings.js). Listing them keeps
   // the Bets tab honest about coverage.
-  const VENUES = ["kalshi", "betonline", "novig", "prophetx", "bfa", "wagerzon", "polymarket_us", "bet105"];
+  const VENUES = ["kalshi", "betonline", "novig", "prophetx", "bfa", "wagerzon", "polymarket_us", "bet105", "draftkings"];
   const FRESH_MS = 5 * 60 * 1000;
   const STALE_MS = 60 * 60 * 1000;
   const BANNER_MAX_LINES = 5;
@@ -394,10 +395,12 @@
   //             the ticket)
   //   teaserGroups  the teasers on the game as related-bets lines (teaserGroupsOf)
   //   cappedAt  the line's liquidity when it cut `bet`, else null (capAtLiquidity)
+  //   uncapped  `bet` before the liquidity cap: the stake if the reported
+  //             liquidity is wrong and more is really there
   function stakeAdvice({ line, price, edgePct, bankroll, multiplier, matches, ladderOf, liquidity, teasers }) {
     const advice = sizeAgainstHeld({ line, price, edgePct, bankroll, multiplier, matches, ladderOf, teasers });
     const capped = capAtLiquidity(advice.bet, liquidity);
-    return { ...advice, bet: capped.stake, cappedAt: capped.cappedAt };
+    return { ...advice, bet: capped.stake, cappedAt: capped.cappedAt, uncapped: advice.bet };
   }
 
   // A stake can never be more than is resting at the price: an exchange line
@@ -539,11 +542,22 @@
     return { verb: advice.verb, bet: bets.formatStake(advice.bet), alone: changed ? `${bets.formatStake(roundCents(advice.alone))} alone` : null, cap };
   }
 
-  // One line for the clipboard: "add $188.32, $183 alone", "add $17, all $17 liq, $71.06 alone".
-  function stakeAdviceLine(advice) {
-    const words = stakeAdviceWords(advice);
-    if (!words) return null;
-    return [`${words.verb} ${words.bet}`, words.cap, words.alone].filter(Boolean).join(", ");
+  // The Ticket's line under "all $17 liq": what the stake would be with
+  // unlimited liquidity, since the reported liquidity is sometimes wrong, and
+  // on an exchange the contracts it buys at Unabated's price (user ask
+  // 2026-10-07, Ticket only, not the Edges rows or Copy).
+  //   line  {price, sourceFormat, sourcePrice, bookName} of the priced line
+  //   "uncapped $240.00 · 752 contracts @ 31.9¢" / "uncapped $85.40"; null
+  //   when liquidity did not cut the stake
+  function uncappedLine(advice, line) {
+    if (!advice || advice.cappedAt == null || !(advice.uncapped > advice.bet)) return null;
+    const stake = roundCents(advice.uncapped);
+    const dollars = `uncapped $${stake.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const order = kelly.contractOrder({ stake, bookPrice: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice, bookName: line.bookName });
+    if (!order) return dollars;
+    const priceText = `${order.priceCents.toFixed(1)}\u00a2`;
+    if (order.contracts === 0) return `${dollars} \u00b7 under 1 contract @ ${priceText}`;
+    return `${dollars} \u00b7 ${order.contracts.toLocaleString("en-US")} contract${order.contracts === 1 ? "" : "s"} @ ${priceText}`;
   }
 
   // The related bets for one line: the bet itself and a tag. A bet in the
@@ -658,7 +672,7 @@
   const api = {
     VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badges, relatedLines, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, stakeAdviceLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, needsFixBanner, keepDismissedOpen, keepKnownStartsOpen, ticketAsLine, sanitizeBetsSettings,
+    bannerLines, badges, relatedLines, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, uncappedLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, needsFixBanner, keepDismissedOpen, keepKnownStartsOpen, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {
