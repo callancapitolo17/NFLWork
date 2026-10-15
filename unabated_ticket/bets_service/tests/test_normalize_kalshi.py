@@ -112,6 +112,20 @@ def test_position_on_the_other_side_closes_this_sides_fills(kalshi_fixture):
     assert by_id(records, "kalshi:KXNCAAFTOTAL-26SEP12RICEND-60:yes")["status"] == "open"
 
 
+def test_a_yes_sell_while_net_short_yes_is_a_no_buy(kalshi_fixture):
+    # The taker bot buys NO as a v2 "ask" (a YES sell); Kalshi may label the fill a YES sell.
+    ticker = "KXNCAAFTOTAL-26SEP12RICEND-60"
+    fills = [fill(ticker, "yes", 60, 0.40, "2026-09-11T15:09:00Z", action="sell")]
+    position = {"ticker": ticker, "position_fp": "-60.00", "total_traded_dollars": "36.000000",
+                "market_exposure_dollars": "36.000000", "realized_pnl_dollars": "0.000000", "fees_paid_dollars": "0.000000"}
+    records = normalized(kalshi_fixture, extra_fills=fills, extra_positions=[position])
+    held = by_id(records, f"kalshi:{ticker}:no")
+    assert (held["status"], held["contracts"], held["price"], held["stake"]) == ("open", 60, -150, 36)
+    assert by_id(records, f"kalshi:{ticker}:yes")["status"] == "closed"
+    # A sell of a side that is held stays a sell (the fixture's closed YES position prices from its sells).
+    assert by_id(records, "kalshi:KXNEXTTEAMNFL-26MCROSBY-LV:yes")["price"] == -285
+
+
 def test_settled_market_without_a_position_reads_the_result(kalshi_fixture):
     record = by_id(normalized(kalshi_fixture), "kalshi:KXNCAAFSPREAD-26SEP05MOSUTXAM-TXAM39:yes")
     assert (record["awayTeam"], record["homeTeam"]) == ("Missouri St.", "Texas A&M")

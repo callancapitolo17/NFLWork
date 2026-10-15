@@ -18,6 +18,10 @@
 // bet was placed after both). `status.leagueLoadedAt` is when each league's
 // last snapshot landed.
 //
+// `deps.maxRefreshMs` caps every league's refresh cadence (the server runner
+// passes 60 s: the automated taker trades against the fair, so a 5-minute-old
+// snapshot is too old); the panel leaves the size tiers alone.
+//
 // Loaded as a plain <script> in panel.html (globalThis.UnabatedScanner) and via
 // require() in tests, where fetch and timers are injected.
 
@@ -71,6 +75,7 @@
     const now = (deps && deps.now) || (() => Date.now());
     const timers = (deps && deps.timers) || { setInterval: (f, ms) => root.setInterval(f, ms), clearInterval: (id) => root.clearInterval(id) };
     const onChange = (deps && deps.onChange) || (() => {});
+    const maxRefreshMs = deps && typeof deps.maxRefreshMs === "number" && deps.maxRefreshMs > 0 ? deps.maxRefreshMs : Infinity;
 
     let state = feed.emptyState();
     // line key -> observations (edgemove.observe); reset with the state.
@@ -117,7 +122,7 @@
     let leagueMeta = {};
 
     function refreshEveryMs(bytes) {
-      return REFRESH_TIERS.find((tier) => bytes <= tier.maxBytes).everyMs;
+      return Math.min(REFRESH_TIERS.find((tier) => bytes <= tier.maxBytes).everyMs, maxRefreshMs);
     }
 
     function leaguesDueForRefresh() {
