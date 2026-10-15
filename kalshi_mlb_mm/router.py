@@ -90,7 +90,7 @@ def drop_relayed_novig(book_fairs: dict[str, float],
     estimate (measured 2026-10-02: Novig sat inside SIGMA_Z_MAX of a book it
     relayed in 96 of 99 combos, against 58 of 70 for FanDuel vs BetMGM). It
     stays when its vendors are absent from the flight — it is then our only
-    read of them (DraftKings' own SGP endpoint is dark for us, #102).
+    read of them (e.g. a flight DraftKings' own SGP call missed).
 
     ``novig_vendors`` is Novig's ``OnDemandBookResult.vendors``. Empty means
     nothing was relayed (a price read off Novig's own exchange), so Novig

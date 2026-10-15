@@ -55,13 +55,14 @@ from __future__ import annotations
 import functools
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from mlb_sgp._shared import (RETRY_LIVE, BookTransportError, FetchCounters,
-                             PricedRow, TargetLine, accepts_on_decline,
+from mlb_sgp._shared import (BookTransportError, FetchCounters, PricedRow,
+                             TargetLine, accepts_on_decline,
                              decimal_to_american, fetch_counters,
-                             price_tally_for, request_with_retry)
+                             price_tally_for)
 from mlb_sgp.dk_client import DraftKingsClient
 
 logger = logging.getLogger(__name__)
@@ -69,15 +70,6 @@ logger = logging.getLogger(__name__)
 BOOK_NAME = "draftkings"
 SOURCE_LABEL = "draftkings_direct"
 SOURCE_LABEL_FALLBACK = "draftkings_interpolated"
-
-# calculateBets answers non-200 for two unrelated reasons, and collapsing them
-# is what made issue #102 invisible for eight days: 422 is DK declining THIS
-# combo (normal — most cross-market pairs decline that way), while 403/429 is
-# DK refusing US. Only the second is a transport verdict. Every other book
-# reaches this judgement inside its client via ``check_response``; DK is the
-# one book whose price hook issues its own request, so it must classify here
-# or the ``prices_empty`` tripwire blames the parser for a dead endpoint.
-BLOCKED_PRICE_STATUSES = frozenset({403, 429})
 
 # Target-level parallelism. Env-overridable for ops tuning without a
 # code edit; the shipped default comes from the Phase-0 probe
@@ -689,7 +681,10 @@ def resolve_legs(structure, legs, home_team, away_team, *,
         "totals": {("O"|"U", line): [sel_ids]},
         "moneyline": {"1": [sel_ids], "3": [sel_ids]}, "canonical": set()}``.
         Each leg resolves from its ``leg.period`` bucket; a missing/None
-        bucket fails the whole book (never a cross-period price).
+        bucket fails the whole book (never a cross-period price). An
+        optional ``"straight_odds"`` key, ``{sel_id: decimal}`` (DK's straight
+        price per live selection, from the same parlays payload), fills the
+        resolved legs' single/opposite decimals.
     legs
         ``list[kalshi_common.legset.CanonicalLeg]`` — market_type in
         {"spread", "total", "ml"}; spread line SIGNED home-perspective.
@@ -706,11 +701,13 @@ def resolve_legs(structure, legs, home_team, away_team, *,
 
     A missing CHOSEN side fails the whole resolution (None). A missing
     OPPOSITE side yields ``opposite_ref=None`` (routes the book to
-    Route B downstream). DK structure carries no odds, so
-    single_decimal / opposite_decimal are always None. Any unexpected
-    structure shape returns None — never raises.
+    Route B downstream). single_decimal / opposite_decimal are the straight
+    odds of ref / opposite_ref, None where ``straight_odds`` lacks them (a
+    suspended selection). Any unexpected structure shape returns None —
+    never raises.
     """
     try:
+        straight_odds = structure.get("straight_odds") or {}
         out: list[ResolvedLeg] = []
         for leg in legs:
             # Period bucket selection — the ONE place period is applied (#85).
@@ -755,12 +752,13 @@ def resolve_legs(structure, legs, home_team, away_team, *,
                 return None
             if not chosen:
                 return None                      # chosen side unresolvable
+            opposite_ref = opposite[0] if opposite else None
             out.append(ResolvedLeg(
                 ref=chosen[0],
-                opposite_ref=opposite[0] if opposite else None,
-                # DK's structure carries no odds — decimals stay None.
-                single_decimal=None,
-                opposite_decimal=None,
+                opposite_ref=opposite_ref,
+                single_decimal=straight_odds.get(chosen[0]),
+                opposite_decimal=(straight_odds.get(opposite_ref)
+                                  if opposite_ref is not None else None),
             ))
         return out
     except Exception as e:
@@ -772,56 +770,57 @@ def resolve_legs(structure, legs, home_team, away_team, *,
         return None
 
 
-def price_selection_set(client, refs, *,
-                        counters: FetchCounters | None = None):
-    """Price one set of DK selection ids (1..N legs) via calculateBets.
+# DK's market id is "{type}_{mnum}", and every game-line selection id carries
+# its mnum behind a type prefix (0ML86559201_1 is in market 1_86559201,
+# 0HC86559201N150_1 in 2_86559201, 0OU86560036O50_1 in 3_86560036). Checked
+# 2026-10-03 against the parlays payload's own market ids for main, alt, F5
+# and 1st-inning markets.
+_DK_MARKET_TYPE_BY_SELECTION_PREFIX = {"0ML": "1", "0HC": "2", "0OU": "3"}
+_DK_SELECTION_MNUM_RE = re.compile(r"^0(?:ML|HC|OU)(\d+)")
 
-    Generalizes the 2-leg ``calculate_sgp`` (scraper_draftkings_sgp.py:598)
-    / trifecta ``post_calculate_bets`` (scraper_draftkings_trifecta.py:104)
-    body to N ``selectionsForYourBet`` entries, all in yourBetGroup 0 (one
-    SGP). Written here rather than importing post_calculate_bets because
-    that helper does not reject ``combinabilityRestrictions`` responses,
-    which this caller must treat as unpriceable.
 
-    Returns the decimal ``trueOdds`` float, or None on 422 /
-    combinabilityRestrictions / any failure (never raises).
+def dk_market_id_of(selection_id: str) -> str:
+    """The DK market id a game-line selection id belongs to.
 
-    A ``BLOCKED_PRICE_STATUSES`` response is still None to the caller, but it
-    is COUNTED as a transport error first (issue #102) — that count is the
-    only thing separating "DK is blocked" from "DK won't build these combos"
-    in ``sgp_fetch_health``.
+    Raises ValueError for any other selection shape — a guessed market would
+    price the wrong leg.
     """
-    try:
-        from scraper_draftkings_sgp import DK_CALCULATE_BETS_URL
-        # RETRY_LIVE: this is the on-demand quote path — one fast retry, and
-        # a 4xx (422 non-combinable) still resolves on the first attempt.
-        resp = request_with_retry(
-            lambda: client.session.post(DK_CALCULATE_BETS_URL, json={
-                "selections": [],
-                "selectionsForYourBet": [
-                    {"id": sid, "yourBetGroup": 0} for sid in refs
-                ],
-                "selectionsForCombinator": [],
-                "selectionsForProgressiveParlay": [],
-                "oddsStyle": "american",
-            }, headers={"Content-Type": "application/json"}, timeout=10),
-            profile=RETRY_LIVE, book=BOOK_NAME, stage="price")
-        if resp.status_code in BLOCKED_PRICE_STATUSES:
-            # Counted by the handler below, not re-raised: one blocked call
-            # must not abort the flight (matches caesars/novig).
-            raise BookTransportError(
-                BOOK_NAME, "price", status_code=resp.status_code,
-                detail=(getattr(resp, "text", "") or "")[:200])
-        if resp.status_code != 200:
-            return None                          # 422 (non-combinable) et al.
-        data = resp.json()
-        if data.get("combinabilityRestrictions"):
-            return None                          # cross-market rejection
-        for bet in data.get("bets", []):
-            true_odds = bet.get("trueOdds")
-            if true_odds and len(bet.get("selectionsMapped", [])) >= len(refs):
-                return float(true_odds)
+    market_type = _DK_MARKET_TYPE_BY_SELECTION_PREFIX.get(selection_id[:3])
+    match = _DK_SELECTION_MNUM_RE.match(selection_id)
+    if market_type is None or match is None:
+        raise ValueError(
+            f"expected a 0ML/0HC/0OU DK selection id, got {selection_id!r}")
+    return f"{market_type}_{match.group(1)}"
+
+
+def price_selection_set(client, refs, dk_event_id: str, *,
+                        counters: FetchCounters | None = None):
+    """Price one set of DK selection ids (2..N legs) via DK's SGP builder.
+
+    The builder prices a base plus each outcome of one candidate market, so
+    the set is asked as base = ``refs[:-1]``, candidate = the market of
+    ``refs[-1]``. The answer covers both sides of the last leg, and
+    ``DraftKingsClient.fetch_added_leg_odds`` keeps it for the sibling
+    partition cell — 2 wire calls per 2-leg partition, 4 per 3-leg.
+
+    Returns the decimal odds, or None when DK will not price the set (never
+    raises). A 1-leg set returns None without a call: the builder prices
+    nothing on an empty base, and its 1-leg price is not DK's straight price
+    (0.85 pp apart on the 1st-inning total, 2026-10-04). 1-leg fairs come
+    from the straight odds ``resolve_legs`` carries instead.
+
+    A transport failure (403/429, wire error, lane busy) is still None to
+    the caller but is COUNTED as a transport error (issue #102) — the count
+    is what separates "DK is blocked" from "DK won't build these combos" in
+    ``sgp_fetch_health``, and keeps the ``prices_empty`` parser tripwire off
+    a dead endpoint.
+    """
+    if len(refs) < 2:
         return None
+    try:
+        answer = client.fetch_added_leg_odds(
+            dk_event_id, frozenset(refs[:-1]), dk_market_id_of(refs[-1]))
+        return answer.get(refs[-1])
     except BookTransportError:
         # Counted, NOT re-raised — see caesars.price_selection_set.
         if counters is not None:

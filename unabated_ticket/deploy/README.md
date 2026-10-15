@@ -121,19 +121,32 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
      done. If BetOnline fails on Cloudflare (its cookies were issued to the
      Mac's IP), move the file back to the Mac the same way.
 
-11. **NFL fecta pricer** (`fectas`; its own README, Running on the VM):
-   - On the Mac, install the DraftKings relay agent (`nfl_specials/README.md`,
-     Running on the VM) and read its address: `tailscale ip -4`.
-   - In `deploy/.env` set `NFL_SPECIALS_DK_PROXY=http://<that address>:8097`.
-     Every deploy needs it (compose refuses to start without it).
-   - Publish the page on the tailnet at port 8443:
-     ```bash
-     sudo tailscale serve --bg --https=8443 http://127.0.0.1:8096
-     tailscale serve status        # must also show https://<name>:8443 proxy http://127.0.0.1:8096
-     ```
-   - Once, with the Mac's page stopped, move its history over:
-     `scp ~/NFLWork/nfl_specials/nfl_specials.duckdb ubuntu@<vm>:~/unabated-data/`.
-   - `./deploy.sh`, then open `https://<name>:8443/` on the phone.
+11. **Automated taker key** (2026-10-14; the bot places real Kalshi orders
+    once this is in). First: public SSH off, SSH over Tailscale only (the key
+    can trade). Then make a NEW key at kalshi.com > API keys for the bot
+    alone, and:
+    ```bash
+    scp kalshi-taker.pem ubuntu@<vm>:~/unabated-data/kalshi_taker.pem   # from the Mac, over Tailscale
+    chmod 600 ~/unabated-data/kalshi_taker.pem                          # on the VM
+    echo 'KALSHI_TAKER_API_KEY_ID=<the new key id>' >> ~/NFLWork/unabated_ticket/bets_service/.env
+    docker compose restart bets   # the log says "taker: ARMED on its own key"
+    ```
+    Stop the bot: `touch ~/unabated-data/taker.stop` (`rm` to resume). For
+    good: revoke the key at kalshi.com. State: `curl -s 127.0.0.1:8095/taker.json`.
+
+12. **NFL fecta pricer** (`fectas`; its own README, Running on the VM):
+    - On the Mac, install the DraftKings relay agent (`nfl_specials/README.md`,
+      Running on the VM) and read its address: `tailscale ip -4`.
+    - In `deploy/.env` set `NFL_SPECIALS_DK_PROXY=http://<that address>:8097`.
+      Every deploy needs it (compose refuses to start without it).
+    - Publish the page on the tailnet at port 8443:
+      ```bash
+      sudo tailscale serve --bg --https=8443 http://127.0.0.1:8096
+      tailscale serve status        # must also show https://<name>:8443 proxy http://127.0.0.1:8096
+      ```
+    - Once, with the Mac's page stopped, move its history over:
+      `scp ~/NFLWork/nfl_specials/nfl_specials.duckdb ubuntu@<vm>:~/unabated-data/`.
+    - `./deploy.sh`, then open `https://<name>:8443/` on the phone.
 
 ## Day to day
 

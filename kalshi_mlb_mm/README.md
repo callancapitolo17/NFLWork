@@ -518,7 +518,7 @@ RFI → I1 total at 0.5, home-perspective spread signs).
 |---|---|---|
 | betmgm, novig | structure, all markets | #95 coverage: 21/21 and 20/21 leg-instances |
 | fanduel | structure for ml/spread and **all** I1; **singles** for FG/F5 totals | FD's SGP structure carries exactly ONE total line per period (its own main); its singles scraper has the full ladder |
-| draftkings | **singles**, all markets | 21/21 `no_structure_odds`, and its `calculateBets` host 403s every set size (2026-08-25) |
+| draftkings | **singles**, all markets | #95 measured 21/21 `no_structure_odds`; DK's structure has carried straight odds since 2026-10-04, but the singles scraper already covers its markets, so the route stays |
 | caesars | **off** | #90's audit recommendation. Not a coverage call — #95 measured CZR alive for single legs (8/21) — a **harm** call: CZR is behind a CloudFront/AWS-WAF *rate-based* rule (100% overnight at ≤130 req/hr, 0% all day) and #90 found our own retries hold the block open. A 20s cadence adds ~1,600 doomed requests/hour, funding the block, for a book that returned **zero** legs in every live run. Env-overridable |
 | prophetx | **off** | 403 at the `events` stage on the first request of a session, 21/21 — an access problem (#91), not coverage |
 
@@ -690,6 +690,16 @@ query of the six books' SGP endpoints for that exact leg set, at RFQ time.
 Always on — no config switch; the bot-wide kill file remains the emergency
 stop, and dropping a misbehaving book is a one-line code change.
 
+**DraftKings (2026-10-04)** prices same-game combos again, through its
+SGP-builder GET instead of the Akamai-gated `calculateBets` (#102). Its wire
+calls go one at a time, >= 0.5 s apart, through `DraftKingsClient.price_lane`
+whatever `ON_DEMAND_BOOK_CONCURRENCY` allows; a 2-leg partition costs 2
+calls. When DK lands in a flight, a Novig cell relayed from DK is dropped
+(`router.drop_relayed_novig`), so DK replaces that relayed read rather than
+adding a book. Details, verification and the kill switch (drop `draftkings`
+from `SGP_BOOKS`): `mlb_sgp/README.md` § DK same-game pricing via the SGP
+builder.
+
 **Feed model — the open-RFQ poll drives everything.** The 2s discovery tick
 never blocks on a book. An on-demand shape with no fresh result enqueues a
 background fetch (`OnDemandEngine`, `kalshi_mlb_mm/on_demand.py`) and skips
@@ -774,9 +784,8 @@ combo) by `SGPService.price_on_demand`:
 - **Route B — correlation transfer** (any N, or any one-sided leg): one SGP
   call; `fair = ∏(devigged singles) × [SGP implied / ∏(vigged singles)]`
   (the book's SGP margin ≈ compounded leg vig cancels in the ratio). Singles
-  come free from the structure fetch at FD/PX/NV/MGM/CZR; DK's structure has
-  IDs only, so DK singles are priced as 1-leg `calculateBets` calls (only
-  when Route B is actually taken). Result gated by exact **Fréchet bounds**
+  come free from the structure fetch at every book (DK's since 2026-10-04:
+  its straight odds from the parlays payload). Result gated by exact **Fréchet bounds**
   (`max(0, Σp−(n−1)) ≤ fair ≤ min(p)`) — assumption-free joint-probability
   limits. Skipped entirely once the fetch has already burned
   `on_demand_deadline_sec` (#93 — measured Route-B fallbacks ran p50 21.6s,

@@ -306,12 +306,12 @@ this to `on_demand` when every quote is live-priced; config, not code).
 | `sportsbook-nash.../league/leagueSubcategory/v1/markets` | None | List MLB events |
 | `sportsbook-nash.../event/eventSubcategory/v1/markets` | None | Main market IDs per game |
 | `sportsbook-nash.../parlays/v1/sgp/events/{id}` | curl_cffi | **All selection IDs** (2MB response) |
-| `gaming-us-nj.../en/api/wager/v1/calculateBets` | curl_cffi | **SGP pricing** (POST, returns trueOdds) — **BLOCKED since ~2026-08-20**, see § DraftKings price host |
-| `sportsbook-nash.../sgp/dkuswv/sportsdata/v2/sgp` | curl_cffi | SGP pricing, GET — **reachable over plain HTTP as of 2026-10-02** (`X-SportId` header required; see `nfl_specials/README.md` § DraftKings, without a browser). Not wired into the MLB bots yet |
+| `gaming-us-nj.../en/api/wager/v1/calculateBets` | curl_cffi | SGP pricing (POST) for the **sweep and trifecta scraper only** — **BLOCKED since ~2026-08-20**, see § DraftKings price host |
+| `sportsbook-nash.../sgp/dkuswv/sportsdata/v2/sgp` | curl_cffi | **On-demand SGP pricing since 2026-10-04** (GET, `X-SportId: 7` for baseball) — see § DK same-game pricing via the SGP builder |
 
 ### Why curl_cffi?
 
-DraftKings uses Akamai Bot Manager. Plain `requests` gets blocked by TLS fingerprinting. `curl_cffi` impersonates Chrome's TLS signature, which is enough to bypass Akamai on `calculateBets` and `parlays/v1/sgp/events`. The `sportsdata/v2/sgp` endpoint has stricter protection and is inaccessible — that's why we use `calculateBets` instead.
+DraftKings uses Akamai Bot Manager. Plain `requests` gets blocked by TLS fingerprinting. `curl_cffi` impersonates Chrome's TLS signature, which is enough on the `sportsbook-nash` read endpoints and the SGP-builder GET. It was enough on `calculateBets` too until ~2026-08-20 (issue #102). The old note here calling `sportsdata/v2/sgp` "inaccessible" was wrong: it needs the `X-SportId` header and nothing else (2026-10-02).
 
 ### The `/en/` prefix on calculateBets (issue #39)
 
@@ -347,10 +347,14 @@ curl_cffi (which is shared by all 6 books).
 
 ## DraftKings price host — blocked since ~2026-08-20 (issue #102)
 
-**Status: DK contributes nothing to SAME-GAME combo pricing.** Its read
-endpoints are green and unaffected — event listing, market metadata, selection
-IDs and the singles scraper all work, so DK still feeds the leg surface
-(epic #94) and therefore all CROSS-GAME pricing. Only `calculateBets` is dead.
+**Status (2026-10-04): `calculateBets` is still blocked, but DK prices
+same-game combos again** — the on-demand path moved to the SGP-builder GET
+(§ DK same-game pricing via the SGP builder, below). The sweep
+(`price_sgps` -> `calculate_sgp`, used by the taker's `refresh()` and the
+dashboard parlay tab) and the trifecta scraper still call `calculateBets` and
+still 403. DK's read endpoints were never affected: event listing, market
+metadata, selection IDs and the singles scraper all work, so DK has fed the
+leg surface (epic #94) and all CROSS-GAME pricing throughout.
 
 ### What is blocked
 
@@ -451,12 +455,12 @@ was logged out), the `_abck` sensor cookie (unvalidated for 90s and still
 different TLS stacks, all 403 with controls stable). A proxy would have
 bought nothing, and so would swapping the imitation library.
 
-### Decision: DK stays OFF the same-game path (2026-09-02)
+### Decision history: DK off the same-game path (2026-09-02 -> 2026-10-04)
 
-**2026-10-02:** DK's SGP-builder endpoint (table above) prices same-game
-combos over plain HTTP, identical to `calculateBets`; `nfl_specials` uses it
-and the `dk_price_sidecar/` browser service was deleted. Re-test it on MLB
-(sport id, burst tolerance) before wiring it into the bots.
+**Superseded 2026-10-04:** DK's SGP-builder GET prices same-game combos over
+plain HTTP (identical to `calculateBets` on NFL, 2026-10-02), and the
+on-demand path now uses it with DK's concurrency capped to 1 — see the next
+section. The 2026-09-02 reasoning is kept below as history.
 
 A browser-backed sidecar (`dk_price_sidecar/`, commit ac9ecf3) was built,
 verified end to end (`true_odds=7.75` 4/4) and **reverted the same day by
@@ -471,9 +475,11 @@ rule.
 
 ### Diagnostic fix that did land (issue #102)
 
-`draftkings.price_selection_set` is the only book's price hook that issues its
-own HTTP request inline; every other book delegates to a client that runs the
-response through `check_response`. It classified nothing — `if
+`draftkings.price_selection_set` was the only book's price hook that issued
+its own HTTP request inline; every other book delegates to a client that runs
+the response through `check_response`. (Since 2026-10-04 the request lives in
+`DraftKingsClient.fetch_added_leg_odds`, which keeps this classification.) It
+classified nothing — `if
 resp.status_code != 200: return None` collapsed a 422 non-combinable and a 403
 blockade into the same silent `None`.
 
@@ -484,6 +490,85 @@ would have pointed the next fixer at DK's parser. A 403/429 is now counted as
 a transport error (still not re-raised, matching `caesars`/`novig`), so
 `sgp_fetch_health` distinguishes a dead endpoint from unpriceable combos.
 Pinned by `mlb_sgp/tests/test_dk_on_demand_price_status.py`.
+
+## DK same-game pricing via the SGP builder (2026-10-04)
+
+The on-demand path (`price_selection_set`, which the maker and `kalshi_rfi`
+call through `SGPService`) prices DK through the GET that DK's own SGP-builder
+widget calls as you click legs:
+
+```
+GET https://sportsbook-nash.draftkings.com/sites/US-WV-SB/api/sportscontent/sgp/dkuswv/sportsdata/v2/sgp
+    ?eventId=<dk event id>&selections=<base ids, comma>&marketCandidates=<market id>&oddsStyle=american
+header X-SportId: 7        (baseball; football is 3; 404 without it)
+```
+
+The answer prices the base plus EACH outcome of the candidate market. So a
+set is asked as base = every leg but the last, candidate = the last leg's
+market. One answer covers both sides of the last leg, and the client keeps it
+for 2 s for the sibling partition cell: a 2-leg partition costs 2 calls (was
+4 `calculateBets` POSTs), a 3-leg one 4.
+
+**Market id.** DK's market id is `{type}_{mnum}`: `1_` moneyline, `2_` run
+line, `3_` total. Every game-line selection id carries its mnum
+(`0ML86559201_1` is in `1_86559201`, `0HC86559201N150_1` in `2_86559201`,
+`0OU86560036O50_1` in `3_86560036`), so `dk_market_id_of` derives it. Any
+other selection shape raises (a counted parse failure) rather than guess.
+
+**Declines (None, never a price).**
+- `selectionsNotMapped` non-empty, or the mapped set != the base. DK does not
+  refuse a base it cannot combine (e.g. both sides of one market): it drops a
+  leg (`IncompatibleSelections`) and prices the rest — a silent wrong number
+  unless refused.
+- The last leg absent from `compatibleMarkets`.
+- 400 `InvalidSelection` (a line DK pulled since the structure was read).
+- 1-leg sets, with no call: an empty base prices nothing, and the builder's
+  1-leg price is NOT DK's straight price (1st-inning total 2026-10-04:
+  +125/-160 straight, +120/-155 in the builder, 0.85 pp apart after devig).
+  1-leg fairs devig DK's **straight odds** instead, which `fetch_selection_ids`
+  now returns as `straight_odds` and `resolve_legs` puts on each leg.
+  `kalshi_rfi`'s 1st-inning leg therefore prices DK with zero SGP calls, and
+  DK's Route B uses straight singles.
+
+**403/429**, a wire failure and a busy price lane are counted
+`transport_errors` (issue #102's classification), so `prices_empty` never
+blames the parser for them.
+
+**One price lane per client** (`DraftKingsClient.price_lane`): one call at a
+time, >= 0.5 s apart (DK's widget throttles itself the same way), at most 3 s
+waiting for the lane (then decline — the other books carry the RFQ), 3 s
+timeout per call with `RETRY_LIVE`. Concurrent bursts are what drew Akamai's
+rule onto `calculateBets`; the lane is the README's old "cap DK's concurrency
+to 1 before any re-enable" condition. The maker still allows DK 3 concurrent
+flights (`ON_DEMAND_BOOK_CONCURRENCY`); they share the one lane. Capacity is
+120 calls/min. The maker's busiest minutes (Sep 13-20) asked DK for p95 39 /
+max 101 pricings per minute, so peaks queue and some decline.
+
+**Verified.**
+
+| check | result |
+|---|---|
+| 21 leg sets, 3 games, vs FD/NV/MGM/CZR (2026-10-03, harness) | mean abs(DK − other-books median) 0.63 pp, max 1.69; 0 missing cells |
+| 16 leg sets, 2 games, through the real `SGPService` hooks (2026-10-04) | 16/16 priced; mean 0.59 pp from the median; 2 calls per 2-leg set, 4 per 3-leg; 1.0-2.8 s each |
+| 1st-inning single, `single_two_way` | DK 0.414 / 0.419 inside the other books' range; 0 SGP calls |
+| burst, one variable per run, control first and last | ~750 calls, **0 × 403/429**: sequential 4.1/s for 73 s and concurrency 2 both clean; above 2 deliberately untested |
+
+**Latency tail.** p50 0.2 s, p95 0.35 s, but ~1% of calls take 2-8 s and
+~0.4% hang >= 8 s. It is DK-side, not throttling: the same request replays in
+0.2 s. The 3 s timeout keeps one hang from holding the lane.
+
+**Kill switch.** A 403/429 from the GET logs `draftkings: SGP builder
+answered HTTP 403 — DK may be blocking us` at WARNING (at most once a minute)
+and counts `transport_errors` in `sgp_fetch_health.counters_json`. The
+on-demand row's outcome stays `empty`, which the book-health alert treats
+as healthy, so watch the log line, not the alert. On seeing it: drop
+`draftkings` from `SGP_BOOKS` (maker) / `RFI_BOOKS` (`kalshi_rfi`) and
+restart, before a rule can spread to DK's read endpoints, which feed the
+cross-game leg surface.
+
+Pinned by `mlb_sgp/tests/test_dk_sgp_builder_price.py`,
+`mlb_sgp/tests/test_draftkings_on_demand.py` and
+`kalshi_common/tests/test_sgp_service_dk_hooks.py`.
 
 ## Selection ID Format
 
@@ -922,7 +1007,7 @@ can serve both the MLB dashboard (writes to `mlb_mm.duckdb`) and the Kalshi
 MLB RFQ bot (writes to a sibling `kalshi_mlb_rfq_market.duckdb`).
 
 - **Per-book HTTP clients** — pure transport, no domain logic:
-  - `dk_client.py` — DK leagues / event-markets / parlays / `calculateBets`
+  - `dk_client.py` — DK leagues / event-markets / parlays / SGP-builder GET (one price lane)
   - `fd_client.py` — FD scan / event-page / `implyBets`
   - `prophetx_client.py` — ProphetX RFQ endpoint
   - `novig_client.py` — Novig REST MLB page (events) and anonymous `/unauthenticated` parlay endpoint; the allowlisted GraphQL market tree is fetched by `scraper_novig_sgp.fetch_event_legs`

@@ -50,7 +50,7 @@ phone ──tailnet──▶ VM :8443 ──▶ fectas (:8096) ──▶ FanDuel
 - **State:** `~/unabated-data/nfl_specials.duckdb` on the VM.
 - **Update:** `~/NFLWork/unabated_ticket/deploy/deploy.sh` on the VM (pulls
   `main`, rebuilds, restarts, checks the page answers on loopback and on the
-  tailnet name). Setup steps: `unabated_ticket/deploy/README.md` step 11.
+  tailnet name). Setup steps: `unabated_ticket/deploy/README.md` step 12.
 - Use one page at a time: the Mac's `run.sh` copy has its own database, so it
   does not see bets placed from the VM's page.
 

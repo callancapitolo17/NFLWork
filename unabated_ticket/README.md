@@ -694,7 +694,47 @@ still count apart (Cal, 2026-10-13). Another number is never compared.
 No tag when no other book posts the number. Tap the tag (▸) to open every
 book at the number under the row, best first, yours in its place; the
 tooltip lists them too. A line above the list counts outliers ("1 outlier to
-check"). The Ticket's **Others** row lists every book at the number.
+check"). The Ticket lists every book at the number (see **The Ticket's
+layout** below).
+
+**Liquidity and thin books (0.25.0, Cal 2026-10-15):** every exchange in the
+list shows the money resting at its price (the feed's `liquidity`, e.g.
+`$1,240`); sportsbooks report none and always count. A book with under $30
+resting (`MIN_OTHER_BOOK_LIQUIDITY`, `pricecheck.isThin`) is greyed at the
+end of the list as `thin $12` and counts toward nothing: not "better", not
+Skip, not the outlier check, not the book count. Only thin books at the
+number means no tag. One book under two names (`Polymarket / US`) is thin
+only when both copies are. The automated taker still skips on a thin book
+that beats its price (`taker.booksBeating`): the floor came after its rules
+were set, and Cal has not moved it onto the bot.
+
+**The Ticket's layout (0.25.0, Cal 2026-10-15), panel and phone:**
+
+- *The card*, first: the pick, the book and its price (American, with the
+  cents beside it), the market, game and start; its lower band is the stake
+  to act on ("Bet" / "Add to your position"), to-win and payout on its
+  right, then the contracts, the position (`held $281.73 · $395.24 alone`)
+  and the uncapped line. The number to act on is the first thing read.
+- *Three tiles*: **Fair** (Unabated's number and its cents; a live ticket
+  names the break), **Edge** (the edge, how far the price sits from the fair
+  in cents — `4.0¢ under fair` — and the edge-move tag), **Other books** (the
+  tag in a few words, `Best of 11` / `1 book better` / `Outlier, check`, and
+  the book that sets it, `next Kalshi +100` / `best Pinnacle +108`;
+  `betsview.otherBooksTile`). No tile when no other book posts the number.
+- *Other books at 47.5*: every book at the number in two columns filled top
+  to bottom (one column under 360 px on the panel, under 480 px on the
+  phone): books that beat you, yours, books at your price, worse books, thin
+  books (`betsview.otherBookRows`). Past eight rows the worst of the worse
+  fold behind "+N more books, all worse" (never a fold of one); Skip sits
+  under the box.
+- *Related bets on this game*: a table, one heading per tag
+  (`betsview.relatedGroups`: `same side · in the sizing`, `other side · in
+  the sizing` in red, `game · not sized` in grey) with the group's dollars;
+  each bet's pick, price, cents, stake, venue and fair then
+  (`bets.labelCells`). A number every bet in the group has moved off to the
+  same place goes in the heading (`line now 47.5`), else beside the bet.
+  Every bet shows; a narrow panel and the phone put each bet on two lines.
+  An open teaser reads its words across the row, its tickets on hover.
 
 **Skip (0.24.0, Cal 2026-10-13):** nothing is skipped for you. A row a book
 beats gets a **Skip** chip (and the Ticket a **Skip this bet** button); a
@@ -792,8 +832,8 @@ fair, ~1–2 min behind, has not answered — wait a snapshot) and the opener.
 Nothing moved since the fill is no tag, whatever the last ten minutes did.
 A held line with no saved fair at its number — including bets held only at
 another number or in another period — keeps the ten-minute tag above,
-unchanged. In the row's Related bets block and the Ticket banner, each bet
-with a saved fair adds `fair then 36.0%`.
+unchanged. In the row's Related bets block, each bet with a saved fair
+adds `fair then 36.0%`; the Ticket's table has a Fair then column.
 
 How a fill's fair is saved (`extension/fillfair.js`): after every bets poll
 and every scanner update, each open bet without one is read off the
@@ -1181,8 +1221,8 @@ other direction in another period, `no fair at 36.5`, `parlay leg`,
 `no stake on the record`, `Kalshi NO also wins on a tie`,
 `three-way moneyline`, `quarter line`, `side not resolved`, or the reason the
 whole calc was declined (`ladder not monotone`). Capped at three with
-"+N more on this game". The Ticket banner shows the same lines and tags (five,
-then "+N more"). No placed-at: it never told you which bet was which, and it
+"+N more on this game". The Ticket's related-bets table shows every bet,
+grouped under the same tags. No placed-at: it never told you which bet was which, and it
 was a third of the line (user decision 2026-09-14). The Bets tab still shows
 it, where the bets are the subject.
 
@@ -1196,9 +1236,9 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   betonline — · novig — · prophetx —" — open bets known to the panel and the
   age of each venue's last successful pull (a dash = no source yet). Red
   when the service is unreachable.
-- *Ticket tab*: a banner between the matchup and the stake, one line per
-  matching bet, strongest first, at most 5 then "+N more"; nothing when no
-  bet matches; under the stake, the position and the standalone size
+- *Ticket tab*: the related-bets table under the other books, every
+  matching bet grouped by tag, strongest first; nothing when no bet
+  matches; under the stake, the position and the standalone size
   (`held $270 · against $413 · $270.05 alone`). The warning strip adds "Bet sources unavailable" when no venue has
   reported in the last hour (the flags may then be missing).
 - *Edges tab*: the badge, the **Related bets** block and the sized stake on
@@ -1206,7 +1246,7 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   ruled (red when a position is against you); a bet on that very line prints
   only what differs from the row — venue, its entry price, when — because the
   row already states the pick, while another market or the other side names
-  itself. The Ticket shows the same matches with the full sentence. Sort **by my exposure** puts held and
+  itself. The Ticket shows the same matches as a table. Sort **by my exposure** puts held and
   against lines first. Nothing is filtered; alerts skip only lines whose
   stake against what you hold is $0 (nothing to act on) and fire as before
   otherwise. The Min suggested bet filter reads the same number.
@@ -2307,9 +2347,10 @@ node unabated_ticket/server/runner.js                     # must be running too 
 - **Edges**: the runner's cards as the panel draws them: badges, side, market,
   game and kickoff, book price with cents, line age, edge in its tier colour,
   the stake rail and its note, the move tag, related bets, the tail-flex line.
-  Tap a card for the ticket: price, fair, edge, the number to act on with the
-  panel's label, position line, contracts (exchange lines), to win / payout,
-  every related bet and the card's other lines. Freshness and errors (edges or
+  Tap a card for the ticket, laid out as the panel's (**The Ticket's
+  layout**): the card with the number to act on, the Fair / Edge / Other
+  books tiles, every book at the number, the related-bets table (each bet on
+  two lines) and the card's other lines. Freshness and errors (edges or
   bets service unreachable since …, scanner errors, settings fallback) sit at
   the top.
 - **Bets**: money at risk, Needs a game / Needs a code fix / Not on the board
@@ -2584,7 +2625,7 @@ the "nothing public listens" check: `deploy/README.md`.
   (pull `main`, rebuild, recreate, then PASS/FAIL checks of `/health`,
   `/` and `/edges.json` with the tailnet `Host`, and a 403 for a foreign one).
 - **Writable data dir** (`UNABATED_DATA_DIR` → `/data`): `bets.duckdb`
-  (`BETS_DB_PATH`), `novig_token.json` (rotates), `logs/`
+  (`BETS_DB_PATH`), `taker.duckdb` (`TAKER_DB_PATH`), the bot's Kalshi key `kalshi_taker.pem` and its stop file `taker.stop`, `novig_token.json` (rotates), `logs/`
   (`BETS_SERVICE_LOG_PATH`; `BETS_SERVICE_LOG_CONSOLE=1` also logs to
   stderr for `docker compose logs`). Off the server all three keep their
   defaults next to the package.
@@ -2596,6 +2637,110 @@ the "nothing public listens" check: `deploy/README.md`.
 - **`BETS_EXTRA_ALLOWED_HOSTS`** in `deploy/.env` is the tailnet name the
   #125 Host guard must accept (Bets service above).
 
+### Automated taker: Kalshi, live (`server/taker.js`, `bets_service/taker_orders.py`)
+
+Plan: `automated_taker_plan.md` in the project folder. Every 30 s the runner
+looks at each Kalshi line Unabated shows at 3%+ (the settings' leagues and
+periods, every market, alts included), reads Kalshi's public orderbook for it,
+decides, and sends each bet to the bets service's order desk, which places it
+on Kalshi with **real money** on the bot's own key. No shadow mode (Cal,
+2026-10-14).
+
+| Rule | Value |
+|---|---|
+| Bankroll / Kelly | $500 at 0.25, conditional on every open bet (the panel's sizing; bot fills reach it through the Kalshi source) |
+| Ceiling | open bot cost (unsettled markets) never above $500; contracts cut to fit, else refused |
+| Price | Kalshi's live ask + 7% fee no more than 0.1c worse than Unabated's shown price, and no more than 1c better (a price that ran away from Unabated's snapshot is news its fair has not caught up with) |
+| Edge | 3% to 20% at that live price (fair read off Unabated's cheaper of its two prices) |
+| Best price | no live book beats it at the number (one is enough to skip, a thin one under $30 too; ties trade); outliers and Skips trade |
+| Line age | changed within 7 days; right up to the start |
+| Board age | the runner re-downloads every league's snapshot every 60 s (the panel's size tiers go up to 5 min); a row whose league snapshot landed over 3 min ago, is a stale build or failed to load is `stale_feed` |
+| Holdings | the pass runs only when the bets service's Kalshi poll succeeded within the last 5 min (conditional Kelly is sized on it); otherwise it decides nothing |
+| Size | floor(stake / all-in), cut to the depth at the ask |
+| Market check | before every order Kalshi's market is read: it must be `active`, its series the row's period, a spread's or total's `floor_strike` the row's number, YES the favorite's side of a spread and the Over of a total, a spread's or moneyline's YES title the team YES is on; else `market_mismatch`, nothing sent |
+| Order | **immediate-or-cancel** limit buy at that ask: what does not fill at once Kalshi cancels in the same request (`remaining_count` 0), so a bot order never rests. A reply without that count, or with contracts left open, is cancelled **by market** (a bare cancel routes to exchange shard 0 and 404s while an order rests), a 404 checked against Kalshi's resting list; the desk's own 30 s sweep retries an unconfirmed cancel and cancels any `ubot-` order resting that no row knows |
+| Adds | a second order on a game goes only once the bot's earlier fill on it is among the held bets the stake was sized on (`unseen_fill` until the Kalshi poll has it): conditional Kelly must see the fill first |
+| Tag | every order's `client_order_id` starts `ubot-` (`taker.duckdb::taker_orders`) |
+
+Tickers: spreads and totals from the rung ids (`Y-` buys YES, `N-` NO);
+full-game moneylines derived from the spread rungs' team code
+(`KXNCAAFSPREAD-26SEP19DUQWSU-WSU36` → `KXNCAAFGAME-26SEP19DUQWSU-WSU`); the
+market check above is what lets a derived ticker trade. Bot fills join the
+board the way every Kalshi bet does (by the event ticker's suffix, bets.js),
+so once the Kalshi poll has one it sizes the next stake on its game.
+
+**The held bets refuse a stake (`size_declined`)** when conditional Kelly
+declines, when a bet on the game on the row's axis is not in the sizing math
+(a number the fair ladder lacks, a side it could not place, a parlay leg: the
+stake would be sized as if it were not held; another market and an
+other-period hedge are left out by design, #129/#130), or when the other
+side of the same Kalshi market is held (Kalshi nets per market: buying NO
+would sell that YES). The desk also refuses a decision older than 60 s
+(`stale_decision`), a game that has started (`started`) and a runner priced
+on another Kalshi API than its own (`env_mismatch`).
+
+**Arming, stopping.** The bot trades only when the bets service has its own
+Kalshi key: `KALSHI_TAKER_API_KEY_ID` (in `bets_service/.env`) and the key
+file at `KALSHI_TAKER_PRIVATE_KEY_PATH` (`/data/kalshi_taker.pem` on the VM).
+Make a key for the bot alone so it can be revoked alone. Without it
+`POST /taker/order.json` answers 503 and `/taker.json` says `desk: off`. Stop:
+`touch` the stop file (`TAKER_STOP_PATH`, `/data/taker.stop` on the VM); `rm` it
+to resume. Revoking the key at kalshi.com stops it for good.
+
+**Fail closed:** no live board, the bets service unread or unreachable, or
+its Kalshi poll failed or older than 5 min, and the pass decides nothing and
+reads no book. Cal's Removed bets (`bet_exclusions`) are not his: the pass
+neither sizes on them nor counts them held. The order row is written
+before the send; a send with no answer, a send Kalshi did not definitely
+refuse (a 409, a 429, a 5xx, a gateway timeout: only 400/401/403/404/422
+count as refused), a fills read that fails or a fill it cannot read, keeps the
+whole cost against the ceiling until a later read or settlement frees it. Such
+an order is looked for on Kalshi by `client_order_id` (in the resting list,
+then, a minute on, in the ticker's resting, executed and canceled lists; an
+executed or canceled one just has its fills read; counted as never sent only
+when none of those lists carries it). Fills are final only once the feed
+shows at least the contracts Kalshi's create reply said filled
+(`count_reported`); the desk also re-checks the decision's age after a
+refresh, since a slow Kalshi can age it out while the desk waits. Two orders
+on one market are one game whatever Unabated's event ids say. Order statuses: `sending`,
+`unknown`, `sent`, `resting` (a fallback cancel unconfirmed, full cost held,
+retried), `filled` / `partial` / `unfilled` (`fills_final` 60 s after the
+cancel), `rejected`. A market frees its orders' cost once Kalshi reports it
+`finalized`. The ceiling is near-exact, not exact: Kalshi rounds the fee per
+fill, so an order sweeping several resting lots can cost a few cents more than
+the all-in reserve (+1c slack) allowed for.
+
+**One armed host.** The ceiling and the stray-order sweep live in
+`taker.duckdb`: a second bets service armed with the same key (the Mac as
+well as the VM) would trade its own $500 and cancel the other's orders. Arm
+the VM only, and never reset `taker.duckdb` while bot positions are open.
+The bets service's Kalshi source reads the bot's NO fills on the YES leg
+(v2 trades YES only): a YES sell while the account is net short YES is
+recorded as the NO buy it is (`sources/kalshi.py::fill_on_its_open_side`), so
+the held bets, conditional Kelly and the desk's `heldIds` see
+`kalshi:<ticker>:no`.
+
+- `GET :8095/taker.json`: the desk state, the rules, the last pass (counts by
+  reason, per-league ticker coverage) and every decision with its `order`.
+- `taker.duckdb::taker_decisions` (append): one row each time a line's
+  decision changes (for a skipped row: its reason or Unabated's price, not
+  every tick of the live book; a chunk the service refuses with 400 is dropped and
+  counted in `/health`'s `taker.log.dropped`, never retried in front of the
+  rows behind it). `taker.duckdb::taker_orders`: one row per order sent.
+  Their own file, never `bets.duckdb`.
+
+```sql
+-- the bot's orders, newest first
+SELECT placed_at, ticker, contract_side, ask_price, count_requested, count_filled, cost_filled, status, cancelled_at
+FROM taker_orders ORDER BY placed_at DESC;
+-- open exposure (the ceiling's measure)
+SELECT sum(open_cost) FROM taker_orders WHERE settled_at IS NULL;
+-- orders that may still rest on Kalshi (the sweep retries their cancel every 30 s)
+SELECT client_order_id, kalshi_order_id, ticker, status, error FROM taker_orders WHERE status IN ('resting', 'sent', 'unknown');
+-- why it skips
+SELECT reason, count(*) FROM taker_decisions GROUP BY reason ORDER BY 2 DESC;
+```
+
 ## Tests
 
 One command runs everything and exits non-zero if any part fails:
@@ -2605,8 +2750,8 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 523 tests) and
-the bets service's pytest suite (388 tests, on the `kalshi_draft/venv`
+the node suite (`npm test` = `node --test tests/*.test.js`, 561 tests) and
+the bets service's pytest suite (630 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`

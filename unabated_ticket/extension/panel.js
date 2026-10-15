@@ -73,7 +73,10 @@
     ticket: el("ticket"), error: el("error"), empty: el("empty"),
     warning: el("warning"), rowTrace: el("row-trace"), sideLabel: el("side-label"), betLine: el("bet-line"),
     eventLine: el("event-line"), startLine: el("start-line"),
-    book: el("book"), price: el("price"), fair: el("fair"), edge: el("edge"), othersLabel: el("others-label"), others: el("others"),
+    book: el("book"), price: el("price"), fair: el("fair"), fairSub: el("fair-sub"), edge: el("edge"), edgeSub: el("edge-sub"), edgeMove: el("edge-move"),
+    othersTile: el("others-tile"), othersHead: el("others-head"), othersSub: el("others-sub"),
+    othersBlock: el("others-block"), othersLabel: el("others-label"), others: el("others"),
+    relatedBlock: el("related-block"), relatedCount: el("related-count"), relatedTable: el("related-table"),
     stake: el("stake"), contracts: el("contracts"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), stakeUncapped: el("stake-uncapped"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
     errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
@@ -83,7 +86,7 @@
     edgesToolbar: el("edges-toolbar"), edgesControls: el("edges-controls"),
     filtersToggle: el("filters-toggle"), filtersSummary: el("filters-summary"),
     settingsToggle: el("settings-toggle"), settings: el("settings"),
-    backToEdges: el("back-to-edges"), stakeLabel: el("stake-label"), betsBannerHead: el("bets-banner-head"),
+    backToEdges: el("back-to-edges"), stakeLabel: el("stake-label"),
     betsCount: el("bets-count"), betsAlert: el("bets-alert"), betsTabButton: el("bets-tab-button"),
     betsRisk: el("bets-risk"), betsRiskCaption: el("bets-risk-caption"),
     edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesTailFlex: el("edges-tailflex"), edgesPriceCheck: el("edges-pricecheck"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
@@ -94,7 +97,7 @@
     edgesLive: el("edges-live"), edgesLiveHead: el("edges-live-head"), edgesLiveList: el("edges-live-list"),
     edgesLiveCount: el("edges-live-count"), edgesPregameLabel: el("edges-pregame-label"),
     alertsEnabled: el("alerts-enabled"), alertsMin: el("alerts-min"),
-    betsHeader: el("bets-header"), betsBanner: el("bets-banner"),
+    betsHeader: el("bets-header"),
     tabBets: el("tab-bets"), betsService: el("bets-service"), betsSources: el("bets-sources"),
     betsUrl: el("bets-url"), betsSettingsError: el("bets-settings-error"),
     betsOpen: el("bets-open"), betsOpenCount: el("bets-open-count"), betsOpenEmpty: el("bets-open-empty"), betsMatchNote: el("bets-match-note"),
@@ -537,22 +540,18 @@
 
     view.sideLabel.textContent = ticket.sideLabel;
     view.betLine.textContent = `${describeSide(ticket)}${periodSuffix(ticket)}${ticket.isAlt ? " \u00b7 alt line" : ""}`;
-    view.eventLine.textContent = describeMatchup(ticket);
+    const matchup = describeMatchup(ticket);
+    view.eventLine.textContent = matchup;
     // A live capture names the break its fair was set at instead of a kickoff long past.
-    view.startLine.textContent = ticket.live ? `live · ${live.checkpointLabel(ticket.live)}` : fmtStart(ticket.eventStart);
+    const start = ticket.live ? `live · ${live.checkpointLabel(ticket.live)}` : fmtStart(ticket.eventStart);
+    view.startLine.textContent = matchup && start ? `\u00b7 ${start}` : start;
     const betFlag = ticketBetFlag(ticket, line);
-    renderBetBanner(betFlag);
+    renderRelatedBets(betFlag);
 
+    const bookLine = asBookLine(line.price, line.sourceFormat, line.sourcePrice);
     view.book.textContent = ticket.book.name;
-    view.price.textContent = fmtPriceBoth(asBookLine(line.price, line.sourceFormat, line.sourcePrice));
-    // The fair is Unabated's own American number; there is no more exact source for it.
-    view.fair.textContent = line.fair == null ? "unknown" : fmtPriceBoth(asBookLine(line.fair, 1, null));
-    if (ticket.live && line.fair != null) view.fair.append(` · Unabated live fair, ${live.checkpointLabel(ticket.live)}`);
-    // The edge-move tag reads the feed's copy of this line, and only at the
-    // price being sized: the feed's history says nothing about another price.
-    const feedCopy = feedLineFor(ticket, line.points);
-    const ticketMoveParts = feedCopy && feedCopy.price === line.price ? moveParts(feedCopy, betFlag) : [];
-    view.edge.replaceChildren(line.edgePct == null ? "\u2014" : fmtPct(line.edgePct / 100), ...ticketMoveParts.flatMap((part) => [" ", part]));
+    view.price.replaceChildren(fmtAmerican(line.price), smallEl(fmtCents(bookLine)));
+    renderFairAndEdge(ticket, line, betFlag);
     renderOtherBooks(ticket, line);
 
     view.stake.classList.remove("no-edge");
@@ -592,26 +591,67 @@
     show("ticket");
   }
 
-  // Every book at the number, best first, yours in its place: the Ticket's
-  // Others row and a row's opened price-check tag share it.
+  function smallEl(text) {
+    const small = document.createElement("small");
+    small.textContent = text;
+    return small;
+  }
+
+  // The Fair and Edge tiles: Unabated's fair in both worlds (its own American
+  // number; there is no more exact source for it), the edge and how far the
+  // price sits from the fair in cents, and the edge-move tag under it.
+  function renderFairAndEdge(ticket, line, betFlag) {
+    const bookLine = asBookLine(line.price, line.sourceFormat, line.sourcePrice);
+    const fairLine = line.fair == null ? null : asBookLine(line.fair, 1, null);
+    view.fair.textContent = fairLine ? fmtAmerican(line.fair) : "unknown";
+    view.fairSub.textContent = !fairLine ? ""
+      : ticket.live ? `${fmtCents(fairLine)} · live fair, ${live.checkpointLabel(ticket.live)}` : fmtCents(fairLine);
+    view.edge.textContent = line.edgePct == null ? "\u2014" : fmtPct(line.edgePct / 100);
+    view.edge.closest(".tile").classList.toggle("no-edge", !(line.edgePct > 0));
+    view.edgeSub.textContent = fairLine ? betsView.centsFromFairText(kelly.bookProbOf(bookLine), kelly.bookProbOf(fairLine)) : "";
+    // The edge-move tag reads the feed's copy of this line, and only at the
+    // price being sized: the feed's history says nothing about another price.
+    const feedCopy = feedLineFor(ticket, line.points);
+    const ticketMoveParts = feedCopy && feedCopy.price === line.price ? moveParts(feedCopy, betFlag) : [];
+    view.edgeMove.replaceChildren(...ticketMoveParts);
+    view.edgeMove.hidden = ticketMoveParts.length === 0;
+  }
+
+  // One book at the number: its name, the money resting at its price on an
+  // exchange ("thin $12" under pricecheck's floor) and its price.
+  //   entry  betsView.otherBookRows row {name, price, liquidity, kind}
+  function bookRowEl(entry) {
+    const div = document.createElement("div");
+    div.className = entry.kind;
+    const nameEl = document.createElement("span");
+    nameEl.className = "nm";
+    nameEl.textContent = entry.name;
+    const liqEl = document.createElement("span");
+    liqEl.className = "liq";
+    liqEl.textContent = entry.liquidity == null ? "" : `${entry.kind === "thin" ? "thin " : ""}${fmtWholeDollars(entry.liquidity)}`;
+    const priceEl = document.createElement("span");
+    priceEl.className = "px";
+    priceEl.textContent = fmtAmerican(entry.price);
+    div.append(nameEl, liqEl, priceEl);
+    return div;
+  }
+
+  const THIN_BOOKS_NOTE = () => `Exchanges show the money resting at their price; one under $${pricecheck.MIN_OTHER_BOOK_LIQUIDITY} is thin and counts toward nothing.`;
+
+  // An Edges row's opened price-check tag: every book at the number, best
+  // first, yours in its place, thin books greyed at the end.
   function otherBooksListEl(check, yourBookName, yourPrice) {
     const listEl = document.createElement("div");
     listEl.className = "others-list";
-    const lineEl = (name, price, className) => {
-      const div = document.createElement("div");
-      div.className = className;
-      const nameEl = document.createElement("span");
-      nameEl.textContent = name;
-      const priceEl = document.createElement("span");
-      priceEl.textContent = fmtAmerican(price);
-      div.append(nameEl, priceEl);
-      return div;
-    };
-    for (const entry of check.better) listEl.append(lineEl(entry.bookName, entry.price, "better"));
-    listEl.append(lineEl(`${yourBookName} (you)`, yourPrice, "yours"));
-    for (const entry of check.sameAs) listEl.append(lineEl(entry.bookName, entry.price, "same"));
-    for (const entry of check.worse) listEl.append(lineEl(entry.bookName, entry.price, "worse"));
+    listEl.append(...betsView.otherBookRows(check, yourBookName, yourPrice, Infinity).rows.map(bookRowEl));
+    listEl.title = THIN_BOOKS_NOTE();
     return listEl;
+  }
+
+  // "$1,240": the liquidity beside another book's price, rounded down so a
+  // thin $29.60 never reads as the $30 floor.
+  function fmtWholeDollars(value) {
+    return `$${Math.floor(value).toLocaleString("en-US")}`;
   }
 
   // The Skip / Restore chip on a line a book beats (pricecheck.canSkip); null otherwise.
@@ -629,13 +669,17 @@
     return button;
   }
 
-  // The Ticket's "Others" row: every other book at the priced number, best
-  // first, with yours in its place (pricecheck.comparePrice, same rules as the
-  // Edges tag), and a Skip button when a book beats you. Hidden for a live
-  // ticket (the feed is pregame) or when no other book posts the number.
+  // The ticket (by capturedAt) whose folded books are open; a new capture closes them.
+  let ticketBooksOpenAt = null;
+
+  // The Ticket's other books: the tile (the tag in a few words) and every
+  // book at the priced number in two columns (pricecheck.comparePrice, same
+  // rules as the Edges tag), the worst of the worse folded, and a Skip button
+  // when a book beats you. Hidden for a live ticket (the feed is pregame) or
+  // when no other book posts the number.
   function renderOtherBooks(ticket, line) {
-    view.othersLabel.hidden = true;
-    view.others.hidden = true;
+    view.othersTile.hidden = true;
+    view.othersBlock.hidden = true;
     view.others.replaceChildren();
     if (ticket.live || !ticket.watch || ticket.eventId == null || !scannerState) return;
     const spec = {
@@ -643,9 +687,32 @@
       sideIndex: ticket.sideIndex, points: line.points, bookId: ticket.book.id, bookName: ticket.book.name, price: line.price,
     };
     const check = pricecheck.comparePrice(priceIndex(), spec);
-    const tagEl = priceCheckTagEl(check);
-    if (!tagEl) return;
-    view.others.append(tagEl, otherBooksListEl(check, ticket.book.name, line.price));
+    const tile = betsView.otherBooksTile(check, pricecheck.priceCheckTag(check));
+    if (!tile) return;
+    view.othersTile.className = `tile tile-books books-${tile.kind}`;
+    view.othersTile.title = describeOtherBooks(check);
+    view.othersHead.textContent = tile.head;
+    view.othersSub.textContent = tile.sub;
+    view.othersTile.hidden = false;
+
+    view.othersLabel.textContent = betsView.otherBooksLabel(ticket.betType, line.points);
+    // Open only while the default cap would fold something: books leaving the feed close it.
+    const folded = betsView.otherBookRows(check, ticket.book.name, line.price).folded;
+    const open = folded.length > 0 && ticketBooksOpenAt === ticket.capturedAt;
+    const { rows } = betsView.otherBookRows(check, ticket.book.name, line.price, open ? Infinity : undefined);
+    const grid = document.createElement("div");
+    grid.className = "books-grid";
+    grid.style.setProperty("--rows", String(Math.ceil(rows.length / 2)));
+    grid.title = THIN_BOOKS_NOTE();
+    grid.append(...rows.map(bookRowEl));
+    view.others.append(grid);
+    if (folded.length) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "books-more";
+      more.textContent = open ? "Fewer books \u25B4" : `+${folded.length} more book${folded.length === 1 ? "" : "s"}, all worse \u25B8`;
+      view.others.append(more);
+    }
     const eventStartMs = ticket.eventStart ? Date.parse(ticket.eventStart.endsWith("Z") ? ticket.eventStart : `${ticket.eventStart}Z`) : NaN;
     if (pricecheck.canSkip(check) && Number.isFinite(eventStartMs)) {
       const skipKey = pricecheck.skipKeyOf(spec, ticket.book.id);
@@ -656,8 +723,7 @@
       if (skipped) actions.append(" skipped on the Edges tab");
       view.others.append(actions);
     }
-    view.othersLabel.hidden = false;
-    view.others.hidden = false;
+    view.othersBlock.hidden = false;
   }
 
   // Under the dollar figure, the order it means on an exchange: "1,127
@@ -720,31 +786,63 @@
     return teaserLib.openTeasers(state.betRecords, boardLines(), { now: Date.now(), ladderOf: currentTeaserBoard().ladderOf });
   }
 
-  // Every open bet on this line's game, bets in the math first: this line,
-  // same side, the other side (red); then the ones that are not sized, grey,
-  // with why. Nothing when none.
-  function renderBetBanner(flag) {
-    const { shown, more } = betsView.bannerLines(betsView.relatedLines(flag, fillFairIndex));
-    const items = shown.map((related) => {
-      const div = document.createElement("div");
-      const against = related.tier === "opposite" || related.tier === "related_opposite";
-      div.className = `bet-match tier-${related.tier}${!related.inMath ? " not-sized" : against ? " bad" : ""}`;
-      if (related.title) div.title = related.title;
-      const kind = document.createElement("span");
-      kind.className = "k";
-      kind.textContent = related.tag;
-      div.append(kind, relatedText(related));
+  // Every open bet on this line's game as a table, one heading per tag
+  // (betsView.relatedGroups): bets in the math first — this line, same side,
+  // the other side (red) — then the ones that are not sized, grey, under
+  // why. Nothing when none.
+  function renderRelatedBets(flag) {
+    const lines = betsView.relatedLines(flag, fillFairIndex);
+    const groups = betsView.relatedGroups(lines);
+    view.relatedBlock.hidden = groups.length === 0;
+    view.relatedTable.replaceChildren();
+    if (!groups.length) return;
+    view.relatedCount.textContent = `${betsView.relatedOpenCount(lines)} open`;
+    view.relatedTable.append(relatedHeaderEl(), ...groups.flatMap((group) => [relatedGroupEl(group), ...group.lines.map((line) => relatedRowEl(line, group))]));
+  }
+
+  function spanEl(className, text) {
+    const span = document.createElement("span");
+    if (className) span.className = className;
+    span.textContent = text ?? "";
+    return span;
+  }
+
+  function relatedHeaderEl() {
+    const div = document.createElement("div");
+    div.className = "rt-head";
+    div.append(spanEl("rt-pick", "Bet"), spanEl("rt-price", "Price"), spanEl("rt-cents", "\u00a2"), spanEl("rt-stake", "Stake"), spanEl("rt-venue", "At"), spanEl("rt-fair", "Fair then"));
+    return div;
+  }
+
+  // "SAME SIDE · IN THE SIZING · LINE NOW 39.5 ......... $281.73"
+  function relatedGroupEl(group) {
+    const div = document.createElement("div");
+    div.className = `rt-group${group.against ? " against" : group.inMath ? "" : " not-sized"}`;
+    const label = group.now != null ? `${group.label} \u00b7 line now ${group.now}` : group.label;
+    div.append(spanEl(null, label), spanEl("rt-dollars", fmtDollars(group.dollars)));
+    return div;
+  }
+
+  // One bet as a table row; a teasers line (no cells) reads its words across
+  // the row with its tickets on hover. The bet's own "now" shows only when
+  // the group heading does not carry one for all.
+  function relatedRowEl(line, group) {
+    const div = document.createElement("div");
+    div.className = `rt-row${line.inMath ? "" : " not-sized"}`;
+    if (line.title) div.title = line.title;
+    if (!line.cells) {
+      div.classList.add("rt-text");
+      div.append(spanEl("rt-pick", line.text));
       return div;
-    });
-    if (more > 0) {
-      const div = document.createElement("div");
-      div.className = "bet-match more";
-      div.textContent = `+${more} more on this game (Bets tab)`;
-      items.push(div);
     }
-    view.betsBanner.replaceChildren(...items);
-    view.betsBanner.hidden = items.length === 0;
-    view.betsBannerHead.hidden = items.length === 0;
+    const { cells } = line;
+    const pick = spanEl("rt-pick", cells.pick);
+    if (cells.now != null && group.now == null) pick.append(" ", spanEl("rt-now", `now ${cells.now}`));
+    const meta = spanEl("rt-meta");
+    meta.append(spanEl("rt-price", cells.price ?? "\u2014"), spanEl("rt-cents", cells.cents ?? ""), spanEl("rt-venue", cells.venue),
+      spanEl(`rt-fair${line.fairThenPct ? "" : " none"}`, line.fairThenPct ?? "\u2014"));
+    div.append(pick, spanEl("rt-stake", cells.stake), meta);
+    return div;
   }
 
   // Under the stake, the same pieces as the Edges rail: the position in
@@ -1355,6 +1453,7 @@
     if (check.better.length) parts.push(`better: ${list(check.better)}`);
     if (check.same) parts.push(`${check.same} at the same price`);
     if (check.worse.length) parts.push(`worse: ${list(check.worse)}`);
+    if (check.thin && check.thin.length) parts.push(`too thin to count: ${list(check.thin)}`);
     parts.push("same number only");
     return parts.join(" · ");
   }
@@ -3144,6 +3243,11 @@
   }
 
   view.others.addEventListener("click", async (event) => {
+    if (event.target.closest("button.books-more") && state.ticket) {
+      ticketBooksOpenAt = ticketBooksOpenAt === state.ticket.capturedAt ? null : state.ticket.capturedAt;
+      renderOtherBooks(state.ticket, pricedLine(state.ticket));
+      return;
+    }
     const skipChip = event.target.closest("button.skip-chip");
     if (!skipChip) return;
     await setEdgeSkipped(skipChip.dataset.skipKey, Number(skipChip.dataset.eventStartMs), skipChip.dataset.skip === "skip");

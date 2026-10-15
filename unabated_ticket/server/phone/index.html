@@ -132,33 +132,51 @@
       <button type="button" id="sheet-close" class="sheet-close" aria-label="Close ticket">Close</button>
       <div id="ticket-gone" class="warning" hidden>No longer listed: this is the line as it was last shown.</div>
       <div id="ticket-moved" class="warning" hidden></div>
-      <div class="side-caption">You are betting</div>
-      <div class="side" id="ticket-side"></div>
-      <div class="ticket-badges" id="ticket-badges"></div>
-      <div class="ticket-meta" id="ticket-bet-line"></div>
-      <div class="ticket-meta" id="ticket-matchup"></div>
-      <div class="ticket-meta" id="ticket-start"></div>
-      <dl class="facts">
-        <dt>Book</dt><dd id="ticket-book"></dd>
-        <dt>Price</dt><dd id="ticket-price"></dd>
-        <dt>Fair</dt><dd id="ticket-fair"></dd>
-        <dt>Edge</dt><dd id="ticket-edge"></dd>
-        <dt id="ticket-books-label" hidden>Others</dt><dd id="ticket-books" hidden></dd>
-      </dl>
-      <div class="stake-block">
-        <div class="stake-label" id="ticket-stake-label">Bet</div>
-        <div class="stake" id="ticket-stake"></div>
-        <div class="stake-contracts" id="ticket-contracts" hidden></div>
-        <div class="stake-exposure" id="ticket-exposure" hidden></div>
-        <div class="stake-uncapped" id="ticket-uncapped" hidden></div>
-        <div class="payout-row" id="ticket-payout-row" hidden>
-          <div><div class="payout-label">To win</div><div class="payout-value" id="ticket-to-win"></div></div>
-          <div><div class="payout-label">Payout</div><div class="payout-value" id="ticket-payout"></div></div>
+      <!-- The bet and what to stake on it in one card at the top, as on the panel's Ticket. -->
+      <div class="bet-card">
+        <div class="card-top">
+          <div class="card-pick">
+            <div class="side-caption">You are betting</div>
+            <div class="side" id="ticket-side"></div>
+          </div>
+          <div class="card-venue">
+            <div class="card-book" id="ticket-book"></div>
+            <div class="card-price" id="ticket-price"></div>
+          </div>
+          <div class="card-meta">
+            <div class="ticket-badges" id="ticket-badges"></div>
+            <div id="ticket-bet-line"></div>
+            <div id="ticket-matchup"></div>
+            <div id="ticket-start"></div>
+            <div id="ticket-line-age"></div>
+          </div>
+        </div>
+        <div class="stake-block">
+          <div class="stake-label" id="ticket-stake-label">Bet</div>
+          <div class="stake-row">
+            <div class="stake" id="ticket-stake"></div>
+            <div class="payout-row" id="ticket-payout-row" hidden>
+              <div><div class="payout-label">To win</div><div class="payout-value" id="ticket-to-win"></div></div>
+              <div><div class="payout-label">Payout</div><div class="payout-value" id="ticket-payout"></div></div>
+            </div>
+          </div>
+          <div class="stake-contracts" id="ticket-contracts" hidden></div>
+          <div class="stake-exposure" id="ticket-exposure" hidden></div>
+          <div class="stake-uncapped" id="ticket-uncapped" hidden></div>
         </div>
       </div>
+      <div class="tiles">
+        <div class="tile"><div class="tile-label">Fair</div><div class="tile-value" id="ticket-fair"></div><div class="tile-sub" id="ticket-fair-sub"></div></div>
+        <div class="tile tile-edge"><div class="tile-label">Edge</div><div class="tile-value" id="ticket-edge"></div><div class="tile-sub" id="ticket-edge-sub"></div><div class="tile-move" id="ticket-edge-move" hidden></div></div>
+        <div class="tile tile-books" id="ticket-books-tile" hidden><div class="tile-label">Other books</div><div class="tile-value" id="ticket-books-head"></div><div class="tile-sub" id="ticket-books-sub"></div></div>
+      </div>
+      <div id="ticket-books-block" hidden>
+        <h2 class="section-label" id="ticket-books-label"></h2>
+        <div class="books-box" id="ticket-books"></div>
+      </div>
       <div id="ticket-related-block" hidden>
-        <h2 class="section-label">Related bets</h2>
-        <div id="ticket-related" class="related-list"></div>
+        <div class="section-head"><h2 class="section-label">Related bets on this game</h2><span class="section-note" id="ticket-related-count"></span></div>
+        <div id="ticket-related" class="related-table"></div>
       </div>
       <div id="ticket-others-block" hidden>
         <h2 class="section-label">Other lines in this card <span id="ticket-others-count" class="num"></span></h2>

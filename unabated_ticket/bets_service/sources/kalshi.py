@@ -154,6 +154,26 @@ def _game_fields(ticker: str, contract_side: str, market: dict | None, event: di
     }
 
 
+def fill_on_its_open_side(fill: dict, position: dict | None) -> dict:
+    """A sell of one side while the account is net long the OTHER side is a
+    buy of that other side. Kalshi's v2 order API trades the YES leg only, so
+    a NO buy (the taker bot's, unabated_ticket/bets_service/taker_orders.py)
+    is placed as a YES sell and its fill may be labelled either way; the
+    position's sign says which it was. Every fill carries both prices, so
+    only the labels change. A sell of a side that IS held stays a sell."""
+    if fill.get("action") != "sell" or not position:
+        return fill
+    position_fp = to_number(position.get("position_fp"))
+    sold = fill.get("side")
+    if sold == "yes" and position_fp < 0:
+        bought = "no"
+    elif sold == "no" and position_fp > 0:
+        bought = "yes"
+    else:
+        return fill
+    return {**fill, "side": bought, "outcome_side": bought, "action": "buy"}
+
+
 def normalize_kalshi(fills: list[dict], positions: list[dict], markets: dict[str, dict],
                      events: dict[str, dict], fetched_at: str | None) -> list[dict]:
     """One record per (ticker, side) seen in `fills`. `markets` / `events` are
@@ -162,6 +182,7 @@ def normalize_kalshi(fills: list[dict], positions: list[dict], markets: dict[str
     positions_by_ticker = {position["ticker"]: position for position in positions}
     groups: dict[str, list[dict]] = {}
     for fill in fills:
+        fill = fill_on_its_open_side(fill, positions_by_ticker.get(fill["ticker"]))
         groups.setdefault(f"{fill['ticker']}:{fill['side']}", []).append(fill)
     records = []
     for key, group in groups.items():

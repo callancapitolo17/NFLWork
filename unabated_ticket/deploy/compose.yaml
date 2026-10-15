@@ -39,6 +39,13 @@ services:
     environment:
       HOME: /tmp
       BETS_DB_PATH: /data/bets.duckdb
+      TAKER_DB_PATH: /data/taker.duckdb
+      # The same Kalshi API on both services: the desk refuses an order the runner priced elsewhere (env_mismatch).
+      KALSHI_BASE_URL: https://api.elections.kalshi.com/trade-api/v2
+      # The bot trades only once this key file exists (its key id: KALSHI_TAKER_API_KEY_ID in bets_service/.env).
+      KALSHI_TAKER_PRIVATE_KEY_PATH: /data/kalshi_taker.pem
+      # touch to stop the bot, rm to resume.
+      TAKER_STOP_PATH: /data/taker.stop
       BETS_SERVICE_LOG_PATH: /data/logs/bets_service.log
       BETS_SERVICE_LOG_CONSOLE: "1"
       NOVIG_TOKEN_PATH: /data/novig_token.json
@@ -66,6 +73,7 @@ services:
       UNABATED_RUNNER_HOST: 127.0.0.1
       UNABATED_RUNNER_PORT: "8095"
       BETS_SERVICE_URL: http://127.0.0.1:8094
+      KALSHI_BASE_URL: https://api.elections.kalshi.com/trade-api/v2
     volumes:
       - ../..:/app:ro
     logging: *rotated-logs
