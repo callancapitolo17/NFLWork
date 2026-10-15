@@ -572,7 +572,7 @@ function stakeCell(line, p, byRotation) {
   if (otherBets.length) {
     const other = p.board.lines.find(l => l.wz_game_id === otherBets[0].wz_game_id);
     children.push(el("div", { class: "stake-note",
-      text: `${line.team} already bet: ${specialTitle(other.description)} (${other.rotation}), ${money(otherBets.reduce((sum, r) => sum + r.risk, 0))}` }));
+      text: `${line.team} holds ${specialTitle(other.description)} (${other.rotation}), ${money(otherBets.reduce((sum, r) => sum + r.risk, 0))}; sized around it` }));
   } else if (line.yields_to) {
     const other = byRotation.get(line.yields_to);
     const label = other ? `${specialTitle(other.description)} (${line.yields_to})` : String(line.yields_to);

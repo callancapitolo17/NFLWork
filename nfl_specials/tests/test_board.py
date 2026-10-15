@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from nfl_specials import board as board_module
-from nfl_specials.board import (Board, FectaLine, book_game, in_special_week, refresh_board,
+from nfl_specials.board import (Board, FectaLine, HeldPlacement, book_game, in_special_week, refresh_board,
                                  size_board, special_week_sunday)
 from nfl_specials.books import BookGame
 from nfl_specials.pricing import BookFair, ScoresFirstShare
@@ -25,14 +25,25 @@ def _board(*lines: FectaLine) -> Board:
     return Board(datetime.now(timezone.utc), None, list(lines), {})
 
 
-def test_same_team_specials_share_one_stake():
-    plain = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.09)
-    spread = _line(2, "CHARGERS TRIFECTA (1Q +½, 1H +4½ & GM +7½)", 400, 0.30)
-    sized = size_board(_board(plain, spread), 35000, 0.25, None)
+def test_same_team_specials_are_sized_jointly():
+    spread = _line(1, "CHARGERS TRIFECTA (1Q +½, 1H +4½ & GM +7½)", 400, 0.30)
+    plain = _line(2, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.12)
+    sized = size_board(_board(spread, plain), 5000, 0.25, None)
+    alone = [size_board(_board(line), 5000, 0.25, None)[0] for line in (spread, plain)]
+    # Both still add log growth on top of each other, so both get a stake...
+    assert all(s.recommended_stake > 0 for s in sized)
+    # ...but each is smaller than it would be alone: they win together.
+    assert all(s.recommended_stake < a.recommended_stake for s, a in zip(sized, alone))
+
+
+def test_a_same_team_special_that_adds_nothing_yields():
+    first = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.09)
+    copy = _line(2, "CHARGERS TRIFECTA (1Q -½, 1H & GM)", 1600, 0.09)   # the same bet
+    sized = size_board(_board(first, copy), 5000, 0.25, None)
     staked = [s for s in sized if s.recommended_stake > 0]
     assert len(staked) == 1
     loser = next(s for s in sized if s.recommended_stake == 0)
-    assert loser.yields_to in (1, 2) and loser.kelly_stake > 0
+    assert loser.yields_to in (1, 2) and loser.kelly_stake == 0
 
 
 def test_opposite_teams_are_sized_independently():
@@ -193,11 +204,31 @@ def test_a_started_game_takes_no_stake_or_budget():
     assert sized[1].recommended_stake == alone[0].recommended_stake > 0
 
 
-def test_a_team_already_bet_gets_no_new_stake():
-    placed = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.09)
+def test_a_held_bet_shrinks_the_same_teams_next_stake():
+    placed = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.12)
     same_team = _line(2, "CHARGERS TRIFECTA (1Q +½, 1H +4½ & GM +7½)", 400, 0.30)
     other_team = _line(3, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 400, 0.30)
-    sized = size_board(_board(placed, same_team, other_team), 10_000, 0.25, None, placed_ids=frozenset({1}))
-    assert [s.recommended_stake for s in sized[:2]] == [0, 0]
-    assert [s.yields_to for s in sized[:2]] == [None, None]
-    assert sized[2].recommended_stake > 0
+    board = _board(placed, same_team, other_team)
+    fresh = size_board(board, 5_000, 0.25, None)
+    sized = size_board(board, 5_000, 0.25, None, held=(HeldPlacement(1, 20.0, 1600),))
+    spread_alone = size_board(_board(same_team), 5_000, 0.25, None)[0]
+    assert sized[0].recommended_stake == pytest.approx(fresh[0].recommended_stake - 20, abs=1)   # topped up
+    assert 0 < sized[1].recommended_stake < spread_alone.recommended_stake
+    assert sized[2].recommended_stake == fresh[2].recommended_stake
+
+
+def test_a_held_bet_tops_up_to_kelly_within_the_book_limit():
+    placed = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.081)
+    kelly = size_board(_board(placed), 35_000, 0.25, None)[0].recommended_stake
+    topped = size_board(_board(placed), 35_000, 0.25, None, held=(HeldPlacement(1, 25.0, 1600),))
+    assert topped[0].recommended_stake == pytest.approx(kelly - 25, abs=1)
+    rich = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.15)
+    capped = size_board(_board(rich), 35_000, 0.25, None, held=(HeldPlacement(1, 200.0, 1600),))
+    assert capped[0].recommended_stake == 50.0      # Wagerzon's $250 per special, $200 already on
+
+
+def test_a_held_bet_the_board_cannot_price_blocks_its_team():
+    placed = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, None)
+    same_team = _line(2, "CHARGERS TRIFECTA (1Q +½, 1H +4½ & GM +7½)", 400, 0.30)
+    sized = size_board(_board(placed, same_team), 10_000, 0.25, None, held=(HeldPlacement(1, 100.0, 1600),))
+    assert sized[1].recommended_stake == 0

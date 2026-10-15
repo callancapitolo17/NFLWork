@@ -76,9 +76,10 @@ def test_payload_carries_structured_legs_and_book_progress(app):
                                                        "text": "LAC wins Q1"}
 
 
-def test_a_placed_special_is_not_recommended_again(app):
+def test_a_placed_special_is_topped_up_to_kelly_not_doubled(app):
     app.store.save_settings(35_000.0, 0.25)
-    assert app.board_payload("Wagerzon")["board"]["lines"][0]["recommended_stake"] > 0
+    before = app.board_payload("Wagerzon")["board"]["lines"][0]["recommended_stake"]
+    assert before > 25
     app.place(_bet(25))
     line = app.board_payload("Wagerzon")["board"]["lines"][0]
-    assert line["recommended_stake"] == 0 and line["kelly_stake"] > 0
+    assert line["recommended_stake"] == pytest.approx(before - 25, abs=1)
