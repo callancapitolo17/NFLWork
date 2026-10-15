@@ -130,6 +130,18 @@ test("a book under $30 resting at its price is thin: listed apart, never better,
   assert.deepEqual(pricecheck.priceCheckTag(onlyThin), { kind: "best", label: "best of 2 books" });
 });
 
+test("one book under two names is thin only when both copies are", () => {
+  const books = {
+    1: { id: 1, name: "Novig", isLive: true }, 2: { id: 2, name: "FanDuel", isLive: true },
+    107: { id: 107, name: "Polymarket", isLive: true }, 111: { id: 111, name: "Polymarket US", isLive: true },
+  };
+  const state = stateWith([[1, 0, 47.5, -110], [2, 0, 47.5, -103], [107, 0, 47.5, -105, { liquidity: 4 }], [111, 0, 47.5, -105, { liquidity: 800 }]], books);
+  const check = pricecheck.comparePrice(pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: null }), { ...overSpec(1, -110), bookName: "Novig" });
+  assert.deepEqual(check.better, [{ bookName: "FanDuel", price: -103, liquidity: null }, { bookName: "Polymarket / US", price: -105, liquidity: 800 }]);
+  assert.deepEqual(check.thin, []);
+  assert.equal(check.wouldSkip, true);
+});
+
 test("a thin book is not the next best for the outlier check", () => {
   // +300 against a -290 market is an outlier even when a $5 offer sits at +280.
   const state = stateWith([[1, 0, null, 300], [2, 0, null, 280, { liquidity: 5 }], [3, 0, null, -290], [4, 0, null, -300]]);

@@ -80,7 +80,6 @@ test("the ticket for a held sportsbook line: add, its standalone size, no contra
   assert.deepEqual(ticket.othersTile, { kind: "best", head: "Best of 3", sub: "next Novig -125" });
   assert.equal(phoneView.ticketView({ ...row, priceCheck: null, priceCheckTag: null }, NOW).othersTile, null);
   assert.equal(ticket.edge, "+5.30%");
-  assert.equal(ticket.edgeTier, "hot");
   assert.match(ticket.start, / · in 1h 0m$/);
   const block = ticket.stakeBlock;
   assert.deepEqual([block.label, block.stake, block.noEdge, block.position, block.positionAgainst, block.contracts],

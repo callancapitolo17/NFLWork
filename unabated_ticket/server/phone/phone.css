@@ -326,13 +326,19 @@ button, select, input { font: inherit; color: inherit; }
 .card-meta { grid-column: 1 / -1; margin-top: 4px; font-size: 13px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
 
 .stake-block {
-  padding: 10px 14px 12px;
+  margin: 16px 0 0; padding: 14px; border-radius: 12px;
   background: color-mix(in srgb, var(--edge-strong) 9%, var(--ground));
+  border: 1px solid color-mix(in srgb, var(--edge-strong) 25%, transparent);
+}
+/* The ticket's stake is the bet card's lower band; the Teasers summary keeps the box above. */
+.bet-card .stake-block {
+  margin: 0; padding: 10px 14px 12px; border: 0; border-radius: 0;
   border-top: 1px solid color-mix(in srgb, var(--edge-strong) 25%, transparent);
 }
 .stake-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 4px 16px; }
 .stake-label { font: 600 11px system-ui, sans-serif; letter-spacing: .12em; text-transform: uppercase; color: var(--edge-mid); }
-.stake { font: 700 36px var(--figure); letter-spacing: -.03em; line-height: 1.05; color: var(--ink); }
+.stake { font: 700 38px var(--figure); letter-spacing: -.03em; color: var(--ink); }
+.bet-card .stake { font-size: 36px; line-height: 1.05; }
 .stake.no-edge { font-size: 28px; color: var(--muted); }
 .stake-contracts { margin-top: 2px; font: 600 16px var(--figure); font-variant-numeric: tabular-nums; }
 .stake-contracts .cost { font-weight: 400; color: var(--ink-2); }
@@ -340,10 +346,15 @@ button, select, input { font: inherit; color: inherit; }
 .stake-exposure { margin-top: 4px; font-size: 13px; color: var(--ink-2); }
 .stake-exposure.against { color: var(--against-fg); }
 .stake-uncapped { margin-top: 2px; font: 400 14px var(--figure); color: var(--ink-2); font-variant-numeric: tabular-nums; }
-.payout-row { display: flex; gap: 18px; text-align: right; }
+.payout-row {
+  display: flex; flex-wrap: wrap; gap: 24px; margin-top: 10px; padding-top: 10px;
+  border-top: 1px dashed color-mix(in srgb, var(--edge-strong) 30%, transparent);
+}
+.bet-card .payout-row { flex-wrap: nowrap; gap: 18px; margin: 0; padding: 0; border: 0; text-align: right; }
 .payout-label { color: var(--muted); font: 600 10px system-ui, sans-serif; text-transform: uppercase; letter-spacing: .1em; }
-.payout-value { font: 600 17px var(--figure); }
-.payout-row > div:first-child .payout-value { color: var(--edge-strong); }
+.payout-value { font: 600 16px var(--figure); }
+.bet-card .payout-value { font-size: 17px; }
+.bet-card .payout-row > div:first-child .payout-value { color: var(--edge-strong); }
 
 /* Fair, Edge and Other books, side by side under the card. */
 .tiles { display: flex; gap: 6px; margin-top: 10px; }

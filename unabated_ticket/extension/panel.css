@@ -415,7 +415,8 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
   border: 1px solid var(--border-soft); background: var(--surface-2);
 }
 .tile-label { font: 600 9.5px system-ui, sans-serif; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
-.tile-value { font: 700 16px var(--figure); letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Wraps rather than cuts: "2 books better" and "Tied best of 11" outgrow a third of the panel. */
+.tile-value { font: 700 16px var(--figure); letter-spacing: -.02em; overflow-wrap: anywhere; }
 .tile-sub { font: 400 11.5px var(--figure); color: var(--ink-2); overflow-wrap: anywhere; }
 .tile-edge { background: color-mix(in srgb, var(--edge-strong) 12%, var(--ground)); border-color: transparent; }
 .tile-edge .tile-value { color: var(--edge-strong); }
@@ -498,7 +499,7 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 @media (max-width: 360px) {
   .tiles { gap: 4px; }
   .tile { padding: 5px 7px; }
-  .tile-value { font-size: 14px; white-space: normal; }
+  .tile-value { font-size: 14px; }
   .books-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-auto-flow: row; }
   .related-table { display: block; }
   .rt-head { display: none; }

@@ -14,7 +14,8 @@
 //     snapshot is news Unabated's fair has not caught up with, not an edge;
 //   - live edge at least 3% and at most 20%;
 //   - no live book beats the price at that number (pricecheck.js, strictly:
-//     one better book is enough to skip; outliers and Cal's Skips trade);
+//     one better book is enough to skip, a thin one under pricecheck's $30
+//     floor too; outliers and Cal's Skips trade);
 //   - lines changed within 7 days, right up to the start;
 //   - $500 at 0.25 Kelly (Cal, 2026-10-14; was $1,000), conditional on every open bet (betsview.js
 //     stakeAdvice), contracts cut to the depth at the ask.
@@ -223,6 +224,17 @@ function quoteOf(book, side) {
   return { ask: roundPrice(1 - opposite[0].price), depth: opposite[0].quantity };
 }
 
+// Every book that beats the live price, thin ones included: pricecheck's
+// $30 floor keeps a thin book off the panel's tags, but the bot still skips
+// on it (the floor was added after the taker's rules were set, and Cal has
+// not moved it onto the bot).
+function booksBeating(check, price) {
+  if (!check) return [];
+  const yourProb = pricecheck.impliedProb(price);
+  const thinBeating = (check.thin || []).filter((book) => pricecheck.impliedProb(book.price) < yourProb);
+  return check.better.concat(thinBeating);
+}
+
 // One row's decision.
 //   row         a candidateRows row
 //   contract    resolveKalshiContract's result
@@ -266,9 +278,10 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing }) {
     eventId: row.eventId, periodTypeId: row.periodTypeId, betTypeId: row.betTypeId, sideIndex: row.sideIndex,
     points: row.points, bookId: row.book.id, bookName: row.book.name, price: liveAmerican,
   });
-  if (check && check.better.length > 0) {
-    decision.betterBooks = check.better;
-    return done("not_best", check.better.map((book) => `${book.bookName} ${book.price}`).join(", "));
+  const beating = booksBeating(check, liveAmerican);
+  if (beating.length > 0) {
+    decision.betterBooks = beating;
+    return done("not_best", beating.map((book) => `${book.bookName} ${book.price}`).join(", "));
   }
   if (liveEdge > MAX_LIVE_EDGE) return done("cap", `live edge ${(liveEdge * 100).toFixed(2)}%`);
 

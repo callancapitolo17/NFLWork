@@ -309,7 +309,7 @@
   function renderTicketRelated(row) {
     const groups = betsView.relatedGroups(row.related || []);
     view.ticketRelatedBlock.hidden = groups.length === 0;
-    view.ticketRelatedCount.textContent = groups.length ? `${groups.reduce((total, group) => total + group.count, 0)} open` : "";
+    view.ticketRelatedCount.textContent = groups.length ? `${betsView.relatedOpenCount(row.related)} open` : "";
     view.ticketRelated.replaceChildren(...groups.flatMap((group) => [relatedGroupEl(group), ...group.lines.map((line) => relatedRowEl(line, group))]));
   }
 
@@ -415,13 +415,15 @@
     view.ticketBooksHead.textContent = tile.head;
     view.ticketBooksSub.textContent = tile.sub;
     view.ticketBooksLabel.textContent = ticket.othersLabel;
-    const open = state.ticket.booksOpen;
-    const { rows, folded } = betsView.otherBookRows(row.priceCheck, row.book.name, row.price, open ? Infinity : undefined);
+    // Open only while the default cap would fold something: books leaving the feed close it.
+    const folded = betsView.otherBookRows(row.priceCheck, row.book.name, row.price).folded;
+    const open = folded.length > 0 && state.ticket.booksOpen;
+    const { rows } = betsView.otherBookRows(row.priceCheck, row.book.name, row.price, open ? Infinity : undefined);
     const grid = makeEl("div", "books-grid");
     grid.style.setProperty("--rows", String(Math.ceil(rows.length / 2)));
     grid.append(...rows.map(bookRowEl));
     view.ticketBooks.append(grid);
-    if (folded.length || open) {
+    if (folded.length) {
       view.ticketBooks.append(actionButton("books-more", open ? "Fewer books ▴" : `+${folded.length} more book${folded.length === 1 ? "" : "s"}, all worse ▸`, {}));
     }
     if (!row.skipKey) return;

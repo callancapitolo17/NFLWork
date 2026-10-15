@@ -164,6 +164,15 @@ test("one live book better at the number is not_best", () => {
   assert.match(decision.detail, /Novig -120/);
 });
 
+test("a thin book better at the number still makes not_best", () => {
+  const state = boardWithEdge(WSU_ALT_KEY, 0.05);
+  const novigKey = Object.keys(state.lines).find((key) => key.includes("ms89") && key.endsWith("si1:tid717:alt-35.5")) || "420942308:ms89:si1:tid717";
+  moveLine(state, novigKey, { points: -35.5, price: -120, liquidity: 12, statusId: 1, isBlurred: false, modifiedOn: new Date(NOW - 1000).toISOString(), sequenceNumber: NOW - 1000 });
+  const decision = decide(state, WSU_ALT_KEY, { ask: 0.57, depth: 1000 });
+  assert.equal(decision.reason, "not_best");
+  assert.match(decision.detail, /Novig -120/);
+});
+
 test("the decision signature changes with the ask, not with the clock", () => {
   const base = { reason: "bet", ticker: "T", liveAsk: 0.57, unabatedPrice: -143, contracts: 3, liveEdge: 0.05 };
   assert.equal(taker.decisionSignature(base), taker.decisionSignature({ ...base, liveEdge: 0.051 }));

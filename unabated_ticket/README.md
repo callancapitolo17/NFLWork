@@ -703,7 +703,10 @@ list shows the money resting at its price (the feed's `liquidity`, e.g.
 resting (`MIN_OTHER_BOOK_LIQUIDITY`, `pricecheck.isThin`) is greyed at the
 end of the list as `thin $12` and counts toward nothing: not "better", not
 Skip, not the outlier check, not the book count. Only thin books at the
-number means no tag.
+number means no tag. One book under two names (`Polymarket / US`) is thin
+only when both copies are. The automated taker still skips on a thin book
+that beats its price (`taker.booksBeating`): the floor came after its rules
+were set, and Cal has not moved it onto the bot.
 
 **The Ticket's layout (0.25.0, Cal 2026-10-15), panel and phone:**
 
@@ -2649,7 +2652,7 @@ on Kalshi with **real money** on the bot's own key. No shadow mode (Cal,
 | Ceiling | open bot cost (unsettled markets) never above $500; contracts cut to fit, else refused |
 | Price | Kalshi's live ask + 7% fee no more than 0.1c worse than Unabated's shown price, and no more than 1c better (a price that ran away from Unabated's snapshot is news its fair has not caught up with) |
 | Edge | 3% to 20% at that live price (fair read off Unabated's cheaper of its two prices) |
-| Best price | no live book beats it at the number (one is enough to skip; ties trade); outliers and Skips trade |
+| Best price | no live book beats it at the number (one is enough to skip, a thin one under $30 too; ties trade); outliers and Skips trade |
 | Line age | changed within 7 days; right up to the start |
 | Board age | the runner re-downloads every league's snapshot every 60 s (the panel's size tiers go up to 5 min); a row whose league snapshot landed over 3 min ago, is a stale build or failed to load is `stale_feed` |
 | Holdings | the pass runs only when the bets service's Kalshi poll succeeded within the last 5 min (conditional Kelly is sized on it); otherwise it decides nothing |

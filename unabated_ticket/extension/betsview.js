@@ -360,6 +360,7 @@
         tier: first.tier, inMath: first.note === null, note: first.note, dollars,
         sameWay: first.position !== null && !rowPosition.reason && first.position.direction === rowPosition.direction,
         count: group.length,
+        ticketIds: group.map((entry) => entry.ticket.id),
         text: parts.join(" · "),
         title: group.map((entry) => ticketText(entry.ticket)).join("\n"),
       };
@@ -561,9 +562,12 @@
   // (fillfair.js), else null; `fairThenPct` is its "36.0%". `cells` are the
   // label's pieces for the Ticket's table (bets.labelCells), null on a
   // teasers line; `dollars` the stake and `count` the bets the line stands
-  // for. The open teasers on the game come in as one line per leg
-  // (advice.teaserGroups), with their tickets in `title`; every line sorts by
-  // tier, then dollars, the ones in the math first.
+  // for, `ticketKeys` the tickets behind it (a parlay's legs share one, a
+  // teaser line lists its tickets) so a ticket on two lines counts once
+  // (relatedGroups, relatedOpenCount). The open teasers on the game come in
+  // as one line per leg (advice.teaserGroups), with their tickets in
+  // `title`; every line sorts by tier, then dollars, the ones in the math
+  // first.
   //   fairs  bet id -> saved fill-fair row (fillfair.fairsByBetId); optional
   function relatedLines(flag, fairs) {
     const matches = flag && Array.isArray(flag.matches) ? flag.matches : [];
@@ -579,16 +583,24 @@
         cells: match.cells || null,
         dollars: match.bet && typeof match.bet.stake === "number" ? match.bet.stake : 0,
         count: 1,
+        ticketKeys: match.bet ? [ticketKeyOf(match.bet)] : null,
       };
     });
     const teaserLines = groups.map((group) => ({
       tier: group.tier, inMath: group.inMath, tag: group.inMath ? bets.tierLabel(group.tier) : group.note, text: group.text,
-      fairThen: null, fairThenPct: null, cells: null, dollars: group.dollars, count: group.count || 1, title: group.title,
+      fairThen: null, fairThenPct: null, cells: null, dollars: group.dollars, count: group.count || 1,
+      ticketKeys: Array.isArray(group.ticketIds) ? group.ticketIds.map((id) => `teaser:${id}`) : null, title: group.title,
     }));
     const all = straightLines.concat(teaserLines);
     const byTierThenDollars = (a, b) => bets.tierRank(a.tier) - bets.tierRank(b.tier) || b.dollars - a.dollars;
     return all.filter((line) => line.inMath).sort(byTierThenDollars)
       .concat(all.filter((line) => !line.inMath).sort(byTierThenDollars));
+  }
+
+  // The ticket a bet belongs to: every leg of one parlay carries the whole
+  // ticket's stake, so its legs share a key.
+  function ticketKeyOf(bet) {
+    return bet.isParlayLeg && bet.parlayId != null ? `parlay:${bet.venue}:${bet.parlayId}` : `bet:${bet.id}`;
   }
 
   // "36.0%": Unabated's fair for the bet's line when it was placed, or null.
@@ -612,7 +624,8 @@
   // in the sizing"; one that is not reads its reason ("game · not sized").
   // `now` is the number the line sits at now when every bet in the group
   // has moved off to the same one (the heading says it once), else null and
-  // each line carries its own (cells.now).
+  // each line carries its own (cells.now). `dollars` and `count` take each
+  // ticket once (ticketKeys): two legs of one parlay are one stake.
   //   [{label, inMath, against, dollars, count, now, lines}]
   function relatedGroups(lines) {
     const byKey = new Map();
@@ -629,12 +642,33 @@
         label: first.inMath ? `${first.tag} \u00b7 in the sizing` : first.tag,
         inMath: first.inMath,
         against: group.some(isAgainst),
-        dollars: roundCents(group.reduce((total, line) => total + (line.dollars || 0), 0)),
-        count: group.reduce((total, line) => total + (line.count || 1), 0),
+        ...ticketTotals(group),
         now: sharedNow ?? null,
         lines: group,
       };
     });
+  }
+
+  // {dollars, count} over related lines, each ticket once: a line whose
+  // tickets were all counted already adds nothing. A line without
+  // ticketKeys (an older runner's) counts as its own.
+  function ticketTotals(lines) {
+    const seen = new Set();
+    let dollars = 0;
+    let count = 0;
+    for (const line of lines) {
+      const keys = Array.isArray(line.ticketKeys) ? line.ticketKeys.filter((key) => !seen.has(key)) : null;
+      if (keys && keys.length === 0) continue;
+      if (keys) keys.forEach((key) => seen.add(key));
+      dollars += line.dollars || 0;
+      count += keys ? keys.length : line.count || 1;
+    }
+    return { dollars: roundCents(dollars), count };
+  }
+
+  // "5 open": the tickets behind the related lines, each once.
+  function relatedOpenCount(lines) {
+    return ticketTotals(Array.isArray(lines) ? lines : []).count;
   }
 
   // ---- the Ticket's other books ----------------------------------------------
@@ -680,7 +714,8 @@
     if (tag.kind === "best") {
       const sameAs = check.sameAs || [];
       if (sameAs.length) {
-        return { kind: tag.kind, head: `Tied best of ${check.bookCount}`, sub: `tied with ${sameAs[0].bookName}${sameAs.length > 1 ? ` +${sameAs.length - 1}` : ""}` };
+        const more = sameAs.length > 1 ? ` and ${sameAs.length - 1} more` : "";
+        return { kind: tag.kind, head: `Tied best of ${check.bookCount}`, sub: `tied with ${sameAs[0].bookName}${more}` };
       }
       return { kind: tag.kind, head: `Best of ${check.bookCount}`, sub: check.worse.length ? `next ${book(check.worse[0])}` : "" };
     }
@@ -689,9 +724,9 @@
   }
 
   // The heading over the Ticket's books: "Other books at 39.5" / "at +3.5";
-  // a moneyline has no number.
+  // a moneyline has no number (even when the feed sends it one).
   function otherBooksLabel(betType, points) {
-    if (points == null) return "Other books on this line";
+    if (betType === "Moneyline" || points == null) return "Other books on this line";
     return `Other books at ${betType === "Total" || points <= 0 ? points : `+${points}`}`;
   }
 
@@ -774,7 +809,7 @@
   const api = {
     VENUES, FRESH_MS, STALE_MS, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    badges, relatedLines, relatedGroups, otherBookRows, otherBooksTile, otherBooksLabel, centsFromFairText, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, uncappedLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, needsFixBanner, keepDismissedOpen, keepKnownStartsOpen, ticketAsLine, sanitizeBetsSettings,
+    badges, relatedLines, relatedGroups, relatedOpenCount, otherBookRows, otherBooksTile, otherBooksLabel, centsFromFairText, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, uncappedLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, needsFixBanner, keepDismissedOpen, keepKnownStartsOpen, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

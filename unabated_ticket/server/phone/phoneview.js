@@ -207,7 +207,6 @@
       fair: row.fair == null ? "unknown" : fmtAmerican(row.fair),
       fairCents: fairProb == null ? "" : `${(fairProb * 100).toFixed(1)}¢`,
       edge: fmtEdgePct(row.edgePct),
-      edgeTier: row.edgeTier,
       edgeSub: fairProb == null ? "" : betsView.centsFromFairText(bookProb, fairProb),
       othersLabel: betsView.otherBooksLabel(row.betType, row.points),
       othersTile: row.priceCheck ? betsView.otherBooksTile(row.priceCheck, row.priceCheckTag) : null,

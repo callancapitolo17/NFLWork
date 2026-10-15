@@ -339,6 +339,7 @@ test("stakeAdvice guards: a bet with no fair, a flat rung, no stake or a parlay 
     assert.deepEqual(view.relatedLines({ matches: advice.matches })[0], {
       tier: advice.matches[0].tier, inMath: false, tag: note, text: advice.matches[0].label, fairThen: null, fairThenPct: null,
       cells: advice.matches[0].cells, dollars: held.stake ?? 0, count: 1,
+      ticketKeys: [held.isParlayLeg && held.parlayId != null ? `parlay:${held.venue}:${held.parlayId}` : `bet:${held.id}`],
     }, held.id);
   }
 });
@@ -606,7 +607,7 @@ test("relatedLines: bets in the math carry their tier's tag, the rest carry why 
       { tier: "same_game", label: "1H Under 22.5 -104 · 51.0¢ · $255 · Kalshi", inMath: false, note: "game · not sized" },
     ],
   };
-  const bare = { fairThen: null, fairThenPct: null, cells: null, dollars: 0, count: 1 };
+  const bare = { fairThen: null, fairThenPct: null, cells: null, dollars: 0, count: 1, ticketKeys: null };
   assert.deepEqual(view.relatedLines(flag), [
     { tier: "same_line", inMath: true, tag: "this line", text: "Chattanooga -5.5 +138 · 42.0¢ · $300 · Kalshi", ...bare },
     { tier: "related_opposite", inMath: true, tag: "other side", text: "1H Eastern Kentucky +2.5 -110 · 52.4¢ · $200 · Kalshi", ...bare },
@@ -652,6 +653,27 @@ test("relatedGroups: one heading per tag, in the math first, with the group's do
   assert.deepEqual(view.relatedGroups(undefined), []);
 });
 
+test("relatedGroups and relatedOpenCount take each ticket once: two legs of one parlay are one stake", () => {
+  const line = nflLine();
+  const leg = (id, fields) => heldRecord(id, { isParlayLeg: true, parlayId: "P1", venue: "novig", stake: 50, price: 260, ...fields });
+  const records = [
+    leg("p1-spread", { betType: "spread", side: "home", points: -3.5 }),
+    leg("p1-ml", { betType: "moneyline", side: "home", points: null }),
+    heldRecord("solo", { betType: "spread", side: "away", points: 3.5, price: 110, stake: 20 }),
+  ];
+  const lines = view.relatedLines({ matches: betsLib.matchBets(line, records, { lines: [line] }).matches });
+  assert.equal(lines.filter((related) => related.ticketKeys[0] === "parlay:novig:P1").length, 2);
+  // All three are other markets of the game, one heading: the parlay's $50 once, plus $20.
+  const groups = view.relatedGroups(lines);
+  assert.deepEqual(groups.map((group) => [group.dollars, group.count, group.lines.length]), [[70, 2, 3]]);
+  assert.equal(view.relatedOpenCount(lines), 2);
+  // A teaser ticket with legs on two lines counts once; an older runner's lines (no keys) count as sent.
+  const teaser = (ids) => ({ tier: "same_game", inMath: false, tag: "game · not sized", cells: null, dollars: 200 * ids.length, count: ids.length, ticketKeys: ids.map((id) => `teaser:${id}`) });
+  assert.equal(view.relatedOpenCount([teaser(["T1", "T2"]), teaser(["T1"])]), 2);
+  assert.equal(view.relatedOpenCount([{ dollars: 5, count: 3 }, { dollars: 5, count: 1 }]), 4);
+  assert.equal(view.relatedOpenCount(undefined), 0);
+});
+
 test("otherBookRows: better, yours, same, worse, thin; the worst of the worse fold past the cap, never just one", () => {
   const book = (bookName, price, liquidity = null) => ({ bookName, price, liquidity });
   const check = {
@@ -684,7 +706,7 @@ test("otherBooksTile: the tag in a few words and the book that sets it", () => {
   assert.equal(view.otherBooksTile(null, { kind: "best" }), null);
   assert.deepEqual(view.otherBooksTile(base, { kind: "best" }), { kind: "best", head: "Best of 3", sub: "next Kalshi +425" });
   assert.deepEqual(view.otherBooksTile({ ...base, sameAs: [book("Circa", 441), book("BetMGM", 441)], same: 2, bookCount: 5 }, { kind: "best" }),
-    { kind: "best", head: "Tied best of 5", sub: "tied with Circa +1" });
+    { kind: "best", head: "Tied best of 5", sub: "tied with Circa and 1 more" });
   assert.deepEqual(view.otherBooksTile({ ...base, better: [book("Circa", 455)] }, { kind: "better" }), { kind: "better", head: "1 book better", sub: "best Circa +455" });
   assert.deepEqual(view.otherBooksTile({ ...base, better: [book("Circa", 455), book("Pinnacle", -105)] }, { kind: "skip" }), { kind: "skip", head: "2 books better", sub: "best Circa +455" });
   assert.deepEqual(view.otherBooksTile({ ...base, outlier: { nextBest: book("Kalshi", 425) } }, { kind: "outlier" }), { kind: "outlier", head: "Outlier, check", sub: "next best Kalshi +425" });
@@ -695,6 +717,7 @@ test("otherBooksLabel: a total's number bare, a spread's signed, a moneyline non
   assert.equal(view.otherBooksLabel("Spread", 3.5), "Other books at +3.5");
   assert.equal(view.otherBooksLabel("Spread", -3.5), "Other books at -3.5");
   assert.equal(view.otherBooksLabel("Moneyline", null), "Other books on this line");
+  assert.equal(view.otherBooksLabel("Moneyline", 0), "Other books on this line");
 });
 
 test("centsFromFairText: the price's distance from the fair in cents", () => {

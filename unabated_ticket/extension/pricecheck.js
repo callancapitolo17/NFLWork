@@ -102,8 +102,16 @@
       }
       const suffix = entry.bookName.slice(sameNameKey(entry.bookName).length).trim();
       held.bookName = suffix ? `${held.bookName} / ${suffix}` : held.bookName;
+      if ("liquidity" in held || "liquidity" in entry) held.liquidity = largerLiquidity(held.liquidity, entry.liquidity);
     }
     return Array.from(kept.values());
+  }
+
+  // A merged book is thin only when every copy is: the larger of the two,
+  // and a copy reporting none (a sportsbook) counts as unlimited.
+  function largerLiquidity(a, b) {
+    if (a == null || b == null) return null;
+    return Math.max(a, b);
   }
 
   // rung key -> Map(bookId -> {bookId, bookName, price, liquidity}), every book's best

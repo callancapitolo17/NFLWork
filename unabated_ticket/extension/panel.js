@@ -696,15 +696,17 @@
     view.othersTile.hidden = false;
 
     view.othersLabel.textContent = betsView.otherBooksLabel(ticket.betType, line.points);
-    const open = ticketBooksOpenAt === ticket.capturedAt;
-    const { rows, folded } = betsView.otherBookRows(check, ticket.book.name, line.price, open ? Infinity : undefined);
+    // Open only while the default cap would fold something: books leaving the feed close it.
+    const folded = betsView.otherBookRows(check, ticket.book.name, line.price).folded;
+    const open = folded.length > 0 && ticketBooksOpenAt === ticket.capturedAt;
+    const { rows } = betsView.otherBookRows(check, ticket.book.name, line.price, open ? Infinity : undefined);
     const grid = document.createElement("div");
     grid.className = "books-grid";
     grid.style.setProperty("--rows", String(Math.ceil(rows.length / 2)));
     grid.title = THIN_BOOKS_NOTE();
     grid.append(...rows.map(bookRowEl));
     view.others.append(grid);
-    if (folded.length || open) {
+    if (folded.length) {
       const more = document.createElement("button");
       more.type = "button";
       more.className = "books-more";
@@ -789,12 +791,12 @@
   // the other side (red) — then the ones that are not sized, grey, under
   // why. Nothing when none.
   function renderRelatedBets(flag) {
-    const groups = betsView.relatedGroups(betsView.relatedLines(flag, fillFairIndex));
+    const lines = betsView.relatedLines(flag, fillFairIndex);
+    const groups = betsView.relatedGroups(lines);
     view.relatedBlock.hidden = groups.length === 0;
     view.relatedTable.replaceChildren();
     if (!groups.length) return;
-    const count = groups.reduce((total, group) => total + group.count, 0);
-    view.relatedCount.textContent = `${count} open`;
+    view.relatedCount.textContent = `${betsView.relatedOpenCount(lines)} open`;
     view.relatedTable.append(relatedHeaderEl(), ...groups.flatMap((group) => [relatedGroupEl(group), ...group.lines.map((line) => relatedRowEl(line, group))]));
   }
 
