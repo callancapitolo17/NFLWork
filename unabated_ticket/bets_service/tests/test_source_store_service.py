@@ -1001,3 +1001,47 @@ def test_host_allowed():
 ])
 def test_main_checkout_root_finds_the_main_checkout_from_either_worktree_layout(raw_root: str, expected: str) -> None:
     assert config.main_checkout_root(Path(raw_root)) == Path(expected)
+
+
+def fill_book_row(bet_id: str, books_better: int = 1, **extra) -> dict:
+    return {"betId": bet_id, "placedAt": "2026-09-23T17:02:00Z", "fillPrice": 208, "bookCount": 2,
+            "booksBetter": books_better, "bestBook": "Kalshi", "bestPrice": 215, **extra}
+
+
+def test_fill_books_are_insert_only_first_capture_wins(store):
+    captured_at = datetime(2026, 9, 23, 17, 3, tzinfo=timezone.utc)
+    none_at_number = fill_book_row("novig:2", 0, bookCount=0, bestBook=None, bestPrice=None)
+    assert store.save_fill_books([fill_book_row("novig:1"), none_at_number], captured_at) == 2
+    assert store.save_fill_books([fill_book_row("novig:1", 2)], captured_at + timedelta(minutes=5)) == 0
+    held = store._con.execute(
+        "SELECT bet_id, fill_price, book_count, books_better, best_book, best_price FROM bet_fill_books ORDER BY bet_id").fetchall()
+    assert held == [("novig:1", 208.0, 2, 1, "Kalshi", 215.0), ("novig:2", 208.0, 0, 0, None, None)]
+
+
+def test_validate_fill_book_rows_says_what_was_expected_and_what_was_found():
+    good = fill_book_row("novig:1")
+    assert service.validate_fill_book_rows({"rows": [good]}) == [good]
+    assert service.validate_fill_book_rows([]) == "body must be an object with a `rows` array, got list"
+    assert service.validate_fill_book_rows({"rows": [{**good, "betId": ""}]}) == "rows[0].betId must be a non-empty string, got ''"
+    assert service.validate_fill_book_rows({"rows": [{**good, "placedAt": "x"}]}) == "rows[0].placedAt must be an ISO time, got 'x'"
+    assert service.validate_fill_book_rows({"rows": [{**good, "fillPrice": 50}]}) == (
+        "rows[0].fillPrice must be an American price (<= -100 or >= 100), got 50")
+    assert service.validate_fill_book_rows({"rows": [{**good, "bookCount": -1}]}) == "rows[0].bookCount must be a whole number >= 0, got -1"
+    assert service.validate_fill_book_rows({"rows": [{**good, "booksBetter": 3}]}) == "rows[0].booksBetter must be at most bookCount, got 3 > 2"
+    assert service.validate_fill_book_rows({"rows": [{**good, "bestBook": None}]}) == "rows[0].bestBook must be a non-empty string, got None"
+    assert service.validate_fill_book_rows({"rows": [{**good, "bookCount": 0, "booksBetter": 0}]}) == (
+        "rows[0] with bookCount 0 must have null bestBook and bestPrice, got 'Kalshi', 215")
+
+
+def test_http_fill_books_post_saves_once(store, http_server):
+    body = json.dumps({"rows": [fill_book_row("novig:1")]}).encode()
+    status, reply = request_json("POST", f"{http_server}/fill_books.json", body, "application/json")
+    assert (status, reply) == (200, {"ok": True, "saved": 1})
+    status, reply = request_json("POST", f"{http_server}/fill_books.json", body, "application/json")
+    assert (status, reply) == (200, {"ok": True, "saved": 0})
+    status, reply = request_json("POST", f"{http_server}/fill_books.json", body, "text/plain")
+    assert status == 415
+    bad = json.dumps({"rows": [fill_book_row("novig:2", 5)]}).encode()
+    status, reply = request_json("POST", f"{http_server}/fill_books.json", bad, "application/json")
+    assert status == 400 and reply["error"].startswith("rows[0].booksBetter must be at most bookCount")
+    assert store._con.execute("SELECT count(*) FROM bet_fill_books").fetchone()[0] == 1
