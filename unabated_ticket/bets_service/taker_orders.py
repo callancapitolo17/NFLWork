@@ -73,7 +73,8 @@ BOT_BANKROLL = 500.0
 FILLS_SETTLE_SEC = 60
 # Kalshi rounds each order's fee up to the cent: one cent of slack per order.
 FEE_ROUNDING_SLACK = 0.01
-SETTLED_MARKET_STATUSES = ("settled", "finalized")
+# Kalshi's market status enum ends initialized/inactive/active/closed/determined/.../finalized.
+SETTLED_MARKET_STATUSES = ("finalized",)
 REQUEST_TIMEOUT_SEC = 10
 SIGNED_PATH_PREFIX = "/trade-api/v2"
 ORDERS_PATH = "/portfolio/events/orders"
@@ -160,15 +161,17 @@ def _parse(raw: bytes) -> object:
 
 
 def order_body(ticker: str, contract_side: str, ask: float, count: int, client_order_id: str) -> dict:
-    """Kalshi v2's order body for BUYING `contract_side` at `ask`. v2 trades the
-    YES leg only: buy YES = bid at the ask; buy NO = ask (sell YES) at 1 - the
-    NO ask (unabated_edge/maker/gateway.py, the same API live)."""
+    """Kalshi v2's order body for BUYING `contract_side` at `ask`, immediate-
+    or-cancel: what does not fill at once Kalshi cancels in the same request,
+    so a bot order never rests (docs.kalshi.com, Create Order V2). v2 trades
+    the YES leg only: buy YES = bid at the ask; buy NO = ask (sell YES) at
+    1 - the NO ask (unabated_edge/maker/gateway.py, the same API live)."""
     if contract_side == "yes":
         v2_side, price = "bid", ask
     else:
         v2_side, price = "ask", 1 - ask
     return {"ticker": ticker, "side": v2_side, "price": f"{price:.4f}", "count": f"{float(count):.2f}",
-            "time_in_force": "good_till_canceled", "self_trade_prevention_type": "taker_at_cross",
+            "time_in_force": "immediate_or_cancel", "self_trade_prevention_type": "taker_at_cross",
             "client_order_id": client_order_id}
 
 
@@ -198,6 +201,21 @@ def _order_id_of(reply: object) -> str | None:
     order = reply.get("order") if isinstance(reply.get("order"), dict) else reply
     order_id = order.get("order_id")
     return order_id if isinstance(order_id, str) and order_id else None
+
+
+def _remaining_count_of(reply: object) -> float | None:
+    """Contracts Kalshi's create reply says are still open ("0.00" after an
+    immediate-or-cancel), or None when the reply does not say."""
+    if not isinstance(reply, dict):
+        return None
+    order = reply.get("order") if isinstance(reply.get("order"), dict) else reply
+    remaining = order.get("remaining_count_fp", order.get("remaining_count"))
+    if isinstance(remaining, bool) or not isinstance(remaining, (int, float, str)):
+        return None
+    try:
+        return float(remaining)
+    except ValueError:
+        return None
 
 
 def _exchange_index_of(reply: object) -> int | None:
@@ -373,6 +391,14 @@ class TakerDesk:
         self._store.update_order(client_order_id, {"status": "sent", "kalshi_order_id": order_id, "exchange_index": exchange_index})
         order = {"client_order_id": client_order_id, "kalshi_order_id": order_id, "ticker": request["ticker"],
                  "contract_side": request["contract_side"], "exchange_index": exchange_index, "count_requested": count}
+        remaining = _remaining_count_of(reply)
+        if remaining is not None and remaining <= 0:
+            # Immediate-or-cancel: Kalshi cancelled the rest in the same request, nothing rests.
+            self._store.update_order(client_order_id, {"cancelled_at": self._now(), "error": None})
+            return self._read_fills(client_order_id, order_id, request["contract_side"], count, final=False)
+        # No count in the reply, or contracts left open against the order's terms: cancel as if it rested.
+        log.warning("taker order %s %s: Kalshi reports %s contracts still open after an IOC send; cancelling",
+                    client_order_id, request["ticker"], remaining)
         return self._cancel_then_read(order, resting=None)
 
     def _cancel_then_read(self, order: dict, resting: list[dict] | None) -> dict:

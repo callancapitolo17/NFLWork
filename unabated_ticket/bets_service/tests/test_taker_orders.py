@@ -31,9 +31,12 @@ class ScriptedKalshi:
     base_url = "https://kalshi.test/trade-api/v2"
 
     def __init__(self, filled: float = 10, market_status: str = "active", post_status: int = 201,
-                 delete_status: int = 200, resting=(), listed=(), exchange_index=None, fills_pages=None):
+                 delete_status: int = 200, resting=(), listed=(), exchange_index=None, fills_pages=None,
+                 remaining_count="0.00"):
         self.calls = []
         self.filled = filled
+        # What the create reply says is still open; None leaves the field out (an older reply shape).
+        self.remaining_count = remaining_count
         # [(contracts, next cursor), ...] served page by page; None answers one page of `filled`.
         self.fills_pages = list(fills_pages) if fills_pages is not None else None
         self.market_status = market_status
@@ -48,10 +51,13 @@ class ScriptedKalshi:
         if method == "POST":
             if self.post_status != 201:
                 return self.post_status, {"error": "no"}
-            order = {"order_id": "k-1"}
+            # Create Order V2 answers flat: order_id, fill_count, remaining_count, ts_ms.
+            order = {"order_id": "k-1", "fill_count": f"{float(self.filled):.2f}", "ts_ms": 1760000000000}
+            if self.remaining_count is not None:
+                order["remaining_count"] = self.remaining_count
             if self.exchange_index is not None:
                 order["exchange_index"] = self.exchange_index
-            return 201, {"order": order}
+            return 201, order
         if method == "DELETE":
             return self.delete_status, {}
         if path.startswith("/portfolio/fills"):
@@ -94,25 +100,36 @@ def order_row(store, client_order_id):
 
 def test_order_body_buys_yes_as_a_bid_and_no_as_an_ask_at_one_minus():
     assert order_body(TICKER, "yes", 0.57, 10, "ubot-x") == {
-        "ticker": TICKER, "side": "bid", "price": "0.5700", "count": "10.00", "time_in_force": "good_till_canceled",
+        "ticker": TICKER, "side": "bid", "price": "0.5700", "count": "10.00", "time_in_force": "immediate_or_cancel",
         "self_trade_prevention_type": "taker_at_cross", "client_order_id": "ubot-x"}
     assert order_body(TICKER, "no", 0.43, 3, "ubot-y")["side"] == "ask"
     assert order_body(TICKER, "no", 0.43, 3, "ubot-y")["price"] == "0.5700"
 
 
-def test_a_filled_order_is_sent_cancelled_by_market_and_its_fills_recorded(store, tmp_path):
-    kalshi = ScriptedKalshi(exchange_index=3)
+def test_a_filled_order_is_sent_immediate_or_cancel_and_its_fills_recorded(store, tmp_path):
+    kalshi = ScriptedKalshi()
     result = desk_for(store, kalshi, tmp_path).place(request())
     assert result["status"] == "filled" and result["filled"] == 10
     assert result["cost"] == pytest.approx(10 * 0.57 + 0.17, abs=1e-3)
-    assert kalshi.methods() == ["POST", "DELETE", "GET"]
+    # Kalshi cancelled the rest in the same request (remaining_count 0): no cancel call, just the fills.
+    assert kalshi.methods() == ["POST", "GET"]
     assert kalshi.calls[0][2]["client_order_id"] == REQUEST_BODY["clientOrderId"]
-    # The cancel names the market and the shard Kalshi's reply gave, never a bare id (shard-0 routing).
-    assert kalshi.calls[1][1] == f"/portfolio/events/orders/k-1?market_ticker={TICKER}&exchange_index=3"
+    assert kalshi.calls[0][2]["time_in_force"] == "immediate_or_cancel"
     row = order_row(store, REQUEST_BODY["clientOrderId"])
-    assert (row["exchange_index"], row["cancelled_at"], row["fills_final"]) == (3, NOW, False)
+    assert (row["exchange_index"], row["cancelled_at"], row["fills_final"]) == (None, NOW, False)
     # Until the final fills read the whole requested cost is held.
     assert store.open_exposure() == pytest.approx(10 * 0.587157 + 0.01, abs=1e-3)
+
+
+@pytest.mark.parametrize("remaining_count", [None, "4.00"])
+def test_a_reply_without_a_zero_remaining_count_is_cancelled_by_market_and_shard(store, tmp_path, remaining_count):
+    kalshi = ScriptedKalshi(exchange_index=3, remaining_count=remaining_count)
+    result = desk_for(store, kalshi, tmp_path).place(request())
+    assert result["status"] == "filled" and result["filled"] == 10
+    assert kalshi.methods() == ["POST", "DELETE", "GET"]
+    # The cancel names the market and the shard Kalshi's reply gave, never a bare id (shard-0 routing).
+    assert kalshi.calls[1][1] == f"/portfolio/events/orders/k-1?market_ticker={TICKER}&exchange_index=3"
+    assert order_row(store, REQUEST_BODY["clientOrderId"])["cancelled_at"] == NOW
 
 
 def test_the_same_client_order_id_is_never_sent_twice(store, tmp_path):
@@ -196,7 +213,8 @@ def test_an_unfilled_order_blocks_the_game_only_until_its_fills_are_final(store,
 
 def test_a_cancel_404_still_resting_holds_the_order_and_the_refresh_retries_it(store, tmp_path):
     clock = {"now": NOW}
-    kalshi = ScriptedKalshi(filled=0, delete_status=404, resting=[{"order_id": "k-1", "ticker": TICKER, "exchange_index": 3}])
+    kalshi = ScriptedKalshi(filled=0, delete_status=404, resting=[{"order_id": "k-1", "ticker": TICKER, "exchange_index": 3}],
+                            remaining_count=None)
     desk = desk_for(store, kalshi, tmp_path, clock=lambda: clock["now"])
     result = desk.place(request())
     assert result["status"] == "resting"
@@ -218,13 +236,13 @@ def test_a_cancel_404_still_resting_holds_the_order_and_the_refresh_retries_it(s
 
 
 def test_a_cancel_404_verified_gone_counts_as_cancelled(store, tmp_path):
-    kalshi = ScriptedKalshi(filled=10, delete_status=404, resting=[{"order_id": "someone-else", "ticker": TICKER}])
+    kalshi = ScriptedKalshi(filled=10, delete_status=404, resting=[{"order_id": "someone-else", "ticker": TICKER}], remaining_count=None)
     assert desk_for(store, kalshi, tmp_path).place(request())["status"] == "filled"
     assert order_row(store, REQUEST_BODY["clientOrderId"])["cancelled_at"] == NOW
 
 
 def test_a_cancel_404_with_the_resting_list_down_holds(store, tmp_path):
-    kalshi = ScriptedKalshi(filled=10, delete_status=404, resting=None)
+    kalshi = ScriptedKalshi(filled=10, delete_status=404, resting=None, remaining_count=None)
     assert desk_for(store, kalshi, tmp_path).place(request())["status"] == "resting"
 
 

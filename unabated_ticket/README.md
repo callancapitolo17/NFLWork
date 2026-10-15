@@ -2617,7 +2617,7 @@ on Kalshi with **real money** on the bot's own key. No shadow mode (Cal,
 | Holdings | the pass runs only when the bets service's Kalshi poll succeeded within the last 5 min (conditional Kelly is sized on it); otherwise it decides nothing |
 | Size | floor(stake / all-in), cut to the depth at the ask |
 | Market check | before every order Kalshi's market is read: it must be `active`, its series the row's period, a spread's or total's `floor_strike` the row's number, YES the favorite's side of a spread and the Over of a total, a spread's or moneyline's YES title the team YES is on; else `market_mismatch`, nothing sent |
-| Order | limit buy at that ask; the rest cancelled at once **by market** (a bare cancel routes to exchange shard 0 and 404s while the order rests), a 404 checked against Kalshi's resting list; the desk's own 30 s sweep retries an unconfirmed cancel and cancels any `ubot-` order resting that no row knows |
+| Order | **immediate-or-cancel** limit buy at that ask: what does not fill at once Kalshi cancels in the same request (`remaining_count` 0), so a bot order never rests. A reply without that count, or with contracts left open, is cancelled **by market** (a bare cancel routes to exchange shard 0 and 404s while an order rests), a 404 checked against Kalshi's resting list; the desk's own 30 s sweep retries an unconfirmed cancel and cancels any `ubot-` order resting that no row knows |
 | Adds | a second order on a game goes only once the bot's earlier fill on it is among the held bets the stake was sized on (`unseen_fill` until the Kalshi poll has it): conditional Kelly must see the fill first |
 | Tag | every order's `client_order_id` starts `ubot-` (`taker.duckdb::taker_orders`) |
 
@@ -2655,9 +2655,10 @@ whole cost against the ceiling until a later read or settlement frees it. A
 send with no answer is looked for on Kalshi by `client_order_id` (adopted and
 cancelled when found; counted as never sent only when Kalshi's order list for
 the ticker, read 10 min on, does not carry it). Order statuses: `sending`,
-`unknown`, `sent`, `resting` (cancel unconfirmed, full cost held, retried),
-`filled` / `partial` / `unfilled` (`fills_final` 60 s after the cancel),
-`rejected`.
+`unknown`, `sent`, `resting` (a fallback cancel unconfirmed, full cost held,
+retried), `filled` / `partial` / `unfilled` (`fills_final` 60 s after the
+cancel), `rejected`. A market frees its orders' cost once Kalshi reports it
+`finalized`.
 
 - `GET :8095/taker.json`: the desk state, the rules, the last pass (counts by
   reason, per-league ticker coverage) and every decision with its `order`.
