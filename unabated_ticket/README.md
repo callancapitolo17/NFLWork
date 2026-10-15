@@ -696,6 +696,18 @@ book at the number under the row, best first, yours in its place; the
 tooltip lists them too. A line above the list counts outliers ("1 outlier to
 check"). The Ticket's **Others** row lists every book at the number.
 
+**Liquidity and thin books (0.25.0, Cal 2026-10-15):** every exchange in the
+list shows the money resting at its price (the feed's `liquidity`, e.g.
+`$1,240`); sportsbooks report none and always count. A book with under $30
+resting (`MIN_OTHER_BOOK_LIQUIDITY`, `pricecheck.isThin`) is greyed at the
+end of the list as `thin $12` and counts toward nothing: not "better", not
+Skip, not the outlier check, not the book count. Only thin books at the
+number means no tag.
+
+**Pinned stake (0.25.0, Cal 2026-10-15):** the Ticket's stake block sticks
+to the bottom of the panel, with to-win and payout on its right, so the
+stake stays on screen however long the related bets and book list run.
+
 **Skip (0.24.0, Cal 2026-10-13):** nothing is skipped for you. A row a book
 beats gets a **Skip** chip (and the Ticket a **Skip this bet** button); a
 skipped line folds into the "N skipped" line under the Edges list, where

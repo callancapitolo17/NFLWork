@@ -268,8 +268,12 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
 .edge-row.skipped { opacity: 0.6; }
 #edges-pricecheck { padding: 0 12px 8px; }
 .facts dd#others .tag { margin-left: 0; }
-.others-list { margin-top: 3px; font-size: 12.5px; max-width: 260px; }
-.others-list > div { display: flex; justify-content: space-between; gap: 12px; }
+.others-list { margin-top: 3px; font-size: 12.5px; max-width: 300px; }
+.others-list > div { display: grid; grid-template-columns: minmax(0, 1fr) auto 3.4em; gap: 10px; align-items: baseline; }
+.others-list .px { text-align: right; }
+.others-list .liq { text-align: right; font-size: 11px; color: var(--muted); }
+.others-list .thin { color: var(--muted); opacity: .6; }
+.others-list .thin .px { text-decoration: line-through; }
 .others-list .better { color: var(--warn-fg); }
 .others-list .yours { font-weight: 700; color: var(--ink); }
 .others-list .worse { color: var(--muted); }
@@ -371,10 +375,17 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 .facts dd { margin: 0; font-family: var(--figure); font-variant-numeric: tabular-nums; }
 
 .stake-block {
-  margin: 14px 0 0; padding: 12px; border-radius: 9px;
+  margin: 14px 0 0; padding: 10px 12px; border-radius: 9px;
   background: color-mix(in srgb, var(--edge-strong) 9%, var(--ground));
   border: 1px solid color-mix(in srgb, var(--edge-strong) 25%, transparent);
+  /* Pinned to the bottom of the Ticket pane so the stake never scrolls out of
+     view under related bets and the other books (Cal, 2026-10-15). Chrome
+     pins inside the pane's 20px bottom padding, so -20px sits it on the edge. */
+  position: sticky; bottom: -20px; z-index: 2;
+  box-shadow: 0 -6px 14px -10px rgba(0, 0, 0, .35);
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 14px; align-items: end;
 }
+.stake-block > * { grid-column: 1; }
 .stake-label { font: 600 10px system-ui, sans-serif; letter-spacing: .12em; text-transform: uppercase; color: var(--edge-mid); }
 .stake { font: 700 34px var(--figure); letter-spacing: -.03em; color: var(--ink); }
 .stake.no-edge { font-size: 26px; color: var(--muted); }
@@ -387,6 +398,12 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 .payout-row {
   display: flex; flex-wrap: wrap; gap: 20px; margin-top: 8px; padding-top: 8px;
   border-top: 1px dashed color-mix(in srgb, var(--edge-strong) 30%, transparent);
+}
+/* In the pinned stake bar, to-win and payout sit right of the stake. */
+.stake-block > .payout-row {
+  margin: 0; padding: 0; border: 0;
+  grid-column: 2; grid-row: 1 / span 6; align-self: center;
+  display: flex; flex-direction: column; gap: 6px; text-align: right;
 }
 .payout-label { color: var(--muted); font: 600 9.5px system-ui, sans-serif; text-transform: uppercase; letter-spacing: .1em; }
 .payout-value { font: 600 15px var(--figure); }

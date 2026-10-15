@@ -592,26 +592,39 @@
     show("ticket");
   }
 
-  // Every book at the number, best first, yours in its place: the Ticket's
-  // Others row and a row's opened price-check tag share it.
+  // Every book at the number, best first, yours in its place, each exchange
+  // with the money resting at its price; books too thin to count
+  // (pricecheck.isThin) greyed at the end. The Ticket's Others row and a
+  // row's opened price-check tag share it.
   function otherBooksListEl(check, yourBookName, yourPrice) {
     const listEl = document.createElement("div");
     listEl.className = "others-list";
-    const lineEl = (name, price, className) => {
+    const lineEl = (name, price, liquidity, className) => {
       const div = document.createElement("div");
       div.className = className;
       const nameEl = document.createElement("span");
       nameEl.textContent = name;
+      const liqEl = document.createElement("span");
+      liqEl.className = "liq";
+      liqEl.textContent = liquidity == null ? "" : `${className === "thin" ? "thin " : ""}${fmtWholeDollars(liquidity)}`;
       const priceEl = document.createElement("span");
+      priceEl.className = "px";
       priceEl.textContent = fmtAmerican(price);
-      div.append(nameEl, priceEl);
+      div.append(nameEl, liqEl, priceEl);
       return div;
     };
-    for (const entry of check.better) listEl.append(lineEl(entry.bookName, entry.price, "better"));
-    listEl.append(lineEl(`${yourBookName} (you)`, yourPrice, "yours"));
-    for (const entry of check.sameAs) listEl.append(lineEl(entry.bookName, entry.price, "same"));
-    for (const entry of check.worse) listEl.append(lineEl(entry.bookName, entry.price, "worse"));
+    for (const entry of check.better) listEl.append(lineEl(entry.bookName, entry.price, entry.liquidity, "better"));
+    listEl.append(lineEl(`${yourBookName} (you)`, yourPrice, null, "yours"));
+    for (const entry of check.sameAs) listEl.append(lineEl(entry.bookName, entry.price, entry.liquidity, "same"));
+    for (const entry of check.worse) listEl.append(lineEl(entry.bookName, entry.price, entry.liquidity, "worse"));
+    for (const entry of check.thin || []) listEl.append(lineEl(entry.bookName, entry.price, entry.liquidity, "thin"));
+    listEl.title = `Exchanges show the money resting at their price; one under $${pricecheck.MIN_OTHER_BOOK_LIQUIDITY} is thin and counts toward nothing.`;
     return listEl;
+  }
+
+  // "$1,240": the liquidity beside another book's price.
+  function fmtWholeDollars(value) {
+    return value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
   }
 
   // The Skip / Restore chip on a line a book beats (pricecheck.canSkip); null otherwise.
@@ -1355,6 +1368,7 @@
     if (check.better.length) parts.push(`better: ${list(check.better)}`);
     if (check.same) parts.push(`${check.same} at the same price`);
     if (check.worse.length) parts.push(`worse: ${list(check.worse)}`);
+    if (check.thin && check.thin.length) parts.push(`too thin to count: ${list(check.thin)}`);
     parts.push("same number only");
     return parts.join(" · ");
   }

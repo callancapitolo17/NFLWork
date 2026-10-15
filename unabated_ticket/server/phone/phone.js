@@ -325,19 +325,22 @@
     return tag ? tagEl(PRICE_CHECK_TAG_CLASS[tag.kind] ?? "", tag.label) : null;
   }
 
-  // Every book at the number, best first, yours in its place.
+  // Every book at the number, best first, yours in its place, each exchange
+  // with the money resting at its price; thin books (pricecheck.isThin) greyed at the end.
   function otherBooksListEl(row) {
     const check = row.priceCheck;
-    const lineEl = (name, price, className) => {
+    const lineEl = (name, price, liquidity, className) => {
       const div = makeEl("div", className);
-      div.append(makeEl("span", null, name), makeEl("span", null, phoneView.fmtAmerican(price)));
+      const liq = liquidity == null ? "" : `${className === "thin" ? "thin " : ""}$${Math.round(liquidity).toLocaleString("en-US")}`;
+      div.append(makeEl("span", null, name), makeEl("span", "liq", liq), makeEl("span", "px", phoneView.fmtAmerican(price)));
       return div;
     };
     const list = makeEl("div", "others-list");
-    for (const entry of check.better) list.append(lineEl(entry.bookName, entry.price, "better"));
-    list.append(lineEl(`${row.book.name} (you)`, row.price, "yours"));
-    for (const entry of check.sameAs || []) list.append(lineEl(entry.bookName, entry.price, "same"));
-    for (const entry of check.worse) list.append(lineEl(entry.bookName, entry.price, "worse"));
+    for (const entry of check.better) list.append(lineEl(entry.bookName, entry.price, entry.liquidity, "better"));
+    list.append(lineEl(`${row.book.name} (you)`, row.price, null, "yours"));
+    for (const entry of check.sameAs || []) list.append(lineEl(entry.bookName, entry.price, entry.liquidity, "same"));
+    for (const entry of check.worse) list.append(lineEl(entry.bookName, entry.price, entry.liquidity, "worse"));
+    for (const entry of check.thin || []) list.append(lineEl(entry.bookName, entry.price, entry.liquidity, "thin"));
     return list;
   }
 
