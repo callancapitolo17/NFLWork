@@ -4,10 +4,10 @@ Inputs: the DK / FD singles scrapers (in-process) and the current slate.
 Outputs: SurfaceRows + counts. Side effects: live HTTP to one book.
 
 This route exists because two books cannot serve the structure route:
-  * DraftKings publishes no structure odds at all (#95: 21/21
-    ``no_structure_odds``), and its ``calculateBets`` price host returns 403
-    for every set size as of 2026-08-25 — so DK's read endpoints, which the
-    singles scraper uses, are its only working path.
+  * DraftKings published no structure odds when #95 measured it (21/21
+    ``no_structure_odds``), so its singles scraper became its surface source.
+    The structure has carried DK's straight odds since 2026-10-04; the route
+    is unchanged.
   * FanDuel's SGP structure carries exactly ONE total line per period (its own
     main) while its singles scraper has the full ladder, so FD's FG/F5 TOTALS
     come from here and everything else from the structure.

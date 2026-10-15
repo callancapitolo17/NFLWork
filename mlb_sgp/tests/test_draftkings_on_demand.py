@@ -67,7 +67,30 @@ def test_resolve_home_spread_hit_with_opposite():
     rl = out[0]
     assert rl.ref == "0HC100N150_1"           # FIRST sel id of chosen side
     assert rl.opposite_ref == "0HC100P150_3"  # away at mirrored line
-    assert rl.single_decimal is None          # DK structure carries no odds
+    assert rl.single_decimal is None          # no straight_odds in structure
+    assert rl.opposite_decimal is None
+
+
+def test_resolve_carries_straight_odds_when_the_structure_has_them():
+    """1-leg fairs (kalshi_rfi) and Route B devig DK's straight prices: the
+    SGP builder's 1-leg price is not the straight price."""
+    from mlb_sgp.draftkings import resolve_legs
+    structure = _structure()
+    structure["straight_odds"] = {"0HC100N150_1": 1.95, "0HC100P150_3": 1.87}
+    rl = resolve_legs(structure, [CanonicalLeg("g1", "spread", -1.5, "home")],
+                      HOME, AWAY)[0]
+    assert (rl.single_decimal, rl.opposite_decimal) == (1.95, 1.87)
+
+
+def test_resolve_leaves_a_suspended_side_without_odds():
+    """A selection missing from straight_odds (suspended) gets None, never a
+    borrowed number."""
+    from mlb_sgp.draftkings import resolve_legs
+    structure = _structure()
+    structure["straight_odds"] = {"0HC100N150_1": 1.95}
+    rl = resolve_legs(structure, [CanonicalLeg("g1", "spread", -1.5, "home")],
+                      HOME, AWAY)[0]
+    assert rl.single_decimal == 1.95
     assert rl.opposite_decimal is None
 
 
@@ -192,12 +215,14 @@ def test_resolve_malformed_structure_returns_none():
 
 
 # ---------------------------------------------------------------------------
-# price_selection_set — fake session wire tests
+# price_selection_set — fake session wire tests (DK's SGP-builder GET)
 # ---------------------------------------------------------------------------
 class FakeResp:
-    def __init__(self, status_code, payload=None):
+    def __init__(self, status_code, payload=None, text=""):
         self.status_code = status_code
         self._payload = payload or {}
+        self.text = text
+        self.headers = {}
 
     def json(self):
         return self._payload
@@ -206,70 +231,89 @@ class FakeResp:
 class FakeSession:
     def __init__(self, resp):
         self._resp = resp
-        self.last_url = None
-        self.last_json = None
+        self.calls = []
 
-    def post(self, url, json=None, **kwargs):
-        self.last_url = url
-        self.last_json = json
+    def get(self, url, params=None, headers=None, **kwargs):
+        self.calls.append({"url": url, "params": params, "headers": headers})
+        if isinstance(self._resp, BaseException):
+            raise self._resp
         return self._resp
 
 
-class FakeClient:
-    def __init__(self, resp):
-        self.session = FakeSession(resp)
+def _client(resp):
+    from mlb_sgp.dk_client import DraftKingsClient
+    client = DraftKingsClient.__new__(DraftKingsClient)
+    client.session = FakeSession(resp)
+    return client
+
+
+def _builder_answer(base, candidates):
+    """DK's SGP-builder body: base taken whole, candidate prices listed."""
+    return {"data": {
+        "trueOdds": 2.0, "selectionsMapped": list(base),
+        "selectionsNotMapped": [],
+        "compatibleMarkets": [{"id": "m", "selections": [
+            {"id": sid, "trueOdds": odds} for sid, odds in candidates.items()]}],
+    }}
 
 
 def test_price_selection_set_happy_path():
+    from mlb_sgp.dk_client import DK_SGP_PRICE_URL
     from mlb_sgp.draftkings import price_selection_set
-    refs = ["0HC100N150_1", "0OU200O850_1", "0ML300_1"]
-    client = FakeClient(FakeResp(200, {
-        "combinabilityRestrictions": [],
-        "bets": [{"trueOdds": 6.42, "displayOdds": "+542",
-                  "selectionsMapped": [{}, {}, {}]}],
-    }))
-    assert price_selection_set(client, refs) == 6.42
-    # Body follows the calculateBets contract: one entry per ref, all in
-    # yourBetGroup 0 (one SGP), american odds style.
-    body = client.session.last_json
-    assert body["selectionsForYourBet"] == [
-        {"id": sid, "yourBetGroup": 0} for sid in refs]
-    assert body["oddsStyle"] == "american"
+    refs = ["0HC100N150_1", "0ML300_1", "0OU200O850_1"]
+    client = _client(FakeResp(200, _builder_answer(
+        refs[:2], {"0OU200O850_1": 6.42, "0OU200U850_3": 5.1})))
+    assert price_selection_set(client, refs, "evt9") == 6.42
+    # Base = every leg but the last; candidate = the last leg's market.
+    (call,) = client.session.calls
+    assert call["url"] == DK_SGP_PRICE_URL
+    assert call["headers"] == {"X-SportId": "7"}
+    assert call["params"] == {"eventId": "evt9",
+                              "selections": "0HC100N150_1,0ML300_1",
+                              "marketCandidates": "3_200",
+                              "oddsStyle": "american"}
 
 
-def test_price_selection_set_single_ref():
+def test_price_selection_set_single_ref_declines_without_a_call():
+    """The builder prices nothing on an empty base, and its 1-leg price is
+    not DK's straight price — a lone leg prices from straight_odds."""
     from mlb_sgp.draftkings import price_selection_set
-    client = FakeClient(FakeResp(200, {
-        "bets": [{"trueOdds": 1.87, "selectionsMapped": [{}]}],
-    }))
-    assert price_selection_set(client, ["0ML300_1"]) == 1.87
+    client = _client(FakeResp(200, {}))
+    assert price_selection_set(client, ["0ML300_1"], "evt9") is None
+    assert client.session.calls == []
 
 
-def test_price_selection_set_422_returns_none():
+def test_price_selection_set_400_returns_none():
+    """400 InvalidSelection: a line DK pulled since the structure was read."""
     from mlb_sgp.draftkings import price_selection_set
-    client = FakeClient(FakeResp(422, {"statusCode": 400, "description": "no"}))
-    assert price_selection_set(client, ["a", "b"]) is None
+    client = _client(FakeResp(400, {"code": "InvalidSelection"}))
+    assert price_selection_set(client, ["0HC100N150_1", "0OU200O850_1"],
+                               "evt9") is None
 
 
-def test_price_selection_set_combinability_restrictions_returns_none():
+def test_price_selection_set_dropped_base_leg_returns_none():
+    """DK drops a base leg it cannot combine and prices the rest — that
+    smaller-base price must never come back as this set's price."""
     from mlb_sgp.draftkings import price_selection_set
-    client = FakeClient(FakeResp(200, {
-        "combinabilityRestrictions": [{"reason": "NonCombinable"}],
-        "bets": [{"trueOdds": 3.0, "selectionsMapped": [{}, {}]}],
-    }))
-    assert price_selection_set(client, ["a", "b"]) is None
+    body = _builder_answer(["0HC100N150_1"], {"0OU200O850_1": 3.5})
+    body["data"]["selectionsNotMapped"] = [
+        {"selectionId": "0ML300_1", "removalReasonCode": "IncompatibleSelections"}]
+    client = _client(FakeResp(200, body))
+    assert price_selection_set(
+        client, ["0HC100N150_1", "0ML300_1", "0OU200O850_1"], "evt9") is None
 
 
-def test_price_selection_set_no_bets_or_exception_returns_none():
+def test_price_selection_set_candidate_absent_returns_none():
+    """A candidate missing from compatibleMarkets is one DK declines."""
     from mlb_sgp.draftkings import price_selection_set
-    client = FakeClient(FakeResp(200, {"bets": []}))
-    assert price_selection_set(client, ["a", "b"]) is None
+    client = _client(FakeResp(200, _builder_answer(
+        ["0HC100N150_1"], {"0OU200U850_3": 3.76})))
+    assert price_selection_set(client, ["0HC100N150_1", "0OU200O850_1"],
+                               "evt9") is None
 
-    class BoomSession:
-        def post(self, *a, **k):
-            raise RuntimeError("network down")
 
-    class BoomClient:
-        session = BoomSession()
-
-    assert price_selection_set(BoomClient(), ["a", "b"]) is None
+def test_price_selection_set_wire_exception_returns_none():
+    from mlb_sgp.draftkings import price_selection_set
+    client = _client(RuntimeError("network down"))
+    assert price_selection_set(client, ["0HC100N150_1", "0OU200O850_1"],
+                               "evt9") is None

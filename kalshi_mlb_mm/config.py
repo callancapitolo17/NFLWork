@@ -304,6 +304,8 @@ ON_DEMAND_MAX_CONCURRENT_JOBS = int(_get("ON_DEMAND_MAX_CONCURRENT_JOBS", "16"))
 # is needed to see a book complaining.
 _BOOK_CONCURRENCY_DEFAULTS = {
     "fanduel": 3,
+    # 3 flights, but DK's wire calls still go one at a time, >= 0.5 s
+    # apart, through DraftKingsClient.price_lane (2026-10-04).
     "draftkings": 3,
     "betmgm": 2,
     "prophetx": 1,
@@ -484,8 +486,9 @@ CONSTITUENT_TAPE_MAX_POINTS = int(_get("CONSTITUENT_TAPE_MAX_POINTS", "64"))
 # Route assignment, per #95's coverage matrix. Exactly ONE route is
 # authoritative per (book, market_type, period), so a surface key can never
 # be written by two sources.
-#   draftkings — singles only: 21/21 no_structure_odds, and its
-#     calculateBets host 403s every set size (verified 2026-08-25).
+#   draftkings — singles only. #95 measured 21/21 no_structure_odds; its
+#     structure has carried DK's straight odds since 2026-10-04, but the
+#     singles scraper already covers DK's FG/F5 markets, so the route stays.
 #   fanduel    — structure for ml/spread and ALL of I1, singles for FG/F5
 #     totals: FD's SGP structure carries exactly ONE total line per period
 #     (its own main) while its singles scraper has the full ladder. The
