@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -83,3 +83,11 @@ def test_a_placed_special_is_topped_up_to_kelly_not_doubled(app):
     app.place(_bet(25))
     line = app.board_payload("Wagerzon")["board"]["lines"][0]
     assert line["recommended_stake"] == pytest.approx(before - 25, abs=1)
+
+def test_a_top_up_cannot_pass_the_per_special_maximum(app, monkeypatch):
+    app.place(_bet(200))
+    monkeypatch.setattr(app_module, "DUPLICATE_PLACEMENT_WINDOW", timedelta(seconds=0))
+    with pytest.raises(ValueError, match="at most \\$50 more"):
+        app.place(_bet(60))
+    assert app.place(_bet(50))["status"] == "placed"
+    assert app.placements == [200.0, 50.0]

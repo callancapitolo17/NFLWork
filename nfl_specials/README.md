@@ -130,8 +130,10 @@ price.
 
 **Place submits a real Wagerzon bet.** The server re-checks the special is on
 the board at the price the page showed, that the game has not started, that
-the stake is at least $20 and within the available balance, and that the same
-special was not placed in the last 2 minutes (a slow answer invites a second
+the stake is at least $20 and within the available balance, that the account's
+tickets on this special this week plus this stake stay within Wagerzon's $250
+per special (user, 2026-10-15: the maximum is per special, not per ticket), and
+that the same special was not placed in the last 2 minutes (a slow answer invites a second
 click; the button is also disabled while a placement is in flight), then
 `wagerzon_odds/single_placer.place_single` previews it (`ConfirmWagerHelper`,
 win must match to $0.01 or it refuses) and submits it. A special is a PROP game,

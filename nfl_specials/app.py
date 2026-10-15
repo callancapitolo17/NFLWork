@@ -187,6 +187,14 @@ class SpecialsApp:
                 raise ValueError(f"${recent['risk']:.0f} already placed on this special at "
                                  f"{recent['placed_at']:%H:%M:%S} (ticket {recent['ticket_number']}); "
                                  f"wait 2 minutes to add more")
+            # Wagerzon's $250 is the most on one special in total (Cal, 2026-10-15),
+            # so a top-up may only take what the earlier tickets left.
+            week_start = datetime.now(timezone.utc) - timedelta(days=PLACEMENT_HISTORY_DAYS)
+            already = self.store.placed_risk(account, wz_game_id, week_start)
+            if already + risk > config.WZ_MAX_STAKE:
+                raise ValueError(f"${already:.0f} already on this special this week; Wagerzon takes "
+                                 f"${config.WZ_MAX_STAKE:.0f} per special, so at most "
+                                 f"${config.WZ_MAX_STAKE - already:.0f} more")
             result = wz.place_fecta(account, line.special, float(risk))
             if result.get("status") == "placed":
                 self._lower_balance(account, float(risk), result.get("balance_after"))
