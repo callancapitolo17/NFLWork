@@ -705,7 +705,8 @@ function createRunner(deps) {
       });
       const books = await readKalshiBooks(new Set(contracts.filter((contract) => contract.ticker).map((contract) => contract.ticker)));
       const priceIndex = pricecheck.buildPriceIndex(board, { now: startedAt, maxLineAgeMs: taker.MAX_LINE_AGE_MS });
-      const flags = betsLib.annotateRows(rows, held.records, { lines: boardLines() });
+      // The same held bets the Edges list sizes against: Cal's Removed bets (bet_exclusions) are not his.
+      const flags = betsLib.annotateRows(rows, held.records.filter((record) => !excludedBetIds.has(record.id)), { lines: boardLines() });
       const teasers = openTeasersNow();
       const decidedAt = now();
       takerDecisions = rows.map((row, index) => {
@@ -770,7 +771,7 @@ function createRunner(deps) {
       Object.assign(decision, { reason: "market_mismatch", detail: `${decision.ticker} unread: ${error.message}` });
       return false;
     }
-    const mismatch = taker.marketMismatch(market, row, { side: decision.side });
+    const mismatch = taker.marketMismatch(market, row, { side: decision.side, ticker: decision.ticker });
     if (mismatch === null) return true;
     Object.assign(decision, { reason: "market_mismatch", detail: `${decision.ticker}: ${mismatch}` });
     return false;
@@ -783,7 +784,7 @@ function createRunner(deps) {
       clientOrderId: taker.clientOrderIdOf(decision.ticker, decision.side, passStartedAt),
       ticker: decision.ticker, side: decision.side, ask: decision.liveAsk, allIn: decision.liveAllIn,
       count: decision.contracts, rowKey: decision.rowKey, eventId: decision.eventId, eventStart: decision.eventStart,
-      heldIds: decision.heldIds,
+      heldIds: decision.heldIds, decidedAt: decision.decidedAt, kalshiBaseUrl,
     };
     try {
       const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/taker/order.json`, "POST", body, TAKER_ORDER_TIMEOUT_MS);
@@ -792,7 +793,7 @@ function createRunner(deps) {
       return { clientOrderId: body.clientOrderId, ...reply };
     } catch (error) {
       if (error.status === 503) {
-        takerDeskStatus = "off: the bets service has no bot Kalshi key";
+        takerDeskStatus = `off: the bets service places no orders (${error.message})`;
         return { status: "off", detail: error.message };
       }
       logWarning(`taker order ${body.clientOrderId} ${decision.ticker}: ${error.message}`);
@@ -849,7 +850,14 @@ function createRunner(deps) {
     try {
       while (takerUnsent.length) {
         const chunk = takerUnsent.slice(0, TAKER_LOG_ROWS_PER_POST);
-        await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/taker_decisions.json`, "POST", { rows: chunk });
+        try {
+          await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/taker_decisions.json`, "POST", { rows: chunk });
+        } catch (error) {
+          // A chunk the service refuses would be refused forever and hold every later row behind it.
+          if (error.status !== HTTP_BAD_REQUEST) throw error;
+          logWarning(`taker log: the bets service refused ${chunk.length} decision row(s), dropped: ${error.message}`);
+          takerLogStatus.dropped += chunk.length;
+        }
         takerUnsent = takerUnsent.slice(chunk.length);
         if (takerLogStatus.error) logInfo("taker log: saving again");
         Object.assign(takerLogStatus, { okAt: now(), error: null, rowsSent: takerLogStatus.rowsSent + chunk.length });
@@ -1017,7 +1025,7 @@ function createRunner(deps) {
       closingFairs: { ...closingStatus },
       taker: {
         desk: takerDeskStatus, lastPassAt: isoOrNull(takerLastPass.finishedAt), skipped: takerLastPass.skipped,
-        rows: takerLastPass.rows, byReason: takerLastPass.byReason, log: { okAt: takerLogStatus.okAt, error: takerLogStatus.error, unsent: takerUnsent.length },
+        rows: takerLastPass.rows, byReason: takerLastPass.byReason, log: { okAt: takerLogStatus.okAt, error: takerLogStatus.error, dropped: takerLogStatus.dropped, unsent: takerUnsent.length },
       },
     };
   }

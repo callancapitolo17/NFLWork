@@ -573,6 +573,9 @@ test("taker: a best-price Kalshi edge at the live ask is sent as one ubot- limit
   assert.deepEqual({ ticker: orders[0].ticker, side: orders[0].side, ask: orders[0].ask, count: orders[0].count },
     { ticker: decision.ticker, side: "yes", ask: decision.liveAsk, count: decision.contracts });
   assert.deepEqual({ eventId: orders[0].eventId, heldIds: orders[0].heldIds }, { eventId: 123742, heldIds: [] });
+  // The desk refuses a decision over a minute old, or priced on another Kalshi.
+  assert.deepEqual({ decidedAt: orders[0].decidedAt, kalshiBaseUrl: orders[0].kalshiBaseUrl },
+    { decidedAt: new Date(TAKER_NOW).toISOString(), kalshiBaseUrl: "https://kalshi.test/v2" });
   assert.equal(decision.order.status, "filled");
   assert.equal(waiting.order.status, "unseen_fill");
   // Each order was preceded by a read of its market; everything else was orderbooks.
@@ -619,6 +622,58 @@ test("taker: a service without the bot key answers 503, the decision reads off",
   await runner.takerPass();
   assert.equal(runner.takerPayload().decisions[0].order.status, "off");
   assert.match(runner.takerPayload().desk, /no bot Kalshi key/);
+  runner.stop();
+});
+
+// Cal's open Kalshi bet on the slice's WSU -35.5 market, as /bets.json lists it.
+const WSU_HELD = {
+  id: `kalshi:${TAKER_TICKER}:yes`, source: "kalshi_api", venue: "kalshi", league: "cfb", status: "open", sourceFetchedAt: "2026-09-15T18:59:00Z",
+  awayTeam: "Duquesne", homeTeam: "Washington St.", awayKey: null, homeKey: null, betType: "spread", period: "FG", side: "home", points: -35.5,
+  price: -143, stake: 100, toWin: 70, contracts: 100, placedAt: "2026-09-15T18:00:00Z", closedAt: null, eventStart: "2026-09-19T19:30:00.000Z",
+  eventDate: "2026-09-19", isParlayLeg: false, parlayId: null, unmatchable: null, approx: [], rotation: null,
+  venueIds: { marketTicker: TAKER_TICKER, eventTicker: "KXNCAAFSPREAD-26SEP19DUQWSU" }, raw: {},
+};
+
+test("taker: a Removed bet (bet_exclusions) is not Cal's: it neither sizes the stake nor counts as held", async () => {
+  async function decisionWith(betsBodyForTaker) {
+    const runner = runnerLib.createRunner({
+      fetchImpl: takerUnabatedFetch(), serviceFetch: takerService({ "/bets.json": betsBodyForTaker, "/settings.json": TAKER_SETTINGS }),
+      kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+    });
+    await runner.start();
+    await runner.takerPass();
+    const decision = runner.takerPayload().decisions.find((row) => row.ticker === TAKER_TICKER);
+    runner.stop();
+    return decision;
+  }
+  const held = await decisionWith(takerBetsBody([WSU_HELD]));
+  assert.equal(held.reason, "size_zero", held.detail);
+  assert.deepEqual(held.heldIds, [WSU_HELD.id]);
+  const removed = await decisionWith({ ...takerBetsBody([WSU_HELD]), exclusions: [{ betId: WSU_HELD.id, venue: "kalshi", excludedAt: "2026-09-15T18:30:00Z" }] });
+  assert.equal(removed.reason, "bet", removed.detail);
+  assert.deepEqual(removed.heldIds, []);
+});
+
+test("taker: a decision chunk the bets service refuses (400) is dropped and counted, not retried forever", async () => {
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  let refused = 0;
+  const refusingService = async (url, init = {}) => {
+    if (url.endsWith("/taker_decisions.json") && refused === 0) {
+      refused += 1;
+      return response({ status: 400, body: JSON.stringify({ error: "rows[0].reason must be one of ..." }) });
+    }
+    return service(url, init);
+  };
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: refusingService, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  const log = runner.health().taker.log;
+  assert.equal(refused, 1);
+  assert.ok(log.dropped >= 1, JSON.stringify(log));
+  assert.deepEqual({ unsent: log.unsent, error: log.error }, { unsent: 0, error: null });
   runner.stop();
 });
 

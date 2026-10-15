@@ -841,13 +841,15 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  extra_hosts: tuple[str, ...] | None = None,
                  teaser_placer: bfa_teaser.BFATeaserPlacer | None = None,
                  taker_store: TakerStore | None = None,
-                 taker_desk: TakerDesk | None = None) -> type[BaseHTTPRequestHandler]:
+                 taker_desk: TakerDesk | None = None,
+                 taker_desk_off_reason: str = "no bot Kalshi key is configured (KALSHI_TAKER_API_KEY_ID / "
+                                             "KALSHI_TAKER_PRIVATE_KEY_PATH)") -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
     EXTRA_ALLOWED_HOSTS (the tests pass their own). `teaser_placer` is the
     Place button's (None: no BFA account is read, POST /place_teaser.json 503s).
     `taker_store` is the taker's decision log (None: POST /taker_decisions.json 503s).
-    `taker_desk` places the bot's orders (None: no bot key, POST /taker/order.json 503s)."""
+    `taker_desk` places the bot's orders (None: POST /taker/order.json 503s with `taker_desk_off_reason`)."""
     names = list(source_names)
     proxied_host_names = tuple(extra_hosts) if extra_hosts is not None else config.EXTRA_ALLOWED_HOSTS
     edges_runner_url = (runner_url or config.RUNNER_URL).rstrip("/")
@@ -1093,7 +1095,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
         # is always a 200 with {status}; 503 only when the bot has no key.
         def _place_taker_order(self, body: object) -> None:
             if taker_desk is None:
-                self._send_json(503, {"status": "off", "error": "no bot Kalshi key is configured (KALSHI_TAKER_API_KEY_ID / KALSHI_TAKER_PRIVATE_KEY_PATH)"})
+                self._send_json(503, {"status": "off", "error": taker_desk_off_reason})
                 return
             request = validate_order_request(body)
             if isinstance(request, str):
@@ -1268,27 +1270,30 @@ def teaser_placer_for(sources: list[Source]) -> bfa_teaser.BFATeaserPlacer | Non
     return bfa_teaser.BFATeaserPlacer(bfa_source) if bfa_source is not None else None
 
 
-def open_taker_desk(store: TakerStore | None) -> TakerDesk | None:
-    """The bot's order desk, or None (logged) without its own key or its log:
-    no key, no orders."""
+def open_taker_desk(store: TakerStore | None) -> tuple[TakerDesk | None, str]:
+    """(the bot's order desk, "") or (None, why): without its own key or its
+    log there are no orders, and POST /taker/order.json answers 503 with that why."""
     if not config.KALSHI_TAKER_API_KEY_ID or not config.KALSHI_TAKER_PRIVATE_KEY_PATH:
-        log.info("taker: no bot Kalshi key configured, the bot places no orders")
-        return None
+        reason = "no bot Kalshi key is configured (KALSHI_TAKER_API_KEY_ID / KALSHI_TAKER_PRIVATE_KEY_PATH)"
+        log.info("taker: %s, the bot places no orders", reason)
+        return None, reason
     if store is None:
-        log.error("taker: the taker log is not open, so the bot places no orders (its ceiling lives there)")
-        return None
+        reason = f"the taker log {config.TAKER_DB_PATH} is not open (its ceiling lives there)"
+        log.error("taker: %s, the bot places no orders", reason)
+        return None, reason
     if not Path(config.KALSHI_TAKER_PRIVATE_KEY_PATH).exists():
-        log.info("taker: no bot key file at %s yet, the bot places no orders", config.KALSHI_TAKER_PRIVATE_KEY_PATH)
-        return None
+        reason = f"no bot key file at {config.KALSHI_TAKER_PRIVATE_KEY_PATH}"
+        log.info("taker: %s yet, the bot places no orders", reason)
+        return None, reason
     try:
         client = KalshiOrderClient(config.KALSHI_TAKER_API_KEY_ID, config.KALSHI_TAKER_PRIVATE_KEY_PATH,
                                    config.KALSHI_BASE_URL)
     except (OSError, ValueError) as error:
-        log.error("taker: the bot key %s could not be read, the bot places no orders: %s",
-                  config.KALSHI_TAKER_PRIVATE_KEY_PATH, error)
-        return None
+        reason = f"the bot key {config.KALSHI_TAKER_PRIVATE_KEY_PATH} could not be read: {error}"
+        log.error("taker: %s, the bot places no orders", reason)
+        return None, reason
     log.info("taker: ARMED on its own key; stop file %s", config.TAKER_STOP_PATH)
-    return TakerDesk(client, store, config.TAKER_STOP_PATH)
+    return TakerDesk(client, store, config.TAKER_STOP_PATH), ""
 
 
 def open_taker_store(db_path: Path) -> TakerStore | None:
@@ -1308,10 +1313,11 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
     started_at = time.monotonic()
     source_names = [source.name for source in sources] + list(PUSHED_SOURCES)
     taker_store = open_taker_store(config.TAKER_DB_PATH)
-    taker_desk = open_taker_desk(taker_store)
+    taker_desk, taker_desk_off_reason = open_taker_desk(taker_store)
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
                                                             teaser_placer=teaser_placer_for(sources),
-                                                            taker_store=taker_store, taker_desk=taker_desk))
+                                                            taker_store=taker_store, taker_desk=taker_desk,
+                                                            taker_desk_off_reason=taker_desk_off_reason))
     server.daemon_threads = True
     poller = threading.Thread(target=poll_loop, args=(sources, store, stop), name="poll", daemon=True)
     # The desk sweeps its own orders (resting cancels, final fills, settlement) whether or not the runner sends any.

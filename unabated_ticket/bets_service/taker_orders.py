@@ -15,16 +15,21 @@ Rules, in order, for every request:
   3. open orders are brought up to date when the last refresh is older than
      REFRESH_SEC (the desk's own thread does the same every REFRESH_SEC, so
      nothing below waits on the runner): see _refresh_open_orders;
-  4. unseen fill: an earlier bot order on the SAME GAME that may still hold
+  4. the decision is fresh (decidedAt within MAX_DECISION_AGE_SEC: a request
+     that waited behind the desk lock is not the live price any more) and the
+     game has not started, and the runner priced the same Kalshi (its
+     kalshiBaseUrl is this desk's); else refused, "stale_decision" /
+     "started" / "env_mismatch";
+  5. unseen fill: an earlier bot order on the SAME GAME that may still hold
      contracts must be among the held bets the runner sized this stake on
      (`heldIds`, the ids bets.js matched to the row: "kalshi:<ticker>:<side>"),
      else refused, "unseen_fill". Conditional Kelly is only right once it
      sees the earlier fill; until then an add would be sized as if alone;
-  5. ceiling: contracts are cut so that open exposure + this order's cost
+  6. ceiling: contracts are cut so that open exposure + this order's cost
      stays at or under BOT_BANKROLL; none left -> refused, "ceiling";
-  6. the order row is INSERTED (status "sending", full cost) BEFORE it is
+  7. the order row is INSERTED (status "sending", full cost) BEFORE it is
      sent, so a crash mid-send still counts against the ceiling;
-  7. one limit buy at the ask (never a market order), then a cancel of the
+  8. one limit buy at the ask (never a market order), then a cancel of the
      remainder routed by market (a bare DELETE goes to exchange shard 0 and
      404s while the order keeps resting: kalshi_rfi, 2026-08-27), a 404
      verified against Kalshi's resting list, then a fills read.
@@ -45,6 +50,7 @@ taker.duckdb::taker_orders (taker_store.py). Network: Kalshi REST, signed
 with the bot's key only.
 """
 import base64
+import http.client
 import json
 import logging
 import math
@@ -87,6 +93,11 @@ ORDER_LIST_PAGE_LIMIT = 1000
 ORDER_LIST_MAX_PAGES = 10
 MAX_HELD_IDS = 1000
 MAX_HELD_ID_LENGTH = 200
+# A decision older than this was priced on a book that may have moved (the
+# runner's pass is 30 s; a request can wait behind the desk lock).
+MAX_DECISION_AGE_SEC = 60
+FILLS_PAGE_LIMIT = 1000
+FILLS_MAX_PAGES = 10
 BOT_ORDER_ID_PREFIX = "ubot-"
 # Statuses under which the order may hold contracts (see _may_hold_contracts).
 STATUSES_MAYBE_HOLDING = ("sending", "unknown", "sent", "resting", "filled", "partial")
@@ -129,6 +140,13 @@ class KalshiOrderClient:
                 return response.status, _parse(response.read())
         except urllib.error.HTTPError as error:
             return error.code, _parse(error.read())
+        except http.client.HTTPException as error:
+            # A cut-off or malformed answer (IncompleteRead, BadStatusLine) is "no answer" to the callers.
+            raise OSError(f"{type(error).__name__}: {error}") from error
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
 
 
 def _parse(raw: bytes) -> object:
@@ -219,16 +237,29 @@ def validate_order_request(body: object) -> dict | str:
     if (not isinstance(held_ids, list) or len(held_ids) > MAX_HELD_IDS
             or any(not isinstance(held, str) or len(held) > MAX_HELD_ID_LENGTH for held in held_ids)):
         return f"heldIds must be a list of at most {MAX_HELD_IDS} bet ids the stake was sized on, got {held_ids!r}"
-    event_start = body.get("eventStart")
-    try:
-        start = datetime.fromisoformat(event_start.replace("Z", "+00:00")) if isinstance(event_start, str) else None
-    except ValueError:
-        start = None
+    start = _iso_time(body.get("eventStart"))
     if start is None:
-        return f"eventStart must be an ISO time, got {event_start!r}"
+        return f"eventStart must be an ISO time, got {body.get('eventStart')!r}"
+    decided_at = _iso_time(body.get("decidedAt"))
+    if decided_at is None:
+        return f"decidedAt must be an ISO time, got {body.get('decidedAt')!r}"
+    kalshi_base_url = body.get("kalshiBaseUrl")
+    if not isinstance(kalshi_base_url, str) or not kalshi_base_url.startswith("http"):
+        return f"kalshiBaseUrl must be the Kalshi API the decision was priced on, got {kalshi_base_url!r}"
     return {"client_order_id": client_order_id, "ticker": body["ticker"], "row_key": body["rowKey"],
             "contract_side": body["side"], "ask_price": float(ask), "all_in_price": float(all_in), "count": count,
-            "event_id": event_id, "held_ids": set(held_ids), "event_start": start}
+            "event_id": event_id, "held_ids": set(held_ids), "event_start": start, "decided_at": decided_at,
+            "kalshi_base_url": kalshi_base_url.rstrip("/")}
+
+
+def _iso_time(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def _may_hold_contracts(order: dict) -> bool:
@@ -280,6 +311,9 @@ class TakerDesk:
                 return {"status": "stopped", "detail": f"stop file {self._stop_path} is present"}
             if self._store.has_order(request["client_order_id"]):
                 return {"status": "duplicate", "detail": f"{request['client_order_id']} was already sent"}
+            refused = self._refuse_unfit(request)
+            if refused:
+                return refused
             if self._last_refresh_at is None or self._now() - self._last_refresh_at >= timedelta(seconds=REFRESH_SEC):
                 self._refresh_open_orders()
             unseen = self._unseen_fill(request)
@@ -290,6 +324,19 @@ class TakerDesk:
             if count < 1:
                 return {"status": "ceiling", "detail": f"${headroom:.2f} of ${BOT_BANKROLL:.0f} left"}
             return self._send(request, count)
+
+    def _refuse_unfit(self, request: dict) -> dict | None:
+        """A request the desk must not act on, whatever the ceiling says, or None."""
+        now = self._now()
+        if request["kalshi_base_url"] != self._client.base_url:
+            return {"status": "env_mismatch",
+                    "detail": f"the runner priced {request['kalshi_base_url']}, this desk trades {self._client.base_url}"}
+        age = now - request["decided_at"]
+        if age > timedelta(seconds=MAX_DECISION_AGE_SEC):
+            return {"status": "stale_decision", "detail": f"decided {age.total_seconds():.0f} s ago, over {MAX_DECISION_AGE_SEC} s"}
+        if request["event_start"] <= now:
+            return {"status": "started", "detail": f"the game started at {request['event_start'].isoformat()}"}
+        return None
 
     def _unseen_fill(self, request: dict) -> str | None:
         """Why this order would add to a game blind, or None: an earlier bot
@@ -369,15 +416,30 @@ class TakerDesk:
         log.error("taker cancel %s failed: HTTP %s %s", order_id, status, reply)
         return False
 
+    def _order_fills(self, order_id: str) -> list[dict] | str:
+        """Every fill of one order (paged), or why the read failed."""
+        fills: list[dict] = []
+        cursor = ""
+        for _ in range(FILLS_MAX_PAGES):
+            path = f"/portfolio/fills?order_id={order_id}&limit={FILLS_PAGE_LIMIT}" + (f"&cursor={cursor}" if cursor else "")
+            try:
+                status, reply = self._client.request("GET", path)
+            except OSError as error:
+                return f"no answer: {error}"
+            if status != 200 or not isinstance(reply, dict) or not isinstance(reply.get("fills"), list):
+                return f"HTTP {status} {str(reply)[:300]}"
+            fills.extend(fill for fill in reply["fills"] if isinstance(fill, dict))
+            cursor = reply.get("cursor") or ""
+            if not cursor:
+                return fills
+        return f"more than {FILLS_MAX_PAGES} pages of fills"
+
     def _read_fills(self, client_order_id: str, order_id: str, contract_side: str, count: int, final: bool) -> dict:
-        try:
-            status, reply = self._client.request("GET", f"/portfolio/fills?order_id={order_id}")
-        except OSError as error:
-            status, reply = None, str(error)
-        if status != 200 or not isinstance(reply, dict) or not isinstance(reply.get("fills"), list):
-            self._store.update_order(client_order_id, {"status": "unknown", "error": f"fills read failed: {status} {str(reply)[:300]}"})
+        fills = self._order_fills(order_id)
+        if isinstance(fills, str):
+            self._store.update_order(client_order_id, {"status": "unknown", "error": f"fills read failed: {fills}"})
             return {"status": "unknown", "count": count, "orderId": order_id, "detail": "fills read failed; full cost held"}
-        filled, cost = fill_totals(reply["fills"], contract_side)
+        filled, cost = fill_totals(fills, contract_side)
         outcome = "unfilled" if filled == 0 else "filled" if filled >= count else "partial"
         fields = {"status": outcome, "count_filled": filled, "cost_filled": cost, "fills_final": final, "error": None}
         if final:

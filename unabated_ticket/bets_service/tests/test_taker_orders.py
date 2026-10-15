@@ -18,7 +18,8 @@ OTHER_TICKER = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU42"
 EVENT_ID = 123742
 REQUEST_BODY = {"clientOrderId": "ubot-" + "a" * 32, "ticker": TICKER, "side": "yes", "ask": 0.57,
                 "allIn": 0.587157, "count": 10, "rowKey": "420942308:ms105:si1:tid717:alt-35.5",
-                "eventId": EVENT_ID, "heldIds": [], "eventStart": "2026-10-15T19:30:00.000Z"}
+                "eventId": EVENT_ID, "heldIds": [], "eventStart": "2026-10-15T19:30:00.000Z",
+                "decidedAt": "2026-10-14T11:59:50.000Z", "kalshiBaseUrl": "https://kalshi.test/trade-api/v2/"}
 HELD_FIRST = f"kalshi:{TICKER}:yes"
 
 
@@ -27,10 +28,14 @@ class ScriptedKalshi:
     GET /portfolio/orders?status=resting lists; `listed` what the ticker
     listing does; None for either makes that read fail."""
 
+    base_url = "https://kalshi.test/trade-api/v2"
+
     def __init__(self, filled: float = 10, market_status: str = "active", post_status: int = 201,
-                 delete_status: int = 200, resting=(), listed=(), exchange_index=None):
+                 delete_status: int = 200, resting=(), listed=(), exchange_index=None, fills_pages=None):
         self.calls = []
         self.filled = filled
+        # [(contracts, next cursor), ...] served page by page; None answers one page of `filled`.
+        self.fills_pages = list(fills_pages) if fills_pages is not None else None
         self.market_status = market_status
         self.post_status = post_status
         self.delete_status = delete_status
@@ -50,9 +55,10 @@ class ScriptedKalshi:
         if method == "DELETE":
             return self.delete_status, {}
         if path.startswith("/portfolio/fills"):
-            fills = [{"count_fp": str(self.filled), "yes_price_dollars": "0.5700", "no_price_dollars": "0.4300",
-                      "fee_cost": "0.17"}] if self.filled else []
-            return 200, {"fills": fills}
+            filled, cursor = (self.fills_pages.pop(0) if self.fills_pages else (self.filled, ""))
+            fills = [{"count_fp": str(filled), "yes_price_dollars": "0.5700", "no_price_dollars": "0.4300",
+                      "fee_cost": "0.17"}] if filled else []
+            return 200, {"fills": fills, "cursor": cursor}
         if path.startswith("/portfolio/orders?status=resting"):
             return (500, "down") if self.resting is None else (200, {"orders": self.resting, "cursor": ""})
         if path.startswith("/portfolio/orders?ticker="):
@@ -150,7 +156,8 @@ def test_final_fills_then_settlement_free_the_money(store, tmp_path):
     assert desk.place(request())["status"] == "partial"
     # A minute after the cancel the fills are final: only what filled is held.
     clock["now"] = NOW + timedelta(seconds=61)
-    desk.place(request(clientOrderId="ubot-" + "c" * 32, count=1, ticker=OTHER_TICKER, heldIds=[HELD_FIRST]))
+    desk.place(request(clientOrderId="ubot-" + "c" * 32, count=1, ticker=OTHER_TICKER, heldIds=[HELD_FIRST],
+                       decidedAt=clock["now"].isoformat()))
     first_cost = 4 * 0.57 + 0.17
     assert store.open_exposure() == pytest.approx(first_cost + 1 * 0.587157 + 0.01, abs=1e-3)
     # After the game starts and the market settles, both orders are freed.
@@ -183,7 +190,8 @@ def test_an_unfilled_order_blocks_the_game_only_until_its_fills_are_final(store,
     # Right after the cancel a fill could still trail in: blocked.
     assert desk.place(request(clientOrderId="ubot-" + "b" * 32, ticker=OTHER_TICKER))["status"] == "unseen_fill"
     clock["now"] = NOW + timedelta(seconds=61)
-    assert desk.place(request(clientOrderId="ubot-" + "c" * 32, ticker=OTHER_TICKER))["status"] == "unfilled"
+    assert desk.place(request(clientOrderId="ubot-" + "c" * 32, ticker=OTHER_TICKER,
+                              decidedAt=clock["now"].isoformat()))["status"] == "unfilled"
 
 
 def test_a_cancel_404_still_resting_holds_the_order_and_the_refresh_retries_it(store, tmp_path):
@@ -271,7 +279,7 @@ def test_a_lost_order_holds_while_the_listing_is_down(store, tmp_path):
     clock = {"now": NOW + timedelta(minutes=11)}
     kalshi = SilentPost(resting=None, listed=None)
     desk = desk_for(store, kalshi, tmp_path, clock=lambda: clock["now"])
-    desk.place(request())
+    desk.place(request(decidedAt=clock["now"].isoformat()))
     clock["now"] += timedelta(seconds=30)
     desk.refresh()
     assert store.open_exposure() > 0
@@ -318,20 +326,105 @@ def test_the_refresh_loop_stops_with_the_service(store, tmp_path):
     ({"heldIds": "kalshi:x:yes"}, "heldIds must be a list"),
     ({"heldIds": [7]}, "heldIds must be a list"),
     ({"eventStart": None}, "eventStart must be an ISO time"),
+    ({"decidedAt": None}, "decidedAt must be an ISO time"),
+    ({"decidedAt": "2026-10-14T11:59:50"}, "decidedAt must be an ISO time"),
+    ({"kalshiBaseUrl": "kalshi.test"}, "kalshiBaseUrl must be the Kalshi API"),
 ])
 def test_a_bad_request_names_the_field(override, message):
     assert validate_order_request({**REQUEST_BODY, **override}).startswith(message)
 
 
-def test_the_client_signs_with_kalshis_rsa_pss_scheme(tmp_path):
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import padding, rsa
-    import base64
+def test_a_stale_decision_a_started_game_or_another_kalshi_is_refused_unsent(store, tmp_path):
+    kalshi = ScriptedKalshi()
+    desk = desk_for(store, kalshi, tmp_path)
+    stale = desk.place(request(decidedAt=(NOW - timedelta(seconds=61)).isoformat()))
+    assert (stale["status"], stale["detail"]) == ("stale_decision", "decided 61 s ago, over 60 s")
+    started = desk.place(request(eventStart=NOW.isoformat()))
+    assert started["status"] == "started"
+    elsewhere = desk.place(request(kalshiBaseUrl="https://demo-api.kalshi.co/trade-api/v2"))
+    assert elsewhere["status"] == "env_mismatch"
+    assert elsewhere["detail"] == ("the runner priced https://demo-api.kalshi.co/trade-api/v2, "
+                                   "this desk trades https://kalshi.test/trade-api/v2")
+    assert kalshi.calls == [] and store.open_orders() == []
+    # The same request a minute younger, on this Kalshi, before the game: sent.
+    assert desk.place(request())["status"] == "filled"
+
+
+def test_fills_are_read_across_every_page(store, tmp_path):
+    kalshi = ScriptedKalshi(fills_pages=[(4, "page2"), (6, "")])
+    desk = desk_for(store, kalshi, tmp_path)
+    reply = desk.place(request())
+    assert (reply["status"], reply["filled"]) == ("filled", 10)
+    assert order_row(store, REQUEST_BODY["clientOrderId"])["count_filled"] == 10
+    assert [path for method, path, _ in kalshi.calls if path.startswith("/portfolio/fills")] == [
+        "/portfolio/fills?order_id=k-1&limit=1000", "/portfolio/fills?order_id=k-1&limit=1000&cursor=page2"]
+
+
+def test_a_cut_off_answer_from_kalshi_is_no_answer(tmp_path, monkeypatch):
+    import http.client
+    import urllib.request
+    client = signing_client(tmp_path)
+
+    def cut_off(request, timeout):
+        raise http.client.IncompleteRead(b"")
+    monkeypatch.setattr(urllib.request, "urlopen", cut_off)
+    with pytest.raises(OSError, match="IncompleteRead"):
+        client.request("GET", "/markets/X")
+
+
+def test_open_taker_desk_says_why_it_is_off_and_the_route_repeats_it(store, tmp_path, monkeypatch):
+    import json
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+    from unabated_ticket.bets_service import config, service
+    from unabated_ticket.bets_service.store import BetsStore
+    monkeypatch.setattr(config, "KALSHI_TAKER_API_KEY_ID", "")
+    assert service.open_taker_desk(store)[0] is None
+    assert "no bot Kalshi key" in service.open_taker_desk(store)[1]
+    monkeypatch.setattr(config, "KALSHI_TAKER_API_KEY_ID", "key-1")
+    monkeypatch.setattr(config, "KALSHI_TAKER_PRIVATE_KEY_PATH", str(tmp_path / "missing.pem"))
+    assert service.open_taker_desk(None)[1].startswith("the taker log")
+    desk, reason = service.open_taker_desk(store)
+    assert desk is None and reason == f"no bot key file at {tmp_path / 'missing.pem'}"
+    bets_store = BetsStore(tmp_path / "bets.duckdb", 7)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), service.make_handler(
+        bets_store, 0.0, ["kalshi"], taker_store=store, taker_desk=None, taker_desk_off_reason=reason))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}/taker/order.json",
+                                     data=json.dumps(REQUEST_BODY).encode(), method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(req, timeout=5)
+        assert refused.value.code == 503
+        assert json.loads(refused.value.read()) == {"status": "off", "error": reason}
+    finally:
+        server.shutdown()
+        server.server_close()
+        bets_store.close()
+
+
+def signing_client(tmp_path):
+    """A KalshiOrderClient on a fresh RSA key written to tmp_path."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     key_path = tmp_path / "bot.pem"
     key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                            serialization.NoEncryption()))
-    client = taker_orders.KalshiOrderClient("key-id", str(key_path), "https://kalshi.test/trade-api/v2")
+    client = taker_orders.KalshiOrderClient("key-id", str(key_path), "https://kalshi.test/trade-api/v2/")
+    client.test_key = key
+    return client
+
+
+def test_the_client_signs_with_kalshis_rsa_pss_scheme(tmp_path):
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+    import base64
+    client = signing_client(tmp_path)
+    key = client.test_key
+    assert client.base_url == "https://kalshi.test/trade-api/v2"
     signature = base64.b64decode(client._signature("1700000000000", "POST", "/portfolio/events/orders?x=1"))
     key.public_key().verify(signature, b"1700000000000POST/trade-api/v2/portfolio/events/orders",
                             padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),

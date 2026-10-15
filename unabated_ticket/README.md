@@ -2616,7 +2616,7 @@ on Kalshi with **real money** on the bot's own key. No shadow mode (Cal,
 | Board age | the runner re-downloads every league's snapshot every 60 s (the panel's size tiers go up to 5 min); a row whose league snapshot landed over 3 min ago, is a stale build or failed to load is `stale_feed` |
 | Holdings | the pass runs only when the bets service's Kalshi poll succeeded within the last 5 min (conditional Kelly is sized on it); otherwise it decides nothing |
 | Size | floor(stake / all-in), cut to the depth at the ask |
-| Market check | before every order Kalshi's market is read: it must be `active`, a spread's or total's `floor_strike` the row's number, a spread's or moneyline's YES title the team YES is on; else `market_mismatch`, nothing sent |
+| Market check | before every order Kalshi's market is read: it must be `active`, its series the row's period, a spread's or total's `floor_strike` the row's number, YES the favorite's side of a spread and the Over of a total, a spread's or moneyline's YES title the team YES is on; else `market_mismatch`, nothing sent |
 | Order | limit buy at that ask; the rest cancelled at once **by market** (a bare cancel routes to exchange shard 0 and 404s while the order rests), a 404 checked against Kalshi's resting list; the desk's own 30 s sweep retries an unconfirmed cancel and cancels any `ubot-` order resting that no row knows |
 | Adds | a second order on a game goes only once the bot's earlier fill on it is among the held bets the stake was sized on (`unseen_fill` until the Kalshi poll has it): conditional Kelly must see the fill first |
 | Tag | every order's `client_order_id` starts `ubot-` (`taker.duckdb::taker_orders`) |
@@ -2624,9 +2624,19 @@ on Kalshi with **real money** on the bot's own key. No shadow mode (Cal,
 Tickers: spreads and totals from the rung ids (`Y-` buys YES, `N-` NO);
 full-game moneylines derived from the spread rungs' team code
 (`KXNCAAFSPREAD-26SEP19DUQWSU-WSU36` → `KXNCAAFGAME-26SEP19DUQWSU-WSU`); the
-market check above is what lets a derived ticker trade. A derived
-moneyline's fill never joins a board row (the feed carries no `GAME`
-tickers), so the bot adds to such a game only after its market settles.
+market check above is what lets a derived ticker trade. Bot fills join the
+board the way every Kalshi bet does (by the event ticker's suffix, bets.js),
+so once the Kalshi poll has one it sizes the next stake on its game.
+
+**The held bets refuse a stake (`size_declined`)** when conditional Kelly
+declines, when a bet on the game on the row's axis is not in the sizing math
+(a number the fair ladder lacks, a side it could not place, a parlay leg: the
+stake would be sized as if it were not held; another market and an
+other-period hedge are left out by design, #129/#130), or when the other
+side of the same Kalshi market is held (Kalshi nets per market: buying NO
+would sell that YES). The desk also refuses a decision older than 60 s
+(`stale_decision`), a game that has started (`started`) and a runner priced
+on another Kalshi API than its own (`env_mismatch`).
 
 **Arming, stopping.** The bot trades only when the bets service has its own
 Kalshi key: `KALSHI_TAKER_API_KEY_ID` (in `bets_service/.env`) and the key
@@ -2638,7 +2648,8 @@ to resume. Revoking the key at kalshi.com stops it for good.
 
 **Fail closed:** no live board, the bets service unread or unreachable, or
 its Kalshi poll failed or older than 5 min, and the pass decides nothing and
-reads no book. The order row is written
+reads no book. Cal's Removed bets (`bet_exclusions`) are not his: the pass
+neither sizes on them nor counts them held. The order row is written
 before the send; a send with no answer, or a fills read that fails, keeps the
 whole cost against the ceiling until a later read or settlement frees it. A
 send with no answer is looked for on Kalshi by `client_order_id` (adopted and
@@ -2651,7 +2662,9 @@ the ticker, read 10 min on, does not carry it). Order statuses: `sending`,
 - `GET :8095/taker.json`: the desk state, the rules, the last pass (counts by
   reason, per-league ticker coverage) and every decision with its `order`.
 - `taker.duckdb::taker_decisions` (append): one row each time a line's
-  decision changes. `taker.duckdb::taker_orders`: one row per order sent.
+  decision changes (a chunk the service refuses with 400 is dropped and
+  counted in `/health`'s `taker.log.dropped`, never retried in front of the
+  rows behind it). `taker.duckdb::taker_orders`: one row per order sent.
   Their own file, never `bets.duckdb`.
 
 ```sql
@@ -2675,8 +2688,8 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 546 tests) and
-the bets service's pytest suite (611 tests, on the `kalshi_draft/venv`
+the node suite (`npm test` = `node --test tests/*.test.js`, 561 tests) and
+the bets service's pytest suite (621 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`

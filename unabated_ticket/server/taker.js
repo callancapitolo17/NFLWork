@@ -28,7 +28,11 @@
 //   edge_short    live edge under MIN_LIVE_EDGE
 //   not_best      another live book beats the live price at the number
 //   cap           live edge over MAX_LIVE_EDGE
-//   size_declined conditional Kelly refused the held bets (fail closed)
+//   size_declined the held bets refuse the stake (fail closed): conditional
+//                 Kelly declined; a bet on the game, on the row's axis, that
+//                 the math could not price (unpricedHolding: the stake would
+//                 be sized as if it were not held); or the other side of the
+//                 same Kalshi market is held (a NO buy would sell that YES)
 //   size_zero     the stake buys no contract at the ask, or no depth
 //   market_mismatch  at send time, Kalshi's market for the ticker is not
 //                 active, or its strike or its YES team is not the row's
@@ -42,6 +46,7 @@
 const crypto = require("node:crypto");
 const feed = require("../extension/feed.js");
 const kelly = require("../extension/kelly.js");
+const betsLib = require("../extension/bets.js");
 const betsView = require("../extension/betsview.js");
 const pricecheck = require("../extension/pricecheck.js");
 
@@ -72,6 +77,9 @@ const ALL_BET_TYPES = [1, 2, 3];
 const SPREAD_STRIKE_RE = /^([A-Z]+)(\d+)$/;
 const KALSHI_CONTRACT_RE = /^([YN])-([A-Z0-9]+)-([A-Z0-9]+)-([A-Z0-9.]+)$/;
 const SPREAD_SERIES_RE = /^(KX[A-Z0-9]+?)SPREAD$/;
+// A full-game series carries no period token: KXNCAAFSPREAD, not KXNCAAF1HTOTAL.
+const FULL_GAME_SERIES_RE = /^KX[A-Z]+(SPREAD|TOTAL|GAME)$/;
+const SIDE_AWAY_OR_OVER = 0;
 const PRICE_DECIMALS = 1e4;
 
 const REASONS = ["stale_feed", "no_ticker", "no_book", "price_moved", "edge_short", "not_best", "cap", "size_declined", "size_zero", "market_mismatch", "bet"];
@@ -264,16 +272,58 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing }) {
   }
   if (liveEdge > MAX_LIVE_EDGE) return done("cap", `live edge ${(liveEdge * 100).toFixed(2)}%`);
 
+  const otherSideHeld = heldOtherSide(sizing.matches, contract);
+  if (otherSideHeld) return done("size_declined", otherSideHeld);
   const advice = betsView.stakeAdvice({
     line: row, price: liveAmerican, edgePct: liveEdge * 100, bankroll: BOT_BANKROLL, multiplier: BOT_KELLY,
     matches: sizing.matches, ladderOf: sizing.ladderOf, liquidity: null, teasers: sizing.teasers,
   });
   if (advice.kind === "declined") return done("size_declined", advice.reason);
+  const blind = unpricedHolding(advice, row);
+  if (blind) return done("size_declined", blind);
   const stake = betsView.suggestedBetAmount(advice);
   const contracts = Math.floor(Math.min(stake / liveAllIn, quote.depth));
   Object.assign(decision, { stake, contracts, cost: roundPrice(contracts * liveAllIn) });
   if (contracts < 1) return done("size_zero", `stake $${stake.toFixed(2)} at ${(liveAllIn * 100).toFixed(2)}c, depth ${quote.depth}`);
   return done("bet");
+}
+
+// Kalshi nets one account per market: a NO buy on a market where YES is held
+// (Cal's own bet) sells that YES instead. The bot never unwinds a held bet.
+//   matches  bets.annotateRows matches for the row ({bet})
+function heldOtherSide(matches, contract) {
+  const otherSide = contract.side === "yes" ? "no" : "yes";
+  const otherId = `kalshi:${contract.ticker}:${otherSide}`;
+  const held = (matches || []).find((match) => match.bet && match.bet.id === otherId && match.bet.status === "open");
+  return held ? `the ${otherSide.toUpperCase()} side of ${contract.ticker} is held: buying ${contract.side.toUpperCase()} would sell it` : null;
+}
+
+// A held bet on the game that conditional Kelly left out of the math, when
+// that is not by design: another market (#129) and an other-period hedge
+// (#130) are left out on purpose; a bet on the row's axis the math could not
+// price (a number the fair ladder lacks, a side it could not place, a
+// parlay leg) would size the stake as if the bet were not held. Null when
+// the math saw everything it should.
+//   advice  betsView.stakeAdvice's result (matches annotated with inMath, note, position)
+function unpricedHolding(advice, row) {
+  const rowPosition = betsLib.linePosition(row);
+  const rowAxis = rowPosition && !rowPosition.reason ? rowPosition.axis : null;
+  for (const match of advice.matches || []) {
+    if (match.inMath) continue;
+    const position = match.position && !match.position.reason ? match.position : null;
+    const axis = position ? position.axis : axisOfBetType(match.bet && match.bet.betType);
+    if (rowAxis !== null && axis != null && axis !== rowAxis) continue;
+    if (position && rowAxis !== null && position.period !== rowPosition.period && position.direction !== rowPosition.direction) continue;
+    return `held ${match.label || match.bet.id} is not in the sizing math: ${match.note}`;
+  }
+  const teaserOut = (advice.teaserGroups || []).find((group) => !group.inMath);
+  return teaserOut ? `open teaser not in the sizing math: ${teaserOut.note}` : null;
+}
+
+function axisOfBetType(betType) {
+  if (betType === "total") return betsLib.AXIS_TOTAL;
+  if (betType === "spread" || betType === "moneyline") return betsLib.AXIS_MARGIN;
+  return null;
 }
 
 // Words of a team name, lowercase, without the filler Kalshi and Unabated
@@ -309,19 +359,29 @@ function moneylineTeamMatches(market, row) {
 // a ticker that drifted from the row (a re-keyed rung, a closed market) is
 // never paid for.
 //   market    Kalshi's GET /markets/<ticker> `market` object
-//   contract  resolveKalshiContract's {side}
+//   contract  resolveKalshiContract's {side, ticker}
 function marketMismatch(market, row, contract) {
   if (!market || typeof market !== "object") return "no market object";
   if (market.status !== MARKET_STATUS_ACTIVE) return `status "${market.status}"`;
+  if (market.ticker && market.ticker !== contract.ticker) return `Kalshi answered ${market.ticker} for ${contract.ticker}`;
+  const series = String(contract.ticker || "").split("-")[0];
+  if (FULL_GAME_SERIES_RE.test(series) !== (row.periodTypeId === PERIOD_FULL_GAME)) {
+    return `series ${series} is not the row's period (periodTypeId ${row.periodTypeId})`;
+  }
   if (row.betTypeId === BET_TYPE_MONEYLINE) {
     return titleNamesSide(market, row, row.sideIndex) ? null : `"${market.yes_sub_title}" is not ${row.sideLabel}`;
   }
   const strike = Number(market.floor_strike);
   if (!Number.isFinite(strike) || strike !== Math.abs(row.points)) return `floor_strike ${market.floor_strike}, row is ${row.points}`;
   if (row.betTypeId === BET_TYPE_SPREAD) {
+    // YES is "<team> wins by over X": the favorite's side, a negative number on the row.
+    if ((contract.side === "yes") !== (row.points < 0)) return `${contract.side.toUpperCase()} of a wins-by-over market for a ${row.points} row`;
     const yesSide = contract.side === "yes" ? row.sideIndex : 1 - row.sideIndex;
     if (!titleNamesSide(market, row, yesSide)) return `"${market.yes_sub_title}" does not name side ${yesSide}'s team`;
-  } else if (row.betTypeId !== BET_TYPE_TOTAL) {
+  } else if (row.betTypeId === BET_TYPE_TOTAL) {
+    // YES is "Over X": the row's Over side.
+    if ((contract.side === "yes") !== (row.sideIndex === SIDE_AWAY_OR_OVER)) return `${contract.side.toUpperCase()} of an Over market for the ${row.sideLabel} row`;
+  } else {
     return `bet type ${row.betTypeId} has no market check`;
   }
   return null;
@@ -348,4 +408,5 @@ module.exports = {
   kalshiAllInPrice, probToAmerican, unabatedAllInOf, candidateRows,
   contractFromRungs, spreadTeamCodes, derivedMoneylineContract, resolveKalshiContract,
   parseKalshiOrderbook, quoteOf, decideRow, decisionSignature, moneylineTeamMatches, marketMismatch, clientOrderIdOf,
+  heldOtherSide, unpricedHolding,
 };

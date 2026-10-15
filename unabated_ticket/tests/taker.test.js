@@ -9,6 +9,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const feed = require("../extension/feed.js");
 const pricecheck = require("../extension/pricecheck.js");
+const betsLib = require("../extension/bets.js");
+const edgeRows = require("../extension/edgerows.js");
+const teams = require("../extension/teams.js");
 const taker = require("../server/taker.js");
 const { moveLine } = require("./helpers.js");
 
@@ -179,28 +182,88 @@ test("a derived moneyline trades only when Kalshi's market names the row's team 
   assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Los Angeles R" }, sameCity), false);
 });
 
-test("the market check: active, the row's strike, and the YES title's team on the contract's side", () => {
+test("the market check: active, the row's strike, the series' period, the side's sign, and the YES title's team", () => {
   const state = boardWithEdge(WSU_ALT_KEY, 0.05);
   const wsuRow = rowOf(state, WSU_ALT_KEY);
-  const spread = { status: "active", floor_strike: 35.5, yes_sub_title: "Washington St. wins by over 35.5 points" };
-  assert.equal(taker.marketMismatch(spread, wsuRow, { side: "yes" }), null);
-  assert.match(taker.marketMismatch({ ...spread, status: "closed" }, wsuRow, { side: "yes" }), /status "closed"/);
-  assert.match(taker.marketMismatch({ ...spread, floor_strike: 34.5 }, wsuRow, { side: "yes" }), /floor_strike 34.5, row is -35.5/);
-  assert.match(taker.marketMismatch({ ...spread, floor_strike: undefined }, wsuRow, { side: "yes" }), /floor_strike undefined/);
-  assert.match(taker.marketMismatch(null, wsuRow, { side: "yes" }), /no market object/);
-  // The Duquesne +35.5 row buys NO of the same market: YES must still name Washington State.
+  const ticker = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36";
+  const yes = { side: "yes", ticker };
+  const no = { side: "no", ticker };
+  const spread = { ticker, status: "active", floor_strike: 35.5, yes_sub_title: "Washington St. wins by over 35.5 points" };
+  assert.equal(taker.marketMismatch(spread, wsuRow, yes), null);
+  assert.match(taker.marketMismatch({ ...spread, status: "closed" }, wsuRow, yes), /status "closed"/);
+  assert.match(taker.marketMismatch({ ...spread, floor_strike: 34.5 }, wsuRow, yes), /floor_strike 34.5, row is -35.5/);
+  assert.match(taker.marketMismatch({ ...spread, floor_strike: undefined }, wsuRow, yes), /floor_strike undefined/);
+  assert.match(taker.marketMismatch(null, wsuRow, yes), /no market object/);
+  // Kalshi answering another market, or a first-half series for a full-game row.
+  assert.match(taker.marketMismatch({ ...spread, ticker: "KXNCAAFSPREAD-26SEP19DUQWSU-WSU42" }, wsuRow, yes), /answered KXNCAAFSPREAD-26SEP19DUQWSU-WSU42 for KXNCAAFSPREAD-26SEP19DUQWSU-WSU36/);
+  const halfTicker = "KXNCAAF1HSPREAD-26SEP19DUQWSU-WSU36";
+  assert.match(taker.marketMismatch({ ...spread, ticker: halfTicker }, wsuRow, { side: "yes", ticker: halfTicker }), /series KXNCAAF1HSPREAD is not the row's period/);
+  // NO of a "wins by over" market is the dog's side: never for the favorite's row, and YES never for the dog's.
+  assert.match(taker.marketMismatch(spread, wsuRow, no), /NO of a wins-by-over market for a -35.5 row/);
   const duqState = boardWithEdge(DUQ_ALT_KEY, 0.05);
   const duqRow = rowOf(duqState, DUQ_ALT_KEY);
-  assert.equal(taker.marketMismatch(spread, duqRow, { side: "no" }), null);
-  assert.match(taker.marketMismatch({ ...spread, yes_sub_title: "Duquesne wins by over 35.5 points" }, duqRow, { side: "no" }), /does not name side 1/);
-  // A total checks the strike only; a moneyline the team only.
-  const totalRow = { ...wsuRow, betTypeId: 3, points: 59.5 };
-  assert.equal(taker.marketMismatch({ status: "active", floor_strike: 59.5, yes_sub_title: "Over 59.5 points scored" }, totalRow, { side: "no" }), null);
-  assert.match(taker.marketMismatch({ status: "active", floor_strike: 60.5, yes_sub_title: "Over 60.5 points scored" }, totalRow, { side: "no" }), /floor_strike 60.5/);
+  assert.equal(taker.marketMismatch(spread, duqRow, no), null);
+  assert.match(taker.marketMismatch(spread, duqRow, yes), /YES of a wins-by-over market for a 35.5 row/);
+  // The Duquesne +35.5 row buys NO of the same market: YES must still name Washington State.
+  assert.match(taker.marketMismatch({ ...spread, yes_sub_title: "Duquesne wins by over 35.5 points" }, duqRow, no), /does not name side 1/);
+  // A total: YES is Over, NO is Under, at the row's strike.
+  const totalTicker = "KXNCAAFTOTAL-26SEP19DUQWSU-60";
+  const total = { ticker: totalTicker, status: "active", floor_strike: 59.5, yes_sub_title: "Over 59.5 points scored" };
+  const underRow = { ...wsuRow, betTypeId: 3, points: 59.5, sideIndex: 1, sideLabel: "Under" };
+  const overRow = { ...underRow, sideIndex: 0, sideLabel: "Over" };
+  assert.equal(taker.marketMismatch(total, underRow, { side: "no", ticker: totalTicker }), null);
+  assert.equal(taker.marketMismatch(total, overRow, { side: "yes", ticker: totalTicker }), null);
+  assert.match(taker.marketMismatch(total, underRow, { side: "yes", ticker: totalTicker }), /YES of an Over market for the Under row/);
+  assert.match(taker.marketMismatch(total, overRow, { side: "no", ticker: totalTicker }), /NO of an Over market for the Over row/);
+  assert.match(taker.marketMismatch({ ...total, floor_strike: 60.5 }, underRow, { side: "no", ticker: totalTicker }), /floor_strike 60.5/);
+  // A moneyline: the team only.
   const mlState = boardWithEdge(ML_WSU_KEY, 0.05, { price: -400 });
   const mlRow = rowOf(mlState, ML_WSU_KEY);
-  assert.equal(taker.marketMismatch({ status: "active", yes_sub_title: "Washington St." }, mlRow, { side: "yes" }), null);
-  assert.match(taker.marketMismatch({ status: "active", yes_sub_title: "Duquesne" }, mlRow, { side: "yes" }), /is not/);
+  const mlTicker = "KXNCAAFGAME-26SEP19DUQWSU-WSU";
+  assert.equal(taker.marketMismatch({ ticker: mlTicker, status: "active", yes_sub_title: "Washington St." }, mlRow, { side: "yes", ticker: mlTicker }), null);
+  assert.match(taker.marketMismatch({ ticker: mlTicker, status: "active", yes_sub_title: "Duquesne" }, mlRow, { side: "yes", ticker: mlTicker }), /is not/);
+});
+
+// An open Kalshi bet of Cal's on the slice's game, as /bets.json lists it.
+function heldKalshi(ticker, side, betType, points, contractSide = "yes") {
+  return {
+    id: `kalshi:${ticker}:${contractSide}`, source: "kalshi_api", venue: "kalshi", league: "cfb", status: "open",
+    betType, period: "FG", side, points, stake: 100, toWin: 25, contracts: 100, price: -400,
+    awayTeam: "Duquesne", homeTeam: "Washington St.", awayKey: null, homeKey: null,
+    eventStart: "2026-09-19T19:30:00.000Z", eventDate: "2026-09-19", placedAt: "2026-09-18T19:30:00.000Z",
+    isParlayLeg: false, parlayId: null, approx: [], unmatchable: null, rotation: null,
+    venueIds: { marketTicker: ticker, eventTicker: ticker.split("-").slice(0, 2).join("-") }, raw: {},
+  };
+}
+
+// decideRow with the runner's real sizing inputs: the held bets annotated
+// against the row (bets.annotateRows) and the game's fair ladder.
+function decideHolding(key, records) {
+  const state = boardWithEdge(key, 0.05);
+  const row = rowOf(state, key);
+  for (const [league, list] of Object.entries(edgeRows.feedTeamsByLeague(state))) teams.registerTeams(league, list);
+  const flags = betsLib.annotateRows([row], betsLib.resolveTeamKeys(records, []), { lines: edgeRows.boardLines(state) });
+  const ladderOf = edgeRows.createLadderReaders(state)(row.eventId);
+  return decide(state, key, { ask: 0.57, depth: 100000 }, { sizing: { matches: flags[0].matches, ladderOf, teasers: [] } });
+}
+
+test("a held bet on the row's axis the sizing math could not price refuses the stake; a held total on a spread row does not", () => {
+  // WSU -41.5 held, deciding WSU -35.5: the same side at a number the fair ladder lacks.
+  const sameSide = decideHolding(WSU_ALT_KEY, [heldKalshi("KXNCAAFSPREAD-26SEP19DUQWSU-WSU42", "home", "spread", -41.5)]);
+  assert.equal(sameSide.reason, "size_declined");
+  assert.match(sameSide.detail, /held .*-41\.5.* is not in the sizing math: no fair at -41\.5/);
+  // A held total is another market (#129): left out on purpose, the spread row still bets.
+  const otherMarket = decideHolding(WSU_ALT_KEY, [heldKalshi("KXNCAAFTOTAL-26SEP19DUQWSU-60", "over", "total", 59.5)]);
+  assert.equal(otherMarket.reason, "bet", otherMarket.detail);
+  // The same line held: conditional Kelly sizes it (here to nothing more), no refusal.
+  const sameLine = decideHolding(WSU_ALT_KEY, [heldKalshi("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "home", "spread", -35.5)]);
+  assert.equal(sameLine.reason, "size_zero", sameLine.detail);
+});
+
+test("the other side of the market held is never sold: size_declined", () => {
+  const decision = decideHolding(WSU_ALT_KEY, [heldKalshi("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "away", "spread", 35.5, "no")]);
+  assert.equal(decision.reason, "size_declined");
+  assert.match(decision.detail, /the NO side of KXNCAAFSPREAD-26SEP19DUQWSU-WSU36 is held: buying YES would sell it/);
 });
 
 test("every bot order id starts ubot- and is fixed per ticker, side and pass", () => {
