@@ -220,7 +220,7 @@
 
   const api = {
     BOOKS_BETTER_TO_SKIP, OUTLIER_PROB_GAP, MIN_OTHER_BOOK_LIQUIDITY,
-    impliedProb, isThin, rungKeyOf, sameNameKey, buildPriceIndex, comparePrice, priceCheckTag, describePriceChecks,
+    impliedProb, isThin, rungKeyOf, sameNameKey, mergeSameNameBooks, buildPriceIndex, comparePrice, priceCheckTag, describePriceChecks,
     skipKeyOf, canSkip, splitSkipped,
   };
 

@@ -1,10 +1,10 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
 from nfl_specials import board as board_module
 from nfl_specials.board import (Board, FectaLine, book_game, in_special_week, refresh_board,
-                                 size_board)
+                                 size_board, special_week_sunday)
 from nfl_specials.books import BookGame
 from nfl_specials.pricing import BookFair, ScoresFirstShare
 from nfl_specials.special_parser import parse_fecta
@@ -13,9 +13,10 @@ from nfl_specials.wz import WzSpecial
 GAME = BookGame("evt", home="SEA", away="LAC", game_start_time="2099-01-01T00:00:00Z")
 
 
-def _line(rotation: int, description: str, wz_american: int, fair_prob: float | None) -> FectaLine:
+def _line(rotation: int, description: str, wz_american: int, fair_prob: float | None,
+          week_date: date = date(2098, 12, 31)) -> FectaLine:
     special = WzSpecial(wz_game_id=rotation, rotation=rotation, description=description,
-                        wz_american=wz_american, week_date=date(2098, 12, 31))
+                        wz_american=wz_american, week_date=week_date)
     fairs = {} if fair_prob is None else {"FanDuel": BookFair("FanDuel", fair_prob, None, 1.3, 8)}
     return FectaLine(special, parse_fecta(description), "priced", game=GAME, book_fairs=fairs)
 
@@ -94,13 +95,22 @@ def test_book_game_must_be_the_same_game():
     assert book_game(_ListingBook(other_team), line) is None
 
 
-def test_special_week_is_thursday_through_monday_night():
-    special = _line(1, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 120, 0.37).special   # Sunday 2098-12-31
-    thursday = BookGame("t", "SEA", "LAC", "2098-12-28T01:15:00Z")
-    monday_night = BookGame("m", "SEA", "LAC", "2099-01-02T01:15:00Z")
-    next_thursday = BookGame("n", "SEA", "LAC", "2099-01-05T01:15:00Z")
-    assert in_special_week(thursday, special) and in_special_week(monday_night, special)
-    assert not in_special_week(next_thursday, special)
+@pytest.mark.parametrize("week_date", [date(2099, 1, 4), date(2099, 1, 1)])   # Sunday, Thursday
+def test_special_week_is_thursday_through_monday_night(week_date):
+    special = _line(1, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 120, 0.37, week_date=week_date).special
+    games =[BookGame("p", "SEA", "LAC", "2098-12-26T01:15:00Z"),   # last Thursday night
+             BookGame("t", "SEA", "LAC", "2099-01-02T01:15:00Z"),   # Thursday night
+             BookGame("s", "SEA", "LAC", "2099-01-04T18:00:00Z"),   # Sunday
+             BookGame("m", "SEA", "LAC", "2099-01-06T01:15:00Z"),   # Monday night
+             BookGame("n", "SEA", "LAC", "2099-01-09T01:15:00Z")]   # next Thursday night
+    assert [in_special_week(game, special) for game in games] == [False, True, True, True, False]
+
+
+def test_special_week_sunday_is_the_first_sunday_on_or_after():
+    monday = date(2099, 1, 5)
+    monday_to_sunday = [monday + timedelta(days=offset) for offset in range(7)]
+    sundays = [special_week_sunday(day) for day in monday_to_sunday]
+    assert sundays == [date(2099, 1, 11)] * 7
 
 
 class _FakeStore:

@@ -2,7 +2,8 @@
 
 Every function this ticket touched takes ``counters`` KEYWORD-ONLY. That is
 not stylistic: BetMGM's ``price_selection_set(client, refs, fixture_id)``
-takes a positional 3rd argument, and an earlier epic ticket nearly bound a
+and DraftKings' ``price_selection_set(client, refs, dk_event_id)`` take a
+positional 3rd argument, and an earlier epic ticket nearly bound a
 positional arg to the wrong parameter. Keyword-only makes that class of bug
 impossible, and ``inspect.signature().bind()`` proves it here rather than by
 eye.
@@ -54,9 +55,17 @@ def test_betmgm_price_selection_set_keeps_fixture_id_positional():
     assert bound2.arguments["counters"] is counters
 
 
-@pytest.mark.parametrize("book", ["draftkings", "fanduel", "prophetx",
-                                  "novig", "caesars"])
-def test_non_mgm_price_selection_set_binds_two_positionals(book):
+def test_draftkings_price_selection_set_keeps_event_id_positional():
+    """Same hazard as MGM's fixture_id: DK's SGP-builder GET needs the
+    event id, and it must never bind to ``counters``."""
+    sig = inspect.signature(draftkings.price_selection_set)
+    bound = sig.bind("client", ["r0", "r1"], "34770901")
+    assert bound.arguments["dk_event_id"] == "34770901"
+    assert "counters" not in bound.arguments
+
+
+@pytest.mark.parametrize("book", ["fanduel", "prophetx", "novig", "caesars"])
+def test_other_price_selection_set_binds_two_positionals(book):
     sig = inspect.signature(BOOK_MODULES[book].price_selection_set)
     bound = sig.bind("client", ["r0"])
     assert "counters" not in bound.arguments

@@ -37,6 +37,9 @@
 //       by venue id (bets.learnCrosswalk) and each new open bet's fill-time
 //       fair off the line history (fillfair.captureFillFairs). Both tables are
 //       insert-only on the service, so the panel learning the same rows is harmless.
+//   POST <bets service>/fill_books.json — each new open bet's other books at
+//       its number when it was placed (server/fillbooks.js): how many posted
+//       it, how many beat the price taken, the best of them. Runner only.
 // Serves (HTTP on UNABATED_RUNNER_HOST:UNABATED_RUNNER_PORT, no auth):
 //   GET /edges.json  the Edges list the panel would show for those settings
 //                    (server/edges_payload.js documents the shape)
@@ -55,7 +58,7 @@
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
 // Side effects: none on disk — no DuckDB, no files. Its writes go through the
 // bets service: the closing fairs (bets.duckdb::bet_closing_fairs) and the
-// crosswalk rows and fill fairs above (insert-only tables). State (feed, line
+// crosswalk rows, fill fairs and fill books above (insert-only tables). State (feed, line
 // history, bets, each game's last pregame odds for
 // the Live tab) is in memory and rebuilt on restart: a game already under way
 // when the runner starts has its card but no kickoff chances. Logs state
@@ -74,6 +77,7 @@ const teaser = require("../extension/teaser.js");
 const edgeRows = require("../extension/edgerows.js");
 const edgesPayload = require("./edges_payload.js");
 const closefair = require("./closefair.js");
+const fillbooks = require("./fillbooks.js");
 const ladderLib = require("../extension/ladder.js");
 const scenarios = require("./scenarios.js");
 const teasersPayload = require("./teasers_payload.js");
@@ -251,6 +255,10 @@ function createRunner(deps) {
   let fillFairsLastError = null;
   const fillFairsDecided = new Set();
   const fillFairsUnsent = new Map();
+  let fillBooksRetryAt = 0;
+  let fillBooksLastError = null;
+  const fillBooksDecided = new Set();
+  const fillBooksUnsent = new Map();
   const betsStatus = { okAt: null, error: null, unreachableSince: null, generatedAt: null, sources: {} };
   let settings = { ...edgesPayload.settingsFromService(null), source: "defaults", error: null, okAt: null, updatedAt: null };
   let scannedLeagues = null;
@@ -387,12 +395,14 @@ function createRunner(deps) {
     learn();
   }
 
-  // Crosswalk rows, then fill fairs; never throws (a failure is logged and retried later).
+  // Crosswalk rows, then fill fairs, then other books at the fill; never
+  // throws (a failure is logged and retried later).
   function learn() {
     if (learnBusy || !feedState) return;
     learnBusy = true;
     learnCrosswalk()
       .then(() => captureFillFairs())
+      .then(() => captureFillBooks())
       .catch((error) => logWarning(`learning failed: ${error.stack || error.message}`))
       .finally(() => { learnBusy = false; });
   }
@@ -458,6 +468,45 @@ function createRunner(deps) {
         fillFairsRetryAt = now() + SERVICE_WRITE_RETRY_MS;
         if (fillFairsLastError !== error.message) logWarning(`fill fairs: service write failed: ${error.message}`);
         fillFairsLastError = error.message;
+        return;
+      }
+    }
+  }
+
+  // Each new open bet's other books at its number when it was placed
+  // (fillbooks.js), one row per POST, the same way as the fill fairs. Decided
+  // ids live in memory only: after a restart every open bet was placed before
+  // the scanner watched, so nothing is re-captured, and the service keeps the
+  // first row regardless.
+  async function captureFillBooks() {
+    const liveStatus = scanner.getStatus();
+    const { saves, refusals } = fillbooks.captureFillBooks({
+      records: held.records, skipIds: fillBooksDecided,
+      state: feedState, boardLines: boardLines(), history,
+      observingSince: liveStatus.observingSince, leagueObservingSince: liveStatus.leagueObservingSince, now: now(),
+    });
+    for (const save of saves) {
+      fillBooksDecided.add(save.betId);
+      fillBooksUnsent.set(save.betId, save);
+    }
+    for (const refusal of refusals) fillBooksDecided.add(refusal.betId);
+    if (saves.length) logInfo(`fill books: ${saves.length} captured`);
+    if (fillBooksUnsent.size === 0 || now() < fillBooksRetryAt) return;
+    for (const row of Array.from(fillBooksUnsent.values())) {
+      try {
+        const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/fill_books.json`, "POST", { rows: [row] });
+        if (!reply || reply.ok !== true) throw new Error("fill_books.json reply is not ok");
+        fillBooksUnsent.delete(row.betId);
+        fillBooksLastError = null;
+      } catch (error) {
+        if (error.status === HTTP_BAD_REQUEST) {
+          fillBooksUnsent.delete(row.betId);
+          logWarning(`fill books: the service refused ${row.betId}, dropped: ${error.message}`);
+          continue;
+        }
+        fillBooksRetryAt = now() + SERVICE_WRITE_RETRY_MS;
+        if (fillBooksLastError !== error.message) logWarning(`fill books: service write failed: ${error.message}`);
+        fillBooksLastError = error.message;
         return;
       }
     }

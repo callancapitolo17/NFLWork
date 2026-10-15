@@ -785,10 +785,10 @@ class SGPService:
         refresh() and on-demand, so all three share one recovery.
 
         Does NOT price combos and never calls the price hook, so it is
-        unaffected by a book whose price endpoint is blocked (DraftKings'
-        calculateBets 403s every set size as of 2026-08-25) — but DK carries
-        no structure odds at all, so DK returns empty ``odds`` here and the
-        surface routes it through its singles scraper instead.
+        unaffected by a book whose price endpoint is blocked. DK is not a
+        structure-route book (the surface prices it through its singles
+        scraper), though its structure has carried straight odds since
+        2026-10-04.
         """
         if book not in self._state or not legs:
             return StructureLegOdds(book=book, fetched_at=None, odds={},
@@ -854,7 +854,7 @@ class SGPService:
                     continue                     # book doesn't offer this rung
                 r0 = resolved[0]
                 if r0.single_decimal is None:
-                    continue                     # structure carries no odds (DK)
+                    continue                     # structure carries no odds
                 odds[i] = (r0.single_decimal, r0.opposite_decimal)
             counters.bump("legs_resolved", len(odds))
             return StructureLegOdds(book=book, fetched_at=fetched_at,
@@ -888,7 +888,7 @@ class SGPService:
 
         Route B (correlation transfer): one SGP price for the target +
         per-leg devigged singles — structure odds where the book carries
-        them, 1-leg price calls where it doesn't (DK), vig-fallback haircut
+        them, 1-leg price calls where it doesn't, vig-fallback haircut
         when a single is one-sided.
 
         Failure accounting: a TRANSPORT-level exception (client/network
@@ -999,13 +999,12 @@ class SGPService:
             # its single market, so where the structure carries both sides'
             # odds the exact 2-cell devig needs ZERO price calls — several
             # books' SGP price endpoints refuse 1-selection sets
-            # (live-verified Novig/MGM 2026-08-25, kalshi_rfi smoke). DK is
-            # NOT one of them: its calculateBets 403s every set size, n=1 and
-            # n=2 alike (issue #102). DK falls through this path for the
-            # unrelated reason below — its structure carries no odds.
+            # (live-verified Novig/MGM 2026-08-25, kalshi_rfi smoke), and
+            # DK's SGP builder prices nothing on a 1-leg set, so DK's lone
+            # legs price here off its straight odds (2026-10-04).
             # devig_partition (not devig_two_way) so the [1.0, 1.25]
             # overround gate rejects crossed/degenerate pairs — a gate
-            # failure (or a book without structure odds, e.g. DK) falls
+            # failure (or a book without structure odds) falls
             # through to the normal routes. Structure odds are only as
             # fresh as this instance's structure_ttl_sec — the enabling
             # caller owns that trade-off (kalshi_rfi passes 0.0: every
@@ -1085,7 +1084,7 @@ class SGPService:
             fair, route = res
             # route_gap (spec §4.2): where BOTH routes come free — partition
             # succeeded AND every leg carries structure odds (no extra wire
-            # calls, so never at DK) — also compute the transfer fair and
+            # calls) — also compute the transfer fair and
             # emit the gap. This is the live measurement of Route B's
             # vig-cancellation assumption (retreat trigger input).
             route_gap = None
@@ -1129,13 +1128,15 @@ class SGPService:
         """Per-leg (vigged_implied, devigged_fair) pairs for Route B.
 
         Per leg: both single decimals -> exact devig_two_way; only the
-        chosen side -> ON_DEMAND_VIG_FALLBACK haircut; NEITHER (DK's
-        structure carries no odds) -> each available side priced as a 1-leg
-        wire call first (Route-B-only cost, per spec §4.2). Any leg that
-        still has no usable chosen-side decimal fails the whole set (None).
+        chosen side -> ON_DEMAND_VIG_FALLBACK haircut; NEITHER (a structure
+        without odds) -> each available side priced as a 1-leg wire call
+        first (Route-B-only cost, per spec §4.2). Any leg that still has no
+        usable chosen-side decimal fails the whole set (None). DK's 1-leg
+        price call always declines, so a DK leg missing straight odds fails
+        here.
 
-        Issue #50 item 4: the 1-leg wire calls fire CONCURRENTLY — DK pays
-        2 per leg, and serially that alone (2N x RTT) dominated the live
+        Issue #50 item 4: the 1-leg wire calls fire CONCURRENTLY — a book
+        pays 2 per leg, and serially that alone (2N x RTT) dominated the live
         budget. Wall cost is now ~one RTT regardless of leg count. The math
         below consumes the fetched decimals in leg order, so the fair is
         identical to the serial version's.
@@ -1147,8 +1148,8 @@ class SGPService:
         for j, r in enumerate(resolved):
             sd, od = r.single_decimal, r.opposite_decimal
             if sd is None and od is None:
-                # DK-style: no odds in the structure — 1-leg price calls
-                # (already landed concurrently above).
+                # No odds in the structure — 1-leg price calls (already
+                # landed concurrently above).
                 sd = fetched.get((j, "single"))
                 od = fetched.get((j, "opposite"))
             try:
@@ -1312,8 +1313,10 @@ class SGPService:
                 # #85: period buckets re-keyed to CanonicalLeg.period
                 # values — resolve_legs picks the bucket per leg. "I1"
                 # (1st-inning 0.5 total, issue #87) rides the same shape.
+                # straight_odds gives the resolved legs DK's single prices.
                 return {"FG": sel.get("fg"), "F5": sel.get("f5"),
-                        "I1": sel.get("i1")}
+                        "I1": sel.get("i1"),
+                        "straight_odds": sel.get("straight_odds")}
 
             return {"match_event": match_event,
                     "build_structure": build_structure,
@@ -1322,6 +1325,7 @@ class SGPService:
                                          counters=counters),
                     "price": lambda client, refs, event:
                         mod.price_selection_set(client, refs,
+                                                event["dk_event_id"],
                                                 counters=counters)}
 
         if book == "fanduel":
