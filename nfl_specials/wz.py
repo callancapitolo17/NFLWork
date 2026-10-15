@@ -62,8 +62,8 @@ class WzSpecial:
                            # Play a bet on this prop is placed with
     description: str       # e.g. "SEAHAWKS TRIFECTA (1Q, 1H & GM)"
     wz_american: int       # posted price
-    week_date: date        # Wagerzon's date for the specials (a day of the
-                           # week, usually its Sunday; its clock time is a
+    week_date: date        # Wagerzon's date for the specials (on or before
+                           # the week's Sunday; its clock time is a
                            # placeholder)
 
 

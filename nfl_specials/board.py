@@ -121,12 +121,10 @@ def open_books() -> tuple[dict[str, SgpBook], dict[str, str]]:
 
 
 def special_week_sunday(week_date: date) -> date:
-    """The Sunday of the NFL week Wagerzon's `week_date` falls in. Wagerzon
-    dates the specials on a day of their week (seen: Sunday, Thursday); a
-    Monday is Monday night, in the week of the Sunday before."""
-    if week_date.weekday() == calendar.MONDAY:
-        return week_date - timedelta(days=1)
-    return week_date + timedelta(days=calendar.SUNDAY - week_date.weekday())
+    """The Sunday of the specials' NFL week: the first Sunday on or after
+    `week_date`, since Wagerzon dates a week's specials on or before its Sunday."""
+    days_to_sunday = calendar.SUNDAY - week_date.weekday()
+    return week_date + timedelta(days=days_to_sunday)
 
 
 def in_special_week(game: BookGame, special: wz.WzSpecial) -> bool:
