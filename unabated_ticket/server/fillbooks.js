@@ -28,6 +28,7 @@ const feed = require("../extension/feed.js");
 const fillfair = require("../extension/fillfair.js");
 const pricecheck = require("../extension/pricecheck.js");
 const bets = require("../extension/bets.js");
+const edgemove = require("../extension/edgemove.js");
 
 const STATUS_ON_BOARD = 1;
 // A placement up to this far past our clock is a venue clock running ahead;
@@ -48,6 +49,7 @@ const REFUSED = Object.freeze({
   future: "placed after now (a clock or time-zone error)",
   notWatching: "placed before the scanner was watching",
   leagueGap: "placed while its league's snapshot was not loading",
+  tooLate: "placed longer ago than the line history keeps every change",
 });
 
 // The probability the bet was filled at, on Unabated's basis: an exchange's
@@ -73,6 +75,11 @@ function refusalOf(bet, placedMs, observingSince, now) {
   if (fillProbOf(bet) == null) return REFUSED.noPrice;
   if (placedMs > now + CLOCK_SKEW_GRACE_MS) return REFUSED.future;
   if (placedMs < observingSince) return REFUSED.notWatching;
+  // The history keeps a line's changes for EDGE_MOVE_WINDOW_MS (edgemove.js
+  // prune). Past that, a line that moved since the fill no longer holds its
+  // fill-time price and would silently drop out of the count; refuse the bet
+  // rather than store a partial one.
+  if (now - placedMs > edgemove.EDGE_MOVE_WINDOW_MS) return REFUSED.tooLate;
   return null;
 }
 

@@ -162,3 +162,9 @@ test("a Kalshi fill is compared all-in of its taker fee, as Unabated shows Kalsh
   assert.equal(row.fillPrice, 217.76);
   assert.equal(row.booksBetter, 1);
 });
+
+test("a bet first read after the history window is refused, never counted from a partial history", () => {
+  const history = historyOf({ [NINERS_ALT(KALSHI)]: [{ at: T0, price: 215 }] });
+  const late = capture({ records: [bet("novig:1")], lines: [line(KALSHI)], history, now: T0 + 2 * MIN + 11 * MIN });
+  assert.deepEqual(late, { saves: [], refusals: [{ betId: "novig:1", reason: REFUSED.tooLate }] });
+});
