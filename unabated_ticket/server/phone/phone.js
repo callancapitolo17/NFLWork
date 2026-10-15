@@ -76,11 +76,14 @@
     sheet: el("sheet"), sheetBackdrop: el("sheet-backdrop"), sheetClose: el("sheet-close"), ticketGone: el("ticket-gone"),
     ticketSide: el("ticket-side"), ticketBadges: el("ticket-badges"), ticketBetLine: el("ticket-bet-line"),
     ticketMatchup: el("ticket-matchup"), ticketStart: el("ticket-start"),
-    ticketBooksLabel: el("ticket-books-label"), ticketBooks: el("ticket-books"),
-    ticketBook: el("ticket-book"), ticketPrice: el("ticket-price"), ticketFair: el("ticket-fair"), ticketEdge: el("ticket-edge"),
+    ticketLineAge: el("ticket-line-age"),
+    ticketBooksBlock: el("ticket-books-block"), ticketBooksLabel: el("ticket-books-label"), ticketBooks: el("ticket-books"),
+    ticketBooksTile: el("ticket-books-tile"), ticketBooksHead: el("ticket-books-head"), ticketBooksSub: el("ticket-books-sub"),
+    ticketBook: el("ticket-book"), ticketPrice: el("ticket-price"), ticketFair: el("ticket-fair"), ticketFairSub: el("ticket-fair-sub"),
+    ticketEdge: el("ticket-edge"), ticketEdgeSub: el("ticket-edge-sub"), ticketEdgeMove: el("ticket-edge-move"),
     ticketStakeLabel: el("ticket-stake-label"), ticketStake: el("ticket-stake"), ticketContracts: el("ticket-contracts"), ticketUncapped: el("ticket-uncapped"),
     ticketExposure: el("ticket-exposure"), ticketPayoutRow: el("ticket-payout-row"), ticketToWin: el("ticket-to-win"), ticketPayout: el("ticket-payout"),
-    ticketRelatedBlock: el("ticket-related-block"), ticketRelated: el("ticket-related"),
+    ticketRelatedBlock: el("ticket-related-block"), ticketRelated: el("ticket-related"), ticketRelatedCount: el("ticket-related-count"),
     ticketOthersBlock: el("ticket-others-block"), ticketOthers: el("ticket-others"), ticketOthersCount: el("ticket-others-count"),
     ticketMoved: el("ticket-moved"),
     teasersTab: el("tab-teasers"), teasersCount: el("teasers-count"), viewTeasers: el("view-teasers"),
@@ -284,22 +287,57 @@
     const against = all.some((line) => line.inMath && (line.tier === "opposite" || line.tier === "related_opposite"));
     const block = makeEl("div", `related-block${against ? " against" : ""}`);
     block.append(makeEl("div", "related-head", `Related bets · ${all.length}`));
-    for (const line of all.slice(0, RELATED_LINES_ON_A_ROW)) block.append(relatedLineEl(line, "related-line"));
+    for (const line of all.slice(0, RELATED_LINES_ON_A_ROW)) block.append(relatedLineEl(line));
     if (all.length > RELATED_LINES_ON_A_ROW) block.append(makeEl("div", "related-more", `+${all.length - RELATED_LINES_ON_A_ROW} more (open the ticket)`));
     return block;
   }
 
-  // One related bet: its tag, its words and "fair then" when its fill fair was saved.
-  function relatedLineEl(line, baseClass) {
-    const against = line.tier === "opposite" || line.tier === "related_opposite";
-    const className = baseClass === "bet-match"
-      ? `bet-match tier-${line.tier}${!line.inMath ? " not-sized" : against ? " bad" : ""}`
-      : `related-line tier-${line.tier}${line.inMath ? "" : " not-sized"}`;
-    const div = makeEl("div", className);
+  // One related bet on an Edges row: its tag, its words and "fair then" when its fill fair was saved.
+  function relatedLineEl(line) {
+    const div = makeEl("div", `related-line tier-${line.tier}${line.inMath ? "" : " not-sized"}`);
     if (line.title) div.title = line.title;
     const text = makeEl("span", null, line.text);
     if (line.fairThen) text.append(" · ", makeEl("span", "fair-then", line.fairThen));
-    div.append(makeEl("span", baseClass === "bet-match" ? "k" : "related-tag", line.tag), text);
+    div.append(makeEl("span", "related-tag", line.tag), text);
+    return div;
+  }
+
+  // The ticket's related bets as a table, one heading per tag
+  // (betsView.relatedGroups), each bet on two lines: pick and stake, then
+  // price, cents, venue and the fair then. A runner from before the table
+  // sends no cells: those bets read their words across the row.
+  function renderTicketRelated(row) {
+    const groups = betsView.relatedGroups(row.related || []);
+    view.ticketRelatedBlock.hidden = groups.length === 0;
+    view.ticketRelatedCount.textContent = groups.length ? `${groups.reduce((total, group) => total + group.count, 0)} open` : "";
+    view.ticketRelated.replaceChildren(...groups.flatMap((group) => [relatedGroupEl(group), ...group.lines.map((line) => relatedRowEl(line, group))]));
+  }
+
+  // "SAME SIDE · IN THE SIZING · LINE NOW 39.5 ......... $281.73"
+  function relatedGroupEl(group) {
+    const div = makeEl("div", `rt-group${group.against ? " against" : group.inMath ? "" : " not-sized"}`);
+    div.append(makeEl("span", null, group.now != null ? `${group.label} · line now ${group.now}` : group.label),
+      makeEl("span", "rt-dollars", phoneView.fmtDollars(group.dollars)));
+    return div;
+  }
+
+  function relatedRowEl(line, group) {
+    const div = makeEl("div", `rt-row${line.inMath ? "" : " not-sized"}`);
+    if (line.title) div.title = line.title;
+    if (!line.cells) {
+      div.classList.add("rt-text");
+      div.append(makeEl("span", "rt-pick", line.fairThen ? `${line.text} · ${line.fairThen}` : line.text));
+      return div;
+    }
+    const { cells } = line;
+    const pick = makeEl("span", "rt-pick", cells.pick);
+    if (cells.now != null && group.now == null) pick.append(" ", makeEl("span", "rt-now", `now ${cells.now}`));
+    const meta = makeEl("span", "rt-meta");
+    meta.append(makeEl("span", "rt-price", cells.price ?? "—"));
+    if (cells.cents) meta.append(makeEl("span", "rt-cents", cells.cents));
+    meta.append(makeEl("span", "rt-venue", cells.venue));
+    if (line.fairThenPct) meta.append(makeEl("span", "rt-fair", line.fairThenPct));
+    div.append(pick, makeEl("span", "rt-stake", cells.stake), meta);
     return div;
   }
 
@@ -325,22 +363,21 @@
     return tag ? tagEl(PRICE_CHECK_TAG_CLASS[tag.kind] ?? "", tag.label) : null;
   }
 
-  // Every book at the number, best first, yours in its place, each exchange
-  // with the money resting at its price; thin books (pricecheck.isThin) greyed at the end.
+  // One book at the number: its name, the money resting at its price on an
+  // exchange ("thin $12" under the runner's floor, rounded down so a thin
+  // $29.60 never reads $30) and its price. `entry` is a betsView.otherBookRows row.
+  function bookRowEl(entry) {
+    const liq = entry.liquidity == null ? "" : `${entry.kind === "thin" ? "thin " : ""}$${Math.floor(entry.liquidity).toLocaleString("en-US")}`;
+    const div = makeEl("div", entry.kind);
+    div.append(makeEl("span", "nm", entry.name), makeEl("span", "liq", liq), makeEl("span", "px", phoneView.fmtAmerican(entry.price)));
+    return div;
+  }
+
+  // An Edges row's opened tag: every book at the number, best first, yours in
+  // its place, thin books greyed at the end.
   function otherBooksListEl(row) {
-    const check = row.priceCheck;
-    const lineEl = (name, price, liquidity, className) => {
-      const div = makeEl("div", className);
-      const liq = liquidity == null ? "" : `${className === "thin" ? "thin " : ""}$${Math.floor(liquidity).toLocaleString("en-US")}`;
-      div.append(makeEl("span", null, name), makeEl("span", "liq", liq), makeEl("span", "px", phoneView.fmtAmerican(price)));
-      return div;
-    };
     const list = makeEl("div", "others-list");
-    for (const entry of check.better) list.append(lineEl(entry.bookName, entry.price, entry.liquidity, "better"));
-    list.append(lineEl(`${row.book.name} (you)`, row.price, null, "yours"));
-    for (const entry of check.sameAs || []) list.append(lineEl(entry.bookName, entry.price, entry.liquidity, "same"));
-    for (const entry of check.worse) list.append(lineEl(entry.bookName, entry.price, entry.liquidity, "worse"));
-    for (const entry of check.thin || []) list.append(lineEl(entry.bookName, entry.price, entry.liquidity, "thin"));
+    list.append(...betsView.otherBookRows(row.priceCheck, row.book.name, row.price, Infinity).rows.map(bookRowEl));
     return list;
   }
 
@@ -365,15 +402,28 @@
     return open ? [line, otherBooksListEl(row)] : [line];
   }
 
-  // The ticket's "Others" row: every other book at the number, best first,
-  // yours in its place, and Skip when a book beats you.
-  function renderTicketBooks(row) {
-    const tag = priceCheckTagEl(row);
-    view.ticketBooksLabel.hidden = !tag;
-    view.ticketBooks.hidden = !tag;
+  // The ticket's other books: the tile (the tag in a few words) and every
+  // book at the number in a box, the worst of the worse folded, and Skip
+  // when a book beats you.
+  function renderTicketBooks(row, ticket) {
+    const tile = ticket.othersTile;
+    view.ticketBooksTile.hidden = !tile;
+    view.ticketBooksBlock.hidden = !tile;
     view.ticketBooks.replaceChildren();
-    if (!tag) return;
-    view.ticketBooks.append(tag, otherBooksListEl(row));
+    if (!tile) return;
+    view.ticketBooksTile.className = `tile tile-books books-${tile.kind}`;
+    view.ticketBooksHead.textContent = tile.head;
+    view.ticketBooksSub.textContent = tile.sub;
+    view.ticketBooksLabel.textContent = ticket.othersLabel;
+    const open = state.ticket.booksOpen;
+    const { rows, folded } = betsView.otherBookRows(row.priceCheck, row.book.name, row.price, open ? Infinity : undefined);
+    const grid = makeEl("div", "books-grid");
+    grid.style.setProperty("--rows", String(Math.ceil(rows.length / 2)));
+    grid.append(...rows.map(bookRowEl));
+    view.ticketBooks.append(grid);
+    if (folded.length || open) {
+      view.ticketBooks.append(actionButton("books-more", open ? "Fewer books ▴" : `+${folded.length} more book${folded.length === 1 ? "" : "s"}, all worse ▸`, {}));
+    }
     if (!row.skipKey) return;
     const skipped = isSkipped(row);
     const actions = makeEl("div", "others-actions");
@@ -497,7 +547,7 @@
   }
 
   function openTicket(rowKey, cardKey) {
-    state.ticket = { rowKey, cardKey, last: null, opened: null };
+    state.ticket = { rowKey, cardKey, last: null, opened: null, booksOpen: false };
     view.sheet.hidden = false;
     document.body.classList.add("sheet-open");
     renderTicket(Date.now());
@@ -530,14 +580,17 @@
     view.ticketBetLine.textContent = ticket.betLine;
     view.ticketMatchup.textContent = ticket.matchup;
     view.ticketStart.textContent = ticket.start;
-    view.ticketBook.replaceChildren(ticket.book, makeEl("span", "sub", ticket.lineAge));
-    view.ticketPrice.textContent = ticket.price;
+    view.ticketLineAge.textContent = ticket.lineAge;
+    view.ticketBook.textContent = ticket.book;
+    view.ticketPrice.replaceChildren(ticket.price, makeEl("small", null, ticket.priceCents));
     view.ticketFair.textContent = ticket.fair;
-    view.ticketEdge.replaceChildren(makeEl("span", `edge-pct tier-${ticket.edgeTier}`, ticket.edge));
-    if (row.move) {
-      view.ticketEdge.append(tagEl(MOVE_TAG_CLASS[row.move.kind] || "", row.move.label), makeEl("span", "sub", row.move.detail));
-    }
-    renderTicketBooks(row);
+    view.ticketFairSub.textContent = ticket.fairCents;
+    view.ticketEdge.textContent = ticket.edge;
+    view.ticketEdge.closest(".tile").classList.toggle("no-edge", !(row.edgePct > 0));
+    view.ticketEdgeSub.textContent = ticket.edgeSub;
+    view.ticketEdgeMove.hidden = !row.move;
+    view.ticketEdgeMove.replaceChildren(...(row.move ? [tagEl(MOVE_TAG_CLASS[row.move.kind] || "", row.move.label), makeEl("span", "move-detail", row.move.detail)] : []));
+    renderTicketBooks(row, ticket);
 
     const block = ticket.stakeBlock;
     view.ticketStakeLabel.textContent = block.label;
@@ -559,9 +612,7 @@
     view.ticketToWin.textContent = block.toWin || "";
     view.ticketPayout.textContent = block.payout || "";
 
-    const related = row.related || [];
-    view.ticketRelatedBlock.hidden = related.length === 0;
-    view.ticketRelated.replaceChildren(...related.map((line) => relatedLineEl(line, "bet-match")));
+    renderTicketRelated(row);
 
     const others = card ? [card.best, ...card.others].filter((other) => other.key !== row.key) : [];
     view.ticketOthersBlock.hidden = others.length === 0;
@@ -1390,6 +1441,11 @@
   });
 
   view.ticketBooks.addEventListener("click", (event) => {
+    if (event.target.closest("button.books-more") && state.ticket) {
+      state.ticket.booksOpen = !state.ticket.booksOpen;
+      renderTicket(Date.now());
+      return;
+    }
     const skipChip = event.target.closest("button.skip-chip");
     if (skipChip) setEdgeSkip(skipChip);
   });

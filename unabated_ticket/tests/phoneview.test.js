@@ -74,7 +74,11 @@ test("the ticket for a held sportsbook line: add, its standalone size, no contra
   const row = payload.items.find((item) => item.key === BEARS_SPREAD_SOUTHPOINT);
   const ticket = phoneView.ticketView(row, NOW);
   assert.equal(ticket.book, "SouthPoint");
-  assert.equal(ticket.price, "-110 · 52.4¢");
+  assert.deepEqual([ticket.price, ticket.priceCents, ticket.fair, ticket.fairCents, ticket.edgeSub], ["-110", "52.4¢", "-123", "55.2¢", "2.8¢ under fair"]);
+  assert.equal(ticket.othersLabel, "Other books at -2.5");
+  // The runner's price check, in the tile's words.
+  assert.deepEqual(ticket.othersTile, { kind: "best", head: "Best of 3", sub: "next Novig -125" });
+  assert.equal(phoneView.ticketView({ ...row, priceCheck: null, priceCheckTag: null }, NOW).othersTile, null);
   assert.equal(ticket.edge, "+5.30%");
   assert.equal(ticket.edgeTier, "hot");
   assert.match(ticket.start, / · in 1h 0m$/);

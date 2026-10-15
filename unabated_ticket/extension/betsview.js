@@ -32,7 +32,6 @@
   const VENUES = ["kalshi", "betonline", "novig", "prophetx", "bfa", "wagerzon", "polymarket_us", "bet105", "draftkings"];
   const FRESH_MS = 5 * 60 * 1000;
   const STALE_MS = 60 * 60 * 1000;
-  const BANNER_MAX_LINES = 5;
   const DEFAULT_BETS_SETTINGS = { serviceUrl: "http://127.0.0.1:8094" };
   // Tiers on the row's own direction and on the other one; same_game is neither.
   const HELD_TIERS = new Set(["same_line", "same_side", "related_same"]);
@@ -162,13 +161,6 @@
     if (!(count > 0)) return "";
     if (count === 1) return "1 open bet could not be read by the bets service. It is left out when the panel sizes your next bet on its game. The venue's parser needs a code fix; Attach cannot help.";
     return `${count} open bets could not be read by the bets service. They are left out when the panel sizes your next bet on their games. The venue parsers need a code fix; Attach cannot help.`;
-  }
-
-  // At most `max` matches for the banner, strongest first (matchBets already
-  // sorts), and how many were cut.
-  function bannerLines(matches, max) {
-    const limit = typeof max === "number" ? max : BANNER_MAX_LINES;
-    return { shown: matches.slice(0, limit), more: Math.max(0, matches.length - limit) };
   }
 
   // ---- stake advice (#130) ---------------------------------------------------
@@ -367,6 +359,7 @@
       return {
         tier: first.tier, inMath: first.note === null, note: first.note, dollars,
         sameWay: first.position !== null && !rowPosition.reason && first.position.direction === rowPosition.direction,
+        count: group.length,
         text: parts.join(" · "),
         title: group.map((entry) => ticketText(entry.ticket)).join("\n"),
       };
@@ -565,41 +558,150 @@
   // that is not carries why (`game · not sized`, `no fair at 36.5`) and is
   // rendered grey. `fairThen` is "fair then 36.0%" — Unabated's fair for the
   // bet's own line when it was placed — on a bet with a saved fill fair
-  // (fillfair.js), else null. The open teasers on the game come in as one
-  // line per leg (advice.teaserGroups), with their tickets in `title`; every
-  // line sorts by tier, then dollars, the ones in the math first.
+  // (fillfair.js), else null; `fairThenPct` is its "36.0%". `cells` are the
+  // label's pieces for the Ticket's table (bets.labelCells), null on a
+  // teasers line; `dollars` the stake and `count` the bets the line stands
+  // for. The open teasers on the game come in as one line per leg
+  // (advice.teaserGroups), with their tickets in `title`; every line sorts by
+  // tier, then dollars, the ones in the math first.
   //   fairs  bet id -> saved fill-fair row (fillfair.fairsByBetId); optional
   function relatedLines(flag, fairs) {
     const matches = flag && Array.isArray(flag.matches) ? flag.matches : [];
     const groups = flag && flag.advice && Array.isArray(flag.advice.teaserGroups) ? flag.advice.teaserGroups : [];
-    const straightLines = matches.map((match) => ({
-      dollars: match.bet && typeof match.bet.stake === "number" ? match.bet.stake : 0,
-      line: {
+    const straightLines = matches.map((match) => {
+      const fairThenPct = fairThenPctOf(match.bet, fairs);
+      return {
         tier: match.tier, inMath: match.inMath === true,
         tag: match.inMath === true ? bets.tierLabel(match.tier) : match.note || bets.tierLabel(match.tier),
         text: match.label,
-        fairThen: fairThenText(match.bet, fairs),
-      },
-    }));
+        fairThen: fairThenPct == null ? null : `fair then ${fairThenPct}`,
+        fairThenPct,
+        cells: match.cells || null,
+        dollars: match.bet && typeof match.bet.stake === "number" ? match.bet.stake : 0,
+        count: 1,
+      };
+    });
     const teaserLines = groups.map((group) => ({
-      dollars: group.dollars,
-      line: { tier: group.tier, inMath: group.inMath, tag: group.inMath ? bets.tierLabel(group.tier) : group.note, text: group.text, fairThen: null, title: group.title },
+      tier: group.tier, inMath: group.inMath, tag: group.inMath ? bets.tierLabel(group.tier) : group.note, text: group.text,
+      fairThen: null, fairThenPct: null, cells: null, dollars: group.dollars, count: group.count || 1, title: group.title,
     }));
     const all = straightLines.concat(teaserLines);
-    const byTierThenDollars = (a, b) => bets.tierRank(a.line.tier) - bets.tierRank(b.line.tier) || b.dollars - a.dollars;
-    const ordered = all.filter((item) => item.line.inMath).sort(byTierThenDollars)
-      .concat(all.filter((item) => !item.line.inMath).sort(byTierThenDollars));
-    return ordered.map((item) => item.line);
+    const byTierThenDollars = (a, b) => bets.tierRank(a.tier) - bets.tierRank(b.tier) || b.dollars - a.dollars;
+    return all.filter((line) => line.inMath).sort(byTierThenDollars)
+      .concat(all.filter((line) => !line.inMath).sort(byTierThenDollars));
   }
 
-  function fairThenText(bet, fairs) {
+  // "36.0%": Unabated's fair for the bet's line when it was placed, or null.
+  function fairThenPctOf(bet, fairs) {
     const saved = bet && fairs instanceof Map ? fairs.get(bet.id) : null;
     if (!saved) return null;
     try {
-      return `fair then ${(kelly.americanToProb(saved.fairAmerican) * 100).toFixed(1)}%`;
+      return `${(kelly.americanToProb(saved.fairAmerican) * 100).toFixed(1)}%`;
     } catch (_error) {
       return null;
     }
+  }
+
+  // A related line bets against the line being sized: the other side, in the math.
+  function isAgainst(line) {
+    return line.inMath && (line.tier === "opposite" || line.tier === "related_opposite");
+  }
+
+  // The Ticket's related-bets table: relatedLines grouped under one heading
+  // per tag, in relatedLines' order. A group in the math reads "same side ·
+  // in the sizing"; one that is not reads its reason ("game · not sized").
+  // `now` is the number the line sits at now when every bet in the group
+  // has moved off to the same one (the heading says it once), else null and
+  // each line carries its own (cells.now).
+  //   [{label, inMath, against, dollars, count, now, lines}]
+  function relatedGroups(lines) {
+    const byKey = new Map();
+    for (const line of Array.isArray(lines) ? lines : []) {
+      const key = `${line.inMath}|${line.tag}`;
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push(line);
+    }
+    return Array.from(byKey.values()).map((group) => {
+      const first = group[0];
+      const nows = new Set(group.map((line) => (line.cells ? line.cells.now : null)));
+      const sharedNow = nows.size === 1 ? Array.from(nows)[0] : null;
+      return {
+        label: first.inMath ? `${first.tag} \u00b7 in the sizing` : first.tag,
+        inMath: first.inMath,
+        against: group.some(isAgainst),
+        dollars: roundCents(group.reduce((total, line) => total + (line.dollars || 0), 0)),
+        count: group.reduce((total, line) => total + (line.count || 1), 0),
+        now: sharedNow ?? null,
+        lines: group,
+      };
+    });
+  }
+
+  // ---- the Ticket's other books ----------------------------------------------
+  //
+  // pricecheck.comparePrice's result as the Ticket shows it. Here, not in
+  // pricecheck.js, because the phone loads this module and not that one.
+
+  const OTHER_BOOK_ROWS_SHOWN = 8;
+
+  function fmtSigned(price) {
+    return price > 0 ? `+${price}` : `${price}`;
+  }
+
+  // Every book at the number in the order the Ticket lists them: books that
+  // beat you, yours, books at your price, worse books, then books too thin to
+  // count (pricecheck.isThin). Past `maxRows` the worst of the worse books
+  // fold away, never just one.
+  //   {rows, folded}: [{name, price, liquidity, kind: better|yours|same|worse|thin}]
+  function otherBookRows(check, yourBookName, yourPrice, maxRows = OTHER_BOOK_ROWS_SHOWN) {
+    const entry = (kind) => (book) => ({ name: book.bookName, price: book.price, liquidity: book.liquidity ?? null, kind });
+    const better = check.better.map(entry("better"));
+    const yours = [{ name: `${yourBookName} (you)`, price: yourPrice, liquidity: null, kind: "yours" }];
+    const same = (check.sameAs || []).map(entry("same"));
+    const worse = check.worse.map(entry("worse"));
+    const thin = (check.thin || []).map(entry("thin"));
+    const fixed = better.length + yours.length + same.length + thin.length;
+    const worseShown = Math.max(0, maxRows - fixed);
+    const keepAll = worse.length - worseShown <= 1;
+    const shownWorse = keepAll ? worse : worse.slice(0, worseShown);
+    return {
+      rows: [...better, ...yours, ...same, ...shownWorse, ...thin],
+      folded: keepAll ? [] : worse.slice(worseShown),
+    };
+  }
+
+  // The Ticket's "Other books" tile: the tag in a few words and the book
+  // that sets it. `tag` is pricecheck.priceCheckTag(check); null without one.
+  //   {kind, head, sub}  kind: best | better | skip | outlier
+  function otherBooksTile(check, tag) {
+    if (!check || !tag) return null;
+    const book = (entry) => `${entry.bookName} ${fmtSigned(entry.price)}`;
+    if (tag.kind === "outlier") return { kind: tag.kind, head: "Outlier, check", sub: `next best ${book(check.outlier.nextBest)}` };
+    if (tag.kind === "best") {
+      const sameAs = check.sameAs || [];
+      if (sameAs.length) {
+        return { kind: tag.kind, head: `Tied best of ${check.bookCount}`, sub: `tied with ${sameAs[0].bookName}${sameAs.length > 1 ? ` +${sameAs.length - 1}` : ""}` };
+      }
+      return { kind: tag.kind, head: `Best of ${check.bookCount}`, sub: check.worse.length ? `next ${book(check.worse[0])}` : "" };
+    }
+    const n = check.better.length;
+    return { kind: tag.kind, head: `${n} book${n === 1 ? "" : "s"} better`, sub: `best ${book(check.better[0])}` };
+  }
+
+  // The heading over the Ticket's books: "Other books at 39.5" / "at +3.5";
+  // a moneyline has no number.
+  function otherBooksLabel(betType, points) {
+    if (points == null) return "Other books on this line";
+    return `Other books at ${betType === "Total" || points <= 0 ? points : `+${points}`}`;
+  }
+
+  // "1.7¢ under fair": how far the book's price sits from Unabated's fair, in
+  // cents of implied probability; "at fair" within a twentieth of a cent.
+  function centsFromFairText(bookProb, fairProb) {
+    if (typeof bookProb !== "number" || typeof fairProb !== "number") return "";
+    const cents = (fairProb - bookProb) * 100;
+    if (Math.abs(cents) < 0.05) return "at fair";
+    return `${Math.abs(cents).toFixed(1)}\u00a2 ${cents > 0 ? "under" : "over"} fair`;
   }
 
   // Venues whose latest service poll succeeded: the payload is then the whole
@@ -670,9 +772,9 @@
   }
 
   const api = {
-    VENUES, FRESH_MS, STALE_MS, BANNER_MAX_LINES, DEFAULT_BETS_SETTINGS,
+    VENUES, FRESH_MS, STALE_MS, DEFAULT_BETS_SETTINGS,
     fmtAgeShort, freshnessLevel, sourceRows, serviceStatus, sourcesUnavailable, openCount, headerLine,
-    bannerLines, badges, relatedLines, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, uncappedLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, needsFixBanner, keepDismissedOpen, keepKnownStartsOpen, ticketAsLine, sanitizeBetsSettings,
+    badges, relatedLines, relatedGroups, otherBookRows, otherBooksTile, otherBooksLabel, centsFromFairText, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, uncappedLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, needsFixBanner, keepDismissedOpen, keepKnownStartsOpen, ticketAsLine, sanitizeBetsSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {
