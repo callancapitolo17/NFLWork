@@ -1,16 +1,18 @@
 # Unabated Ticket on the Oracle VM (phone page plan step 4)
 
-Two containers on the VM `mlb-stack` (Ubuntu 22.04, ARM64), both bound to
-**127.0.0.1 only**: the bets service (:8094 — phone page, `/bets.json`,
-`/settings.json`, `/edges.json` proxy) and the Edges runner (:8095). The
-phone reaches :8094 through `tailscale serve` on the host, over the tailnet.
+Three containers on the VM `mlb-stack` (Ubuntu 22.04, ARM64), all bound to
+**127.0.0.1 only**: the bets service (:8094, phone page, `/bets.json`,
+`/settings.json`, `/edges.json` proxy), the Edges runner (:8095) and the NFL
+fecta pricer `fectas` (:8096, `nfl_specials/`). The phone reaches :8094 and
+:8096 through `tailscale serve` on the host, over the tailnet.
 Nothing listens on a public interface; Oracle's security list keeps only SSH.
 
 | File | What it is |
 |---|---|
 | `compose.yaml` | both services, `network_mode: host`, `restart: unless-stopped`, json-file logs rotated at 10 MB × 3 |
 | `bets_service.Dockerfile` | `python:3.12-slim` + `bets_service/requirements.txt`, wheels only (all have aarch64 wheels); no code, no secrets |
-| `.env.example` | copy to `deploy/.env` (gitignored): tailnet name, data dir, Kalshi `.pem` path, uid/gid |
+| `nfl_specials.Dockerfile` | the same for the fecta pricer: `python:3.12-slim` + `nfl_specials/requirements.txt` (build context: the repo root, narrowed to that one file by its `.dockerignore`) |
+| `.env.example` | copy to `deploy/.env` (gitignored): tailnet name, data dir, Kalshi `.pem` path, uid/gid, the fecta pricer's DraftKings relay URL |
 | `deploy.sh` | pull `main`, rebuild, recreate both containers, health-check; prints PASS/FAIL |
 
 Where things live on the VM:
@@ -20,11 +22,12 @@ Where things live on the VM:
 | `~/NFLWork` (the repo) | `/app` | read-only (code; an update is pull + restart) |
 | `~/NFLWork/unabated_ticket/bets_service/.env` | inside `/app` | read-only: `KALSHI_API_KEY_ID`, `POLYMARKET_US_KEY_ID`, `POLYMARKET_US_SECRET_KEY`, and the book logins `BFA_USERNAME`, `BFA_PASSWORD`, `WAGERZONC_USERNAME`, `WAGERZONC_PASSWORD` (step 10) |
 | `KALSHI_PEM_PATH` (e.g. `~/unabated-secrets/kalshi.pem`) | `/run/secrets/kalshi.pem` | read-only |
-| `UNABATED_DATA_DIR` (e.g. `~/unabated-data`) | `/data` | read-write: `bets.duckdb`, `novig_token.json` (rotates; rewritten in place), `recon_betonline_cookies.json` (BetOnline's refresh token; rotates, step 10), `logs/bets_service.log` |
+| `UNABATED_DATA_DIR` (e.g. `~/unabated-data`) | `/data` | read-write: `bets.duckdb`, `novig_token.json` (rotates; rewritten in place), `recon_betonline_cookies.json` (BetOnline's refresh token; rotates, step 10), `logs/bets_service.log`, and the fecta pricer's `nfl_specials.duckdb` |
 
 `bet_logger/.env` is never put on the VM: the BFA and Wagerzon logins go in
 `bets_service/.env` instead, and BetOnline's token file in the data dir
-(step 10). A book with neither reports "not configured".
+(step 10). A book with neither reports "not configured". The fecta pricer
+reads only the `WAGERZON*_USERNAME` / `_PASSWORD` lines of that same file.
 
 ## One-time setup
 
@@ -118,16 +121,30 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
      done. If BetOnline fails on Cloudflare (its cookies were issued to the
      Mac's IP), move the file back to the Mac the same way.
 
+11. **NFL fecta pricer** (`fectas`; its own README, Running on the VM):
+   - On the Mac, install the DraftKings relay agent (`nfl_specials/README.md`,
+     Running on the VM) and read its address: `tailscale ip -4`.
+   - In `deploy/.env` set `NFL_SPECIALS_DK_PROXY=http://<that address>:8097`.
+     Every deploy needs it (compose refuses to start without it).
+   - Publish the page on the tailnet at port 8443:
+     ```bash
+     sudo tailscale serve --bg --https=8443 http://127.0.0.1:8096
+     tailscale serve status        # must also show https://<name>:8443 proxy http://127.0.0.1:8096
+     ```
+   - Once, with the Mac's page stopped, move its history over:
+     `scp ~/NFLWork/nfl_specials/nfl_specials.duckdb ubuntu@<vm>:~/unabated-data/`.
+   - `./deploy.sh`, then open `https://<name>:8443/` on the phone.
+
 ## Day to day
 
 ```bash
 cd ~/NFLWork/unabated_ticket/deploy
 ./deploy.sh                          # update: pull main, rebuild, restart, PASS/FAIL checks
 docker compose ps                    # state
-docker compose logs -f --tail 100 bets      # or: runner
+docker compose logs -f --tail 100 bets      # or: runner, fectas
 tail -f ~/unabated-data/logs/bets_service.log
 docker compose restart bets          # e.g. after editing bets_service/.env
-docker compose down                  # stop both (data kept); `up -d` or deploy.sh starts again
+docker compose down                  # stop all three (data kept); `up -d` or deploy.sh starts again
 sudo tailscale serve reset           # take the page off the tailnet
 ```
 
@@ -145,7 +162,7 @@ docker compose stop bets && docker compose run --rm bets python -m unabated_tick
 sudo ss -tlnp
 ```
 
-Expect `127.0.0.1:8094` (python), `127.0.0.1:8095` (node), `sshd` on `:22`,
+Expect `127.0.0.1:8094` (python), `127.0.0.1:8095` (node), `127.0.0.1:8096` (python), `sshd` on `:22`,
 and local system ones (`127.0.0.53:53`). `tailscaled` may hold the tailnet
 address (`100.x.y.z`) only. Anything else on `0.0.0.0`, `[::]` or the
 public IP is wrong — `docker compose down` and look.
@@ -156,6 +173,7 @@ Against `http://127.0.0.1:8094`, polling up to 90 s each: `/health` with the
 loopback `Host` → 200; `/health`, `/` and `/edges.json` with the tailnet
 name as `Host` (what `tailscale serve` forwards) → 200 (`/edges.json`
 proves the runner is up); `/health` with `Host: evil.example` → 403 (the
-guard is still on). It prints status codes, never bodies. On FAIL read
+guard is still on). Then against `http://127.0.0.1:8096`: `/` with the
+loopback `Host` and with `<tailnet name>:8443` → 200, with `evil.example` → 403. It prints status codes, never bodies. On FAIL read
 `docker compose logs --tail 100`. Run it with `--no-pull` to deploy the
 checkout as it is (e.g. trying a branch).

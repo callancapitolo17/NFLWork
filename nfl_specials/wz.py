@@ -7,12 +7,14 @@ Places: wagerzon_odds/single_placer.place_single — ConfirmWagerHelper
         A special is a PROP game: its Play is the prop's rotation number
         (vnum), not a side code, with no points.
 Credentials: WAGERZON[_X]_USERNAME / _PASSWORD from bet_logger/.env (the main
-checkout's copy is found from a worktree too). No DB writes here.
+checkout's copy is found from a worktree too), or on a server only those lines
+of config.WAGERZON_ENV_PATH. No DB writes here.
 """
 from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 import sys
 import time
@@ -21,13 +23,28 @@ from datetime import date, datetime
 from typing import Callable, TypeVar
 
 import requests
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 from nfl_specials import config
 
 
+# The account login names wagerzon_accounts discovers (WAGERZON{X}_USERNAME / _PASSWORD).
+WAGERZON_LOGIN_KEY = re.compile(r"WAGERZON[A-Z]?_(USERNAME|PASSWORD)")
+
+
 def _load_wagerzon_env() -> None:
-    """bet_logger/.env lives in the main checkout; a worktree walks up to it."""
+    """Put the Wagerzon logins in the environment. On a server: only the login
+    lines of config.WAGERZON_ENV_PATH, a file that also holds other books' keys.
+    Otherwise bet_logger/.env, which lives in the main checkout (a worktree
+    walks up to it)."""
+    if config.WAGERZON_ENV_PATH is not None:
+        logins = {key: value for key, value in dotenv_values(config.WAGERZON_ENV_PATH).items()
+                  if WAGERZON_LOGIN_KEY.fullmatch(key) and value}
+        if not logins:
+            raise RuntimeError(f"expected WAGERZON*_USERNAME / _PASSWORD lines in "
+                               f"{config.WAGERZON_ENV_PATH}, found none")
+        os.environ.update(logins)
+        return
     for candidate in (config.REPO_ROOT, *config.REPO_ROOT.parents):
         env_file = candidate / "bet_logger" / ".env"
         if env_file.exists():

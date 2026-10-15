@@ -109,7 +109,8 @@ class Sizing:
 def open_books() -> tuple[dict[str, SgpBook], dict[str, str]]:
     books: dict[str, SgpBook] = {}
     status: dict[str, str] = {}
-    constructors = {"FanDuel": FanDuelBook, "BetMGM": BetMgmBook, "DraftKings": DraftKingsBook}
+    constructors = {"FanDuel": FanDuelBook, "BetMGM": BetMgmBook,
+                    "DraftKings": lambda: DraftKingsBook(proxy_url=config.DK_PROXY_URL)}
     for name in BOOK_ORDER:
         try:
             books[name] = constructors[name]()

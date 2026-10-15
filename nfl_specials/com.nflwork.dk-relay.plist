@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- DraftKings relay for the fecta pricer on the Oracle VM, as a launchd
+       agent: starts at login, restarts if it dies, waits for Tailscale.
+       Install/restart/remove: nfl_specials/README.md "Running on the VM".
+       Paths point at the main checkout, never a worktree. -->
+  <key>Label</key>
+  <string>com.nflwork.dk-relay</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/python3</string>
+    <string>-m</string>
+    <string>nfl_specials.dk_relay</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/callancapitolo/NFLWork</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- Until Tailscale is up the relay exits at once; launchd retries after this many seconds. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/callancapitolo/NFLWork/nfl_specials/dk_relay.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/callancapitolo/NFLWork/nfl_specials/dk_relay.log</string>
+</dict>
+</plist>

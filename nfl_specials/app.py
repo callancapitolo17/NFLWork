@@ -4,9 +4,10 @@ recommended stake, and a Place button.
     python -m nfl_specials.app        (or nfl_specials/run.sh)
     -> http://127.0.0.1:8096
 
-Routes (loopback only; every verb refuses a foreign Host header, and POSTs
-must be application/json, which no other site can send here without a
-preflight this server never answers):
+Routes (bound to loopback; every verb refuses a Host other than the loopback
+names and config.EXTRA_ALLOWED_HOSTS, the tailnet name `tailscale serve`
+forwards on a server, and POSTs must be application/json, which no other site
+can send here without a preflight this server never answers):
     GET  /                       the page (static/index.html)
     GET  /api/board?account=X    latest board, sized at the current settings
                                  and fitted to account X's Wagerzon balance
@@ -255,11 +256,14 @@ def _placement_json(row: dict) -> dict:
     return {key: (value.isoformat() if isinstance(value, datetime) else value) for key, value in row.items()}
 
 
-def allowed_hosts(port: int) -> tuple[str, ...]:
-    return (f"127.0.0.1:{port}", f"localhost:{port}")
+def allowed_hosts(port: int, extra_hosts: tuple[str, ...] = ()) -> tuple[str, ...]:
+    """The Host values a request can carry: the loopback names with this port,
+    and each tailnet name with the port `tailscale serve` publishes the page on."""
+    proxied = tuple(f"{name}:{config.TAILNET_HTTPS_PORT}" for name in extra_hosts)
+    return (f"127.0.0.1:{port}", f"localhost:{port}") + proxied
 
 
-def make_handler(app: SpecialsApp, port: int):
+def make_handler(app: SpecialsApp, port: int, extra_hosts: tuple[str, ...] = ()):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — http.server's name
             if self._refused_foreign_host():
@@ -303,7 +307,7 @@ def make_handler(app: SpecialsApp, port: int):
         def _refused_foreign_host(self) -> bool:
             # A page whose DNS flips to 127.0.0.1 is same-origin with this
             # server, so CORS alone would not stop it from placing bets.
-            if self.headers.get("Host") in allowed_hosts(port):
+            if self.headers.get("Host") in allowed_hosts(port, extra_hosts):
                 return False
             self._send_json(403, {"error": "foreign Host header"})
             return True
@@ -325,8 +329,11 @@ def make_handler(app: SpecialsApp, port: int):
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     app = SpecialsApp(Store())
-    server = ThreadingHTTPServer((config.APP_HOST, config.APP_PORT), make_handler(app, config.APP_PORT))
-    log.info("NFL fecta pricer on http://%s:%d (click Refresh to price)", config.APP_HOST, config.APP_PORT)
+    handler = make_handler(app, config.APP_PORT, config.EXTRA_ALLOWED_HOSTS)
+    server = ThreadingHTTPServer((config.APP_HOST, config.APP_PORT), handler)
+    log.info("NFL fecta pricer on http://%s:%d (click Refresh to price); tailnet names: %s; DraftKings via %s",
+             config.APP_HOST, config.APP_PORT, ", ".join(config.EXTRA_ALLOWED_HOSTS) or "none",
+             config.DK_PROXY_URL or "direct")
     try:
         server.serve_forever()
     finally:

@@ -82,3 +82,12 @@ def test_a_placed_special_is_not_recommended_again(app):
     app.place(_bet(25))
     line = app.board_payload("Wagerzon")["board"]["lines"][0]
     assert line["recommended_stake"] == 0 and line["kelly_stake"] > 0
+
+
+def test_the_tailnet_name_is_allowed_only_on_the_tailscale_serve_port():
+    hosts = app_module.allowed_hosts(8096, ("mlb-stack.tail87ab2d.ts.net",))
+    assert hosts == ("127.0.0.1:8096", "localhost:8096", "mlb-stack.tail87ab2d.ts.net:8443")
+
+
+def test_without_tailnet_names_only_loopback_is_allowed():
+    assert app_module.allowed_hosts(8096) == ("127.0.0.1:8096", "localhost:8096")

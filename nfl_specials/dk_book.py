@@ -9,7 +9,9 @@ legs (dk-same-game-parlay 9.0.1). Given base legs and a candidate market it
 returns the SGP price of base + EACH outcome of that market, so one request
 prices every cell that differs only in its last leg. Verified 2026-10-02:
 10/10 superfecta cells identical to the betslip's calculateBets (the call
-issue #102 locked behind a real Chrome). No DB writes.
+issue #102 locked behind a real Chrome). DraftKings answers "Access Denied" to
+data-center IPs, so on a server every request goes through `proxy_url`
+(nfl_specials/dk_relay.py on the Mac). No DB writes.
 
 Leg -> DK market:
     scores_first   "1st to Score"                     (home, away)
@@ -23,6 +25,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import Hashable
+from urllib.parse import urlsplit
 
 from curl_cffi import requests as cffi_requests
 
@@ -41,6 +44,9 @@ DK_SGP_EVENT_URL = ("https://sportsbook-nash.draftkings.com/sites/US-SB/api/spor
 DK_SGP_PRICE_URL = ("https://sportsbook-nash.draftkings.com/sites/US-WV-SB/api/sportscontent/"
                     "sgp/dkuswv/sportsdata/v2/sgp")
 DK_WARMUP_URL = "https://sportsbook.draftkings.com/leagues/football/nfl"
+# Every host this adapter calls; dk_relay tunnels to these and nothing else.
+DK_HOSTS = frozenset(urlsplit(url).hostname for url in (DK_LEAGUE_URL, DK_SGP_EVENT_URL,
+                                                       DK_SGP_PRICE_URL, DK_WARMUP_URL))
 # DK's sport id for football. The price endpoint answers 404 without the header.
 DK_FOOTBALL_SPORT_ID = "3"
 # DK's own SGP widget throttles its price requests to one per 500 ms; never
@@ -63,8 +69,8 @@ def dk_team_to_abbr(dk_name: str) -> str | None:
 class DraftKingsBook:
     name = "DraftKings"
 
-    def __init__(self) -> None:
-        self.session = cffi_requests.Session(impersonate="chrome")
+    def __init__(self, proxy_url: str | None) -> None:
+        self.session = cffi_requests.Session(impersonate="chrome", proxy=proxy_url)
         self.session.get(DK_WARMUP_URL, timeout=30)
         self._games = self._list_games()
         self._markets: dict[str, dict[str, dict]] = {}

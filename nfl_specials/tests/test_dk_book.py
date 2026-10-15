@@ -47,10 +47,23 @@ class FakeSession:
         return FakeResponse(200, {})                     # sportsbook warm-up page
 
 
-def _book(monkeypatch, session):
-    monkeypatch.setattr(dk_book.cffi_requests, "Session", lambda impersonate: session)
+def _book(monkeypatch, session, proxy_url=None):
+    def make_session(impersonate, proxy):
+        session.made_with = {"impersonate": impersonate, "proxy": proxy}
+        return session
+    monkeypatch.setattr(dk_book.cffi_requests, "Session", make_session)
     monkeypatch.setattr(dk_book, "MIN_SECONDS_BETWEEN_PRICE_CALLS", 0.0)
-    return DraftKingsBook()
+    return DraftKingsBook(proxy_url=proxy_url)
+
+
+def test_the_proxy_carries_every_draftkings_request(monkeypatch):
+    session = FakeSession(_price_answer(["q1_sea"], {"ml_sea": 2.4}))
+    _book(monkeypatch, session, proxy_url="http://100.120.136.59:8097")
+    assert session.made_with == {"impersonate": "chrome", "proxy": "http://100.120.136.59:8097"}
+
+
+def test_every_host_the_book_calls_is_on_the_relay_list():
+    assert dk_book.DK_HOSTS == frozenset({"sportsbook.draftkings.com", "sportsbook-nash.draftkings.com"})
 
 
 def test_cells_sharing_a_base_cost_one_request(monkeypatch):

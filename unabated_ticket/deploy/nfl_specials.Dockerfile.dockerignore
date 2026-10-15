@@ -1,0 +1,5 @@
+# The build needs one file. Everything else in the repo (the .env files,
+# every .duckdb, cookies) stays out of the build context, so it can never
+# land in an image layer.
+*
+!nfl_specials/requirements.txt
