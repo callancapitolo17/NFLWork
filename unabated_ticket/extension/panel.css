@@ -240,11 +240,9 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
 .tag.move-against { background: var(--against-bg); border-color: transparent; color: var(--against-fg); }
 .edge-row .edge-rail .tag, .group-line .gl-rail .tag { justify-self: end; margin: 1px 0; }
 .group-line .gl-rail .tag { display: inline-block; }
-.facts dd .tag { margin-left: 6px; vertical-align: middle; }
 /* The mover under the tag: fair then → now (green / red), price then → now (amber). */
 .move-detail { font: 400 11px system-ui, sans-serif; color: var(--muted); white-space: nowrap; }
 .edge-row .edge-rail .move-detail, .group-line .gl-rail .move-detail { display: block; }
-.facts dd .move-detail { margin-left: 6px; }
 /* Other books at the same number (pricecheck.js): green best price, plain one
    book better, amber 2+ better (would skip), red outlier. */
 .tag.check-best { background: color-mix(in srgb, var(--edge-strong) 15%, transparent); border-color: transparent; color: var(--edge-mid); }
@@ -267,9 +265,12 @@ input[type="checkbox"] { accent-color: var(--edge-strong); }
 .skip-fold-toggle { appearance: none; border: 0; background: none; padding: 0; cursor: pointer; font: inherit; color: var(--ink-2); }
 .edge-row.skipped { opacity: 0.6; }
 #edges-pricecheck { padding: 0 12px 8px; }
-.facts dd#others .tag { margin-left: 0; }
-.others-list { margin-top: 3px; font-size: 12.5px; max-width: 260px; }
-.others-list > div { display: flex; justify-content: space-between; gap: 12px; }
+.others-list { margin-top: 3px; font-size: 12.5px; max-width: 300px; }
+.others-list > div { display: grid; grid-template-columns: minmax(0, 1fr) auto 3.4em; gap: 10px; align-items: baseline; }
+.others-list .px { text-align: right; }
+.others-list .liq { text-align: right; font-size: 11px; color: var(--muted); }
+.others-list .thin { color: var(--muted); opacity: .6; }
+.others-list .thin .px { text-decoration: line-through; }
 .others-list .better { color: var(--warn-fg); }
 .others-list .yours { font-weight: 700; color: var(--ink); }
 .others-list .worse { color: var(--muted); }
@@ -353,23 +354,6 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 .row-trace summary { cursor: pointer; color: var(--warn-fg); font-weight: 600; }
 #row-trace-detail { margin-top: 5px; overflow-wrap: anywhere; }
 
-.bets-banner { display: grid; gap: 4px; margin: 4px 0 2px; }
-.bet-match {
-  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px; align-items: baseline;
-  padding: 6px 9px; border-radius: 6px; font-size: 12px; overflow-wrap: anywhere;
-  background: color-mix(in srgb, var(--edge-strong) 11%, transparent); color: var(--ink-2);
-}
-.bet-match .k { font: 600 9.5px system-ui, sans-serif; letter-spacing: .07em; text-transform: uppercase; color: var(--edge-mid); }
-.bet-match.bad { background: var(--against-bg); }
-.bet-match.bad .k { color: var(--against-fg); }
-.bet-match.not-sized { background: var(--chip); color: var(--muted); }
-.bet-match.not-sized .k { color: var(--muted); }
-.bet-match.more { background: none; color: var(--muted); padding: 0 9px; display: block; }
-
-.facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 14px; margin: 12px 0 0; font-size: 13px; }
-.facts dt { color: var(--muted); }
-.facts dd { margin: 0; font-family: var(--figure); font-variant-numeric: tabular-nums; }
-
 .stake-block {
   margin: 14px 0 0; padding: 12px; border-radius: 9px;
   background: color-mix(in srgb, var(--edge-strong) 9%, var(--ground));
@@ -391,6 +375,141 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 .payout-label { color: var(--muted); font: 600 9.5px system-ui, sans-serif; text-transform: uppercase; letter-spacing: .1em; }
 .payout-value { font: 600 15px var(--figure); }
 #full-kelly { margin-top: 6px; }
+
+/* The bet and what to stake on it in one card at the top of the Ticket, so
+   the number to act on is the first thing read (Cal, 2026-10-15). The stake
+   block is the card's lower band (the Teasers summary shares .stake-block). */
+#ticket .warning {
+  margin: 0 0 9px; padding: 6px 9px; border-radius: 4px; border-left: 3px solid var(--warn-fg);
+  font-size: 11.5px; line-height: 1.35;
+}
+#ticket .warning.bad { border-left-color: var(--bad-fg); }
+.bet-card {
+  border: 1px solid color-mix(in srgb, var(--edge-strong) 30%, var(--border));
+  border-radius: 10px; overflow: hidden;
+}
+.card-top { padding: 9px 12px 8px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 12px; align-items: end; }
+.card-top .side { font-size: 24px; }
+.card-venue { text-align: right; line-height: 1.15; }
+.card-book { font: 600 10px system-ui, sans-serif; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.card-price { font: 700 21px var(--figure); letter-spacing: -.02em; white-space: nowrap; }
+.card-price small { font: 400 12px var(--figure); letter-spacing: 0; color: var(--ink-2); margin-left: 5px; }
+.card-meta { grid-column: 1 / -1; margin-top: 3px; font-size: 12px; line-height: 1.4; color: var(--muted); overflow-wrap: anywhere; }
+#ticket .stake-block {
+  margin: 0; padding: 9px 12px 10px; border: 0; border-radius: 0;
+  border-top: 1px solid color-mix(in srgb, var(--edge-strong) 25%, transparent);
+}
+.stake-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 4px 16px; }
+#ticket .stake { font-size: 32px; line-height: 1.05; }
+#ticket .stake.no-edge { font-size: 24px; }
+#ticket .payout-row { margin: 0; padding: 0; border: 0; flex-wrap: nowrap; gap: 16px; text-align: right; }
+#ticket .payout-value { font-size: 16px; }
+#ticket .payout-cell:first-child .payout-value { color: var(--edge-strong); }
+#ticket .stake-contracts { margin-top: 3px; font-size: 13px; }
+#ticket #full-kelly:empty { display: none; }
+
+/* Fair, Edge and Other books, side by side under the card. */
+.tiles { display: flex; gap: 6px; margin-top: 10px; }
+.tile {
+  flex: 1 1 0; min-width: 0; padding: 6px 9px; border-radius: 7px;
+  border: 1px solid var(--border-soft); background: var(--surface-2);
+}
+.tile-label { font: 600 9.5px system-ui, sans-serif; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+/* Wraps rather than cuts: "2 books better" and "Tied best of 11" outgrow a third of the panel. */
+.tile-value { font: 700 16px var(--figure); letter-spacing: -.02em; overflow-wrap: anywhere; }
+.tile-sub { font: 400 11.5px var(--figure); color: var(--ink-2); overflow-wrap: anywhere; }
+.tile-edge { background: color-mix(in srgb, var(--edge-strong) 12%, var(--ground)); border-color: transparent; }
+.tile-edge .tile-value { color: var(--edge-strong); }
+.tile-edge.no-edge { background: var(--surface-2); border-color: var(--border-soft); }
+.tile-edge.no-edge .tile-value { color: var(--muted); }
+.tile-move { margin-top: 3px; }
+.tile-move .move-detail { display: block; white-space: normal; }
+.books-best .tile-value { color: var(--edge-mid); }
+.books-better .tile-value, .books-skip .tile-value { color: var(--warn-fg); }
+.books-outlier .tile-value { color: var(--against-fg); }
+.tile-books { cursor: default; }
+
+.section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin: 13px 0 5px; }
+.section-head .section-label { margin: 0; }
+.section-note { font-size: 11px; color: var(--muted); }
+
+/* Every book at the number, two columns filled top to bottom (--rows is set
+   by panel.js), the worst of the worse folded behind a toggle. */
+.books-box { padding: 5px 9px; border: 1px solid var(--border-soft); border-radius: 7px; }
+.books-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-flow: column;
+  grid-template-rows: repeat(var(--rows, 1), auto); column-gap: 14px; font-size: 12px;
+}
+.books-grid > div { display: grid; grid-template-columns: minmax(0, 1fr) auto 3.2em; gap: 6px; align-items: baseline; padding: 2px 0; }
+.books-grid .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.books-grid .liq { font: 400 10.5px var(--figure); color: var(--muted); text-align: right; }
+.books-grid .px { font-family: var(--figure); text-align: right; }
+.books-grid .yours { font-weight: 700; }
+.books-grid .yours .nm::before {
+  content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 5px; vertical-align: 1px;
+  border-radius: 50%; background: var(--edge-strong);
+}
+.books-grid .better { color: var(--warn-fg); }
+.books-grid .worse { color: var(--ink-2); }
+.books-grid .thin { color: var(--muted); opacity: .6; }
+.books-grid .thin .px { text-decoration: line-through; }
+.books-more {
+  appearance: none; display: block; width: 100%; margin-top: 2px; padding: 4px 0 1px; cursor: pointer;
+  border: 0; border-top: 1px dashed var(--border-soft); background: none; text-align: left;
+  font: 600 11.5px system-ui, sans-serif; color: var(--edge-mid);
+}
+.books-box .others-actions { margin: 5px 0 1px; }
+
+/* Related bets as a table: one heading per tag, columns lined up across
+   every row (subgrid). */
+.related-table {
+  display: grid; grid-template-columns: minmax(0, 1fr) repeat(5, auto); column-gap: 8px;
+  border: 1px solid var(--border-soft); border-radius: 7px; overflow: hidden; font-size: 12px;
+}
+.related-table > div { grid-column: 1 / -1; padding: 3px 9px; }
+.rt-head, .rt-row { display: grid; grid-template-columns: subgrid; align-items: baseline; }
+.rt-meta { display: contents; }
+.rt-head > span, .rt-row span { grid-row: 1; }
+.rt-pick { grid-column: 1; min-width: 0; overflow-wrap: anywhere; }
+.rt-price { grid-column: 2; }
+.rt-cents { grid-column: 3; }
+.rt-stake { grid-column: 4; }
+.rt-venue { grid-column: 5; }
+.rt-fair { grid-column: 6; }
+.rt-price, .rt-cents, .rt-stake, .rt-fair { font-family: var(--figure); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.rt-venue { text-align: right; white-space: nowrap; color: var(--ink-2); }
+.rt-head { padding-bottom: 2px; font: 600 9px system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.rt-head > span { font: inherit; }
+.rt-group {
+  display: flex; justify-content: space-between; gap: 8px; padding: 4px 9px;
+  font: 600 9.5px system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--edge-mid); background: color-mix(in srgb, var(--edge-strong) 9%, var(--ground));
+}
+.rt-group .rt-dollars { font: 600 11px var(--figure); letter-spacing: 0; color: var(--ink); white-space: nowrap; }
+.rt-group.against { color: var(--against-fg); background: var(--against-bg); }
+.rt-group.not-sized { color: var(--muted); background: var(--surface-2); }
+.rt-group.not-sized .rt-dollars { color: var(--ink-2); }
+.rt-row { border-top: 1px solid var(--border-soft); }
+.rt-row.not-sized, .rt-row.not-sized .rt-venue { color: var(--muted); }
+.rt-row.rt-text .rt-pick { grid-column: 1 / -1; }
+.rt-now { font-size: 11px; color: var(--muted); }
+.rt-fair.none { color: var(--muted); }
+
+/* A narrow panel: books in one column, each bet on two lines. Nothing is cut. */
+@media (max-width: 360px) {
+  .tiles { gap: 4px; }
+  .tile { padding: 5px 7px; }
+  .tile-value { font-size: 14px; }
+  .books-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-auto-flow: row; }
+  .related-table { display: block; }
+  .rt-head { display: none; }
+  .related-table > .rt-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; }
+  .rt-row .rt-stake { grid-column: 2; }
+  .rt-row .rt-meta { display: block; grid-column: 1 / -1; grid-row: 2; font: 400 11px var(--figure); color: var(--muted); }
+  .rt-meta > span + span::before { content: " \00b7  "; }
+  .rt-meta .rt-fair::before { content: " \00b7  fair then "; }
+  .rt-meta .rt-fair.none, .rt-meta .rt-cents:empty { display: none; }
+}
 
 .btn {
   appearance: none; cursor: pointer; font: 600 13px system-ui, sans-serif;

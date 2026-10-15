@@ -694,7 +694,47 @@ still count apart (Cal, 2026-10-13). Another number is never compared.
 No tag when no other book posts the number. Tap the tag (▸) to open every
 book at the number under the row, best first, yours in its place; the
 tooltip lists them too. A line above the list counts outliers ("1 outlier to
-check"). The Ticket's **Others** row lists every book at the number.
+check"). The Ticket lists every book at the number (see **The Ticket's
+layout** below).
+
+**Liquidity and thin books (0.25.0, Cal 2026-10-15):** every exchange in the
+list shows the money resting at its price (the feed's `liquidity`, e.g.
+`$1,240`); sportsbooks report none and always count. A book with under $30
+resting (`MIN_OTHER_BOOK_LIQUIDITY`, `pricecheck.isThin`) is greyed at the
+end of the list as `thin $12` and counts toward nothing: not "better", not
+Skip, not the outlier check, not the book count. Only thin books at the
+number means no tag. One book under two names (`Polymarket / US`) is thin
+only when both copies are. The automated taker still skips on a thin book
+that beats its price (`taker.booksBeating`): the floor came after its rules
+were set, and Cal has not moved it onto the bot.
+
+**The Ticket's layout (0.25.0, Cal 2026-10-15), panel and phone:**
+
+- *The card*, first: the pick, the book and its price (American, with the
+  cents beside it), the market, game and start; its lower band is the stake
+  to act on ("Bet" / "Add to your position"), to-win and payout on its
+  right, then the contracts, the position (`held $281.73 · $395.24 alone`)
+  and the uncapped line. The number to act on is the first thing read.
+- *Three tiles*: **Fair** (Unabated's number and its cents; a live ticket
+  names the break), **Edge** (the edge, how far the price sits from the fair
+  in cents — `4.0¢ under fair` — and the edge-move tag), **Other books** (the
+  tag in a few words, `Best of 11` / `1 book better` / `Outlier, check`, and
+  the book that sets it, `next Kalshi +100` / `best Pinnacle +108`;
+  `betsview.otherBooksTile`). No tile when no other book posts the number.
+- *Other books at 47.5*: every book at the number in two columns filled top
+  to bottom (one column under 360 px on the panel, under 480 px on the
+  phone): books that beat you, yours, books at your price, worse books, thin
+  books (`betsview.otherBookRows`). Past eight rows the worst of the worse
+  fold behind "+N more books, all worse" (never a fold of one); Skip sits
+  under the box.
+- *Related bets on this game*: a table, one heading per tag
+  (`betsview.relatedGroups`: `same side · in the sizing`, `other side · in
+  the sizing` in red, `game · not sized` in grey) with the group's dollars;
+  each bet's pick, price, cents, stake, venue and fair then
+  (`bets.labelCells`). A number every bet in the group has moved off to the
+  same place goes in the heading (`line now 47.5`), else beside the bet.
+  Every bet shows; a narrow panel and the phone put each bet on two lines.
+  An open teaser reads its words across the row, its tickets on hover.
 
 **Skip (0.24.0, Cal 2026-10-13):** nothing is skipped for you. A row a book
 beats gets a **Skip** chip (and the Ticket a **Skip this bet** button); a
@@ -792,8 +832,8 @@ fair, ~1–2 min behind, has not answered — wait a snapshot) and the opener.
 Nothing moved since the fill is no tag, whatever the last ten minutes did.
 A held line with no saved fair at its number — including bets held only at
 another number or in another period — keeps the ten-minute tag above,
-unchanged. In the row's Related bets block and the Ticket banner, each bet
-with a saved fair adds `fair then 36.0%`.
+unchanged. In the row's Related bets block, each bet with a saved fair
+adds `fair then 36.0%`; the Ticket's table has a Fair then column.
 
 How a fill's fair is saved (`extension/fillfair.js`): after every bets poll
 and every scanner update, each open bet without one is read off the
@@ -1181,8 +1221,8 @@ other direction in another period, `no fair at 36.5`, `parlay leg`,
 `no stake on the record`, `Kalshi NO also wins on a tie`,
 `three-way moneyline`, `quarter line`, `side not resolved`, or the reason the
 whole calc was declined (`ladder not monotone`). Capped at three with
-"+N more on this game". The Ticket banner shows the same lines and tags (five,
-then "+N more"). No placed-at: it never told you which bet was which, and it
+"+N more on this game". The Ticket's related-bets table shows every bet,
+grouped under the same tags. No placed-at: it never told you which bet was which, and it
 was a third of the line (user decision 2026-09-14). The Bets tab still shows
 it, where the bets are the subject.
 
@@ -1196,9 +1236,9 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   betonline — · novig — · prophetx —" — open bets known to the panel and the
   age of each venue's last successful pull (a dash = no source yet). Red
   when the service is unreachable.
-- *Ticket tab*: a banner between the matchup and the stake, one line per
-  matching bet, strongest first, at most 5 then "+N more"; nothing when no
-  bet matches; under the stake, the position and the standalone size
+- *Ticket tab*: the related-bets table under the other books, every
+  matching bet grouped by tag, strongest first; nothing when no bet
+  matches; under the stake, the position and the standalone size
   (`held $270 · against $413 · $270.05 alone`). The warning strip adds "Bet sources unavailable" when no venue has
   reported in the last hour (the flags may then be missing).
 - *Edges tab*: the badge, the **Related bets** block and the sized stake on
@@ -1206,7 +1246,7 @@ tie"). Kalshi first-5 and RFI markets map to the `F5` / `I1` periods.
   ruled (red when a position is against you); a bet on that very line prints
   only what differs from the row — venue, its entry price, when — because the
   row already states the pick, while another market or the other side names
-  itself. The Ticket shows the same matches with the full sentence. Sort **by my exposure** puts held and
+  itself. The Ticket shows the same matches as a table. Sort **by my exposure** puts held and
   against lines first. Nothing is filtered; alerts skip only lines whose
   stake against what you hold is $0 (nothing to act on) and fire as before
   otherwise. The Min suggested bet filter reads the same number.
@@ -2307,9 +2347,10 @@ node unabated_ticket/server/runner.js                     # must be running too 
 - **Edges**: the runner's cards as the panel draws them: badges, side, market,
   game and kickoff, book price with cents, line age, edge in its tier colour,
   the stake rail and its note, the move tag, related bets, the tail-flex line.
-  Tap a card for the ticket: price, fair, edge, the number to act on with the
-  panel's label, position line, contracts (exchange lines), to win / payout,
-  every related bet and the card's other lines. Freshness and errors (edges or
+  Tap a card for the ticket, laid out as the panel's (**The Ticket's
+  layout**): the card with the number to act on, the Fair / Edge / Other
+  books tiles, every book at the number, the related-bets table (each bet on
+  two lines) and the card's other lines. Freshness and errors (edges or
   bets service unreachable since …, scanner errors, settings fallback) sit at
   the top.
 - **Bets**: money at risk, Needs a game / Needs a code fix / Not on the board
@@ -2611,7 +2652,7 @@ on Kalshi with **real money** on the bot's own key. No shadow mode (Cal,
 | Ceiling | open bot cost (unsettled markets) never above $500; contracts cut to fit, else refused |
 | Price | Kalshi's live ask + 7% fee no more than 0.1c worse than Unabated's shown price, and no more than 1c better (a price that ran away from Unabated's snapshot is news its fair has not caught up with) |
 | Edge | 3% to 20% at that live price (fair read off Unabated's cheaper of its two prices) |
-| Best price | no live book beats it at the number (one is enough to skip; ties trade); outliers and Skips trade |
+| Best price | no live book beats it at the number (one is enough to skip, a thin one under $30 too; ties trade); outliers and Skips trade |
 | Line age | changed within 7 days; right up to the start |
 | Board age | the runner re-downloads every league's snapshot every 60 s (the panel's size tiers go up to 5 min); a row whose league snapshot landed over 3 min ago, is a stale build or failed to load is `stale_feed` |
 | Holdings | the pass runs only when the bets service's Kalshi poll succeeded within the last 5 min (conditional Kelly is sized on it); otherwise it decides nothing |
