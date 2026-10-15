@@ -532,14 +532,22 @@ function takerService(script) {
     return response({ body: JSON.stringify(answer) });
   };
   impl.posts = posts;
+  impl.script = script;
   return impl;
 }
 
 const TAKER_SETTINGS = { settings: { leagues: [2], periods: [1] }, updatedAt: null };
 
+// The bets service as the taker needs it: its Kalshi poll succeeded 30 s ago.
+function takerBetsBody(bets = [], kalshiSource = {}) {
+  const body = betsBody(bets);
+  body.sources.kalshi = { ok: true, fetchedAt: new Date(TAKER_NOW - 30 * 1000).toISOString(), error: null, count: bets.length, ...kalshiSource };
+  return body;
+}
+
 test("taker: a best-price Kalshi edge at the live ask is sent as one ubot- limit order; the game's next add waits for the fill to be held", async () => {
   const kalshi = kalshiFetch();
-  const service = takerService({ "/bets.json": betsBody([]), "/settings.json": TAKER_SETTINGS });
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
   const runner = runnerLib.createRunner({
     fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
     betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
@@ -581,7 +589,7 @@ test("taker: a best-price Kalshi edge at the live ask is sent as one ubot- limit
 });
 
 test("taker: a market that is closed, or at another strike, is market_mismatch and nothing is sent", async () => {
-  const service = takerService({ "/bets.json": betsBody([]), "/settings.json": TAKER_SETTINGS });
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
   const runner = runnerLib.createRunner({
     fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiBaseUrl: "https://kalshi.test/v2",
     kalshiFetch: kalshiFetch({ WSU42: { status: "closed" }, WSU36: { floor_strike: 34.5 } }),
@@ -598,7 +606,7 @@ test("taker: a market that is closed, or at another strike, is market_mismatch a
 });
 
 test("taker: a service without the bot key answers 503, the decision reads off", async () => {
-  const service = takerService({ "/bets.json": betsBody([]), "/settings.json": TAKER_SETTINGS });
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
   const offService = async (url, init = {}) => (url.endsWith("/taker/order.json")
     ? response({ status: 503, body: JSON.stringify({ status: "off", error: "no bot Kalshi key is configured" }) })
     : service(url, init));
@@ -629,8 +637,61 @@ test("taker: holdings unknown (bets service down) decides nothing and reads no b
   runner.stop();
 });
 
-test("taker: a failed orderbook read is no_book for that row, the pass goes on", async () => {
+test("taker: a Kalshi poll that failed, or is older than 5 min, means unknown holdings: the pass decides nothing", async () => {
+  for (const [source, expected] of [
+    [{ ok: false, error: "HTTP 401" }, /Kalshi poll failed: HTTP 401/],
+    [{ fetchedAt: new Date(TAKER_NOW - 6 * 60 * 1000).toISOString() }, /older than 5 min/],
+  ]) {
+    const kalshi = kalshiFetch();
+    const service = takerService({ "/bets.json": takerBetsBody([], source), "/settings.json": TAKER_SETTINGS });
+    const runner = runnerLib.createRunner({
+      fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+      betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+    });
+    await runner.start();
+    await runner.takerPass();
+    assert.match(runner.takerPayload().pass.skipped, expected);
+    assert.equal(kalshi.calls.length, 0);
+    runner.stop();
+  }
+  // No Kalshi source at all (the service has no Kalshi key) is the same.
   const service = takerService({ "/bets.json": betsBody([]), "/settings.json": TAKER_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  assert.match(runner.takerPayload().pass.skipped, /does not poll Kalshi/);
+  runner.stop();
+});
+
+test("taker: a league snapshot that landed over 3 min ago is stale_feed for its rows, and the runner re-downloads every minute", async () => {
+  let clock = TAKER_NOW;
+  const kalshi = kalshiFetch();
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  service.posts.length = 0;
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => clock, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  assert.equal(runner.scanner.refreshEveryMs(9.7 * 1024 * 1024), 60 * 1000);
+  clock += 4 * 60 * 1000;
+  // The Kalshi poll must still be fresh for the pass to run at all.
+  service.script["/bets.json"] = takerBetsBody([], { fetchedAt: new Date(clock - 30 * 1000).toISOString() });
+  await runner.pollBets();
+  await runner.takerPass();
+  const decisions = runner.takerPayload().decisions;
+  assert.ok(decisions.length > 0);
+  assert.ok(decisions.every((row) => row.reason === "stale_feed"), JSON.stringify(decisions.map((row) => row.reason)));
+  assert.match(decisions[0].detail, /landed 240 s ago/);
+  assert.equal(kalshi.calls.length, 0, "no orderbook is read for a stale row");
+  runner.stop();
+});
+
+test("taker: a failed orderbook read is no_book for that row, the pass goes on", async () => {
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
   const runner = runnerLib.createRunner({
     fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: async () => { throw new Error("socket hang up"); },
     kalshiBaseUrl: "https://kalshi.test/v2", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,

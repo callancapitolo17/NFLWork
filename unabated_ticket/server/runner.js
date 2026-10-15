@@ -41,6 +41,8 @@
 //   POST <bets service>/fill_books.json — each new open bet's other books at
 //       its number when it was placed (server/fillbooks.js): how many posted
 //       it, how many beat the price taken, the best of them. Runner only.
+//   Every league's snapshot every 60 s (scanner maxRefreshMs: the taker
+//       trades against the fair, so the panel's 2-5 min tiers are too slow).
 //   GET <Kalshi>/markets/<ticker>/orderbook every 30 s for each Kalshi Edges
 //       row the automated taker looks at, and GET <Kalshi>/markets/<ticker>
 //       before every order, so the market is active and its strike and team
@@ -107,6 +109,16 @@ const DEFAULT_KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2";
 const TAKER_PASS_MS = 30 * 1000;
 // Two reads in flight stay well under Kalshi's 20 reads/s basic limit at ~100 ms a read.
 const KALSHI_BOOK_READS_AT_ONCE = 2;
+// The taker trades against Unabated's fair, which lags the market by a minute
+// or two already: every league re-downloads at least this often (the panel's
+// size tiers go up to 5 min), and a row whose league snapshot landed longer
+// ago than TAKER_MAX_SNAPSHOT_AGE_MS is stale_feed, not a bet.
+const TAKER_SNAPSHOT_REFRESH_MS = 60 * 1000;
+const TAKER_MAX_SNAPSHOT_AGE_MS = 3 * 60 * 1000;
+// The stake is conditional on the held bets, read off the bets service's
+// Kalshi poll (60 s): a poll that failed, or none this recent, and the
+// holdings are unknown, so the pass decides nothing.
+const TAKER_MAX_HELD_AGE_MS = 5 * 60 * 1000;
 // The desk sends, cancels and reads fills, each up to 10 s at Kalshi.
 const TAKER_ORDER_TIMEOUT_MS = 45 * 1000;
 // Decisions held for the bets service while it is down; past this the oldest go (logged).
@@ -333,7 +345,7 @@ function createRunner(deps) {
   }
 
   const scanner = scannerLib.createScanner({
-    fetchImpl: deps.fetchImpl, now, timers,
+    fetchImpl: deps.fetchImpl, now, timers, maxRefreshMs: TAKER_SNAPSHOT_REFRESH_MS,
     onChange: (status, state, lineHistory) => {
       if (status.error && (!scannerStatus || scannerStatus.error !== status.error)) logWarning(`scanner: ${status.error}`);
       if (status.phase === "live" && (!scannerStatus || scannerStatus.phase !== "live")) {
@@ -642,11 +654,31 @@ function createRunner(deps) {
   }
 
   // Why the taker must not decide right now, or null: no live board, or the
-  // held bets are unknown (sizing is conditional on them). Fail closed.
+  // held bets are unknown (sizing is conditional on them): the bets service
+  // unread or unreachable, or its Kalshi poll failed or is too old. Fail closed.
   function takerBlocker() {
     if (!feedState || !scannerStatus || scannerStatus.phase !== "live") return "the board is not live";
     if (betsStatus.okAt === null) return "the bets service has not been read yet";
     if (betsStatus.error) return `the bets service is unreachable: ${betsStatus.error}`;
+    const kalshiSource = betsStatus.sources && betsStatus.sources.kalshi;
+    if (!kalshiSource) return "the bets service does not poll Kalshi, so the held Kalshi bets are unknown";
+    if (kalshiSource.ok !== true) return `the bets service's Kalshi poll failed: ${kalshiSource.error || "no detail"}`;
+    const fetchedAt = Date.parse(kalshiSource.fetchedAt || "");
+    if (!Number.isFinite(fetchedAt) || now() - fetchedAt > TAKER_MAX_HELD_AGE_MS) {
+      return `the bets service's Kalshi poll is older than ${TAKER_MAX_HELD_AGE_MS / 60000} min (${kalshiSource.fetchedAt || "never"})`;
+    }
+    return null;
+  }
+
+  // Why a row's league snapshot is not one to trade on, or null: the
+  // scanner marked it stale or failed, or it landed too long ago.
+  function staleSnapshotReason(leagueId, passStartedAt) {
+    if ((scannerStatus.staleLeagues || []).includes(leagueId)) return `league ${leagueId} snapshot is a stale build`;
+    if (scannerStatus.leagueErrors && scannerStatus.leagueErrors[leagueId]) return `league ${leagueId} failed to load: ${scannerStatus.leagueErrors[leagueId]}`;
+    const loadedAt = scannerStatus.leagueLoadedAt && scannerStatus.leagueLoadedAt[leagueId];
+    if (typeof loadedAt !== "number") return `league ${leagueId} has not loaded`;
+    const ageMs = passStartedAt - loadedAt;
+    if (ageMs > TAKER_MAX_SNAPSHOT_AGE_MS) return `league ${leagueId} snapshot landed ${Math.round(ageMs / 1000)} s ago`;
     return null;
   }
 
@@ -667,10 +699,10 @@ function createRunner(deps) {
       // The board as of the pass start: a snapshot landing during the book reads must not mix in.
       const board = feedState;
       const rows = taker.candidateRows(board, settings.edgeSettings, startedAt);
-      const staleLeagueIds = new Set([...(scannerStatus.staleLeagues || []), ...Object.keys(scannerStatus.leagueErrors || {}).map(Number)]);
-      const contracts = rows.map((row) => (staleLeagueIds.has(row.leagueId)
-        ? { reason: "stale_feed", detail: `league ${row.leagueId} snapshot is stale or failed to load` }
-        : taker.resolveKalshiContract(row, board)));
+      const contracts = rows.map((row) => {
+        const stale = staleSnapshotReason(row.leagueId, startedAt);
+        return stale ? { reason: "stale_feed", detail: stale } : taker.resolveKalshiContract(row, board);
+      });
       const books = await readKalshiBooks(new Set(contracts.filter((contract) => contract.ticker).map((contract) => contract.ticker)));
       const priceIndex = pricecheck.buildPriceIndex(board, { now: startedAt, maxLineAgeMs: taker.MAX_LINE_AGE_MS });
       const flags = betsLib.annotateRows(rows, held.records, { lines: boardLines() });

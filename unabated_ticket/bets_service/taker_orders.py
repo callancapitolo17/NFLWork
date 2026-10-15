@@ -419,6 +419,8 @@ class TakerDesk:
         now = self._now()
         self._last_refresh_at = now
         open_orders = self._store.open_orders()
+        open_tickers = {order["ticker"] for order in open_orders}
+        self._settlement_checked_at = {ticker: at for ticker, at in self._settlement_checked_at.items() if ticker in open_tickers}
         if not open_orders:
             return
         resting = self._resting_orders()

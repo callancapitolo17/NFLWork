@@ -2613,6 +2613,8 @@ on Kalshi with **real money** on the bot's own key. No shadow mode (Cal,
 | Edge | 3% to 20% at that live price (fair read off Unabated's cheaper of its two prices) |
 | Best price | no live book beats it at the number (one is enough to skip; ties trade); outliers and Skips trade |
 | Line age | changed within 7 days; right up to the start |
+| Board age | the runner re-downloads every league's snapshot every 60 s (the panel's size tiers go up to 5 min); a row whose league snapshot landed over 3 min ago, is a stale build or failed to load is `stale_feed` |
+| Holdings | the pass runs only when the bets service's Kalshi poll succeeded within the last 5 min (conditional Kelly is sized on it); otherwise it decides nothing |
 | Size | floor(stake / all-in), cut to the depth at the ask |
 | Market check | before every order Kalshi's market is read: it must be `active`, a spread's or total's `floor_strike` the row's number, a spread's or moneyline's YES title the team YES is on; else `market_mismatch`, nothing sent |
 | Order | limit buy at that ask; the rest cancelled at once **by market** (a bare cancel routes to exchange shard 0 and 404s while the order rests), a 404 checked against Kalshi's resting list; the desk's own 30 s sweep retries an unconfirmed cancel and cancels any `ubot-` order resting that no row knows |
@@ -2634,8 +2636,9 @@ Make a key for the bot alone so it can be revoked alone. Without it
 `touch` the stop file (`TAKER_STOP_PATH`, `/data/taker.stop` on the VM); `rm` it
 to resume. Revoking the key at kalshi.com stops it for good.
 
-**Fail closed:** no live board, or the bets service unread or unreachable,
-and the pass decides nothing and reads no book. The order row is written
+**Fail closed:** no live board, the bets service unread or unreachable, or
+its Kalshi poll failed or older than 5 min, and the pass decides nothing and
+reads no book. The order row is written
 before the send; a send with no answer, or a fills read that fails, keeps the
 whole cost against the ceiling until a later read or settlement frees it. A
 send with no answer is looked for on Kalshi by `client_order_id` (adopted and
