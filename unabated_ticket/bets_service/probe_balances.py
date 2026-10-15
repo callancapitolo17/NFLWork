@@ -76,6 +76,8 @@ def report(venue, label, status, body):
     print(f"  {venue} GET {label} -> HTTP {status}")
     if body is None:
         return
+    if status != 200 and isinstance(body, dict) and body.get("message") is not None:
+        print(f"      message: {str(body.get('message'))[:300]}")
     fields = money_fields(body)
     if not fields:
         top = list(body.keys())[:15] if isinstance(body, dict) else type(body).__name__
@@ -171,6 +173,37 @@ def probe_betonline():
         report("betonline", url, response.status_code, json_or_none(response))
 
 
+NEXT_CHUNK = re.compile(r"""["'(]((?:https://novig\.com)?/?_next/static/[A-Za-z0-9_./~-]+\.js)""")
+NOVIG_API_STRING = re.compile(r"""["'`](/?(?:nbx/v1/)?(?:portfolio|wallet|balance|balances|account|accounts|user|users|me|funds)[A-Za-z0-9_/-]*)["'`]""")
+MAX_NOVIG_CHUNKS = 400
+
+
+def novig_api_strings() -> list[str]:
+    """Novig's public site code (no login): every quoted path that starts with an
+    account-ish word, crawled through the Next.js chunks the page loads."""
+    session = http_session()
+    seen_chunks: set[str] = set()
+    queue = [session.get("https://novig.com/", timeout=TIMEOUT_SEC).text]
+    found: set[str] = set()
+    while queue and len(seen_chunks) < MAX_NOVIG_CHUNKS:
+        text = queue.pop()
+        found.update(NOVIG_API_STRING.findall(text))
+        for chunk in NEXT_CHUNK.findall(text):
+            path = chunk.split("novig.com", 1)[-1].lstrip("/")
+            if path in seen_chunks:
+                continue
+            seen_chunks.add(path)
+            try:
+                queue.append(session.get("https://novig.com/" + path, timeout=TIMEOUT_SEC).text)
+            except Exception:  # noqa: BLE001
+                continue
+    strings = sorted(found)
+    print(f"  site code: {len(seen_chunks)} chunks read, {len(strings)} account-ish paths:")
+    for string in strings[:120]:
+        print(f"      {string}")
+    return strings
+
+
 def probe_novig():
     from unabated_ticket.bets_service import config
     from unabated_ticket.bets_service.sources.novig import CLIENT_CAPABILITIES_HEADER
@@ -179,13 +212,28 @@ def probe_novig():
     headers = {"Authorization": f"Bearer {bearer}", "Accept": "application/json",
                CLIENT_CAPABILITIES_HEADER[0]: CLIENT_CAPABILITIES_HEADER[1]}
     base = config.NOVIG_REST_URL.rstrip("/")
-    guesses = ["/portfolio/balance", "/portfolio/balances", "/portfolio/summary", "/wallet", "/wallet/balance",
-               "/user/balance", "/account/balance"]
-    paths = guesses + discover_paths("https://novig.com/")
     session = http_session()
-    for url in dict.fromkeys(full_urls(paths, [base, "https://api.novig.us"])):
+
+    def get(path):
+        url = base + path
         response = session.get(url, headers=headers, timeout=TIMEOUT_SEC)
-        report("novig", url, response.status_code, json_or_none(response))
+        report("novig", path, response.status_code, json_or_none(response))
+
+    # /portfolio/summary answered 400 (2026-10-15): it exists but wants parameters.
+    for path in ["/portfolio/summary", "/portfolio/summary?currency=CASH", "/portfolio/summary?currency=COINS",
+                 "/portfolio/summary?currency=CASH&sort=active_recency&limit=1"]:
+        get(path)
+    for string in novig_api_strings():
+        path = "/" + string.lstrip("/").removeprefix("nbx/v1/")
+        if not path.startswith(("/portfolio", "/wallet", "/balance", "/account", "/user", "/me", "/funds")):
+            continue
+        if path.startswith(("/portfolio/active", "/portfolio/settled")):
+            continue
+        if re.search(r"delete|close|logout|withdraw|deposit|cancel|verify|kyc|password|token", path, re.I):
+            continue
+        get(path)
+        if "?" not in path:
+            get(path + "?currency=CASH")
 
 
 def probe_polymarket_us():
