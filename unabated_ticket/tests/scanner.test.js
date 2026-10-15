@@ -186,6 +186,18 @@ test("each league re-downloads its snapshot on a cadence set by its compressed s
   assert.equal(scanner.getStatus().loading, null); // a refresh shows no progress counter
 });
 
+test("maxRefreshMs caps every tier: the server runner re-downloads a large snapshot every minute", async () => {
+  let clock = NOW;
+  const fetchImpl = fakeFetch({ nflBytes: 9.7 * 1024 * 1024 });
+  const scanner = createScanner({ fetchImpl, now: () => clock, timers: noTimers, maxRefreshMs: 60 * 1000 });
+  await scanner.start([1]);
+  assert.equal(scanner.refreshEveryMs(9.7 * 1024 * 1024), 60 * 1000);
+  assert.equal(scanner.refreshEveryMs(1000), 60 * 1000);
+  clock += 61 * 1000;
+  await scanner.tick();
+  assert.equal(fetchImpl.calls.filter((u) => u === SNAPSHOT_BASE_URL(1)).length, 2);
+});
+
 test("a large snapshot refreshes on the slow tier", async () => {
   let clock = NOW;
   const fetchImpl = fakeFetch({ nflBytes: 9.7 * 1024 * 1024 });
