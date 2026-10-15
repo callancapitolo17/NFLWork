@@ -622,9 +622,10 @@
     return listEl;
   }
 
-  // "$1,240": the liquidity beside another book's price.
+  // "$1,240": the liquidity beside another book's price, rounded down so a
+  // thin $29.60 never reads as the $30 floor.
   function fmtWholeDollars(value) {
-    return value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+    return `$${Math.floor(value).toLocaleString("en-US")}`;
   }
 
   // The Skip / Restore chip on a line a book beats (pricecheck.canSkip); null otherwise.

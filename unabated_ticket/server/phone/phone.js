@@ -331,7 +331,7 @@
     const check = row.priceCheck;
     const lineEl = (name, price, liquidity, className) => {
       const div = makeEl("div", className);
-      const liq = liquidity == null ? "" : `${className === "thin" ? "thin " : ""}$${Math.round(liquidity).toLocaleString("en-US")}`;
+      const liq = liquidity == null ? "" : `${className === "thin" ? "thin " : ""}$${Math.floor(liquidity).toLocaleString("en-US")}`;
       div.append(makeEl("span", null, name), makeEl("span", "liq", liq), makeEl("span", "px", phoneView.fmtAmerican(price)));
       return div;
     };

@@ -375,17 +375,21 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
 .facts dd { margin: 0; font-family: var(--figure); font-variant-numeric: tabular-nums; }
 
 .stake-block {
-  margin: 14px 0 0; padding: 10px 12px; border-radius: 9px;
+  margin: 14px 0 0; padding: 12px; border-radius: 9px;
   background: color-mix(in srgb, var(--edge-strong) 9%, var(--ground));
   border: 1px solid color-mix(in srgb, var(--edge-strong) 25%, transparent);
-  /* Pinned to the bottom of the Ticket pane so the stake never scrolls out of
-     view under related bets and the other books (Cal, 2026-10-15). Chrome
-     pins inside the pane's 20px bottom padding, so -20px sits it on the edge. */
+}
+/* The Ticket's own stake block (the Teasers summary shares .stake-block),
+   pinned to the bottom of the Ticket pane so the stake never scrolls out of
+   view under related bets and the other books (Cal, 2026-10-15). Chrome pins
+   inside the pane's 20px bottom padding, so -20px sits it on the edge. */
+#ticket .stake-block {
+  padding: 10px 12px;
   position: sticky; bottom: -20px; z-index: 2;
   box-shadow: 0 -6px 14px -10px rgba(0, 0, 0, .35);
   display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 14px; align-items: end;
 }
-.stake-block > * { grid-column: 1; }
+#ticket .stake-block > * { grid-column: 1; }
 .stake-label { font: 600 10px system-ui, sans-serif; letter-spacing: .12em; text-transform: uppercase; color: var(--edge-mid); }
 .stake { font: 700 34px var(--figure); letter-spacing: -.03em; color: var(--ink); }
 .stake.no-edge { font-size: 26px; color: var(--muted); }
@@ -400,7 +404,7 @@ button.small { font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer
   border-top: 1px dashed color-mix(in srgb, var(--edge-strong) 30%, transparent);
 }
 /* In the pinned stake bar, to-win and payout sit right of the stake. */
-.stake-block > .payout-row {
+#ticket .stake-block > .payout-row {
   margin: 0; padding: 0; border: 0;
   grid-column: 2; grid-row: 1 / span 6; align-self: center;
   display: flex; flex-direction: column; gap: 6px; text-align: right;
