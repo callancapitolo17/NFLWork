@@ -89,7 +89,13 @@ SETTLEMENT_CHECK_SEC = 5 * 60
 # A send with no answer and not resting: Kalshi's order list for the ticker
 # is asked for it by client_order_id once it is this old; absent then, it
 # never reached Kalshi and its cost is freed.
-LOST_ORDER_LOOKUP_AFTER_SEC = 10 * 60
+# An immediate-or-cancel order is final within a second; its listing can lag a little.
+LOST_ORDER_LOOKUP_AFTER_SEC = 60
+# Kalshi answered the order itself and refused it: nothing was placed. Any other
+# answer (409 conflict, 429, a 5xx, a gateway timeout) may have reached the
+# matching engine after all: the order is looked up by client_order_id instead.
+DEFINITE_REJECTION_STATUSES = (400, 401, 403, 404, 422)
+ORDER_LIST_STATUSES = ("resting", "executed", "canceled")
 ORDER_LIST_PAGE_LIMIT = 1000
 ORDER_LIST_MAX_PAGES = 10
 MAX_HELD_IDS = 1000
@@ -175,19 +181,41 @@ def order_body(ticker: str, contract_side: str, ask: float, count: int, client_o
             "client_order_id": client_order_id}
 
 
-def fill_totals(fills: list[dict], contract_side: str) -> tuple[float, float]:
+def fill_totals(fills: list[dict], contract_side: str) -> tuple[float, float] | str:
     """(contracts, dollars paid incl. fees) over one order's fills, priced on
-    the bot's own contract side whichever leg Kalshi reports the fill on."""
+    the bot's own contract side whichever leg Kalshi reports the fill on; or
+    why a fill could not be read (a renamed or missing field must never read
+    as a free fill)."""
     contracts = 0.0
     cost = 0.0
     for fill in fills:
-        count = float(fill.get("count_fp") or fill.get("count") or 0)
-        yes_price = float(fill.get("yes_price_dollars") or 0)
-        no_price = float(fill.get("no_price_dollars") or (1 - yes_price))
+        count = _positive_number(fill.get("count_fp", fill.get("count")))
+        yes_price = _positive_number(fill.get("yes_price_dollars"))
+        no_price = _positive_number(fill.get("no_price_dollars"))
+        if no_price is None and yes_price is not None:
+            no_price = 1 - yes_price
+        fee = 0.0 if fill.get("fee_cost") in (None, "") else _number(fill.get("fee_cost"))
+        if count is None or yes_price is None or no_price is None or fee is None:
+            return f"fill {fill.get('fill_id') or fill.get('trade_id') or '?'} unreadable, fields {sorted(fill)}"
         price = yes_price if contract_side == "yes" else no_price
         contracts += count
-        cost += count * price + float(fill.get("fee_cost") or 0)
+        cost += count * price + fee
     return contracts, round(cost, 4)
+
+
+def _number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _positive_number(value: object) -> float | None:
+    number = _number(value)
+    return number if number is not None and number > 0 else None
 
 
 def held_id_of(ticker: str, contract_side: str) -> str:
@@ -206,16 +234,23 @@ def _order_id_of(reply: object) -> str | None:
 def _remaining_count_of(reply: object) -> float | None:
     """Contracts Kalshi's create reply says are still open ("0.00" after an
     immediate-or-cancel), or None when the reply does not say."""
+    return _reply_count(reply, "remaining_count_fp", "remaining_count")
+
+
+def _fill_count_of(reply: object) -> float | None:
+    """Contracts Kalshi's create reply says filled at once, or None."""
+    return _reply_count(reply, "fill_count_fp", "fill_count")
+
+
+def _reply_count(reply: object, *keys: str) -> float | None:
     if not isinstance(reply, dict):
         return None
     order = reply.get("order") if isinstance(reply.get("order"), dict) else reply
-    remaining = order.get("remaining_count_fp", order.get("remaining_count"))
-    if isinstance(remaining, bool) or not isinstance(remaining, (int, float, str)):
-        return None
-    try:
-        return float(remaining)
-    except ValueError:
-        return None
+    for key in keys:
+        if key in order:
+            number = _number(order[key])
+            return number if number is not None and number >= 0 else None
+    return None
 
 
 def _exchange_index_of(reply: object) -> int | None:
@@ -301,11 +336,6 @@ class TakerDesk:
         self._last_refresh_at: datetime | None = None
         self._settlement_checked_at: dict[str, datetime] = {}
 
-    def status(self) -> dict:
-        return {"armed": True, "stopped": self._stop_path.exists(), "bankroll": BOT_BANKROLL,
-                "openExposure": round(self._store.open_exposure(), 2),
-                "lastRefreshAt": self._last_refresh_at.isoformat() if self._last_refresh_at else None}
-
     def run_refresh_loop(self, stop: threading.Event) -> None:
         """The desk's own thread (service.serve): open orders brought up to
         date every REFRESH_SEC whether or not the runner sends anything, so a
@@ -334,6 +364,10 @@ class TakerDesk:
                 return refused
             if self._last_refresh_at is None or self._now() - self._last_refresh_at >= timedelta(seconds=REFRESH_SEC):
                 self._refresh_open_orders()
+                # The refresh waits on Kalshi, which can be slow: the decision may have aged out meanwhile.
+                refused = self._refuse_unfit(request)
+                if refused:
+                    return refused
             unseen = self._unseen_fill(request)
             if unseen:
                 return {"status": "unseen_fill", "detail": unseen}
@@ -360,7 +394,8 @@ class TakerDesk:
         """Why this order would add to a game blind, or None: an earlier bot
         order on the game that may hold contracts and is not in `held_ids`."""
         for order in self._store.open_orders():
-            if order["event_id"] != request["event_id"] or not _may_hold_contracts(order):
+            same_game = order["event_id"] == request["event_id"] or order["ticker"] == request["ticker"]
+            if not same_game or not _may_hold_contracts(order):
                 continue
             held_id = held_id_of(order["ticker"], order["contract_side"])
             if held_id not in request["held_ids"]:
@@ -381,14 +416,21 @@ class TakerDesk:
             log.error("taker order %s %s: no answer from Kalshi: %s", client_order_id, request["ticker"], error)
             return {"status": "unknown", "count": count, "detail": f"no answer from Kalshi: {error}"}
         order_id = _order_id_of(reply)
-        if status not in (200, 201) or not order_id:
+        if status in DEFINITE_REJECTION_STATUSES:
             # Nothing rests or filled: no cost, and no market to watch for settlement.
             self._store.update_order(client_order_id, {"status": "rejected", "open_cost": 0.0, "settled_at": self._now(),
                                                        "error": f"HTTP {status}: {str(reply)[:500]}"})
             log.warning("taker order %s %s refused by Kalshi: HTTP %s %s", client_order_id, request["ticker"], status, reply)
             return {"status": "rejected", "count": count, "detail": f"Kalshi HTTP {status}"}
+        if status not in (200, 201) or not order_id:
+            # A gateway error or a conflict may hide a placed order: full cost held, looked up by client_order_id.
+            self._store.update_order(client_order_id, {"status": "unknown",
+                                                       "error": f"no definite answer: HTTP {status}: {str(reply)[:300]}"})
+            log.error("taker order %s %s: no definite answer from Kalshi: HTTP %s %s", client_order_id, request["ticker"], status, reply)
+            return {"status": "unknown", "count": count, "detail": f"no definite answer from Kalshi: HTTP {status}; full cost held"}
         exchange_index = _exchange_index_of(reply)
-        self._store.update_order(client_order_id, {"status": "sent", "kalshi_order_id": order_id, "exchange_index": exchange_index})
+        self._store.update_order(client_order_id, {"status": "sent", "kalshi_order_id": order_id, "exchange_index": exchange_index,
+                                                   "count_reported": _fill_count_of(reply)})
         order = {"client_order_id": client_order_id, "kalshi_order_id": order_id, "ticker": request["ticker"],
                  "contract_side": request["contract_side"], "exchange_index": exchange_index, "count_requested": count}
         remaining = _remaining_count_of(reply)
@@ -428,8 +470,8 @@ class TakerDesk:
             return False
         if status in (200, 204):
             return True
-        if status == 404:
-            # Terminal (filled, expired) or misrouted: only Kalshi's resting list tells.
+        if 400 <= status < 500:
+            # Terminal (filled, expired), misrouted, or refused: only Kalshi's resting list tells.
             listing = self._resting_orders() if resting is None else resting
             if listing is None:
                 log.error("taker cancel %s: 404 and the resting list could not be read; holding", order_id)
@@ -460,12 +502,21 @@ class TakerDesk:
                 return fills
         return f"more than {FILLS_MAX_PAGES} pages of fills"
 
-    def _read_fills(self, client_order_id: str, order_id: str, contract_side: str, count: int, final: bool) -> dict:
+    def _read_fills(self, client_order_id: str, order_id: str, contract_side: str, count: int, final: bool,
+                    count_reported: float | None = None) -> dict:
+        """Read the order's fills into its row. `final` fixes open_cost to what
+        filled; refused while the fills feed shows fewer contracts than Kalshi's
+        create reply reported (`count_reported`), since the feed can lag."""
         fills = self._order_fills(order_id)
-        if isinstance(fills, str):
-            self._store.update_order(client_order_id, {"status": "unknown", "error": f"fills read failed: {fills}"})
+        totals = fills if isinstance(fills, str) else fill_totals(fills, contract_side)
+        if isinstance(totals, str):
+            self._store.update_order(client_order_id, {"status": "unknown", "error": f"fills read failed: {totals}"})
             return {"status": "unknown", "count": count, "orderId": order_id, "detail": "fills read failed; full cost held"}
-        filled, cost = fill_totals(fills, contract_side)
+        filled, cost = totals
+        if final and count_reported is not None and filled < count_reported:
+            log.warning("taker order %s: the fills feed shows %s of the %s contracts Kalshi reported filled; not final yet",
+                        client_order_id, filled, count_reported)
+            final = False
         outcome = "unfilled" if filled == 0 else "filled" if filled >= count else "partial"
         fields = {"status": outcome, "count_filled": filled, "cost_filled": cost, "fills_final": final, "error": None}
         if final:
@@ -498,6 +549,17 @@ class TakerDesk:
     def _resting_orders(self) -> list[dict] | None:
         return self._list_orders("status=resting")
 
+    def _orders_for_ticker(self, ticker: str) -> list[dict] | None:
+        """Every order on the ticker in every status Kalshi lists (what an
+        unfiltered listing returns is not documented), or None when any read failed."""
+        orders: list[dict] = []
+        for status in ORDER_LIST_STATUSES:
+            listed = self._list_orders(f"ticker={ticker}&status={status}")
+            if listed is None:
+                return None
+            orders.extend(listed)
+        return orders
+
     def _refresh_open_orders(self) -> None:
         """Bring every open order up to date, fail closed (a failed read holds
         the cost): a bot order resting on Kalshi that no row knows is
@@ -525,7 +587,7 @@ class TakerDesk:
             if (not order["fills_final"] and cancelled_at is not None
                     and now - cancelled_at >= timedelta(seconds=FILLS_SETTLE_SEC)):
                 self._read_fills(order["client_order_id"], order["kalshi_order_id"], order["contract_side"],
-                                 order["count_requested"], final=True)
+                                 order["count_requested"], final=True, count_reported=order["count_reported"])
             if (order["event_start"] is not None and order["event_start"] <= now
                     and self._settlement_check_due(order["ticker"], now) and self._market_settled(order["ticker"])):
                 self._store.update_order(order["client_order_id"], {"settled_at": now})
@@ -550,7 +612,7 @@ class TakerDesk:
         client_order_id = order["client_order_id"]
         match = _by_client_order_id(resting, client_order_id)
         if match is None and now - order["placed_at"] >= timedelta(seconds=LOST_ORDER_LOOKUP_AFTER_SEC):
-            listed = self._list_orders(f"ticker={order['ticker']}")
+            listed = self._orders_for_ticker(order["ticker"])
             if listed is None:
                 return
             match = _by_client_order_id(listed, client_order_id)
@@ -563,8 +625,15 @@ class TakerDesk:
             return
         adopted = {**order, "kalshi_order_id": match["order_id"], "exchange_index": _exchange_index_of(match)}
         self._store.update_order(client_order_id, {"status": "sent", "kalshi_order_id": match["order_id"],
-                                                   "exchange_index": adopted["exchange_index"]})
-        log.warning("taker order %s %s: found on Kalshi as %s after a lost answer", client_order_id, order["ticker"], match["order_id"])
+                                                   "exchange_index": adopted["exchange_index"],
+                                                   "count_reported": _fill_count_of(match)})
+        log.warning("taker order %s %s: found on Kalshi as %s (%s) after a lost answer",
+                    client_order_id, order["ticker"], match["order_id"], match.get("status"))
+        if match.get("status") in ("executed", "canceled"):
+            # Done on Kalshi's side (an immediate-or-cancel always is): nothing to cancel, only fills to read.
+            self._store.update_order(client_order_id, {"cancelled_at": now, "error": None})
+            self._read_fills(client_order_id, match["order_id"], order["contract_side"], order["count_requested"], final=False)
+            return
         self._cancel_then_read(adopted, resting)
 
     def _settlement_check_due(self, ticker: str, now: datetime) -> bool:

@@ -15,6 +15,7 @@ from unabated_ticket.bets_service.taker_store import TakerStore
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
 TICKER = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36"
 OTHER_TICKER = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU42"
+THIRD_TICKER = "KXNCAAFSPREAD-26SEP26OSUWSU-WSU7"
 EVENT_ID = 123742
 REQUEST_BODY = {"clientOrderId": "ubot-" + "a" * 32, "ticker": TICKER, "side": "yes", "ask": 0.57,
                 "allIn": 0.587157, "count": 10, "rowKey": "420942308:ms105:si1:tid717:alt-35.5",
@@ -155,7 +156,7 @@ def test_the_ceiling_cuts_contracts_then_refuses(store, tmp_path, monkeypatch):
     # $10 - 1c slack at 0.587157 a contract: 17 contracts.
     assert first["count"] == 17
     assert kalshi.calls[0][2]["count"] == "17.00"
-    refused = desk.place(request(clientOrderId="ubot-" + "b" * 32, eventId=EVENT_ID + 1))
+    refused = desk.place(request(clientOrderId="ubot-" + "b" * 32, eventId=EVENT_ID + 1, ticker=THIRD_TICKER))
     assert refused["status"] == "ceiling"
     assert kalshi.methods().count("POST") == 1
 
@@ -192,8 +193,8 @@ def test_an_add_on_the_game_waits_until_the_earlier_fill_is_among_the_held_bets(
     blind = desk.place(request(clientOrderId="ubot-" + "b" * 32, ticker=OTHER_TICKER))
     assert blind["status"] == "unseen_fill"
     assert HELD_FIRST in blind["detail"]
-    # Another game is not blocked; the same game is, once the fill is among the held ids.
-    assert desk.place(request(clientOrderId="ubot-" + "c" * 32, eventId=EVENT_ID + 1))["status"] == "partial"
+    # Another game (another market too) is not blocked; the same game is, once the fill is among the held ids.
+    assert desk.place(request(clientOrderId="ubot-" + "c" * 32, eventId=EVENT_ID + 1, ticker=THIRD_TICKER))["status"] == "partial"
     seen = desk.place(request(clientOrderId="ubot-" + "d" * 32, ticker=OTHER_TICKER, heldIds=[HELD_FIRST]))
     assert seen["status"] == "partial"
     assert kalshi.methods().count("POST") == 3
@@ -278,15 +279,15 @@ def test_a_lost_order_found_resting_is_adopted_cancelled_and_read(store, tmp_pat
     assert ("DELETE", f"/portfolio/events/orders/k-9?market_ticker={TICKER}&exchange_index=0", None) in kalshi.calls
 
 
-def test_a_lost_order_listed_nowhere_after_ten_minutes_holds_nothing(store, tmp_path):
+def test_a_lost_order_listed_nowhere_after_a_minute_holds_nothing(store, tmp_path):
     clock = {"now": NOW}
     kalshi = SilentPost(resting=[], listed=[])
     desk = desk_for(store, kalshi, tmp_path, clock=lambda: clock["now"])
     desk.place(request())
-    clock["now"] = NOW + timedelta(minutes=5)
+    clock["now"] = NOW + timedelta(seconds=30)
     desk.refresh()
     assert store.open_exposure() > 0, "too soon to give up on it"
-    clock["now"] = NOW + timedelta(minutes=11)
+    clock["now"] = NOW + timedelta(seconds=61)
     desk.refresh()
     assert store.open_exposure() == 0
     assert store.open_orders() == []
@@ -421,6 +422,91 @@ def test_open_taker_desk_says_why_it_is_off_and_the_route_repeats_it(store, tmp_
         server.shutdown()
         server.server_close()
         bets_store.close()
+
+
+def test_a_gateway_error_on_the_send_is_unknown_and_recovered_from_kalshis_order_list(store, tmp_path):
+    import re
+    clock = {"now": NOW}
+    cid = REQUEST_BODY["clientOrderId"]
+    kalshi = ScriptedKalshi(filled=10, post_status=502,
+                            listed=[{"order_id": "k-7", "client_order_id": cid, "ticker": TICKER, "status": "executed",
+                                     "fill_count_fp": "10.00"}])
+    desk = desk_for(store, kalshi, tmp_path, clock=lambda: clock["now"])
+    result = desk.place(request())
+    assert result["status"] == "unknown" and "HTTP 502" in result["detail"]
+    assert store.open_exposure() == pytest.approx(10 * 0.587157 + 0.01, abs=1e-3)
+    # Too soon to look it up: nothing changes.
+    clock["now"] = NOW + timedelta(seconds=30)
+    desk.refresh()
+    assert order_row(store, cid)["status"] == "unknown"
+    # A minute on: found executed on Kalshi, nothing to cancel, its fills read.
+    clock["now"] = NOW + timedelta(seconds=61)
+    desk.refresh()
+    row = order_row(store, cid)
+    assert (row["status"], row["kalshi_order_id"], row["count_filled"], row["count_reported"]) == ("filled", "k-7", 10, 10)
+    assert "DELETE" not in kalshi.methods()
+    listed = {re.search(r"status=(\w+)", path).group(1) for _, path, _ in kalshi.calls if path.startswith(f"/portfolio/orders?ticker=")}
+    assert listed == {"resting", "executed", "canceled"}
+
+
+def test_a_decision_that_ages_out_during_a_slow_refresh_is_refused(store, tmp_path):
+    clock = {"now": NOW}
+
+    class SlowKalshi(ScriptedKalshi):
+        def request(self, method, path, body=None):
+            if path.startswith("/portfolio/orders?status=resting"):
+                clock["now"] += timedelta(seconds=70)
+            return super().request(method, path, body)
+    kalshi = SlowKalshi()
+    desk = desk_for(store, kalshi, tmp_path, clock=lambda: clock["now"])
+    assert desk.place(request())["status"] == "filled"
+    clock["now"] = NOW + timedelta(seconds=31)
+    late = desk.place(request(clientOrderId="ubot-" + "b" * 32, ticker=OTHER_TICKER, eventId=EVENT_ID + 1,
+                              decidedAt=(clock["now"] - timedelta(seconds=5)).isoformat()))
+    assert late["status"] == "stale_decision"
+    assert kalshi.methods().count("POST") == 1
+
+
+def test_any_4xx_on_the_cancel_is_checked_against_the_resting_list(store, tmp_path):
+    kalshi = ScriptedKalshi(filled=10, delete_status=400, resting=[], remaining_count=None)
+    assert desk_for(store, kalshi, tmp_path).place(request())["status"] == "filled"
+    assert kalshi.methods() == ["POST", "DELETE", "GET", "GET"]
+
+
+def test_fills_short_of_the_count_kalshi_reported_are_not_final(store, tmp_path):
+    clock = {"now": NOW}
+    cid = REQUEST_BODY["clientOrderId"]
+    kalshi = ScriptedKalshi(filled=10, fills_pages=[(4, ""), (4, ""), (10, "")])
+    desk = desk_for(store, kalshi, tmp_path, clock=lambda: clock["now"])
+    assert desk.place(request())["status"] == "partial"
+    # A minute on the feed still shows 4 of the 10 Kalshi reported: not final, the full reserve stays.
+    clock["now"] = NOW + timedelta(seconds=61)
+    desk.refresh()
+    row = order_row(store, cid)
+    assert (row["status"], row["fills_final"], row["count_filled"], row["count_reported"]) == ("partial", False, 4, 10)
+    assert store.open_exposure() == pytest.approx(10 * 0.587157 + 0.01, abs=1e-3)
+    clock["now"] = NOW + timedelta(seconds=91)
+    desk.refresh()
+    row = order_row(store, cid)
+    assert (row["status"], row["fills_final"], row["count_filled"]) == ("filled", True, 10)
+    assert store.open_exposure() == pytest.approx(10 * 0.57 + 0.17, abs=1e-3)
+
+
+def test_an_unreadable_fill_holds_the_full_cost(store, tmp_path):
+    class RenamedFields(ScriptedKalshi):
+        def request(self, method, path, body=None):
+            if path.startswith("/portfolio/fills"):
+                return 200, {"fills": [{"count_fp": "10.00", "yes_price_fixed": "0.5700", "fee_cost": "0.17"}], "cursor": ""}
+            return super().request(method, path, body)
+    result = desk_for(store, RenamedFields(), tmp_path).place(request())
+    assert result["status"] == "unknown"
+    assert store.open_exposure() == pytest.approx(10 * 0.587157 + 0.01, abs=1e-3)
+
+
+def test_an_add_on_the_same_market_under_another_event_id_still_waits(store, tmp_path):
+    desk = desk_for(store, ScriptedKalshi(), tmp_path)
+    assert desk.place(request())["status"] == "filled"
+    assert desk.place(request(clientOrderId="ubot-" + "b" * 32, eventId=EVENT_ID + 1))["status"] == "unseen_fill"
 
 
 def signing_client(tmp_path):

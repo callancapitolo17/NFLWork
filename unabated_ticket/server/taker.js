@@ -399,7 +399,9 @@ function clientOrderIdOf(ticker, side, passStartedMs) {
 // was taken at. The same row deciding the same way every pass logs once.
 function decisionSignature(decision) {
   const orderStatus = decision.order ? decision.order.status : "";
-  return [decision.reason, decision.ticker, decision.liveAsk, decision.unabatedPrice, decision.contracts, orderStatus].join("|");
+  // A skipped row logs again when its reason or Unabated's price changes, not on every tick of the live book.
+  const isBet = decision.reason === "bet";
+  return [decision.reason, decision.ticker, isBet ? decision.liveAsk : "", decision.unabatedPrice, isBet ? decision.contracts : "", orderStatus].join("|");
 }
 
 module.exports = {

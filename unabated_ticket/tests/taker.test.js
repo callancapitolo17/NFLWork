@@ -168,6 +168,10 @@ test("the decision signature changes with the ask, not with the clock", () => {
   const base = { reason: "bet", ticker: "T", liveAsk: 0.57, unabatedPrice: -143, contracts: 3, liveEdge: 0.05 };
   assert.equal(taker.decisionSignature(base), taker.decisionSignature({ ...base, liveEdge: 0.051 }));
   assert.notEqual(taker.decisionSignature(base), taker.decisionSignature({ ...base, liveAsk: 0.58 }));
+  // A skipped row does not re-log on every tick of the book: only its reason or Unabated's price matter.
+  const skipped = { ...base, reason: "price_moved" };
+  assert.equal(taker.decisionSignature(skipped), taker.decisionSignature({ ...skipped, liveAsk: 0.58, contracts: 4 }));
+  assert.notEqual(taker.decisionSignature(skipped), taker.decisionSignature({ ...skipped, unabatedPrice: -150 }));
 });
 
 test("a derived moneyline trades only when Kalshi's market names the row's team and not the other", () => {

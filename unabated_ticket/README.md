@@ -2650,20 +2650,40 @@ to resume. Revoking the key at kalshi.com stops it for good.
 its Kalshi poll failed or older than 5 min, and the pass decides nothing and
 reads no book. Cal's Removed bets (`bet_exclusions`) are not his: the pass
 neither sizes on them nor counts them held. The order row is written
-before the send; a send with no answer, or a fills read that fails, keeps the
-whole cost against the ceiling until a later read or settlement frees it. A
-send with no answer is looked for on Kalshi by `client_order_id` (adopted and
-cancelled when found; counted as never sent only when Kalshi's order list for
-the ticker, read 10 min on, does not carry it). Order statuses: `sending`,
+before the send; a send with no answer, a send Kalshi did not definitely
+refuse (a 409, a 429, a 5xx, a gateway timeout: only 400/401/403/404/422
+count as refused), a fills read that fails or a fill it cannot read, keeps the
+whole cost against the ceiling until a later read or settlement frees it. Such
+an order is looked for on Kalshi by `client_order_id` (in the resting list,
+then, a minute on, in the ticker's resting, executed and canceled lists; an
+executed or canceled one just has its fills read; counted as never sent only
+when none of those lists carries it). Fills are final only once the feed
+shows at least the contracts Kalshi's create reply said filled
+(`count_reported`); the desk also re-checks the decision's age after a
+refresh, since a slow Kalshi can age it out while the desk waits. Two orders
+on one market are one game whatever Unabated's event ids say. Order statuses: `sending`,
 `unknown`, `sent`, `resting` (a fallback cancel unconfirmed, full cost held,
 retried), `filled` / `partial` / `unfilled` (`fills_final` 60 s after the
 cancel), `rejected`. A market frees its orders' cost once Kalshi reports it
-`finalized`.
+`finalized`. The ceiling is near-exact, not exact: Kalshi rounds the fee per
+fill, so an order sweeping several resting lots can cost a few cents more than
+the all-in reserve (+1c slack) allowed for.
+
+**One armed host.** The ceiling and the stray-order sweep live in
+`taker.duckdb`: a second bets service armed with the same key (the Mac as
+well as the VM) would trade its own $500 and cancel the other's orders. Arm
+the VM only, and never reset `taker.duckdb` while bot positions are open.
+The bets service's Kalshi source reads the bot's NO fills on the YES leg
+(v2 trades YES only): a YES sell while the account is net short YES is
+recorded as the NO buy it is (`sources/kalshi.py::fill_on_its_open_side`), so
+the held bets, conditional Kelly and the desk's `heldIds` see
+`kalshi:<ticker>:no`.
 
 - `GET :8095/taker.json`: the desk state, the rules, the last pass (counts by
   reason, per-league ticker coverage) and every decision with its `order`.
 - `taker.duckdb::taker_decisions` (append): one row each time a line's
-  decision changes (a chunk the service refuses with 400 is dropped and
+  decision changes (for a skipped row: its reason or Unabated's price, not
+  every tick of the live book; a chunk the service refuses with 400 is dropped and
   counted in `/health`'s `taker.log.dropped`, never retried in front of the
   rows behind it). `taker.duckdb::taker_orders`: one row per order sent.
   Their own file, never `bets.duckdb`.
@@ -2690,7 +2710,7 @@ One command runs everything and exits non-zero if any part fails:
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
 the node suite (`npm test` = `node --test tests/*.test.js`, 561 tests) and
-the bets service's pytest suite (621 tests, on the `kalshi_draft/venv`
+the bets service's pytest suite (630 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`

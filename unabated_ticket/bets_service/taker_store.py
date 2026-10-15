@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS taker_orders (
     kalshi_order_id  VARCHAR,
     exchange_index   INTEGER,              -- Kalshi's shard for the order, when its reply named one; routes the cancel
     cancelled_at     TIMESTAMPTZ,          -- when the cancel of the rest was confirmed; fills are final 60 s on
+    count_reported   DOUBLE,               -- contracts Kalshi's create reply said filled; the fills are final only once they show them all
     count_filled     DOUBLE,               -- NULL until the fills are read
     cost_filled      DOUBLE,               -- dollars paid incl. fees, NULL until read
     fills_final      BOOLEAN NOT NULL DEFAULT FALSE,  -- a fills read at least FILLS_SETTLE_SEC after the cancel
@@ -134,8 +135,8 @@ class TakerStore:
 
     def update_order(self, client_order_id: str, fields: dict) -> None:
         """UPDATE the named columns of one order (column names are this module's own, never caller text)."""
-        allowed = {"status", "kalshi_order_id", "exchange_index", "cancelled_at", "count_filled", "cost_filled",
-                   "fills_final", "open_cost", "error", "settled_at"}
+        allowed = {"status", "kalshi_order_id", "exchange_index", "cancelled_at", "count_reported", "count_filled",
+                   "cost_filled", "fills_final", "open_cost", "error", "settled_at"}
         unknown = set(fields) - allowed
         if unknown:
             raise ValueError(f"update_order: unknown columns {sorted(unknown)}")
@@ -151,13 +152,14 @@ class TakerStore:
             rows = self._con.execute(
                 "SELECT client_order_id, epoch_ms(placed_at), ticker, contract_side, status, kalshi_order_id, "
                 "fills_final, open_cost, epoch_ms(event_start), all_in_price, count_requested, event_id, "
-                "exchange_index, epoch_ms(cancelled_at), count_filled "
+                "exchange_index, epoch_ms(cancelled_at), count_filled, count_reported "
                 "FROM taker_orders WHERE settled_at IS NULL ORDER BY placed_at").fetchall()
         return [{
             "client_order_id": row[0], "placed_at": _utc_from_ms(row[1]), "ticker": row[2], "contract_side": row[3],
             "status": row[4], "kalshi_order_id": row[5], "fills_final": row[6], "open_cost": row[7],
             "event_start": _utc_from_ms(row[8]), "all_in_price": row[9], "count_requested": row[10],
             "event_id": row[11], "exchange_index": row[12], "cancelled_at": _utc_from_ms(row[13]), "count_filled": row[14],
+            "count_reported": row[15],
         } for row in rows]
 
     def open_exposure(self) -> float:
