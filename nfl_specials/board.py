@@ -18,10 +18,11 @@ book; each book's own calls stay sequential, so DK's 0.5 s pacing holds.
 """
 from __future__ import annotations
 
+import calendar
 import logging
 import threading
 from dataclasses import dataclass, field, replace
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Callable
 
 from nfl_specials import config, wz
@@ -119,8 +120,17 @@ def open_books() -> tuple[dict[str, SgpBook], dict[str, str]]:
     return books, status
 
 
+def special_week_sunday(week_date: date) -> date:
+    """The Sunday of the NFL week Wagerzon's `week_date` falls in. Wagerzon
+    dates the specials on a day of their week (seen: Sunday, Thursday); a
+    Monday is Monday night, in the week of the Sunday before."""
+    if week_date.weekday() == calendar.MONDAY:
+        return week_date - timedelta(days=1)
+    return week_date + timedelta(days=calendar.SUNDAY - week_date.weekday())
+
+
 def in_special_week(game: BookGame, special: wz.WzSpecial) -> bool:
-    sunday = datetime.combine(special.week_date, time(0, 0), tzinfo=timezone.utc)
+    sunday = datetime.combine(special_week_sunday(special.week_date), time(0, 0), tzinfo=timezone.utc)
     kickoff = parse_start(game.game_start_time)
     return sunday - WEEK_STARTS_BEFORE_SUNDAY <= kickoff <= sunday + WEEK_ENDS_AFTER_SUNDAY
 
