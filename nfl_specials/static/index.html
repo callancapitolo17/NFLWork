@@ -402,6 +402,7 @@ function renderTiles(p) {
   const recommended = p.board.lines.filter(l => l.recommended_stake > 0);
   const totalStake = recommended.reduce((sum, l) => sum + l.recommended_stake, 0);
   const expectedProfit = recommended.reduce((sum, l) => sum + l.recommended_stake * l.ev, 0);
+  const unlimitedTotal = p.board.lines.reduce((sum, l) => sum + (l.unlimited_stake || 0), 0);
   const available = p.available_balance;
   const share = available ? Math.min(1, totalStake / available) : 0;
 
@@ -421,6 +422,8 @@ function renderTiles(p) {
         el("span", { style: `width:${(share * 100).toFixed(1)}%` })),
       el("div", { class: "tile-sub", text: `${recommended.length} bet${recommended.length === 1 ? "" : "s"}` +
         (available ? ` · ${Math.round(share * 100)}% of available` : "") }),
+      unlimitedTotal > totalStake + 0.5
+        ? el("div", { class: "tile-sub", text: `${money(unlimitedTotal)} with no balance limit` }) : null,
     ]),
     el("div", { class: "tile" }, [
       el("div", { class: "tile-label", text: "Expected profit" }),
@@ -591,7 +594,8 @@ function stakeCell(line, p, byRotation) {
     const risk = Number(input.value);
     const pieces = [];
     if (risk > 0) pieces.push(`to win ${money(toWin(risk, line.wz_american))}`);
-    if (!line.yields_to && !teamBets.length && line.kelly_stake > line.recommended_stake + 0.5) pieces.push(`Kelly ${money(line.kelly_stake)}`);
+    if (line.unlimited_stake > line.recommended_stake + 0.5) pieces.push(`no balance limit ${money(line.unlimited_stake)}`);
+    if (!line.yields_to && !teamBets.length && line.kelly_stake > Math.max(line.recommended_stake, line.unlimited_stake) + 0.5) pieces.push(`Kelly ${money(line.kelly_stake)}`);
     if (!line.yields_to && p.available_balance == null) pieces.push("no stake until Refresh reads the balance");
     sub.textContent = pieces.join(" · ");
   };

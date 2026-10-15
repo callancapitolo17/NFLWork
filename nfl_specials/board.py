@@ -105,6 +105,7 @@ class Sizing:
     kelly_stake: float              # fractional Kelly given the team's other positions, before the budget
     recommended_stake: float        # fitted to the Wagerzon budget, whole dollars
     yields_to: int | None           # rotation of the same-team position that leaves this one no stake
+    unlimited_stake: float = 0.0    # the recommended stake if the balance were no limit ($20 min, $250 cap kept)
 
 
 @dataclass(frozen=True)
@@ -230,13 +231,16 @@ def size_board(board: Board, bankroll: float, kelly_fraction: float,
         groups.append(ExposureGroup(candidates, tuple(bet for _i, bet in held_by_team.get(key, []))))
 
     fitted = budgeted_stakes(groups, bankroll, kelly_fraction, budget, config.WZ_MIN_STAKE)
+    # Same sizing with the Wagerzon balance taken away: shows what the balance costs.
+    unlimited = budgeted_stakes(groups, bankroll, kelly_fraction, None, config.WZ_MIN_STAKE)
     # Joint Kelly with no budget, cap or minimum: what the correlation alone leaves each line.
     unbudgeted = budgeted_stakes([replace(g, candidates=tuple(replace(c, max_stake=math.inf) for c in g.candidates))
                                   for g in groups], bankroll, kelly_fraction, None, 0.0)
-    recommended, joint_kelly, yields_to = {}, {}, {}
-    for key, group_fitted, group_unbudgeted in zip(teams, fitted, unbudgeted):
+    recommended, unlimited_by_line, joint_kelly, yields_to = {}, {}, {}, {}
+    for key, group_fitted, group_unlimited, group_unbudgeted in zip(teams, fitted, unlimited, unbudgeted):
         members = members_by_team[key]
         recommended.update(zip(members, group_fitted))
+        unlimited_by_line.update(zip(members, group_unlimited))
         joint_kelly.update(zip(members, group_unbudgeted))
         # A line the joint Kelly zeroes is covered by the team's biggest
         # other position: a staked sibling, else a held bet.
@@ -250,7 +254,7 @@ def size_board(board: Board, bankroll: float, kelly_fraction: float,
     sized = []
     for index, (line, (fair, ev, stake)) in enumerate(zip(board.lines, raw)):
         sized.append(Sizing(fair, ev, joint_kelly.get(index, stake), recommended.get(index, 0.0),
-                            yields_to.get(index)))
+                            yields_to.get(index), unlimited_by_line.get(index, 0.0)))
     return sized
 
 

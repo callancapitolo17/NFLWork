@@ -232,3 +232,12 @@ def test_a_held_bet_the_board_cannot_price_blocks_its_team():
     same_team = _line(2, "CHARGERS TRIFECTA (1Q +½, 1H +4½ & GM +7½)", 400, 0.30)
     sized = size_board(_board(placed, same_team), 10_000, 0.25, None, held=(HeldPlacement(1, 100.0, 1600),))
     assert sized[1].recommended_stake == 0
+
+
+def test_unlimited_stake_drops_the_balance_but_keeps_the_book_limits():
+    raiders = _line(1, "RAIDERS TRIFECTA (1Q, 1H & GM)", 1730, 0.12)
+    chargers = _line(2, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.081)
+    sized = size_board(_board(raiders, chargers), 35000, 0.25, 200)
+    assert sum(s.recommended_stake for s in sized) <= 200
+    assert [s.unlimited_stake for s in sized] == [250.0, 206.0]   # Raiders capped at $250, Chargers at its Kelly
+    assert all(s.unlimited_stake >= s.recommended_stake for s in sized)
