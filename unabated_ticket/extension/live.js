@@ -27,6 +27,17 @@
 
   // eventPeriodTypeId on a live row -> the part of the game that just ended.
   const PERIOD_ENDED = { 2: "1st half", 3: "2nd half", 4: "Q1", 5: "Q2", 6: "Q3", 7: "Q4" };
+  // eventPeriodTypeId -> the periods (feed.PERIODS names) decided by then: a
+  // bet on one is settled, not a live position, whatever its venue still
+  // lists it as. The full game is never here (overtime).
+  const PERIODS_SETTLED_BY = {
+    4: ["1Q"],
+    5: ["1Q", "2Q", "1H"],
+    2: ["1Q", "2Q", "1H"],
+    6: ["1Q", "2Q", "1H", "3Q"],
+    7: ["1Q", "2Q", "1H", "3Q", "4Q"],
+    3: ["1Q", "2Q", "1H", "3Q", "4Q", "2H"],
+  };
 
   function storageKeyOf(league) {
     return `${STORAGE_PREFIX}${league}`;
@@ -52,6 +63,12 @@
       return game.checkpointType.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
     }
     return "break";
+  }
+
+  // The periods already settled at this break, by feed.PERIODS name; none
+  // when the break is unknown.
+  function settledPeriods(eventPeriodTypeId) {
+    return (PERIODS_SETTLED_BY[eventPeriodTypeId] || []).slice();
   }
 
   function matchupOf(game) {
@@ -150,6 +167,8 @@
         producedMs: parseUtcMs(game.producedUtc),
         producedUtc: game.producedUtc ?? null,
         matchup: matchupOf(game),
+        eventPeriodTypeId: game.eventPeriodTypeId ?? null,
+        settledPeriods: settledPeriods(game.eventPeriodTypeId),
       },
     };
   }
@@ -167,6 +186,17 @@
       }
     }
     return ready;
+  }
+
+  // Whether a payload not yet past LIVE_DROP_MS carries this game with its
+  // fair ready: what a live ticket's stake rests on. False once the break
+  // ends (the fair expires) or the tab stops posting.
+  function hasReadyFair(payloads, eventId, now) {
+    for (const payload of payloads || []) {
+      if (!isFresh(payload, now)) continue;
+      if ((payload.games || []).some((game) => game.eventId === eventId && game.fairStatus === FAIR_READY)) return true;
+    }
+    return false;
   }
 
   // The listable live rows across every stored payload whose fair is ready,
@@ -208,7 +238,7 @@
 
   const api = {
     LIVE_STALE_MS, LIVE_STALE_HIDDEN_MS, LIVE_DROP_MS, STORAGE_PREFIX,
-    storageKeyOf, checkpointLabel, liveView, selectLiveEdges, liveFairState, liveAlertKey,
+    storageKeyOf, checkpointLabel, settledPeriods, liveView, selectLiveEdges, liveFairState, hasReadyFair, liveAlertKey,
   };
 
   if (typeof module !== "undefined" && module.exports) {

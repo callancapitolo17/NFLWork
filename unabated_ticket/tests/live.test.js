@@ -9,6 +9,7 @@ const teams = require("../extension/teams.js");
 const betsLib = require("../extension/bets.js");
 const edgeRows = require("../extension/edgerows.js");
 const kelly = require("../extension/kelly.js");
+const betsView = require("../extension/betsview.js");
 // Real Unabated team ids (teams_index.json), so a bet's team names resolve.
 teams.loadIndex(JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "teams_index.json"), "utf8")).leagues);
 
@@ -57,6 +58,8 @@ test("selectLiveEdges: an Edges row with the screen's edge and fair, a live bloc
   assert.equal(edge.book.name, "DraftKings");
   assert.equal(edge.live.checkpoint, "end of Q1");
   assert.equal(edge.live.matchup, "Philadelphia Eagles @ Chicago Bears");
+  // End of Q1: the first quarter is decided, nothing else.
+  assert.deepEqual([edge.live.eventPeriodTypeId, edge.live.settledPeriods], [4, ["1Q"]]);
   // Naive UTC read as UTC: 00:52:48 is 12 s before NOW.
   assert.equal(NOW - edge.modifiedMs, 12000);
   assert.equal(edge.eventStartMs, Date.parse("2026-09-28T00:15:00Z"));
@@ -180,16 +183,23 @@ function heldBet(fields) {
   }]);
 }
 
-// The listed row with `key`, sized against `records` on the in-game ladder.
-function sizedLive(key, records) {
-  const listed = live.selectLiveEdges([halftimeLadders()], { now: NOW, includeAlts: true, minEdgePct: 1 });
+// The listed row with `key`, sized against `records` on the in-game ladder
+// the way panel.js does it (a bounded ladder reader over the live payload).
+function sizedLiveRow(key, records, livePayload = halftimeLadders()) {
+  const listed = live.selectLiveEdges([livePayload], { now: NOW, includeAlts: true, minEdgePct: 1 });
   const [sized] = edgeRows.withBetFlags(listed.filter((r) => r.key === key), {
     records, boardLines: [], stakeSettings: edgeRows.DEFAULT_STAKE_SETTINGS,
-    ladderReaderOf: edgeRows.createLadderReaders(live.liveFairState([halftimeLadders()], NOW)), teasers: [],
+    ladderReaderOf: edgeRows.createLadderReaders(live.liveFairState([livePayload], NOW), { bounded: true }), teasers: [],
   });
+  return sized;
+}
+
+// That row's flag, the matches cut down to what the tests read.
+function sizedLive(key, records, livePayload = halftimeLadders()) {
+  const sized = sizedLiveRow(key, records, livePayload);
   return {
     tier: sized.bet.tier, advice: { ...sized.bet.advice, matches: undefined },
-    matches: sized.bet.matches.map((match) => ({ id: match.bet.id, tier: match.tier, inMath: match.inMath, note: match.note })),
+    matches: sized.bet.matches.map((match) => ({ id: match.bet.id, tier: match.tier, inMath: match.inMath, note: match.note, ...(match.bound ? { bound: match.bound } : {}) })),
   };
 }
 
@@ -249,9 +259,133 @@ test("live sizing: spreads read the same way: a held Eagles -7.5 cuts the Eagles
   });
 });
 
-test("live sizing: a held bet at a number the screen has no fair for is named and left out", () => {
-  assert.deepEqual(sizedLive(OVER_475, heldBet({ id: "k-over-515", side: "over", points: 51.5 })), {
-    tier: "same_side", advice: sizedAdvice(ALONE, "bet", 0, 0),
-    matches: [{ id: "k-over-515", tier: "same_side", inMath: false, note: "no fair at 51.5" }],
+// ---- a held bet at a number the screen shows no fair for: bounded, not left out
+//
+// P(total > 51.5) is somewhere between 0 (past the ladder's end) and the
+// row's own 38.0% at 47.5 (Unabated's edge); the stake is the smaller of
+// the two ends. Checked by hand with condkelly at each end: $326.92 with the
+// bet certainly lost, $125.95 with it winning exactly when the Over 47.5 does.
+
+test("live sizing: a held Over 51.5 past the ladder's end is sized at the worst case its bounds allow, $125.95, and says so", () => {
+  const held = heldBet({ id: "k-over-515", side: "over", points: 51.5 });
+  assert.deepEqual(sizedLive(OVER_475, held), {
+    tier: "same_side", advice: sizedAdvice(125.95, "add", 300, 0),
+    matches: [{ id: "k-over-515", tier: "same_side", inMath: true, note: null, bound: "no fair at 51.5 \u00b7 bounded 0%\u201338%" }],
   });
+  const row = sizedLiveRow(OVER_475, held);
+  assert.deepEqual(betsView.relatedLines({ matches: row.bet.matches }).map((line) => [line.tag, line.inMath]), [["same side \u00b7 no fair at 51.5 \u00b7 bounded 0%\u201338%", true]]);
+  assert.deepEqual(edgeRows.stakeRail(row), { text: "add $125.95", note: "$340.54 alone", atSize: false });
+});
+
+test("live sizing: a held Under 51.5 past the ladder's end reads its bound from its own side, 62–100%, and takes the smaller end, $354.16", () => {
+  assert.deepEqual(sizedLive(OVER_475, heldBet({ id: "k-under-515", side: "under", points: 51.5 })), {
+    tier: "opposite", advice: sizedAdvice(354.16, "bet", 0, 300),
+    matches: [{ id: "k-under-515", tier: "opposite", inMath: true, note: null, bound: "no fair at 51.5 \u00b7 bounded 62%\u2013100%" }],
+  });
+});
+
+test("live sizing: a held Over 42.5 between two rungs is bracketed by them (50–62%); the worst end is the 44.5 rung's, $167.18", () => {
+  const sized = sizedLive(OVER_475, heldBet({ id: "k-over-425", side: "over", points: 42.5 }));
+  assert.deepEqual([sized.advice.bet, sized.matches[0].bound], [167.18, "no fair at 42.5 \u00b7 bounded 50%\u201362%"]);
+});
+
+test("live sizing: two held Overs past the ladder share one bracket; the end that puts both on the row's own cut leaves nothing to add", () => {
+  // Corners by hand: $313.30 (both lost), $112.33 (48.5 at 38%, 49.5 lost), $0 (both at 38%: $600 already on the Over 47.5's outcome);
+  // the fourth corner has the fairs rising with the number and is not a ladder.
+  const held = [...heldBet({ id: "k-485", side: "over", points: 48.5 }), ...heldBet({ id: "k-495", side: "over", points: 49.5 })];
+  const sized = sizedLive(OVER_475, held);
+  assert.deepEqual([sized.advice.kind, sized.advice.bet, sized.advice.held], ["sized", 0, 600]);
+  assert.deepEqual(edgeRows.stakeRail(sizedLiveRow(OVER_475, held)), { text: "add $0.00", note: "$340.54 alone", atSize: true });
+});
+
+test("live sizing: past six bounded numbers the calc is declined, and a live row then shows no stake at all", () => {
+  const records = [48.5, 49.5, 50.5, 51.5, 52.5, 53.5, 54.5].flatMap((points) => heldBet({ id: `k-${points}`, side: "over", points }));
+  const sized = sizedLive(OVER_475, records);
+  assert.deepEqual([sized.advice.kind, sized.advice.reason], ["declined", betsView.REASON_TOO_MANY_BOUNDS]);
+  assert.ok(sized.matches.every((match) => match.inMath === false && match.note === betsView.REASON_TOO_MANY_BOUNDS));
+  assert.deepEqual(edgeRows.stakeRail(sizedLiveRow(OVER_475, records)), { text: "\u2014", note: betsView.REASON_TOO_MANY_BOUNDS, atSize: false });
+});
+
+// A whole-number live line: the push between 45.5 and 46.5 has no rung of
+// its own, so it is bracketed by the 44.5 and 47.5 rungs (0 to 12 points of
+// push). Checked by hand: $88.88 with no push, $60.85 with the most.
+test("live sizing: a whole-number live Over 46 prices its push off the rungs around it, worst case the most push, $60.85", () => {
+  const withOver46 = halftimeLadders();
+  withOver46.rows.push(novigRow(3, 0, 46, 44.5, 136, 150, 6));
+  const OVER_46 = "live:125807:pt1:bt3:si0:ms89:alt46";
+  const sized = sizedLive(OVER_46, heldBet({ id: "k-over", side: "over", points: 44.5 }), withOver46);
+  assert.deepEqual([sized.advice.kind, sized.advice.bet, sized.advice.verb, sized.advice.held, sized.advice.alone], ["sized", 60.85, "add", 300, 300]);
+  assert.deepEqual(sized.matches, [{ id: "k-over", tier: "same_side", inMath: true, note: null }]);
+});
+
+// ---- periods the game has finished
+
+test("settledPeriods: the quarters and halves decided at each break; the full game never", () => {
+  assert.deepEqual(live.settledPeriods(4), ["1Q"]);
+  assert.deepEqual(live.settledPeriods(5), ["1Q", "2Q", "1H"]);
+  assert.deepEqual(live.settledPeriods(2), ["1Q", "2Q", "1H"]);
+  assert.deepEqual(live.settledPeriods(6), ["1Q", "2Q", "1H", "3Q"]);
+  assert.deepEqual(live.settledPeriods(7), ["1Q", "2Q", "1H", "3Q", "4Q"]);
+  assert.deepEqual(live.settledPeriods(3), ["1Q", "2Q", "1H", "3Q", "4Q", "2H"]);
+  assert.deepEqual(live.settledPeriods(null), []);
+});
+
+test("live sizing: a held 1H Over at halftime is settled, not a position: named grey, the row sized alone", () => {
+  assert.deepEqual(sizedLive(OVER_475, heldBet({ id: "k-1h-over", side: "over", points: 24.5, period: "1H" })), {
+    tier: "related_same", advice: sizedAdvice(ALONE, "bet", 0, 0),
+    matches: [{ id: "k-1h-over", tier: "related_same", inMath: false, note: "1H \u00b7 settled" }],
+  });
+});
+
+// Across periods the corners of a bound are not the worst case: the
+// worst-case pairing puts the smallest stake inside it (a 1H Over with no
+// live fair, FG Over 47.5: $326.92 and $354.16 at the ends, $126.15 at a
+// 38% chance, scanned by hand), so these decline instead.
+
+test("live sizing: a held 1H Over at the end of Q1 with no 1H line on the screen declines the calc: no number, the reason named", () => {
+  const endOfQ1 = { ...halftimeLadders(), games: [game({ eventPeriodTypeId: 4 })] };
+  const held = heldBet({ id: "k-1h-over", side: "over", points: 24.5, period: "1H" });
+  const reason = "no live fair at 24.5 for the 1H bet";
+  assert.deepEqual(sizedLive(OVER_475, held, endOfQ1), {
+    tier: "related_same", advice: { ...sizedAdvice(ALONE, "bet", 0, 0), kind: "declined", reason },
+    matches: [{ id: "k-1h-over", tier: "related_same", inMath: false, note: reason }],
+  });
+  assert.deepEqual(edgeRows.stakeRail(sizedLiveRow(OVER_475, held, endOfQ1)), { text: "\u2014", note: reason, atSize: false });
+});
+
+// The end of Q1 with Novig's 1H total on the screen too: both sides of 24.5 at even money.
+function endOfQ1WithFirstHalf() {
+  const base = halftimeLadders();
+  const firstHalf = (sideIndex, fair, price, edgePct) => row({
+    key: `live:125807:pt2:bt3:si${sideIndex}:ms89`, periodTypeId: 2, betTypeId: 3, sideIndex, sideKey: `si${sideIndex}`, sideLabel: null,
+    bookId: 89, bookName: "Novig", isAlt: false, mainPoints: null, points: 24.5, price, fair, edgePct, marketId: 3,
+  });
+  return { ...base, games: [game({ eventPeriodTypeId: 4 })], rows: [...base.rows, firstHalf(0, 100, -105, -2.4), firstHalf(1, 100, -105, -2.4)] };
+}
+
+// The worst-case pairing puts the 1H win on the FG rows the Over 47.5 wins
+// on, so a 50% 1H Over cuts it exactly as a same-period Over 44.5 does.
+test("live sizing: a held 1H Over at a number the screen does price is in the math across periods as pregame (worst-case pairing), $167.18", () => {
+  const sized = sizedLive(OVER_475, heldBet({ id: "k-1h-over", side: "over", points: 24.5, period: "1H" }), endOfQ1WithFirstHalf());
+  assert.deepEqual(sized, {
+    tier: "related_same", advice: sizedAdvice(167.18, "add", 300, 0),
+    matches: [{ id: "k-1h-over", tier: "related_same", inMath: true, note: null }],
+  });
+});
+
+test("live sizing: a bounded fair in the row's period while a 1H bet is in the math declines the calc: the corners are not the worst case then", () => {
+  const held = [...heldBet({ id: "k-1h-over", side: "over", points: 24.5, period: "1H" }), ...heldBet({ id: "k-over-515", side: "over", points: 51.5 })];
+  const sized = sizedLive(OVER_475, held, endOfQ1WithFirstHalf());
+  const reason = "no live fair at 51.5 with a 1H bet held";
+  assert.deepEqual([sized.advice.kind, sized.advice.reason], ["declined", reason]);
+  assert.deepEqual(sized.matches.map((match) => [match.id, match.inMath, match.note]), [["k-over-515", false, reason], ["k-1h-over", false, reason]]);
+});
+
+test("hasReadyFair: the game's fair is ready in a payload not yet dropped; expired, another game or an old payload is not", () => {
+  const ready = payload();
+  assert.equal(live.hasReadyFair([ready], 125807, NOW), true);
+  assert.equal(live.hasReadyFair([ready], 7, NOW), false);
+  assert.equal(live.hasReadyFair([payload({ games: [game({ fairStatus: "expired" })] })], 125807, NOW), false);
+  assert.equal(live.hasReadyFair([payload({ at: NOW - live.LIVE_DROP_MS - 1 })], 125807, NOW), false);
+  assert.equal(live.hasReadyFair([], 125807, NOW), false);
 });

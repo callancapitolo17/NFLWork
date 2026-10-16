@@ -56,6 +56,19 @@
   const TEASER_PERIOD = "FG";
   const NOTE_TWO_TEASER_LEGS = "two legs on this market of the game";
   const HALF_POINT = 0.5;
+  // The in-game ladder (live) carries only the numbers the screen shows. A
+  // held bet at a number it lacks is not left out: its fair is bracketed by
+  // the rungs around it (ladder.probBounds) and the stake is the smallest
+  // the bounds allow, every end of every bound tried (smallestOverBounds).
+  // That is exact only while every bet in the math is in the row's own
+  // period: across periods the worst-case pairing puts the smallest stake
+  // INSIDE the bound (a 1H Over with no live fair at the end of Q1 is worst
+  // when its chance equals the row's own: $126 against $327 and $354 at the
+  // ends), so a bound that meets a bet in another period declines the calc
+  // rather than show a number that is not the worst case. Past this many
+  // bounded cuts the corners multiply too far: declined.
+  const MAX_BOUNDED_CUTS = 6;
+  const REASON_TOO_MANY_BOUNDS = "too many numbers without a live fair to bound";
   // "20 s" / "3 min" / "2 h" / "3 d" — the header line's short form.
   function fmtAgeShort(ms) {
     const age = Math.max(0, ms);
@@ -207,31 +220,91 @@
   }
 
   // P(above) at every cut the bet needs that the row does not set itself:
-  // {pairs: [[cut, prob], ...]} or {reason}. A cut on the row's own number
-  // takes the row's chance (from Unabated's edge), so it needs no rung.
-  function ladderPairsFor(position, rowPosition, ladderOf) {
-    const rowCuts = position.period === rowPosition.period ? condkelly.cutsNeeded(rowPosition) : [];
+  // {pairs: [[cut, prob], ...], bounds: [[cut, {lo, hi}], ...]} or {reason}.
+  // A cut on the row's own number takes the row's chance (from Unabated's
+  // edge), so it needs no rung. On a bounded ladder (the in-game one) a cut
+  // with no usable rung is bracketed by the rungs around it, the row's own
+  // cut among them (`rowKnown`, [[cut, probAbove]]), instead of failing.
+  function ladderPairsFor(position, rowPosition, ladderOf, rowKnown) {
+    const samePeriod = position.period === rowPosition.period;
+    const rowCuts = samePeriod ? condkelly.cutsNeeded(rowPosition) : [];
+    const ladder = ladderOf(position.period, position.axis);
     const pairs = [];
+    const bounds = [];
     for (const cut of condkelly.cutsNeeded(position)) {
       if (rowCuts.includes(cut)) continue;
-      const found = ladderLib.probAbove(ladderOf(position.period, position.axis), cut);
-      if (found.reason) return { reason: found.reason };
-      pairs.push([cut, found.prob]);
+      const found = ladderLib.probAbove(ladder, cut);
+      if (!found.reason) {
+        pairs.push([cut, found.prob]);
+        continue;
+      }
+      if (!ladder || !ladder.bounded) return { reason: found.reason };
+      // Another period's unknown fair has no exact worst case at a bound's end.
+      if (!samePeriod) return { reason: found.reason, otherPeriod: true };
+      bounds.push([cut, ladderLib.probBounds(ladder, cut, rowKnown)]);
     }
-    return { pairs };
+    return { pairs, bounds };
   }
 
-  // Why one match is not in the math, or null when it is: {note} | {pairs}.
-  function sizingOf(match, rowPosition, ladderOf) {
+  // The row's own cut as a point the bounds can lean on: a half-point row's
+  // chance is Unabated's edge; a whole-number row's chances hang on its push
+  // rungs, so it hands over nothing.
+  function rowKnownPoints(rowPosition, winProb) {
+    if (rowPosition.reason || !(winProb > 0 && winProb < 1) || Number.isInteger(rowPosition.cut)) return [];
+    return [[rowPosition.cut, rowPosition.direction === "above" ? winProb : 1 - winProb]];
+  }
+
+  function fmtPct(prob) {
+    return `${Math.round(prob * 100)}%`;
+  }
+
+  // "no fair at 51.5 · bounded 0–38%": the bet's win chance between the ends
+  // its bounds allow, read off the cut it wins past; "no fair at 51 ·
+  // bounded" when only its push rung is bounded.
+  function boundNote(bet, position, bounds) {
+    const winCut = rowWinCut(position);
+    const found = bounds.find(([cut]) => cut === winCut);
+    const number = `no fair at ${betNumberLabel(bet)} \u00b7 bounded`;
+    if (!found) return number;
+    const { lo, hi } = found[1];
+    const [winLo, winHi] = position.direction === "above" ? [lo, hi] : [1 - hi, 1 - lo];
+    return `${number} ${fmtPct(winLo)}\u2013${fmtPct(winHi)}`;
+  }
+
+  // "no live fair at 24.5 for the 1H bet": a bet in another period at a
+  // number the in-game ladder lacks; the whole calc declines on it.
+  function otherPeriodUnknownReason(match, position) {
+    return `no live fair at ${betNumberLabel(match.bet)} for the ${position.period} bet`;
+  }
+
+  // "no live fair at 42.5 with a 1H bet held": a bounded fair in the row's
+  // period while a bet in another period is in the math; the calc declines.
+  function boundedAcrossPeriodsReason(match, otherPeriod) {
+    return `no live fair at ${betNumberLabel(match.bet)} with a ${otherPeriod} bet held`;
+  }
+
+  // Why one match is not in the math, or how it is: {note} | {pairs, bounds,
+  // bound}, `bound` the words when its fair had to be bounded, else null;
+  // `block` names a decline the whole calc must take (an unknown fair in
+  // another period), with the same words as its note.
+  //   settledPeriods  feed.PERIODS names already decided at this live break
+  function sizingOf(match, rowPosition, ladderOf, rowKnown, settledPeriods) {
     if (match.tier === "same_game") return { note: NOTE_OTHER_MARKET };
     if (rowPosition.reason) return { note: rowPosition.reason };
     const position = match.position;
     if (!position || position.reason) return { note: position ? position.reason : "position unknown" };
+    // A bet on a period the game has finished is decided, whatever its venue
+    // still lists it as: a fixed sum, not a position on the rest of the game.
+    if (settledPeriods.includes(position.period)) return { note: `${position.period} \u00b7 settled` };
     if (position.axis !== rowPosition.axis) return { note: NOTE_OTHER_MARKET };
     if (position.period !== rowPosition.period && position.direction !== rowPosition.direction) return { note: NOTE_OTHER_PERIOD_HEDGE };
-    const found = ladderPairsFor(position, rowPosition, ladderOf);
+    const found = ladderPairsFor(position, rowPosition, ladderOf, rowKnown);
+    if (found.reason && found.otherPeriod) {
+      const reason = otherPeriodUnknownReason(match, position);
+      return { note: reason, block: reason };
+    }
     if (found.reason) return { note: `no fair at ${betNumberLabel(match.bet)}` };
-    return { pairs: found.pairs };
+    return { pairs: found.pairs, bounds: found.bounds, bound: found.bounds.length ? boundNote(match.bet, position, found.bounds) : null };
   }
 
   function heldBetOf(position) {
@@ -239,17 +312,61 @@
   }
 
   // A whole-number row pushes on its number: the push mass comes from the two
-  // rungs around it. {pairs} or {reason}.
+  // rungs around it, bracketed on a bounded ladder when it lacks one.
+  // {pairs, bounds} or {reason}.
   function rowPushPairs(rowPosition, ladderOf) {
     const cuts = condkelly.cutsNeeded(rowPosition);
-    if (cuts.length === 1) return { pairs: [] };
+    if (cuts.length === 1) return { pairs: [], bounds: [] };
+    const ladder = ladderOf(rowPosition.period, rowPosition.axis);
     const pairs = [];
+    const bounds = [];
     for (const cut of cuts) {
-      const found = ladderLib.probAbove(ladderOf(rowPosition.period, rowPosition.axis), cut);
-      if (found.reason) return { reason: `no fair at ${cut} to price the push` };
-      pairs.push([cut, found.prob]);
+      const found = ladderLib.probAbove(ladder, cut);
+      if (!found.reason) {
+        pairs.push([cut, found.prob]);
+        continue;
+      }
+      if (!ladder || !ladder.bounded) return { reason: `no fair at ${cut} to price the push` };
+      bounds.push([cut, ladderLib.probBounds(ladder, cut, [])]);
     }
-    return { pairs };
+    return { pairs, bounds };
+  }
+
+  // The ladders with one corner's bounded cuts filled in: {period: [[cut, prob]]}.
+  function laddersWith(ladders, cornerPairs) {
+    const filled = {};
+    for (const [period, pairs] of Object.entries(ladders)) filled[period] = pairs.slice();
+    for (const { period, cut, prob } of cornerPairs) (filled[period] ||= []).push([cut, prob]);
+    return filled;
+  }
+
+  // The stake over every corner of the box the bounds allow (each bounded
+  // cut at the low or the high end of its bound), the smallest kept:
+  // {stake, reason}. With every bet in the row's own period the outcome
+  // rows' chances are linear in the fairs, so the best stake is
+  // quasi-concave in them — every set where it is at least some amount is a
+  // half-space — and the smallest over the box sits at a corner (the caller
+  // declines before coming here when another period is in the math). A
+  // corner whose fairs rise with the cut is not a ladder (condkelly declines
+  // it as not monotone) and is skipped; with every corner skipped, that is
+  // the reason.
+  //   bounds  [{period, cut, range: {lo, hi}}], one per bounded cut
+  //   solve   cornerPairs ([{period, cut, prob}]) -> condkelly.solveStake result
+  function smallestOverBounds(bounds, solve) {
+    if (bounds.length > MAX_BOUNDED_CUTS) return { stake: null, reason: REASON_TOO_MANY_BOUNDS };
+    let smallest = null;
+    let notMonotone = null;
+    for (let corner = 0; corner < 1 << bounds.length; corner += 1) {
+      const cornerPairs = bounds.map((bound, index) => ({ period: bound.period, cut: bound.cut, prob: (corner >> index) & 1 ? bound.range.hi : bound.range.lo }));
+      const solved = solve(cornerPairs);
+      if (solved.reason === condkelly.REASON_NOT_MONOTONE && bounds.length > 0) {
+        notMonotone = solved;
+        continue;
+      }
+      if (solved.reason) return solved;
+      if (!smallest || solved.stake < smallest.stake) smallest = solved;
+    }
+    return smallest || notMonotone;
   }
 
   // ---- open teasers on the row's game (2026-09-30, teasers plan section 14) --
@@ -426,13 +543,21 @@
     const teaserIds = new Set(teasersHere.map((ticket) => ticket.id));
     // A teaser's leg records are the ticket's: it is listed once, as the ticket.
     const isTeaserLeg = (match) => Boolean(match.bet && match.bet.isParlayLeg && teaserIds.has(match.bet.parlayId));
+    const winProb = alone == null ? null : (1 + edgePct / 100) / kelly.americanToDecimal(price);
+    const rowKnown = rowKnownPoints(rowPosition, winProb);
+    // A live row names the periods the game has finished (live.describeLiveRow).
+    const settledPeriods = line.live && Array.isArray(line.live.settledPeriods) ? line.live.settledPeriods : [];
     const annotated = (matches || []).filter((match) => !isTeaserLeg(match)).map((match) => {
-      const sizing = sizingOf(match, rowPosition, readLadder);
-      return { ...match, inMath: !sizing.note, note: sizing.note || null, pairs: sizing.pairs || [] };
+      const sizing = sizingOf(match, rowPosition, readLadder, rowKnown, settledPeriods);
+      return {
+        ...match, inMath: !sizing.note, note: sizing.note || null, pairs: sizing.pairs || [], bounds: sizing.bounds || [],
+        block: sizing.block || null, ...(sizing.bound ? { bound: sizing.bound } : {}),
+      };
     });
     const entries = teasersHere.map((ticket) => teaserEntryOf(ticket, line, rowPosition, readLadder));
     const inMath = annotated.filter((match) => match.inMath);
     const teasersInMath = entries.filter((entry) => entry.note === null);
+    const blocked = annotated.find((match) => match.block);
     const sumStakes = (list) => roundCents(list.reduce((total, match) => total + match.position.stake, 0));
     const sumTickets = (list) => roundCents(list.reduce((total, entry) => total + entry.ticket.stake, 0));
     const held = sumStakes(inMath.filter((match) => match.position.direction === rowPosition.direction));
@@ -445,23 +570,41 @@
     const advice = { kind: "none", bet: alone, alone, verb, held, against, teasers: teaserDollars, reason: null };
     const finish = (list, teaserEntries) => ({ ...advice, matches: orderedForDisplay(list), teaserGroups: teaserGroupsOf(teaserEntries, rowPosition) });
     // No edge of its own: $0 as today. Sizing a hedge is deferred (user, 2026-09-19).
-    if ((inMath.length === 0 && teasersInMath.length === 0) || alone == null || !(alone > 0)) return finish(annotated, entries);
+    if (alone == null || !(alone > 0)) return finish(annotated, entries);
 
     const decline = (reason) => {
       Object.assign(advice, { kind: "declined", reason, held: 0, against: 0, teasers: { held: 0, against: 0 }, verb: "bet" });
       return finish(annotated.map((match) => (match.inMath ? { ...match, inMath: false, note: reason } : match)),
         entries.map((entry) => (entry.note === null ? { ...entry, note: reason } : entry)));
     };
-    const winProb = (1 + edgePct / 100) / kelly.americanToDecimal(price);
+    // A bet in another period with no live fair at its number: no exact
+    // worst case, so no number (see MAX_BOUNDED_CUTS).
+    if (blocked) return decline(blocked.block);
+    if (inMath.length === 0 && teasersInMath.length === 0) return finish(annotated, entries);
     if (!(winProb < 1)) return decline(REASON_CERTAIN_WIN);
     const push = rowPushPairs(rowPosition, readLadder);
     if (push.reason) return decline(push.reason);
     const ladders = {};
+    const boundsByCut = new Map();
     const addPairs = (period, pairs) => { ladders[period] = (ladders[period] || []).concat(pairs); };
+    // One bound per (period, cut): two bets at the same unpriced number share it.
+    const addBounds = (period, list) => { for (const [cut, range] of list) boundsByCut.set(`${period}|${cut}`, { period, cut, range }); };
     addPairs(rowPosition.period, push.pairs);
-    for (const match of inMath) addPairs(match.position.period, match.pairs);
+    addBounds(rowPosition.period, push.bounds);
+    for (const match of inMath) {
+      addPairs(match.position.period, match.pairs);
+      addBounds(match.position.period, match.bounds);
+    }
     for (const entry of teasersInMath) addPairs(entry.position.period, entry.pairs);
-    const solveWith = (teaserEntries) => condkelly.solveStake({
+    const bounds = Array.from(boundsByCut.values());
+    if (bounds.length) {
+      // Bounds are exact at their corners only within one period (see MAX_BOUNDED_CUTS).
+      const periodsInMath = [...inMath.map((match) => match.position.period), ...teasersInMath.map((entry) => entry.position.period)];
+      const otherPeriod = periodsInMath.find((period) => period !== rowPosition.period);
+      const boundedMatch = inMath.find((match) => match.bounds.length) || null;
+      if (otherPeriod) return decline(boundedMatch ? boundedAcrossPeriodsReason(boundedMatch, otherPeriod) : `no live fair for the push with a ${otherPeriod} bet held`);
+    }
+    const solveWith = (teaserEntries, cornerPairs) => condkelly.solveStake({
       kellyBankroll: bankroll * multiplier,
       candidate: {
         group: rowPosition.period, cut: rowPosition.cut, direction: rowPosition.direction,
@@ -470,15 +613,16 @@
       },
       held: inMath.map((match) => heldBetOf(match.position)),
       ...condkellyTicketsOf(teaserEntries),
-      ladders,
+      ladders: laddersWith(ladders, cornerPairs),
     });
-    let solved = solveWith(teasersInMath);
+    const solveOverBounds = (teaserEntries) => smallestOverBounds(bounds, (cornerPairs) => solveWith(teaserEntries, cornerPairs));
+    let solved = solveOverBounds(teasersInMath);
     let shownEntries = entries;
     // A decline the teasers alone cause (their other games past the budget or
     // out of line, their risk past K) must not throw the straights out too:
     // the straights size the row and the teasers say why they do not.
     if (solved.reason && teasersInMath.length > 0 && inMath.length > 0) {
-      const straightsOnly = solveWith([]);
+      const straightsOnly = solveOverBounds([]);
       if (!straightsOnly.reason) {
         const teaserReason = solved.reason;
         solved = straightsOnly;
@@ -492,9 +636,10 @@
   }
 
   // In-math bets first, each group in the matcher's order (strongest tier,
-  // then stake); the working `pairs` are dropped.
+  // then stake); the working `pairs`, `bounds` and `block` are dropped,
+  // `bound` (the words when the bet's fair had to be bounded) stays.
   function orderedForDisplay(annotated) {
-    const strip = ({ pairs: _pairs, ...match }) => match;
+    const strip = ({ pairs: _pairs, bounds: _bounds, block: _block, ...match }) => match;
     return annotated.filter((match) => match.inMath).concat(annotated.filter((match) => !match.inMath)).map(strip);
   }
 
@@ -566,8 +711,10 @@
   }
 
   // The related bets for one line: the bet itself and a tag. A bet in the
-  // math carries how it relates (`this line`, `same side`, `other side`); one
-  // that is not carries why (`game · not sized`, `no fair at 36.5`) and is
+  // math carries how it relates (`this line`, `same side`, `other side`),
+  // plus how its fair was bounded when the in-game ladder lacked its number
+  // (`same side · no fair at 51.5 · bounded 0–38%`); one that is not carries
+  // why (`game · not sized`, `no fair at 36.5`, `1H · settled`) and is
   // rendered grey. `fairThen` is "fair then 36.0%" — Unabated's fair for the
   // bet's own line when it was placed — on a bet with a saved fill fair
   // (fillfair.js), else null; `fairThenPct` is its "36.0%". `cells` are the
@@ -585,9 +732,11 @@
     const groups = flag && flag.advice && Array.isArray(flag.advice.teaserGroups) ? flag.advice.teaserGroups : [];
     const straightLines = matches.map((match) => {
       const fairThenPct = fairThenPctOf(match.bet, fairs);
+      const tierLabel = bets.tierLabel(match.tier);
       return {
         tier: match.tier, inMath: match.inMath === true,
-        tag: match.inMath === true ? bets.tierLabel(match.tier) : match.note || bets.tierLabel(match.tier),
+        // A bet in the math on a bounded fair says so after its tier ("same side · no fair at 51.5 · bounded 0–38%").
+        tag: match.inMath === true ? (match.bound ? `${tierLabel} \u00b7 ${match.bound}` : tierLabel) : match.note || tierLabel,
         text: match.label,
         fairThen: fairThenPct == null ? null : `fair then ${fairThenPct}`,
         fairThenPct,
@@ -818,7 +967,7 @@
   }
 
   const api = {
-    VENUES, FRESH_MS, STALE_MS, DEFAULT_BETS_SETTINGS,
+    VENUES, FRESH_MS, STALE_MS, DEFAULT_BETS_SETTINGS, MAX_BOUNDED_CUTS, REASON_TOO_MANY_BOUNDS,
     fmtAgeShort, freshnessLevel, sourceRows, liveSyncText, serviceStatus, sourcesUnavailable, openCount, headerLine,
     badges, relatedLines, relatedGroups, relatedOpenCount, otherBookRows, otherBooksTile, otherBooksLabel, centsFromFairText, stakeAdvice, capAtLiquidity, suggestedBetAmount, stakeAdviceWords, uncappedLine, venuesWithFreshPull, mergeServicePayload, crosswalkOf, pinsOf, crosswalkRows, needsGameBanner, needsFixBanner, keepDismissedOpen, keepKnownStartsOpen, ticketAsLine, sanitizeBetsSettings,
   };

@@ -11,8 +11,9 @@
 //          number, as a whole American price; side 0 = away / Over, side 1 =
 //          home / Under.
 // Outputs a ladder {axis, periodTypeId, rungs: [[cut, probAbove], ...]}
-//          sorted by cut, and probAbove(ladder, cut) -> {prob} or {reason}.
-//          Nothing here writes anywhere.
+//          sorted by cut, probAbove(ladder, cut) -> {prob} or {reason}, and
+//          probBounds(ladder, cut, known) -> {lo, hi} bracketing a cut the
+//          ladder has no usable rung at. Nothing here writes anywhere.
 //
 // Two axes. "total": cut = the number, above = Over. "margin" = away score
 // minus home score: an away spread at points a wins above -a, a home spread
@@ -126,6 +127,37 @@
     return { prob };
   }
 
+  // The rungs probAbove accepts, in cut order: no flat tail, no clamp.
+  function usableRungs(ladder) {
+    const rungs = ladder && Array.isArray(ladder.rungs) ? ladder.rungs : [];
+    return rungs.filter(([cut]) => !probAbove(ladder, cut).reason);
+  }
+
+  // P(result > cut) when the ladder has no usable rung at `cut`, bracketed
+  // by the usable rungs around it: {lo, hi}. P(above) falls as the cut
+  // rises, so the nearest usable rung below `cut` bounds it from above and
+  // the nearest above bounds it from below; past the ladder's ends the bound
+  // is certainty (1 below the first rung, 0 past the last). `known` is
+  // [[cut, probAbove], ...] the caller has from elsewhere (the row's own
+  // cut, from Unabated's edge) and counts as rungs. A live ladder carries
+  // only the numbers the screen shows, so a held bet at a number it lacks is
+  // sized at the worst case these bounds allow instead of being left out.
+  function probBounds(ladder, cut, known) {
+    const rungs = usableRungs(ladder).concat(Array.isArray(known) ? known : []).sort((a, b) => a[0] - b[0]);
+    let hi = 1;
+    let lo = 0;
+    for (const [rungCut, prob] of rungs) {
+      if (rungCut === cut) return { lo: prob, hi: prob };
+      if (rungCut < cut) hi = prob;
+      if (rungCut > cut) {
+        lo = prob;
+        break;
+      }
+    }
+    // Two rungs crossing by a hair (whole American prices) still bound.
+    return { lo: Math.min(lo, hi), hi: Math.max(lo, hi) };
+  }
+
   // "1H" -> 2: a bet record names its period the way feed.PERIODS does. A
   // period Unabated has no id for (Kalshi's F5, I1) has no ladder.
   function periodTypeIdOf(period) {
@@ -133,7 +165,7 @@
     return null;
   }
 
-  const api = { AXIS_TOTAL, AXIS_MARGIN, REASON_NO_RUNG, REASON_FLAT, groupLinesByEvent, buildLadder, probAbove, periodTypeIdOf };
+  const api = { AXIS_TOTAL, AXIS_MARGIN, REASON_NO_RUNG, REASON_FLAT, groupLinesByEvent, buildLadder, probAbove, probBounds, periodTypeIdOf };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
