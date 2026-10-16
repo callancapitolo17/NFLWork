@@ -97,11 +97,18 @@ superfectas (7-10 requests each, 0.5 s apart) took ~40 s over plain HTTP.
    zero. A stake under
    Wagerzon's $20 minimum for specials (measured: $15-19
    rejected) is dropped and the rest re-fit; each stake is capped at the
-   $250 maximum, and what a capped bet can't take goes to the next edge. The
-   page shows, next to each stake and the Recommended total, what it would be with
-   no balance limit (same sizing, $20 minimum and $250 cap kept; user decision
-   2026-10-15), always, even when it equals the stake (2026-10-16), and the uncapped (joint) Kelly stake when the cap trims it. No
+   $250 maximum, and what a capped bet can't take goes to the next edge. No
    stake (and no budget) goes to a special whose game has started.
+
+   Each row's stake column (2026-10-16, mockup approved by Cal) shows, in a
+   fixed order, the Recommended stake, the stake with no balance limit (same
+   sizing, $20 minimum and $250 cap kept) and the uncapped joint Kelly stake,
+   even when they match or are $0; what is already bet on that special as a
+   green chip; and at most one plain reason when something holds the stake
+   back (amber when it is $0, grey when it is only capped or trimmed). A
+   team's specials in one game sit together; with more than one, a strip on
+   top shows the team's total bet and recommended stake and its one Kelly
+   figure, and the rows drop their own Kelly line.
 
 | Book | Trifecta | Superfecta | How |
 |---|---|---|---|
