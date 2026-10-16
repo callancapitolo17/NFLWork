@@ -121,17 +121,19 @@
   .ev.neg { color: var(--bad); padding-left: 0; }
   .stake-col { min-width: 0; }
   .stake-form { display: flex; gap: 6px; align-items: center; }
-  .money-input { position: relative; flex: 1; min-width: 0; max-width: 120px; }
+  .money-input { position: relative; flex: 0 0 110px; min-width: 0; }
   .money-input span { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
   .money-input input { width: 100%; padding-left: 20px; }
   .stake-towin { font-size: 12px; color: var(--muted); white-space: nowrap; }
-  .stake-held { font-size: 12px; color: var(--good); font-weight: 600; margin-bottom: 5px; }
+  .stake-held { font-size: 12px; color: var(--good); font-weight: 600; margin-bottom: 2px; }
   .stake-figures { display: grid; grid-template-columns: auto auto; justify-content: start; column-gap: 12px;
                    font-size: 12px; color: var(--muted); margin: 6px 0 0; }
   .stake-figures dt, .stake-figures dd { margin: 0; }
   .stake-figures dd { text-align: right; color: var(--text); }
   .stake-reason { font-size: 12px; color: var(--muted); margin-top: 3px; overflow-wrap: anywhere; }
   .stake-reason.zero { color: var(--warn); }
+  .stake-reason.done { color: var(--good); }
+  .stake-team { font-size: 12px; color: var(--muted); margin-bottom: 5px; overflow-wrap: anywhere; }
   .stake-none { color: var(--faint); font-size: 13px; }
   .msg-ok { color: var(--good); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
   .msg-err { color: var(--bad); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
@@ -572,28 +574,39 @@ function stakeReason(line, p, ownTotal, teamBets, byRotation) {
   if (p.available_balance == null) return "No stake until Refresh reads your balance";
   if (line.kelly_stake <= 0.5 && recommended <= 0.5) return coveredReason(line, ownTotal, teamBets, byRotation);
   if (line.kelly_stake <= recommended + 0.5) return null;
-  if (ownTotal + recommended >= p.max_stake - 0.5) return `Capped at Wagerzon's ${money(p.max_stake)} max per special`;
+  if (ownTotal + recommended >= p.max_stake - 0.5) return ownTotal > 0.5 && recommended <= 0.5
+    ? `At Wagerzon's ${money(p.max_stake)} max for this special` : `Capped at Wagerzon's ${money(p.max_stake)} max per special`;
   if (line.unlimited_stake > recommended + 0.5) return "Balance goes to bigger edges first";
   if (recommended <= 0.5) return `Under Wagerzon's ${money(p.min_stake)} minimum`;
   return null;
 }
 
-// Kelly adds nothing here: say which of the team's bets already carries the exposure.
+// Kelly adds nothing here: say why, given the team's bets.
 function coveredReason(line, ownTotal, teamBets, byRotation) {
+  if (ownTotal > 0) return "Fully bet";
   const otherBets = teamBets.filter(r => r.wz_game_id !== line.wz_game_id);
-  if (otherBets.length) {
-    const otherTotal = otherBets.reduce((sum, r) => sum + r.risk, 0);
-    const other = byRotation.get(line.yields_to);
-    const name = other ? specialTitle(other.description) : "other bet on this team";
-    return `Your ${money(otherTotal)} on the ${name} already covers this`;
-  }
-  if (ownTotal > 0) return "What you already bet here is enough";
+  if (otherBets.length) return "The team's other bets already cover this";
   if (line.yields_to) {
     const other = byRotation.get(line.yields_to);
     const name = other ? `${specialTitle(other.description)} (${line.yields_to})` : String(line.yields_to);
     return `The ${name} takes this team's stake`;
   }
   return null;
+}
+
+// "Team also: $250 on the Bills superfecta", one entry per other special this team holds.
+function teamAlsoText(p, line, teamBets) {
+  const riskBySpecial = new Map();
+  for (const r of teamBets) {
+    if (r.wz_game_id === line.wz_game_id) continue;
+    riskBySpecial.set(r.wz_game_id, (riskBySpecial.get(r.wz_game_id) || 0) + r.risk);
+  }
+  if (!riskBySpecial.size) return null;
+  const parts = [...riskBySpecial].map(([wzGameId, risk]) => {
+    const other = p.board.lines.find(l => l.wz_game_id === wzGameId);
+    return `${money(risk)} on the ${specialTitle(other.description)}`;
+  });
+  return "Team also: " + parts.join(", ");
 }
 
 function stakeCell(line, p, byRotation) {
@@ -613,6 +626,8 @@ function stakeCell(line, p, byRotation) {
     const tickets = ownBets.length === 1 ? `ticket ${ownBets[0].ticket_number}` : `${ownBets.length} tickets`;
     children.push(el("div", { class: "stake-held num", text: `Already bet ${money(ownTotal)} · ${tickets}` }));
   }
+  const teamAlso = teamAlsoText(p, line, teamBets);
+  if (teamAlso) children.push(el("div", { class: "stake-team num", text: teamAlso }));
 
   const typed = editingStake.get(id);
   const value = typed !== undefined ? typed : (line.recommended_stake ? String(Math.round(line.recommended_stake)) : "");
@@ -639,7 +654,7 @@ function stakeCell(line, p, byRotation) {
   children.push(el("dl", { class: "stake-figures num" }, figures.flatMap(([label, stake]) =>
     [el("dt", { text: label }), el("dd", { text: money(stake) })])));
   const reason = stakeReason(line, p, ownTotal, teamBets, byRotation);
-  if (reason) children.push(el("div", { class: "stake-reason" + (line.recommended_stake <= 0.5 ? " zero" : ""), text: reason }));
+  if (reason) children.push(el("div", { class: "stake-reason" + (reason === "Fully bet" ? " done" : line.recommended_stake <= 0.5 ? " zero" : ""), text: reason }));
 
   if (message) children.push(el("div", { class: message.ok ? "msg-ok" : "msg-err", role: "status", text: message.text }));
   return el("div", { class: "stake-col" }, children);
