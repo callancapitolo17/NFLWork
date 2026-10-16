@@ -201,3 +201,22 @@ def test_a_team_already_bet_gets_no_new_stake():
     assert [s.recommended_stake for s in sized[:2]] == [0, 0]
     assert [s.yields_to for s in sized[:2]] == [None, None]
     assert sized[2].recommended_stake > 0
+
+
+def test_books_open_with_draftkings_through_the_configured_proxy(monkeypatch):
+    opened = {}
+
+    def fake(name):
+        def construct(**kwargs):
+            opened[name] = kwargs
+            return name
+        return construct
+
+    monkeypatch.setattr(board_module, "FanDuelBook", fake("FanDuel"))
+    monkeypatch.setattr(board_module, "BetMgmBook", fake("BetMGM"))
+    monkeypatch.setattr(board_module, "DraftKingsBook", fake("DraftKings"))
+    monkeypatch.setattr(board_module.config, "DK_PROXY_URL", "http://100.120.136.59:8097")
+    books, status = board_module.open_books()
+    assert books == {"FanDuel": "FanDuel", "BetMGM": "BetMGM", "DraftKings": "DraftKings"}
+    assert status == {"FanDuel": "ok", "BetMGM": "ok", "DraftKings": "ok"}
+    assert opened == {"FanDuel": {}, "BetMGM": {}, "DraftKings": {"proxy_url": "http://100.120.136.59:8097"}}

@@ -27,24 +27,12 @@ TAILNET_HTTPS_PORT = 8443
 # dk_relay's port on the Mac's Tailscale address.
 DK_RELAY_PORT = 8097
 
-_HOST_NAME_PATTERN = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*")
-
-
 def parse_extra_allowed_hosts(raw: str | None) -> tuple[str, ...]:
-    """NFL_SPECIALS_EXTRA_ALLOWED_HOSTS ("a.ts.net,b.ts.net") as a tuple of host names.
-
-    Empty or unset is (). Raises ValueError naming the first bad entry: the
-    page must refuse to start rather than run with an allowlist it misread.
-    """
-    names: list[str] = []
+    """NFL_SPECIALS_EXTRA_ALLOWED_HOSTS ("a.ts.net,b.ts.net") as host names; empty or unset is ()."""
+    names = []
     for entry in (raw or "").split(","):
         name = entry.strip()
-        if not name:
-            continue
-        if name != name.lower() or not _HOST_NAME_PATTERN.fullmatch(name) or len(name) > 253:
-            raise ValueError("NFL_SPECIALS_EXTRA_ALLOWED_HOSTS: expected a lowercase bare host name like "
-                             f"mlb-stack.tail1234.ts.net (no scheme, port, path or wildcard), got {name!r}")
-        if name not in names:
+        if name and name not in names:
             names.append(name)
     return tuple(names)
 

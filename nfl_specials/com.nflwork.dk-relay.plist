@@ -10,7 +10,8 @@
   <string>com.nflwork.dk-relay</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/python3</string>
+    <string>/usr/bin/env</string>
+    <string>python3</string>
     <string>-m</string>
     <string>nfl_specials.dk_relay</string>
   </array>
@@ -25,7 +26,6 @@
   <true/>
   <key>KeepAlive</key>
   <true/>
-  <!-- Until Tailscale is up the relay exits at once; launchd retries after this many seconds. -->
   <key>ThrottleInterval</key>
   <integer>30</integer>
   <key>StandardOutPath</key>

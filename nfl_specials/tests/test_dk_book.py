@@ -1,5 +1,6 @@
 """DraftKingsBook pricing over DK's SGP-builder endpoint — no network."""
 import pytest
+from curl_cffi.requests.exceptions import RequestException
 
 from nfl_specials import dk_book
 from nfl_specials.books import BookGame
@@ -60,6 +61,25 @@ def test_the_proxy_carries_every_draftkings_request(monkeypatch):
     session = FakeSession(_price_answer(["q1_sea"], {"ml_sea": 2.4}))
     _book(monkeypatch, session, proxy_url="http://100.120.136.59:8097")
     assert session.made_with == {"impersonate": "chrome", "proxy": "http://100.120.136.59:8097"}
+
+
+def test_after_one_transport_failure_later_calls_fail_at_once(monkeypatch):
+    session = FakeSession(_price_answer(["q1_sea"], {"ml_sea": 2.4}))
+    book = _book(monkeypatch, session)
+    calls_before = len(session.price_calls)
+
+    def unreachable(url, params=None, headers=None, timeout=None):
+        session.price_calls.append((params, headers))
+        raise RequestException("Failed to connect to 100.120.136.59 port 8097")
+
+    session.get = unreachable
+    with pytest.raises(RequestException):
+        book.price(GAME, ("q1_sea", "ml_sea"))
+    with pytest.raises(RuntimeError) as second:
+        book.price(GAME, ("q1_sea", "ml_lac"))
+    assert str(second.value) == ("DraftKings unreachable this refresh: "
+                                 "Failed to connect to 100.120.136.59 port 8097")
+    assert len(session.price_calls) == calls_before + 1
 
 
 def test_every_host_the_book_calls_is_on_the_relay_list():

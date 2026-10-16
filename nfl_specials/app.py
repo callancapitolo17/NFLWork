@@ -256,14 +256,12 @@ def _placement_json(row: dict) -> dict:
     return {key: (value.isoformat() if isinstance(value, datetime) else value) for key, value in row.items()}
 
 
-def allowed_hosts(port: int, extra_hosts: tuple[str, ...] = ()) -> tuple[str, ...]:
-    """The Host values a request can carry: the loopback names with this port,
-    and each tailnet name with the port `tailscale serve` publishes the page on."""
+def allowed_hosts(port: int, extra_hosts: tuple[str, ...]) -> tuple[str, ...]:
     proxied = tuple(f"{name}:{config.TAILNET_HTTPS_PORT}" for name in extra_hosts)
     return (f"127.0.0.1:{port}", f"localhost:{port}") + proxied
 
 
-def make_handler(app: SpecialsApp, port: int, extra_hosts: tuple[str, ...] = ()):
+def make_handler(app: SpecialsApp, port: int, extra_hosts: tuple[str, ...]):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — http.server's name
             if self._refused_foreign_host():

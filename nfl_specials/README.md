@@ -37,13 +37,10 @@ phone ──tailnet──▶ VM :8443 ──▶ fectas (:8096) ──▶ FanDuel
 ```
 
 - **DraftKings goes through the Mac.** DraftKings answers "Access Denied" to
-  Oracle's data-center IPs (every host, even its website; 2026-10-03 and
-  2026-10-15), so the container sends its DraftKings requests to
+  Oracle's data-center IPs, so the container sends its DraftKings requests to
   `dk_relay.py` on the Mac over Tailscale (`NFL_SPECIALS_DK_PROXY` in the
-  VM's `deploy/.env`). The relay is a CONNECT tunnel to DraftKings' two hosts
-  (`dk_book.DK_HOSTS`, port 443) and refuses anything else; TLS stays end to
-  end, so it never sees a request. **Mac asleep or off: the DraftKings chip
-  errors and superfectas stay unpriced; trifectas still price.**
+  VM's `deploy/.env`). **Mac asleep or off: the DraftKings chip errors and
+  superfectas stay unpriced; trifectas still price.**
 - **Wagerzon login:** only the `WAGERZON*_USERNAME` / `_PASSWORD` lines of the
   VM's `unabated_ticket/bets_service/.env` (`NFL_SPECIALS_WAGERZON_ENV`), the
   same login the bets service uses. There is no `bet_logger/.env` on the VM.
@@ -66,9 +63,6 @@ launchctl kickstart -k gui/$(id -u)/com.nflwork.dk-relay
 # stop and remove
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.dk-relay.plist
 ```
-
-It logs to `nfl_specials/dk_relay.log`: the start line (the Tailscale address
-it listens on), refused targets and upstream failures, never a request.
 
 ## The page
 
@@ -194,7 +188,7 @@ balance right away. Wagerzon's minimum online wager on a special is $20.
 | `dk_relay.py`, `com.nflwork.dk-relay.plist` | DraftKings-only CONNECT relay on the Mac for the VM, and its launchd agent |
 | `requirements.txt` | third-party packages for the VM image (`unabated_ticket/deploy/nfl_specials.Dockerfile`) |
 
-## Data: `nfl_specials/nfl_specials.duckdb` (on the VM `~/unabated-data/nfl_specials.duckdb`)
+## Data: `nfl_specials/nfl_specials.duckdb`
 
 | Table | Write | Row |
 |---|---|---|

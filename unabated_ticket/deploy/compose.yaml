@@ -78,9 +78,6 @@ services:
       - ../..:/app:ro
     logging: *rotated-logs
 
-  # The NFL fecta pricer (nfl_specials). Its DraftKings requests go through
-  # dk_relay on the Mac (DraftKings refuses data-center IPs); its Wagerzon login
-  # is the WAGERZON*_ lines of bets_service/.env, read inside the repo mount.
   fectas:
     build:
       context: ../..

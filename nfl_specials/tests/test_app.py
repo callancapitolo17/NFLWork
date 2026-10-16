@@ -1,4 +1,8 @@
+import http.client
+import json
+import threading
 from datetime import date, datetime, timezone
+from http.server import ThreadingHTTPServer
 
 import pytest
 
@@ -90,4 +94,28 @@ def test_the_tailnet_name_is_allowed_only_on_the_tailscale_serve_port():
 
 
 def test_without_tailnet_names_only_loopback_is_allowed():
-    assert app_module.allowed_hosts(8096) == ("127.0.0.1:8096", "localhost:8096")
+    assert app_module.allowed_hosts(8096, ()) == ("127.0.0.1:8096", "localhost:8096")
+
+
+def test_the_page_answers_its_names_and_refuses_any_other_host(app):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), app_module.make_handler(app, 0, ()))
+    port = server.server_address[1]
+    server.RequestHandlerClass = app_module.make_handler(app, port, ("mlb-stack.tail87ab2d.ts.net",))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        answers = {}
+        for host in (f"127.0.0.1:{port}", "mlb-stack.tail87ab2d.ts.net:8443", "mlb-stack.tail87ab2d.ts.net",
+                     "evil.example"):
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            connection.request("GET", "/api/board", headers={"Host": host})
+            response = connection.getresponse()
+            body = json.loads(response.read())
+            answers[host] = (response.status, body.get("error"))
+            connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert answers == {f"127.0.0.1:{port}": (200, None),
+                       "mlb-stack.tail87ab2d.ts.net:8443": (200, None),
+                       "mlb-stack.tail87ab2d.ts.net": (403, "foreign Host header"),
+                       "evil.example": (403, "foreign Host header")}

@@ -9,11 +9,11 @@ Nothing listens on a public interface; Oracle's security list keeps only SSH.
 
 | File | What it is |
 |---|---|
-| `compose.yaml` | both services, `network_mode: host`, `restart: unless-stopped`, json-file logs rotated at 10 MB × 3 |
+| `compose.yaml` | all three services, `network_mode: host`, `restart: unless-stopped`, json-file logs rotated at 10 MB × 3 |
 | `bets_service.Dockerfile` | `python:3.12-slim` + `bets_service/requirements.txt`, wheels only (all have aarch64 wheels); no code, no secrets |
-| `nfl_specials.Dockerfile` | the same for the fecta pricer: `python:3.12-slim` + `nfl_specials/requirements.txt` (build context: the repo root, narrowed to that one file by its `.dockerignore`) |
+| `nfl_specials.Dockerfile` | the same for the fecta pricer: `python:3.12-slim` + `nfl_specials/requirements.txt` |
 | `.env.example` | copy to `deploy/.env` (gitignored): tailnet name, data dir, Kalshi `.pem` path, uid/gid, the fecta pricer's DraftKings relay URL |
-| `deploy.sh` | pull `main`, rebuild, recreate both containers, health-check; prints PASS/FAIL |
+| `deploy.sh` | pull `main`, rebuild, recreate all three containers, health-check; prints PASS/FAIL |
 
 Where things live on the VM:
 
@@ -76,7 +76,8 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
 6. **deploy/.env.** `cp ~/NFLWork/unabated_ticket/deploy/.env.example ~/NFLWork/unabated_ticket/deploy/.env`,
    set `BETS_EXTRA_ALLOWED_HOSTS` to the name from step 5 (lowercase, no
    `https://`, no port), the two paths, and `DEPLOY_UID`/`DEPLOY_GID` to
-   `id -u` / `id -g`. The bets service refuses to start on a malformed name.
+   `id -u` / `id -g`, and `NFL_SPECIALS_DK_PROXY` (step 12; deploy.sh refuses
+   to run without it). The bets service refuses to start on a malformed name.
    Why it is needed: `tailscale serve` forwards the browser's `Host` header
    (the tailnet name), and the #125 DNS-rebinding guard 403s any name it does
    not list.
@@ -156,7 +157,7 @@ cd ~/NFLWork/unabated_ticket/deploy
 docker compose ps                    # state
 docker compose logs -f --tail 100 bets      # or: runner, fectas
 tail -f ~/unabated-data/logs/bets_service.log
-docker compose restart bets          # e.g. after editing bets_service/.env
+docker compose restart bets fectas   # e.g. after editing bets_service/.env
 docker compose down                  # stop all three (data kept); `up -d` or deploy.sh starts again
 sudo tailscale serve reset           # take the page off the tailnet
 ```

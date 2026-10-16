@@ -9,9 +9,7 @@ legs (dk-same-game-parlay 9.0.1). Given base legs and a candidate market it
 returns the SGP price of base + EACH outcome of that market, so one request
 prices every cell that differs only in its last leg. Verified 2026-10-02:
 10/10 superfecta cells identical to the betslip's calculateBets (the call
-issue #102 locked behind a real Chrome). DraftKings answers "Access Denied" to
-data-center IPs, so on a server every request goes through `proxy_url`
-(nfl_specials/dk_relay.py on the Mac). No DB writes.
+issue #102 locked behind a real Chrome). No DB writes.
 
 Leg -> DK market:
     scores_first   "1st to Score"                     (home, away)
@@ -28,6 +26,7 @@ from typing import Hashable
 from urllib.parse import urlsplit
 
 from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.exceptions import RequestException
 
 from nfl_specials.books import BookGame, LegMarket, Outcome, next_game, is_half_point, widen_with_tie
 from nfl_specials.special_parser import Leg
@@ -71,7 +70,8 @@ class DraftKingsBook:
 
     def __init__(self, proxy_url: str | None) -> None:
         self.session = cffi_requests.Session(impersonate="chrome", proxy=proxy_url)
-        self.session.get(DK_WARMUP_URL, timeout=30)
+        self._unreachable: RequestException | None = None
+        self._get(DK_WARMUP_URL, timeout=30)
         self._games = self._list_games()
         self._markets: dict[str, dict[str, dict]] = {}
         self._market_of_selection: dict[str, str] = {}
@@ -81,6 +81,18 @@ class DraftKingsBook:
         self._last_price_call_at = 0.0
 
     # --- discovery ---------------------------------------------------------
+    def _get(self, url: str, **kwargs):
+        """session.get, except that after one transport failure (a relay host
+        that went to sleep mid-refresh) every later call fails at once instead
+        of waiting out its own timeout."""
+        if self._unreachable is not None:
+            raise RuntimeError(f"DraftKings unreachable this refresh: {self._unreachable}")
+        try:
+            return self.session.get(url, **kwargs)
+        except RequestException as exc:
+            self._unreachable = exc
+            raise
+
     def _list_games(self) -> list[BookGame]:
         params = {
             "isBatchable": "false",
@@ -92,7 +104,7 @@ class DraftKingsBook:
             "include": "Events",
             "entity": "events",
         }
-        resp = self.session.get(DK_LEAGUE_URL, params=params, timeout=30)
+        resp = self._get(DK_LEAGUE_URL, params=params, timeout=30)
         if resp.status_code != 200:
             raise RuntimeError(f"DK event listing returned HTTP {resp.status_code}")
         games = []
@@ -112,7 +124,7 @@ class DraftKingsBook:
     def _event_markets(self, game: BookGame) -> dict[str, dict]:
         if game.book_event_id not in self._markets:
             url = DK_SGP_EVENT_URL.format(event_id=game.book_event_id)
-            resp = self.session.get(url, timeout=60)
+            resp = self._get(url, timeout=60)
             if resp.status_code != 200:
                 raise RuntimeError(f"DK SGP payload for event {game.book_event_id} "
                                    f"returned HTTP {resp.status_code}")
@@ -177,7 +189,7 @@ class DraftKingsBook:
         if wait > 0:
             time.sleep(wait)
         try:
-            resp = self.session.get(DK_SGP_PRICE_URL, timeout=30,
+            resp = self._get(DK_SGP_PRICE_URL, timeout=30,
                                     headers={"X-SportId": DK_FOOTBALL_SPORT_ID},
                                     params={"eventId": event_id, "selections": ",".join(sorted(base)),
                                             "marketCandidates": candidate_market_id,

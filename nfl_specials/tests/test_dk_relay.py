@@ -1,4 +1,5 @@
 import asyncio
+import socket
 
 import pytest
 
@@ -13,6 +14,7 @@ from nfl_specials import dk_relay
     (b"CONNECT sportsbook.draftkings.com HTTP/1.1\r\n\r\n", None),
     (b"CONNECT :443 HTTP/1.1\r\n\r\n", None),
     (b"CONNECT sportsbook.draftkings.com:443\r\n\r\n", None),
+    ("CONNECT sportsbook.draftkings.com:\u00b2 HTTP/1.1\r\n\r\n".encode("latin-1"), None),
 ])
 def test_connect_target_is_read_from_the_request_line(head, expected):
     assert dk_relay.parse_connect_target(head) == expected
@@ -64,3 +66,12 @@ def test_an_allowed_target_gets_a_byte_for_byte_tunnel(monkeypatch):
 def test_any_other_target_is_refused():
     head = b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n"
     assert asyncio.run(_relay_round_trip(head, b"never sent")) == (b"HTTP/1.1 403 Forbidden", b"")
+
+
+def test_an_unreachable_target_answers_502(monkeypatch):
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        closed_port = probe.getsockname()[1]
+    monkeypatch.setattr(dk_relay, "is_allowed", lambda target: target == ("127.0.0.1", closed_port))
+    head = f"CONNECT 127.0.0.1:{closed_port} HTTP/1.1\r\n\r\n".encode()
+    assert asyncio.run(_relay_round_trip(head, b"never sent")) == (b"HTTP/1.1 502 Bad Gateway", b"")

@@ -7,17 +7,18 @@ DraftKings, so this process sees only the target host, never a request.
 
     python3 -m nfl_specials.dk_relay     (launchd: nfl_specials/com.nflwork.dk-relay.plist)
 
-Listens on this Mac's Tailscale IPv4 (`tailscale ip -4`) at config.DK_RELAY_PORT,
-so only devices on the tailnet can reach it, and tunnels only to
-dk_book.DK_HOSTS on 443; any other target gets 403. No DB, no files: logs go
-to stderr (start, refusals, upstream failures).
+Listens on this Mac's Tailscale IPv4 (`tailscale ip -4`, waiting until
+Tailscale is up) at config.DK_RELAY_PORT, so only devices on the tailnet can
+reach it, and tunnels only to dk_book.DK_HOSTS on 443; any other target gets
+403. No DB, no files: logs go to stderr (start, waiting for Tailscale, refused
+targets, upstream failures).
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import subprocess
-import sys
+import time
 
 from nfl_specials import config
 from nfl_specials.dk_book import DK_HOSTS
@@ -30,6 +31,7 @@ MAX_HEADER_BYTES = 8192
 HEADER_TIMEOUT_SECONDS = 10
 UPSTREAM_CONNECT_TIMEOUT_SECONDS = 10
 CHUNK_BYTES = 65536
+TAILSCALE_RETRY_SECONDS = 30
 
 
 def parse_connect_target(head: bytes) -> tuple[str, int] | None:
@@ -39,7 +41,7 @@ def parse_connect_target(head: bytes) -> tuple[str, int] | None:
     if len(parts) != 3 or parts[0] != "CONNECT" or not parts[2].startswith("HTTP/1."):
         return None
     host, separator, port = parts[1].rpartition(":")
-    if not separator or not host or not port.isdigit():
+    if not separator or not host or not (port.isascii() and port.isdigit()):
         return None
     return host.lower(), int(port)
 
@@ -78,7 +80,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         return
     target = parse_connect_target(head)
     if not is_allowed(target):
-        log.warning("refused %r from %s", target or head[:80], peer)
+        log.warning("refused %s from %s", target or "a request that is not CONNECT", peer)
         await _answer_and_close(writer, b"HTTP/1.1 403 Forbidden")
         return
     try:
@@ -99,8 +101,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
 
 def tailscale_ipv4() -> str:
-    """This Mac's Tailscale IPv4. Raises when Tailscale is not up, so launchd
-    retries instead of the relay listening somewhere else."""
+    """This Mac's Tailscale IPv4. Raises when Tailscale is not up."""
     result = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=10, check=False)
     lines = result.stdout.split()
     if result.returncode != 0 or not lines or not lines[0].startswith("100."):
@@ -117,14 +118,22 @@ async def serve(host: str, port: int) -> None:
         await server.serve_forever()
 
 
+def wait_for_tailscale_ipv4() -> str:
+    """tailscale_ipv4(), retried until Tailscale is up; logs the first failure only."""
+    waiting_logged = False
+    while True:
+        try:
+            return tailscale_ipv4()
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+            if not waiting_logged:
+                log.warning("waiting for Tailscale: %s", exc)
+                waiting_logged = True
+            time.sleep(TAILSCALE_RETRY_SECONDS)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    try:
-        host = tailscale_ipv4()
-    except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
-        log.error("not starting: %s", exc)
-        sys.exit(1)
-    asyncio.run(serve(host, config.DK_RELAY_PORT))
+    asyncio.run(serve(wait_for_tailscale_ipv4(), config.DK_RELAY_PORT))
 
 
 if __name__ == "__main__":

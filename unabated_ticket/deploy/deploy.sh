@@ -45,8 +45,7 @@ status_of() {
 }
 
 # Polls until GET path with this Host returns the expected status or WAIT_SEC
-# passes (the containers need a few seconds to bind). Prints PASS/FAIL. The
-# request goes to the bets service unless a base URL is given.
+# passes (the containers need a few seconds to bind). Prints PASS/FAIL.
 check() {
   local label="$1" path="$2" host="$3" expected="$4" base_url="${5:-$BETS_URL}"
   local waited=0 status
@@ -82,6 +81,8 @@ main() {
   docker info >/dev/null 2>&1 \
     || fail "cannot reach Docker as $(id -un); run: sudo usermod -aG docker $(id -un), then log out and back in"
   [ -f "$env_file" ] || fail "missing ${env_file}; copy deploy/.env.example to it and fill it in"
+  [ -n "$(env_value "$env_file" NFL_SPECIALS_DK_PROXY)" ] \
+    || fail "NFL_SPECIALS_DK_PROXY is empty in ${env_file}; see deploy/README.md step 12"
 
   if [ "$pull" -eq 1 ]; then
     local branch

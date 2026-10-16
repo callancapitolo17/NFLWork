@@ -83,7 +83,7 @@ def test_on_a_server_only_the_wagerzon_login_lines_are_loaded(tmp_path, monkeypa
                         "WAGERZON_USERNAME=wz-user\nWAGERZON_PASSWORD=wz-pass\nWAGERZONC_USERNAME=\n")
     monkeypatch.setattr(wz.config, "WAGERZON_ENV_PATH", str(env_file))
     for key in ("WAGERZON_USERNAME", "WAGERZON_PASSWORD"):
-        monkeypatch.setenv(key, "before")          # restored after the test
+        monkeypatch.setenv(key, "before")
     monkeypatch.delenv("KALSHI_API_KEY_ID", raising=False)
     monkeypatch.delenv("BFA_PASSWORD", raising=False)
     monkeypatch.delenv("WAGERZONC_USERNAME", raising=False)

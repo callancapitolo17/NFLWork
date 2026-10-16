@@ -28,7 +28,6 @@ from dotenv import dotenv_values, load_dotenv
 from nfl_specials import config
 
 
-# The account login names wagerzon_accounts discovers (WAGERZON{X}_USERNAME / _PASSWORD).
 WAGERZON_LOGIN_KEY = re.compile(r"WAGERZON[A-Z]?_(USERNAME|PASSWORD)")
 
 
