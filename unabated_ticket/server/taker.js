@@ -67,8 +67,11 @@ const pricecheck = require("../extension/pricecheck.js");
 
 const KALSHI_BOOK_ID = 105;
 const NOVIG_BOOK_ID = 89;
-// Each venue's own $500 (Cal, 2026-10-14 for Kalshi, 2026-10-16 for Novig).
+// Kalshi's Kelly bankroll (Cal, 2026-10-14). The open-cost cap and the money
+// funded are the desks' own (taker_orders.py, novig_taker_desk.py), not this.
 const BOT_BANKROLL = 500;
+// Novig's Kelly bankroll (Cal, 2026-10-16: its own $500), apart from Kalshi's and from the Novig desk's cap.
+const NOVIG_KELLY_BANKROLL = 500;
 const BOT_KELLY = 0.25;
 const MIN_LIVE_EDGE = 0.03;
 const MAX_LIVE_EDGE = 0.20;
@@ -267,11 +270,13 @@ function booksBeating(check, price) {
 // contracts a stake buys, and which held bet is the other side of the market.
 const VENUE_RULES = {
   [VENUE_KALSHI]: {
+    kellyBankroll: BOT_BANKROLL,
     allInOf: (ask) => kalshiAllInPrice(ask),
     contractsFor: (stake, allIn, depth) => Math.floor(Math.min(stake / allIn, depth)),
     heldOtherSide: (matches, contract) => heldOtherSide(matches, contract),
   },
   [VENUE_NOVIG]: {
+    kellyBankroll: NOVIG_KELLY_BANKROLL,
     allInOf: (ask) => ask,
     contractsFor: (stake, allIn, depth) => Math.floor(Math.min((stake * NOVIG_QTY_PER_DOLLAR) / allIn, depth)),
     heldOtherSide: (matches, contract) => novigHeldOtherSide(matches, contract),
@@ -336,7 +341,7 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing, venue
   const otherSideHeld = rules.heldOtherSide(sizing.matches, contract);
   if (otherSideHeld) return done("size_declined", otherSideHeld);
   const advice = betsView.stakeAdvice({
-    line: row, price: liveAmerican, edgePct: liveEdge * 100, bankroll: BOT_BANKROLL, multiplier: BOT_KELLY,
+    line: row, price: liveAmerican, edgePct: liveEdge * 100, bankroll: rules.kellyBankroll, multiplier: BOT_KELLY,
     matches: sizing.matches, ladderOf: sizing.ladderOf, liquidity: null, teasers: sizing.teasers,
   });
   if (advice.kind === "declined") return done("size_declined", advice.reason);
@@ -601,7 +606,7 @@ function decisionSignature(decision) {
 }
 
 module.exports = {
-  KALSHI_BOOK_ID, NOVIG_BOOK_ID, VENUE_KALSHI, VENUE_NOVIG, NOVIG_QTY_PER_DOLLAR, BOT_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
+  KALSHI_BOOK_ID, NOVIG_BOOK_ID, VENUE_KALSHI, VENUE_NOVIG, NOVIG_QTY_PER_DOLLAR, BOT_BANKROLL, NOVIG_KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
   MAX_LINE_AGE_MS, KALSHI_TAKER_FEE_RATE, REASONS,
   kalshiAllInPrice, probToAmerican, unabatedAllInOf, candidateRows,
   contractFromRungs, spreadTeamCodes, derivedMoneylineContract, resolveKalshiContract,

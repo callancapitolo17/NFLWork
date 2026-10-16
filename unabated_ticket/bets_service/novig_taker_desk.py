@@ -39,7 +39,7 @@ Rules, in order, for every request:
      that may hold contracts must be among the held bets the runner sized
      this stake on (`heldIds`) -> else "unseen_fill";
   7. ceiling: qty cut so open Novig exposure + this order stays at or under
-     BOT_BANKROLL; none left -> "ceiling";
+     OPEN_COST_CEILING; none left -> "ceiling";
   8. the row is INSERTED (status "sending", full cost) BEFORE the send;
   9. one IOC buy; then the order is read until final, and its fills.
 
@@ -72,8 +72,9 @@ from unabated_ticket.bets_service.taker_store import TakerStore
 
 log = logging.getLogger(__name__)
 
-# Cal, 2026-10-16: Novig gets its own $500, apart from Kalshi's.
-BOT_BANKROLL = 500.0
+# Cal, 2026-10-16: Novig's own $500 cap on open cost, apart from Kalshi's. The
+# Kelly bankroll that sizes the stake is the runner's (taker.js NOVIG_KELLY_BANKROLL).
+OPEN_COST_CEILING = 500.0
 # The bot subaccount's bets are recorded as "novig:<order id>:bot" (sources/novig_subaccount.py).
 BOT_ACCOUNT_NAME = "bot"
 REFRESH_SEC = 30
@@ -275,10 +276,10 @@ class NovigTakerDesk:
                       or kalshi_unseen_fill(self._store, request["event_id"], request["held_ids"]))
             if unseen:
                 return {"status": "unseen_fill", "detail": unseen}
-            headroom = BOT_BANKROLL - self._store.novig_open_exposure()
+            headroom = OPEN_COST_CEILING - self._store.novig_open_exposure()
             qty = min(request["qty"], math.floor(headroom * QTY_PER_DOLLAR / request["price"]))
             if qty < 1:
-                return {"status": "ceiling", "detail": f"${headroom:.2f} of ${BOT_BANKROLL:.0f} left"}
+                return {"status": "ceiling", "detail": f"${headroom:.2f} of ${OPEN_COST_CEILING:.0f} left"}
             return self._send(request, qty)
 
     def _refuse_unfit(self, request: dict) -> dict | None:
