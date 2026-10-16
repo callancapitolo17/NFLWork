@@ -153,9 +153,7 @@
   const STANDING_OTHER_MARKET = "other_market";
   const STANDING_UNPRICED = "unpriced";
   const STANDING_BLOCKED = "blocked";
-  // A STANDING_OUT leg's note: above break-even, shed to stay within MAX_OUTCOMES.
-  const SHED_NOTE = "too many outcomes to size";
-  const REASON_FEW_LEGS = `fewer than ${LEGS_PER_TICKET} games with a priced Buckeye leg`;
+  const REASON_FEW_LEGS = `fewer than ${LEGS_PER_TICKET} games with a leg above break-even`;
   const REASON_HELD_RISK = "the open teasers and straight bets on these games can already lose the Kelly bankroll";
   const REASON_NO_STAKE = "no stake on the record";
   // A straight bet on a pool game but not on its leg's market (spread vs total).
@@ -758,9 +756,8 @@
       outcomeCount *= shaped.rows;
       return shaped;
     });
-    const structure = { factors, outcomeCount, legStates: null, stateCount: null, placedWins: [] };
+    const structure = { factors, outcomeCount, legStates: null, stateCount: 1 << poolLegs.length, placedWins: [] };
     if (outcomeCount > MAX_OUTCOMES) return structure;
-    structure.stateCount = 1 << poolLegs.length;
     const factorOf = new Map(factors.map((factor) => [factorKey(factor.eventId, factor.axis), factor]));
     const winsOf = (leg) => outcomesWon(factorOf.get(factorKey(leg.eventId, leg.axis)), leg, outcomeCount);
     structure.legStates = legStatesOf(poolLegs.map(winsOf), outcomeCount);
@@ -1224,10 +1221,10 @@
     }));
   }
 
-  // The Legs list: one row per game — its pool leg, else the leg the pool
-  // shed for the outcome budget, else its best priced leg (on the open
-  // teasers' market when the game has one), else a leg with the reason it
-  // has no fair — leaving out markets marked can't tease, and
+  // The Legs list: one row per game (its pool leg, else the leg the pool
+  // shed for the outcome budget, else its best priced leg, on the open
+  // teasers' market when the game has one, else a leg with the reason it
+  // has no fair), leaving out markets marked can't tease, and
   // one row per such market (its best side). Priced rows best first, then
   // the unpriced. A pool row carries the straight bets on its game
   // (straightsOnRow); other rows' games are in no ticket, so their
@@ -1266,7 +1263,7 @@
         const inTickets = ticketsByPoolIndex.get(poolIndexByKey.get(poolLeg.key)) || 0;
         rows.push({ leg: poolLeg, standing: STANDING_POOL, inTickets, openTickets, note: null, straights: straightsOnRow(poolLeg, build, straights) });
       } else if (shedLeg) {
-        rows.push({ leg: shedLeg, standing: STANDING_OUT, inTickets: 0, openTickets, note: SHED_NOTE, straights: null });
+        rows.push({ leg: shedLeg, standing: STANDING_OUT, inTickets: 0, openTickets, note: "too many outcomes to size", straights: null });
       } else if (offered.length) {
         // Above break-even now but not in the pool: its fair was under when the list was built (REBUILD_FAIR_MOVE).
         const note = offered[0].win > BREAK_EVEN_WIN ? "below break-even when the list was built" : "below break-even";

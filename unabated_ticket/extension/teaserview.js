@@ -96,7 +96,7 @@
   function emptyText(plan) {
     if (!plan) return "Waiting for Buckeye's NFL and CFB board…";
     if (plan.ticketCount) return null;
-    if (plan.reason === teaserLib.REASON_FEW_LEGS) return `Fewer than ${teaserLib.LEGS_PER_TICKET} games with a priced Buckeye leg right now: nothing to tease.`;
+    if (plan.reason === teaserLib.REASON_FEW_LEGS) return `Fewer than ${teaserLib.LEGS_PER_TICKET} games with a leg above break-even right now: nothing to tease.`;
     if (plan.reason) return `No tickets: ${plan.reason}.`;
     if (plan.partialHeldBack > 0) {
       return `Nothing more to bet: the next ticket would be a partial ${fmtWholeDollars(plan.partialHeldBack)}, and a 4-team ticket under $200 is already open at BFA (one partial ticket per set).`;

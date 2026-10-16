@@ -1411,7 +1411,7 @@ restoring on the same fairs brings the same list back. Marks live in
 each ends when its game starts.
 
 **Tickets.** A leg breaks even at 70.7% (0.25^¼). The pool is every game's
-best leg — one leg per game, so legs are independent — whose win chance is
+best leg (one leg per game, so legs are independent) whose win chance is
 above 70.7%, however many (user decision 2026-10-16: each leg must be +EV on
 its own, so a 70% leg stays out even beside strong partners). Like every
 fair in the list, a leg's is the one the list was built on until it moves a
@@ -1442,7 +1442,7 @@ Every ticket wins exactly where its four legs do, so the search scores the
 2^N states of "which pool legs win", not every outcome, and one
 sum-over-supersets pass per step (N × 2^N) gives every ticket its score at
 once. Measured in node: 10 legs build in ~20 ms, 17 legs in 0.4 s, 20 legs
-(the full budget) in ~4 s at K = $5,000 and ~11 s at K = $20,000. Two legs with the same fair
+(the full budget) in ~4 s at K = $5,000 and ~14 s at K = $20,000. Two legs with the same fair
 (Colts +7.5 and Titans +8.5 are both 74.7% on 9/27) make tickets that tie
 exactly; a tie goes to the first combination in the pool's order. Two ways
 to see what it does, on Sunday's board (2026-09-27 16:37 UTC, $20,000 at
@@ -1570,7 +1570,8 @@ with no fair behind a fold, the markets marked can't tease first). An open ticke
 game started, or no leg priced on the board. The Placed figure in the
 summary is the open tickets still in the math; the Open at BFA line says
 both when they differ. Empty states: the
-board loading, fewer than 4 priced games, no ticket worth betting. The bets
+board loading, fewer than 4 games with a leg above break-even, no ticket
+worth betting. The bets
 service down puts a red banner up and the list stays (an open teaser may be
 missing from it). The scanner always loads NFL and CFB for this tab; the
 Edges tab and its alerts still list only the sports you tick
@@ -2942,7 +2943,8 @@ twice; the pool as every game's best leg above 70.7% on a 20-leg board
 (-242 in, -241 out); a leg ticking over 70.7% joining only on a 1-point
 move, its row saying why it waits; a ticket on the 17th pool leg winning where its legs do
 (the leg states are 32-bit); the superset pass picking the per-ticket scan's
-ticket at every step on six of the file's boards; fewer than 4 priced games;
+ticket at every step on five of the file's boards; fewer than 4 games above
+break-even however many are priced;
 open BFA teaser legs grouping into tickets and joining their games by
 rotation (a BFA parlay, a settled teaser and another venue's leg ignored);
 an open ticket lowering the next suggestion on the legs it shares ($200 → $84
@@ -3279,15 +3281,16 @@ in red.
   did not join its game (BFA's start more than 12 h off the board's, or the
   game off Buckeye's board), so the ticket is not recognised as the list's:
   attach the leg to its game on the Bets tab.
-- **Teasers: "Fewer than 4 games with a priced Buckeye leg"**: Buckeye's
-  NFL/CFB board is thin (Monday night, or before the week's lines post), or
-  its lines are older than **Max line age h** in the Edges controls.
+- **Teasers: "Fewer than 4 games with a leg above break-even"**: Buckeye's
+  NFL/CFB board is thin (Monday night, or before the week's lines post), its
+  lines are older than **Max line age h** in the Edges controls, or too few
+  of its teased legs clear 70.7% (the fold counts the ones below break-even).
 
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
 
-**2026-10-16 — Every +EV leg in the teaser pool (0.26.0).** The pool kept
+**2026-10-16: every +EV leg in the teaser pool (0.26.0).** The pool kept
 the 10 best legs only for speed. Cal: every game's best leg above the 70.7%
 break-even goes in, however many, and a leg at or under it stays out even
 when strong partners could carry it (each leg must be +EV on its own). The
@@ -3297,9 +3300,10 @@ to 2^20 so held straights stop shedding +EV legs (9/27's 15 straights made
 with it: the leg states were 16-bit, so a 17th pool leg's tickets never won;
 and scoring every ticket against every leg state cost C(N,4) × 2^N per step
 (~40 s at 17 legs, hours at 24, on the runner's event loop beside the
-taker), now one sum-over-supersets pass, N × 2^N. Before the pool rule
-changed, the new scoring reproduced all 57 of the test file's builds
-ticket for ticket. Speed at the full budget (~4 s for 20 legs at K =
+taker), now one sum-over-supersets pass, N × 2^N. In a one-off run before
+the pool rule changed, the new scoring reproduced all 57 of the test file's
+builds ticket for ticket; the committed test compares the two pick by pick
+on five boards. Speed at the full budget (~4 s for 20 legs at K =
 $5,000) is accepted (Cal: "not too worried about speed"). Plan:
 `docs/2026-10-16-unabated-ticket-teaser-pool-plan.md`.
 

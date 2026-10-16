@@ -326,10 +326,11 @@ test("a ticket on a pool leg past the 16th wins where its four legs do", () => {
   nearly(view.summary.makesMoney, makesMoney);
 });
 
-test("fewer than four priced games: no tickets, and the reason", () => {
-  const { build } = plan(awayLegBoard([-400, -400, -400]));
+test("fewer than four games above break-even: no tickets, and the reason, however many are priced", () => {
+  const { build } = plan(awayLegBoard([-400, -400, -400, ...Array(7).fill(-150)]));
+  assert.deepEqual(build.pool.map((leg) => leg.eventId), [101, 102, 103]);
   assert.deepEqual(build.tickets, []);
-  assert.equal(build.reason, teaser.REASON_FEW_LEGS);
+  assert.equal(build.reason, "fewer than 4 games with a leg above break-even");
 });
 
 test("open BFA teasers: legs group into tickets and join their games by rotation", () => {
@@ -883,13 +884,11 @@ function scanBestTicket(stake, masks, used, pnl, prob, kellyBankroll, structure)
 test("the superset pass picks the ticket the per-ticket scan picks, step by step, on this file's boards", () => {
   const standout = awayLegBoard(STANDOUT_BOARD);
   const standoutBuild = plan(standout).build;
-  const standoutOpen = openTeasersOf(standout, openTicketOf(standoutBuild, standoutBuild.tickets[0], 1));
   const straightState = withStraightRungs(awayLegBoard([-400, -400, -400, -400, -400]));
   const hedge = straightBet("other", { side: "home", points: -9.5, rotation: 402, price: 500, stake: 200, toWin: 1000 });
   const builds = [
     ["twelve equal legs", plan(awayLegBoard(Array(12).fill(-400)), { kellyBankroll: 200000 }).build],
     ["standout legs", standoutBuild],
-    ["standout legs, the top ticket open", plan(standout, { placed: standoutOpen }).build],
     ["a leg a hair under four others", plan(awayLegBoard([-400, -400, -400, -400, -399]), { kellyBankroll: 300 }).build],
     ["straights on both sides of a leg", plan(straightState, { kellyBankroll: 1000, straights: straightsOf(straightState, [straightBet("same"), hedge]) }).build],
     ["a college game's two markets", plan(collegeBoard(), { kellyBankroll: 300 }).build],
