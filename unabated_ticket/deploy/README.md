@@ -143,9 +143,18 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
     ```bash
     docker compose restart bets   # the log says "taker: ARMED on its own key, locked to Kalshi subaccount 1"
     ```
-    Revoke any earlier bot key at kalshi.com > API keys. Stop the bot:
+    The old bot key is NOT revoked: it signs the Ticket's Place button (step 12).
+    Revoke any other earlier bot key at kalshi.com > API keys. Stop the bot:
     `touch ~/unabated-data/taker.stop` (`rm` to resume). For good: revoke the
     key. State: `curl -s 127.0.0.1:8095/taker.json`.
+12. **The Ticket's Place key** (2026-10-16, Cal: the old unrestricted bot key,
+    on his MAIN account). Do this BEFORE step 11's setup, which replaces
+    `kalshi_taker.pem`: `cp -p ~/unabated-data/kalshi_taker.pem
+    ~/unabated-data/kalshi_place.pem` (never print it), then add
+    `KALSHI_PLACE_API_KEY_ID=<the old bot key id>` to
+    `~/NFLWork/unabated_ticket/bets_service/.env` and `docker compose restart
+    bets`; the log says "kalshi place: on, signing with the Place key". With
+    no `KALSHI_PLACE_API_KEY_ID`, Place signs with the read key.
 
 ## Day to day
 

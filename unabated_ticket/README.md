@@ -2802,9 +2802,12 @@ Plan: `manual_place_plan.md` in the project folder (Cal, 2026-10-16). A Kalshi
 line's Ticket (pregame, panel and phone) shows an amount box filled with the
 stake to act on, which Cal can change, and **Place**; the second click (**Bet
 $X at Kalshi**) sends ONE order. Nothing places without that second click and
-nothing is automatic. The order goes out on Cal's **main** Kalshi key
-(`KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PATH`, the key the Kalshi source
-reads with; it needs trade permission), never the taker bot's key, and works
+nothing is automatic. The order goes out on Cal's **main** Kalshi account,
+signed with the Place key (`KALSHI_PLACE_API_KEY_ID` +
+`KALSHI_PLACE_PRIVATE_KEY_PATH`; on the VM the old unrestricted bot key, kept
+for this, `deploy/README.md` step 12) or, when that is unset, the read key
+(`KALSHI_API_KEY_ID`; it then needs trade permission). Never the taker's
+subaccount-locked key. It works
 from wherever the phone reaches the VM over Tailscale.
 
 1. The bets service asks the runner `GET /kalshi_quote.json?eventId&periodTypeId&betTypeId&sideIndex&points`

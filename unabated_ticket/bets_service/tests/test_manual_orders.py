@@ -250,3 +250,14 @@ def test_the_route_places_through_the_tailnet_name_and_refuses_a_bad_body_or_no_
     assert status == 403
     status, reply = post_place(serve_with(None), BODY)
     assert status == 503 and "KALSHI_API_KEY_ID" in reply["error"]
+
+
+# ---- which key Place signs with ----
+def test_place_signs_with_the_place_key_once_its_id_is_set_else_the_read_key():
+    assert service.place_key_of("place-id", "/data/kalshi_place.pem", "read-id", "/run/secrets/kalshi.pem")[:2] == (
+        "place-id", "/data/kalshi_place.pem")
+    # The deploy sets the Place path always: with no Place id, the read key.
+    assert service.place_key_of(None, "/data/kalshi_place.pem", "read-id", "/run/secrets/kalshi.pem")[:2] == (
+        "read-id", "/run/secrets/kalshi.pem")
+    with pytest.raises(ValueError, match="KALSHI_PLACE_PRIVATE_KEY_PATH"):
+        service.place_key_of("place-id", None, "read-id", "/run/secrets/kalshi.pem")

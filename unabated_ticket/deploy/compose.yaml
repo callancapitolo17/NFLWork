@@ -45,6 +45,8 @@ services:
       # The bot trades only once this key file exists, locked to its own subaccount (key id and subaccount:
       # KALSHI_TAKER_API_KEY_ID + KALSHI_TAKER_SUBACCOUNT in bets_service/.env; deploy/README.md step 11).
       KALSHI_TAKER_PRIVATE_KEY_PATH: /data/kalshi_taker.pem
+      # The Place button's key, used once KALSHI_PLACE_API_KEY_ID is set in bets_service/.env (deploy/README.md).
+      KALSHI_PLACE_PRIVATE_KEY_PATH: /data/kalshi_place.pem
       # touch to stop the bot, rm to resume.
       TAKER_STOP_PATH: /data/taker.stop
       BETS_SERVICE_LOG_PATH: /data/logs/bets_service.log
