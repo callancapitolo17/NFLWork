@@ -2741,7 +2741,7 @@ subaccount. No shadow mode (Cal, 2026-10-14).
 
 | Rule | Value |
 |---|---|
-| Bankroll / Kelly | $500 at 0.25, conditional on every open bet (the panel's sizing; bot fills reach it through the Kalshi source) |
+| Bankroll / Kelly | $2,000 at 0.25 (Cal, 2026-10-16), conditional on every open bet (the panel's sizing; bot fills reach it through the Kalshi source). What Kelly divides by, not the money at risk: the Ceiling row caps that |
 | Ceiling | open bot cost (unsettled markets) never above $500; contracts cut to fit, else refused |
 | Price | Kalshi's live ask + 7% fee no more than 0.1c worse than Unabated's shown price, and no more than 1c better (a price that ran away from Unabated's snapshot is news its fair has not caught up with) |
 | Edge | 3% to 20% at that live price (fair read off Unabated's cheaper of its two prices) |
@@ -2876,7 +2876,7 @@ The Kalshi rules above hold unless this table says otherwise.
 |---|---|
 | Lines | spreads and totals whose rung carries a Novig outcome id; moneylines never trade (Unabated lists no Novig moneyline rung) |
 | Price | buying an outcome crosses the best resting order on the other outcome at 1 − its price (`/v3/public/catalog/markets/<id>/book`); fee 0 pregame; a market whose fee is `ALWAYS` is refused (`market_mismatch`) |
-| Size | a Novig contract pays 1c: qty = floor(stake × 100 / price), cut to the depth; Kelly bankroll `NOVIG_KELLY_BANKROLL` ($500, its own parameter, separate from the cap) |
+| Size | a Novig contract pays 1c: qty = floor(stake × 100 / price), cut to the depth; Kelly bankroll `NOVIG_KELLY_BANKROLL` ($2,000 like Kalshi's, its own parameter, separate from the $500 cap) |
 | Ceiling | open bot cost on Novig never above $500 (`OPEN_COST_CEILING`), its own budget beside Kalshi's |
 | Market check | before every order the public market and event are read: market `OPEN`, event `OPEN_PREGAME`, the row's market type, strike (a spread's is the home side's) and outcome, and the outcome's own name must be the row's side (a spread's last word its handicap, a pick'em refused; a total's first word Over / O or Under / U; unreadable fails closed) |
 | Order | one IOC limit (`POST /v3/orders`, NOVIG-V3 signed); a partial fill cancels the rest, a zero fill comes back rejected; an order still `OPEN` is cancelled. `clientId` is a UUID derived from the outcome and the pass (Novig does not dedupe it, so the desk never re-sends) |

@@ -93,7 +93,7 @@ test("orderbook: the ask is 1 - the best opposite bid; legacy cents parse too", 
   assert.deepEqual(taker.quoteOf(legacy, "no"), { ask: 0.6, depth: 10 });
 });
 
-test("at Unabated's own price, best at the number, a 5% edge bets quarter Kelly of $500 in contracts", () => {
+test("at Unabated's own price, best at the number, a 5% edge bets quarter Kelly of $2,000 in contracts", () => {
   // Prophet Exchange and Novig sit at the same number at worse or no price; none is better than -143.
   const state = boardWithEdge(WSU_ALT_KEY, 0.05);
   for (const key of Object.keys(state.lines)) {
@@ -104,8 +104,9 @@ test("at Unabated's own price, best at the number, a 5% edge bets quarter Kelly 
   assert.equal(decision.liveAsk, 0.57);
   // At Unabated's own all-in the live edge is Unabated's edge (the fair is read off its cheaper price).
   assert.ok(Math.abs(decision.liveEdge - 0.05) < 0.0005, String(decision.liveEdge));
-  assert.ok(decision.stake > 0 && decision.stake <= taker.BOT_BANKROLL * taker.BOT_KELLY);
-  assert.equal(decision.contracts, Math.floor(decision.stake / decision.liveAllIn));
+  // Quarter Kelly of $2,000 at a 5% edge on -143: $35.56, bought as 60 contracts at the 0.5872 all-in.
+  assert.equal(Math.round(decision.stake * 100) / 100, 35.56);
+  assert.deepEqual({ contracts: decision.contracts, cost: decision.cost, liveAllIn: decision.liveAllIn }, { contracts: 60, cost: 35.2294, liveAllIn: 0.5872 });
 });
 
 test("depth cuts the contracts; none resting at the ask is no_book", () => {
@@ -271,6 +272,10 @@ test("a held bet on the row's axis the sizing math could not price refuses the s
   // The same line held: conditional Kelly sizes it (here to nothing more), no refusal.
   const sameLine = decideHolding(WSU_ALT_KEY, [heldKalshi("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "home", "spread", -35.5)]);
   assert.equal(sameLine.reason, "size_zero", sameLine.detail);
+  // A smaller same-line holding leaves room: $20 at -133 held, the bot adds $15.04. At the old $500
+  // bankroll this sized to $0 too, which is why the bot never bet a game Cal already held.
+  const topUp = decideHolding(WSU_ALT_KEY, [{ ...heldKalshi("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "home", "spread", -35.5), stake: 20, toWin: 15, contracts: 35, price: -133 }]);
+  assert.deepEqual({ reason: topUp.reason, stake: topUp.stake, contracts: topUp.contracts, cost: topUp.cost }, { reason: "bet", stake: 15.04, contracts: 25, cost: 14.6789 });
 });
 
 test("the other side of the market held is never bet against, in either account: size_declined", () => {

@@ -17,11 +17,11 @@
 //     one better book is enough to skip, a thin one under pricecheck's $30
 //     floor too; outliers and Cal's Skips trade);
 //   - lines changed within 7 days, right up to the start;
-//   - $500 at 0.25 Kelly (Cal, 2026-10-14; was $1,000), conditional on every open bet (betsview.js
-//     stakeAdvice), contracts cut to the depth at the ask.
+//   - $2,000 at 0.25 Kelly (Cal, 2026-10-16), conditional on every open bet (betsview.js stakeAdvice),
+//     contracts cut to the depth at the ask; the order desk caps the money at risk.
 //
-// Novig (2026-10-16, automated_taker_plan.md § Novig; Cal: its own $500 at
-// 0.25 Kelly, the better all-in price first when both books trade a number):
+// Novig (2026-10-16, automated_taker_plan.md § Novig; Cal: its own $500 sub-account,
+// $2,000 at 0.25 Kelly, the better all-in price first when both books trade a number):
 // the same rules on Novig's rows (book 89), with Novig's own facts. The
 // contract is the Novig outcome Unabated's rung names (feed.js novigOutcomes;
 // Novig moneylines carry no rung, so they never trade); buying it costs 1
@@ -67,11 +67,10 @@ const pricecheck = require("../extension/pricecheck.js");
 
 const KALSHI_BOOK_ID = 105;
 const NOVIG_BOOK_ID = 89;
-// Kalshi's Kelly bankroll (Cal, 2026-10-14). The open-cost cap and the money
-// funded are the desks' own (taker_orders.py, novig_taker_desk.py), not this.
-const BOT_BANKROLL = 500;
-// Novig's Kelly bankroll (Cal, 2026-10-16: its own $500), apart from Kalshi's and from the Novig desk's cap.
-const NOVIG_KELLY_BANKROLL = 500;
+// What Kalshi's Kelly divides by; the money at risk is the order desk's ceiling (taker_orders.BOT_BANKROLL).
+const KELLY_BANKROLL = 2000;
+// Novig's Kelly bankroll (Cal, 2026-10-16: $2,000 like Kalshi's), its own parameter, apart from the Novig desk's $500 cap.
+const NOVIG_KELLY_BANKROLL = 2000;
 const BOT_KELLY = 0.25;
 const MIN_LIVE_EDGE = 0.03;
 const MAX_LIVE_EDGE = 0.20;
@@ -271,7 +270,7 @@ function booksBeating(check, price) {
 // side of the market. A Kalshi contract pays $1, a Novig one 1c.
 const VENUE_RULES = {
   [VENUE_KALSHI]: {
-    kellyBankroll: BOT_BANKROLL,
+    kellyBankroll: KELLY_BANKROLL,
     allInOf: kalshiAllInPrice,
     contractsFor: (stake, allIn, depth) => Math.floor(Math.min(stake / allIn, depth)),
     costOf: (contracts, allIn) => contracts * allIn,
@@ -627,7 +626,7 @@ function decisionSignature(decision) {
 }
 
 module.exports = {
-  KALSHI_BOOK_ID, NOVIG_BOOK_ID, VENUE_KALSHI, VENUE_NOVIG, NOVIG_EVENT_PREGAME, BOT_BANKROLL, NOVIG_KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
+  KALSHI_BOOK_ID, NOVIG_BOOK_ID, VENUE_KALSHI, VENUE_NOVIG, NOVIG_EVENT_PREGAME, KELLY_BANKROLL, NOVIG_KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
   MAX_LINE_AGE_MS, KALSHI_TAKER_FEE_RATE, REASONS,
   kalshiAllInPrice, probToAmerican, unabatedAllInOf, candidateRows,
   contractFromRungs, spreadTeamCodes, derivedMoneylineContract, resolveKalshiContract,
