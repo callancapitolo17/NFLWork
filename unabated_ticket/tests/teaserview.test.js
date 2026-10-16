@@ -113,7 +113,7 @@ test("legs layout: break-even divider where the shown legs cross it, the rest fo
 });
 
 test("a leg row: its words, its straight-bet tags and its standing", () => {
-  const straights = { held: 50, against: 0, counted: [{ label: "Bills +3" }], leftOut: [] };
+  const straights = { held: 50, counted: [{ label: "Bills +3" }], leftOut: [] };
   const rowView = teaserView.legRowView(rowOf(teaser.STANDING_POOL, {}, { inTickets: 1, openTickets: 2, straights }));
   assert.equal(rowView.pool, true);
   assert.equal(rowView.book, "Buckeye +1.5 -110");

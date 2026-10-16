@@ -68,7 +68,8 @@
 //     P&L the same way, the conditional Kelly method: on a pool leg's game,
 //     the leg's market and the full game, its numbers cut the game's rows
 //     and it pays +toWin / 0 on a push / -stake in each. Same side as a leg
-//     means fewer tickets on it, the other side more. Another market,
+//     means fewer tickets on it; one on the other side is left out (Cal,
+//     2026-10-16: a bet against a leg never grows it). Another market,
 //     another period and a game no new ticket uses are left out, as on the
 //     Edges tab; a straight never adds a game nor changes the leg a game
 //     offers.
@@ -158,6 +159,7 @@
   const REASON_NO_STAKE = "no stake on the record";
   // A straight bet on a pool game but not on its leg's market (spread vs total).
   const STRAIGHT_OTHER_MARKET = "other market";
+  const STRAIGHT_AGAINST_LEG = "against the leg";
   // A gap between two growths this small is floating-point noise, not a
   // better ticket: the first combination in order keeps a tie.
   const GROWTH_TIE_TOLERANCE = 1e-12;
@@ -551,12 +553,12 @@
 
   // The straights in the math for this pool, and why the others on a pool
   // game are not: {counted, leftOut: Map(id -> reason)}. A straight counts on
-  // a pool leg's game and market, each in turn only while its numbers leave
+  // a pool leg's game and market and on the leg's side, each in turn only while its numbers leave
   // that game's ladder monotone with the cuts already there — one bad rung
   // leaves that bet out instead of failing the build.
   function countedStraights(straights, pool, placed, valuation) {
     const cutsByFactor = new Map();
-    const poolEvents = new Set();
+    const legDirectionByEvent = new Map();
     const addCut = (eventId, axis, cut) => {
       const key = factorKey(eventId, axis);
       if (!cutsByFactor.has(key)) cutsByFactor.set(key, new Map());
@@ -564,7 +566,7 @@
     };
     for (const { leg } of pool) {
       addCut(leg.eventId, leg.axis, leg.winCut);
-      poolEvents.add(leg.eventId);
+      legDirectionByEvent.set(leg.eventId, leg.direction);
     }
     for (const ticket of placed) {
       for (const leg of liveLegsOf(ticket)) if (cutsByFactor.has(factorKey(leg.eventId, leg.axis))) addCut(leg.eventId, leg.axis, leg.winCut);
@@ -572,10 +574,15 @@
     const counted = [];
     const leftOut = new Map();
     for (const straight of straights) {
-      if (straight.reason || !poolEvents.has(straight.eventId)) continue;
+      if (straight.reason || !legDirectionByEvent.has(straight.eventId)) continue;
       const cuts = cutsByFactor.get(factorKey(straight.eventId, straight.axis));
       if (!cuts) {
         leftOut.set(straight.id, STRAIGHT_OTHER_MARKET);
+        continue;
+      }
+      // Cal, 2026-10-16: a bet against the leg never grows the teaser stake on it.
+      if (straight.direction !== legDirectionByEvent.get(straight.eventId)) {
+        leftOut.set(straight.id, STRAIGHT_AGAINST_LEG);
         continue;
       }
       const merged = new Map(cuts);
@@ -1171,19 +1178,17 @@
   }
 
   // What a pool leg's row says about the straight bets on its game: the
-  // dollars in the math on the leg's direction (held) and against it, the
-  // bets themselves, and the ones on the game left out with why.
-  //   {held, against, counted: [{label, direction}], leftOut: [{label, reason}]}
+  // dollars in the math (all on the leg's side), the bets themselves, and
+  // the ones on the game left out with why.
+  //   {held, counted: [{label}], leftOut: [{label, reason}]}
   function straightsOnRow(leg, build, straights) {
     const countedIds = new Set((build.straights || []).map((straight) => straight.id));
     const onGame = (straights || []).filter((straight) => straight.eventId === leg.eventId);
-    const out = { held: 0, against: 0, counted: [], leftOut: [] };
+    const out = { held: 0, counted: [], leftOut: [] };
     for (const straight of onGame) {
       if (countedIds.has(straight.id)) {
-        const sameWay = straight.direction === leg.direction;
-        if (sameWay) out.held += straight.stake;
-        else out.against += straight.stake;
-        out.counted.push({ label: straight.label, sameWay });
+        out.held += straight.stake;
+        out.counted.push({ label: straight.label });
         continue;
       }
       const reason = straight.reason || (straight.axis !== leg.axis ? STRAIGHT_OTHER_MARKET : (build.straightsLeftOut && build.straightsLeftOut.get(straight.id)) || "not counted");
@@ -1307,7 +1312,7 @@
     TEASER_LEAGUE_IDS, TEASER_POINTS, LEGS_PER_TICKET, TICKET_NET_ODDS, TICKET_MAX_STAKE, POOL_SIZE, BREAK_EVEN_WIN,
     LEG_LIVE, LEG_STARTED,
     STANDING_POOL, STANDING_OUT, STANDING_BELOW, STANDING_OTHER_MARKET, STANDING_UNPRICED, STANDING_BLOCKED,
-    REASON_FEW_LEGS, REASON_HELD_RISK, STRAIGHT_OTHER_MARKET,
+    REASON_FEW_LEGS, REASON_HELD_RISK, STRAIGHT_OTHER_MARKET, STRAIGHT_AGAINST_LEG,
     teaserBoardOf, teaserLegs, openTeasers, heldStraights, planTeasers, describePlan, describeLegs, marketKeyOf, marketNameOf, canBlock,
     ticketSignatureOf, placeRequestOf,
   };
