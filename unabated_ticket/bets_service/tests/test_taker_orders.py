@@ -278,7 +278,8 @@ def test_a_lost_order_found_resting_is_adopted_cancelled_and_read(store, tmp_pat
     desk.refresh()
     row = order_row(store, cid)
     assert (row["status"], row["kalshi_order_id"], row["exchange_index"], row["count_filled"]) == ("partial", "k-9", 0, 3)
-    assert ("DELETE", f"/portfolio/events/orders/k-9?market_ticker={TICKER}&subaccount=1&exchange_index=0", None) in kalshi.calls
+    cancel_path = f"/portfolio/events/orders/k-9?market_ticker={TICKER}&subaccount=1&exchange_index=0"
+    assert ("DELETE", cancel_path, None) in kalshi.calls
 
 
 def test_a_lost_order_listed_nowhere_after_a_minute_holds_nothing(store, tmp_path):
@@ -555,6 +556,13 @@ def test_the_lock_check_passes_only_a_key_refused_the_primary_account():
     unlocked = BalanceKalshi({BOT_SUBACCOUNT: [(200, {"balance": 50000})], 0: [(200, {"balance": 900000})]})
     problem, balance = taker_orders.key_lock_problem(unlocked, BOT_SUBACCOUNT, sleep=no_sleep)
     assert "reads the primary account too" in problem and balance is None
+    # Kalshi's own marker of an unrestricted key (balance_breakdown) refuses it
+    # even if the primary probe were refused.
+    broad = BalanceKalshi({BOT_SUBACCOUNT: [(200, {"balance": 50000, "balance_breakdown": [{"exchange_index": 0}]})],
+                           0: [(403, {})]})
+    problem, balance = taker_orders.key_lock_problem(broad, BOT_SUBACCOUNT, sleep=no_sleep)
+    assert "is not restricted: its balance reply carries balance_breakdown" in problem and balance is None
+    assert broad.paths == [f"/portfolio/balance?subaccount={BOT_SUBACCOUNT}"]  # refused before the primary probe
     wrong_key = BalanceKalshi({BOT_SUBACCOUNT: [(401, {"error": "bad key"})]})
     problem, _balance = taker_orders.key_lock_problem(wrong_key, BOT_SUBACCOUNT, sleep=no_sleep)
     assert "cannot read subaccount 1: HTTP 401" in problem

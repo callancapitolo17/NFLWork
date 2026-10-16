@@ -264,8 +264,10 @@ def _get_status(client: "KalshiOrderClient", path: str) -> tuple[int | None, obj
 def key_lock_problem(client: "KalshiOrderClient", subaccount: int,
                      sleep: Callable[[float], None] = time.sleep) -> tuple[str | None, float | None]:
     """(None, the subaccount's available dollars) when Kalshi shows the key is
-    locked to `subaccount`: it reads its balance there, and is refused the
-    primary account's. Otherwise (why not, None). A no-answer, 429 or 5xx is
+    locked to `subaccount`, two ways that must agree: its balance reply there
+    carries no `balance_breakdown` (docs.kalshi.com, Get Balance: "omitted only
+    when using a subaccount-restricted API key"), and the primary account's
+    balance is refused. Otherwise (why not, None). A no-answer, 429 or 5xx is
     retried LOCK_CHECK_ATTEMPTS times; never proven means not armed. GETs only."""
     last = "not checked"
     for attempt in range(LOCK_CHECK_ATTEMPTS):
@@ -277,6 +279,9 @@ def key_lock_problem(client: "KalshiOrderClient", subaccount: int,
             continue
         if own_status != 200:
             return (f"the key cannot read subaccount {subaccount}: HTTP {own_status} {str(own_reply)[:200]}", None)
+        if isinstance(own_reply, dict) and "balance_breakdown" in own_reply:
+            return ("the key is not restricted: its balance reply carries balance_breakdown, which Kalshi omits "
+                    "only for a subaccount-restricted key", None)
         primary_status, primary_reply = _get_status(client, f"{BALANCE_PATH}?subaccount={PRIMARY_SUBACCOUNT}")
         if _retryable(primary_status):
             last = f"the primary account's balance: {primary_status or primary_reply}"

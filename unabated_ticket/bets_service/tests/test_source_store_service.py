@@ -229,6 +229,19 @@ def test_the_bots_subaccount_is_read_on_its_own_and_kept_apart_from_the_primary(
     assert api.count("/markets/") == 1
 
 
+def test_a_fill_labelled_for_another_subaccount_is_dropped_not_filed(kalshi_fixture, caplog):
+    """Kalshi answering ?subaccount=0 with a subaccount-1 fill would file the
+    bot's NO buy against the primary's positions (a closed YES ghost row)."""
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL, {**fill(NE_TICKER, "yes", 10, 0.64, "2026-09-12T15:00:00Z",
+                                                          action="sell", trade_id="b1"), "subaccount_number": BOT}],
+                        [NE_POSITION])
+    api.subaccounts[BOT] = {"fills": [], "positions": [], "settlements": [], "historical_fills": []}
+    with caplog.at_level("WARNING"):
+        records = bot_source(api, clock=lambda: 1_800_000_000.0).fetch()
+    assert [record["id"] for record in records] == [f"kalshi:{NE_TICKER}:yes"]
+    assert "labelled subaccount 1 came back under subaccount 0; dropped" in caplog.text
+
+
 def test_a_closed_round_trip_in_the_bots_subaccount_merges_within_it(kalshi_fixture):
     api = FakeKalshiApi(kalshi_fixture, [], [])
     opened = fill(NE_TICKER, "yes", 10, 0.40, "2026-09-12T15:00:00Z", trade_id="b1")
@@ -464,6 +477,10 @@ def test_load_kalshi_tickers_reads_the_ticker_out_of_each_kalshi_id(store):
                       datetime(2026, 9, 12, 1, tzinfo=timezone.utc))
     assert store.load_kalshi_tickers() == {"KXA-1"}  # the primary's own
     assert store.load_kalshi_tickers(1) == {"KXB-2"}
+    # One odd stored id is skipped (logged), never a failed hourly full pull.
+    store.upsert_bets([{**record("kalshi:odd", "won", "2026-09-11T20:00:00Z"), "venue": "kalshi"}],
+                      datetime(2026, 9, 12, 2, tzinfo=timezone.utc))
+    assert store.load_kalshi_tickers() == {"KXA-1"}
 
 
 def test_rows_from_before_the_content_hash_column_are_rewritten_once(store):

@@ -426,6 +426,20 @@ def _hold_fills(held: dict[str, dict], fills) -> int:
     return n_new
 
 
+def _own_subaccount_fills(fills: Iterator[dict], subaccount: int) -> Iterator[dict]:
+    """The fills whose `subaccount_number` is `subaccount` or unknown. A fill
+    Kalshi returned under `?subaccount=N` but labelled for another subaccount
+    would be filed against the wrong positions (a bot NO buy would read as a
+    closed YES in the primary); it is dropped and logged instead."""
+    for fill in fills:
+        labelled = fill.get("subaccount_number")
+        if labelled is None or labelled == subaccount:
+            yield fill
+            continue
+        log.warning("kalshi fill %s on %s labelled subaccount %s came back under subaccount %d; dropped",
+                    fill.get("trade_id"), fill.get("ticker"), labelled, subaccount)
+
+
 def _validated_subaccounts(subaccounts: tuple[int, ...]) -> tuple[int, ...]:
     """The subaccounts to read: the primary first, then distinct numbered ones."""
     if not subaccounts or subaccounts[0] != PRIMARY_SUBACCOUNT:
@@ -503,7 +517,7 @@ class KalshiSource:
             min_ts = int(self._last_poll_ts) - config.KALSHI_FILLS_OVERLAP_SEC
             path += f"&min_ts={min_ts}"
         held = self._fills_by_trade_id[subaccount]
-        n_new = _hold_fills(held, _paginate(self._api, path, "fills"))
+        n_new = _hold_fills(held, _own_subaccount_fills(_paginate(self._api, path, "fills"), subaccount))
         if full:
             n_new += self._hold_historical_fills(subaccount)
         log.info("kalshi fills, subaccount %d: %s pull, %d new, %d held", subaccount,
@@ -528,7 +542,7 @@ class KalshiSource:
             time.sleep(self._lookup_gap_sec)
             path = f"{HISTORICAL_FILLS_PATH}?ticker={ticker}&subaccount={subaccount}"
             try:
-                fills = list(_paginate(self._api, path, "fills"))
+                fills = list(_own_subaccount_fills(_paginate(self._api, path, "fills"), subaccount))
             except (RuntimeError, OSError) as error:
                 log.warning("kalshi historical fills for %s (subaccount %d) failed, retried next full pull: %s",
                             ticker, subaccount, error)

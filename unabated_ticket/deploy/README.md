@@ -120,18 +120,25 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
 
 11. **Automated taker: its own subaccount and key** (2026-10-16; the bot
     places real Kalshi orders once this is in). Public SSH stays off: SSH over
-    Tailscale only (the key can trade). Keep the stop file in place
-    (`touch ~/unabated-data/taker.stop`) until you mean it to trade. On the VM,
-    from `~/NFLWork/unabated_ticket/deploy`:
+    Tailscale only (the key can trade). On the VM, from
+    `~/NFLWork/unabated_ticket/deploy`:
     ```bash
     docker compose exec bets python -m unabated_ticket.bets_service.taker_subaccount_setup
     ```
-    It signs with your main Kalshi key, makes subaccount 1 (asking for
-    Kalshi's Advanced API tier if needed), moves $500 into it once, mints a
-    key locked to it with no transfer permission, writes it to
-    `/data/kalshi_taker.pem` (mode 0600, replacing the old bot key file; never
-    printed) and checks the lock. Re-running it is safe. Then set the two
-    lines it prints in `~/NFLWork/unabated_ticket/bets_service/.env`
+    It puts the stop file (`~/unabated-data/taker.stop`) in place first, so
+    nothing trades until you `rm` it. Then it signs with your main Kalshi key,
+    makes subaccount 1 (asking for Kalshi's Advanced API tier if needed),
+    moves $500 into it once and checks it landed, mints a key locked to it
+    with no transfer permission, writes it to `/data/kalshi_taker.pem` (mode
+    0600, replacing the old bot key file; never printed) and proves the lock:
+    Kalshi's key listing must show it on subaccount 1 with only `read` and
+    `write::trade`, and it must read that balance and be refused the primary's.
+    A key that fails is deleted from disk and the output names it for
+    revoking. Re-running it is safe (it reuses the subaccount, transfers
+    nothing while the subaccount holds money, and keeps a key that still
+    passes); the one case it stops on is a subaccount back at $0 after the
+    $500 went in, which is a top-up you make yourself as a transfer. Then set
+    the two lines it prints in `~/NFLWork/unabated_ticket/bets_service/.env`
     (`KALSHI_TAKER_API_KEY_ID=<new id>`, `KALSHI_TAKER_SUBACCOUNT=1`) and:
     ```bash
     docker compose restart bets   # the log says "taker: ARMED on its own key, locked to Kalshi subaccount 1"

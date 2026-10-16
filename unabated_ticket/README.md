@@ -2688,14 +2688,19 @@ and trades only there and cannot move money or make subaccounts. The bot
 trades only from `KALSHI_TAKER_SUBACCOUNT` on a key locked to it, so the money
 in that subaccount is all it can lose; topping it up or taking money back is
 a transfer Cal makes. `python -m unabated_ticket.bets_service.taker_subaccount_setup`
-(on the VM, `deploy/README.md` step 11) makes the subaccount, moves $500 into
-it once, and mints the locked key (scopes `read` + `write::trade`) straight
-into the key file, never printing it. The Kalshi source reads the bot's
-subaccount on Cal's main key next to the primary (fills, positions and
-settlements per subaccount: Kalshi's positions read is primary-only), and a
-bot bet's id ends `:s<N>` (`kalshi:<ticker>:<side>:s1`), so the bot's bet and
-Cal's on the same market stay two rows. Every order, cancel and listing names
-the subaccount. The bot's first orders, placed from the primary account on
+(on the VM, `deploy/README.md` step 11) puts the stop file in place first,
+makes the subaccount, moves $500 into it once (and checks it landed), mints
+the locked key (scopes `read` + `write::trade`) straight into the key file,
+never printing it, then proves the lock two ways before it keeps the file:
+Kalshi's own key listing must show the key on that subaccount with exactly
+those scopes, and the key must read the subaccount's balance and be refused
+the primary's. A key that fails is deleted from disk and named for revoking.
+The Kalshi source reads the bot's subaccount on Cal's main key next to the
+primary (fills, positions and settlements per subaccount: Kalshi's positions
+read is primary-only; a fill Kalshi labels with another subaccount is dropped
+and logged), and a bot bet's id ends `:s<N>` (`kalshi:<ticker>:<side>:s1`),
+so the bot's bet and Cal's on the same market stay two rows. Every order,
+cancel and listing names the subaccount. The bot's first orders, placed from the primary account on
 2026-10-16 before this, keep their primary ids; the locked key cannot read
 them, so their cost stays against the ceiling until their markets settle.
 
@@ -2703,7 +2708,8 @@ them, so their cost stays against the ceiling until their markets settle.
 Kalshi key and subaccount: `KALSHI_TAKER_API_KEY_ID` and
 `KALSHI_TAKER_SUBACCOUNT` (in `bets_service/.env`) and the key file at
 `KALSHI_TAKER_PRIVATE_KEY_PATH` (`/data/kalshi_taker.pem` on the VM). At start
-the desk asks Kalshi for the key's balance in the subaccount (must answer) and
+the desk asks Kalshi for the key's balance in the subaccount (must answer,
+without the `balance_breakdown` Kalshi sends only to unrestricted keys) and
 in the primary account (must be refused); a key that reads the primary, or a
 check that never finishes (no answer, 429, 5xx three times), leaves it off.
 Without all of it `POST /taker/order.json` answers 503 and `/taker.json` says
