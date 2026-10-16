@@ -1689,8 +1689,10 @@ A local Python service that turns the user's own bet history into normalised
 records the panel can match against a line (issue #114; plan in
 `docs/2026-09-11-issue-114-bet-history-plan.md`). It is the only place that
 signs Kalshi requests — the private key never enters the extension. Read-only
-GETs, except one bet at a book: `POST /place_teaser.json` places a Buckeye
-teaser at BFA (the Teasers tab's Place button).
+GETs, except two kinds of bet at a book: `POST /place_teaser.json` places a
+Buckeye teaser at BFA (the Teasers tab's Place button) and `POST
+/place_kalshi.json` buys one Kalshi line on Cal's own account (the Ticket's
+Place button, Place on Kalshi below).
 
 It runs as a launchd agent (`bets_service/com.nflwork.bets-service.plist`):
 it starts at login and restarts itself if it dies. A copy started from a
@@ -1780,7 +1782,13 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   name too since 0.22.0, Cal's call 2026-10-09); 400 on a bad body, 503 when
   no BFA account is read;
   the open bets it read while confirming are UPSERTed into `bets` so the
-  next `/bets.json` has the ticket. **Settings** (the server
+  next `/bets.json` has the ticket. `POST /place_kalshi.json` with
+  `{clickId, eventId, periodTypeId, betTypeId, sideIndex, points|null, stake,
+  ticketAllIn, kalshiReadAt}` → `{ok, status: filled | partial | unfilled |
+  rejected | unknown | refused, message, count?, cost?}` — **buys contracts on
+  Cal's main Kalshi account** (*Ticket → Place*, panel or phone; the tailnet
+  name too); 400 on a bad body, 503 when no Kalshi key is set (Place on
+  Kalshi below). **Settings** (the server
   runner, Running on a server below): `GET /settings.json` → `{settings:
   {bankroll, multiplier, leagues, periods, betTypes, bookMode, bookIds,
   minEdgePct, minStake, maxLineAgeHours, minLiquidityToWin, includeAlts,
@@ -2850,6 +2858,39 @@ SELECT sum(open_cost) FROM taker_orders WHERE settled_at IS NULL;
 SELECT client_order_id, kalshi_order_id, ticker, status, error FROM taker_orders WHERE status IN ('resting', 'sent', 'unknown');
 -- why it skips
 SELECT reason, count(*) FROM taker_decisions GROUP BY reason ORDER BY 2 DESC;
+```
+
+### Place on Kalshi from the Ticket (`extension/kalshiplace.js`, `bets_service/manual_orders.py`)
+
+Plan: `manual_place_plan.md` in the project folder (Cal, 2026-10-16). A Kalshi
+line's Ticket (pregame, panel and phone) shows an amount box filled with the
+stake to act on, which Cal can change, and **Place**; the second click (**Bet
+$X at Kalshi**) sends ONE order. Nothing places without that second click and
+nothing is automatic. The order goes out on Cal's **main** Kalshi key
+(`KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PATH`, the key the Kalshi source
+reads with; it needs trade permission), never the taker bot's key, and works
+from wherever the phone reaches the VM over Tailscale.
+
+1. The bets service asks the runner `GET /kalshi_quote.json?eventId&periodTypeId&betTypeId&sideIndex&points`
+   for the line's ticker and Kalshi's live ask (the taker's own contract and
+   market checks: `resolveKalshiContract`, `marketMismatch`, `quoteOf`).
+2. It refuses, sending nothing, when: the game has started or its start is
+   unknown; the live all-in (ask + 7% fee) is more than **0.1c worse** than the
+   Ticket's price (better always goes); the other side of the market is held
+   (a buy there would sell it); an earlier Place on the same game may have
+   filled after the Kalshi read the stake was sized on (`kalshiReadAt`, the
+   bets payload's `sources.kalshi.fetchedAt`); the click id was already sent.
+3. It sends one immediate-or-cancel limit at the live ask for
+   `floor(stake / all-in)` contracts, `client_order_id` `uman-<clickId>`, so
+   nothing rests; the reply reads filled, partial, unfilled (the price was
+   gone), rejected (Kalshi's words) or unknown (no definite answer: check
+   Kalshi before clicking again). One click at a time.
+
+Every click is a row in `bets.duckdb::manual_orders` (inserted before the send):
+
+```sql
+SELECT placed_at, label, ticker, contract_side, ticket_all_in, all_in_price, stake, count_requested, count_filled, cost_filled, status, error
+FROM manual_orders ORDER BY placed_at DESC;
 ```
 
 ## Tests

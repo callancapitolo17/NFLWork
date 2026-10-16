@@ -234,6 +234,17 @@ def test_a_held_bet_the_board_cannot_price_blocks_its_team():
     assert sized[1].recommended_stake == 0
 
 
+def test_a_stake_the_minimum_drops_is_flagged():
+    # The capped line hands its leftover Kelly to the other; $13 is under the $20 minimum.
+    plain = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1910, 0.0804)
+    spread = _line(2, "CHARGERS TRIFECTA (1Q +½, 1H +4½ & GM +7½)", 2125, 0.1048)
+    sized = size_board(_board(plain, spread), 35000, 0.25, 5000)
+    assert [(s.recommended_stake, s.unlimited_stake, s.under_min_stake) for s in sized] == \
+        [(0.0, 0.0, True), (250.0, 250.0, False)]
+    lone = size_board(_board(_line(3, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1910, 0.051)), 35000, 0.25, 5000)
+    assert [(s.recommended_stake, s.unlimited_stake, s.under_min_stake) for s in lone] == [(0.0, 0.0, True)]
+
+
 def test_unlimited_stake_drops_the_balance_but_keeps_the_book_limits():
     raiders = _line(1, "RAIDERS TRIFECTA (1Q, 1H & GM)", 1730, 0.12)
     chargers = _line(2, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.081)

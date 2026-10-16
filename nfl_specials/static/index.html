@@ -125,7 +125,7 @@
   .money-input span { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
   .money-input input { width: 100%; padding-left: 20px; }
   .to-win { font-size: 12px; color: var(--muted); white-space: nowrap; }
-  .held { display: inline-block; font-size: 12px; font-weight: 600; color: var(--good); background: var(--good-bg); border-radius: 999px; padding: 1px 9px; margin-bottom: 6px; max-width: 100%; overflow-wrap: anywhere; }
+  .chip.held { font-weight: 600; margin-bottom: 6px; }
   .sizes { display: grid; grid-template-columns: auto auto; justify-content: start; gap: 1px 14px; margin: 8px 0 0; font-size: 12px; }
   .sizes dt { color: var(--muted); }
   .sizes dd { margin: 0; text-align: right; font-weight: 600; }
@@ -356,14 +356,17 @@ function currentAccount() { return document.getElementById("account").value || (
 // refresh must not keep the page polling or the Refresh button locked.
 function isBusy(p) { return refreshRequested || p.refreshing; }
 function teamKey(line) { return line.home ? `${line.away}@${line.home}@${line.team}` : null; }
-// This account's placed bets this week on the line's (game, team) — the
-// server recommends no new stake there.
+// This account's placed bets this week.
+function ownPlacements(p) { return p.placements.filter(r => r.status === "placed" && r.account === p.account); }
+function placedRisk(p, wzGameId) {
+  return ownPlacements(p).filter(r => r.wz_game_id === wzGameId).reduce((sum, r) => sum + r.risk, 0);
+}
+// This account's placed bets this week on the line's (game, team).
 function teamPlacements(p, line) {
   const key = teamKey(line);
   if (!key) return [];
   const byId = new Map(p.board.lines.map(l => [l.wz_game_id, l]));
-  return p.placements.filter(r => r.status === "placed" && r.account === p.account &&
-    byId.has(r.wz_game_id) && teamKey(byId.get(r.wz_game_id)) === key);
+  return ownPlacements(p).filter(r => byId.has(r.wz_game_id) && teamKey(byId.get(r.wz_game_id)) === key);
 }
 
 // --- header -----------------------------------------------------------------
@@ -579,15 +582,25 @@ function stakeReason(line, p, byRotation, teamLines) {
   const room = p.max_stake - heldOwn;
   if (p.available_balance == null) return { warn: false, text: "No stake until Refresh reads the balance" };
   if (room < 0.5) return { warn: false, text: `Full: Wagerzon takes ${money(p.max_stake)} per special` };
+  const unpricedHeld = unpricedHeldSpecial(p, line);
+  if (unpricedHeld) return { warn: true, text: `No stake: your bet on the ${specialTitle(unpricedHeld.description)} (${unpricedHeld.rotation}) can't be priced, so this team isn't sized` };
   if (rec < 0.5) {
+    if (unlimited > 0.5 && p.available_balance < p.min_stake) {
+      return { warn: true, text: `$0: your ${money(p.available_balance)} available is under Wagerzon's ${money(p.min_stake)} minimum` };
+    }
     if (unlimited > 0.5) return { warn: true, text: "$0: your available balance went to bigger edges" };
+    if (heldOwn > 0) {
+      const teamHeld = teamPlacements(p, line).reduce((sum, r) => sum + r.risk, 0);
+      return { warn: true, text: teamHeld > heldOwn + 0.5 ? `No more: your ${money(teamHeld)} on this team already reaches Kelly`
+                                                         : "No more: what you've bet already matches Kelly" };
+    }
+    if (line.under_min_stake && teamLines.length > 1) return null;
     const sibling = line.yields_to ? byRotation.get(line.yields_to) : null;
     if (sibling) {
       const siblingHeld = placedRisk(p, sibling.wz_game_id);
       if (siblingHeld > 0) return { warn: true, text: `No more: the team's Kelly is already in your ${money(siblingHeld)} ${specialTitle(sibling.description)}` };
       return { warn: true, text: `$0: the ${specialTitle(sibling.description)} (${sibling.rotation}) is the better way to bet this team` };
     }
-    if (heldOwn > 0) return { warn: true, text: "No more: what you've bet already matches Kelly" };
     if (kelly > 0.5) return { warn: true, text: `$0: Kelly's ${money(kelly)} is under Wagerzon's ${money(p.min_stake)} minimum` };
     return { warn: true, text: "$0: Kelly sizes this at nothing" };
   }
@@ -604,13 +617,14 @@ function stakeReason(line, p, byRotation, teamLines) {
   return null;
 }
 
-function placedRisk(p, wzGameId) {
-  return p.placements.filter(r => r.status === "placed" && r.account === p.account && r.wz_game_id === wzGameId)
-    .reduce((sum, r) => sum + r.risk, 0);
+// The server leaves a team unsized while a bet on one of its specials can't be priced.
+function unpricedHeldSpecial(p, line) {
+  const byId = new Map(p.board.lines.map(l => [l.wz_game_id, l]));
+  const bet = teamPlacements(p, line).find(r => byId.get(r.wz_game_id).fair_prob == null);
+  return bet ? byId.get(bet.wz_game_id) : null;
 }
 
-// `teamLines` are the visible specials on the line's (game, team); with more
-// than one, the team strip carries the Kelly figure instead of each row.
+// `teamLines` are every special on the board for the line's (game, team).
 function stakeCell(line, p, byRotation, teamLines) {
   if (line.fair_prob == null) {
     return el("div", { class: "stake-col stake-none", text: line.status === "pricing" ? "Pricing…" : "Unpriced" });
@@ -619,12 +633,12 @@ function stakeCell(line, p, byRotation, teamLines) {
   if (hasStarted(line)) return el("div", { class: "stake-col stake-none", text: "Game started" });
 
   const id = line.wz_game_id;
-  const ownBets = p.placements.filter(r => r.status === "placed" && r.account === p.account && r.wz_game_id === id);
+  const ownBets = ownPlacements(p).filter(r => r.wz_game_id === id);
   const message = placeMessages.get(id);
   const children = [];
-  if (ownBets.length && !(message && message.ok)) {
-    const total = ownBets.reduce((sum, r) => sum + r.risk, 0);
-    children.push(el("span", { class: "held num", text: `Already bet ${money(total)} · ticket ${ownBets[0].ticket_number}` }));
+  if (ownBets.length) {
+    children.push(el("span", { class: "chip ok held num",
+      text: `Already bet ${money(placedRisk(p, id))} · ticket ${ownBets[0].ticket_number}` }));
   }
 
   const typed = editingStake.get(id);
@@ -666,7 +680,6 @@ function rowFor(line, p, byRotation, showMatchup, teamLines) {
   ]);
 }
 
-// A team's specials in one game, best EV first; blocks ordered by their best line.
 function teamBlocks(lines) {
   const blocks = new Map();
   for (const line of [...lines].sort(byEvDesc)) {
@@ -686,7 +699,7 @@ function teamStrip(teamLines, p, showMatchup) {
   const live = teamLines.filter(l => l.fair_prob != null && l.ev > 0 && !hasStarted(l));
   const recommended = live.reduce((sum, l) => sum + l.recommended_stake, 0);
   const recommendedCount = live.filter(l => l.recommended_stake > 0.5).length;
-  const kelly = live.reduce((sum, l) => sum + l.kelly_stake, 0);
+  const kelly = unpricedHeldSpecial(p, first) ? 0 : live.reduce((sum, l) => sum + l.kelly_stake, 0);
   const plural = n => `${n} special${n === 1 ? "" : "s"}`;
   const right = [];
   if (held > 0) right.push(["Bet on this team: ", el("b", { text: money(held) })]);
@@ -699,11 +712,17 @@ function teamStrip(teamLines, p, showMatchup) {
   return el("div", { class: "team-strip num" }, [el("span", {}, left), el("span", {}, rightParts)]);
 }
 
+// The strip and each row's reasons read the team's full board, so filters
+// that hide a sibling don't change what they say.
 function teamRows(lines, p, byRotation, showMatchup) {
-  return teamBlocks(lines).flatMap(teamLines => [
-    teamLines.length > 1 ? teamStrip(teamLines, p, showMatchup) : null,
-    ...teamLines.map(l => rowFor(l, p, byRotation, showMatchup, teamLines)),
-  ]).filter(Boolean);
+  return teamBlocks(lines).flatMap(visible => {
+    const key = teamKey(visible[0]);
+    const teamLines = key ? p.board.lines.filter(l => teamKey(l) === key).sort(byEvDesc) : visible;
+    return [
+      teamLines.length > 1 ? teamStrip(teamLines, p, showMatchup) : null,
+      ...visible.map(l => rowFor(l, p, byRotation, showMatchup, teamLines)),
+    ];
+  }).filter(Boolean);
 }
 
 // --- board ------------------------------------------------------------------
