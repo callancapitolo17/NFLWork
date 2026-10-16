@@ -97,11 +97,23 @@ superfectas (7-10 requests each, 0.5 s apart) took ~40 s over plain HTTP.
    zero. A stake under
    Wagerzon's $20 minimum for specials (measured: $15-19
    rejected) is dropped and the rest re-fit; each stake is capped at the
-   $250 maximum, and what a capped bet can't take goes to the next edge. The
-   page shows, next to each stake and the Recommended total, what it would be with
-   no balance limit (same sizing, $20 minimum and $250 cap kept; user decision
-   2026-10-15), always, even when it equals the stake (2026-10-16), and the uncapped (joint) Kelly stake when the cap trims it. No
+   $250 maximum, and what a capped bet can't take goes to the next edge. No
    stake (and no budget) goes to a special whose game has started.
+
+   **Stake column** (2026-10-16, Cal: one consistent layout). Every
+   +EV row shows, in this order: what you already bet on it (green, with
+   the ticket), the team's other bets this week ("Team also: $250 on the
+   Seahawks superfecta"), the stake box with Place and "to win", then a
+   fixed list — **Recommended**, **No balance limit** (same sizing, $20
+   minimum and $250 cap kept) and **Kelly** (uncapped joint Kelly; shown only
+   for a team's lone special, since with two specials one row's Kelly can
+   read $0 next to a real stake the cap pushed onto it). One plain reason
+   line follows when the stake isn't simply Kelly: capped at the $250 max
+   (naming the sibling that takes the rest), "Takes the rest" (the sibling
+   it overflows from), balance goes to bigger edges, under the $20 minimum,
+   the team's other bets already cover it, or "Fully bet". Amber when the
+   stake is $0, grey when only trimmed, green for "Fully bet". The
+   Recommended tile also shows its no-balance-limit total.
 
 | Book | Trifecta | Superfecta | How |
 |---|---|---|---|
