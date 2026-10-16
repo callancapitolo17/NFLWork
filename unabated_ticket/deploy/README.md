@@ -120,15 +120,28 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
 
 11. **Automated taker: its own subaccount and key** (2026-10-16; the bot
     places real Kalshi orders once this is in). Public SSH stays off: SSH over
-    Tailscale only (the key can trade). On the VM, from
-    `~/NFLWork/unabated_ticket/deploy`:
+    Tailscale only (the key can trade). The setup must sign with a Kalshi key
+    that has **write** scope (an unrestricted key: it makes a subaccount,
+    moves money and mints a key). The service's own `KALSHI_API_KEY_ID` is
+    read-only, and a read-only key stops at once with "the signing key ... is
+    read-only", nothing changed. So override both settings for this one run
+    with `-e`, pointing at a **copy** of a write key's file in
+    `~/unabated-data/` (the setup overwrites `kalshi_taker.pem`, so never sign
+    from that path itself). On the VM, from `~/NFLWork/unabated_ticket/deploy`:
     ```bash
-    docker compose exec bets python -m unabated_ticket.bets_service.taker_subaccount_setup
+    cp -p <write key file> ~/unabated-data/kalshi_setup_signing.pem && chmod 600 ~/unabated-data/kalshi_setup_signing.pem
+    docker compose exec -T -e KALSHI_API_KEY_ID=<write key id> \
+      -e KALSHI_PRIVATE_KEY_PATH=/data/kalshi_setup_signing.pem \
+      bets python -m unabated_ticket.bets_service.taker_subaccount_setup
+    rm ~/unabated-data/kalshi_setup_signing.pem   # when it prints Done
     ```
-    It puts the stop file (`~/unabated-data/taker.stop`) in place first, so
-    nothing trades until you `rm` it. Then it signs with your main Kalshi key,
-    makes subaccount 1 (asking for Kalshi's Advanced API tier if needed),
-    moves $500 into it once and checks it landed, mints a key locked to it
+    (2026-10-16 the write key was the earlier bot key, then at
+    `~/unabated-data/kalshi_taker.pem`; `-e` on `exec` wins over `.env`, which
+    stays untouched.) It puts the stop file (`~/unabated-data/taker.stop`) in
+    place first, so nothing trades until you `rm` it. Then it makes
+    subaccount 1 (asking for Kalshi's Advanced API tier if needed),
+    moves $500 into it once and checks it landed (waiting up to 30 s for
+    Kalshi's balance to show it), mints a key locked to it
     with no transfer permission, writes it to `/data/kalshi_taker.pem` (mode
     0600, replacing the old bot key file; never printed) and proves the lock:
     Kalshi's key listing must show it on subaccount 1 with only `read` and

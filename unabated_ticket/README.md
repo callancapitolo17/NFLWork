@@ -2713,7 +2713,8 @@ and trades only there and cannot move money or make subaccounts. The bot
 trades only from `KALSHI_TAKER_SUBACCOUNT` on a key locked to it, so the money
 in that subaccount is all it can lose; topping it up or taking money back is
 a transfer Cal makes. `python -m unabated_ticket.bets_service.taker_subaccount_setup`
-(on the VM, `deploy/README.md` step 11) puts the stop file in place first,
+(on the VM, `deploy/README.md` step 11, signed with a write-scoped key; a
+read-only one stops before anything changes) puts the stop file in place first,
 makes the subaccount, moves $500 into it once (and checks it landed), mints
 the locked key (scopes `read` + `write::trade`) straight into the key file,
 never printing it, then proves the lock two ways before it keeps the file:

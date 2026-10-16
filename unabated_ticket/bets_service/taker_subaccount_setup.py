@@ -10,9 +10,12 @@ service; /data is where the bot's key file lives):
 
     docker compose exec bets python -m unabated_ticket.bets_service.taker_subaccount_setup
 
-It signs with Cal's MAIN key (KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PATH),
-which must be allowed to make subaccounts, move money and make keys. Steps,
-each safe to re-run:
+It signs with KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PATH, which must be a key
+with write scope (allowed to make subaccounts, move money and make keys). The
+VM's main key is read-only, so the run overrides both with `-e` pointing at a
+COPY of a write key's file (step 3 overwrites the bot key file); deploy/README
+step 11 has the command. A read-only key stops at step 1, before anything
+changes. Steps, each safe to re-run:
   0. the stop file (TAKER_STOP_PATH) is put in place if absent, so the restart
      that arms the bot cannot trade until Cal removes it; the bot key file's
      directory is checked writable before anything is asked of Kalshi;
@@ -20,11 +23,13 @@ each safe to re-run:
      subaccount, else a new one (POST /portfolio/subaccounts). Kalshi makes
      subaccounts on its Advanced API tier only; on a refusal the tier is asked
      for once (POST /account/api_usage_level/upgrade, granted when one of the
-     account's last 100 orders came by API) and the create retried;
+     account's last 100 orders came by API) and the create retried. A refusal
+     for scope (a read-only key) stops instead, saying so;
   2. the money: BOT_BANKROLL ($500) moved from the primary account, only while
-     the subaccount holds $0, and checked to have landed. The transfer id is
-     fixed per subaccount, so the setup funds a subaccount once at most; a
-     later top-up is Cal's own transfer;
+     the subaccount holds $0, and checked to have landed (re-read for up to
+     FUNDING_LAND_WAIT_SEC: Kalshi's balances lag a transfer by seconds). The
+     transfer id is fixed per subaccount, so the setup funds a subaccount
+     once at most; a later top-up is Cal's own transfer;
   3. the bot's key: POST /api_keys/generate locked to the subaccount, scopes
      read + write::trade (no transfer). Its private key is written to
      KALSHI_TAKER_PRIVATE_KEY_PATH at mode 0600, replacing the file there,
@@ -66,6 +71,11 @@ BOT_KEY_SCOPES = ("read", "write::trade")
 FUNDING_ID_NAMESPACE = uuid.UUID("6f1d2b7e-3c4a-4e59-9d0b-6a2f5c8e1b37")
 # Kalshi reports dollars to the cent; a landed transfer may show a hair under.
 FUNDING_TOLERANCE_DOLLARS = 0.01
+# Kalshi's subaccount balances lag an accepted transfer (seen $0 at once, $500 within 24 s, 2026-10-16).
+FUNDING_LAND_WAIT_SEC = 30.0
+FUNDING_LAND_RETRY_SEC = 5.0
+# Kalshi's 403 code for a key without write scope ("insufficient scope: write required").
+INSUFFICIENT_SCOPE_CODE_PREFIX = "insufficient_scope"
 # A key Kalshi just made may take a moment to be accepted.
 NEW_KEY_CHECK_ATTEMPTS = 3
 NEW_KEY_CHECK_RETRY_SEC = 3.0
@@ -116,6 +126,13 @@ def ensure_key_dir_writable(key_path: Path) -> None:
 
 # ---- step 1: the subaccount --------------------------------------------------------
 
+def is_scope_refusal(status: int, reply: object) -> bool:
+    """Kalshi refused because the signing key lacks write scope (not the API tier)."""
+    error = reply.get("error") if isinstance(reply, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return status == 403 and isinstance(code, str) and code.startswith(INSUFFICIENT_SCOPE_CODE_PREFIX)
+
+
 def subaccount_balances(client: KalshiOrderClient) -> dict[int, float]:
     """Dollars per subaccount number (summed over exchange shards), the primary included."""
     status, reply = _signed(client, "GET", SUBACCOUNT_BALANCES_PATH)
@@ -139,6 +156,9 @@ def subaccount_balances(client: KalshiOrderClient) -> dict[int, float]:
 def create_subaccount(client: KalshiOrderClient, out: TextIO) -> int:
     """A new numbered subaccount; asks for the Advanced API tier once if Kalshi refuses."""
     status, reply = _signed(client, "POST", SUBACCOUNTS_PATH, {})
+    if is_scope_refusal(status, reply):
+        raise SetupError(f"the signing key (KALSHI_API_KEY_ID) is read-only (Kalshi: HTTP {status} {str(reply)[:300]}); "
+                         f"run this with a write-scoped key, see deploy/README step 11. Nothing changed")
     if status != 201:
         out.write(f"Kalshi refused a new subaccount (HTTP {status}); asking for the Advanced API tier it needs.\n")
         upgrade_status, upgrade_reply = _signed(client, "POST", UPGRADE_PATH, {})
@@ -171,7 +191,20 @@ def choose_subaccount(client: KalshiOrderClient, wanted: int | None, out: TextIO
 
 # ---- step 2: the money -------------------------------------------------------------
 
-def fund_once(client: KalshiOrderClient, subaccount: int, out: TextIO) -> float:
+def landed_balance(client: KalshiOrderClient, subaccount: int, sleep: Callable[[float], None]) -> float:
+    """The subaccount's balance once it shows the transfer, re-read every
+    FUNDING_LAND_RETRY_SEC for up to FUNDING_LAND_WAIT_SEC; else the last read."""
+    waited = 0.0
+    while True:
+        held = subaccount_balances(client).get(subaccount, 0.0)
+        if held >= BOT_BANKROLL - FUNDING_TOLERANCE_DOLLARS or waited >= FUNDING_LAND_WAIT_SEC:
+            return held
+        sleep(FUNDING_LAND_RETRY_SEC)
+        waited += FUNDING_LAND_RETRY_SEC
+
+
+def fund_once(client: KalshiOrderClient, subaccount: int, out: TextIO,
+              sleep: Callable[[float], None] = time.sleep) -> float:
     """Moves BOT_BANKROLL from the primary account while the subaccount holds
     $0, and checks it landed; returns what the subaccount holds after."""
     held = subaccount_balances(client).get(subaccount, 0.0)
@@ -184,10 +217,10 @@ def fund_once(client: KalshiOrderClient, subaccount: int, out: TextIO) -> float:
     if status != 200:
         raise SetupError(f"the ${BOT_BANKROLL:,.0f} transfer to subaccount {subaccount} was refused: HTTP {status} "
                          f"{str(reply)[:300]} (the setup funds a subaccount once; a top-up is your own transfer)")
-    held = subaccount_balances(client).get(subaccount, 0.0)
+    held = landed_balance(client, subaccount, sleep)
     if held < BOT_BANKROLL - FUNDING_TOLERANCE_DOLLARS:
         raise SetupError(f"Kalshi answered 200 to the ${BOT_BANKROLL:,.0f} transfer but subaccount {subaccount} "
-                         f"holds ${held:,.2f}: check your Kalshi balances before running this again")
+                         f"holds ${held:,.2f} after {FUNDING_LAND_WAIT_SEC:.0f} s: check your Kalshi balances before running this again")
     out.write(f"Moved ${BOT_BANKROLL:,.2f} from your primary account; subaccount {subaccount} holds ${held:,.2f}.\n")
     return held
 
@@ -301,7 +334,7 @@ def run_setup(main_client: KalshiOrderClient, make_bot_client: Callable[[str, Pa
         ensure_stopped(stop_path, out)
         ensure_key_dir_writable(key_path)
         subaccount = choose_subaccount(main_client, wanted_subaccount, out)
-        held = fund_once(main_client, subaccount, out)
+        held = fund_once(main_client, subaccount, out, sleep)
         if _configured_key_stands(main_client, make_bot_client, configured_key_id, key_path, configured_subaccount,
                                   subaccount, sleep):
             out.write(f"The configured bot key {configured_key_id} is already locked to subaccount {subaccount}; "

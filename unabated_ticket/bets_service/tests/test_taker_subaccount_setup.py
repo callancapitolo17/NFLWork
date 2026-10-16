@@ -35,12 +35,16 @@ class MainKalshi:
     call. `listed` is what GET /api_keys carries (None: the minted key, locked)."""
 
     def __init__(self, balances, create=(201,), upgrade=201, transfer=200, generate=201, generated=None,
-                 listed=None, transfer_lands=True):
+                 listed=None, transfer_lands=True, land_after_reads=0, create_error="forbidden"):
         self.balances = dict(balances)
         self.create = list(create)
         self.upgrade = upgrade
         self.transfer = transfer
         self.transfer_lands = transfer_lands
+        # Balance reads after an accepted transfer that still show it missing (Kalshi's lag).
+        self.land_after_reads = land_after_reads
+        self.pending = {}
+        self.create_error = create_error
         self.generate = generate
         self.generated = generated if generated is not None else {"api_key_id": NEW_KEY_ID, "key_type": "rsa",
                                                                     "private_key": PEM}
@@ -50,6 +54,13 @@ class MainKalshi:
     def request(self, method, path, body=None):
         self.calls.append((method, path, body))
         if (method, path) == ("GET", setup.SUBACCOUNT_BALANCES_PATH):
+            if self.pending:
+                if self.land_after_reads > 0:
+                    self.land_after_reads -= 1
+                else:
+                    for number, dollars in self.pending.items():
+                        self.balances[number] += dollars
+                    self.pending = {}
             return 200, {"subaccount_balances": [
                 {"subaccount_number": number, "exchange_index": 0, "balance": f"{dollars:.4f}", "updated_ts": 1}
                 for number, dollars in self.balances.items()]}
@@ -59,7 +70,7 @@ class MainKalshi:
         if (method, path) == ("POST", setup.SUBACCOUNTS_PATH):
             status = self.create.pop(0)
             if status != 201:
-                return status, {"error": {"code": "forbidden", "message": "advanced tier required"}}
+                return status, {"error": {"code": self.create_error, "message": "refused"}}
             number = max(self.balances) + 1
             self.balances[number] = 0.0
             return 201, {"subaccount_number": number}
@@ -68,7 +79,7 @@ class MainKalshi:
         if (method, path) == ("POST", setup.TRANSFER_PATH):
             if self.transfer == 200:
                 if self.transfer_lands:
-                    self.balances[body["to_subaccount"]] += body["amount_cents"] / 100
+                    self.pending[body["to_subaccount"]] = body["amount_cents"] / 100
                     self.balances[body["from_subaccount"]] -= body["amount_cents"] / 100
                 return 200, {}
             return self.transfer, {"error": "insufficient balance"}
@@ -181,6 +192,15 @@ def test_a_refused_tier_stops_before_any_money_moves(tmp_path):
     assert main.posts(setup.TRANSFER_PATH) == [] and main.posts(setup.GENERATE_KEY_PATH) == []
 
 
+def test_a_read_only_signing_key_stops_before_the_tier_is_asked_or_anything_changes(tmp_path):
+    main = MainKalshi({0: 2000.0}, create=(403,), create_error="insufficient_scope:_write_required")
+    code, output, _made = run(main, tmp_path)
+    assert code == 1
+    assert output.splitlines()[-1].startswith("STOPPED: the signing key (KALSHI_API_KEY_ID) is read-only")
+    assert "deploy/README step 11" in output and "Advanced API tier" not in output
+    assert [call[1] for call in main.calls if call[0] == "POST"] == [setup.SUBACCOUNTS_PATH]
+
+
 def test_the_one_existing_subaccount_is_reused_and_a_funded_one_gets_no_transfer(tmp_path):
     main = MainKalshi({0: 2000.0, 1: 480.0})
     code, output, _made = run(main, tmp_path)
@@ -212,6 +232,22 @@ def test_a_transfer_kalshi_accepted_but_did_not_land_stops_before_a_key_is_made(
     code, output, _made = run(main, tmp_path)
     assert code == 1 and "answered 200 to the $500 transfer but subaccount 1 holds $0.00" in output
     assert main.posts(setup.GENERATE_KEY_PATH) == []
+
+
+def test_a_transfer_kalshi_shows_a_few_seconds_late_is_waited_for(tmp_path):
+    main = MainKalshi({0: 2000.0, 1: 0.0}, land_after_reads=3)
+    naps = []
+    held = setup.fund_once(main, 1, io.StringIO(), sleep=naps.append)
+    assert held == 500.0 and naps == [setup.FUNDING_LAND_RETRY_SEC] * 3
+    assert len(main.posts(setup.TRANSFER_PATH)) == 1
+
+
+def test_a_transfer_still_missing_after_the_wait_stops_without_a_second_transfer(tmp_path):
+    main = MainKalshi({0: 2000.0, 1: 0.0}, land_after_reads=100)
+    naps = []
+    with pytest.raises(setup.SetupError, match=r"holds \$0.00 after 30 s"):
+        setup.fund_once(main, 1, io.StringIO(), sleep=naps.append)
+    assert sum(naps) == setup.FUNDING_LAND_WAIT_SEC and len(main.posts(setup.TRANSFER_PATH)) == 1
 
 
 def test_a_finished_setup_makes_no_second_key(tmp_path):
