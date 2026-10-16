@@ -130,7 +130,8 @@
                    font-size: 12px; color: var(--muted); margin: 6px 0 0; }
   .stake-figures dt, .stake-figures dd { margin: 0; }
   .stake-figures dd { text-align: right; color: var(--text); }
-  .stake-reason { font-size: 12px; color: var(--muted); font-style: italic; margin-top: 3px; overflow-wrap: anywhere; }
+  .stake-reason { font-size: 12px; color: var(--muted); margin-top: 3px; overflow-wrap: anywhere; }
+  .stake-reason.zero { color: var(--warn); }
   .stake-none { color: var(--faint); font-size: 13px; }
   .msg-ok { color: var(--good); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
   .msg-err { color: var(--bad); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
@@ -638,7 +639,7 @@ function stakeCell(line, p, byRotation) {
   children.push(el("dl", { class: "stake-figures num" }, figures.flatMap(([label, stake]) =>
     [el("dt", { text: label }), el("dd", { text: money(stake) })])));
   const reason = stakeReason(line, p, ownTotal, teamBets, byRotation);
-  if (reason) children.push(el("div", { class: "stake-reason", text: reason }));
+  if (reason) children.push(el("div", { class: "stake-reason" + (line.recommended_stake <= 0.5 ? " zero" : ""), text: reason }));
 
   if (message) children.push(el("div", { class: message.ok ? "msg-ok" : "msg-err", role: "status", text: message.text }));
   return el("div", { class: "stake-col" }, children);
