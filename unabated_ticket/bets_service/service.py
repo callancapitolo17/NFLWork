@@ -869,8 +869,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  taker_desk_off_reason: str = "no bot Kalshi key is configured (KALSHI_TAKER_API_KEY_ID / "
                                              "KALSHI_TAKER_PRIVATE_KEY_PATH)",
                  kalshi_place_desk: ManualKalshiDesk | None = None,
-                 kalshi_place_off_reason: str = "no Kalshi key is configured (KALSHI_API_KEY_ID / "
-                                                "KALSHI_PRIVATE_KEY_PATH)") -> type[BaseHTTPRequestHandler]:
+                 kalshi_place_off_reason: str = "no Kalshi trade key for Place is configured "
+                                                "(KALSHI_PLACE_API_KEY_ID / KALSHI_PLACE_PRIVATE_KEY_PATH)") -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
     EXTRA_ALLOWED_HOSTS (the tests pass their own). `teaser_placer` is the
@@ -1373,17 +1373,22 @@ def kalshi_subaccounts_read(bot_subaccount: int | None) -> tuple[int, ...]:
 
 
 def open_kalshi_place_desk(store: BetsStore) -> tuple[ManualKalshiDesk | None, str]:
-    """(the Place button's Kalshi desk on Cal's own key, "") or (None, why)."""
-    if not config.KALSHI_API_KEY_ID or not config.KALSHI_PRIVATE_KEY_PATH:
-        reason = "no Kalshi key is configured (KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PATH)"
+    """(the Place button's Kalshi desk on Cal's MAIN account, "") or (None, why).
+    It signs only with its own trade key (KALSHI_PLACE_*): the read key the
+    Kalshi source polls with is read-only, so it is never a fallback."""
+    if not config.KALSHI_PLACE_API_KEY_ID or not config.KALSHI_PLACE_PRIVATE_KEY_PATH:
+        reason = ("no Kalshi trade key for Place is configured (KALSHI_PLACE_API_KEY_ID / "
+                  "KALSHI_PLACE_PRIVATE_KEY_PATH)")
         log.info("kalshi place: %s, the Place button is off", reason)
         return None, reason
     try:
-        client = KalshiOrderClient(config.KALSHI_API_KEY_ID, config.KALSHI_PRIVATE_KEY_PATH, config.KALSHI_BASE_URL)
+        client = KalshiOrderClient(config.KALSHI_PLACE_API_KEY_ID, config.KALSHI_PLACE_PRIVATE_KEY_PATH,
+                                   config.KALSHI_BASE_URL)
     except (OSError, ValueError) as error:
-        reason = f"the Kalshi key {config.KALSHI_PRIVATE_KEY_PATH} could not be read: {error}"
+        reason = f"the Place key {config.KALSHI_PLACE_PRIVATE_KEY_PATH} could not be read: {error}"
         log.error("kalshi place: %s, the Place button is off", reason)
         return None, reason
+    log.info("kalshi place: on, signing with Place key %s on the main account", config.KALSHI_PLACE_API_KEY_ID[:8])
     return ManualKalshiDesk(client, store, lambda line: read_runner_quote(config.RUNNER_URL, line)), ""
 
 
