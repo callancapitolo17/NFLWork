@@ -202,8 +202,8 @@
   }
 
   // The straight bets on a pool leg's game, the Edges tab's tags: `held $X`
-  // on the leg's side, `against $Y` on the other, or a bare `game` when the
-  // game has straights and none of them counts. Every bet in the title.
+  // on the leg's side, or a bare `game` when the game has straights and none
+  // of them counts (a bet against the leg never does). Every bet in the title.
   //   [{kind, text, title}]
   function straightTags(straights) {
     if (!straights) return [];
@@ -211,7 +211,6 @@
       .concat(straights.leftOut.map((bet) => `${bet.label} — not counted: ${bet.reason}`)).join("\n");
     const tags = [];
     if (straights.held > 0) tags.push({ kind: "held", text: `held ${betsLib.formatStake(straights.held)}`, title });
-    if (straights.against > 0) tags.push({ kind: "against", text: `against ${betsLib.formatStake(straights.against)}`, title });
     if (tags.length === 0 && straights.leftOut.length > 0) tags.push({ kind: "game", text: "game", title });
     return tags;
   }
