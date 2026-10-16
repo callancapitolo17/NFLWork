@@ -250,6 +250,7 @@ def _line_json(line, sizing) -> dict:
         "kelly_stake": round(sizing.kelly_stake, 2),
         "recommended_stake": sizing.recommended_stake,
         "unlimited_stake": sizing.unlimited_stake,
+        "under_min_stake": sizing.under_min_stake,
         "yields_to": sizing.yields_to,
     }
 
