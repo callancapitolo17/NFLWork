@@ -10,7 +10,8 @@ Rules, in order, for every request (validate_place_request's shape):
      live ask, and checks Kalshi's market is that line's (GET
      /kalshi_quote.json: the automated taker's own resolveKalshiContract,
      quoteOf and marketMismatch);
-  3. the game has not started;
+  3. the game has not started, and the runner read the Kalshi this desk
+     trades on (KALSHI_BASE_URL);
   4. the live all-in price is at most PRICE_TOLERANCE (0.1c) worse than the
      Ticket's (Cal, 2026-10-16); a better one is taken;
   5. the other side of the market is not held: on Kalshi a buy of the other
@@ -188,7 +189,11 @@ class ManualKalshiDesk:
             return "the game's start time is unknown."
         if start <= self._now():
             return "the game has started."
-        if not (MIN_PRICE <= quote.get("ask", 0) <= MAX_PRICE) or not _is_number(quote.get("allIn")):
+        if quote.get("kalshiBaseUrl") != self._client.base_url:
+            return (f"the runner read Kalshi at {quote.get('kalshiBaseUrl')!r} but this desk trades "
+                    f"{self._client.base_url}.")
+        ask = quote.get("ask")
+        if not _is_number(ask) or not MIN_PRICE <= ask <= MAX_PRICE or not _is_number(quote.get("allIn")):
             return f"Kalshi's ask {quote.get('ask')!r} is not a price."
         if quote["allIn"] > request["ticket_all_in"] + PRICE_TOLERANCE:
             return (f"Kalshi is at {_cents(quote['allIn'])} all-in now, more than 0.1¢ worse than the "

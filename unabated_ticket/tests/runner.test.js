@@ -631,6 +631,7 @@ test("kalshi_quote: the board's Kalshi line gives its contract, live ask, all-in
     { ok: true, ticker: TAKER_TICKER, side: "yes", ask: 0.57, depth: 40, eventId: 123742 });
   assert.equal(quote.allIn, Math.round((0.57 + 0.07 * 0.57 * 0.43) * 1e6) / 1e6);
   assert.ok(quote.eventStart);
+  assert.equal(quote.kalshiBaseUrl, "https://kalshi.test/v2", "the desk checks it trades the Kalshi this read");
   assert.ok(kalshi.calls.includes(`https://kalshi.test/v2/markets/${TAKER_TICKER}`), "the market is checked");
   assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 0);
 });

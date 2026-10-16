@@ -17,10 +17,13 @@ ALL_IN = 0.587157
 BODY = {"clickId": "c1a2b3c4-0001", "eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 1,
         "points": -35.5, "stake": 100, "ticketAllIn": 0.5872, "kalshiReadAt": "2026-10-16T20:59:30Z"}
 QUOTE = {"ok": True, "ticker": TICKER, "side": "yes", "ask": 0.57, "allIn": ALL_IN, "depth": 40,
-         "eventId": EVENT_ID, "eventStart": "2026-10-17T19:30:00.000Z", "label": "Washington St -35.5 full game"}
+         "eventId": EVENT_ID, "eventStart": "2026-10-17T19:30:00.000Z", "label": "Washington St -35.5 full game",
+         "kalshiBaseUrl": "https://api.elections.kalshi.com/trade-api/v2"}
 
 
 class ScriptedKalshi:
+    base_url = "https://api.elections.kalshi.com/trade-api/v2"
+
     def __init__(self, post_status=201, filled="170.00", remaining="0.00", fills_count="170", raises=False):
         self.calls = []
         self.post_status = post_status
@@ -110,6 +113,8 @@ def test_the_same_click_is_never_sent_twice(store):
     ({"eventStart": "2026-10-16T20:00:00Z"}, "has started"),
     ({"allIn": 0.5884}, "more than 0.1"),
     ({"ok": False, "reason": "no_line", "detail": "the board holds 0 Kalshi lines"}, "0 Kalshi lines"),
+    ({"kalshiBaseUrl": "https://demo-api.kalshi.co/trade-api/v2"}, "this desk trades"),
+    ({"ask": None}, "is not a price"),
 ])
 def test_refusals_send_nothing(store, quote_changes, words):
     kalshi = ScriptedKalshi()

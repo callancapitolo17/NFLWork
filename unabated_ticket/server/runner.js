@@ -74,8 +74,9 @@
 //                    the Ticket's Place button (bets_service/manual_orders.py):
 //                    the board's Kalshi line with those fields, the contract it
 //                    buys, its live ask and Kalshi's market check (the taker's
-//                    own resolveKalshiContract / quoteOf / marketMismatch);
-//                    places nothing. points omitted on a moneyline.
+//                    own resolveKalshiContract / quoteOf / marketMismatch) and
+//                    the Kalshi API it read; places nothing. points omitted
+//                    (and ignored) on a moneyline.
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
@@ -112,6 +113,8 @@ const feedLib = require("../extension/feed.js");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8095;
+// A moneyline has no number: the Place button's line matches on side alone.
+const MONEYLINE_BET_TYPE_ID = 1;
 const DEFAULT_BETS_SERVICE_URL = "http://127.0.0.1:8094";
 const DEFAULT_KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2";
 // The taker decides on every Kalshi row this often; Kalshi's public reads allow far more.
@@ -761,7 +764,7 @@ function createRunner(deps) {
     if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
     const found = Object.values(board.lines).filter((line) => line.bookId === taker.KALSHI_BOOK_ID
       && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
-      && line.sideIndex === spec.sideIndex && (line.points ?? null) === spec.points);
+      && line.sideIndex === spec.sideIndex && (spec.betTypeId === MONEYLINE_BET_TYPE_ID || (line.points ?? null) === spec.points));
     if (found.length !== 1) {
       return { ok: false, reason: "no_line", detail: `the board holds ${found.length} Kalshi lines for game ${spec.eventId} at that market, side and number` };
     }
@@ -782,7 +785,10 @@ function createRunner(deps) {
     if (mismatch) return { ok: false, ...position, reason: "market_mismatch", detail: `${contract.ticker}: ${mismatch}` };
     const quote = taker.quoteOf(book, contract.side);
     if (!quote) return { ok: false, ...position, reason: "no_book", detail: `nothing rests on the ${contract.side} side of ${contract.ticker}` };
-    return { ok: true, ...position, ask: quote.ask, allIn: Math.round(taker.kalshiAllInPrice(quote.ask) * 1e6) / 1e6, depth: quote.depth };
+    return {
+      ok: true, ...position, ask: quote.ask, allIn: Math.round(taker.kalshiAllInPrice(quote.ask) * 1e6) / 1e6, depth: quote.depth,
+      kalshiBaseUrl,
+    };
   }
 
   // Kalshi's market object for a ticker (public GET /markets/<ticker>).
