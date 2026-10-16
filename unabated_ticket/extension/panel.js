@@ -619,7 +619,9 @@
       kalshiPlaceState = { ticketAt: ticket.capturedAt, phase: null, armedAt: 0, message: null, tone: null, edited: false };
     }
     // The box follows the stake until Cal types in it.
-    if (!kalshiPlaceState.edited && document.activeElement !== view.kalshiPlaceStake) {
+    // ...and holds still once Place is pressed: what the confirm names is what is sent.
+    const settled = kalshiPlaceState.phase === "confirm" || kalshiPlaceState.phase === "placing";
+    if (!kalshiPlaceState.edited && !settled && document.activeElement !== view.kalshiPlaceStake) {
       view.kalshiPlaceStake.value = kalshiPlace.stakeText(acted);
     }
     renderKalshiPlaceControls();
@@ -709,9 +711,10 @@
       const reply = await serviceRequest("POST", "/place_kalshi.json", request.body);
       next = { message: reply.message, tone: kalshiPlace.replyTone(reply.status) };
     } catch (error) {
-      next = error.status
+      // A 4xx is the service refusing before Kalshi; a 5xx (a gateway losing the service mid-send) may have placed.
+      next = error.status >= 400 && error.status < 500
         ? { message: `Not placed: ${error.message}`, tone: "refused" }
-        : { message: `The bets service did not answer (${error.message}). Check Kalshi before placing again.`, tone: "warn" };
+        : { message: `No answer from the bets service (${error.message}). Check Kalshi before placing again.`, tone: "warn" };
     }
     // A new capture meanwhile owns the box now; this answer belonged to the old one.
     if (kalshiPlaceState.ticketAt !== ticketAt) return;

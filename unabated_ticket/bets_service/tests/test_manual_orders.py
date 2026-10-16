@@ -43,6 +43,8 @@ class ScriptedKalshi:
             if self.remaining is not None:
                 order["remaining_count"] = self.remaining
             return 201, order
+        if method == "DELETE":
+            return 200, {}
         if path.startswith("/portfolio/fills"):
             return 200, {"fills": [{"count_fp": self.fills_count, "yes_price_dollars": "0.5700",
                                     "no_price_dollars": "0.4300", "fee_cost": "2.92"}], "cursor": ""}
@@ -160,6 +162,13 @@ def test_no_answer_or_no_closed_count_is_unknown(store):
     assert desk_with(store, ScriptedKalshi(raises=True)).place(request())["status"] == "unknown"
     assert desk_with(store, ScriptedKalshi(remaining=None)).place(
         request(clickId="c1a2b3c4-0004", kalshiReadAt="2026-10-16T21:30:00Z"))["status"] == "unknown"
+
+
+def test_a_reply_still_open_gets_one_cancel(store):
+    kalshi = ScriptedKalshi(remaining="30.00")
+    result = desk_with(store, kalshi).place(request())
+    assert result["status"] == "unknown" and "rest was cancelled" in result["message"]
+    assert [call[1] for call in kalshi.calls if call[0] == "DELETE"] == [f"/portfolio/events/orders/k-9?market_ticker={TICKER}"]
 
 
 def test_partial_and_unfilled(store):

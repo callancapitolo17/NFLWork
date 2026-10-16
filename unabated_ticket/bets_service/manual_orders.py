@@ -229,17 +229,31 @@ class ManualKalshiDesk:
         filled = _count_of(order, "fill_count_fp", "fill_count")
         remaining = _count_of(order, "remaining_count_fp", "remaining_count")
         if filled is None or remaining is None or remaining > 0:
-            # Immediate-or-cancel leaves nothing open; a reply that does not say so is checked on Kalshi by hand.
+            # Immediate-or-cancel leaves nothing open; a reply that does not say so gets one cancel, then a check by hand.
+            cancelled = self._cancel(order_id, quote["ticker"])
             self._update(client_order_id, {"status": STATUS_UNKNOWN, "kalshi_order_id": order_id,
-                                           "error": f"reply without a zero remaining count: {str(reply)[:500]}"})
-            log.error("manual order %s %s: Kalshi's reply does not show it closed: %s", client_order_id, order_id, reply)
-            return {"status": STATUS_UNKNOWN, "message": "Kalshi took it but did not say what filled. Check Kalshi."}
+                                           "error": f"reply without a zero remaining count (cancel "
+                                                    f"{'confirmed' if cancelled else 'NOT confirmed'}): {str(reply)[:500]}"})
+            log.error("manual order %s %s: Kalshi's reply does not show it closed (cancel %s): %s", client_order_id,
+                      order_id, "confirmed" if cancelled else "not confirmed", reply)
+            rest = "Its rest was cancelled." if cancelled else "It may still rest: cancel it on Kalshi."
+            return {"status": STATUS_UNKNOWN, "message": f"Kalshi took it but did not say what filled. {rest} Check Kalshi."}
         cost = self._fill_cost(order_id, quote["side"], filled)
         outcome = STATUS_UNFILLED if filled <= 0 else STATUS_FILLED if filled >= count else STATUS_PARTIAL
         self._update(client_order_id, {"status": outcome, "kalshi_order_id": order_id, "count_filled": filled,
                                        "cost_filled": cost, "error": None})
         return {"status": outcome, "ticker": quote["ticker"], "side": quote["side"], "count": count, "filled": filled,
                 "cost": cost, "message": _outcome_message(outcome, quote, count, filled, cost)}
+
+    def _cancel(self, order_id: str, ticker: str) -> bool:
+        """One cancel of an order Kalshi did not report closed, routed by
+        market (the bot's own route). True only on Kalshi's 200/204."""
+        try:
+            status, _reply = self._client.request("DELETE", f"{ORDERS_PATH}/{order_id}?market_ticker={ticker}")
+        except OSError as error:
+            log.error("manual order %s: cancel got no answer: %s", order_id, error)
+            return False
+        return status in (200, 204)
 
     def _fill_cost(self, order_id: str, contract_side: str, filled: float) -> float | None:
         """Dollars paid for the order's fills, fees included, or None when the
