@@ -95,6 +95,9 @@ GATEWAY_BASE_URL = "https://gateway.polymarket.us"
 POSITIONS_PATH = "/v1/portfolio/positions"
 ACTIVITIES_PATH = "/v1/portfolio/activities"
 EVENTS_PATH = "/v1/events"
+# Verified on Cal's account 2026-10-16: one entry in `balances`, dollars.
+# currentBalance = cash; buyingPower = what can be bet now. No open-positions value here.
+BALANCES_PATH = "/v1/account/balances"
 PAGE_LIMIT = 100
 # A cursor that never reaches eof would otherwise loop forever; 200 pages of 100 is far past
 # any history window this service reads.
@@ -555,6 +558,19 @@ def json_or_raise(response: object, what: str) -> dict:
     return body
 
 
+def balance_of_polymarket_us(body: dict) -> dict:
+    """GET /v1/account/balances -> the balances.py reading (inBets None: not reported)."""
+    entries = body.get("balances")
+    if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
+        raise RuntimeError(f"Polymarket US balances: expected exactly one balance entry, got {entries!r:.200}")
+    entry = entries[0]
+    for field in ("currentBalance", "buyingPower"):
+        value = entry.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RuntimeError(f"Polymarket US balances: expected a number at {field}, got {value!r}")
+    return {"cash": entry["currentBalance"], "inBets": None, "available": entry["buyingPower"], "creditLimit": None}
+
+
 class PolymarketUSSource:
     """Source protocol implementation for the Polymarket US account (signed GETs only).
 
@@ -689,6 +705,11 @@ class PolymarketUSSource:
         log.info("polymarket_us: %d positions + %d activities -> %d records (%d open, %d unmatchable)",
                  len(positions), len(activities), len(records), n_open, n_unmatchable)
         return records
+
+    def balance(self) -> dict:
+        response = self._session.get(f"{API_BASE_URL}{BALANCES_PATH}", headers=self._signed_headers(BALANCES_PATH),
+                                     timeout=HTTP_TIMEOUT_SEC)
+        return balance_of_polymarket_us(json_or_raise(response, f"GET {BALANCES_PATH}"))
 
 
 def source_if_configured() -> PolymarketUSSource | None:

@@ -11,6 +11,7 @@ from unabated_ticket.bets_service import service
 from unabated_ticket.bets_service.balances import BalanceBook, read_balance_once, validate_reading
 from unabated_ticket.bets_service.sources.kalshi import KalshiSource, balance_of_kalshi
 from unabated_ticket.bets_service.sources.novig import NovigSource, balance_of_novig_summary
+from unabated_ticket.bets_service.sources.polymarket_us import balance_of_polymarket_us
 from unabated_ticket.bets_service.store import BetsStore
 
 
@@ -59,6 +60,19 @@ def test_novig_source_balance_asks_for_the_cash_summary():
     source = NovigSource(auth=Auth(), http_get=http_get, poll_sec=1, base_url="https://x/nbx/v1")
     assert source.balance()["inBets"] == 2
     assert urls == ["https://x/nbx/v1/portfolio/summary?currency=CASH"]
+
+
+def test_polymarket_us_balance_reads_the_one_entry():
+    body = {"balances": [{"currentBalance": 1082.4, "buyingPower": 1080.0, "assetAvailable": 0,
+                          "pendingCredit": 0, "displayedCash": 1082.4, "availableToWithdraw": 1082.4}]}
+    assert balance_of_polymarket_us(body) == {
+        "cash": 1082.4, "inBets": None, "available": 1080.0, "creditLimit": None}
+
+
+def test_polymarket_us_balance_refuses_more_than_one_entry():
+    entry = {"currentBalance": 1, "buyingPower": 1}
+    with pytest.raises(RuntimeError, match="exactly one"):
+        balance_of_polymarket_us({"balances": [entry, entry]})
 
 
 def test_validate_reading_needs_cash():

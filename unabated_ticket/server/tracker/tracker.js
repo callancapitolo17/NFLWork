@@ -568,6 +568,8 @@
     const credit = rows.filter((row) => row.creditLimit);
     const notes = ["Cash leaves out money in open bets. Kalshi's in bets is what the positions are worth now."];
     if (credit.length) notes.push("* Includes " + credit.map((row) => row.label + "'s " + balanceMoney(row.creditLimit)).join(", ") + " credit.");
+    const noInBets = read.filter((row) => row.inBets === null);
+    if (noInBets.length) notes.push(noInBets.map((row) => row.label).join(", ") + " does not report money in open bets, so the in bets total leaves it out.");
     if (read.length < rows.length) notes.push("The total leaves out books shown as unavailable.");
     fill("bal-table", el("div", { className: "scroll" }, [tbl]),
       el("div", { className: "balance-notes" }, notes.map((text) => el("span", { text }))));
