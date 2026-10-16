@@ -2878,7 +2878,7 @@ The Kalshi rules above hold unless this table says otherwise.
 | Price | buying an outcome crosses the best resting order on the other outcome at 1 − its price (`/v3/public/catalog/markets/<id>/book`); fee 0 pregame; a market whose fee is `ALWAYS` is refused (`market_mismatch`) |
 | Size | a Novig contract pays 1c: qty = floor(stake × 100 / price), cut to the depth; Kelly bankroll `NOVIG_KELLY_BANKROLL` ($500, its own parameter, separate from the cap) |
 | Ceiling | open bot cost on Novig never above $500 (`OPEN_COST_CEILING`), its own budget beside Kalshi's |
-| Market check | before every order the public market and event are read: market `OPEN`, event `OPEN_PREGAME`, the row's market type, strike (a spread's is the home side's) and outcome, and the outcome's own name must be the row's side (a spread's last word its handicap, a total's first word Over / Under; unreadable fails closed) |
+| Market check | before every order the public market and event are read: market `OPEN`, event `OPEN_PREGAME`, the row's market type, strike (a spread's is the home side's) and outcome, and the outcome's own name must be the row's side (a spread's last word its handicap, a pick'em refused; a total's first word Over / O or Under / U; unreadable fails closed) |
 | Order | one IOC limit (`POST /v3/orders`, NOVIG-V3 signed); a partial fill cancels the rest, a zero fill comes back rejected; an order still `OPEN` is cancelled. `clientId` is a UUID derived from the outcome and the pass (Novig does not dedupe it, so the desk never re-sends) |
 | Adds | `unseen_fill` across venues: a Novig order waits for any earlier bot fill on the game, Kalshi or Novig, to be held; a Kalshi order waits for an earlier Novig one the same way. One bets list sorted by live edge, so the better venue goes first |
 | Holdings | the pass needs the `kalshi`, `novig` and `novig_bot` polls under 5 min old (the stake is sized on every held bet); the desk re-checks `novig` and `novig_bot` (`stale_holdings`) |
@@ -2890,8 +2890,8 @@ apart from Cal's app account (`novig`). Novig's catalog names neither the
 board's teams nor its periods, so each record takes them from the board line
 stored with the order (`novig_taker_orders`); an order the desk did not place
 is unmatchable. Settlement reads the public market once the game has started;
-a bet's `closedAt` is when the desk first saw its market `SETTLED`
-(`novig_taker_orders.settled_at`), so it never moves poll to poll.
+a bot bet grades once the desk has stored when it first saw its market
+`SETTLED` (`novig_taker_orders.settled_at`, its `closedAt`), so it never moves poll to poll.
 `--name place` is the Ticket's Novig Place sub-account (`novig_place`), read
 the same way once its thread stores contexts.
 

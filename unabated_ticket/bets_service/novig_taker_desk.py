@@ -394,7 +394,7 @@ class NovigTakerDesk:
                 self._recover_lost_order(order, now)
             elif order["status"] in ("sent", "resting") or order["final_at"] is None:
                 followed = self._follow_order(order["client_id"], order["novig_order_id"], order["qty_requested"], wait=False)
-                if followed["status"] in ("sent", "resting"):
+                if followed["status"] == "sent":
                     self._final_from_listing(order, now)
             elif not order["fills_final"] and now - order["final_at"] >= timedelta(seconds=FILLS_SETTLE_SEC):
                 self._read_fills(order["client_id"], order["novig_order_id"], order["qty_requested"], final=True)

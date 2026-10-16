@@ -125,6 +125,7 @@ test("the outcome's own name must be the row's side: a swapped rung fails closed
   assert.match(taker.novigMarketMismatch(named("Washington St +35.5"), EVENT, row, contract), /is 35.5, the row is -35.5/);
   assert.match(taker.novigMarketMismatch(named("Washington St"), EVENT, row, contract), /names no handicap/);
   assert.equal(taker.novigMarketMismatch(named("WSU -35.5"), EVENT, row, contract), null);
+  assert.match(taker.novigMarketMismatch(named("WSU PK"), EVENT, row, contract), /pick'em/);
 });
 
 test("the clientId is a UUID per outcome and pass, and the line is named the way a bet record is", () => {

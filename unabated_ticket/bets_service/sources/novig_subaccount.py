@@ -194,8 +194,14 @@ class NovigSubaccountSource:
             market = self._market_if_started(market_id, context, now, markets_this_poll)
             settled_at = None
             if market is not None and market.get("status") == MARKET_SETTLED:
-                # The desk's stored first sighting survives a restart; this process's own is the fallback.
-                settled_at = (context or {}).get("settled_at") or self._settled_markets[market_id][1]
+                if context is not None:
+                    # A desk order grades only once the desk has stored its settle time (it survives a
+                    # restart): grading on this poll's sighting first would move closedAt when it lands.
+                    settled_at = context.get("settled_at")
+                    if settled_at is None:
+                        market = None
+                else:
+                    settled_at = self._settled_markets[market_id][1]
             records.append(normalize_order(self._account, order_id, order_fills, context, market, settled_at, fetched_at))
         polled_markets = {fills_of[0].get("marketId") for fills_of in by_order.values()}
         self._settled_markets = {market_id: seen for market_id, seen in self._settled_markets.items()

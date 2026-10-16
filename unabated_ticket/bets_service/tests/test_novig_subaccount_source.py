@@ -48,7 +48,7 @@ def test_an_order_is_one_record_named_by_its_board_line():
 
 
 def test_a_settled_market_grades_it_and_is_read_once():
-    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4)}
+    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": NOW - timedelta(minutes=2)}
     market = {"marketId": MARKET, "eventId": "ev-1", "status": "SETTLED", "outcomes": [{"outcomeId": OUTCOME, "status": "WIN"}]}
     client = FakeClient([fill()], market)
     source = NovigSubaccountSource("bot", client, lambda: {"o1": started}, now=lambda: NOW)
@@ -67,12 +67,15 @@ def test_a_settled_bet_keeps_one_closed_at_poll_after_poll():
     clock["now"] = NOW + timedelta(minutes=5)
     assert first == {**source.fetch()[0], "sourceFetchedAt": first["sourceFetchedAt"]}
     assert first["closedAt"] == "2026-10-18T15:00:00.000Z"
-    # Before the desk has seen it settled, the first poll that did is the closedAt, and it holds.
+    # Before the desk has stored its settle time a desk order stays open; with no context (Place, until its
+    # thread stores contexts) the first poll that saw it settled is the closedAt, and it holds.
     unseen = NovigSubaccountSource("bot", FakeClient([fill()], market), lambda: {"o1": {**started, "settled_at": None}},
                                    now=lambda: clock["now"])
-    assert unseen.fetch()[0]["closedAt"] == "2026-10-18T16:05:00.000Z"
+    assert (unseen.fetch()[0]["status"], unseen.fetch()[0]["closedAt"]) == ("open", None)
+    place = NovigSubaccountSource("place", FakeClient([fill()], market), lambda: {}, now=lambda: clock["now"])
+    assert place.fetch()[0]["closedAt"] == "2026-10-18T16:05:00.000Z"
     clock["now"] = NOW + timedelta(minutes=10)
-    assert unseen.fetch()[0]["closedAt"] == "2026-10-18T16:05:00.000Z"
+    assert place.fetch()[0]["closedAt"] == "2026-10-18T16:05:00.000Z"
 
 
 def test_no_context_is_recorded_unmatchable():
@@ -83,7 +86,7 @@ def test_no_context_is_recorded_unmatchable():
 
 def test_an_unreadable_settlement_or_fill_fails_the_run():
     market = {"marketId": MARKET, "status": "SETTLED", "outcomes": [{"outcomeId": OUTCOME, "status": "WEIRD"}]}
-    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4)}
+    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": NOW - timedelta(minutes=2)}
     with pytest.raises(NovigError):
         NovigSubaccountSource("bot", FakeClient([fill()], market), lambda: {"o1": started}, now=lambda: NOW).fetch()
     with pytest.raises(NovigError):

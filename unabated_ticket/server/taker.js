@@ -564,12 +564,15 @@ function novigMarketMismatch(market, event, row, contract) {
     if (!Number.isFinite(strike) || strike !== homePoints) return `strike ${market.strike} (home), row is ${row.points} side ${row.sideIndex}`;
     const handicap = novigNameHandicap(name);
     if (handicap === null) return `outcome "${name}" names no handicap`;
+    // At a pick'em both outcomes read 0, so the name cannot tell a swapped rung: refused.
+    if (handicap === 0) return `outcome "${name}" is a pick'em: its name cannot confirm the side`;
     if (handicap !== row.points) return `outcome "${name}" is ${handicap}, the row is ${row.points}`;
   } else if (row.betTypeId === BET_TYPE_TOTAL) {
     if (!Number.isFinite(strike) || strike !== row.points) return `strike ${market.strike}, row is ${row.points}`;
-    const word = name.toLowerCase();
+    // "Over" / "Over 47.5" / "O 47.5" (Novig's app labels a total "O 7.5").
     const sideWord = row.sideIndex === SIDE_AWAY_OR_OVER ? "over" : "under";
-    if (!word.startsWith(sideWord)) return `outcome "${name}" is not the row's ${sideWord}`;
+    const pattern = row.sideIndex === SIDE_AWAY_OR_OVER ? /^(over|o)\b/i : /^(under|u)\b/i;
+    if (!pattern.test(name)) return `outcome "${name}" is not the row's ${sideWord}`;
   } else {
     return `bet type ${row.betTypeId} has no Novig market check`;
   }
