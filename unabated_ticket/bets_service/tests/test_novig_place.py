@@ -24,7 +24,7 @@ EVENT_ID = 123742
 OUTCOME = "01a0a05e-e864-7b73-9b80-9e502e4e98d5"
 OTHER_OUTCOME = "01a0a05e-e864-7b73-9b80-9e64b163cc27"
 NOVIG_URL = "https://api.novig.com"
-BODY = {"clickId": "n1a2b3c4-0001", "eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 1,
+BODY = {"clickId": "00000000-0000-4000-8000-000000000001", "eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 1,
         "points": -35.5, "stake": 50, "ticketAllIn": 0.675, "novigReadAt": "2026-10-16T20:59:30Z",
         "kalshiReadAt": "2026-10-16T20:59:40Z"}
 QUOTE = {"ok": True, "outcomeId": OUTCOME, "otherOutcomeId": OTHER_OUTCOME, "price": 0.675, "depth": 9000,
@@ -74,6 +74,7 @@ def request(**changes):
 
 
 def test_validate_names_what_is_wrong():
+    assert validate_novig_place_request({**BODY, "clickId": "abc12345-0001"}).startswith("clickId")
     assert validate_novig_place_request({**BODY, "betTypeId": 1}).startswith("betTypeId")
     assert validate_novig_place_request({**BODY, "points": None}).startswith("points")
     assert validate_novig_place_request({**BODY, "ticketAllIn": 1.0}).startswith("ticketAllIn")
@@ -93,7 +94,7 @@ def test_a_click_sends_one_ioc_buy_at_the_live_price(store):
     desk = desk_with(store, novig)
     result = desk.place(request())
     assert desk.quotes == [{"eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 1, "points": -35.5}]
-    assert novig.calls == [(OUTCOME, 0.675, 7407, "nman-n1a2b3c4-0001")]
+    assert novig.calls == [(OUTCOME, 0.675, 7407, "00000000-0000-4000-8000-000000000001")]
     assert result["status"] == "filled"
     assert result["cost"] == pytest.approx(49.99725)
     assert result["message"] == "Bet $50.00 at 67.5¢ on Novig to win $24.07."
@@ -126,7 +127,7 @@ def test_a_price_within_a_tenth_of_a_cent_worse_or_any_better_places(store):
     novig = ScriptedNovig()
     assert desk_with(store, novig, {**QUOTE, "price": 0.676}).place(request())["status"] == "filled"
     assert desk_with(store, novig, {**QUOTE, "price": 0.6}).place(
-        request(clickId="n1a2b3c4-0002", novigReadAt=(NOW + timedelta(seconds=1)).isoformat()))["status"] == "filled"
+        request(clickId="00000000-0000-4000-8000-000000000002", novigReadAt=(NOW + timedelta(seconds=1)).isoformat()))["status"] == "filled"
     assert novig.calls[1][2] == novig_contracts_for(50, 0.6)
 
 
@@ -138,7 +139,7 @@ def test_the_other_outcome_held_is_refused_but_a_parlay_leg_on_it_is_not(store):
     straight = {"id": "novig:o-1", "venue": "novig", "status": "open", "venueIds": {"outcomeId": OTHER_OUTCOME}}
     store.upsert_bets([straight], NOW)
     novig = ScriptedNovig()
-    result = desk_with(store, novig).place(request(clickId="n1a2b3c4-0003", novigReadAt=NOW.isoformat()))
+    result = desk_with(store, novig).place(request(clickId="00000000-0000-4000-8000-000000000003", novigReadAt=NOW.isoformat()))
     assert result["status"] == "refused" and "other side" in result["message"]
     assert novig.calls == []
 
@@ -156,10 +157,10 @@ def test_a_failing_or_old_novig_read_is_refused(store):
 def test_an_add_waits_until_the_last_place_on_the_game_was_read_at_either_venue(store):
     novig = ScriptedNovig()
     desk_with(store, novig).place(request())
-    stale = desk_with(store, novig, now=NOW + timedelta(seconds=20)).place(request(clickId="n1a2b3c4-0009"))
+    stale = desk_with(store, novig, now=NOW + timedelta(seconds=20)).place(request(clickId="00000000-0000-4000-8000-000000000009"))
     assert stale["status"] == "refused" and "not on the Bets tab yet" in stale["message"]
     fresh = desk_with(store, novig, now=NOW + timedelta(seconds=90)).place(
-        request(clickId="n1a2b3c4-0010", novigReadAt=(NOW + timedelta(seconds=60)).isoformat()))
+        request(clickId="00000000-0000-4000-8000-000000000010", novigReadAt=(NOW + timedelta(seconds=60)).isoformat()))
     assert fresh["status"] == "filled"
     # A Kalshi Place on the game after the Kalshi read the stake knew blocks a Novig Place too.
     store.insert_manual_order({
@@ -167,10 +168,10 @@ def test_an_add_waits_until_the_last_place_on_the_game_was_read_at_either_venue(
         "ticker": "KX", "contract_side": "yes", "label": None, "ticket_all_in": 0.5, "ask_price": 0.5,
         "all_in_price": 0.51, "stake": 10, "count_requested": 19, "status": "filled", "updated_at": NOW})
     blocked = desk_with(store, novig, now=NOW + timedelta(seconds=120)).place(
-        request(clickId="n1a2b3c4-0011", novigReadAt=(NOW + timedelta(seconds=110)).isoformat()))
+        request(clickId="00000000-0000-4000-8000-000000000011", novigReadAt=(NOW + timedelta(seconds=110)).isoformat()))
     assert blocked["status"] == "refused"
     unseen_by_no_kalshi_read = desk_with(store, novig, now=NOW + timedelta(seconds=120)).place(
-        request(clickId="n1a2b3c4-0012", novigReadAt=(NOW + timedelta(seconds=110)).isoformat(), kalshiReadAt=None))
+        request(clickId="00000000-0000-4000-8000-000000000012", novigReadAt=(NOW + timedelta(seconds=110)).isoformat(), kalshiReadAt=None))
     assert unseen_by_no_kalshi_read["status"] == "refused"
 
 

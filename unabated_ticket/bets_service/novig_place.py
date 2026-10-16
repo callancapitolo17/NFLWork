@@ -5,9 +5,10 @@ on a timer: every order is one POST /place_novig.json from the panel or the
 phone page.
 
 Rules, in order, for every request (validate_novig_place_request's shape):
-  1. the click was not already sent: client id 'nman-' + its clickId, held in
-     bets.duckdb::manual_orders before the send (Novig does not dedupe ids,
-     so this row is the only guard);
+  1. the click was not already sent: 'nman-' + its clickId, held in
+     bets.duckdb::manual_orders before the send (Novig does not dedupe its
+     clientId, which is the bare clickId since Novig wants a UUID, so this
+     row is the only guard);
   2. the server runner finds the board's Novig line, its outcome id (Unabated's
      rung sourceData) and the outcome on the other side, reads Novig's live
      price for it (1 minus the best resting order on the other outcome) and
@@ -32,13 +33,14 @@ bets.duckdb::manual_orders (venue 'novig'). Network: GET
 """
 import logging
 import math
+import re
 import threading
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 from unabated_ticket.bets_service.manual_orders import (
-    CLICK_ID_PATTERN, PRICE_TOLERANCE, STATUS_FILLED, STATUS_PARTIAL, STATUS_REFUSED, STATUS_REJECTED,
+    PRICE_TOLERANCE, STATUS_FILLED, STATUS_PARTIAL, STATUS_REFUSED, STATUS_REJECTED,
     STATUS_UNFILLED, STATUS_UNKNOWN, _cents, _is_number, _iso_time,
 )
 from unabated_ticket.bets_service.store import BetsStore
@@ -46,6 +48,8 @@ from unabated_ticket.bets_service.store import BetsStore
 log = logging.getLogger(__name__)
 
 NOVIG_ORDER_ID_PREFIX = "nman-"
+# Novig's clientId must be a UUID; the panel and phone send crypto.randomUUID().
+UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 RUNNER_NOVIG_QUOTE_PATH = "/novig_quote.json"
 # A Novig contract pays 1c (qty 100 = $1 payout), unlike Kalshi's $1.
 NOVIG_CONTRACT_PAYOUT_DOLLARS = 0.01
@@ -87,8 +91,8 @@ def validate_novig_place_request(body: object) -> dict | str:
     if not isinstance(body, dict):
         return f"body must be an object, got {type(body).__name__}"
     click_id = body.get("clickId")
-    if not isinstance(click_id, str) or not CLICK_ID_PATTERN.match(click_id):
-        return f"clickId must be 8-48 letters, digits or dashes, got {click_id!r}"
+    if not isinstance(click_id, str) or not UUID_PATTERN.match(click_id):
+        return f"clickId must be a lowercase UUID (Novig's clientId), got {click_id!r}"
     whole = {}
     for field, allowed in (("eventId", None), ("periodTypeId", None), ("betTypeId", NOVIG_PLACE_BET_TYPES),
                            ("sideIndex", (0, 1))):
@@ -148,7 +152,7 @@ class ManualNovigDesk:
             return self._place(request)
 
     def _place(self, request: dict) -> dict:
-        client_id = f"{NOVIG_ORDER_ID_PREFIX}{request['click_id']}"
+        client_order_id = f"{NOVIG_ORDER_ID_PREFIX}{request['click_id']}"
         quote = self._quote_reader({"eventId": request["eventId"], "periodTypeId": request["periodTypeId"],
                                     "betTypeId": request["betTypeId"], "sideIndex": request["sideIndex"],
                                     "points": request["points"]})
@@ -160,16 +164,16 @@ class ManualNovigDesk:
             return {"status": STATUS_REFUSED,
                     "message": f"Not placed: ${request['stake']:.2f} buys no contract at {_cents(quote['price'])}."}
         inserted = self._store.insert_manual_order({
-            "client_order_id": client_id, "placed_at": self._now(), "venue": VENUE_NOVIG, "event_id": request["eventId"],
+            "client_order_id": client_order_id, "placed_at": self._now(), "venue": VENUE_NOVIG, "event_id": request["eventId"],
             "ticker": quote["outcomeId"], "contract_side": "buy", "label": quote.get("label"),
             "ticket_all_in": request["ticket_all_in"], "ask_price": quote["price"], "all_in_price": quote["price"],
             "stake": request["stake"], "count_requested": quantity, "status": "sending", "updated_at": self._now(),
         })
         if not inserted:
             return {"status": STATUS_REFUSED, "message": "Not placed: this click was already sent."}
-        log.info("novig place %s: outcome %s x%d @ %s (Ticket %s)", client_id, quote["outcomeId"], quantity,
+        log.info("novig place %s: outcome %s x%d @ %s (Ticket %s)", client_order_id, quote["outcomeId"], quantity,
                  quote["price"], request["ticket_all_in"])
-        return self._send(client_id, quote, quantity)
+        return self._send(client_order_id, request["click_id"], quote, quantity)
 
     def _refusal(self, request: dict, quote: dict) -> str | None:
         """Why this click must not become an order, in words, or None."""
@@ -222,39 +226,39 @@ class ManualNovigDesk:
         kalshi_orders = self._store.manual_orders_maybe_filled_since(request["eventId"], kalshi_since, venue=VENUE_KALSHI)
         return bool(novig_orders or kalshi_orders)
 
-    def _send(self, client_id: str, quote: dict, quantity: int) -> dict:
+    def _send(self, client_order_id: str, novig_client_id: str, quote: dict, quantity: int) -> dict:
         try:
-            result = self._client.place_ioc_buy(quote["outcomeId"], quote["price"], quantity, client_id)
+            result = self._client.place_ioc_buy(quote["outcomeId"], quote["price"], quantity, novig_client_id)
         except OSError as error:
-            self._update(client_id, {"status": STATUS_UNKNOWN, "error": f"no answer: {error}"})
-            log.error("novig place %s: no answer from Novig: %s", client_id, error)
+            self._update(client_order_id, {"status": STATUS_UNKNOWN, "error": f"no answer: {error}"})
+            log.error("novig place %s: no answer from Novig: %s", client_order_id, error)
             return {"status": STATUS_UNKNOWN, "message": "Novig did not answer. Check Novig before placing again."}
         outcome = result.get("outcome") if isinstance(result, dict) else None
         detail = str(result.get("detail") or "")[:500] if isinstance(result, dict) else f"not a result: {result!r}"[:500]
         if outcome == STATUS_GEO_BLOCKED:
-            self._update(client_id, {"status": STATUS_REJECTED, "error": f"451: {detail}"})
+            self._update(client_order_id, {"status": STATUS_REJECTED, "error": f"451: {detail}"})
             return {"status": STATUS_REJECTED, "message": "Novig refused it: your phone's Novig location check is over "
                                                           "3 days old. Open the Novig app on your phone, then place again."}
         if outcome == STATUS_REJECTED:
-            self._update(client_id, {"status": STATUS_REJECTED, "error": detail})
+            self._update(client_order_id, {"status": STATUS_REJECTED, "error": detail})
             return {"status": STATUS_REJECTED,
                     "message": f"Novig refused it{': ' + detail if detail else ''}. Nothing was placed."}
         filled = result.get("filledQuantity")
         cost = result.get("cost")
         definite = outcome in (STATUS_FILLED, STATUS_PARTIAL, STATUS_UNFILLED) and _is_number(filled) and filled >= 0
         if not definite:
-            self._update(client_id, {"status": STATUS_UNKNOWN, "novig_order_id": result.get("orderId"),
+            self._update(client_order_id, {"status": STATUS_UNKNOWN, "novig_order_id": result.get("orderId"),
                                      "error": detail or f"no definite answer: {str(result)[:300]}"})
-            log.error("novig place %s: no definite answer: %s", client_id, result)
+            log.error("novig place %s: no definite answer: %s", client_order_id, result)
             return {"status": STATUS_UNKNOWN, "message": "Novig did not say what filled. Check Novig before placing again."}
-        self._update(client_id, {"status": outcome, "novig_order_id": result.get("orderId"), "count_filled": filled,
+        self._update(client_order_id, {"status": outcome, "novig_order_id": result.get("orderId"), "count_filled": filled,
                                  "cost_filled": cost if _is_number(cost) else None, "error": None})
         return {"status": outcome, "outcomeId": quote["outcomeId"], "count": quantity, "filled": filled,
                 "cost": cost if _is_number(cost) else None,
                 "message": _outcome_message(outcome, quote, quantity, filled, cost)}
 
-    def _update(self, client_id: str, fields: dict) -> None:
-        self._store.update_manual_order(client_id, fields, self._now())
+    def _update(self, client_order_id: str, fields: dict) -> None:
+        self._store.update_manual_order(client_order_id, fields, self._now())
 
 
 def _outcome_message(outcome: str, quote: dict, quantity: int, filled: float, cost: object) -> str:
