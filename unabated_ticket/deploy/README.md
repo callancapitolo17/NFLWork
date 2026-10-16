@@ -145,8 +145,10 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
       sudo tailscale serve --bg --https=8443 http://127.0.0.1:8096
       tailscale serve status        # must also show https://<name>:8443 proxy http://127.0.0.1:8096
       ```
-    - Once, with the Mac's page stopped, move its history over:
-      `scp ~/NFLWork/nfl_specials/nfl_specials.duckdb ubuntu@<vm>:~/unabated-data/`.
+    - Once, before the first deploy and with the Mac's page stopped, move its
+      history over, then retire the Mac's copy as step 10 does:
+      `scp ~/NFLWork/nfl_specials/nfl_specials.duckdb ubuntu@<vm>:~/unabated-data/`, then
+      `mv ~/NFLWork/nfl_specials/nfl_specials.duckdb ~/NFLWork/nfl_specials/nfl_specials.duckdb.moved-to-vm`.
     - `./deploy.sh`, then open `https://<name>:8443/` on the phone.
 
 ## Day to day
@@ -159,7 +161,8 @@ docker compose logs -f --tail 100 bets      # or: runner, fectas
 tail -f ~/unabated-data/logs/bets_service.log
 docker compose restart bets fectas   # e.g. after editing bets_service/.env
 docker compose down                  # stop all three (data kept); `up -d` or deploy.sh starts again
-sudo tailscale serve reset           # take the page off the tailnet
+sudo tailscale serve reset           # take both pages off the tailnet
+sudo tailscale serve --https=8443 off   # take only the fecta pricer off
 ```
 
 Login check on the VM (step 10 too), as step 0 but in the container — stop the service

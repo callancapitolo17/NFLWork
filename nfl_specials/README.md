@@ -43,11 +43,9 @@ phone ──tailnet──▶ VM :8443 ──▶ fectas (:8096) ──▶ FanDuel
   superfectas stay unpriced; trifectas still price.**
 - **Wagerzon login:** only the `WAGERZON*_USERNAME` / `_PASSWORD` lines of the
   VM's `unabated_ticket/bets_service/.env` (`NFL_SPECIALS_WAGERZON_ENV`), the
-  same login the bets service uses. There is no `bet_logger/.env` on the VM.
+  same login the bets service uses.
 - **State:** `~/unabated-data/nfl_specials.duckdb` on the VM.
-- **Update:** `~/NFLWork/unabated_ticket/deploy/deploy.sh` on the VM (pulls
-  `main`, rebuilds, restarts, checks the page answers on loopback and on the
-  tailnet name). Setup steps: `unabated_ticket/deploy/README.md` step 12.
+- **Update and setup:** `unabated_ticket/deploy/README.md` (`deploy.sh`, step 12).
 - Use one page at a time: the Mac's `run.sh` copy has its own database, so it
   does not see bets placed from the VM's page.
 
@@ -55,7 +53,7 @@ The relay on the Mac runs as a launchd agent (starts at login, restarts if it
 dies, waits for Tailscale):
 
 ```bash
-# install once (or again after editing the plist)
+# install once (after editing the plist, run the bootout line first)
 cp nfl_specials/com.nflwork.dk-relay.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.dk-relay.plist
 # restart onto new code
@@ -206,11 +204,13 @@ balance right away. Wagerzon's minimum online wager on a special is $20.
   only DK prices superfectas.
 - **Nothing on the board** — Wagerzon posts the specials Thursday-ish; every league
   named `NFL WEEK <n> - SPECIALS` is read (two can be up at once).
-- **On the VM the DraftKings chip shows "DK event listing returned HTTP 403"**: the
-  relay was not used or not reached. Check the Mac is awake and on Tailscale,
-  `launchctl print gui/$(id -u)/com.nflwork.dk-relay` shows it running, and
-  `nfl_specials/dk_relay.log` has a start line. A "CONNECT tunnel failed, response
-  403" means the relay refused the host: a new DraftKings host belongs in `DK_HOSTS`.
+- **On the VM the DraftKings chip shows a curl error** ("Failed to connect to ...
+  port 8097", or a timeout): the relay is not reachable. Check the Mac is awake and
+  on Tailscale, `launchctl print gui/$(id -u)/com.nflwork.dk-relay` shows it running,
+  and `nfl_specials/dk_relay.log` has a start line. "HTTP 403" on the chip means the
+  request reached DraftKings without the relay (`NFL_SPECIALS_DK_PROXY` unset); "CONNECT
+  tunnel failed, response 403" means the relay refused the host: a new DraftKings host
+  belongs in `DK_HOSTS`.
 - **"Available: unknown"** — the Wagerzon balance read failed, so no stakes are
   recommended; click Refresh.
 

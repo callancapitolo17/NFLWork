@@ -52,8 +52,6 @@ EXTRA_ALLOWED_HOSTS = parse_extra_allowed_hosts(os.environ.get("NFL_SPECIALS_EXT
 # DraftKings answers "Access Denied" to data-center IPs, so on a server its
 # requests go through a proxy at home. None: straight to DraftKings.
 DK_PROXY_URL = parse_dk_proxy(os.environ.get("NFL_SPECIALS_DK_PROXY"))
-# On a server, the env file holding the Wagerzon login (the bets service's .env,
-# which also holds other books' keys). None: bet_logger/.env.
 WAGERZON_ENV_PATH = os.environ.get("NFL_SPECIALS_WAGERZON_ENV") or None
 
 # --- Wagerzon ---------------------------------------------------------------

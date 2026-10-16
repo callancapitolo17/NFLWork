@@ -56,6 +56,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 import json as _json
+import os
 
 import requests
 
@@ -224,7 +225,8 @@ def _first_present(*candidates):
 # Where placement-response forensics get written. Gitignored so we can
 # capture full WZ responses for orphan / rejection paths without leaking
 # them to source control. .gitignore pattern: .placement_debug_*.json
-_DEBUG_DIR = Path(__file__).resolve().parent
+# A read-only checkout (the server's) points this at a writable dir.
+_DEBUG_DIR = Path(os.environ.get("WAGERZON_DEBUG_DIR") or Path(__file__).resolve().parent)
 _DEBUG_SENSITIVE_KEYS = {"confirmPassword", "password", "Password"}
 
 

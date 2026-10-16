@@ -10,7 +10,7 @@
 # Code: the repo is mounted read-only at /app (the code resolves everything
 # from the repo root), so an update is `git pull` + a restart, not a rebuild.
 # Writes go only to ${UNABATED_DATA_DIR} (/data inside): bets.duckdb,
-# novig_token.json (rewritten on every Auth0 rotation), logs/.
+# novig_token.json (rewritten on every Auth0 rotation), logs/, nfl_specials.duckdb.
 # Secrets are files on the host, never in an image: the Kalshi .pem
 # (${KALSHI_PEM_PATH}, read-only) and unabated_ticket/bets_service/.env
 # (gitignored, inside the read-only repo mount: KALSHI_API_KEY_ID, the
@@ -94,6 +94,7 @@ services:
       NFL_SPECIALS_EXTRA_ALLOWED_HOSTS: "${BETS_EXTRA_ALLOWED_HOSTS:?set BETS_EXTRA_ALLOWED_HOSTS in deploy/.env (the VM's MagicDNS name)}"
       NFL_SPECIALS_DK_PROXY: "${NFL_SPECIALS_DK_PROXY:?set NFL_SPECIALS_DK_PROXY in deploy/.env (http://<Mac tailnet IP>:8097)}"
       NFL_SPECIALS_WAGERZON_ENV: /app/unabated_ticket/bets_service/.env
+      WAGERZON_DEBUG_DIR: /data/logs
     volumes:
       - ../..:/app:ro
       - "${UNABATED_DATA_DIR:?set UNABATED_DATA_DIR in deploy/.env}:/data"

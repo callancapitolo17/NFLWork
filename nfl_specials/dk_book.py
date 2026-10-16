@@ -46,6 +46,8 @@ DK_WARMUP_URL = "https://sportsbook.draftkings.com/leagues/football/nfl"
 # Every host this adapter calls; dk_relay tunnels to these and nothing else.
 DK_HOSTS = frozenset(urlsplit(url).hostname for url in (DK_LEAGUE_URL, DK_SGP_EVENT_URL,
                                                        DK_SGP_PRICE_URL, DK_WARMUP_URL))
+# A relay host that is asleep drops SYNs: fail its connect in seconds, not the read timeout.
+DK_CONNECT_TIMEOUT_SECONDS = 5
 # DK's sport id for football. The price endpoint answers 404 without the header.
 DK_FOOTBALL_SPORT_ID = "3"
 # DK's own SGP widget throttles its price requests to one per 500 ms; never
@@ -81,14 +83,14 @@ class DraftKingsBook:
         self._last_price_call_at = 0.0
 
     # --- discovery ---------------------------------------------------------
-    def _get(self, url: str, **kwargs):
+    def _get(self, url: str, *, timeout: float, **kwargs):
         """session.get, except that after one transport failure (a relay host
         that went to sleep mid-refresh) every later call fails at once instead
         of waiting out its own timeout."""
         if self._unreachable is not None:
             raise RuntimeError(f"DraftKings unreachable this refresh: {self._unreachable}")
         try:
-            return self.session.get(url, **kwargs)
+            return self.session.get(url, timeout=(DK_CONNECT_TIMEOUT_SECONDS, timeout), **kwargs)
         except RequestException as exc:
             self._unreachable = exc
             raise
