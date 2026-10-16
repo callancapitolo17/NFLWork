@@ -594,6 +594,7 @@ function stakeReason(line, p, byRotation, teamLines) {
       return { warn: true, text: teamHeld > heldOwn + 0.5 ? `No more: your ${money(teamHeld)} on this team already reaches Kelly`
                                                          : "No more: what you've bet already matches Kelly" };
     }
+    if (line.under_min_stake) return { warn: true, text: `$0: its share of the team's stake is under Wagerzon's ${money(p.min_stake)} minimum` };
     const sibling = line.yields_to ? byRotation.get(line.yields_to) : null;
     if (sibling) {
       const siblingHeld = placedRisk(p, sibling.wz_game_id);
