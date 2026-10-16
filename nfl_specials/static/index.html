@@ -568,14 +568,38 @@ function priceCell(line) {
   ]);
 }
 
-// Why the recommended stake is below Kelly, in one plain phrase; null when it isn't.
+// The team's other specials on this game that Kelly could stake (priced, +EV, not started).
+function teamSiblings(p, line) {
+  const key = teamKey(line);
+  if (!key) return [];
+  return p.board.lines.filter(l => l.wz_game_id !== line.wz_game_id && teamKey(l) === key &&
+    l.fair_prob != null && l.ev > 0 && !hasStarted(l));
+}
+
+// A sibling the $250 cap stops short of its Kelly stake; its overflow is what a
+// nested sibling picks up, so the two rows explain each other.
+function cappedShort(p, line, teamBets) {
+  const held = teamBets.filter(r => r.wz_game_id === line.wz_game_id).reduce((sum, r) => sum + r.risk, 0);
+  return held + line.recommended_stake >= p.max_stake - 0.5 && line.kelly_stake > line.recommended_stake + 0.5;
+}
+
+// Why this row's stake is what it is, in one plain phrase; null when Kelly alone explains it.
 function stakeReason(line, p, ownTotal, teamBets, byRotation) {
   const recommended = line.recommended_stake;
   if (p.available_balance == null) return "No stake until Refresh reads your balance";
+  const siblings = teamSiblings(p, line);
+  const cappedSibling = siblings.find(s => cappedShort(p, s, teamBets));
+  if (cappedSibling && recommended > line.kelly_stake + 0.5) {
+    return `Takes the rest: the ${specialTitle(cappedSibling.description)} stops at Wagerzon's ${money(p.max_stake)} max`;
+  }
   if (line.kelly_stake <= 0.5 && recommended <= 0.5) return coveredReason(line, ownTotal, teamBets, byRotation);
   if (line.kelly_stake <= recommended + 0.5) return null;
-  if (ownTotal + recommended >= p.max_stake - 0.5) return ownTotal > 0.5 && recommended <= 0.5
-    ? `At Wagerzon's ${money(p.max_stake)} max for this special` : `Capped at Wagerzon's ${money(p.max_stake)} max per special`;
+  if (ownTotal + recommended >= p.max_stake - 0.5) {
+    const overflow = siblings.find(s => s.recommended_stake > s.kelly_stake + 0.5);
+    if (overflow) return `Capped at Wagerzon's ${money(p.max_stake)} max; the rest goes to the ${specialTitle(overflow.description)}`;
+    return ownTotal > 0.5 && recommended <= 0.5
+      ? `At Wagerzon's ${money(p.max_stake)} max for this special` : `Capped at Wagerzon's ${money(p.max_stake)} max per special`;
+  }
   if (line.unlimited_stake > recommended + 0.5) return "Balance goes to bigger edges first";
   if (recommended <= 0.5) return `Under Wagerzon's ${money(p.min_stake)} minimum`;
   return null;
@@ -650,7 +674,10 @@ function stakeCell(line, p, byRotation) {
     inFlight ? [el("span", { class: "spinner", "aria-hidden": "true" }), "Placing…"] : ["Place"]);
   children.push(el("div", { class: "stake-form" }, [el("div", { class: "money-input" }, [el("span", { text: "$" }), input]), button, toWinText]));
 
-  const figures = [["Recommended", line.recommended_stake], ["No balance limit", line.unlimited_stake], ["Kelly", line.kelly_stake]];
+  // Kelly is sized per team, so with two specials one row's Kelly can read $0 next to a
+  // real stake the $250 cap pushed onto it; show it only for a team's lone special.
+  const figures = [["Recommended", line.recommended_stake], ["No balance limit", line.unlimited_stake]];
+  if (!teamSiblings(p, line).length) figures.push(["Kelly", line.kelly_stake]);
   children.push(el("dl", { class: "stake-figures num" }, figures.flatMap(([label, stake]) =>
     [el("dt", { text: label }), el("dd", { text: money(stake) })])));
   const reason = stakeReason(line, p, ownTotal, teamBets, byRotation);
