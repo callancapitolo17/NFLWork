@@ -226,8 +226,10 @@ MAX_EXCLUSION_IDS_PER_POST = 50
 MAX_DISMISSAL_IDS_PER_POST = 200
 # teaser.js marketKeyOf: "<Unabated eventId>:bt2" (spread) or ":bt3" (total).
 TEASER_MARKET_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}:bt[23]$")
-# pricecheck.js skipKeyOf: one line (game, period, market, side, number) at one book.
-EDGE_SKIP_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}:\d{1,4}:\d{1,4}:\d{1,2}\|(ml|-?\d{1,4}(\.\d{1,3})?)@\d{1,6}$")
+# pricecheck.js skipKeyOf: one line (game, period, market, side, number) at
+# every book. A panel not yet reloaded still sends the old '@<bookId>' suffix;
+# the store keeps only the line (store.edge_skip_line).
+EDGE_SKIP_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}:\d{1,4}:\d{1,4}:\d{1,2}\|(ml|-?\d{1,4}(\.\d{1,3})?)(@\d{1,6})?$")
 # American odds run from -100 down and +100 up; the gap between is no price.
 MIN_AMERICAN_MAGNITUDE = 100
 # The Edges settings' allowed values, as the panel's inputs enforce them
@@ -726,7 +728,7 @@ def validate_edge_skip_request(body: object) -> tuple[str, datetime, bool] | str
         return f"body must be an object, got {type(body).__name__}"
     skip_key = body.get("skipKey")
     if not isinstance(skip_key, str) or not EDGE_SKIP_KEY_PATTERN.match(skip_key):
-        return f"skipKey must look like '<eventId>:<period>:<betType>:<side>|<points|ml>@<bookId>', got {skip_key!r}"
+        return f"skipKey must look like '<eventId>:<period>:<betType>:<side>|<points|ml>', got {skip_key!r}"
     event_start_ms = body.get("eventStartMs")
     if not _is_whole_number(event_start_ms) or event_start_ms <= 0:
         return f"eventStartMs must be the game's start in whole epoch milliseconds, got {event_start_ms!r}"
