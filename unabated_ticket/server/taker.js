@@ -301,14 +301,21 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing }) {
   return done("bet");
 }
 
-// Kalshi nets one account per market: a NO buy on a market where YES is held
-// (Cal's own bet) sells that YES instead. The bot never unwinds a held bet.
+// Kalshi nets one subaccount per market: a NO buy on a market where YES is
+// held there sells that YES instead. The bot trades its own subaccount, so it
+// would only net against its own bet there; it still never takes the other
+// side of a held bet in any subaccount, Cal's primary included (unchanged
+// since 2026-10-14). Kalshi record ids are kalshi:<ticker>:<side>, plus
+// :s<N> in numbered subaccount N (bets_service/sources/kalshi.py record_id_of).
 //   matches  bets.annotateRows matches for the row ({bet})
 function heldOtherSide(matches, contract) {
   const otherSide = contract.side === "yes" ? "no" : "yes";
   const otherId = `kalshi:${contract.ticker}:${otherSide}`;
-  const held = (matches || []).find((match) => match.bet && match.bet.id === otherId && match.bet.status === "open");
-  return held ? `the ${otherSide.toUpperCase()} side of ${contract.ticker} is held: buying ${contract.side.toUpperCase()} would sell it` : null;
+  const isOtherSide = (id) => id === otherId || (typeof id === "string" && id.startsWith(`${otherId}:s`));
+  const held = (matches || []).find((match) => match.bet && isOtherSide(match.bet.id) && match.bet.status === "open");
+  if (!held) return null;
+  const where = held.bet.id === otherId ? "in the primary account" : "in the bot's subaccount";
+  return `the ${otherSide.toUpperCase()} side of ${contract.ticker} is held ${where}: the bot never takes the other side of a held bet`;
 }
 
 // A held bet on the game that conditional Kelly left out of the math, when

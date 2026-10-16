@@ -118,18 +118,27 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
      done. If BetOnline fails on Cloudflare (its cookies were issued to the
      Mac's IP), move the file back to the Mac the same way.
 
-11. **Automated taker key** (2026-10-14; the bot places real Kalshi orders
-    once this is in). First: public SSH off, SSH over Tailscale only (the key
-    can trade). Then make a NEW key at kalshi.com > API keys for the bot
-    alone, and:
+11. **Automated taker: its own subaccount and key** (2026-10-16; the bot
+    places real Kalshi orders once this is in). Public SSH stays off: SSH over
+    Tailscale only (the key can trade). Keep the stop file in place
+    (`touch ~/unabated-data/taker.stop`) until you mean it to trade. On the VM,
+    from `~/NFLWork/unabated_ticket/deploy`:
     ```bash
-    scp kalshi-taker.pem ubuntu@<vm>:~/unabated-data/kalshi_taker.pem   # from the Mac, over Tailscale
-    chmod 600 ~/unabated-data/kalshi_taker.pem                          # on the VM
-    echo 'KALSHI_TAKER_API_KEY_ID=<the new key id>' >> ~/NFLWork/unabated_ticket/bets_service/.env
-    docker compose restart bets   # the log says "taker: ARMED on its own key"
+    docker compose exec bets python -m unabated_ticket.bets_service.taker_subaccount_setup
     ```
-    Stop the bot: `touch ~/unabated-data/taker.stop` (`rm` to resume). For
-    good: revoke the key at kalshi.com. State: `curl -s 127.0.0.1:8095/taker.json`.
+    It signs with your main Kalshi key, makes subaccount 1 (asking for
+    Kalshi's Advanced API tier if needed), moves $500 into it once, mints a
+    key locked to it with no transfer permission, writes it to
+    `/data/kalshi_taker.pem` (mode 0600, replacing the old bot key file; never
+    printed) and checks the lock. Re-running it is safe. Then set the two
+    lines it prints in `~/NFLWork/unabated_ticket/bets_service/.env`
+    (`KALSHI_TAKER_API_KEY_ID=<new id>`, `KALSHI_TAKER_SUBACCOUNT=1`) and:
+    ```bash
+    docker compose restart bets   # the log says "taker: ARMED on its own key, locked to Kalshi subaccount 1"
+    ```
+    Revoke any earlier bot key at kalshi.com > API keys. Stop the bot:
+    `touch ~/unabated-data/taker.stop` (`rm` to resume). For good: revoke the
+    key. State: `curl -s 127.0.0.1:8095/taker.json`.
 
 ## Day to day
 

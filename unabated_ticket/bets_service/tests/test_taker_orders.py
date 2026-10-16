@@ -17,11 +17,13 @@ TICKER = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36"
 OTHER_TICKER = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU42"
 THIRD_TICKER = "KXNCAAFSPREAD-26SEP26OSUWSU-WSU7"
 EVENT_ID = 123742
+BOT_SUBACCOUNT = 1
 REQUEST_BODY = {"clientOrderId": "ubot-" + "a" * 32, "ticker": TICKER, "side": "yes", "ask": 0.57,
                 "allIn": 0.587157, "count": 10, "rowKey": "420942308:ms105:si1:tid717:alt-35.5",
                 "eventId": EVENT_ID, "heldIds": [], "eventStart": "2026-10-15T19:30:00.000Z",
                 "decidedAt": "2026-10-14T11:59:50.000Z", "kalshiBaseUrl": "https://kalshi.test/trade-api/v2/"}
-HELD_FIRST = f"kalshi:{TICKER}:yes"
+# The bot's fills are held in its own subaccount: the Kalshi source's id carries :s<N>.
+HELD_FIRST = f"kalshi:{TICKER}:yes:s{BOT_SUBACCOUNT}"
 
 
 class ScriptedKalshi:
@@ -86,7 +88,7 @@ def store(tmp_path):
 
 
 def desk_for(store, kalshi, tmp_path, clock=lambda: NOW):
-    return TakerDesk(kalshi, store, tmp_path / "taker.stop", now=clock)
+    return TakerDesk(kalshi, store, tmp_path / "taker.stop", BOT_SUBACCOUNT, now=clock)
 
 
 def request(**overrides):
@@ -100,11 +102,11 @@ def order_row(store, client_order_id):
 
 
 def test_order_body_buys_yes_as_a_bid_and_no_as_an_ask_at_one_minus():
-    assert order_body(TICKER, "yes", 0.57, 10, "ubot-x") == {
+    assert order_body(TICKER, "yes", 0.57, 10, "ubot-x", BOT_SUBACCOUNT) == {
         "ticker": TICKER, "side": "bid", "price": "0.5700", "count": "10.00", "time_in_force": "immediate_or_cancel",
-        "self_trade_prevention_type": "taker_at_cross", "client_order_id": "ubot-x"}
-    assert order_body(TICKER, "no", 0.43, 3, "ubot-y")["side"] == "ask"
-    assert order_body(TICKER, "no", 0.43, 3, "ubot-y")["price"] == "0.5700"
+        "self_trade_prevention_type": "taker_at_cross", "client_order_id": "ubot-x", "subaccount": BOT_SUBACCOUNT}
+    assert order_body(TICKER, "no", 0.43, 3, "ubot-y", BOT_SUBACCOUNT)["side"] == "ask"
+    assert order_body(TICKER, "no", 0.43, 3, "ubot-y", BOT_SUBACCOUNT)["price"] == "0.5700"
 
 
 def test_a_filled_order_is_sent_immediate_or_cancel_and_its_fills_recorded(store, tmp_path):
@@ -129,7 +131,7 @@ def test_a_reply_without_a_zero_remaining_count_is_cancelled_by_market_and_shard
     assert result["status"] == "filled" and result["filled"] == 10
     assert kalshi.methods() == ["POST", "DELETE", "GET"]
     # The cancel names the market and the shard Kalshi's reply gave, never a bare id (shard-0 routing).
-    assert kalshi.calls[1][1] == f"/portfolio/events/orders/k-1?market_ticker={TICKER}&exchange_index=3"
+    assert kalshi.calls[1][1] == f"/portfolio/events/orders/k-1?market_ticker={TICKER}&subaccount=1&exchange_index=3"
     assert order_row(store, REQUEST_BODY["clientOrderId"])["cancelled_at"] == NOW
 
 
@@ -276,7 +278,7 @@ def test_a_lost_order_found_resting_is_adopted_cancelled_and_read(store, tmp_pat
     desk.refresh()
     row = order_row(store, cid)
     assert (row["status"], row["kalshi_order_id"], row["exchange_index"], row["count_filled"]) == ("partial", "k-9", 0, 3)
-    assert ("DELETE", f"/portfolio/events/orders/k-9?market_ticker={TICKER}&exchange_index=0", None) in kalshi.calls
+    assert ("DELETE", f"/portfolio/events/orders/k-9?market_ticker={TICKER}&subaccount=1&exchange_index=0", None) in kalshi.calls
 
 
 def test_a_lost_order_listed_nowhere_after_a_minute_holds_nothing(store, tmp_path):
@@ -313,7 +315,7 @@ def test_an_untracked_bot_order_resting_on_kalshi_is_cancelled_by_the_refresh(st
     desk.place(request())
     desk.refresh()
     cancelled = [path for method, path, _ in kalshi.calls if method == "DELETE"]
-    assert f"/portfolio/events/orders/k-stray?market_ticker={OTHER_TICKER}&exchange_index=2" in cancelled
+    assert f"/portfolio/events/orders/k-stray?market_ticker={OTHER_TICKER}&subaccount=1&exchange_index=2" in cancelled
     assert not any("k-mm" in path for path in cancelled), "another client's order is not the bot's to cancel"
 
 
@@ -376,7 +378,8 @@ def test_fills_are_read_across_every_page(store, tmp_path):
     assert (reply["status"], reply["filled"]) == ("filled", 10)
     assert order_row(store, REQUEST_BODY["clientOrderId"])["count_filled"] == 10
     assert [path for method, path, _ in kalshi.calls if path.startswith("/portfolio/fills")] == [
-        "/portfolio/fills?order_id=k-1&limit=1000", "/portfolio/fills?order_id=k-1&limit=1000&cursor=page2"]
+        "/portfolio/fills?order_id=k-1&subaccount=1&limit=1000",
+        "/portfolio/fills?order_id=k-1&subaccount=1&limit=1000&cursor=page2"]
 
 
 def test_a_cut_off_answer_from_kalshi_is_no_answer(tmp_path, monkeypatch):
@@ -404,6 +407,10 @@ def test_open_taker_desk_says_why_it_is_off_and_the_route_repeats_it(store, tmp_
     monkeypatch.setattr(config, "KALSHI_TAKER_API_KEY_ID", "key-1")
     monkeypatch.setattr(config, "KALSHI_TAKER_PRIVATE_KEY_PATH", str(tmp_path / "missing.pem"))
     assert service.open_taker_desk(None)[1].startswith("the taker log")
+    # A key alone never arms it: the bot trades only in its own subaccount.
+    monkeypatch.setattr(config, "KALSHI_TAKER_SUBACCOUNT", None)
+    assert service.open_taker_desk(store)[1].startswith("no bot subaccount is configured")
+    monkeypatch.setattr(config, "KALSHI_TAKER_SUBACCOUNT", BOT_SUBACCOUNT)
     desk, reason = service.open_taker_desk(store)
     assert desk is None and reason == f"no bot key file at {tmp_path / 'missing.pem'}"
     bets_store = BetsStore(tmp_path / "bets.duckdb", 7)
@@ -522,6 +529,100 @@ def signing_client(tmp_path):
     return client
 
 
+class BalanceKalshi:
+    """Answers GET /portfolio/balance?subaccount=N from `answers` {N: [(status, reply), ...]}, one per call."""
+
+    def __init__(self, answers):
+        self.answers = {number: list(replies) for number, replies in answers.items()}
+        self.paths = []
+
+    def request(self, method, path, body=None):
+        assert method == "GET" and path.startswith("/portfolio/balance?subaccount=")
+        self.paths.append(path)
+        answer = self.answers[int(path.rsplit("=", 1)[1])].pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+LOCKED = {BOT_SUBACCOUNT: [(200, {"balance": 50000, "balance_dollars": "500.0000"})],
+          0: [(403, {"error": {"code": "forbidden", "message": "subaccount must match the key's restriction"}})]}
+
+
+def test_the_lock_check_passes_only_a_key_refused_the_primary_account():
+    no_sleep = lambda _sec: None  # noqa: E731
+    assert taker_orders.key_lock_problem(BalanceKalshi(LOCKED), BOT_SUBACCOUNT, sleep=no_sleep) == (None, 500.0)
+    unlocked = BalanceKalshi({BOT_SUBACCOUNT: [(200, {"balance": 50000})], 0: [(200, {"balance": 900000})]})
+    problem, balance = taker_orders.key_lock_problem(unlocked, BOT_SUBACCOUNT, sleep=no_sleep)
+    assert "reads the primary account too" in problem and balance is None
+    wrong_key = BalanceKalshi({BOT_SUBACCOUNT: [(401, {"error": "bad key"})]})
+    problem, _balance = taker_orders.key_lock_problem(wrong_key, BOT_SUBACCOUNT, sleep=no_sleep)
+    assert "cannot read subaccount 1: HTTP 401" in problem
+    # A no-answer, 429 or 5xx is retried; a check never finished is a refusal to arm.
+    flaky = BalanceKalshi({BOT_SUBACCOUNT: [OSError("timed out"), (200, {"balance": 50000}), (200, {"balance": 50000})],
+                           0: [(503, "down"), (403, {})]})
+    assert taker_orders.key_lock_problem(flaky, BOT_SUBACCOUNT, sleep=no_sleep) == (None, 500.0)
+    down = BalanceKalshi({BOT_SUBACCOUNT: [(429, {})] * taker_orders.LOCK_CHECK_ATTEMPTS})
+    problem, _balance = taker_orders.key_lock_problem(down, BOT_SUBACCOUNT, sleep=no_sleep)
+    assert problem.startswith("could not check after 3 tries")
+
+
+def test_open_taker_desk_arms_only_on_a_key_locked_to_the_subaccount(store, tmp_path, monkeypatch):
+    from unabated_ticket.bets_service import config, service
+    signing_client(tmp_path)  # writes bot.pem
+    monkeypatch.setattr(config, "KALSHI_TAKER_API_KEY_ID", "key-1")
+    monkeypatch.setattr(config, "KALSHI_TAKER_PRIVATE_KEY_PATH", str(tmp_path / "bot.pem"))
+    monkeypatch.setattr(config, "KALSHI_TAKER_SUBACCOUNT", BOT_SUBACCOUNT)
+    seen = []
+
+    def unlocked(desk_client, subaccount):
+        seen.append((desk_client.base_url, subaccount))
+        return "the key reads the primary account too: it is not locked to subaccount 1", None
+    desk, reason = service.open_taker_desk(store, lock_check=unlocked)
+    assert desk is None and reason == ("the bot key is not proven locked to subaccount 1: "
+                                       "the key reads the primary account too: it is not locked to subaccount 1")
+    assert seen == [(config.KALSHI_BASE_URL.rstrip("/"), BOT_SUBACCOUNT)]
+    desk, reason = service.open_taker_desk(store, lock_check=lambda _client, _subaccount: (None, 500.0))
+    assert isinstance(desk, TakerDesk) and reason == ""
+
+
+def test_the_desk_refuses_the_primary_account():
+    for subaccount in (0, 64, True, None):
+        with pytest.raises(ValueError, match="numbered subaccount"):
+            TakerDesk(ScriptedKalshi(), None, "taker.stop", subaccount)
+
+
+def test_orders_record_their_subaccount_and_older_primary_orders_only_wait_to_settle(store, tmp_path):
+    """The bot's orders from before its subaccount (NULL there, read as 0)
+    cannot be read or cancelled by the locked key: only their market's
+    settlement frees them."""
+    clock = {"now": NOW}
+    kalshi = ScriptedKalshi(market_status="active")
+    desk = desk_for(store, kalshi, tmp_path, clock=lambda: clock["now"])
+    assert desk.place(request())["status"] == "filled"
+    assert order_row(store, REQUEST_BODY["clientOrderId"])["subaccount"] == BOT_SUBACCOUNT
+    assert kalshi.calls[0][2]["subaccount"] == BOT_SUBACCOUNT
+    old_id = "ubot-" + "c" * 32
+    store.insert_order({**request(clientOrderId=old_id, ticker=THIRD_TICKER, eventId=EVENT_ID + 5),
+                        "placed_at": NOW - timedelta(hours=5), "count_requested": 5, "open_cost": 3.0,
+                        "subaccount": None})
+    store.update_order(old_id, {"status": "resting", "kalshi_order_id": "k-old"})
+    assert order_row(store, old_id)["subaccount"] == 0
+    # Its add on the same game waits for the PRIMARY account's record of that fill.
+    same_game = request(clientOrderId="ubot-" + "d" * 32, ticker=THIRD_TICKER, eventId=EVENT_ID + 5)
+    assert desk.place(same_game)["status"] == "unseen_fill"
+    kalshi.calls.clear()
+    clock["now"] = NOW + timedelta(days=2)  # past the game: settlement is asked
+    desk.refresh()
+    touched_old = [call for call in kalshi.calls if "k-old" in call[1] or THIRD_TICKER in call[1]]
+    assert touched_old == [("GET", f"/markets/{THIRD_TICKER}", None)]  # no cancel, no fills read: only the settlement
+    assert order_row(store, old_id)["status"] == "resting"
+    kalshi.market_status = "finalized"
+    clock["now"] += timedelta(minutes=10)
+    desk.refresh()
+    assert old_id not in {order["client_order_id"] for order in store.open_orders()}
+
+
 def test_the_client_signs_with_kalshis_rsa_pss_scheme(tmp_path):
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import padding
@@ -545,7 +646,7 @@ def test_the_order_route_refuses_the_tailnet_name(tmp_path):
     bets_store = BetsStore(tmp_path / "bets.duckdb", 7)
     taker_store = TakerStore(tmp_path / "taker.duckdb")
     kalshi = ScriptedKalshi()
-    desk = TakerDesk(kalshi, taker_store, tmp_path / "taker.stop", now=lambda: NOW)
+    desk = TakerDesk(kalshi, taker_store, tmp_path / "taker.stop", BOT_SUBACCOUNT, now=lambda: NOW)
     server = ThreadingHTTPServer(("127.0.0.1", 0), service.make_handler(
         bets_store, 0.0, ["kalshi"], extra_hosts=("box.tail.ts.net",), taker_store=taker_store, taker_desk=desk))
     threading.Thread(target=server.serve_forever, daemon=True).start()

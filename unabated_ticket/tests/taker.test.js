@@ -273,10 +273,19 @@ test("a held bet on the row's axis the sizing math could not price refuses the s
   assert.equal(sameLine.reason, "size_zero", sameLine.detail);
 });
 
-test("the other side of the market held is never sold: size_declined", () => {
-  const decision = decideHolding(WSU_ALT_KEY, [heldKalshi("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "away", "spread", 35.5, "no")]);
-  assert.equal(decision.reason, "size_declined");
-  assert.match(decision.detail, /the NO side of KXNCAAFSPREAD-26SEP19DUQWSU-WSU36 is held: buying YES would sell it/);
+test("the other side of the market held is never bet against, in either account: size_declined", () => {
+  const ticker = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36";
+  const primary = decideHolding(WSU_ALT_KEY, [heldKalshi(ticker, "away", "spread", 35.5, "no")]);
+  assert.equal(primary.reason, "size_declined");
+  assert.match(primary.detail, /the NO side of KXNCAAFSPREAD-26SEP19DUQWSU-WSU36 is held in the primary account: the bot never takes the other side/);
+  // The bot's own subaccount: the id carries :s<N> (bets_service/sources/kalshi.py record_id_of).
+  const botHeld = { ...heldKalshi(ticker, "away", "spread", 35.5, "no"), id: `kalshi:${ticker}:no:s1` };
+  const bot = decideHolding(WSU_ALT_KEY, [botHeld]);
+  assert.equal(bot.reason, "size_declined");
+  assert.match(bot.detail, /is held in the bot's subaccount/);
+  // A longer ticker sharing the prefix is another market, not the other side.
+  assert.equal(taker.heldOtherSide([{ bet: { id: `kalshi:${ticker}:nox`, status: "open" } }], { ticker, side: "yes" }), null);
+  assert.equal(taker.heldOtherSide([{ bet: { id: `kalshi:${ticker}:no:s1`, status: "lost" } }], { ticker, side: "yes" }), null);
 });
 
 test("every bot order id starts ubot- and is fixed per ticker, side and pass", () => {
