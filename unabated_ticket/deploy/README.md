@@ -118,18 +118,34 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
      done. If BetOnline fails on Cloudflare (its cookies were issued to the
      Mac's IP), move the file back to the Mac the same way.
 
-11. **Automated taker key** (2026-10-14; the bot places real Kalshi orders
-    once this is in). First: public SSH off, SSH over Tailscale only (the key
-    can trade). Then make a NEW key at kalshi.com > API keys for the bot
-    alone, and:
+11. **Automated taker: its own subaccount and key** (2026-10-16; the bot
+    places real Kalshi orders once this is in). Public SSH stays off: SSH over
+    Tailscale only (the key can trade). On the VM, from
+    `~/NFLWork/unabated_ticket/deploy`:
     ```bash
-    scp kalshi-taker.pem ubuntu@<vm>:~/unabated-data/kalshi_taker.pem   # from the Mac, over Tailscale
-    chmod 600 ~/unabated-data/kalshi_taker.pem                          # on the VM
-    echo 'KALSHI_TAKER_API_KEY_ID=<the new key id>' >> ~/NFLWork/unabated_ticket/bets_service/.env
-    docker compose restart bets   # the log says "taker: ARMED on its own key"
+    docker compose exec bets python -m unabated_ticket.bets_service.taker_subaccount_setup
     ```
-    Stop the bot: `touch ~/unabated-data/taker.stop` (`rm` to resume). For
-    good: revoke the key at kalshi.com. State: `curl -s 127.0.0.1:8095/taker.json`.
+    It puts the stop file (`~/unabated-data/taker.stop`) in place first, so
+    nothing trades until you `rm` it. Then it signs with your main Kalshi key,
+    makes subaccount 1 (asking for Kalshi's Advanced API tier if needed),
+    moves $500 into it once and checks it landed, mints a key locked to it
+    with no transfer permission, writes it to `/data/kalshi_taker.pem` (mode
+    0600, replacing the old bot key file; never printed) and proves the lock:
+    Kalshi's key listing must show it on subaccount 1 with only `read` and
+    `write::trade`, and it must read that balance and be refused the primary's.
+    A key that fails is deleted from disk and the output names it for
+    revoking. Re-running it is safe (it reuses the subaccount, transfers
+    nothing while the subaccount holds money, and keeps a key that still
+    passes); the one case it stops on is a subaccount back at $0 after the
+    $500 went in, which is a top-up you make yourself as a transfer. Then set
+    the two lines it prints in `~/NFLWork/unabated_ticket/bets_service/.env`
+    (`KALSHI_TAKER_API_KEY_ID=<new id>`, `KALSHI_TAKER_SUBACCOUNT=1`) and:
+    ```bash
+    docker compose restart bets   # the log says "taker: ARMED on its own key, locked to Kalshi subaccount 1"
+    ```
+    Revoke any earlier bot key at kalshi.com > API keys. Stop the bot:
+    `touch ~/unabated-data/taker.stop` (`rm` to resume). For good: revoke the
+    key. State: `curl -s 127.0.0.1:8095/taker.json`.
 
 ## Day to day
 
