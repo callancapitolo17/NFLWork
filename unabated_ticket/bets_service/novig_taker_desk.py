@@ -50,7 +50,8 @@ Order statuses (taker.duckdb::novig_taker_orders.status):
   resting   Novig shows it OPEN (never expected of an IOC): cancelled, full cost held
   filled | partial | unfilled   what the fills read found; `fills_final` once
             read FILLS_SETTLE_SEC after the order went final
-  rejected  Novig refused it before taking it, or it never reached Novig
+  rejected  Novig refused it before taking it (a 451 answers the runner
+            "geo_blocked"), or it never reached Novig
 
 Side effects: Novig orders on the bot's key (money); INSERTs / UPDATEs
 taker.duckdb::novig_taker_orders (taker_store.py). Network: Novig REST, signed
@@ -254,7 +255,8 @@ class NovigTakerDesk:
         """One order (validate_order_request's shape). Returns {status, ...}:
         stopped | duplicate | stale_decision | started | env_mismatch |
         stale_holdings | unseen_fill | ceiling (nothing sent), or the sent
-        order's filled | partial | unfilled | resting | rejected | unknown."""
+        order's filled | partial | unfilled | resting | rejected | unknown, or
+        geo_blocked (451: Novig refused it for the phone's location; nothing placed)."""
         with self._lock:
             for stop_path in self._stop_paths:
                 if stop_path.exists():
@@ -328,6 +330,9 @@ class NovigTakerDesk:
                 log.error("novig taker: Novig refused placement for location (%s): open the Novig app on Cal's phone", code)
             else:
                 log.warning("novig taker order %s refused: HTTP %s %s", client_id, status, reply)
+            if status == GEO_STATUS:
+                return {"status": "geo_blocked", "qty": qty,
+                        "detail": f"Novig HTTP 451 {code or ''}: open the Novig app on Cal's phone to check its location".strip()}
             return {"status": "rejected", "qty": qty, "detail": f"Novig HTTP {status} {code or ''}".strip()}
         if status != 201 or not isinstance(order_id, str) or not order_id:
             self._store.update_novig_order(client_id, {"status": "unknown",

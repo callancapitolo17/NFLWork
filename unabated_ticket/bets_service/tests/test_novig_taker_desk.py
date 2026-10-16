@@ -160,7 +160,7 @@ def test_the_ceiling_cuts_qty_in_one_cent_contracts(setup):
 def test_a_refusal_holds_nothing_and_a_lost_answer_holds_the_cost(setup):
     desk, client, store, *_ = setup
     client.place_reply = (451, {"code": "GEOLOCATION_EXPIRED"})
-    assert desk.place(request())["status"] == "rejected"
+    assert desk.place(request())["status"] == "geo_blocked"
     assert store.novig_open_exposure() == 0
     client.place_reply = OSError("timed out")
     lost = request(clientId="3b3f5f20-9c1b-4d6e-8f3a-5c2d1e7b4a93", eventId=8)
