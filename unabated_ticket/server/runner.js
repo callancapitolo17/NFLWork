@@ -84,6 +84,11 @@
 //                    own resolveKalshiContract / quoteOf / marketMismatch) and
 //                    the Kalshi API it read; places nothing. points omitted
 //                    (and ignored) on a moneyline.
+//   GET /novig_quote.json?eventId=..&periodTypeId=..&betTypeId=..&sideIndex=..&points=..
+//                    the same for Novig Place (bets_service/novig_place.py):
+//                    the board's Novig line, its outcome id and the other
+//                    side's (novigquote.js), its live price and the Novig API
+//                    read; places nothing. Spreads and totals only.
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
@@ -117,6 +122,7 @@ const attachLib = require("../extension/attach.js");
 const pricecheck = require("../extension/pricecheck.js");
 const taker = require("./taker.js");
 const feedLib = require("../extension/feed.js");
+const novigQuote = require("./novigquote.js");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8095;
@@ -930,6 +936,37 @@ function createRunner(deps) {
     };
   }
 
+  // The Ticket's Place button on Novig (bets_service/novig_place.py asks):
+  // the board's one Novig line with these fields, its outcome id and the
+  // other side's, and what buying it costs now. As on Kalshi, the board only
+  // finds the outcome; the price Cal acts on is checked by the bets service.
+  //   params  URLSearchParams {eventId, periodTypeId, betTypeId, sideIndex, points}
+  async function novigQuoteNow(params) {
+    const spec = kalshiLineSpecOf(params);
+    const board = feedState;
+    if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
+    const found = Object.values(board.lines).filter((line) => line.bookId === novigQuote.NOVIG_BOOK_ID
+      && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
+      && line.sideIndex === spec.sideIndex && (line.points ?? null) === spec.points);
+    if (found.length !== 1) {
+      return { ok: false, reason: "no_line", detail: `the board holds ${found.length} Novig lines for game ${spec.eventId} at that market, side and number` };
+    }
+    const row = feedLib.describeLine(found[0], board);
+    const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName };
+    const outcomes = novigQuote.novigOutcomesOf(found[0], board);
+    if (outcomes.reason) return { ok: false, ...fields, reason: outcomes.reason, detail: outcomes.detail };
+    const position = { ...fields, outcomeId: outcomes.outcomeId, otherOutcomeId: outcomes.otherOutcomeId };
+    if (!novigQuoteReader) return { ok: false, ...position, reason: "novig_off", detail: "this runner has no Novig book reader yet" };
+    let live;
+    try {
+      live = await novigQuoteReader({ ...outcomes, row });
+    } catch (error) {
+      return { ok: false, ...position, reason: "no_book", detail: error.message };
+    }
+    if (live.reason) return { ok: false, ...position, reason: live.reason, detail: live.detail };
+    return { ok: true, ...position, price: live.price, depth: live.depth, novigBaseUrl: live.novigBaseUrl };
+  }
+
   // Kalshi's market object for a ticker (public GET /markets/<ticker>).
   async function readKalshiMarket(ticker) {
     const body = await getServiceJson(kalshiFetch, `${kalshiBaseUrl}/markets/${encodeURIComponent(ticker)}`);
@@ -1283,7 +1320,7 @@ function createRunner(deps) {
   return {
     start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions,
     edgesPayload: edgesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow,
-    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, health, scanner,
+    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, health, scanner,
   };
 }
 
@@ -1329,7 +1366,7 @@ function sendJson(response, status, body) {
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /kalshi_quote.json and /health, the Host allowlist first on
+// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /kalshi_quote.json, /novig_quote.json and /health, the Host allowlist first on
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
@@ -1354,6 +1391,7 @@ function createHttpServer(runner, { host }) {
       if (path === "/scenarios.json") return sendJson(response, 200, runner.scenariosPayload());
       if (path === "/taker.json") return sendJson(response, 200, runner.takerPayload());
       if (path === "/kalshi_quote.json") return sendJson(response, 200, await runner.kalshiQuote(url.searchParams));
+      if (path === "/novig_quote.json") return sendJson(response, 200, await runner.novigQuote(url.searchParams));
       if (path === "/health") return sendJson(response, 200, runner.health());
     } catch (error) {
       if (error.status) return sendJson(response, error.status, { error: error.message });

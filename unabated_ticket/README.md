@@ -2924,7 +2924,7 @@ FROM novig_taker_orders ORDER BY placed_at DESC;
 SELECT sum(open_cost) FROM novig_taker_orders WHERE settled_at IS NULL;
 ```
 
-### Place on Kalshi from the Ticket (`extension/kalshiplace.js`, `bets_service/manual_orders.py`)
+### Place on Kalshi from the Ticket (`extension/place.js`, `bets_service/manual_orders.py`)
 
 Plan: `manual_place_plan.md` in the project folder (Cal, 2026-10-16). A Kalshi
 line's Ticket (pregame, panel and phone) shows an amount box filled with the
@@ -2958,6 +2958,35 @@ Every click is a row in `bets.duckdb::manual_orders` (inserted before the send):
 SELECT placed_at, label, ticker, contract_side, ticket_all_in, all_in_price, stake, count_requested, count_filled, cost_filled, status, error
 FROM manual_orders ORDER BY placed_at DESC;
 ```
+
+### Place on Novig from the Ticket (`extension/place.js`, `bets_service/novig_place.py`, `server/novigquote.js`)
+
+Plan: `novig_place_plan.md` in the project folder (Cal, 2026-10-16). The same
+button on a pregame Novig spread or total (Unabated carries no Novig outcome id
+on a moneyline), **Bet $X at Novig**, ONE order from Place's own Novig
+sub-account, never the bot's (no key trades the app balance). **Off until the
+shared Novig order client (`novig_orders.py`, the Novig taker's) is wired in:**
+`POST /place_novig.json` answers 503 and the runner's quote answers `novig_off`.
+
+1. The bets service asks the runner `GET /novig_quote.json` (same query as
+   Kalshi's) for the line's Novig outcome id and the other side's, read off the
+   board's `venueIds.novigOutcomes` (`novigquote.js`), and the live price: 1
+   minus the best resting order on the other outcome, with the market open and
+   pregame (the order client's book read, injected as `novigQuoteReader`).
+2. It refuses, sending nothing, when: the game has started; the live price is
+   more than **0.1c worse** than the Ticket's (a pregame take pays no fee);
+   an open straight Novig bet is on the other outcome; the Novig read is
+   failing or over 5 minutes old; a Novig Place on the game may have filled
+   after `novigReadAt`, or a Kalshi Place after `kalshiReadAt`; the click id
+   was already sent.
+3. It buys `floor(stake / (price x 1c))` contracts (a Novig contract pays 1c,
+   not $1) with one immediate-or-cancel limit at the live price, client id
+   `nman-<clickId>`; Novig does not dedupe ids, so a lost send is looked up on
+   that outcome, never re-sent. A 451 reads "open the Novig app on your phone"
+   (Novig wants a phone location check in the last 3 days).
+
+Its rows are in the same `manual_orders` table with `venue = 'novig'`
+(`ticker` = the outcome id, `novig_order_id`).
 
 ## Tests
 

@@ -610,12 +610,12 @@ test("taker: a market that is closed, or at another strike, is market_mismatch a
 });
 
 // ---- the Ticket's Place button: GET /kalshi_quote.json (places nothing) ----
-async function quoteRunner(markets = {}) {
+async function quoteRunner(markets = {}, extraDeps = {}) {
   const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
   const kalshi = kalshiFetch(markets);
   const runner = runnerLib.createRunner({
     fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
-    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet, ...extraDeps,
   });
   await runner.start();
   return { runner, kalshi, service };
@@ -644,6 +644,40 @@ test("kalshi_quote: a closed market, a number the board lacks and bad params are
   await assert.rejects(runner.kalshiQuote(new URLSearchParams({ ...WSU_36_LINE, sideIndex: "2" })), (error) => error.status === 400);
   runner.stop();
   assert.deepEqual([closed.ok, closed.reason], [false, "market_mismatch"]);
+  assert.deepEqual([missing.ok, missing.reason], [false, "no_line"]);
+});
+
+// The fixture's Novig outcome ids for WSU -35.5 (side 1) and DUQ +35.5 (side 0).
+const NOVIG_WSU_36 = "01a0a05e-e864-7b73-9b80-9e502e4e98d5";
+const NOVIG_DUQ_36 = "01a0a05e-e864-7b73-9b80-9e64b163cc27";
+
+test("novig_quote: the board's Novig line gives its outcome, the other side's and the reader's live price", async () => {
+  const asked = [];
+  const novigQuoteReader = async (request) => {
+    asked.push(request);
+    return { price: 0.675, depth: 5000, novigBaseUrl: "https://novig.test" };
+  };
+  const { runner, service } = await quoteRunner({}, { novigQuoteReader });
+  const quote = await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  runner.stop();
+  assert.deepEqual(
+    { ok: quote.ok, outcomeId: quote.outcomeId, otherOutcomeId: quote.otherOutcomeId, price: quote.price, novigBaseUrl: quote.novigBaseUrl },
+    { ok: true, outcomeId: NOVIG_WSU_36, otherOutcomeId: NOVIG_DUQ_36, price: 0.675, novigBaseUrl: "https://novig.test" });
+  assert.ok(quote.eventStart);
+  assert.deepEqual([asked[0].outcomeId, asked[0].otherOutcomeId], [NOVIG_WSU_36, NOVIG_DUQ_36]);
+  assert.equal(service.posts.length, service.posts.filter((post) => post.route !== "/taker/order.json").length);
+});
+
+test("novig_quote: no reader yet, a reader refusal and a number the board lacks are refused", async () => {
+  const off = await quoteRunner();
+  const offQuote = await off.runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  off.runner.stop();
+  assert.deepEqual([offQuote.ok, offQuote.reason, offQuote.outcomeId], [false, "novig_off", NOVIG_WSU_36]);
+  const closed = await quoteRunner({}, { novigQuoteReader: async () => ({ reason: "market_mismatch", detail: "event is LIVE" }) });
+  const closedQuote = await closed.runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  const missing = await closed.runner.novigQuote(new URLSearchParams({ ...WSU_36_LINE, points: "-99.5" }));
+  closed.runner.stop();
+  assert.deepEqual([closedQuote.ok, closedQuote.reason], [false, "market_mismatch"]);
   assert.deepEqual([missing.ok, missing.reason], [false, "no_line"]);
 });
 

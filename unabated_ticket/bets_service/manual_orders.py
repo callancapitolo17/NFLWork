@@ -116,13 +116,14 @@ def _iso_time(value: object) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
-def read_runner_quote(runner_url: str, request: dict) -> dict:
-    """GET <runner>/kalshi_quote.json for the request's line: the runner's
-    answer, or {ok: False, reason: 'runner', detail} when it could not be read."""
+def read_runner_quote(runner_url: str, request: dict, quote_path: str = RUNNER_QUOTE_PATH) -> dict:
+    """GET <runner><quote_path> (/kalshi_quote.json, or Novig Place's
+    /novig_quote.json) for the request's line: the runner's answer, or
+    {ok: False, reason: 'runner', detail} when it could not be read."""
     query = {key: request[key] for key in ("eventId", "periodTypeId", "betTypeId", "sideIndex")}
     if request["points"] is not None:
         query["points"] = f"{request['points']:g}"
-    url = f"{runner_url.rstrip('/')}{RUNNER_QUOTE_PATH}?{urlencode(query)}"
+    url = f"{runner_url.rstrip('/')}{quote_path}?{urlencode(query)}"
     try:
         with _RUNNER_OPENER.open(url, timeout=RUNNER_TIMEOUT_SEC) as response:
             answer = json.loads(response.read())
@@ -171,7 +172,7 @@ class ManualKalshiDesk:
             return {"status": STATUS_REFUSED,
                     "message": f"Not placed: ${request['stake']:.2f} buys no contract at {_cents(quote['allIn'])}."}
         inserted = self._store.insert_manual_order({
-            "client_order_id": client_order_id, "placed_at": self._now(), "event_id": request["eventId"],
+            "client_order_id": client_order_id, "placed_at": self._now(), "venue": "kalshi", "event_id": request["eventId"],
             "ticker": quote["ticker"], "contract_side": quote["side"], "label": quote.get("label"),
             "ticket_all_in": request["ticket_all_in"], "ask_price": quote["ask"], "all_in_price": quote["allIn"],
             "stake": request["stake"], "count_requested": count, "status": "sending", "updated_at": self._now(),

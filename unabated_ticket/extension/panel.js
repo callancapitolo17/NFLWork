@@ -36,7 +36,7 @@
   "use strict";
 
   const kelly = globalThis.UnabatedKelly;
-  const kalshiPlace = globalThis.UnabatedKalshiPlace;
+  const venuePlace = globalThis.UnabatedPlace;
   const feed = globalThis.UnabatedFeed;
   const betsLib = globalThis.UnabatedBets;
   const betsView = globalThis.UnabatedBetsView;
@@ -76,7 +76,7 @@
     othersBlock: el("others-block"), othersLabel: el("others-label"), others: el("others"),
     relatedBlock: el("related-block"), relatedCount: el("related-count"), relatedTable: el("related-table"),
     stake: el("stake"), contracts: el("contracts"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), stakeUncapped: el("stake-uncapped"),
-    kalshiPlace: el("kalshi-place"), kalshiPlaceStake: el("kalshi-place-stake"), kalshiPlaceButtons: el("kalshi-place-buttons"), kalshiPlaceMsg: el("kalshi-place-msg"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
+    venuePlace: el("venue-place"), venuePlaceStake: el("venue-place-stake"), venuePlaceButtons: el("venue-place-buttons"), venuePlaceMsg: el("venue-place-msg"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
     errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
     pageStatus: el("page-status"),
@@ -587,21 +587,22 @@
       view.payoutRow.hidden = false;
     }
     renderContracts(acted, line, ticket.book.name);
-    renderKalshiPlace(ticket, line, acted);
+    renderPlace(ticket, line, acted);
 
     show("ticket");
   }
 
-  // ---- Place on Kalshi (kalshiplace.js) -----------------------------------
+  // ---- Place on Kalshi or Novig (place.js) --------------------------------
   // The Ticket's own Place button: one order per second click, sent by the
-  // bets service on Cal's Kalshi key (POST /place_kalshi.json). Its state
+  // bets service on Place's own key at that venue (POST /place_kalshi.json or
+  // /place_novig.json). Its state
   // lives across re-renders and belongs to one capture: a new ticket starts
   // it over. {ticketAt, phase: null | "confirm" | "placing" | "done",
   // armedAt, message, tone, edited (Cal typed in the box)}.
-  let kalshiPlaceState = { ticketAt: null, phase: null, armedAt: 0, message: null, tone: null, edited: false };
+  let placeState = { ticketAt: null, phase: null, armedAt: 0, message: null, tone: null, edited: false };
 
   // The line as the Ticket prices it, in the request's fields.
-  function kalshiPlaceLine(ticket, line) {
+  function venuePlaceLine(ticket, line) {
     return {
       bookId: ticket.book.id, live: ticket.live || null, eventId: ticket.eventId, periodTypeId: ticket.watch ? ticket.watch.periodTypeId : null,
       betTypeId: ticket.watch ? ticket.watch.betTypeId : null, sideIndex: ticket.sideIndex, points: line.points ?? null,
@@ -609,115 +610,127 @@
     };
   }
 
-  function renderKalshiPlace(ticket, line, acted) {
-    const placeLine = kalshiPlaceLine(ticket, line);
-    view.kalshiPlace.hidden = !kalshiPlace.canPlace(placeLine);
-    if (view.kalshiPlace.hidden) return;
-    if (kalshiPlaceState.ticketAt !== ticket.capturedAt) {
-      kalshiPlaceState = { ticketAt: ticket.capturedAt, phase: null, armedAt: 0, message: null, tone: null, edited: false };
+  function renderPlace(ticket, line, acted) {
+    const placeLine = venuePlaceLine(ticket, line);
+    view.venuePlace.hidden = !venuePlace.canPlace(placeLine);
+    if (view.venuePlace.hidden) return;
+    if (placeState.ticketAt !== ticket.capturedAt) {
+      placeState = { ticketAt: ticket.capturedAt, phase: null, armedAt: 0, message: null, tone: null, edited: false };
     }
     // The box follows the stake until Cal types in it.
     // ...and holds still once Place is pressed: what the confirm names is what is sent.
-    const settled = kalshiPlaceState.phase === "confirm" || kalshiPlaceState.phase === "placing";
-    if (!kalshiPlaceState.edited && !settled && document.activeElement !== view.kalshiPlaceStake) {
-      view.kalshiPlaceStake.value = kalshiPlace.stakeText(acted);
+    const settled = placeState.phase === "confirm" || placeState.phase === "placing";
+    if (!placeState.edited && !settled && document.activeElement !== view.venuePlaceStake) {
+      view.venuePlaceStake.value = venuePlace.stakeText(acted);
     }
-    renderKalshiPlaceControls();
+    renderPlaceControls();
   }
 
-  function renderKalshiPlaceControls() {
-    const { phase, message, tone } = kalshiPlaceState;
-    view.kalshiPlaceMsg.hidden = !message;
-    view.kalshiPlaceMsg.className = `tk-place-msg ${tone || ""}`;
-    view.kalshiPlaceMsg.textContent = message || "";
-    view.kalshiPlaceStake.disabled = phase === "confirm" || phase === "placing";
+  function renderPlaceControls() {
+    const { phase, message, tone } = placeState;
+    view.venuePlaceMsg.hidden = !message;
+    view.venuePlaceMsg.className = `tk-place-msg ${tone || ""}`;
+    view.venuePlaceMsg.textContent = message || "";
+    view.venuePlaceStake.disabled = phase === "confirm" || phase === "placing";
     const button = (className, text, action) => {
       const element = makeEl("button", className, text);
       element.type = "button";
-      element.dataset.kalshiPlace = action;
+      element.dataset.venuePlace = action;
       return element;
     };
     if (phase === "confirm") {
-      const stake = kalshiPlace.parseStake(view.kalshiPlaceStake.value);
-      view.kalshiPlaceButtons.replaceChildren(button("btn sm", "Cancel", "cancel"),
-        button("btn sm primary", `Bet ${fmtDollars(stake)} at Kalshi`, "confirm"));
+      const stake = venuePlace.parseStake(view.venuePlaceStake.value);
+      view.venuePlaceButtons.replaceChildren(button("btn sm", "Cancel", "cancel"),
+        button("btn sm primary", `Bet ${fmtDollars(stake)} at ${placeVenueName()}`, "confirm"));
     } else if (phase === "placing") {
       const waiting = button("btn sm", "Placing\u2026", "none");
       waiting.disabled = true;
-      view.kalshiPlaceButtons.replaceChildren(waiting);
+      view.venuePlaceButtons.replaceChildren(waiting);
     } else {
-      view.kalshiPlaceButtons.replaceChildren(button("btn sm", "Place", "arm"));
+      view.venuePlaceButtons.replaceChildren(button("btn sm", "Place", "arm"));
     }
   }
 
-  view.kalshiPlaceStake.addEventListener("input", () => {
-    kalshiPlaceState.edited = true;
+  view.venuePlaceStake.addEventListener("input", () => {
+    placeState.edited = true;
   });
 
-  view.kalshiPlaceButtons.addEventListener("click", (event) => {
-    const button = event.target.closest("button[data-kalshi-place]");
+  view.venuePlaceButtons.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-venue-place]");
     if (!button) return;
-    const action = button.dataset.kalshiPlace;
+    const action = button.dataset.venuePlace;
     if (action === "arm") {
-      if (kalshiPlace.parseStake(view.kalshiPlaceStake.value) == null) {
-        Object.assign(kalshiPlaceState, { message: "Type an amount in dollars first.", tone: "refused" });
-        renderKalshiPlaceControls();
+      if (venuePlace.parseStake(view.venuePlaceStake.value) == null) {
+        Object.assign(placeState, { message: "Type an amount in dollars first.", tone: "refused" });
+        renderPlaceControls();
         return;
       }
       const armedAt = Date.now();
-      Object.assign(kalshiPlaceState, { phase: "confirm", armedAt, message: null, tone: null });
+      Object.assign(placeState, { phase: "confirm", armedAt, message: null, tone: null });
       setTimeout(() => {
-        if (kalshiPlaceState.phase === "confirm" && kalshiPlaceState.armedAt === armedAt) {
-          kalshiPlaceState.phase = null;
-          renderKalshiPlaceControls();
+        if (placeState.phase === "confirm" && placeState.armedAt === armedAt) {
+          placeState.phase = null;
+          renderPlaceControls();
         }
       }, TEASER_CONFIRM_MS);
-      renderKalshiPlaceControls();
+      renderPlaceControls();
       return;
     }
     if (action === "cancel") {
-      kalshiPlaceState.phase = null;
-      renderKalshiPlaceControls();
+      placeState.phase = null;
+      renderPlaceControls();
       return;
     }
-    if (action !== "confirm" || kalshiPlaceState.phase !== "confirm") return;
+    if (action !== "confirm" || placeState.phase !== "confirm") return;
     // The second click of a double-click lands where Place was: not a decision.
-    if (event.detail > 1 || Date.now() - kalshiPlaceState.armedAt < TEASER_CONFIRM_MIN_MS) return;
-    placeOnKalshi().catch((error) => console.error("[unabated-ticket] place on Kalshi failed", error));
+    if (event.detail > 1 || Date.now() - placeState.armedAt < TEASER_CONFIRM_MIN_MS) return;
+    placeOnVenue().catch((error) => console.error("[unabated-ticket] place failed", error));
   });
 
-  // POST the Ticket's order to the bets service. An HTTP error is the service
-  // refusing before Kalshi; no answer at all may still have reached Kalshi.
-  async function placeOnKalshi() {
-    const ticket = state.ticket;
-    const ticketAt = kalshiPlaceState.ticketAt;
+  // The open Ticket's venue in words ("Kalshi", "Novig").
+  function placeVenueName() {
+    const venue = state.ticket ? venuePlace.venueOf(state.ticket.book.id) : null;
+    return venue ? venue.name : "the venue";
+  }
+
+  // The bets payload's read times by venue: what the Ticket's stake counted.
+  function placeReadAts() {
     const payload = state.betsService && state.betsService.payload;
-    const kalshiSource = payload && payload.sources ? payload.sources.kalshi : null;
-    const request = ticket ? kalshiPlace.placeRequestOf({
-      line: kalshiPlaceLine(ticket, pricedLine(ticket)), stakeInput: view.kalshiPlaceStake.value,
-      kalshiReadAt: kalshiSource ? kalshiSource.fetchedAt : null, clickId: crypto.randomUUID(),
+    const sources = payload && payload.sources ? payload.sources : {};
+    return { kalshi: sources.kalshi ? sources.kalshi.fetchedAt : null, novig: sources.novig ? sources.novig.fetchedAt : null };
+  }
+
+  // POST the Ticket's order to the bets service. An HTTP error is the service
+  // refusing before the venue; no answer at all may still have reached it.
+  async function placeOnVenue() {
+    const ticket = state.ticket;
+    const ticketAt = placeState.ticketAt;
+    const venueName = placeVenueName();
+    const request = ticket ? venuePlace.placeRequestOf({
+      line: venuePlaceLine(ticket, pricedLine(ticket)), stakeInput: view.venuePlaceStake.value,
+      readAts: placeReadAts(), clickId: crypto.randomUUID(),
     }) : { error: "the Ticket is gone" };
     if (request.error) {
-      Object.assign(kalshiPlaceState, { phase: null, message: `Not placed: ${request.error}.`, tone: "refused" });
-      renderKalshiPlaceControls();
+      Object.assign(placeState, { phase: null, message: `Not placed: ${request.error}.`, tone: "refused" });
+      renderPlaceControls();
       return;
     }
-    Object.assign(kalshiPlaceState, { phase: "placing", message: "Placing at Kalshi\u2026", tone: "wait" });
-    renderKalshiPlaceControls();
+    Object.assign(placeState, { phase: "placing", message: `Placing at ${venueName}\u2026`, tone: "wait" });
+    renderPlaceControls();
     let next;
     try {
-      const reply = await serviceRequest("POST", "/place_kalshi.json", request.body);
-      next = { message: reply.message, tone: kalshiPlace.replyTone(reply.status) };
+      const reply = await serviceRequest("POST", request.path, request.body);
+      next = { message: reply.message, tone: venuePlace.replyTone(reply.status) };
     } catch (error) {
-      // A 4xx is the service refusing before Kalshi; a 5xx (a gateway losing the service mid-send) may have placed.
+      // A 4xx is the service refusing before the venue; a 5xx (a gateway losing the service mid-send) may have placed.
       next = error.status >= 400 && error.status < 500
         ? { message: `Not placed: ${error.message}`, tone: "refused" }
-        : { message: `No answer from the bets service (${error.message}). Check Kalshi before placing again.`, tone: "warn" };
+        : { message: `No answer from the bets service (${error.message}). Check ${venueName} before placing again.`, tone: "warn" };
     }
     // A new capture meanwhile owns the box now; this answer belonged to the old one.
-    if (kalshiPlaceState.ticketAt !== ticketAt) return;
-    Object.assign(kalshiPlaceState, { phase: "done", ...next });
-    renderKalshiPlaceControls();
+    if (placeState.ticketAt !== ticketAt) return;
+    Object.assign(placeState, { phase: "done", ...next });
+    renderPlaceControls();
     if (next.tone === "ok") pollBets().catch((error) => console.error("[unabated-ticket] bets poll failed", error));
   }
 
