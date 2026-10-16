@@ -103,6 +103,21 @@ KALSHI_TAKER_SUBACCOUNT = _subaccount_number(_get("KALSHI_TAKER_SUBACCOUNT"))
 # The stop switch: while this file exists the bot sends no order (`touch` it to stop, `rm` to resume).
 TAKER_STOP_PATH = Path(_get("TAKER_STOP_PATH", str(PKG_DIR / "taker.stop")))
 
+# Novig's v3 trading API (novig_orders.py; plan: automated_taker_plan.md § Novig).
+NOVIG_API_URL = _get("NOVIG_API_URL", "https://api.novig.com")
+# The bot's Novig subaccount, addressed by its one trading key (Cal, 2026-10-16:
+# $500 in a subaccount of its own). A trading key can trade only there and can
+# never move money. Both set = the Novig desk arms (novig_taker_desk.py).
+NOVIG_TAKER_KEY_ID = _get("NOVIG_TAKER_KEY_ID")
+NOVIG_TAKER_PRIVATE_KEY_PATH = _get("NOVIG_TAKER_PRIVATE_KEY_PATH")
+# The Novig desk's own stop switch, next to the shared TAKER_STOP_PATH (which stops
+# both bots): the Novig setup puts it in place so arming Novig never touches Kalshi's.
+NOVIG_TAKER_STOP_PATH = Path(_get("NOVIG_TAKER_STOP_PATH", str(PKG_DIR / "novig_taker.stop")))
+# The Ticket's Novig Place button's own subaccount (Cal, 2026-10-16), apart
+# from the bot's. Read here so its bets count in sizing; Place itself is built on top.
+NOVIG_PLACE_KEY_ID = _get("NOVIG_PLACE_KEY_ID")
+NOVIG_PLACE_PRIVATE_KEY_PATH = _get("NOVIG_PLACE_PRIVATE_KEY_PATH")
+
 # HTTP. Loopback only: the service has no auth and serves the user's own bets.
 # Not configurable on purpose: on the server, `tailscale serve` on the host
 # proxies the tailnet name to this loopback port, so nothing listens publicly.

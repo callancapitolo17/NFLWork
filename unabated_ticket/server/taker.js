@@ -17,12 +17,26 @@
 //     one better book is enough to skip, a thin one under pricecheck's $30
 //     floor too; outliers and Cal's Skips trade);
 //   - lines changed within 7 days, right up to the start;
-//   - $3,500 at 0.25 Kelly, conditional on every open bet (betsview.js stakeAdvice),
+//   - $2,000 at 0.25 Kelly (Cal, 2026-10-16), conditional on every open bet (betsview.js stakeAdvice),
 //     contracts cut to the depth at the ask; the order desk caps the money at risk.
+//
+// Novig (2026-10-16, automated_taker_plan.md § Novig; Cal: its own $500 sub-account,
+// $2,000 at 0.25 Kelly, the better all-in price first when both books trade a number):
+// the same rules on Novig's rows (book 89), with Novig's own facts. The
+// contract is the Novig outcome Unabated's rung names (feed.js novigOutcomes;
+// Novig moneylines carry no rung, so they never trade); buying it costs 1
+// minus the best resting order on the OTHER outcome (every Novig order buys
+// an outcome); pregame game markets charge takers nothing, so all-in = ask;
+// a contract pays 1c, so the stake buys stake x 100 / ask contracts; the
+// market must be OPEN, its event OPEN_PREGAME, its fee not charged pregame,
+// and its strike the row's (novigMarketMismatch). The desk is
+// bets_service/novig_taker_desk.py.
 //
 // Reasons, in the order they are checked:
 //   stale_feed    the row's league snapshot is stale or its last load failed
 //   no_ticker     no Kalshi contract for the row (or an ambiguous one)
+//   no_outcome    no Novig outcome for the row (or an ambiguous one), or no
+//                 open pregame Novig market lists it
 //   no_book       the orderbook read failed or has no ask on the row's side
 //   price_moved   live all-in more than PRICE_TOLERANCE worse than Unabated's,
 //                 or more than BETTER_PRICE_TOLERANCE better
@@ -33,7 +47,7 @@
 //                 Kelly declined; a bet on the game, on the row's axis, that
 //                 the math could not price (unpricedHolding: the stake would
 //                 be sized as if it were not held); or the other side of the
-//                 same Kalshi market is held (a NO buy would sell that YES)
+//                 same Kalshi market (or Novig market) is held
 //   size_zero     the stake buys no contract at the ask, or no depth
 //   market_mismatch  at send time, Kalshi's market for the ticker is not
 //                 active, or its strike or its YES team is not the row's
@@ -52,8 +66,11 @@ const betsView = require("../extension/betsview.js");
 const pricecheck = require("../extension/pricecheck.js");
 
 const KALSHI_BOOK_ID = 105;
-// What Kelly divides by; the money at risk is the order desk's ceiling (taker_orders.BOT_BANKROLL).
-const KELLY_BANKROLL = 3500;
+const NOVIG_BOOK_ID = 89;
+// What Kalshi's Kelly divides by; the money at risk is the order desk's ceiling (taker_orders.BOT_BANKROLL).
+const KELLY_BANKROLL = 2000;
+// Novig's Kelly bankroll (Cal, 2026-10-16: $2,000 like Kalshi's), its own parameter, apart from the Novig desk's $500 cap.
+const NOVIG_KELLY_BANKROLL = 2000;
 const BOT_KELLY = 0.25;
 const MIN_LIVE_EDGE = 0.03;
 const MAX_LIVE_EDGE = 0.20;
@@ -84,7 +101,18 @@ const FULL_GAME_SERIES_RE = /^KX[A-Z]+(SPREAD|TOTAL|GAME)$/;
 const SIDE_AWAY_OR_OVER = 0;
 const PRICE_DECIMALS = 1e4;
 
-const REASONS = ["stale_feed", "no_ticker", "no_book", "price_moved", "edge_short", "not_best", "cap", "size_declined", "size_zero", "market_mismatch", "bet"];
+// Novig: a contract pays 1c, so $1 of payout is 100 contracts.
+const NOVIG_QTY_PER_DOLLAR = 100;
+const NOVIG_MARKET_OPEN = "OPEN";
+const NOVIG_EVENT_PREGAME = "OPEN_PREGAME";
+// A market whose fee is charged ALWAYS charges a pregame taker; WHEN_LIVE charges only in-game.
+const NOVIG_FEE_ALWAYS = "ALWAYS";
+// Novig's market types: the full game's carry the bare name (docs.novig.com GET /v3/types/markets).
+const NOVIG_MARKET_TYPE_OF_BET_TYPE = { 1: "MONEY", 2: "SPREAD", 3: "TOTAL" };
+const VENUE_KALSHI = "kalshi";
+const VENUE_NOVIG = "novig";
+
+const REASONS = ["stale_feed", "no_ticker", "no_outcome", "no_book", "price_moved", "edge_short", "not_best", "cap", "size_declined", "size_zero", "market_mismatch", "bet"];
 
 function roundPrice(value) {
   return Math.round(value * PRICE_DECIMALS) / PRICE_DECIMALS;
@@ -113,13 +141,14 @@ function unabatedAllInOf(row) {
 // every market, lines changed within MAX_LINE_AGE_MS. No liquidity gate: the
 // live depth sizes the order instead.
 //   edgeSettings  the settings the runner holds (edgerows.js shape)
-function candidateRows(feedState, edgeSettings, now) {
+//   bookId        KALSHI_BOOK_ID (default) or NOVIG_BOOK_ID
+function candidateRows(feedState, edgeSettings, now, bookId = KALSHI_BOOK_ID) {
   if (!feedState) return [];
   return feed.selectEdges(feedState, {
     leagueIds: new Set(edgeSettings.leagues),
     periods: new Set(edgeSettings.periods),
     betTypes: new Set(ALL_BET_TYPES),
-    bookIds: new Set([KALSHI_BOOK_ID]),
+    bookIds: new Set([bookId]),
     now,
     maxLineAgeMs: MAX_LINE_AGE_MS,
     includeAlts: true,
@@ -236,15 +265,38 @@ function booksBeating(check, price) {
   return check.better.concat(thinBeating);
 }
 
+// What differs per venue in a decision: the all-in price of an ask, how many
+// contracts a stake buys, what they cost, and which held bet is the other
+// side of the market. A Kalshi contract pays $1, a Novig one 1c.
+const VENUE_RULES = {
+  [VENUE_KALSHI]: {
+    kellyBankroll: KELLY_BANKROLL,
+    allInOf: kalshiAllInPrice,
+    contractsFor: (stake, allIn, depth) => Math.floor(Math.min(stake / allIn, depth)),
+    costOf: (contracts, allIn) => contracts * allIn,
+    heldOtherSide,
+  },
+  [VENUE_NOVIG]: {
+    kellyBankroll: NOVIG_KELLY_BANKROLL,
+    allInOf: (ask) => ask,
+    contractsFor: (stake, allIn, depth) => Math.floor(Math.min((stake * NOVIG_QTY_PER_DOLLAR) / allIn, depth)),
+    costOf: (contracts, allIn) => (contracts * allIn) / NOVIG_QTY_PER_DOLLAR,
+    heldOtherSide: novigHeldOtherSide,
+  },
+};
+
 // One row's decision.
 //   row         a candidateRows row
-//   contract    resolveKalshiContract's result
-//   quote       quoteOf's result, or null (read failed or empty side)
+//   contract    resolveKalshiContract's (or resolveNovigOutcome's) result
+//   quote       quoteOf's (or novigQuoteOf's) result, or null (read failed or empty side)
 //   quoteError  why the orderbook read failed, when it did
 //   priceIndex  pricecheck.buildPriceIndex over the same feed
 //   sizing      {matches (bets.annotateRows for the row), ladderOf, teasers}
+//   venue       VENUE_KALSHI (default) or VENUE_NOVIG
 // Returns {reason, detail, ...the numbers it got to}.
-function decideRow({ row, contract, quote, quoteError, priceIndex, sizing }) {
+function decideRow({ row, contract, quote, quoteError, priceIndex, sizing, venue = VENUE_KALSHI }) {
+  const rules = VENUE_RULES[venue];
+  if (!rules) throw new Error(`decideRow: unknown venue ${venue}`);
   const unabatedAllIn = unabatedAllInOf(row);
   // Unabated's edge is on its price, which it shows twice: the American
   // (-143) and Kalshi's all-in (0.587157 = -142.2). Which one `ge` is measured
@@ -252,18 +304,20 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing }) {
   // the lower fair, never an edge the bot gave itself.
   const fairProb = (1 + row.edgePct / 100) * Math.min(unabatedAllIn, kelly.americanToProb(row.price));
   const decision = {
-    reason: null, detail: null,
-    ticker: contract.ticker || null, side: contract.side || null, derivedTicker: contract.derived === true,
+    reason: null, detail: null, venue,
+    // A Novig decision's "ticker" is the outcome it buys (the log's ticker column), its side null.
+    ticker: contract.ticker || contract.outcomeId || null, side: contract.side || null, derivedTicker: contract.derived === true,
+    marketId: contract.marketId || null,
     unabatedPrice: row.price, unabatedAllIn: roundPrice(unabatedAllIn), unabatedEdge: row.edgePct / 100, fairProb: roundPrice(fairProb),
     liveAsk: null, liveAllIn: null, liveEdge: null, depth: null, betterBooks: null,
     stake: null, contracts: null, cost: null,
   };
   const done = (reason, detail = null) => ({ ...decision, reason, detail });
   if (contract.reason) return done(contract.reason, contract.detail);
-  if (quoteError) return done("no_book", `${contract.ticker}: ${quoteError}`);
-  if (!quote) return done("no_book", `nothing rests on the ${contract.side} side of ${contract.ticker}`);
+  if (quoteError) return done("no_book", `${decision.ticker}: ${quoteError}`);
+  if (!quote) return done("no_book", `nothing rests to sell ${venue === VENUE_NOVIG ? "outcome" : `the ${contract.side} side of`} ${decision.ticker}`);
 
-  const liveAllIn = kalshiAllInPrice(quote.ask);
+  const liveAllIn = rules.allInOf(quote.ask);
   const liveEdge = fairProb / liveAllIn - 1;
   Object.assign(decision, { liveAsk: quote.ask, liveAllIn: roundPrice(liveAllIn), liveEdge: roundPrice(liveEdge), depth: quote.depth });
   if (liveAllIn > unabatedAllIn + PRICE_TOLERANCE) {
@@ -286,18 +340,19 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing }) {
   }
   if (liveEdge > MAX_LIVE_EDGE) return done("cap", `live edge ${(liveEdge * 100).toFixed(2)}%`);
 
-  const otherSideHeld = heldOtherSide(sizing.matches, contract);
+  const otherSideHeld = rules.heldOtherSide(sizing.matches, contract);
   if (otherSideHeld) return done("size_declined", otherSideHeld);
   const advice = betsView.stakeAdvice({
-    line: row, price: liveAmerican, edgePct: liveEdge * 100, bankroll: KELLY_BANKROLL, multiplier: BOT_KELLY,
+    line: row, price: liveAmerican, edgePct: liveEdge * 100, bankroll: rules.kellyBankroll, multiplier: BOT_KELLY,
     matches: sizing.matches, ladderOf: sizing.ladderOf, liquidity: null, teasers: sizing.teasers,
   });
   if (advice.kind === "declined") return done("size_declined", advice.reason);
   const blind = unpricedHolding(advice, row);
   if (blind) return done("size_declined", blind);
   const stake = betsView.suggestedBetAmount(advice);
-  const contracts = Math.floor(Math.min(stake / liveAllIn, quote.depth));
-  Object.assign(decision, { stake, contracts, cost: roundPrice(contracts * liveAllIn) });
+  const contracts = rules.contractsFor(stake, liveAllIn, quote.depth);
+  const cost = rules.costOf(contracts, liveAllIn);
+  Object.assign(decision, { stake, contracts, cost: roundPrice(cost) });
   if (contracts < 1) return done("size_zero", `stake $${stake.toFixed(2)} at ${(liveAllIn * 100).toFixed(2)}c, depth ${quote.depth}`);
   return done("bet");
 }
@@ -408,6 +463,151 @@ function marketMismatch(market, row, contract) {
   return null;
 }
 
+// ---- Novig ------------------------------------------------------------------
+
+// The Novig outcome a row buys, off the rung ids (feed.noteRungVenueIds): the
+// one outcome whose listed line IS this row, at the row's number and side.
+//   {outcomeId} or {reason: "no_outcome", detail}
+function resolveNovigOutcome(row) {
+  const outcomes = (row.venueIds && row.venueIds.novigOutcomes) || {};
+  const found = Object.entries(outcomes).filter(([, target]) => target.lineKey === row.key);
+  if (found.length === 0) return { reason: "no_outcome", detail: "no Novig rung names this line" };
+  if (found.length > 1) return { reason: "no_outcome", detail: `${found.length} Novig rungs name this line` };
+  const [outcomeId, target] = found[0];
+  if (target.points !== row.points || target.sideIndex !== row.sideIndex) {
+    return { reason: "no_outcome", detail: `outcome ${outcomeId} is ${target.points} side ${target.sideIndex}, row is ${row.points} side ${row.sideIndex}` };
+  }
+  return { outcomeId };
+}
+
+// outcome id -> {market} over Novig's public catalog listing of open
+// pregame markets (GET /v3/public/catalog/markets?eventStatus=OPEN_PREGAME
+// pages, each market with its outcomes).
+//   markets  [Novig market]
+function novigOutcomeIndex(markets) {
+  const index = new Map();
+  for (const market of markets || []) {
+    for (const outcome of (market && market.outcomes) || []) {
+      if (outcome && typeof outcome.outcomeId === "string") index.set(outcome.outcomeId, { market });
+    }
+  }
+  return index;
+}
+
+// The outcome resolved and placed in its market: {outcomeId, marketId,
+// otherOutcomeId} or {reason: "no_outcome", detail}. A market with other than
+// two outcomes has no "other side" to read the price off.
+function novigContractOf(row, index) {
+  const resolved = resolveNovigOutcome(row);
+  if (resolved.reason) return resolved;
+  const listed = index.get(resolved.outcomeId);
+  if (!listed) return { reason: "no_outcome", detail: `outcome ${resolved.outcomeId} is on no open pregame Novig market` };
+  const outcomes = listed.market.outcomes || [];
+  if (outcomes.length !== 2) return { reason: "no_outcome", detail: `market ${listed.market.marketId} has ${outcomes.length} outcomes, expected 2` };
+  const other = outcomes.find((outcome) => outcome.outcomeId !== resolved.outcomeId);
+  return { outcomeId: resolved.outcomeId, marketId: listed.market.marketId, otherOutcomeId: other.outcomeId };
+}
+
+// Novig's book (GET /v3/public/catalog/markets/<id>/book): {orders: {outcomeId:
+// [{orderId, price, qty}] best first}}. Every resting order BUYS its outcome,
+// so buying one outcome crosses the best resting order on the other, at 1 -
+// its price; the depth is every order resting at that best price, in 1c contracts.
+//   {ask, depth} or null when nothing rests on the other outcome
+function novigQuoteOf(book, contract) {
+  if (!book || typeof book !== "object" || !book.orders || typeof book.orders !== "object") throw new Error("Novig book: expected {orders}");
+  const resting = (book.orders[contract.otherOutcomeId] || [])
+    .map((order) => ({ price: Number(order.price), qty: Number(order.qty) }))
+    .filter((order) => order.price > 0 && order.price < 1 && Number.isInteger(order.qty) && order.qty > 0);
+  if (!resting.length) return null;
+  const best = Math.max(...resting.map((order) => order.price));
+  const depth = resting.filter((order) => order.price === best).reduce((sum, order) => sum + order.qty, 0);
+  return { ask: Math.round((1 - best) * 1000) / 1000, depth };
+}
+
+// Novig records the outcome held; another open Novig bet on the same market,
+// on the other outcome, is the other side of this one (Cal's app account,
+// the bot's or Place's subaccount alike).
+//   matches  bets.annotateRows matches for the row ({bet})
+function novigHeldOtherSide(matches, contract) {
+  const held = (matches || []).find((match) => match.bet && match.bet.venue === VENUE_NOVIG && match.bet.status === "open"
+    && match.bet.venueIds && match.bet.venueIds.marketId === contract.marketId && match.bet.venueIds.outcomeId !== contract.outcomeId);
+  if (!held) return null;
+  return `the other outcome of Novig market ${contract.marketId} is held (${held.bet.id}): the bot never takes the other side of a held bet`;
+}
+
+// Why Novig's market is not the one the row prices, or null when it is: the
+// market OPEN, its event OPEN_PREGAME (an in-game take pays a fee and the
+// event's resting orders are voided), its fee not charged pregame, the
+// outcome on it, its type the row's market (the bare type is the full
+// game's), and its strike the row's number (a spread's strike is the home
+// side's handicap; a total's is the total). Read before every order.
+//   market  GET /v3/public/catalog/markets/<id>; event  GET .../events/<id>
+function novigMarketMismatch(market, event, row, contract) {
+  if (!market || typeof market !== "object") return "no market object";
+  if (market.marketId !== contract.marketId) return `Novig answered market ${market.marketId} for ${contract.marketId}`;
+  if (market.status !== NOVIG_MARKET_OPEN) return `market status "${market.status}"`;
+  if (!event || event.eventId !== market.eventId) return `no event ${market.eventId} read`;
+  if (event.status !== NOVIG_EVENT_PREGAME) return `event status "${event.status}"`;
+  if (!market.fee || market.fee.charged === NOVIG_FEE_ALWAYS) return `the market charges a taker fee pregame (${market.fee && market.fee.charged})`;
+  if (!(market.outcomes || []).some((outcome) => outcome.outcomeId === contract.outcomeId)) return `outcome ${contract.outcomeId} is not on the market`;
+  const bareType = NOVIG_MARKET_TYPE_OF_BET_TYPE[row.betTypeId];
+  if (!bareType || typeof market.marketType !== "string" || !market.marketType.startsWith(bareType)) return `market type ${market.marketType} is not the row's ${row.betType}`;
+  if ((market.marketType === bareType) !== (row.periodTypeId === PERIOD_FULL_GAME)) return `market type ${market.marketType} is not the row's period (${row.period})`;
+  const strike = Number(market.strike);
+  // The outcome's own name decides its side, apart from the rung map that
+  // picked it: a swapped rung would otherwise buy the other side at this
+  // side's fair. A name that says nothing readable fails closed.
+  const name = String((market.outcomes.find((outcome) => outcome.outcomeId === contract.outcomeId) || {}).name || "").trim();
+  if (row.betTypeId === BET_TYPE_SPREAD) {
+    const homePoints = row.sideIndex === SIDE_AWAY_OR_OVER ? -row.points : row.points;
+    if (!Number.isFinite(strike) || strike !== homePoints) return `strike ${market.strike} (home), row is ${row.points} side ${row.sideIndex}`;
+    const handicap = novigNameHandicap(name);
+    if (handicap === null) return `outcome "${name}" names no handicap`;
+    // At a pick'em both outcomes read 0, so the name cannot tell a swapped rung: refused.
+    if (handicap === 0) return `outcome "${name}" is a pick'em: its name cannot confirm the side`;
+    if (handicap !== row.points) return `outcome "${name}" is ${handicap}, the row is ${row.points}`;
+  } else if (row.betTypeId === BET_TYPE_TOTAL) {
+    if (!Number.isFinite(strike) || strike !== row.points) return `strike ${market.strike}, row is ${row.points}`;
+    // "Over" / "Over 47.5" / "O 47.5" (Novig's app labels a total "O 7.5").
+    const sideWord = row.sideIndex === SIDE_AWAY_OR_OVER ? "over" : "under";
+    const pattern = row.sideIndex === SIDE_AWAY_OR_OVER ? /^(over|o)\b/i : /^(under|u)\b/i;
+    if (!pattern.test(name)) return `outcome "${name}" is not the row's ${sideWord}`;
+  } else {
+    return `bet type ${row.betTypeId} has no Novig market check`;
+  }
+  return null;
+}
+
+// A spread outcome name's handicap ("Washington St -35.5" -> -35.5, "PK" or
+// a bare 0 -> 0), or null when its last word is no number.
+function novigNameHandicap(name) {
+  const last = String(name).trim().split(/\s+/).pop() || "";
+  if (/^(pk|pick|pick'em)$/i.test(last)) return 0;
+  if (!/^[+-]?\d+(\.\d+)?$/.test(last)) return null;
+  return Number(last);
+}
+
+// The order's clientId: a UUID (Novig requires one) hashed from outcome and
+// pass, so one pass can never send the same order twice (the desk refuses a
+// repeat). Novig does not dedupe it, so it is a guard of ours only.
+function novigClientIdOf(outcomeId, passStartedMs) {
+  const hex = crypto.createHash("sha256").update(`nbot|${outcomeId}|${passStartedMs}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+// The board line as a bet record names it (bets_service sources), for the
+// desk to keep: the bot subaccount's read names its bets with it.
+function novigLineOf(row) {
+  const betType = String(row.betType || "").toLowerCase();
+  const isTotal = row.betTypeId === BET_TYPE_TOTAL;
+  const side = isTotal ? (row.sideIndex === SIDE_AWAY_OR_OVER ? "over" : "under") : (row.sideIndex === SIDE_AWAY_OR_OVER ? "away" : "home");
+  const idOrNull = (id) => (id == null ? null : String(id));
+  return {
+    league: row.league, betType, period: row.period, side, points: row.points ?? null,
+    awayTeam: row.awayTeam ?? null, homeTeam: row.homeTeam ?? null, awayTeamId: idOrNull(row.awayTeamId), homeTeamId: idOrNull(row.homeTeamId),
+  };
+}
+
 // The order's client_order_id: "ubot-" (every bot order carries it, Cal's
 // tag) and a hash of ticker, side and pass, so one pass can never send the
 // same order twice (the desk refuses a repeat id).
@@ -426,10 +626,12 @@ function decisionSignature(decision) {
 }
 
 module.exports = {
-  KALSHI_BOOK_ID, KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
+  KALSHI_BOOK_ID, NOVIG_BOOK_ID, VENUE_KALSHI, VENUE_NOVIG, NOVIG_EVENT_PREGAME, KELLY_BANKROLL, NOVIG_KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
   MAX_LINE_AGE_MS, KALSHI_TAKER_FEE_RATE, REASONS,
   kalshiAllInPrice, probToAmerican, unabatedAllInOf, candidateRows,
   contractFromRungs, spreadTeamCodes, derivedMoneylineContract, resolveKalshiContract,
   parseKalshiOrderbook, quoteOf, decideRow, decisionSignature, moneylineTeamMatches, marketMismatch, clientOrderIdOf,
   heldOtherSide, unpricedHolding,
+  resolveNovigOutcome, novigOutcomeIndex, novigContractOf, novigQuoteOf, novigHeldOtherSide, novigMarketMismatch,
+  novigClientIdOf, novigLineOf,
 };

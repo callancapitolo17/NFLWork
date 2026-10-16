@@ -47,8 +47,16 @@ services:
       KALSHI_TAKER_PRIVATE_KEY_PATH: /data/kalshi_taker.pem
       # The Place button's own trade key; Place is on once KALSHI_PLACE_API_KEY_ID is set in bets_service/.env (deploy/README.md step 12).
       KALSHI_PLACE_PRIVATE_KEY_PATH: /data/kalshi_place.pem
-      # touch to stop the bot, rm to resume.
+      # touch to stop the bot, rm to resume (stops the Novig bot too).
       TAKER_STOP_PATH: /data/taker.stop
+      # The Novig bot's trading key on its own subaccount, made on this VM by novig_subaccount_setup.py
+      # keygen; it trades once NOVIG_TAKER_KEY_ID is set in bets_service/.env (deploy/README.md step 13).
+      NOVIG_API_URL: https://api.novig.com
+      NOVIG_TAKER_PRIVATE_KEY_PATH: /data/novig_bot.pem
+      # The Novig bot's own stop switch, put in place by the setup; Kalshi's taker.stop stops it as well.
+      NOVIG_TAKER_STOP_PATH: /data/novig_taker.stop
+      # The Novig Place button's subaccount key (read here once NOVIG_PLACE_KEY_ID is set).
+      NOVIG_PLACE_PRIVATE_KEY_PATH: /data/novig_place.pem
       BETS_SERVICE_LOG_PATH: /data/logs/bets_service.log
       BETS_SERVICE_LOG_CONSOLE: "1"
       NOVIG_TOKEN_PATH: /data/novig_token.json
@@ -77,6 +85,8 @@ services:
       UNABATED_RUNNER_PORT: "8095"
       BETS_SERVICE_URL: http://127.0.0.1:8094
       KALSHI_BASE_URL: https://api.elections.kalshi.com/trade-api/v2
+      # The same Novig on both services: the Novig desk refuses an order priced elsewhere (env_mismatch).
+      NOVIG_API_URL: https://api.novig.com
     volumes:
       - ../..:/app:ro
     logging: *rotated-logs

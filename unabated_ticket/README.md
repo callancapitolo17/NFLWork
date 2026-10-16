@@ -2741,7 +2741,7 @@ subaccount. No shadow mode (Cal, 2026-10-14).
 
 | Rule | Value |
 |---|---|
-| Bankroll / Kelly | $3,500 at 0.25, conditional on every open bet (the panel's sizing; bot fills reach it through the Kalshi source). What Kelly divides by, not the money at risk: the Ceiling row caps that |
+| Bankroll / Kelly | $2,000 at 0.25 (Cal, 2026-10-16), conditional on every open bet (the panel's sizing; bot fills reach it through the Kalshi source). What Kelly divides by, not the money at risk: the Ceiling row caps that |
 | Ceiling | open bot cost (unsettled markets) never above $500; contracts cut to fit, else refused |
 | Price | Kalshi's live ask + 7% fee no more than 0.1c worse than Unabated's shown price, and no more than 1c better (a price that ran away from Unabated's snapshot is news its fair has not caught up with) |
 | Edge | 3% to 20% at that live price (fair read off Unabated's cheaper of its two prices) |
@@ -2863,6 +2863,65 @@ SELECT sum(open_cost) FROM taker_orders WHERE settled_at IS NULL;
 SELECT client_order_id, kalshi_order_id, ticker, status, error FROM taker_orders WHERE status IN ('resting', 'sent', 'unknown');
 -- why it skips
 SELECT reason, count(*) FROM taker_decisions GROUP BY reason ORDER BY 2 DESC;
+```
+
+### Automated taker: Novig (`server/taker.js`, `bets_service/novig_taker_desk.py`)
+
+The same bot on Novig (Unabated book 89), in the same 30 s pass, with **real
+money** from its own Novig sub-account on a trading key that cannot move money
+(plan: `automated_taker_plan.md` § Novig and `novig_taker_plan_review.md`).
+The Kalshi rules above hold unless this table says otherwise.
+
+| Rule | Novig |
+|---|---|
+| Lines | spreads and totals whose rung carries a Novig outcome id; moneylines never trade (Unabated lists no Novig moneyline rung) |
+| Price | buying an outcome crosses the best resting order on the other outcome at 1 − its price (`/v3/public/catalog/markets/<id>/book`); fee 0 pregame; a market whose fee is `ALWAYS` is refused (`market_mismatch`) |
+| Size | a Novig contract pays 1c: qty = floor(stake × 100 / price), cut to the depth; Kelly bankroll `NOVIG_KELLY_BANKROLL` ($2,000 like Kalshi's, its own parameter, separate from the $500 cap) |
+| Ceiling | open bot cost on Novig never above $500 (`OPEN_COST_CEILING`), its own budget beside Kalshi's |
+| Market check | before every order the public market and event are read: market `OPEN`, event `OPEN_PREGAME`, the row's market type, strike (a spread's is the home side's) and outcome, and the outcome's own name must be the row's side (a spread's last word its handicap, a pick'em refused; a total's first word Over / O or Under / U; unreadable fails closed) |
+| Order | one IOC limit (`POST /v3/orders`, NOVIG-V3 signed); a partial fill cancels the rest, a zero fill comes back rejected; an order still `OPEN` is cancelled. `clientId` is a UUID derived from the outcome and the pass (Novig does not dedupe it, so the desk never re-sends) |
+| Adds | `unseen_fill` across venues: a Novig order waits for any earlier bot fill on the game, Kalshi or Novig, to be held; a Kalshi order waits for an earlier Novig one the same way. One bets list sorted by live edge, so the better venue goes first |
+| Holdings | the pass needs the `kalshi`, `novig` and `novig_bot` polls under 5 min old (the stake is sized on every held bet); the desk re-checks `novig` and `novig_bot` (`stale_holdings`) |
+| Location | a 451 (`GEOLOCATION_EXPIRED`, Novig's 3-day phone location check) is `geo_blocked`: nothing placed, the runner shows it in `/taker.json`; open the Novig app on the phone in a legal state to clear it |
+
+**Bets.** `sources/novig_subaccount.py` reads the sub-account's fills on the
+bot's key every 30 s (source `novig_bot`, ids `novig:<orderId>:bot`), kept
+apart from Cal's app account (`novig`). Novig's catalog names neither the
+board's teams nor its periods, so each record takes them from the board line
+stored with the order (`novig_taker_orders`); an order the desk did not place
+is unmatchable. Settlement reads the public market once the game has started;
+a bot bet grades once the desk has stored when it first saw its market
+`SETTLED` (`novig_taker_orders.settled_at`, its `closedAt`), so it never moves poll to poll.
+`--name place` is the Ticket's Novig Place sub-account (`novig_place`), read
+the same way once its thread stores contexts.
+
+**Arming, stopping.** Armed only when `NOVIG_TAKER_KEY_ID` is set and the key
+file at `NOVIG_TAKER_PRIVATE_KEY_PATH` (`/data/novig_bot.pem`) reads a balance
+and is not a management key; else `POST /taker/novig_order.json` answers 503
+and the bets-service log names the reason (no `novig_bot` read, so every
+pass shows it in `pass.novigSkipped`). Stop: `touch`
+`NOVIG_TAKER_STOP_PATH` (`/data/novig_taker.stop`), or the shared
+`/data/taker.stop` (stops both bots). Setup: `deploy/README.md` step 13
+(`novig_subaccount_setup.py keygen` on the VM, `open --name bot --fund 500`
+on the Mac's management key; a top-up is the same line with a new
+`--run-id` (e.g. `topup-1`) and the amount: a new key stops the desk, a kept
+one does not).
+
+Desk statuses: `stopped`, `duplicate`, `env_mismatch`, `stale_decision`,
+`started`, `stale_holdings`, `unseen_fill`, `ceiling`, then the order's
+`sending`, `unknown` (no definite answer: full cost held, looked up by
+`clientId` a minute on), `sent` (an order Novig took but never shows final is
+settled off its listing by `clientId` a minute on), `resting`, `filled` /
+`partial` / `unfilled` (final 60 s on), `rejected`, `geo_blocked`. A started
+market frees its orders' cost once Novig reads it `SETTLED`; one still not
+settled 12 h after the start is logged once.
+
+```sql
+-- taker.duckdb: the Novig bot's orders, newest first
+SELECT placed_at, league, bet_type, side, points, price, qty_requested, qty_filled, cost_filled, status, error
+FROM novig_taker_orders ORDER BY placed_at DESC;
+-- open exposure (the Novig ceiling's measure)
+SELECT sum(open_cost) FROM novig_taker_orders WHERE settled_at IS NULL;
 ```
 
 ### Place on Kalshi from the Ticket (`extension/kalshiplace.js`, `bets_service/manual_orders.py`)

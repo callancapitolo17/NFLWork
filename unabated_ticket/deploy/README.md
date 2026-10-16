@@ -172,6 +172,39 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
     bets` (this restarts the automated taker too; it re-arms by itself). The log
     says "kalshi place: on, signing with Place key". Without it Place answers
     503 "no Kalshi trade key for Place": the read key is read-only.
+13. **Automated taker on Novig: its own subaccount** (2026-10-16, Cal: $500 of
+    its own; the bot places real Novig orders once this is in). Novig's
+    management key (`~/.novig/novig_mgmt.pem` + `novig_mgmt.key_id`) stays on
+    the Mac; the bot's trading key is made on the VM and its private half
+    never moves. One line on the Mac, from `~/NFLWork`:
+    ```bash
+    ssh -i ~/.ssh/oracle_mlb.key ubuntu@100.66.14.98 \
+      'cd ~/NFLWork/unabated_ticket/deploy && docker compose exec -T bets python -m unabated_ticket.bets_service.novig_subaccount_setup keygen --name bot' \
+      | kalshi_draft/venv/bin/python3 -m unabated_ticket.bets_service.novig_subaccount_setup open --name bot --fund 500
+    ```
+    The VM half, making a NEW key, puts the Novig stop file
+    (`~/unabated-data/novig_taker.stop`) in place first (a kept key, a
+    top-up, leaves a trading bot running), writes the key to `/data/novig_bot.pem` (mode 0600; an
+    existing usable key is kept) and prints only its public half. The Mac half
+    opens the subaccount "unabated-bot" with it (or finds it), checks Novig's
+    record of the key (scope trading, that subaccount, the VM key's
+    fingerprint), moves $500 in from the app's cash and waits for Novig to
+    apply it, then prints `NOVIG_TAKER_KEY_ID=<id>`. Re-running is safe: the
+    transfer id is fixed per run (`--run-id`, "initial" by default), so a
+    retry never moves money twice; a top-up is the same line with
+    `--run-id topup-1` and the amount. Set that line in
+    `~/NFLWork/unabated_ticket/bets_service/.env`, `docker compose up -d`
+    (the log must say "novig taker: ARMED on its own trading key"; else it
+    names why the desk is off), then `rm ~/unabated-data/novig_taker.stop` to
+    start trading. `curl -s 127.0.0.1:8095/taker.json`: `pass.novigSkipped`
+    says why a pass decided nothing on Novig, `novigDesk` what the desk last
+    answered (`armed`, `stopped: ...`, `off: ...`, `geo_blocked: ...`; `not
+    asked yet` until a Novig bet qualifies). Stop it: `touch` that
+    file (or `taker.stop`, which stops both bots). A 451 means Novig wants the
+    phone app opened (location check every 3 days): `novigDesk` reads
+    `geo_blocked` and nothing is placed until then. The Place button's
+    subaccount is the same two halves with `--name place` (its line is
+    `NOVIG_PLACE_KEY_ID`).
 
 ## Day to day
 
