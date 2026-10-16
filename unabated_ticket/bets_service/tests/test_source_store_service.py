@@ -1058,18 +1058,18 @@ def test_http_teaser_blocks_mark_and_restore_until_the_game_starts(store, http_s
 def test_http_edge_skips_skip_and_restore_until_the_game_starts(store, http_server):
     future_ms = int((datetime.now(timezone.utc) + timedelta(days=2)).timestamp() * 1000)
     past_ms = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() * 1000)
-    key = "125791:1:3:0|47.5@4"
+    key = "125791:1:3:0|47.5"
     skip = json.dumps({"skipKey": key, "eventStartMs": future_ms, "skipped": True}).encode()
     status, reply = request_json("POST", f"{http_server}/edge_skips.json", skip, "application/json")
     assert status == 200 and reply["changed"] == 1
     assert [(row["skipKey"], row["eventStartMs"]) for row in reply["edgeSkips"]] == [(key, future_ms)]
     assert get_json(f"{http_server}/bets.json")[1]["edgeSkips"] == reply["edgeSkips"]
     # A moneyline and a negative spread key are fine; a started game's skip is not served.
-    started = json.dumps({"skipKey": "999:1:2:1|-3.5@17", "eventStartMs": past_ms, "skipped": True}).encode()
+    started = json.dumps({"skipKey": "999:1:2:1|-3.5", "eventStartMs": past_ms, "skipped": True}).encode()
     status, reply = request_json("POST", f"{http_server}/edge_skips.json", started, "application/json")
     assert status == 200 and [row["skipKey"] for row in reply["edgeSkips"]] == [key]
     status, reply = request_json("POST", f"{http_server}/edge_skips.json",
-                                 json.dumps({"skipKey": "125791:1:1:0|ml", "eventStartMs": future_ms, "skipped": True}).encode(),
+                                 json.dumps({"skipKey": "125791:1:1:0|evens", "eventStartMs": future_ms, "skipped": True}).encode(),
                                  "application/json")
     assert status == 400 and reply["error"].startswith("skipKey must look like")
     status, reply = request_json("POST", f"{http_server}/edge_skips.json",
@@ -1081,6 +1081,26 @@ def test_http_edge_skips_skip_and_restore_until_the_game_starts(store, http_serv
     restore = json.dumps({"skipKey": key, "eventStartMs": future_ms, "skipped": False}).encode()
     status, reply = request_json("POST", f"{http_server}/edge_skips.json", restore, "application/json")
     assert (status, reply["changed"], reply["edgeSkips"]) == (200, 1, [])
+
+
+def test_edge_skips_are_per_line_and_restore_lifts_old_per_book_rows(store, http_server):
+    """A skip covers the line at every book (Cal, 2026-10-16). A panel not yet
+    reloaded still sends '<line>@<bookId>'; it is stored as the line. Restore
+    also deletes a per-book row written before the change."""
+    future = datetime.now(timezone.utc) + timedelta(days=2)
+    future_ms = int(future.timestamp() * 1000)
+    line = "7:1:2:0|-16.5"
+    old_client = json.dumps({"skipKey": f"{line}@3", "eventStartMs": future_ms, "skipped": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", old_client, "application/json")
+    assert status == 200 and [row["skipKey"] for row in reply["edgeSkips"]] == [line]
+    # A row stored per book before the change, as on the VM today.
+    with store._lock:
+        store._con.execute("INSERT INTO edge_skips VALUES (?, ?, ?)", [f"{line}@5", future, future])
+        store._con.execute("INSERT INTO edge_skips VALUES (?, ?, ?)", ["7:1:2:0|-16@5", future, future])
+    restore = json.dumps({"skipKey": line, "eventStartMs": future_ms, "skipped": False}).encode()
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", restore, "application/json")
+    assert (status, reply["changed"]) == (200, 2)
+    assert [row["skipKey"] for row in reply["edgeSkips"]] == ["7:1:2:0|-16@5"]
 
 
 def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):

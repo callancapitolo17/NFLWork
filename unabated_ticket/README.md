@@ -742,9 +742,14 @@ skipped line folds into the "N skipped" line under the Edges list, where
 **Restore** lists it again. A skip holds only while a book still beats the
 price and the game is still to start: once no book beats it (the check
 reruns on every snapshot) or the game starts, the row lists again by itself
-(`pricecheck.splitSkipped`). A skipped line never alerts. The skip is keyed
-on the line at the book (`pricecheck.skipKeyOf`: game, period, market, side,
-number, book), so a new number is a new line. Skips live on the bets service
+(`pricecheck.splitSkipped`). A skipped line never alerts. **Since 0.26.0
+(Cal 2026-10-16) a skip covers the line at every book**: skip -16.5 at
+FanDuel and DraftKings' worse -16.5 folds too. Each row still folds only
+while a book beats its own price, so the best price at that number stays
+listed. The key is the line (`pricecheck.skipKeyOf`: game, period, market,
+side, number), so the other side or a new number is a new line; a skip saved
+per book before 0.26.0 (`<line>@<bookId>`) reads as its line, and Restore
+lifts both. Skips live on the bets service
 (`bets.duckdb::edge_skips`, `POST /edge_skips.json {skipKey, eventStartMs,
 skipped}`, served as `edgeSkips` in `/bets.json`), shared by the panel and
 the phone; an older service leaves them panel-only in `chrome.storage.local`.
@@ -1692,7 +1697,9 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   /exclusions.json` with `{betIds: [...], excluded: true|false}` (at most
   50) → `{ok, changed, exclusions}` — the Bet Tracker's Remove / Restore; a
   bet not at BFA or Wagerzon is a 400, an unknown id a 404. `/bets.json` also
-  serves `exclusions` (all of them). `POST
+  serves `exclusions` (all of them). `GET /balances.json` → `{generatedAt,
+  balances: {venue: {cash, inBets, available, creditLimit, fetchedAt, error}}}`
+  (dollars or null; in memory only) — the tracker's Balances tab. `POST
   /bet105.json` with `{fetchedAt, feeds: {prematch: [betGroup], live:
   [betGroup]}, settled: [wager]}` (both feeds, at most 2000 groups, and the
   wager list) → `{ok, count, settled, closed, skipped}`, or `{error}` → `{ok,
@@ -2517,6 +2524,16 @@ visible. Its one write is the Bets page's Remove / Restore.
 - **Header**: range (Today, Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days), $ / units with the unit size
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
+- **Balances** (own tab, last in the nav, so a glance at Overview never shows
+  today's money; Cal, 2026-10-14): live cash, in bets and available per book
+  from `GET /balances.json`, fetched only while the tab is open. Read after each
+  poll for Kalshi (`/portfolio/balance`, cents), Novig
+  (`/portfolio/summary?currency=CASH`) and Polymarket US
+  (`/v1/account/balances`, no in-bets figure), each on the source's own login;
+  fields seen in real responses 2026-10-13/16. Readings live in memory only
+  (`bets_service/balances.py`): a restart shows nothing until the next poll, a
+  failed read keeps the last numbers with how old they are, and a book never
+  read shows "unavailable", never $0, and stays out of the total.
 - **Open bets** (Open page) are split into **Upcoming** and, when any
   exist, **No start time** (BetOnline's report carries no game time, Kalshi
   NFL/CFB tickers only a date; futures and Kalshi combos none), each with
