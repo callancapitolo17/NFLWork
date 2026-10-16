@@ -143,18 +143,19 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
     ```bash
     docker compose restart bets   # the log says "taker: ARMED on its own key, locked to Kalshi subaccount 1"
     ```
-    The old bot key is NOT revoked: it signs the Ticket's Place button (step 12).
-    Revoke any other earlier bot key at kalshi.com > API keys. Stop the bot:
+    Revoke any earlier bot key at kalshi.com > API keys. Stop the bot:
     `touch ~/unabated-data/taker.stop` (`rm` to resume). For good: revoke the
     key. State: `curl -s 127.0.0.1:8095/taker.json`.
-12. **The Ticket's Place key** (2026-10-16, Cal: the old unrestricted bot key,
-    on his MAIN account). Do this BEFORE step 11's setup, which replaces
-    `kalshi_taker.pem`: `cp -p ~/unabated-data/kalshi_taker.pem
-    ~/unabated-data/kalshi_place.pem` (never print it), then add
-    `KALSHI_PLACE_API_KEY_ID=<the old bot key id>` to
-    `~/NFLWork/unabated_ticket/bets_service/.env` and `docker compose restart
-    bets`; the log says "kalshi place: on, signing with the Place key". With
-    no `KALSHI_PLACE_API_KEY_ID`, Place signs with the read key.
+12. **The Ticket's Place key** (2026-10-16, Cal: its own key, "Unabated Place").
+    At kalshi.com > Account & security > API keys, make an RSA key on the MAIN
+    account (no subaccount) with read + trade, and save its .pem. From the Mac:
+    `scp -i ~/.ssh/oracle_mlb.key ~/Downloads/<file>.pem
+    ubuntu@100.66.14.98:unabated-data/kalshi_place.pem`, then on the VM `chmod
+    600 ~/unabated-data/kalshi_place.pem`, add `KALSHI_PLACE_API_KEY_ID=<its id>`
+    to `~/NFLWork/unabated_ticket/bets_service/.env` and `docker compose restart
+    bets` (this restarts the automated taker too; it re-arms by itself). The log
+    says "kalshi place: on, signing with Place key". Without it Place answers
+    503 "no Kalshi trade key for Place": the read key is read-only.
 
 ## Day to day
 

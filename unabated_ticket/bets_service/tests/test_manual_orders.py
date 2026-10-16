@@ -249,15 +249,14 @@ def test_the_route_places_through_the_tailnet_name_and_refuses_a_bad_body_or_no_
     status, reply = post_place(url, BODY, host="evil.example")
     assert status == 403
     status, reply = post_place(serve_with(None), BODY)
-    assert status == 503 and "KALSHI_API_KEY_ID" in reply["error"]
+    assert status == 503 and "KALSHI_PLACE_API_KEY_ID" in reply["error"]
+
 
 
 # ---- which key Place signs with ----
-def test_place_signs_with_the_place_key_once_its_id_is_set_else_the_read_key():
-    assert service.place_key_of("place-id", "/data/kalshi_place.pem", "read-id", "/run/secrets/kalshi.pem")[:2] == (
-        "place-id", "/data/kalshi_place.pem")
-    # The deploy sets the Place path always: with no Place id, the read key.
-    assert service.place_key_of(None, "/data/kalshi_place.pem", "read-id", "/run/secrets/kalshi.pem")[:2] == (
-        "read-id", "/run/secrets/kalshi.pem")
-    with pytest.raises(ValueError, match="KALSHI_PLACE_PRIVATE_KEY_PATH"):
-        service.place_key_of("place-id", None, "read-id", "/run/secrets/kalshi.pem")
+def test_place_is_off_without_its_own_trade_key(monkeypatch, store):
+    monkeypatch.setattr(service.config, "KALSHI_PLACE_API_KEY_ID", None)
+    monkeypatch.setattr(service.config, "KALSHI_PLACE_PRIVATE_KEY_PATH", "/data/kalshi_place.pem")
+    monkeypatch.setattr(service.config, "KALSHI_API_KEY_ID", "read-only-id")
+    desk, reason = service.open_kalshi_place_desk(store)
+    assert desk is None and "KALSHI_PLACE_API_KEY_ID" in reason
