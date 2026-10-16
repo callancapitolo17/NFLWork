@@ -118,18 +118,60 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
      done. If BetOnline fails on Cloudflare (its cookies were issued to the
      Mac's IP), move the file back to the Mac the same way.
 
-11. **Automated taker key** (2026-10-14; the bot places real Kalshi orders
-    once this is in). First: public SSH off, SSH over Tailscale only (the key
-    can trade). Then make a NEW key at kalshi.com > API keys for the bot
-    alone, and:
+11. **Automated taker: its own subaccount and key** (2026-10-16; the bot
+    places real Kalshi orders once this is in). Public SSH stays off: SSH over
+    Tailscale only (the key can trade). The setup must sign with a Kalshi key
+    that has **write** scope (an unrestricted key: it makes a subaccount,
+    moves money and mints a key). The service's own `KALSHI_API_KEY_ID` is
+    read-only, and a read-only key stops at once with "the signing key ... is
+    read-only", nothing changed at Kalshi. So override both settings for this
+    one run with `-e`, pointing at a **copy** of a write key's file in
+    `~/unabated-data/` (the setup overwrites `kalshi_taker.pem`, so never sign
+    from that path itself). On the VM, from `~/NFLWork/unabated_ticket/deploy`:
     ```bash
-    scp kalshi-taker.pem ubuntu@<vm>:~/unabated-data/kalshi_taker.pem   # from the Mac, over Tailscale
-    chmod 600 ~/unabated-data/kalshi_taker.pem                          # on the VM
-    echo 'KALSHI_TAKER_API_KEY_ID=<the new key id>' >> ~/NFLWork/unabated_ticket/bets_service/.env
-    docker compose restart bets   # the log says "taker: ARMED on its own key"
+    cp -p <write key file> ~/unabated-data/kalshi_setup_signing.pem && chmod 600 ~/unabated-data/kalshi_setup_signing.pem
+    docker compose exec -T -e KALSHI_API_KEY_ID=<write key id> \
+      -e KALSHI_PRIVATE_KEY_PATH=/data/kalshi_setup_signing.pem \
+      bets python -m unabated_ticket.bets_service.taker_subaccount_setup
+    rm ~/unabated-data/kalshi_setup_signing.pem   # afterwards, Done or STOPPED
     ```
-    Stop the bot: `touch ~/unabated-data/taker.stop` (`rm` to resume). For
-    good: revoke the key at kalshi.com. State: `curl -s 127.0.0.1:8095/taker.json`.
+    Use a main-account key whose scopes, in Kalshi's `GET /api_keys` listing,
+    include `read` and `write` (a key made at kalshi.com listed as both on
+    2026-10-16); check before using the Place key of step 12. (2026-10-16 the write key
+    was the earlier bot key, then at `~/unabated-data/kalshi_taker.pem`; `-e`
+    on `exec` wins over `.env`, which stays untouched.) It puts the stop file (`~/unabated-data/taker.stop`) in
+    place first, so nothing trades until you `rm` it; that holds on a STOPPED
+    run too, and on a VM where the bot already trades it pauses the bot. Then
+    it makes subaccount 1 (asking for Kalshi's Advanced API tier if needed),
+    moves $500 into it once and checks it landed (waiting up to 30 s for
+    Kalshi's balance to show it), mints a key locked to it
+    with no transfer permission, writes it to `/data/kalshi_taker.pem` (mode
+    0600, replacing the old bot key file; never printed) and proves the lock:
+    Kalshi's key listing must show it on subaccount 1 with only `read` and
+    `write::trade`, and it must read that balance and be refused the primary's.
+    A key that fails is deleted from disk and the output names it for
+    revoking. Re-running it is safe (it reuses the subaccount, transfers
+    nothing while the subaccount holds money, and keeps a key that still
+    passes); the one case it stops on is a subaccount back at $0 after the
+    $500 went in, which is a top-up you make yourself as a transfer. Then set
+    the two lines it prints in `~/NFLWork/unabated_ticket/bets_service/.env`
+    (`KALSHI_TAKER_API_KEY_ID=<new id>`, `KALSHI_TAKER_SUBACCOUNT=1`) and:
+    ```bash
+    docker compose restart bets   # the log says "taker: ARMED on its own key, locked to Kalshi subaccount 1"
+    ```
+    Revoke any earlier bot key at kalshi.com > API keys. Stop the bot:
+    `touch ~/unabated-data/taker.stop` (`rm` to resume). For good: revoke the
+    key. State: `curl -s 127.0.0.1:8095/taker.json`.
+12. **The Ticket's Place key** (2026-10-16, Cal: its own key, "Unabated Place").
+    At kalshi.com > Account & security > API keys, make an RSA key on the MAIN
+    account (no subaccount) with read + trade, and save its .pem. From the Mac:
+    `scp -i ~/.ssh/oracle_mlb.key ~/Downloads/<file>.pem
+    ubuntu@100.66.14.98:unabated-data/kalshi_place.pem`, then on the VM `chmod
+    600 ~/unabated-data/kalshi_place.pem`, add `KALSHI_PLACE_API_KEY_ID=<its id>`
+    to `~/NFLWork/unabated_ticket/bets_service/.env` and `docker compose restart
+    bets` (this restarts the automated taker too; it re-arms by itself). The log
+    says "kalshi place: on, signing with Place key". Without it Place answers
+    503 "no Kalshi trade key for Place": the read key is read-only.
 
 ## Day to day
 

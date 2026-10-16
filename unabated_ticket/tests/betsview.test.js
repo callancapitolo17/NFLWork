@@ -86,6 +86,18 @@ test("sourceRows: no payload at all is nine unconfigured rows", () => {
   assert.equal(rows.filter((row) => row.configured).length, 0);
 });
 
+test("liveSyncText: each live venue's last good pull, failed ones included; other venues left out; null with none configured", () => {
+  const text = view.liveSyncText(payloadWith({
+    kalshi: { fetchedAt: iso(3 * 3600e3), ok: false, error: "TimeoutError", count: 337 },
+    novig: { fetchedAt: iso(20e3), ok: true, error: null, count: 1176 },
+    polymarket_us: { fetchedAt: iso(41e3), ok: true, error: null, count: 17 },
+    bfa: { fetchedAt: iso(5e3), ok: true, error: null, count: 153 },
+  }), NOW);
+  assert.equal(text, "bets: kalshi 3 h · novig 20 s · polymarket_us 41 s");
+  assert.equal(view.liveSyncText(payloadWith({ bfa: { fetchedAt: iso(5e3), ok: true, error: null, count: 1 } }), NOW), null);
+  assert.equal(view.liveSyncText(null, NOW), null);
+});
+
 test("serviceStatus: not reached, unreachable since, reached", () => {
   assert.deepEqual(view.serviceStatus(null, NOW), { unreachable: true, text: "bets service not reached yet" });
   const down = view.serviceStatus({ okAt: NOW - 600e3, error: "Failed to fetch", errorAt: NOW - 10e3, unreachableSince: NOW - 180e3 }, NOW);

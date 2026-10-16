@@ -1,5 +1,6 @@
 // Unabated Ticket phone page — the DOM side (phone page plan steps 2-3).
-// One order route: a Teasers ticket's Place (POST /place_teaser.json, a real
+// Two order routes: a Kalshi Ticket's Place (POST /place_kalshi.json, Cal's
+// own Kalshi key, kalshiplace.js) and a Teasers ticket's Place (POST /place_teaser.json, a real
 // teaser at BFA, the panel's same two-step confirm). Everything else you bet
 // in the book's own app.
 //
@@ -23,6 +24,7 @@
 //   POST /pins.json, DELETE /pins.json?betId=   Attach a bet to a game / Undo
 //   DELETE /crosswalk.json     Clear the learned team names (two taps)
 //   POST /place_teaser.json    Place a Teasers ticket at BFA (money, not just rows)
+//   POST /place_kalshi.json    Place a Kalshi Ticket on Cal's own key (money)
 // Nothing is stored in the browser.
 // Words and numbers come from phoneview.js and the extension's own pure
 // modules (edgerows.js, teaserview.js, betsview.js, bets.js, kelly.js, feed.js).
@@ -36,6 +38,7 @@
   const betsLib = globalThis.UnabatedBets;
   const betsView = globalThis.UnabatedBetsView;
   const teaserView = globalThis.UnabatedTeaserView;
+  const kalshiPlace = globalThis.UnabatedKalshiPlace;
 
   const FETCH_TIMEOUT_MS = 10 * 1000;
   // BFA usually answers a placement in seconds but can take about a minute; a
@@ -86,6 +89,8 @@
     ticketRelatedBlock: el("ticket-related-block"), ticketRelated: el("ticket-related"), ticketRelatedCount: el("ticket-related-count"),
     ticketOthersBlock: el("ticket-others-block"), ticketOthers: el("ticket-others"), ticketOthersCount: el("ticket-others-count"),
     ticketMoved: el("ticket-moved"),
+    ticketKalshiPlace: el("ticket-kalshi-place"), ticketKalshiStake: el("ticket-kalshi-stake"),
+    ticketKalshiButtons: el("ticket-kalshi-buttons"), ticketKalshiMsg: el("ticket-kalshi-msg"), ticketFoot: el("ticket-foot"),
     teasersTab: el("tab-teasers"), teasersCount: el("teasers-count"), viewTeasers: el("view-teasers"),
     teasersError: el("teasers-error"), teasersWarning: el("teasers-warning"), teasersStatus: el("teasers-status"), teasersEmpty: el("teasers-empty"),
     teasersSummary: el("teasers-summary"), teasersSummaryLabel: el("teasers-summary-label"), teasersSummaryStake: el("teasers-summary-stake"),
@@ -613,6 +618,7 @@
     view.ticketPayoutRow.hidden = block.toWin == null;
     view.ticketToWin.textContent = block.toWin || "";
     view.ticketPayout.textContent = block.payout || "";
+    renderKalshiPlace(row, block.acted, Boolean(found));
 
     renderTicketRelated(row);
 
@@ -620,6 +626,127 @@
     view.ticketOthersBlock.hidden = others.length === 0;
     view.ticketOthersCount.textContent = others.length ? String(others.length) : "";
     view.ticketOthers.replaceChildren(...others.map((other) => otherLineEl(other, row.sideLabel, card.key, now)));
+  }
+
+  // ---- Place on Kalshi (kalshiplace.js) --------------------------------------
+  // The ticket's own Place button: one order per second tap, sent by the bets
+  // service on Cal's Kalshi key (POST /place_kalshi.json). Its state belongs
+  // to one open row: {rowKey, phase: null | "confirm" | "placing" | "done",
+  // armedAt, message, tone, edited (Cal typed in the box)}.
+  let kalshiPlaceState = { rowKey: null, phase: null, armedAt: 0, message: null, tone: null, edited: false };
+
+  function kalshiPlaceLine(row) {
+    return {
+      bookId: row.book ? row.book.id : null, live: null, eventId: row.eventId, periodTypeId: row.periodTypeId, betTypeId: row.betTypeId,
+      sideIndex: row.sideIndex, points: row.points ?? null, price: row.price, sourceFormat: row.sourceFormat, sourcePrice: row.sourcePrice,
+    };
+  }
+
+  // `onList` false: the row has left the Edges list, so nothing is placed off its last price.
+  function renderKalshiPlace(row, acted, onList) {
+    view.ticketKalshiPlace.hidden = !onList || !kalshiPlace.canPlace(kalshiPlaceLine(row));
+    // The foot says nothing here places a bet: true everywhere but a Kalshi ticket.
+    view.ticketFoot.hidden = !view.ticketKalshiPlace.hidden;
+    if (view.ticketKalshiPlace.hidden) return;
+    if (kalshiPlaceState.rowKey !== row.key) {
+      kalshiPlaceState = { rowKey: row.key, phase: null, armedAt: 0, message: null, tone: null, edited: false };
+    }
+    // The box follows the stake until Cal types in it, and holds still once Place is pressed.
+    const settled = kalshiPlaceState.phase === "confirm" || kalshiPlaceState.phase === "placing";
+    if (!kalshiPlaceState.edited && !settled && document.activeElement !== view.ticketKalshiStake) {
+      view.ticketKalshiStake.value = kalshiPlace.stakeText(acted);
+    }
+    renderKalshiPlaceControls();
+  }
+
+  function renderKalshiPlaceControls() {
+    const { phase, message, tone } = kalshiPlaceState;
+    view.ticketKalshiMsg.hidden = !message;
+    view.ticketKalshiMsg.className = `tk-place-msg ${tone || ""}`;
+    view.ticketKalshiMsg.textContent = message || "";
+    view.ticketKalshiStake.disabled = phase === "confirm" || phase === "placing";
+    const button = (className, text, action) => {
+      const element = makeEl("button", className, text);
+      element.type = "button";
+      element.dataset.kalshiPlace = action;
+      return element;
+    };
+    if (phase === "confirm") {
+      const stake = kalshiPlace.parseStake(view.ticketKalshiStake.value);
+      view.ticketKalshiButtons.replaceChildren(button("btn sm", "Cancel", "cancel"),
+        button("btn sm primary", `Bet ${phoneView.fmtDollars(stake)} at Kalshi`, "confirm"));
+    } else if (phase === "placing") {
+      const waiting = button("btn sm", "Placing\u2026", "none");
+      waiting.disabled = true;
+      view.ticketKalshiButtons.replaceChildren(waiting);
+    } else {
+      view.ticketKalshiButtons.replaceChildren(button("btn sm", "Place", "arm"));
+    }
+  }
+
+  function onKalshiPlaceClick(event) {
+    const button = event.target.closest("button[data-kalshi-place]");
+    if (!button) return;
+    const action = button.dataset.kalshiPlace;
+    if (action === "arm") {
+      if (kalshiPlace.parseStake(view.ticketKalshiStake.value) == null) {
+        Object.assign(kalshiPlaceState, { message: "Type an amount in dollars first.", tone: "refused" });
+        renderKalshiPlaceControls();
+        return;
+      }
+      const armedAt = Date.now();
+      Object.assign(kalshiPlaceState, { phase: "confirm", armedAt, message: null, tone: null });
+      setTimeout(() => {
+        if (kalshiPlaceState.phase === "confirm" && kalshiPlaceState.armedAt === armedAt) {
+          kalshiPlaceState.phase = null;
+          renderKalshiPlaceControls();
+        }
+      }, TEASER_CONFIRM_MS);
+      renderKalshiPlaceControls();
+      return;
+    }
+    if (action === "cancel") {
+      kalshiPlaceState.phase = null;
+      renderKalshiPlaceControls();
+      return;
+    }
+    if (action !== "confirm" || kalshiPlaceState.phase !== "confirm") return;
+    // The second tap of a double-tap lands where Place was: not a decision.
+    if (event.detail > 1 || Date.now() - kalshiPlaceState.armedAt < TEASER_CONFIRM_MIN_MS) return;
+    placeOnKalshi().catch((error) => console.error("[unabated-ticket] place on Kalshi failed", error));
+  }
+
+  // POST the open row's order to the bets service. An HTTP error is the
+  // service refusing before Kalshi; no answer at all may still have reached Kalshi.
+  async function placeOnKalshi() {
+    const rowKey = kalshiPlaceState.rowKey;
+    const found = state.ticket ? findTicketRow(state.ticket) : null;
+    const kalshiSource = state.bets.payload && state.bets.payload.sources ? state.bets.payload.sources.kalshi : null;
+    const request = found && found.row.key === rowKey ? kalshiPlace.placeRequestOf({
+      line: kalshiPlaceLine(found.row), stakeInput: view.ticketKalshiStake.value,
+      kalshiReadAt: kalshiSource ? kalshiSource.fetchedAt : null, clickId: crypto.randomUUID(),
+    }) : { error: "the line has left the Edges list" };
+    if (request.error) {
+      Object.assign(kalshiPlaceState, { phase: null, message: `Not placed: ${request.error}.`, tone: "refused" });
+      renderKalshiPlaceControls();
+      return;
+    }
+    Object.assign(kalshiPlaceState, { phase: "placing", message: "Placing at Kalshi\u2026", tone: "wait" });
+    renderKalshiPlaceControls();
+    let next;
+    try {
+      const reply = await requestJson("POST", "/place_kalshi.json", request.body, PLACE_TIMEOUT_MS);
+      next = { message: reply.message, tone: kalshiPlace.replyTone(reply.status) };
+    } catch (error) {
+      // A 4xx is the service refusing before Kalshi; a 5xx (a gateway losing the service mid-send) may have placed.
+      next = error.status >= 400 && error.status < 500
+        ? { message: `Not placed: ${error.message}`, tone: "refused" }
+        : { message: `No answer from the bets service (${error.message}). Check Kalshi before placing again.`, tone: "warn" };
+    }
+    if (kalshiPlaceState.rowKey !== rowKey) return;
+    Object.assign(kalshiPlaceState, { phase: "done", ...next });
+    renderKalshiPlaceControls();
+    if (next.tone === "ok") await pollBets();
   }
 
   // Another line of the same card: rung, book and price, its edge and standalone stake. Tap to open it.
@@ -1490,6 +1617,10 @@
   });
   view.betsCrosswalkClear.addEventListener("click", clearCrosswalk);
 
+  view.ticketKalshiButtons.addEventListener("click", onKalshiPlaceClick);
+  view.ticketKalshiStake.addEventListener("input", () => {
+    kalshiPlaceState.edited = true;
+  });
   view.sheetClose.addEventListener("click", closeTicket);
   view.sheetBackdrop.addEventListener("click", closeTicket);
   document.addEventListener("keydown", (event) => {

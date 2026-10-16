@@ -66,15 +66,23 @@ writer). Tables:
                games off its teaser menu), UPSERT on the key, DELETE on
                Restore. Served only until the game starts; never pruned.
   edge_skips   one row per Edges line Cal skipped (the Skip chip on a row a
-               book beats; pricecheck.js skipKeyOf: '<rung>@<bookId>'), UPSERT
-               on the key, DELETE on Restore. Served only until the game
-               starts; never pruned.
+               book beats; pricecheck.js skipKeyOf: the line at every book,
+               '<rung>'; rows written before 2026-10-16 end '@<bookId>'),
+               UPSERT on the line, DELETE of the line (old per-book rows
+               too) on Restore. Served only until the game starts; never
+               pruned.
   edge_settings  at most ONE row (settings_id = 1): the Edges settings the
                server runner (unabated_ticket/server/runner.js, phone page plan
                step 1) reads every cycle, written by PUT /settings.json and
                UPSERTed whole on every write. Each column is an override; NULL
                means "the panel's default", and the defaults live only in
                extension/edgerows.js, never here. Never pruned (one row).
+  manual_orders  one row per Kalshi order Cal placed from the Ticket's Place
+               button (manual_orders.py), on his own key: INSERTED before it is
+               sent (status 'sending'), UPDATED with what Kalshi answered and
+               what filled. The client_order_id ('uman-' + the click's id) is
+               the key, so one click can never send twice. Never pruned (a
+               few a day); the bet itself reaches `bets` through the Kalshi poll.
 A failed poll writes a source_runs row and touches nothing in `bets`, so a
 dark source keeps serving its previous records.
 
@@ -89,6 +97,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
+
+from unabated_ticket.bets_service.sources.kalshi import PRIMARY_SUBACCOUNT, subaccount_of_record_id
 
 log = logging.getLogger(__name__)
 
@@ -185,7 +195,7 @@ CREATE TABLE IF NOT EXISTS teaser_blocks (
     blocked_at   TIMESTAMPTZ NOT NULL
 );
 CREATE TABLE IF NOT EXISTS edge_skips (
-    skip_key     VARCHAR PRIMARY KEY,    -- pricecheck.js skipKeyOf: '<eventId>:<period>:<betType>:<side>|<points|ml>@<bookId>'
+    skip_key     VARCHAR PRIMARY KEY,    -- pricecheck.js skipKeyOf: '<eventId>:<period>:<betType>:<side>|<points|ml>' (older rows: '...@<bookId>')
     event_start  TIMESTAMPTZ NOT NULL,   -- the game's start: the skip is served until then
     skipped_at   TIMESTAMPTZ NOT NULL
 );
@@ -207,6 +217,39 @@ CREATE TABLE IF NOT EXISTS edge_settings (
     group_by_market       BOOLEAN,
     updated_at            TIMESTAMPTZ NOT NULL
 );
+CREATE TABLE IF NOT EXISTS manual_orders (
+    client_order_id  VARCHAR PRIMARY KEY,   -- 'uman-' + the click's id
+    placed_at        TIMESTAMPTZ NOT NULL,  -- when the row was inserted, just before the send
+    event_id         BIGINT NOT NULL,       -- Unabated's eventId
+    ticker           VARCHAR NOT NULL,
+    contract_side    VARCHAR NOT NULL,      -- 'yes' | 'no'
+    label            VARCHAR,               -- the line in words, for the log
+    ticket_all_in    DOUBLE NOT NULL,       -- the Ticket's price, all-in, as a probability
+    ask_price        DOUBLE NOT NULL,       -- the limit sent (the live ask)
+    all_in_price     DOUBLE NOT NULL,       -- that ask with Kalshi's taker fee
+    stake            DOUBLE NOT NULL,       -- dollars Cal asked to bet
+    count_requested  INTEGER NOT NULL,
+    status           VARCHAR NOT NULL,      -- sending | filled | partial | unfilled | rejected | unknown
+    kalshi_order_id  VARCHAR,
+    count_filled     DOUBLE,
+    cost_filled      DOUBLE,                -- dollars paid, fees included
+    error            VARCHAR,
+    updated_at       TIMESTAMPTZ NOT NULL
+);
+"""
+
+MANUAL_ORDER_INSERT_COLUMNS = (
+    "client_order_id", "placed_at", "event_id", "ticker", "contract_side", "label", "ticket_all_in",
+    "ask_price", "all_in_price", "stake", "count_requested", "status", "updated_at",
+)
+MANUAL_ORDER_UPDATE_COLUMNS = ("status", "kalshi_order_id", "count_filled", "cost_filled", "error")
+_INSERT_MANUAL_ORDER = (f"INSERT INTO manual_orders ({', '.join(MANUAL_ORDER_INSERT_COLUMNS)}) "
+                        f"VALUES ({', '.join(['?'] * len(MANUAL_ORDER_INSERT_COLUMNS))})")
+_SELECT_MANUAL_MAYBE_FILLED = """
+SELECT client_order_id, ticker, status, epoch(placed_at)
+FROM manual_orders
+WHERE event_id = ? AND placed_at >= ? AND status IN ('sending', 'unknown', 'filled', 'partial')
+ORDER BY placed_at
 """
 
 _INSERT_CROSSWALK = """
@@ -350,6 +393,12 @@ _UPSERT_EDGE_SKIP = """
 INSERT INTO edge_skips (skip_key, event_start, skipped_at) VALUES (?, ?, ?)
 ON CONFLICT (skip_key) DO UPDATE SET event_start = excluded.event_start, skipped_at = excluded.skipped_at
 """
+
+def edge_skip_line(skip_key: str) -> str:
+    """The line a skip key names (pricecheck.js skipLineOf): a key from a
+    panel not yet reloaded carries a '@<bookId>' suffix, dropped here."""
+    return skip_key.split("@", 1)[0]
+
 
 # A skip is moot once its game has started, like a teaser block.
 _SELECT_EDGE_SKIPS = """
@@ -593,12 +642,20 @@ class BetsStore:
             log.info("source_runs: pruned %d row(s) older than %s", deleted, cutoff.isoformat())
         return deleted
 
-    def load_kalshi_tickers(self) -> set[str]:
-        """Every Kalshi market ticker a stored record names (ids are
-        kalshi:<ticker>:<side>), so the Kalshi source reads their pre-cutoff fills."""
+    def load_kalshi_tickers(self, subaccount: int = PRIMARY_SUBACCOUNT) -> set[str]:
+        """Every Kalshi market ticker a stored record of `subaccount` names (ids
+        are kalshi:<ticker>:<side>, plus :s<N> in numbered subaccount N), so the
+        Kalshi source reads that subaccount's pre-cutoff fills of them."""
         with self._lock:
             rows = self._con.execute(_SELECT_KALSHI_IDS).fetchall()
-        return {record_id.split(":")[1] for (record_id,) in rows}
+        tickers: set[str] = set()
+        for (record_id,) in rows:
+            try:
+                if subaccount_of_record_id(record_id) == subaccount:
+                    tickers.add(record_id.split(":")[1])
+            except ValueError as error:
+                log.warning("load_kalshi_tickers: skipping stored id %r: %s", record_id, error)
+        return tickers
 
     def load_bets(self, days: int, now: datetime) -> list[dict]:
         """Records in the retention window: open, or closed within `days` of `now`."""
@@ -849,14 +906,18 @@ class BetsStore:
                 for market_key, event_start_ms, blocked_at in rows]
 
     def set_edge_skip(self, skip_key: str, event_start: datetime, skipped: bool, at: datetime) -> int:
-        """Skip (UPSERT) or restore (DELETE) one Edges line. Returns how many
-        rows changed (an UPSERT always counts 1)."""
+        """Skip (UPSERT) or restore (DELETE) one Edges line at every book.
+        Returns how many rows changed (an UPSERT always counts 1). Restore
+        also deletes the line's old per-book rows ('<line>@<bookId>')."""
+        line = edge_skip_line(skip_key)
         with self._lock:
             if skipped:
-                [count] = self._con.execute(_UPSERT_EDGE_SKIP, [skip_key, event_start, at]).fetchone()
+                [count] = self._con.execute(_UPSERT_EDGE_SKIP, [line, event_start, at]).fetchone()
             else:
-                [count] = self._con.execute("DELETE FROM edge_skips WHERE skip_key = ?", [skip_key]).fetchone()
-        log.info("edge skips: %s %s", "skipped" if skipped else "restored", skip_key)
+                [count] = self._con.execute(
+                    "DELETE FROM edge_skips WHERE skip_key = ? OR starts_with(skip_key, ?)", [line, f"{line}@"]
+                ).fetchone()
+        log.info("edge skips: %s %s", "skipped" if skipped else "restored", line)
         return count
 
     def load_edge_skips(self, now: datetime) -> list[dict]:
@@ -887,6 +948,41 @@ class BetsStore:
         with self._lock:
             self._con.execute(_UPSERT_EDGE_SETTINGS, [settings[field] for field in EDGE_SETTINGS_FIELDS] + [updated_at])
         log.info("edge settings: saved %s", {field: value for field, value in settings.items() if value is not None})
+
+    def bet_is_open(self, bet_id: str) -> bool:
+        """Whether `bets` holds this id as an open record."""
+        with self._lock:
+            row = self._con.execute("SELECT status FROM bets WHERE id = ?", [bet_id]).fetchone()
+        return bool(row) and row[0] == "open"
+
+    def insert_manual_order(self, order: dict) -> bool:
+        """INSERT a Place-button order before it is sent (status 'sending').
+        False when its client_order_id is already held: that click was sent."""
+        with self._lock:
+            held = self._con.execute("SELECT 1 FROM manual_orders WHERE client_order_id = ?",
+                                     [order["client_order_id"]]).fetchone()
+            if held:
+                return False
+            self._con.execute(_INSERT_MANUAL_ORDER, [order[column] for column in MANUAL_ORDER_INSERT_COLUMNS])
+        return True
+
+    def update_manual_order(self, client_order_id: str, fields: dict, at: datetime) -> None:
+        """UPDATE the named columns of one manual order (and updated_at)."""
+        unknown = set(fields) - set(MANUAL_ORDER_UPDATE_COLUMNS)
+        if unknown:
+            raise ValueError(f"update_manual_order: unknown columns {sorted(unknown)}")
+        assignments = ", ".join(f"{column} = ?" for column in fields)
+        with self._lock:
+            self._con.execute(f"UPDATE manual_orders SET {assignments}, updated_at = ? WHERE client_order_id = ?",
+                              [*fields.values(), at, client_order_id])
+
+    def manual_orders_maybe_filled_since(self, event_id: int, since: datetime) -> list[dict]:
+        """Manual orders on this game placed at or after `since` that may hold
+        contracts (sent and filled, partly filled, or no definite answer)."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_MANUAL_MAYBE_FILLED, [event_id, since]).fetchall()
+        return [{"client_order_id": client_order_id, "ticker": ticker, "status": status,
+                 "placed_at": _epoch_to_iso(placed_at)} for client_order_id, ticker, status, placed_at in rows]
 
     def source_status(self) -> dict[str, dict]:
         """{source: {fetchedAt, ok, error, count}} — fetchedAt/count from the

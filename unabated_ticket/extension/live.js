@@ -27,6 +27,17 @@
 
   // eventPeriodTypeId on a live row -> the part of the game that just ended.
   const PERIOD_ENDED = { 2: "1st half", 3: "2nd half", 4: "Q1", 5: "Q2", 6: "Q3", 7: "Q4" };
+  // eventPeriodTypeId -> the periods (feed.PERIODS names) decided by then: a
+  // bet on one is settled, not a live position, whatever its venue still
+  // lists it as. The full game is never here (overtime).
+  const PERIODS_SETTLED_BY = {
+    4: ["1Q"],
+    5: ["1Q", "2Q", "1H"],
+    2: ["1Q", "2Q", "1H"],
+    6: ["1Q", "2Q", "1H", "3Q"],
+    7: ["1Q", "2Q", "1H", "3Q", "4Q"],
+    3: ["1Q", "2Q", "1H", "3Q", "4Q", "2H"],
+  };
 
   function storageKeyOf(league) {
     return `${STORAGE_PREFIX}${league}`;
@@ -52,6 +63,12 @@
       return game.checkpointType.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
     }
     return "break";
+  }
+
+  // The periods already settled at this break, by feed.PERIODS name; none
+  // when the break is unknown.
+  function settledPeriods(eventPeriodTypeId) {
+    return (PERIODS_SETTLED_BY[eventPeriodTypeId] || []).slice();
   }
 
   function matchupOf(game) {
@@ -150,8 +167,40 @@
         producedMs: parseUtcMs(game.producedUtc),
         producedUtc: game.producedUtc ?? null,
         matchup: matchupOf(game),
+        eventPeriodTypeId: game.eventPeriodTypeId ?? null,
+        settledPeriods: settledPeriods(game.eventPeriodTypeId),
       },
     };
+  }
+
+  // {raw, game, payload} for every posted line of a game whose fair is
+  // ready, in the payloads not yet past LIVE_DROP_MS.
+  function readyLiveRows(payloads, now) {
+    const ready = [];
+    for (const payload of payloads || []) {
+      if (!isFresh(payload, now)) continue;
+      const games = new Map((payload.games || []).map((game) => [game.eventId, game]));
+      for (const raw of payload.rows || []) {
+        const game = games.get(raw.eventId);
+        if (game && game.fairStatus === FAIR_READY) ready.push({ raw, game, payload });
+      }
+    }
+    return ready;
+  }
+
+  // Whether a payload not yet past LIVE_DROP_MS carries this game with its
+  // fair ready — and, given `producedUtc`, still the fair produced then:
+  // what a live ticket's stake rests on. False once the break ends (the fair
+  // expires), the screen sets a new fair (the ticket's edge and the ladder
+  // would then be two fairs), or the tab stops posting.
+  function hasReadyFair(payloads, eventId, now, producedUtc) {
+    const isTheFair = (game) => game.eventId === eventId && game.fairStatus === FAIR_READY
+      && (producedUtc == null || game.producedUtc === producedUtc);
+    for (const payload of payloads || []) {
+      if (!isFresh(payload, now)) continue;
+      if ((payload.games || []).some(isTheFair)) return true;
+    }
+    return false;
   }
 
   // The listable live rows across every stored payload whose fair is ready,
@@ -163,19 +212,26 @@
     const options = opts || {};
     const now = typeof options.now === "number" ? options.now : Date.now();
     const rows = [];
-    for (const payload of payloads || []) {
-      if (!isFresh(payload, now)) continue;
-      const games = new Map((payload.games || []).map((game) => [game.eventId, game]));
-      for (const raw of payload.rows || []) {
-        const game = games.get(raw.eventId);
-        if (!game || game.fairStatus !== FAIR_READY) continue;
-        const row = describeLiveRow(raw, game, payload);
-        if (!passesFilters({ ...row, bookId: raw.bookId }, options)) continue;
-        rows.push(row);
-      }
+    for (const { raw, game, payload } of readyLiveRows(payloads, now)) {
+      const row = describeLiveRow(raw, game, payload);
+      if (!passesFilters({ ...row, bookId: raw.bookId }, options)) continue;
+      rows.push(row);
     }
     rows.sort((a, b) => b.edgePct - a.edgePct);
     return rows;
+  }
+
+  // Every line of a game whose fair is ready, edge or not, in a scanner
+  // state's {lines} shape, its `bacr` the in-game fair at its points.
+  function liveFairState(payloads, now) {
+    const lines = {};
+    for (const { raw, payload } of readyLiveRows(payloads, now)) {
+      lines[raw.key] = {
+        eventId: raw.eventId, leagueId: leagueIdOfPath(payload.league), periodTypeId: raw.periodTypeId, betTypeId: raw.betTypeId,
+        sideIndex: raw.sideIndex, points: raw.points, bacr: raw.fair,
+      };
+    }
+    return { lines };
   }
 
   // One alert per line per break: the fair's production time is in the key,
@@ -186,7 +242,7 @@
 
   const api = {
     LIVE_STALE_MS, LIVE_STALE_HIDDEN_MS, LIVE_DROP_MS, STORAGE_PREFIX,
-    storageKeyOf, checkpointLabel, liveView, selectLiveEdges, liveAlertKey,
+    storageKeyOf, checkpointLabel, settledPeriods, liveView, selectLiveEdges, liveFairState, hasReadyFair, liveAlertKey,
   };
 
   if (typeof module !== "undefined" && module.exports) {

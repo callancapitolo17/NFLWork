@@ -62,6 +62,11 @@ def _get(key: str, default: str | None = None) -> str | None:
 # Kalshi credentials (same names as every bot so one .env works everywhere).
 KALSHI_API_KEY_ID = _get("KALSHI_API_KEY_ID")
 KALSHI_PRIVATE_KEY_PATH = _get("KALSHI_PRIVATE_KEY_PATH")
+# The Ticket's Place button's own trade key (manual_orders.py, Cal 2026-10-16):
+# a key on his MAIN account with trade scope, made for Place alone. The read key
+# above is read-only, so with this unset the Place button is off.
+KALSHI_PLACE_API_KEY_ID = _get("KALSHI_PLACE_API_KEY_ID")
+KALSHI_PLACE_PRIVATE_KEY_PATH = _get("KALSHI_PLACE_PRIVATE_KEY_PATH")
 KALSHI_BASE_URL = _get("KALSHI_BASE_URL",
                        "https://api.elections.kalshi.com/trade-api/v2")
 
@@ -72,9 +77,29 @@ DB_PATH = Path(_get("BETS_DB_PATH", str(PKG_DIR / "bets.duckdb")))
 # bot's log never shares a write path with Cal's bet history.
 TAKER_DB_PATH = Path(_get("TAKER_DB_PATH", str(PKG_DIR / "taker.duckdb")))
 # The bot's own Kalshi key (taker_orders.py): made for the bot alone so it can
-# be revoked alone. Both set = the bot places orders; either missing = it does not.
+# be revoked alone, and locked to the bot's own subaccount. All three set = the
+# bot places orders; any missing = it does not.
 KALSHI_TAKER_API_KEY_ID = _get("KALSHI_TAKER_API_KEY_ID")
 KALSHI_TAKER_PRIVATE_KEY_PATH = _get("KALSHI_TAKER_PRIVATE_KEY_PATH")
+FIRST_NUMBERED_SUBACCOUNT = 1
+LAST_NUMBERED_SUBACCOUNT = 63
+
+
+def _subaccount_number(raw: str | None) -> int | None:
+    """A numbered Kalshi subaccount (1-63), or None when unset. Raises on
+    anything else: 0 is the primary account, which the bot must never trade."""
+    if raw is None or not raw.strip():
+        return None
+    if raw.strip().isdigit() and FIRST_NUMBERED_SUBACCOUNT <= int(raw) <= LAST_NUMBERED_SUBACCOUNT:
+        return int(raw)
+    raise ValueError(f"KALSHI_TAKER_SUBACCOUNT: expected a subaccount number "
+                     f"{FIRST_NUMBERED_SUBACCOUNT}-{LAST_NUMBERED_SUBACCOUNT}, got {raw!r}")
+
+
+# The bot's Kalshi subaccount (Cal, 2026-10-16): the money in it is all the bot
+# can lose, since its key is locked there. The Kalshi source reads it next to
+# the primary account (sources/kalshi.py); the desk arms only with it set.
+KALSHI_TAKER_SUBACCOUNT = _subaccount_number(_get("KALSHI_TAKER_SUBACCOUNT"))
 # The stop switch: while this file exists the bot sends no order (`touch` it to stop, `rm` to resume).
 TAKER_STOP_PATH = Path(_get("TAKER_STOP_PATH", str(PKG_DIR / "taker.stop")))
 

@@ -129,6 +129,13 @@
           <div class="stake-exposure" id="stake-exposure" hidden></div>
           <div class="stake-uncapped" id="stake-uncapped" hidden></div>
           <div class="muted" id="full-kelly"></div>
+          <div class="kalshi-place" id="kalshi-place" hidden>
+            <div class="kp-row">
+              <label class="kp-amount">$<input id="kalshi-place-stake" inputmode="decimal" autocomplete="off" aria-label="Amount to bet at Kalshi"></label>
+              <span class="kp-buttons" id="kalshi-place-buttons"></span>
+            </div>
+            <div class="tk-place-msg" id="kalshi-place-msg" hidden></div>
+          </div>
         </div>
       </div>
 
@@ -271,6 +278,7 @@
   </section>
 
   <script src="kelly.js"></script>
+  <script src="kalshiplace.js"></script>
   <script src="edgemove.js"></script>
   <script src="feed.js"></script>
   <script src="tailflex.js"></script>

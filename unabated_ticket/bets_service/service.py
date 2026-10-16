@@ -100,11 +100,22 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     button: ONE 4-team 6-point teaser at BFA, real money —
                                     bfa_teaser.py checks every number on BFA's board first and
                                     confirms off the open bets; 503 when no BFA account is read)
+           POST /place_kalshi.json  body {clickId, eventId, periodTypeId, betTypeId, sideIndex, points,
+                                    stake, ticketAllIn, kalshiReadAt} -> {ok, status: filled |
+                                    partial | unfilled | refused | rejected | unknown, message, ...}
+                                    (the Ticket's Place button: ONE immediate-or-cancel Kalshi
+                                    order on Cal's own key, real money — manual_orders.py checks
+                                    the live ask against the Ticket's price first; 503 when no
+                                    Kalshi key is configured)
            PUT /settings.json       body {settings: {<any of those fields>: value or null}} ->
                                     {ok, settings, updatedAt}; a field left out keeps its value,
                                     null resets it to the default, an unknown field or a bad
                                     value is a 400 naming it (same Content-Type guard as the
                                     POSTs: a web page cannot send JSON cross-origin)
+           GET /balances.json       {generatedAt, balances: {venue: {cash, inBets, available,
+                                    creditLimit, fetchedAt, error}}}, the live per-venue
+                                    account balance read after each poll (balances.py;
+                                    memory only, a failed read keeps the last numbers)
            GET /edges.json          the server runner's Edges list (config.RUNNER_URL,
                                     server/edges_payload.js documents it), passed through
                                     as it came; 502 {error, runnerUrl} when the runner
@@ -152,11 +163,14 @@ leaves `bets` untouched — a dark source never blanks the list. PUT
 bets it read while confirming into bets.duckdb::bets, so the panel's next poll has the
 ticket. POST /taker_decisions.json APPENDs the server runner's taker decisions to
 taker.duckdb::taker_decisions (taker_store.py; a separate file from bets.duckdb).
+POST /place_kalshi.json places Cal's own Kalshi order (money) and INSERTs /
+UPDATEs bets.duckdb::manual_orders (manual_orders.py).
 POST /taker/order.json places a bot order on Kalshi (money) on the bot's own
-key when one is configured, and INSERTs / UPDATEs taker.duckdb::taker_orders
-(taker_orders.py: stop file, $500 ceiling, limit at the ask, rest cancelled);
-the desk's own thread cancels bot orders left resting on Kalshi, reads final
-fills and frees settled markets every 30 s, runner or no runner.
+key, locked to the bot's own Kalshi subaccount, when one is configured, and
+INSERTs / UPDATEs taker.duckdb::taker_orders (taker_orders.py: stop file, $500
+ceiling, limit at the ask, rest cancelled); the desk's own thread cancels bot
+orders left resting on Kalshi, reads final fills and frees settled markets
+every 30 s, runner or no runner.
 """
 import json
 import logging
@@ -174,18 +188,22 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from unabated_ticket.bets_service import bfa_teaser, config
+from unabated_ticket.bets_service.balances import BalanceBook, balances_payload, read_balance_once
 from unabated_ticket.bets_service.log_setup import setup_logging
+from unabated_ticket.bets_service.manual_orders import ManualKalshiDesk, read_runner_quote
+from unabated_ticket.bets_service.manual_orders import validate_place_request as validate_kalshi_place_request
 from unabated_ticket.bets_service.normalize import parse_iso_ms, utc_now_iso
 from unabated_ticket.bets_service.sources import Source, bet105, draftkings
 from unabated_ticket.bets_service.sources.betonline import source_if_configured as betonline_source_if_configured
 from unabated_ticket.bets_service.sources.bfa import BFASource, normalize_open_bets
 from unabated_ticket.bets_service.sources.bfa import source_if_configured as bfa_source_if_configured
-from unabated_ticket.bets_service.sources.kalshi import KalshiSource
+from unabated_ticket.bets_service.sources.kalshi import PRIMARY_SUBACCOUNT, KalshiSource
 from unabated_ticket.bets_service.sources.novig import source_if_connected as novig_source_if_connected
 from unabated_ticket.bets_service.sources.polymarket_us import source_if_configured as polymarket_us_source_if_configured
 from unabated_ticket.bets_service.sources.wagerzon import source_if_configured as wagerzon_source_if_configured
 from unabated_ticket.bets_service.store import EDGE_SETTINGS_FIELDS, BetsStore
-from unabated_ticket.bets_service.taker_orders import KalshiOrderClient, TakerDesk, validate_order_request
+from unabated_ticket.bets_service.taker_orders import (KalshiOrderClient, TakerDesk, key_lock_problem,
+                                                      validate_order_request)
 from unabated_ticket.bets_service.taker_store import DECISION_REASONS, TakerStore
 
 log = logging.getLogger(__name__)
@@ -221,8 +239,10 @@ MAX_EXCLUSION_IDS_PER_POST = 50
 MAX_DISMISSAL_IDS_PER_POST = 200
 # teaser.js marketKeyOf: "<Unabated eventId>:bt2" (spread) or ":bt3" (total).
 TEASER_MARKET_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}:bt[23]$")
-# pricecheck.js skipKeyOf: one line (game, period, market, side, number) at one book.
-EDGE_SKIP_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}:\d{1,4}:\d{1,4}:\d{1,2}\|(ml|-?\d{1,4}(\.\d{1,3})?)@\d{1,6}$")
+# pricecheck.js skipKeyOf: one line (game, period, market, side, number) at
+# every book. A panel not yet reloaded still sends the old '@<bookId>' suffix;
+# the store keeps only the line (store.edge_skip_line).
+EDGE_SKIP_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}:\d{1,4}:\d{1,4}:\d{1,2}\|(ml|-?\d{1,4}(\.\d{1,3})?)(@\d{1,6})?$")
 # American odds run from -100 down and +100 up; the gap between is no price.
 MIN_AMERICAN_MAGNITUDE = 100
 # The Edges settings' allowed values, as the panel's inputs enforce them
@@ -242,7 +262,7 @@ PHONE_DIR = UNABATED_TICKET_DIR / "server" / "phone"
 TRACKER_DIR = UNABATED_TICKET_DIR / "server" / "tracker"
 EXTENSION_DIR = UNABATED_TICKET_DIR / "extension"
 PHONE_EXTENSION_MODULES = (
-    "kelly.js", "feed.js", "teams.js", "bets.js", "ladder.js", "condkelly.js", "betsview.js",
+    "kelly.js", "kalshiplace.js", "feed.js", "teams.js", "bets.js", "ladder.js", "condkelly.js", "betsview.js",
     "edgemove.js", "fillfair.js", "tailflex.js", "edgerows.js", "teaser.js", "teaserview.js",
 )
 STATIC_FILES: dict[str, Path] = {
@@ -324,7 +344,8 @@ def run_source_once(source: Source, store: BetsStore) -> bool:
         return False
 
 
-def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event) -> None:
+def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event,
+              balance_book: BalanceBook | None = None) -> None:
     """Run each source on its own cadence until `stop`. A store write that
     raises (disk full, a locked file) is logged and retried next poll — the
     thread must outlive it, or the HTTP side would serve ageing data with no
@@ -338,6 +359,8 @@ def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event) ->
                     run_source_once(source, store)
                 except Exception:  # noqa: BLE001 — the poll thread is the service's heartbeat
                     log.exception("store write failed for source %s; retrying next poll", source.name)
+                if balance_book is not None:
+                    read_balance_once(source, balance_book)
                 next_due[source.name] = time.monotonic() + source.poll_sec
         stop.wait(POLL_TICK_SEC)
 
@@ -718,7 +741,7 @@ def validate_edge_skip_request(body: object) -> tuple[str, datetime, bool] | str
         return f"body must be an object, got {type(body).__name__}"
     skip_key = body.get("skipKey")
     if not isinstance(skip_key, str) or not EDGE_SKIP_KEY_PATTERN.match(skip_key):
-        return f"skipKey must look like '<eventId>:<period>:<betType>:<side>|<points|ml>@<bookId>', got {skip_key!r}"
+        return f"skipKey must look like '<eventId>:<period>:<betType>:<side>|<points|ml>', got {skip_key!r}"
     event_start_ms = body.get("eventStartMs")
     if not _is_whole_number(event_start_ms) or event_start_ms <= 0:
         return f"eventStartMs must be the game's start in whole epoch milliseconds, got {event_start_ms!r}"
@@ -840,16 +863,22 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  runner_url: str | None = None, runner_timeout_sec: float | None = None,
                  extra_hosts: tuple[str, ...] | None = None,
                  teaser_placer: bfa_teaser.BFATeaserPlacer | None = None,
+                 balance_book: BalanceBook | None = None,
                  taker_store: TakerStore | None = None,
                  taker_desk: TakerDesk | None = None,
                  taker_desk_off_reason: str = "no bot Kalshi key is configured (KALSHI_TAKER_API_KEY_ID / "
-                                             "KALSHI_TAKER_PRIVATE_KEY_PATH)") -> type[BaseHTTPRequestHandler]:
+                                             "KALSHI_TAKER_PRIVATE_KEY_PATH)",
+                 kalshi_place_desk: ManualKalshiDesk | None = None,
+                 kalshi_place_off_reason: str = "no Kalshi trade key for Place is configured "
+                                                "(KALSHI_PLACE_API_KEY_ID / KALSHI_PLACE_PRIVATE_KEY_PATH)") -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
     EXTRA_ALLOWED_HOSTS (the tests pass their own). `teaser_placer` is the
     Place button's (None: no BFA account is read, POST /place_teaser.json 503s).
     `taker_store` is the taker's decision log (None: POST /taker_decisions.json 503s).
-    `taker_desk` places the bot's orders (None: POST /taker/order.json 503s with `taker_desk_off_reason`)."""
+    `taker_desk` places the bot's orders (None: POST /taker/order.json 503s with `taker_desk_off_reason`).
+    `kalshi_place_desk` places Cal's own Place-button orders (None: POST
+    /place_kalshi.json 503s with `kalshi_place_off_reason`)."""
     names = list(source_names)
     proxied_host_names = tuple(extra_hosts) if extra_hosts is not None else config.EXTRA_ALLOWED_HOSTS
     edges_runner_url = (runner_url or config.RUNNER_URL).rstrip("/")
@@ -865,6 +894,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/settings.json":
                 self._send_json(200, store.load_edge_settings())
+                return
+            if url.path == "/balances.json":
+                self._send_json(200, balances_payload(balance_book or BalanceBook()))
                 return
             if url.path == "/bets.json":
                 days = parse_days(url.query)
@@ -897,7 +929,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             url = urlparse(self.path)
             if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/fill_books.json", "/closing_fairs.json",
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
-                                "/draftkings.json", "/place_teaser.json", "/taker_decisions.json",
+                                "/draftkings.json", "/place_teaser.json", "/place_kalshi.json", "/taker_decisions.json",
                                 "/taker/order.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
@@ -937,6 +969,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/place_teaser.json":
                 self._place_teaser(body)
+                return
+            if url.path == "/place_kalshi.json":
+                self._place_kalshi(body)
                 return
             if url.path in ("/taker_decisions.json", "/taker/order.json") and self._refused_non_loopback():
                 return
@@ -1174,6 +1209,25 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 self._store_bfa_open_bets(open_wagers)
             self._send_json(200, {"ok": result["status"] == bfa_teaser.STATUS_PLACED, **result})
 
+        # POST /place_kalshi.json: one order on Cal's own Kalshi key
+        # (manual_orders.py). Like Place on a teaser, the phone page and a
+        # panel pointed at the server send it through the tailnet name.
+        def _place_kalshi(self, body: object) -> None:
+            if kalshi_place_desk is None:
+                self._send_json(503, {"error": kalshi_place_off_reason})
+                return
+            request = validate_kalshi_place_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            try:
+                result = kalshi_place_desk.place(request)
+            except Exception as error:  # noqa: BLE001 — logged; the row (if any) says how far it got
+                log.exception("kalshi place: failed")
+                result = {"status": "unknown", "message": f"The order failed on this server ({type(error).__name__}: "
+                                                          f"{error}). Check Kalshi before placing again."}
+            self._send_json(200, {"ok": result["status"] in ("filled", "partial"), **result})
+
         def _store_bfa_open_bets(self, open_wagers: list[dict]) -> None:
             try:
                 store.upsert_bets(normalize_open_bets(open_wagers, utc_now_iso()), _now())
@@ -1270,15 +1324,24 @@ def teaser_placer_for(sources: list[Source]) -> bfa_teaser.BFATeaserPlacer | Non
     return bfa_teaser.BFATeaserPlacer(bfa_source) if bfa_source is not None else None
 
 
-def open_taker_desk(store: TakerStore | None) -> tuple[TakerDesk | None, str]:
-    """(the bot's order desk, "") or (None, why): without its own key or its
-    log there are no orders, and POST /taker/order.json answers 503 with that why."""
+def open_taker_desk(store: TakerStore | None,
+                    lock_check: Callable[[KalshiOrderClient, int], tuple[str | None, float | None]] = key_lock_problem,
+                    ) -> tuple[TakerDesk | None, str]:
+    """(the bot's order desk, "") or (None, why): without its own key, its
+    subaccount, Kalshi's word that the key is locked to that subaccount, or its
+    log there are no orders, and POST /taker/order.json answers 503 with that
+    why. The lock check is two signed GETs (taker_orders.key_lock_problem)."""
     if not config.KALSHI_TAKER_API_KEY_ID or not config.KALSHI_TAKER_PRIVATE_KEY_PATH:
         reason = "no bot Kalshi key is configured (KALSHI_TAKER_API_KEY_ID / KALSHI_TAKER_PRIVATE_KEY_PATH)"
         log.info("taker: %s, the bot places no orders", reason)
         return None, reason
     if store is None:
         reason = f"the taker log {config.TAKER_DB_PATH} is not open (its ceiling lives there)"
+        log.error("taker: %s, the bot places no orders", reason)
+        return None, reason
+    subaccount = config.KALSHI_TAKER_SUBACCOUNT
+    if subaccount is None:
+        reason = "no bot subaccount is configured (KALSHI_TAKER_SUBACCOUNT): the bot trades only in its own"
         log.error("taker: %s, the bot places no orders", reason)
         return None, reason
     if not Path(config.KALSHI_TAKER_PRIVATE_KEY_PATH).exists():
@@ -1292,8 +1355,41 @@ def open_taker_desk(store: TakerStore | None) -> tuple[TakerDesk | None, str]:
         reason = f"the bot key {config.KALSHI_TAKER_PRIVATE_KEY_PATH} could not be read: {error}"
         log.error("taker: %s, the bot places no orders", reason)
         return None, reason
-    log.info("taker: ARMED on its own key; stop file %s", config.TAKER_STOP_PATH)
-    return TakerDesk(client, store, config.TAKER_STOP_PATH), ""
+    problem, balance = lock_check(client, subaccount)
+    if problem is not None:
+        reason = f"the bot key is not proven locked to subaccount {subaccount}: {problem}"
+        log.error("taker: %s, the bot places no orders", reason)
+        return None, reason
+    shown_balance = "unknown" if balance is None else f"${balance:,.2f}"
+    log.info("taker: ARMED on its own key, locked to Kalshi subaccount %d (available %s); stop file %s",
+             subaccount, shown_balance, config.TAKER_STOP_PATH)
+    return TakerDesk(client, store, config.TAKER_STOP_PATH, subaccount), ""
+
+
+def kalshi_subaccounts_read(bot_subaccount: int | None) -> tuple[int, ...]:
+    """The Kalshi subaccounts the Bets tab reads: the primary, plus the bot's
+    when one is configured, so the bot's bets size Cal's and its own."""
+    return (PRIMARY_SUBACCOUNT,) if bot_subaccount is None else (PRIMARY_SUBACCOUNT, bot_subaccount)
+
+
+def open_kalshi_place_desk(store: BetsStore) -> tuple[ManualKalshiDesk | None, str]:
+    """(the Place button's Kalshi desk on Cal's MAIN account, "") or (None, why).
+    It signs only with its own trade key (KALSHI_PLACE_*): the read key the
+    Kalshi source polls with is read-only, so it is never a fallback."""
+    if not config.KALSHI_PLACE_API_KEY_ID or not config.KALSHI_PLACE_PRIVATE_KEY_PATH:
+        reason = ("no Kalshi trade key for Place is configured (KALSHI_PLACE_API_KEY_ID / "
+                  "KALSHI_PLACE_PRIVATE_KEY_PATH)")
+        log.info("kalshi place: %s, the Place button is off", reason)
+        return None, reason
+    try:
+        client = KalshiOrderClient(config.KALSHI_PLACE_API_KEY_ID, config.KALSHI_PLACE_PRIVATE_KEY_PATH,
+                                   config.KALSHI_BASE_URL)
+    except (OSError, ValueError) as error:
+        reason = f"the Place key {config.KALSHI_PLACE_PRIVATE_KEY_PATH} could not be read: {error}"
+        log.error("kalshi place: %s, the Place button is off", reason)
+        return None, reason
+    log.info("kalshi place: on, signing with Place key %s on the main account", config.KALSHI_PLACE_API_KEY_ID[:8])
+    return ManualKalshiDesk(client, store, lambda line: read_runner_quote(config.RUNNER_URL, line)), ""
 
 
 def open_taker_store(db_path: Path) -> TakerStore | None:
@@ -1312,14 +1408,19 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
     stop = threading.Event()
     started_at = time.monotonic()
     source_names = [source.name for source in sources] + list(PUSHED_SOURCES)
+    balance_book = BalanceBook()
     taker_store = open_taker_store(config.TAKER_DB_PATH)
     taker_desk, taker_desk_off_reason = open_taker_desk(taker_store)
+    kalshi_place_desk, kalshi_place_off_reason = open_kalshi_place_desk(store)
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
                                                             teaser_placer=teaser_placer_for(sources),
                                                             taker_store=taker_store, taker_desk=taker_desk,
-                                                            taker_desk_off_reason=taker_desk_off_reason))
+                                                            taker_desk_off_reason=taker_desk_off_reason,
+                                                            kalshi_place_desk=kalshi_place_desk,
+                                                            kalshi_place_off_reason=kalshi_place_off_reason,
+                                                            balance_book=balance_book))
     server.daemon_threads = True
-    poller = threading.Thread(target=poll_loop, args=(sources, store, stop), name="poll", daemon=True)
+    poller = threading.Thread(target=poll_loop, args=(sources, store, stop, balance_book), name="poll", daemon=True)
     # The desk sweeps its own orders (resting cancels, final fills, settlement) whether or not the runner sends any.
     desk_sweep = (threading.Thread(target=taker_desk.run_refresh_loop, args=(stop,), name="taker-desk", daemon=True)
                   if taker_desk is not None else None)
@@ -1365,7 +1466,8 @@ OPTIONAL_SOURCE_FACTORIES: tuple[tuple[str, Callable[[], Source | None]], ...] =
 def main() -> None:
     setup_logging()
     store = BetsStore(config.DB_PATH, config.SOURCE_RUNS_RETENTION_DAYS)
-    sources: list[Source] = [KalshiSource(known_tickers=store.load_kalshi_tickers)]
+    sources: list[Source] = [KalshiSource(known_tickers=store.load_kalshi_tickers,
+                                          subaccounts=kalshi_subaccounts_read(config.KALSHI_TAKER_SUBACCOUNT))]
     for _venue, factory in OPTIONAL_SOURCE_FACTORIES:
         optional = factory()
         if optional is not None:
