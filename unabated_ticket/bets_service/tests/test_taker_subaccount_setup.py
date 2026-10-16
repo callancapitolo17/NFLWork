@@ -198,6 +198,7 @@ def test_a_read_only_signing_key_stops_before_the_tier_is_asked_or_anything_chan
     assert code == 1
     assert output.splitlines()[-1].startswith("STOPPED: the signing key (KALSHI_API_KEY_ID) is read-only")
     assert "deploy/README step 11" in output and "Advanced API tier" not in output
+    assert (tmp_path / "taker.stop").exists()  # step 0 still ran, so the run says "at Kalshi"
     assert [call[1] for call in main.calls if call[0] == "POST"] == [setup.SUBACCOUNTS_PATH]
 
 

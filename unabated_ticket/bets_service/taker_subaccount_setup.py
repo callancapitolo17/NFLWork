@@ -15,7 +15,7 @@ with write scope (allowed to make subaccounts, move money and make keys). The
 VM's main key is read-only, so the run overrides both with `-e` pointing at a
 COPY of a write key's file (step 3 overwrites the bot key file); deploy/README
 step 11 has the command. A read-only key stops at step 1, before anything
-changes. Steps, each safe to re-run:
+changes at Kalshi. Steps, each safe to re-run:
   0. the stop file (TAKER_STOP_PATH) is put in place if absent, so the restart
      that arms the bot cannot trade until Cal removes it; the bot key file's
      directory is checked writable before anything is asked of Kalshi;
@@ -159,7 +159,7 @@ def create_subaccount(client: KalshiOrderClient, out: TextIO) -> int:
     if is_scope_refusal(status, reply):
         raise SetupError(f"the signing key (KALSHI_API_KEY_ID) is read-only "
                          f"(Kalshi: HTTP {status} {str(reply)[:300]}); run this with a write-scoped key, "
-                         f"see deploy/README step 11. Nothing changed")
+                         f"see deploy/README step 11. Nothing changed at Kalshi")
     if status != 201:
         out.write(f"Kalshi refused a new subaccount (HTTP {status}); asking for the Advanced API tier it needs.\n")
         upgrade_status, upgrade_reply = _signed(client, "POST", UPGRADE_PATH, {})
