@@ -274,7 +274,7 @@ def test_upsert_replaces_a_record_by_id(store):
                              [record("kalshi:a:yes", "won", "2026-09-12T00:00:00Z")]])
     service.run_source_once(source, store)
     service.run_source_once(source, store)
-    [bet] = service.bets_payload(store, days=30)["bets"]
+    [bet] = service.bets_payload(store, days=3650)["bets"]  # the window is not under test; a fixed date ages out of 30
     assert bet["status"] == "won"
     assert store._con.execute("SELECT count(*) FROM bets").fetchone()[0] == 1
 
@@ -686,7 +686,7 @@ def test_http_bets_json_and_health_shape(store, http_server):
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
     assert set(payload) == {"generatedAt", "sources", "bets", "crosswalk", "pins", "fillFairs", "closingFairs",
-                            "exclusions"}
+                            "exclusions", "dismissals", "teaserBlocks", "edgeSkips"}
     assert set(payload["sources"]["kalshi"]) == {"fetchedAt", "ok", "error", "count"}
     assert payload["sources"]["kalshi"]["ok"] is True
     assert payload["bets"][0]["id"] == "kalshi:a:yes"
@@ -704,7 +704,8 @@ def test_http_before_any_poll_serves_an_empty_list_with_the_source_pending(http_
     status, payload = get_json(f"{http_server}/bets.json")
     assert status == 200
     assert payload == {"generatedAt": payload["generatedAt"], "sources": {"kalshi": service.NO_POLL_YET}, "bets": [],
-                       "crosswalk": [], "pins": [], "fillFairs": [], "closingFairs": [], "exclusions": []}
+                       "crosswalk": [], "pins": [], "fillFairs": [], "closingFairs": [], "exclusions": [],
+                       "dismissals": [], "teaserBlocks": [], "edgeSkips": []}
     status, payload = get_json(f"{http_server}/health")
     assert status == 200 and payload["sources"] == {"kalshi": service.NO_POLL_YET}
 
@@ -867,6 +868,107 @@ def test_http_exclusions_remove_and_restore_only_bfa_and_wagerzon_bets(store, ht
     assert (status, reply["changed"], reply["exclusions"]) == (200, 2, [])
 
 
+def test_http_dismissals_dismiss_and_restore_open_bets(store, http_server):
+    service.run_source_once(ScriptedSource([[
+        record("kalshi:a:yes", "open", None),
+        record("kalshi:b:yes", "won", "2026-09-20T20:00:00Z"),
+    ]]), store)
+    dismiss = json.dumps({"betIds": ["kalshi:a:yes", "kalshi:b:yes"], "dismissed": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", dismiss, "application/json")
+    assert status == 200 and reply["changed"] == 2
+    # Only the open bet's dismissal is served: the flag ends when a bet settles.
+    assert [row["betId"] for row in reply["dismissals"]] == ["kalshi:a:yes"]
+    assert [row["betId"] for row in get_json(f"{http_server}/bets.json")[1]["dismissals"]] == ["kalshi:a:yes"]
+    # Dismissing again keeps the first time and changes nothing.
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", dismiss, "application/json")
+    assert reply["changed"] == 0
+    unknown = json.dumps({"betIds": ["kalshi:nope"], "dismissed": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", unknown, "application/json")
+    assert status == 404 and reply["error"] == "no bet with id(s) ['kalshi:nope']"
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", b'{"betIds": ["kalshi:a:yes"]}', "application/json")
+    assert status == 400 and reply["error"] == "dismissed must be true or false, got None"
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", dismiss, "text/plain")
+    assert status == 415
+    restore = json.dumps({"betIds": ["kalshi:a:yes"], "dismissed": False}).encode()
+    status, reply = request_json("POST", f"{http_server}/dismissals.json", restore, "application/json")
+    assert (status, reply["changed"], reply["dismissals"]) == (200, 1, [])
+
+
+def test_http_teaser_blocks_mark_and_restore_until_the_game_starts(store, http_server):
+    future_ms = int((datetime.now(timezone.utc) + timedelta(days=2)).timestamp() * 1000)
+    past_ms = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() * 1000)
+    block = json.dumps({"marketKey": "123456:bt2", "eventStartMs": future_ms, "blocked": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json", block, "application/json")
+    assert status == 200 and reply["changed"] == 1
+    assert [(row["marketKey"], row["eventStartMs"]) for row in reply["teaserBlocks"]] == [("123456:bt2", future_ms)]
+    assert get_json(f"{http_server}/bets.json")[1]["teaserBlocks"] == reply["teaserBlocks"]
+    # A started game's block is no longer served.
+    started = json.dumps({"marketKey": "999:bt3", "eventStartMs": past_ms, "blocked": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json", started, "application/json")
+    assert status == 200 and [row["marketKey"] for row in reply["teaserBlocks"]] == ["123456:bt2"]
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json",
+                                 json.dumps({"marketKey": "123456:bt1", "eventStartMs": future_ms, "blocked": True}).encode(),
+                                 "application/json")
+    assert status == 400 and reply["error"].startswith("marketKey must look like")
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json",
+                                 json.dumps({"marketKey": "123456:bt2", "eventStartMs": "soon", "blocked": True}).encode(),
+                                 "application/json")
+    assert status == 400 and reply["error"].startswith("eventStartMs must be")
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json", block, "text/plain")
+    assert status == 415
+    restore = json.dumps({"marketKey": "123456:bt2", "eventStartMs": future_ms, "blocked": False}).encode()
+    status, reply = request_json("POST", f"{http_server}/teaser_blocks.json", restore, "application/json")
+    assert (status, reply["changed"], reply["teaserBlocks"]) == (200, 1, [])
+
+
+def test_http_edge_skips_skip_and_restore_until_the_game_starts(store, http_server):
+    future_ms = int((datetime.now(timezone.utc) + timedelta(days=2)).timestamp() * 1000)
+    past_ms = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() * 1000)
+    key = "125791:1:3:0|47.5"
+    skip = json.dumps({"skipKey": key, "eventStartMs": future_ms, "skipped": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", skip, "application/json")
+    assert status == 200 and reply["changed"] == 1
+    assert [(row["skipKey"], row["eventStartMs"]) for row in reply["edgeSkips"]] == [(key, future_ms)]
+    assert get_json(f"{http_server}/bets.json")[1]["edgeSkips"] == reply["edgeSkips"]
+    # A moneyline and a negative spread key are fine; a started game's skip is not served.
+    started = json.dumps({"skipKey": "999:1:2:1|-3.5", "eventStartMs": past_ms, "skipped": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", started, "application/json")
+    assert status == 200 and [row["skipKey"] for row in reply["edgeSkips"]] == [key]
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json",
+                                 json.dumps({"skipKey": "125791:1:1:0|evens", "eventStartMs": future_ms, "skipped": True}).encode(),
+                                 "application/json")
+    assert status == 400 and reply["error"].startswith("skipKey must look like")
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json",
+                                 json.dumps({"skipKey": key, "eventStartMs": future_ms, "skipped": "yes"}).encode(),
+                                 "application/json")
+    assert status == 400 and reply["error"].startswith("skipped must be")
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", skip, "text/plain")
+    assert status == 415
+    restore = json.dumps({"skipKey": key, "eventStartMs": future_ms, "skipped": False}).encode()
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", restore, "application/json")
+    assert (status, reply["changed"], reply["edgeSkips"]) == (200, 1, [])
+
+
+def test_edge_skips_are_per_line_and_restore_lifts_old_per_book_rows(store, http_server):
+    """A skip covers the line at every book (Cal, 2026-10-16). A panel not yet
+    reloaded still sends '<line>@<bookId>'; it is stored as the line. Restore
+    also deletes a per-book row written before the change."""
+    future = datetime.now(timezone.utc) + timedelta(days=2)
+    future_ms = int(future.timestamp() * 1000)
+    line = "7:1:2:0|-16.5"
+    old_client = json.dumps({"skipKey": f"{line}@3", "eventStartMs": future_ms, "skipped": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", old_client, "application/json")
+    assert status == 200 and [row["skipKey"] for row in reply["edgeSkips"]] == [line]
+    # A row stored per book before the change, as on the VM today.
+    with store._lock:
+        store._con.execute("INSERT INTO edge_skips VALUES (?, ?, ?)", [f"{line}@5", future, future])
+        store._con.execute("INSERT INTO edge_skips VALUES (?, ?, ?)", ["7:1:2:0|-16@5", future, future])
+    restore = json.dumps({"skipKey": line, "eventStartMs": future_ms, "skipped": False}).encode()
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", restore, "application/json")
+    assert (status, reply["changed"]) == (200, 2)
+    assert [row["skipKey"] for row in reply["edgeSkips"]] == ["7:1:2:0|-16@5"]
+
+
 def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):
     """DNS rebinding: evil.example resolving to 127.0.0.1 is SAME-ORIGIN with
     this server, so CORS and the JSON Content-Type guard do not apply to it.
@@ -919,3 +1021,47 @@ def test_host_allowed():
 ])
 def test_main_checkout_root_finds_the_main_checkout_from_either_worktree_layout(raw_root: str, expected: str) -> None:
     assert config.main_checkout_root(Path(raw_root)) == Path(expected)
+
+
+def fill_book_row(bet_id: str, books_better: int = 1, **extra) -> dict:
+    return {"betId": bet_id, "placedAt": "2026-09-23T17:02:00Z", "fillPrice": 208, "bookCount": 2,
+            "booksBetter": books_better, "bestBook": "Kalshi", "bestPrice": 215, **extra}
+
+
+def test_fill_books_are_insert_only_first_capture_wins(store):
+    captured_at = datetime(2026, 9, 23, 17, 3, tzinfo=timezone.utc)
+    none_at_number = fill_book_row("novig:2", 0, bookCount=0, bestBook=None, bestPrice=None)
+    assert store.save_fill_books([fill_book_row("novig:1"), none_at_number], captured_at) == 2
+    assert store.save_fill_books([fill_book_row("novig:1", 2)], captured_at + timedelta(minutes=5)) == 0
+    held = store._con.execute(
+        "SELECT bet_id, fill_price, book_count, books_better, best_book, best_price FROM bet_fill_books ORDER BY bet_id").fetchall()
+    assert held == [("novig:1", 208.0, 2, 1, "Kalshi", 215.0), ("novig:2", 208.0, 0, 0, None, None)]
+
+
+def test_validate_fill_book_rows_says_what_was_expected_and_what_was_found():
+    good = fill_book_row("novig:1")
+    assert service.validate_fill_book_rows({"rows": [good]}) == [good]
+    assert service.validate_fill_book_rows([]) == "body must be an object with a `rows` array, got list"
+    assert service.validate_fill_book_rows({"rows": [{**good, "betId": ""}]}) == "rows[0].betId must be a non-empty string, got ''"
+    assert service.validate_fill_book_rows({"rows": [{**good, "placedAt": "x"}]}) == "rows[0].placedAt must be an ISO time, got 'x'"
+    assert service.validate_fill_book_rows({"rows": [{**good, "fillPrice": 50}]}) == (
+        "rows[0].fillPrice must be an American price (<= -100 or >= 100), got 50")
+    assert service.validate_fill_book_rows({"rows": [{**good, "bookCount": -1}]}) == "rows[0].bookCount must be a whole number >= 0, got -1"
+    assert service.validate_fill_book_rows({"rows": [{**good, "booksBetter": 3}]}) == "rows[0].booksBetter must be at most bookCount, got 3 > 2"
+    assert service.validate_fill_book_rows({"rows": [{**good, "bestBook": None}]}) == "rows[0].bestBook must be a non-empty string, got None"
+    assert service.validate_fill_book_rows({"rows": [{**good, "bookCount": 0, "booksBetter": 0}]}) == (
+        "rows[0] with bookCount 0 must have null bestBook and bestPrice, got 'Kalshi', 215")
+
+
+def test_http_fill_books_post_saves_once(store, http_server):
+    body = json.dumps({"rows": [fill_book_row("novig:1")]}).encode()
+    status, reply = request_json("POST", f"{http_server}/fill_books.json", body, "application/json")
+    assert (status, reply) == (200, {"ok": True, "saved": 1})
+    status, reply = request_json("POST", f"{http_server}/fill_books.json", body, "application/json")
+    assert (status, reply) == (200, {"ok": True, "saved": 0})
+    status, reply = request_json("POST", f"{http_server}/fill_books.json", body, "text/plain")
+    assert status == 415
+    bad = json.dumps({"rows": [fill_book_row("novig:2", 5)]}).encode()
+    status, reply = request_json("POST", f"{http_server}/fill_books.json", bad, "application/json")
+    assert status == 400 and reply["error"].startswith("rows[0].booksBetter must be at most bookCount")
+    assert store._con.execute("SELECT count(*) FROM bet_fill_books").fetchone()[0] == 1

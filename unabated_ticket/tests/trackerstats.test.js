@@ -153,6 +153,51 @@ test("a Kalshi multivariate combo (the bots' RFQ fills) is its own type, not a s
   assert.deepEqual(stats.groupBy([combo], "kind").map((r) => r.label), ["Kalshi combo"]);
 });
 
+test("a bet the source could not place gets its market from the venue's own text", () => {
+  // Raw shapes copied from bets.duckdb (2026-10-12), one per pattern.
+  const cases = [
+    ["kalshi", { series: "KXWNBASPREAD", marketTitle: "Atlanta wins the game by over 3.5 points" }, "Spread"],
+    ["kalshi", { series: "KXNHLTOTAL", marketTitle: "Full Game: Over 3.5 goals scored" }, "Total"],
+    ["kalshi", { series: "KXJOINCLUB", marketTitle: "Where will Rodri go next?" }, "Future"],
+    ["novig", { outcomeSubtitle: "Winner", marketTitle: "Clemson @ LSU · Winner · CLEM" }, "Moneyline"],
+    ["novig", { outcomeSubtitle: "First 5 Winner" }, "Moneyline"],
+    ["bfa", { description: "[309141] TOTAL o61½-110 \r(MOREHEAD ST vrs WESTERN ILLINOIS)" }, "Total"],
+    ["bfa", { description: "[1340] TOTAL u24EV \r(ARIZONA 1H vrs BYU 1H)" }, "Total"],
+    ["bfa", { description: "[1201] TOTAL u38½-115 (SAINT LOUIS 1H TEAM PTS vrs DAYTON 1H)" }, "Team total"],
+    ["bfa", { description: "[309011] EASTERN ILLINOIS +35½-110" }, "Spread"],
+    ["bfa", { description: "Detroit Lions vs Carolina Panthers Bryce Young (CAR) 234+ Passing Yards" }, "Player prop"],
+    ["bfa", { description: "Florida Panthers vs San Jose Sharks First Goalscorer - Will Smith (FLA @ SJ)" }, "Player prop"],
+    ["wagerzon", { sportCode: "PROP", description: "[777045] GIANTS SUPERFECTA (SCR 1ST, 1Q, 1H & GM +7½) +1935" }, "Special"],
+    ["wagerzon", { sportCode: "RBL", description: "George Kittle (SF) 1+ Touchdowns <br /> Miami Dolphins vs San Francisco 49Ers" }, "Player prop"],
+    ["bet105", { market: "Tulsa team total" }, "Team total"],
+    ["bet105", { market: "Point spread" }, "Spread"],
+    ["polymarket_us", { marketType: "hockey_team_full_game_spread" }, "Spread"],
+    ["polymarket_us", { marketType: null, comboLegs: [{ slug: "aec-nfl-gb-min-2026-09-13" }] }, "Parlay"],
+    ["novig", { outcomeSubtitle: "Passing Yards" }, "Player prop"],
+    ["novig", { outcomeSubtitle: "Series Winner" }, "Other"],
+    ["novig", {}, "Other"],
+  ];
+  for (const [venue, raw, market] of cases) {
+    const [ticket] = stats.buildTickets([straight({ id: venue + ":x", venue, league: null, betType: "other", side: null, raw })], []);
+    assert.equal(ticket.market, market, venue + " " + JSON.stringify(raw));
+  }
+});
+
+test("untypedSummary counts kept bets with no market, by venue", () => {
+  const tickets = stats.buildTickets([
+    straight({ id: "novig:a", venue: "novig", betType: "other", side: null, raw: { outcomeSubtitle: "Receiving Yards" } }),
+    straight({ id: "novig:b", venue: "novig", betType: "other", side: null, raw: {} }),
+    straight({ id: "kalshi:c", venue: "kalshi", betType: "other", side: null, raw: {} }),
+    straight({ id: "bfa:d", venue: "bfa", betType: "other", side: null, raw: { description: "[1] Q -3-110" } }),
+    straight({ id: "novig:e", venue: "novig", betType: "spread" }),
+  ], [], [], [{ betId: "bfa:d" }]);
+  const summary = stats.untypedSummary(tickets);
+  // novig:a is a player prop; bfa:d is Other but removed by Cal.
+  assert.equal(summary.count, 2);
+  assert.deepEqual(summary.venues, [{ venue: "Novig", count: 1 }, { venue: "Kalshi", count: 1 }]);
+  assert.equal(stats.untypedSummary([]).count, 0);
+});
+
 test("edge and expected P&L come from the saved fair and the ticket's actual payout", () => {
   // -110 pays 100 on 110 (decimal 1.909); a fair of -130 is p = 0.5652.
   const [ticket] = stats.buildTickets([straight()], [{ betId: "novig:1", fairAmerican: -130 }]);
@@ -199,6 +244,58 @@ test("groupBy orders ordinal groups by their scale and others by handle; an unkn
   assert.deepEqual(stats.groupBy(tickets, "oddsBucket").map((r) => r.label), ["−200 or shorter", "−120 to +120", "+200 and up"]);
   assert.deepEqual(stats.groupBy(tickets, "venue").map((r) => r.label), ["Kalshi", "Novig"]);
   assert.throws(() => stats.groupBy(tickets, "nope"), /unknown group nope/);
+});
+
+test("League × Market: a section per league by handle, its markets as rows; groupBy refuses the nested key", () => {
+  const tickets = stats.buildTickets([
+    straight({ id: "a", league: "nfl", betType: "spread", stake: 300, toWin: 270 }),
+    straight({ id: "b", league: "nfl", betType: "total", stake: 110, toWin: 100, status: "lost" }),
+    straight({ id: "c", league: "nfl", betType: "spread", stake: 110, toWin: 100 }),
+    straight({ id: "d", league: "cfb", betType: "moneyline", stake: 50, toWin: 45 }),
+  ], []);
+  const sections = stats.groupSections(tickets, "leagueMarket");
+  assert.deepEqual(sections.map((s) => [s.label, s.bets]), [[tickets[0].league, 3], [tickets[3].league, 1]]);
+  assert.deepEqual(sections[0].rows.map((r) => [r.label, r.bets]), [[tickets[0].market, 2], [tickets[1].market, 1]]);
+  assert.equal(sections[0].pnl, 270 - 110 + 100);
+  assert.throws(() => stats.groupBy(tickets, "leagueMarket"), /nested/);
+  assert.throws(() => stats.groupSections(tickets, "venue"), /expected a nested group/);
+});
+
+test("pivot: rows and columns in their groups' order, a summary per cell, null where no bets", () => {
+  const tickets = stats.buildTickets([
+    straight({ id: "a", betType: "total", side: "under", points: 44.5, price: -110, stake: 110, toWin: 100, status: "lost" }),
+    straight({ id: "b", betType: "total", side: "over", points: 47, price: 105, stake: 100, toWin: 105 }),
+    straight({ id: "c", betType: "total", side: "under", points: 41, price: 110, stake: 100, toWin: 110, placedAt: "2026-10-03T15:00:00Z" }),
+  ], []);
+  const grid = stats.pivot(tickets, "side", "timing");
+  assert.deepEqual(grid.rows.map((r) => r.label), ["Over", "Under"]);
+  assert.deepEqual(grid.cols, ["1 to 6h before", "1 day+ before"]);
+  const under = grid.rows[1];
+  assert.equal(under.total.bets, 2);
+  assert.equal(under.cells[0].pnl, -110);
+  assert.equal(under.cells[1].pnl, 110);
+  assert.equal(grid.rows[0].cells[1], null);
+  assert.throws(() => stats.pivot(tickets, "side", "nope"), /unknown group nope/);
+});
+
+test("drill dimensions: side, fav/dog, the number and whether the close was beaten", () => {
+  const tickets = stats.buildTickets([
+    straight({ id: "spread-fav", points: -3.5 }),
+    straight({ id: "spread-dog", side: "away", points: 3.5 }),
+    straight({ id: "ml-dog", betType: "moneyline", side: "away", points: null, price: 140 }),
+    straight({ id: "total", betType: "total", side: "over", points: 44.5 }),
+  ], [], [
+    { betId: "spread-fav", fairAmerican: -130, fairObservedAt: "2026-10-04T16:55:00Z", eventStart: "2026-10-04T17:00:00Z" },
+    { betId: "spread-dog", fairAmerican: 105, fairObservedAt: "2026-10-04T16:55:00Z", eventStart: "2026-10-04T17:00:00Z" },
+  ]);
+  const byId = Object.fromEntries(tickets.map((t) => [t.id, [t.side, t.favDog, t.number, t.closeResult]]));
+  assert.deepEqual(byId, {
+    "spread-fav": ["Home", "Fav", "−3.5", "Beat close"],
+    "spread-dog": ["Away", "Dog", "+3.5", "Lost close"],
+    "ml-dog": ["Away", "Dog", "No number", "No close"],
+    total: ["Over", "Not fav/dog", "44.5", "No close"],
+  });
+  assert.deepEqual(stats.groupBy(tickets, "number").map((r) => r.label), ["−3.5", "+3.5", "44.5", "No number"]);
 });
 
 test("calibration bins straight bets with a fair by fair probability, pushes left out", () => {
@@ -248,9 +345,19 @@ test("expected P&L uses the fill fair, else the closing fair, and says which", (
   assert.equal(stats.summarize(tickets).withFair, 2);
 });
 
-test("rangeBounds: Today and Yesterday are single Pacific days; presets end today", () => {
+test("hideSettledFrom drops bets settled on the day or later, keeps open and undated ones", () => {
+  const tickets = [
+    { id: "open", settledDay: null },
+    { id: "yesterday", settledDay: "2026-10-11" },
+    { id: "today", settledDay: "2026-10-12" },
+    { id: "later", settledDay: "2026-10-13" },
+  ];
+  assert.deepEqual(stats.hideSettledFrom(tickets, "2026-10-12").map((t) => t.id), ["open", "yesterday"]);
+});
+
+test("rangeBounds: Yesterday is a single Pacific day; presets end today", () => {
   const today = "2026-10-06";
-  assert.deepEqual(stats.rangeBounds("Today", today, null, "2026-01-02"), { first: today, last: today });
+  assert.throws(() => stats.rangeBounds("Today", today, null, null), /unknown date range Today/);
   assert.deepEqual(stats.rangeBounds("Yesterday", "2026-03-01", null, null), { first: "2026-02-28", last: "2026-02-28" });
   assert.deepEqual(stats.rangeBounds("7D", today, null, null), { first: "2026-09-30", last: today });
   assert.deepEqual(stats.rangeBounds("YTD", today, null, null), { first: "2026-01-01", last: today });

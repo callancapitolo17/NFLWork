@@ -20,6 +20,7 @@
 //                          the Tailscale address comes with the deploy step)
 //   UNABATED_RUNNER_PORT   default 8095
 //   BETS_SERVICE_URL       the bets service, default http://127.0.0.1:8094
+//   KALSHI_BASE_URL        Kalshi's API, default https://api.elections.kalshi.com/trade-api/v2
 // Network:
 //   GET content.unabated.com league snapshots (public, no login), as the panel does.
 //   GET <bets service>/bets.json every 30 s (the panel's cadence) — open bets
@@ -31,18 +32,50 @@
 //       changed — each open straight bet's Unabated fair on its own line
 //       while its game is still to start (server/closefair.js); the service
 //       keeps the newest pre-start one, the close CLV is measured against.
+//   POST <bets service>/crosswalk.json and /fill_fairs.json — what the panel
+//       learns while it is open, learned here all the time: after every bets
+//       poll and scanner update, the team names of open bets the board joined
+//       by venue id (bets.learnCrosswalk) and each new open bet's fill-time
+//       fair off the line history (fillfair.captureFillFairs). Both tables are
+//       insert-only on the service, so the panel learning the same rows is harmless.
+//   POST <bets service>/fill_books.json — each new open bet's other books at
+//       its number when it was placed (server/fillbooks.js): how many posted
+//       it, how many beat the price taken, the best of them. Runner only.
+//   Every league's snapshot every 60 s (scanner maxRefreshMs: the taker
+//       trades against the fair, so the panel's 2-5 min tiers are too slow).
+//   GET <Kalshi>/markets/<ticker>/orderbook every 30 s for each Kalshi Edges
+//       row the automated taker looks at, and GET <Kalshi>/markets/<ticker>
+//       before every order, so the market is active and its strike and team
+//       are the row's (public, no key; server/taker.js marketMismatch).
+//   POST <bets service>/taker/order.json — each "bet" decision, with the ids
+//       of the held bets its stake was sized on: the bets service's order
+//       desk places it on Kalshi on the bot's own key (MONEY; stop file, $500
+//       ceiling and the unseen-fill rule there; bets_service/taker_orders.py).
+//   POST <bets service>/taker_decisions.json — each taker decision that
+//       changed since it was last logged (taker.duckdb::taker_decisions).
 // Serves (HTTP on UNABATED_RUNNER_HOST:UNABATED_RUNNER_PORT, no auth):
 //   GET /edges.json  the Edges list the panel would show for those settings
 //                    (server/edges_payload.js documents the shape)
+//   GET /teasers.json  the panel's Teasers tab, as words (server/teasers_payload.js)
+//   ?fresh=1 on /edges.json or /teasers.json reads /bets.json first, so a
+//                    Dismiss, Can't tease or Attach the page just wrote shows at once
+//   GET /attach.json?betId=..&query=..  Attach step 1: the board games to pick
+//                    from for an open bet, best fit first (attach.js)
+//   GET /attach.json?betId=..&eventId=..&swapped=0|1  Attach step 2: the plan
+//                    and the POST /pins.json body the page sends the bets service
 //   GET /scenarios.json  the Bet Tracker's Live tab: every game in progress
 //                    with open bets, its results and the P&L and kickoff
 //                    chance of each (server/scenarios.js documents the shape)
-//   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings}
+//   GET /taker.json  the automated taker's last pass: every Kalshi row it
+//                    looked at, what it decided and what each order did
+//   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
-// Side effects: none on disk — no DuckDB, no files. Its one write is the
-// closing-fair POST above (bets.duckdb::bet_closing_fairs, through the bets
-// service). State (feed, line history, bets, each game's last pregame odds for
+// Side effects: none on disk — no DuckDB, no files. Its writes go through the
+// bets service: the closing fairs (bets.duckdb::bet_closing_fairs), the
+// crosswalk rows, fill fairs and fill books above (insert-only tables) and
+// the taker's decisions (taker.duckdb::taker_decisions, append). State (feed, line
+// history, bets, each game's last pregame odds for
 // the Live tab) is in memory and rebuilt on restart: a game already under way
 // when the runner starts has its card but no kickoff chances. Logs state
 // changes (not every poll) to stdout/stderr.
@@ -60,12 +93,37 @@ const teaser = require("../extension/teaser.js");
 const edgeRows = require("../extension/edgerows.js");
 const edgesPayload = require("./edges_payload.js");
 const closefair = require("./closefair.js");
+const fillbooks = require("./fillbooks.js");
 const ladderLib = require("../extension/ladder.js");
 const scenarios = require("./scenarios.js");
+const teasersPayload = require("./teasers_payload.js");
+const attachLib = require("../extension/attach.js");
+const pricecheck = require("../extension/pricecheck.js");
+const taker = require("./taker.js");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8095;
 const DEFAULT_BETS_SERVICE_URL = "http://127.0.0.1:8094";
+const DEFAULT_KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2";
+// The taker decides on every Kalshi row this often; Kalshi's public reads allow far more.
+const TAKER_PASS_MS = 30 * 1000;
+// Two reads in flight stay well under Kalshi's 20 reads/s basic limit at ~100 ms a read.
+const KALSHI_BOOK_READS_AT_ONCE = 2;
+// The taker trades against Unabated's fair, which lags the market by a minute
+// or two already: every league re-downloads at least this often (the panel's
+// size tiers go up to 5 min), and a row whose league snapshot landed longer
+// ago than TAKER_MAX_SNAPSHOT_AGE_MS is stale_feed, not a bet.
+const TAKER_SNAPSHOT_REFRESH_MS = 60 * 1000;
+const TAKER_MAX_SNAPSHOT_AGE_MS = 3 * 60 * 1000;
+// The stake is conditional on the held bets, read off the bets service's
+// Kalshi poll (60 s): a poll that failed, or none this recent, and the
+// holdings are unknown, so the pass decides nothing.
+const TAKER_MAX_HELD_AGE_MS = 5 * 60 * 1000;
+// The desk sends, cancels and reads fills, each up to 10 s at Kalshi.
+const TAKER_ORDER_TIMEOUT_MS = 45 * 1000;
+// Decisions held for the bets service while it is down; past this the oldest go (logged).
+const TAKER_LOG_MAX_UNSENT = 5000;
+const TAKER_LOG_ROWS_PER_POST = 200;
 // The panel polls the bets service every 30 s (panel.js BETS_POLL_MS).
 const BETS_POLL_MS = 30 * 1000;
 // A phone setting change shows within one scanner tick.
@@ -81,6 +139,9 @@ const HOUR_MS = 3600 * 1000;
 // A started game keeps its card this long after its start, whether or not
 // it is still on the board: past any game's length plus a slow grader's lag.
 const KICKOFF_MEMO_HOURS = 12;
+// A failed crosswalk or fill-fair write waits this long before the next try (panel.js).
+const SERVICE_WRITE_RETRY_MS = 60 * 1000;
+const HTTP_BAD_REQUEST = 400;
 
 function log(message) {
   console.log(`${new Date().toISOString()} [runner] ${message}`);
@@ -91,7 +152,7 @@ function logError(message) {
 }
 
 // The runner's config from the environment; throws naming the bad variable.
-//   {host, port, betsServiceUrl}
+//   {host, port, betsServiceUrl, kalshiBaseUrl}
 function configFromEnv(env) {
   const host = env.UNABATED_RUNNER_HOST || DEFAULT_HOST;
   const rawPort = env.UNABATED_RUNNER_PORT || String(DEFAULT_PORT);
@@ -103,7 +164,11 @@ function configFromEnv(env) {
   if (!/^https?:\/\/\S+$/.test(betsServiceUrl)) {
     throw new Error(`BETS_SERVICE_URL must be an http(s) URL, got ${JSON.stringify(env.BETS_SERVICE_URL)}`);
   }
-  return { host, port, betsServiceUrl };
+  const kalshiBaseUrl = (env.KALSHI_BASE_URL || DEFAULT_KALSHI_BASE_URL).replace(/\/+$/, "");
+  if (!/^https?:\/\/\S+$/.test(kalshiBaseUrl)) {
+    throw new Error(`KALSHI_BASE_URL must be an http(s) URL, got ${JSON.stringify(env.KALSHI_BASE_URL)}`);
+  }
+  return { host, port, betsServiceUrl, kalshiBaseUrl };
 }
 
 // The Host values a request to this runner can carry: the loopback names and
@@ -152,15 +217,41 @@ async function getServiceJson(fetchImpl, url, init = {}) {
   return response.json();
 }
 
+// One JSON request to a bets-service write route: the parsed reply, or an
+// Error carrying the HTTP status and the service's own error text.
+async function sendServiceJson(fetchImpl, url, method, body, timeoutMs = SERVICE_TIMEOUT_MS) {
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    const reason = error.cause ? ` (${error.cause.code || error.cause.message})` : "";
+    throw new Error(`${method} ${url}: ${error.message}${reason}`, { cause: error });
+  }
+  const reply = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = new Error(`HTTP ${response.status} from ${method} ${url}${reply && reply.error ? `: ${reply.error}` : ""}`);
+    error.status = response.status;
+    throw error;
+  }
+  return reply;
+}
+
 // The scan loop, the bets poll and the settings poll, held in memory.
 //   deps  {fetchImpl (Unabated snapshots), serviceFetch (the bets service),
+//          kalshiFetch (Kalshi's orderbooks, default serviceFetch), kalshiBaseUrl,
 //          betsServiceUrl, now, timers {setInterval, clearInterval},
 //          logInfo / logWarning (message) -> void, default stdout / stderr}
-// Returns {start, stop, pollBets, pollSettings, scanLoaded, edgesPayload, health, scanner}.
+// Returns {start, stop, pollBets, pollSettings, scanLoaded, learn, takerPass,
+//          postTakerDecisions, edgesPayload, teasersPayload, attachPayload,
+//          scenariosPayload, takerPayload, health, scanner}.
 function createRunner(deps) {
   const now = deps.now || (() => Date.now());
   const timers = deps.timers || { setInterval: (fn, ms) => setInterval(fn, ms), clearInterval: (id) => clearInterval(id) };
   const serviceFetch = deps.serviceFetch || deps.fetchImpl;
+  const kalshiFetch = deps.kalshiFetch || serviceFetch;
+  const kalshiBaseUrl = deps.kalshiBaseUrl || DEFAULT_KALSHI_BASE_URL;
   const logInfo = deps.logInfo || log;
   const logWarning = deps.logWarning || logError;
   const startedAt = now();
@@ -189,6 +280,31 @@ function createRunner(deps) {
   // panel's knownStarts): a bet with no start of its own whose game has
   // started stops flagging as needing a game.
   let knownStarts = {};
+  // The shared Dismiss and Can't tease marks (bets.duckdb::bet_dismissals,
+  // teaser_blocks), as /bets.json last served them.
+  let dismissedIds = [];
+  let teaserBlocks = [];
+  // The Edges lines Skipped on either page (bets.duckdb::edge_skips).
+  let edgeSkips = [];
+  // The Teasers list's last build (teaser.planTeasers `previous`): the list
+  // is rebuilt only when what it is built on changed, so it holds still.
+  let teaserBuild = null;
+  let teaserLastError = null;
+  // Learning (panel.js learnCrosswalk / captureFillFairs): one pass at a time,
+  // a minute's wait after a failed write, each conflict logged once, each bet
+  // looked at until its fill fair is decided, unsent rows kept for the retry.
+  let learnBusy = false;
+  let crosswalkRetryAt = 0;
+  let crosswalkLastError = null;
+  const crosswalkConflictsLogged = new Set();
+  let fillFairsRetryAt = 0;
+  let fillFairsLastError = null;
+  const fillFairsDecided = new Set();
+  const fillFairsUnsent = new Map();
+  let fillBooksRetryAt = 0;
+  let fillBooksLastError = null;
+  const fillBooksDecided = new Set();
+  const fillBooksUnsent = new Map();
   const betsStatus = { okAt: null, error: null, unreachableSince: null, generatedAt: null, sources: {} };
   let settings = { ...edgesPayload.settingsFromService(null), source: "defaults", error: null, okAt: null, updatedAt: null };
   let scannedLeagues = null;
@@ -205,6 +321,17 @@ function createRunner(deps) {
   // restart): every change restarts the scan, which wipes the board and the
   // line history, so a league is not dropped when its last bet settles.
   const betLeagueIds = new Set();
+  // The automated taker (server/taker.js): the last pass's decisions, each
+  // row's last logged signature (a row logs again only when its decision
+  // changes), and the decisions the bets service has not taken yet.
+  let takerBusy = false;
+  let takerPostBusy = false;
+  let takerLastPass = { startedAt: null, finishedAt: null, skipped: "not run yet", rows: 0, byReason: {}, coverage: {} };
+  let takerDecisions = [];
+  const takerLogged = new Map();
+  let takerUnsent = [];
+  let takerDeskStatus = "not asked yet";
+  const takerLogStatus = { okAt: null, error: null, rowsSent: 0, dropped: 0 };
 
   // Every snapshot carries Unabated's team list; register it so bet records
   // resolve to the board's team ids, and re-resolve when it grew (as the panel does).
@@ -218,7 +345,7 @@ function createRunner(deps) {
   }
 
   const scanner = scannerLib.createScanner({
-    fetchImpl: deps.fetchImpl, now, timers,
+    fetchImpl: deps.fetchImpl, now, timers, maxRefreshMs: TAKER_SNAPSHOT_REFRESH_MS,
     onChange: (status, state, lineHistory) => {
       if (status.error && (!scannerStatus || scannerStatus.error !== status.error)) logWarning(`scanner: ${status.error}`);
       if (status.phase === "live" && (!scannerStatus || scannerStatus.phase !== "live")) {
@@ -233,6 +360,7 @@ function createRunner(deps) {
       registerFeedTeams();
       noteMatchedStarts();
       rememberKickoffOdds();
+      learn();
     },
   });
 
@@ -306,6 +434,9 @@ function createRunner(deps) {
       const applied = edgeRows.applyBetsPayload(held, await getServiceJson(serviceFetch, `${deps.betsServiceUrl}/bets.json`), at);
       held = { records: applied.records, crosswalk: applied.crosswalk, pins: applied.pins, fillFairs: applied.fillFairs };
       if (Array.isArray(applied.exclusions)) excludedBetIds = new Set(applied.exclusions.map((row) => row.betId));
+      if (Array.isArray(applied.dismissals)) dismissedIds = applied.dismissals.map((row) => row.betId);
+      if (Array.isArray(applied.teaserBlocks)) teaserBlocks = applied.teaserBlocks;
+      if (Array.isArray(applied.edgeSkips)) edgeSkips = applied.edgeSkips;
       fillFairIndex = fillfair.fairsByBetId(held.fillFairs);
       noteMatchedStarts();
       // Before the first settings read the scan has not started; start() starts it.
@@ -317,6 +448,124 @@ function createRunner(deps) {
       Object.assign(betsStatus, { error: error.message, unreachableSince: betsStatus.unreachableSince ?? at });
     } finally {
       betsBusy = false;
+    }
+    learn();
+  }
+
+  // Crosswalk rows, then fill fairs, then other books at the fill; never
+  // throws (a failure is logged and retried later).
+  function learn() {
+    if (learnBusy || !feedState) return;
+    learnBusy = true;
+    learnCrosswalk()
+      .then(() => captureFillFairs())
+      .then(() => captureFillBooks())
+      .catch((error) => logWarning(`learning failed: ${error.stack || error.message}`))
+      .finally(() => { learnBusy = false; });
+  }
+
+  // The open bets the board joined by venue id teach what their venue calls
+  // both teams; the service's reply is the whole table, and the records are
+  // re-keyed through it (panel.js learnCrosswalk + applyServiceTables).
+  async function learnCrosswalk() {
+    if (now() < crosswalkRetryAt) return;
+    const { learned, conflicts } = betsLib.learnCrosswalk(held.records, boardLines(), held.crosswalk);
+    for (const conflict of conflicts) {
+      const tag = `${conflict.betId}:${conflict.side}`;
+      if (crosswalkConflictsLogged.has(tag)) continue;
+      crosswalkConflictsLogged.add(tag);
+      logInfo(`crosswalk: not learning ${conflict.venue} ${conflict.league} "${conflict.venueTeamKey}" from ${conflict.betId}: ${conflict.reason}`);
+    }
+    if (!learned.length) return;
+    try {
+      const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/crosswalk.json`, "POST", { rows: learned });
+      if (!reply || !Array.isArray(reply.crosswalk)) throw new Error("crosswalk.json reply has no crosswalk array");
+      logInfo(`crosswalk: learned ${reply.learned} row(s), ${(reply.conflicts || []).length} refused by the service, ${reply.crosswalk.length} held`);
+      held = { ...held, crosswalk: reply.crosswalk, records: betsLib.rekeyRecords(betsLib.applyPins(held.records, held.pins), reply.crosswalk) };
+      crosswalkLastError = null;
+    } catch (error) {
+      crosswalkRetryAt = now() + SERVICE_WRITE_RETRY_MS;
+      if (crosswalkLastError !== error.message) logWarning(`crosswalk: service write failed: ${error.message}`);
+      crosswalkLastError = error.message;
+    }
+  }
+
+  // Each new open bet's fair when it was placed, read off the line history
+  // while the scanner watched through the fill (fillfair.js), one row per
+  // POST: the service refuses a whole request on its first bad row. A 400
+  // drops the row; any other failure keeps every unsent row for a minute.
+  async function captureFillFairs() {
+    const liveStatus = scanner.getStatus();
+    const { saves, refusals } = fillfair.captureFillFairs({
+      records: held.records, skipIds: new Set([...fillFairIndex.keys(), ...fillFairsDecided]),
+      state: feedState, boardLines: boardLines(), history,
+      observingSince: liveStatus.observingSince, leagueObservingSince: liveStatus.leagueObservingSince, now: now(),
+    });
+    for (const save of saves) {
+      fillFairsDecided.add(save.betId);
+      fillFairsUnsent.set(save.betId, save);
+    }
+    for (const refusal of refusals) fillFairsDecided.add(refusal.betId);
+    if (saves.length) logInfo(`fill fairs: ${saves.length} captured`);
+    if (fillFairsUnsent.size === 0 || now() < fillFairsRetryAt) return;
+    for (const row of Array.from(fillFairsUnsent.values())) {
+      try {
+        const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/fill_fairs.json`, "POST", { rows: [row] });
+        if (!reply || !Array.isArray(reply.fillFairs)) throw new Error("fill_fairs.json reply has no fillFairs array");
+        fillFairsUnsent.delete(row.betId);
+        fillFairsLastError = null;
+        held = { ...held, fillFairs: fillfair.mergeFillFairs(held.fillFairs, reply.fillFairs, held.records) };
+        fillFairIndex = fillfair.fairsByBetId(held.fillFairs);
+      } catch (error) {
+        if (error.status === HTTP_BAD_REQUEST) {
+          fillFairsUnsent.delete(row.betId);
+          logWarning(`fill fairs: the service refused ${row.betId}, dropped: ${error.message}`);
+          continue;
+        }
+        fillFairsRetryAt = now() + SERVICE_WRITE_RETRY_MS;
+        if (fillFairsLastError !== error.message) logWarning(`fill fairs: service write failed: ${error.message}`);
+        fillFairsLastError = error.message;
+        return;
+      }
+    }
+  }
+
+  // Each new open bet's other books at its number when it was placed
+  // (fillbooks.js), one row per POST, the same way as the fill fairs. Decided
+  // ids live in memory only: after a restart every open bet was placed before
+  // the scanner watched, so nothing is re-captured, and the service keeps the
+  // first row regardless.
+  async function captureFillBooks() {
+    const liveStatus = scanner.getStatus();
+    const { saves, refusals } = fillbooks.captureFillBooks({
+      records: held.records, skipIds: fillBooksDecided,
+      state: feedState, boardLines: boardLines(), history,
+      observingSince: liveStatus.observingSince, leagueObservingSince: liveStatus.leagueObservingSince, now: now(),
+    });
+    for (const save of saves) {
+      fillBooksDecided.add(save.betId);
+      fillBooksUnsent.set(save.betId, save);
+    }
+    for (const refusal of refusals) fillBooksDecided.add(refusal.betId);
+    if (saves.length) logInfo(`fill books: ${saves.length} captured`);
+    if (fillBooksUnsent.size === 0 || now() < fillBooksRetryAt) return;
+    for (const row of Array.from(fillBooksUnsent.values())) {
+      try {
+        const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/fill_books.json`, "POST", { rows: [row] });
+        if (!reply || reply.ok !== true) throw new Error("fill_books.json reply is not ok");
+        fillBooksUnsent.delete(row.betId);
+        fillBooksLastError = null;
+      } catch (error) {
+        if (error.status === HTTP_BAD_REQUEST) {
+          fillBooksUnsent.delete(row.betId);
+          logWarning(`fill books: the service refused ${row.betId}, dropped: ${error.message}`);
+          continue;
+        }
+        fillBooksRetryAt = now() + SERVICE_WRITE_RETRY_MS;
+        if (fillBooksLastError !== error.message) logWarning(`fill books: service write failed: ${error.message}`);
+        fillBooksLastError = error.message;
+        return;
+      }
     }
   }
 
@@ -379,6 +628,266 @@ function createRunner(deps) {
     }
   }
 
+  // One Kalshi orderbook, parsed (taker.parseKalshiOrderbook). Throws naming
+  // the ticker and what went wrong; a 404 is a ticker Kalshi does not list.
+  async function readKalshiBook(ticker) {
+    const body = await getServiceJson(kalshiFetch, `${kalshiBaseUrl}/markets/${encodeURIComponent(ticker)}/orderbook`);
+    return taker.parseKalshiOrderbook(body);
+  }
+
+  // ticker -> {book} | {error}, KALSHI_BOOK_READS_AT_ONCE reads in flight.
+  async function readKalshiBooks(tickers) {
+    const books = new Map();
+    const queue = Array.from(tickers);
+    const worker = async () => {
+      while (queue.length) {
+        const ticker = queue.shift();
+        try {
+          books.set(ticker, { book: await readKalshiBook(ticker) });
+        } catch (error) {
+          books.set(ticker, { error: error.message });
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: KALSHI_BOOK_READS_AT_ONCE }, worker));
+    return books;
+  }
+
+  // Why the taker must not decide right now, or null: no live board, or the
+  // held bets are unknown (sizing is conditional on them): the bets service
+  // unread or unreachable, or its Kalshi poll failed or is too old. Fail closed.
+  function takerBlocker() {
+    if (!feedState || !scannerStatus || scannerStatus.phase !== "live") return "the board is not live";
+    if (betsStatus.okAt === null) return "the bets service has not been read yet";
+    if (betsStatus.error) return `the bets service is unreachable: ${betsStatus.error}`;
+    const kalshiSource = betsStatus.sources && betsStatus.sources.kalshi;
+    if (!kalshiSource) return "the bets service does not poll Kalshi, so the held Kalshi bets are unknown";
+    if (kalshiSource.ok !== true) return `the bets service's Kalshi poll failed: ${kalshiSource.error || "no detail"}`;
+    const fetchedAt = Date.parse(kalshiSource.fetchedAt || "");
+    if (!Number.isFinite(fetchedAt) || now() - fetchedAt > TAKER_MAX_HELD_AGE_MS) {
+      return `the bets service's Kalshi poll is older than ${TAKER_MAX_HELD_AGE_MS / 60000} min (${kalshiSource.fetchedAt || "never"})`;
+    }
+    return null;
+  }
+
+  // Why a row's league snapshot is not one to trade on, or null: the
+  // scanner marked it stale or failed, or it landed too long ago.
+  function staleSnapshotReason(leagueId, passStartedAt) {
+    if ((scannerStatus.staleLeagues || []).includes(leagueId)) return `league ${leagueId} snapshot is a stale build`;
+    if (scannerStatus.leagueErrors && scannerStatus.leagueErrors[leagueId]) return `league ${leagueId} failed to load: ${scannerStatus.leagueErrors[leagueId]}`;
+    const loadedAt = scannerStatus.leagueLoadedAt && scannerStatus.leagueLoadedAt[leagueId];
+    if (typeof loadedAt !== "number") return `league ${leagueId} has not loaded`;
+    const ageMs = passStartedAt - loadedAt;
+    if (ageMs > TAKER_MAX_SNAPSHOT_AGE_MS) return `league ${leagueId} snapshot landed ${Math.round(ageMs / 1000)} s ago`;
+    return null;
+  }
+
+  // One taker pass (server/taker.js): every Kalshi row at the bot's minimum
+  // edge, its contract, its live book, its decision; each "bet" goes to the
+  // desk. The decisions that changed since they were last logged are queued
+  // for the bets service.
+  async function takerPass() {
+    if (takerBusy) return;
+    takerBusy = true;
+    const startedAt = now();
+    try {
+      const blocker = takerBlocker();
+      if (blocker) {
+        takerLastPass = { ...takerLastPass, startedAt, finishedAt: now(), skipped: blocker };
+        return;
+      }
+      // The board as of the pass start: a snapshot landing during the book reads must not mix in.
+      const board = feedState;
+      const rows = taker.candidateRows(board, settings.edgeSettings, startedAt);
+      const contracts = rows.map((row) => {
+        const stale = staleSnapshotReason(row.leagueId, startedAt);
+        return stale ? { reason: "stale_feed", detail: stale } : taker.resolveKalshiContract(row, board);
+      });
+      const books = await readKalshiBooks(new Set(contracts.filter((contract) => contract.ticker).map((contract) => contract.ticker)));
+      const priceIndex = pricecheck.buildPriceIndex(board, { now: startedAt, maxLineAgeMs: taker.MAX_LINE_AGE_MS });
+      // The same held bets the Edges list sizes against: Cal's Removed bets (bet_exclusions) are not his.
+      const flags = betsLib.annotateRows(rows, held.records.filter((record) => !excludedBetIds.has(record.id)), { lines: boardLines() });
+      const teasers = openTeasersNow();
+      const decidedAt = now();
+      takerDecisions = rows.map((row, index) => {
+        const contract = contracts[index];
+        const read = contract.ticker ? books.get(contract.ticker) : null;
+        const quote = read && read.book ? taker.quoteOf(read.book, contract.side) : null;
+        const decision = taker.decideRow({
+          row, contract, quote, quoteError: read ? read.error || null : null, priceIndex,
+          sizing: { matches: flags[index].matches, ladderOf: ladderReaderOf(row.eventId), teasers },
+        });
+        // The held bets the stake was sized on, by id: the desk refuses an add
+        // on a game whose earlier bot fill is not among them (taker_orders.py).
+        const heldIds = flags[index].matches.map((match) => match.bet.id);
+        return { ...takerRowFields(row), decidedAt: new Date(decidedAt).toISOString(), ...decision, heldIds };
+      });
+      await sendTakerOrders(takerDecisions, rows, startedAt);
+      queueChangedDecisions(takerDecisions);
+      takerLastPass = {
+        startedAt, finishedAt: now(), skipped: null, rows: rows.length,
+        byReason: countBy(takerDecisions, (decision) => decision.reason),
+        coverage: takerCoverage(takerDecisions),
+      };
+    } catch (error) {
+      logWarning(`taker pass failed: ${error.stack || error.message}`);
+      takerLastPass = { ...takerLastPass, startedAt, finishedAt: now(), skipped: `the pass failed: ${error.message}` };
+    } finally {
+      takerBusy = false;
+    }
+    await postTakerDecisions();
+  }
+
+  // Kalshi's market object for a ticker (public GET /markets/<ticker>).
+  async function readKalshiMarket(ticker) {
+    const body = await getServiceJson(kalshiFetch, `${kalshiBaseUrl}/markets/${encodeURIComponent(ticker)}`);
+    if (!body || typeof body.market !== "object" || body.market === null) throw new Error(`Kalshi market ${ticker}: no market object`);
+    return body.market;
+  }
+
+  // Send every "bet" decision to the bets service's order desk, best live
+  // edge first, one at a time (each changes the open exposure the next is
+  // capped by), each after Kalshi's market is read and found to be the
+  // row's (taker.marketMismatch). The outcome rides on the decision as
+  // `order`. Mutates `decisions`.
+  async function sendTakerOrders(decisions, rows, passStartedAt) {
+    const rowByKey = new Map(rows.map((row) => [row.key, row]));
+    const bets = decisions.filter((decision) => decision.reason === "bet").sort((a, b) => b.liveEdge - a.liveEdge);
+    for (const decision of bets) {
+      if (!(await marketConfirmed(decision, rowByKey.get(decision.rowKey)))) continue;
+      decision.order = await sendTakerOrder(decision, passStartedAt);
+      if (decision.order.status === "off") break;
+    }
+  }
+
+  // Kalshi's market for the decision's ticker is active and prices the row
+  // (its strike, its YES team), else the decision becomes market_mismatch
+  // (fail closed, read failures included).
+  async function marketConfirmed(decision, row) {
+    let market;
+    try {
+      market = await readKalshiMarket(decision.ticker);
+    } catch (error) {
+      Object.assign(decision, { reason: "market_mismatch", detail: `${decision.ticker} unread: ${error.message}` });
+      return false;
+    }
+    const mismatch = taker.marketMismatch(market, row, { side: decision.side, ticker: decision.ticker });
+    if (mismatch === null) return true;
+    Object.assign(decision, { reason: "market_mismatch", detail: `${decision.ticker}: ${mismatch}` });
+    return false;
+  }
+
+  // One POST /taker/order.json; never throws. {status, ...} as the desk
+  // answers it, "off" when the service has no bot key, "error" on no answer.
+  async function sendTakerOrder(decision, passStartedAt) {
+    const body = {
+      clientOrderId: taker.clientOrderIdOf(decision.ticker, decision.side, passStartedAt),
+      ticker: decision.ticker, side: decision.side, ask: decision.liveAsk, allIn: decision.liveAllIn,
+      count: decision.contracts, rowKey: decision.rowKey, eventId: decision.eventId, eventStart: decision.eventStart,
+      heldIds: decision.heldIds, decidedAt: decision.decidedAt, kalshiBaseUrl,
+    };
+    try {
+      const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/taker/order.json`, "POST", body, TAKER_ORDER_TIMEOUT_MS);
+      takerDeskStatus = "armed";
+      if (!["ceiling", "stopped", "unseen_fill"].includes(reply.status)) logInfo(`taker order ${body.clientOrderId} ${decision.ticker} ${decision.side} x${decision.contracts} @ ${decision.liveAsk}: ${reply.status}`);
+      return { clientOrderId: body.clientOrderId, ...reply };
+    } catch (error) {
+      if (error.status === 503) {
+        takerDeskStatus = `off: the bets service places no orders (${error.message})`;
+        return { status: "off", detail: error.message };
+      }
+      logWarning(`taker order ${body.clientOrderId} ${decision.ticker}: ${error.message}`);
+      return { status: "error", detail: error.message };
+    }
+  }
+
+  // What a decision row says about the line, for the log and /taker.json.
+  function takerRowFields(row) {
+    return {
+      rowKey: row.key, leagueId: row.leagueId, league: row.leagueLabel, eventId: row.eventId, eventName: row.eventName,
+      eventStart: row.eventStart, period: row.period, betType: row.betType, sideLabel: row.sideLabel, points: row.points, isAlt: row.isAlt,
+    };
+  }
+
+  // Per league: rows looked at, rows with a ticker (derived moneylines apart),
+  // rows without one. T1's coverage check.
+  function takerCoverage(decisions) {
+    const byLeague = {};
+    for (const decision of decisions) {
+      const league = byLeague[decision.league] || (byLeague[decision.league] = { rows: 0, withTicker: 0, derivedTicker: 0, noTicker: 0 });
+      league.rows += 1;
+      if (decision.reason === "no_ticker") league.noTicker += 1;
+      else if (decision.ticker) league.withTicker += 1;
+      if (decision.derivedTicker) league.derivedTicker += 1;
+    }
+    return byLeague;
+  }
+
+  // Queue each decision whose signature changed; forget rows that left the
+  // list, so one coming back logs again.
+  function queueChangedDecisions(decisions) {
+    const present = new Set();
+    for (const decision of decisions) {
+      present.add(decision.rowKey);
+      const signature = taker.decisionSignature(decision);
+      if (takerLogged.get(decision.rowKey) === signature) continue;
+      takerLogged.set(decision.rowKey, signature);
+      takerUnsent.push(decision);
+    }
+    for (const rowKey of Array.from(takerLogged.keys())) if (!present.has(rowKey)) takerLogged.delete(rowKey);
+    if (takerUnsent.length > TAKER_LOG_MAX_UNSENT) {
+      const dropped = takerUnsent.length - TAKER_LOG_MAX_UNSENT;
+      takerUnsent = takerUnsent.slice(dropped);
+      takerLogStatus.dropped += dropped;
+      logWarning(`taker log: the bets service is behind, dropped the ${dropped} oldest unsent decision(s)`);
+    }
+  }
+
+  // POST the queued decisions, oldest first; a failure keeps the rest for the next pass.
+  async function postTakerDecisions() {
+    if (takerPostBusy || takerUnsent.length === 0) return;
+    takerPostBusy = true;
+    try {
+      while (takerUnsent.length) {
+        const chunk = takerUnsent.slice(0, TAKER_LOG_ROWS_PER_POST);
+        try {
+          await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/taker_decisions.json`, "POST", { rows: chunk });
+        } catch (error) {
+          // A chunk the service refuses would be refused forever and hold every later row behind it.
+          if (error.status !== HTTP_BAD_REQUEST) throw error;
+          logWarning(`taker log: the bets service refused ${chunk.length} decision row(s), dropped: ${error.message}`);
+          takerLogStatus.dropped += chunk.length;
+        }
+        takerUnsent = takerUnsent.slice(chunk.length);
+        if (takerLogStatus.error) logInfo("taker log: saving again");
+        Object.assign(takerLogStatus, { okAt: now(), error: null, rowsSent: takerLogStatus.rowsSent + chunk.length });
+      }
+    } catch (error) {
+      if (takerLogStatus.error !== error.message) logWarning(`taker log: POST failed: ${error.message}`);
+      takerLogStatus.error = error.message;
+    } finally {
+      takerPostBusy = false;
+    }
+  }
+
+  // /taker.json: the rules, the last pass, its decisions (would-bets first,
+  // then by live edge) and the log's state.
+  function takerPayloadNow() {
+    const order = (decision) => (decision.reason === "bet" ? 0 : 1);
+    const decisions = takerDecisions.slice().sort((a, b) => order(a) - order(b) || (b.liveEdge ?? -Infinity) - (a.liveEdge ?? -Infinity));
+    return {
+      generatedAt: new Date(now()).toISOString(),
+      desk: takerDeskStatus,
+      rules: {
+        bankroll: taker.BOT_BANKROLL, kelly: taker.BOT_KELLY, minLiveEdge: taker.MIN_LIVE_EDGE, maxLiveEdge: taker.MAX_LIVE_EDGE,
+        priceTolerance: taker.PRICE_TOLERANCE, maxLineAgeHours: taker.MAX_LINE_AGE_MS / HOUR_MS,
+      },
+      pass: { ...takerLastPass, startedAt: isoOrNull(takerLastPass.startedAt), finishedAt: isoOrNull(takerLastPass.finishedAt) },
+      decisions,
+      log: { ...takerLogStatus, unsent: takerUnsent.length },
+    };
+  }
+
   // Bets and settings first, so the first scan uses the right leagues and the
   // first list is sized against what is held; then the polls, and resolve
   // once the first full load has landed.
@@ -389,6 +898,7 @@ function createRunner(deps) {
       timers.setInterval(() => pollBets(), BETS_POLL_MS),
       timers.setInterval(() => pollSettings(), SETTINGS_POLL_MS),
       timers.setInterval(() => postClosingFairs(), CLOSING_FAIRS_POST_MS),
+      timers.setInterval(() => takerPass(), TAKER_PASS_MS),
     ];
     await scanLoad;
   }
@@ -407,7 +917,80 @@ function createRunner(deps) {
       settingsStatus: { source: settings.source, error: settings.error, okAt: settings.okAt, updatedAt: settings.updatedAt },
       betsStatus: { ...betsStatus }, boardLines: boardLines(), ladderReaderOf,
       teasers: openTeasersNow(), measurement: feedState ? tailFlexMeasurement() : null, now: now(),
+      dismissedIds, edgeSkips,
     });
+  }
+
+  // Both football boards in, or failed (panel.js teaserBoardReady): before
+  // that a list would be NFL's alone while CFB is still coming.
+  function teaserBoardReady() {
+    if (!scannerStatus || !feedState) return false;
+    return teaser.TEASER_LEAGUE_IDS.every((id) => scannerStatus.leaguesLoaded.includes(id)
+      || Boolean(scannerStatus.leagueErrors && scannerStatus.leagueErrors[id]));
+  }
+
+  // The Teasers tab's model, built as panel.js teaserModel builds it, with
+  // the Can't tease marks whose game is still to start.
+  function teaserModel(at) {
+    if (!teaserBoardReady()) return null;
+    const board = currentTeaserBoard();
+    const blocked = new Set(teaserBlocks.filter((block) => block.eventStartMs > at).map((block) => block.marketKey));
+    const legs = teaser.teaserLegs(feedState, { now: at, maxLineAgeMs: settings.edgeSettings.maxLineAgeHours * HOUR_MS, board });
+    const placed = teaser.openTeasers(held.records, boardLines(), { now: at, ladderOf: board.ladderOf });
+    const straights = teaser.heldStraights(held.records, boardLines(), { now: at, ladderOf: board.ladderOf });
+    const kellyBankroll = settings.stakeSettings.bankroll * settings.stakeSettings.multiplier;
+    const planned = teaser.planTeasers({ legs, placed, straights, kellyBankroll, previous: teaserBuild, blocked });
+    teaserBuild = planned.build;
+    return {
+      legs, placed, build: teaserBuild,
+      plan: teaser.describePlan(teaserBuild, legs, placed),
+      legRows: teaser.describeLegs(legs, teaserBuild, placed, straights, blocked),
+    };
+  }
+
+  function teasersPayloadNow() {
+    const at = now();
+    let model = null;
+    let error = null;
+    try {
+      model = teaserModel(at);
+      teaserLastError = null;
+    } catch (thrown) {
+      error = `Teasers failed: ${thrown.message}`;
+      if (teaserLastError !== thrown.message) logWarning(`teasers failed: ${thrown.stack || thrown.message}`);
+      teaserLastError = thrown.message;
+    }
+    return teasersPayload.buildTeasersPayload({ model, error, scannerStatus, stakeSettings: settings.stakeSettings, now: at });
+  }
+
+  // The Bets tab's Attach, off the board this runner holds (attach.js):
+  // step 1 lists the games for `query`; with `eventId`, step 2 is the plan
+  // for that game and the POST /pins.json body. Throws a 400/404-tagged
+  // Error naming what was wrong.
+  //   params  URLSearchParams {betId, query?, eventId?, swapped?}
+  function attachPayloadNow(params) {
+    const betId = params.get("betId");
+    const bet = held.records.find((record) => record.id === betId && record.status === "open");
+    if (!bet) throw httpError(404, `no open bet ${JSON.stringify(betId)}`);
+    const lines = boardLines();
+    const eventIdText = params.get("eventId");
+    if (eventIdText == null) {
+      const { scope, events, more } = attachLib.attachCandidates(bet, lines, { query: params.get("query") || "" });
+      return {
+        betId, scope, more,
+        events: events.map(({ event, why }) => ({ eventId: event.eventId, label: attachLib.gameLabel(event), meta: attachLib.gameMeta(event), why: why || null })),
+      };
+    }
+    const game = attachLib.boardGames(lines, null).find((candidate) => String(candidate.eventId) === eventIdText);
+    if (!game) throw httpError(404, `game ${eventIdText} has left the board`);
+    const swapped = params.get("swapped") === "1";
+    const plan = attachLib.attachPlan(bet, game, { swapped, lines });
+    return {
+      betId, eventId: game.eventId, swapped, label: attachLib.gameLabel(game), meta: attachLib.gameMeta(game),
+      venueLabel: betsLib.venueLabel(bet.venue), names: plan.names, betOnGame: plan.betOnGame,
+      learnCount: plan.crosswalk.length, learnedNames: plan.crosswalk.map((row) => row.venueTeamName),
+      pinRequest: attachLib.pinRequest(bet, game, plan),
+    };
   }
 
   // The Live tab's cards, off the remembered games (scenarios.js).
@@ -440,11 +1023,34 @@ function createRunner(deps) {
       betsService: { okAt: betsStatus.okAt, error: betsStatus.error },
       settings: { source: settings.source, okAt: settings.okAt, error: settings.error },
       closingFairs: { ...closingStatus },
+      taker: {
+        desk: takerDeskStatus, lastPassAt: isoOrNull(takerLastPass.finishedAt), skipped: takerLastPass.skipped,
+        rows: takerLastPass.rows, byReason: takerLastPass.byReason, log: { okAt: takerLogStatus.okAt, error: takerLogStatus.error, dropped: takerLogStatus.dropped, unsent: takerUnsent.length },
+      },
     };
   }
 
-  return { start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, edgesPayload: edgesPayloadNow,
-    scenariosPayload: scenariosPayloadNow, health, scanner };
+  return {
+    start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions,
+    edgesPayload: edgesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow,
+    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, health, scanner,
+  };
+}
+
+function isoOrNull(ms) {
+  return typeof ms === "number" ? new Date(ms).toISOString() : null;
+}
+
+function countBy(items, keyOf) {
+  const counts = {};
+  for (const item of items) counts[keyOf(item)] = (counts[keyOf(item)] || 0) + 1;
+  return counts;
+}
+
+function httpError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
 }
 
 function sendJson(response, status, body) {
@@ -453,11 +1059,11 @@ function sendJson(response, status, body) {
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json, /scenarios.json and /health, the Host allowlist first on
+// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json and /health, the Host allowlist first on
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
-  const server = http.createServer((request, response) => {
+  const server = http.createServer(async (request, response) => {
     const allowed = allowedHosts(host, server.address().port);
     if (!hostAllowed(request.headers.host, allowed)) {
       sendJson(response, 403, { error: `Host must be one of ${JSON.stringify(allowed)}, got ${JSON.stringify(request.headers.host ?? null)}` });
@@ -467,12 +1073,19 @@ function createHttpServer(runner, { host }) {
       sendJson(response, 405, { error: `only GET is served, got ${request.method}` });
       return;
     }
-    const path = new URL(request.url, "http://runner.invalid").pathname;
+    const url = new URL(request.url, "http://runner.invalid");
+    const path = url.pathname;
     try {
+      // A page that just wrote a mark or a pin asks for the list on bets read now, not up to 30 s ago.
+      if (url.searchParams.get("fresh") === "1" && (path === "/edges.json" || path === "/teasers.json")) await runner.pollBets();
       if (path === "/edges.json") return sendJson(response, 200, runner.edgesPayload());
+      if (path === "/teasers.json") return sendJson(response, 200, runner.teasersPayload());
+      if (path === "/attach.json") return sendJson(response, 200, runner.attachPayload(url.searchParams));
       if (path === "/scenarios.json") return sendJson(response, 200, runner.scenariosPayload());
+      if (path === "/taker.json") return sendJson(response, 200, runner.takerPayload());
       if (path === "/health") return sendJson(response, 200, runner.health());
     } catch (error) {
+      if (error.status) return sendJson(response, error.status, { error: error.message });
       logError(`${path} failed: ${error.stack || error.message}`);
       return sendJson(response, 500, { error: `${path} failed: ${error.message}` });
     }
@@ -483,7 +1096,9 @@ function createHttpServer(runner, { host }) {
 
 async function main() {
   const config = configFromEnv(process.env);
-  const runner = createRunner({ fetchImpl: nodeFetch, serviceFetch: fetch, betsServiceUrl: config.betsServiceUrl });
+  const runner = createRunner({
+    fetchImpl: nodeFetch, serviceFetch: fetch, kalshiFetch: fetch, kalshiBaseUrl: config.kalshiBaseUrl, betsServiceUrl: config.betsServiceUrl,
+  });
   const server = createHttpServer(runner, config);
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -508,6 +1123,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  DEFAULT_HOST, DEFAULT_PORT, DEFAULT_BETS_SERVICE_URL, BETS_POLL_MS, SETTINGS_POLL_MS, CLOSING_FAIRS_POST_MS,
+  DEFAULT_HOST, DEFAULT_PORT, DEFAULT_BETS_SERVICE_URL, DEFAULT_KALSHI_BASE_URL, BETS_POLL_MS, SETTINGS_POLL_MS, CLOSING_FAIRS_POST_MS, TAKER_PASS_MS,
   configFromEnv, allowedHosts, hostAllowed, scannerLeaguesOf, nodeFetch, createRunner, createHttpServer,
 };

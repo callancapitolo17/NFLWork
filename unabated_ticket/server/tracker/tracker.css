@@ -96,7 +96,7 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 /* calendar */
 .cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
 .cal .wd { font-size: 10px; text-align: center; }
-.cell { min-height: 58px; border-radius: 6px; padding: 6px 7px; display: flex; flex-direction: column; justify-content: space-between; border: 1px solid transparent; background: #0f1319; }
+.cell { min-height: 58px; border-radius: 6px; padding: 6px 4px; display: flex; flex-direction: column; justify-content: space-between; border: 1px solid transparent; background: #0f1319; }
 .cell .d { font-size: 11px; color: #4e5866; }
 .cell .v { font: 500 12px var(--mono); text-align: right; }
 .cell.today { border-color: var(--exp-line); }
@@ -183,12 +183,29 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
   .kpi .value { font-size: 20px; }
   .stats { gap: 16px; }
   .stats div { align-items: flex-start; }
+  /* Calendar cells are ~37px wide on a phone; "+12.34K" needs a smaller face and less padding to fit. */
+  .cell { padding: 5px 2px; min-height: 50px; }
+  .cell .v { font-size: 8px; letter-spacing: -0.2px; }
 }
 /* index.html carries no style attributes: the page's CSP blocks inline styles
    in markup (tracker.js sets per-element values through the CSSOM, which it allows). */
 .stack.tight { gap: 4px; }
 .stack.flush { gap: 0; }
 .filter-row .lbl.bare { min-width: 0; }
+/* Analysis filter chips: on = solid with a check, off = dim outline, so the selection reads at a glance. */
+#f-rows .filter-row { gap: 8px; }
+.quick { display: inline-flex; gap: 2px; margin-right: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.quick button { border: 0; border-radius: 6px; padding: 0 10px; min-height: 30px; cursor: pointer; background: transparent; color: var(--muted); font-size: 12px; font-weight: 500; }
+.quick button[aria-pressed="true"] { background: var(--active); color: var(--text); }
+.fchip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 0 12px; min-height: 32px; cursor: pointer; font-size: 13px; font-weight: 500; background: transparent; color: #5d6876; border: 1px dashed #2a323e; }
+.fchip .n { font-size: 11px; opacity: .75; font-variant-numeric: tabular-nums; }
+.fchip[aria-pressed="true"] { background: #3b6fb6; border: 1px solid #3b6fb6; color: #fff; }
+.fchip[aria-pressed="true"]::before { content: "\2713"; font-size: 12px; }
+.reset { align-self: flex-start; border: 0; background: transparent; color: var(--exp, #6ea8fe); cursor: pointer; font-size: 13px; padding: 0; }
+@media (max-width: 640px) {
+  #view-analysis .filters { padding: 14px 16px; }
+  #f-rows .filter-row .lbl { min-width: 100%; }
+}
 .cal-key .k-neg2 { background: rgba(255, 107, 107, .65); }
 .cal-key .k-neg1 { background: rgba(255, 107, 107, .25); }
 .cal-key .k-flat { background: #161b23; }
@@ -224,9 +241,46 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .band-pnl { text-align: right; font-weight: 600; }
 .leg-tag { font-size: 11.5px; padding: 1px 6px; border-radius: 4px; background: rgba(255, 107, 107, .12); color: var(--neg); }
 .leg-tag.push { background: rgba(245, 183, 79, .12); color: var(--warn); }
+.leg-tag.alive { background: transparent; color: var(--muted); padding-left: 0; }
 @media (max-width: 560px) {
   .band { grid-template-columns: minmax(0, 1fr) 40px 70px; }
   .band .prob { display: none; }
   .game-head, .game-body { padding-inline: 14px; }
 }
 #view-live .note { font-size: 13px; color: var(--muted); margin: 0; }
+
+.group-section .tbl :is(th, td):first-child { width: 120px; }
+
+/* Analysis drill path and pivot (2026-10-13) */
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.crumb-all { border: 0; background: transparent; color: var(--exp); cursor: pointer; font-size: 13px; padding: 0; }
+.crumb-sep { color: var(--faint); }
+.crumb { display: inline-flex; align-items: center; background: var(--active); border: 1px solid #33404f; border-radius: 999px; overflow: hidden; }
+.crumb button { border: 0; background: transparent; cursor: pointer; font-size: 13px; min-height: 28px; }
+.crumb-go { padding: 0 4px 0 12px; color: var(--text); }
+.crumb-x { padding: 0 10px 0 6px; color: var(--muted); }
+.crumb button:hover { color: var(--text); text-decoration: underline; }
+.odds-range { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+.odds-in { width: 72px; background: var(--chip); border: 1px solid #2a323e; color: var(--text); border-radius: 6px; padding: 4px 8px; font-size: 13px; }
+.odds-in[aria-invalid="true"] { border-color: var(--neg); }
+tr.drill { cursor: pointer; }
+tr.drill:hover td { background: #161c25; }
+.pivot-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.pivot-axes { display: inline-flex; flex-wrap: wrap; gap: 10px; }
+.pivot-axis { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.pivot-axis select { background: var(--chip); border: 1px solid #2a323e; color: var(--text); border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 13px; }
+.tbl.pivot td, .tbl.pivot th { padding: 4px 6px; }
+.pv-head { border: 0; background: transparent; color: var(--text); cursor: pointer; font: inherit; font-size: 13px; padding: 4px 6px; text-align: inherit; white-space: nowrap; }
+.pv-head:hover { text-decoration: underline; }
+.pv-row { text-align: left; }
+.pv-cell { width: 100%; min-width: 64px; border: 0; border-radius: 4px; background: transparent; color: var(--text); cursor: pointer; padding: 4px 8px; text-align: right; display: flex; flex-direction: column; align-items: flex-end; }
+.pv-cell small { color: var(--muted); font-size: 11px; }
+.pv-cell:hover { outline: 1px solid var(--exp); }
+.pv-empty { color: var(--faint); text-align: right; }
+.tbl.pivot th { text-transform: none; letter-spacing: 0; }
+
+/* Balances tab: its own tab so a glance at Overview never shows today's swings (Cal, 2026-10-14) */
+.balances-panel { max-width: 760px; }
+.tbl tr.total td { border-top: 1px solid var(--line); font-weight: 600; }
+.balance-notes { display: flex; flex-direction: column; gap: 4px; padding: 10px 22px 16px; font-size: 12px; color: var(--faint); }
+.pill-warn { font: 11px var(--sans); padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--warn); }

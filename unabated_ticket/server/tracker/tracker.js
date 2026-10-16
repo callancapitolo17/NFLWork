@@ -1,7 +1,7 @@
-// Bet Tracker page: fetches the bets service's /bets.json (all history) and
-// /scenarios.json (the server runner's live game cards, passed through by the
-// bets service), builds tickets with trackerstats.js and renders the
-// Overview, Live, Open, Analysis and Bets views. Its one write is the Bets view's Remove / Restore: POST
+// Bet Tracker page: fetches the bets service's /bets.json (all history),
+// /balances.json (each book's live balance, only while the Balances tab is open) and /scenarios.json (the server
+// runner's live game cards, passed through by the bets service), builds tickets with trackerstats.js and renders the
+// Overview, Live, Open, Analysis, Bets and Balances views. Its one write is the Bets view's Remove / Restore: POST
 // /exclusions.json, which marks a BFA or Wagerzon bet as not Cal's
 // (bets.duckdb::bet_exclusions; the bet itself stays) and takes it out of
 // every number here. Otherwise it keeps only the viewer's own display choices
@@ -19,14 +19,50 @@
   const BETS_URL = "/bets.json?days=3650";
   const EXCLUSIONS_URL = "/exclusions.json";
   const SCENARIOS_URL = "/scenarios.json";
-  const VIEWS = ["overview", "live", "open", "analysis", "bets"];
+  // Live per-book account balance (bets service balances.py). Cal chose live over
+  // a midnight snapshot (2026-10-13); since a live balance shows today's swings,
+  // it lives on its own Balances tab and is fetched only while that tab is open (2026-10-14).
+  const BALANCES_URL = "/balances.json";
+  const VIEWS = ["overview", "live", "open", "analysis", "bets", "balances"];
   // Cal's ask (2026-10-05): only these books carry bets that are not his (service.EXCLUDABLE_VENUES).
   const REMOVABLE_VENUES = ["BFA", "Wagerzon"];
   const BET_FILTERS = ["All", "Counted", "Removed"];
   const POLL_MS = 60 * 1000;
   const PREFS_KEY = "betTracker.prefs";
-  const RANGES = ["Today", "Yesterday", "7D", "30D", "90D", "YTD", "All", "Custom"];
-  const KINDS = ["All", "Straight", "Parlay", "Teaser", "Kalshi combo"];
+  const RANGES = ["Yesterday", "7D", "30D", "90D", "YTD", "All", "Custom"];
+  // The Analysis filter bar, one chip row per entry (Cal, 2026-10-12): every
+  // value a ticket carries is a chip, all on by default; state.off[key] holds
+  // the ones switched off, so a value new to the data shows up on. Keys match
+  // trackerstats.GROUPS so a clicked breakdown row or pivot cell becomes a
+  // filter (Cal, 2026-10-13: drill down like a BI tool); `fromGroup` maps a
+  // group label to the filter's value where the two differ. Rows without
+  // `primary` stay folded under More filters until one is in use.
+  // A ticket's value for a group key, labelled exactly as trackerstats.groupBy
+  // labels it (missing -> "Unknown"), so a clicked "Unknown" row filters to it.
+  function groupValue(key) {
+    return (ticket) => ticket[key] || "Unknown";
+  }
+  const FILTERS = [
+    { key: "venue", label: "Venue", primary: true, value: groupValue("venue") },
+    { key: "league", label: "League", primary: true, value: groupValue("league") },
+    { key: "kind", label: "Type", primary: true, value: groupValue("kind") },
+    { key: "market", label: "Market", primary: true, value: groupValue("market") },
+    { key: "period", label: "Period", primary: true, value: (t) => periodFilterValue(t.period), fromGroup: periodFilterValue },
+    { key: "side", label: "Side", primary: true, value: groupValue("side") },
+    { key: "closeResult", label: "Close", primary: true, value: groupValue("closeResult") },
+    { key: "favDog", label: "Fav / Dog", value: groupValue("favDog") },
+    { key: "oddsBucket", label: "Odds", value: groupValue("oddsBucket") },
+    { key: "edgeBucket", label: "Edge", value: groupValue("edgeBucket") },
+    { key: "timing", label: "Timing", value: groupValue("timing") },
+    { key: "weekday", label: "Weekday", value: groupValue("weekday") },
+    { key: "stakeBucket", label: "Stake", value: groupValue("stakeBucket") },
+    { key: "number", label: "Number", value: groupValue("number") },
+  ];
+  const PIVOT_METRICS = [
+    { key: "roi", label: "ROI" }, { key: "pnl", label: "P&L" }, { key: "clv", label: "CLV" }, { key: "bets", label: "Bets" },
+  ];
+  // ROI at which a pivot cell is fully shaded; smaller ROIs fade toward clear.
+  const PIVOT_FULL_SHADE_ROI = 0.3;
   const DAILY_ROWS = 14;
   const LOG_PAGE = 50;
   const CALENDAR_WEEKS = 6;
@@ -40,7 +76,12 @@
 
   const state = Object.assign({
     view: "overview", range: "30D", customFirst: null, customLast: null, units: false, unitSize: 100,
-    groupBy: "venue", kind: "All", offVenues: [], offLeagues: [], query: "", logLimit: LOG_PAGE,
+    groupBy: "venue", off: Object.fromEntries(FILTERS.map((f) => [f.key, []])), query: "", logLimit: LOG_PAGE,
+    // The drill path: filter keys in the order they came into use, so the
+    // breadcrumb reads like the clicks that built it. oddsMin/oddsMax are the
+    // typed American odds range (null = open end).
+    drillOrder: [], oddsMin: null, oddsMax: null, moreFilters: false,
+    pivotRows: "side", pivotCols: "timing", pivotMetric: "roi",
     betsQuery: "", betsVenue: "All", betsFilter: "All", betsLimit: LOG_PAGE, saving: false,
     // Per table: {col: column index, dir: "asc" | "desc"}; absent = the table's own order.
     sorts: {},
@@ -59,6 +100,8 @@
   // last read failed; the Live tab falls back to a plain list without them.
   let scenarios = null;
   let scenariosError = null;
+  let balances = null;
+  let balancesError = null;
   let allTickets = [];
   let tickets = [];
 
@@ -111,11 +154,12 @@
     return (dollars ? sign(value, signed) : "") + "$" + dollars.toLocaleString("en-US");
   }
 
+  /** A calendar cell's P&L: thousands as 3.21K (Cal, 2026-10-11), under $1K in whole dollars. */
   function moneyShort(value) {
     const abs = Math.abs(value);
     if (state.units) return sign(value, true) + (abs / state.unitSize).toFixed(1) + "u";
     if (Math.round(abs) === 0) return "0";
-    return sign(value, true) + (abs >= 1000 ? (abs / 1000).toFixed(1) + "k" : String(Math.round(abs)));
+    return sign(value, true) + (abs >= 999.5 ? (abs / 1000).toFixed(2) + "K" : String(Math.round(abs)));
   }
 
   function pct(value, signed) {
@@ -220,13 +264,15 @@
    * sort?(row) -> number | string | null, highFirst? (a left-aligned column whose first click sorts high to low)}.
    * opts.sortKey names the table in state.sorts: columns with a `sort` get a
    * clickable header (click sorts, click again reverses) and the rows are
-   * ordered by it. opts.rowClass?(row) -> class.
+   * ordered by it. opts.rowClass?(row) -> class. opts.onRowClick?(row) makes rows clickable.
    */
   function table(columns, rows, opts) {
-    const { sortKey, rowClass } = opts || {};
+    const { sortKey, rowClass, onRowClick } = opts || {};
     const current = sortKey ? state.sorts[sortKey] : null;
     const head = el("tr", null, columns.map((col, index) => headerCell(col, index, sortKey, current)));
-    const body = sortedRows(sortKey, columns, rows).map((row) => el("tr", { className: rowClass ? rowClass(row) : "" }, columns.map((col) => {
+    const body = sortedRows(sortKey, columns, rows).map((row) => el("tr", {
+      className: rowClass ? rowClass(row) : "", title: onRowClick ? "Click to drill in" : "", onClick: onRowClick ? () => onRowClick(row) : null,
+    }, columns.map((col) => {
       const value = col.cell(row);
       const classes = [col.right ? "r" : "", col.num ? "num" : "", col.className ? col.className(row) : ""].filter(Boolean).join(" ");
       const td = el("td", { className: classes });
@@ -292,9 +338,23 @@
 
   // ---- range ----------------------------------------------------------------
 
+  /** The last Pacific day whose results show: yesterday, since today's stay hidden until midnight. */
+  function lastShownDay() {
+    return stats.addDays(stats.pacificDay(Date.now()), -1);
+  }
+
+  /**
+   * The header range's days, ending no later than yesterday (today's results
+   * are hidden). The 7D / 30D / 90D windows end yesterday so they still hold
+   * that many days of results; Yesterday is counted back from the real today.
+   */
   function rangeDays() {
-    return stats.rangeBounds(state.range, stats.pacificDay(Date.now()),
+    const lastShown = lastShownDay();
+    const rollingWindow = ["7D", "30D", "90D"].includes(state.range);
+    const bounds = stats.rangeBounds(state.range, rollingWindow ? lastShown : stats.pacificDay(Date.now()),
       { first: state.customFirst, last: state.customLast }, stats.firstSettledDay(tickets));
+    const last = bounds.last > lastShown ? lastShown : bounds.last;
+    return { first: bounds.first > last ? last : bounds.first, last };
   }
 
   function rangeCaption(first, last) {
@@ -335,8 +395,9 @@
     ]);
 
     const series = stats.dailySeries(tickets, first, last);
-    renderChart(series);
-    renderCalendar(pickedCalendarDay() ? state.calendarPick.anchor : last);
+    renderChart(series, "ov-chart", "ov-stats", "No settled bets in this range.");
+    // A range ending yesterday still shows this week's calendar, today's cell included.
+    renderCalendar(pickedCalendarDay() ? state.calendarPick.anchor : last === lastShownDay() ? stats.pacificDay(Date.now()) : last);
     renderDaily(series);
     renderVenues(settled);
     renderSettledBets(settled, total, missing);
@@ -356,17 +417,18 @@
     return ticket.clv === null ? "muted" : toneClass(ticket.clv);
   }
 
-  function renderChart(series) {
+  /** Cumulative actual vs expected P&L line with daily bars; drawn into chartId, best/worst/up-days into statsId. */
+  function renderChart(series, chartId, statsId, emptyText) {
     const withBets = series.filter((d) => d.bets > 0);
     if (!withBets.length) {
-      fill("ov-stats");
-      fill("ov-chart", emptyNote("No settled bets in this range."));
+      fill(statsId);
+      fill(chartId, emptyNote(emptyText));
       return;
     }
     const best = withBets.reduce((a, b) => (b.pnl > a.pnl ? b : a));
     const worst = withBets.reduce((a, b) => (b.pnl < a.pnl ? b : a));
     const stat = (label, text, color) => el("div", null, [el("span", { className: "lbl", text: label }), el("span", { className: "num", text, style: { color } })]);
-    fill("ov-stats",
+    fill(statsId,
       stat("Best day", money(best.pnl, true) + " " + dayLabel(best.day), COLORS.pos),
       stat("Worst day", money(worst.pnl, true) + " " + dayLabel(worst.day), COLORS.neg),
       stat("Up days", withBets.filter((d) => d.pnl > 0).length + " / " + withBets.length, COLORS.text));
@@ -406,28 +468,29 @@
     const mid = series[Math.floor((series.length - 1) / 2)];
     const axisDays = [...new Set([series[0], mid, series[series.length - 1]].map((d) => d.day))];
     const xAxis = el("div", { className: "xaxis" }, axisDays.map((day) => el("span", { text: dayLabel(day) })));
-    fill("ov-chart", el("div", { className: "plot" }, [yAxis, svg]), bars, xAxis);
+    fill(chartId, el("div", { className: "plot" }, [yAxis, svg]), bars, xAxis);
   }
 
-  function renderCalendar(today) {
-    const todayIndex = stats.WEEKDAYS.indexOf(stats.weekdayOf(today));
-    const start = stats.addDays(today, -todayIndex - (CALENDAR_WEEKS - 1) * 7);
+  function renderCalendar(anchor) {
+    const anchorIndex = stats.WEEKDAYS.indexOf(stats.weekdayOf(anchor));
+    const start = stats.addDays(anchor, -anchorIndex - (CALENDAR_WEEKS - 1) * 7);
     const end = stats.addDays(start, CALENDAR_WEEKS * 7 - 1);
-    const byDay = new Map(stats.dailySeries(tickets, start, today).map((d) => [d.day, d]));
+    const byDay = new Map(stats.dailySeries(tickets, start, anchor).map((d) => [d.day, d]));
     setText("cal-caption", dayLabel(start) + " to " + dayLabel(end));
     const fullColorDollars = CAL_FULL_COLOR_PNL_UNITS * state.unitSize;
     const cells = stats.WEEKDAYS.map((name) => el("span", { className: "lbl wd", text: name }));
-    // Custom ranges clamp to [first settled day, today], so a click outside it
+    // Ranges clamp to [first settled day, yesterday], so a click outside it
     // would quietly filter to a different day; those days aren't clickable.
     const realToday = stats.pacificDay(Date.now());
-    const firstPickable = stats.firstSettledDay(tickets) || realToday;
+    const lastPickable = lastShownDay();
+    const firstPickable = stats.firstSettledDay(tickets) || lastPickable;
     for (let day = start; day <= end; day = stats.addDays(day, 1)) {
       const totals = byDay.get(day);
       const isPicked = day === pickedCalendarDay();
-      const isPickable = day >= firstPickable && day <= realToday;
+      const isPickable = day >= firstPickable && day <= lastPickable;
       const cell = el("div", {
-        className: "cell" + (day === today ? " today" : "") + (isPicked ? " picked" : "") + (isPickable ? " pickable" : ""),
-        onClick: isPickable ? () => toggleCalendarDay(day, today) : null,
+        className: "cell" + (day === realToday ? " today" : "") + (isPicked ? " picked" : "") + (isPickable ? " pickable" : ""),
+        onClick: isPickable ? () => toggleCalendarDay(day, anchor) : null,
       });
       const dayNumber = el("span", { className: "d", text: Number(day.slice(8)) });
       const value = el("span", { className: "v" });
@@ -440,8 +503,8 @@
         dayNumber.style.color = strength > 0.55 ? "rgba(11,14,19,0.7)" : COLORS.muted;
         cell.title = dayLabel(day, true) + ": " + money(totals.pnl, true) + " on " + totals.bets + " bets";
       } else {
-        cell.title = dayLabel(day, true) + (day === today ? ": nothing settled yet" : day > today ? "" : ": no bets settled");
-        if (day === today) value.textContent = "Today";
+        cell.title = dayLabel(day, true) + (day === realToday ? ": results show after midnight Pacific" : day > realToday ? "" : ": no bets settled");
+        if (day === realToday) value.textContent = "Tomorrow";
       }
       if (isPickable) cell.title += isPicked ? " · click to clear" : " · click to filter to this day";
       cell.append(dayNumber, value);
@@ -504,6 +567,53 @@
     })));
   }
 
+  /**
+   * Balance by book (Cal, 2026-10-12): one row per book the service reads a
+   * balance for. A book never read shows "unavailable", never $0, and stays out
+   * of the total; a failed read keeps its last numbers and says how old they are.
+   */
+  function renderBalances() {
+    const rows = Object.entries((balances && balances.balances) || {})
+      .map(([venue, reading]) => ({ venue, label: stats.venueName(venue), ...reading }))
+      .sort((a, b) => (b.cash ?? -Infinity) - (a.cash ?? -Infinity));
+    setText("balances-caption", balancesError ? "Could not load: " + balancesError : "live");
+    if (!rows.length) {
+      fill("bal-table", emptyNote(balances ? "No book reports a balance yet." : "Loading…"));
+      return;
+    }
+    const read = rows.filter((row) => row.cash !== null);
+    const sum = (values) => values.reduce((total, value) => total + (value ?? 0), 0);
+    const columns = [
+      { label: "Book", cell: (row) => row.label },
+      { label: "Cash", right: true, num: true, cell: (row) => row.cash === null ? unavailablePill(row) : balanceMoney(row.cash) },
+      { label: "In bets", right: true, num: true, cell: (row) => row.cash === null || row.inBets === null ? "" : balanceMoney(row.inBets) },
+      { label: "Available", right: true, num: true,
+        cell: (row) => row.cash === null ? "" : balanceMoney(row.available ?? row.cash) + (row.creditLimit ? "*" : "") },
+      { label: "Updated", right: true, className: (row) => row.error ? "warn" : "muted",
+        cell: (row) => row.isTotal ? "" : row.fetchedAt ? ago(row.fetchedAt) : "never" },
+    ];
+    const totalRow = { label: "Total", cash: sum(read.map((row) => row.cash)), inBets: sum(read.map((row) => row.inBets)),
+      available: sum(read.map((row) => row.available ?? row.cash)), creditLimit: null, fetchedAt: null, isTotal: true };
+    const tbl = table(columns, [...rows, totalRow], { rowClass: (row) => row.isTotal ? "total" : "" });
+    const credit = rows.filter((row) => row.creditLimit);
+    const notes = ["Cash leaves out money in open bets. Kalshi's in bets is what the positions are worth now."];
+    if (credit.length) notes.push("* Includes " + credit.map((row) => row.label + "'s " + balanceMoney(row.creditLimit)).join(", ") + " credit.");
+    const noInBets = read.filter((row) => row.inBets === null);
+    if (noInBets.length) notes.push(noInBets.map((row) => row.label).join(", ") + " does not report money in open bets, so the in bets total leaves it out.");
+    if (read.length < rows.length) notes.push("The total leaves out books shown as unavailable.");
+    fill("bal-table", el("div", { className: "scroll" }, [tbl]),
+      el("div", { className: "balance-notes" }, notes.map((text) => el("span", { text }))));
+  }
+
+  /** A balance can be negative (a credit book you owe); its sign always shows. */
+  function balanceMoney(value) {
+    return sign(value, false) + money(Math.abs(value));
+  }
+
+  function unavailablePill(row) {
+    return el("span", { className: "pill-warn", text: "unavailable", title: row.error || "no reading yet" });
+  }
+
   function timeLabel(ms) {
     return new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: stats.PACIFIC_TZ });
   }
@@ -523,17 +633,6 @@
     document.getElementById("settled-more").hidden = settled.length <= shown.length;
     if (!shown.length) { fill("ov-settled", emptyNote("No settled bets in this range.")); return; }
     fill("ov-settled", table(columns, shown, { sortKey: "settled" }));
-  }
-
-  /** The Open page's Settled today panel: bets settled on the current Pacific day, whatever the header range. */
-  function renderSettledToday() {
-    const today = stats.pacificDay(Date.now());
-    const settled = stats.inDayRange(tickets, today, today);
-    fillSettledSummary("today-sum", settled, stats.summarize(settled), noResultCount(today, today));
-    setText("today-caption", dayLabel(today, true) + " · Pacific settle day");
-    if (!settled.length) { fill("op-today", emptyNote("Nothing has settled yet today.")); return; }
-    const newestFirst = settled.slice().sort((a, b) => b.closedMs - a.closedMs);
-    fill("op-today", table(settledColumns((t) => timeLabel(t.closedMs)), newestFirst, { sortKey: "today" }));
   }
 
   /** P&L, record, expected and handle above a settled-bets table. */
@@ -591,7 +690,6 @@
         onClick: () => showView("live") },
     ]);
     renderOpen(upcoming.concat(noStart), { upcoming, noStart });
-    renderSettledToday();
   }
 
   function renderOpen(notLive, split) {
@@ -650,14 +748,14 @@
     const pricedGroups = games.flatMap((game) => game.groups).filter((group) => group.ev !== null);
     const ev = pricedGroups.reduce((sum, group) => sum + group.ev, 0);
     const best = games.flatMap((game) => game.groups).reduce((sum, group) => sum + group.best, 0);
-    const worst = games.flatMap((game) => game.groups).reduce((sum, group) => sum + group.worst, 0);
+    const worst = worstCase(games.flatMap((game) => game.groups));
     setText("live-caption", scenarios ? "Updated " + ago(scenarios.generatedAt) : "");
     kpiTiles("lv-kpis", [
       { label: "Live bets", value: String(live.length), sub: games.length + (games.length === 1 ? " game" : " games") + " in progress · " + money(stake) + " at risk" },
       { label: "Best case", value: games.length ? money(best, true) : "—", color: games.length ? COLORS.pos : COLORS.muted, sub: "every game lands your way (straight bets)" },
-      { label: "Worst case", value: games.length ? money(worst, true) : "—", color: games.length ? COLORS.neg : COLORS.muted, sub: "nothing lands" },
+      { label: "Worst case", value: games.length ? money(worst, true) : "—", color: games.length ? COLORS.neg : COLORS.muted, sub: "nothing lands, every live teaser dies" },
       { label: "EV at kickoff", value: pricedGroups.length ? money(ev, true) : "—", color: pricedGroups.length ? COLORS.exp : COLORS.muted,
-        sub: "Unabated's fair before the start" },
+        sub: "Unabated's fair before the start (straight bets)" },
     ]);
     const problem = scenariosError
       ? el("div", { className: "banner", text: "Game cards are unavailable: " + scenariosError + ". Live bets are listed below without them." })
@@ -670,24 +768,58 @@
     fill("lv-off", split.offCard.length ? openGroup("", split.offCard, "Started", "", null, "liveOff") : null);
   }
 
+  /** Each group's worst result added up, a ticket the worst results of several groups kill counted once. */
+  function worstCase(groups) {
+    let total = 0;
+    const killsByTicket = new Map();
+    for (const group of groups) {
+      total += group.worst;
+      const worstBand = group.bands.find((band) => band.pnl === group.worst);
+      const killed = new Map(worstBand.legs.filter((leg) => leg.result === "lost" && Number.isFinite(leg.ticketStake)).map((leg) => [leg.parlayId, leg.ticketStake]));
+      for (const [ticket, stake] of killed) killsByTicket.set(ticket, { stake, count: (killsByTicket.get(ticket)?.count || 0) + 1 });
+    }
+    for (const { stake, count } of killsByTicket.values()) total += stake * (count - 1);
+    return total;
+  }
+
+  /** Legs with the same label, kind and result, one entry each with their distinct tickets' count, stake and to-win. */
+  function legsByTicket(legs, keyOf) {
+    const byKey = new Map();
+    for (const leg of legs) {
+      const key = keyOf(leg);
+      if (!byKey.has(key)) byKey.set(key, { leg, tickets: new Map() });
+      byKey.get(key).tickets.set(leg.parlayId, leg);
+    }
+    return Array.from(byKey.values()).map(({ leg, tickets }) => {
+      const all = Array.from(tickets.values());
+      const total = (field) => all.reduce((sum, ticket) => sum + (Number.isFinite(ticket[field]) ? ticket[field] : 0), 0);
+      return { leg, count: all.length, stake: total("ticketStake"), toWin: total("ticketToWin") };
+    });
+  }
+
+  function ticketWord(kind, count) {
+    return count + " " + kind + (count === 1 ? "" : "s");
+  }
+
   /** One game in progress: its bets, then one outcome ladder per market and period. */
   function gameCard(game) {
     const placedBets = game.bets.map((bet) => el("span", { className: "bet-chip" + (bet.reason ? " off" : ""), title: bet.reason ? "Not on the ladder: " + bet.reason : "" }, [
       el("span", { text: bet.label }),
       el("span", { className: "muted", text: " · " + bet.venue + (Number.isFinite(bet.stake) ? " · " + money(bet.stake) : "") + (bet.reason ? " · " + bet.reason : "") }),
     ]));
-    const legChips = game.legs.map((leg) => el("span", { className: "bet-chip leg", title: leg.reason ? "Not on the ladder: " + leg.reason : "" }, [
+    const legEntries = legsByTicket(game.legs, (leg) => [leg.label, leg.kind, leg.venue, leg.reason].join("|"));
+    const legChips = legEntries.map(({ leg, count, stake }) => el("span", { className: "bet-chip leg", title: leg.reason ? "Not on the ladder: " + leg.reason : "" }, [
       el("span", { text: leg.label }),
-      el("span", { className: "muted", text: " · " + leg.kind + " leg · " + leg.venue + (Number.isFinite(leg.ticketStake) ? " · " + money(leg.ticketStake) + " ticket" : "") + (leg.reason ? " · " + leg.reason : "") }),
+      el("span", { className: "muted", text: " · in " + ticketWord(leg.kind, count) + " · " + leg.venue + (stake ? " · " + money(stake) : "") + (leg.reason ? " · " + leg.reason : "") }),
     ]));
     const best = game.groups.reduce((sum, group) => sum + group.best, 0);
-    const worst = game.groups.reduce((sum, group) => sum + group.worst, 0);
+    const worst = worstCase(game.groups);
     const priced = game.groups.filter((group) => group.ev !== null);
     const ev = priced.reduce((sum, group) => sum + group.ev, 0);
     const summary = el("div", { className: "note" }, [
       el("span", { text: "Range " }), el("span", { className: "num " + toneClass(worst), text: money(worst, true) }),
       el("span", { text: " to " }), el("span", { className: "num " + toneClass(best), text: money(best, true) }),
-      priced.length === game.groups.length && priced.length ? el("span", { text: " · EV at kickoff " }) : null,
+      priced.length === game.groups.length && priced.length ? el("span", { text: " · EV at kickoff (straight bets) " }) : null,
       priced.length === game.groups.length && priced.length ? el("span", { className: "num exp", text: money(ev, true) }) : null,
       game.oddsAt === null ? el("span", { text: " · no kickoff odds (the runner started after this game did)" }) : null,
     ]);
@@ -711,8 +843,12 @@
   function outcomeLadder(group) {
     const rows = group.bands.map((band) => {
       const bar = el("span", { className: "prob" }, [el("i", { style: { width: band.prob === null ? "0%" : (band.prob * 100).toFixed(1) + "%" } })]);
-      const lost = band.legs.filter((leg) => leg.result !== "won");
-      const legTags = lost.map((leg) => el("span", { className: "leg-tag " + leg.result, text: leg.label + " " + leg.kind + " leg " + (leg.result === "push" ? "pushes" : "loses") }));
+      const legTags = legsByTicket(band.legs, (leg) => [leg.label, leg.kind, leg.result].join("|")).map(({ leg, count, stake, toWin }) => {
+        const tickets = ticketWord(leg.kind, count);
+        if (leg.result === "won") return el("span", { className: "leg-tag alive", text: leg.label + " holds: " + tickets + " alive, " + money(toWin) + " to win" });
+        if (leg.result === "push") return el("span", { className: "leg-tag push", text: leg.label + " pushes: " + tickets });
+        return el("span", { className: "leg-tag", text: leg.label + " loses: " + tickets + ", " + money(-stake, true) });
+      });
       return el("div", { className: "band" }, [
         el("span", { className: "band-what" }, [el("span", { text: band.label })].concat(legTags)),
         bar,
@@ -727,37 +863,209 @@
 
   // ---- analysis -------------------------------------------------------------
 
+  function periodFilterValue(period) {
+    return period === "FG" ? "Full game" : "Partial";
+  }
+
+  function filterSpec(key) {
+    return FILTERS.find((f) => f.key === key);
+  }
+
+  function inOddsRange(ticket) {
+    if (state.oddsMin === null && state.oddsMax === null) return true;
+    const price = ticket.displayPrice;
+    if (!Number.isFinite(price)) return false;
+    return (state.oddsMin === null || price >= state.oddsMin) && (state.oddsMax === null || price <= state.oddsMax);
+  }
+
+  function passesFilters(ticket) {
+    return inOddsRange(ticket) && FILTERS.every((f) => !state.off[f.key].includes(f.value(ticket)));
+  }
+
   function filteredSettled() {
     const { first, last } = rangeDays();
-    return stats.inDayRange(tickets, first, last).filter((t) => !state.offVenues.includes(t.venue)
-      && !state.offLeagues.includes(t.league) && (state.kind === "All" || t.kind === state.kind));
+    return stats.inDayRange(tickets, first, last).filter(passesFilters);
   }
 
-  function valuesByCount(key) {
-    const counts = new Map();
-    for (const ticket of tickets) counts.set(ticket[key], (counts.get(ticket[key]) || 0) + 1);
-    return [...counts].sort((a, b) => b[1] - a[1]).map(([value]) => value);
+  /** Every value of a filter across all tickets, most bets first. */
+  function allFilterValues(filter) {
+    return valuesByCount(tickets, filter.value).map(([value]) => value);
   }
 
-  function toggleIn(listKey, value) {
-    const list = state[listKey];
-    state[listKey] = list.includes(value) ? list.filter((v) => v !== value) : list.concat(value);
+  /** Filter keys switched on for a value still on the page, in drill order. */
+  function activeFilterKeys() {
+    const active = FILTERS.filter((f) => tickets.some((t) => state.off[f.key].includes(f.value(t)))).map((f) => f.key);
+    if (state.oddsMin !== null || state.oddsMax !== null) active.push("odds");
+    const rank = (key) => (state.drillOrder.includes(key) ? state.drillOrder.indexOf(key) : Infinity);
+    return active.sort((a, b) => rank(a) - rank(b));
+  }
+
+  function noteDrillKey(key, inUse) {
+    state.drillOrder = state.drillOrder.filter((k) => k !== key);
+    if (inUse) state.drillOrder.push(key);
+  }
+
+  function resetPaging() {
     state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
+  }
+
+  function setOff(key, values) {
+    state.off[key] = values;
+    noteDrillKey(key, values.length > 0);
+    resetPaging();
     render();
   }
 
-  function chips(id, values, offKey) {
-    fill(id, ...values.map((value) => el("button", {
-      className: "chip", text: value, attrs: { type: "button", "aria-pressed": String(!state[offKey].includes(value)) },
-      onClick: () => toggleIn(offKey, value),
-    })));
+  function clearFilter(key) {
+    if (key === "odds") { state.oddsMin = null; state.oddsMax = null; } else state.off[key] = [];
+    noteDrillKey(key, false);
+  }
+
+  /** Keep only these values: [[groupKey, groupLabel], ...] from a clicked row or cell. */
+  function drillTo(pairs) {
+    for (const [key, label] of pairs) {
+      const filter = filterSpec(key);
+      if (!filter) continue;
+      const value = filter.fromGroup ? filter.fromGroup(label) : label;
+      state.off[key] = allFilterValues(filter).filter((v) => v !== value);
+      noteDrillKey(key, true);
+    }
+    resetPaging();
+    render();
+  }
+
+  /** Back up the path: keep the crumbs up to and including `key`, drop the rest. */
+  function backTo(key) {
+    const keys = activeFilterKeys();
+    for (const later of keys.slice(keys.indexOf(key) + 1)) clearFilter(later);
+    resetPaging();
+    render();
+  }
+
+  function resetFilters() {
+    for (const key of activeFilterKeys()) clearFilter(key);
+    state.drillOrder = [];
+    resetPaging();
+    render();
+  }
+
+  /** "NFL", "Over, Under", "4 of 7"; the odds crumb shows its range. */
+  function crumbText(key) {
+    if (key === "odds") {
+      return "Odds: " + (state.oddsMin === null ? "any" : american(state.oddsMin)) + " to " + (state.oddsMax === null ? "any" : american(state.oddsMax));
+    }
+    const filter = filterSpec(key);
+    const values = allFilterValues(filter);
+    const on = values.filter((v) => !state.off[key].includes(v));
+    const shown = on.length === 0 ? "none" : on.length <= 2 ? on.join(", ") : on.length + " of " + values.length;
+    return filter.label + ": " + shown;
+  }
+
+  function renderCrumbs() {
+    const keys = activeFilterKeys();
+    const nodes = [el("button", { className: "crumb-all", text: "All bets", attrs: { type: "button" }, onClick: resetFilters })];
+    for (const key of keys) {
+      nodes.push(el("span", { className: "crumb-sep", text: "›" }));
+      nodes.push(el("span", { className: "crumb" }, [
+        el("button", { className: "crumb-go", text: crumbText(key), title: "Back up to here", attrs: { type: "button" }, onClick: () => backTo(key) }),
+        el("button", { className: "crumb-x", text: "×", title: "Drop this filter", attrs: { type: "button", "aria-label": "Drop " + crumbText(key) },
+          onClick: () => { clearFilter(key); resetPaging(); render(); } }),
+      ]));
+    }
+    if (!keys.length) nodes.push(el("span", { className: "note", text: "Click any breakdown row or pivot cell to drill in." }));
+    fill("f-crumbs", ...nodes);
+  }
+
+  /** [value, count] pairs over these tickets, most bets first. */
+  function valuesByCount(list, valueOf) {
+    const counts = new Map();
+    for (const ticket of list) counts.set(valueOf(ticket), (counts.get(valueOf(ticket)) || 0) + 1);
+    return [...counts].sort((a, b) => b[1] - a[1]);
+  }
+
+  /** A filter's values in its group's order where it has one (odds, timing...), else most bets first. */
+  function orderedFilterValues(filter) {
+    const values = allFilterValues(filter);
+    const group = stats.GROUPS.find((g) => g.key === filter.key);
+    if (group && group.order) return values.sort((a, b) => rankIn(group.order, a) - rankIn(group.order, b));
+    if (group && group.numeric) return values.sort((a, b) => numberOrInfinity(a) - numberOrInfinity(b));
+    return values;
+  }
+
+  function rankIn(order, value) {
+    return order.includes(value) ? order.indexOf(value) : order.length;
+  }
+
+  function numberOrInfinity(label) {
+    const value = Number(String(label).replace("−", "-").replace("+", ""));
+    return Number.isNaN(value) ? Infinity : value;
+  }
+
+  /** One filter row: label, All / None, then a chip per value with its count in the range. */
+  function filterRow(filter, inRange) {
+    const allValues = orderedFilterValues(filter);
+    const inRangeCounts = new Map(valuesByCount(inRange, filter.value));
+    const off = state.off[filter.key];
+    const quick = el("span", { className: "quick" }, [
+      el("button", { text: "All", attrs: { type: "button", "aria-pressed": String(off.length === 0) }, onClick: () => setOff(filter.key, []) }),
+      el("button", { text: "None", attrs: { type: "button", "aria-pressed": String(allValues.every((v) => off.includes(v))) }, onClick: () => setOff(filter.key, allValues.slice()) }),
+    ]);
+    const chipNodes = allValues.map((value) => el("button", {
+      className: "fchip", attrs: { type: "button", "aria-pressed": String(!off.includes(value)) },
+      onClick: () => setOff(filter.key, off.includes(value) ? off.filter((v) => v !== value) : off.concat(value)),
+    }, [document.createTextNode(value), el("span", { className: "n", text: String(inRangeCounts.get(value) || 0) })]));
+    return el("div", { className: "filter-row" }, [el("span", { className: "lbl", text: filter.label }), quick, ...chipNodes]);
+  }
+
+  /** Parse a typed American price ("-120", "+120", "120"); null when blank, NaN when not a price. */
+  function parseAmerican(text) {
+    const trimmed = String(text).trim().replace("−", "-");
+    if (!trimmed) return null;
+    const value = Number(trimmed);
+    return Number.isFinite(value) && Math.abs(value) >= 100 ? value : NaN;
+  }
+
+  function oddsInput(id, label, current, onSet) {
+    const input = el("input", { className: "odds-in num", attrs: { id, type: "text", inputmode: "numeric", placeholder: "any", "aria-label": label } });
+    input.value = current === null ? "" : american(current);
+    input.addEventListener("change", () => {
+      const value = parseAmerican(input.value);
+      if (Number.isNaN(value)) { input.setAttribute("aria-invalid", "true"); input.title = "Type an American price like -120 or +120"; return; }
+      onSet(value);
+      noteDrillKey("odds", state.oddsMin !== null || state.oddsMax !== null);
+      resetPaging();
+      render();
+    });
+    return input;
+  }
+
+  function oddsRangeRow() {
+    return el("div", { className: "filter-row" }, [
+      el("span", { className: "lbl", text: "Price" }),
+      el("label", { className: "odds-range" }, [document.createTextNode("from"), oddsInput("odds-min", "Lowest price", state.oddsMin, (v) => { state.oddsMin = v; })]),
+      el("label", { className: "odds-range" }, [document.createTextNode("to"), oddsInput("odds-max", "Highest price", state.oddsMax, (v) => { state.oddsMax = v; })]),
+      el("span", { className: "note", text: "American odds, e.g. −120 to +120" }),
+    ]);
+  }
+
+  function renderFilters(first, last) {
+    const inRange = stats.inDayRange(tickets, first, last);
+    const active = activeFilterKeys();
+    const shown = FILTERS.filter((f) => f.primary || state.moreFilters || active.includes(f.key));
+    const hiddenCount = FILTERS.length - shown.length;
+    const toggle = el("button", {
+      className: "reset", attrs: { type: "button" },
+      text: state.moreFilters ? "Fewer filters" : "More filters (" + hiddenCount + ")",
+      onClick: () => { state.moreFilters = !state.moreFilters; render(); },
+    });
+    fill("f-rows", ...shown.map((filter) => filterRow(filter, inRange)), oddsRangeRow(), (state.moreFilters || hiddenCount) ? toggle : null);
+    document.getElementById("f-reset").hidden = !active.length;
+    renderCrumbs();
   }
 
   function renderAnalysis() {
     const { first, last } = rangeDays();
-    chips("f-venues", valuesByCount("venue"), "offVenues");
-    chips("f-leagues", valuesByCount("league"), "offLeagues");
-    segButtons("f-kinds", KINDS.filter((k) => k !== BOT_COMBO_KIND || state.includeBotCombos), (k) => k === state.kind, (k) => { state.kind = k; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; render(); });
+    renderFilters(first, last);
     segButtons("group-tabs", stats.GROUPS, (g) => g.key === state.groupBy, (g) => { state.groupBy = g.key; render(); });
 
     const settled = filteredSettled();
@@ -772,7 +1080,9 @@
       { label: "Luck (z)", value: total.z === null ? "—" : total.z.toFixed(2), color: total.z !== null && Math.abs(total.z) >= 1.96 ? COLORS.warn : COLORS.text,
         sub: total.z === null ? "needs bets with a fair" : Math.abs(total.z) < 1.96 ? "within normal variance" : "outside the 95% band" },
     ]);
+    renderChart(stats.dailySeries(settled, first, last), "an-chart", "an-stats", "No settled bets match these filters.");
     renderGroups(settled);
+    renderPivot(settled);
     renderCalibration(settled);
     renderLog(settled);
   }
@@ -792,13 +1102,89 @@
   }
 
   function renderGroups(settled) {
+    const group = stats.GROUPS.find((g) => g.key === state.groupBy);
+    if (group.outer) { renderGroupSections(settled, group); return; }
     const rows = stats.groupBy(settled, state.groupBy);
     if (!rows.length) { fill("an-groups", emptyNote("No settled bets match these filters.")); return; }
-    const group = stats.GROUPS.find((g) => g.key === state.groupBy);
-    // Bucketed groups (odds, edge, timing, weekday, stake) sort in their own order, not A to Z.
-    const groupSortKey = group.order ? (r) => group.order.indexOf(r.label) : (r) => r.label;
-    fill("an-groups", table([
-      { label: group.label, cell: (r) => r.label, sort: groupSortKey },
+    // Bucketed groups (odds, edge, timing, weekday, stake) sort in their own order, numbers by value, the rest A to Z.
+    const groupSortKey = group.order ? (r) => group.order.indexOf(r.label) : group.numeric ? (r) => numberOrInfinity(r.label) : (r) => r.label;
+    fill("an-groups", groupTable(group.label, groupSortKey, rows, (row) => drillTo([[group.key, row.label]])));
+  }
+
+  /** League × Market: a header with each league's totals, then its markets as rows. A row drills into both. */
+  function renderGroupSections(settled, group) {
+    const sections = stats.groupSections(settled, group.key);
+    if (!sections.length) { fill("an-groups", emptyNote("No settled bets match these filters.")); return; }
+    const innerLabel = stats.GROUPS.find((g) => g.key === group.inner).label;
+    fill("an-groups", ...sections.map((section) => el("div", { className: "open-group group-section" }, [
+      el("div", { className: "open-group-head" }, [
+        el("button", { className: "pv-head open-group-title", text: section.label, attrs: { type: "button" }, title: "Drill into " + section.label,
+          onClick: () => drillTo([[group.outer, section.label]]) }),
+        el("span", { className: "note", text: section.bets + " bets · " + money(section.handle) + " handle · " }),
+        el("span", { className: "num " + toneClass(section.pnl), text: money(section.pnl, true) + " · " + pct(section.roi, true) }),
+      ]),
+      groupTable(innerLabel, (r) => r.label, section.rows, (row) => drillTo([[group.outer, section.label], [group.inner, row.label]])),
+    ])));
+  }
+
+  function pivotValue(cell, metric) {
+    if (metric === "pnl") return money(cell.pnl, true);
+    if (metric === "clv") return pct(cell.clvRoi, true);
+    if (metric === "bets") return String(cell.bets);
+    return pct(cell.roi, true);
+  }
+
+  /** Green for a winning cell, red for a losing one, stronger with ROI; CLV colours by CLV. */
+  function pivotShade(cell, metric) {
+    const value = metric === "clv" ? cell.clvRoi : cell.roi;
+    if (value === null || metric === "bets") return null;
+    const strength = Math.min(1, Math.abs(value) / PIVOT_FULL_SHADE_ROI);
+    const alpha = (0.08 + 0.32 * strength).toFixed(2);
+    return value >= 0 ? "rgba(61, 214, 140, " + alpha + ")" : "rgba(255, 107, 107, " + alpha + ")";
+  }
+
+  function pivotSelect(id, current, onPick) {
+    const select = el("select", { attrs: { id, "aria-label": id === "pivot-rows" ? "Pivot rows" : "Pivot columns" } },
+      stats.GROUPS.filter((g) => !g.outer).map((g) => el("option", { text: g.label, attrs: { value: g.key } })));
+    select.value = current;
+    select.addEventListener("change", () => onPick(select.value));
+    return select;
+  }
+
+  function renderPivot(settled) {
+    fill("pivot-pick",
+      el("label", { className: "pivot-axis" }, [document.createTextNode("Rows"), pivotSelect("pivot-rows", state.pivotRows, (key) => { state.pivotRows = key; render(); })]),
+      el("label", { className: "pivot-axis" }, [document.createTextNode("Columns"), pivotSelect("pivot-cols", state.pivotCols, (key) => { state.pivotCols = key; render(); })]));
+    segButtons("pivot-metric", PIVOT_METRICS, (m) => m.key === state.pivotMetric, (m) => { state.pivotMetric = m.key; render(); });
+    if (state.pivotRows === state.pivotCols) { fill("an-pivot", emptyNote("Pick two different dimensions.")); return; }
+    const grid = stats.pivot(settled, state.pivotRows, state.pivotCols);
+    if (!grid.rows.length) { fill("an-pivot", emptyNote("No settled bets match these filters.")); return; }
+    const metric = state.pivotMetric;
+    const cellNode = (cell, pairs) => {
+      if (!cell) return el("td", { className: "pv-empty", text: "·" });
+      const shade = pivotShade(cell, metric);
+      const button = el("button", {
+        className: "pv-cell num", attrs: { type: "button" },
+        title: cell.bets + " bets · " + money(cell.pnl, true) + " · ROI " + pct(cell.roi, true) + " · CLV " + pct(cell.clvRoi, true) + " · click to drill in",
+        style: shade ? { background: shade } : null, onClick: () => drillTo(pairs),
+      }, [el("span", { text: pivotValue(cell, metric) }), el("small", { text: String(cell.bets) })]);
+      return el("td", null, [button]);
+    };
+    const head = el("tr", null, [el("th", { text: "" }), ...grid.cols.map((col) => el("th", { className: "r" }, [
+      el("button", { className: "pv-head", text: col, attrs: { type: "button" }, title: "Drill into " + col, onClick: () => drillTo([[state.pivotCols, col]]) }),
+    ])), el("th", { className: "r", text: "Total" })]);
+    const body = grid.rows.map((row) => el("tr", null, [
+      el("th", { className: "pv-row" }, [el("button", { className: "pv-head", text: row.label, attrs: { type: "button" }, title: "Drill into " + row.label, onClick: () => drillTo([[state.pivotRows, row.label]]) })]),
+      ...row.cells.map((cell, index) => cellNode(cell, [[state.pivotRows, row.label], [state.pivotCols, grid.cols[index]]])),
+      cellNode(row.total, [[state.pivotRows, row.label]]),
+    ]));
+    fill("an-pivot", el("table", { className: "tbl pivot" }, [el("thead", null, [head]), el("tbody", null, body)]));
+  }
+
+  /** One breakdown table: a row per group with the Analysis metrics. */
+  function groupTable(firstLabel, firstSort, rows, onRowClick) {
+    return table([
+      { label: firstLabel, cell: (r) => r.label, sort: firstSort },
       { label: "Bets", right: true, num: true, cell: (r) => String(r.bets), sort: (r) => r.bets },
       { label: "W-L-P", right: true, num: true, className: () => "muted", cell: (r) => r.wins + "-" + r.losses + "-" + r.pushes, sort: (r) => r.wins },
       { label: "Handle", right: true, num: true, cell: (r) => money(r.handle), sort: (r) => r.handle },
@@ -811,7 +1197,7 @@
       { label: "z", right: true, num: true, className: (r) => (r.z !== null && Math.abs(r.z) >= 1.96 ? "warn" : "muted"), cell: (r) => (r.z === null ? "—" : r.z.toFixed(2)), sort: (r) => r.z },
       { label: "CLV", right: true, num: true, className: (r) => (r.clvRoi === null ? "muted" : toneClass(r.clvRoi)), cell: (r) => pct(r.clvRoi, true), sort: (r) => r.clvRoi },
       { label: "Beat close", right: true, num: true, className: () => "muted", cell: (r) => (r.withClose ? pct(r.beatRate) + " of " + r.withClose : "—"), sort: (r) => (r.withClose ? r.beatRate : null) },
-    ], rows, { sortKey: "groups" }));
+    ], rows, { sortKey: "groups", onRowClick, rowClass: () => "drill" });
   }
 
   function renderCalibration(settled) {
@@ -961,6 +1347,7 @@
     history.replaceState(null, "", "#" + view);
     window.scrollTo(0, 0);
     render();
+    if (view === "balances") refreshBalances().then(render);
   }
 
   function renderHeader() {
@@ -1001,10 +1388,10 @@
     document.getElementById("custom-range").hidden = state.range !== "Custom";
     if (state.range !== "Custom") return;
     const { first, last } = rangeDays();
-    const today = stats.pacificDay(Date.now());
+    const lastShown = lastShownDay();
     for (const [id, value] of [["custom-first", first], ["custom-last", last]]) {
       const input = document.getElementById(id);
-      input.max = today;
+      input.max = lastShown;
       if (document.activeElement !== input) input.value = value;
     }
   }
@@ -1016,15 +1403,30 @@
     const failing = sources.filter(([, s]) => !s.ok);
     dot.classList.toggle("bad", failing.length > 0);
     const okCount = sources.length - failing.length;
-    setText("sync-text", okCount + " of " + sources.length + " venues ok · " + ago(payload.generatedAt));
+    const failingNames = failing.map(([name]) => stats.venueName(name)).join(", ");
+    setText("sync-text", okCount + " of " + sources.length + " venues ok · "
+      + (failing.length ? failingNames + " down · " : "") + ago(payload.generatedAt));
     document.getElementById("sync").title = failing.length
       ? failing.map(([name, s]) => stats.venueName(name) + ": " + (s.error || "no completed poll yet")).join("\n")
       : "Every venue's last poll succeeded";
   }
 
+  // Bets no rule could give a market: hidden at zero, else the count and venues.
+  function renderUntyped() {
+    const element = document.getElementById("untyped");
+    const summary = stats.untypedSummary(allTickets);
+    element.hidden = summary.count === 0;
+    if (!summary.count) return;
+    setText("untyped-text", summary.count + " untyped · " + summary.venues.map((v) => v.venue).join(", "));
+    element.title = "Bets with no market type (counted as Other); the bet type rules in trackerstats.js need a case for them:\n"
+      + summary.examples.join("\n") + (summary.count > summary.examples.length ? "\n…" : "");
+  }
+
   function render() {
     renderHeader();
     renderSync();
+    renderUntyped();
+    if (state.view === "balances") { renderBalances(); return; }
     if (!payload) return;
     if (state.view === "overview") renderOverview();
     else if (state.view === "live") renderLiveView();
@@ -1044,8 +1446,11 @@
     tickets = allTickets.filter((t) => !t.excluded && (state.includeBotCombos || t.kind !== BOT_COMBO_KIND));
   }
 
+  // Today's settled bets leave every page here until Pacific midnight; the next
+  // poll after midnight brings them back.
   function rebuildTickets() {
-    allTickets = stats.buildTickets(payload.bets, payload.fillFairs, payload.closingFairs, payload.exclusions);
+    const built = stats.buildTickets(payload.bets, payload.fillFairs, payload.closingFairs, payload.exclusions);
+    allTickets = stats.hideSettledFrom(built, stats.pacificDay(Date.now()));
     applyBotComboFilter();
   }
 
@@ -1063,8 +1468,23 @@
     }
   }
 
+  // The balance card; a failure keeps the last balances read and says why.
+  async function refreshBalances() {
+    try {
+      const response = await fetch(BALANCES_URL, { cache: "no-store" });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error((body && body.error) || "the bets service answered HTTP " + response.status);
+      if (!body || typeof body.balances !== "object" || body.balances === null) throw new Error("balances.json has no balances");
+      balances = body;
+      balancesError = null;
+    } catch (error) {
+      balancesError = error.message;
+    }
+  }
+
   async function refresh() {
     const scenariosRead = refreshScenarios();
+    const balancesRead = state.view === "balances" ? refreshBalances() : null;
     try {
       const response = await fetch(BETS_URL, { cache: "no-store" });
       if (!response.ok) throw new Error("the bets service answered HTTP " + response.status);
@@ -1074,7 +1494,7 @@
     } catch (error) {
       showBanner("Could not load bets: " + error.message + (payload ? ". Showing the last load." : "."));
     }
-    await scenariosRead;
+    await Promise.all([scenariosRead, balancesRead]);
     render();
   }
 
@@ -1083,11 +1503,11 @@
       button.addEventListener("click", () => showView(button.dataset.view));
     }
     document.getElementById("settled-more").addEventListener("click", () => { state.settledLimit += LOG_PAGE; render(); });
+    document.getElementById("f-reset").addEventListener("click", resetFilters);
     document.getElementById("show-dollars").addEventListener("click", () => { state.units = false; savePrefs(); render(); });
     document.getElementById("show-units").addEventListener("click", () => { state.units = true; savePrefs(); render(); });
     document.getElementById("bot-combos").addEventListener("click", () => {
       state.includeBotCombos = !state.includeBotCombos;
-      if (!state.includeBotCombos && state.kind === BOT_COMBO_KIND) state.kind = "All";
       state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
       savePrefs(); applyBotComboFilter(); render();
     });
@@ -1111,7 +1531,11 @@
       state.betsQuery = event.target.value; state.betsLimit = LOG_PAGE; render();
     });
     document.getElementById("bets-more").addEventListener("click", () => { state.betsLimit += LOG_PAGE; render(); });
-    window.addEventListener("hashchange", () => { state.view = viewOfHash(); render(); });
+    window.addEventListener("hashchange", () => {
+      state.view = viewOfHash();
+      render();
+      if (state.view === "balances") refreshBalances().then(render);
+    });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
     setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
   }

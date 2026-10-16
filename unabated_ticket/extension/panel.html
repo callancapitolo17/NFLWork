@@ -100,33 +100,52 @@
         <summary id="row-trace-reason"></summary>
         <div id="row-trace-detail"></div>
       </details>
-      <div class="side-caption">You are betting</div>
-      <div class="side" id="side-label"></div>
-      <div class="muted" id="bet-line"></div>
-      <div class="muted" id="event-line"></div>
-      <div class="muted" id="start-line"></div>
-      <div id="bets-banner-head" class="section-label" hidden>Related bets</div>
-      <div id="bets-banner" class="bets-banner" hidden></div>
-
-      <dl class="facts">
-        <dt>Book</dt><dd id="book"></dd>
-        <dt>Price</dt><dd id="price"></dd>
-        <dt>Fair</dt><dd id="fair"></dd>
-        <dt>Edge</dt><dd id="edge"></dd>
-        <dt id="others-label" hidden>Others</dt><dd id="others" hidden></dd>
-      </dl>
-
-      <div class="stake-block">
-        <div class="stake-label" id="stake-label">Bet</div>
-        <div class="stake" id="stake"></div>
-        <div class="stake-contracts" id="contracts" hidden></div>
-        <div class="stake-exposure" id="stake-exposure" hidden></div>
-        <div class="stake-uncapped" id="stake-uncapped" hidden></div>
-        <div class="payout-row" id="payout-row" hidden>
-          <div class="payout-cell"><div class="payout-label">To win</div><div class="payout-value" id="profit"></div></div>
-          <div class="payout-cell"><div class="payout-label">Payout</div><div class="payout-value" id="payout"></div></div>
+      <!-- The bet and what to stake on it, in one card at the top (Cal, 2026-10-15). -->
+      <div class="bet-card">
+        <div class="card-top">
+          <div class="card-pick">
+            <div class="side-caption">You are betting</div>
+            <div class="side" id="side-label"></div>
+          </div>
+          <div class="card-venue">
+            <div class="card-book" id="book"></div>
+            <div class="card-price" id="price"></div>
+          </div>
+          <div class="card-meta">
+            <div id="bet-line"></div>
+            <div><span id="event-line"></span> <span id="start-line"></span></div>
+          </div>
         </div>
-        <div class="muted" id="full-kelly"></div>
+        <div class="stake-block">
+          <div class="stake-label" id="stake-label">Bet</div>
+          <div class="stake-row">
+            <div class="stake" id="stake"></div>
+            <div class="payout-row" id="payout-row" hidden>
+              <div class="payout-cell"><div class="payout-label">To win</div><div class="payout-value" id="profit"></div></div>
+              <div class="payout-cell"><div class="payout-label">Payout</div><div class="payout-value" id="payout"></div></div>
+            </div>
+          </div>
+          <div class="stake-contracts" id="contracts" hidden></div>
+          <div class="stake-exposure" id="stake-exposure" hidden></div>
+          <div class="stake-uncapped" id="stake-uncapped" hidden></div>
+          <div class="muted" id="full-kelly"></div>
+        </div>
+      </div>
+
+      <div class="tiles">
+        <div class="tile"><div class="tile-label">Fair</div><div class="tile-value" id="fair"></div><div class="tile-sub" id="fair-sub"></div></div>
+        <div class="tile tile-edge"><div class="tile-label">Edge</div><div class="tile-value" id="edge"></div><div class="tile-sub" id="edge-sub"></div><div class="tile-move" id="edge-move" hidden></div></div>
+        <div class="tile tile-books" id="others-tile" hidden><div class="tile-label">Other books</div><div class="tile-value" id="others-head"></div><div class="tile-sub" id="others-sub"></div></div>
+      </div>
+
+      <div id="others-block" hidden>
+        <div class="section-head"><h2 class="section-label" id="others-label"></h2></div>
+        <div class="books-box" id="others"></div>
+      </div>
+
+      <div id="related-block" hidden>
+        <div class="section-head"><h2 class="section-label">Related bets on this game</h2><span class="section-note" id="related-count"></span></div>
+        <div class="related-table" id="related-table"></div>
       </div>
     </main>
 
@@ -264,11 +283,13 @@
   <script src="ladder.js"></script>
   <script src="condkelly.js"></script>
   <script src="teaser.js"></script>
+  <script src="teaserview.js"></script>
   <script src="betsview.js"></script>
   <script src="fillfair.js"></script>
   <script src="pricecheck.js"></script>
   <script src="edgerows.js"></script>
   <script src="bet105.js"></script>
+  <script src="draftkings.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>

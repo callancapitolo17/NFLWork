@@ -355,29 +355,34 @@ def test_sweep_keeps_the_BACKGROUND_profile_at_draftkings(recorded_sleeps):
 # Price calls — RETRY_LIVE on BOTH paths                                       #
 # --------------------------------------------------------------------------- #
 # The on-demand quote path prices through price_selection_set at every book.
-# DK and FD build that POST themselves rather than going through a client
-# price method, so they need their own coverage — without it the highest-
-# priority path (a live RFQ quote) would silently have no retry at 2 of 6
-# books.
+# DK's GET and FD's POST are built by the book modules themselves rather than
+# a shared client price method, so they need their own coverage — without it
+# the highest-priority path (a live RFQ quote) would silently have no retry
+# at 2 of 6 books.
+
+_DK_REFS = ["0HC100N150_1", "0OU200O850_1"]
+_DK_PRICED = FakeResponse(200, {"data": {
+    "selectionsMapped": ["0HC100N150_1"], "selectionsNotMapped": [],
+    "compatibleMarkets": [{"id": "3_200", "selections": [
+        {"id": "0OU200O850_1", "trueOdds": 6.42}]}]}})
+
 
 def test_dk_price_selection_set_retries_once_then_prices(recorded_sleeps):
     from mlb_sgp.draftkings import price_selection_set
-    good = FakeResponse(200, {"bets": [
-        {"trueOdds": 6.42, "selectionsMapped": ["a", "b"]}]})
-    client = _dk_client(FlakySession(good))
-    assert price_selection_set(client, ["a", "b"]) == 6.42
+    client = _dk_client(FlakySession(_DK_PRICED))
+    assert price_selection_set(client, _DK_REFS, "evt1") == 6.42
     assert len(recorded_sleeps) == 1
     assert sum(recorded_sleeps) <= 1.0          # RETRY_LIVE budget
 
 
-def test_dk_price_selection_set_does_not_retry_a_422(recorded_sleeps):
-    """422 = non-combinable. A real verdict, not a blip — retrying it would
+def test_dk_price_selection_set_does_not_retry_a_400(recorded_sleeps):
+    """400 = a line DK pulled. A real verdict, not a blip — retrying it would
     add latency to a quote that was never going to price."""
     from mlb_sgp.draftkings import price_selection_set
-    session = FlakySession(FakeResponse(200, {}),
-                           failure=FakeResponse(422, text="not combinable"))
+    session = FlakySession(_DK_PRICED,
+                           failure=FakeResponse(400, text="InvalidSelection"))
     client = _dk_client(session)
-    assert price_selection_set(client, ["a", "b"]) is None
+    assert price_selection_set(client, _DK_REFS, "evt1") is None
     assert session.calls == 1
     assert recorded_sleeps == []
 
@@ -406,8 +411,8 @@ def test_price_retries_stay_inside_the_live_budget_when_a_book_is_broken():
     original = shared._sleep
     shared._sleep = slept.append
     try:
-        client = _dk_client(FlakySession(FakeResponse(200, {}), n_failures=99))
-        assert price_selection_set(client, ["a", "b"]) is None
+        client = _dk_client(FlakySession(_DK_PRICED, n_failures=99))
+        assert price_selection_set(client, _DK_REFS, "evt1") is None
     finally:
         shared._sleep = original
     assert sum(slept) <= RETRY_LIVE.max_total_delay_sec

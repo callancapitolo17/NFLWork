@@ -29,8 +29,8 @@ class StubRunnerHandler(BaseHTTPRequestHandler):
         self.server.paths_seen.append(self.path)
         if mode == "slow":
             time.sleep(SLOW_RUNNER_DELAY_SEC)
-        status = 500 if mode == "error" else 200
-        body = json.dumps({"error": "boom"} if mode == "error" else RUNNER_BODY).encode()
+        status = {"error": 500, "missing": 404}.get(mode, 200)
+        body = json.dumps({"error": "boom"} if status != 200 else RUNNER_BODY).encode()
         try:
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -213,6 +213,23 @@ def test_scenarios_json_passes_the_runner_body_through(bets_port, stub_runner):
     assert status == 200
     assert json.loads(body) == RUNNER_BODY
     assert stub_runner.paths_seen == ["/scenarios.json"]
+
+
+def test_teasers_json_passes_the_runner_body_through(bets_port, stub_runner):
+    status, _headers, body = get(bets_port, "/teasers.json")
+    assert status == 200
+    assert json.loads(body) == RUNNER_BODY
+    assert stub_runner.paths_seen == ["/teasers.json"]
+
+
+def test_attach_json_passes_the_query_on_and_the_runner_404_back(bets_port, stub_runner):
+    status, _headers, _body = get(bets_port, "/attach.json?betId=bfa%3A1&query=duke")
+    assert status == 200
+    assert stub_runner.paths_seen == ["/attach.json?betId=bfa%3A1&query=duke"]
+    stub_runner.mode = "missing"
+    status, _headers, body = get(bets_port, "/attach.json?betId=gone")
+    assert status == 404
+    assert json.loads(body) == {"error": "boom"}
 
 
 def test_scenarios_json_502_names_its_own_path(store):

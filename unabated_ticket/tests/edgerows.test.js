@@ -279,3 +279,23 @@ test("applyBetsPayload: a body with no bets throws; an older service's missing c
   const current = edgeRows.applyBetsPayload(held, { bets: [], crosswalk: [], pins: [], fillFairs: [], sources: { kalshi: { ok: true } } }, NOW);
   assert.deepEqual([current.crosswalk, current.pins, current.sources], [[], [], { kalshi: { ok: true } }]);
 });
+
+test("serviceSettingsOf: every field for PUT /settings.json; settingsFromService gives the same settings back", () => {
+  const stake = { bankroll: 8000, multiplier: 0.5 };
+  for (const bookIds of [undefined, null, [89, 59]]) {
+    const edges = { ...edgeRows.DEFAULT_EDGE_SETTINGS, bookIds, minEdgePct: 3, includeAlts: true, leagues: [1, 2] };
+    const body = edgeRows.serviceSettingsOf(stake, edges);
+    assert.deepEqual(Object.keys(body).sort(), ["bankroll", "multiplier", ...edgeRows.EDGE_SETTING_KEYS, "bookMode", "bookIds"].sort());
+    assert.equal(body.bookMode, bookIds === undefined ? "default" : bookIds === null ? "all" : "custom");
+    assert.deepEqual(edgeRows.settingsFromService(body), { stakeSettings: stake, edgeSettings: edges });
+  }
+});
+
+test("applyBetsPayload: the shared Dismiss and Can't tease marks, null from a service that has none", () => {
+  const held = { records: [], crosswalk: [], pins: [], fillFairs: [] };
+  const old = edgeRows.applyBetsPayload(held, { bets: [] }, 0);
+  assert.deepEqual([old.dismissals, old.teaserBlocks], [null, null]);
+  const marks = { dismissals: [{ betId: "a", dismissedAt: "x" }], teaserBlocks: [{ marketKey: "1:bt2", eventStartMs: 5, blockedAt: "y" }] };
+  const now = edgeRows.applyBetsPayload(held, { bets: [], ...marks }, 0);
+  assert.deepEqual([now.dismissals, now.teaserBlocks], [marks.dismissals, marks.teaserBlocks]);
+});

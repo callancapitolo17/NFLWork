@@ -101,11 +101,12 @@ async function startedRunner(script) {
 }
 
 test("configFromEnv: loopback 8095 and the local bets service by default; a bad port or URL fails naming the variable", () => {
-  assert.deepEqual(runnerLib.configFromEnv({}), { host: "127.0.0.1", port: 8095, betsServiceUrl: "http://127.0.0.1:8094" });
+  assert.deepEqual(runnerLib.configFromEnv({}), { host: "127.0.0.1", port: 8095, betsServiceUrl: "http://127.0.0.1:8094", kalshiBaseUrl: "https://api.elections.kalshi.com/trade-api/v2" });
   assert.deepEqual(runnerLib.configFromEnv({ UNABATED_RUNNER_HOST: "100.64.0.7", UNABATED_RUNNER_PORT: "9000", BETS_SERVICE_URL: "http://127.0.0.1:8094/" }),
-    { host: "100.64.0.7", port: 9000, betsServiceUrl: "http://127.0.0.1:8094" });
+    { host: "100.64.0.7", port: 9000, betsServiceUrl: "http://127.0.0.1:8094", kalshiBaseUrl: "https://api.elections.kalshi.com/trade-api/v2" });
   assert.throws(() => runnerLib.configFromEnv({ UNABATED_RUNNER_PORT: "80a" }), /UNABATED_RUNNER_PORT must be a whole number from 1 to 65535, got "80a"/);
   assert.throws(() => runnerLib.configFromEnv({ BETS_SERVICE_URL: "ftp://x" }), /BETS_SERVICE_URL must be an http\(s\) URL/);
+  assert.throws(() => runnerLib.configFromEnv({ KALSHI_BASE_URL: "ftp://x" }), /KALSHI_BASE_URL must be an http\(s\) URL/);
 });
 
 test("allowedHosts: the loopback names and the bound address, with the port; bare names only on 80", () => {
@@ -286,6 +287,10 @@ test("HTTP: /edges.json and /health on loopback; a foreign Host is 403, another 
     assert.equal((await get("/edges.json", { headers: { Host: `localhost:${port}` } })).status, 200);
     assert.equal((await get("/edges.json", { method: "POST" })).status, 405);
     assert.equal((await get("/bets.json")).status, 404);
+    assert.deepEqual((await get("/teasers.json")).body, JSON.parse(JSON.stringify(runner.teasersPayload())));
+    const missing = await get("/attach.json?betId=nope");
+    assert.deepEqual([missing.status, missing.body.error], [404, 'no open bet "nope"']);
+    assert.equal((await get("/attach.json?betId=bol-1&query=bears")).body.events[0].eventId, 125807);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     runner.stop();
@@ -400,4 +405,356 @@ test("scenarios: started before the runner saw it, the card has no chances; a re
   const removed = await runnerOnClock(clock, [BEARS_HELD], { exclusions: [{ betId: "bol-1", venue: "betonline", excludedAt: "2026-09-13T16:00:00Z" }] });
   assert.deepEqual(removed.scenariosPayload().games, []);
   removed.stop();
+});
+
+// ---- /teasers.json, Attach and the shared Dismiss marks ---------------------------------
+
+test("teasers.json: the panel's Teasers tab in its words, the open BFA teaser held fixed", async () => {
+  const { runner } = await startedRunner({ "/bets.json": betsBody([BEARS_HELD, ...PANTHERS_TEASER]), "/settings.json": { settings: OPEN_SETTINGS, updatedAt: null } });
+  const payload = runner.teasersPayload();
+  runner.stop();
+  assert.equal(payload.ready, true);
+  assert.equal(payload.error, null);
+  assert.equal(payload.status, "NFL · CFB unavailable · 0 games on Buckeye's board · 0 of 0 legs priced");
+  assert.match(payload.empty, /^Fewer than 4 games/);
+  assert.deepEqual(payload.summary.cells, [{ label: "Placed", value: "$400", small: null }]);
+  assert.equal(payload.open.length, 1);
+  assert.deepEqual([payload.open[0].size, payload.open[0].stake, payload.open[0].inPlay], ["2-team · $400 to win $1,200", 400, true]);
+  assert.deepEqual(payload.open[0].legs[1], { label: "Elsewhere +3.5", note: "no board game; counted as won", win: "—", counted: true });
+  assert.equal(payload.breakEven, "70.7% a leg breaks even at +300");
+});
+
+test("attach.json: step 1 lists the bet's games best first, step 2 the plan and the pins body; a settled or unknown bet is a 404", async () => {
+  const { runner } = await startedRunner({ "/bets.json": betsBody([BEARS_HELD]), "/settings.json": { settings: OPEN_SETTINGS, updatedAt: null } });
+  const pick = runner.attachPayload(new URLSearchParams({ betId: "bol-1", query: "" }));
+  assert.equal(pick.scope, "NFL · Sat Sep 12 to Mon Sep 14");
+  assert.deepEqual(pick.events[0], { eventId: 125807, label: "Chicago Bears @ Carolina Panthers", meta: "Sun Sep 13 1:00 PM ET · rot 465 / 466", why: "Chicago Bears matches" });
+  const confirm = runner.attachPayload(new URLSearchParams({ betId: "bol-1", eventId: "125807", swapped: "0" }));
+  assert.equal(confirm.label, "Chicago Bears @ Carolina Panthers");
+  assert.deepEqual([confirm.pinRequest.pin.betId, confirm.pinRequest.pin.eventId], ["bol-1", "125807"]);
+  assert.equal(confirm.venueLabel, betsLib.venueLabel("betonline"));
+  assert.throws(() => runner.attachPayload(new URLSearchParams({ betId: "nope" })), (error) => error.status === 404);
+  assert.throws(() => runner.attachPayload(new URLSearchParams({ betId: "bol-1", eventId: "1" })), /has left the board/);
+  runner.stop();
+});
+
+test("a bet Dismissed on either page stops needing a game in edges.json, and lists as dismissed", async () => {
+  const stray = { ...BEARS_HELD, id: "bol-stray", awayTeam: "Nowhere Owls", homeTeam: "Lost Llamas" };
+  const flagged = await startedRunner({ "/bets.json": betsBody([stray]), "/settings.json": { settings: OPEN_SETTINGS, updatedAt: null } });
+  const before = flagged.runner.edgesPayload().betsService.unmatched.find((entry) => entry.betId === "bol-stray");
+  flagged.runner.stop();
+  assert.deepEqual([before.needsGame, before.dismissed], [true, false]);
+  const body = { ...betsBody([stray]), dismissals: [{ betId: "bol-stray", dismissedAt: "2026-09-13T15:00:00Z" }] };
+  const { runner } = await startedRunner({ "/bets.json": body, "/settings.json": { settings: OPEN_SETTINGS, updatedAt: null } });
+  const after = runner.edgesPayload().betsService.unmatched.find((entry) => entry.betId === "bol-stray");
+  runner.stop();
+  assert.deepEqual([after.needsGame, after.dismissed], [false, true]);
+});
+
+// ---- the automated taker (server/taker.js, T1: decides, places nothing) ----
+// The CFB venue-id slice (Duquesne @ Washington State, Kalshi rung ids) served
+// as league 2, the clock four days before its kickoff, a 5% Unabated edge set
+// on Kalshi's WSU -35.5 alt (-143, 0.587157 all-in) and every other book at
+// that number made worse, so the row is the best price.
+const TAKER_NOW = Date.parse("2026-09-15T19:00:00Z");
+const TAKER_TICKER = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36";
+
+function takerVenueSlice() {
+  const json = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "v2_venue_ids_slice.json"), "utf8"));
+  const spreadRow = json.odds["lg2:pt1:pregame"].find((row) => row.key === "pt1:pregame:bt2:e123742");
+  for (const [sideKey, books] of Object.entries(spreadRow.sides)) {
+    for (const [bookKey, book] of Object.entries(books)) {
+      for (const rung of book.alternateLines || []) {
+        if (rung && rung.points === -41.5 && sideKey === "si1:tid717" && bookKey === "ms105") Object.assign(rung, { ge: 0.06, bacr: 100, sequenceNumber: TAKER_NOW - 60000 });
+        if (!rung || rung.points !== -35.5 || sideKey !== "si1:tid717") continue;
+        if (bookKey === "ms105") Object.assign(rung, { ge: 0.05, bacr: -160, sequenceNumber: TAKER_NOW - 60000 });
+        else if (rung.americanPrice != null) Object.assign(rung, { americanPrice: -200, price: -200 });
+      }
+    }
+  }
+  return JSON.stringify(json);
+}
+
+function takerUnabatedFetch() {
+  const body = takerVenueSlice();
+  return async (url) => {
+    if (url.split("?")[0] === SNAPSHOT_BASE_URL(2)) return response({ body, headers: { "content-length": "1000", "last-modified": new Date(TAKER_NOW - 20000).toUTCString() } });
+    return response({ status: 404, body: "not found" });
+  };
+}
+
+// Kalshi: a 57c YES ask with 40 contracts behind it on the WSU -35.5 market,
+// 46c on WSU -41.5, and both markets active at their strikes.
+function kalshiFetch(markets = {}) {
+  const calls = [];
+  const impl = async (url) => {
+    calls.push(url);
+    if (url.endsWith("/markets/KXNCAAFSPREAD-26SEP19DUQWSU-WSU42/orderbook")) {
+      return response({ body: JSON.stringify({ orderbook_fp: { yes_dollars: [["0.4400", "100"]], no_dollars: [["0.5400", "40"]] } }) });
+    }
+    if (url.endsWith(`/markets/${TAKER_TICKER}/orderbook`)) {
+      return response({ body: JSON.stringify({ orderbook_fp: { yes_dollars: [["0.5500", "100"]], no_dollars: [["0.4300", "40"]] } }) });
+    }
+    if (url.endsWith("/markets/KXNCAAFSPREAD-26SEP19DUQWSU-WSU42")) {
+      return response({ body: JSON.stringify({ market: { status: "active", floor_strike: 41.5, yes_sub_title: "Washington St. wins by over 41.5 points", ...markets.WSU42 } }) });
+    }
+    if (url.endsWith(`/markets/${TAKER_TICKER}`)) {
+      return response({ body: JSON.stringify({ market: { status: "active", floor_strike: 35.5, yes_sub_title: "Washington St. wins by over 35.5 points", ...markets.WSU36 } }) });
+    }
+    return response({ status: 404, body: JSON.stringify({ error: "not found" }) });
+  };
+  impl.calls = calls;
+  return impl;
+}
+
+// The bets service with the desk's unseen-fill rule (taker_orders.py): an
+// order on a game whose earlier filled bot order is not among the request's
+// heldIds is refused, else it fills in full.
+function takerService(script) {
+  const posts = [];
+  const filledByEvent = new Map();
+  const impl = async (url, init = {}) => {
+    const route = url.slice(SERVICE_URL.length);
+    if (init.method === "POST") {
+      const body = JSON.parse(init.body);
+      posts.push({ route, body });
+      if (route === "/taker/order.json") {
+        const unseen = (filledByEvent.get(body.eventId) || []).find((heldId) => !body.heldIds.includes(heldId));
+        if (unseen) return response({ body: JSON.stringify({ status: "unseen_fill", detail: `${unseen} is not yet among the held bets` }) });
+        filledByEvent.set(body.eventId, [...(filledByEvent.get(body.eventId) || []), `kalshi:${body.ticker}:${body.side}`]);
+        return response({ body: JSON.stringify({ status: "filled", count: body.count, filled: body.count, cost: body.count * body.allIn, orderId: "k-1" }) });
+      }
+      return response({ body: JSON.stringify({ ok: true, logged: body.rows.length }) });
+    }
+    const answer = script[route];
+    if (answer instanceof Error) throw answer;
+    if (answer === undefined) return response({ status: 404, body: "{}" });
+    return response({ body: JSON.stringify(answer) });
+  };
+  impl.posts = posts;
+  impl.script = script;
+  return impl;
+}
+
+const TAKER_SETTINGS = { settings: { leagues: [2], periods: [1] }, updatedAt: null };
+
+// The bets service as the taker needs it: its Kalshi poll succeeded 30 s ago.
+function takerBetsBody(bets = [], kalshiSource = {}) {
+  const body = betsBody(bets);
+  body.sources.kalshi = { ok: true, fetchedAt: new Date(TAKER_NOW - 30 * 1000).toISOString(), error: null, count: bets.length, ...kalshiSource };
+  return body;
+}
+
+test("taker: a best-price Kalshi edge at the live ask is sent as one ubot- limit order; the game's next add waits for the fill to be held", async () => {
+  const kalshi = kalshiFetch();
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  const payload = runner.takerPayload();
+  assert.equal(payload.pass.skipped, null);
+  assert.equal(payload.desk, "armed");
+  // WSU -35.5 and WSU -41.5 are both bets: the better live edge (-41.5) goes
+  // first, and the desk refuses -35.5 until the -41.5 fill is among its held bets.
+  const decision = payload.decisions.find((row) => row.ticker === "KXNCAAFSPREAD-26SEP19DUQWSU-WSU42");
+  const waiting = payload.decisions.find((row) => row.ticker === TAKER_TICKER);
+  assert.equal(decision.reason, "bet", decision.detail);
+  assert.equal(waiting.reason, "bet", waiting.detail);
+  assert.equal(waiting.liveAsk, 0.57);
+  assert.ok(decision.contracts >= 1 && decision.contracts <= 40, String(decision.contracts));
+  assert.equal(payload.decisions[0], decision, "bets list first, best live edge first");
+  // Both reached the desk, best live edge first; only the first was sent.
+  const orders = service.posts.filter((post) => post.route === "/taker/order.json").map((post) => post.body);
+  assert.deepEqual(orders.map((order) => order.ticker), [decision.ticker, TAKER_TICKER]);
+  assert.match(orders[0].clientOrderId, /^ubot-[0-9a-f]{32}$/);
+  assert.deepEqual({ ticker: orders[0].ticker, side: orders[0].side, ask: orders[0].ask, count: orders[0].count },
+    { ticker: decision.ticker, side: "yes", ask: decision.liveAsk, count: decision.contracts });
+  assert.deepEqual({ eventId: orders[0].eventId, heldIds: orders[0].heldIds }, { eventId: 123742, heldIds: [] });
+  // The desk refuses a decision over a minute old, or priced on another Kalshi.
+  assert.deepEqual({ decidedAt: orders[0].decidedAt, kalshiBaseUrl: orders[0].kalshiBaseUrl },
+    { decidedAt: new Date(TAKER_NOW).toISOString(), kalshiBaseUrl: "https://kalshi.test/v2" });
+  assert.equal(decision.order.status, "filled");
+  assert.equal(waiting.order.status, "unseen_fill");
+  // Each order was preceded by a read of its market; everything else was orderbooks.
+  assert.ok(kalshi.calls.includes("https://kalshi.test/v2/markets/KXNCAAFSPREAD-26SEP19DUQWSU-WSU42"));
+  assert.ok(kalshi.calls.every((url) => url.startsWith("https://kalshi.test/v2/markets/")), "only market and orderbook reads");
+  const logged = service.posts.filter((post) => post.route === "/taker_decisions.json").flatMap((post) => post.body.rows);
+  assert.equal(logged.filter((row) => row.rowKey === decision.rowKey).length, 1);
+  // The next pass: the -41.5 fill is still not among the held bets, so the desk refuses every add on the game.
+  await runner.takerPass();
+  assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 4);
+  assert.ok(runner.takerPayload().decisions.filter((row) => row.reason === "bet").every((row) => row.order.status === "unseen_fill"));
+  assert.equal(runner.health().taker.byReason.bet >= 1, true);
+  runner.stop();
+});
+
+test("taker: a market that is closed, or at another strike, is market_mismatch and nothing is sent", async () => {
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiBaseUrl: "https://kalshi.test/v2",
+    kalshiFetch: kalshiFetch({ WSU42: { status: "closed" }, WSU36: { floor_strike: 34.5 } }),
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  const byTicker = new Map(runner.takerPayload().decisions.map((row) => [row.ticker, row]));
+  assert.equal(byTicker.get("KXNCAAFSPREAD-26SEP19DUQWSU-WSU42").reason, "market_mismatch");
+  assert.match(byTicker.get("KXNCAAFSPREAD-26SEP19DUQWSU-WSU42").detail, /status "closed"/);
+  assert.match(byTicker.get(TAKER_TICKER).detail, /floor_strike 34.5, row is -35.5/);
+  assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 0);
+  runner.stop();
+});
+
+test("taker: a service without the bot key answers 503, the decision reads off", async () => {
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  const offService = async (url, init = {}) => (url.endsWith("/taker/order.json")
+    ? response({ status: 503, body: JSON.stringify({ status: "off", error: "no bot Kalshi key is configured" }) })
+    : service(url, init));
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: offService, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  await runner.takerPass();
+  assert.equal(runner.takerPayload().decisions[0].order.status, "off");
+  assert.match(runner.takerPayload().desk, /no bot Kalshi key/);
+  runner.stop();
+});
+
+// Cal's open Kalshi bet on the slice's WSU -35.5 market, as /bets.json lists it.
+const WSU_HELD = {
+  id: `kalshi:${TAKER_TICKER}:yes`, source: "kalshi_api", venue: "kalshi", league: "cfb", status: "open", sourceFetchedAt: "2026-09-15T18:59:00Z",
+  awayTeam: "Duquesne", homeTeam: "Washington St.", awayKey: null, homeKey: null, betType: "spread", period: "FG", side: "home", points: -35.5,
+  price: -143, stake: 100, toWin: 70, contracts: 100, placedAt: "2026-09-15T18:00:00Z", closedAt: null, eventStart: "2026-09-19T19:30:00.000Z",
+  eventDate: "2026-09-19", isParlayLeg: false, parlayId: null, unmatchable: null, approx: [], rotation: null,
+  venueIds: { marketTicker: TAKER_TICKER, eventTicker: "KXNCAAFSPREAD-26SEP19DUQWSU" }, raw: {},
+};
+
+test("taker: a Removed bet (bet_exclusions) is not Cal's: it neither sizes the stake nor counts as held", async () => {
+  async function decisionWith(betsBodyForTaker) {
+    const runner = runnerLib.createRunner({
+      fetchImpl: takerUnabatedFetch(), serviceFetch: takerService({ "/bets.json": betsBodyForTaker, "/settings.json": TAKER_SETTINGS }),
+      kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+    });
+    await runner.start();
+    await runner.takerPass();
+    const decision = runner.takerPayload().decisions.find((row) => row.ticker === TAKER_TICKER);
+    runner.stop();
+    return decision;
+  }
+  const held = await decisionWith(takerBetsBody([WSU_HELD]));
+  assert.equal(held.reason, "size_zero", held.detail);
+  assert.deepEqual(held.heldIds, [WSU_HELD.id]);
+  const removed = await decisionWith({ ...takerBetsBody([WSU_HELD]), exclusions: [{ betId: WSU_HELD.id, venue: "kalshi", excludedAt: "2026-09-15T18:30:00Z" }] });
+  assert.equal(removed.reason, "bet", removed.detail);
+  assert.deepEqual(removed.heldIds, []);
+});
+
+test("taker: a decision chunk the bets service refuses (400) is dropped and counted, not retried forever", async () => {
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  let refused = 0;
+  const refusingService = async (url, init = {}) => {
+    if (url.endsWith("/taker_decisions.json") && refused === 0) {
+      refused += 1;
+      return response({ status: 400, body: JSON.stringify({ error: "rows[0].reason must be one of ..." }) });
+    }
+    return service(url, init);
+  };
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: refusingService, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  const log = runner.health().taker.log;
+  assert.equal(refused, 1);
+  assert.ok(log.dropped >= 1, JSON.stringify(log));
+  assert.deepEqual({ unsent: log.unsent, error: log.error }, { unsent: 0, error: null });
+  runner.stop();
+});
+
+test("taker: holdings unknown (bets service down) decides nothing and reads no book", async () => {
+  const kalshi = kalshiFetch();
+  const service = takerService({ "/bets.json": new Error("connection refused"), "/settings.json": TAKER_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  assert.match(runner.takerPayload().pass.skipped, /bets service/);
+  assert.deepEqual(runner.takerPayload().decisions, []);
+  assert.equal(kalshi.calls.length, 0);
+  runner.stop();
+});
+
+test("taker: a Kalshi poll that failed, or is older than 5 min, means unknown holdings: the pass decides nothing", async () => {
+  for (const [source, expected] of [
+    [{ ok: false, error: "HTTP 401" }, /Kalshi poll failed: HTTP 401/],
+    [{ fetchedAt: new Date(TAKER_NOW - 6 * 60 * 1000).toISOString() }, /older than 5 min/],
+  ]) {
+    const kalshi = kalshiFetch();
+    const service = takerService({ "/bets.json": takerBetsBody([], source), "/settings.json": TAKER_SETTINGS });
+    const runner = runnerLib.createRunner({
+      fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+      betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+    });
+    await runner.start();
+    await runner.takerPass();
+    assert.match(runner.takerPayload().pass.skipped, expected);
+    assert.equal(kalshi.calls.length, 0);
+    runner.stop();
+  }
+  // No Kalshi source at all (the service has no Kalshi key) is the same.
+  const service = takerService({ "/bets.json": betsBody([]), "/settings.json": TAKER_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  assert.match(runner.takerPayload().pass.skipped, /does not poll Kalshi/);
+  runner.stop();
+});
+
+test("taker: a league snapshot that landed over 3 min ago is stale_feed for its rows, and the runner re-downloads every minute", async () => {
+  let clock = TAKER_NOW;
+  const kalshi = kalshiFetch();
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  service.posts.length = 0;
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => clock, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  assert.equal(runner.scanner.refreshEveryMs(9.7 * 1024 * 1024), 60 * 1000);
+  clock += 4 * 60 * 1000;
+  // The Kalshi poll must still be fresh for the pass to run at all.
+  service.script["/bets.json"] = takerBetsBody([], { fetchedAt: new Date(clock - 30 * 1000).toISOString() });
+  await runner.pollBets();
+  await runner.takerPass();
+  const decisions = runner.takerPayload().decisions;
+  assert.ok(decisions.length > 0);
+  assert.ok(decisions.every((row) => row.reason === "stale_feed"), JSON.stringify(decisions.map((row) => row.reason)));
+  assert.match(decisions[0].detail, /landed 240 s ago/);
+  assert.equal(kalshi.calls.length, 0, "no orderbook is read for a stale row");
+  runner.stop();
+});
+
+test("taker: a failed orderbook read is no_book for that row, the pass goes on", async () => {
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: async () => { throw new Error("socket hang up"); },
+    kalshiBaseUrl: "https://kalshi.test/v2", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  const decision = runner.takerPayload().decisions.find((row) => row.ticker === TAKER_TICKER);
+  assert.equal(decision.reason, "no_book");
+  assert.match(decision.detail, /socket hang up/);
+  runner.stop();
 });

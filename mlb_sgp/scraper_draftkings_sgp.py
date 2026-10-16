@@ -404,6 +404,26 @@ def _strip_prefix(mid: str) -> str:
     return mid.split("_")[-1] if "_" in mid else mid
 
 
+def _straight_odds_by_selection(markets: list[dict]) -> dict[str, float]:
+    """{selection id: DK's straight decimal odds} for every live selection.
+
+    These are the plain single-bet prices the parlays payload already carries
+    (``trueOdds`` matches ``displayOdds``). The SGP builder's 1-leg price is
+    NOT this number — it can sit a few cents off (2026-10-04: 1st-inning
+    total +125/-160 straight vs +120/-155 in the builder) — so 1-leg fairs
+    devig these. A suspended (``isDisabled``) or unpriced selection is left
+    out rather than given a stale number.
+    """
+    odds = {}
+    for market in markets:
+        for selection in market.get("selections") or []:
+            true_odds = selection.get("trueOdds")
+            if selection.get("isDisabled") or not true_odds:
+                continue
+            odds[str(selection["id"])] = float(true_odds)
+    return odds
+
+
 # Selection IDs look like 0HC84252605P150_3 (spread) or 0OU84265271U750_3 (total).
 # The 8+ digits immediately after the 0HC/0OU prefix are the DK market_num. A
 # "same-market" selection pair means both legs were priced from the same DK
@@ -486,6 +506,7 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
         'fg': {'spreads': {...}, 'totals': {...}},
         'f5': {'spreads': {...}, 'totals': {...}},
         'i1': {'spreads': {...}, 'totals': {...}},
+        'straight_odds': {selection_id: decimal},   # live selections only
     }
 
     Period assignment for game line markets:
@@ -511,7 +532,8 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
 
     empty = {"fg": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}},
              "f5": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}},
-             "i1": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}}}
+             "i1": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}},
+             "straight_odds": {}}
     # 404 = event gone; any other non-200 (DK's 403) is a dead book, not an
     # event with no SGP selections — see issue #33.
     if not check_response(DK_BOOK, "structure", resp, allow_404=True):
@@ -526,12 +548,19 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
     # standalone totals are deliberately skipped as inning noise for FG/F5).
     # Payload-shape drift degrades to an empty i1 bucket, never a crash.
     i1_total_mnums: set = set()
+    straight_odds: dict = {}
     try:
-        for m in (resp.json() or {}).get("data", {}).get("markets", []) or []:
+        markets = (resp.json() or {}).get("data", {}).get("markets", []) or []
+        for m in markets:
             if (m.get("name") or "") == "Runs - 1st Inning":
                 i1_total_mnums.add(_strip_prefix(str(m.get("id", ""))))
-    except Exception:
+        straight_odds = _straight_odds_by_selection(markets)
+    except Exception as e:
+        logger.warning("draftkings: parlays payload for event %s unreadable "
+                       "as JSON markets (%s) — no 1st-inning bucket, no "
+                       "straight odds", dk_event_id, e)
         i1_total_mnums = set()
+        straight_odds = {}
 
     spread_matches = re.findall(r'0HC(\d+)([NP])(\d+)(_\d+)', text)
     total_matches = re.findall(r'0OU(\d+)([OU])(\d+)(_\d+)', text)
@@ -662,6 +691,7 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
     out["fg"]["moneyline"] = _extract_moneyline_selections(text, fg_ml)
     out["f5"]["moneyline"] = _extract_moneyline_selections(text, f5_ml)
     out["i1"]["moneyline"] = {"1": [], "3": []}   # no I1 moneyline market
+    out["straight_odds"] = straight_odds
 
     if logger.isEnabledFor(logging.DEBUG):
         for per in ("fg", "f5"):

@@ -4,8 +4,9 @@ Inputs: an SGPService and the current slate. Outputs: SurfaceRows + counts.
 Side effects: live HTTP to one book. No DB writes (the runner owns those).
 
 Books on this route are FanDuel, BetMGM, Novig and Caesars (#95 coverage).
-DraftKings carries no structure odds at all and ProphetX 403s at the events
-stage on the first request of a session, so neither is here.
+DraftKings is priced by the singles route (#95 found no structure odds; its
+structure has carried them since 2026-10-04, unused here) and ProphetX 403s
+at the events stage on the first request of a session, so neither is here.
 
 Cost shape, measured in #95: one cold structure fetch per game (median
 0.31-0.42s) and then ~0.00s per additional leg on that game, with ZERO SGP

@@ -68,6 +68,15 @@ KALSHI_BASE_URL = _get("KALSHI_BASE_URL",
 # Where the store lives. The server deploy (unabated_ticket/deploy/) points it
 # at a writable data directory, since the repo is mounted read-only there.
 DB_PATH = Path(_get("BETS_DB_PATH", str(PKG_DIR / "bets.duckdb")))
+# The automated taker's decision log (taker_store.py), its own file so the
+# bot's log never shares a write path with Cal's bet history.
+TAKER_DB_PATH = Path(_get("TAKER_DB_PATH", str(PKG_DIR / "taker.duckdb")))
+# The bot's own Kalshi key (taker_orders.py): made for the bot alone so it can
+# be revoked alone. Both set = the bot places orders; either missing = it does not.
+KALSHI_TAKER_API_KEY_ID = _get("KALSHI_TAKER_API_KEY_ID")
+KALSHI_TAKER_PRIVATE_KEY_PATH = _get("KALSHI_TAKER_PRIVATE_KEY_PATH")
+# The stop switch: while this file exists the bot sends no order (`touch` it to stop, `rm` to resume).
+TAKER_STOP_PATH = Path(_get("TAKER_STOP_PATH", str(PKG_DIR / "taker.stop")))
 
 # HTTP. Loopback only: the service has no auth and serves the user's own bets.
 # Not configurable on purpose: on the server, `tailscale serve` on the host
@@ -181,6 +190,11 @@ POLYMARKET_US_HISTORY_DAYS = RETENTION_DAYS + 1
 # request that is not the browser session's own, so the extension reads the account
 # from Cal's logged-in Chrome (extension/bet105.js, every 5 min while the panel is
 # open) and POSTs it to /bet105.json; sources/bet105.py parses it.
+
+# DraftKings (2026-10-10): the same — no credentials and no poll here. Akamai's bot
+# checks and a login code stop anything but Cal's own Chrome, so the extension reads
+# My Bets' socket there (extension/draftkings.js) and POSTs to /draftkings.json;
+# sources/draftkings.py parses it.
 
 # Logging
 LOG_PATH = Path(_get("BETS_SERVICE_LOG_PATH", str(PKG_DIR / "bets_service.log")))

@@ -25,6 +25,12 @@ PARSER regression. A restart of the maker would therefore have pointed the
 next fixer at DK's parser while the real story was a dead endpoint: the exact
 misdiagnosis epic #32 exists to remove.
 
+2026-10-04: the on-demand path now prices through DK's SGP-builder GET
+(``DraftKingsClient.fetch_added_leg_odds``), whose decline is a 200 without
+the candidate or a 400 for a pulled line. The classification pinned here is
+unchanged: 403/429 (and a busy price lane) count as transport, a decline
+does not.
+
 No network: every test injects a fake session.
 """
 from __future__ import annotations
@@ -41,6 +47,7 @@ if str(_MLB_SGP_DIR) not in sys.path:
 
 from mlb_sgp import draftkings                                   # noqa: E402
 from mlb_sgp._shared import FetchCounters                        # noqa: E402
+from mlb_sgp.dk_client import DraftKingsClient                   # noqa: E402
 
 _LOG = logging.getLogger(__name__)
 
@@ -50,6 +57,7 @@ class _Response:
         self.status_code = status_code
         self._body = body
         self.text = text
+        self.headers = {}
 
     def json(self):
         if self._body is None:
@@ -60,33 +68,43 @@ class _Response:
 class _Session:
     def __init__(self, response):
         self._response = response
-        self.posts = 0
+        self.gets = 0
 
-    def post(self, url, **kwargs):
-        self.posts += 1
+    def get(self, url, **kwargs):
+        self.gets += 1
         return self._response
 
 
-class _Client:
-    def __init__(self, response):
-        self.session = _Session(response)
+def _client(response):
+    client = DraftKingsClient.__new__(DraftKingsClient)
+    client.session = _Session(response)
+    return client
 
 
-AKAMAI_DENY = _Response(
-    403, text="<HTML><HEAD>\n<TITLE>Access Denied</TITLE>\n</HEAD>")
-NON_COMBINABLE = _Response(422, body={"statusCode": "NonCombinable"})
-PRICED = _Response(200, body={"bets": [{"trueOdds": "3.72",
-                                        "selectionsMapped": ["a", "b"]}]})
+class _BusyLane:
+    """A price lane that stayed busy past its wait budget."""
+
+    def answer(self, key, fetch):
+        return None
+
 
 _REFS = ["0HC1P150_1", "0OU1O950_1"]
 
+AKAMAI_DENY = _Response(
+    403, text="<HTML><HEAD>\n<TITLE>Access Denied</TITLE>\n</HEAD>")
+PULLED_LINE = _Response(400, body={"code": "InvalidSelection"})
+PRICED = _Response(200, body={"data": {
+    "selectionsMapped": ["0HC1P150_1"], "selectionsNotMapped": [],
+    "compatibleMarkets": [{"id": "3_1", "selections": [
+        {"id": "0OU1O950_1", "trueOdds": 3.72}]}]}})
 
-def _price(response):
+
+def _price(response, client=None):
     """Run one on-demand price call and return (result, counters snapshot)."""
     counters = FetchCounters("draftkings", "on_demand")
     counters.bump("targets_attempted")       # the caller counts the target
-    result = draftkings.price_selection_set(_Client(response), _REFS,
-                                            counters=counters)
+    result = draftkings.price_selection_set(client or _client(response),
+                                            _REFS, "evt1", counters=counters)
     return result, counters
 
 
@@ -118,23 +136,34 @@ def test_rate_limited_price_endpoint_counts_a_transport_error():
     assert counters.snapshot().transport_errors == 1
 
 
+def test_busy_price_lane_counts_a_transport_error():
+    """A call our own lane never sent is not a parser that went silent: it
+    must not arm ``prices_empty`` either."""
+    client = _client(PRICED)
+    client.__dict__["_price_lane"] = _BusyLane()
+    result, counters = _price(None, client=client)
+    assert result is None
+    assert counters.snapshot().transport_errors == 1
+    assert client.session.gets == 0
+
+
 # --------------------------------------------------------------------------- #
 # A per-combo decline must stay a per-combo decline                            #
 # --------------------------------------------------------------------------- #
 
-def test_non_combinable_is_not_a_transport_error():
-    """422 is normal and high-volume — most combos decline this way. Counting
-    it as transport would mask a real blockade behind constant noise."""
-    result, counters = _price(NON_COMBINABLE)
+def test_pulled_line_is_not_a_transport_error():
+    """A 400 for a line DK pulled is a per-combo verdict. Counting it as
+    transport would mask a real blockade behind constant noise."""
+    result, counters = _price(PULLED_LINE)
     assert result is None
     assert counters.snapshot().transport_errors == 0
 
 
-def test_non_combinable_still_arms_the_prices_empty_tripwire():
+def test_pulled_line_still_arms_the_prices_empty_tripwire():
     """The mirror of the 403 case: when transport is healthy and nothing
     priced, the tripwire SHOULD fire. Silencing every non-200 would trade one
     blind spot for another."""
-    _, counters = _price(NON_COMBINABLE)
+    _, counters = _price(PULLED_LINE)
     assert "prices_empty" in counters.tripwires()
 
 
@@ -147,14 +176,27 @@ def test_successful_price_is_unchanged():
 def test_blocked_endpoint_makes_exactly_one_wire_call():
     """A 403 must not be retried: issue #90 found our own retry volume is what
     holds a reputation block open."""
-    client = _Client(AKAMAI_DENY)
-    draftkings.price_selection_set(client, _REFS,
+    client = _client(AKAMAI_DENY)
+    draftkings.price_selection_set(client, _REFS, "evt1",
                                    counters=FetchCounters("draftkings",
                                                           "on_demand"))
-    assert client.session.posts == 1
+    assert client.session.gets == 1
 
 
 def test_price_selection_set_still_never_raises():
     """The on-demand contract: one unpriceable combo must never abort a
     flight, whatever the status."""
-    assert draftkings.price_selection_set(_Client(AKAMAI_DENY), _REFS) is None
+    assert draftkings.price_selection_set(_client(AKAMAI_DENY), _REFS,
+                                          "evt1") is None
+
+
+def test_blocked_endpoint_logs_a_warning_at_most_once_a_minute(caplog):
+    """The on-demand outcome stays "empty" and the book-health alert treats
+    that as healthy, so this log line is the only loud signal that DK is
+    blocking the GET — the kill-switch trigger."""
+    client = _client(AKAMAI_DENY)
+    with caplog.at_level(logging.WARNING, logger="mlb_sgp.dk_client"):
+        for _ in range(3):
+            draftkings.price_selection_set(client, _REFS, "evt1")
+    blocked = [r for r in caplog.records if "HTTP 403" in r.getMessage()]
+    assert len(blocked) == 1

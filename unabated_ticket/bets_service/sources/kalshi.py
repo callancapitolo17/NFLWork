@@ -154,6 +154,26 @@ def _game_fields(ticker: str, contract_side: str, market: dict | None, event: di
     }
 
 
+def fill_on_its_open_side(fill: dict, position: dict | None) -> dict:
+    """A sell of one side while the account is net long the OTHER side is a
+    buy of that other side. Kalshi's v2 order API trades the YES leg only, so
+    a NO buy (the taker bot's, unabated_ticket/bets_service/taker_orders.py)
+    is placed as a YES sell and its fill may be labelled either way; the
+    position's sign says which it was. Every fill carries both prices, so
+    only the labels change. A sell of a side that IS held stays a sell."""
+    if fill.get("action") != "sell" or not position:
+        return fill
+    position_fp = to_number(position.get("position_fp"))
+    sold = fill.get("side")
+    if sold == "yes" and position_fp < 0:
+        bought = "no"
+    elif sold == "no" and position_fp > 0:
+        bought = "yes"
+    else:
+        return fill
+    return {**fill, "side": bought, "outcome_side": bought, "action": "buy"}
+
+
 def normalize_kalshi(fills: list[dict], positions: list[dict], markets: dict[str, dict],
                      events: dict[str, dict], fetched_at: str | None) -> list[dict]:
     """One record per (ticker, side) seen in `fills`. `markets` / `events` are
@@ -162,6 +182,7 @@ def normalize_kalshi(fills: list[dict], positions: list[dict], markets: dict[str
     positions_by_ticker = {position["ticker"]: position for position in positions}
     groups: dict[str, list[dict]] = {}
     for fill in fills:
+        fill = fill_on_its_open_side(fill, positions_by_ticker.get(fill["ticker"]))
         groups.setdefault(f"{fill['ticker']}:{fill['side']}", []).append(fill)
     records = []
     for key, group in groups.items():
@@ -316,6 +337,21 @@ def apply_net_position_pnl(records: list[dict], fills: list[dict],
 # ---- network half -----------------------------------------------------------------
 
 ApiCall = Callable[[str, str], tuple[int, object, dict]]
+
+
+# Integer cents (verified 2026-10-13): `balance` is cash, open positions left out;
+# `portfolio_value` is what the open positions are worth now.
+BALANCE_PATH = "/portfolio/balance"
+
+
+def balance_of_kalshi(body: dict) -> dict:
+    cash_cents = body.get("balance")
+    positions_cents = body.get("portfolio_value")
+    for field, value in (("balance", cash_cents), ("portfolio_value", positions_cents)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RuntimeError(f"Kalshi {BALANCE_PATH}: expected integer cents in {field}, got {value!r}")
+    cash = cash_cents / 100
+    return {"cash": cash, "inBets": positions_cents / 100, "available": cash, "creditLimit": None}
 
 
 def _paginate(api: ApiCall, base_path: str, items_key: str) -> Iterator[dict]:
@@ -488,3 +524,10 @@ class KalshiSource:
         log.info("kalshi: %d fills, %d positions -> %d records", len(fills), len(positions),
                  len(records))
         return records
+
+    def balance(self) -> dict:
+        """The account balance for the tracker's Balance by book card (balances.py)."""
+        status, body, _headers = self._api("GET", BALANCE_PATH)
+        if status != 200 or not isinstance(body, dict):
+            raise RuntimeError(f"GET {BALANCE_PATH} expected 200 with a JSON body, got {status}")
+        return balance_of_kalshi(body)

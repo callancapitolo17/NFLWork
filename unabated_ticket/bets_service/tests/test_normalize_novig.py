@@ -138,6 +138,12 @@ def test_first_half_is_1h_and_first_5_is_f5(novig_fixture):
         "league": "mlb", "betType": "total", "period": "F5", "side": "over", "points": 4.5, "status": "lost", "stake": 154, "contracts": 354.02}
     assert pick(by_id(out, FIRST_FIVE_ML), ["league", "betType", "period", "side", "points", "price"]) == {
         "league": "mlb", "betType": "moneyline", "period": "F5", "side": "home", "points": None, "price": -108}
+    # Novig's current label for the same market, "First 5 Winner" (and "Winner" full game).
+    for subtitle, period in (("First 5 Winner", "F5"), ("Winner", "FG")):
+        card = copy.deepcopy(next(card for card in novig_fixture["settled"] if card.get("orderId") == FIRST_FIVE_ML.split(":")[1]))
+        card["outcome"]["subtitle"] = subtitle
+        assert pick(normalize_novig([card], NOVIG_FETCHED_AT)[0], ["betType", "period", "side", "unmatchable"]) == {
+            "betType": "moneyline", "period": period, "side": "home", "unmatchable": None}
     # An MLB market Novig labels "1st Half" is the same five innings.
     card = copy.deepcopy(next(card for card in novig_fixture["settled"] if card.get("orderId") == FIRST_HALF_NFL.split(":")[1]))
     card["eventHeader"]["league"] = "MLB"

@@ -211,8 +211,13 @@
   // kelly.bookProbOf). A bet record carries only the American price it was
   // placed at, so the cents are derived from it.
   function priceBoth(american) {
+    return `${signedNumber(american)} \u00b7 ${centsOf(american)}`;
+  }
+
+  // "43.5¢": an American price as the implied probability in cents.
+  function centsOf(american) {
     const decimal = american > 0 ? 1 + american / 100 : 1 + 100 / Math.abs(american);
-    return `${signedNumber(american)} \u00b7 ${(100 / decimal).toFixed(1)}\u00a2`;
+    return `${(100 / decimal).toFixed(1)}\u00a2`;
   }
 
   function roundCents(dollars) {
@@ -225,7 +230,7 @@
   }
 
   // Venues whose display name is not the capitalised key.
-  const VENUE_LABELS = { bfa: "BFA", polymarket_us: "Polymarket US", bet105: "Bet105" };
+  const VENUE_LABELS = { bfa: "BFA", polymarket_us: "Polymarket US", bet105: "Bet105", draftkings: "DraftKings" };
 
   function venueLabel(venue) {
     if (!venue) return "unknown venue";
@@ -784,8 +789,15 @@
   }
 
   // "Chattanooga -5.5 +138", "1H Under 22.5 -104", "NO PIT Steelers ≈ NE Patriots or tie -178".
-  // A record with no parsed pick reads its market title, else the venue's own text, else its id.
   function describeBet(bet) {
+    const price = bet.price == null ? "" : ` ${priceBoth(bet.price)}`;
+    const parlay = bet.isParlayLeg ? " (parlay leg)" : "";
+    return `${pickOf(bet)}${price}${parlay}`;
+  }
+
+  // The pick alone, its period first: "Chattanooga -5.5", "1H Under 22.5".
+  // A record with no parsed pick reads its market title, else the venue's own text, else its id.
+  function pickOf(bet) {
     const period = bet.period && bet.period !== "FG" ? `${bet.period} ` : "";
     let pick;
     if (bet.betType === "total") {
@@ -800,9 +812,7 @@
     } else {
       pick = betTeamName(bet, bet.side);
     }
-    const price = bet.price == null ? "" : ` ${priceBoth(bet.price)}`;
-    const parlay = bet.isParlayLeg ? " (parlay leg)" : "";
-    return `${period}${pick}${price}${parlay}`;
+    return `${period}${pick}`;
   }
 
   // The other side of a spread carries the negated number; a total or a
@@ -855,12 +865,35 @@
   // 2026-09-14).
   function labelOf(tier, bet, line) {
     const parts = [describeBet(bet), formatStake(bet.stake), venueLabel(bet.venue)];
-    // Only a bet of the row's own type has a number the row can have moved
-    // off: a moneyline held against a spread row does not.
+    const now = movedNumberOf(tier, bet, line);
+    if (now != null) parts.push(`now ${now}`);
+    return parts.join(" · ");
+  }
+
+  // Where the line sits now when it has moved off the bet's number, as the
+  // bet's side writes it ("39.5", "+14"), else null. Only a bet of the row's
+  // own type has a number the row can have moved off: a moneyline held
+  // against a spread row does not.
+  function movedNumberOf(tier, bet, line) {
     const sameType = bet.betType === lineBetType(line);
     const numberMoved = sameType && (tier === "same_side" || (tier === "opposite" && !oppositeSameNumber(bet, line)));
-    if (numberMoved) parts.push(`now ${linePointsAsBetSide(tier, line)}`);
-    return parts.join(" · ");
+    return numberMoved ? linePointsAsBetSide(tier, line) : null;
+  }
+
+  // The label's pieces for the Ticket's related-bets table: {pick, price
+  // ("+130", or null), cents ("43.5¢", or null), stake ("$70.00", always
+  // with cents so a column of them lines up), venue, now ("39.5", or null —
+  // labelOf's "now")}.
+  function labelCells(tier, bet, line) {
+    const parlay = bet.isParlayLeg ? " (parlay leg)" : "";
+    return {
+      pick: `${pickOf(bet)}${parlay}`,
+      price: bet.price == null ? null : signedNumber(bet.price),
+      cents: bet.price == null ? null : centsOf(bet.price),
+      stake: bet.stake == null ? "$?" : `$${bet.stake.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      venue: venueLabel(bet.venue),
+      now: movedNumberOf(tier, bet, line),
+    };
   }
 
   // ---- positions on the market axis (#130) -----------------------------------
@@ -953,7 +986,7 @@
         continue;
       }
       const tier = tierOf(bet, line);
-      matches.push({ tier, bet, label: labelOf(tier, bet, line), position: positionOf(bet, line) });
+      matches.push({ tier, bet, label: labelOf(tier, bet, line), cells: labelCells(tier, bet, line), position: positionOf(bet, line) });
     }
     matches.sort((a, b) => TIER_RANK[a.tier] - TIER_RANK[b.tier] || (b.bet.stake ?? 0) - (a.bet.stake ?? 0));
     return { matches, unmatched };

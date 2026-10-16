@@ -47,9 +47,14 @@
 
   const VENUE_NAMES = {
     kalshi: "Kalshi", novig: "Novig", betonline: "BetOnline", bfa: "BFA",
-    wagerzon: "Wagerzon", polymarket_us: "Polymarket US", bet105: "Bet105",
+    wagerzon: "Wagerzon", polymarket_us: "Polymarket US", bet105: "Bet105", draftkings: "DraftKings",
   };
   const BET_TYPE_NAMES = { moneyline: "Moneyline", spread: "Spread", total: "Total", other: "Other" };
+  // Markets of bets the sources leave as betType "other" (no game on the
+  // scanner's board to place them on), read off the venue's own text.
+  const OTHER_MARKET_NAMES = {
+    teamTotal: "Team total", playerProp: "Player prop", special: "Special", future: "Future", parlay: "Parlay",
+  };
   const KIND_NAMES = { straight: "Straight", parlay: "Parlay", teaser: "Teaser", kalshiCombo: "Kalshi combo" };
   // Kalshi's multivariate combo series: the MLB bots' RFQ fills (kalshi_mlb_mm,
   // kalshi_mlb_rfq) on the same account land in the bets service as these.
@@ -60,21 +65,34 @@
   const TIMING_BUCKETS = ["Under 1h before", "1 to 6h before", "6 to 24h before", "1 day+ before", "Live or unknown"];
   const STAKE_BUCKETS = ["Under $150", "$150 to $299", "$300 to $449", "$450 and up"];
   const NO_FAIR = "No fair saved";
+  const SIDE_NAMES = { over: "Over", under: "Under", home: "Home", away: "Away" };
+  const NO_SIDE = "No side";
+  const FAV_DOG = ["Fav", "Pick", "Dog"];
+  const NO_FAV_DOG = "Not fav/dog";
+  const NO_NUMBER = "No number";
+  const CLOSE_RESULTS = ["Beat close", "Lost close", "No close"];
   // Snapshots land every 1-5 min while the runner is up; 30 min of silence
   // before the start means it was not, and the reading is not the close.
   const CLOSE_MAX_GAP_MS = 30 * 60 * 1000;
   const FAIR_SOURCES = { fill: "fill", close: "close" };
 
-  // Group-by dimensions of the Analysis page; `order` fixes the row order of
-  // ordinal ones, the rest sort by handle.
+  // Group-by dimensions of the Analysis page and its pivot grid; `order` fixes
+  // the row order of ordinal ones, `numeric` sorts by the number in the label,
+  // the rest sort by handle.
   const GROUPS = [
     { key: "venue", label: "Venue" },
     { key: "league", label: "League" },
     { key: "market", label: "Market" },
+    // Nested: one section per league, its markets as rows (spreads vs totals vs moneylines within a sport).
+    { key: "leagueMarket", label: "League × Market", outer: "league", inner: "market" },
+    { key: "side", label: "Side", order: Object.values(SIDE_NAMES).concat(NO_SIDE) },
+    { key: "favDog", label: "Fav / Dog", order: FAV_DOG.concat(NO_FAV_DOG) },
+    { key: "number", label: "Number", numeric: true },
     { key: "period", label: "Period" },
     { key: "kind", label: "Type", order: ["Straight", "Parlay", "Teaser", "Kalshi combo"] },
     { key: "oddsBucket", label: "Odds", order: ODDS_BUCKETS },
     { key: "edgeBucket", label: "Edge", order: EDGE_BUCKETS.concat(NO_FAIR) },
+    { key: "closeResult", label: "Close", order: CLOSE_RESULTS },
     { key: "timing", label: "Timing", order: TIMING_BUCKETS },
     { key: "weekday", label: "Weekday", order: WEEKDAYS },
     { key: "stakeBucket", label: "Stake", order: STAKE_BUCKETS },
@@ -183,6 +201,36 @@
     return (points > 0 ? "+" : points < 0 ? "−" : "") + Math.abs(points);
   }
 
+  /** "Over" / "Under" on a total, "Home" / "Away" on a spread or moneyline. */
+  function sideOf(record) {
+    if (record.betType === "other") return NO_SIDE;
+    return SIDE_NAMES[record.side] || NO_SIDE;
+  }
+
+  /** Favourite or underdog: a spread by its points, a moneyline by its price; totals are neither. */
+  function favDogOf(record) {
+    if (record.betType === "spread" && Number.isFinite(record.points)) {
+      return record.points < 0 ? "Fav" : record.points > 0 ? "Dog" : "Pick";
+    }
+    if (record.betType === "moneyline" && Number.isFinite(record.price)) {
+      return record.price < 0 && record.price !== -100 ? "Fav" : record.price > 100 ? "Dog" : "Pick";
+    }
+    return NO_FAV_DOG;
+  }
+
+  /** The number bet: a total's points as is ("44.5"), a spread's signed ("−3.5"). */
+  function numberOf(record) {
+    if (!Number.isFinite(record.points)) return NO_NUMBER;
+    if (record.betType === "total") return String(record.points);
+    if (record.betType === "spread") return signedNumber(record.points);
+    return NO_NUMBER;
+  }
+
+  function closeResultOf(clv) {
+    if (clv === null) return CLOSE_RESULTS[2];
+    return clv > 0 ? CLOSE_RESULTS[0] : CLOSE_RESULTS[1];
+  }
+
   function eventLabel(record) {
     if (record.awayTeam && record.homeTeam) return record.awayTeam + " @ " + record.homeTeam;
     return "";
@@ -202,6 +250,73 @@
     if (!team) return fallback;
     if (record.betType === "moneyline") return prefix + team + " ML";
     return prefix + team + (Number.isFinite(record.points) ? " " + signedNumber(record.points) : "");
+  }
+
+  /** The market of a record the source typed "other", from the venue's text (formats checked
+   * against bets.duckdb 2026-10-12); "Other" when nothing matches. */
+  function otherMarketName(record) {
+    const raw = record.raw || {};
+    const names = Object.assign({}, BET_TYPE_NAMES, OTHER_MARKET_NAMES);
+    switch (record.venue) {
+      case "kalshi": {
+        // Game series end in the market (KXWNBASPREAD, KXNHLTOTAL); every other
+        // non-combo series held is a future (next club, awards, starting QB).
+        const series = String(raw.series || "");
+        if (/SPREAD$/.test(series)) return names.spread;
+        if (/TOTAL$/.test(series)) return names.total;
+        return series ? names.future : names.other;
+      }
+      case "novig": {
+        // outcomeSubtitle: "Winner", "First 5 Winner", "1st Half Total", "Passing Yards", ...
+        const subtitle = String(raw.outcomeSubtitle || "");
+        if (!subtitle) return names.other;
+        // Game markets only (the source's own label set); "Series Winner" and the like stay Other.
+        const game = /^(1st Half |First 5 )?(Winner|Moneyline|Spread|Total)$/.exec(subtitle);
+        if (game) return game[2] === "Spread" ? names.spread : game[2] === "Total" ? names.total : names.moneyline;
+        if (/Yards|Touchdown|Receptions|Points|Rebounds|Assists|Strikeouts|Hits|Goals/i.test(subtitle)) return names.playerProp;
+        return names.other;
+      }
+      case "bfa": {
+        // "[309141] TOTAL o61½-110 (A vrs B)", "[308945] ILLINOIS ST -3-110"; props carry no rotation.
+        const text = String(raw.description || "");
+        if (/^\[\d+\]\s+TOTAL\b/.test(text)) return /TEAM PTS/.test(text) ? names.teamTotal : names.total;
+        if (/^\[\d+\]\s+.+\s[+-]\d+½?(-|\+|EV)/.test(text)) return names.spread;
+        if (/^\[\d+\]/.test(text)) return names.other;
+        return /\d\+ |Over \d|Under \d|Goalscorer/.test(text) ? names.playerProp : names.other;
+      }
+      case "wagerzon": {
+        // "[777045] GIANTS SUPERFECTA (...)" specials; RBL rows are player props ("1+ Touchdowns").
+        const text = String(raw.description || "");
+        if (/TRIFECTA|SUPERFECTA/i.test(text)) return names.special;
+        return raw.sportCode === "RBL" ? names.playerProp : names.other;
+      }
+      case "bet105": {
+        // market: "Point spread", "Moneyline", "Total", "<team> team total".
+        const market = String(raw.market || "");
+        if (/team total/i.test(market)) return names.teamTotal;
+        if (/spread/i.test(market)) return names.spread;
+        if (/total/i.test(market)) return names.total;
+        if (/moneyline/i.test(market)) return names.moneyline;
+        return names.other;
+      }
+      case "polymarket_us": {
+        // marketType: "hockey_team_full_game_spread", "football_team_full_game_total"; a combo has comboLegs.
+        if (Array.isArray(raw.comboLegs) && raw.comboLegs.length) return names.parlay;
+        const marketType = String(raw.marketType || "");
+        if (/spread$/.test(marketType)) return names.spread;
+        if (/total$/.test(marketType)) return names.total;
+        if (/moneyline$/.test(marketType)) return names.moneyline;
+        return names.other;
+      }
+      default:
+        return names.other;
+    }
+  }
+
+  function marketName(record) {
+    if (isKalshiCombo(record)) return KIND_NAMES.kalshiCombo;
+    if (record.betType && record.betType !== "other" && BET_TYPE_NAMES[record.betType]) return BET_TYPE_NAMES[record.betType];
+    return otherMarketName(record);
   }
 
   function pnlOf(status, stake, toWin, decimal) {
@@ -257,6 +372,7 @@
       displayPrice: Number.isFinite(ticket.price) ? ticket.price : decimalToAmerican(decimal),
       oddsBucket: oddsBucket(Number.isFinite(ticket.price) ? ticket.price : decimalToAmerican(decimal)),
       edgeBucket: edgeBucket(edge),
+      closeResult: closeResultOf(clv),
       timing: timingBucket(placedMs, parseMs(ticket.eventStart)),
       stakeBucket: stakeBucket(ticket.stake),
       weekday: settledDay ? weekdayOf(settledDay) : null,
@@ -272,8 +388,9 @@
     return finishTicket({
       id: record.id, venueKey: record.venue, venue: venueName(record.venue), league: leagueName(record.league),
       kind: combo ? KIND_NAMES.kalshiCombo : KIND_NAMES.straight,
-      market: combo ? KIND_NAMES.kalshiCombo : BET_TYPE_NAMES[record.betType] || "Other",
+      market: marketName(record),
       period: record.period || "FG", event: eventLabel(record), selection: selectionLabel(record),
+      side: sideOf(record), favDog: favDogOf(record), number: numberOf(record),
       price: record.price, stake: Number(record.stake) || 0, toWin: record.toWin,
       venuePnl: Number.isFinite(record.pnl) ? record.pnl : null,
       status: record.status, placedAt: record.placedAt, closedAt: record.closedAt, eventStart: record.eventStart || null,
@@ -309,6 +426,7 @@
       id: parlayId, venueKey: first.venue, venue: venueName(first.venue),
       league: leagues.size === 1 ? leagues.values().next().value : "Mixed",
       kind, market: kind, period: "FG", event: legCount + "-leg " + kind.toLowerCase(),
+      side: NO_SIDE, favDog: NO_FAV_DOG, number: NO_NUMBER,
       selection: sorted.map(selectionLabel).filter(Boolean).join(" · "),
       price: Number.isFinite(raw.parlayPrice) ? raw.parlayPrice : null,
       stake: Number(first.stake) || 0, toWin: first.toWin,
@@ -393,6 +511,18 @@
     return { open, noResult };
   }
 
+  /** Kept tickets whose market no rule could name ("Other"), so a venue that renames a
+   * market or a new kind of bet shows up instead of piling up untyped.
+   * -> {count, venues: [{venue, count}] most first, examples: ["Venue: selection", ...]} */
+  function untypedSummary(tickets, maxExamples) {
+    const untyped = tickets.filter((t) => !t.excluded && t.market === BET_TYPE_NAMES.other);
+    const countByVenue = new Map();
+    for (const ticket of untyped) countByVenue.set(ticket.venue, (countByVenue.get(ticket.venue) || 0) + 1);
+    const venues = [...countByVenue].map(([venue, count]) => ({ venue, count })).sort((a, b) => b.count - a.count);
+    const examples = untyped.slice(0, maxExamples || 10).map((t) => t.venue + ": " + (t.selection || t.id));
+    return { count: untyped.length, venues, examples };
+  }
+
   /** Settled tickets whose Pacific settle day is in [firstDay, lastDay]. */
   function inDayRange(tickets, firstDay, lastDay) {
     return tickets.filter((t) => t.settledDay !== null && t.pnl !== null
@@ -412,6 +542,16 @@
       days.push(Object.assign({ day }, summarize(byDay.get(day) || [])));
     }
     return days;
+  }
+
+  /**
+   * The tickets without those settled on `day` or later (Cal, 2026-10-12): a
+   * Pacific day's results stay hidden until the next day, so the tracker never
+   * shows a running P&L for today. Open tickets, and settled ones with no
+   * settle time, are kept.
+   */
+  function hideSettledFrom(tickets, day) {
+    return tickets.filter((t) => t.settledDay === null || t.settledDay < day);
   }
 
   /** The earliest settle day among the tickets, or null. */
@@ -441,7 +581,6 @@
    * the daily series (one bar per day) millions of days long and hang the page.
    */
   function rangeBounds(range, today, custom, firstSettled) {
-    if (range === "Today") return { first: today, last: today };
     if (range === "Yesterday") { const day = addDays(today, -1); return { first: day, last: day }; }
     if (RANGE_DAYS[range]) return { first: addDays(today, 1 - RANGE_DAYS[range]), last: today };
     if (range === "YTD") return { first: today.slice(0, 4) + "-01-01", last: today };
@@ -453,13 +592,34 @@
       return first <= last ? { first, last } : { first: last, last: first };
     }
     if (range === "All") return { first: firstSettled || today, last: today };
-    throw new Error("unknown date range " + range + "; expected Today, Yesterday, 7D, 30D, 90D, YTD, All or Custom");
+    throw new Error("unknown date range " + range + "; expected Yesterday, 7D, 30D, 90D, YTD, All or Custom");
   }
 
-  /** Rows of the Analysis breakdown: one per value of `groupKey`, with totals. */
-  function groupBy(tickets, groupKey) {
+  function groupSpec(groupKey) {
     const spec = GROUPS.find((g) => g.key === groupKey);
     if (!spec) throw new Error("unknown group " + groupKey + "; expected one of " + GROUPS.map((g) => g.key).join(", "));
+    return spec;
+  }
+
+  /** The number in a "Number" label ("−3.5" -> -3.5); NaN for "No number". */
+  function labelNumber(label) {
+    return Number(String(label).replace("−", "-").replace("+", ""));
+  }
+
+  /** Labels in the group's own order: its fixed scale, by number, or as given (by handle). */
+  function orderLabels(spec, rows) {
+    if (spec.order) {
+      const rank = (label) => (spec.order.includes(label) ? spec.order.indexOf(label) : spec.order.length);
+      return rows.sort((a, b) => rank(a.label) - rank(b.label));
+    }
+    if (spec.numeric) {
+      const value = (label) => (Number.isNaN(labelNumber(label)) ? Infinity : labelNumber(label));
+      return rows.sort((a, b) => value(a.label) - value(b.label));
+    }
+    return rows.sort((a, b) => b.handle - a.handle);
+  }
+
+  function bucketsOf(tickets, groupKey) {
     const buckets = new Map();
     for (const ticket of tickets) {
       if (ticket.pnl === null) continue;
@@ -467,12 +627,44 @@
       if (!buckets.has(label)) buckets.set(label, []);
       buckets.get(label).push(ticket);
     }
-    const rows = [...buckets].map(([label, group]) => Object.assign({ label }, summarize(group)));
-    if (spec.order) {
-      const rank = (label) => (spec.order.includes(label) ? spec.order.indexOf(label) : spec.order.length);
-      return rows.sort((a, b) => rank(a.label) - rank(b.label));
-    }
-    return rows.sort((a, b) => b.handle - a.handle);
+    return buckets;
+  }
+
+  /** Rows of the Analysis breakdown: one per value of `groupKey`, with totals. */
+  function groupBy(tickets, groupKey) {
+    const spec = groupSpec(groupKey);
+    if (spec.outer) throw new Error("group " + groupKey + " is nested; use groupSections");
+    const rows = [...bucketsOf(tickets, groupKey)].map(([label, group]) => Object.assign({ label }, summarize(group)));
+    return orderLabels(spec, rows);
+  }
+
+  /**
+   * Sections of a nested breakdown (League × Market): one per value of the
+   * spec's `outer` key, largest handle first, each with its own totals and its
+   * rows grouped by `inner`.
+   */
+  function groupSections(tickets, groupKey) {
+    const spec = GROUPS.find((g) => g.key === groupKey);
+    if (!spec || !spec.outer) throw new Error("expected a nested group (" + GROUPS.filter((g) => g.outer).map((g) => g.key).join(", ") + "), got " + groupKey);
+    return groupBy(tickets, spec.outer).map((section) => Object.assign(section, {
+      rows: groupBy(tickets.filter((t) => (t[spec.outer] || "Unknown") === section.label), spec.inner),
+    }));
+  }
+
+  /**
+   * The Analysis pivot grid: rows by `rowKey`, columns by `colKey`, each in
+   * its group's order. Returns { cols: [label], rows: [{ label, total, cells }] }
+   * where `total` and each cell are summarize() results and a cell with no
+   * settled bets is null.
+   */
+  function pivot(tickets, rowKey, colKey) {
+    const cols = groupBy(tickets, colKey).map((col) => col.label);
+    const rows = groupBy(tickets, rowKey).map((row) => {
+      const inRow = tickets.filter((t) => (t[rowKey] || "Unknown") === row.label);
+      const byCol = bucketsOf(inRow, colKey);
+      return { label: row.label, total: row, cells: cols.map((col) => (byCol.has(col) ? summarize(byCol.get(col)) : null)) };
+    });
+    return { cols, rows };
   }
 
   /** Straight bets with a fair, push/void left out, in 10-point fair-probability bins. */
@@ -570,7 +762,7 @@
     PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR, CLOSE_MAX_GAP_MS, FAIR_SOURCES,
     pacificDay, addDays, dayKeyToUtc, weekdayOf, isDayKey, rangeBounds,
     americanToDecimal, decimalToAmerican,
-    buildTickets, summarize, exclusions, inDayRange, dailySeries, firstSettledDay, groupBy, calibration,
+    buildTickets, summarize, exclusions, untypedSummary, inDayRange, hideSettledFrom, dailySeries, firstSettledDay, groupBy, groupSections, pivot, calibration,
     venueName, splitOpenByStart, splitOpenForLive, sortRows,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

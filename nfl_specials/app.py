@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from nfl_specials import config, wz
-from nfl_specials.board import Board, refresh_board, size_board
+from nfl_specials.board import Board, HeldPlacement, refresh_board, size_board
 from nfl_specials.books import parse_start
 from nfl_specials.pricing import decimal_to_american
 from nfl_specials.store import Store
@@ -128,7 +128,7 @@ class SpecialsApp:
         # Unknown balance: recommend nothing rather than uncapped Kelly.
         sized = size_board(board, settings["bankroll"], settings["kelly_fraction"],
                            0.0 if budget is None else budget,
-                           placed_ids=_placed_ids(placements, account))
+                           held=_held_placements(placements, account))
         payload["board"] = {
             "started_at": board.started_at.isoformat(),
             "finished_at": board.finished_at.isoformat() if board.finished_at else None,
@@ -187,6 +187,14 @@ class SpecialsApp:
                 raise ValueError(f"${recent['risk']:.0f} already placed on this special at "
                                  f"{recent['placed_at']:%H:%M:%S} (ticket {recent['ticket_number']}); "
                                  f"wait 2 minutes to add more")
+            # Wagerzon's $250 is the most on one special in total (Cal, 2026-10-15),
+            # so a top-up may only take what the earlier tickets left.
+            week_start = datetime.now(timezone.utc) - timedelta(days=PLACEMENT_HISTORY_DAYS)
+            already = self.store.placed_risk(account, wz_game_id, week_start)
+            if already + risk > config.WZ_MAX_STAKE:
+                raise ValueError(f"${already:.0f} already on this special this week; Wagerzon takes "
+                                 f"${config.WZ_MAX_STAKE:.0f} per special, so at most "
+                                 f"${config.WZ_MAX_STAKE - already:.0f} more")
             result = wz.place_fecta(account, line.special, float(risk))
             if result.get("status") == "placed":
                 self._lower_balance(account, float(risk), result.get("balance_after"))
@@ -241,14 +249,15 @@ def _line_json(line, sizing) -> dict:
         "ev": sizing.ev,
         "kelly_stake": round(sizing.kelly_stake, 2),
         "recommended_stake": sizing.recommended_stake,
+        "unlimited_stake": sizing.unlimited_stake,
         "yields_to": sizing.yields_to,
     }
 
 
-def _placed_ids(placements: list[dict], account: str | None) -> frozenset[int]:
-    """wz_game_ids `account` has a placed bet on, among `placements`."""
-    return frozenset(p["wz_game_id"] for p in placements
-                     if p["account"] == account and p["status"] == "placed")
+def _held_placements(placements: list[dict], account: str | None) -> tuple[HeldPlacement, ...]:
+    """The bets `account` has placed, among `placements`."""
+    return tuple(HeldPlacement(p["wz_game_id"], p["risk"], p["wz_american"]) for p in placements
+                 if p["account"] == account and p["status"] == "placed")
 
 
 def _placement_json(row: dict) -> dict:
