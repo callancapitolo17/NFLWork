@@ -67,9 +67,10 @@ writer). Tables:
                Restore. Served only until the game starts; never pruned.
   edge_skips   one row per Edges line Cal skipped (the Skip chip on a row a
                book beats; pricecheck.js skipKeyOf: the line at every book,
-               '<rung>'; rows written before 2026-10-16 end '@<bookId>'), UPSERT
-               on the line, DELETE of the line (old per-book rows too) on Restore. Served only until the game
-               starts; never pruned.
+               '<rung>'; rows written before 2026-10-16 end '@<bookId>'),
+               UPSERT on the line, DELETE of the line (old per-book rows
+               too) on Restore. Served only until the game starts; never
+               pruned.
   edge_settings  at most ONE row (settings_id = 1): the Edges settings the
                server runner (unabated_ticket/server/runner.js, phone page plan
                step 1) reads every cycle, written by PUT /settings.json and
