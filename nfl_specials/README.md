@@ -37,7 +37,7 @@ superfectas (7-10 requests each, 0.5 s apart) took ~40 s over plain HTTP.
   chips, every book's fair with the worst case marked (a superfecta shows its
   one DK fair), WZ
   price, fair, EV (shaded by size), and the stake box prefilled with the
-  recommended stake, "to win", and the uncapped Kelly when trimmed.
+  recommended stake and its stake figures (see the stake column below).
 - **Place:** a confirm sheet (risk, to win, price, fair, EV, account), then the
   button shows "Placing…" until Wagerzon answers; the ticket or the error shows
   on the row. **Placed this week** lists only bets Wagerzon took (refused
@@ -87,7 +87,7 @@ superfectas (7-10 requests each, 0.5 s apart) took ~40 s over plain HTTP.
    the first, a placed bet shrinks the next stake instead of blocking it, and
    the same special is topped up to Kelly (never past Wagerzon's $250 per
    special). A placed bet whose special the board cannot price still blocks
-   its team. A special the joint Kelly leaves at zero "overlaps" the team's
+   its team. A special the joint Kelly leaves at zero yields to the team's
    biggest position. Opposite teams are separate groups. The stakes are then
    **fitted to the Wagerzon balance available** (read live from
    Wagerzon when a refresh starts and ends, so pending bets and the week's
@@ -100,12 +100,13 @@ superfectas (7-10 requests each, 0.5 s apart) took ~40 s over plain HTTP.
    $250 maximum, and what a capped bet can't take goes to the next edge. No
    stake (and no budget) goes to a special whose game has started.
 
-   Each row's stake column (2026-10-16, mockup approved by Cal) shows, in a
+   Each row's stake column shows, in a
    fixed order, the Recommended stake, the stake with no balance limit (same
    sizing, $20 minimum and $250 cap kept) and the uncapped joint Kelly stake,
    even when they match or are $0; what is already bet on that special as a
    green chip; and at most one plain reason when something holds the stake
-   back (amber when it is $0, grey when it is only capped or trimmed). A
+   back (amber when it is $0 for a reason worth a look, grey when it is only
+   capped, trimmed, full at $250 or waiting for the balance). A
    team's specials in one game sit together; with more than one, a strip on
    top shows the team's total bet and recommended stake and its one Kelly
    figure, and the rows drop their own Kelly line.
