@@ -28,7 +28,7 @@ The full quantitative reference — market-efficiency concepts, EV/Kelly/Poisson
 
 Both hooks always exit 0 and can never block a tool call.
 
-**Skills** (`.claude/skills/`, auto-load on relevance): `quant-edge-framework` (the +EV / market-efficiency / Kelly / devig reference) and `mlb-dashboard-worktree-testing` (how to test the dashboard from a worktree). Domain reference and occasional procedures live in skills, not this file, so they don't load every session.
+**Skills** (`.claude/skills/`, auto-load on relevance): `quant-edge-framework` (the +EV / market-efficiency / Kelly / devig reference), and `mlb-dashboard-worktree-testing` (how to test the dashboard from a worktree). The review procedure is the user-level `pre-pr-review` skill (`~/.claude/skills/`); this repo's half of it is `REVIEW.md` at the root plus the `review_evals/` cases that score the reviewer. Domain reference and occasional procedures live in skills, not this file, so they don't load every session.
 
 ## Implementation Philosophy
 
@@ -183,16 +183,9 @@ architecture.
 - Every implementation plan must include a **documentation section**: list which README.md and CLAUDE.md files need updating based on the changes. Update docs after code changes are finalized and reviewed, in the same merge to `main`.
 
 **Pre-merge review (REQUIRED):**
-- Before merging any feature branch to `main`, perform an executive engineer review of the full diff (`git diff main..HEAD`)
-- Review checklist:
-  - **Data integrity**: No duplicate writes, proper deduplication, incomplete/in-progress records filtered out
-  - **Resource safety**: All DB connections use `on.exit(dbDisconnect(...))`, no lock file leaks on crash
-  - **Edge cases**: Off-season behavior, empty tables, first-run with no existing data, timezone boundaries
-  - **Dead code**: No unused flags, functions, or imports introduced
-  - **Log/disk hygiene**: Log rotation in place, no unbounded file growth
-  - **Security**: No secrets in logs, no API keys exposed in output
-- Document findings as ISSUES TO FIX vs ACCEPTABLE RISKS before proceeding
-- Fix all identified issues, then get explicit user approval to merge
+- Before merging any feature branch to `main`, run the `pre-pr-review` skill on the full diff. It runs the checks and shows their output, tiers the change by what it touches (order placement, bets tables, CI and schedulers are High), reviews against `REVIEW.md` with 4 agents plus a verifier on the other model, and reports Important / Nit / Pre-existing / Skipped, count first.
+- Fix every Important finding, show the Skipped list, then get explicit user approval to merge
+- A bug that reaches `main` past this review becomes a case in `review_evals/` and a line in `REVIEW.md`
 
 **Approval required:**
 - Never merge to `main` or push to remote without explicit user approval
