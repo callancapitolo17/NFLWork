@@ -17,8 +17,8 @@
 //     one better book is enough to skip, a thin one under pricecheck's $30
 //     floor too; outliers and Cal's Skips trade);
 //   - lines changed within 7 days, right up to the start;
-//   - $3,500 at 0.25 Kelly (Cal, 2026-10-16; was $500, $1,000 before), conditional on every open bet (betsview.js
-//     stakeAdvice), contracts cut to the depth at the ask and the $500 of cash in the subaccount.
+//   - $3,500 at 0.25 Kelly, conditional on every open bet (betsview.js stakeAdvice),
+//     contracts cut to the depth at the ask; the order desk caps the money at risk.
 //
 // Reasons, in the order they are checked:
 //   stale_feed    the row's league snapshot is stale or its last load failed
@@ -52,7 +52,7 @@ const betsView = require("../extension/betsview.js");
 const pricecheck = require("../extension/pricecheck.js");
 
 const KALSHI_BOOK_ID = 105;
-// The Kelly bankroll, not the money at risk: the subaccount holds $500 and the desk ceiling is $500.
+// What Kelly divides by; the money at risk is the order desk's ceiling (taker_orders.BOT_BANKROLL).
 const KELLY_BANKROLL = 3500;
 const BOT_KELLY = 0.25;
 const MIN_LIVE_EDGE = 0.03;

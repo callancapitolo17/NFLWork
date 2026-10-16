@@ -2673,7 +2673,7 @@ subaccount. No shadow mode (Cal, 2026-10-14).
 
 | Rule | Value |
 |---|---|
-| Bankroll / Kelly | $3,500 at 0.25 (Cal, 2026-10-16; was $500), conditional on every open bet (the panel's sizing; bot fills reach it through the Kalshi source). The $3,500 is what Kelly divides by, not the money at risk: at $500 the bot sized to $0 on every game Cal already held |
+| Bankroll / Kelly | $3,500 at 0.25, conditional on every open bet (the panel's sizing; bot fills reach it through the Kalshi source). What Kelly divides by, not the money at risk: the Ceiling row caps that |
 | Ceiling | open bot cost (unsettled markets) never above $500; contracts cut to fit, else refused |
 | Price | Kalshi's live ask + 7% fee no more than 0.1c worse than Unabated's shown price, and no more than 1c better (a price that ran away from Unabated's snapshot is news its fair has not caught up with) |
 | Edge | 3% to 20% at that live price (fair read off Unabated's cheaper of its two prices) |

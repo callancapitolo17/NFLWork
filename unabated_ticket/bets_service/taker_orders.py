@@ -78,7 +78,7 @@ from unabated_ticket.bets_service.taker_store import TakerStore
 
 log = logging.getLogger(__name__)
 
-# Cal, 2026-10-14: $500, and the same $500 caps what the bot has open.
+# The ceiling on the bot's open cost and what the setup funds its subaccount with; the Kelly bankroll is taker.js KELLY_BANKROLL.
 BOT_BANKROLL = 500.0
 # Kalshi's fill feed can trail the match by a moment; a read this long after
 # the confirmed cancel is taken as final. Until then the whole requested cost is held.
