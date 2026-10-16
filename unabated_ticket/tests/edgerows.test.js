@@ -299,3 +299,20 @@ test("applyBetsPayload: the shared Dismiss and Can't tease marks, null from a se
   const now = edgeRows.applyBetsPayload(held, { bets: [], ...marks }, 0);
   assert.deepEqual([now.dismissals, now.teaserBlocks], [marks.dismissals, marks.teaserBlocks]);
 });
+
+test("stakeRail: a live row whose open bets could not be sized against shows no number and the reason; a pregame row keeps the standalone stake", () => {
+  const declined = {
+    kind: "declined", bet: 437.25, alone: 437.25, verb: "bet", held: 0, against: 0, teasers: { held: 0, against: 0 },
+    reason: "ladder not monotone", matches: [], cappedAt: null, uncapped: 437.25,
+  };
+  const flag = { tier: "same_side", matches: [], advice: declined };
+  assert.deepEqual(edgeRows.stakeRail({ stake: 437.25, live: { checkpoint: "halftime" }, bet: flag }), { text: "\u2014", note: "ladder not monotone", atSize: false });
+  assert.deepEqual(edgeRows.stakeRail({ stake: 437.25, bet: flag }), { text: "bet $437.25", note: null, atSize: false });
+});
+
+test("createLadderReaders: a bounded reader marks every ladder it builds, the default marks none", () => {
+  const state = sliceState();
+  const eventId = Number(Object.values(state.lines)[0].eventId);
+  assert.equal(edgeRows.createLadderReaders(state)(eventId)("FG", "total").bounded, false);
+  assert.equal(edgeRows.createLadderReaders(state, { bounded: true })(eventId)("FG", "total").bounded, true);
+});

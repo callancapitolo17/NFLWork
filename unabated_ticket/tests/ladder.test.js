@@ -128,3 +128,24 @@ test("periodTypeIdOf reads feed.PERIODS backwards; a period Unabated has no id f
   assert.equal(ladder.periodTypeIdOf("F5"), null);
   assert.equal(ladder.periodTypeIdOf(null), null);
 });
+
+test("probBounds: a cut with no rung is bracketed by the usable rungs around it, certainty past the ends, the caller's known points counted", () => {
+  const built = { axis: ladder.AXIS_TOTAL, periodTypeId: FULL_GAME, rungs: [[41.5, 0.62], [44.5, 0.5], [47.5, 0.38]] };
+  assert.deepEqual(ladder.probBounds(built, 42.5, []), { lo: 0.5, hi: 0.62 });
+  assert.deepEqual(ladder.probBounds(built, 51.5, []), { lo: 0, hi: 0.38 });
+  assert.deepEqual(ladder.probBounds(built, 38.5, []), { lo: 0.62, hi: 1 });
+  // The row's own cut, known from Unabated's edge, tightens the bracket from either side.
+  assert.deepEqual(ladder.probBounds(built, 51.5, [[49.5, 0.3]]), { lo: 0, hi: 0.3 });
+  assert.deepEqual(ladder.probBounds(built, 50.5, [[51.5, 0.25]]), { lo: 0.25, hi: 0.38 });
+  // A rung at the cut itself is the fair, not a bracket.
+  assert.deepEqual(ladder.probBounds(built, 44.5, []), { lo: 0.5, hi: 0.5 });
+  // A flat-lined tail is no rung: the bracket reaches past it to certainty.
+  const flat = { axis: ladder.AXIS_TOTAL, periodTypeId: FULL_GAME, rungs: [[41.5, 0.62], [44.5, 0.5], [47.5, 0.198], [50.5, 0.198]] };
+  assert.deepEqual(ladder.probBounds(flat, 48.5, []), { lo: 0, hi: 0.5 });
+  // Neighbours crossing by a hair still bound, low end first.
+  const crossed = { axis: ladder.AXIS_TOTAL, periodTypeId: FULL_GAME, rungs: [[41.5, 0.5], [44.5, 0.502]] };
+  assert.deepEqual(ladder.probBounds(crossed, 42.5, []), { lo: 0.5, hi: 0.502 });
+  // No ladder at all: anything.
+  assert.deepEqual(ladder.probBounds({ axis: ladder.AXIS_TOTAL, periodTypeId: FULL_GAME, rungs: [] }, 44.5, []), { lo: 0, hi: 1 });
+  assert.deepEqual(ladder.probBounds(null, 44.5, []), { lo: 0, hi: 1 });
+});
