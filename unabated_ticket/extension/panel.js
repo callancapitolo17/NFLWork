@@ -65,9 +65,6 @@
   // page.js republishes the books filter every 10s while an Unabated tab is open.
   const BOOKS_FILTER_STALE_MS = 6 * 60 * 60 * 1000;
   const MAX_EDGE_ROWS = edgeRows.MAX_EDGE_ROWS;
-  // Open bets never net against a live line: conditional Kelly needs a live
-  // fair ladder, which the screen does not expose (plan 2026-09-27, § Sizing).
-  const LIVE_NOT_SIZED_NOTE = "live · not sized";
 
   const el = (id) => document.getElementById(id);
   const view = {
@@ -549,6 +546,7 @@
     view.startLine.textContent = matchup && start ? `\u00b7 ${start}` : start;
     const betFlag = ticketBetFlag(ticket, line);
     renderRelatedBets(betFlag);
+    const liveBlock = liveTicketBlock(ticket, betFlag.advice);
 
     const bookLine = asBookLine(line.price, line.sourceFormat, line.sourcePrice);
     view.book.textContent = ticket.book.name;
@@ -558,10 +556,10 @@
 
     view.stake.classList.remove("no-edge");
     view.payoutRow.hidden = true;
-    if (!result) {
+    if (!result || liveBlock) {
       view.stake.textContent = "—";
       view.stake.classList.add("no-edge");
-      view.fullKelly.textContent = `Cannot size: ${reason}`;
+      view.fullKelly.textContent = `Cannot size: ${liveBlock || reason}`;
     } else if (result.stake <= 0) {
       view.stake.textContent = fmtDollars(0);
       view.stake.classList.add("no-edge");
@@ -572,16 +570,16 @@
     }
     // Sets view.stake to the number to act on when held bets changed it.
     const advice = betFlag.advice;
-    renderStakeExposure(advice);
+    renderStakeExposure(advice, liveBlock);
     // With unlimited liquidity: the reported number is sometimes wrong.
-    const uncapped = betsView.uncappedLine(advice, { price: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice, bookName: ticket.book.name });
+    const uncapped = liveBlock ? null : betsView.uncappedLine(advice, { price: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice, bookName: ticket.book.name });
     view.stakeUncapped.hidden = uncapped == null;
     view.stakeUncapped.textContent = uncapped || "";
 
     // Payout = stake x decimal odds at the book's American price; "to win" is
     // the profit on top of it. Both describe the number shown above them, so a
     // top-up prices the top-up and an at-size line shows no payout at all.
-    const acted = result ? betsView.suggestedBetAmount(advice) : null;
+    const acted = result && !liveBlock ? betsView.suggestedBetAmount(advice) : null;
     if (acted != null && acted > 0) {
       const payout = acted * kelly.americanToDecimal(line.price);
       view.profit.textContent = fmtDollars(payout - acted);
@@ -893,16 +891,19 @@
     // The ticket's event's venue id map lets an id-joined bet whose team
     // names do not resolve be placed on a side (bets.sideIndexByVenueId).
     const event = scannerState && ticket.eventId != null ? scannerState.events[ticket.eventId] : null;
-    const matchLine = { ...betsView.ticketAsLine(ticket), points: line.points ?? ticket.points ?? null, venueIds: event ? event.venueIds ?? null : null };
+    // A live capture names the periods the game has finished, as a live row does.
+    const liveFields = ticket.live ? { settledPeriods: live.settledPeriods(ticket.live.eventPeriodTypeId) } : null;
+    const matchLine = { ...betsView.ticketAsLine(ticket), points: line.points ?? ticket.points ?? null, venueIds: event ? event.venueIds ?? null : null, live: liveFields };
     const { matches } = betsLib.matchBets(matchLine, state.betRecords, { lines: boardLines() });
     // Liquidity is for one price, like the edge: only the feed's copy of the
     // line at the price being sized caps the stake, as it does on the Edges row.
     const feedCopy = feedLineFor(ticket, line.points);
     const liquidity = feedCopy && feedCopy.price === line.price ? feedCopy.liquidity : null;
+    const ladderOf = ticket.live ? liveLadderReaders(Date.now())(ticket.eventId) : ladderReader(ticket.eventId);
     const advice = betsView.stakeAdvice({
       line: matchLine, price: line.price, edgePct: line.edgePct,
       bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
-      matches, ladderOf: ladderReader(ticket.eventId), liquidity, teasers: openTeasersNow(),
+      matches, ladderOf, liquidity, teasers: openTeasersNow(),
     });
     return { tier: matches.length ? matches[0].tier : null, matches: advice.matches, advice };
   }
@@ -977,11 +978,26 @@
     return div;
   }
 
+  // Why a live ticket shows no stake, or null: the game's in-game fair is
+  // gone (the break ended, or the live tab stopped posting) or is a newer one
+  // than the ticket's, or the open bets on the game could not be sized against. The standalone number would
+  // ignore them, and that is the number live sizing exists to replace.
+  function liveTicketBlock(ticket, advice) {
+    if (!ticket.live) return null;
+    const now = Date.now();
+    if (!live.hasReadyFair(livePayloads(), ticket.eventId, now)) return "no live fair for this game now (the break ended, or the Unabated live tab stopped reading)";
+    // The ticket's edge is the fair it was captured at; the ladder is the screen's current one. Two fairs size nothing.
+    if (!live.hasReadyFair(livePayloads(), ticket.eventId, now, ticket.live.producedUtc)) return "the in-game fair was set again since this ticket was captured (click the price again)";
+    if (advice.kind === "declined") return `the open bets on this game could not be sized against (${advice.reason})`;
+    return null;
+  }
+
   // Under the stake, the same pieces as the Edges rail: the position in
   // dollars, the number to act on (the big figure, its label says "Bet" or
   // "Add to your position"), that liquidity capped it, and what the stake
-  // would be alone.
-  function renderStakeExposure(advice) {
+  // would be alone. `liveBlock` (liveTicketBlock) keeps the dash on a live
+  // ticket that cannot be sized: the position still shows, the number not.
+  function renderStakeExposure(advice, liveBlock) {
     const words = betsView.stakeAdviceWords(advice);
     const teasers = advice.teasers || { held: 0, against: 0 };
     const position = [
@@ -996,12 +1012,12 @@
     view.stakeExposure.classList.toggle("against", onlyAgainst);
     view.stakeExposure.hidden = position.length === 0;
     view.stakeExposure.textContent = position.join(" \u00b7 ");
-    view.stakeLabel.textContent = !words ? "Bet"
+    view.stakeLabel.textContent = liveBlock || !words ? "Bet"
       : advice.bet === 0 && advice.cappedAt === 0 ? "Nothing resting at this price"
         : advice.bet === 0 ? "Already at full size"
           : words.verb === "add" ? "Add to your position" : "Bet";
     // The stake shown is the number to act on, not the standalone size.
-    if (words) view.stake.textContent = fmtDollars(advice.bet);
+    if (words && !liveBlock) view.stake.textContent = fmtDollars(advice.bet);
   }
 
   // Two kinds of capture error need opposite advice: no_fair is Unabated
@@ -1362,31 +1378,25 @@
     return Object.values(liveStore);
   }
 
-  // Held bets on the game show on a live row, but none is netted: the stake
-  // is the line's own quarter-Kelly (LIVE_NOT_SIZED_NOTE says why).
-  function withLiveBetFlags(rows) {
-    let flags = null;
-    try {
-      flags = betsLib.annotateRows(rows, state.betRecords, { lines: boardLines() });
-    } catch (error) {
-      console.info("[unabated-ticket] live bet flags skipped:", error.message);
-    }
-    return rows.map((row, index) => {
-      const flag = flags ? flags[index] : { tier: null, matches: [] };
-      const advice = betsView.stakeAdvice({
-        line: row, price: row.price, edgePct: row.edgePct,
-        bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
-        matches: [], ladderOf: null, liquidity: row.liquidity,
-      });
-      const matches = (flag.matches || []).map((match) => ({ ...match, inMath: false, note: LIVE_NOT_SIZED_NOTE }));
-      return { ...row, bet: { tier: flag.tier, matches, advice } };
-    });
+  // eventId -> (period, axis) -> the in-game fair ladder the screen shows
+  // now. Bounded: it has only the numbers on screen, so a held bet at one it
+  // lacks is sized at the worst case its neighbours allow (betsview.js).
+  function liveLadderReaders(now) {
+    return edgeRows.createLadderReaders(live.liveFairState(livePayloads(), now), { bounded: true });
+  }
+
+  // Sized like an Edges row, against every open bet on the game, pregame or
+  // live, on the in-game fair ladder: the pregame one is a game that no
+  // longer exists.
+  function withLiveBetFlags(rows, now) {
+    return edgeRows.withBetFlags(rows, { ...betFlagContext(), ladderReaderOf: liveLadderReaders(now) });
   }
 
   function liveRowsAt(minEdgePct) {
-    const options = { ...edgeSelectionOptions(effectiveFilter()), minEdgePct, now: Date.now() };
+    const now = Date.now();
+    const options = { ...edgeSelectionOptions(effectiveFilter()), minEdgePct, now };
     const selected = live.selectLiveEdges(livePayloads(), options).map((row) => ({ ...row, stake: stakeFor(row) }));
-    return withLiveBetFlags(selected);
+    return withLiveBetFlags(selected, now);
   }
 
   function currentLiveRows() {
@@ -1413,7 +1423,9 @@
     const games = ready.map((game) => `${game.matchup} · ${game.checkpoint}`).join("; ");
     const fairAge = newestFairMs ? ` · fair set ${fmtAgoShort(Date.now() - newestFairMs)} ago` : "";
     const none = rows.length ? "" : ` · nothing at ${state.edgeSettings.minEdgePct}% or more`;
-    return `${games}${fairAge}${none}`;
+    const syncText = betsView.liveSyncText(betsPayload(), Date.now());
+    const sync = syncText ? ` · ${syncText}` : "";
+    return `${games}${fairAge}${none}${sync}`;
   }
 
   // Rendered on every Edges render and once a second while a live game is on
@@ -2024,12 +2036,17 @@
   async function notifyEdge(row, summary) {
     const notificationId = `edge:${row.key}:${Date.now()}`;
     await rememberAlertTarget(notificationId, row);
-    const stake = row.stake ?? stakeFor(row);
+    // A live row's alert carries the rail's number, sized against the open
+    // bets on the game, and none when the row shows none: the standalone
+    // stake is what live sizing replaces. A pregame alert keeps it, as before.
+    const liveRail = row.live && row.bet ? edgeRows.stakeRail(row) : null;
+    const stake = row.live ? null : row.stake ?? stakeFor(row);
     const message = [
       `${fmtPct(row.edgePct / 100)} edge`,
       // Why it grew (#132): a re-fire on a better edge says which improvement it was.
       moveWords(row),
       stake == null ? null : `stake ${fmtDollars(stake)}`,
+      liveRail && liveRail.text !== "\u2014" ? liveRail.text : null,
       summary,
       describeMatchup(row),
       row.live ? null : fmtUntil(row.eventStartMs),
@@ -3840,6 +3857,8 @@
         else delete liveStore[league];
       }
       renderLive();
+      // A live ticket's stake rests on this payload: its fair, its ladder, its game still being at a break.
+      if (state.ticket && state.ticket.live && !state.error) renderTicket();
       processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
     }
     if ("locateResult" in changes) {
@@ -3896,9 +3915,12 @@
   }, 5000);
 
   // The Live block's clock: staleness and "fair set 0:38 ago" move without a
-  // new payload. Idle (no DOM work) unless a live game is on a screen.
+  // new payload. Idle (no DOM work) unless a live game is on a screen. A live
+  // ticket follows the same clock: its payload drops after 2 min without a
+  // post, and with it the stake.
   setInterval(() => {
     if (state.activeTab === "edges" && livePayloads().length) renderLive();
+    if (state.activeTab === "ticket" && state.ticket && state.ticket.live && !state.error) renderTicket();
   }, 1000);
 
   load().catch((error) => {

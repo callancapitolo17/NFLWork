@@ -330,7 +330,8 @@ choose x >= 0 to maximize  sum over outcome rows of  prob * ln(1 + pnl / K)
   grey `game` line. Open question in #129.
 - **Left out and named, never guessed:** no rung at the bet's number or a rung
   whose fair repeats a neighbour's (Unabated flat-lines deep tails; the two
-  moneyline cuts are exempt), no stake on the record, parlay legs (an open
+  moneyline cuts are exempt) — on the pregame ladder; the in-game ladder
+  brackets such a bet instead (see *Live edges*) — no stake on the record, parlay legs (an open
   BFA teaser counts as its ticket, below), a Kalshi NO
   moneyline (also wins on a tie), a soccer three-way moneyline, quarter lines,
   a period Unabated has no ladder for (`F5`, `I1`). A ladder that crosses by
@@ -928,14 +929,81 @@ live tab's game while that tab is still posting (`content.js`).
 
 The Edges filters apply as they do to pregame (Books, Bets, Periods, min
 edge, min suggested bet, min liquidity to win, alt lines and their distance);
-there are no live-only settings. Stakes are the line's own quarter-Kelly off
-the live edge: open bets on the game show on the row as `live · not sized`
-but are never netted, since conditional Kelly needs a fair ladder the screen
-does not expose (the fair set carries per-market probabilities; a
-follow-up). Clicking a live row outlines the cell on the screen (`locate`
-with `live: true`, so `page.js` looks only among live rows). Alerts use the
-same threshold, one per line per break (the key carries the fair's
-`producedUtc`), and nothing alerts while the tab is not reading.
+there are no live-only settings. Stakes are conditional Kelly against every
+open bet on the game, pregame and live alike, but on the **in-game fair
+ladder**: every line `page.js` posts for a game
+whose fair is ready (every book, main and alt, both sides, edge or not)
+carries the screen's fair at its own number, and `live.liveFairState` hands
+those to `edgeRows.createLadderReaders` as the ladder (2026-10-09). The
+pregame ladder is never used once the game is live: it prices a game that no
+longer exists. Example (`tests/live.test.js`): holding Kalshi Over 44.5 for
+$300, a live Over 47.5 at +185 (fair +163) is $167 instead of $341 alone;
+holding the Under instead lifts it to $508.
+
+The in-game ladder has only the numbers the screen shows, so three things
+differ from pregame sizing (review of 2026-10-16, user decision):
+
+- **A held bet at a number the ladder lacks is bounded, not left out.** Its
+  fair is bracketed by the usable rungs around it (`ladder.probBounds`):
+  the nearest rung below bounds `P(above)` from above, the nearest above from
+  below, the row's own cut (Unabated's edge) counts as a rung, and past the
+  ladder's ends the bound is certainty. The stake is then the **smallest
+  over every corner of the bounds** (`betsview.smallestOverBounds`). That is
+  exact while every bet in the math is in the row's own period: the outcome
+  rows' chances are then linear in the fairs, so the best stake is
+  quasi-concave in them (every set where it is at least some amount is a
+  half-space) and the smallest over the box sits at a corner; a corner whose
+  fairs rise with the number is not a ladder and is skipped. Holding
+  Over 51.5 for $300 with the ladder ending at 47.5: `P(> 51.5)` is between
+  0 and the row's own 38%, the two ends give $326.92 and $125.95, the stake
+  is **$125.95** (the branch's first cut left the bet out and showed $340.54
+  alone). The related line says so: `same side · no fair at 51.5 · bounded
+  0%–38%`, the range read from the bet's own side (an Under reads `62%–100%`).
+  A whole-number live line whose push rungs are missing prices its push the
+  same way (most push is the worst case). Past six bounded numbers the calc
+  is declined (`too many numbers without a live fair to bound`).
+  **Across periods the corners are not the worst case**, so no number is
+  shown: under the worst-case pairing of two periods the smallest stake sits
+  *inside* the bound (a 1H Over $300 held at the end of Q1 with no 1H line
+  on the screen, FG Over 47.5 at +185: $326.92 and $354.16 at the two ends
+  of `0–100%`, $126.15 when its chance equals the row's own 38% — scanned
+  by hand, 2026-10-16). A bet in another period at a number the live ladder
+  lacks therefore declines the calc (`no live fair at 24.5 for the 1H bet`),
+  as does a bounded fair in the row's period while a bet in another period is
+  in the math (`no live fair at 51.5 with a 1H bet held`); a live row then
+  shows `—` with the reason (next bullet). A bet in another period at a
+  number the screen *does* price is in the math as pregame (worst-case
+  pairing). The exact cross-period bound needs the pairing's breakpoints
+  enumerated inside `condkelly.js`: a follow-up, not in 0.28.0.
+- **A bet on a period the game has finished is settled**, whatever its venue
+  still lists it as: `1H · settled` at halftime, grey, out of the math (its
+  P&L no longer depends on the rest of the game). `live.settledPeriods` reads
+  the break's `eventPeriodTypeId`; the full game is never settled (overtime).
+- **No number is better than the standalone one.** A live row whose open
+  bets could not be sized against (a declined calc) shows `—` with the
+  reason where the stake would be (`edgeRows.stakeRail`); a pregame row
+  keeps the standalone stake, as before. A live Ticket shows `—` and
+  `Cannot size: …` when the game's fair is gone (the break ended, or the live
+  tab stopped posting — `live.hasReadyFair`, re-checked on every payload and
+  once a second), when the screen has set a newer fair than the one the
+  ticket was captured at (its `producedUtc`; the ticket's edge and the ladder
+  would be two fairs — click the price again), or when its calc was declined;
+  the position and the related bets still show. A live alert carries the
+  row's sized number (`add $125.95`) and none when the row shows none; a
+  pregame alert keeps the standalone stake, as before.
+
+Open BFA teasers with a leg on the live game are left out: their leg is not
+repriced live. The related line names them `started` while the game is still
+on the pregame board, and once it leaves the board they are not listed at
+all. The header ends `bets: kalshi 20 s · novig 45 s · polymarket_us 12 s`,
+how old each live venue's last good pull is (`betsview.liveSyncText`): a bet
+placed at a break is in the stake only after its venue's next pull (every 60
+s), so wait for that before stacking a second bet in the same break. The
+Ticket sizes a live capture on the same in-game ladder. Clicking a live row
+outlines the cell on the screen (`locate` with `live: true`, so `page.js`
+looks only among live rows). Alerts use the same threshold, one per line per
+break (the key carries the fair's `producedUtc`), and nothing alerts while
+the tab is not reading.
 
 A price clicked on a live row builds a normal ticket whose fair is
 `edge.simulatedPrice` (live lines carry no `bacr`), labelled `Unabated live
@@ -2470,7 +2538,7 @@ visible. Its one write is the Bets page's Remove / Restore.
   ride on it ("in 4 teasers · $800"), and the tickets are listed under
   **Parlays and teasers riding**. **The chance is Unabated's fair at
   kickoff** (the median fair ladder from the last snapshot before the
-  start, the ladder the Edges sizing reads), not the live score: no scores
+  start, the ladder the Edges sizing reads before kickoff), not the live score: no scores
   feed is wired yet. Started bets the runner could not place on a game
   (futures, props, a name or time the board doesn't share) are listed under
   **Not on a game card**; when `/scenarios.json` cannot be read the tab says
@@ -2841,7 +2909,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 561 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 601 tests) and
 the bets service's pytest suite (630 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -3364,6 +3432,29 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-09, shipped 2026-10-16 — Live stakes count open bets (0.28.0).**
+The Live block sized every line as if nothing were held: a halftime Over
+after an end-of-Q1 Over got a second full quarter-Kelly on nearly the same
+outcome. The 2026-09-27 plan assumed the screen exposes no live fair ladder;
+it does: every line `page.js` reads carries the in-game fair at its own
+number. Cal's calls: count pregame and live bets alike (a bet's payoff by
+final score is what matters, not when it was placed), never a flat
+subtraction of the old stake (it over-cuts bets that barely overlap and gets
+the other side backwards), and show each live venue's sync age, since a bet
+placed at a break counts only after its venue's next pull. The Ticket's live
+capture had been sizing on the pregame ladder; it now uses the live one too.
+Built on the Mac on 2026-10-09; the 2026-10-16 review before main asked for
+exactness over fallbacks ("make sure this is a mathematically accurate
+play"): a held bet at a number the live ladder lacks had fallen back to the
+standalone stake, so it is now bounded by its neighbouring rungs and sized at
+the worst case (the branch's own test, Over 51.5 held, went from $340.54 to
+$125.95); a bet on a finished period is marked settled rather than priced
+off a ladder that no longer exists; and a live row or Ticket that cannot be
+sized shows no number, never the standalone one. Cal confirmed the same-period
+other-side rule stands live as it does pregame: a held Under sizes the Over
+UP ($508 against $341), since it is Kelly against a known position, not a
+hedge. Shipped as 0.28.0: Place on Kalshi (#181) took 0.27.0 first.
 
 **2026-10-13 — Skip button; same-name books count once (0.24.0).** Cal
 dropped the automatic skip: he wants to decide. A row a book beats gets a

@@ -304,7 +304,13 @@
   // (period, axis) -> ladder.buildLadder result, built from the feed's lines
   // on first use and cached inside the returned reader. Make a new one per
   // feed update; a reader over a null state reads no ladder.
-  function createLadderReaders(feedState) {
+  //   options.bounded  true for the in-game ladder (live.liveFairState): it
+  //                    carries only the numbers the live screen shows, so a
+  //                    cut it has no rung at is bracketed by its neighbours
+  //                    (ladder.probBounds, betsview.js) instead of leaving
+  //                    the held bet out. The pregame ladder is not bounded.
+  function createLadderReaders(feedState, options) {
+    const bounded = Boolean(options && options.bounded);
     let linesByEvent = null;
     const ladders = new Map();
     return (eventId) => (period, axis) => {
@@ -313,7 +319,7 @@
       const cacheKey = `${eventId}|${periodTypeId}|${axis}`;
       if (!ladders.has(cacheKey)) {
         if (!linesByEvent) linesByEvent = ladderLib.groupLinesByEvent(Object.values(feedState.lines));
-        ladders.set(cacheKey, ladderLib.buildLadder(linesByEvent.get(eventId), { periodTypeId, axis }));
+        ladders.set(cacheKey, { ...ladderLib.buildLadder(linesByEvent.get(eventId), { periodTypeId, axis }), bounded });
       }
       return ladders.get(cacheKey);
     };
@@ -442,10 +448,15 @@
   // stake would be with nothing held. "add $250" is not the same instruction
   // as "bet $250" and must not look like it. `row` carries `stake` and `bet`.
   //   {text, note, atSize}  text "add $188.32" / "bet $437.25" / "—"; note
-  //                         "all $17 liq · $270.05 alone" or null; atSize when
+  //                         "all $17 liq · $270.05 alone" or null (the
+  //                         decline's reason on a live row); atSize when
   //                         the held bets leave nothing to add
   function stakeRail(row) {
     const advice = row.bet ? row.bet.advice : null;
+    // A live row whose open bets could not be sized against shows no number:
+    // the standalone stake ignores them, and that is the number live sizing
+    // exists to replace (user, 2026-10-16). A pregame row keeps it, named.
+    if (row.live && advice && advice.kind === "declined") return { text: "\u2014", note: advice.reason, atSize: false };
     const words = betsView.stakeAdviceWords(advice);
     if (!words) return { text: row.stake == null ? "—" : `bet ${fmtDollars(row.stake)}`, note: null, atSize: false };
     const noteText = [words.cap, words.alone].filter(Boolean).join(" · ");
