@@ -124,8 +124,13 @@
   .money-input { position: relative; flex: 1; min-width: 0; max-width: 120px; }
   .money-input span { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
   .money-input input { width: 100%; padding-left: 20px; }
-  .stake-sub { font-size: 12px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
-  .stake-note { font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+  .stake-towin { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .stake-held { font-size: 12px; color: var(--good); font-weight: 600; margin-bottom: 5px; }
+  .stake-figures { display: grid; grid-template-columns: auto auto; justify-content: start; column-gap: 12px;
+                   font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+  .stake-figures dt, .stake-figures dd { margin: 0; }
+  .stake-figures dd { text-align: right; color: var(--text); }
+  .stake-reason { font-size: 12px; color: var(--muted); font-style: italic; margin-top: 3px; overflow-wrap: anywhere; }
   .stake-none { color: var(--faint); font-size: 13px; }
   .msg-ok { color: var(--good); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
   .msg-err { color: var(--bad); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
@@ -560,6 +565,36 @@ function priceCell(line) {
   ]);
 }
 
+// Why the recommended stake is below Kelly, in one plain phrase; null when it isn't.
+function stakeReason(line, p, ownTotal, teamBets, byRotation) {
+  const recommended = line.recommended_stake;
+  if (p.available_balance == null) return "No stake until Refresh reads your balance";
+  if (line.kelly_stake <= 0.5 && recommended <= 0.5) return coveredReason(line, ownTotal, teamBets, byRotation);
+  if (line.kelly_stake <= recommended + 0.5) return null;
+  if (ownTotal + recommended >= p.max_stake - 0.5) return `Capped at Wagerzon's ${money(p.max_stake)} max per special`;
+  if (line.unlimited_stake > recommended + 0.5) return "Balance goes to bigger edges first";
+  if (recommended <= 0.5) return `Under Wagerzon's ${money(p.min_stake)} minimum`;
+  return null;
+}
+
+// Kelly adds nothing here: say which of the team's bets already carries the exposure.
+function coveredReason(line, ownTotal, teamBets, byRotation) {
+  const otherBets = teamBets.filter(r => r.wz_game_id !== line.wz_game_id);
+  if (otherBets.length) {
+    const otherTotal = otherBets.reduce((sum, r) => sum + r.risk, 0);
+    const other = byRotation.get(line.yields_to);
+    const name = other ? specialTitle(other.description) : "other bet on this team";
+    return `Your ${money(otherTotal)} on the ${name} already covers this`;
+  }
+  if (ownTotal > 0) return "What you already bet here is enough";
+  if (line.yields_to) {
+    const other = byRotation.get(line.yields_to);
+    const name = other ? `${specialTitle(other.description)} (${line.yields_to})` : String(line.yields_to);
+    return `The ${name} takes this team's stake`;
+  }
+  return null;
+}
+
 function stakeCell(line, p, byRotation) {
   if (line.fair_prob == null) {
     return el("div", { class: "stake-col stake-none", text: line.status === "pricing" ? "Pricing…" : "Unpriced" });
@@ -570,16 +605,12 @@ function stakeCell(line, p, byRotation) {
   const id = line.wz_game_id;
   const teamBets = teamPlacements(p, line);
   const ownBets = teamBets.filter(r => r.wz_game_id === id);
-  const otherBets = teamBets.filter(r => r.wz_game_id !== id);
+  const ownTotal = ownBets.reduce((sum, r) => sum + r.risk, 0);
+  const message = placeMessages.get(id);
   const children = [];
-  if (otherBets.length) {
-    const other = p.board.lines.find(l => l.wz_game_id === otherBets[0].wz_game_id);
-    children.push(el("div", { class: "stake-note",
-      text: `${line.team} holds ${specialTitle(other.description)} (${other.rotation}), ${money(otherBets.reduce((sum, r) => sum + r.risk, 0))}; sized around it` }));
-  } else if (line.yields_to) {
-    const other = byRotation.get(line.yields_to);
-    const label = other ? `${specialTitle(other.description)} (${line.yields_to})` : String(line.yields_to);
-    children.push(el("div", { class: "stake-note", text: "Overlaps " + label }));
+  if (ownBets.length && !(message && message.ok)) {
+    const tickets = ownBets.length === 1 ? `ticket ${ownBets[0].ticket_number}` : `${ownBets.length} tickets`;
+    children.push(el("div", { class: "stake-held num", text: `Already bet ${money(ownTotal)} · ${tickets}` }));
   }
 
   const typed = editingStake.get(id);
@@ -589,32 +620,27 @@ function stakeCell(line, p, byRotation) {
   const input = el("input", { type: "text", inputmode: "decimal", autocomplete: "off",
                               "aria-label": `Risk on ${line.description}`, "data-stake-id": String(id) });
   input.value = value;
-  const sub = el("div", { class: "stake-sub num" });
-  const updateSub = () => {
+  const toWinText = el("span", { class: "stake-towin num" });
+  const updateToWin = () => {
     const risk = Number(input.value);
-    const pieces = [];
-    if (risk > 0) pieces.push(`to win ${money(toWin(risk, line.wz_american))}`);
-    if (line.unlimited_stake > 0.5) pieces.push(`no balance limit ${money(line.unlimited_stake)}`);
-    if (!line.yields_to && !teamBets.length && line.kelly_stake > Math.max(line.recommended_stake, line.unlimited_stake) + 0.5) pieces.push(`Kelly ${money(line.kelly_stake)}`);
-    if (!line.yields_to && p.available_balance == null) pieces.push("no stake until Refresh reads the balance");
-    sub.textContent = pieces.join(" · ");
+    toWinText.textContent = risk > 0 ? `to win ${money(toWin(risk, line.wz_american))}` : "";
   };
-  input.addEventListener("input", () => { editingStake.set(id, input.value); placeMessages.delete(id); updateSub(); });
+  input.addEventListener("input", () => { editingStake.set(id, input.value); placeMessages.delete(id); updateToWin(); });
   input.addEventListener("keydown", e => { if (e.key === "Enter") button.click(); });
-  updateSub();
+  updateToWin();
 
   const inFlight = placing.has(id);
   const button = el("button", { disabled: inFlight, onclick: () => askToPlace(line, input) },
     inFlight ? [el("span", { class: "spinner", "aria-hidden": "true" }), "Placing…"] : ["Place"]);
-  children.push(el("div", { class: "stake-form" }, [el("div", { class: "money-input" }, [el("span", { text: "$" }), input]), button]));
-  children.push(sub);
+  children.push(el("div", { class: "stake-form" }, [el("div", { class: "money-input" }, [el("span", { text: "$" }), input]), button, toWinText]));
 
-  const message = placeMessages.get(id);
+  const figures = [["Recommended", line.recommended_stake], ["No balance limit", line.unlimited_stake], ["Kelly", line.kelly_stake]];
+  children.push(el("dl", { class: "stake-figures num" }, figures.flatMap(([label, stake]) =>
+    [el("dt", { text: label }), el("dd", { text: money(stake) })])));
+  const reason = stakeReason(line, p, ownTotal, teamBets, byRotation);
+  if (reason) children.push(el("div", { class: "stake-reason", text: reason }));
+
   if (message) children.push(el("div", { class: message.ok ? "msg-ok" : "msg-err", role: "status", text: message.text }));
-  if (ownBets.length && !(message && message.ok)) {
-    const total = ownBets.reduce((sum, r) => sum + r.risk, 0);
-    children.push(el("div", { class: "msg-ok", text: `Placed ${money(total)} this week · ticket ${ownBets[0].ticket_number}` }));
-  }
   return el("div", { class: "stake-col" }, children);
 }
 
@@ -776,10 +802,10 @@ async function place(line, risk, account) {
       placeMessages.set(id, { ok: true, text: `Placed ${money(risk)} · ticket ${r.ticket_number}` });
       editingStake.delete(id);
     } else {
-      placeMessages.set(id, { ok: false, text: `Not placed — ${r.status}: ${r.error || "no reason given"}` });
+      placeMessages.set(id, { ok: false, text: `Not placed. ${r.status}: ${r.error || "no reason given"}` });
     }
   } catch (e) {
-    placeMessages.set(id, { ok: false, text: "Not placed — " + e.message });
+    placeMessages.set(id, { ok: false, text: "Not placed. " + e.message });
   } finally {
     placing.delete(id);
     load();
