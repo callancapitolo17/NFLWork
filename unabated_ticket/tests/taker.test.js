@@ -104,7 +104,7 @@ test("at Unabated's own price, best at the number, a 5% edge bets quarter Kelly 
   assert.equal(decision.liveAsk, 0.57);
   // At Unabated's own all-in the live edge is Unabated's edge (the fair is read off its cheaper price).
   assert.ok(Math.abs(decision.liveEdge - 0.05) < 0.0005, String(decision.liveEdge));
-  assert.ok(decision.stake > 0 && decision.stake <= taker.BOT_BANKROLL * taker.BOT_KELLY);
+  assert.ok(decision.stake > 0 && decision.stake <= taker.KELLY_BANKROLL * taker.BOT_KELLY);
   assert.equal(decision.contracts, Math.floor(decision.stake / decision.liveAllIn));
 });
 

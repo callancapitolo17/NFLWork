@@ -17,8 +17,8 @@
 //     one better book is enough to skip, a thin one under pricecheck's $30
 //     floor too; outliers and Cal's Skips trade);
 //   - lines changed within 7 days, right up to the start;
-//   - $500 at 0.25 Kelly (Cal, 2026-10-14; was $1,000), conditional on every open bet (betsview.js
-//     stakeAdvice), contracts cut to the depth at the ask.
+//   - $3,500 at 0.25 Kelly (Cal, 2026-10-16; was $500, $1,000 before), conditional on every open bet (betsview.js
+//     stakeAdvice), contracts cut to the depth at the ask and the $500 of cash in the subaccount.
 //
 // Reasons, in the order they are checked:
 //   stale_feed    the row's league snapshot is stale or its last load failed
@@ -52,7 +52,8 @@ const betsView = require("../extension/betsview.js");
 const pricecheck = require("../extension/pricecheck.js");
 
 const KALSHI_BOOK_ID = 105;
-const BOT_BANKROLL = 500;
+// The Kelly bankroll, not the money at risk: the subaccount holds $500 and the desk ceiling is $500.
+const KELLY_BANKROLL = 3500;
 const BOT_KELLY = 0.25;
 const MIN_LIVE_EDGE = 0.03;
 const MAX_LIVE_EDGE = 0.20;
@@ -288,7 +289,7 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing }) {
   const otherSideHeld = heldOtherSide(sizing.matches, contract);
   if (otherSideHeld) return done("size_declined", otherSideHeld);
   const advice = betsView.stakeAdvice({
-    line: row, price: liveAmerican, edgePct: liveEdge * 100, bankroll: BOT_BANKROLL, multiplier: BOT_KELLY,
+    line: row, price: liveAmerican, edgePct: liveEdge * 100, bankroll: KELLY_BANKROLL, multiplier: BOT_KELLY,
     matches: sizing.matches, ladderOf: sizing.ladderOf, liquidity: null, teasers: sizing.teasers,
   });
   if (advice.kind === "declined") return done("size_declined", advice.reason);
@@ -425,7 +426,7 @@ function decisionSignature(decision) {
 }
 
 module.exports = {
-  KALSHI_BOOK_ID, BOT_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
+  KALSHI_BOOK_ID, KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
   MAX_LINE_AGE_MS, KALSHI_TAKER_FEE_RATE, REASONS,
   kalshiAllInPrice, probToAmerican, unabatedAllInOf, candidateRows,
   contractFromRungs, spreadTeamCodes, derivedMoneylineContract, resolveKalshiContract,

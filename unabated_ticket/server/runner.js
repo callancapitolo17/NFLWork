@@ -932,7 +932,7 @@ function createRunner(deps) {
       generatedAt: new Date(now()).toISOString(),
       desk: takerDeskStatus,
       rules: {
-        bankroll: taker.BOT_BANKROLL, kelly: taker.BOT_KELLY, minLiveEdge: taker.MIN_LIVE_EDGE, maxLiveEdge: taker.MAX_LIVE_EDGE,
+        bankroll: taker.KELLY_BANKROLL, kelly: taker.BOT_KELLY, minLiveEdge: taker.MIN_LIVE_EDGE, maxLiveEdge: taker.MAX_LIVE_EDGE,
         priceTolerance: taker.PRICE_TOLERANCE, maxLineAgeHours: taker.MAX_LINE_AGE_MS / HOUR_MS,
       },
       pass: { ...takerLastPass, startedAt: isoOrNull(takerLastPass.startedAt), finishedAt: isoOrNull(takerLastPass.finishedAt) },
