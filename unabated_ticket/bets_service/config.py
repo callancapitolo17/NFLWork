@@ -62,6 +62,11 @@ def _get(key: str, default: str | None = None) -> str | None:
 # Kalshi credentials (same names as every bot so one .env works everywhere).
 KALSHI_API_KEY_ID = _get("KALSHI_API_KEY_ID")
 KALSHI_PRIVATE_KEY_PATH = _get("KALSHI_PRIVATE_KEY_PATH")
+# The Ticket's Place button's own trade key (manual_orders.py, Cal 2026-10-16):
+# a key on his MAIN account with trade scope, made for Place alone. The read key
+# above is read-only, so with this unset the Place button is off.
+KALSHI_PLACE_API_KEY_ID = _get("KALSHI_PLACE_API_KEY_ID")
+KALSHI_PLACE_PRIVATE_KEY_PATH = _get("KALSHI_PLACE_PRIVATE_KEY_PATH")
 KALSHI_BASE_URL = _get("KALSHI_BASE_URL",
                        "https://api.elections.kalshi.com/trade-api/v2")
 
