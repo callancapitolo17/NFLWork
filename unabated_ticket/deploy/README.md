@@ -124,8 +124,8 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
     that has **write** scope (an unrestricted key: it makes a subaccount,
     moves money and mints a key). The service's own `KALSHI_API_KEY_ID` is
     read-only, and a read-only key stops at once with "the signing key ... is
-    read-only", nothing changed at Kalshi. So override both settings for this one run
-    with `-e`, pointing at a **copy** of a write key's file in
+    read-only", nothing changed at Kalshi. So override both settings for this
+    one run with `-e`, pointing at a **copy** of a write key's file in
     `~/unabated-data/` (the setup overwrites `kalshi_taker.pem`, so never sign
     from that path itself). On the VM, from `~/NFLWork/unabated_ticket/deploy`:
     ```bash
@@ -137,11 +137,11 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
     ```
     Use an unrestricted read + write key on the main account, not the Place
     key of step 12, which is made for trading only. (2026-10-16 the write key
-    was the earlier bot key, then at `~/unabated-data/kalshi_taker.pem`; `-e` on `exec` wins over `.env`, which
-    stays untouched.) It puts the stop file (`~/unabated-data/taker.stop`) in
+    was the earlier bot key, then at `~/unabated-data/kalshi_taker.pem`; `-e`
+    on `exec` wins over `.env`, which stays untouched.) It puts the stop file (`~/unabated-data/taker.stop`) in
     place first, so nothing trades until you `rm` it; that holds on a STOPPED
-    run too, and on a VM where the bot already trades it pauses the bot. Then it makes
-    subaccount 1 (asking for Kalshi's Advanced API tier if needed),
+    run too, and on a VM where the bot already trades it pauses the bot. Then
+    it makes subaccount 1 (asking for Kalshi's Advanced API tier if needed),
     moves $500 into it once and checks it landed (waiting up to 30 s for
     Kalshi's balance to show it), mints a key locked to it
     with no transfer permission, writes it to `/data/kalshi_taker.pem` (mode
