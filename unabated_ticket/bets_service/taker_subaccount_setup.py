@@ -157,8 +157,9 @@ def create_subaccount(client: KalshiOrderClient, out: TextIO) -> int:
     """A new numbered subaccount; asks for the Advanced API tier once if Kalshi refuses."""
     status, reply = _signed(client, "POST", SUBACCOUNTS_PATH, {})
     if is_scope_refusal(status, reply):
-        raise SetupError(f"the signing key (KALSHI_API_KEY_ID) is read-only (Kalshi: HTTP {status} {str(reply)[:300]}); "
-                         f"run this with a write-scoped key, see deploy/README step 11. Nothing changed")
+        raise SetupError(f"the signing key (KALSHI_API_KEY_ID) is read-only "
+                         f"(Kalshi: HTTP {status} {str(reply)[:300]}); run this with a write-scoped key, "
+                         f"see deploy/README step 11. Nothing changed")
     if status != 201:
         out.write(f"Kalshi refused a new subaccount (HTTP {status}); asking for the Advanced API tier it needs.\n")
         upgrade_status, upgrade_reply = _signed(client, "POST", UPGRADE_PATH, {})
@@ -220,7 +221,8 @@ def fund_once(client: KalshiOrderClient, subaccount: int, out: TextIO,
     held = landed_balance(client, subaccount, sleep)
     if held < BOT_BANKROLL - FUNDING_TOLERANCE_DOLLARS:
         raise SetupError(f"Kalshi answered 200 to the ${BOT_BANKROLL:,.0f} transfer but subaccount {subaccount} "
-                         f"holds ${held:,.2f} after {FUNDING_LAND_WAIT_SEC:.0f} s: check your Kalshi balances before running this again")
+                         f"holds ${held:,.2f} after {FUNDING_LAND_WAIT_SEC:.0f} s: "
+                         f"check your Kalshi balances before running this again")
     out.write(f"Moved ${BOT_BANKROLL:,.2f} from your primary account; subaccount {subaccount} holds ${held:,.2f}.\n")
     return held
 
