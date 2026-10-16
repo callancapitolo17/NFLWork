@@ -518,6 +518,23 @@ def _make_session():
     return session
 
 
+# Verified on Cal's account 2026-10-16: dollars, like every portfolio amount.
+# `wallets.cashBalance` = cash on account; `openPositionsValue` = open positions
+# now (totalValue is their sum). currency must be CASH or COIN.
+SUMMARY_PATH = "/portfolio/summary?currency=CASH"
+
+
+def balance_of_novig_summary(body: object) -> dict:
+    """GET /portfolio/summary?currency=CASH -> the balances.py reading."""
+    wallets = body.get("wallets") if isinstance(body, dict) else None
+    cash = wallets.get("cashBalance") if isinstance(wallets, dict) else None
+    in_bets = body.get("openPositionsValue") if isinstance(body, dict) else None
+    for field, value in (("wallets.cashBalance", cash), ("openPositionsValue", in_bets)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RuntimeError(f"novig portfolio/summary: expected a number at {field}, got {value!r}")
+    return {"cash": cash, "inBets": in_bets, "available": cash, "creditLimit": None}
+
+
 def portfolio_url(base_url: str, tab: str, sort: str, limit: int, cursor: str | None) -> str:
     url = f"{base_url}/portfolio/{tab}?currency=CASH&sort={sort}&limit={limit}"
     return f"{url}&cursor={cursor}" if cursor else url
@@ -578,6 +595,13 @@ class NovigSource:
         records = normalize_novig(cards, utc_now_iso())
         log.info("novig: %d active + %d settled cards -> %d records", counts["active"], counts["settled"], len(records))
         return records
+
+    def balance(self) -> dict:
+        try:
+            access = self._auth.token()
+        except NovigAuthError as error:
+            raise RuntimeError(f"novig auth: {error}") from error
+        return balance_of_novig_summary(self._http_get(f"{self._base_url}{SUMMARY_PATH}", access.token))
 
 
 def source_if_connected(token_path: Path | None = None) -> NovigSource | None:
