@@ -25,6 +25,16 @@ Tables:
                `subaccount` (added 2026-10-16 by ALTER on open) is the Kalshi
                subaccount the bot's key is locked to; NULL on the orders the
                bot placed from the primary account before that.
+  novig_taker_orders  one row per order the bot sent to Novig (added
+               2026-10-16, novig_taker_desk.py), keyed by its `client_id` (a
+               UUID; Novig does not dedupe it, so the desk never re-sends).
+               INSERTED before the send, then UPDATED as Novig answers, its
+               fills are read, and its market settles. Its own $500 ceiling is
+               the sum of `open_cost` over rows not yet settled. The row also
+               keeps the board line the bot priced (league, teams, market,
+               side, number), which the bot's subaccount read
+               (sources/novig_subaccount.py) gives its bets: Novig's own
+               catalog names neither the board's teams nor its periods.
 
 The DuckDB connection is shared between the HTTP handler threads behind one
 lock (DuckDB connections are not thread-safe).
@@ -82,7 +92,48 @@ CREATE TABLE IF NOT EXISTS taker_orders (
     subaccount       INTEGER               -- the Kalshi subaccount it traded in; NULL = primary (before 2026-10-16)
 );
 ALTER TABLE taker_orders ADD COLUMN IF NOT EXISTS subaccount INTEGER;
+CREATE TABLE IF NOT EXISTS novig_taker_orders (
+    client_id        VARCHAR PRIMARY KEY,  -- the UUID the order carried (clientId)
+    placed_at        TIMESTAMPTZ NOT NULL,
+    row_key          VARCHAR NOT NULL,
+    event_id         BIGINT NOT NULL,      -- Unabated's event: the game an add must see earlier fills on
+    event_start      TIMESTAMPTZ NOT NULL,
+    outcome_id       VARCHAR NOT NULL,     -- the Novig outcome bought
+    market_id        VARCHAR NOT NULL,
+    price            DOUBLE NOT NULL,      -- the limit: the ask the decision was checked at (no fee pregame)
+    qty_requested    INTEGER NOT NULL,     -- 1c contracts (100 = $1 payout)
+    status           VARCHAR NOT NULL,     -- sending | unknown | sent | resting | filled | partial | unfilled | rejected
+    novig_order_id   VARCHAR,
+    final_at         TIMESTAMPTZ,          -- when Novig showed the order final (FILLED / CANCELED / REJECTED)
+    qty_filled       INTEGER,              -- NULL until the fills are read
+    cost_filled      DOUBLE,               -- dollars paid incl. fees, NULL until read
+    fills_final      BOOLEAN NOT NULL DEFAULT FALSE,  -- a fills read at least FILLS_SETTLE_SEC after final_at
+    open_cost        DOUBLE NOT NULL,      -- what counts against the ceiling while the market is open
+    error            VARCHAR,
+    settled_at       TIMESTAMPTZ,          -- when its market was seen settled; frees open_cost
+    league           VARCHAR NOT NULL,     -- the board line, as a bet record names it (feed.js league path)
+    bet_type         VARCHAR NOT NULL,     -- spread | total | moneyline
+    period           VARCHAR NOT NULL,     -- FG | 1H | ...
+    side             VARCHAR NOT NULL,     -- away | home | over | under
+    points           DOUBLE,
+    away_team        VARCHAR,
+    home_team        VARCHAR,
+    away_team_id     VARCHAR,              -- Unabated's team ids
+    home_team_id     VARCHAR
+);
 """
+
+NOVIG_ORDER_COLUMNS = ("client_id", "placed_at", "row_key", "event_id", "event_start", "outcome_id", "market_id", "price",
+                       "qty_requested", "status", "open_cost", "league", "bet_type", "period", "side", "points",
+                       "away_team", "home_team", "away_team_id", "home_team_id")
+NOVIG_UPDATABLE_COLUMNS = ("status", "novig_order_id", "final_at", "qty_filled", "cost_filled", "fills_final", "open_cost",
+                           "error", "settled_at")
+# What open_novig_orders reads back; times as epoch ms (see open_orders).
+_NOVIG_OPEN_COLUMNS = ("client_id", "placed_at", "event_id", "event_start", "outcome_id", "market_id", "price",
+                       "qty_requested", "status", "novig_order_id", "final_at", "qty_filled", "fills_final", "open_cost")
+_NOVIG_TIME_COLUMNS = ("placed_at", "event_start", "final_at")
+NOVIG_CONTEXT_COLUMNS = ("league", "bet_type", "period", "side", "points", "away_team", "home_team", "away_team_id",
+                         "home_team_id", "event_start", "event_id", "market_id", "outcome_id", "price")
 
 _INSERT = """
 INSERT INTO taker_decisions (decided_at, received_at, row_key, league, event_id, event_start, reason, ticker,
@@ -178,3 +229,59 @@ class TakerStore:
     def count_decisions(self) -> int:
         with self._lock:
             return self._con.execute("SELECT count(*) FROM taker_decisions").fetchone()[0]
+
+    # ---- Novig (novig_taker_desk.py) ----
+
+    def insert_novig_order(self, order: dict) -> None:
+        """INSERT a new Novig order row (status "sending", open_cost the full requested cost)."""
+        values = [order[column] for column in NOVIG_ORDER_COLUMNS]
+        placeholders = ", ".join("?" for _ in NOVIG_ORDER_COLUMNS)
+        with self._lock:
+            self._con.execute(f"INSERT INTO novig_taker_orders ({', '.join(NOVIG_ORDER_COLUMNS)}) VALUES ({placeholders})",
+                              values)
+
+    def has_novig_order(self, client_id: str) -> bool:
+        with self._lock:
+            return self._con.execute("SELECT count(*) FROM novig_taker_orders WHERE client_id = ?",
+                                     [client_id]).fetchone()[0] > 0
+
+    def update_novig_order(self, client_id: str, fields: dict) -> None:
+        """UPDATE the named columns of one Novig order (this module's column names only)."""
+        unknown = set(fields) - set(NOVIG_UPDATABLE_COLUMNS)
+        if unknown:
+            raise ValueError(f"update_novig_order: unknown columns {sorted(unknown)}")
+        assignments = ", ".join(f"{column} = ?" for column in fields)
+        with self._lock:
+            self._con.execute(f"UPDATE novig_taker_orders SET {assignments} WHERE client_id = ?",
+                              [*fields.values(), client_id])
+
+    def open_novig_orders(self) -> list[dict]:
+        """Every Novig order whose market has not been seen settled, oldest first."""
+        selected = ", ".join(f"epoch_ms({column})" if column in _NOVIG_TIME_COLUMNS else column
+                             for column in _NOVIG_OPEN_COLUMNS)
+        with self._lock:
+            rows = self._con.execute(f"SELECT {selected} FROM novig_taker_orders WHERE settled_at IS NULL "
+                                     f"ORDER BY placed_at").fetchall()
+        return [{column: (_utc_from_ms(value) if column in _NOVIG_TIME_COLUMNS else value)
+                 for column, value in zip(_NOVIG_OPEN_COLUMNS, row)} for row in rows]
+
+    def novig_open_exposure(self) -> float:
+        """Dollars the bot has on Novig in markets not yet settled: the Novig ceiling's measure."""
+        with self._lock:
+            return float(self._con.execute(
+                "SELECT coalesce(sum(open_cost), 0) FROM novig_taker_orders WHERE settled_at IS NULL").fetchone()[0])
+
+    def novig_order_contexts(self) -> dict[str, dict]:
+        """Novig order id -> the board line the bot priced it on (NOVIG_CONTEXT_COLUMNS), for
+        every order Novig gave an id. The bot subaccount's read names its bets with these."""
+        selected = ", ".join(f"epoch_ms({column})" if column == "event_start" else column
+                             for column in NOVIG_CONTEXT_COLUMNS)
+        with self._lock:
+            rows = self._con.execute(f"SELECT novig_order_id, {selected} FROM novig_taker_orders "
+                                     f"WHERE novig_order_id IS NOT NULL").fetchall()
+        contexts = {}
+        for row in rows:
+            context = dict(zip(NOVIG_CONTEXT_COLUMNS, row[1:]))
+            context["event_start"] = _utc_from_ms(context["event_start"])
+            contexts[row[0]] = context
+        return contexts

@@ -309,8 +309,11 @@ class NovigOrderClient:
         return self._paged(FILLS_PATH, query)
 
     def positions(self) -> list[dict]:
-        """This subaccount's open positions ({marketId, outcomeId, qty, cost})."""
-        return self._paged(POSITIONS_PATH, [])
+        """This subaccount's open positions ({marketId, outcomeId, qty, cost}); a bare list, not paged."""
+        status, reply = self.request("GET", POSITIONS_PATH)
+        if status != 200 or not isinstance(reply, list):
+            raise NovigError(f"GET {POSITIONS_PATH}: expected 200 with a list, got HTTP {status} {str(reply)[:300]}")
+        return [position for position in reply if isinstance(position, dict)]
 
     def balance(self) -> float:
         """This subaccount's balance in dollars (GET .../subaccounts/{own key}/balance)."""

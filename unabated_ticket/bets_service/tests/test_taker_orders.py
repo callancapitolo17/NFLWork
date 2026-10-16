@@ -675,3 +675,19 @@ def test_the_order_route_refuses_the_tailnet_name(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_a_novig_bot_order_on_the_game_blocks_a_kalshi_add_until_it_is_held(store, tmp_path):
+    from unabated_ticket.bets_service.novig_taker_desk import novig_unseen_fill
+    store.insert_novig_order({
+        "client_id": "0b3f5f20-9c1b-4d6e-8f3a-5c2d1e7b4a90", "placed_at": NOW, "row_key": "n1", "event_id": EVENT_ID,
+        "event_start": NOW + timedelta(days=1), "outcome_id": "o", "market_id": "m", "price": 0.465, "qty_requested": 2150,
+        "status": "sending", "open_cost": 9.9975, "league": "cfb", "bet_type": "spread", "period": "FG", "side": "home",
+        "points": -35.5, "away_team": None, "home_team": None, "away_team_id": None, "home_team_id": None})
+    store.update_novig_order("0b3f5f20-9c1b-4d6e-8f3a-5c2d1e7b4a90", {"status": "filled", "novig_order_id": "nv-1"})
+    kalshi = ScriptedKalshi(filled=10)
+    desk = TakerDesk(kalshi, store, tmp_path / "taker.stop", BOT_SUBACCOUNT, now=lambda: NOW,
+                     other_venue_unseen=lambda event_id, held_ids: novig_unseen_fill(store, event_id, held_ids))
+    assert desk.place(request())["status"] == "unseen_fill"
+    assert "POST" not in kalshi.methods()
+    assert desk.place(request(heldIds=["novig:nv-1:bot"]))["status"] == "filled"

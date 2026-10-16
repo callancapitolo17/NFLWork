@@ -25,7 +25,8 @@ Rules, in order, for every request:
      game has not started, and the runner priced the same Kalshi (its
      kalshiBaseUrl is this desk's); else refused, "stale_decision" /
      "started" / "env_mismatch";
-  5. unseen fill: an earlier bot order on the SAME GAME that may still hold
+  5. unseen fill: an earlier bot order on the SAME GAME, on Kalshi or on
+     Novig (novig_taker_desk.py), that may still hold
      contracts must be among the held bets the runner sized this stake on
      (`heldIds`, the ids bets.js matched to the row: "kalshi:<ticker>:<side>:s<N>"
      for the bot's subaccount N, sources/kalshi.py record_id_of), else
@@ -394,11 +395,28 @@ def _may_hold_contracts(order: dict) -> bool:
     return order["status"] == "unfilled" and not order["fills_final"]
 
 
+def kalshi_unseen_fill(store: TakerStore, event_id: int, held_ids: set[str], ticker: str | None = None) -> str | None:
+    """Why an add on Unabated event `event_id` (or on `ticker`) would be sized
+    blind, or None: an open Kalshi bot order there that may hold contracts and
+    whose position is not among `held_ids`. Store reads only, no desk lock, so
+    the Novig desk asks it too."""
+    for order in store.open_orders():
+        same_game = order["event_id"] == event_id or (ticker is not None and order["ticker"] == ticker)
+        if not same_game or not _may_hold_contracts(order):
+            continue
+        held_id = held_id_of(order["ticker"], order["contract_side"], order["subaccount"])
+        if held_id not in held_ids:
+            return (f"{order['client_order_id']} ({order['status']}) is not yet among the held bets the stake "
+                    f"was sized on: no {held_id}")
+    return None
+
+
 class TakerDesk:
     """Places the runner's orders, one at a time, under the ceiling."""
 
     def __init__(self, client: KalshiOrderClient, store: TakerStore, stop_path: Path, subaccount: int,
-                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)):
+                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+                 other_venue_unseen: Callable[[int, set[str]], str | None] | None = None):
         if isinstance(subaccount, bool) or not isinstance(subaccount, int) or not 1 <= subaccount <= MAX_SUBACCOUNT:
             raise ValueError(f"the bot trades only in a numbered subaccount 1-{MAX_SUBACCOUNT}, got {subaccount!r}")
         self._client = client
@@ -406,6 +424,8 @@ class TakerDesk:
         self._store = store
         self._stop_path = Path(stop_path)
         self._now = now
+        # The Novig bot's orders on the same game (novig_taker_desk.novig_unseen_fill); None = Kalshi's alone.
+        self._other_venue_unseen = other_venue_unseen
         self._lock = threading.Lock()
         self._last_refresh_at: datetime | None = None
         self._settlement_checked_at: dict[str, datetime] = {}
@@ -466,16 +486,12 @@ class TakerDesk:
 
     def _unseen_fill(self, request: dict) -> str | None:
         """Why this order would add to a game blind, or None: an earlier bot
-        order on the game that may hold contracts and is not in `held_ids`."""
-        for order in self._store.open_orders():
-            same_game = order["event_id"] == request["event_id"] or order["ticker"] == request["ticker"]
-            if not same_game or not _may_hold_contracts(order):
-                continue
-            held_id = held_id_of(order["ticker"], order["contract_side"], order["subaccount"])
-            if held_id not in request["held_ids"]:
-                return (f"{order['client_order_id']} ({order['status']}) is not yet among the held bets the stake "
-                        f"was sized on: no {held_id}")
-        return None
+        order on the game, on Kalshi or (other_venue_unseen) on Novig, that
+        may hold contracts and is not in `held_ids`."""
+        unseen = kalshi_unseen_fill(self._store, request["event_id"], request["held_ids"], request["ticker"])
+        if unseen is None and self._other_venue_unseen is not None:
+            unseen = self._other_venue_unseen(request["event_id"], request["held_ids"])
+        return unseen
 
     def _send(self, request: dict, count: int) -> dict:
         client_order_id = request["client_order_id"]
