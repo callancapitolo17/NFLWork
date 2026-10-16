@@ -135,8 +135,9 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
       bets python -m unabated_ticket.bets_service.taker_subaccount_setup
     rm ~/unabated-data/kalshi_setup_signing.pem   # afterwards, Done or STOPPED
     ```
-    Use an unrestricted read + write key on the main account, not the Place
-    key of step 12, which is made for trading only. (2026-10-16 the write key
+    Use a main-account key whose scopes, in Kalshi's `GET /api_keys` listing,
+    include `read` and `write` (a key made at kalshi.com listed as both on
+    2026-10-16); check before using the Place key of step 12. (2026-10-16 the write key
     was the earlier bot key, then at `~/unabated-data/kalshi_taker.pem`; `-e`
     on `exec` wins over `.env`, which stays untouched.) It puts the stop file (`~/unabated-data/taker.stop`) in
     place first, so nothing trades until you `rm` it; that holds on a STOPPED
