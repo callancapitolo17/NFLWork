@@ -1699,7 +1699,9 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   /exclusions.json` with `{betIds: [...], excluded: true|false}` (at most
   50) → `{ok, changed, exclusions}` — the Bet Tracker's Remove / Restore; a
   bet not at BFA or Wagerzon is a 400, an unknown id a 404. `/bets.json` also
-  serves `exclusions` (all of them). `POST
+  serves `exclusions` (all of them). `GET /balances.json` → `{generatedAt,
+  balances: {venue: {cash, inBets, available, creditLimit, fetchedAt, error}}}`
+  (dollars or null; in memory only) — the tracker's Balances tab. `POST
   /bet105.json` with `{fetchedAt, feeds: {prematch: [betGroup], live:
   [betGroup]}, settled: [wager]}` (both feeds, at most 2000 groups, and the
   wager list) → `{ok, count, settled, closed, skipped}`, or `{error}` → `{ok,
@@ -2530,6 +2532,16 @@ visible. Its one write is the Bets page's Remove / Restore.
 - **Header**: range (Today, Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days), $ / units with the unit size
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
+- **Balances** (own tab, last in the nav, so a glance at Overview never shows
+  today's money; Cal, 2026-10-14): live cash, in bets and available per book
+  from `GET /balances.json`, fetched only while the tab is open. Read after each
+  poll for Kalshi (`/portfolio/balance`, cents), Novig
+  (`/portfolio/summary?currency=CASH`) and Polymarket US
+  (`/v1/account/balances`, no in-bets figure), each on the source's own login;
+  fields seen in real responses 2026-10-13/16. Readings live in memory only
+  (`bets_service/balances.py`): a restart shows nothing until the next poll, a
+  failed read keeps the last numbers with how old they are, and a book never
+  read shows "unavailable", never $0, and stays out of the total.
 - **Open bets** (Open page) are split into **Upcoming** and, when any
   exist, **No start time** (BetOnline's report carries no game time, Kalshi
   NFL/CFB tickers only a date; futures and Kalshi combos none), each with

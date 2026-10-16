@@ -24,6 +24,7 @@
         <button type="button" data-view="open">Open<span class="badge num" id="open-count" hidden></span></button>
         <button type="button" data-view="analysis">Analysis</button>
         <button type="button" data-view="bets">Bets</button>
+        <button type="button" data-view="balances">Balances</button>
       </nav>
       <div class="spacer"></div>
       <div class="controls">
@@ -211,6 +212,14 @@
         </div>
         <div class="scroll" id="b-list"></div>
         <button type="button" class="more" id="bets-more" hidden>Show more</button>
+      </section>
+    </section>
+
+    <section id="view-balances" class="stack" aria-label="Balances" hidden>
+      <div class="title-row"><h1>Balances</h1><span class="note" id="balances-caption"></span></div>
+      <section class="panel balances-panel" aria-label="Balance by book">
+        <div class="head"><span class="lbl">Balance by book</span></div>
+        <div id="bal-table"></div>
       </section>
     </section>
   </main>
