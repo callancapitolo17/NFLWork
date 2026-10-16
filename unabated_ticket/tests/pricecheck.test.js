@@ -192,13 +192,37 @@ test("a skipped row folds only while a book beats it and its game is still to st
   const started = row(3, beaten, NOW - HOUR);
   const notSkipped = row(4, beaten, NOW + HOUR);
   const skips = {};
-  for (const r of [skipped, nowBest, started]) skips[pricecheck.skipKeyOf(r, 4)] = r.eventStartMs;
-  assert.equal(pricecheck.skipKeyOf(skipped, 4), "1:1:3:0|47.5@4");
+  for (const r of [skipped, nowBest, started]) skips[pricecheck.skipKeyOf(r)] = r.eventStartMs;
+  assert.equal(pricecheck.skipKeyOf(skipped), "1:1:3:0|47.5");
   const { listed, skipped: folded } = pricecheck.splitSkipped([skipped, nowBest, started, notSkipped], skips, NOW);
   assert.deepEqual(folded, [skipped]);
   assert.deepEqual(listed, [nowBest, started, notSkipped]);
   assert.equal(pricecheck.canSkip({ better: [] }), false);
   assert.equal(pricecheck.canSkip(null), false);
+});
+
+test("a skip covers the line at every book a book beats; the best price there still lists", () => {
+  // Cal, 2026-10-16: skipped Pittsburgh -16.5 at FanDuel, then DraftKings'
+  // worse -16.5 showed. Now it folds too; the other side and number do not.
+  const beaten = { better: [{ bookName: "Circa", price: -105 }] };
+  const row = (bookId, priceCheck, overrides = {}) => ({
+    eventId: 7, periodTypeId: 1, betTypeId: 2, sideIndex: 0, points: -16.5,
+    book: { id: bookId }, priceCheck, eventStartMs: NOW + HOUR, ...overrides,
+  });
+  const fanduel = row(3, beaten);
+  const draftkings = row(5, beaten);
+  const bestAtNumber = row(9, { better: [] });
+  const otherSide = row(5, beaten, { sideIndex: 1, points: 16.5 });
+  const otherNumber = row(5, beaten, { points: -17 });
+  const skips = { [pricecheck.skipKeyOf(fanduel)]: fanduel.eventStartMs };
+  const { listed, skipped } = pricecheck.splitSkipped([fanduel, draftkings, bestAtNumber, otherSide, otherNumber], skips, NOW);
+  assert.deepEqual(skipped, [fanduel, draftkings]);
+  assert.deepEqual(listed, [bestAtNumber, otherSide, otherNumber]);
+  // A skip saved per book before this change covers the line too.
+  const legacy = { "7:1:2:0|-16.5@3": fanduel.eventStartMs };
+  assert.deepEqual(pricecheck.splitSkipped([draftkings], legacy, NOW).skipped, [draftkings]);
+  assert.equal(pricecheck.skipLineOf("7:1:2:0|-16.5@3"), "7:1:2:0|-16.5");
+  assert.equal(pricecheck.skipLineOf("7:1:1:0|ml"), "7:1:1:0|ml");
 });
 
 test("every Edges row carries its price check, on the real NFL slice", () => {

@@ -742,9 +742,14 @@ skipped line folds into the "N skipped" line under the Edges list, where
 **Restore** lists it again. A skip holds only while a book still beats the
 price and the game is still to start: once no book beats it (the check
 reruns on every snapshot) or the game starts, the row lists again by itself
-(`pricecheck.splitSkipped`). A skipped line never alerts. The skip is keyed
-on the line at the book (`pricecheck.skipKeyOf`: game, period, market, side,
-number, book), so a new number is a new line. Skips live on the bets service
+(`pricecheck.splitSkipped`). A skipped line never alerts. **Since 0.26.0
+(Cal 2026-10-16) a skip covers the line at every book**: skip -16.5 at
+FanDuel and DraftKings' worse -16.5 folds too. Each row still folds only
+while a book beats its own price, so the best price at that number stays
+listed. The key is the line (`pricecheck.skipKeyOf`: game, period, market,
+side, number), so the other side or a new number is a new line; a skip saved
+per book before 0.26.0 (`<line>@<bookId>`) reads as its line, and Restore
+lifts both. Skips live on the bets service
 (`bets.duckdb::edge_skips`, `POST /edge_skips.json {skipKey, eventStartMs,
 skipped}`, served as `edgeSkips` in `/bets.json`), shared by the panel and
 the phone; an older service leaves them panel-only in `chrome.storage.local`.

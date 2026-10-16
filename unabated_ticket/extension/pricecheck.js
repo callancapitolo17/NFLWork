@@ -198,10 +198,26 @@
     return `${outliers} outlier${outliers === 1 ? "" : "s"} to check`;
   }
 
-  // One line at one book: what a Skip is keyed on (bets.duckdb::edge_skips).
-  // A different number or a different book is a different line.
-  function skipKeyOf(line, bookId) {
-    return `${rungKeyOf(line)}@${bookId}`;
+  // What a Skip is keyed on (bets.duckdb::edge_skips): the line, at every
+  // book (Cal, 2026-10-16: skipping -16.5 at FanDuel hides DraftKings' -16.5
+  // too). A different number, side, market or period is a different line.
+  function skipKeyOf(line) {
+    return rungKeyOf(line);
+  }
+
+  // The line a stored skip key names. Skips saved before 2026-10-16 were per
+  // book ('<line>@<bookId>'); they now cover the line at every book too.
+  function skipLineOf(skipKey) {
+    const at = skipKey.indexOf("@");
+    return at === -1 ? skipKey : skipKey.slice(0, at);
+  }
+
+  // {skipKey: eventStartMs} keyed by line (skipLineOf), so old per-book keys
+  // and new line keys read the same way.
+  function skipsByLine(skips) {
+    const byLine = {};
+    for (const [skipKey, eventStartMs] of Object.entries(skips || {})) byLine[skipLineOf(skipKey)] = eventStartMs;
+    return byLine;
   }
 
   // A Skip is offered only where a book beats the price.
@@ -209,17 +225,19 @@
     return Boolean(check && check.better.length > 0);
   }
 
-  // The rows Cal skipped, apart from the rest. A skip holds only while a book
-  // still beats the row's price and its game is still to start; after that the
-  // row lists again by itself (the restore rule, Cal 2026-10-09/13).
-  //   rows   Edges rows carrying priceCheck, book.id and eventStartMs
+  // The rows Cal skipped, apart from the rest. A skipped line folds at every
+  // book a book beats; a row nobody beats (the best price at that number)
+  // still lists. Each row comes back by itself once no book beats it or its
+  // game starts (the restore rule, Cal 2026-10-09/13/16).
+  //   rows   Edges rows carrying priceCheck and eventStartMs
   //   skips  {skipKey: eventStartMs}; now  epoch ms
   // Returns {listed, skipped}, each in the rows' order.
   function splitSkipped(rows, skips, now) {
+    const byLine = skipsByLine(skips);
     const listed = [];
     const skipped = [];
     for (const row of rows) {
-      const eventStartMs = skips[skipKeyOf(row, row.book.id)];
+      const eventStartMs = byLine[skipKeyOf(row)];
       const held = typeof eventStartMs === "number" && eventStartMs > now && canSkip(row.priceCheck);
       (held ? skipped : listed).push(row);
     }
@@ -229,7 +247,7 @@
   const api = {
     BOOKS_BETTER_TO_SKIP, OUTLIER_PROB_GAP, MIN_OTHER_BOOK_LIQUIDITY,
     impliedProb, isThin, rungKeyOf, sameNameKey, mergeSameNameBooks, buildPriceIndex, comparePrice, priceCheckTag, describePriceChecks,
-    skipKeyOf, canSkip, splitSkipped,
+    skipKeyOf, skipLineOf, skipsByLine, canSkip, splitSkipped,
   };
 
   if (inNode) {
