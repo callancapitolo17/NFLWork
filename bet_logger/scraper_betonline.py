@@ -1,29 +1,33 @@
 #!/usr/bin/env python3
 """
-BetOnline Bet History Scraper
-Fetches bet history via BetOnline's REST API (no browser needed).
+BetOnline Bet History -> Google Sheet
 
-Auth flow:
-  1. Read saved cookies/tokens from recon_betonline_cookies.json
-  2. Use refresh token to get a fresh access token
-  3. Call the bet history API endpoint
-  4. Save rotated refresh token for next run
+Reads BetOnline bets from the Unabated Ticket bets service on the Oracle VM
+(GET <BETS_SERVICE_URL>/bets.json, over Tailscale) instead of logging in to
+BetOnline. Since the 2026-10-14 phone cutover the BetOnline refresh token lives
+only on the VM; a second login from this Mac would rotate it under the VM and
+Keycloak's reuse detection would kill both, so this script holds no BetOnline
+credentials and never calls BetOnline.
 
-If the refresh token has expired (>3 days without use), re-run recon_betonline.py
-to capture fresh tokens via the browser.
+Inputs:  BETS_SERVICE_URL (bet_logger/.env, default DEFAULT_BETS_SERVICE_URL);
+         the VM stores each report row verbatim under record["raw"]
+         (unabated_ticket/bets_service/sources/betonline.py), which is rebuilt
+         into the report's own shape and parsed exactly as before.
+Outputs: settled bets appended to the Google Sheet (sheets.append_bets_to_sheet,
+         which skips rows already there). Pending bets are left out, as before.
+Fails loudly when the VM is unreachable or its last BetOnline poll failed, so
+the Monday runner reports BetOnline as FAILED rather than logging stale data.
 """
 
 import os
 import sys
 import re
 import json
-import fcntl
 import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from utils import (
     calculate_american_odds,
-    calculate_american_odds_from_line,
     calculate_decimal_odds_from_american,
     parse_sport,
 )
@@ -32,202 +36,71 @@ from sheets import append_bets_to_sheet, get_sheets_service, SPREADSHEET_ID, SHE
 
 load_dotenv()
 
-# Paths
 SCRIPT_DIR = os.path.dirname(__file__)
-COOKIES_FILE = os.path.join(SCRIPT_DIR, "recon_betonline_cookies.json")
 
-# The Unabated Ticket bets service (unabated_ticket/bets_service/sources/betonline.py)
-# rotates the same refresh token. Both take this exclusive lock around
-# read -> refresh -> write, so a race loser waits and then rotates the winner's
-# token instead of the dead parent (Keycloak reuse detection would kill both).
-COOKIES_LOCK_FILE = COOKIES_FILE + ".lock"
-
-# API endpoints
-TOKEN_URL = "https://api.betonline.ag/api/auth/realms/betonline/protocol/openid-connect/token"
-BET_HISTORY_URL = "https://api.betonline.ag/report/api/report/get-bet-history"
-
-# Shared request headers
-BASE_HEADERS = {
-    "Accept": "application/json, text/plain, */*",
-    "Origin": "https://www.betonline.ag",
-    "Referer": "https://www.betonline.ag/",
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "gsetting": "bolnasite",
-    "contests": "na",
-    "gmt-offset": "-8",
-    "utc-offset": "480",
+# The VM's tailnet name (tailscale serve fronts the bets service with HTTPS).
+DEFAULT_BETS_SERVICE_URL = "https://mlb-stack.tail87ab2d.ts.net"
+BETS_SERVICE_SOURCE = "betonline"
+BETS_SERVICE_TIMEOUT_SEC = 30
+# /bets.json windows on the settle time; a bet settles on or after the day it was
+# placed, so a window this much wider than the placed-date range holds every bet.
+SETTLE_WINDOW_MARGIN_DAYS = 2
+# The report fields the sheet parser reads, as the VM keeps them under record["raw"].
+RAW_TO_REPORT_FIELDS = {
+    "description": "Description",
+    "wagerType": "WagerType",
+    "wagerStatus": "WagerStatus",
+    "risk": "Risk",
+    "toWin": "ToWin",
+    "date": "Date",
 }
 
 
-def load_cookies() -> list:
-    """Load saved cookies from recon output."""
-    if not os.path.exists(COOKIES_FILE):
-        raise FileNotFoundError(
-            f"Cookie file not found: {COOKIES_FILE}\n"
-            "Run recon_betonline.py first to capture auth tokens."
-        )
-    with open(COOKIES_FILE, 'r') as f:
-        return json.load(f)
-
-
-def build_session(cookies: list) -> requests.Session:
-    """Build a requests session with BetOnline Cloudflare cookies."""
-    session = requests.Session()
-    for c in cookies:
-        if 'betonline.ag' in c.get('domain', ''):
-            session.cookies.set(
-                c['name'], c['value'],
-                domain=c['domain'],
-                path=c.get('path', '/'),
-            )
-    return session
-
-
-def refresh_access_token(session: requests.Session, cookies: list) -> str:
-    """
-    Use the saved refresh token to get a fresh access token.
-    Saves the rotated refresh token back to the cookies file.
-
-    Runs under the cookie-file lock and re-reads krefresh from disk inside it,
-    so a rotation another process just made is used instead of the stale value
-    in `cookies` (which is updated in place).
-
-    Returns the new access token.
-    Raises RuntimeError if the refresh token has expired.
-    """
-    with open(COOKIES_LOCK_FILE, 'w') as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            return _refresh_access_token_locked(session, cookies)
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
-
-
-def _refresh_access_token_locked(session: requests.Session, cookies: list) -> str:
-    on_disk = load_cookies()
-    for c in on_disk:
-        if c['name'] == 'krefresh':
-            for held in cookies:
-                if held['name'] == 'krefresh':
-                    held['value'] = c['value']
-            break
-    krefresh = None
-    for c in cookies:
-        if c['name'] == 'krefresh':
-            krefresh = c['value']
-            break
-
-    if not krefresh:
-        raise RuntimeError("No refresh token (krefresh) found in cookies. Run recon_betonline.py.")
-
-    resp = session.post(
-        TOKEN_URL,
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": krefresh,
-            "client_id": "betonline-web",
-        },
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            **{k: v for k, v in BASE_HEADERS.items() if k in ("User-Agent", "Origin", "Referer")},
-        },
-        timeout=15,
-    )
-
-    if resp.status_code != 200:
+def fetch_bets_payload(service_url: str, days: int) -> dict:
+    """GET /bets.json?days=N from the bets service. Raises with the reason when the
+    VM cannot be reached, answers non-200, or its last BetOnline poll failed."""
+    url = f"{service_url.rstrip('/')}/bets.json"
+    try:
+        resp = requests.get(url, params={"days": days}, timeout=BETS_SERVICE_TIMEOUT_SEC)
+    except requests.RequestException as e:
         raise RuntimeError(
-            f"Token refresh failed (HTTP {resp.status_code}). "
-            "Refresh token likely expired (>3 days). Run recon_betonline.py to re-authenticate."
-        )
-
-    token_data = resp.json()
-    new_access = token_data["access_token"]
-    new_refresh = token_data.get("refresh_token")
-
-    # Save rotated refresh token back to cookies file (temp file + os.replace so
-    # a concurrent reader — the bets service — never sees a half-written file)
-    if new_refresh and new_refresh != krefresh:
-        for c in cookies:
-            if c['name'] == 'krefresh':
-                c['value'] = new_refresh
-                break
-        temp_file = COOKIES_FILE + ".tmp"
-        with open(temp_file, 'w') as f:
-            json.dump(cookies, f, indent=2)
-        os.replace(temp_file, COOKIES_FILE)
-
-    return new_access
+            f"could not reach the bets service at {url} ({e}). "
+            "Is Tailscale up on this Mac?") from e
+    if resp.status_code != 200:
+        raise RuntimeError(f"bets service {url} answered HTTP {resp.status_code}: {resp.text[:200]}")
+    payload = resp.json()
+    status = payload.get("sources", {}).get(BETS_SERVICE_SOURCE)
+    if status is None:
+        raise RuntimeError(f"bets service has no '{BETS_SERVICE_SOURCE}' source; sources seen: "
+                           f"{sorted(payload.get('sources', {}))}")
+    if not status.get("ok"):
+        raise RuntimeError(
+            f"the VM's last BetOnline poll failed ({status.get('error')}); last good poll "
+            f"{status.get('fetchedAt')}. Its BetOnline token may need a new login on the VM.")
+    return payload
 
 
-def build_api_headers(access_token: str) -> dict:
-    """Build the full header set for BetOnline API calls."""
-    now = datetime.now(timezone.utc)
-    ms = int(now.timestamp() * 1000)
-
-    return {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-        **BASE_HEADERS,
-        "actual-time": str(ms),
-        "iso-time": now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms % 1000:03d}Z",
-        "utc-time": now.strftime("%a, %d %b %Y %H:%M:%S GMT"),
-    }
-
-
-def fetch_bet_history(session: requests.Session, headers: dict,
-                      start_date: str, end_date: str) -> list:
-    """
-    Fetch bet history from the API.
-
-    Args:
-        start_date: ISO date string (YYYY-MM-DD), converted to midnight UTC
-        end_date: ISO date string (YYYY-MM-DD), converted to midnight UTC
-
-    Returns:
-        List of bet dicts from the API's Data array
-    """
-    all_bets = []
-    start_pos = 0
-    page_size = 100
-
-    while True:
-        resp = session.post(
-            BET_HISTORY_URL,
-            headers=headers,
-            json={
-                "Id": None,
-                "StartDate": f"{start_date}T00:00:00.000Z",
-                "EndDate": f"{end_date}T00:00:00.000Z",
-                "Status": None,
-                "Product": None,
-                "WagerType": None,
-                "FreePlayFlag": None,
-                "StartPosition": start_pos,
-                "TotalPerPage": page_size,
-                "IsDailyFigureReport": False,
-            },
-            timeout=15,
-        )
-
-        if resp.status_code != 200:
-            print(f"API error: HTTP {resp.status_code}")
-            break
-
-        data = resp.json()
-        bets = data.get("Data", [])
-        total_rows = data.get("TotalRows", 0)
-
-        all_bets.extend(bets)
-
-        if len(all_bets) >= total_rows or not bets:
-            break
-
-        start_pos += page_size
-
-    return all_bets
+def report_rows_from_payload(payload: dict, from_date: str) -> list:
+    """The BetOnline report rows placed on or after from_date (YYYY-MM-DD, the
+    report's own clock), one per wager. A parlay is stored as one record per leg,
+    each carrying the same raw row, so rows are de-duplicated on the wager id."""
+    rows_by_wager_id = {}
+    for record in payload.get("bets", []):
+        if record.get("venue") != BETS_SERVICE_SOURCE:
+            continue
+        raw = record.get("raw") or {}
+        wager_id = raw.get("nativeId")
+        if not wager_id:
+            raise RuntimeError(f"BetOnline record {record.get('id')} carries no raw.nativeId")
+        placed_date = str(raw.get("date") or "")[:10]
+        if not placed_date:
+            raise RuntimeError(f"BetOnline record {record.get('id')} carries no raw.date")
+        if placed_date < from_date:
+            continue
+        rows_by_wager_id[wager_id] = {
+            report_field: raw.get(raw_field) for raw_field, report_field in RAW_TO_REPORT_FIELDS.items()
+        }
+    return sorted(rows_by_wager_id.values(), key=lambda row: str(row["Date"] or ""))
 
 
 # ── Parsing helpers ──────────────────────────────────────────────
@@ -414,39 +287,27 @@ def get_last_betonline_date() -> str:
 # ── Main scraper ─────────────────────────────────────────────────
 
 
-def scrape_betonline(days_back: int = 7, from_date: str = None) -> list:
+def scrape_betonline(days_back: int = 7, from_date: str = None,
+                     service_url: str = DEFAULT_BETS_SERVICE_URL) -> list:
     """
-    Fetch bet history from BetOnline's API.
-
-    Args:
-        days_back: Number of days of history to fetch (default: 7).
-                   Ignored if from_date is provided.
-        from_date: Explicit start date as YYYY-MM-DD.
-
-    Returns:
-        List of parsed bet dictionaries.
+    Settled BetOnline bets placed on or after from_date (else the last days_back
+    days), read from the bets service on the VM. Read-only: no BetOnline call,
+    no token, no DB write.
     """
-    # Load auth
-    cookies = load_cookies()
-    session = build_session(cookies)
-
-    print("Refreshing access token...")
-    access_token = refresh_access_token(session, cookies)
-    print("✅ Token refreshed")
-
-    # Build date range (use local time — BetOnline rejects future EndDates in UTC)
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now()
     if from_date:
         start = from_date
     else:
-        start = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        start = (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    days_in_range = (today - datetime.strptime(start, "%Y-%m-%d")).days
+    window_days = max(days_in_range, 0) + SETTLE_WINDOW_MARGIN_DAYS
 
-    print(f"Fetching bets from {start} to {today}...")
-    headers = build_api_headers(access_token)
-    api_bets = fetch_bet_history(session, headers, start, today)
+    print(f"Reading BetOnline bets placed since {start} from {service_url}...")
+    payload = fetch_bets_payload(service_url, window_days)
+    report_rows = report_rows_from_payload(payload, start)
 
-    print(f"\nAPI returned {len(api_bets)} bets")
-    return parse_api_bets(api_bets)
+    print(f"\nBets service returned {len(report_rows)} BetOnline bets")
+    return parse_api_bets(report_rows)
 
 
 def scrape_from_file(filepath: str) -> list:
@@ -461,23 +322,12 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description='Scrape bet history from BetOnline')
-    parser.add_argument('--test', action='store_true', help='Parse from saved JSON file instead of live API')
+    parser.add_argument('--test', action='store_true', help='Parse from a saved report JSON file instead of the bets service')
     parser.add_argument('--days', type=int, default=7, help='Days of history to fetch (default: 7)')
     parser.add_argument('--since-last', action='store_true', help='Scrape from the date of the last BetOnline bet in Google Sheets')
     parser.add_argument('--dry-run', action='store_true', help='Scrape but do not upload to Google Sheets')
-    parser.add_argument('--refresh-only', action='store_true', help='Just refresh the auth token and exit (keeps token alive)')
     args = parser.parse_args()
-
-    if args.refresh_only:
-        try:
-            cookies = load_cookies()
-            session = build_session(cookies)
-            refresh_access_token(session, cookies)
-            print("Token refreshed successfully")
-        except Exception as e:
-            print(f"Token refresh failed: {e}")
-            sys.exit(1)
-        sys.exit(0)
+    service_url = os.getenv('BETS_SERVICE_URL') or DEFAULT_BETS_SERVICE_URL
 
     if args.test:
         print("TEST MODE: Parsing from saved JSON file")
@@ -517,7 +367,7 @@ if __name__ == "__main__":
                 else:
                     print("No existing BetOnline bets found in sheet, using default range")
 
-            bets = scrape_betonline(days_back=args.days, from_date=from_date)
+            bets = scrape_betonline(days_back=args.days, from_date=from_date, service_url=service_url)
 
             print(f"\n{'=' * 60}")
             print(f"Successfully scraped {len(bets)} bets from BetOnline")

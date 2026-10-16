@@ -32,14 +32,37 @@
   const RANGES = ["Yesterday", "7D", "30D", "90D", "YTD", "All", "Custom"];
   // The Analysis filter bar, one chip row per entry (Cal, 2026-10-12): every
   // value a ticket carries is a chip, all on by default; state.off[key] holds
-  // the ones switched off, so a value new to the data shows up on.
+  // the ones switched off, so a value new to the data shows up on. Keys match
+  // trackerstats.GROUPS so a clicked breakdown row or pivot cell becomes a
+  // filter (Cal, 2026-10-13: drill down like a BI tool); `fromGroup` maps a
+  // group label to the filter's value where the two differ. Rows without
+  // `primary` stay folded under More filters until one is in use.
+  // A ticket's value for a group key, labelled exactly as trackerstats.groupBy
+  // labels it (missing -> "Unknown"), so a clicked "Unknown" row filters to it.
+  function groupValue(key) {
+    return (ticket) => ticket[key] || "Unknown";
+  }
   const FILTERS = [
-    { key: "venue", label: "Venue", value: (t) => t.venue },
-    { key: "league", label: "League", value: (t) => t.league },
-    { key: "kind", label: "Type", value: (t) => t.kind },
-    { key: "market", label: "Market", value: (t) => t.market },
-    { key: "period", label: "Period", value: (t) => (t.period === "FG" ? "Full game" : "Partial") },
+    { key: "venue", label: "Venue", primary: true, value: groupValue("venue") },
+    { key: "league", label: "League", primary: true, value: groupValue("league") },
+    { key: "kind", label: "Type", primary: true, value: groupValue("kind") },
+    { key: "market", label: "Market", primary: true, value: groupValue("market") },
+    { key: "period", label: "Period", primary: true, value: (t) => periodFilterValue(t.period), fromGroup: periodFilterValue },
+    { key: "side", label: "Side", primary: true, value: groupValue("side") },
+    { key: "closeResult", label: "Close", primary: true, value: groupValue("closeResult") },
+    { key: "favDog", label: "Fav / Dog", value: groupValue("favDog") },
+    { key: "oddsBucket", label: "Odds", value: groupValue("oddsBucket") },
+    { key: "edgeBucket", label: "Edge", value: groupValue("edgeBucket") },
+    { key: "timing", label: "Timing", value: groupValue("timing") },
+    { key: "weekday", label: "Weekday", value: groupValue("weekday") },
+    { key: "stakeBucket", label: "Stake", value: groupValue("stakeBucket") },
+    { key: "number", label: "Number", value: groupValue("number") },
   ];
+  const PIVOT_METRICS = [
+    { key: "roi", label: "ROI" }, { key: "pnl", label: "P&L" }, { key: "clv", label: "CLV" }, { key: "bets", label: "Bets" },
+  ];
+  // ROI at which a pivot cell is fully shaded; smaller ROIs fade toward clear.
+  const PIVOT_FULL_SHADE_ROI = 0.3;
   const DAILY_ROWS = 14;
   const LOG_PAGE = 50;
   const CALENDAR_WEEKS = 6;
@@ -54,6 +77,11 @@
   const state = Object.assign({
     view: "overview", range: "30D", customFirst: null, customLast: null, units: false, unitSize: 100,
     groupBy: "venue", off: Object.fromEntries(FILTERS.map((f) => [f.key, []])), query: "", logLimit: LOG_PAGE,
+    // The drill path: filter keys in the order they came into use, so the
+    // breadcrumb reads like the clicks that built it. oddsMin/oddsMax are the
+    // typed American odds range (null = open end).
+    drillOrder: [], oddsMin: null, oddsMax: null, moreFilters: false,
+    pivotRows: "side", pivotCols: "timing", pivotMetric: "roi",
     betsQuery: "", betsVenue: "All", betsFilter: "All", betsLimit: LOG_PAGE, saving: false,
     // Per table: {col: column index, dir: "asc" | "desc"}; absent = the table's own order.
     sorts: {},
@@ -236,13 +264,15 @@
    * sort?(row) -> number | string | null, highFirst? (a left-aligned column whose first click sorts high to low)}.
    * opts.sortKey names the table in state.sorts: columns with a `sort` get a
    * clickable header (click sorts, click again reverses) and the rows are
-   * ordered by it. opts.rowClass?(row) -> class.
+   * ordered by it. opts.rowClass?(row) -> class. opts.onRowClick?(row) makes rows clickable.
    */
   function table(columns, rows, opts) {
-    const { sortKey, rowClass } = opts || {};
+    const { sortKey, rowClass, onRowClick } = opts || {};
     const current = sortKey ? state.sorts[sortKey] : null;
     const head = el("tr", null, columns.map((col, index) => headerCell(col, index, sortKey, current)));
-    const body = sortedRows(sortKey, columns, rows).map((row) => el("tr", { className: rowClass ? rowClass(row) : "" }, columns.map((col) => {
+    const body = sortedRows(sortKey, columns, rows).map((row) => el("tr", {
+      className: rowClass ? rowClass(row) : "", title: onRowClick ? "Click to drill in" : "", onClick: onRowClick ? () => onRowClick(row) : null,
+    }, columns.map((col) => {
       const value = col.cell(row);
       const classes = [col.right ? "r" : "", col.num ? "num" : "", col.className ? col.className(row) : ""].filter(Boolean).join(" ");
       const td = el("td", { className: classes });
@@ -833,8 +863,23 @@
 
   // ---- analysis -------------------------------------------------------------
 
+  function periodFilterValue(period) {
+    return period === "FG" ? "Full game" : "Partial";
+  }
+
+  function filterSpec(key) {
+    return FILTERS.find((f) => f.key === key);
+  }
+
+  function inOddsRange(ticket) {
+    if (state.oddsMin === null && state.oddsMax === null) return true;
+    const price = ticket.displayPrice;
+    if (!Number.isFinite(price)) return false;
+    return (state.oddsMin === null || price >= state.oddsMin) && (state.oddsMax === null || price <= state.oddsMax);
+  }
+
   function passesFilters(ticket) {
-    return FILTERS.every((f) => !state.off[f.key].includes(f.value(ticket)));
+    return inOddsRange(ticket) && FILTERS.every((f) => !state.off[f.key].includes(f.value(ticket)));
   }
 
   function filteredSettled() {
@@ -842,10 +887,93 @@
     return stats.inDayRange(tickets, first, last).filter(passesFilters);
   }
 
+  /** Every value of a filter across all tickets, most bets first. */
+  function allFilterValues(filter) {
+    return valuesByCount(tickets, filter.value).map(([value]) => value);
+  }
+
+  /** Filter keys switched on for a value still on the page, in drill order. */
+  function activeFilterKeys() {
+    const active = FILTERS.filter((f) => tickets.some((t) => state.off[f.key].includes(f.value(t)))).map((f) => f.key);
+    if (state.oddsMin !== null || state.oddsMax !== null) active.push("odds");
+    const rank = (key) => (state.drillOrder.includes(key) ? state.drillOrder.indexOf(key) : Infinity);
+    return active.sort((a, b) => rank(a) - rank(b));
+  }
+
+  function noteDrillKey(key, inUse) {
+    state.drillOrder = state.drillOrder.filter((k) => k !== key);
+    if (inUse) state.drillOrder.push(key);
+  }
+
+  function resetPaging() {
+    state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
+  }
+
   function setOff(key, values) {
     state.off[key] = values;
-    state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
+    noteDrillKey(key, values.length > 0);
+    resetPaging();
     render();
+  }
+
+  function clearFilter(key) {
+    if (key === "odds") { state.oddsMin = null; state.oddsMax = null; } else state.off[key] = [];
+    noteDrillKey(key, false);
+  }
+
+  /** Keep only these values: [[groupKey, groupLabel], ...] from a clicked row or cell. */
+  function drillTo(pairs) {
+    for (const [key, label] of pairs) {
+      const filter = filterSpec(key);
+      if (!filter) continue;
+      const value = filter.fromGroup ? filter.fromGroup(label) : label;
+      state.off[key] = allFilterValues(filter).filter((v) => v !== value);
+      noteDrillKey(key, true);
+    }
+    resetPaging();
+    render();
+  }
+
+  /** Back up the path: keep the crumbs up to and including `key`, drop the rest. */
+  function backTo(key) {
+    const keys = activeFilterKeys();
+    for (const later of keys.slice(keys.indexOf(key) + 1)) clearFilter(later);
+    resetPaging();
+    render();
+  }
+
+  function resetFilters() {
+    for (const key of activeFilterKeys()) clearFilter(key);
+    state.drillOrder = [];
+    resetPaging();
+    render();
+  }
+
+  /** "NFL", "Over, Under", "4 of 7"; the odds crumb shows its range. */
+  function crumbText(key) {
+    if (key === "odds") {
+      return "Odds: " + (state.oddsMin === null ? "any" : american(state.oddsMin)) + " to " + (state.oddsMax === null ? "any" : american(state.oddsMax));
+    }
+    const filter = filterSpec(key);
+    const values = allFilterValues(filter);
+    const on = values.filter((v) => !state.off[key].includes(v));
+    const shown = on.length === 0 ? "none" : on.length <= 2 ? on.join(", ") : on.length + " of " + values.length;
+    return filter.label + ": " + shown;
+  }
+
+  function renderCrumbs() {
+    const keys = activeFilterKeys();
+    const nodes = [el("button", { className: "crumb-all", text: "All bets", attrs: { type: "button" }, onClick: resetFilters })];
+    for (const key of keys) {
+      nodes.push(el("span", { className: "crumb-sep", text: "›" }));
+      nodes.push(el("span", { className: "crumb" }, [
+        el("button", { className: "crumb-go", text: crumbText(key), title: "Back up to here", attrs: { type: "button" }, onClick: () => backTo(key) }),
+        el("button", { className: "crumb-x", text: "×", title: "Drop this filter", attrs: { type: "button", "aria-label": "Drop " + crumbText(key) },
+          onClick: () => { clearFilter(key); resetPaging(); render(); } }),
+      ]));
+    }
+    if (!keys.length) nodes.push(el("span", { className: "note", text: "Click any breakdown row or pivot cell to drill in." }));
+    fill("f-crumbs", ...nodes);
   }
 
   /** [value, count] pairs over these tickets, most bets first. */
@@ -855,9 +983,27 @@
     return [...counts].sort((a, b) => b[1] - a[1]);
   }
 
-  /** One filter row: label, All / None, then a chip per value (most bets first) with its count in the range. */
+  /** A filter's values in its group's order where it has one (odds, timing...), else most bets first. */
+  function orderedFilterValues(filter) {
+    const values = allFilterValues(filter);
+    const group = stats.GROUPS.find((g) => g.key === filter.key);
+    if (group && group.order) return values.sort((a, b) => rankIn(group.order, a) - rankIn(group.order, b));
+    if (group && group.numeric) return values.sort((a, b) => numberOrInfinity(a) - numberOrInfinity(b));
+    return values;
+  }
+
+  function rankIn(order, value) {
+    return order.includes(value) ? order.indexOf(value) : order.length;
+  }
+
+  function numberOrInfinity(label) {
+    const value = Number(String(label).replace("−", "-").replace("+", ""));
+    return Number.isNaN(value) ? Infinity : value;
+  }
+
+  /** One filter row: label, All / None, then a chip per value with its count in the range. */
   function filterRow(filter, inRange) {
-    const allValues = valuesByCount(tickets, filter.value).map(([value]) => value);
+    const allValues = orderedFilterValues(filter);
     const inRangeCounts = new Map(valuesByCount(inRange, filter.value));
     const off = state.off[filter.key];
     const quick = el("span", { className: "quick" }, [
@@ -871,12 +1017,50 @@
     return el("div", { className: "filter-row" }, [el("span", { className: "lbl", text: filter.label }), quick, ...chipNodes]);
   }
 
+  /** Parse a typed American price ("-120", "+120", "120"); null when blank, NaN when not a price. */
+  function parseAmerican(text) {
+    const trimmed = String(text).trim().replace("−", "-");
+    if (!trimmed) return null;
+    const value = Number(trimmed);
+    return Number.isFinite(value) && Math.abs(value) >= 100 ? value : NaN;
+  }
+
+  function oddsInput(id, label, current, onSet) {
+    const input = el("input", { className: "odds-in num", attrs: { id, type: "text", inputmode: "numeric", placeholder: "any", "aria-label": label } });
+    input.value = current === null ? "" : american(current);
+    input.addEventListener("change", () => {
+      const value = parseAmerican(input.value);
+      if (Number.isNaN(value)) { input.setAttribute("aria-invalid", "true"); input.title = "Type an American price like -120 or +120"; return; }
+      onSet(value);
+      noteDrillKey("odds", state.oddsMin !== null || state.oddsMax !== null);
+      resetPaging();
+      render();
+    });
+    return input;
+  }
+
+  function oddsRangeRow() {
+    return el("div", { className: "filter-row" }, [
+      el("span", { className: "lbl", text: "Price" }),
+      el("label", { className: "odds-range" }, [document.createTextNode("from"), oddsInput("odds-min", "Lowest price", state.oddsMin, (v) => { state.oddsMin = v; })]),
+      el("label", { className: "odds-range" }, [document.createTextNode("to"), oddsInput("odds-max", "Highest price", state.oddsMax, (v) => { state.oddsMax = v; })]),
+      el("span", { className: "note", text: "American odds, e.g. −120 to +120" }),
+    ]);
+  }
+
   function renderFilters(first, last) {
     const inRange = stats.inDayRange(tickets, first, last);
-    fill("f-rows", ...FILTERS.map((filter) => filterRow(filter, inRange)));
-    // Only values still on the page count: a "Kalshi combo" switched off and then hidden by the header toggle shows no Reset.
-    const anyOff = FILTERS.some((f) => tickets.some((t) => state.off[f.key].includes(f.value(t))));
-    document.getElementById("f-reset").hidden = !anyOff;
+    const active = activeFilterKeys();
+    const shown = FILTERS.filter((f) => f.primary || state.moreFilters || active.includes(f.key));
+    const hiddenCount = FILTERS.length - shown.length;
+    const toggle = el("button", {
+      className: "reset", attrs: { type: "button" },
+      text: state.moreFilters ? "Fewer filters" : "More filters (" + hiddenCount + ")",
+      onClick: () => { state.moreFilters = !state.moreFilters; render(); },
+    });
+    fill("f-rows", ...shown.map((filter) => filterRow(filter, inRange)), oddsRangeRow(), (state.moreFilters || hiddenCount) ? toggle : null);
+    document.getElementById("f-reset").hidden = !active.length;
+    renderCrumbs();
   }
 
   function renderAnalysis() {
@@ -898,6 +1082,7 @@
     ]);
     renderChart(stats.dailySeries(settled, first, last), "an-chart", "an-stats", "No settled bets match these filters.");
     renderGroups(settled);
+    renderPivot(settled);
     renderCalibration(settled);
     renderLog(settled);
   }
@@ -921,28 +1106,83 @@
     if (group.outer) { renderGroupSections(settled, group); return; }
     const rows = stats.groupBy(settled, state.groupBy);
     if (!rows.length) { fill("an-groups", emptyNote("No settled bets match these filters.")); return; }
-    // Bucketed groups (odds, edge, timing, weekday, stake) sort in their own order, not A to Z.
-    const groupSortKey = group.order ? (r) => group.order.indexOf(r.label) : (r) => r.label;
-    fill("an-groups", groupTable(group.label, groupSortKey, rows));
+    // Bucketed groups (odds, edge, timing, weekday, stake) sort in their own order, numbers by value, the rest A to Z.
+    const groupSortKey = group.order ? (r) => group.order.indexOf(r.label) : group.numeric ? (r) => numberOrInfinity(r.label) : (r) => r.label;
+    fill("an-groups", groupTable(group.label, groupSortKey, rows, (row) => drillTo([[group.key, row.label]])));
   }
 
-  /** League × Market: a header with each league's totals, then its markets as rows. All sections share one sort. */
+  /** League × Market: a header with each league's totals, then its markets as rows. A row drills into both. */
   function renderGroupSections(settled, group) {
     const sections = stats.groupSections(settled, group.key);
     if (!sections.length) { fill("an-groups", emptyNote("No settled bets match these filters.")); return; }
     const innerLabel = stats.GROUPS.find((g) => g.key === group.inner).label;
     fill("an-groups", ...sections.map((section) => el("div", { className: "open-group group-section" }, [
       el("div", { className: "open-group-head" }, [
-        el("span", { className: "open-group-title", text: section.label }),
+        el("button", { className: "pv-head open-group-title", text: section.label, attrs: { type: "button" }, title: "Drill into " + section.label,
+          onClick: () => drillTo([[group.outer, section.label]]) }),
         el("span", { className: "note", text: section.bets + " bets · " + money(section.handle) + " handle · " }),
         el("span", { className: "num " + toneClass(section.pnl), text: money(section.pnl, true) + " · " + pct(section.roi, true) }),
       ]),
-      groupTable(innerLabel, (r) => r.label, section.rows),
+      groupTable(innerLabel, (r) => r.label, section.rows, (row) => drillTo([[group.outer, section.label], [group.inner, row.label]])),
     ])));
   }
 
+  function pivotValue(cell, metric) {
+    if (metric === "pnl") return money(cell.pnl, true);
+    if (metric === "clv") return pct(cell.clvRoi, true);
+    if (metric === "bets") return String(cell.bets);
+    return pct(cell.roi, true);
+  }
+
+  /** Green for a winning cell, red for a losing one, stronger with ROI; CLV colours by CLV. */
+  function pivotShade(cell, metric) {
+    const value = metric === "clv" ? cell.clvRoi : cell.roi;
+    if (value === null || metric === "bets") return null;
+    const strength = Math.min(1, Math.abs(value) / PIVOT_FULL_SHADE_ROI);
+    const alpha = (0.08 + 0.32 * strength).toFixed(2);
+    return value >= 0 ? "rgba(61, 214, 140, " + alpha + ")" : "rgba(255, 107, 107, " + alpha + ")";
+  }
+
+  function pivotSelect(id, current, onPick) {
+    const select = el("select", { attrs: { id, "aria-label": id === "pivot-rows" ? "Pivot rows" : "Pivot columns" } },
+      stats.GROUPS.filter((g) => !g.outer).map((g) => el("option", { text: g.label, attrs: { value: g.key } })));
+    select.value = current;
+    select.addEventListener("change", () => onPick(select.value));
+    return select;
+  }
+
+  function renderPivot(settled) {
+    fill("pivot-pick",
+      el("label", { className: "pivot-axis" }, [document.createTextNode("Rows"), pivotSelect("pivot-rows", state.pivotRows, (key) => { state.pivotRows = key; render(); })]),
+      el("label", { className: "pivot-axis" }, [document.createTextNode("Columns"), pivotSelect("pivot-cols", state.pivotCols, (key) => { state.pivotCols = key; render(); })]));
+    segButtons("pivot-metric", PIVOT_METRICS, (m) => m.key === state.pivotMetric, (m) => { state.pivotMetric = m.key; render(); });
+    if (state.pivotRows === state.pivotCols) { fill("an-pivot", emptyNote("Pick two different dimensions.")); return; }
+    const grid = stats.pivot(settled, state.pivotRows, state.pivotCols);
+    if (!grid.rows.length) { fill("an-pivot", emptyNote("No settled bets match these filters.")); return; }
+    const metric = state.pivotMetric;
+    const cellNode = (cell, pairs) => {
+      if (!cell) return el("td", { className: "pv-empty", text: "·" });
+      const shade = pivotShade(cell, metric);
+      const button = el("button", {
+        className: "pv-cell num", attrs: { type: "button" },
+        title: cell.bets + " bets · " + money(cell.pnl, true) + " · ROI " + pct(cell.roi, true) + " · CLV " + pct(cell.clvRoi, true) + " · click to drill in",
+        style: shade ? { background: shade } : null, onClick: () => drillTo(pairs),
+      }, [el("span", { text: pivotValue(cell, metric) }), el("small", { text: String(cell.bets) })]);
+      return el("td", null, [button]);
+    };
+    const head = el("tr", null, [el("th", { text: "" }), ...grid.cols.map((col) => el("th", { className: "r" }, [
+      el("button", { className: "pv-head", text: col, attrs: { type: "button" }, title: "Drill into " + col, onClick: () => drillTo([[state.pivotCols, col]]) }),
+    ])), el("th", { className: "r", text: "Total" })]);
+    const body = grid.rows.map((row) => el("tr", null, [
+      el("th", { className: "pv-row" }, [el("button", { className: "pv-head", text: row.label, attrs: { type: "button" }, title: "Drill into " + row.label, onClick: () => drillTo([[state.pivotRows, row.label]]) })]),
+      ...row.cells.map((cell, index) => cellNode(cell, [[state.pivotRows, row.label], [state.pivotCols, grid.cols[index]]])),
+      cellNode(row.total, [[state.pivotRows, row.label]]),
+    ]));
+    fill("an-pivot", el("table", { className: "tbl pivot" }, [el("thead", null, [head]), el("tbody", null, body)]));
+  }
+
   /** One breakdown table: a row per group with the Analysis metrics. */
-  function groupTable(firstLabel, firstSort, rows) {
+  function groupTable(firstLabel, firstSort, rows, onRowClick) {
     return table([
       { label: firstLabel, cell: (r) => r.label, sort: firstSort },
       { label: "Bets", right: true, num: true, cell: (r) => String(r.bets), sort: (r) => r.bets },
@@ -957,7 +1197,7 @@
       { label: "z", right: true, num: true, className: (r) => (r.z !== null && Math.abs(r.z) >= 1.96 ? "warn" : "muted"), cell: (r) => (r.z === null ? "—" : r.z.toFixed(2)), sort: (r) => r.z },
       { label: "CLV", right: true, num: true, className: (r) => (r.clvRoi === null ? "muted" : toneClass(r.clvRoi)), cell: (r) => pct(r.clvRoi, true), sort: (r) => r.clvRoi },
       { label: "Beat close", right: true, num: true, className: () => "muted", cell: (r) => (r.withClose ? pct(r.beatRate) + " of " + r.withClose : "—"), sort: (r) => (r.withClose ? r.beatRate : null) },
-    ], rows, { sortKey: "groups" });
+    ], rows, { sortKey: "groups", onRowClick, rowClass: () => "drill" });
   }
 
   function renderCalibration(settled) {
@@ -1263,11 +1503,7 @@
       button.addEventListener("click", () => showView(button.dataset.view));
     }
     document.getElementById("settled-more").addEventListener("click", () => { state.settledLimit += LOG_PAGE; render(); });
-    document.getElementById("f-reset").addEventListener("click", () => {
-      for (const filter of FILTERS) state.off[filter.key] = [];
-      state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
-      render();
-    });
+    document.getElementById("f-reset").addEventListener("click", resetFilters);
     document.getElementById("show-dollars").addEventListener("click", () => { state.units = false; savePrefs(); render(); });
     document.getElementById("show-units").addEventListener("click", () => { state.units = true; savePrefs(); render(); });
     document.getElementById("bot-combos").addEventListener("click", () => {

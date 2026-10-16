@@ -35,6 +35,13 @@ writer). Tables:
                is never rewritten, and nothing is ever backfilled. Never pruned
                (~14 bets a day). Served with /bets.json for the bets in its
                window (see load_fill_fairs).
+  bet_fill_books  one row per bet: what the other books offered at its number
+               the moment it was placed — how many books posted it, how many
+               beat the price taken, and the best of them (server/fillbooks.js,
+               read off the runner's line history; Cal 2026-10-13). POSTed to
+               /fill_books.json by the server runner. INSERT only, first
+               capture wins (ON CONFLICT DO NOTHING); nothing is backfilled.
+               Stored only: nothing serves it back yet. Never pruned.
   bet_closing_fairs  one row per bet: Unabated's fair for the bet's own line on
                the newest snapshot before its game started — the close CLV is
                measured against. POSTed to /closing_fairs.json by the server
@@ -143,6 +150,16 @@ CREATE TABLE IF NOT EXISTS bet_fill_fairs (
     fair_observed_at  TIMESTAMPTZ NOT NULL,  -- when the panel saw that fair: at or before placed_at
     placed_at         TIMESTAMPTZ NOT NULL,  -- the bet's placedAt
     captured_at       TIMESTAMPTZ NOT NULL   -- when this service stored the row
+);
+CREATE TABLE IF NOT EXISTS bet_fill_books (
+    bet_id        VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
+    placed_at     TIMESTAMPTZ NOT NULL,  -- the bet's placedAt
+    fill_price    DOUBLE NOT NULL,       -- the bet's American price on Unabated's basis (Kalshi with its fee)
+    book_count    INTEGER NOT NULL,      -- other books with a price at its number at the fill
+    books_better  INTEGER NOT NULL,      -- of those, how many beat the price taken
+    best_book     VARCHAR,               -- the best other book; NULL when book_count = 0
+    best_price    DOUBLE,                -- its American price at the fill; NULL when book_count = 0
+    captured_at   TIMESTAMPTZ NOT NULL   -- when this service stored the row
 );
 CREATE TABLE IF NOT EXISTS bet_closing_fairs (
     bet_id            VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
@@ -264,6 +281,13 @@ ON CONFLICT (bet_id) DO NOTHING
 """
 
 _FILL_FAIR_ROW_PLACEHOLDERS = "(?, ?, ?, ?, ?, ?, ?)"
+
+# Insert-only, first capture wins, as bet_fill_fairs.
+_INSERT_FILL_BOOKS = """
+INSERT INTO bet_fill_books (bet_id, placed_at, fill_price, book_count, books_better, best_book, best_price, captured_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (bet_id) DO NOTHING
+"""
 
 # The saved fairs of the bets /bets.json serves — the same window as
 # _SELECT_WINDOW. The table is never pruned, so serving all of it would grow
@@ -707,6 +731,22 @@ class BetsStore:
                 saved += inserted
         if saved:
             log.info("fill fairs: saved %d of %d row(s)", saved, len(values))
+        return saved
+
+    def save_fill_books(self, rows: list[dict], captured_at: datetime) -> int:
+        """INSERT the other-books rows of bets that have none (validated shape:
+        see service.validate_fill_book_rows). A bet that already has one keeps
+        it — ON CONFLICT DO NOTHING. Returns how many rows were inserted."""
+        saved = 0
+        with self._lock:
+            for row in rows:
+                [inserted] = self._con.execute(_INSERT_FILL_BOOKS, [
+                    row["betId"], _parse_iso(row["placedAt"]), row["fillPrice"], row["bookCount"],
+                    row["booksBetter"], row["bestBook"], row["bestPrice"], captured_at,
+                ]).fetchone()
+                saved += inserted
+        if saved:
+            log.info("fill books: saved %d of %d row(s)", saved, len(rows))
         return saved
 
     def load_fill_fairs(self, days: int, now: datetime) -> list[dict]:

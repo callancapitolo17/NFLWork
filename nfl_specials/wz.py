@@ -62,8 +62,9 @@ class WzSpecial:
                            # Play a bet on this prop is placed with
     description: str       # e.g. "SEAHAWKS TRIFECTA (1Q, 1H & GM)"
     wz_american: int       # posted price
-    week_date: date        # Wagerzon's date for the specials (the week's
-                           # Sunday; its clock time is a placeholder)
+    week_date: date        # Wagerzon's date for the specials (on or before
+                           # the week's Sunday; its clock time is a
+                           # placeholder)
 
 
 def account_labels() -> list[str]:

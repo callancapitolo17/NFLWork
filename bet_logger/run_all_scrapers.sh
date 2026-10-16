@@ -3,7 +3,7 @@
 # Run Bet Scrapers
 # Runs the active betting platform scrapers in sequence: Wagerzon (the one
 # surviving login, logged to the sheet as WagerzonC), BFA primary
-# ("Betfastaction") and BetOnline. Hoop88 and BFAJ were dropped 2026-09-16 at
+# ("Betfastaction") and BetOnline (read from the bets service on the VM). Hoop88 and BFAJ were dropped 2026-09-16 at
 # the user's request; their scrapers remain runnable by hand.
 # Wagerzon defaults to last week (--weeks 1), matching the Monday schedule.
 # Continues to the next scraper even if one fails.
@@ -46,29 +46,18 @@ else
 fi
 echo ""
 
-# Run BetOnline scraper — if token refresh fails, auto-recon and retry
-echo "[$(date '+%H:%M:%S')] Running BetOnline scraper..."
+# BetOnline: read from the Unabated Ticket bets service on the Oracle VM, which
+# holds the only BetOnline login since 2026-10-14. No re-login from this Mac:
+# a second login would rotate the VM's token and break both.
+echo "[$(date '+%H:%M:%S')] Running BetOnline (from the bets service on the VM)..."
 echo "----------------------------------------"
 if ./venv/bin/python3 scraper_betonline.py --since-last; then
     echo "[$(date '+%H:%M:%S')] BetOnline: done"
 else
-    echo "[$(date '+%H:%M:%S')] BetOnline: token may be expired, running auto-recon..."
-    if ./venv/bin/python3 recon_betonline.py; then
-        echo "[$(date '+%H:%M:%S')] Recon succeeded, retrying scraper..."
-        if ./venv/bin/python3 scraper_betonline.py --since-last; then
-            echo "[$(date '+%H:%M:%S')] BetOnline: done (after recon)"
-        else
-            rc=$?
-            echo "[$(date '+%H:%M:%S')] BetOnline: FAILED after recon (exit $rc)"
-            FAILED=$((FAILED + 1))
-            FAILED_NAMES="${FAILED_NAMES}BetOnline, "
-        fi
-    else
-        rc=$?
-        echo "[$(date '+%H:%M:%S')] BetOnline: FAILED — recon also failed (exit $rc)"
-        FAILED=$((FAILED + 1))
-        FAILED_NAMES="${FAILED_NAMES}BetOnline, "
-    fi
+    rc=$?
+    echo "[$(date '+%H:%M:%S')] BetOnline: FAILED (exit $rc)"
+    FAILED=$((FAILED + 1))
+    FAILED_NAMES="${FAILED_NAMES}BetOnline, "
 fi
 echo ""
 

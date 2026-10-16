@@ -141,7 +141,6 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .open-group + .open-group { border-top: 1px solid var(--line); }
 .open-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; padding: 14px 14px 6px; }
 .open-group-title { font-weight: 600; }
-.group-section .tbl :is(th, td):first-child { width: 120px; }
 
 /* venue bars */
 .venues { padding: 4px 22px 18px; display: flex; flex-direction: column; gap: 14px; }
@@ -249,6 +248,36 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
   .game-head, .game-body { padding-inline: 14px; }
 }
 #view-live .note { font-size: 13px; color: var(--muted); margin: 0; }
+
+.group-section .tbl :is(th, td):first-child { width: 120px; }
+
+/* Analysis drill path and pivot (2026-10-13) */
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.crumb-all { border: 0; background: transparent; color: var(--exp); cursor: pointer; font-size: 13px; padding: 0; }
+.crumb-sep { color: var(--faint); }
+.crumb { display: inline-flex; align-items: center; background: var(--active); border: 1px solid #33404f; border-radius: 999px; overflow: hidden; }
+.crumb button { border: 0; background: transparent; cursor: pointer; font-size: 13px; min-height: 28px; }
+.crumb-go { padding: 0 4px 0 12px; color: var(--text); }
+.crumb-x { padding: 0 10px 0 6px; color: var(--muted); }
+.crumb button:hover { color: var(--text); text-decoration: underline; }
+.odds-range { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+.odds-in { width: 72px; background: var(--chip); border: 1px solid #2a323e; color: var(--text); border-radius: 6px; padding: 4px 8px; font-size: 13px; }
+.odds-in[aria-invalid="true"] { border-color: var(--neg); }
+tr.drill { cursor: pointer; }
+tr.drill:hover td { background: #161c25; }
+.pivot-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.pivot-axes { display: inline-flex; flex-wrap: wrap; gap: 10px; }
+.pivot-axis { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.pivot-axis select { background: var(--chip); border: 1px solid #2a323e; color: var(--text); border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 13px; }
+.tbl.pivot td, .tbl.pivot th { padding: 4px 6px; }
+.pv-head { border: 0; background: transparent; color: var(--text); cursor: pointer; font: inherit; font-size: 13px; padding: 4px 6px; text-align: inherit; white-space: nowrap; }
+.pv-head:hover { text-decoration: underline; }
+.pv-row { text-align: left; }
+.pv-cell { width: 100%; min-width: 64px; border: 0; border-radius: 4px; background: transparent; color: var(--text); cursor: pointer; padding: 4px 8px; text-align: right; display: flex; flex-direction: column; align-items: flex-end; }
+.pv-cell small { color: var(--muted); font-size: 11px; }
+.pv-cell:hover { outline: 1px solid var(--exp); }
+.pv-empty { color: var(--faint); text-align: right; }
+.tbl.pivot th { text-transform: none; letter-spacing: 0; }
 
 /* Balances tab: its own tab so a glance at Overview never shows today's swings (Cal, 2026-10-14) */
 .balances-panel { max-width: 760px; }

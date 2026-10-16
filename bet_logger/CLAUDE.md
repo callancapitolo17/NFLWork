@@ -41,8 +41,8 @@ calls it "WagerzonC".
 ### Credentials
 All credentials live in `.env` in this directory. This is the SHARED `.env` — odds scrapers and bet_placer also read from here.
 
-### BetOnline EndDate Bug
-The BetOnline API returns 0 results if EndDate is "tomorrow" in BetOnline's timezone. Use `datetime.now()` (local time), NOT `datetime.now(timezone.utc)`.
+### BetOnline comes from the VM, never a login here
+Since 2026-10-14 `scraper_betonline.py` reads BetOnline bets from the Unabated Ticket bets service on the Oracle VM (`GET /bets.json` over Tailscale), which holds the only BetOnline login. Never add a BetOnline login or token refresh back to this directory: a second rotation of the shared Keycloak refresh token kills the VM's session too.
 
 ### Google Sheets
 - `credentials.json` — Service account key (gitignored)

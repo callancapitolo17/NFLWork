@@ -111,11 +111,25 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
      ```
      On the VM `chmod 600 ~/unabated-data/recon_betonline_cookies.json`. The
      Mac's bets service then reports BetOnline "not configured" and can be
-     started again; the weekly sheet scraper's BetOnline step fails until the
-     file comes back.
+     started again. The weekly sheet scraper (`bet_logger/scraper_betonline.py`)
+     reads BetOnline from this service's `/bets.json` over Tailscale, so it
+     keeps working; never run its old login on the Mac again.
    - **Check, then restart:** the login check below. `ok` for all three means
      done. If BetOnline fails on Cloudflare (its cookies were issued to the
      Mac's IP), move the file back to the Mac the same way.
+
+11. **Automated taker key** (2026-10-14; the bot places real Kalshi orders
+    once this is in). First: public SSH off, SSH over Tailscale only (the key
+    can trade). Then make a NEW key at kalshi.com > API keys for the bot
+    alone, and:
+    ```bash
+    scp kalshi-taker.pem ubuntu@<vm>:~/unabated-data/kalshi_taker.pem   # from the Mac, over Tailscale
+    chmod 600 ~/unabated-data/kalshi_taker.pem                          # on the VM
+    echo 'KALSHI_TAKER_API_KEY_ID=<the new key id>' >> ~/NFLWork/unabated_ticket/bets_service/.env
+    docker compose restart bets   # the log says "taker: ARMED on its own key"
+    ```
+    Stop the bot: `touch ~/unabated-data/taker.stop` (`rm` to resume). For
+    good: revoke the key at kalshi.com. State: `curl -s 127.0.0.1:8095/taker.json`.
 
 ## Day to day
 

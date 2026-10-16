@@ -18,7 +18,12 @@
 //     2026-10-13: "books with the same name should be matched");
 //   - 2 or more books beating the price reads amber ("3 books better");
 //   - outlier = the price beats the next best book by more than
-//     OUTLIER_PROB_GAP in implied probability; it is tagged, never skipped.
+//     OUTLIER_PROB_GAP in implied probability; it is tagged, never skipped;
+//   - a book reporting under MIN_OTHER_BOOK_LIQUIDITY dollars resting at its
+//     price (exchanges; sportsbooks report none and always count) is listed
+//     greyed as thin and counts toward nothing: not better, not the outlier
+//     check, not the book count (Cal, 2026-10-15: a $4 Kalshi offer must not
+//     bring up Skip).
 //
 // Pure: no DOM, no fetch, no chrome.*, no clock (now comes in). Input is the
 // scanner's feed state (feed.js shape). Loaded as a plain <script> before
@@ -37,6 +42,14 @@
   // stale-but-real line by maybe 5. Beyond 10 points the price is more likely
   // wrong than a gift, so it reads "outlier, check".
   const OUTLIER_PROB_GAP = 0.10;
+  // Dollars resting at the price (the feed's liquidity, the "liq" figure)
+  // below which another book's price is too thin to act on.
+  const MIN_OTHER_BOOK_LIQUIDITY = 30;
+
+  // Does this book report too little money at its price to count.
+  function isThin(entry) {
+    return entry.liquidity != null && entry.liquidity < MIN_OTHER_BOOK_LIQUIDITY;
+  }
 
   // A book's price as a probability, or null when it is no American price.
   function impliedProb(americanOdds) {
@@ -89,11 +102,19 @@
       }
       const suffix = entry.bookName.slice(sameNameKey(entry.bookName).length).trim();
       held.bookName = suffix ? `${held.bookName} / ${suffix}` : held.bookName;
+      if ("liquidity" in held || "liquidity" in entry) held.liquidity = largerLiquidity(held.liquidity, entry.liquidity);
     }
     return Array.from(kept.values());
   }
 
-  // rung key -> Map(bookId -> {bookId, bookName, price}), every book's best
+  // A merged book is thin only when every copy is: the larger of the two,
+  // and a copy reporting none (a sportsbook) counts as unlimited.
+  function largerLiquidity(a, b) {
+    if (a == null || b == null) return null;
+    return Math.max(a, b);
+  }
+
+  // rung key -> Map(bookId -> {bookId, bookName, price, liquidity}), every book's best
   // price at each number (a book can sit on a number twice: main and alt).
   // Build once per feed update.
   //   options  {now, maxLineAgeMs (null = no age gate)}
@@ -109,7 +130,7 @@
       const byBook = index.get(key);
       const held = byBook.get(line.bookId);
       if (held && impliedProb(held.price) <= impliedProb(line.price)) continue;
-      byBook.set(line.bookId, { bookId: line.bookId, bookName: state.books[line.bookId].name, price: line.price });
+      byBook.set(line.bookId, { bookId: line.bookId, bookName: state.books[line.bookId].name, price: line.price, liquidity: line.liquidity ?? null });
     }
     return index;
   }
@@ -117,24 +138,28 @@
   // How the price compares with every other book at the same number.
   //   spec  {eventId, periodTypeId, betTypeId, sideIndex, points, bookId, bookName, price}
   // Returns null when the price is unusable, else
-  //   {better: [{bookName, price}] best first, worse: [...] best first, same: n,
-  //    sameAs: [...] (the n books at your price),
-  //    bookCount (books at the number, yours included), wouldSkip, outlier: {nextBest}|null}
-  // "better" means a strictly lower implied probability for the same bet.
+  //   {better: [{bookName, price, liquidity}] best first, worse: [...] best first, same: n,
+  //    sameAs: [...] (the n books at your price), thin: [...] best first (isThin,
+  //    in none of the others), bookCount (counted books at the number, yours
+  //    included), wouldSkip, outlier: {nextBest}|null}
+  // "better" means a strictly lower implied probability for the same bet;
+  // liquidity is null for a book that reports none.
   function comparePrice(index, spec) {
     const yourProb = impliedProb(spec.price);
     if (yourProb == null) return null;
     const atNumber = Array.from((index.get(rungKeyOf(spec)) || new Map()).values())
       .filter((entry) => entry.bookId !== spec.bookId);
     const yours = spec.bookName ? { bookName: spec.bookName, price: spec.price } : null;
-    const others = mergeSameNameBooks(atNumber, yours)
+    const merged = mergeSameNameBooks(atNumber, yours)
       .sort((a, b) => impliedProb(a.price) - impliedProb(b.price));
+    const others = merged.filter((entry) => !isThin(entry));
+    const thin = merged.filter(isThin).map((entry) => ({ bookName: entry.bookName, price: entry.price, liquidity: entry.liquidity }));
     const better = [];
     const worse = [];
     const sameAs = [];
     for (const entry of others) {
       const prob = impliedProb(entry.price);
-      const shown = { bookName: entry.bookName, price: entry.price };
+      const shown = { bookName: entry.bookName, price: entry.price, liquidity: entry.liquidity ?? null };
       if (prob < yourProb) better.push(shown);
       else if (prob > yourProb) worse.push(shown);
       else sameAs.push(shown);
@@ -146,6 +171,7 @@
       worse,
       same: sameAs.length,
       sameAs,
+      thin,
       bookCount: others.length + 1,
       wouldSkip: better.length >= BOOKS_BETTER_TO_SKIP,
       outlier: isOutlier ? { nextBest: { bookName: nextBest.bookName, price: nextBest.price } } : null,
@@ -201,8 +227,8 @@
   }
 
   const api = {
-    BOOKS_BETTER_TO_SKIP, OUTLIER_PROB_GAP,
-    impliedProb, rungKeyOf, sameNameKey, buildPriceIndex, comparePrice, priceCheckTag, describePriceChecks,
+    BOOKS_BETTER_TO_SKIP, OUTLIER_PROB_GAP, MIN_OTHER_BOOK_LIQUIDITY,
+    impliedProb, isThin, rungKeyOf, sameNameKey, mergeSameNameBooks, buildPriceIndex, comparePrice, priceCheckTag, describePriceChecks,
     skipKeyOf, canSkip, splitSkipped,
   };
 

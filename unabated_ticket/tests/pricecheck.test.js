@@ -44,8 +44,8 @@ test("counts books that beat the price at the same number, best first; 2+ reads 
   ]);
   const index = pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: 168 * HOUR });
   const check = pricecheck.comparePrice(index, overSpec(1, -112));
-  assert.deepEqual(check.better, [{ bookName: "Circa", price: -105 }, { bookName: "Pinnacle", price: -107 }]);
-  assert.deepEqual(check.worse, [{ bookName: "DraftKings", price: -115 }]);
+  assert.deepEqual(check.better, [{ bookName: "Circa", price: -105, liquidity: null }, { bookName: "Pinnacle", price: -107, liquidity: null }]);
+  assert.deepEqual(check.worse, [{ bookName: "DraftKings", price: -115, liquidity: null }]);
   assert.equal(check.same, 1);
   assert.equal(check.bookCount, 5);
   assert.equal(check.wouldSkip, true);
@@ -88,7 +88,7 @@ test("a book on the number twice (main and alt) counts once at its better price"
   state.lines["alt"] = { ...state.lines["m3:ms2:si0:47.5"], key: "alt", isAlt: true, price: -105, sequenceNumber: NOW - HOUR, modifiedOn: "0001-01-01T00:00:00" };
   const index = pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: 168 * HOUR });
   const check = pricecheck.comparePrice(index, overSpec(1, -110));
-  assert.deepEqual(check.better, [{ bookName: "Circa", price: -105 }]);
+  assert.deepEqual(check.better, [{ bookName: "Circa", price: -105, liquidity: null }]);
   assert.equal(check.bookCount, 3);
 });
 
@@ -102,13 +102,52 @@ test("one book under two country names counts once at a shared price; a differen
   const index = pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: null });
   const check = pricecheck.comparePrice(index, { ...overSpec(1, -112), bookName: "Circa" });
   assert.deepEqual(check.better, [
-    { bookName: "Polymarket US", price: -103 }, { bookName: "Polymarket", price: -104 }, { bookName: "TheScore US / CA", price: -105 },
+    { bookName: "Polymarket US", price: -103, liquidity: null }, { bookName: "Polymarket", price: -104, liquidity: null }, { bookName: "TheScore US / CA", price: -105, liquidity: null },
   ]);
   assert.equal(check.bookCount, 4);
   // Betting theScore US: its CA copy is you, not another book.
   const own = pricecheck.comparePrice(index, { ...overSpec(36, -105), bookName: "TheScore US" });
   assert.equal(own.bookCount, 4);
   assert.ok(!own.better.concat(own.worse).some((entry) => entry.bookName.startsWith("TheScore")));
+});
+
+test("a book under $30 resting at its price is thin: listed apart, never better, counted or an outlier", () => {
+  const state = stateWith([
+    [1, 0, 47.5, -110], [2, 0, 47.5, -105, { liquidity: 12 }], [3, 0, 47.5, -107, { liquidity: 30 }], [4, 0, 47.5, -115],
+  ]);
+  const index = pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: null });
+  const check = pricecheck.comparePrice(index, overSpec(1, -110));
+  // $30 exactly counts; $12 does not, so one book better and no Skip.
+  assert.deepEqual(check.better, [{ bookName: "Pinnacle", price: -107, liquidity: 30 }]);
+  assert.deepEqual(check.thin, [{ bookName: "Circa", price: -105, liquidity: 12 }]);
+  assert.equal(check.bookCount, 3);
+  assert.equal(pricecheck.canSkip(check), true);
+  assert.equal(check.wouldSkip, false);
+  // A thin book alone beating you is no reason to skip.
+  const onlyThin = pricecheck.comparePrice(pricecheck.buildPriceIndex(
+    stateWith([[1, 0, 47.5, -110], [2, 0, 47.5, -105, { liquidity: 4 }], [4, 0, 47.5, -115]]), { now: NOW, maxLineAgeMs: null }), overSpec(1, -110));
+  assert.equal(pricecheck.canSkip(onlyThin), false);
+  assert.deepEqual(pricecheck.priceCheckTag(onlyThin), { kind: "best", label: "best of 2 books" });
+});
+
+test("one book under two names is thin only when both copies are", () => {
+  const books = {
+    1: { id: 1, name: "Novig", isLive: true }, 2: { id: 2, name: "FanDuel", isLive: true },
+    107: { id: 107, name: "Polymarket", isLive: true }, 111: { id: 111, name: "Polymarket US", isLive: true },
+  };
+  const state = stateWith([[1, 0, 47.5, -110], [2, 0, 47.5, -103], [107, 0, 47.5, -105, { liquidity: 4 }], [111, 0, 47.5, -105, { liquidity: 800 }]], books);
+  const check = pricecheck.comparePrice(pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: null }), { ...overSpec(1, -110), bookName: "Novig" });
+  assert.deepEqual(check.better, [{ bookName: "FanDuel", price: -103, liquidity: null }, { bookName: "Polymarket / US", price: -105, liquidity: 800 }]);
+  assert.deepEqual(check.thin, []);
+  assert.equal(check.wouldSkip, true);
+});
+
+test("a thin book is not the next best for the outlier check", () => {
+  // +300 against a -290 market is an outlier even when a $5 offer sits at +280.
+  const state = stateWith([[1, 0, null, 300], [2, 0, null, 280, { liquidity: 5 }], [3, 0, null, -290], [4, 0, null, -300]]);
+  const index = pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: null });
+  const check = pricecheck.comparePrice(index, { eventId: 100, periodTypeId: 1, betTypeId: 1, sideIndex: 0, points: null, bookId: 1, price: 300 });
+  assert.equal(check.outlier.nextBest.price, -290);
 });
 
 test("the Jackson St case: +300 against a -290 market is an outlier, tagged and never a skip", () => {
