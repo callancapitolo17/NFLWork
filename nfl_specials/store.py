@@ -119,6 +119,18 @@ class Store:
         finally:
             con.close()
 
+    def placed_risk(self, account: str, wz_game_id: int, since: datetime) -> float:
+        """Dollars `account` has placed on this special since `since` (Wagerzon took them)."""
+        con = duckdb.connect(str(self.db_path))
+        try:
+            total = con.execute(
+                "SELECT COALESCE(SUM(risk), 0) FROM placed_fectas "
+                "WHERE account = ? AND wz_game_id = ? AND status = 'placed' AND placed_at >= ?",
+                [account, wz_game_id, since]).fetchone()[0]
+            return float(total)
+        finally:
+            con.close()
+
     def settings(self) -> dict[str, float]:
         values = {"bankroll": config.DEFAULT_BANKROLL, "kelly_fraction": config.DEFAULT_KELLY_FRACTION}
         con = duckdb.connect(str(self.db_path))
