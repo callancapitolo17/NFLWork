@@ -715,8 +715,8 @@
     }
     const eventStartMs = ticket.eventStart ? Date.parse(ticket.eventStart.endsWith("Z") ? ticket.eventStart : `${ticket.eventStart}Z`) : NaN;
     if (pricecheck.canSkip(check) && Number.isFinite(eventStartMs)) {
-      const skipKey = pricecheck.skipKeyOf(spec, ticket.book.id);
-      const skipped = liveEdgeSkips(Date.now())[skipKey] != null;
+      const skipKey = pricecheck.skipKeyOf(spec);
+      const skipped = pricecheck.skipsByLine(liveEdgeSkips(Date.now()))[skipKey] != null;
       const actions = document.createElement("div");
       actions.className = "others-actions";
       actions.append(skipChipEl(skipKey, eventStartMs, skipped, "Skip this bet"));
@@ -1440,7 +1440,7 @@
     line.className = "edge-pricecheck";
     line.append(tagEl);
     if (pricecheck.canSkip(row.priceCheck)) {
-      line.append(skipChipEl(pricecheck.skipKeyOf(row, row.book.id), row.eventStartMs, skipped, "Skip"));
+      line.append(skipChipEl(pricecheck.skipKeyOf(row), row.eventStartMs, skipped, "Skip"));
     }
     if (!open) return [line];
     return [line, otherBooksListEl(row.priceCheck, row.book.name, row.price)];
@@ -3222,8 +3222,11 @@
   async function setEdgeSkipped(skipKey, eventStartMs, skipped) {
     const before = edgeSkips;
     const next = { ...edgeSkips };
+    // Restore lifts the line at every book, an old per-book key included.
+    for (const key of Object.keys(next)) {
+      if (pricecheck.skipLineOf(key) === skipKey) delete next[key];
+    }
     if (skipped) next[skipKey] = eventStartMs;
-    else delete next[skipKey];
     edgeSkips = next;
     chrome.storage.local.set({ edgeSkips });
     renderEdges();
