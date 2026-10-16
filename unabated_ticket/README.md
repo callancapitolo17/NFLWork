@@ -2774,6 +2774,20 @@ would sell that YES; across them the bot still never bets against a held bet). T
 (`stale_decision`), a game that has started (`started`) and a runner priced
 on another Kalshi API than its own (`env_mismatch`).
 
+**Two clocks for "started" (2026-10-16, option B).** Unabated's eventStart
+alone let two orders through after kickoff: it listed Columbia at Penn at
+8:30 PM ET, the game kicked off at 7:00 PM ET, and its board kept the rows
+pregame. Before every order and every Place quote the runner now also reads
+Kalshi's own start for the game (`GET /milestones?related_event_ticker=<the
+market's event_ticker>`, public, cached 10 min per event, a failed read
+retried after 1 min; `taker.kalshiStartMsOf`), and the order / quote carries
+the EARLIER of the two as `eventStart`, so both desks refuse once either
+clock says the game began. When Kalshi lists no start (or the read fails) it
+trades on Unabated's alone, as before (Cal chose B over refusing). Each
+decision and quote also carries `unabatedStart` and `kalshiStart`. The Novig
+desk still judges "started" on Unabated's start (plus Novig's own pregame
+flag).
+
 **Its own subaccount (2026-10-16).** Kalshi keeps a separate balance and
 positions per subaccount (0 = Cal's primary, 1-63 numbered; API only, not in
 Kalshi's app or website yet), and an API key can be locked to one: it reads
@@ -2940,7 +2954,8 @@ from wherever the phone reaches the VM over Tailscale.
 1. The bets service asks the runner `GET /kalshi_quote.json?eventId&periodTypeId&betTypeId&sideIndex&points`
    for the line's ticker and Kalshi's live ask (the taker's own contract and
    market checks: `resolveKalshiContract`, `marketMismatch`, `quoteOf`).
-2. It refuses, sending nothing, when: the game has started or its start is
+2. It refuses, sending nothing, when: the game has started (the earlier of
+   Unabated's and Kalshi's start, see Two clocks above) or its start is
    unknown; the live all-in (ask + 7% fee) is more than **0.1c worse** than the
    Ticket's price (better always goes); the other side of the market is held
    (a buy there would sell it); an earlier Place on the same game may have

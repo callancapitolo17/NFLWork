@@ -53,6 +53,9 @@
 //                 active, or its strike or its YES team is not the row's
 //                 (marketMismatch; the runner reads the market before every order)
 //   bet           buy `contracts` at `liveAsk` (the runner sends it)
+// At send time the order carries the earlier of Unabated's and Kalshi's start
+// for the game (kalshiStartMsOf, GET /milestones), and the desk refuses it
+// once passed ("started"); Unabated's alone when Kalshi lists none.
 //
 // Pure: no fetch, no clock (now comes in), no DOM. node-tested.
 
@@ -608,6 +611,45 @@ function novigLineOf(row) {
   };
 }
 
+// Kalshi's own start for a game, read off GET /milestones?related_event_ticker=<event>:
+// the earliest start_date among the milestones that name the event (in
+// related_event_tickers or primary_event_tickers), as epoch ms, or null when
+// none does or none carries a zoned time. A second clock beside Unabated's
+// eventStart, which was 90 min late on Columbia at Penn (2026-10-16): the
+// taker bought two contracts after kickoff on Unabated's 8:30 PM ET.
+//   body         Kalshi's {milestones: [{start_date, related_event_tickers, primary_event_tickers}]}
+//   eventTicker  the market's event_ticker ("KXNCAAFSPREAD-26OCT16CLMBPENN")
+function kalshiStartMsOf(body, eventTicker) {
+  const milestones = body && Array.isArray(body.milestones) ? body.milestones : [];
+  let earliest = null;
+  for (const milestone of milestones) {
+    if (!milestone || typeof milestone !== "object") continue;
+    const named = [milestone.related_event_tickers, milestone.primary_event_tickers]
+      .some((tickers) => Array.isArray(tickers) && tickers.includes(eventTicker));
+    if (!named) continue;
+    const start = milestone.start_date;
+    // A time without a zone is read nowhere: Unabated's naive times are what failed here.
+    if (typeof start !== "string" || !/(?:Z|[+-]\d\d:\d\d)$/.test(start)) continue;
+    const startMs = Date.parse(start);
+    if (Number.isFinite(startMs) && (earliest === null || startMs < earliest)) earliest = startMs;
+  }
+  return earliest;
+}
+
+// The start the desk refuses on: the earlier of Unabated's and Kalshi's, or
+// Unabated's alone when Kalshi has none (Cal, 2026-10-16: option B).
+function earliestStartMs(unabatedStartMs, kalshiStartMs) {
+  const starts = [unabatedStartMs, kalshiStartMs].filter((ms) => Number.isFinite(ms));
+  return starts.length ? Math.min(...starts) : null;
+}
+
+// The event a market belongs to: Kalshi's event_ticker, else the ticker less its last part.
+function eventTickerOf(market, ticker) {
+  if (market && typeof market.event_ticker === "string" && market.event_ticker) return market.event_ticker;
+  const cut = String(ticker || "").lastIndexOf("-");
+  return cut > 0 ? ticker.slice(0, cut) : null;
+}
+
 // The order's client_order_id: "ubot-" (every bot order carries it, Cal's
 // tag) and a hash of ticker, side and pass, so one pass can never send the
 // same order twice (the desk refuses a repeat id).
@@ -631,7 +673,7 @@ module.exports = {
   kalshiAllInPrice, probToAmerican, unabatedAllInOf, candidateRows,
   contractFromRungs, spreadTeamCodes, derivedMoneylineContract, resolveKalshiContract,
   parseKalshiOrderbook, quoteOf, decideRow, decisionSignature, moneylineTeamMatches, marketMismatch, clientOrderIdOf,
-  heldOtherSide, unpricedHolding,
+  heldOtherSide, unpricedHolding, kalshiStartMsOf, earliestStartMs, eventTickerOf,
   resolveNovigOutcome, novigOutcomeIndex, novigContractOf, novigQuoteOf, novigHeldOtherSide, novigMarketMismatch,
   novigClientIdOf, novigLineOf,
 };

@@ -300,3 +300,36 @@ test("every bot order id starts ubot- and is fixed per ticker, side and pass", (
   assert.notEqual(taker.clientOrderIdOf("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 31000), id);
   assert.notEqual(taker.clientOrderIdOf("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "no", 1000), id);
 });
+
+// ---- Kalshi's own start for a game (second clock beside Unabated's eventStart) ----
+const CLMB_EVENT = "KXNCAAFSPREAD-26OCT16CLMBPENN";
+
+test("kalshiStartMsOf: the earliest zoned start_date among milestones naming the event", () => {
+  const body = { milestones: [
+    { start_date: "2026-10-17T00:30:00Z", related_event_tickers: [CLMB_EVENT] },
+    { start_date: "2026-10-16T23:00:00Z", primary_event_tickers: [CLMB_EVENT] },
+    { start_date: "2026-10-16T20:00:00Z", related_event_tickers: ["KXNCAAFSPREAD-26OCT16OTHER"] },
+    { start_date: "2026-10-16T21:00:00", related_event_tickers: [CLMB_EVENT] },
+    { start_date: "not a time", related_event_tickers: [CLMB_EVENT] },
+    null,
+  ] };
+  assert.equal(taker.kalshiStartMsOf(body, CLMB_EVENT), Date.parse("2026-10-16T23:00:00Z"));
+  assert.equal(taker.kalshiStartMsOf({ milestones: [] }, CLMB_EVENT), null);
+  assert.equal(taker.kalshiStartMsOf({}, CLMB_EVENT), null);
+  assert.equal(taker.kalshiStartMsOf(null, CLMB_EVENT), null);
+});
+
+test("earliestStartMs: the earlier clock wins; Unabated's alone when Kalshi has none", () => {
+  const unabated = Date.parse("2026-10-17T00:30:00Z");
+  const kalshi = Date.parse("2026-10-16T23:00:00Z");
+  assert.equal(taker.earliestStartMs(unabated, kalshi), kalshi);
+  assert.equal(taker.earliestStartMs(kalshi, unabated), kalshi);
+  assert.equal(taker.earliestStartMs(unabated, null), unabated);
+  assert.equal(taker.earliestStartMs(NaN, null), null);
+});
+
+test("eventTickerOf: Kalshi's event_ticker, else the ticker less its last part", () => {
+  assert.equal(taker.eventTickerOf({ event_ticker: CLMB_EVENT }, "X-Y-Z"), CLMB_EVENT);
+  assert.equal(taker.eventTickerOf({}, `${CLMB_EVENT}-CLMB6`), CLMB_EVENT);
+  assert.equal(taker.eventTickerOf(null, "NODASH"), null);
+});
