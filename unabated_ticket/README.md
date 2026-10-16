@@ -974,7 +974,7 @@ differ from pregame sizing (review of 2026-10-16, user decision):
   shows `—` with the reason (next bullet). A bet in another period at a
   number the screen *does* price is in the math as pregame (worst-case
   pairing). The exact cross-period bound needs the pairing's breakpoints
-  enumerated inside `condkelly.js`: a follow-up, not in 0.27.0.
+  enumerated inside `condkelly.js`: a follow-up, not in 0.28.0.
 - **A bet on a period the game has finished is settled**, whatever its venue
   still lists it as: `1H · settled` at halftime, grey, out of the math (its
   P&L no longer depends on the rest of the game). `live.settledPeriods` reads
@@ -985,8 +985,12 @@ differ from pregame sizing (review of 2026-10-16, user decision):
   keeps the standalone stake, as before. A live Ticket shows `—` and
   `Cannot size: …` when the game's fair is gone (the break ended, or the live
   tab stopped posting — `live.hasReadyFair`, re-checked on every payload and
-  once a second) or when its calc was declined; the position and the related
-  bets still show.
+  once a second), when the screen has set a newer fair than the one the
+  ticket was captured at (its `producedUtc`; the ticket's edge and the ladder
+  would be two fairs — click the price again), or when its calc was declined;
+  the position and the related bets still show. A live alert carries the
+  row's sized number (`add $125.95`) and none when the row shows none; a
+  pregame alert keeps the standalone stake, as before.
 
 Open BFA teasers with a leg on the live game are left out: their leg is not
 repriced live. The related line names them `started` while the game is still
@@ -2902,7 +2906,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 594 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 601 tests) and
 the bets service's pytest suite (630 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
@@ -3426,7 +3430,7 @@ in red.
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
 
-**2026-10-09, shipped 2026-10-16 — Live stakes count open bets (0.27.0).**
+**2026-10-09, shipped 2026-10-16 — Live stakes count open bets (0.28.0).**
 The Live block sized every line as if nothing were held: a halftime Over
 after an end-of-Q1 Over got a second full quarter-Kelly on nearly the same
 outcome. The 2026-09-27 plan assumed the screen exposes no live fair ladder;
@@ -3447,7 +3451,7 @@ off a ladder that no longer exists; and a live row or Ticket that cannot be
 sized shows no number, never the standalone one. Cal confirmed the same-period
 other-side rule stands live as it does pregame: a held Under sizes the Over
 UP ($508 against $341), since it is Kelly against a known position, not a
-hedge.
+hedge. Shipped as 0.28.0: Place on Kalshi (#181) took 0.27.0 first.
 
 **2026-10-13 — Skip button; same-name books count once (0.24.0).** Cal
 dropped the automatic skip: he wants to decide. A row a book beats gets a

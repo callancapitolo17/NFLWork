@@ -385,6 +385,10 @@ test("hasReadyFair: the game's fair is ready in a payload not yet dropped; expir
   const ready = payload();
   assert.equal(live.hasReadyFair([ready], 125807, NOW), true);
   assert.equal(live.hasReadyFair([ready], 7, NOW), false);
+  // Given the production time a live ticket was captured at: only that fair counts.
+  assert.equal(live.hasReadyFair([ready], 125807, NOW, "2026-09-28T00:52:10.000"), true);
+  assert.equal(live.hasReadyFair([ready], 125807, NOW, "2026-09-28T00:40:00.000"), false);
+  assert.equal(live.hasReadyFair([ready], 125807, NOW, null), true);
   assert.equal(live.hasReadyFair([payload({ games: [game({ fairStatus: "expired" })] })], 125807, NOW), false);
   assert.equal(live.hasReadyFair([payload({ at: NOW - live.LIVE_DROP_MS - 1 })], 125807, NOW), false);
   assert.equal(live.hasReadyFair([], 125807, NOW), false);

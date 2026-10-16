@@ -189,12 +189,16 @@
   }
 
   // Whether a payload not yet past LIVE_DROP_MS carries this game with its
-  // fair ready: what a live ticket's stake rests on. False once the break
-  // ends (the fair expires) or the tab stops posting.
-  function hasReadyFair(payloads, eventId, now) {
+  // fair ready — and, given `producedUtc`, still the fair produced then:
+  // what a live ticket's stake rests on. False once the break ends (the fair
+  // expires), the screen sets a new fair (the ticket's edge and the ladder
+  // would then be two fairs), or the tab stops posting.
+  function hasReadyFair(payloads, eventId, now, producedUtc) {
+    const isTheFair = (game) => game.eventId === eventId && game.fairStatus === FAIR_READY
+      && (producedUtc == null || game.producedUtc === producedUtc);
     for (const payload of payloads || []) {
       if (!isFresh(payload, now)) continue;
-      if ((payload.games || []).some((game) => game.eventId === eventId && game.fairStatus === FAIR_READY)) return true;
+      if ((payload.games || []).some(isTheFair)) return true;
     }
     return false;
   }

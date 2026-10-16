@@ -424,7 +424,9 @@
     const placed = { ...entry, leg, position, tier: teaserTierOf(position, rowPosition) };
     if (position.period !== rowPosition.period && position.direction !== rowPosition.direction) return { ...placed, note: NOTE_OTHER_PERIOD_HEDGE };
     const found = ladderPairsFor(position, rowPosition, readLadder);
-    if (found.reason) return { ...placed, note: `no fair at ${leg.label}` };
+    // A teaser leg's fair is never bounded (unreachable live today: a started
+    // leg is not live-priced), so a missing rung leaves it out, named.
+    if (found.reason || found.bounds.length) return { ...placed, note: `no fair at ${leg.label}` };
     const unknown = ticket.legs.find((other) => other !== leg && other.state !== TEASER_LEG_LIVE && !other.started);
     if (unknown) return { ...placed, note: `other leg not priced: ${unknown.label} (${unknown.reason || unknown.state})` };
     const others = ticket.legs.filter((other) => other !== leg && other.state === TEASER_LEG_LIVE);

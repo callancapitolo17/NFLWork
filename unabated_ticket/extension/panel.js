@@ -979,12 +979,15 @@
   }
 
   // Why a live ticket shows no stake, or null: the game's in-game fair is
-  // gone (the break ended, or the live tab stopped posting), or the open bets
-  // on the game could not be sized against. The standalone number would
+  // gone (the break ended, or the live tab stopped posting) or is a newer one
+  // than the ticket's, or the open bets on the game could not be sized against. The standalone number would
   // ignore them, and that is the number live sizing exists to replace.
   function liveTicketBlock(ticket, advice) {
     if (!ticket.live) return null;
-    if (!live.hasReadyFair(livePayloads(), ticket.eventId, Date.now())) return "no live fair for this game now (the break ended, or the Unabated live tab stopped reading)";
+    const now = Date.now();
+    if (!live.hasReadyFair(livePayloads(), ticket.eventId, now)) return "no live fair for this game now (the break ended, or the Unabated live tab stopped reading)";
+    // The ticket's edge is the fair it was captured at; the ladder is the screen's current one. Two fairs size nothing.
+    if (!live.hasReadyFair(livePayloads(), ticket.eventId, now, ticket.live.producedUtc)) return "the in-game fair was set again since this ticket was captured (click the price again)";
     if (advice.kind === "declined") return `the open bets on this game could not be sized against (${advice.reason})`;
     return null;
   }
@@ -2033,12 +2036,17 @@
   async function notifyEdge(row, summary) {
     const notificationId = `edge:${row.key}:${Date.now()}`;
     await rememberAlertTarget(notificationId, row);
-    const stake = row.stake ?? stakeFor(row);
+    // A live row's alert carries the rail's number, sized against the open
+    // bets on the game, and none when the row shows none: the standalone
+    // stake is what live sizing replaces. A pregame alert keeps it, as before.
+    const liveRail = row.live && row.bet ? edgeRows.stakeRail(row) : null;
+    const stake = row.live ? null : row.stake ?? stakeFor(row);
     const message = [
       `${fmtPct(row.edgePct / 100)} edge`,
       // Why it grew (#132): a re-fire on a better edge says which improvement it was.
       moveWords(row),
       stake == null ? null : `stake ${fmtDollars(stake)}`,
+      liveRail && liveRail.text !== "\u2014" ? liveRail.text : null,
       summary,
       describeMatchup(row),
       row.live ? null : fmtUntil(row.eventStartMs),
