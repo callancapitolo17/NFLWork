@@ -183,16 +183,8 @@ architecture.
 - Every implementation plan must include a **documentation section**: list which README.md and CLAUDE.md files need updating based on the changes. Update docs after code changes are finalized and reviewed, in the same merge to `main`.
 
 **Pre-merge review (REQUIRED):**
-- Before merging any feature branch to `main`, perform an executive engineer review of the full diff (`git diff main..HEAD`)
-- Review checklist:
-  - **Data integrity**: No duplicate writes, proper deduplication, incomplete/in-progress records filtered out
-  - **Resource safety**: All DB connections use `on.exit(dbDisconnect(...))`, no lock file leaks on crash
-  - **Edge cases**: Off-season behavior, empty tables, first-run with no existing data, timezone boundaries
-  - **Dead code**: No unused flags, functions, or imports introduced
-  - **Log/disk hygiene**: Log rotation in place, no unbounded file growth
-  - **Security**: No secrets in logs, no API keys exposed in output
-- Document findings as ISSUES TO FIX vs ACCEPTABLE RISKS before proceeding
-- Fix all identified issues, then get explicit user approval to merge
+- Before merging any feature branch to `main`, run the `pre-pr-review` skill on the full diff. `REVIEW.md` at the root holds this repo's checks, High-tier paths, and what failure looks like in each area.
+- A bug that reaches `main` past this review becomes a line in `REVIEW.md`
 
 **Approval required:**
 - Never merge to `main` or push to remote without explicit user approval
