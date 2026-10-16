@@ -179,7 +179,7 @@
           : words.verb === "add" ? "Add to your position" : "Bet";
     const payout = acted > 0 ? acted * kelly.americanToDecimal(row.price) : null;
     return {
-      label, stake: fmtDollars(acted), noEdge: acted <= 0,
+      label, stake: fmtDollars(acted), acted, noEdge: acted <= 0,
       position: position.join(" · "),
       positionAgainst: advice.held === 0 && teasers.held === 0 && (advice.against > 0 || teasers.against > 0),
       contracts: contractsView(acted, row),

@@ -77,6 +77,12 @@ writer). Tables:
                UPSERTed whole on every write. Each column is an override; NULL
                means "the panel's default", and the defaults live only in
                extension/edgerows.js, never here. Never pruned (one row).
+  manual_orders  one row per Kalshi order Cal placed from the Ticket's Place
+               button (manual_orders.py), on his own key: INSERTED before it is
+               sent (status 'sending'), UPDATED with what Kalshi answered and
+               what filled. The client_order_id ('uman-' + the click's id) is
+               the key, so one click can never send twice. Never pruned (a
+               few a day); the bet itself reaches `bets` through the Kalshi poll.
 A failed poll writes a source_runs row and touches nothing in `bets`, so a
 dark source keeps serving its previous records.
 
@@ -209,6 +215,39 @@ CREATE TABLE IF NOT EXISTS edge_settings (
     group_by_market       BOOLEAN,
     updated_at            TIMESTAMPTZ NOT NULL
 );
+CREATE TABLE IF NOT EXISTS manual_orders (
+    client_order_id  VARCHAR PRIMARY KEY,   -- 'uman-' + the click's id
+    placed_at        TIMESTAMPTZ NOT NULL,  -- when the row was inserted, just before the send
+    event_id         BIGINT NOT NULL,       -- Unabated's eventId
+    ticker           VARCHAR NOT NULL,
+    contract_side    VARCHAR NOT NULL,      -- 'yes' | 'no'
+    label            VARCHAR,               -- the line in words, for the log
+    ticket_all_in    DOUBLE NOT NULL,       -- the Ticket's price, all-in, as a probability
+    ask_price        DOUBLE NOT NULL,       -- the limit sent (the live ask)
+    all_in_price     DOUBLE NOT NULL,       -- that ask with Kalshi's taker fee
+    stake            DOUBLE NOT NULL,       -- dollars Cal asked to bet
+    count_requested  INTEGER NOT NULL,
+    status           VARCHAR NOT NULL,      -- sending | filled | partial | unfilled | rejected | unknown
+    kalshi_order_id  VARCHAR,
+    count_filled     DOUBLE,
+    cost_filled      DOUBLE,                -- dollars paid, fees included
+    error            VARCHAR,
+    updated_at       TIMESTAMPTZ NOT NULL
+);
+"""
+
+MANUAL_ORDER_INSERT_COLUMNS = (
+    "client_order_id", "placed_at", "event_id", "ticker", "contract_side", "label", "ticket_all_in",
+    "ask_price", "all_in_price", "stake", "count_requested", "status", "updated_at",
+)
+MANUAL_ORDER_UPDATE_COLUMNS = ("status", "kalshi_order_id", "count_filled", "cost_filled", "error")
+_INSERT_MANUAL_ORDER = (f"INSERT INTO manual_orders ({', '.join(MANUAL_ORDER_INSERT_COLUMNS)}) "
+                        f"VALUES ({', '.join(['?'] * len(MANUAL_ORDER_INSERT_COLUMNS))})")
+_SELECT_MANUAL_MAYBE_FILLED = """
+SELECT client_order_id, ticker, status, epoch(placed_at)
+FROM manual_orders
+WHERE event_id = ? AND placed_at >= ? AND status IN ('sending', 'unknown', 'filled', 'partial')
+ORDER BY placed_at
 """
 
 _INSERT_CROSSWALK = """
@@ -899,6 +938,41 @@ class BetsStore:
         with self._lock:
             self._con.execute(_UPSERT_EDGE_SETTINGS, [settings[field] for field in EDGE_SETTINGS_FIELDS] + [updated_at])
         log.info("edge settings: saved %s", {field: value for field, value in settings.items() if value is not None})
+
+    def bet_is_open(self, bet_id: str) -> bool:
+        """Whether `bets` holds this id as an open record."""
+        with self._lock:
+            row = self._con.execute("SELECT status FROM bets WHERE id = ?", [bet_id]).fetchone()
+        return bool(row) and row[0] == "open"
+
+    def insert_manual_order(self, order: dict) -> bool:
+        """INSERT a Place-button order before it is sent (status 'sending').
+        False when its client_order_id is already held: that click was sent."""
+        with self._lock:
+            held = self._con.execute("SELECT 1 FROM manual_orders WHERE client_order_id = ?",
+                                     [order["client_order_id"]]).fetchone()
+            if held:
+                return False
+            self._con.execute(_INSERT_MANUAL_ORDER, [order[column] for column in MANUAL_ORDER_INSERT_COLUMNS])
+        return True
+
+    def update_manual_order(self, client_order_id: str, fields: dict, at: datetime) -> None:
+        """UPDATE the named columns of one manual order (and updated_at)."""
+        unknown = set(fields) - set(MANUAL_ORDER_UPDATE_COLUMNS)
+        if unknown:
+            raise ValueError(f"update_manual_order: unknown columns {sorted(unknown)}")
+        assignments = ", ".join(f"{column} = ?" for column in fields)
+        with self._lock:
+            self._con.execute(f"UPDATE manual_orders SET {assignments}, updated_at = ? WHERE client_order_id = ?",
+                              [*fields.values(), at, client_order_id])
+
+    def manual_orders_maybe_filled_since(self, event_id: int, since: datetime) -> list[dict]:
+        """Manual orders on this game placed at or after `since` that may hold
+        contracts (sent and filled, partly filled, or no definite answer)."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_MANUAL_MAYBE_FILLED, [event_id, since]).fetchall()
+        return [{"client_order_id": client_order_id, "ticker": ticker, "status": status,
+                 "placed_at": _epoch_to_iso(placed_at)} for client_order_id, ticker, status, placed_at in rows]
 
     def source_status(self) -> dict[str, dict]:
         """{source: {fetchedAt, ok, error, count}} — fetchedAt/count from the

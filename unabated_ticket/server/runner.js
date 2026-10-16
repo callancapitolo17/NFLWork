@@ -53,6 +53,8 @@
 //       ceiling and the unseen-fill rule there; bets_service/taker_orders.py).
 //   POST <bets service>/taker_decisions.json — each taker decision that
 //       changed since it was last logged (taker.duckdb::taker_decisions).
+//   GET <Kalshi>/markets/<ticker>/orderbook and /markets/<ticker> once per
+//       GET /kalshi_quote.json (Cal's Place button, never on a timer).
 // Serves (HTTP on UNABATED_RUNNER_HOST:UNABATED_RUNNER_PORT, no auth):
 //   GET /edges.json  the Edges list the panel would show for those settings
 //                    (server/edges_payload.js documents the shape)
@@ -68,6 +70,12 @@
 //                    chance of each (server/scenarios.js documents the shape)
 //   GET /taker.json  the automated taker's last pass: every Kalshi row it
 //                    looked at, what it decided and what each order did
+//   GET /kalshi_quote.json?eventId=..&periodTypeId=..&betTypeId=..&sideIndex=..&points=..
+//                    the Ticket's Place button (bets_service/manual_orders.py):
+//                    the board's Kalshi line with those fields, the contract it
+//                    buys, its live ask and Kalshi's market check (the taker's
+//                    own resolveKalshiContract / quoteOf / marketMismatch);
+//                    places nothing. points omitted on a moneyline.
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
@@ -100,6 +108,7 @@ const teasersPayload = require("./teasers_payload.js");
 const attachLib = require("../extension/attach.js");
 const pricecheck = require("../extension/pricecheck.js");
 const taker = require("./taker.js");
+const feedLib = require("../extension/feed.js");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8095;
@@ -738,6 +747,44 @@ function createRunner(deps) {
     await postTakerDecisions();
   }
 
+  // The Ticket's Place button (bets_service/manual_orders.py asks, Cal
+  // clicked): the board's one Kalshi line with these fields, the contract it
+  // buys, what buying it costs now and whether Kalshi's market is the line's.
+  // The board is used only to find the contract, so its age does not matter
+  // here: the price Cal acts on is the Ticket's, checked against the live ask
+  // by the bets service. A line the board lacks or holds twice, or no
+  // contract, answers {ok: false, reason, detail}; bad params are a 400.
+  //   params  URLSearchParams {eventId, periodTypeId, betTypeId, sideIndex, points?}
+  async function kalshiQuoteNow(params) {
+    const spec = kalshiLineSpecOf(params);
+    const board = feedState;
+    if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
+    const found = Object.values(board.lines).filter((line) => line.bookId === taker.KALSHI_BOOK_ID
+      && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
+      && line.sideIndex === spec.sideIndex && (line.points ?? null) === spec.points);
+    if (found.length !== 1) {
+      return { ok: false, reason: "no_line", detail: `the board holds ${found.length} Kalshi lines for game ${spec.eventId} at that market, side and number` };
+    }
+    const row = feedLib.describeLine(found[0], board);
+    const contract = taker.resolveKalshiContract(row, board);
+    const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName };
+    if (contract.reason) return { ok: false, ...fields, reason: contract.reason, detail: contract.detail };
+    const position = { ...fields, ticker: contract.ticker, side: contract.side, derivedTicker: contract.derived === true };
+    let book;
+    let market;
+    try {
+      book = await readKalshiBook(contract.ticker);
+      market = await readKalshiMarket(contract.ticker);
+    } catch (error) {
+      return { ok: false, ...position, reason: "no_book", detail: error.message };
+    }
+    const mismatch = taker.marketMismatch(market, row, contract);
+    if (mismatch) return { ok: false, ...position, reason: "market_mismatch", detail: `${contract.ticker}: ${mismatch}` };
+    const quote = taker.quoteOf(book, contract.side);
+    if (!quote) return { ok: false, ...position, reason: "no_book", detail: `nothing rests on the ${contract.side} side of ${contract.ticker}` };
+    return { ok: true, ...position, ask: quote.ask, allIn: Math.round(taker.kalshiAllInPrice(quote.ask) * 1e6) / 1e6, depth: quote.depth };
+  }
+
   // Kalshi's market object for a ticker (public GET /markets/<ticker>).
   async function readKalshiMarket(ticker) {
     const body = await getServiceJson(kalshiFetch, `${kalshiBaseUrl}/markets/${encodeURIComponent(ticker)}`);
@@ -1033,7 +1080,27 @@ function createRunner(deps) {
   return {
     start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions,
     edgesPayload: edgesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow,
-    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, health, scanner,
+    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, health, scanner,
+  };
+}
+
+// The line the Place button names, from the query: ids are whole numbers,
+// points a number or absent (a moneyline). Throws a 400-tagged Error.
+function kalshiLineSpecOf(params) {
+  const whole = (name, allowed) => {
+    const text = params.get(name);
+    const value = Number(text);
+    if (text === null || text === "" || !Number.isInteger(value) || (allowed && !allowed.includes(value))) {
+      throw httpError(400, `${name} must be ${allowed ? `one of ${allowed.join(", ")}` : "a whole number"}, got ${JSON.stringify(text)}`);
+    }
+    return value;
+  };
+  const pointsText = params.get("points");
+  const points = pointsText === null || pointsText === "" ? null : Number(pointsText);
+  if (points !== null && !Number.isFinite(points)) throw httpError(400, `points must be a number, got ${JSON.stringify(pointsText)}`);
+  return {
+    eventId: whole("eventId"), periodTypeId: whole("periodTypeId"), betTypeId: whole("betTypeId", [1, 2, 3]),
+    sideIndex: whole("sideIndex", [0, 1]), points,
   };
 }
 
@@ -1059,7 +1126,7 @@ function sendJson(response, status, body) {
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json and /health, the Host allowlist first on
+// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /kalshi_quote.json and /health, the Host allowlist first on
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
@@ -1083,6 +1150,7 @@ function createHttpServer(runner, { host }) {
       if (path === "/attach.json") return sendJson(response, 200, runner.attachPayload(url.searchParams));
       if (path === "/scenarios.json") return sendJson(response, 200, runner.scenariosPayload());
       if (path === "/taker.json") return sendJson(response, 200, runner.takerPayload());
+      if (path === "/kalshi_quote.json") return sendJson(response, 200, await runner.kalshiQuote(url.searchParams));
       if (path === "/health") return sendJson(response, 200, runner.health());
     } catch (error) {
       if (error.status) return sendJson(response, error.status, { error: error.message });
