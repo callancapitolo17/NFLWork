@@ -36,10 +36,12 @@ class FakeSession:
     def __init__(self, price_answer, price_status=200):
         self.price_answer, self.price_status = price_answer, price_status
         self.price_calls = []
+        self.price_timeouts = []
 
     def get(self, url, params=None, headers=None, timeout=None):
         if url == dk_book.DK_SGP_PRICE_URL:
             self.price_calls.append((params, headers))
+            self.price_timeouts.append(timeout)
             return FakeResponse(self.price_status, self.price_answer)
         if url == dk_book.DK_LEAGUE_URL:
             return FakeResponse(200, {"events": []})
@@ -95,6 +97,7 @@ def test_cells_sharing_a_base_cost_one_request(monkeypatch):
     params, headers = session.price_calls[0]
     assert params["selections"] == "q1_sea" and params["marketCandidates"] == "m_ml"
     assert headers == {"X-SportId": dk_book.DK_FOOTBALL_SPORT_ID}
+    assert session.price_timeouts == [(dk_book.DK_CONNECT_TIMEOUT_SECONDS, 30)]
 
 
 def test_a_base_dk_shrank_prices_nothing():

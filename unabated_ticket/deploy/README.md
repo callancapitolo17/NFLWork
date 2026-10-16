@@ -22,7 +22,7 @@ Where things live on the VM:
 | `~/NFLWork` (the repo) | `/app` | read-only (code; an update is pull + restart) |
 | `~/NFLWork/unabated_ticket/bets_service/.env` | inside `/app` | read-only: `KALSHI_API_KEY_ID`, `POLYMARKET_US_KEY_ID`, `POLYMARKET_US_SECRET_KEY`, and the book logins `BFA_USERNAME`, `BFA_PASSWORD`, `WAGERZONC_USERNAME`, `WAGERZONC_PASSWORD` (step 10) |
 | `KALSHI_PEM_PATH` (e.g. `~/unabated-secrets/kalshi.pem`) | `/run/secrets/kalshi.pem` | read-only |
-| `UNABATED_DATA_DIR` (e.g. `~/unabated-data`) | `/data` | read-write: `bets.duckdb`, `novig_token.json` (rotates; rewritten in place), `recon_betonline_cookies.json` (BetOnline's refresh token; rotates, step 10), `logs/bets_service.log`, and the fecta pricer's `nfl_specials.duckdb` |
+| `UNABATED_DATA_DIR` (e.g. `~/unabated-data`) | `/data` | read-write: `bets.duckdb`, `novig_token.json` (rotates; rewritten in place), `recon_betonline_cookies.json` (BetOnline's refresh token; rotates, step 10), `logs/bets_service.log`, and the fecta pricer's `nfl_specials.duckdb` and `logs/.placement_debug_*.json` (`WAGERZON_DEBUG_DIR`: Wagerzon's answer to each Place that did not place) |
 
 `bet_logger/.env` is never put on the VM: the BFA and Wagerzon logins go in
 `bets_service/.env` instead, and BetOnline's token file in the data dir

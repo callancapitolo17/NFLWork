@@ -265,6 +265,15 @@ def _placement_json(row: dict) -> dict:
     return {key: (value.isoformat() if isinstance(value, datetime) else value) for key, value in row.items()}
 
 
+# No other site may frame the page, so a decoy page cannot steer clicks onto
+# Place. Its script and style are inline, so there is no default-src.
+PAGE_SECURITY_HEADERS = {
+    "Content-Security-Policy": "frame-ancestors 'none'; base-uri 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+
+
 def allowed_hosts(port: int, extra_hosts: tuple[str, ...]) -> tuple[str, ...]:
     proxied = tuple(f"{name}:{config.TAILNET_HTTPS_PORT}" for name in extra_hosts)
     return (f"127.0.0.1:{port}", f"localhost:{port}") + proxied
@@ -280,6 +289,8 @@ def make_handler(app: SpecialsApp, port: int, extra_hosts: tuple[str, ...]):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
+                for name, value in PAGE_SECURITY_HEADERS.items():
+                    self.send_header(name, value)
                 self.end_headers()
                 self.wfile.write(body)
             elif self.path.split("?")[0] == "/api/board":

@@ -32,8 +32,6 @@ WAGERZON_LOGIN_KEY = re.compile(r"WAGERZON[A-Z]?_(USERNAME|PASSWORD)")
 
 
 def _load_wagerzon_env() -> None:
-    """On a server only the login lines: that file also holds other books' keys.
-    bet_logger/.env lives in the main checkout; a worktree walks up to it."""
     if config.WAGERZON_ENV_PATH is not None:
         logins = {key: value for key, value in dotenv_values(config.WAGERZON_ENV_PATH).items()
                   if WAGERZON_LOGIN_KEY.fullmatch(key) and value}

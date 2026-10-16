@@ -1,5 +1,3 @@
-import re
-
 import pytest
 
 from nfl_specials import config
@@ -27,5 +25,6 @@ def test_dk_proxy_is_an_http_host_and_port():
 @pytest.mark.parametrize("bad", ["100.120.136.59:8097", "https://100.120.136.59:8097", "http://100.120.136.59",
                                  "http://100.120.136.59:8097/"])
 def test_a_misread_dk_proxy_refuses_to_start_and_names_the_value(bad):
-    with pytest.raises(ValueError, match=re.escape(f"NFL_SPECIALS_DK_PROXY: expected http://<host>:<port>, got {bad!r}")):
+    with pytest.raises(ValueError) as raised:
         config.parse_dk_proxy(bad)
+    assert str(raised.value) == f"NFL_SPECIALS_DK_PROXY: expected http://<host>:<port>, got {bad!r}"

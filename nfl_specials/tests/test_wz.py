@@ -1,5 +1,4 @@
 import json
-import re
 
 import pytest
 import requests
@@ -104,6 +103,6 @@ def test_a_server_env_file_without_a_wagerzon_login_fails_loudly(tmp_path, monke
     env_file = tmp_path / "bets.env"
     env_file.write_text("KALSHI_API_KEY_ID=kalshi-key\n")
     monkeypatch.setattr(wz.config, "WAGERZON_ENV_PATH", str(env_file))
-    expected = f"expected WAGERZON*_USERNAME / _PASSWORD lines in {env_file}, found none"
-    with pytest.raises(RuntimeError, match=re.escape(expected)):
+    with pytest.raises(RuntimeError) as raised:
         wz._load_wagerzon_env()
+    assert str(raised.value) == f"expected WAGERZON*_USERNAME / _PASSWORD lines in {env_file}, found none"
