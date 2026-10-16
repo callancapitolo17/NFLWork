@@ -849,13 +849,14 @@ function novigTakerBetsBody(novigSources = {}) {
   return body;
 }
 
-function novigTakerService(betsBodyForTaker) {
+function novigTakerService(betsBodyForTaker, deskReply = null) {
   const service = takerService({ "/bets.json": betsBodyForTaker, "/settings.json": TAKER_SETTINGS });
   const novigOrders = [];
   const impl = async (url, init = {}) => {
     if (url.endsWith("/taker/novig_order.json")) {
       const body = JSON.parse(init.body);
       novigOrders.push(body);
+      if (deskReply) return response(deskReply);
       return response({ body: JSON.stringify({ status: "filled", qty: body.qty, filled: body.qty, cost: (body.qty * body.price) / 100, orderId: "n-1" }) });
     }
     return service(url, init);
@@ -919,7 +920,7 @@ test("taker: Novig decides nothing while the bot subaccount or Cal's Novig read 
   }
 });
 
-test("taker: a Novig market gone in-game, or charging a pregame fee, is market_mismatch and nothing is sent", async () => {
+test("taker: a Novig market charging a pregame fee is market_mismatch and nothing is sent", async () => {
   const service = novigTakerService(novigTakerBetsBody());
   const runner = runnerLib.createRunner({
     fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
@@ -931,6 +932,44 @@ test("taker: a Novig market gone in-game, or charging a pregame fee, is market_m
   const decision = runner.takerPayload().decisions.find((row) => row.venue === "novig");
   assert.equal(decision.reason, "market_mismatch");
   assert.match(decision.detail, /fee/);
+  assert.equal(service.novigOrders.length, 0);
+  runner.stop();
+});
+
+test("taker: /taker.json says what the Novig desk answered: off, stopped or out of location", async () => {
+  for (const [deskReply, expected] of [
+    [{ status: 503, body: JSON.stringify({ error: "no NOVIG_TAKER_KEY_ID" }) }, /^off: /],
+    [{ body: JSON.stringify({ status: "stopped", detail: "stop file /data/novig_taker.stop is present" }) }, /^stopped: stop file/],
+    [{ body: JSON.stringify({ status: "geo_blocked", detail: "Novig HTTP 451 GEOLOCATION_EXPIRED" }) }, /^geo_blocked: Novig HTTP 451/],
+  ]) {
+    const service = novigTakerService(novigTakerBetsBody(), deskReply);
+    const runner = runnerLib.createRunner({
+      fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+      novigFetch: novigFetch(), novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+    });
+    await runner.start();
+    await runner.takerPass();
+    const payload = runner.takerPayload();
+    assert.equal(service.novigOrders.length, 1);
+    assert.match(payload.novigDesk, expected);
+    runner.stop();
+  }
+});
+
+test("taker: a stale Kalshi poll stops the Novig side too (its stake is sized on Cal's Kalshi bets)", async () => {
+  const body = novigTakerBetsBody();
+  body.sources.kalshi = { ...body.sources.kalshi, fetchedAt: new Date(TAKER_NOW - 6 * 60 * 1000).toISOString() };
+  const novig = novigFetch();
+  const service = novigTakerService(body);
+  const runner = runnerLib.createRunner({
+    fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    novigFetch: novig, novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  const payload = runner.takerPayload();
+  assert.match(payload.pass.novigSkipped, /Kalshi poll is older than 5 min/);
+  assert.equal(novig.calls.length, 0);
   assert.equal(service.novigOrders.length, 0);
   runner.stop();
 });

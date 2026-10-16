@@ -58,16 +58,17 @@ taker.duckdb::novig_taker_orders (taker_store.py). Network: Novig REST, signed
 with the bot's trading key only; public catalog reads for settlement.
 """
 import logging
-import math
 import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from unabated_ticket.bets_service.novig_orders import (FINAL_ORDER_STATUSES, GEO_STATUS, QTY_PER_DOLLAR, STATUS_OPEN, NovigError, NovigOrderClient, cost_of,
-                                                       error_code_of, is_on_price_grid, order_totals)
-from unabated_ticket.bets_service.taker_orders import kalshi_unseen_fill
+from unabated_ticket.bets_service.novig_orders import (FINAL_ORDER_STATUSES, GEO_STATUS, MARKET_SETTLED, STATUS_OPEN, NovigError,
+                                                       NovigOrderClient, cost_of, error_code_of, is_on_price_grid, order_totals,
+                                                       qty_for_stake)
+from unabated_ticket.bets_service.sources.novig_subaccount import record_id_of
+from unabated_ticket.bets_service.taker_orders import _iso_time, _may_hold_contracts, kalshi_unseen_fill
 from unabated_ticket.bets_service.taker_store import TakerStore
 
 log = logging.getLogger(__name__)
@@ -93,8 +94,8 @@ DEFINITE_REJECTION_STATUSES = (400, 401, 403, 404, 413, 422, GEO_STATUS)
 FINAL_READ_ATTEMPTS = 6
 FINAL_READ_SLEEP_SEC = 0.5
 SETTLEMENT_CHECK_SEC = 5 * 60
-MARKET_SETTLED = "SETTLED"
-STATUSES_MAYBE_HOLDING = ("sending", "unknown", "sent", "resting", "filled", "partial")
+# A market not SETTLED this long after its game started is logged (once): its cost stays held until it is.
+UNSETTLED_WARN_AFTER_SEC = 12 * 3600
 MAX_HELD_IDS = 1000
 MAX_HELD_ID_LENGTH = 200
 BET_TYPES = ("spread", "total", "moneyline")
@@ -103,13 +104,7 @@ SIDES = ("away", "home", "over", "under")
 
 def held_id_of(novig_order_id: str) -> str:
     """The bets service's record id for a bot-subaccount Novig order."""
-    return f"novig:{novig_order_id}:{BOT_ACCOUNT_NAME}"
-
-
-def _may_hold_contracts(order: dict) -> bool:
-    if order["status"] in STATUSES_MAYBE_HOLDING:
-        return True
-    return order["status"] == "unfilled" and not order["fills_final"]
+    return record_id_of(BOT_ACCOUNT_NAME, novig_order_id)
 
 
 def novig_unseen_fill(store: TakerStore, event_id: int, held_ids: set[str]) -> str | None:
@@ -125,16 +120,6 @@ def novig_unseen_fill(store: TakerStore, event_id: int, held_ids: set[str]) -> s
             return (f"Novig bot order {order['client_id']} ({order['status']}) is not yet among the held bets "
                     f"the stake was sized on: no {shown}")
     return None
-
-
-def _iso_time(value: object) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else None
 
 
 def _uuid_like(value: object) -> bool:
@@ -239,6 +224,7 @@ class NovigTakerDesk:
         self._lock = threading.Lock()
         self._last_refresh_at: datetime | None = None
         self._settlement_checked_at: dict[str, datetime] = {}
+        self._unsettled_warned: set[str] = set()
 
     def run_refresh_loop(self, stop: threading.Event) -> None:
         """The desk's own thread: open orders brought up to date every REFRESH_SEC."""
@@ -277,7 +263,7 @@ class NovigTakerDesk:
             if unseen:
                 return {"status": "unseen_fill", "detail": unseen}
             headroom = OPEN_COST_CEILING - self._store.novig_open_exposure()
-            qty = min(request["qty"], math.floor(headroom * QTY_PER_DOLLAR / request["price"]))
+            qty = min(request["qty"], qty_for_stake(max(headroom, 0.0), request["price"]))
             if qty < 1:
                 return {"status": "ceiling", "detail": f"${headroom:.2f} of ${OPEN_COST_CEILING:.0f} left"}
             return self._send(request, qty)
@@ -329,11 +315,9 @@ class NovigTakerDesk:
                                                        "error": f"HTTP {status} {code or ''}: {str(reply)[:400]}"})
             if status == GEO_STATUS:
                 log.error("novig taker: Novig refused placement for location (%s): open the Novig app on Cal's phone", code)
-            else:
-                log.warning("novig taker order %s refused: HTTP %s %s", client_id, status, reply)
-            if status == GEO_STATUS:
                 return {"status": "geo_blocked", "qty": qty,
                         "detail": f"Novig HTTP 451 {code or ''}: open the Novig app on Cal's phone to check its location".strip()}
+            log.warning("novig taker order %s refused: HTTP %s %s", client_id, status, reply)
             return {"status": "rejected", "qty": qty, "detail": f"Novig HTTP {status} {code or ''}".strip()}
         if status != 201 or not isinstance(order_id, str) or not order_id:
             self._store.update_novig_order(client_id, {"status": "unknown",
@@ -403,16 +387,41 @@ class NovigTakerDesk:
         open_orders = self._store.open_novig_orders()
         open_markets = {order["market_id"] for order in open_orders}
         self._settlement_checked_at = {market: at for market, at in self._settlement_checked_at.items() if market in open_markets}
+        self._unsettled_warned &= open_markets
+        settled_this_pass: dict[str, bool] = {}
         for order in open_orders:
             if order["novig_order_id"] is None:
                 self._recover_lost_order(order, now)
-                continue
-            if order["status"] in ("sent", "resting") or order["final_at"] is None:
-                self._follow_order(order["client_id"], order["novig_order_id"], order["qty_requested"], wait=False)
-                continue
-            if not order["fills_final"] and now - order["final_at"] >= timedelta(seconds=FILLS_SETTLE_SEC):
+            elif order["status"] in ("sent", "resting") or order["final_at"] is None:
+                followed = self._follow_order(order["client_id"], order["novig_order_id"], order["qty_requested"], wait=False)
+                if followed["status"] in ("sent", "resting"):
+                    self._final_from_listing(order, now)
+            elif not order["fills_final"] and now - order["final_at"] >= timedelta(seconds=FILLS_SETTLE_SEC):
                 self._read_fills(order["client_id"], order["novig_order_id"], order["qty_requested"], final=True)
-            self._free_if_settled(order, now)
+            # Every row, followed or not: an order Novig never shows final still frees once its market settles.
+            self._free_if_settled(order, now, settled_this_pass)
+
+    def _final_from_listing(self, order: dict, now: datetime) -> None:
+        """An order Novig took (201) but its order read never shows final (it
+        can 404): once it is old enough, its status comes from Novig's order
+        listings by clientId; listed nowhere, nothing can rest, so its fills
+        decide (read final FILLS_SETTLE_SEC on)."""
+        if now - order["placed_at"] < timedelta(seconds=LOST_ORDER_LOOKUP_AFTER_SEC):
+            return
+        try:
+            match = self._client.find_order_by_client_id(order["outcome_id"], order["client_id"])
+        except (NovigError, OSError) as error:
+            log.error("novig taker order %s: listing lookup failed, holding its cost: %s", order["client_id"], error)
+            return
+        if match is not None and match.get("status") == STATUS_OPEN:
+            self._cancel_resting(order["client_id"], order["novig_order_id"], order["qty_requested"])
+            return
+        if match is not None and match.get("status") not in FINAL_ORDER_STATUSES:
+            return
+        log.warning("novig taker order %s: its order read never showed final; listed %s, its fills decide",
+                    order["client_id"], match.get("status") if match else "nowhere")
+        self._store.update_novig_order(order["client_id"], {"final_at": now})
+        self._read_fills(order["client_id"], order["novig_order_id"], order["qty_requested"], final=False)
 
     def _recover_lost_order(self, order: dict, now: datetime) -> None:
         """A send with no definite answer: adopt it from Novig's listings by
@@ -434,16 +443,28 @@ class NovigTakerDesk:
                     order["client_id"], match["orderId"], match.get("status"))
         self._follow_order(order["client_id"], match["orderId"], order["qty_requested"], wait=False)
 
-    def _free_if_settled(self, order: dict, now: datetime) -> None:
+    def _free_if_settled(self, order: dict, now: datetime, settled_this_pass: dict[str, bool]) -> None:
+        """Free a started order's cost once Novig shows its market SETTLED.
+        Each market is read at most once per SETTLEMENT_CHECK_SEC, and that one
+        read decides every order on it in the pass."""
         if order["event_start"] > now:
             return
-        last = self._settlement_checked_at.get(order["market_id"])
-        if last is not None and now - last < timedelta(seconds=SETTLEMENT_CHECK_SEC):
-            return
-        self._settlement_checked_at[order["market_id"]] = now
-        try:
-            market = self._client.market(order["market_id"])
-        except (NovigError, OSError):
-            return
-        if market.get("status") == MARKET_SETTLED:
+        market_id = order["market_id"]
+        if market_id not in settled_this_pass:
+            last = self._settlement_checked_at.get(market_id)
+            if last is not None and now - last < timedelta(seconds=SETTLEMENT_CHECK_SEC):
+                return
+            self._settlement_checked_at[market_id] = now
+            try:
+                market_status = self._client.market(market_id).get("status")
+            except (NovigError, OSError) as error:
+                log.warning("novig taker: settlement read of market %s failed, its cost stays held: %s", market_id, error)
+                return
+            settled_this_pass[market_id] = market_status == MARKET_SETTLED
+            if (not settled_this_pass[market_id] and market_id not in self._unsettled_warned
+                    and now - order["event_start"] > timedelta(seconds=UNSETTLED_WARN_AFTER_SEC)):
+                self._unsettled_warned.add(market_id)
+                log.warning("novig taker: market %s reads %r %d h after its game started; its orders' cost stays "
+                            "held until it reads %s", market_id, market_status, UNSETTLED_WARN_AFTER_SEC // 3600, MARKET_SETTLED)
+        if settled_this_pass[market_id]:
             self._store.update_novig_order(order["client_id"], {"settled_at": now})

@@ -65,6 +65,17 @@ def test_keygen_keeps_an_existing_key_and_place_never_touches_the_stop_file(tmp_
     assert not stop_path.exists()
 
 
+def test_a_bot_top_up_keeps_the_key_and_never_stops_a_trading_desk(tmp_path):
+    key_path = tmp_path / "novig_bot.pem"
+    stop_path = tmp_path / "novig_taker.stop"
+    first, second = io.StringIO(), io.StringIO()
+    assert setup.run_keygen("bot", key_path, stop_path, first, io.StringIO()) == 0
+    stop_path.unlink()  # Cal armed the desk
+    assert setup.run_keygen("bot", key_path, stop_path, second, io.StringIO()) == 0
+    assert first.getvalue() == second.getvalue()
+    assert not stop_path.exists()
+
+
 def test_keygen_refuses_an_unusable_key_file(tmp_path):
     key_path = tmp_path / "novig_bot.pem"
     key_path.write_text("not a key")

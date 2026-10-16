@@ -49,7 +49,7 @@ function market(fields = {}) {
 const EVENT = { eventId: NOVIG_EVENT_ID, status: "OPEN_PREGAME", league: "NCAAF", startsTs: EVENT_START_MS };
 
 function contractOf(row, held = market()) {
-  return taker.novigContractOf(row, taker.novigOutcomeIndex([held], { [NOVIG_EVENT_ID]: EVENT }));
+  return taker.novigContractOf(row, taker.novigOutcomeIndex([held]));
 }
 
 // A book whose best resting order on Duquesne makes WSU cost `ask`.
@@ -116,6 +116,15 @@ test("the market check: open, pregame, no pregame fee, the row's type, period an
   assert.match(taker.novigMarketMismatch(market({ strike: "35.5" }), EVENT, row, contract), /strike/);
   assert.match(taker.novigMarketMismatch(market({ marketType: "SPREAD_1H" }), EVENT, row, contract), /period/);
   assert.match(taker.novigMarketMismatch(market({ marketType: "TOTAL" }), EVENT, row, contract), /type/);
+});
+
+test("the outcome's own name must be the row's side: a swapped rung fails closed", () => {
+  const row = novigRow(board());
+  const contract = contractOf(row);
+  const named = (wsuName) => market({ outcomes: [{ outcomeId: WSU_OUTCOME, name: wsuName, status: "TBD" }, { outcomeId: DUQ_OUTCOME, name: "Duquesne +35.5", status: "TBD" }] });
+  assert.match(taker.novigMarketMismatch(named("Washington St +35.5"), EVENT, row, contract), /is 35.5, the row is -35.5/);
+  assert.match(taker.novigMarketMismatch(named("Washington St"), EVENT, row, contract), /names no handicap/);
+  assert.equal(taker.novigMarketMismatch(named("WSU -35.5"), EVENT, row, contract), null);
 });
 
 test("the clientId is a UUID per outcome and pass, and the line is named the way a bet record is", () => {

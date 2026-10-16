@@ -2878,10 +2878,10 @@ The Kalshi rules above hold unless this table says otherwise.
 | Price | buying an outcome crosses the best resting order on the other outcome at 1 − its price (`/v3/public/catalog/markets/<id>/book`); fee 0 pregame; a market whose fee is `ALWAYS` is refused (`market_mismatch`) |
 | Size | a Novig contract pays 1c: qty = floor(stake × 100 / price), cut to the depth; Kelly bankroll `NOVIG_KELLY_BANKROLL` ($500, its own parameter, separate from the cap) |
 | Ceiling | open bot cost on Novig never above $500 (`OPEN_COST_CEILING`), its own budget beside Kalshi's |
-| Market check | before every order the public market and event are read: market `OPEN`, event `OPEN_PREGAME`, the row's market type, strike (a spread's is the home side's) and outcome |
+| Market check | before every order the public market and event are read: market `OPEN`, event `OPEN_PREGAME`, the row's market type, strike (a spread's is the home side's) and outcome, and the outcome's own name must be the row's side (a spread's last word its handicap, a total's first word Over / Under; unreadable fails closed) |
 | Order | one IOC limit (`POST /v3/orders`, NOVIG-V3 signed); a partial fill cancels the rest, a zero fill comes back rejected; an order still `OPEN` is cancelled. `clientId` is a UUID derived from the outcome and the pass (Novig does not dedupe it, so the desk never re-sends) |
 | Adds | `unseen_fill` across venues: a Novig order waits for any earlier bot fill on the game, Kalshi or Novig, to be held; a Kalshi order waits for an earlier Novig one the same way. One bets list sorted by live edge, so the better venue goes first |
-| Holdings | the pass and the desk both need the `novig` and `novig_bot` polls under 5 min old (`stale_holdings`) |
+| Holdings | the pass needs the `kalshi`, `novig` and `novig_bot` polls under 5 min old (the stake is sized on every held bet); the desk re-checks `novig` and `novig_bot` (`stale_holdings`) |
 | Location | a 451 (`GEOLOCATION_EXPIRED`, Novig's 3-day phone location check) is `geo_blocked`: nothing placed, the runner shows it in `/taker.json`; open the Novig app on the phone in a legal state to clear it |
 
 **Bets.** `sources/novig_subaccount.py` reads the sub-account's fills on the
@@ -2889,24 +2889,32 @@ bot's key every 30 s (source `novig_bot`, ids `novig:<orderId>:bot`), kept
 apart from Cal's app account (`novig`). Novig's catalog names neither the
 board's teams nor its periods, so each record takes them from the board line
 stored with the order (`novig_taker_orders`); an order the desk did not place
-is unmatchable. Settlement reads the public market once the game has started.
+is unmatchable. Settlement reads the public market once the game has started;
+a bet's `closedAt` is when the desk first saw its market `SETTLED`
+(`novig_taker_orders.settled_at`), so it never moves poll to poll.
 `--name place` is the Ticket's Novig Place sub-account (`novig_place`), read
 the same way once its thread stores contexts.
 
 **Arming, stopping.** Armed only when `NOVIG_TAKER_KEY_ID` is set and the key
 file at `NOVIG_TAKER_PRIVATE_KEY_PATH` (`/data/novig_bot.pem`) reads a balance
 and is not a management key; else `POST /taker/novig_order.json` answers 503
-and `/taker.json` says `novigDesk: off` with the reason. Stop: `touch`
+and the bets-service log names the reason (no `novig_bot` read, so every
+pass shows it in `pass.novigSkipped`). Stop: `touch`
 `NOVIG_TAKER_STOP_PATH` (`/data/novig_taker.stop`), or the shared
 `/data/taker.stop` (stops both bots). Setup: `deploy/README.md` step 13
 (`novig_subaccount_setup.py keygen` on the VM, `open --name bot --fund 500`
-on the Mac's management key; rerun with `--fund` to top up).
+on the Mac's management key; a top-up is the same line with a new
+`--run-id` (e.g. `topup-1`) and the amount: a new key stops the desk, a kept
+one does not).
 
 Desk statuses: `stopped`, `duplicate`, `env_mismatch`, `stale_decision`,
 `started`, `stale_holdings`, `unseen_fill`, `ceiling`, then the order's
 `sending`, `unknown` (no definite answer: full cost held, looked up by
-`clientId` a minute on), `sent`, `resting`, `filled` / `partial` / `unfilled`
-(final 60 s on), `rejected`, `geo_blocked`.
+`clientId` a minute on), `sent` (an order Novig took but never shows final is
+settled off its listing by `clientId` a minute on), `resting`, `filled` /
+`partial` / `unfilled` (final 60 s on), `rejected`, `geo_blocked`. A started
+market frees its orders' cost once Novig reads it `SETTLED`; one still not
+settled 12 h after the start is logged once.
 
 ```sql
 -- taker.duckdb: the Novig bot's orders, newest first

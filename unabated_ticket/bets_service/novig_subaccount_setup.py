@@ -10,9 +10,9 @@ in two halves, and the trading key's private half never moves:
   1. on the VM, inside the bets container (`keygen`): makes the trading
      keypair, writes the private half to the name's key file at mode 0600
      (an existing usable key is kept), and prints ONLY its public half on
-     stdout. For "bot" it first puts the Novig stop file
+     stdout. For a NEW "bot" key it first puts the Novig stop file
      (NOVIG_TAKER_STOP_PATH) in place, so the restart that arms the desk
-     cannot trade until Cal removes it;
+     cannot trade until Cal removes it (a kept key, a top-up, leaves it be);
   2. on the Mac (`open`), signed by the management key in ~/.novig: reads that
      public half on stdin, opens the subaccount labelled "unabated-<name>"
      with it (or finds the one already open), checks Novig's record of the
@@ -43,12 +43,11 @@ from pathlib import Path
 from typing import TextIO
 
 from unabated_ticket.bets_service import config
-from unabated_ticket.bets_service.novig_orders import NovigError, NovigOrderClient, public_key_pem_of
+from unabated_ticket.bets_service.novig_orders import KEYS_PATH, NovigError, NovigOrderClient, public_key_pem_of
+from unabated_ticket.bets_service.sources.novig_subaccount import NAMES
 
-NAMES = ("bot", "place")
 LABEL_PREFIX = "unabated-"
 SUBACCOUNTS_PATH = "/v3/account/subaccounts"
-KEYS_PATH = "/v3/keys"
 TRADING_SCOPE = "trading"
 DEFAULT_RUN_ID = "initial"
 MAX_TRANSFER_ID_CHARS = 64
@@ -127,8 +126,6 @@ def ensure_novig_stopped(stop_path: Path, err: TextIO) -> None:
 def run_keygen(name: str, key_path: Path, stop_path: Path, out: TextIO, err: TextIO) -> int:
     """Half 1. Prints the public key on `out` and nothing else there."""
     try:
-        if name == "bot":
-            ensure_novig_stopped(stop_path, err)
         if key_path.exists():
             try:
                 public_pem = public_key_pem_of(key_path.read_bytes())
@@ -137,6 +134,10 @@ def run_keygen(name: str, key_path: Path, stop_path: Path, out: TextIO, err: Tex
                                  f"move it aside and run this again") from error
             err.write(f"Kept the existing {name} trading key {key_path}.\n")
         else:
+            # A new bot key is a first setup: stop the desk before the restart that arms it. A kept
+            # key is a re-run or a top-up, which must not stop a bot already trading.
+            if name == "bot":
+                ensure_novig_stopped(stop_path, err)
             key_path.parent.mkdir(parents=True, exist_ok=True)
             write_new_private_key(key_path)
             public_pem = public_key_pem_of(key_path.read_bytes())
@@ -267,7 +268,7 @@ def run_open(client: NovigOrderClient, name: str, public_key_pem: str, amount: f
               f"and cannot move money.\nSet this in unabated_ticket/bets_service/.env on the VM, then restart the bets "
               f"service:\n  {variable}={key_id}\n")
     if name == "bot":
-        out.write(f"The Novig stop file stays until you rm it on the VM.\n")
+        out.write("If this made a new bot key, the Novig stop file stays until you rm it on the VM.\n")
     return 0
 
 

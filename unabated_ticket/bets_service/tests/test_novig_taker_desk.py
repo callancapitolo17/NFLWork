@@ -29,6 +29,7 @@ class FakeNovig:
         self.fill_items = [{"fillId": "f1", "orderId": ORDER_ID, "qty": 2150, "cost": "9.99750", "taker": True}]
         self.lookup = None
         self.market_reply = {"marketId": MARKET, "status": "OPEN"}
+        self.market_reads = 0
         self.cancelled = []
 
     def place_ioc_order(self, outcome_id, price, qty, client_id):
@@ -51,6 +52,7 @@ class FakeNovig:
         return self.lookup
 
     def market(self, market_id):
+        self.market_reads += 1
         return self.market_reply
 
 
@@ -162,6 +164,9 @@ def test_a_refusal_holds_nothing_and_a_lost_answer_holds_the_cost(setup):
     client.place_reply = (451, {"code": "GEOLOCATION_EXPIRED"})
     assert desk.place(request())["status"] == "geo_blocked"
     assert store.novig_open_exposure() == 0
+    stored = store._con.execute("SELECT status, open_cost, settled_at IS NOT NULL, novig_order_id, error "
+                                "FROM novig_taker_orders WHERE client_id = ?", [CLIENT_ID]).fetchone()
+    assert stored[:4] == ("rejected", 0.0, True, None) and stored[4].startswith("HTTP 451 GEOLOCATION_EXPIRED")
     client.place_reply = OSError("timed out")
     lost = request(clientId="3b3f5f20-9c1b-4d6e-8f3a-5c2d1e7b4a93", eventId=8)
     assert desk.place(lost)["status"] == "unknown"
@@ -221,6 +226,40 @@ def test_a_started_settled_market_frees_its_cost(setup):
     client.market_reply = {"marketId": MARKET, "status": "SETTLED"}
     desk.refresh()
     assert store.open_novig_orders() == [] and store.novig_open_exposure() == 0
+
+
+def test_two_orders_on_a_settled_market_free_on_one_read(setup):
+    desk, client, store, clock, status, _ = setup
+    desk.place(request())
+    held = [held_id_of(ORDER_ID)]
+    second = request(clientId="1b3f5f20-9c1b-4d6e-8f3a-5c2d1e7b4a91", heldIds=held)
+    client.place_reply = (201, {"orderId": "8d8c7b6a-5f4e-4d3c-2b1a-0f9e8d7c6b5b"})
+    client.fill_items = [{"fillId": "f2", "qty": 100, "cost": "0.46500", "taker": True}]
+    assert desk.place(second)["status"] == "partial"
+    clock["now"] = NOW + timedelta(hours=4)
+    status["value"] = {name: {**source, "fetchedAt": clock["now"].isoformat()} for name, source in fresh_status().items()}
+    client.market_reply = {"marketId": MARKET, "status": "SETTLED"}
+    client.market_reads = 0
+    desk.refresh()
+    assert store.open_novig_orders() == [] and client.market_reads == 1
+
+
+def test_an_order_novig_never_shows_final_is_settled_off_its_listing(setup):
+    desk, client, store, clock, *_ = setup
+    client.order_reply = (404, {"code": "NOT_FOUND"})
+    assert desk.place(request())["status"] == "sent"
+    clock["now"] = NOW + timedelta(seconds=30)
+    desk.refresh()
+    assert store.open_novig_orders()[0]["status"] == "sent"  # too young to look up
+    clock["now"] = NOW + timedelta(seconds=61)
+    client.lookup = {"orderId": ORDER_ID, "clientId": CLIENT_ID, "status": "CANCELED"}
+    client.fill_items = [{"fillId": "f1", "qty": 1000, "cost": "4.65000", "taker": True}]
+    desk.refresh()
+    assert store.open_novig_orders()[0]["status"] == "partial"
+    clock["now"] = NOW + timedelta(seconds=125)
+    desk.refresh()
+    order = store.open_novig_orders()[0]
+    assert order["fills_final"] and order["open_cost"] == pytest.approx(4.65)
 
 
 def test_a_duplicate_client_id_is_never_sent_twice(setup):

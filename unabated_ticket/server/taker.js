@@ -267,19 +267,22 @@ function booksBeating(check, price) {
 }
 
 // What differs per venue in a decision: the all-in price of an ask, how many
-// contracts a stake buys, and which held bet is the other side of the market.
+// contracts a stake buys, what they cost, and which held bet is the other
+// side of the market. A Kalshi contract pays $1, a Novig one 1c.
 const VENUE_RULES = {
   [VENUE_KALSHI]: {
     kellyBankroll: BOT_BANKROLL,
-    allInOf: (ask) => kalshiAllInPrice(ask),
+    allInOf: kalshiAllInPrice,
     contractsFor: (stake, allIn, depth) => Math.floor(Math.min(stake / allIn, depth)),
-    heldOtherSide: (matches, contract) => heldOtherSide(matches, contract),
+    costOf: (contracts, allIn) => contracts * allIn,
+    heldOtherSide,
   },
   [VENUE_NOVIG]: {
     kellyBankroll: NOVIG_KELLY_BANKROLL,
     allInOf: (ask) => ask,
     contractsFor: (stake, allIn, depth) => Math.floor(Math.min((stake * NOVIG_QTY_PER_DOLLAR) / allIn, depth)),
-    heldOtherSide: (matches, contract) => novigHeldOtherSide(matches, contract),
+    costOf: (contracts, allIn) => (contracts * allIn) / NOVIG_QTY_PER_DOLLAR,
+    heldOtherSide: novigHeldOtherSide,
   },
 };
 
@@ -349,7 +352,7 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing, venue
   if (blind) return done("size_declined", blind);
   const stake = betsView.suggestedBetAmount(advice);
   const contracts = rules.contractsFor(stake, liveAllIn, quote.depth);
-  const cost = venue === VENUE_NOVIG ? (contracts * liveAllIn) / NOVIG_QTY_PER_DOLLAR : contracts * liveAllIn;
+  const cost = rules.costOf(contracts, liveAllIn);
   Object.assign(decision, { stake, contracts, cost: roundPrice(cost) });
   if (contracts < 1) return done("size_zero", `stake $${stake.toFixed(2)} at ${(liveAllIn * 100).toFixed(2)}c, depth ${quote.depth}`);
   return done("bet");
@@ -478,15 +481,15 @@ function resolveNovigOutcome(row) {
   return { outcomeId };
 }
 
-// outcome id -> {market, event} over Novig's public catalog listing of open
+// outcome id -> {market} over Novig's public catalog listing of open
 // pregame markets (GET /v3/public/catalog/markets?eventStatus=OPEN_PREGAME
-// pages, each market with its outcomes) and its events by id.
-//   markets  [Novig market], events  {eventId: Novig event}
-function novigOutcomeIndex(markets, events) {
+// pages, each market with its outcomes).
+//   markets  [Novig market]
+function novigOutcomeIndex(markets) {
   const index = new Map();
   for (const market of markets || []) {
     for (const outcome of (market && market.outcomes) || []) {
-      if (outcome && typeof outcome.outcomeId === "string") index.set(outcome.outcomeId, { market, event: (events || {})[market.eventId] || null });
+      if (outcome && typeof outcome.outcomeId === "string") index.set(outcome.outcomeId, { market });
     }
   }
   return index;
@@ -552,19 +555,34 @@ function novigMarketMismatch(market, event, row, contract) {
   if (!bareType || typeof market.marketType !== "string" || !market.marketType.startsWith(bareType)) return `market type ${market.marketType} is not the row's ${row.betType}`;
   if ((market.marketType === bareType) !== (row.periodTypeId === PERIOD_FULL_GAME)) return `market type ${market.marketType} is not the row's period (${row.period})`;
   const strike = Number(market.strike);
+  // The outcome's own name decides its side, apart from the rung map that
+  // picked it: a swapped rung would otherwise buy the other side at this
+  // side's fair. A name that says nothing readable fails closed.
+  const name = String((market.outcomes.find((outcome) => outcome.outcomeId === contract.outcomeId) || {}).name || "").trim();
   if (row.betTypeId === BET_TYPE_SPREAD) {
     const homePoints = row.sideIndex === SIDE_AWAY_OR_OVER ? -row.points : row.points;
     if (!Number.isFinite(strike) || strike !== homePoints) return `strike ${market.strike} (home), row is ${row.points} side ${row.sideIndex}`;
+    const handicap = novigNameHandicap(name);
+    if (handicap === null) return `outcome "${name}" names no handicap`;
+    if (handicap !== row.points) return `outcome "${name}" is ${handicap}, the row is ${row.points}`;
   } else if (row.betTypeId === BET_TYPE_TOTAL) {
     if (!Number.isFinite(strike) || strike !== row.points) return `strike ${market.strike}, row is ${row.points}`;
-    const name = (market.outcomes.find((outcome) => outcome.outcomeId === contract.outcomeId) || {}).name || "";
-    const word = name.trim().toLowerCase();
+    const word = name.toLowerCase();
     const sideWord = row.sideIndex === SIDE_AWAY_OR_OVER ? "over" : "under";
-    if ((word.startsWith("over") || word.startsWith("under")) && !word.startsWith(sideWord)) return `outcome "${name}" is not the row's ${sideWord}`;
+    if (!word.startsWith(sideWord)) return `outcome "${name}" is not the row's ${sideWord}`;
   } else {
     return `bet type ${row.betTypeId} has no Novig market check`;
   }
   return null;
+}
+
+// A spread outcome name's handicap ("Washington St -35.5" -> -35.5, "PK" or
+// a bare 0 -> 0), or null when its last word is no number.
+function novigNameHandicap(name) {
+  const last = String(name).trim().split(/\s+/).pop() || "";
+  if (/^(pk|pick|pick'em)$/i.test(last)) return 0;
+  if (!/^[+-]?\d+(\.\d+)?$/.test(last)) return null;
+  return Number(last);
 }
 
 // The order's clientId: a UUID (Novig requires one) hashed from outcome and
@@ -606,7 +624,7 @@ function decisionSignature(decision) {
 }
 
 module.exports = {
-  KALSHI_BOOK_ID, NOVIG_BOOK_ID, VENUE_KALSHI, VENUE_NOVIG, NOVIG_QTY_PER_DOLLAR, BOT_BANKROLL, NOVIG_KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
+  KALSHI_BOOK_ID, NOVIG_BOOK_ID, VENUE_KALSHI, VENUE_NOVIG, NOVIG_EVENT_PREGAME, BOT_BANKROLL, NOVIG_KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
   MAX_LINE_AGE_MS, KALSHI_TAKER_FEE_RATE, REASONS,
   kalshiAllInPrice, probToAmerican, unabatedAllInOf, candidateRows,
   contractFromRungs, spreadTeamCodes, derivedMoneylineContract, resolveKalshiContract,

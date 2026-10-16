@@ -57,6 +57,24 @@ def test_a_settled_market_grades_it_and_is_read_once():
     assert client.market_reads == 1
 
 
+def test_a_settled_bet_keeps_one_closed_at_poll_after_poll():
+    desk_saw_it = NOW - timedelta(hours=1)
+    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": desk_saw_it}
+    market = {"marketId": MARKET, "eventId": "ev-1", "status": "SETTLED", "outcomes": [{"outcomeId": OUTCOME, "status": "LOSS"}]}
+    clock = {"now": NOW}
+    source = NovigSubaccountSource("bot", FakeClient([fill()], market), lambda: {"o1": started}, now=lambda: clock["now"])
+    first = source.fetch()[0]
+    clock["now"] = NOW + timedelta(minutes=5)
+    assert first == {**source.fetch()[0], "sourceFetchedAt": first["sourceFetchedAt"]}
+    assert first["closedAt"] == "2026-10-18T15:00:00.000Z"
+    # Before the desk has seen it settled, the first poll that did is the closedAt, and it holds.
+    unseen = NovigSubaccountSource("bot", FakeClient([fill()], market), lambda: {"o1": {**started, "settled_at": None}},
+                                   now=lambda: clock["now"])
+    assert unseen.fetch()[0]["closedAt"] == "2026-10-18T16:05:00.000Z"
+    clock["now"] = NOW + timedelta(minutes=10)
+    assert unseen.fetch()[0]["closedAt"] == "2026-10-18T16:05:00.000Z"
+
+
 def test_no_context_is_recorded_unmatchable():
     source = NovigSubaccountSource("place", FakeClient([fill()], {"marketId": MARKET, "status": "OPEN"}), lambda: {}, now=lambda: NOW)
     [record] = source.fetch()

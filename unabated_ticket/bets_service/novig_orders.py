@@ -46,14 +46,14 @@ USER_AGENT = "unabated-ticket-bets-service/1.0"
 
 ORDERS_PATH = "/v3/orders"
 FILLS_PATH = "/v3/portfolio/fills"
-POSITIONS_PATH = "/v3/portfolio/positions"
 KEYS_PATH = "/v3/keys"
 PUBLIC_MARKET_PATH = "/v3/public/catalog/markets"
-PUBLIC_EVENT_PATH = "/v3/public/catalog/events"
 TIME_IN_FORCE_IOC = "IOC"
 # Order statuses (OrderStatus). There is no partly-filled status: track `remaining`.
 STATUS_PENDING = "PENDING"
 STATUS_OPEN = "OPEN"
+# A public market's status once its outcomes are graded; nothing about it changes after.
+MARKET_SETTLED = "SETTLED"
 STATUS_FILLED = "FILLED"
 STATUS_CANCELED = "CANCELED"
 STATUS_REJECTED = "REJECTED"
@@ -233,10 +233,6 @@ class NovigOrderClient:
         self._transport = transport or requests_transport()
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
 
-    @property
-    def algorithm(self) -> str:
-        return self._signer.algorithm
-
     def request(self, method: str, path: str, query: list[tuple[str, str]] | None = None,
                 body: dict | None = None) -> tuple[int, object]:
         """(status, parsed body or text). Raises OSError on no answer at all.
@@ -308,13 +304,6 @@ class NovigOrderClient:
             query.append(("startsAfter", str(starts_after_ms)))
         return self._paged(FILLS_PATH, query)
 
-    def positions(self) -> list[dict]:
-        """This subaccount's open positions ({marketId, outcomeId, qty, cost}); a bare list, not paged."""
-        status, reply = self.request("GET", POSITIONS_PATH)
-        if status != 200 or not isinstance(reply, list):
-            raise NovigError(f"GET {POSITIONS_PATH}: expected 200 with a list, got HTTP {status} {str(reply)[:300]}")
-        return [position for position in reply if isinstance(position, dict)]
-
     def balance(self) -> float:
         """This subaccount's balance in dollars (GET .../subaccounts/{own key}/balance)."""
         status, reply = self.request("GET", f"/v3/account/subaccounts/{self.key_id}/balance")
@@ -341,13 +330,6 @@ class NovigOrderClient:
         status, reply = self.request("GET", f"{PUBLIC_MARKET_PATH}/{market_id}")
         if status != 200 or not isinstance(reply, dict) or not reply.get("marketId"):
             raise NovigError(f"market {market_id}: expected 200 with a market, got HTTP {status} {str(reply)[:300]}")
-        return reply
-
-    def event(self, event_id: str) -> dict:
-        """The public catalog's event (status, startsTs, description, league)."""
-        status, reply = self.request("GET", f"{PUBLIC_EVENT_PATH}/{event_id}")
-        if status != 200 or not isinstance(reply, dict) or not reply.get("eventId"):
-            raise NovigError(f"event {event_id}: expected 200 with an event, got HTTP {status} {str(reply)[:300]}")
         return reply
 
     def is_management_key(self) -> bool | None:

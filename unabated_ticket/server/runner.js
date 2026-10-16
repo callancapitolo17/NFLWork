@@ -673,17 +673,18 @@ function createRunner(deps) {
     return taker.parseKalshiOrderbook(body);
   }
 
-  // ticker -> {book} | {error}, KALSHI_BOOK_READS_AT_ONCE reads in flight.
-  async function readKalshiBooks(tickers) {
+  // id -> {book} | {error} for every id, KALSHI_BOOK_READS_AT_ONCE reads of
+  // `readOne(id)` in flight (Kalshi tickers and Novig market ids alike).
+  async function readBooks(ids, readOne) {
     const books = new Map();
-    const queue = Array.from(tickers);
+    const queue = Array.from(ids);
     const worker = async () => {
       while (queue.length) {
-        const ticker = queue.shift();
+        const id = queue.shift();
         try {
-          books.set(ticker, { book: await readKalshiBook(ticker) });
+          books.set(id, { book: await readOne(id) });
         } catch (error) {
-          books.set(ticker, { error: error.message });
+          books.set(id, { error: error.message });
         }
       }
     };
@@ -753,7 +754,8 @@ function createRunner(deps) {
     const startedAt = now();
     try {
       const blocker = takerBlocker();
-      const novigSkip = boardBlocker() || novigBlocker();
+      // A Novig stake is sized on every held bet, Cal's Kalshi bets included: it needs the Kalshi poll fresh too.
+      const novigSkip = blocker || novigBlocker();
       if (blocker && novigSkip) {
         takerLastPass = { ...takerLastPass, startedAt, finishedAt: now(), skipped: blocker, novigSkipped: novigSkip };
         return;
@@ -820,7 +822,7 @@ function createRunner(deps) {
       const contract = taker.resolveKalshiContract(row, pass.board);
       if (contract.ticker) tickers.add(contract.ticker);
     }
-    const books = await readKalshiBooks(tickers);
+    const books = await readBooks(tickers, readKalshiBook);
     return decideRows(pass, rows, taker.VENUE_KALSHI, (row) => taker.resolveKalshiContract(row, pass.board), (contract) => {
       const read = books.get(contract.ticker);
       if (!read) return null;
@@ -837,7 +839,7 @@ function createRunner(deps) {
     let index = new Map();
     let catalogError = null;
     try {
-      index = taker.novigOutcomeIndex(await readNovigMarkets(rows), {});
+      index = taker.novigOutcomeIndex(await readNovigMarkets(rows));
     } catch (error) {
       catalogError = error.message;
     }
@@ -851,7 +853,7 @@ function createRunner(deps) {
       const contract = resolve(row);
       if (contract.marketId) marketIds.add(contract.marketId);
     }
-    const books = await readNovigBooks(marketIds);
+    const books = await readBooks(marketIds, (marketId) => getNovigJson(`${novigBaseUrl}/v3/public/catalog/markets/${encodeURIComponent(marketId)}/book`));
     return decideRows(pass, rows, taker.VENUE_NOVIG, resolve, (contract) => {
       const read = books.get(contract.marketId);
       if (!read) return null;
@@ -876,7 +878,7 @@ function createRunner(deps) {
     const markets = [];
     let after = null;
     for (let page = 0; page < NOVIG_MARKETS_MAX_PAGES; page += 1) {
-      const query = new URLSearchParams({ league: leagues.join(","), eventStatus: "OPEN_PREGAME", limit: String(NOVIG_MARKETS_PAGE_LIMIT) });
+      const query = new URLSearchParams({ league: leagues.join(","), eventStatus: taker.NOVIG_EVENT_PREGAME, limit: String(NOVIG_MARKETS_PAGE_LIMIT) });
       if (after) query.set("after", after);
       const body = await getNovigJson(`${novigBaseUrl}/v3/public/catalog/markets?${query}`);
       if (!body || !Array.isArray(body.items)) throw new Error("Novig markets: no items list");
@@ -885,24 +887,6 @@ function createRunner(deps) {
       if (!after) return markets;
     }
     throw new Error(`Novig markets: more than ${NOVIG_MARKETS_MAX_PAGES} pages`);
-  }
-
-  // marketId -> {book} | {error}, KALSHI_BOOK_READS_AT_ONCE reads in flight.
-  async function readNovigBooks(marketIds) {
-    const books = new Map();
-    const queue = Array.from(marketIds);
-    const worker = async () => {
-      while (queue.length) {
-        const marketId = queue.shift();
-        try {
-          books.set(marketId, { book: await getNovigJson(`${novigBaseUrl}/v3/public/catalog/markets/${encodeURIComponent(marketId)}/book`) });
-        } catch (error) {
-          books.set(marketId, { error: error.message });
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: KALSHI_BOOK_READS_AT_ONCE }, worker));
-    return books;
   }
 
   // The Ticket's Place button (bets_service/manual_orders.py asks, Cal
@@ -1008,7 +992,8 @@ function createRunner(deps) {
     };
     try {
       const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/taker/novig_order.json`, "POST", body, TAKER_ORDER_TIMEOUT_MS);
-      novigDeskStatus = reply.status === "geo_blocked" ? `geo_blocked: ${reply.detail}` : "armed";
+      novigDeskStatus = reply.status === "geo_blocked" ? `geo_blocked: ${reply.detail}`
+        : reply.status === "stopped" ? `stopped: ${reply.detail}` : "armed";
       if (!["ceiling", "stopped", "unseen_fill", "stale_holdings"].includes(reply.status)) {
         logInfo(`taker novig order ${body.clientId} ${decision.ticker} x${decision.contracts} @ ${decision.liveAsk}: ${reply.status}${reply.detail ? ` (${reply.detail})` : ""}`);
       }

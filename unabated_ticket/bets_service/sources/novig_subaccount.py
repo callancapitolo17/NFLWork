@@ -32,10 +32,10 @@ a failed run and keeps the previous records.
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
-from unabated_ticket.bets_service.normalize import js_round, json_clean, utc_now_iso
-from unabated_ticket.bets_service.novig_orders import QTY_PER_DOLLAR, NovigError, NovigOrderClient, order_totals
+from unabated_ticket.bets_service.normalize import EASTERN, json_clean, round_cents, utc_now_iso
+from unabated_ticket.bets_service.novig_orders import (MARKET_SETTLED, QTY_PER_DOLLAR, NovigError, NovigOrderClient,
+                                                       order_totals)
 from unabated_ticket.bets_service.sources.novig import probability_to_american
 
 log = logging.getLogger(__name__)
@@ -43,11 +43,9 @@ log = logging.getLogger(__name__)
 NAMES = ("bot", "place")
 SOURCE_PREFIX = "novig_"
 VENUE = "novig"
-EASTERN = ZoneInfo("America/New_York")
 POLL_SEC = 30.0
 # Fills on events that started within this many days are read every poll (the store keeps older ones).
 HISTORY_DAYS = 14
-MARKET_SETTLED = "SETTLED"
 OUTCOME_STATUS = {"WIN": "won", "LOSS": "lost", "PUSH": "push"}
 OUTCOME_OPEN = "TBD"
 REASON_NO_CONTEXT = "no board line on record for this Novig order (placed outside the bot's desk)"
@@ -68,8 +66,9 @@ def _iso_of_epoch_ms(epoch_ms: object) -> str | None:
     return _iso_ms(datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc))
 
 
-def _round_cents(dollars: float) -> float:
-    return js_round(dollars * 100) / 100
+def record_id_of(name: str, novig_order_id: str) -> str:
+    """The bet record id of a subaccount's Novig order; the desk's unseen-fill rule looks for it."""
+    return f"novig:{novig_order_id}:{name}"
 
 
 def settled_status(outcome_status: object, stake: float, qty: int) -> str | None:
@@ -113,8 +112,10 @@ def _game_fields(context: dict | None) -> dict:
 
 
 def normalize_order(name: str, order_id: str, fills: list[dict], context: dict | None, market: dict | None,
-                    fetched_at: str) -> dict:
-    """One order's fills -> one record. `market` is the public market once its game has started (else None)."""
+                    settled_at: datetime | None, fetched_at: str) -> dict:
+    """One order's fills -> one record. `market` is the public market once its game has started (else None);
+    `settled_at` is when its market was first seen SETTLED, the record's fixed closedAt (never the poll's
+    time: the record would change, and its settle day move, every poll)."""
     qty, cost, fee = order_totals(fills)
     stake = round(cost + fee, 5)
     first = fills[0]
@@ -133,17 +134,17 @@ def normalize_order(name: str, order_id: str, fills: list[dict], context: dict |
     placed_ms = min(fill.get("ts") for fill in fills if isinstance(fill.get("ts"), int)) if any(
         isinstance(fill.get("ts"), int) for fill in fills) else None
     record = {
-        "id": f"novig:{order_id}:{name}",
+        "id": record_id_of(name, order_id),
         "source": f"{SOURCE_PREFIX}{name}",
         "venue": VENUE,
         "rotation": None,
         "price": probability_to_american(probability),
-        "stake": _round_cents(stake),
-        "toWin": _round_cents(payout - stake),
-        "contracts": _round_cents(payout),
+        "stake": round_cents(stake),
+        "toWin": round_cents(payout - stake),
+        "contracts": round_cents(payout),
         "placedAt": _iso_of_epoch_ms(placed_ms),
         "status": status,
-        "closedAt": None if status == "open" else fetched_at,
+        "closedAt": None if status == "open" else _iso_ms(settled_at),
         "isParlayLeg": False, "parlayId": None, "legIndex": None, "legCount": None,
         "approx": [],
         "sourceFetchedAt": fetched_at,
@@ -170,8 +171,8 @@ class NovigSubaccountSource:
         self._client = client
         self._contexts = contexts
         self._now = now
-        # A market seen SETTLED never changes again: read once.
-        self._settled_markets: dict[str, dict] = {}
+        # market id -> (the market, when first seen SETTLED): it never changes again, so it is read once.
+        self._settled_markets: dict[str, tuple[dict, datetime]] = {}
 
     def fetch(self) -> list[dict]:
         now = self._now()
@@ -185,25 +186,39 @@ class NovigSubaccountSource:
             by_order.setdefault(order_id, []).append(fill)
         contexts = self._contexts()
         fetched_at = utc_now_iso()
+        markets_this_poll: dict[str, dict] = {}
         records = []
         for order_id, order_fills in by_order.items():
             context = contexts.get(order_id)
-            market = self._market_if_started(order_fills[0].get("marketId"), context, now)
-            records.append(normalize_order(self._account, order_id, order_fills, context, market, fetched_at))
+            market_id = order_fills[0].get("marketId")
+            market = self._market_if_started(market_id, context, now, markets_this_poll)
+            settled_at = None
+            if market is not None and market.get("status") == MARKET_SETTLED:
+                # The desk's stored first sighting survives a restart; this process's own is the fallback.
+                settled_at = (context or {}).get("settled_at") or self._settled_markets[market_id][1]
+            records.append(normalize_order(self._account, order_id, order_fills, context, market, settled_at, fetched_at))
+        polled_markets = {fills_of[0].get("marketId") for fills_of in by_order.values()}
+        self._settled_markets = {market_id: seen for market_id, seen in self._settled_markets.items()
+                                 if market_id in polled_markets}
         log.info("%s: %d fills -> %d bets", self.name, len(fills), len(records))
         return records
 
-    def _market_if_started(self, market_id: object, context: dict | None, now: datetime) -> dict | None:
+    def _market_if_started(self, market_id: object, context: dict | None, now: datetime,
+                           markets_this_poll: dict[str, dict]) -> dict | None:
         """The public market once the game may be over (started, or no context
-        to say when), else None: before the start nothing can have settled."""
+        to say when), else None: before the start nothing can have settled.
+        Read once per market per poll; a SETTLED one once for good."""
         if not isinstance(market_id, str):
             return None
         if market_id in self._settled_markets:
-            return self._settled_markets[market_id]
+            return self._settled_markets[market_id][0]
+        if market_id in markets_this_poll:
+            return markets_this_poll[market_id]
         start = context.get("event_start") if context else None
         if start is not None and start > now:
             return None
         market = self._client.market(market_id)
+        markets_this_poll[market_id] = market
         if market.get("status") == MARKET_SETTLED:
-            self._settled_markets[market_id] = market
+            self._settled_markets[market_id] = (market, now)
         return market

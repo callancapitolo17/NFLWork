@@ -133,7 +133,8 @@ _NOVIG_OPEN_COLUMNS = ("client_id", "placed_at", "event_id", "event_start", "out
                        "qty_requested", "status", "novig_order_id", "final_at", "qty_filled", "fills_final", "open_cost")
 _NOVIG_TIME_COLUMNS = ("placed_at", "event_start", "final_at")
 NOVIG_CONTEXT_COLUMNS = ("league", "bet_type", "period", "side", "points", "away_team", "home_team", "away_team_id",
-                         "home_team_id", "event_start", "event_id", "market_id", "outcome_id", "price")
+                         "home_team_id", "event_start", "event_id", "market_id", "outcome_id", "price", "settled_at")
+_NOVIG_CONTEXT_TIME_COLUMNS = ("event_start", "settled_at")
 
 _INSERT = """
 INSERT INTO taker_decisions (decided_at, received_at, row_key, league, event_id, event_start, reason, ticker,
@@ -273,8 +274,9 @@ class TakerStore:
 
     def novig_order_contexts(self) -> dict[str, dict]:
         """Novig order id -> the board line the bot priced it on (NOVIG_CONTEXT_COLUMNS), for
-        every order Novig gave an id. The bot subaccount's read names its bets with these."""
-        selected = ", ".join(f"epoch_ms({column})" if column == "event_start" else column
+        every order Novig gave an id. The bot subaccount's read names its bets with these;
+        `settled_at` (when the desk first saw its market SETTLED) is the bet's fixed closedAt."""
+        selected = ", ".join(f"epoch_ms({column})" if column in _NOVIG_CONTEXT_TIME_COLUMNS else column
                              for column in NOVIG_CONTEXT_COLUMNS)
         with self._lock:
             rows = self._con.execute(f"SELECT novig_order_id, {selected} FROM novig_taker_orders "
@@ -282,6 +284,7 @@ class TakerStore:
         contexts = {}
         for row in rows:
             context = dict(zip(NOVIG_CONTEXT_COLUMNS, row[1:]))
-            context["event_start"] = _utc_from_ms(context["event_start"])
+            for column in _NOVIG_CONTEXT_TIME_COLUMNS:
+                context[column] = _utc_from_ms(context[column])
             contexts[row[0]] = context
         return contexts
