@@ -120,12 +120,22 @@
   .ev.ev1 { background: var(--ev1-bg); color: var(--ev1-text); }
   .ev.neg { color: var(--bad); padding-left: 0; }
   .stake-col { min-width: 0; }
-  .stake-form { display: flex; gap: 6px; align-items: center; }
+  .stake-form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .money-input { position: relative; flex: 1; min-width: 0; max-width: 120px; }
   .money-input span { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
   .money-input input { width: 100%; padding-left: 20px; }
-  .stake-sub { font-size: 12px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
-  .stake-note { font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+  .to-win { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .held { display: inline-block; font-size: 12px; font-weight: 600; color: var(--good); background: var(--good-bg); border-radius: 999px; padding: 1px 9px; margin-bottom: 6px; max-width: 100%; overflow-wrap: anywhere; }
+  .sizes { display: grid; grid-template-columns: auto auto; justify-content: start; gap: 1px 14px; margin: 8px 0 0; font-size: 12px; }
+  .sizes dt { color: var(--muted); }
+  .sizes dd { margin: 0; text-align: right; font-weight: 600; }
+  .sizes dd.zero { color: var(--faint); font-weight: 500; }
+  .why { font-size: 12px; color: var(--warn); background: var(--warn-bg); border-radius: 6px; padding: 3px 8px; margin-top: 6px; overflow-wrap: anywhere; }
+  .why.plain { color: var(--muted); background: var(--surface-2); }
+  .team-strip { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; padding: 8px 14px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--border); }
+  .team-strip b { color: var(--text); }
+  .group-head + .team-strip { border-top: 0; }
+  .team-strip + .row { border-top: 1px dashed var(--border); }
   .stake-none { color: var(--faint); font-size: 13px; }
   .msg-ok { color: var(--good); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
   .msg-err { color: var(--bad); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
@@ -176,6 +186,7 @@
     .stake-form input, .stake-form button { height: 44px; font-size: 16px; }
     .money-input { max-width: none; }
     .stake-form button { min-width: 112px; justify-content: center; }
+    .to-win { flex-basis: 100%; }
     .toolbar .spacer { display: none; }
     .placed-row { grid-template-columns: 18px minmax(0, 1fr) auto; }
     .placed-row .placed-when { display: none; }
@@ -560,7 +571,47 @@ function priceCell(line) {
   ]);
 }
 
-function stakeCell(line, p, byRotation) {
+// One plain sentence on what holds a stake back, or null when nothing does.
+// `warn` marks a $0 stake on a +EV special; a cap or trim reads plain.
+function stakeReason(line, p, byRotation, teamLines) {
+  const rec = line.recommended_stake, unlimited = line.unlimited_stake, kelly = line.kelly_stake;
+  const heldOwn = placedRisk(p, line.wz_game_id);
+  const room = p.max_stake - heldOwn;
+  if (p.available_balance == null) return { warn: false, text: "No stake until Refresh reads the balance" };
+  if (room < 0.5) return { warn: false, text: `Full: Wagerzon takes ${money(p.max_stake)} per special` };
+  if (rec < 0.5) {
+    if (unlimited > 0.5) return { warn: true, text: "$0: your available balance went to bigger edges" };
+    const sibling = line.yields_to ? byRotation.get(line.yields_to) : null;
+    if (sibling) {
+      const siblingHeld = placedRisk(p, sibling.wz_game_id);
+      if (siblingHeld > 0) return { warn: true, text: `No more: the team's Kelly is already in your ${money(siblingHeld)} ${specialTitle(sibling.description)}` };
+      return { warn: true, text: `$0: the ${specialTitle(sibling.description)} (${sibling.rotation}) is the better way to bet this team` };
+    }
+    if (heldOwn > 0) return { warn: true, text: "No more: what you've bet already matches Kelly" };
+    if (kelly > 0.5) return { warn: true, text: `$0: Kelly's ${money(kelly)} is under Wagerzon's ${money(p.min_stake)} minimum` };
+    return { warn: true, text: "$0: Kelly sizes this at nothing" };
+  }
+  const isCapped = l => l.recommended_stake >= p.max_stake - placedRisk(p, l.wz_game_id) - 0.5 && l.kelly_stake > l.recommended_stake + 0.5;
+  if (isCapped(line)) {
+    const takesRest = teamLines.find(l => l !== line && l.recommended_stake > 0.5 && l.kelly_stake < l.recommended_stake - 0.5);
+    return { warn: false, text: `Capped at Wagerzon's ${money(p.max_stake)} max` + (takesRest ? `; the rest goes to the ${specialTitle(takesRest.description)}` : "") };
+  }
+  if (rec < unlimited - 0.5) return { warn: false, text: `Trimmed to fit your ${money(p.available_balance)} available` };
+  if (kelly < rec - 0.5) {
+    const capped = teamLines.find(l => l !== line && isCapped(l));
+    if (capped) return { warn: false, text: `Takes the rest: the ${specialTitle(capped.description)} stops at ${money(p.max_stake)}, short of its ${money(capped.kelly_stake)} Kelly` };
+  }
+  return null;
+}
+
+function placedRisk(p, wzGameId) {
+  return p.placements.filter(r => r.status === "placed" && r.account === p.account && r.wz_game_id === wzGameId)
+    .reduce((sum, r) => sum + r.risk, 0);
+}
+
+// `teamLines` are the visible specials on the line's (game, team); with more
+// than one, the team strip carries the Kelly figure instead of each row.
+function stakeCell(line, p, byRotation, teamLines) {
   if (line.fair_prob == null) {
     return el("div", { class: "stake-col stake-none", text: line.status === "pricing" ? "Pricing…" : "Unpriced" });
   }
@@ -568,18 +619,12 @@ function stakeCell(line, p, byRotation) {
   if (hasStarted(line)) return el("div", { class: "stake-col stake-none", text: "Game started" });
 
   const id = line.wz_game_id;
-  const teamBets = teamPlacements(p, line);
-  const ownBets = teamBets.filter(r => r.wz_game_id === id);
-  const otherBets = teamBets.filter(r => r.wz_game_id !== id);
+  const ownBets = p.placements.filter(r => r.status === "placed" && r.account === p.account && r.wz_game_id === id);
+  const message = placeMessages.get(id);
   const children = [];
-  if (otherBets.length) {
-    const other = p.board.lines.find(l => l.wz_game_id === otherBets[0].wz_game_id);
-    children.push(el("div", { class: "stake-note",
-      text: `${line.team} holds ${specialTitle(other.description)} (${other.rotation}), ${money(otherBets.reduce((sum, r) => sum + r.risk, 0))}; sized around it` }));
-  } else if (line.yields_to) {
-    const other = byRotation.get(line.yields_to);
-    const label = other ? `${specialTitle(other.description)} (${line.yields_to})` : String(line.yields_to);
-    children.push(el("div", { class: "stake-note", text: "Overlaps " + label }));
+  if (ownBets.length && !(message && message.ok)) {
+    const total = ownBets.reduce((sum, r) => sum + r.risk, 0);
+    children.push(el("span", { class: "held num", text: `Already bet ${money(total)} · ticket ${ownBets[0].ticket_number}` }));
   }
 
   const typed = editingStake.get(id);
@@ -589,40 +634,76 @@ function stakeCell(line, p, byRotation) {
   const input = el("input", { type: "text", inputmode: "decimal", autocomplete: "off",
                               "aria-label": `Risk on ${line.description}`, "data-stake-id": String(id) });
   input.value = value;
-  const sub = el("div", { class: "stake-sub num" });
-  const updateSub = () => {
+  const toWinText = el("span", { class: "to-win num" });
+  const updateToWin = () => {
     const risk = Number(input.value);
-    const pieces = [];
-    if (risk > 0) pieces.push(`to win ${money(toWin(risk, line.wz_american))}`);
-    if (line.unlimited_stake > 0.5) pieces.push(`no balance limit ${money(line.unlimited_stake)}`);
-    if (!line.yields_to && !teamBets.length && line.kelly_stake > Math.max(line.recommended_stake, line.unlimited_stake) + 0.5) pieces.push(`Kelly ${money(line.kelly_stake)}`);
-    if (!line.yields_to && p.available_balance == null) pieces.push("no stake until Refresh reads the balance");
-    sub.textContent = pieces.join(" · ");
+    toWinText.textContent = risk > 0 ? `to win ${money(toWin(risk, line.wz_american))}` : "";
   };
-  input.addEventListener("input", () => { editingStake.set(id, input.value); placeMessages.delete(id); updateSub(); });
+  input.addEventListener("input", () => { editingStake.set(id, input.value); placeMessages.delete(id); updateToWin(); });
   input.addEventListener("keydown", e => { if (e.key === "Enter") button.click(); });
-  updateSub();
+  updateToWin();
 
   const inFlight = placing.has(id);
   const button = el("button", { disabled: inFlight, onclick: () => askToPlace(line, input) },
     inFlight ? [el("span", { class: "spinner", "aria-hidden": "true" }), "Placing…"] : ["Place"]);
-  children.push(el("div", { class: "stake-form" }, [el("div", { class: "money-input" }, [el("span", { text: "$" }), input]), button]));
-  children.push(sub);
+  children.push(el("div", { class: "stake-form" }, [el("div", { class: "money-input" }, [el("span", { text: "$" }), input]), button, toWinText]));
 
-  const message = placeMessages.get(id);
+  const sizes = [["Recommended", line.recommended_stake], ["No balance limit", line.unlimited_stake]];
+  if (teamLines.length < 2) sizes.push(["Kelly", line.kelly_stake]);
+  children.push(el("dl", { class: "sizes num" }, sizes.flatMap(([label, stake]) => [
+    el("dt", { text: label }), el("dd", { class: stake < 0.5 ? "zero" : null, text: money(stake) })])));
+
+  const reason = stakeReason(line, p, byRotation, teamLines);
+  if (reason) children.push(el("div", { class: "why" + (reason.warn ? "" : " plain"), text: reason.text }));
   if (message) children.push(el("div", { class: message.ok ? "msg-ok" : "msg-err", role: "status", text: message.text }));
-  if (ownBets.length && !(message && message.ok)) {
-    const total = ownBets.reduce((sum, r) => sum + r.risk, 0);
-    children.push(el("div", { class: "msg-ok", text: `Placed ${money(total)} this week · ticket ${ownBets[0].ticket_number}` }));
-  }
   return el("div", { class: "stake-col" }, children);
 }
 
-function rowFor(line, p, byRotation, showMatchup) {
+function rowFor(line, p, byRotation, showMatchup, teamLines) {
   const dim = line.fair_prob == null || line.ev <= 0 || hasStarted(line);
   return el("div", { class: "row" + (dim ? " dim" : ""), "data-id": String(line.wz_game_id) }, [
-    infoCell(line, p, showMatchup), priceCell(line), stakeCell(line, p, byRotation),
+    infoCell(line, p, showMatchup), priceCell(line), stakeCell(line, p, byRotation, teamLines),
   ]);
+}
+
+// A team's specials in one game, best EV first; blocks ordered by their best line.
+function teamBlocks(lines) {
+  const blocks = new Map();
+  for (const line of [...lines].sort(byEvDesc)) {
+    const key = teamKey(line) || `special:${line.wz_game_id}`;
+    if (!blocks.has(key)) blocks.set(key, []);
+    blocks.get(key).push(line);
+  }
+  return [...blocks.values()];
+}
+
+function teamStrip(teamLines, p, showMatchup) {
+  const first = teamLines[0];
+  const team = specialTitle(first.description).replace(/\s+(trifecta|superfecta)$/i, "");
+  const left = [el("b", { text: team })];
+  if (showMatchup && first.home) left.push(` · ${first.away} @ ${first.home} · ${dayClock(parseTime(first.game_start_time))}`);
+  const held = teamPlacements(p, first).reduce((sum, r) => sum + r.risk, 0);
+  const live = teamLines.filter(l => l.fair_prob != null && l.ev > 0 && !hasStarted(l));
+  const recommended = live.reduce((sum, l) => sum + l.recommended_stake, 0);
+  const recommendedCount = live.filter(l => l.recommended_stake > 0.5).length;
+  const kelly = live.reduce((sum, l) => sum + l.kelly_stake, 0);
+  const plural = n => `${n} special${n === 1 ? "" : "s"}`;
+  const right = [];
+  if (held > 0) right.push(["Bet on this team: ", el("b", { text: money(held) })]);
+  if (recommended > 0.5) {
+    right.push(held > 0 ? ["Recommended ", el("b", { text: money(recommended) }), " more"]
+                        : ["Recommended on this team: ", el("b", { text: money(recommended) }), ` on ${plural(recommendedCount)}`]);
+  }
+  if (kelly > 0.5) right.push(held > 0 ? ["Kelly wants ", el("b", { text: money(kelly) }), " more"] : ["Kelly ", el("b", { text: money(kelly) })]);
+  const rightParts = right.flatMap((piece, i) => i ? [" · ", ...piece] : piece);
+  return el("div", { class: "team-strip num" }, [el("span", {}, left), el("span", {}, rightParts)]);
+}
+
+function teamRows(lines, p, byRotation, showMatchup) {
+  return teamBlocks(lines).flatMap(teamLines => [
+    teamLines.length > 1 ? teamStrip(teamLines, p, showMatchup) : null,
+    ...teamLines.map(l => rowFor(l, p, byRotation, showMatchup, teamLines)),
+  ]).filter(Boolean);
 }
 
 // --- board ------------------------------------------------------------------
@@ -680,7 +761,7 @@ function renderBoard(p) {
 
   if (prefs.view === "ev") {
     if (lines.length) {
-      parts.push(el("div", { class: "group" }, [...lines].sort(byEvDesc).map(l => rowFor(l, p, byRotation, true))));
+      parts.push(el("div", { class: "group" }, teamRows(lines, p, byRotation, true)));
     }
   } else {
     for (const group of groupByGame(lines)) {
@@ -691,7 +772,7 @@ function renderBoard(p) {
             el("span", { class: "matchup", text: `${group.line.away} @ ${group.line.home}` }),
             el("span", { class: "muted small num", text: `${dayClock(parseTime(group.line.game_start_time))} · ${untilKickoff(parseTime(group.line.game_start_time))}` }),
           ]);
-      parts.push(el("div", { class: "group" }, [head, ...group.lines.sort(byEvDesc).map(l => rowFor(l, p, byRotation, false))]));
+      parts.push(el("div", { class: "group" }, [head, ...teamRows(group.lines, p, byRotation, false)]));
     }
   }
   if (lines.length === 0) {

@@ -105,6 +105,10 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     null resets it to the default, an unknown field or a bad
                                     value is a 400 naming it (same Content-Type guard as the
                                     POSTs: a web page cannot send JSON cross-origin)
+           GET /balances.json       {generatedAt, balances: {venue: {cash, inBets, available,
+                                    creditLimit, fetchedAt, error}}}, the live per-venue
+                                    account balance read after each poll (balances.py;
+                                    memory only, a failed read keeps the last numbers)
            GET /edges.json          the server runner's Edges list (config.RUNNER_URL,
                                     server/edges_payload.js documents it), passed through
                                     as it came; 502 {error, runnerUrl} when the runner
@@ -174,6 +178,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from unabated_ticket.bets_service import bfa_teaser, config
+from unabated_ticket.bets_service.balances import BalanceBook, balances_payload, read_balance_once
 from unabated_ticket.bets_service.log_setup import setup_logging
 from unabated_ticket.bets_service.normalize import parse_iso_ms, utc_now_iso
 from unabated_ticket.bets_service.sources import Source, bet105, draftkings
@@ -221,8 +226,10 @@ MAX_EXCLUSION_IDS_PER_POST = 50
 MAX_DISMISSAL_IDS_PER_POST = 200
 # teaser.js marketKeyOf: "<Unabated eventId>:bt2" (spread) or ":bt3" (total).
 TEASER_MARKET_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}:bt[23]$")
-# pricecheck.js skipKeyOf: one line (game, period, market, side, number) at one book.
-EDGE_SKIP_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}:\d{1,4}:\d{1,4}:\d{1,2}\|(ml|-?\d{1,4}(\.\d{1,3})?)@\d{1,6}$")
+# pricecheck.js skipKeyOf: one line (game, period, market, side, number) at
+# every book. A panel not yet reloaded still sends the old '@<bookId>' suffix;
+# the store keeps only the line (store.edge_skip_line).
+EDGE_SKIP_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}:\d{1,4}:\d{1,4}:\d{1,2}\|(ml|-?\d{1,4}(\.\d{1,3})?)(@\d{1,6})?$")
 # American odds run from -100 down and +100 up; the gap between is no price.
 MIN_AMERICAN_MAGNITUDE = 100
 # The Edges settings' allowed values, as the panel's inputs enforce them
@@ -324,7 +331,8 @@ def run_source_once(source: Source, store: BetsStore) -> bool:
         return False
 
 
-def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event) -> None:
+def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event,
+              balance_book: BalanceBook | None = None) -> None:
     """Run each source on its own cadence until `stop`. A store write that
     raises (disk full, a locked file) is logged and retried next poll — the
     thread must outlive it, or the HTTP side would serve ageing data with no
@@ -338,6 +346,8 @@ def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event) ->
                     run_source_once(source, store)
                 except Exception:  # noqa: BLE001 — the poll thread is the service's heartbeat
                     log.exception("store write failed for source %s; retrying next poll", source.name)
+                if balance_book is not None:
+                    read_balance_once(source, balance_book)
                 next_due[source.name] = time.monotonic() + source.poll_sec
         stop.wait(POLL_TICK_SEC)
 
@@ -718,7 +728,7 @@ def validate_edge_skip_request(body: object) -> tuple[str, datetime, bool] | str
         return f"body must be an object, got {type(body).__name__}"
     skip_key = body.get("skipKey")
     if not isinstance(skip_key, str) or not EDGE_SKIP_KEY_PATTERN.match(skip_key):
-        return f"skipKey must look like '<eventId>:<period>:<betType>:<side>|<points|ml>@<bookId>', got {skip_key!r}"
+        return f"skipKey must look like '<eventId>:<period>:<betType>:<side>|<points|ml>', got {skip_key!r}"
     event_start_ms = body.get("eventStartMs")
     if not _is_whole_number(event_start_ms) or event_start_ms <= 0:
         return f"eventStartMs must be the game's start in whole epoch milliseconds, got {event_start_ms!r}"
@@ -840,6 +850,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  runner_url: str | None = None, runner_timeout_sec: float | None = None,
                  extra_hosts: tuple[str, ...] | None = None,
                  teaser_placer: bfa_teaser.BFATeaserPlacer | None = None,
+                 balance_book: BalanceBook | None = None,
                  taker_store: TakerStore | None = None,
                  taker_desk: TakerDesk | None = None,
                  taker_desk_off_reason: str = "no bot Kalshi key is configured (KALSHI_TAKER_API_KEY_ID / "
@@ -865,6 +876,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/settings.json":
                 self._send_json(200, store.load_edge_settings())
+                return
+            if url.path == "/balances.json":
+                self._send_json(200, balances_payload(balance_book or BalanceBook()))
                 return
             if url.path == "/bets.json":
                 days = parse_days(url.query)
@@ -1312,14 +1326,16 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
     stop = threading.Event()
     started_at = time.monotonic()
     source_names = [source.name for source in sources] + list(PUSHED_SOURCES)
+    balance_book = BalanceBook()
     taker_store = open_taker_store(config.TAKER_DB_PATH)
     taker_desk, taker_desk_off_reason = open_taker_desk(taker_store)
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
                                                             teaser_placer=teaser_placer_for(sources),
                                                             taker_store=taker_store, taker_desk=taker_desk,
-                                                            taker_desk_off_reason=taker_desk_off_reason))
+                                                            taker_desk_off_reason=taker_desk_off_reason,
+                                                            balance_book=balance_book))
     server.daemon_threads = True
-    poller = threading.Thread(target=poll_loop, args=(sources, store, stop), name="poll", daemon=True)
+    poller = threading.Thread(target=poll_loop, args=(sources, store, stop, balance_book), name="poll", daemon=True)
     # The desk sweeps its own orders (resting cancels, final fills, settlement) whether or not the runner sends any.
     desk_sweep = (threading.Thread(target=taker_desk.run_refresh_loop, args=(stop,), name="taker-desk", daemon=True)
                   if taker_desk is not None else None)
