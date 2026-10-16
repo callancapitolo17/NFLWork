@@ -101,7 +101,7 @@ test("Can't tease shows on college legs on show only; a marked market offers Res
 test("legs layout: break-even divider where the shown legs cross it, the rest folded with counts", () => {
   const rows = [
     rowOf(teaser.STANDING_POOL, { eventId: "a", win: 0.76 }, { inTickets: 2 }),
-    rowOf(teaser.STANDING_OUT, { eventId: "b", win: 0.70 }, { note: "outside the top 10" }),
+    rowOf(teaser.STANDING_OUT, { eventId: "b", win: 0.70 }, { note: "too many outcomes to size" }),
     rowOf(teaser.STANDING_BELOW, { eventId: "c", win: 0.6 }, { note: "below break-even" }),
     rowOf(teaser.STANDING_BLOCKED, { eventId: "d", leagueId: CFB }, { note: "can't tease" }),
   ];

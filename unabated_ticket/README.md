@@ -1410,11 +1410,15 @@ restoring on the same fairs brings the same list back. Marks live in
 `chrome.storage.local` (`teaserBlocked`: market key → the game's start) and
 each ends when its game starts.
 
-**Tickets.** The pool is each game's best leg — one leg per game, so legs are
-independent — the top 10 by win chance (2^10 = 1,024 joint outcomes; 12 legs
-added nothing). Every 4-leg combination of the pool (210) is a candidate. All
-four legs win: +3 per dollar (+300); anything else loses the stake. A leg
-breaks even at 70.7% (0.25^¼).
+**Tickets.** A leg breaks even at 70.7% (0.25^¼). The pool is every game's
+best leg — one leg per game, so legs are independent — whose win chance is
+above 70.7%, however many (user decision 2026-10-16: each leg must be +EV on
+its own, so a 70% leg stays out even beside strong partners). Like every
+fair in the list, a leg's is the one the list was built on until it moves a
+point, so a leg ticking just over 70.7% waits for that move and reads
+"below break-even when the list was built" meanwhile. Every 4-leg
+combination of the pool is a candidate (210 at 10 legs, 4,845 at 20). All
+four legs win: +3 per dollar (+300); anything else loses the stake.
 
 **The set.** One score decides everything: E[ln(1 + P&L / K)], K = bankroll ×
 Kelly multiplier (the ⚙ settings; the objective conditional Kelly uses for
@@ -1429,12 +1433,16 @@ offered again, and once an open 4-team ticket under $200 is in play (the
 list's partial, placed — a 2-team teaser does not count) no second partial
 is; the empty state says so, with the partial it held back. So placing the
 list in order leaves the rest of it, and placing all of it leaves nothing.
-The joint outcomes stay under 131,072: open teasers on many games outside the
-pool, or straight bets splitting many games into more rows, cost the pool its
-weakest free legs (and the straights on their games) rather than the list.
+The joint outcomes stay within 2^20 (1,048,576): open teasers on many games
+outside the pool, or straight bets splitting many games into more rows, cost
+the pool its weakest free legs (and the straights on their games) rather than
+the list; a leg shed this way reads "too many outcomes to size" in the Legs
+list. Each pool leg is its own game, so the pool holds at most 20 legs.
 Every ticket wins exactly where its four legs do, so the search scores the
-2^10 states of "which pool legs win", not every outcome: 9/27 with its 15
-straights (69,984 outcomes) builds in ~0.2 s. Two legs with the same fair
+2^N states of "which pool legs win", not every outcome, and one
+sum-over-supersets pass per step (N × 2^N) gives every ticket its score at
+once. Measured in node: 10 legs build in ~20 ms, 17 legs in 0.4 s, 20 legs
+(the full budget) in ~4 s at K = $5,000 and ~11 s at K = $20,000. Two legs with the same fair
 (Colts +7.5 and Titans +8.5 are both 74.7% on 9/27) make tickets that tie
 exactly; a tie goes to the first combination in the pool's order. Two ways
 to see what it does, on Sunday's board (2026-09-27 16:37 UTC, $20,000 at
@@ -2930,7 +2938,11 @@ lines off the board, stale lines and other books never teased; grading (the
 one ticket's EV, expected profit, chance to make money and chance every
 ticket loses); one ticket under the cap sized at the single-bet Kelly stake
 in whole dollars; the greedy never above $200 a ticket nor taking a ticket
-twice; the pool as each game's best leg, top 10; fewer than 4 priced games;
+twice; the pool as every game's best leg above 70.7% on a 20-leg board
+(-242 in, -241 out); a leg ticking over 70.7% joining only on a 1-point
+move, its row saying why it waits; a ticket on the 17th pool leg winning where its legs do
+(the leg states are 32-bit); the superset pass picking the per-ticket scan's
+ticket at every step on six of the file's boards; fewer than 4 priced games;
 open BFA teaser legs grouping into tickets and joining their games by
 rotation (a BFA parlay, a settled teaser and another venue's leg ignored);
 an open ticket lowering the next suggestion on the legs it shares ($200 → $84
@@ -2938,8 +2950,8 @@ with $200 open on three of its legs); an open ticket's own four legs never
 offered again, so placing the top ticket leaves the list less it (a board
 with four standout legs, where it used to come back at the top); the whole
 list open leaving nothing (one partial ticket per set); open teasers on
-eight games outside the pool shedding one pool leg to stay at 2^17
-outcomes rather than going dark; a leg whose BFA start is 3 h off the board's
+eight games outside the pool shedding the two weakest pool legs to stay at
+2^20 outcomes rather than going dark, each named in the Legs list; a leg whose BFA start is 3 h off the board's
 joining by rotation so its ticket stays taken (13 h off: counted as won); a
 5-team teaser with a leg counted as won blocking no 4-leg combination; the
 partial rule ($63 alone, $45 with a 2-team $110 teaser open, none and $32
@@ -2964,7 +2976,8 @@ ladder leaving that straight out while the list stands; the list rebuilt on
 a straight placed on a pool game and on its 1-point move, not on one off the
 pool nor a sub-point tick; the summary leaving the straights' P&L out and
 counting them for the note, with the row's held / against dollars; and the
-outcome budget shedding the two weakest legs with their games' straights.
+outcome budget shedding the weakest leg with its game's straights (4^11
+outcomes down to 4^10).
 `condkelly.test.js` adds `resultAt` (win, push, loss either side).
 `bets.test.js` adds `teaserLegPositionOf` (the leg at its own teased number,
 no stake guard, the parlay-leg guard kept for straight sizing),
@@ -3273,6 +3286,22 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-16 — Every +EV leg in the teaser pool (0.26.0).** The pool kept
+the 10 best legs only for speed. Cal: every game's best leg above the 70.7%
+break-even goes in, however many, and a leg at or under it stays out even
+when strong partners could carry it (each leg must be +EV on its own). The
+greedy and its $200 tickets are unchanged. The outcome budget went from 2^17
+to 2^20 so held straights stop shedding +EV legs (9/27's 15 straights made
+69,984 outcomes at 10 legs: an 11th leg already overflowed). Two fixes came
+with it: the leg states were 16-bit, so a 17th pool leg's tickets never won;
+and scoring every ticket against every leg state cost C(N,4) × 2^N per step
+(~40 s at 17 legs, hours at 24, on the runner's event loop beside the
+taker), now one sum-over-supersets pass, N × 2^N. Before the pool rule
+changed, the new scoring reproduced all 57 of the test file's builds
+ticket for ticket. Speed at the full budget (~4 s for 20 legs at K =
+$5,000) is accepted (Cal: "not too worried about speed"). Plan:
+`docs/2026-10-16-unabated-ticket-teaser-pool-plan.md`.
 
 **2026-10-13 — Skip button; same-name books count once (0.24.0).** Cal
 dropped the automatic skip: he wants to decide. A row a book beats gets a

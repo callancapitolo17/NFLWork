@@ -33,6 +33,8 @@
 //   ticketSignatureOf, placeRequestOf  a ticket's identity across renders, and
 //                 the body of the bets service's POST /place_teaser.json for it
 //                 (the Place button; bets_service/bfa_teaser.py places it at BFA)
+//   outcomeProbs, bestTicketAt  each joint outcome's chance and the greedy's
+//                 pick at one stake, exported for the tests
 //
 // The rules (user decisions 2026-09-27/28):
 //   - A leg is Buckeye's main full-game spread or total, NFL or CFB, teased
@@ -46,9 +48,10 @@
 //     disagree by ~2.5 points near zero).
 //   - Tickets are 4 teams at +300: all four legs win -> +3 per dollar,
 //     anything else -> -1.
-//   - One leg per game, so legs are independent. The pool is each game's
-//     best leg, the top POOL_SIZE by win chance; every 4-leg combination of
-//     the pool is a candidate ticket.
+//   - One leg per game, so legs are independent. The pool is every game's
+//     best leg whose win chance is above BREAK_EVEN_WIN (each leg +EV on its
+//     own, user decision 2026-10-16); every 4-leg combination of the pool is
+//     a candidate ticket.
 //   - The set maximizes E[ln(1 + pnl / K)], K = bankroll x multiplier: add
 //     the $200 ticket that most raises it, repeat until none does; the last
 //     may be partial (whole dollars); no ticket twice. Open teasers count as
@@ -112,8 +115,6 @@
   const TICKET_NET_ODDS = 3;
   // Buckeye's limit per ticket (user, 2026-09-27).
   const TICKET_MAX_STAKE = 200;
-  // 2^10 = 1,024 joint outcomes (26 ms on the 9/27 board); 12 legs took 221 ms and added nothing.
-  const POOL_SIZE = 10;
   // One percentage point of a leg's win chance.
   const REBUILD_FAIR_MOVE = 0.01;
   // The win chance four equal legs need for +300 to break even: 0.25^(1/4) = 70.7%.
@@ -126,9 +127,8 @@
   const MAX_NEGATIVE_SLICE = 0.005;
   // The joint outcomes one build may enumerate (past it the pool sheds legs).
   // Straight bets multiply a game's rows: 9/27's 15 straights on 9 pool
-  // games made 69,984 outcomes. The greedy works per pool-leg state, not
-  // per outcome, so a build stays well under a second here.
-  const MAX_OUTCOMES = 1 << 17;
+  // games made 69,984 outcomes.
+  const MAX_OUTCOMES = 1 << 20;
   const GOLDEN_RATIO = (Math.sqrt(5) - 1) / 2;
   const SEARCH_MAX_ITERATIONS = 200;
   const SEARCH_TOLERANCE_DOLLARS = 1e-7;
@@ -153,6 +153,8 @@
   const STANDING_OTHER_MARKET = "other_market";
   const STANDING_UNPRICED = "unpriced";
   const STANDING_BLOCKED = "blocked";
+  // A STANDING_OUT leg's note: above break-even, shed to stay within MAX_OUTCOMES.
+  const SHED_NOTE = "too many outcomes to size";
   const REASON_FEW_LEGS = `fewer than ${LEGS_PER_TICKET} games with a priced Buckeye leg`;
   const REASON_HELD_RISK = "the open teasers and straight bets on these games can already lose the Kelly bankroll";
   const REASON_NO_STAKE = "no stake on the record";
@@ -656,9 +658,9 @@
   }
 
   // What a build is made of, on one valuation: the pool ({leg, win} per
-  // game, the top POOL_SIZE, never a blocked market), the open teasers in
-  // play, the straight bets in the math (and why the others on a pool game
-  // are not), and the valuation.
+  // game whose best leg beats BREAK_EVEN_WIN, never a blocked market), the
+  // open teasers in play, the straight bets in the math (and why the others
+  // on a pool game are not), and the valuation.
   function selectInputs(legs, placed, straights, valuation, blocked) {
     const inPlay = placed.filter((ticket) => ticket.inPlay);
     const openMarkets = openMarketsByEvent(inPlay);
@@ -669,7 +671,7 @@
       const held = bestByEvent.get(leg.eventId);
       if (!held || byPoolOrder(candidate, held) < 0) bestByEvent.set(leg.eventId, candidate);
     }
-    const pool = Array.from(bestByEvent.values()).sort(byPoolOrder).slice(0, POOL_SIZE);
+    const pool = Array.from(bestByEvent.values()).filter(({ win }) => win > BREAK_EVEN_WIN).sort(byPoolOrder);
     const { counted, leftOut } = countedStraights(straights, pool, inPlay, valuation);
     return { pool, placed: inPlay, straights: counted, straightsLeftOut: leftOut, valuation };
   }
@@ -720,9 +722,10 @@
 
   // outcome -> a bit per pool leg, set where that leg wins: every ticket
   // wins exactly in the outcomes whose state holds all four of its bits.
-  // POOL_SIZE legs fit a Uint16.
+  // Each pool leg is a game of its own (2 rows or more), so within
+  // MAX_OUTCOMES the pool has at most 20 legs: their bits fit a Uint32.
   function legStatesOf(poolWins, outcomeCount) {
-    const states = new Uint16Array(outcomeCount);
+    const states = new Uint32Array(outcomeCount);
     poolWins.forEach((wins, leg) => {
       for (let outcome = 0; outcome < outcomeCount; outcome += 1) if (wins[outcome]) states[outcome] |= 1 << leg;
     });
@@ -755,8 +758,9 @@
       outcomeCount *= shaped.rows;
       return shaped;
     });
-    const structure = { factors, outcomeCount, legStates: null, stateCount: 1 << poolLegs.length, placedWins: [] };
+    const structure = { factors, outcomeCount, legStates: null, stateCount: null, placedWins: [] };
     if (outcomeCount > MAX_OUTCOMES) return structure;
+    structure.stateCount = 1 << poolLegs.length;
     const factorOf = new Map(factors.map((factor) => [factorKey(factor.eventId, factor.axis), factor]));
     const winsOf = (leg) => outcomesWon(factorOf.get(factorKey(leg.eventId, leg.axis)), leg, outcomeCount);
     structure.legStates = legStatesOf(poolLegs.map(winsOf), outcomeCount);
@@ -886,12 +890,23 @@
     return total;
   }
 
+  // values[state] becomes the sum of values over every state holding all of
+  // state's bits: one pass per bit adds, into each state without it, the
+  // state with it.
+  function sumOverSupersets(values) {
+    for (let bit = 1; bit < values.length; bit <<= 1) {
+      for (let state = 0; state < values.length; state += 1) {
+        if ((state & bit) === 0) values[state] += values[state | bit];
+      }
+    }
+  }
+
   // The unused ticket that raises the growth most at `stake`: {index,
   // growth}, or null. Each outcome's lose term is shared by every ticket, so
   // a ticket's growth is their sum plus the gains (win minus lose) of the
   // outcomes it wins. Those are the outcomes whose leg state holds its four
-  // legs, so the gains are summed per state once and each ticket reads the
-  // 2^pool states, not every outcome. A near-tie keeps the earlier ticket.
+  // legs, so the gains are summed per state, then over supersets, and each
+  // ticket reads its own at its mask. A near-tie keeps the earlier ticket.
   function bestTicketAt(stake, masks, used, pnl, prob, kellyBankroll, structure) {
     const gainByState = new Float64Array(structure.stateCount);
     let loseTotal = 0;
@@ -902,12 +917,11 @@
       loseTotal += lose;
       gainByState[structure.legStates[outcome]] += win - lose;
     }
+    sumOverSupersets(gainByState);
     let best = null;
     for (let index = 0; index < masks.length; index += 1) {
       if (used[index]) continue;
-      const mask = masks[index];
-      let growth = loseTotal;
-      for (let state = 0; state < structure.stateCount; state += 1) if ((state & mask) === mask) growth += gainByState[state];
+      const growth = loseTotal + gainByState[masks[index]];
       if (!best || growth > best.growth + GROWTH_TIE_TOLERANCE) best = { index, growth };
     }
     return best;
@@ -1049,15 +1063,17 @@
     }
   }
 
-  // One build: {key, refs, kellyBankroll, pool, placed, straights,
+  // One build: {key, refs, kellyBankroll, pool, shed, placed, straights,
   // straightsLeftOut, structure, tickets, reason, partialHeldBack}.
-  // `tickets` index into `pool`; `refs` is the valuation it was built on;
-  // `straights` the straight bets in the math, `straightsLeftOut` id ->
-  // why one on a pool game is not; `partialHeldBack` the partial ticket's
-  // stake when one is due but this list's partial is already open, else 0.
+  // `tickets` index into `pool`; `shed` the legs above break-even the pool
+  // gave up to stay within MAX_OUTCOMES; `refs` is the valuation it was
+  // built on; `straights` the straight bets in the math, `straightsLeftOut`
+  // id -> why one on a pool game is not; `partialHeldBack` the partial
+  // ticket's stake when one is due but this list's partial is already
+  // open, else 0.
   function buildTeaserSet(inputs, kellyBankroll, key) {
     const build = {
-      key, refs: inputs.valuation, kellyBankroll, pool: inputs.pool.map(({ leg }) => leg), placed: inputs.placed,
+      key, refs: inputs.valuation, kellyBankroll, pool: inputs.pool.map(({ leg }) => leg), shed: [], placed: inputs.placed,
       straights: [], straightsLeftOut: inputs.straightsLeftOut, structure: null, tickets: [], reason: null, partialHeldBack: 0,
     };
     if (build.pool.length < LEGS_PER_TICKET) return { ...build, reason: REASON_FEW_LEGS };
@@ -1066,9 +1082,10 @@
       return { ...build, reason: `open teasers ride on too many games to size with ${LEGS_PER_TICKET} pool legs (${fitted.overBudget.factors.length} games, ${fitted.overBudget.outcomeCount} outcomes)` };
     }
     const pool = fitted.legs;
+    const shed = build.pool.filter((leg) => !pool.includes(leg));
     const straights = fitted.straights;
     const probs = outcomeProbs(fitted.structure, inputs.valuation);
-    if (probs.reason) return { ...build, pool, straights, reason: probs.reason };
+    if (probs.reason) return { ...build, pool, shed, straights, reason: probs.reason };
     // One partial ticket per set: an open 4-team ticket under $200 still in
     // play is taken to be this list's partial, placed, and no second one is
     // offered — else placing it brought a smaller one, and so on. Another
@@ -1080,7 +1097,7 @@
     const picked = greedyTickets(fitted.structure, pool.length, probs.prob, heldPnl, kellyBankroll,
       { takenCombos: openComboKeys(pool, inputs.placed), partialAllowed });
     return {
-      ...build, pool, straights, structure: fitted.structure, tickets: picked.tickets, reason: picked.reason, partialHeldBack: picked.partialHeldBack,
+      ...build, pool, shed, straights, structure: fitted.structure, tickets: picked.tickets, reason: picked.reason, partialHeldBack: picked.partialHeldBack,
     };
   }
 
@@ -1207,9 +1224,10 @@
     }));
   }
 
-  // The Legs list: one row per game — its pool leg, else its best priced leg
-  // (on the open teasers' market when the game has one), else a leg with
-  // the reason it has no fair — leaving out markets marked can't tease, and
+  // The Legs list: one row per game — its pool leg, else the leg the pool
+  // shed for the outcome budget, else its best priced leg (on the open
+  // teasers' market when the game has one), else a leg with the reason it
+  // has no fair — leaving out markets marked can't tease, and
   // one row per such market (its best side). Priced rows best first, then
   // the unpriced. A pool row carries the straight bets on its game
   // (straightsOnRow); other rows' games are in no ticket, so their
@@ -1222,6 +1240,7 @@
     const inPlay = placed.filter((ticket) => ticket.inPlay);
     const openMarkets = openMarketsByEvent(inPlay);
     const poolIndexByKey = new Map(build.pool.map((leg, index) => [leg.key, index]));
+    const shedKeys = new Set(build.shed.map((leg) => leg.key));
     const ticketsByPoolIndex = new Map();
     for (const ticket of build.tickets) for (const index of ticket.legIndexes) ticketsByPoolIndex.set(index, (ticketsByPoolIndex.get(index) || 0) + 1);
     const openTicketsByEvent = new Map();
@@ -1240,15 +1259,18 @@
       rows.push(...blockedRowsOf(eventLegs, blockedMarkets, openTickets));
       if (teasable.length === 0) continue;
       const poolLeg = teasable.find((leg) => poolIndexByKey.has(leg.key));
+      const shedLeg = teasable.find((leg) => shedKeys.has(leg.key));
       const priced = teasable.filter((leg) => leg.win != null).sort(byWinThenKey);
       const offered = priced.filter((leg) => isOffered(leg, openMarkets));
       if (poolLeg) {
         const inTickets = ticketsByPoolIndex.get(poolIndexByKey.get(poolLeg.key)) || 0;
         rows.push({ leg: poolLeg, standing: STANDING_POOL, inTickets, openTickets, note: null, straights: straightsOnRow(poolLeg, build, straights) });
+      } else if (shedLeg) {
+        rows.push({ leg: shedLeg, standing: STANDING_OUT, inTickets: 0, openTickets, note: SHED_NOTE, straights: null });
       } else if (offered.length) {
-        const best = offered[0];
-        const standing = best.win >= BREAK_EVEN_WIN ? STANDING_OUT : STANDING_BELOW;
-        rows.push({ leg: best, standing, inTickets: 0, openTickets, note: standing === STANDING_OUT ? `not in the top ${build.pool.length}` : "below break-even", straights: null });
+        // Above break-even now but not in the pool: its fair was under when the list was built (REBUILD_FAIR_MOVE).
+        const note = offered[0].win > BREAK_EVEN_WIN ? "below break-even when the list was built" : "below break-even";
+        rows.push({ leg: offered[0], standing: STANDING_BELOW, inTickets: 0, openTickets, note, straights: null });
       } else if (priced.length) {
         rows.push({ leg: priced[0], standing: STANDING_OTHER_MARKET, inTickets: 0, openTickets, note: "open teasers use the game's other market", straights: null });
       } else {
@@ -1304,12 +1326,12 @@
   }
 
   const api = {
-    TEASER_LEAGUE_IDS, TEASER_POINTS, LEGS_PER_TICKET, TICKET_NET_ODDS, TICKET_MAX_STAKE, POOL_SIZE, BREAK_EVEN_WIN,
+    TEASER_LEAGUE_IDS, TEASER_POINTS, LEGS_PER_TICKET, TICKET_NET_ODDS, TICKET_MAX_STAKE, BREAK_EVEN_WIN,
     LEG_LIVE, LEG_STARTED,
     STANDING_POOL, STANDING_OUT, STANDING_BELOW, STANDING_OTHER_MARKET, STANDING_UNPRICED, STANDING_BLOCKED,
     REASON_FEW_LEGS, REASON_HELD_RISK, STRAIGHT_OTHER_MARKET,
     teaserBoardOf, teaserLegs, openTeasers, heldStraights, planTeasers, describePlan, describeLegs, marketKeyOf, marketNameOf, canBlock,
-    ticketSignatureOf, placeRequestOf,
+    ticketSignatureOf, placeRequestOf, outcomeProbs, bestTicketAt,
   };
 
   if (inNode) {
