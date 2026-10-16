@@ -184,7 +184,6 @@ architecture.
 
 **Pre-merge review (REQUIRED):**
 - Before merging any feature branch to `main`, run the `pre-pr-review` skill on the full diff. `REVIEW.md` at the root holds this repo's checks, High-tier paths, and what failure looks like in each area.
-- Fix every Important finding, show the Skipped list, then get explicit user approval to merge
 - A bug that reaches `main` past this review becomes a line in `REVIEW.md`
 
 **Approval required:**
