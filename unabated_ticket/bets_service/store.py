@@ -66,9 +66,11 @@ writer). Tables:
                games off its teaser menu), UPSERT on the key, DELETE on
                Restore. Served only until the game starts; never pruned.
   edge_skips   one row per Edges line Cal skipped (the Skip chip on a row a
-               book beats; pricecheck.js skipKeyOf: '<rung>@<bookId>'), UPSERT
-               on the key, DELETE on Restore. Served only until the game
-               starts; never pruned.
+               book beats; pricecheck.js skipKeyOf: the line at every book,
+               '<rung>'; rows written before 2026-10-16 end '@<bookId>'),
+               UPSERT on the line, DELETE of the line (old per-book rows
+               too) on Restore. Served only until the game starts; never
+               pruned.
   edge_settings  at most ONE row (settings_id = 1): the Edges settings the
                server runner (unabated_ticket/server/runner.js, phone page plan
                step 1) reads every cycle, written by PUT /settings.json and
@@ -89,6 +91,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
+
+from unabated_ticket.bets_service.sources.kalshi import PRIMARY_SUBACCOUNT, subaccount_of_record_id
 
 log = logging.getLogger(__name__)
 
@@ -185,7 +189,7 @@ CREATE TABLE IF NOT EXISTS teaser_blocks (
     blocked_at   TIMESTAMPTZ NOT NULL
 );
 CREATE TABLE IF NOT EXISTS edge_skips (
-    skip_key     VARCHAR PRIMARY KEY,    -- pricecheck.js skipKeyOf: '<eventId>:<period>:<betType>:<side>|<points|ml>@<bookId>'
+    skip_key     VARCHAR PRIMARY KEY,    -- pricecheck.js skipKeyOf: '<eventId>:<period>:<betType>:<side>|<points|ml>' (older rows: '...@<bookId>')
     event_start  TIMESTAMPTZ NOT NULL,   -- the game's start: the skip is served until then
     skipped_at   TIMESTAMPTZ NOT NULL
 );
@@ -350,6 +354,12 @@ _UPSERT_EDGE_SKIP = """
 INSERT INTO edge_skips (skip_key, event_start, skipped_at) VALUES (?, ?, ?)
 ON CONFLICT (skip_key) DO UPDATE SET event_start = excluded.event_start, skipped_at = excluded.skipped_at
 """
+
+def edge_skip_line(skip_key: str) -> str:
+    """The line a skip key names (pricecheck.js skipLineOf): a key from a
+    panel not yet reloaded carries a '@<bookId>' suffix, dropped here."""
+    return skip_key.split("@", 1)[0]
+
 
 # A skip is moot once its game has started, like a teaser block.
 _SELECT_EDGE_SKIPS = """
@@ -593,12 +603,20 @@ class BetsStore:
             log.info("source_runs: pruned %d row(s) older than %s", deleted, cutoff.isoformat())
         return deleted
 
-    def load_kalshi_tickers(self) -> set[str]:
-        """Every Kalshi market ticker a stored record names (ids are
-        kalshi:<ticker>:<side>), so the Kalshi source reads their pre-cutoff fills."""
+    def load_kalshi_tickers(self, subaccount: int = PRIMARY_SUBACCOUNT) -> set[str]:
+        """Every Kalshi market ticker a stored record of `subaccount` names (ids
+        are kalshi:<ticker>:<side>, plus :s<N> in numbered subaccount N), so the
+        Kalshi source reads that subaccount's pre-cutoff fills of them."""
         with self._lock:
             rows = self._con.execute(_SELECT_KALSHI_IDS).fetchall()
-        return {record_id.split(":")[1] for (record_id,) in rows}
+        tickers: set[str] = set()
+        for (record_id,) in rows:
+            try:
+                if subaccount_of_record_id(record_id) == subaccount:
+                    tickers.add(record_id.split(":")[1])
+            except ValueError as error:
+                log.warning("load_kalshi_tickers: skipping stored id %r: %s", record_id, error)
+        return tickers
 
     def load_bets(self, days: int, now: datetime) -> list[dict]:
         """Records in the retention window: open, or closed within `days` of `now`."""
@@ -849,14 +867,18 @@ class BetsStore:
                 for market_key, event_start_ms, blocked_at in rows]
 
     def set_edge_skip(self, skip_key: str, event_start: datetime, skipped: bool, at: datetime) -> int:
-        """Skip (UPSERT) or restore (DELETE) one Edges line. Returns how many
-        rows changed (an UPSERT always counts 1)."""
+        """Skip (UPSERT) or restore (DELETE) one Edges line at every book.
+        Returns how many rows changed (an UPSERT always counts 1). Restore
+        also deletes the line's old per-book rows ('<line>@<bookId>')."""
+        line = edge_skip_line(skip_key)
         with self._lock:
             if skipped:
-                [count] = self._con.execute(_UPSERT_EDGE_SKIP, [skip_key, event_start, at]).fetchone()
+                [count] = self._con.execute(_UPSERT_EDGE_SKIP, [line, event_start, at]).fetchone()
             else:
-                [count] = self._con.execute("DELETE FROM edge_skips WHERE skip_key = ?", [skip_key]).fetchone()
-        log.info("edge skips: %s %s", "skipped" if skipped else "restored", skip_key)
+                [count] = self._con.execute(
+                    "DELETE FROM edge_skips WHERE skip_key = ? OR starts_with(skip_key, ?)", [line, f"{line}@"]
+                ).fetchone()
+        log.info("edge skips: %s %s", "skipped" if skipped else "restored", line)
         return count
 
     def load_edge_skips(self, now: datetime) -> list[dict]:

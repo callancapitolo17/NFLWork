@@ -94,7 +94,7 @@ function rowView(row, moveContext) {
     priceCheck: row.priceCheck ?? null,
     priceCheckTag: pricecheck.priceCheckTag(row.priceCheck),
     // The Skip key, only where a book beats the price (pricecheck.canSkip).
-    skipKey: pricecheck.canSkip(row.priceCheck) ? pricecheck.skipKeyOf(row, row.book.id) : null,
+    skipKey: pricecheck.canSkip(row.priceCheck) ? pricecheck.skipKeyOf(row) : null,
   };
 }
 

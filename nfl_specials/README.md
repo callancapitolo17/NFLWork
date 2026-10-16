@@ -115,21 +115,40 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.dk-relay.plist
    history (2011-2025, 1,970 team-games that won 1Q, 1H and the game) says
    0.893 ± 0.007, so DK's number is the conservative one. 7-10 DK requests
    per superfecta: each prices every outcome of the cell's last leg.
-5. **Stake** = bankroll x Kelly fraction x full Kelly at Wagerzon's price.
-   Per (game, team) only the best special by expected log growth keeps a
-   stake ("overlaps" on the rest): a team's fectas win together. The stakes
-   are then **fitted to the Wagerzon balance available** (read live from
+5. **Stake** = bankroll x Kelly fraction x full Kelly at Wagerzon's price,
+   sized **per (game, team) jointly** (user decision 2026-10-15, replacing
+   "one special per team"): a team's fectas are nested — the stricter one
+   winning means the looser one won (GM -7½ => GM; a superfecta => its
+   trifecta part) — so the group is one chain where the k-th likeliest bet
+   wins only if every likelier one did (exact when nested, the maximum
+   correlation the fairs allow otherwise). Each stake is the Kelly stake
+   GIVEN the others and the bets **already placed** on that team this week:
+   a second special gets money only when it still adds log growth on top of
+   the first, a placed bet shrinks the next stake instead of blocking it, and
+   the same special is topped up to Kelly (never past Wagerzon's $250 per
+   special). A placed bet whose special the board cannot price still blocks
+   its team. A special the joint Kelly leaves at zero "overlaps" the team's
+   biggest position. Opposite teams are separate groups. The stakes are then
+   **fitted to the Wagerzon balance available** (read live from
    Wagerzon when a refresh starts and ends, so pending bets and the week's
    results already count; an unreadable balance recommends nothing): if they
    add up past it, every bet's marginal log growth must clear one common
    hurdle, raised until they fit — weaker edges shrink first and drop to
-   zero. A stake under Wagerzon's $20 minimum for specials (measured: $15-19
+   zero. A stake under
+   Wagerzon's $20 minimum for specials (measured: $15-19
    rejected) is dropped and the rest re-fit; each stake is capped at the
-   $250 maximum, and what a capped bet can't take goes to the next edge. The page shows the uncapped
-   Kelly stake next to any trimmed one. No stake (and no budget) goes to a
-   special whose game has started, or to any special of a team the account
-   already has a placed bet on this week (that bet is already in Wagerzon's
-   available; a second stake would double one position).
+   $250 maximum, and what a capped bet can't take goes to the next edge. No
+   stake (and no budget) goes to a special whose game has started.
+
+   Each row's stake column (2026-10-16, mockup approved by Cal) shows, in a
+   fixed order, the Recommended stake, the stake with no balance limit (same
+   sizing, $20 minimum and $250 cap kept) and the uncapped joint Kelly stake,
+   even when they match or are $0; what is already bet on that special as a
+   green chip; and at most one plain reason when something holds the stake
+   back (amber when it is $0, grey when it is only capped or trimmed). A
+   team's specials in one game sit together; with more than one, a strip on
+   top shows the team's total bet and recommended stake and its one Kelly
+   figure, and the rows drop their own Kelly line.
 
 | Book | Trifecta | Superfecta | How |
 |---|---|---|---|
@@ -160,8 +179,10 @@ price.
 
 **Place submits a real Wagerzon bet.** The server re-checks the special is on
 the board at the price the page showed, that the game has not started, that
-the stake is at least $20 and within the available balance, and that the same
-special was not placed in the last 2 minutes (a slow answer invites a second
+the stake is at least $20 and within the available balance, that the account's
+tickets on this special this week plus this stake stay within Wagerzon's $250
+per special (user, 2026-10-15: the maximum is per special, not per ticket), and
+that the same special was not placed in the last 2 minutes (a slow answer invites a second
 click; the button is also disabled while a placement is in flight), then
 `wagerzon_odds/single_placer.place_single` previews it (`ConfirmWagerHelper`,
 win must match to $0.01 or it refuses) and submits it. A special is a PROP game,

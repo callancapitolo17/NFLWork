@@ -1,7 +1,7 @@
 import http.client
 import json
 import threading
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 
 import pytest
@@ -80,12 +80,21 @@ def test_payload_carries_structured_legs_and_book_progress(app):
                                                        "text": "LAC wins Q1"}
 
 
-def test_a_placed_special_is_not_recommended_again(app):
+def test_a_placed_special_is_topped_up_to_kelly_not_doubled(app):
     app.store.save_settings(35_000.0, 0.25)
-    assert app.board_payload("Wagerzon")["board"]["lines"][0]["recommended_stake"] > 0
+    before = app.board_payload("Wagerzon")["board"]["lines"][0]["recommended_stake"]
+    assert before > 25
     app.place(_bet(25))
     line = app.board_payload("Wagerzon")["board"]["lines"][0]
-    assert line["recommended_stake"] == 0 and line["kelly_stake"] > 0
+    assert line["recommended_stake"] == pytest.approx(before - 25, abs=1)
+
+def test_a_top_up_cannot_pass_the_per_special_maximum(app, monkeypatch):
+    app.place(_bet(200))
+    monkeypatch.setattr(app_module, "DUPLICATE_PLACEMENT_WINDOW", timedelta(seconds=0))
+    with pytest.raises(ValueError, match="at most \\$50 more"):
+        app.place(_bet(60))
+    assert app.place(_bet(50))["status"] == "placed"
+    assert app.placements == [200.0, 50.0]
 
 
 def test_the_tailnet_name_is_allowed_only_on_the_tailscale_serve_port():

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import calendar
 import logging
+import math
 import threading
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
@@ -30,9 +31,9 @@ from nfl_specials.books import BookGame, SgpBook, parse_start
 from nfl_specials.dk_book import DraftKingsBook
 from nfl_specials.fd_book import FanDuelBook
 from nfl_specials.mgm_book import BetMgmBook
-from nfl_specials.pricing import (BookFair, ScoresFirstShare, budgeted_stakes, expected_value,
-                                  kelly_stake, log_growth, price_fecta_at_book, scores_first_share,
-                                  trifecta_part, worst_case_fair)
+from nfl_specials.pricing import (BookFair, Candidate, ExposureGroup, HeldBet, ScoresFirstShare,
+                                  budgeted_stakes, expected_value, kelly_stake, price_fecta_at_book,
+                                  scores_first_share, trifecta_part, worst_case_fair)
 from nfl_specials.special_parser import Fecta, ParseFailure, parse_fecta
 from nfl_specials.store import Store
 
@@ -101,9 +102,18 @@ class Board:
 class Sizing:
     fair_prob: float | None
     ev: float | None
-    kelly_stake: float              # fractional Kelly, before the budget
+    kelly_stake: float              # fractional Kelly given the team's other positions, before the budget
     recommended_stake: float        # fitted to the Wagerzon budget, whole dollars
-    yields_to: int | None           # rotation of the better special on the same team
+    yields_to: int | None           # rotation of the same-team position that leaves this one no stake
+    unlimited_stake: float = 0.0    # the recommended stake if the balance were no limit ($20 min, $250 cap kept)
+
+
+@dataclass(frozen=True)
+class HeldPlacement:
+    """A bet the account already has on a special this week."""
+    wz_game_id: int
+    risk: float
+    wz_american: int
 
 
 def open_books() -> tuple[dict[str, SgpBook], dict[str, str]]:
@@ -157,19 +167,21 @@ def book_game(book: SgpBook, line: "FectaLine") -> BookGame | None:
 
 def size_board(board: Board, bankroll: float, kelly_fraction: float,
                budget: float | None, now: datetime | None = None,
-               placed_ids: frozenset[int] = frozenset()) -> list[Sizing]:
+               held: tuple[HeldPlacement, ...] = ()) -> list[Sizing]:
     """Worst-case fair, EV and stakes per line (same order as board.lines).
 
     No stake for a line whose game has started (at `now`, default the clock;
-    Wagerzon refuses it, so it must not take budget from later games), nor
-    for any special of a (game, team) already bet — `placed_ids` are the
-    wz_game_ids placed this week. Those bets are in Wagerzon's available, and
-    a second stake on the same team would double one position.
+    Wagerzon refuses it, so it must not take budget from later games).
 
-    Per (game, team) only the line with the best expected log growth is a
-    candidate: a team's trifecta and superfecta mostly win together, so
-    staking both is one oversized bet. Opposite teams' fectas exclude each
-    other and stay separate candidates. The candidates' stakes are then
+    A team's fectas in one game win together, so they are sized as one
+    group (pricing.ExposureGroup): each line's stake is its Kelly stake
+    GIVEN the team's other lines and the bets already `held` on that team
+    this week. A second special on the same team gets a stake only when it
+    still adds log growth on top of the first; a held bet shrinks, never
+    blocks, the next one. A held bet whose special the board cannot price
+    blocks its team instead (nothing to size around). Opposite teams'
+    fectas are separate groups (they mostly exclude each other, which only
+    makes staking both safer than sized). The stakes are then
     fitted to `budget` (pricing.budgeted_stakes; None = no cap).
     """
     raw = []
@@ -182,33 +194,73 @@ def size_board(board: Board, bankroll: float, kelly_fraction: float,
                     kelly_stake(fair, line.special.wz_american, bankroll, kelly_fraction)))
 
     now = now or datetime.now(timezone.utc)
-    held_teams = {(line.game.home, line.game.away, line.fecta.team) for line in board.lines
-                  if line.special.wz_game_id in placed_ids and line.game is not None}
-    best_by_team: dict[tuple, tuple[float, int]] = {}
-    for index, (line, (fair, _ev, stake)) in enumerate(zip(board.lines, raw)):
+    line_by_id = {line.special.wz_game_id: index for index, line in enumerate(board.lines)}
+    held_by_team: dict[tuple, list[tuple[int, HeldBet]]] = {}
+    held_risk_by_id: dict[int, float] = {}
+    blocked_teams = set()
+    for placement in held:
+        index = line_by_id.get(placement.wz_game_id)
+        line = board.lines[index] if index is not None else None
+        if line is None or line.game is None:
+            continue    # another week's special, or one the board never parsed
+        key = _team_key(line)
+        fair = raw[index][0]
+        if fair is None:
+            blocked_teams.add(key)
+            continue
+        held_by_team.setdefault(key, []).append(
+            (index, HeldBet(fair, placement.wz_american, placement.risk)))
+        held_risk_by_id[placement.wz_game_id] = held_risk_by_id.get(placement.wz_game_id, 0.0) + placement.risk
+
+    members_by_team: dict[tuple, list[int]] = {}
+    for index, (line, (_fair, _ev, stake)) in enumerate(zip(board.lines, raw)):
         if stake <= 0 or line.game is None or parse_start(line.game.game_start_time) <= now:
             continue
-        key = (line.game.home, line.game.away, line.fecta.team)
-        if key in held_teams:
+        key = _team_key(line)
+        if key in blocked_teams:
             continue
-        growth = log_growth(fair, line.special.wz_american, stake, bankroll)
-        if key not in best_by_team or growth > best_by_team[key][0]:
-            best_by_team[key] = (growth, index)
+        members_by_team.setdefault(key, []).append(index)
 
-    candidates = sorted(index for _growth, index in best_by_team.values())
-    fitted = budgeted_stakes([(raw[i][0], board.lines[i].special.wz_american) for i in candidates],
-                             bankroll, kelly_fraction, budget, config.WZ_MIN_STAKE, config.WZ_MAX_STAKE)
-    recommended = dict(zip(candidates, fitted))
+    teams = list(members_by_team)
+    groups = []
+    for key in teams:
+        line = board.lines[members_by_team[key][0]]
+        candidates = tuple(
+            Candidate(raw[i][0], board.lines[i].special.wz_american,
+                      config.WZ_MAX_STAKE - held_risk_by_id.get(board.lines[i].special.wz_game_id, 0.0))
+            for i in members_by_team[key])
+        groups.append(ExposureGroup(candidates, tuple(bet for _i, bet in held_by_team.get(key, []))))
+
+    fitted = budgeted_stakes(groups, bankroll, kelly_fraction, budget, config.WZ_MIN_STAKE)
+    # Same sizing with the Wagerzon balance taken away: shows what the balance costs.
+    unlimited = budgeted_stakes(groups, bankroll, kelly_fraction, None, config.WZ_MIN_STAKE)
+    # Joint Kelly with no budget, cap or minimum: what the correlation alone leaves each line.
+    unbudgeted = budgeted_stakes([replace(g, candidates=tuple(replace(c, max_stake=math.inf) for c in g.candidates))
+                                  for g in groups], bankroll, kelly_fraction, None, 0.0)
+    recommended, unlimited_by_line, joint_kelly, yields_to = {}, {}, {}, {}
+    for key, group_fitted, group_unlimited, group_unbudgeted in zip(teams, fitted, unlimited, unbudgeted):
+        members = members_by_team[key]
+        recommended.update(zip(members, group_fitted))
+        unlimited_by_line.update(zip(members, group_unlimited))
+        joint_kelly.update(zip(members, group_unbudgeted))
+        # A line the joint Kelly zeroes is covered by the team's biggest
+        # other position: a staked sibling, else a held bet.
+        exposure = [(stake, i) for i, stake in zip(members, group_unbudgeted) if stake > 0]
+        exposure += [(bet.risk, i) for i, bet in held_by_team.get(key, [])]
+        for i, stake in zip(members, group_unbudgeted):
+            others = [position for position in exposure if position[1] != i]
+            if stake <= 0 and others:
+                yields_to[i] = board.lines[max(others)[1]].special.rotation
 
     sized = []
     for index, (line, (fair, ev, stake)) in enumerate(zip(board.lines, raw)):
-        yields_to = None
-        key = (line.game.home, line.game.away, line.fecta.team) if line.game is not None else None
-        if stake > 0 and key in best_by_team and index not in recommended:
-            winner_index = best_by_team[key][1]
-            yields_to = board.lines[winner_index].special.rotation
-        sized.append(Sizing(fair, ev, stake, recommended.get(index, 0.0), yields_to))
+        sized.append(Sizing(fair, ev, joint_kelly.get(index, stake), recommended.get(index, 0.0),
+                            yields_to.get(index), unlimited_by_line.get(index, 0.0)))
     return sized
+
+
+def _team_key(line: FectaLine) -> tuple[str, str, str]:
+    return (line.game.home, line.game.away, line.fecta.team)
 
 
 def _quote_row(line: FectaLine, quoted_at: datetime, *, book: str, quote_kind: str,

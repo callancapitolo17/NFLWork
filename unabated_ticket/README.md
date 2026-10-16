@@ -742,9 +742,14 @@ skipped line folds into the "N skipped" line under the Edges list, where
 **Restore** lists it again. A skip holds only while a book still beats the
 price and the game is still to start: once no book beats it (the check
 reruns on every snapshot) or the game starts, the row lists again by itself
-(`pricecheck.splitSkipped`). A skipped line never alerts. The skip is keyed
-on the line at the book (`pricecheck.skipKeyOf`: game, period, market, side,
-number, book), so a new number is a new line. Skips live on the bets service
+(`pricecheck.splitSkipped`). A skipped line never alerts. **Since 0.26.0
+(Cal 2026-10-16) a skip covers the line at every book**: skip -16.5 at
+FanDuel and DraftKings' worse -16.5 folds too. Each row still folds only
+while a book beats its own price, so the best price at that number stays
+listed. The key is the line (`pricecheck.skipKeyOf`: game, period, market,
+side, number), so the other side or a new number is a new line; a skip saved
+per book before 0.26.0 (`<line>@<bookId>`) reads as its line, and Restore
+lifts both. Skips live on the bets service
 (`bets.duckdb::edge_skips`, `POST /edge_skips.json {skipKey, eventStartMs,
 skipped}`, served as `edgeSkips` in `/bets.json`), shared by the panel and
 the phone; an older service leaves them panel-only in `chrome.storage.local`.
@@ -1692,7 +1697,9 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   /exclusions.json` with `{betIds: [...], excluded: true|false}` (at most
   50) → `{ok, changed, exclusions}` — the Bet Tracker's Remove / Restore; a
   bet not at BFA or Wagerzon is a 400, an unknown id a 404. `/bets.json` also
-  serves `exclusions` (all of them). `POST
+  serves `exclusions` (all of them). `GET /balances.json` → `{generatedAt,
+  balances: {venue: {cash, inBets, available, creditLimit, fetchedAt, error}}}`
+  (dollars or null; in memory only) — the tracker's Balances tab. `POST
   /bet105.json` with `{fetchedAt, feeds: {prematch: [betGroup], live:
   [betGroup]}, settled: [wager]}` (both feeds, at most 2000 groups, and the
   wager list) → `{ok, count, settled, closed, skipped}`, or `{error}` → `{ok,
@@ -2517,6 +2524,16 @@ visible. Its one write is the Bets page's Remove / Restore.
 - **Header**: range (Today, Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days), $ / units with the unit size
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
+- **Balances** (own tab, last in the nav, so a glance at Overview never shows
+  today's money; Cal, 2026-10-14): live cash, in bets and available per book
+  from `GET /balances.json`, fetched only while the tab is open. Read after each
+  poll for Kalshi (`/portfolio/balance`, cents), Novig
+  (`/portfolio/summary?currency=CASH`) and Polymarket US
+  (`/v1/account/balances`, no in-bets figure), each on the source's own login;
+  fields seen in real responses 2026-10-13/16. Readings live in memory only
+  (`bets_service/balances.py`): a restart shows nothing until the next poll, a
+  failed read keeps the last numbers with how old they are, and a book never
+  read shows "unavailable", never $0, and stays out of the total.
 - **Open bets** (Open page) are split into **Upcoming** and, when any
   exist, **No start time** (BetOnline's report carries no game time, Kalshi
   NFL/CFB tickers only a date; futures and Kalshi combos none), each with
@@ -2643,8 +2660,8 @@ Plan: `automated_taker_plan.md` in the project folder. Every 30 s the runner
 looks at each Kalshi line Unabated shows at 3%+ (the settings' leagues and
 periods, every market, alts included), reads Kalshi's public orderbook for it,
 decides, and sends each bet to the bets service's order desk, which places it
-on Kalshi with **real money** on the bot's own key. No shadow mode (Cal,
-2026-10-14).
+on Kalshi with **real money** on the bot's own key, from the bot's own Kalshi
+subaccount. No shadow mode (Cal, 2026-10-14).
 
 | Rule | Value |
 |---|---|
@@ -2661,6 +2678,7 @@ on Kalshi with **real money** on the bot's own key. No shadow mode (Cal,
 | Order | **immediate-or-cancel** limit buy at that ask: what does not fill at once Kalshi cancels in the same request (`remaining_count` 0), so a bot order never rests. A reply without that count, or with contracts left open, is cancelled **by market** (a bare cancel routes to exchange shard 0 and 404s while an order rests), a 404 checked against Kalshi's resting list; the desk's own 30 s sweep retries an unconfirmed cancel and cancels any `ubot-` order resting that no row knows |
 | Adds | a second order on a game goes only once the bot's earlier fill on it is among the held bets the stake was sized on (`unseen_fill` until the Kalshi poll has it): conditional Kelly must see the fill first |
 | Tag | every order's `client_order_id` starts `ubot-` (`taker.duckdb::taker_orders`) |
+| Money | the bot's own Kalshi subaccount (Cal, 2026-10-16): its key is locked there, so what the subaccount holds is all it can lose |
 
 Tickers: spreads and totals from the rung ids (`Y-` buys YES, `N-` NO);
 full-game moneylines derived from the spread rungs' team code
@@ -2674,18 +2692,47 @@ declines, when a bet on the game on the row's axis is not in the sizing math
 (a number the fair ladder lacks, a side it could not place, a parlay leg: the
 stake would be sized as if it were not held; another market and an
 other-period hedge are left out by design, #129/#130), or when the other
-side of the same Kalshi market is held (Kalshi nets per market: buying NO
-would sell that YES). The desk also refuses a decision older than 60 s
+side of the same Kalshi market is held, in Cal's primary account or the
+bot's subaccount (Kalshi nets per market within a subaccount: buying NO
+would sell that YES; across them the bot still never bets against a held bet). The desk also refuses a decision older than 60 s
 (`stale_decision`), a game that has started (`started`) and a runner priced
 on another Kalshi API than its own (`env_mismatch`).
 
+**Its own subaccount (2026-10-16).** Kalshi keeps a separate balance and
+positions per subaccount (0 = Cal's primary, 1-63 numbered; API only, not in
+Kalshi's app or website yet), and an API key can be locked to one: it reads
+and trades only there and cannot move money or make subaccounts. The bot
+trades only from `KALSHI_TAKER_SUBACCOUNT` on a key locked to it, so the money
+in that subaccount is all it can lose; topping it up or taking money back is
+a transfer Cal makes. `python -m unabated_ticket.bets_service.taker_subaccount_setup`
+(on the VM, `deploy/README.md` step 11) puts the stop file in place first,
+makes the subaccount, moves $500 into it once (and checks it landed), mints
+the locked key (scopes `read` + `write::trade`) straight into the key file,
+never printing it, then proves the lock two ways before it keeps the file:
+Kalshi's own key listing must show the key on that subaccount with exactly
+those scopes, and the key must read the subaccount's balance and be refused
+the primary's. A key that fails is deleted from disk and named for revoking.
+The Kalshi source reads the bot's subaccount on Cal's main key next to the
+primary (fills, positions and settlements per subaccount: Kalshi's positions
+read is primary-only; a fill Kalshi labels with another subaccount is dropped
+and logged), and a bot bet's id ends `:s<N>` (`kalshi:<ticker>:<side>:s1`),
+so the bot's bet and Cal's on the same market stay two rows. Every order,
+cancel and listing names the subaccount. The bot's first orders, placed from the primary account on
+2026-10-16 before this, keep their primary ids; the locked key cannot read
+them, so their cost stays against the ceiling until their markets settle.
+
 **Arming, stopping.** The bot trades only when the bets service has its own
-Kalshi key: `KALSHI_TAKER_API_KEY_ID` (in `bets_service/.env`) and the key
-file at `KALSHI_TAKER_PRIVATE_KEY_PATH` (`/data/kalshi_taker.pem` on the VM).
-Make a key for the bot alone so it can be revoked alone. Without it
-`POST /taker/order.json` answers 503 and `/taker.json` says `desk: off`. Stop:
-`touch` the stop file (`TAKER_STOP_PATH`, `/data/taker.stop` on the VM); `rm` it
-to resume. Revoking the key at kalshi.com stops it for good.
+Kalshi key and subaccount: `KALSHI_TAKER_API_KEY_ID` and
+`KALSHI_TAKER_SUBACCOUNT` (in `bets_service/.env`) and the key file at
+`KALSHI_TAKER_PRIVATE_KEY_PATH` (`/data/kalshi_taker.pem` on the VM). At start
+the desk asks Kalshi for the key's balance in the subaccount (must answer,
+without the `balance_breakdown` Kalshi sends only to unrestricted keys) and
+in the primary account (must be refused); a key that reads the primary, or a
+check that never finishes (no answer, 429, 5xx three times), leaves it off.
+Without all of it `POST /taker/order.json` answers 503 and `/taker.json` says
+`desk: off`, and the log names the reason. Stop: `touch` the stop file
+(`TAKER_STOP_PATH`, `/data/taker.stop` on the VM); `rm` it to resume. Revoking
+the key at kalshi.com stops it for good.
 
 **Fail closed:** no live board, the bets service unread or unreachable, or
 its Kalshi poll failed or older than 5 min, and the pass decides nothing and
@@ -2715,10 +2762,10 @@ the all-in reserve (+1c slack) allowed for.
 well as the VM) would trade its own $500 and cancel the other's orders. Arm
 the VM only, and never reset `taker.duckdb` while bot positions are open.
 The bets service's Kalshi source reads the bot's NO fills on the YES leg
-(v2 trades YES only): a YES sell while the account is net short YES is
-recorded as the NO buy it is (`sources/kalshi.py::fill_on_its_open_side`), so
-the held bets, conditional Kelly and the desk's `heldIds` see
-`kalshi:<ticker>:no`.
+(v2 trades YES only): a YES sell while the subaccount is net short YES is
+recorded as the NO buy it is (`sources/kalshi.py::fill_on_its_open_side`, in
+the records and in the net-position P&L alike), so the held bets, conditional
+Kelly and the desk's `heldIds` see `kalshi:<ticker>:no:s<N>`.
 
 - `GET :8095/taker.json`: the desk state, the rules, the last pass (counts by
   reason, per-league ticker coverage) and every decision with its `order`.
