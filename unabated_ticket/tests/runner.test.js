@@ -608,6 +608,44 @@ test("taker: a market that is closed, or at another strike, is market_mismatch a
   runner.stop();
 });
 
+// ---- the Ticket's Place button: GET /kalshi_quote.json (places nothing) ----
+async function quoteRunner(markets = {}) {
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  const kalshi = kalshiFetch(markets);
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  return { runner, kalshi, service };
+}
+
+const WSU_36_LINE = { eventId: "123742", periodTypeId: "1", betTypeId: "2", sideIndex: "1", points: "-35.5" };
+
+test("kalshi_quote: the board's Kalshi line gives its contract, live ask, all-in and depth; nothing is sent", async () => {
+  const { runner, kalshi, service } = await quoteRunner();
+  const quote = await runner.kalshiQuote(new URLSearchParams(WSU_36_LINE));
+  runner.stop();
+  assert.deepEqual(
+    { ok: quote.ok, ticker: quote.ticker, side: quote.side, ask: quote.ask, depth: quote.depth, eventId: quote.eventId },
+    { ok: true, ticker: TAKER_TICKER, side: "yes", ask: 0.57, depth: 40, eventId: 123742 });
+  assert.equal(quote.allIn, Math.round((0.57 + 0.07 * 0.57 * 0.43) * 1e6) / 1e6);
+  assert.ok(quote.eventStart);
+  assert.equal(quote.kalshiBaseUrl, "https://kalshi.test/v2", "the desk checks it trades the Kalshi this read");
+  assert.ok(kalshi.calls.includes(`https://kalshi.test/v2/markets/${TAKER_TICKER}`), "the market is checked");
+  assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 0);
+});
+
+test("kalshi_quote: a closed market, a number the board lacks and bad params are refused", async () => {
+  const { runner } = await quoteRunner({ WSU36: { status: "closed" } });
+  const closed = await runner.kalshiQuote(new URLSearchParams(WSU_36_LINE));
+  const missing = await runner.kalshiQuote(new URLSearchParams({ ...WSU_36_LINE, points: "-99.5" }));
+  await assert.rejects(runner.kalshiQuote(new URLSearchParams({ ...WSU_36_LINE, sideIndex: "2" })), (error) => error.status === 400);
+  runner.stop();
+  assert.deepEqual([closed.ok, closed.reason], [false, "market_mismatch"]);
+  assert.deepEqual([missing.ok, missing.reason], [false, "no_line"]);
+});
+
 test("taker: a service without the bot key answers 503, the decision reads off", async () => {
   const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
   const offService = async (url, init = {}) => (url.endsWith("/taker/order.json")
