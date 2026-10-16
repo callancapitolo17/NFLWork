@@ -10,6 +10,7 @@ import pytest
 from unabated_ticket.bets_service import service
 from unabated_ticket.bets_service.balances import BalanceBook, read_balance_once, validate_reading
 from unabated_ticket.bets_service.sources.kalshi import KalshiSource, balance_of_kalshi
+from unabated_ticket.bets_service.sources.novig import NovigSource, balance_of_novig_summary
 from unabated_ticket.bets_service.store import BetsStore
 
 
@@ -27,6 +28,37 @@ def test_kalshi_source_balance_raises_on_non_200():
     source = KalshiSource(api=lambda method, path: (401, {"error": "no"}, {}), configure_auth=False)
     with pytest.raises(RuntimeError, match="401"):
         source.balance()
+
+
+def test_novig_balance_reads_cash_wallet_and_open_positions():
+    body = {"wallets": {"cashBalance": 320.5, "coinBalance": 9000, "bonusBalance": 0},
+            "openPositionsValue": 19857.25, "totalValue": 20177.75, "tradeCreditsValue": 0}
+    assert balance_of_novig_summary(body) == {
+        "cash": 320.5, "inBets": 19857.25, "available": 320.5, "creditLimit": None}
+
+
+def test_novig_balance_refuses_a_missing_field():
+    with pytest.raises(RuntimeError, match="openPositionsValue"):
+        balance_of_novig_summary({"wallets": {"cashBalance": 1}})
+
+
+def test_novig_source_balance_asks_for_the_cash_summary():
+    class Token:
+        token = "t"
+
+    class Auth:
+        def token(self):
+            return Token()
+
+    urls = []
+
+    def http_get(url, bearer):
+        urls.append(url)
+        return {"wallets": {"cashBalance": 1}, "openPositionsValue": 2}
+
+    source = NovigSource(auth=Auth(), http_get=http_get, poll_sec=1, base_url="https://x/nbx/v1")
+    assert source.balance()["inBets"] == 2
+    assert urls == ["https://x/nbx/v1/portfolio/summary?currency=CASH"]
 
 
 def test_validate_reading_needs_cash():

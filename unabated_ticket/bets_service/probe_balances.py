@@ -249,6 +249,6 @@ def probe_polymarket_us():
 
 
 if __name__ == "__main__":
-    for venue, fn in [("novig", probe_novig), ("polymarket_us", probe_polymarket_us)]:
+    for venue, fn in [("polymarket_us", probe_polymarket_us)]:
         probe(venue, fn)
     print("\nDone. Bet105 and DraftKings are read from Chrome; not probed here.")
