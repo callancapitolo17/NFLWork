@@ -76,13 +76,20 @@ def test_unabated_feed_ok_and_block_page():
 
 
 def test_every_service_venue_is_checked(monkeypatch):
-    monkeypatch.setattr(check_sources, "KalshiSource", lambda: None)
+    built = []
+
+    def fake_kalshi(subaccounts):
+        built.append(subaccounts)
+        return None
+    monkeypatch.setattr(check_sources, "KalshiSource", fake_kalshi)
+    monkeypatch.setattr(check_sources.config, "KALSHI_TAKER_SUBACCOUNT", 1)
     monkeypatch.setattr(check_sources, "check_unabated_feed",
                         lambda: check_sources.CheckResult("unabated feed", "ok", "stub"))
     monkeypatch.setattr(check_sources.service, "OPTIONAL_SOURCE_FACTORIES",
                         tuple((venue, lambda: None) for venue, _ in check_sources.service.OPTIONAL_SOURCE_FACTORIES))
     venues = [result.venue for result in check_sources.run_checks()]
     assert venues == ["kalshi", "betonline", "novig", "bfa", "wagerzon", "polymarket_us", "unabated feed"]
+    assert built == [(0, 1)]  # the login check reads the bot's subaccount like the service does
 
 
 def test_table_aligns_columns():

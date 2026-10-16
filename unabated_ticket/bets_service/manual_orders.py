@@ -23,7 +23,8 @@ Rules, in order, for every request (validate_place_request's shape):
   8. one immediate-or-cancel limit buy at the live ask
      (taker_orders.order_body: nothing rests), then the order's fills read.
 
-Side effects: a Kalshi order on Cal's own key (money); INSERT / UPDATE
+Side effects: a Kalshi order on Cal's own key, his primary account (no
+subaccount named; the bot trades its own numbered one) (money); INSERT / UPDATE
 bets.duckdb::manual_orders. Network: GET <runner>/kalshi_quote.json, then
 Kalshi REST signed with Cal's key (the order, and its fills).
 """
@@ -38,6 +39,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
+from unabated_ticket.bets_service.sources.kalshi import PRIMARY_SUBACCOUNT
 from unabated_ticket.bets_service.store import BetsStore
 from unabated_ticket.bets_service.taker_orders import (
     DEFINITE_REJECTION_STATUSES, ORDERS_PATH, KalshiOrderClient, fill_totals, held_id_of, order_body,
@@ -199,7 +201,7 @@ class ManualKalshiDesk:
             return (f"Kalshi is at {_cents(quote['allIn'])} all-in now, more than 0.1¢ worse than the "
                     f"Ticket's {_cents(request['ticket_all_in'])}.")
         other_side = "no" if quote["side"] == "yes" else "yes"
-        if self._store.bet_is_open(held_id_of(quote["ticker"], other_side)):
+        if self._store.bet_is_open(held_id_of(quote["ticker"], other_side, PRIMARY_SUBACCOUNT)):
             return f"you hold the {other_side.upper()} side of {quote['ticker']}; buying {quote['side'].upper()} would sell it."
         recent = self._store.manual_orders_maybe_filled_since(request["eventId"], request["kalshi_read_at"])
         if recent:
@@ -208,7 +210,10 @@ class ManualKalshiDesk:
         return None
 
     def _send(self, client_order_id: str, quote: dict, count: int) -> dict:
-        body = order_body(quote["ticker"], quote["side"], quote["ask"], count, client_order_id)
+        body = order_body(quote["ticker"], quote["side"], quote["ask"], count, client_order_id, PRIMARY_SUBACCOUNT)
+        # Cal's MAIN account (his choice A): an order naming no subaccount is the
+        # primary's, as every order was before the bot moved to its own.
+        del body["subaccount"]
         try:
             status, reply = self._client.request("POST", ORDERS_PATH, body)
         except OSError as error:

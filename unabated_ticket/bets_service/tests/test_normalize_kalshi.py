@@ -292,7 +292,7 @@ def test_apply_net_position_pnl_merges_the_other_side_into_the_entry_record():
     records = [{"id": "kalshi:C:yes", "status": "won"}, {"id": "kalshi:C:no", "status": "lost"}]
     fills = [fill("C", "yes", 10, 0.50, "2026-09-03T10:00:00Z"),
              fill("C", "no", 4, 0.50, "2026-09-04T10:00:00Z")]
-    entry, other = apply_net_position_pnl(records, fills, {"C": {"result": "yes"}})
+    entry, other = apply_net_position_pnl(records, fills, {"C": {"result": "yes"}}, [])
     assert entry["pnl"] == 3  # 4 closed flat at 50c, 6 won 50c each
     assert other == {"id": "kalshi:C:no", "status": "closed", "mergedInto": "kalshi:C:yes",
                      "pnl": None, "fees": 0}
@@ -300,5 +300,18 @@ def test_apply_net_position_pnl_merges_the_other_side_into_the_entry_record():
 
 def test_an_open_position_carries_no_pnl_yet():
     records = [{"id": "kalshi:O:yes", "status": "open"}]
-    [entry] = apply_net_position_pnl(records, [fill("O", "yes", 10, 0.5, "2026-09-03T10:00:00Z")], {})
+    [entry] = apply_net_position_pnl(records, [fill("O", "yes", 10, 0.5, "2026-09-03T10:00:00Z")], {}, [])
     assert entry["pnl"] is None
+
+
+def test_a_no_buy_reported_as_a_yes_sell_prices_its_no_record():
+    """Kalshi's v2 API buys NO as a YES sell (the taker bot); its fill may come
+    labelled that way. normalize_kalshi files it under NO by the position's
+    sign; the net P&L must price that same record, not a missing YES one."""
+    fills = [fill("B", "yes", 10, 0.64, "2026-10-16T10:00:00Z", action="sell")]
+    positions = [position("B", -10, 3.6)]
+    records = normalize_kalshi(fills, positions, {}, {}, None)
+    assert [record["id"] for record in records] == ["kalshi:B:no"]
+    [entry] = apply_net_position_pnl(records, fills, {"B": {"result": "no"}}, positions)
+    assert entry["pnl"] == 6.4  # 10 NO at 36c each, settled NO
+

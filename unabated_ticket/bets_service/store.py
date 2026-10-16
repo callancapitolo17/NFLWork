@@ -98,6 +98,8 @@ from pathlib import Path
 
 import duckdb
 
+from unabated_ticket.bets_service.sources.kalshi import PRIMARY_SUBACCOUNT, subaccount_of_record_id
+
 log = logging.getLogger(__name__)
 
 _SCHEMA = """
@@ -640,12 +642,20 @@ class BetsStore:
             log.info("source_runs: pruned %d row(s) older than %s", deleted, cutoff.isoformat())
         return deleted
 
-    def load_kalshi_tickers(self) -> set[str]:
-        """Every Kalshi market ticker a stored record names (ids are
-        kalshi:<ticker>:<side>), so the Kalshi source reads their pre-cutoff fills."""
+    def load_kalshi_tickers(self, subaccount: int = PRIMARY_SUBACCOUNT) -> set[str]:
+        """Every Kalshi market ticker a stored record of `subaccount` names (ids
+        are kalshi:<ticker>:<side>, plus :s<N> in numbered subaccount N), so the
+        Kalshi source reads that subaccount's pre-cutoff fills of them."""
         with self._lock:
             rows = self._con.execute(_SELECT_KALSHI_IDS).fetchall()
-        return {record_id.split(":")[1] for (record_id,) in rows}
+        tickers: set[str] = set()
+        for (record_id,) in rows:
+            try:
+                if subaccount_of_record_id(record_id) == subaccount:
+                    tickers.add(record_id.split(":")[1])
+            except ValueError as error:
+                log.warning("load_kalshi_tickers: skipping stored id %r: %s", record_id, error)
+        return tickers
 
     def load_bets(self, days: int, now: datetime) -> list[dict]:
         """Records in the retention window: open, or closed within `days` of `now`."""

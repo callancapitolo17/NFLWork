@@ -97,6 +97,7 @@ def test_a_click_sends_one_ioc_buy_at_the_live_ask_and_reads_what_filled(store):
     assert body["client_order_id"] == "uman-c1a2b3c4-0001"
     assert (body["ticker"], body["side"], body["price"], body["count"], body["time_in_force"]) == (
         TICKER, "bid", "0.5700", "170.00", "immediate_or_cancel")
+    assert "subaccount" not in body  # Cal's primary account, never the bot's
     assert result["status"] == "filled"
     assert result["cost"] == pytest.approx(170 * 0.57 + 2.92)
     assert result["message"].startswith("Bought 170 contracts at 58.7")
@@ -131,6 +132,11 @@ def test_a_price_within_a_tenth_of_a_cent_worse_or_any_better_places(store):
     better = desk_with(store, kalshi, {**QUOTE, "allIn": 0.55}).place(request(clickId="c1a2b3c4-0003",
                                                                               kalshiReadAt="2026-10-16T21:30:00Z"))
     assert better["status"] == "partial" and better["count"] == 181  # floor(100 / 0.55); the script fills 170
+
+
+def test_the_bots_subaccount_holding_the_other_side_does_not_block(store):
+    store.upsert_bets([{"id": f"kalshi:{TICKER}:no:s1", "venue": "kalshi", "status": "open"}], NOW)
+    assert desk_with(store, ScriptedKalshi()).place(request())["status"] == "filled"
 
 
 def test_the_other_side_held_is_refused(store):

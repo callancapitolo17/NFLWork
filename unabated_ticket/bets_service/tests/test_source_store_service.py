@@ -22,7 +22,10 @@ NE_POSITION = position("KXNFLGAME-26SEP20PITNE-NE", 550, 352)
 
 
 class FakeKalshiApi:
-    """Answers the signed GETs the source makes; records every path it saw."""
+    """Answers the signed GETs the source makes; records every path it saw.
+    `fills`, `positions`, `historical_fills` and `settlements` are the primary
+    account's (subaccount 0); `subaccounts[N]` holds a numbered subaccount's
+    under the same keys. Every portfolio read must name its subaccount."""
 
     def __init__(self, fixture: dict, fills: list[dict], positions: list[dict]):
         self.fixture = fixture
@@ -30,31 +33,40 @@ class FakeKalshiApi:
         self.positions = positions
         self.historical_fills: list[dict] = []
         self.settlements: list[dict] = []
+        self.subaccounts: dict[int, dict[str, list[dict]]] = {}
         self.paths: list[str] = []
         self.fail_paths: set[str] = set()
+
+    def _held(self, query: dict, kind: str) -> list[dict]:
+        subaccount = int(query["subaccount"][0])
+        if subaccount == 0:
+            return getattr(self, kind)
+        return self.subaccounts.get(subaccount, {}).get(kind, [])
 
     def __call__(self, method: str, path: str) -> tuple[int, object, dict]:
         assert method == "GET"
         self.paths.append(path)
         url = urlparse(path)
-        if url.path in self.fail_paths:
+        query = parse_qs(url.query)
+        if url.path in self.fail_paths or path in self.fail_paths:
             return 503, "unavailable", {}
         if url.path == "/historical/fills":
-            ticker = parse_qs(url.query)["ticker"][0]
-            return 200, {"fills": [f for f in self.historical_fills if f["ticker"] == ticker], "cursor": ""}, {}
+            ticker = query["ticker"][0]
+            fills = self._held(query, "historical_fills")
+            return 200, {"fills": [f for f in fills if f["ticker"] == ticker], "cursor": ""}, {}
         if url.path.startswith("/historical/markets/"):
             return 404, {"message": "not found"}, {}
         if url.path == "/portfolio/fills":
-            min_ts = parse_qs(url.query).get("min_ts")
-            fills = self.fills
+            min_ts = query.get("min_ts")
+            fills = self._held(query, "fills")
             if min_ts:
                 fills = [f for f in fills if datetime.fromisoformat(
                     f["created_time"].replace("Z", "+00:00")).timestamp() >= int(min_ts[0])]
             return 200, {"fills": fills, "cursor": ""}, {}
         if url.path == "/portfolio/settlements":
-            return 200, {"settlements": self.settlements, "cursor": ""}, {}
+            return 200, {"settlements": self._held(query, "settlements"), "cursor": ""}, {}
         if url.path == "/portfolio/positions":
-            return 200, {"market_positions": self.positions, "cursor": ""}, {}
+            return 200, {"market_positions": self._held(query, "positions"), "cursor": ""}, {}
         if url.path.startswith("/markets/"):
             market = self.fixture["markets"].get(url.path[len("/markets/"):])
             return (200, {"market": market}, {}) if market else (404, {"message": "not found"}, {})
@@ -81,11 +93,11 @@ def test_first_fetch_is_a_full_pull_then_incremental_with_overlap(kalshi_fixture
     [record] = source.fetch()
     assert record["id"] == "kalshi:KXNFLGAME-26SEP20PITNE-NE:yes"
     assert (record["stake"], record["price"], record["contracts"]) == (352, -178, 550)
-    assert api.paths[0] == "/portfolio/fills?limit=200"  # full pull, no min_ts
+    assert api.paths[0] == "/portfolio/fills?subaccount=0&limit=200"  # full pull, no min_ts
     now[0] += 60
     source.fetch()
-    incremental = [p for p in api.paths if p.startswith("/portfolio/fills?min_ts=")]
-    assert incremental == [f"/portfolio/fills?min_ts={int(1_800_000_000 - 60)}&limit=200"]
+    incremental = [p for p in api.paths if "min_ts=" in p]
+    assert incremental == [f"/portfolio/fills?subaccount=0&min_ts={int(1_800_000_000 - 60)}&limit=200"]
     # Market and event were looked up exactly once across both polls.
     assert api.count("/markets/") == 1
     assert api.count("/events/") == 1
@@ -115,7 +127,7 @@ def test_reconcile_re_pulls_fills_and_re_reads_unsettled_markets(kalshi_fixture)
     api.positions = []
     now[0] += 3600
     [record] = source.fetch()
-    assert api.count("/portfolio/fills?limit=200") == 2  # second full pull
+    assert api.count("/portfolio/fills?subaccount=0&limit=200") == 2  # second full pull
     assert api.count("/markets/") == 2  # re-read because it had no result
     assert record["status"] == "won"
     assert record["closedAt"] == "2026-09-20T20:00:00Z"
@@ -143,13 +155,14 @@ def test_full_pulls_read_the_historical_fills_and_price_the_net_position(kalshi_
     api.historical_fills = [opening, bot, stored, settled]
     api.settlements = [{"ticker": "KXNFLGAME-26SEP20PITNE-PIT", "market_result": "yes"}]
     source = KalshiSource(api=api, configure_auth=False, lookup_gap_sec=0, clock=lambda: 1_800_000_000.0,
-                          known_tickers=lambda: {"KXNCAAFTOTAL-26SEP12RICEND-60"})
+                          known_tickers=lambda subaccount: {"KXNCAAFTOTAL-26SEP12RICEND-60"} if subaccount == 0
+                          else set())
     records = {record["id"]: record for record in source.fetch()}
     # One read per market the bets touch; the bot's market is never asked for.
     assert sorted(p for p in api.paths if p.startswith("/historical/fills")) == [
-        "/historical/fills?ticker=KXNCAAFTOTAL-26SEP12RICEND-60&limit=200",
-        "/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-NE&limit=200",
-        "/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-PIT&limit=200"]
+        "/historical/fills?ticker=KXNCAAFTOTAL-26SEP12RICEND-60&subaccount=0&limit=200",
+        "/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-NE&subaccount=0&limit=200",
+        "/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-PIT&subaccount=0&limit=200"]
     # Only markets the bets touch: in the recent fills, held by the store, or
     # settled since the cutoff; not the bot's.
     assert {record["raw"]["ticker"] for record in records.values()} == {
@@ -178,6 +191,119 @@ def test_a_failed_fills_pull_raises(kalshi_fixture):
     api.fail_paths.add("/portfolio/fills")
     with pytest.raises(RuntimeError, match="expected 200"):
         make_source(api, clock=lambda: 1_800_000_000.0).fetch()
+
+
+# ---- the bot's subaccount (2026-10-16) ------------------------------------------------
+
+NE_TICKER = "KXNFLGAME-26SEP20PITNE-NE"
+BOT = 1
+
+
+def bot_source(api, clock, known_tickers=lambda _subaccount: set()):
+    return KalshiSource(api=api, configure_auth=False, lookup_gap_sec=0, clock=clock,
+                        known_tickers=known_tickers, subaccounts=(0, BOT))
+
+
+def test_the_bots_subaccount_is_read_on_its_own_and_kept_apart_from_the_primary(kalshi_fixture):
+    """Cal holds YES on the market in the primary account; the bot bought NO
+    in its subaccount (a YES sell on Kalshi's v2 API). Kalshi's primary-only
+    positions would leave the bot's fill without a position; read per
+    subaccount it is an open NO, and the two never merge."""
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL], [NE_POSITION])
+    bot_fill = fill(NE_TICKER, "yes", 10, 0.64, "2026-09-12T15:00:00Z", action="sell", trade_id="b1")
+    api.subaccounts[BOT] = {"fills": [bot_fill], "positions": [position(NE_TICKER, -10, 3.6)],
+                            "settlements": [], "historical_fills": []}
+    records = {record["id"]: record for record in bot_source(api, clock=lambda: 1_800_000_000.0).fetch()}
+    assert set(records) == {f"kalshi:{NE_TICKER}:yes", f"kalshi:{NE_TICKER}:no:s1"}
+    cal, bot = records[f"kalshi:{NE_TICKER}:yes"], records[f"kalshi:{NE_TICKER}:no:s1"]
+    assert (cal["status"], cal["contracts"], "subaccount" in cal["raw"]) == ("open", 550, False)
+    assert (bot["status"], bot["contracts"], bot["raw"]["subaccount"]) == ("open", 10, BOT)
+    assert bot["stake"] == 3.6 and "mergedInto" not in bot and "mergedInto" not in cal
+    # Every portfolio read names its subaccount; the bot's historical reads ask only for its own markets.
+    assert "/portfolio/fills?subaccount=1&limit=200" in api.paths
+    assert "/portfolio/positions?settlement_status=unsettled&subaccount=1&limit=200" in api.paths
+    assert "/portfolio/settlements?subaccount=1&limit=200" in api.paths
+    assert [p for p in api.paths if p.startswith("/historical/fills") and "subaccount=1" in p] == [
+        f"/historical/fills?ticker={NE_TICKER}&subaccount=1&limit=200"]
+    # One market and event lookup serves both subaccounts.
+    assert api.count("/markets/") == 1
+
+
+def test_a_fill_labelled_for_another_subaccount_is_dropped_not_filed(kalshi_fixture, caplog):
+    """Kalshi answering ?subaccount=0 with a subaccount-1 fill would file the
+    bot's NO buy against the primary's positions (a closed YES ghost row)."""
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL, {**fill(NE_TICKER, "yes", 10, 0.64, "2026-09-12T15:00:00Z",
+                                                          action="sell", trade_id="b1"), "subaccount_number": BOT}],
+                        [NE_POSITION])
+    api.subaccounts[BOT] = {"fills": [], "positions": [], "settlements": [], "historical_fills": []}
+    with caplog.at_level("WARNING"):
+        records = bot_source(api, clock=lambda: 1_800_000_000.0).fetch()
+    assert [record["id"] for record in records] == [f"kalshi:{NE_TICKER}:yes"]
+    assert "labelled subaccount 1 came back under subaccount 0; dropped" in caplog.text
+
+
+def test_a_closed_round_trip_in_the_bots_subaccount_merges_within_it(kalshi_fixture):
+    api = FakeKalshiApi(kalshi_fixture, [], [])
+    opened = fill(NE_TICKER, "yes", 10, 0.40, "2026-09-12T15:00:00Z", trade_id="b1")
+    closed = fill(NE_TICKER, "no", 10, 0.45, "2026-09-12T16:00:00Z", action="sell", trade_id="b2")
+    api.subaccounts[BOT] = {"fills": [opened, closed], "positions": [], "settlements": [], "historical_fills": []}
+    records = {record["id"]: record for record in bot_source(api, clock=lambda: 1_800_000_000.0).fetch()}
+    assert records[f"kalshi:{NE_TICKER}:no:s1"]["mergedInto"] == f"kalshi:{NE_TICKER}:yes:s1"
+    assert records[f"kalshi:{NE_TICKER}:yes:s1"]["pnl"] == 0.5
+
+
+def test_a_failed_read_of_the_bots_subaccount_fails_the_whole_poll(kalshi_fixture):
+    """The store keeps the previous records rather than a poll missing the
+    bot's bets, and the next poll's window still starts at the last good one."""
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL], [NE_POSITION])
+    now = [1_800_000_000.0]
+    source = bot_source(api, clock=lambda: now[0])
+    source.fetch()
+    api.fail_paths.add("/portfolio/positions?settlement_status=unsettled&subaccount=1&limit=200")
+    now[0] += 60
+    with pytest.raises(RuntimeError, match="expected 200"):
+        source.fetch()
+    api.fail_paths.clear()
+    now[0] += 60
+    source.fetch()
+    assert f"/portfolio/fills?subaccount=1&min_ts={int(1_800_000_000 - 60)}&limit=200" in api.paths
+
+
+def test_the_subaccounts_read_start_with_the_primary_and_are_numbered(kalshi_fixture):
+    api = FakeKalshiApi(kalshi_fixture, [], [])
+    for bad in ((), (1,), (0, 0), (0, 64), (0, 1, 1)):
+        with pytest.raises(ValueError, match="subaccount"):
+            KalshiSource(api=api, configure_auth=False, subaccounts=bad)
+    assert service.kalshi_subaccounts_read(None) == (0,)
+    assert service.kalshi_subaccounts_read(3) == (0, 3)
+
+
+def test_record_ids_name_the_subaccount_and_tagging_leaves_the_primary_alone():
+    from unabated_ticket.bets_service.sources import kalshi as kalshi_source
+    assert kalshi_source.record_id_of("KXA-1", "no") == "kalshi:KXA-1:no"
+    assert kalshi_source.record_id_of("KXA-1", "no", 2) == "kalshi:KXA-1:no:s2"
+    assert kalshi_source.subaccount_of_record_id("kalshi:KXA-1:no") == 0
+    assert kalshi_source.subaccount_of_record_id("kalshi:KXA-1:no:s2") == 2
+    with pytest.raises(ValueError, match="kalshi:<ticker>"):
+        kalshi_source.subaccount_of_record_id("kalshi:KXA-1:no:x2")
+    records = [{"id": "kalshi:KXA-1:yes", "raw": {"ticker": "KXA-1"}},
+               {"id": "kalshi:KXA-1:no", "mergedInto": "kalshi:KXA-1:yes", "raw": {}}]
+    assert kalshi_source.tag_subaccount(records, 0) is records
+    tagged = kalshi_source.tag_subaccount(records, 2)
+    assert [(r["id"], r.get("mergedInto"), r["raw"]["subaccount"]) for r in tagged] == [
+        ("kalshi:KXA-1:yes:s2", None, 2), ("kalshi:KXA-1:no:s2", "kalshi:KXA-1:yes:s2", 2)]
+    assert records[0]["id"] == "kalshi:KXA-1:yes" and "subaccount" not in records[0]["raw"]  # pure
+
+
+@pytest.mark.parametrize("raw, expected", [(None, None), ("", None), ("1", 1), (" 63 ", 63)])
+def test_the_bot_subaccount_setting_is_a_numbered_subaccount(raw, expected):
+    assert config._subaccount_number(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["0", "64", "-1", "one", "1.5"])
+def test_a_bot_subaccount_setting_outside_1_to_63_fails_loudly(raw):
+    with pytest.raises(ValueError, match="KALSHI_TAKER_SUBACCOUNT: expected a subaccount number 1-63"):
+        config._subaccount_number(raw)
 
 
 # ---- store + service loop ------------------------------------------------------------
@@ -346,6 +472,14 @@ def test_load_kalshi_tickers_reads_the_ticker_out_of_each_kalshi_id(store):
     store.upsert_bets([{**record("kalshi:KXA-1:yes", "won", "2026-09-11T20:00:00Z"), "venue": "kalshi"},
                        {**record("novig:x", "won", "2026-09-11T20:00:00Z"), "venue": "novig"}],
                       datetime(2026, 9, 12, tzinfo=timezone.utc))
+    assert store.load_kalshi_tickers() == {"KXA-1"}
+    store.upsert_bets([{**record("kalshi:KXB-2:no:s1", "won", "2026-09-11T20:00:00Z"), "venue": "kalshi"}],
+                      datetime(2026, 9, 12, 1, tzinfo=timezone.utc))
+    assert store.load_kalshi_tickers() == {"KXA-1"}  # the primary's own
+    assert store.load_kalshi_tickers(1) == {"KXB-2"}
+    # One odd stored id is skipped (logged), never a failed hourly full pull.
+    store.upsert_bets([{**record("kalshi:odd", "won", "2026-09-11T20:00:00Z"), "venue": "kalshi"}],
+                      datetime(2026, 9, 12, 2, tzinfo=timezone.utc))
     assert store.load_kalshi_tickers() == {"KXA-1"}
 
 

@@ -22,6 +22,9 @@ Tables:
                market settles (taker_orders.py has the status vocabulary).
                The $500 ceiling is the sum of `open_cost` over rows not yet
                settled (open_exposure). Never pruned (a handful a day).
+               `subaccount` (added 2026-10-16 by ALTER on open) is the Kalshi
+               subaccount the bot's key is locked to; NULL on the orders the
+               bot placed from the primary account before that.
 
 The DuckDB connection is shared between the HTTP handler threads behind one
 lock (DuckDB connections are not thread-safe).
@@ -75,8 +78,10 @@ CREATE TABLE IF NOT EXISTS taker_orders (
     fills_final      BOOLEAN NOT NULL DEFAULT FALSE,  -- a fills read at least FILLS_SETTLE_SEC after the cancel
     open_cost        DOUBLE NOT NULL,      -- what counts against the ceiling while the market is open
     error            VARCHAR,
-    settled_at       TIMESTAMPTZ           -- when its market was seen settled; frees open_cost
+    settled_at       TIMESTAMPTZ,          -- when its market was seen settled; frees open_cost
+    subaccount       INTEGER               -- the Kalshi subaccount it traded in; NULL = primary (before 2026-10-16)
 );
+ALTER TABLE taker_orders ADD COLUMN IF NOT EXISTS subaccount INTEGER;
 """
 
 _INSERT = """
@@ -118,15 +123,16 @@ class TakerStore:
         return len(values)
 
     def insert_order(self, order: dict) -> None:
-        """INSERT a new order row (status "sending", open_cost the full requested cost)."""
+        """INSERT a new order row (status "sending", open_cost the full requested cost, the
+        subaccount it trades in)."""
         with self._lock:
             self._con.execute(
                 "INSERT INTO taker_orders (client_order_id, placed_at, row_key, event_id, ticker, contract_side, "
-                "ask_price, all_in_price, count_requested, event_start, status, open_cost) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "ask_price, all_in_price, count_requested, event_start, status, open_cost, subaccount) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [order["client_order_id"], order["placed_at"], order["row_key"], order["event_id"], order["ticker"],
                  order["contract_side"], order["ask_price"], order["all_in_price"], order["count_requested"],
-                 order["event_start"], "sending", order["open_cost"]])
+                 order["event_start"], "sending", order["open_cost"], order["subaccount"]])
 
     def has_order(self, client_order_id: str) -> bool:
         with self._lock:
@@ -146,20 +152,21 @@ class TakerStore:
                               [*fields.values(), client_order_id])
 
     def open_orders(self) -> list[dict]:
-        """Every order whose market has not been seen settled, oldest first."""
+        """Every order whose market has not been seen settled, oldest first
+        (`subaccount` 0 for the orders placed from the primary account)."""
         # Times leave DuckDB as epoch ms: a TIMESTAMPTZ fetched as a datetime needs pytz, which the service lacks.
         with self._lock:
             rows = self._con.execute(
                 "SELECT client_order_id, epoch_ms(placed_at), ticker, contract_side, status, kalshi_order_id, "
                 "fills_final, open_cost, epoch_ms(event_start), all_in_price, count_requested, event_id, "
-                "exchange_index, epoch_ms(cancelled_at), count_filled, count_reported "
+                "exchange_index, epoch_ms(cancelled_at), count_filled, count_reported, coalesce(subaccount, 0) "
                 "FROM taker_orders WHERE settled_at IS NULL ORDER BY placed_at").fetchall()
         return [{
             "client_order_id": row[0], "placed_at": _utc_from_ms(row[1]), "ticker": row[2], "contract_side": row[3],
             "status": row[4], "kalshi_order_id": row[5], "fills_final": row[6], "open_cost": row[7],
             "event_start": _utc_from_ms(row[8]), "all_in_price": row[9], "count_requested": row[10],
             "event_id": row[11], "exchange_index": row[12], "cancelled_at": _utc_from_ms(row[13]), "count_filled": row[14],
-            "count_reported": row[15],
+            "count_reported": row[15], "subaccount": row[16],
         } for row in rows]
 
     def open_exposure(self) -> float:

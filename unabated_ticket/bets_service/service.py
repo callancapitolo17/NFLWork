@@ -166,10 +166,11 @@ taker.duckdb::taker_decisions (taker_store.py; a separate file from bets.duckdb)
 POST /place_kalshi.json places Cal's own Kalshi order (money) and INSERTs /
 UPDATEs bets.duckdb::manual_orders (manual_orders.py).
 POST /taker/order.json places a bot order on Kalshi (money) on the bot's own
-key when one is configured, and INSERTs / UPDATEs taker.duckdb::taker_orders
-(taker_orders.py: stop file, $500 ceiling, limit at the ask, rest cancelled);
-the desk's own thread cancels bot orders left resting on Kalshi, reads final
-fills and frees settled markets every 30 s, runner or no runner.
+key, locked to the bot's own Kalshi subaccount, when one is configured, and
+INSERTs / UPDATEs taker.duckdb::taker_orders (taker_orders.py: stop file, $500
+ceiling, limit at the ask, rest cancelled); the desk's own thread cancels bot
+orders left resting on Kalshi, reads final fills and frees settled markets
+every 30 s, runner or no runner.
 """
 import json
 import logging
@@ -196,12 +197,13 @@ from unabated_ticket.bets_service.sources import Source, bet105, draftkings
 from unabated_ticket.bets_service.sources.betonline import source_if_configured as betonline_source_if_configured
 from unabated_ticket.bets_service.sources.bfa import BFASource, normalize_open_bets
 from unabated_ticket.bets_service.sources.bfa import source_if_configured as bfa_source_if_configured
-from unabated_ticket.bets_service.sources.kalshi import KalshiSource
+from unabated_ticket.bets_service.sources.kalshi import PRIMARY_SUBACCOUNT, KalshiSource
 from unabated_ticket.bets_service.sources.novig import source_if_connected as novig_source_if_connected
 from unabated_ticket.bets_service.sources.polymarket_us import source_if_configured as polymarket_us_source_if_configured
 from unabated_ticket.bets_service.sources.wagerzon import source_if_configured as wagerzon_source_if_configured
 from unabated_ticket.bets_service.store import EDGE_SETTINGS_FIELDS, BetsStore
-from unabated_ticket.bets_service.taker_orders import KalshiOrderClient, TakerDesk, validate_order_request
+from unabated_ticket.bets_service.taker_orders import (KalshiOrderClient, TakerDesk, key_lock_problem,
+                                                      validate_order_request)
 from unabated_ticket.bets_service.taker_store import DECISION_REASONS, TakerStore
 
 log = logging.getLogger(__name__)
@@ -1322,15 +1324,24 @@ def teaser_placer_for(sources: list[Source]) -> bfa_teaser.BFATeaserPlacer | Non
     return bfa_teaser.BFATeaserPlacer(bfa_source) if bfa_source is not None else None
 
 
-def open_taker_desk(store: TakerStore | None) -> tuple[TakerDesk | None, str]:
-    """(the bot's order desk, "") or (None, why): without its own key or its
-    log there are no orders, and POST /taker/order.json answers 503 with that why."""
+def open_taker_desk(store: TakerStore | None,
+                    lock_check: Callable[[KalshiOrderClient, int], tuple[str | None, float | None]] = key_lock_problem,
+                    ) -> tuple[TakerDesk | None, str]:
+    """(the bot's order desk, "") or (None, why): without its own key, its
+    subaccount, Kalshi's word that the key is locked to that subaccount, or its
+    log there are no orders, and POST /taker/order.json answers 503 with that
+    why. The lock check is two signed GETs (taker_orders.key_lock_problem)."""
     if not config.KALSHI_TAKER_API_KEY_ID or not config.KALSHI_TAKER_PRIVATE_KEY_PATH:
         reason = "no bot Kalshi key is configured (KALSHI_TAKER_API_KEY_ID / KALSHI_TAKER_PRIVATE_KEY_PATH)"
         log.info("taker: %s, the bot places no orders", reason)
         return None, reason
     if store is None:
         reason = f"the taker log {config.TAKER_DB_PATH} is not open (its ceiling lives there)"
+        log.error("taker: %s, the bot places no orders", reason)
+        return None, reason
+    subaccount = config.KALSHI_TAKER_SUBACCOUNT
+    if subaccount is None:
+        reason = "no bot subaccount is configured (KALSHI_TAKER_SUBACCOUNT): the bot trades only in its own"
         log.error("taker: %s, the bot places no orders", reason)
         return None, reason
     if not Path(config.KALSHI_TAKER_PRIVATE_KEY_PATH).exists():
@@ -1344,8 +1355,21 @@ def open_taker_desk(store: TakerStore | None) -> tuple[TakerDesk | None, str]:
         reason = f"the bot key {config.KALSHI_TAKER_PRIVATE_KEY_PATH} could not be read: {error}"
         log.error("taker: %s, the bot places no orders", reason)
         return None, reason
-    log.info("taker: ARMED on its own key; stop file %s", config.TAKER_STOP_PATH)
-    return TakerDesk(client, store, config.TAKER_STOP_PATH), ""
+    problem, balance = lock_check(client, subaccount)
+    if problem is not None:
+        reason = f"the bot key is not proven locked to subaccount {subaccount}: {problem}"
+        log.error("taker: %s, the bot places no orders", reason)
+        return None, reason
+    shown_balance = "unknown" if balance is None else f"${balance:,.2f}"
+    log.info("taker: ARMED on its own key, locked to Kalshi subaccount %d (available %s); stop file %s",
+             subaccount, shown_balance, config.TAKER_STOP_PATH)
+    return TakerDesk(client, store, config.TAKER_STOP_PATH, subaccount), ""
+
+
+def kalshi_subaccounts_read(bot_subaccount: int | None) -> tuple[int, ...]:
+    """The Kalshi subaccounts the Bets tab reads: the primary, plus the bot's
+    when one is configured, so the bot's bets size Cal's and its own."""
+    return (PRIMARY_SUBACCOUNT,) if bot_subaccount is None else (PRIMARY_SUBACCOUNT, bot_subaccount)
 
 
 def open_kalshi_place_desk(store: BetsStore) -> tuple[ManualKalshiDesk | None, str]:
@@ -1437,7 +1461,8 @@ OPTIONAL_SOURCE_FACTORIES: tuple[tuple[str, Callable[[], Source | None]], ...] =
 def main() -> None:
     setup_logging()
     store = BetsStore(config.DB_PATH, config.SOURCE_RUNS_RETENTION_DAYS)
-    sources: list[Source] = [KalshiSource(known_tickers=store.load_kalshi_tickers)]
+    sources: list[Source] = [KalshiSource(known_tickers=store.load_kalshi_tickers,
+                                          subaccounts=kalshi_subaccounts_read(config.KALSHI_TAKER_SUBACCOUNT))]
     for _venue, factory in OPTIONAL_SOURCE_FACTORIES:
         optional = factory()
         if optional is not None:
