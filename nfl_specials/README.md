@@ -107,8 +107,8 @@ superfectas (7-10 requests each, 0.5 s apart) took ~40 s over plain HTTP.
    green chip; and at most one plain reason when something holds the stake
    back (amber when it is $0 for a reason worth a look, grey when it is only
    capped, trimmed, full at $250 or waiting for the balance). A line whose
-   share of its team's stake falls under the $20 minimum says so
-   (`under_min_stake` on the payload). A
+   share of its team's stake falls under the $20 minimum shows no reason
+   (`under_min_stake` on the payload), rather than blaming a sibling. A
    team's specials in one game sit together; with more than one, a strip on
    top shows the team's total bet and recommended stake and its one Kelly
    figure, and the rows drop their own Kelly line.
