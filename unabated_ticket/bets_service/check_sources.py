@@ -25,7 +25,7 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from unabated_ticket.bets_service import service
+from unabated_ticket.bets_service import config, service
 from unabated_ticket.bets_service.sources import Source
 from unabated_ticket.bets_service.sources.kalshi import KalshiSource
 
@@ -78,7 +78,8 @@ def check_unabated_feed(open_url: Callable[..., object] = urllib.request.urlopen
 
 def run_checks() -> list[CheckResult]:
     """Every venue the service polls, in the order it registers them, then the feed."""
-    results = [check_source("kalshi", KalshiSource)]
+    kalshi_subaccounts = service.kalshi_subaccounts_read(config.KALSHI_TAKER_SUBACCOUNT)
+    results = [check_source("kalshi", lambda: KalshiSource(subaccounts=kalshi_subaccounts))]
     for venue, factory in service.OPTIONAL_SOURCE_FACTORIES:
         results.append(check_source(venue, factory))
     results.append(check_unabated_feed())
