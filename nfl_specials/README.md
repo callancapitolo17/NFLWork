@@ -100,7 +100,7 @@ superfectas (7-10 requests each, 0.5 s apart) took ~40 s over plain HTTP.
    $250 maximum, and what a capped bet can't take goes to the next edge. The
    page shows, next to each stake and the Recommended total, what it would be with
    no balance limit (same sizing, $20 minimum and $250 cap kept; user decision
-   2026-10-15), and the uncapped (joint) Kelly stake when the cap trims it. No
+   2026-10-15), always, even when it equals the stake (2026-10-16), and the uncapped (joint) Kelly stake when the cap trims it. No
    stake (and no budget) goes to a special whose game has started.
 
 | Book | Trifecta | Superfecta | How |
