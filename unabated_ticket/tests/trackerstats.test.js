@@ -398,3 +398,20 @@ test("sortRows: numbers and text both ways, missing keys last, ties stable", () 
   assert.deepEqual(stats.sortRows(names, (r) => r.n, "asc").map((r) => r.n), ["BFA", "Kalshi", "novig"]);
   assert.equal(rows[0].id, "a", "the input is not reordered");
 });
+
+test("origin: Kalshi's numbered subaccount and the novig_bot source are the bot, everything else Other", () => {
+  const tickets = stats.buildTickets([
+    straight({ id: "kalshi:KXNFL-X:yes:s1", venue: "kalshi", source: "kalshi_api", raw: { subaccount: 1 } }),
+    straight({ id: "kalshi:KXNFL-X:no", venue: "kalshi", source: "kalshi_api", raw: {} }),
+    straight({ id: "novig:9:bot", source: "novig_bot" }),
+    straight({ id: "novig:8:place", source: "novig_place" }),
+    straight({ id: "novig:7", source: "novig_rest" }),
+  ], []);
+  const byId = Object.fromEntries(tickets.map((t) => [t.id, t.origin]));
+  assert.deepEqual(byId, {
+    "kalshi:KXNFL-X:yes:s1": "Bot", "kalshi:KXNFL-X:no": "Other",
+    "novig:9:bot": "Bot", "novig:8:place": "Other", "novig:7": "Other",
+  });
+  const rows = stats.groupBy(tickets, "origin").map((row) => [row.label, row.bets]);
+  assert.deepEqual(rows, [["Bot", 2], ["Other", 3]]);
+});

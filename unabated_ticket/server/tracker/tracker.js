@@ -44,6 +44,7 @@
   }
   const FILTERS = [
     { key: "venue", label: "Venue", primary: true, value: groupValue("venue") },
+    { key: "origin", label: "Bot / Other", primary: true, value: groupValue("origin") },
     { key: "league", label: "League", primary: true, value: groupValue("league") },
     { key: "kind", label: "Type", primary: true, value: groupValue("kind") },
     { key: "market", label: "Market", primary: true, value: groupValue("market") },
@@ -207,6 +208,15 @@
   }
 
   // ---- DOM helpers ----------------------------------------------------------
+
+  // Every bet table's Venue cell; a bot bet carries a "Bot" tag after its venue.
+  const VENUE_COLUMN = {
+    label: "Venue",
+    cell: (t) => (t.origin === stats.ORIGINS.bot
+      ? el("span", null, [document.createTextNode(t.venue + " "), el("span", { className: "tag bot", text: stats.ORIGINS.bot })])
+      : t.venue),
+    sort: (t) => t.venue + " " + t.origin,
+  };
 
   function el(tag, options, children) {
     const node = document.createElement(tag);
@@ -651,7 +661,7 @@
   function settledColumns(settledCell) {
     return [
       { label: "Settled", className: () => "muted", cell: settledCell, sort: (t) => t.closedMs },
-      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      VENUE_COLUMN,
       { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
       { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
       { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
@@ -715,7 +725,7 @@
     if (!group.length) return el("div", { className: "open-group" }, [head, emptyNote(emptyText)]);
     return el("div", { className: "open-group" }, [head, el("div", { className: "scroll" }, [table([
       { label: startLabelText, className: () => "muted", cell: (t) => startLabel(t.eventStart), sort: (t) => msOf(t.eventStart) },
-      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      VENUE_COLUMN,
       { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
       { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
       { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
@@ -1247,11 +1257,11 @@
   function renderLog(settled) {
     const query = state.query.trim().toLowerCase();
     const matching = query
-      ? settled.filter((t) => [t.event, t.selection, t.venue, t.league, t.kind].join(" ").toLowerCase().includes(query))
+      ? settled.filter((t) => [t.event, t.selection, t.venue, t.origin, t.league, t.kind].join(" ").toLowerCase().includes(query))
       : settled;
     const columns = [
       { label: "Settled", className: () => "muted", cell: (t) => dayLabel(t.settledDay, true), sort: (t) => t.closedMs },
-      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      VENUE_COLUMN,
       { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
       { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
       { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
@@ -1330,7 +1340,7 @@
       { label: "Result", cell: resultTag, sort: (t) => t.status },
       { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => (t.pnl === null ? "—" : money(t.pnl, true)), sort: (t) => t.pnl },
       { label: "Placed", className: () => "muted", cell: (t) => (t.placedMs ? dayLabel(stats.pacificDay(t.placedMs), true) : "—"), sort: (t) => t.placedMs },
-      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      VENUE_COLUMN,
       { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
     ];
     const shown = sortedRows("bets", columns, matching).slice(0, state.betsLimit);
