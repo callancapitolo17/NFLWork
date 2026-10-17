@@ -152,6 +152,35 @@ def test_a_lost_place_order_is_adopted_by_client_id_a_minute_on_or_marked_never_
     assert "never" not in adopted, "a failed listing read leaves the order lost for the next poll"
 
 
+def test_an_unconfirmed_place_order_is_confirmed_once_novig_shows_it_final():
+    class OrderClient(FakeClient):
+        def __init__(self, fills, order_read):
+            super().__init__(fills)
+            self.order_read = order_read
+
+        def get_order(self, order_id):
+            if isinstance(self.order_read, Exception):
+                raise self.order_read
+            return self.order_read
+
+    def confirmed_by(client, requested=1000):
+        confirmed = []
+        unconfirmed = [{"client_order_id": "nman-1", "novig_order_id": "o1", "count_requested": requested}]
+        NovigSubaccountSource("place", client, lambda: {"o1": CONTEXT}, now=lambda: NOW,
+                              unconfirmed_orders=lambda before: list(unconfirmed) if before <= NOW - timedelta(seconds=59) else [],
+                              confirm_order=lambda *args: confirmed.append(args)).fetch()
+        return confirmed
+
+    assert confirmed_by(OrderClient([fill(qty=1000, cost="4.65000")], (200, {"status": "FILLED"}))) == [("nman-1", "filled", 1000, 4.65)]
+    assert confirmed_by(OrderClient([fill(qty=400, cost="1.86000")], (200, {"status": "CANCELED"}))) == [("nman-1", "partial", 400, 1.86)]
+    assert confirmed_by(OrderClient([], (200, {"status": "CANCELED"}))) == [("nman-1", "unfilled", 0, 0.0)]
+    # Not final yet, a FILLED order whose fills have not all landed, a failed read: left for the next poll.
+    assert confirmed_by(OrderClient([fill()], (200, {"status": "PENDING"}))) == []
+    assert confirmed_by(OrderClient([fill(qty=400)], (200, {"status": "FILLED"}))) == []
+    assert confirmed_by(OrderClient([fill()], (404, {}))) == []
+    assert confirmed_by(OrderClient([fill()], OSError("reset"))) == []
+
+
 def test_a_market_no_context_names_is_re_read_every_ten_minutes_not_every_poll():
     market = {"marketId": MARKET, "eventId": "ev-1", "status": "OPEN", "outcomes": [{"outcomeId": OUTCOME, "status": "TBD"}]}
     client = FakeClient([fill()], market)

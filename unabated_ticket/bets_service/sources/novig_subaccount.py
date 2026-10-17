@@ -27,7 +27,10 @@ A context's `settled_at` is the bet's fixed closedAt. The bot desk keeps it
 itself; Place has no desk sweep, so its read keeps the first SETTLED sighting
 through `note_settled` (BetsStore.note_novig_place_settled, an UPDATE of
 manual_orders.settled_at) and a restart never moves it. For the same reason
-this read also adopts Place's LOST orders (`lost_orders` / `adopt_order`): a
+this read also confirms Place's UNCONFIRMED orders (`unconfirmed_orders` /
+`confirm_order`): one Novig named but never showed final while Cal waited is
+read again here until Novig shows it final, then given what its fills say. It
+also adopts Place's LOST orders (`lost_orders` / `adopt_order`): a
 Place send Novig never answered has no order id, so no fill could ever be
 named; once it is LOST_ORDER_LOOKUP_AFTER_SEC old the order is looked up by
 clientId across Novig's order lists (never re-sent) and given its id, or,
@@ -40,7 +43,7 @@ Ids: "novig:<order id>:<name>", venue "novig" (bets.js joins a spread or total
 on venueIds.outcomeId and the side on its own fields). A Novig contract pays
 1c: qty 100 = $1; `contracts` here is dollars of payout like sources/novig.py.
 
-Side effects: none on disk but `note_settled`'s and `adopt_order`'s, when given. Raises on any failed read, so the service records
+Side effects: none on disk but `note_settled`'s, `adopt_order`'s and `confirm_order`'s, when given. Raises on any failed read, so the service records
 a failed run and keeps the previous records.
 """
 import logging
@@ -48,8 +51,8 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from unabated_ticket.bets_service.normalize import EASTERN, json_clean, round_cents, utc_now_iso
-from unabated_ticket.bets_service.novig_orders import (MARKET_SETTLED, QTY_PER_DOLLAR, NovigError, NovigOrderClient,
-                                                       order_totals)
+from unabated_ticket.bets_service.novig_orders import (FINAL_ORDER_STATUSES, MARKET_SETTLED, QTY_PER_DOLLAR,
+                                                       STATUS_FILLED, NovigError, NovigOrderClient, order_totals)
 from unabated_ticket.bets_service.sources.novig import probability_to_american
 
 log = logging.getLogger(__name__)
@@ -71,6 +74,10 @@ NoteSettled = Callable[[str, datetime], datetime]
 LostOrders = Callable[[datetime], list[dict]]
 # (client_order_id, Novig order id or None when Novig lists it nowhere) -> None.
 AdoptOrder = Callable[[str, str | None], None]
+# placed_before -> [{client_order_id, novig_order_id, count_requested}]: Place orders Novig named but never showed final.
+UnconfirmedOrders = Callable[[datetime], list[dict]]
+# (client_order_id, 'filled' | 'partial' | 'unfilled', contracts filled, dollars paid) -> None.
+ConfirmOrder = Callable[[str, str, int, float], None]
 # A lost send is looked up only once it is this old: Novig's listings can lag a 201.
 LOST_ORDER_LOOKUP_AFTER_SEC = 60
 # The order row's client id is 'nman-' + Novig's clientId (novig_place.py).
@@ -190,7 +197,8 @@ class NovigSubaccountSource:
     def __init__(self, name: str, client: NovigOrderClient, contexts: Contexts,
                  now: Callable[[], datetime] = lambda: datetime.now(timezone.utc), poll_sec: float = POLL_SEC,
                  note_settled: NoteSettled | None = None, lost_orders: LostOrders | None = None,
-                 adopt_order: AdoptOrder | None = None):
+                 adopt_order: AdoptOrder | None = None, unconfirmed_orders: UnconfirmedOrders | None = None,
+                 confirm_order: ConfirmOrder | None = None):
         if name not in NAMES:
             raise ValueError(f"name must be one of {NAMES}, got {name!r}")
         self.name = f"{SOURCE_PREFIX}{name}"
@@ -201,6 +209,8 @@ class NovigSubaccountSource:
         self._note_settled = note_settled
         self._lost_orders = lost_orders
         self._adopt_order = adopt_order
+        self._unconfirmed_orders = unconfirmed_orders
+        self._confirm_order = confirm_order
         self._now = now
         # market id -> when a market no context names was last read and found unsettled.
         self._unnamed_checked_at: dict[str, datetime] = {}
@@ -218,6 +228,7 @@ class NovigSubaccountSource:
             if not isinstance(order_id, str) or not order_id:
                 raise NovigError(f"fill {fill.get('fillId') or '?'} names no order")
             by_order.setdefault(order_id, []).append(fill)
+        self._confirm_unconfirmed_orders(now, by_order)
         contexts = self._contexts()
         fetched_at = utc_now_iso()
         markets_this_poll: dict[str, dict] = {}
@@ -272,6 +283,32 @@ class NovigSubaccountSource:
         if market.get("status") == MARKET_SETTLED:
             self._settled_markets[market_id] = (market, now)
         return market
+
+    def _confirm_unconfirmed_orders(self, now: datetime, by_order: dict[str, list[dict]]) -> None:
+        """Give each Place order Novig never showed final while Cal waited what
+        this poll's fills say, once Novig shows it final. A FILLED order whose
+        fills have not all landed yet waits for the next poll; a failed read too."""
+        if self._unconfirmed_orders is None or self._confirm_order is None:
+            return
+        for order in self._unconfirmed_orders(now - timedelta(seconds=LOST_ORDER_LOOKUP_AFTER_SEC)):
+            client_order_id = order["client_order_id"]
+            order_id = order["novig_order_id"]
+            try:
+                status, reply = self._client.get_order(order_id)
+                order_status = reply.get("status") if status == 200 and isinstance(reply, dict) else None
+                if order_status not in FINAL_ORDER_STATUSES:
+                    continue
+                filled, cost, fee = order_totals(by_order.get(order_id, []))
+            except (NovigError, OSError) as error:
+                log.error("%s: unconfirmed order %s: read failed, still unconfirmed: %s", self.name, client_order_id, error)
+                continue
+            requested = order["count_requested"]
+            if order_status == STATUS_FILLED and filled < requested:
+                continue
+            outcome = "unfilled" if filled == 0 else "filled" if filled >= requested else "partial"
+            self._confirm_order(client_order_id, outcome, filled, round(cost + fee, 5))
+            log.warning("%s: unconfirmed order %s is %s on Novig: %s, %d of %d", self.name, client_order_id,
+                        order_status, outcome, filled, requested)
 
     def _adopt_lost_orders(self, now: datetime) -> None:
         """Give each Place order Novig never answered its Novig id off Novig's

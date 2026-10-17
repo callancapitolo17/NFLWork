@@ -15,7 +15,8 @@ import pytest
 
 from unabated_ticket.bets_service import service
 from unabated_ticket.bets_service.novig_orders import qty_for_stake
-from unabated_ticket.bets_service.novig_place import ManualNovigDesk, validate_novig_place_request
+from unabated_ticket.bets_service.novig_place import (PLACE_FINAL_READ_ATTEMPTS, ManualNovigDesk,
+                                                      validate_novig_place_request)
 from unabated_ticket.bets_service.store import BetsStore
 
 NOW = datetime(2026, 10, 16, 21, 0, tzinfo=timezone.utc)
@@ -243,8 +244,16 @@ def test_an_add_waits_until_the_last_place_on_the_game_was_read_at_either_venue(
     (ScriptedNovig(send=(500, {})), "unknown", "Check Novig"),
     (ScriptedNovig(send=(201, {})), "unknown", "Check Novig"),
     (ScriptedNovig(raises=True), "unknown", "Novig did not answer"),
-    (ScriptedNovig(order_reads=[(404, {})] * 6), "unknown", "has not said what filled"),
-    (ScriptedNovig(order_reads=[OSError("reset")] * 6), "unknown", "has not said what filled"),
+    (ScriptedNovig(order_reads=[(404, {})] * PLACE_FINAL_READ_ATTEMPTS, fills=[]), "unknown", "has not said what filled"),
+    (ScriptedNovig(order_reads=[OSError("reset")] * PLACE_FINAL_READ_ATTEMPTS, fills=[]), "unknown",
+     "has not said what filled"),
+    # Never read final, but every contract filled: it cannot fill more, so it is filled.
+    (ScriptedNovig(order_reads=[(404, {})] * PLACE_FINAL_READ_ATTEMPTS), "filled", "Bet $"),
+    # Never read final, some contracts filled: what filled so far, still unknown.
+    (ScriptedNovig(order_reads=[(200, {"status": "PENDING"})] * PLACE_FINAL_READ_ATTEMPTS,
+                   fills=[{"fillId": "f1", "qty": 4000, "cost": "27.00000"}]), "unknown", "Bet $27.00 at 67.5¢ on Novig so far"),
+    (ScriptedNovig(order_reads=[(404, {})] * PLACE_FINAL_READ_ATTEMPTS, fills=[{"fillId": "f1", "qty": 100}]), "unknown",
+     "has not said what filled"),
     (ScriptedNovig(order_reads=[(200, {"status": "REJECTED"})], fills=[]), "unfilled", "price was gone"),
     (ScriptedNovig(order_reads=[(200, {"status": "CANCELED"})], fills=[{"fillId": "f1", "qty": 4000, "cost": "27.00000"}]),
      "partial", "Bet $27.00 of $50.00"),
@@ -369,3 +378,31 @@ def test_the_service_arms_place_only_on_its_own_proven_trading_key_with_both_rea
     assert armed._read_sources == ("novig", "novig_place", "novig_bot"), "the bot's bets count when they are read"
     sources = service.novig_subaccount_sources(None, store)
     assert [source.name for source in sources] == ["novig_place"]
+
+
+def test_an_order_never_read_final_stays_unknown_until_the_sub_account_read_confirms_it(store):
+    novig = ScriptedNovig(order_reads=[(404, {})] * PLACE_FINAL_READ_ATTEMPTS, fills=[])
+    assert desk_with(store, novig).place(request())["status"] == "unknown"
+    client_order_id = f"nman-{CLICK_ID}"
+    assert store.unconfirmed_novig_place_orders(NOW - timedelta(seconds=1)) == [], "placed after the cutoff: not yet"
+    [unconfirmed] = store.unconfirmed_novig_place_orders(NOW)
+    assert unconfirmed == {"client_order_id": client_order_id, "novig_order_id": ORDER_ID, "count_requested": novig.last_qty}
+    store.confirm_novig_place_order(client_order_id, "filled", novig.last_qty, 50.0, NOW + timedelta(minutes=1))
+    assert store.unconfirmed_novig_place_orders(NOW + timedelta(minutes=1)) == []
+
+
+def test_order_reads_stop_at_the_window_however_slow_each_read_is(store):
+    """Each read hanging to its 10 s timeout: reads stop once the window has
+    passed, so the click answers within the phone's wait."""
+    elapsed = [0.0]
+
+    class HangingNovig(ScriptedNovig):
+        def get_order(self, order_id):
+            elapsed[0] += 10.0
+            return 404, {}
+
+    novig = HangingNovig(fills=[])
+    desk = ManualNovigDesk(novig, store, lambda _line: dict(QUOTE), now=lambda: NOW, sleep=lambda sec: None,
+                           clock=lambda: elapsed[0])
+    assert desk.place(request())["status"] == "unknown"
+    assert elapsed[0] == 20.0, "two reads: the second ends past the 12 s window, so no third starts"

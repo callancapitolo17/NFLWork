@@ -1199,3 +1199,15 @@ def test_http_fill_books_post_saves_once(store, http_server):
     status, reply = request_json("POST", f"{http_server}/fill_books.json", bad, "application/json")
     assert status == 400 and reply["error"].startswith("rows[0].booksBetter must be at most bookCount")
     assert store._con.execute("SELECT count(*) FROM bet_fill_books").fetchone()[0] == 1
+
+
+def test_an_order_the_novig_app_feed_and_a_sub_account_both_hold_is_served_once(store):
+    """Cal's app feed lists his sub-accounts' orders too: the sub-account copy is kept."""
+    seen = datetime(2026, 9, 11, 21, 0, tzinfo=timezone.utc)
+    def novig(record_id: str, source: str) -> dict:
+        return {**record(record_id, "open", None), "source": source, "venue": "novig"}
+    store.upsert_bets([novig("novig:o1", "novig_rest"), novig("novig:o1:place", "novig_place"),
+                       novig("novig:o2", "novig_rest"), novig("novig:o2:bot", "novig_bot"),
+                       novig("novig:o3", "novig_rest"), record("kalshi:a:yes", "open", None)], seen)
+    served = sorted(bet["id"] for bet in store.load_bets(30, seen))
+    assert served == ["kalshi:a:yes", "novig:o1:place", "novig:o2:bot", "novig:o3"]
