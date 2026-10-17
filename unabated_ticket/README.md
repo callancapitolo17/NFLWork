@@ -2569,7 +2569,9 @@ visible. Its one write is the Bets page's Remove / Restore.
   games (links to Live), then the open bets that are not live with price,
   fair, edge and CLV. The nav tab carries the count of open bets not on the
   Live tab. (Its **Settled today** panel went with the change below.)
-- **Analysis** (a click-to-drill page, 2026-10-13): filter by venue, league, type, market,
+- **Analysis** (a click-to-drill page, 2026-10-13): filter by venue, **Bot / Other**
+  (2026-10-17: Bot = a Kalshi bet in a numbered subaccount, which only the taker trades,
+  or a `novig_bot` bet; every bet table tags its venue "Bot"; also a breakdown), league, type, market,
   period, side (Over / Under / Home / Away) and close (beat / lost / no close), plus
   fav / dog, odds, edge, timing, weekday, stake and the number itself under **More
   filters**, and an exact **Price** range in American odds: every value is a chip (on =
