@@ -112,6 +112,7 @@
 "use strict";
 
 const http = require("node:http");
+const { monitorEventLoopDelay } = require("node:perf_hooks");
 const scannerLib = require("../extension/scanner.js");
 const teams = require("../extension/teams.js");
 const betsLib = require("../extension/bets.js");
@@ -143,6 +144,11 @@ const NOVIG_USER_AGENT = "unabated-ticket-runner/1.0";
 // Novig's public catalog: one page holds up to 5000 markets; a slate is a few hundred.
 const NOVIG_MARKETS_PAGE_LIMIT = 5000;
 const NOVIG_MARKETS_MAX_PAGES = 10;
+// A Place quote reuses Novig's catalog when it is at most this old: an outcome
+// never moves to another market, and the quote still reads the market, its
+// event and its book live (2026-10-17: a fresh catalog plus three reads one
+// after another ran past the bets service's deadline, so the first click failed).
+const NOVIG_CATALOG_REUSE_MS = 60 * 1000;
 // feed.js league path -> Novig's canonical league name (GET /v3/types/leagues).
 const NOVIG_LEAGUE_OF = { nfl: "NFL", cfb: "NCAAF", nba: "NBA", cbb: "NCAAB", wnba: "WNBA", mlb: "MLB", nhl: "NHL" };
 // The bets service's sources the Novig stake is sized on: Cal's app account and the bot's subaccount.
@@ -388,6 +394,12 @@ function createRunner(deps) {
   let takerUnsent = [];
   let takerDeskStatus = "not asked yet";
   let novigDeskStatus = "not asked yet";
+  // Novig's catalog as last read: {leagues: Set, readAt, index (novigOutcomeIndex)}.
+  let novigCatalog = null;
+  // How long the event loop stalled since the last Novig quote (logged with it):
+  // a quote slow on a stalled loop is the runner's own work, not Novig.
+  const loopDelay = monitorEventLoopDelay({ resolution: 20 });
+  loopDelay.enable();
   const takerLogStatus = { okAt: null, error: null, rowsSent: 0, dropped: 0 };
 
   // Every snapshot carries Unabated's team list; register it so bet records
@@ -858,7 +870,7 @@ function createRunner(deps) {
     let index = new Map();
     let catalogError = null;
     try {
-      index = taker.novigOutcomeIndex(await readNovigMarkets(rows));
+      index = (await novigCatalogFor(rows, 0)).index;
     } catch (error) {
       catalogError = error.message;
     }
@@ -888,6 +900,21 @@ function createRunner(deps) {
   // One public Novig GET as JSON; throws naming the URL and status.
   function getNovigJson(url) {
     return getServiceJson(novigFetch, url, { headers: { Accept: "application/json", "User-Agent": NOVIG_USER_AGENT } });
+  }
+
+  // Novig's outcome index for the rows' leagues: the last catalog read when it
+  // covers them and is at most maxAgeMs old, else a fresh read (kept for the
+  // next quote); maxAgeMs 0 always reads. {index, readAt, reused}.
+  async function novigCatalogFor(rows, maxAgeMs) {
+    const leagues = rows.map((row) => NOVIG_LEAGUE_OF[row.league]).filter(Boolean);
+    const cached = novigCatalog;
+    if (maxAgeMs > 0 && leagues.length && cached && now() - cached.readAt <= maxAgeMs && leagues.every((league) => cached.leagues.has(league))) {
+      return { index: cached.index, readAt: cached.readAt, reused: true };
+    }
+    const readAt = now();
+    const index = taker.novigOutcomeIndex(await readNovigMarkets(rows));
+    novigCatalog = { leagues: new Set(leagues), readAt, index };
+    return { index, readAt, reused: false };
   }
 
   // Every open pregame Novig market in the rows' leagues, every page (never a partial list).
@@ -961,34 +988,63 @@ function createRunner(deps) {
   //   params  URLSearchParams {eventId, periodTypeId, betTypeId, sideIndex, points}
   async function novigQuoteNow(params) {
     const spec = kalshiLineSpecOf(params);
+    const startedAt = now();
+    const { answer, catalog } = await novigQuoteOfSpec(spec);
+    const stalledMs = Math.round(loopDelay.max / 1e6);
+    loopDelay.reset();
+    logInfo(`novig quote ${spec.eventId} ${answer.label || `bet type ${spec.betTypeId} side ${spec.sideIndex} ${spec.points}`}: `
+      + `${answer.ok ? `ok @ ${answer.price}` : answer.reason} in ${now() - startedAt} ms`
+      + (catalog ? ` (catalog ${catalog.reused ? `reused, ${Math.round((startedAt - catalog.readAt) / 1000)}s old` : "read"}, `
+        + `market reads ${catalog.readsMs} ms)` : "")
+      + `; event loop stalled up to ${stalledMs} ms since the last quote`);
+    return answer;
+  }
+
+  // {answer: novigQuoteNow's answer, catalog: {reused, readAt, readsMs} for its log line once the outcome was found, else null}.
+  async function novigQuoteOfSpec(spec) {
     const board = feedState;
-    if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
+    if (!board) return { answer: { ok: false, reason: "no_board", detail: "the board has not loaded yet" }, catalog: null };
     const found = Object.values(board.lines).filter((line) => line.bookId === taker.NOVIG_BOOK_ID
       && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
       && line.sideIndex === spec.sideIndex && (line.points ?? null) === spec.points);
     if (found.length !== 1) {
-      return { ok: false, reason: "no_line", detail: `the board holds ${found.length} Novig lines for game ${spec.eventId} at that market, side and number` };
+      return { answer: { ok: false, reason: "no_line", detail: `the board holds ${found.length} Novig lines for game ${spec.eventId} at that market, side and number` }, catalog: null };
     }
     const row = feedLib.describeLine(found[0], board);
     const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName };
+    let catalog;
     let contract;
     try {
-      contract = taker.novigContractOf(row, taker.novigOutcomeIndex(await readNovigMarkets([row])));
+      catalog = await novigCatalogFor([row], NOVIG_CATALOG_REUSE_MS);
+      contract = taker.novigContractOf(row, catalog.index);
+      // A market listed since the reused read: one fresh read before giving up.
+      if (contract.reason && catalog.reused) {
+        catalog = await novigCatalogFor([row], 0);
+        contract = taker.novigContractOf(row, catalog.index);
+      }
     } catch (error) {
-      return { ok: false, ...fields, reason: "no_outcome", detail: `Novig's catalog unread: ${error.message}` };
+      return { answer: { ok: false, ...fields, reason: "no_outcome", detail: `Novig's catalog unread: ${error.message}` }, catalog: null };
     }
-    if (contract.reason) return { ok: false, ...fields, reason: contract.reason, detail: contract.detail };
+    if (contract.reason) return { answer: { ok: false, ...fields, reason: contract.reason, detail: contract.detail }, catalog: null };
     const position = { ...fields, outcomeId: contract.outcomeId, otherOutcomeId: contract.otherOutcomeId, marketId: contract.marketId };
+    // The book, the market and its event at once (the catalog names the event; the check confirms it is the market's).
+    const listedEventId = catalog.index.get(contract.outcomeId).market.eventId;
+    const readsStartedAt = now();
+    const [bookRead, mismatch] = await Promise.all([
+      getNovigJson(`${novigMarketUrl(contract.marketId)}/book`).then((book) => ({ book }), (error) => ({ error })),
+      readNovigMarketMismatch(row, contract, listedEventId),
+    ]);
+    const timing = { reused: catalog.reused, readAt: catalog.readAt, readsMs: now() - readsStartedAt };
     let quote;
     try {
-      quote = taker.novigQuoteOf(await getNovigJson(`${novigMarketUrl(contract.marketId)}/book`), contract);
+      if (bookRead.error) throw bookRead.error;
+      quote = taker.novigQuoteOf(bookRead.book, contract);
     } catch (error) {
-      return { ok: false, ...position, reason: "no_book", detail: error.message };
+      return { answer: { ok: false, ...position, reason: "no_book", detail: error.message }, catalog: timing };
     }
-    const mismatch = await readNovigMarketMismatch(row, contract);
-    if (mismatch) return { ok: false, ...position, reason: "market_mismatch", detail: mismatch };
-    if (!quote) return { ok: false, ...position, reason: "no_book", detail: `nothing rests on the other side of Novig market ${contract.marketId}` };
-    return { ok: true, ...position, price: quote.ask, depth: quote.depth, novigBaseUrl, line: taker.novigLineOf(row) };
+    if (mismatch) return { answer: { ok: false, ...position, reason: "market_mismatch", detail: mismatch }, catalog: timing };
+    if (!quote) return { answer: { ok: false, ...position, reason: "no_book", detail: `nothing rests on the other side of Novig market ${contract.marketId}` }, catalog: timing };
+    return { answer: { ok: true, ...position, price: quote.ask, depth: quote.depth, novigBaseUrl, line: taker.novigLineOf(row) }, catalog: timing };
   }
 
   // Kalshi's start for an event as epoch ms, or null when it lists none or
@@ -1063,12 +1119,19 @@ function createRunner(deps) {
   // take a free pregame order (taker.novigMarketMismatch), an unread market
   // included (fail closed); null when they are. Shared by the bot's orders
   // and the Place button's quotes, so neither can skip a check the other has.
-  async function readNovigMarketMismatch(row, contract) {
+  //   listedEventId  the event the catalog listed the market under, when known:
+  //                  then the market and the event are read at once
+  async function readNovigMarketMismatch(row, contract, listedEventId = null) {
+    const eventUrl = (eventId) => `${novigBaseUrl}/v3/public/catalog/events/${encodeURIComponent(eventId)}`;
     let market;
     let event;
     try {
-      market = await getNovigJson(novigMarketUrl(contract.marketId));
-      event = await getNovigJson(`${novigBaseUrl}/v3/public/catalog/events/${encodeURIComponent(market.eventId)}`);
+      if (typeof listedEventId === "string" && listedEventId) {
+        [market, event] = await Promise.all([getNovigJson(novigMarketUrl(contract.marketId)), getNovigJson(eventUrl(listedEventId))]);
+      } else {
+        market = await getNovigJson(novigMarketUrl(contract.marketId));
+        event = await getNovigJson(eventUrl(market.eventId));
+      }
     } catch (error) {
       return `Novig market ${contract.marketId} unread: ${error.message}`;
     }

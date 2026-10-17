@@ -66,8 +66,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from unabated_ticket.bets_service.novig_orders import (FINAL_ORDER_STATUSES, GEO_STATUS, MARKET_SETTLED, STATUS_OPEN, NovigError,
-                                                       NovigOrderClient, cost_of, error_code_of, is_on_price_grid, order_totals,
-                                                       qty_for_stake)
+                                                       NovigOrderClient, cost_of, error_code_of, fill_outcome, is_on_price_grid,
+                                                       order_totals, qty_for_stake)
 from unabated_ticket.bets_service.sources.novig_subaccount import record_id_of
 from unabated_ticket.bets_service.taker_orders import _iso_time, _may_hold_contracts, kalshi_unseen_fill
 from unabated_ticket.bets_service.taker_store import TakerStore
@@ -383,7 +383,7 @@ class NovigTakerDesk:
             self._store.update_novig_order(client_id, {"status": "unknown", "error": f"fills read failed: {error}"})
             return {"status": "unknown", "qty": qty, "orderId": order_id, "detail": "fills read failed; full cost held"}
         paid = round(cost + fee, 5)
-        outcome = "unfilled" if filled == 0 else "filled" if filled >= qty else "partial"
+        outcome = fill_outcome(filled, qty)
         fields = {"status": outcome, "qty_filled": filled, "cost_filled": paid, "fills_final": final, "error": None}
         if final:
             fields["open_cost"] = paid

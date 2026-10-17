@@ -3016,7 +3016,12 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
    best resting order on the other outcome) and checks Novig's market and
    event the taker's way (`novigContractOf`, `novigQuoteOf`,
    `novigMarketMismatch`: open, pregame, no pregame fee, the row's type,
-   number and side by the outcome's own name).
+   number and side by the outcome's own name). The catalog is reused when
+   under a minute old (read fresh when the outcome is missing from it); the
+   book, market and event are read live and at once. The bets service waits
+   up to 30 s for this quote (Kalshi's 10 s was too short: 7-18 s on the VM,
+   2026-10-17). Each quote logs `novig quote ...` with its time, whether the
+   catalog was reused and how long the event loop stalled.
 2. It refuses, sending nothing, when: the game has started or its start is
    unknown; the runner read a Novig other than the one Place trades
    (`NOVIG_API_URL`); the live price is off Novig's grid or more than **0.1c
@@ -3030,8 +3035,12 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
 3. It buys `floor(stake x 100 / price)` contracts (a Novig contract pays 1c,
    not $1) with ONE immediate-or-cancel order at the live price, clientId the
    click's UUID, row `nman-<clickId>`, never re-sent (Novig does not dedupe
-   clientIds). It reads the order until final, then its fills; an order shown
-   `OPEN` is cancelled. A 451 reads "open the Novig app on your phone" (Novig
+   clientIds). It reads the order until final (about 10 reads a second
+   apart, none started after 12 s), then its fills; an order shown `OPEN` is
+   cancelled. An order never read final still has its fills read: every
+   contract filled is `filled` (it cannot fill more); less stays `unknown`
+   with what filled so far, and the `novig_place` read gives it its final
+   status once Novig shows it final. A 451 reads "open the Novig app on your phone" (Novig
    wants a phone location check in the last 3 days). No definite answer, an
    order never read final or unreadable fills read `unknown` and hold the
    next Place on that game until a read that saw it; so does an `unfilled`,
@@ -3040,6 +3049,14 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
    the game whatever the read time until the `novig_place` read, a minute
    on, finds it on Novig's order lists by clientId and names it, or finds it
    nowhere and marks it rejected (never sent). Nothing is ever re-sent.
+
+Cal's app feed (`novig`, ids `novig:<order id>`) lists his sub-accounts'
+orders too; `/bets.json` serves such an order once, as the sub-account read's
+`novig:<order id>:place` (or `:bot`), so it is sized and tracked once
+(`store._SELECT_WINDOW`; nothing is deleted). When the sub-account copy
+names no game (an order no desk placed, or a lost send not yet found), the
+app's copy is served instead. An `unknown` Place order is re-read by the
+`novig_place` read for 24 hours, then left `unknown`.
 
 Its rows are in the same `manual_orders` table with `venue = 'novig'`
 (`ticker` = the outcome id, `novig_order_id`, and the board line Place's

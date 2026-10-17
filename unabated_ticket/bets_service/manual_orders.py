@@ -151,16 +151,18 @@ def _iso_time(value: object) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
-def read_runner_quote(runner_url: str, request: dict, quote_path: str = RUNNER_QUOTE_PATH) -> dict:
+def read_runner_quote(runner_url: str, request: dict, quote_path: str = RUNNER_QUOTE_PATH,
+                      timeout_sec: float = RUNNER_TIMEOUT_SEC) -> dict:
     """GET <runner><quote_path> (/kalshi_quote.json, or Novig Place's
     /novig_quote.json) for the request's line: the runner's answer, or
-    {ok: False, reason: 'runner', detail} when it could not be read."""
+    {ok: False, reason: 'runner', detail} when it could not be read within
+    timeout_sec."""
     query = {key: request[key] for key in ("eventId", "periodTypeId", "betTypeId", "sideIndex")}
     if request["points"] is not None:
         query["points"] = f"{request['points']:g}"
     url = f"{runner_url.rstrip('/')}{quote_path}?{urlencode(query)}"
     try:
-        with _RUNNER_OPENER.open(url, timeout=RUNNER_TIMEOUT_SEC) as response:
+        with _RUNNER_OPENER.open(url, timeout=timeout_sec) as response:
             answer = json.loads(response.read())
     except urllib.error.HTTPError as error:
         return {"ok": False, "reason": "runner", "detail": f"the server runner answered HTTP {error.code}: {error.read()[:300]!r}"}

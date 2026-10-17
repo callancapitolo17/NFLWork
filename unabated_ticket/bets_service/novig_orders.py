@@ -343,6 +343,12 @@ class NovigOrderClient:
         return None
 
 
+def fill_outcome(filled: int, requested: int) -> str:
+    """An order's row status from its contracts filled: 'unfilled' | 'filled' |
+    'partial' (the bot desk's, Place's and Place's later confirmation)."""
+    return "unfilled" if filled == 0 else "filled" if filled >= requested else "partial"
+
+
 def order_totals(fills: list[dict]) -> tuple[int, float, float]:
     """(contracts, dollars paid, fees) over one order's fills. Raises NovigError
     on a fill whose qty or cost cannot be read: a missing field must never read

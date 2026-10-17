@@ -209,7 +209,8 @@ from unabated_ticket.bets_service.balances import BalanceBook, balances_payload,
 from unabated_ticket.bets_service.log_setup import setup_logging
 from unabated_ticket.bets_service.manual_orders import ManualKalshiDesk, read_runner_quote
 from unabated_ticket.bets_service.manual_orders import validate_place_request as validate_kalshi_place_request
-from unabated_ticket.bets_service.novig_place import (NOVIG_PLACE_READ_SOURCES, RUNNER_NOVIG_QUOTE_PATH, ManualNovigDesk,
+from unabated_ticket.bets_service.novig_place import (NOVIG_PLACE_READ_SOURCES, RUNNER_NOVIG_QUOTE_PATH,
+                                                      RUNNER_NOVIG_QUOTE_TIMEOUT_SEC, ManualNovigDesk,
                                                       validate_novig_place_request)
 from unabated_ticket.bets_service.normalize import parse_iso_ms, utc_now_iso
 from unabated_ticket.bets_service.novig_orders import NovigError, NovigOrderClient
@@ -1506,7 +1507,10 @@ def novig_subaccount_sources(taker_store: TakerStore | None, store: BetsStore) -
         sources.append(NovigSubaccountSource(
             "place", place_client, store.novig_place_order_contexts, note_settled=store.note_novig_place_settled,
             lost_orders=store.lost_novig_place_orders,
-            adopt_order=lambda client_order_id, order_id: store.adopt_novig_place_order(client_order_id, order_id, _now())))
+            adopt_order=lambda client_order_id, order_id: store.adopt_novig_place_order(client_order_id, order_id, _now()),
+            unconfirmed_orders=store.unconfirmed_novig_place_orders,
+            confirm_order=lambda client_order_id, outcome, filled, paid: store.confirm_novig_place_order(
+                client_order_id, outcome, filled, paid, _now())))
     else:
         log.info("novig_place: %s, not read", reason)
     return sources
@@ -1564,7 +1568,9 @@ def open_novig_place_desk(store: BetsStore, source_names: list[str],
     read_sources = NOVIG_PLACE_READ_SOURCES + (("novig_bot",) if "novig_bot" in source_names else ())
     log.info("novig place: on, signing with Place key %s (sub-account balance $%s); stakes count %s",
              config.NOVIG_PLACE_KEY_ID[:8], f"{balance:,.2f}", ", ".join(read_sources))
-    return ManualNovigDesk(client, store, lambda line: read_runner_quote(config.RUNNER_URL, line, RUNNER_NOVIG_QUOTE_PATH),
+    return ManualNovigDesk(client, store,
+                           lambda line: read_runner_quote(config.RUNNER_URL, line, RUNNER_NOVIG_QUOTE_PATH,
+                                                          RUNNER_NOVIG_QUOTE_TIMEOUT_SEC),
                            read_sources=read_sources), ""
 
 
