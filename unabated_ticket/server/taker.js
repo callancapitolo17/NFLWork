@@ -6,7 +6,7 @@
 //
 // Cal's rules (2026-10-01 and 2026-10-14), each a named constant below:
 //   - Kalshi rows Unabated shows an edge on, every league and market the
-//     settings scan (alts included, moneylines through a derived ticker);
+//     settings scan (alts included, moneylines and main numbers through a derived ticker);
 //   - fair = Unabated's own (`ge` on the row), no cross-check;
 //   - Kalshi's live all-in price (ask + the 7% taker fee, the way Unabated
 //     shows Kalshi) at most 0.1c worse than Unabated's shown price, and at
@@ -167,6 +167,7 @@ function candidateRows(feedState, edgeSettings, now, bookId = KALSHI_BOOK_ID) {
 function contractFromRungs(row) {
   const contracts = (row.venueIds && row.venueIds.kalshiContracts) || {};
   const found = Object.entries(contracts).filter(([, target]) => target.lineKey === row.key);
+  if (found.length === 0 && !row.isAlt) return derivedMainNumberContract(row);
   if (found.length === 0) return { reason: "no_ticker", detail: "no Kalshi rung names this line" };
   if (found.length > 1) return { reason: "no_ticker", detail: `${found.length} Kalshi rungs name this line: ${found.map(([key]) => key).join(", ")}` };
   const [sourceKey, target] = found[0];
@@ -176,6 +177,53 @@ function contractFromRungs(row) {
   const match = KALSHI_CONTRACT_RE.exec(sourceKey);
   if (!match) return { reason: "no_ticker", detail: `rung id ${sourceKey} is not a Kalshi contract` };
   return { ticker: `${match[2]}-${match[3]}-${match[4]}`, side: match[1] === "Y" ? "yes" : "no", sourceKey, derived: false };
+}
+
+// A Kalshi main line's contract, which the feed never carries: Unabated's
+// ladder leaves out the rung at the main number (the fixture's 52.5 main
+// hangs 50.5/51.5/53.5/54.5; Place refused a live Under 43.5 main on
+// 2026-10-17), and main lines carry no id. Every rung on the line's OWN
+// ladder, on its side of zero, shares its contract side, series, event and
+// (spreads) team code, and Kalshi names a strike X.5 as X+1 (51.5 -> "-52",
+// -35.5 -> "WSU36"), so the main number's ticker is the siblings' with the
+// row's strike. Inferred from Kalshi's naming like the moneyline: `derived`,
+// and marketMismatch's ticker, floor_strike, side and team checks are its
+// existence check before any order.
+//   {ticker, side, sourceKey: null, derived: true} or {reason, detail}
+function derivedMainNumberContract(row) {
+  const contracts = (row.venueIds && row.venueIds.kalshiContracts) || {};
+  const seriesKind = row.betTypeId === BET_TYPE_SPREAD ? "SPREAD" : row.betTypeId === BET_TYPE_TOTAL ? "TOTAL" : null;
+  if (!seriesKind) return { reason: "no_ticker", detail: `bet type ${row.betTypeId} has no main-number ticker` };
+  // A spread ladder that crosses zero trades the other team's market past it
+  // (-1.5 main: -2.5 is "A wins by over 2.5", +0.5 is NO on "B wins by over
+  // 0.5"), so only the rungs on the main number's side of zero vouch for it.
+  const onRowSide = (target) => seriesKind !== "SPREAD" || (target.points < 0) === (row.points < 0);
+  const siblings = Object.entries(contracts).filter(([, target]) => target.mainKey === row.key && onRowSide(target));
+  if (siblings.length === 0) return { reason: "no_ticker", detail: "no Kalshi rung names this line, and its ladder has no rungs on its side to derive the main number from" };
+  const absPoints = Math.abs(row.points);
+  const strikeNumber = absPoints + 0.5;
+  if (!Number.isInteger(strikeNumber)) return { reason: "no_ticker", detail: `main number ${row.points} is not a half point` };
+  let shared = null;
+  for (const [sourceKey] of siblings) {
+    const match = KALSHI_CONTRACT_RE.exec(sourceKey);
+    if (!match || !match[2].endsWith(seriesKind)) return { reason: "no_ticker", detail: `ladder rung ${sourceKey} is not a Kalshi ${seriesKind} contract` };
+    const strike = seriesKind === "SPREAD" ? SPREAD_STRIKE_RE.exec(match[4]) : /^\d+$/.test(match[4]) ? [match[4], ""] : null;
+    if (!strike) return { reason: "no_ticker", detail: `ladder rung ${sourceKey} has no readable strike` };
+    const shape = { prefix: match[1], series: match[2], eventSuffix: match[3], teamCode: strike[1] };
+    if (shared && (shared.prefix !== shape.prefix || shared.series !== shape.series || shared.eventSuffix !== shape.eventSuffix || shared.teamCode !== shape.teamCode)) {
+      return { reason: "no_ticker", detail: `ladder rungs disagree: ${shared.prefix}-${shared.series}-${shared.eventSuffix}-${shared.teamCode} and ${sourceKey}` };
+    }
+    shared = shape;
+  }
+  const yes = shared.prefix === "Y";
+  // YES is "<team> wins by over X": the favorite's side, a negative number.
+  if (seriesKind === "SPREAD" && yes !== (row.points < 0)) {
+    return { reason: "no_ticker", detail: `main number ${row.points} reads ${shared.prefix} rungs on its own side of zero` };
+  }
+  if (seriesKind === "TOTAL" && yes !== (row.sideIndex === SIDE_AWAY_OR_OVER)) {
+    return { reason: "no_ticker", detail: `${row.sideLabel || `side ${row.sideIndex}`} ladder carries ${shared.prefix} rungs` };
+  }
+  return { ticker: `${shared.series}-${shared.eventSuffix}-${shared.teamCode}${strikeNumber}`, side: yes ? "yes" : "no", sourceKey: null, derived: true };
 }
 
 // Kalshi's team code for each Unabated side, read off the game's full-game
@@ -670,7 +718,7 @@ module.exports = {
   KALSHI_BOOK_ID, NOVIG_BOOK_ID, VENUE_KALSHI, VENUE_NOVIG, NOVIG_EVENT_PREGAME, KELLY_BANKROLL, NOVIG_KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
   MAX_LINE_AGE_MS, KALSHI_TAKER_FEE_RATE, REASONS,
   kalshiAllInPrice, probToAmerican, unabatedAllInOf, candidateRows,
-  contractFromRungs, spreadTeamCodes, derivedMoneylineContract, resolveKalshiContract,
+  contractFromRungs, derivedMainNumberContract, spreadTeamCodes, derivedMoneylineContract, resolveKalshiContract,
   parseKalshiOrderbook, quoteOf, decideRow, decisionSignature, moneylineTeamMatches, marketMismatch, clientOrderIdOf,
   heldOtherSide, unpricedHolding, kalshiStartMsOf, earliestStartMs, eventTickerOf,
   resolveNovigOutcome, novigOutcomeIndex, novigContractOf, novigQuoteOf, novigHeldOtherSide, novigMarketMismatch,
