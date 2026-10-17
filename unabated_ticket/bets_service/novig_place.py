@@ -59,12 +59,12 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from unabated_ticket.bets_service.manual_orders import (
-    PRICE_TOLERANCE, STATUS_FILLED, STATUS_PARTIAL, STATUS_REFUSED, STATUS_REJECTED, STATUS_UNFILLED, STATUS_UNKNOWN,
+    PRICE_TOLERANCE, STATUS_FILLED, STATUS_PARTIAL, STATUS_REFUSED, STATUS_REJECTED, STATUS_UNKNOWN,
     VENUE_NOVIG, _cents, _is_number, _iso_time, optional_read_at, unseen_manual_fill,
 )
 from unabated_ticket.bets_service.novig_orders import (FINAL_ORDER_STATUSES, GEO_STATUS, QTY_PER_DOLLAR, STATUS_OPEN,
-                                                       NovigError, NovigOrderClient, error_code_of, is_on_price_grid,
-                                                       order_totals, qty_for_stake)
+                                                       NovigError, NovigOrderClient, error_code_of, fill_outcome,
+                                                       is_on_price_grid, order_totals, qty_for_stake)
 from unabated_ticket.bets_service.novig_taker_desk import (DEFINITE_REJECTION_STATUSES, MAX_HOLDINGS_AGE_SEC,
                                                            UUID_PATTERN, line_context_of)
 from unabated_ticket.bets_service.store import BetsStore
@@ -294,8 +294,8 @@ class ManualNovigDesk:
             self._update(client_order_id, {"status": STATUS_UNKNOWN, "error": f"never read final; fills read failed: {error}"})
             log.error("novig place %s: order %s never read final and its fills could not be read: %s",
                       client_order_id, order_id, error)
-            return {"status": STATUS_UNKNOWN, "message": "Novig took the order but has not said what filled. "
-                                                         "Check Novig before placing again."}
+            return {"status": STATUS_UNKNOWN, "message": "Novig took the order but has not said what filled, and its "
+                                                         "fills could not be read. Check Novig before placing again."}
         if filled >= quantity:
             return self._record_fills(client_order_id, quote, quantity, filled, cost, fee)
         paid = round(cost + fee, 5)
@@ -334,7 +334,7 @@ class ManualNovigDesk:
     def _record_fills(self, client_order_id: str, quote: dict, quantity: int, filled: int, cost: float,
                       fee: float) -> dict:
         paid = round(cost + fee, 5)
-        outcome = STATUS_UNFILLED if filled == 0 else STATUS_FILLED if filled >= quantity else STATUS_PARTIAL
+        outcome = fill_outcome(filled, quantity)
         self._update(client_order_id, {"status": outcome, "count_filled": filled, "cost_filled": paid, "error": None})
         log.info("novig place %s: %s, %d of %d for $%.2f", client_order_id, outcome, filled, quantity, paid)
         return {"status": outcome, "outcomeId": quote["outcomeId"], "count": quantity, "filled": filled, "cost": paid,

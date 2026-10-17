@@ -154,31 +154,48 @@ def test_a_lost_place_order_is_adopted_by_client_id_a_minute_on_or_marked_never_
 
 def test_an_unconfirmed_place_order_is_confirmed_once_novig_shows_it_final():
     class OrderClient(FakeClient):
-        def __init__(self, fills, order_read):
-            super().__init__(fills)
-            self.order_read = order_read
+        """The poll's own fills read sees `poll_fills`; the order's fills, read after its final status, `order_fills`."""
+        def __init__(self, order_read, order_fills, listed=None):
+            super().__init__([])
+            self.order_read, self.order_fills, self.listed, self.order_fill_reads = order_read, order_fills, listed, []
+
+        def fills(self, order_id=None, outcome_id=None, starts_after_ms=None):
+            if order_id is None:
+                return super().fills(starts_after_ms=starts_after_ms)
+            self.order_fill_reads.append(order_id)
+            return self.order_fills
 
         def get_order(self, order_id):
             if isinstance(self.order_read, Exception):
                 raise self.order_read
             return self.order_read
 
+        def find_order_by_client_id(self, outcome_id, client_id):
+            assert (outcome_id, client_id) == (OUTCOME, "00000000-0000-4000-8000-000000000001")
+            return self.listed
+
     def confirmed_by(client, requested=1000):
         confirmed = []
-        unconfirmed = [{"client_order_id": "nman-1", "novig_order_id": "o1", "count_requested": requested}]
+        unconfirmed = [{"client_order_id": "nman-00000000-0000-4000-8000-000000000001", "novig_order_id": "o1",
+                        "outcome_id": OUTCOME, "count_requested": requested}]
         NovigSubaccountSource("place", client, lambda: {"o1": CONTEXT}, now=lambda: NOW,
                               unconfirmed_orders=lambda before: list(unconfirmed) if before <= NOW - timedelta(seconds=59) else [],
-                              confirm_order=lambda *args: confirmed.append(args)).fetch()
+                              confirm_order=lambda *args: confirmed.append(args[1:])).fetch()
         return confirmed
 
-    assert confirmed_by(OrderClient([fill(qty=1000, cost="4.65000")], (200, {"status": "FILLED"}))) == [("nman-1", "filled", 1000, 4.65)]
-    assert confirmed_by(OrderClient([fill(qty=400, cost="1.86000")], (200, {"status": "CANCELED"}))) == [("nman-1", "partial", 400, 1.86)]
-    assert confirmed_by(OrderClient([], (200, {"status": "CANCELED"}))) == [("nman-1", "unfilled", 0, 0.0)]
+    filled = OrderClient((200, {"status": "FILLED"}), [fill(qty=1000, cost="4.65000")])
+    assert confirmed_by(filled) == [("filled", 1000, 4.65)]
+    assert filled.order_fill_reads == ["o1"], "the order's fills are read after its final status"
+    assert confirmed_by(OrderClient((200, {"status": "CANCELED"}), [fill(qty=400, cost="1.86000")])) == [("partial", 400, 1.86)]
+    assert confirmed_by(OrderClient((200, {"status": "CANCELED"}), [])) == [("unfilled", 0, 0.0)]
+    # Novig 404s the order: its listing by clientId decides; another order id or none listed waits.
+    assert confirmed_by(OrderClient((404, {}), [fill()], listed={"orderId": "o1", "status": "FILLED"})) == [("filled", 1000, 4.65)]
+    assert confirmed_by(OrderClient((404, {}), [fill()], listed={"orderId": "o2", "status": "FILLED"})) == []
+    assert confirmed_by(OrderClient((404, {}), [fill()], listed=None)) == []
     # Not final yet, a FILLED order whose fills have not all landed, a failed read: left for the next poll.
-    assert confirmed_by(OrderClient([fill()], (200, {"status": "PENDING"}))) == []
-    assert confirmed_by(OrderClient([fill(qty=400)], (200, {"status": "FILLED"}))) == []
-    assert confirmed_by(OrderClient([fill()], (404, {}))) == []
-    assert confirmed_by(OrderClient([fill()], OSError("reset"))) == []
+    assert confirmed_by(OrderClient((200, {"status": "PENDING"}), [fill()])) == []
+    assert confirmed_by(OrderClient((200, {"status": "FILLED"}), [fill(qty=400)])) == []
+    assert confirmed_by(OrderClient(OSError("reset"), [fill()])) == []
 
 
 def test_a_market_no_context_names_is_re_read_every_ten_minutes_not_every_poll():

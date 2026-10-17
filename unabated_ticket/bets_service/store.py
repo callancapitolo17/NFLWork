@@ -310,7 +310,7 @@ ORDER BY placed_at
 # Novig Place orders Novig named but never showed final to the desk: settled by
 # Place's sub-account read once Novig shows them final.
 _SELECT_UNCONFIRMED_NOVIG_PLACE = """
-SELECT client_order_id, novig_order_id, count_requested
+SELECT client_order_id, novig_order_id, ticker, count_requested
 FROM manual_orders
 WHERE venue = 'novig' AND status = 'unknown' AND novig_order_id IS NOT NULL AND placed_at <= ? AND placed_at >= ?
 ORDER BY placed_at
@@ -537,18 +537,25 @@ SELECT id FROM bets WHERE venue = 'kalshi'
 # tracked) once, under the sub-account read that knows its board line. A
 # sub-account copy with no board line (unmatchable: an order no desk names,
 # or a lost Place send not yet adopted) sizes nothing, so then the app's copy
-# is served instead of it. Either way one copy.
+# is served instead of it. Either way one copy, judged inside the window, so a
+# copy the window drops never hides the other. Uncorrelated IN lists, so DuckDB
+# hash-joins them (a correlated EXISTS here ran as a nested loop: seconds at
+# tens of thousands of rows, under the store lock).
 _SELECT_WINDOW = """
-SELECT b.record FROM bets AS b
-WHERE (b.status = 'open' OR b.closed_at IS NULL OR b.closed_at >= ?)
-  AND NOT (b.venue = 'novig' AND EXISTS (
-      SELECT 1 FROM bets AS sub
-      WHERE sub.id IN (b.id || ':place', b.id || ':bot')
-        AND json_extract_string(sub.record, '$.unmatchable') IS NULL))
-  AND NOT (b.venue = 'novig' AND regexp_matches(b.id, ':(place|bot)$')
-           AND json_extract_string(b.record, '$.unmatchable') IS NOT NULL
-           AND EXISTS (SELECT 1 FROM bets AS app WHERE app.id = regexp_replace(b.id, ':(place|bot)$', '')))
-ORDER BY b.placed_at DESC, b.id
+WITH windowed AS (
+    SELECT id, venue, record, placed_at,
+           venue = 'novig' AND regexp_matches(id, ':(place|bot)$') AS is_sub_account,
+           regexp_replace(id, ':(place|bot)$', '') AS novig_order_key,
+           json_extract_string(record, '$.unmatchable') IS NULL AS names_game
+    FROM bets
+    WHERE status = 'open' OR closed_at IS NULL OR closed_at >= ?
+)
+SELECT record FROM windowed
+WHERE NOT (venue = 'novig' AND NOT is_sub_account
+           AND id IN (SELECT novig_order_key FROM windowed WHERE is_sub_account AND names_game))
+  AND NOT (is_sub_account AND NOT names_game
+           AND novig_order_key IN (SELECT id FROM windowed WHERE venue = 'novig' AND NOT is_sub_account))
+ORDER BY placed_at DESC, id
 """
 
 # Timestamps come back as epoch seconds: reading a TIMESTAMPTZ into Python
@@ -1103,12 +1110,14 @@ class BetsStore:
     def unconfirmed_novig_place_orders(self, placed_before: datetime) -> list[dict]:
         """Novig Place orders with a Novig id still 'unknown' (never read final,
         or their fills unread), placed at or before `placed_before` and within
-        UNCONFIRMED_NOVIG_PLACE_WINDOW of it: [{client_order_id, novig_order_id, count_requested}]."""
+        UNCONFIRMED_NOVIG_PLACE_WINDOW of it: [{client_order_id, novig_order_id,
+        outcome_id, count_requested}]."""
         with self._lock:
             rows = self._con.execute(_SELECT_UNCONFIRMED_NOVIG_PLACE,
                                      [placed_before, placed_before - UNCONFIRMED_NOVIG_PLACE_WINDOW]).fetchall()
-        return [{"client_order_id": client_order_id, "novig_order_id": novig_order_id, "count_requested": count_requested}
-                for client_order_id, novig_order_id, count_requested in rows]
+        return [{"client_order_id": client_order_id, "novig_order_id": novig_order_id, "outcome_id": outcome_id,
+                 "count_requested": count_requested}
+                for client_order_id, novig_order_id, outcome_id, count_requested in rows]
 
     def confirm_novig_place_order(self, client_order_id: str, status: str, filled: int, paid: float,
                                   at: datetime) -> None:

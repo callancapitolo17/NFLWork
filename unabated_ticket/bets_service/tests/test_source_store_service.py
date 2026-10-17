@@ -1209,10 +1209,16 @@ def test_an_order_the_novig_app_feed_and_a_sub_account_both_hold_is_served_once(
     store.upsert_bets([novig("novig:o1", "novig_rest"), novig("novig:o1:place", "novig_place"),
                        novig("novig:o2", "novig_rest"), novig("novig:o2:bot", "novig_bot"),
                        novig("novig:o3", "novig_rest"), record("kalshi:a:yes", "open", None),
+                       novig("novig:o6", "novig_rest"), {**novig("novig:o6:place", "novig_place"), "unmatchable": None},
                        novig("novig:o4", "novig_rest"),
                        {**novig("novig:o4:place", "novig_place"), "unmatchable": "no board line on record"},
                        {**novig("novig:o5:place", "novig_place"), "unmatchable": "no board line on record"}], seen)
     served = sorted(bet["id"] for bet in store.load_bets(30, seen))
     # o4's sub-account copy names no game (it would size nothing): the app's copy is served instead;
-    # o5's is the only copy, so it is served.
-    assert served == ["kalshi:a:yes", "novig:o1:place", "novig:o2:bot", "novig:o3", "novig:o4", "novig:o5:place"]
+    # o5's is the only copy, so it is served; o6's names its game as the sources write it (unmatchable null).
+    assert served == ["kalshi:a:yes", "novig:o1:place", "novig:o2:bot", "novig:o3", "novig:o4", "novig:o5:place",
+                      "novig:o6:place"]
+    # A sub-account copy closed before the window does not hide an app copy inside it.
+    old_close = {**novig("novig:o7:place", "novig_place"), "status": "won", "closedAt": "2026-08-01T00:00:00Z"}
+    store.upsert_bets([{**novig("novig:o7", "novig_rest"), "status": "won", "closedAt": "2026-09-11T20:00:00Z"}, old_close], seen)
+    assert "novig:o7" in {bet["id"] for bet in store.load_bets(30, seen)}

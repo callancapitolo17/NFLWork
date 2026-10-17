@@ -29,7 +29,8 @@ through `note_settled` (BetsStore.note_novig_place_settled, an UPDATE of
 manual_orders.settled_at) and a restart never moves it. For the same reason
 this read also confirms Place's UNCONFIRMED orders (`unconfirmed_orders` /
 `confirm_order`): one Novig named but never showed final while Cal waited is
-read again here until Novig shows it final, then given what its fills say. It
+read again here (by clientId when its own read fails) until Novig shows it
+final, then given what its fills say. It
 also adopts Place's LOST orders (`lost_orders` / `adopt_order`): a
 Place send Novig never answered has no order id, so no fill could ever be
 named; once it is LOST_ORDER_LOOKUP_AFTER_SEC old the order is looked up by
@@ -51,8 +52,9 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from unabated_ticket.bets_service.normalize import EASTERN, json_clean, round_cents, utc_now_iso
-from unabated_ticket.bets_service.novig_orders import (FINAL_ORDER_STATUSES, MARKET_SETTLED, QTY_PER_DOLLAR,
-                                                       STATUS_FILLED, NovigError, NovigOrderClient, order_totals)
+from unabated_ticket.bets_service.novig_orders import FINAL_ORDER_STATUSES, MARKET_SETTLED, QTY_PER_DOLLAR
+from unabated_ticket.bets_service.novig_orders import STATUS_FILLED as NOVIG_STATUS_FILLED
+from unabated_ticket.bets_service.novig_orders import NovigError, NovigOrderClient, fill_outcome, order_totals
 from unabated_ticket.bets_service.sources.novig import probability_to_american
 
 log = logging.getLogger(__name__)
@@ -74,7 +76,7 @@ NoteSettled = Callable[[str, datetime], datetime]
 LostOrders = Callable[[datetime], list[dict]]
 # (client_order_id, Novig order id or None when Novig lists it nowhere) -> None.
 AdoptOrder = Callable[[str, str | None], None]
-# placed_before -> [{client_order_id, novig_order_id, count_requested}]: Place orders Novig named but never showed final.
+# placed_before -> [{client_order_id, novig_order_id, outcome_id, count_requested}]: Place orders Novig named but never showed final.
 UnconfirmedOrders = Callable[[datetime], list[dict]]
 # (client_order_id, 'filled' | 'partial' | 'unfilled', contracts filled, dollars paid) -> None.
 ConfirmOrder = Callable[[str, str, int, float], None]
@@ -228,7 +230,7 @@ class NovigSubaccountSource:
             if not isinstance(order_id, str) or not order_id:
                 raise NovigError(f"fill {fill.get('fillId') or '?'} names no order")
             by_order.setdefault(order_id, []).append(fill)
-        self._confirm_unconfirmed_orders(now, by_order)
+        self._confirm_unconfirmed_orders(now)
         contexts = self._contexts()
         fetched_at = utc_now_iso()
         markets_this_poll: dict[str, dict] = {}
@@ -284,31 +286,45 @@ class NovigSubaccountSource:
             self._settled_markets[market_id] = (market, now)
         return market
 
-    def _confirm_unconfirmed_orders(self, now: datetime, by_order: dict[str, list[dict]]) -> None:
-        """Give each Place order Novig never showed final while Cal waited what
-        this poll's fills say, once Novig shows it final. A FILLED order whose
-        fills have not all landed yet waits for the next poll; a failed read too."""
+    def _confirm_unconfirmed_orders(self, now: datetime) -> None:
+        """Give each Place order Novig never showed final while Cal waited its
+        fills, once Novig shows it final: its own read, or by clientId on its
+        outcome's order lists when that read fails (Novig can 404 an order).
+        The fills are read after the final status, so none can land between.
+        A FILLED order whose fills have not all landed waits for the next
+        poll; a failed read too."""
         if self._unconfirmed_orders is None or self._confirm_order is None:
             return
         for order in self._unconfirmed_orders(now - timedelta(seconds=LOST_ORDER_LOOKUP_AFTER_SEC)):
             client_order_id = order["client_order_id"]
             order_id = order["novig_order_id"]
             try:
-                status, reply = self._client.get_order(order_id)
-                order_status = reply.get("status") if status == 200 and isinstance(reply, dict) else None
+                order_status = self._final_status_of(order)
                 if order_status not in FINAL_ORDER_STATUSES:
                     continue
-                filled, cost, fee = order_totals(by_order.get(order_id, []))
+                filled, cost, fee = order_totals(self._client.fills(order_id=order_id))
             except (NovigError, OSError) as error:
                 log.error("%s: unconfirmed order %s: read failed, still unconfirmed: %s", self.name, client_order_id, error)
                 continue
             requested = order["count_requested"]
-            if order_status == STATUS_FILLED and filled < requested:
+            if order_status == NOVIG_STATUS_FILLED and filled < requested:
                 continue
-            outcome = "unfilled" if filled == 0 else "filled" if filled >= requested else "partial"
+            outcome = fill_outcome(filled, requested)
             self._confirm_order(client_order_id, outcome, filled, round(cost + fee, 5))
             log.warning("%s: unconfirmed order %s is %s on Novig: %s, %d of %d", self.name, client_order_id,
                         order_status, outcome, filled, requested)
+
+    def _final_status_of(self, order: dict) -> str | None:
+        """Novig's status for an unconfirmed Place order: its own read, else
+        its listing by clientId; None when neither names it."""
+        status, reply = self._client.get_order(order["novig_order_id"])
+        if status == 200 and isinstance(reply, dict):
+            return reply.get("status")
+        novig_client_id = order["client_order_id"].removeprefix(PLACE_ORDER_ID_PREFIX)
+        listed = self._client.find_order_by_client_id(order["outcome_id"], novig_client_id)
+        if listed and listed.get("orderId") == order["novig_order_id"]:
+            return listed.get("status")
+        return None
 
     def _adopt_lost_orders(self, now: datetime) -> None:
         """Give each Place order Novig never answered its Novig id off Novig's

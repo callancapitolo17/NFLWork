@@ -908,7 +908,7 @@ function createRunner(deps) {
   async function novigCatalogFor(rows, maxAgeMs) {
     const leagues = rows.map((row) => NOVIG_LEAGUE_OF[row.league]).filter(Boolean);
     const cached = novigCatalog;
-    if (maxAgeMs > 0 && cached && now() - cached.readAt <= maxAgeMs && leagues.every((league) => cached.leagues.has(league))) {
+    if (maxAgeMs > 0 && leagues.length && cached && now() - cached.readAt <= maxAgeMs && leagues.every((league) => cached.leagues.has(league))) {
       return { index: cached.index, readAt: cached.readAt, reused: true };
     }
     const readAt = now();
@@ -989,9 +989,7 @@ function createRunner(deps) {
   async function novigQuoteNow(params) {
     const spec = kalshiLineSpecOf(params);
     const startedAt = now();
-    const answer = await novigQuoteOfSpec(spec);
-    const catalog = answer.catalog;
-    delete answer.catalog;
+    const { answer, catalog } = await novigQuoteOfSpec(spec);
     const stalledMs = Math.round(loopDelay.max / 1e6);
     loopDelay.reset();
     logInfo(`novig quote ${spec.eventId} ${answer.label || `bet type ${spec.betTypeId} side ${spec.sideIndex} ${spec.points}`}: `
@@ -1002,15 +1000,15 @@ function createRunner(deps) {
     return answer;
   }
 
-  // novigQuoteNow's answer, plus `catalog` {reused, readAt, readsMs} for its log line once the outcome was found.
+  // {answer: novigQuoteNow's answer, catalog: {reused, readAt, readsMs} for its log line once the outcome was found, else null}.
   async function novigQuoteOfSpec(spec) {
     const board = feedState;
-    if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
+    if (!board) return { answer: { ok: false, reason: "no_board", detail: "the board has not loaded yet" }, catalog: null };
     const found = Object.values(board.lines).filter((line) => line.bookId === taker.NOVIG_BOOK_ID
       && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
       && line.sideIndex === spec.sideIndex && (line.points ?? null) === spec.points);
     if (found.length !== 1) {
-      return { ok: false, reason: "no_line", detail: `the board holds ${found.length} Novig lines for game ${spec.eventId} at that market, side and number` };
+      return { answer: { ok: false, reason: "no_line", detail: `the board holds ${found.length} Novig lines for game ${spec.eventId} at that market, side and number` }, catalog: null };
     }
     const row = feedLib.describeLine(found[0], board);
     const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName };
@@ -1025,9 +1023,9 @@ function createRunner(deps) {
         contract = taker.novigContractOf(row, catalog.index);
       }
     } catch (error) {
-      return { ok: false, ...fields, reason: "no_outcome", detail: `Novig's catalog unread: ${error.message}` };
+      return { answer: { ok: false, ...fields, reason: "no_outcome", detail: `Novig's catalog unread: ${error.message}` }, catalog: null };
     }
-    if (contract.reason) return { ok: false, ...fields, reason: contract.reason, detail: contract.detail };
+    if (contract.reason) return { answer: { ok: false, ...fields, reason: contract.reason, detail: contract.detail }, catalog: null };
     const position = { ...fields, outcomeId: contract.outcomeId, otherOutcomeId: contract.otherOutcomeId, marketId: contract.marketId };
     // The book, the market and its event at once (the catalog names the event; the check confirms it is the market's).
     const listedEventId = catalog.index.get(contract.outcomeId).market.eventId;
@@ -1036,17 +1034,17 @@ function createRunner(deps) {
       getNovigJson(`${novigMarketUrl(contract.marketId)}/book`).then((book) => ({ book }), (error) => ({ error })),
       readNovigMarketMismatch(row, contract, listedEventId),
     ]);
-    const timing = { catalog: { reused: catalog.reused, readAt: catalog.readAt, readsMs: now() - readsStartedAt } };
+    const timing = { reused: catalog.reused, readAt: catalog.readAt, readsMs: now() - readsStartedAt };
     let quote;
     try {
       if (bookRead.error) throw bookRead.error;
       quote = taker.novigQuoteOf(bookRead.book, contract);
     } catch (error) {
-      return { ok: false, ...position, reason: "no_book", detail: error.message, ...timing };
+      return { answer: { ok: false, ...position, reason: "no_book", detail: error.message }, catalog: timing };
     }
-    if (mismatch) return { ok: false, ...position, reason: "market_mismatch", detail: mismatch, ...timing };
-    if (!quote) return { ok: false, ...position, reason: "no_book", detail: `nothing rests on the other side of Novig market ${contract.marketId}`, ...timing };
-    return { ok: true, ...position, price: quote.ask, depth: quote.depth, novigBaseUrl, line: taker.novigLineOf(row), ...timing };
+    if (mismatch) return { answer: { ok: false, ...position, reason: "market_mismatch", detail: mismatch }, catalog: timing };
+    if (!quote) return { answer: { ok: false, ...position, reason: "no_book", detail: `nothing rests on the other side of Novig market ${contract.marketId}` }, catalog: timing };
+    return { answer: { ok: true, ...position, price: quote.ask, depth: quote.depth, novigBaseUrl, line: taker.novigLineOf(row) }, catalog: timing };
   }
 
   // Kalshi's start for an event as epoch ms, or null when it lists none or
