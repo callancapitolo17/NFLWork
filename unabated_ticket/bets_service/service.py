@@ -1491,8 +1491,10 @@ def novig_subaccount_sources(taker_store: TakerStore | None, store: BetsStore) -
         log.info("novig_bot: %s, not read", reason)
     place_client, reason = novig_trading_client(config.NOVIG_PLACE_KEY_ID, config.NOVIG_PLACE_PRIVATE_KEY_PATH, "Place")
     if place_client is not None:
-        sources.append(NovigSubaccountSource("place", place_client, store.novig_place_order_contexts,
-                                             note_settled=store.note_novig_place_settled))
+        sources.append(NovigSubaccountSource(
+            "place", place_client, store.novig_place_order_contexts, note_settled=store.note_novig_place_settled,
+            lost_orders=store.lost_novig_place_orders,
+            adopt_order=lambda client_order_id, order_id: store.adopt_novig_place_order(client_order_id, order_id, _now())))
     else:
         log.info("novig_place: %s, not read", reason)
     return sources

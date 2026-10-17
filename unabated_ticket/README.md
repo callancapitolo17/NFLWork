@@ -1788,7 +1788,7 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   the open bets it read while confirming are UPSERTed into `bets` so the
   next `/bets.json` has the ticket. `POST /place_kalshi.json` with
   `{clickId, eventId, periodTypeId, betTypeId, sideIndex, points|null, stake,
-  ticketAllIn, kalshiReadAt}` → `{ok, status: filled | partial | unfilled |
+  ticketAllIn, kalshiReadAt, novigReadAt|null}` → `{ok, status: filled | partial | unfilled |
   rejected | unknown | refused, message, count?, cost?}` — **buys contracts on
   Cal's main Kalshi account** (*Ticket → Place*, panel or phone; the tailnet
   name too); 400 on a bad body, 503 when no Kalshi key is set (Place on
@@ -2961,9 +2961,11 @@ from wherever the phone reaches the VM over Tailscale.
    Unabated's and Kalshi's start, see Two clocks above) or its start is
    unknown; the live all-in (ask + 7% fee) is more than **0.1c worse** than the
    Ticket's price (better always goes); the other side of the market is held
-   (a buy there would sell it); an earlier Place on the same game may have
-   filled after the Kalshi read the stake was sized on (`kalshiReadAt`, the
-   bets payload's `sources.kalshi.fetchedAt`); the click id was already sent.
+   (a buy there would sell it); an earlier Place on the same game, at either
+   venue, may have filled after the read of its venue the stake was sized on
+   (`kalshiReadAt`, the bets payload's `sources.kalshi.fetchedAt`;
+   `novigReadAt`, or every Novig Place when Novig was never read); the click
+   id was already sent.
 3. It sends one immediate-or-cancel limit at the live ask for
    `floor(stake / all-in)` contracts, `client_order_id` `uman-<clickId>`, so
    nothing rests; the reply reads filled, partial, unfilled (the price was
@@ -2997,14 +2999,16 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
    event the taker's way (`novigContractOf`, `novigQuoteOf`,
    `novigMarketMismatch`: open, pregame, no pregame fee, the row's type,
    number and side by the outcome's own name).
-2. It refuses, sending nothing, when: the game has started; the live price is
-   off Novig's grid or more than **0.1c worse** than the Ticket's (a pregame
-   take pays no fee); an open straight Novig bet is on the other outcome; a
-   Novig read the stake counts (`novig`, `novig_place`, and `novig_bot` when
-   it is read) is failing or over 5 minutes old; a Novig Place on the game may
-   have filled after `novigReadAt` (the oldest of those reads, `place.js
-   readAtsOf`), or a Kalshi Place after `kalshiReadAt`; the click id was
-   already sent.
+2. It refuses, sending nothing, when: the game has started or its start is
+   unknown; the runner read a Novig other than the one Place trades
+   (`NOVIG_API_URL`); the live price is off Novig's grid or more than **0.1c
+   worse** than the Ticket's (a pregame take pays no fee); an open straight
+   Novig bet is on the other outcome; a Novig read the stake counts (`novig`,
+   `novig_place`, and `novig_bot` when it is read) is failing, has never run
+   or is over 5 minutes old; a Novig Place on the game may have filled after
+   `novigReadAt` (the oldest of those reads, `place.js readAtsOf`), or a
+   Kalshi Place after `kalshiReadAt` (`manual_orders.unseen_manual_fill`,
+   shared with Place on Kalshi); the click id was already sent.
 3. It buys `floor(stake x 100 / price)` contracts (a Novig contract pays 1c,
    not $1) with ONE immediate-or-cancel order at the live price, clientId the
    click's UUID, row `nman-<clickId>`, never re-sent (Novig does not dedupe
@@ -3012,7 +3016,12 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
    `OPEN` is cancelled. A 451 reads "open the Novig app on your phone" (Novig
    wants a phone location check in the last 3 days). No definite answer, an
    order never read final or unreadable fills read `unknown` and hold the
-   next Place on that game until a read that saw it.
+   next Place on that game until a read that saw it; so does an `unfilled`,
+   since Novig's fills feed can lag the order read. A send Novig never
+   answered has no order id, so no read could ever name its fill: it holds
+   the game whatever the read time until the `novig_place` read, a minute
+   on, finds it on Novig's order lists by clientId and names it, or finds it
+   nowhere and marks it rejected (never sent). Nothing is ever re-sent.
 
 Its rows are in the same `manual_orders` table with `venue = 'novig'`
 (`ticker` = the outcome id, `novig_order_id`, and the board line Place's
@@ -3032,8 +3041,8 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 618 tests) and
-the bets service's pytest suite (854 tests, on the `kalshi_draft/venv`
+the node suite (`npm test` = `node --test tests/*.test.js`, 624 tests) and
+the bets service's pytest suite (866 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`

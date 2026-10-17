@@ -120,3 +120,47 @@ def test_settled_status_reads_keywords_and_fair_value():
     assert settled_status("LOSS", 4.65, 1000) == "lost" and settled_status("PUSH", 4.65, 1000) == "push"
     assert settled_status("TBD", 4.65, 1000) is None
     assert settled_status("0.731", 4.65, 1000) == "won" and settled_status("0.200", 4.65, 1000) == "lost"
+
+
+def test_a_lost_place_order_is_adopted_by_client_id_a_minute_on_or_marked_never_sent():
+    class LookupClient(FakeClient):
+        def __init__(self, fills, listed):
+            super().__init__(fills)
+            self.listed, self.lookups = listed, []
+
+        def find_order_by_client_id(self, outcome_id, client_id):
+            self.lookups.append((outcome_id, client_id))
+            if isinstance(self.listed, Exception):
+                raise self.listed
+            return self.listed
+
+    adopted = []
+    lost = [{"client_order_id": "nman-00000000-0000-4000-8000-000000000001", "outcome_id": OUTCOME}]
+    found = LookupClient([], {"orderId": "o9", "status": "FILLED", "clientId": "00000000-0000-4000-8000-000000000001"})
+    source = NovigSubaccountSource("place", found, dict, now=lambda: NOW, lost_orders=lambda before: list(lost) if before <= NOW else [],
+                                   adopt_order=lambda client_order_id, order_id: adopted.append((client_order_id, order_id)))
+    source.fetch()
+    assert found.lookups == [(OUTCOME, "00000000-0000-4000-8000-000000000001")]
+    assert adopted == [("nman-00000000-0000-4000-8000-000000000001", "o9")]
+    nowhere = LookupClient([], None)
+    NovigSubaccountSource("place", nowhere, dict, now=lambda: NOW, lost_orders=lambda _before: list(lost),
+                          adopt_order=lambda client_order_id, order_id: adopted.append((client_order_id, order_id))).fetch()
+    assert adopted[-1] == ("nman-00000000-0000-4000-8000-000000000001", None)
+    unread = LookupClient([], NovigError("HTTP 500"))
+    NovigSubaccountSource("place", unread, dict, now=lambda: NOW, lost_orders=lambda _before: list(lost),
+                          adopt_order=lambda *_args: adopted.append("never")).fetch()
+    assert "never" not in adopted, "a failed listing read leaves the order lost for the next poll"
+
+
+def test_a_market_no_context_names_is_re_read_every_ten_minutes_not_every_poll():
+    market = {"marketId": MARKET, "eventId": "ev-1", "status": "OPEN", "outcomes": [{"outcomeId": OUTCOME, "status": "TBD"}]}
+    client = FakeClient([fill()], market)
+    clock = {"now": NOW}
+    source = NovigSubaccountSource("place", client, dict, now=lambda: clock["now"])
+    source.fetch()
+    clock["now"] = NOW + timedelta(seconds=30)
+    source.fetch()
+    assert client.market_reads == 1
+    clock["now"] = NOW + timedelta(minutes=11)
+    source.fetch()
+    assert client.market_reads == 2

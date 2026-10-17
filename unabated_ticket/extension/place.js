@@ -87,9 +87,9 @@
   //   readAts   {kalshi, novig} (readAtsOf): the reads the Ticket's stake
   //             was sized on (null: never read)
   //   clickId   a fresh id per click (the server sends each id once)
-  // A Kalshi order needs the Kalshi read; a Novig order needs the Novig read
-  // and sends the Kalshi one too (the server checks for a Place at either
-  // venue the stake has not seen).
+  // An order needs its own venue's read and sends the other venue's too, or
+  // null when that venue was never read (the server checks for a Place at
+  // either venue the stake has not seen).
   function placeRequestOf({ line, stakeInput, readAts, clickId }) {
     const venue = venueOf(line.bookId);
     if (!venue) return { error: "this book has no Place button" };
@@ -103,8 +103,7 @@
       clickId, eventId: line.eventId, periodTypeId: line.periodTypeId, betTypeId: line.betTypeId, sideIndex: line.sideIndex,
       points: line.points ?? null, stake, ticketAllIn: Math.round(ticketAllIn * 1e6) / 1e6,
     };
-    if (venue.venue === "kalshi") return { path: venue.path, body: { ...body, kalshiReadAt: venueReadAt } };
-    return { path: venue.path, body: { ...body, novigReadAt: venueReadAt, kalshiReadAt: readAts.kalshi || null } };
+    return { path: venue.path, body: { ...body, kalshiReadAt: readAts.kalshi || null, novigReadAt: readAts.novig || null } };
   }
 
   // How the reply reads: "ok" (contracts bought), "bad" (the venue refused or

@@ -727,8 +727,10 @@ test("novig_quote: the board's Novig line gives its outcome, market, the other s
     { ok: quote.ok, outcomeId: quote.outcomeId, otherOutcomeId: quote.otherOutcomeId, marketId: quote.marketId, price: quote.price, depth: quote.depth, novigBaseUrl: quote.novigBaseUrl },
     { ok: true, outcomeId: NOVIG_WSU_OUTCOME, otherOutcomeId: NOVIG_DUQ_OUTCOME, marketId: NOVIG_MARKET, price: 0.555, depth: 500000, novigBaseUrl: "https://novig.test" });
   assert.ok(quote.eventStart);
-  assert.deepEqual({ league: quote.line.league, side: quote.line.side, points: quote.line.points, homeTeamId: quote.line.homeTeamId },
-    { league: "cfb", side: "home", points: -35.5, homeTeamId: "717" });
+  assert.deepEqual(quote.line, {
+    league: "cfb", betType: "spread", period: "FG", side: "home", points: -35.5,
+    awayTeam: quote.line.awayTeam, homeTeam: quote.line.homeTeam, awayTeamId: quote.line.awayTeamId, homeTeamId: "717",
+  });
   assert.ok(novig.calls.some((call) => call.url === `https://novig.test/v3/public/catalog/events/${NOVIG_EVENT}`), "the event is checked");
   assert.equal(service.posts.filter((post) => post.route.startsWith("/taker/")).length, 0);
 });
@@ -745,6 +747,22 @@ test("novig_quote: a market charging a pregame fee, a closed market and a number
   closed.runner.stop();
   assert.deepEqual([closedQuote.ok, closedQuote.reason], [false, "market_mismatch"]);
   assert.match(closedQuote.detail, /market status "CLOSED"/);
+  // The catalog down, nothing resting on the other side, a market with one outcome: each refused, nothing thrown.
+  const down = novigFetch();
+  const downImpl = async (url, init) => (url.includes("/catalog/markets?") ? response({ status: 503, body: "down" }) : down(url, init));
+  const noCatalog = await quoteRunner({}, { novigFetch: downImpl, novigBaseUrl: "https://novig.test" });
+  const noCatalogQuote = await noCatalog.runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  noCatalog.runner.stop();
+  assert.deepEqual([noCatalogQuote.ok, noCatalogQuote.reason], [false, "no_outcome"]);
+  assert.match(noCatalogQuote.detail, /catalog unread/);
+  const empty = novigFetch();
+  const emptyImpl = async (url, init) => (url.endsWith("/book")
+    ? response({ body: JSON.stringify({ marketId: NOVIG_MARKET, seq: 1, orders: { [NOVIG_DUQ_OUTCOME]: [], [NOVIG_WSU_OUTCOME]: [] } }) }) : empty(url, init));
+  const noBook = await quoteRunner({}, { novigFetch: emptyImpl, novigBaseUrl: "https://novig.test" });
+  const noBookQuote = await noBook.runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  noBook.runner.stop();
+  assert.deepEqual([noBookQuote.ok, noBookQuote.reason, noBookQuote.outcomeId], [false, "no_book", NOVIG_WSU_OUTCOME]);
+  assert.match(noBookQuote.detail, /nothing rests/);
 });
 
 test("taker: a service without the bot key answers 503, the decision reads off", async () => {

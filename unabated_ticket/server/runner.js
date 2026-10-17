@@ -872,7 +872,7 @@ function createRunner(deps) {
       const contract = resolve(row);
       if (contract.marketId) marketIds.add(contract.marketId);
     }
-    const books = await readBooks(marketIds, (marketId) => getNovigJson(`${novigBaseUrl}/v3/public/catalog/markets/${encodeURIComponent(marketId)}/book`));
+    const books = await readBooks(marketIds, (marketId) => getNovigJson(`${novigMarketUrl(marketId)}/book`));
     return decideRows(pass, rows, taker.VENUE_NOVIG, resolve, (contract) => {
       const read = books.get(contract.marketId);
       if (!read) return null;
@@ -979,19 +979,14 @@ function createRunner(deps) {
     }
     if (contract.reason) return { ok: false, ...fields, reason: contract.reason, detail: contract.detail };
     const position = { ...fields, outcomeId: contract.outcomeId, otherOutcomeId: contract.otherOutcomeId, marketId: contract.marketId };
-    const marketUrl = `${novigBaseUrl}/v3/public/catalog/markets/${encodeURIComponent(contract.marketId)}`;
     let quote;
-    let market;
-    let event;
     try {
-      quote = taker.novigQuoteOf(await getNovigJson(`${marketUrl}/book`), contract);
-      market = await getNovigJson(marketUrl);
-      event = await getNovigJson(`${novigBaseUrl}/v3/public/catalog/events/${encodeURIComponent(market.eventId)}`);
+      quote = taker.novigQuoteOf(await getNovigJson(`${novigMarketUrl(contract.marketId)}/book`), contract);
     } catch (error) {
       return { ok: false, ...position, reason: "no_book", detail: error.message };
     }
-    const mismatch = taker.novigMarketMismatch(market, event, row, contract);
-    if (mismatch) return { ok: false, ...position, reason: "market_mismatch", detail: `Novig market ${contract.marketId}: ${mismatch}` };
+    const mismatch = await readNovigMarketMismatch(row, contract);
+    if (mismatch) return { ok: false, ...position, reason: "market_mismatch", detail: mismatch };
     if (!quote) return { ok: false, ...position, reason: "no_book", detail: `nothing rests on the other side of Novig market ${contract.marketId}` };
     return { ok: true, ...position, price: quote.ask, depth: quote.depth, novigBaseUrl, line: taker.novigLineOf(row) };
   }
@@ -1060,21 +1055,32 @@ function createRunner(deps) {
     }
   }
 
-  // Novig's market and its event, read now, are the row's and take a free
-  // pregame order (taker.novigMarketMismatch), else market_mismatch (fail closed).
-  async function novigMarketConfirmed(decision, row) {
+  function novigMarketUrl(marketId) {
+    return `${novigBaseUrl}/v3/public/catalog/markets/${encodeURIComponent(marketId)}`;
+  }
+
+  // Why Novig's market and its event, read now, are not the row's or do not
+  // take a free pregame order (taker.novigMarketMismatch), an unread market
+  // included (fail closed); null when they are. Shared by the bot's orders
+  // and the Place button's quotes, so neither can skip a check the other has.
+  async function readNovigMarketMismatch(row, contract) {
     let market;
     let event;
     try {
-      market = await getNovigJson(`${novigBaseUrl}/v3/public/catalog/markets/${encodeURIComponent(decision.marketId)}`);
+      market = await getNovigJson(novigMarketUrl(contract.marketId));
       event = await getNovigJson(`${novigBaseUrl}/v3/public/catalog/events/${encodeURIComponent(market.eventId)}`);
     } catch (error) {
-      Object.assign(decision, { reason: "market_mismatch", detail: `Novig market ${decision.marketId} unread: ${error.message}` });
-      return false;
+      return `Novig market ${contract.marketId} unread: ${error.message}`;
     }
-    const mismatch = taker.novigMarketMismatch(market, event, row, { outcomeId: decision.ticker, marketId: decision.marketId });
+    const mismatch = taker.novigMarketMismatch(market, event, row, contract);
+    return mismatch === null ? null : `Novig market ${contract.marketId}: ${mismatch}`;
+  }
+
+  // The bot's order goes only when readNovigMarketMismatch finds nothing; else the decision reads market_mismatch.
+  async function novigMarketConfirmed(decision, row) {
+    const mismatch = await readNovigMarketMismatch(row, { outcomeId: decision.ticker, marketId: decision.marketId });
     if (mismatch === null) return true;
-    Object.assign(decision, { reason: "market_mismatch", detail: `Novig market ${decision.marketId}: ${mismatch}` });
+    Object.assign(decision, { reason: "market_mismatch", detail: mismatch });
     return false;
   }
 

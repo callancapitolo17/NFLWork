@@ -22,7 +22,7 @@ Rules, in order, for every request (validate_novig_place_request's shape):
   6. the Novig reads the stake was sized on are fresh and ok;
   7. no earlier Place on this game may have filled after the read the stake
      was sized on: a Novig Place after `novigReadAt`, a Kalshi Place after
-     `kalshiReadAt` (the stake counts bets at both);
+     `kalshiReadAt` (the stake counts bets at both; manual_orders.unseen_manual_fill);
   8. contracts = floor(stake x 100 / price) (novig_orders.qty_for_stake): a
      Novig contract pays 1c, not $1;
   9. the row is INSERTED (status 'sending', with the board line, so Place's
@@ -39,7 +39,9 @@ Order statuses (manual_orders.status on a Novig row):
             check is over 3 days old); nothing placed
   unknown   no definite answer, the order never read final, it rested, or its
             fills could not be read: it may hold contracts, so the next Place
-            on the game waits for a read that saw it
+            on the game waits for a read that saw it. One Novig never answered
+            has no order id: the novig_place read looks it up by clientId a
+            minute on and gives it its id, or marks it rejected (never sent)
 
 Side effects: a Novig order from Place's sub-account (money); INSERT / UPDATE
 bets.duckdb::manual_orders (venue 'novig'). Network: GET
@@ -47,43 +49,36 @@ bets.duckdb::manual_orders (venue 'novig'). Network: GET
 """
 import logging
 import math
-import re
 import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from unabated_ticket.bets_service.manual_orders import (
-    PRICE_TOLERANCE, STATUS_FILLED, STATUS_PARTIAL, STATUS_REFUSED, STATUS_REJECTED,
-    STATUS_UNFILLED, STATUS_UNKNOWN, _cents, _is_number, _iso_time,
+    PRICE_TOLERANCE, STATUS_FILLED, STATUS_PARTIAL, STATUS_REFUSED, STATUS_REJECTED, STATUS_UNFILLED, STATUS_UNKNOWN,
+    VENUE_NOVIG, _cents, _is_number, _iso_time, optional_read_at, unseen_manual_fill,
 )
 from unabated_ticket.bets_service.novig_orders import (FINAL_ORDER_STATUSES, GEO_STATUS, QTY_PER_DOLLAR, STATUS_OPEN,
                                                        NovigError, NovigOrderClient, error_code_of, is_on_price_grid,
                                                        order_totals, qty_for_stake)
-from unabated_ticket.bets_service.novig_taker_desk import (BET_TYPES, DEFINITE_REJECTION_STATUSES, FINAL_READ_ATTEMPTS,
-                                                           FINAL_READ_SLEEP_SEC, SIDES)
+from unabated_ticket.bets_service.novig_taker_desk import (DEFINITE_REJECTION_STATUSES, FINAL_READ_ATTEMPTS,
+                                                           FINAL_READ_SLEEP_SEC, MAX_HOLDINGS_AGE_SEC, UUID_PATTERN,
+                                                           line_context_of)
 from unabated_ticket.bets_service.store import BetsStore
 
 log = logging.getLogger(__name__)
 
 NOVIG_ORDER_ID_PREFIX = "nman-"
-# Novig's clientId must be a UUID; the panel and phone send crypto.randomUUID().
-UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 RUNNER_NOVIG_QUOTE_PATH = "/novig_quote.json"
-# Novig's price grid runs 0.001 to 0.999.
-MIN_NOVIG_PRICE = 0.001
-MAX_NOVIG_PRICE = 0.999
 # The bets service's Novig reads the stake counted must be at most this old
-# (the Kalshi bot's poll gate).
-NOVIG_READ_MAX_AGE = timedelta(minutes=5)
+# (the Novig bot's holdings gate).
+NOVIG_READ_MAX_AGE = timedelta(seconds=MAX_HOLDINGS_AGE_SEC)
 # Bet types an outcome id exists for: Unabated carries Novig ids on spread and
 # total rungs only, never on a moneyline.
 NOVIG_PLACE_BET_TYPES = (2, 3)
 # Novig's sources whose reads the Ticket's stake counts: Cal's app account and
 # Place's own sub-account (the bot's is added when it is read, service.py).
 NOVIG_PLACE_READ_SOURCES = ("novig", "novig_place")
-VENUE_NOVIG = "novig"
-VENUE_KALSHI = "kalshi"
 
 
 def validate_novig_place_request(body: object) -> dict | str:
@@ -96,7 +91,7 @@ def validate_novig_place_request(body: object) -> dict | str:
         return f"body must be an object, got {type(body).__name__}"
     click_id = body.get("clickId")
     if not isinstance(click_id, str) or not UUID_PATTERN.match(click_id):
-        return f"clickId must be a lowercase UUID (Novig's clientId), got {click_id!r}"
+        return f"clickId must be a UUID (Novig's clientId), got {click_id!r}"
     whole = {}
     for field, allowed in (("eventId", None), ("periodTypeId", None), ("betTypeId", NOVIG_PLACE_BET_TYPES),
                            ("sideIndex", (0, 1))):
@@ -111,37 +106,16 @@ def validate_novig_place_request(body: object) -> dict | str:
     if not _is_number(stake) or not math.isfinite(stake) or stake <= 0:
         return f"stake must be dollars above 0, got {stake!r}"
     ticket_all_in = body.get("ticketAllIn")
-    if not _is_number(ticket_all_in) or not MIN_NOVIG_PRICE <= ticket_all_in <= MAX_NOVIG_PRICE:
-        return f"ticketAllIn must be a probability from {MIN_NOVIG_PRICE} to {MAX_NOVIG_PRICE}, got {ticket_all_in!r}"
+    if not _is_number(ticket_all_in) or not 0 < ticket_all_in < 1:
+        return f"ticketAllIn must be a probability between 0 and 1, got {ticket_all_in!r}"
     novig_read_at = _iso_time(body.get("novigReadAt"))
     if novig_read_at is None:
         return f"novigReadAt must be the ISO time of the Novig read the stake was sized on, got {body.get('novigReadAt')!r}"
-    kalshi_read_at = None
-    if body.get("kalshiReadAt") is not None:
-        kalshi_read_at = _iso_time(body.get("kalshiReadAt"))
-        if kalshi_read_at is None:
-            return f"kalshiReadAt must be an ISO time or null, got {body.get('kalshiReadAt')!r}"
+    kalshi_read_at = optional_read_at(body, "kalshiReadAt")
+    if isinstance(kalshi_read_at, str):
+        return kalshi_read_at
     return {"click_id": click_id, **whole, "points": float(points), "stake": float(stake),
             "ticket_all_in": float(ticket_all_in), "novig_read_at": novig_read_at, "kalshi_read_at": kalshi_read_at}
-
-
-def line_context_of(line: object) -> dict | str:
-    """The runner's board line (taker.js novigLineOf) as manual_orders columns,
-    or what was expected and what was found."""
-    if not isinstance(line, dict):
-        return f"the runner sent no board line, got {line!r}"
-    if not isinstance(line.get("league"), str) or not line["league"]:
-        return f"the line has no league, got {line.get('league')!r}"
-    if line.get("betType") not in BET_TYPES or line.get("side") not in SIDES:
-        return f"the line's market is {line.get('betType')!r} side {line.get('side')!r}"
-    if not isinstance(line.get("period"), str) or not line["period"]:
-        return f"the line has no period, got {line.get('period')!r}"
-    points = line.get("points")
-    if not _is_number(points):
-        return f"the line has no number, got {points!r}"
-    return {"league": line["league"], "bet_type": line["betType"], "period": line["period"], "side": line["side"],
-            "points": float(points), "away_team": line.get("awayTeam"), "home_team": line.get("homeTeam"),
-            "away_team_id": line.get("awayTeamId"), "home_team_id": line.get("homeTeamId")}
 
 
 class ManualNovigDesk:
@@ -211,7 +185,7 @@ class ManualNovigDesk:
             return (f"the runner read Novig at {quote.get('novigBaseUrl')!r} but this desk trades "
                     f"{self._client.base_url}.")
         price = quote.get("price")
-        if not _is_number(price) or not MIN_NOVIG_PRICE <= price <= MAX_NOVIG_PRICE or not is_on_price_grid(price):
+        if not _is_number(price) or not is_on_price_grid(price):
             return f"Novig's price {price!r} is not a price on its grid."
         if not all(isinstance(quote.get(field), str) and quote[field]
                    for field in ("outcomeId", "otherOutcomeId", "marketId")):
@@ -224,7 +198,7 @@ class ManualNovigDesk:
         stale = self._stale_read()
         if stale:
             return stale
-        if self._maybe_unseen_fill(request):
+        if unseen_manual_fill(self._store, request["eventId"], request["kalshi_read_at"], request["novig_read_at"]):
             return ("your last Place on this game is not on the Bets tab yet, so this stake does not count it. "
                     "Wait for the next read (up to a minute) and place again.")
         return None
@@ -240,15 +214,6 @@ class ManualNovigDesk:
             if self._now() - fetched_at > NOVIG_READ_MAX_AGE:
                 return f"the {source} read is over {NOVIG_READ_MAX_AGE.seconds // 60} minutes old, so the stake may miss a bet."
         return None
-
-    def _maybe_unseen_fill(self, request: dict) -> bool:
-        """An earlier Place on this game that may have filled after the read
-        of its venue the stake was sized on (no Kalshi read: any Kalshi Place)."""
-        novig_orders = self._store.manual_orders_maybe_filled_since(request["eventId"], request["novig_read_at"],
-                                                                    venue=VENUE_NOVIG)
-        kalshi_since = request["kalshi_read_at"] or datetime(1970, 1, 1, tzinfo=timezone.utc)
-        kalshi_orders = self._store.manual_orders_maybe_filled_since(request["eventId"], kalshi_since, venue=VENUE_KALSHI)
-        return bool(novig_orders or kalshi_orders)
 
     def _send(self, client_order_id: str, novig_client_id: str, quote: dict, quantity: int) -> dict:
         """ONE IOC buy, never re-sent; then the order read until final and its fills."""

@@ -284,11 +284,27 @@ SELECT novig_order_id, league, bet_type, period, side, points, away_team, home_t
 FROM manual_orders
 WHERE venue = 'novig' AND novig_order_id IS NOT NULL
 """
+# A Place order on the game that may hold contracts the stake's read missed:
+# sent and filled, partly filled, or no definite answer, since the read. A
+# Novig 'unfilled' counts too (its fills are read once, right after the order
+# goes final, and Novig's fills feed can lag that read). A Novig order Novig
+# never answered and never named (no order id) counts whatever the read time:
+# its fill can reach no read until it is named (`lost_novig_place_orders`).
 _SELECT_MANUAL_MAYBE_FILLED = """
 SELECT client_order_id, ticker, status, epoch(placed_at)
 FROM manual_orders
-WHERE event_id = ? AND placed_at >= ? AND status IN ('sending', 'unknown', 'filled', 'partial')
+WHERE event_id = ?
   AND (? IS NULL OR coalesce(venue, 'kalshi') = ?)
+  AND ((placed_at >= ? AND (status IN ('sending', 'unknown', 'filled', 'partial')
+                            OR (coalesce(venue, 'kalshi') = 'novig' AND status = 'unfilled')))
+       OR (coalesce(venue, 'kalshi') = 'novig' AND status = 'unknown' AND novig_order_id IS NULL))
+ORDER BY placed_at
+"""
+# Novig Place orders Novig never answered (no order id): looked up by clientId.
+_SELECT_LOST_NOVIG_PLACE = """
+SELECT client_order_id, ticker
+FROM manual_orders
+WHERE venue = 'novig' AND status = 'unknown' AND novig_order_id IS NULL AND placed_at <= ?
 ORDER BY placed_at
 """
 
@@ -1046,6 +1062,16 @@ class BetsStore:
             }
         return contexts
 
+    def adopt_novig_place_order(self, client_order_id: str, novig_order_id: str | None, at: datetime) -> None:
+        """A lost Novig Place order (no answer, no id) found on Novig's order
+        lists gets its id, so its fills are named from now on; one listed
+        nowhere is marked rejected: it never reached Novig."""
+        if novig_order_id is None:
+            fields = {"status": "rejected", "error": "never reached Novig: in none of its order lists"}
+        else:
+            fields = {"novig_order_id": novig_order_id, "error": "answer lost; found on Novig by clientId"}
+        self.update_manual_order(client_order_id, fields, at)
+
     def note_novig_place_settled(self, novig_order_id: str, at: datetime) -> datetime:
         """Keep when Place's sub-account read first saw this order's market
         SETTLED (only the first sighting is kept); returns the kept time."""
@@ -1067,13 +1093,20 @@ class BetsStore:
                               [*fields.values(), at, client_order_id])
 
     def manual_orders_maybe_filled_since(self, event_id: int, since: datetime, venue: str | None = None) -> list[dict]:
-        """Manual orders on this game placed at or after `since` that may hold
-        contracts (sent and filled, partly filled, or no definite answer), at
-        one venue ('kalshi' | 'novig') or, with venue None, at either."""
+        """Manual orders on this game that may hold contracts the read at
+        `since` missed (_SELECT_MANUAL_MAYBE_FILLED), at one venue ('kalshi' |
+        'novig') or, with venue None, at either."""
         with self._lock:
-            rows = self._con.execute(_SELECT_MANUAL_MAYBE_FILLED, [event_id, since, venue, venue]).fetchall()
+            rows = self._con.execute(_SELECT_MANUAL_MAYBE_FILLED, [event_id, venue, venue, since]).fetchall()
         return [{"client_order_id": client_order_id, "ticker": ticker, "status": status,
                  "placed_at": _epoch_to_iso(placed_at)} for client_order_id, ticker, status, placed_at in rows]
+
+    def lost_novig_place_orders(self, placed_before: datetime) -> list[dict]:
+        """Novig Place orders with no definite answer and no Novig order id,
+        placed at or before `placed_before`: [{client_order_id, outcome_id}]."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_LOST_NOVIG_PLACE, [placed_before]).fetchall()
+        return [{"client_order_id": client_order_id, "outcome_id": ticker} for client_order_id, ticker in rows]
 
     def source_status(self) -> dict[str, dict]:
         """{source: {fetchedAt, ok, error, count}} — fetchedAt/count from the
