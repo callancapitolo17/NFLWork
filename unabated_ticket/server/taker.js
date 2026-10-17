@@ -191,23 +191,23 @@ function contractFromRungs(row) {
 //   {ticker, side, sourceKey: null, derived: true} or {reason, detail}
 function derivedMainNumberContract(row) {
   const contracts = (row.venueIds && row.venueIds.kalshiContracts) || {};
-  const siblings = Object.entries(contracts).filter(([, target]) => target.mainKey === row.key);
-  if (siblings.length === 0) return { reason: "no_ticker", detail: "no Kalshi rung names this line, and its ladder has no rungs to derive the main number from" };
   const seriesKind = row.betTypeId === BET_TYPE_SPREAD ? "SPREAD" : row.betTypeId === BET_TYPE_TOTAL ? "TOTAL" : null;
   if (!seriesKind) return { reason: "no_ticker", detail: `bet type ${row.betTypeId} has no main-number ticker` };
+  // A spread ladder that crosses zero trades the other team's market past it
+  // (-1.5 main: -2.5 is "A wins by over 2.5", +0.5 is NO on "B wins by over
+  // 0.5"), so only the rungs on the main number's side of zero vouch for it.
+  const onRowSide = (target) => seriesKind !== "SPREAD" || (target.points < 0) === (row.points < 0);
+  const siblings = Object.entries(contracts).filter(([, target]) => target.mainKey === row.key && onRowSide(target));
+  if (siblings.length === 0) return { reason: "no_ticker", detail: "no Kalshi rung names this line, and its ladder has no rungs on its side to derive the main number from" };
   const absPoints = Math.abs(row.points);
   const strikeNumber = absPoints + 0.5;
   if (!Number.isInteger(strikeNumber)) return { reason: "no_ticker", detail: `main number ${row.points} is not a half point` };
   let shared = null;
-  for (const [sourceKey, target] of siblings) {
+  for (const [sourceKey] of siblings) {
     const match = KALSHI_CONTRACT_RE.exec(sourceKey);
     if (!match || !match[2].endsWith(seriesKind)) return { reason: "no_ticker", detail: `ladder rung ${sourceKey} is not a Kalshi ${seriesKind} contract` };
     const strike = seriesKind === "SPREAD" ? SPREAD_STRIKE_RE.exec(match[4]) : /^\d+$/.test(match[4]) ? [match[4], ""] : null;
     if (!strike) return { reason: "no_ticker", detail: `ladder rung ${sourceKey} has no readable strike` };
-    // A spread ladder that crosses zero flips which team's market it trades: never mix.
-    if (seriesKind === "SPREAD" && (match[1] === "Y") !== (target.points < 0)) {
-      return { reason: "no_ticker", detail: `ladder rung ${sourceKey} at ${target.points} is on the other team's market` };
-    }
     const shape = { prefix: match[1], series: match[2], eventSuffix: match[3], teamCode: strike[1] };
     if (shared && (shared.prefix !== shape.prefix || shared.series !== shape.series || shared.eventSuffix !== shape.eventSuffix || shared.teamCode !== shape.teamCode)) {
       return { reason: "no_ticker", detail: `ladder rungs disagree: ${shared.prefix}-${shared.series}-${shared.eventSuffix}-${shared.teamCode} and ${sourceKey}` };
@@ -215,8 +215,9 @@ function derivedMainNumberContract(row) {
     shared = shape;
   }
   const yes = shared.prefix === "Y";
+  // YES is "<team> wins by over X": the favorite's side, a negative number.
   if (seriesKind === "SPREAD" && yes !== (row.points < 0)) {
-    return { reason: "no_ticker", detail: `main number ${row.points} is on the other side of zero from its ladder's ${shared.prefix} rungs` };
+    return { reason: "no_ticker", detail: `main number ${row.points} reads ${shared.prefix} rungs on its own side of zero` };
   }
   if (seriesKind === "TOTAL" && yes !== (row.sideIndex === SIDE_AWAY_OR_OVER)) {
     return { reason: "no_ticker", detail: `${row.sideLabel || `side ${row.sideIndex}`} ladder carries ${shared.prefix} rungs` };

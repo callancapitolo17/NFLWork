@@ -96,7 +96,7 @@ test("a main number refuses a ticker when its ladder cannot vouch for one", () =
   const state = boardWithEdge(UNDER_MAIN_KEY, 0.05);
   const row = rowOf(state, UNDER_MAIN_KEY);
   // No rungs hang off the line.
-  assert.match(taker.contractFromRungs({ ...row, key: "nothing" }).detail, /no rungs to derive/);
+  assert.match(taker.contractFromRungs({ ...row, key: "nothing" }).detail, /has no rungs/);
   // A whole number has no X.5 strike.
   assert.match(taker.contractFromRungs({ ...row, points: 52 }).detail, /not a half point/);
   // An alt the map misses is never derived.
@@ -106,10 +106,27 @@ test("a main number refuses a ticker when its ladder cannot vouch for one", () =
   // Rungs that disagree on the event.
   const contracts = { ...row.venueIds.kalshiContracts, "N-KXNCAAFTOTAL-26SEP20OTHER-50": { lineKey: null, mainKey: row.key, points: 49.5, sideIndex: 1 } };
   assert.match(taker.contractFromRungs({ ...row, venueIds: { ...row.venueIds, kalshiContracts: contracts } }).detail, /disagree/);
-  // A spread main on the other side of zero from its ladder's rungs.
+  // A spread main with no rung on its side of zero.
   const spreadState = boardWithEdge(WSU_MAIN_KEY, 0.05);
   const spreadRow = rowOf(spreadState, WSU_MAIN_KEY);
-  assert.match(taker.contractFromRungs({ ...spreadRow, points: 1.5 }).detail, /other side of zero/);
+  assert.match(taker.contractFromRungs({ ...spreadRow, points: 1.5 }).detail, /no rungs on its side/);
+  // Same-side rungs that contradict the sign (an N rung at a negative number).
+  const flipped = Object.fromEntries(Object.entries(spreadRow.venueIds.kalshiContracts).filter(([, target]) => target.mainKey === spreadRow.key).map(([key, target]) => [key.replace(/^Y-/, "N-"), target]));
+  assert.match(taker.contractFromRungs({ ...spreadRow, venueIds: { ...spreadRow.venueIds, kalshiContracts: flipped } }).detail, /reads N rungs/);
+});
+
+test("a close spread whose ladder crosses zero derives from the rungs on its own side only", () => {
+  const state = boardWithEdge(WSU_MAIN_KEY, 0.05);
+  const row = rowOf(state, WSU_MAIN_KEY);
+  // WSU -1.5 main: -2.5 / -3.5 are YES on WSU, +0.5 / +1.5 are NO on Duquesne-covers markets.
+  const kalshiContracts = {
+    "Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU3": { lineKey: "a", mainKey: row.key, points: -2.5, sideIndex: 1 },
+    "Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU4": { lineKey: "b", mainKey: row.key, points: -3.5, sideIndex: 1 },
+    "N-KXNCAAFSPREAD-26SEP19DUQWSU-DUQ1": { lineKey: "c", mainKey: row.key, points: 0.5, sideIndex: 1 },
+    "N-KXNCAAFSPREAD-26SEP19DUQWSU-DUQ2": { lineKey: "d", mainKey: row.key, points: 1.5, sideIndex: 1 },
+  };
+  assert.deepEqual(taker.contractFromRungs({ ...row, points: -1.5, venueIds: { ...row.venueIds, kalshiContracts } }),
+    { ticker: "KXNCAAFSPREAD-26SEP19DUQWSU-WSU2", side: "yes", sourceKey: null, derived: true });
 });
 
 test("a derived main-number ticker must still pass Kalshi's market check", () => {
