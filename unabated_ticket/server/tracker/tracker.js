@@ -578,7 +578,7 @@
       .sort((a, b) => (b.cash ?? -Infinity) - (a.cash ?? -Infinity));
     setText("balances-caption", balancesError ? "Could not load: " + balancesError : "live");
     if (!rows.length) {
-      fill("bal-table", emptyNote(balances ? "No book reports a balance yet." : "Loading…"));
+      fill("bal-table", emptyNote(balances ? "No balances yet. They appear within a minute of the bets service starting." : "Loading…"));
       return;
     }
     const read = rows.filter((row) => row.cash !== null);
