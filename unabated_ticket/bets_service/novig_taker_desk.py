@@ -58,6 +58,7 @@ taker.duckdb::novig_taker_orders (taker_store.py). Network: Novig REST, signed
 with the bot's trading key only; public catalog reads for settlement.
 """
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -122,8 +123,38 @@ def novig_unseen_fill(store: TakerStore, event_id: int, held_ids: set[str]) -> s
     return None
 
 
+# Novig's clientId must be a UUID (the runner hashes one, the Ticket sends crypto.randomUUID()).
+UUID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
 def _uuid_like(value: object) -> bool:
-    return isinstance(value, str) and len(value) == 36 and value.count("-") == 4
+    return isinstance(value, str) and UUID_PATTERN.match(value) is not None
+
+
+def line_context_of(line: object) -> dict | str:
+    """The runner's board line (taker.js novigLineOf) as the order row's
+    columns (league, bet_type, period, side, points, teams and team ids), or
+    what was expected and what was found. Shared with Novig Place."""
+    if not isinstance(line, dict):
+        return f"line must be the board line priced, got {line!r}"
+    if not isinstance(line.get("league"), str) or not line["league"]:
+        return f"line.league must be the feed's league path, got {line.get('league')!r}"
+    if line.get("betType") not in BET_TYPES:
+        return f"line.betType must be one of {BET_TYPES}, got {line.get('betType')!r}"
+    if not isinstance(line.get("period"), str) or not line["period"]:
+        return f"line.period must be a period name, got {line.get('period')!r}"
+    if line.get("side") not in SIDES:
+        return f"line.side must be one of {SIDES}, got {line.get('side')!r}"
+    points = line.get("points")
+    if points is not None and (not isinstance(points, (int, float)) or isinstance(points, bool)):
+        return f"line.points must be a number or null, got {points!r}"
+    for field in ("awayTeam", "homeTeam", "awayTeamId", "homeTeamId"):
+        if not _optional_text(line.get(field)):
+            return f"line.{field} must be a short string or null, got {line.get(field)!r}"
+    return {"league": line["league"], "bet_type": line["betType"], "period": line["period"], "side": line["side"],
+            "points": None if points is None else float(points), "away_team": line.get("awayTeam"),
+            "home_team": line.get("homeTeam"), "away_team_id": line.get("awayTeamId"),
+            "home_team_id": line.get("homeTeamId")}
 
 
 def _optional_text(value: object) -> bool:
@@ -161,31 +192,13 @@ def validate_order_request(body: object) -> dict | str:
     novig_base_url = body.get("novigBaseUrl")
     if not isinstance(novig_base_url, str) or not novig_base_url.startswith("http"):
         return f"novigBaseUrl must be the Novig API the decision was priced on, got {novig_base_url!r}"
-    line = body.get("line")
-    if not isinstance(line, dict):
-        return f"line must be the board line priced, got {line!r}"
-    if not isinstance(line.get("league"), str) or not line["league"]:
-        return f"line.league must be the feed's league path, got {line.get('league')!r}"
-    if line.get("betType") not in BET_TYPES:
-        return f"line.betType must be one of {BET_TYPES}, got {line.get('betType')!r}"
-    if not isinstance(line.get("period"), str) or not line["period"]:
-        return f"line.period must be a period name, got {line.get('period')!r}"
-    if line.get("side") not in SIDES:
-        return f"line.side must be one of {SIDES}, got {line.get('side')!r}"
-    points = line.get("points")
-    if points is not None and (not isinstance(points, (int, float)) or isinstance(points, bool)):
-        return f"line.points must be a number or null, got {points!r}"
-    for field in ("awayTeam", "homeTeam", "awayTeamId", "homeTeamId"):
-        if not _optional_text(line.get(field)):
-            return f"line.{field} must be a short string or null, got {line.get(field)!r}"
+    line = line_context_of(body.get("line"))
+    if isinstance(line, str):
+        return line
     return {"client_id": body["clientId"], "outcome_id": body["outcomeId"], "market_id": body["marketId"],
             "row_key": body["rowKey"], "price": float(price), "qty": qty, "event_id": event_id,
             "held_ids": set(held_ids), "event_start": start, "decided_at": decided_at,
-            "novig_base_url": novig_base_url.rstrip("/"),
-            "league": line["league"], "bet_type": line["betType"], "period": line["period"], "side": line["side"],
-            "points": None if points is None else float(points), "away_team": line.get("awayTeam"),
-            "home_team": line.get("homeTeam"), "away_team_id": line.get("awayTeamId"),
-            "home_team_id": line.get("homeTeamId")}
+            "novig_base_url": novig_base_url.rstrip("/"), **line}
 
 
 def account_problem(client: NovigOrderClient) -> tuple[str | None, float | None]:

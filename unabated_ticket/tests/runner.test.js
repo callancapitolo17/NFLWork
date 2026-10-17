@@ -662,12 +662,12 @@ test("taker: a market that is closed, or at another strike, is market_mismatch a
 });
 
 // ---- the Ticket's Place button: GET /kalshi_quote.json (places nothing) ----
-async function quoteRunner(markets = {}, kalshiStart = WSU_UNABATED_START) {
+async function quoteRunner(markets = {}, extraDeps = {}, kalshiStart = WSU_UNABATED_START) {
   const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
   const kalshi = kalshiFetch(markets, kalshiStart);
   const runner = runnerLib.createRunner({
     fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
-    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet, ...extraDeps,
   });
   await runner.start();
   return { runner, kalshi, service };
@@ -691,12 +691,12 @@ test("kalshi_quote: the board's Kalshi line gives its contract, live ask, all-in
 
 test("kalshi_quote: the quote's eventStart is Kalshi's when earlier, so Place refuses a game Unabated still lists as pregame", async () => {
   const kickedOff = new Date(TAKER_NOW - 60 * 1000).toISOString();
-  const { runner } = await quoteRunner({}, kickedOff);
+  const { runner } = await quoteRunner({}, {}, kickedOff);
   const quote = await runner.kalshiQuote(new URLSearchParams(WSU_36_LINE));
   runner.stop();
   assert.deepEqual({ ok: quote.ok, eventStart: quote.eventStart, unabatedStart: quote.unabatedStart, kalshiStart: quote.kalshiStart },
     { ok: true, eventStart: kickedOff, unabatedStart: WSU_UNABATED_START, kalshiStart: kickedOff });
-  const { runner: unlisted } = await quoteRunner({}, null);
+  const { runner: unlisted } = await quoteRunner({}, {}, null);
   const fallback = await unlisted.kalshiQuote(new URLSearchParams(WSU_36_LINE));
   unlisted.stop();
   assert.deepEqual({ eventStart: fallback.eventStart, kalshiStart: fallback.kalshiStart }, { eventStart: WSU_UNABATED_START, kalshiStart: null });
@@ -710,6 +710,59 @@ test("kalshi_quote: a closed market, a number the board lacks and bad params are
   runner.stop();
   assert.deepEqual([closed.ok, closed.reason], [false, "market_mismatch"]);
   assert.deepEqual([missing.ok, missing.reason], [false, "no_line"]);
+});
+
+// Novig Place reads Novig's public catalog the taker's way (novigFetch below):
+// the WSU -35.5 outcome on a two-outcome SPREAD market, DUQ resting at 0.445.
+function novigQuoteRunner(marketFields = {}) {
+  const novig = novigFetch(marketFields);
+  return quoteRunner({}, { novigFetch: novig, novigBaseUrl: "https://novig.test" }).then((made) => ({ ...made, novig }));
+}
+
+test("novig_quote: the board's Novig line gives its outcome, market, the other side's, the live ask and the line; nothing is sent", async () => {
+  const { runner, service, novig } = await novigQuoteRunner();
+  const quote = await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  runner.stop();
+  assert.deepEqual(
+    { ok: quote.ok, outcomeId: quote.outcomeId, otherOutcomeId: quote.otherOutcomeId, marketId: quote.marketId, price: quote.price, depth: quote.depth, novigBaseUrl: quote.novigBaseUrl },
+    { ok: true, outcomeId: NOVIG_WSU_OUTCOME, otherOutcomeId: NOVIG_DUQ_OUTCOME, marketId: NOVIG_MARKET, price: 0.555, depth: 500000, novigBaseUrl: "https://novig.test" });
+  assert.ok(quote.eventStart);
+  assert.deepEqual(quote.line, {
+    league: "cfb", betType: "spread", period: "FG", side: "home", points: -35.5,
+    awayTeam: quote.line.awayTeam, homeTeam: quote.line.homeTeam, awayTeamId: quote.line.awayTeamId, homeTeamId: "717",
+  });
+  assert.ok(novig.calls.some((call) => call.url === `https://novig.test/v3/public/catalog/events/${NOVIG_EVENT}`), "the event is checked");
+  assert.equal(service.posts.filter((post) => post.route.startsWith("/taker/")).length, 0);
+});
+
+test("novig_quote: a market charging a pregame fee, a closed market and a number the board lacks are refused", async () => {
+  const fee = await novigQuoteRunner({ fee: { coefficient: "0.06", makerCredit: "0", charged: "ALWAYS" } });
+  const feeQuote = await fee.runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  const missing = await fee.runner.novigQuote(new URLSearchParams({ ...WSU_36_LINE, points: "-99.5" }));
+  fee.runner.stop();
+  assert.deepEqual([feeQuote.ok, feeQuote.reason], [false, "market_mismatch"]);
+  assert.deepEqual([missing.ok, missing.reason], [false, "no_line"]);
+  const closed = await novigQuoteRunner({ status: "CLOSED" });
+  const closedQuote = await closed.runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  closed.runner.stop();
+  assert.deepEqual([closedQuote.ok, closedQuote.reason], [false, "market_mismatch"]);
+  assert.match(closedQuote.detail, /market status "CLOSED"/);
+  // The catalog down, nothing resting on the other side, a market with one outcome: each refused, nothing thrown.
+  const down = novigFetch();
+  const downImpl = async (url, init) => (url.includes("/catalog/markets?") ? response({ status: 503, body: "down" }) : down(url, init));
+  const noCatalog = await quoteRunner({}, { novigFetch: downImpl, novigBaseUrl: "https://novig.test" });
+  const noCatalogQuote = await noCatalog.runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  noCatalog.runner.stop();
+  assert.deepEqual([noCatalogQuote.ok, noCatalogQuote.reason], [false, "no_outcome"]);
+  assert.match(noCatalogQuote.detail, /catalog unread/);
+  const empty = novigFetch();
+  const emptyImpl = async (url, init) => (url.endsWith("/book")
+    ? response({ body: JSON.stringify({ marketId: NOVIG_MARKET, seq: 1, orders: { [NOVIG_DUQ_OUTCOME]: [], [NOVIG_WSU_OUTCOME]: [] } }) }) : empty(url, init));
+  const noBook = await quoteRunner({}, { novigFetch: emptyImpl, novigBaseUrl: "https://novig.test" });
+  const noBookQuote = await noBook.runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  noBook.runner.stop();
+  assert.deepEqual([noBookQuote.ok, noBookQuote.reason, noBookQuote.outcomeId], [false, "no_book", NOVIG_WSU_OUTCOME]);
+  assert.match(noBookQuote.detail, /nothing rests/);
 });
 
 test("taker: a service without the bot key answers 503, the decision reads off", async () => {

@@ -16,9 +16,11 @@ Rules, in order, for every request (validate_place_request's shape):
      Ticket's (Cal, 2026-10-16); a better one is taken;
   5. the other side of the market is not held: on Kalshi a buy of the other
      side sells it;
-  6. no earlier Place on this game may have filled after the Kalshi read the
-     Ticket's stake was sized on (`kalshiReadAt`): that stake would not know
-     about it (the bot's unseen-fill rule, on time instead of ids);
+  6. no earlier Place on this game may have filled after the read of its venue
+     the Ticket's stake was sized on: a Kalshi Place after `kalshiReadAt`, a
+     Novig Place after `novigReadAt` (any Novig Place when Novig was never
+     read): that stake would not know about it (the bot's unseen-fill rule,
+     on time instead of ids; `unseen_manual_fill`, shared with Novig Place);
   7. contracts = floor(stake / live all-in), at least one;
   8. one immediate-or-cancel limit buy at the live ask
      (taker_orders.order_body: nothing rests), then the order's fills read.
@@ -74,7 +76,8 @@ def validate_place_request(body: object) -> dict | str:
     """A POST /place_kalshi.json body, or what was expected and what was found.
     {clickId, eventId, periodTypeId, betTypeId, sideIndex, points (null on a
     moneyline), stake (dollars), ticketAllIn (the Ticket's price, all-in, as a
-    probability), kalshiReadAt (the Kalshi read the stake was sized on, ISO)}"""
+    probability), kalshiReadAt (the Kalshi read the stake was sized on, ISO),
+    novigReadAt (the Novig read, ISO, or null when Novig was never read)}"""
     if not isinstance(body, dict):
         return f"body must be an object, got {type(body).__name__}"
     click_id = body.get("clickId")
@@ -98,8 +101,40 @@ def validate_place_request(body: object) -> dict | str:
     kalshi_read_at = _iso_time(body.get("kalshiReadAt"))
     if kalshi_read_at is None:
         return f"kalshiReadAt must be the ISO time of the Kalshi read the stake was sized on, got {body.get('kalshiReadAt')!r}"
+    novig_read_at = optional_read_at(body, "novigReadAt")
+    if isinstance(novig_read_at, str):
+        return novig_read_at
     return {"click_id": click_id, **whole, "points": None if points is None else float(points),
-            "stake": float(stake), "ticket_all_in": float(ticket_all_in), "kalshi_read_at": kalshi_read_at}
+            "stake": float(stake), "ticket_all_in": float(ticket_all_in), "kalshi_read_at": kalshi_read_at,
+            "novig_read_at": novig_read_at}
+
+
+def optional_read_at(body: dict, field: str) -> datetime | None | str:
+    """A venue read time the body may leave null (that venue never read):
+    the time, None, or the complaint when it is neither."""
+    if body.get(field) is None:
+        return None
+    read_at = _iso_time(body.get(field))
+    if read_at is None:
+        return f"{field} must be an ISO time or null, got {body.get(field)!r}"
+    return read_at
+
+
+# No read of a venue: every Place there counts as unseen.
+NEVER_READ = datetime(1970, 1, 1, tzinfo=timezone.utc)
+VENUE_KALSHI = "kalshi"
+VENUE_NOVIG = "novig"
+
+
+def unseen_manual_fill(store: BetsStore, event_id: int, kalshi_read_at: datetime | None,
+                       novig_read_at: datetime | None) -> bool:
+    """Whether an earlier Place on this game, at either venue, may hold
+    contracts the stake's reads missed: a Kalshi Place after the Kalshi read, a
+    Novig Place after the Novig read, a venue never read counting every Place
+    there (store.manual_orders_maybe_filled_since says what counts)."""
+    kalshi_orders = store.manual_orders_maybe_filled_since(event_id, kalshi_read_at or NEVER_READ, venue=VENUE_KALSHI)
+    novig_orders = store.manual_orders_maybe_filled_since(event_id, novig_read_at or NEVER_READ, venue=VENUE_NOVIG)
+    return bool(kalshi_orders or novig_orders)
 
 
 def _is_number(value: object) -> bool:
@@ -116,13 +151,14 @@ def _iso_time(value: object) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
-def read_runner_quote(runner_url: str, request: dict) -> dict:
-    """GET <runner>/kalshi_quote.json for the request's line: the runner's
-    answer, or {ok: False, reason: 'runner', detail} when it could not be read."""
+def read_runner_quote(runner_url: str, request: dict, quote_path: str = RUNNER_QUOTE_PATH) -> dict:
+    """GET <runner><quote_path> (/kalshi_quote.json, or Novig Place's
+    /novig_quote.json) for the request's line: the runner's answer, or
+    {ok: False, reason: 'runner', detail} when it could not be read."""
     query = {key: request[key] for key in ("eventId", "periodTypeId", "betTypeId", "sideIndex")}
     if request["points"] is not None:
         query["points"] = f"{request['points']:g}"
-    url = f"{runner_url.rstrip('/')}{RUNNER_QUOTE_PATH}?{urlencode(query)}"
+    url = f"{runner_url.rstrip('/')}{quote_path}?{urlencode(query)}"
     try:
         with _RUNNER_OPENER.open(url, timeout=RUNNER_TIMEOUT_SEC) as response:
             answer = json.loads(response.read())
@@ -171,7 +207,7 @@ class ManualKalshiDesk:
             return {"status": STATUS_REFUSED,
                     "message": f"Not placed: ${request['stake']:.2f} buys no contract at {_cents(quote['allIn'])}."}
         inserted = self._store.insert_manual_order({
-            "client_order_id": client_order_id, "placed_at": self._now(), "event_id": request["eventId"],
+            "client_order_id": client_order_id, "placed_at": self._now(), "venue": "kalshi", "event_id": request["eventId"],
             "ticker": quote["ticker"], "contract_side": quote["side"], "label": quote.get("label"),
             "ticket_all_in": request["ticket_all_in"], "ask_price": quote["ask"], "all_in_price": quote["allIn"],
             "stake": request["stake"], "count_requested": count, "status": "sending", "updated_at": self._now(),
@@ -203,10 +239,9 @@ class ManualKalshiDesk:
         other_side = "no" if quote["side"] == "yes" else "yes"
         if self._store.bet_is_open(held_id_of(quote["ticker"], other_side, PRIMARY_SUBACCOUNT)):
             return f"you hold the {other_side.upper()} side of {quote['ticker']}; buying {quote['side'].upper()} would sell it."
-        recent = self._store.manual_orders_maybe_filled_since(request["eventId"], request["kalshi_read_at"])
-        if recent:
-            return ("your last order on this game is not on the Bets tab yet, so this stake does not count it. "
-                    "Wait for the next Kalshi read (up to a minute) and place again.")
+        if unseen_manual_fill(self._store, request["eventId"], request["kalshi_read_at"], request["novig_read_at"]):
+            return ("your last Place on this game is not on the Bets tab yet, so this stake does not count it. "
+                    "Wait for the next read (up to a minute) and place again.")
         return None
 
     def _send(self, client_order_id: str, quote: dict, count: int) -> dict:

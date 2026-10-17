@@ -89,6 +89,14 @@
 //                    own resolveKalshiContract / quoteOf / marketMismatch) and
 //                    the Kalshi API it read; places nothing. points omitted
 //                    (and ignored) on a moneyline.
+//   GET /novig_quote.json?eventId=..&periodTypeId=..&betTypeId=..&sideIndex=..&points=..
+//                    the same for Novig Place (bets_service/novig_place.py):
+//                    the board's Novig line, its outcome, market and the other
+//                    side's outcome, its live price, Novig's market check
+//                    (the taker's own novigContractOf / novigQuoteOf /
+//                    novigMarketMismatch), the Novig API read and the line
+//                    as a bet record names it; places nothing. Spreads and
+//                    totals only.
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
@@ -864,7 +872,7 @@ function createRunner(deps) {
       const contract = resolve(row);
       if (contract.marketId) marketIds.add(contract.marketId);
     }
-    const books = await readBooks(marketIds, (marketId) => getNovigJson(`${novigBaseUrl}/v3/public/catalog/markets/${encodeURIComponent(marketId)}/book`));
+    const books = await readBooks(marketIds, (marketId) => getNovigJson(`${novigMarketUrl(marketId)}/book`));
     return decideRows(pass, rows, taker.VENUE_NOVIG, resolve, (contract) => {
       const read = books.get(contract.marketId);
       if (!read) return null;
@@ -943,6 +951,46 @@ function createRunner(deps) {
     };
   }
 
+  // The Ticket's Place button on Novig (bets_service/novig_place.py asks):
+  // the board's one Novig line with these fields, the outcome it buys and the
+  // other side's (the taker's own novigContractOf over Novig's open pregame
+  // catalog), what buying it costs now (novigQuoteOf) and whether Novig's
+  // market and event are the line's and take a free pregame order
+  // (novigMarketMismatch). As on Kalshi, the board only finds the outcome;
+  // the price Cal acts on is checked by the bets service. Places nothing.
+  //   params  URLSearchParams {eventId, periodTypeId, betTypeId, sideIndex, points}
+  async function novigQuoteNow(params) {
+    const spec = kalshiLineSpecOf(params);
+    const board = feedState;
+    if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
+    const found = Object.values(board.lines).filter((line) => line.bookId === taker.NOVIG_BOOK_ID
+      && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
+      && line.sideIndex === spec.sideIndex && (line.points ?? null) === spec.points);
+    if (found.length !== 1) {
+      return { ok: false, reason: "no_line", detail: `the board holds ${found.length} Novig lines for game ${spec.eventId} at that market, side and number` };
+    }
+    const row = feedLib.describeLine(found[0], board);
+    const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName };
+    let contract;
+    try {
+      contract = taker.novigContractOf(row, taker.novigOutcomeIndex(await readNovigMarkets([row])));
+    } catch (error) {
+      return { ok: false, ...fields, reason: "no_outcome", detail: `Novig's catalog unread: ${error.message}` };
+    }
+    if (contract.reason) return { ok: false, ...fields, reason: contract.reason, detail: contract.detail };
+    const position = { ...fields, outcomeId: contract.outcomeId, otherOutcomeId: contract.otherOutcomeId, marketId: contract.marketId };
+    let quote;
+    try {
+      quote = taker.novigQuoteOf(await getNovigJson(`${novigMarketUrl(contract.marketId)}/book`), contract);
+    } catch (error) {
+      return { ok: false, ...position, reason: "no_book", detail: error.message };
+    }
+    const mismatch = await readNovigMarketMismatch(row, contract);
+    if (mismatch) return { ok: false, ...position, reason: "market_mismatch", detail: mismatch };
+    if (!quote) return { ok: false, ...position, reason: "no_book", detail: `nothing rests on the other side of Novig market ${contract.marketId}` };
+    return { ok: true, ...position, price: quote.ask, depth: quote.depth, novigBaseUrl, line: taker.novigLineOf(row) };
+  }
+
   // Kalshi's start for an event as epoch ms, or null when it lists none or
   // the read failed (never throws: option B trades on Unabated's start then).
   async function kalshiStartOf(eventTicker) {
@@ -1007,21 +1055,32 @@ function createRunner(deps) {
     }
   }
 
-  // Novig's market and its event, read now, are the row's and take a free
-  // pregame order (taker.novigMarketMismatch), else market_mismatch (fail closed).
-  async function novigMarketConfirmed(decision, row) {
+  function novigMarketUrl(marketId) {
+    return `${novigBaseUrl}/v3/public/catalog/markets/${encodeURIComponent(marketId)}`;
+  }
+
+  // Why Novig's market and its event, read now, are not the row's or do not
+  // take a free pregame order (taker.novigMarketMismatch), an unread market
+  // included (fail closed); null when they are. Shared by the bot's orders
+  // and the Place button's quotes, so neither can skip a check the other has.
+  async function readNovigMarketMismatch(row, contract) {
     let market;
     let event;
     try {
-      market = await getNovigJson(`${novigBaseUrl}/v3/public/catalog/markets/${encodeURIComponent(decision.marketId)}`);
+      market = await getNovigJson(novigMarketUrl(contract.marketId));
       event = await getNovigJson(`${novigBaseUrl}/v3/public/catalog/events/${encodeURIComponent(market.eventId)}`);
     } catch (error) {
-      Object.assign(decision, { reason: "market_mismatch", detail: `Novig market ${decision.marketId} unread: ${error.message}` });
-      return false;
+      return `Novig market ${contract.marketId} unread: ${error.message}`;
     }
-    const mismatch = taker.novigMarketMismatch(market, event, row, { outcomeId: decision.ticker, marketId: decision.marketId });
+    const mismatch = taker.novigMarketMismatch(market, event, row, contract);
+    return mismatch === null ? null : `Novig market ${contract.marketId}: ${mismatch}`;
+  }
+
+  // The bot's order goes only when readNovigMarketMismatch finds nothing; else the decision reads market_mismatch.
+  async function novigMarketConfirmed(decision, row) {
+    const mismatch = await readNovigMarketMismatch(row, { outcomeId: decision.ticker, marketId: decision.marketId });
     if (mismatch === null) return true;
-    Object.assign(decision, { reason: "market_mismatch", detail: `Novig market ${decision.marketId}: ${mismatch}` });
+    Object.assign(decision, { reason: "market_mismatch", detail: mismatch });
     return false;
   }
 
@@ -1330,7 +1389,7 @@ function createRunner(deps) {
   return {
     start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions,
     edgesPayload: edgesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow,
-    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, health, scanner,
+    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, health, scanner,
   };
 }
 
@@ -1376,7 +1435,7 @@ function sendJson(response, status, body) {
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /kalshi_quote.json and /health, the Host allowlist first on
+// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /kalshi_quote.json, /novig_quote.json and /health, the Host allowlist first on
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
@@ -1401,6 +1460,7 @@ function createHttpServer(runner, { host }) {
       if (path === "/scenarios.json") return sendJson(response, 200, runner.scenariosPayload());
       if (path === "/taker.json") return sendJson(response, 200, runner.takerPayload());
       if (path === "/kalshi_quote.json") return sendJson(response, 200, await runner.kalshiQuote(url.searchParams));
+      if (path === "/novig_quote.json") return sendJson(response, 200, await runner.novigQuote(url.searchParams));
       if (path === "/health") return sendJson(response, 200, runner.health());
     } catch (error) {
       if (error.status) return sendJson(response, error.status, { error: error.message });

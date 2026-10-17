@@ -77,12 +77,13 @@ writer). Tables:
                UPSERTed whole on every write. Each column is an override; NULL
                means "the panel's default", and the defaults live only in
                extension/edgerows.js, never here. Never pruned (one row).
-  manual_orders  one row per Kalshi order Cal placed from the Ticket's Place
-               button (manual_orders.py), on his own key: INSERTED before it is
-               sent (status 'sending'), UPDATED with what Kalshi answered and
-               what filled. The client_order_id ('uman-' + the click's id) is
-               the key, so one click can never send twice. Never pruned (a
-               few a day); the bet itself reaches `bets` through the Kalshi poll.
+  manual_orders  one row per Kalshi or Novig order Cal placed from the Ticket's
+               Place button (manual_orders.py), on Place's own key: INSERTED
+               before it is sent (status 'sending'), UPDATED with what the
+               venue answered and what filled. The client_order_id ('uman-' or
+               'nman-' + the click's id) is the key, so one click can never send
+               twice. Never pruned (a few a day); the bet itself reaches `bets`
+               through the venue's poll.
 A failed poll writes a source_runs row and touches nothing in `bets`, so a
 dark source keeps serving its previous records.
 
@@ -236,20 +237,84 @@ CREATE TABLE IF NOT EXISTS manual_orders (
     error            VARCHAR,
     updated_at       TIMESTAMPTZ NOT NULL
 );
+-- Novig Place: rows from before it are all Kalshi. On a Novig row `ticker` is
+-- the Novig outcome id, `contract_side` 'buy' (every Novig order buys its
+-- outcome), `ask_price` = `all_in_price` (a pregame take pays no fee) and a
+-- contract pays 1c, not $1.
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS venue VARCHAR DEFAULT 'kalshi';
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS novig_order_id VARCHAR;
+-- The board line a Novig Place order bought (taker.js novigLineOf, as the bot
+-- desk keeps it in taker.duckdb::novig_taker_orders): Novig's catalog names
+-- neither the board's teams nor its periods, so Place's sub-account read
+-- (sources/novig_subaccount.py) names its bets with these. NULL on Kalshi rows.
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS market_id VARCHAR;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS event_start TIMESTAMPTZ;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS league VARCHAR;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS bet_type VARCHAR;      -- spread | total
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS period VARCHAR;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS side VARCHAR;          -- away | home | over | under
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS points DOUBLE;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS away_team VARCHAR;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS home_team VARCHAR;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS away_team_id VARCHAR;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS home_team_id VARCHAR;
+-- When Place's sub-account read first saw the order's market SETTLED: the
+-- bet's fixed closedAt, kept so a restart never moves it.
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;
 """
 
 MANUAL_ORDER_INSERT_COLUMNS = (
-    "client_order_id", "placed_at", "event_id", "ticker", "contract_side", "label", "ticket_all_in",
+    "client_order_id", "placed_at", "venue", "event_id", "ticker", "contract_side", "label", "ticket_all_in",
     "ask_price", "all_in_price", "stake", "count_requested", "status", "updated_at",
 )
-MANUAL_ORDER_UPDATE_COLUMNS = ("status", "kalshi_order_id", "count_filled", "cost_filled", "error")
-_INSERT_MANUAL_ORDER = (f"INSERT INTO manual_orders ({', '.join(MANUAL_ORDER_INSERT_COLUMNS)}) "
-                        f"VALUES ({', '.join(['?'] * len(MANUAL_ORDER_INSERT_COLUMNS))})")
+# A Novig row's board line; a Kalshi row leaves them NULL.
+MANUAL_ORDER_NOVIG_LINE_COLUMNS = (
+    "market_id", "event_start", "league", "bet_type", "period", "side", "points", "away_team", "home_team",
+    "away_team_id", "home_team_id",
+)
+MANUAL_ORDER_UPDATE_COLUMNS = ("status", "kalshi_order_id", "novig_order_id", "count_filled", "cost_filled", "error")
+_INSERT_MANUAL_ORDER_COLUMNS = MANUAL_ORDER_INSERT_COLUMNS + MANUAL_ORDER_NOVIG_LINE_COLUMNS
+_INSERT_MANUAL_ORDER = (f"INSERT INTO manual_orders ({', '.join(_INSERT_MANUAL_ORDER_COLUMNS)}) "
+                        f"VALUES ({', '.join(['?'] * len(_INSERT_MANUAL_ORDER_COLUMNS))})")
+# Every Novig Place order Novig gave an id, as the sub-account read's
+# contexts (sources/novig_subaccount.py, taker_store.NOVIG_CONTEXT_COLUMNS).
+_SELECT_NOVIG_PLACE_CONTEXTS = """
+SELECT novig_order_id, league, bet_type, period, side, points, away_team, home_team, away_team_id, home_team_id,
+       epoch_ms(event_start), event_id, market_id, ticker, ask_price, epoch_ms(settled_at)
+FROM manual_orders
+WHERE venue = 'novig' AND novig_order_id IS NOT NULL
+"""
+# A Place order on the game that may hold contracts the stake's read missed:
+# sent and filled, partly filled, or no definite answer, since the read. A
+# Novig 'unfilled' counts too (its fills are read once, right after the order
+# goes final, and Novig's fills feed can lag that read). A Novig order Novig
+# never answered and never named (no order id) counts whatever the read time:
+# its fill can reach no read until it is named (`lost_novig_place_orders`).
 _SELECT_MANUAL_MAYBE_FILLED = """
 SELECT client_order_id, ticker, status, epoch(placed_at)
 FROM manual_orders
-WHERE event_id = ? AND placed_at >= ? AND status IN ('sending', 'unknown', 'filled', 'partial')
+WHERE event_id = ?
+  AND (? IS NULL OR coalesce(venue, 'kalshi') = ?)
+  AND ((placed_at >= ? AND (status IN ('sending', 'unknown', 'filled', 'partial')
+                            OR (coalesce(venue, 'kalshi') = 'novig' AND status = 'unfilled')))
+       OR (coalesce(venue, 'kalshi') = 'novig' AND status = 'unknown' AND novig_order_id IS NULL))
 ORDER BY placed_at
+"""
+# Novig Place orders Novig never answered (no order id): looked up by clientId.
+_SELECT_LOST_NOVIG_PLACE = """
+SELECT client_order_id, ticker
+FROM manual_orders
+WHERE venue = 'novig' AND status = 'unknown' AND novig_order_id IS NULL AND placed_at <= ?
+ORDER BY placed_at
+"""
+
+# An open straight Novig bet (app or sub-account) on one outcome.
+_SELECT_OPEN_NOVIG_ON_OUTCOME = """
+SELECT 1 FROM bets
+WHERE venue = 'novig' AND status = 'open'
+  AND json_extract_string(record, '$.venueIds.outcomeId') = ?
+  AND coalesce(json_extract(record, '$.isParlayLeg')::BOOLEAN, false) = false
+LIMIT 1
 """
 
 _INSERT_CROSSWALK = """
@@ -556,6 +621,10 @@ def _epoch_to_iso(epoch_seconds: float | None) -> str | None:
     if epoch_seconds is None:
         return None
     return datetime.fromtimestamp(epoch_seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _utc_of_epoch_ms(epoch_ms: int | None) -> datetime | None:
+    return None if epoch_ms is None else datetime.fromtimestamp(epoch_ms / 1000, timezone.utc)
 
 
 class BetsStore:
@@ -955,6 +1024,12 @@ class BetsStore:
             row = self._con.execute("SELECT status FROM bets WHERE id = ?", [bet_id]).fetchone()
         return bool(row) and row[0] == "open"
 
+    def novig_outcome_is_held(self, outcome_id: str) -> bool:
+        """Whether an open straight Novig bet is on this outcome id."""
+        with self._lock:
+            row = self._con.execute(_SELECT_OPEN_NOVIG_ON_OUTCOME, [outcome_id]).fetchone()
+        return row is not None
+
     def insert_manual_order(self, order: dict) -> bool:
         """INSERT a Place-button order before it is sent (status 'sending').
         False when its client_order_id is already held: that click was sent."""
@@ -963,8 +1038,49 @@ class BetsStore:
                                      [order["client_order_id"]]).fetchone()
             if held:
                 return False
-            self._con.execute(_INSERT_MANUAL_ORDER, [order[column] for column in MANUAL_ORDER_INSERT_COLUMNS])
+            values = ([order[column] for column in MANUAL_ORDER_INSERT_COLUMNS]
+                      + [order.get(column) for column in MANUAL_ORDER_NOVIG_LINE_COLUMNS])
+            self._con.execute(_INSERT_MANUAL_ORDER, values)
         return True
+
+    def novig_place_order_contexts(self) -> dict[str, dict]:
+        """Novig order id -> the board line a Novig Place order bought, in the
+        bot desk's context shape (taker_store.NOVIG_CONTEXT_COLUMNS), for every
+        order Novig gave an id. Place's sub-account read names its bets with
+        these; `settled_at` is the bet's fixed closedAt once set."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_NOVIG_PLACE_CONTEXTS).fetchall()
+        contexts = {}
+        for (order_id, league, bet_type, period, side, points, away_team, home_team, away_team_id, home_team_id,
+             event_start_ms, event_id, market_id, outcome_id, price, settled_at_ms) in rows:
+            contexts[order_id] = {
+                "league": league, "bet_type": bet_type, "period": period, "side": side, "points": points,
+                "away_team": away_team, "home_team": home_team, "away_team_id": away_team_id,
+                "home_team_id": home_team_id, "event_start": _utc_of_epoch_ms(event_start_ms), "event_id": event_id,
+                "market_id": market_id, "outcome_id": outcome_id, "price": price,
+                "settled_at": _utc_of_epoch_ms(settled_at_ms),
+            }
+        return contexts
+
+    def adopt_novig_place_order(self, client_order_id: str, novig_order_id: str | None, at: datetime) -> None:
+        """A lost Novig Place order (no answer, no id) found on Novig's order
+        lists gets its id, so its fills are named from now on; one listed
+        nowhere is marked rejected: it never reached Novig."""
+        if novig_order_id is None:
+            fields = {"status": "rejected", "error": "never reached Novig: in none of its order lists"}
+        else:
+            fields = {"novig_order_id": novig_order_id, "error": "answer lost; found on Novig by clientId"}
+        self.update_manual_order(client_order_id, fields, at)
+
+    def note_novig_place_settled(self, novig_order_id: str, at: datetime) -> datetime:
+        """Keep when Place's sub-account read first saw this order's market
+        SETTLED (only the first sighting is kept); returns the kept time."""
+        with self._lock:
+            self._con.execute("UPDATE manual_orders SET settled_at = ? "
+                              "WHERE novig_order_id = ? AND venue = 'novig' AND settled_at IS NULL", [at, novig_order_id])
+            row = self._con.execute("SELECT epoch_ms(settled_at) FROM manual_orders WHERE novig_order_id = ?",
+                                    [novig_order_id]).fetchone()
+        return _utc_of_epoch_ms(row[0]) if row and row[0] is not None else at
 
     def update_manual_order(self, client_order_id: str, fields: dict, at: datetime) -> None:
         """UPDATE the named columns of one manual order (and updated_at)."""
@@ -976,13 +1092,21 @@ class BetsStore:
             self._con.execute(f"UPDATE manual_orders SET {assignments}, updated_at = ? WHERE client_order_id = ?",
                               [*fields.values(), at, client_order_id])
 
-    def manual_orders_maybe_filled_since(self, event_id: int, since: datetime) -> list[dict]:
-        """Manual orders on this game placed at or after `since` that may hold
-        contracts (sent and filled, partly filled, or no definite answer)."""
+    def manual_orders_maybe_filled_since(self, event_id: int, since: datetime, venue: str | None = None) -> list[dict]:
+        """Manual orders on this game that may hold contracts the read at
+        `since` missed (_SELECT_MANUAL_MAYBE_FILLED), at one venue ('kalshi' |
+        'novig') or, with venue None, at either."""
         with self._lock:
-            rows = self._con.execute(_SELECT_MANUAL_MAYBE_FILLED, [event_id, since]).fetchall()
+            rows = self._con.execute(_SELECT_MANUAL_MAYBE_FILLED, [event_id, venue, venue, since]).fetchall()
         return [{"client_order_id": client_order_id, "ticker": ticker, "status": status,
                  "placed_at": _epoch_to_iso(placed_at)} for client_order_id, ticker, status, placed_at in rows]
+
+    def lost_novig_place_orders(self, placed_before: datetime) -> list[dict]:
+        """Novig Place orders with no definite answer and no Novig order id,
+        placed at or before `placed_before`: [{client_order_id, outcome_id}]."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_LOST_NOVIG_PLACE, [placed_before]).fetchall()
+        return [{"client_order_id": client_order_id, "outcome_id": ticker} for client_order_id, ticker in rows]
 
     def source_status(self) -> dict[str, dict]:
         """{source: {fetchedAt, ok, error, count}} — fetchedAt/count from the
