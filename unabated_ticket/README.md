@@ -3039,7 +3039,10 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
 Cal's app feed (`novig`, ids `novig:<order id>`) lists his sub-accounts'
 orders too; `/bets.json` serves such an order once, as the sub-account read's
 `novig:<order id>:place` (or `:bot`), so it is sized and tracked once
-(`store._SELECT_WINDOW`; nothing is deleted).
+(`store._SELECT_WINDOW`; nothing is deleted). When the sub-account copy
+names no game (an order no desk placed, or a lost send not yet found), the
+app's copy is served instead. An `unknown` Place order is re-read by the
+`novig_place` read for 24 hours, then left `unknown`.
 
 Its rows are in the same `manual_orders` table with `venue = 'novig'`
 (`ticker` = the outcome id, `novig_order_id`, and the board line Place's

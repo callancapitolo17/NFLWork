@@ -83,8 +83,10 @@ RUNNER_NOVIG_QUOTE_TIMEOUT_SEC = 30
 PLACE_FINAL_READ_ATTEMPTS = 10
 PLACE_FINAL_READ_SLEEP_SEC = 1.0
 # ...and no new read starts once this long has passed since the first, so a
-# Novig whose reads each hang to their 10 s timeout cannot hold the click past
-# the phone's 90 s wait (runner quote 30 s + send 10 s + this + fills 10 s).
+# Novig whose reads each hang to their 10 s timeout holds one click about 72 s
+# at worst (runner quote 30 s + send 10 s + this + one read 10 s + fills 10 s),
+# under the phone's 90 s wait. A second click queued behind it can wait longer;
+# it still sends at most once, and the phone tells Cal to check Novig.
 PLACE_FINAL_READ_WINDOW_SEC = 12.0
 # The bets service's Novig reads the stake counted must be at most this old
 # (the Novig bot's holdings gate).

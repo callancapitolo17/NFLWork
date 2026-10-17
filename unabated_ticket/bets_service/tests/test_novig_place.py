@@ -387,6 +387,7 @@ def test_an_order_never_read_final_stays_unknown_until_the_sub_account_read_conf
     assert store.unconfirmed_novig_place_orders(NOW - timedelta(seconds=1)) == [], "placed after the cutoff: not yet"
     [unconfirmed] = store.unconfirmed_novig_place_orders(NOW)
     assert unconfirmed == {"client_order_id": client_order_id, "novig_order_id": ORDER_ID, "count_requested": novig.last_qty}
+    assert store.unconfirmed_novig_place_orders(NOW + timedelta(hours=25)) == [], "re-read for a day, then left"
     store.confirm_novig_place_order(client_order_id, "filled", novig.last_qty, 50.0, NOW + timedelta(minutes=1))
     assert store.unconfirmed_novig_place_orders(NOW + timedelta(minutes=1)) == []
 

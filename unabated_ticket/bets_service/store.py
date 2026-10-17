@@ -312,9 +312,12 @@ ORDER BY placed_at
 _SELECT_UNCONFIRMED_NOVIG_PLACE = """
 SELECT client_order_id, novig_order_id, count_requested
 FROM manual_orders
-WHERE venue = 'novig' AND status = 'unknown' AND novig_order_id IS NOT NULL AND placed_at <= ?
+WHERE venue = 'novig' AND status = 'unknown' AND novig_order_id IS NOT NULL AND placed_at <= ? AND placed_at >= ?
 ORDER BY placed_at
 """
+# An unconfirmed order is re-read for this long, then left 'unknown' (a row
+# Novig never shows final must not slow every novig_place poll for good).
+UNCONFIRMED_NOVIG_PLACE_WINDOW = timedelta(hours=24)
 
 # An open straight Novig bet (app or sub-account) on one outcome.
 _SELECT_OPEN_NOVIG_ON_OUTCOME = """
@@ -531,12 +534,20 @@ SELECT id FROM bets WHERE venue = 'kalshi'
 # the orders of his API sub-accounts, which their own reads hold as
 # "novig:<order id>:place" / ":bot" (sources/novig_subaccount.py): the app's
 # copy of such an order is left out, so every order is served (sized,
-# tracked) once, under the sub-account read that knows its board line.
+# tracked) once, under the sub-account read that knows its board line. A
+# sub-account copy with no board line (unmatchable: an order no desk names,
+# or a lost Place send not yet adopted) sizes nothing, so then the app's copy
+# is served instead of it. Either way one copy.
 _SELECT_WINDOW = """
 SELECT b.record FROM bets AS b
 WHERE (b.status = 'open' OR b.closed_at IS NULL OR b.closed_at >= ?)
   AND NOT (b.venue = 'novig' AND EXISTS (
-      SELECT 1 FROM bets AS sub WHERE sub.id IN (b.id || ':place', b.id || ':bot')))
+      SELECT 1 FROM bets AS sub
+      WHERE sub.id IN (b.id || ':place', b.id || ':bot')
+        AND json_extract_string(sub.record, '$.unmatchable') IS NULL))
+  AND NOT (b.venue = 'novig' AND regexp_matches(b.id, ':(place|bot)$')
+           AND json_extract_string(b.record, '$.unmatchable') IS NOT NULL
+           AND EXISTS (SELECT 1 FROM bets AS app WHERE app.id = regexp_replace(b.id, ':(place|bot)$', '')))
 ORDER BY b.placed_at DESC, b.id
 """
 
@@ -1091,10 +1102,11 @@ class BetsStore:
 
     def unconfirmed_novig_place_orders(self, placed_before: datetime) -> list[dict]:
         """Novig Place orders with a Novig id still 'unknown' (never read final,
-        or their fills unread), placed at or before `placed_before`:
-        [{client_order_id, novig_order_id, count_requested}]."""
+        or their fills unread), placed at or before `placed_before` and within
+        UNCONFIRMED_NOVIG_PLACE_WINDOW of it: [{client_order_id, novig_order_id, count_requested}]."""
         with self._lock:
-            rows = self._con.execute(_SELECT_UNCONFIRMED_NOVIG_PLACE, [placed_before]).fetchall()
+            rows = self._con.execute(_SELECT_UNCONFIRMED_NOVIG_PLACE,
+                                     [placed_before, placed_before - UNCONFIRMED_NOVIG_PLACE_WINDOW]).fetchall()
         return [{"client_order_id": client_order_id, "novig_order_id": novig_order_id, "count_requested": count_requested}
                 for client_order_id, novig_order_id, count_requested in rows]
 

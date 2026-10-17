@@ -1208,6 +1208,11 @@ def test_an_order_the_novig_app_feed_and_a_sub_account_both_hold_is_served_once(
         return {**record(record_id, "open", None), "source": source, "venue": "novig"}
     store.upsert_bets([novig("novig:o1", "novig_rest"), novig("novig:o1:place", "novig_place"),
                        novig("novig:o2", "novig_rest"), novig("novig:o2:bot", "novig_bot"),
-                       novig("novig:o3", "novig_rest"), record("kalshi:a:yes", "open", None)], seen)
+                       novig("novig:o3", "novig_rest"), record("kalshi:a:yes", "open", None),
+                       novig("novig:o4", "novig_rest"),
+                       {**novig("novig:o4:place", "novig_place"), "unmatchable": "no board line on record"},
+                       {**novig("novig:o5:place", "novig_place"), "unmatchable": "no board line on record"}], seen)
     served = sorted(bet["id"] for bet in store.load_bets(30, seen))
-    assert served == ["kalshi:a:yes", "novig:o1:place", "novig:o2:bot", "novig:o3"]
+    # o4's sub-account copy names no game (it would size nothing): the app's copy is served instead;
+    # o5's is the only copy, so it is served.
+    assert served == ["kalshi:a:yes", "novig:o1:place", "novig:o2:bot", "novig:o3", "novig:o4", "novig:o5:place"]
