@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 NAMES = ("bot", "place")
 SOURCE_PREFIX = "novig_"
 VENUE = "novig"
-POLL_SEC = 30.0
+POLL_SEC = 20.0  # the app source's NOVIG_POLL_SEC cadence
 # Fills on events that started within this many days are read every poll (the store keeps older ones).
 HISTORY_DAYS = 14
 OUTCOME_STATUS = {"WIN": "won", "LOSS": "lost", "PUSH": "push"}

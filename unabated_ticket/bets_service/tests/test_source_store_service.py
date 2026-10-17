@@ -458,7 +458,9 @@ def test_poll_loop_survives_a_store_write_error_and_retries():
     stop = threading.Event()
     thread = threading.Thread(target=service.poll_loop, args=([source], failing, stop), daemon=True)
     original_tick_sec = service.POLL_TICK_SEC
+    original_retry_sec = service.FAILED_POLL_RETRY_SEC
     service.POLL_TICK_SEC = 0.01
+    service.FAILED_POLL_RETRY_SEC = 0.02
     source.poll_sec = 0.02
     try:
         thread.start()
@@ -469,8 +471,36 @@ def test_poll_loop_survives_a_store_write_error_and_retries():
         stop.set()
         thread.join(timeout=2)
         service.POLL_TICK_SEC = original_tick_sec
+        service.FAILED_POLL_RETRY_SEC = original_retry_sec
     assert failing.attempts >= 2  # the thread outlived the first failure
     assert not thread.is_alive()
+
+
+def test_a_failed_poll_backs_off_to_the_retry_floor_and_a_success_does_not():
+    assert service.next_poll_delay(10.0, True) == 10.0
+    assert service.next_poll_delay(10.0, False) == service.FAILED_POLL_RETRY_SEC == 60.0
+    assert service.next_poll_delay(300.0, False) == 300.0  # a slow cadence is never shortened
+
+
+def test_poll_loop_waits_the_retry_floor_after_a_failed_fetch(tmp_path):
+    source = ScriptedSource([RuntimeError("venue down")] * 50)
+    store = BetsStore(tmp_path / "bets.duckdb", SOURCE_RUNS_RETENTION_DAYS)
+    stop = threading.Event()
+    thread = threading.Thread(target=service.poll_loop, args=([source], store, stop), daemon=True)
+    original_tick_sec = service.POLL_TICK_SEC
+    original_retry_sec = service.FAILED_POLL_RETRY_SEC
+    service.POLL_TICK_SEC = 0.01
+    service.FAILED_POLL_RETRY_SEC = 0.5
+    source.poll_sec = 0.01
+    try:
+        thread.start()
+        time.sleep(0.3)
+    finally:
+        stop.set()
+        thread.join(timeout=2)
+        service.POLL_TICK_SEC = original_tick_sec
+        service.FAILED_POLL_RETRY_SEC = original_retry_sec
+    assert len(source.outcomes) == 49  # one fetch; without the floor it would have retried ~30 times
 
 
 def test_registered_sources_report_no_completed_poll_yet(store):
