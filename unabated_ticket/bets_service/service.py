@@ -107,6 +107,14 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     order on Cal's own key, real money — manual_orders.py checks
                                     the live ask against the Ticket's price first; 503 when no
                                     Kalshi key is configured)
+           POST /place_novig.json   body {clickId, eventId, periodTypeId, betTypeId (2|3),
+                                    sideIndex, points, stake, ticketAllIn, novigReadAt,
+                                    kalshiReadAt} -> {ok, status: filled | partial | unfilled |
+                                    refused | rejected | unknown, message, ...} (the Ticket's Place
+                                    button on Novig: ONE immediate-or-cancel order from Place's own
+                                    Novig sub-account, real money — novig_place.py checks the live
+                                    price against the Ticket's first; 503 while Place has no Novig
+                                    order client)
            PUT /settings.json       body {settings: {<any of those fields>: value or null}} ->
                                     {ok, settings, updatedAt}; a field left out keeps its value,
                                     null resets it to the default, an unknown field or a bad
@@ -165,12 +173,21 @@ ticket. POST /taker_decisions.json APPENDs the server runner's taker decisions t
 taker.duckdb::taker_decisions (taker_store.py; a separate file from bets.duckdb).
 POST /place_kalshi.json places Cal's own Kalshi order (money) and INSERTs /
 UPDATEs bets.duckdb::manual_orders (manual_orders.py).
+POST /place_novig.json places a Novig order from Place's own sub-account (money)
+and INSERTs / UPDATEs bets.duckdb::manual_orders, venue 'novig' (novig_place.py).
 POST /taker/order.json places a bot order on Kalshi (money) on the bot's own
 key, locked to the bot's own Kalshi subaccount, when one is configured, and
 INSERTs / UPDATEs taker.duckdb::taker_orders (taker_orders.py: stop file, $500
 ceiling, limit at the ask, rest cancelled); the desk's own thread cancels bot
 orders left resting on Kalshi, reads final fills and frees settled markets
 every 30 s, runner or no runner.
+POST /taker/novig_order.json places a bot order on Novig (money) on the bot's
+own trading key, which trades only in the bot's Novig subaccount, and INSERTs /
+UPDATEs taker.duckdb::novig_taker_orders (novig_taker_desk.py: stop files,
+holdings freshness, its own $500 ceiling, one IOC buy); its thread reads final
+fills and frees settled markets every 30 s. The bot's (and the Novig Place
+button's) subaccount is read as its own source, novig_bot / novig_place
+(sources/novig_subaccount.py).
 """
 import json
 import logging
@@ -192,13 +209,19 @@ from unabated_ticket.bets_service.balances import BalanceBook, balances_payload,
 from unabated_ticket.bets_service.log_setup import setup_logging
 from unabated_ticket.bets_service.manual_orders import ManualKalshiDesk, read_runner_quote
 from unabated_ticket.bets_service.manual_orders import validate_place_request as validate_kalshi_place_request
+from unabated_ticket.bets_service.novig_place import (NOVIG_PLACE_READ_SOURCES, RUNNER_NOVIG_QUOTE_PATH, ManualNovigDesk,
+                                                      validate_novig_place_request)
 from unabated_ticket.bets_service.normalize import parse_iso_ms, utc_now_iso
+from unabated_ticket.bets_service.novig_orders import NovigError, NovigOrderClient
+from unabated_ticket.bets_service.novig_taker_desk import NovigTakerDesk, account_problem, novig_unseen_fill
+from unabated_ticket.bets_service.novig_taker_desk import validate_order_request as validate_novig_order_request
 from unabated_ticket.bets_service.sources import Source, bet105, draftkings
 from unabated_ticket.bets_service.sources.betonline import source_if_configured as betonline_source_if_configured
 from unabated_ticket.bets_service.sources.bfa import BFASource, normalize_open_bets
 from unabated_ticket.bets_service.sources.bfa import source_if_configured as bfa_source_if_configured
 from unabated_ticket.bets_service.sources.kalshi import PRIMARY_SUBACCOUNT, KalshiSource
 from unabated_ticket.bets_service.sources.novig import source_if_connected as novig_source_if_connected
+from unabated_ticket.bets_service.sources.novig_subaccount import NovigSubaccountSource
 from unabated_ticket.bets_service.sources.polymarket_us import source_if_configured as polymarket_us_source_if_configured
 from unabated_ticket.bets_service.sources.wagerzon import source_if_configured as wagerzon_source_if_configured
 from unabated_ticket.bets_service.store import EDGE_SETTINGS_FIELDS, BetsStore
@@ -252,6 +275,9 @@ SETTINGS_PERIOD_IDS = range(1, 8)
 SETTINGS_BET_TYPE_IDS = (1, 2, 3)
 SETTINGS_BOOK_MODES = ("default", "all", "custom")
 SETTINGS_SORT_KEYS = ("edge", "stake", "start", "exposure")
+# Why POST /place_novig.json answers 503 when no Place key is configured.
+NOVIG_PLACE_OFF_REASON = "no Place Novig key is configured (NOVIG_PLACE_KEY_ID / NOVIG_PLACE_PRIVATE_KEY_PATH)"
+
 # The phone page (phone page plan step 2): every file the service serves, by
 # exact URL path. Nothing is resolved from the request, so `..`, encoded
 # slashes or a symlink cannot reach any other file. The extension modules are
@@ -262,7 +288,7 @@ PHONE_DIR = UNABATED_TICKET_DIR / "server" / "phone"
 TRACKER_DIR = UNABATED_TICKET_DIR / "server" / "tracker"
 EXTENSION_DIR = UNABATED_TICKET_DIR / "extension"
 PHONE_EXTENSION_MODULES = (
-    "kelly.js", "kalshiplace.js", "feed.js", "teams.js", "bets.js", "ladder.js", "condkelly.js", "betsview.js",
+    "kelly.js", "place.js", "feed.js", "teams.js", "bets.js", "ladder.js", "condkelly.js", "betsview.js",
     "edgemove.js", "fillfair.js", "tailflex.js", "edgerows.js", "teaser.js", "teaserview.js",
 )
 STATIC_FILES: dict[str, Path] = {
@@ -870,7 +896,12 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                                              "KALSHI_TAKER_PRIVATE_KEY_PATH)",
                  kalshi_place_desk: ManualKalshiDesk | None = None,
                  kalshi_place_off_reason: str = "no Kalshi trade key for Place is configured "
-                                                "(KALSHI_PLACE_API_KEY_ID / KALSHI_PLACE_PRIVATE_KEY_PATH)") -> type[BaseHTTPRequestHandler]:
+                                                "(KALSHI_PLACE_API_KEY_ID / KALSHI_PLACE_PRIVATE_KEY_PATH)",
+                 novig_taker_desk: NovigTakerDesk | None = None,
+                 novig_taker_desk_off_reason: str = "no bot Novig key is configured (NOVIG_TAKER_KEY_ID / "
+                                                    "NOVIG_TAKER_PRIVATE_KEY_PATH)",
+                 novig_place_desk: ManualNovigDesk | None = None,
+                 novig_place_off_reason: str = NOVIG_PLACE_OFF_REASON) -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
     EXTRA_ALLOWED_HOSTS (the tests pass their own). `teaser_placer` is the
@@ -878,7 +909,11 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
     `taker_store` is the taker's decision log (None: POST /taker_decisions.json 503s).
     `taker_desk` places the bot's orders (None: POST /taker/order.json 503s with `taker_desk_off_reason`).
     `kalshi_place_desk` places Cal's own Place-button orders (None: POST
-    /place_kalshi.json 503s with `kalshi_place_off_reason`)."""
+    /place_kalshi.json 503s with `kalshi_place_off_reason`).
+    `novig_taker_desk` places the bot's Novig orders (None: POST
+    /taker/novig_order.json 503s with `novig_taker_desk_off_reason`). `novig_place_desk`
+    places Cal's Novig Place-button orders (None: POST /place_novig.json 503s
+    with `novig_place_off_reason`)."""
     names = list(source_names)
     proxied_host_names = tuple(extra_hosts) if extra_hosts is not None else config.EXTRA_ALLOWED_HOSTS
     edges_runner_url = (runner_url or config.RUNNER_URL).rstrip("/")
@@ -929,8 +964,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             url = urlparse(self.path)
             if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/fill_books.json", "/closing_fairs.json",
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
-                                "/draftkings.json", "/place_teaser.json", "/place_kalshi.json", "/taker_decisions.json",
-                                "/taker/order.json"):
+                                "/draftkings.json", "/place_teaser.json", "/place_kalshi.json", "/place_novig.json",
+                                "/taker_decisions.json",
+                                "/taker/order.json", "/taker/novig_order.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
@@ -973,13 +1009,20 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if url.path == "/place_kalshi.json":
                 self._place_kalshi(body)
                 return
-            if url.path in ("/taker_decisions.json", "/taker/order.json") and self._refused_non_loopback():
+            if url.path == "/place_novig.json":
+                self._place_novig(body)
+                return
+            if (url.path in ("/taker_decisions.json", "/taker/order.json", "/taker/novig_order.json")
+                    and self._refused_non_loopback()):
                 return
             if url.path == "/taker_decisions.json":
                 self._log_taker_decisions(body)
                 return
             if url.path == "/taker/order.json":
                 self._place_taker_order(body)
+                return
+            if url.path == "/taker/novig_order.json":
+                self._place_novig_taker_order(body)
                 return
             rows = validate_crosswalk_rows(body)
             if isinstance(rows, str):
@@ -1138,6 +1181,18 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             self._send_json(200, taker_desk.place(request))
 
+        # POST /taker/novig_order.json: one bot order on Novig (novig_taker_desk.py),
+        # a 200 with {status} always; 503 only when the bot has no Novig key.
+        def _place_novig_taker_order(self, body: object) -> None:
+            if novig_taker_desk is None:
+                self._send_json(503, {"status": "off", "error": novig_taker_desk_off_reason})
+                return
+            request = validate_novig_order_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            self._send_json(200, novig_taker_desk.place(request))
+
         def _push_bet105(self, body: object) -> None:
             push = bet105.validate_push(body)
             if isinstance(push, str):
@@ -1226,6 +1281,24 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 log.exception("kalshi place: failed")
                 result = {"status": "unknown", "message": f"The order failed on this server ({type(error).__name__}: "
                                                           f"{error}). Check Kalshi before placing again."}
+            self._send_json(200, {"ok": result["status"] in ("filled", "partial"), **result})
+
+        # POST /place_novig.json: one order from Place's Novig sub-account
+        # (novig_place.py), through the tailnet name like Place on Kalshi.
+        def _place_novig(self, body: object) -> None:
+            if novig_place_desk is None:
+                self._send_json(503, {"error": novig_place_off_reason})
+                return
+            request = validate_novig_place_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            try:
+                result = novig_place_desk.place(request)
+            except Exception as error:  # noqa: BLE001 — logged; the row (if any) says how far it got
+                log.exception("novig place: failed")
+                result = {"status": "unknown", "message": f"The order failed on this server ({type(error).__name__}: "
+                                                          f"{error}). Check Novig before placing again."}
             self._send_json(200, {"ok": result["status"] in ("filled", "partial"), **result})
 
         def _store_bfa_open_bets(self, open_wagers: list[dict]) -> None:
@@ -1363,7 +1436,68 @@ def open_taker_desk(store: TakerStore | None,
     shown_balance = "unknown" if balance is None else f"${balance:,.2f}"
     log.info("taker: ARMED on its own key, locked to Kalshi subaccount %d (available %s); stop file %s",
              subaccount, shown_balance, config.TAKER_STOP_PATH)
-    return TakerDesk(client, store, config.TAKER_STOP_PATH, subaccount), ""
+    return TakerDesk(client, store, config.TAKER_STOP_PATH, subaccount,
+                     other_venue_unseen=lambda event_id, held_ids: novig_unseen_fill(store, event_id, held_ids)), ""
+
+
+def novig_trading_client(key_id: str | None, key_path: str | None, variable: str) -> tuple[NovigOrderClient | None, str]:
+    """(a client signing with one Novig trading key, "") or (None, why)."""
+    if not key_id or not key_path:
+        return None, f"no {variable} Novig key is configured"
+    if not Path(key_path).exists():
+        return None, f"no {variable} Novig key file at {key_path}"
+    try:
+        return NovigOrderClient(key_id, key_path, config.NOVIG_API_URL), ""
+    except (OSError, ValueError, NovigError) as error:
+        return None, f"the {variable} Novig key {key_path} could not be read: {type(error).__name__}"
+
+
+def open_novig_taker_desk(store: TakerStore | None, holdings_status: Callable[[], dict[str, dict]],
+                          check: Callable[[NovigOrderClient], tuple[str | None, float | None]] = account_problem,
+                          ) -> tuple[NovigTakerDesk | None, str]:
+    """(the bot's Novig desk, "") or (None, why): without its own trading key,
+    Novig's word that it is a trading key on its own subaccount (it reads
+    that balance and is refused the key listing), or its log, nothing is sent."""
+    client, reason = novig_trading_client(config.NOVIG_TAKER_KEY_ID, config.NOVIG_TAKER_PRIVATE_KEY_PATH, "bot")
+    if client is None:
+        log.info("novig taker: %s, the bot places no Novig orders", reason)
+        return None, reason
+    if store is None:
+        reason = f"the taker log {config.TAKER_DB_PATH} is not open (its ceiling lives there)"
+        log.error("novig taker: %s, the bot places no Novig orders", reason)
+        return None, reason
+    problem, balance = check(client)
+    if problem is not None:
+        reason = f"the bot Novig key is not proven a trading key on its own subaccount: {problem}"
+        log.error("novig taker: %s, the bot places no Novig orders", reason)
+        return None, reason
+    log.info("novig taker: ARMED on its own trading key %s (subaccount balance $%s); stop files %s, %s",
+             config.NOVIG_TAKER_KEY_ID[:8], f"{balance:,.2f}", config.TAKER_STOP_PATH, config.NOVIG_TAKER_STOP_PATH)
+    return NovigTakerDesk(client, store, (config.TAKER_STOP_PATH, config.NOVIG_TAKER_STOP_PATH), holdings_status), ""
+
+
+def novig_subaccount_sources(taker_store: TakerStore | None, store: BetsStore) -> list[Source]:
+    """The bot's and the Place button's Novig subaccounts, each read on its
+    own trading key when one is configured. The bot's bets are named by the
+    board lines its desk kept (taker.duckdb), Place's by the lines its orders
+    bought (bets.duckdb::manual_orders), which also keep Place's settle times."""
+    sources: list[Source] = []
+    bot_client, reason = novig_trading_client(config.NOVIG_TAKER_KEY_ID, config.NOVIG_TAKER_PRIVATE_KEY_PATH, "bot")
+    if bot_client is not None and taker_store is not None:
+        sources.append(NovigSubaccountSource("bot", bot_client, taker_store.novig_order_contexts))
+    elif bot_client is not None:
+        log.error("novig_bot: the taker log is not open, so the bot subaccount's bets cannot be named; not read")
+    else:
+        log.info("novig_bot: %s, not read", reason)
+    place_client, reason = novig_trading_client(config.NOVIG_PLACE_KEY_ID, config.NOVIG_PLACE_PRIVATE_KEY_PATH, "Place")
+    if place_client is not None:
+        sources.append(NovigSubaccountSource(
+            "place", place_client, store.novig_place_order_contexts, note_settled=store.note_novig_place_settled,
+            lost_orders=store.lost_novig_place_orders,
+            adopt_order=lambda client_order_id, order_id: store.adopt_novig_place_order(client_order_id, order_id, _now())))
+    else:
+        log.info("novig_place: %s, not read", reason)
+    return sources
 
 
 def kalshi_subaccounts_read(bot_subaccount: int | None) -> tuple[int, ...]:
@@ -1392,6 +1526,36 @@ def open_kalshi_place_desk(store: BetsStore) -> tuple[ManualKalshiDesk | None, s
     return ManualKalshiDesk(client, store, lambda line: read_runner_quote(config.RUNNER_URL, line)), ""
 
 
+def open_novig_place_desk(store: BetsStore, source_names: list[str],
+                          check: Callable[[NovigOrderClient], tuple[str | None, float | None]] = account_problem,
+                          ) -> tuple[ManualNovigDesk | None, str]:
+    """(the Place button's Novig desk on Place's own sub-account, "") or (None, why).
+    It signs only with Place's own trading key (NOVIG_PLACE_*), proven by Novig
+    a trading key on its own sub-account (it reads that balance and is refused
+    the key listing), so the money in that sub-account is all it can spend.
+    The stake counts Cal's app account and Place's sub-account, and the bot's
+    when it is read, so each of those reads must be fresh before an order."""
+    client, reason = novig_trading_client(config.NOVIG_PLACE_KEY_ID, config.NOVIG_PLACE_PRIVATE_KEY_PATH, "Place")
+    if client is None:
+        log.info("novig place: %s, the Novig Place button is off", reason)
+        return None, reason
+    missing = [name for name in NOVIG_PLACE_READ_SOURCES if name not in source_names]
+    if missing:
+        reason = f"the bets service does not read {', '.join(missing)}, so a stake could miss a Novig bet"
+        log.error("novig place: %s, the Novig Place button is off", reason)
+        return None, reason
+    problem, balance = check(client)
+    if problem is not None:
+        reason = f"the Place Novig key is not proven a trading key on its own sub-account: {problem}"
+        log.error("novig place: %s, the Novig Place button is off", reason)
+        return None, reason
+    read_sources = NOVIG_PLACE_READ_SOURCES + (("novig_bot",) if "novig_bot" in source_names else ())
+    log.info("novig place: on, signing with Place key %s (sub-account balance $%s); stakes count %s",
+             config.NOVIG_PLACE_KEY_ID[:8], f"{balance:,.2f}", ", ".join(read_sources))
+    return ManualNovigDesk(client, store, lambda line: read_runner_quote(config.RUNNER_URL, line, RUNNER_NOVIG_QUOTE_PATH),
+                           read_sources=read_sources), ""
+
+
 def open_taker_store(db_path: Path) -> TakerStore | None:
     """The taker's decision log, or None (logged) when its file cannot be
     opened: the log is the bot's, so a bad path must not take Cal's bets down
@@ -1403,27 +1567,37 @@ def open_taker_store(db_path: Path) -> TakerStore | None:
         return None
 
 
-def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None:
-    """Run the poll thread and the HTTP server until SIGINT/SIGTERM."""
+def serve(sources: list[Source], store: BetsStore, host: str, port: int,
+          taker_store: TakerStore | None = None) -> None:
+    """Run the poll thread and the HTTP server until SIGINT/SIGTERM. The
+    taker log is opened here unless main() opened it for the Novig sources."""
     stop = threading.Event()
     started_at = time.monotonic()
     source_names = [source.name for source in sources] + list(PUSHED_SOURCES)
     balance_book = BalanceBook()
-    taker_store = open_taker_store(config.TAKER_DB_PATH)
+    if taker_store is None:
+        taker_store = open_taker_store(config.TAKER_DB_PATH)
     taker_desk, taker_desk_off_reason = open_taker_desk(taker_store)
+    novig_taker_desk, novig_taker_desk_off_reason = open_novig_taker_desk(
+        taker_store, lambda: source_status(store, source_names))
     kalshi_place_desk, kalshi_place_off_reason = open_kalshi_place_desk(store)
+    novig_place_desk, novig_place_off_reason = open_novig_place_desk(store, source_names)
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
                                                             teaser_placer=teaser_placer_for(sources),
                                                             taker_store=taker_store, taker_desk=taker_desk,
                                                             taker_desk_off_reason=taker_desk_off_reason,
                                                             kalshi_place_desk=kalshi_place_desk,
                                                             kalshi_place_off_reason=kalshi_place_off_reason,
+                                                            novig_taker_desk=novig_taker_desk,
+                                                            novig_taker_desk_off_reason=novig_taker_desk_off_reason,
+                                                            novig_place_desk=novig_place_desk,
+                                                            novig_place_off_reason=novig_place_off_reason,
                                                             balance_book=balance_book))
     server.daemon_threads = True
     poller = threading.Thread(target=poll_loop, args=(sources, store, stop, balance_book), name="poll", daemon=True)
     # The desk sweeps its own orders (resting cancels, final fills, settlement) whether or not the runner sends any.
-    desk_sweep = (threading.Thread(target=taker_desk.run_refresh_loop, args=(stop,), name="taker-desk", daemon=True)
-                  if taker_desk is not None else None)
+    desk_sweeps = [threading.Thread(target=desk.run_refresh_loop, args=(stop,), name=name, daemon=True)
+                   for desk, name in ((taker_desk, "taker-desk"), (novig_taker_desk, "novig-taker-desk")) if desk is not None]
 
     def request_stop(_signum, _frame) -> None:
         log.info("stopping")
@@ -1433,7 +1607,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
     poller.start()
-    if desk_sweep is not None:
+    for desk_sweep in desk_sweeps:
         desk_sweep.start()
     log.info("bets service on http://%s:%d (sources: %s); phone page at / with /edges.json from %s; "
              "extra allowed hosts: %s", host, port, ", ".join(source_names), config.RUNNER_URL,
@@ -1444,7 +1618,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int) -> None
         server.server_close()
         stop.set()
         poller.join(timeout=5)
-        if desk_sweep is not None:
+        for desk_sweep in desk_sweeps:
             desk_sweep.join(timeout=5)
         store.close()
         if taker_store is not None:
@@ -1472,7 +1646,9 @@ def main() -> None:
         optional = factory()
         if optional is not None:
             sources.append(optional)
-    serve(sources, store, config.BIND_HOST, config.PORT)
+    taker_store = open_taker_store(config.TAKER_DB_PATH)
+    sources.extend(novig_subaccount_sources(taker_store, store))
+    serve(sources, store, config.BIND_HOST, config.PORT, taker_store=taker_store)
 
 
 if __name__ == "__main__":

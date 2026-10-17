@@ -93,7 +93,7 @@ test("orderbook: the ask is 1 - the best opposite bid; legacy cents parse too", 
   assert.deepEqual(taker.quoteOf(legacy, "no"), { ask: 0.6, depth: 10 });
 });
 
-test("at Unabated's own price, best at the number, a 5% edge bets quarter Kelly of $3,500 in contracts", () => {
+test("at Unabated's own price, best at the number, a 5% edge bets quarter Kelly of $2,000 in contracts", () => {
   // Prophet Exchange and Novig sit at the same number at worse or no price; none is better than -143.
   const state = boardWithEdge(WSU_ALT_KEY, 0.05);
   for (const key of Object.keys(state.lines)) {
@@ -104,9 +104,9 @@ test("at Unabated's own price, best at the number, a 5% edge bets quarter Kelly 
   assert.equal(decision.liveAsk, 0.57);
   // At Unabated's own all-in the live edge is Unabated's edge (the fair is read off its cheaper price).
   assert.ok(Math.abs(decision.liveEdge - 0.05) < 0.0005, String(decision.liveEdge));
-  // Quarter Kelly of $3,500 at a 5% edge on -143: $62.22, bought as 105 contracts at the 0.5872 all-in.
-  assert.equal(Math.round(decision.stake * 100) / 100, 62.22);
-  assert.deepEqual({ contracts: decision.contracts, cost: decision.cost, liveAllIn: decision.liveAllIn }, { contracts: 105, cost: 61.6515, liveAllIn: 0.5872 });
+  // Quarter Kelly of $2,000 at a 5% edge on -143: $35.56, bought as 60 contracts at the 0.5872 all-in.
+  assert.equal(Math.round(decision.stake * 100) / 100, 35.56);
+  assert.deepEqual({ contracts: decision.contracts, cost: decision.cost, liveAllIn: decision.liveAllIn }, { contracts: 60, cost: 35.2294, liveAllIn: 0.5872 });
 });
 
 test("depth cuts the contracts; none resting at the ask is no_book", () => {
@@ -272,10 +272,10 @@ test("a held bet on the row's axis the sizing math could not price refuses the s
   // The same line held: conditional Kelly sizes it (here to nothing more), no refusal.
   const sameLine = decideHolding(WSU_ALT_KEY, [heldKalshi("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "home", "spread", -35.5)]);
   assert.equal(sameLine.reason, "size_zero", sameLine.detail);
-  // A smaller same-line holding leaves room: $20 at -133 held, the bot adds $41.71. At the old $500
+  // A smaller same-line holding leaves room: $20 at -133 held, the bot adds $15.04. At the old $500
   // bankroll this sized to $0 too, which is why the bot never bet a game Cal already held.
   const topUp = decideHolding(WSU_ALT_KEY, [{ ...heldKalshi("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "home", "spread", -35.5), stake: 20, toWin: 15, contracts: 35, price: -133 }]);
-  assert.deepEqual({ reason: topUp.reason, stake: topUp.stake, contracts: topUp.contracts, cost: topUp.cost }, { reason: "bet", stake: 41.71, contracts: 71, cost: 41.6881 });
+  assert.deepEqual({ reason: topUp.reason, stake: topUp.stake, contracts: topUp.contracts, cost: topUp.cost }, { reason: "bet", stake: 15.04, contracts: 25, cost: 14.6789 });
 });
 
 test("the other side of the market held is never bet against, in either account: size_declined", () => {
@@ -299,4 +299,37 @@ test("every bot order id starts ubot- and is fixed per ticker, side and pass", (
   assert.equal(taker.clientOrderIdOf("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 1000), id);
   assert.notEqual(taker.clientOrderIdOf("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 31000), id);
   assert.notEqual(taker.clientOrderIdOf("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "no", 1000), id);
+});
+
+// ---- Kalshi's own start for a game (second clock beside Unabated's eventStart) ----
+const CLMB_EVENT = "KXNCAAFSPREAD-26OCT16CLMBPENN";
+
+test("kalshiStartMsOf: the earliest zoned start_date among milestones naming the event", () => {
+  const body = { milestones: [
+    { start_date: "2026-10-17T00:30:00Z", related_event_tickers: [CLMB_EVENT] },
+    { start_date: "2026-10-16T23:00:00Z", primary_event_tickers: [CLMB_EVENT] },
+    { start_date: "2026-10-16T20:00:00Z", related_event_tickers: ["KXNCAAFSPREAD-26OCT16OTHER"] },
+    { start_date: "2026-10-16T21:00:00", related_event_tickers: [CLMB_EVENT] },
+    { start_date: "not a time", related_event_tickers: [CLMB_EVENT] },
+    null,
+  ] };
+  assert.equal(taker.kalshiStartMsOf(body, CLMB_EVENT), Date.parse("2026-10-16T23:00:00Z"));
+  assert.equal(taker.kalshiStartMsOf({ milestones: [] }, CLMB_EVENT), null);
+  assert.equal(taker.kalshiStartMsOf({}, CLMB_EVENT), null);
+  assert.equal(taker.kalshiStartMsOf(null, CLMB_EVENT), null);
+});
+
+test("earliestStartMs: the earlier clock wins; Unabated's alone when Kalshi has none", () => {
+  const unabated = Date.parse("2026-10-17T00:30:00Z");
+  const kalshi = Date.parse("2026-10-16T23:00:00Z");
+  assert.equal(taker.earliestStartMs(unabated, kalshi), kalshi);
+  assert.equal(taker.earliestStartMs(kalshi, unabated), kalshi);
+  assert.equal(taker.earliestStartMs(unabated, null), unabated);
+  assert.equal(taker.earliestStartMs(NaN, null), null);
+});
+
+test("eventTickerOf: Kalshi's event_ticker, else the ticker less its last part", () => {
+  assert.equal(taker.eventTickerOf({ event_ticker: CLMB_EVENT }, "X-Y-Z"), CLMB_EVENT);
+  assert.equal(taker.eventTickerOf({}, `${CLMB_EVENT}-CLMB6`), CLMB_EVENT);
+  assert.equal(taker.eventTickerOf(null, "NODASH"), null);
 });

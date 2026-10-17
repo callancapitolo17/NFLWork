@@ -51,7 +51,7 @@ The $200 ticket limit, the Kelly multiplier, panel and phone layout.
   `.claude/worktrees/modest-newton-931339`.
 - Files: `unabated_ticket/extension/teaser.js`,
   `unabated_ticket/extension/teaserview.js` (the too-few-legs wording),
-  `unabated_ticket/extension/manifest.json` (0.29.0),
+  `unabated_ticket/extension/manifest.json` (0.30.0),
   `unabated_ticket/tests/teaser.test.js`,
   `unabated_ticket/tests/teaserview.test.js`, `unabated_ticket/README.md`,
   `docs/2026-09-27-unabated-ticket-teasers-plan.md`, root `CLAUDE.md`, this

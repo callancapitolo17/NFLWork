@@ -83,6 +83,8 @@ def test_validate_names_what_is_wrong():
     assert validate_place_request({**BODY, "stake": 0}).startswith("stake")
     assert validate_place_request({**BODY, "ticketAllIn": 1.2}).startswith("ticketAllIn")
     assert validate_place_request({**BODY, "kalshiReadAt": None}).startswith("kalshiReadAt")
+    assert validate_place_request({**BODY, "novigReadAt": "yesterday"}).startswith("novigReadAt")
+    assert validate_place_request(BODY)["novig_read_at"] is None
     assert validate_place_request({**BODY, "points": None})["points"] is None
 
 
@@ -157,6 +159,24 @@ def test_an_add_waits_until_the_last_fill_on_the_game_was_read(store):
     fresh = desk_with(store, kalshi, now=NOW + timedelta(seconds=90)).place(
         request(clickId="c1a2b3c4-0010", kalshiReadAt=(NOW + timedelta(seconds=60)).isoformat()))
     assert fresh["status"] == "filled"
+
+
+def test_an_add_waits_on_a_novig_place_the_novig_read_has_not_seen(store):
+    """The stake counts Novig bets off the Novig read: a Novig Place after that
+    read is missing from it, however fresh the Kalshi read is."""
+    store.insert_manual_order({
+        "client_order_id": "nman-00000000-0000-4000-8000-000000000001", "placed_at": NOW - timedelta(seconds=30),
+        "venue": "novig", "event_id": EVENT_ID, "ticker": "01a0a05e-e864-7b73-9b80-9e502e4e98d5", "contract_side": "buy",
+        "label": None, "ticket_all_in": 0.675, "ask_price": 0.675, "all_in_price": 0.675, "stake": 50,
+        "count_requested": 7407, "status": "filled", "updated_at": NOW})
+    kalshi = ScriptedKalshi()
+    read_before = request(kalshiReadAt=NOW.isoformat(), novigReadAt=(NOW - timedelta(seconds=60)).isoformat())
+    assert desk_with(store, kalshi).place(read_before)["status"] == "refused"
+    never_read = request(clickId="c1a2b3c4-0020", kalshiReadAt=NOW.isoformat(), novigReadAt=None)
+    assert desk_with(store, kalshi).place(never_read)["status"] == "refused"
+    assert kalshi.calls == []
+    read_after = request(clickId="c1a2b3c4-0021", kalshiReadAt=NOW.isoformat(), novigReadAt=NOW.isoformat())
+    assert desk_with(store, kalshi).place(read_after)["status"] == "filled"
 
 
 def test_kalshi_refusing_is_rejected_with_its_words(store):
