@@ -34,6 +34,16 @@ are the primary's only, so every subaccount read is pulled and normalised on
 its own: fills, positions and settlements with `subaccount=N`. A numbered
 subaccount's ids end in ":s<N>" (record_id_of), so the bot's bet and Cal's on
 the same market stay two records; the primary's ids are unchanged.
+
+Startup skip: a restart empties every in-memory cache, and re-reading each
+market ever held (its pre-cutoff fills, the market, the event; one throttled
+GET each) took ~16 minutes on 2026-10-17. A market whose stored records are
+all final (FINAL_STATUSES) never changes for placing or sizing, so the first
+fetch skips it: no historical read, no lookup, no record re-sent; the stored
+copy stands (the store never deletes). It is read again only if it shows an
+open position or a fill made after this process started. Accepted gap: a
+stored-closed market reopened AND closed again while the service was down
+keeps its old record.
 """
 import logging
 import threading
@@ -64,6 +74,10 @@ POSITIONS_PATH = "/portfolio/positions?settlement_status=unsettled"
 SETTLEMENTS_PATH = "/portfolio/settlements"
 PRIMARY_SUBACCOUNT = 0
 MAX_SUBACCOUNT = 63
+# Record statuses that no later fill or settlement changes for placing or
+# sizing; a market whose stored records are all one of these is skipped at
+# startup (module docstring, "Startup skip").
+FINAL_STATUSES = frozenset({"won", "lost", "void", "closed"})
 
 
 def subaccount_suffix(subaccount: int) -> str:
@@ -477,6 +491,9 @@ class KalshiSource:
     `known_tickers(subaccount)` returns the tickers the store already holds
     that subaccount's Kalshi records for (BetsStore.load_kalshi_tickers);
     their pre-cutoff fills are read.
+    `final_tickers(subaccount)` returns the tickers whose stored records of
+    that subaccount are all final (BetsStore.load_kalshi_final_tickers); read
+    once, on the first fetch, they are skipped (module docstring).
     """
 
     name = "kalshi"
@@ -485,15 +502,20 @@ class KalshiSource:
                  reconcile_sec: float | None = None, configure_auth: bool = True,
                  lookup_gap_sec: float | None = None, clock: Callable[[], float] = time.time,
                  known_tickers: Callable[[int], set[str]] = lambda _subaccount: set(),
+                 final_tickers: Callable[[int], set[str]] = lambda _subaccount: set(),
                  subaccounts: tuple[int, ...] = (PRIMARY_SUBACCOUNT,)):
         self.poll_sec = poll_sec if poll_sec is not None else config.KALSHI_POLL_SEC
         self._reconcile_sec = reconcile_sec if reconcile_sec is not None else config.KALSHI_RECONCILE_SEC
         self._lookup_gap_sec = lookup_gap_sec if lookup_gap_sec is not None else config.KALSHI_LOOKUP_GAP_SEC
         self._clock = clock
         self._known_tickers = known_tickers
+        self._final_tickers = final_tickers
         self._subaccounts = _validated_subaccounts(tuple(subaccounts))
         # Per subaccount: tickers whose /historical/fills have been read (pre-cutoff fills never change).
         self._historical_read: dict[int, set[str]] = {number: set() for number in self._subaccounts}
+        # Per subaccount: stored-final tickers not read this process; set on the first fetch.
+        self._skipped: dict[int, set[str]] | None = None
+        self._first_fetch_ms: int | None = None
         if configure_auth:
             if not config.KALSHI_API_KEY_ID or not config.KALSHI_PRIVATE_KEY_PATH:
                 raise RuntimeError("KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PATH not set "
@@ -551,9 +573,14 @@ class KalshiSource:
         settled = _paginate(self._api, f"{SETTLEMENTS_PATH}?subaccount={subaccount}", "settlements")
         wanted = ({fill["ticker"] for fill in held.values()} | self._known_tickers(subaccount)
                   | {settlement["ticker"] for settlement in settled})
+        return self._read_historical_fills(subaccount, wanted - self._skipped_in(subaccount))
+
+    def _read_historical_fills(self, subaccount: int, tickers: set[str]) -> int:
+        """/historical/fills of each ticker not yet read this process."""
+        held = self._fills_by_trade_id[subaccount]
         already_read = self._historical_read[subaccount]
         n_new = 0
-        for ticker in sorted(wanted - already_read):
+        for ticker in sorted(tickers - already_read):
             time.sleep(self._lookup_gap_sec)
             path = f"{HISTORICAL_FILLS_PATH}?ticker={ticker}&subaccount={subaccount}"
             try:
@@ -565,6 +592,42 @@ class KalshiSource:
             n_new += _hold_fills(held, fills)
             already_read.add(ticker)
         return n_new
+
+    # -- startup skip (module docstring) -------------------------------------------
+
+    def _skipped_in(self, subaccount: int) -> set[str]:
+        return self._skipped[subaccount] if self._skipped is not None else set()
+
+    def _load_skipped(self, now: float) -> None:
+        """On the first fetch: the stored-final tickers of every subaccount."""
+        if self._skipped is not None:
+            return
+        self._first_fetch_ms = int(now * 1000)
+        self._skipped = {subaccount: set(self._final_tickers(subaccount)) for subaccount in self._subaccounts}
+        for subaccount, skipped in self._skipped.items():
+            log.info("kalshi subaccount %d: %d stored-final markets skipped at startup", subaccount, len(skipped))
+
+    def _unskip_active(self, subaccount: int, positions: list[dict]) -> None:
+        """A skipped ticker with an open position or a fill made after the
+        first fetch is live again: its pre-cutoff fills are read now, so its
+        record is never priced off a partial fill list."""
+        skipped = self._skipped_in(subaccount)
+        if not skipped:
+            return
+        open_tickers = {position["ticker"] for position in positions
+                        if abs(to_number(position.get("position_fp"))) > FLAT_POSITION_EPSILON}
+        recent_tickers = {fill["ticker"] for fill in self._fills_by_trade_id[subaccount].values()
+                          if (parse_iso_ms(fill.get("created_time") or "") or 0) >= self._first_fetch_ms}
+        active = skipped & (open_tickers | recent_tickers)
+        if not active:
+            return
+        log.info("kalshi subaccount %d: %d skipped markets active again: %s", subaccount, len(active), sorted(active))
+        skipped -= active
+        self._read_historical_fills(subaccount, active)
+
+    def _live_fills(self, subaccount: int) -> list[dict]:
+        skipped = self._skipped_in(subaccount)
+        return [fill for fill in self._fills_by_trade_id[subaccount].values() if fill["ticker"] not in skipped]
 
     def _pull_positions(self, subaccount: int) -> list[dict]:
         return list(_paginate(self._api, f"{POSITIONS_PATH}&subaccount={subaccount}", "market_positions"))
@@ -613,15 +676,19 @@ class KalshiSource:
 
     def fetch(self) -> list[dict]:
         now = self._clock()
+        self._load_skipped(now)
         self._pull_fills(now)
         positions = {subaccount: self._pull_positions(subaccount) for subaccount in self._subaccounts}
-        tickers = {fill["ticker"] for held in self._fills_by_trade_id.values() for fill in held.values()}
+        for subaccount in self._subaccounts:
+            self._unskip_active(subaccount, positions[subaccount])
+        live_fills = {subaccount: self._live_fills(subaccount) for subaccount in self._subaccounts}
+        tickers = {fill["ticker"] for fills in live_fills.values() for fill in fills}
         for ticker in sorted(tickers):
             self._ensure_market_and_event(ticker)
         fetched_at = utc_now_iso()
         records = []
         for subaccount in self._subaccounts:
-            fills = list(self._fills_by_trade_id[subaccount].values())
+            fills = live_fills[subaccount]
             subaccount_records = normalize_kalshi(fills, positions[subaccount], self._markets, self._events, fetched_at)
             subaccount_records = apply_net_position_pnl(subaccount_records, fills, self._markets, positions[subaccount])
             records.extend(json_clean(record) for record in tag_subaccount(subaccount_records, subaccount))

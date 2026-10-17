@@ -1833,7 +1833,17 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   positions, plus one cached public GET per market and per event; a full
   fills re-pull once an hour is the reconcile, and it re-reads every cached
   market without a result yet (settlement is the one thing on a market payload
-  that changes). Records are one per (ticker, side): positions are the truth
+  that changes). **Startup skip (2026-10-17):** a market whose stored records
+  are all final (won / lost / void / closed) is skipped from the first poll
+  on: no historical read, no lookup, no record re-sent, so the stored copy
+  stands (the store never deletes). It is read in full again only if it shows
+  an open position or a fill made after the process started. This cut the
+  first poll after a deploy from ~16 minutes (every market ever held, re-read
+  one throttled GET at a time) to the open markets. Accepted gap: a
+  stored-closed market reopened and closed again while the service was down
+  keeps its old record. Kalshi polls on its own thread
+  (`service.py::OWN_THREAD_SOURCES`), so its first poll never holds up the
+  other venues. Records are one per (ticker, side): positions are the truth
   for the open size, fills give the VWAP entry price and first fill time,
   `market.result` gives won/lost. Team keys are left `null` — the panel fills
   them with `bets.resolveTeamKeys()` so the team table lives only in
@@ -2210,7 +2220,7 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   `source_runs` row and touches nothing else, so a dark source keeps serving
   its previous records; a store write that raises (disk full) is logged and
   retried next poll, never killing the poll thread. Until a source's first
-  poll completes (Kalshi: ~1–2 min, one throttled GET per market and event)
+  poll completes (Kalshi: ~1–2 min, one throttled GET per open market and event)
   `/bets.json` lists it as `{ok: false, error: "no completed poll yet"}`.
   Log: `bets_service.log` (rotating, 10 MB × 3).
 - **Adding a venue** (#117 ProphetX; BetOnline, Novig, BFA, Wagerzon and

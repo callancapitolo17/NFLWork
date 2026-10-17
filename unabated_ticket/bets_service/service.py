@@ -232,6 +232,10 @@ from unabated_ticket.bets_service.taker_store import DECISION_REASONS, TakerStor
 log = logging.getLogger(__name__)
 
 POLL_TICK_SEC = 1.0
+# Sources polled on a thread of their own: Kalshi's first poll after a restart
+# is the slowest read in the service (throttled GETs per live market), and in
+# the shared loop every other venue waited behind it.
+OWN_THREAD_SOURCES = ("kalshi",)
 MAX_DAYS = 3650
 # A crosswalk POST is a few rows per poll; anything near this is not the panel.
 MAX_BODY_BYTES = 1024 * 1024
@@ -389,6 +393,14 @@ def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event,
                     read_balance_once(source, balance_book)
                 next_due[source.name] = time.monotonic() + source.poll_sec
         stop.wait(POLL_TICK_SEC)
+
+
+def poll_lanes(sources: list[Source]) -> list[list[Source]]:
+    """The sources grouped one list per poll thread: each OWN_THREAD_SOURCES
+    source alone, every other source together in one shared loop."""
+    lanes = [[source] for source in sources if source.name in OWN_THREAD_SOURCES]
+    shared = [source for source in sources if source.name not in OWN_THREAD_SOURCES]
+    return lanes + ([shared] if shared else [])
 
 
 # A registered source that has not finished a poll yet (the first Kalshi poll
@@ -1594,7 +1606,9 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                                                             novig_place_off_reason=novig_place_off_reason,
                                                             balance_book=balance_book))
     server.daemon_threads = True
-    poller = threading.Thread(target=poll_loop, args=(sources, store, stop, balance_book), name="poll", daemon=True)
+    pollers = [threading.Thread(target=poll_loop, args=(lane, store, stop, balance_book),
+                                name=f"poll-{lane[0].name}" if len(lane) == 1 else "poll", daemon=True)
+               for lane in poll_lanes(sources)]
     # The desk sweeps its own orders (resting cancels, final fills, settlement) whether or not the runner sends any.
     desk_sweeps = [threading.Thread(target=desk.run_refresh_loop, args=(stop,), name=name, daemon=True)
                    for desk, name in ((taker_desk, "taker-desk"), (novig_taker_desk, "novig-taker-desk")) if desk is not None]
@@ -1606,7 +1620,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
 
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
-    poller.start()
+    for poller in pollers:
+        poller.start()
     for desk_sweep in desk_sweeps:
         desk_sweep.start()
     log.info("bets service on http://%s:%d (sources: %s); phone page at / with /edges.json from %s; "
@@ -1617,7 +1632,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     finally:
         server.server_close()
         stop.set()
-        poller.join(timeout=5)
+        for poller in pollers:
+            poller.join(timeout=5)
         for desk_sweep in desk_sweeps:
             desk_sweep.join(timeout=5)
         store.close()
@@ -1641,6 +1657,7 @@ def main() -> None:
     setup_logging()
     store = BetsStore(config.DB_PATH, config.SOURCE_RUNS_RETENTION_DAYS)
     sources: list[Source] = [KalshiSource(known_tickers=store.load_kalshi_tickers,
+                                          final_tickers=store.load_kalshi_final_tickers,
                                           subaccounts=kalshi_subaccounts_read(config.KALSHI_TAKER_SUBACCOUNT))]
     for _venue, factory in OPTIONAL_SOURCE_FACTORIES:
         optional = factory()

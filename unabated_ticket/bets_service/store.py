@@ -99,7 +99,7 @@ from pathlib import Path
 
 import duckdb
 
-from unabated_ticket.bets_service.sources.kalshi import PRIMARY_SUBACCOUNT, subaccount_of_record_id
+from unabated_ticket.bets_service.sources.kalshi import FINAL_STATUSES, PRIMARY_SUBACCOUNT, subaccount_of_record_id
 
 log = logging.getLogger(__name__)
 
@@ -519,6 +519,10 @@ _SELECT_KALSHI_IDS = """
 SELECT id FROM bets WHERE venue = 'kalshi'
 """
 
+_SELECT_KALSHI_IDS_AND_STATUSES = """
+SELECT id, status FROM bets WHERE venue = 'kalshi'
+"""
+
 _SELECT_WINDOW = """
 SELECT record FROM bets
 WHERE status = 'open' OR closed_at IS NULL OR closed_at >= ?
@@ -725,6 +729,25 @@ class BetsStore:
             except ValueError as error:
                 log.warning("load_kalshi_tickers: skipping stored id %r: %s", record_id, error)
         return tickers
+
+    def load_kalshi_final_tickers(self, subaccount: int = PRIMARY_SUBACCOUNT) -> set[str]:
+        """Every Kalshi ticker whose stored records of `subaccount` all have a
+        final status (sources.kalshi.FINAL_STATUSES); the Kalshi source skips
+        them at startup. One open/unknown side keeps the ticker out."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_KALSHI_IDS_AND_STATUSES).fetchall()
+        final: set[str] = set()
+        not_final: set[str] = set()
+        for record_id, status in rows:
+            try:
+                if subaccount_of_record_id(record_id) != subaccount:
+                    continue
+            except ValueError as error:
+                log.warning("load_kalshi_final_tickers: skipping stored id %r: %s", record_id, error)
+                continue
+            ticker = record_id.split(":")[1]
+            (final if status in FINAL_STATUSES else not_final).add(ticker)
+        return final - not_final
 
     def load_bets(self, days: int, now: datetime) -> list[dict]:
         """Records in the retention window: open, or closed within `days` of `now`."""

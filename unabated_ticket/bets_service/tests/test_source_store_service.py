@@ -186,6 +186,60 @@ def test_a_failed_historical_read_skips_that_market_and_retries_next_full_pull(k
     assert api.count("/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-NE") == 2  # failed, then read; the third pull reads nothing
 
 
+RICE_TICKER = "KXNCAAFTOTAL-26SEP12RICEND-60"
+
+
+def skipping_source(api, clock):
+    """A source whose store holds RICE as a closed (final) market."""
+    return KalshiSource(api=api, configure_auth=False, lookup_gap_sec=0, clock=clock,
+                        known_tickers=lambda subaccount: {RICE_TICKER} if subaccount == 0 else set(),
+                        final_tickers=lambda subaccount: {RICE_TICKER} if subaccount == 0 else set())
+
+
+def test_startup_skips_stored_final_markets_entirely(kalshi_fixture):
+    rice = fill(RICE_TICKER, "yes", 500, 0.32, "2026-09-11T20:08:40Z", trade_id="r1")
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL, rice], [NE_POSITION])
+    api.historical_fills = [fill(RICE_TICKER, "yes", 5, 0.30, "2026-07-02T12:00:00Z", trade_id="rh")]
+    api.settlements = [{"ticker": RICE_TICKER, "market_result": "no"}]
+    records = skipping_source(api, clock=lambda: 1_800_000_000.0).fetch()
+    # No historical read, no market or event lookup, no record: the stored copy stands.
+    assert [record["id"] for record in records] == ["kalshi:KXNFLGAME-26SEP20PITNE-NE:yes"]
+    assert api.count(f"/historical/fills?ticker={RICE_TICKER}") == 0
+    assert api.count(f"/markets/{RICE_TICKER}") == 0
+    assert api.count("/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-NE") == 1
+
+
+def test_a_skipped_market_with_an_open_position_is_read_in_full_again(kalshi_fixture):
+    rice = fill(RICE_TICKER, "yes", 500, 0.32, "2026-09-11T20:08:40Z", trade_id="r1")
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL, rice], [NE_POSITION])
+    api.historical_fills = [fill(RICE_TICKER, "yes", 100, 0.30, "2026-07-02T12:00:00Z", trade_id="rh")]
+    now = [1_800_000_000.0]
+    source = skipping_source(api, clock=lambda: now[0])
+    source.fetch()
+    api.positions = [NE_POSITION, position(RICE_TICKER, 600, 190)]
+    now[0] += 60
+    records = {record["id"]: record for record in source.fetch()}
+    # Its pre-cutoff fills are read before its record is priced, so the VWAP covers all 600.
+    assert api.count(f"/historical/fills?ticker={RICE_TICKER}") == 1
+    assert records[f"kalshi:{RICE_TICKER}:yes"]["status"] == "open"
+    assert records[f"kalshi:{RICE_TICKER}:yes"]["raw"]["fillCount"] == 2
+
+
+def test_a_skipped_market_with_a_fill_after_startup_is_read_again(kalshi_fixture):
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL], [NE_POSITION])
+    now = [1_800_000_000.0]  # 2027-01-15T08:00:00Z
+    source = skipping_source(api, clock=lambda: now[0])
+    source.fetch()
+    # Bought and sold within one poll: no open position, but a fill made after startup.
+    api.fills = [NE_FILL,
+                 fill(RICE_TICKER, "yes", 10, 0.40, "2027-01-15T08:00:30Z", trade_id="r2"),
+                 fill(RICE_TICKER, "no", 10, 0.45, "2027-01-15T08:00:40Z", action="sell", trade_id="r3")]
+    now[0] += 60
+    records = {record["id"] for record in source.fetch()}
+    assert f"kalshi:{RICE_TICKER}:yes" in records
+    assert api.count(f"/historical/fills?ticker={RICE_TICKER}") == 1
+
+
 def test_a_failed_fills_pull_raises(kalshi_fixture):
     api = FakeKalshiApi(kalshi_fixture, [NE_FILL], [NE_POSITION])
     api.fail_paths.add("/portfolio/fills")
@@ -312,8 +366,9 @@ class ScriptedSource:
     name = "kalshi"
     poll_sec = 60
 
-    def __init__(self, outcomes: list):
+    def __init__(self, outcomes: list, name: str = "kalshi"):
         self.outcomes = list(outcomes)
+        self.name = name
 
     def fetch(self) -> list[dict]:
         outcome = self.outcomes.pop(0)
@@ -481,6 +536,27 @@ def test_load_kalshi_tickers_reads_the_ticker_out_of_each_kalshi_id(store):
     store.upsert_bets([{**record("kalshi:odd", "won", "2026-09-11T20:00:00Z"), "venue": "kalshi"}],
                       datetime(2026, 9, 12, 2, tzinfo=timezone.utc))
     assert store.load_kalshi_tickers() == {"KXA-1"}
+
+
+def test_load_kalshi_final_tickers_needs_every_stored_side_final(store):
+    seen = datetime(2026, 9, 12, tzinfo=timezone.utc)
+    store.upsert_bets([{**record("kalshi:KXA-1:yes", "won", "2026-09-11T20:00:00Z"), "venue": "kalshi"},
+                       {**record("kalshi:KXA-1:no", "closed", "2026-09-11T20:00:00Z"), "venue": "kalshi"},
+                       {**record("kalshi:KXB-2:yes", "closed", "2026-09-11T20:00:00Z"), "venue": "kalshi"},
+                       {**record("kalshi:KXB-2:no", "open", None), "venue": "kalshi"},
+                       {**record("kalshi:KXC-3:yes", "unknown", None), "venue": "kalshi"},
+                       {**record("kalshi:KXD-4:yes:s1", "lost", "2026-09-11T20:00:00Z"), "venue": "kalshi"},
+                       {**record("kalshi:KXE-5:yes:s1", "open", None), "venue": "kalshi"},
+                       {**record("kalshi:odd", "won", "2026-09-11T20:00:00Z"), "venue": "kalshi"}], seen)
+    assert store.load_kalshi_final_tickers() == {"KXA-1"}  # KXB-2 has an open side, KXC-3 is unknown
+    assert store.load_kalshi_final_tickers(1) == {"KXD-4"}
+
+
+def test_kalshi_polls_on_its_own_thread():
+    kalshi, novig, bfa = (ScriptedSource([[]], name=name) for name in ("kalshi", "novig", "bfa"))
+    assert service.poll_lanes([kalshi, novig, bfa]) == [[kalshi], [novig, bfa]]
+    assert service.poll_lanes([novig]) == [[novig]]
+    assert service.poll_lanes([kalshi]) == [[kalshi]]
 
 
 def test_rows_from_before_the_content_hash_column_are_rewritten_once(store):
