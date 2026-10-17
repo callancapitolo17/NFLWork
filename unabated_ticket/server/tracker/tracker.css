@@ -116,6 +116,7 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .tbl .r { text-align: right; }
 .tbl .wrap { white-space: normal; min-width: 220px; }
 .tag { font-size: 11px; font-weight: 600; letter-spacing: .05em; padding: 3px 7px; border-radius: 4px; background: var(--chip); color: #b6c0cd; }
+.tag.bot { color: var(--exp); }
 .result { font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 4px; background: var(--chip); color: var(--muted); }
 .result.won { background: rgba(61, 214, 140, .14); color: var(--pos); }
 .result.lost { background: rgba(255, 107, 107, .14); color: var(--neg); }
