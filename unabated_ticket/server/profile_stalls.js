@@ -17,14 +17,29 @@ const LONG_RUN_MS = 300;
 const INSPECTOR_URL = "http://127.0.0.1:9229/json/list";
 const IDLE_FRAMES = new Set(["(idle)"]);
 
+// The node process itself, never a wrapper: with compose's `init: true` the
+// container's PID 1 is docker-init (tini) whose cmdline also names runner.js,
+// and a process without a SIGUSR1 handler dies of it. So the target must be
+// exactly one process whose executable is node, running runner.js as its script.
 function runnerPid() {
   const pids = fs.readdirSync("/proc").filter((name) => /^\d+$/.test(name) && Number(name) !== process.pid);
+  const found = [];
   for (const pid of pids) {
-    let cmdline = "";
-    try { cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8"); } catch { continue; }
-    if (cmdline.split("\0").some((arg) => arg.endsWith("server/runner.js"))) return Number(pid);
+    let args;
+    let comm;
+    try {
+      args = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean);
+      comm = fs.readFileSync(`/proc/${pid}/comm`, "utf8").trim();
+    } catch { continue; }
+    const isNode = comm === "node" && args.length >= 2 && /(^|\/)node$/.test(args[0]);
+    if (isNode && args[1].endsWith("server/runner.js")) found.push({ pid: Number(pid), args });
   }
-  throw new Error("no node process running server/runner.js found in /proc");
+  if (found.length !== 1) {
+    throw new Error(`expected exactly 1 node process running server/runner.js, found ${found.length}: `
+      + JSON.stringify(found));
+  }
+  console.log(`target: pid ${found[0].pid}, command: ${found[0].args.join(" ")}`);
+  return found[0].pid;
 }
 
 async function inspectorWsUrl() {
