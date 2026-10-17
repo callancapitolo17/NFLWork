@@ -485,11 +485,22 @@ function takerUnabatedFetch() {
 }
 
 // Kalshi: a 57c YES ask with 40 contracts behind it on the WSU -35.5 market,
-// 46c on WSU -41.5, and both markets active at their strikes.
-function kalshiFetch(markets = {}) {
+// 46c on WSU -41.5, and both markets active at their strikes. Its milestone
+// for the game starts when Unabated's does, unless `kalshiStart` says another
+// time (null: no milestone; an Error: the read fails).
+const WSU_EVENT_TICKER = "KXNCAAFSPREAD-26SEP19DUQWSU";
+const WSU_UNABATED_START = "2026-09-19T19:30:00.000Z";
+function kalshiFetch(markets = {}, kalshiStart = WSU_UNABATED_START) {
   const calls = [];
   const impl = async (url) => {
     calls.push(url);
+    if (url.includes("/milestones?")) {
+      if (kalshiStart instanceof Error) return response({ status: 500, body: JSON.stringify({ error: kalshiStart.message }) });
+      const named = new URL(url).searchParams.get("related_event_ticker");
+      const milestones = kalshiStart === null || named !== WSU_EVENT_TICKER ? []
+        : [{ id: "m-1", type: "football_game", start_date: kalshiStart, related_event_tickers: [WSU_EVENT_TICKER, "KXNCAAFGAME-26SEP19DUQWSU"] }];
+      return response({ body: JSON.stringify({ milestones, cursor: "" }) });
+    }
     if (url.endsWith("/markets/KXNCAAFSPREAD-26SEP19DUQWSU-WSU42/orderbook")) {
       return response({ body: JSON.stringify({ orderbook_fp: { yes_dollars: [["0.4400", "100"]], no_dollars: [["0.5400", "40"]] } }) });
     }
@@ -520,6 +531,7 @@ function takerService(script) {
       const body = JSON.parse(init.body);
       posts.push({ route, body });
       if (route === "/taker/order.json") {
+        if (Date.parse(body.eventStart) <= TAKER_NOW) return response({ body: JSON.stringify({ status: "started", detail: `the game started at ${body.eventStart}` }) });
         const unseen = (filledByEvent.get(body.eventId) || []).find((heldId) => !body.heldIds.includes(heldId));
         if (unseen) return response({ body: JSON.stringify({ status: "unseen_fill", detail: `${unseen} is not yet among the held bets` }) });
         filledByEvent.set(body.eventId, [...(filledByEvent.get(body.eventId) || []), `kalshi:${body.ticker}:${body.side}`]);
@@ -581,7 +593,10 @@ test("taker: a best-price Kalshi edge at the live ask is sent as one ubot- limit
   assert.equal(waiting.order.status, "unseen_fill");
   // Each order was preceded by a read of its market; everything else was orderbooks.
   assert.ok(kalshi.calls.includes("https://kalshi.test/v2/markets/KXNCAAFSPREAD-26SEP19DUQWSU-WSU42"));
-  assert.ok(kalshi.calls.every((url) => url.startsWith("https://kalshi.test/v2/markets/")), "only market and orderbook reads");
+  assert.ok(kalshi.calls.every((url) => url.startsWith("https://kalshi.test/v2/markets/") || url.startsWith("https://kalshi.test/v2/milestones?")),
+    "only market, orderbook and milestone reads");
+  assert.equal(orders[0].eventStart, WSU_UNABATED_START, "Kalshi's start agrees with Unabated's");
+  assert.equal(kalshi.calls.filter((url) => url.includes("/milestones?")).length, 1, "one milestone read per game, cached");
   const logged = service.posts.filter((post) => post.route === "/taker_decisions.json").flatMap((post) => post.body.rows);
   assert.equal(logged.filter((row) => row.rowKey === decision.rowKey).length, 1);
   // The next pass: the -41.5 fill is still not among the held bets, so the desk refuses every add on the game.
@@ -590,6 +605,43 @@ test("taker: a best-price Kalshi edge at the live ask is sent as one ubot- limit
   assert.ok(runner.takerPayload().decisions.filter((row) => row.reason === "bet").every((row) => row.order.status === "unseen_fill"));
   assert.equal(runner.health().taker.byReason.bet >= 1, true);
   runner.stop();
+});
+
+test("taker: Kalshi's start, when earlier than Unabated's, is the one the order carries, so the desk refuses a started game", async () => {
+  // Unabated still lists the game four days out; Kalshi says it kicked off a minute ago.
+  const kickedOff = new Date(TAKER_NOW - 60 * 1000).toISOString();
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch({}, kickedOff), kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  runner.stop();
+  const orders = service.posts.filter((post) => post.route === "/taker/order.json").map((post) => post.body);
+  assert.ok(orders.length >= 1);
+  assert.ok(orders.every((order) => order.eventStart === kickedOff), JSON.stringify(orders.map((order) => order.eventStart)));
+  const decision = runner.takerPayload().decisions.find((row) => row.ticker === TAKER_TICKER);
+  assert.equal(decision.order.status, "started");
+  assert.deepEqual({ unabatedStart: decision.unabatedStart, kalshiStart: decision.kalshiStart }, { unabatedStart: WSU_UNABATED_START, kalshiStart: kickedOff });
+});
+
+test("taker: no Kalshi start (none listed, or the read fails) trades on Unabated's start alone (option B)", async () => {
+  for (const kalshiStart of [null, new Error("boom")]) {
+    const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+    const runner = runnerLib.createRunner({
+      fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch({}, kalshiStart), kalshiBaseUrl: "https://kalshi.test/v2",
+      betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+    });
+    await runner.start();
+    await runner.takerPass();
+    runner.stop();
+    const first = service.posts.find((post) => post.route === "/taker/order.json").body;
+    assert.equal(first.eventStart, WSU_UNABATED_START, String(kalshiStart));
+    const decision = runner.takerPayload().decisions.find((row) => row.order);
+    assert.equal(decision.order.status, "filled");
+    assert.equal(decision.kalshiStart, null);
+  }
 });
 
 test("taker: a market that is closed, or at another strike, is market_mismatch and nothing is sent", async () => {
@@ -610,9 +662,9 @@ test("taker: a market that is closed, or at another strike, is market_mismatch a
 });
 
 // ---- the Ticket's Place button: GET /kalshi_quote.json (places nothing) ----
-async function quoteRunner(markets = {}, extraDeps = {}) {
+async function quoteRunner(markets = {}, extraDeps = {}, kalshiStart = WSU_UNABATED_START) {
   const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
-  const kalshi = kalshiFetch(markets);
+  const kalshi = kalshiFetch(markets, kalshiStart);
   const runner = runnerLib.createRunner({
     fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
     betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet, ...extraDeps,
@@ -635,6 +687,19 @@ test("kalshi_quote: the board's Kalshi line gives its contract, live ask, all-in
   assert.equal(quote.kalshiBaseUrl, "https://kalshi.test/v2", "the desk checks it trades the Kalshi this read");
   assert.ok(kalshi.calls.includes(`https://kalshi.test/v2/markets/${TAKER_TICKER}`), "the market is checked");
   assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 0);
+});
+
+test("kalshi_quote: the quote's eventStart is Kalshi's when earlier, so Place refuses a game Unabated still lists as pregame", async () => {
+  const kickedOff = new Date(TAKER_NOW - 60 * 1000).toISOString();
+  const { runner } = await quoteRunner({}, {}, kickedOff);
+  const quote = await runner.kalshiQuote(new URLSearchParams(WSU_36_LINE));
+  runner.stop();
+  assert.deepEqual({ ok: quote.ok, eventStart: quote.eventStart, unabatedStart: quote.unabatedStart, kalshiStart: quote.kalshiStart },
+    { ok: true, eventStart: kickedOff, unabatedStart: WSU_UNABATED_START, kalshiStart: kickedOff });
+  const { runner: unlisted } = await quoteRunner({}, {}, null);
+  const fallback = await unlisted.kalshiQuote(new URLSearchParams(WSU_36_LINE));
+  unlisted.stop();
+  assert.deepEqual({ eventStart: fallback.eventStart, kalshiStart: fallback.kalshiStart }, { eventStart: WSU_UNABATED_START, kalshiStart: null });
 });
 
 test("kalshi_quote: a closed market, a number the board lacks and bad params are refused", async () => {

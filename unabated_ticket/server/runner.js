@@ -60,6 +60,11 @@
 //       (MONEY, on the bot's own Novig subaccount; bets_service/novig_taker_desk.py).
 //   POST <bets service>/taker_decisions.json — each taker decision that
 //       changed since it was last logged (taker.duckdb::taker_decisions).
+//   GET <Kalshi>/milestones?related_event_ticker=<event> before an order or a
+//       Place quote, cached per event for 10 min: Kalshi's own start for the
+//       game. The order and the quote carry the earlier of it and Unabated's
+//       eventStart, which the desks refuse on once passed (Unabated's alone
+//       when Kalshi lists none; public, no key; taker.kalshiStartMsOf).
 //   GET <Kalshi>/markets/<ticker>/orderbook and /markets/<ticker> once per
 //       GET /kalshi_quote.json (Cal's Place button, never on a timer).
 // Serves (HTTP on UNABATED_RUNNER_HOST:UNABATED_RUNNER_PORT, no auth):
@@ -156,6 +161,10 @@ const TAKER_MAX_SNAPSHOT_AGE_MS = 3 * 60 * 1000;
 // Kalshi poll (60 s): a poll that failed, or none this recent, and the
 // holdings are unknown, so the pass decides nothing.
 const TAKER_MAX_HELD_AGE_MS = 5 * 60 * 1000;
+// Kalshi's start for a game (GET /milestones) is read once per event this
+// often; a read that failed is retried sooner. Starts move by days, not minutes.
+const KALSHI_START_TTL_MS = 10 * 60 * 1000;
+const KALSHI_START_RETRY_MS = 60 * 1000;
 // The desk sends, cancels and reads fills, each up to 10 s at Kalshi.
 const TAKER_ORDER_TIMEOUT_MS = 45 * 1000;
 // Decisions held for the bets service while it is down; past this the oldest go (logged).
@@ -330,6 +339,8 @@ function createRunner(deps) {
   let teaserBlocks = [];
   // The Edges lines Skipped on either page (bets.duckdb::edge_skips).
   let edgeSkips = [];
+  // eventTicker -> {startMs, expiresAt, error?}: Kalshi's start per game (kalshiStartOf).
+  const kalshiStarts = new Map();
   // The Teasers list's last build (teaser.planTeasers `previous`): the list
   // is rebuilt only when what it is built on changed, so it holds still.
   let teaserBuild = null;
@@ -930,6 +941,8 @@ function createRunner(deps) {
     }
     const mismatch = taker.marketMismatch(market, row, contract);
     if (mismatch) return { ok: false, ...position, reason: "market_mismatch", detail: `${contract.ticker}: ${mismatch}` };
+    const kalshiStartMs = await kalshiStartOf(taker.eventTickerOf(market, contract.ticker));
+    Object.assign(position, startFields(row.eventStart, kalshiStartMs));
     const quote = taker.quoteOf(book, contract.side);
     if (!quote) return { ok: false, ...position, reason: "no_book", detail: `nothing rests on the ${contract.side} side of ${contract.ticker}` };
     return {
@@ -981,6 +994,36 @@ function createRunner(deps) {
     if (mismatch) return { ok: false, ...position, reason: "market_mismatch", detail: `Novig market ${contract.marketId}: ${mismatch}` };
     if (!quote) return { ok: false, ...position, reason: "no_book", detail: `nothing rests on the other side of Novig market ${contract.marketId}` };
     return { ok: true, ...position, price: quote.ask, depth: quote.depth, novigBaseUrl, line: taker.novigLineOf(row) };
+  }
+
+  // Kalshi's start for an event as epoch ms, or null when it lists none or
+  // the read failed (never throws: option B trades on Unabated's start then).
+  async function kalshiStartOf(eventTicker) {
+    if (!eventTicker) return null;
+    const cached = kalshiStarts.get(eventTicker);
+    if (cached && now() < cached.expiresAt) return cached.startMs;
+    for (const [key, entry] of kalshiStarts) if (now() >= entry.expiresAt) kalshiStarts.delete(key);
+    const url = `${kalshiBaseUrl}/milestones?limit=20&related_event_ticker=${encodeURIComponent(eventTicker)}`;
+    try {
+      const startMs = taker.kalshiStartMsOf(await getServiceJson(kalshiFetch, url), eventTicker);
+      kalshiStarts.set(eventTicker, { startMs, expiresAt: now() + KALSHI_START_TTL_MS });
+      return startMs;
+    } catch (error) {
+      if (!cached || cached.error !== error.message) logWarning(`kalshi start ${eventTicker}: ${error.message}`);
+      kalshiStarts.set(eventTicker, { startMs: null, error: error.message, expiresAt: now() + KALSHI_START_RETRY_MS });
+      return null;
+    }
+  }
+
+  // The start an order or a quote carries: the earlier of Unabated's and
+  // Kalshi's, with both kept for the log.
+  //   unabatedStart  the row's eventStart, ISO UTC
+  function startFields(unabatedStart, kalshiStartMs) {
+    const startMs = taker.earliestStartMs(Date.parse(unabatedStart), kalshiStartMs);
+    return {
+      eventStart: startMs === null ? unabatedStart : new Date(startMs).toISOString(),
+      unabatedStart, kalshiStart: kalshiStartMs === null ? null : new Date(kalshiStartMs).toISOString(),
+    };
   }
 
   // Kalshi's market object for a ticker (public GET /markets/<ticker>).
@@ -1073,7 +1116,11 @@ function createRunner(deps) {
       return false;
     }
     const mismatch = taker.marketMismatch(market, row, { side: decision.side, ticker: decision.ticker });
-    if (mismatch === null) return true;
+    if (mismatch === null) {
+      // The order carries the earlier start; the desk refuses it once passed ("started").
+      Object.assign(decision, startFields(decision.eventStart, await kalshiStartOf(taker.eventTickerOf(market, decision.ticker))));
+      return true;
+    }
     Object.assign(decision, { reason: "market_mismatch", detail: `${decision.ticker}: ${mismatch}` });
     return false;
   }
@@ -1090,7 +1137,7 @@ function createRunner(deps) {
     try {
       const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/taker/order.json`, "POST", body, TAKER_ORDER_TIMEOUT_MS);
       takerDeskStatus = "armed";
-      if (!["ceiling", "stopped", "unseen_fill"].includes(reply.status)) logInfo(`taker order ${body.clientOrderId} ${decision.ticker} ${decision.side} x${decision.contracts} @ ${decision.liveAsk}: ${reply.status}`);
+      if (!["ceiling", "stopped", "unseen_fill", "started"].includes(reply.status)) logInfo(`taker order ${body.clientOrderId} ${decision.ticker} ${decision.side} x${decision.contracts} @ ${decision.liveAsk}: ${reply.status}`);
       return { clientOrderId: body.clientOrderId, ...reply };
     } catch (error) {
       if (error.status === 503) {
