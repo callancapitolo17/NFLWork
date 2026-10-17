@@ -30,6 +30,11 @@
     [KALSHI_BOOK_ID]: { venue: "kalshi", name: "Kalshi", path: "/place_kalshi.json", betTypeIds: [1, 2, 3] },
     [NOVIG_BOOK_ID]: { venue: "novig", name: "Novig", path: "/place_novig.json", betTypeIds: [2, 3] },
   };
+  // The bets service's Novig reads a stake counts: Cal's app account and
+  // Place's own sub-account, both required, and the bot's sub-account when
+  // the service reads it.
+  const NOVIG_REQUIRED_SOURCES = ["novig", "novig_place"];
+  const NOVIG_OPTIONAL_SOURCES = ["novig_bot"];
   // Statuses the bets service answers; the first two put contracts in the account.
   const FILLED_STATUSES = ["filled", "partial"];
 
@@ -60,12 +65,27 @@
     return typeof stake === "number" && stake > 0 ? stake.toFixed(2) : "";
   }
 
+  // {kalshi, novig}: the read times a stake counted, off the bets payload's
+  // sources ({name: {fetchedAt}}). Novig's is the OLDEST of its reads (a
+  // Place fill after any of them may be missing from the stake), null while
+  // either required read has never landed.
+  function readAtsOf(sources) {
+    const fetchedAtOf = (name) => (sources && sources[name] ? sources[name].fetchedAt || null : null);
+    const required = NOVIG_REQUIRED_SOURCES.map(fetchedAtOf);
+    const optional = NOVIG_OPTIONAL_SOURCES.filter((name) => sources && sources[name]).map(fetchedAtOf);
+    const novigReads = [...required, ...optional];
+    const novig = novigReads.every(Boolean)
+      ? novigReads.reduce((oldest, readAt) => (Date.parse(readAt) < Date.parse(oldest) ? readAt : oldest))
+      : null;
+    return { kalshi: fetchedAtOf("kalshi"), novig };
+  }
+
   // The request for one click, {path, body}, or {error} in words.
   //   line      {bookId, eventId, periodTypeId, betTypeId, sideIndex, points, price, sourceFormat, sourcePrice}
   //             the Ticket's line at the price it shows
   //   stakeInput  the amount box's text
-  //   readAts   {kalshi, novig}: the bets payload's sources.<venue>.fetchedAt,
-  //             the reads the Ticket's stake was sized on (null: never read)
+  //   readAts   {kalshi, novig} (readAtsOf): the reads the Ticket's stake
+  //             was sized on (null: never read)
   //   clickId   a fresh id per click (the server sends each id once)
   // A Kalshi order needs the Kalshi read; a Novig order needs the Novig read
   // and sends the Kalshi one too (the server checks for a Place at either
@@ -97,7 +117,7 @@
     return "bad";
   }
 
-  const api = { KALSHI_BOOK_ID, NOVIG_BOOK_ID, venueOf, canPlace, parseStake, stakeText, placeRequestOf, replyTone };
+  const api = { KALSHI_BOOK_ID, NOVIG_BOOK_ID, venueOf, canPlace, parseStake, stakeText, readAtsOf, placeRequestOf, replyTone };
 
   if (inNode) {
     module.exports = api;

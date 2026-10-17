@@ -2893,7 +2893,8 @@ is unmatchable. Settlement reads the public market once the game has started;
 a bot bet grades once the desk has stored when it first saw its market
 `SETTLED` (`novig_taker_orders.settled_at`, its `closedAt`), so it never moves poll to poll.
 `--name place` is the Ticket's Novig Place sub-account (`novig_place`), read
-the same way once its thread stores contexts.
+the same way: its records take the board line from `manual_orders`, and the
+read itself stores the first `SETTLED` sighting (`manual_orders.settled_at`).
 
 **Arming, stopping.** Armed only when `NOVIG_TAKER_KEY_ID` is set and the key
 file at `NOVIG_TAKER_PRIVATE_KEY_PATH` (`/data/novig_bot.pem`) reads a balance
@@ -2959,34 +2960,51 @@ SELECT placed_at, label, ticker, contract_side, ticket_all_in, all_in_price, sta
 FROM manual_orders ORDER BY placed_at DESC;
 ```
 
-### Place on Novig from the Ticket (`extension/place.js`, `bets_service/novig_place.py`, `server/novigquote.js`)
+### Place on Novig from the Ticket (`extension/place.js`, `bets_service/novig_place.py`)
 
 Plan: `novig_place_plan.md` in the project folder (Cal, 2026-10-16). The same
 button on a pregame Novig spread or total (Unabated carries no Novig outcome id
 on a moneyline), **Bet $X at Novig**, ONE order from Place's own Novig
-sub-account, never the bot's (no key trades the app balance). **Off until the
-shared Novig order client (`novig_orders.py`, the Novig taker's) is wired in:**
-`POST /place_novig.json` answers 503 and the runner's quote answers `novig_off`.
+sub-account, never the bot's (no key trades the app balance). It shares the
+Novig taker's order client (`novig_orders.py`) and Novig reads. **On only when
+`NOVIG_PLACE_KEY_ID` is set** and Novig proves the key a trading key on its own
+sub-account (it reads that balance and is refused the key listing), and the
+service reads both `novig` and `novig_place`; else `POST /place_novig.json`
+answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
+`--name place`.
 
 1. The bets service asks the runner `GET /novig_quote.json` (same query as
-   Kalshi's) for the line's Novig outcome id and the other side's, read off the
-   board's `venueIds.novigOutcomes` (`novigquote.js`), and the live price: 1
-   minus the best resting order on the other outcome, with the market open and
-   pregame (the order client's book read, injected as `novigQuoteReader`).
+   Kalshi's). The runner finds the line's outcome, its market and the other
+   side's outcome on Novig's open pregame catalog, the live price (1 minus the
+   best resting order on the other outcome) and checks Novig's market and
+   event the taker's way (`novigContractOf`, `novigQuoteOf`,
+   `novigMarketMismatch`: open, pregame, no pregame fee, the row's type,
+   number and side by the outcome's own name).
 2. It refuses, sending nothing, when: the game has started; the live price is
-   more than **0.1c worse** than the Ticket's (a pregame take pays no fee);
-   an open straight Novig bet is on the other outcome; the Novig read is
-   failing or over 5 minutes old; a Novig Place on the game may have filled
-   after `novigReadAt`, or a Kalshi Place after `kalshiReadAt`; the click id
-   was already sent.
-3. It buys `floor(stake / (price x 1c))` contracts (a Novig contract pays 1c,
-   not $1) with one immediate-or-cancel limit at the live price, client id
-   `nman-<clickId>`; Novig does not dedupe ids, so a lost send is looked up on
-   that outcome, never re-sent. A 451 reads "open the Novig app on your phone"
-   (Novig wants a phone location check in the last 3 days).
+   off Novig's grid or more than **0.1c worse** than the Ticket's (a pregame
+   take pays no fee); an open straight Novig bet is on the other outcome; a
+   Novig read the stake counts (`novig`, `novig_place`, and `novig_bot` when
+   it is read) is failing or over 5 minutes old; a Novig Place on the game may
+   have filled after `novigReadAt` (the oldest of those reads, `place.js
+   readAtsOf`), or a Kalshi Place after `kalshiReadAt`; the click id was
+   already sent.
+3. It buys `floor(stake x 100 / price)` contracts (a Novig contract pays 1c,
+   not $1) with ONE immediate-or-cancel order at the live price, clientId the
+   click's UUID, row `nman-<clickId>`, never re-sent (Novig does not dedupe
+   clientIds). It reads the order until final, then its fills; an order shown
+   `OPEN` is cancelled. A 451 reads "open the Novig app on your phone" (Novig
+   wants a phone location check in the last 3 days). No definite answer, an
+   order never read final or unreadable fills read `unknown` and hold the
+   next Place on that game until a read that saw it.
 
 Its rows are in the same `manual_orders` table with `venue = 'novig'`
-(`ticker` = the outcome id, `novig_order_id`).
+(`ticker` = the outcome id, `novig_order_id`, and the board line Place's
+sub-account read names the bet with):
+
+```sql
+SELECT placed_at, label, ticker, ticket_all_in, ask_price, stake, count_requested, count_filled, cost_filled, status, error
+FROM manual_orders WHERE venue = 'novig' ORDER BY placed_at DESC;
+```
 
 ## Tests
 
@@ -2997,8 +3015,8 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 601 tests) and
-the bets service's pytest suite (630 tests, on the `kalshi_draft/venv`
+the node suite (`npm test` = `node --test tests/*.test.js`, 618 tests) and
+the bets service's pytest suite (854 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one
 run shows every failure. ESLint comes from `unabated_ticket/package.json`
@@ -3520,6 +3538,18 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-16 — Place on Novig from the Ticket (0.29.0).** Cal approved the
+plan with funding A (`novig_subaccount_setup.py open --name place --fund`,
+re-run to top up): Place gets its OWN Novig sub-account, apart from the bot's,
+so the money in it is all a click can spend. He chose to wait for the Novig
+taker's order client (#186) rather than write a second one, so Place shares
+its client, its 1c contract math, its catalog and market checks (the same
+`novigMarketMismatch` that refuses a pregame fee or a swapped rung) and its
+never-resend rule: Novig does not dedupe clientIds. The button and server
+refusals mirror Place on Kalshi (#181), with one Novig addition: the stake
+counts the app account, Place's sub-account and the bot's, so the oldest of
+those reads is the one an unseen Place fill is checked against.
 
 **2026-10-09, shipped 2026-10-16 — Live stakes count open bets (0.28.0).**
 The Live block sized every line as if nothing were held: a halftime Over

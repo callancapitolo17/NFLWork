@@ -67,8 +67,8 @@ def test_a_settled_bet_keeps_one_closed_at_poll_after_poll():
     clock["now"] = NOW + timedelta(minutes=5)
     assert first == {**source.fetch()[0], "sourceFetchedAt": first["sourceFetchedAt"]}
     assert first["closedAt"] == "2026-10-18T15:00:00.000Z"
-    # Before the desk has stored its settle time a desk order stays open; with no context (Place, until its
-    # thread stores contexts) the first poll that saw it settled is the closedAt, and it holds.
+    # Before the desk has stored its settle time a desk order stays open; with no context the first
+    # poll that saw it settled is the closedAt, and it holds.
     unseen = NovigSubaccountSource("bot", FakeClient([fill()], market), lambda: {"o1": {**started, "settled_at": None}},
                                    now=lambda: clock["now"])
     assert (unseen.fetch()[0]["status"], unseen.fetch()[0]["closedAt"]) == ("open", None)
@@ -76,6 +76,29 @@ def test_a_settled_bet_keeps_one_closed_at_poll_after_poll():
     assert place.fetch()[0]["closedAt"] == "2026-10-18T16:05:00.000Z"
     clock["now"] = NOW + timedelta(minutes=10)
     assert place.fetch()[0]["closedAt"] == "2026-10-18T16:05:00.000Z"
+
+
+def test_place_keeps_its_first_settled_sighting_through_note_settled():
+    """Place has no desk sweep: its read stores the settle time itself, and a
+    later poll (or a restart) reads the stored one back through the context."""
+    market = {"marketId": MARKET, "eventId": "ev-1", "status": "SETTLED", "outcomes": [{"outcomeId": OUTCOME, "status": "WIN"}]}
+    kept = {}
+
+    def note_settled(order_id, at):
+        kept.setdefault(order_id, at)
+        return kept[order_id]
+
+    contexts = lambda: {"o1": {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": kept.get("o1")}}  # noqa: E731
+    clock = {"now": NOW}
+    source = NovigSubaccountSource("place", FakeClient([fill()], market), contexts, now=lambda: clock["now"],
+                                   note_settled=note_settled)
+    first = source.fetch()[0]
+    assert (first["id"], first["status"], first["closedAt"], first["homeTeamVenue"]["unabatedId"]) == (
+        "novig:o1:place", "won", "2026-10-18T16:00:00.000Z", "12")
+    clock["now"] = NOW + timedelta(minutes=5)
+    restarted = NovigSubaccountSource("place", FakeClient([fill()], market), contexts, now=lambda: clock["now"],
+                                      note_settled=note_settled)
+    assert restarted.fetch()[0]["closedAt"] == "2026-10-18T16:00:00.000Z"
 
 
 def test_no_context_is_recorded_unmatchable():

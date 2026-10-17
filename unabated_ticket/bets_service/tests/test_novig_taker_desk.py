@@ -333,9 +333,9 @@ def test_the_service_says_why_the_novig_desk_is_off_and_routes_orders_on_loopbac
     assert refused[0] is None and "management key" in refused[1]
     armed, _ = service.open_novig_taker_desk(taker_store, dict, check=lambda _client: (None, 500.0))
     assert isinstance(armed, NovigTakerDesk)
-    assert [source.name for source in service.novig_subaccount_sources(taker_store)] == ["novig_bot"]
-
     bets_store = BetsStore(tmp_path / "bets.duckdb", 7)
+    assert [source.name for source in service.novig_subaccount_sources(taker_store, bets_store)] == ["novig_bot"]
+
     server = ThreadingHTTPServer(("127.0.0.1", 0), service.make_handler(
         bets_store, 0.0, ["kalshi"], extra_hosts=("box.ts.net",), taker_store=taker_store,
         novig_taker_desk=None, novig_taker_desk_off_reason=reason))

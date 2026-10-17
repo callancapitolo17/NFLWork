@@ -1,9 +1,9 @@
 """The Ticket's Place button on Novig (novig_place.py) against a scripted
-order client and a scripted runner quote: the request shape, the refusals
-before anything is sent (started, price over 0.1c worse, other outcome held, a
-stale Novig read, an earlier Place the stake has not seen at either venue, a
-repeat click), the 1c contract count, and what each client answer reads as.
-No network."""
+NovigOrderClient and a scripted runner quote: the request shape, the refusals
+before anything is sent (started, price over 0.1c worse or off Novig's grid,
+other outcome held, a stale Novig read, an earlier Place the stake has not
+seen at either venue, a repeat click), the 1c contract count, what each Novig
+answer reads as, and the board line kept for Place's sub-account read. No network."""
 import json
 import threading
 import urllib.error
@@ -14,45 +14,68 @@ from http.server import ThreadingHTTPServer
 import pytest
 
 from unabated_ticket.bets_service import service
-from unabated_ticket.bets_service.novig_place import (
-    ManualNovigDesk, novig_contracts_for, validate_novig_place_request,
-)
+from unabated_ticket.bets_service.novig_orders import qty_for_stake
+from unabated_ticket.bets_service.novig_place import ManualNovigDesk, validate_novig_place_request
 from unabated_ticket.bets_service.store import BetsStore
 
 NOW = datetime(2026, 10, 16, 21, 0, tzinfo=timezone.utc)
 EVENT_ID = 123742
 OUTCOME = "01a0a05e-e864-7b73-9b80-9e502e4e98d5"
 OTHER_OUTCOME = "01a0a05e-e864-7b73-9b80-9e64b163cc27"
+MARKET = "0b0b0b0b-1111-4222-8333-444444444444"
+ORDER_ID = "0c0c0c0c-1111-4222-8333-666666666666"
+CLICK_ID = "00000000-0000-4000-8000-000000000001"
 NOVIG_URL = "https://api.novig.com"
-BODY = {"clickId": "00000000-0000-4000-8000-000000000001", "eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 1,
+BODY = {"clickId": CLICK_ID, "eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 1,
         "points": -35.5, "stake": 50, "ticketAllIn": 0.675, "novigReadAt": "2026-10-16T20:59:30Z",
         "kalshiReadAt": "2026-10-16T20:59:40Z"}
-QUOTE = {"ok": True, "outcomeId": OUTCOME, "otherOutcomeId": OTHER_OUTCOME, "price": 0.675, "depth": 9000,
-         "eventId": EVENT_ID, "eventStart": "2026-10-17T19:30:00.000Z", "label": "Washington St -35.5 full game",
-         "novigBaseUrl": NOVIG_URL}
+LINE = {"league": "cfb", "betType": "spread", "period": "full game", "side": "home", "points": -35.5,
+        "awayTeam": "Duquesne", "homeTeam": "Washington St", "awayTeamId": "880", "homeTeamId": "717"}
+QUOTE = {"ok": True, "outcomeId": OUTCOME, "otherOutcomeId": OTHER_OUTCOME, "marketId": MARKET, "price": 0.675,
+         "depth": 9000, "eventId": EVENT_ID, "eventStart": "2026-10-17T19:30:00.000Z",
+         "label": "Washington St -35.5 full game", "novigBaseUrl": NOVIG_URL, "line": LINE}
 
 
 class ScriptedNovig:
+    """NovigOrderClient's order calls, scripted. By default the IOC is taken
+    (201), reads FILLED and fills every contract asked for."""
     base_url = NOVIG_URL
 
-    def __init__(self, result=None, raises=False):
+    def __init__(self, send=None, order_reads=None, fills=None, raises=False):
         self.calls = []
-        self.result = result
+        self.send = send
+        self.order_reads = list(order_reads or [])
+        self.fill_items = fills
         self.raises = raises
+        self.cancels = []
 
-    def place_ioc_buy(self, outcome_id, price, quantity, client_id):
-        self.calls.append((outcome_id, price, quantity, client_id))
+    def place_ioc_order(self, outcome_id, price, qty, client_id):
+        self.calls.append((outcome_id, price, qty, client_id))
+        self.last_qty = qty
         if self.raises:
             raise OSError("timed out")
-        if self.result is not None:
-            return dict(self.result)
-        return {"outcome": "filled", "orderId": "nv-1", "filledQuantity": quantity, "cost": quantity * price / 100}
+        return self.send or (201, {"orderId": ORDER_ID})
+
+    def get_order(self, order_id):
+        if self.order_reads:
+            return self.order_reads.pop(0)
+        return 200, {"orderId": order_id, "status": "FILLED"}
+
+    def cancel_order(self, order_id):
+        self.cancels.append(order_id)
+        return 200, {}
+
+    def fills(self, order_id=None):
+        if self.fill_items is not None:
+            return self.fill_items
+        return [{"fillId": "f1", "orderId": order_id, "qty": self.last_qty, "cost": f"{self.last_qty * 0.675 / 100:.5f}"}]
 
 
 @pytest.fixture
 def store(tmp_path):
     held = BetsStore(tmp_path / "bets.duckdb", 0)
-    held.log_source_run("novig", NOW - timedelta(seconds=40), NOW - timedelta(seconds=30), True, None, 3)
+    for source in ("novig", "novig_place"):
+        held.log_source_run(source, NOW - timedelta(seconds=40), NOW - timedelta(seconds=30), True, None, 3)
     yield held
     held.close()
 
@@ -64,7 +87,7 @@ def desk_with(store, novig, quote=None, now=NOW):
         quotes.append(line)
         return dict(QUOTE if quote is None else quote)
 
-    desk = ManualNovigDesk(novig, store, reader, now=lambda: now)
+    desk = ManualNovigDesk(novig, store, reader, now=lambda: now, sleep=lambda _sec: None)
     desk.quotes = quotes
     return desk
 
@@ -83,21 +106,32 @@ def test_validate_names_what_is_wrong():
     assert validate_novig_place_request({**BODY, "kalshiReadAt": None})["kalshi_read_at"] is None
 
 
-def test_a_contract_pays_a_cent_so_50_dollars_at_675_buys_7407():
-    assert novig_contracts_for(50, 0.675) == 7407
-    assert novig_contracts_for(50, 0.5) == 10000
-    assert novig_contracts_for(0.001, 0.5) == 0
-
-
-def test_a_click_sends_one_ioc_buy_at_the_live_price(store):
+def test_a_click_sends_one_ioc_buy_at_the_live_price_in_1c_contracts(store):
     novig = ScriptedNovig()
     desk = desk_with(store, novig)
     result = desk.place(request())
     assert desk.quotes == [{"eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 1, "points": -35.5}]
-    assert novig.calls == [(OUTCOME, 0.675, 7407, "00000000-0000-4000-8000-000000000001")]
+    assert novig.calls == [(OUTCOME, 0.675, 7407, CLICK_ID)]
     assert result["status"] == "filled"
     assert result["cost"] == pytest.approx(49.99725)
     assert result["message"] == "Bet $50.00 at 67.5¢ on Novig to win $24.07."
+
+
+def test_the_board_line_is_kept_so_places_subaccount_read_names_the_bet(store):
+    desk_with(store, ScriptedNovig()).place(request())
+    contexts = store.novig_place_order_contexts()
+    assert list(contexts) == [ORDER_ID]
+    context = contexts[ORDER_ID]
+    assert {key: context[key] for key in ("league", "bet_type", "period", "side", "points", "home_team_id",
+                                          "market_id", "outcome_id", "event_id", "price", "settled_at")} == {
+        "league": "cfb", "bet_type": "spread", "period": "full game", "side": "home", "points": -35.5,
+        "home_team_id": "717", "market_id": MARKET, "outcome_id": OUTCOME, "event_id": EVENT_ID, "price": 0.675,
+        "settled_at": None}
+    assert context["event_start"] == datetime(2026, 10, 17, 19, 30, tzinfo=timezone.utc)
+    first = store.note_novig_place_settled(ORDER_ID, NOW)
+    again = store.note_novig_place_settled(ORDER_ID, NOW + timedelta(hours=1))
+    assert first == again == NOW, "only the first SETTLED sighting is kept"
+    assert store.novig_place_order_contexts()[ORDER_ID]["settled_at"] == NOW
 
 
 def test_the_same_click_is_never_sent_twice(store):
@@ -110,11 +144,15 @@ def test_the_same_click_is_never_sent_twice(store):
 
 @pytest.mark.parametrize("quote_changes, words", [
     ({"eventStart": "2026-10-16T20:00:00Z"}, "has started"),
-    ({"price": 0.6761}, "more than 0.1"),
-    ({"ok": False, "reason": "novig_off", "detail": "this runner has no Novig book reader yet"}, "no Novig book reader"),
+    ({"price": 0.68}, "more than 0.1"),
+    ({"ok": False, "reason": "market_mismatch", "detail": "Novig market x: event status \"LIVE\""}, "event status"),
     ({"novigBaseUrl": "https://api.qa.novig.com"}, "this desk trades"),
     ({"price": None}, "is not a price"),
-    ({"otherOutcomeId": None}, "both outcomes"),
+    ({"price": 0.672}, "on its grid"),
+    ({"otherOutcomeId": None}, "both its outcomes"),
+    ({"marketId": None}, "both its outcomes"),
+    ({"line": None}, "no board line"),
+    ({"line": {**LINE, "side": "sideways"}}, "market is"),
 ])
 def test_refusals_send_nothing(store, quote_changes, words):
     novig = ScriptedNovig()
@@ -125,10 +163,10 @@ def test_refusals_send_nothing(store, quote_changes, words):
 
 def test_a_price_within_a_tenth_of_a_cent_worse_or_any_better_places(store):
     novig = ScriptedNovig()
-    assert desk_with(store, novig, {**QUOTE, "price": 0.676}).place(request())["status"] == "filled"
+    assert desk_with(store, novig).place(request(ticketAllIn=0.6745))["status"] == "filled"
     assert desk_with(store, novig, {**QUOTE, "price": 0.6}).place(
         request(clickId="00000000-0000-4000-8000-000000000002", novigReadAt=(NOW + timedelta(seconds=1)).isoformat()))["status"] == "filled"
-    assert novig.calls[1][2] == novig_contracts_for(50, 0.6)
+    assert novig.calls[1][2] == qty_for_stake(50, 0.6)
 
 
 def test_the_other_outcome_held_is_refused_but_a_parlay_leg_on_it_is_not(store):
@@ -148,9 +186,9 @@ def test_a_failing_or_old_novig_read_is_refused(store):
     novig = ScriptedNovig()
     old = desk_with(store, novig, now=NOW + timedelta(minutes=6)).place(request())
     assert old["status"] == "refused" and "over 5 minutes old" in old["message"]
-    store.log_source_run("novig", NOW, NOW, False, "HTTP 401", 0)
+    store.log_source_run("novig_place", NOW, NOW, False, "HTTP 401", 0)
     failing = desk_with(store, novig).place(request())
-    assert failing["status"] == "refused" and "read is failing" in failing["message"]
+    assert failing["status"] == "refused" and "novig_place read is failing" in failing["message"]
     assert novig.calls == []
 
 
@@ -175,22 +213,40 @@ def test_an_add_waits_until_the_last_place_on_the_game_was_read_at_either_venue(
     assert unseen_by_no_kalshi_read["status"] == "refused"
 
 
-@pytest.mark.parametrize("result, status, words", [
-    ({"outcome": "geo_blocked", "detail": "GEOLOCATION_EXPIRED"}, "rejected", "Open the Novig app on your phone"),
-    ({"outcome": "rejected", "detail": "insufficient balance"}, "rejected", "insufficient balance"),
-    ({"outcome": "unknown", "detail": "lookup found no order"}, "unknown", "Check Novig"),
-    ({"outcome": "filled"}, "unknown", "Check Novig"),
-    ({"outcome": "unfilled", "orderId": "nv-2", "filledQuantity": 0, "cost": 0}, "unfilled", "price was gone"),
-    ({"outcome": "partial", "orderId": "nv-3", "filledQuantity": 4000, "cost": 27.0}, "partial", "Bet $27.00 of $50.00"),
+@pytest.mark.parametrize("novig, status, words", [
+    (ScriptedNovig(send=(451, {"code": "GEOLOCATION_EXPIRED"})), "rejected", "Open the Novig app on your phone"),
+    (ScriptedNovig(send=(422, {"code": "INSUFFICIENT_BALANCE"})), "rejected", "INSUFFICIENT_BALANCE"),
+    (ScriptedNovig(send=(500, {})), "unknown", "Check Novig"),
+    (ScriptedNovig(send=(201, {})), "unknown", "Check Novig"),
+    (ScriptedNovig(raises=True), "unknown", "Novig did not answer"),
+    (ScriptedNovig(order_reads=[(404, {})] * 6), "unknown", "has not said what filled"),
+    (ScriptedNovig(order_reads=[(200, {"status": "REJECTED"})], fills=[]), "unfilled", "price was gone"),
+    (ScriptedNovig(order_reads=[(200, {"status": "CANCELED"})], fills=[{"fillId": "f1", "qty": 4000, "cost": "27.00000"}]),
+     "partial", "Bet $27.00 of $50.00"),
+    (ScriptedNovig(fills=[{"fillId": "f1", "qty": 100}]), "unknown", "fills could not be read"),
 ])
-def test_what_each_answer_reads_as(store, result, status, words):
-    answer = desk_with(store, ScriptedNovig(result=result)).place(request())
+def test_what_each_answer_reads_as(store, novig, status, words):
+    answer = desk_with(store, novig).place(request())
     assert answer["status"] == status and words in answer["message"]
+    assert len(novig.calls) == 1, "an order is sent once, never retried"
 
 
-def test_no_answer_is_unknown(store):
-    answer = desk_with(store, ScriptedNovig(raises=True)).place(request())
-    assert answer["status"] == "unknown" and "Check Novig" in answer["message"]
+def test_an_order_left_resting_is_cancelled_and_reads_unknown(store):
+    novig = ScriptedNovig(order_reads=[(200, {"status": "PENDING"}), (200, {"status": "OPEN"})])
+    answer = desk_with(store, novig).place(request())
+    assert answer["status"] == "unknown" and "cancel was sent" in answer["message"]
+    assert novig.cancels == [ORDER_ID]
+
+
+def test_a_rejected_send_leaves_the_game_open_but_an_unknown_one_blocks_the_next_place(store):
+    desk_with(store, ScriptedNovig(send=(422, {"code": "INSUFFICIENT_BALANCE"}))).place(request())
+    later = {"novigReadAt": (NOW - timedelta(seconds=30)).isoformat()}
+    assert desk_with(store, ScriptedNovig()).place(
+        request(clickId="00000000-0000-4000-8000-000000000020", **later))["status"] == "filled"
+    other_game = {"eventId": EVENT_ID + 1, **later}
+    desk_with(store, ScriptedNovig(raises=True)).place(request(clickId="00000000-0000-4000-8000-000000000021", **other_game))
+    blocked = desk_with(store, ScriptedNovig()).place(request(clickId="00000000-0000-4000-8000-000000000022", **other_game))
+    assert blocked["status"] == "refused" and "not on the Bets tab yet" in blocked["message"]
 
 
 # ---- the route ----
@@ -240,4 +296,23 @@ def test_the_route_places_and_refuses_a_bad_body_or_no_order_client(serve_with):
     status, reply = post_place(url, {**BODY, "betTypeId": 1})
     assert status == 400 and "betTypeId" in reply["error"]
     status, reply = post_place(serve_with(None), BODY)
-    assert status == 503 and "no Novig order client" in reply["error"]
+    assert status == 503 and "no Place Novig key" in reply["error"]
+
+
+def test_the_service_arms_place_only_on_its_own_proven_trading_key_with_both_reads(store, tmp_path, monkeypatch):
+    from unabated_ticket.bets_service import config
+    from unabated_ticket.bets_service.novig_subaccount_setup import write_new_private_key
+    monkeypatch.setattr(config, "NOVIG_PLACE_KEY_ID", "")
+    assert "no Place Novig key" in service.open_novig_place_desk(store, ["novig", "novig_place"])[1]
+    write_new_private_key(tmp_path / "novig_place.pem")
+    monkeypatch.setattr(config, "NOVIG_PLACE_KEY_ID", "8f14e45f-ceea-467a-9b1c-3f2a51c8d7e1")
+    monkeypatch.setattr(config, "NOVIG_PLACE_PRIVATE_KEY_PATH", str(tmp_path / "novig_place.pem"))
+    trading = lambda _client: (None, 250.0)  # noqa: E731
+    assert "does not read novig_place" in service.open_novig_place_desk(store, ["novig"], check=trading)[1]
+    refused = service.open_novig_place_desk(store, ["novig", "novig_place"], check=lambda _client: ("management key", None))
+    assert refused[0] is None and "management key" in refused[1]
+    armed, _ = service.open_novig_place_desk(store, ["novig", "novig_place", "novig_bot"], check=trading)
+    assert isinstance(armed, ManualNovigDesk)
+    assert armed._read_sources == ("novig", "novig_place", "novig_bot"), "the bot's bets count when they are read"
+    sources = service.novig_subaccount_sources(None, store)
+    assert [source.name for source in sources] == ["novig_place"]

@@ -696,8 +696,7 @@
   // The bets payload's read times by venue: what the Ticket's stake counted.
   function placeReadAts() {
     const payload = state.betsService && state.betsService.payload;
-    const sources = payload && payload.sources ? payload.sources : {};
-    return { kalshi: sources.kalshi ? sources.kalshi.fetchedAt : null, novig: sources.novig ? sources.novig.fetchedAt : null };
+    return venuePlace.readAtsOf(payload && payload.sources ? payload.sources : {});
   }
 
   // POST the Ticket's order to the bets service. An HTTP error is the service

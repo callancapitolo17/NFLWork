@@ -209,7 +209,8 @@ from unabated_ticket.bets_service.balances import BalanceBook, balances_payload,
 from unabated_ticket.bets_service.log_setup import setup_logging
 from unabated_ticket.bets_service.manual_orders import ManualKalshiDesk, read_runner_quote
 from unabated_ticket.bets_service.manual_orders import validate_place_request as validate_kalshi_place_request
-from unabated_ticket.bets_service.novig_place import ManualNovigDesk, validate_novig_place_request
+from unabated_ticket.bets_service.novig_place import (NOVIG_PLACE_READ_SOURCES, RUNNER_NOVIG_QUOTE_PATH, ManualNovigDesk,
+                                                      validate_novig_place_request)
 from unabated_ticket.bets_service.normalize import parse_iso_ms, utc_now_iso
 from unabated_ticket.bets_service.novig_orders import NovigError, NovigOrderClient
 from unabated_ticket.bets_service.novig_taker_desk import NovigTakerDesk, account_problem, novig_unseen_fill
@@ -274,9 +275,8 @@ SETTINGS_PERIOD_IDS = range(1, 8)
 SETTINGS_BET_TYPE_IDS = (1, 2, 3)
 SETTINGS_BOOK_MODES = ("default", "all", "custom")
 SETTINGS_SORT_KEYS = ("edge", "stake", "start", "exposure")
-# Why POST /place_novig.json answers 503 until Place gets its Novig order
-# client (the Novig taker's shared novig_orders.py, novig_place_plan.md).
-NOVIG_PLACE_OFF_REASON = "Novig Place has no Novig order client yet (novig_orders.py is not on this server)"
+# Why POST /place_novig.json answers 503 when no Place key is configured.
+NOVIG_PLACE_OFF_REASON = "no Place Novig key is configured (NOVIG_PLACE_KEY_ID / NOVIG_PLACE_PRIVATE_KEY_PATH)"
 
 # The phone page (phone page plan step 2): every file the service serves, by
 # exact URL path. Nothing is resolved from the request, so `..`, encoded
@@ -899,7 +899,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                                                 "(KALSHI_PLACE_API_KEY_ID / KALSHI_PLACE_PRIVATE_KEY_PATH)",
                  novig_taker_desk: NovigTakerDesk | None = None,
                  novig_taker_desk_off_reason: str = "no bot Novig key is configured (NOVIG_TAKER_KEY_ID / "
-                                                    "NOVIG_TAKER_PRIVATE_KEY_PATH)"),
+                                                    "NOVIG_TAKER_PRIVATE_KEY_PATH)",
                  novig_place_desk: ManualNovigDesk | None = None,
                  novig_place_off_reason: str = NOVIG_PLACE_OFF_REASON) -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
@@ -1476,10 +1476,11 @@ def open_novig_taker_desk(store: TakerStore | None, holdings_status: Callable[[]
     return NovigTakerDesk(client, store, (config.TAKER_STOP_PATH, config.NOVIG_TAKER_STOP_PATH), holdings_status), ""
 
 
-def novig_subaccount_sources(taker_store: TakerStore | None) -> list[Source]:
+def novig_subaccount_sources(taker_store: TakerStore | None, store: BetsStore) -> list[Source]:
     """The bot's and the Place button's Novig subaccounts, each read on its
     own trading key when one is configured. The bot's bets are named by the
-    board lines the desk kept (taker.duckdb); Place's have none here yet."""
+    board lines its desk kept (taker.duckdb), Place's by the lines its orders
+    bought (bets.duckdb::manual_orders), which also keep Place's settle times."""
     sources: list[Source] = []
     bot_client, reason = novig_trading_client(config.NOVIG_TAKER_KEY_ID, config.NOVIG_TAKER_PRIVATE_KEY_PATH, "bot")
     if bot_client is not None and taker_store is not None:
@@ -1490,7 +1491,8 @@ def novig_subaccount_sources(taker_store: TakerStore | None) -> list[Source]:
         log.info("novig_bot: %s, not read", reason)
     place_client, reason = novig_trading_client(config.NOVIG_PLACE_KEY_ID, config.NOVIG_PLACE_PRIVATE_KEY_PATH, "Place")
     if place_client is not None:
-        sources.append(NovigSubaccountSource("place", place_client, lambda: {}))
+        sources.append(NovigSubaccountSource("place", place_client, store.novig_place_order_contexts,
+                                             note_settled=store.note_novig_place_settled))
     else:
         log.info("novig_place: %s, not read", reason)
     return sources
@@ -1522,11 +1524,34 @@ def open_kalshi_place_desk(store: BetsStore) -> tuple[ManualKalshiDesk | None, s
     return ManualKalshiDesk(client, store, lambda line: read_runner_quote(config.RUNNER_URL, line)), ""
 
 
-def open_novig_place_desk(store: BetsStore) -> tuple[ManualNovigDesk | None, str]:
+def open_novig_place_desk(store: BetsStore, source_names: list[str],
+                          check: Callable[[NovigOrderClient], tuple[str | None, float | None]] = account_problem,
+                          ) -> tuple[ManualNovigDesk | None, str]:
     """(the Place button's Novig desk on Place's own sub-account, "") or (None, why).
-    Off until the shared Novig order client (novig_orders.py) is wired in."""
-    log.info("novig place: %s, the Novig Place button is off", NOVIG_PLACE_OFF_REASON)
-    return None, NOVIG_PLACE_OFF_REASON
+    It signs only with Place's own trading key (NOVIG_PLACE_*), proven by Novig
+    a trading key on its own sub-account (it reads that balance and is refused
+    the key listing), so the money in that sub-account is all it can spend.
+    The stake counts Cal's app account and Place's sub-account, and the bot's
+    when it is read, so each of those reads must be fresh before an order."""
+    client, reason = novig_trading_client(config.NOVIG_PLACE_KEY_ID, config.NOVIG_PLACE_PRIVATE_KEY_PATH, "Place")
+    if client is None:
+        log.info("novig place: %s, the Novig Place button is off", reason)
+        return None, reason
+    missing = [name for name in NOVIG_PLACE_READ_SOURCES if name not in source_names]
+    if missing:
+        reason = f"the bets service does not read {', '.join(missing)}, so a stake could miss a Novig bet"
+        log.error("novig place: %s, the Novig Place button is off", reason)
+        return None, reason
+    problem, balance = check(client)
+    if problem is not None:
+        reason = f"the Place Novig key is not proven a trading key on its own sub-account: {problem}"
+        log.error("novig place: %s, the Novig Place button is off", reason)
+        return None, reason
+    read_sources = NOVIG_PLACE_READ_SOURCES + (("novig_bot",) if "novig_bot" in source_names else ())
+    log.info("novig place: on, signing with Place key %s (sub-account balance $%s); stakes count %s",
+             config.NOVIG_PLACE_KEY_ID[:8], f"{balance:,.2f}", ", ".join(read_sources))
+    return ManualNovigDesk(client, store, lambda line: read_runner_quote(config.RUNNER_URL, line, RUNNER_NOVIG_QUOTE_PATH),
+                           read_sources=read_sources), ""
 
 
 def open_taker_store(db_path: Path) -> TakerStore | None:
@@ -1554,7 +1579,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     novig_taker_desk, novig_taker_desk_off_reason = open_novig_taker_desk(
         taker_store, lambda: source_status(store, source_names))
     kalshi_place_desk, kalshi_place_off_reason = open_kalshi_place_desk(store)
-    novig_place_desk, novig_place_off_reason = open_novig_place_desk(store)
+    novig_place_desk, novig_place_off_reason = open_novig_place_desk(store, source_names)
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
                                                             teaser_placer=teaser_placer_for(sources),
                                                             taker_store=taker_store, taker_desk=taker_desk,
@@ -1620,7 +1645,7 @@ def main() -> None:
         if optional is not None:
             sources.append(optional)
     taker_store = open_taker_store(config.TAKER_DB_PATH)
-    sources.extend(novig_subaccount_sources(taker_store))
+    sources.extend(novig_subaccount_sources(taker_store, store))
     serve(sources, store, config.BIND_HOST, config.PORT, taker_store=taker_store)
 
 

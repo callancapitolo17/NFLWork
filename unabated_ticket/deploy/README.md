@@ -203,8 +203,10 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
     file (or `taker.stop`, which stops both bots). A 451 means Novig wants the
     phone app opened (location check every 3 days): `novigDesk` reads
     `geo_blocked` and nothing is placed until then. The Place button's
-    subaccount is the same two halves with `--name place` (its line is
-    `NOVIG_PLACE_KEY_ID`).
+    subaccount is the same two halves with `--name place` and its own amount
+    (its line is `NOVIG_PLACE_KEY_ID`; top it up by re-running `open --name
+    place --fund <dollars>` with a new `--run-id`). After `docker compose up -d` the log must say "novig place: on,
+    signing with Place key"; it has no stop file, every order is a click.
 
 ## Day to day
 

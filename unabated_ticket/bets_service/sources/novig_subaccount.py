@@ -19,14 +19,20 @@ Novig's catalog names neither the board's teams nor its periods, so a bet's
 game fields (league, teams with Unabated's team ids, market, period, side,
 number) come from `contexts()`: the board line the order was placed on, by
 Novig order id. For "bot" that is taker.duckdb::novig_taker_orders
-(TakerStore.novig_order_contexts); an order with no context (placed outside the
-desk) is recorded unmatchable, so it shows but sizes nothing.
+(TakerStore.novig_order_contexts), for "place" bets.duckdb::manual_orders
+(BetsStore.novig_place_order_contexts); an order with no context (placed
+outside the desk) is recorded unmatchable, so it shows but sizes nothing.
+
+A context's `settled_at` is the bet's fixed closedAt. The bot desk keeps it
+itself; Place has no desk sweep, so its read keeps the first SETTLED sighting
+through `note_settled` (BetsStore.note_novig_place_settled, an UPDATE of
+manual_orders.settled_at) and a restart never moves it.
 
 Ids: "novig:<order id>:<name>", venue "novig" (bets.js joins a spread or total
 on venueIds.outcomeId and the side on its own fields). A Novig contract pays
 1c: qty 100 = $1; `contracts` here is dollars of payout like sources/novig.py.
 
-Side effects: none on disk. Raises on any failed read, so the service records
+Side effects: none on disk but `note_settled`'s, when given. Raises on any failed read, so the service records
 a failed run and keeps the previous records.
 """
 import logging
@@ -51,6 +57,8 @@ OUTCOME_OPEN = "TBD"
 REASON_NO_CONTEXT = "no board line on record for this Novig order (placed outside the bot's desk)"
 
 Contexts = Callable[[], dict[str, dict]]
+# (Novig order id, first SETTLED sighting) -> the settle time kept for good.
+NoteSettled = Callable[[str, datetime], datetime]
 
 
 def _iso_ms(value: datetime | None) -> str | None:
@@ -162,7 +170,8 @@ class NovigSubaccountSource:
     """Source protocol for one Novig subaccount (signed GETs on its trading key)."""
 
     def __init__(self, name: str, client: NovigOrderClient, contexts: Contexts,
-                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc), poll_sec: float = POLL_SEC):
+                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc), poll_sec: float = POLL_SEC,
+                 note_settled: NoteSettled | None = None):
         if name not in NAMES:
             raise ValueError(f"name must be one of {NAMES}, got {name!r}")
         self.name = f"{SOURCE_PREFIX}{name}"
@@ -170,6 +179,7 @@ class NovigSubaccountSource:
         self._account = name
         self._client = client
         self._contexts = contexts
+        self._note_settled = note_settled
         self._now = now
         # market id -> (the market, when first seen SETTLED): it never changes again, so it is read once.
         self._settled_markets: dict[str, tuple[dict, datetime]] = {}
@@ -195,10 +205,13 @@ class NovigSubaccountSource:
             settled_at = None
             if market is not None and market.get("status") == MARKET_SETTLED:
                 if context is not None:
-                    # A desk order grades only once the desk has stored its settle time (it survives a
-                    # restart): grading on this poll's sighting first would move closedAt when it lands.
+                    # A desk order grades only once its settle time is stored (it survives a restart):
+                    # grading on this poll's sighting first would move closedAt when it lands. Place
+                    # stores it here (note_settled); the bot's desk stores its own.
                     settled_at = context.get("settled_at")
-                    if settled_at is None:
+                    if settled_at is None and self._note_settled is not None:
+                        settled_at = self._note_settled(order_id, now)
+                    elif settled_at is None:
                         market = None
                 else:
                     settled_at = self._settled_markets[market_id][1]

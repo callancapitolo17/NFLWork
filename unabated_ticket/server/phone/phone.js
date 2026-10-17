@@ -726,8 +726,7 @@
   async function placeOnVenue() {
     const { rowKey, venueName } = placeState;
     const found = state.ticket ? findTicketRow(state.ticket) : null;
-    const sources = state.bets.payload && state.bets.payload.sources ? state.bets.payload.sources : {};
-    const readAts = { kalshi: sources.kalshi ? sources.kalshi.fetchedAt : null, novig: sources.novig ? sources.novig.fetchedAt : null };
+    const readAts = venuePlace.readAtsOf(state.bets.payload && state.bets.payload.sources ? state.bets.payload.sources : {});
     const request = found && found.row.key === rowKey ? venuePlace.placeRequestOf({
       line: venuePlaceLine(found.row), stakeInput: view.ticketVenueStake.value, readAts, clickId: crypto.randomUUID(),
     }) : { error: "the line has left the Edges list" };

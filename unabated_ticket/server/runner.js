@@ -86,9 +86,12 @@
 //                    (and ignored) on a moneyline.
 //   GET /novig_quote.json?eventId=..&periodTypeId=..&betTypeId=..&sideIndex=..&points=..
 //                    the same for Novig Place (bets_service/novig_place.py):
-//                    the board's Novig line, its outcome id and the other
-//                    side's (novigquote.js), its live price and the Novig API
-//                    read; places nothing. Spreads and totals only.
+//                    the board's Novig line, its outcome, market and the other
+//                    side's outcome, its live price, Novig's market check
+//                    (the taker's own novigContractOf / novigQuoteOf /
+//                    novigMarketMismatch), the Novig API read and the line
+//                    as a bet record names it; places nothing. Spreads and
+//                    totals only.
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
@@ -122,7 +125,6 @@ const attachLib = require("../extension/attach.js");
 const pricecheck = require("../extension/pricecheck.js");
 const taker = require("./taker.js");
 const feedLib = require("../extension/feed.js");
-const novigQuote = require("./novigquote.js");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8095;
@@ -937,15 +939,18 @@ function createRunner(deps) {
   }
 
   // The Ticket's Place button on Novig (bets_service/novig_place.py asks):
-  // the board's one Novig line with these fields, its outcome id and the
-  // other side's, and what buying it costs now. As on Kalshi, the board only
-  // finds the outcome; the price Cal acts on is checked by the bets service.
+  // the board's one Novig line with these fields, the outcome it buys and the
+  // other side's (the taker's own novigContractOf over Novig's open pregame
+  // catalog), what buying it costs now (novigQuoteOf) and whether Novig's
+  // market and event are the line's and take a free pregame order
+  // (novigMarketMismatch). As on Kalshi, the board only finds the outcome;
+  // the price Cal acts on is checked by the bets service. Places nothing.
   //   params  URLSearchParams {eventId, periodTypeId, betTypeId, sideIndex, points}
   async function novigQuoteNow(params) {
     const spec = kalshiLineSpecOf(params);
     const board = feedState;
     if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
-    const found = Object.values(board.lines).filter((line) => line.bookId === novigQuote.NOVIG_BOOK_ID
+    const found = Object.values(board.lines).filter((line) => line.bookId === taker.NOVIG_BOOK_ID
       && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
       && line.sideIndex === spec.sideIndex && (line.points ?? null) === spec.points);
     if (found.length !== 1) {
@@ -953,18 +958,29 @@ function createRunner(deps) {
     }
     const row = feedLib.describeLine(found[0], board);
     const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName };
-    const outcomes = novigQuote.novigOutcomesOf(found[0], board);
-    if (outcomes.reason) return { ok: false, ...fields, reason: outcomes.reason, detail: outcomes.detail };
-    const position = { ...fields, outcomeId: outcomes.outcomeId, otherOutcomeId: outcomes.otherOutcomeId };
-    if (!novigQuoteReader) return { ok: false, ...position, reason: "novig_off", detail: "this runner has no Novig book reader yet" };
-    let live;
+    let contract;
     try {
-      live = await novigQuoteReader({ ...outcomes, row });
+      contract = taker.novigContractOf(row, taker.novigOutcomeIndex(await readNovigMarkets([row])));
+    } catch (error) {
+      return { ok: false, ...fields, reason: "no_outcome", detail: `Novig's catalog unread: ${error.message}` };
+    }
+    if (contract.reason) return { ok: false, ...fields, reason: contract.reason, detail: contract.detail };
+    const position = { ...fields, outcomeId: contract.outcomeId, otherOutcomeId: contract.otherOutcomeId, marketId: contract.marketId };
+    const marketUrl = `${novigBaseUrl}/v3/public/catalog/markets/${encodeURIComponent(contract.marketId)}`;
+    let quote;
+    let market;
+    let event;
+    try {
+      quote = taker.novigQuoteOf(await getNovigJson(`${marketUrl}/book`), contract);
+      market = await getNovigJson(marketUrl);
+      event = await getNovigJson(`${novigBaseUrl}/v3/public/catalog/events/${encodeURIComponent(market.eventId)}`);
     } catch (error) {
       return { ok: false, ...position, reason: "no_book", detail: error.message };
     }
-    if (live.reason) return { ok: false, ...position, reason: live.reason, detail: live.detail };
-    return { ok: true, ...position, price: live.price, depth: live.depth, novigBaseUrl: live.novigBaseUrl };
+    const mismatch = taker.novigMarketMismatch(market, event, row, contract);
+    if (mismatch) return { ok: false, ...position, reason: "market_mismatch", detail: `Novig market ${contract.marketId}: ${mismatch}` };
+    if (!quote) return { ok: false, ...position, reason: "no_book", detail: `nothing rests on the other side of Novig market ${contract.marketId}` };
+    return { ok: true, ...position, price: quote.ask, depth: quote.depth, novigBaseUrl, line: taker.novigLineOf(row) };
   }
 
   // Kalshi's market object for a ticker (public GET /markets/<ticker>).

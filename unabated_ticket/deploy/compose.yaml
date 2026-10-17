@@ -55,7 +55,7 @@ services:
       NOVIG_TAKER_PRIVATE_KEY_PATH: /data/novig_bot.pem
       # The Novig bot's own stop switch, put in place by the setup; Kalshi's taker.stop stops it as well.
       NOVIG_TAKER_STOP_PATH: /data/novig_taker.stop
-      # The Novig Place button's subaccount key (read here once NOVIG_PLACE_KEY_ID is set).
+      # The Novig Place button's subaccount key: read and placing once NOVIG_PLACE_KEY_ID is set.
       NOVIG_PLACE_PRIVATE_KEY_PATH: /data/novig_place.pem
       BETS_SERVICE_LOG_PATH: /data/logs/bets_service.log
       BETS_SERVICE_LOG_CONSOLE: "1"

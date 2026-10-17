@@ -64,3 +64,13 @@ test("reply tones", () => {
   assert.deepEqual(["filled", "partial", "unfilled", "rejected", "unknown", "refused"].map(place.replyTone),
     ["ok", "ok", "bad", "bad", "warn", "refused"]);
 });
+
+test("Novig's read is the oldest of the app, Place and (when read) bot reads, null until both required land", () => {
+  const at = (iso) => ({ fetchedAt: iso });
+  const sources = { kalshi: at("2026-10-16T21:00:00Z"), novig: at("2026-10-16T21:00:10Z"), novig_place: at("2026-10-16T20:59:50Z") };
+  assert.deepEqual(place.readAtsOf(sources), { kalshi: "2026-10-16T21:00:00Z", novig: "2026-10-16T20:59:50Z" });
+  assert.equal(place.readAtsOf({ ...sources, novig_bot: at("2026-10-16T20:58:00Z") }).novig, "2026-10-16T20:58:00Z");
+  assert.equal(place.readAtsOf({ ...sources, novig_bot: at(null) }).novig, null, "a bot read that never landed counts as missing");
+  assert.equal(place.readAtsOf({ kalshi: sources.kalshi, novig: sources.novig }).novig, null);
+  assert.deepEqual(place.readAtsOf({}), { kalshi: null, novig: null });
+});
