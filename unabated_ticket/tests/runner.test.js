@@ -735,6 +735,33 @@ test("novig_quote: the board's Novig line gives its outcome, market, the other s
   assert.equal(service.posts.filter((post) => post.route.startsWith("/taker/")).length, 0);
 });
 
+test("novig_quote: a main total its ladder has no rung for is found in the catalog off its siblings and checked like any other", async () => {
+  // The fixture's Novig 52.5 total hangs 50.5/51.5/53.5/54.5 rungs and no 52.5 one.
+  const sibling = {
+    marketId: "0c0c0c0c-1111-4222-8333-515151515151", eventId: NOVIG_EVENT, marketType: "TOTAL", strike: "51.5", status: "OPEN",
+    fee: { coefficient: "0.06", makerCredit: "0", charged: "WHEN_LIVE" },
+    outcomes: [{ outcomeId: "01a0a059-6836-7b83-8813-18c4e5a44a2f", name: "Over 51.5" }, { outcomeId: "01a0a059-6836-7b83-8813-18d718a0283c", name: "Under 51.5" }],
+  };
+  const mainId = "0c0c0c0c-1111-4222-8333-525252525252";
+  const main = { ...sibling, marketId: mainId, strike: "52.5", outcomes: [{ outcomeId: "0d0d-over", name: "Over 52.5" }, { outcomeId: "0d0d-under", name: "Under 52.5" }] };
+  const base = novigFetch();
+  const impl = async (url, init) => {
+    const bare = url.split("?")[0];
+    if (bare === "https://novig.test/v3/public/catalog/markets") return response({ body: JSON.stringify({ items: [sibling, main] }) });
+    if (bare === `https://novig.test/v3/public/catalog/markets/${mainId}/book`) {
+      return response({ body: JSON.stringify({ marketId: mainId, seq: 3, orders: { "0d0d-over": [{ orderId: "o1", price: "0.48", qty: 2000 }], "0d0d-under": [] } }) });
+    }
+    if (bare === `https://novig.test/v3/public/catalog/markets/${mainId}`) return response({ body: JSON.stringify(main) });
+    return base(url, init);
+  };
+  const { runner } = await quoteRunner({}, { novigFetch: impl, novigBaseUrl: "https://novig.test" });
+  const quote = await runner.novigQuote(new URLSearchParams({ eventId: "123742", periodTypeId: "1", betTypeId: "3", sideIndex: "1", points: "52.5" }));
+  runner.stop();
+  assert.deepEqual(
+    { ok: quote.ok, outcomeId: quote.outcomeId, otherOutcomeId: quote.otherOutcomeId, marketId: quote.marketId, price: quote.price, depth: quote.depth },
+    { ok: true, outcomeId: "0d0d-under", otherOutcomeId: "0d0d-over", marketId: mainId, price: 0.52, depth: 2000 });
+});
+
 test("novig_quote: a market charging a pregame fee, a closed market and a number the board lacks are refused", async () => {
   const fee = await novigQuoteRunner({ fee: { coefficient: "0.06", makerCredit: "0", charged: "ALWAYS" } });
   const feeQuote = await fee.runner.novigQuote(new URLSearchParams(WSU_36_LINE));

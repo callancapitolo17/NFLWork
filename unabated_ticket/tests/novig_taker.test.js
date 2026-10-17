@@ -138,3 +138,108 @@ test("the clientId is a UUID per outcome and pass, and the line is named the way
     awayTeam: "Duquesne", homeTeam: "Washington State", awayTeamId: "927", homeTeamId: "717",
   });
 });
+
+// ---- main numbers: the feed's ladder leaves out the main rung ----------------
+// The fixture's Novig 52.5 total hangs 50.5/51.5/53.5/54.5 and no 52.5 rung,
+// so the main line's outcome is found in Novig's catalog off its siblings.
+const UNDER_KEY = "433644483:ms89:si1:tid717";
+const OVER_KEY = "433644484:ms89:si0:tid927";
+const DUQ_KEY = "420942310:ms89:si0:tid927";
+const UNDER_515 = "01a0a059-6836-7b83-8813-18d718a0283c";
+const OVER_515 = "01a0a059-6836-7b83-8813-18c4e5a44a2f";
+const UNDER_535 = "01a0a059-6836-7b83-8813-19060702da02";
+const OVER_535 = "01a0a059-6836-7b83-8813-18f82e7d1e57";
+const TOTAL_MAIN_MARKET = "0c0c0c0c-1111-4222-8333-525252525252";
+const TOTAL_MAIN_OVER = "0d0d0d0d-1111-4222-8333-0000000000a1";
+const TOTAL_MAIN_UNDER = "0d0d0d0d-1111-4222-8333-0000000000a2";
+
+function lineRow(state, key) {
+  return feed.describeLine(state.lines[key], state);
+}
+
+function totalMarket(marketId, strike, over, under, fields = {}) {
+  return market({
+    marketId, marketType: "TOTAL", strike,
+    outcomes: [{ outcomeId: over, name: `Over ${strike}`, status: "TBD" }, { outcomeId: under, name: `Under ${strike}`, status: "TBD" }],
+    ...fields,
+  });
+}
+
+function totalCatalog(extra = []) {
+  return taker.novigOutcomeIndex([
+    totalMarket("0c0c0c0c-1111-4222-8333-515151515151", "51.5", OVER_515, UNDER_515),
+    totalMarket("0c0c0c0c-1111-4222-8333-535353535353", "53.5", OVER_535, UNDER_535),
+    totalMarket(TOTAL_MAIN_MARKET, "52.5", TOTAL_MAIN_OVER, TOTAL_MAIN_UNDER),
+    ...extra,
+  ]);
+}
+
+test("a main total with no rung of its own takes the one catalog market of its siblings' event and type at its number", () => {
+  const state = board();
+  const under = lineRow(state, UNDER_KEY);
+  assert.equal(taker.resolveNovigOutcome(under).reason, "no_outcome");
+  const contract = taker.novigContractOf(under, totalCatalog());
+  assert.deepEqual(contract, { outcomeId: TOTAL_MAIN_UNDER, marketId: TOTAL_MAIN_MARKET, otherOutcomeId: TOTAL_MAIN_OVER, derived: true });
+  assert.equal(taker.novigMarketMismatch(totalMarket(TOTAL_MAIN_MARKET, "52.5", TOTAL_MAIN_OVER, TOTAL_MAIN_UNDER), EVENT, under, contract), null);
+  const over = taker.novigContractOf(lineRow(state, OVER_KEY), totalCatalog());
+  assert.equal(over.outcomeId, TOTAL_MAIN_OVER);
+  assert.equal(over.otherOutcomeId, TOTAL_MAIN_UNDER);
+});
+
+test("a main number refuses when the catalog has no market, two markets, or names that cannot tell the side", () => {
+  const under = lineRow(board(), UNDER_KEY);
+  const withoutMain = taker.novigOutcomeIndex([totalMarket("0c0c0c0c-1111-4222-8333-515151515151", "51.5", OVER_515, UNDER_515)]);
+  assert.match(taker.novigContractOf(under, withoutMain).detail, /0 open Novig TOTAL markets at strike 52.5/);
+  const twin = totalMarket("0c0c0c0c-1111-4222-8333-999999999999", "52.5", "0d0d0d0d-1111-4222-8333-0000000000b1", "0d0d0d0d-1111-4222-8333-0000000000b2");
+  assert.match(taker.novigContractOf(under, totalCatalog([twin])).detail, /2 open Novig TOTAL markets/);
+  // Another period's market at the same number is another type: not a twin.
+  const firstHalf = totalMarket("0c0c0c0c-1111-4222-8333-888888888888", "52.5", "0d0d0d0d-1111-4222-8333-0000000000c1", "0d0d0d0d-1111-4222-8333-0000000000c2", { marketType: "TOTAL_1H" });
+  assert.equal(taker.novigContractOf(under, totalCatalog([firstHalf])).outcomeId, TOTAL_MAIN_UNDER);
+  const unnamed = taker.novigOutcomeIndex([
+    totalMarket("0c0c0c0c-1111-4222-8333-515151515151", "51.5", OVER_515, UNDER_515),
+    market({ marketId: TOTAL_MAIN_MARKET, marketType: "TOTAL", strike: "52.5", outcomes: [{ outcomeId: TOTAL_MAIN_OVER, name: "Yes" }, { outcomeId: TOTAL_MAIN_UNDER, name: "No" }] }),
+  ]);
+  assert.match(taker.novigContractOf(under, unnamed).detail, /0 outcomes of market .* name the row's side/);
+  assert.match(taker.novigContractOf(under, new Map()).detail, /no rung on its ladder is on an open pregame Novig market/);
+});
+
+test("a main number refuses when its ladder's rungs sit on different Novig events or market types", () => {
+  const under = lineRow(board(), UNDER_KEY);
+  const otherEvent = taker.novigOutcomeIndex([
+    totalMarket("0c0c0c0c-1111-4222-8333-515151515151", "51.5", OVER_515, UNDER_515),
+    totalMarket("0c0c0c0c-1111-4222-8333-535353535353", "53.5", OVER_535, UNDER_535, { eventId: "0e0e0e0e-1111-4222-8333-000000000000" }),
+    totalMarket(TOTAL_MAIN_MARKET, "52.5", TOTAL_MAIN_OVER, TOTAL_MAIN_UNDER),
+  ]);
+  assert.match(taker.novigContractOf(under, otherEvent).detail, /rungs disagree: 2 events, 1 market types/);
+});
+
+test("a main spread missing its rung finds the market at the home side's handicap and the side by its name", () => {
+  const state = board();
+  // Drop the main-number rungs the fixture does carry, as the feed leaves them out.
+  const outcomes = state.events[123742].venueIds.novigOutcomes;
+  delete outcomes[WSU_OUTCOME];
+  delete outcomes["01a0a05e-e864-7b73-9b80-9e64b163cc27"];
+  const siblings = market({
+    marketId: "0b0b0b0b-1111-4222-8333-343434343434", strike: "-34.5",
+    outcomes: [{ outcomeId: "01a0a05e-e864-7b73-9b80-9fde29b0f1dc", name: "Washington St -34.5" }, { outcomeId: "01a0a05e-e864-7b73-9b80-9fe2c39c2f8d", name: "Duquesne +34.5" }],
+  });
+  const index = taker.novigOutcomeIndex([siblings, market()]);
+  const duquesne = lineRow(state, DUQ_KEY);
+  const contract = taker.novigContractOf(duquesne, index);
+  assert.deepEqual(contract, { outcomeId: DUQ_OUTCOME, marketId: MARKET_ID, otherOutcomeId: WSU_OUTCOME, derived: true });
+  assert.equal(taker.novigMarketMismatch(market(), EVENT, duquesne, contract), null);
+  assert.equal(taker.novigContractOf(lineRow(state, WSU_KEY), index).outcomeId, WSU_OUTCOME);
+  // A pick'em's names cannot tell the side: refused.
+  const pick = market({ outcomes: [{ outcomeId: WSU_OUTCOME, name: "Washington St PK" }, { outcomeId: DUQ_OUTCOME, name: "Duquesne PK" }] });
+  assert.equal(taker.novigContractOf(duquesne, taker.novigOutcomeIndex([siblings, pick])).reason, "no_outcome");
+});
+
+test("an alt line or a line its own rung names is never derived", () => {
+  const state = board();
+  const wsu = lineRow(state, WSU_KEY);
+  // The rung on the main number is used as is, even with a catalog that lists more.
+  assert.equal(taker.novigContractOf(wsu, taker.novigOutcomeIndex([market()])).derived, undefined);
+  // An alt with no rung stays refused: only a main number has a market to look up.
+  const alt = { ...lineRow(state, UNDER_KEY), isAlt: true, key: `${UNDER_KEY}:alt52.5` };
+  assert.equal(taker.novigContractOf(alt, totalCatalog()).detail, "no Novig rung names this line");
+});

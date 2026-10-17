@@ -24,7 +24,8 @@
 // $2,000 at 0.25 Kelly, the better all-in price first when both books trade a number):
 // the same rules on Novig's rows (book 89), with Novig's own facts. The
 // contract is the Novig outcome Unabated's rung names (feed.js novigOutcomes;
-// Novig moneylines carry no rung, so they never trade); buying it costs 1
+// a main number with no rung is looked up in Novig's catalog off its
+// siblings; Novig moneylines carry no rung, so they never trade); buying it costs 1
 // minus the best resting order on the OTHER outcome (every Novig order buys
 // an outcome); pregame game markets charge takers nothing, so all-in = ask;
 // a contract pays 1c, so the stake buys stake x 100 / ask contracts; the
@@ -112,6 +113,9 @@ const NOVIG_EVENT_PREGAME = "OPEN_PREGAME";
 const NOVIG_FEE_ALWAYS = "ALWAYS";
 // Novig's market types: the full game's carry the bare name (docs.novig.com GET /v3/types/markets).
 const NOVIG_MARKET_TYPE_OF_BET_TYPE = { 1: "MONEY", 2: "SPREAD", 3: "TOTAL" };
+// A total outcome's side word: "Over" / "Over 47.5" / "O 47.5" (Novig's app labels a total "O 7.5").
+const NOVIG_OVER_NAME_RE = /^(over|o)\b/i;
+const NOVIG_UNDER_NAME_RE = /^(under|u)\b/i;
 const VENUE_KALSHI = "kalshi";
 const VENUE_NOVIG = "novig";
 
@@ -550,6 +554,7 @@ function novigOutcomeIndex(markets) {
 // two outcomes has no "other side" to read the price off.
 function novigContractOf(row, index) {
   const resolved = resolveNovigOutcome(row);
+  if (resolved.reason && !row.isAlt && !hasOwnRung(row)) return derivedNovigMainContract(row, index);
   if (resolved.reason) return resolved;
   const listed = index.get(resolved.outcomeId);
   if (!listed) return { reason: "no_outcome", detail: `outcome ${resolved.outcomeId} is on no open pregame Novig market` };
@@ -557,6 +562,70 @@ function novigContractOf(row, index) {
   if (outcomes.length !== 2) return { reason: "no_outcome", detail: `market ${listed.market.marketId} has ${outcomes.length} outcomes, expected 2` };
   const other = outcomes.find((outcome) => outcome.outcomeId !== resolved.outcomeId);
   return { outcomeId: resolved.outcomeId, marketId: listed.market.marketId, otherOutcomeId: other.outcomeId };
+}
+
+// Does any Novig rung claim this line? Two rungs on it is ambiguous, not missing.
+function hasOwnRung(row) {
+  const outcomes = (row.venueIds && row.venueIds.novigOutcomes) || {};
+  return Object.values(outcomes).some((target) => target.lineKey === row.key);
+}
+
+// A Novig main line's outcome, which the feed often lacks: Unabated's ladder
+// can leave out the rung at the main number (a 52.5 total hanging only
+// 50.5/51.5/53.5/54.5), and Novig's outcome ids are random, so nothing
+// derives them from the siblings the way Kalshi's tickers are (#190).
+// Instead the siblings' outcomes find Novig's event and market type in the
+// catalog listing already read, and the one open market of that event and
+// type at the row's strike is the main number's (a spread's strike is the
+// home side's handicap). The outcome is picked by its name, the same reading
+// novigMarketMismatch checks before any order.
+//   {outcomeId, marketId, otherOutcomeId, derived: true} or {reason: "no_outcome", detail}
+function derivedNovigMainContract(row, index) {
+  if (row.betTypeId !== BET_TYPE_SPREAD && row.betTypeId !== BET_TYPE_TOTAL) {
+    return { reason: "no_outcome", detail: "no Novig rung names this line" };
+  }
+  const outcomes = (row.venueIds && row.venueIds.novigOutcomes) || {};
+  const siblingIds = Object.entries(outcomes).filter(([, target]) => target.mainKey === row.key).map(([outcomeId]) => outcomeId);
+  const siblingMarkets = siblingIds.map((outcomeId) => index.get(outcomeId)).filter(Boolean).map((listed) => listed.market);
+  if (siblingMarkets.length === 0) {
+    return { reason: "no_outcome", detail: "no Novig rung names this line, and no rung on its ladder is on an open pregame Novig market" };
+  }
+  const eventIds = new Set(siblingMarkets.map((market) => market.eventId));
+  const marketTypes = new Set(siblingMarkets.map((market) => market.marketType));
+  if (eventIds.size !== 1 || marketTypes.size !== 1) {
+    return { reason: "no_outcome", detail: `the ladder's Novig rungs disagree: ${eventIds.size} events, ${marketTypes.size} market types` };
+  }
+  const [eventId] = eventIds;
+  const [marketType] = marketTypes;
+  const strike = row.betTypeId === BET_TYPE_SPREAD ? (row.sideIndex === SIDE_AWAY_OR_OVER ? -row.points : row.points) : row.points;
+  const candidates = new Map();
+  for (const listed of index.values()) {
+    const market = listed.market;
+    if (market.eventId === eventId && market.marketType === marketType && Number(market.strike) === strike) candidates.set(market.marketId, market);
+  }
+  if (candidates.size !== 1) {
+    return { reason: "no_outcome", detail: `${candidates.size} open Novig ${marketType} markets at strike ${strike} on event ${eventId}` };
+  }
+  const [market] = candidates.values();
+  const marketOutcomes = market.outcomes || [];
+  if (marketOutcomes.length !== 2) return { reason: "no_outcome", detail: `market ${market.marketId} has ${marketOutcomes.length} outcomes, expected 2` };
+  const named = marketOutcomes.filter((outcome) => novigOutcomeNamesRow(outcome, row));
+  if (named.length !== 1) {
+    return { reason: "no_outcome", detail: `${named.length} outcomes of market ${market.marketId} name the row's side (${marketOutcomes.map((outcome) => `"${outcome.name}"`).join(", ")})` };
+  }
+  const other = marketOutcomes.find((outcome) => outcome.outcomeId !== named[0].outcomeId);
+  return { outcomeId: named[0].outcomeId, marketId: market.marketId, otherOutcomeId: other.outcomeId, derived: true };
+}
+
+// Does the outcome's name say it is the row's side? A total's "Over"/"O 47.5"
+// or "Under"/"U 47.5"; a spread's last word its handicap, a pick'em never.
+function novigOutcomeNamesRow(outcome, row) {
+  const name = String((outcome && outcome.name) || "").trim();
+  if (row.betTypeId === BET_TYPE_TOTAL) {
+    return (row.sideIndex === SIDE_AWAY_OR_OVER ? NOVIG_OVER_NAME_RE : NOVIG_UNDER_NAME_RE).test(name);
+  }
+  const handicap = novigNameHandicap(name);
+  return handicap !== null && handicap !== 0 && handicap === row.points;
 }
 
 // Novig's book (GET /v3/public/catalog/markets/<id>/book): {orders: {outcomeId:
@@ -619,9 +688,8 @@ function novigMarketMismatch(market, event, row, contract) {
     if (handicap !== row.points) return `outcome "${name}" is ${handicap}, the row is ${row.points}`;
   } else if (row.betTypeId === BET_TYPE_TOTAL) {
     if (!Number.isFinite(strike) || strike !== row.points) return `strike ${market.strike}, row is ${row.points}`;
-    // "Over" / "Over 47.5" / "O 47.5" (Novig's app labels a total "O 7.5").
     const sideWord = row.sideIndex === SIDE_AWAY_OR_OVER ? "over" : "under";
-    const pattern = row.sideIndex === SIDE_AWAY_OR_OVER ? /^(over|o)\b/i : /^(under|u)\b/i;
+    const pattern = row.sideIndex === SIDE_AWAY_OR_OVER ? NOVIG_OVER_NAME_RE : NOVIG_UNDER_NAME_RE;
     if (!pattern.test(name)) return `outcome "${name}" is not the row's ${sideWord}`;
   } else {
     return `bet type ${row.betTypeId} has no Novig market check`;
