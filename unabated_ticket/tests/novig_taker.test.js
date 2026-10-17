@@ -243,3 +243,35 @@ test("an alt line or a line its own rung names is never derived", () => {
   const alt = { ...lineRow(state, UNDER_KEY), isAlt: true, key: `${UNDER_KEY}:alt52.5` };
   assert.equal(taker.novigContractOf(alt, totalCatalog()).detail, "no Novig rung names this line");
 });
+
+test("a main spread refuses when Novig lists the game with home and away swapped, or the rungs' names disagree", () => {
+  const state = board();
+  const outcomes = state.events[123742].venueIds.novigOutcomes;
+  delete outcomes[WSU_OUTCOME];
+  delete outcomes["01a0a05e-e864-7b73-9b80-9e64b163cc27"];
+  const duquesne = lineRow(state, DUQ_KEY);
+  // Neutral site: Novig's home is Duquesne, so every strike is Duquesne's
+  // handicap. Picking by number and name alone would buy Washington St -35.5
+  // for the Duquesne +35.5 row; the siblings' strikes give the swap away.
+  const swappedSibling = market({
+    marketId: "0b0b0b0b-1111-4222-8333-343434343434", strike: "34.5",
+    outcomes: [{ outcomeId: "01a0a05e-e864-7b73-9b80-9fde29b0f1dc", name: "Washington St -34.5" }, { outcomeId: "01a0a05e-e864-7b73-9b80-9fe2c39c2f8d", name: "Duquesne +34.5" }],
+  });
+  const swappedMain = market({ strike: "35.5" });
+  const swapped = taker.novigContractOf(duquesne, taker.novigOutcomeIndex([swappedSibling, swappedMain]));
+  assert.equal(swapped.reason, "no_outcome");
+  assert.match(swapped.detail, /at strike 34.5, Unabated as 34.5 side 0/);
+  // A main market whose outcome at the row's number names another team than the rungs do.
+  const sibling = market({
+    marketId: "0b0b0b0b-1111-4222-8333-343434343434", strike: "-34.5",
+    outcomes: [{ outcomeId: "01a0a05e-e864-7b73-9b80-9fde29b0f1dc", name: "Washington St -34.5" }, { outcomeId: "01a0a05e-e864-7b73-9b80-9fe2c39c2f8d", name: "Duquesne +34.5" }],
+  });
+  const otherTeam = market({ outcomes: [{ outcomeId: WSU_OUTCOME, name: "Washington St -35.5" }, { outcomeId: DUQ_OUTCOME, name: "Idaho +35.5" }] });
+  assert.match(taker.novigContractOf(duquesne, taker.novigOutcomeIndex([sibling, otherTeam])).detail, /0 outcomes of market/);
+  // A rung whose own name is the other side.
+  const misnamed = market({
+    marketId: "0b0b0b0b-1111-4222-8333-343434343434", strike: "-34.5",
+    outcomes: [{ outcomeId: "01a0a05e-e864-7b73-9b80-9fde29b0f1dc", name: "Duquesne +34.5" }, { outcomeId: "01a0a05e-e864-7b73-9b80-9fe2c39c2f8d", name: "Washington St -34.5" }],
+  });
+  assert.match(taker.novigContractOf(duquesne, taker.novigOutcomeIndex([misnamed, market()])).detail, /Novig lists rung/);
+});

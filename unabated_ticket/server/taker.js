@@ -585,11 +585,28 @@ function derivedNovigMainContract(row, index) {
     return { reason: "no_outcome", detail: "no Novig rung names this line" };
   }
   const outcomes = (row.venueIds && row.venueIds.novigOutcomes) || {};
-  const siblingIds = Object.entries(outcomes).filter(([, target]) => target.mainKey === row.key).map(([outcomeId]) => outcomeId);
-  const siblingMarkets = siblingIds.map((outcomeId) => index.get(outcomeId)).filter(Boolean).map((listed) => listed.market);
-  if (siblingMarkets.length === 0) {
+  const siblings = Object.entries(outcomes).filter(([, target]) => target.mainKey === row.key)
+    .map(([outcomeId, target]) => ({ outcomeId, target, listed: index.get(outcomeId) })).filter((sibling) => sibling.listed);
+  if (siblings.length === 0) {
     return { reason: "no_outcome", detail: "no Novig rung names this line, and no rung on its ladder is on an open pregame Novig market" };
   }
+  // Each sibling must read on Novig the way Unabated lists it: its market's
+  // strike at the rung's number from Unabated's home side, its outcome's name
+  // the rung's side. A game Novig lists with home and away swapped (a neutral
+  // site) fails here; past this point the side is picked by name and number
+  // alone, which a swap would pass.
+  const siblingNames = new Set();
+  for (const { outcomeId, target, listed } of siblings) {
+    const outcome = (listed.market.outcomes || []).find((candidate) => candidate.outcomeId === outcomeId);
+    const siblingRow = { betTypeId: row.betTypeId, sideIndex: target.sideIndex, points: target.points };
+    if (target.sideIndex !== row.sideIndex || Number(listed.market.strike) !== novigStrikeOf(siblingRow) || !novigOutcomeNamesRow(outcome, siblingRow)) {
+      return { reason: "no_outcome", detail: `Novig lists rung ${outcomeId} as "${outcome && outcome.name}" at strike ${listed.market.strike}, Unabated as ${target.points} side ${target.sideIndex}` };
+    }
+    siblingNames.add(novigOutcomeTeamText(outcome));
+  }
+  if (siblingNames.size !== 1) return { reason: "no_outcome", detail: `the ladder's Novig rungs name ${siblingNames.size} different sides` };
+  const [siblingName] = siblingNames;
+  const siblingMarkets = siblings.map((sibling) => sibling.listed.market);
   const eventIds = new Set(siblingMarkets.map((market) => market.eventId));
   const marketTypes = new Set(siblingMarkets.map((market) => market.marketType));
   if (eventIds.size !== 1 || marketTypes.size !== 1) {
@@ -597,7 +614,7 @@ function derivedNovigMainContract(row, index) {
   }
   const [eventId] = eventIds;
   const [marketType] = marketTypes;
-  const strike = row.betTypeId === BET_TYPE_SPREAD ? (row.sideIndex === SIDE_AWAY_OR_OVER ? -row.points : row.points) : row.points;
+  const strike = novigStrikeOf(row);
   const candidates = new Map();
   for (const listed of index.values()) {
     const market = listed.market;
@@ -609,12 +626,26 @@ function derivedNovigMainContract(row, index) {
   const [market] = candidates.values();
   const marketOutcomes = market.outcomes || [];
   if (marketOutcomes.length !== 2) return { reason: "no_outcome", detail: `market ${market.marketId} has ${marketOutcomes.length} outcomes, expected 2` };
-  const named = marketOutcomes.filter((outcome) => novigOutcomeNamesRow(outcome, row));
+  // The side by its name and number, and by the same team (or Over/Under) words its rungs carry.
+  const named = marketOutcomes.filter((outcome) => novigOutcomeNamesRow(outcome, row) && novigOutcomeTeamText(outcome) === siblingName);
   if (named.length !== 1) {
     return { reason: "no_outcome", detail: `${named.length} outcomes of market ${market.marketId} name the row's side (${marketOutcomes.map((outcome) => `"${outcome.name}"`).join(", ")})` };
   }
   const other = marketOutcomes.find((outcome) => outcome.outcomeId !== named[0].outcomeId);
   return { outcomeId: named[0].outcomeId, marketId: market.marketId, otherOutcomeId: other.outcomeId, derived: true };
+}
+
+// A Novig market's strike for a row: a total's is the total, a spread's the
+// home side's handicap (an away row's -points).
+function novigStrikeOf(row) {
+  if (row.betTypeId !== BET_TYPE_SPREAD) return row.points;
+  return row.sideIndex === SIDE_AWAY_OR_OVER ? -row.points : row.points;
+}
+
+// An outcome's name less its number: the team ("Washington St -35.5" ->
+// "washington st") or the total's side word ("Over 52.5" -> "over").
+function novigOutcomeTeamText(outcome) {
+  return String((outcome && outcome.name) || "").trim().toLowerCase().replace(/\s*[+-]?\d+(\.\d+)?$/, "");
 }
 
 // Does the outcome's name say it is the row's side? A total's "Over"/"O 47.5"
