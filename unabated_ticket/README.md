@@ -1473,8 +1473,8 @@ its number, or a rung that repeats its neighbour's fair (Unabated flat-lines
 deep tails), is listed grey with the reason and never used.
 
 **Can't tease (college only, 2026-10-03).** Buckeye keeps some college games
-off its teaser menu; every NFL game teases. A CFB leg in the pool or above
-break-even carries a **Can't tease** chip: it takes that game's spread or
+off its teaser menu; every NFL game teases. A CFB leg in the pool or shed for
+the outcome budget carries a **Can't tease** chip: it takes that game's spread or
 total, both sides (`teaser.marketKeyOf`), out of the pool, and the game's other
 market can still step in. The list rebuilds when the market held a pool leg;
 otherwise only the Legs list changes. The marked market sits in the
@@ -3244,7 +3244,9 @@ offered again, so placing the top ticket leaves the list less it (a board
 with four standout legs, where it used to come back at the top); the whole
 list open leaving nothing (one partial ticket per set); open teasers on
 eight games outside the pool shedding the two weakest pool legs to stay at
-2^20 outcomes rather than going dark, each named in the Legs list; a leg whose BFA start is 3 h off the board's
+2^20 outcomes rather than going dark, each named in the Legs list and
+still named after a sub-point tick; open teasers on 17 games outside four
+pool legs giving no tickets with that reason; a leg whose BFA start is 3 h off the board's
 joining by rotation so its ticket stays taken (13 h off: counted as won); a
 5-team teaser with a leg counted as won blocking no 4-leg combination; the
 partial rule ($63 alone, $45 with a 2-team $110 teaser open, none and $32

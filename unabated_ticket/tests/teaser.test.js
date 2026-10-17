@@ -479,6 +479,24 @@ test("past the outcome budget the pool sheds its weakest legs on games no open t
     [113, "out", "too many outcomes to size", 0], [114, "out", "too many outcomes to size", 0],
     ...Array.from({ length: 8 }, (_, index) => [115 + index, "below_break_even", "below break-even", 1]),
   ]);
+  // A sub-point tick on a shed leg keeps the list, and the row still says why it is out.
+  const rung = Object.values(state.lines).find((line) => line.eventId === 113 && line.bookId === FAIR_BOOK && line.points === 8.5);
+  rung.bacr = -392;
+  const ticked = plan(state, { placed, kellyBankroll: 1000, previous: build });
+  assert.equal(ticked.rebuilt, false);
+  const tickedRow = teaser.describeLegs(legsOf(state), ticked.build, placed).find((row) => row.leg.eventId === 113);
+  assert.deepEqual([tickedRow.standing, tickedRow.note], ["out", "too many outcomes to size"]);
+});
+
+test("open teasers on too many games to fit even four pool legs: no tickets, and the reason", () => {
+  // Four 80% legs and open teasers on 17 other games: 21 games make 2^21 outcomes.
+  const state = awayLegBoard([...Array(4).fill(-400), ...Array(17).fill(-150)]);
+  const ticketGames = [[105, 106, 107, 108], [109, 110, 111, 112], [113, 114, 115, 116], [117, 118, 119, 120], [121, 105, 106, 107]];
+  const records = ticketGames.flatMap((games, ticket) => games.map((eventId, legIndex) => bfaLeg(ticket + 1, legIndex, { rotation: 401 + 2 * (eventId - 101) })));
+  const { build } = plan(state, { placed: openTeasersOf(state, records), kellyBankroll: 100000 });
+  assert.deepEqual(build.pool.map((leg) => leg.eventId), [101, 102, 103, 104]);
+  assert.deepEqual(build.tickets, []);
+  assert.equal(build.reason, "open teasers ride on too many games to size with 4 pool legs (21 games, 2097152 outcomes)");
 });
 
 test("a started leg and a leg no board game matches count as won; a ticket with none still to play leaves the math", () => {
@@ -822,8 +840,8 @@ test("the summary leaves the straights' own P&L out and counts them for the note
 });
 
 test("past the outcome budget the straights on a shed leg's game go with it", () => {
-  // Eleven 80% games, each with two straights splitting it into 4 rows: 4^11
-  // outcomes; 4^10 fits 2^20, so the weakest leg goes.
+  // Ten 80% games and one 79.6%, each with two straights splitting it into 4
+  // rows: 4^11 outcomes; 4^10 fits 2^20, so the 79.6% leg goes.
   const wins = [...Array(10).fill(-400), -390];
   const state = awayLegBoard(wins);
   const records = [];
