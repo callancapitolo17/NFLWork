@@ -614,9 +614,8 @@ function novigLineOf(row) {
 // Kalshi's own start for a game, read off GET /milestones?related_event_ticker=<event>:
 // the earliest start_date among the milestones that name the event (in
 // related_event_tickers or primary_event_tickers), as epoch ms, or null when
-// none does or none carries a zoned time. A second clock beside Unabated's
-// eventStart, which was 90 min late on Columbia at Penn (2026-10-16): the
-// taker bought two contracts after kickoff on Unabated's 8:30 PM ET.
+// none does or none carries a zoned time. A backup clock beside Unabated's
+// eventStart (Cal, 2026-10-16), read off a different feed.
 //   body         Kalshi's {milestones: [{start_date, related_event_tickers, primary_event_tickers}]}
 //   eventTicker  the market's event_ticker ("KXNCAAFSPREAD-26OCT16CLMBPENN")
 function kalshiStartMsOf(body, eventTicker) {

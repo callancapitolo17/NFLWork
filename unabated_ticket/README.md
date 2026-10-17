@@ -2774,10 +2774,12 @@ would sell that YES; across them the bot still never bets against a held bet). T
 (`stale_decision`), a game that has started (`started`) and a runner priced
 on another Kalshi API than its own (`env_mismatch`).
 
-**Two clocks for "started" (2026-10-16, option B).** Unabated's eventStart
-alone let two orders through after kickoff: it listed Columbia at Penn at
-8:30 PM ET, the game kicked off at 7:00 PM ET, and its board kept the rows
-pregame. Before every order and every Place quote the runner now also reads
+**Two clocks for "started" (2026-10-16, option B).** A backup to Unabated's
+eventStart, added after a suspected late start that turned out to be right
+(Columbia at Penn: public schedules said 7:00 PM ET, Unabated and Kalshi
+8:30 PM ET, the real kickoff). Kalshi's schedule comes from the same kind of
+data vendor, so it guards against a stale or mis-keyed Unabated time, not
+against a vendor-wide error. Before every order and every Place quote the runner now also reads
 Kalshi's own start for the game (`GET /milestones?related_event_ticker=<the
 market's event_ticker>`, public, cached 10 min per event, a failed read
 retried after 1 min; `taker.kalshiStartMsOf`), and the order / quote carries
