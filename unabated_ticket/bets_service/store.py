@@ -99,7 +99,8 @@ from pathlib import Path
 
 import duckdb
 
-from unabated_ticket.bets_service.sources.kalshi import FINAL_STATUSES, PRIMARY_SUBACCOUNT, subaccount_of_record_id
+from unabated_ticket.bets_service.sources.kalshi import (FINAL_STATUSES, PRIMARY_SUBACCOUNT, READ_VERSION,
+                                                         subaccount_of_record_id)
 
 log = logging.getLogger(__name__)
 
@@ -519,8 +520,8 @@ _SELECT_KALSHI_IDS = """
 SELECT id FROM bets WHERE venue = 'kalshi'
 """
 
-_SELECT_KALSHI_IDS_AND_STATUSES = """
-SELECT id, status FROM bets WHERE venue = 'kalshi'
+_SELECT_KALSHI_IDS_STATUSES_RECORDS = """
+SELECT id, status, record FROM bets WHERE venue = 'kalshi'
 """
 
 _SELECT_WINDOW = """
@@ -730,15 +731,17 @@ class BetsStore:
                 log.warning("load_kalshi_tickers: skipping stored id %r: %s", record_id, error)
         return tickers
 
-    def load_kalshi_final_tickers(self, subaccount: int = PRIMARY_SUBACCOUNT) -> set[str]:
-        """Every Kalshi ticker whose stored records of `subaccount` all have a
-        final status (sources.kalshi.FINAL_STATUSES); the Kalshi source skips
-        them at startup. One open/unknown side keeps the ticker out."""
+    def load_kalshi_final_tickers(self, subaccount: int = PRIMARY_SUBACCOUNT) -> dict[str, str]:
+        """{ticker: newest stored raw.lastFillAt} for every Kalshi ticker whose
+        stored records of `subaccount` are all final (sources.kalshi.
+        FINAL_STATUSES) and stamped complete at the current READ_VERSION; the
+        Kalshi source skips them at startup. One side that is open, unknown,
+        from a partial read or without a lastFillAt keeps the ticker out."""
         with self._lock:
-            rows = self._con.execute(_SELECT_KALSHI_IDS_AND_STATUSES).fetchall()
-        final: set[str] = set()
+            rows = self._con.execute(_SELECT_KALSHI_IDS_STATUSES_RECORDS).fetchall()
+        last_fill_by_ticker: dict[str, str] = {}
         not_final: set[str] = set()
-        for record_id, status in rows:
+        for record_id, status, record_json in rows:
             try:
                 if subaccount_of_record_id(record_id) != subaccount:
                     continue
@@ -746,8 +749,13 @@ class BetsStore:
                 log.warning("load_kalshi_final_tickers: skipping stored id %r: %s", record_id, error)
                 continue
             ticker = record_id.split(":")[1]
-            (final if status in FINAL_STATUSES else not_final).add(ticker)
-        return final - not_final
+            raw = (json.loads(record_json) or {}).get("raw") or {}
+            last_fill_at = raw.get("lastFillAt")
+            if status not in FINAL_STATUSES or raw.get("readComplete") != READ_VERSION or not last_fill_at:
+                not_final.add(ticker)
+                continue
+            last_fill_by_ticker[ticker] = max(last_fill_at, last_fill_by_ticker.get(ticker, ""))
+        return {ticker: last_fill_at for ticker, last_fill_at in last_fill_by_ticker.items() if ticker not in not_final}
 
     def load_bets(self, days: int, now: datetime) -> list[dict]:
         """Records in the retention window: open, or closed within `days` of `now`."""
