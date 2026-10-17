@@ -180,9 +180,10 @@ function contractFromRungs(row) {
 }
 
 // A Kalshi main line's contract, which the feed never carries: Unabated's
-// ladder leaves out the rung at the main number (live CFB 2026-10-17: Under
-// 43.5 main, rungs 41.5/42.5/44.5/45.5), and main lines carry no id. Every
-// rung on the line's OWN ladder shares its contract side, series, event and
+// ladder leaves out the rung at the main number (the fixture's 52.5 main
+// hangs 50.5/51.5/53.5/54.5; Place refused a live Under 43.5 main on
+// 2026-10-17), and main lines carry no id. Every rung on the line's OWN
+// ladder, on its side of zero, shares its contract side, series, event and
 // (spreads) team code, and Kalshi names a strike X.5 as X+1 (51.5 -> "-52",
 // -35.5 -> "WSU36"), so the main number's ticker is the siblings' with the
 // row's strike. Inferred from Kalshi's naming like the moneyline: `derived`,
