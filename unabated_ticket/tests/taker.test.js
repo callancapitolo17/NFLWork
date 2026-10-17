@@ -75,6 +75,52 @@ test("a line no rung names, or whose rung disagrees on the number, has no ticker
   assert.match(taker.contractFromRungs({ ...row, points: -34.5 }).detail, /row is -34.5/);
 });
 
+// Main lines in the fixture: Unabated's ladders skip the main-number rung (52.5 / -38.5), as live.
+const UNDER_MAIN_KEY = "433644483:ms105:si1:tid717";
+const OVER_MAIN_KEY = "433644484:ms105:si0:tid927";
+const WSU_MAIN_KEY = "420942308:ms105:si1:tid717";
+const DUQ_MAIN_KEY = "420942310:ms105:si0:tid927";
+
+test("a main number's ticker is derived from its own ladder's rungs: Kalshi names X.5 as X+1", () => {
+  const derived = (key) => {
+    const state = boardWithEdge(key, 0.05);
+    return taker.resolveKalshiContract(rowOf(state, key), state);
+  };
+  assert.deepEqual(derived(UNDER_MAIN_KEY), { ticker: "KXNCAAFTOTAL-26SEP19DUQWSU-53", side: "no", sourceKey: null, derived: true });
+  assert.deepEqual(derived(OVER_MAIN_KEY), { ticker: "KXNCAAFTOTAL-26SEP19DUQWSU-53", side: "yes", sourceKey: null, derived: true });
+  assert.deepEqual(derived(WSU_MAIN_KEY), { ticker: "KXNCAAFSPREAD-26SEP19DUQWSU-WSU39", side: "yes", sourceKey: null, derived: true });
+  assert.deepEqual(derived(DUQ_MAIN_KEY), { ticker: "KXNCAAFSPREAD-26SEP19DUQWSU-WSU39", side: "no", sourceKey: null, derived: true });
+});
+
+test("a main number refuses a ticker when its ladder cannot vouch for one", () => {
+  const state = boardWithEdge(UNDER_MAIN_KEY, 0.05);
+  const row = rowOf(state, UNDER_MAIN_KEY);
+  // No rungs hang off the line.
+  assert.match(taker.contractFromRungs({ ...row, key: "nothing" }).detail, /no rungs to derive/);
+  // A whole number has no X.5 strike.
+  assert.match(taker.contractFromRungs({ ...row, points: 52 }).detail, /not a half point/);
+  // An alt the map misses is never derived.
+  assert.equal(taker.contractFromRungs({ ...row, isAlt: true }).detail, "no Kalshi rung names this line");
+  // The Over side's ladder carrying NO rungs is a contradiction, not a guess.
+  assert.match(taker.contractFromRungs({ ...row, sideIndex: 0 }).detail, /carries N rungs/);
+  // Rungs that disagree on the event.
+  const contracts = { ...row.venueIds.kalshiContracts, "N-KXNCAAFTOTAL-26SEP20OTHER-50": { lineKey: null, mainKey: row.key, points: 49.5, sideIndex: 1 } };
+  assert.match(taker.contractFromRungs({ ...row, venueIds: { ...row.venueIds, kalshiContracts: contracts } }).detail, /disagree/);
+  // A spread main on the other side of zero from its ladder's rungs.
+  const spreadState = boardWithEdge(WSU_MAIN_KEY, 0.05);
+  const spreadRow = rowOf(spreadState, WSU_MAIN_KEY);
+  assert.match(taker.contractFromRungs({ ...spreadRow, points: 1.5 }).detail, /other side of zero/);
+});
+
+test("a derived main-number ticker must still pass Kalshi's market check", () => {
+  const state = boardWithEdge(UNDER_MAIN_KEY, 0.05);
+  const row = rowOf(state, UNDER_MAIN_KEY);
+  const contract = taker.resolveKalshiContract(row, state);
+  const market = { status: "active", ticker: contract.ticker, floor_strike: 52.5 };
+  assert.equal(taker.marketMismatch(market, row, contract), null);
+  assert.match(taker.marketMismatch({ ...market, floor_strike: 53.5 }, row, contract), /floor_strike/);
+});
+
 test("a full-game moneyline's ticker is derived from the spread rungs' team codes", () => {
   const state = boardWithEdge(ML_WSU_KEY, 0.05, { price: -400 });
   const row = rowOf(state, ML_WSU_KEY);

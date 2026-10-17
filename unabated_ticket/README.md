@@ -2757,7 +2757,11 @@ subaccount. No shadow mode (Cal, 2026-10-14).
 | Money | the bot's own Kalshi subaccount (Cal, 2026-10-16): its key is locked there, so what the subaccount holds is all it can lose |
 
 Tickers: spreads and totals from the rung ids (`Y-` buys YES, `N-` NO);
-full-game moneylines derived from the spread rungs' team code
+a main number, whose rung Unabated's ladder leaves out (main lines carry no
+id), derived from its own ladder's rungs with Kalshi's X.5 → X+1 strike name
+(Under 52.5 beside `N-KXNCAAFTOTAL-26SEP19DUQWSU-52` → NO on
+`KXNCAAFTOTAL-26SEP19DUQWSU-53`; refused when the rungs disagree or cross zero;
+the bot and Kalshi Place alike, 2026-10-17); full-game moneylines derived from the spread rungs' team code
 (`KXNCAAFSPREAD-26SEP19DUQWSU-WSU36` → `KXNCAAFGAME-26SEP19DUQWSU-WSU`); the
 market check above is what lets a derived ticker trade. Bot fills join the
 board the way every Kalshi bet does (by the event ticker's suffix, bets.js),

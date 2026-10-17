@@ -1163,7 +1163,7 @@ function createRunner(deps) {
     };
   }
 
-  // Per league: rows looked at, rows with a ticker (derived moneylines apart),
+  // Per league: rows looked at, rows with a ticker (derived moneylines and main numbers apart),
   // rows without one. T1's coverage check.
   function takerCoverage(decisions) {
     const byLeague = {};
