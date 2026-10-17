@@ -377,6 +377,11 @@ def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event,
     thread must outlive it, or the HTTP side would serve ageing data with no
     failed run to show for it."""
     next_due = {source.name: 0.0 for source in sources}
+    # Balances first: a first Kalshi poll takes minutes and the loop is serial, so
+    # reading them only after each fetch left the Balances tab empty after a restart.
+    if balance_book is not None:
+        for source in sources:
+            read_balance_once(source, balance_book)
     while not stop.is_set():
         now = time.monotonic()
         for source in sources:
