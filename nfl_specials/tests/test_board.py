@@ -252,3 +252,22 @@ def test_unlimited_stake_drops_the_balance_but_keeps_the_book_limits():
     assert sum(s.recommended_stake for s in sized) <= 200
     assert [s.unlimited_stake for s in sized] == [250.0, 206.0]   # Raiders capped at $250, Chargers at its Kelly
     assert all(s.unlimited_stake >= s.recommended_stake for s in sized)
+
+
+def test_books_open_with_draftkings_through_the_configured_proxy(monkeypatch):
+    opened = {}
+
+    def fake(name):
+        def construct(**kwargs):
+            opened[name] = kwargs
+            return name
+        return construct
+
+    monkeypatch.setattr(board_module, "FanDuelBook", fake("FanDuel"))
+    monkeypatch.setattr(board_module, "BetMgmBook", fake("BetMGM"))
+    monkeypatch.setattr(board_module, "DraftKingsBook", fake("DraftKings"))
+    monkeypatch.setattr(board_module.config, "DK_PROXY_URL", "http://100.120.136.59:8097")
+    books, status = board_module.open_books()
+    assert books == {"FanDuel": "FanDuel", "BetMGM": "BetMGM", "DraftKings": "DraftKings"}
+    assert status == {"FanDuel": "ok", "BetMGM": "ok", "DraftKings": "ok"}
+    assert opened == {"FanDuel": {}, "BetMGM": {}, "DraftKings": {"proxy_url": "http://100.120.136.59:8097"}}

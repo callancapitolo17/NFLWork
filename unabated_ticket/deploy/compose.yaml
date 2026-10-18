@@ -1,16 +1,16 @@
 # Unabated Ticket on the server (phone page plan step 4): the bets service
-# (:8094, phone page + /bets.json + /settings.json + /edges.json proxy) and the
-# Edges runner (:8095), both on 127.0.0.1 only. network_mode: host keeps that
-# loopback binding meaning the VM's own loopback — nothing is published and
-# nothing listens on a public interface; the phone reaches :8094 through
-# `tailscale serve` on the host (deploy/README.md).
+# (:8094, phone page + /bets.json + /settings.json + /edges.json proxy), the
+# Edges runner (:8095) and the NFL fecta pricer (:8096), all on 127.0.0.1 only.
+# network_mode: host keeps that loopback binding meaning the VM's own loopback;
+# nothing is published and nothing listens on a public interface. The phone
+# reaches :8094 and :8096 through `tailscale serve` on the host (deploy/README.md).
 #
 #   cd ~/NFLWork/unabated_ticket/deploy && docker compose up -d     (or ./deploy.sh)
 #
 # Code: the repo is mounted read-only at /app (the code resolves everything
 # from the repo root), so an update is `git pull` + a restart, not a rebuild.
 # Writes go only to ${UNABATED_DATA_DIR} (/data inside): bets.duckdb,
-# novig_token.json (rewritten on every Auth0 rotation), logs/.
+# novig_token.json (rewritten on every Auth0 rotation), logs/, nfl_specials.duckdb.
 # Secrets are files on the host, never in an image: the Kalshi .pem
 # (${KALSHI_PEM_PATH}, read-only) and unabated_ticket/bets_service/.env
 # (gitignored, inside the read-only repo mount: KALSHI_API_KEY_ID, the
@@ -89,4 +89,26 @@ services:
       NOVIG_API_URL: https://api.novig.com
     volumes:
       - ../..:/app:ro
+    logging: *rotated-logs
+
+  fectas:
+    build:
+      context: ../..
+      dockerfile: unabated_ticket/deploy/nfl_specials.Dockerfile
+    image: nfl-specials:local
+    network_mode: host
+    restart: unless-stopped
+    init: true
+    user: "${DEPLOY_UID:-1000}:${DEPLOY_GID:-1000}"
+    working_dir: /app
+    environment:
+      HOME: /tmp
+      NFL_SPECIALS_DB: /data/nfl_specials.duckdb
+      NFL_SPECIALS_EXTRA_ALLOWED_HOSTS: "${BETS_EXTRA_ALLOWED_HOSTS:?set BETS_EXTRA_ALLOWED_HOSTS in deploy/.env (the VM's MagicDNS name)}"
+      NFL_SPECIALS_DK_PROXY: "${NFL_SPECIALS_DK_PROXY:?set NFL_SPECIALS_DK_PROXY in deploy/.env (http://<Mac tailnet IP>:8097)}"
+      NFL_SPECIALS_WAGERZON_ENV: /app/unabated_ticket/bets_service/.env
+      WAGERZON_DEBUG_DIR: /data/logs
+    volumes:
+      - ../..:/app:ro
+      - "${UNABATED_DATA_DIR:?set UNABATED_DATA_DIR in deploy/.env}:/data"
     logging: *rotated-logs

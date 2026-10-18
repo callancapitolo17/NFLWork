@@ -12,6 +12,9 @@ Wagerzon "NFL WEEK n - SPECIALS" ──▶ parse legs ──▶ FanDuel / BetMGM
 
 ## Run
 
+On the phone or any tailnet device: **https://mlb-stack.tail87ab2d.ts.net:8443/**
+(the Oracle VM; see Running on the VM). For development on the Mac:
+
 ```bash
 nfl_specials/run.sh         # http://127.0.0.1:8096
 ```
@@ -21,6 +24,43 @@ books price side by side, one thread each (`board.py::_price_lane`), so the
 refresh takes about as long as the slowest book. Measured 2026-10-02 (17
 specials): BetMGM done in 0.5 min, FanDuel in 0.9 min; DraftKings' six
 superfectas (7-10 requests each, 0.5 s apart) took ~40 s over plain HTTP.
+
+## Running on the VM
+
+The page runs as the `fectas` container of the VM's Docker stack
+(`unabated_ticket/deploy/`, next to the bets service), bound to the VM's
+loopback and published on the tailnet by `tailscale serve` at port 8443.
+
+```
+phone ──tailnet──▶ VM :8443 ──▶ fectas (:8096) ──▶ FanDuel, BetMGM, Wagerzon (direct)
+                                              └──▶ Mac dk_relay (:8097) ──▶ DraftKings
+```
+
+- **DraftKings goes through the Mac.** DraftKings answers "Access Denied" to
+  Oracle's data-center IPs, so the container sends its DraftKings requests to
+  `dk_relay.py` on the Mac over Tailscale (`NFL_SPECIALS_DK_PROXY` in the
+  VM's `deploy/.env`). **Mac asleep or off: the DraftKings chip errors and
+  superfectas stay unpriced; trifectas still price.**
+- **Wagerzon login:** only the `WAGERZON*_USERNAME` / `_PASSWORD` lines of the
+  VM's `unabated_ticket/bets_service/.env` (`NFL_SPECIALS_WAGERZON_ENV`), the
+  same login the bets service uses.
+- **State:** `~/unabated-data/nfl_specials.duckdb` on the VM.
+- **Update and setup:** `unabated_ticket/deploy/README.md` (`deploy.sh`, step 12).
+- Use one page at a time: the Mac's `run.sh` copy has its own database, so it
+  does not see bets placed from the VM's page.
+
+The relay on the Mac runs as a launchd agent (starts at login, restarts if it
+dies, waits for Tailscale):
+
+```bash
+# install once (after editing the plist, run the bootout line first)
+cp nfl_specials/com.nflwork.dk-relay.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.dk-relay.plist
+# restart onto new code
+launchctl kickstart -k gui/$(id -u)/com.nflwork.dk-relay
+# stop and remove
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.dk-relay.plist
+```
 
 ## The page
 
@@ -168,8 +208,10 @@ balance right away. Wagerzon's minimum online wager on a special is $20.
 | `board.py` | one refresh; read-time sizing |
 | `store.py` | DuckDB state |
 | `app.py`, `static/index.html` | loopback web page + JSON API |
+| `dk_relay.py`, `com.nflwork.dk-relay.plist` | DraftKings-only CONNECT relay on the Mac for the VM, and its launchd agent |
+| `requirements.txt` | third-party packages for the VM image (`unabated_ticket/deploy/nfl_specials.Dockerfile`) |
 
-## Data — `nfl_specials/nfl_specials.duckdb`
+## Data: `nfl_specials/nfl_specials.duckdb`
 
 | Table | Write | Row |
 |---|---|---|
@@ -187,11 +229,18 @@ balance right away. Wagerzon's minimum online wager on a special is $20.
   only DK prices superfectas.
 - **Nothing on the board** — Wagerzon posts the specials Thursday-ish; every league
   named `NFL WEEK <n> - SPECIALS` is read (two can be up at once).
+- **On the VM the DraftKings chip shows a curl error** ("Failed to connect to ...
+  port 8097", or a timeout): the relay is not reachable. Check the Mac is awake and
+  on Tailscale, `launchctl print gui/$(id -u)/com.nflwork.dk-relay` shows it running,
+  and `nfl_specials/dk_relay.log` has a start line. "HTTP 403" on the chip means the
+  request reached DraftKings without the relay (`NFL_SPECIALS_DK_PROXY` unset); "CONNECT
+  tunnel failed, response 403" means the relay refused the host: a new DraftKings host
+  belongs in `DK_HOSTS`.
 - **"Available: unknown"** — the Wagerzon balance read failed, so no stakes are
   recommended; click Refresh.
 
 ## Not done yet
 
-- **Cloud.** Every book is plain HTTP now, but only the home IP has been tested;
-  Wagerzon logins from a data-center IP are untested.
+- **Superfectas with the Mac off.** DraftKings needs a home IP; nothing at home
+  but the Mac carries the relay.
 - Correlation across games is ignored (cross-game NFL correlation measured ~0).
