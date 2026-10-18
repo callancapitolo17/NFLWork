@@ -8,3 +8,5 @@ requests>=2.31
 python-dotenv>=1.0
 scipy>=1.11
 pandas>=2.0
+# DuckDB returns TIMESTAMPTZ values through pytz; pandas 3 no longer installs it.
+pytz>=2023.3

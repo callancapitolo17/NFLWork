@@ -122,6 +122,7 @@ main() {
   check "edges via the runner"     /edges.json "$tailnet_host"  200 || failed=1
   check "foreign Host refused"     /health     "$FOREIGN_HOST"  403 || failed=1
   check "fecta pricer"             /           "$FECTAS_LOOPBACK_HOST" 200 "$FECTAS_URL" || failed=1
+  check "fecta board"              /api/board  "$FECTAS_LOOPBACK_HOST" 200 "$FECTAS_URL" || failed=1
   check "fecta pricer on tailnet"  /           "${tailnet_host}:${FECTAS_TAILNET_PORT}" 200 "$FECTAS_URL" || failed=1
   check "fecta foreign Host"       /           "$FOREIGN_HOST"  403 "$FECTAS_URL" || failed=1
 

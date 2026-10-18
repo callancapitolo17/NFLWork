@@ -268,6 +268,7 @@ loopback `Host` → 200; `/health`, `/` and `/edges.json` with the tailnet
 name as `Host` (what `tailscale serve` forwards) → 200 (`/edges.json`
 proves the runner is up); `/health` with `Host: evil.example` → 403 (the
 guard is still on). Then against `http://127.0.0.1:8096`: `/` with the
-loopback `Host` and with `<tailnet name>:8443` → 200, with `evil.example` → 403. It prints status codes, never bodies. On FAIL read
+loopback `Host` and with `<tailnet name>:8443` → 200, `/api/board` (reads the
+pricer's database) → 200, `/` with `evil.example` → 403. It prints status codes, never bodies. On FAIL read
 `docker compose logs --tail 100`. Run it with `--no-pull` to deploy the
 checkout as it is (e.g. trying a branch).
