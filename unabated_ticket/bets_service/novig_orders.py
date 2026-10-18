@@ -54,6 +54,8 @@ STATUS_PENDING = "PENDING"
 STATUS_OPEN = "OPEN"
 # A public market's status once its outcomes are graded; nothing about it changes after.
 MARKET_SETTLED = "SETTLED"
+# The error code of a market Novig's public catalog no longer lists.
+CODE_MARKET_NOT_FOUND = "MARKET_NOT_FOUND"
 STATUS_FILLED = "FILLED"
 STATUS_CANCELED = "CANCELED"
 STATUS_REJECTED = "REJECTED"
@@ -327,7 +329,17 @@ class NovigOrderClient:
 
     def market(self, market_id: str) -> dict:
         """The public catalog's market (status, strike, outcomes, fee, eventId)."""
+        market = self.market_if_listed(market_id)
+        if market is None:
+            raise NovigError(f"market {market_id}: Novig's catalog does not list it")
+        return market
+
+    def market_if_listed(self, market_id: str) -> dict | None:
+        """The public catalog's market, or None when Novig answers 404
+        MARKET_NOT_FOUND (it drops some markets from the catalog)."""
         status, reply = self.request("GET", f"{PUBLIC_MARKET_PATH}/{market_id}")
+        if status == 404 and error_code_of(reply) == CODE_MARKET_NOT_FOUND:
+            return None
         if status != 200 or not isinstance(reply, dict) or not reply.get("marketId"):
             raise NovigError(f"market {market_id}: expected 200 with a market, got HTTP {status} {str(reply)[:300]}")
         return reply

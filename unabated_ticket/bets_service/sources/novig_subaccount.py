@@ -216,6 +216,7 @@ class NovigSubaccountSource:
         self._now = now
         # market id -> when a market no context names was last read and found unsettled.
         self._unnamed_checked_at: dict[str, datetime] = {}
+        self._unlisted_warned: set[str] = set()
         # market id -> (the market, when first seen SETTLED): it never changes again, so it is read once.
         self._settled_markets: dict[str, tuple[dict, datetime]] = {}
 
@@ -233,12 +234,15 @@ class NovigSubaccountSource:
         self._confirm_unconfirmed_orders(now)
         contexts = self._contexts()
         fetched_at = utc_now_iso()
-        markets_this_poll: dict[str, dict] = {}
+        markets_this_poll: dict[str, dict | None] = {}
         records = []
         for order_id, order_fills in by_order.items():
             context = contexts.get(order_id)
             market_id = order_fills[0].get("marketId")
             market = self._market_if_started(market_id, context, now, markets_this_poll)
+            if market is None and market_id in markets_this_poll and context is not None and context.get("settled_at"):
+                # Graded before Novig dropped the market: the stored graded row stands.
+                continue
             settled_at = None
             if market is not None and market.get("status") == MARKET_SETTLED:
                 if context is not None:
@@ -262,9 +266,10 @@ class NovigSubaccountSource:
         return records
 
     def _market_if_started(self, market_id: object, context: dict | None, now: datetime,
-                           markets_this_poll: dict[str, dict]) -> dict | None:
+                           markets_this_poll: dict[str, dict | None]) -> dict | None:
         """The public market once the game may be over (started, or no context
         to say when), else None: before the start nothing can have settled.
+        None too when Novig's catalog no longer lists it.
         Read once per market per poll; a SETTLED one once for good."""
         if not isinstance(market_id, str):
             return None
@@ -280,9 +285,12 @@ class NovigSubaccountSource:
             if last is not None and now - last < UNNAMED_MARKET_RECHECK:
                 return None
             self._unnamed_checked_at[market_id] = now
-        market = self._client.market(market_id)
+        market = self._client.market_if_listed(market_id)
         markets_this_poll[market_id] = market
-        if market.get("status") == MARKET_SETTLED:
+        if market is None and market_id not in self._unlisted_warned:
+            self._unlisted_warned.add(market_id)
+            log.warning("%s: market %s is no longer in Novig's catalog; its bet stays as stored", self.name, market_id)
+        if market is not None and market.get("status") == MARKET_SETTLED:
             self._settled_markets[market_id] = (market, now)
         return market
 

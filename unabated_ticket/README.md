@@ -2931,6 +2931,8 @@ a bot bet grades once the desk has stored when it first saw its market
 `--name place` is the Ticket's Novig Place sub-account (`novig_place`), read
 the same way: its records take the board line from `manual_orders`, and the
 read itself stores the first `SETTLED` sighting (`manual_orders.settled_at`).
+A market Novig's catalog no longer lists (404 `MARKET_NOT_FOUND`) does not fail
+the read: its bet stays open, or as stored once graded, and never grades.
 
 **Arming, stopping.** Armed only when `NOVIG_TAKER_KEY_ID` is set and the key
 file at `NOVIG_TAKER_PRIVATE_KEY_PATH` (`/data/novig_bot.pem`) reads a balance
