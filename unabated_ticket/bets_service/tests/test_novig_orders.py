@@ -162,3 +162,17 @@ def test_balance_reads_its_own_subaccount(tmp_path):
     client, sent = _client(tmp_path, [(200, {"keyId": "k", "balance": "500.00000"})])
     assert client.balance() == 500.0
     assert sent[0]["url"].endswith("/v3/account/subaccounts/8f14e45f-ceea-467a-9b1c-3f2a51c8d7e0/balance")
+
+
+def test_market_if_listed_is_none_only_when_novig_says_market_not_found(tmp_path):
+    market = {"marketId": "m1", "status": "OPEN"}
+    client, sent = _client(tmp_path, [(200, market), (404, {"code": "MARKET_NOT_FOUND", "message": "Market not found"})])
+    assert client.market_if_listed("m1") == market
+    assert client.market_if_listed("m2") is None
+    assert sent[1]["url"].endswith("/m2")
+    client, _ = _client(tmp_path, [(404, {"code": "NOT_FOUND"})])
+    with pytest.raises(NovigError):
+        client.market_if_listed("m3")
+    client, _ = _client(tmp_path, [(500, {"code": "INTERNAL_ERROR"})])
+    with pytest.raises(NovigError):
+        client.market_if_listed("m4")
