@@ -160,7 +160,7 @@ def test_an_unnamed_order_on_a_missing_market_is_re_read_every_ten_minutes():
     assert client.market_reads == 2
 
 
-def test_a_missing_market_is_re_read_every_ten_minutes_even_when_a_later_read_fails_the_run():
+def test_a_rate_limited_market_read_keeps_the_bet_open_and_the_read_goes_through():
     started = {**CONTEXT, "event_start": NOW - timedelta(hours=4)}
     other = {**started, "market_id": "m2"}
     clock = [NOW]
@@ -174,17 +174,32 @@ def test_a_missing_market_is_re_read_every_ten_minutes_even_when_a_later_read_fa
 
     client = RateLimitedClient([fill(), {**fill(order_id="o2", fill_id="f2"), "marketId": "m2"}])
     source = NovigSubaccountSource("place", client, lambda: {"o1": started, "o2": other}, now=lambda: clock[0])
-    with pytest.raises(NovigError):
-        source.fetch()
+    assert [(record["id"], record["status"]) for record in source.fetch()] == \
+        [("novig:o1:place", "open"), ("novig:o2:place", "open")]
     assert client.market_reads == 2
     clock[0] = NOW + timedelta(minutes=5)
-    with pytest.raises(NovigError):
-        source.fetch()
-    assert client.market_reads == 3
-    clock[0] = NOW + timedelta(minutes=11)
-    with pytest.raises(NovigError):
-        source.fetch()
+    assert len(source.fetch()) == 2
+    assert client.market_reads == 3  # the unlisted market waits; the rate-limited one is read again
+    clock[0] = NOW + timedelta(minutes=10)
+    assert len(source.fetch()) == 2
     assert client.market_reads == 5
+
+
+def test_a_graded_bet_on_a_rate_limited_or_unlisted_market_is_left_as_stored_poll_after_poll():
+    graded = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": NOW - timedelta(hours=1)}
+    clock = [NOW]
+
+    class RateLimitedClient(FakeClient):
+        def market_if_listed(self, market_id):
+            self.market_reads += 1
+            raise NovigError("market: expected 200 with a market, got HTTP 429")
+
+    source = NovigSubaccountSource("place", RateLimitedClient([fill()]), lambda: {"o1": graded}, now=lambda: clock[0])
+    assert source.fetch() == []
+    unlisted = NovigSubaccountSource("place", FakeClient([fill()], None), lambda: {"o1": graded}, now=lambda: clock[0])
+    assert unlisted.fetch() == []
+    clock[0] = NOW + timedelta(minutes=5)
+    assert unlisted.fetch() == []
 
 
 def test_an_unreadable_settlement_or_fill_fails_the_run():
