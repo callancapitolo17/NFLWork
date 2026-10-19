@@ -209,7 +209,8 @@ from unabated_ticket.bets_service.balances import BalanceBook, balances_payload,
 from unabated_ticket.bets_service.log_setup import setup_logging
 from unabated_ticket.bets_service.manual_orders import ManualKalshiDesk, read_runner_quote
 from unabated_ticket.bets_service.manual_orders import validate_place_request as validate_kalshi_place_request
-from unabated_ticket.bets_service.novig_place import (NOVIG_PLACE_READ_SOURCES, RUNNER_NOVIG_QUOTE_PATH, ManualNovigDesk,
+from unabated_ticket.bets_service.novig_place import (NOVIG_PLACE_READ_SOURCES, RUNNER_NOVIG_QUOTE_PATH,
+                                                      RUNNER_NOVIG_QUOTE_TIMEOUT_SEC, ManualNovigDesk,
                                                       validate_novig_place_request)
 from unabated_ticket.bets_service.normalize import parse_iso_ms, utc_now_iso
 from unabated_ticket.bets_service.novig_orders import NovigError, NovigOrderClient
@@ -232,6 +233,14 @@ from unabated_ticket.bets_service.taker_store import DECISION_REASONS, TakerStor
 log = logging.getLogger(__name__)
 
 POLL_TICK_SEC = 1.0
+# After a failed poll a source waits at least this long before the next try: the
+# fast cadences (Kalshi 10 s, Novig and Polymarket US 20 s) must not hammer a venue
+# that is down or refusing us. One success puts it back on its own cadence.
+FAILED_POLL_RETRY_SEC = 60.0
+# Sources polled on a thread of their own: Kalshi's first poll after a restart
+# is the slowest read in the service (throttled GETs per live market), and in
+# the shared loop every other venue waited behind it.
+OWN_THREAD_SOURCES = ("kalshi",)
 MAX_DAYS = 3650
 # A crosswalk POST is a few rows per poll; anything near this is not the panel.
 MAX_BODY_BYTES = 1024 * 1024
@@ -370,9 +379,18 @@ def run_source_once(source: Source, store: BetsStore) -> bool:
         return False
 
 
+def next_poll_delay(poll_sec: float, succeeded: bool) -> float:
+    """Seconds until a source's next poll: its own cadence, or at least
+    FAILED_POLL_RETRY_SEC after a failed one."""
+    if succeeded:
+        return poll_sec
+    return max(poll_sec, FAILED_POLL_RETRY_SEC)
+
+
 def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event,
               balance_book: BalanceBook | None = None) -> None:
-    """Run each source on its own cadence until `stop`. A store write that
+    """Run each source on its own cadence until `stop` (backed off to
+    FAILED_POLL_RETRY_SEC after a failure). A store write that
     raises (disk full, a locked file) is logged and retried next poll — the
     thread must outlive it, or the HTTP side would serve ageing data with no
     failed run to show for it."""
@@ -387,13 +405,22 @@ def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event,
         for source in sources:
             if now >= next_due[source.name]:
                 try:
-                    run_source_once(source, store)
+                    succeeded = run_source_once(source, store)
                 except Exception:  # noqa: BLE001 — the poll thread is the service's heartbeat
                     log.exception("store write failed for source %s; retrying next poll", source.name)
+                    succeeded = False
                 if balance_book is not None:
                     read_balance_once(source, balance_book)
-                next_due[source.name] = time.monotonic() + source.poll_sec
+                next_due[source.name] = time.monotonic() + next_poll_delay(source.poll_sec, succeeded)
         stop.wait(POLL_TICK_SEC)
+
+
+def poll_lanes(sources: list[Source]) -> list[list[Source]]:
+    """The sources grouped one list per poll thread: each OWN_THREAD_SOURCES
+    source alone, every other source together in one shared loop."""
+    lanes = [[source] for source in sources if source.name in OWN_THREAD_SOURCES]
+    shared = [source for source in sources if source.name not in OWN_THREAD_SOURCES]
+    return lanes + ([shared] if shared else [])
 
 
 # A registered source that has not finished a poll yet (the first Kalshi poll
@@ -1499,7 +1526,10 @@ def novig_subaccount_sources(taker_store: TakerStore | None, store: BetsStore) -
         sources.append(NovigSubaccountSource(
             "place", place_client, store.novig_place_order_contexts, note_settled=store.note_novig_place_settled,
             lost_orders=store.lost_novig_place_orders,
-            adopt_order=lambda client_order_id, order_id: store.adopt_novig_place_order(client_order_id, order_id, _now())))
+            adopt_order=lambda client_order_id, order_id: store.adopt_novig_place_order(client_order_id, order_id, _now()),
+            unconfirmed_orders=store.unconfirmed_novig_place_orders,
+            confirm_order=lambda client_order_id, outcome, filled, paid: store.confirm_novig_place_order(
+                client_order_id, outcome, filled, paid, _now())))
     else:
         log.info("novig_place: %s, not read", reason)
     return sources
@@ -1557,7 +1587,9 @@ def open_novig_place_desk(store: BetsStore, source_names: list[str],
     read_sources = NOVIG_PLACE_READ_SOURCES + (("novig_bot",) if "novig_bot" in source_names else ())
     log.info("novig place: on, signing with Place key %s (sub-account balance $%s); stakes count %s",
              config.NOVIG_PLACE_KEY_ID[:8], f"{balance:,.2f}", ", ".join(read_sources))
-    return ManualNovigDesk(client, store, lambda line: read_runner_quote(config.RUNNER_URL, line, RUNNER_NOVIG_QUOTE_PATH),
+    return ManualNovigDesk(client, store,
+                           lambda line: read_runner_quote(config.RUNNER_URL, line, RUNNER_NOVIG_QUOTE_PATH,
+                                                          RUNNER_NOVIG_QUOTE_TIMEOUT_SEC),
                            read_sources=read_sources), ""
 
 
@@ -1599,7 +1631,9 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                                                             novig_place_off_reason=novig_place_off_reason,
                                                             balance_book=balance_book))
     server.daemon_threads = True
-    poller = threading.Thread(target=poll_loop, args=(sources, store, stop, balance_book), name="poll", daemon=True)
+    pollers = [threading.Thread(target=poll_loop, args=(lane, store, stop, balance_book),
+                                name=f"poll-{lane[0].name}" if len(lane) == 1 else "poll", daemon=True)
+               for lane in poll_lanes(sources)]
     # The desk sweeps its own orders (resting cancels, final fills, settlement) whether or not the runner sends any.
     desk_sweeps = [threading.Thread(target=desk.run_refresh_loop, args=(stop,), name=name, daemon=True)
                    for desk, name in ((taker_desk, "taker-desk"), (novig_taker_desk, "novig-taker-desk")) if desk is not None]
@@ -1611,7 +1645,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
 
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
-    poller.start()
+    for poller in pollers:
+        poller.start()
     for desk_sweep in desk_sweeps:
         desk_sweep.start()
     log.info("bets service on http://%s:%d (sources: %s); phone page at / with /edges.json from %s; "
@@ -1622,7 +1657,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     finally:
         server.server_close()
         stop.set()
-        poller.join(timeout=5)
+        for poller in pollers:
+            poller.join(timeout=5)
         for desk_sweep in desk_sweeps:
             desk_sweep.join(timeout=5)
         store.close()
@@ -1646,6 +1682,7 @@ def main() -> None:
     setup_logging()
     store = BetsStore(config.DB_PATH, config.SOURCE_RUNS_RETENTION_DAYS)
     sources: list[Source] = [KalshiSource(known_tickers=store.load_kalshi_tickers,
+                                          final_tickers=store.load_kalshi_final_tickers,
                                           subaccounts=kalshi_subaccounts_read(config.KALSHI_TAKER_SUBACCOUNT))]
     for _venue, factory in OPTIONAL_SOURCE_FACTORIES:
         optional = factory()

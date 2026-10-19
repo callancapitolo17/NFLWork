@@ -24,7 +24,7 @@ class FakeClient:
         self.fill_queries.append(starts_after_ms)
         return self._fills
 
-    def market(self, market_id):
+    def market_if_listed(self, market_id):
         self.market_reads += 1
         return self._market
 
@@ -107,6 +107,101 @@ def test_no_context_is_recorded_unmatchable():
     assert record["id"] == "novig:o1:place" and record["unmatchable"] and record["status"] == "open"
 
 
+class SequenceClient(FakeClient):
+    def __init__(self, fills, markets):
+        super().__init__(fills)
+        self._markets = list(markets)
+
+    def market_if_listed(self, market_id):
+        self.market_reads += 1
+        return self._markets.pop(0)
+
+
+def test_a_market_novig_no_longer_lists_keeps_the_bet_open_as_before_the_start():
+    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4)}
+    before = NovigSubaccountSource("place", FakeClient([fill()]), lambda: {"o1": CONTEXT}, now=lambda: NOW).fetch()
+    client = FakeClient([fill()], None)
+    after = NovigSubaccountSource("place", client, lambda: {"o1": started}, now=lambda: NOW).fetch()
+    assert client.market_reads == 1
+    assert [{**record, "sourceFetchedAt": None, "eventStart": None} for record in after] == \
+        [{**record, "sourceFetchedAt": None, "eventStart": None} for record in before]
+
+
+def test_a_graded_bet_whose_market_novig_dropped_is_left_as_stored():
+    graded = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": NOW - timedelta(hours=1)}
+    client = FakeClient([fill()], None)
+    assert NovigSubaccountSource("place", client, lambda: {"o1": graded}, now=lambda: NOW).fetch() == []
+    assert client.market_reads == 1
+
+
+def test_a_market_missing_on_one_poll_grades_once_novig_lists_it_settled():
+    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": NOW - timedelta(minutes=2)}
+    settled = {"marketId": MARKET, "eventId": "ev-1", "status": "SETTLED", "outcomes": [{"outcomeId": OUTCOME, "status": "LOSS"}]}
+    clock = [NOW]
+    client = SequenceClient([fill()], [None, settled])
+    source = NovigSubaccountSource("place", client, lambda: {"o1": {**started, "settled_at": None}}, now=lambda: clock[0],
+                                   note_settled=lambda order_id, now: NOW - timedelta(minutes=2))
+    assert [record["status"] for record in source.fetch()] == ["open"]
+    clock[0] = NOW + timedelta(minutes=11)
+    assert [(record["status"], record["closedAt"]) for record in source.fetch()] == [("lost", "2026-10-18T15:58:00.000Z")]
+
+
+def test_an_unnamed_order_on_a_missing_market_is_re_read_every_ten_minutes():
+    clock = [NOW]
+    client = FakeClient([fill()], None)
+    source = NovigSubaccountSource("place", client, lambda: {}, now=lambda: clock[0])
+    [record] = source.fetch()
+    assert (record["status"], bool(record["unmatchable"])) == ("open", True)
+    clock[0] = NOW + timedelta(minutes=5)
+    source.fetch()
+    assert client.market_reads == 1
+    clock[0] = NOW + timedelta(minutes=11)
+    source.fetch()
+    assert client.market_reads == 2
+
+
+def test_a_rate_limited_market_read_keeps_the_bet_open_and_the_read_goes_through():
+    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4)}
+    other = {**started, "market_id": "m2"}
+    clock = [NOW]
+
+    class RateLimitedClient(FakeClient):
+        def market_if_listed(self, market_id):
+            self.market_reads += 1
+            if market_id == "m2":
+                raise NovigError("market m2: expected 200 with a market, got HTTP 429")
+            return None
+
+    client = RateLimitedClient([fill(), {**fill(order_id="o2", fill_id="f2"), "marketId": "m2"}])
+    source = NovigSubaccountSource("place", client, lambda: {"o1": started, "o2": other}, now=lambda: clock[0])
+    assert [(record["id"], record["status"]) for record in source.fetch()] == \
+        [("novig:o1:place", "open"), ("novig:o2:place", "open")]
+    assert client.market_reads == 2
+    clock[0] = NOW + timedelta(minutes=5)
+    assert len(source.fetch()) == 2
+    assert client.market_reads == 3  # the unlisted market waits; the rate-limited one is read again
+    clock[0] = NOW + timedelta(minutes=10)
+    assert len(source.fetch()) == 2
+    assert client.market_reads == 5
+
+
+def test_a_graded_bet_on_a_rate_limited_or_unlisted_market_is_left_as_stored_poll_after_poll():
+    graded = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": NOW - timedelta(hours=1)}
+    clock = [NOW]
+
+    class RateLimitedClient(FakeClient):
+        def market_if_listed(self, market_id):
+            self.market_reads += 1
+            raise NovigError("market: expected 200 with a market, got HTTP 429")
+
+    source = NovigSubaccountSource("place", RateLimitedClient([fill()]), lambda: {"o1": graded}, now=lambda: clock[0])
+    assert source.fetch() == []
+    unlisted = NovigSubaccountSource("place", FakeClient([fill()], None), lambda: {"o1": graded}, now=lambda: clock[0])
+    assert unlisted.fetch() == []
+    clock[0] = NOW + timedelta(minutes=5)
+    assert unlisted.fetch() == []
+
+
 def test_an_unreadable_settlement_or_fill_fails_the_run():
     market = {"marketId": MARKET, "status": "SETTLED", "outcomes": [{"outcomeId": OUTCOME, "status": "WEIRD"}]}
     started = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": NOW - timedelta(minutes=2)}
@@ -150,6 +245,52 @@ def test_a_lost_place_order_is_adopted_by_client_id_a_minute_on_or_marked_never_
     NovigSubaccountSource("place", unread, dict, now=lambda: NOW, lost_orders=lambda _before: list(lost),
                           adopt_order=lambda *_args: adopted.append("never")).fetch()
     assert "never" not in adopted, "a failed listing read leaves the order lost for the next poll"
+
+
+def test_an_unconfirmed_place_order_is_confirmed_once_novig_shows_it_final():
+    class OrderClient(FakeClient):
+        """The poll's own fills read sees `poll_fills`; the order's fills, read after its final status, `order_fills`."""
+        def __init__(self, order_read, order_fills, listed=None):
+            super().__init__([])
+            self.order_read, self.order_fills, self.listed, self.order_fill_reads = order_read, order_fills, listed, []
+
+        def fills(self, order_id=None, outcome_id=None, starts_after_ms=None):
+            if order_id is None:
+                return super().fills(starts_after_ms=starts_after_ms)
+            self.order_fill_reads.append(order_id)
+            return self.order_fills
+
+        def get_order(self, order_id):
+            if isinstance(self.order_read, Exception):
+                raise self.order_read
+            return self.order_read
+
+        def find_order_by_client_id(self, outcome_id, client_id):
+            assert (outcome_id, client_id) == (OUTCOME, "00000000-0000-4000-8000-000000000001")
+            return self.listed
+
+    def confirmed_by(client, requested=1000):
+        confirmed = []
+        unconfirmed = [{"client_order_id": "nman-00000000-0000-4000-8000-000000000001", "novig_order_id": "o1",
+                        "outcome_id": OUTCOME, "count_requested": requested}]
+        NovigSubaccountSource("place", client, lambda: {"o1": CONTEXT}, now=lambda: NOW,
+                              unconfirmed_orders=lambda before: list(unconfirmed) if before <= NOW - timedelta(seconds=59) else [],
+                              confirm_order=lambda *args: confirmed.append(args[1:])).fetch()
+        return confirmed
+
+    filled = OrderClient((200, {"status": "FILLED"}), [fill(qty=1000, cost="4.65000")])
+    assert confirmed_by(filled) == [("filled", 1000, 4.65)]
+    assert filled.order_fill_reads == ["o1"], "the order's fills are read after its final status"
+    assert confirmed_by(OrderClient((200, {"status": "CANCELED"}), [fill(qty=400, cost="1.86000")])) == [("partial", 400, 1.86)]
+    assert confirmed_by(OrderClient((200, {"status": "CANCELED"}), [])) == [("unfilled", 0, 0.0)]
+    # Novig 404s the order: its listing by clientId decides; another order id or none listed waits.
+    assert confirmed_by(OrderClient((404, {}), [fill()], listed={"orderId": "o1", "status": "FILLED"})) == [("filled", 1000, 4.65)]
+    assert confirmed_by(OrderClient((404, {}), [fill()], listed={"orderId": "o2", "status": "FILLED"})) == []
+    assert confirmed_by(OrderClient((404, {}), [fill()], listed=None)) == []
+    # Not final yet, a FILLED order whose fills have not all landed, a failed read: left for the next poll.
+    assert confirmed_by(OrderClient((200, {"status": "PENDING"}), [fill()])) == []
+    assert confirmed_by(OrderClient((200, {"status": "FILLED"}), [fill(qty=400)])) == []
+    assert confirmed_by(OrderClient(OSError("reset"), [fill()])) == []
 
 
 def test_a_market_no_context_names_is_re_read_every_ten_minutes_not_every_poll():

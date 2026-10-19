@@ -757,7 +757,7 @@ the phone; an older service leaves them panel-only in `chrome.storage.local`.
 The phone page shows the same tags, list, Skip and fold, computed by the
 runner (`/edges.json` rows carry `priceCheck`, `priceCheckTag` and
 `skipKey`; the body carries `priceCheck` and `skipped`); a tap on the phone
-shows at once and the runner's list catches up on its next bets read (30 s).
+shows at once and the runner's list catches up on its next bets read (10 s).
 
 ### Why an edge grew
 
@@ -1054,12 +1054,12 @@ Two kinds of source feed the flags:
 
 | Venue | Source | How it refreshes |
 |---|---|---|
-| Kalshi | `bets_service/sources/kalshi.py` (local service, signed REST) | every 60 s while the service runs |
-| Novig | `bets_service/sources/novig.py` (local service, the app's Portfolio REST feed on the account's own Auth0 refresh token, #116) | every 60 s while the service runs; no tab needed |
+| Kalshi | `bets_service/sources/kalshi.py` (local service, signed REST) | every 10 s while the service runs (60 s after a failed poll) |
+| Novig | `bets_service/sources/novig.py` (local service, the app's Portfolio REST feed on the account's own Auth0 refresh token, #116) | every 20 s while the service runs (60 s after a failed poll); no tab needed |
 | BetOnline | — (#115) | shows "no source configured" |
 | BFA (Betfastaction) | `bets_service/sources/bfa.py` (local service, the account's own Keycloak password login from `bet_logger/.env`; 2026-09-23) | open bets every 60 s, history every 300 s, while the service runs |
 | Wagerzon (the C account) | `bets_service/sources/wagerzon.py` (local service, the site's form login from `bet_logger/.env`; 2026-09-23) | every 300 s while the service runs |
-| Polymarket US (the CFTC app) | `bets_service/sources/polymarket_us.py` (local service, the account's own API key from `bet_logger/.env`, Ed25519-signed; 2026-09-23) | every 60 s while the service runs |
+| Polymarket US (the CFTC app) | `bets_service/sources/polymarket_us.py` (local service, the account's own API key from `bet_logger/.env`, Ed25519-signed; 2026-09-23) | every 20 s while the service runs (60 s after a failed poll) |
 | Bet105 | the panel itself (`extension/bet105.js`, your own login at app.bet105.ag in this Chrome — Cloudflare challenges anything else) → `POST /bet105.json`, parsed by `bets_service/sources/bet105.py`; open bets 2026-09-29, graded bets 2026-10-07 | every 5 min while the panel is open; open bets plus every graded wager with its result and settle time |
 | DraftKings | the panel itself (`extension/draftkings.js`, your own login at sportsbook.draftkings.com in this Chrome — Akamai's bot checks and a login code stop anything else) → `POST /draftkings.json`, parsed by `bets_service/sources/draftkings.py`; 2026-10-10 | every 5 min while the panel is open; every open bet plus the last 31 days of settled bets with their result |
 | ProphetX | — (#117) | shows "no source configured" |
@@ -1376,7 +1376,7 @@ Portfolio feed the app reads (issue #116):
   localStorage, and Auth0 revokes the whole chain when a rotated token is
   reused — copying the app's token would log the app out and kill the
   poller. A separate login is a separate chain; both live side by side.
-- **Polling** (`sources/novig.py`, every 60 s): refresh the access token
+- **Polling** (`sources/novig.py`, every 20 s): refresh the access token
   inside a 2-min margin (a rotated refresh token is rewritten at once), then
   `GET https://api.novig.us/nbx/v1/portfolio/{active,settled}?currency=CASH&sort=<tab>_recency&limit=50`
   with the app's `novig-client-capabilities: card_stack,player_props`
@@ -1828,12 +1828,26 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   forwards the browser's `Host` (the VM's tailnet name) to the loopback
   port. Entries must be bare lowercase host names — a scheme, port, path or
   wildcard stops the service at startup.
-- **Kalshi source** (`sources/kalshi.py`): every 60 s pulls fills since the
+- **Kalshi source** (`sources/kalshi.py`): every 10 s pulls fills since the
   last poll with a 60 s overlap (deduped on `trade_id`) and unsettled
   positions, plus one cached public GET per market and per event; a full
   fills re-pull once an hour is the reconcile, and it re-reads every cached
   market without a result yet (settlement is the one thing on a market payload
-  that changes). Records are one per (ticker, side): positions are the truth
+  that changes). **Startup skip (2026-10-17):** a market whose stored records
+  are all final (won / lost / void / closed) and were built from a complete
+  read (`raw.readComplete` == `sources/kalshi.py::READ_VERSION`: historical
+  fills read, market and event payloads present) is skipped from the first
+  poll on: no historical read, no lookup, no record re-sent, so the stored
+  copy stands (the store never deletes). It is read in full again once it
+  shows an open position or a fill newer than its stored `raw.lastFillAt`. A
+  row from a partial read is rebuilt at the next restart; bump `READ_VERSION`
+  to make a change to how records are built reach rows already stored as
+  final. This cut the first poll after a deploy from ~16 minutes (every market
+  ever held, re-read one throttled GET at a time) to the open markets; the
+  first deploy of it still reads everything once, to stamp the rows. Kalshi
+  polls on its own thread
+  (`service.py::OWN_THREAD_SOURCES`), so its first poll never holds up the
+  other venues. Records are one per (ticker, side): positions are the truth
   for the open size, fills give the VWAP entry price and first fill time,
   `market.result` gives won/lost. Team keys are left `null` — the panel fills
   them with `bets.resolveTeamKeys()` so the team table lives only in
@@ -1987,7 +2001,7 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   code-fix flag), a postponed leg or a prop never.
 - **Polymarket US source** (`sources/polymarket_us.py`, 2026-09-23; the CFTC
   app at polymarket.us, not the international polymarket.com — Unabated lists
-  them as two books, so the venue key is `polymarket_us`): every 60 s two
+  them as two books, so the venue key is `polymarket_us`): every 20 s two
   signed GETs on `api.polymarket.us` — `/v1/portfolio/positions` (a slug →
   position map, `netPositionDecimal` positive = YES held, negative = NO) and
   `/v1/portfolio/activities` (newest first, paged until a page ends before the
@@ -2210,7 +2224,7 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   `source_runs` row and touches nothing else, so a dark source keeps serving
   its previous records; a store write that raises (disk full) is logged and
   retried next poll, never killing the poll thread. Until a source's first
-  poll completes (Kalshi: ~1–2 min, one throttled GET per market and event)
+  poll completes (Kalshi: ~1–2 min, one throttled GET per open market and event)
   `/bets.json` lists it as `{ok: false, error: "no completed poll yet"}`.
   Log: `bets_service.log` (rotating, 10 MB × 3).
 - **Adding a venue** (#117 ProphetX; BetOnline, Novig, BFA, Wagerzon and
@@ -2352,8 +2366,8 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
 | `BETS_SERVICE_URL` | `http://127.0.0.1:8094` | where `/bets.json` and `/settings.json` come from |
 
 - **Reads**: Unabated's public league snapshots (no login, ~6–8 MB/min with
-  every league on, as the panel); the bets service's `/bets.json` every 30 s
-  (the panel's cadence), applied exactly as the panel applies it
+  every league on, as the panel); the bets service's `/bets.json` every 10 s
+  (the panel and phone read it every 30 s), applied exactly as the panel applies it
   (`edgeRows.applyBetsPayload`); `/settings.json` every 10 s. A league change
   in the settings restarts the scan, as the panel's checkboxes do (NFL and
   CFB stay loaded either way).
@@ -2555,7 +2569,9 @@ visible. Its one write is the Bets page's Remove / Restore.
   games (links to Live), then the open bets that are not live with price,
   fair, edge and CLV. The nav tab carries the count of open bets not on the
   Live tab. (Its **Settled today** panel went with the change below.)
-- **Analysis** (a click-to-drill page, 2026-10-13): filter by venue, league, type, market,
+- **Analysis** (a click-to-drill page, 2026-10-13): filter by venue, **Bot / Other**
+  (2026-10-17: Bot = a Kalshi bet in a numbered subaccount, which only the taker trades,
+  or a `novig_bot` bet; every bet table tags its venue "Bot"; also a breakdown), league, type, market,
   period, side (Over / Under / Home / Away) and close (beat / lost / no close), plus
   fav / dog, odds, edge, timing, weekday, stake and the number itself under **More
   filters**, and an exact **Price** range in American odds: every value is a chip (on =
@@ -2757,7 +2773,11 @@ subaccount. No shadow mode (Cal, 2026-10-14).
 | Money | the bot's own Kalshi subaccount (Cal, 2026-10-16): its key is locked there, so what the subaccount holds is all it can lose |
 
 Tickers: spreads and totals from the rung ids (`Y-` buys YES, `N-` NO);
-full-game moneylines derived from the spread rungs' team code
+a main number, whose rung Unabated's ladder leaves out (main lines carry no
+id), derived from its own ladder's rungs with Kalshi's X.5 → X+1 strike name
+(Under 52.5 beside `N-KXNCAAFTOTAL-26SEP19DUQWSU-52` → NO on
+`KXNCAAFTOTAL-26SEP19DUQWSU-53`; refused when the rungs disagree or cross zero;
+the bot and Kalshi Place alike, 2026-10-17); full-game moneylines derived from the spread rungs' team code
 (`KXNCAAFSPREAD-26SEP19DUQWSU-WSU36` → `KXNCAAFGAME-26SEP19DUQWSU-WSU`); the
 market check above is what lets a derived ticker trade. Bot fills join the
 board the way every Kalshi bet does (by the event ticker's suffix, bets.js),
@@ -2890,7 +2910,7 @@ The Kalshi rules above hold unless this table says otherwise.
 
 | Rule | Novig |
 |---|---|
-| Lines | spreads and totals whose rung carries a Novig outcome id; moneylines never trade (Unabated lists no Novig moneyline rung) |
+| Lines | spreads and totals whose rung carries a Novig outcome id; a main number whose rung Unabated's ladder leaves out takes the one open market in Novig's catalog on its siblings' event and market type at its strike, the outcome by its name (refused when the rungs disagree, or zero or two markets or outcomes fit; the bot and Novig Place alike, 2026-10-17); moneylines never trade (Unabated lists no Novig moneyline rung) |
 | Price | buying an outcome crosses the best resting order on the other outcome at 1 − its price (`/v3/public/catalog/markets/<id>/book`); fee 0 pregame; a market whose fee is `ALWAYS` is refused (`market_mismatch`) |
 | Size | a Novig contract pays 1c: qty = floor(stake × 100 / price), cut to the depth; Kelly bankroll `NOVIG_KELLY_BANKROLL` ($2,000 like Kalshi's, its own parameter, separate from the $500 cap) |
 | Ceiling | open bot cost on Novig never above $500 (`OPEN_COST_CEILING`), its own budget beside Kalshi's |
@@ -2901,7 +2921,7 @@ The Kalshi rules above hold unless this table says otherwise.
 | Location | a 451 (`GEOLOCATION_EXPIRED`, Novig's 3-day phone location check) is `geo_blocked`: nothing placed, the runner shows it in `/taker.json`; open the Novig app on the phone in a legal state to clear it |
 
 **Bets.** `sources/novig_subaccount.py` reads the sub-account's fills on the
-bot's key every 30 s (source `novig_bot`, ids `novig:<orderId>:bot`), kept
+bot's key every 20 s (source `novig_bot`, ids `novig:<orderId>:bot`), kept
 apart from Cal's app account (`novig`). Novig's catalog names neither the
 board's teams nor its periods, so each record takes them from the board line
 stored with the order (`novig_taker_orders`); an order the desk did not place
@@ -2911,6 +2931,10 @@ a bot bet grades once the desk has stored when it first saw its market
 `--name place` is the Ticket's Novig Place sub-account (`novig_place`), read
 the same way: its records take the board line from `manual_orders`, and the
 read itself stores the first `SETTLED` sighting (`manual_orders.settled_at`).
+A market Novig's catalog no longer lists (404 `MARKET_NOT_FOUND`) does not fail
+the read: its bet stays open, or as stored once graded, and the market is
+re-read every 10 minutes. A market read that fails (a 429, a 5xx) leaves the bet
+as stored for that poll; only a failed fills or order read fails the run.
 
 **Arming, stopping.** Armed only when `NOVIG_TAKER_KEY_ID` is set and the key
 file at `NOVIG_TAKER_PRIVATE_KEY_PATH` (`/data/novig_bot.pem`) reads a balance
@@ -2998,7 +3022,12 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
    best resting order on the other outcome) and checks Novig's market and
    event the taker's way (`novigContractOf`, `novigQuoteOf`,
    `novigMarketMismatch`: open, pregame, no pregame fee, the row's type,
-   number and side by the outcome's own name).
+   number and side by the outcome's own name). The catalog is reused when
+   under a minute old (read fresh when the outcome is missing from it); the
+   book, market and event are read live and at once. The bets service waits
+   up to 30 s for this quote (Kalshi's 10 s was too short: 7-18 s on the VM,
+   2026-10-17). Each quote logs `novig quote ...` with its time, whether the
+   catalog was reused and how long the event loop stalled.
 2. It refuses, sending nothing, when: the game has started or its start is
    unknown; the runner read a Novig other than the one Place trades
    (`NOVIG_API_URL`); the live price is off Novig's grid or more than **0.1c
@@ -3012,8 +3041,12 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
 3. It buys `floor(stake x 100 / price)` contracts (a Novig contract pays 1c,
    not $1) with ONE immediate-or-cancel order at the live price, clientId the
    click's UUID, row `nman-<clickId>`, never re-sent (Novig does not dedupe
-   clientIds). It reads the order until final, then its fills; an order shown
-   `OPEN` is cancelled. A 451 reads "open the Novig app on your phone" (Novig
+   clientIds). It reads the order until final (about 10 reads a second
+   apart, none started after 12 s), then its fills; an order shown `OPEN` is
+   cancelled. An order never read final still has its fills read: every
+   contract filled is `filled` (it cannot fill more); less stays `unknown`
+   with what filled so far, and the `novig_place` read gives it its final
+   status once Novig shows it final. A 451 reads "open the Novig app on your phone" (Novig
    wants a phone location check in the last 3 days). No definite answer, an
    order never read final or unreadable fills read `unknown` and hold the
    next Place on that game until a read that saw it; so does an `unfilled`,
@@ -3022,6 +3055,14 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
    the game whatever the read time until the `novig_place` read, a minute
    on, finds it on Novig's order lists by clientId and names it, or finds it
    nowhere and marks it rejected (never sent). Nothing is ever re-sent.
+
+Cal's app feed (`novig`, ids `novig:<order id>`) lists his sub-accounts'
+orders too; `/bets.json` serves such an order once, as the sub-account read's
+`novig:<order id>:place` (or `:bot`), so it is sized and tracked once
+(`store._SELECT_WINDOW`; nothing is deleted). When the sub-account copy
+names no game (an order no desk placed, or a lost send not yet found), the
+app's copy is served instead. An `unknown` Place order is re-read by the
+`novig_place` read for 24 hours, then left `unknown`.
 
 Its rows are in the same `manual_orders` table with `venue = 'novig'`
 (`ticker` = the outcome id, `novig_order_id`, and the board line Place's

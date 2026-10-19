@@ -99,7 +99,8 @@ from pathlib import Path
 
 import duckdb
 
-from unabated_ticket.bets_service.sources.kalshi import PRIMARY_SUBACCOUNT, subaccount_of_record_id
+from unabated_ticket.bets_service.sources.kalshi import (FINAL_STATUSES, PRIMARY_SUBACCOUNT, READ_VERSION,
+                                                         subaccount_of_record_id)
 
 log = logging.getLogger(__name__)
 
@@ -307,6 +308,17 @@ FROM manual_orders
 WHERE venue = 'novig' AND status = 'unknown' AND novig_order_id IS NULL AND placed_at <= ?
 ORDER BY placed_at
 """
+# Novig Place orders Novig named but never showed final to the desk: settled by
+# Place's sub-account read once Novig shows them final.
+_SELECT_UNCONFIRMED_NOVIG_PLACE = """
+SELECT client_order_id, novig_order_id, ticker, count_requested
+FROM manual_orders
+WHERE venue = 'novig' AND status = 'unknown' AND novig_order_id IS NOT NULL AND placed_at <= ? AND placed_at >= ?
+ORDER BY placed_at
+"""
+# An unconfirmed order is re-read for this long, then left 'unknown' (a row
+# Novig never shows final must not slow every novig_place poll for good).
+UNCONFIRMED_NOVIG_PLACE_WINDOW = timedelta(hours=24)
 
 # An open straight Novig bet (app or sub-account) on one outcome.
 _SELECT_OPEN_NOVIG_ON_OUTCOME = """
@@ -519,9 +531,35 @@ _SELECT_KALSHI_IDS = """
 SELECT id FROM bets WHERE venue = 'kalshi'
 """
 
+_SELECT_KALSHI_IDS_STATUSES_RECORDS = """
+SELECT id, status, record FROM bets WHERE venue = 'kalshi'
+"""
+
+# Cal's Novig app feed (sources/novig.py, ids "novig:<order id>") also lists
+# the orders of his API sub-accounts, which their own reads hold as
+# "novig:<order id>:place" / ":bot" (sources/novig_subaccount.py): the app's
+# copy of such an order is left out, so every order is served (sized,
+# tracked) once, under the sub-account read that knows its board line. A
+# sub-account copy with no board line (unmatchable: an order no desk names,
+# or a lost Place send not yet adopted) sizes nothing, so then the app's copy
+# is served instead of it. Either way one copy, judged inside the window, so a
+# copy the window drops never hides the other. Uncorrelated IN lists, so DuckDB
+# hash-joins them (a correlated EXISTS here ran as a nested loop: seconds at
+# tens of thousands of rows, under the store lock).
 _SELECT_WINDOW = """
-SELECT record FROM bets
-WHERE status = 'open' OR closed_at IS NULL OR closed_at >= ?
+WITH windowed AS (
+    SELECT id, venue, record, placed_at,
+           venue = 'novig' AND regexp_matches(id, ':(place|bot)$') AS is_sub_account,
+           regexp_replace(id, ':(place|bot)$', '') AS novig_order_key,
+           json_extract_string(record, '$.unmatchable') IS NULL AS names_game
+    FROM bets
+    WHERE status = 'open' OR closed_at IS NULL OR closed_at >= ?
+)
+SELECT record FROM windowed
+WHERE NOT (venue = 'novig' AND NOT is_sub_account
+           AND id IN (SELECT novig_order_key FROM windowed WHERE is_sub_account AND names_game))
+  AND NOT (is_sub_account AND NOT names_game
+           AND novig_order_key IN (SELECT id FROM windowed WHERE venue = 'novig' AND NOT is_sub_account))
 ORDER BY placed_at DESC, id
 """
 
@@ -726,8 +764,36 @@ class BetsStore:
                 log.warning("load_kalshi_tickers: skipping stored id %r: %s", record_id, error)
         return tickers
 
+    def load_kalshi_final_tickers(self, subaccount: int = PRIMARY_SUBACCOUNT) -> dict[str, str]:
+        """{ticker: newest stored raw.lastFillAt} for every Kalshi ticker whose
+        stored records of `subaccount` are all final (sources.kalshi.
+        FINAL_STATUSES) and stamped complete at the current READ_VERSION; the
+        Kalshi source skips them at startup. One side that is open, unknown,
+        from a partial read or without a lastFillAt keeps the ticker out."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_KALSHI_IDS_STATUSES_RECORDS).fetchall()
+        last_fill_by_ticker: dict[str, str] = {}
+        not_final: set[str] = set()
+        for record_id, status, record_json in rows:
+            try:
+                if subaccount_of_record_id(record_id) != subaccount:
+                    continue
+            except ValueError as error:
+                log.warning("load_kalshi_final_tickers: skipping stored id %r: %s", record_id, error)
+                continue
+            ticker = record_id.split(":")[1]
+            raw = (json.loads(record_json) or {}).get("raw") or {}
+            last_fill_at = raw.get("lastFillAt")
+            if status not in FINAL_STATUSES or raw.get("readComplete") != READ_VERSION or not last_fill_at:
+                not_final.add(ticker)
+                continue
+            last_fill_by_ticker[ticker] = max(last_fill_at, last_fill_by_ticker.get(ticker, ""))
+        return {ticker: last_fill_at for ticker, last_fill_at in last_fill_by_ticker.items() if ticker not in not_final}
+
     def load_bets(self, days: int, now: datetime) -> list[dict]:
-        """Records in the retention window: open, or closed within `days` of `now`."""
+        """Records in the retention window: open, or closed within `days` of
+        `now`; an order the Novig app feed and a sub-account read both hold,
+        once (_SELECT_WINDOW)."""
         cutoff = now - timedelta(days=days)
         with self._lock:
             rows = self._con.execute(_SELECT_WINDOW, [cutoff]).fetchall()
@@ -1071,6 +1137,24 @@ class BetsStore:
         else:
             fields = {"novig_order_id": novig_order_id, "error": "answer lost; found on Novig by clientId"}
         self.update_manual_order(client_order_id, fields, at)
+
+    def unconfirmed_novig_place_orders(self, placed_before: datetime) -> list[dict]:
+        """Novig Place orders with a Novig id still 'unknown' (never read final,
+        or their fills unread), placed at or before `placed_before` and within
+        UNCONFIRMED_NOVIG_PLACE_WINDOW of it: [{client_order_id, novig_order_id,
+        outcome_id, count_requested}]."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_UNCONFIRMED_NOVIG_PLACE,
+                                     [placed_before, placed_before - UNCONFIRMED_NOVIG_PLACE_WINDOW]).fetchall()
+        return [{"client_order_id": client_order_id, "novig_order_id": novig_order_id, "outcome_id": outcome_id,
+                 "count_requested": count_requested}
+                for client_order_id, novig_order_id, outcome_id, count_requested in rows]
+
+    def confirm_novig_place_order(self, client_order_id: str, status: str, filled: int, paid: float,
+                                  at: datetime) -> None:
+        """An 'unknown' Novig Place order Novig now shows final: what filled."""
+        self.update_manual_order(client_order_id, {"status": status, "count_filled": filled, "cost_filled": paid,
+                                                   "error": "confirmed later by the Place sub-account read"}, at)
 
     def note_novig_place_settled(self, novig_order_id: str, at: datetime) -> datetime:
         """Keep when Place's sub-account read first saw this order's market

@@ -735,6 +735,33 @@ test("novig_quote: the board's Novig line gives its outcome, market, the other s
   assert.equal(service.posts.filter((post) => post.route.startsWith("/taker/")).length, 0);
 });
 
+test("novig_quote: a main total its ladder has no rung for is found in the catalog off its siblings and checked like any other", async () => {
+  // The fixture's Novig 52.5 total hangs 50.5/51.5/53.5/54.5 rungs and no 52.5 one.
+  const sibling = {
+    marketId: "0c0c0c0c-1111-4222-8333-515151515151", eventId: NOVIG_EVENT, marketType: "TOTAL", strike: "51.5", status: "OPEN",
+    fee: { coefficient: "0.06", makerCredit: "0", charged: "WHEN_LIVE" },
+    outcomes: [{ outcomeId: "01a0a059-6836-7b83-8813-18c4e5a44a2f", name: "Over 51.5" }, { outcomeId: "01a0a059-6836-7b83-8813-18d718a0283c", name: "Under 51.5" }],
+  };
+  const mainId = "0c0c0c0c-1111-4222-8333-525252525252";
+  const main = { ...sibling, marketId: mainId, strike: "52.5", outcomes: [{ outcomeId: "0d0d-over", name: "Over 52.5" }, { outcomeId: "0d0d-under", name: "Under 52.5" }] };
+  const base = novigFetch();
+  const impl = async (url, init) => {
+    const bare = url.split("?")[0];
+    if (bare === "https://novig.test/v3/public/catalog/markets") return response({ body: JSON.stringify({ items: [sibling, main] }) });
+    if (bare === `https://novig.test/v3/public/catalog/markets/${mainId}/book`) {
+      return response({ body: JSON.stringify({ marketId: mainId, seq: 3, orders: { "0d0d-over": [{ orderId: "o1", price: "0.48", qty: 2000 }], "0d0d-under": [] } }) });
+    }
+    if (bare === `https://novig.test/v3/public/catalog/markets/${mainId}`) return response({ body: JSON.stringify(main) });
+    return base(url, init);
+  };
+  const { runner } = await quoteRunner({}, { novigFetch: impl, novigBaseUrl: "https://novig.test" });
+  const quote = await runner.novigQuote(new URLSearchParams({ eventId: "123742", periodTypeId: "1", betTypeId: "3", sideIndex: "1", points: "52.5" }));
+  runner.stop();
+  assert.deepEqual(
+    { ok: quote.ok, outcomeId: quote.outcomeId, otherOutcomeId: quote.otherOutcomeId, marketId: quote.marketId, price: quote.price, depth: quote.depth },
+    { ok: true, outcomeId: "0d0d-under", otherOutcomeId: "0d0d-over", marketId: mainId, price: 0.52, depth: 2000 });
+});
+
 test("novig_quote: a market charging a pregame fee, a closed market and a number the board lacks are refused", async () => {
   const fee = await novigQuoteRunner({ fee: { coefficient: "0.06", makerCredit: "0", charged: "ALWAYS" } });
   const feeQuote = await fee.runner.novigQuote(new URLSearchParams(WSU_36_LINE));
@@ -763,6 +790,44 @@ test("novig_quote: a market charging a pregame fee, a closed market and a number
   noBook.runner.stop();
   assert.deepEqual([noBookQuote.ok, noBookQuote.reason, noBookQuote.outcomeId], [false, "no_book", NOVIG_WSU_OUTCOME]);
   assert.match(noBookQuote.detail, /nothing rests/);
+});
+
+test("novig_quote: a catalog under a minute old is reused, the market, event and book still read live; a missing outcome reads it fresh", async () => {
+  let clock = TAKER_NOW;
+  const logs = [];
+  const novig = novigFetch();
+  const { runner } = await quoteRunner({}, { novigFetch: novig, novigBaseUrl: "https://novig.test", now: () => clock, logInfo: (line) => logs.push(line) });
+  const catalogReads = () => novig.calls.filter((call) => call.url.includes("/catalog/markets?")).length;
+  const first = await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  clock += 59 * 1000;
+  const reused = await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  assert.deepEqual([first.ok, reused.ok, catalogReads()], [true, true, 1], "the second quote reuses the first catalog");
+  assert.equal(novig.calls.filter((call) => call.url.endsWith(`/markets/${NOVIG_MARKET}/book`)).length, 2, "each quote reads the book");
+  assert.equal(novig.calls.filter((call) => call.url.endsWith(`/events/${NOVIG_EVENT}`)).length, 2, "each quote reads the event");
+  assert.match(logs.at(-1), /ok @ 0\.555 .*catalog reused, 59s old/);
+  clock += 2 * 1000;
+  await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  assert.equal(catalogReads(), 2, "a catalog over a minute old is read again");
+  runner.stop();
+  // A reused catalog without the outcome (listed since): read fresh once, then found.
+  let listed = false;
+  const late = novigFetch();
+  const lateImpl = async (url, init) => (url.includes("/catalog/markets?") && !listed
+    ? response({ body: JSON.stringify({ items: [] }) }) : late(url, init));
+  const { runner: lateRunner } = await quoteRunner({}, { novigFetch: lateImpl, novigBaseUrl: "https://novig.test" });
+  const missing = await lateRunner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  listed = true;
+  const found = await lateRunner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  lateRunner.stop();
+  assert.deepEqual([missing.ok, missing.reason, found.ok, found.detail], [false, "no_outcome", true, undefined]);
+});
+
+test("novig_quote: an event the catalog lists that is not the market's is refused", async () => {
+  const novig = novigFetch({ eventId: "another-event" });
+  const { runner } = await quoteRunner({}, { novigFetch: novig, novigBaseUrl: "https://novig.test" });
+  const quote = await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  runner.stop();
+  assert.deepEqual([quote.ok, quote.reason], [false, "market_mismatch"]);
 });
 
 test("taker: a service without the bot key answers 503, the decision reads off", async () => {

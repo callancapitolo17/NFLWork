@@ -27,29 +27,37 @@ A context's `settled_at` is the bet's fixed closedAt. The bot desk keeps it
 itself; Place has no desk sweep, so its read keeps the first SETTLED sighting
 through `note_settled` (BetsStore.note_novig_place_settled, an UPDATE of
 manual_orders.settled_at) and a restart never moves it. For the same reason
-this read also adopts Place's LOST orders (`lost_orders` / `adopt_order`): a
+this read also confirms Place's UNCONFIRMED orders (`unconfirmed_orders` /
+`confirm_order`): one Novig named but never showed final while Cal waited is
+read again here (by clientId when its own read fails) until Novig shows it
+final, then given what its fills say. It
+also adopts Place's LOST orders (`lost_orders` / `adopt_order`): a
 Place send Novig never answered has no order id, so no fill could ever be
 named; once it is LOST_ORDER_LOOKUP_AFTER_SEC old the order is looked up by
 clientId across Novig's order lists (never re-sent) and given its id, or,
 listed nowhere, marked as never having reached Novig.
 
-A market no context names (an order placed outside the desks) is read once
-per UNNAMED_MARKET_RECHECK until it settles, not every poll.
+A market no context names (an order placed outside the desks), or one Novig's
+catalog no longer lists, is read once per MARKET_RECHECK until it settles, not
+every poll. A market read that fails (a 429, a 5xx) leaves its bet as stored
+for this poll and does not fail the run: grading touches only started games,
+which neither desk bets.
 
 Ids: "novig:<order id>:<name>", venue "novig" (bets.js joins a spread or total
 on venueIds.outcomeId and the side on its own fields). A Novig contract pays
 1c: qty 100 = $1; `contracts` here is dollars of payout like sources/novig.py.
 
-Side effects: none on disk but `note_settled`'s and `adopt_order`'s, when given. Raises on any failed read, so the service records
-a failed run and keeps the previous records.
+Side effects: none on disk but `note_settled`'s, `adopt_order`'s and `confirm_order`'s, when given. Raises on any other failed read, so the service
+records a failed run and keeps the previous records.
 """
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from unabated_ticket.bets_service.normalize import EASTERN, json_clean, round_cents, utc_now_iso
-from unabated_ticket.bets_service.novig_orders import (MARKET_SETTLED, QTY_PER_DOLLAR, NovigError, NovigOrderClient,
-                                                       order_totals)
+from unabated_ticket.bets_service.novig_orders import FINAL_ORDER_STATUSES, MARKET_SETTLED, QTY_PER_DOLLAR
+from unabated_ticket.bets_service.novig_orders import STATUS_FILLED as NOVIG_STATUS_FILLED
+from unabated_ticket.bets_service.novig_orders import NovigError, NovigOrderClient, fill_outcome, order_totals
 from unabated_ticket.bets_service.sources.novig import probability_to_american
 
 log = logging.getLogger(__name__)
@@ -57,7 +65,7 @@ log = logging.getLogger(__name__)
 NAMES = ("bot", "place")
 SOURCE_PREFIX = "novig_"
 VENUE = "novig"
-POLL_SEC = 30.0
+POLL_SEC = 20.0  # the app source's NOVIG_POLL_SEC cadence
 # Fills on events that started within this many days are read every poll (the store keeps older ones).
 HISTORY_DAYS = 14
 OUTCOME_STATUS = {"WIN": "won", "LOSS": "lost", "PUSH": "push"}
@@ -71,12 +79,16 @@ NoteSettled = Callable[[str, datetime], datetime]
 LostOrders = Callable[[datetime], list[dict]]
 # (client_order_id, Novig order id or None when Novig lists it nowhere) -> None.
 AdoptOrder = Callable[[str, str | None], None]
+# placed_before -> [{client_order_id, novig_order_id, outcome_id, count_requested}]: Place orders Novig named but never showed final.
+UnconfirmedOrders = Callable[[datetime], list[dict]]
+# (client_order_id, 'filled' | 'partial' | 'unfilled', contracts filled, dollars paid) -> None.
+ConfirmOrder = Callable[[str, str, int, float], None]
 # A lost send is looked up only once it is this old: Novig's listings can lag a 201.
 LOST_ORDER_LOOKUP_AFTER_SEC = 60
 # The order row's client id is 'nman-' + Novig's clientId (novig_place.py).
 PLACE_ORDER_ID_PREFIX = "nman-"
-# How often a market no context names is re-read for settlement.
-UNNAMED_MARKET_RECHECK = timedelta(minutes=10)
+# How often a market no context names, or one the catalog no longer lists, is re-read for settlement.
+MARKET_RECHECK = timedelta(minutes=10)
 
 
 def _iso_ms(value: datetime | None) -> str | None:
@@ -190,7 +202,8 @@ class NovigSubaccountSource:
     def __init__(self, name: str, client: NovigOrderClient, contexts: Contexts,
                  now: Callable[[], datetime] = lambda: datetime.now(timezone.utc), poll_sec: float = POLL_SEC,
                  note_settled: NoteSettled | None = None, lost_orders: LostOrders | None = None,
-                 adopt_order: AdoptOrder | None = None):
+                 adopt_order: AdoptOrder | None = None, unconfirmed_orders: UnconfirmedOrders | None = None,
+                 confirm_order: ConfirmOrder | None = None):
         if name not in NAMES:
             raise ValueError(f"name must be one of {NAMES}, got {name!r}")
         self.name = f"{SOURCE_PREFIX}{name}"
@@ -201,9 +214,12 @@ class NovigSubaccountSource:
         self._note_settled = note_settled
         self._lost_orders = lost_orders
         self._adopt_order = adopt_order
+        self._unconfirmed_orders = unconfirmed_orders
+        self._confirm_order = confirm_order
         self._now = now
         # market id -> when a market no context names was last read and found unsettled.
         self._unnamed_checked_at: dict[str, datetime] = {}
+        self._unlisted_checked_at: dict[str, datetime] = {}
         # market id -> (the market, when first seen SETTLED): it never changes again, so it is read once.
         self._settled_markets: dict[str, tuple[dict, datetime]] = {}
 
@@ -218,14 +234,18 @@ class NovigSubaccountSource:
             if not isinstance(order_id, str) or not order_id:
                 raise NovigError(f"fill {fill.get('fillId') or '?'} names no order")
             by_order.setdefault(order_id, []).append(fill)
+        self._confirm_unconfirmed_orders(now)
         contexts = self._contexts()
         fetched_at = utc_now_iso()
-        markets_this_poll: dict[str, dict] = {}
+        markets_this_poll: dict[str, dict | None] = {}
         records = []
         for order_id, order_fills in by_order.items():
             context = contexts.get(order_id)
             market_id = order_fills[0].get("marketId")
             market = self._market_if_started(market_id, context, now, markets_this_poll)
+            if market is None and market_id in markets_this_poll and context is not None and context.get("settled_at"):
+                # Graded before Novig dropped the market: the stored graded row stands.
+                continue
             settled_at = None
             if market is not None and market.get("status") == MARKET_SETTLED:
                 if context is not None:
@@ -245,33 +265,92 @@ class NovigSubaccountSource:
                                  if market_id in polled_markets}
         self._unnamed_checked_at = {market_id: at for market_id, at in self._unnamed_checked_at.items()
                                     if market_id in polled_markets}
+        self._unlisted_checked_at = {market_id: at for market_id, at in self._unlisted_checked_at.items()
+                                     if market_id in polled_markets}
         log.info("%s: %d fills -> %d bets", self.name, len(fills), len(records))
         return records
 
     def _market_if_started(self, market_id: object, context: dict | None, now: datetime,
-                           markets_this_poll: dict[str, dict]) -> dict | None:
+                           markets_this_poll: dict[str, dict | None]) -> dict | None:
         """The public market once the game may be over (started, or no context
         to say when), else None: before the start nothing can have settled.
-        Read once per market per poll; a SETTLED one once for good."""
+        None too when Novig's catalog no longer lists it or the read fails.
+        Read once per market per poll, an unlisted one once per MARKET_RECHECK;
+        a SETTLED one once for good."""
         if not isinstance(market_id, str):
             return None
         if market_id in self._settled_markets:
             return self._settled_markets[market_id][0]
         if market_id in markets_this_poll:
             return markets_this_poll[market_id]
+        unlisted_at = self._unlisted_checked_at.get(market_id)
+        if unlisted_at is not None and now - unlisted_at < MARKET_RECHECK:
+            markets_this_poll[market_id] = None
+            return None
         start = context.get("event_start") if context else None
         if start is not None and start > now:
             return None
         if context is None:
             last = self._unnamed_checked_at.get(market_id)
-            if last is not None and now - last < UNNAMED_MARKET_RECHECK:
+            if last is not None and now - last < MARKET_RECHECK:
                 return None
             self._unnamed_checked_at[market_id] = now
-        market = self._client.market(market_id)
+        try:
+            market = self._client.market_if_listed(market_id)
+        except (NovigError, OSError) as error:
+            log.warning("%s: settlement read of market %s failed, its bet stays as stored: %s", self.name, market_id, error)
+            markets_this_poll[market_id] = None
+            return None
         markets_this_poll[market_id] = market
-        if market.get("status") == MARKET_SETTLED:
+        if market is None and market_id not in self._unlisted_checked_at:
+            log.warning("%s: market %s is no longer in Novig's catalog; its bet stays as stored", self.name, market_id)
+        if market is not None and market.get("status") == MARKET_SETTLED:
             self._settled_markets[market_id] = (market, now)
+        if market is None:
+            self._unlisted_checked_at[market_id] = now
+        else:
+            self._unlisted_checked_at.pop(market_id, None)
         return market
+
+    def _confirm_unconfirmed_orders(self, now: datetime) -> None:
+        """Give each Place order Novig never showed final while Cal waited its
+        fills, once Novig shows it final: its own read, or by clientId on its
+        outcome's order lists when that read fails (Novig can 404 an order).
+        The fills are read after the final status, so none can land between.
+        A FILLED order whose fills have not all landed waits for the next
+        poll; a failed read too."""
+        if self._unconfirmed_orders is None or self._confirm_order is None:
+            return
+        for order in self._unconfirmed_orders(now - timedelta(seconds=LOST_ORDER_LOOKUP_AFTER_SEC)):
+            client_order_id = order["client_order_id"]
+            order_id = order["novig_order_id"]
+            try:
+                order_status = self._final_status_of(order)
+                if order_status not in FINAL_ORDER_STATUSES:
+                    continue
+                filled, cost, fee = order_totals(self._client.fills(order_id=order_id))
+            except (NovigError, OSError) as error:
+                log.error("%s: unconfirmed order %s: read failed, still unconfirmed: %s", self.name, client_order_id, error)
+                continue
+            requested = order["count_requested"]
+            if order_status == NOVIG_STATUS_FILLED and filled < requested:
+                continue
+            outcome = fill_outcome(filled, requested)
+            self._confirm_order(client_order_id, outcome, filled, round(cost + fee, 5))
+            log.warning("%s: unconfirmed order %s is %s on Novig: %s, %d of %d", self.name, client_order_id,
+                        order_status, outcome, filled, requested)
+
+    def _final_status_of(self, order: dict) -> str | None:
+        """Novig's status for an unconfirmed Place order: its own read, else
+        its listing by clientId; None when neither names it."""
+        status, reply = self._client.get_order(order["novig_order_id"])
+        if status == 200 and isinstance(reply, dict):
+            return reply.get("status")
+        novig_client_id = order["client_order_id"].removeprefix(PLACE_ORDER_ID_PREFIX)
+        listed = self._client.find_order_by_client_id(order["outcome_id"], novig_client_id)
+        if listed and listed.get("orderId") == order["novig_order_id"]:
+            return listed.get("status")
+        return None
 
     def _adopt_lost_orders(self, now: datetime) -> None:
         """Give each Place order Novig never answered its Novig id off Novig's

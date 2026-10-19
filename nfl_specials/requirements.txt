@@ -1,0 +1,12 @@
+# The fecta pricer's third-party imports (nfl_specials, kalshi_common,
+# mlb_sgp, wagerzon_odds). On the Mac they live in the default python3; the
+# server installs them into the nfl_specials image (unabated_ticket/deploy).
+# curl_cffi is pinned: its Chrome fingerprint is what the books were tested against.
+curl_cffi==0.14.0
+duckdb>=1.4
+requests>=2.31
+python-dotenv>=1.0
+scipy>=1.11
+pandas>=2.0
+# DuckDB returns TIMESTAMPTZ values through pytz; pandas 3 no longer installs it.
+pytz>=2023.3

@@ -154,6 +154,7 @@ unabated_edge/*.duckdb
 unabated_edge/*.duckdb.wal
 unabated_edge/bot.log
 unabated_edge/bot.log.*
+unabated_ticket/bets_service/*.log.*
 unabated_edge/.kill
 unabated_edge/.runner.lock
 
