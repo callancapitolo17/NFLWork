@@ -369,6 +369,72 @@ test("an open bet's league is loaded for its close, and stays loaded after the b
   runner.stop();
 });
 
+// ---- board rows kept per league ------------------------------------------------------------
+
+// The NFL slice re-labelled as CFB, with its own market and event ids so nothing collides with NFL's;
+// `dropPregame` leaves out its pregame game, so CFB's board loses its one event.
+function cfbSliceBody({ dropPregame = false } = {}) {
+  const json = JSON.parse(sliceBody);
+  if (dropPregame) {
+    delete json.odds["lg1:pt1:pregame"];
+    delete json.odds["lg1:pt2:pregame"];
+  }
+  return JSON.stringify(json).replace(/lg1:/g, "lg2:").replace(/"marketId":(\d+)/g, '"marketId":9$1').replace(/"eventId":(\d+)/g, '"eventId":9$1');
+}
+
+// NFL and CFB from the slice; `feed.failNfl` makes NFL's next downloads fail
+// (it keeps its lines), `feed.dropCfbPregame` changes CFB's next snapshot.
+function twoLeagueFetch(feed) {
+  return async (url) => {
+    const base = url.split("?")[0];
+    const headers = { "content-length": "1000", "last-modified": new Date(NOW - 20000).toUTCString() };
+    if (base === SNAPSHOT_BASE_URL(1)) return feed.failNfl ? response({ status: 503, body: "" }) : response({ body: sliceBody, headers });
+    if (base === SNAPSHOT_BASE_URL(2)) return response({ body: cfbSliceBody({ dropPregame: feed.dropCfbPregame }), headers });
+    return response({ status: 404, body: "not found" });
+  };
+}
+
+test("boardLines: built league by league, the same rows a walk of the whole board gives; a league that did not land keeps its rows untouched", async () => {
+  const feed = { failNfl: false, dropCfbPregame: false };
+  const runner = runnerLib.createRunner({
+    fetchImpl: twoLeagueFetch(feed), betsServiceUrl: SERVICE_URL, now: () => NOW, timers: noTimers, ...quiet,
+    serviceFetch: serviceFetch({ "/bets.json": betsBody([BEARS_HELD]), "/settings.json": { settings: OPEN_SETTINGS } }),
+  });
+  await runner.start();
+  const walked = () => edgeRows.boardLines(runner.scanner.getState());
+  const rowsOf = (leagueId) => runner.boardLines().filter((row) => row.leagueId === leagueId);
+  assert.deepEqual(runner.boardLines(), walked());
+  const nflRows = rowsOf(1);
+  assert.equal(rowsOf(2).length, 1);
+
+  // Only CFB lands, without its game.
+  Object.assign(feed, { failNfl: true, dropCfbPregame: true });
+  await runner.scanner.resync();
+  assert.deepEqual(runner.boardLines(), walked(), "the landed league's rows are rebuilt");
+  assert.equal(rowsOf(2).length, 0);
+  assert.ok(rowsOf(1).every((row, index) => row === nflRows[index]) && rowsOf(1).length === nflRows.length, "NFL did not land: its rows are the same objects");
+  runner.stop();
+});
+
+test("kickoff odds: a game's lines are re-read when its league lands, kept when the league's download fails", async () => {
+  const feed = { failNfl: false, dropCfbPregame: false };
+  const clock = { ms: NOW };
+  const runner = runnerLib.createRunner({
+    fetchImpl: twoLeagueFetch(feed), betsServiceUrl: SERVICE_URL, now: () => clock.ms, timers: noTimers, ...quiet,
+    serviceFetch: serviceFetch({ "/bets.json": betsBody([BEARS_HELD]), "/settings.json": { settings: OPEN_SETTINGS } }),
+  });
+  await runner.start();
+  clock.ms = NOW + 60 * 1000;
+  await runner.scanner.resync();
+  clock.ms = NOW + 120 * 1000;
+  feed.failNfl = true;
+  await runner.scanner.resync();
+  clock.ms = KICKOFF_MS + 3600 * 1000;
+  const card = runner.scenariosPayload().games.find((game) => game.eventId === 125807);
+  assert.equal(card.oddsAt, NOW + 60 * 1000, "the last NFL landing before kickoff, not the failed one after it");
+  runner.stop();
+});
+
 // ---- /scenarios.json (the Bet Tracker's Live tab) ----------------------------------------
 
 async function runnerOnClock(clock, bets, extra) {
@@ -687,6 +753,22 @@ test("kalshi_quote: the board's Kalshi line gives its contract, live ask, all-in
   assert.equal(quote.kalshiBaseUrl, "https://kalshi.test/v2", "the desk checks it trades the Kalshi this read");
   assert.ok(kalshi.calls.includes(`https://kalshi.test/v2/markets/${TAKER_TICKER}`), "the market is checked");
   assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 0);
+});
+
+test("kalshi_quote: while a scan restart is still downloading, the quote reads the board the list still shows", async () => {
+  const unabated = takerUnabatedFetch();
+  let hold = false;
+  const held = [];
+  const fetchImpl = (url) => (hold ? new Promise((resolve) => held.push(() => resolve(unabated(url)))) : unabated(url));
+  const { runner } = await quoteRunner({}, { fetchImpl });
+  hold = true;
+  const restart = runner.scanner.start([2]);
+  assert.equal(Object.keys(runner.scanner.getState().lines).length, 0, "the scanner's new board is still empty");
+  const quote = await runner.kalshiQuote(new URLSearchParams(WSU_36_LINE));
+  for (const release of held) release();
+  await restart;
+  runner.stop();
+  assert.deepEqual({ ok: quote.ok, ticker: quote.ticker }, { ok: true, ticker: TAKER_TICKER });
 });
 
 test("kalshi_quote: the quote's eventStart is Kalshi's when earlier, so Place refuses a game Unabated still lists as pregame", async () => {

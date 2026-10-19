@@ -2339,6 +2339,14 @@ is what the panel's Edges tab shows for the same settings, bets and
 snapshot. Pregame only: the Live block reads the logged-in Unabated
 screen, which a server does not have.
 
+A league's snapshot landing touches only that league (2026-10-19): the
+scanner keeps each league's line keys, event ids and line counts, so the
+merge and the header counts never pass over the other leagues' lines, and
+the runner keeps each league's board rows and kickoff odds, rebuilt only
+for the league that landed (`scanner.getLeagueLines` / `getLeagueVersion`).
+Before, five passes over the whole ~1.2M-line board per landing froze the
+runner for 6-8 s at a time (CPU profile on the VM, 2026-10-18).
+
 ```bash
 # Node 18+ (Ubuntu 22.04's apt node is v12 — install 20 or 22 from NodeSource or nvm). No npm install.
 node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json

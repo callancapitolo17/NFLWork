@@ -243,6 +243,53 @@ test("a full resync keeps every league listed while the others re-download", asy
   assert.deepEqual(scanner.getStatus().leaguesLoaded, [1, 2]);
 });
 
+// What a pass over every line of the board says, to check the scanner's per-league bookkeeping against.
+function boardByWalking(state) {
+  const lines = Object.values(state.lines);
+  return { main: lines.filter((line) => !line.isAlt).length, alt: lines.filter((line) => line.isAlt).length, lines };
+}
+
+test("a league landing touches only its own lines: counts, getLeagueLines and versions match a walk of the whole board after every landing", async () => {
+  const cfbBody = (trim) => snapshotWith((json) => {
+    if (trim) json.odds["lg1:pt1:pregame"] = json.odds["lg1:pt1:pregame"].slice(0, 1);
+  }).replace(/lg1:/g, "lg2:").replace(/"marketId":(\d+)/g, '"marketId":9$1');
+  let trimCfb = false;
+  const fetchImpl = fakeFetch({ [SNAPSHOT_BASE_URL(2)]: async () => response({ body: cfbBody(trimCfb) }) });
+  const checks = [];
+  let scanner = null;
+  const onChange = (status, state) => {
+    const walked = boardByWalking(state);
+    assert.equal(status.lineCount, walked.main);
+    assert.equal(status.altLineCount, walked.alt);
+    for (const leagueId of new Set(state.leagues)) {
+      const expected = walked.lines.filter((line) => line.leagueId === leagueId).map((line) => line.key).sort();
+      assert.deepEqual(scanner.getLeagueLines(leagueId).map((line) => line.key).sort(), expected);
+    }
+    checks.push(status.lineCount);
+  };
+  scanner = createScanner({ fetchImpl, now: () => NOW, timers: noTimers, onChange });
+  await scanner.start([1, 2]);
+  assert.equal(scanner.getStatus().lineCount, 124);
+  const nflKeys = scanner.getLeagueLines(1).map((line) => line.key);
+  const versions = [scanner.getLeagueVersion(1), scanner.getLeagueVersion(2)];
+  assert.ok(versions.every((version) => typeof version === "number"));
+
+  trimCfb = true;
+  await scanner.resync();
+  const trimmed = scanner.getStatus().lineCount;
+  assert.ok(trimmed < 124 && trimmed > 62, `CFB lost its pulled lines, NFL kept all 62 (got ${trimmed})`);
+  assert.deepEqual(scanner.getLeagueLines(1).map((line) => line.key), nflKeys);
+  assert.ok(scanner.getLeagueVersion(1) > versions[0] && scanner.getLeagueVersion(2) > versions[1], "each landing moves its league's version");
+
+  // start() wipes the board: the bookkeeping starts over, and versions are never reused.
+  const beforeRestart = scanner.getLeagueVersion(2);
+  await scanner.start([1]);
+  assert.equal(scanner.getStatus().lineCount, 62);
+  assert.deepEqual(scanner.getLeagueLines(2), []);
+  assert.ok(scanner.getLeagueVersion(1) > beforeRestart);
+  assert.ok(checks.length >= 5);
+});
+
 test("a league whose snapshot build is older than 15 min is reported stale", async () => {
   const fetchImpl = fakeFetch();
   const scanner = createScanner({ fetchImpl, now: () => NOW + 60 * 60 * 1000, timers: noTimers }); // snapshot built 1h before "now"

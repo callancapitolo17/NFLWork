@@ -303,7 +303,8 @@ async function sendServiceJson(fetchImpl, url, method, body, timeoutMs = SERVICE
 //          logInfo / logWarning (message) -> void, default stdout / stderr}
 // Returns {start, stop, pollBets, pollSettings, scanLoaded, learn, takerPass,
 //          postTakerDecisions, edgesPayload, teasersPayload, attachPayload,
-//          scenariosPayload, takerPayload, health, scanner}.
+//          scenariosPayload, takerPayload, health, scanner, boardLines (the
+//          board's rows, read by the tests)}.
 function createRunner(deps) {
   const now = deps.now || (() => Date.now());
   const timers = deps.timers || { setInterval: (fn, ms) => setInterval(fn, ms), clearInterval: (id) => clearInterval(id) };
@@ -320,6 +321,11 @@ function createRunner(deps) {
   let scannerStatus = null;
   let history = {};
   let boardLinesCache = null;
+  // leagueId -> {version, rows}: each league's board rows as of its last
+  // snapshot (scanner.getLeagueVersion; boardLines rebuilds only the league that landed).
+  const boardRowsByLeague = new Map();
+  // leagueId -> the league version rememberKickoffOdds last read.
+  const kickoffLeagueVersions = new Map();
   let ladderReaders = null;
   // The panel's other per-snapshot caches: the tail-flex measurement (dropped
   // on every scanner update, re-measured when the max line age changes) and
@@ -437,16 +443,25 @@ function createRunner(deps) {
   // Keep every board game's row, and its lines while it has not started, so
   // a game in progress keeps its card and its kickoff chances whether or not
   // the board still lists it. Games started more than KICKOFF_MEMO_HOURS ago go.
+  // Only leagues whose snapshot landed since the last call are looked at: an
+  // unchanged league's rows and lines are the ones already remembered.
   function rememberKickoffOdds() {
     const at = now();
-    const linesByEvent = feedState ? ladderLib.groupLinesByEvent(Object.values(feedState.lines)) : new Map();
-    for (const row of boardLines()) {
-      if (typeof row.eventStartMs !== "number") continue;
-      const pregame = row.eventStartMs > at;
-      const known = kickoffMemo.get(row.eventId);
-      if (pregame) kickoffMemo.set(row.eventId, { row, lines: linesByEvent.get(row.eventId) || [], oddsAt: at });
-      else if (!known) kickoffMemo.set(row.eventId, { row, lines: null, oddsAt: null });
+    const leagueIds = boardLeagueIds();
+    for (const leagueId of leagueIds) {
+      const version = scanner.getLeagueVersion(leagueId);
+      if (kickoffLeagueVersions.get(leagueId) === version) continue;
+      kickoffLeagueVersions.set(leagueId, version);
+      const linesByEvent = ladderLib.groupLinesByEvent(scanner.getLeagueLines(leagueId));
+      for (const row of leagueBoardRows(leagueId)) {
+        if (typeof row.eventStartMs !== "number") continue;
+        const pregame = row.eventStartMs > at;
+        const known = kickoffMemo.get(row.eventId);
+        if (pregame) kickoffMemo.set(row.eventId, { row, lines: linesByEvent.get(row.eventId) || [], oddsAt: at });
+        else if (!known) kickoffMemo.set(row.eventId, { row, lines: null, oddsAt: null });
+      }
     }
+    for (const leagueId of kickoffLeagueVersions.keys()) if (!leagueIds.includes(leagueId)) kickoffLeagueVersions.delete(leagueId);
     for (const [eventId, entry] of kickoffMemo) {
       if (at - entry.row.eventStartMs > KICKOFF_MEMO_HOURS * HOUR_MS) kickoffMemo.delete(eventId);
     }
@@ -457,10 +472,40 @@ function createRunner(deps) {
     knownStarts = betsView.keepKnownStartsOpen(knownStarts, betsLib.matchedStarts(held.records, boardLines()), held.records);
   }
 
+  // The board's leagues in board order (state.leagues: a refreshed league moves to the end, as its lines do).
+  function boardLeagueIds() {
+    return feedState ? Array.from(new Set(feedState.leagues)) : [];
+  }
+
+  // One league's board rows (edgeRows.boardLines over its lines), rebuilt only when its snapshot landed again.
+  // A row keeps the book and team names of its own league's last snapshot (accepted: rows only name games).
+  function leagueBoardRows(leagueId) {
+    const version = scanner.getLeagueVersion(leagueId);
+    const cached = boardRowsByLeague.get(leagueId);
+    if (cached && cached.version === version) return cached.rows;
+    const rows = edgeRows.boardLines(feedState, scanner.getLeagueLines(leagueId));
+    boardRowsByLeague.set(leagueId, { version, rows });
+    return rows;
+  }
+
+  // Every league's rows, in the order a pass over state.lines gives them
+  // (lines sit in league merge order), one row per event.
   function boardLines() {
     if (!feedState) return [];
-    if (!boardLinesCache) boardLinesCache = edgeRows.boardLines(feedState);
-    return boardLinesCache;
+    if (boardLinesCache) return boardLinesCache;
+    const leagueIds = boardLeagueIds();
+    for (const leagueId of boardRowsByLeague.keys()) if (!leagueIds.includes(leagueId)) boardRowsByLeague.delete(leagueId);
+    const seen = new Set();
+    const rows = [];
+    for (const leagueId of leagueIds) {
+      for (const row of leagueBoardRows(leagueId)) {
+        if (seen.has(row.eventId)) continue;
+        seen.add(row.eventId);
+        rows.push(row);
+      }
+    }
+    boardLinesCache = rows;
+    return rows;
   }
 
   function ladderReaderOf(eventId) {
@@ -948,7 +993,7 @@ function createRunner(deps) {
     const spec = kalshiLineSpecOf(params);
     const board = feedState;
     if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
-    const found = Object.values(board.lines).filter((line) => line.bookId === taker.KALSHI_BOOK_ID
+    const found = linesOfEvent(board, spec.eventId).filter((line) => line.bookId === taker.KALSHI_BOOK_ID
       && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
       && line.sideIndex === spec.sideIndex && (spec.betTypeId === MONEYLINE_BET_TYPE_ID || (line.points ?? null) === spec.points));
     if (found.length !== 1) {
@@ -1001,11 +1046,23 @@ function createRunner(deps) {
     return answer;
   }
 
+  // One game's lines, read from its league's lines only: a Place quote walking
+  // the whole ~1.2M-line board took ~1.3 s per click (2026-10-19 review).
+  // A game the board does not hold has none. Right after a scan restart the
+  // scanner holds a new board while `board` is still the last published one:
+  // that board is walked whole, as before, so the quote matches the list Cal sees.
+  function linesOfEvent(board, eventId) {
+    const event = board.events[eventId];
+    if (!event) return [];
+    const lines = board === scanner.getState() ? scanner.getLeagueLines(event.leagueId) : Object.values(board.lines);
+    return lines.filter((line) => line.eventId === eventId);
+  }
+
   // {answer: novigQuoteNow's answer, catalog: {reused, readAt, readsMs} for its log line once the outcome was found, else null}.
   async function novigQuoteOfSpec(spec) {
     const board = feedState;
     if (!board) return { answer: { ok: false, reason: "no_board", detail: "the board has not loaded yet" }, catalog: null };
-    const found = Object.values(board.lines).filter((line) => line.bookId === taker.NOVIG_BOOK_ID
+    const found = linesOfEvent(board, spec.eventId).filter((line) => line.bookId === taker.NOVIG_BOOK_ID
       && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
       && line.sideIndex === spec.sideIndex && (line.points ?? null) === spec.points);
     if (found.length !== 1) {
@@ -1454,6 +1511,7 @@ function createRunner(deps) {
     start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions,
     edgesPayload: edgesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow,
     scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, health, scanner,
+    boardLines,
   };
 }
 

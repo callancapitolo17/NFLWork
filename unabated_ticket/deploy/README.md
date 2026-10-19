@@ -242,6 +242,15 @@ sudo tailscale serve reset           # take both pages off the tailnet
 sudo tailscale serve --https=8443 off   # take only the fecta pricer off
 ```
 
+What is freezing the runner, if anything: a 3-minute CPU profile of the
+live runner (no restart; it opens Node's inspector on the VM's loopback,
+samples, then closes it), printing each busy stretch over 300 ms with its
+call path. Piped in, nothing written on the VM:
+
+```bash
+docker compose exec -T runner node - < ~/NFLWork/unabated_ticket/server/profile_stalls.js
+```
+
 Login check on the VM (step 10 too), as step 0 but in the container — stop the service
 first, because a Novig check rotates the same refresh token the running
 service holds:
