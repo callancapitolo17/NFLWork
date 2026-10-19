@@ -993,7 +993,7 @@ function createRunner(deps) {
     const spec = kalshiLineSpecOf(params);
     const board = feedState;
     if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
-    const found = Object.values(board.lines).filter((line) => line.bookId === taker.KALSHI_BOOK_ID
+    const found = linesOfEvent(board, spec.eventId).filter((line) => line.bookId === taker.KALSHI_BOOK_ID
       && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
       && line.sideIndex === spec.sideIndex && (spec.betTypeId === MONEYLINE_BET_TYPE_ID || (line.points ?? null) === spec.points));
     if (found.length !== 1) {
@@ -1046,11 +1046,23 @@ function createRunner(deps) {
     return answer;
   }
 
+  // One game's lines, read from its league's lines only: a Place quote walking
+  // the whole ~1.2M-line board took ~1.3 s per click (2026-10-19 review).
+  // A game the board does not hold has none. Right after a scan restart the
+  // scanner holds a new board while `board` is still the last published one:
+  // that board is walked whole, as before, so the quote matches the list Cal sees.
+  function linesOfEvent(board, eventId) {
+    const event = board.events[eventId];
+    if (!event) return [];
+    const lines = board === scanner.getState() ? scanner.getLeagueLines(event.leagueId) : Object.values(board.lines);
+    return lines.filter((line) => line.eventId === eventId);
+  }
+
   // {answer: novigQuoteNow's answer, catalog: {reused, readAt, readsMs} for its log line once the outcome was found, else null}.
   async function novigQuoteOfSpec(spec) {
     const board = feedState;
     if (!board) return { answer: { ok: false, reason: "no_board", detail: "the board has not loaded yet" }, catalog: null };
-    const found = Object.values(board.lines).filter((line) => line.bookId === taker.NOVIG_BOOK_ID
+    const found = linesOfEvent(board, spec.eventId).filter((line) => line.bookId === taker.NOVIG_BOOK_ID
       && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
       && line.sideIndex === spec.sideIndex && (line.points ?? null) === spec.points);
     if (found.length !== 1) {
