@@ -371,35 +371,67 @@ test("an open bet's league is loaded for its close, and stays loaded after the b
 
 // ---- board rows kept per league ------------------------------------------------------------
 
-test("boardLines: built league by league, the same rows a walk of the whole board gives, after every landing and a refresh", async () => {
-  let trimCfb = false;
-  const cfbBody = () => {
-    const json = JSON.parse(sliceBody);
-    if (trimCfb) json.odds["lg1:pt1:pregame"] = json.odds["lg1:pt1:pregame"].slice(0, 1);
-    // The NFL slice re-labelled as CFB, with its own market and event ids so nothing collides with NFL's.
-    return JSON.stringify(json).replace(/lg1:/g, "lg2:").replace(/"marketId":(\d+)/g, '"marketId":9$1').replace(/"eventId":(\d+)/g, '"eventId":9$1');
-  };
-  const fetchImpl = async (url) => {
+// The NFL slice re-labelled as CFB, with its own market and event ids so nothing collides with NFL's;
+// `dropPregame` leaves out its pregame game, so CFB's board loses its one event.
+function cfbSliceBody({ dropPregame = false } = {}) {
+  const json = JSON.parse(sliceBody);
+  if (dropPregame) {
+    delete json.odds["lg1:pt1:pregame"];
+    delete json.odds["lg1:pt2:pregame"];
+  }
+  return JSON.stringify(json).replace(/lg1:/g, "lg2:").replace(/"marketId":(\d+)/g, '"marketId":9$1').replace(/"eventId":(\d+)/g, '"eventId":9$1');
+}
+
+// NFL and CFB from the slice; `feed.failNfl` makes NFL's next downloads fail
+// (it keeps its lines), `feed.dropCfbPregame` changes CFB's next snapshot.
+function twoLeagueFetch(feed) {
+  return async (url) => {
     const base = url.split("?")[0];
     const headers = { "content-length": "1000", "last-modified": new Date(NOW - 20000).toUTCString() };
-    if (base === SNAPSHOT_BASE_URL(1)) return response({ body: sliceBody, headers });
-    if (base === SNAPSHOT_BASE_URL(2)) return response({ body: cfbBody(), headers });
+    if (base === SNAPSHOT_BASE_URL(1)) return feed.failNfl ? response({ status: 503, body: "" }) : response({ body: sliceBody, headers });
+    if (base === SNAPSHOT_BASE_URL(2)) return response({ body: cfbSliceBody({ dropPregame: feed.dropCfbPregame }), headers });
     return response({ status: 404, body: "not found" });
   };
+}
+
+test("boardLines: built league by league, the same rows a walk of the whole board gives; a league that did not land keeps its rows untouched", async () => {
+  const feed = { failNfl: false, dropCfbPregame: false };
   const runner = runnerLib.createRunner({
-    fetchImpl, betsServiceUrl: SERVICE_URL, now: () => NOW, timers: noTimers, ...quiet,
+    fetchImpl: twoLeagueFetch(feed), betsServiceUrl: SERVICE_URL, now: () => NOW, timers: noTimers, ...quiet,
     serviceFetch: serviceFetch({ "/bets.json": betsBody([BEARS_HELD]), "/settings.json": { settings: OPEN_SETTINGS } }),
   });
   await runner.start();
   const walked = () => edgeRows.boardLines(runner.scanner.getState());
-  assert.deepEqual(new Set(runner.boardLines().map((row) => row.leagueId)), new Set([1, 2]));
+  const rowsOf = (leagueId) => runner.boardLines().filter((row) => row.leagueId === leagueId);
   assert.deepEqual(runner.boardLines(), walked());
-  const nflRows = runner.boardLines().filter((row) => row.leagueId === 1);
+  const nflRows = rowsOf(1);
+  assert.equal(rowsOf(2).length, 1);
 
-  trimCfb = true;
+  // Only CFB lands, without its game.
+  Object.assign(feed, { failNfl: true, dropCfbPregame: true });
   await runner.scanner.resync();
-  assert.deepEqual(runner.boardLines(), walked(), "a refreshed league's rows are rebuilt");
-  assert.deepEqual(runner.boardLines().filter((row) => row.leagueId === 1).map((row) => row.key), nflRows.map((row) => row.key));
+  assert.deepEqual(runner.boardLines(), walked(), "the landed league's rows are rebuilt");
+  assert.equal(rowsOf(2).length, 0);
+  assert.ok(rowsOf(1).every((row, index) => row === nflRows[index]) && rowsOf(1).length === nflRows.length, "NFL did not land: its rows are the same objects");
+  runner.stop();
+});
+
+test("kickoff odds: a game's lines are re-read when its league lands, kept when the league's download fails", async () => {
+  const feed = { failNfl: false, dropCfbPregame: false };
+  const clock = { ms: NOW };
+  const runner = runnerLib.createRunner({
+    fetchImpl: twoLeagueFetch(feed), betsServiceUrl: SERVICE_URL, now: () => clock.ms, timers: noTimers, ...quiet,
+    serviceFetch: serviceFetch({ "/bets.json": betsBody([BEARS_HELD]), "/settings.json": { settings: OPEN_SETTINGS } }),
+  });
+  await runner.start();
+  clock.ms = NOW + 60 * 1000;
+  await runner.scanner.resync();
+  clock.ms = NOW + 120 * 1000;
+  feed.failNfl = true;
+  await runner.scanner.resync();
+  clock.ms = KICKOFF_MS + 3600 * 1000;
+  const card = runner.scenariosPayload().games.find((game) => game.eventId === 125807);
+  assert.equal(card.oddsAt, NOW + 60 * 1000, "the last NFL landing before kickoff, not the failed one after it");
   runner.stop();
 });
 

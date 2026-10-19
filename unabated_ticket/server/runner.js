@@ -303,7 +303,8 @@ async function sendServiceJson(fetchImpl, url, method, body, timeoutMs = SERVICE
 //          logInfo / logWarning (message) -> void, default stdout / stderr}
 // Returns {start, stop, pollBets, pollSettings, scanLoaded, learn, takerPass,
 //          postTakerDecisions, edgesPayload, teasersPayload, attachPayload,
-//          scenariosPayload, takerPayload, health, scanner, boardLines}.
+//          scenariosPayload, takerPayload, health, scanner, boardLines (the
+//          board's rows, read by the tests)}.
 function createRunner(deps) {
   const now = deps.now || (() => Date.now());
   const timers = deps.timers || { setInterval: (fn, ms) => setInterval(fn, ms), clearInterval: (id) => clearInterval(id) };
@@ -476,8 +477,8 @@ function createRunner(deps) {
     return feedState ? Array.from(new Set(feedState.leagues)) : [];
   }
 
-
   // One league's board rows (edgeRows.boardLines over its lines), rebuilt only when its snapshot landed again.
+  // A row keeps the book and team names of its own league's last snapshot (accepted: rows only name games).
   function leagueBoardRows(leagueId) {
     const version = scanner.getLeagueVersion(leagueId);
     const cached = boardRowsByLeague.get(leagueId);

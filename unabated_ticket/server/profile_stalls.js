@@ -42,11 +42,11 @@ function runnerPid() {
   return found[0].pid;
 }
 
-async function inspectorWsUrl() {
+async function inspectorTargets() {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
       const targets = await (await fetch(INSPECTOR_URL)).json();
-      if (targets.length) return targets[0].webSocketDebuggerUrl;
+      if (targets.length) return targets;
     } catch { /* not open yet */ }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -139,12 +139,28 @@ function summarize(profile) {
   for (const [label, ms] of inclusive(allBusy).slice(0, 30)) console.log(`    ${String(Math.round(ms)).padStart(6)}  ${label}`);
 }
 
+async function inspectorAnswers() {
+  try {
+    await fetch(INSPECTOR_URL);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Whatever happens after SIGUSR1, the runner's inspector is closed (or a
+// warning says it is still open): an inspector left open is code execution
+// for anything on the VM's loopback until the runner restarts.
 async function main() {
+  if (await inspectorAnswers()) throw new Error(`something already answers at ${INSPECTOR_URL}: refusing to signal the runner`);
   const pid = runnerPid();
   process.kill(pid, "SIGUSR1");
-  const client = connect(await inspectorWsUrl());
-  await client.opened;
+  let client = null;
   try {
+    const targets = await inspectorTargets();
+    if (!targets[0].url.endsWith("server/runner.js")) throw new Error(`the inspector at ${INSPECTOR_URL} is not the runner's (${targets[0].url})`);
+    client = connect(targets[0].webSocketDebuggerUrl);
+    await client.opened;
     await client.send("Profiler.enable");
     await client.send("Profiler.setSamplingInterval", { interval: SAMPLING_INTERVAL_US });
     await client.send("Profiler.start");
@@ -153,18 +169,16 @@ async function main() {
     const { profile } = await client.send("Profiler.stop");
     summarize(profile);
   } finally {
-    // inspector.close() waits for every session to leave, so schedule it and leave.
-    await client.send("Runtime.evaluate", {
-      expression: "setTimeout(() => process.mainModule.require('inspector').close(), 1000); 'closing'",
-    }).catch((error) => console.log(`could not schedule the inspector close: ${error.message}`));
-    client.close();
-  }
-  await new Promise((resolve) => setTimeout(resolve, 2500));
-  try {
-    await fetch(INSPECTOR_URL);
-    console.log("WARNING: the inspector is still open on 127.0.0.1:9229 (closes on the next runner restart)");
-  } catch {
-    console.log("inspector closed");
+    if (client) {
+      // inspector.close() waits for every session to leave, so schedule it and leave.
+      await client.send("Runtime.evaluate", {
+        expression: "setTimeout(() => { try { process.mainModule.require('inspector').close(); } catch {} }, 1000); 'closing'",
+      }).catch((error) => console.log(`could not schedule the inspector close: ${error.message}`));
+      client.close();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    if (await inspectorAnswers()) console.log("WARNING: the inspector is still open on 127.0.0.1:9229 (closes on the next runner restart)");
+    else console.log("inspector closed");
   }
 }
 
