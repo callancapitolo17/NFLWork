@@ -287,12 +287,13 @@
   // the matcher's ambiguity check, its venue id join (each row carries its
   // event's venueIds) and the unmatched list only need to know which games
   // exist, not every book's price. Callers cache it per feed update (73 ms
-  // over the 140,755 NFL + CFB lines of 2026-09-15).
-  function boardLines(feedState) {
+  // over the 140,755 NFL + CFB lines of 2026-09-15). `lines` narrows it to
+  // some of the board's lines (the server runner passes one league's).
+  function boardLines(feedState, lines) {
     if (!feedState) return [];
     const seen = new Set();
     const rows = [];
-    for (const line of Object.values(feedState.lines)) {
+    for (const line of lines || Object.values(feedState.lines)) {
       if (line.isAlt || seen.has(line.eventId)) continue;
       seen.add(line.eventId);
       rows.push(feed.describeLine(line, feedState));

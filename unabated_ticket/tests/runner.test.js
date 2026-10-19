@@ -369,6 +369,40 @@ test("an open bet's league is loaded for its close, and stays loaded after the b
   runner.stop();
 });
 
+// ---- board rows kept per league ------------------------------------------------------------
+
+test("boardLines: built league by league, the same rows a walk of the whole board gives, after every landing and a refresh", async () => {
+  let trimCfb = false;
+  const cfbBody = () => {
+    const json = JSON.parse(sliceBody);
+    if (trimCfb) json.odds["lg1:pt1:pregame"] = json.odds["lg1:pt1:pregame"].slice(0, 1);
+    // The NFL slice re-labelled as CFB, with its own market and event ids so nothing collides with NFL's.
+    return JSON.stringify(json).replace(/lg1:/g, "lg2:").replace(/"marketId":(\d+)/g, '"marketId":9$1').replace(/"eventId":(\d+)/g, '"eventId":9$1');
+  };
+  const fetchImpl = async (url) => {
+    const base = url.split("?")[0];
+    const headers = { "content-length": "1000", "last-modified": new Date(NOW - 20000).toUTCString() };
+    if (base === SNAPSHOT_BASE_URL(1)) return response({ body: sliceBody, headers });
+    if (base === SNAPSHOT_BASE_URL(2)) return response({ body: cfbBody(), headers });
+    return response({ status: 404, body: "not found" });
+  };
+  const runner = runnerLib.createRunner({
+    fetchImpl, betsServiceUrl: SERVICE_URL, now: () => NOW, timers: noTimers, ...quiet,
+    serviceFetch: serviceFetch({ "/bets.json": betsBody([BEARS_HELD]), "/settings.json": { settings: OPEN_SETTINGS } }),
+  });
+  await runner.start();
+  const walked = () => edgeRows.boardLines(runner.scanner.getState());
+  assert.deepEqual(new Set(runner.boardLines().map((row) => row.leagueId)), new Set([1, 2]));
+  assert.deepEqual(runner.boardLines(), walked());
+  const nflRows = runner.boardLines().filter((row) => row.leagueId === 1);
+
+  trimCfb = true;
+  await runner.scanner.resync();
+  assert.deepEqual(runner.boardLines(), walked(), "a refreshed league's rows are rebuilt");
+  assert.deepEqual(runner.boardLines().filter((row) => row.leagueId === 1).map((row) => row.key), nflRows.map((row) => row.key));
+  runner.stop();
+});
+
 // ---- /scenarios.json (the Bet Tracker's Live tab) ----------------------------------------
 
 async function runnerOnClock(clock, bets, extra) {
