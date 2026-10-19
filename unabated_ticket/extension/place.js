@@ -24,11 +24,12 @@
   const KALSHI_BOOK_ID = 105;
   const NOVIG_BOOK_ID = 89;
   // Each venue Place sends to, by Unabated book id: its name in words, the
-  // bets service route, and the bet types it places (Unabated carries a
-  // Novig outcome id on spreads and totals only, never on a moneyline).
+  // bets service route, and the bet types it places (every one: a moneyline
+  // the feed names no contract for is found in the venue's own market list
+  // by the server runner, Cal 2026-10-19).
   const VENUES = {
     [KALSHI_BOOK_ID]: { venue: "kalshi", name: "Kalshi", path: "/place_kalshi.json", betTypeIds: [1, 2, 3] },
-    [NOVIG_BOOK_ID]: { venue: "novig", name: "Novig", path: "/place_novig.json", betTypeIds: [2, 3] },
+    [NOVIG_BOOK_ID]: { venue: "novig", name: "Novig", path: "/place_novig.json", betTypeIds: [1, 2, 3] },
   };
   // The bets service's Novig reads a stake counts: Cal's app account and
   // Place's own sub-account, both required, and the bot's sub-account when

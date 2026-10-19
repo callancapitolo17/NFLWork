@@ -91,9 +91,10 @@ PLACE_FINAL_READ_WINDOW_SEC = 12.0
 # The bets service's Novig reads the stake counted must be at most this old
 # (the Novig bot's holdings gate).
 NOVIG_READ_MAX_AGE = timedelta(seconds=MAX_HOLDINGS_AGE_SEC)
-# Bet types an outcome id exists for: Unabated carries Novig ids on spread and
-# total rungs only, never on a moneyline.
-NOVIG_PLACE_BET_TYPES = (2, 3)
+# Bet types Place takes: 1 moneyline, 2 spread, 3 total. A moneyline carries
+# no Novig id on Unabated; the runner finds it in Novig's catalog.
+NOVIG_PLACE_BET_TYPES = (1, 2, 3)
+BET_TYPE_MONEYLINE = 1
 # Novig's sources whose reads the Ticket's stake counts: Cal's app account and
 # Place's own sub-account (the bot's is added when it is read, service.py).
 NOVIG_PLACE_READ_SOURCES = ("novig", "novig_place")
@@ -101,10 +102,10 @@ NOVIG_PLACE_READ_SOURCES = ("novig", "novig_place")
 
 def validate_novig_place_request(body: object) -> dict | str:
     """A POST /place_novig.json body, or what was expected and what was found.
-    {clickId, eventId, periodTypeId, betTypeId (2 spread | 3 total), sideIndex,
-    points, stake (dollars), ticketAllIn (the Ticket's Novig price as a
-    probability), novigReadAt (the Novig read the stake was sized on, ISO),
-    kalshiReadAt (the Kalshi read, ISO, or null when Kalshi was never read)}"""
+    {clickId, eventId, periodTypeId, betTypeId (1 moneyline | 2 spread | 3 total),
+    sideIndex, points (null on a moneyline), stake (dollars), ticketAllIn (the
+    Ticket's Novig price as a probability), novigReadAt (the Novig read the
+    stake was sized on, ISO), kalshiReadAt (the Kalshi read, ISO, or null when Kalshi was never read)}"""
     if not isinstance(body, dict):
         return f"body must be an object, got {type(body).__name__}"
     click_id = body.get("clickId")
@@ -118,7 +119,10 @@ def validate_novig_place_request(body: object) -> dict | str:
             return f"{field} must be {'one of ' + str(allowed) if allowed else 'a whole number'}, got {value!r}"
         whole[field] = value
     points = body.get("points")
-    if not _is_number(points) or not math.isfinite(points):
+    if whole["betTypeId"] == BET_TYPE_MONEYLINE:
+        # A moneyline has no number; the runner ignores one.
+        points = None
+    elif not _is_number(points) or not math.isfinite(points):
         return f"points must be a number (a spread or total), got {points!r}"
     stake = body.get("stake")
     if not _is_number(stake) or not math.isfinite(stake) or stake <= 0:
@@ -132,8 +136,9 @@ def validate_novig_place_request(body: object) -> dict | str:
     kalshi_read_at = optional_read_at(body, "kalshiReadAt")
     if isinstance(kalshi_read_at, str):
         return kalshi_read_at
-    return {"click_id": click_id, **whole, "points": float(points), "stake": float(stake),
-            "ticket_all_in": float(ticket_all_in), "novig_read_at": novig_read_at, "kalshi_read_at": kalshi_read_at}
+    return {"click_id": click_id, **whole, "points": None if points is None else float(points),
+            "stake": float(stake), "ticket_all_in": float(ticket_all_in), "novig_read_at": novig_read_at,
+            "kalshi_read_at": kalshi_read_at}
 
 
 class ManualNovigDesk:

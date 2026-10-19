@@ -912,6 +912,89 @@ test("novig_quote: an event the catalog lists that is not the market's is refuse
   assert.deepEqual([quote.ok, quote.reason], [false, "market_mismatch"]);
 });
 
+// Moneylines: the slice's moneyline row also listed at Novig, which Unabated
+// sends no Novig id for; Place finds it off the game's other rungs.
+function moneylineUnabatedFetch() {
+  const json = JSON.parse(takerVenueSlice());
+  const moneyRow = json.odds["lg2:pt1:pregame"].find((row) => row.key === "pt1:pregame:bt1:e123742");
+  for (const books of Object.values(moneyRow.sides)) books.ms89 = { ...books.ms105, americanPrice: 150, price: 150, sourcePrice: 0.4, sourceFormat: 4 };
+  const body = JSON.stringify(json);
+  return async (url) => {
+    if (url.split("?")[0] === SNAPSHOT_BASE_URL(2)) return response({ body, headers: { "content-length": "1000", "last-modified": new Date(TAKER_NOW - 20000).toUTCString() } });
+    return response({ status: 404, body: "not found" });
+  };
+}
+
+test("novig_quote: a moneyline is found in Novig's catalog off the game's spread rung and checked by its team's name", async () => {
+  const moneyId = "0f0f0f0f-1111-4222-8333-111111111111";
+  const money = {
+    marketId: moneyId, eventId: NOVIG_EVENT, marketType: "MONEY", status: "OPEN", fee: { coefficient: "0.06", makerCredit: "0", charged: "WHEN_LIVE" },
+    outcomes: [{ outcomeId: "money-duq", name: "DUQ" }, { outcomeId: "money-wsu", name: "WSU" }],
+  };
+  const spread = novigFetch();
+  const spreadMarket = {
+    marketId: NOVIG_MARKET, eventId: NOVIG_EVENT, marketType: "SPREAD", strike: "-35.5", status: "OPEN", fee: money.fee,
+    outcomes: [{ outcomeId: NOVIG_WSU_OUTCOME, name: "WSU -35.5" }, { outcomeId: NOVIG_DUQ_OUTCOME, name: "DUQ +35.5" }],
+  };
+  const impl = async (url, init) => {
+    const bare = url.split("?")[0];
+    if (bare === "https://novig.test/v3/public/catalog/markets") return response({ body: JSON.stringify({ items: [spreadMarket, money] }) });
+    if (bare === `https://novig.test/v3/public/catalog/markets/${moneyId}/book`) {
+      return response({ body: JSON.stringify({ marketId: moneyId, seq: 2, orders: { "money-wsu": [{ orderId: "w", price: "0.62", qty: 3000 }], "money-duq": [] } }) });
+    }
+    if (bare === `https://novig.test/v3/public/catalog/markets/${moneyId}`) return response({ body: JSON.stringify(money) });
+    return spread(url, init);
+  };
+  const { runner } = await quoteRunner({}, { fetchImpl: moneylineUnabatedFetch(), novigFetch: impl, novigBaseUrl: "https://novig.test" });
+  const quote = await runner.novigQuote(new URLSearchParams({ eventId: "123742", periodTypeId: "1", betTypeId: "1", sideIndex: "0" }));
+  runner.stop();
+  assert.deepEqual(
+    { ok: quote.ok, outcomeId: quote.outcomeId, otherOutcomeId: quote.otherOutcomeId, marketId: quote.marketId, price: quote.price, depth: quote.depth, label: quote.label, eventStart: quote.eventStart },
+    { ok: true, outcomeId: "money-duq", otherOutcomeId: "money-wsu", marketId: moneyId, price: 0.38, depth: 3000, label: "Duquesne FG", eventStart: WSU_UNABATED_START });
+  assert.deepEqual([quote.line.betType, quote.line.side, quote.line.points], ["moneyline", "away", null]);
+});
+
+test("kalshi_quote: a moneyline whose team code no spread rung gives is found in Kalshi's market list for the game", async () => {
+  // Kalshi's spread rungs name WSU only, so the Duquesne moneyline has no code to build a ticker from.
+  const duqTicker = "KXNCAAFGAME-26SEP19DUQWSU-DUQ";
+  const base = kalshiFetch();
+  const kalshi = async (url, init) => {
+    if (url.includes("/markets?") && new URL(url).searchParams.get("event_ticker") === "KXNCAAFGAME-26SEP19DUQWSU") {
+      return response({ body: JSON.stringify({ markets: [
+        { ticker: "KXNCAAFGAME-26SEP19DUQWSU-WSU", event_ticker: "KXNCAAFGAME-26SEP19DUQWSU", yes_sub_title: "Washington St." },
+        { ticker: duqTicker, event_ticker: "KXNCAAFGAME-26SEP19DUQWSU", yes_sub_title: "Duquesne" },
+      ] }) });
+    }
+    if (url.endsWith(`/markets/${duqTicker}/orderbook`)) return response({ body: JSON.stringify({ orderbook_fp: { yes_dollars: [], no_dollars: [["0.9200", "50"]] } }) });
+    if (url.endsWith(`/markets/${duqTicker}`)) {
+      return response({ body: JSON.stringify({ market: { ticker: duqTicker, event_ticker: "KXNCAAFGAME-26SEP19DUQWSU", status: "active", yes_sub_title: "Duquesne" } }) });
+    }
+    return base(url, init);
+  };
+  const { runner } = await quoteRunner({}, { kalshiFetch: kalshi });
+  const quote = await runner.kalshiQuote(new URLSearchParams({ eventId: "123742", periodTypeId: "1", betTypeId: "1", sideIndex: "0" }));
+  runner.stop();
+  assert.deepEqual(
+    { ok: quote.ok, ticker: quote.ticker, side: quote.side, ask: quote.ask, depth: quote.depth, allIn: quote.allIn, derivedTicker: quote.derivedTicker, label: quote.label },
+    { ok: true, ticker: duqTicker, side: "yes", ask: 0.08, depth: 50, allIn: Math.round((0.08 + 0.07 * 0.08 * 0.92) * 1e6) / 1e6, derivedTicker: true, label: "Duquesne FG" });
+  // Kalshi's market list unread: refused, naming why.
+  const down = async (url, init) => (url.includes("/markets?") ? response({ status: 503, body: "down" }) : kalshi(url, init));
+  const { runner: downRunner } = await quoteRunner({}, { kalshiFetch: down });
+  const unread = await downRunner.kalshiQuote(new URLSearchParams({ eventId: "123742", periodTypeId: "1", betTypeId: "1", sideIndex: "0" }));
+  downRunner.stop();
+  assert.deepEqual([unread.ok, unread.reason], [false, "no_ticker"]);
+  assert.match(unread.detail, /markets on KXNCAAFGAME-26SEP19DUQWSU unread/);
+  // Kalshi listing a tie market too: refused, nothing read past it.
+  const tied = async (url, init) => (url.includes("/markets?")
+    ? response({ body: JSON.stringify({ markets: [{ event_ticker: "KXNCAAFGAME-26SEP19DUQWSU", ticker: "a" }, { event_ticker: "KXNCAAFGAME-26SEP19DUQWSU", ticker: "b" }, { event_ticker: "KXNCAAFGAME-26SEP19DUQWSU", ticker: "c" }] }) })
+    : kalshi(url, init));
+  const { runner: tiedRunner } = await quoteRunner({}, { kalshiFetch: tied });
+  const refused = await tiedRunner.kalshiQuote(new URLSearchParams({ eventId: "123742", periodTypeId: "1", betTypeId: "1", sideIndex: "0" }));
+  tiedRunner.stop();
+  assert.deepEqual([refused.ok, refused.reason], [false, "no_ticker"]);
+  assert.match(refused.detail, /lists 3 markets/);
+});
+
 test("taker: a service without the bot key answers 503, the decision reads off", async () => {
   const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
   const offService = async (url, init = {}) => (url.endsWith("/taker/order.json")

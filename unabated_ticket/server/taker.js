@@ -659,6 +659,151 @@ function novigOutcomeNamesRow(outcome, row) {
   return handicap !== null && handicap !== 0 && handicap === row.points;
 }
 
+// ---- Place's moneylines (never the bot's) ------------------------------------
+
+// A half's moneyline can tie, and whether Kalshi's or Novig's two-way half
+// winner voids a tie or pays it as a loss is unchecked: bought at Unabated's
+// tie-no-bet fair, a contract that loses the tie overpays by about P(tie).
+// Refused until checked.
+const HALF_MONEYLINE_REFUSAL = "only full-game moneylines place: a half's winner market may pay a tie as a loss";
+
+// A Novig full-game moneyline's outcome, for the Ticket's Place button only
+// (Cal, 2026-10-19). Unabated gives no Novig id on a moneyline, so the game's
+// other Novig rungs name its event, whose one two-outcome "MONEY" market it is.
+// Each outcome is told by the team's name on Novig's spread rungs, else by
+// Unabated's team name; one told makes the other the other team.
+//   feedState  the board, for each rung's own line (its market and period)
+//   {outcomeId, marketId, otherOutcomeId, teamText, derived: true} or {reason: "no_outcome", detail}
+function novigMoneylineContract(row, index, feedState) {
+  const refuse = (detail) => ({ reason: "no_outcome", detail });
+  if (row.betTypeId !== BET_TYPE_MONEYLINE) return refuse(`bet type ${row.betTypeId} is not a moneyline`);
+  if (row.periodTypeId !== PERIOD_FULL_GAME) return refuse(HALF_MONEYLINE_REFUSAL);
+  const outcomes = (row.venueIds && row.venueIds.novigOutcomes) || {};
+  const rungs = Object.entries(outcomes)
+    .map(([outcomeId, target]) => ({ outcomeId, target, listed: index.get(outcomeId), line: feedState.lines[target.mainKey] }))
+    .filter((rung) => rung.listed && rung.line);
+  if (rungs.length === 0) return refuse("no Novig rung on this game is on an open pregame Novig market");
+  const eventIds = new Set(rungs.map((rung) => rung.listed.market.eventId));
+  if (eventIds.size !== 1) return refuse(`the game's Novig rungs are on ${eventIds.size} Novig events`);
+  const [eventId] = eventIds;
+  const moneyType = NOVIG_MARKET_TYPE_OF_BET_TYPE[BET_TYPE_MONEYLINE];
+  const sideNames = novigSideNamesOf(rungs);
+  if (sideNames.reason) return sideNames;
+  const candidates = new Map();
+  for (const listed of index.values()) {
+    const market = listed.market;
+    if (market.eventId === eventId && market.marketType === moneyType) candidates.set(market.marketId, market);
+  }
+  if (candidates.size !== 1) return refuse(`${candidates.size} open Novig ${moneyType} markets on event ${eventId}`);
+  const [market] = candidates.values();
+  const marketOutcomes = market.outcomes || [];
+  if (marketOutcomes.length !== 2) return refuse(`market ${market.marketId} has ${marketOutcomes.length} outcomes, expected 2 (a draw makes it 3-way)`);
+  const sides = marketOutcomes.map((outcome) => novigMoneylineSideOf(outcome, row, sideNames.names));
+  // Two outcomes on the game's own event: one told, the other is the other team.
+  const unknown = sides.indexOf(null);
+  if (unknown !== -1 && sides[1 - unknown] !== null) sides[unknown] = 1 - sides[1 - unknown];
+  if (!sides.includes(0) || !sides.includes(1)) {
+    return refuse(`market ${market.marketId}'s outcomes (${marketOutcomes.map((outcome) => `"${outcome.name}"`).join(", ")}) do not name ${row.awayTeam} and ${row.homeTeam} one each`);
+  }
+  const chosen = marketOutcomes[sides.indexOf(row.sideIndex)];
+  const other = marketOutcomes[sides.indexOf(1 - row.sideIndex)];
+  return { outcomeId: chosen.outcomeId, marketId: market.marketId, otherOutcomeId: other.outcomeId, teamText: novigOutcomeTeamText(chosen), derived: true };
+}
+
+// How Novig names each Unabated side's team, off the game's spread rungs
+// ("Virginia Tech +3.5" on side 0 -> names[0] "virginia tech"). A rung that
+// does not read on Novig the way Unabated lists it (a neutral site listed
+// home/away swapped) refuses, as do two names for one side or one name for
+// both. A side no spread rung names is null. {names: [side0, side1]} or {reason, detail}.
+function novigSideNamesOf(rungs) {
+  const names = [null, null];
+  for (const { outcomeId, target, listed, line } of rungs) {
+    // A pick'em rung's name cannot tell the side; the others can.
+    if (line.betTypeId !== BET_TYPE_SPREAD || target.points === 0) continue;
+    const outcome = (listed.market.outcomes || []).find((candidate) => candidate.outcomeId === outcomeId);
+    const rungRow = { betTypeId: BET_TYPE_SPREAD, sideIndex: target.sideIndex, points: target.points };
+    if (Number(listed.market.strike) !== novigStrikeOf(rungRow) || !novigOutcomeNamesRow(outcome, rungRow)) {
+      return { reason: "no_outcome", detail: `Novig lists rung ${outcomeId} as "${outcome && outcome.name}" at strike ${listed.market.strike}, Unabated as ${target.points} side ${target.sideIndex}` };
+    }
+    const name = novigOutcomeTeamText(outcome);
+    if (!name) return { reason: "no_outcome", detail: `rung ${outcomeId}'s name "${outcome.name}" carries no team` };
+    if (names[target.sideIndex] !== null && names[target.sideIndex] !== name) {
+      return { reason: "no_outcome", detail: `side ${target.sideIndex} reads on Novig as both "${names[target.sideIndex]}" and "${name}"` };
+    }
+    names[target.sideIndex] = name;
+  }
+  if (names[0] !== null && names[0] === names[1]) return { reason: "no_outcome", detail: `both sides read on Novig as "${names[0]}"` };
+  return { names };
+}
+
+// Which Unabated side a moneyline outcome is (0 away, 1 home), or null: the
+// side whose Novig spread name it carries; with no spread name to go on, the
+// one team whose name holds every word of the outcome's and the other does
+// not (teamWords drops "St"/"State" and the like).
+function novigMoneylineSideOf(outcome, row, names) {
+  const text = novigOutcomeTeamText(outcome);
+  if (text && text === names[0]) return 0;
+  if (text && text === names[1]) return 1;
+  // Both sides named and this is neither: a third name.
+  if (names[0] !== null && names[1] !== null) return null;
+  const words = teamWords(text);
+  if (!words.length) return null;
+  const holds = (team) => { const teamSet = new Set(teamWords(team)); return words.every((word) => teamSet.has(word)); };
+  const away = holds(row.awayTeam);
+  const home = holds(row.homeTeam);
+  if (away === home) return null;
+  const side = away ? 0 : 1;
+  // A name the spreads give the other side never stands for this one.
+  return names[side] !== null && names[side] !== text ? null : side;
+}
+
+// The Kalshi event a moneyline's market is listed under, for the Ticket's
+// Place button when its team code cannot be read off a full-game spread rung
+// (derivedMoneylineContract): the league prefix and event suffix every Kalshi
+// rung on the game shares ("KXNCAAF1HTOTAL-26SEP19DUQWSU" -> KXNCAAF,
+// 26SEP19DUQWSU) under the game series ("KXNCAAFGAME"). {eventTicker} or {reason: "no_ticker", detail}.
+function kalshiMoneylineEventOf(row) {
+  const refuse = (detail) => ({ reason: "no_ticker", detail });
+  if (row.betTypeId !== BET_TYPE_MONEYLINE) return refuse(`bet type ${row.betTypeId} is not a moneyline`);
+  if (row.periodTypeId !== PERIOD_FULL_GAME) return refuse(HALF_MONEYLINE_REFUSAL);
+  const contracts = (row.venueIds && row.venueIds.kalshiContracts) || {};
+  const prefixes = new Set();
+  const suffixes = new Set();
+  for (const sourceKey of Object.keys(contracts)) {
+    const match = KALSHI_CONTRACT_RE.exec(sourceKey);
+    const prefix = match ? /^(KX[A-Z]+?)(1H|2H)?(SPREAD|TOTAL)$/.exec(match[2]) : null;
+    // Another series (a quarter, a team total) names no league prefix we can read: skipped.
+    if (!prefix) continue;
+    prefixes.add(prefix[1]);
+    suffixes.add(match[3]);
+  }
+  if (prefixes.size === 0) return refuse("no Kalshi spread or total rung on this game names its Kalshi event");
+  if (prefixes.size !== 1 || suffixes.size !== 1) {
+    return refuse(`the game's Kalshi rungs name ${prefixes.size} leagues and ${suffixes.size} events: ${[...prefixes].join(", ")} / ${[...suffixes].join(", ")}`);
+  }
+  const [prefix] = prefixes;
+  const [suffix] = suffixes;
+  return { eventTicker: `${prefix}GAME-${suffix}` };
+}
+
+// The moneyline's market among Kalshi's markets of that event (GET
+// /markets?event_ticker=...): exactly two markets (a tie market makes it
+// 3-way, refused), one whose YES title names each team (titleNamesSide);
+// YES on the row's team's. marketMismatch re-checks the title before any order.
+//   {ticker, side: "yes", sourceKey: null, derived: true} or {reason: "no_ticker", detail}
+function kalshiMoneylineFromMarkets(row, markets, eventTicker) {
+  const listed = (Array.isArray(markets) ? markets : []).filter((market) => market && market.event_ticker === eventTicker);
+  if (listed.length !== 2) {
+    return { reason: "no_ticker", detail: `Kalshi lists ${listed.length} markets on ${eventTicker}, expected 2 (one per team)` };
+  }
+  const named = listed.filter((market) => titleNamesSide(market, row, row.sideIndex));
+  const other = listed.filter((market) => titleNamesSide(market, row, 1 - row.sideIndex));
+  if (named.length !== 1 || other.length !== 1 || named[0] === other[0]) {
+    return { reason: "no_ticker", detail: `${eventTicker}'s markets (${listed.map((market) => `"${market.yes_sub_title}"`).join(", ")}) do not name ${row.awayTeam} and ${row.homeTeam} one each` };
+  }
+  return { ticker: named[0].ticker, side: "yes", sourceKey: null, derived: true };
+}
+
 // Novig's book (GET /v3/public/catalog/markets/<id>/book): {orders: {outcomeId:
 // [{orderId, price, qty}] best first}}. Every resting order BUYS its outcome,
 // so buying one outcome crosses the best resting order on the other, at 1 -
@@ -717,6 +862,9 @@ function novigMarketMismatch(market, event, row, contract) {
     // At a pick'em both outcomes read 0, so the name cannot tell a swapped rung: refused.
     if (handicap === 0) return `outcome "${name}" is a pick'em: its name cannot confirm the side`;
     if (handicap !== row.points) return `outcome "${name}" is ${handicap}, the row is ${row.points}`;
+  } else if (row.betTypeId === BET_TYPE_MONEYLINE) {
+    // The outcome must still carry the team name it was picked by (novigMoneylineContract).
+    if (!contract.teamText || novigOutcomeTeamText({ name }) !== contract.teamText) return `outcome "${name}" is not the row's team ("${contract.teamText}")`;
   } else if (row.betTypeId === BET_TYPE_TOTAL) {
     if (!Number.isFinite(strike) || strike !== row.points) return `strike ${market.strike}, row is ${row.points}`;
     const sideWord = row.sideIndex === SIDE_AWAY_OR_OVER ? "over" : "under";
@@ -820,6 +968,7 @@ module.exports = {
   contractFromRungs, derivedMainNumberContract, spreadTeamCodes, derivedMoneylineContract, resolveKalshiContract,
   parseKalshiOrderbook, quoteOf, decideRow, decisionSignature, moneylineTeamMatches, marketMismatch, clientOrderIdOf,
   heldOtherSide, unpricedHolding, kalshiStartMsOf, earliestStartMs, eventTickerOf,
+  novigMoneylineContract, kalshiMoneylineEventOf, kalshiMoneylineFromMarkets,
   resolveNovigOutcome, novigOutcomeIndex, novigContractOf, novigQuoteOf, novigHeldOtherSide, novigMarketMismatch,
   novigClientIdOf, novigLineOf,
 };

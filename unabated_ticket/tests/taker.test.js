@@ -396,3 +396,33 @@ test("eventTickerOf: Kalshi's event_ticker, else the ticker less its last part",
   assert.equal(taker.eventTickerOf({}, `${CLMB_EVENT}-CLMB6`), CLMB_EVENT);
   assert.equal(taker.eventTickerOf(null, "NODASH"), null);
 });
+
+// ---- moneylines Kalshi's market list finds (the Ticket's Place only) ----------
+test("a moneyline's Kalshi event is the game series at the event every spread and total rung shares; a half refuses", () => {
+  const state = boardWithEdge(ML_WSU_KEY, 0.05);
+  const row = feed.describeLine(state.lines[ML_WSU_KEY], state);
+  assert.deepEqual(taker.kalshiMoneylineEventOf(row), { eventTicker: "KXNCAAFGAME-26SEP19DUQWSU" });
+  assert.match(taker.kalshiMoneylineEventOf({ ...row, periodTypeId: 2, period: "1H" }).detail, /only full-game moneylines place/);
+  assert.match(taker.kalshiMoneylineEventOf({ ...row, venueIds: { kalshiContracts: {} } }).detail, /no Kalshi spread or total rung/);
+  // A rung of another series is skipped, not a refusal.
+  const withQuarter = { ...row.venueIds.kalshiContracts, "Y-KXNCAAF1QTOTAL-26SEP19DUQWSU-14": {} };
+  assert.deepEqual(taker.kalshiMoneylineEventOf({ ...row, venueIds: { kalshiContracts: withQuarter } }), { eventTicker: "KXNCAAFGAME-26SEP19DUQWSU" });
+  const twoEvents = { ...row.venueIds.kalshiContracts, "Y-KXNCAAFTOTAL-26SEP26DUQWSU-52": {} };
+  assert.match(taker.kalshiMoneylineEventOf({ ...row, venueIds: { kalshiContracts: twoEvents } }).detail, /2 events/);
+});
+
+test("a moneyline's Kalshi market is the one of two on its event whose title names the row's team", () => {
+  const state = boardWithEdge(ML_WSU_KEY, 0.05);
+  const row = feed.describeLine(state.lines[ML_WSU_KEY], state);
+  const event = "KXNCAAFGAME-26SEP19DUQWSU";
+  const wsu = { ticker: `${event}-WSU`, event_ticker: event, yes_sub_title: "Washington St." };
+  const duq = { ticker: `${event}-DUQ`, event_ticker: event, yes_sub_title: "Duquesne" };
+  assert.deepEqual(taker.kalshiMoneylineFromMarkets(row, [duq, wsu], event), { ticker: `${event}-WSU`, side: "yes", sourceKey: null, derived: true });
+  assert.equal(taker.kalshiMoneylineFromMarkets({ ...row, sideIndex: 0 }, [duq, wsu], event).ticker, `${event}-DUQ`);
+  const tie = { ticker: `${event}-TIE`, event_ticker: event, yes_sub_title: "Tie" };
+  assert.match(taker.kalshiMoneylineFromMarkets(row, [duq, wsu, tie], event).detail, /lists 3 markets/);
+  assert.match(taker.kalshiMoneylineFromMarkets(row, [], event).detail, /lists 0 markets/);
+  assert.match(taker.kalshiMoneylineFromMarkets(row, [duq, { ...wsu, yes_sub_title: "Somebody" }], event).detail, /do not name/);
+  // A market of another event in the list is not counted.
+  assert.equal(taker.kalshiMoneylineFromMarkets(row, [duq, wsu, { ...wsu, event_ticker: "KXNCAAFGAME-X" }], event).ticker, `${event}-WSU`);
+});
