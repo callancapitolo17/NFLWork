@@ -233,6 +233,10 @@ from unabated_ticket.bets_service.taker_store import DECISION_REASONS, TakerStor
 log = logging.getLogger(__name__)
 
 POLL_TICK_SEC = 1.0
+# After a failed poll a source waits at least this long before the next try: the
+# fast cadences (Kalshi 10 s, Novig and Polymarket US 20 s) must not hammer a venue
+# that is down or refusing us. One success puts it back on its own cadence.
+FAILED_POLL_RETRY_SEC = 60.0
 # Sources polled on a thread of their own: Kalshi's first poll after a restart
 # is the slowest read in the service (throttled GETs per live market), and in
 # the shared loop every other venue waited behind it.
@@ -375,9 +379,18 @@ def run_source_once(source: Source, store: BetsStore) -> bool:
         return False
 
 
+def next_poll_delay(poll_sec: float, succeeded: bool) -> float:
+    """Seconds until a source's next poll: its own cadence, or at least
+    FAILED_POLL_RETRY_SEC after a failed one."""
+    if succeeded:
+        return poll_sec
+    return max(poll_sec, FAILED_POLL_RETRY_SEC)
+
+
 def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event,
               balance_book: BalanceBook | None = None) -> None:
-    """Run each source on its own cadence until `stop`. A store write that
+    """Run each source on its own cadence until `stop` (backed off to
+    FAILED_POLL_RETRY_SEC after a failure). A store write that
     raises (disk full, a locked file) is logged and retried next poll — the
     thread must outlive it, or the HTTP side would serve ageing data with no
     failed run to show for it."""
@@ -387,12 +400,13 @@ def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event,
         for source in sources:
             if now >= next_due[source.name]:
                 try:
-                    run_source_once(source, store)
+                    succeeded = run_source_once(source, store)
                 except Exception:  # noqa: BLE001 — the poll thread is the service's heartbeat
                     log.exception("store write failed for source %s; retrying next poll", source.name)
+                    succeeded = False
                 if balance_book is not None:
                     read_balance_once(source, balance_book)
-                next_due[source.name] = time.monotonic() + source.poll_sec
+                next_due[source.name] = time.monotonic() + next_poll_delay(source.poll_sec, succeeded)
         stop.wait(POLL_TICK_SEC)
 
 

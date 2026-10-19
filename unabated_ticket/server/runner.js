@@ -176,8 +176,9 @@ const TAKER_ORDER_TIMEOUT_MS = 45 * 1000;
 // Decisions held for the bets service while it is down; past this the oldest go (logged).
 const TAKER_LOG_MAX_UNSENT = 5000;
 const TAKER_LOG_ROWS_PER_POST = 200;
-// The panel polls the bets service every 30 s (panel.js BETS_POLL_MS).
-const BETS_POLL_MS = 30 * 1000;
+// The runner re-reads the bets every 10 s (the panel and phone every 30 s): the taker
+// sizes against these, and the venues' own polls are 10-20 s, so a fill is held fast.
+const BETS_POLL_MS = 10 * 1000;
 // A phone setting change shows within one scanner tick.
 const SETTINGS_POLL_MS = 10 * 1000;
 // Snapshots land every 1-5 min per league, so a 30 s pass misses no change.

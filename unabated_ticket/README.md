@@ -757,7 +757,7 @@ the phone; an older service leaves them panel-only in `chrome.storage.local`.
 The phone page shows the same tags, list, Skip and fold, computed by the
 runner (`/edges.json` rows carry `priceCheck`, `priceCheckTag` and
 `skipKey`; the body carries `priceCheck` and `skipped`); a tap on the phone
-shows at once and the runner's list catches up on its next bets read (30 s).
+shows at once and the runner's list catches up on its next bets read (10 s).
 
 ### Why an edge grew
 
@@ -1054,12 +1054,12 @@ Two kinds of source feed the flags:
 
 | Venue | Source | How it refreshes |
 |---|---|---|
-| Kalshi | `bets_service/sources/kalshi.py` (local service, signed REST) | every 60 s while the service runs |
-| Novig | `bets_service/sources/novig.py` (local service, the app's Portfolio REST feed on the account's own Auth0 refresh token, #116) | every 60 s while the service runs; no tab needed |
+| Kalshi | `bets_service/sources/kalshi.py` (local service, signed REST) | every 10 s while the service runs (60 s after a failed poll) |
+| Novig | `bets_service/sources/novig.py` (local service, the app's Portfolio REST feed on the account's own Auth0 refresh token, #116) | every 20 s while the service runs (60 s after a failed poll); no tab needed |
 | BetOnline | — (#115) | shows "no source configured" |
 | BFA (Betfastaction) | `bets_service/sources/bfa.py` (local service, the account's own Keycloak password login from `bet_logger/.env`; 2026-09-23) | open bets every 60 s, history every 300 s, while the service runs |
 | Wagerzon (the C account) | `bets_service/sources/wagerzon.py` (local service, the site's form login from `bet_logger/.env`; 2026-09-23) | every 300 s while the service runs |
-| Polymarket US (the CFTC app) | `bets_service/sources/polymarket_us.py` (local service, the account's own API key from `bet_logger/.env`, Ed25519-signed; 2026-09-23) | every 60 s while the service runs |
+| Polymarket US (the CFTC app) | `bets_service/sources/polymarket_us.py` (local service, the account's own API key from `bet_logger/.env`, Ed25519-signed; 2026-09-23) | every 20 s while the service runs (60 s after a failed poll) |
 | Bet105 | the panel itself (`extension/bet105.js`, your own login at app.bet105.ag in this Chrome — Cloudflare challenges anything else) → `POST /bet105.json`, parsed by `bets_service/sources/bet105.py`; open bets 2026-09-29, graded bets 2026-10-07 | every 5 min while the panel is open; open bets plus every graded wager with its result and settle time |
 | DraftKings | the panel itself (`extension/draftkings.js`, your own login at sportsbook.draftkings.com in this Chrome — Akamai's bot checks and a login code stop anything else) → `POST /draftkings.json`, parsed by `bets_service/sources/draftkings.py`; 2026-10-10 | every 5 min while the panel is open; every open bet plus the last 31 days of settled bets with their result |
 | ProphetX | — (#117) | shows "no source configured" |
@@ -1376,7 +1376,7 @@ Portfolio feed the app reads (issue #116):
   localStorage, and Auth0 revokes the whole chain when a rotated token is
   reused — copying the app's token would log the app out and kill the
   poller. A separate login is a separate chain; both live side by side.
-- **Polling** (`sources/novig.py`, every 60 s): refresh the access token
+- **Polling** (`sources/novig.py`, every 20 s): refresh the access token
   inside a 2-min margin (a rotated refresh token is rewritten at once), then
   `GET https://api.novig.us/nbx/v1/portfolio/{active,settled}?currency=CASH&sort=<tab>_recency&limit=50`
   with the app's `novig-client-capabilities: card_stack,player_props`
@@ -1828,7 +1828,7 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   forwards the browser's `Host` (the VM's tailnet name) to the loopback
   port. Entries must be bare lowercase host names — a scheme, port, path or
   wildcard stops the service at startup.
-- **Kalshi source** (`sources/kalshi.py`): every 60 s pulls fills since the
+- **Kalshi source** (`sources/kalshi.py`): every 10 s pulls fills since the
   last poll with a 60 s overlap (deduped on `trade_id`) and unsettled
   positions, plus one cached public GET per market and per event; a full
   fills re-pull once an hour is the reconcile, and it re-reads every cached
@@ -2001,7 +2001,7 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   code-fix flag), a postponed leg or a prop never.
 - **Polymarket US source** (`sources/polymarket_us.py`, 2026-09-23; the CFTC
   app at polymarket.us, not the international polymarket.com — Unabated lists
-  them as two books, so the venue key is `polymarket_us`): every 60 s two
+  them as two books, so the venue key is `polymarket_us`): every 20 s two
   signed GETs on `api.polymarket.us` — `/v1/portfolio/positions` (a slug →
   position map, `netPositionDecimal` positive = YES held, negative = NO) and
   `/v1/portfolio/activities` (newest first, paged until a page ends before the
@@ -2366,8 +2366,8 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
 | `BETS_SERVICE_URL` | `http://127.0.0.1:8094` | where `/bets.json` and `/settings.json` come from |
 
 - **Reads**: Unabated's public league snapshots (no login, ~6–8 MB/min with
-  every league on, as the panel); the bets service's `/bets.json` every 30 s
-  (the panel's cadence), applied exactly as the panel applies it
+  every league on, as the panel); the bets service's `/bets.json` every 10 s
+  (the panel and phone read it every 30 s), applied exactly as the panel applies it
   (`edgeRows.applyBetsPayload`); `/settings.json` every 10 s. A league change
   in the settings restarts the scan, as the panel's checkboxes do (NFL and
   CFB stay loaded either way).
@@ -2921,7 +2921,7 @@ The Kalshi rules above hold unless this table says otherwise.
 | Location | a 451 (`GEOLOCATION_EXPIRED`, Novig's 3-day phone location check) is `geo_blocked`: nothing placed, the runner shows it in `/taker.json`; open the Novig app on the phone in a legal state to clear it |
 
 **Bets.** `sources/novig_subaccount.py` reads the sub-account's fills on the
-bot's key every 30 s (source `novig_bot`, ids `novig:<orderId>:bot`), kept
+bot's key every 20 s (source `novig_bot`, ids `novig:<orderId>:bot`), kept
 apart from Cal's app account (`novig`). Novig's catalog names neither the
 board's teams nor its periods, so each record takes them from the board line
 stored with the order (`novig_taker_orders`); an order the desk did not place
