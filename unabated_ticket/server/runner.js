@@ -100,6 +100,9 @@
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
+// Threads: main() runs createRunner on a worker thread (server/board_thread.js)
+// and keeps only the HTTP server, which answers the pages from that thread's
+// last copy, so no board walk holds up a phone reply.
 // Side effects: none on disk — no DuckDB, no files. Its writes go through the
 // bets service: the closing fairs (bets.duckdb::bet_closing_fairs), the
 // crosswalk rows, fill fairs and fill books above (insert-only tables) and

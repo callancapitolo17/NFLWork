@@ -2347,6 +2347,22 @@ for the league that landed (`scanner.getLeagueLines` / `getLeagueVersion`).
 Before, five passes over the whole ~1.2M-line board per landing froze the
 runner for 6-8 s at a time (CPU profile on the VM, 2026-10-18).
 
+The board runs on its own thread (2026-10-19, `server/board_thread.js`):
+a worker thread holds the whole runner (the scanner and the board, the bets
+and settings polls, learning, closing fairs, the taker's passes and order
+sends, every page and quote). The main thread holds only the HTTP server:
+`/edges.json`, `/teasers.json`, `/scenarios.json` and `/taker.json` are
+served at once from the board thread's last copy when it is under a minute
+old, and a new copy is built for the next ask (so a page polling every 15 s
+reads a list at most one poll old; `?fresh=1` and an older copy wait for a
+build). `/health` answers from the health the board thread posts every 5 s,
+with `boardThread: {state, startedAt, restarts, lastExit}`. `/attach.json`
+and the Place quotes are one message to the board thread, answered after
+the work in progress. A board thread that dies fails the requests waiting
+on it with 503 and is replaced after 5 s with a fresh board (as a restart
+gives; the taker fails closed until it is live). `profile_stalls.js`
+profiles both threads.
+
 ```bash
 # Node 18+ (Ubuntu 22.04's apt node is v12 — install 20 or 22 from NodeSource or nvm). No npm install.
 node unabated_ticket/server/runner.js       # http://127.0.0.1:8095/edges.json
