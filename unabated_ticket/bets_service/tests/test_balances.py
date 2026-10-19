@@ -141,3 +141,38 @@ def test_balances_route(tmp_path):
         store.close()
     assert response.status == 200
     assert body["balances"]["kalshi"]["cash"] == 10.0
+
+
+def test_poll_loop_reads_every_balance_before_the_first_fetch():
+    import threading as _threading
+    order = []
+    stop = _threading.Event()
+
+    class Slow:
+        name = "slow"
+        poll_sec = 60
+
+        def fetch(self):
+            order.append("slow fetch")
+            stop.set()
+            return []
+
+        def balance(self):
+            order.append("slow balance")
+            return {"cash": 1.0}
+
+    class Quick(Slow):
+        name = "quick"
+
+        def balance(self):
+            order.append("quick balance")
+            return {"cash": 2.0}
+
+    class Store:
+        def __getattr__(self, _name):
+            return lambda *args, **kwargs: None
+
+    book = BalanceBook()
+    service.poll_loop([Slow(), Quick()], Store(), stop, book)
+    assert order[:3] == ["slow balance", "quick balance", "slow fetch"]
+    assert book.snapshot()["quick"]["cash"] == 2.0

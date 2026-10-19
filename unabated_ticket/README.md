@@ -2623,7 +2623,7 @@ visible. Its one write is the Bets page's Remove / Restore.
   (`/portfolio/summary?currency=CASH`) and Polymarket US
   (`/v1/account/balances`, no in-bets figure), each on the source's own login;
   fields seen in real responses 2026-10-13/16. Readings live in memory only
-  (`bets_service/balances.py`): a restart shows nothing until the next poll, a
+  (`bets_service/balances.py`): every book is read once at startup, before the first (slow) poll, a
   failed read keeps the last numbers with how old they are, and a book never
   read shows "unavailable", never $0, and stays out of the total.
 - **Open bets** (Open page) are split into **Upcoming** and, when any

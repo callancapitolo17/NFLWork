@@ -5,12 +5,13 @@ A source that can read its account balance defines `balance() -> dict` with
     inBets     dollars in open bets (Kalshi: what the open positions are worth now)
     available  dollars the book lets you bet now (credit included), or None
     creditLimit dollars of credit, or None
-and raises on any failure. The poll loop calls it after each fetch().
+and raises on any failure. The poll loop calls it for every source at startup,
+then after each fetch().
 
 Inputs:  the sources' own sessions (no new logins).
 Outputs: GET /balances.json -> {generatedAt, balances: {venue: reading}}.
-Side effects: none on disk. Readings live in memory only, so a restart shows
-         nothing until each venue's next poll; a failed read keeps the last good
+Side effects: none on disk. Readings live in memory only (a restart re-reads
+         every venue at once); a failed read keeps the last good
          numbers and says why, and a venue never read reads "unavailable", never $0.
 """
 import logging
