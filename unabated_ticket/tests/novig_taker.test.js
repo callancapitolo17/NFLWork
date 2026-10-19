@@ -275,3 +275,93 @@ test("a main spread refuses when Novig lists the game with home and away swapped
   });
   assert.match(taker.novigContractOf(duquesne, taker.novigOutcomeIndex([misnamed, market()])).detail, /Novig lists rung/);
 });
+
+// ---- moneylines (the Ticket's Place only) ------------------------------------
+// Unabated carries no Novig id on a moneyline: the game's other rungs find
+// Novig's event, period and team names, and the event's one MONEY market is it.
+const ML_WSU_KEY = "411181220:ms105:si1:tid717";
+const MONEY_MARKET = "0f0f0f0f-1111-4222-8333-111111111111";
+const MONEY_WSU = "0f0f0f0f-1111-4222-8333-0000000000e1";
+const MONEY_DUQ = "0f0f0f0f-1111-4222-8333-0000000000e2";
+
+function moneyMarket(fields = {}) {
+  return market({
+    marketId: MONEY_MARKET, marketType: "MONEY", strike: undefined,
+    outcomes: [{ outcomeId: MONEY_DUQ, name: "Duquesne", status: "TBD" }, { outcomeId: MONEY_WSU, name: "Washington St", status: "TBD" }],
+    ...fields,
+  });
+}
+
+function moneylineRow(state, sideIndex = 1) {
+  return { ...lineRow(state, ML_WSU_KEY), sideIndex };
+}
+
+test("a moneyline takes its event's one MONEY market, each outcome told by the team's name on Novig's spread rungs", () => {
+  const state = board();
+  const index = taker.novigOutcomeIndex([market(), moneyMarket()]);
+  const wsu = taker.novigMoneylineContract(moneylineRow(state, 1), index, state);
+  assert.deepEqual(wsu, { outcomeId: MONEY_WSU, marketId: MONEY_MARKET, otherOutcomeId: MONEY_DUQ, teamText: "washington st", derived: true });
+  assert.equal(taker.novigMarketMismatch(moneyMarket(), EVENT, moneylineRow(state, 1), wsu), null);
+  assert.deepEqual(taker.novigMoneylineContract(moneylineRow(state, 0), index, state),
+    { outcomeId: MONEY_DUQ, marketId: MONEY_MARKET, otherOutcomeId: MONEY_WSU, teamText: "duquesne", derived: true });
+  // The market check reads the outcome's name again: renamed since the catalog read, refused.
+  const renamed = moneyMarket({ outcomes: [{ outcomeId: MONEY_DUQ, name: "Duquesne" }, { outcomeId: MONEY_WSU, name: "Wazzu" }] });
+  assert.match(taker.novigMarketMismatch(renamed, EVENT, moneylineRow(state, 1), wsu), /is not the row's team/);
+  // The bot never resolves one: its path refuses as before.
+  assert.equal(taker.novigContractOf(moneylineRow(state, 1), index).reason, "no_outcome");
+});
+
+test("with no spread rung on Novig, a moneyline's outcomes are told by Unabated's team names", () => {
+  const state = board();
+  const index = taker.novigOutcomeIndex([totalMarket("0c0c0c0c-1111-4222-8333-515151515151", "51.5", OVER_515, UNDER_515), moneyMarket()]);
+  assert.deepEqual(taker.novigMoneylineContract(moneylineRow(state, 1), index, state),
+    { outcomeId: MONEY_WSU, marketId: MONEY_MARKET, otherOutcomeId: MONEY_DUQ, teamText: "washington st", derived: true });
+  const strangers = moneyMarket({ outcomes: [{ outcomeId: MONEY_DUQ, name: "Team A" }, { outcomeId: MONEY_WSU, name: "Team B" }] });
+  const unnamed = taker.novigOutcomeIndex([totalMarket("0c0c0c0c-1111-4222-8333-515151515151", "51.5", OVER_515, UNDER_515), strangers]);
+  assert.match(taker.novigMoneylineContract(moneylineRow(state, 1), unnamed, state).detail, /do not name Duquesne and Washington State one each/);
+});
+
+test("a moneyline refuses on no market, two markets, a draw, names that disagree, or a spread rung read swapped", () => {
+  const state = board();
+  const row = moneylineRow(state, 1);
+  const refused = (markets) => taker.novigMoneylineContract(row, taker.novigOutcomeIndex(markets), state);
+  assert.match(refused([market()]).detail, /0 open Novig MONEY markets/);
+  assert.match(refused([market(), moneyMarket(), moneyMarket({ marketId: "0f0f0f0f-1111-4222-8333-222222222222", outcomes: [{ outcomeId: "x1", name: "Duquesne" }, { outcomeId: "x2", name: "Washington St" }] })]).detail, /2 open Novig MONEY markets/);
+  assert.match(refused([market(), moneyMarket({ outcomes: [...moneyMarket().outcomes, { outcomeId: "x3", name: "Draw" }] })]).detail, /3 outcomes/);
+  // Both outcomes read as one team, or neither as either: refused.
+  assert.match(refused([market(), moneyMarket({ outcomes: [{ outcomeId: MONEY_DUQ, name: "Washington St" }, { outcomeId: MONEY_WSU, name: "Washington St" }] })]).detail, /do not name/);
+  assert.match(refused([market(), moneyMarket({ outcomes: [{ outcomeId: MONEY_DUQ, name: "Team A" }, { outcomeId: MONEY_WSU, name: "Team B" }] })]).detail, /do not name/);
+  // One outcome told by Novig's spread name ("Washington St"), the other is the other team.
+  assert.equal(refused([market(), moneyMarket({ outcomes: [{ outcomeId: MONEY_DUQ, name: "DUQ" }, { outcomeId: MONEY_WSU, name: "Washington St" }] })]).outcomeId, MONEY_WSU);
+  // A neutral site listed home/away swapped: the spread rung's strike gives it away.
+  assert.match(refused([market({ strike: "35.5" }), moneyMarket()]).detail, /Novig lists rung/);
+  assert.match(refused([]).detail, /no Novig rung on this game/);
+  assert.equal(taker.novigMoneylineContract({ ...row, betTypeId: 2 }, new Map(), state).reason, "no_outcome");
+});
+
+test("a half's moneyline refuses: its winner market may pay a tie as a loss", () => {
+  const state = board();
+  const row = { ...moneylineRow(state, 1), periodTypeId: 2, period: "1H" };
+  const half = taker.novigOutcomeIndex([market(), moneyMarket({ marketType: "MONEY_1H" })]);
+  assert.deepEqual(taker.novigMoneylineContract(row, half, state),
+    { reason: "no_outcome", detail: "only full-game moneylines place: a half's winner market may pay a tie as a loss" });
+});
+
+test("a pick'em spread rung is skipped; both spread names known tell a differently spelled outcome by elimination", () => {
+  const state = board();
+  // Put a pick'em rung on the WSU spread ladder: its name cannot tell the side, the -35.5 rung still can.
+  const outcomes = state.events[123742].venueIds.novigOutcomes;
+  outcomes["pk-wsu"] = { ...outcomes[WSU_OUTCOME], points: 0, lineKey: null };
+  const pick = market({ marketId: "0b0b0b0b-1111-4222-8333-000000000000", strike: "0", outcomes: [{ outcomeId: "pk-wsu", name: "Washington St PK" }, { outcomeId: "pk-duq", name: "Duquesne PK" }] });
+  const index = taker.novigOutcomeIndex([market(), pick, moneyMarket({ outcomes: [{ outcomeId: MONEY_DUQ, name: "DUQ" }, { outcomeId: MONEY_WSU, name: "Washington St" }] })]);
+  assert.deepEqual(taker.novigMoneylineContract(moneylineRow(state, 0), index, state),
+    { outcomeId: MONEY_DUQ, marketId: MONEY_MARKET, otherOutcomeId: MONEY_WSU, teamText: "duq", derived: true });
+});
+
+test("a moneyline whose outcome names only part of a team, or a team sharing a city, refuses rather than guess", () => {
+  const state = board();
+  const row = { ...moneylineRow(state, 1), awayTeam: "Miami (OH)", homeTeam: "Miami" };
+  const totals = totalMarket("0c0c0c0c-1111-4222-8333-515151515151", "51.5", OVER_515, UNDER_515);
+  const miami = moneyMarket({ outcomes: [{ outcomeId: MONEY_DUQ, name: "Miami" }, { outcomeId: MONEY_WSU, name: "Miami" }] });
+  assert.match(taker.novigMoneylineContract(row, taker.novigOutcomeIndex([totals, miami]), state).detail, /do not name/);
+});

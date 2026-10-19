@@ -1004,8 +1004,8 @@ function createRunner(deps) {
       return { ok: false, reason: "no_line", detail: `the board holds ${found.length} Kalshi lines for game ${spec.eventId} at that market, side and number` };
     }
     const row = feedLib.describeLine(found[0], board);
-    const contract = taker.resolveKalshiContract(row, board);
     const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName };
+    const contract = await kalshiPlaceContractOf(row, board);
     if (contract.reason) return { ok: false, ...fields, reason: contract.reason, detail: contract.detail };
     const position = { ...fields, ticker: contract.ticker, side: contract.side, derivedTicker: contract.derived === true };
     let book;
@@ -1026,6 +1026,24 @@ function createRunner(deps) {
       ok: true, ...position, ask: quote.ask, allIn: Math.round(taker.kalshiAllInPrice(quote.ask) * 1e6) / 1e6, depth: quote.depth,
       kalshiBaseUrl,
     };
+  }
+
+  // The Kalshi contract Place buys: the bot's own reading of the rungs, and
+  // for a moneyline whose team code no full-game spread rung gives (a game
+  // without one, a half), Kalshi's own market list for the game's winner
+  // event (taker.kalshiMoneylineEventOf / kalshiMoneylineFromMarkets).
+  async function kalshiPlaceContractOf(row, board) {
+    const contract = taker.resolveKalshiContract(row, board);
+    if (!contract.reason || row.betTypeId !== MONEYLINE_BET_TYPE_ID) return contract;
+    const event = taker.kalshiMoneylineEventOf(row);
+    if (event.reason) return { reason: event.reason, detail: `${contract.detail}; ${event.detail}` };
+    let body;
+    try {
+      body = await getServiceJson(kalshiFetch, `${kalshiBaseUrl}/markets?limit=20&event_ticker=${encodeURIComponent(event.eventTicker)}`);
+    } catch (error) {
+      return { reason: "no_ticker", detail: `${contract.detail}; Kalshi's markets on ${event.eventTicker} unread: ${error.message}` };
+    }
+    return taker.kalshiMoneylineFromMarkets(row, body && body.markets, event.eventTicker);
   }
 
   // The Ticket's Place button on Novig (bets_service/novig_place.py asks):
@@ -1068,7 +1086,7 @@ function createRunner(deps) {
     if (!board) return { answer: { ok: false, reason: "no_board", detail: "the board has not loaded yet" }, catalog: null };
     const found = linesOfEvent(board, spec.eventId).filter((line) => line.bookId === taker.NOVIG_BOOK_ID
       && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
-      && line.sideIndex === spec.sideIndex && (line.points ?? null) === spec.points);
+      && line.sideIndex === spec.sideIndex && (spec.betTypeId === MONEYLINE_BET_TYPE_ID || (line.points ?? null) === spec.points));
     if (found.length !== 1) {
       return { answer: { ok: false, reason: "no_line", detail: `the board holds ${found.length} Novig lines for game ${spec.eventId} at that market, side and number` }, catalog: null };
     }
@@ -1077,12 +1095,15 @@ function createRunner(deps) {
     let catalog;
     let contract;
     try {
+      // A moneyline has no Novig rung of its own: Place finds it off the game's other rungs (never the bot).
+      const contractOf = (index) => (row.betTypeId === MONEYLINE_BET_TYPE_ID
+        ? taker.novigMoneylineContract(row, index, board) : taker.novigContractOf(row, index));
       catalog = await novigCatalogFor([row], NOVIG_CATALOG_REUSE_MS);
-      contract = taker.novigContractOf(row, catalog.index);
+      contract = contractOf(catalog.index);
       // A market listed since the reused read: one fresh read before giving up.
       if (contract.reason && catalog.reused) {
         catalog = await novigCatalogFor([row], 0);
-        contract = taker.novigContractOf(row, catalog.index);
+        contract = contractOf(catalog.index);
       }
     } catch (error) {
       return { answer: { ok: false, ...fields, reason: "no_outcome", detail: `Novig's catalog unread: ${error.message}` }, catalog: null };

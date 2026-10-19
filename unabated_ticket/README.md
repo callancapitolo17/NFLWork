@@ -2938,7 +2938,7 @@ The Kalshi rules above hold unless this table says otherwise.
 
 | Rule | Novig |
 |---|---|
-| Lines | spreads and totals whose rung carries a Novig outcome id; a main number whose rung Unabated's ladder leaves out takes the one open market in Novig's catalog on its siblings' event and market type at its strike, the outcome by its name (refused when the rungs disagree, or zero or two markets or outcomes fit; the bot and Novig Place alike, 2026-10-17); moneylines never trade (Unabated lists no Novig moneyline rung) |
+| Lines | spreads and totals whose rung carries a Novig outcome id; a main number whose rung Unabated's ladder leaves out takes the one open market in Novig's catalog on its siblings' event and market type at its strike, the outcome by its name (refused when the rungs disagree, or zero or two markets or outcomes fit; the bot and Novig Place alike, 2026-10-17); moneylines never trade (Unabated lists no Novig moneyline rung; only Novig Place finds them in the catalog) |
 | Price | buying an outcome crosses the best resting order on the other outcome at 1 − its price (`/v3/public/catalog/markets/<id>/book`); fee 0 pregame; a market whose fee is `ALWAYS` is refused (`market_mismatch`) |
 | Size | a Novig contract pays 1c: qty = floor(stake × 100 / price), cut to the depth; Kelly bankroll `NOVIG_KELLY_BANKROLL` ($2,000 like Kalshi's, its own parameter, separate from the $500 cap) |
 | Ceiling | open bot cost on Novig never above $500 (`OPEN_COST_CEILING`), its own budget beside Kalshi's |
@@ -3025,7 +3025,17 @@ from wherever the phone reaches the VM over Tailscale.
 
 1. The bets service asks the runner `GET /kalshi_quote.json?eventId&periodTypeId&betTypeId&sideIndex&points`
    for the line's ticker and Kalshi's live ask (the taker's own contract and
-   market checks: `resolveKalshiContract`, `marketMismatch`, `quoteOf`).
+   market checks: `resolveKalshiContract`, `marketMismatch`, `quoteOf`). A
+   full-game moneyline whose team code no spread rung gives (Kalshi's spread
+   markets often list one team only) is found in Kalshi's own market list
+   (2026-10-19, 0.30.0): every Kalshi spread or total rung on the game names
+   one league and event (`kalshiMoneylineEventOf`), `KX<league>GAME` must list
+   exactly two markets on that event, and the one whose title names the row's
+   team is bought YES (`kalshiMoneylineFromMarkets`); a tie market, a third
+   market or a title naming neither team refuses. Place only, never the bot.
+   A half's moneyline refuses at both venues: whether a two-way half winner
+   voids a tie or pays it as a loss is unchecked, and bought at Unabated's
+   tie-no-bet fair a contract that loses the tie overpays by about P(tie).
 2. It refuses, sending nothing, when: the game has started (the earlier of
    Unabated's and Kalshi's start, see Two clocks above) or its start is
    unknown; the live all-in (ask + 7% fee) is more than **0.1c worse** than the
@@ -3053,8 +3063,7 @@ FROM manual_orders ORDER BY placed_at DESC;
 ### Place on Novig from the Ticket (`extension/place.js`, `bets_service/novig_place.py`)
 
 Plan: `novig_place_plan.md` in the project folder (Cal, 2026-10-16). The same
-button on a pregame Novig spread or total (Unabated carries no Novig outcome id
-on a moneyline), **Bet $X at Novig**, ONE order from Place's own Novig
+button on every pregame Novig line, **Bet $X at Novig**, ONE order from Place's own Novig
 sub-account, never the bot's (no key trades the app balance). It shares the
 Novig taker's order client (`novig_orders.py`) and Novig reads. **On only when
 `NOVIG_PLACE_KEY_ID` is set** and Novig proves the key a trading key on its own
@@ -3069,7 +3078,16 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
    best resting order on the other outcome) and checks Novig's market and
    event the taker's way (`novigContractOf`, `novigQuoteOf`,
    `novigMarketMismatch`: open, pregame, no pregame fee, the row's type,
-   number and side by the outcome's own name). The catalog is reused when
+   number and side by the outcome's own name). A moneyline, which Unabated
+   gives no Novig outcome id (2026-10-19, 0.30.0, Place only, never the bot,
+   full game only): the game's other Novig rungs must sit on one Novig event,
+   and that event's one `MONEY` market must have two outcomes, each told by
+   the name Novig gives the team on its spread rungs (which must read the way
+   Unabated lists them, so a home/away swap refuses; a pick'em rung is skipped),
+   else by Unabated's team name, one told making the other the other team
+   (`novigMoneylineContract`); the market check then requires the outcome's
+   name to still be that team's. A draw, two markets or names that fit
+   neither team refuse. The catalog is reused when
    under a minute old (read fresh when the outcome is missing from it); the
    book, market and event are read live and at once. The bets service waits
    up to 30 s for this quote (Kalshi's 10 s was too short: 7-18 s on the VM,
@@ -3652,6 +3670,15 @@ in red.
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-19 — Place on any pregame line (0.30.0).** Cal: "It should be able
+to place anything", Kalshi and Novig alike; he picked A, finding each line in
+the venue's own market list. Novig moneylines get the button (found off the
+game's other rungs in Novig's catalog), and Kalshi full-game moneylines no
+spread rung codes (the side Kalshi's one-team spread markets leave out) are
+found in Kalshi's game series. Any mismatch refuses. Half moneylines refuse at
+both venues until their tie rule is checked; live lines stay off (#187: no
+orders on started games). The bots are unchanged.
 
 **2026-10-16 — Place on Novig from the Ticket (0.29.0).** Cal approved the
 plan with funding A (`novig_subaccount_setup.py open --name place --fund`,

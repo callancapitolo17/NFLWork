@@ -7,7 +7,7 @@ const LINE = { bookId: 105, eventId: 123742, periodTypeId: 1, betTypeId: 2, side
 const NOVIG_LINE = { ...LINE, bookId: 89, price: -208, sourcePrice: 0.675 };
 const READS = { kalshi: "2026-10-16T21:00:00Z", novig: "2026-10-16T21:00:10Z" };
 
-test("only a pregame Kalshi line, or a pregame Novig spread or total, gets the button", () => {
+test("every pregame Kalshi or Novig line gets the button, moneylines included; live lines and other books never", () => {
   const ids = { eventId: 1, periodTypeId: 1, betTypeId: 3, sideIndex: 0 };
   assert.equal(place.canPlace({ ...ids, bookId: 105, live: null }), true);
   assert.equal(place.canPlace({ ...ids, bookId: 105, live: { period: 2 } }), false);
@@ -15,8 +15,8 @@ test("only a pregame Kalshi line, or a pregame Novig spread or total, gets the b
   assert.equal(place.canPlace({ ...ids, eventId: null, bookId: 105 }), false);
   assert.equal(place.canPlace({ ...ids, betTypeId: 1, bookId: 105, live: null }), true);
   assert.equal(place.canPlace({ ...ids, bookId: 89, live: null }), true);
-  // Unabated carries no Novig outcome id on a moneyline.
-  assert.equal(place.canPlace({ ...ids, betTypeId: 1, bookId: 89, live: null }), false);
+  // A Novig moneyline too: the runner finds it in Novig's catalog.
+  assert.equal(place.canPlace({ ...ids, betTypeId: 1, bookId: 89, live: null }), true);
   assert.equal(place.canPlace({ ...ids, bookId: 89, live: { period: 2 } }), false);
 });
 

@@ -105,7 +105,10 @@ def request(**changes):
 
 def test_validate_names_what_is_wrong():
     assert validate_novig_place_request({**BODY, "clickId": "abc12345-0001"}).startswith("clickId")
-    assert validate_novig_place_request({**BODY, "betTypeId": 1}).startswith("betTypeId")
+    assert validate_novig_place_request({**BODY, "betTypeId": 4}).startswith("betTypeId")
+    # A moneyline has no number: whatever the Ticket sent is dropped.
+    assert validate_novig_place_request({**BODY, "betTypeId": 1, "points": None})["points"] is None
+    assert validate_novig_place_request({**BODY, "betTypeId": 1})["points"] is None
     assert validate_novig_place_request({**BODY, "points": None}).startswith("points")
     assert validate_novig_place_request({**BODY, "ticketAllIn": 1.0}).startswith("ticketAllIn")
     assert validate_novig_place_request({**BODY, "novigReadAt": None}).startswith("novigReadAt")
@@ -128,6 +131,12 @@ def test_a_click_sends_one_ioc_buy_at_the_live_price_in_1c_contracts(store):
     assert result["status"] == "filled"
     assert result["cost"] == pytest.approx(49.99725)
     assert result["message"] == "Bet $50.00 at 67.5¢ on Novig to win $24.07."
+
+
+def test_a_moneyline_click_asks_the_runner_with_no_number(store):
+    desk = desk_with(store, ScriptedNovig())
+    desk.place(request(betTypeId=1, points=None))
+    assert desk.quotes == [{"eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 1, "sideIndex": 1, "points": None}]
 
 
 def test_the_board_line_is_kept_so_places_subaccount_read_names_the_bet(store):
@@ -355,7 +364,7 @@ def test_the_route_places_and_refuses_a_bad_body_or_no_order_client(serve_with):
     status, reply = post_place(url, BODY)
     assert status == 200 and reply["ok"] is True and reply["status"] == "filled"
     assert desk.requests == [validate_novig_place_request(BODY)]
-    status, reply = post_place(url, {**BODY, "betTypeId": 1})
+    status, reply = post_place(url, {**BODY, "betTypeId": 4})
     assert status == 400 and "betTypeId" in reply["error"]
     status, reply = post_place(serve_with(None), BODY)
     assert status == 503 and "no Place Novig key" in reply["error"]
