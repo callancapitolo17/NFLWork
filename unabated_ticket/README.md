@@ -2359,7 +2359,8 @@ build). `/health` answers from the health the board thread posts every 5 s,
 with `boardThread: {state, startedAt, restarts, lastExit}`. `/attach.json`
 and the Place quotes are one message to the board thread, answered after
 the work in progress. A board thread that dies fails the requests waiting
-on it with 503 and is replaced after 5 s with a fresh board (as a restart
+on it with 503 and is replaced after 5 s (doubling per death in a row, up
+to 5 min; reset after 10 min alive) with a fresh board (as a restart
 gives; the taker fails closed until it is live). `profile_stalls.js`
 profiles both threads.
 
@@ -3028,7 +3029,9 @@ from wherever the phone reaches the VM over Tailscale.
    Ticket's price (better always goes); the other side of the market is held
    (a buy there would sell it); an earlier Place on the same game, at either
    venue, may have filled after the read of its venue the stake was sized on
-   (`kalshiReadAt`, the bets payload's `sources.kalshi.fetchedAt`;
+   (`kalshiReadAt`, the bets payload's `sources.kalshi.fetchedAt`: on the
+   phone, edges.json's `betsService.sources`, the runner's read its stake
+   was sized on, since 2026-10-19;
    `novigReadAt`, or every Novig Place when Novig was never read); the click
    id was already sent.
 3. It sends one immediate-or-cancel limit at the live ask for
