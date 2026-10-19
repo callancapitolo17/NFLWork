@@ -1319,6 +1319,10 @@ test("board thread: the HTTP routes answer exactly what the runner builds, throu
     assert.deepEqual([missing.status, missing.body.error], [404, 'no open bet "nope"']);
     const health = await get("/health");
     assert.deepEqual([health.status, health.body.boardThread.state, health.body.scanner.phase], [200, "running", "starting"]);
+    assert.deepEqual((await get("/taker.json")).body.decisions, same(runner.takerPayload()).decisions);
+    const badQuote = await get("/kalshi_quote.json?eventId=x");
+    assert.deepEqual([badQuote.status, badQuote.body.error], [400, 'eventId must be a whole number, got "x"']);
+    assert.equal((await get("/novig_quote.json?eventId=1&periodTypeId=1&betTypeId=2&sideIndex=0&points=99")).body.reason, "no_line");
   } finally {
     await new Promise((resolve) => server.close(resolve));
     client.stop();
@@ -1384,7 +1388,24 @@ test("board thread: a thread that dies fails what waits with 503, drops its copi
   spawned[2].exit(1);
   assert.deepEqual(restarts.map((entry) => entry.ms), [5000, 10000, 5000]);
   client.stop();
-  assert.equal(restarts.length, 3);
+  restarts[2].fn();
+  assert.deepEqual([spawned.length, client.health().boardThread.state, client.health().ok], [3, "stopped", false]);
+});
+
+test("board thread: /health is down while the thread posts nothing for 15 s; a fresh build's copy is the one served next", async () => {
+  const runner = countingRunner();
+  const clock = { now: NOW };
+  const { client, spawned } = boardClient([runner], clock);
+  assert.equal(client.health().ok, true);
+  spawned[0].emit("message", { type: "health", health: { ok: true, scanner: { phase: "live" } } });
+  clock.now += boardThread.HEALTH_STALE_MS;
+  assert.deepEqual([client.health().ok, client.health().scanner.phase], [true, "live"]);
+  clock.now += 1;
+  assert.equal(client.health().ok, false);
+  assert.equal(JSON.parse((await client.edgesPayload()).text).build, 1);
+  assert.equal(JSON.parse((await client.edgesPayload({ fresh: true })).text).build, 2);
+  assert.equal(JSON.parse((await client.edgesPayload()).text).build, 2);
+  client.stop();
 });
 
 test("board thread: the real worker boots board_thread.js with runner.js and posts its health", async () => {

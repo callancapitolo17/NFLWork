@@ -14,7 +14,8 @@
 //       request (so a page polling every 15 s reads a list at most one poll
 //       old); an older or missing copy, or ?fresh=1, waits for a build.
 //   /health  from the health the board thread posts every HEALTH_POST_MS, plus
-//       the board thread's own state (running, restarting, restarts).
+//       the board thread's own state (running, restarting, restarts); ok is
+//       false while it restarts or has posted nothing for HEALTH_STALE_MS.
 //   /attach.json, /kalshi_quote.json, /novig_quote.json  one message to the
 //       board thread, answered when it is free (after the work in progress).
 // If the board thread dies, every waiting request answers 503, the copies are
@@ -28,6 +29,8 @@ const { Worker, isMainThread, parentPort, workerData } = require("node:worker_th
 // A copy this young is served without waiting; the phone polls every 15 s, the tracker every 60 s.
 const PAYLOAD_SERVE_MAX_AGE_MS = 60 * 1000;
 const HEALTH_POST_MS = 5 * 1000;
+// No health from the board thread for this long: it is stuck, and /health says ok: false.
+const HEALTH_STALE_MS = 3 * HEALTH_POST_MS;
 // A dead board thread is replaced after BOARD_RESTART_DELAY_MS, doubling for
 // each death in a row up to BOARD_RESTART_MAX_DELAY_MS (a thread that dies on
 // every boot must not re-download every league every few seconds); a thread
@@ -80,6 +83,7 @@ function createBoardClient(options) {
   // payload name -> the build in flight (a Promise of its RawJson)
   const builds = new Map();
   let workerHealth = null;
+  let healthPostedAt = null;
 
   function start() {
     stopped = false;
@@ -98,6 +102,7 @@ function createBoardClient(options) {
   function onMessage(message) {
     if (message.type === "health") {
       workerHealth = message.health;
+      healthPostedAt = now();
       return;
     }
     if (message.type !== "reply") return;
@@ -110,7 +115,7 @@ function createBoardClient(options) {
 
   // Every waiting request fails, the copies built on the dead board go, and
   // (unless stopping) a new board thread starts after a pause that grows while
-// threads keep dying.
+  // threads keep dying.
   function onExit(exited, code) {
     if (exited !== worker) return;
     worker = null;
@@ -120,6 +125,7 @@ function createBoardClient(options) {
     copies.clear();
     builds.clear();
     workerHealth = null;
+    healthPostedAt = null;
     if (stopped) return;
     deathsInARow = now() - startedAt >= BOARD_HEALTHY_RUN_MS ? 1 : deathsInARow + 1;
     const delayMs = Math.min(BOARD_RESTART_DELAY_MS * 2 ** (deathsInARow - 1), BOARD_RESTART_MAX_DELAY_MS);
@@ -169,12 +175,16 @@ function createBoardClient(options) {
   }
 
   function health() {
+    const silentMs = healthPostedAt === null ? null : now() - healthPostedAt;
     const boardThread = {
       state: worker ? "running" : (stopped ? "stopped" : "restarting"),
       startedAt: startedAt === null ? null : new Date(startedAt).toISOString(), restarts, lastExit,
+      healthPostedAt: healthPostedAt === null ? null : new Date(healthPostedAt).toISOString(),
     };
-    if (!workerHealth) return { ok: true, scanner: { phase: "starting", error: null }, boardThread };
-    return { ...workerHealth, boardThread };
+    // Up while starting (no health posted yet); down while restarting or silent past HEALTH_STALE_MS.
+    const ok = Boolean(worker) && (silentMs === null || silentMs <= HEALTH_STALE_MS);
+    if (!workerHealth) return { ok, scanner: { phase: "starting", error: null }, boardThread };
+    return { ...workerHealth, ok, boardThread };
   }
 
   function stop() {
@@ -197,8 +207,8 @@ function createBoardClient(options) {
 }
 
 // The board thread: the whole runner, answering the main thread's calls.
-//   port     the parent port; config  runner.js configFromEnv's result
-//   runner   createRunner's result (built by runBoardThread)
+//   port    the parent port
+//   runner  createRunner's result (built by runBoardThread)
 function serveBoardCalls(port, runner, logWarning) {
   const methods = {
     async buildPayload(name, fresh) {
@@ -246,7 +256,7 @@ function runBoardThread(port, config) {
 }
 
 module.exports = {
-  PAYLOAD_SERVE_MAX_AGE_MS, HEALTH_POST_MS, BOARD_RESTART_DELAY_MS, BOARD_RESTART_MAX_DELAY_MS, BOARD_HEALTHY_RUN_MS, PAYLOAD_METHODS,
+  PAYLOAD_SERVE_MAX_AGE_MS, HEALTH_POST_MS, HEALTH_STALE_MS, BOARD_RESTART_DELAY_MS, BOARD_RESTART_MAX_DELAY_MS, BOARD_HEALTHY_RUN_MS, PAYLOAD_METHODS,
   RawJson, createBoardClient, serveBoardCalls,
 };
 

@@ -2355,8 +2355,11 @@ sends, every page and quote). The main thread holds only the HTTP server:
 served at once from the board thread's last copy when it is under a minute
 old, and a new copy is built for the next ask (so a page polling every 15 s
 reads a list at most one poll old; `?fresh=1` and an older copy wait for a
-build). `/health` answers from the health the board thread posts every 5 s,
-with `boardThread: {state, startedAt, restarts, lastExit}`. `/attach.json`
+build; with the bets poll every 10 s, a list can stand on bets read up to
+~70 s before, which Place covers by sending the reads its stake was sized
+on). `/health` answers from the health the board thread posts every 5 s,
+with `boardThread: {state, startedAt, restarts, lastExit, healthPostedAt}`;
+`ok` is false while it restarts or has posted nothing for 15 s. `/attach.json`
 and the Place quotes are one message to the board thread, answered after
 the work in progress. A board thread that dies fails the requests waiting
 on it with 503 and is replaced after 5 s (doubling per death in a row, up

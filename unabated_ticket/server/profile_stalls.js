@@ -206,7 +206,10 @@ async function main() {
     console.log("\n##### main thread (HTTP: every reply waits for its stalls)");
     summarize(profile);
     if (board) {
-      const boardProfile = (await board.send("Profiler.stop")).profile;
+      // A board thread that restarted mid-profile never answers: give up rather than leave the inspector open.
+      const stopped = await Promise.race([board.send("Profiler.stop"), new Promise((resolve) => setTimeout(() => resolve(null), 10000))]);
+      if (!stopped) throw new Error("the board thread did not return its profile (did it restart?)");
+      const boardProfile = stopped.profile;
       console.log("\n##### board thread (scanner, pages, quotes, taker)");
       summarize(boardProfile);
     }

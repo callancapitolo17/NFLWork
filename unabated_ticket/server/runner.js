@@ -1581,6 +1581,7 @@ function createHttpServer(runner, { host }) {
     try {
       // A page that just wrote a mark or a pin asks for the list on bets read now, not up to 30 s ago.
       const fresh = url.searchParams.get("fresh") === "1" && (path === "/edges.json" || path === "/teasers.json");
+      // A runner on this thread reads here; the board client's fresh build reads on the board thread.
       if (fresh) await runner.pollBets();
       if (path === "/edges.json") return sendJson(response, 200, await runner.edgesPayload({ fresh }));
       if (path === "/teasers.json") return sendJson(response, 200, await runner.teasersPayload({ fresh }));

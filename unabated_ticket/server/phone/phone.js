@@ -636,7 +636,8 @@
   // /place_novig.json). Its state belongs to one open row: {rowKey,
   // venueName, phase: null | "confirm" | "placing" | "done", armedAt,
   // message, tone, edited (Cal typed in the box)}.
-  let placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false };
+  // sizedOn: edges.json's betsService.sources when the box last took the stake (the reads it was sized on).
+  let placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false, sizedOn: null };
 
   function venuePlaceLine(row) {
     return {
@@ -654,12 +655,13 @@
     if (placeState.rowKey !== row.key) {
       const venue = venuePlace.venueOf(row.book ? row.book.id : null);
       placeState = { rowKey: row.key, venueName: venue ? venue.name : "the venue", phase: null, armedAt: 0, message: null,
-        tone: null, edited: false };
+        tone: null, edited: false, sizedOn: null };
     }
     // The box follows the stake until Cal types in it, and holds still once Place is pressed.
     const settled = placeState.phase === "confirm" || placeState.phase === "placing";
     if (!placeState.edited && !settled && document.activeElement !== view.ticketVenueStake) {
       view.ticketVenueStake.value = venuePlace.stakeText(acted);
+      placeState.sizedOn = state.edges.payload && state.edges.payload.betsService ? state.edges.payload.betsService.sources : null;
     }
     renderPlaceControls();
   }
@@ -726,10 +728,9 @@
   async function placeOnVenue() {
     const { rowKey, venueName } = placeState;
     const found = state.ticket ? findTicketRow(state.ticket) : null;
-    // The reads the runner sized the shown stake on (edges.json's betsService), not this page's
-    // own /bets.json poll: a Place filled between the two must still count as unseen.
-    const sizedOn = state.edges.payload && state.edges.payload.betsService ? state.edges.payload.betsService.sources : null;
-    const readAts = venuePlace.readAtsOf(sizedOn || {});
+    // The reads the runner sized the box's stake on, frozen with the box (not this page's own
+    // /bets.json poll, nor a later edges poll): a Place filled since must still count as unseen.
+    const readAts = venuePlace.readAtsOf(placeState.sizedOn || {});
     const request = found && found.row.key === rowKey ? venuePlace.placeRequestOf({
       line: venuePlaceLine(found.row), stakeInput: view.ticketVenueStake.value, readAts, clickId: crypto.randomUUID(),
     }) : { error: "the line has left the Edges list" };
