@@ -1238,3 +1238,164 @@ test("taker: a stale Kalshi poll stops the Novig side too (its stake is sized on
   assert.equal(service.novigOrders.length, 0);
   runner.stop();
 });
+
+// ---- The board thread (server/board_thread.js) ----
+// A worker stand-in: the board side served over a real MessageChannel, so the
+// messages are cloned as between threads; exit() plays the thread dying.
+const { MessageChannel } = require("node:worker_threads");
+const { EventEmitter } = require("node:events");
+const boardThread = require("../server/board_thread.js");
+
+function channelWorker(runner) {
+  const { port1, port2 } = new MessageChannel();
+  boardThread.serveBoardCalls(port2, runner, () => {});
+  const worker = new EventEmitter();
+  port1.on("message", (message) => worker.emit("message", message));
+  worker.postMessage = (message) => port1.postMessage(message);
+  worker.terminate = () => worker.exit(1);
+  worker.exit = (code) => {
+    port1.close();
+    port2.close();
+    worker.emit("exit", code);
+  };
+  return worker;
+}
+
+function boardClient(runners, clock, extra = {}) {
+  const spawned = [];
+  const client = boardThread.createBoardClient({
+    now: () => clock.now, ...quiet, setTimeout: extra.setTimeout || (() => {}),
+    createWorker: () => {
+      const worker = channelWorker(runners[Math.min(spawned.length, runners.length - 1)]);
+      spawned.push(worker);
+      return worker;
+    },
+  });
+  client.start();
+  return { client, spawned };
+}
+
+// A runner whose payloads count their builds and say which build they are.
+function countingRunner() {
+  const builds = { edgesPayload: 0, teasersPayload: 0 };
+  const runner = {
+    builds, betsPolls: 0,
+    edgesPayload: () => ({ build: (builds.edgesPayload += 1) }),
+    teasersPayload: () => ({ build: (builds.teasersPayload += 1) }),
+    scenariosPayload: () => ({ games: [] }),
+    takerPayload: () => ({ decisions: [] }),
+    pollBets: async () => { runner.betsPolls += 1; },
+    attachPayload: () => { const error = new Error("no open bet \"x\""); error.status = 404; throw error; },
+    kalshiQuote: async (params) => ({ ok: false, eventId: Number(params.get("eventId")) }),
+    novigQuote: async () => { throw new Error("boom"); },
+  };
+  return runner;
+}
+
+test("board thread: the HTTP routes answer exactly what the runner builds, through the thread's messages", async () => {
+  const { runner } = await startedRunner({ "/bets.json": betsBody([BEARS_HELD]), "/settings.json": { settings: OPEN_SETTINGS, updatedAt: null } });
+  const clock = { now: NOW };
+  const { client } = boardClient([runner], clock);
+  const server = runnerLib.createHttpServer(client, { host: "127.0.0.1" });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const get = (route) => new Promise((resolve, reject) => {
+    const request = require("node:http").request({ host: "127.0.0.1", port, path: route, method: "GET" }, (reply) => {
+      let body = "";
+      reply.on("data", (chunk) => { body += chunk; });
+      reply.on("end", () => resolve({ status: reply.statusCode, body: JSON.parse(body) }));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+  const same = (value) => JSON.parse(JSON.stringify(value));
+  try {
+    assert.deepEqual((await get("/edges.json")).body, same(runner.edgesPayload()));
+    assert.deepEqual((await get("/edges.json?fresh=1")).body, same(runner.edgesPayload()));
+    assert.deepEqual((await get("/teasers.json")).body, same(runner.teasersPayload()));
+    assert.deepEqual((await get("/scenarios.json")).body, same(runner.scenariosPayload()));
+    assert.equal((await get("/attach.json?betId=bol-1&query=bears")).body.events[0].eventId, 125807);
+    const missing = await get("/attach.json?betId=nope");
+    assert.deepEqual([missing.status, missing.body.error], [404, 'no open bet "nope"']);
+    const health = await get("/health");
+    assert.deepEqual([health.status, health.body.boardThread.state, health.body.scanner.phase], [200, "running", "starting"]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    client.stop();
+    runner.stop();
+  }
+});
+
+test("board thread: a copy under a minute old is served at once and rebuilt for the next ask; older, or fresh, waits for a build", async () => {
+  const runner = countingRunner();
+  const clock = { now: NOW };
+  const { client } = boardClient([runner], clock);
+  const read = async (opts) => JSON.parse((await client.edgesPayload(opts)).text).build;
+  assert.equal(await read(), 1);
+  assert.equal(await read(), 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(runner.builds.edgesPayload, 2);
+  assert.equal(await read(), 2);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  clock.now += boardThread.PAYLOAD_SERVE_MAX_AGE_MS + 1;
+  assert.equal(await read(), 4);
+  assert.equal(await read({ fresh: true }), 5);
+  assert.equal(runner.betsPolls, 1);
+  client.stop();
+});
+
+test("board thread: asks at once share one build; errors keep their status, a bug is a 500", async () => {
+  const runner = countingRunner();
+  const { client } = boardClient([runner], { now: NOW });
+  const both = await Promise.all([client.teasersPayload(), client.teasersPayload()]);
+  assert.deepEqual(both.map((reply) => JSON.parse(reply.text).build), [1, 1]);
+  assert.equal(runner.builds.teasersPayload, 1);
+  await assert.rejects(client.attachPayload(new URLSearchParams("betId=x")), (error) => error.status === 404 && /no open bet/.test(error.message));
+  await assert.rejects(client.novigQuote(new URLSearchParams("eventId=1")), (error) => error.status === 500 && error.message === "boom");
+  assert.deepEqual(JSON.parse((await client.kalshiQuote(new URLSearchParams("eventId=7"))).text), { ok: false, eventId: 7 });
+  client.stop();
+});
+
+test("board thread: a thread that dies fails what waits with 503, drops its copies, and a new thread starts after the pause", async () => {
+  const first = countingRunner();
+  let release;
+  first.kalshiQuote = () => new Promise((resolve) => { release = resolve; });
+  const second = countingRunner();
+  const restarts = [];
+  const { client, spawned } = boardClient([first, second], { now: NOW }, { setTimeout: (fn, ms) => restarts.push({ fn, ms }) });
+  await client.edgesPayload();
+  const waiting = client.kalshiQuote(new URLSearchParams("eventId=1"));
+  await new Promise((resolve) => setImmediate(resolve));
+  spawned[0].exit(1);
+  await assert.rejects(waiting, (error) => error.status === 503);
+  await assert.rejects(client.edgesPayload(), (error) => error.status === 503 && /restarting/.test(error.message));
+  assert.equal(client.health().boardThread.state, "restarting");
+  assert.deepEqual(restarts.map((entry) => entry.ms), [boardThread.BOARD_RESTART_DELAY_MS]);
+  restarts[0].fn();
+  assert.equal(JSON.parse((await client.edgesPayload()).text).build, 1);
+  assert.deepEqual([second.builds.edgesPayload, client.health().boardThread.restarts, client.health().boardThread.lastExit.code], [1, 1, 1]);
+  release({});
+  client.stop();
+  spawned[1].exit(1);
+  assert.equal(restarts.length, 1);
+});
+
+test("board thread: the real worker boots board_thread.js with runner.js and posts its health", async () => {
+  // Nothing listens on port 9: every read fails fast, which is all a boot needs.
+  const dead = "http://127.0.0.1:9";
+  const { Worker } = require("node:worker_threads");
+  const worker = new Worker(path.join(__dirname, "..", "server", "board_thread.js"), {
+    workerData: { role: "board", config: { betsServiceUrl: dead, kalshiBaseUrl: dead, novigBaseUrl: dead } }, stdout: true, stderr: true,
+  });
+  try {
+    const health = await new Promise((resolve, reject) => {
+      worker.once("error", reject);
+      worker.on("message", (message) => { if (message.type === "health") resolve(message.health); });
+    });
+    assert.deepEqual([health.ok, health.scanner.phase], [true, "starting"]);
+  } finally {
+    await worker.terminate();
+  }
+});

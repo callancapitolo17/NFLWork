@@ -131,6 +131,7 @@ const attachLib = require("../extension/attach.js");
 const pricecheck = require("../extension/pricecheck.js");
 const taker = require("./taker.js");
 const feedLib = require("../extension/feed.js");
+const boardThread = require("./board_thread.js");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8095;
@@ -1551,8 +1552,9 @@ function httpError(status, message) {
   return error;
 }
 
+// body: a value to serialize, or a RawJson the board thread already serialized.
 function sendJson(response, status, body) {
-  const text = JSON.stringify(body);
+  const text = body instanceof boardThread.RawJson ? body.text : JSON.stringify(body);
   response.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(text), "Cache-Control": "no-store" });
   response.end(text);
 }
@@ -1575,15 +1577,16 @@ function createHttpServer(runner, { host }) {
     const path = url.pathname;
     try {
       // A page that just wrote a mark or a pin asks for the list on bets read now, not up to 30 s ago.
-      if (url.searchParams.get("fresh") === "1" && (path === "/edges.json" || path === "/teasers.json")) await runner.pollBets();
-      if (path === "/edges.json") return sendJson(response, 200, runner.edgesPayload());
-      if (path === "/teasers.json") return sendJson(response, 200, runner.teasersPayload());
-      if (path === "/attach.json") return sendJson(response, 200, runner.attachPayload(url.searchParams));
-      if (path === "/scenarios.json") return sendJson(response, 200, runner.scenariosPayload());
-      if (path === "/taker.json") return sendJson(response, 200, runner.takerPayload());
+      const fresh = url.searchParams.get("fresh") === "1" && (path === "/edges.json" || path === "/teasers.json");
+      if (fresh) await runner.pollBets();
+      if (path === "/edges.json") return sendJson(response, 200, await runner.edgesPayload({ fresh }));
+      if (path === "/teasers.json") return sendJson(response, 200, await runner.teasersPayload({ fresh }));
+      if (path === "/attach.json") return sendJson(response, 200, await runner.attachPayload(url.searchParams));
+      if (path === "/scenarios.json") return sendJson(response, 200, await runner.scenariosPayload());
+      if (path === "/taker.json") return sendJson(response, 200, await runner.takerPayload());
       if (path === "/kalshi_quote.json") return sendJson(response, 200, await runner.kalshiQuote(url.searchParams));
       if (path === "/novig_quote.json") return sendJson(response, 200, await runner.novigQuote(url.searchParams));
-      if (path === "/health") return sendJson(response, 200, runner.health());
+      if (path === "/health") return sendJson(response, 200, await runner.health());
     } catch (error) {
       if (error.status) return sendJson(response, error.status, { error: error.message });
       logError(`${path} failed: ${error.stack || error.message}`);
@@ -1594,12 +1597,12 @@ function createHttpServer(runner, { host }) {
   return server;
 }
 
+// The main thread: the HTTP server and the board client; the runner itself
+// (createRunner) runs on the board thread (board_thread.js), so no board work
+// holds up a reply the main thread can give from a copy.
 async function main() {
   const config = configFromEnv(process.env);
-  const runner = createRunner({
-    fetchImpl: nodeFetch, serviceFetch: fetch, kalshiFetch: fetch, kalshiBaseUrl: config.kalshiBaseUrl, betsServiceUrl: config.betsServiceUrl,
-    novigFetch: fetch, novigBaseUrl: config.novigBaseUrl,
-  });
+  const runner = boardThread.createBoardClient({ workerData: { role: "board", config }, logInfo: log, logWarning: logError });
   const server = createHttpServer(runner, config);
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -1613,7 +1616,7 @@ async function main() {
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
-  await runner.start();
+  runner.start();
 }
 
 if (require.main === module) {
@@ -1625,5 +1628,5 @@ if (require.main === module) {
 
 module.exports = {
   DEFAULT_HOST, DEFAULT_PORT, DEFAULT_BETS_SERVICE_URL, DEFAULT_KALSHI_BASE_URL, DEFAULT_NOVIG_BASE_URL, BETS_POLL_MS, SETTINGS_POLL_MS, CLOSING_FAIRS_POST_MS, TAKER_PASS_MS,
-  configFromEnv, allowedHosts, hostAllowed, scannerLeaguesOf, nodeFetch, createRunner, createHttpServer,
+  configFromEnv, allowedHosts, hostAllowed, scannerLeaguesOf, nodeFetch, createRunner, createHttpServer, logError,
 };
