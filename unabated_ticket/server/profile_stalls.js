@@ -5,7 +5,8 @@
 //
 // Finds the runner's node process (cmdline ends in server/runner.js), sends it
 // SIGUSR1 (Node opens its inspector on 127.0.0.1:9229), samples its CPU for
-// PROFILE_SECONDS, then closes the inspector again. Changes nothing the runner
+// PROFILE_SECONDS (its main thread, and its board thread when it has one),
+// then closes the inspector again. Changes nothing the runner
 // does; reads no secrets; writes nothing to disk. Prints every stretch the
 // loop was busy longer than LONG_RUN_MS, with the call path that held it.
 
@@ -53,26 +54,61 @@ async function inspectorTargets() {
   throw new Error(`the inspector never answered at ${INSPECTOR_URL}`);
 }
 
-function connect(url) {
-  const socket = new WebSocket(url);
+// A protocol session: send(method, params) resolves to the result; `receive`
+// takes each raw message the transport delivers; events go to onEvent.
+function protocolSession(transmit) {
   let nextId = 1;
   const pending = new Map();
-  socket.onmessage = (event) => {
-    const message = JSON.parse(event.data);
+  const listeners = [];
+  const receive = (message) => {
     if (message.id && pending.has(message.id)) {
       const { resolve, reject } = pending.get(message.id);
       pending.delete(message.id);
       if (message.error) reject(new Error(`${message.error.message}`));
       else resolve(message.result);
+      return;
     }
+    if (message.method) for (const listener of listeners) listener(message);
   };
-  const opened = new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
   const send = (method, params = {}) => new Promise((resolve, reject) => {
     const id = nextId++;
     pending.set(id, { resolve, reject });
-    socket.send(JSON.stringify({ id, method, params }));
+    transmit(JSON.stringify({ id, method, params }));
   });
-  return { opened, send, close: () => socket.close() };
+  return { send, receive, onEvent: (listener) => listeners.push(listener) };
+}
+
+function connect(url) {
+  const socket = new WebSocket(url);
+  const session = protocolSession((text) => socket.send(text));
+  socket.onmessage = (event) => session.receive(JSON.parse(event.data));
+  const opened = new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
+  return { opened, send: session.send, onEvent: session.onEvent, close: () => socket.close() };
+}
+
+// The runner's board thread (server/board_thread.js) as its own session,
+// reached through the main thread's NodeWorker domain. Null when the runner
+// has no worker (a runner from before the board thread).
+async function boardThreadSession(client) {
+  const attached = new Promise((resolve) => {
+    client.onEvent((message) => { if (message.method === "NodeWorker.attachedToWorker") resolve(message.params.sessionId); });
+  });
+  await client.send("NodeWorker.enable", { waitForDebuggerOnStart: false });
+  const sessionId = await Promise.race([attached, new Promise((resolve) => setTimeout(() => resolve(null), 3000))]);
+  if (!sessionId) return null;
+  const session = protocolSession((message) => client.send("NodeWorker.sendMessageToWorker", { sessionId, message }));
+  client.onEvent((message) => {
+    if (message.method === "NodeWorker.receivedMessageFromWorker" && message.params.sessionId === sessionId) {
+      session.receive(JSON.parse(message.params.message));
+    }
+  });
+  return session;
+}
+
+async function startProfiler(session) {
+  await session.send("Profiler.enable");
+  await session.send("Profiler.setSamplingInterval", { interval: SAMPLING_INTERVAL_US });
+  await session.send("Profiler.start");
 }
 
 function frameLabel(node) {
@@ -161,13 +197,22 @@ async function main() {
     if (!targets[0].url.endsWith("server/runner.js")) throw new Error(`the inspector at ${INSPECTOR_URL} is not the runner's (${targets[0].url})`);
     client = connect(targets[0].webSocketDebuggerUrl);
     await client.opened;
-    await client.send("Profiler.enable");
-    await client.send("Profiler.setSamplingInterval", { interval: SAMPLING_INTERVAL_US });
-    await client.send("Profiler.start");
-    console.log(`runner pid ${pid}: profiling ${PROFILE_SECONDS} s ...`);
+    const board = await boardThreadSession(client);
+    await startProfiler(client);
+    if (board) await startProfiler(board);
+    console.log(`runner pid ${pid}: profiling ${PROFILE_SECONDS} s (main thread${board ? " and board thread" : " only: no board thread"}) ...`);
     await new Promise((resolve) => setTimeout(resolve, PROFILE_SECONDS * 1000));
     const { profile } = await client.send("Profiler.stop");
+    console.log("\n##### main thread (HTTP: every reply waits for its stalls)");
     summarize(profile);
+    if (board) {
+      // A board thread that restarted mid-profile never answers: give up rather than leave the inspector open.
+      const stopped = await Promise.race([board.send("Profiler.stop"), new Promise((resolve) => setTimeout(() => resolve(null), 10000))]);
+      if (!stopped) throw new Error("the board thread did not return its profile (did it restart?)");
+      const boardProfile = stopped.profile;
+      console.log("\n##### board thread (scanner, pages, quotes, taker)");
+      summarize(boardProfile);
+    }
   } finally {
     if (client) {
       // inspector.close() waits for every session to leave, so schedule it and leave.
