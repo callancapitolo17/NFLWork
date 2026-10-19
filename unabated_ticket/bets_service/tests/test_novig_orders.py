@@ -176,3 +176,17 @@ def test_market_if_listed_is_none_only_when_novig_says_market_not_found(tmp_path
     client, _ = _client(tmp_path, [(500, {"code": "INTERNAL_ERROR"})])
     with pytest.raises(NovigError):
         client.market_if_listed("m4")
+
+
+def test_open_positions_and_settlements_read_the_subaccounts_own_money(tmp_path):
+    position = {"marketId": "m1", "outcomeId": "o1", "qty": 23901, "cost": "68.11785"}
+    row = {"transactionId": "t1", "kind": "SETTLEMENT", "amount": "684.28000", "ref": "m2", "ts": 1792303897282}
+    client, sent = _client(tmp_path, [(200, [position]), (200, {"items": [row]})])
+    assert client.open_positions() == [position]
+    assert client.settlements(1791000000000) == [row]
+    assert sent[0]["url"] == "https://api.novig.com/v3/portfolio/positions"
+    assert sent[1]["url"].startswith("https://api.novig.com/v3/account/subaccounts/8f14e45f-ceea-467a-9b1c-3f2a51c8d7e0"
+                                     "/transactions?kind=SETTLEMENT&startsAfter=1791000000000")
+    client, _ = _client(tmp_path, [(429, {"code": "RATE_LIMIT_EXCEEDED"})])
+    with pytest.raises(NovigError):
+        client.open_positions()

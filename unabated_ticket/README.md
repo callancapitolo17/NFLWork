@@ -2925,12 +2925,27 @@ bot's key every 20 s (source `novig_bot`, ids `novig:<orderId>:bot`), kept
 apart from Cal's app account (`novig`). Novig's catalog names neither the
 board's teams nor its periods, so each record takes them from the board line
 stored with the order (`novig_taker_orders`); an order the desk did not place
-is unmatchable. Settlement reads the public market once the game has started;
-a bot bet grades once the desk has stored when it first saw its market
-`SETTLED` (`novig_taker_orders.settled_at`, its `closedAt`), so it never moves poll to poll.
+is unmatchable. Novig drops most markets from its catalog around when they
+settle (none of the first 15 Place bets ever read `SETTLED` there), so a
+started bet grades off the sub-account's own money, on its own key, every
+2 min: `GET /v3/portfolio/positions` then the `SETTLEMENT` rows of
+`GET /v3/account/subaccounts/<key>/transactions`. A `SETTLEMENT` row (ref = the
+market, amount = what it paid the sub-account, shared out by contracts across
+its orders on that market) grades by what each order was paid against its
+stake: the stake back is a push, any other payout is won with `toWin` = paid
+less stake (negative for a fair-value settlement under the stake, since the
+tracker books every lost bet at its full stake). A loss pays nothing and
+writes no row: a started bet whose position closed with no `SETTLEMENT` is lost
+15 min after the close was first seen, at that time (its `closedAt`; a late
+`SETTLEMENT` still turns it won). The first sighting is kept for good: the
+bot's desk stores it (`novig_taker_orders.settled_at`), Place's read stores it
+(`manual_orders.settled_at`).
+2026-10-18: 4 `SETTLEMENT` rows and 10 closed positions for the 14 settled
+Place bets, the same 4 won / 10 lost Cal's app shows. Only a bet the ledger
+cannot grade has its market read: a bot bet grades once the desk has stored
+when its market went `SETTLED`, a Place bet once its read did.
 `--name place` is the Ticket's Novig Place sub-account (`novig_place`), read
-the same way: its records take the board line from `manual_orders`, and the
-read itself stores the first `SETTLED` sighting (`manual_orders.settled_at`).
+the same way: its records take the board line from `manual_orders`.
 A market Novig's catalog no longer lists (404 `MARKET_NOT_FOUND`) does not fail
 the read: its bet stays open, or as stored once graded, and the market is
 re-read every 10 minutes. A market read that fails (a 429, a 5xx) leaves the bet
@@ -2954,8 +2969,10 @@ Desk statuses: `stopped`, `duplicate`, `env_mismatch`, `stale_decision`,
 `clientId` a minute on), `sent` (an order Novig took but never shows final is
 settled off its listing by `clientId` a minute on), `resting`, `filled` /
 `partial` / `unfilled` (final 60 s on), `rejected`, `geo_blocked`. A started
-market frees its orders' cost once Novig reads it `SETTLED`; one still not
-settled 12 h after the start is logged once.
+market frees its orders' cost once it has left the bot's open positions
+(`GET /v3/portfolio/positions`, read at most every 5 min; Novig closes a
+position when its market settles); one still held 12 h after the start is
+logged once.
 
 ```sql
 -- taker.duckdb: the Novig bot's orders, newest first

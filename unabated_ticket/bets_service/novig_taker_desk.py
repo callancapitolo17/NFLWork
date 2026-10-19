@@ -55,7 +55,7 @@ Order statuses (taker.duckdb::novig_taker_orders.status):
 
 Side effects: Novig orders on the bot's key (money); INSERTs / UPDATEs
 taker.duckdb::novig_taker_orders (taker_store.py). Network: Novig REST, signed
-with the bot's trading key only; public catalog reads for settlement.
+with the bot's trading key only; its open positions read for settlement.
 """
 import logging
 import re
@@ -65,7 +65,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from unabated_ticket.bets_service.novig_orders import (FINAL_ORDER_STATUSES, GEO_STATUS, MARKET_SETTLED, STATUS_OPEN, NovigError,
+from unabated_ticket.bets_service.novig_orders import (FINAL_ORDER_STATUSES, GEO_STATUS, STATUS_OPEN, NovigError,
                                                        NovigOrderClient, cost_of, error_code_of, fill_outcome, is_on_price_grid,
                                                        order_totals, qty_for_stake)
 from unabated_ticket.bets_service.sources.novig_subaccount import record_id_of
@@ -95,7 +95,7 @@ DEFINITE_REJECTION_STATUSES = (400, 401, 403, 404, 413, 422, GEO_STATUS)
 FINAL_READ_ATTEMPTS = 6
 FINAL_READ_SLEEP_SEC = 0.5
 SETTLEMENT_CHECK_SEC = 5 * 60
-# A market not SETTLED this long after its game started is logged (once): its cost stays held until it is.
+# A market still holding a position this long after its game started is logged (once): its cost stays held.
 UNSETTLED_WARN_AFTER_SEC = 12 * 3600
 MAX_HELD_IDS = 1000
 MAX_HELD_ID_LENGTH = 200
@@ -236,7 +236,9 @@ class NovigTakerDesk:
         self._sleep = sleep
         self._lock = threading.Lock()
         self._last_refresh_at: datetime | None = None
-        self._settlement_checked_at: dict[str, datetime] = {}
+        self._open_markets: set[str] = set()
+        self._positions_read_at: datetime | None = None
+        self._positions_tried_at: datetime | None = None
         self._unsettled_warned: set[str] = set()
 
     def run_refresh_loop(self, stop: threading.Event) -> None:
@@ -394,14 +396,12 @@ class NovigTakerDesk:
         """Bring every open Novig order up to date, fail closed (a failed read
         holds the cost): a lost send is looked up by clientId, a sent or
         resting order read to final, fills read final FILLS_SETTLE_SEC after,
-        and a started market checked for settlement, which frees its cost."""
+        and a started market checked for a closed position (settled), which frees its cost."""
         now = self._now()
         self._last_refresh_at = now
         open_orders = self._store.open_novig_orders()
         open_markets = {order["market_id"] for order in open_orders}
-        self._settlement_checked_at = {market: at for market, at in self._settlement_checked_at.items() if market in open_markets}
         self._unsettled_warned &= open_markets
-        settled_this_pass: dict[str, bool] = {}
         for order in open_orders:
             if order["novig_order_id"] is None:
                 self._recover_lost_order(order, now)
@@ -412,7 +412,7 @@ class NovigTakerDesk:
             elif not order["fills_final"] and now - order["final_at"] >= timedelta(seconds=FILLS_SETTLE_SEC):
                 self._read_fills(order["client_id"], order["novig_order_id"], order["qty_requested"], final=True)
             # Every row, followed or not: an order Novig never shows final still frees once its market settles.
-            self._free_if_settled(order, now, settled_this_pass)
+            self._free_if_settled(order, now)
 
     def _final_from_listing(self, order: dict, now: datetime) -> None:
         """An order Novig took (201) but its order read never shows final (it
@@ -456,28 +456,40 @@ class NovigTakerDesk:
                     order["client_id"], match["orderId"], match.get("status"))
         self._follow_order(order["client_id"], match["orderId"], order["qty_requested"], wait=False)
 
-    def _free_if_settled(self, order: dict, now: datetime, settled_this_pass: dict[str, bool]) -> None:
-        """Free a started order's cost once Novig shows its market SETTLED.
-        Each market is read at most once per SETTLEMENT_CHECK_SEC, and that one
-        read decides every order on it in the pass."""
+    def _free_if_settled(self, order: dict, now: datetime) -> None:
+        """Free a started order's cost once its market has left the bot's open
+        positions: Novig closes a position when its market settles. (Its
+        catalog drops most settled markets, so a SETTLED read never comes.)
+        The time it is first seen closed is the bet's settle time."""
         if order["event_start"] > now:
             return
+        open_markets = self._open_position_markets(now, order["event_start"])
+        if open_markets is None:
+            return
         market_id = order["market_id"]
-        if market_id not in settled_this_pass:
-            last = self._settlement_checked_at.get(market_id)
-            if last is not None and now - last < timedelta(seconds=SETTLEMENT_CHECK_SEC):
-                return
-            self._settlement_checked_at[market_id] = now
-            try:
-                market_status = self._client.market(market_id).get("status")
-            except (NovigError, OSError) as error:
-                log.warning("novig taker: settlement read of market %s failed, its cost stays held: %s", market_id, error)
-                return
-            settled_this_pass[market_id] = market_status == MARKET_SETTLED
-            if (not settled_this_pass[market_id] and market_id not in self._unsettled_warned
-                    and now - order["event_start"] > timedelta(seconds=UNSETTLED_WARN_AFTER_SEC)):
-                self._unsettled_warned.add(market_id)
-                log.warning("novig taker: market %s reads %r %d h after its game started; its orders' cost stays "
-                            "held until it reads %s", market_id, market_status, UNSETTLED_WARN_AFTER_SEC // 3600, MARKET_SETTLED)
-        if settled_this_pass[market_id]:
+        if market_id not in open_markets:
             self._store.update_novig_order(order["client_id"], {"settled_at": now})
+            return
+        if (market_id not in self._unsettled_warned
+                and now - order["event_start"] > timedelta(seconds=UNSETTLED_WARN_AFTER_SEC)):
+            self._unsettled_warned.add(market_id)
+            log.warning("novig taker: market %s still holds a position %d h after its game started; its orders' "
+                        "cost stays held until Novig settles it", market_id, UNSETTLED_WARN_AFTER_SEC // 3600)
+
+    def _open_position_markets(self, now: datetime, event_start: datetime) -> set[str] | None:
+        """The market ids of the bot's open positions, re-read at most once per
+        SETTLEMENT_CHECK_SEC (a failed read too: a 429 is not retried every
+        pass); None when the last read failed or predates the start (a read
+        from before it can predate the order's fills)."""
+        if self._positions_tried_at is None or now - self._positions_tried_at >= timedelta(seconds=SETTLEMENT_CHECK_SEC):
+            self._positions_tried_at = now
+            try:
+                self._open_markets = {position.get("marketId") for position in self._client.open_positions()}
+            except (NovigError, OSError) as error:
+                log.warning("novig taker: open positions read failed, started orders' cost stays held: %s", error)
+                self._positions_read_at = None
+                return None
+            self._positions_read_at = now
+        if self._positions_read_at is None or self._positions_read_at <= event_start:
+            return None
+        return self._open_markets
