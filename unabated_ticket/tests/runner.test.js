@@ -755,6 +755,22 @@ test("kalshi_quote: the board's Kalshi line gives its contract, live ask, all-in
   assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 0);
 });
 
+test("kalshi_quote: while a scan restart is still downloading, the quote reads the board the list still shows", async () => {
+  const unabated = takerUnabatedFetch();
+  let hold = false;
+  const held = [];
+  const fetchImpl = (url) => (hold ? new Promise((resolve) => held.push(() => resolve(unabated(url)))) : unabated(url));
+  const { runner } = await quoteRunner({}, { fetchImpl });
+  hold = true;
+  const restart = runner.scanner.start([2]);
+  assert.equal(Object.keys(runner.scanner.getState().lines).length, 0, "the scanner's new board is still empty");
+  const quote = await runner.kalshiQuote(new URLSearchParams(WSU_36_LINE));
+  for (const release of held) release();
+  await restart;
+  runner.stop();
+  assert.deepEqual({ ok: quote.ok, ticker: quote.ticker }, { ok: true, ticker: TAKER_TICKER });
+});
+
 test("kalshi_quote: the quote's eventStart is Kalshi's when earlier, so Place refuses a game Unabated still lists as pregame", async () => {
   const kickedOff = new Date(TAKER_NOW - 60 * 1000).toISOString();
   const { runner } = await quoteRunner({}, {}, kickedOff);
