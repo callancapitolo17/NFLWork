@@ -726,7 +726,10 @@
   async function placeOnVenue() {
     const { rowKey, venueName } = placeState;
     const found = state.ticket ? findTicketRow(state.ticket) : null;
-    const readAts = venuePlace.readAtsOf(state.bets.payload && state.bets.payload.sources ? state.bets.payload.sources : {});
+    // The reads the runner sized the shown stake on (edges.json's betsService), not this page's
+    // own /bets.json poll: a Place filled between the two must still count as unseen.
+    const sizedOn = state.edges.payload && state.edges.payload.betsService ? state.edges.payload.betsService.sources : null;
+    const readAts = venuePlace.readAtsOf(sizedOn || {});
     const request = found && found.row.key === rowKey ? venuePlace.placeRequestOf({
       line: venuePlaceLine(found.row), stakeInput: view.ticketVenueStake.value, readAts, clickId: crypto.randomUUID(),
     }) : { error: "the line has left the Edges list" };

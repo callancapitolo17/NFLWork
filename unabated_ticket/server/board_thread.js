@@ -18,7 +18,8 @@
 //   /attach.json, /kalshi_quote.json, /novig_quote.json  one message to the
 //       board thread, answered when it is free (after the work in progress).
 // If the board thread dies, every waiting request answers 503, the copies are
-// dropped and a new board thread starts after BOARD_RESTART_DELAY_MS: a fresh
+// dropped and a new board thread starts after BOARD_RESTART_DELAY_MS (doubling
+// while threads keep dying): a fresh
 // board, as a process restart gives (the taker fails closed until it is live).
 // Side effects: none of its own; the board thread's are runner.js's.
 
@@ -27,7 +28,13 @@ const { Worker, isMainThread, parentPort, workerData } = require("node:worker_th
 // A copy this young is served without waiting; the phone polls every 15 s, the tracker every 60 s.
 const PAYLOAD_SERVE_MAX_AGE_MS = 60 * 1000;
 const HEALTH_POST_MS = 5 * 1000;
+// A dead board thread is replaced after BOARD_RESTART_DELAY_MS, doubling for
+// each death in a row up to BOARD_RESTART_MAX_DELAY_MS (a thread that dies on
+// every boot must not re-download every league every few seconds); a thread
+// that lived BOARD_HEALTHY_RUN_MS starts the count again.
 const BOARD_RESTART_DELAY_MS = 5 * 1000;
+const BOARD_RESTART_MAX_DELAY_MS = 5 * 60 * 1000;
+const BOARD_HEALTHY_RUN_MS = 10 * 60 * 1000;
 // The pages the main thread serves from a copy, by the runner method that builds each.
 const PAYLOAD_METHODS = { edges: "edgesPayload", teasers: "teasersPayload", scenarios: "scenariosPayload", taker: "takerPayload" };
 const HTTP_SERVICE_UNAVAILABLE = 503;
@@ -61,6 +68,8 @@ function createBoardClient(options) {
   let worker = null;
   let stopped = false;
   let restarts = 0;
+  // Deaths in a row (a thread that ran BOARD_HEALTHY_RUN_MS resets it).
+  let deathsInARow = 0;
   let startedAt = null;
   let lastExit = null;
   let nextCallId = 1;
@@ -100,7 +109,8 @@ function createBoardClient(options) {
   }
 
   // Every waiting request fails, the copies built on the dead board go, and
-  // (unless stopping) a new board thread starts after a pause.
+  // (unless stopping) a new board thread starts after a pause that grows while
+// threads keep dying.
   function onExit(exited, code) {
     if (exited !== worker) return;
     worker = null;
@@ -111,13 +121,15 @@ function createBoardClient(options) {
     builds.clear();
     workerHealth = null;
     if (stopped) return;
-    logWarning(`board thread exited with code ${code}; starting a new one in ${BOARD_RESTART_DELAY_MS / 1000} s`);
+    deathsInARow = now() - startedAt >= BOARD_HEALTHY_RUN_MS ? 1 : deathsInARow + 1;
+    const delayMs = Math.min(BOARD_RESTART_DELAY_MS * 2 ** (deathsInARow - 1), BOARD_RESTART_MAX_DELAY_MS);
+    logWarning(`board thread exited with code ${code}; starting a new one in ${delayMs / 1000} s`);
     later(() => {
       if (stopped || worker) return;
       restarts += 1;
       logInfo(`board thread restart ${restarts}`);
       spawn();
-    }, BOARD_RESTART_DELAY_MS);
+    }, delayMs);
   }
 
   // One runner method run on the board thread; resolves to its reply as JSON text.
@@ -234,7 +246,7 @@ function runBoardThread(port, config) {
 }
 
 module.exports = {
-  PAYLOAD_SERVE_MAX_AGE_MS, HEALTH_POST_MS, BOARD_RESTART_DELAY_MS, PAYLOAD_METHODS,
+  PAYLOAD_SERVE_MAX_AGE_MS, HEALTH_POST_MS, BOARD_RESTART_DELAY_MS, BOARD_RESTART_MAX_DELAY_MS, BOARD_HEALTHY_RUN_MS, PAYLOAD_METHODS,
   RawJson, createBoardClient, serveBoardCalls,
 };
 

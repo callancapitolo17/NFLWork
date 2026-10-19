@@ -1358,13 +1358,14 @@ test("board thread: asks at once share one build; errors keep their status, a bu
   client.stop();
 });
 
-test("board thread: a thread that dies fails what waits with 503, drops its copies, and a new thread starts after the pause", async () => {
+test("board thread: a thread that dies fails what waits with 503, drops its copies, and a new thread starts after a pause that doubles while threads keep dying", async () => {
   const first = countingRunner();
   let release;
   first.kalshiQuote = () => new Promise((resolve) => { release = resolve; });
   const second = countingRunner();
   const restarts = [];
-  const { client, spawned } = boardClient([first, second], { now: NOW }, { setTimeout: (fn, ms) => restarts.push({ fn, ms }) });
+  const clock = { now: NOW };
+  const { client, spawned } = boardClient([first, second], clock, { setTimeout: (fn, ms) => restarts.push({ fn, ms }) });
   await client.edgesPayload();
   const waiting = client.kalshiQuote(new URLSearchParams("eventId=1"));
   await new Promise((resolve) => setImmediate(resolve));
@@ -1377,9 +1378,13 @@ test("board thread: a thread that dies fails what waits with 503, drops its copi
   assert.equal(JSON.parse((await client.edgesPayload()).text).build, 1);
   assert.deepEqual([second.builds.edgesPayload, client.health().boardThread.restarts, client.health().boardThread.lastExit.code], [1, 1, 1]);
   release({});
-  client.stop();
   spawned[1].exit(1);
-  assert.equal(restarts.length, 1);
+  restarts[1].fn();
+  clock.now += boardThread.BOARD_HEALTHY_RUN_MS;
+  spawned[2].exit(1);
+  assert.deepEqual(restarts.map((entry) => entry.ms), [5000, 10000, 5000]);
+  client.stop();
+  assert.equal(restarts.length, 3);
 });
 
 test("board thread: the real worker boots board_thread.js with runner.js and posts its health", async () => {
