@@ -46,6 +46,8 @@ USER_AGENT = "unabated-ticket-bets-service/1.0"
 
 ORDERS_PATH = "/v3/orders"
 FILLS_PATH = "/v3/portfolio/fills"
+POSITIONS_PATH = "/v3/portfolio/positions"
+TRANSACTION_SETTLEMENT = "SETTLEMENT"
 KEYS_PATH = "/v3/keys"
 PUBLIC_MARKET_PATH = "/v3/public/catalog/markets"
 TIME_IN_FORCE_IOC = "IOC"
@@ -305,6 +307,21 @@ class NovigOrderClient:
         if starts_after_ms is not None:
             query.append(("startsAfter", str(starts_after_ms)))
         return self._paged(FILLS_PATH, query)
+
+    def open_positions(self) -> list[dict]:
+        """This subaccount's nonzero positions ([{marketId, outcomeId, qty, cost}]).
+        A settled market's position leaves this list (Novig closes it)."""
+        status, reply = self.request("GET", POSITIONS_PATH)
+        if status != 200 or not isinstance(reply, list):
+            raise NovigError(f"GET {POSITIONS_PATH}: expected 200 with a list, got HTTP {status} {str(reply)[:300]}")
+        return [item for item in reply if isinstance(item, dict)]
+
+    def settlements(self, starts_after_ms: int) -> list[dict]:
+        """This subaccount's SETTLEMENT ledger rows ([{amount, ref, ts}]) on
+        events that start after `starts_after_ms`: one per settled market that
+        paid it something (ref = market id; a loss pays nothing, so writes none)."""
+        return self._paged(f"/v3/account/subaccounts/{self.key_id}/transactions",
+                           [("kind", TRANSACTION_SETTLEMENT), ("startsAfter", str(starts_after_ms))])
 
     def balance(self) -> float:
         """This subaccount's balance in dollars (GET .../subaccounts/{own key}/balance)."""

@@ -1,12 +1,12 @@
 """sources/novig_subaccount.py: a subaccount's fills -> one record per order,
-named by the board line the desk kept, graded off the public market once
-settled, ids apart from Cal's app account ("novig:<order>:bot")."""
+named by the board line the desk kept, graded off the subaccount's own open
+positions and SETTLEMENT ledger, ids apart from Cal's app account ("novig:<order>:bot")."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from unabated_ticket.bets_service.novig_orders import NovigError
-from unabated_ticket.bets_service.sources.novig_subaccount import NovigSubaccountSource, settled_status
+from unabated_ticket.bets_service.sources.novig_subaccount import NovigSubaccountSource, normalize_order
 
 NOW = datetime(2026, 10, 18, 16, 0, tzinfo=timezone.utc)
 MARKET = "6a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
@@ -17,16 +17,25 @@ CONTEXT = {"league": "nfl", "bet_type": "spread", "period": "FG", "side": "home"
 
 
 class FakeClient:
-    def __init__(self, fills, market=None):
-        self._fills, self._market, self.market_reads, self.fill_queries = fills, market, 0, []
+    """The position stays open and nothing is paid unless a test says otherwise."""
+
+    def __init__(self, fills, positions=None, settlement_rows=()):
+        self._fills, self.fill_queries = fills, []
+        self.positions = [{"marketId": MARKET}] if positions is None else positions
+        self.settlement_rows, self.ledger_reads = list(settlement_rows), 0
 
     def fills(self, order_id=None, outcome_id=None, starts_after_ms=None):
         self.fill_queries.append(starts_after_ms)
         return self._fills
 
-    def market_if_listed(self, market_id):
-        self.market_reads += 1
-        return self._market
+    def open_positions(self):
+        self.ledger_reads += 1
+        if isinstance(self.positions, Exception):
+            raise self.positions
+        return list(self.positions)
+
+    def settlements(self, starts_after_ms):
+        return list(self.settlement_rows)
 
 
 def fill(order_id="o1", qty=1000, cost="4.65000", fill_id="f1", ts=1760800000000):
@@ -43,178 +52,13 @@ def test_an_order_is_one_record_named_by_its_board_line():
     assert record["price"] == 115  # 0.465
     assert (record["league"], record["betType"], record["side"], record["points"], record["status"]) == ("nfl", "spread", "home", -3.5, "open")
     assert record["homeTeamVenue"]["unabatedId"] == "12" and record["venueIds"]["outcomeId"] == OUTCOME
-    assert client.market_reads == 0  # before the start nothing can have settled
     assert client.fill_queries[0] == int((NOW - timedelta(days=14)).timestamp() * 1000)
 
 
-def test_a_settled_market_grades_it_and_is_read_once():
-    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": NOW - timedelta(minutes=2)}
-    market = {"marketId": MARKET, "eventId": "ev-1", "status": "SETTLED", "outcomes": [{"outcomeId": OUTCOME, "status": "WIN"}]}
-    client = FakeClient([fill()], market)
-    source = NovigSubaccountSource("bot", client, lambda: {"o1": started}, now=lambda: NOW)
-    assert source.fetch()[0]["status"] == "won"
-    source.fetch()
-    assert client.market_reads == 1
-
-
-def test_a_settled_bet_keeps_one_closed_at_poll_after_poll():
-    desk_saw_it = NOW - timedelta(hours=1)
-    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": desk_saw_it}
-    market = {"marketId": MARKET, "eventId": "ev-1", "status": "SETTLED", "outcomes": [{"outcomeId": OUTCOME, "status": "LOSS"}]}
-    clock = {"now": NOW}
-    source = NovigSubaccountSource("bot", FakeClient([fill()], market), lambda: {"o1": started}, now=lambda: clock["now"])
-    first = source.fetch()[0]
-    clock["now"] = NOW + timedelta(minutes=5)
-    assert first == {**source.fetch()[0], "sourceFetchedAt": first["sourceFetchedAt"]}
-    assert first["closedAt"] == "2026-10-18T15:00:00.000Z"
-    # Before the desk has stored its settle time a desk order stays open; with no context the first
-    # poll that saw it settled is the closedAt, and it holds.
-    unseen = NovigSubaccountSource("bot", FakeClient([fill()], market), lambda: {"o1": {**started, "settled_at": None}},
-                                   now=lambda: clock["now"])
-    assert (unseen.fetch()[0]["status"], unseen.fetch()[0]["closedAt"]) == ("open", None)
-    place = NovigSubaccountSource("place", FakeClient([fill()], market), lambda: {}, now=lambda: clock["now"])
-    assert place.fetch()[0]["closedAt"] == "2026-10-18T16:05:00.000Z"
-    clock["now"] = NOW + timedelta(minutes=10)
-    assert place.fetch()[0]["closedAt"] == "2026-10-18T16:05:00.000Z"
-
-
-def test_place_keeps_its_first_settled_sighting_through_note_settled():
-    """Place has no desk sweep: its read stores the settle time itself, and a
-    later poll (or a restart) reads the stored one back through the context."""
-    market = {"marketId": MARKET, "eventId": "ev-1", "status": "SETTLED", "outcomes": [{"outcomeId": OUTCOME, "status": "WIN"}]}
-    kept = {}
-
-    def note_settled(order_id, at):
-        kept.setdefault(order_id, at)
-        return kept[order_id]
-
-    contexts = lambda: {"o1": {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": kept.get("o1")}}  # noqa: E731
-    clock = {"now": NOW}
-    source = NovigSubaccountSource("place", FakeClient([fill()], market), contexts, now=lambda: clock["now"],
-                                   note_settled=note_settled)
-    first = source.fetch()[0]
-    assert (first["id"], first["status"], first["closedAt"], first["homeTeamVenue"]["unabatedId"]) == (
-        "novig:o1:place", "won", "2026-10-18T16:00:00.000Z", "12")
-    clock["now"] = NOW + timedelta(minutes=5)
-    restarted = NovigSubaccountSource("place", FakeClient([fill()], market), contexts, now=lambda: clock["now"],
-                                      note_settled=note_settled)
-    assert restarted.fetch()[0]["closedAt"] == "2026-10-18T16:00:00.000Z"
-
-
 def test_no_context_is_recorded_unmatchable():
-    source = NovigSubaccountSource("place", FakeClient([fill()], {"marketId": MARKET, "status": "OPEN"}), lambda: {}, now=lambda: NOW)
+    source = NovigSubaccountSource("place", FakeClient([fill()]), lambda: {}, now=lambda: NOW)
     [record] = source.fetch()
     assert record["id"] == "novig:o1:place" and record["unmatchable"] and record["status"] == "open"
-
-
-class SequenceClient(FakeClient):
-    def __init__(self, fills, markets):
-        super().__init__(fills)
-        self._markets = list(markets)
-
-    def market_if_listed(self, market_id):
-        self.market_reads += 1
-        return self._markets.pop(0)
-
-
-def test_a_market_novig_no_longer_lists_keeps_the_bet_open_as_before_the_start():
-    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4)}
-    before = NovigSubaccountSource("place", FakeClient([fill()]), lambda: {"o1": CONTEXT}, now=lambda: NOW).fetch()
-    client = FakeClient([fill()], None)
-    after = NovigSubaccountSource("place", client, lambda: {"o1": started}, now=lambda: NOW).fetch()
-    assert client.market_reads == 1
-    assert [{**record, "sourceFetchedAt": None, "eventStart": None} for record in after] == \
-        [{**record, "sourceFetchedAt": None, "eventStart": None} for record in before]
-
-
-def test_a_graded_bet_whose_market_novig_dropped_is_left_as_stored():
-    graded = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": NOW - timedelta(hours=1)}
-    client = FakeClient([fill()], None)
-    assert NovigSubaccountSource("place", client, lambda: {"o1": graded}, now=lambda: NOW).fetch() == []
-    assert client.market_reads == 1
-
-
-def test_a_market_missing_on_one_poll_grades_once_novig_lists_it_settled():
-    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": NOW - timedelta(minutes=2)}
-    settled = {"marketId": MARKET, "eventId": "ev-1", "status": "SETTLED", "outcomes": [{"outcomeId": OUTCOME, "status": "LOSS"}]}
-    clock = [NOW]
-    client = SequenceClient([fill()], [None, settled])
-    source = NovigSubaccountSource("place", client, lambda: {"o1": {**started, "settled_at": None}}, now=lambda: clock[0],
-                                   note_settled=lambda order_id, now: NOW - timedelta(minutes=2))
-    assert [record["status"] for record in source.fetch()] == ["open"]
-    clock[0] = NOW + timedelta(minutes=11)
-    assert [(record["status"], record["closedAt"]) for record in source.fetch()] == [("lost", "2026-10-18T15:58:00.000Z")]
-
-
-def test_an_unnamed_order_on_a_missing_market_is_re_read_every_ten_minutes():
-    clock = [NOW]
-    client = FakeClient([fill()], None)
-    source = NovigSubaccountSource("place", client, lambda: {}, now=lambda: clock[0])
-    [record] = source.fetch()
-    assert (record["status"], bool(record["unmatchable"])) == ("open", True)
-    clock[0] = NOW + timedelta(minutes=5)
-    source.fetch()
-    assert client.market_reads == 1
-    clock[0] = NOW + timedelta(minutes=11)
-    source.fetch()
-    assert client.market_reads == 2
-
-
-def test_a_rate_limited_market_read_keeps_the_bet_open_and_the_read_goes_through():
-    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4)}
-    other = {**started, "market_id": "m2"}
-    clock = [NOW]
-
-    class RateLimitedClient(FakeClient):
-        def market_if_listed(self, market_id):
-            self.market_reads += 1
-            if market_id == "m2":
-                raise NovigError("market m2: expected 200 with a market, got HTTP 429")
-            return None
-
-    client = RateLimitedClient([fill(), {**fill(order_id="o2", fill_id="f2"), "marketId": "m2"}])
-    source = NovigSubaccountSource("place", client, lambda: {"o1": started, "o2": other}, now=lambda: clock[0])
-    assert [(record["id"], record["status"]) for record in source.fetch()] == \
-        [("novig:o1:place", "open"), ("novig:o2:place", "open")]
-    assert client.market_reads == 2
-    clock[0] = NOW + timedelta(minutes=5)
-    assert len(source.fetch()) == 2
-    assert client.market_reads == 3  # the unlisted market waits; the rate-limited one is read again
-    clock[0] = NOW + timedelta(minutes=10)
-    assert len(source.fetch()) == 2
-    assert client.market_reads == 5
-
-
-def test_a_graded_bet_on_a_rate_limited_or_unlisted_market_is_left_as_stored_poll_after_poll():
-    graded = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": NOW - timedelta(hours=1)}
-    clock = [NOW]
-
-    class RateLimitedClient(FakeClient):
-        def market_if_listed(self, market_id):
-            self.market_reads += 1
-            raise NovigError("market: expected 200 with a market, got HTTP 429")
-
-    source = NovigSubaccountSource("place", RateLimitedClient([fill()]), lambda: {"o1": graded}, now=lambda: clock[0])
-    assert source.fetch() == []
-    unlisted = NovigSubaccountSource("place", FakeClient([fill()], None), lambda: {"o1": graded}, now=lambda: clock[0])
-    assert unlisted.fetch() == []
-    clock[0] = NOW + timedelta(minutes=5)
-    assert unlisted.fetch() == []
-
-
-def test_an_unreadable_settlement_or_fill_fails_the_run():
-    market = {"marketId": MARKET, "status": "SETTLED", "outcomes": [{"outcomeId": OUTCOME, "status": "WEIRD"}]}
-    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": NOW - timedelta(minutes=2)}
-    with pytest.raises(NovigError):
-        NovigSubaccountSource("bot", FakeClient([fill()], market), lambda: {"o1": started}, now=lambda: NOW).fetch()
-    with pytest.raises(NovigError):
-        NovigSubaccountSource("bot", FakeClient([{**fill(), "orderId": None}]), lambda: {}, now=lambda: NOW).fetch()
-
-
-def test_settled_status_reads_keywords_and_fair_value():
-    assert settled_status("LOSS", 4.65, 1000) == "lost" and settled_status("PUSH", 4.65, 1000) == "push"
-    assert settled_status("TBD", 4.65, 1000) is None
-    assert settled_status("0.731", 4.65, 1000) == "won" and settled_status("0.200", 4.65, 1000) == "lost"
 
 
 def test_a_lost_place_order_is_adopted_by_client_id_a_minute_on_or_marked_never_sent():
@@ -293,15 +137,119 @@ def test_an_unconfirmed_place_order_is_confirmed_once_novig_shows_it_final():
     assert confirmed_by(OrderClient(OSError("reset"), [fill()])) == []
 
 
-def test_a_market_no_context_names_is_re_read_every_ten_minutes_not_every_poll():
-    market = {"marketId": MARKET, "eventId": "ev-1", "status": "OPEN", "outcomes": [{"outcomeId": OUTCOME, "status": "TBD"}]}
-    client = FakeClient([fill()], market)
+def settlement(amount, ts=1792303897282, market=MARKET):
+    return {"transactionId": "t1", "kind": "SETTLEMENT", "amount": amount, "ref": market, "ts": ts}
+
+
+def place_source(client, clock, kept):
+    def note_settled(order_id, at):
+        kept.setdefault(order_id, at)
+        return kept[order_id]
+
+    def contexts():
+        started = {**CONTEXT, "event_start": NOW - timedelta(hours=4)}
+        return {"o1": {**started, "settled_at": kept.get("o1")}, "o2": {**started, "settled_at": kept.get("o2")}}
+
+    return NovigSubaccountSource("place", client, contexts, now=lambda: clock["now"], note_settled=note_settled)
+
+
+def test_a_settlement_row_grades_each_order_on_its_market_by_what_it_paid():
+    # Two orders on one market: 10 and 5 dollars of contracts; the market paid this subaccount $15.
+    fills = [fill(), fill(order_id="o2", qty=500, cost="2.32500", fill_id="f2")]
+    client = FakeClient(fills, [], [settlement("15.00000")])
+    clock, kept = {"now": NOW}, {}
+    first, second = place_source(client, clock, kept).fetch()
+    expected = normalize_order("place", "o1", [fill()], {**CONTEXT, "event_start": NOW - timedelta(hours=4)},
+                               first["sourceFetchedAt"])
+    assert first == {**expected, "status": "won", "closedAt": "2026-10-18T06:11:37.282Z", "toWin": 5.35}
+    assert (second["status"], second["toWin"], second["closedAt"]) == ("won", 2.68, "2026-10-18T06:11:37.282Z")
+    assert kept == {"o1": NOW, "o2": NOW}  # kept, so a restart whose first read fails leaves them as stored
+
+
+def test_a_fair_value_settlement_pays_part_and_a_refund_is_a_push():
     clock = {"now": NOW}
-    source = NovigSubaccountSource("place", client, dict, now=lambda: clock["now"])
+    partial = place_source(FakeClient([fill()], [], [settlement("6.00000")]), clock, {}).fetch()[0]
+    assert (partial["status"], partial["toWin"]) == ("won", 1.35)
+    short = place_source(FakeClient([fill()], [], [settlement("2.00000")]), clock, {}).fetch()[0]
+    assert (short["status"], short["toWin"]) == ("won", -2.65)  # P&L -2.65, not the full stake
+    refund = place_source(FakeClient([fill()], [], [settlement("4.65000")]), clock, {}).fetch()[0]
+    assert refund["status"] == "push"
+
+
+def test_a_closed_position_with_no_payout_is_lost_once_confirmed_at_its_first_sighting():
+    client = FakeClient([fill()], [], [])
+    clock, kept = {"now": NOW}, {}
+    source = place_source(client, clock, kept)
+    assert source.fetch()[0]["status"] == "open" and kept == {"o1": NOW}  # first sighting kept
+    clock["now"] = NOW + timedelta(minutes=14)
+    assert source.fetch() == []  # closed, not yet a loss: the stored row stands
+    clock["now"] = NOW + timedelta(minutes=15)
+    lost = source.fetch()[0]
+    assert (lost["status"], lost["closedAt"]) == ("lost", "2026-10-18T16:00:00.000Z")
+    # A restart reads the kept sighting back and grades at once, with the same closedAt.
+    again = place_source(FakeClient([fill()], [], []), clock, kept).fetch()[0]
+    assert (again["status"], again["closedAt"]) == ("lost", "2026-10-18T16:00:00.000Z")
+    # A settlement row landing after the close still wins it.
+    late = place_source(FakeClient([fill()], [], [settlement("10.00000")]), clock, kept).fetch()[0]
+    assert late["status"] == "won"
+
+
+def test_an_open_position_a_read_from_before_the_start_or_a_bot_order_the_desk_has_not_closed_stays_open():
+    clock, kept = {"now": NOW}, {}
+    held = place_source(FakeClient([fill()], [{"marketId": MARKET}], []), clock, kept).fetch()[0]
+    assert (held["status"], kept) == ("open", {})
+    # The bot's desk keeps its settle time itself: until it has, the order stays open.
+    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": None}
+    bot = NovigSubaccountSource("bot", FakeClient([fill()], [], []), lambda: {"o1": started}, now=lambda: clock["now"])
+    assert bot.fetch()[0]["status"] == "open"
+    # A positions read taken before the start (cached for LEDGER_RECHECK) says nothing of a later close.
+    early = {"now": NOW}
+    soon = {**CONTEXT, "event_start": NOW + timedelta(minutes=1)}
+    source = NovigSubaccountSource("place", FakeClient([fill()], [], []), lambda: {"o1": soon},
+                                   now=lambda: early["now"], note_settled=lambda order_id, at: at)
     source.fetch()
-    clock["now"] = NOW + timedelta(seconds=30)
+    early["now"] = NOW + timedelta(minutes=1, seconds=30)
+    assert source.fetch()[0]["status"] == "open"
+
+
+def test_the_ledger_is_read_every_two_minutes_and_a_failed_read_keeps_the_last():
+    client = FakeClient([fill()], [{"marketId": MARKET}], [])
+    clock, kept = {"now": NOW}, {}
+    source = place_source(client, clock, kept)
     source.fetch()
-    assert client.market_reads == 1
-    clock["now"] = NOW + timedelta(minutes=11)
+    clock["now"] = NOW + timedelta(minutes=1)
     source.fetch()
-    assert client.market_reads == 2
+    assert client.ledger_reads == 1
+    client.positions = NovigError("HTTP 429")
+    clock["now"] = NOW + timedelta(minutes=2)
+    assert source.fetch()[0]["status"] == "open" and kept == {}
+    client.positions, client.settlement_rows = [], [settlement("10.00000")]
+    clock["now"] = NOW + timedelta(minutes=3)
+    assert source.fetch()[0]["status"] == "open"  # a failed read waits LEDGER_RECHECK too
+    clock["now"] = NOW + timedelta(minutes=4)
+    assert source.fetch()[0]["status"] == "won"
+
+
+def test_a_restart_whose_first_ledger_read_fails_leaves_graded_bets_as_stored():
+    graded = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": NOW - timedelta(hours=1)}
+    client = FakeClient([fill()], NovigError("HTTP 429"))
+    assert NovigSubaccountSource("place", client, lambda: {"o1": graded}, now=lambda: NOW).fetch() == []
+    # A started bot order (no settle time kept yet) or one with no context may be stored won: skipped too.
+    started = {**CONTEXT, "event_start": NOW - timedelta(hours=4), "settled_at": None}
+    assert NovigSubaccountSource("bot", client, lambda: {"o1": started}, now=lambda: NOW).fetch() == []
+    assert NovigSubaccountSource("bot", client, lambda: {}, now=lambda: NOW).fetch() == []
+    upcoming = {**CONTEXT, "event_start": NOW + timedelta(hours=4)}
+    assert NovigSubaccountSource("bot", client, lambda: {"o1": upcoming}, now=lambda: NOW).fetch()[0]["status"] == "open"
+
+
+def test_an_order_with_no_context_grades_only_off_a_settlement_row():
+    unnamed = NovigSubaccountSource("place", FakeClient([fill()], []), lambda: {}, now=lambda: NOW).fetch()[0]
+    assert (unnamed["status"], bool(unnamed["unmatchable"])) == ("open", True)
+    paid = NovigSubaccountSource("place", FakeClient([fill()], [], [settlement("10.00000")]), lambda: {},
+                                 now=lambda: NOW).fetch()[0]
+    assert paid["status"] == "won"
+
+
+def test_an_unreadable_fill_fails_the_run():
+    with pytest.raises(NovigError):
+        NovigSubaccountSource("bot", FakeClient([{**fill(), "orderId": None}]), lambda: {}, now=lambda: NOW).fetch()
