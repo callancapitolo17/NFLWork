@@ -116,6 +116,7 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .tbl .r { text-align: right; }
 .tbl .wrap { white-space: normal; min-width: 220px; }
 .tag { font-size: 11px; font-weight: 600; letter-spacing: .05em; padding: 3px 7px; border-radius: 4px; background: var(--chip); color: #b6c0cd; }
+.tag.bot { color: var(--exp); }
 .result { font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 4px; background: var(--chip); color: var(--muted); }
 .result.won { background: rgba(61, 214, 140, .14); color: var(--pos); }
 .result.lost { background: rgba(255, 107, 107, .14); color: var(--neg); }
@@ -278,3 +279,9 @@ tr.drill:hover td { background: #161c25; }
 .pv-cell:hover { outline: 1px solid var(--exp); }
 .pv-empty { color: var(--faint); text-align: right; }
 .tbl.pivot th { text-transform: none; letter-spacing: 0; }
+
+/* Balances tab: its own tab so a glance at Overview never shows today's swings (Cal, 2026-10-14) */
+.balances-panel { max-width: 760px; }
+.tbl tr.total td { border-top: 1px solid var(--line); font-weight: 600; }
+.balance-notes { display: flex; flex-direction: column; gap: 4px; padding: 10px 22px 16px; font-size: 12px; color: var(--faint); }
+.pill-warn { font: 11px var(--sans); padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--warn); }

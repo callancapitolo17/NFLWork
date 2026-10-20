@@ -51,8 +51,22 @@
 //       of the held bets its stake was sized on: the bets service's order
 //       desk places it on Kalshi on the bot's own key (MONEY; stop file, $500
 //       ceiling and the unseen-fill rule there; bets_service/taker_orders.py).
+//   GET <Novig>/v3/public/catalog/markets?league=..&eventStatus=OPEN_PREGAME
+//       and /v3/public/catalog/markets/<id>/book every 30 s while Novig Edges
+//       rows are up and the bets service reads the bot's Novig subaccount;
+//       /v3/public/catalog/markets/<id> and /events/<id> before every Novig
+//       order (public, no key; taker.novigMarketMismatch).
+//   POST <bets service>/taker/novig_order.json — each Novig "bet" decision
+//       (MONEY, on the bot's own Novig subaccount; bets_service/novig_taker_desk.py).
 //   POST <bets service>/taker_decisions.json — each taker decision that
 //       changed since it was last logged (taker.duckdb::taker_decisions).
+//   GET <Kalshi>/milestones?related_event_ticker=<event> before an order or a
+//       Place quote, cached per event for 10 min: Kalshi's own start for the
+//       game. The order and the quote carry the earlier of it and Unabated's
+//       eventStart, which the desks refuse on once passed (Unabated's alone
+//       when Kalshi lists none; public, no key; taker.kalshiStartMsOf).
+//   GET <Kalshi>/markets/<ticker>/orderbook and /markets/<ticker> once per
+//       GET /kalshi_quote.json (Cal's Place button, never on a timer).
 // Serves (HTTP on UNABATED_RUNNER_HOST:UNABATED_RUNNER_PORT, no auth):
 //   GET /edges.json  the Edges list the panel would show for those settings
 //                    (server/edges_payload.js documents the shape)
@@ -68,9 +82,27 @@
 //                    chance of each (server/scenarios.js documents the shape)
 //   GET /taker.json  the automated taker's last pass: every Kalshi row it
 //                    looked at, what it decided and what each order did
+//   GET /kalshi_quote.json?eventId=..&periodTypeId=..&betTypeId=..&sideIndex=..&points=..
+//                    the Ticket's Place button (bets_service/manual_orders.py):
+//                    the board's Kalshi line with those fields, the contract it
+//                    buys, its live ask and Kalshi's market check (the taker's
+//                    own resolveKalshiContract / quoteOf / marketMismatch) and
+//                    the Kalshi API it read; places nothing. points omitted
+//                    (and ignored) on a moneyline.
+//   GET /novig_quote.json?eventId=..&periodTypeId=..&betTypeId=..&sideIndex=..&points=..
+//                    the same for Novig Place (bets_service/novig_place.py):
+//                    the board's Novig line, its outcome, market and the other
+//                    side's outcome, its live price, Novig's market check
+//                    (the taker's own novigContractOf / novigQuoteOf /
+//                    novigMarketMismatch), the Novig API read and the line
+//                    as a bet record names it; places nothing. Spreads and
+//                    totals only.
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
+// Threads: main() runs createRunner on a worker thread (server/board_thread.js)
+// and keeps only the HTTP server, which answers the pages from that thread's
+// last copy, so no board walk holds up a phone reply.
 // Side effects: none on disk — no DuckDB, no files. Its writes go through the
 // bets service: the closing fairs (bets.duckdb::bet_closing_fairs), the
 // crosswalk rows, fill fairs and fill books above (insert-only tables) and
@@ -83,6 +115,7 @@
 "use strict";
 
 const http = require("node:http");
+const { monitorEventLoopDelay } = require("node:perf_hooks");
 const scannerLib = require("../extension/scanner.js");
 const teams = require("../extension/teams.js");
 const betsLib = require("../extension/bets.js");
@@ -100,11 +133,30 @@ const teasersPayload = require("./teasers_payload.js");
 const attachLib = require("../extension/attach.js");
 const pricecheck = require("../extension/pricecheck.js");
 const taker = require("./taker.js");
+const feedLib = require("../extension/feed.js");
+const boardThread = require("./board_thread.js");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8095;
+// A moneyline has no number: the Place button's line matches on side alone.
+const MONEYLINE_BET_TYPE_ID = 1;
 const DEFAULT_BETS_SERVICE_URL = "http://127.0.0.1:8094";
 const DEFAULT_KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2";
+const DEFAULT_NOVIG_BASE_URL = "https://api.novig.com";
+// Novig's CloudFront refused an unnamed client once (2026-10-10): every Novig read names itself.
+const NOVIG_USER_AGENT = "unabated-ticket-runner/1.0";
+// Novig's public catalog: one page holds up to 5000 markets; a slate is a few hundred.
+const NOVIG_MARKETS_PAGE_LIMIT = 5000;
+const NOVIG_MARKETS_MAX_PAGES = 10;
+// A Place quote reuses Novig's catalog when it is at most this old: an outcome
+// never moves to another market, and the quote still reads the market, its
+// event and its book live (2026-10-17: a fresh catalog plus three reads one
+// after another ran past the bets service's deadline, so the first click failed).
+const NOVIG_CATALOG_REUSE_MS = 60 * 1000;
+// feed.js league path -> Novig's canonical league name (GET /v3/types/leagues).
+const NOVIG_LEAGUE_OF = { nfl: "NFL", cfb: "NCAAF", nba: "NBA", cbb: "NCAAB", wnba: "WNBA", mlb: "MLB", nhl: "NHL" };
+// The bets service's sources the Novig stake is sized on: Cal's app account and the bot's subaccount.
+const NOVIG_HOLDINGS_SOURCES = ["novig", "novig_bot"];
 // The taker decides on every Kalshi row this often; Kalshi's public reads allow far more.
 const TAKER_PASS_MS = 30 * 1000;
 // Two reads in flight stay well under Kalshi's 20 reads/s basic limit at ~100 ms a read.
@@ -119,13 +171,18 @@ const TAKER_MAX_SNAPSHOT_AGE_MS = 3 * 60 * 1000;
 // Kalshi poll (60 s): a poll that failed, or none this recent, and the
 // holdings are unknown, so the pass decides nothing.
 const TAKER_MAX_HELD_AGE_MS = 5 * 60 * 1000;
+// Kalshi's start for a game (GET /milestones) is read once per event this
+// often; a read that failed is retried sooner. Starts move by days, not minutes.
+const KALSHI_START_TTL_MS = 10 * 60 * 1000;
+const KALSHI_START_RETRY_MS = 60 * 1000;
 // The desk sends, cancels and reads fills, each up to 10 s at Kalshi.
 const TAKER_ORDER_TIMEOUT_MS = 45 * 1000;
 // Decisions held for the bets service while it is down; past this the oldest go (logged).
 const TAKER_LOG_MAX_UNSENT = 5000;
 const TAKER_LOG_ROWS_PER_POST = 200;
-// The panel polls the bets service every 30 s (panel.js BETS_POLL_MS).
-const BETS_POLL_MS = 30 * 1000;
+// The runner re-reads the bets every 10 s (the panel and phone every 30 s): the taker
+// sizes against these, and the venues' own polls are 10-20 s, so a fill is held fast.
+const BETS_POLL_MS = 10 * 1000;
 // A phone setting change shows within one scanner tick.
 const SETTINGS_POLL_MS = 10 * 1000;
 // Snapshots land every 1-5 min per league, so a 30 s pass misses no change.
@@ -152,7 +209,7 @@ function logError(message) {
 }
 
 // The runner's config from the environment; throws naming the bad variable.
-//   {host, port, betsServiceUrl, kalshiBaseUrl}
+//   {host, port, betsServiceUrl, kalshiBaseUrl, novigBaseUrl}
 function configFromEnv(env) {
   const host = env.UNABATED_RUNNER_HOST || DEFAULT_HOST;
   const rawPort = env.UNABATED_RUNNER_PORT || String(DEFAULT_PORT);
@@ -168,7 +225,11 @@ function configFromEnv(env) {
   if (!/^https?:\/\/\S+$/.test(kalshiBaseUrl)) {
     throw new Error(`KALSHI_BASE_URL must be an http(s) URL, got ${JSON.stringify(env.KALSHI_BASE_URL)}`);
   }
-  return { host, port, betsServiceUrl, kalshiBaseUrl };
+  const novigBaseUrl = (env.NOVIG_API_URL || DEFAULT_NOVIG_BASE_URL).replace(/\/+$/, "");
+  if (!/^https?:\/\/\S+$/.test(novigBaseUrl)) {
+    throw new Error(`NOVIG_API_URL must be an http(s) URL, got ${JSON.stringify(env.NOVIG_API_URL)}`);
+  }
+  return { host, port, betsServiceUrl, kalshiBaseUrl, novigBaseUrl };
 }
 
 // The Host values a request to this runner can carry: the loopback names and
@@ -241,17 +302,21 @@ async function sendServiceJson(fetchImpl, url, method, body, timeoutMs = SERVICE
 // The scan loop, the bets poll and the settings poll, held in memory.
 //   deps  {fetchImpl (Unabated snapshots), serviceFetch (the bets service),
 //          kalshiFetch (Kalshi's orderbooks, default serviceFetch), kalshiBaseUrl,
+//          novigFetch (Novig's public catalog, default serviceFetch), novigBaseUrl,
 //          betsServiceUrl, now, timers {setInterval, clearInterval},
 //          logInfo / logWarning (message) -> void, default stdout / stderr}
 // Returns {start, stop, pollBets, pollSettings, scanLoaded, learn, takerPass,
 //          postTakerDecisions, edgesPayload, teasersPayload, attachPayload,
-//          scenariosPayload, takerPayload, health, scanner}.
+//          scenariosPayload, takerPayload, health, scanner, boardLines (the
+//          board's rows, read by the tests)}.
 function createRunner(deps) {
   const now = deps.now || (() => Date.now());
   const timers = deps.timers || { setInterval: (fn, ms) => setInterval(fn, ms), clearInterval: (id) => clearInterval(id) };
   const serviceFetch = deps.serviceFetch || deps.fetchImpl;
   const kalshiFetch = deps.kalshiFetch || serviceFetch;
   const kalshiBaseUrl = deps.kalshiBaseUrl || DEFAULT_KALSHI_BASE_URL;
+  const novigFetch = deps.novigFetch || serviceFetch;
+  const novigBaseUrl = deps.novigBaseUrl || DEFAULT_NOVIG_BASE_URL;
   const logInfo = deps.logInfo || log;
   const logWarning = deps.logWarning || logError;
   const startedAt = now();
@@ -260,6 +325,11 @@ function createRunner(deps) {
   let scannerStatus = null;
   let history = {};
   let boardLinesCache = null;
+  // leagueId -> {version, rows}: each league's board rows as of its last
+  // snapshot (scanner.getLeagueVersion; boardLines rebuilds only the league that landed).
+  const boardRowsByLeague = new Map();
+  // leagueId -> the league version rememberKickoffOdds last read.
+  const kickoffLeagueVersions = new Map();
   let ladderReaders = null;
   // The panel's other per-snapshot caches: the tail-flex measurement (dropped
   // on every scanner update, re-measured when the max line age changes) and
@@ -286,6 +356,8 @@ function createRunner(deps) {
   let teaserBlocks = [];
   // The Edges lines Skipped on either page (bets.duckdb::edge_skips).
   let edgeSkips = [];
+  // eventTicker -> {startMs, expiresAt, error?}: Kalshi's start per game (kalshiStartOf).
+  const kalshiStarts = new Map();
   // The Teasers list's last build (teaser.planTeasers `previous`): the list
   // is rebuilt only when what it is built on changed, so it holds still.
   let teaserBuild = null;
@@ -326,11 +398,19 @@ function createRunner(deps) {
   // changes), and the decisions the bets service has not taken yet.
   let takerBusy = false;
   let takerPostBusy = false;
-  let takerLastPass = { startedAt: null, finishedAt: null, skipped: "not run yet", rows: 0, byReason: {}, coverage: {} };
+  // `skipped` is the Kalshi side's (as before Novig), `novigSkipped` the Novig side's.
+  let takerLastPass = { startedAt: null, finishedAt: null, skipped: "not run yet", novigSkipped: "not run yet", rows: 0, byReason: {}, coverage: {} };
   let takerDecisions = [];
   const takerLogged = new Map();
   let takerUnsent = [];
   let takerDeskStatus = "not asked yet";
+  let novigDeskStatus = "not asked yet";
+  // Novig's catalog as last read: {leagues: Set, readAt, index (novigOutcomeIndex)}.
+  let novigCatalog = null;
+  // How long the event loop stalled since the last Novig quote (logged with it):
+  // a quote slow on a stalled loop is the runner's own work, not Novig.
+  const loopDelay = monitorEventLoopDelay({ resolution: 20 });
+  loopDelay.enable();
   const takerLogStatus = { okAt: null, error: null, rowsSent: 0, dropped: 0 };
 
   // Every snapshot carries Unabated's team list; register it so bet records
@@ -367,16 +447,25 @@ function createRunner(deps) {
   // Keep every board game's row, and its lines while it has not started, so
   // a game in progress keeps its card and its kickoff chances whether or not
   // the board still lists it. Games started more than KICKOFF_MEMO_HOURS ago go.
+  // Only leagues whose snapshot landed since the last call are looked at: an
+  // unchanged league's rows and lines are the ones already remembered.
   function rememberKickoffOdds() {
     const at = now();
-    const linesByEvent = feedState ? ladderLib.groupLinesByEvent(Object.values(feedState.lines)) : new Map();
-    for (const row of boardLines()) {
-      if (typeof row.eventStartMs !== "number") continue;
-      const pregame = row.eventStartMs > at;
-      const known = kickoffMemo.get(row.eventId);
-      if (pregame) kickoffMemo.set(row.eventId, { row, lines: linesByEvent.get(row.eventId) || [], oddsAt: at });
-      else if (!known) kickoffMemo.set(row.eventId, { row, lines: null, oddsAt: null });
+    const leagueIds = boardLeagueIds();
+    for (const leagueId of leagueIds) {
+      const version = scanner.getLeagueVersion(leagueId);
+      if (kickoffLeagueVersions.get(leagueId) === version) continue;
+      kickoffLeagueVersions.set(leagueId, version);
+      const linesByEvent = ladderLib.groupLinesByEvent(scanner.getLeagueLines(leagueId));
+      for (const row of leagueBoardRows(leagueId)) {
+        if (typeof row.eventStartMs !== "number") continue;
+        const pregame = row.eventStartMs > at;
+        const known = kickoffMemo.get(row.eventId);
+        if (pregame) kickoffMemo.set(row.eventId, { row, lines: linesByEvent.get(row.eventId) || [], oddsAt: at });
+        else if (!known) kickoffMemo.set(row.eventId, { row, lines: null, oddsAt: null });
+      }
     }
+    for (const leagueId of kickoffLeagueVersions.keys()) if (!leagueIds.includes(leagueId)) kickoffLeagueVersions.delete(leagueId);
     for (const [eventId, entry] of kickoffMemo) {
       if (at - entry.row.eventStartMs > KICKOFF_MEMO_HOURS * HOUR_MS) kickoffMemo.delete(eventId);
     }
@@ -387,10 +476,40 @@ function createRunner(deps) {
     knownStarts = betsView.keepKnownStartsOpen(knownStarts, betsLib.matchedStarts(held.records, boardLines()), held.records);
   }
 
+  // The board's leagues in board order (state.leagues: a refreshed league moves to the end, as its lines do).
+  function boardLeagueIds() {
+    return feedState ? Array.from(new Set(feedState.leagues)) : [];
+  }
+
+  // One league's board rows (edgeRows.boardLines over its lines), rebuilt only when its snapshot landed again.
+  // A row keeps the book and team names of its own league's last snapshot (accepted: rows only name games).
+  function leagueBoardRows(leagueId) {
+    const version = scanner.getLeagueVersion(leagueId);
+    const cached = boardRowsByLeague.get(leagueId);
+    if (cached && cached.version === version) return cached.rows;
+    const rows = edgeRows.boardLines(feedState, scanner.getLeagueLines(leagueId));
+    boardRowsByLeague.set(leagueId, { version, rows });
+    return rows;
+  }
+
+  // Every league's rows, in the order a pass over state.lines gives them
+  // (lines sit in league merge order), one row per event.
   function boardLines() {
     if (!feedState) return [];
-    if (!boardLinesCache) boardLinesCache = edgeRows.boardLines(feedState);
-    return boardLinesCache;
+    if (boardLinesCache) return boardLinesCache;
+    const leagueIds = boardLeagueIds();
+    for (const leagueId of boardRowsByLeague.keys()) if (!leagueIds.includes(leagueId)) boardRowsByLeague.delete(leagueId);
+    const seen = new Set();
+    const rows = [];
+    for (const leagueId of leagueIds) {
+      for (const row of leagueBoardRows(leagueId)) {
+        if (seen.has(row.eventId)) continue;
+        seen.add(row.eventId);
+        rows.push(row);
+      }
+    }
+    boardLinesCache = rows;
+    return rows;
   }
 
   function ladderReaderOf(eventId) {
@@ -635,17 +754,18 @@ function createRunner(deps) {
     return taker.parseKalshiOrderbook(body);
   }
 
-  // ticker -> {book} | {error}, KALSHI_BOOK_READS_AT_ONCE reads in flight.
-  async function readKalshiBooks(tickers) {
+  // id -> {book} | {error} for every id, KALSHI_BOOK_READS_AT_ONCE reads of
+  // `readOne(id)` in flight (Kalshi tickers and Novig market ids alike).
+  async function readBooks(ids, readOne) {
     const books = new Map();
-    const queue = Array.from(tickers);
+    const queue = Array.from(ids);
     const worker = async () => {
       while (queue.length) {
-        const ticker = queue.shift();
+        const id = queue.shift();
         try {
-          books.set(ticker, { book: await readKalshiBook(ticker) });
+          books.set(id, { book: await readOne(id) });
         } catch (error) {
-          books.set(ticker, { error: error.message });
+          books.set(id, { error: error.message });
         }
       }
     };
@@ -653,13 +773,36 @@ function createRunner(deps) {
     return books;
   }
 
-  // Why the taker must not decide right now, or null: no live board, or the
-  // held bets are unknown (sizing is conditional on them): the bets service
-  // unread or unreachable, or its Kalshi poll failed or is too old. Fail closed.
-  function takerBlocker() {
+  // Why the taker must not decide on any venue right now, or null: no live
+  // board, or the bets service unread or unreachable. Fail closed.
+  function boardBlocker() {
     if (!feedState || !scannerStatus || scannerStatus.phase !== "live") return "the board is not live";
     if (betsStatus.okAt === null) return "the bets service has not been read yet";
     if (betsStatus.error) return `the bets service is unreachable: ${betsStatus.error}`;
+    return null;
+  }
+
+  // Why the Novig side must not decide, or null: the held Novig bets are
+  // unknown (Cal's app account or the bot's subaccount unread, failed or too
+  // old), or the bets service reads no bot subaccount (no bot key: no desk).
+  function novigBlocker() {
+    for (const name of NOVIG_HOLDINGS_SOURCES) {
+      const source = betsStatus.sources && betsStatus.sources[name];
+      if (!source) return `the bets service does not read ${name}`;
+      if (source.ok !== true) return `the bets service's ${name} read failed: ${source.error || "no detail"}`;
+      const fetchedAt = Date.parse(source.fetchedAt || "");
+      if (!Number.isFinite(fetchedAt) || now() - fetchedAt > TAKER_MAX_HELD_AGE_MS) {
+        return `the bets service's ${name} read is older than ${TAKER_MAX_HELD_AGE_MS / 60000} min (${source.fetchedAt || "never"})`;
+      }
+    }
+    return null;
+  }
+
+  // Why the Kalshi side must not decide right now, or null: boardBlocker, or
+  // the held Kalshi bets are unknown (its poll failed or is too old).
+  function takerBlocker() {
+    const board = boardBlocker();
+    if (board) return board;
     const kalshiSource = betsStatus.sources && betsStatus.sources.kalshi;
     if (!kalshiSource) return "the bets service does not poll Kalshi, so the held Kalshi bets are unknown";
     if (kalshiSource.ok !== true) return `the bets service's Kalshi poll failed: ${kalshiSource.error || "no detail"}`;
@@ -692,50 +835,329 @@ function createRunner(deps) {
     const startedAt = now();
     try {
       const blocker = takerBlocker();
-      if (blocker) {
-        takerLastPass = { ...takerLastPass, startedAt, finishedAt: now(), skipped: blocker };
+      // A Novig stake is sized on every held bet, Cal's Kalshi bets included: it needs the Kalshi poll fresh too.
+      const novigSkip = blocker || novigBlocker();
+      if (blocker && novigSkip) {
+        takerLastPass = { ...takerLastPass, startedAt, finishedAt: now(), skipped: blocker, novigSkipped: novigSkip };
         return;
       }
       // The board as of the pass start: a snapshot landing during the book reads must not mix in.
       const board = feedState;
-      const rows = taker.candidateRows(board, settings.edgeSettings, startedAt);
-      const contracts = rows.map((row) => {
-        const stale = staleSnapshotReason(row.leagueId, startedAt);
-        return stale ? { reason: "stale_feed", detail: stale } : taker.resolveKalshiContract(row, board);
-      });
-      const books = await readKalshiBooks(new Set(contracts.filter((contract) => contract.ticker).map((contract) => contract.ticker)));
-      const priceIndex = pricecheck.buildPriceIndex(board, { now: startedAt, maxLineAgeMs: taker.MAX_LINE_AGE_MS });
-      // The same held bets the Edges list sizes against: Cal's Removed bets (bet_exclusions) are not his.
-      const flags = betsLib.annotateRows(rows, held.records.filter((record) => !excludedBetIds.has(record.id)), { lines: boardLines() });
-      const teasers = openTeasersNow();
-      const decidedAt = now();
-      takerDecisions = rows.map((row, index) => {
-        const contract = contracts[index];
-        const read = contract.ticker ? books.get(contract.ticker) : null;
-        const quote = read && read.book ? taker.quoteOf(read.book, contract.side) : null;
-        const decision = taker.decideRow({
-          row, contract, quote, quoteError: read ? read.error || null : null, priceIndex,
-          sizing: { matches: flags[index].matches, ladderOf: ladderReaderOf(row.eventId), teasers },
-        });
-        // The held bets the stake was sized on, by id: the desk refuses an add
-        // on a game whose earlier bot fill is not among them (taker_orders.py).
-        const heldIds = flags[index].matches.map((match) => match.bet.id);
-        return { ...takerRowFields(row), decidedAt: new Date(decidedAt).toISOString(), ...decision, heldIds };
-      });
+      const pass = {
+        board, startedAt, priceIndex: pricecheck.buildPriceIndex(board, { now: startedAt, maxLineAgeMs: taker.MAX_LINE_AGE_MS }),
+        // The same held bets the Edges list sizes against: Cal's Removed bets (bet_exclusions) are not his.
+        heldRecords: held.records.filter((record) => !excludedBetIds.has(record.id)), teasers: openTeasersNow(),
+      };
+      const kalshiPart = blocker ? { rows: [], decisions: [] } : await kalshiDecisions(pass);
+      const novigPart = novigSkip ? { rows: [], decisions: [] } : await novigDecisions(pass);
+      takerDecisions = kalshiPart.decisions.concat(novigPart.decisions);
+      const rows = kalshiPart.rows.concat(novigPart.rows);
       await sendTakerOrders(takerDecisions, rows, startedAt);
       queueChangedDecisions(takerDecisions);
       takerLastPass = {
-        startedAt, finishedAt: now(), skipped: null, rows: rows.length,
+        startedAt, finishedAt: now(), skipped: blocker, novigSkipped: novigSkip, rows: rows.length,
         byReason: countBy(takerDecisions, (decision) => decision.reason),
         coverage: takerCoverage(takerDecisions),
       };
     } catch (error) {
       logWarning(`taker pass failed: ${error.stack || error.message}`);
-      takerLastPass = { ...takerLastPass, startedAt, finishedAt: now(), skipped: `the pass failed: ${error.message}` };
+      takerLastPass = { ...takerLastPass, startedAt, finishedAt: now(), skipped: `the pass failed: ${error.message}`, novigSkipped: `the pass failed: ${error.message}` };
     } finally {
       takerBusy = false;
     }
     await postTakerDecisions();
+  }
+
+  // One venue's rows decided: the contract each buys, its live book, the
+  // stake conditional on the held bets. `resolve(row)` gives the contract,
+  // `quoteFor(contract)` the live {ask, depth} or {error}.
+  function decideRows(pass, rows, venue, resolve, quoteFor) {
+    const contracts = rows.map((row) => {
+      const stale = staleSnapshotReason(row.leagueId, pass.startedAt);
+      return stale ? { reason: "stale_feed", detail: stale } : resolve(row);
+    });
+    const flags = betsLib.annotateRows(rows, pass.heldRecords, { lines: boardLines() });
+    const decidedAt = now();
+    const decisions = rows.map((row, index) => {
+      const contract = contracts[index];
+      const read = contract.reason ? null : quoteFor(contract);
+      const decision = taker.decideRow({
+        row, contract, quote: read && !read.error ? read.quote : null, quoteError: read ? read.error || null : null,
+        priceIndex: pass.priceIndex, venue,
+        sizing: { matches: flags[index].matches, ladderOf: ladderReaderOf(row.eventId), teasers: pass.teasers },
+      });
+      // The held bets the stake was sized on, by id: the desk refuses an add
+      // on a game whose earlier bot fill (either venue) is not among them.
+      const heldIds = flags[index].matches.map((match) => match.bet.id);
+      const extra = venue === taker.VENUE_NOVIG ? { line: taker.novigLineOf(row) } : {};
+      return { ...takerRowFields(row), decidedAt: new Date(decidedAt).toISOString(), ...decision, ...extra, heldIds };
+    });
+    return { rows, decisions };
+  }
+
+  async function kalshiDecisions(pass) {
+    const rows = taker.candidateRows(pass.board, settings.edgeSettings, pass.startedAt);
+    const tickers = new Set();
+    for (const row of rows) {
+      if (staleSnapshotReason(row.leagueId, pass.startedAt)) continue;
+      const contract = taker.resolveKalshiContract(row, pass.board);
+      if (contract.ticker) tickers.add(contract.ticker);
+    }
+    const books = await readBooks(tickers, readKalshiBook);
+    return decideRows(pass, rows, taker.VENUE_KALSHI, (row) => taker.resolveKalshiContract(row, pass.board), (contract) => {
+      const read = books.get(contract.ticker);
+      if (!read) return null;
+      return read.book ? { quote: taker.quoteOf(read.book, contract.side) } : { error: read.error };
+    });
+  }
+
+  // The Novig rows: Novig's open pregame markets for their leagues (one
+  // catalog read), each row's outcome on them, the books of those markets.
+  // A failed catalog read leaves every row no_outcome, so nothing is sent.
+  async function novigDecisions(pass) {
+    const rows = taker.candidateRows(pass.board, settings.edgeSettings, pass.startedAt, taker.NOVIG_BOOK_ID);
+    if (!rows.length) return { rows, decisions: [] };
+    let index = new Map();
+    let catalogError = null;
+    try {
+      index = (await novigCatalogFor(rows, 0)).index;
+    } catch (error) {
+      catalogError = error.message;
+    }
+    const resolve = (row) => {
+      if (catalogError) return { reason: "no_outcome", detail: `Novig's catalog unread: ${catalogError}` };
+      return taker.novigContractOf(row, index);
+    };
+    const marketIds = new Set();
+    for (const row of rows) {
+      if (staleSnapshotReason(row.leagueId, pass.startedAt)) continue;
+      const contract = resolve(row);
+      if (contract.marketId) marketIds.add(contract.marketId);
+    }
+    const books = await readBooks(marketIds, (marketId) => getNovigJson(`${novigMarketUrl(marketId)}/book`));
+    return decideRows(pass, rows, taker.VENUE_NOVIG, resolve, (contract) => {
+      const read = books.get(contract.marketId);
+      if (!read) return null;
+      if (read.error) return { error: read.error };
+      try {
+        return { quote: taker.novigQuoteOf(read.book, contract) };
+      } catch (error) {
+        return { error: error.message };
+      }
+    });
+  }
+
+  // One public Novig GET as JSON; throws naming the URL and status.
+  function getNovigJson(url) {
+    return getServiceJson(novigFetch, url, { headers: { Accept: "application/json", "User-Agent": NOVIG_USER_AGENT } });
+  }
+
+  // Novig's outcome index for the rows' leagues: the last catalog read when it
+  // covers them and is at most maxAgeMs old, else a fresh read (kept for the
+  // next quote); maxAgeMs 0 always reads. {index, readAt, reused}.
+  async function novigCatalogFor(rows, maxAgeMs) {
+    const leagues = rows.map((row) => NOVIG_LEAGUE_OF[row.league]).filter(Boolean);
+    const cached = novigCatalog;
+    if (maxAgeMs > 0 && leagues.length && cached && now() - cached.readAt <= maxAgeMs && leagues.every((league) => cached.leagues.has(league))) {
+      return { index: cached.index, readAt: cached.readAt, reused: true };
+    }
+    const readAt = now();
+    const index = taker.novigOutcomeIndex(await readNovigMarkets(rows));
+    novigCatalog = { leagues: new Set(leagues), readAt, index };
+    return { index, readAt, reused: false };
+  }
+
+  // Every open pregame Novig market in the rows' leagues, every page (never a partial list).
+  async function readNovigMarkets(rows) {
+    const leagues = Array.from(new Set(rows.map((row) => NOVIG_LEAGUE_OF[row.league]).filter(Boolean))).sort();
+    if (!leagues.length) return [];
+    const markets = [];
+    let after = null;
+    for (let page = 0; page < NOVIG_MARKETS_MAX_PAGES; page += 1) {
+      const query = new URLSearchParams({ league: leagues.join(","), eventStatus: taker.NOVIG_EVENT_PREGAME, limit: String(NOVIG_MARKETS_PAGE_LIMIT) });
+      if (after) query.set("after", after);
+      const body = await getNovigJson(`${novigBaseUrl}/v3/public/catalog/markets?${query}`);
+      if (!body || !Array.isArray(body.items)) throw new Error("Novig markets: no items list");
+      markets.push(...body.items);
+      after = body.next || null;
+      if (!after) return markets;
+    }
+    throw new Error(`Novig markets: more than ${NOVIG_MARKETS_MAX_PAGES} pages`);
+  }
+
+  // The Ticket's Place button (bets_service/manual_orders.py asks, Cal
+  // clicked): the board's one Kalshi line with these fields, the contract it
+  // buys, what buying it costs now and whether Kalshi's market is the line's.
+  // The board is used only to find the contract, so its age does not matter
+  // here: the price Cal acts on is the Ticket's, checked against the live ask
+  // by the bets service. A line the board lacks or holds twice, or no
+  // contract, answers {ok: false, reason, detail}; bad params are a 400.
+  //   params  URLSearchParams {eventId, periodTypeId, betTypeId, sideIndex, points?}
+  async function kalshiQuoteNow(params) {
+    const spec = kalshiLineSpecOf(params);
+    const board = feedState;
+    if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
+    const found = linesOfEvent(board, spec.eventId).filter((line) => line.bookId === taker.KALSHI_BOOK_ID
+      && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
+      && line.sideIndex === spec.sideIndex && (spec.betTypeId === MONEYLINE_BET_TYPE_ID || (line.points ?? null) === spec.points));
+    if (found.length !== 1) {
+      return { ok: false, reason: "no_line", detail: `the board holds ${found.length} Kalshi lines for game ${spec.eventId} at that market, side and number` };
+    }
+    const row = feedLib.describeLine(found[0], board);
+    const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName };
+    const contract = await kalshiPlaceContractOf(row, board);
+    if (contract.reason) return { ok: false, ...fields, reason: contract.reason, detail: contract.detail };
+    const position = { ...fields, ticker: contract.ticker, side: contract.side, derivedTicker: contract.derived === true };
+    let book;
+    let market;
+    try {
+      book = await readKalshiBook(contract.ticker);
+      market = await readKalshiMarket(contract.ticker);
+    } catch (error) {
+      return { ok: false, ...position, reason: "no_book", detail: error.message };
+    }
+    const mismatch = taker.marketMismatch(market, row, contract);
+    if (mismatch) return { ok: false, ...position, reason: "market_mismatch", detail: `${contract.ticker}: ${mismatch}` };
+    const kalshiStartMs = await kalshiStartOf(taker.eventTickerOf(market, contract.ticker));
+    Object.assign(position, startFields(row.eventStart, kalshiStartMs));
+    const quote = taker.quoteOf(book, contract.side);
+    if (!quote) return { ok: false, ...position, reason: "no_book", detail: `nothing rests on the ${contract.side} side of ${contract.ticker}` };
+    return {
+      ok: true, ...position, ask: quote.ask, allIn: Math.round(taker.kalshiAllInPrice(quote.ask) * 1e6) / 1e6, depth: quote.depth,
+      kalshiBaseUrl,
+    };
+  }
+
+  // The Kalshi contract Place buys: the bot's own reading of the rungs, and
+  // for a moneyline whose team code no full-game spread rung gives (a game
+  // without one, a half), Kalshi's own market list for the game's winner
+  // event (taker.kalshiMoneylineEventOf / kalshiMoneylineFromMarkets).
+  async function kalshiPlaceContractOf(row, board) {
+    const contract = taker.resolveKalshiContract(row, board);
+    if (!contract.reason || row.betTypeId !== MONEYLINE_BET_TYPE_ID) return contract;
+    const event = taker.kalshiMoneylineEventOf(row);
+    if (event.reason) return { reason: event.reason, detail: `${contract.detail}; ${event.detail}` };
+    let body;
+    try {
+      body = await getServiceJson(kalshiFetch, `${kalshiBaseUrl}/markets?limit=20&event_ticker=${encodeURIComponent(event.eventTicker)}`);
+    } catch (error) {
+      return { reason: "no_ticker", detail: `${contract.detail}; Kalshi's markets on ${event.eventTicker} unread: ${error.message}` };
+    }
+    return taker.kalshiMoneylineFromMarkets(row, body && body.markets, event.eventTicker);
+  }
+
+  // The Ticket's Place button on Novig (bets_service/novig_place.py asks):
+  // the board's one Novig line with these fields, the outcome it buys and the
+  // other side's (the taker's own novigContractOf over Novig's open pregame
+  // catalog), what buying it costs now (novigQuoteOf) and whether Novig's
+  // market and event are the line's and take a free pregame order
+  // (novigMarketMismatch). As on Kalshi, the board only finds the outcome;
+  // the price Cal acts on is checked by the bets service. Places nothing.
+  //   params  URLSearchParams {eventId, periodTypeId, betTypeId, sideIndex, points}
+  async function novigQuoteNow(params) {
+    const spec = kalshiLineSpecOf(params);
+    const startedAt = now();
+    const { answer, catalog } = await novigQuoteOfSpec(spec);
+    const stalledMs = Math.round(loopDelay.max / 1e6);
+    loopDelay.reset();
+    logInfo(`novig quote ${spec.eventId} ${answer.label || `bet type ${spec.betTypeId} side ${spec.sideIndex} ${spec.points}`}: `
+      + `${answer.ok ? `ok @ ${answer.price}` : answer.reason} in ${now() - startedAt} ms`
+      + (catalog ? ` (catalog ${catalog.reused ? `reused, ${Math.round((startedAt - catalog.readAt) / 1000)}s old` : "read"}, `
+        + `market reads ${catalog.readsMs} ms)` : "")
+      + `; event loop stalled up to ${stalledMs} ms since the last quote`);
+    return answer;
+  }
+
+  // One game's lines, read from its league's lines only: a Place quote walking
+  // the whole ~1.2M-line board took ~1.3 s per click (2026-10-19 review).
+  // A game the board does not hold has none. Right after a scan restart the
+  // scanner holds a new board while `board` is still the last published one:
+  // that board is walked whole, as before, so the quote matches the list Cal sees.
+  function linesOfEvent(board, eventId) {
+    const event = board.events[eventId];
+    if (!event) return [];
+    const lines = board === scanner.getState() ? scanner.getLeagueLines(event.leagueId) : Object.values(board.lines);
+    return lines.filter((line) => line.eventId === eventId);
+  }
+
+  // {answer: novigQuoteNow's answer, catalog: {reused, readAt, readsMs} for its log line once the outcome was found, else null}.
+  async function novigQuoteOfSpec(spec) {
+    const board = feedState;
+    if (!board) return { answer: { ok: false, reason: "no_board", detail: "the board has not loaded yet" }, catalog: null };
+    const found = linesOfEvent(board, spec.eventId).filter((line) => line.bookId === taker.NOVIG_BOOK_ID
+      && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
+      && line.sideIndex === spec.sideIndex && (spec.betTypeId === MONEYLINE_BET_TYPE_ID || (line.points ?? null) === spec.points));
+    if (found.length !== 1) {
+      return { answer: { ok: false, reason: "no_line", detail: `the board holds ${found.length} Novig lines for game ${spec.eventId} at that market, side and number` }, catalog: null };
+    }
+    const row = feedLib.describeLine(found[0], board);
+    const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName };
+    let catalog;
+    let contract;
+    try {
+      // A moneyline has no Novig rung of its own: Place finds it off the game's other rungs (never the bot).
+      const contractOf = (index) => (row.betTypeId === MONEYLINE_BET_TYPE_ID
+        ? taker.novigMoneylineContract(row, index, board) : taker.novigContractOf(row, index));
+      catalog = await novigCatalogFor([row], NOVIG_CATALOG_REUSE_MS);
+      contract = contractOf(catalog.index);
+      // A market listed since the reused read: one fresh read before giving up.
+      if (contract.reason && catalog.reused) {
+        catalog = await novigCatalogFor([row], 0);
+        contract = contractOf(catalog.index);
+      }
+    } catch (error) {
+      return { answer: { ok: false, ...fields, reason: "no_outcome", detail: `Novig's catalog unread: ${error.message}` }, catalog: null };
+    }
+    if (contract.reason) return { answer: { ok: false, ...fields, reason: contract.reason, detail: contract.detail }, catalog: null };
+    const position = { ...fields, outcomeId: contract.outcomeId, otherOutcomeId: contract.otherOutcomeId, marketId: contract.marketId };
+    // The book, the market and its event at once (the catalog names the event; the check confirms it is the market's).
+    const listedEventId = catalog.index.get(contract.outcomeId).market.eventId;
+    const readsStartedAt = now();
+    const [bookRead, mismatch] = await Promise.all([
+      getNovigJson(`${novigMarketUrl(contract.marketId)}/book`).then((book) => ({ book }), (error) => ({ error })),
+      readNovigMarketMismatch(row, contract, listedEventId),
+    ]);
+    const timing = { reused: catalog.reused, readAt: catalog.readAt, readsMs: now() - readsStartedAt };
+    let quote;
+    try {
+      if (bookRead.error) throw bookRead.error;
+      quote = taker.novigQuoteOf(bookRead.book, contract);
+    } catch (error) {
+      return { answer: { ok: false, ...position, reason: "no_book", detail: error.message }, catalog: timing };
+    }
+    if (mismatch) return { answer: { ok: false, ...position, reason: "market_mismatch", detail: mismatch }, catalog: timing };
+    if (!quote) return { answer: { ok: false, ...position, reason: "no_book", detail: `nothing rests on the other side of Novig market ${contract.marketId}` }, catalog: timing };
+    return { answer: { ok: true, ...position, price: quote.ask, depth: quote.depth, novigBaseUrl, line: taker.novigLineOf(row) }, catalog: timing };
+  }
+
+  // Kalshi's start for an event as epoch ms, or null when it lists none or
+  // the read failed (never throws: option B trades on Unabated's start then).
+  async function kalshiStartOf(eventTicker) {
+    if (!eventTicker) return null;
+    const cached = kalshiStarts.get(eventTicker);
+    if (cached && now() < cached.expiresAt) return cached.startMs;
+    for (const [key, entry] of kalshiStarts) if (now() >= entry.expiresAt) kalshiStarts.delete(key);
+    const url = `${kalshiBaseUrl}/milestones?limit=20&related_event_ticker=${encodeURIComponent(eventTicker)}`;
+    try {
+      const startMs = taker.kalshiStartMsOf(await getServiceJson(kalshiFetch, url), eventTicker);
+      kalshiStarts.set(eventTicker, { startMs, expiresAt: now() + KALSHI_START_TTL_MS });
+      return startMs;
+    } catch (error) {
+      if (!cached || cached.error !== error.message) logWarning(`kalshi start ${eventTicker}: ${error.message}`);
+      kalshiStarts.set(eventTicker, { startMs: null, error: error.message, expiresAt: now() + KALSHI_START_RETRY_MS });
+      return null;
+    }
+  }
+
+  // The start an order or a quote carries: the earlier of Unabated's and
+  // Kalshi's, with both kept for the log.
+  //   unabatedStart  the row's eventStart, ISO UTC
+  function startFields(unabatedStart, kalshiStartMs) {
+    const startMs = taker.earliestStartMs(Date.parse(unabatedStart), kalshiStartMs);
+    return {
+      eventStart: startMs === null ? unabatedStart : new Date(startMs).toISOString(),
+      unabatedStart, kalshiStart: kalshiStartMs === null ? null : new Date(kalshiStartMs).toISOString(),
+    };
   }
 
   // Kalshi's market object for a ticker (public GET /markets/<ticker>).
@@ -750,13 +1172,87 @@ function createRunner(deps) {
   // capped by), each after Kalshi's market is read and found to be the
   // row's (taker.marketMismatch). The outcome rides on the decision as
   // `order`. Mutates `decisions`.
+  // Kalshi and Novig bets are one list (Cal, 2026-10-16: the better all-in
+  // price first): a number both books trade at a tie sends the better live
+  // edge first, and the other waits on the desk's unseen_fill. A venue whose
+  // desk is off stops only that venue's sends.
   async function sendTakerOrders(decisions, rows, passStartedAt) {
     const rowByKey = new Map(rows.map((row) => [row.key, row]));
     const bets = decisions.filter((decision) => decision.reason === "bet").sort((a, b) => b.liveEdge - a.liveEdge);
+    const venuesOff = new Set();
     for (const decision of bets) {
-      if (!(await marketConfirmed(decision, rowByKey.get(decision.rowKey)))) continue;
-      decision.order = await sendTakerOrder(decision, passStartedAt);
-      if (decision.order.status === "off") break;
+      if (venuesOff.has(decision.venue)) continue;
+      const row = rowByKey.get(decision.rowKey);
+      if (decision.venue === taker.VENUE_NOVIG) {
+        if (!(await novigMarketConfirmed(decision, row))) continue;
+        decision.order = await sendNovigTakerOrder(decision, passStartedAt);
+      } else {
+        if (!(await marketConfirmed(decision, row))) continue;
+        decision.order = await sendTakerOrder(decision, passStartedAt);
+      }
+      if (decision.order.status === "off") venuesOff.add(decision.venue);
+    }
+  }
+
+  function novigMarketUrl(marketId) {
+    return `${novigBaseUrl}/v3/public/catalog/markets/${encodeURIComponent(marketId)}`;
+  }
+
+  // Why Novig's market and its event, read now, are not the row's or do not
+  // take a free pregame order (taker.novigMarketMismatch), an unread market
+  // included (fail closed); null when they are. Shared by the bot's orders
+  // and the Place button's quotes, so neither can skip a check the other has.
+  //   listedEventId  the event the catalog listed the market under, when known:
+  //                  then the market and the event are read at once
+  async function readNovigMarketMismatch(row, contract, listedEventId = null) {
+    const eventUrl = (eventId) => `${novigBaseUrl}/v3/public/catalog/events/${encodeURIComponent(eventId)}`;
+    let market;
+    let event;
+    try {
+      if (typeof listedEventId === "string" && listedEventId) {
+        [market, event] = await Promise.all([getNovigJson(novigMarketUrl(contract.marketId)), getNovigJson(eventUrl(listedEventId))]);
+      } else {
+        market = await getNovigJson(novigMarketUrl(contract.marketId));
+        event = await getNovigJson(eventUrl(market.eventId));
+      }
+    } catch (error) {
+      return `Novig market ${contract.marketId} unread: ${error.message}`;
+    }
+    const mismatch = taker.novigMarketMismatch(market, event, row, contract);
+    return mismatch === null ? null : `Novig market ${contract.marketId}: ${mismatch}`;
+  }
+
+  // The bot's order goes only when readNovigMarketMismatch finds nothing; else the decision reads market_mismatch.
+  async function novigMarketConfirmed(decision, row) {
+    const mismatch = await readNovigMarketMismatch(row, { outcomeId: decision.ticker, marketId: decision.marketId });
+    if (mismatch === null) return true;
+    Object.assign(decision, { reason: "market_mismatch", detail: mismatch });
+    return false;
+  }
+
+  // One POST /taker/novig_order.json; never throws. {status, ...} as the desk
+  // answers it, "off" when the service has no bot Novig key, "error" on no answer.
+  async function sendNovigTakerOrder(decision, passStartedAt) {
+    const body = {
+      clientId: taker.novigClientIdOf(decision.ticker, passStartedAt), outcomeId: decision.ticker, marketId: decision.marketId,
+      price: decision.liveAsk, qty: decision.contracts, rowKey: decision.rowKey, eventId: decision.eventId, eventStart: decision.eventStart,
+      heldIds: decision.heldIds, decidedAt: decision.decidedAt, novigBaseUrl, line: decision.line,
+    };
+    try {
+      const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/taker/novig_order.json`, "POST", body, TAKER_ORDER_TIMEOUT_MS);
+      novigDeskStatus = reply.status === "geo_blocked" ? `geo_blocked: ${reply.detail}`
+        : reply.status === "stopped" ? `stopped: ${reply.detail}` : "armed";
+      if (!["ceiling", "stopped", "unseen_fill", "stale_holdings"].includes(reply.status)) {
+        logInfo(`taker novig order ${body.clientId} ${decision.ticker} x${decision.contracts} @ ${decision.liveAsk}: ${reply.status}${reply.detail ? ` (${reply.detail})` : ""}`);
+      }
+      return { clientId: body.clientId, ...reply };
+    } catch (error) {
+      if (error.status === 503) {
+        novigDeskStatus = `off: the bets service places no Novig orders (${error.message})`;
+        return { status: "off", detail: error.message };
+      }
+      logWarning(`taker novig order ${body.clientId} ${decision.ticker}: ${error.message}`);
+      return { status: "error", detail: error.message };
     }
   }
 
@@ -772,7 +1268,11 @@ function createRunner(deps) {
       return false;
     }
     const mismatch = taker.marketMismatch(market, row, { side: decision.side, ticker: decision.ticker });
-    if (mismatch === null) return true;
+    if (mismatch === null) {
+      // The order carries the earlier start; the desk refuses it once passed ("started").
+      Object.assign(decision, startFields(decision.eventStart, await kalshiStartOf(taker.eventTickerOf(market, decision.ticker))));
+      return true;
+    }
     Object.assign(decision, { reason: "market_mismatch", detail: `${decision.ticker}: ${mismatch}` });
     return false;
   }
@@ -789,7 +1289,7 @@ function createRunner(deps) {
     try {
       const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/taker/order.json`, "POST", body, TAKER_ORDER_TIMEOUT_MS);
       takerDeskStatus = "armed";
-      if (!["ceiling", "stopped", "unseen_fill"].includes(reply.status)) logInfo(`taker order ${body.clientOrderId} ${decision.ticker} ${decision.side} x${decision.contracts} @ ${decision.liveAsk}: ${reply.status}`);
+      if (!["ceiling", "stopped", "unseen_fill", "started"].includes(reply.status)) logInfo(`taker order ${body.clientOrderId} ${decision.ticker} ${decision.side} x${decision.contracts} @ ${decision.liveAsk}: ${reply.status}`);
       return { clientOrderId: body.clientOrderId, ...reply };
     } catch (error) {
       if (error.status === 503) {
@@ -809,7 +1309,7 @@ function createRunner(deps) {
     };
   }
 
-  // Per league: rows looked at, rows with a ticker (derived moneylines apart),
+  // Per league: rows looked at, rows with a ticker (derived moneylines and main numbers apart),
   // rows without one. T1's coverage check.
   function takerCoverage(decisions) {
     const byLeague = {};
@@ -878,8 +1378,9 @@ function createRunner(deps) {
     return {
       generatedAt: new Date(now()).toISOString(),
       desk: takerDeskStatus,
+      novigDesk: novigDeskStatus,
       rules: {
-        bankroll: taker.BOT_BANKROLL, kelly: taker.BOT_KELLY, minLiveEdge: taker.MIN_LIVE_EDGE, maxLiveEdge: taker.MAX_LIVE_EDGE,
+        kellyBankroll: taker.KELLY_BANKROLL, novigKellyBankroll: taker.NOVIG_KELLY_BANKROLL, kelly: taker.BOT_KELLY, minLiveEdge: taker.MIN_LIVE_EDGE, maxLiveEdge: taker.MAX_LIVE_EDGE,
         priceTolerance: taker.PRICE_TOLERANCE, maxLineAgeHours: taker.MAX_LINE_AGE_MS / HOUR_MS,
       },
       pass: { ...takerLastPass, startedAt: isoOrNull(takerLastPass.startedAt), finishedAt: isoOrNull(takerLastPass.finishedAt) },
@@ -1024,7 +1525,8 @@ function createRunner(deps) {
       settings: { source: settings.source, okAt: settings.okAt, error: settings.error },
       closingFairs: { ...closingStatus },
       taker: {
-        desk: takerDeskStatus, lastPassAt: isoOrNull(takerLastPass.finishedAt), skipped: takerLastPass.skipped,
+        desk: takerDeskStatus, novigDesk: novigDeskStatus, lastPassAt: isoOrNull(takerLastPass.finishedAt),
+        skipped: takerLastPass.skipped, novigSkipped: takerLastPass.novigSkipped,
         rows: takerLastPass.rows, byReason: takerLastPass.byReason, log: { okAt: takerLogStatus.okAt, error: takerLogStatus.error, dropped: takerLogStatus.dropped, unsent: takerUnsent.length },
       },
     };
@@ -1033,7 +1535,28 @@ function createRunner(deps) {
   return {
     start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions,
     edgesPayload: edgesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow,
-    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, health, scanner,
+    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, health, scanner,
+    boardLines,
+  };
+}
+
+// The line the Place button names, from the query: ids are whole numbers,
+// points a number or absent (a moneyline). Throws a 400-tagged Error.
+function kalshiLineSpecOf(params) {
+  const whole = (name, allowed) => {
+    const text = params.get(name);
+    const value = Number(text);
+    if (text === null || text === "" || !Number.isInteger(value) || (allowed && !allowed.includes(value))) {
+      throw httpError(400, `${name} must be ${allowed ? `one of ${allowed.join(", ")}` : "a whole number"}, got ${JSON.stringify(text)}`);
+    }
+    return value;
+  };
+  const pointsText = params.get("points");
+  const points = pointsText === null || pointsText === "" ? null : Number(pointsText);
+  if (points !== null && !Number.isFinite(points)) throw httpError(400, `points must be a number, got ${JSON.stringify(pointsText)}`);
+  return {
+    eventId: whole("eventId"), periodTypeId: whole("periodTypeId"), betTypeId: whole("betTypeId", [1, 2, 3]),
+    sideIndex: whole("sideIndex", [0, 1]), points,
   };
 }
 
@@ -1053,13 +1576,14 @@ function httpError(status, message) {
   return error;
 }
 
+// body: a value to serialize, or a RawJson the board thread already serialized.
 function sendJson(response, status, body) {
-  const text = JSON.stringify(body);
+  const text = body instanceof boardThread.RawJson ? body.text : JSON.stringify(body);
   response.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(text), "Cache-Control": "no-store" });
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json and /health, the Host allowlist first on
+// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /kalshi_quote.json, /novig_quote.json and /health, the Host allowlist first on
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
@@ -1077,13 +1601,17 @@ function createHttpServer(runner, { host }) {
     const path = url.pathname;
     try {
       // A page that just wrote a mark or a pin asks for the list on bets read now, not up to 30 s ago.
-      if (url.searchParams.get("fresh") === "1" && (path === "/edges.json" || path === "/teasers.json")) await runner.pollBets();
-      if (path === "/edges.json") return sendJson(response, 200, runner.edgesPayload());
-      if (path === "/teasers.json") return sendJson(response, 200, runner.teasersPayload());
-      if (path === "/attach.json") return sendJson(response, 200, runner.attachPayload(url.searchParams));
-      if (path === "/scenarios.json") return sendJson(response, 200, runner.scenariosPayload());
-      if (path === "/taker.json") return sendJson(response, 200, runner.takerPayload());
-      if (path === "/health") return sendJson(response, 200, runner.health());
+      const fresh = url.searchParams.get("fresh") === "1" && (path === "/edges.json" || path === "/teasers.json");
+      // A runner on this thread reads here; the board client's fresh build reads on the board thread.
+      if (fresh) await runner.pollBets();
+      if (path === "/edges.json") return sendJson(response, 200, await runner.edgesPayload({ fresh }));
+      if (path === "/teasers.json") return sendJson(response, 200, await runner.teasersPayload({ fresh }));
+      if (path === "/attach.json") return sendJson(response, 200, await runner.attachPayload(url.searchParams));
+      if (path === "/scenarios.json") return sendJson(response, 200, await runner.scenariosPayload());
+      if (path === "/taker.json") return sendJson(response, 200, await runner.takerPayload());
+      if (path === "/kalshi_quote.json") return sendJson(response, 200, await runner.kalshiQuote(url.searchParams));
+      if (path === "/novig_quote.json") return sendJson(response, 200, await runner.novigQuote(url.searchParams));
+      if (path === "/health") return sendJson(response, 200, await runner.health());
     } catch (error) {
       if (error.status) return sendJson(response, error.status, { error: error.message });
       logError(`${path} failed: ${error.stack || error.message}`);
@@ -1094,11 +1622,12 @@ function createHttpServer(runner, { host }) {
   return server;
 }
 
+// The main thread: the HTTP server and the board client; the runner itself
+// (createRunner) runs on the board thread (board_thread.js), so no board work
+// holds up a reply the main thread can give from a copy.
 async function main() {
   const config = configFromEnv(process.env);
-  const runner = createRunner({
-    fetchImpl: nodeFetch, serviceFetch: fetch, kalshiFetch: fetch, kalshiBaseUrl: config.kalshiBaseUrl, betsServiceUrl: config.betsServiceUrl,
-  });
+  const runner = boardThread.createBoardClient({ workerData: { role: "board", config }, logInfo: log, logWarning: logError });
   const server = createHttpServer(runner, config);
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -1112,7 +1641,7 @@ async function main() {
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
-  await runner.start();
+  runner.start();
 }
 
 if (require.main === module) {
@@ -1123,6 +1652,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  DEFAULT_HOST, DEFAULT_PORT, DEFAULT_BETS_SERVICE_URL, DEFAULT_KALSHI_BASE_URL, BETS_POLL_MS, SETTINGS_POLL_MS, CLOSING_FAIRS_POST_MS, TAKER_PASS_MS,
-  configFromEnv, allowedHosts, hostAllowed, scannerLeaguesOf, nodeFetch, createRunner, createHttpServer,
+  DEFAULT_HOST, DEFAULT_PORT, DEFAULT_BETS_SERVICE_URL, DEFAULT_KALSHI_BASE_URL, DEFAULT_NOVIG_BASE_URL, BETS_POLL_MS, SETTINGS_POLL_MS, CLOSING_FAIRS_POST_MS, TAKER_PASS_MS,
+  configFromEnv, allowedHosts, hostAllowed, scannerLeaguesOf, nodeFetch, createRunner, createHttpServer, logError,
 };

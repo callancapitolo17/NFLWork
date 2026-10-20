@@ -62,6 +62,11 @@ def _get(key: str, default: str | None = None) -> str | None:
 # Kalshi credentials (same names as every bot so one .env works everywhere).
 KALSHI_API_KEY_ID = _get("KALSHI_API_KEY_ID")
 KALSHI_PRIVATE_KEY_PATH = _get("KALSHI_PRIVATE_KEY_PATH")
+# The Ticket's Place button's own trade key (manual_orders.py, Cal 2026-10-16):
+# a key on his MAIN account with trade scope, made for Place alone. The read key
+# above is read-only, so with this unset the Place button is off.
+KALSHI_PLACE_API_KEY_ID = _get("KALSHI_PLACE_API_KEY_ID")
+KALSHI_PLACE_PRIVATE_KEY_PATH = _get("KALSHI_PLACE_PRIVATE_KEY_PATH")
 KALSHI_BASE_URL = _get("KALSHI_BASE_URL",
                        "https://api.elections.kalshi.com/trade-api/v2")
 
@@ -72,11 +77,46 @@ DB_PATH = Path(_get("BETS_DB_PATH", str(PKG_DIR / "bets.duckdb")))
 # bot's log never shares a write path with Cal's bet history.
 TAKER_DB_PATH = Path(_get("TAKER_DB_PATH", str(PKG_DIR / "taker.duckdb")))
 # The bot's own Kalshi key (taker_orders.py): made for the bot alone so it can
-# be revoked alone. Both set = the bot places orders; either missing = it does not.
+# be revoked alone, and locked to the bot's own subaccount. All three set = the
+# bot places orders; any missing = it does not.
 KALSHI_TAKER_API_KEY_ID = _get("KALSHI_TAKER_API_KEY_ID")
 KALSHI_TAKER_PRIVATE_KEY_PATH = _get("KALSHI_TAKER_PRIVATE_KEY_PATH")
+FIRST_NUMBERED_SUBACCOUNT = 1
+LAST_NUMBERED_SUBACCOUNT = 63
+
+
+def _subaccount_number(raw: str | None) -> int | None:
+    """A numbered Kalshi subaccount (1-63), or None when unset. Raises on
+    anything else: 0 is the primary account, which the bot must never trade."""
+    if raw is None or not raw.strip():
+        return None
+    if raw.strip().isdigit() and FIRST_NUMBERED_SUBACCOUNT <= int(raw) <= LAST_NUMBERED_SUBACCOUNT:
+        return int(raw)
+    raise ValueError(f"KALSHI_TAKER_SUBACCOUNT: expected a subaccount number "
+                     f"{FIRST_NUMBERED_SUBACCOUNT}-{LAST_NUMBERED_SUBACCOUNT}, got {raw!r}")
+
+
+# The bot's Kalshi subaccount (Cal, 2026-10-16): the money in it is all the bot
+# can lose, since its key is locked there. The Kalshi source reads it next to
+# the primary account (sources/kalshi.py); the desk arms only with it set.
+KALSHI_TAKER_SUBACCOUNT = _subaccount_number(_get("KALSHI_TAKER_SUBACCOUNT"))
 # The stop switch: while this file exists the bot sends no order (`touch` it to stop, `rm` to resume).
 TAKER_STOP_PATH = Path(_get("TAKER_STOP_PATH", str(PKG_DIR / "taker.stop")))
+
+# Novig's v3 trading API (novig_orders.py; plan: automated_taker_plan.md § Novig).
+NOVIG_API_URL = _get("NOVIG_API_URL", "https://api.novig.com")
+# The bot's Novig subaccount, addressed by its one trading key (Cal, 2026-10-16:
+# $500 in a subaccount of its own). A trading key can trade only there and can
+# never move money. Both set = the Novig desk arms (novig_taker_desk.py).
+NOVIG_TAKER_KEY_ID = _get("NOVIG_TAKER_KEY_ID")
+NOVIG_TAKER_PRIVATE_KEY_PATH = _get("NOVIG_TAKER_PRIVATE_KEY_PATH")
+# The Novig desk's own stop switch, next to the shared TAKER_STOP_PATH (which stops
+# both bots): the Novig setup puts it in place so arming Novig never touches Kalshi's.
+NOVIG_TAKER_STOP_PATH = Path(_get("NOVIG_TAKER_STOP_PATH", str(PKG_DIR / "novig_taker.stop")))
+# The Ticket's Novig Place button's own subaccount (Cal, 2026-10-16), apart
+# from the bot's. Read here so its bets count in sizing; Place itself is built on top.
+NOVIG_PLACE_KEY_ID = _get("NOVIG_PLACE_KEY_ID")
+NOVIG_PLACE_PRIVATE_KEY_PATH = _get("NOVIG_PLACE_PRIVATE_KEY_PATH")
 
 # HTTP. Loopback only: the service has no auth and serves the user's own bets.
 # Not configurable on purpose: on the server, `tailscale serve` on the host
@@ -134,8 +174,11 @@ SOURCE_RUNS_RETENTION_DAYS = int(_get("BETS_SOURCE_RUNS_RETENTION_DAYS", "7"))
 
 # Kalshi cadence: fills + positions every poll; a full fills re-pull (the
 # reconcile) once per RECONCILE_SEC; the fills poll overlaps the previous
-# window by FILLS_OVERLAP_SEC (trade_id dedupe absorbs re-delivery).
-KALSHI_POLL_SEC = float(_get("BETS_KALSHI_POLL_SEC", "60"))
+# window by FILLS_OVERLAP_SEC (trade_id dedupe absorbs re-delivery), which must
+# stay >= POLL_SEC. Every 10 s (2026-10-17) so a bot or Place fill is held within
+# seconds: a poll is ~5 GETs (fills + positions per subaccount, a lookup per new
+# ticker), under 1/s against Kalshi's published 20/s (Basic) read limit.
+KALSHI_POLL_SEC = float(_get("BETS_KALSHI_POLL_SEC", "10"))
 KALSHI_RECONCILE_SEC = float(_get("BETS_KALSHI_RECONCILE_SEC", "3600"))
 KALSHI_FILLS_OVERLAP_SEC = 60
 # Minimum gap between market/event lookups (kalshi_draft.auth precedent).
@@ -145,7 +188,9 @@ KALSHI_LOOKUP_GAP_SEC = 0.6
 # `python -m unabated_ticket.bets_service.sources.novig_auth connect` and
 # rewritten on rotation. The source registers only when the file exists.
 NOVIG_TOKEN_PATH = Path(_get("NOVIG_TOKEN_PATH", str(PKG_DIR / "novig_token.json")))
-NOVIG_POLL_SEC = float(_get("BETS_NOVIG_POLL_SEC", "60"))
+# Every 20 s (2026-10-17): Novig publishes no limit and 403s bursts, and each poll
+# pages the whole active and settled portfolio, so it stays slower than Kalshi.
+NOVIG_POLL_SEC = float(_get("BETS_NOVIG_POLL_SEC", "20"))
 # The app's own REST base (novig.com bundle, 2026-09-22); the Portfolio feed
 # lives under it. Its GraphQL is behind a query allowlist and is not used.
 NOVIG_REST_URL = _get("NOVIG_REST_URL", "https://api.novig.us/nbx/v1")
@@ -179,11 +224,11 @@ WAGERZON_HISTORY_WEEKS = 6
 
 # Polymarket US (2026-09-23): the CFTC app's own API key, created by Cal at
 # polymarket.us/developer and kept in bet_logger/.env (see sources/polymarket_us.py).
-# An exchange like Kalshi, so the same cadence; activities are read back one day past
+# Every 20 s (2026-10-17; no published limit, so slower than Kalshi); activities are read back one day past
 # the retention window, and further while an open or just-settled position's fills are older.
 POLYMARKET_US_KEY_ID = _get("POLYMARKET_US_KEY_ID")
 POLYMARKET_US_SECRET_KEY = _get("POLYMARKET_US_SECRET_KEY")
-POLYMARKET_US_POLL_SEC = 60.0
+POLYMARKET_US_POLL_SEC = 20.0
 POLYMARKET_US_HISTORY_DAYS = RETENTION_DAYS + 1
 
 # Bet105 (2026-09-29): no credentials and no poll here. Cloudflare challenges any

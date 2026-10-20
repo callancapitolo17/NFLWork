@@ -106,6 +106,7 @@ class Sizing:
     recommended_stake: float        # fitted to the Wagerzon budget, whole dollars
     yields_to: int | None           # rotation of the same-team position that leaves this one no stake
     unlimited_stake: float = 0.0    # the recommended stake if the balance were no limit ($20 min, $250 cap kept)
+    under_min_stake: bool = False   # with no balance limit, its stake would be under Wagerzon's $20 minimum
 
 
 @dataclass(frozen=True)
@@ -119,7 +120,8 @@ class HeldPlacement:
 def open_books() -> tuple[dict[str, SgpBook], dict[str, str]]:
     books: dict[str, SgpBook] = {}
     status: dict[str, str] = {}
-    constructors = {"FanDuel": FanDuelBook, "BetMGM": BetMgmBook, "DraftKings": DraftKingsBook}
+    constructors = {"FanDuel": FanDuelBook, "BetMGM": BetMgmBook,
+                    "DraftKings": lambda: DraftKingsBook(proxy_url=config.DK_PROXY_URL)}
     for name in BOOK_ORDER:
         try:
             books[name] = constructors[name]()
@@ -233,14 +235,18 @@ def size_board(board: Board, bankroll: float, kelly_fraction: float,
     fitted = budgeted_stakes(groups, bankroll, kelly_fraction, budget, config.WZ_MIN_STAKE)
     # Same sizing with the Wagerzon balance taken away: shows what the balance costs.
     unlimited = budgeted_stakes(groups, bankroll, kelly_fraction, None, config.WZ_MIN_STAKE)
+    # The $250 cap kept but no balance or minimum: which stakes the minimum alone drops.
+    no_minimum = budgeted_stakes(groups, bankroll, kelly_fraction, None, 0.0)
     # Joint Kelly with no budget, cap or minimum: what the correlation alone leaves each line.
     unbudgeted = budgeted_stakes([replace(g, candidates=tuple(replace(c, max_stake=math.inf) for c in g.candidates))
                                   for g in groups], bankroll, kelly_fraction, None, 0.0)
-    recommended, unlimited_by_line, joint_kelly, yields_to = {}, {}, {}, {}
-    for key, group_fitted, group_unlimited, group_unbudgeted in zip(teams, fitted, unlimited, unbudgeted):
+    recommended, unlimited_by_line, joint_kelly, yields_to, under_min = {}, {}, {}, {}, set()
+    for key, group_fitted, group_unlimited, group_no_minimum, group_unbudgeted in zip(
+            teams, fitted, unlimited, no_minimum, unbudgeted):
         members = members_by_team[key]
         recommended.update(zip(members, group_fitted))
         unlimited_by_line.update(zip(members, group_unlimited))
+        under_min.update(i for i, stake in zip(members, group_no_minimum) if 0 < stake < config.WZ_MIN_STAKE)
         joint_kelly.update(zip(members, group_unbudgeted))
         # A line the joint Kelly zeroes is covered by the team's biggest
         # other position: a staked sibling, else a held bet.
@@ -254,7 +260,7 @@ def size_board(board: Board, bankroll: float, kelly_fraction: float,
     sized = []
     for index, (line, (fair, ev, stake)) in enumerate(zip(board.lines, raw)):
         sized.append(Sizing(fair, ev, joint_kelly.get(index, stake), recommended.get(index, 0.0),
-                            yields_to.get(index), unlimited_by_line.get(index, 0.0)))
+                            yields_to.get(index), unlimited_by_line.get(index, 0.0), index in under_min))
     return sized
 
 

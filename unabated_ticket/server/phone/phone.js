@@ -1,5 +1,7 @@
 // Unabated Ticket phone page — the DOM side (phone page plan steps 2-3).
-// One order route: a Teasers ticket's Place (POST /place_teaser.json, a real
+// Three order routes: a Kalshi or Novig Ticket's Place (POST /place_kalshi.json
+// or /place_novig.json, Place's own key at that venue, place.js) and a Teasers
+// ticket's Place (POST /place_teaser.json, a real
 // teaser at BFA, the panel's same two-step confirm). Everything else you bet
 // in the book's own app.
 //
@@ -23,6 +25,8 @@
 //   POST /pins.json, DELETE /pins.json?betId=   Attach a bet to a game / Undo
 //   DELETE /crosswalk.json     Clear the learned team names (two taps)
 //   POST /place_teaser.json    Place a Teasers ticket at BFA (money, not just rows)
+//   POST /place_kalshi.json    Place a Kalshi Ticket on Cal's own key (money)
+//   POST /place_novig.json     Place a Novig Ticket from Place's own Novig sub-account (money)
 // Nothing is stored in the browser.
 // Words and numbers come from phoneview.js and the extension's own pure
 // modules (edgerows.js, teaserview.js, betsview.js, bets.js, kelly.js, feed.js).
@@ -36,6 +40,7 @@
   const betsLib = globalThis.UnabatedBets;
   const betsView = globalThis.UnabatedBetsView;
   const teaserView = globalThis.UnabatedTeaserView;
+  const venuePlace = globalThis.UnabatedPlace;
 
   const FETCH_TIMEOUT_MS = 10 * 1000;
   // BFA usually answers a placement in seconds but can take about a minute; a
@@ -86,6 +91,8 @@
     ticketRelatedBlock: el("ticket-related-block"), ticketRelated: el("ticket-related"), ticketRelatedCount: el("ticket-related-count"),
     ticketOthersBlock: el("ticket-others-block"), ticketOthers: el("ticket-others"), ticketOthersCount: el("ticket-others-count"),
     ticketMoved: el("ticket-moved"),
+    ticketVenuePlace: el("ticket-venue-place"), ticketVenueStake: el("ticket-venue-stake"),
+    ticketVenueButtons: el("ticket-venue-buttons"), ticketVenueMsg: el("ticket-venue-msg"), ticketFoot: el("ticket-foot"),
     teasersTab: el("tab-teasers"), teasersCount: el("teasers-count"), viewTeasers: el("view-teasers"),
     teasersError: el("teasers-error"), teasersWarning: el("teasers-warning"), teasersStatus: el("teasers-status"), teasersEmpty: el("teasers-empty"),
     teasersSummary: el("teasers-summary"), teasersSummaryLabel: el("teasers-summary-label"), teasersSummaryStake: el("teasers-summary-stake"),
@@ -613,6 +620,7 @@
     view.ticketPayoutRow.hidden = block.toWin == null;
     view.ticketToWin.textContent = block.toWin || "";
     view.ticketPayout.textContent = block.payout || "";
+    renderPlace(row, block.acted, Boolean(found));
 
     renderTicketRelated(row);
 
@@ -620,6 +628,133 @@
     view.ticketOthersBlock.hidden = others.length === 0;
     view.ticketOthersCount.textContent = others.length ? String(others.length) : "";
     view.ticketOthers.replaceChildren(...others.map((other) => otherLineEl(other, row.sideLabel, card.key, now)));
+  }
+
+  // ---- Place on Kalshi or Novig (place.js) --------------------------------
+  // The ticket's own Place button: one order per second tap, sent by the bets
+  // service on Place's own key at that venue (POST /place_kalshi.json or
+  // /place_novig.json). Its state belongs to one open row: {rowKey,
+  // venueName, phase: null | "confirm" | "placing" | "done", armedAt,
+  // message, tone, edited (Cal typed in the box)}.
+  // sizedOn: edges.json's betsService.sources when the box last took the stake (the reads it was sized on).
+  let placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false, sizedOn: null };
+
+  function venuePlaceLine(row) {
+    return {
+      bookId: row.book ? row.book.id : null, live: null, eventId: row.eventId, periodTypeId: row.periodTypeId, betTypeId: row.betTypeId,
+      sideIndex: row.sideIndex, points: row.points ?? null, price: row.price, sourceFormat: row.sourceFormat, sourcePrice: row.sourcePrice,
+    };
+  }
+
+  // `onList` false: the row has left the Edges list, so nothing is placed off its last price.
+  function renderPlace(row, acted, onList) {
+    view.ticketVenuePlace.hidden = !onList || !venuePlace.canPlace(venuePlaceLine(row));
+    // The foot says nothing here places a bet: true everywhere but a Kalshi or Novig ticket.
+    view.ticketFoot.hidden = !view.ticketVenuePlace.hidden;
+    if (view.ticketVenuePlace.hidden) return;
+    if (placeState.rowKey !== row.key) {
+      const venue = venuePlace.venueOf(row.book ? row.book.id : null);
+      placeState = { rowKey: row.key, venueName: venue ? venue.name : "the venue", phase: null, armedAt: 0, message: null,
+        tone: null, edited: false, sizedOn: null };
+    }
+    // The box follows the stake until Cal types in it, and holds still once Place is pressed.
+    const settled = placeState.phase === "confirm" || placeState.phase === "placing";
+    if (!placeState.edited && !settled && document.activeElement !== view.ticketVenueStake) {
+      view.ticketVenueStake.value = venuePlace.stakeText(acted);
+      placeState.sizedOn = state.edges.payload && state.edges.payload.betsService ? state.edges.payload.betsService.sources : null;
+    }
+    renderPlaceControls();
+  }
+
+  function renderPlaceControls() {
+    const { phase, message, tone } = placeState;
+    view.ticketVenueMsg.hidden = !message;
+    view.ticketVenueMsg.className = `tk-place-msg ${tone || ""}`;
+    view.ticketVenueMsg.textContent = message || "";
+    view.ticketVenueStake.disabled = phase === "confirm" || phase === "placing";
+    const button = (className, text, action) => {
+      const element = makeEl("button", className, text);
+      element.type = "button";
+      element.dataset.venuePlace = action;
+      return element;
+    };
+    if (phase === "confirm") {
+      const stake = venuePlace.parseStake(view.ticketVenueStake.value);
+      view.ticketVenueButtons.replaceChildren(button("btn sm", "Cancel", "cancel"),
+        button("btn sm primary", `Bet ${phoneView.fmtDollars(stake)} at ${placeState.venueName}`, "confirm"));
+    } else if (phase === "placing") {
+      const waiting = button("btn sm", "Placing\u2026", "none");
+      waiting.disabled = true;
+      view.ticketVenueButtons.replaceChildren(waiting);
+    } else {
+      view.ticketVenueButtons.replaceChildren(button("btn sm", "Place", "arm"));
+    }
+  }
+
+  function onPlaceClick(event) {
+    const button = event.target.closest("button[data-venue-place]");
+    if (!button) return;
+    const action = button.dataset.venuePlace;
+    if (action === "arm") {
+      if (venuePlace.parseStake(view.ticketVenueStake.value) == null) {
+        Object.assign(placeState, { message: "Type an amount in dollars first.", tone: "refused" });
+        renderPlaceControls();
+        return;
+      }
+      const armedAt = Date.now();
+      Object.assign(placeState, { phase: "confirm", armedAt, message: null, tone: null });
+      setTimeout(() => {
+        if (placeState.phase === "confirm" && placeState.armedAt === armedAt) {
+          placeState.phase = null;
+          renderPlaceControls();
+        }
+      }, TEASER_CONFIRM_MS);
+      renderPlaceControls();
+      return;
+    }
+    if (action === "cancel") {
+      placeState.phase = null;
+      renderPlaceControls();
+      return;
+    }
+    if (action !== "confirm" || placeState.phase !== "confirm") return;
+    // The second tap of a double-tap lands where Place was: not a decision.
+    if (event.detail > 1 || Date.now() - placeState.armedAt < TEASER_CONFIRM_MIN_MS) return;
+    placeOnVenue().catch((error) => console.error("[unabated-ticket] place failed", error));
+  }
+
+  // POST the open row's order to the bets service. An HTTP error is the
+  // service refusing before the venue; no answer at all may still have reached it.
+  async function placeOnVenue() {
+    const { rowKey, venueName } = placeState;
+    const found = state.ticket ? findTicketRow(state.ticket) : null;
+    // The reads the runner sized the box's stake on, frozen with the box (not this page's own
+    // /bets.json poll, nor a later edges poll): a Place filled since must still count as unseen.
+    const readAts = venuePlace.readAtsOf(placeState.sizedOn || {});
+    const request = found && found.row.key === rowKey ? venuePlace.placeRequestOf({
+      line: venuePlaceLine(found.row), stakeInput: view.ticketVenueStake.value, readAts, clickId: crypto.randomUUID(),
+    }) : { error: "the line has left the Edges list" };
+    if (request.error) {
+      Object.assign(placeState, { phase: null, message: `Not placed: ${request.error}.`, tone: "refused" });
+      renderPlaceControls();
+      return;
+    }
+    Object.assign(placeState, { phase: "placing", message: `Placing at ${venueName}\u2026`, tone: "wait" });
+    renderPlaceControls();
+    let next;
+    try {
+      const reply = await requestJson("POST", request.path, request.body, PLACE_TIMEOUT_MS);
+      next = { message: reply.message, tone: venuePlace.replyTone(reply.status) };
+    } catch (error) {
+      // A 4xx is the service refusing before the venue; a 5xx (a gateway losing the service mid-send) may have placed.
+      next = error.status >= 400 && error.status < 500
+        ? { message: `Not placed: ${error.message}`, tone: "refused" }
+        : { message: `No answer from the bets service (${error.message}). Check ${venueName} before placing again.`, tone: "warn" };
+    }
+    if (placeState.rowKey !== rowKey) return;
+    Object.assign(placeState, { phase: "done", ...next });
+    renderPlaceControls();
+    if (next.tone === "ok") await pollBets();
   }
 
   // Another line of the same card: rung, book and price, its edge and standalone stake. Tap to open it.
@@ -1490,6 +1625,10 @@
   });
   view.betsCrosswalkClear.addEventListener("click", clearCrosswalk);
 
+  view.ticketVenueButtons.addEventListener("click", onPlaceClick);
+  view.ticketVenueStake.addEventListener("input", () => {
+    placeState.edited = true;
+  });
   view.sheetClose.addEventListener("click", closeTicket);
   view.sheetBackdrop.addEventListener("click", closeTicket);
   document.addEventListener("keydown", (event) => {

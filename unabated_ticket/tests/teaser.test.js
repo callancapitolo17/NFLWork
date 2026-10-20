@@ -270,7 +270,7 @@ test("one ticket under the cap is the single-bet Kelly stake, in whole dollars",
 test("the greedy never puts more than $200 on a ticket nor takes a ticket twice", () => {
   const state = awayLegBoard([-400, -400, -400, -400, -400, -400, -400, -400, -400, -400, -400, -400]);
   const { build } = plan(state, { kellyBankroll: 200000 });
-  assert.equal(build.pool.length, teaser.POOL_SIZE);
+  assert.equal(build.pool.length, 12);
   assert.ok(build.tickets.length > 20, `expected a big set, got ${build.tickets.length}`);
   const seen = new Set();
   build.tickets.forEach((ticket, index) => {
@@ -283,18 +283,54 @@ test("the greedy never puts more than $200 on a ticket nor takes a ticket twice"
   });
 });
 
-test("the pool is each game's best leg, the top 10 by win chance", () => {
-  const state = awayLegBoard([-400, -300, -400, -300, -400, -300, -400, -300, -400, -300, -250, -250]);
-  const { build } = plan(state);
-  assert.equal(build.pool.length, 10);
-  assert.equal(new Set(build.pool.map((leg) => leg.eventId)).size, 10);
-  assert.ok(!build.pool.some((leg) => leg.eventId === 111 || leg.eventId === 112), "the two 71.4% legs are left out");
+test("the pool is every game's best leg above break-even, however many: 20 in, the three at or under 70.7% out", () => {
+  // 20 legs from 85.7% down to 70.76% (-242), then 70.67% (-241), 70.6% (-240) and 60%.
+  const above = [-600, -580, -560, -540, -520, -500, -480, -460, -440, -420, -400, -380, -360, -340, -320, -300, -280, -260, -250, -242];
+  const state = awayLegBoard([...above, -241, -240, -150]);
+  const { build } = plan(state, { kellyBankroll: 300 });
+  assert.equal(build.reason, null);
+  assert.deepEqual(build.pool.map((leg) => leg.eventId), above.map((_, index) => 101 + index));
+  assert.deepEqual(build.shed, []);
+  assert.equal(build.structure.outcomeCount, 2 ** 20);
+  const outRows = teaser.describeLegs(legsOf(state), build, []).filter((row) => row.standing !== teaser.STANDING_POOL);
+  assert.deepEqual(outRows.map((row) => [row.leg.label, row.standing, row.note]), [
+    ["Away 21 +8.5", "below_break_even", "below break-even"],
+    ["Away 22 +8.5", "below_break_even", "below break-even"],
+    ["Away 23 +8.5", "below_break_even", "below break-even"],
+  ]);
 });
 
-test("fewer than four priced games: no tickets, and the reason", () => {
-  const { build } = plan(awayLegBoard([-400, -400, -400]));
+test("a ticket on a pool leg past the 16th wins where its four legs do", () => {
+  // 17 legs at 80%: the greedy spreads its tickets, so leg 17 (bit 16) rides.
+  const state = awayLegBoard(Array(17).fill(-400));
+  const { build } = plan(state, { kellyBankroll: 2000 });
+  assert.deepEqual(build.tickets.map((ticket) => [ticket.legIndexes.join(","), ticket.stake]), [
+    ["0,1,2,3", 200], ["4,5,6,7", 200], ["8,9,10,11", 200], ["12,13,14,15", 200], ["0,4,8,16", 200],
+    ["1,5,9,16", 200], ["2,6,10,12", 200], ["3,7,11,13", 200], ["2,7,14,15", 200], ["3,6,14,16", 41],
+  ]);
+  const view = teaser.describePlan(build, legsOf(state), []);
+  view.tickets.forEach((ticket) => nearly(ticket.winAll, 0.8 ** 4));
+  // Every ticket's wins enumerated over the 2^17 leg states, apart from teaser.js.
+  const masks = build.tickets.map((ticket) => ticket.legIndexes.reduce((mask, leg) => mask | (1 << leg), 0));
+  let allLose = 0;
+  let makesMoney = 0;
+  for (let state17 = 0; state17 < 2 ** 17; state17 += 1) {
+    let prob = 1;
+    for (let leg = 0; leg < 17; leg += 1) prob *= (state17 >> leg) & 1 ? 0.8 : 0.2;
+    let pnl = 0;
+    build.tickets.forEach((ticket, index) => { pnl += (state17 & masks[index]) === masks[index] ? 3 * ticket.stake : -ticket.stake; });
+    if (masks.every((mask) => (state17 & mask) !== mask)) allLose += prob;
+    if (pnl > 0) makesMoney += prob;
+  }
+  nearly(view.summary.allLose, allLose);
+  nearly(view.summary.makesMoney, makesMoney);
+});
+
+test("fewer than four games above break-even: no tickets, and the reason, however many are priced", () => {
+  const { build } = plan(awayLegBoard([-400, -400, -400, ...Array(7).fill(-150)]));
+  assert.deepEqual(build.pool.map((leg) => leg.eventId), [101, 102, 103]);
   assert.deepEqual(build.tickets, []);
-  assert.equal(build.reason, teaser.REASON_FEW_LEGS);
+  assert.equal(build.reason, "fewer than 4 games with a leg above break-even");
 });
 
 test("open BFA teasers: legs group into tickets and join their games by rotation", () => {
@@ -424,17 +460,43 @@ test("a reopened panel builds on the saved reference fairs: a sub-point tick lea
   assert.deepEqual(ticketList(reopened.build), ticketList(first.build));
 });
 
-test("past the outcome budget the pool sheds its weakest legs on games no open teaser rides on, not the list", () => {
-  // Ten 80% games, then eight 60% ones that two open teasers ride on: 18 games
-  // would be 2^18 outcomes, so one of the ten free pool legs goes (2^17 fits).
-  const state = awayLegBoard([...Array(10).fill(-400), ...Array(8).fill(-150)]);
-  const records = [0, 1, 2, 3].map((index) => bfaLeg(1, index, { rotation: 421 + 2 * index }))
-    .concat([0, 1, 2, 3].map((index) => bfaLeg(2, index, { rotation: 429 + 2 * index })));
-  const { build } = plan(state, { placed: openTeasersOf(state, records) });
+test("past the outcome budget the pool sheds its weakest legs on games no open teaser rides on, not the list, and the Legs list says so", () => {
+  // Twelve 80% games, two 79.6% ones, then eight 60% ones that two open
+  // teasers ride on: 22 games would be 2^22 outcomes, so the two weakest free
+  // pool legs go (2^20 fits).
+  const state = awayLegBoard([...Array(12).fill(-400), -390, -390, ...Array(8).fill(-150)]);
+  const records = [0, 1, 2, 3].map((index) => bfaLeg(1, index, { rotation: 429 + 2 * index }))
+    .concat([0, 1, 2, 3].map((index) => bfaLeg(2, index, { rotation: 437 + 2 * index })));
+  const placed = openTeasersOf(state, records);
+  const { build } = plan(state, { placed, kellyBankroll: 1000 });
   assert.equal(build.reason, null);
-  assert.equal(build.pool.length, 9);
-  assert.equal(build.structure.outcomeCount, 2 ** 17);
+  assert.deepEqual(build.pool.map((leg) => leg.eventId), Array.from({ length: 12 }, (_, index) => 101 + index));
+  assert.deepEqual(build.shed.map((leg) => leg.eventId), [113, 114]);
+  assert.equal(build.structure.outcomeCount, 2 ** 20);
   assert.ok(build.tickets.length > 0);
+  const outRows = teaser.describeLegs(legsOf(state), build, placed).filter((row) => row.standing !== teaser.STANDING_POOL);
+  assert.deepEqual(outRows.map((row) => [row.leg.eventId, row.standing, row.note, row.openTickets]), [
+    [113, "out", "too many outcomes to size", 0], [114, "out", "too many outcomes to size", 0],
+    ...Array.from({ length: 8 }, (_, index) => [115 + index, "below_break_even", "below break-even", 1]),
+  ]);
+  // A sub-point tick on a shed leg keeps the list, and the row still says why it is out.
+  const rung = Object.values(state.lines).find((line) => line.eventId === 113 && line.bookId === FAIR_BOOK && line.points === 8.5);
+  rung.bacr = -392;
+  const ticked = plan(state, { placed, kellyBankroll: 1000, previous: build });
+  assert.equal(ticked.rebuilt, false);
+  const tickedRow = teaser.describeLegs(legsOf(state), ticked.build, placed).find((row) => row.leg.eventId === 113);
+  assert.deepEqual([tickedRow.standing, tickedRow.note], ["out", "too many outcomes to size"]);
+});
+
+test("open teasers on too many games to fit even four pool legs: no tickets, and the reason", () => {
+  // Four 80% legs and open teasers on 17 other games: 21 games make 2^21 outcomes.
+  const state = awayLegBoard([...Array(4).fill(-400), ...Array(17).fill(-150)]);
+  const ticketGames = [[105, 106, 107, 108], [109, 110, 111, 112], [113, 114, 115, 116], [117, 118, 119, 120], [121, 105, 106, 107]];
+  const records = ticketGames.flatMap((games, ticket) => games.map((eventId, legIndex) => bfaLeg(ticket + 1, legIndex, { rotation: 401 + 2 * (eventId - 101) })));
+  const { build } = plan(state, { placed: openTeasersOf(state, records), kellyBankroll: 100000 });
+  assert.deepEqual(build.pool.map((leg) => leg.eventId), [101, 102, 103, 104]);
+  assert.deepEqual(build.tickets, []);
+  assert.equal(build.reason, "open teasers ride on too many games to size with 4 pool legs (21 games, 2097152 outcomes)");
 });
 
 test("a started leg and a leg no board game matches count as won; a ticket with none still to play leaves the math", () => {
@@ -512,6 +574,23 @@ test("the list holds still while fairs tick, and is rebuilt on a 1-point move", 
   assert.equal(plan(state, { kellyBankroll: 50000, previous: ticked.build }).rebuilt, true);
 });
 
+test("a leg ticking just over break-even joins the pool on a 1-point move, and its row says why it waits", () => {
+  // Leg 5 at 70.67% (-241), under break-even when the list is built.
+  const state = awayLegBoard([-400, -400, -400, -400, -241]);
+  const first = plan(state, { kellyBankroll: 300 });
+  assert.deepEqual(first.build.pool.map((leg) => leg.eventId), [101, 102, 103, 104]);
+  const rung = Object.values(state.lines).find((line) => line.eventId === 105 && line.bookId === FAIR_BOOK && line.points === 8.5);
+  rung.bacr = -244; // 70.93%: over break-even, under a point since the build
+  const ticked = plan(state, { kellyBankroll: 300, previous: first.build });
+  assert.equal(ticked.rebuilt, false);
+  const row = teaser.describeLegs(legsOf(state), ticked.build, []).find((candidate) => candidate.leg.eventId === 105);
+  assert.deepEqual([row.standing, row.note], ["below_break_even", "below break-even when the list was built"]);
+  rung.bacr = -260; // 72.2%: a point or more since the build
+  const moved = plan(state, { kellyBankroll: 300, previous: ticked.build });
+  assert.equal(moved.rebuilt, true);
+  assert.deepEqual(moved.build.pool.map((leg) => leg.eventId), [101, 102, 103, 104, 105]);
+});
+
 test("the list is rebuilt when K changes or a pool leg's number moves", () => {
   const state = awayLegBoard([-400, -400, -400, -400]);
   const first = plan(state, { kellyBankroll: 300 });
@@ -534,9 +613,9 @@ test("describeLegs: each game's pool leg with its ticket count, then the rest, t
   addGame(state, { eventId: 120, away: "No Fair", home: "Anywhere", awayRotation: 499, homeRotation: 500, spread: 2.5 });
   const { build } = plan(state, { kellyBankroll: 300 });
   const rows = teaser.describeLegs(legsOf(state), build, []);
-  assert.deepEqual(rows.map((row) => row.standing), [...Array(10).fill("pool"), "out", "below_break_even", "unpriced"]);
-  assert.deepEqual(rows.slice(10).map((row) => [row.leg.label, row.note]), [
-    ["Away 11 +8.5", "not in the top 10"], ["Away 12 +8.5", "below break-even"], ["No Fair +8.5", "no Unabated fair at +8.5"],
+  assert.deepEqual(rows.map((row) => row.standing), [...Array(11).fill("pool"), "below_break_even", "unpriced"]);
+  assert.deepEqual(rows.slice(11).map((row) => [row.leg.label, row.note]), [
+    ["Away 12 +8.5", "below break-even"], ["No Fair +8.5", "no Unabated fair at +8.5"],
   ]);
   assert.deepEqual(rows.slice(0, 5).map((row) => row.inTickets), [1, 1, 1, 1, 0]);
 });
@@ -763,9 +842,9 @@ test("the summary leaves the straights' own P&L out and counts them for the note
 });
 
 test("past the outcome budget the straights on a shed leg's game go with it", () => {
-  // Ten 80% games, each with two straights splitting it into 4 rows: 4^10
-  // outcomes; 4^8 = 65,536 fits 2^17, so the two weakest legs go.
-  const wins = [-400, -400, -400, -400, -400, -400, -400, -400, -390, -390];
+  // Ten 80% games and one 79.6%, each with two straights splitting it into 4
+  // rows: 4^11 outcomes; 4^10 fits 2^20, so the 79.6% leg goes.
+  const wins = [...Array(10).fill(-400), -390];
   const state = awayLegBoard(wins);
   const records = [];
   wins.forEach((_, index) => {
@@ -774,13 +853,92 @@ test("past the outcome budget the straights on a shed leg's game go with it", ()
     records.push(straightBet(`near-${index}`, { rotation: 401 + 2 * index, points: -3.5 }));
     records.push(straightBet(`far-${index}`, { rotation: 401 + 2 * index, points: -6.5, stake: 50, toWin: 175 }));
   });
-  const { build } = plan(state, { kellyBankroll: 20000, straights: straightsOf(state, records) });
+  const { build } = plan(state, { kellyBankroll: 5000, straights: straightsOf(state, records) });
   assert.equal(build.reason, null);
-  assert.equal(build.pool.length, 8);
-  assert.equal(build.structure.outcomeCount, 4 ** 8);
-  assert.equal(build.straights.length, 16);
-  assert.ok(!build.straights.some((straight) => straight.eventId === 109 || straight.eventId === 110));
+  assert.deepEqual(build.pool.map((leg) => leg.eventId), Array.from({ length: 10 }, (_, index) => 101 + index));
+  assert.deepEqual(build.shed.map((leg) => leg.eventId), [111]);
+  assert.equal(build.structure.outcomeCount, 4 ** 10);
+  assert.equal(build.straights.length, 20);
+  assert.ok(!build.straights.some((straight) => straight.eventId === 111));
   assert.ok(build.tickets.length > 0);
+});
+
+// ---- the superset pass against the per-ticket scan --------------------------------
+
+// Every 4-leg combination of `count` pool legs as bit masks, in teaser.js's order.
+function ticketMasks(count) {
+  const masks = [];
+  for (let a = 0; a < count; a += 1) {
+    for (let b = a + 1; b < count; b += 1) {
+      for (let c = b + 1; c < count; c += 1) {
+        for (let d = c + 1; d < count; d += 1) masks.push((1 << a) | (1 << b) | (1 << c) | (1 << d));
+      }
+    }
+  }
+  return masks;
+}
+
+// The scan bestTicketAt's superset pass stands in for: each unused ticket
+// sums the gains of every leg state holding its four legs; a near-tie keeps
+// the earlier ticket.
+function scanBestTicket(stake, masks, used, pnl, prob, kellyBankroll, structure) {
+  const gainByState = new Float64Array(structure.stateCount);
+  let loseTotal = 0;
+  for (let outcome = 0; outcome < pnl.length; outcome += 1) {
+    if (prob[outcome] === 0) continue;
+    const lose = prob[outcome] * Math.log(1 + (pnl[outcome] - stake) / kellyBankroll);
+    const win = prob[outcome] * Math.log(1 + (pnl[outcome] + stake * teaser.TICKET_NET_ODDS) / kellyBankroll);
+    loseTotal += lose;
+    gainByState[structure.legStates[outcome]] += win - lose;
+  }
+  let best = null;
+  for (let index = 0; index < masks.length; index += 1) {
+    if (used[index]) continue;
+    let growth = loseTotal;
+    for (let state = 0; state < structure.stateCount; state += 1) if ((state & masks[index]) === masks[index]) growth += gainByState[state];
+    if (!best || growth > best.growth + 1e-12) best = { index, growth };
+  }
+  return best;
+}
+
+test("the superset pass picks the ticket the per-ticket scan picks, step by step, on this file's boards", () => {
+  const standout = awayLegBoard(STANDOUT_BOARD);
+  const standoutBuild = plan(standout).build;
+  const straightState = withStraightRungs(awayLegBoard([-400, -400, -400, -400, -400]));
+  const hedge = straightBet("other", { side: "home", points: -9.5, rotation: 402, price: 500, stake: 200, toWin: 1000 });
+  const builds = [
+    ["twelve equal legs", plan(awayLegBoard(Array(12).fill(-400)), { kellyBankroll: 200000 }).build],
+    ["standout legs", standoutBuild],
+    ["a leg a hair under four others", plan(awayLegBoard([-400, -400, -400, -400, -399]), { kellyBankroll: 300 }).build],
+    ["straights on both sides of a leg", plan(straightState, { kellyBankroll: 1000, straights: straightsOf(straightState, [straightBet("same"), hedge]) }).build],
+    ["a college game's two markets", plan(collegeBoard(), { kellyBankroll: 300 }).build],
+  ];
+  // Full tickets and a partial's stake, on a bankroll no 30 tickets can sink.
+  const stakes = [teaser.TICKET_MAX_STAKE, teaser.TICKET_MAX_STAKE, 37.5];
+  const kellyBankroll = 100000;
+  const maxSteps = 30;
+  for (const [name, build] of builds) {
+    const { legStates, outcomeCount } = build.structure;
+    const { prob } = teaser.outcomeProbs(build.structure, build.refs);
+    const masks = ticketMasks(build.pool.length);
+    const used = new Uint8Array(masks.length);
+    const pnl = new Float64Array(outcomeCount);
+    const picks = { scan: [], superset: [] };
+    for (let step = 0; step < Math.min(masks.length, maxSteps); step += 1) {
+      const stake = stakes[step % stakes.length];
+      const scan = scanBestTicket(stake, masks, used, pnl, prob, kellyBankroll, build.structure);
+      const superset = teaser.bestTicketAt(stake, masks, used, pnl, prob, kellyBankroll, build.structure);
+      nearly(superset.growth, scan.growth, 1e-12);
+      picks.scan.push(scan.index);
+      picks.superset.push(superset.index);
+      used[scan.index] = 1;
+      const mask = masks[scan.index];
+      for (let outcome = 0; outcome < outcomeCount; outcome += 1) {
+        pnl[outcome] += (legStates[outcome] & mask) === mask ? stake * teaser.TICKET_NET_ODDS : -stake;
+      }
+    }
+    assert.deepEqual(picks.superset, picks.scan, name);
+  }
 });
 
 // ---- placing a ticket at BFA ----------------------------------------------------

@@ -75,3 +75,34 @@ def test_the_expected_win_is_whole_dollars_like_wagerzon_quotes():
     assert wz.wagerzon_to_win(250.0, 1730) == 4325.0
     assert wz.wagerzon_to_win(100.0, 1550) == 1550.0
     assert wz.wagerzon_to_win(21.0, 250) == 53.0  # 52.50 rounds up
+
+
+def test_on_a_server_only_the_wagerzon_login_lines_are_loaded(tmp_path, monkeypatch):
+    env_file = tmp_path / "bets.env"
+    env_file.write_text("KALSHI_API_KEY_ID=kalshi-key\nBFA_PASSWORD=bfa-secret\n"
+                        "WAGERZON_USERNAME=wz-user\nWAGERZON_PASSWORD=wz-pass\n"
+                        "WAGERZONC_USERNAME=wzc-user\nWAGERZONC_PASSWORD=wzc-pass\nWAGERZOND_USERNAME=\n")
+    monkeypatch.setattr(wz.config, "WAGERZON_ENV_PATH", str(env_file))
+    for key in ("WAGERZON_USERNAME", "WAGERZON_PASSWORD", "WAGERZONC_USERNAME", "WAGERZONC_PASSWORD"):
+        monkeypatch.setenv(key, "before")
+    monkeypatch.delenv("KALSHI_API_KEY_ID", raising=False)
+    monkeypatch.delenv("BFA_PASSWORD", raising=False)
+    monkeypatch.delenv("WAGERZOND_USERNAME", raising=False)
+
+    wz._load_wagerzon_env()
+
+    keys = ("WAGERZON_USERNAME", "WAGERZON_PASSWORD", "WAGERZONC_USERNAME", "WAGERZONC_PASSWORD",
+            "WAGERZOND_USERNAME", "KALSHI_API_KEY_ID", "BFA_PASSWORD")
+    assert {key: wz.os.environ.get(key) for key in keys} == {
+        "WAGERZON_USERNAME": "wz-user", "WAGERZON_PASSWORD": "wz-pass",
+        "WAGERZONC_USERNAME": "wzc-user", "WAGERZONC_PASSWORD": "wzc-pass",
+        "WAGERZOND_USERNAME": None, "KALSHI_API_KEY_ID": None, "BFA_PASSWORD": None}
+
+
+def test_a_server_env_file_without_a_wagerzon_login_fails_loudly(tmp_path, monkeypatch):
+    env_file = tmp_path / "bets.env"
+    env_file.write_text("KALSHI_API_KEY_ID=kalshi-key\n")
+    monkeypatch.setattr(wz.config, "WAGERZON_ENV_PATH", str(env_file))
+    with pytest.raises(RuntimeError) as raised:
+        wz._load_wagerzon_env()
+    assert str(raised.value) == f"expected WAGERZON*_USERNAME / _PASSWORD lines in {env_file}, found none"

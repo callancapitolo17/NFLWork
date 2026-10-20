@@ -66,15 +66,24 @@ writer). Tables:
                games off its teaser menu), UPSERT on the key, DELETE on
                Restore. Served only until the game starts; never pruned.
   edge_skips   one row per Edges line Cal skipped (the Skip chip on a row a
-               book beats; pricecheck.js skipKeyOf: '<rung>@<bookId>'), UPSERT
-               on the key, DELETE on Restore. Served only until the game
-               starts; never pruned.
+               book beats; pricecheck.js skipKeyOf: the line at every book,
+               '<rung>'; rows written before 2026-10-16 end '@<bookId>'),
+               UPSERT on the line, DELETE of the line (old per-book rows
+               too) on Restore. Served only until the game starts; never
+               pruned.
   edge_settings  at most ONE row (settings_id = 1): the Edges settings the
                server runner (unabated_ticket/server/runner.js, phone page plan
                step 1) reads every cycle, written by PUT /settings.json and
                UPSERTed whole on every write. Each column is an override; NULL
                means "the panel's default", and the defaults live only in
                extension/edgerows.js, never here. Never pruned (one row).
+  manual_orders  one row per Kalshi or Novig order Cal placed from the Ticket's
+               Place button (manual_orders.py), on Place's own key: INSERTED
+               before it is sent (status 'sending'), UPDATED with what the
+               venue answered and what filled. The client_order_id ('uman-' or
+               'nman-' + the click's id) is the key, so one click can never send
+               twice. Never pruned (a few a day); the bet itself reaches `bets`
+               through the venue's poll.
 A failed poll writes a source_runs row and touches nothing in `bets`, so a
 dark source keeps serving its previous records.
 
@@ -89,6 +98,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
+
+from unabated_ticket.bets_service.sources.kalshi import (FINAL_STATUSES, PRIMARY_SUBACCOUNT, READ_VERSION,
+                                                         subaccount_of_record_id)
 
 log = logging.getLogger(__name__)
 
@@ -185,7 +197,7 @@ CREATE TABLE IF NOT EXISTS teaser_blocks (
     blocked_at   TIMESTAMPTZ NOT NULL
 );
 CREATE TABLE IF NOT EXISTS edge_skips (
-    skip_key     VARCHAR PRIMARY KEY,    -- pricecheck.js skipKeyOf: '<eventId>:<period>:<betType>:<side>|<points|ml>@<bookId>'
+    skip_key     VARCHAR PRIMARY KEY,    -- pricecheck.js skipKeyOf: '<eventId>:<period>:<betType>:<side>|<points|ml>' (older rows: '...@<bookId>')
     event_start  TIMESTAMPTZ NOT NULL,   -- the game's start: the skip is served until then
     skipped_at   TIMESTAMPTZ NOT NULL
 );
@@ -207,6 +219,114 @@ CREATE TABLE IF NOT EXISTS edge_settings (
     group_by_market       BOOLEAN,
     updated_at            TIMESTAMPTZ NOT NULL
 );
+CREATE TABLE IF NOT EXISTS manual_orders (
+    client_order_id  VARCHAR PRIMARY KEY,   -- 'uman-' + the click's id
+    placed_at        TIMESTAMPTZ NOT NULL,  -- when the row was inserted, just before the send
+    event_id         BIGINT NOT NULL,       -- Unabated's eventId
+    ticker           VARCHAR NOT NULL,
+    contract_side    VARCHAR NOT NULL,      -- 'yes' | 'no'
+    label            VARCHAR,               -- the line in words, for the log
+    ticket_all_in    DOUBLE NOT NULL,       -- the Ticket's price, all-in, as a probability
+    ask_price        DOUBLE NOT NULL,       -- the limit sent (the live ask)
+    all_in_price     DOUBLE NOT NULL,       -- that ask with Kalshi's taker fee
+    stake            DOUBLE NOT NULL,       -- dollars Cal asked to bet
+    count_requested  INTEGER NOT NULL,
+    status           VARCHAR NOT NULL,      -- sending | filled | partial | unfilled | rejected | unknown
+    kalshi_order_id  VARCHAR,
+    count_filled     DOUBLE,
+    cost_filled      DOUBLE,                -- dollars paid, fees included
+    error            VARCHAR,
+    updated_at       TIMESTAMPTZ NOT NULL
+);
+-- Novig Place: rows from before it are all Kalshi. On a Novig row `ticker` is
+-- the Novig outcome id, `contract_side` 'buy' (every Novig order buys its
+-- outcome), `ask_price` = `all_in_price` (a pregame take pays no fee) and a
+-- contract pays 1c, not $1.
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS venue VARCHAR DEFAULT 'kalshi';
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS novig_order_id VARCHAR;
+-- The board line a Novig Place order bought (taker.js novigLineOf, as the bot
+-- desk keeps it in taker.duckdb::novig_taker_orders): Novig's catalog names
+-- neither the board's teams nor its periods, so Place's sub-account read
+-- (sources/novig_subaccount.py) names its bets with these. NULL on Kalshi rows.
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS market_id VARCHAR;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS event_start TIMESTAMPTZ;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS league VARCHAR;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS bet_type VARCHAR;      -- spread | total
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS period VARCHAR;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS side VARCHAR;          -- away | home | over | under
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS points DOUBLE;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS away_team VARCHAR;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS home_team VARCHAR;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS away_team_id VARCHAR;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS home_team_id VARCHAR;
+-- When Place's sub-account read first saw the order's market SETTLED: the
+-- bet's fixed closedAt, kept so a restart never moves it.
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;
+"""
+
+MANUAL_ORDER_INSERT_COLUMNS = (
+    "client_order_id", "placed_at", "venue", "event_id", "ticker", "contract_side", "label", "ticket_all_in",
+    "ask_price", "all_in_price", "stake", "count_requested", "status", "updated_at",
+)
+# A Novig row's board line; a Kalshi row leaves them NULL.
+MANUAL_ORDER_NOVIG_LINE_COLUMNS = (
+    "market_id", "event_start", "league", "bet_type", "period", "side", "points", "away_team", "home_team",
+    "away_team_id", "home_team_id",
+)
+MANUAL_ORDER_UPDATE_COLUMNS = ("status", "kalshi_order_id", "novig_order_id", "count_filled", "cost_filled", "error")
+_INSERT_MANUAL_ORDER_COLUMNS = MANUAL_ORDER_INSERT_COLUMNS + MANUAL_ORDER_NOVIG_LINE_COLUMNS
+_INSERT_MANUAL_ORDER = (f"INSERT INTO manual_orders ({', '.join(_INSERT_MANUAL_ORDER_COLUMNS)}) "
+                        f"VALUES ({', '.join(['?'] * len(_INSERT_MANUAL_ORDER_COLUMNS))})")
+# Every Novig Place order Novig gave an id, as the sub-account read's
+# contexts (sources/novig_subaccount.py, taker_store.NOVIG_CONTEXT_COLUMNS).
+_SELECT_NOVIG_PLACE_CONTEXTS = """
+SELECT novig_order_id, league, bet_type, period, side, points, away_team, home_team, away_team_id, home_team_id,
+       epoch_ms(event_start), event_id, market_id, ticker, ask_price, epoch_ms(settled_at)
+FROM manual_orders
+WHERE venue = 'novig' AND novig_order_id IS NOT NULL
+"""
+# A Place order on the game that may hold contracts the stake's read missed:
+# sent and filled, partly filled, or no definite answer, since the read. A
+# Novig 'unfilled' counts too (its fills are read once, right after the order
+# goes final, and Novig's fills feed can lag that read). A Novig order Novig
+# never answered and never named (no order id) counts whatever the read time:
+# its fill can reach no read until it is named (`lost_novig_place_orders`).
+_SELECT_MANUAL_MAYBE_FILLED = """
+SELECT client_order_id, ticker, status, epoch(placed_at)
+FROM manual_orders
+WHERE event_id = ?
+  AND (? IS NULL OR coalesce(venue, 'kalshi') = ?)
+  AND ((placed_at >= ? AND (status IN ('sending', 'unknown', 'filled', 'partial')
+                            OR (coalesce(venue, 'kalshi') = 'novig' AND status = 'unfilled')))
+       OR (coalesce(venue, 'kalshi') = 'novig' AND status = 'unknown' AND novig_order_id IS NULL))
+ORDER BY placed_at
+"""
+# Novig Place orders Novig never answered (no order id): looked up by clientId.
+_SELECT_LOST_NOVIG_PLACE = """
+SELECT client_order_id, ticker
+FROM manual_orders
+WHERE venue = 'novig' AND status = 'unknown' AND novig_order_id IS NULL AND placed_at <= ?
+ORDER BY placed_at
+"""
+# Novig Place orders Novig named but never showed final to the desk: settled by
+# Place's sub-account read once Novig shows them final.
+_SELECT_UNCONFIRMED_NOVIG_PLACE = """
+SELECT client_order_id, novig_order_id, ticker, count_requested
+FROM manual_orders
+WHERE venue = 'novig' AND status = 'unknown' AND novig_order_id IS NOT NULL AND placed_at <= ? AND placed_at >= ?
+ORDER BY placed_at
+"""
+# An unconfirmed order is re-read for this long, then left 'unknown' (a row
+# Novig never shows final must not slow every novig_place poll for good).
+UNCONFIRMED_NOVIG_PLACE_WINDOW = timedelta(hours=24)
+
+# An open straight Novig bet (app or sub-account) on one outcome.
+_SELECT_OPEN_NOVIG_ON_OUTCOME = """
+SELECT 1 FROM bets
+WHERE venue = 'novig' AND status = 'open'
+  AND json_extract_string(record, '$.venueIds.outcomeId') = ?
+  AND coalesce(json_extract(record, '$.isParlayLeg')::BOOLEAN, false) = false
+LIMIT 1
 """
 
 _INSERT_CROSSWALK = """
@@ -351,6 +471,12 @@ INSERT INTO edge_skips (skip_key, event_start, skipped_at) VALUES (?, ?, ?)
 ON CONFLICT (skip_key) DO UPDATE SET event_start = excluded.event_start, skipped_at = excluded.skipped_at
 """
 
+def edge_skip_line(skip_key: str) -> str:
+    """The line a skip key names (pricecheck.js skipLineOf): a key from a
+    panel not yet reloaded carries a '@<bookId>' suffix, dropped here."""
+    return skip_key.split("@", 1)[0]
+
+
 # A skip is moot once its game has started, like a teaser block.
 _SELECT_EDGE_SKIPS = """
 SELECT skip_key, epoch_ms(event_start), epoch(skipped_at)
@@ -405,9 +531,35 @@ _SELECT_KALSHI_IDS = """
 SELECT id FROM bets WHERE venue = 'kalshi'
 """
 
+_SELECT_KALSHI_IDS_STATUSES_RECORDS = """
+SELECT id, status, record FROM bets WHERE venue = 'kalshi'
+"""
+
+# Cal's Novig app feed (sources/novig.py, ids "novig:<order id>") also lists
+# the orders of his API sub-accounts, which their own reads hold as
+# "novig:<order id>:place" / ":bot" (sources/novig_subaccount.py): the app's
+# copy of such an order is left out, so every order is served (sized,
+# tracked) once, under the sub-account read that knows its board line. A
+# sub-account copy with no board line (unmatchable: an order no desk names,
+# or a lost Place send not yet adopted) sizes nothing, so then the app's copy
+# is served instead of it. Either way one copy, judged inside the window, so a
+# copy the window drops never hides the other. Uncorrelated IN lists, so DuckDB
+# hash-joins them (a correlated EXISTS here ran as a nested loop: seconds at
+# tens of thousands of rows, under the store lock).
 _SELECT_WINDOW = """
-SELECT record FROM bets
-WHERE status = 'open' OR closed_at IS NULL OR closed_at >= ?
+WITH windowed AS (
+    SELECT id, venue, record, placed_at,
+           venue = 'novig' AND regexp_matches(id, ':(place|bot)$') AS is_sub_account,
+           regexp_replace(id, ':(place|bot)$', '') AS novig_order_key,
+           json_extract_string(record, '$.unmatchable') IS NULL AS names_game
+    FROM bets
+    WHERE status = 'open' OR closed_at IS NULL OR closed_at >= ?
+)
+SELECT record FROM windowed
+WHERE NOT (venue = 'novig' AND NOT is_sub_account
+           AND id IN (SELECT novig_order_key FROM windowed WHERE is_sub_account AND names_game))
+  AND NOT (is_sub_account AND NOT names_game
+           AND novig_order_key IN (SELECT id FROM windowed WHERE venue = 'novig' AND NOT is_sub_account))
 ORDER BY placed_at DESC, id
 """
 
@@ -509,6 +661,10 @@ def _epoch_to_iso(epoch_seconds: float | None) -> str | None:
     return datetime.fromtimestamp(epoch_seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _utc_of_epoch_ms(epoch_ms: int | None) -> datetime | None:
+    return None if epoch_ms is None else datetime.fromtimestamp(epoch_ms / 1000, timezone.utc)
+
+
 class BetsStore:
     def __init__(self, db_path: str | Path, source_runs_retention_days: int):
         """`source_runs_retention_days` 0 disables the prune (the repo's
@@ -593,15 +749,51 @@ class BetsStore:
             log.info("source_runs: pruned %d row(s) older than %s", deleted, cutoff.isoformat())
         return deleted
 
-    def load_kalshi_tickers(self) -> set[str]:
-        """Every Kalshi market ticker a stored record names (ids are
-        kalshi:<ticker>:<side>), so the Kalshi source reads their pre-cutoff fills."""
+    def load_kalshi_tickers(self, subaccount: int = PRIMARY_SUBACCOUNT) -> set[str]:
+        """Every Kalshi market ticker a stored record of `subaccount` names (ids
+        are kalshi:<ticker>:<side>, plus :s<N> in numbered subaccount N), so the
+        Kalshi source reads that subaccount's pre-cutoff fills of them."""
         with self._lock:
             rows = self._con.execute(_SELECT_KALSHI_IDS).fetchall()
-        return {record_id.split(":")[1] for (record_id,) in rows}
+        tickers: set[str] = set()
+        for (record_id,) in rows:
+            try:
+                if subaccount_of_record_id(record_id) == subaccount:
+                    tickers.add(record_id.split(":")[1])
+            except ValueError as error:
+                log.warning("load_kalshi_tickers: skipping stored id %r: %s", record_id, error)
+        return tickers
+
+    def load_kalshi_final_tickers(self, subaccount: int = PRIMARY_SUBACCOUNT) -> dict[str, str]:
+        """{ticker: newest stored raw.lastFillAt} for every Kalshi ticker whose
+        stored records of `subaccount` are all final (sources.kalshi.
+        FINAL_STATUSES) and stamped complete at the current READ_VERSION; the
+        Kalshi source skips them at startup. One side that is open, unknown,
+        from a partial read or without a lastFillAt keeps the ticker out."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_KALSHI_IDS_STATUSES_RECORDS).fetchall()
+        last_fill_by_ticker: dict[str, str] = {}
+        not_final: set[str] = set()
+        for record_id, status, record_json in rows:
+            try:
+                if subaccount_of_record_id(record_id) != subaccount:
+                    continue
+            except ValueError as error:
+                log.warning("load_kalshi_final_tickers: skipping stored id %r: %s", record_id, error)
+                continue
+            ticker = record_id.split(":")[1]
+            raw = (json.loads(record_json) or {}).get("raw") or {}
+            last_fill_at = raw.get("lastFillAt")
+            if status not in FINAL_STATUSES or raw.get("readComplete") != READ_VERSION or not last_fill_at:
+                not_final.add(ticker)
+                continue
+            last_fill_by_ticker[ticker] = max(last_fill_at, last_fill_by_ticker.get(ticker, ""))
+        return {ticker: last_fill_at for ticker, last_fill_at in last_fill_by_ticker.items() if ticker not in not_final}
 
     def load_bets(self, days: int, now: datetime) -> list[dict]:
-        """Records in the retention window: open, or closed within `days` of `now`."""
+        """Records in the retention window: open, or closed within `days` of
+        `now`; an order the Novig app feed and a sub-account read both hold,
+        once (_SELECT_WINDOW)."""
         cutoff = now - timedelta(days=days)
         with self._lock:
             rows = self._con.execute(_SELECT_WINDOW, [cutoff]).fetchall()
@@ -849,14 +1041,18 @@ class BetsStore:
                 for market_key, event_start_ms, blocked_at in rows]
 
     def set_edge_skip(self, skip_key: str, event_start: datetime, skipped: bool, at: datetime) -> int:
-        """Skip (UPSERT) or restore (DELETE) one Edges line. Returns how many
-        rows changed (an UPSERT always counts 1)."""
+        """Skip (UPSERT) or restore (DELETE) one Edges line at every book.
+        Returns how many rows changed (an UPSERT always counts 1). Restore
+        also deletes the line's old per-book rows ('<line>@<bookId>')."""
+        line = edge_skip_line(skip_key)
         with self._lock:
             if skipped:
-                [count] = self._con.execute(_UPSERT_EDGE_SKIP, [skip_key, event_start, at]).fetchone()
+                [count] = self._con.execute(_UPSERT_EDGE_SKIP, [line, event_start, at]).fetchone()
             else:
-                [count] = self._con.execute("DELETE FROM edge_skips WHERE skip_key = ?", [skip_key]).fetchone()
-        log.info("edge skips: %s %s", "skipped" if skipped else "restored", skip_key)
+                [count] = self._con.execute(
+                    "DELETE FROM edge_skips WHERE skip_key = ? OR starts_with(skip_key, ?)", [line, f"{line}@"]
+                ).fetchone()
+        log.info("edge skips: %s %s", "skipped" if skipped else "restored", line)
         return count
 
     def load_edge_skips(self, now: datetime) -> list[dict]:
@@ -887,6 +1083,114 @@ class BetsStore:
         with self._lock:
             self._con.execute(_UPSERT_EDGE_SETTINGS, [settings[field] for field in EDGE_SETTINGS_FIELDS] + [updated_at])
         log.info("edge settings: saved %s", {field: value for field, value in settings.items() if value is not None})
+
+    def bet_is_open(self, bet_id: str) -> bool:
+        """Whether `bets` holds this id as an open record."""
+        with self._lock:
+            row = self._con.execute("SELECT status FROM bets WHERE id = ?", [bet_id]).fetchone()
+        return bool(row) and row[0] == "open"
+
+    def novig_outcome_is_held(self, outcome_id: str) -> bool:
+        """Whether an open straight Novig bet is on this outcome id."""
+        with self._lock:
+            row = self._con.execute(_SELECT_OPEN_NOVIG_ON_OUTCOME, [outcome_id]).fetchone()
+        return row is not None
+
+    def insert_manual_order(self, order: dict) -> bool:
+        """INSERT a Place-button order before it is sent (status 'sending').
+        False when its client_order_id is already held: that click was sent."""
+        with self._lock:
+            held = self._con.execute("SELECT 1 FROM manual_orders WHERE client_order_id = ?",
+                                     [order["client_order_id"]]).fetchone()
+            if held:
+                return False
+            values = ([order[column] for column in MANUAL_ORDER_INSERT_COLUMNS]
+                      + [order.get(column) for column in MANUAL_ORDER_NOVIG_LINE_COLUMNS])
+            self._con.execute(_INSERT_MANUAL_ORDER, values)
+        return True
+
+    def novig_place_order_contexts(self) -> dict[str, dict]:
+        """Novig order id -> the board line a Novig Place order bought, in the
+        bot desk's context shape (taker_store.NOVIG_CONTEXT_COLUMNS), for every
+        order Novig gave an id. Place's sub-account read names its bets with
+        these; `settled_at` is the bet's fixed closedAt once set."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_NOVIG_PLACE_CONTEXTS).fetchall()
+        contexts = {}
+        for (order_id, league, bet_type, period, side, points, away_team, home_team, away_team_id, home_team_id,
+             event_start_ms, event_id, market_id, outcome_id, price, settled_at_ms) in rows:
+            contexts[order_id] = {
+                "league": league, "bet_type": bet_type, "period": period, "side": side, "points": points,
+                "away_team": away_team, "home_team": home_team, "away_team_id": away_team_id,
+                "home_team_id": home_team_id, "event_start": _utc_of_epoch_ms(event_start_ms), "event_id": event_id,
+                "market_id": market_id, "outcome_id": outcome_id, "price": price,
+                "settled_at": _utc_of_epoch_ms(settled_at_ms),
+            }
+        return contexts
+
+    def adopt_novig_place_order(self, client_order_id: str, novig_order_id: str | None, at: datetime) -> None:
+        """A lost Novig Place order (no answer, no id) found on Novig's order
+        lists gets its id, so its fills are named from now on; one listed
+        nowhere is marked rejected: it never reached Novig."""
+        if novig_order_id is None:
+            fields = {"status": "rejected", "error": "never reached Novig: in none of its order lists"}
+        else:
+            fields = {"novig_order_id": novig_order_id, "error": "answer lost; found on Novig by clientId"}
+        self.update_manual_order(client_order_id, fields, at)
+
+    def unconfirmed_novig_place_orders(self, placed_before: datetime) -> list[dict]:
+        """Novig Place orders with a Novig id still 'unknown' (never read final,
+        or their fills unread), placed at or before `placed_before` and within
+        UNCONFIRMED_NOVIG_PLACE_WINDOW of it: [{client_order_id, novig_order_id,
+        outcome_id, count_requested}]."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_UNCONFIRMED_NOVIG_PLACE,
+                                     [placed_before, placed_before - UNCONFIRMED_NOVIG_PLACE_WINDOW]).fetchall()
+        return [{"client_order_id": client_order_id, "novig_order_id": novig_order_id, "outcome_id": outcome_id,
+                 "count_requested": count_requested}
+                for client_order_id, novig_order_id, outcome_id, count_requested in rows]
+
+    def confirm_novig_place_order(self, client_order_id: str, status: str, filled: int, paid: float,
+                                  at: datetime) -> None:
+        """An 'unknown' Novig Place order Novig now shows final: what filled."""
+        self.update_manual_order(client_order_id, {"status": status, "count_filled": filled, "cost_filled": paid,
+                                                   "error": "confirmed later by the Place sub-account read"}, at)
+
+    def note_novig_place_settled(self, novig_order_id: str, at: datetime) -> datetime:
+        """Keep when Place's sub-account read first saw this order's market
+        SETTLED (only the first sighting is kept); returns the kept time."""
+        with self._lock:
+            self._con.execute("UPDATE manual_orders SET settled_at = ? "
+                              "WHERE novig_order_id = ? AND venue = 'novig' AND settled_at IS NULL", [at, novig_order_id])
+            row = self._con.execute("SELECT epoch_ms(settled_at) FROM manual_orders WHERE novig_order_id = ?",
+                                    [novig_order_id]).fetchone()
+        return _utc_of_epoch_ms(row[0]) if row and row[0] is not None else at
+
+    def update_manual_order(self, client_order_id: str, fields: dict, at: datetime) -> None:
+        """UPDATE the named columns of one manual order (and updated_at)."""
+        unknown = set(fields) - set(MANUAL_ORDER_UPDATE_COLUMNS)
+        if unknown:
+            raise ValueError(f"update_manual_order: unknown columns {sorted(unknown)}")
+        assignments = ", ".join(f"{column} = ?" for column in fields)
+        with self._lock:
+            self._con.execute(f"UPDATE manual_orders SET {assignments}, updated_at = ? WHERE client_order_id = ?",
+                              [*fields.values(), at, client_order_id])
+
+    def manual_orders_maybe_filled_since(self, event_id: int, since: datetime, venue: str | None = None) -> list[dict]:
+        """Manual orders on this game that may hold contracts the read at
+        `since` missed (_SELECT_MANUAL_MAYBE_FILLED), at one venue ('kalshi' |
+        'novig') or, with venue None, at either."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_MANUAL_MAYBE_FILLED, [event_id, venue, venue, since]).fetchall()
+        return [{"client_order_id": client_order_id, "ticker": ticker, "status": status,
+                 "placed_at": _epoch_to_iso(placed_at)} for client_order_id, ticker, status, placed_at in rows]
+
+    def lost_novig_place_orders(self, placed_before: datetime) -> list[dict]:
+        """Novig Place orders with no definite answer and no Novig order id,
+        placed at or before `placed_before`: [{client_order_id, outcome_id}]."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_LOST_NOVIG_PLACE, [placed_before]).fetchall()
+        return [{"client_order_id": client_order_id, "outcome_id": ticker} for client_order_id, ticker in rows]
 
     def source_status(self) -> dict[str, dict]:
         """{source: {fetchedAt, ok, error, count}} — fetchedAt/count from the

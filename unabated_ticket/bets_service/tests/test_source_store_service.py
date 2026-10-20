@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from unabated_ticket.bets_service import config, service
-from unabated_ticket.bets_service.sources.kalshi import KalshiSource
+from unabated_ticket.bets_service.sources.kalshi import READ_VERSION, KalshiSource
 from unabated_ticket.bets_service.store import UPSERT_ROWS_PER_STATEMENT, BetsStore
 from unabated_ticket.bets_service.tests.conftest import fill, position
 
@@ -22,7 +22,10 @@ NE_POSITION = position("KXNFLGAME-26SEP20PITNE-NE", 550, 352)
 
 
 class FakeKalshiApi:
-    """Answers the signed GETs the source makes; records every path it saw."""
+    """Answers the signed GETs the source makes; records every path it saw.
+    `fills`, `positions`, `historical_fills` and `settlements` are the primary
+    account's (subaccount 0); `subaccounts[N]` holds a numbered subaccount's
+    under the same keys. Every portfolio read must name its subaccount."""
 
     def __init__(self, fixture: dict, fills: list[dict], positions: list[dict]):
         self.fixture = fixture
@@ -30,31 +33,40 @@ class FakeKalshiApi:
         self.positions = positions
         self.historical_fills: list[dict] = []
         self.settlements: list[dict] = []
+        self.subaccounts: dict[int, dict[str, list[dict]]] = {}
         self.paths: list[str] = []
         self.fail_paths: set[str] = set()
+
+    def _held(self, query: dict, kind: str) -> list[dict]:
+        subaccount = int(query["subaccount"][0])
+        if subaccount == 0:
+            return getattr(self, kind)
+        return self.subaccounts.get(subaccount, {}).get(kind, [])
 
     def __call__(self, method: str, path: str) -> tuple[int, object, dict]:
         assert method == "GET"
         self.paths.append(path)
         url = urlparse(path)
-        if url.path in self.fail_paths:
+        query = parse_qs(url.query)
+        if url.path in self.fail_paths or path in self.fail_paths:
             return 503, "unavailable", {}
         if url.path == "/historical/fills":
-            ticker = parse_qs(url.query)["ticker"][0]
-            return 200, {"fills": [f for f in self.historical_fills if f["ticker"] == ticker], "cursor": ""}, {}
+            ticker = query["ticker"][0]
+            fills = self._held(query, "historical_fills")
+            return 200, {"fills": [f for f in fills if f["ticker"] == ticker], "cursor": ""}, {}
         if url.path.startswith("/historical/markets/"):
             return 404, {"message": "not found"}, {}
         if url.path == "/portfolio/fills":
-            min_ts = parse_qs(url.query).get("min_ts")
-            fills = self.fills
+            min_ts = query.get("min_ts")
+            fills = self._held(query, "fills")
             if min_ts:
                 fills = [f for f in fills if datetime.fromisoformat(
                     f["created_time"].replace("Z", "+00:00")).timestamp() >= int(min_ts[0])]
             return 200, {"fills": fills, "cursor": ""}, {}
         if url.path == "/portfolio/settlements":
-            return 200, {"settlements": self.settlements, "cursor": ""}, {}
+            return 200, {"settlements": self._held(query, "settlements"), "cursor": ""}, {}
         if url.path == "/portfolio/positions":
-            return 200, {"market_positions": self.positions, "cursor": ""}, {}
+            return 200, {"market_positions": self._held(query, "positions"), "cursor": ""}, {}
         if url.path.startswith("/markets/"):
             market = self.fixture["markets"].get(url.path[len("/markets/"):])
             return (200, {"market": market}, {}) if market else (404, {"message": "not found"}, {})
@@ -81,11 +93,11 @@ def test_first_fetch_is_a_full_pull_then_incremental_with_overlap(kalshi_fixture
     [record] = source.fetch()
     assert record["id"] == "kalshi:KXNFLGAME-26SEP20PITNE-NE:yes"
     assert (record["stake"], record["price"], record["contracts"]) == (352, -178, 550)
-    assert api.paths[0] == "/portfolio/fills?limit=200"  # full pull, no min_ts
+    assert api.paths[0] == "/portfolio/fills?subaccount=0&limit=200"  # full pull, no min_ts
     now[0] += 60
     source.fetch()
-    incremental = [p for p in api.paths if p.startswith("/portfolio/fills?min_ts=")]
-    assert incremental == [f"/portfolio/fills?min_ts={int(1_800_000_000 - 60)}&limit=200"]
+    incremental = [p for p in api.paths if "min_ts=" in p]
+    assert incremental == [f"/portfolio/fills?subaccount=0&min_ts={int(1_800_000_000 - 60)}&limit=200"]
     # Market and event were looked up exactly once across both polls.
     assert api.count("/markets/") == 1
     assert api.count("/events/") == 1
@@ -115,7 +127,7 @@ def test_reconcile_re_pulls_fills_and_re_reads_unsettled_markets(kalshi_fixture)
     api.positions = []
     now[0] += 3600
     [record] = source.fetch()
-    assert api.count("/portfolio/fills?limit=200") == 2  # second full pull
+    assert api.count("/portfolio/fills?subaccount=0&limit=200") == 2  # second full pull
     assert api.count("/markets/") == 2  # re-read because it had no result
     assert record["status"] == "won"
     assert record["closedAt"] == "2026-09-20T20:00:00Z"
@@ -143,13 +155,14 @@ def test_full_pulls_read_the_historical_fills_and_price_the_net_position(kalshi_
     api.historical_fills = [opening, bot, stored, settled]
     api.settlements = [{"ticker": "KXNFLGAME-26SEP20PITNE-PIT", "market_result": "yes"}]
     source = KalshiSource(api=api, configure_auth=False, lookup_gap_sec=0, clock=lambda: 1_800_000_000.0,
-                          known_tickers=lambda: {"KXNCAAFTOTAL-26SEP12RICEND-60"})
+                          known_tickers=lambda subaccount: {"KXNCAAFTOTAL-26SEP12RICEND-60"} if subaccount == 0
+                          else set())
     records = {record["id"]: record for record in source.fetch()}
     # One read per market the bets touch; the bot's market is never asked for.
     assert sorted(p for p in api.paths if p.startswith("/historical/fills")) == [
-        "/historical/fills?ticker=KXNCAAFTOTAL-26SEP12RICEND-60&limit=200",
-        "/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-NE&limit=200",
-        "/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-PIT&limit=200"]
+        "/historical/fills?ticker=KXNCAAFTOTAL-26SEP12RICEND-60&subaccount=0&limit=200",
+        "/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-NE&subaccount=0&limit=200",
+        "/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-PIT&subaccount=0&limit=200"]
     # Only markets the bets touch: in the recent fills, held by the store, or
     # settled since the cutoff; not the bot's.
     assert {record["raw"]["ticker"] for record in records.values()} == {
@@ -173,11 +186,208 @@ def test_a_failed_historical_read_skips_that_market_and_retries_next_full_pull(k
     assert api.count("/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-NE") == 2  # failed, then read; the third pull reads nothing
 
 
+RICE_TICKER = "KXNCAAFTOTAL-26SEP12RICEND-60"
+
+
+RICE_STORED_LAST_FILL = "2026-09-11T20:08:40Z"
+
+
+def skipping_source(api, clock):
+    """A source whose store holds RICE as a closed (final, complete) market."""
+    return KalshiSource(api=api, configure_auth=False, lookup_gap_sec=0, clock=clock,
+                        known_tickers=lambda subaccount: {RICE_TICKER} if subaccount == 0 else set(),
+                        final_tickers=lambda subaccount: {RICE_TICKER: RICE_STORED_LAST_FILL} if subaccount == 0 else {})
+
+
+def test_startup_skips_stored_final_markets_entirely(kalshi_fixture):
+    rice = fill(RICE_TICKER, "yes", 500, 0.32, "2026-09-11T20:08:40Z", trade_id="r1")
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL, rice], [NE_POSITION])
+    api.historical_fills = [fill(RICE_TICKER, "yes", 5, 0.30, "2026-07-02T12:00:00Z", trade_id="rh")]
+    api.settlements = [{"ticker": RICE_TICKER, "market_result": "no"}]
+    records = skipping_source(api, clock=lambda: 1_800_000_000.0).fetch()
+    # No historical read, no market or event lookup, no record: the stored copy stands.
+    assert [record["id"] for record in records] == ["kalshi:KXNFLGAME-26SEP20PITNE-NE:yes"]
+    assert api.count(f"/historical/fills?ticker={RICE_TICKER}") == 0
+    assert api.count(f"/markets/{RICE_TICKER}") == 0
+    assert api.count("/historical/fills?ticker=KXNFLGAME-26SEP20PITNE-NE") == 1
+
+
+def test_a_skipped_market_with_an_open_position_is_read_in_full_again(kalshi_fixture):
+    rice = fill(RICE_TICKER, "yes", 500, 0.32, "2026-09-11T20:08:40Z", trade_id="r1")
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL, rice], [NE_POSITION])
+    api.historical_fills = [fill(RICE_TICKER, "yes", 100, 0.30, "2026-07-02T12:00:00Z", trade_id="rh")]
+    now = [1_800_000_000.0]
+    source = skipping_source(api, clock=lambda: now[0])
+    source.fetch()
+    api.positions = [NE_POSITION, position(RICE_TICKER, 600, 190)]
+    now[0] += 60
+    records = {record["id"]: record for record in source.fetch()}
+    # Its pre-cutoff fills are read before its record is priced, so the VWAP covers all 600.
+    assert api.count(f"/historical/fills?ticker={RICE_TICKER}") == 1
+    assert records[f"kalshi:{RICE_TICKER}:yes"]["status"] == "open"
+    assert records[f"kalshi:{RICE_TICKER}:yes"]["raw"]["fillCount"] == 2
+
+
+def test_a_skipped_market_with_a_fill_newer_than_stored_is_read_again(kalshi_fixture):
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL], [NE_POSITION])
+    now = [1_800_000_000.0]  # 2027-01-15T08:00:00Z
+    source = skipping_source(api, clock=lambda: now[0])
+    source.fetch()
+    # Bought and sold within one poll: no open position, but fills newer than the stored last fill.
+    api.fills = [NE_FILL,
+                 fill(RICE_TICKER, "yes", 10, 0.40, "2027-01-15T08:00:30Z", trade_id="r2"),
+                 fill(RICE_TICKER, "no", 10, 0.45, "2027-01-15T08:00:40Z", action="sell", trade_id="r3")]
+    now[0] += 60
+    records = {record["id"] for record in source.fetch()}
+    assert f"kalshi:{RICE_TICKER}:yes" in records
+    assert api.count(f"/historical/fills?ticker={RICE_TICKER}") == 1
+
+
+def test_a_re_entry_made_while_the_service_was_down_is_read_on_the_first_fetch(kalshi_fixture):
+    # The stored row saw fills up to 2026-09-11; a re-entry and exit landed before this restart.
+    stored = fill(RICE_TICKER, "yes", 500, 0.32, RICE_STORED_LAST_FILL, trade_id="r1")
+    re_entry = fill(RICE_TICKER, "yes", 10, 0.40, "2026-09-12T10:00:00Z", trade_id="r2")
+    exit_fill = fill(RICE_TICKER, "no", 10, 0.45, "2026-09-12T11:00:00Z", action="sell", trade_id="r3")
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL, stored, re_entry, exit_fill], [NE_POSITION])
+    records = {record["id"] for record in skipping_source(api, clock=lambda: 1_800_000_000.0).fetch()}
+    assert f"kalshi:{RICE_TICKER}:yes" in records
+    assert api.count(f"/historical/fills?ticker={RICE_TICKER}") == 1
+
+
+def test_records_are_stamped_complete_only_after_a_full_read(kalshi_fixture):
+    other = fill(RICE_TICKER, "yes", 500, 0.32, RICE_STORED_LAST_FILL, trade_id="r1")
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL, other], [NE_POSITION])
+    api.fail_paths.add(f"/historical/fills?ticker={RICE_TICKER}&subaccount=0&limit=200")
+    api.fail_paths.add("/markets/KXNFLGAME-26SEP20PITNE-NE")
+    records = {record["raw"]["ticker"]: record for record in make_source(api, clock=lambda: 1_800_000_000.0).fetch()}
+    # NE: history read, but its market lookup failed (unreadable). RICE: its history read failed.
+    assert records["KXNFLGAME-26SEP20PITNE-NE"]["raw"]["readComplete"] is None
+    assert records[RICE_TICKER]["raw"]["readComplete"] is None
+    assert records[RICE_TICKER]["raw"]["lastFillAt"] == RICE_STORED_LAST_FILL
+    api.fail_paths.clear()
+    records = {record["raw"]["ticker"]: record for record in make_source(api, clock=lambda: 1_800_000_000.0).fetch()}
+    assert records["KXNFLGAME-26SEP20PITNE-NE"]["raw"]["readComplete"] == READ_VERSION
+    assert records[RICE_TICKER]["raw"]["readComplete"] == READ_VERSION
+
+
 def test_a_failed_fills_pull_raises(kalshi_fixture):
     api = FakeKalshiApi(kalshi_fixture, [NE_FILL], [NE_POSITION])
     api.fail_paths.add("/portfolio/fills")
     with pytest.raises(RuntimeError, match="expected 200"):
         make_source(api, clock=lambda: 1_800_000_000.0).fetch()
+
+
+# ---- the bot's subaccount (2026-10-16) ------------------------------------------------
+
+NE_TICKER = "KXNFLGAME-26SEP20PITNE-NE"
+BOT = 1
+
+
+def bot_source(api, clock, known_tickers=lambda _subaccount: set()):
+    return KalshiSource(api=api, configure_auth=False, lookup_gap_sec=0, clock=clock,
+                        known_tickers=known_tickers, subaccounts=(0, BOT))
+
+
+def test_the_bots_subaccount_is_read_on_its_own_and_kept_apart_from_the_primary(kalshi_fixture):
+    """Cal holds YES on the market in the primary account; the bot bought NO
+    in its subaccount (a YES sell on Kalshi's v2 API). Kalshi's primary-only
+    positions would leave the bot's fill without a position; read per
+    subaccount it is an open NO, and the two never merge."""
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL], [NE_POSITION])
+    bot_fill = fill(NE_TICKER, "yes", 10, 0.64, "2026-09-12T15:00:00Z", action="sell", trade_id="b1")
+    api.subaccounts[BOT] = {"fills": [bot_fill], "positions": [position(NE_TICKER, -10, 3.6)],
+                            "settlements": [], "historical_fills": []}
+    records = {record["id"]: record for record in bot_source(api, clock=lambda: 1_800_000_000.0).fetch()}
+    assert set(records) == {f"kalshi:{NE_TICKER}:yes", f"kalshi:{NE_TICKER}:no:s1"}
+    cal, bot = records[f"kalshi:{NE_TICKER}:yes"], records[f"kalshi:{NE_TICKER}:no:s1"]
+    assert (cal["status"], cal["contracts"], "subaccount" in cal["raw"]) == ("open", 550, False)
+    assert (bot["status"], bot["contracts"], bot["raw"]["subaccount"]) == ("open", 10, BOT)
+    assert bot["stake"] == 3.6 and "mergedInto" not in bot and "mergedInto" not in cal
+    # Every portfolio read names its subaccount; the bot's historical reads ask only for its own markets.
+    assert "/portfolio/fills?subaccount=1&limit=200" in api.paths
+    assert "/portfolio/positions?settlement_status=unsettled&subaccount=1&limit=200" in api.paths
+    assert "/portfolio/settlements?subaccount=1&limit=200" in api.paths
+    assert [p for p in api.paths if p.startswith("/historical/fills") and "subaccount=1" in p] == [
+        f"/historical/fills?ticker={NE_TICKER}&subaccount=1&limit=200"]
+    # One market and event lookup serves both subaccounts.
+    assert api.count("/markets/") == 1
+
+
+def test_a_fill_labelled_for_another_subaccount_is_dropped_not_filed(kalshi_fixture, caplog):
+    """Kalshi answering ?subaccount=0 with a subaccount-1 fill would file the
+    bot's NO buy against the primary's positions (a closed YES ghost row)."""
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL, {**fill(NE_TICKER, "yes", 10, 0.64, "2026-09-12T15:00:00Z",
+                                                          action="sell", trade_id="b1"), "subaccount_number": BOT}],
+                        [NE_POSITION])
+    api.subaccounts[BOT] = {"fills": [], "positions": [], "settlements": [], "historical_fills": []}
+    with caplog.at_level("WARNING"):
+        records = bot_source(api, clock=lambda: 1_800_000_000.0).fetch()
+    assert [record["id"] for record in records] == [f"kalshi:{NE_TICKER}:yes"]
+    assert "labelled subaccount 1 came back under subaccount 0; dropped" in caplog.text
+
+
+def test_a_closed_round_trip_in_the_bots_subaccount_merges_within_it(kalshi_fixture):
+    api = FakeKalshiApi(kalshi_fixture, [], [])
+    opened = fill(NE_TICKER, "yes", 10, 0.40, "2026-09-12T15:00:00Z", trade_id="b1")
+    closed = fill(NE_TICKER, "no", 10, 0.45, "2026-09-12T16:00:00Z", action="sell", trade_id="b2")
+    api.subaccounts[BOT] = {"fills": [opened, closed], "positions": [], "settlements": [], "historical_fills": []}
+    records = {record["id"]: record for record in bot_source(api, clock=lambda: 1_800_000_000.0).fetch()}
+    assert records[f"kalshi:{NE_TICKER}:no:s1"]["mergedInto"] == f"kalshi:{NE_TICKER}:yes:s1"
+    assert records[f"kalshi:{NE_TICKER}:yes:s1"]["pnl"] == 0.5
+
+
+def test_a_failed_read_of_the_bots_subaccount_fails_the_whole_poll(kalshi_fixture):
+    """The store keeps the previous records rather than a poll missing the
+    bot's bets, and the next poll's window still starts at the last good one."""
+    api = FakeKalshiApi(kalshi_fixture, [NE_FILL], [NE_POSITION])
+    now = [1_800_000_000.0]
+    source = bot_source(api, clock=lambda: now[0])
+    source.fetch()
+    api.fail_paths.add("/portfolio/positions?settlement_status=unsettled&subaccount=1&limit=200")
+    now[0] += 60
+    with pytest.raises(RuntimeError, match="expected 200"):
+        source.fetch()
+    api.fail_paths.clear()
+    now[0] += 60
+    source.fetch()
+    assert f"/portfolio/fills?subaccount=1&min_ts={int(1_800_000_000 - 60)}&limit=200" in api.paths
+
+
+def test_the_subaccounts_read_start_with_the_primary_and_are_numbered(kalshi_fixture):
+    api = FakeKalshiApi(kalshi_fixture, [], [])
+    for bad in ((), (1,), (0, 0), (0, 64), (0, 1, 1)):
+        with pytest.raises(ValueError, match="subaccount"):
+            KalshiSource(api=api, configure_auth=False, subaccounts=bad)
+    assert service.kalshi_subaccounts_read(None) == (0,)
+    assert service.kalshi_subaccounts_read(3) == (0, 3)
+
+
+def test_record_ids_name_the_subaccount_and_tagging_leaves_the_primary_alone():
+    from unabated_ticket.bets_service.sources import kalshi as kalshi_source
+    assert kalshi_source.record_id_of("KXA-1", "no") == "kalshi:KXA-1:no"
+    assert kalshi_source.record_id_of("KXA-1", "no", 2) == "kalshi:KXA-1:no:s2"
+    assert kalshi_source.subaccount_of_record_id("kalshi:KXA-1:no") == 0
+    assert kalshi_source.subaccount_of_record_id("kalshi:KXA-1:no:s2") == 2
+    with pytest.raises(ValueError, match="kalshi:<ticker>"):
+        kalshi_source.subaccount_of_record_id("kalshi:KXA-1:no:x2")
+    records = [{"id": "kalshi:KXA-1:yes", "raw": {"ticker": "KXA-1"}},
+               {"id": "kalshi:KXA-1:no", "mergedInto": "kalshi:KXA-1:yes", "raw": {}}]
+    assert kalshi_source.tag_subaccount(records, 0) is records
+    tagged = kalshi_source.tag_subaccount(records, 2)
+    assert [(r["id"], r.get("mergedInto"), r["raw"]["subaccount"]) for r in tagged] == [
+        ("kalshi:KXA-1:yes:s2", None, 2), ("kalshi:KXA-1:no:s2", "kalshi:KXA-1:yes:s2", 2)]
+    assert records[0]["id"] == "kalshi:KXA-1:yes" and "subaccount" not in records[0]["raw"]  # pure
+
+
+@pytest.mark.parametrize("raw, expected", [(None, None), ("", None), ("1", 1), (" 63 ", 63)])
+def test_the_bot_subaccount_setting_is_a_numbered_subaccount(raw, expected):
+    assert config._subaccount_number(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["0", "64", "-1", "one", "1.5"])
+def test_a_bot_subaccount_setting_outside_1_to_63_fails_loudly(raw):
+    with pytest.raises(ValueError, match="KALSHI_TAKER_SUBACCOUNT: expected a subaccount number 1-63"):
+        config._subaccount_number(raw)
 
 
 # ---- store + service loop ------------------------------------------------------------
@@ -186,8 +396,9 @@ class ScriptedSource:
     name = "kalshi"
     poll_sec = 60
 
-    def __init__(self, outcomes: list):
+    def __init__(self, outcomes: list, name: str = "kalshi"):
         self.outcomes = list(outcomes)
+        self.name = name
 
     def fetch(self) -> list[dict]:
         outcome = self.outcomes.pop(0)
@@ -247,7 +458,9 @@ def test_poll_loop_survives_a_store_write_error_and_retries():
     stop = threading.Event()
     thread = threading.Thread(target=service.poll_loop, args=([source], failing, stop), daemon=True)
     original_tick_sec = service.POLL_TICK_SEC
+    original_retry_sec = service.FAILED_POLL_RETRY_SEC
     service.POLL_TICK_SEC = 0.01
+    service.FAILED_POLL_RETRY_SEC = 0.02
     source.poll_sec = 0.02
     try:
         thread.start()
@@ -258,8 +471,36 @@ def test_poll_loop_survives_a_store_write_error_and_retries():
         stop.set()
         thread.join(timeout=2)
         service.POLL_TICK_SEC = original_tick_sec
+        service.FAILED_POLL_RETRY_SEC = original_retry_sec
     assert failing.attempts >= 2  # the thread outlived the first failure
     assert not thread.is_alive()
+
+
+def test_a_failed_poll_backs_off_to_the_retry_floor_and_a_success_does_not():
+    assert service.next_poll_delay(10.0, True) == 10.0
+    assert service.next_poll_delay(10.0, False) == service.FAILED_POLL_RETRY_SEC == 60.0
+    assert service.next_poll_delay(300.0, False) == 300.0  # a slow cadence is never shortened
+
+
+def test_poll_loop_waits_the_retry_floor_after_a_failed_fetch(tmp_path):
+    source = ScriptedSource([RuntimeError("venue down")] * 50)
+    store = BetsStore(tmp_path / "bets.duckdb", SOURCE_RUNS_RETENTION_DAYS)
+    stop = threading.Event()
+    thread = threading.Thread(target=service.poll_loop, args=([source], store, stop), daemon=True)
+    original_tick_sec = service.POLL_TICK_SEC
+    original_retry_sec = service.FAILED_POLL_RETRY_SEC
+    service.POLL_TICK_SEC = 0.01
+    service.FAILED_POLL_RETRY_SEC = 0.5
+    source.poll_sec = 0.01
+    try:
+        thread.start()
+        time.sleep(0.3)
+    finally:
+        stop.set()
+        thread.join(timeout=2)
+        service.POLL_TICK_SEC = original_tick_sec
+        service.FAILED_POLL_RETRY_SEC = original_retry_sec
+    assert len(source.outcomes) == 49  # one fetch; without the floor it would have retried ~30 times
 
 
 def test_registered_sources_report_no_completed_poll_yet(store):
@@ -347,6 +588,46 @@ def test_load_kalshi_tickers_reads_the_ticker_out_of_each_kalshi_id(store):
                        {**record("novig:x", "won", "2026-09-11T20:00:00Z"), "venue": "novig"}],
                       datetime(2026, 9, 12, tzinfo=timezone.utc))
     assert store.load_kalshi_tickers() == {"KXA-1"}
+    store.upsert_bets([{**record("kalshi:KXB-2:no:s1", "won", "2026-09-11T20:00:00Z"), "venue": "kalshi"}],
+                      datetime(2026, 9, 12, 1, tzinfo=timezone.utc))
+    assert store.load_kalshi_tickers() == {"KXA-1"}  # the primary's own
+    assert store.load_kalshi_tickers(1) == {"KXB-2"}
+    # One odd stored id is skipped (logged), never a failed hourly full pull.
+    store.upsert_bets([{**record("kalshi:odd", "won", "2026-09-11T20:00:00Z"), "venue": "kalshi"}],
+                      datetime(2026, 9, 12, 2, tzinfo=timezone.utc))
+    assert store.load_kalshi_tickers() == {"KXA-1"}
+
+
+def kalshi_row(record_id: str, status: str, last_fill_at: str | None = "2026-09-11T19:00:00Z",
+               read_complete: int | None = READ_VERSION) -> dict:
+    closed_at = None if status == "open" else "2026-09-11T20:00:00Z"
+    return {**record(record_id, status, closed_at), "venue": "kalshi",
+            "raw": {"ticker": record_id.split(":")[1], "lastFillAt": last_fill_at, "readComplete": read_complete}}
+
+
+def test_load_kalshi_final_tickers_needs_every_stored_side_final_and_complete(store):
+    seen = datetime(2026, 9, 12, tzinfo=timezone.utc)
+    store.upsert_bets([kalshi_row("kalshi:KXA-1:yes", "won", "2026-09-11T19:00:00Z"),
+                       kalshi_row("kalshi:KXA-1:no", "closed", "2026-09-11T19:30:00Z"),
+                       kalshi_row("kalshi:KXB-2:yes", "closed"),
+                       kalshi_row("kalshi:KXB-2:no", "open"),
+                       kalshi_row("kalshi:KXC-3:yes", "unknown"),
+                       kalshi_row("kalshi:KXF-6:yes", "won", read_complete=None),  # a partial read
+                       kalshi_row("kalshi:KXG-7:yes", "won", read_complete=READ_VERSION - 1),  # an older build
+                       kalshi_row("kalshi:KXH-8:yes", "lost", last_fill_at=None),
+                       kalshi_row("kalshi:KXD-4:yes:s1", "lost"),
+                       kalshi_row("kalshi:KXE-5:yes:s1", "open"),
+                       kalshi_row("kalshi:odd", "won")], seen)
+    # The newest lastFillAt of the ticker's sides.
+    assert store.load_kalshi_final_tickers() == {"KXA-1": "2026-09-11T19:30:00Z"}
+    assert store.load_kalshi_final_tickers(1) == {"KXD-4": "2026-09-11T19:00:00Z"}
+
+
+def test_kalshi_polls_on_its_own_thread():
+    kalshi, novig, bfa = (ScriptedSource([[]], name=name) for name in ("kalshi", "novig", "bfa"))
+    assert service.poll_lanes([kalshi, novig, bfa]) == [[kalshi], [novig, bfa]]
+    assert service.poll_lanes([novig]) == [[novig]]
+    assert service.poll_lanes([kalshi]) == [[kalshi]]
 
 
 def test_rows_from_before_the_content_hash_column_are_rewritten_once(store):
@@ -924,18 +1205,18 @@ def test_http_teaser_blocks_mark_and_restore_until_the_game_starts(store, http_s
 def test_http_edge_skips_skip_and_restore_until_the_game_starts(store, http_server):
     future_ms = int((datetime.now(timezone.utc) + timedelta(days=2)).timestamp() * 1000)
     past_ms = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() * 1000)
-    key = "125791:1:3:0|47.5@4"
+    key = "125791:1:3:0|47.5"
     skip = json.dumps({"skipKey": key, "eventStartMs": future_ms, "skipped": True}).encode()
     status, reply = request_json("POST", f"{http_server}/edge_skips.json", skip, "application/json")
     assert status == 200 and reply["changed"] == 1
     assert [(row["skipKey"], row["eventStartMs"]) for row in reply["edgeSkips"]] == [(key, future_ms)]
     assert get_json(f"{http_server}/bets.json")[1]["edgeSkips"] == reply["edgeSkips"]
     # A moneyline and a negative spread key are fine; a started game's skip is not served.
-    started = json.dumps({"skipKey": "999:1:2:1|-3.5@17", "eventStartMs": past_ms, "skipped": True}).encode()
+    started = json.dumps({"skipKey": "999:1:2:1|-3.5", "eventStartMs": past_ms, "skipped": True}).encode()
     status, reply = request_json("POST", f"{http_server}/edge_skips.json", started, "application/json")
     assert status == 200 and [row["skipKey"] for row in reply["edgeSkips"]] == [key]
     status, reply = request_json("POST", f"{http_server}/edge_skips.json",
-                                 json.dumps({"skipKey": "125791:1:1:0|ml", "eventStartMs": future_ms, "skipped": True}).encode(),
+                                 json.dumps({"skipKey": "125791:1:1:0|evens", "eventStartMs": future_ms, "skipped": True}).encode(),
                                  "application/json")
     assert status == 400 and reply["error"].startswith("skipKey must look like")
     status, reply = request_json("POST", f"{http_server}/edge_skips.json",
@@ -947,6 +1228,26 @@ def test_http_edge_skips_skip_and_restore_until_the_game_starts(store, http_serv
     restore = json.dumps({"skipKey": key, "eventStartMs": future_ms, "skipped": False}).encode()
     status, reply = request_json("POST", f"{http_server}/edge_skips.json", restore, "application/json")
     assert (status, reply["changed"], reply["edgeSkips"]) == (200, 1, [])
+
+
+def test_edge_skips_are_per_line_and_restore_lifts_old_per_book_rows(store, http_server):
+    """A skip covers the line at every book (Cal, 2026-10-16). A panel not yet
+    reloaded still sends '<line>@<bookId>'; it is stored as the line. Restore
+    also deletes a per-book row written before the change."""
+    future = datetime.now(timezone.utc) + timedelta(days=2)
+    future_ms = int(future.timestamp() * 1000)
+    line = "7:1:2:0|-16.5"
+    old_client = json.dumps({"skipKey": f"{line}@3", "eventStartMs": future_ms, "skipped": True}).encode()
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", old_client, "application/json")
+    assert status == 200 and [row["skipKey"] for row in reply["edgeSkips"]] == [line]
+    # A row stored per book before the change, as on the VM today.
+    with store._lock:
+        store._con.execute("INSERT INTO edge_skips VALUES (?, ?, ?)", [f"{line}@5", future, future])
+        store._con.execute("INSERT INTO edge_skips VALUES (?, ?, ?)", ["7:1:2:0|-16@5", future, future])
+    restore = json.dumps({"skipKey": line, "eventStartMs": future_ms, "skipped": False}).encode()
+    status, reply = request_json("POST", f"{http_server}/edge_skips.json", restore, "application/json")
+    assert (status, reply["changed"]) == (200, 2)
+    assert [row["skipKey"] for row in reply["edgeSkips"]] == ["7:1:2:0|-16@5"]
 
 
 def test_http_refuses_a_foreign_host_on_every_verb(store, http_server):
@@ -1045,3 +1346,26 @@ def test_http_fill_books_post_saves_once(store, http_server):
     status, reply = request_json("POST", f"{http_server}/fill_books.json", bad, "application/json")
     assert status == 400 and reply["error"].startswith("rows[0].booksBetter must be at most bookCount")
     assert store._con.execute("SELECT count(*) FROM bet_fill_books").fetchone()[0] == 1
+
+
+def test_an_order_the_novig_app_feed_and_a_sub_account_both_hold_is_served_once(store):
+    """Cal's app feed lists his sub-accounts' orders too: the sub-account copy is kept."""
+    seen = datetime(2026, 9, 11, 21, 0, tzinfo=timezone.utc)
+    def novig(record_id: str, source: str) -> dict:
+        return {**record(record_id, "open", None), "source": source, "venue": "novig"}
+    store.upsert_bets([novig("novig:o1", "novig_rest"), novig("novig:o1:place", "novig_place"),
+                       novig("novig:o2", "novig_rest"), novig("novig:o2:bot", "novig_bot"),
+                       novig("novig:o3", "novig_rest"), record("kalshi:a:yes", "open", None),
+                       novig("novig:o6", "novig_rest"), {**novig("novig:o6:place", "novig_place"), "unmatchable": None},
+                       novig("novig:o4", "novig_rest"),
+                       {**novig("novig:o4:place", "novig_place"), "unmatchable": "no board line on record"},
+                       {**novig("novig:o5:place", "novig_place"), "unmatchable": "no board line on record"}], seen)
+    served = sorted(bet["id"] for bet in store.load_bets(30, seen))
+    # o4's sub-account copy names no game (it would size nothing): the app's copy is served instead;
+    # o5's is the only copy, so it is served; o6's names its game as the sources write it (unmatchable null).
+    assert served == ["kalshi:a:yes", "novig:o1:place", "novig:o2:bot", "novig:o3", "novig:o4", "novig:o5:place",
+                      "novig:o6:place"]
+    # A sub-account copy closed before the window does not hide an app copy inside it.
+    old_close = {**novig("novig:o7:place", "novig_place"), "status": "won", "closedAt": "2026-08-01T00:00:00Z"}
+    store.upsert_bets([{**novig("novig:o7", "novig_rest"), "status": "won", "closedAt": "2026-09-11T20:00:00Z"}, old_close], seen)
+    assert "novig:o7" in {bet["id"] for bet in store.load_bets(30, seen)}

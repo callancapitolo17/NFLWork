@@ -15,10 +15,19 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import json
+import logging
+
 import pytest
 from unittest.mock import MagicMock, patch
 
 import single_placer
+
+
+@pytest.fixture(autouse=True)
+def debug_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("WAGERZON_DEBUG_DIR", str(tmp_path))
+    return tmp_path
 
 
 def make_bet(**overrides):
@@ -238,7 +247,7 @@ def test_wz_error_msg_key_convention_also_rejected():
     assert result.get("error_msg_key") == "line_unavailable"
 
 
-def test_orphaned_when_make_succeeds_but_no_wager_number():
+def test_orphaned_when_make_succeeds_but_no_wager_number(debug_dir):
     """WZ confirmed submission but didn't return WagerNumber -> orphaned."""
     fake_session = MagicMock()
     confirm = _make_json_response(
@@ -252,6 +261,18 @@ def test_orphaned_when_make_succeeds_but_no_wager_number():
     result = single_placer.place_single("primary", make_bet(), session=fake_session)
     assert result["status"] == "orphaned"
     assert result["error_msg_key"] == "no_ticket"
+    [record] = [json.loads(path.read_text()) for path in debug_dir.glob(".placement_debug_*.json")]
+    assert (record["classification"], record["endpoint"], record["response_body"]) == (
+        "orphaned", "PostWagerMultipleHelper", {"result": {"AvailBalance": 100.0}})
+
+
+def test_a_record_that_cannot_be_written_is_logged_not_raised(monkeypatch, tmp_path, caplog):
+    missing = tmp_path / "missing"
+    monkeypatch.setenv("WAGERZON_DEBUG_DIR", str(missing))
+    with caplog.at_level(logging.WARNING, logger="single_placer"):
+        single_placer._log_placement_response(make_bet(), {}, {}, "rejected", "test")
+    assert [record.getMessage().split(":")[0] for record in caplog.records] == [
+        f"placement record not written to {missing}"]
 
 
 def test_missing_odds_in_preflight_details_proceeds_to_step2():

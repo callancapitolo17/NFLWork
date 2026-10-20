@@ -78,6 +78,16 @@
     const maxRefreshMs = deps && typeof deps.maxRefreshMs === "number" && deps.maxRefreshMs > 0 ? deps.maxRefreshMs : Infinity;
 
     let state = feed.emptyState();
+    // leagueId -> the keys of its lines in state.lines, its event ids in
+    // state.events, and its {main, alt} line counts; reset with the state.
+    let leagueLineKeys = new Map();
+    let leagueEventIds = new Map();
+    let leagueLineCounts = new Map();
+    // leagueId -> a number that changes every time that league's lines are
+    // merged in (never reused, across start() too): a reader caching one
+    // league's work redoes it when this moved.
+    const leagueVersions = new Map();
+    let mergeCount = 0;
     // line key -> observations (edgemove.observe); reset with the state.
     let history = {};
     let leagues = [];
@@ -145,8 +155,14 @@
     }
 
     function notify() {
-      status.lineCount = feed.countLines(state);
-      status.altLineCount = feed.countAltLines(state);
+      let lineCount = 0;
+      let altLineCount = 0;
+      for (const counts of leagueLineCounts.values()) {
+        lineCount += counts.main;
+        altLineCount += counts.alt;
+      }
+      status.lineCount = lineCount;
+      status.altLineCount = altLineCount;
       status.eventCount = Object.keys(state.events).length;
       onChange({ ...status }, state, history);
     }
@@ -194,23 +210,64 @@
     }
 
     // Merge one league's snapshot into the live state in place (a full
-    // mergeStates per league would copy every line 29 times). Returns the
+    // mergeStates per league would copy every line 29 times). Only the
+    // loaded league's own lines and events are touched, found through
+    // leagueLineKeys / leagueEventIds: a pass over the whole board per league
+    // landing froze the runner for seconds (2026-10-18 profile). Returns the
     // keys of the league's lines it dropped, re-listed or not.
     function mergeInto(target, loaded) {
       target.leagues = target.leagues.filter((id) => !loaded.leagues.includes(id)).concat(loaded.leagues);
       Object.assign(target.teams, loaded.teams);
       Object.assign(target.teamIndex ||= {}, loaded.teamIndex || {});
       Object.assign(target.books, loaded.books);
-      for (const [id, event] of Object.entries(target.events)) if (loaded.leagues.includes(event.leagueId)) delete target.events[id];
       const dropped = [];
-      for (const [key, line] of Object.entries(target.lines)) {
-        if (!loaded.leagues.includes(line.leagueId)) continue;
-        delete target.lines[key];
-        dropped.push(key);
+      for (const leagueId of loaded.leagues) {
+        for (const id of leagueEventIds.get(leagueId) || []) {
+          if (target.events[id] && target.events[id].leagueId === leagueId) delete target.events[id];
+        }
+        for (const key of leagueLineKeys.get(leagueId) || []) {
+          if (!target.lines[key] || target.lines[key].leagueId !== leagueId) continue;
+          delete target.lines[key];
+          dropped.push(key);
+        }
+        leagueEventIds.delete(leagueId);
+        leagueLineKeys.delete(leagueId);
+        leagueLineCounts.delete(leagueId);
       }
       Object.assign(target.events, loaded.events);
       Object.assign(target.lines, loaded.lines);
+      indexLoaded(loaded);
+      for (const leagueId of loaded.leagues) leagueVersions.set(leagueId, ++mergeCount);
       return dropped;
+    }
+
+    // Each loaded league's line keys, event ids and main / alt line counts.
+    function indexLoaded(loaded) {
+      for (const [id, event] of Object.entries(loaded.events)) listUnder(leagueEventIds, event.leagueId, id);
+      for (const [key, line] of Object.entries(loaded.lines)) {
+        listUnder(leagueLineKeys, line.leagueId, key);
+        const counts = leagueLineCounts.get(line.leagueId) || { main: 0, alt: 0 };
+        if (line.isAlt) counts.alt += 1;
+        else counts.main += 1;
+        leagueLineCounts.set(line.leagueId, counts);
+      }
+    }
+
+    function listUnder(index, leagueId, value) {
+      const list = index.get(leagueId);
+      if (list) list.push(value);
+      else index.set(leagueId, [value]);
+    }
+
+    // One league's lines on the board now (a reader that needs only the
+    // league that just landed, not a pass over every league's lines).
+    function leagueLines(leagueId) {
+      const lines = [];
+      for (const key of leagueLineKeys.get(leagueId) || []) {
+        const line = state.lines[key];
+        if (line && line.leagueId === leagueId) lines.push(line);
+      }
+      return lines;
     }
 
     // One observation per line of a freshly merged snapshot, and the history
@@ -351,6 +408,9 @@
       status.leagues = leagues.slice();
       clearTimers();
       state = feed.emptyState();
+      leagueLineKeys = new Map();
+      leagueEventIds = new Map();
+      leagueLineCounts = new Map();
       history = {};
       status.observingSince = null;
       status.leagueObservingSince = {};
@@ -408,6 +468,8 @@
     return {
       start, stop, pause, resume, tick, resync,
       getState: () => state,
+      getLeagueLines: leagueLines,
+      getLeagueVersion: (leagueId) => leagueVersions.get(leagueId) ?? null,
       getHistory: () => history,
       getStatus: () => ({ ...status }),
       refreshEveryMs,

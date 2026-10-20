@@ -1,7 +1,7 @@
-// Bet Tracker page: fetches the bets service's /bets.json (all history) and
-// /scenarios.json (the server runner's live game cards, passed through by the
-// bets service), builds tickets with trackerstats.js and renders the
-// Overview, Live, Open, Analysis and Bets views. Its one write is the Bets view's Remove / Restore: POST
+// Bet Tracker page: fetches the bets service's /bets.json (all history),
+// /balances.json (each book's live balance, only while the Balances tab is open) and /scenarios.json (the server
+// runner's live game cards, passed through by the bets service), builds tickets with trackerstats.js and renders the
+// Overview, Live, Open, Analysis, Bets and Balances views. Its one write is the Bets view's Remove / Restore: POST
 // /exclusions.json, which marks a BFA or Wagerzon bet as not Cal's
 // (bets.duckdb::bet_exclusions; the bet itself stays) and takes it out of
 // every number here. Otherwise it keeps only the viewer's own display choices
@@ -19,7 +19,11 @@
   const BETS_URL = "/bets.json?days=3650";
   const EXCLUSIONS_URL = "/exclusions.json";
   const SCENARIOS_URL = "/scenarios.json";
-  const VIEWS = ["overview", "live", "open", "analysis", "bets"];
+  // Live per-book account balance (bets service balances.py). Cal chose live over
+  // a midnight snapshot (2026-10-13); since a live balance shows today's swings,
+  // it lives on its own Balances tab and is fetched only while that tab is open (2026-10-14).
+  const BALANCES_URL = "/balances.json";
+  const VIEWS = ["overview", "live", "open", "analysis", "bets", "balances"];
   // Cal's ask (2026-10-05): only these books carry bets that are not his (service.EXCLUDABLE_VENUES).
   const REMOVABLE_VENUES = ["BFA", "Wagerzon"];
   const BET_FILTERS = ["All", "Counted", "Removed"];
@@ -40,6 +44,7 @@
   }
   const FILTERS = [
     { key: "venue", label: "Venue", primary: true, value: groupValue("venue") },
+    { key: "origin", label: "Bot / Other", primary: true, value: groupValue("origin") },
     { key: "league", label: "League", primary: true, value: groupValue("league") },
     { key: "kind", label: "Type", primary: true, value: groupValue("kind") },
     { key: "market", label: "Market", primary: true, value: groupValue("market") },
@@ -96,6 +101,8 @@
   // last read failed; the Live tab falls back to a plain list without them.
   let scenarios = null;
   let scenariosError = null;
+  let balances = null;
+  let balancesError = null;
   let allTickets = [];
   let tickets = [];
 
@@ -201,6 +208,15 @@
   }
 
   // ---- DOM helpers ----------------------------------------------------------
+
+  // Every bet table's Venue cell; a bot bet carries a "Bot" tag after its venue.
+  const VENUE_COLUMN = {
+    label: "Venue",
+    cell: (t) => (t.origin === stats.ORIGINS.bot
+      ? el("span", null, [document.createTextNode(t.venue + " "), el("span", { className: "tag bot", text: stats.ORIGINS.bot })])
+      : t.venue),
+    sort: (t) => t.venue + " " + t.origin,
+  };
 
   function el(tag, options, children) {
     const node = document.createElement(tag);
@@ -561,6 +577,53 @@
     })));
   }
 
+  /**
+   * Balance by book (Cal, 2026-10-12): one row per book the service reads a
+   * balance for. A book never read shows "unavailable", never $0, and stays out
+   * of the total; a failed read keeps its last numbers and says how old they are.
+   */
+  function renderBalances() {
+    const rows = Object.entries((balances && balances.balances) || {})
+      .map(([venue, reading]) => ({ venue, label: stats.venueName(venue), ...reading }))
+      .sort((a, b) => (b.cash ?? -Infinity) - (a.cash ?? -Infinity));
+    setText("balances-caption", balancesError ? "Could not load: " + balancesError : "live");
+    if (!rows.length) {
+      fill("bal-table", emptyNote(balances ? "No balances yet. They appear within a minute of the bets service starting." : "Loading…"));
+      return;
+    }
+    const read = rows.filter((row) => row.cash !== null);
+    const sum = (values) => values.reduce((total, value) => total + (value ?? 0), 0);
+    const columns = [
+      { label: "Book", cell: (row) => row.label },
+      { label: "Cash", right: true, num: true, cell: (row) => row.cash === null ? unavailablePill(row) : balanceMoney(row.cash) },
+      { label: "In bets", right: true, num: true, cell: (row) => row.cash === null || row.inBets === null ? "" : balanceMoney(row.inBets) },
+      { label: "Available", right: true, num: true,
+        cell: (row) => row.cash === null ? "" : balanceMoney(row.available ?? row.cash) + (row.creditLimit ? "*" : "") },
+      { label: "Updated", right: true, className: (row) => row.error ? "warn" : "muted",
+        cell: (row) => row.isTotal ? "" : row.fetchedAt ? ago(row.fetchedAt) : "never" },
+    ];
+    const totalRow = { label: "Total", cash: sum(read.map((row) => row.cash)), inBets: sum(read.map((row) => row.inBets)),
+      available: sum(read.map((row) => row.available ?? row.cash)), creditLimit: null, fetchedAt: null, isTotal: true };
+    const tbl = table(columns, [...rows, totalRow], { rowClass: (row) => row.isTotal ? "total" : "" });
+    const credit = rows.filter((row) => row.creditLimit);
+    const notes = ["Cash leaves out money in open bets. Kalshi's in bets is what the positions are worth now."];
+    if (credit.length) notes.push("* Includes " + credit.map((row) => row.label + "'s " + balanceMoney(row.creditLimit)).join(", ") + " credit.");
+    const noInBets = read.filter((row) => row.inBets === null);
+    if (noInBets.length) notes.push(noInBets.map((row) => row.label).join(", ") + " does not report money in open bets, so the in bets total leaves it out.");
+    if (read.length < rows.length) notes.push("The total leaves out books shown as unavailable.");
+    fill("bal-table", el("div", { className: "scroll" }, [tbl]),
+      el("div", { className: "balance-notes" }, notes.map((text) => el("span", { text }))));
+  }
+
+  /** A balance can be negative (a credit book you owe); its sign always shows. */
+  function balanceMoney(value) {
+    return sign(value, false) + money(Math.abs(value));
+  }
+
+  function unavailablePill(row) {
+    return el("span", { className: "pill-warn", text: "unavailable", title: row.error || "no reading yet" });
+  }
+
   function timeLabel(ms) {
     return new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: stats.PACIFIC_TZ });
   }
@@ -598,7 +661,7 @@
   function settledColumns(settledCell) {
     return [
       { label: "Settled", className: () => "muted", cell: settledCell, sort: (t) => t.closedMs },
-      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      VENUE_COLUMN,
       { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
       { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
       { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
@@ -662,7 +725,7 @@
     if (!group.length) return el("div", { className: "open-group" }, [head, emptyNote(emptyText)]);
     return el("div", { className: "open-group" }, [head, el("div", { className: "scroll" }, [table([
       { label: startLabelText, className: () => "muted", cell: (t) => startLabel(t.eventStart), sort: (t) => msOf(t.eventStart) },
-      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      VENUE_COLUMN,
       { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
       { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
       { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
@@ -1194,11 +1257,11 @@
   function renderLog(settled) {
     const query = state.query.trim().toLowerCase();
     const matching = query
-      ? settled.filter((t) => [t.event, t.selection, t.venue, t.league, t.kind].join(" ").toLowerCase().includes(query))
+      ? settled.filter((t) => [t.event, t.selection, t.venue, t.origin, t.league, t.kind].join(" ").toLowerCase().includes(query))
       : settled;
     const columns = [
       { label: "Settled", className: () => "muted", cell: (t) => dayLabel(t.settledDay, true), sort: (t) => t.closedMs },
-      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      VENUE_COLUMN,
       { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
       { label: "Event", cell: (t) => t.event || t.kind, sort: (t) => t.event || t.kind },
       { label: "Bet", className: () => "wrap", cell: (t) => t.selection, sort: (t) => t.selection },
@@ -1277,7 +1340,7 @@
       { label: "Result", cell: resultTag, sort: (t) => t.status },
       { label: "P&L", right: true, num: true, className: (t) => toneClass(t.pnl), cell: (t) => (t.pnl === null ? "—" : money(t.pnl, true)), sort: (t) => t.pnl },
       { label: "Placed", className: () => "muted", cell: (t) => (t.placedMs ? dayLabel(stats.pacificDay(t.placedMs), true) : "—"), sort: (t) => t.placedMs },
-      { label: "Venue", cell: (t) => t.venue, sort: (t) => t.venue },
+      VENUE_COLUMN,
       { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
     ];
     const shown = sortedRows("bets", columns, matching).slice(0, state.betsLimit);
@@ -1294,6 +1357,7 @@
     history.replaceState(null, "", "#" + view);
     window.scrollTo(0, 0);
     render();
+    if (view === "balances") refreshBalances().then(render);
   }
 
   function renderHeader() {
@@ -1372,6 +1436,7 @@
     renderHeader();
     renderSync();
     renderUntyped();
+    if (state.view === "balances") { renderBalances(); return; }
     if (!payload) return;
     if (state.view === "overview") renderOverview();
     else if (state.view === "live") renderLiveView();
@@ -1413,8 +1478,23 @@
     }
   }
 
+  // The balance card; a failure keeps the last balances read and says why.
+  async function refreshBalances() {
+    try {
+      const response = await fetch(BALANCES_URL, { cache: "no-store" });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error((body && body.error) || "the bets service answered HTTP " + response.status);
+      if (!body || typeof body.balances !== "object" || body.balances === null) throw new Error("balances.json has no balances");
+      balances = body;
+      balancesError = null;
+    } catch (error) {
+      balancesError = error.message;
+    }
+  }
+
   async function refresh() {
     const scenariosRead = refreshScenarios();
+    const balancesRead = state.view === "balances" ? refreshBalances() : null;
     try {
       const response = await fetch(BETS_URL, { cache: "no-store" });
       if (!response.ok) throw new Error("the bets service answered HTTP " + response.status);
@@ -1424,7 +1504,7 @@
     } catch (error) {
       showBanner("Could not load bets: " + error.message + (payload ? ". Showing the last load." : "."));
     }
-    await scenariosRead;
+    await Promise.all([scenariosRead, balancesRead]);
     render();
   }
 
@@ -1461,7 +1541,11 @@
       state.betsQuery = event.target.value; state.betsLimit = LOG_PAGE; render();
     });
     document.getElementById("bets-more").addEventListener("click", () => { state.betsLimit += LOG_PAGE; render(); });
-    window.addEventListener("hashchange", () => { state.view = viewOfHash(); render(); });
+    window.addEventListener("hashchange", () => {
+      state.view = viewOfHash();
+      render();
+      if (state.view === "balances") refreshBalances().then(render);
+    });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
     setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
   }

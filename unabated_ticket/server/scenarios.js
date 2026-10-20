@@ -12,7 +12,8 @@
 //             awayTeam, homeTeam, eventStartMs, venueIds, rotations),
 //             `ladderOf(period, axis)` the event's fair ladder as of `oddsAt`
 //             (ladder.js shape) or null when the runner never saw the game
-//             before it started, `oddsAt` ms or null
+//             before it started, `oddsAt` ms (when its league's last
+//             snapshot before kickoff landed) or null
 //   now       ms
 // Output {games: [game], coveredBetIds} — `game` = {eventId, league,
 //   awayTeam, homeTeam, startMs, oddsAt, groups, bets, legs}; each group is

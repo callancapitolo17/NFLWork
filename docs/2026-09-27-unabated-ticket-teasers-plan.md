@@ -44,11 +44,11 @@ again.
 
 ## 3. Tickets and grading
 
-- Pool: the best leg per game (one leg per game, so legs are independent),
-  top `POOL_SIZE = 10` by win chance. Every leg is win-or-lose, so 2^10 =
-  1,024 joint outcomes (26 ms on the 9/27 board; 12 legs took 221 ms and
-  added nothing).
-- Candidate tickets: every 4-leg combination of the pool (210).
+- Pool: the best leg per game (one leg per game, so legs are independent)
+  whose win chance is above break-even (70.7%), however many. Every leg is
+  win-or-lose, so N legs make 2^N joint outcomes. (2026-10-16, was the top
+  `POOL_SIZE = 10`; see `docs/2026-10-16-unabated-ticket-teaser-pool-plan.md`.)
+- Candidate tickets: every 4-leg combination of the pool (210 at 10 legs).
 - Grading: all four legs win -> +3 per dollar (+300); anything else -> -1.
 - Ticket EV = P(all four win) x 4 - 1.
 

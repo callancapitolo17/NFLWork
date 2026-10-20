@@ -6,8 +6,13 @@ once, and reads what filled.
 
 Armed only when a dedicated Kalshi key is configured
 (KALSHI_TAKER_API_KEY_ID + KALSHI_TAKER_PRIVATE_KEY_PATH, a key made for the
-bot alone so it can be revoked alone). Without it, POST /taker/order.json
-answers 503 and nothing is sent.
+bot alone so it can be revoked alone) together with the bot's own subaccount
+(KALSHI_TAKER_SUBACCOUNT, 1-63; Cal, 2026-10-16), and only once Kalshi shows
+the key is locked to that subaccount (key_lock_problem): it reads its balance
+there and is refused the primary account's. The money in the subaccount is
+then all the bot can lose. Without all of it, POST /taker/order.json answers
+503 and nothing is sent. taker_subaccount_setup.py makes the subaccount, funds
+it and mints the locked key.
 
 Rules, in order, for every request:
   1. the stop file (config.TAKER_STOP_PATH) exists -> refused, "stopped";
@@ -20,10 +25,12 @@ Rules, in order, for every request:
      game has not started, and the runner priced the same Kalshi (its
      kalshiBaseUrl is this desk's); else refused, "stale_decision" /
      "started" / "env_mismatch";
-  5. unseen fill: an earlier bot order on the SAME GAME that may still hold
+  5. unseen fill: an earlier bot order on the SAME GAME, on Kalshi or on
+     Novig (novig_taker_desk.py), that may still hold
      contracts must be among the held bets the runner sized this stake on
-     (`heldIds`, the ids bets.js matched to the row: "kalshi:<ticker>:<side>"),
-     else refused, "unseen_fill". Conditional Kelly is only right once it
+     (`heldIds`, the ids bets.js matched to the row: "kalshi:<ticker>:<side>:s<N>"
+     for the bot's subaccount N, sources/kalshi.py record_id_of), else
+     refused, "unseen_fill". Conditional Kelly is only right once it
      sees the earlier fill; until then an add would be sized as if alone;
   6. ceiling: contracts are cut so that open exposure + this order's cost
      stays at or under BOT_BANKROLL; none left -> refused, "ceiling";
@@ -45,6 +52,11 @@ Order statuses (taker.duckdb::taker_orders.status):
             once read FILLS_SETTLE_SEC after the confirmed cancel
   rejected  Kalshi refused it, or it never reached Kalshi: nothing held
 
+Every order, cancel and listing names the subaccount, which a locked key must
+match. An open order from another subaccount (the bot's first orders, placed
+from the primary account on 2026-10-16) cannot be read or cancelled with the
+locked key: its cost stays held until its market settles.
+
 Side effects: Kalshi orders on the bot's key (money); INSERTs / UPDATEs
 taker.duckdb::taker_orders (taker_store.py). Network: Kalshi REST, signed
 with the bot's key only.
@@ -62,11 +74,12 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from unabated_ticket.bets_service.sources.kalshi import MAX_SUBACCOUNT, PRIMARY_SUBACCOUNT, record_id_of
 from unabated_ticket.bets_service.taker_store import TakerStore
 
 log = logging.getLogger(__name__)
 
-# Cal, 2026-10-14: $500, and the same $500 caps what the bot has open.
+# The ceiling on the bot's open cost and what the setup funds its subaccount with; the Kelly bankroll is taker.js KELLY_BANKROLL.
 BOT_BANKROLL = 500.0
 # Kalshi's fill feed can trail the match by a moment; a read this long after
 # the confirmed cancel is taken as final. Until then the whole requested cost is held.
@@ -108,6 +121,10 @@ FILLS_MAX_PAGES = 10
 BOT_ORDER_ID_PREFIX = "ubot-"
 # Statuses under which the order may hold contracts (see _may_hold_contracts).
 STATUSES_MAYBE_HOLDING = ("sending", "unknown", "sent", "resting", "filled", "partial")
+BALANCE_PATH = "/portfolio/balance"
+# The key-lock check at arming: a no-answer, 429 or 5xx is retried this many times, this far apart.
+LOCK_CHECK_ATTEMPTS = 3
+LOCK_CHECK_RETRY_SEC = 2.0
 
 
 class KalshiOrderClient:
@@ -166,19 +183,21 @@ def _parse(raw: bytes) -> object:
         return text
 
 
-def order_body(ticker: str, contract_side: str, ask: float, count: int, client_order_id: str) -> dict:
+def order_body(ticker: str, contract_side: str, ask: float, count: int, client_order_id: str,
+               subaccount: int) -> dict:
     """Kalshi v2's order body for BUYING `contract_side` at `ask`, immediate-
     or-cancel: what does not fill at once Kalshi cancels in the same request,
     so a bot order never rests (docs.kalshi.com, Create Order V2). v2 trades
     the YES leg only: buy YES = bid at the ask; buy NO = ask (sell YES) at
-    1 - the NO ask (unabated_edge/maker/gateway.py, the same API live)."""
+    1 - the NO ask (unabated_edge/maker/gateway.py, the same API live).
+    `subaccount` is the bot's: a key locked to it may name only it."""
     if contract_side == "yes":
         v2_side, price = "bid", ask
     else:
         v2_side, price = "ask", 1 - ask
     return {"ticker": ticker, "side": v2_side, "price": f"{price:.4f}", "count": f"{float(count):.2f}",
             "time_in_force": "immediate_or_cancel", "self_trade_prevention_type": "taker_at_cross",
-            "client_order_id": client_order_id}
+            "client_order_id": client_order_id, "subaccount": subaccount}
 
 
 def fill_totals(fills: list[dict], contract_side: str) -> tuple[float, float] | str:
@@ -218,9 +237,62 @@ def _positive_number(value: object) -> float | None:
     return number if number is not None and number > 0 else None
 
 
-def held_id_of(ticker: str, contract_side: str) -> str:
+def held_id_of(ticker: str, contract_side: str, subaccount: int) -> str:
     """The bets service's record id for a Kalshi position (sources/kalshi.py)."""
-    return f"kalshi:{ticker}:{contract_side}"
+    return record_id_of(ticker, contract_side, subaccount)
+
+
+def _balance_dollars(reply: object) -> float | None:
+    """GET /portfolio/balance's available balance (`balance`, in cents), in dollars."""
+    cents = reply.get("balance") if isinstance(reply, dict) else None
+    if isinstance(cents, bool) or not isinstance(cents, (int, float)):
+        return None
+    return cents / 100
+
+
+def _retryable(status: int | None) -> bool:
+    return status is None or status == 429 or status >= 500
+
+
+def _get_status(client: "KalshiOrderClient", path: str) -> tuple[int | None, object]:
+    """(status, reply), or (None, why) when Kalshi did not answer."""
+    try:
+        return client.request("GET", path)
+    except OSError as error:
+        return None, f"no answer: {error}"
+
+
+def key_lock_problem(client: "KalshiOrderClient", subaccount: int,
+                     sleep: Callable[[float], None] = time.sleep) -> tuple[str | None, float | None]:
+    """(None, the subaccount's available dollars) when Kalshi shows the key is
+    locked to `subaccount`, two ways that must agree: its balance reply there
+    carries no `balance_breakdown` (docs.kalshi.com, Get Balance: "omitted only
+    when using a subaccount-restricted API key"), and the primary account's
+    balance is refused. Otherwise (why not, None). A no-answer, 429 or 5xx is
+    retried LOCK_CHECK_ATTEMPTS times; never proven means not armed. GETs only."""
+    last = "not checked"
+    for attempt in range(LOCK_CHECK_ATTEMPTS):
+        if attempt:
+            sleep(LOCK_CHECK_RETRY_SEC)
+        own_status, own_reply = _get_status(client, f"{BALANCE_PATH}?subaccount={subaccount}")
+        if _retryable(own_status):
+            last = f"its balance in subaccount {subaccount}: {own_status or own_reply}"
+            continue
+        if own_status != 200:
+            return (f"the key cannot read subaccount {subaccount}: HTTP {own_status} {str(own_reply)[:200]}", None)
+        if isinstance(own_reply, dict) and "balance_breakdown" in own_reply:
+            return ("the key is not restricted: its balance reply carries balance_breakdown, which Kalshi omits "
+                    "only for a subaccount-restricted key", None)
+        primary_status, primary_reply = _get_status(client, f"{BALANCE_PATH}?subaccount={PRIMARY_SUBACCOUNT}")
+        if _retryable(primary_status):
+            last = f"the primary account's balance: {primary_status or primary_reply}"
+            continue
+        if primary_status == 200:
+            return (f"the key reads the primary account too: it is not locked to subaccount {subaccount}", None)
+        if 400 <= primary_status < 500:
+            return None, _balance_dollars(own_reply)
+        return f"the primary account's balance answered HTTP {primary_status}, expected a refusal", None
+    return f"could not check after {LOCK_CHECK_ATTEMPTS} tries ({last})", None
 
 
 def _order_id_of(reply: object) -> str | None:
@@ -323,15 +395,37 @@ def _may_hold_contracts(order: dict) -> bool:
     return order["status"] == "unfilled" and not order["fills_final"]
 
 
+def kalshi_unseen_fill(store: TakerStore, event_id: int, held_ids: set[str], ticker: str | None = None) -> str | None:
+    """Why an add on Unabated event `event_id` (or on `ticker`) would be sized
+    blind, or None: an open Kalshi bot order there that may hold contracts and
+    whose position is not among `held_ids`. Store reads only, no desk lock, so
+    the Novig desk asks it too."""
+    for order in store.open_orders():
+        same_game = order["event_id"] == event_id or (ticker is not None and order["ticker"] == ticker)
+        if not same_game or not _may_hold_contracts(order):
+            continue
+        held_id = held_id_of(order["ticker"], order["contract_side"], order["subaccount"])
+        if held_id not in held_ids:
+            return (f"{order['client_order_id']} ({order['status']}) is not yet among the held bets the stake "
+                    f"was sized on: no {held_id}")
+    return None
+
+
 class TakerDesk:
     """Places the runner's orders, one at a time, under the ceiling."""
 
-    def __init__(self, client: KalshiOrderClient, store: TakerStore, stop_path: Path,
-                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)):
+    def __init__(self, client: KalshiOrderClient, store: TakerStore, stop_path: Path, subaccount: int,
+                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+                 other_venue_unseen: Callable[[int, set[str]], str | None] | None = None):
+        if isinstance(subaccount, bool) or not isinstance(subaccount, int) or not 1 <= subaccount <= MAX_SUBACCOUNT:
+            raise ValueError(f"the bot trades only in a numbered subaccount 1-{MAX_SUBACCOUNT}, got {subaccount!r}")
         self._client = client
+        self._subaccount = subaccount
         self._store = store
         self._stop_path = Path(stop_path)
         self._now = now
+        # The Novig bot's orders on the same game (novig_taker_desk.novig_unseen_fill); None = Kalshi's alone.
+        self._other_venue_unseen = other_venue_unseen
         self._lock = threading.Lock()
         self._last_refresh_at: datetime | None = None
         self._settlement_checked_at: dict[str, datetime] = {}
@@ -392,22 +486,20 @@ class TakerDesk:
 
     def _unseen_fill(self, request: dict) -> str | None:
         """Why this order would add to a game blind, or None: an earlier bot
-        order on the game that may hold contracts and is not in `held_ids`."""
-        for order in self._store.open_orders():
-            same_game = order["event_id"] == request["event_id"] or order["ticker"] == request["ticker"]
-            if not same_game or not _may_hold_contracts(order):
-                continue
-            held_id = held_id_of(order["ticker"], order["contract_side"])
-            if held_id not in request["held_ids"]:
-                return (f"{order['client_order_id']} ({order['status']}) is not yet among the held bets the stake "
-                        f"was sized on: no {held_id}")
-        return None
+        order on the game, on Kalshi or (other_venue_unseen) on Novig, that
+        may hold contracts and is not in `held_ids`."""
+        unseen = kalshi_unseen_fill(self._store, request["event_id"], request["held_ids"], request["ticker"])
+        if unseen is None and self._other_venue_unseen is not None:
+            unseen = self._other_venue_unseen(request["event_id"], request["held_ids"])
+        return unseen
 
     def _send(self, request: dict, count: int) -> dict:
         client_order_id = request["client_order_id"]
         reserved = round(count * request["all_in_price"] + FEE_ROUNDING_SLACK, 4)
-        self._store.insert_order({**request, "placed_at": self._now(), "count_requested": count, "open_cost": reserved})
-        body = order_body(request["ticker"], request["contract_side"], request["ask_price"], count, client_order_id)
+        self._store.insert_order({**request, "placed_at": self._now(), "count_requested": count, "open_cost": reserved,
+                                  "subaccount": self._subaccount})
+        body = order_body(request["ticker"], request["contract_side"], request["ask_price"], count, client_order_id,
+                          self._subaccount)
         try:
             status, reply = self._client.request("POST", ORDERS_PATH, body)
         except OSError as error:
@@ -460,7 +552,7 @@ class TakerDesk:
         named one). True only when Kalshi confirmed it, or answered 404 and
         its resting list does not carry the order."""
         order_id = order["kalshi_order_id"]
-        path = f"{ORDERS_PATH}/{order_id}?market_ticker={order['ticker']}"
+        path = f"{ORDERS_PATH}/{order_id}?market_ticker={order['ticker']}&subaccount={self._subaccount}"
         if order.get("exchange_index") is not None:
             path += f"&exchange_index={int(order['exchange_index'])}"
         try:
@@ -489,7 +581,8 @@ class TakerDesk:
         fills: list[dict] = []
         cursor = ""
         for _ in range(FILLS_MAX_PAGES):
-            path = f"/portfolio/fills?order_id={order_id}&limit={FILLS_PAGE_LIMIT}" + (f"&cursor={cursor}" if cursor else "")
+            path = (f"/portfolio/fills?order_id={order_id}&subaccount={self._subaccount}&limit={FILLS_PAGE_LIMIT}"
+                    + (f"&cursor={cursor}" if cursor else ""))
             try:
                 status, reply = self._client.request("GET", path)
             except OSError as error:
@@ -525,12 +618,13 @@ class TakerDesk:
         return {"status": outcome, "count": count, "filled": filled, "cost": cost, "orderId": order_id}
 
     def _list_orders(self, query: str) -> list[dict] | None:
-        """GET /portfolio/orders?<query>, every page; None when the read
-        failed or the listing did not end (never a partial list)."""
+        """GET /portfolio/orders?<query> in the bot's subaccount, every page;
+        None when the read failed or the listing did not end (never a partial list)."""
         orders: list[dict] = []
         cursor = ""
         for _ in range(ORDER_LIST_MAX_PAGES):
-            path = f"{ORDER_LIST_PATH}?{query}&limit={ORDER_LIST_PAGE_LIMIT}" + (f"&cursor={cursor}" if cursor else "")
+            path = (f"{ORDER_LIST_PATH}?{query}&subaccount={self._subaccount}&limit={ORDER_LIST_PAGE_LIMIT}"
+                    + (f"&cursor={cursor}" if cursor else ""))
             try:
                 status, reply = self._client.request("GET", path)
             except OSError as error:
@@ -565,7 +659,9 @@ class TakerDesk:
         the cost): a bot order resting on Kalshi that no row knows is
         cancelled; a send with no answer is looked up by client_order_id; an
         unconfirmed cancel is retried; fills are final FILLS_SETTLE_SEC after
-        the cancel; a started market is checked for settlement, which frees it."""
+        the cancel; a started market is checked for settlement, which frees it.
+        An order from another subaccount is only checked for settlement: the
+        locked key can neither read nor cancel it, so its cost stays held."""
         now = self._now()
         self._last_refresh_at = now
         open_orders = self._store.open_orders()
@@ -577,6 +673,9 @@ class TakerDesk:
         if resting is not None:
             self._cancel_untracked(resting, {order["client_order_id"] for order in open_orders})
         for order in open_orders:
+            if order["subaccount"] != self._subaccount:
+                self._free_if_settled(order, now)
+                continue
             if not order["kalshi_order_id"]:
                 self._recover_lost_order(order, resting, now)
                 continue
@@ -588,9 +687,14 @@ class TakerDesk:
                     and now - cancelled_at >= timedelta(seconds=FILLS_SETTLE_SEC)):
                 self._read_fills(order["client_order_id"], order["kalshi_order_id"], order["contract_side"],
                                  order["count_requested"], final=True, count_reported=order["count_reported"])
-            if (order["event_start"] is not None and order["event_start"] <= now
-                    and self._settlement_check_due(order["ticker"], now) and self._market_settled(order["ticker"])):
-                self._store.update_order(order["client_order_id"], {"settled_at": now})
+            self._free_if_settled(order, now)
+
+    def _free_if_settled(self, order: dict, now: datetime) -> None:
+        """Marks a started order's market settled once Kalshi says so (a public
+        market read, any subaccount): that frees its open_cost."""
+        if (order["event_start"] is not None and order["event_start"] <= now
+                and self._settlement_check_due(order["ticker"], now) and self._market_settled(order["ticker"])):
+            self._store.update_order(order["client_order_id"], {"settled_at": now})
 
     def _cancel_untracked(self, resting: list[dict], known_ids: set[str]) -> None:
         """A bot order (client_order_id "ubot-…") resting on Kalshi that no

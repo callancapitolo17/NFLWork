@@ -75,6 +75,69 @@ test("a line no rung names, or whose rung disagrees on the number, has no ticker
   assert.match(taker.contractFromRungs({ ...row, points: -34.5 }).detail, /row is -34.5/);
 });
 
+// Main lines in the fixture: Unabated's ladders skip the main-number rung (52.5 / -38.5), as live.
+const UNDER_MAIN_KEY = "433644483:ms105:si1:tid717";
+const OVER_MAIN_KEY = "433644484:ms105:si0:tid927";
+const WSU_MAIN_KEY = "420942308:ms105:si1:tid717";
+const DUQ_MAIN_KEY = "420942310:ms105:si0:tid927";
+
+test("a main number's ticker is derived from its own ladder's rungs: Kalshi names X.5 as X+1", () => {
+  const derived = (key) => {
+    const state = boardWithEdge(key, 0.05);
+    return taker.resolveKalshiContract(rowOf(state, key), state);
+  };
+  assert.deepEqual(derived(UNDER_MAIN_KEY), { ticker: "KXNCAAFTOTAL-26SEP19DUQWSU-53", side: "no", sourceKey: null, derived: true });
+  assert.deepEqual(derived(OVER_MAIN_KEY), { ticker: "KXNCAAFTOTAL-26SEP19DUQWSU-53", side: "yes", sourceKey: null, derived: true });
+  assert.deepEqual(derived(WSU_MAIN_KEY), { ticker: "KXNCAAFSPREAD-26SEP19DUQWSU-WSU39", side: "yes", sourceKey: null, derived: true });
+  assert.deepEqual(derived(DUQ_MAIN_KEY), { ticker: "KXNCAAFSPREAD-26SEP19DUQWSU-WSU39", side: "no", sourceKey: null, derived: true });
+});
+
+test("a main number refuses a ticker when its ladder cannot vouch for one", () => {
+  const state = boardWithEdge(UNDER_MAIN_KEY, 0.05);
+  const row = rowOf(state, UNDER_MAIN_KEY);
+  // No rungs hang off the line.
+  assert.match(taker.contractFromRungs({ ...row, key: "nothing" }).detail, /has no rungs/);
+  // A whole number has no X.5 strike.
+  assert.match(taker.contractFromRungs({ ...row, points: 52 }).detail, /not a half point/);
+  // An alt the map misses is never derived.
+  assert.equal(taker.contractFromRungs({ ...row, isAlt: true }).detail, "no Kalshi rung names this line");
+  // The Over side's ladder carrying NO rungs is a contradiction, not a guess.
+  assert.match(taker.contractFromRungs({ ...row, sideIndex: 0 }).detail, /carries N rungs/);
+  // Rungs that disagree on the event.
+  const contracts = { ...row.venueIds.kalshiContracts, "N-KXNCAAFTOTAL-26SEP20OTHER-50": { lineKey: null, mainKey: row.key, points: 49.5, sideIndex: 1 } };
+  assert.match(taker.contractFromRungs({ ...row, venueIds: { ...row.venueIds, kalshiContracts: contracts } }).detail, /disagree/);
+  // A spread main with no rung on its side of zero.
+  const spreadState = boardWithEdge(WSU_MAIN_KEY, 0.05);
+  const spreadRow = rowOf(spreadState, WSU_MAIN_KEY);
+  assert.match(taker.contractFromRungs({ ...spreadRow, points: 1.5 }).detail, /no rungs on its side/);
+  // Same-side rungs that contradict the sign (an N rung at a negative number).
+  const flipped = Object.fromEntries(Object.entries(spreadRow.venueIds.kalshiContracts).filter(([, target]) => target.mainKey === spreadRow.key).map(([key, target]) => [key.replace(/^Y-/, "N-"), target]));
+  assert.match(taker.contractFromRungs({ ...spreadRow, venueIds: { ...spreadRow.venueIds, kalshiContracts: flipped } }).detail, /reads N rungs/);
+});
+
+test("a close spread whose ladder crosses zero derives from the rungs on its own side only", () => {
+  const state = boardWithEdge(WSU_MAIN_KEY, 0.05);
+  const row = rowOf(state, WSU_MAIN_KEY);
+  // WSU -1.5 main: -2.5 / -3.5 are YES on WSU, +0.5 / +1.5 are NO on Duquesne-covers markets.
+  const kalshiContracts = {
+    "Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU3": { lineKey: "a", mainKey: row.key, points: -2.5, sideIndex: 1 },
+    "Y-KXNCAAFSPREAD-26SEP19DUQWSU-WSU4": { lineKey: "b", mainKey: row.key, points: -3.5, sideIndex: 1 },
+    "N-KXNCAAFSPREAD-26SEP19DUQWSU-DUQ1": { lineKey: "c", mainKey: row.key, points: 0.5, sideIndex: 1 },
+    "N-KXNCAAFSPREAD-26SEP19DUQWSU-DUQ2": { lineKey: "d", mainKey: row.key, points: 1.5, sideIndex: 1 },
+  };
+  assert.deepEqual(taker.contractFromRungs({ ...row, points: -1.5, venueIds: { ...row.venueIds, kalshiContracts } }),
+    { ticker: "KXNCAAFSPREAD-26SEP19DUQWSU-WSU2", side: "yes", sourceKey: null, derived: true });
+});
+
+test("a derived main-number ticker must still pass Kalshi's market check", () => {
+  const state = boardWithEdge(UNDER_MAIN_KEY, 0.05);
+  const row = rowOf(state, UNDER_MAIN_KEY);
+  const contract = taker.resolveKalshiContract(row, state);
+  const market = { status: "active", ticker: contract.ticker, floor_strike: 52.5 };
+  assert.equal(taker.marketMismatch(market, row, contract), null);
+  assert.match(taker.marketMismatch({ ...market, floor_strike: 53.5 }, row, contract), /floor_strike/);
+});
+
 test("a full-game moneyline's ticker is derived from the spread rungs' team codes", () => {
   const state = boardWithEdge(ML_WSU_KEY, 0.05, { price: -400 });
   const row = rowOf(state, ML_WSU_KEY);
@@ -93,7 +156,7 @@ test("orderbook: the ask is 1 - the best opposite bid; legacy cents parse too", 
   assert.deepEqual(taker.quoteOf(legacy, "no"), { ask: 0.6, depth: 10 });
 });
 
-test("at Unabated's own price, best at the number, a 5% edge bets quarter Kelly of $500 in contracts", () => {
+test("at Unabated's own price, best at the number, a 5% edge bets quarter Kelly of $2,000 in contracts", () => {
   // Prophet Exchange and Novig sit at the same number at worse or no price; none is better than -143.
   const state = boardWithEdge(WSU_ALT_KEY, 0.05);
   for (const key of Object.keys(state.lines)) {
@@ -104,8 +167,9 @@ test("at Unabated's own price, best at the number, a 5% edge bets quarter Kelly 
   assert.equal(decision.liveAsk, 0.57);
   // At Unabated's own all-in the live edge is Unabated's edge (the fair is read off its cheaper price).
   assert.ok(Math.abs(decision.liveEdge - 0.05) < 0.0005, String(decision.liveEdge));
-  assert.ok(decision.stake > 0 && decision.stake <= taker.BOT_BANKROLL * taker.BOT_KELLY);
-  assert.equal(decision.contracts, Math.floor(decision.stake / decision.liveAllIn));
+  // Quarter Kelly of $2,000 at a 5% edge on -143: $35.56, bought as 60 contracts at the 0.5872 all-in.
+  assert.equal(Math.round(decision.stake * 100) / 100, 35.56);
+  assert.deepEqual({ contracts: decision.contracts, cost: decision.cost, liveAllIn: decision.liveAllIn }, { contracts: 60, cost: 35.2294, liveAllIn: 0.5872 });
 });
 
 test("depth cuts the contracts; none resting at the ask is no_book", () => {
@@ -271,12 +335,25 @@ test("a held bet on the row's axis the sizing math could not price refuses the s
   // The same line held: conditional Kelly sizes it (here to nothing more), no refusal.
   const sameLine = decideHolding(WSU_ALT_KEY, [heldKalshi("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "home", "spread", -35.5)]);
   assert.equal(sameLine.reason, "size_zero", sameLine.detail);
+  // A smaller same-line holding leaves room: $20 at -133 held, the bot adds $15.04. At the old $500
+  // bankroll this sized to $0 too, which is why the bot never bet a game Cal already held.
+  const topUp = decideHolding(WSU_ALT_KEY, [{ ...heldKalshi("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "home", "spread", -35.5), stake: 20, toWin: 15, contracts: 35, price: -133 }]);
+  assert.deepEqual({ reason: topUp.reason, stake: topUp.stake, contracts: topUp.contracts, cost: topUp.cost }, { reason: "bet", stake: 15.04, contracts: 25, cost: 14.6789 });
 });
 
-test("the other side of the market held is never sold: size_declined", () => {
-  const decision = decideHolding(WSU_ALT_KEY, [heldKalshi("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "away", "spread", 35.5, "no")]);
-  assert.equal(decision.reason, "size_declined");
-  assert.match(decision.detail, /the NO side of KXNCAAFSPREAD-26SEP19DUQWSU-WSU36 is held: buying YES would sell it/);
+test("the other side of the market held is never bet against, in either account: size_declined", () => {
+  const ticker = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36";
+  const primary = decideHolding(WSU_ALT_KEY, [heldKalshi(ticker, "away", "spread", 35.5, "no")]);
+  assert.equal(primary.reason, "size_declined");
+  assert.match(primary.detail, /the NO side of KXNCAAFSPREAD-26SEP19DUQWSU-WSU36 is held in the primary account: the bot never takes the other side/);
+  // The bot's own subaccount: the id carries :s<N> (bets_service/sources/kalshi.py record_id_of).
+  const botHeld = { ...heldKalshi(ticker, "away", "spread", 35.5, "no"), id: `kalshi:${ticker}:no:s1` };
+  const bot = decideHolding(WSU_ALT_KEY, [botHeld]);
+  assert.equal(bot.reason, "size_declined");
+  assert.match(bot.detail, /is held in the bot's subaccount/);
+  // A longer ticker sharing the prefix is another market, not the other side.
+  assert.equal(taker.heldOtherSide([{ bet: { id: `kalshi:${ticker}:nox`, status: "open" } }], { ticker, side: "yes" }), null);
+  assert.equal(taker.heldOtherSide([{ bet: { id: `kalshi:${ticker}:no:s1`, status: "lost" } }], { ticker, side: "yes" }), null);
 });
 
 test("every bot order id starts ubot- and is fixed per ticker, side and pass", () => {
@@ -285,4 +362,67 @@ test("every bot order id starts ubot- and is fixed per ticker, side and pass", (
   assert.equal(taker.clientOrderIdOf("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 1000), id);
   assert.notEqual(taker.clientOrderIdOf("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "yes", 31000), id);
   assert.notEqual(taker.clientOrderIdOf("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "no", 1000), id);
+});
+
+// ---- Kalshi's own start for a game (second clock beside Unabated's eventStart) ----
+const CLMB_EVENT = "KXNCAAFSPREAD-26OCT16CLMBPENN";
+
+test("kalshiStartMsOf: the earliest zoned start_date among milestones naming the event", () => {
+  const body = { milestones: [
+    { start_date: "2026-10-17T00:30:00Z", related_event_tickers: [CLMB_EVENT] },
+    { start_date: "2026-10-16T23:00:00Z", primary_event_tickers: [CLMB_EVENT] },
+    { start_date: "2026-10-16T20:00:00Z", related_event_tickers: ["KXNCAAFSPREAD-26OCT16OTHER"] },
+    { start_date: "2026-10-16T21:00:00", related_event_tickers: [CLMB_EVENT] },
+    { start_date: "not a time", related_event_tickers: [CLMB_EVENT] },
+    null,
+  ] };
+  assert.equal(taker.kalshiStartMsOf(body, CLMB_EVENT), Date.parse("2026-10-16T23:00:00Z"));
+  assert.equal(taker.kalshiStartMsOf({ milestones: [] }, CLMB_EVENT), null);
+  assert.equal(taker.kalshiStartMsOf({}, CLMB_EVENT), null);
+  assert.equal(taker.kalshiStartMsOf(null, CLMB_EVENT), null);
+});
+
+test("earliestStartMs: the earlier clock wins; Unabated's alone when Kalshi has none", () => {
+  const unabated = Date.parse("2026-10-17T00:30:00Z");
+  const kalshi = Date.parse("2026-10-16T23:00:00Z");
+  assert.equal(taker.earliestStartMs(unabated, kalshi), kalshi);
+  assert.equal(taker.earliestStartMs(kalshi, unabated), kalshi);
+  assert.equal(taker.earliestStartMs(unabated, null), unabated);
+  assert.equal(taker.earliestStartMs(NaN, null), null);
+});
+
+test("eventTickerOf: Kalshi's event_ticker, else the ticker less its last part", () => {
+  assert.equal(taker.eventTickerOf({ event_ticker: CLMB_EVENT }, "X-Y-Z"), CLMB_EVENT);
+  assert.equal(taker.eventTickerOf({}, `${CLMB_EVENT}-CLMB6`), CLMB_EVENT);
+  assert.equal(taker.eventTickerOf(null, "NODASH"), null);
+});
+
+// ---- moneylines Kalshi's market list finds (the Ticket's Place only) ----------
+test("a moneyline's Kalshi event is the game series at the event every spread and total rung shares; a half refuses", () => {
+  const state = boardWithEdge(ML_WSU_KEY, 0.05);
+  const row = feed.describeLine(state.lines[ML_WSU_KEY], state);
+  assert.deepEqual(taker.kalshiMoneylineEventOf(row), { eventTicker: "KXNCAAFGAME-26SEP19DUQWSU" });
+  assert.match(taker.kalshiMoneylineEventOf({ ...row, periodTypeId: 2, period: "1H" }).detail, /only full-game moneylines place/);
+  assert.match(taker.kalshiMoneylineEventOf({ ...row, venueIds: { kalshiContracts: {} } }).detail, /no Kalshi spread or total rung/);
+  // A rung of another series is skipped, not a refusal.
+  const withQuarter = { ...row.venueIds.kalshiContracts, "Y-KXNCAAF1QTOTAL-26SEP19DUQWSU-14": {} };
+  assert.deepEqual(taker.kalshiMoneylineEventOf({ ...row, venueIds: { kalshiContracts: withQuarter } }), { eventTicker: "KXNCAAFGAME-26SEP19DUQWSU" });
+  const twoEvents = { ...row.venueIds.kalshiContracts, "Y-KXNCAAFTOTAL-26SEP26DUQWSU-52": {} };
+  assert.match(taker.kalshiMoneylineEventOf({ ...row, venueIds: { kalshiContracts: twoEvents } }).detail, /2 events/);
+});
+
+test("a moneyline's Kalshi market is the one of two on its event whose title names the row's team", () => {
+  const state = boardWithEdge(ML_WSU_KEY, 0.05);
+  const row = feed.describeLine(state.lines[ML_WSU_KEY], state);
+  const event = "KXNCAAFGAME-26SEP19DUQWSU";
+  const wsu = { ticker: `${event}-WSU`, event_ticker: event, yes_sub_title: "Washington St." };
+  const duq = { ticker: `${event}-DUQ`, event_ticker: event, yes_sub_title: "Duquesne" };
+  assert.deepEqual(taker.kalshiMoneylineFromMarkets(row, [duq, wsu], event), { ticker: `${event}-WSU`, side: "yes", sourceKey: null, derived: true });
+  assert.equal(taker.kalshiMoneylineFromMarkets({ ...row, sideIndex: 0 }, [duq, wsu], event).ticker, `${event}-DUQ`);
+  const tie = { ticker: `${event}-TIE`, event_ticker: event, yes_sub_title: "Tie" };
+  assert.match(taker.kalshiMoneylineFromMarkets(row, [duq, wsu, tie], event).detail, /lists 3 markets/);
+  assert.match(taker.kalshiMoneylineFromMarkets(row, [], event).detail, /lists 0 markets/);
+  assert.match(taker.kalshiMoneylineFromMarkets(row, [duq, { ...wsu, yes_sub_title: "Somebody" }], event).detail, /do not name/);
+  // A market of another event in the list is not counted.
+  assert.equal(taker.kalshiMoneylineFromMarkets(row, [duq, wsu, { ...wsu, event_ticker: "KXNCAAFGAME-X" }], event).ticker, `${event}-WSU`);
 });

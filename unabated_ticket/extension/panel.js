@@ -36,6 +36,7 @@
   "use strict";
 
   const kelly = globalThis.UnabatedKelly;
+  const venuePlace = globalThis.UnabatedPlace;
   const feed = globalThis.UnabatedFeed;
   const betsLib = globalThis.UnabatedBets;
   const betsView = globalThis.UnabatedBetsView;
@@ -64,9 +65,6 @@
   // page.js republishes the books filter every 10s while an Unabated tab is open.
   const BOOKS_FILTER_STALE_MS = 6 * 60 * 60 * 1000;
   const MAX_EDGE_ROWS = edgeRows.MAX_EDGE_ROWS;
-  // Open bets never net against a live line: conditional Kelly needs a live
-  // fair ladder, which the screen does not expose (plan 2026-09-27, § Sizing).
-  const LIVE_NOT_SIZED_NOTE = "live · not sized";
 
   const el = (id) => document.getElementById(id);
   const view = {
@@ -77,7 +75,8 @@
     othersTile: el("others-tile"), othersHead: el("others-head"), othersSub: el("others-sub"),
     othersBlock: el("others-block"), othersLabel: el("others-label"), others: el("others"),
     relatedBlock: el("related-block"), relatedCount: el("related-count"), relatedTable: el("related-table"),
-    stake: el("stake"), contracts: el("contracts"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), stakeUncapped: el("stake-uncapped"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
+    stake: el("stake"), contracts: el("contracts"), fullKelly: el("full-kelly"), stakeExposure: el("stake-exposure"), stakeUncapped: el("stake-uncapped"),
+    venuePlace: el("venue-place"), venuePlaceStake: el("venue-place-stake"), venuePlaceButtons: el("venue-place-buttons"), venuePlaceMsg: el("venue-place-msg"), payoutRow: el("payout-row"), profit: el("profit"), payout: el("payout"),
     errorTitle: el("error-title"), errorDetail: el("error-detail"), errorHint: el("error-hint"),
     bankroll: el("bankroll"), multiplier: el("multiplier"), settingsError: el("settings-error"),
     pageStatus: el("page-status"),
@@ -547,6 +546,7 @@
     view.startLine.textContent = matchup && start ? `\u00b7 ${start}` : start;
     const betFlag = ticketBetFlag(ticket, line);
     renderRelatedBets(betFlag);
+    const liveBlock = liveTicketBlock(ticket, betFlag.advice);
 
     const bookLine = asBookLine(line.price, line.sourceFormat, line.sourcePrice);
     view.book.textContent = ticket.book.name;
@@ -556,10 +556,10 @@
 
     view.stake.classList.remove("no-edge");
     view.payoutRow.hidden = true;
-    if (!result) {
+    if (!result || liveBlock) {
       view.stake.textContent = "—";
       view.stake.classList.add("no-edge");
-      view.fullKelly.textContent = `Cannot size: ${reason}`;
+      view.fullKelly.textContent = `Cannot size: ${liveBlock || reason}`;
     } else if (result.stake <= 0) {
       view.stake.textContent = fmtDollars(0);
       view.stake.classList.add("no-edge");
@@ -570,16 +570,16 @@
     }
     // Sets view.stake to the number to act on when held bets changed it.
     const advice = betFlag.advice;
-    renderStakeExposure(advice);
+    renderStakeExposure(advice, liveBlock);
     // With unlimited liquidity: the reported number is sometimes wrong.
-    const uncapped = betsView.uncappedLine(advice, { price: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice, bookName: ticket.book.name });
+    const uncapped = liveBlock ? null : betsView.uncappedLine(advice, { price: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice, bookName: ticket.book.name });
     view.stakeUncapped.hidden = uncapped == null;
     view.stakeUncapped.textContent = uncapped || "";
 
     // Payout = stake x decimal odds at the book's American price; "to win" is
     // the profit on top of it. Both describe the number shown above them, so a
     // top-up prices the top-up and an at-size line shows no payout at all.
-    const acted = result ? betsView.suggestedBetAmount(advice) : null;
+    const acted = result && !liveBlock ? betsView.suggestedBetAmount(advice) : null;
     if (acted != null && acted > 0) {
       const payout = acted * kelly.americanToDecimal(line.price);
       view.profit.textContent = fmtDollars(payout - acted);
@@ -587,8 +587,150 @@
       view.payoutRow.hidden = false;
     }
     renderContracts(acted, line, ticket.book.name);
+    renderPlace(ticket, line, acted);
 
     show("ticket");
+  }
+
+  // ---- Place on Kalshi or Novig (place.js) --------------------------------
+  // The Ticket's own Place button: one order per second click, sent by the
+  // bets service on Place's own key at that venue (POST /place_kalshi.json or
+  // /place_novig.json). Its state
+  // lives across re-renders and belongs to one capture: a new ticket starts
+  // it over. {ticketAt, phase: null | "confirm" | "placing" | "done",
+  // armedAt, message, tone, edited (Cal typed in the box)}.
+  let placeState = { ticketAt: null, phase: null, armedAt: 0, message: null, tone: null, edited: false };
+
+  // The line as the Ticket prices it, in the request's fields.
+  function venuePlaceLine(ticket, line) {
+    return {
+      bookId: ticket.book.id, live: ticket.live || null, eventId: ticket.eventId, periodTypeId: ticket.watch ? ticket.watch.periodTypeId : null,
+      betTypeId: ticket.watch ? ticket.watch.betTypeId : null, sideIndex: ticket.sideIndex, points: line.points ?? null,
+      price: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice,
+    };
+  }
+
+  function renderPlace(ticket, line, acted) {
+    const placeLine = venuePlaceLine(ticket, line);
+    view.venuePlace.hidden = !venuePlace.canPlace(placeLine);
+    if (view.venuePlace.hidden) return;
+    if (placeState.ticketAt !== ticket.capturedAt) {
+      placeState = { ticketAt: ticket.capturedAt, phase: null, armedAt: 0, message: null, tone: null, edited: false };
+    }
+    // The box follows the stake until Cal types in it.
+    // ...and holds still once Place is pressed: what the confirm names is what is sent.
+    const settled = placeState.phase === "confirm" || placeState.phase === "placing";
+    if (!placeState.edited && !settled && document.activeElement !== view.venuePlaceStake) {
+      view.venuePlaceStake.value = venuePlace.stakeText(acted);
+    }
+    renderPlaceControls();
+  }
+
+  function renderPlaceControls() {
+    const { phase, message, tone } = placeState;
+    view.venuePlaceMsg.hidden = !message;
+    view.venuePlaceMsg.className = `tk-place-msg ${tone || ""}`;
+    view.venuePlaceMsg.textContent = message || "";
+    view.venuePlaceStake.disabled = phase === "confirm" || phase === "placing";
+    const button = (className, text, action) => {
+      const element = makeEl("button", className, text);
+      element.type = "button";
+      element.dataset.venuePlace = action;
+      return element;
+    };
+    if (phase === "confirm") {
+      const stake = venuePlace.parseStake(view.venuePlaceStake.value);
+      view.venuePlaceButtons.replaceChildren(button("btn sm", "Cancel", "cancel"),
+        button("btn sm primary", `Bet ${fmtDollars(stake)} at ${placeVenueName()}`, "confirm"));
+    } else if (phase === "placing") {
+      const waiting = button("btn sm", "Placing\u2026", "none");
+      waiting.disabled = true;
+      view.venuePlaceButtons.replaceChildren(waiting);
+    } else {
+      view.venuePlaceButtons.replaceChildren(button("btn sm", "Place", "arm"));
+    }
+  }
+
+  view.venuePlaceStake.addEventListener("input", () => {
+    placeState.edited = true;
+  });
+
+  view.venuePlaceButtons.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-venue-place]");
+    if (!button) return;
+    const action = button.dataset.venuePlace;
+    if (action === "arm") {
+      if (venuePlace.parseStake(view.venuePlaceStake.value) == null) {
+        Object.assign(placeState, { message: "Type an amount in dollars first.", tone: "refused" });
+        renderPlaceControls();
+        return;
+      }
+      const armedAt = Date.now();
+      Object.assign(placeState, { phase: "confirm", armedAt, message: null, tone: null });
+      setTimeout(() => {
+        if (placeState.phase === "confirm" && placeState.armedAt === armedAt) {
+          placeState.phase = null;
+          renderPlaceControls();
+        }
+      }, TEASER_CONFIRM_MS);
+      renderPlaceControls();
+      return;
+    }
+    if (action === "cancel") {
+      placeState.phase = null;
+      renderPlaceControls();
+      return;
+    }
+    if (action !== "confirm" || placeState.phase !== "confirm") return;
+    // The second click of a double-click lands where Place was: not a decision.
+    if (event.detail > 1 || Date.now() - placeState.armedAt < TEASER_CONFIRM_MIN_MS) return;
+    placeOnVenue().catch((error) => console.error("[unabated-ticket] place failed", error));
+  });
+
+  // The open Ticket's venue in words ("Kalshi", "Novig").
+  function placeVenueName() {
+    const venue = state.ticket ? venuePlace.venueOf(state.ticket.book.id) : null;
+    return venue ? venue.name : "the venue";
+  }
+
+  // The bets payload's read times by venue: what the Ticket's stake counted.
+  function placeReadAts() {
+    const payload = state.betsService && state.betsService.payload;
+    return venuePlace.readAtsOf(payload && payload.sources ? payload.sources : {});
+  }
+
+  // POST the Ticket's order to the bets service. An HTTP error is the service
+  // refusing before the venue; no answer at all may still have reached it.
+  async function placeOnVenue() {
+    const ticket = state.ticket;
+    const ticketAt = placeState.ticketAt;
+    const venueName = placeVenueName();
+    const request = ticket ? venuePlace.placeRequestOf({
+      line: venuePlaceLine(ticket, pricedLine(ticket)), stakeInput: view.venuePlaceStake.value,
+      readAts: placeReadAts(), clickId: crypto.randomUUID(),
+    }) : { error: "the Ticket is gone" };
+    if (request.error) {
+      Object.assign(placeState, { phase: null, message: `Not placed: ${request.error}.`, tone: "refused" });
+      renderPlaceControls();
+      return;
+    }
+    Object.assign(placeState, { phase: "placing", message: `Placing at ${venueName}\u2026`, tone: "wait" });
+    renderPlaceControls();
+    let next;
+    try {
+      const reply = await serviceRequest("POST", request.path, request.body);
+      next = { message: reply.message, tone: venuePlace.replyTone(reply.status) };
+    } catch (error) {
+      // A 4xx is the service refusing before the venue; a 5xx (a gateway losing the service mid-send) may have placed.
+      next = error.status >= 400 && error.status < 500
+        ? { message: `Not placed: ${error.message}`, tone: "refused" }
+        : { message: `No answer from the bets service (${error.message}). Check ${venueName} before placing again.`, tone: "warn" };
+    }
+    // A new capture meanwhile owns the box now; this answer belonged to the old one.
+    if (placeState.ticketAt !== ticketAt) return;
+    Object.assign(placeState, { phase: "done", ...next });
+    renderPlaceControls();
+    if (next.tone === "ok") pollBets().catch((error) => console.error("[unabated-ticket] bets poll failed", error));
   }
 
   function smallEl(text) {
@@ -715,8 +857,8 @@
     }
     const eventStartMs = ticket.eventStart ? Date.parse(ticket.eventStart.endsWith("Z") ? ticket.eventStart : `${ticket.eventStart}Z`) : NaN;
     if (pricecheck.canSkip(check) && Number.isFinite(eventStartMs)) {
-      const skipKey = pricecheck.skipKeyOf(spec, ticket.book.id);
-      const skipped = liveEdgeSkips(Date.now())[skipKey] != null;
+      const skipKey = pricecheck.skipKeyOf(spec);
+      const skipped = pricecheck.skipsByLine(liveEdgeSkips(Date.now()))[skipKey] != null;
       const actions = document.createElement("div");
       actions.className = "others-actions";
       actions.append(skipChipEl(skipKey, eventStartMs, skipped, "Skip this bet"));
@@ -761,16 +903,19 @@
     // The ticket's event's venue id map lets an id-joined bet whose team
     // names do not resolve be placed on a side (bets.sideIndexByVenueId).
     const event = scannerState && ticket.eventId != null ? scannerState.events[ticket.eventId] : null;
-    const matchLine = { ...betsView.ticketAsLine(ticket), points: line.points ?? ticket.points ?? null, venueIds: event ? event.venueIds ?? null : null };
+    // A live capture names the periods the game has finished, as a live row does.
+    const liveFields = ticket.live ? { settledPeriods: live.settledPeriods(ticket.live.eventPeriodTypeId) } : null;
+    const matchLine = { ...betsView.ticketAsLine(ticket), points: line.points ?? ticket.points ?? null, venueIds: event ? event.venueIds ?? null : null, live: liveFields };
     const { matches } = betsLib.matchBets(matchLine, state.betRecords, { lines: boardLines() });
     // Liquidity is for one price, like the edge: only the feed's copy of the
     // line at the price being sized caps the stake, as it does on the Edges row.
     const feedCopy = feedLineFor(ticket, line.points);
     const liquidity = feedCopy && feedCopy.price === line.price ? feedCopy.liquidity : null;
+    const ladderOf = ticket.live ? liveLadderReaders(Date.now())(ticket.eventId) : ladderReader(ticket.eventId);
     const advice = betsView.stakeAdvice({
       line: matchLine, price: line.price, edgePct: line.edgePct,
       bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
-      matches, ladderOf: ladderReader(ticket.eventId), liquidity, teasers: openTeasersNow(),
+      matches, ladderOf, liquidity, teasers: openTeasersNow(),
     });
     return { tier: matches.length ? matches[0].tier : null, matches: advice.matches, advice };
   }
@@ -845,11 +990,26 @@
     return div;
   }
 
+  // Why a live ticket shows no stake, or null: the game's in-game fair is
+  // gone (the break ended, or the live tab stopped posting) or is a newer one
+  // than the ticket's, or the open bets on the game could not be sized against. The standalone number would
+  // ignore them, and that is the number live sizing exists to replace.
+  function liveTicketBlock(ticket, advice) {
+    if (!ticket.live) return null;
+    const now = Date.now();
+    if (!live.hasReadyFair(livePayloads(), ticket.eventId, now)) return "no live fair for this game now (the break ended, or the Unabated live tab stopped reading)";
+    // The ticket's edge is the fair it was captured at; the ladder is the screen's current one. Two fairs size nothing.
+    if (!live.hasReadyFair(livePayloads(), ticket.eventId, now, ticket.live.producedUtc)) return "the in-game fair was set again since this ticket was captured (click the price again)";
+    if (advice.kind === "declined") return `the open bets on this game could not be sized against (${advice.reason})`;
+    return null;
+  }
+
   // Under the stake, the same pieces as the Edges rail: the position in
   // dollars, the number to act on (the big figure, its label says "Bet" or
   // "Add to your position"), that liquidity capped it, and what the stake
-  // would be alone.
-  function renderStakeExposure(advice) {
+  // would be alone. `liveBlock` (liveTicketBlock) keeps the dash on a live
+  // ticket that cannot be sized: the position still shows, the number not.
+  function renderStakeExposure(advice, liveBlock) {
     const words = betsView.stakeAdviceWords(advice);
     const teasers = advice.teasers || { held: 0, against: 0 };
     const position = [
@@ -864,12 +1024,12 @@
     view.stakeExposure.classList.toggle("against", onlyAgainst);
     view.stakeExposure.hidden = position.length === 0;
     view.stakeExposure.textContent = position.join(" \u00b7 ");
-    view.stakeLabel.textContent = !words ? "Bet"
+    view.stakeLabel.textContent = liveBlock || !words ? "Bet"
       : advice.bet === 0 && advice.cappedAt === 0 ? "Nothing resting at this price"
         : advice.bet === 0 ? "Already at full size"
           : words.verb === "add" ? "Add to your position" : "Bet";
     // The stake shown is the number to act on, not the standalone size.
-    if (words) view.stake.textContent = fmtDollars(advice.bet);
+    if (words && !liveBlock) view.stake.textContent = fmtDollars(advice.bet);
   }
 
   // Two kinds of capture error need opposite advice: no_fair is Unabated
@@ -1230,31 +1390,25 @@
     return Object.values(liveStore);
   }
 
-  // Held bets on the game show on a live row, but none is netted: the stake
-  // is the line's own quarter-Kelly (LIVE_NOT_SIZED_NOTE says why).
-  function withLiveBetFlags(rows) {
-    let flags = null;
-    try {
-      flags = betsLib.annotateRows(rows, state.betRecords, { lines: boardLines() });
-    } catch (error) {
-      console.info("[unabated-ticket] live bet flags skipped:", error.message);
-    }
-    return rows.map((row, index) => {
-      const flag = flags ? flags[index] : { tier: null, matches: [] };
-      const advice = betsView.stakeAdvice({
-        line: row, price: row.price, edgePct: row.edgePct,
-        bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
-        matches: [], ladderOf: null, liquidity: row.liquidity,
-      });
-      const matches = (flag.matches || []).map((match) => ({ ...match, inMath: false, note: LIVE_NOT_SIZED_NOTE }));
-      return { ...row, bet: { tier: flag.tier, matches, advice } };
-    });
+  // eventId -> (period, axis) -> the in-game fair ladder the screen shows
+  // now. Bounded: it has only the numbers on screen, so a held bet at one it
+  // lacks is sized at the worst case its neighbours allow (betsview.js).
+  function liveLadderReaders(now) {
+    return edgeRows.createLadderReaders(live.liveFairState(livePayloads(), now), { bounded: true });
+  }
+
+  // Sized like an Edges row, against every open bet on the game, pregame or
+  // live, on the in-game fair ladder: the pregame one is a game that no
+  // longer exists.
+  function withLiveBetFlags(rows, now) {
+    return edgeRows.withBetFlags(rows, { ...betFlagContext(), ladderReaderOf: liveLadderReaders(now) });
   }
 
   function liveRowsAt(minEdgePct) {
-    const options = { ...edgeSelectionOptions(effectiveFilter()), minEdgePct, now: Date.now() };
+    const now = Date.now();
+    const options = { ...edgeSelectionOptions(effectiveFilter()), minEdgePct, now };
     const selected = live.selectLiveEdges(livePayloads(), options).map((row) => ({ ...row, stake: stakeFor(row) }));
-    return withLiveBetFlags(selected);
+    return withLiveBetFlags(selected, now);
   }
 
   function currentLiveRows() {
@@ -1281,7 +1435,9 @@
     const games = ready.map((game) => `${game.matchup} · ${game.checkpoint}`).join("; ");
     const fairAge = newestFairMs ? ` · fair set ${fmtAgoShort(Date.now() - newestFairMs)} ago` : "";
     const none = rows.length ? "" : ` · nothing at ${state.edgeSettings.minEdgePct}% or more`;
-    return `${games}${fairAge}${none}`;
+    const syncText = betsView.liveSyncText(betsPayload(), Date.now());
+    const sync = syncText ? ` · ${syncText}` : "";
+    return `${games}${fairAge}${none}${sync}`;
   }
 
   // Rendered on every Edges render and once a second while a live game is on
@@ -1440,7 +1596,7 @@
     line.className = "edge-pricecheck";
     line.append(tagEl);
     if (pricecheck.canSkip(row.priceCheck)) {
-      line.append(skipChipEl(pricecheck.skipKeyOf(row, row.book.id), row.eventStartMs, skipped, "Skip"));
+      line.append(skipChipEl(pricecheck.skipKeyOf(row), row.eventStartMs, skipped, "Skip"));
     }
     if (!open) return [line];
     return [line, otherBooksListEl(row.priceCheck, row.book.name, row.price)];
@@ -1892,12 +2048,17 @@
   async function notifyEdge(row, summary) {
     const notificationId = `edge:${row.key}:${Date.now()}`;
     await rememberAlertTarget(notificationId, row);
-    const stake = row.stake ?? stakeFor(row);
+    // A live row's alert carries the rail's number, sized against the open
+    // bets on the game, and none when the row shows none: the standalone
+    // stake is what live sizing replaces. A pregame alert keeps it, as before.
+    const liveRail = row.live && row.bet ? edgeRows.stakeRail(row) : null;
+    const stake = row.live ? null : row.stake ?? stakeFor(row);
     const message = [
       `${fmtPct(row.edgePct / 100)} edge`,
       // Why it grew (#132): a re-fire on a better edge says which improvement it was.
       moveWords(row),
       stake == null ? null : `stake ${fmtDollars(stake)}`,
+      liveRail && liveRail.text !== "\u2014" ? liveRail.text : null,
       summary,
       describeMatchup(row),
       row.live ? null : fmtUntil(row.eventStartMs),
@@ -3222,8 +3383,11 @@
   async function setEdgeSkipped(skipKey, eventStartMs, skipped) {
     const before = edgeSkips;
     const next = { ...edgeSkips };
+    // Restore lifts the line at every book, an old per-book key included.
+    for (const key of Object.keys(next)) {
+      if (pricecheck.skipLineOf(key) === skipKey) delete next[key];
+    }
     if (skipped) next[skipKey] = eventStartMs;
-    else delete next[skipKey];
     edgeSkips = next;
     chrome.storage.local.set({ edgeSkips });
     renderEdges();
@@ -3705,6 +3869,8 @@
         else delete liveStore[league];
       }
       renderLive();
+      // A live ticket's stake rests on this payload: its fair, its ladder, its game still being at a break.
+      if (state.ticket && state.ticket.live && !state.error) renderTicket();
       processAlerts().catch((error) => console.error("[unabated-ticket] alerts failed", error));
     }
     if ("locateResult" in changes) {
@@ -3761,9 +3927,12 @@
   }, 5000);
 
   // The Live block's clock: staleness and "fair set 0:38 ago" move without a
-  // new payload. Idle (no DOM work) unless a live game is on a screen.
+  // new payload. Idle (no DOM work) unless a live game is on a screen. A live
+  // ticket follows the same clock: its payload drops after 2 min without a
+  // post, and with it the stake.
   setInterval(() => {
     if (state.activeTab === "edges" && livePayloads().length) renderLive();
+    if (state.activeTab === "ticket" && state.ticket && state.ticket.live && !state.error) renderTicket();
   }, 1000);
 
   load().catch((error) => {
