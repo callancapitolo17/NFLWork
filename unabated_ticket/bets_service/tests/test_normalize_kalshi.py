@@ -335,3 +335,14 @@ def test_a_flat_position_holds_nothing_at_settlement():
             fill("P", "yes", 223, 0.01, "2026-09-02T10:00:00Z", action="sell")]
     net = net_position_pnl(flat, "no")
     assert (net["heldContracts"], net["heldCost"]) == (0, 0)
+
+
+def test_a_settled_close_out_with_buys_stays_closed():
+    """A YES bought and sold back as a `yes` sell (the fixture's Crosby fills)
+    reads as a hold to `side` alone; with a buy on the ticker it is not regraded."""
+    fills = [fill("X", "yes", 10, 0.60, "2026-10-16T10:00:00Z"),
+             fill("X", "yes", 10, 0.74, "2026-10-16T11:00:00Z", action="sell")]
+    markets = {"X": {"event_ticker": "X-EVENT", "result": "yes"}}
+    records = normalize_kalshi(fills, [], markets, {}, None)
+    [entry] = apply_net_position_pnl(records, fills, markets, [])
+    assert (entry["status"], entry["contracts"], entry["stake"]) == ("closed", 0, 0)

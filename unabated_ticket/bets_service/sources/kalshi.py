@@ -363,7 +363,7 @@ def net_position_pnl(fills: list[dict], market_result: str | None) -> dict:
             "heldContracts": held_contracts, "heldCost": held_cost}
 
 
-def grade_settled_hold(entry: dict, net: dict, market: dict | None) -> None:
+def grade_settled_hold(entry: dict, net: dict, market: dict | None, ticker_fills: list[dict]) -> None:
     """A record normalize_kalshi called "closed" although its position was
     still held when the market settled gets the hold's size, cost and result.
     Once a market settles, Kalshi drops it from the unsettled positions, so
@@ -372,8 +372,16 @@ def grade_settled_hold(entry: dict, net: dict, market: dict | None) -> None:
     one `no` sell fill, no buys, market result `no`); aggregate_fills then
     counts it as a sale of nothing and the record read closed with 0 contracts
     and a $0 stake. net_position_pnl, which goes by `side` alone, already
-    priced it as the NO hold it was. Mutates `entry`."""
+    priced it as the NO hold it was. Mutates `entry`.
+
+    Only a ticker with no buy fills at all is regraded: nothing can be closed
+    out without first being bought, so its sells were the opening trades. A
+    ticker with buys may hold a real close-out labelled a sell of the held
+    side (the fixture's KXNEXTTEAMNFL-26MCROSBY-LV `yes` sells), which
+    `side` alone would misread as a hold."""
     if entry.get("status") != "closed" or net["heldContracts"] < FLAT_POSITION_EPSILON:
+        return
+    if any(fill.get("action") != "sell" for fill in ticker_fills):
         return
     held_side = "yes" if net["positionYes"] > 0 else "no"
     if held_side != entry["raw"]["contractSide"]:
@@ -421,7 +429,7 @@ def apply_net_position_pnl(records: list[dict], fills: list[dict], markets: dict
         entry = records_by_id[entry_id]
         entry["pnl"] = round_cents(net["realized"] - net["fees"]) if net["final"] else None
         entry["fees"] = round_cents(net["fees"])
-        grade_settled_hold(entry, net, market)
+        grade_settled_hold(entry, net, market, ticker_fills)
         other = records_by_id.get(other_id)
         if other is not None:
             other.update({"status": "closed", "mergedInto": entry_id, "pnl": None, "fees": 0})

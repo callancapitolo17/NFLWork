@@ -2919,7 +2919,8 @@ Kelly and the desk's `heldIds` see `kalshi:<ticker>:no:s<N>`. Once the market
 settles it leaves the unsettled positions, so a record still read as closed
 while its net position was held at settlement (a NO buy Kalshi labelled a NO
 sell, 2026-10-16) is graded off that hold: its contracts, stake and
-won/lost (`sources/kalshi.py::grade_settled_hold`).
+won/lost (`sources/kalshi.py::grade_settled_hold`). Only a market with no
+buy fills is regraded, so a real close-out is never read as a hold.
 
 - `GET :8095/taker.json`: the desk state, the rules, the last pass (counts by
   reason, per-league ticker coverage) and every decision with its `order`.
