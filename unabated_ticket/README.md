@@ -2915,7 +2915,11 @@ The bets service's Kalshi source reads the bot's NO fills on the YES leg
 (v2 trades YES only): a YES sell while the subaccount is net short YES is
 recorded as the NO buy it is (`sources/kalshi.py::fill_on_its_open_side`, in
 the records and in the net-position P&L alike), so the held bets, conditional
-Kelly and the desk's `heldIds` see `kalshi:<ticker>:no:s<N>`.
+Kelly and the desk's `heldIds` see `kalshi:<ticker>:no:s<N>`. Once the market
+settles it leaves the unsettled positions, so a record still read as closed
+while its net position was held at settlement (a NO buy Kalshi labelled a NO
+sell, 2026-10-16) is graded off that hold: its contracts, stake and
+won/lost (`sources/kalshi.py::grade_settled_hold`).
 
 - `GET :8095/taker.json`: the desk state, the rules, the last pass (counts by
   reason, per-league ticker coverage) and every decision with its `order`.
