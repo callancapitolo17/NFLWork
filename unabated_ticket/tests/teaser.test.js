@@ -746,7 +746,7 @@ test("heldStraights: each open straight on a football game placed on its market,
   assert.equal(byId.get("novig:no-stake").reason, "no stake on the record");
 });
 
-test("a straight on a leg's own side puts fewer tickets on that leg; one on the other side, more", () => {
+test("a straight on a leg's own side puts fewer tickets on that leg; one on the other side is left out", () => {
   // Five 80% legs, K = $1,000: alone, $284 rides on game 101 (Away 1 +8.5).
   const state = withStraightRungs(awayLegBoard([-400, -400, -400, -400, -400]));
   const alone = plan(state, { kellyBankroll: 1000 }).build;
@@ -755,10 +755,12 @@ test("a straight on a leg's own side puts fewer tickets on that leg; one on the 
   const sameSide = plan(state, { kellyBankroll: 1000, straights: straightsOf(state, [straightBet("same")]) }).build;
   assert.deepEqual(sameSide.straights.map((straight) => straight.id), ["novig:same"]);
   assert.ok(dollarsOn(sameSide, 101) < 284, `same side: $${dollarsOn(sameSide, 101)} on game 101`);
-  // Home 1 -9.5 pays in most of the results where the leg loses.
+  // Home 1 -9.5 pays where the leg loses, but a bet against the leg never grows it (Cal, 2026-10-16).
   const hedge = straightBet("other", { side: "home", points: -9.5, rotation: 402, price: 500, stake: 200, toWin: 1000 });
   const otherSide = plan(state, { kellyBankroll: 1000, straights: straightsOf(state, [hedge]) }).build;
-  assert.ok(dollarsOn(otherSide, 101) > 284, `other side: $${dollarsOn(otherSide, 101)} on game 101`);
+  assert.deepEqual(otherSide.straights, []);
+  assert.equal(otherSide.straightsLeftOut.get("novig:other"), teaser.STRAIGHT_AGAINST_LEG);
+  assert.deepEqual(ticketList(otherSide), ticketList(alone));
 });
 
 test("a straight on another market, another period or a game no ticket uses changes nothing", () => {
@@ -775,13 +777,13 @@ test("a straight on another market, another period or a game no ticket uses chan
   assert.deepEqual(build.straights, []);
   assert.deepEqual(ticketList(build), ticketList(alone));
   const row = teaser.describeLegs(legsOf(state), build, [], straights).find((candidate) => candidate.leg.eventId === 101);
-  assert.deepEqual([row.straights.held, row.straights.against], [0, 0]);
+  assert.equal(row.straights.held, 0);
   assert.deepEqual(row.straights.leftOut.map((bet) => bet.reason).sort(), ["1H bet", teaser.STRAIGHT_OTHER_MARKET]);
 });
 
 test("a whole-number straight splits its game at both sides of its push", () => {
   const state = withStraightRungs(awayLegBoard([-400, -400, -400, -400]));
-  const straights = straightsOf(state, [straightBet("whole", { side: "home", points: 3, rotation: 402 })]);
+  const straights = straightsOf(state, [straightBet("whole", { points: -3 })]);
   const { build } = plan(state, { kellyBankroll: 1000, straights });
   const game = build.structure.factors.find((factor) => factor.eventId === 101);
   assert.deepEqual(game.cuts, [-8.5, 2.5, 3.5]);
@@ -800,7 +802,7 @@ test("a straight whose rung is out of line with its game's ladder is left out; t
   const state = awayLegBoard([-400, -400, -400, -400]);
   // P(margin > -10.5) 70% under P(margin > -8.5) 80%: no ladder does that.
   addGame(state, { eventId: 101, away: "Away 1", home: "Home 1", awayRotation: 401, homeRotation: 402, marginRungs: [[-10.5, -233]] });
-  const straights = straightsOf(state, [straightBet("bad-rung", { side: "home", points: -10.5, rotation: 402 })]);
+  const straights = straightsOf(state, [straightBet("bad-rung", { points: 10.5 })]);
   assert.equal(straights[0].reason, null);
   const { build } = plan(state, { kellyBankroll: 1000, straights });
   assert.equal(build.reason, null);
@@ -833,10 +835,10 @@ test("the summary leaves the straights' own P&L out and counts them for the note
   const view = teaser.describePlan(build, legsOf(state), []);
   nearly(view.summary.expected, view.tickets.reduce((sum, ticket) => sum + ticket.stake * ticket.ev, 0), 1e-9);
   nearly(view.summary.expectedAll, view.summary.expected, 1e-6);
-  assert.deepEqual(view.summary.straights, { count: 2, stake: 500, games: 1 });
+  assert.deepEqual(view.summary.straights, { count: 1, stake: 300, games: 1 });
   const row = teaser.describeLegs(legsOf(state), build, [], straights).find((candidate) => candidate.leg.eventId === 101);
-  assert.deepEqual([row.straights.held, row.straights.against], [300, 200]);
-  assert.deepEqual(row.straights.counted.map((bet) => bet.sameWay), [false, true]);
+  assert.equal(row.straights.held, 300);
+  assert.deepEqual(row.straights.leftOut, [{ label: straights.find((straight) => straight.id === "novig:other").label, reason: teaser.STRAIGHT_AGAINST_LEG }]);
 });
 
 test("past the outcome budget the straights on a shed leg's game go with it", () => {

@@ -1592,8 +1592,10 @@ the leg (a moneyline at the spread ladder's ±0.5 rungs). No correlation
 number: where the two numbers sit on the game's fair ladder is the link.
 `teaser.heldStraights` joins each bet to its game with `bets.js`'s matcher
 (the Edges tab's: pins, venue ids, names, rotation). A straight on the leg's
-own side means fewer tickets on that leg (its losses get deeper), one on the
-other side means more. On 9/27 Cal held 15 straights on 9 of the 10 pool
+own side means fewer tickets on that leg (its losses get deeper); one on the
+other side is left out ("against the leg"; Cal, 2026-10-16: a bet against a
+leg never grows the teaser stake on it — before, it counted as a hedge and
+raised it). On 9/27 Cal held 15 straights on 9 of the 10 pool
 games ($4,542): counted, the set goes from 7 tickets / $1,292 to 4 / $676,
 and the set's value after risk on top of the straights from −$8 to +$62 —
 the Lions and Patriots legs drop out, the 49ers ($892 → $476) and Seahawks
@@ -1635,8 +1637,8 @@ stake, EV, **Copy**: `[rotation] side` per leg, BFA's own form, and
 **Place**, below) and the legs
 (each game's best leg: teased number, Buckeye's line, win chance, line age,
 how many tickets use it, and on a pool leg the Edges tab's tags for the
-straights on its game — `held $X` on the leg's side, `against $Y` on the
-other, a bare `game` when none of them counts, every bet and why in the
+straights on its game — `held $X` on the leg's side, a bare `game` when
+none of them counts (a bet against the leg never does), every bet and why in the
 tooltip; the break-even line, which a pool leg can sit
 below; the other games below break-even, on an open teaser's other market or
 with no fair behind a fold, the markets marked can't tease first). An open ticket out of the math says why: every
@@ -3369,7 +3371,7 @@ held on the same games: `heldStraights` placing an away spread, a home whole
 number (two cuts), an Over and a moneyline (the +0.5 rung) and naming a 1H
 bet, no fair and no stake (parlay legs, settled bets and started games
 dropped); a same-side straight lowering the dollars on its leg ($284 alone)
-and an other-side one raising them; another market, another period and a
+and an other-side one left out, the list as without it; another market, another period and a
 game outside the pool changing nothing (the row says why); a whole number
 splitting its game at both sides of the push; straights that can lose K
 giving no tickets with the reason; a rung out of line with its game's
