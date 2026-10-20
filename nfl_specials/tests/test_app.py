@@ -1,4 +1,8 @@
+import http.client
+import json
+import threading
 from datetime import date, datetime, timedelta, timezone
+from http.server import ThreadingHTTPServer
 
 import pytest
 
@@ -91,3 +95,54 @@ def test_a_top_up_cannot_pass_the_per_special_maximum(app, monkeypatch):
         app.place(_bet(60))
     assert app.place(_bet(50))["status"] == "placed"
     assert app.placements == [200.0, 50.0]
+
+
+def test_the_tailnet_name_is_allowed_only_on_the_tailscale_serve_port():
+    hosts = app_module.allowed_hosts(8096, ("mlb-stack.tail87ab2d.ts.net",))
+    assert hosts == ("127.0.0.1:8096", "localhost:8096", "mlb-stack.tail87ab2d.ts.net:8443")
+
+
+def test_without_tailnet_names_only_loopback_is_allowed():
+    assert app_module.allowed_hosts(8096, ()) == ("127.0.0.1:8096", "localhost:8096")
+
+
+@pytest.fixture
+def page_port(app):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), app_module.make_handler(app, 0, ()))
+    port = server.server_address[1]
+    server.RequestHandlerClass = app_module.make_handler(app, port, ("mlb-stack.tail87ab2d.ts.net",))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield port
+    server.shutdown()
+    server.server_close()
+
+
+def _get(port, path, host):
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    connection.request("GET", path, headers={"Host": host})
+    response = connection.getresponse()
+    body = response.read()
+    connection.close()
+    return response, body
+
+
+def test_the_page_answers_its_names_and_refuses_any_other_host(page_port):
+    port = page_port
+    answers = {}
+    for host in (f"127.0.0.1:{port}", "mlb-stack.tail87ab2d.ts.net:8443", "mlb-stack.tail87ab2d.ts.net",
+                 "evil.example"):
+        response, body = _get(port, "/api/board", host)
+        answers[host] = (response.status, json.loads(body).get("error"))
+    assert answers == {f"127.0.0.1:{port}": (200, None),
+                       "mlb-stack.tail87ab2d.ts.net:8443": (200, None),
+                       "mlb-stack.tail87ab2d.ts.net": (403, "foreign Host header"),
+                       "evil.example": (403, "foreign Host header")}
+
+
+def test_no_other_site_can_frame_the_page(page_port):
+    response, body = _get(page_port, "/", "mlb-stack.tail87ab2d.ts.net:8443")
+    assert response.status == 200 and body.startswith(b"<!")
+    assert {name: response.getheader(name) for name in app_module.PAGE_SECURITY_HEADERS} == {
+        "Content-Security-Policy": "frame-ancestors 'none'; base-uri 'none'",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer"}

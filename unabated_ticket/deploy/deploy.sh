@@ -5,10 +5,11 @@
 #   ~/NFLWork/unabated_ticket/deploy/deploy.sh --no-pull   # deploy the checkout as it is
 #
 # Inputs:  unabated_ticket/deploy/.env (from .env.example: BETS_EXTRA_ALLOWED_HOSTS,
-#          UNABATED_DATA_DIR, KALSHI_PEM_PATH, DEPLOY_UID/GID) — paths and names only.
+#          UNABATED_DATA_DIR, KALSHI_PEM_PATH, DEPLOY_UID/GID, NFL_SPECIALS_DK_PROXY):
+#          paths and names only.
 # Effects: `git pull --ff-only origin main` in the repo (refuses any other branch
 #          unless --no-pull); creates UNABATED_DATA_DIR/logs (mode 700); rebuilds
-#          the bets image and recreates both containers (compose.yaml), so the
+#          the images and recreates the containers (compose.yaml), so the
 #          bind-mounted code is re-read. bets.duckdb and the Novig token in the data
 #          dir are kept. Prints PASS/FAIL per check and exits 1 on any FAIL.
 # Never prints a credential: the checks print status codes, not bodies.
@@ -16,6 +17,10 @@ set -euo pipefail
 
 BETS_URL="http://127.0.0.1:8094"
 LOOPBACK_HOST="127.0.0.1:8094"
+FECTAS_URL="http://127.0.0.1:8096"
+FECTAS_LOOPBACK_HOST="127.0.0.1:8096"
+# The HTTPS port `tailscale serve` publishes the fecta pricer on (nfl_specials/config.py).
+FECTAS_TAILNET_PORT=8443
 FOREIGN_HOST="evil.example"
 WAIT_SEC=90
 POLL_SEC=3
@@ -31,21 +36,21 @@ env_value() {
   sed -n "s/^${key}=//p" "$env_file" | tail -n 1 | sed -e 's/^["'\'']//' -e 's/["'\'']$//'
 }
 
-# The status code of GET $BETS_URL$path sent with this Host header ("000" when
+# The status code of GET base_url+path sent with this Host header ("000" when
 # nothing answers). --noproxy: the request must reach the VM's own loopback.
 status_of() {
-  local path="$1" host="$2"
+  local base_url="$1" path="$2" host="$3"
   curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 5 \
-    -H "Host: ${host}" "${BETS_URL}${path}" 2>/dev/null || true
+    -H "Host: ${host}" "${base_url}${path}" 2>/dev/null || true
 }
 
 # Polls until GET path with this Host returns the expected status or WAIT_SEC
 # passes (the containers need a few seconds to bind). Prints PASS/FAIL.
 check() {
-  local label="$1" path="$2" host="$3" expected="$4"
+  local label="$1" path="$2" host="$3" expected="$4" base_url="${5:-$BETS_URL}"
   local waited=0 status
   while :; do
-    status="$(status_of "$path" "$host")"
+    status="$(status_of "$base_url" "$path" "$host")"
     if [ "$status" = "$expected" ]; then
       echo "PASS  ${label}: GET ${path} Host ${host} -> ${status}"
       return 0
@@ -76,6 +81,8 @@ main() {
   docker info >/dev/null 2>&1 \
     || fail "cannot reach Docker as $(id -un); run: sudo usermod -aG docker $(id -un), then log out and back in"
   [ -f "$env_file" ] || fail "missing ${env_file}; copy deploy/.env.example to it and fill it in"
+  [ -n "$(env_value "$env_file" NFL_SPECIALS_DK_PROXY)" ] \
+    || fail "NFL_SPECIALS_DK_PROXY is empty in ${env_file}; see deploy/README.md step 12"
 
   if [ "$pull" -eq 1 ]; then
     local branch
@@ -114,12 +121,17 @@ main() {
   check "bet tracker"              /tracker    "$tailnet_host"  200 || failed=1
   check "edges via the runner"     /edges.json "$tailnet_host"  200 || failed=1
   check "foreign Host refused"     /health     "$FOREIGN_HOST"  403 || failed=1
+  check "fecta pricer"             /           "$FECTAS_LOOPBACK_HOST" 200 "$FECTAS_URL" || failed=1
+  check "fecta board"              /api/board  "$FECTAS_LOOPBACK_HOST" 200 "$FECTAS_URL" || failed=1
+  check "fecta pricer on tailnet"  /           "${tailnet_host}:${FECTAS_TAILNET_PORT}" 200 "$FECTAS_URL" || failed=1
+  check "fecta foreign Host"       /           "$FOREIGN_HOST"  403 "$FECTAS_URL" || failed=1
 
   if [ "$failed" -ne 0 ]; then
     echo "deploy: FAIL — see: docker compose --project-directory ${deploy_dir} logs --tail 100" >&2
     exit 1
   fi
   echo "deploy: PASS — open https://${tailnet_host}/ on a device in the tailnet"
+  echo "        fecta pricer: https://${tailnet_host}:${FECTAS_TAILNET_PORT}/"
 }
 
 # Everything runs inside main(), so bash has parsed the whole file before the

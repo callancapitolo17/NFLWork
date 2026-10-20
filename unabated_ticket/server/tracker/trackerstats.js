@@ -71,6 +71,12 @@
   const NO_FAV_DOG = "Not fav/dog";
   const NO_NUMBER = "No number";
   const CLOSE_RESULTS = ["Beat close", "Lost close", "No close"];
+  // Who placed a bet (Cal, 2026-10-17: "bot vs other"). The automated takers
+  // trade only their own sub-accounts: Kalshi's bot is the one numbered
+  // subaccount (Place and Cal's own bets are on the primary, raw.subaccount
+  // absent), Novig's is the "novig_bot" source.
+  const ORIGINS = { bot: "Bot", other: "Other" };
+  const NOVIG_BOT_SOURCE = "novig_bot";
   // Snapshots land every 1-5 min while the runner is up; 30 min of silence
   // before the start means it was not, and the reading is not the close.
   const CLOSE_MAX_GAP_MS = 30 * 60 * 1000;
@@ -81,6 +87,7 @@
   // the rest sort by handle.
   const GROUPS = [
     { key: "venue", label: "Venue" },
+    { key: "origin", label: "Bot / Other", order: [ORIGINS.bot, ORIGINS.other] },
     { key: "league", label: "League" },
     { key: "market", label: "Market" },
     // Nested: one section per league, its markets as rows (spreads vs totals vs moneylines within a sport).
@@ -383,10 +390,18 @@
     return record.venue === "kalshi" && (record.raw || {}).series === KALSHI_COMBO_SERIES;
   }
 
+  /** "Bot" for a bet an automated taker placed, else "Other" (hand, Place, any other tool). */
+  function originOf(record) {
+    const subaccount = Number((record.raw || {}).subaccount);
+    const kalshiBot = record.venue === "kalshi" && Number.isInteger(subaccount) && subaccount > 0;
+    return kalshiBot || record.source === NOVIG_BOT_SOURCE ? ORIGINS.bot : ORIGINS.other;
+  }
+
   function straightTicket(record, fillAmerican, close) {
     const combo = isKalshiCombo(record);
     return finishTicket({
-      id: record.id, venueKey: record.venue, venue: venueName(record.venue), league: leagueName(record.league),
+      id: record.id, venueKey: record.venue, venue: venueName(record.venue), origin: originOf(record),
+      league: leagueName(record.league),
       kind: combo ? KIND_NAMES.kalshiCombo : KIND_NAMES.straight,
       market: marketName(record),
       period: record.period || "FG", event: eventLabel(record), selection: selectionLabel(record),
@@ -423,7 +438,7 @@
     const legCount = first.legCount || sorted.length;
     const raw = first.raw || {};
     return finishTicket({
-      id: parlayId, venueKey: first.venue, venue: venueName(first.venue),
+      id: parlayId, venueKey: first.venue, venue: venueName(first.venue), origin: originOf(first),
       league: leagues.size === 1 ? leagues.values().next().value : "Mixed",
       kind, market: kind, period: "FG", event: legCount + "-leg " + kind.toLowerCase(),
       side: NO_SIDE, favDog: NO_FAV_DOG, number: NO_NUMBER,
@@ -759,11 +774,11 @@
   }
 
   const api = {
-    PACIFIC_TZ, GROUPS, WEEKDAYS, NO_FAIR, CLOSE_MAX_GAP_MS, FAIR_SOURCES,
+    PACIFIC_TZ, GROUPS, ORIGINS, WEEKDAYS, NO_FAIR, CLOSE_MAX_GAP_MS, FAIR_SOURCES,
     pacificDay, addDays, dayKeyToUtc, weekdayOf, isDayKey, rangeBounds,
     americanToDecimal, decimalToAmerican,
     buildTickets, summarize, exclusions, untypedSummary, inDayRange, hideSettledFrom, dailySeries, firstSettledDay, groupBy, groupSections, pivot, calibration,
-    venueName, splitOpenByStart, splitOpenForLive, sortRows,
+    venueName, originOf, splitOpenByStart, splitOpenForLive, sortRows,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.UnabatedTrackerStats = api;

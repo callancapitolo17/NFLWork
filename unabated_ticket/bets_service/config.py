@@ -174,8 +174,11 @@ SOURCE_RUNS_RETENTION_DAYS = int(_get("BETS_SOURCE_RUNS_RETENTION_DAYS", "7"))
 
 # Kalshi cadence: fills + positions every poll; a full fills re-pull (the
 # reconcile) once per RECONCILE_SEC; the fills poll overlaps the previous
-# window by FILLS_OVERLAP_SEC (trade_id dedupe absorbs re-delivery).
-KALSHI_POLL_SEC = float(_get("BETS_KALSHI_POLL_SEC", "60"))
+# window by FILLS_OVERLAP_SEC (trade_id dedupe absorbs re-delivery), which must
+# stay >= POLL_SEC. Every 10 s (2026-10-17) so a bot or Place fill is held within
+# seconds: a poll is ~5 GETs (fills + positions per subaccount, a lookup per new
+# ticker), under 1/s against Kalshi's published 20/s (Basic) read limit.
+KALSHI_POLL_SEC = float(_get("BETS_KALSHI_POLL_SEC", "10"))
 KALSHI_RECONCILE_SEC = float(_get("BETS_KALSHI_RECONCILE_SEC", "3600"))
 KALSHI_FILLS_OVERLAP_SEC = 60
 # Minimum gap between market/event lookups (kalshi_draft.auth precedent).
@@ -185,7 +188,9 @@ KALSHI_LOOKUP_GAP_SEC = 0.6
 # `python -m unabated_ticket.bets_service.sources.novig_auth connect` and
 # rewritten on rotation. The source registers only when the file exists.
 NOVIG_TOKEN_PATH = Path(_get("NOVIG_TOKEN_PATH", str(PKG_DIR / "novig_token.json")))
-NOVIG_POLL_SEC = float(_get("BETS_NOVIG_POLL_SEC", "60"))
+# Every 20 s (2026-10-17): Novig publishes no limit and 403s bursts, and each poll
+# pages the whole active and settled portfolio, so it stays slower than Kalshi.
+NOVIG_POLL_SEC = float(_get("BETS_NOVIG_POLL_SEC", "20"))
 # The app's own REST base (novig.com bundle, 2026-09-22); the Portfolio feed
 # lives under it. Its GraphQL is behind a query allowlist and is not used.
 NOVIG_REST_URL = _get("NOVIG_REST_URL", "https://api.novig.us/nbx/v1")
@@ -219,11 +224,11 @@ WAGERZON_HISTORY_WEEKS = 6
 
 # Polymarket US (2026-09-23): the CFTC app's own API key, created by Cal at
 # polymarket.us/developer and kept in bet_logger/.env (see sources/polymarket_us.py).
-# An exchange like Kalshi, so the same cadence; activities are read back one day past
+# Every 20 s (2026-10-17; no published limit, so slower than Kalshi); activities are read back one day past
 # the retention window, and further while an open or just-settled position's fills are older.
 POLYMARKET_US_KEY_ID = _get("POLYMARKET_US_KEY_ID")
 POLYMARKET_US_SECRET_KEY = _get("POLYMARKET_US_SECRET_KEY")
-POLYMARKET_US_POLL_SEC = 60.0
+POLYMARKET_US_POLL_SEC = 20.0
 POLYMARKET_US_HISTORY_DAYS = RETENTION_DAYS + 1
 
 # Bet105 (2026-09-29): no credentials and no poll here. Cloudflare challenges any

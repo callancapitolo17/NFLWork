@@ -28,8 +28,8 @@ class FakeNovig:
         self.order_reply = (200, {"orderId": ORDER_ID, "status": "FILLED", "qty": 2150, "remaining": 0})
         self.fill_items = [{"fillId": "f1", "orderId": ORDER_ID, "qty": 2150, "cost": "9.99750", "taker": True}]
         self.lookup = None
-        self.market_reply = {"marketId": MARKET, "status": "OPEN"}
-        self.market_reads = 0
+        self.positions = [{"marketId": MARKET, "outcomeId": OUTCOME, "qty": 2150, "cost": "9.99750"}]
+        self.positions_reads = 0
         self.cancelled = []
 
     def place_ioc_order(self, outcome_id, price, qty, client_id):
@@ -51,9 +51,11 @@ class FakeNovig:
     def find_order_by_client_id(self, outcome_id, client_id):
         return self.lookup
 
-    def market(self, market_id):
-        self.market_reads += 1
-        return self.market_reply
+    def open_positions(self):
+        self.positions_reads += 1
+        if isinstance(self.positions, Exception):
+            raise self.positions
+        return list(self.positions)
 
 
 def fresh_status():
@@ -219,16 +221,33 @@ def test_an_open_ioc_is_cancelled_and_held(setup):
     assert client.cancelled == [ORDER_ID] and store.novig_open_exposure() == pytest.approx(9.9975)
 
 
-def test_a_started_settled_market_frees_its_cost(setup):
+def test_a_started_market_whose_position_closed_frees_its_cost(setup):
     desk, client, store, clock, *_ = setup
     desk.place(request())
     clock["now"] = NOW + timedelta(hours=4)
-    client.market_reply = {"marketId": MARKET, "status": "SETTLED"}
+    desk.refresh()
+    assert store.novig_open_exposure() == pytest.approx(9.9975)  # the position is still open
+    client.positions = []
+    clock["now"] += timedelta(minutes=4)
+    desk.refresh()
+    assert store.novig_open_exposure() == pytest.approx(9.9975)  # read at most every 5 minutes
+    clock["now"] += timedelta(minutes=1)
     desk.refresh()
     assert store.open_novig_orders() == [] and store.novig_open_exposure() == 0
+    stored = store._con.execute("SELECT epoch_ms(settled_at) FROM novig_taker_orders").fetchone()[0]
+    assert stored == int(clock["now"].timestamp() * 1000)
 
 
-def test_two_orders_on_a_settled_market_free_on_one_read(setup):
+def test_a_failed_positions_read_frees_nothing(setup):
+    desk, client, store, clock, *_ = setup
+    desk.place(request())
+    clock["now"] = NOW + timedelta(hours=4)
+    client.positions = desk_module.NovigError("HTTP 429")
+    desk.refresh()
+    assert store.novig_open_exposure() == pytest.approx(9.9975)
+
+
+def test_two_orders_on_a_settled_market_free_on_one_positions_read(setup):
     desk, client, store, clock, status, _ = setup
     desk.place(request())
     held = [held_id_of(ORDER_ID)]
@@ -238,10 +257,10 @@ def test_two_orders_on_a_settled_market_free_on_one_read(setup):
     assert desk.place(second)["status"] == "partial"
     clock["now"] = NOW + timedelta(hours=4)
     status["value"] = {name: {**source, "fetchedAt": clock["now"].isoformat()} for name, source in fresh_status().items()}
-    client.market_reply = {"marketId": MARKET, "status": "SETTLED"}
-    client.market_reads = 0
+    client.positions = []
+    client.positions_reads = 0
     desk.refresh()
-    assert store.open_novig_orders() == [] and client.market_reads == 1
+    assert store.open_novig_orders() == [] and client.positions_reads == 1
 
 
 def test_an_order_novig_never_shows_final_is_settled_off_its_listing(setup):

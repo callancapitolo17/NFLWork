@@ -369,6 +369,72 @@ test("an open bet's league is loaded for its close, and stays loaded after the b
   runner.stop();
 });
 
+// ---- board rows kept per league ------------------------------------------------------------
+
+// The NFL slice re-labelled as CFB, with its own market and event ids so nothing collides with NFL's;
+// `dropPregame` leaves out its pregame game, so CFB's board loses its one event.
+function cfbSliceBody({ dropPregame = false } = {}) {
+  const json = JSON.parse(sliceBody);
+  if (dropPregame) {
+    delete json.odds["lg1:pt1:pregame"];
+    delete json.odds["lg1:pt2:pregame"];
+  }
+  return JSON.stringify(json).replace(/lg1:/g, "lg2:").replace(/"marketId":(\d+)/g, '"marketId":9$1').replace(/"eventId":(\d+)/g, '"eventId":9$1');
+}
+
+// NFL and CFB from the slice; `feed.failNfl` makes NFL's next downloads fail
+// (it keeps its lines), `feed.dropCfbPregame` changes CFB's next snapshot.
+function twoLeagueFetch(feed) {
+  return async (url) => {
+    const base = url.split("?")[0];
+    const headers = { "content-length": "1000", "last-modified": new Date(NOW - 20000).toUTCString() };
+    if (base === SNAPSHOT_BASE_URL(1)) return feed.failNfl ? response({ status: 503, body: "" }) : response({ body: sliceBody, headers });
+    if (base === SNAPSHOT_BASE_URL(2)) return response({ body: cfbSliceBody({ dropPregame: feed.dropCfbPregame }), headers });
+    return response({ status: 404, body: "not found" });
+  };
+}
+
+test("boardLines: built league by league, the same rows a walk of the whole board gives; a league that did not land keeps its rows untouched", async () => {
+  const feed = { failNfl: false, dropCfbPregame: false };
+  const runner = runnerLib.createRunner({
+    fetchImpl: twoLeagueFetch(feed), betsServiceUrl: SERVICE_URL, now: () => NOW, timers: noTimers, ...quiet,
+    serviceFetch: serviceFetch({ "/bets.json": betsBody([BEARS_HELD]), "/settings.json": { settings: OPEN_SETTINGS } }),
+  });
+  await runner.start();
+  const walked = () => edgeRows.boardLines(runner.scanner.getState());
+  const rowsOf = (leagueId) => runner.boardLines().filter((row) => row.leagueId === leagueId);
+  assert.deepEqual(runner.boardLines(), walked());
+  const nflRows = rowsOf(1);
+  assert.equal(rowsOf(2).length, 1);
+
+  // Only CFB lands, without its game.
+  Object.assign(feed, { failNfl: true, dropCfbPregame: true });
+  await runner.scanner.resync();
+  assert.deepEqual(runner.boardLines(), walked(), "the landed league's rows are rebuilt");
+  assert.equal(rowsOf(2).length, 0);
+  assert.ok(rowsOf(1).every((row, index) => row === nflRows[index]) && rowsOf(1).length === nflRows.length, "NFL did not land: its rows are the same objects");
+  runner.stop();
+});
+
+test("kickoff odds: a game's lines are re-read when its league lands, kept when the league's download fails", async () => {
+  const feed = { failNfl: false, dropCfbPregame: false };
+  const clock = { ms: NOW };
+  const runner = runnerLib.createRunner({
+    fetchImpl: twoLeagueFetch(feed), betsServiceUrl: SERVICE_URL, now: () => clock.ms, timers: noTimers, ...quiet,
+    serviceFetch: serviceFetch({ "/bets.json": betsBody([BEARS_HELD]), "/settings.json": { settings: OPEN_SETTINGS } }),
+  });
+  await runner.start();
+  clock.ms = NOW + 60 * 1000;
+  await runner.scanner.resync();
+  clock.ms = NOW + 120 * 1000;
+  feed.failNfl = true;
+  await runner.scanner.resync();
+  clock.ms = KICKOFF_MS + 3600 * 1000;
+  const card = runner.scenariosPayload().games.find((game) => game.eventId === 125807);
+  assert.equal(card.oddsAt, NOW + 60 * 1000, "the last NFL landing before kickoff, not the failed one after it");
+  runner.stop();
+});
+
 // ---- /scenarios.json (the Bet Tracker's Live tab) ----------------------------------------
 
 async function runnerOnClock(clock, bets, extra) {
@@ -689,6 +755,22 @@ test("kalshi_quote: the board's Kalshi line gives its contract, live ask, all-in
   assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 0);
 });
 
+test("kalshi_quote: while a scan restart is still downloading, the quote reads the board the list still shows", async () => {
+  const unabated = takerUnabatedFetch();
+  let hold = false;
+  const held = [];
+  const fetchImpl = (url) => (hold ? new Promise((resolve) => held.push(() => resolve(unabated(url)))) : unabated(url));
+  const { runner } = await quoteRunner({}, { fetchImpl });
+  hold = true;
+  const restart = runner.scanner.start([2]);
+  assert.equal(Object.keys(runner.scanner.getState().lines).length, 0, "the scanner's new board is still empty");
+  const quote = await runner.kalshiQuote(new URLSearchParams(WSU_36_LINE));
+  for (const release of held) release();
+  await restart;
+  runner.stop();
+  assert.deepEqual({ ok: quote.ok, ticker: quote.ticker }, { ok: true, ticker: TAKER_TICKER });
+});
+
 test("kalshi_quote: the quote's eventStart is Kalshi's when earlier, so Place refuses a game Unabated still lists as pregame", async () => {
   const kickedOff = new Date(TAKER_NOW - 60 * 1000).toISOString();
   const { runner } = await quoteRunner({}, {}, kickedOff);
@@ -735,6 +817,33 @@ test("novig_quote: the board's Novig line gives its outcome, market, the other s
   assert.equal(service.posts.filter((post) => post.route.startsWith("/taker/")).length, 0);
 });
 
+test("novig_quote: a main total its ladder has no rung for is found in the catalog off its siblings and checked like any other", async () => {
+  // The fixture's Novig 52.5 total hangs 50.5/51.5/53.5/54.5 rungs and no 52.5 one.
+  const sibling = {
+    marketId: "0c0c0c0c-1111-4222-8333-515151515151", eventId: NOVIG_EVENT, marketType: "TOTAL", strike: "51.5", status: "OPEN",
+    fee: { coefficient: "0.06", makerCredit: "0", charged: "WHEN_LIVE" },
+    outcomes: [{ outcomeId: "01a0a059-6836-7b83-8813-18c4e5a44a2f", name: "Over 51.5" }, { outcomeId: "01a0a059-6836-7b83-8813-18d718a0283c", name: "Under 51.5" }],
+  };
+  const mainId = "0c0c0c0c-1111-4222-8333-525252525252";
+  const main = { ...sibling, marketId: mainId, strike: "52.5", outcomes: [{ outcomeId: "0d0d-over", name: "Over 52.5" }, { outcomeId: "0d0d-under", name: "Under 52.5" }] };
+  const base = novigFetch();
+  const impl = async (url, init) => {
+    const bare = url.split("?")[0];
+    if (bare === "https://novig.test/v3/public/catalog/markets") return response({ body: JSON.stringify({ items: [sibling, main] }) });
+    if (bare === `https://novig.test/v3/public/catalog/markets/${mainId}/book`) {
+      return response({ body: JSON.stringify({ marketId: mainId, seq: 3, orders: { "0d0d-over": [{ orderId: "o1", price: "0.48", qty: 2000 }], "0d0d-under": [] } }) });
+    }
+    if (bare === `https://novig.test/v3/public/catalog/markets/${mainId}`) return response({ body: JSON.stringify(main) });
+    return base(url, init);
+  };
+  const { runner } = await quoteRunner({}, { novigFetch: impl, novigBaseUrl: "https://novig.test" });
+  const quote = await runner.novigQuote(new URLSearchParams({ eventId: "123742", periodTypeId: "1", betTypeId: "3", sideIndex: "1", points: "52.5" }));
+  runner.stop();
+  assert.deepEqual(
+    { ok: quote.ok, outcomeId: quote.outcomeId, otherOutcomeId: quote.otherOutcomeId, marketId: quote.marketId, price: quote.price, depth: quote.depth },
+    { ok: true, outcomeId: "0d0d-under", otherOutcomeId: "0d0d-over", marketId: mainId, price: 0.52, depth: 2000 });
+});
+
 test("novig_quote: a market charging a pregame fee, a closed market and a number the board lacks are refused", async () => {
   const fee = await novigQuoteRunner({ fee: { coefficient: "0.06", makerCredit: "0", charged: "ALWAYS" } });
   const feeQuote = await fee.runner.novigQuote(new URLSearchParams(WSU_36_LINE));
@@ -763,6 +872,127 @@ test("novig_quote: a market charging a pregame fee, a closed market and a number
   noBook.runner.stop();
   assert.deepEqual([noBookQuote.ok, noBookQuote.reason, noBookQuote.outcomeId], [false, "no_book", NOVIG_WSU_OUTCOME]);
   assert.match(noBookQuote.detail, /nothing rests/);
+});
+
+test("novig_quote: a catalog under a minute old is reused, the market, event and book still read live; a missing outcome reads it fresh", async () => {
+  let clock = TAKER_NOW;
+  const logs = [];
+  const novig = novigFetch();
+  const { runner } = await quoteRunner({}, { novigFetch: novig, novigBaseUrl: "https://novig.test", now: () => clock, logInfo: (line) => logs.push(line) });
+  const catalogReads = () => novig.calls.filter((call) => call.url.includes("/catalog/markets?")).length;
+  const first = await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  clock += 59 * 1000;
+  const reused = await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  assert.deepEqual([first.ok, reused.ok, catalogReads()], [true, true, 1], "the second quote reuses the first catalog");
+  assert.equal(novig.calls.filter((call) => call.url.endsWith(`/markets/${NOVIG_MARKET}/book`)).length, 2, "each quote reads the book");
+  assert.equal(novig.calls.filter((call) => call.url.endsWith(`/events/${NOVIG_EVENT}`)).length, 2, "each quote reads the event");
+  assert.match(logs.at(-1), /ok @ 0\.555 .*catalog reused, 59s old/);
+  clock += 2 * 1000;
+  await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  assert.equal(catalogReads(), 2, "a catalog over a minute old is read again");
+  runner.stop();
+  // A reused catalog without the outcome (listed since): read fresh once, then found.
+  let listed = false;
+  const late = novigFetch();
+  const lateImpl = async (url, init) => (url.includes("/catalog/markets?") && !listed
+    ? response({ body: JSON.stringify({ items: [] }) }) : late(url, init));
+  const { runner: lateRunner } = await quoteRunner({}, { novigFetch: lateImpl, novigBaseUrl: "https://novig.test" });
+  const missing = await lateRunner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  listed = true;
+  const found = await lateRunner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  lateRunner.stop();
+  assert.deepEqual([missing.ok, missing.reason, found.ok, found.detail], [false, "no_outcome", true, undefined]);
+});
+
+test("novig_quote: an event the catalog lists that is not the market's is refused", async () => {
+  const novig = novigFetch({ eventId: "another-event" });
+  const { runner } = await quoteRunner({}, { novigFetch: novig, novigBaseUrl: "https://novig.test" });
+  const quote = await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  runner.stop();
+  assert.deepEqual([quote.ok, quote.reason], [false, "market_mismatch"]);
+});
+
+// Moneylines: the slice's moneyline row also listed at Novig, which Unabated
+// sends no Novig id for; Place finds it off the game's other rungs.
+function moneylineUnabatedFetch() {
+  const json = JSON.parse(takerVenueSlice());
+  const moneyRow = json.odds["lg2:pt1:pregame"].find((row) => row.key === "pt1:pregame:bt1:e123742");
+  for (const books of Object.values(moneyRow.sides)) books.ms89 = { ...books.ms105, americanPrice: 150, price: 150, sourcePrice: 0.4, sourceFormat: 4 };
+  const body = JSON.stringify(json);
+  return async (url) => {
+    if (url.split("?")[0] === SNAPSHOT_BASE_URL(2)) return response({ body, headers: { "content-length": "1000", "last-modified": new Date(TAKER_NOW - 20000).toUTCString() } });
+    return response({ status: 404, body: "not found" });
+  };
+}
+
+test("novig_quote: a moneyline is found in Novig's catalog off the game's spread rung and checked by its team's name", async () => {
+  const moneyId = "0f0f0f0f-1111-4222-8333-111111111111";
+  const money = {
+    marketId: moneyId, eventId: NOVIG_EVENT, marketType: "MONEY", status: "OPEN", fee: { coefficient: "0.06", makerCredit: "0", charged: "WHEN_LIVE" },
+    outcomes: [{ outcomeId: "money-duq", name: "DUQ" }, { outcomeId: "money-wsu", name: "WSU" }],
+  };
+  const spread = novigFetch();
+  const spreadMarket = {
+    marketId: NOVIG_MARKET, eventId: NOVIG_EVENT, marketType: "SPREAD", strike: "-35.5", status: "OPEN", fee: money.fee,
+    outcomes: [{ outcomeId: NOVIG_WSU_OUTCOME, name: "WSU -35.5" }, { outcomeId: NOVIG_DUQ_OUTCOME, name: "DUQ +35.5" }],
+  };
+  const impl = async (url, init) => {
+    const bare = url.split("?")[0];
+    if (bare === "https://novig.test/v3/public/catalog/markets") return response({ body: JSON.stringify({ items: [spreadMarket, money] }) });
+    if (bare === `https://novig.test/v3/public/catalog/markets/${moneyId}/book`) {
+      return response({ body: JSON.stringify({ marketId: moneyId, seq: 2, orders: { "money-wsu": [{ orderId: "w", price: "0.62", qty: 3000 }], "money-duq": [] } }) });
+    }
+    if (bare === `https://novig.test/v3/public/catalog/markets/${moneyId}`) return response({ body: JSON.stringify(money) });
+    return spread(url, init);
+  };
+  const { runner } = await quoteRunner({}, { fetchImpl: moneylineUnabatedFetch(), novigFetch: impl, novigBaseUrl: "https://novig.test" });
+  const quote = await runner.novigQuote(new URLSearchParams({ eventId: "123742", periodTypeId: "1", betTypeId: "1", sideIndex: "0" }));
+  runner.stop();
+  assert.deepEqual(
+    { ok: quote.ok, outcomeId: quote.outcomeId, otherOutcomeId: quote.otherOutcomeId, marketId: quote.marketId, price: quote.price, depth: quote.depth, label: quote.label, eventStart: quote.eventStart },
+    { ok: true, outcomeId: "money-duq", otherOutcomeId: "money-wsu", marketId: moneyId, price: 0.38, depth: 3000, label: "Duquesne FG", eventStart: WSU_UNABATED_START });
+  assert.deepEqual([quote.line.betType, quote.line.side, quote.line.points], ["moneyline", "away", null]);
+});
+
+test("kalshi_quote: a moneyline whose team code no spread rung gives is found in Kalshi's market list for the game", async () => {
+  // Kalshi's spread rungs name WSU only, so the Duquesne moneyline has no code to build a ticker from.
+  const duqTicker = "KXNCAAFGAME-26SEP19DUQWSU-DUQ";
+  const base = kalshiFetch();
+  const kalshi = async (url, init) => {
+    if (url.includes("/markets?") && new URL(url).searchParams.get("event_ticker") === "KXNCAAFGAME-26SEP19DUQWSU") {
+      return response({ body: JSON.stringify({ markets: [
+        { ticker: "KXNCAAFGAME-26SEP19DUQWSU-WSU", event_ticker: "KXNCAAFGAME-26SEP19DUQWSU", yes_sub_title: "Washington St." },
+        { ticker: duqTicker, event_ticker: "KXNCAAFGAME-26SEP19DUQWSU", yes_sub_title: "Duquesne" },
+      ] }) });
+    }
+    if (url.endsWith(`/markets/${duqTicker}/orderbook`)) return response({ body: JSON.stringify({ orderbook_fp: { yes_dollars: [], no_dollars: [["0.9200", "50"]] } }) });
+    if (url.endsWith(`/markets/${duqTicker}`)) {
+      return response({ body: JSON.stringify({ market: { ticker: duqTicker, event_ticker: "KXNCAAFGAME-26SEP19DUQWSU", status: "active", yes_sub_title: "Duquesne" } }) });
+    }
+    return base(url, init);
+  };
+  const { runner } = await quoteRunner({}, { kalshiFetch: kalshi });
+  const quote = await runner.kalshiQuote(new URLSearchParams({ eventId: "123742", periodTypeId: "1", betTypeId: "1", sideIndex: "0" }));
+  runner.stop();
+  assert.deepEqual(
+    { ok: quote.ok, ticker: quote.ticker, side: quote.side, ask: quote.ask, depth: quote.depth, allIn: quote.allIn, derivedTicker: quote.derivedTicker, label: quote.label },
+    { ok: true, ticker: duqTicker, side: "yes", ask: 0.08, depth: 50, allIn: Math.round((0.08 + 0.07 * 0.08 * 0.92) * 1e6) / 1e6, derivedTicker: true, label: "Duquesne FG" });
+  // Kalshi's market list unread: refused, naming why.
+  const down = async (url, init) => (url.includes("/markets?") ? response({ status: 503, body: "down" }) : kalshi(url, init));
+  const { runner: downRunner } = await quoteRunner({}, { kalshiFetch: down });
+  const unread = await downRunner.kalshiQuote(new URLSearchParams({ eventId: "123742", periodTypeId: "1", betTypeId: "1", sideIndex: "0" }));
+  downRunner.stop();
+  assert.deepEqual([unread.ok, unread.reason], [false, "no_ticker"]);
+  assert.match(unread.detail, /markets on KXNCAAFGAME-26SEP19DUQWSU unread/);
+  // Kalshi listing a tie market too: refused, nothing read past it.
+  const tied = async (url, init) => (url.includes("/markets?")
+    ? response({ body: JSON.stringify({ markets: [{ event_ticker: "KXNCAAFGAME-26SEP19DUQWSU", ticker: "a" }, { event_ticker: "KXNCAAFGAME-26SEP19DUQWSU", ticker: "b" }, { event_ticker: "KXNCAAFGAME-26SEP19DUQWSU", ticker: "c" }] }) })
+    : kalshi(url, init));
+  const { runner: tiedRunner } = await quoteRunner({}, { kalshiFetch: tied });
+  const refused = await tiedRunner.kalshiQuote(new URLSearchParams({ eventId: "123742", periodTypeId: "1", betTypeId: "1", sideIndex: "0" }));
+  tiedRunner.stop();
+  assert.deepEqual([refused.ok, refused.reason], [false, "no_ticker"]);
+  assert.match(refused.detail, /lists 3 markets/);
 });
 
 test("taker: a service without the bot key answers 503, the decision reads off", async () => {
@@ -1090,4 +1320,191 @@ test("taker: a stale Kalshi poll stops the Novig side too (its stake is sized on
   assert.equal(novig.calls.length, 0);
   assert.equal(service.novigOrders.length, 0);
   runner.stop();
+});
+
+// ---- The board thread (server/board_thread.js) ----
+// A worker stand-in: the board side served over a real MessageChannel, so the
+// messages are cloned as between threads; exit() plays the thread dying.
+const { MessageChannel } = require("node:worker_threads");
+const { EventEmitter } = require("node:events");
+const boardThread = require("../server/board_thread.js");
+
+function channelWorker(runner) {
+  const { port1, port2 } = new MessageChannel();
+  boardThread.serveBoardCalls(port2, runner, () => {});
+  const worker = new EventEmitter();
+  port1.on("message", (message) => worker.emit("message", message));
+  worker.postMessage = (message) => port1.postMessage(message);
+  worker.terminate = () => worker.exit(1);
+  worker.exit = (code) => {
+    port1.close();
+    port2.close();
+    worker.emit("exit", code);
+  };
+  return worker;
+}
+
+function boardClient(runners, clock, extra = {}) {
+  const spawned = [];
+  const client = boardThread.createBoardClient({
+    now: () => clock.now, ...quiet, setTimeout: extra.setTimeout || (() => {}),
+    createWorker: () => {
+      const worker = channelWorker(runners[Math.min(spawned.length, runners.length - 1)]);
+      spawned.push(worker);
+      return worker;
+    },
+  });
+  client.start();
+  return { client, spawned };
+}
+
+// A runner whose payloads count their builds and say which build they are.
+function countingRunner() {
+  const builds = { edgesPayload: 0, teasersPayload: 0 };
+  const runner = {
+    builds, betsPolls: 0,
+    edgesPayload: () => ({ build: (builds.edgesPayload += 1) }),
+    teasersPayload: () => ({ build: (builds.teasersPayload += 1) }),
+    scenariosPayload: () => ({ games: [] }),
+    takerPayload: () => ({ decisions: [] }),
+    pollBets: async () => { runner.betsPolls += 1; },
+    attachPayload: () => { const error = new Error("no open bet \"x\""); error.status = 404; throw error; },
+    kalshiQuote: async (params) => ({ ok: false, eventId: Number(params.get("eventId")) }),
+    novigQuote: async () => { throw new Error("boom"); },
+  };
+  return runner;
+}
+
+test("board thread: the HTTP routes answer exactly what the runner builds, through the thread's messages", async () => {
+  const { runner } = await startedRunner({ "/bets.json": betsBody([BEARS_HELD]), "/settings.json": { settings: OPEN_SETTINGS, updatedAt: null } });
+  const clock = { now: NOW };
+  const { client } = boardClient([runner], clock);
+  const server = runnerLib.createHttpServer(client, { host: "127.0.0.1" });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const get = (route) => new Promise((resolve, reject) => {
+    const request = require("node:http").request({ host: "127.0.0.1", port, path: route, method: "GET" }, (reply) => {
+      let body = "";
+      reply.on("data", (chunk) => { body += chunk; });
+      reply.on("end", () => resolve({ status: reply.statusCode, body: JSON.parse(body) }));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+  const same = (value) => JSON.parse(JSON.stringify(value));
+  try {
+    assert.deepEqual((await get("/edges.json")).body, same(runner.edgesPayload()));
+    assert.deepEqual((await get("/edges.json?fresh=1")).body, same(runner.edgesPayload()));
+    assert.deepEqual((await get("/teasers.json")).body, same(runner.teasersPayload()));
+    assert.deepEqual((await get("/scenarios.json")).body, same(runner.scenariosPayload()));
+    assert.equal((await get("/attach.json?betId=bol-1&query=bears")).body.events[0].eventId, 125807);
+    const missing = await get("/attach.json?betId=nope");
+    assert.deepEqual([missing.status, missing.body.error], [404, 'no open bet "nope"']);
+    const health = await get("/health");
+    assert.deepEqual([health.status, health.body.boardThread.state, health.body.scanner.phase], [200, "running", "starting"]);
+    assert.deepEqual((await get("/taker.json")).body.decisions, same(runner.takerPayload()).decisions);
+    const badQuote = await get("/kalshi_quote.json?eventId=x");
+    assert.deepEqual([badQuote.status, badQuote.body.error], [400, 'eventId must be a whole number, got "x"']);
+    assert.equal((await get("/novig_quote.json?eventId=1&periodTypeId=1&betTypeId=2&sideIndex=0&points=99")).body.reason, "no_line");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    client.stop();
+    runner.stop();
+  }
+});
+
+test("board thread: a copy under a minute old is served at once and rebuilt for the next ask; older, or fresh, waits for a build", async () => {
+  const runner = countingRunner();
+  const clock = { now: NOW };
+  const { client } = boardClient([runner], clock);
+  const read = async (opts) => JSON.parse((await client.edgesPayload(opts)).text).build;
+  assert.equal(await read(), 1);
+  assert.equal(await read(), 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(runner.builds.edgesPayload, 2);
+  assert.equal(await read(), 2);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  clock.now += boardThread.PAYLOAD_SERVE_MAX_AGE_MS + 1;
+  assert.equal(await read(), 4);
+  assert.equal(await read({ fresh: true }), 5);
+  assert.equal(runner.betsPolls, 1);
+  client.stop();
+});
+
+test("board thread: asks at once share one build; errors keep their status, a bug is a 500", async () => {
+  const runner = countingRunner();
+  const { client } = boardClient([runner], { now: NOW });
+  const both = await Promise.all([client.teasersPayload(), client.teasersPayload()]);
+  assert.deepEqual(both.map((reply) => JSON.parse(reply.text).build), [1, 1]);
+  assert.equal(runner.builds.teasersPayload, 1);
+  await assert.rejects(client.attachPayload(new URLSearchParams("betId=x")), (error) => error.status === 404 && /no open bet/.test(error.message));
+  await assert.rejects(client.novigQuote(new URLSearchParams("eventId=1")), (error) => error.status === 500 && error.message === "boom");
+  assert.deepEqual(JSON.parse((await client.kalshiQuote(new URLSearchParams("eventId=7"))).text), { ok: false, eventId: 7 });
+  client.stop();
+});
+
+test("board thread: a thread that dies fails what waits with 503, drops its copies, and a new thread starts after a pause that doubles while threads keep dying", async () => {
+  const first = countingRunner();
+  let release;
+  first.kalshiQuote = () => new Promise((resolve) => { release = resolve; });
+  const second = countingRunner();
+  const restarts = [];
+  const clock = { now: NOW };
+  const { client, spawned } = boardClient([first, second], clock, { setTimeout: (fn, ms) => restarts.push({ fn, ms }) });
+  await client.edgesPayload();
+  const waiting = client.kalshiQuote(new URLSearchParams("eventId=1"));
+  await new Promise((resolve) => setImmediate(resolve));
+  spawned[0].exit(1);
+  await assert.rejects(waiting, (error) => error.status === 503);
+  await assert.rejects(client.edgesPayload(), (error) => error.status === 503 && /restarting/.test(error.message));
+  assert.equal(client.health().boardThread.state, "restarting");
+  assert.deepEqual(restarts.map((entry) => entry.ms), [boardThread.BOARD_RESTART_DELAY_MS]);
+  restarts[0].fn();
+  assert.equal(JSON.parse((await client.edgesPayload()).text).build, 1);
+  assert.deepEqual([second.builds.edgesPayload, client.health().boardThread.restarts, client.health().boardThread.lastExit.code], [1, 1, 1]);
+  release({});
+  spawned[1].exit(1);
+  restarts[1].fn();
+  clock.now += boardThread.BOARD_HEALTHY_RUN_MS;
+  spawned[2].exit(1);
+  assert.deepEqual(restarts.map((entry) => entry.ms), [5000, 10000, 5000]);
+  client.stop();
+  restarts[2].fn();
+  assert.deepEqual([spawned.length, client.health().boardThread.state, client.health().ok], [3, "stopped", false]);
+});
+
+test("board thread: /health is down while the thread posts nothing for 15 s; a fresh build's copy is the one served next", async () => {
+  const runner = countingRunner();
+  const clock = { now: NOW };
+  const { client, spawned } = boardClient([runner], clock);
+  assert.equal(client.health().ok, true);
+  spawned[0].emit("message", { type: "health", health: { ok: true, scanner: { phase: "live" } } });
+  clock.now += boardThread.HEALTH_STALE_MS;
+  assert.deepEqual([client.health().ok, client.health().scanner.phase], [true, "live"]);
+  clock.now += 1;
+  assert.equal(client.health().ok, false);
+  assert.equal(JSON.parse((await client.edgesPayload()).text).build, 1);
+  assert.equal(JSON.parse((await client.edgesPayload({ fresh: true })).text).build, 2);
+  assert.equal(JSON.parse((await client.edgesPayload()).text).build, 2);
+  client.stop();
+});
+
+test("board thread: the real worker boots board_thread.js with runner.js and posts its health", async () => {
+  // Nothing listens on port 9: every read fails fast, which is all a boot needs.
+  const dead = "http://127.0.0.1:9";
+  const { Worker } = require("node:worker_threads");
+  const worker = new Worker(path.join(__dirname, "..", "server", "board_thread.js"), {
+    workerData: { role: "board", config: { betsServiceUrl: dead, kalshiBaseUrl: dead, novigBaseUrl: dead } }, stdout: true, stderr: true,
+  });
+  try {
+    const health = await new Promise((resolve, reject) => {
+      worker.once("error", reject);
+      worker.on("message", (message) => { if (message.type === "health") resolve(message.health); });
+    });
+    assert.deepEqual([health.ok, health.scanner.phase], [true, "starting"]);
+  } finally {
+    await worker.terminate();
+  }
 });

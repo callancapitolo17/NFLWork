@@ -23,8 +23,10 @@ from __future__ import annotations
 import logging
 import time
 from typing import Hashable
+from urllib.parse import urlsplit
 
 from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.exceptions import RequestException
 
 from nfl_specials.books import BookGame, LegMarket, Outcome, next_game, is_half_point, widen_with_tie
 from nfl_specials.special_parser import Leg
@@ -41,6 +43,11 @@ DK_SGP_EVENT_URL = ("https://sportsbook-nash.draftkings.com/sites/US-SB/api/spor
 DK_SGP_PRICE_URL = ("https://sportsbook-nash.draftkings.com/sites/US-WV-SB/api/sportscontent/"
                     "sgp/dkuswv/sportsdata/v2/sgp")
 DK_WARMUP_URL = "https://sportsbook.draftkings.com/leagues/football/nfl"
+# Every host this adapter calls; dk_relay tunnels to these and nothing else.
+DK_HOSTS = frozenset(urlsplit(url).hostname for url in (DK_LEAGUE_URL, DK_SGP_EVENT_URL,
+                                                       DK_SGP_PRICE_URL, DK_WARMUP_URL))
+# A relay host that is asleep drops SYNs: fail its connect in seconds, not the read timeout.
+DK_CONNECT_TIMEOUT_SECONDS = 5
 # DK's sport id for football. The price endpoint answers 404 without the header.
 DK_FOOTBALL_SPORT_ID = "3"
 # DK's own SGP widget throttles its price requests to one per 500 ms; never
@@ -63,9 +70,10 @@ def dk_team_to_abbr(dk_name: str) -> str | None:
 class DraftKingsBook:
     name = "DraftKings"
 
-    def __init__(self) -> None:
-        self.session = cffi_requests.Session(impersonate="chrome")
-        self.session.get(DK_WARMUP_URL, timeout=30)
+    def __init__(self, proxy_url: str | None) -> None:
+        self.session = cffi_requests.Session(impersonate="chrome", proxy=proxy_url)
+        self._unreachable: RequestException | None = None
+        self._get(DK_WARMUP_URL, timeout=30)
         self._games = self._list_games()
         self._markets: dict[str, dict[str, dict]] = {}
         self._market_of_selection: dict[str, str] = {}
@@ -75,6 +83,18 @@ class DraftKingsBook:
         self._last_price_call_at = 0.0
 
     # --- discovery ---------------------------------------------------------
+    def _get(self, url: str, *, timeout: float, **kwargs):
+        """session.get, except that after one transport failure (a relay host
+        that went to sleep mid-refresh) every later call fails at once instead
+        of waiting out its own timeout."""
+        if self._unreachable is not None:
+            raise RuntimeError(f"DraftKings unreachable this refresh: {self._unreachable}")
+        try:
+            return self.session.get(url, timeout=(DK_CONNECT_TIMEOUT_SECONDS, timeout), **kwargs)
+        except RequestException as exc:
+            self._unreachable = exc
+            raise
+
     def _list_games(self) -> list[BookGame]:
         params = {
             "isBatchable": "false",
@@ -86,7 +106,7 @@ class DraftKingsBook:
             "include": "Events",
             "entity": "events",
         }
-        resp = self.session.get(DK_LEAGUE_URL, params=params, timeout=30)
+        resp = self._get(DK_LEAGUE_URL, params=params, timeout=30)
         if resp.status_code != 200:
             raise RuntimeError(f"DK event listing returned HTTP {resp.status_code}")
         games = []
@@ -106,7 +126,7 @@ class DraftKingsBook:
     def _event_markets(self, game: BookGame) -> dict[str, dict]:
         if game.book_event_id not in self._markets:
             url = DK_SGP_EVENT_URL.format(event_id=game.book_event_id)
-            resp = self.session.get(url, timeout=60)
+            resp = self._get(url, timeout=60)
             if resp.status_code != 200:
                 raise RuntimeError(f"DK SGP payload for event {game.book_event_id} "
                                    f"returned HTTP {resp.status_code}")
@@ -171,7 +191,7 @@ class DraftKingsBook:
         if wait > 0:
             time.sleep(wait)
         try:
-            resp = self.session.get(DK_SGP_PRICE_URL, timeout=30,
+            resp = self._get(DK_SGP_PRICE_URL, timeout=30,
                                     headers={"X-SportId": DK_FOOTBALL_SPORT_ID},
                                     params={"eventId": event_id, "selections": ",".join(sorted(base)),
                                             "marketCandidates": candidate_market_id,

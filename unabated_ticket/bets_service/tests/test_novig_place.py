@@ -13,9 +13,10 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-from unabated_ticket.bets_service import service
+from unabated_ticket.bets_service import manual_orders, service
 from unabated_ticket.bets_service.novig_orders import qty_for_stake
-from unabated_ticket.bets_service.novig_place import ManualNovigDesk, validate_novig_place_request
+from unabated_ticket.bets_service.novig_place import (PLACE_FINAL_READ_ATTEMPTS, ManualNovigDesk,
+                                                      validate_novig_place_request)
 from unabated_ticket.bets_service.store import BetsStore
 
 NOW = datetime(2026, 10, 16, 21, 0, tzinfo=timezone.utc)
@@ -104,7 +105,10 @@ def request(**changes):
 
 def test_validate_names_what_is_wrong():
     assert validate_novig_place_request({**BODY, "clickId": "abc12345-0001"}).startswith("clickId")
-    assert validate_novig_place_request({**BODY, "betTypeId": 1}).startswith("betTypeId")
+    assert validate_novig_place_request({**BODY, "betTypeId": 4}).startswith("betTypeId")
+    # A moneyline has no number: whatever the Ticket sent is dropped.
+    assert validate_novig_place_request({**BODY, "betTypeId": 1, "points": None})["points"] is None
+    assert validate_novig_place_request({**BODY, "betTypeId": 1})["points"] is None
     assert validate_novig_place_request({**BODY, "points": None}).startswith("points")
     assert validate_novig_place_request({**BODY, "ticketAllIn": 1.0}).startswith("ticketAllIn")
     assert validate_novig_place_request({**BODY, "novigReadAt": None}).startswith("novigReadAt")
@@ -127,6 +131,12 @@ def test_a_click_sends_one_ioc_buy_at_the_live_price_in_1c_contracts(store):
     assert result["status"] == "filled"
     assert result["cost"] == pytest.approx(49.99725)
     assert result["message"] == "Bet $50.00 at 67.5¢ on Novig to win $24.07."
+
+
+def test_a_moneyline_click_asks_the_runner_with_no_number(store):
+    desk = desk_with(store, ScriptedNovig())
+    desk.place(request(betTypeId=1, points=None))
+    assert desk.quotes == [{"eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 1, "sideIndex": 1, "points": None}]
 
 
 def test_the_board_line_is_kept_so_places_subaccount_read_names_the_bet(store):
@@ -243,8 +253,16 @@ def test_an_add_waits_until_the_last_place_on_the_game_was_read_at_either_venue(
     (ScriptedNovig(send=(500, {})), "unknown", "Check Novig"),
     (ScriptedNovig(send=(201, {})), "unknown", "Check Novig"),
     (ScriptedNovig(raises=True), "unknown", "Novig did not answer"),
-    (ScriptedNovig(order_reads=[(404, {})] * 6), "unknown", "has not said what filled"),
-    (ScriptedNovig(order_reads=[OSError("reset")] * 6), "unknown", "has not said what filled"),
+    (ScriptedNovig(order_reads=[(404, {})] * PLACE_FINAL_READ_ATTEMPTS, fills=[]), "unknown", "has not said what filled"),
+    (ScriptedNovig(order_reads=[OSError("reset")] * PLACE_FINAL_READ_ATTEMPTS, fills=[]), "unknown",
+     "has not said what filled"),
+    # Never read final, but every contract filled: it cannot fill more, so it is filled.
+    (ScriptedNovig(order_reads=[(404, {})] * PLACE_FINAL_READ_ATTEMPTS), "filled", "Bet $"),
+    # Never read final, some contracts filled: what filled so far, still unknown.
+    (ScriptedNovig(order_reads=[(200, {"status": "PENDING"})] * PLACE_FINAL_READ_ATTEMPTS,
+                   fills=[{"fillId": "f1", "qty": 4000, "cost": "27.00000"}]), "unknown", "Bet $27.00 at 67.5¢ on Novig so far"),
+    (ScriptedNovig(order_reads=[(404, {})] * PLACE_FINAL_READ_ATTEMPTS, fills=[{"fillId": "f1", "qty": 100}]), "unknown",
+     "has not said what filled"),
     (ScriptedNovig(order_reads=[(200, {"status": "REJECTED"})], fills=[]), "unfilled", "price was gone"),
     (ScriptedNovig(order_reads=[(200, {"status": "CANCELED"})], fills=[{"fillId": "f1", "qty": 4000, "cost": "27.00000"}]),
      "partial", "Bet $27.00 of $50.00"),
@@ -346,7 +364,7 @@ def test_the_route_places_and_refuses_a_bad_body_or_no_order_client(serve_with):
     status, reply = post_place(url, BODY)
     assert status == 200 and reply["ok"] is True and reply["status"] == "filled"
     assert desk.requests == [validate_novig_place_request(BODY)]
-    status, reply = post_place(url, {**BODY, "betTypeId": 1})
+    status, reply = post_place(url, {**BODY, "betTypeId": 4})
     assert status == 400 and "betTypeId" in reply["error"]
     status, reply = post_place(serve_with(None), BODY)
     assert status == 503 and "no Place Novig key" in reply["error"]
@@ -367,5 +385,75 @@ def test_the_service_arms_place_only_on_its_own_proven_trading_key_with_both_rea
     armed, _ = service.open_novig_place_desk(store, ["novig", "novig_place", "novig_bot"], check=trading)
     assert isinstance(armed, ManualNovigDesk)
     assert armed._read_sources == ("novig", "novig_place", "novig_bot"), "the bot's bets count when they are read"
+    # Its runner quote waits RUNNER_NOVIG_QUOTE_TIMEOUT_SEC (30 s), not the Kalshi quote's 10 s.
+    opened = []
+
+    class Opener:
+        def open(self, url, timeout):
+            opened.append((url, timeout))
+            raise urllib.error.URLError("timed out")
+
+    monkeypatch.setattr(manual_orders, "_RUNNER_OPENER", Opener())
+    answer = armed._quote_reader({"eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 1, "points": -35.5})
+    assert answer["reason"] == "runner" and "timed out" in answer["detail"]
+    assert [(url.split("?")[0].endswith("/novig_quote.json"), timeout) for url, timeout in opened] == [(True, 30)]
     sources = service.novig_subaccount_sources(None, store)
     assert [source.name for source in sources] == ["novig_place"]
+
+
+def test_an_order_never_read_final_stays_unknown_until_the_sub_account_read_confirms_it(store):
+    novig = ScriptedNovig(order_reads=[(404, {})] * PLACE_FINAL_READ_ATTEMPTS, fills=[])
+    assert desk_with(store, novig).place(request())["status"] == "unknown"
+    client_order_id = f"nman-{CLICK_ID}"
+    assert store.unconfirmed_novig_place_orders(NOW - timedelta(seconds=1)) == [], "placed after the cutoff: not yet"
+    [unconfirmed] = store.unconfirmed_novig_place_orders(NOW)
+    assert unconfirmed == {"client_order_id": client_order_id, "novig_order_id": ORDER_ID, "outcome_id": OUTCOME,
+                           "count_requested": novig.last_qty}
+    assert store.unconfirmed_novig_place_orders(NOW + timedelta(hours=25)) == [], "re-read for a day, then left"
+    store.confirm_novig_place_order(client_order_id, "filled", novig.last_qty, 50.0, NOW + timedelta(minutes=1))
+    assert store.unconfirmed_novig_place_orders(NOW + timedelta(minutes=1)) == []
+    assert order_row(store, client_order_id) == ("filled", novig.last_qty, 50.0, "confirmed later by the Place sub-account read")
+
+
+def test_order_reads_stop_at_the_window_however_slow_each_read_is(store):
+    """Each read hanging to its 10 s timeout: reads stop once the window has
+    passed, so the click answers within the phone's wait."""
+    elapsed = [0.0]
+
+    class HangingNovig(ScriptedNovig):
+        def get_order(self, order_id):
+            elapsed[0] += 10.0
+            return 404, {}
+
+    novig = HangingNovig(fills=[])
+    desk = ManualNovigDesk(novig, store, lambda _line: dict(QUOTE), now=lambda: NOW, sleep=lambda sec: None,
+                           clock=lambda: elapsed[0])
+    assert desk.place(request())["status"] == "unknown"
+    assert elapsed[0] == 20.0, "two reads: the second ends past the 12 s window, so no third starts"
+
+
+def order_row(store, client_order_id):
+    """(status, count_filled, cost_filled, error) of one manual_orders row."""
+    return store._con.execute("SELECT status, count_filled, cost_filled, error FROM manual_orders WHERE client_order_id = ?",
+                              [client_order_id]).fetchone()
+
+
+@pytest.mark.parametrize("novig, row", [
+    # Never final, nothing filled yet: unknown, 0 so far.
+    (ScriptedNovig(order_reads=[(404, {})] * PLACE_FINAL_READ_ATTEMPTS, fills=[]),
+     ("unknown", 0, 0.0, "never read final; 0 of 7407 filled so far")),
+    # Never final, some filled: unknown with what filled so far.
+    (ScriptedNovig(order_reads=[(200, {"status": "PENDING"})] * PLACE_FINAL_READ_ATTEMPTS,
+                   fills=[{"fillId": "f1", "qty": 4000, "cost": "27.00000"}]),
+     ("unknown", 4000, 27.0, "never read final; 4000 of 7407 filled so far")),
+    # Never final, fills unreadable: unknown, nothing claimed filled.
+    (ScriptedNovig(order_reads=[(404, {})] * PLACE_FINAL_READ_ATTEMPTS, fills=[{"fillId": "f1", "qty": 100}]),
+     ("unknown", None, None, "never read final; fills read failed: ")),
+    # Never final, every contract filled: filled.
+    (ScriptedNovig(order_reads=[(404, {})] * PLACE_FINAL_READ_ATTEMPTS), ("filled", 7407, 49.99725, None)),
+])
+def test_what_an_order_never_read_final_writes(store, novig, row):
+    desk_with(store, novig).place(request())
+    status, count, cost, error = order_row(store, f"nman-{CLICK_ID}")
+    assert (status, count, cost) == row[:3]
+    assert (error or "").startswith(row[3] or "") and (row[3] is not None or error is None)

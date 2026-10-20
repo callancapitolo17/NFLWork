@@ -46,6 +46,8 @@ USER_AGENT = "unabated-ticket-bets-service/1.0"
 
 ORDERS_PATH = "/v3/orders"
 FILLS_PATH = "/v3/portfolio/fills"
+POSITIONS_PATH = "/v3/portfolio/positions"
+TRANSACTION_SETTLEMENT = "SETTLEMENT"
 KEYS_PATH = "/v3/keys"
 PUBLIC_MARKET_PATH = "/v3/public/catalog/markets"
 TIME_IN_FORCE_IOC = "IOC"
@@ -54,6 +56,8 @@ STATUS_PENDING = "PENDING"
 STATUS_OPEN = "OPEN"
 # A public market's status once its outcomes are graded; nothing about it changes after.
 MARKET_SETTLED = "SETTLED"
+# The error code of a market Novig's public catalog no longer lists.
+CODE_MARKET_NOT_FOUND = "MARKET_NOT_FOUND"
 STATUS_FILLED = "FILLED"
 STATUS_CANCELED = "CANCELED"
 STATUS_REJECTED = "REJECTED"
@@ -304,6 +308,21 @@ class NovigOrderClient:
             query.append(("startsAfter", str(starts_after_ms)))
         return self._paged(FILLS_PATH, query)
 
+    def open_positions(self) -> list[dict]:
+        """This subaccount's nonzero positions ([{marketId, outcomeId, qty, cost}]).
+        A settled market's position leaves this list (Novig closes it)."""
+        status, reply = self.request("GET", POSITIONS_PATH)
+        if status != 200 or not isinstance(reply, list):
+            raise NovigError(f"GET {POSITIONS_PATH}: expected 200 with a list, got HTTP {status} {str(reply)[:300]}")
+        return [item for item in reply if isinstance(item, dict)]
+
+    def settlements(self, starts_after_ms: int) -> list[dict]:
+        """This subaccount's SETTLEMENT ledger rows ([{amount, ref, ts}]) on
+        events that start after `starts_after_ms`: one per settled market that
+        paid it something (ref = market id; a loss pays nothing, so writes none)."""
+        return self._paged(f"/v3/account/subaccounts/{self.key_id}/transactions",
+                           [("kind", TRANSACTION_SETTLEMENT), ("startsAfter", str(starts_after_ms))])
+
     def balance(self) -> float:
         """This subaccount's balance in dollars (GET .../subaccounts/{own key}/balance)."""
         status, reply = self.request("GET", f"/v3/account/subaccounts/{self.key_id}/balance")
@@ -327,7 +346,17 @@ class NovigOrderClient:
 
     def market(self, market_id: str) -> dict:
         """The public catalog's market (status, strike, outcomes, fee, eventId)."""
+        market = self.market_if_listed(market_id)
+        if market is None:
+            raise NovigError(f"market {market_id}: Novig's catalog does not list it")
+        return market
+
+    def market_if_listed(self, market_id: str) -> dict | None:
+        """The public catalog's market, or None when Novig answers 404
+        MARKET_NOT_FOUND (it drops some markets from the catalog)."""
         status, reply = self.request("GET", f"{PUBLIC_MARKET_PATH}/{market_id}")
+        if status == 404 and error_code_of(reply) == CODE_MARKET_NOT_FOUND:
+            return None
         if status != 200 or not isinstance(reply, dict) or not reply.get("marketId"):
             raise NovigError(f"market {market_id}: expected 200 with a market, got HTTP {status} {str(reply)[:300]}")
         return reply
@@ -341,6 +370,12 @@ class NovigOrderClient:
         if status in (401, 403):
             return False
         return None
+
+
+def fill_outcome(filled: int, requested: int) -> str:
+    """An order's row status from its contracts filled: 'unfilled' | 'filled' |
+    'partial' (the bot desk's, Place's and Place's later confirmation)."""
+    return "unfilled" if filled == 0 else "filled" if filled >= requested else "partial"
 
 
 def order_totals(fills: list[dict]) -> tuple[int, float, float]:
