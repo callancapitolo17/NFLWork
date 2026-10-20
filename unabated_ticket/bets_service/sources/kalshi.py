@@ -84,7 +84,7 @@ FINAL_STATUSES = frozenset({"won", "lost", "void", "closed"})
 # Stamped into raw.readComplete on a record built from a complete read. Bump it
 # when a change to how records are built must reach rows already stored as
 # final: every stored row then fails the match and is rebuilt at the next restart.
-READ_VERSION = 1
+READ_VERSION = 2
 # A record whose market or event payload could not be read (_game_fields,
 # _lookup failures) carries this prefix in `unmatchable`.
 UNREADABLE_REASON_PREFIX = "unreadable"
@@ -230,6 +230,17 @@ def fill_on_its_open_side(fill: dict, position: dict | None) -> dict:
     return {**fill, "side": bought, "outcome_side": bought, "action": "buy"}
 
 
+def combo_leg_event_tickers(market: dict | None) -> list[str] | None:
+    """A combo market's legs' event tickers (KXNFLSPREAD-26OCT19WASSF, ...), which
+    name each leg's league; None on a market with no legs. Kalshi's GET
+    /markets/<ticker> carries mve_selected_legs on finalized combos too (checked
+    2026-10-20 on three KXMVECROSSCATEGORY tickers, 2026-09-09 to 2026-10-20)."""
+    legs = (market or {}).get("mve_selected_legs")
+    if not isinstance(legs, list) or not legs:
+        return None
+    return [str(leg.get("event_ticker") or "") for leg in legs]
+
+
 def normalize_kalshi(fills: list[dict], positions: list[dict], markets: dict[str, dict],
                      events: dict[str, dict], fetched_at: str | None) -> list[dict]:
     """One record per (ticker, side) seen in `fills`. `markets` / `events` are
@@ -282,6 +293,7 @@ def normalize_kalshi(fills: list[dict], positions: list[dict], markets: dict[str
                 "marketStatus": market.get("status") if market else None,
                 "marketResult": market.get("result") if market else None,
                 "eventTitle": event.get("title") if event else None,
+                "legEventTickers": combo_leg_event_tickers(market),
             },
         }
         spec = tk.GAME_SERIES.get(series)
