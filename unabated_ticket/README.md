@@ -1473,8 +1473,8 @@ its number, or a rung that repeats its neighbour's fair (Unabated flat-lines
 deep tails), is listed grey with the reason and never used.
 
 **Can't tease (college only, 2026-10-03).** Buckeye keeps some college games
-off its teaser menu; every NFL game teases. A CFB leg in the pool or above
-break-even carries a **Can't tease** chip: it takes that game's spread or
+off its teaser menu; every NFL game teases. A CFB leg in the pool or shed for
+the outcome budget carries a **Can't tease** chip: it takes that game's spread or
 total, both sides (`teaser.marketKeyOf`), out of the pool, and the game's other
 market can still step in. The list rebuilds when the market held a pool leg;
 otherwise only the Legs list changes. The marked market sits in the
@@ -1483,11 +1483,15 @@ restoring on the same fairs brings the same list back. Marks live in
 `chrome.storage.local` (`teaserBlocked`: market key → the game's start) and
 each ends when its game starts.
 
-**Tickets.** The pool is each game's best leg — one leg per game, so legs are
-independent — the top 10 by win chance (2^10 = 1,024 joint outcomes; 12 legs
-added nothing). Every 4-leg combination of the pool (210) is a candidate. All
-four legs win: +3 per dollar (+300); anything else loses the stake. A leg
-breaks even at 70.7% (0.25^¼).
+**Tickets.** A leg breaks even at 70.7% (0.25^¼). The pool is every game's
+best leg (one leg per game, so legs are independent) whose win chance is
+above 70.7%, however many (user decision 2026-10-16: each leg must be +EV on
+its own, so a 70% leg stays out even beside strong partners). Like every
+fair in the list, a leg's is the one the list was built on until it moves a
+point, so a leg ticking just over 70.7% waits for that move and reads
+"below break-even when the list was built" meanwhile. Every 4-leg
+combination of the pool is a candidate (210 at 10 legs, 4,845 at 20). All
+four legs win: +3 per dollar (+300); anything else loses the stake.
 
 **The set.** One score decides everything: E[ln(1 + P&L / K)], K = bankroll ×
 Kelly multiplier (the ⚙ settings; the objective conditional Kelly uses for
@@ -1502,12 +1506,16 @@ offered again, and once an open 4-team ticket under $200 is in play (the
 list's partial, placed — a 2-team teaser does not count) no second partial
 is; the empty state says so, with the partial it held back. So placing the
 list in order leaves the rest of it, and placing all of it leaves nothing.
-The joint outcomes stay under 131,072: open teasers on many games outside the
-pool, or straight bets splitting many games into more rows, cost the pool its
-weakest free legs (and the straights on their games) rather than the list.
+The joint outcomes stay within 2^20 (1,048,576): open teasers on many games
+outside the pool, or straight bets splitting many games into more rows, cost
+the pool its weakest free legs (and the straights on their games) rather than
+the list; a leg shed this way reads "too many outcomes to size" in the Legs
+list. Each pool leg is its own game, so the pool holds at most 20 legs.
 Every ticket wins exactly where its four legs do, so the search scores the
-2^10 states of "which pool legs win", not every outcome: 9/27 with its 15
-straights (69,984 outcomes) builds in ~0.2 s. Two legs with the same fair
+2^N states of "which pool legs win", not every outcome, and one
+sum-over-supersets pass per step (N × 2^N) gives every ticket its score at
+once. Measured in node: 10 legs build in ~20 ms, 17 legs in 0.4 s, 20 legs
+(the full budget) in ~4 s at K = $5,000 and ~14 s at K = $20,000. Two legs with the same fair
 (Colts +7.5 and Titans +8.5 are both 74.7% on 9/27) make tickets that tie
 exactly; a tie goes to the first combination in the pool's order. Two ways
 to see what it does, on Sunday's board (2026-09-27 16:37 UTC, $20,000 at
@@ -1635,7 +1643,8 @@ with no fair behind a fold, the markets marked can't tease first). An open ticke
 game started, or no leg priced on the board. The Placed figure in the
 summary is the open tickets still in the math; the Open at BFA line says
 both when they differ. Empty states: the
-board loading, fewer than 4 priced games, no ticket worth betting. The bets
+board loading, fewer than 4 games with a leg above break-even, no ticket
+worth betting. The bets
 service down puts a red banner up and the list stays (an open teaser may be
 missing from it). The scanner always loads NFL and CFB for this tab; the
 Edges tab and its alerts still list only the sports you tick
@@ -3327,7 +3336,12 @@ lines off the board, stale lines and other books never teased; grading (the
 one ticket's EV, expected profit, chance to make money and chance every
 ticket loses); one ticket under the cap sized at the single-bet Kelly stake
 in whole dollars; the greedy never above $200 a ticket nor taking a ticket
-twice; the pool as each game's best leg, top 10; fewer than 4 priced games;
+twice; the pool as every game's best leg above 70.7% on a 20-leg board
+(-242 in, -241 out); a leg ticking over 70.7% joining only on a 1-point
+move, its row saying why it waits; a ticket on the 17th pool leg winning where its legs do
+(the leg states are 32-bit); the superset pass picking the per-ticket scan's
+ticket at every step on five of the file's boards; fewer than 4 games above
+break-even however many are priced;
 open BFA teaser legs grouping into tickets and joining their games by
 rotation (a BFA parlay, a settled teaser and another venue's leg ignored);
 an open ticket lowering the next suggestion on the legs it shares ($200 → $84
@@ -3335,8 +3349,10 @@ with $200 open on three of its legs); an open ticket's own four legs never
 offered again, so placing the top ticket leaves the list less it (a board
 with four standout legs, where it used to come back at the top); the whole
 list open leaving nothing (one partial ticket per set); open teasers on
-eight games outside the pool shedding one pool leg to stay at 2^17
-outcomes rather than going dark; a leg whose BFA start is 3 h off the board's
+eight games outside the pool shedding the two weakest pool legs to stay at
+2^20 outcomes rather than going dark, each named in the Legs list and
+still named after a sub-point tick; open teasers on 17 games outside four
+pool legs giving no tickets with that reason; a leg whose BFA start is 3 h off the board's
 joining by rotation so its ticket stays taken (13 h off: counted as won); a
 5-team teaser with a leg counted as won blocking no 4-leg combination; the
 partial rule ($63 alone, $45 with a 2-team $110 teaser open, none and $32
@@ -3361,7 +3377,8 @@ ladder leaving that straight out while the list stands; the list rebuilt on
 a straight placed on a pool game and on its 1-point move, not on one off the
 pool nor a sub-point tick; the summary leaving the straights' P&L out and
 counting them for the note, with the row's held / against dollars; and the
-outcome budget shedding the two weakest legs with their games' straights.
+outcome budget shedding the weakest leg with its game's straights (4^11
+outcomes down to 4^10).
 `condkelly.test.js` adds `resultAt` (win, push, loss either side).
 `bets.test.js` adds `teaserLegPositionOf` (the leg at its own teased number,
 no stake guard, the parlay-leg guard kept for straight sizing),
@@ -3663,13 +3680,33 @@ in red.
   did not join its game (BFA's start more than 12 h off the board's, or the
   game off Buckeye's board), so the ticket is not recognised as the list's:
   attach the leg to its game on the Bets tab.
-- **Teasers: "Fewer than 4 games with a priced Buckeye leg"**: Buckeye's
-  NFL/CFB board is thin (Monday night, or before the week's lines post), or
-  its lines are older than **Max line age h** in the Edges controls.
+- **Teasers: "Fewer than 4 games with a leg above break-even"**: Buckeye's
+  NFL/CFB board is thin (Monday night, or before the week's lines post), its
+  lines are older than **Max line age h** in the Edges controls, or too few
+  of its teased legs clear 70.7% (the fold counts the ones below break-even).
 
 ## Design decisions log (moved from the root CLAUDE.md, 2026-09-15)
 
 History of design decisions that used to live in `NFLWork/CLAUDE.md`. The sections above are the maintained reference; this log records *why* each choice was made and when, with issue numbers.
+
+**2026-10-16, shipped 2026-10-20: every +EV leg in the teaser pool (0.31.0).** The pool kept
+the 10 best legs only for speed. Cal: every game's best leg above the 70.7%
+break-even goes in, however many, and a leg at or under it stays out even
+when strong partners could carry it (each leg must be +EV on its own). The
+greedy and its $200 tickets are unchanged. The outcome budget went from 2^17
+to 2^20 so held straights shed fewer +EV legs (9/27's 15 straights made
+69,984 outcomes at 10 legs: an 11th leg already overflowed). Two fixes came
+with it: the leg states were 16-bit, so a 17th pool leg's tickets never won;
+and scoring every ticket against every leg state cost C(N,4) × 2^N per step
+(~40 s at 17 legs, hours at 24, on the runner's event loop beside the
+taker), now one sum-over-supersets pass, N × 2^N. In a one-off run before
+the pool rule changed, the new scoring reproduced all 57 of the test file's
+builds ticket for ticket; the committed test compares the two pick by pick
+on five boards. Speed at the full budget (~4 s for 20 legs at K =
+$5,000) is accepted (Cal: "not too worried about speed"). Shipped as 0.31.0:
+Novig Place (#188) took 0.29.0 and Place on any pregame line 0.30.0 first.
+Plan:
+`docs/2026-10-16-unabated-ticket-teaser-pool-plan.md`.
 
 **2026-10-19 — Place on any pregame line (0.30.0).** Cal: "It should be able
 to place anything", Kalshi and Novig alike; he picked A, finding each line in

@@ -96,7 +96,7 @@
   function emptyText(plan) {
     if (!plan) return "Waiting for Buckeye's NFL and CFB board…";
     if (plan.ticketCount) return null;
-    if (plan.reason === teaserLib.REASON_FEW_LEGS) return `Fewer than ${teaserLib.LEGS_PER_TICKET} games with a priced Buckeye leg right now: nothing to tease.`;
+    if (plan.reason === teaserLib.REASON_FEW_LEGS) return `Fewer than ${teaserLib.LEGS_PER_TICKET} games with a leg above break-even right now: nothing to tease.`;
     if (plan.reason) return `No tickets: ${plan.reason}.`;
     if (plan.partialHeldBack > 0) {
       return `Nothing more to bet: the next ticket would be a partial ${fmtWholeDollars(plan.partialHeldBack)}, and a 4-team ticket under $200 is already open at BFA (one partial ticket per set).`;
@@ -216,9 +216,9 @@
     return tags;
   }
 
-  // A college leg on show (in the pool or above break-even) offers Can't
-  // tease; a marked one offers Restore. NFL legs never: Buckeye teases every
-  // NFL game. {action: "block" | "restore", title} or null.
+  // A college leg on show (in the pool or shed for the outcome budget)
+  // offers Can't tease; a marked one offers Restore. NFL legs never: Buckeye
+  // teases every NFL game. {action: "block" | "restore", title} or null.
   function blockControl(row) {
     if (row.standing === teaserLib.STANDING_BLOCKED) return { action: "restore", title: "Tease this market again." };
     const onShow = row.standing === teaserLib.STANDING_POOL || row.standing === teaserLib.STANDING_OUT;
@@ -229,8 +229,8 @@
     };
   }
 
-  // The Legs list's layout: the pool's legs and the priced legs above
-  // break-even, best first, with the break-even divider where it falls; the
+  // The Legs list's layout: the pool's legs and the legs shed for the
+  // outcome budget, best first, with the break-even divider where it falls; the
   // rest of the games behind a fold, the markets marked can't tease first.
   //   {gameCount, items: [{divider: true} | {row}], folded: [row], foldLabel}
   function legsLayout(rows) {

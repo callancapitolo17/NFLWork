@@ -29,7 +29,7 @@ function rowOf(standing, legOverrides, rowOverrides) {
 test("the empty list says why: no board yet, too few legs, a partial held back, nothing worth betting", () => {
   assert.equal(teaserView.emptyText(null), "Waiting for Buckeye's NFL and CFB board…");
   assert.equal(teaserView.emptyText({ ticketCount: 2, reason: null, partialHeldBack: 0, placedCount: 0 }), null);
-  assert.match(teaserView.emptyText({ ticketCount: 0, reason: teaser.REASON_FEW_LEGS, partialHeldBack: 0, placedCount: 0 }), /^Fewer than 4 games/);
+  assert.equal(teaserView.emptyText({ ticketCount: 0, reason: teaser.REASON_FEW_LEGS, partialHeldBack: 0, placedCount: 0 }), "Fewer than 4 games with a leg above break-even right now: nothing to tease.");
   assert.match(teaserView.emptyText({ ticketCount: 0, reason: null, partialHeldBack: 120, placedCount: 1 }), /partial \$120/);
   assert.match(teaserView.emptyText({ ticketCount: 0, reason: null, partialHeldBack: 0, placedCount: 2 }), /with the open teasers held/);
   assert.match(teaserView.emptyText({ ticketCount: 0, reason: null, partialHeldBack: 0, placedCount: 0 }), /^No ticket worth betting/);
@@ -101,7 +101,7 @@ test("Can't tease shows on college legs on show only; a marked market offers Res
 test("legs layout: break-even divider where the shown legs cross it, the rest folded with counts", () => {
   const rows = [
     rowOf(teaser.STANDING_POOL, { eventId: "a", win: 0.76 }, { inTickets: 2 }),
-    rowOf(teaser.STANDING_OUT, { eventId: "b", win: 0.70 }, { note: "outside the top 10" }),
+    rowOf(teaser.STANDING_OUT, { eventId: "b", win: 0.70 }, { note: "too many outcomes to size" }),
     rowOf(teaser.STANDING_BELOW, { eventId: "c", win: 0.6 }, { note: "below break-even" }),
     rowOf(teaser.STANDING_BLOCKED, { eventId: "d", leagueId: CFB }, { note: "can't tease" }),
   ];
