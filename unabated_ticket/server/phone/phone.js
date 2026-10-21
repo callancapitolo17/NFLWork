@@ -91,7 +91,7 @@
     ticketRelatedBlock: el("ticket-related-block"), ticketRelated: el("ticket-related"), ticketRelatedCount: el("ticket-related-count"),
     ticketOthersBlock: el("ticket-others-block"), ticketOthers: el("ticket-others"), ticketOthersCount: el("ticket-others-count"),
     ticketMoved: el("ticket-moved"),
-    ticketVenuePlace: el("ticket-venue-place"), ticketVenueStake: el("ticket-venue-stake"),
+    ticketVenuePlace: el("ticket-venue-place"), ticketVenueRow: el("ticket-venue-row"), ticketVenueStake: el("ticket-venue-stake"),
     ticketVenueButtons: el("ticket-venue-buttons"), ticketVenueMsg: el("ticket-venue-msg"), ticketFoot: el("ticket-foot"),
     teasersTab: el("tab-teasers"), teasersCount: el("teasers-count"), viewTeasers: el("view-teasers"),
     teasersError: el("teasers-error"), teasersWarning: el("teasers-warning"), teasersStatus: el("teasers-status"), teasersEmpty: el("teasers-empty"),
@@ -177,17 +177,22 @@
     } catch (error) {
       throw new Error(error.name === "TimeoutError" ? `no answer in ${timeoutMs / 1000} s` : error.message, { cause: error });
     }
+    // The timeout covers the body too: on a slow connection a big reply (/bets.json)
+    // is cut off mid-download, which must not read as a reply with nothing in it.
     let parsed;
+    let bodyError = null;
     try {
       parsed = await response.json();
-    } catch (_error) {
+    } catch (error) {
       parsed = null;
+      bodyError = error;
     }
     if (!response.ok) {
       const error = new Error(parsed && parsed.error ? parsed.error : `HTTP ${response.status}`);
       error.status = response.status;
       throw error;
     }
+    if (bodyError) throw new Error(phoneView.cutOffBodyText(bodyError, timeoutMs), { cause: bodyError });
     return parsed;
   }
 
@@ -647,7 +652,13 @@
   }
 
   // `onList` false: the row has left the Edges list, so nothing is placed off its last price.
+  // A Place sent on this row keeps its result in view (a fill often takes the line off the list).
   function renderPlace(row, acted, onList) {
+    if (!onList && placeState.rowKey === row.key && (placeState.phase === "placing" || placeState.phase === "done")) {
+      renderPlaceResultOnly();
+      return;
+    }
+    view.ticketVenueRow.hidden = false;
     view.ticketVenuePlace.hidden = !onList || !venuePlace.canPlace(venuePlaceLine(row));
     // The foot says nothing here places a bet: true everywhere but a Kalshi or Novig ticket.
     view.ticketFoot.hidden = !view.ticketVenuePlace.hidden;
@@ -664,6 +675,17 @@
       placeState.sizedOn = state.edges.payload && state.edges.payload.betsService ? state.edges.payload.betsService.sources : null;
     }
     renderPlaceControls();
+  }
+
+  // The line has left the list after a Place on it: the result stays, the amount box and buttons go.
+  function renderPlaceResultOnly() {
+    view.ticketVenuePlace.hidden = false;
+    view.ticketFoot.hidden = true;
+    view.ticketVenueRow.hidden = true;
+    const { message, tone } = placeState;
+    view.ticketVenueMsg.hidden = false;
+    view.ticketVenueMsg.className = `tk-place-msg ${tone || ""}`;
+    view.ticketVenueMsg.textContent = `${message} The line has since left the Edges list.`;
   }
 
   function renderPlaceControls() {

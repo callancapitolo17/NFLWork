@@ -226,3 +226,10 @@ test("teasersWarningText: no BFA account read, or BFA's last pull failed", () =>
   assert.equal(phoneView.teasersWarningText({ configured: true, error: "HTTP 500", ageText: "3m" }), "BFA's last pull failed (HTTP 500); open teasers are as of 3m ago.");
   assert.equal(phoneView.teasersWarningText({ configured: true, error: null }), null);
 });
+
+test("cutOffBodyText: a body cut off mid-download reads as that, not as a reply with nothing in it", () => {
+  const timedOut = Object.assign(new Error("signal timed out"), { name: "TimeoutError" });
+  assert.equal(phoneView.cutOffBodyText(timedOut, 10000), "download cut off: not all of it arrived in 10 s (slow connection?)");
+  assert.equal(phoneView.cutOffBodyText(new SyntaxError("Unexpected end of JSON input"), 10000),
+    "download cut off: the reply arrived incomplete (connection dropped?)");
+});
