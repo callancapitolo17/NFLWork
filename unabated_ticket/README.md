@@ -2488,7 +2488,11 @@ node unabated_ticket/server/runner.js                     # must be running too 
   books tiles, every book at the number, the related-bets table (each bet on
   two lines) and the card's other lines. Freshness and errors (edges or
   bets service unreachable since …, scanner errors, settings fallback) sit at
-  the top.
+  the top. A read whose body does not arrive whole inside the page's 10 s
+  timeout (a slow connection; `/bets.json` is the big one) reads "download
+  cut off", not as an empty reply. A Place result stays on the ticket after
+  the line leaves the Edges list (a fill often takes it off), with the amount
+  box and buttons gone.
 - **Bets**: money at risk, Needs a game / Needs a code fix / Not on the board
   (the runner adds `betsService.unmatched`, `bets.unmatchedReasons` over
   its board, to `/edges.json`), venue freshness, open bets; Attach, Undo,
