@@ -1,6 +1,7 @@
 // Unabated Ticket phone page — the DOM side (phone page plan steps 2-3).
-// Three order routes: a Kalshi or Novig Ticket's Place (POST /place_kalshi.json
-// or /place_novig.json, Place's own key at that venue, place.js) and a Teasers
+// Three order routes: a Kalshi, Novig or Polymarket US Ticket's Place (POST
+// /place_kalshi.json, /place_novig.json or /place_polymarket.json, Place's own
+// key at that venue, place.js) and a Teasers
 // ticket's Place (POST /place_teaser.json, a real
 // teaser at BFA, the panel's same two-step confirm). Everything else you bet
 // in the book's own app.
@@ -27,6 +28,7 @@
 //   POST /place_teaser.json    Place a Teasers ticket at BFA (money, not just rows)
 //   POST /place_kalshi.json    Place a Kalshi Ticket on Cal's own key (money)
 //   POST /place_novig.json     Place a Novig Ticket from Place's own Novig sub-account (money)
+//   POST /place_polymarket.json  Place a Polymarket US Ticket on Cal's main account (money)
 // Nothing is stored in the browser.
 // Words and numbers come from phoneview.js and the extension's own pure
 // modules (edgerows.js, teaserview.js, betsview.js, bets.js, kelly.js, feed.js).
@@ -635,10 +637,10 @@
     view.ticketOthers.replaceChildren(...others.map((other) => otherLineEl(other, row.sideLabel, card.key, now)));
   }
 
-  // ---- Place on Kalshi or Novig (place.js) --------------------------------
+  // ---- Place on Kalshi, Novig or Polymarket US (place.js) -----------------
   // The ticket's own Place button: one order per second tap, sent by the bets
-  // service on Place's own key at that venue (POST /place_kalshi.json or
-  // /place_novig.json). Its state belongs to one open row: {rowKey,
+  // service on its key at that venue (POST /place_kalshi.json,
+  // /place_novig.json or /place_polymarket.json). Its state belongs to one open row: {rowKey,
   // venueName, phase: null | "confirm" | "placing" | "done", armedAt,
   // message, tone, edited (Cal typed in the box)}.
   // sizedOn: edges.json's betsService.sources when the box last took the stake (the reads it was sized on).
@@ -660,7 +662,7 @@
     }
     view.ticketVenueRow.hidden = false;
     view.ticketVenuePlace.hidden = !onList || !venuePlace.canPlace(venuePlaceLine(row));
-    // The foot says nothing here places a bet: true everywhere but a Kalshi or Novig ticket.
+    // The foot says nothing here places a bet: true everywhere but a Place-able (Kalshi, Novig, Polymarket US) ticket.
     view.ticketFoot.hidden = !view.ticketVenuePlace.hidden;
     if (view.ticketVenuePlace.hidden) return;
     if (placeState.rowKey !== row.key) {

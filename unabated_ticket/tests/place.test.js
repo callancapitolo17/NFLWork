@@ -5,7 +5,8 @@ const place = require("../extension/place.js");
 
 const LINE = { bookId: 105, eventId: 123742, periodTypeId: 1, betTypeId: 2, sideIndex: 1, points: -35.5, price: -143, sourceFormat: 4, sourcePrice: 0.587157 };
 const NOVIG_LINE = { ...LINE, bookId: 89, price: -208, sourcePrice: 0.675 };
-const READS = { kalshi: "2026-10-16T21:00:00Z", novig: "2026-10-16T21:00:10Z" };
+const POLY_LINE = { ...LINE, bookId: 111, price: -179, sourceFormat: 1, sourcePrice: -179 };
+const READS = { kalshi: "2026-10-16T21:00:00Z", novig: "2026-10-16T21:00:10Z", polymarket_us: "2026-10-16T21:00:05Z" };
 
 test("every pregame Kalshi or Novig line gets the button, moneylines included; live lines and other books never", () => {
   const ids = { eventId: 1, periodTypeId: 1, betTypeId: 3, sideIndex: 0 };
@@ -36,6 +37,7 @@ test("a Kalshi request carries the line, the typed stake, the Ticket's all-in pr
   assert.deepEqual(request.body, {
     clickId: "abc12345", eventId: 123742, periodTypeId: 1, betTypeId: 2, sideIndex: 1, points: -35.5,
     stake: 150, ticketAllIn: 0.587157, kalshiReadAt: "2026-10-16T21:00:00Z", novigReadAt: "2026-10-16T21:00:10Z",
+    polymarketReadAt: "2026-10-16T21:00:05Z",
   });
   // Novig never read: the server then counts every Novig Place on the game.
   const noNovig = place.placeRequestOf({ line: LINE, stakeInput: "150", readAts: { kalshi: READS.kalshi, novig: null }, clickId: "abc12345" });
@@ -51,9 +53,25 @@ test("a Novig request goes to its own route with the Novig read and the Kalshi r
   assert.deepEqual(request.body, {
     clickId: "abc12345", eventId: 123742, periodTypeId: 1, betTypeId: 2, sideIndex: 1, points: -35.5,
     stake: 50, ticketAllIn: 0.675, kalshiReadAt: "2026-10-16T21:00:00Z", novigReadAt: "2026-10-16T21:00:10Z",
+    polymarketReadAt: "2026-10-16T21:00:05Z",
   });
   const noKalshi = place.placeRequestOf({ line: NOVIG_LINE, stakeInput: "50", readAts: { novig: READS.novig, kalshi: null }, clickId: "abc12345" });
   assert.equal(noKalshi.body.kalshiReadAt, null);
+});
+
+test("a Polymarket US request goes to its own route, priced off its American price, with every venue's read", () => {
+  const request = place.placeRequestOf({ line: POLY_LINE, stakeInput: "75", readAts: READS, clickId: "abc12345" });
+  assert.equal(request.path, "/place_polymarket.json");
+  assert.deepEqual(request.body, {
+    clickId: "abc12345", eventId: 123742, periodTypeId: 1, betTypeId: 2, sideIndex: 1, points: -35.5,
+    stake: 75, ticketAllIn: 0.641577, kalshiReadAt: "2026-10-16T21:00:00Z", novigReadAt: "2026-10-16T21:00:10Z",
+    polymarketReadAt: "2026-10-16T21:00:05Z",
+  });
+  assert.match(place.placeRequestOf({ line: POLY_LINE, stakeInput: "10", readAts: { ...READS, polymarket_us: null }, clickId: "abc12345" }).error,
+    /Polymarket US bets have not been read/);
+  // polymarket.com (107) is another book: no button.
+  assert.equal(place.canPlace({ eventId: 1, periodTypeId: 1, betTypeId: 2, sideIndex: 0, bookId: 107, live: null }), false);
+  assert.equal(place.canPlace({ eventId: 1, periodTypeId: 1, betTypeId: 1, sideIndex: 0, bookId: 111, live: null }), true);
 });
 
 test("no amount or no read at the venue is an error in words, nothing to send", () => {
@@ -71,10 +89,11 @@ test("reply tones", () => {
 test("Novig's read is the oldest of the app, Place and (when read) bot reads, null until both required land", () => {
   const at = (iso) => ({ fetchedAt: iso });
   const sources = { kalshi: at("2026-10-16T21:00:00Z"), novig: at("2026-10-16T21:00:10Z"), novig_place: at("2026-10-16T20:59:50Z") };
-  assert.deepEqual(place.readAtsOf(sources), { kalshi: "2026-10-16T21:00:00Z", novig: "2026-10-16T20:59:50Z" });
+  assert.deepEqual(place.readAtsOf(sources), { kalshi: "2026-10-16T21:00:00Z", novig: "2026-10-16T20:59:50Z", polymarket_us: null });
+  assert.equal(place.readAtsOf({ ...sources, polymarket_us: at("2026-10-16T21:00:05Z") }).polymarket_us, "2026-10-16T21:00:05Z");
   assert.equal(place.readAtsOf({ ...sources, novig_bot: at("2026-10-16T20:58:00Z") }).novig, "2026-10-16T20:58:00Z");
   assert.equal(place.readAtsOf({ ...sources, novig_bot: at(null) }).novig, null, "a bot read that never landed counts as missing");
   assert.equal(place.readAtsOf({ kalshi: sources.kalshi, novig: sources.novig }).novig, null);
-  assert.deepEqual(place.readAtsOf({}), { kalshi: null, novig: null });
-  assert.deepEqual(place.readAtsOf(undefined), { kalshi: null, novig: null }, "no bets payload yet");
+  assert.deepEqual(place.readAtsOf({}), { kalshi: null, novig: null, polymarket_us: null });
+  assert.deepEqual(place.readAtsOf(undefined), { kalshi: null, novig: null, polymarket_us: null }, "no bets payload yet");
 });

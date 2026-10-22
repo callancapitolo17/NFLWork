@@ -3158,6 +3158,66 @@ SELECT placed_at, label, ticker, ticket_all_in, ask_price, stake, count_requeste
 FROM manual_orders WHERE venue = 'novig' ORDER BY placed_at DESC;
 ```
 
+### Place on Polymarket US from the Ticket (`extension/place.js`, `server/polymarket.js`, `bets_service/polymarket_place.py`)
+
+Cal, 2026-10-21 (option A): the same button on every pregame Polymarket US
+line (book 111; polymarket.com, book 107, is another book and gets none),
+**Bet $X at Polymarket US**, ONE order on Cal's **main** Polymarket US account,
+signed with the `POLYMARKET_US_*` key the `polymarket_us` source already reads
+with (Cal, 2026-10-22: a polymarket.us key trades too, so no new key or setup).
+**On only when** the key is set,
+signs (one balance read at start) and the service reads `polymarket_us`; else
+`POST /place_polymarket.json` answers 503 and the log names why.
+
+1. Unabated's feed lists Polymarket US but names no market on any line (no
+   `sourceKey` / `sourceData`, checked on the VM 2026-10-22), so the runner's
+   `GET /polymarket_quote.json` (same query as Kalshi's) finds the contract in
+   Polymarket US's own public list (`server/polymarket.js`): the events of the
+   line's market type (`football_team_full_game_spread`, ...) starting within
+   30 min of the board's start; the one whose two teams resolve, through
+   `teams.js` and the team crosswalk exactly as Cal's Polymarket US bets are
+   matched, to the board game's away and home in that order (a full page of
+   100 events refuses as possibly cut); then among its markets the one market and side whose own
+   structured sides read as the line's side and number (YES is the `long`
+   side; a spread side's description is its own signed number; a total's YES
+   is Over; the bets source's grammar, so the bet reads back as the line it
+   was placed on). Zero or two of either refuses. A half moneyline refuses
+   (tie rule unchecked, as at Kalshi and Novig). It then reads the market's
+   book: YES costs the best offer, NO costs 1 minus the best bid (one
+   instrument per market; every price is the YES price), and a market not
+   `MARKET_STATE_OPEN` refuses. The quote carries the earlier of Unabated's
+   and Polymarket US's start.
+2. The all-in price adds the taker fee, THETA x p x (1 - p) per contract with
+   THETA = 0.06 (the exchange-wide coefficient of the July 2026 CFTC filing;
+   a sports-only 0.03 is reported second-hand, so the higher one is used:
+   over-counting can only refuse a click). **Unverified:** whether Unabated's
+   Polymarket US price already includes the fee. If it does not, nearly every
+   click refuses as "more than 0.1c worse" and the refusal shows both prices.
+3. It refuses, sending nothing, when: the game has started or its start is
+   unknown; the runner read another gateway; the live all-in is more than
+   **0.1c worse** than the Ticket's price (better always goes); the other side
+   of the market is held (a buy there sells it); the `polymarket_us` read is
+   failing or over 5 minutes old; an earlier Place on the game, at any venue,
+   may have filled after the read of its venue the stake was sized on
+   (`polymarketReadAt`, `kalshiReadAt`, `novigReadAt`;
+   `manual_orders.unseen_manual_fill`, which Kalshi and Novig Place now check
+   for Polymarket US Place too); the click id was already sent.
+4. It buys `floor(stake / all-in)` contracts with ONE immediate-or-cancel limit
+   at the live ask (a NO buy is `ORDER_INTENT_BUY_SHORT` at the YES price 1 -
+   ask), row `pman-<clickId>` inserted before the send. Polymarket US takes
+   **no client order id**, so that row is the only guard: nothing is ever
+   re-sent. The order is read until final (6 reads a second apart, none
+   started after 8 s) for `cumQuantity`, `avgPx` and the commission; one
+   shown resting gets one cancel. No answer, or an order never read final,
+   is `unknown` and holds the next Place on the game until a `polymarket_us`
+   read after it, which shows any fill as a position.
+
+```sql
+SELECT placed_at, label, ticker AS slug, contract_side, ticket_all_in, ask_price, all_in_price, stake, count_requested,
+       count_filled, cost_filled, polymarket_order_id, status, error
+FROM manual_orders WHERE venue = 'polymarket_us' ORDER BY placed_at DESC;
+```
+
 ## Tests
 
 One command runs everything and exits non-zero if any part fails:

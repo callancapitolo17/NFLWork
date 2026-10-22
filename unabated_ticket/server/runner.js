@@ -97,6 +97,12 @@
 //                    novigMarketMismatch), the Novig API read and the line
 //                    as a bet record names it; places nothing. Spreads and
 //                    totals only.
+//   GET /polymarket_quote.json?eventId=..&periodTypeId=..&betTypeId=..&sideIndex=..&points=..
+//                    the same for Polymarket US Place (bets_service/polymarket_place.py):
+//                    the board's Polymarket US line, the market slug and contract
+//                    side found in Polymarket US's own event list (polymarket.js),
+//                    its live ask, the all-in price with the taker fee and the
+//                    line as a bet record names it; places nothing.
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
@@ -133,6 +139,7 @@ const teasersPayload = require("./teasers_payload.js");
 const attachLib = require("../extension/attach.js");
 const pricecheck = require("../extension/pricecheck.js");
 const taker = require("./taker.js");
+const polymarket = require("./polymarket.js");
 const feedLib = require("../extension/feed.js");
 const boardThread = require("./board_thread.js");
 
@@ -143,6 +150,8 @@ const MONEYLINE_BET_TYPE_ID = 1;
 const DEFAULT_BETS_SERVICE_URL = "http://127.0.0.1:8094";
 const DEFAULT_KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2";
 const DEFAULT_NOVIG_BASE_URL = "https://api.novig.com";
+// Polymarket US's public gateway (no key): events, markets and order books.
+const DEFAULT_POLYMARKET_GATEWAY_URL = "https://gateway.polymarket.us";
 // Novig's CloudFront refused an unnamed client once (2026-10-10): every Novig read names itself.
 const NOVIG_USER_AGENT = "unabated-ticket-runner/1.0";
 // Novig's public catalog: one page holds up to 5000 markets; a slate is a few hundred.
@@ -303,6 +312,7 @@ async function sendServiceJson(fetchImpl, url, method, body, timeoutMs = SERVICE
 //   deps  {fetchImpl (Unabated snapshots), serviceFetch (the bets service),
 //          kalshiFetch (Kalshi's orderbooks, default serviceFetch), kalshiBaseUrl,
 //          novigFetch (Novig's public catalog, default serviceFetch), novigBaseUrl,
+//          polymarketFetch (Polymarket US's public gateway, default serviceFetch), polymarketGatewayUrl,
 //          betsServiceUrl, now, timers {setInterval, clearInterval},
 //          logInfo / logWarning (message) -> void, default stdout / stderr}
 // Returns {start, stop, pollBets, pollSettings, scanLoaded, learn, takerPass,
@@ -317,6 +327,8 @@ function createRunner(deps) {
   const kalshiBaseUrl = deps.kalshiBaseUrl || DEFAULT_KALSHI_BASE_URL;
   const novigFetch = deps.novigFetch || serviceFetch;
   const novigBaseUrl = deps.novigBaseUrl || DEFAULT_NOVIG_BASE_URL;
+  const polymarketFetch = deps.polymarketFetch || serviceFetch;
+  const polymarketGatewayUrl = deps.polymarketGatewayUrl || DEFAULT_POLYMARKET_GATEWAY_URL;
   const logInfo = deps.logInfo || log;
   const logWarning = deps.logWarning || logError;
   const startedAt = now();
@@ -1130,6 +1142,77 @@ function createRunner(deps) {
     return { answer: { ok: true, ...position, price: quote.ask, depth: quote.depth, novigBaseUrl, line: taker.novigLineOf(row) }, catalog: timing };
   }
 
+  // The Ticket's Place button at Polymarket US (bets_service/polymarket_place.py
+  // asks): the board's one Polymarket US line with these fields, the contract
+  // it buys, found in Polymarket US's own list (polymarket.js: the game by its
+  // two teams through the crosswalk, the market by its own sides), what buying
+  // it costs now and the line as a bet record names it. Places nothing.
+  //   params  URLSearchParams {eventId, periodTypeId, betTypeId, sideIndex, points?}
+  async function polymarketQuoteNow(params) {
+    const spec = kalshiLineSpecOf(params);
+    const startedAt = now();
+    const answer = await polymarketQuoteOfSpec(spec);
+    logInfo(`polymarket quote ${spec.eventId} ${answer.label || `bet type ${spec.betTypeId} side ${spec.sideIndex} ${spec.points}`}: `
+      + `${answer.ok ? `ok ${answer.slug} ${answer.side} @ ${answer.ask}` : `${answer.reason}: ${answer.detail}`} in ${now() - startedAt} ms`);
+    return answer;
+  }
+
+  async function polymarketQuoteOfSpec(spec) {
+    const board = feedState;
+    if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
+    const found = linesOfEvent(board, spec.eventId).filter((line) => polymarket.isPolymarketUsBook(board.books[line.bookId])
+      && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
+      && line.sideIndex === spec.sideIndex && (spec.betTypeId === MONEYLINE_BET_TYPE_ID || (line.points ?? null) === spec.points));
+    if (found.length !== 1) {
+      return { ok: false, reason: "no_line", detail: `the board holds ${found.length} Polymarket US lines for game ${spec.eventId} at that market, side and number` };
+    }
+    const row = feedLib.describeLine(found[0], board);
+    const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName };
+    const type = polymarket.marketTypeOf(row);
+    if (type.reason) return { ok: false, ...fields, reason: type.reason, detail: type.detail };
+    const startMs = Date.parse(row.eventStart);
+    if (!Number.isFinite(startMs)) return { ok: false, ...fields, reason: "no_start", detail: "the board has no start for this game" };
+    if (row.awayTeamId == null || row.homeTeamId == null) return { ok: false, ...fields, reason: "no_teams", detail: "the board names no team ids for this game" };
+    const query = new URLSearchParams({
+      limit: String(polymarket.EVENTS_PAGE_LIMIT), active: "true", sportsMarketTypes: type.type,
+      startTimeMin: new Date(startMs - polymarket.START_TOLERANCE_MS).toISOString(),
+      startTimeMax: new Date(startMs + polymarket.START_TOLERANCE_MS).toISOString(),
+    });
+    let events;
+    try {
+      const body = await getServiceJson(polymarketFetch, `${polymarketGatewayUrl}/v1/events?${query}`, { headers: { Accept: "application/json" } });
+      if (!body || !Array.isArray(body.events)) throw new Error("Polymarket US events: no events list");
+      if (body.events.length >= polymarket.EVENTS_PAGE_LIMIT) throw new Error(`${body.events.length} events in one page may be a cut list`);
+      events = body.events;
+    } catch (error) {
+      return { ok: false, ...fields, reason: "no_market", detail: `Polymarket US's events unread: ${error.message}` };
+    }
+    const keysOf = (record) => betsLib.resolveTeamKeys([record], held.crosswalk)[0];
+    const boardKeys = { away: teams.keyOf(row.league, row.awayTeamId), home: teams.keyOf(row.league, row.homeTeamId) };
+    const games = polymarket.matchingEvents(events, row, keysOf, boardKeys);
+    if (games.length !== 1) {
+      return { ok: false, ...fields, reason: "no_market", detail: `${games.length} of Polymarket US's ${events.length} ${type.type} events are ${row.eventName} at its start` };
+    }
+    const { event, teams: eventTeams } = games[0];
+    const contract = polymarket.contractOf(row, event, eventTeams, type.type);
+    if (contract.reason) return { ok: false, ...fields, reason: contract.reason, detail: contract.detail };
+    const eventStartMs = Math.min(startMs, Date.parse(event.startTime));
+    const position = { ...fields, eventStart: new Date(eventStartMs).toISOString(), unabatedStart: row.eventStart,
+      polymarketStart: event.startTime, slug: contract.slug, side: contract.side, eventSlug: event.slug };
+    let book;
+    try {
+      book = await getServiceJson(polymarketFetch, `${polymarketGatewayUrl}/v1/markets/${encodeURIComponent(contract.slug)}/book`, { headers: { Accept: "application/json" } });
+    } catch (error) {
+      return { ok: false, ...position, reason: "no_book", detail: error.message };
+    }
+    const quote = polymarket.quoteOf(book, contract.side);
+    if (quote.reason) return { ok: false, ...position, reason: quote.reason, detail: `${contract.slug}: ${quote.detail}` };
+    return {
+      ok: true, ...position, ask: quote.ask, allIn: polymarket.allInOf(quote.ask), depth: quote.depth,
+      feeTheta: polymarket.TAKER_FEE_THETA, polymarketGatewayUrl, line: taker.novigLineOf(row),
+    };
+  }
+
   // Kalshi's start for an event as epoch ms, or null when it lists none or
   // the read failed (never throws: option B trades on Unabated's start then).
   async function kalshiStartOf(eventTicker) {
@@ -1535,7 +1618,7 @@ function createRunner(deps) {
   return {
     start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions,
     edgesPayload: edgesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow,
-    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, health, scanner,
+    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, health, scanner,
     boardLines,
   };
 }
@@ -1583,7 +1666,7 @@ function sendJson(response, status, body) {
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /kalshi_quote.json, /novig_quote.json and /health, the Host allowlist first on
+// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /kalshi_quote.json, /novig_quote.json, /polymarket_quote.json and /health, the Host allowlist first on
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
@@ -1611,6 +1694,7 @@ function createHttpServer(runner, { host }) {
       if (path === "/taker.json") return sendJson(response, 200, await runner.takerPayload());
       if (path === "/kalshi_quote.json") return sendJson(response, 200, await runner.kalshiQuote(url.searchParams));
       if (path === "/novig_quote.json") return sendJson(response, 200, await runner.novigQuote(url.searchParams));
+      if (path === "/polymarket_quote.json") return sendJson(response, 200, await runner.polymarketQuote(url.searchParams));
       if (path === "/health") return sendJson(response, 200, await runner.health());
     } catch (error) {
       if (error.status) return sendJson(response, error.status, { error: error.message });

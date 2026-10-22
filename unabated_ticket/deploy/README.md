@@ -211,6 +211,11 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
     (its line is `NOVIG_PLACE_KEY_ID`; top it up by re-running `open --name
     place --fund <dollars>` with a new `--run-id`). After `docker compose up -d` the log must say "novig place: on,
     signing with Place key"; it has no stop file, every order is a click.
+14. **The Ticket's Polymarket US Place button** (2026-10-22) needs no setup: it
+    signs with the `POLYMARKET_US_*` key the bets service already reads with,
+    on the main account. After a deploy the log must say "polymarket place:
+    on, signing with key"; else it names why (key unset, or Polymarket US
+    refusing the balance read). It has no stop file: every order is a click.
 
 12. **NFL fecta pricer** (`fectas`; its own README, Running on the VM):
     - On the Mac, install the DraftKings relay agent (`nfl_specials/README.md`,

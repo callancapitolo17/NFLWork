@@ -1508,3 +1508,110 @@ test("board thread: the real worker boots board_thread.js with runner.js and pos
     await worker.terminate();
   }
 });
+
+// ---- Polymarket US Place: GET /polymarket_quote.json (places nothing) ----
+// The slice's spread row also listed at Polymarket US (book 111, which the
+// feed names by its marketSources only), WSU -35.5 at -179. Polymarket US's
+// gateway lists the game as Duquesne @ Washington State with its +35.5 market
+// whose YES is Duquesne, so WSU -35.5 is that market's NO.
+const POLY_GATEWAY = "https://poly.test";
+const POLY_SLUG = "asc-cfb-duq-wst-2026-09-19-pos-35pt5";
+function polymarketUnabatedFetch() {
+  const json = JSON.parse(takerVenueSlice());
+  json.marketSources.push({ ...json.marketSources[0], id: 111, name: "Polymarket US", sortOrder: 111 });
+  const spreadRow = json.odds["lg2:pt1:pregame"].find((row) => row.key === "pt1:pregame:bt2:e123742");
+  spreadRow.sides["si1:tid717"].ms111 = {
+    ...spreadRow.sides["si1:tid717"].ms89, americanPrice: -179, price: -179, sourceFormat: 1, sourcePrice: -179, statusId: 1,
+    sequenceNumber: TAKER_NOW - 60000, alternateLines: [],
+  };
+  const body = JSON.stringify(json);
+  return async (url) => {
+    if (url.split("?")[0] === SNAPSHOT_BASE_URL(2)) return response({ body, headers: { "content-length": "1000", "last-modified": new Date(TAKER_NOW - 20000).toUTCString() } });
+    return response({ status: 404, body: "not found" });
+  };
+}
+
+function polymarketEvent(fields = {}) {
+  const duq = { id: 501, name: "Dukes", safeName: "Duquesne", league: "cfb", ordering: "away" };
+  const wst = { id: 502, name: "Cougars", safeName: "Washington State", league: "cfb", ordering: "home" };
+  return {
+    slug: "cfb-duq-wst-2026-09-19", startTime: "2026-09-19T19:30:00Z", teams: [duq, wst],
+    markets: [{
+      slug: POLY_SLUG, sportsMarketType: "football_team_full_game_spread", line: 35.5,
+      marketSides: [{ long: true, description: "+35.50", teamId: 501, team: duq }, { long: false, description: "-35.50", teamId: 502, team: wst }],
+    }],
+    ...fields,
+  };
+}
+
+function polymarketFetch(events = [polymarketEvent()], book = null) {
+  const calls = [];
+  const impl = async (url) => {
+    calls.push(url);
+    const bare = url.split("?")[0];
+    if (bare === `${POLY_GATEWAY}/v1/events`) return response({ body: JSON.stringify({ events }) });
+    if (bare === `${POLY_GATEWAY}/v1/markets/${POLY_SLUG}/book`) {
+      return response({ body: JSON.stringify(book || { marketData: {
+        marketSlug: POLY_SLUG, state: "MARKET_STATE_OPEN",
+        bids: [{ px: { value: "0.3700", currency: "USD" }, qty: "500" }, { px: { value: "0.3500", currency: "USD" }, qty: "900" }],
+        offers: [{ px: { value: "0.3800", currency: "USD" }, qty: "100" }],
+      } }) });
+    }
+    return response({ status: 404, body: "{}" });
+  };
+  impl.calls = calls;
+  return impl;
+}
+
+const POLY_LINE_PARAMS = { eventId: "123742", periodTypeId: "1", betTypeId: "2", sideIndex: "1", points: "-35.5" };
+
+test("polymarket_quote: the board's Polymarket US line is found in Polymarket US's own list, NO side, priced off the YES bid", async () => {
+  const poly = polymarketFetch();
+  const { runner, service } = await quoteRunner({}, { fetchImpl: polymarketUnabatedFetch(), polymarketFetch: poly, polymarketGatewayUrl: POLY_GATEWAY });
+  const quote = await runner.polymarketQuote(new URLSearchParams(POLY_LINE_PARAMS));
+  runner.stop();
+  assert.deepEqual(
+    { ok: quote.ok, slug: quote.slug, side: quote.side, ask: quote.ask, depth: quote.depth, eventStart: quote.eventStart, gateway: quote.polymarketGatewayUrl },
+    { ok: true, slug: POLY_SLUG, side: "no", ask: 0.63, depth: 500, eventStart: WSU_UNABATED_START, gateway: POLY_GATEWAY });
+  assert.equal(quote.allIn, Math.round((0.63 + 0.06 * 0.63 * 0.37) * 1e6) / 1e6);
+  assert.deepEqual([quote.line.betType, quote.line.side, quote.line.points], ["spread", "home", -35.5]);
+  const eventsUrl = new URL(poly.calls[0]);
+  assert.equal(eventsUrl.searchParams.get("sportsMarketTypes"), "football_team_full_game_spread");
+  assert.equal(service.posts.length, 0, "nothing is sent");
+});
+
+test("polymarket_quote: a game Polymarket US lists with its teams swapped, at another start, twice, or no market at the number refuses", async () => {
+  const run = async (events, params = POLY_LINE_PARAMS) => {
+    const { runner } = await quoteRunner({}, { fetchImpl: polymarketUnabatedFetch(), polymarketFetch: polymarketFetch(events), polymarketGatewayUrl: POLY_GATEWAY });
+    const quote = await runner.polymarketQuote(new URLSearchParams(params));
+    runner.stop();
+    return quote;
+  };
+  const event = polymarketEvent();
+  const swapped = await run([{ ...event, teams: [event.teams[1], event.teams[0]] }]);
+  assert.deepEqual([swapped.ok, swapped.reason], [false, "no_market"]);
+  assert.match(swapped.detail, /0 of Polymarket US's 1/);
+  const later = await run([{ ...event, startTime: "2026-09-19T21:30:00Z" }]);
+  assert.deepEqual([later.ok, later.reason], [false, "no_market"]);
+  const twice = await run([event, { ...event, slug: "cfb-duq-wst-2026-09-19-b" }]);
+  assert.match(twice.detail, /2 of Polymarket US's 2/);
+  const otherNumber = await run([event], { ...POLY_LINE_PARAMS, points: "-38.5" });
+  assert.deepEqual([otherNumber.ok, otherNumber.reason], [false, "no_line"], "the board itself has no Polymarket US line at -38.5");
+  const noMarket = await run([{ ...event, markets: [{ ...event.markets[0], line: 34.5, marketSides: [
+    { ...event.markets[0].marketSides[0], description: "+34.50" }, { ...event.markets[0].marketSides[1], description: "-34.50" }] }] }]);
+  assert.match(noMarket.detail, /no football_team_full_game_spread market on cfb-duq-wst-2026-09-19 reads as home -35.5/);
+});
+
+test("polymarket_quote: a closed market or an empty bid side is refused, and the gateway failing is a reason, not a throw", async () => {
+  const closed = polymarketFetch(undefined, { marketData: { state: "MARKET_STATE_SUSPENDED", bids: [], offers: [] } });
+  const { runner } = await quoteRunner({}, { fetchImpl: polymarketUnabatedFetch(), polymarketFetch: closed, polymarketGatewayUrl: POLY_GATEWAY });
+  const quote = await runner.polymarketQuote(new URLSearchParams(POLY_LINE_PARAMS));
+  runner.stop();
+  assert.deepEqual([quote.ok, quote.reason, quote.slug], [false, "market_closed", POLY_SLUG]);
+  const down = async () => response({ status: 503, body: "{}" });
+  const { runner: second } = await quoteRunner({}, { fetchImpl: polymarketUnabatedFetch(), polymarketFetch: down, polymarketGatewayUrl: POLY_GATEWAY });
+  const failed = await second.polymarketQuote(new URLSearchParams(POLY_LINE_PARAMS));
+  second.stop();
+  assert.deepEqual([failed.ok, failed.reason], [false, "no_market"]);
+  assert.match(failed.detail, /HTTP 503/);
+});

@@ -592,10 +592,10 @@
     show("ticket");
   }
 
-  // ---- Place on Kalshi or Novig (place.js) --------------------------------
+  // ---- Place on Kalshi, Novig or Polymarket US (place.js) -----------------
   // The Ticket's own Place button: one order per second click, sent by the
-  // bets service on Place's own key at that venue (POST /place_kalshi.json or
-  // /place_novig.json). Its state
+  // bets service on its key at that venue (POST /place_kalshi.json,
+  // /place_novig.json or /place_polymarket.json). Its state
   // lives across re-renders and belongs to one capture: a new ticket starts
   // it over. {ticketAt, phase: null | "confirm" | "placing" | "done",
   // armedAt, message, tone, edited (Cal typed in the box)}.
@@ -687,7 +687,7 @@
     placeOnVenue().catch((error) => console.error("[unabated-ticket] place failed", error));
   });
 
-  // The open Ticket's venue in words ("Kalshi", "Novig").
+  // The open Ticket's venue in words ("Kalshi", "Novig", "Polymarket US").
   function placeVenueName() {
     const venue = state.ticket ? venuePlace.venueOf(state.ticket.book.id) : null;
     return venue ? venue.name : "the venue";

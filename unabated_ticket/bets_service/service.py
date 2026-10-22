@@ -115,6 +115,13 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     Novig sub-account, real money — novig_place.py checks the live
                                     price against the Ticket's first; 503 while Place has no Novig
                                     order client)
+           POST /place_polymarket.json  body {clickId, eventId, periodTypeId, betTypeId, sideIndex,
+                                    points, stake, ticketAllIn, polymarketReadAt, kalshiReadAt,
+                                    novigReadAt} -> {ok, status, message, ...} (the Ticket's Place
+                                    button at Polymarket US: ONE immediate-or-cancel order on Cal's
+                                    main account with the POLYMARKET_US_* key, real money —
+                                    polymarket_place.py checks the live all-in price against the
+                                    Ticket's first; 503 while that key is unset or refused)
            PUT /settings.json       body {settings: {<any of those fields>: value or null}} ->
                                     {ok, settings, updatedAt}; a field left out keeps its value,
                                     null resets it to the default, an unknown field or a bad
@@ -175,6 +182,9 @@ POST /place_kalshi.json places Cal's own Kalshi order (money) and INSERTs /
 UPDATEs bets.duckdb::manual_orders (manual_orders.py).
 POST /place_novig.json places a Novig order from Place's own sub-account (money)
 and INSERTs / UPDATEs bets.duckdb::manual_orders, venue 'novig' (novig_place.py).
+POST /place_polymarket.json places a Polymarket US order on Cal's main account
+(money) and INSERTs / UPDATEs bets.duckdb::manual_orders, venue 'polymarket_us'
+(polymarket_place.py).
 POST /taker/order.json places a bot order on Kalshi (money) on the bot's own
 key, locked to the bot's own Kalshi subaccount, when one is configured, and
 INSERTs / UPDATEs taker.duckdb::taker_orders (taker_orders.py: stop file, $500
@@ -209,6 +219,10 @@ from unabated_ticket.bets_service.balances import BalanceBook, balances_payload,
 from unabated_ticket.bets_service.log_setup import setup_logging
 from unabated_ticket.bets_service.manual_orders import ManualKalshiDesk, read_runner_quote
 from unabated_ticket.bets_service.manual_orders import validate_place_request as validate_kalshi_place_request
+from unabated_ticket.bets_service.polymarket_orders import PolymarketError, PolymarketOrderClient
+from unabated_ticket.bets_service.polymarket_place import (RUNNER_POLYMARKET_QUOTE_PATH,
+                                                           RUNNER_POLYMARKET_QUOTE_TIMEOUT_SEC,
+                                                           ManualPolymarketDesk, validate_polymarket_place_request)
 from unabated_ticket.bets_service.novig_place import (NOVIG_PLACE_READ_SOURCES, RUNNER_NOVIG_QUOTE_PATH,
                                                       RUNNER_NOVIG_QUOTE_TIMEOUT_SEC, ManualNovigDesk,
                                                       validate_novig_place_request)
@@ -284,6 +298,8 @@ SETTINGS_PERIOD_IDS = range(1, 8)
 SETTINGS_BET_TYPE_IDS = (1, 2, 3)
 SETTINGS_BOOK_MODES = ("default", "all", "custom")
 SETTINGS_SORT_KEYS = ("edge", "stake", "start", "exposure")
+# Why POST /place_polymarket.json answers 503 when no Polymarket US key is configured.
+POLYMARKET_PLACE_OFF_REASON = "no Polymarket US key is configured (POLYMARKET_US_KEY_ID / POLYMARKET_US_SECRET_KEY)"
 # Why POST /place_novig.json answers 503 when no Place key is configured.
 NOVIG_PLACE_OFF_REASON = "no Place Novig key is configured (NOVIG_PLACE_KEY_ID / NOVIG_PLACE_PRIVATE_KEY_PATH)"
 
@@ -933,7 +949,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  novig_taker_desk_off_reason: str = "no bot Novig key is configured (NOVIG_TAKER_KEY_ID / "
                                                     "NOVIG_TAKER_PRIVATE_KEY_PATH)",
                  novig_place_desk: ManualNovigDesk | None = None,
-                 novig_place_off_reason: str = NOVIG_PLACE_OFF_REASON) -> type[BaseHTTPRequestHandler]:
+                 novig_place_off_reason: str = NOVIG_PLACE_OFF_REASON,
+                 polymarket_place_desk: ManualPolymarketDesk | None = None,
+                 polymarket_place_off_reason: str = POLYMARKET_PLACE_OFF_REASON) -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
     EXTRA_ALLOWED_HOSTS (the tests pass their own). `teaser_placer` is the
@@ -945,7 +963,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
     `novig_taker_desk` places the bot's Novig orders (None: POST
     /taker/novig_order.json 503s with `novig_taker_desk_off_reason`). `novig_place_desk`
     places Cal's Novig Place-button orders (None: POST /place_novig.json 503s
-    with `novig_place_off_reason`)."""
+    with `novig_place_off_reason`). `polymarket_place_desk` places Cal's
+    Polymarket US Place-button orders (None: POST /place_polymarket.json 503s
+    with `polymarket_place_off_reason`)."""
     names = list(source_names)
     proxied_host_names = tuple(extra_hosts) if extra_hosts is not None else config.EXTRA_ALLOWED_HOSTS
     edges_runner_url = (runner_url or config.RUNNER_URL).rstrip("/")
@@ -997,7 +1017,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/fill_books.json", "/closing_fairs.json",
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
                                 "/draftkings.json", "/place_teaser.json", "/place_kalshi.json", "/place_novig.json",
-                                "/taker_decisions.json",
+                                "/place_polymarket.json", "/taker_decisions.json",
                                 "/taker/order.json", "/taker/novig_order.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
@@ -1043,6 +1063,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/place_novig.json":
                 self._place_novig(body)
+                return
+            if url.path == "/place_polymarket.json":
+                self._place_polymarket(body)
                 return
             if (url.path in ("/taker_decisions.json", "/taker/order.json", "/taker/novig_order.json")
                     and self._refused_non_loopback()):
@@ -1333,6 +1356,25 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                                                           f"{error}). Check Novig before placing again."}
             self._send_json(200, {"ok": result["status"] in ("filled", "partial"), **result})
 
+        # POST /place_polymarket.json: one order on Cal's main Polymarket US
+        # account on the POLYMARKET_US_* key (polymarket_place.py), through the
+        # tailnet name like Place on Kalshi.
+        def _place_polymarket(self, body: object) -> None:
+            if polymarket_place_desk is None:
+                self._send_json(503, {"error": polymarket_place_off_reason})
+                return
+            request = validate_polymarket_place_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            try:
+                result = polymarket_place_desk.place(request)
+            except Exception as error:  # noqa: BLE001 — logged; the row (if any) says how far it got
+                log.exception("polymarket place: failed")
+                result = {"status": "unknown", "message": f"The order failed on this server ({type(error).__name__}: "
+                                                          f"{error}). Check Polymarket US before placing again."}
+            self._send_json(200, {"ok": result["status"] in ("filled", "partial"), **result})
+
         def _store_bfa_open_bets(self, open_wagers: list[dict]) -> None:
             try:
                 store.upsert_bets(normalize_open_bets(open_wagers, utc_now_iso()), _now())
@@ -1593,6 +1635,37 @@ def open_novig_place_desk(store: BetsStore, source_names: list[str],
                            read_sources=read_sources), ""
 
 
+def open_polymarket_place_desk(store: BetsStore, source_names: list[str],
+                               client_factory: Callable[[str, str], PolymarketOrderClient] = PolymarketOrderClient,
+                               ) -> tuple[ManualPolymarketDesk | None, str]:
+    """(the Place button's Polymarket US desk on Cal's main account, "") or (None, why).
+    It signs with the key the polymarket_us source reads with (POLYMARKET_US_*,
+    Cal 2026-10-22), proven to sign by one balance read. The stake counts that
+    source's read, so it must be read here."""
+    if not config.POLYMARKET_US_KEY_ID or not config.POLYMARKET_US_SECRET_KEY:
+        log.info("polymarket place: %s, the Polymarket US Place button is off", POLYMARKET_PLACE_OFF_REASON)
+        return None, POLYMARKET_PLACE_OFF_REASON
+    if "polymarket_us" not in source_names:
+        reason = "the bets service does not read polymarket_us, so a stake could miss a Polymarket US bet"
+        log.error("polymarket place: %s, the Polymarket US Place button is off", reason)
+        return None, reason
+    try:
+        client = client_factory(config.POLYMARKET_US_KEY_ID, config.POLYMARKET_US_SECRET_KEY)
+        status, reply = client.balance()
+    except (OSError, PolymarketError) as error:
+        reason = f"the POLYMARKET_US_* key could not be used: {error}"
+        log.error("polymarket place: %s, the Polymarket US Place button is off", reason)
+        return None, reason
+    if status != 200:
+        reason = f"Polymarket US refused the key's balance read: HTTP {status} {str(reply)[:200]}"
+        log.error("polymarket place: %s, the Polymarket US Place button is off", reason)
+        return None, reason
+    log.info("polymarket place: on, signing with key %s on the main account", config.POLYMARKET_US_KEY_ID[:8])
+    return ManualPolymarketDesk(client, store,
+                                lambda line: read_runner_quote(config.RUNNER_URL, line, RUNNER_POLYMARKET_QUOTE_PATH,
+                                                               RUNNER_POLYMARKET_QUOTE_TIMEOUT_SEC)), ""
+
+
 def open_taker_store(db_path: Path) -> TakerStore | None:
     """The taker's decision log, or None (logged) when its file cannot be
     opened: the log is the bot's, so a bad path must not take Cal's bets down
@@ -1619,6 +1692,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
         taker_store, lambda: source_status(store, source_names))
     kalshi_place_desk, kalshi_place_off_reason = open_kalshi_place_desk(store)
     novig_place_desk, novig_place_off_reason = open_novig_place_desk(store, source_names)
+    polymarket_place_desk, polymarket_place_off_reason = open_polymarket_place_desk(store, source_names)
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
                                                             teaser_placer=teaser_placer_for(sources),
                                                             taker_store=taker_store, taker_desk=taker_desk,
@@ -1629,6 +1703,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                                                             novig_taker_desk_off_reason=novig_taker_desk_off_reason,
                                                             novig_place_desk=novig_place_desk,
                                                             novig_place_off_reason=novig_place_off_reason,
+                                                            polymarket_place_desk=polymarket_place_desk,
+                                                            polymarket_place_off_reason=polymarket_place_off_reason,
                                                             balance_book=balance_book))
     server.daemon_threads = True
     pollers = [threading.Thread(target=poll_loop, args=(lane, store, stop, balance_book),

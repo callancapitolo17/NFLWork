@@ -1,11 +1,13 @@
 // Unabated Ticket — the Ticket's Place button on Kalshi (manual_place_plan.md,
-// Cal 2026-10-16) and Novig (novig_place_plan.md): a Kalshi or Novig line's
+// Cal 2026-10-16), Novig (novig_place_plan.md) and Polymarket US (Cal
+// 2026-10-21): a Kalshi, Novig or Polymarket US line's
 // Ticket gets an amount box filled with the stake to act on, which Cal can
 // change, and a Place button; a second click sends ONE order through the bets
-// service (POST /place_kalshi.json or /place_novig.json), which signs it on
-// the server with Place's own key at that venue, checks the live price is at
-// most 0.1c worse than the Ticket's and sends an immediate-or-cancel limit
-// (bets_service/manual_orders.py, novig_place.py). Nothing is ever placed
+// service (POST /place_kalshi.json, /place_novig.json or /place_polymarket.json),
+// which signs it on the server with its key at that venue, checks the
+// live price is at most 0.1c worse than the Ticket's and sends an
+// immediate-or-cancel limit (bets_service/manual_orders.py, novig_place.py,
+// polymarket_place.py). Nothing is ever placed
 // without that second click.
 //
 // Shared by the panel (panel.js) and the phone page (phone.js), so both send
@@ -23,6 +25,9 @@
   // Unabated's book ids.
   const KALSHI_BOOK_ID = 105;
   const NOVIG_BOOK_ID = 89;
+  // Polymarket US (the CFTC app), not polymarket.com (107): read off the feed's
+  // marketSources on 2026-10-22.
+  const POLYMARKET_US_BOOK_ID = 111;
   // Each venue Place sends to, by Unabated book id: its name in words, the
   // bets service route, and the bet types it places (every one: a moneyline
   // the feed names no contract for is found in the venue's own market list
@@ -30,6 +35,7 @@
   const VENUES = {
     [KALSHI_BOOK_ID]: { venue: "kalshi", name: "Kalshi", path: "/place_kalshi.json", betTypeIds: [1, 2, 3] },
     [NOVIG_BOOK_ID]: { venue: "novig", name: "Novig", path: "/place_novig.json", betTypeIds: [1, 2, 3] },
+    [POLYMARKET_US_BOOK_ID]: { venue: "polymarket_us", name: "Polymarket US", path: "/place_polymarket.json", betTypeIds: [1, 2, 3] },
   };
   // The bets service's Novig reads a stake counts: Cal's app account and
   // Place's own sub-account, both required, and the bot's sub-account when
@@ -44,7 +50,7 @@
     return VENUES[bookId] || null;
   }
 
-  // Does this Ticket get a Place button: a Kalshi or Novig line before its
+  // Does this Ticket get a Place button: a Kalshi, Novig or Polymarket US line before its
   // game, on the pregame board (a live capture is priced off the in-game
   // screen, which the server's board does not carry).
   function canPlace({ bookId, live, eventId, periodTypeId, betTypeId, sideIndex }) {
@@ -66,7 +72,7 @@
     return typeof stake === "number" && stake > 0 ? stake.toFixed(2) : "";
   }
 
-  // {kalshi, novig}: the read times a stake counted, off the bets payload's
+  // {kalshi, novig, polymarket_us}: the read times a stake counted, off the bets payload's
   // sources ({name: {fetchedAt}}). Novig's is the OLDEST of its reads (a
   // Place fill after any of them may be missing from the stake), null while
   // either required read has never landed.
@@ -78,19 +84,19 @@
     const novig = novigReads.every(Boolean)
       ? novigReads.reduce((oldest, readAt) => (Date.parse(readAt) < Date.parse(oldest) ? readAt : oldest))
       : null;
-    return { kalshi: fetchedAtOf("kalshi"), novig };
+    return { kalshi: fetchedAtOf("kalshi"), novig, polymarket_us: fetchedAtOf("polymarket_us") };
   }
 
   // The request for one click, {path, body}, or {error} in words.
   //   line      {bookId, eventId, periodTypeId, betTypeId, sideIndex, points, price, sourceFormat, sourcePrice}
   //             the Ticket's line at the price it shows
   //   stakeInput  the amount box's text
-  //   readAts   {kalshi, novig} (readAtsOf): the reads the Ticket's stake
+  //   readAts   {kalshi, novig, polymarket_us} (readAtsOf): the reads the Ticket's stake
   //             was sized on (null: never read)
   //   clickId   a fresh id per click (the server sends each id once)
-  // An order needs its own venue's read and sends the other venue's too, or
-  // null when that venue was never read (the server checks for a Place at
-  // either venue the stake has not seen).
+  // An order needs its own venue's read and sends the other venues' too, or
+  // null when a venue was never read (the server checks for a Place at any
+  // venue the stake has not seen).
   function placeRequestOf({ line, stakeInput, readAts, clickId }) {
     const venue = venueOf(line.bookId);
     if (!venue) return { error: "this book has no Place button" };
@@ -104,7 +110,10 @@
       clickId, eventId: line.eventId, periodTypeId: line.periodTypeId, betTypeId: line.betTypeId, sideIndex: line.sideIndex,
       points: line.points ?? null, stake, ticketAllIn: Math.round(ticketAllIn * 1e6) / 1e6,
     };
-    return { path: venue.path, body: { ...body, kalshiReadAt: readAts.kalshi || null, novigReadAt: readAts.novig || null } };
+    return {
+      path: venue.path,
+      body: { ...body, kalshiReadAt: readAts.kalshi || null, novigReadAt: readAts.novig || null, polymarketReadAt: readAts.polymarket_us || null },
+    };
   }
 
   // How the reply reads: "ok" (contracts bought), "bad" (the venue refused or
@@ -117,7 +126,7 @@
     return "bad";
   }
 
-  const api = { KALSHI_BOOK_ID, NOVIG_BOOK_ID, venueOf, canPlace, parseStake, stakeText, readAtsOf, placeRequestOf, replyTone };
+  const api = { KALSHI_BOOK_ID, NOVIG_BOOK_ID, POLYMARKET_US_BOOK_ID, venueOf, canPlace, parseStake, stakeText, readAtsOf, placeRequestOf, replyTone };
 
   if (inNode) {
     module.exports = api;

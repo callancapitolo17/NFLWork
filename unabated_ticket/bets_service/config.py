@@ -230,6 +230,8 @@ POLYMARKET_US_KEY_ID = _get("POLYMARKET_US_KEY_ID")
 POLYMARKET_US_SECRET_KEY = _get("POLYMARKET_US_SECRET_KEY")
 POLYMARKET_US_POLL_SEC = 20.0
 POLYMARKET_US_HISTORY_DAYS = RETENTION_DAYS + 1
+# The Ticket's Place button at Polymarket US (polymarket_place.py) signs with this
+# same key (Cal 2026-10-22: a polymarket.us key is not read-only).
 
 # Bet105 (2026-09-29): no credentials and no poll here. Cloudflare challenges any
 # request that is not the browser session's own, so the extension reads the account
