@@ -57,9 +57,6 @@ services:
       NOVIG_TAKER_STOP_PATH: /data/novig_taker.stop
       # The Novig Place button's subaccount key: read and placing once NOVIG_PLACE_KEY_ID is set.
       NOVIG_PLACE_PRIVATE_KEY_PATH: /data/novig_place.pem
-      # The Polymarket US Place button's own key (its base64 secret in this file); Place is on once
-      # POLYMARKET_PLACE_KEY_ID is set in bets_service/.env (deploy/README.md step 14).
-      POLYMARKET_PLACE_SECRET_PATH: /data/polymarket_place.key
       BETS_SERVICE_LOG_PATH: /data/logs/bets_service.log
       BETS_SERVICE_LOG_CONSOLE: "1"
       NOVIG_TOKEN_PATH: /data/novig_token.json

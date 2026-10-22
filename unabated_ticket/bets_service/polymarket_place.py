@@ -1,7 +1,7 @@
 """The Ticket's Place button at Polymarket US (Cal 2026-10-21, option A): Cal
 clicks, and this desk sends ONE order on his main Polymarket US account,
-signed only with Place's own key (POLYMARKET_PLACE_*, never the read key the
-polymarket_us source polls with). Nothing here runs on a timer: every order is
+signed with the key the polymarket_us source reads with (POLYMARKET_US_*;
+Cal 2026-10-22, a polymarket.us key trades too). Nothing here runs on a timer: every order is
 one POST /place_polymarket.json from the panel or the phone page.
 
 Rules, in order, for every request (validate_polymarket_place_request's shape):
@@ -130,7 +130,7 @@ class ManualPolymarketDesk:
     def __init__(self, client: PolymarketOrderClient, store: BetsStore, quote_reader: Callable[[dict], dict],
                  now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
                  sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic):
-        """`client` signs with Place's own key (never the read key)."""
+        """`client` signs with the POLYMARKET_US_* key."""
         self._client = client
         self._store = store
         self._quote_reader = quote_reader

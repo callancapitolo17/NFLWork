@@ -3158,9 +3158,9 @@ FROM manual_orders WHERE venue = 'novig' ORDER BY placed_at DESC;
 Cal, 2026-10-21 (option A): the same button on every pregame Polymarket US
 line (book 111; polymarket.com, book 107, is another book and gets none),
 **Bet $X at Polymarket US**, ONE order on Cal's **main** Polymarket US account,
-signed with Place's own key (`POLYMARKET_PLACE_KEY_ID` + the secret in the file
-`POLYMARKET_PLACE_SECRET_PATH`, `deploy/README.md` step 14). The read key the
-`polymarket_us` source polls with is never used. **On only when** the key is set,
+signed with the `POLYMARKET_US_*` key the `polymarket_us` source already reads
+with (Cal, 2026-10-22: a polymarket.us key trades too, so no new key or setup).
+**On only when** the key is set,
 signs (one balance read at start) and the service reads `polymarket_us`; else
 `POST /place_polymarket.json` answers 503 and the log names why.
 

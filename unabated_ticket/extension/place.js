@@ -4,7 +4,7 @@
 // Ticket gets an amount box filled with the stake to act on, which Cal can
 // change, and a Place button; a second click sends ONE order through the bets
 // service (POST /place_kalshi.json, /place_novig.json or /place_polymarket.json),
-// which signs it on the server with Place's own key at that venue, checks the
+// which signs it on the server with its key at that venue, checks the
 // live price is at most 0.1c worse than the Ticket's and sends an
 // immediate-or-cancel limit (bets_service/manual_orders.py, novig_place.py,
 // polymarket_place.py). Nothing is ever placed

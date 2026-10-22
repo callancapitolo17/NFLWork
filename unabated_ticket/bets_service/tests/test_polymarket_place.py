@@ -226,24 +226,22 @@ def test_partial_unfilled_and_resting_orders(store):
 
 # ---- the order client ----
 
-def key_file(tmp_path):
+def fake_secret_key():
     private = ed25519.Ed25519PrivateKey.generate()
     seed = private.private_bytes_raw()
     public = private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-    path = tmp_path / "polymarket_place.key"
-    path.write_text(base64.b64encode(seed + public).decode() + "\n")
-    return path, private.public_key()
+    return base64.b64encode(seed + public).decode(), private.public_key()
 
 
-def test_the_client_signs_timestamp_method_and_path_without_the_query(tmp_path):
-    path, public = key_file(tmp_path)
+def test_the_client_signs_timestamp_method_and_path_without_the_query():
+    secret, public = fake_secret_key()
     sent = []
 
     def transport(method, url, headers, body):
         sent.append((method, url, headers, body))
         return 200, b'{"id": "o1", "executions": []}'
 
-    client = PolymarketOrderClient("key-1", path, transport=transport, clock=lambda: 1_760_000_000.123)
+    client = PolymarketOrderClient("key-1", secret, transport=transport, clock=lambda: 1_760_000_000.123)
     status, reply = client.place_ioc_order(SLUG, "no", 0.63, 77)
     assert (status, reply) == (200, {"id": "o1", "executions": []})
     method, url, headers, body = sent[0]
@@ -254,13 +252,9 @@ def test_the_client_signs_timestamp_method_and_path_without_the_query(tmp_path):
     assert b'"intent": "ORDER_INTENT_BUY_SHORT"' in body and b'"tif": "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL"' in body
 
 
-def test_a_bad_key_file_fails_at_start(tmp_path):
-    path = tmp_path / "bad.key"
-    path.write_text("not base64!")
+def test_a_bad_key_fails_at_start():
     with pytest.raises(PolymarketError):
-        PolymarketOrderClient("key-1", path)
-    with pytest.raises(OSError):
-        PolymarketOrderClient("key-1", tmp_path / "missing.key")
+        PolymarketOrderClient("key-1", "not base64!")
 
 
 def test_order_body_sends_the_yes_price_and_refuses_nonsense():
@@ -325,7 +319,7 @@ def test_the_route_places_and_refuses_a_bad_body_or_no_desk(store):
     off, send_off = post_place(store, None)
     try:
         status, reply = send_off(BODY)
-        assert status == 503 and "no Polymarket US key for Place" in reply["error"]
+        assert status == 503 and "no Polymarket US key" in reply["error"]
     finally:
         off.shutdown()
         off.server_close()
@@ -341,12 +335,12 @@ class BalanceClient:
         return self.status, {"balances": []}
 
 
-def test_the_service_arms_place_only_on_its_own_key_that_signs_with_the_read_in_place(store, monkeypatch):
+def test_the_service_arms_place_only_on_a_key_that_signs_with_the_read_in_place(store, monkeypatch):
     from unabated_ticket.bets_service import config
-    monkeypatch.setattr(config, "POLYMARKET_PLACE_KEY_ID", "")
-    assert "no Polymarket US key for Place" in service.open_polymarket_place_desk(store, ["polymarket_us"])[1]
-    monkeypatch.setattr(config, "POLYMARKET_PLACE_KEY_ID", "key-1")
-    monkeypatch.setattr(config, "POLYMARKET_PLACE_SECRET_PATH", "/data/polymarket_place.key")
+    monkeypatch.setattr(config, "POLYMARKET_US_KEY_ID", "")
+    assert "no Polymarket US key" in service.open_polymarket_place_desk(store, ["polymarket_us"])[1]
+    monkeypatch.setattr(config, "POLYMARKET_US_KEY_ID", "key-1")
+    monkeypatch.setattr(config, "POLYMARKET_US_SECRET_KEY", "fake-secret")
     assert "does not read polymarket_us" in service.open_polymarket_place_desk(
         store, ["kalshi"], client_factory=lambda *_: BalanceClient())[1]
     refused = service.open_polymarket_place_desk(store, ["polymarket_us"], client_factory=lambda *_: BalanceClient(401))

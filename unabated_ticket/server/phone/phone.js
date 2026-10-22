@@ -639,7 +639,7 @@
 
   // ---- Place on Kalshi, Novig or Polymarket US (place.js) -----------------
   // The ticket's own Place button: one order per second tap, sent by the bets
-  // service on Place's own key at that venue (POST /place_kalshi.json,
+  // service on its key at that venue (POST /place_kalshi.json,
   // /place_novig.json or /place_polymarket.json). Its state belongs to one open row: {rowKey,
   // venueName, phase: null | "confirm" | "placing" | "done", armedAt,
   // message, tone, edited (Cal typed in the box)}.

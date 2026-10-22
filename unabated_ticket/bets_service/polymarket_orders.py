@@ -11,8 +11,9 @@ cloud container, so nothing here was read off docs.polymarket.us directly):
     the path WITHOUT its query string (a signed query string is refused 401,
     live 2026-09-23). The body is not signed.
   * The secret key is base64 of the 32-byte Ed25519 seed followed by the
-    public key (the "Secret Key" polymarket.us/developer shows once); it is
-    read from a FILE here (the Place key moves to the VM by scp), never .env.
+    public key (the "Secret Key" polymarket.us/developer shows once). Place
+    signs with the same key the polymarket_us source reads with
+    (POLYMARKET_US_*, Cal 2026-10-22: a polymarket.us key is not read-only).
   * One instrument per market: the YES (long) contract. Buying NO is
     ORDER_INTENT_BUY_SHORT, and `price.value` is ALWAYS the YES price, on a
     short order too: buying NO at 83c sends 0.17 (yes_price_of).
@@ -34,12 +35,11 @@ import json
 import math
 import time
 from collections.abc import Callable
-from pathlib import Path
 
 import requests
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from unabated_ticket.bets_service.sources.polymarket_us import API_BASE_URL, ED25519_SEED_BYTES, GATEWAY_BASE_URL
+from unabated_ticket.bets_service.sources.polymarket_us import API_BASE_URL, GATEWAY_BASE_URL, signer_of
 
 ACCESS_KEY_HEADER = "X-PM-Access-Key"
 TIMESTAMP_HEADER = "X-PM-Timestamp"
@@ -75,15 +75,12 @@ class PolymarketError(RuntimeError):
     """A Polymarket US answer that is not what the call expects."""
 
 
-def signer_of_key_file(path: str | Path) -> ed25519.Ed25519PrivateKey:
-    """The Ed25519 key in a Place key file: the base64 "Secret Key" text."""
-    text = Path(path).read_text().strip()
+def signer_of_secret_key(secret_key: str) -> ed25519.Ed25519PrivateKey:
+    """The Ed25519 key in the base64 "Secret Key" text."""
     try:
-        seed = base64.b64decode(text, validate=True)[:ED25519_SEED_BYTES]
-        return ed25519.Ed25519PrivateKey.from_private_bytes(seed)
-    except ValueError as error:
-        raise PolymarketError(f"{path} does not hold a base64 Ed25519 Secret Key from polymarket.us/developer: "
-                              f"{error}") from None
+        return signer_of(secret_key)
+    except RuntimeError as error:
+        raise PolymarketError(str(error)) from None
 
 
 def yes_price_of(contract_side: str, side_price: float) -> float:
@@ -171,14 +168,14 @@ def _parse(raw: bytes) -> object:
 class PolymarketOrderClient:
     """Signed order calls on one Polymarket US key, plus the public book."""
 
-    def __init__(self, key_id: str, secret_key_path: str | Path, base_url: str = API_BASE_URL,
+    def __init__(self, key_id: str, secret_key: str, base_url: str = API_BASE_URL,
                  gateway_url: str = GATEWAY_BASE_URL, transport: Transport | None = None,
                  clock: Callable[[], float] = time.time):
-        """Reads the key file now, so a bad file fails at start, not on a click."""
+        """Parses the key now, so a bad key fails at start, not on a click."""
         self.key_id = key_id
         self.base_url = base_url.rstrip("/")
         self.gateway_url = gateway_url.rstrip("/")
-        self._signer = signer_of_key_file(secret_key_path)
+        self._signer = signer_of_secret_key(secret_key)
         self._transport = transport or requests_transport()
         self._clock = clock
 

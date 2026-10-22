@@ -594,7 +594,7 @@
 
   // ---- Place on Kalshi, Novig or Polymarket US (place.js) -----------------
   // The Ticket's own Place button: one order per second click, sent by the
-  // bets service on Place's own key at that venue (POST /place_kalshi.json,
+  // bets service on its key at that venue (POST /place_kalshi.json,
   // /place_novig.json or /place_polymarket.json). Its state
   // lives across re-renders and belongs to one capture: a new ticket starts
   // it over. {ticketAt, phase: null | "confirm" | "placing" | "done",
