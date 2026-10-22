@@ -261,26 +261,59 @@
 
   // ---- sizing ----------------------------------------------------------------
 
-  // Quarter-Kelly with nothing held, never more than the line's resting
-  // liquidity: it sorts "by stake" and feeds the tail-flex rank score.
-  function stakeFor(row, stakeSettings) {
+  // The edge a row is sized on, in percent: the shrunk edge (tailflex.
+  // shrinkOfRow — Unabated's claimed edge, less the farther the line sits
+  // from the main number; issue #208) on a pregame row, the raw edge on a
+  // live row (its fair is in-game, not on the pregame ladder c and tau were
+  // measured on). Null without an edge.
+  function sizingEdgePct(row, measurement) {
     if (row.edgePct == null) return null;
+    if (row.live) return row.edgePct;
+    const shrunk = tailflex.shrinkOfRow(row, measurement);
+    return shrunk ? shrunk.edgePct : row.edgePct;
+  }
+
+  // Quarter-Kelly on the sizing edge with nothing held, never more than the
+  // line's resting liquidity: it sorts "by stake" and feeds the rank score.
+  function stakeFor(row, stakeSettings, measurement) {
+    return stakeOnEdge(row, sizingEdgePct(row, measurement), stakeSettings);
+  }
+
+  function stakeOnEdge(row, edgePct, stakeSettings) {
+    if (edgePct == null) return null;
     try {
-      const kellyStake = kelly.kellyStakeFromEdge({ bookPrice: row.price, edgePct: row.edgePct, bankroll: stakeSettings.bankroll, multiplier: stakeSettings.multiplier }).stake;
+      const kellyStake = kelly.kellyStakeFromEdge({ bookPrice: row.price, edgePct, bankroll: stakeSettings.bankroll, multiplier: stakeSettings.multiplier }).stake;
       return betsView.capAtLiquidity(kellyStake, row.liquidity).stake;
     } catch (_error) {
       return null;
     }
   }
 
-  // The standalone stake (sized on Unabated's raw edge, never on the flexed
-  // one) and the tail-flex rank score: EV dollars after flex, which picks a
-  // card's best line and orders the lines inside it. `measurement` is
-  // tailflex.measureTailFlex over the same feed state.
+  // The row with its shrink (`shrink`, `shrunkEdgePct`: what the stake and
+  // the rank read; `edgePct` stays Unabated's raw edge, which the listing
+  // floor reads), its standalone stake on the shrunk edge, and the rank
+  // score: shrunk edge x stake, EV dollars, which picks a card's best line
+  // and orders the lines inside it. `measurement` is tailflex.measureTailFlex
+  // over the same feed state (with the pooled tau where the caller has one).
   function withStakeAndRank(row, measurement, stakeSettings) {
-    const sized = { ...row, stake: stakeFor(row, stakeSettings) };
-    const rank = tailflex.rankOfRow(sized, measurement);
-    return { ...sized, rankScore: rank ? rank.score : null };
+    const shrunk = tailflex.shrinkOfRow(row, measurement);
+    const shrunkEdgePct = shrunk ? shrunk.edgePct : null;
+    const sized = { ...row, shrink: shrunk ? shrunk.shrink : null, shrunkEdgePct, stake: stakeOnEdge(row, shrunkEdgePct ?? row.edgePct, stakeSettings) };
+    return { ...sized, rankScore: tailflex.rankScoreOf(sized) };
+  }
+
+  // The Ticket's line as the Edges row shape the tail flex reads (the
+  // period and bet type ids live on the ticket's `watch`, page.js; the
+  // league on the board's event). The shrink falls back on both c and tau
+  // without a league; a live ticket sizes on the raw edge (sizingEdgePct).
+  function ticketSizingRow(ticket, line, event) {
+    const watch = ticket.watch || {};
+    return {
+      eventId: ticket.eventId ?? null, leagueId: event ? event.leagueId : null,
+      periodTypeId: watch.periodTypeId ?? null, betTypeId: watch.betTypeId ?? null,
+      sideIndex: ticket.sideIndex, points: line.points ?? ticket.points ?? null, price: line.price, edgePct: line.edgePct,
+      live: ticket.live ? true : undefined,
+    };
   }
 
   // One describeLine-shaped row per event on the board (main lines only):
@@ -339,7 +372,7 @@
     return rows.map((row, index) => {
       const flag = flags[index];
       const advice = betsView.stakeAdvice({
-        line: row, price: row.price, edgePct: row.edgePct,
+        line: row, price: row.price, edgePct: typeof row.shrunkEdgePct === "number" ? row.shrunkEdgePct : row.edgePct,
         bankroll: context.stakeSettings.bankroll, multiplier: context.stakeSettings.multiplier,
         matches: flag.matches, ladderOf: context.ladderReaderOf(row.eventId), liquidity: row.liquidity, teasers,
       });
@@ -422,9 +455,10 @@
     return groups;
   }
 
-  // "tail flex: NFL spr 6.2% · CFB 1H tot 10%": the c in use for every
-  // spread/total market on the list, in list order; a market too thin to
-  // measure shows the fallback. "" for an empty list.
+  // "tail flex: NFL spr c 6.2% τ 1.9% · CFB 1H tot c 10% τ 1.85%": the c and
+  // the tau in use for every spread/total market on the list, in list order;
+  // a market too thin to measure shows the fallback (a whole number for c,
+  // 1.85% for tau). "" for an empty list.
   function describeTailFlex(rows, measurement) {
     if (!rows.length) return "";
     const parts = new Map();
@@ -434,8 +468,10 @@
       if (parts.has(key)) continue;
       const c = tailflex.cOf(measurement, row);
       const cText = tailflex.isMeasured(measurement, row) ? `${(c * 100).toFixed(1)}%` : `${Math.round(c * 100)}%`;
+      const tau = tailflex.tauOf(measurement, row);
+      const tauText = tailflex.isTauMeasured(measurement, row) ? `${(tau * 100).toFixed(2)}%` : `${(tailflex.TAU_FALLBACK * 100).toFixed(2)}% (fallback)`;
       const period = row.period === "FG" ? "" : `${row.period} `;
-      parts.set(key, `${row.leagueLabel} ${period}${row.betTypeId === BET_TYPE_SPREAD ? "spr" : "tot"} ${cText}`);
+      parts.set(key, `${row.leagueLabel} ${period}${row.betTypeId === BET_TYPE_SPREAD ? "spr" : "tot"} c ${cText} τ ${tauText}`);
     }
     return parts.size ? `tail flex: ${Array.from(parts.values()).join(" · ")}` : "";
   }
@@ -558,7 +594,7 @@
     EDGE_SETTING_KEYS, sanitizeStakeSettings, sanitizeEdgeSettings, settingsFromService, serviceSettingsOf,
     feedTeamsByLeague, applyBetsPayload,
     liveBooks, defaultBookIds, effectiveFilter, edgeSelectionOptions,
-    stakeFor, withStakeAndRank, boardLines, createLadderReaders, withBetFlags, exposureDollars, meetsMinStake,
+    sizingEdgePct, stakeFor, withStakeAndRank, ticketSizingRow, boardLines, createLadderReaders, withBetFlags, exposureDollars, meetsMinStake,
     sizedEdgeRows, createPriceIndex, withPriceCheck, sortEdgeRows, listedEdgeRows, groupEdgeRows, describeTailFlex, edgeTier, fmtDollars, stakeRail,
     fmtAmerican, fmtFairEntry, fmtBetPrice, heldInThisDirection, tagReading, moveDetail, moveTag, moveWords,
   };

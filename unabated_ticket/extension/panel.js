@@ -197,6 +197,16 @@
   // and when the max line age changes.
   const tailflex = globalThis.UnabatedTailFlex;
   let tailFlexCache = null;
+  // The pooled tau per market from the bets service's GET /tau.json (the
+  // server runner's 24 h pool, issue #208), read after every bets poll;
+  // {markets, generatedAt, fetchedAt, error}. Until one is read, or while the
+  // service is unreachable, every market sizes on tailflex.TAU_FALLBACK and
+  // the Edges header says "(fallback)" — never this panel's one-refresh read.
+  let pooledTau = null;
+  // A /tau.json read older than this is not sized on: the runner serves the
+  // pool every bets poll (30 s), so ten minutes without one means the runner
+  // or the service is down, and a pool that old has rolled on.
+  const TAU_POOL_STALE_MS = 10 * 60 * 1000;
   // Every book's price at every number (pricecheck.js), for the "N books
   // better" tags: built once per scanner update and max line age.
   const pricecheck = globalThis.UnabatedPriceCheck;
@@ -369,15 +379,24 @@
     return `Unabated has no edge at ${fmtAmerican(line.price)} (the Edges feed has this line at ${fmtAmerican(held.price)} with ${fmtPct(held.ge)}; the cell shows a different price)`;
   }
 
-  // Stake from Unabated's own edge for the line being priced (captured, or current if it moved).
+  function ticketSizingRow(ticket, line) {
+    const event = scannerState && ticket.eventId != null ? scannerState.events[ticket.eventId] : null;
+    return edgeRows.ticketSizingRow(ticket, line, event);
+  }
+
+  // Stake from Unabated's own edge for the line being priced (captured, or
+  // current if it moved), shrunk for the line's distance from the main
+  // number (tailflex.js, issue #208; a live ticket sizes on the raw edge).
+  // `sizingEdgePct` is the edge the stake was sized on, for the Edge tile.
   function computeStake(ticket, settings) {
     const line = pricedLine(ticket);
-    if (line.edgePct == null) return { line, result: null, reason: noEdgeReason(line) };
+    if (line.edgePct == null) return { line, result: null, reason: noEdgeReason(line), sizingEdgePct: null };
+    const sizingEdgePct = edgeRows.sizingEdgePct(ticketSizingRow(ticket, line), tailFlexMeasurement());
     try {
-      const result = kelly.kellyStakeFromEdge({ bookPrice: line.price, edgePct: line.edgePct, bankroll: settings.bankroll, multiplier: settings.multiplier });
-      return { line, result, reason: null };
+      const result = kelly.kellyStakeFromEdge({ bookPrice: line.price, edgePct: sizingEdgePct, bankroll: settings.bankroll, multiplier: settings.multiplier });
+      return { line, result, reason: null, sizingEdgePct };
     } catch (error) {
-      return { line, result: null, reason: error.message };
+      return { line, result: null, reason: error.message, sizingEdgePct };
     }
   }
 
@@ -530,7 +549,7 @@
 
   function renderTicket() {
     const { ticket, settings, watchStatus } = state;
-    const { line, result, reason } = computeStake(ticket, settings);
+    const { line, result, reason, sizingEdgePct } = computeStake(ticket, settings);
     if (!line.moved && line.edgePct == null) {
       renderNoEdge(ticket, line);
       return;
@@ -551,7 +570,7 @@
     const bookLine = asBookLine(line.price, line.sourceFormat, line.sourcePrice);
     view.book.textContent = ticket.book.name;
     view.price.replaceChildren(fmtAmerican(line.price), smallEl(fmtCents(bookLine)));
-    renderFairAndEdge(ticket, line, betFlag);
+    renderFairAndEdge(ticket, line, betFlag, sizingEdgePct);
     renderOtherBooks(ticket, line);
 
     view.stake.classList.remove("no-edge");
@@ -742,7 +761,7 @@
   // The Fair and Edge tiles: Unabated's fair in both worlds (its own American
   // number; there is no more exact source for it), the edge and how far the
   // price sits from the fair in cents, and the edge-move tag under it.
-  function renderFairAndEdge(ticket, line, betFlag) {
+  function renderFairAndEdge(ticket, line, betFlag, sizingEdgePct) {
     const bookLine = asBookLine(line.price, line.sourceFormat, line.sourcePrice);
     const fairLine = line.fair == null ? null : asBookLine(line.fair, 1, null);
     view.fair.textContent = fairLine ? fmtAmerican(line.fair) : "unknown";
@@ -750,7 +769,9 @@
       : ticket.live ? `${fmtCents(fairLine)} · live fair, ${live.checkpointLabel(ticket.live)}` : fmtCents(fairLine);
     view.edge.textContent = line.edgePct == null ? "\u2014" : fmtPct(line.edgePct / 100);
     view.edge.closest(".tile").classList.toggle("no-edge", !(line.edgePct > 0));
-    view.edgeSub.textContent = fairLine ? betsView.centsFromFairText(kelly.bookProbOf(bookLine), kelly.bookProbOf(fairLine)) : "";
+    // The edge the stake was sized on, when the tail flex shrank it (issue #208).
+    const shrunkText = typeof sizingEdgePct === "number" && line.edgePct > 0 && sizingEdgePct < line.edgePct ? `sized on ${fmtPct(sizingEdgePct / 100)}` : null;
+    view.edgeSub.textContent = [fairLine ? betsView.centsFromFairText(kelly.bookProbOf(bookLine), kelly.bookProbOf(fairLine)) : null, shrunkText].filter(Boolean).join(" \u00b7 ");
     // The edge-move tag reads the feed's copy of this line, and only at the
     // price being sized: the feed's history says nothing about another price.
     const feedCopy = feedLineFor(ticket, line.points);
@@ -913,7 +934,7 @@
     const liquidity = feedCopy && feedCopy.price === line.price ? feedCopy.liquidity : null;
     const ladderOf = ticket.live ? liveLadderReaders(Date.now())(ticket.eventId) : ladderReader(ticket.eventId);
     const advice = betsView.stakeAdvice({
-      line: matchLine, price: line.price, edgePct: line.edgePct,
+      line: matchLine, price: line.price, edgePct: line.edgePct == null ? null : edgeRows.sizingEdgePct(ticketSizingRow(ticket, line), tailFlexMeasurement()),
       bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
       matches, ladderOf, liquidity, teasers: openTeasersNow(),
     });
@@ -1321,9 +1342,9 @@
   view.booksAll.addEventListener("click", () => setBookIds(liveBooks().map((book) => book.id)));
   view.booksNone.addEventListener("click", () => setBookIds([]));
 
-  // Quarter-Kelly with nothing held, never more than the line's resting liquidity.
+  // Quarter-Kelly on the shrunk edge with nothing held, never more than the line's resting liquidity.
   function stakeFor(row) {
-    return edgeRows.stakeFor(row, state.settings);
+    return edgeRows.stakeFor(row, state.settings, tailFlexMeasurement());
   }
 
   // Everything selectEdges needs except the edge threshold (list and alerts differ there).
@@ -1352,13 +1373,53 @@
     return edgeRows.meetsMinStake(row, state.edgeSettings.minStake);
   }
 
-  // Measured once per scanner update, on the same line-age gate as the list.
+  // Measured once per scanner update, on the same line-age gate as the list:
+  // c from this scan, tau from the bets service's pool (pooledTauMarkets;
+  // the fallback until it is read). Null before the first scan: every market
+  // then falls back on both. The cache is dropped by the scan and by a
+  // changed pool read (syncPooledTau), not by an identity check: a fresh
+  // object per call would re-measure the feed on every row.
   function tailFlexMeasurement() {
+    if (!scannerState) return null;
     const maxLineAgeMs = state.edgeSettings.maxLineAgeHours * 3600 * 1000;
     if (!tailFlexCache || tailFlexCache.maxLineAgeMs !== maxLineAgeMs) {
-      tailFlexCache = { maxLineAgeMs, measurement: tailflex.measureTailFlex(scannerState, { now: Date.now(), maxLineAgeMs }) };
+      const measured = tailflex.measureTailFlex(scannerState, { now: Date.now(), maxLineAgeMs });
+      tailFlexCache = { maxLineAgeMs, measurement: tailflex.withPooledTau(measured, pooledTauMarkets(Date.now())) };
     }
     return tailFlexCache.measurement;
+  }
+
+  // The pooled tau per market to size on: the last /tau.json read while it is
+  // younger than TAU_POOL_STALE_MS, else none (every market falls back and
+  // the header says so) — a pool the runner stopped serving is not sized on.
+  function pooledTauMarkets(at) {
+    if (!pooledTau || pooledTau.fetchedAt == null || at - pooledTau.fetchedAt > TAU_POOL_STALE_MS) return {};
+    return pooledTau.markets;
+  }
+
+  // One GET of /tau.json (the bets service passes it through from the server
+  // runner), after each bets poll. A failure keeps the last read until it
+  // goes stale (pooledTauMarkets); none yet means the fallback.
+  async function syncPooledTau() {
+    const wasStale = Object.keys(pooledTauMarkets(Date.now())).length === 0;
+    try {
+      const body = await serviceRequest("GET", "/tau.json");
+      if (!body || typeof body.markets !== "object" || body.markets === null) throw new Error("tau.json has no markets object");
+      const changed = wasStale || JSON.stringify(pooledTau.markets) !== JSON.stringify(body.markets);
+      pooledTau = { markets: body.markets, fetchedAt: Date.now(), error: null };
+      if (changed) {
+        tailFlexCache = null;
+        renderEdges();
+        if (state.ticket && !state.error) renderTicket();
+      }
+    } catch (error) {
+      if (!pooledTau || pooledTau.error !== error.message) console.warn("[unabated-ticket] tau pool read failed (the last read sizes until it goes stale, then the fallback)", error.message);
+      pooledTau = { ...(pooledTau || { markets: {}, fetchedAt: null }), error: error.message };
+      if (!wasStale && Object.keys(pooledTauMarkets(Date.now())).length === 0) {
+        tailFlexCache = null;
+        renderEdges();
+      }
+    }
   }
 
   function priceIndex() {
@@ -1711,6 +1772,7 @@
     const stake = document.createElement("span");
     stake.className = "gl-stake";
     stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
+    if (typeof row.shrunkEdgePct === "number") stake.title = `sized on ${fmtPct(row.shrunkEdgePct / 100)} (${Math.round(row.shrink * 100)}% of Unabated's ${fmtPct(row.edgePct / 100)})`;
     rail.append(edge, ...moveParts(row, row.bet), stake);
 
     li.append(main, rail);
@@ -2393,6 +2455,7 @@
     pollDraftKings().catch((error) => console.error("[unabated-ticket] draftkings poll failed", error));
     if (state.betsService.error == null) {
       syncSettings().catch((error) => console.error("[unabated-ticket] settings sync failed", error));
+      syncPooledTau().catch((error) => console.error("[unabated-ticket] tau pool sync failed", error));
       if (sharedMarksDue) migrateSharedMarks().catch((error) => console.error("[unabated-ticket] marks migration failed", error));
     }
   }

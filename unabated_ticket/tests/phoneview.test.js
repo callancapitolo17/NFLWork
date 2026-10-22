@@ -82,10 +82,10 @@ test("the ticket for a held sportsbook line: add, its standalone size, no contra
   assert.equal(ticket.edge, "+5.30%");
   assert.match(ticket.start, / · in 1h 0m$/);
   const block = ticket.stakeBlock;
+  // $200 held on a main number the shrunk edge (#208) sizes $194.08: at full size.
   assert.deepEqual([block.label, block.stake, block.noEdge, block.position, block.positionAgainst, block.contracts],
-    ["Add to your position", "$237.25", false, "held $200 · $437.25 alone", false, null]);
-  // -110: $237.25 wins $215.68 and pays $452.93.
-  assert.deepEqual([block.toWin, block.payout], ["$215.68", "$452.93"]);
+    ["Already at full size", "$0.00", true, "held $200 · $194.08 alone", false, null]);
+  assert.deepEqual([block.toWin, block.payout], [null, null]);
 });
 
 test("the ticket for an exchange line: contracts at the exchange's price, cost under the stake", async () => {
@@ -94,8 +94,8 @@ test("the ticket for an exchange line: contracts at the exchange's price, cost u
   const block = phoneView.stakeBlockView(row);
   assert.equal(block.label, "Bet");
   assert.equal(block.stake, edgeRows.fmtDollars(row.advice.bet));
-  // floor($215.13 / 0.345) = 623 contracts; 623 x 0.345 = 214.935 rounds (in float) to $214.93.
-  assert.deepEqual(block.contracts, { text: "623 contracts @ 34.5¢", cost: "$214.93", under: false });
+  // The shrunk edge sizes $30.94 (edgerows.test.js): floor($30.94 / 0.345) = 89 contracts; 89 x 0.345 = $30.71.
+  assert.deepEqual(block.contracts, { text: "89 contracts @ 34.5¢", cost: "$30.71", under: false });
   assert.equal(phoneView.contractsView(0.2, row).text, "under 1 contract @ 34.5¢");
   assert.equal(phoneView.contractsView(0, row), null);
 });
