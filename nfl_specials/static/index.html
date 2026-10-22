@@ -525,26 +525,36 @@ function setPref(key, value) {
 
 // --- one special --------------------------------------------------------------
 function booksLine(line) {
-  if (line.is_superfecta) {
+  const fixedShare = line.sf_share && line.sf_share.book === "fixed" ? line.sf_share.share : null;
+  const worstTitle = fixedShare == null ? "Worst case — the fair this row uses"
+    : "Worst case of the trifecta part; the row uses it times the fixed share";
+  if (line.is_superfecta && fixedShare == null) {
     // DraftKings is the only superfecta book; its fair is the row's fair.
     const text = line.fair_american != null ? `DK ${signed(line.fair_american)}` : "DK –";
     return el("div", { class: "books-line num", text });
   }
+  // A superfecta with DraftKings down lists its trifecta part's fair by book.
   const names = BOOK_ORDER.filter(n => n in line.books);
   const priced = names.filter(n => line.books[n].fair_prob != null);
+  const worstProb = priced.length ? Math.min(...priced.map(n => line.books[n].fair_prob)) : null;
   const parts = [];
   names.forEach((name, i) => {
     const fair = line.books[name];
     if (i > 0) parts.push(" · ");
     if (fair.fair_american == null) {
       parts.push(el("span", { class: "none", title: fair.reason || "", text: `${BOOK_SHORT[name]} –` }));
-    } else if (priced.length > 1 && fair.fair_prob === line.fair_prob) {
-      parts.push(el("span", { class: "worst", title: "Worst case — the fair this row uses",
+    } else if (priced.length > 1 && fair.fair_prob === worstProb) {
+      parts.push(el("span", { class: "worst", title: worstTitle,
                               text: `${BOOK_SHORT[name]} ${signed(fair.fair_american)} (worst)` }));
     } else {
       parts.push(`${BOOK_SHORT[name]} ${signed(fair.fair_american)}`);
     }
   });
+  if (fixedShare != null && line.fair_prob != null) {
+    parts.push(" ", el("span", { class: "chip warn",
+      title: "DraftKings is down: the trifecta part's worst case times the lowest scores-first share DraftKings ever quoted",
+      text: `share ${fixedShare.toFixed(2)} fixed, DK down` }));
+  }
   return parts.length ? el("div", { class: "books-line num" }, parts) : null;
 }
 

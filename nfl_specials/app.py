@@ -245,6 +245,8 @@ def _line_json(line, sizing) -> dict:
         "note": line.note,
         "books": books,
         "is_superfecta": line.is_superfecta(),
+        "sf_share": ({"share": line.sf_share.share, "book": line.sf_share.book}
+                     if line.sf_share else None),
         "fair_prob": sizing.fair_prob,
         "fair_american": _american(sizing.fair_prob),
         "ev": sizing.ev,
