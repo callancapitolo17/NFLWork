@@ -42,6 +42,20 @@ writer). Tables:
                /fill_books.json by the server runner. INSERT only, first
                capture wins (ON CONFLICT DO NOTHING); nothing is backfilled.
                Stored only: nothing serves it back yet. Never pruned.
+  bet_fill_snapshots  one row per bet: the market at the fill, for working out
+               afterwards why its edge was right or wrong (Cal 2026-10-22) —
+               every book's price on both sides at its number (`books_json`,
+               raw prices, devigged in analysis), Unabated's main number and
+               fair, the bet's distance from it, and the edge-move tag
+               (server/edgesnapshot.js). POSTed to /fill_snapshots.json by the
+               server runner. INSERT only, first capture wins; nothing is
+               backfilled. Never pruned. Served by /bets.json?snapshots=1.
+  bet_close_snapshots  one row per bet: every book's price on both sides at its
+               number on the newest snapshot before its game started, the
+               exchange close (server/edgesnapshot.js). POSTed to
+               /close_snapshots.json with the closing fairs; UPSERT keeps the
+               LATEST observed_at, the bet_closing_fairs rule. Never pruned.
+               Served by /bets.json?snapshots=1.
   bet_closing_fairs  one row per bet: Unabated's fair for the bet's own line on
                the newest snapshot before its game started — the close CLV is
                measured against. POSTed to /closing_fairs.json by the server
@@ -173,6 +187,28 @@ CREATE TABLE IF NOT EXISTS bet_fill_books (
     best_book     VARCHAR,               -- the best other book; NULL when book_count = 0
     best_price    DOUBLE,                -- its American price at the fill; NULL when book_count = 0
     captured_at   TIMESTAMPTZ NOT NULL   -- when this service stored the row
+);
+CREATE TABLE IF NOT EXISTS bet_fill_snapshots (
+    bet_id                 VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
+    placed_at              TIMESTAMPTZ NOT NULL,  -- the bet's placedAt
+    line_key               VARCHAR NOT NULL,      -- the board line at the bet's number the snapshot is keyed on
+    points                 DOUBLE,                -- the bet's number; NULL on a moneyline
+    main_points            DOUBLE,                -- Unabated's main number on the bet's side at the fill; NULL when unseen
+    main_fair_american     INTEGER,               -- Unabated's fair (bacr) at that main number at the fill
+    points_from_main       DOUBLE,                -- points - main_points
+    edge_move_line_key     VARCHAR NOT NULL,      -- the line the edge-move tag was read on (the venue's when listed)
+    edge_move              VARCHAR NOT NULL,      -- edgemove.js kind: none | fair_to_you | book_away | fair_against
+    edge_move_fair_delta   DOUBLE,                -- the fair's move toward the side, in probability
+    edge_move_price_delta  DOUBLE,                -- the book's move away from the side, in probability
+    books_json             VARCHAR NOT NULL,      -- JSON [{bookId, book, exchange, venue, side, other}] at the fill
+    captured_at            TIMESTAMPTZ NOT NULL   -- when this service stored the row
+);
+CREATE TABLE IF NOT EXISTS bet_close_snapshots (
+    bet_id       VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
+    observed_at  TIMESTAMPTZ NOT NULL,  -- the league snapshot the books were read off; before event_start
+    event_start  TIMESTAMPTZ NOT NULL,  -- the board game's start
+    books_json   VARCHAR NOT NULL,      -- JSON [{bookId, book, exchange, venue, side, other}], liquidity included
+    updated_at   TIMESTAMPTZ NOT NULL   -- when this service last wrote the row
 );
 CREATE TABLE IF NOT EXISTS bet_closing_fairs (
     bet_id            VARCHAR PRIMARY KEY,   -- bets.id, the venue-native bet id
@@ -415,6 +451,43 @@ _INSERT_FILL_BOOKS = """
 INSERT INTO bet_fill_books (bet_id, placed_at, fill_price, book_count, books_better, best_book, best_price, captured_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (bet_id) DO NOTHING
+"""
+
+# Insert-only, first capture wins, as bet_fill_fairs.
+_INSERT_FILL_SNAPSHOT = """
+INSERT INTO bet_fill_snapshots (bet_id, placed_at, line_key, points, main_points, main_fair_american, points_from_main,
+                                edge_move_line_key, edge_move, edge_move_fair_delta, edge_move_price_delta, books_json,
+                                captured_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (bet_id) DO NOTHING
+"""
+
+# Newest observation wins, as _UPSERT_CLOSING_FAIR.
+_UPSERT_CLOSE_SNAPSHOT = """
+INSERT INTO bet_close_snapshots (bet_id, observed_at, event_start, books_json, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (bet_id) DO UPDATE SET
+    observed_at = excluded.observed_at, event_start = excluded.event_start, books_json = excluded.books_json,
+    updated_at = excluded.updated_at
+WHERE excluded.observed_at > bet_close_snapshots.observed_at
+"""
+
+# The snapshots of the bets /bets.json serves — the same window as _SELECT_FILL_FAIRS.
+_SELECT_FILL_SNAPSHOTS = """
+SELECT s.bet_id, epoch(s.placed_at), s.line_key, s.points, s.main_points, s.main_fair_american, s.points_from_main,
+       s.edge_move_line_key, s.edge_move, s.edge_move_fair_delta, s.edge_move_price_delta, s.books_json
+FROM bet_fill_snapshots s
+JOIN bets b ON b.id = s.bet_id
+WHERE b.status = 'open' OR b.closed_at IS NULL OR b.closed_at >= ?
+ORDER BY s.placed_at, s.bet_id
+"""
+
+_SELECT_CLOSE_SNAPSHOTS = """
+SELECT c.bet_id, epoch(c.observed_at), epoch(c.event_start), c.books_json
+FROM bet_close_snapshots c
+JOIN bets b ON b.id = c.bet_id
+WHERE b.status = 'open' OR b.closed_at IS NULL OR b.closed_at >= ?
+ORDER BY c.event_start, c.bet_id
 """
 
 # The saved fairs of the bets /bets.json serves — the same window as
@@ -960,6 +1033,61 @@ class BetsStore:
             "fairObservedAt": _epoch_to_iso(fair_observed_at), "placedAt": _epoch_to_iso(placed_at),
             "capturedAt": _epoch_to_iso(captured_at),
         } for bet_id, line_key, points, fair_american, fair_observed_at, placed_at, captured_at in rows]
+
+    def save_fill_snapshots(self, rows: list[dict], captured_at: datetime) -> int:
+        """INSERT the fill snapshots of bets that have none (validated shape:
+        see service.validate_fill_snapshot_rows). A bet that already has one
+        keeps it — ON CONFLICT DO NOTHING. Returns how many rows were inserted."""
+        saved = 0
+        with self._lock:
+            for row in rows:
+                [inserted] = self._con.execute(_INSERT_FILL_SNAPSHOT, [
+                    row["betId"], _parse_iso(row["placedAt"]), row["lineKey"], row["points"], row["mainPoints"],
+                    row["mainFairAmerican"], row["pointsFromMain"], row["edgeMoveLineKey"], row["edgeMove"],
+                    row["edgeMoveFairDelta"], row["edgeMovePriceDelta"], json.dumps(row["books"], separators=(",", ":")),
+                    captured_at,
+                ]).fetchone()
+                saved += inserted
+        if saved:
+            log.info("fill snapshots: saved %d of %d row(s)", saved, len(rows))
+        return saved
+
+    def save_close_snapshots(self, rows: list[dict], updated_at: datetime) -> int:
+        """UPSERT the close snapshots (validated shape: see
+        service.validate_close_snapshot_rows), each kept only when it is newer
+        than the stored one. Returns how many rows were written."""
+        written = 0
+        with self._lock:
+            for row in rows:
+                [count] = self._con.execute(_UPSERT_CLOSE_SNAPSHOT, [
+                    row["betId"], _parse_iso(row["observedAt"]), _parse_iso(row["eventStart"]),
+                    json.dumps(row["books"], separators=(",", ":")), updated_at,
+                ]).fetchone()
+                written += count
+        return written
+
+    def load_fill_snapshots(self, days: int, now: datetime) -> list[dict]:
+        """The fill snapshots of the bets load_bets(days, now) serves, oldest placement first."""
+        cutoff = now - timedelta(days=days)
+        with self._lock:
+            rows = self._con.execute(_SELECT_FILL_SNAPSHOTS, [cutoff]).fetchall()
+        return [{
+            "betId": bet_id, "placedAt": _epoch_to_iso(placed_at), "lineKey": line_key, "points": points,
+            "mainPoints": main_points, "mainFairAmerican": main_fair, "pointsFromMain": points_from_main,
+            "edgeMoveLineKey": move_line_key, "edgeMove": edge_move, "edgeMoveFairDelta": fair_delta,
+            "edgeMovePriceDelta": price_delta, "books": json.loads(books_json),
+        } for (bet_id, placed_at, line_key, points, main_points, main_fair, points_from_main, move_line_key, edge_move,
+               fair_delta, price_delta, books_json) in rows]
+
+    def load_close_snapshots(self, days: int, now: datetime) -> list[dict]:
+        """The close snapshots of the bets load_bets(days, now) serves, earliest game first."""
+        cutoff = now - timedelta(days=days)
+        with self._lock:
+            rows = self._con.execute(_SELECT_CLOSE_SNAPSHOTS, [cutoff]).fetchall()
+        return [{
+            "betId": bet_id, "observedAt": _epoch_to_iso(observed_at), "eventStart": _epoch_to_iso(event_start),
+            "books": json.loads(books_json),
+        } for bet_id, observed_at, event_start, books_json in rows]
 
     def save_closing_fairs(self, rows: list[dict], updated_at: datetime) -> int:
         """UPSERT the closing fairs (validated shape: see

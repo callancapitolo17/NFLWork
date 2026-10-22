@@ -52,19 +52,24 @@ function pregameRow(rows, bet, leagueLoadedAt, staleLeagues, now) {
   return null;
 }
 
-// The rows POST /closing_fairs.json takes, one per open bet whose line the
-// board prices right now before its game starts:
+// One closing pass: {rows, rowsByBet}. `rows` are what POST
+// /closing_fairs.json takes, one per open bet whose line the board prices
+// right now before its game starts:
 //   {betId, lineKey, points, fairAmerican, fairObservedAt, eventStart}, times ISO.
+// `rowsByBet` is the board rows each bet is same_line on, so the close
+// snapshot (server/edgesnapshot.js) reads the same lookup without a second
+// walk of the board.
 //   records        bet records (bets.js contract)
 //   state          the scanner's feed state
 //   boardLines     one describeLine row per event (runner boardLines())
 //   leagueLoadedAt leagueId -> ms the league's last snapshot landed (scanner status)
 //   staleLeagues   league ids whose snapshot build is stale (scanner status)
 //   now            ms
-function closingFairRows({ records, state, boardLines, leagueLoadedAt, staleLeagues, now }) {
-  if (!state) return [];
+function closingPass({ records, state, boardLines, leagueLoadedAt, staleLeagues, now }) {
+  const empty = { rows: [], rowsByBet: new Map() };
+  if (!state) return empty;
   const candidates = closingCandidates(records);
-  if (!candidates.length) return [];
+  if (!candidates.length) return empty;
   const rowsByBet = fillfair.sameLineRows(candidates, state, boardLines);
   const out = [];
   for (const bet of candidates) {
@@ -77,7 +82,7 @@ function closingFairRows({ records, state, boardLines, leagueLoadedAt, staleLeag
       fairObservedAt: new Date(found.observedMs).toISOString(), eventStart: new Date(found.row.eventStartMs).toISOString(),
     });
   }
-  return out;
+  return { rows: out, rowsByBet };
 }
 
 // The rows that differ from what was last sent for their bet.
@@ -104,4 +109,4 @@ function leagueIdsOfOpenBets(records) {
   return Object.entries(feed.LEAGUES).filter(([, league]) => paths.has(league.path)).map(([id]) => Number(id));
 }
 
-module.exports = { closingFairRows, unsentRows, markSent, forgetClosed, leagueIdsOfOpenBets };
+module.exports = { closingPass, unsentRows, markSent, forgetClosed, leagueIdsOfOpenBets };

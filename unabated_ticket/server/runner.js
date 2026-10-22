@@ -41,6 +41,12 @@
 //   POST <bets service>/fill_books.json — each new open bet's other books at
 //       its number when it was placed (server/fillbooks.js): how many posted
 //       it, how many beat the price taken, the best of them. Runner only.
+//   POST <bets service>/fill_snapshots.json — each new open bet's market at
+//       the fill (server/edgesnapshot.js): every book's two sides at its
+//       number, Unabated's main number and fair, the edge-move tag. Runner only.
+//   POST <bets service>/close_snapshots.json every 30 s with the closing
+//       fairs — every book's two sides at each open bet's number before its
+//       game starts; the service keeps the newest pre-start one.
 //   Every league's snapshot every 60 s (scanner maxRefreshMs: the taker
 //       trades against the fair, so the panel's 2-5 min tiers are too slow).
 //   GET <Kalshi>/markets/<ticker>/orderbook every 30 s for each Kalshi Edges
@@ -103,7 +109,7 @@
 //                    side found in Polymarket US's own event list (polymarket.js),
 //                    its live ask, the all-in price with the taker fee and the
 //                    line as a bet record names it; places nothing.
-//   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, taker}
+//   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
 // Threads: main() runs createRunner on a worker thread (server/board_thread.js)
@@ -133,6 +139,7 @@ const edgeRows = require("../extension/edgerows.js");
 const edgesPayload = require("./edges_payload.js");
 const closefair = require("./closefair.js");
 const fillbooks = require("./fillbooks.js");
+const edgesnapshot = require("./edgesnapshot.js");
 const ladderLib = require("../extension/ladder.js");
 const scenarios = require("./scenarios.js");
 const teasersPayload = require("./teasers_payload.js");
@@ -207,6 +214,9 @@ const HOUR_MS = 3600 * 1000;
 const KICKOFF_MEMO_HOURS = 12;
 // A failed crosswalk or fill-fair write waits this long before the next try (panel.js).
 const SERVICE_WRITE_RETRY_MS = 60 * 1000;
+// Close snapshots per POST: each carries every book's two sides (a few KB),
+// so a full slate of open bets stays far under the service's 1 MB body cap.
+const CLOSE_SNAPSHOT_ROWS_PER_POST = 25;
 const HTTP_BAD_REQUEST = 400;
 
 function log(message) {
@@ -342,6 +352,9 @@ function createRunner(deps) {
   const boardRowsByLeague = new Map();
   // leagueId -> the league version rememberKickoffOdds last read.
   const kickoffLeagueVersions = new Map();
+  // leagueId -> {version, byEvent}: each league's lines grouped by game as of
+  // its last snapshot (the kickoff odds and the edge snapshots read it).
+  const linesByEventOfLeague = new Map();
   let ladderReaders = null;
   // The panel's other per-snapshot caches: the tail-flex measurement (dropped
   // on every scanner update, re-measured when the max line age changes) and
@@ -385,10 +398,11 @@ function createRunner(deps) {
   let fillFairsLastError = null;
   const fillFairsDecided = new Set();
   const fillFairsUnsent = new Map();
-  let fillBooksRetryAt = 0;
-  let fillBooksLastError = null;
-  const fillBooksDecided = new Set();
-  const fillBooksUnsent = new Map();
+  // One insert-only per-bet capture (fill books, fill snapshots): ids decided
+  // this run, rows not yet taken by the service, the retry clock, the last error.
+  const newCapture = () => ({ decided: new Set(), unsent: new Map(), retryAt: 0, lastError: null });
+  const fillBooksCapture = newCapture();
+  const fillSnapshotsCapture = newCapture();
   const betsStatus = { okAt: null, error: null, unreachableSince: null, generatedAt: null, sources: {} };
   let settings = { ...edgesPayload.settingsFromService(null), source: "defaults", error: null, okAt: null, updatedAt: null };
   let scannedLeagues = null;
@@ -401,6 +415,9 @@ function createRunner(deps) {
   // betId -> what was last POSTed for it (closefair.unsentRows).
   const sentClosingFairs = new Map();
   const closingStatus = { okAt: null, error: null, rowsSent: 0 };
+  // betId -> what was last POSTed to /close_snapshots.json (edgesnapshot.unsentCloseRows).
+  const sentCloseSnapshots = new Map();
+  const closeSnapshotStatus = { okAt: null, error: null, rowsSent: 0 };
   // Leagues added for open bets' closing fairs. It only grows (until a
   // restart): every change restarts the scan, which wipes the board and the
   // line history, so a league is not dropped when its last bet settles.
@@ -468,7 +485,7 @@ function createRunner(deps) {
       const version = scanner.getLeagueVersion(leagueId);
       if (kickoffLeagueVersions.get(leagueId) === version) continue;
       kickoffLeagueVersions.set(leagueId, version);
-      const linesByEvent = ladderLib.groupLinesByEvent(scanner.getLeagueLines(leagueId));
+      const linesByEvent = leagueLinesByEvent(leagueId);
       for (const row of leagueBoardRows(leagueId)) {
         if (typeof row.eventStartMs !== "number") continue;
         const pregame = row.eventStartMs > at;
@@ -481,6 +498,23 @@ function createRunner(deps) {
     for (const [eventId, entry] of kickoffMemo) {
       if (at - entry.row.eventStartMs > KICKOFF_MEMO_HOURS * HOUR_MS) kickoffMemo.delete(eventId);
     }
+  }
+
+  // One league's lines by game, regrouped only when its snapshot landed again.
+  function leagueLinesByEvent(leagueId) {
+    const version = scanner.getLeagueVersion(leagueId);
+    const cached = linesByEventOfLeague.get(leagueId);
+    if (cached && cached.version === version) return cached.byEvent;
+    const byEvent = ladderLib.groupLinesByEvent(scanner.getLeagueLines(leagueId));
+    linesByEventOfLeague.set(leagueId, { version, byEvent });
+    for (const known of linesByEventOfLeague.keys()) if (!boardLeagueIds().includes(known)) linesByEventOfLeague.delete(known);
+    return byEvent;
+  }
+
+  // One game's lines as of its league's last snapshot (edgesnapshot.js linesOfEvent).
+  function linesOfEventNow(eventId) {
+    const event = feedState && feedState.events[eventId];
+    return event ? leagueLinesByEvent(event.leagueId).get(eventId) || [] : [];
   }
 
   // Remember each open bet's matched game start, as the panel's noteMatchedStarts does.
@@ -590,7 +624,7 @@ function createRunner(deps) {
     learnBusy = true;
     learnCrosswalk()
       .then(() => captureFillFairs())
-      .then(() => captureFillBooks())
+      .then(() => captureFillBooksAndSnapshots())
       .catch((error) => logWarning(`learning failed: ${error.stack || error.message}`))
       .finally(() => { learnBusy = false; });
   }
@@ -662,39 +696,57 @@ function createRunner(deps) {
   }
 
   // Each new open bet's other books at its number when it was placed
-  // (fillbooks.js), one row per POST, the same way as the fill fairs. Decided
-  // ids live in memory only: after a restart every open bet was placed before
+  // (fillbooks.js) and its market at the fill (edgesnapshot.js: every book's
+  // two sides at its number, Unabated's main number and fair, the edge-move
+  // tag), one row per POST, the same way as the fill fairs. Both read one
+  // lookup of the board for the bets either still has to decide. Decided ids
+  // live in memory only: after a restart every open bet was placed before
   // the scanner watched, so nothing is re-captured, and the service keeps the
   // first row regardless.
-  async function captureFillBooks() {
+  async function captureFillBooksAndSnapshots() {
     const liveStatus = scanner.getStatus();
-    const { saves, refusals } = fillbooks.captureFillBooks({
-      records: held.records, skipIds: fillBooksDecided,
-      state: feedState, boardLines: boardLines(), history,
+    const shared = {
+      records: held.records, state: feedState, boardLines: boardLines(), history,
       observingSince: liveStatus.observingSince, leagueObservingSince: liveStatus.leagueObservingSince, now: now(),
+    };
+    const undecided = held.records.filter((bet) => bet.status === "open" && !bet.unmatchable
+      && !(fillBooksCapture.decided.has(bet.id) && fillSnapshotsCapture.decided.has(bet.id)));
+    if (typeof liveStatus.observingSince !== "number" || !undecided.length) return;
+    const rowsByBet = fillfair.sameLineRows(undecided, feedState, shared.boardLines);
+    const books = fillbooks.captureFillBooks({ ...shared, skipIds: fillBooksCapture.decided, rowsByBet });
+    const snapshots = edgesnapshot.captureFillSnapshots({
+      ...shared, skipIds: fillSnapshotsCapture.decided, rowsByBet, linesOfEvent: linesOfEventNow,
     });
+    await sendCaptured(fillBooksCapture, books, "fill books", "fill_books.json");
+    await sendCaptured(fillSnapshotsCapture, snapshots, "fill snapshots", "fill_snapshots.json");
+  }
+
+  // Record a capture pass's saves and refusals, then POST the unsent rows one
+  // per request (the service refuses a whole request on its first bad row): a
+  // 400 drops the row, any other failure keeps every unsent row for a minute.
+  async function sendCaptured(capture, { saves, refusals }, label, path) {
     for (const save of saves) {
-      fillBooksDecided.add(save.betId);
-      fillBooksUnsent.set(save.betId, save);
+      capture.decided.add(save.betId);
+      capture.unsent.set(save.betId, save);
     }
-    for (const refusal of refusals) fillBooksDecided.add(refusal.betId);
-    if (saves.length) logInfo(`fill books: ${saves.length} captured`);
-    if (fillBooksUnsent.size === 0 || now() < fillBooksRetryAt) return;
-    for (const row of Array.from(fillBooksUnsent.values())) {
+    for (const refusal of refusals) capture.decided.add(refusal.betId);
+    if (saves.length) logInfo(`${label}: ${saves.length} captured`);
+    if (capture.unsent.size === 0 || now() < capture.retryAt) return;
+    for (const row of Array.from(capture.unsent.values())) {
       try {
-        const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/fill_books.json`, "POST", { rows: [row] });
-        if (!reply || reply.ok !== true) throw new Error("fill_books.json reply is not ok");
-        fillBooksUnsent.delete(row.betId);
-        fillBooksLastError = null;
+        const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/${path}`, "POST", { rows: [row] });
+        if (!reply || reply.ok !== true) throw new Error(`${path} reply is not ok`);
+        capture.unsent.delete(row.betId);
+        capture.lastError = null;
       } catch (error) {
         if (error.status === HTTP_BAD_REQUEST) {
-          fillBooksUnsent.delete(row.betId);
-          logWarning(`fill books: the service refused ${row.betId}, dropped: ${error.message}`);
+          capture.unsent.delete(row.betId);
+          logWarning(`${label}: the service refused ${row.betId}, dropped: ${error.message}`);
           continue;
         }
-        fillBooksRetryAt = now() + SERVICE_WRITE_RETRY_MS;
-        if (fillBooksLastError !== error.message) logWarning(`fill books: service write failed: ${error.message}`);
-        fillBooksLastError = error.message;
+        capture.retryAt = now() + SERVICE_WRITE_RETRY_MS;
+        if (capture.lastError !== error.message) logWarning(`${label}: service write failed: ${error.message}`);
+        capture.lastError = error.message;
         return;
       }
     }
@@ -733,16 +785,30 @@ function createRunner(deps) {
     followLeagues();
   }
 
-  // POST the closing-fair rows that changed since the last successful POST.
-  // A failure keeps them unsent, so the next pass retries them.
+  // POST the closing-fair rows that changed since the last successful POST,
+  // then the close snapshots of the same bets off the same lookup. A failure
+  // keeps them unsent, so the next pass retries them.
   async function postClosingFairs() {
     if (closingBusy || !feedState || !scannerStatus) return;
     closingBusy = true;
     try {
-      const rows = closefair.unsentRows(closefair.closingFairRows({
+      const pass = closefair.closingPass({
         records: held.records, state: feedState, boardLines: boardLines(),
         leagueLoadedAt: scannerStatus.leagueLoadedAt || {}, staleLeagues: scannerStatus.staleLeagues, now: now(),
-      }), sentClosingFairs);
+      });
+      await postClosingFairRows(pass.rows);
+      await postCloseSnapshots(pass);
+    } catch (error) {
+      if (closingStatus.error !== error.message) logWarning(`closing pass failed: ${error.stack || error.message}`);
+      closingStatus.error = error.message;
+    } finally {
+      closingBusy = false;
+    }
+  }
+
+  async function postClosingFairRows(passRows) {
+    try {
+      const rows = closefair.unsentRows(passRows, sentClosingFairs);
       closefair.forgetClosed(sentClosingFairs, held.records);
       if (!rows.length) return;
       await getServiceJson(serviceFetch, `${deps.betsServiceUrl}/closing_fairs.json`, {
@@ -754,8 +820,34 @@ function createRunner(deps) {
     } catch (error) {
       if (closingStatus.error !== error.message) logWarning(`closing fairs POST failed: ${error.message}`);
       closingStatus.error = error.message;
-    } finally {
-      closingBusy = false;
+    }
+  }
+
+  // The close snapshots that changed, CLOSE_SNAPSHOT_ROWS_PER_POST to a
+  // request so the body stays far under the service's size cap however many
+  // bets are open; a request that fails keeps its rows (and the rest) for the
+  // next pass, and a 400 (a row the service refuses) drops only its own rows.
+  async function postCloseSnapshots(pass) {
+    const rows = edgesnapshot.unsentCloseRows(edgesnapshot.closeSnapshotRows({
+      fairRows: pass.rows, records: held.records, rowsByBet: pass.rowsByBet, state: feedState, linesOfEvent: linesOfEventNow,
+    }), sentCloseSnapshots);
+    closefair.forgetClosed(sentCloseSnapshots, held.records);
+    for (let start = 0; start < rows.length; start += CLOSE_SNAPSHOT_ROWS_PER_POST) {
+      const chunk = rows.slice(start, start + CLOSE_SNAPSHOT_ROWS_PER_POST);
+      try {
+        await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/close_snapshots.json`, "POST", { rows: chunk });
+        edgesnapshot.markCloseSent(chunk, sentCloseSnapshots);
+        if (closeSnapshotStatus.error) logInfo("close snapshots saving again");
+        Object.assign(closeSnapshotStatus, { okAt: now(), error: null, rowsSent: closeSnapshotStatus.rowsSent + chunk.length });
+      } catch (error) {
+        if (closeSnapshotStatus.error !== error.message) logWarning(`close snapshots POST failed: ${error.message}`);
+        closeSnapshotStatus.error = error.message;
+        if (error.status === HTTP_BAD_REQUEST) {
+          edgesnapshot.markCloseSent(chunk, sentCloseSnapshots);
+          continue;
+        }
+        return;
+      }
     }
   }
 
@@ -1607,6 +1699,7 @@ function createRunner(deps) {
       betsService: { okAt: betsStatus.okAt, error: betsStatus.error },
       settings: { source: settings.source, okAt: settings.okAt, error: settings.error },
       closingFairs: { ...closingStatus },
+      closeSnapshots: { ...closeSnapshotStatus },
       taker: {
         desk: takerDeskStatus, novigDesk: novigDeskStatus, lastPassAt: isoOrNull(takerLastPass.finishedAt),
         skipped: takerLastPass.skipped, novigSkipped: takerLastPass.novigSkipped,
