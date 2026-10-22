@@ -1774,7 +1774,12 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   runner's pregame read of each open bet's line (Bet Tracker, CLV); a row
   observed at or after `eventStart` is a 400, and a row older than the stored
   one is ignored. `/bets.json` also serves `closingFairs` (the window's
-  bets). `POST
+  bets). `POST /fill_snapshots.json` (insert-only) and `POST
+  /close_snapshots.json` (newest pregame reading wins, a reading at or after
+  `eventStart` is a 400) → `{ok, saved}` take the server runner's edge
+  snapshots (*Edge snapshots* below); `/bets.json?snapshots=1` adds
+  `fillSnapshots` and `closeSnapshots` for the window's bets — opt-in, so the
+  30 s polls never carry the books records. `POST
   /exclusions.json` with `{betIds: [...], excluded: true|false}` (at most
   50) → `{ok, changed, exclusions}` — the Bet Tracker's Remove / Restore; a
   bet not at BFA or Wagerzon is a 400, an unknown id a 404. `/bets.json` also
@@ -2217,6 +2222,14 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   (`server/fillbooks.js`) only when it watched through the fill, and POSTs
   `/fill_books.json`; INSERT-only, never backfilled, never pruned. Stored
   only: no page reads it yet, query it in DuckDB.
+  `bet_fill_snapshots` (primary key `bet_id`, plus `placed_at`, `line_key`,
+  `points`, `main_points`, `main_fair_american`, `points_from_main`,
+  `edge_move_line_key`, `edge_move`, `edge_move_fair_delta`,
+  `edge_move_price_delta`, `books_json`, `captured_at`) and
+  `bet_close_snapshots` (primary key `bet_id`, plus `observed_at`,
+  `event_start`, `books_json`, `updated_at`) hold the edge snapshots below;
+  the fill row is INSERT-only, the close row UPSERTed only forward in time,
+  neither backfilled nor pruned.
   `bet_closing_fairs` (primary key `bet_id`, plus `line_key`, `points`,
   `fair_american`, `fair_observed_at`, `event_start`, `updated_at`) holds one
   closing fair per bet, UPSERTed only forward in time (`DO UPDATE ... WHERE
@@ -2439,7 +2452,7 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
   → `{generatedAt, scanner, betsService, games, coveredBetIds}`, the Bet
   Tracker's Live tab cards (`server/scenarios.js` documents the shape; the
   bets service passes it through at its own `/scenarios.json`). `GET /health` →
-  `{ok, uptimeSec, scanner, betsService, settings, closingFairs}`. Any verb but GET is
+  `{ok, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots}`. Any verb but GET is
   405; a request whose `Host` is not `127.0.0.1:<port>`, `localhost:<port>`
   or the bound address with the port is 403 (the bets service's #125 rule).
 - **Closing fairs** (2026-10-05): it also loads the leagues of open straight
@@ -2450,6 +2463,24 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
   30 s POSTs `/closing_fairs.json` with the rows that changed — each open
   bet's Unabated fair on its own line while its game is still to start
   (`server/closefair.js`; Bet Tracker, CLV).
+- **Edge snapshots** (2026-10-22, Cal: record why each edge was right or
+  wrong): for each new open straight bet the runner POSTs
+  `/fill_snapshots.json` once, read off its line history at the fill
+  (`server/edgesnapshot.js`, the fill books' rules: only when it watched
+  through the fill, within 10 min of it, never a backfill): `books` — every
+  book's raw price on both sides at the bet's number, `[{bookId, book,
+  exchange, venue, side, other}]`, each side `{price, sourcePrice,
+  sourceFormat, liquidity}` or null (the other side is the same book's line
+  at the opposite number; Unabated's own line is not a book; devig in
+  analysis) — Unabated's main number and fair on the bet's side and the
+  bet's `pointsFromMain`, and the edge-move tag (`edgemove.js`) the Edges tab
+  showed at the fill, on the bet's own venue's line when listed. With every
+  closing-fair pass it POSTs `/close_snapshots.json`: the same `books` off
+  the board as it is now, liquidity included, until kickoff (the stored row
+  is the close). Only venues Unabated lists get their own price (Kalshi,
+  Novig, BetOnline, ProphetX, DraftKings, Polymarket US); a BFA, Wagerzon or
+  Bet105 bet still gets the other books. Read them with
+  `/bets.json?snapshots=1`.
 - **Side effects**: none on disk; its one write to the bets service is that
   POST. Feed, line history, bets and each game's kickoff odds (the Live
   tab's chances) live in memory and rebuild on restart (so the edge-move tag
