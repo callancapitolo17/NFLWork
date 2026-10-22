@@ -120,8 +120,8 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.dk-relay.plist
    **DraftKings down** (it failed to open this refresh; user decision
    2026-10-22): the trifecta part prices at FanDuel + BetMGM exactly as a
    trifecta (worst case of the two) and the share is a fixed **0.776**
-   (`board.DK_DOWN_SCORES_FIRST_SHARE`), the lowest DK ever quoted (21
-   superfectas, 122 quotes in `fecta_quotes.sf_share`: 0.776-0.883, median
+   (`board.DK_DOWN_SCORES_FIRST_SHARE`), the lowest DK ever quoted (122
+   quotes in `fecta_quotes.sf_share`: 0.776-0.883, median
    0.842). Each superfecta appends one `fecta_quotes` row with `book =
    'fixed'`, `quote_kind = 'scores_first_share'`, `sf_share = 0.776` and the
    DK error in `reason`. DK failing mid-refresh does not fall back: those
@@ -240,7 +240,7 @@ balance right away. Wagerzon's minimum online wager on a special is $20.
   (`dk-same-game-parlay/<version>/samegameparlayweb-external.js`, linked from the
   sportsbook page's `sameGameParlayConfig`) for `getYourbetRequestParameters`.
 - **A superfecta says "no SGP market for '... scores first'"** at FD/BetMGM — expected;
-  only DK prices superfectas.
+  only DK prices the scores-first leg (FD/BetMGM price only the trifecta part, with DK down).
 - **Nothing on the board** — Wagerzon posts the specials Thursday-ish; every league
   named `NFL WEEK <n> - SPECIALS` is read (two can be up at once).
 - **On the VM the DraftKings chip shows a curl error** ("Failed to connect to ...

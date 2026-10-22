@@ -49,8 +49,8 @@ SUPERFECTA_BOOK = "DraftKings"
 BOOK_ORDER = TRIFECTA_BOOKS + (SUPERFECTA_BOOK,)
 # With DraftKings down, a superfecta's fair is its trifecta part's worst case
 # at TRIFECTA_BOOKS times this share: the LOWEST P(scores first | the other
-# legs) DraftKings ever quoted (21 superfectas, 122 quotes in
-# fecta_quotes.sf_share: 0.776-0.883, median 0.842).
+# legs) DraftKings ever quoted (122 quotes in fecta_quotes.sf_share:
+# 0.776-0.883, median 0.842).
 DK_DOWN_SCORES_FIRST_SHARE = 0.776
 DK_DOWN_SHARE_SOURCE = "fixed"
 # Whose kickoff time the board shows: DK and BetMGM list the real kickoff,
@@ -375,13 +375,16 @@ def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
             if line.is_superfecta():
                 work += [("partition", SUPERFECTA_BOOK, line), ("scores_first", SUPERFECTA_BOOK, line)]
     else:
+        fixed_share_rows = []
         for line in pricing:
             if line.is_superfecta():
                 line.sf_share = ScoresFirstShare(DK_DOWN_SHARE_SOURCE, DK_DOWN_SCORES_FIRST_SHARE, 0,
-                                                 reason=f"DraftKings down: {book_status.get(SUPERFECTA_BOOK)}"[:200])
-                store.append_quotes([_quote_row(line, started_at, book=DK_DOWN_SHARE_SOURCE,
-                                                quote_kind="scores_first_share", share=line.sf_share)])
+                                                 reason=f"DraftKings down: {book_status.get(SUPERFECTA_BOOK)}")
+                fixed_share_rows.append(_quote_row(line, started_at, book=DK_DOWN_SHARE_SOURCE,
+                                                   quote_kind="scores_first_share", share=line.sf_share))
                 work += [("partition", name, line) for name in TRIFECTA_BOOKS if name in books]
+        if fixed_share_rows:
+            store.append_quotes(fixed_share_rows)
     board.progress_total = len(work)
     for _task, name, _line in work:
         board.book_progress.setdefault(name, {"done": 0, "total": 0})["total"] += 1
@@ -420,7 +423,9 @@ def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
             continue
         line.status = "unpriced"
         reasons = [f"{b}: {f.reason}" for b, f in line.book_fairs.items() if f.reason]
-        if line.is_superfecta() and (line.sf_share is None or line.sf_share.share is None):
+        if line.is_superfecta() and line.sf_share is not None and line.sf_share.book == DK_DOWN_SHARE_SOURCE:
+            reasons.append(line.sf_share.reason)
+        elif line.is_superfecta() and (line.sf_share is None or line.sf_share.share is None):
             reasons.append(f"DraftKings scores first: {line.sf_share.reason if line.sf_share else 'not priced'}")
         line.note = "; ".join(reasons) or "no book priced it"
     board.finished_at = datetime.now(timezone.utc)

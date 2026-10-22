@@ -193,37 +193,69 @@ def test_refresh_counts_progress_per_book(monkeypatch):
     assert [sum(c["done"] for c in snap.book_progress.values()) for snap in published] == [0, 1, 2, 3, 4, 4]
 
 
-def test_draftkings_down_prices_superfectas_at_the_trifecta_books_with_a_fixed_share(monkeypatch):
-    specials = [WzSpecial(wz_game_id=1, rotation=1, description="CHARGERS SUPERFECTA (SCR 1ST, 1Q, 1H & GM)",
-                          wz_american=900, week_date=date(2098, 12, 31))]
-    books = {"FanDuel": object(), "BetMGM": object()}
-    fairs = {"FanDuel": 0.12, "BetMGM": 0.10}
-    monkeypatch.setattr(board_module, "open_books",
-                        lambda: (books, {"FanDuel": "ok", "BetMGM": "ok", "DraftKings": "error: HTTP 403"}))
+SUPERFECTA = "CHARGERS SUPERFECTA (SCR 1ST, 1Q, 1H & GM)"
+DK_DOWN = "DraftKings down: error: HTTP 403"
+
+
+def _refresh_with_draftkings_down(monkeypatch, books: dict, fairs: dict[str, float | None]):
+    specials = [WzSpecial(wz_game_id=1, rotation=1, description=SUPERFECTA, wz_american=900,
+                          week_date=date(2098, 12, 31))]
+    status = {name: "ok" for name in books} | {"DraftKings": "error: HTTP 403"}
+    monkeypatch.setattr(board_module, "open_books", lambda: (books, status))
     monkeypatch.setattr(board_module.wz, "fetch_fecta_specials", lambda: specials)
     monkeypatch.setattr(board_module, "_locate_game", lambda fecta, special, books: GAME)
-    priced_targets = []
 
     def price_partition(book, line):
         name = next(n for n, b in books.items() if b is book)
-        priced_targets.append((name, line.is_superfecta()))
+        assert line.is_superfecta()
+        if fairs[name] is None:
+            return BookFair(name, None, None, None, 8, reason="declined cell")
         return BookFair(name, fairs[name], None, 1.3, 8)
 
     monkeypatch.setattr(board_module, "_price_partition", price_partition)
     store = _FakeStore()
-    board = refresh_board(store, lambda snapshot: None)
+    return refresh_board(store, lambda snapshot: None), store
 
+
+def _expected_row(board, *, book, quote_kind, fair_prob=None, overround=None, n_cells, sf_share=None, reason=None):
+    return {"quoted_at": board.started_at, "wz_game_id": 1, "rotation": 1, "description": SUPERFECTA,
+            "team": "LAC", "prop_type": "SUPERFECTA", "home_team": "SEA", "away_team": "LAC",
+            "game_start_time": GAME.game_start_time, "wz_american": 900, "book": book, "quote_kind": quote_kind,
+            "fair_prob": fair_prob, "sgp_decimal": None, "overround": overround, "n_cells": n_cells,
+            "sf_share": sf_share, "reason": reason}
+
+
+def test_draftkings_down_prices_superfectas_at_the_trifecta_books_with_a_fixed_share(monkeypatch):
+    board, store = _refresh_with_draftkings_down(monkeypatch, {"FanDuel": object(), "BetMGM": object()},
+                                                 {"FanDuel": 0.12, "BetMGM": 0.10})
     line = board.lines[0]
-    assert sorted(priced_targets) == [("BetMGM", True), ("FanDuel", True)]
-    assert line.status == "priced"
-    assert line.sf_share == ScoresFirstShare("fixed", 0.776, 0, reason="DraftKings down: error: HTTP 403")
+    assert (line.status, line.note) == ("priced", None)
+    assert line.sf_share == ScoresFirstShare("fixed", 0.776, 0, reason=DK_DOWN)
     assert line.fair_prob() == pytest.approx(0.10 * 0.776)
-    assert sorted((row["book"], row["quote_kind"], row["fair_prob"], row["sf_share"], row["reason"])
-                  for row in store.rows) == [
-        ("BetMGM", "trifecta_part", 0.10, None, None),
-        ("FanDuel", "trifecta_part", 0.12, None, None),
-        ("fixed", "scores_first_share", None, 0.776, "DraftKings down: error: HTTP 403")]
+    # The fixed share is quoted at the refresh's start; the lanes stamp their own time.
+    assert all(row["quoted_at"] >= board.started_at for row in store.rows)
+    rows = sorted(({**row, "quoted_at": board.started_at} if row["book"] != "fixed" else row for row in store.rows),
+                  key=lambda row: row["book"])
+    assert rows == [
+        _expected_row(board, book="BetMGM", quote_kind="trifecta_part", fair_prob=0.10, overround=1.3, n_cells=8),
+        _expected_row(board, book="FanDuel", quote_kind="trifecta_part", fair_prob=0.12, overround=1.3, n_cells=8),
+        _expected_row(board, book="fixed", quote_kind="scores_first_share", n_cells=0, sf_share=0.776,
+                      reason=DK_DOWN)]
     assert board.book_progress == {"FanDuel": {"done": 1, "total": 1}, "BetMGM": {"done": 1, "total": 1}}
+
+
+def test_draftkings_down_with_one_trifecta_book_declining_uses_the_other(monkeypatch):
+    board, _store = _refresh_with_draftkings_down(monkeypatch, {"FanDuel": object(), "BetMGM": object()},
+                                                  {"FanDuel": 0.12, "BetMGM": None})
+    assert board.lines[0].status == "priced"
+    assert board.lines[0].fair_prob() == pytest.approx(0.12 * 0.776)
+
+
+def test_draftkings_and_the_trifecta_books_down_names_draftkings(monkeypatch):
+    board, store = _refresh_with_draftkings_down(monkeypatch, {}, {})
+    assert (board.lines[0].status, board.lines[0].note) == ("unpriced", DK_DOWN)
+    assert store.rows == [_expected_row(board, book="fixed", quote_kind="scores_first_share", n_cells=0,
+                                        sf_share=0.776, reason=DK_DOWN)]
 
 
 def test_a_started_game_takes_no_stake_or_budget():

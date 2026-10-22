@@ -526,6 +526,8 @@ function setPref(key, value) {
 // --- one special --------------------------------------------------------------
 function booksLine(line) {
   const fixedShare = line.sf_share && line.sf_share.book === "fixed" ? line.sf_share.share : null;
+  const worstTitle = fixedShare == null ? "Worst case — the fair this row uses"
+    : "Worst case of the trifecta part; the row uses it times the fixed share";
   if (line.is_superfecta && fixedShare == null) {
     // DraftKings is the only superfecta book; its fair is the row's fair.
     const text = line.fair_american != null ? `DK ${signed(line.fair_american)}` : "DK –";
@@ -542,13 +544,13 @@ function booksLine(line) {
     if (fair.fair_american == null) {
       parts.push(el("span", { class: "none", title: fair.reason || "", text: `${BOOK_SHORT[name]} –` }));
     } else if (priced.length > 1 && fair.fair_prob === worstProb) {
-      parts.push(el("span", { class: "worst", title: "Worst case — the fair this row uses",
+      parts.push(el("span", { class: "worst", title: worstTitle,
                               text: `${BOOK_SHORT[name]} ${signed(fair.fair_american)} (worst)` }));
     } else {
       parts.push(`${BOOK_SHORT[name]} ${signed(fair.fair_american)}`);
     }
   });
-  if (fixedShare != null) {
+  if (fixedShare != null && line.fair_prob != null) {
     parts.push(" ", el("span", { class: "chip warn",
       title: "DraftKings is down: the trifecta part's worst case times the lowest scores-first share DraftKings ever quoted",
       text: `share ${fixedShare.toFixed(2)} fixed, DK down` }));
