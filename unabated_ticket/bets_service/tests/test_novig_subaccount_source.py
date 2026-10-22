@@ -194,6 +194,16 @@ def test_a_closed_position_with_no_payout_is_lost_once_confirmed_at_its_first_si
     assert late["status"] == "won"
 
 
+def test_a_loss_first_seen_long_after_its_game_is_dated_at_the_game_end_bound():
+    # 2026-10-19: the first grading read after a deploy saw Oct 17-18 losses closed days late.
+    client = FakeClient([fill()], [], [])
+    long_ago = {**CONTEXT, "event_start": NOW - timedelta(days=2), "settled_at": NOW - timedelta(hours=1)}
+    source = NovigSubaccountSource("place", client, lambda: {"o1": long_ago}, now=lambda: NOW,
+                                   note_settled=lambda order_id, at: at)
+    lost = source.fetch()[0]
+    assert (lost["status"], lost["closedAt"]) == ("lost", "2026-10-16T20:00:00.000Z")  # start + 4 h
+
+
 def test_an_open_position_a_read_from_before_the_start_or_a_bot_order_the_desk_has_not_closed_stays_open():
     clock, kept = {"now": NOW}, {}
     held = place_source(FakeClient([fill()], [{"marketId": MARKET}], []), clock, kept).fetch()[0]
