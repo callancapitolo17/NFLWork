@@ -22,6 +22,10 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     (games still to start),
                                     edgeSkips: [{skipKey, eventStartMs, skippedAt}]
                                     (games still to start)}
+           GET /bets.json?snapshots=1  the same plus fillSnapshots and closeSnapshots:
+                                    [bet_fill_snapshots / bet_close_snapshots rows of those
+                                    bets] (every book's two sides at each bet's number at the
+                                    fill and at the close; opt-in, they are large)
            GET /health              {ok, generatedAt, uptimeSec, sources}
            POST /crosswalk.json     body {rows: [{venue, league, venueTeamKey,
                                     unabatedTeamId, venueTeamName?, unabatedTeamName?,
@@ -50,6 +54,15 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     (the other books at a new bet's number when it was
                                     placed, server/fillbooks.js; insert-only; same
                                     Content-Type guard)
+           POST /fill_snapshots.json body {rows: [{betId, placedAt, lineKey, points, mainPoints,
+                                    mainFairAmerican, pointsFromMain, edgeMoveLineKey, edgeMove,
+                                    edgeMoveFairDelta, edgeMovePriceDelta, books}]} -> {ok, saved}
+                                    (a new bet's market at the fill, server/edgesnapshot.js;
+                                    insert-only; same Content-Type guard)
+           POST /close_snapshots.json body {rows: [{betId, observedAt, eventStart, books}]}
+                                    -> {ok, saved} (every book's two sides at each open bet's
+                                    number before its game starts, server/edgesnapshot.js; a
+                                    row older than the stored one is ignored; same guard)
            POST /closing_fairs.json body {rows: [{betId, lineKey, points, fairAmerican,
                                     fairObservedAt, eventStart}]} -> {ok, saved}
                                     (the server runner's pre-start read of each open bet's
@@ -164,8 +177,10 @@ bets.duckdb::team_crosswalk on the two crosswalk routes; UPSERTs / DELETEs
 bets.duckdb::bet_pins and the crosswalk rows a pin taught on the two pin
 routes; INSERTs into bets.duckdb::bet_fill_fairs on POST /fill_fairs.json —
 insert-only, a bet that has a saved fair keeps it; INSERTs into
-bets.duckdb::bet_fill_books on POST /fill_books.json (insert-only); UPSERTs
-bets.duckdb::bet_closing_fairs on POST /closing_fairs.json (newest observation
+bets.duckdb::bet_fill_books on POST /fill_books.json (insert-only); INSERTs into
+bets.duckdb::bet_fill_snapshots on POST /fill_snapshots.json (insert-only); UPSERTs
+bets.duckdb::bet_closing_fairs on POST /closing_fairs.json and
+bets.duckdb::bet_close_snapshots on POST /close_snapshots.json (newest observation
 wins); INSERTs into / DELETEs from bets.duckdb::bet_exclusions on POST
 /exclusions.json; INSERTs into / DELETEs from bets.duckdb::bet_dismissals on
 POST /dismissals.json; UPSERTs / DELETEs bets.duckdb::teaser_blocks on POST
@@ -453,13 +468,17 @@ def source_status(store: BetsStore, source_names: list[str]) -> dict[str, dict]:
     return status
 
 
-def bets_payload(store: BetsStore, days: int, source_names: list[str] = ()) -> dict:
+def bets_payload(store: BetsStore, days: int, source_names: list[str] = (), snapshots: bool = False) -> dict:
     now = _now()
-    return {"generatedAt": _iso(now), "sources": source_status(store, list(source_names)),
+    payload = {"generatedAt": _iso(now), "sources": source_status(store, list(source_names)),
             "bets": store.load_bets(days, now), "crosswalk": store.load_crosswalk(), "pins": store.load_pins(),
             "fillFairs": store.load_fill_fairs(days, now), "closingFairs": store.load_closing_fairs(days, now),
             "exclusions": store.load_exclusions(), "dismissals": store.load_dismissals(),
             "teaserBlocks": store.load_teaser_blocks(now), "edgeSkips": store.load_edge_skips(now)}
+    if snapshots:
+        payload["fillSnapshots"] = store.load_fill_snapshots(days, now)
+        payload["closeSnapshots"] = store.load_close_snapshots(days, now)
+    return payload
 
 
 def _non_empty_string(value: object) -> bool:
@@ -715,6 +734,134 @@ def validate_fill_book_rows(body: object) -> list[dict] | str:
             return row
         rows.append(row)
     return rows
+
+
+EDGE_MOVE_KINDS = ("none", "fair_to_you", "book_away", "fair_against")
+MAX_SNAPSHOT_BOOKS = 200
+
+
+def _number_or_none(value: object) -> bool:
+    return value is None or _is_number(value)
+
+
+def _validate_snapshot_price(where: str, raw: object) -> str | None:
+    """What is wrong with one side's price in a books record, or None. Null is
+    a side the book did not list."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        return f"{where} must be an object or null, got {type(raw).__name__}"
+    if not _is_number(raw.get("price")):
+        return f"{where}.price must be a number, got {raw.get('price')!r}"
+    for field in ("sourcePrice", "liquidity"):
+        if not _number_or_none(raw.get(field)):
+            return f"{where}.{field} must be a number or null, got {raw.get(field)!r}"
+    if not _is_count(raw.get("sourceFormat")):
+        return f"{where}.sourceFormat must be a whole number, got {raw.get('sourceFormat')!r}"
+    return None
+
+
+def _validate_snapshot_books(where: str, raw: object) -> list[dict] | str:
+    """A books record ([{bookId, book, exchange, venue, side, other}]) as
+    sent, or what was expected and what was found."""
+    if not isinstance(raw, list):
+        return f"{where} must be a list, got {type(raw).__name__}"
+    if len(raw) > MAX_SNAPSHOT_BOOKS:
+        return f"{where} holds at most {MAX_SNAPSHOT_BOOKS} books, got {len(raw)}"
+    books: list[dict] = []
+    for index, entry in enumerate(raw):
+        at = f"{where}[{index}]"
+        if not isinstance(entry, dict):
+            return f"{at} must be an object, got {type(entry).__name__}"
+        if not _is_count(entry.get("bookId")):
+            return f"{at}.bookId must be a whole number, got {entry.get('bookId')!r}"
+        if not _non_empty_string(entry.get("book")):
+            return f"{at}.book must be a non-empty string, got {entry.get('book')!r}"
+        for field in ("exchange", "venue"):
+            if not isinstance(entry.get(field), bool):
+                return f"{at}.{field} must be true or false, got {entry.get(field)!r}"
+        for field in ("side", "other"):
+            error = _validate_snapshot_price(f"{at}.{field}", entry.get(field))
+            if error:
+                return error
+        books.append({key: entry.get(key) for key in ("bookId", "book", "exchange", "venue", "side", "other")})
+    return books
+
+
+def _validate_fill_snapshot_row(index: int, raw: object) -> dict | str:
+    """One row of a POST /fill_snapshots.json body in the store's shape, or
+    what was expected and what was found."""
+    if not isinstance(raw, dict):
+        return f"rows[{index}] must be an object, got {type(raw).__name__}"
+    for field in ("betId", "lineKey", "edgeMoveLineKey"):
+        if not _non_empty_string(raw.get(field)):
+            return f"rows[{index}].{field} must be a non-empty string, got {raw.get(field)!r}"
+    if _iso_ms(raw.get("placedAt")) is None:
+        return f"rows[{index}].placedAt must be an ISO time, got {raw.get('placedAt')!r}"
+    for field in ("points", "mainPoints", "pointsFromMain", "edgeMoveFairDelta", "edgeMovePriceDelta"):
+        if not _number_or_none(raw.get(field)):
+            return f"rows[{index}].{field} must be a number or null, got {raw.get(field)!r}"
+    main_fair = raw.get("mainFairAmerican")
+    if main_fair is not None and not _is_whole_american(main_fair):
+        return f"rows[{index}].mainFairAmerican must be a whole American price or null, got {main_fair!r}"
+    if raw.get("edgeMove") not in EDGE_MOVE_KINDS:
+        return f"rows[{index}].edgeMove must be one of {list(EDGE_MOVE_KINDS)}, got {raw.get('edgeMove')!r}"
+    books = _validate_snapshot_books(f"rows[{index}].books", raw.get("books"))
+    if isinstance(books, str):
+        return books
+    fields = ("betId", "placedAt", "lineKey", "points", "mainPoints", "mainFairAmerican", "pointsFromMain",
+              "edgeMoveLineKey", "edgeMove", "edgeMoveFairDelta", "edgeMovePriceDelta")
+    return {**{field: raw.get(field) for field in fields}, "books": books}
+
+
+def _validate_close_snapshot_row(index: int, raw: object) -> dict | str:
+    """One row of a POST /close_snapshots.json body in the store's shape, or
+    what was expected and what was found: read before its game's start."""
+    if not isinstance(raw, dict):
+        return f"rows[{index}] must be an object, got {type(raw).__name__}"
+    if not _non_empty_string(raw.get("betId")):
+        return f"rows[{index}].betId must be a non-empty string, got {raw.get('betId')!r}"
+    observed_ms = _iso_ms(raw.get("observedAt"))
+    start_ms = _iso_ms(raw.get("eventStart"))
+    if observed_ms is None:
+        return f"rows[{index}].observedAt must be an ISO time, got {raw.get('observedAt')!r}"
+    if start_ms is None:
+        return f"rows[{index}].eventStart must be an ISO time, got {raw.get('eventStart')!r}"
+    if observed_ms >= start_ms:
+        return (f"rows[{index}].observedAt must be before eventStart (a close is read pregame), "
+                f"got {raw['observedAt']} at or after {raw['eventStart']}")
+    books = _validate_snapshot_books(f"rows[{index}].books", raw.get("books"))
+    if isinstance(books, str):
+        return books
+    return {"betId": raw["betId"], "observedAt": raw["observedAt"], "eventStart": raw["eventStart"], "books": books}
+
+
+def _validate_rows(body: object, validate_row) -> list[dict] | str:
+    """The rows of a POST body, or an error naming the first bad row (the
+    whole request is refused)."""
+    if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
+        return f"body must be an object with a `rows` array, got {type(body).__name__}"
+    raw_rows = body["rows"]
+    if len(raw_rows) > MAX_FILL_FAIR_ROWS_PER_POST:
+        return f"at most {MAX_FILL_FAIR_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
+    rows: list[dict] = []
+    for index, raw in enumerate(raw_rows):
+        row = validate_row(index, raw)
+        if isinstance(row, str):
+            return row
+        rows.append(row)
+    return rows
+
+
+def validate_fill_snapshot_rows(body: object) -> list[dict] | str:
+    """The rows of a POST /fill_snapshots.json body, or an error naming the
+    first bad row: a saved snapshot is permanent, so a malformed one is refused."""
+    return _validate_rows(body, _validate_fill_snapshot_row)
+
+
+def validate_close_snapshot_rows(body: object) -> list[dict] | str:
+    """The rows of a POST /close_snapshots.json body, or an error naming the first bad row."""
+    return _validate_rows(body, _validate_close_snapshot_row)
 
 
 def _validate_closing_fair_row(index: int, raw: object) -> dict | str:
@@ -990,7 +1137,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 if isinstance(days, str):
                     self._send_json(400, {"error": days})
                     return
-                self._send_json(200, bets_payload(store, days, names))
+                snapshots = parse_qs(url.query).get("snapshots") == ["1"]
+                self._send_json(200, bets_payload(store, days, names, snapshots))
                 return
             if url.path in RUNNER_ROUTES:
                 status, body = fetch_runner_json(edges_runner_url, url.path, edges_timeout_sec, url.query)
@@ -1015,6 +1163,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             url = urlparse(self.path)
             if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/fill_books.json", "/closing_fairs.json",
+                                "/fill_snapshots.json", "/close_snapshots.json",
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
                                 "/draftkings.json", "/place_teaser.json", "/place_kalshi.json", "/place_novig.json",
                                 "/place_polymarket.json", "/taker_decisions.json",
@@ -1036,6 +1185,12 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/closing_fairs.json":
                 self._save_closing_fairs(body)
+                return
+            if url.path == "/fill_snapshots.json":
+                self._save_rows(validate_fill_snapshot_rows(body), store.save_fill_snapshots)
+                return
+            if url.path == "/close_snapshots.json":
+                self._save_rows(validate_close_snapshot_rows(body), store.save_close_snapshots)
                 return
             if url.path == "/exclusions.json":
                 self._set_exclusions(body)
@@ -1143,6 +1298,14 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 self._send_json(400, {"error": rows})
                 return
             self._send_json(200, {"ok": True, "saved": store.save_fill_books(rows, _now())})
+
+        # POST /fill_snapshots.json (insert-only) and /close_snapshots.json
+        # (newest pre-start wins): validated rows, or a 400 naming the first bad one.
+        def _save_rows(self, rows: list[dict] | str, save) -> None:
+            if isinstance(rows, str):
+                self._send_json(400, {"error": rows})
+                return
+            self._send_json(200, {"ok": True, "saved": save(rows, _now())})
 
         # POST /closing_fairs.json: UPSERT the rows, each kept only when newer.
         def _save_closing_fairs(self, body: object) -> None:

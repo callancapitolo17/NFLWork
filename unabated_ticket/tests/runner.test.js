@@ -330,6 +330,43 @@ test("closing fairs: the open bet's fair on its own line, POSTed once, again onl
   runner.stop();
 });
 
+test("close snapshots: every book's two sides at the bet's number, sent with the closing fair, never after kickoff", async () => {
+  let clock = NOW;
+  const posts = [];
+  const service = async (url, init = {}) => {
+    const route = url.slice(SERVICE_URL.length);
+    if (route === "/close_snapshots.json") {
+      posts.push(JSON.parse(init.body).rows);
+      return response({ body: JSON.stringify({ ok: true, saved: 1 }) });
+    }
+    if (route === "/closing_fairs.json") return response({ body: JSON.stringify({ ok: true, saved: 1 }) });
+    if (route === "/bets.json") return response({ body: JSON.stringify(betsBody([BEARS_HELD])) });
+    if (route === "/settings.json") return response({ body: JSON.stringify({ settings: OPEN_SETTINGS, updatedAt: null }) });
+    return response({ status: 404, body: "{}" });
+  };
+  const runner = runnerLib.createRunner({ fetchImpl: unabatedFetch(), serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => clock, timers: noTimers, ...quiet });
+  await runner.start();
+  await runner.postClosingFairs();
+  assert.equal(posts.length, 1);
+  const [row] = posts[0];
+  assert.deepEqual([row.betId, row.observedAt, row.eventStart], ["bol-1", new Date(NOW).toISOString(), new Date(KICKOFF_MS).toISOString()]);
+  // The slice's books at Bears -2.5 and Packers +2.5; Unabated's own line is not a book, and BetOnline is not in the slice.
+  const side = (price, sourcePrice, sourceFormat, liquidity = null) => ({ price, sourcePrice, sourceFormat, liquidity });
+  const book = (bookId, name, own, other) => ({ bookId, book: name, exchange: false, venue: false, side: own, other });
+  assert.deepEqual(row.books, [
+    book(89, "Novig", side(-125, 0.555, 4), side(120, 0.455, 4)),
+    book(99, "SouthPoint", side(-110, -110, 1), side(-110, -110, 1)),
+    book(105, "Kalshi", side(-137, 0.577248, 4, 29779.68), side(113, 0.467325, 4, 3415.5)),
+  ]);
+  await runner.postClosingFairs();
+  assert.equal(posts.length, 1, "nothing changed, nothing resent");
+  clock = KICKOFF_MS + 1000;
+  await runner.postClosingFairs();
+  assert.equal(posts.length, 1, "after kickoff the stored row is the close");
+  assert.equal(runner.health().closeSnapshots.rowsSent, 1);
+  runner.stop();
+});
+
 test("closing fairs: a league whose snapshot build is stale gives no close", async () => {
   const posts = [];
   const service = async (url, init = {}) => {

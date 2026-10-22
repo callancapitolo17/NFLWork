@@ -1369,3 +1369,67 @@ def test_an_order_the_novig_app_feed_and_a_sub_account_both_hold_is_served_once(
     old_close = {**novig("novig:o7:place", "novig_place"), "status": "won", "closedAt": "2026-08-01T00:00:00Z"}
     store.upsert_bets([{**novig("novig:o7", "novig_rest"), "status": "won", "closedAt": "2026-09-11T20:00:00Z"}, old_close], seen)
     assert "novig:o7" in {bet["id"] for bet in store.load_bets(30, seen)}
+
+
+def snapshot_books(kalshi_price: float = 215) -> list[dict]:
+    price = lambda value, source=None, fmt=1, liquidity=None: {  # noqa: E731
+        "price": value, "sourcePrice": source, "sourceFormat": fmt, "liquidity": liquidity}
+    return [{"bookId": 89, "book": "Novig", "exchange": True, "venue": True,
+             "side": price(208, 0.325, 4), "other": price(-240, 0.7, 4)},
+            {"bookId": 105, "book": "Kalshi", "exchange": True, "venue": False, "side": price(kalshi_price), "other": None}]
+
+
+def fill_snapshot_row(bet_id: str, **extra) -> dict:
+    return {"betId": bet_id, "placedAt": "2026-10-22T17:02:00Z", "lineKey": "m1:ms89:si1:tid22:alt-14.5", "points": -14.5,
+            "mainPoints": -8.5, "mainFairAmerican": -112, "pointsFromMain": -6, "edgeMoveLineKey": "m1:ms89:si1:tid22:alt-14.5",
+            "edgeMove": "book_away", "edgeMoveFairDelta": 0, "edgeMovePriceDelta": 0.02, "books": snapshot_books(), **extra}
+
+
+def close_snapshot_row(bet_id: str, observed: str = "2026-10-22T19:55:00Z", **extra) -> dict:
+    return {"betId": bet_id, "observedAt": observed, "eventStart": "2026-10-22T20:00:00Z", "books": snapshot_books(), **extra}
+
+
+def test_fill_snapshots_are_insert_only_and_close_snapshots_keep_the_newest_pregame_reading(store):
+    service.run_source_once(ScriptedSource([[record("novig:1", "open", None)]]), store)
+    at = datetime(2026, 10, 22, 17, 3, tzinfo=timezone.utc)
+    assert store.save_fill_snapshots([fill_snapshot_row("novig:1")], at) == 1
+    assert store.save_fill_snapshots([fill_snapshot_row("novig:1", edgeMove="none")], at) == 0
+    assert store.save_close_snapshots([close_snapshot_row("novig:1", "2026-10-22T19:50:00Z")], at) == 1
+    newer = close_snapshot_row("novig:1", books=snapshot_books(190))
+    assert store.save_close_snapshots([newer], at) == 1
+    assert store.save_close_snapshots([close_snapshot_row("novig:1", "2026-10-22T19:52:00Z")], at) == 0
+    payload = service.bets_payload(store, days=30, snapshots=True)
+    assert payload["fillSnapshots"] == [fill_snapshot_row("novig:1")]
+    assert payload["closeSnapshots"] == [newer]
+    assert "fillSnapshots" not in service.bets_payload(store, days=30)
+
+
+def test_validate_snapshot_rows_say_what_was_expected_and_what_was_found():
+    good = fill_snapshot_row("novig:1")
+    assert service.validate_fill_snapshot_rows({"rows": [good]}) == [good]
+    assert service.validate_fill_snapshot_rows({"rows": [{**good, "edgeMove": "up"}]}) == (
+        "rows[0].edgeMove must be one of ['none', 'fair_to_you', 'book_away', 'fair_against'], got 'up'")
+    assert service.validate_fill_snapshot_rows({"rows": [{**good, "mainFairAmerican": 50}]}) == (
+        "rows[0].mainFairAmerican must be a whole American price or null, got 50")
+    bad_book = [{**snapshot_books()[0], "side": {"price": "x"}}]
+    assert service.validate_fill_snapshot_rows({"rows": [{**good, "books": bad_book}]}) == (
+        "rows[0].books[0].side.price must be a number, got 'x'")
+    closing = close_snapshot_row("novig:1")
+    assert service.validate_close_snapshot_rows({"rows": [closing]}) == [closing]
+    assert service.validate_close_snapshot_rows({"rows": [close_snapshot_row("novig:1", "2026-10-22T20:00:00Z")]}) == (
+        "rows[0].observedAt must be before eventStart (a close is read pregame), "
+        "got 2026-10-22T20:00:00Z at or after 2026-10-22T20:00:00Z")
+
+
+def test_http_snapshots_post_and_bets_json_serves_them_only_when_asked(store, http_server):
+    service.run_source_once(ScriptedSource([[record("novig:1", "open", None)]]), store)
+    for route, row in (("/fill_snapshots.json", fill_snapshot_row("novig:1")), ("/close_snapshots.json", close_snapshot_row("novig:1"))):
+        body = json.dumps({"rows": [row]}).encode()
+        assert request_json("POST", f"{http_server}{route}", body, "application/json") == (200, {"ok": True, "saved": 1})
+        assert request_json("POST", f"{http_server}{route}", body, "text/plain")[0] == 415
+    bad = json.dumps({"rows": [fill_snapshot_row("novig:2", books="x")]}).encode()
+    status, reply = request_json("POST", f"{http_server}/fill_snapshots.json", bad, "application/json")
+    assert (status, reply) == (400, {"error": "rows[0].books must be a list, got str"})
+    assert "fillSnapshots" not in get_json(f"{http_server}/bets.json")[1]
+    served = get_json(f"{http_server}/bets.json?snapshots=1")[1]
+    assert [len(served["fillSnapshots"]), len(served["closeSnapshots"])] == [1, 1]

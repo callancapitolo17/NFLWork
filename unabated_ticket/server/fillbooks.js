@@ -171,4 +171,4 @@ function captureFillBooks({ records, skipIds, state, boardLines, history, observ
   return result;
 }
 
-module.exports = { REFUSED, captureFillBooks };
+module.exports = { REFUSED, captureFillBooks, refusalOf, entryAtFill, isOwnBook };
