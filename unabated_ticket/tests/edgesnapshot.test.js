@@ -100,7 +100,7 @@ function capture({ records, lines, history, observingSince = WATCHING_SINCE, lea
   const state = boardState(lines);
   return edgesnapshot.captureFillSnapshots({
     records, skipIds: new Set(), state, boardLines: boardLinesOf(state), history, observingSince, leagueObservingSince,
-    leagueLinesOf: (leagueId) => Object.values(state.lines).filter((each) => each.leagueId === leagueId), now,
+    linesOfEvent: (eventId) => Object.values(state.lines).filter((each) => each.eventId === eventId), now,
   });
 }
 
@@ -169,15 +169,18 @@ test("the other side: a spread's number flips, a total's stays, a moneyline has 
   assert.equal(edgesnapshot.otherSideOf(over, [over, { ...under, points: 48.5 }, under]), under);
   const away = { bookId: 4, periodTypeId: 1, betTypeId: 1, sideIndex: 0, points: null };
   const home = { ...away, sideIndex: 1 };
-  assert.equal(edgesnapshot.otherSideOf(away, [{ ...home, periodTypeId: 2 }, home]), home);
+  const draw = { ...away, sideIndex: 2 };
+  assert.equal(edgesnapshot.otherSideOf(away, [draw, { ...home, periodTypeId: 2 }, home]), home);
+  assert.equal(edgesnapshot.otherSideOf(draw, [away, home]), null, "a three-way moneyline's draw has no other side");
 });
 
-test("close snapshots are resent only when their reading time or books change", () => {
+test("close snapshots are resent only when their books change, not on every new league snapshot", () => {
   const row = { betId: "b1", observedAt: iso(T0), eventStart: iso(KICKOFF), books: [{ bookId: 105, side: price(215), other: null }] };
   const sent = new Map();
   assert.deepEqual(edgesnapshot.unsentCloseRows([row], sent), [row]);
   edgesnapshot.markCloseSent([row], sent);
   assert.deepEqual(edgesnapshot.unsentCloseRows([row], sent), []);
+  assert.deepEqual(edgesnapshot.unsentCloseRows([{ ...row, observedAt: iso(T0 + MIN) }], sent), []);
   const moved = { ...row, books: [{ bookId: 105, side: price(220), other: null }] };
   assert.deepEqual(edgesnapshot.unsentCloseRows([moved], sent), [moved]);
 });

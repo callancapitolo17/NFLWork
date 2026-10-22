@@ -2470,14 +2470,17 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
   through the fill, within 10 min of it, never a backfill): `books` — every
   book's raw price on both sides at the bet's number, `[{bookId, book,
   exchange, venue, side, other}]`, each side `{price, sourcePrice,
-  sourceFormat, liquidity}` or null (the other side is the same book's line
+  sourceFormat, liquidity}` or null (`liquidity` is always null at the fill:
+  the history keeps no liquidity; the other side is the same book's line
   at the opposite number; Unabated's own line is not a book; devig in
   analysis) — Unabated's main number and fair on the bet's side and the
   bet's `pointsFromMain`, and the edge-move tag (`edgemove.js`) the Edges tab
   showed at the fill, on the bet's own venue's line when listed. With every
   closing-fair pass it POSTs `/close_snapshots.json`: the same `books` off
   the board as it is now, liquidity included, until kickoff (the stored row
-  is the close). Only venues Unabated lists get their own price (Kalshi,
+  is the close; a bet's row is resent only when a book's price changed, 25
+  rows to a request, so `observed_at` is when the stored prices were first
+  read). Only venues Unabated lists get their own price (Kalshi,
   Novig, BetOnline, ProphetX, DraftKings, Polymarket US); a BFA, Wagerzon or
   Bet105 bet still gets the other books. Read them with
   `/bets.json?snapshots=1`.

@@ -37,7 +37,7 @@ test("forgetClosed keeps only what was sent for bets still open", () => {
   assert.deepEqual([...sent.keys()], ["b1"]);
 });
 
-test("closingFairRows: nothing without a board, or without an open straight bet", () => {
-  assert.deepEqual(closefair.closingFairRows({ records: [bet()], state: null, boardLines: [], leagueLoadedAt: {}, now: 0 }), []);
-  assert.deepEqual(closefair.closingFairRows({ records: [bet({ status: "won" })], state: { lines: {} }, boardLines: [], leagueLoadedAt: {}, now: 0 }), []);
+test("closingPass: nothing without a board, or without an open straight bet", () => {
+  assert.deepEqual(closefair.closingPass({ records: [bet()], state: null, boardLines: [], leagueLoadedAt: {}, now: 0 }).rows, []);
+  assert.deepEqual(closefair.closingPass({ records: [bet({ status: "won" })], state: { lines: {} }, boardLines: [], leagueLoadedAt: {}, now: 0 }).rows, []);
 });

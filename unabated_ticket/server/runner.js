@@ -214,6 +214,9 @@ const HOUR_MS = 3600 * 1000;
 const KICKOFF_MEMO_HOURS = 12;
 // A failed crosswalk or fill-fair write waits this long before the next try (panel.js).
 const SERVICE_WRITE_RETRY_MS = 60 * 1000;
+// Close snapshots per POST: each carries every book's two sides (a few KB),
+// so a full slate of open bets stays far under the service's 1 MB body cap.
+const CLOSE_SNAPSHOT_ROWS_PER_POST = 25;
 const HTTP_BAD_REQUEST = 400;
 
 function log(message) {
@@ -349,6 +352,9 @@ function createRunner(deps) {
   const boardRowsByLeague = new Map();
   // leagueId -> the league version rememberKickoffOdds last read.
   const kickoffLeagueVersions = new Map();
+  // leagueId -> {version, byEvent}: each league's lines grouped by game as of
+  // its last snapshot (the kickoff odds and the edge snapshots read it).
+  const linesByEventOfLeague = new Map();
   let ladderReaders = null;
   // The panel's other per-snapshot caches: the tail-flex measurement (dropped
   // on every scanner update, re-measured when the max line age changes) and
@@ -479,7 +485,7 @@ function createRunner(deps) {
       const version = scanner.getLeagueVersion(leagueId);
       if (kickoffLeagueVersions.get(leagueId) === version) continue;
       kickoffLeagueVersions.set(leagueId, version);
-      const linesByEvent = ladderLib.groupLinesByEvent(scanner.getLeagueLines(leagueId));
+      const linesByEvent = leagueLinesByEvent(leagueId);
       for (const row of leagueBoardRows(leagueId)) {
         if (typeof row.eventStartMs !== "number") continue;
         const pregame = row.eventStartMs > at;
@@ -492,6 +498,23 @@ function createRunner(deps) {
     for (const [eventId, entry] of kickoffMemo) {
       if (at - entry.row.eventStartMs > KICKOFF_MEMO_HOURS * HOUR_MS) kickoffMemo.delete(eventId);
     }
+  }
+
+  // One league's lines by game, regrouped only when its snapshot landed again.
+  function leagueLinesByEvent(leagueId) {
+    const version = scanner.getLeagueVersion(leagueId);
+    const cached = linesByEventOfLeague.get(leagueId);
+    if (cached && cached.version === version) return cached.byEvent;
+    const byEvent = ladderLib.groupLinesByEvent(scanner.getLeagueLines(leagueId));
+    linesByEventOfLeague.set(leagueId, { version, byEvent });
+    for (const known of linesByEventOfLeague.keys()) if (!boardLeagueIds().includes(known)) linesByEventOfLeague.delete(known);
+    return byEvent;
+  }
+
+  // One game's lines as of its league's last snapshot (edgesnapshot.js linesOfEvent).
+  function linesOfEventNow(eventId) {
+    const event = feedState && feedState.events[eventId];
+    return event ? leagueLinesByEvent(event.leagueId).get(eventId) || [] : [];
   }
 
   // Remember each open bet's matched game start, as the panel's noteMatchedStarts does.
@@ -601,8 +624,7 @@ function createRunner(deps) {
     learnBusy = true;
     learnCrosswalk()
       .then(() => captureFillFairs())
-      .then(() => captureFillBooks())
-      .then(() => captureFillSnapshots())
+      .then(() => captureFillBooksAndSnapshots())
       .catch((error) => logWarning(`learning failed: ${error.stack || error.message}`))
       .finally(() => { learnBusy = false; });
   }
@@ -674,32 +696,29 @@ function createRunner(deps) {
   }
 
   // Each new open bet's other books at its number when it was placed
-  // (fillbooks.js), one row per POST, the same way as the fill fairs. Decided
-  // ids live in memory only: after a restart every open bet was placed before
+  // (fillbooks.js) and its market at the fill (edgesnapshot.js: every book's
+  // two sides at its number, Unabated's main number and fair, the edge-move
+  // tag), one row per POST, the same way as the fill fairs. Both read one
+  // lookup of the board for the bets either still has to decide. Decided ids
+  // live in memory only: after a restart every open bet was placed before
   // the scanner watched, so nothing is re-captured, and the service keeps the
   // first row regardless.
-  async function captureFillBooks() {
+  async function captureFillBooksAndSnapshots() {
     const liveStatus = scanner.getStatus();
-    const captured = fillbooks.captureFillBooks({
-      records: held.records, skipIds: fillBooksCapture.decided,
-      state: feedState, boardLines: boardLines(), history,
+    const shared = {
+      records: held.records, state: feedState, boardLines: boardLines(), history,
       observingSince: liveStatus.observingSince, leagueObservingSince: liveStatus.leagueObservingSince, now: now(),
+    };
+    const undecided = held.records.filter((bet) => bet.status === "open" && !bet.unmatchable
+      && !(fillBooksCapture.decided.has(bet.id) && fillSnapshotsCapture.decided.has(bet.id)));
+    if (typeof liveStatus.observingSince !== "number" || !undecided.length) return;
+    const rowsByBet = fillfair.sameLineRows(undecided, feedState, shared.boardLines);
+    const books = fillbooks.captureFillBooks({ ...shared, skipIds: fillBooksCapture.decided, rowsByBet });
+    const snapshots = edgesnapshot.captureFillSnapshots({
+      ...shared, skipIds: fillSnapshotsCapture.decided, rowsByBet, linesOfEvent: linesOfEventNow,
     });
-    await sendCaptured(fillBooksCapture, captured, "fill books", "fill_books.json");
-  }
-
-  // Each new open bet's market at the fill (edgesnapshot.js): every book's two
-  // sides at its number, Unabated's main number and fair, the edge-move tag.
-  // Same rules as the fill books.
-  async function captureFillSnapshots() {
-    const liveStatus = scanner.getStatus();
-    const captured = edgesnapshot.captureFillSnapshots({
-      records: held.records, skipIds: fillSnapshotsCapture.decided,
-      state: feedState, boardLines: boardLines(), history,
-      observingSince: liveStatus.observingSince, leagueObservingSince: liveStatus.leagueObservingSince,
-      leagueLinesOf: scanner.getLeagueLines, now: now(),
-    });
-    await sendCaptured(fillSnapshotsCapture, captured, "fill snapshots", "fill_snapshots.json");
+    await sendCaptured(fillBooksCapture, books, "fill books", "fill_books.json");
+    await sendCaptured(fillSnapshotsCapture, snapshots, "fill snapshots", "fill_snapshots.json");
   }
 
   // Record a capture pass's saves and refusals, then POST the unsent rows one
@@ -779,6 +798,9 @@ function createRunner(deps) {
       });
       await postClosingFairRows(pass.rows);
       await postCloseSnapshots(pass);
+    } catch (error) {
+      if (closingStatus.error !== error.message) logWarning(`closing pass failed: ${error.stack || error.message}`);
+      closingStatus.error = error.message;
     } finally {
       closingBusy = false;
     }
@@ -801,22 +823,31 @@ function createRunner(deps) {
     }
   }
 
+  // The close snapshots that changed, CLOSE_SNAPSHOT_ROWS_PER_POST to a
+  // request so the body stays far under the service's size cap however many
+  // bets are open; a request that fails keeps its rows (and the rest) for the
+  // next pass, and a 400 (a row the service refuses) drops only its own rows.
   async function postCloseSnapshots(pass) {
-    try {
-      const rows = edgesnapshot.unsentCloseRows(edgesnapshot.closeSnapshotRows({
-        fairRows: pass.rows, records: held.records, rowsByBet: pass.rowsByBet, state: feedState, leagueLinesOf: scanner.getLeagueLines,
-      }), sentCloseSnapshots);
-      closefair.forgetClosed(sentCloseSnapshots, held.records);
-      if (!rows.length) return;
-      await getServiceJson(serviceFetch, `${deps.betsServiceUrl}/close_snapshots.json`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rows }),
-      });
-      edgesnapshot.markCloseSent(rows, sentCloseSnapshots);
-      if (closeSnapshotStatus.error) logInfo("close snapshots saving again");
-      Object.assign(closeSnapshotStatus, { okAt: now(), error: null, rowsSent: closeSnapshotStatus.rowsSent + rows.length });
-    } catch (error) {
-      if (closeSnapshotStatus.error !== error.message) logWarning(`close snapshots POST failed: ${error.message}`);
-      closeSnapshotStatus.error = error.message;
+    const rows = edgesnapshot.unsentCloseRows(edgesnapshot.closeSnapshotRows({
+      fairRows: pass.rows, records: held.records, rowsByBet: pass.rowsByBet, state: feedState, linesOfEvent: linesOfEventNow,
+    }), sentCloseSnapshots);
+    closefair.forgetClosed(sentCloseSnapshots, held.records);
+    for (let start = 0; start < rows.length; start += CLOSE_SNAPSHOT_ROWS_PER_POST) {
+      const chunk = rows.slice(start, start + CLOSE_SNAPSHOT_ROWS_PER_POST);
+      try {
+        await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/close_snapshots.json`, "POST", { rows: chunk });
+        edgesnapshot.markCloseSent(chunk, sentCloseSnapshots);
+        if (closeSnapshotStatus.error) logInfo("close snapshots saving again");
+        Object.assign(closeSnapshotStatus, { okAt: now(), error: null, rowsSent: closeSnapshotStatus.rowsSent + chunk.length });
+      } catch (error) {
+        if (closeSnapshotStatus.error !== error.message) logWarning(`close snapshots POST failed: ${error.message}`);
+        closeSnapshotStatus.error = error.message;
+        if (error.status === HTTP_BAD_REQUEST) {
+          edgesnapshot.markCloseSent(chunk, sentCloseSnapshots);
+          continue;
+        }
+        return;
+      }
     }
   }
 

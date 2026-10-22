@@ -100,12 +100,18 @@ function isOwnBook(line, book, venue) {
   return String(book.name || "").toLowerCase() === bets.venueLabel(venue).toLowerCase();
 }
 
-// Can this book's line stand as another book's price right now.
-function bookLineCounts(line, state, venue) {
+// Is this a book's price on the board right now: listed, unblurred, at a
+// live book, and not Unabated's own line.
+function lineOnBoard(line, state) {
   if (!line || line.bookId === feed.UNABATED_LINE_BOOK_ID) return false;
   if (line.statusId !== STATUS_ON_BOARD || line.isBlurred) return false;
   const book = state.books[line.bookId];
-  return Boolean(book && book.isLive) && !isOwnBook(line, book, venue);
+  return Boolean(book && book.isLive);
+}
+
+// Can this book's line stand as another book's price right now.
+function bookLineCounts(line, state, venue) {
+  return lineOnBoard(line, state) && !isOwnBook(line, state.books[line.bookId], venue);
 }
 
 // The row for one bet, from its same_line rows: {row} or {reason}.
@@ -147,8 +153,10 @@ function decide(bet, placedMs, rows, state, history, leagueObservingSince) {
 //   history         edgemove history: line key -> entries
 //   observingSince  ms since when the history has no gap, or null
 //   leagueObservingSince  leagueId -> ms (scanner status)
+//   rowsByBet       optional fillfair.sameLineRows of (at least) these bets,
+//                   shared with the fill snapshots' pass
 //   now             ms
-function captureFillBooks({ records, skipIds, state, boardLines, history, observingSince, leagueObservingSince, now }) {
+function captureFillBooks({ records, skipIds, state, boardLines, history, observingSince, leagueObservingSince, rowsByBet: sharedRows, now }) {
   const result = { saves: [], refusals: [] };
   if (!state || typeof observingSince !== "number") return result;
   const pending = [];
@@ -160,7 +168,7 @@ function captureFillBooks({ records, skipIds, state, boardLines, history, observ
     else if (placedMs <= now) pending.push({ bet, placedMs });
   }
   if (!pending.length) return result;
-  const rowsByBet = fillfair.sameLineRows(pending.map((item) => item.bet), state, boardLines);
+  const rowsByBet = sharedRows || fillfair.sameLineRows(pending.map((item) => item.bet), state, boardLines);
   for (const { bet, placedMs } of pending) {
     const rows = rowsByBet.get(bet.id);
     if (!rows || !rows.length) continue;
@@ -171,4 +179,4 @@ function captureFillBooks({ records, skipIds, state, boardLines, history, observ
   return result;
 }
 
-module.exports = { REFUSED, captureFillBooks, refusalOf, entryAtFill, isOwnBook };
+module.exports = { REFUSED, captureFillBooks, refusalOf, entryAtFill, isOwnBook, lineOnBoard };

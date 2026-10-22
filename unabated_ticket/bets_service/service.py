@@ -668,18 +668,7 @@ def validate_fill_fair_rows(body: object) -> list[dict] | str:
     always is); fairObservedAt and placedAt ISO times, the fair observed at or
     before the placement — a saved fair is permanent, so a row that cannot be
     the fill's is refused rather than stored."""
-    if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
-        return f"body must be an object with a `rows` array, got {type(body).__name__}"
-    raw_rows = body["rows"]
-    if len(raw_rows) > MAX_FILL_FAIR_ROWS_PER_POST:
-        return f"at most {MAX_FILL_FAIR_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
-    rows: list[dict] = []
-    for index, raw in enumerate(raw_rows):
-        row = _validate_fill_fair_row(index, raw)
-        if isinstance(row, str):
-            return row
-        rows.append(row)
-    return rows
+    return _validate_rows(body, _validate_fill_fair_row)
 
 
 def _is_american_price(value: object) -> bool:
@@ -722,18 +711,7 @@ def _validate_fill_book_row(index: int, raw: object) -> dict | str:
 def validate_fill_book_rows(body: object) -> list[dict] | str:
     """The rows of a POST /fill_books.json body, or an error naming the first
     bad row: a saved row is permanent, so a malformed one is refused."""
-    if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
-        return f"body must be an object with a `rows` array, got {type(body).__name__}"
-    raw_rows = body["rows"]
-    if len(raw_rows) > MAX_FILL_FAIR_ROWS_PER_POST:
-        return f"at most {MAX_FILL_FAIR_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
-    rows: list[dict] = []
-    for index, raw in enumerate(raw_rows):
-        row = _validate_fill_book_row(index, raw)
-        if isinstance(row, str):
-            return row
-        rows.append(row)
-    return rows
+    return _validate_rows(body, _validate_fill_book_row)
 
 
 EDGE_MOVE_KINDS = ("none", "fair_to_you", "book_away", "fair_against")
@@ -895,18 +873,7 @@ def validate_closing_fair_rows(body: object) -> list[dict] | str:
     """The rows of a POST /closing_fairs.json body, or an error naming the
     first bad row: the fill-fair shape with eventStart in place of placedAt,
     each observed before its game's start."""
-    if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
-        return f"body must be an object with a `rows` array, got {type(body).__name__}"
-    raw_rows = body["rows"]
-    if len(raw_rows) > MAX_FILL_FAIR_ROWS_PER_POST:
-        return f"at most {MAX_FILL_FAIR_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
-    rows: list[dict] = []
-    for index, raw in enumerate(raw_rows):
-        row = _validate_closing_fair_row(index, raw)
-        if isinstance(row, str):
-            return row
-        rows.append(row)
-    return rows
+    return _validate_rows(body, _validate_closing_fair_row)
 
 
 def validate_exclusion_request(body: object) -> tuple[list[str], bool] | str:

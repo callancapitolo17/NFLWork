@@ -367,6 +367,34 @@ test("close snapshots: every book's two sides at the bet's number, sent with the
   runner.stop();
 });
 
+test("close snapshots: a failed POST leaves the closing fairs saved and is retried next pass", async () => {
+  const fairPosts = [];
+  let snapshotStatus = 500;
+  let snapshotPosts = 0;
+  const service = async (url, init = {}) => {
+    const route = url.slice(SERVICE_URL.length);
+    if (route === "/close_snapshots.json") {
+      snapshotPosts += 1;
+      return response({ status: snapshotStatus, body: JSON.stringify(snapshotStatus === 200 ? { ok: true, saved: 1 } : { error: "down" }) });
+    }
+    if (route === "/closing_fairs.json") { fairPosts.push(JSON.parse(init.body).rows); return response({ body: "{}" }); }
+    if (route === "/bets.json") return response({ body: JSON.stringify(betsBody([BEARS_HELD])) });
+    if (route === "/settings.json") return response({ body: JSON.stringify({ settings: OPEN_SETTINGS, updatedAt: null }) });
+    return response({ status: 404, body: "{}" });
+  };
+  const runner = runnerLib.createRunner({ fetchImpl: unabatedFetch(), serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => NOW, timers: noTimers, ...quiet });
+  await runner.start();
+  await runner.postClosingFairs();
+  assert.equal(fairPosts.length, 1);
+  assert.equal(snapshotPosts, 1);
+  assert.match(runner.health().closeSnapshots.error, /500/);
+  snapshotStatus = 200;
+  await runner.postClosingFairs();
+  assert.equal(snapshotPosts, 2, "the unsent snapshot goes again");
+  assert.deepEqual([runner.health().closeSnapshots.error, runner.health().closeSnapshots.rowsSent], [null, 1]);
+  runner.stop();
+});
+
 test("closing fairs: a league whose snapshot build is stale gives no close", async () => {
   const posts = [];
   const service = async (url, init = {}) => {

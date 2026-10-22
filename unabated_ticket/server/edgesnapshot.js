@@ -30,30 +30,15 @@ const fillfair = require("../extension/fillfair.js");
 const edgemove = require("../extension/edgemove.js");
 const fillbooks = require("./fillbooks.js");
 
-const STATUS_ON_BOARD = 1;
 const BET_TYPE_MONEYLINE = 1;
 const BET_TYPE_SPREAD = 2;
 
-// eventId -> that game's lines, one walk of each league the events are in
-// (the scanner's per-league index), never the whole board.
-//   eventIds       the games wanted
-//   state          the scanner's feed state (events carry their leagueId)
-//   leagueLinesOf  leagueId -> that league's lines (scanner.getLeagueLines)
-function eventLinesOf(eventIds, state, leagueLinesOf) {
-  const wanted = new Set(eventIds);
+// eventId -> that game's lines, for the games wanted.
+//   linesOfEvent  eventId -> that game's lines (the runner's per-league index,
+//                 rebuilt once per league snapshot: never a board walk here)
+function eventLinesOf(eventIds, linesOfEvent) {
   const byEvent = new Map();
-  const leagueIds = new Set();
-  for (const eventId of wanted) {
-    const event = state.events[eventId];
-    if (event) leagueIds.add(event.leagueId);
-  }
-  for (const leagueId of leagueIds) {
-    for (const line of leagueLinesOf(leagueId)) {
-      if (!wanted.has(line.eventId)) continue;
-      if (!byEvent.has(line.eventId)) byEvent.set(line.eventId, []);
-      byEvent.get(line.eventId).push(line);
-    }
-  }
+  for (const eventId of new Set(eventIds)) byEvent.set(eventId, linesOfEvent(eventId) || []);
   return byEvent;
 }
 
@@ -63,22 +48,18 @@ function oppositePoints(line) {
   return line.betTypeId === BET_TYPE_SPREAD ? -line.points : line.points;
 }
 
-// The same book's line on the other side of the same market at the opposite number, or null.
+// The same book's line on the other side of the same market at the opposite
+// number, or null. Sides are 0 and 1 only: a three-way moneyline's draw is
+// never "the other side".
 function otherSideOf(ownLine, eventLines) {
+  if (ownLine.sideIndex !== 0 && ownLine.sideIndex !== 1) return null;
   const points = oppositePoints(ownLine);
   for (const line of eventLines || []) {
     if (line.bookId !== ownLine.bookId || line.periodTypeId !== ownLine.periodTypeId || line.betTypeId !== ownLine.betTypeId) continue;
-    if (line.sideIndex == null || line.sideIndex === ownLine.sideIndex) continue;
+    if (line.sideIndex !== 1 - ownLine.sideIndex) continue;
     if (ownLine.betTypeId === BET_TYPE_MONEYLINE || line.points === points) return line;
   }
   return null;
-}
-
-function lineOnBoard(line, state) {
-  if (!line || line.bookId === feed.UNABATED_LINE_BOOK_ID) return false;
-  if (line.statusId !== STATUS_ON_BOARD || line.isBlurred) return false;
-  const book = state.books[line.bookId];
-  return Boolean(book && book.isLive);
 }
 
 function priceFields(observed, liquidity) {
@@ -97,11 +78,11 @@ function booksRecord(ownRows, bet, state, eventLines, priceAt) {
   const books = [];
   for (const row of ownRows) {
     const ownLine = state.lines[row.key];
-    if (!lineOnBoard(ownLine, state)) continue;
+    if (!fillbooks.lineOnBoard(ownLine, state)) continue;
     const book = state.books[ownLine.bookId];
     const otherLine = otherSideOf(ownLine, eventLines.get(ownLine.eventId));
     const side = priceAt(ownLine);
-    const other = lineOnBoard(otherLine, state) ? priceAt(otherLine) : null;
+    const other = fillbooks.lineOnBoard(otherLine, state) ? priceAt(otherLine) : null;
     if (!side && !other) continue;
     books.push({
       bookId: ownLine.bookId, book: book.name, exchange: book.hasLiquidity === true,
@@ -153,9 +134,11 @@ function edgeMoveAtFill(bet, ownRows, state, history, placedMs) {
 // A save is the row POST /fill_snapshots.json takes — {betId, placedAt,
 // lineKey, points, mainPoints, mainFairAmerican, pointsFromMain,
 // edgeMoveLineKey, edgeMove, edgeMoveFairDelta, edgeMovePriceDelta, books}.
-//   leagueLinesOf  leagueId -> that league's lines (scanner.getLeagueLines)
+//   linesOfEvent  eventId -> that game's lines (see eventLinesOf)
+//   rowsByBet     optional fillfair.sameLineRows of (at least) these bets,
+//                 shared with the fill books' pass so the board is walked once
 //   the rest as captureFillBooks
-function captureFillSnapshots({ records, skipIds, state, boardLines, history, observingSince, leagueObservingSince, leagueLinesOf, now }) {
+function captureFillSnapshots({ records, skipIds, state, boardLines, history, observingSince, leagueObservingSince, linesOfEvent, rowsByBet: sharedRows, now }) {
   const result = { saves: [], refusals: [] };
   if (!state || typeof observingSince !== "number") return result;
   const pending = [];
@@ -167,9 +150,9 @@ function captureFillSnapshots({ records, skipIds, state, boardLines, history, ob
     else if (placedMs <= now) pending.push({ bet, placedMs });
   }
   if (!pending.length) return result;
-  const rowsByBet = fillfair.sameLineRows(pending.map((item) => item.bet), state, boardLines);
-  const eventIds = [...rowsByBet.values()].map((rows) => rows[0].eventId);
-  const eventLines = eventLinesOf(eventIds, state, leagueLinesOf);
+  const rowsByBet = sharedRows || fillfair.sameLineRows(pending.map((item) => item.bet), state, boardLines);
+  const eventIds = pending.map(({ bet }) => rowsByBet.get(bet.id)).filter((rows) => rows && rows.length).map((rows) => rows[0].eventId);
+  const eventLines = eventLinesOf(eventIds, linesOfEvent);
   for (const { bet, placedMs } of pending) {
     const rows = rowsByBet.get(bet.id);
     if (!rows || !rows.length) continue;
@@ -194,17 +177,17 @@ function captureFillSnapshots({ records, skipIds, state, boardLines, history, ob
   return result;
 }
 
-// The close snapshot of each closing-fair row (closefair.closingFairRows):
+// The close snapshot of each closing-fair row (closefair.closingPass):
 // {betId, observedAt, eventStart, books} off the board as it is now, with
-// each line's resting liquidity. Same observedAt and eventStart as the
-// closing fair, so the service keeps them by the same newest-pre-start rule.
+// each line's resting liquidity. Same eventStart as the closing fair, and its
+// observedAt, so the service keeps them by the same newest-pre-start rule.
 //   fairRows   the closing-fair rows of this pass
 //   rowsByBet  fillfair.sameLineRows of the same bets
-function closeSnapshotRows({ fairRows, records, rowsByBet, state, leagueLinesOf }) {
+function closeSnapshotRows({ fairRows, records, rowsByBet, state, linesOfEvent }) {
   if (!fairRows.length) return [];
   const betsById = new Map((records || []).map((bet) => [bet.id, bet]));
   const eventIds = fairRows.map((row) => (rowsByBet.get(row.betId) || [])[0]).filter(Boolean).map((row) => row.eventId);
-  const eventLines = eventLinesOf(eventIds, state, leagueLinesOf);
+  const eventLines = eventLinesOf(eventIds, linesOfEvent);
   const priceAt = (line) => priceFields(line, line.liquidity);
   const out = [];
   for (const fair of fairRows) {
@@ -219,9 +202,11 @@ function closeSnapshotRows({ fairRows, records, rowsByBet, state, leagueLinesOf 
   return out;
 }
 
-// A close snapshot is resent only when its reading time or its books changed.
+// A close snapshot is resent only when its books changed (a new league
+// snapshot with the same prices is not): the stored observedAt is when the
+// books were first read as they stand.
 function closeSignatureOf(row) {
-  return `${row.observedAt}|${JSON.stringify(row.books)}`;
+  return JSON.stringify(row.books);
 }
 
 function unsentCloseRows(rows, sent) {
@@ -233,6 +218,5 @@ function markCloseSent(rows, sent) {
 }
 
 module.exports = {
-  captureFillSnapshots, closeSnapshotRows, unsentCloseRows, markCloseSent,
-  eventLinesOf, otherSideOf, oppositePoints,
+  captureFillSnapshots, closeSnapshotRows, unsentCloseRows, markCloseSent, otherSideOf, oppositePoints,
 };
