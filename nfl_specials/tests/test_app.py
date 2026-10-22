@@ -10,7 +10,7 @@ from nfl_specials import app as app_module
 from nfl_specials.app import SpecialsApp
 from nfl_specials.board import Board, FectaLine
 from nfl_specials.books import BookGame
-from nfl_specials.pricing import BookFair
+from nfl_specials.pricing import BookFair, ScoresFirstShare
 from nfl_specials.special_parser import parse_fecta
 from nfl_specials.store import Store
 from nfl_specials.wz import WzSpecial
@@ -78,6 +78,26 @@ def test_payload_carries_structured_legs_and_book_progress(app):
     assert payload["board"]["book_progress"] == {"FanDuel": {"done": 1, "total": 1}}
     assert payload["board"]["lines"][0]["legs"][0] == {"kind": "win", "period": "Q1", "line": None,
                                                        "text": "LAC wins Q1"}
+
+
+def test_payload_carries_a_draftkings_down_superfectas_books_and_fixed_share(app):
+    special = WzSpecial(wz_game_id=2, rotation=2, description="CHARGERS SUPERFECTA (SCR 1ST, 1Q, 1H & GM)",
+                        wz_american=1600, week_date=date(2098, 12, 31))
+    line = FectaLine(special, parse_fecta(special.description), "priced", game=GAME,
+                     book_fairs={"FanDuel": BookFair("FanDuel", 0.12, None, 1.3, 8),
+                                 "BetMGM": BookFair("BetMGM", 0.10, None, 1.3, 8)},
+                     sf_share=ScoresFirstShare("fixed", 0.776, 0, reason="DraftKings down: error: HTTP 403"))
+    app.publish(Board(datetime.now(timezone.utc), datetime.now(timezone.utc), [line], {}))
+    payload = app.board_payload("Wagerzon")["board"]["lines"][0]
+    assert {key: payload[key] for key in ("is_superfecta", "books", "sf_share", "fair_prob")} == {
+        "is_superfecta": True,
+        "books": {"FanDuel": {"fair_prob": 0.12, "fair_american": 733, "sgp_american": None, "overround": 1.3,
+                              "n_cells": 8, "reason": None},
+                  "BetMGM": {"fair_prob": 0.10, "fair_american": 900, "sgp_american": None, "overround": 1.3,
+                             "n_cells": 8, "reason": None}},
+        "sf_share": {"share": 0.776, "book": "fixed"},
+        "fair_prob": pytest.approx(0.10 * 0.776),
+    }
 
 
 def test_a_placed_special_is_topped_up_to_kelly_not_doubled(app):

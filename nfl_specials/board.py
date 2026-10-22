@@ -13,8 +13,11 @@ bankroll or Kelly fraction applies without re-pricing.
 Books: FanDuel and BetMGM price the trifectas over plain HTTP. DraftKings
 prices the superfectas alone (user decision 2026-10-02: only DK lets "scores
 first" into an SGP, so only DK prices them) — its trifecta-part partition,
-then its scores-first share. The three books price in parallel, one thread per
-book; each book's own calls stay sequential, so DK's 0.5 s pacing holds.
+then its scores-first share. When DraftKings is down (it failed to open this
+refresh), a superfecta's trifecta part prices at FanDuel + BetMGM like a
+trifecta and takes a fixed scores-first share instead (user decision
+2026-10-22). The books price in parallel, one thread per book; each book's own
+calls stay sequential, so DK's 0.5 s pacing holds.
 """
 from __future__ import annotations
 
@@ -44,6 +47,12 @@ log = logging.getLogger("nfl_specials.board")
 TRIFECTA_BOOKS = ("FanDuel", "BetMGM")
 SUPERFECTA_BOOK = "DraftKings"
 BOOK_ORDER = TRIFECTA_BOOKS + (SUPERFECTA_BOOK,)
+# With DraftKings down, a superfecta's fair is its trifecta part's worst case
+# at TRIFECTA_BOOKS times this share: the LOWEST P(scores first | the other
+# legs) DraftKings ever quoted (122 quotes in fecta_quotes.sf_share:
+# 0.776-0.883, median 0.842).
+DK_DOWN_SCORES_FIRST_SHARE = 0.776
+DK_DOWN_SHARE_SOURCE = "fixed"
 # Whose kickoff time the board shows: DK and BetMGM list the real kickoff,
 # FanDuel lists it a minute late.
 GAME_SOURCE_ORDER = ("DraftKings", "BetMGM", "FanDuel")
@@ -64,8 +73,9 @@ class FectaLine:
     status: str                     # 'pricing' | 'priced' | 'unpriced' | 'unparsed' | 'no_game'
     note: str | None = None         # parse failure / why unpriced
     game: BookGame | None = None
-    # Trifecta: the special's fair by book. Superfecta: DraftKings' fair for
-    # its TRIFECTA PART, multiplied by sf_share at sizing time.
+    # Trifecta: the special's fair by book. Superfecta: the fair for its
+    # TRIFECTA PART (DraftKings', or FanDuel's and BetMGM's with DraftKings
+    # down), multiplied by sf_share at sizing time.
     book_fairs: dict[str, BookFair] = field(default_factory=dict)
     sf_share: ScoresFirstShare | None = None
 
@@ -364,6 +374,17 @@ def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
         for line in pricing:
             if line.is_superfecta():
                 work += [("partition", SUPERFECTA_BOOK, line), ("scores_first", SUPERFECTA_BOOK, line)]
+    else:
+        fixed_share_rows = []
+        for line in pricing:
+            if line.is_superfecta():
+                line.sf_share = ScoresFirstShare(DK_DOWN_SHARE_SOURCE, DK_DOWN_SCORES_FIRST_SHARE, 0,
+                                                 reason=f"DraftKings down: {book_status.get(SUPERFECTA_BOOK)}")
+                fixed_share_rows.append(_quote_row(line, started_at, book=DK_DOWN_SHARE_SOURCE,
+                                                   quote_kind="scores_first_share", share=line.sf_share))
+                work += [("partition", name, line) for name in TRIFECTA_BOOKS if name in books]
+        if fixed_share_rows:
+            store.append_quotes(fixed_share_rows)
     board.progress_total = len(work)
     for _task, name, _line in work:
         board.book_progress.setdefault(name, {"done": 0, "total": 0})["total"] += 1
@@ -402,8 +423,8 @@ def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
             continue
         line.status = "unpriced"
         reasons = [f"{b}: {f.reason}" for b, f in line.book_fairs.items() if f.reason]
-        if line.is_superfecta() and SUPERFECTA_BOOK not in books:
-            reasons.append(f"superfectas price at DraftKings only: {book_status.get(SUPERFECTA_BOOK)}")
+        if line.is_superfecta() and line.sf_share is not None and line.sf_share.book == DK_DOWN_SHARE_SOURCE:
+            reasons.append(line.sf_share.reason)
         elif line.is_superfecta() and (line.sf_share is None or line.sf_share.share is None):
             reasons.append(f"DraftKings scores first: {line.sf_share.reason if line.sf_share else 'not priced'}")
         line.note = "; ".join(reasons) or "no book priced it"

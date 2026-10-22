@@ -315,3 +315,34 @@ def test_a_no_buy_reported_as_a_yes_sell_prices_its_no_record():
     [entry] = apply_net_position_pnl(records, fills, {"B": {"result": "no"}}, positions)
     assert entry["pnl"] == 6.4  # 10 NO at 36c each, settled NO
 
+
+def test_a_settled_bot_no_buy_reported_as_a_no_sell_grades_as_the_hold():
+    """KXNCAAFSPREAD-26OCT16CLMBPENN-CLMB6 on 2026-10-16: the bot's NO buy came
+    back as one `no` sell fill. Once the market settled it left the unsettled
+    positions, and the record read closed with 0 contracts and a $0 stake."""
+    fills = [fill("S", "no", 29, 0.22, "2026-10-16T23:00:05Z", action="sell")]
+    markets = {"S": {"event_ticker": "S-EVENT", "result": "no", "expected_expiration_time": "2026-10-17T03:00:00Z"}}
+    records = normalize_kalshi(fills, [], markets, {}, None)
+    assert [(record["id"], record["status"], record["stake"]) for record in records] == [("kalshi:S:no", "closed", 0)]
+    [entry] = apply_net_position_pnl(records, fills, markets, [])
+    assert (entry["status"], entry["contracts"], entry["stake"], entry["toWin"], entry["pnl"]) == (
+        "won", 29, 22.62, 6.38, 6.38)
+    assert entry["closedAt"] == "2026-10-17T03:00:00Z"
+
+
+def test_a_flat_position_holds_nothing_at_settlement():
+    flat = [fill("P", "no", 223, 0.13, "2026-05-28T10:00:00Z"),
+            fill("P", "yes", 223, 0.01, "2026-09-02T10:00:00Z", action="sell")]
+    net = net_position_pnl(flat, "no")
+    assert (net["heldContracts"], net["heldCost"]) == (0, 0)
+
+
+def test_a_settled_close_out_with_buys_stays_closed():
+    """A YES bought and sold back as a `yes` sell (the fixture's Crosby fills)
+    reads as a hold to `side` alone; with a buy on the ticker it is not regraded."""
+    fills = [fill("X", "yes", 10, 0.60, "2026-10-16T10:00:00Z"),
+             fill("X", "yes", 10, 0.74, "2026-10-16T11:00:00Z", action="sell")]
+    markets = {"X": {"event_ticker": "X-EVENT", "result": "yes"}}
+    records = normalize_kalshi(fills, [], markets, {}, None)
+    [entry] = apply_net_position_pnl(records, fills, markets, [])
+    assert (entry["status"], entry["contracts"], entry["stake"]) == ("closed", 0, 0)

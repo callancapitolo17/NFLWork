@@ -46,7 +46,7 @@ class ScoresFirstShare:
     book: str
     share: float | None            # P(team scores first | the special's other legs)
     n_calls: int
-    reason: str | None = None      # why share is None
+    reason: str | None = None      # why share is None, or why a fixed share stands in
 
 
 @dataclass(frozen=True)

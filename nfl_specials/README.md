@@ -39,8 +39,9 @@ phone ──tailnet──▶ VM :8443 ──▶ fectas (:8096) ──▶ FanDuel
 - **DraftKings goes through the Mac.** DraftKings answers "Access Denied" to
   Oracle's data-center IPs, so the container sends its DraftKings requests to
   `dk_relay.py` on the Mac over Tailscale (`NFL_SPECIALS_DK_PROXY` in the
-  VM's `deploy/.env`). **Mac asleep or off: the DraftKings chip errors and
-  superfectas stay unpriced; trifectas still price.**
+  VM's `deploy/.env`). **Mac asleep or off, or abroad (DraftKings refuses
+  non-US IPs): the DraftKings chip errors and superfectas fall back to
+  FanDuel + BetMGM with a fixed scores-first share (Pricing step 4).**
 - **Wagerzon login:** only the `WAGERZON*_USERNAME` / `_PASSWORD` lines of the
   VM's `unabated_ticket/bets_service/.env` (`NFL_SPECIALS_WAGERZON_ENV`), the
   same login the bets service uses.
@@ -75,7 +76,8 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.dk-relay.plist
   no game last), or one list by EV ("Best EV"); filter All / Trifectas /
   Superfectas and "+EV only" (remembered in the browser). Each row: legs as
   chips, every book's fair with the worst case marked (a superfecta shows its
-  one DK fair), WZ
+  one DK fair, or with DK down its trifecta part's FD and MGM fairs and a
+  `share 0.78 fixed, DK down` chip), WZ
   price, fair, EV (shaded by size), and the stake box prefilled with the
   recommended stake and its stake figures (see the stake column below).
 - **Place:** a confirm sheet (risk, to win, price, fair, EV, account), then the
@@ -115,6 +117,15 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.dk-relay.plist
    history (2011-2025, 1,970 team-games that won 1Q, 1H and the game) says
    0.893 ± 0.007, so DK's number is the conservative one. 7-10 DK requests
    per superfecta: each prices every outcome of the cell's last leg.
+   **DraftKings down** (it failed to open this refresh; user decision
+   2026-10-22): the trifecta part prices at FanDuel + BetMGM exactly as a
+   trifecta (worst case of the two) and the share is a fixed **0.776**
+   (`board.DK_DOWN_SCORES_FIRST_SHARE`), the lowest DK ever quoted (122
+   quotes in `fecta_quotes.sf_share`: 0.776-0.883, median
+   0.842). Each superfecta appends one `fecta_quotes` row with `book =
+   'fixed'`, `quote_kind = 'scores_first_share'`, `sf_share = 0.776` and the
+   DK error in `reason`. DK failing mid-refresh does not fall back: those
+   superfectas stay unpriced until the next Refresh.
 5. **Stake** = bankroll x Kelly fraction x full Kelly at Wagerzon's price,
    sized **per (game, team) jointly** (user decision 2026-10-15, replacing
    "one special per team"): a team's fectas are nested — the stricter one
@@ -159,6 +170,9 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.dk-relay.plist
 | FanDuel | yes | no — "Team to Score First" is not SGP-eligible | 3-way period winners + ML / spreads, `implyBets` |
 | BetMGM | yes | no — no first-to-score market | ±0.5 period spreads + ML / spreads, `tv2Picks` |
 | DraftKings | not used | yes — the only book ("1st to Score") | its SGP builder's price endpoint (below) |
+
+With DraftKings down, FanDuel and BetMGM price a superfecta's trifecta part
+(Pricing step 4).
 
 **DraftKings, without a browser (2026-10-02).** DK's betslip price call
 (`calculateBets`) answers only a real Chrome (issue #102). DK's SGP *builder*
@@ -226,7 +240,7 @@ balance right away. Wagerzon's minimum online wager on a special is $20.
   (`dk-same-game-parlay/<version>/samegameparlayweb-external.js`, linked from the
   sportsbook page's `sameGameParlayConfig`) for `getYourbetRequestParameters`.
 - **A superfecta says "no SGP market for '... scores first'"** at FD/BetMGM — expected;
-  only DK prices superfectas.
+  only DK prices the scores-first leg (FD/BetMGM price only the trifecta part, with DK down).
 - **Nothing on the board** — Wagerzon posts the specials Thursday-ish; every league
   named `NFL WEEK <n> - SPECIALS` is read (two can be up at once).
 - **On the VM the DraftKings chip shows a curl error** ("Failed to connect to ...
@@ -241,6 +255,7 @@ balance right away. Wagerzon's minimum online wager on a special is $20.
 
 ## Not done yet
 
-- **Superfectas with the Mac off.** DraftKings needs a home IP; nothing at home
-  but the Mac carries the relay.
+- **A live scores-first share with DraftKings down.** The fallback uses the
+  fixed 0.776; FanDuel's standalone first-to-score (independence, ~0.50)
+  never bets.
 - Correlation across games is ignored (cross-game NFL correlation measured ~0).

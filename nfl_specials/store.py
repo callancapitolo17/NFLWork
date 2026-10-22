@@ -38,7 +38,7 @@ SCHEMA = [
         sgp_decimal     DOUBLE,
         overround       DOUBLE,
         n_cells         INTEGER,     -- SGP calls made
-        sf_share        DOUBLE,      -- P(scores first | trifecta part), DK rows only
+        sf_share        DOUBLE,      -- P(scores first | trifecta part), DK rows and the 'fixed' DK-down rows
         reason          VARCHAR
     )""",
     """CREATE TABLE IF NOT EXISTS placed_fectas (
