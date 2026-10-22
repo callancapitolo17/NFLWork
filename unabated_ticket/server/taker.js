@@ -18,7 +18,12 @@
 //     floor too; outliers and Cal's Skips trade);
 //   - lines changed within 7 days, right up to the start;
 //   - $2,000 at 0.25 Kelly (Cal, 2026-10-16), conditional on every open bet (betsview.js stakeAdvice),
-//     contracts cut to the depth at the ask; the order desk caps the money at risk.
+//     contracts cut to the depth at the ask; the order desk caps the money at risk;
+//   - the stake is sized on the SHRUNK live edge (issue #208, Cal 2026-10-22):
+//     the live edge times the row's tail-flex shrink (tailflex.shrinkOfRow —
+//     less the farther the line sits from the main number; the runner passes
+//     it in `sizing.shrink`). The 3% floor and the 20% cap read the raw live
+//     edge, so the bot still looks at the same rows; it bets a deep alt small.
 //
 // Novig (2026-10-16, automated_taker_plan.md § Novig; Cal: its own $500 sub-account,
 // $2,000 at 0.25 Kelly, the better all-in price first when both books trade a number):
@@ -346,7 +351,7 @@ const VENUE_RULES = {
 //   quote       quoteOf's (or novigQuoteOf's) result, or null (read failed or empty side)
 //   quoteError  why the orderbook read failed, when it did
 //   priceIndex  pricecheck.buildPriceIndex over the same feed
-//   sizing      {matches (bets.annotateRows for the row), ladderOf, teasers}
+//   sizing      {matches (bets.annotateRows for the row), ladderOf, teasers, shrink (tailflex.shrinkOfRow, in (0, 1])}
 //   venue       VENUE_KALSHI (default) or VENUE_NOVIG
 // Returns {reason, detail, ...the numbers it got to}.
 function decideRow({ row, contract, quote, quoteError, priceIndex, sizing, venue = VENUE_KALSHI }) {
@@ -365,6 +370,8 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing, venue
     marketId: contract.marketId || null,
     unabatedPrice: row.price, unabatedAllIn: roundPrice(unabatedAllIn), unabatedEdge: row.edgePct / 100, fairProb: roundPrice(fairProb),
     liveAsk: null, liveAllIn: null, liveEdge: null, depth: null, betterBooks: null,
+    // The tail-flex shrink and the edge the stake was sized on (live edge x shrink).
+    shrink: null, sizedEdge: null,
     stake: null, contracts: null, cost: null,
   };
   const done = (reason, detail = null) => ({ ...decision, reason, detail });
@@ -397,8 +404,16 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing, venue
 
   const otherSideHeld = rules.heldOtherSide(sizing.matches, contract);
   if (otherSideHeld) return done("size_declined", otherSideHeld);
+  // No shrink (tailflex.shrinkOfRow found no fair in (0, 1) for the row) is
+  // this row's refusal, never the pass's; a shrink outside (0, 1] is a bug.
+  if (sizing.shrink === null) return done("size_declined", "no tail-flex shrink for the row");
+  if (typeof sizing.shrink !== "number" || !(sizing.shrink > 0 && sizing.shrink <= 1)) {
+    throw new Error(`decideRow: expected sizing.shrink in (0, 1] for ${row.key}, got ${sizing.shrink}`);
+  }
+  const sizedEdge = liveEdge * sizing.shrink;
+  Object.assign(decision, { shrink: roundPrice(sizing.shrink), sizedEdge: roundPrice(sizedEdge) });
   const advice = betsView.stakeAdvice({
-    line: row, price: liveAmerican, edgePct: liveEdge * 100, bankroll: rules.kellyBankroll, multiplier: BOT_KELLY,
+    line: row, price: liveAmerican, edgePct: sizedEdge * 100, bankroll: rules.kellyBankroll, multiplier: BOT_KELLY,
     matches: sizing.matches, ladderOf: sizing.ladderOf, liquidity: null, teasers: sizing.teasers,
   });
   if (advice.kind === "declined") return done("size_declined", advice.reason);

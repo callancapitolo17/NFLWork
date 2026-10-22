@@ -47,6 +47,12 @@
 //   POST <bets service>/close_snapshots.json every 30 s with the closing
 //       fairs — every book's two sides at each open bet's number before its
 //       game starts; the service keeps the newest pre-start one.
+//   GET <bets service>/tau_samples.json once on start and POST /tau_samples.json
+//       every 30 s with the readings that changed (an unchanged one hourly):
+//       the tail flex's tau pool (tailflex.createTauPool, issue #208), the
+//       day's two-sided exchange rungs, so a restart keeps the measured tau.
+//       GET /tau.json here serves the pooled tau per market (the panel sizes
+//       on it through the bets service's pass-through).
 //   Every league's snapshot every 60 s (scanner maxRefreshMs: the taker
 //       trades against the fair, so the panel's 2-5 min tiers are too slow).
 //   GET <Kalshi>/markets/<ticker>/orderbook every 30 s for each Kalshi Edges
@@ -196,6 +202,13 @@ const TAKER_ORDER_TIMEOUT_MS = 45 * 1000;
 // Decisions held for the bets service while it is down; past this the oldest go (logged).
 const TAKER_LOG_MAX_UNSENT = 5000;
 const TAKER_LOG_ROWS_PER_POST = 200;
+// Tau samples (tailflex createTauPool, issue #208) are POSTed in chunks of
+// this: one multi-row UPSERT under the bets service's lock, kept short so
+// /bets.json never waits behind it (the service refuses over
+// MAX_TAU_SAMPLE_ROWS_PER_POST per request).
+const TAU_SAMPLES_PER_POST = 500;
+// How often the unsent tau samples are POSTed and the pool's GET retried.
+const TAU_SAMPLES_POST_MS = 30 * 1000;
 // The runner re-reads the bets every 10 s (the panel and phone every 30 s): the taker
 // sizes against these, and the venues' own polls are 10-20 s, so a fill is held fast.
 const BETS_POLL_MS = 10 * 1000;
@@ -418,6 +431,18 @@ function createRunner(deps) {
   // betId -> what was last POSTed to /close_snapshots.json (edgesnapshot.unsentCloseRows).
   const sentCloseSnapshots = new Map();
   const closeSnapshotStatus = { okAt: null, error: null, rowsSent: 0 };
+  // The tail flex's rolling tau pool (tailflex.createTauPool): every refresh's
+  // two-sided exchange rungs where two or more exchanges quote both sides,
+  // kept 24 h, loaded from the bets service on start (GET /tau_samples.json)
+  // and persisted there as readings change (POST /tau_samples.json), so a
+  // restart starts with the day's rungs, not an empty pool and the fallback.
+  const tauPool = tailflex.createTauPool();
+  // Unsent samples by key, the newest reading of each (the service keeps the
+  // newest seen_at anyway), so a long service outage holds at most one row
+  // per pooled sample, never a row per refresh.
+  const tauUnsent = new Map();
+  let tauBusy = false;
+  const tauStatus = { loaded: false, loadError: null, okAt: null, error: null, rowsSent: 0 };
   // Leagues added for open bets' closing fairs. It only grows (until a
   // restart): every change restarts the scan, which wipes the board and the
   // line history, so a league is not dropped when its last bet settles.
@@ -563,13 +588,79 @@ function createRunner(deps) {
     return ladderReaders(eventId);
   }
 
-  // Measured once per scanner update, on the same line-age gate as the list (panel.js tailFlexMeasurement).
+  // Measured once per scanner update, on the same line-age gate as the list
+  // (panel.js tailFlexMeasurement): c from this refresh, tau from the pool
+  // after this refresh's samples join it (the changed ones queued for the
+  // bets service).
   function tailFlexMeasurement() {
     const maxLineAgeMs = settings.edgeSettings.maxLineAgeHours * HOUR_MS;
     if (!tailFlexCache || tailFlexCache.maxLineAgeMs !== maxLineAgeMs) {
-      tailFlexCache = { maxLineAgeMs, measurement: tailflex.measureTailFlex(feedState, { now: now(), maxLineAgeMs }) };
+      const at = now();
+      const measured = tailflex.measureTailFlex(feedState, { now: at, maxLineAgeMs });
+      for (const sample of tauPool.absorb(measured.tauSamples, at)) tauUnsent.set(sample.key, sample);
+      tailFlexCache = { maxLineAgeMs, measurement: tailflex.withPooledTau(measured, tauPool.measure(at)) };
     }
     return tailFlexCache.measurement;
+  }
+
+  // The row's tail-flex shrink for the bot's stake (taker.decideRow sizing.shrink).
+  function shrinkOfRow(row) {
+    const shrunk = tailflex.shrinkOfRow(row, tailFlexMeasurement());
+    return shrunk ? shrunk.shrink : null;
+  }
+
+  // One GET of /tau_samples.json into the pool, once: the day's rungs as the
+  // service kept them. Until it succeeds the pool holds only what this
+  // process has seen, and /health says so.
+  async function loadTauPool() {
+    if (tauStatus.loaded) return;
+    try {
+      const body = await getServiceJson(serviceFetch, `${deps.betsServiceUrl}/tau_samples.json`);
+      if (!body || !Array.isArray(body.rows)) throw new Error("tau_samples.json has no rows array");
+      tauPool.load(body.rows);
+      tailFlexCache = null;
+      tauStatus.loaded = true;
+      tauStatus.loadError = null;
+      logInfo(`tau pool: loaded ${body.rows.length} sample(s) from the bets service`);
+    } catch (error) {
+      if (tauStatus.loadError !== error.message) logWarning(`tau pool load failed (retrying): ${error.message}`);
+      tauStatus.loadError = error.message;
+    }
+  }
+
+  // POST the queued tau samples, oldest first; a failure keeps the rest for
+  // the next pass. A chunk the service refuses (400) is dropped, as the taker log does.
+  async function postTauSamples() {
+    if (tauBusy) return;
+    tauBusy = true;
+    try {
+      await loadTauPool();
+      while (tauUnsent.size) {
+        const keys = Array.from(tauUnsent.keys()).slice(0, TAU_SAMPLES_PER_POST);
+        const chunk = keys.map((key) => ({ ...tauUnsent.get(key), seenAt: new Date(tauUnsent.get(key).seenAt).toISOString() }));
+        try {
+          await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/tau_samples.json`, "POST", { rows: chunk });
+        } catch (error) {
+          if (error.status !== HTTP_BAD_REQUEST) throw error;
+          logWarning(`tau samples: the bets service refused ${chunk.length} row(s), dropped: ${error.message}`);
+        }
+        for (const key of keys) tauUnsent.delete(key);
+        if (tauStatus.error) logInfo("tau samples: saving again");
+        Object.assign(tauStatus, { okAt: now(), error: null, rowsSent: tauStatus.rowsSent + chunk.length });
+      }
+    } catch (error) {
+      if (tauStatus.error !== error.message) logWarning(`tau samples POST failed: ${error.message}`);
+      tauStatus.error = error.message;
+    } finally {
+      tauBusy = false;
+    }
+  }
+
+  // /tau.json: the pooled tau per market, what the panel sizes on through
+  // the bets service's pass-through (the pool's state is on /health).
+  function tauPayloadNow() {
+    const at = now();
+    return { generatedAt: new Date(at).toISOString(), markets: tauPool.measure(at) };
   }
 
   // The board pass, redone when an NFL or CFB snapshot has landed since (panel.js currentTeaserBoard).
@@ -988,7 +1079,7 @@ function createRunner(deps) {
       const decision = taker.decideRow({
         row, contract, quote: read && !read.error ? read.quote : null, quoteError: read ? read.error || null : null,
         priceIndex: pass.priceIndex, venue,
-        sizing: { matches: flags[index].matches, ladderOf: ladderReaderOf(row.eventId), teasers: pass.teasers },
+        sizing: { matches: flags[index].matches, ladderOf: ladderReaderOf(row.eventId), teasers: pass.teasers, shrink: shrinkOfRow(row) },
       });
       // The held bets the stake was sized on, by id: the desk refuses an add
       // on a game whose earlier bot fill (either venue) is not among them.
@@ -1575,7 +1666,9 @@ function createRunner(deps) {
       timers.setInterval(() => pollSettings(), SETTINGS_POLL_MS),
       timers.setInterval(() => postClosingFairs(), CLOSING_FAIRS_POST_MS),
       timers.setInterval(() => takerPass(), TAKER_PASS_MS),
+      timers.setInterval(() => postTauSamples(), TAU_SAMPLES_POST_MS),
     ];
+    await loadTauPool();
     await scanLoad;
   }
 
@@ -1700,6 +1793,7 @@ function createRunner(deps) {
       settings: { source: settings.source, okAt: settings.okAt, error: settings.error },
       closingFairs: { ...closingStatus },
       closeSnapshots: { ...closeSnapshotStatus },
+      tauPool: { ...tauStatus, size: tauPool.size(), unsent: tauUnsent.size },
       taker: {
         desk: takerDeskStatus, novigDesk: novigDeskStatus, lastPassAt: isoOrNull(takerLastPass.finishedAt),
         skipped: takerLastPass.skipped, novigSkipped: takerLastPass.novigSkipped,
@@ -1709,8 +1803,8 @@ function createRunner(deps) {
   }
 
   return {
-    start, stop, pollBets, pollSettings, postClosingFairs, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions,
-    edgesPayload: edgesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow,
+    start, stop, pollBets, pollSettings, postClosingFairs, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions,
+    edgesPayload: edgesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow, tauPayload: tauPayloadNow,
     scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, health, scanner,
     boardLines,
   };
@@ -1759,7 +1853,7 @@ function sendJson(response, status, body) {
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /kalshi_quote.json, /novig_quote.json, /polymarket_quote.json and /health, the Host allowlist first on
+// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /tau.json, /kalshi_quote.json, /novig_quote.json, /polymarket_quote.json and /health, the Host allowlist first on
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
@@ -1785,6 +1879,7 @@ function createHttpServer(runner, { host }) {
       if (path === "/attach.json") return sendJson(response, 200, await runner.attachPayload(url.searchParams));
       if (path === "/scenarios.json") return sendJson(response, 200, await runner.scenariosPayload());
       if (path === "/taker.json") return sendJson(response, 200, await runner.takerPayload());
+      if (path === "/tau.json") return sendJson(response, 200, await runner.tauPayload());
       if (path === "/kalshi_quote.json") return sendJson(response, 200, await runner.kalshiQuote(url.searchParams));
       if (path === "/novig_quote.json") return sendJson(response, 200, await runner.novigQuote(url.searchParams));
       if (path === "/polymarket_quote.json") return sendJson(response, 200, await runner.polymarketQuote(url.searchParams));

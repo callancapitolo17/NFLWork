@@ -57,7 +57,7 @@ function bookWithAsk(ask, qty = 100000) {
   return { marketId: MARKET_ID, seq: 1, orders: { [DUQ_OUTCOME]: [{ orderId: "a", price: (1 - ask).toFixed(3), qty }, { orderId: "b", price: (1 - ask - 0.01).toFixed(3), qty: 5 }], [WSU_OUTCOME]: [] } };
 }
 
-function decide(state, quote, sizing = { matches: [], ladderOf: () => null, teasers: [] }) {
+function decide(state, quote, sizing = { matches: [], ladderOf: () => null, teasers: [], shrink: 1 }) {
   const row = novigRow(state);
   return taker.decideRow({
     row, contract: contractOf(row), quote, priceIndex: pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: taker.MAX_LINE_AGE_MS }),
@@ -90,6 +90,16 @@ test("a clean Novig row bets in 1c contracts with no fee pregame", () => {
   // contracts pay 1c: the stake buys stake x 100 / ask of them, never Kalshi's stake / ask.
   assert.equal(decision.contracts, Math.floor((decision.stake * 100) / 0.555));
   assert.ok(Math.abs(decision.cost - (decision.contracts * 0.555) / 100) < 1e-4);
+});
+
+test("a Novig stake is sized on the shrunk live edge too (issue #208): half the shrink, half the contracts", () => {
+  const quote = taker.novigQuoteOf(bookWithAsk(0.555), { otherOutcomeId: DUQ_OUTCOME });
+  const full = decide(board(), quote);
+  const half = decide(board(), quote, { matches: [], ladderOf: () => null, teasers: [], shrink: 0.5 });
+  assert.deepEqual([full.reason, half.reason, full.shrink, half.shrink], ["bet", "bet", 1, 0.5]);
+  assert.ok(Math.abs(half.sizedEdge - full.liveEdge / 2) < 1e-4, `${half.sizedEdge} vs ${full.liveEdge}`);
+  assert.ok(Math.abs(half.stake - full.stake / 2) < 0.02, `${half.stake} vs ${full.stake}`);
+  assert.ok(Math.abs(half.contracts - full.contracts / 2) <= 1, `${half.contracts} vs ${full.contracts}`);
 });
 
 test("Novig's live price must be Unabated's: worse by over 0.1c or better by over 1c skips", () => {

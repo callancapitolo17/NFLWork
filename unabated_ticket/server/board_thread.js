@@ -39,7 +39,7 @@ const BOARD_RESTART_DELAY_MS = 5 * 1000;
 const BOARD_RESTART_MAX_DELAY_MS = 5 * 60 * 1000;
 const BOARD_HEALTHY_RUN_MS = 10 * 60 * 1000;
 // The pages the main thread serves from a copy, by the runner method that builds each.
-const PAYLOAD_METHODS = { edges: "edgesPayload", teasers: "teasersPayload", scenarios: "scenariosPayload", taker: "takerPayload" };
+const PAYLOAD_METHODS = { edges: "edgesPayload", teasers: "teasersPayload", scenarios: "scenariosPayload", taker: "takerPayload", tau: "tauPayload" };
 const HTTP_SERVICE_UNAVAILABLE = 503;
 
 // A reply body already serialized: runner.js sendJson writes its text as is.
@@ -200,6 +200,7 @@ function createBoardClient(options) {
     teasersPayload: (opts) => payload("teasers", opts),
     scenariosPayload: () => payload("scenarios"),
     takerPayload: () => payload("taker"),
+    tauPayload: () => payload("tau"),
     attachPayload: (params) => call("attachPayload", [params.toString()]).then((text) => new RawJson(text)),
     kalshiQuote: (params) => call("kalshiQuote", [params.toString()]).then((text) => new RawJson(text)),
     novigQuote: (params) => call("novigQuote", [params.toString()]).then((text) => new RawJson(text)),

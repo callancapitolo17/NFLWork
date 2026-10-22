@@ -99,6 +99,16 @@ writer). Tables:
                'nman-' or 'pman-' + the click's id) is the key, so one click can never send
                twice. Never pruned (a few a day); the bet itself reaches `bets`
                through the venue's poll.
+  tau_samples  one row per (exchange, rung, side) the server runner's tail
+               flex read where two or more exchanges quote both sides: the
+               exchange's devigged mid priced against Unabated's fair and
+               against the other exchanges' fair (extension/tailflex.js
+               tauSamplesOfRungs; issue #208). POSTed to /tau_samples.json
+               by the runner as readings change (an unchanged one hourly),
+               UPSERT keeps the row with the LATEST seen_at. The runner's
+               rolling tau pool (24 h) is rebuilt from GET /tau_samples.json
+               on a restart; rows older than TAU_SAMPLES_RETENTION_HOURS are
+               pruned on every save. Nothing else reads it.
 A failed poll writes a source_runs row and touches nothing in `bets`, so a
 dark source keeps serving its previous records.
 
@@ -305,6 +315,13 @@ ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;
 -- fee; the board-line columns above are kept for the log. Polymarket US
 -- takes no client order id: this row is the only guard against a resend.
 ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS polymarket_order_id VARCHAR;
+CREATE TABLE IF NOT EXISTS tau_samples (
+    sample_key      VARCHAR PRIMARY KEY,   -- '<bookId>|<eventId>:<period>:<betType>:<side>:<points>|<sideIndex>'
+    market_key      VARCHAR NOT NULL,      -- '<leagueId>:<periodTypeId>:<betTypeId>' (tailflex.marketKeyOf)
+    edge_unabated   DOUBLE NOT NULL,       -- the exchange's devigged mid against Unabated's fair, EV units
+    edge_exchanges  DOUBLE NOT NULL,       -- the same mid against the other exchanges' devigged fair
+    seen_at         TIMESTAMPTZ NOT NULL   -- the runner's refresh that read it (newest wins)
+);
 """
 
 MANUAL_ORDER_INSERT_COLUMNS = (
@@ -564,6 +581,29 @@ SELECT skip_key, epoch_ms(event_start), epoch(skipped_at)
 FROM edge_skips
 WHERE event_start > ?
 ORDER BY event_start, skip_key
+"""
+
+# Newest reading wins: a POST that lands late (or twice) never moves a sample
+# back, and an unchanged reading re-sent as a heartbeat only advances seen_at.
+# Multi-row VALUES like _UPSERT_BETS ({values} is up to UPSERT_ROWS_PER_STATEMENT
+# 5-placeholder tuples): one UPSERT per row held the service lock ~4 ms a
+# row, so a 500-row POST stalled every /bets.json behind it.
+_UPSERT_TAU_SAMPLES = """
+INSERT INTO tau_samples (sample_key, market_key, edge_unabated, edge_exchanges, seen_at)
+VALUES {values}
+ON CONFLICT (sample_key) DO UPDATE SET
+    market_key = excluded.market_key, edge_unabated = excluded.edge_unabated,
+    edge_exchanges = excluded.edge_exchanges, seen_at = excluded.seen_at
+WHERE excluded.seen_at > tau_samples.seen_at
+"""
+
+_PRUNE_TAU_SAMPLES = "DELETE FROM tau_samples WHERE seen_at < ?"
+
+_SELECT_TAU_SAMPLES = """
+SELECT sample_key, market_key, edge_unabated, edge_exchanges, epoch_ms(seen_at)
+FROM tau_samples
+WHERE seen_at >= ?
+ORDER BY seen_at, sample_key
 """
 
 # The settings fields in the API's camelCase, in column order: the shape
@@ -1190,6 +1230,51 @@ class BetsStore:
                 ).fetchone()
         log.info("edge skips: %s %s", "skipped" if skipped else "restored", line)
         return count
+
+    def save_tau_samples(self, rows: list[dict], retention_hours: float, now: datetime) -> int:
+        """UPSERT the tau samples (validated shape: see
+        service.validate_tau_sample_rows), each kept only when its seenAt is
+        newer than the stored one, then DELETE every row older than
+        `retention_hours` before `now` (the runner's pool keeps 24 h; the
+        table has no other reader). Returns how many rows were written."""
+        written = 0
+        cutoff = now - timedelta(hours=retention_hours)
+        # A key repeated in one POST keeps its newest reading: a multi-row
+        # INSERT ... ON CONFLICT keeps the FIRST row of a repeated key.
+        newest_by_key: dict[str, dict] = {}
+        for row in rows:
+            held = newest_by_key.get(row["key"])
+            if held is None or _parse_iso(row["seenAt"]) > _parse_iso(held["seenAt"]):
+                newest_by_key[row["key"]] = row
+        values = [
+            [row["key"], row["marketKey"], row["edgeUnabated"], row["edgeExchanges"], _parse_iso(row["seenAt"])]
+            for row in newest_by_key.values()
+        ]
+        with self._lock:
+            self._con.execute("BEGIN TRANSACTION")
+            try:
+                for start in range(0, len(values), UPSERT_ROWS_PER_STATEMENT):
+                    chunk = values[start:start + UPSERT_ROWS_PER_STATEMENT]
+                    statement = _UPSERT_TAU_SAMPLES.format(values=", ".join(["(?, ?, ?, ?, ?)"] * len(chunk)))
+                    [count] = self._con.execute(statement, [value for row in chunk for value in row]).fetchone()
+                    written += count
+                self._con.execute(_PRUNE_TAU_SAMPLES, [cutoff])
+                self._con.execute("COMMIT")
+            except Exception:
+                self._con.execute("ROLLBACK")
+                raise
+        return written
+
+    def load_tau_samples(self, retention_hours: float, now: datetime) -> list[dict]:
+        """[{key, marketKey, edgeUnabated, edgeExchanges, seenAt (epoch ms)}]
+        of the samples seen within `retention_hours`, oldest first — the
+        runner's pool on a restart (tailflex createTauPool().load)."""
+        cutoff = now - timedelta(hours=retention_hours)
+        with self._lock:
+            rows = self._con.execute(_SELECT_TAU_SAMPLES, [cutoff]).fetchall()
+        return [{"key": key, "marketKey": market_key, "edgeUnabated": edge_unabated, "edgeExchanges": edge_exchanges,
+                 "seenAt": int(seen_at_ms)}
+                for key, market_key, edge_unabated, edge_exchanges, seen_at_ms in rows]
 
     def load_edge_skips(self, now: datetime) -> list[dict]:
         """[{skipKey, eventStartMs, skippedAt}] of the skips whose game is still to start."""

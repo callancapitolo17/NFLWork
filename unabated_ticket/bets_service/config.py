@@ -171,6 +171,11 @@ RETENTION_DAYS = int(_get("BETS_RETENTION_DAYS", "30"))
 # is scanned on every /bets.json and /health, so it is pruned to this window
 # (0 = never prune).
 SOURCE_RUNS_RETENTION_DAYS = int(_get("BETS_SOURCE_RUNS_RETENTION_DAYS", "7"))
+# How long a tau sample (bets.duckdb::tau_samples, the server runner's
+# tail-flex pool, issue #208) is kept after the runner last saw it: the
+# runner's own pool window (tailflex.TAU_POOL_WINDOW_MS, 24 h) plus the hour
+# an unchanged sample may go between heartbeats.
+TAU_SAMPLES_RETENTION_HOURS = 25
 
 # Kalshi cadence: fills + positions every poll; a full fills re-pull (the
 # reconcile) once per RECONCILE_SEC; the fills poll overlaps the previous

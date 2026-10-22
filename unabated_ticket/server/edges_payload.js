@@ -80,7 +80,7 @@ function rowView(row, moveContext) {
     bookProb: bookProbOrNull(row), fair: row.fair, edgePct: row.edgePct, edgeTier: edgeRows.edgeTier(row.edgePct),
     liquidity: row.liquidity, modifiedMs: row.modifiedMs, isBlurred: row.isBlurred,
     openerPrice: row.openerPrice, openerPoints: row.openerPoints,
-    stake: row.stake, rankScore: row.rankScore,
+    stake: row.stake, rankScore: row.rankScore, shrink: row.shrink ?? null, shrunkEdgePct: row.shrunkEdgePct ?? null,
     advice: {
       kind: advice.kind, bet: advice.bet, alone: advice.alone, verb: advice.verb,
       held: advice.held, against: advice.against, teasers: advice.teasers, reason: advice.reason, cappedAt: advice.cappedAt,

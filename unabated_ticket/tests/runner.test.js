@@ -158,7 +158,7 @@ test("edges.json lists exactly what the panel's modules list for the same settin
   assert.deepEqual([payload.betsService.openBets, payload.betsService.error], [1, null]);
   assert.deepEqual([payload.books.mode, payload.books.ids, payload.books.liveCount], ["all", null, 5]);
   assert.deepEqual([payload.grouped, payload.unit, payload.total, payload.maxShown], [true, "cards", 4, 200]);
-  assert.equal(payload.tailFlex, "tail flex: NFL spr 10% · NFL tot 10%");
+  assert.equal(payload.tailFlex, "tail flex: NFL spr c 10% τ 1.85% (fallback) · NFL tot c 10% τ 1.85% (fallback)");
 
   // Parity: the panel's own path over the same state and settings.
   const { rows, cards } = panelCards(runner.scanner.getState(), OPEN_SETTINGS, [BEARS_HELD]);
@@ -170,9 +170,10 @@ test("edges.json lists exactly what the panel's modules list for the same settin
   assert.equal(rows.length, 14);
 
   const held = payload.items.find((card) => card.best.key === BEARS_SPREAD_SOUTHPOINT).best;
-  assert.deepEqual(held.rail, { text: "add $237.25", note: "$437.25 alone", atSize: false });
+  // $200 held on a main number the shrunk edge sizes $194.08: at full size (edgerows.test.js).
+  assert.deepEqual(held.rail, { text: "add $0.00", note: "$194.08 alone", atSize: true });
   assert.deepEqual(held.badges, [{ kind: "held", text: "held $200" }]);
-  assert.deepEqual([held.advice.kind, held.advice.verb, held.advice.held, held.advice.bet], ["sized", "add", 200, 237.25]);
+  assert.deepEqual([held.advice.kind, held.advice.verb, held.advice.held, held.advice.bet], ["sized", "add", 200, 0]);
   assert.deepEqual(held.advice.teasers, { held: 0, against: 0 });
   assert.equal(held.related.length, 1);
   assert.equal(held.related[0].tier, "same_line");
@@ -202,7 +203,7 @@ test("a flat list when cards are off, and the minimum edge and sort come from th
   const payload = runner.edgesPayload();
   assert.deepEqual([payload.grouped, payload.unit, payload.total], [false, "lines", 3]);
   assert.deepEqual(payload.items.map((row) => row.key), [BEARS_SPREAD_SOUTHPOINT, "289357357:ms89:si1:tid5:alt-2.5", "289357357:ms89:si1:tid5:alt-6.5"]);
-  assert.deepEqual(payload.items[0].rail, { text: "bet $437.25", note: null, atSize: false });
+  assert.deepEqual(payload.items[0].rail, { text: "bet $194.08", note: null, atSize: false });
 });
 
 test("the bets service down: the panel's defaults, both errors named, nothing sized against bets", async () => {
@@ -282,6 +283,9 @@ test("HTTP: /edges.json and /health on loopback; a foreign Host is 403, another 
     assert.deepEqual(edges.body, JSON.parse(JSON.stringify(runner.edgesPayload())));
     const health = await get("/health");
     assert.deepEqual([health.status, health.body.ok, health.body.scanner.phase], [200, true, "live"]);
+    const tau = await get("/tau.json");
+    assert.deepEqual([tau.status, Object.keys(tau.body)], [200, ["generatedAt", "markets"]]);
+    assert.deepEqual(tau.body, JSON.parse(JSON.stringify(runner.tauPayload())));
     const foreign = await get("/edges.json", { headers: { Host: "evil.example" } });
     assert.equal(foreign.status, 403);
     assert.match(foreign.body.error, /Host must be one of/);
@@ -296,6 +300,44 @@ test("HTTP: /edges.json and /health on loopback; a foreign Host is 403, another 
     await new Promise((resolve) => server.close(resolve));
     runner.stop();
   }
+});
+
+// Persisted tau samples as GET /tau_samples.json serves them: `count` rungs
+// of NFL full-game spreads whose two edge reads agree (covariance 0.02^2 / 2
+// over an even spread of real edges), seen a second before NOW.
+function tauSampleRows(count) {
+  return Array.from({ length: count }, (_, index) => {
+    const edge = -0.02 + (0.04 * index) / Math.max(1, count - 1);
+    return { key: `89|1:1:2:0:-${index}|0`, marketKey: "1:1:2", edgeUnabated: edge, edgeExchanges: edge, seenAt: NOW - 1000 };
+  });
+}
+
+test("tau pool: loaded from the bets service at start, the header and /tau.json read it; until it loads every market is the fallback and the load retries on the next POST pass", async () => {
+  const loaded = await startedRunner({ "/bets.json": betsBody([]), "/settings.json": { settings: OPEN_SETTINGS }, "/tau_samples.json": { rows: tauSampleRows(110) } });
+  assert.deepEqual([loaded.runner.health().tauPool.loaded, loaded.runner.health().tauPool.loadError, loaded.runner.health().tauPool.size], [true, null, 110]);
+  const market = loaded.runner.tauPayload().markets["1:1:2"];
+  // 110 samples, the top 1% (one) trimmed: tau is the spread of the edges themselves.
+  assert.deepEqual([market.measured, market.rungCount], [true, 109]);
+  assert.ok(market.tau > 0.010 && market.tau < 0.014, `tau = ${market.tau}`);
+  assert.match(loaded.runner.edgesPayload().tailFlex, /^tail flex: NFL spr c 10% τ 1\.\d\d% · NFL tot c 10% τ 1\.85% \(fallback\)$/);
+  loaded.runner.stop();
+
+  const script = { "/bets.json": betsBody([]), "/settings.json": { settings: OPEN_SETTINGS } };
+  const { runner } = await startedRunner(script);
+  assert.equal(runner.health().tauPool.loaded, false);
+  assert.match(runner.health().tauPool.loadError, /404/);
+  assert.deepEqual(runner.tauPayload().markets, {});
+  assert.equal(runner.edgesPayload().tailFlex, "tail flex: NFL spr c 10% τ 1.85% (fallback) · NFL tot c 10% τ 1.85% (fallback)");
+  script["/tau_samples.json"] = { rows: tauSampleRows(110) };
+  await runner.postTauSamples();
+  assert.deepEqual([runner.health().tauPool.loaded, runner.health().tauPool.loadError], [true, null]);
+  assert.equal(runner.tauPayload().markets["1:1:2"].measured, true);
+  assert.match(runner.edgesPayload().tailFlex, /NFL spr c 10% τ 1\.\d\d% ·/);
+  // A loaded service reply with no rows array is a failed load, not an empty pool.
+  const bad = await startedRunner({ "/bets.json": betsBody([]), "/settings.json": { settings: OPEN_SETTINGS }, "/tau_samples.json": { rows: null } });
+  assert.deepEqual([bad.runner.health().tauPool.loaded, bad.runner.health().tauPool.loadError], [false, "tau_samples.json has no rows array"]);
+  bad.runner.stop();
+  runner.stop();
 });
 
 test("closing fairs: the open bet's fair on its own line, POSTed once, again only when it changes, never after kickoff", async () => {

@@ -291,6 +291,8 @@
     }
     const stake = makeEl("span", `edge-stake${row.rail.atSize ? " at-size" : ""}`, row.rail.text);
     if (row.rail.note) stake.append(" ", makeEl("small", null, row.rail.note));
+    // The edge the stake was sized on (the tail-flex shrink, issue #208), as the panel's hover.
+    if (typeof row.shrunkEdgePct === "number") stake.title = `sized on ${phoneView.fmtEdgePct(row.shrunkEdgePct)} (${Math.round(row.shrink * 100)}% of Unabated's ${phoneView.fmtEdgePct(row.edgePct)})`;
     rail.append(stake);
     return rail;
   }
