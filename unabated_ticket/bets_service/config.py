@@ -230,6 +230,12 @@ POLYMARKET_US_KEY_ID = _get("POLYMARKET_US_KEY_ID")
 POLYMARKET_US_SECRET_KEY = _get("POLYMARKET_US_SECRET_KEY")
 POLYMARKET_US_POLL_SEC = 20.0
 POLYMARKET_US_HISTORY_DAYS = RETENTION_DAYS + 1
+# The Ticket's Place button at Polymarket US (polymarket_place.py, Cal 2026-10-21):
+# its OWN key on Cal's main account, made for Place alone at polymarket.us/developer;
+# the read key above is never a fallback. The secret (the base64 "Secret Key" shown
+# once) lives in a FILE (scp'd to the VM's data dir), never in .env. Unset = Place off.
+POLYMARKET_PLACE_KEY_ID = _get("POLYMARKET_PLACE_KEY_ID")
+POLYMARKET_PLACE_SECRET_PATH = _get("POLYMARKET_PLACE_SECRET_PATH")
 
 # Bet105 (2026-09-29): no credentials and no poll here. Cloudflare challenges any
 # request that is not the browser session's own, so the extension reads the account

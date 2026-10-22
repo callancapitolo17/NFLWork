@@ -203,6 +203,7 @@ function createBoardClient(options) {
     attachPayload: (params) => call("attachPayload", [params.toString()]).then((text) => new RawJson(text)),
     kalshiQuote: (params) => call("kalshiQuote", [params.toString()]).then((text) => new RawJson(text)),
     novigQuote: (params) => call("novigQuote", [params.toString()]).then((text) => new RawJson(text)),
+    polymarketQuote: (params) => call("polymarketQuote", [params.toString()]).then((text) => new RawJson(text)),
   };
 }
 
@@ -220,6 +221,7 @@ function serveBoardCalls(port, runner, logWarning) {
     attachPayload: (search) => runner.attachPayload(new URLSearchParams(search)),
     kalshiQuote: (search) => runner.kalshiQuote(new URLSearchParams(search)),
     novigQuote: (search) => runner.novigQuote(new URLSearchParams(search)),
+    polymarketQuote: (search) => runner.polymarketQuote(new URLSearchParams(search)),
   };
   port.on("message", async (message) => {
     if (message.type !== "call") return;

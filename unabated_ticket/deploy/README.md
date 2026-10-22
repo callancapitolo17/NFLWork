@@ -211,6 +211,19 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
     (its line is `NOVIG_PLACE_KEY_ID`; top it up by re-running `open --name
     place --fund <dollars>` with a new `--run-id`). After `docker compose up -d` the log must say "novig place: on,
     signing with Place key"; it has no stop file, every order is a click.
+14. **The Ticket's Polymarket US Place key** (2026-10-21, Cal: option A, its
+    own key on the MAIN account). At polymarket.us/developer make a new API
+    key and copy its Secret Key (shown once) into a file on the Mac, e.g.
+    `~/Downloads/polymarket_place.key` (the secret alone, one line). Don't
+    upload it anywhere. From the Mac:
+    `scp -i ~/.ssh/oracle_mlb.key ~/Downloads/polymarket_place.key
+    ubuntu@100.66.14.98:unabated-data/polymarket_place.key`, then on the VM
+    `chmod 600 ~/unabated-data/polymarket_place.key`, add
+    `POLYMARKET_PLACE_KEY_ID=<its key id>` to
+    `~/NFLWork/unabated_ticket/bets_service/.env`, `docker compose up -d`, and
+    delete the Mac copy. The log must say "polymarket place: on, signing with
+    Place key"; else it names why (no key, an unreadable file, Polymarket US
+    refusing the balance read). It has no stop file: every order is a click.
 
 12. **NFL fecta pricer** (`fectas`; its own README, Running on the VM):
     - On the Mac, install the DraftKings relay agent (`nfl_specials/README.md`,

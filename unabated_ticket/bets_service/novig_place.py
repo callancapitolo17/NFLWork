@@ -22,7 +22,8 @@ Rules, in order, for every request (validate_novig_place_request's shape):
   6. the Novig reads the stake was sized on are fresh and ok;
   7. no earlier Place on this game may have filled after the read the stake
      was sized on: a Novig Place after `novigReadAt`, a Kalshi Place after
-     `kalshiReadAt` (the stake counts bets at both; manual_orders.unseen_manual_fill);
+     `kalshiReadAt`, a Polymarket US Place after `polymarketReadAt` (the
+     stake counts bets at all three; manual_orders.unseen_manual_fill);
   8. contracts = floor(stake x 100 / price) (novig_orders.qty_for_stake): a
      Novig contract pays 1c, not $1;
   9. the row is INSERTED (status 'sending', with the board line, so Place's
@@ -105,7 +106,8 @@ def validate_novig_place_request(body: object) -> dict | str:
     {clickId, eventId, periodTypeId, betTypeId (1 moneyline | 2 spread | 3 total),
     sideIndex, points (null on a moneyline), stake (dollars), ticketAllIn (the
     Ticket's Novig price as a probability), novigReadAt (the Novig read the
-    stake was sized on, ISO), kalshiReadAt (the Kalshi read, ISO, or null when Kalshi was never read)}"""
+    stake was sized on, ISO), kalshiReadAt / polymarketReadAt (the Kalshi /
+    Polymarket US read, ISO, or null when that venue was never read)}"""
     if not isinstance(body, dict):
         return f"body must be an object, got {type(body).__name__}"
     click_id = body.get("clickId")
@@ -136,9 +138,12 @@ def validate_novig_place_request(body: object) -> dict | str:
     kalshi_read_at = optional_read_at(body, "kalshiReadAt")
     if isinstance(kalshi_read_at, str):
         return kalshi_read_at
+    polymarket_read_at = optional_read_at(body, "polymarketReadAt")
+    if isinstance(polymarket_read_at, str):
+        return polymarket_read_at
     return {"click_id": click_id, **whole, "points": None if points is None else float(points),
             "stake": float(stake), "ticket_all_in": float(ticket_all_in), "novig_read_at": novig_read_at,
-            "kalshi_read_at": kalshi_read_at}
+            "kalshi_read_at": kalshi_read_at, "polymarket_read_at": polymarket_read_at}
 
 
 class ManualNovigDesk:
@@ -222,7 +227,8 @@ class ManualNovigDesk:
         stale = self._stale_read()
         if stale:
             return stale
-        if unseen_manual_fill(self._store, request["eventId"], request["kalshi_read_at"], request["novig_read_at"]):
+        if unseen_manual_fill(self._store, request["eventId"], request["kalshi_read_at"], request["novig_read_at"],
+                              request["polymarket_read_at"]):
             return ("your last Place on this game is not on the Bets tab yet, so this stake does not count it. "
                     "Wait for the next read (up to a minute) and place again.")
         return None

@@ -77,11 +77,12 @@ writer). Tables:
                UPSERTed whole on every write. Each column is an override; NULL
                means "the panel's default", and the defaults live only in
                extension/edgerows.js, never here. Never pruned (one row).
-  manual_orders  one row per Kalshi or Novig order Cal placed from the Ticket's
-               Place button (manual_orders.py), on Place's own key: INSERTED
+  manual_orders  one row per Kalshi, Novig or Polymarket US order Cal placed
+               from the Ticket's Place button (manual_orders.py, novig_place.py,
+               polymarket_place.py), on Place's own key: INSERTED
                before it is sent (status 'sending'), UPDATED with what the
-               venue answered and what filled. The client_order_id ('uman-' or
-               'nman-' + the click's id) is the key, so one click can never send
+               venue answered and what filled. The client_order_id ('uman-',
+               'nman-' or 'pman-' + the click's id) is the key, so one click can never send
                twice. Never pruned (a few a day); the bet itself reaches `bets`
                through the venue's poll.
 A failed poll writes a source_runs row and touches nothing in `bets`, so a
@@ -262,18 +263,25 @@ ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS home_team_id VARCHAR;
 -- When Place's sub-account read first saw the order's market SETTLED: the
 -- bet's fixed closedAt, kept so a restart never moves it.
 ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;
+-- Polymarket US Place (polymarket_place.py): `ticker` is the market slug,
+-- `contract_side` 'yes' | 'no', `ask_price` that side's own price (the order
+-- sends the YES price: 1 - ask on a NO buy), `all_in_price` it with the taker
+-- fee; the board-line columns above are kept for the log. Polymarket US
+-- takes no client order id: this row is the only guard against a resend.
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS polymarket_order_id VARCHAR;
 """
 
 MANUAL_ORDER_INSERT_COLUMNS = (
     "client_order_id", "placed_at", "venue", "event_id", "ticker", "contract_side", "label", "ticket_all_in",
     "ask_price", "all_in_price", "stake", "count_requested", "status", "updated_at",
 )
-# A Novig row's board line; a Kalshi row leaves them NULL.
+# The board line of a Novig or Polymarket US row; a Kalshi row leaves them NULL.
 MANUAL_ORDER_NOVIG_LINE_COLUMNS = (
     "market_id", "event_start", "league", "bet_type", "period", "side", "points", "away_team", "home_team",
     "away_team_id", "home_team_id",
 )
-MANUAL_ORDER_UPDATE_COLUMNS = ("status", "kalshi_order_id", "novig_order_id", "count_filled", "cost_filled", "error")
+MANUAL_ORDER_UPDATE_COLUMNS = ("status", "kalshi_order_id", "novig_order_id", "polymarket_order_id", "count_filled",
+                               "cost_filled", "error")
 _INSERT_MANUAL_ORDER_COLUMNS = MANUAL_ORDER_INSERT_COLUMNS + MANUAL_ORDER_NOVIG_LINE_COLUMNS
 _INSERT_MANUAL_ORDER = (f"INSERT INTO manual_orders ({', '.join(_INSERT_MANUAL_ORDER_COLUMNS)}) "
                         f"VALUES ({', '.join(['?'] * len(_INSERT_MANUAL_ORDER_COLUMNS))})")
@@ -1179,7 +1187,7 @@ class BetsStore:
     def manual_orders_maybe_filled_since(self, event_id: int, since: datetime, venue: str | None = None) -> list[dict]:
         """Manual orders on this game that may hold contracts the read at
         `since` missed (_SELECT_MANUAL_MAYBE_FILLED), at one venue ('kalshi' |
-        'novig') or, with venue None, at either."""
+        'novig' | 'polymarket_us') or, with venue None, at any."""
         with self._lock:
             rows = self._con.execute(_SELECT_MANUAL_MAYBE_FILLED, [event_id, venue, venue, since]).fetchall()
         return [{"client_order_id": client_order_id, "ticker": ticker, "status": status,
