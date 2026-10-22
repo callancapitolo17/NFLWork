@@ -2979,8 +2979,11 @@ stake: the stake back is a push, any other payout is won with `toWin` = paid
 less stake (negative for a fair-value settlement under the stake, since the
 tracker books every lost bet at its full stake). A loss pays nothing and
 writes no row: a started bet whose position closed with no `SETTLEMENT` is lost
-15 min after the close was first seen, at that time (its `closedAt`; a late
-`SETTLEMENT` still turns it won). The first sighting is kept for good: the
+15 min after the close was first seen, at that time (its `closedAt`), but
+never dated later than 4 h after its game's start, so a read that was down or
+not yet grading cannot move a loss to another day (2026-10-19: #199's deploy
+dated 11 Place losses from Oct 17-18 to Oct 19); a late `SETTLEMENT` still
+turns it won. The first sighting is kept for good: the
 bot's desk stores it (`novig_taker_orders.settled_at`), Place's read stores it
 (`manual_orders.settled_at`).
 2026-10-18: 4 `SETTLEMENT` rows and 10 closed positions for the 14 settled
