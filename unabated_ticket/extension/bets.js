@@ -361,6 +361,14 @@
     });
   }
 
+  /** A combo market's legs' event tickers, which name each leg's league; null with no legs
+   * (sources/kalshi.py combo_leg_event_tickers). */
+  function comboLegEventTickers(market) {
+    const legs = market ? market.mve_selected_legs : null;
+    if (!Array.isArray(legs) || !legs.length) return null;
+    return legs.map((leg) => String(leg.event_ticker || ""));
+  }
+
   // One record per (ticker, side) seen in fills. `markets`/`events` are keyed by
   // ticker / event_ticker (the service's cached public GETs); a game-series
   // market missing either fails closed with a specific reason.
@@ -412,6 +420,7 @@
           marketTitle: market ? market.title : null, marketStatus: market ? market.status : null,
           marketResult: market ? market.result : null,
           eventTitle: market && events[market.event_ticker] ? events[market.event_ticker].title : null,
+          legEventTickers: comboLegEventTickers(market),
         },
       };
       const spec = GAME_SERIES[series];

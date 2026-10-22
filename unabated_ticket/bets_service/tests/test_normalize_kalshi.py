@@ -316,6 +316,28 @@ def test_a_no_buy_reported_as_a_yes_sell_prices_its_no_record():
     assert entry["pnl"] == 6.4  # 10 NO at 36c each, settled NO
 
 
+
+def test_a_combo_keeps_its_legs_event_tickers_for_the_league():
+    """KXMVECROSSCATEGORY-S20265XVE2Z5Z4BFBZYO5-OCKYWV75Y as Kalshi's GET /markets
+    returned it finalized on 2026-10-20: mve_selected_legs name each leg's event."""
+    ticker = "KXMVECROSSCATEGORY-S20265XVE2Z5Z4BFBZYO5-OCKYWV75Y"
+    combo = {"ticker": ticker, "event_ticker": "KXMVECROSSCATEGORY-S20265XVE2Z5Z4BFBZYO5", "result": "no",
+             "status": "finalized", "title": "yes Jayden Daniels: 70+,no San Francisco wins by over 3.5 points",
+             "mve_selected_legs": [
+                 {"event_ticker": "KXNFLRSHYDS-26OCT19WASSF", "market_ticker": "KXNFLRSHYDS-26OCT19WASSF-WASJDANIELS5-70", "side": "yes"},
+                 {"event_ticker": "KXNFLSPREAD-26OCT19WASSF", "market_ticker": "KXNFLSPREAD-26OCT19WASSF-SF4", "side": "no"}]}
+    fills = [fill(ticker, "yes", 10, 0.2, "2026-10-19T19:00:00Z")]
+    [record] = normalize_kalshi(fills, [], {ticker: combo}, {}, FETCHED_AT)
+    assert record["league"] is None
+    assert record["raw"]["legEventTickers"] == ["KXNFLRSHYDS-26OCT19WASSF", "KXNFLSPREAD-26OCT19WASSF"]
+
+
+def test_a_market_with_no_legs_carries_none():
+    fills = [fill("KXNHLTOTAL-26OCT14MTLWSH-5", "no", 5, 0.5, "2026-10-14T19:00:00Z")]
+    [record] = normalize_kalshi(fills, [], {}, {}, FETCHED_AT)
+    assert record["raw"]["legEventTickers"] is None
+
+
 def test_a_settled_bot_no_buy_reported_as_a_no_sell_grades_as_the_hold():
     """KXNCAAFSPREAD-26OCT16CLMBPENN-CLMB6 on 2026-10-16: the bot's NO buy came
     back as one `no` sell fill. Once the market settled it left the unsettled

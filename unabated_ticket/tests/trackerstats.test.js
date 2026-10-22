@@ -415,3 +415,40 @@ test("origin: Kalshi's numbered subaccount and the novig_bot source are the bot,
   const rows = stats.groupBy(tickets, "origin").map((row) => [row.label, row.bets]);
   assert.deepEqual(rows, [["Bot", 2], ["Other", 3]]);
 });
+
+test("leagueOf reads the league a venue names on a bet the source left unplaced", () => {
+  const unplaced = (venue, raw, extra) => straight(Object.assign({ venue, league: null, betType: "other", raw }, extra));
+  const cases = [
+    [unplaced("kalshi", { series: "KXMVECROSSCATEGORY", legEventTickers: ["KXNFLRSHYDS-26OCT19WASSF", "KXNFLSPREAD-26OCT19WASSF"] }), "nfl"],
+    [unplaced("kalshi", { series: "KXMVECROSSCATEGORY", legEventTickers: ["KXNFLSPREAD-26OCT19WASSF", "KXMLBTOTAL-26OCT19NYYBOS"] }), "mixed"],
+    [unplaced("kalshi", { series: "KXMVECROSSCATEGORY", legEventTickers: ["KXNFLSPREAD-26OCT19WASSF", "KXATPMATCH-26OCT19"] }), null],
+    [unplaced("kalshi", { series: "KXMVECROSSCATEGORY" }), null],
+    [unplaced("kalshi", { series: "KXNHLTOTAL" }), "nhl"],
+    [unplaced("novig", { novigLeague: "NFL" }), "nfl"],
+    [unplaced("novig", { novigLeague: "ATP" }), "atp"],
+    [unplaced("bet105", { league: "College Basketball" }), "cbb"],
+    [unplaced("bet105", { league: "UEFA Champions League" }), "soccer"],
+    [unplaced("draftkings", { leagueId: 88808 }), "nfl"],
+    [unplaced("polymarket_us", { eventSlug: "nhl-pit-was-2026-10-07" }), "nhl"],
+    [unplaced("polymarket_us", { slug: "crossd-71057c8273d820c0" }), null],
+    [unplaced("wagerzon", { headerDesc: "NFL Week 6 - Specials", sportCode: "PROP" }), "nfl"],
+    [unplaced("wagerzon", { headerDesc: "DST Straight|ID:396861071", sportCode: "RBL" }), null],
+    [unplaced("bfa", { description: "[308950] PRAIRIE VIEW -16-110" },
+      { unmatchable: "league unknown (BFA names no sport; a college game cannot be placed)" }), "ncaa"],
+    [unplaced("bfa", { description: "Detroit Lions vs Carolina Panthers Tetairoa Mcmillan (CAR) 103+ Receiving Yards" },
+      { unmatchable: "no '[rotation]' prefix (Detroit Lions vs ...)" }), null],
+    [straight({ league: "cfb", venue: "novig", raw: { novigLeague: "NFL" } }), "cfb"],
+  ];
+  for (const [record, league] of cases) assert.equal(stats.leagueOf(record), league, JSON.stringify(record.raw));
+});
+
+test("tickets label the venue-named league, a mixed combo, and keep Unknown when nothing says", () => {
+  const tickets = stats.buildTickets([
+    straight({ id: "prop", venue: "novig", league: null, betType: "other", raw: { novigLeague: "NFL" } }),
+    straight({ id: "combo", venue: "kalshi", league: null, betType: "other",
+      raw: { series: "KXMVECROSSCATEGORY", legEventTickers: ["KXNFLSPREAD-26OCT19WASSF", "KXMLBTOTAL-26OCT19NYYBOS"] } }),
+    straight({ id: "rbl", venue: "wagerzon", league: null, betType: "other", raw: { sportCode: "RBL" } }),
+  ], []);
+  const byId = Object.fromEntries(tickets.map((t) => [t.id, t.league]));
+  assert.deepEqual(byId, { prop: "NFL", combo: "Mixed", rbl: "Unknown" });
+});
