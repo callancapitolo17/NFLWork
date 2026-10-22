@@ -459,9 +459,15 @@ function axisOfBetType(betType) {
 
 // Words of a team name, lowercase, without the filler Kalshi and Unabated
 // spell differently ("Washington St." / "Washington State Cougars").
+// Apostrophes and okinas are dropped, not split on, and accents are folded:
+// Kalshi writes "Hawai'i" and "San José St" where Unabated writes "Hawaii"
+// and "San Jose State".
 const TEAM_FILLER_WORDS = new Set(["st", "state", "university", "univ", "the", "of", "u"]);
+const ACCENT_MARKS_RE = /[\u0300-\u036f]/g;
+const APOSTROPHES_RE = /['\u2018\u2019\u02bb\u02bc`]/g;
 function teamWords(name) {
-  return String(name || "").toLowerCase().split(/[^a-z0-9]+/).filter((word) => word && !TEAM_FILLER_WORDS.has(word));
+  const folded = String(name || "").normalize("NFD").replace(ACCENT_MARKS_RE, "").replace(APOSTROPHES_RE, "").toLowerCase();
+  return folded.split(/[^a-z0-9]+/).filter((word) => word && !TEAM_FILLER_WORDS.has(word));
 }
 
 // Does Kalshi's market's YES title name the row's game's team on `sideIndex`?

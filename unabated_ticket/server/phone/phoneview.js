@@ -463,6 +463,16 @@
     return betsView.sourceRows(betsPoll.payload, now).find((row) => row.venue === "bfa") || null;
   }
 
+  // A 200 reply whose body could not be read whole: the request's timeout firing
+  // mid-download (slow connection), or the connection dropping. Names it as
+  // that, not as a reply missing its contents.
+  function cutOffBodyText(error, timeoutMs) {
+    if (error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      return `download cut off: not all of it arrived in ${timeoutMs / 1000} s (slow connection?)`;
+    }
+    return "download cut off: the reply arrived incomplete (connection dropped?)";
+  }
+
   // The Teasers tab's amber note (panel.js renderTeasersBanners), or null.
   function teasersWarningText(bfaRow) {
     if (!bfaRow) return null;
@@ -476,7 +486,7 @@
     fmtEdgePct, fmtPriceBoth, fmtPoints, fmtStart, fmtUntil, untilLevel, fmtAge, fmtLineAge, fmtLiquidity, fmtClock,
     marketText, describeMatchup, bookPriceText, lineAgeText, contractsView, stakeBlockView, ticketView,
     scannerText, booksText, banners, freshnessText, betItemView, betsTabView, applyDismissals,
-    lineMovedText, teaserLegMeta, bfaRowOf, teasersWarningText,
+    lineMovedText, teaserLegMeta, bfaRowOf, teasersWarningText, cutOffBodyText,
     settingsDefaults, effectiveSettings, settingsUpdate, resetUpdate, defaultText, sportsOfLeagues, leaguesForSports,
     fmtDollars, fmtAmerican,
   };
