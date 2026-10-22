@@ -361,9 +361,6 @@
     });
   }
 
-  // One record per (ticker, side) seen in fills. `markets`/`events` are keyed by
-  // ticker / event_ticker (the service's cached public GETs); a game-series
-  // market missing either fails closed with a specific reason.
   /** A combo market's legs' event tickers, which name each leg's league; null with no legs
    * (sources/kalshi.py combo_leg_event_tickers). */
   function comboLegEventTickers(market) {
@@ -372,6 +369,9 @@
     return legs.map((leg) => String(leg.event_ticker || ""));
   }
 
+  // One record per (ticker, side) seen in fills. `markets`/`events` are keyed by
+  // ticker / event_ticker (the service's cached public GETs); a game-series
+  // market missing either fails closed with a specific reason.
   function normalizeKalshi(input) {
     const fills = input.fills || [];
     const positions = new Map((input.positions || []).map((p) => [p.ticker, p]));

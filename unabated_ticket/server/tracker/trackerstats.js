@@ -77,6 +77,7 @@
   const POLYMARKET_LEAGUES = new Set(["nfl", "cfb", "nba", "cbb", "wnba", "mlb", "nhl"]);
   const BFA_COLLEGE = "ncaa";
   const MIXED_LEAGUE = "mixed";
+  const MIXED_LEAGUE_NAME = "Mixed";
   const KIND_NAMES = { straight: "Straight", parlay: "Parlay", teaser: "Teaser", kalshiCombo: "Kalshi combo" };
   // Kalshi's multivariate combo series: the MLB bots' RFQ fills (kalshi_mlb_mm,
   // kalshi_mlb_rfq) on the same account land in the bets service as these.
@@ -223,7 +224,7 @@
   }
 
   function leagueName(league) {
-    if (league === MIXED_LEAGUE) return "Mixed";
+    if (league === MIXED_LEAGUE) return MIXED_LEAGUE_NAME;
     return league ? String(league).toUpperCase() : "Unknown";
   }
 
@@ -515,7 +516,7 @@
     const raw = first.raw || {};
     return finishTicket({
       id: parlayId, venueKey: first.venue, venue: venueName(first.venue), origin: originOf(first),
-      league: leagues.size === 1 ? leagues.values().next().value : "Mixed",
+      league: leagues.size === 1 ? leagues.values().next().value : MIXED_LEAGUE_NAME,
       kind, market: kind, period: "FG", event: legCount + "-leg " + kind.toLowerCase(),
       side: NO_SIDE, favDog: NO_FAV_DOG, number: NO_NUMBER,
       selection: sorted.map(selectionLabel).filter(Boolean).join(" · "),
