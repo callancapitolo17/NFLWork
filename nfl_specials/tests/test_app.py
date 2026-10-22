@@ -10,7 +10,7 @@ from nfl_specials import app as app_module
 from nfl_specials.app import SpecialsApp
 from nfl_specials.board import Board, FectaLine
 from nfl_specials.books import BookGame
-from nfl_specials.pricing import BookFair
+from nfl_specials.pricing import BookFair, ScoresFirstShare
 from nfl_specials.special_parser import parse_fecta
 from nfl_specials.store import Store
 from nfl_specials.wz import WzSpecial
@@ -78,6 +78,13 @@ def test_payload_carries_structured_legs_and_book_progress(app):
     assert payload["board"]["book_progress"] == {"FanDuel": {"done": 1, "total": 1}}
     assert payload["board"]["lines"][0]["legs"][0] == {"kind": "win", "period": "Q1", "line": None,
                                                        "text": "LAC wins Q1"}
+
+
+def test_payload_names_where_a_superfecta_share_came_from(app):
+    line = app._board.lines[0]
+    assert app.board_payload("Wagerzon")["board"]["lines"][0]["sf_share"] is None
+    line.sf_share = ScoresFirstShare("fixed", 0.776, 0, reason="DraftKings down: error: HTTP 403")
+    assert app.board_payload("Wagerzon")["board"]["lines"][0]["sf_share"] == {"share": 0.776, "book": "fixed"}
 
 
 def test_a_placed_special_is_topped_up_to_kelly_not_doubled(app):

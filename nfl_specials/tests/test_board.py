@@ -193,6 +193,39 @@ def test_refresh_counts_progress_per_book(monkeypatch):
     assert [sum(c["done"] for c in snap.book_progress.values()) for snap in published] == [0, 1, 2, 3, 4, 4]
 
 
+def test_draftkings_down_prices_superfectas_at_the_trifecta_books_with_a_fixed_share(monkeypatch):
+    specials = [WzSpecial(wz_game_id=1, rotation=1, description="CHARGERS SUPERFECTA (SCR 1ST, 1Q, 1H & GM)",
+                          wz_american=900, week_date=date(2098, 12, 31))]
+    books = {"FanDuel": object(), "BetMGM": object()}
+    fairs = {"FanDuel": 0.12, "BetMGM": 0.10}
+    monkeypatch.setattr(board_module, "open_books",
+                        lambda: (books, {"FanDuel": "ok", "BetMGM": "ok", "DraftKings": "error: HTTP 403"}))
+    monkeypatch.setattr(board_module.wz, "fetch_fecta_specials", lambda: specials)
+    monkeypatch.setattr(board_module, "_locate_game", lambda fecta, special, books: GAME)
+    priced_targets = []
+
+    def price_partition(book, line):
+        name = next(n for n, b in books.items() if b is book)
+        priced_targets.append((name, line.is_superfecta()))
+        return BookFair(name, fairs[name], None, 1.3, 8)
+
+    monkeypatch.setattr(board_module, "_price_partition", price_partition)
+    store = _FakeStore()
+    board = refresh_board(store, lambda snapshot: None)
+
+    line = board.lines[0]
+    assert sorted(priced_targets) == [("BetMGM", True), ("FanDuel", True)]
+    assert line.status == "priced"
+    assert line.sf_share == ScoresFirstShare("fixed", 0.776, 0, reason="DraftKings down: error: HTTP 403")
+    assert line.fair_prob() == pytest.approx(0.10 * 0.776)
+    assert sorted((row["book"], row["quote_kind"], row["fair_prob"], row["sf_share"], row["reason"])
+                  for row in store.rows) == [
+        ("BetMGM", "trifecta_part", 0.10, None, None),
+        ("FanDuel", "trifecta_part", 0.12, None, None),
+        ("fixed", "scores_first_share", None, 0.776, "DraftKings down: error: HTTP 403")]
+    assert board.book_progress == {"FanDuel": {"done": 1, "total": 1}, "BetMGM": {"done": 1, "total": 1}}
+
+
 def test_a_started_game_takes_no_stake_or_budget():
     started = _line(1, "CHARGERS TRIFECTA (1Q, 1H & GM)", 1600, 0.09)
     later = _line(2, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 400, 0.30)
