@@ -257,6 +257,14 @@ test("a derived moneyline trades only when Kalshi's market names the row's team 
   // A shared first word names neither side for sure.
   const sameCity = { ...row, awayTeam: "Los Angeles Chargers", homeTeam: "Los Angeles Rams" };
   assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Los Angeles R" }, sameCity), false);
+  // Kalshi's apostrophes, okinas and accents read as Unabated's plain spelling; the other team still fails.
+  const hawaii = { ...row, awayTeam: "Hawaii", homeTeam: "Northern Illinois", sideIndex: 0 };
+  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Hawai'i" }, hawaii), true);
+  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Hawai\u02bbi" }, hawaii), true);
+  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Hawai\u2019i" }, hawaii), true);
+  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Northern Illinois" }, hawaii), false);
+  const sanJose = { ...row, awayTeam: "San Jose State", homeTeam: "Fresno State", sideIndex: 0 };
+  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "San Jos\u00e9 St." }, sanJose), true);
 });
 
 test("the market check: active, the row's strike, the series' period, the side's sign, and the YES title's team", () => {
@@ -283,6 +291,12 @@ test("the market check: active, the row's strike, the series' period, the side's
   assert.match(taker.marketMismatch(spread, duqRow, yes), /YES of a wins-by-over market for a 35.5 row/);
   // The Duquesne +35.5 row buys NO of the same market: YES must still name Washington State.
   assert.match(taker.marketMismatch({ ...spread, yes_sub_title: "Duquesne wins by over 35.5 points" }, duqRow, no), /does not name side 1/);
+  // The Hawai'i -16.5 Place Kalshi refused on 2026-10-21: YES names Hawai'i, Unabated says Hawaii.
+  const hawTicker = "KXNCAAFSPREAD-26OCT24HAWNIU-HAW17";
+  const hawRow = { ...wsuRow, awayTeam: "Hawaii", homeTeam: "Northern Illinois", sideIndex: 0, points: -16.5 };
+  const hawSpread = { ticker: hawTicker, status: "active", floor_strike: 16.5, yes_sub_title: "Hawai'i wins by over 16.5 points" };
+  assert.equal(taker.marketMismatch(hawSpread, hawRow, { side: "yes", ticker: hawTicker }), null);
+  assert.match(taker.marketMismatch({ ...hawSpread, yes_sub_title: "Northern Illinois wins by over 16.5 points" }, hawRow, { side: "yes", ticker: hawTicker }), /does not name side 0/);
   // A total: YES is Over, NO is Under, at the row's strike.
   const totalTicker = "KXNCAAFTOTAL-26SEP19DUQWSU-60";
   const total = { ticker: totalTicker, status: "active", floor_strike: 59.5, yes_sub_title: "Over 59.5 points scored" };
