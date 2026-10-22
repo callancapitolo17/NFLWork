@@ -84,7 +84,7 @@ FINAL_STATUSES = frozenset({"won", "lost", "void", "closed"})
 # Stamped into raw.readComplete on a record built from a complete read. Bump it
 # when a change to how records are built must reach rows already stored as
 # final: every stored row then fails the match and is rebuilt at the next restart.
-READ_VERSION = 2
+READ_VERSION = 3
 # A record whose market or event payload could not be read (_game_fields,
 # _lookup failures) carries this prefix in `unmatchable`.
 UNREADABLE_REASON_PREFIX = "unreadable"
@@ -336,7 +336,8 @@ def net_position_pnl(fills: list[dict], market_result: str | None) -> dict:
 
     Returns {entrySide, positionYes (signed: + YES, - NO), realized (dollars,
     before fees), fees (dollars, Kalshi's fee_cost summed), final (no open
-    position left: settled, or flat)}."""
+    position left: settled, or flat), heldContracts / heldCost (what was still
+    held when the market settled or voided; 0 when flat)}."""
     ordered = sorted(fills, key=lambda fill: (parse_iso_ms(fill.get("created_time") or "") or 0,
                                               fill.get("trade_id") or ""))
     position_yes = cost = realized = fees = 0.0
@@ -359,6 +360,9 @@ def net_position_pnl(fills: list[dict], market_result: str | None) -> dict:
             position_yes = _sign(delta) * remainder
             cost = remainder * _own_side_price(_sign(delta), yes_price)
     holding = abs(position_yes) >= FLAT_POSITION_EPSILON
+    held_contracts = held_cost = 0.0
+    if holding and market_result in ("yes", "no", "void"):
+        held_contracts, held_cost = abs(position_yes), cost
     if holding and market_result in ("yes", "no"):
         held_side = "yes" if position_yes > 0 else "no"
         payout = abs(position_yes) if held_side == market_result else 0.0
@@ -367,7 +371,41 @@ def net_position_pnl(fills: list[dict], market_result: str | None) -> dict:
     elif holding and market_result == "void":
         holding = False  # a voided market refunds the cost of what was held
     return {"entrySide": ordered[0].get("side") if ordered else None, "positionYes": position_yes,
-            "realized": realized, "fees": fees, "final": not holding}
+            "realized": realized, "fees": fees, "final": not holding,
+            "heldContracts": held_contracts, "heldCost": held_cost}
+
+
+def grade_settled_hold(entry: dict, net: dict, market: dict | None, ticker_fills: list[dict]) -> None:
+    """A record normalize_kalshi called "closed" although its position was
+    still held when the market settled gets the hold's size, cost and result.
+    Once a market settles, Kalshi drops it from the unsettled positions, so
+    fill_on_its_open_side can no longer relabel a bot NO buy that Kalshi
+    reported as a NO *sell* (seen 2026-10-16, KXNCAAFSPREAD-26OCT16CLMBPENN:
+    one `no` sell fill, no buys, market result `no`); aggregate_fills then
+    counts it as a sale of nothing and the record read closed with 0 contracts
+    and a $0 stake. net_position_pnl, which goes by `side` alone, already
+    priced it as the NO hold it was. Mutates `entry`.
+
+    Only a ticker with no buy fills at all is regraded: nothing can be closed
+    out without first being bought, so its sells were the opening trades. A
+    ticker with buys may hold a real close-out labelled a sell of the held
+    side (the fixture's KXNEXTTEAMNFL-26MCROSBY-LV `yes` sells), which
+    `side` alone would misread as a hold."""
+    if entry.get("status") != "closed" or net["heldContracts"] < FLAT_POSITION_EPSILON:
+        return
+    if any(fill.get("action") != "sell" for fill in ticker_fills):
+        return
+    held_side = "yes" if net["positionYes"] > 0 else "no"
+    if held_side != entry["raw"]["contractSide"]:
+        return
+    result = market.get("result") if market else None
+    status = "void" if result == "void" else "won" if result == held_side else "lost"
+    contracts = net["heldContracts"]
+    entry.update({
+        "status": status, "contracts": contracts,
+        "stake": round_cents(net["heldCost"]), "toWin": round_cents(contracts - net["heldCost"]),
+        "closedAt": closed_at_of(status, None, market, entry.get("closedAt")),
+    })
 
 
 def apply_net_position_pnl(records: list[dict], fills: list[dict], markets: dict[str, dict],
@@ -403,6 +441,7 @@ def apply_net_position_pnl(records: list[dict], fills: list[dict], markets: dict
         entry = records_by_id[entry_id]
         entry["pnl"] = round_cents(net["realized"] - net["fees"]) if net["final"] else None
         entry["fees"] = round_cents(net["fees"])
+        grade_settled_hold(entry, net, market, ticker_fills)
         other = records_by_id.get(other_id)
         if other is not None:
             other.update({"status": "closed", "mergedInto": entry_id, "pnl": None, "fees": 0})
