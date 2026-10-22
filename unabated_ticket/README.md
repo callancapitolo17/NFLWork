@@ -2732,7 +2732,16 @@ visible. Its one write is the Bets page's Remove / Restore.
   **Other** and is counted in the header's amber **N untyped** chip (hidden
   at zero; tooltip lists them) so a venue renaming a market shows the same
   day (2026-10-12: Novig's "Moneyline" had become "Winner", and every Novig
-  moneyline fell through for weeks). Won pays
+  moneyline fell through for weeks). **League** is the record's `league`;
+  one its source left null (a prop, a special, a league the scanner does not
+  list) takes the league the venue's own fields name (`leagueOf`, display
+  only, 2026-10-20): a Kalshi combo's legs (`raw.legEventTickers`, from the
+  market's `mve_selected_legs`; legs in two leagues read **Mixed**), a Kalshi
+  series prefix, Novig's `novigLeague`, Bet105's league name, DraftKings'
+  `leagueId`, a Polymarket US `eventSlug`, a Wagerzon special's header, and
+  **NCAA** for a settled BFA college game (BFA's history names no sport, so
+  CFB vs CBB is never guessed). Only what no field names stays **Unknown**
+  (Wagerzon RBL props, BFA props, Polymarket combos). Won pays
   `toWin`, lost costs `stake`, push and void are 0, unless the record carries
   the venue's own `pnl`: **Bet105** graded records carry its `result`
   (2026-10-07); **Kalshi** records do (2026-10-06), priced off the
@@ -3018,8 +3027,11 @@ stake: the stake back is a push, any other payout is won with `toWin` = paid
 less stake (negative for a fair-value settlement under the stake, since the
 tracker books every lost bet at its full stake). A loss pays nothing and
 writes no row: a started bet whose position closed with no `SETTLEMENT` is lost
-15 min after the close was first seen, at that time (its `closedAt`; a late
-`SETTLEMENT` still turns it won). The first sighting is kept for good: the
+15 min after the close was first seen, at that time (its `closedAt`), but
+never dated later than 4 h after its game's start, so a read that was down or
+not yet grading cannot move a loss to another day (2026-10-19: #199's deploy
+dated 11 Place losses from Oct 17-18 to Oct 19); a late `SETTLEMENT` still
+turns it won. The first sighting is kept for good: the
 bot's desk stores it (`novig_taker_orders.settled_at`), Place's read stores it
 (`manual_orders.settled_at`).
 2026-10-18: 4 `SETTLEMENT` rows and 10 closed positions for the 14 settled

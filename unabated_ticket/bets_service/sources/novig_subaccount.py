@@ -49,7 +49,8 @@ stake: more is won, the stake back a push, less lost (a fair-value price pays
 part). A loss pays nothing and writes no row, so a started order whose market
 has left the open positions with no SETTLEMENT is lost once its settle time
 (`settled_at`: the first sighting of the closed position, kept by note_settled
-for Place and by the bot's desk) is LOSS_CONFIRM old; a SETTLEMENT lagging the
+for Place and by the bot's desk) is LOSS_CONFIRM old, dated at that settle time but no later than
+LOSS_CLOSED_AT_MAX_AFTER_START after its game's start; a SETTLEMENT lagging the
 close turns it won. On 2026-10-18 this read 4 SETTLEMENT rows and 10 closed
 positions for the 14 settled Place bets: the 4 won / 10 lost Cal's app shows.
 An order with no context grades only off a SETTLEMENT row (no start time to
@@ -103,6 +104,12 @@ PLACE_ORDER_ID_PREFIX = "nman-"
 LEDGER_RECHECK = timedelta(minutes=2)
 # A closed position with no SETTLEMENT row is a loss only this long after it was first seen closed.
 LOSS_CONFIRM = timedelta(minutes=15)
+# A no-payout loss is dated no later than this after its game's start. Novig gives a loss no
+# settle time, so its closedAt is when the read first saw the position closed; a read that was
+# down or not yet grading (2026-10-19: #199's deploy dated 11 Place losses from Oct 17-18 to
+# the deploy) would move the loss to another day. Long enough for any game to end, short
+# enough that a late Pacific kickoff stays on its own day.
+LOSS_CLOSED_AT_MAX_AFTER_START = timedelta(hours=4)
 
 
 def _iso_ms(value: datetime | None) -> str | None:
@@ -313,7 +320,7 @@ class NovigSubaccountSource:
             settled_at = self._note_settled(order_id, now)
         if settled_at is None or now - settled_at < LOSS_CONFIRM:
             return None
-        return "lost", _iso_ms(settled_at), 0.0
+        return "lost", _iso_ms(min(settled_at, start + LOSS_CLOSED_AT_MAX_AFTER_START)), 0.0
 
     def _confirm_unconfirmed_orders(self, now: datetime) -> None:
         """Give each Place order Novig never showed final while Cal waited its

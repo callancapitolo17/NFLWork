@@ -55,6 +55,29 @@
   const OTHER_MARKET_NAMES = {
     teamTotal: "Team total", playerProp: "Player prop", special: "Special", future: "Future", parlay: "Parlay",
   };
+  // Venue league codes -> the scanner's league keys (each source's own LEAGUES
+  // table), plus the leagues of bets those tables leave out (tennis, soccer).
+  const KALSHI_SERIES_LEAGUES = {
+    KXNFL: "nfl", KXNCAAF: "cfb", KXMLB: "mlb", KXNBA: "nba", KXNHL: "nhl", KXWNBA: "wnba",
+  };
+  const NOVIG_LEAGUES = {
+    NFL: "nfl", NCAAF: "cfb", NBA: "nba", NCAAB: "cbb", WNBA: "wnba", MLB: "mlb", NHL: "nhl",
+    MLS: "soccer", EPL: "soccer", Bundesliga: "soccer", "Serie A": "soccer", "La Liga": "soccer",
+    "Ligue 1": "soccer", "Champions League": "soccer", "Europa League": "soccer", "FIFA Club World Cup": "soccer",
+  };
+  const BET105_LEAGUES = {
+    NFL: "nfl", NBA: "nba", MLB: "mlb", NHL: "nhl", WNBA: "wnba",
+    "College Football": "cfb", "College Football - FCS": "cfb",
+    "College Basketball": "cbb", "College Basketball Extra": "cbb", "NBA Preseason": "nba",
+    "UEFA Champions League": "soccer",
+  };
+  const DRAFTKINGS_LEAGUES = {
+    88808: "nfl", 87637: "cfb", 84240: "mlb", 42648: "nba", 92483: "cbb", 42133: "nhl", 94682: "wnba",
+  };
+  const POLYMARKET_LEAGUES = new Set(["nfl", "cfb", "nba", "cbb", "wnba", "mlb", "nhl"]);
+  const BFA_COLLEGE = "ncaa";
+  const MIXED_LEAGUE = "mixed";
+  const MIXED_LEAGUE_NAME = "Mixed";
   const KIND_NAMES = { straight: "Straight", parlay: "Parlay", teaser: "Teaser", kalshiCombo: "Kalshi combo" };
   // Kalshi's multivariate combo series: the MLB bots' RFQ fills (kalshi_mlb_mm,
   // kalshi_mlb_rfq) on the same account land in the bets service as these.
@@ -201,7 +224,61 @@
   }
 
   function leagueName(league) {
+    if (league === MIXED_LEAGUE) return MIXED_LEAGUE_NAME;
     return league ? String(league).toUpperCase() : "Unknown";
+  }
+
+  /** The record's league, or for a bet the source left unplaced (a prop, a
+   * special, a league the scanner does not list), the league the venue's own
+   * fields name. Display only: the record's `league` stays null for matching. */
+  function leagueOf(record) {
+    return record.league || venueLeagueOf(record) || null;
+  }
+
+  function kalshiSeriesLeague(ticker) {
+    const prefix = Object.keys(KALSHI_SERIES_LEAGUES).find((key) => String(ticker).startsWith(key));
+    return prefix ? KALSHI_SERIES_LEAGUES[prefix] : null;
+  }
+
+  /** The league in the raw fields of a record with none (formats checked
+   * against bets.duckdb 2026-10-20); null when the venue does not say. */
+  function venueLeagueOf(record) {
+    const raw = record.raw || {};
+    switch (record.venue) {
+      case "kalshi": {
+        // A combo's legs name theirs (legEventTickers "KXNFLSPREAD-26OCT19WASSF");
+        // other series start with the league: KXNHLTOTAL, KXNFLGAME, KXNCAAFSPREAD.
+        if (Array.isArray(raw.legEventTickers) && raw.legEventTickers.length) {
+          const legLeagues = new Set(raw.legEventTickers.map(kalshiSeriesLeague));
+          if (legLeagues.has(null)) return null;
+          return legLeagues.size === 1 ? legLeagues.values().next().value : MIXED_LEAGUE;
+        }
+        return kalshiSeriesLeague(String(raw.series || ""));
+      }
+      case "novig":
+        // eventHeader.league: "NFL" on player props, "ATP" on tennis.
+        return raw.novigLeague ? NOVIG_LEAGUES[raw.novigLeague] || String(raw.novigLeague).toLowerCase() : null;
+      case "bet105":
+        // leagueName: "College Basketball" on team totals, "UEFA Champions League".
+        return raw.league ? BET105_LEAGUES[raw.league] || null : null;
+      case "draftkings":
+        return DRAFTKINGS_LEAGUES[String(raw.leagueId || "")] || null;
+      case "polymarket_us": {
+        // eventSlug "nfl-nyg-was-2026-10-11"; a combo has none.
+        const slugLeague = /^([a-z]+)-/.exec(String(raw.eventSlug || ""));
+        return slugLeague && POLYMARKET_LEAGUES.has(slugLeague[1]) ? slugLeague[1] : null;
+      }
+      case "wagerzon": {
+        // Specials: headerDesc "NFL Week 6 - Specials". RBL props name no league.
+        const header = /^(NFL|NBA|MLB|NHL|WNBA)\b/.exec(String(raw.headerDesc || ""));
+        return header ? header[1].toLowerCase() : null;
+      }
+      case "bfa":
+        // BFA's settled history names no sport: a college game is CFB or CBB, never guessed.
+        return /^league unknown/.test(String(record.unmatchable || "")) ? BFA_COLLEGE : null;
+      default:
+        return null;
+    }
   }
 
   function signedNumber(points) {
@@ -401,7 +478,7 @@
     const combo = isKalshiCombo(record);
     return finishTicket({
       id: record.id, venueKey: record.venue, venue: venueName(record.venue), origin: originOf(record),
-      league: leagueName(record.league),
+      league: leagueName(leagueOf(record)),
       kind: combo ? KIND_NAMES.kalshiCombo : KIND_NAMES.straight,
       market: marketName(record),
       period: record.period || "FG", event: eventLabel(record), selection: selectionLabel(record),
@@ -432,14 +509,14 @@
     const sorted = legs.slice().sort((a, b) => (a.legIndex || 0) - (b.legIndex || 0));
     const first = sorted[0];
     const kind = isTeaserTicket(sorted) ? KIND_NAMES.teaser : KIND_NAMES.parlay;
-    const leagues = new Set(sorted.map((leg) => leagueName(leg.league)));
+    const leagues = new Set(sorted.map((leg) => leagueName(leagueOf(leg))));
     const starts = sorted.map((leg) => parseMs(leg.eventStart)).filter((ms) => ms !== null);
     const closedAt = multiLegClosedAt(sorted, first.status);
     const legCount = first.legCount || sorted.length;
     const raw = first.raw || {};
     return finishTicket({
       id: parlayId, venueKey: first.venue, venue: venueName(first.venue), origin: originOf(first),
-      league: leagues.size === 1 ? leagues.values().next().value : "Mixed",
+      league: leagues.size === 1 ? leagues.values().next().value : MIXED_LEAGUE_NAME,
       kind, market: kind, period: "FG", event: legCount + "-leg " + kind.toLowerCase(),
       side: NO_SIDE, favDog: NO_FAV_DOG, number: NO_NUMBER,
       selection: sorted.map(selectionLabel).filter(Boolean).join(" · "),
@@ -778,7 +855,7 @@
     pacificDay, addDays, dayKeyToUtc, weekdayOf, isDayKey, rangeBounds,
     americanToDecimal, decimalToAmerican,
     buildTickets, summarize, exclusions, untypedSummary, inDayRange, hideSettledFrom, dailySeries, firstSettledDay, groupBy, groupSections, pivot, calibration,
-    venueName, originOf, splitOpenByStart, splitOpenForLive, sortRows,
+    venueName, originOf, leagueOf, splitOpenByStart, splitOpenForLive, sortRows,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.UnabatedTrackerStats = api;
