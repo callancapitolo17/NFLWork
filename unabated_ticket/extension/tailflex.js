@@ -1,8 +1,10 @@
 // Tail flex for the Unabated Ticket panel: how much of Unabated's claimed edge
 // on a line to believe, less the farther the line sits from the main number.
-// The shrunk edge sizes the stake AND ranks the lines (issue #208, user
-// decision 2026-10-22; until then the stake used the raw edge and only the
-// rank was flexed). Pure: no DOM, no fetch, no chrome.* — loaded as a plain
+// The shrunk edge picks WHICH rung of a ladder to bet (the rank score) and
+// whether a rung is bet at all (the Min shrunk edge floor, a setting); the
+// stake stays Kelly on Unabated's raw edge (issue #208, Cal 2026-10-23: the
+// rung choice was the leak, and a chosen rung is bet on Unabated's own
+// number). Pure: no DOM, no fetch, no chrome.* — loaded as a plain
 // <script> in panel.html after feed.js (exposes globalThis.UnabatedTailFlex)
 // and via require() in tests/tailflex.test.js.
 //
@@ -14,8 +16,9 @@
 //                                   Unabated's main fair is taken as right)
 //   sigma_e = d * dnorm(z) * sigma_z                  (edge uncertainty, EV units)
 //   shrink  = tau^2 / (tau^2 + sigma_e^2)             (empirical Bayes)
-//   shrunk edge = e * shrink                          (sizes the stake)
-//   rank score  = shrunk edge * stake                 (EV dollars; picks a card's line)
+//   shrunk edge = e * shrink                          (the floor reads it)
+//   rank score  = shrunk edge * stake                 (EV dollars believed on the
+//                                                      raw-edge stake; picks a card's line)
 // tau is how much REAL edges vary from line to line (a standard deviation in
 // EV units); sigma_e is how wrong THIS line's claimed edge can be. The
 // earlier keep = e^2 / (e^2 + sigma_e^2) (Baker & McHale 2013) let a big
@@ -489,10 +492,12 @@
     return { shrink, edgePct: row.edgePct * shrink, tau, c };
   }
 
-  // A sized row's rank score: shrunk edge x stake (EV dollars, the stake
-  // itself sized on the shrunk edge; edgerows.withStakeAndRank sets both);
-  // null when the row has no stake or no shrunk edge. It picks a card's best
-  // line and orders the lines inside it.
+  // A sized row's rank score: shrunk edge x stake, the EV dollars believed
+  // on the stake that would be placed (Kelly on the raw edge;
+  // edgerows.withStakeAndRank sets both); null when the row has no stake or
+  // no shrunk edge. It picks a card's best line and orders the lines inside
+  // it: between two rungs the nearer the main wins unless the farther one
+  // claims many times more.
   function rankScoreOf(row) {
     if (typeof row.stake !== "number" || typeof row.shrunkEdgePct !== "number") return null;
     return (row.shrunkEdgePct / 100) * row.stake;

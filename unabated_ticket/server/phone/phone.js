@@ -291,8 +291,8 @@
     }
     const stake = makeEl("span", `edge-stake${row.rail.atSize ? " at-size" : ""}`, row.rail.text);
     if (row.rail.note) stake.append(" ", makeEl("small", null, row.rail.note));
-    // The edge the stake was sized on (the tail-flex shrink, issue #208), as the panel's hover.
-    if (typeof row.shrunkEdgePct === "number") stake.title = `sized on ${phoneView.fmtEdgePct(row.shrunkEdgePct)} (${Math.round(row.shrink * 100)}% of Unabated's ${phoneView.fmtEdgePct(row.edgePct)})`;
+    // The shrunk edge the list ranks and gates the row on (the tail flex, issue #208), as the panel's hover; the stake is on the raw edge.
+    if (typeof row.shrunkEdgePct === "number") stake.title = `ranked on ${phoneView.fmtEdgePct(row.shrunkEdgePct)} shrunk (${Math.round(row.shrink * 100)}% of Unabated's ${phoneView.fmtEdgePct(row.edgePct)}); the stake is on Unabated's edge`;
     rail.append(stake);
     return rail;
   }
@@ -1469,6 +1469,7 @@
     form.append(
       section("What is listed"),
       numberField("minEdgePct", "Min edge %", current.minEdgePct, stored("minEdgePct"), 0.1),
+      numberField("minShrunkEdgePct", "Min shrunk edge %", current.minShrunkEdgePct, stored("minShrunkEdgePct"), 0.1),
       numberField("minStake", "Min suggested bet $", current.minStake, stored("minStake"), 1),
       numberField("maxLineAgeHours", "Max line age h", current.maxLineAgeHours, stored("maxLineAgeHours"), 1),
       numberField("minLiquidityToWin", "Min liq to win $", current.minLiquidityToWin, stored("minLiquidityToWin"), 10),
@@ -1482,7 +1483,7 @@
   }
 
   const NUMBER_FIELD_LABELS = {
-    bankroll: "Bankroll", multiplier: "Kelly multiplier", minEdgePct: "Min edge", minStake: "Min suggested bet",
+    bankroll: "Bankroll", multiplier: "Kelly multiplier", minEdgePct: "Min edge", minShrunkEdgePct: "Min shrunk edge", minStake: "Min suggested bet",
     maxLineAgeHours: "Max line age", minLiquidityToWin: "Min liq to win",
   };
 

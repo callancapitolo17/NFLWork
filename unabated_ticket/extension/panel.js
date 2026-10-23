@@ -90,7 +90,7 @@
     betsRisk: el("bets-risk"), betsRiskCaption: el("bets-risk-caption"),
     edgesError: el("edges-error"), edgesStatus: el("edges-status"), edgesFilter: el("edges-filter"), edgesTailFlex: el("edges-tailflex"), edgesPriceCheck: el("edges-pricecheck"), edgesFilterDebug: el("edges-filter-debug"), edgesLocate: el("edges-locate"),
     edgesSports: el("edges-sports"), edgesBetTypes: el("edges-bettypes"), edgesBooks: el("edges-books"), edgesBooksMode: el("edges-books-mode"),
-    booksDefault: el("books-default"), booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMinStake: el("edges-min-stake"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
+    booksDefault: el("books-default"), booksUnabated: el("books-unabated"), booksAll: el("books-all"), booksNone: el("books-none"), edgesPeriods: el("edges-periods"), edgesMin: el("edges-min"), edgesMinShrunk: el("edges-min-shrunk"), edgesMinStake: el("edges-min-stake"), edgesMaxAge: el("edges-max-age"), edgesSort: el("edges-sort"),
     edgesIncludeAlts: el("edges-include-alts"), edgesMinToWin: el("edges-min-to-win"), edgesGroup: el("edges-group"),
     edgesSettingsError: el("edges-settings-error"), edgesList: el("edges-list"), edgesEmpty: el("edges-empty"),
     edgesLive: el("edges-live"), edgesLiveHead: el("edges-live-head"), edgesLiveList: el("edges-live-list"),
@@ -385,18 +385,19 @@
   }
 
   // Stake from Unabated's own edge for the line being priced (captured, or
-  // current if it moved), shrunk for the line's distance from the main
-  // number (tailflex.js, issue #208; a live ticket sizes on the raw edge).
-  // `sizingEdgePct` is the edge the stake was sized on, for the Edge tile.
+  // current if it moved). `shrunkEdgePct` is the edge shrunk for the line's
+  // distance from the main number (tailflex.js, issue #208), for the Edge
+  // tile: it says how the Edges list ranks and gates this line, the stake
+  // never reads it.
   function computeStake(ticket, settings) {
     const line = pricedLine(ticket);
-    if (line.edgePct == null) return { line, result: null, reason: noEdgeReason(line), sizingEdgePct: null };
-    const sizingEdgePct = edgeRows.sizingEdgePct(ticketSizingRow(ticket, line), tailFlexMeasurement());
+    if (line.edgePct == null) return { line, result: null, reason: noEdgeReason(line), shrunkEdgePct: null };
+    const shrunkEdgePct = edgeRows.shrunkEdgePctOf(ticketSizingRow(ticket, line), tailFlexMeasurement());
     try {
-      const result = kelly.kellyStakeFromEdge({ bookPrice: line.price, edgePct: sizingEdgePct, bankroll: settings.bankroll, multiplier: settings.multiplier });
-      return { line, result, reason: null, sizingEdgePct };
+      const result = kelly.kellyStakeFromEdge({ bookPrice: line.price, edgePct: line.edgePct, bankroll: settings.bankroll, multiplier: settings.multiplier });
+      return { line, result, reason: null, shrunkEdgePct };
     } catch (error) {
-      return { line, result: null, reason: error.message, sizingEdgePct };
+      return { line, result: null, reason: error.message, shrunkEdgePct };
     }
   }
 
@@ -549,7 +550,7 @@
 
   function renderTicket() {
     const { ticket, settings, watchStatus } = state;
-    const { line, result, reason, sizingEdgePct } = computeStake(ticket, settings);
+    const { line, result, reason, shrunkEdgePct } = computeStake(ticket, settings);
     if (!line.moved && line.edgePct == null) {
       renderNoEdge(ticket, line);
       return;
@@ -570,7 +571,7 @@
     const bookLine = asBookLine(line.price, line.sourceFormat, line.sourcePrice);
     view.book.textContent = ticket.book.name;
     view.price.replaceChildren(fmtAmerican(line.price), smallEl(fmtCents(bookLine)));
-    renderFairAndEdge(ticket, line, betFlag, sizingEdgePct);
+    renderFairAndEdge(ticket, line, betFlag, shrunkEdgePct);
     renderOtherBooks(ticket, line);
 
     view.stake.classList.remove("no-edge");
@@ -761,7 +762,7 @@
   // The Fair and Edge tiles: Unabated's fair in both worlds (its own American
   // number; there is no more exact source for it), the edge and how far the
   // price sits from the fair in cents, and the edge-move tag under it.
-  function renderFairAndEdge(ticket, line, betFlag, sizingEdgePct) {
+  function renderFairAndEdge(ticket, line, betFlag, shrunkEdgePct) {
     const bookLine = asBookLine(line.price, line.sourceFormat, line.sourcePrice);
     const fairLine = line.fair == null ? null : asBookLine(line.fair, 1, null);
     view.fair.textContent = fairLine ? fmtAmerican(line.fair) : "unknown";
@@ -769,8 +770,9 @@
       : ticket.live ? `${fmtCents(fairLine)} · live fair, ${live.checkpointLabel(ticket.live)}` : fmtCents(fairLine);
     view.edge.textContent = line.edgePct == null ? "\u2014" : fmtPct(line.edgePct / 100);
     view.edge.closest(".tile").classList.toggle("no-edge", !(line.edgePct > 0));
-    // The edge the stake was sized on, when the tail flex shrank it (issue #208).
-    const shrunkText = typeof sizingEdgePct === "number" && line.edgePct > 0 && sizingEdgePct < line.edgePct ? `sized on ${fmtPct(sizingEdgePct / 100)}` : null;
+    // The shrunk edge the Edges list ranks and gates this line on, when the
+    // tail flex shrank it (issue #208); the stake is on the raw edge.
+    const shrunkText = typeof shrunkEdgePct === "number" && line.edgePct > 0 && shrunkEdgePct < line.edgePct ? `shrunk ${fmtPct(shrunkEdgePct / 100)}` : null;
     view.edgeSub.textContent = [fairLine ? betsView.centsFromFairText(kelly.bookProbOf(bookLine), kelly.bookProbOf(fairLine)) : null, shrunkText].filter(Boolean).join(" \u00b7 ");
     // The edge-move tag reads the feed's copy of this line, and only at the
     // price being sized: the feed's history says nothing about another price.
@@ -934,7 +936,7 @@
     const liquidity = feedCopy && feedCopy.price === line.price ? feedCopy.liquidity : null;
     const ladderOf = ticket.live ? liveLadderReaders(Date.now())(ticket.eventId) : ladderReader(ticket.eventId);
     const advice = betsView.stakeAdvice({
-      line: matchLine, price: line.price, edgePct: line.edgePct == null ? null : edgeRows.sizingEdgePct(ticketSizingRow(ticket, line), tailFlexMeasurement()),
+      line: matchLine, price: line.price, edgePct: line.edgePct,
       bankroll: state.settings.bankroll, multiplier: state.settings.multiplier,
       matches, ladderOf, liquidity, teasers: openTeasersNow(),
     });
@@ -1342,9 +1344,9 @@
   view.booksAll.addEventListener("click", () => setBookIds(liveBooks().map((book) => book.id)));
   view.booksNone.addEventListener("click", () => setBookIds([]));
 
-  // Quarter-Kelly on the shrunk edge with nothing held, never more than the line's resting liquidity.
+  // Quarter-Kelly on Unabated's raw edge with nothing held, never more than the line's resting liquidity.
   function stakeFor(row) {
-    return edgeRows.stakeFor(row, state.settings, tailFlexMeasurement());
+    return edgeRows.stakeFor(row, state.settings);
   }
 
   // Everything selectEdges needs except the edge threshold (list and alerts differ there).
@@ -1772,7 +1774,7 @@
     const stake = document.createElement("span");
     stake.className = "gl-stake";
     stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
-    if (typeof row.shrunkEdgePct === "number") stake.title = `sized on ${fmtPct(row.shrunkEdgePct / 100)} (${Math.round(row.shrink * 100)}% of Unabated's ${fmtPct(row.edgePct / 100)})`;
+    if (typeof row.shrunkEdgePct === "number") stake.title = `ranked on ${fmtPct(row.shrunkEdgePct / 100)} shrunk (${Math.round(row.shrink * 100)}% of Unabated's ${fmtPct(row.edgePct / 100)}); the stake is on Unabated's edge`;
     rail.append(edge, ...moveParts(row, row.bet), stake);
 
     li.append(main, rail);
@@ -2312,10 +2314,12 @@
     const periods = Array.from(view.edgesPeriods.querySelectorAll("input:checked")).map((input) => Number(input.dataset.period));
     const betTypes = Array.from(view.edgesBetTypes.querySelectorAll("input:checked")).map((input) => Number(input.dataset.bettype));
     const minEdgePct = Number(view.edgesMin.value);
+    const minShrunkEdgePct = Number(view.edgesMinShrunk.value);
     const minStake = Number(view.edgesMinStake.value);
     const maxLineAgeHours = Number(view.edgesMaxAge.value);
     const minLiquidityToWin = Number(view.edgesMinToWin.value);
     if (!Number.isFinite(minEdgePct) || minEdgePct < 0) return { error: "Minimum edge must be zero or more." };
+    if (!Number.isFinite(minShrunkEdgePct) || minShrunkEdgePct < 0) return { error: "Minimum shrunk edge must be zero or more." };
     if (!Number.isFinite(minStake) || minStake < 0) return { error: "Minimum suggested bet must be zero (off) or more." };
     if (!Number.isFinite(maxLineAgeHours) || maxLineAgeHours <= 0) return { error: "Max line age must be above zero hours." };
     if (!Number.isFinite(minLiquidityToWin) || minLiquidityToWin < 0) return { error: "Min liq to win must be zero (off) or more." };
@@ -2323,7 +2327,7 @@
     if (!betTypes.length) return { error: "Pick at least one bet type." };
     return {
       settings: {
-        ...state.edgeSettings, leagues, periods, betTypes, minEdgePct, minStake, maxLineAgeHours, minLiquidityToWin, sortBy: view.edgesSort.value,
+        ...state.edgeSettings, leagues, periods, betTypes, minEdgePct, minShrunkEdgePct, minStake, maxLineAgeHours, minLiquidityToWin, sortBy: view.edgesSort.value,
         includeAlts: view.edgesIncludeAlts.checked,
         groupByMarket: view.edgesGroup.checked,
       },
@@ -2338,6 +2342,7 @@
     for (const input of view.edgesPeriods.querySelectorAll("input")) input.checked = settings.periods.includes(Number(input.dataset.period));
     for (const input of view.edgesBetTypes.querySelectorAll("input")) input.checked = settings.betTypes.includes(Number(input.dataset.bettype));
     view.edgesMin.value = settings.minEdgePct;
+    view.edgesMinShrunk.value = settings.minShrunkEdgePct;
     view.edgesMinStake.value = settings.minStake;
     view.edgesMaxAge.value = settings.maxLineAgeHours;
     view.edgesMinToWin.value = settings.minLiquidityToWin;

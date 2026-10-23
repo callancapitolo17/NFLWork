@@ -266,6 +266,8 @@ CREATE TABLE IF NOT EXISTS edge_settings (
     group_by_market       BOOLEAN,
     updated_at            TIMESTAMPTZ NOT NULL
 );
+-- Min shrunk edge (issue #208, 2026-10-23): the floor on the tail-flex shrunk edge; NULL = the panel's default.
+ALTER TABLE edge_settings ADD COLUMN IF NOT EXISTS min_shrunk_edge_pct DOUBLE;
 CREATE TABLE IF NOT EXISTS manual_orders (
     client_order_id  VARCHAR PRIMARY KEY,   -- 'uman-' + the click's id
     placed_at        TIMESTAMPTZ NOT NULL,  -- when the row was inserted, just before the send
@@ -611,13 +613,14 @@ ORDER BY seen_at, sample_key
 EDGE_SETTINGS_FIELDS = (
     "bankroll", "multiplier", "leagues", "periods", "betTypes", "bookMode", "bookIds", "minEdgePct",
     "minStake", "maxLineAgeHours", "minLiquidityToWin", "includeAlts", "sortBy", "groupByMarket",
+    "minShrunkEdgePct",
 )
 
 _UPSERT_EDGE_SETTINGS = """
 INSERT INTO edge_settings (settings_id, bankroll, kelly_multiplier, league_ids, period_type_ids, bet_type_ids,
                            book_mode, book_ids, min_edge_pct, min_stake, max_line_age_hours,
-                           min_liquidity_to_win, include_alts, sort_by, group_by_market, updated_at)
-VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           min_liquidity_to_win, include_alts, sort_by, group_by_market, min_shrunk_edge_pct, updated_at)
+VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (settings_id) DO UPDATE SET
     bankroll = excluded.bankroll, kelly_multiplier = excluded.kelly_multiplier,
     league_ids = excluded.league_ids, period_type_ids = excluded.period_type_ids,
@@ -625,13 +628,14 @@ ON CONFLICT (settings_id) DO UPDATE SET
     min_edge_pct = excluded.min_edge_pct, min_stake = excluded.min_stake,
     max_line_age_hours = excluded.max_line_age_hours, min_liquidity_to_win = excluded.min_liquidity_to_win,
     include_alts = excluded.include_alts, sort_by = excluded.sort_by,
-    group_by_market = excluded.group_by_market, updated_at = excluded.updated_at
+    group_by_market = excluded.group_by_market, min_shrunk_edge_pct = excluded.min_shrunk_edge_pct,
+    updated_at = excluded.updated_at
 """
 
 _SELECT_EDGE_SETTINGS = """
 SELECT bankroll, kelly_multiplier, league_ids, period_type_ids, bet_type_ids, book_mode, book_ids,
        min_edge_pct, min_stake, max_line_age_hours, min_liquidity_to_win, include_alts, sort_by,
-       group_by_market, epoch(updated_at)
+       group_by_market, min_shrunk_edge_pct, epoch(updated_at)
 FROM edge_settings
 WHERE settings_id = 1
 """

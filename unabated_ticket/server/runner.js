@@ -603,7 +603,7 @@ function createRunner(deps) {
     return tailFlexCache.measurement;
   }
 
-  // The row's tail-flex shrink for the bot's stake (taker.decideRow sizing.shrink).
+  // The row's tail-flex shrink for the bot's Min shrunk edge floor (taker.decideRow sizing.shrink).
   function shrinkOfRow(row) {
     const shrunk = tailflex.shrinkOfRow(row, tailFlexMeasurement());
     return shrunk ? shrunk.shrink : null;
@@ -1079,7 +1079,10 @@ function createRunner(deps) {
       const decision = taker.decideRow({
         row, contract, quote: read && !read.error ? read.quote : null, quoteError: read ? read.error || null : null,
         priceIndex: pass.priceIndex, venue,
-        sizing: { matches: flags[index].matches, ladderOf: ladderReaderOf(row.eventId), teasers: pass.teasers, shrink: shrinkOfRow(row) },
+        sizing: {
+          matches: flags[index].matches, ladderOf: ladderReaderOf(row.eventId), teasers: pass.teasers,
+          shrink: shrinkOfRow(row), minShrunkEdgePct: settings.edgeSettings.minShrunkEdgePct,
+        },
       });
       // The held bets the stake was sized on, by id: the desk refuses an add
       // on a game whose earlier bot fill (either venue) is not among them.

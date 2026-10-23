@@ -57,7 +57,8 @@ def test_before_any_write_every_field_is_the_default(store):
 
 def test_settings_round_trip_lists_booleans_and_nulls(store):
     settings = {**NOTHING_HELD, "bankroll": 8000, "multiplier": 0.5, "leagues": [1, 2], "periods": [1, 2],
-                "betTypes": [2, 3], "bookMode": "custom", "bookIds": [89, 105], "includeAlts": True, "sortBy": "stake"}
+                "betTypes": [2, 3], "bookMode": "custom", "bookIds": [89, 105], "includeAlts": True, "sortBy": "stake",
+                "minShrunkEdgePct": 1.5}
     store.save_edge_settings(settings, SAVED_AT)
     loaded = store.load_edge_settings()
     assert loaded["updatedAt"] == "2026-10-01T12:00:00Z"
@@ -82,6 +83,7 @@ def test_saving_without_every_field_fails_loudly(store):
     ({"multiplier": 1.5}, "settings.multiplier must be above 0 and at most 1, got 1.5"),
     ({"maxLineAgeHours": 0}, "settings.maxLineAgeHours must be a number above 0, got 0"),
     ({"minEdgePct": -1}, "settings.minEdgePct must be a number, 0 or more, got -1"),
+    ({"minShrunkEdgePct": -0.5}, "settings.minShrunkEdgePct must be a number, 0 or more, got -0.5"),
     ({"minLiquidityToWin": True}, "settings.minLiquidityToWin must be a number, 0 or more, got True"),
     ({"includeAlts": "yes"}, "settings.includeAlts must be true or false, got 'yes'"),
     ({"periods": []}, "settings.periods must name at least one id, got []"),

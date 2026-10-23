@@ -19,7 +19,7 @@ const SERVICE_URL = "http://127.0.0.1:8094";
 const BEARS_SPREAD_SOUTHPOINT = "289357360:ms99:si0:tid6";
 const NOVIG_PANTHERS_ALT = "289357357:ms89:si1:tid5:alt-2.5";
 const sliceBody = fs.readFileSync(path.join(__dirname, "fixtures", "v2_slice.json"), "utf8");
-const OPEN_SETTINGS = { leagues: [1], bookMode: "all", bookIds: null, maxLineAgeHours: 1e6, includeAlts: true, minEdgePct: 1, groupByMarket: false };
+const OPEN_SETTINGS = { leagues: [1], bookMode: "all", bookIds: null, maxLineAgeHours: 1e6, includeAlts: true, minEdgePct: 1, minShrunkEdgePct: 0, groupByMarket: false };
 
 function response(status, body, headers = {}) {
   return { ok: status < 300, status, headers: { get: (name) => headers[name.toLowerCase()] ?? null }, json: async () => JSON.parse(body) };
@@ -82,11 +82,11 @@ test("the ticket for a held sportsbook line: add, its standalone size, no contra
   assert.equal(ticket.edge, "+5.30%");
   assert.match(ticket.start, / · in 1h 0m$/);
   const block = ticket.stakeBlock;
-  // $200 held on a line the shrunk edge (#208) sizes $362.64: add $162.64.
+  // $200 held on a line the raw edge sizes $437.25: add $237.25.
   assert.deepEqual([block.label, block.stake, block.noEdge, block.position, block.positionAgainst, block.contracts],
-    ["Add to your position", "$162.64", false, "held $200 · $362.64 alone", false, null]);
-  // The add's own payout at -110: $162.64 wins $147.85.
-  assert.deepEqual([block.toWin, block.payout], ["$147.85", "$310.49"]);
+    ["Add to your position", "$237.25", false, "held $200 · $437.25 alone", false, null]);
+  // -110: $237.25 wins $215.68 and pays $452.93.
+  assert.deepEqual([block.toWin, block.payout], ["$215.68", "$452.93"]);
 });
 
 test("the ticket for an exchange line: contracts at the exchange's price, cost under the stake", async () => {
@@ -95,8 +95,8 @@ test("the ticket for an exchange line: contracts at the exchange's price, cost u
   const block = phoneView.stakeBlockView(row);
   assert.equal(block.label, "Bet");
   assert.equal(block.stake, edgeRows.fmtDollars(row.advice.bet));
-  // The shrunk edge sizes $45.03 (edgerows.test.js): floor($45.03 / 0.345) = 130 contracts; 130 x 0.345 = $44.85.
-  assert.deepEqual(block.contracts, { text: "130 contracts @ 34.5¢", cost: "$44.85", under: false });
+  // floor($215.13 / 0.345) = 623 contracts; 623 x 0.345 = 214.935 rounds (in float) to $214.93.
+  assert.deepEqual(block.contracts, { text: "623 contracts @ 34.5¢", cost: "$214.93", under: false });
   assert.equal(phoneView.contractsView(0.2, row).text, "under 1 contract @ 34.5¢");
   assert.equal(phoneView.contractsView(0, row), null);
 });
@@ -171,7 +171,7 @@ test("banners: the page's failed reads, then what the runner reports, worst firs
 
 test("settings: defaults fill nulls, a save sends only what changed, books travel with their mode, reset sends null", () => {
   const nothing = { bankroll: null, multiplier: null, leagues: null, periods: null, betTypes: null, bookMode: null, bookIds: null, minEdgePct: null,
-    minStake: null, maxLineAgeHours: null, minLiquidityToWin: null, includeAlts: null, sortBy: null, groupByMarket: null };
+    minStake: null, maxLineAgeHours: null, minLiquidityToWin: null, includeAlts: null, sortBy: null, groupByMarket: null, minShrunkEdgePct: null };
   const effective = phoneView.effectiveSettings(nothing);
   assert.deepEqual([effective.bankroll, effective.multiplier, effective.bookMode, effective.minEdgePct, effective.groupByMarket],
     [edgeRows.DEFAULT_STAKE_SETTINGS.bankroll, edgeRows.DEFAULT_STAKE_SETTINGS.multiplier, "default", edgeRows.DEFAULT_EDGE_SETTINGS.minEdgePct, true]);

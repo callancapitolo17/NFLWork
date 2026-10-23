@@ -110,7 +110,8 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     carries is closed with no result)
            GET /settings.json       {settings: {bankroll, multiplier, leagues, periods, betTypes,
                                     bookMode, bookIds, minEdgePct, minStake, maxLineAgeHours,
-                                    minLiquidityToWin, includeAlts, sortBy, groupByMarket},
+                                    minLiquidityToWin, includeAlts, sortBy, groupByMarket,
+                                    minShrunkEdgePct},
                                     updatedAt} — the Edges settings the server
                                     runner (unabated_ticket/server/runner.js) reads every cycle;
                                     null = the panel's default (extension/edgerows.js)
@@ -1002,7 +1003,7 @@ def _settings_value_error(field: str, value: object) -> str | None:
         return None if _is_number(value) and value > 0 else f"settings.{field} must be a number above 0, got {value!r}"
     if field == "multiplier":
         return None if _is_number(value) and 0 < value <= 1 else f"settings.multiplier must be above 0 and at most 1, got {value!r}"
-    if field in ("minEdgePct", "minStake", "minLiquidityToWin"):
+    if field in ("minEdgePct", "minShrunkEdgePct", "minStake", "minLiquidityToWin"):
         return None if _is_number(value) and value >= 0 else f"settings.{field} must be a number, 0 or more, got {value!r}"
     if field in ("includeAlts", "groupByMarket"):
         return None if isinstance(value, bool) else f"settings.{field} must be true or false, got {value!r}"

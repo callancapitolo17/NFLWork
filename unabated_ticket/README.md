@@ -252,10 +252,10 @@ and the time to first pitch warms to amber inside 12 hours and red inside 2.
 ## Stake
 
 Mode B of the Kelly sheet (`extension/kelly.js`): Unabated already publishes
-the edge (EV per $1) for every line, so the stake is sized straight from it —
-since 2026-10-22 (#208) from the **shrunk** edge, Unabated's edge times the
-tail-flex shrink below (the main number keeps roughly half of it, a deep alt
-a tenth). Floors and gates still read the raw edge.
+the edge (EV per $1) for every line, so the stake is sized straight from it
+(Unabated's raw edge; the tail-flex shrink below decides which rung of a
+ladder is bet and whether it lists at all, never the stake — Cal,
+2026-10-23, #208).
 
 ```
 b      = decimal(american book price) - 1
@@ -559,16 +559,21 @@ sort orders cards through their best line, and `feed.groupEdges` (pure,
 node-tested) does the grouping; the panel passes the rank score as the rank.
 Turning the toggle off gives the flat list.
 
-### Tail flex (rank score and shrink)
+### Tail flex (rank score and the Min shrunk edge floor)
 
 Unabated's fair is solid at the main number and flexes in the tails (the
 host on Unabated Live, 2026-09-11, 49:26: the fuselage is solid, the wings
-flex). Since 2026-10-22 (#208) that flex **shrinks the edge every stake is
-sized on** — rows, cards, the Ticket, the phone and the server bot alike —
-and ranks the lines; before it only ranked them (0.15.0, 2026-09-30), and
-the stake took a +17% deep-alt fair at face value. Per line
-(`extension/tailflex.js`, pure, node-tested), with Unabated fair
-p = (1 + edge) / decimal:
+flex). The flex answers two questions about a ladder that shows edge on
+several rungs — **which rung to bet** (the rank score picks a card's best
+line) and **whether a rung is worth betting at all** (the **Min shrunk
+edge** setting, default 1%, panel and phone; the server bot reads it too)
+— and never a third: the stake of a rung that passes is Kelly on Unabated's
+raw edge (Cal, 2026-10-23, #208: the rung choice was the leak, and a chosen
+rung is bet on Unabated's own number; the 2026-10-22 build had shrunk every
+stake too, and on the 2026-10-23 boards that cut the dollars 55% while
+moving only 6 of 18 picks — he chose the pick and the floor without the
+stake cut). Per line (`extension/tailflex.js`, pure, node-tested), with
+Unabated fair p = (1 + edge) / decimal:
 
 - `dist_sd = |qnorm(p) − qnorm(fair of the same side at Unabated's main
   number)|` (Unabated's own line, book 49; even money when it has none; 0 on
@@ -587,22 +592,28 @@ p = (1 + edge) / decimal:
   McHale 2013), which let a big claimed edge vouch for itself — the
   optimizer's curse (Smith & Winkler 2006): the rows that list are the ones
   whose noise happened to point up, and the deepest rungs most of all;
-- **rank score = shrunk edge × stake** (`rankScoreOf`), the stake being the
-  row's own Kelly stake on the shrunk edge. It picks a card's best line and
-  orders the lines inside it; the stake's tooltip shows the shrunk edge and
-  the shrink (`sized on 1.0% (21% of Unabated's 4.7%)`), the Ticket's edge sub-line
-  `sized on X%`. The issue's card (main −14 at +105 for 4.5%, −24.5 at +340
-  for 12.2%, c 9.4%, tau 1.85%, $35k quarter Kelly): the main keeps 4.5% and
-  $375, −17.5 keeps 44% ($128), −21 11% ($38), −24.5 4% ($13); the card picks
-  the main.
+- **Min shrunk edge** (`edgerows.meetsShrunkFloor`; `minShrunkEdgePct` in
+  the settings row, stored like Min edge, 0 = off): a pregame row lists only
+  while its shrunk edge reaches it, so a rung whose claim does not survive
+  its distance from the main is not listed and the bot never looks at it; a
+  row the shrink cannot price fails closed. On the 2026-10-23 boards at 1%
+  the floor cuts the deepest rungs (Texas Tech −20.5 at 1.0% shrunk, FAU and
+  UNC −17.5 at 1.1%) and leaves the rest;
+- **rank score = shrunk edge × stake** (`rankScoreOf`): the EV dollars
+  believed on the stake that would be placed (Kelly on the raw edge). It
+  picks a card's best line and orders the lines inside it — between two
+  rungs the nearer the main wins unless the farther one claims many times
+  more; two neighbouring deep rungs are near a coin flip, which is honest.
+  The stake's tooltip shows the shrunk edge and the shrink (`ranked on 1.0%
+  shrunk (21% of Unabated's 4.7%); the stake is on Unabated's edge`), the
+  Ticket's edge sub-line `shrunk X%`. The issue's card (main −14 at +105
+  for 4.5%, −24.5 at +340 for 12.2%, c 9.4%, tau 1.85%): the main keeps
+  4.5%, −17.5 keeps 44%, −21 11%, −24.5 4%; the card picks the main, and
+  at a 1% floor the −24.5 does not list.
 
 The **Min edge** gate, the bot's 3% floor and 20% cap and the Live block read
-the raw edge; live rows and a live Ticket are sized on the raw edge (the live
-fair is Unabated's in-game read, not a tail). A held bet is still priced at
-its own fill, so an alt held at the raw-edge stake now often reads
-`add $0.00 … at full size`; and a candidate stake over a shrunk fair can sit
-below a held neighbour's on the ladder, which the conditional Kelly then
-declines as `ladder not monotone` (accepted, 2026-10-22).
+the raw edge; live rows and a live Ticket have no shrunk edge (the live fair
+is Unabated's in-game read, not a tail) and are never gated by the floor.
 
 **c is measured live** per (league, period, bet type) on every scanner
 update from exchanges (`hasLiquidity` books) quoting BOTH sides of a rung at
@@ -654,8 +665,9 @@ ladder (`feed.isClampedFair`; a held bet there is left out and named).
 
 A line shows when: it is on the board (`statusId 1`), its book is allowed
 (see filter), the bet type and period are enabled, `ge` is at or above the
-minimum edge, the game has not started, and the book changed the line
-within **Max line age** (default 168 h). That last one matters: on
+minimum edge, its shrunk edge is at or above **Min shrunk edge** (Tail flex
+below; 1% default, 0 = off), the game has not started, and the book changed
+the line within **Max line age** (default 168 h). That last one matters: on
 2026-09-10 the biggest "edges" on the live feed were a 96-day-old Buckeye
 -110 on a 44.5 total (+36.67%) and a 24-day-old SouthPoint Oklahoma +2 —
 dead feeds at books Unabated still flags active. Every row prints the
@@ -1875,7 +1887,7 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   runner, Running on a server below): `GET /settings.json` → `{settings:
   {bankroll, multiplier, leagues, periods, betTypes, bookMode, bookIds,
   minEdgePct, minStake, maxLineAgeHours, minLiquidityToWin, includeAlts,
-  sortBy, groupByMarket}, updatedAt}`, every field `null`
+  sortBy, groupByMarket, minShrunkEdgePct}, updatedAt}`, every field `null`
   until set — null is the panel's default, read from `extension/edgerows.js`
   by the runner, never copied into Python; `PUT /settings.json` with
   `{settings: {<some of those>: value or null}}` → `{ok, settings,
@@ -2918,7 +2930,7 @@ subaccount. No shadow mode (Cal, 2026-10-14).
 | Line age | changed within 7 days; right up to the start |
 | Board age | the runner re-downloads every league's snapshot every 60 s (the panel's size tiers go up to 5 min); a row whose league snapshot landed over 3 min ago, is a stale build or failed to load is `stale_feed` |
 | Holdings | the pass runs only when the bets service's Kalshi poll succeeded within the last 5 min (conditional Kelly is sized on it); otherwise it decides nothing |
-| Shrink | the stake is Kelly on the live edge × the row's tail-flex shrink (#208, the pooled tau the runner measures; Tail flex above) — the 3% floor and 20% cap read the raw live edge; a row with no shrink is `size_declined`, never sized at full |
+| Min shrunk edge | the live edge × the row's tail-flex shrink (#208, the pooled tau the runner measures; Tail flex above) must reach the settings' **Min shrunk edge** (the Edges list's own floor, 1% default), else `edge_short` with the shrunk edge and the shrink in the detail; the stake is Kelly on the raw live edge; a row with no shrink is `size_declined`, never sized at full |
 | Size | floor(stake / all-in), cut to the depth at the ask |
 | Market check | before every order Kalshi's market is read: it must be `active`, its series the row's period, a spread's or total's `floor_strike` the row's number, YES the favorite's side of a spread and the Over of a total, a spread's or moneyline's YES title the team YES is on; else `market_mismatch`, nothing sent |
 | Order | **immediate-or-cancel** limit buy at that ask: what does not fill at once Kalshi cancels in the same request (`remaining_count` 0), so a bot order never rests. A reply without that count, or with contracts left open, is cancelled **by market** (a bare cancel routes to exchange shard 0 and 404s while an order rests), a 404 checked against Kalshi's resting list; the desk's own 30 s sweep retries an unconfirmed cancel and cancels any `ubot-` order resting that no row knows |
@@ -3362,11 +3374,13 @@ The extension itself has no build step and stays loaded unpacked.
 before kickoff — the panel's defaults, the book modes, quarter Kelly with
 nothing held and each row's tail-flex rank score, the gates, the sorts, the
 cards (best line by rank), the tail-flex header with c and tau, the shrink
-on every stake (SouthPoint's Bears -2.5, half a point off Unabated's main,
-keeps 83% at the fallback tau and sizes $362.64, not $437.25; the Panthers
--2.5 at +190 keeps 21%; a moneyline keeps 100%), a held $200 Bears
--2.5 that turns the same line into `add $162.64` and the Panthers side
-`bet $155.70`, and an open $400 BFA teaser on the Panthers +3.5
+on every row for the rank and the floor with the stake on the raw edge
+(SouthPoint's Bears -2.5, half a point off Unabated's main, keeps 83% at
+the fallback tau and still sizes $437.25; the Panthers -2.5 at +190 keeps
+21% and sizes $215.13; a moneyline keeps 100%), the Min shrunk edge floor
+(at 1% the Panthers -6.5 at 0.2% shrunk goes, the -2.5 at 1.1% stays; 0 is
+off), a held $200 Bears -2.5 that turns the same line into `add $237.25`
+and the Panthers side `bet $328.86`, and an open $400 BFA teaser on the Panthers +3.5
 that puts the Panthers lines at size — and the edge-move tag only on a held
 line. `runner.test.js` drives `server/runner.js` with the slice behind an
 injected fetch and a scripted bets service: `/edges.json` equals what
@@ -4122,10 +4136,20 @@ adversarial review found the one-cent fuselage term halving every main
 stake on an unmeasured constant while mains had performed to expectation
 (65 wins vs 65.6); he trusts Unabated's main fair, so `sigma_z = c ×
 dist_sd` with nothing at the main — the shrink measures distance from the
-main only, and a main line or moneyline keeps today's stake. Known
-effects: a held alt at its raw stake reads at full size; a shrunk
-candidate below a held neighbour on the
-ladder is a `ladder not monotone` decline.
+main only. Then, on the 2026-10-23 NFL + CFB boards (47 alt rows, 18
+cards, no main-line edge at 3%+ with his books), shrinking the stakes
+would have cut the card dollars from $4,299 to $1,882 while the shrink
+moved only 6 picks, each one rung nearer the main. Cal restated the
+system's purpose — pick WHICH rung of a ladder to bet, then size that
+rung with Kelly on Unabated's edge — and chose that over the stake cut
+(decision card, 11:42Z), with the floor on the shrunk edge as a setting
+of his own ("like the min edge"). So the shrink picks (rank score) and
+gates (**Min shrunk edge**, default 1%, bot included), and every stake is
+back on the raw edge; the pooled tau and `/tau.json` stay, as the floor
+and the rank read them. The adversarial review
+(`/mnt/project-files/unabated_ticket/alt_shrink_adversarial.md`) stands as
+the record of what this does not fix: the deep tail's one-way lean against
+the exchanges.
 
 **2026-09-30 — Tail flex ranks alt lines; the 7-point cap becomes a 10-90% fair cap (0.15.0).**
 The card's best line was the highest Kelly stake, which takes Unabated's

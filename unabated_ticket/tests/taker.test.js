@@ -48,7 +48,7 @@ function decide(state, key, quote, extra = {}) {
   return taker.decideRow({
     row, contract: taker.resolveKalshiContract(row, state), quote,
     priceIndex: pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: taker.MAX_LINE_AGE_MS }),
-    sizing: { matches: [], ladderOf: () => null, teasers: [], shrink: 1 }, ...extra,
+    sizing: { matches: [], ladderOf: () => null, teasers: [], shrink: 1, minShrunkEdgePct: 1 }, ...extra,
   });
 }
 
@@ -335,7 +335,7 @@ function decideHolding(key, records) {
   for (const [league, list] of Object.entries(edgeRows.feedTeamsByLeague(state))) teams.registerTeams(league, list);
   const flags = betsLib.annotateRows([row], betsLib.resolveTeamKeys(records, []), { lines: edgeRows.boardLines(state) });
   const ladderOf = edgeRows.createLadderReaders(state)(row.eventId);
-  return decide(state, key, { ask: 0.57, depth: 100000 }, { sizing: { matches: flags[0].matches, ladderOf, teasers: [], shrink: 1 } });
+  return decide(state, key, { ask: 0.57, depth: 100000 }, { sizing: { matches: flags[0].matches, ladderOf, teasers: [], shrink: 1, minShrunkEdgePct: 1 } });
 }
 
 test("a held bet on the row's axis the sizing math could not price refuses the stake; a held total on a spread row does not", () => {
@@ -441,24 +441,31 @@ test("a moneyline's Kalshi market is the one of two on its event whose title nam
   assert.equal(taker.kalshiMoneylineFromMarkets(row, [duq, wsu, { ...wsu, event_ticker: "KXNCAAFGAME-X" }], event).ticker, `${event}-WSU`);
 });
 
-test("the stake is sized on the shrunk live edge (issue #208): half the shrink, half the contracts; the 3% floor reads the raw edge; no shrink refuses the row", () => {
+test("the Min shrunk edge floor (issue #208): the shrunk live edge gates the row, the stake stays Kelly on the raw live edge; no shrink refuses the row", () => {
   const state = boardWithEdge(WSU_ALT_KEY, 0.05);
+  const sizing = (extra) => ({ sizing: { matches: [], ladderOf: () => null, teasers: [], shrink: 1, minShrunkEdgePct: 1, ...extra } });
   const full = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"));
-  const half = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), { sizing: { matches: [], ladderOf: () => null, teasers: [], shrink: 0.5 } });
+  const half = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: 0.5 }));
   assert.equal(full.reason, "bet");
   assert.equal(half.reason, "bet");
   assert.deepEqual([full.shrink, half.shrink], [1, 0.5]);
-  assert.ok(Math.abs(half.sizedEdge - full.liveEdge / 2) < 1e-6);
-  assert.ok(Math.abs(half.stake - full.stake / 2) < 0.02, `${half.stake} vs ${full.stake}`);
-  assert.equal(half.liveEdge, full.liveEdge);
-  // A shrink that takes the sized edge under 3% still bets: the floor is on the raw live edge.
-  const tiny = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), { sizing: { matches: [], ladderOf: () => null, teasers: [], shrink: 0.05 } });
-  // 5% x 5% = 0.25% sized edge: $1.78 of the $35.56, 3 contracts of the 60, and it still bets.
-  assert.deepEqual([tiny.reason, tiny.sizedEdge, tiny.contracts, full.contracts], ["bet", 0.0025, 3, 60]);
-  assert.ok(Math.abs(tiny.stake - 1.78) < 0.01 && tiny.sizedEdge < taker.MIN_LIVE_EDGE);
-  // No shrink at all (tailflex found no fair for the row) refuses this row, not the pass; a shrink outside (0, 1] is a bug.
-  const none = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), { sizing: { matches: [], ladderOf: () => null, teasers: [], shrink: null } });
+  assert.ok(Math.abs(half.shrunkEdge - full.liveEdge / 2) < 1e-6);
+  // Half the shrink, the SAME stake and contracts: the stake is on the raw live edge (Cal 2026-10-23).
+  assert.deepEqual([half.stake, half.contracts, half.liveEdge], [full.stake, full.contracts, full.liveEdge]);
+  assert.equal(full.contracts, 60);
+  // 5% x 0.15 = 0.75% shrunk: under the 1% floor, edge_short; the same row passes a 0.5% floor at the full stake.
+  const deep = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: 0.15 }));
+  assert.equal(deep.reason, "edge_short");
+  assert.match(deep.detail, /shrunk live edge 0\.7\d% under 1% \(shrink 0\.150\)/);
+  assert.ok(Math.abs(deep.shrunkEdge - full.liveEdge * 0.15) < 1e-6);
+  const lowFloor = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: 0.15, minShrunkEdgePct: 0.5 }));
+  assert.deepEqual([lowFloor.reason, lowFloor.contracts], ["bet", 60]);
+  // A floor of 0 is off: every shrink passes.
+  assert.equal(decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: 0.01, minShrunkEdgePct: 0 })).reason, "bet");
+  // No shrink at all (tailflex found no fair for the row) refuses this row, not the pass; a shrink outside (0, 1] or a missing floor is a bug.
+  const none = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: null }));
   assert.deepEqual([none.reason, none.detail], ["size_declined", "no tail-flex shrink for the row"]);
-  assert.throws(() => decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), { sizing: { matches: [], ladderOf: () => null, teasers: [] } }), /sizing\.shrink in \(0, 1\]/);
-  assert.throws(() => decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), { sizing: { matches: [], ladderOf: () => null, teasers: [], shrink: 1.5 } }), /sizing\.shrink in \(0, 1\]/);
+  assert.throws(() => decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), { sizing: { matches: [], ladderOf: () => null, teasers: [], minShrunkEdgePct: 1 } }), /sizing\.shrink in \(0, 1\]/);
+  assert.throws(() => decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: 1.5 })), /sizing\.shrink in \(0, 1\]/);
+  assert.throws(() => decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), { sizing: { matches: [], ladderOf: () => null, teasers: [], shrink: 1 } }), /minShrunkEdgePct/);
 });
