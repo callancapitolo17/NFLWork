@@ -2928,6 +2928,9 @@ the desk asks Kalshi for the key's balance in the subaccount (must answer,
 without the `balance_breakdown` Kalshi sends only to unrestricted keys) and
 in the primary account (must be refused); a key that reads the primary, or a
 check that never finishes (no answer, 429, 5xx three times), leaves it off.
+Since 2026-10-22 Kalshi refuses a locked key's primary read with a steady 429,
+not a 403: a 429 there on all three tries, each right after a locked-shape
+subaccount read, counts as the refusal and is logged as such.
 Without all of it `POST /taker/order.json` answers 503 and `/taker.json` says
 `desk: off`, and the log names the reason. Stop: `touch` the stop file
 (`TAKER_STOP_PATH`, `/data/taker.stop` on the VM); `rm` it to resume. Revoking
