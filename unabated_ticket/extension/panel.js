@@ -1774,7 +1774,7 @@
     const stake = document.createElement("span");
     stake.className = "gl-stake";
     stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
-    if (typeof row.shrunkEdgePct === "number") stake.title = `ranked on ${fmtPct(row.shrunkEdgePct / 100)} shrunk (${Math.round(row.shrink * 100)}% of Unabated's ${fmtPct(row.edgePct / 100)}); the stake is on Unabated's edge`;
+    if (typeof row.shrunkEdgePct === "number") stake.title = `ranked on this stake's growth at ${fmtPct(row.shrunkEdgePct / 100)} shrunk (${Math.round(row.shrink * 100)}% of Unabated's ${fmtPct(row.edgePct / 100)}); the stake is on Unabated's edge`;
     rail.append(edge, ...moveParts(row, row.bet), stake);
 
     li.append(main, rail);

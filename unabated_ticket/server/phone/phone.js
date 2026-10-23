@@ -292,7 +292,7 @@
     const stake = makeEl("span", `edge-stake${row.rail.atSize ? " at-size" : ""}`, row.rail.text);
     if (row.rail.note) stake.append(" ", makeEl("small", null, row.rail.note));
     // The shrunk edge the list ranks and gates the row on (the tail flex, issue #208), as the panel's hover; the stake is on the raw edge.
-    if (typeof row.shrunkEdgePct === "number") stake.title = `ranked on ${phoneView.fmtEdgePct(row.shrunkEdgePct)} shrunk (${Math.round(row.shrink * 100)}% of Unabated's ${phoneView.fmtEdgePct(row.edgePct)}); the stake is on Unabated's edge`;
+    if (typeof row.shrunkEdgePct === "number") stake.title = `ranked on this stake's growth at ${phoneView.fmtEdgePct(row.shrunkEdgePct)} shrunk (${Math.round(row.shrink * 100)}% of Unabated's ${phoneView.fmtEdgePct(row.edgePct)}); the stake is on Unabated's edge`;
     rail.append(stake);
     return rail;
   }

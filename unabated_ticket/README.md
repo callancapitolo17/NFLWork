@@ -549,9 +549,9 @@ soft ladder yields 4–10 rows that all say one thing, so the list shows one
 **card per (game, period, bet type, side)** — a +EV opinion is directional,
 so the two sides of a market are two cards. The card's head is the side and
 its best edge; under it the market, matchup and start; then the **best
-line**, which is the highest **tail-flex rank score** — shrunk edge × its
-stake, below — so a -14.5 at +270 for 13.9% outranks a -27.5 at +1300 for
-17.3%; then `▸ 2 books · 7 lines (+6)`, which opens the other books and rungs.
+line**, which is the highest **tail-flex rank score** — the believed growth
+of its stake, below — so a -14.5 at +270 for 13.9% outranks a -27.5 at +1300
+for 17.3%; then `▸ 2 books · 7 lines (+6)`, which opens the other books and rungs.
 The card is its best line — it carries that line's own number, and a rung
 behind the expander names its own when it differs. Every line is clickable
 (locate) as before. The count badge counts cards,
@@ -601,17 +601,27 @@ Unabated fair p = (1 + edge) / decimal:
   the shrink). On the 2026-10-23 boards at 1%
   the floor cuts the deepest rungs (Texas Tech −20.5 at 1.0% shrunk, FAU and
   UNC −17.5 at 1.1%) and leaves the rest;
-- **rank score = shrunk edge × stake** (`rankScoreOf`): the EV dollars
-  believed on the stake that would be placed (Kelly on the raw edge). It
-  picks a card's best line and orders the lines inside it — between two
-  rungs the nearer the main wins unless the farther one claims many times
-  more; two neighbouring deep rungs are near a coin flip, which is honest.
-  The stake's tooltip shows the shrunk edge and the shrink (`ranked on 1.0%
-  shrunk (21% of Unabated's 4.7%); the stake is on Unabated's edge`), the
-  Ticket's edge sub-line `shrunk X%`. The issue's card (main −14 at +105
-  for 4.5%, −24.5 at +340 for 12.2%, c 9.4%, tau 1.85%): the main keeps
-  4.5%, −17.5 keeps 44%, −21 11%, −24.5 4%; the card picks the main, and
-  at a 1% floor the −24.5 does not list.
+- **rank score = the believed growth of the stake** (`rankScoreOf`):
+  `stake × shrunk edge − stake² × b / (2 × bankroll)`, the second-order
+  Kelly expansion of the stake that would be placed (Kelly on the raw
+  edge) believed at the shrunk edge, b the net odds. The first term is the
+  EV believed, the second what the stake's size costs in variance, so a big
+  stake on a little-trusted claim cannot win a card through its size: the
+  2026-10-22 rank, `shrunk edge × stake` (∝ edge² × shrink), let a 10%
+  claim at shrink 0.15 outrank a 4% claim at 0.80 (15 vs 12.8) and tied 11
+  of 40 cards within 25% on the 2026-10-23 boards. The score goes negative
+  once the stake is past twice the Kelly the shrunk edge supports (shrink
+  under multiplier / 2); nothing gates on that (Cal, 2026-10-23: "I don't
+  want to have a minimum trust") — the score only picks a card's best line
+  and orders the lines inside it, and between two books at one number it
+  prefers the better price. The stake's tooltip shows the shrunk edge and
+  the shrink (`ranked on this stake's growth at 1.0% shrunk (21% of
+  Unabated's 4.7%); the stake is on Unabated's edge`), the Ticket's edge
+  sub-line `shrunk X%`. The issue's card (main −14 at +105 for 4.5%, −24.5
+  at +340 for 12.2%, c 9.4%, tau 1.85%): the main keeps 4.5%, −17.5 keeps
+  44%, −21 11%, −24.5 4%; the card picks the main (growth about +$14.8 on
+  its $375 against about −$3.2 for the −24.5 on its raw $314), and at a 1%
+  floor the −24.5 does not list.
 
 The **Min edge** gate, the bot's 3% floor and 20% cap and the Live block read
 the raw edge; live rows and a live Ticket have no shrunk edge (the live fair
@@ -4155,7 +4165,17 @@ back on the raw edge; the pooled tau and `/tau.json` stay, as the floor
 and the rank read them. The adversarial review
 (`/mnt/project-files/unabated_ticket/alt_shrink_adversarial.md`) stands as
 the record of what this does not fix: the deep tail's one-way lean against
-the exchanges.
+the exchanges. 2026-10-23 ~21:00Z, the logic review before the push
+(`alt_shrink_review.md` addendum 3): with raw stakes the 2026-10-22 rank,
+shrunk edge × stake, let the claim vouch for itself again through the
+stake (∝ edge² × shrink); on the evening boards 16 of 40 picks and 115 of
+188 rows had negative believed growth at the raw quarter-Kelly stake
+(every one at shrink < 0.125 = multiplier / 2). Offered A (growth rank +
+a shrink ≥ multiplier / 2 gate), B (growth rank only), C (as built); Cal:
+"I don't want to have a minimum trust", then B — so the rank is the
+believed growth of the stake and the Min shrunk edge floor is the only
+gate. The same review made alerts honour the floor, a floor of 0 truly
+off (list and bot), and tau's 100 minimum count distinct rungs.
 
 **2026-09-30 — Tail flex ranks alt lines; the 7-point cap becomes a 10-90% fair cap (0.15.0).**
 The card's best line was the highest Kelly stake, which takes Unabated's

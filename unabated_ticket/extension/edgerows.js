@@ -310,13 +310,14 @@
   // The row with its shrink (`shrink`, `shrunkEdgePct`: what the Min shrunk
   // edge floor and the rank read), its standalone stake on Unabated's raw
   // edge (`edgePct`, which the Min edge floor reads too), and the rank
-  // score: shrunk edge x stake, which picks a card's best line and orders the
-  // lines inside it. `measurement` is tailflex.measureTailFlex over the same
-  // feed state (with the pooled tau where the caller has one).
+  // score: the believed growth of that stake (tailflex.rankScoreOf), which
+  // picks a card's best line and orders the lines inside it. `measurement`
+  // is tailflex.measureTailFlex over the same feed state (with the pooled
+  // tau where the caller has one).
   function withStakeAndRank(row, measurement, stakeSettings) {
     const shrunk = tailflex.shrinkOfRow(row, measurement);
     const sized = { ...row, shrink: shrunk ? shrunk.shrink : null, shrunkEdgePct: shrunk ? shrunk.edgePct : null, stake: stakeOnEdge(row, row.edgePct, stakeSettings) };
-    return { ...sized, rankScore: tailflex.rankScoreOf(sized) };
+    return { ...sized, rankScore: tailflex.rankScoreOf(sized, stakeSettings.bankroll) };
   }
 
   // The Ticket's line as the Edges row shape the tail flex reads (the
@@ -464,8 +465,8 @@
   }
 
   // Cards: the best line of each (game, market, side) is always the highest
-  // tail-flex rank score (EV dollars after flex); the list's sort orders the
-  // cards through that line.
+  // tail-flex rank score (the believed growth of its stake); the list's sort
+  // orders the cards through that line.
   function groupEdgeRows(rows, sortBy) {
     const groups = feed.groupEdges(rows, (row) => row.rankScore);
     if (sortBy === "stake") groups.sort((a, b) => (b.best.stake ?? -1) - (a.best.stake ?? -1) || b.best.edgePct - a.best.edgePct);

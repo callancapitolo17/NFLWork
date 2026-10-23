@@ -57,7 +57,8 @@
 //          sourcePrice, bacr, statusId, isAlt, ...}, books {id: {hasLiquidity}},
 //          events {id: {eventStart}}.
 // Outputs  measureTailFlex -> {markets, mainFairs, tauSamples}; shrinkOfRow ->
-//          {shrink, edgePct, sigmaE, tau, c}; rankOfRow -> {shrink, score}.
+//          {shrink, edgePct, tau, c}; rankScoreOf -> the believed growth of
+//          a sized row's stake, in dollars.
 //          Nothing here writes anywhere.
 
 (function (root) {
@@ -506,15 +507,25 @@
     return { shrink, edgePct: row.edgePct * shrink, tau, c };
   }
 
-  // A sized row's rank score: shrunk edge x stake, the EV dollars believed
-  // on the stake that would be placed (Kelly on the raw edge;
-  // edgerows.withStakeAndRank sets both); null when the row has no stake or
-  // no shrunk edge. It picks a card's best line and orders the lines inside
-  // it: between two rungs the nearer the main wins unless the farther one
-  // claims many times more.
-  function rankScoreOf(row) {
+  // A sized row's rank score: the expected log growth, in dollars, of the
+  // stake that would be placed (Kelly on the raw edge; edgerows.withStakeAndRank
+  // sets it), believed at the shrunk edge — the second-order Kelly expansion
+  //   stake x shrunkEdge - stake^2 x b / (2 x bankroll),   b = decimal - 1.
+  // The first term is the EV believed; the second is what the stake's size
+  // costs in variance, so a big stake on a little-trusted claim cannot win a
+  // card through its size (shrunk edge x stake alone let a 10% claim at
+  // shrink 0.15 outrank a 4% claim at 0.80; the 2026-10-23 review). It goes
+  // negative once the stake is past twice the Kelly the shrunk edge supports
+  // (shrink under multiplier / 2); nothing gates on that (Cal, 2026-10-23: no
+  // minimum trust) — it only picks a card's best line and orders the lines
+  // inside it. null when the row has no stake or no shrunk edge; a bankroll
+  // that is not a positive number is a bug.
+  function rankScoreOf(row, bankroll) {
+    if (!(typeof bankroll === "number" && bankroll > 0)) throw new Error(`rankScoreOf: expected a positive bankroll, got ${bankroll}`);
     if (typeof row.stake !== "number" || typeof row.shrunkEdgePct !== "number") return null;
-    return (row.shrunkEdgePct / 100) * row.stake;
+    const netOdds = kelly.americanToDecimal(row.price) - 1;
+    const believedEdge = row.shrunkEdgePct / 100;
+    return row.stake * believedEdge - (row.stake * row.stake * netOdds) / (2 * bankroll);
   }
 
   const api = {

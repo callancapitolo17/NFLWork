@@ -146,8 +146,10 @@ test("listedEdgeRows: nothing held, every row's stake is quarter Kelly off Unaba
     assert.equal(row.stake, standalone);
     // A moneyline sits on no ladder: nothing to shrink.
     if (row.betTypeId === 1) assert.equal(row.shrink, 1);
-    assert.equal(row.rankScore, tailflex.rankScoreOf(row));
-    assert.ok(Math.abs(row.rankScore - (row.shrunkEdgePct / 100) * row.stake) < 1e-9);
+    assert.equal(row.rankScore, tailflex.rankScoreOf(row, 30000));
+    // The rank is the believed growth of that stake: stake x shrunk edge - stake^2 x b / (2 x bankroll).
+    const netOdds = kelly.americanToDecimal(row.price) - 1;
+    assert.ok(Math.abs(row.rankScore - (row.stake * (row.shrunkEdgePct / 100) - (row.stake * row.stake * netOdds) / (2 * 30000))) < 1e-9);
     assert.deepEqual([row.bet.tier, row.bet.advice.kind, row.bet.advice.bet], [null, "none", standalone]);
   }
   // SouthPoint's Bears -2.5 at -110 (5.3%) sits half a point off Unabated's

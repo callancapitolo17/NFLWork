@@ -31,8 +31,8 @@
 //          score; the panel's expander shows each of `others`, in rank
 //          order, with its standalone `stake`, not its rail)
 //   row   the selectEdges fields the panel renders, plus edgeTier, stake (the
-//         standalone, liquidity-capped Kelly stake), rankScore (tail-flex EV
-//         dollars, null when unranked), bookProb, advice {kind, bet, alone,
+//         standalone, liquidity-capped Kelly stake), rankScore (the believed
+//         growth of that stake, dollars; null when unranked), bookProb, advice {kind, bet, alone,
 //         verb, held, against, teasers {held, against}, reason, cappedAt, uncapped},
 //         rail {text, note, atSize}, badges [{kind, text, title?}], related
 //         [{tier, inMath, tag, text, fairThen, title?}], move {kind, label,

@@ -184,10 +184,10 @@ test("shrinkFactor: the share of a claimed edge to believe does not depend on th
 // A row ranked as edgerows.withStakeAndRank ranks it, on the stake it carries.
 function ranked(row, measurement) {
   const shrunk = tailflex.shrinkOfRow(row, measurement);
-  return { ...row, shrunkEdgePct: shrunk ? shrunk.edgePct : null, rankScore: tailflex.rankScoreOf({ ...row, shrunkEdgePct: shrunk ? shrunk.edgePct : null }) };
+  return { ...row, shrunkEdgePct: shrunk ? shrunk.edgePct : null, rankScore: tailflex.rankScoreOf({ ...row, shrunkEdgePct: shrunk ? shrunk.edgePct : null }, BANKROLL) };
 }
 
-test("shrinkOfRow and rankScoreOf: the stake reads the shrunk edge, the rank is shrunk edge x stake; the issue's card picks the main", () => {
+test("shrinkOfRow and rankScoreOf: the rank is the believed growth of the raw-edge stake; the issue's card picks the main", () => {
   // Issue #208's card: a CFB favorite, main -14 at 51% fair, c 9.4%, $35k at quarter Kelly, tau 1.85%.
   const main = { points: -14, price: 105, edgePct: 4.5 };
   const deep = { points: -24.5, price: 340, edgePct: 12.2 };
@@ -202,38 +202,49 @@ test("shrinkOfRow and rankScoreOf: the stake reads the shrunk edge, the rank is 
   assert.ok(Math.abs(shrunkMain.edgePct - 4.5) < 0.01, `main ${shrunkMain.edgePct}`);
   assert.ok(Math.abs(shrunkDeep.edgePct - 0.5) < 0.1, `deep ${shrunkDeep.edgePct}`);
   assert.deepEqual([shrunkMain.tau, shrunkMain.c], [0.0185, 0.094]);
-  const sized = (line) => {
+  // The stake is Kelly on the RAW edge (Cal 2026-10-23); the rank believes the shrunk one.
+  const sized = (line, at = measurement) => {
     const row = rowOf(line);
-    const shrunk = tailflex.shrinkOfRow(row, measurement);
-    return { ...row, shrunkEdgePct: shrunk.edgePct, stake: kelly.kellyStakeFromEdge({ bookPrice: row.price, edgePct: shrunk.edgePct, bankroll: 35000, multiplier: 0.25 }).stake };
+    const shrunk = tailflex.shrinkOfRow(row, at);
+    return { ...row, shrunkEdgePct: shrunk.edgePct, stake: kelly.kellyStakeFromEdge({ bookPrice: row.price, edgePct: row.edgePct, bankroll: 35000, multiplier: 0.25 }).stake };
   };
   const mainRow = sized(main);
   const deepRow = sized(deep);
   assert.ok(Math.abs(mainRow.stake - 375) < 3, `main stake ${mainRow.stake}`);
-  assert.ok(Math.abs(deepRow.stake - 13) < 2, `deep stake ${deepRow.stake}`);
-  const rankMain = tailflex.rankScoreOf(mainRow);
-  const rankDeep = tailflex.rankScoreOf(deepRow);
-  assert.ok(Math.abs(rankMain - (mainRow.shrunkEdgePct / 100) * mainRow.stake) < 1e-9);
-  assert.ok(rankMain > 20 * rankDeep, `${rankMain} vs ${rankDeep}`);
+  assert.ok(Math.abs(deepRow.stake - 314) < 3, `deep stake ${deepRow.stake}`);
+  const rankMain = tailflex.rankScoreOf(mainRow, 35000);
+  const rankDeep = tailflex.rankScoreOf(deepRow, 35000);
+  // Believed growth: stake x shrunk edge - stake^2 x b / (2K). The main: $375 x 4.5% - $375^2 x 1.05 / $70,000 = $14.77.
+  const growth = (row) => row.stake * (row.shrunkEdgePct / 100) - (row.stake * row.stake * (kelly.americanToDecimal(row.price) - 1)) / (2 * 35000);
+  assert.ok(Math.abs(rankMain - growth(mainRow)) < 1e-9 && Math.abs(rankMain - 14.77) < 0.05, `${rankMain}`);
+  // The -24.5's raw $314 believes 0.5%: past twice the Kelly that supports, so its growth is negative (about -$3.2).
+  assert.ok(Math.abs(rankDeep - growth(deepRow)) < 1e-9 && rankDeep < -2.5 && rankDeep > -4, `${rankDeep}`);
   // At every tau from 1% to 3% the main still wins the card.
   for (const tau of [0.01, 0.03]) {
     const at = { ...measurement, markets: { "2:1:2": { ...measurement.markets["2:1:2"], tau } } };
-    const score = (line) => { const row = rowOf(line); const shrunk = tailflex.shrinkOfRow(row, at); return tailflex.rankScoreOf({ ...row, shrunkEdgePct: shrunk.edgePct, stake: kelly.kellyStakeFromEdge({ bookPrice: row.price, edgePct: shrunk.edgePct, bankroll: 35000, multiplier: 0.25 }).stake }); };
+    const score = (line) => tailflex.rankScoreOf(sized(line, at), 35000);
     assert.ok(score(main) > score(deep), `tau ${tau}`);
   }
-  // No stake, no positive edge, no American price: nothing.
-  assert.equal(tailflex.rankScoreOf({ ...mainRow, stake: null }), null);
-  assert.equal(tailflex.rankScoreOf({ ...mainRow, shrunkEdgePct: null }), null);
+  // No stake, no positive edge, no American price: nothing. No bankroll: a bug.
+  assert.equal(tailflex.rankScoreOf({ ...mainRow, stake: null }, 35000), null);
+  assert.equal(tailflex.rankScoreOf({ ...mainRow, shrunkEdgePct: null }, 35000), null);
+  assert.throws(() => tailflex.rankScoreOf(mainRow), /positive bankroll/);
+  assert.throws(() => tailflex.rankScoreOf(mainRow, 0), /positive bankroll/);
   assert.equal(tailflex.shrinkOfRow({ ...mainRow, edgePct: 0 }, measurement), null);
   assert.equal(tailflex.shrinkOfRow({ ...mainRow, price: 50 }, measurement), null);
 });
 
-test("groupEdges by the rank score picks -14.5 over the bigger-edge -27.5 and the -257 short", () => {
+test("groupEdges by the rank score: the near rung's small trusted edge beats -14.5's big claim at its oversized stake; the -27.5 longshot ranks last", () => {
   const rows = [MINUS_27_5, MINUS_2_5, MINUS_14_5].map((row) => ranked(row, MEASUREMENT_C10));
   const [card] = feed.groupEdges(rows, (row) => row.rankScore);
-  // The +1300 longshot at 17.3% now ranks last: 1% at the -257 short keeps more of its edge than 17.3% four SD out.
-  assert.deepEqual(card.rows.map((row) => row.key), ["novig-14.5", "novig-2.5", "hardrock-27.5"]);
-  assert.equal(card.best.key, "novig-14.5");
+  // Believed growth of the raw quarter-Kelly stake off the -8.5 main (fallback c 10%, tau 1.85%): -2.5 at -257,
+  // six points off, keeps 27% of its 1%, and its $64 still grows (+$0.10); -14.5 at +270 keeps 9% of 13.9%, so
+  // its $129 is eleven times the Kelly the believed 1.2% supports and loses growth (-$0.64); -27.5 at +1300
+  // keeps 0.4% of 17.3% (-$0.70). Shrunk edge x stake alone ($1.60 vs $0.18) would have put -14.5 first.
+  assert.deepEqual(card.rows.map((row) => row.key), ["novig-2.5", "novig-14.5", "hardrock-27.5"]);
+  assert.equal(card.best.key, "novig-2.5");
+  const scoreOf = (key) => rows.find((row) => row.key === key).rankScore;
+  assert.ok(scoreOf("novig-2.5") > 0 && scoreOf("novig-14.5") < 0 && scoreOf("novig-14.5") > scoreOf("hardrock-27.5"), rows.map((row) => `${row.key} ${row.rankScore}`).join(", "));
   // By raw edge the -27.5 would have won the card.
   assert.equal(feed.groupEdges(rows)[0].best.key, "hardrock-27.5");
 });
