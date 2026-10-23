@@ -170,10 +170,10 @@ test("edges.json lists exactly what the panel's modules list for the same settin
   assert.equal(rows.length, 14);
 
   const held = payload.items.find((card) => card.best.key === BEARS_SPREAD_SOUTHPOINT).best;
-  // $200 held on a main number the shrunk edge sizes $194.08: at full size (edgerows.test.js).
-  assert.deepEqual(held.rail, { text: "add $0.00", note: "$194.08 alone", atSize: true });
+  // $200 held on a line the shrunk edge sizes $362.64: add the rest (edgerows.test.js).
+  assert.deepEqual(held.rail, { text: "add $162.64", note: "$362.64 alone", atSize: false });
   assert.deepEqual(held.badges, [{ kind: "held", text: "held $200" }]);
-  assert.deepEqual([held.advice.kind, held.advice.verb, held.advice.held, held.advice.bet], ["sized", "add", 200, 0]);
+  assert.deepEqual([held.advice.kind, held.advice.verb, held.advice.held, held.advice.bet], ["sized", "add", 200, 162.64]);
   assert.deepEqual(held.advice.teasers, { held: 0, against: 0 });
   assert.equal(held.related.length, 1);
   assert.equal(held.related[0].tier, "same_line");
@@ -203,7 +203,7 @@ test("a flat list when cards are off, and the minimum edge and sort come from th
   const payload = runner.edgesPayload();
   assert.deepEqual([payload.grouped, payload.unit, payload.total], [false, "lines", 3]);
   assert.deepEqual(payload.items.map((row) => row.key), [BEARS_SPREAD_SOUTHPOINT, "289357357:ms89:si1:tid5:alt-2.5", "289357357:ms89:si1:tid5:alt-6.5"]);
-  assert.deepEqual(payload.items[0].rail, { text: "bet $194.08", note: null, atSize: false });
+  assert.deepEqual(payload.items[0].rail, { text: "bet $362.64", note: null, atSize: false });
 });
 
 test("the bets service down: the panel's defaults, both errors named, nothing sized against bets", async () => {

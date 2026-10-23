@@ -82,10 +82,11 @@ test("the ticket for a held sportsbook line: add, its standalone size, no contra
   assert.equal(ticket.edge, "+5.30%");
   assert.match(ticket.start, / · in 1h 0m$/);
   const block = ticket.stakeBlock;
-  // $200 held on a main number the shrunk edge (#208) sizes $194.08: at full size.
+  // $200 held on a line the shrunk edge (#208) sizes $362.64: add $162.64.
   assert.deepEqual([block.label, block.stake, block.noEdge, block.position, block.positionAgainst, block.contracts],
-    ["Already at full size", "$0.00", true, "held $200 · $194.08 alone", false, null]);
-  assert.deepEqual([block.toWin, block.payout], [null, null]);
+    ["Add to your position", "$162.64", false, "held $200 · $362.64 alone", false, null]);
+  // The add's own payout at -110: $162.64 wins $147.85.
+  assert.deepEqual([block.toWin, block.payout], ["$147.85", "$310.49"]);
 });
 
 test("the ticket for an exchange line: contracts at the exchange's price, cost under the stake", async () => {
@@ -94,8 +95,8 @@ test("the ticket for an exchange line: contracts at the exchange's price, cost u
   const block = phoneView.stakeBlockView(row);
   assert.equal(block.label, "Bet");
   assert.equal(block.stake, edgeRows.fmtDollars(row.advice.bet));
-  // The shrunk edge sizes $30.94 (edgerows.test.js): floor($30.94 / 0.345) = 89 contracts; 89 x 0.345 = $30.71.
-  assert.deepEqual(block.contracts, { text: "89 contracts @ 34.5¢", cost: "$30.71", under: false });
+  // The shrunk edge sizes $45.03 (edgerows.test.js): floor($45.03 / 0.345) = 130 contracts; 130 x 0.345 = $44.85.
+  assert.deepEqual(block.contracts, { text: "130 contracts @ 34.5¢", cost: "$44.85", under: false });
   assert.equal(phoneView.contractsView(0.2, row).text, "under 1 contract @ 34.5¢");
   assert.equal(phoneView.contractsView(0, row), null);
 });

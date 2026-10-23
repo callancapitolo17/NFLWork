@@ -573,8 +573,11 @@ p = (1 + edge) / decimal:
 - `dist_sd = |qnorm(p) − qnorm(fair of the same side at Unabated's main
   number)|` (Unabated's own line, book 49; even money when it has none; 0 on
   a moneyline);
-- `sigma_z = sqrt(DZ_MAIN² + (c × dist_sd)²)`, `DZ_MAIN` = one cent at the
-  median in probit;
+- `sigma_z = c × dist_sd` — zero at Unabated's main number and on a
+  moneyline: Unabated's main fair is taken as right, so a main line keeps its
+  whole edge and today's stake (Cal, 2026-10-23; the one-cent "fuselage" term
+  the old flex carried would have halved every main stake on an unmeasured
+  constant);
 - `sigma_e = decimal × dnorm(z) × sigma_z` — the noise of the claimed edge, in
   EV per $1 (`tailflex.edgeUncertainty`);
 - **`shrink = tau² / (tau² + sigma_e²)`**, **shrunk edge = edge × shrink**
@@ -584,16 +587,19 @@ p = (1 + edge) / decimal:
   McHale 2013), which let a big claimed edge vouch for itself — the
   optimizer's curse (Smith & Winkler 2006): the rows that list are the ones
   whose noise happened to point up, and the deepest rungs most of all;
-- **rank score = shrunk edge × stake** (`rankOfRow`), the stake being the
+- **rank score = shrunk edge × stake** (`rankScoreOf`), the stake being the
   row's own Kelly stake on the shrunk edge. It picks a card's best line and
   orders the lines inside it; the stake's tooltip shows the shrunk edge and
-  the shrink (`sized on 2.1% (44% of Unabated's 4.7%)`), the Ticket's edge sub-line
-  `sized on X%`.
+  the shrink (`sized on 1.0% (21% of Unabated's 4.7%)`), the Ticket's edge sub-line
+  `sized on X%`. The issue's card (main −14 at +105 for 4.5%, −24.5 at +340
+  for 12.2%, c 9.4%, tau 1.85%, $35k quarter Kelly): the main keeps 4.5% and
+  $375, −17.5 keeps 44% ($128), −21 11% ($38), −24.5 4% ($13); the card picks
+  the main.
 
 The **Min edge** gate, the bot's 3% floor and 20% cap and the Live block read
 the raw edge; live rows and a live Ticket are sized on the raw edge (the live
 fair is Unabated's in-game read, not a tail). A held bet is still priced at
-its own fill, so a line held at the raw-edge stake now often reads
+its own fill, so an alt held at the raw-edge stake now often reads
 `add $0.00 … at full size`; and a candidate stake over a shrunk fair can sit
 below a held neighbour's on the ladder, which the conditional Kelly then
 declines as `ladder not monotone` (accepted, 2026-10-22).
@@ -3356,10 +3362,11 @@ The extension itself has no build step and stays loaded unpacked.
 before kickoff — the panel's defaults, the book modes, quarter Kelly with
 nothing held and each row's tail-flex rank score, the gates, the sorts, the
 cards (best line by rank), the tail-flex header with c and tau, the shrink
-on every stake (Bears -2.5 main keeps 44% at the fallback tau and sizes
-$194.08, not $437.25; the Panthers -2.5 at +190 keeps 14%), a held $200 Bears
--2.5 that reads the same line `add $0.00` at size and the Panthers side
-`bet $141.37`, and an open $400 BFA teaser on the Panthers +3.5
+on every stake (SouthPoint's Bears -2.5, half a point off Unabated's main,
+keeps 83% at the fallback tau and sizes $362.64, not $437.25; the Panthers
+-2.5 at +190 keeps 21%; a moneyline keeps 100%), a held $200 Bears
+-2.5 that turns the same line into `add $162.64` and the Panthers side
+`bet $155.70`, and an open $400 BFA teaser on the Panthers +3.5
 that puts the Panthers lines at size — and the edge-move tag only on a held
 line. `runner.test.js` drives `server/runner.js` with the slice behind an
 injected fetch and a scripted bets service: `/edges.json` equals what
@@ -4110,8 +4117,14 @@ a rolling 24 h pool the runner persists through the bets service
 (`tau_samples`) and serves at `/tau.json`; the panel sizes on the pooled
 tau, never a one-refresh read (Cal: "concerned about measuring live tau";
 "I don't want it to go in as fixed"; chose A, pooled over a day).
-Fallback 1.85% under 101 pooled samples. Known effects: a held bet at its raw
-stake reads at full size; a shrunk candidate below a held neighbour on the
+Fallback 1.85% under 101 pooled samples. 2026-10-23, before merge: Cal's
+adversarial review found the one-cent fuselage term halving every main
+stake on an unmeasured constant while mains had performed to expectation
+(65 wins vs 65.6); he trusts Unabated's main fair, so `sigma_z = c ×
+dist_sd` with nothing at the main — the shrink measures distance from the
+main only, and a main line or moneyline keeps today's stake. Known
+effects: a held alt at its raw stake reads at full size; a shrunk
+candidate below a held neighbour on the
 ladder is a `ladder not monotone` decline.
 
 **2026-09-30 — Tail flex ranks alt lines; the 7-point cap becomes a 10-90% fair cap (0.15.0).**

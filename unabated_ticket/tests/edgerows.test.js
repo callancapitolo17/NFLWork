@@ -136,23 +136,26 @@ test("listedEdgeRows: nothing held, every row's stake is quarter Kelly off its S
   for (const row of rows) {
     // The shrink (tailflex.shrinkOfRow, issue #208): the raw edge stays on the row, the stake reads the shrunk one.
     const shrunk = tailflex.shrinkOfRow(row, measurement);
-    assert.ok(row.shrink > 0 && row.shrink < 1 && row.shrunkEdgePct === shrunk.edgePct && row.shrunkEdgePct < row.edgePct, row.key);
+    assert.ok(row.shrink > 0 && row.shrink <= 1 && row.shrunkEdgePct === shrunk.edgePct && row.shrunkEdgePct <= row.edgePct, row.key);
     const standalone = kelly.kellyStakeFromEdge({ bookPrice: row.price, edgePct: row.shrunkEdgePct, bankroll: 30000, multiplier: 0.25 }).stake;
     assert.equal(row.stake, standalone);
-    assert.ok(row.stake < kelly.kellyStakeFromEdge({ bookPrice: row.price, edgePct: row.edgePct, bankroll: 30000, multiplier: 0.25 }).stake);
+    assert.ok(row.stake <= kelly.kellyStakeFromEdge({ bookPrice: row.price, edgePct: row.edgePct, bankroll: 30000, multiplier: 0.25 }).stake);
+    // A moneyline sits on no ladder: nothing to shrink.
+    if (row.betTypeId === 1) assert.equal(row.shrink, 1);
     assert.equal(row.rankScore, tailflex.rankScoreOf(row));
     assert.ok(Math.abs(row.rankScore - (row.shrunkEdgePct / 100) * row.stake) < 1e-9);
     assert.deepEqual([row.bet.tier, row.bet.advice.kind, row.bet.advice.bet], [null, "none", standalone]);
   }
-  // SouthPoint's Bears -2.5 at -110 (5.3%) is a main number: it keeps ~44%
-  // (the one-cent fuselage alone, tau 1.85%) and sizes $194.08, not $437.25.
+  // SouthPoint's Bears -2.5 at -110 (5.3%) sits half a point off Unabated's
+  // main: it keeps 83% (tau 1.85%, nothing at the main itself) and sizes
+  // $362.64, not $437.25.
   const main = rows.find((row) => row.key === BEARS_SPREAD_SOUTHPOINT);
-  assert.ok(Math.abs(main.shrink - 0.444) < 0.001, `main shrink ${main.shrink}`);
-  assert.equal(Math.round(main.stake * 100) / 100, 194.08);
-  // Novig's Panthers +2.5 at 34.5c (5.45%), 0.4 SD out at the fallback c: 14%, $30.94 (was $215.13).
+  assert.ok(Math.abs(main.shrink - 0.829) < 0.001, `main shrink ${main.shrink}`);
+  assert.equal(Math.round(main.stake * 100) / 100, 362.64);
+  // Novig's Panthers +2.5 at 34.5c (5.45%), 0.4 SD out at the fallback c: 21%, $45.03 (was $215.13).
   const alt = rows.find((row) => row.key === PANTHERS_ALT_NOVIG);
-  assert.ok(Math.abs(alt.shrink - 0.144) < 0.001, `alt shrink ${alt.shrink}`);
-  assert.equal(Math.round(alt.stake * 100) / 100, 30.94);
+  assert.ok(Math.abs(alt.shrink - 0.209) < 0.001, `alt shrink ${alt.shrink}`);
+  assert.equal(Math.round(alt.stake * 100) / 100, 45.03);
   for (let i = 1; i < rows.length; i += 1) assert.ok(rows[i - 1].edgePct >= rows[i].edgePct);
 });
 
@@ -186,22 +189,22 @@ test("conditional Kelly: a held Bears -2.5 makes the same line an add, the other
   const rows = edgeRows.listedEdgeRows(state, contextFor(state, openSettings(), records));
   const byKey = new Map(rows.map((row) => [row.key, row]));
   const same = byKey.get(BEARS_SPREAD_SOUTHPOINT);
-  // $200 held on a line whose shrunk size is $194.08: already at full size (the raw edge sized it $437.25 before #208).
-  assert.deepEqual([same.bet.tier, same.bet.advice.kind, same.bet.advice.verb, same.bet.advice.held, same.bet.advice.bet], ["same_line", "sized", "add", 200, 0]);
-  assert.deepEqual(edgeRows.stakeRail(same), { text: "add $0.00", note: "$194.08 alone", atSize: true });
+  // $200 held on a line whose shrunk size is $362.64: add $162.64 (the raw edge sized it $437.25 before #208).
+  assert.deepEqual([same.bet.tier, same.bet.advice.kind, same.bet.advice.verb, same.bet.advice.held, same.bet.advice.bet], ["same_line", "sized", "add", 200, 162.64]);
+  assert.deepEqual(edgeRows.stakeRail(same), { text: "add $162.64", note: "$362.64 alone", atSize: false });
   const other = byKey.get(PANTHERS_ALT_NOVIG);
-  assert.deepEqual([other.bet.tier, other.bet.advice.against, other.bet.advice.bet], ["opposite", 200, 141.37]);
-  assert.deepEqual(edgeRows.stakeRail(other), { text: "bet $141.37", note: "$30.94 alone", atSize: false });
+  assert.deepEqual([other.bet.tier, other.bet.advice.against, other.bet.advice.bet], ["opposite", 200, 155.7]);
+  assert.deepEqual(edgeRows.stakeRail(other), { text: "bet $155.70", note: "$45.03 alone", atSize: false });
   const atSize = rows.filter((row) => row.bet.advice.bet === 0);
-  assert.equal(atSize.length, 8);
+  assert.equal(atSize.length, 5);
   // A live row sizes on the raw edge: its fair is in-game, not on the ladder c and tau were measured on.
   const measurement = contextFor(state, openSettings(), records).measurement;
   const liveRow = { ...other, live: true, shrunkEdgePct: undefined, shrink: undefined };
   assert.equal(edgeRows.sizingEdgePct(liveRow, measurement), other.edgePct);
-  assert.ok(edgeRows.stakeFor(liveRow, edgeRows.DEFAULT_STAKE_SETTINGS, measurement) > 5 * other.stake, "the live stake is the raw-edge one");
+  assert.ok(edgeRows.stakeFor(liveRow, edgeRows.DEFAULT_STAKE_SETTINGS, measurement) > 4 * other.stake, "the live stake is the raw-edge one");
   assert.ok(atSize.every((row) => edgeRows.stakeRail(row).atSize));
   const gated = edgeRows.listedEdgeRows(state, contextFor(state, openSettings({ minStake: 1 }), records));
-  assert.equal(gated.length, rows.length - 8);
+  assert.equal(gated.length, rows.length - 5);
   assert.equal(edgeRows.exposureDollars(same), 200);
   const byExposure = edgeRows.listedEdgeRows(state, contextFor(state, openSettings({ sortBy: "exposure" }), records));
   assert.equal(edgeRows.exposureDollars(byExposure[0]), 200);
@@ -217,10 +220,10 @@ test("open BFA teasers size the rows too: a Panthers +3.5 teaser puts the Panthe
   const byKey = new Map(rows.map((row) => [row.key, row]));
   const panthers = byKey.get(PANTHERS_ALT_NOVIG);
   assert.deepEqual([panthers.bet.advice.verb, panthers.bet.advice.bet, panthers.bet.advice.teasers], ["add", 0, { held: 400, against: 0 }]);
-  assert.deepEqual(edgeRows.stakeRail(panthers), { text: "add $0.00", note: "$30.94 alone", atSize: true });
+  assert.deepEqual(edgeRows.stakeRail(panthers), { text: "add $0.00", note: "$45.03 alone", atSize: true });
   assert.equal(edgeRows.exposureDollars(panthers), 400);
   const bears = byKey.get(BEARS_SPREAD_SOUTHPOINT);
-  assert.deepEqual([bears.bet.advice.verb, bears.bet.advice.bet, bears.bet.advice.teasers], ["bet", 946.6, { held: 0, against: 400 }]);
+  assert.deepEqual([bears.bet.advice.verb, bears.bet.advice.bet, bears.bet.advice.teasers], ["bet", 1113.41, { held: 0, against: 400 }]);
   // Without the tickets the same records size nothing: the teaser legs are the tickets' own.
   const unsized = edgeRows.listedEdgeRows(state, contextFor(state, openSettings(), records, []));
   const bearsUnsized = unsized.find((row) => row.key === BEARS_SPREAD_SOUTHPOINT);
@@ -232,7 +235,7 @@ test("groupEdgeRows: one card per (game, period, bet type, side), its best line 
   const rows = edgeRows.listedEdgeRows(state, contextFor(state, openSettings()));
   const cards = edgeRows.groupEdgeRows(rows, "edge");
   // The totals card: the 50.5 rung at 1.59% beats the 54.5 at 2.63% — the
-  // nearer rung keeps 25% of its edge, the deeper one 7% (issue #208; by the
+  // nearer rung keeps 44% of its edge, the deeper one 9% (issue #208; by the
   // old keep the 54.5 won).
   assert.deepEqual(cards.map((card) => [card.key, card.rows.length, card.best.key]), [
     ["125807:pt1:bt2:si1", 4, PANTHERS_ALT_NOVIG],
@@ -243,7 +246,7 @@ test("groupEdgeRows: one card per (game, period, bet type, side), its best line 
   for (const card of cards) {
     for (let i = 1; i < card.rows.length; i += 1) assert.ok(card.rows[i - 1].rankScore >= card.rows[i].rankScore);
   }
-  // The Bears card: SouthPoint's main -2.5 at $194 ranks four orders above
+  // The Bears card: SouthPoint's main -2.5 at $363 ranks four orders above
   // Novig's deep alts, though the -13.5 alt is within a point of its edge.
   const bearsCard = cards[1];
   assert.ok(bearsCard.rows[0].rankScore > 1000 * bearsCard.rows[bearsCard.rows.length - 1].rankScore);

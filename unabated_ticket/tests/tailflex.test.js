@@ -24,13 +24,12 @@ function americanOf(prob) {
 
 // ---- normal distribution and devig -----------------------------------------
 
-test("qnorm inverts pnorm; dnorm(0) and the one-cent fuselage", () => {
+test("qnorm inverts pnorm; dnorm(0)", () => {
   for (const p of [0.001, 0.02, 0.1, 0.308, 0.481, 0.5, 0.75, 0.99]) {
     assert.ok(Math.abs(tailflex.pnorm(tailflex.qnorm(p)) - p) < 1e-6, `p = ${p}`);
   }
   assert.ok(Math.abs(tailflex.qnorm(0.975) - 1.959964) < 1e-5);
   assert.ok(Math.abs(tailflex.dnorm(0) - 0.398942) < 1e-6);
-  assert.ok(Math.abs(tailflex.DZ_MAIN - 0.025066) < 1e-6);
   assert.throws(() => tailflex.qnorm(0), /strictly between 0 and 1/);
 });
 
@@ -169,18 +168,17 @@ test("shrinkFactor: the share of a claimed edge to believe does not depend on th
   assert.ok(Math.abs(fairProb - 0.308) < 0.001);
   const zMain = tailflex.qnorm(0.481);
   const { shrink, sigmaE } = tailflex.shrinkFactor({ decimal, fairProb, zMain, c: 0.10, tau: 0.0185 });
-  // sigma_e = 3.7 x dnorm(z) x sqrt(DZ_MAIN^2 + (0.1 x 0.45)^2) ~ 6.6% EV against tau 1.85%: ~7% believed.
+  // sigma_e = 3.7 x dnorm(z) x 0.1 x 0.45 ~ 5.9% EV against tau 1.85%: ~9% believed.
   assert.equal(sigmaE, tailflex.edgeUncertainty({ decimal, fairProb, zMain, c: 0.10 }));
-  assert.ok(Math.abs(sigmaE - 0.066) < 0.002, `sigmaE = ${sigmaE}`);
+  assert.ok(Math.abs(sigmaE - 0.059) < 0.002, `sigmaE = ${sigmaE}`);
   assert.ok(Math.abs(shrink - 0.0185 ** 2 / (0.0185 ** 2 + sigmaE ** 2)) < 1e-12);
-  assert.ok(shrink > 0.06 && shrink < 0.08, `shrink = ${shrink}`);
-  // A wider c flexes more; a bigger tau believes more; at the main number only the one-cent fuselage is left (c drops out).
+  assert.ok(shrink > 0.08 && shrink < 0.10, `shrink = ${shrink}`);
+  // A wider c flexes more; a bigger tau believes more; at the main number nothing is left to shrink (Cal 2026-10-23).
   assert.ok(tailflex.shrinkFactor({ decimal, fairProb, zMain, c: 0.2, tau: 0.0185 }).shrink < shrink);
   assert.ok(tailflex.shrinkFactor({ decimal, fairProb, zMain, c: 0.1, tau: 0.03 }).shrink > shrink);
   const atMain = tailflex.shrinkFactor({ decimal, fairProb, zMain: tailflex.qnorm(fairProb), c: 0.10, tau: 0.0185 }).shrink;
   assert.equal(atMain, tailflex.shrinkFactor({ decimal, fairProb, zMain: tailflex.qnorm(fairProb), c: 0, tau: 0.0185 }).shrink);
-  // At the main, sigma_e = decimal x dnorm(z) x one cent: 3.7 x 0.351 x 0.025 = 3.3% against 1.85%: ~24%.
-  assert.ok(atMain > 0.23 && atMain < 0.25, `atMain = ${atMain}`);
+  assert.equal(atMain, 1);
 });
 
 // A row ranked as edgerows.withStakeAndRank ranks it, on the stake it carries.
@@ -200,8 +198,9 @@ test("shrinkOfRow and rankScoreOf: the stake reads the shrunk edge, the rank is 
   const rowOf = (line) => ({ key: `k${line.points}`, eventId: 55, leagueId: 2, periodTypeId: FULL_GAME, betTypeId: SPREAD, sideIndex: 0, ...line });
   const shrunkMain = tailflex.shrinkOfRow(rowOf(main), measurement);
   const shrunkDeep = tailflex.shrinkOfRow(rowOf(deep), measurement);
-  assert.ok(Math.abs(shrunkMain.edgePct - 2.0) < 0.1, `main ${shrunkMain.edgePct}`);
-  assert.ok(Math.abs(shrunkDeep.edgePct - 0.4) < 0.1, `deep ${shrunkDeep.edgePct}`);
+  // The main keeps its whole 4.5% (its fair is Unabated's main fair); -24.5 keeps 0.5% of 12.2%.
+  assert.ok(Math.abs(shrunkMain.edgePct - 4.5) < 0.01, `main ${shrunkMain.edgePct}`);
+  assert.ok(Math.abs(shrunkDeep.edgePct - 0.5) < 0.1, `deep ${shrunkDeep.edgePct}`);
   assert.deepEqual([shrunkMain.tau, shrunkMain.c], [0.0185, 0.094]);
   const sized = (line) => {
     const row = rowOf(line);
@@ -210,8 +209,8 @@ test("shrinkOfRow and rankScoreOf: the stake reads the shrunk edge, the rank is 
   };
   const mainRow = sized(main);
   const deepRow = sized(deep);
-  assert.ok(Math.abs(mainRow.stake - 170) < 3, `main stake ${mainRow.stake}`);
-  assert.ok(Math.abs(deepRow.stake - 11) < 2, `deep stake ${deepRow.stake}`);
+  assert.ok(Math.abs(mainRow.stake - 375) < 3, `main stake ${mainRow.stake}`);
+  assert.ok(Math.abs(deepRow.stake - 13) < 2, `deep stake ${deepRow.stake}`);
   const rankMain = tailflex.rankScoreOf(mainRow);
   const rankDeep = tailflex.rankScoreOf(deepRow);
   assert.ok(Math.abs(rankMain - (mainRow.shrunkEdgePct / 100) * mainRow.stake) < 1e-9);
@@ -249,11 +248,10 @@ test("the video's check: -12 at 4% (+156) vs -24 at 10% (+650) off a -8.5 main â
   assert.equal(winner(0.10), "-12");
 });
 
-test("a moneyline shrinks on the fuselage alone; a side with no Unabated main line measures from even money", () => {
+test("a moneyline keeps its whole edge (no ladder to flex); a side with no Unabated main line measures from even money", () => {
   const moneyline = { ...MINUS_14_5, betTypeId: 1, points: null };
   const decimal = kelly.americanToDecimal(270);
-  const shrinkMl = tailflex.shrinkOfRow(moneyline, MEASUREMENT_C10).shrink;
-  assert.ok(Math.abs(shrinkMl - tailflex.shrinkFactor({ decimal, fairProb: 1.139 / decimal, zMain: null, c: 0.1, tau: tailflex.TAU_FALLBACK }).shrink) < 1e-12);
+  assert.equal(tailflex.shrinkOfRow(moneyline, MEASUREMENT_C10).shrink, 1);
   const orphan = tailflex.shrinkOfRow({ ...MINUS_14_5, eventId: 999 }, MEASUREMENT_C10).shrink;
   assert.ok(Math.abs(orphan - tailflex.shrinkFactor({ decimal, fairProb: 1.139 / decimal, zMain: 0, c: 0.1, tau: tailflex.TAU_FALLBACK }).shrink) < 1e-12);
   // No measurement at all: the fallbacks for both c and tau.

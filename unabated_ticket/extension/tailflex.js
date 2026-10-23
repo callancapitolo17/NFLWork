@@ -10,7 +10,8 @@
 // the wings flex). Per line with Unabated fair p, decimal odds d, edge e:
 //   z = qnorm(p), z_main = qnorm(fair of the same side at Unabated's main
 //   number), dist_sd = |z - z_main|
-//   sigma_z = sqrt(DZ_MAIN^2 + (c * dist_sd)^2)
+//   sigma_z = c * dist_sd          (zero at the main number: Cal 2026-10-23,
+//                                   Unabated's main fair is taken as right)
 //   sigma_e = d * dnorm(z) * sigma_z                  (edge uncertainty, EV units)
 //   shrink  = tau^2 / (tau^2 + sigma_e^2)             (empirical Bayes)
 //   shrunk edge = e * shrink                          (sizes the stake)
@@ -62,8 +63,6 @@
   const kelly = typeof module !== "undefined" && module.exports ? require("./kelly.js") : root.UnabatedKelly;
   const feed = typeof module !== "undefined" && module.exports ? require("./feed.js") : root.UnabatedFeed;
 
-  // A one-cent error at the median, in probit units (the video's "fuselage").
-  const DZ_MAIN = 0.01 / dnorm(0);
   // Used for a market with too few two-sided exchange rungs to measure c.
   const C_FALLBACK = 0.10;
   // An RMS of fewer ratios than this swings by points from slate to slate;
@@ -450,13 +449,13 @@
 
   // ---- the shrink --------------------------------------------------------------
 
-  // sigma_e: how wrong the claimed edge can be, in EV units. zMain null = no
-  // ladder (a moneyline): only the one-cent fuselage applies.
+  // sigma_e: how wrong the claimed edge can be, in EV units: nothing at the
+  // main number (Unabated's main fair is taken as right, so a main line and a
+  // moneyline keep their whole edge), growing with distance from it at c.
   function edgeUncertainty({ decimal, fairProb, zMain, c }) {
     const z = qnorm(fairProb);
     const distSd = zMain == null ? 0 : Math.abs(z - zMain);
-    const sigmaZ = Math.sqrt(DZ_MAIN * DZ_MAIN + (c * distSd) * (c * distSd));
-    return decimal * dnorm(z) * sigmaZ;
+    return decimal * dnorm(z) * c * distSd;
   }
 
   // {shrink, sigmaE}: shrink in (0, 1] is the share of a claimed edge to
@@ -500,7 +499,7 @@
   }
 
   const api = {
-    DZ_MAIN, C_FALLBACK, TAU_FALLBACK, TAU_POOL_WINDOW_MS, MIN_RUNGS, TRIM_TOP_SHARE, MIN_DIST_SD, IMPLIED_SUM_MIN, IMPLIED_SUM_MAX,
+    C_FALLBACK, TAU_FALLBACK, TAU_POOL_WINDOW_MS, MIN_RUNGS, TRIM_TOP_SHARE, MIN_DIST_SD, IMPLIED_SUM_MIN, IMPLIED_SUM_MAX,
     dnorm, pnorm, qnorm, impliedProbOf, devigProbitTwoWay, marketKeyOf,
     cOfRungs, tauSamplesOfRungs, tauOfSamples, tauByMarketOf, createTauPool, measureTailFlex, withPooledTau,
     cOf, isMeasured, tauOf, isTauMeasured, edgeUncertainty, shrinkFactor, shrinkOfRow, rankScoreOf,
