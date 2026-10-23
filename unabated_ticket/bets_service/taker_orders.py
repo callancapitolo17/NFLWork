@@ -269,8 +269,14 @@ def key_lock_problem(client: "KalshiOrderClient", subaccount: int,
     carries no `balance_breakdown` (docs.kalshi.com, Get Balance: "omitted only
     when using a subaccount-restricted API key"), and the primary account's
     balance is refused. Otherwise (why not, None). A no-answer, 429 or 5xx is
-    retried LOCK_CHECK_ATTEMPTS times; never proven means not armed. GETs only."""
+    retried LOCK_CHECK_ATTEMPTS times; never proven means not armed. GETs only.
+
+    Since 2026-10-22 Kalshi answers a locked key's primary read with a steady
+    429 instead of a 403, while the same key's subaccount read a moment earlier
+    gets a 200, so it is not a rate limit. A 429 on the primary counts as the
+    refusal only when every try gets it, each right after a locked-shape 200."""
     last = "not checked"
+    primary_429_tries = 0
     for attempt in range(LOCK_CHECK_ATTEMPTS):
         if attempt:
             sleep(LOCK_CHECK_RETRY_SEC)
@@ -284,6 +290,8 @@ def key_lock_problem(client: "KalshiOrderClient", subaccount: int,
             return ("the key is not restricted: its balance reply carries balance_breakdown, which Kalshi omits "
                     "only for a subaccount-restricted key", None)
         primary_status, primary_reply = _get_status(client, f"{BALANCE_PATH}?subaccount={PRIMARY_SUBACCOUNT}")
+        if primary_status == 429:
+            primary_429_tries += 1
         if _retryable(primary_status):
             last = f"the primary account's balance: {primary_status or primary_reply}"
             continue
@@ -292,6 +300,10 @@ def key_lock_problem(client: "KalshiOrderClient", subaccount: int,
         if 400 <= primary_status < 500:
             return None, _balance_dollars(own_reply)
         return f"the primary account's balance answered HTTP {primary_status}, expected a refusal", None
+    if primary_429_tries == LOCK_CHECK_ATTEMPTS:
+        log.warning("taker: the primary account's balance answered 429 on all %d tries, each right after a "
+                    "locked-shape 200 in subaccount %d: read as Kalshi's refusal", LOCK_CHECK_ATTEMPTS, subaccount)
+        return None, _balance_dollars(own_reply)
     return f"could not check after {LOCK_CHECK_ATTEMPTS} tries ({last})", None
 
 

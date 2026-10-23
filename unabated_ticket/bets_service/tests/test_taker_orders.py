@@ -575,6 +575,28 @@ def test_the_lock_check_passes_only_a_key_refused_the_primary_account():
     assert problem.startswith("could not check after 3 tries")
 
 
+def test_a_steady_429_on_the_primary_counts_as_refused_only_after_locked_shape_reads():
+    no_sleep = lambda _sec: None  # noqa: E731
+    tries = taker_orders.LOCK_CHECK_ATTEMPTS
+    locked_reply = (200, {"balance": 58996})
+    too_many = (429, {"error": {"code": "too_many_requests"}})
+    steady = BalanceKalshi({BOT_SUBACCOUNT: [locked_reply] * tries, 0: [too_many] * tries})
+    assert taker_orders.key_lock_problem(steady, BOT_SUBACCOUNT, sleep=no_sleep) == (None, 589.96)
+    # One try without the 429 (a 5xx) breaks the run: not proven.
+    mixed = BalanceKalshi({BOT_SUBACCOUNT: [locked_reply] * tries, 0: [too_many, (503, "down"), too_many]})
+    problem, balance = taker_orders.key_lock_problem(mixed, BOT_SUBACCOUNT, sleep=no_sleep)
+    assert problem.startswith("could not check after 3 tries") and balance is None
+    # A try whose own read never answered does not count toward the run.
+    own_flaky = BalanceKalshi({BOT_SUBACCOUNT: [locked_reply, OSError("timed out"), locked_reply],
+                               0: [too_many, too_many]})
+    problem, balance = taker_orders.key_lock_problem(own_flaky, BOT_SUBACCOUNT, sleep=no_sleep)
+    assert problem.startswith("could not check after 3 tries") and balance is None
+    # An unrestricted key never reaches the primary probe, 429 or not.
+    broad = BalanceKalshi({BOT_SUBACCOUNT: [(200, {"balance": 50000, "balance_breakdown": []})], 0: [too_many] * tries})
+    problem, balance = taker_orders.key_lock_problem(broad, BOT_SUBACCOUNT, sleep=no_sleep)
+    assert "is not restricted" in problem and balance is None
+
+
 def test_open_taker_desk_arms_only_on_a_key_locked_to_the_subaccount(store, tmp_path, monkeypatch):
     from unabated_ticket.bets_service import config, service
     signing_client(tmp_path)  # writes bot.pem
