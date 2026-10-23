@@ -69,9 +69,11 @@
   // Used for a market with too few two-sided exchange rungs to measure c.
   const C_FALLBACK = 0.10;
   // An RMS of fewer ratios than this swings by points from slate to slate;
-  // a covariance of fewer samples than this swings more.
+  // a covariance over fewer distinct rungs than this swings more (a rung's
+  // two sides and its exchanges are readings of one real edge, so tau
+  // counts rungs, never samples).
   const MIN_RUNGS = 100;
-  // tau until a market's pool holds MIN_RUNGS samples with a positive
+  // tau until a market's pool holds MIN_RUNGS distinct rungs with a positive
   // covariance: 1.85%, fitted on Cal's 255 bets of 9/25 to 10/4 that had both
   // a saved fill fair and a real exchange close (issue #208; 1% to 3% fit
   // about as well — a soft number, which is why tau is measured).
@@ -284,22 +286,34 @@
     return samples;
   }
 
+  // The rung a tau sample was read at, off its key "<bookId>|<rungKey>|<sideIndex>"
+  // (tauSamplesOfRungs). Any other shape is a bug upstream, never a rung.
+  function rungOfSampleKey(key) {
+    const parts = typeof key === "string" ? key.split("|") : [];
+    if (parts.length !== 3) throw new Error(`tau sample key must be "<bookId>|<rungKey>|<sideIndex>", got ${JSON.stringify(key)}`);
+    return parts[1];
+  }
+
   // tau for one market from its samples: the covariance of the two edge
   // reads after dropping the TRIM_TOP_SHARE largest (by either read: a stale
   // quote at a tail reads as a 50% edge and would own the covariance).
-  // Fewer than MIN_RUNGS samples, or a covariance at or below zero (the two
+  // Fewer than MIN_RUNGS distinct rungs among the kept samples (a rung's two
+  // sides at two exchanges are four samples of one real edge, so samples
+  // would reach 100 at 25 rungs), or a covariance at or below zero (the two
   // reads do not agree on where the edges are), fall back; `covariance` is
-  // reported either way so the fallback can be seen for what it is.
+  // reported either way so the fallback can be seen for what it is, and
+  // `sampleCount` beside `rungCount` so the pool's depth can be.
   function tauOfSamples(samples) {
     const sorted = [...samples].sort((a, b) => Math.max(Math.abs(a.edgeUnabated), Math.abs(a.edgeExchanges)) - Math.max(Math.abs(b.edgeUnabated), Math.abs(b.edgeExchanges)));
     const kept = sorted.slice(0, sorted.length - Math.floor(sorted.length * TRIM_TOP_SHARE));
-    const count = kept.length;
-    if (count < MIN_RUNGS) return { tau: TAU_FALLBACK, measured: false, rungCount: count, covariance: null };
-    const meanX = kept.reduce((sum, sample) => sum + sample.edgeUnabated, 0) / count;
-    const meanY = kept.reduce((sum, sample) => sum + sample.edgeExchanges, 0) / count;
-    const covariance = kept.reduce((sum, sample) => sum + (sample.edgeUnabated - meanX) * (sample.edgeExchanges - meanY), 0) / count;
-    if (!(covariance > 0)) return { tau: TAU_FALLBACK, measured: false, rungCount: count, covariance };
-    return { tau: Math.sqrt(covariance), measured: true, rungCount: count, covariance };
+    const sampleCount = kept.length;
+    const rungCount = new Set(kept.map((sample) => rungOfSampleKey(sample.key))).size;
+    if (rungCount < MIN_RUNGS) return { tau: TAU_FALLBACK, measured: false, rungCount, sampleCount, covariance: null };
+    const meanX = kept.reduce((sum, sample) => sum + sample.edgeUnabated, 0) / sampleCount;
+    const meanY = kept.reduce((sum, sample) => sum + sample.edgeExchanges, 0) / sampleCount;
+    const covariance = kept.reduce((sum, sample) => sum + (sample.edgeUnabated - meanX) * (sample.edgeExchanges - meanY), 0) / sampleCount;
+    if (!(covariance > 0)) return { tau: TAU_FALLBACK, measured: false, rungCount, sampleCount, covariance };
+    return { tau: Math.sqrt(covariance), measured: true, rungCount, sampleCount, covariance };
   }
 
   // {marketKey: tauOfSamples(that market's samples)}.

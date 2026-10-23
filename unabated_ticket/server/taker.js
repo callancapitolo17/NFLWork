@@ -26,6 +26,7 @@
 //     floor; issue #208, Cal 2026-10-23): a deep alt whose claim does not
 //     survive its distance is skipped. The stake is Kelly on the RAW live
 //     edge, as before #208: a rung that passes is bet on Unabated's number.
+//     A floor of 0 is the setting's "off": no shrink is read at all.
 //
 // Novig (2026-10-16, automated_taker_plan.md § Novig; Cal: its own $500 sub-account,
 // $2,000 at 0.25 Kelly, the better all-in price first when both books trade a number):
@@ -55,8 +56,9 @@
 //   size_declined the held bets refuse the stake (fail closed): conditional
 //                 Kelly declined; a bet on the game, on the row's axis, that
 //                 the math could not price (unpricedHolding: the stake would
-//                 be sized as if it were not held); or the other side of the
-//                 same Kalshi market (or Novig market) is held
+//                 be sized as if it were not held); the other side of the
+//                 same Kalshi market (or Novig market) is held; or, with the
+//                 Min shrunk edge floor on, the row has no tail-flex shrink
 //   size_zero     the stake buys no contract at the ask, or no depth
 //   market_mismatch  at send time, Kalshi's market for the ticker is not
 //                 active, or its strike or its YES team is not the row's
@@ -393,20 +395,25 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing, venue
     return done("price_moved", `live ${(liveAllIn * 100).toFixed(2)}c is over ${BETTER_PRICE_TOLERANCE * 100}c better than Unabated's ${(unabatedAllIn * 100).toFixed(2)}c: its fair is stale`);
   }
   if (liveEdge < MIN_LIVE_EDGE) return done("edge_short", `live edge ${(liveEdge * 100).toFixed(2)}%`);
-  // No shrink (tailflex.shrinkOfRow found no fair in (0, 1) for the row) is
-  // this row's refusal, never the pass's; a shrink outside (0, 1] or a
-  // missing floor is a bug.
-  if (sizing.shrink === null) return done("size_declined", "no tail-flex shrink for the row");
-  if (typeof sizing.shrink !== "number" || !(sizing.shrink > 0 && sizing.shrink <= 1)) {
-    throw new Error(`decideRow: expected sizing.shrink in (0, 1] for ${row.key}, got ${sizing.shrink}`);
-  }
+  // The Min shrunk edge gate. A missing floor, or a shrink outside (0, 1],
+  // is a bug. A floor of 0 is the setting's "off": the row is bet on its raw
+  // edge, shrink or no shrink (the stake never reads it). With the floor on,
+  // no shrink (tailflex.shrinkOfRow found no fair in (0, 1) for the row) is
+  // this row's refusal, never the pass's.
   if (typeof sizing.minShrunkEdgePct !== "number" || !(sizing.minShrunkEdgePct >= 0)) {
     throw new Error(`decideRow: expected sizing.minShrunkEdgePct, a number 0 or more, for ${row.key}, got ${sizing.minShrunkEdgePct}`);
   }
-  const shrunkEdge = liveEdge * sizing.shrink;
-  Object.assign(decision, { shrink: roundPrice(sizing.shrink), shrunkEdge: roundPrice(shrunkEdge) });
-  if (shrunkEdge * 100 < sizing.minShrunkEdgePct) {
-    return done("edge_short", `shrunk live edge ${(shrunkEdge * 100).toFixed(2)}% under ${sizing.minShrunkEdgePct}% (shrink ${sizing.shrink.toFixed(3)})`);
+  if (sizing.shrink !== null && (typeof sizing.shrink !== "number" || !(sizing.shrink > 0 && sizing.shrink <= 1))) {
+    throw new Error(`decideRow: expected sizing.shrink in (0, 1] or null for ${row.key}, got ${sizing.shrink}`);
+  }
+  const shrunkFloorOn = sizing.minShrunkEdgePct > 0;
+  if (sizing.shrink === null && shrunkFloorOn) return done("size_declined", "no tail-flex shrink for the row");
+  if (sizing.shrink !== null) {
+    const shrunkEdge = liveEdge * sizing.shrink;
+    Object.assign(decision, { shrink: roundPrice(sizing.shrink), shrunkEdge: roundPrice(shrunkEdge) });
+    if (shrunkFloorOn && shrunkEdge * 100 < sizing.minShrunkEdgePct) {
+      return done("edge_short", `shrunk live edge ${(shrunkEdge * 100).toFixed(2)}% under ${sizing.minShrunkEdgePct}% (shrink ${sizing.shrink.toFixed(3)})`);
+    }
   }
 
   const liveAmerican = probToAmerican(liveAllIn);

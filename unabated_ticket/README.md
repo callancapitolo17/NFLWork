@@ -593,10 +593,12 @@ Unabated fair p = (1 + edge) / decimal:
   optimizer's curse (Smith & Winkler 2006): the rows that list are the ones
   whose noise happened to point up, and the deepest rungs most of all;
 - **Min shrunk edge** (`edgerows.meetsShrunkFloor`; `minShrunkEdgePct` in
-  the settings row, stored like Min edge, 0 = off): a pregame row lists only
-  while its shrunk edge reaches it, so a rung whose claim does not survive
-  its distance from the main is not listed and the bot never looks at it; a
-  row the shrink cannot price fails closed. On the 2026-10-23 boards at 1%
+  the settings row, stored like Min edge, 0 = off): a pregame row lists (and
+  alerts) only while its shrunk edge reaches it, so a rung whose claim does
+  not survive its distance from the main is not listed and the bot never
+  looks at it; with the floor on, a row the shrink cannot price fails closed;
+  at 0 the gate is off and every row lists, priced or not (no stake reads
+  the shrink). On the 2026-10-23 boards at 1%
   the floor cuts the deepest rungs (Texas Tech −20.5 at 1.0% shrunk, FAU and
   UNC −17.5 at 1.1%) and leaves the rest;
 - **rank score = shrunk edge × stake** (`rankScoreOf`): the EV dollars
@@ -634,8 +636,10 @@ Unabated's error and the other exchanges' error are independent noise, so
 their product averages to zero and only the real mispricing of the priced
 exchange survives (`tauSamplesOfRungs`, `tauOfSamples`; top 1% by
 max(|x|, |y|) trimmed; the mid, not the ask, because the ask's hold varies by
-rung and inflated the covariance). Fewer than 100 pooled samples after the
-trim (so 101 is the first count that measures) or a covariance at or below
+rung and inflated the covariance). Fewer than 100 **distinct rungs** among
+the pooled samples after the trim (a rung's two sides at two exchanges are
+four samples of one real edge, so samples would reach 100 at 25 rungs;
+`rungCount` and `sampleCount` are both reported) or a covariance at or below
 zero → `TAU_FALLBACK = 1.85%` (fitted on Cal's 255 bets of 9/25 to 10/4,
 `tailflex.js`). The **server runner** holds the pool (`createTauPool`:
 each `(exchange, rung, side)` sample kept 24 h after it was last seen, its
@@ -2527,7 +2531,7 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
   → `{generatedAt, scanner, betsService, games, coveredBetIds}`, the Bet
   Tracker's Live tab cards (`server/scenarios.js` documents the shape; the
   bets service passes it through at its own `/scenarios.json`). `GET /tau.json` → `{generatedAt, markets: {"<league>:<period>:<betType>":
-  {tau, measured, rungCount, covariance}}}`, the pooled tail-flex tau the
+  {tau, measured, rungCount, sampleCount, covariance}}}`, the pooled tail-flex tau the
   panel sizes on (Tail flex above; the pool's load state is on `/health`). `GET /health` →
   `{ok, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, tauPool}`. Any verb but GET is
   405; a request whose `Host` is not `127.0.0.1:<port>`, `localhost:<port>`
@@ -2930,7 +2934,7 @@ subaccount. No shadow mode (Cal, 2026-10-14).
 | Line age | changed within 7 days; right up to the start |
 | Board age | the runner re-downloads every league's snapshot every 60 s (the panel's size tiers go up to 5 min); a row whose league snapshot landed over 3 min ago, is a stale build or failed to load is `stale_feed` |
 | Holdings | the pass runs only when the bets service's Kalshi poll succeeded within the last 5 min (conditional Kelly is sized on it); otherwise it decides nothing |
-| Min shrunk edge | the live edge × the row's tail-flex shrink (#208, the pooled tau the runner measures; Tail flex above) must reach the settings' **Min shrunk edge** (the Edges list's own floor, 1% default), else `edge_short` with the shrunk edge and the shrink in the detail; the stake is Kelly on the raw live edge; a row with no shrink is `size_declined`, never sized at full |
+| Min shrunk edge | the live edge × the row's tail-flex shrink (#208, the pooled tau the runner measures; Tail flex above) must reach the settings' **Min shrunk edge** (the Edges list's own floor, 1% default), else `edge_short` with the shrunk edge and the shrink in the detail; the stake is Kelly on the raw live edge; with the floor on, a row with no shrink is `size_declined`, never sized at full; a floor of 0 turns the gate off |
 | Size | floor(stake / all-in), cut to the depth at the ask |
 | Market check | before every order Kalshi's market is read: it must be `active`, its series the row's period, a spread's or total's `floor_strike` the row's number, YES the favorite's side of a spread and the Over of a total, a spread's or moneyline's YES title the team YES is on; else `market_mismatch`, nothing sent |
 | Order | **immediate-or-cancel** limit buy at that ask: what does not fill at once Kalshi cancels in the same request (`remaining_count` 0), so a bot order never rests. A reply without that count, or with contracts left open, is cancelled **by market** (a bare cancel routes to exchange shard 0 and 404s while an order rests), a 404 checked against Kalshi's resting list; the desk's own 30 s sweep retries an unconfirmed cancel and cancels any `ubot-` order resting that no row knows |
@@ -4131,7 +4135,9 @@ a rolling 24 h pool the runner persists through the bets service
 (`tau_samples`) and serves at `/tau.json`; the panel sizes on the pooled
 tau, never a one-refresh read (Cal: "concerned about measuring live tau";
 "I don't want it to go in as fixed"; chose A, pooled over a day).
-Fallback 1.85% under 101 pooled samples. 2026-10-23, before merge: Cal's
+Fallback 1.85% under 100 pooled rungs (distinct rungs, not samples — a
+rung's sides and exchanges are one reading; the 2026-10-23 logic review
+found 100 samples were 25 to 50 rungs). 2026-10-23, before merge: Cal's
 adversarial review found the one-cent fuselage term halving every main
 stake on an unmeasured constant while mains had performed to expectation
 (65 wins vs 65.6); he trusts Unabated's main fair, so `sigma_z = c ×

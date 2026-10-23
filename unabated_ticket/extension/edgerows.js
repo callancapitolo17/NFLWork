@@ -277,10 +277,17 @@
     return shrunk ? shrunk.edgePct : null;
   }
 
-  // A pregame row stays listed (and the bot looks at it) only while its
-  // shrunk edge reaches the Min shrunk edge setting; a row the shrink cannot
-  // price fails closed. Live rows are never gated here.
+  // A pregame row stays listed (and alerts, and the bot looks at it) only
+  // while its shrunk edge reaches the Min shrunk edge setting; with the floor
+  // on, a row the shrink cannot price fails closed. A floor of 0 is the
+  // setting's "off": every row lists, priced or not (no stake reads the
+  // shrink). Live rows are never gated here. A floor that is not a number 0
+  // or more is a bug (sanitizeEdgeSettings guarantees one).
   function meetsShrunkFloor(shrunkEdgePct, minShrunkEdgePct) {
+    if (typeof minShrunkEdgePct !== "number" || !(minShrunkEdgePct >= 0)) {
+      throw new Error(`meetsShrunkFloor: expected minShrunkEdgePct, a number 0 or more, got ${minShrunkEdgePct}`);
+    }
+    if (minShrunkEdgePct === 0) return true;
     return typeof shrunkEdgePct === "number" && shrunkEdgePct >= minShrunkEdgePct;
   }
 

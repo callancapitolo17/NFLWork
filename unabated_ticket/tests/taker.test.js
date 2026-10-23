@@ -462,9 +462,12 @@ test("the Min shrunk edge floor (issue #208): the shrunk live edge gates the row
   assert.deepEqual([lowFloor.reason, lowFloor.contracts], ["bet", 60]);
   // A floor of 0 is off: every shrink passes.
   assert.equal(decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: 0.01, minShrunkEdgePct: 0 })).reason, "bet");
-  // No shrink at all (tailflex found no fair for the row) refuses this row, not the pass; a shrink outside (0, 1] or a missing floor is a bug.
+  // No shrink at all (tailflex found no fair for the row) refuses this row, not the pass, while the floor is on;
+  // a floor of 0 is off and bets the row on its raw edge; a shrink outside (0, 1] or a missing floor is a bug.
   const none = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: null }));
   assert.deepEqual([none.reason, none.detail], ["size_declined", "no tail-flex shrink for the row"]);
+  const unpricedOff = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: null, minShrunkEdgePct: 0 }));
+  assert.deepEqual([unpricedOff.reason, unpricedOff.shrink, unpricedOff.shrunkEdge], ["bet", null, null]);
   assert.throws(() => decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), { sizing: { matches: [], ladderOf: () => null, teasers: [], minShrunkEdgePct: 1 } }), /sizing\.shrink in \(0, 1\]/);
   assert.throws(() => decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: 1.5 })), /sizing\.shrink in \(0, 1\]/);
   assert.throws(() => decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), { sizing: { matches: [], ladderOf: () => null, teasers: [], shrink: 1 } }), /minShrunkEdgePct/);

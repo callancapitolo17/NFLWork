@@ -2150,7 +2150,9 @@
   function alertRows() {
     const measurement = tailFlexMeasurement();
     const selected = feed.selectEdges(scannerState, { ...edgeSelectionOptions(effectiveFilter()), minEdge: state.alertSettings.minEdgePct / 100 })
-      .map((row) => withStakeAndRank(row, measurement));
+      .map((row) => withStakeAndRank(row, measurement))
+      // The list's Min shrunk edge floor: a rung the list would not show never alerts.
+      .filter((row) => edgeRows.meetsShrunkFloor(row.shrunkEdgePct, state.edgeSettings.minShrunkEdgePct));
     // A line whose stake against what you hold is $0 has nothing to act on, and
     // one below the Min suggested bet is hidden from the list, so neither alerts.
     return withBetFlags(selected).filter((row) => betsView.suggestedBetAmount(row.bet.advice) > 0 && meetsMinStake(row))

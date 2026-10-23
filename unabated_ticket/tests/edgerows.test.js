@@ -163,7 +163,7 @@ test("listedEdgeRows: nothing held, every row's stake is quarter Kelly off Unaba
   for (let i = 1; i < rows.length; i += 1) assert.ok(rows[i - 1].edgePct >= rows[i].edgePct);
 });
 
-test("listedEdgeRows: the Min shrunk edge floor drops a rung whose shrunk edge is under it; 0 is off; a row the shrink cannot price fails closed", () => {
+test("listedEdgeRows: the Min shrunk edge floor drops a rung whose shrunk edge is under it; 0 is off (an unpriced row lists); with the floor on an unpriced row fails closed", () => {
   const state = sliceState();
   const list = (overrides) => edgeRows.listedEdgeRows(state, contextFor(state, openSettings(overrides)));
   const all = list({});
@@ -176,9 +176,13 @@ test("listedEdgeRows: the Min shrunk edge floor drops a rung whose shrunk edge i
   assert.ok(keys.includes(BEARS_SPREAD_SOUTHPOINT) && keys.includes(PANTHERS_ALT_NOVIG) && !keys.includes(PANTHERS_ALT_65_NOVIG));
   assert.equal(list({ minShrunkEdgePct: 1.5 }).map((row) => row.key).includes(PANTHERS_ALT_NOVIG), false);
   assert.equal(list({ minShrunkEdgePct: 0 }).length, all.length);
-  assert.equal(edgeRows.meetsShrunkFloor(null, 0), false);
+  assert.equal(edgeRows.meetsShrunkFloor(null, 0), true);
+  assert.equal(edgeRows.meetsShrunkFloor(null, 1.0), false);
   assert.equal(edgeRows.meetsShrunkFloor(1.0, 1.0), true);
   assert.equal(edgeRows.meetsShrunkFloor(0.99, 1.0), false);
+  // A floor that is not a number 0 or more is a settings bug, never a gate silently off.
+  assert.throws(() => edgeRows.meetsShrunkFloor(1.0, undefined), /minShrunkEdgePct/);
+  assert.throws(() => edgeRows.meetsShrunkFloor(1.0, null), /minShrunkEdgePct/);
 });
 
 test("listedEdgeRows: the settings' gates — min edge, alts off, the default books, max line age, leagues", () => {

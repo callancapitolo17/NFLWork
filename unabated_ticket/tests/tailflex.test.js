@@ -300,8 +300,8 @@ test("tauSamplesOfRungs: a rung needs two exchanges; each exchange is priced aga
   // mid, not the ask, so the 2% vig never shows), Unabated's within its rounding to a whole American price.
   assert.ok(two.tauSamples.every((item) => Math.abs(item.edgeExchanges) < 1e-5));
   assert.ok(Math.abs(sample.edgeUnabated) < 0.01, `${sample.edgeUnabated}`);
-  // Fewer than 100 samples: the fallback, the count reported.
-  assert.deepEqual(tailflex.tauOfSamples(two.tauSamples.filter((item) => item.key.endsWith("|0"))), { tau: tailflex.TAU_FALLBACK, measured: false, rungCount: 36, covariance: null });
+  // Fewer than 100 distinct rungs (18 here, two exchanges each, side 0 only): the fallback, both counts reported.
+  assert.deepEqual(tailflex.tauOfSamples(two.tauSamples.filter((item) => item.key.endsWith("|0"))), { tau: tailflex.TAU_FALLBACK, measured: false, rungCount: 18, sampleCount: 36, covariance: null });
 });
 
 test("tauOfSamples recovers the spread of real edges when Unabated and the exchanges err independently; books at the truth give no tau", () => {
@@ -313,8 +313,10 @@ test("tauOfSamples recovers the spread of real edges when Unabated and the excha
   assert.equal(measured.measured, true);
   // The real edge in EV units: ~0.05 probit x dnorm(z) x decimal ~ 2-4% across the rungs.
   assert.ok(measured.tau > 0.015 && measured.tau < 0.045, `tau = ${measured.tau}`);
-  // 960 built; a rung whose noisy Unabated fair rounds to its neighbour's whole American price is a flat tail and never measures (feed.flatFairRungKeys).
-  assert.ok(measured.rungCount >= 700, `rungCount = ${measured.rungCount}`);
+  // 240 rungs, 960 samples built; a rung whose noisy Unabated fair rounds to its neighbour's whole American price is a flat tail and never measures (feed.flatFairRungKeys).
+  assert.ok(measured.rungCount >= 175 && measured.rungCount <= 240, `rungCount = ${measured.rungCount}`);
+  // The 1% trim takes single samples, so a rung can keep 3 of its 4.
+  assert.ok(measured.sampleCount >= 700 && measured.sampleCount <= 4 * measured.rungCount, `sampleCount = ${measured.sampleCount} for ${measured.rungCount} rungs`);
   // An exchange's own mispricing IS a real edge (both reads see the cheap
   // ask), so "no real edge" is every book at the truth with only Unabated
   // noisy: the two reads then share nothing, the covariance sits at zero
@@ -324,8 +326,8 @@ test("tauOfSamples recovers the spread of real edges when Unabated and the excha
   assert.ok(flat.tau < 0.005 || !flat.measured, `tau = ${flat.tau} measured ${flat.measured}`);
 });
 
-test("tauOfSamples measures from 101 samples: the 1% trim comes off first, and 100 then leaves 99", () => {
-  const rows = (count) => Array.from({ length: count }, (_, index) => { const edge = -0.02 + (0.04 * index) / (count - 1); return { marketKey: NFL_SPREAD_FG, edgeUnabated: edge, edgeExchanges: edge }; });
+test("tauOfSamples measures from 101 rungs: the 1% trim comes off first, and 100 then leaves 99", () => {
+  const rows = (count) => Array.from({ length: count }, (_, index) => { const edge = -0.02 + (0.04 * index) / (count - 1); return { key: `89|1:1:2:0:-${index}|0`, marketKey: NFL_SPREAD_FG, edgeUnabated: edge, edgeExchanges: edge }; });
   assert.deepEqual([tailflex.tauOfSamples(rows(100)).measured, tailflex.tauOfSamples(rows(100)).rungCount], [false, 99]);
   assert.deepEqual([tailflex.tauOfSamples(rows(101)).measured, tailflex.tauOfSamples(rows(101)).rungCount], [true, 100]);
   // Two reads that disagree on where the edges are (covariance <= 0): the fallback, with the covariance reported.
@@ -333,11 +335,27 @@ test("tauOfSamples measures from 101 samples: the 1% trim comes off first, and 1
   assert.deepEqual([tailflex.tauOfSamples(crossed).measured, tailflex.tauOfSamples(crossed).tau, tailflex.tauOfSamples(crossed).covariance < 0], [false, tailflex.TAU_FALLBACK, true]);
 });
 
+test("tauOfSamples counts rungs, not samples: a rung's two sides at two exchanges are one reading; a key of another shape is a bug", () => {
+  // `rungs` distinct rungs, each read four ways (two exchanges x two sides) with edges that agree.
+  const fourWays = (rungs) => Array.from({ length: rungs }, (_, index) => {
+    const edge = -0.02 + (0.04 * index) / Math.max(1, rungs - 1);
+    return [89, 111].flatMap((bookId) => [0, 1].map((side) => ({ key: `${bookId}|1:1:2:0:-${index}|${side}`, marketKey: NFL_SPREAD_FG, edgeUnabated: edge, edgeExchanges: edge })));
+  }).flat();
+  // 99 rungs are 396 samples (393 after the trim): still the fallback.
+  const short = tailflex.tauOfSamples(fourWays(99));
+  assert.deepEqual([short.measured, short.rungCount, short.sampleCount, short.tau], [false, 99, 393, tailflex.TAU_FALLBACK]);
+  // 101 rungs: the trim drops 4 samples (at most one whole rung), 100 rungs or more remain.
+  const enough = tailflex.tauOfSamples(fourWays(101));
+  assert.deepEqual([enough.measured, enough.rungCount >= 100, enough.sampleCount], [true, true, 400]);
+  assert.throws(() => tailflex.tauOfSamples([{ key: "k1", marketKey: "m", edgeUnabated: 0.01, edgeExchanges: 0.01 }]), /tau sample key must be/);
+  assert.throws(() => tailflex.tauOfSamples([{ marketKey: "m", edgeUnabated: 0.01, edgeExchanges: 0.01 }]), /tau sample key must be/);
+});
+
 test("tauOfSamples drops the top 1% by either read, so one stale quote cannot own the covariance", () => {
   const samples = [];
-  for (let i = 0; i < 200; i += 1) samples.push({ key: `k${i}`, marketKey: "m", edgeUnabated: -0.05 + 0.02 * Math.sin(i), edgeExchanges: -0.05 + 0.02 * Math.sin(i) });
+  for (let i = 0; i < 200; i += 1) samples.push({ key: `89|k${i}|0`, marketKey: "m", edgeUnabated: -0.05 + 0.02 * Math.sin(i), edgeExchanges: -0.05 + 0.02 * Math.sin(i) });
   const clean = tailflex.tauOfSamples(samples);
-  const spiked = tailflex.tauOfSamples([...samples.slice(0, 198), { key: "stale", marketKey: "m", edgeUnabated: 0.5, edgeExchanges: 0.5 }, { key: "stale2", marketKey: "m", edgeUnabated: -0.6, edgeExchanges: -0.6 }]);
+  const spiked = tailflex.tauOfSamples([...samples.slice(0, 198), { key: "89|stale|0", marketKey: "m", edgeUnabated: 0.5, edgeExchanges: 0.5 }, { key: "89|stale2|0", marketKey: "m", edgeUnabated: -0.6, edgeExchanges: -0.6 }]);
   assert.ok(Math.abs(clean.tau - Math.sqrt(0.02 ** 2 / 2)) < 0.001, `clean tau = ${clean.tau}`);
   assert.ok(Math.abs(spiked.tau - clean.tau) < 0.001, `spiked tau = ${spiked.tau}`);
   assert.equal(spiked.rungCount, 198);
@@ -345,26 +363,27 @@ test("tauOfSamples drops the top 1% by either read, so one stale quote cannot ow
 
 test("createTauPool: the latest reading per key, evicted after the window, persisted when changed or hourly; withPooledTau replaces tau and keeps c", () => {
   const pool = tailflex.createTauPool({ windowMs: 1000, heartbeatMs: 100 });
-  const sample = (key, edgeUnabated) => ({ key, marketKey: NFL_SPREAD_FG, edgeUnabated, edgeExchanges: edgeUnabated - 0.01 });
-  assert.deepEqual(pool.absorb([sample("a", -0.05), sample("b", -0.04)], 0).map((row) => row.key), ["a", "b"]);
+  const keyOf = (rung) => `89|${rung}|0`;
+  const sample = (rung, edgeUnabated) => ({ key: keyOf(rung), marketKey: NFL_SPREAD_FG, edgeUnabated, edgeExchanges: edgeUnabated - 0.01 });
+  assert.deepEqual(pool.absorb([sample("a", -0.05), sample("b", -0.04)], 0).map((row) => row.key), [keyOf("a"), keyOf("b")]);
   // Unchanged within the heartbeat: nothing to persist; changed: persisted; past the heartbeat: persisted again.
-  assert.deepEqual(pool.absorb([sample("a", -0.05), sample("b", -0.03)], 50).map((row) => [row.key, row.seenAt]), [["b", 50]]);
-  assert.deepEqual(pool.absorb([sample("a", -0.05)], 150).map((row) => [row.key, row.seenAt]), [["a", 150]]);
+  assert.deepEqual(pool.absorb([sample("a", -0.05), sample("b", -0.03)], 50).map((row) => [row.key, row.seenAt]), [[keyOf("b"), 50]]);
+  assert.deepEqual(pool.absorb([sample("a", -0.05)], 150).map((row) => [row.key, row.seenAt]), [[keyOf("a"), 150]]);
   assert.equal(pool.size(), 2);
   // "b" was last seen at 50: gone after the window; "a" stays.
   pool.absorb([sample("a", -0.05)], 1100);
   assert.equal(pool.size(), 1);
   // A persisted copy restores, and the pool measures what is inside the window.
-  pool.load([{ key: "c", marketKey: NFL_SPREAD_FG, edgeUnabated: -0.02, edgeExchanges: -0.03, seenAt: 1100 }]);
+  pool.load([{ key: keyOf("c"), marketKey: NFL_SPREAD_FG, edgeUnabated: -0.02, edgeExchanges: -0.03, seenAt: 1100 }]);
   assert.equal(pool.size(), 2);
   // A persisted row older than the reading held (the service came back after the pool filled) does not replace it; a newer one does.
   pool.load([{ ...sample("a", -0.08), seenAt: 100 }]);
   assert.deepEqual(pool.absorb([sample("a", -0.05)], 1110), []);
   pool.load([{ ...sample("a", -0.08), seenAt: 1150 }]);
   assert.deepEqual(pool.absorb([sample("a", -0.08)], 1160), []);
-  assert.deepEqual(pool.absorb([sample("a", -0.05)], 1170).map((row) => row.key), ["a"]);
+  assert.deepEqual(pool.absorb([sample("a", -0.05)], 1170).map((row) => row.key), [keyOf("a")]);
   const measured = pool.measure(1100);
-  assert.deepEqual(measured, { [NFL_SPREAD_FG]: { tau: tailflex.TAU_FALLBACK, measured: false, rungCount: 2, covariance: null } });
+  assert.deepEqual(measured, { [NFL_SPREAD_FG]: { tau: tailflex.TAU_FALLBACK, measured: false, rungCount: 2, sampleCount: 2, covariance: null } });
   const base = tailflex.measureTailFlex(syntheticState({ events: 25, cTrue: 0.062, baseline: 0.02 }), { now: NOW });
   const pooled = tailflex.withPooledTau(base, { [NFL_SPREAD_FG]: { tau: 0.021, measured: true, rungCount: 400, covariance: 0.021 ** 2 }, "9:9:9": { tau: 0.015, measured: true, rungCount: 150, covariance: 0.015 ** 2 } });
   assert.equal(pooled.markets[NFL_SPREAD_FG].c, base.markets[NFL_SPREAD_FG].c);
