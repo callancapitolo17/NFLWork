@@ -296,12 +296,16 @@ MAX_CROSSWALK_ROWS_PER_PIN = 2
 PIN_REQUIRED_FIELDS = ("betId", "venue", "league", "eventId")
 PIN_OPTIONAL_ID_FIELDS = ("awayTeamId", "homeTeamId")
 PIN_OPTIONAL_TEXT_FIELDS = ("eventStart", "awayTeamName", "homeTeamName")
-# A fill-fair POST carries the bets a capture pass decided: a handful.
-MAX_FILL_FAIR_ROWS_PER_POST = 1000
+# Every `rows` POST that _validate_rows reads (fill snapshots, close snapshots,
+# tau samples) is refused past this; the runner posts tau samples 500 at a
+# time (runner.js TAU_SAMPLES_PER_POST), the snapshot POSTs carry a handful.
+MAX_ROWS_PER_POST = 1000
 # The runner posts its taker decisions 200 at a time (runner.js TAKER_LOG_ROWS_PER_POST).
 MAX_TAKER_DECISION_ROWS_PER_POST = 1000
-# The runner posts its tau samples in chunks of this (runner.js TAU_SAMPLES_PER_POST).
-MAX_TAU_SAMPLE_ROWS_PER_POST = 1000
+# A tau sample's seenAt is the runner's own clock; one further ahead of this
+# server's clock than this would never be pruned or replaced (seen_at only
+# moves forward), so it is refused.
+MAX_TAU_SAMPLE_FUTURE_MS = 60 * 1000
 # Cal's ask (2026-10-05): only these books carry bets that are not his.
 EXCLUDABLE_VENUES = ("bfa", "wagerzon")
 # A parlay's legs go in one request; a dozen is already a long ticket.
@@ -830,8 +834,8 @@ def _validate_rows(body: object, validate_row) -> list[dict] | str:
     if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
         return f"body must be an object with a `rows` array, got {type(body).__name__}"
     raw_rows = body["rows"]
-    if len(raw_rows) > MAX_FILL_FAIR_ROWS_PER_POST:
-        return f"at most {MAX_FILL_FAIR_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
+    if len(raw_rows) > MAX_ROWS_PER_POST:
+        return f"at most {MAX_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
     rows: list[dict] = []
     for index, raw in enumerate(raw_rows):
         row = validate_row(index, raw)
@@ -852,38 +856,44 @@ def validate_close_snapshot_rows(body: object) -> list[dict] | str:
     return _validate_rows(body, _validate_close_snapshot_row)
 
 
+def _is_tau_sample_key(value: object) -> bool:
+    """The shape the runner's pool reads a rung off: "<bookId>|<rungKey>|<sideIndex>"
+    (tailflex.js rungOfSampleKey). A stored key of another shape would make
+    every pool measurement throw until the row is pruned."""
+    if not _non_empty_string(value):
+        return False
+    parts = value.split("|")
+    return len(parts) == 3 and all(parts) and parts[2] in ("0", "1")
+
+
 def _validate_tau_sample_row(index: int, raw: object) -> dict | str:
     """One row of a POST /tau_samples.json body in the store's shape, or what
-    was expected and what was found."""
+    was expected and what was found. seenAt is refused further ahead of this
+    server's clock than MAX_TAU_SAMPLE_FUTURE_MS."""
     if not isinstance(raw, dict):
         return f"rows[{index}] must be an object, got {type(raw).__name__}"
-    for field in ("key", "marketKey"):
-        if not _non_empty_string(raw.get(field)):
-            return f"rows[{index}].{field} must be a non-empty string, got {raw.get(field)!r}"
+    if not _is_tau_sample_key(raw.get("key")):
+        return f"rows[{index}].key must be \"<bookId>|<rungKey>|<sideIndex>\", got {raw.get('key')!r}"
+    if not _non_empty_string(raw.get("marketKey")):
+        return f"rows[{index}].marketKey must be a non-empty string, got {raw.get('marketKey')!r}"
     for field in ("edgeUnabated", "edgeExchanges"):
         if not _is_number(raw.get(field)):
             return f"rows[{index}].{field} must be a finite number, got {raw.get(field)!r}"
-    if _iso_ms(raw.get("seenAt")) is None:
+    seen_at_ms = _iso_ms(raw.get("seenAt"))
+    if seen_at_ms is None:
         return f"rows[{index}].seenAt must be an ISO time, got {raw.get('seenAt')!r}"
+    latest_allowed_ms = int(_now().timestamp() * 1000) + MAX_TAU_SAMPLE_FUTURE_MS
+    if seen_at_ms > latest_allowed_ms:
+        return (f"rows[{index}].seenAt must be within {MAX_TAU_SAMPLE_FUTURE_MS // 1000}s of this server's clock "
+                f"({utc_now_iso()}), got {raw.get('seenAt')!r}")
     return {"key": raw["key"], "marketKey": raw["marketKey"], "edgeUnabated": raw["edgeUnabated"],
             "edgeExchanges": raw["edgeExchanges"], "seenAt": raw["seenAt"]}
 
 
 def validate_tau_sample_rows(body: object) -> list[dict] | str:
     """The rows of a POST /tau_samples.json body, or an error naming the first
-    bad row (the whole request is refused; the runner keeps its queue)."""
-    if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
-        return f"body must be an object with a `rows` array, got {type(body).__name__}"
-    raw_rows = body["rows"]
-    if len(raw_rows) > MAX_TAU_SAMPLE_ROWS_PER_POST:
-        return f"at most {MAX_TAU_SAMPLE_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
-    rows: list[dict] = []
-    for index, raw in enumerate(raw_rows):
-        row = _validate_tau_sample_row(index, raw)
-        if isinstance(row, str):
-            return row
-        rows.append(row)
-    return rows
+    bad row (the whole request is refused; the runner drops that chunk)."""
+    return _validate_rows(body, _validate_tau_sample_row)
 
 
 def _validate_closing_fair_row(index: int, raw: object) -> dict | str:
@@ -1209,7 +1219,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 self._save_rows(validate_close_snapshot_rows(body), store.save_close_snapshots)
                 return
             if url.path == "/tau_samples.json":
-                self._save_tau_samples(body)
+                self._save_rows(validate_tau_sample_rows(body),
+                                lambda rows, now: store.save_tau_samples(rows, config.TAU_SAMPLES_RETENTION_HOURS, now))
                 return
             if url.path == "/exclusions.json":
                 self._set_exclusions(body)
@@ -1318,8 +1329,10 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             self._send_json(200, {"ok": True, "saved": store.save_fill_books(rows, _now())})
 
-        # POST /fill_snapshots.json (insert-only) and /close_snapshots.json
-        # (newest pre-start wins): validated rows, or a 400 naming the first bad one.
+        # POST /fill_snapshots.json (insert-only), /close_snapshots.json
+        # (newest pre-start wins) and /tau_samples.json (newest seenAt wins,
+        # rows past the retention window pruned in the same write): validated
+        # rows, or a 400 naming the first bad one.
         def _save_rows(self, rows: list[dict] | str, save) -> None:
             if isinstance(rows, str):
                 self._send_json(400, {"error": rows})
@@ -1333,15 +1346,6 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 self._send_json(400, {"error": rows})
                 return
             self._send_json(200, {"ok": True, "saved": store.save_closing_fairs(rows, _now())})
-
-        # POST /tau_samples.json: UPSERT the rows, each kept only when newer;
-        # rows past the retention window go in the same write.
-        def _save_tau_samples(self, body: object) -> None:
-            rows = validate_tau_sample_rows(body)
-            if isinstance(rows, str):
-                self._send_json(400, {"error": rows})
-                return
-            self._send_json(200, {"ok": True, "saved": store.save_tau_samples(rows, config.TAU_SAMPLES_RETENTION_HOURS, _now())})
 
         # POST /exclusions.json: remove (or restore) BFA / Wagerzon bets from
         # the tracker's numbers. Every id must be a stored bet at one of

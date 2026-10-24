@@ -1,7 +1,8 @@
 // Run: node --test unabated_ticket/tests
 // tailflex.js: the probit devig, the live measurement of c off two-sided
 // exchange rungs, the tau samples and their rolling pool, and the shrink
-// that sizes the stake and ranks the lines (issue #208). The worked card is NFL Chargers @ Seahawks (2026-09-30
+// that picks a ladder's rung and gates it while every stake stays on the raw
+// edge (issue #208). The worked card is NFL Chargers @ Seahawks (2026-09-30
 // design session): Seahawks main fair 48.1%, c = 10%, $10k bankroll, quarter Kelly.
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -167,17 +168,17 @@ test("shrinkFactor: the share of a claimed edge to believe does not depend on th
   const fairProb = 1.139 / decimal;
   assert.ok(Math.abs(fairProb - 0.308) < 0.001);
   const zMain = tailflex.qnorm(0.481);
-  const { shrink, sigmaE } = tailflex.shrinkFactor({ decimal, fairProb, zMain, c: 0.10, tau: 0.0185 });
+  const shrink = tailflex.shrinkFactor({ decimal, fairProb, zMain, c: 0.10, tau: 0.0185 });
+  const sigmaE = tailflex.edgeUncertainty({ decimal, fairProb, zMain, c: 0.10 });
   // sigma_e = 3.7 x dnorm(z) x 0.1 x 0.45 ~ 5.9% EV against tau 1.85%: ~9% believed.
-  assert.equal(sigmaE, tailflex.edgeUncertainty({ decimal, fairProb, zMain, c: 0.10 }));
   assert.ok(Math.abs(sigmaE - 0.059) < 0.002, `sigmaE = ${sigmaE}`);
   assert.ok(Math.abs(shrink - 0.0185 ** 2 / (0.0185 ** 2 + sigmaE ** 2)) < 1e-12);
   assert.ok(shrink > 0.08 && shrink < 0.10, `shrink = ${shrink}`);
   // A wider c flexes more; a bigger tau believes more; at the main number nothing is left to shrink (Cal 2026-10-23).
-  assert.ok(tailflex.shrinkFactor({ decimal, fairProb, zMain, c: 0.2, tau: 0.0185 }).shrink < shrink);
-  assert.ok(tailflex.shrinkFactor({ decimal, fairProb, zMain, c: 0.1, tau: 0.03 }).shrink > shrink);
-  const atMain = tailflex.shrinkFactor({ decimal, fairProb, zMain: tailflex.qnorm(fairProb), c: 0.10, tau: 0.0185 }).shrink;
-  assert.equal(atMain, tailflex.shrinkFactor({ decimal, fairProb, zMain: tailflex.qnorm(fairProb), c: 0, tau: 0.0185 }).shrink);
+  assert.ok(tailflex.shrinkFactor({ decimal, fairProb, zMain, c: 0.2, tau: 0.0185 }) < shrink);
+  assert.ok(tailflex.shrinkFactor({ decimal, fairProb, zMain, c: 0.1, tau: 0.03 }) > shrink);
+  const atMain = tailflex.shrinkFactor({ decimal, fairProb, zMain: tailflex.qnorm(fairProb), c: 0.10, tau: 0.0185 });
+  assert.equal(atMain, tailflex.shrinkFactor({ decimal, fairProb, zMain: tailflex.qnorm(fairProb), c: 0, tau: 0.0185 }));
   assert.equal(atMain, 1);
 });
 
@@ -201,7 +202,8 @@ test("shrinkOfRow and rankScoreOf: the rank is the believed growth of the raw-ed
   // The main keeps its whole 4.5% (its fair is Unabated's main fair); -24.5 keeps 0.5% of 12.2%.
   assert.ok(Math.abs(shrunkMain.edgePct - 4.5) < 0.01, `main ${shrunkMain.edgePct}`);
   assert.ok(Math.abs(shrunkDeep.edgePct - 0.5) < 0.1, `deep ${shrunkDeep.edgePct}`);
-  assert.deepEqual([shrunkMain.tau, shrunkMain.c], [0.0185, 0.094]);
+  assert.deepEqual([tailflex.tauOf(measurement, rowOf(main)), tailflex.cOf(measurement, rowOf(main))], [0.0185, 0.094]);
+  assert.deepEqual(Object.keys(shrunkMain), ["shrink", "edgePct"]);
   // The stake is Kelly on the RAW edge (Cal 2026-10-23); the rank believes the shrunk one.
   const sized = (line, at = measurement) => {
     const row = rowOf(line);
@@ -259,12 +261,21 @@ test("the video's check: -12 at 4% (+156) vs -24 at 10% (+650) off a -8.5 main â
   assert.equal(winner(0.10), "-12");
 });
 
-test("a moneyline keeps its whole edge (no ladder to flex); a side with no Unabated main line measures from even money", () => {
+test("a moneyline keeps its whole edge (no ladder to flex); on a side with no Unabated main line a book's main line is the main (shrink 1) and an alt measures from even money", () => {
   const moneyline = { ...MINUS_14_5, betTypeId: 1, points: null };
   const decimal = kelly.americanToDecimal(270);
   assert.equal(tailflex.shrinkOfRow(moneyline, MEASUREMENT_C10).shrink, 1);
-  const orphan = tailflex.shrinkOfRow({ ...MINUS_14_5, eventId: 999 }, MEASUREMENT_C10).shrink;
-  assert.ok(Math.abs(orphan - tailflex.shrinkFactor({ decimal, fairProb: 1.139 / decimal, zMain: 0, c: 0.1, tau: tailflex.TAU_FALLBACK }).shrink) < 1e-12);
+  const fromEvenMoney = tailflex.shrinkFactor({ decimal, fairProb: 1.139 / decimal, zMain: 0, c: 0.1, tau: tailflex.TAU_FALLBACK });
+  const orphan = tailflex.shrinkOfRow({ ...MINUS_14_5, eventId: 999, isAlt: true }, MEASUREMENT_C10).shrink;
+  assert.ok(Math.abs(orphan - fromEvenMoney) < 1e-12);
+  assert.ok(orphan < 0.15, `an alt with no main fair is shrunk from even money: ${orphan}`);
+  // A book's main line on such a side (Unabated posts no line of its own for
+  // the market, the fixture's 1H spreads) is the main number: nothing to shrink,
+  // so the Min shrunk edge floor cannot drop it (review 2026-10-24).
+  const bookMain = tailflex.shrinkOfRow({ ...MINUS_14_5, eventId: 999, isAlt: false }, MEASUREMENT_C10);
+  assert.deepEqual([bookMain.shrink, bookMain.edgePct], [1, MINUS_14_5.edgePct]);
+  // Without the flag (a row shape that never set it) the even-money reading stands.
+  assert.ok(Math.abs(tailflex.shrinkOfRow({ ...MINUS_14_5, eventId: 999 }, MEASUREMENT_C10).shrink - fromEvenMoney) < 1e-12);
   // No measurement at all: the fallbacks for both c and tau.
   assert.deepEqual([tailflex.cOf(null, MINUS_14_5), tailflex.tauOf(null, MINUS_14_5), tailflex.isTauMeasured(null, MINUS_14_5)], [0.10, 0.0185, false]);
 });
@@ -272,9 +283,10 @@ test("a moneyline keeps its whole edge (no ladder to flex); a side with no Unaba
 // ---- measuring tau ------------------------------------------------------------
 
 // Two exchanges on every rung of syntheticState: book 89 as built, book 90 a
-// copy whose devigged fair sits `secondGap` probit from Unabated's. With
-// `realEdge(eventId, points)` (probit) both exchanges and Unabated share
-// that much of their difference from the ask.
+// copy. Each exchange's ask sits `realEdgeZ(eventId, points)` probit inside
+// the fair (the real edge both exchanges and Unabated share) plus its own
+// `noiseX(eventId, points, book)`; Unabated's fair is off the truth by
+// `noiseU(eventId, points)`.
 function twoExchangeState({ events, realEdgeZ = () => 0, noiseU = () => 0, noiseX = () => 0 }) {
   const state = syntheticState({ events, cTrue: 0 });
   state.books[90] = { id: 90, hasLiquidity: true };
@@ -284,8 +296,6 @@ function twoExchangeState({ events, realEdgeZ = () => 0, noiseU = () => 0, noise
     // The exchange's ask: the fair plus the real edge the book missed, plus its own noise, under 2% vig.
     const z = tailflex.qnorm(kelly.americanToProb(line.bacr));
     const sign = line.sideIndex === 0 ? 1 : -1;
-    const trueZ = sign * (Math.abs(z) * sign) ;
-    void trueZ;
     const askZ = (book) => z - sign * realEdgeZ(line.eventId, line.points) + sign * noiseX(line.eventId, line.points, book) + 0.02;
     state.lines[key] = { ...line, sourcePrice: tailflex.pnorm(askZ(EXCHANGE_BOOK)) };
     added.push([key.replace(`ms${EXCHANGE_BOOK}`, "ms90"), { ...line, bookId: 90, sourcePrice: tailflex.pnorm(askZ(90)) }]);
@@ -398,7 +408,7 @@ test("createTauPool: the latest reading per key, evicted after the window, persi
   const base = tailflex.measureTailFlex(syntheticState({ events: 25, cTrue: 0.062, baseline: 0.02 }), { now: NOW });
   const pooled = tailflex.withPooledTau(base, { [NFL_SPREAD_FG]: { tau: 0.021, measured: true, rungCount: 400, covariance: 0.021 ** 2 }, "9:9:9": { tau: 0.015, measured: true, rungCount: 150, covariance: 0.015 ** 2 } });
   assert.equal(pooled.markets[NFL_SPREAD_FG].c, base.markets[NFL_SPREAD_FG].c);
-  assert.deepEqual([pooled.markets[NFL_SPREAD_FG].tau, pooled.markets[NFL_SPREAD_FG].tauMeasured, pooled.markets[NFL_SPREAD_FG].tauRungCount], [0.021, true, 400]);
+  assert.deepEqual([pooled.markets[NFL_SPREAD_FG].tau, pooled.markets[NFL_SPREAD_FG].tauMeasured], [0.021, true]);
   // A market the pool knows and this refresh does not: the pool's tau, the fallback c.
   assert.deepEqual([pooled.markets["9:9:9"].c, pooled.markets["9:9:9"].measured, pooled.markets["9:9:9"].tau], [0.10, false, 0.015]);
   // A market this refresh has and the pool does not: the fallback tau, never the one-refresh read.

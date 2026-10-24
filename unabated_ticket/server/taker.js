@@ -26,7 +26,9 @@
 //     floor; issue #208, Cal 2026-10-23): a deep alt whose claim does not
 //     survive its distance is skipped. The stake is Kelly on the RAW live
 //     edge, as before #208: a rung that passes is bet on Unabated's number.
-//     A floor of 0 is the setting's "off": no shrink is read at all.
+//     A floor of 0 is the setting's "off": the gate is skipped, while the
+//     shrink still rides on the decision (`shrink`, `shrunkEdge`) when the
+//     runner has one.
 //
 // Novig (2026-10-16, automated_taker_plan.md § Novig; Cal: its own $500 sub-account,
 // $2,000 at 0.25 Kelly, the better all-in price first when both books trade a number):

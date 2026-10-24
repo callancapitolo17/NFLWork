@@ -752,6 +752,26 @@ def _last_record_per_id(records: list[dict]) -> list[dict]:
     return list(by_id.values())
 
 
+def _newest_row_per_key(rows: list[dict]) -> list[dict]:
+    """The tau sample rows with any repeated key collapsed to its NEWEST
+    seenAt: the rule the table keeps (seen_at only moves forward). The runner
+    queues one row per key, so a repeat is logged; a multi-row INSERT ... ON
+    CONFLICT would silently keep the FIRST (DuckDB 1.4.4)."""
+    newest_by_key: dict[str, dict] = {}
+    duplicates: set[str] = set()
+    for row in rows:
+        held = newest_by_key.get(row["key"])
+        if held is not None:
+            duplicates.add(row["key"])
+            if _parse_iso(row["seenAt"]) <= _parse_iso(held["seenAt"]):
+                continue
+        newest_by_key[row["key"]] = row
+    if duplicates:
+        log.warning("save_tau_samples: %d sample key(s) repeated in one POST, newest seenAt kept: %s",
+                    len(duplicates), sorted(duplicates)[:10])
+    return list(newest_by_key.values())
+
+
 def _first_row_per_bet(rows: list[dict]) -> list[dict]:
     """The fill-fair rows with any repeated betId collapsed to its FIRST
     occurrence: the first capture wins inside one request as it does against
@@ -1243,16 +1263,9 @@ class BetsStore:
         table has no other reader). Returns how many rows were written."""
         written = 0
         cutoff = now - timedelta(hours=retention_hours)
-        # A key repeated in one POST keeps its newest reading: a multi-row
-        # INSERT ... ON CONFLICT keeps the FIRST row of a repeated key.
-        newest_by_key: dict[str, dict] = {}
-        for row in rows:
-            held = newest_by_key.get(row["key"])
-            if held is None or _parse_iso(row["seenAt"]) > _parse_iso(held["seenAt"]):
-                newest_by_key[row["key"]] = row
         values = [
             [row["key"], row["marketKey"], row["edgeUnabated"], row["edgeExchanges"], _parse_iso(row["seenAt"])]
-            for row in newest_by_key.values()
+            for row in _newest_row_per_key(rows)
         ]
         with self._lock:
             self._con.execute("BEGIN TRANSACTION")

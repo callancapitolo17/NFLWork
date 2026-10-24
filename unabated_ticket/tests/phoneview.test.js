@@ -173,8 +173,8 @@ test("settings: defaults fill nulls, a save sends only what changed, books trave
   const nothing = { bankroll: null, multiplier: null, leagues: null, periods: null, betTypes: null, bookMode: null, bookIds: null, minEdgePct: null,
     minStake: null, maxLineAgeHours: null, minLiquidityToWin: null, includeAlts: null, sortBy: null, groupByMarket: null, minShrunkEdgePct: null };
   const effective = phoneView.effectiveSettings(nothing);
-  assert.deepEqual([effective.bankroll, effective.multiplier, effective.bookMode, effective.minEdgePct, effective.groupByMarket],
-    [edgeRows.DEFAULT_STAKE_SETTINGS.bankroll, edgeRows.DEFAULT_STAKE_SETTINGS.multiplier, "default", edgeRows.DEFAULT_EDGE_SETTINGS.minEdgePct, true]);
+  assert.deepEqual([effective.bankroll, effective.multiplier, effective.bookMode, effective.minEdgePct, effective.minShrunkEdgePct, effective.groupByMarket],
+    [edgeRows.DEFAULT_STAKE_SETTINGS.bankroll, edgeRows.DEFAULT_STAKE_SETTINGS.multiplier, "default", edgeRows.DEFAULT_EDGE_SETTINGS.minEdgePct, 1, true]);
   assert.deepEqual(Object.keys(phoneView.settingsDefaults()).sort(), Object.keys(nothing).sort());
 
   // The form as it loads: nothing to send.

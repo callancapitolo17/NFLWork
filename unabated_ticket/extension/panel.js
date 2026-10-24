@@ -199,13 +199,13 @@
   let tailFlexCache = null;
   // The pooled tau per market from the bets service's GET /tau.json (the
   // server runner's 24 h pool, issue #208), read after every bets poll;
-  // {markets, generatedAt, fetchedAt, error}. Until one is read, or while the
-  // service is unreachable, every market sizes on tailflex.TAU_FALLBACK and
+  // {markets, fetchedAt, error}. Until one is read, or while the service is
+  // unreachable, every market ranks and gates on tailflex.TAU_FALLBACK and
   // the Edges header says "(fallback)" — never this panel's one-refresh read.
   let pooledTau = null;
-  // A /tau.json read older than this is not sized on: the runner serves the
-  // pool every bets poll (30 s), so ten minutes without one means the runner
-  // or the service is down, and a pool that old has rolled on.
+  // A /tau.json read older than this is not ranked or gated on: the runner
+  // serves the pool every bets poll (30 s), so ten minutes without one means
+  // the runner or the service is down, and a pool that old has rolled on.
   const TAU_POOL_STALE_MS = 10 * 60 * 1000;
   // Every book's price at every number (pricecheck.js), for the "N books
   // better" tags: built once per scanner update and max line age.
@@ -1391,19 +1391,27 @@
     return tailFlexCache.measurement;
   }
 
-  // The pooled tau per market to size on: the last /tau.json read while it is
-  // younger than TAU_POOL_STALE_MS, else none (every market falls back and
-  // the header says so) — a pool the runner stopped serving is not sized on.
+  // No /tau.json read yet, or the last one older than TAU_POOL_STALE_MS: a
+  // pool the runner stopped serving is not ranked or gated on.
+  function pooledTauIsStale(at) {
+    return !pooledTau || pooledTau.fetchedAt == null || at - pooledTau.fetchedAt > TAU_POOL_STALE_MS;
+  }
+
+  // The pooled tau per market to rank and gate on: the last /tau.json read
+  // while it is fresh, else none (every market falls back and the header
+  // says so).
   function pooledTauMarkets(at) {
-    if (!pooledTau || pooledTau.fetchedAt == null || at - pooledTau.fetchedAt > TAU_POOL_STALE_MS) return {};
-    return pooledTau.markets;
+    return pooledTauIsStale(at) ? {} : pooledTau.markets;
   }
 
   // One GET of /tau.json (the bets service passes it through from the server
   // runner), after each bets poll. A failure keeps the last read until it
-  // goes stale (pooledTauMarkets); none yet means the fallback.
+  // goes stale (pooledTauMarkets); none yet means the fallback. The rows are
+  // rebuilt only when the markets in use change: a fresh read after a stale
+  // one, or a pool that moved (an empty pool served again, the runner's first
+  // day, is no change).
   async function syncPooledTau() {
-    const wasStale = Object.keys(pooledTauMarkets(Date.now())).length === 0;
+    const wasStale = pooledTauIsStale(Date.now());
     try {
       const body = await serviceRequest("GET", "/tau.json");
       if (!body || typeof body.markets !== "object" || body.markets === null) throw new Error("tau.json has no markets object");
@@ -1415,9 +1423,9 @@
         if (state.ticket && !state.error) renderTicket();
       }
     } catch (error) {
-      if (!pooledTau || pooledTau.error !== error.message) console.warn("[unabated-ticket] tau pool read failed (the last read sizes until it goes stale, then the fallback)", error.message);
+      if (!pooledTau || pooledTau.error !== error.message) console.warn("[unabated-ticket] tau pool read failed (the last read ranks and gates until it goes stale, then the fallback)", error.message);
       pooledTau = { ...(pooledTau || { markets: {}, fetchedAt: null }), error: error.message };
-      if (!wasStale && Object.keys(pooledTauMarkets(Date.now())).length === 0) {
+      if (!wasStale && pooledTauIsStale(Date.now())) {
         tailFlexCache = null;
         renderEdges();
       }
@@ -2316,6 +2324,9 @@
     const periods = Array.from(view.edgesPeriods.querySelectorAll("input:checked")).map((input) => Number(input.dataset.period));
     const betTypes = Array.from(view.edgesBetTypes.querySelectorAll("input:checked")).map((input) => Number(input.dataset.bettype));
     const minEdgePct = Number(view.edgesMin.value);
+    // An emptied box is not 0: 0 is "off" for the server bot's gate too (the
+    // service shares the setting), so it has to be typed.
+    if (view.edgesMinShrunk.value.trim() === "") return { error: "Minimum shrunk edge needs a number (0 turns it off)." };
     const minShrunkEdgePct = Number(view.edgesMinShrunk.value);
     const minStake = Number(view.edgesMinStake.value);
     const maxLineAgeHours = Number(view.edgesMaxAge.value);

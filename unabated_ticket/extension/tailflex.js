@@ -17,8 +17,9 @@
 //   sigma_e = d * dnorm(z) * sigma_z                  (edge uncertainty, EV units)
 //   shrink  = tau^2 / (tau^2 + sigma_e^2)             (empirical Bayes)
 //   shrunk edge = e * shrink                          (the floor reads it)
-//   rank score  = shrunk edge * stake                 (EV dollars believed on the
-//                                                      raw-edge stake; picks a card's line)
+//   rank score  = stake * shrunk edge - stake^2 * b / (2 * bankroll)
+//                 (the believed growth of the raw-edge stake, b the net odds;
+//                  picks a card's line and orders the lines inside it)
 // tau is how much REAL edges vary from line to line (a standard deviation in
 // EV units); sigma_e is how wrong THIS line's claimed edge can be. The
 // earlier keep = e^2 / (e^2 + sigma_e^2) (Baker & McHale 2013) let a big
@@ -202,9 +203,20 @@
     return isFresh(line, now, maxLineAgeMs);
   }
 
+  // Map of keyOf(item) -> the items with that key, in order.
+  function groupBy(items, keyOf) {
+    const groups = new Map();
+    for (const item of items) {
+      const key = keyOf(item);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item);
+    }
+    return groups;
+  }
+
   // Every exchange rung quoted fresh on both sides at the mirrored number of
   // a game not yet started, as {marketKey, rungKey, bookId, gap, distSd,
-  // onMain, unabatedZ, exchangeZ, implied0, implied1}: gap = probit distance
+  // onMain, unabatedZ, exchangeZ}: gap = probit distance
   // between Unabated's side-0 fair and the exchange's devigged side-0 fair
   // (exchangeZ); rungKey names the rung without the book, so the rungs of two
   // exchanges at one number meet (tau). The probit is symmetric, so side 0
@@ -241,7 +253,7 @@
         gap: Math.abs(unabatedZ - exchangeZ),
         distSd: Math.abs(unabatedZ - qnorm(main.fairProb)),
         onMain: side0.points === main.points,
-        unabatedZ, exchangeZ, implied0, implied1,
+        unabatedZ, exchangeZ,
       });
     }
     return { rungs, mainFairs };
@@ -259,13 +271,8 @@
   // about how they vary together across rungs, not their level.
   // [{key, marketKey, edgeUnabated, edgeExchanges}], key = "<bookId>|<rungKey>|<sideIndex>".
   function tauSamplesOfRungs(rungs) {
-    const byRung = new Map();
-    for (const rung of rungs) {
-      if (!byRung.has(rung.rungKey)) byRung.set(rung.rungKey, []);
-      byRung.get(rung.rungKey).push(rung);
-    }
     const samples = [];
-    for (const atRung of byRung.values()) {
+    for (const atRung of groupBy(rungs, (rung) => rung.rungKey).values()) {
       if (new Set(atRung.map((rung) => rung.bookId)).size < 2) continue;
       for (const rung of atRung) {
         const others = atRung.filter((other) => other.bookId !== rung.bookId);
@@ -295,12 +302,20 @@
     return parts[1];
   }
 
+  // A persisted tau sample row in the shape the pool measures: a three-part
+  // key, a market key, two finite edges and a finite seenAt (ms).
+  function isWellFormedSample(row) {
+    if (!row || typeof row.key !== "string" || typeof row.marketKey !== "string" || row.marketKey === "") return false;
+    const parts = row.key.split("|");
+    if (parts.length !== 3 || parts.some((part) => part === "")) return false;
+    return Number.isFinite(row.edgeUnabated) && Number.isFinite(row.edgeExchanges) && Number.isFinite(row.seenAt);
+  }
+
   // tau for one market from its samples: the covariance of the two edge
   // reads after dropping the TRIM_TOP_SHARE largest (by either read: a stale
   // quote at a tail reads as a 50% edge and would own the covariance).
-  // Fewer than MIN_RUNGS distinct rungs among the kept samples (a rung's two
-  // sides at two exchanges are four samples of one real edge, so samples
-  // would reach 100 at 25 rungs), or a covariance at or below zero (the two
+  // Fewer than MIN_RUNGS distinct rungs among the kept samples (rungs, never
+  // samples: see MIN_RUNGS), or a covariance at or below zero (the two
   // reads do not agree on where the edges are), fall back; `covariance` is
   // reported either way so the fallback can be seen for what it is, and
   // `sampleCount` beside `rungCount` so the pool's depth can be.
@@ -319,13 +334,8 @@
 
   // {marketKey: tauOfSamples(that market's samples)}.
   function tauByMarketOf(samples) {
-    const byMarket = new Map();
-    for (const sample of samples) {
-      if (!byMarket.has(sample.marketKey)) byMarket.set(sample.marketKey, []);
-      byMarket.get(sample.marketKey).push(sample);
-    }
     const markets = {};
-    for (const [marketKey, marketSamples] of byMarket) markets[marketKey] = tauOfSamples(marketSamples);
+    for (const [marketKey, marketSamples] of groupBy(samples, (sample) => sample.marketKey)) markets[marketKey] = tauOfSamples(marketSamples);
     return markets;
   }
 
@@ -337,7 +347,10 @@
   //                               (what the runner has to persist)
   //   load(rows)               -> restore rows [{key, marketKey, edgeUnabated,
   //                               edgeExchanges, seenAt (ms)}] (a persisted
-  //                               copy; a held newer reading wins)
+  //                               copy; a held newer reading wins); returns
+  //                               {kept, skipped}: a row of another shape is
+  //                               skipped, never pooled (one would make every
+  //                               measure() throw until it is pruned)
   //   measure(now)             -> tauByMarketOf(the samples still inside the window)
   //   size()                   -> samples held
   function createTauPool({ windowMs = TAU_POOL_WINDOW_MS, heartbeatMs = 3600 * 1000 } = {}) {
@@ -365,11 +378,19 @@
     // A persisted row never replaces a fresher reading this process already
     // absorbed (the service comes back after the pool filled).
     function load(rows) {
+      let kept = 0;
+      let skipped = 0;
       for (const row of rows) {
+        if (!isWellFormedSample(row)) {
+          skipped += 1;
+          continue;
+        }
         const held = samples.get(row.key);
         if (held && held.seenAt > row.seenAt) continue;
         samples.set(row.key, { key: row.key, marketKey: row.marketKey, edgeUnabated: row.edgeUnabated, edgeExchanges: row.edgeExchanges, seenAt: row.seenAt, persistedAt: row.seenAt });
+        kept += 1;
       }
+      return { kept, skipped };
     }
     function measure(now) {
       evict(now);
@@ -412,22 +433,17 @@
     const now = typeof options.now === "number" ? options.now : Date.now();
     const maxLineAgeMs = typeof options.maxLineAgeMs === "number" && options.maxLineAgeMs > 0 ? options.maxLineAgeMs : null;
     const { rungs, mainFairs } = twoSidedExchangeRungs(state, now, maxLineAgeMs);
-    const byMarket = new Map();
-    for (const rung of rungs) {
-      if (!byMarket.has(rung.marketKey)) byMarket.set(rung.marketKey, []);
-      byMarket.get(rung.marketKey).push(rung);
-    }
     const markets = {};
-    for (const [marketKey, marketRungs] of byMarket) markets[marketKey] = cOfRungs(marketRungs);
+    for (const [marketKey, marketRungs] of groupBy(rungs, (rung) => rung.marketKey)) markets[marketKey] = cOfRungs(marketRungs);
     return { markets, mainFairs, tauSamples: tauSamplesOfRungs(rungs) };
   }
 
   function tauFields(measured) {
-    return { tau: measured.tau, tauMeasured: measured.measured, tauRungCount: measured.rungCount, tauCovariance: measured.covariance };
+    return { tau: measured.tau, tauMeasured: measured.measured };
   }
 
-  // The measurement with each market's tau fields (tau, tauMeasured,
-  // tauRungCount, tauCovariance) from the pool (tauPool.measure(now), or a
+  // The measurement with each market's tau fields (tau, tauMeasured) from
+  // the pool (tauPool.measure(now), or a
   // served copy of it: {marketKey: {tau, measured, rungCount, covariance}}).
   // A market the pool has no samples for gets the fallback.
   function withPooledTau(measurement, pooled) {
@@ -476,20 +492,23 @@
     return decimal * dnorm(z) * c * distSd;
   }
 
-  // {shrink, sigmaE}: shrink in (0, 1] is the share of a claimed edge to
-  // believe, given how much real edges vary (tau) and how wrong this one can
-  // be (sigma_e). It does not depend on the claimed edge itself.
+  // The share of a claimed edge to believe, in (0, 1], given how much real
+  // edges vary (tau) and how wrong this one can be (sigma_e, edgeUncertainty).
+  // It does not depend on the claimed edge itself.
   function shrinkFactor({ decimal, fairProb, zMain, c, tau }) {
     const sigmaE = edgeUncertainty({ decimal, fairProb, zMain, c });
-    return { shrink: (tau * tau) / (tau * tau + sigmaE * sigmaE), sigmaE };
+    return (tau * tau) / (tau * tau + sigmaE * sigmaE);
   }
 
-  // A row's shrink and shrunk edge: {shrink, edgePct (shrunk, in percent),
-  // tau, c}, or null when the row has no positive edge or no American price. The fair is read back from the edge (Unabated's ge = p x decimal -
-  // 1, exactly). A side Unabated has no main line for is measured from even
-  // money, where a main number sits. The raw edge stays on the row: the
-  // listing floor (Min edge, the bot's 3%) reads it; the stake and the rank
-  // read this.
+  // A row's shrink and shrunk edge: {shrink, edgePct (shrunk, in percent)},
+  // or null when the row has no positive edge or no American price. The
+  // fair is read back from the edge (Unabated's ge = p x decimal - 1,
+  // exactly). On a side Unabated has no main line for, a book's main line
+  // (`isAlt` false) is the main number itself (distance 0: nothing to
+  // shrink), and an alt is measured from even money, where a main number
+  // sits. The raw edge stays on the row: the listing floor (Min edge, the
+  // bot's 3%) and every stake read it; the Min shrunk edge floor and the
+  // rank read this.
   function shrinkOfRow(row, measurement) {
     if (row.edgePct == null || row.edgePct <= 0 || !kelly.isAmericanPrice(row.price)) return null;
     const edge = row.edgePct / 100;
@@ -499,12 +518,13 @@
     let zMain = null;
     if (row.betTypeId !== BET_TYPE_MONEYLINE) {
       const main = measurement ? measurement.mainFairs.get(sideKeyOf(row)) : null;
-      zMain = main ? qnorm(main.fairProb) : 0;
+      if (main) zMain = qnorm(main.fairProb);
+      else zMain = row.isAlt === false ? qnorm(fairProb) : 0;
     }
     const c = cOf(measurement, row);
     const tau = tauOf(measurement, row);
-    const { shrink } = shrinkFactor({ decimal, fairProb, zMain, c, tau });
-    return { shrink, edgePct: row.edgePct * shrink, tau, c };
+    const shrink = shrinkFactor({ decimal, fairProb, zMain, c, tau });
+    return { shrink, edgePct: row.edgePct * shrink };
   }
 
   // A sized row's rank score: the expected log growth, in dollars, of the

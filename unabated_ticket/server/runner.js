@@ -48,11 +48,12 @@
 //       fairs — every book's two sides at each open bet's number before its
 //       game starts; the service keeps the newest pre-start one.
 //   GET <bets service>/tau_samples.json once on start and POST /tau_samples.json
-//       every 30 s with the readings that changed (an unchanged one hourly):
-//       the tail flex's tau pool (tailflex.createTauPool, issue #208), the
-//       day's two-sided exchange rungs, so a restart keeps the measured tau.
-//       GET /tau.json here serves the pooled tau per market (the panel sizes
-//       on it through the bets service's pass-through).
+//       every 30 s with the readings that changed (an unchanged one hourly;
+//       each pass absorbs the board's current refresh first): the tail
+//       flex's tau pool (tailflex.createTauPool, issue #208), the day's
+//       two-sided exchange rungs, so a restart keeps the measured tau.
+//       GET /tau.json here serves the pooled tau per market (the panel ranks
+//       and gates on it through the bets service's pass-through).
 //   Every league's snapshot every 60 s (scanner maxRefreshMs: the taker
 //       trades against the fair, so the panel's 2-5 min tiers are too slow).
 //   GET <Kalshi>/markets/<ticker>/orderbook every 30 s for each Kalshi Edges
@@ -438,11 +439,12 @@ function createRunner(deps) {
   // restart starts with the day's rungs, not an empty pool and the fallback.
   const tauPool = tailflex.createTauPool();
   // Unsent samples by key, the newest reading of each (the service keeps the
-  // newest seen_at anyway), so a long service outage holds at most one row
-  // per pooled sample, never a row per refresh.
+  // newest seen_at anyway), a reading older than the pool's window dropped
+  // before each POST, so a long service outage holds at most one row per
+  // pooled sample, never a row per refresh and never more than the pool.
   const tauUnsent = new Map();
   let tauBusy = false;
-  const tauStatus = { loaded: false, loadError: null, okAt: null, error: null, rowsSent: 0 };
+  const tauStatus = { loaded: false, loadError: null, loadSkipped: 0, okAt: null, error: null, rowsSent: 0 };
   // Leagues added for open bets' closing fairs. It only grows (until a
   // restart): every change restarts the scan, which wipes the board and the
   // line history, so a league is not dropped when its last bet settles.
@@ -617,34 +619,46 @@ function createRunner(deps) {
     try {
       const body = await getServiceJson(serviceFetch, `${deps.betsServiceUrl}/tau_samples.json`);
       if (!body || !Array.isArray(body.rows)) throw new Error("tau_samples.json has no rows array");
-      tauPool.load(body.rows);
+      const { kept, skipped } = tauPool.load(body.rows);
       tailFlexCache = null;
-      tauStatus.loaded = true;
-      tauStatus.loadError = null;
-      logInfo(`tau pool: loaded ${body.rows.length} sample(s) from the bets service`);
+      Object.assign(tauStatus, { loaded: true, loadError: null, loadSkipped: skipped });
+      logInfo(`tau pool: loaded ${kept} sample(s) from the bets service`);
+      if (skipped) logWarning(`tau pool: skipped ${skipped} persisted row(s) of another shape than a tau sample (a bug upstream; they are not pooled)`);
     } catch (error) {
       if (tauStatus.loadError !== error.message) logWarning(`tau pool load failed (retrying): ${error.message}`);
       tauStatus.loadError = error.message;
     }
   }
 
-  // POST the queued tau samples, oldest first; a failure keeps the rest for
-  // the next pass. A chunk the service refuses (400) is dropped, as the taker log does.
+  // Absorb the board's current refresh into the pool (the measurement is
+  // cached per refresh, so this costs nothing when /edges.json or the taker
+  // already built it), then POST the queued tau samples, oldest first; a
+  // failure keeps the rest for the next pass. A chunk the service refuses
+  // (400) is dropped, as the taker log does. A reading that changed while
+  // its chunk was in flight stays queued; one older than the pool's window
+  // is dropped unsent (the service would prune it in the same write).
   async function postTauSamples() {
     if (tauBusy) return;
     tauBusy = true;
     try {
       await loadTauPool();
+      if (feedState) tailFlexMeasurement();
+      const at = now();
+      for (const [key, sample] of tauUnsent) {
+        if (at - sample.seenAt > tailflex.TAU_POOL_WINDOW_MS) tauUnsent.delete(key);
+      }
       while (tauUnsent.size) {
-        const keys = Array.from(tauUnsent.keys()).slice(0, TAU_SAMPLES_PER_POST);
-        const chunk = keys.map((key) => ({ ...tauUnsent.get(key), seenAt: new Date(tauUnsent.get(key).seenAt).toISOString() }));
+        const sent = Array.from(tauUnsent.entries()).slice(0, TAU_SAMPLES_PER_POST);
+        const chunk = sent.map(([, sample]) => ({ ...sample, seenAt: new Date(sample.seenAt).toISOString() }));
         try {
           await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/tau_samples.json`, "POST", { rows: chunk });
         } catch (error) {
           if (error.status !== HTTP_BAD_REQUEST) throw error;
           logWarning(`tau samples: the bets service refused ${chunk.length} row(s), dropped: ${error.message}`);
         }
-        for (const key of keys) tauUnsent.delete(key);
+        for (const [key, sample] of sent) {
+          if (tauUnsent.get(key) === sample) tauUnsent.delete(key);
+        }
         if (tauStatus.error) logInfo("tau samples: saving again");
         Object.assign(tauStatus, { okAt: now(), error: null, rowsSent: tauStatus.rowsSent + chunk.length });
       }
@@ -656,8 +670,8 @@ function createRunner(deps) {
     }
   }
 
-  // /tau.json: the pooled tau per market, what the panel sizes on through
-  // the bets service's pass-through (the pool's state is on /health).
+  // /tau.json: the pooled tau per market, what the panel ranks and gates on
+  // through the bets service's pass-through (the pool's state is on /health).
   function tauPayloadNow() {
     const at = now();
     return { generatedAt: new Date(at).toISOString(), markets: tauPool.measure(at) };

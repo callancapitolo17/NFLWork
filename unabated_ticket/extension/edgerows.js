@@ -294,13 +294,9 @@
   // Quarter-Kelly on Unabated's raw edge with nothing held, never more than
   // the line's resting liquidity: it sorts "by stake" and feeds the rank score.
   function stakeFor(row, stakeSettings) {
-    return stakeOnEdge(row, row.edgePct, stakeSettings);
-  }
-
-  function stakeOnEdge(row, edgePct, stakeSettings) {
-    if (edgePct == null) return null;
+    if (row.edgePct == null) return null;
     try {
-      const kellyStake = kelly.kellyStakeFromEdge({ bookPrice: row.price, edgePct, bankroll: stakeSettings.bankroll, multiplier: stakeSettings.multiplier }).stake;
+      const kellyStake = kelly.kellyStakeFromEdge({ bookPrice: row.price, edgePct: row.edgePct, bankroll: stakeSettings.bankroll, multiplier: stakeSettings.multiplier }).stake;
       return betsView.capAtLiquidity(kellyStake, row.liquidity).stake;
     } catch (_error) {
       return null;
@@ -316,21 +312,23 @@
   // tau where the caller has one).
   function withStakeAndRank(row, measurement, stakeSettings) {
     const shrunk = tailflex.shrinkOfRow(row, measurement);
-    const sized = { ...row, shrink: shrunk ? shrunk.shrink : null, shrunkEdgePct: shrunk ? shrunk.edgePct : null, stake: stakeOnEdge(row, row.edgePct, stakeSettings) };
+    const sized = { ...row, shrink: shrunk ? shrunk.shrink : null, shrunkEdgePct: shrunk ? shrunk.edgePct : null, stake: stakeFor(row, stakeSettings) };
     return { ...sized, rankScore: tailflex.rankScoreOf(sized, stakeSettings.bankroll) };
   }
 
   // The Ticket's line as the Edges row shape the tail flex reads (the
   // period and bet type ids live on the ticket's `watch`, page.js; the
-  // league on the board's event). The shrink falls back on both c and tau
-  // without a league; a live ticket has no shrunk edge (shrunkEdgePctOf).
+  // league on the board's event; `isAlt` is the ticket's own flag, so a
+  // book's main line on a side Unabated has no main for is the main). The
+  // shrink falls back on both c and tau without a league; a live ticket has
+  // no shrunk edge (shrunkEdgePctOf).
   function ticketSizingRow(ticket, line, event) {
     const watch = ticket.watch || {};
     return {
       eventId: ticket.eventId ?? null, leagueId: event ? event.leagueId : null,
       periodTypeId: watch.periodTypeId ?? null, betTypeId: watch.betTypeId ?? null,
       sideIndex: ticket.sideIndex, points: line.points ?? ticket.points ?? null, price: line.price, edgePct: line.edgePct,
-      live: ticket.live ? true : undefined,
+      isAlt: ticket.isAlt ?? null, live: ticket.live ? true : undefined,
     };
   }
 

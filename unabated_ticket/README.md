@@ -568,11 +568,9 @@ several rungs — **which rung to bet** (the rank score picks a card's best
 line) and **whether a rung is worth betting at all** (the **Min shrunk
 edge** setting, default 1%, panel and phone; the server bot reads it too)
 — and never a third: the stake of a rung that passes is Kelly on Unabated's
-raw edge (Cal, 2026-10-23, #208: the rung choice was the leak, and a chosen
-rung is bet on Unabated's own number; the 2026-10-22 build had shrunk every
-stake too, and on the 2026-10-23 boards that cut the dollars 55% while
-moving only 6 of 18 picks — he chose the pick and the floor without the
-stake cut). Per line (`extension/tailflex.js`, pure, node-tested), with
+raw edge (Cal, 2026-10-23, #208: a chosen rung is bet on Unabated's own
+number; the design log's 2026-10-22 entry has the numbers behind the
+decision). Per line (`extension/tailflex.js`, pure, node-tested), with
 Unabated fair p = (1 + edge) / decimal:
 
 - `dist_sd = |qnorm(p) − qnorm(fair of the same side at Unabated's main
@@ -654,17 +652,23 @@ zero → `TAU_FALLBACK = 1.85%` (fitted on Cal's 255 bets of 9/25 to 10/4,
 `tailflex.js`). The **server runner** holds the pool (`createTauPool`:
 each `(exchange, rung, side)` sample kept 24 h after it was last seen, its
 newest reading winning; re-persisted on a 1 h heartbeat) in memory, loads it
-from the bets service once at start (`GET /tau_samples.json`) and posts new
-or moved samples every 30 s (`POST /tau_samples.json`, 500 rows a post, one
-multi-row UPSERT each; the unsent queue holds one row per sample key, so an
-outage never grows it past the pool; `bets.duckdb::tau_samples`, pruned
-past 25 h), so a restart keeps the day (a persisted row never replaces a
+from the bets service once at start (`GET /tau_samples.json`; a persisted
+row of another shape is skipped, counted on `/health` as `loadSkipped`,
+never pooled) and posts new or moved samples every 30 s (`POST
+/tau_samples.json`, 500 rows a post, one multi-row UPSERT each; each pass
+first absorbs the board's current refresh, so the pool fills whether or not
+anyone asks for `/edges.json` or the bot has a row; the unsent queue holds
+one row per sample key, drops a reading older than the 24 h window unsent
+and keeps one that changed while its chunk was in flight, so an outage
+never grows it past the pool; `bets.duckdb::tau_samples`, pruned past
+25 h), so a restart keeps the day (a persisted row never replaces a
 fresher reading the pool already holds). The pooled tau per market is
 served at `GET /tau.json` (runner; the bets service passes it through) and
 the **panel reads it there** after every bets poll (`syncPooledTau`) — it
-never sizes on its own one-refresh read; until the first read, and once the
-last read is over 10 min old (`TAU_POOL_STALE_MS`: the runner or the
-service is down), it sizes on the fallback and the header says so. The Edges header shows
+never ranks or gates on its own one-refresh read; until the first read, and
+once the last read is over 10 min old (`TAU_POOL_STALE_MS`: the runner or
+the service is down), it ranks and gates on the fallback and the header says
+so. The Edges header shows
 c and tau per market and whether tau is measured
 (`tail flex: NFL spr c 7.6% τ 2.10% · CFB tot c 9.2% τ 1.85% (fallback)`).
 A sane measured tau lands between 1% and 3%; a tau well above that means
@@ -1863,7 +1867,10 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   `fillSnapshots` and `closeSnapshots` for the window's bets — opt-in, so the
   30 s polls never carry the books records.
   `POST /tau_samples.json` with `{rows: [{key, marketKey,
-  edgeUnabated, edgeExchanges, seenAt}]}` (at most 1000) → `{ok, saved}` —
+  edgeUnabated, edgeExchanges, seenAt}]}` (at most 1000; a `key` not
+  `<bookId>|<rungKey>|<sideIndex>` or a `seenAt` over 60 s ahead of the
+  service's clock is a 400 — either row, once stored, would poison or
+  outlive the runner's pool) → `{ok, saved}` —
   the server runner's tail-flex tau pool (Tail flex above; #208), UPSERT on
   `key` where the row's `seenAt` is newer, rows last seen over 25 h ago
   pruned on every save (`bets.duckdb::tau_samples`); `GET /tau_samples.json`
@@ -2542,7 +2549,7 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
   Tracker's Live tab cards (`server/scenarios.js` documents the shape; the
   bets service passes it through at its own `/scenarios.json`). `GET /tau.json` → `{generatedAt, markets: {"<league>:<period>:<betType>":
   {tau, measured, rungCount, sampleCount, covariance}}}`, the pooled tail-flex tau the
-  panel sizes on (Tail flex above; the pool's load state is on `/health`). `GET /health` →
+  panel ranks and gates on (Tail flex above; the pool's load state is on `/health`). `GET /health` →
   `{ok, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, tauPool}`. Any verb but GET is
   405; a request whose `Host` is not `127.0.0.1:<port>`, `localhost:<port>`
   or the bound address with the port is 403 (the bets service's #125 rule).
@@ -4126,7 +4133,7 @@ the list and from the tail-flex measurement (ladder.js already dropped it
 from sizing). The `EV $` line on each row was removed as repetitive next to
 the edge and the bet (user); it still ranks lines.
 
-**2026-10-22 — The tail flex shrinks the sized edge everywhere; tau is pooled over a day (#208, 0.33.0).**
+**2026-10-22 — The tail flex picks a ladder's rung and gates it; the stake stays on the raw edge; tau is pooled over a day (#208, 0.33.0).**
 Deep alts had been bet at face value: the 2026-09-30 change discounted a
 rung's edge only to pick a card's line, every stake stayed Kelly on
 Unabated's raw edge, and the server bot never used the card pick at all
@@ -4176,6 +4183,25 @@ a shrink ≥ multiplier / 2 gate), B (growth rank only), C (as built); Cal:
 believed growth of the stake and the Min shrunk edge floor is the only
 gate. The same review made alerts honour the floor, a floor of 0 truly
 off (list and bot), and tau's 100 minimum count distinct rungs.
+2026-10-24, the pre-merge review (`alt_shrink_review.md` addendum 5; four
+REVIEW.md passes and a security pass, which found nothing): a book's main
+line on a side Unabated posts no line for (the slice's 1H spreads) had been
+measured from even money and, now that the shrink gates, could be dropped
+or refused `edge_short` at the main number — it is the main (distance 0,
+shrink 1; an alt there still measures from even money); the tau pool had
+absorbed a refresh only when `/edges.json` was built or the bot had a 3%+
+row, so a quiet VM thinned it — every POST pass absorbs the board first;
+a persisted sample of another shape would have made every measurement
+throw for a day — refused by the service and skipped at load; the unsent
+queue is bound to the pool's window and keeps a reading that moved while
+its chunk was in flight; an emptied Min shrunk edge box no longer saves 0
+(off) for the bot too; and the rank's growth formula replaced the stale
+"shrunk edge × stake" wording. Two notes for the first slate, not changes:
+tau has no significance floor (a true-zero market can read 0.3-1% and
+collapse every alt of it), and tau off exchange mids may land at 2-3.5%
+against the 1.85% fallback, which relaxes the floor on exactly the deep
+rungs #208 targets — read τ in the Edges header before trusting a deep
+pick.
 
 **2026-09-30 — Tail flex ranks alt lines; the 7-point cap becomes a 10-90% fair cap (0.15.0).**
 The card's best line was the highest Kelly stake, which takes Unabated's
