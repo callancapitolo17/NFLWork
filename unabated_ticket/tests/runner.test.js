@@ -36,17 +36,42 @@ function response({ status = 200, body = "", headers = {} }) {
 // The scanner always loads NFL and CFB (the panel's Teasers leagues) on top of the settings' leagues.
 const NFL_AND_CFB = [SNAPSHOT_BASE_URL(1), SNAPSHOT_BASE_URL(2)];
 
-// Unabated's CDN: the NFL slice for league 1, a 404 for anything else.
-function unabatedFetch() {
+// Unabated's CDN: the NFL slice (or `body`, a string or a function of none)
+// for league 1, a 404 for anything else.
+function unabatedFetch(body = sliceBody) {
   const calls = [];
   const impl = async (url) => {
     const base = url.split("?")[0];
     calls.push(base);
-    if (base === SNAPSHOT_BASE_URL(1)) return response({ body: sliceBody, headers: { "content-length": "1000", "last-modified": new Date(NOW - 20000).toUTCString() } });
+    if (base === SNAPSHOT_BASE_URL(1)) return response({ body: typeof body === "function" ? body() : body, headers: { "content-length": "1000", "last-modified": new Date(NOW - 20000).toUTCString() } });
     return response({ status: 404, body: "not found" });
   };
   impl.calls = calls;
   return impl;
+}
+
+// The slice with Novig (89) flagged hasLiquidity and a copy of its lines as a
+// second exchange (90) `nudge` probability points dearer: two exchanges on
+// every Novig rung, so the board yields tau samples (tailflex.tauSamplesOfRungs),
+// which the slice alone never does (no book of it has liquidity).
+function twoExchangeSliceBody(nudge = 0.004) {
+  const json = JSON.parse(sliceBody);
+  const novig = json.marketSources.find((source) => source.id === 89);
+  novig.hasLiquidity = true;
+  json.marketSources.push({ ...novig, id: 90, name: "Second exchange" });
+  const dearer = (line) => {
+    if (typeof line.sourcePrice === "number") line.sourcePrice = Math.min(0.99, line.sourcePrice + nudge);
+    for (const alt of line.alternateLines || []) dearer(alt);
+    return line;
+  };
+  for (const rows of Object.values(json.odds)) {
+    for (const row of rows) {
+      for (const sides of Object.values(row.sides || {})) {
+        if (sides && sides.ms89) sides.ms90 = dearer(JSON.parse(JSON.stringify(sides.ms89)));
+      }
+    }
+  }
+  return JSON.stringify(json);
 }
 
 // An open BetOnline bet on the Bears -2.5 at -110 for $200, as /bets.json serves it.
@@ -72,7 +97,7 @@ const PANTHERS_TEASER = [teaserLeg(0), teaserLeg(1, { rotation: 901, homeTeam: "
 
 // The slice's lines are days old by NOW, so the line-age gate is opened; every
 // live book, alts on, a 1% floor so the slice's thinner lines list.
-const OPEN_SETTINGS = { leagues: [1], bookMode: "all", bookIds: null, maxLineAgeHours: 1e6, includeAlts: true, minEdgePct: 1 };
+const OPEN_SETTINGS = { leagues: [1], bookMode: "all", bookIds: null, maxLineAgeHours: 1e6, includeAlts: true, minEdgePct: 1, minShrunkEdgePct: 0 };
 
 // The bets service: scripted /bets.json and /settings.json bodies, or a thrown error.
 function serviceFetch(script) {
@@ -158,7 +183,7 @@ test("edges.json lists exactly what the panel's modules list for the same settin
   assert.deepEqual([payload.betsService.openBets, payload.betsService.error], [1, null]);
   assert.deepEqual([payload.books.mode, payload.books.ids, payload.books.liveCount], ["all", null, 5]);
   assert.deepEqual([payload.grouped, payload.unit, payload.total, payload.maxShown], [true, "cards", 4, 200]);
-  assert.equal(payload.tailFlex, "tail flex: NFL spr 10% · NFL tot 10%");
+  assert.equal(payload.tailFlex, "tail flex: NFL spr c 10% τ 1.85% (fallback) · NFL tot c 10% τ 1.85% (fallback)");
 
   // Parity: the panel's own path over the same state and settings.
   const { rows, cards } = panelCards(runner.scanner.getState(), OPEN_SETTINGS, [BEARS_HELD]);
@@ -170,6 +195,7 @@ test("edges.json lists exactly what the panel's modules list for the same settin
   assert.equal(rows.length, 14);
 
   const held = payload.items.find((card) => card.best.key === BEARS_SPREAD_SOUTHPOINT).best;
+  // $200 held on a line the raw edge sizes $437.25: add the rest (edgerows.test.js).
   assert.deepEqual(held.rail, { text: "add $237.25", note: "$437.25 alone", atSize: false });
   assert.deepEqual(held.badges, [{ kind: "held", text: "held $200" }]);
   assert.deepEqual([held.advice.kind, held.advice.verb, held.advice.held, held.advice.bet], ["sized", "add", 200, 237.25]);
@@ -282,6 +308,10 @@ test("HTTP: /edges.json and /health on loopback; a foreign Host is 403, another 
     assert.deepEqual(edges.body, JSON.parse(JSON.stringify(runner.edgesPayload())));
     const health = await get("/health");
     assert.deepEqual([health.status, health.body.ok, health.body.scanner.phase], [200, true, "live"]);
+    const tau = await get("/tau.json");
+    assert.deepEqual([tau.status, Object.keys(tau.body)], [200, ["generatedAt", "markets"]]);
+    assert.deepEqual(tau.body, JSON.parse(JSON.stringify(runner.tauPayload())));
+    for (const market of Object.values(tau.body.markets)) assert.deepEqual(Object.keys(market), ["tau", "measured", "rungCount", "sampleCount", "covariance"]);
     const foreign = await get("/edges.json", { headers: { Host: "evil.example" } });
     assert.equal(foreign.status, 403);
     assert.match(foreign.body.error, /Host must be one of/);
@@ -296,6 +326,125 @@ test("HTTP: /edges.json and /health on loopback; a foreign Host is 403, another 
     await new Promise((resolve) => server.close(resolve));
     runner.stop();
   }
+});
+
+// Persisted tau samples as GET /tau_samples.json serves them: `count` rungs
+// of NFL full-game spreads whose two edge reads agree (covariance 0.02^2 / 2
+// over an even spread of real edges), seen a second before NOW.
+function tauSampleRows(count) {
+  return Array.from({ length: count }, (_, index) => {
+    const edge = -0.02 + (0.04 * index) / Math.max(1, count - 1);
+    return { key: `89|1:1:2:0:-${index}|0`, marketKey: "1:1:2", edgeUnabated: edge, edgeExchanges: edge, seenAt: NOW - 1000 };
+  });
+}
+
+test("tau pool: loaded from the bets service at start, the header and /tau.json read it; until it loads every market is the fallback and the load retries on the next POST pass", async () => {
+  const loaded = await startedRunner({ "/bets.json": betsBody([]), "/settings.json": { settings: OPEN_SETTINGS }, "/tau_samples.json": { rows: tauSampleRows(110) } });
+  assert.deepEqual([loaded.runner.health().tauPool.loaded, loaded.runner.health().tauPool.loadError, loaded.runner.health().tauPool.size], [true, null, 110]);
+  const market = loaded.runner.tauPayload().markets["1:1:2"];
+  // 110 samples, the top 1% (one) trimmed: tau is the spread of the edges themselves.
+  assert.deepEqual([market.measured, market.rungCount], [true, 109]);
+  assert.ok(market.tau > 0.010 && market.tau < 0.014, `tau = ${market.tau}`);
+  assert.match(loaded.runner.edgesPayload().tailFlex, /^tail flex: NFL spr c 10% τ 1\.\d\d% · NFL tot c 10% τ 1\.85% \(fallback\)$/);
+  loaded.runner.stop();
+
+  const script = { "/bets.json": betsBody([]), "/settings.json": { settings: OPEN_SETTINGS } };
+  const { runner } = await startedRunner(script);
+  assert.equal(runner.health().tauPool.loaded, false);
+  assert.match(runner.health().tauPool.loadError, /404/);
+  assert.deepEqual(runner.tauPayload().markets, {});
+  assert.equal(runner.edgesPayload().tailFlex, "tail flex: NFL spr c 10% τ 1.85% (fallback) · NFL tot c 10% τ 1.85% (fallback)");
+  script["/tau_samples.json"] = { rows: tauSampleRows(110) };
+  await runner.postTauSamples();
+  assert.deepEqual([runner.health().tauPool.loaded, runner.health().tauPool.loadError], [true, null]);
+  assert.equal(runner.tauPayload().markets["1:1:2"].measured, true);
+  assert.match(runner.edgesPayload().tailFlex, /NFL spr c 10% τ 1\.\d\d% ·/);
+  // A loaded service reply with no rows array is a failed load, not an empty pool.
+  const bad = await startedRunner({ "/bets.json": betsBody([]), "/settings.json": { settings: OPEN_SETTINGS }, "/tau_samples.json": { rows: null } });
+  assert.deepEqual([bad.runner.health().tauPool.loaded, bad.runner.health().tauPool.loadError], [false, "tau_samples.json has no rows array"]);
+  bad.runner.stop();
+  runner.stop();
+});
+
+test("tau samples: every pass absorbs the board and POSTs the changed readings once; a 503 keeps them, a 400 drops them, a reading that changed in flight stays queued, one older than the window is dropped", async () => {
+  let clock = NOW;
+  const board = { body: twoExchangeSliceBody() };
+  const posts = [];
+  let answer = { status: 200, body: { ok: true, saved: 1 } };
+  let duringPost = null;
+  const service = async (url, init = {}) => {
+    const route = url.slice(SERVICE_URL.length);
+    if (route === "/tau_samples.json" && init.method === "POST") {
+      assert.equal(init.headers["Content-Type"], "application/json");
+      posts.push(JSON.parse(init.body).rows);
+      if (duringPost) await duringPost();
+      return response({ status: answer.status, body: JSON.stringify(answer.body) });
+    }
+    if (route === "/tau_samples.json") return response({ body: JSON.stringify({ rows: [] }) });
+    if (route === "/bets.json") return response({ body: JSON.stringify(betsBody([])) });
+    if (route === "/settings.json") return response({ body: JSON.stringify({ settings: OPEN_SETTINGS, updatedAt: null }) });
+    return response({ status: 404, body: "{}" });
+  };
+  const runner = runnerLib.createRunner({ fetchImpl: unabatedFetch(() => board.body), serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => clock, timers: noTimers, ...quiet });
+  await runner.start();
+  // No /edges.json ask and no taker pass: the POST pass itself absorbs the board's rungs.
+  await runner.postTauSamples();
+  assert.equal(posts.length, 1);
+  const first = posts[0];
+  assert.ok(first.length >= 8, `${first.length} samples`);
+  for (const row of first) {
+    assert.deepEqual(Object.keys(row), ["key", "marketKey", "edgeUnabated", "edgeExchanges", "seenAt"]);
+    assert.match(row.key, /^(89|90)\|\d+:\d:\d:[01]:-?[\d.]+\|[01]$/);
+    assert.equal(row.seenAt, new Date(NOW).toISOString());
+    assert.ok(Number.isFinite(row.edgeUnabated) && Number.isFinite(row.edgeExchanges));
+  }
+  assert.deepEqual([runner.health().tauPool.unsent, runner.health().tauPool.rowsSent, runner.health().tauPool.size], [0, first.length, first.length]);
+  assert.ok(Object.keys(runner.tauPayload().markets).length >= 1);
+  // Nothing moved: nothing is sent again.
+  await runner.postTauSamples();
+  assert.equal(posts.length, 1);
+  // A moved board queues the readings that changed; a 503 keeps them queued and /health says so.
+  board.body = twoExchangeSliceBody(0.012);
+  await runner.scanner.resync();
+  answer = { status: 503, body: { error: "down" } };
+  await runner.postTauSamples();
+  assert.equal(posts.length, 2);
+  const queued = runner.health().tauPool.unsent;
+  assert.ok(queued > 0 && /503/.test(runner.health().tauPool.error), `unsent ${queued}: ${runner.health().tauPool.error}`);
+  // A reading that changes while its chunk is in flight is not marked sent with the chunk.
+  answer = { status: 200, body: { ok: true, saved: 1 } };
+  duringPost = async () => {
+    board.body = twoExchangeSliceBody(0.02);
+    await runner.scanner.resync();
+    runner.edgesPayload();
+  };
+  await runner.postTauSamples();
+  duringPost = null;
+  // The chunk in flight did not take the newer readings with it: the same pass sends them in a second chunk.
+  assert.deepEqual([posts.length, runner.health().tauPool.unsent, runner.health().tauPool.error], [4, 0, null]);
+  const inFlight = new Map(posts[2].map((row) => [row.key, row]));
+  assert.ok(posts[3].length > 0 && posts[3].every((row) => inFlight.has(row.key)), "the second chunk re-sends keys of the first");
+  assert.ok(posts[3].some((row) => row.edgeExchanges !== inFlight.get(row.key).edgeExchanges), "with the newer reading");
+  await runner.postTauSamples();
+  assert.equal(posts.length, 4, "nothing left to send");
+  // The service refuses a chunk (400): dropped, the pass goes on without an error.
+  board.body = twoExchangeSliceBody(0.03);
+  await runner.scanner.resync();
+  answer = { status: 400, body: { error: "rows[0].key must be ..." } };
+  await runner.postTauSamples();
+  assert.deepEqual([posts.length, runner.health().tauPool.unsent, runner.health().tauPool.error], [5, 0, null]);
+  // A reading queued through an outage longer than the pool's window is dropped unsent (the service would prune it).
+  board.body = twoExchangeSliceBody(0.04);
+  await runner.scanner.resync();
+  answer = { status: 503, body: { error: "down" } };
+  await runner.postTauSamples();
+  assert.ok(runner.health().tauPool.unsent > 0);
+  clock = NOW + tailflex.TAU_POOL_WINDOW_MS + 1000;
+  answer = { status: 200, body: { ok: true, saved: 1 } };
+  const before = posts.length;
+  await runner.postTauSamples();
+  assert.deepEqual([posts.length, runner.health().tauPool.unsent], [before, 0]);
+  runner.stop();
 });
 
 test("closing fairs: the open bet's fair on its own line, POSTed once, again only when it changes, never after kickoff", async () => {

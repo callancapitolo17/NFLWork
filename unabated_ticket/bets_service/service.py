@@ -68,6 +68,13 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     (the server runner's pre-start read of each open bet's
                                     line, server/closefair.js; a row older than the stored
                                     one is ignored; same Content-Type guard)
+           POST /tau_samples.json   body {rows: [{key, marketKey, edgeUnabated, edgeExchanges,
+                                    seenAt}]} -> {ok, saved}
+                                    (the server runner's tail-flex tau samples, issue #208:
+                                    newest seenAt wins, rows past 25 h pruned; same
+                                    Content-Type guard)
+           GET /tau_samples.json    {generatedAt, rows} — the samples of the last 25 h,
+                                    the runner's pool on a restart
            POST /exclusions.json    body {betIds: [...], excluded: bool} -> {ok, changed,
                                     exclusions} (the Bet Tracker's Bets page removing or
                                     restoring bets that are not Cal's; BFA and Wagerzon
@@ -103,7 +110,8 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     carries is closed with no result)
            GET /settings.json       {settings: {bankroll, multiplier, leagues, periods, betTypes,
                                     bookMode, bookIds, minEdgePct, minStake, maxLineAgeHours,
-                                    minLiquidityToWin, includeAlts, sortBy, groupByMarket},
+                                    minLiquidityToWin, includeAlts, sortBy, groupByMarket,
+                                    minShrunkEdgePct},
                                     updatedAt} — the Edges settings the server
                                     runner (unabated_ticket/server/runner.js) reads every cycle;
                                     null = the panel's default (extension/edgerows.js)
@@ -181,7 +189,7 @@ bets.duckdb::bet_fill_books on POST /fill_books.json (insert-only); INSERTs into
 bets.duckdb::bet_fill_snapshots on POST /fill_snapshots.json (insert-only); UPSERTs
 bets.duckdb::bet_closing_fairs on POST /closing_fairs.json and
 bets.duckdb::bet_close_snapshots on POST /close_snapshots.json (newest observation
-wins); INSERTs into / DELETEs from bets.duckdb::bet_exclusions on POST
+wins); UPSERTs / prunes bets.duckdb::tau_samples on POST /tau_samples.json; INSERTs into / DELETEs from bets.duckdb::bet_exclusions on POST
 /exclusions.json; INSERTs into / DELETEs from bets.duckdb::bet_dismissals on
 POST /dismissals.json; UPSERTs / DELETEs bets.duckdb::teaser_blocks on POST
 /teaser_blocks.json and bets.duckdb::edge_skips on POST /edge_skips.json;
@@ -288,10 +296,16 @@ MAX_CROSSWALK_ROWS_PER_PIN = 2
 PIN_REQUIRED_FIELDS = ("betId", "venue", "league", "eventId")
 PIN_OPTIONAL_ID_FIELDS = ("awayTeamId", "homeTeamId")
 PIN_OPTIONAL_TEXT_FIELDS = ("eventStart", "awayTeamName", "homeTeamName")
-# A fill-fair POST carries the bets a capture pass decided: a handful.
-MAX_FILL_FAIR_ROWS_PER_POST = 1000
+# Every `rows` POST that _validate_rows reads (fill snapshots, close snapshots,
+# tau samples) is refused past this; the runner posts tau samples 500 at a
+# time (runner.js TAU_SAMPLES_PER_POST), the snapshot POSTs carry a handful.
+MAX_ROWS_PER_POST = 1000
 # The runner posts its taker decisions 200 at a time (runner.js TAKER_LOG_ROWS_PER_POST).
 MAX_TAKER_DECISION_ROWS_PER_POST = 1000
+# A tau sample's seenAt is the runner's own clock; one further ahead of this
+# server's clock than this would never be pruned or replaced (seen_at only
+# moves forward), so it is refused.
+MAX_TAU_SAMPLE_FUTURE_MS = 60 * 1000
 # Cal's ask (2026-10-05): only these books carry bets that are not his.
 EXCLUDABLE_VENUES = ("bfa", "wagerzon")
 # A parlay's legs go in one request; a dozen is already a long ticket.
@@ -820,8 +834,8 @@ def _validate_rows(body: object, validate_row) -> list[dict] | str:
     if not isinstance(body, dict) or not isinstance(body.get("rows"), list):
         return f"body must be an object with a `rows` array, got {type(body).__name__}"
     raw_rows = body["rows"]
-    if len(raw_rows) > MAX_FILL_FAIR_ROWS_PER_POST:
-        return f"at most {MAX_FILL_FAIR_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
+    if len(raw_rows) > MAX_ROWS_PER_POST:
+        return f"at most {MAX_ROWS_PER_POST} rows per request, got {len(raw_rows)}"
     rows: list[dict] = []
     for index, raw in enumerate(raw_rows):
         row = validate_row(index, raw)
@@ -840,6 +854,46 @@ def validate_fill_snapshot_rows(body: object) -> list[dict] | str:
 def validate_close_snapshot_rows(body: object) -> list[dict] | str:
     """The rows of a POST /close_snapshots.json body, or an error naming the first bad row."""
     return _validate_rows(body, _validate_close_snapshot_row)
+
+
+def _is_tau_sample_key(value: object) -> bool:
+    """The shape the runner's pool reads a rung off: "<bookId>|<rungKey>|<sideIndex>"
+    (tailflex.js rungOfSampleKey). A stored key of another shape would make
+    every pool measurement throw until the row is pruned."""
+    if not _non_empty_string(value):
+        return False
+    parts = value.split("|")
+    return len(parts) == 3 and all(parts) and parts[2] in ("0", "1")
+
+
+def _validate_tau_sample_row(index: int, raw: object) -> dict | str:
+    """One row of a POST /tau_samples.json body in the store's shape, or what
+    was expected and what was found. seenAt is refused further ahead of this
+    server's clock than MAX_TAU_SAMPLE_FUTURE_MS."""
+    if not isinstance(raw, dict):
+        return f"rows[{index}] must be an object, got {type(raw).__name__}"
+    if not _is_tau_sample_key(raw.get("key")):
+        return f"rows[{index}].key must be \"<bookId>|<rungKey>|<sideIndex>\", got {raw.get('key')!r}"
+    if not _non_empty_string(raw.get("marketKey")):
+        return f"rows[{index}].marketKey must be a non-empty string, got {raw.get('marketKey')!r}"
+    for field in ("edgeUnabated", "edgeExchanges"):
+        if not _is_number(raw.get(field)):
+            return f"rows[{index}].{field} must be a finite number, got {raw.get(field)!r}"
+    seen_at_ms = _iso_ms(raw.get("seenAt"))
+    if seen_at_ms is None:
+        return f"rows[{index}].seenAt must be an ISO time, got {raw.get('seenAt')!r}"
+    latest_allowed_ms = int(_now().timestamp() * 1000) + MAX_TAU_SAMPLE_FUTURE_MS
+    if seen_at_ms > latest_allowed_ms:
+        return (f"rows[{index}].seenAt must be within {MAX_TAU_SAMPLE_FUTURE_MS // 1000}s of this server's clock "
+                f"({utc_now_iso()}), got {raw.get('seenAt')!r}")
+    return {"key": raw["key"], "marketKey": raw["marketKey"], "edgeUnabated": raw["edgeUnabated"],
+            "edgeExchanges": raw["edgeExchanges"], "seenAt": raw["seenAt"]}
+
+
+def validate_tau_sample_rows(body: object) -> list[dict] | str:
+    """The rows of a POST /tau_samples.json body, or an error naming the first
+    bad row (the whole request is refused; the runner drops that chunk)."""
+    return _validate_rows(body, _validate_tau_sample_row)
 
 
 def _validate_closing_fair_row(index: int, raw: object) -> dict | str:
@@ -959,7 +1013,7 @@ def _settings_value_error(field: str, value: object) -> str | None:
         return None if _is_number(value) and value > 0 else f"settings.{field} must be a number above 0, got {value!r}"
     if field == "multiplier":
         return None if _is_number(value) and 0 < value <= 1 else f"settings.multiplier must be above 0 and at most 1, got {value!r}"
-    if field in ("minEdgePct", "minStake", "minLiquidityToWin"):
+    if field in ("minEdgePct", "minShrunkEdgePct", "minStake", "minLiquidityToWin"):
         return None if _is_number(value) and value >= 0 else f"settings.{field} must be a number, 0 or more, got {value!r}"
     if field in ("includeAlts", "groupByMarket"):
         return None if isinstance(value, bool) else f"settings.{field} must be true or false, got {value!r}"
@@ -1002,7 +1056,7 @@ def validate_settings_update(body: object, held: dict) -> dict | str:
 
 
 # The runner's JSON routes the bets service passes through (one origin for the pages).
-RUNNER_ROUTES = ("/edges.json", "/scenarios.json", "/teasers.json", "/attach.json")
+RUNNER_ROUTES = ("/edges.json", "/scenarios.json", "/teasers.json", "/attach.json", "/tau.json")
 # The runner's own answer about the request (no such open bet, a game gone
 # from the board) passes through as it came; any other failure is a 502.
 RUNNER_PASSTHROUGH_ERRORS = (400, 404)
@@ -1099,6 +1153,11 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if url.path == "/balances.json":
                 self._send_json(200, balances_payload(balance_book or BalanceBook()))
                 return
+            if url.path == "/tau_samples.json":
+                now = _now()
+                self._send_json(200, {"generatedAt": _iso(now),
+                                      "rows": store.load_tau_samples(config.TAU_SAMPLES_RETENTION_HOURS, now)})
+                return
             if url.path == "/bets.json":
                 days = parse_days(url.query)
                 if isinstance(days, str):
@@ -1130,7 +1189,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             url = urlparse(self.path)
             if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/fill_books.json", "/closing_fairs.json",
-                                "/fill_snapshots.json", "/close_snapshots.json",
+                                "/fill_snapshots.json", "/close_snapshots.json", "/tau_samples.json",
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
                                 "/draftkings.json", "/place_teaser.json", "/place_kalshi.json", "/place_novig.json",
                                 "/place_polymarket.json", "/taker_decisions.json",
@@ -1158,6 +1217,10 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/close_snapshots.json":
                 self._save_rows(validate_close_snapshot_rows(body), store.save_close_snapshots)
+                return
+            if url.path == "/tau_samples.json":
+                self._save_rows(validate_tau_sample_rows(body),
+                                lambda rows, now: store.save_tau_samples(rows, config.TAU_SAMPLES_RETENTION_HOURS, now))
                 return
             if url.path == "/exclusions.json":
                 self._set_exclusions(body)
@@ -1266,8 +1329,10 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             self._send_json(200, {"ok": True, "saved": store.save_fill_books(rows, _now())})
 
-        # POST /fill_snapshots.json (insert-only) and /close_snapshots.json
-        # (newest pre-start wins): validated rows, or a 400 naming the first bad one.
+        # POST /fill_snapshots.json (insert-only), /close_snapshots.json
+        # (newest pre-start wins) and /tau_samples.json (newest seenAt wins,
+        # rows past the retention window pruned in the same write): validated
+        # rows, or a 400 naming the first bad one.
         def _save_rows(self, rows: list[dict] | str, save) -> None:
             if isinstance(rows, str):
                 self._send_json(400, {"error": rows})

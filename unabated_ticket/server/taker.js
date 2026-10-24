@@ -18,7 +18,17 @@
 //     floor too; outliers and Cal's Skips trade);
 //   - lines changed within 7 days, right up to the start;
 //   - $2,000 at 0.25 Kelly (Cal, 2026-10-16), conditional on every open bet (betsview.js stakeAdvice),
-//     contracts cut to the depth at the ask; the order desk caps the money at risk.
+//     contracts cut to the depth at the ask; the order desk caps the money at risk;
+//   - the SHRUNK live edge (the live edge times the row's tail-flex shrink,
+//     tailflex.shrinkOfRow — less the farther the line sits from the main
+//     number; the runner passes it in `sizing.shrink`) must reach the Min
+//     shrunk edge setting (`sizing.minShrunkEdgePct`, the Edges list's own
+//     floor; issue #208, Cal 2026-10-23): a deep alt whose claim does not
+//     survive its distance is skipped. The stake is Kelly on the RAW live
+//     edge, as before #208: a rung that passes is bet on Unabated's number.
+//     A floor of 0 is the setting's "off": the gate is skipped, while the
+//     shrink still rides on the decision (`shrink`, `shrunkEdge`) when the
+//     runner has one.
 //
 // Novig (2026-10-16, automated_taker_plan.md § Novig; Cal: its own $500 sub-account,
 // $2,000 at 0.25 Kelly, the better all-in price first when both books trade a number):
@@ -41,14 +51,16 @@
 //   no_book       the orderbook read failed or has no ask on the row's side
 //   price_moved   live all-in more than PRICE_TOLERANCE worse than Unabated's,
 //                 or more than BETTER_PRICE_TOLERANCE better
-//   edge_short    live edge under MIN_LIVE_EDGE
+//   edge_short    live edge under MIN_LIVE_EDGE, or the shrunk live edge under
+//                 the Min shrunk edge setting
 //   not_best      another live book beats the live price at the number
 //   cap           live edge over MAX_LIVE_EDGE
 //   size_declined the held bets refuse the stake (fail closed): conditional
 //                 Kelly declined; a bet on the game, on the row's axis, that
 //                 the math could not price (unpricedHolding: the stake would
-//                 be sized as if it were not held); or the other side of the
-//                 same Kalshi market (or Novig market) is held
+//                 be sized as if it were not held); the other side of the
+//                 same Kalshi market (or Novig market) is held; or, with the
+//                 Min shrunk edge floor on, the row has no tail-flex shrink
 //   size_zero     the stake buys no contract at the ask, or no depth
 //   market_mismatch  at send time, Kalshi's market for the ticker is not
 //                 active, or its strike or its YES team is not the row's
@@ -346,7 +358,8 @@ const VENUE_RULES = {
 //   quote       quoteOf's (or novigQuoteOf's) result, or null (read failed or empty side)
 //   quoteError  why the orderbook read failed, when it did
 //   priceIndex  pricecheck.buildPriceIndex over the same feed
-//   sizing      {matches (bets.annotateRows for the row), ladderOf, teasers}
+//   sizing      {matches (bets.annotateRows for the row), ladderOf, teasers, shrink (tailflex.shrinkOfRow, in (0, 1]),
+//                minShrunkEdgePct (the Edges settings' Min shrunk edge, percent, 0 or more)}
 //   venue       VENUE_KALSHI (default) or VENUE_NOVIG
 // Returns {reason, detail, ...the numbers it got to}.
 function decideRow({ row, contract, quote, quoteError, priceIndex, sizing, venue = VENUE_KALSHI }) {
@@ -365,6 +378,8 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing, venue
     marketId: contract.marketId || null,
     unabatedPrice: row.price, unabatedAllIn: roundPrice(unabatedAllIn), unabatedEdge: row.edgePct / 100, fairProb: roundPrice(fairProb),
     liveAsk: null, liveAllIn: null, liveEdge: null, depth: null, betterBooks: null,
+    // The tail-flex shrink and the shrunk live edge the Min shrunk edge floor read (live edge x shrink).
+    shrink: null, shrunkEdge: null,
     stake: null, contracts: null, cost: null,
   };
   const done = (reason, detail = null) => ({ ...decision, reason, detail });
@@ -382,6 +397,26 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing, venue
     return done("price_moved", `live ${(liveAllIn * 100).toFixed(2)}c is over ${BETTER_PRICE_TOLERANCE * 100}c better than Unabated's ${(unabatedAllIn * 100).toFixed(2)}c: its fair is stale`);
   }
   if (liveEdge < MIN_LIVE_EDGE) return done("edge_short", `live edge ${(liveEdge * 100).toFixed(2)}%`);
+  // The Min shrunk edge gate. A missing floor, or a shrink outside (0, 1],
+  // is a bug. A floor of 0 is the setting's "off": the row is bet on its raw
+  // edge, shrink or no shrink (the stake never reads it). With the floor on,
+  // no shrink (tailflex.shrinkOfRow found no fair in (0, 1) for the row) is
+  // this row's refusal, never the pass's.
+  if (typeof sizing.minShrunkEdgePct !== "number" || !(sizing.minShrunkEdgePct >= 0)) {
+    throw new Error(`decideRow: expected sizing.minShrunkEdgePct, a number 0 or more, for ${row.key}, got ${sizing.minShrunkEdgePct}`);
+  }
+  if (sizing.shrink !== null && (typeof sizing.shrink !== "number" || !(sizing.shrink > 0 && sizing.shrink <= 1))) {
+    throw new Error(`decideRow: expected sizing.shrink in (0, 1] or null for ${row.key}, got ${sizing.shrink}`);
+  }
+  const shrunkFloorOn = sizing.minShrunkEdgePct > 0;
+  if (sizing.shrink === null && shrunkFloorOn) return done("size_declined", "no tail-flex shrink for the row");
+  if (sizing.shrink !== null) {
+    const shrunkEdge = liveEdge * sizing.shrink;
+    Object.assign(decision, { shrink: roundPrice(sizing.shrink), shrunkEdge: roundPrice(shrunkEdge) });
+    if (shrunkFloorOn && shrunkEdge * 100 < sizing.minShrunkEdgePct) {
+      return done("edge_short", `shrunk live edge ${(shrunkEdge * 100).toFixed(2)}% under ${sizing.minShrunkEdgePct}% (shrink ${sizing.shrink.toFixed(3)})`);
+    }
+  }
 
   const liveAmerican = probToAmerican(liveAllIn);
   const check = pricecheck.comparePrice(priceIndex, {

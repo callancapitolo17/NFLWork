@@ -349,7 +349,7 @@
       ...edgeRows.DEFAULT_STAKE_SETTINGS,
       leagues: edges.leagues, periods: edges.periods, betTypes: edges.betTypes,
       bookMode: "default", bookIds: null,
-      minEdgePct: edges.minEdgePct, minStake: edges.minStake, maxLineAgeHours: edges.maxLineAgeHours,
+      minEdgePct: edges.minEdgePct, minShrunkEdgePct: edges.minShrunkEdgePct, minStake: edges.minStake, maxLineAgeHours: edges.maxLineAgeHours,
       minLiquidityToWin: edges.minLiquidityToWin, includeAlts: edges.includeAlts, sortBy: edges.sortBy,
       groupByMarket: edges.groupByMarket,
     };

@@ -31,8 +31,8 @@
 //          score; the panel's expander shows each of `others`, in rank
 //          order, with its standalone `stake`, not its rail)
 //   row   the selectEdges fields the panel renders, plus edgeTier, stake (the
-//         standalone, liquidity-capped Kelly stake), rankScore (tail-flex EV
-//         dollars, null when unranked), bookProb, advice {kind, bet, alone,
+//         standalone, liquidity-capped Kelly stake), rankScore (the believed
+//         growth of that stake, dollars; null when unranked), bookProb, advice {kind, bet, alone,
 //         verb, held, against, teasers {held, against}, reason, cappedAt, uncapped},
 //         rail {text, note, atSize}, badges [{kind, text, title?}], related
 //         [{tier, inMath, tag, text, fairThen, title?}], move {kind, label,
@@ -80,7 +80,7 @@ function rowView(row, moveContext) {
     bookProb: bookProbOrNull(row), fair: row.fair, edgePct: row.edgePct, edgeTier: edgeRows.edgeTier(row.edgePct),
     liquidity: row.liquidity, modifiedMs: row.modifiedMs, isBlurred: row.isBlurred,
     openerPrice: row.openerPrice, openerPoints: row.openerPoints,
-    stake: row.stake, rankScore: row.rankScore,
+    stake: row.stake, rankScore: row.rankScore, shrink: row.shrink ?? null, shrunkEdgePct: row.shrunkEdgePct ?? null,
     advice: {
       kind: advice.kind, bet: advice.bet, alone: advice.alone, verb: advice.verb,
       held: advice.held, against: advice.against, teasers: advice.teasers, reason: advice.reason, cappedAt: advice.cappedAt,

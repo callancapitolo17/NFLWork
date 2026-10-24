@@ -1109,6 +1109,78 @@ def test_validate_closing_fair_rows_refuses_a_reading_at_or_after_the_start():
         "got 2026-09-13T17:00:00Z at or after 2026-09-13T17:00:00Z")
 
 
+def tau_sample_row(key: str, edge_unabated: float = -0.03, seen: str = "2026-10-22T17:00:00Z", **extra) -> dict:
+    return {"key": key, "marketKey": "1:1:2", "edgeUnabated": edge_unabated, "edgeExchanges": edge_unabated - 0.01,
+            "seenAt": seen, **extra}
+
+
+def test_tau_samples_keep_the_newest_reading_and_prune_past_the_window(store):
+    now = datetime(2026, 10, 22, 17, 5, tzinfo=timezone.utc)
+    assert store.save_tau_samples([tau_sample_row("89|1:1:2:0:-7|0"), tau_sample_row("90|1:1:2:0:-7|0")], 25, now) == 2
+    # Newer moves the row forward; the same or an older seenAt arriving late is ignored.
+    assert store.save_tau_samples([tau_sample_row("89|1:1:2:0:-7|0", -0.02, "2026-10-22T17:04:00Z")], 25, now) == 1
+    assert store.save_tau_samples([tau_sample_row("89|1:1:2:0:-7|0", -0.09, "2026-10-22T17:04:00Z")], 25, now) == 0
+    assert store.save_tau_samples([tau_sample_row("89|1:1:2:0:-7|0", -0.09, "2026-10-22T16:00:00Z")], 25, now) == 0
+    # Served in the shape the runner's pool loads (tailflex createTauPool.load): seenAt as epoch ms.
+    assert store.load_tau_samples(25, now) == [
+        {"key": "90|1:1:2:0:-7|0", "marketKey": "1:1:2", "edgeUnabated": -0.03, "edgeExchanges": -0.04, "seenAt": 1792688400000},
+        {"key": "89|1:1:2:0:-7|0", "marketKey": "1:1:2", "edgeUnabated": -0.02, "edgeExchanges": -0.03, "seenAt": 1792688640000}]
+    # A key repeated in one POST keeps its newest seenAt, whatever the order.
+    assert store.save_tau_samples([tau_sample_row("92|1:1:2:0:-7|0", -0.05, "2026-10-22T17:03:00Z"),
+                                   tau_sample_row("92|1:1:2:0:-7|0", -0.01, "2026-10-22T17:02:00Z")], 25, now) == 1
+    assert [row["edgeUnabated"] for row in store.load_tau_samples(25, now) if row["key"] == "92|1:1:2:0:-7|0"] == [-0.05]
+    # A row last seen before the window is pruned on the next save, and never served.
+    later = now + timedelta(hours=26)
+    assert store.save_tau_samples([tau_sample_row("91|1:1:2:0:-7|0", seen="2026-10-23T19:00:00Z")], 25, later) == 1
+    assert [row["key"] for row in store.load_tau_samples(25, later)] == ["91|1:1:2:0:-7|0"]
+    assert store._con.execute("SELECT count(*) FROM tau_samples").fetchone()[0] == 1
+
+
+def test_validate_tau_sample_rows_says_what_was_expected_and_what_was_found():
+    good = tau_sample_row("89|1:1:2:0:-7|0")
+    assert service.validate_tau_sample_rows({"rows": [good]}) == [good]
+    assert service.validate_tau_sample_rows([]) == "body must be an object with a `rows` array, got list"
+    assert service.validate_tau_sample_rows({"rows": [{**good, "key": ""}]}) == 'rows[0].key must be "<bookId>|<rungKey>|<sideIndex>", got \'\''
+    assert service.validate_tau_sample_rows({"rows": [{**good, "marketKey": ""}]}) == "rows[0].marketKey must be a non-empty string, got ''"
+    assert service.validate_tau_sample_rows({"rows": [{**good, "edgeUnabated": "x"}]}) == (
+        "rows[0].edgeUnabated must be a finite number, got 'x'")
+    assert service.validate_tau_sample_rows({"rows": [{**good, "seenAt": 5}]}) == "rows[0].seenAt must be an ISO time, got 5"
+    too_many = {"rows": [good] * (service.MAX_ROWS_PER_POST + 1)}
+    assert service.validate_tau_sample_rows(too_many).startswith("at most 1000 rows per request")
+    # A key of another shape than <bookId>|<rungKey>|<sideIndex> would make the
+    # runner's pool throw on every measurement once loaded: refused at the door.
+    for bad_key in ("89|1:1:2:0:-7", "89|1:1:2:0:-7|0|x", "|1:1:2:0:-7|0", "89||0", "89|1:1:2:0:-7|2"):
+        assert service.validate_tau_sample_rows({"rows": [{**good, "key": bad_key}]}) == (
+            f'rows[0].key must be "<bookId>|<rungKey>|<sideIndex>", got {bad_key!r}'), bad_key
+    # A seenAt far ahead of this server would never be pruned or replaced.
+    far_ahead = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    assert service.validate_tau_sample_rows({"rows": [{**good, "seenAt": far_ahead}]}).startswith(
+        "rows[0].seenAt must be within 60s of this server's clock")
+    just_ahead = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z")
+    assert service.validate_tau_sample_rows({"rows": [{**good, "seenAt": just_ahead}]}) == [{**good, "seenAt": just_ahead}]
+
+
+def test_http_tau_samples_post_then_get_serves_the_pool(store, http_server):
+    body = json.dumps({"rows": [tau_sample_row("89|1:1:2:0:-7|0", seen=_iso_now())]}).encode()
+    status, reply = request_json("POST", f"{http_server}/tau_samples.json", body, "application/json")
+    assert (status, reply) == (200, {"ok": True, "saved": 1})
+    status, reply = request_json("POST", f"{http_server}/tau_samples.json", body, "application/json")
+    assert (status, reply) == (200, {"ok": True, "saved": 0})
+    status, reply = get_json(f"{http_server}/tau_samples.json")
+    [served] = reply["rows"]
+    assert status == 200 and served["key"] == "89|1:1:2:0:-7|0" and isinstance(served["seenAt"], int)
+    assert set(served) == {"key", "marketKey", "edgeUnabated", "edgeExchanges", "seenAt"}
+    status, _ = request_json("POST", f"{http_server}/tau_samples.json", body, "text/plain")
+    assert status == 415
+    bad = json.dumps({"rows": [tau_sample_row("not-a-sample-key", seen=_iso_now())]}).encode()
+    status, reply = request_json("POST", f"{http_server}/tau_samples.json", bad, "application/json")
+    assert status == 400 and reply["error"].startswith('rows[0].key must be "<bookId>|<rungKey>|<sideIndex>"')
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def test_http_closing_fairs_post_and_bets_json_serves_them(store, http_server):
     service.run_source_once(ScriptedSource([[record("kalshi:1", "open", None)]]), store)
     body = json.dumps({"rows": [closing_fair_row("kalshi:1")]}).encode()

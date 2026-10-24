@@ -208,18 +208,12 @@ def test_edges_json_is_a_502_naming_the_runner_when_it_is_down(store):
     assert "node unabated_ticket/server/runner.js" in reply["error"]
 
 
-def test_scenarios_json_passes_the_runner_body_through(bets_port, stub_runner):
-    status, _headers, body = get(bets_port, "/scenarios.json")
+@pytest.mark.parametrize("route", sorted(service.RUNNER_ROUTES))
+def test_every_runner_route_passes_the_runner_body_through(bets_port, stub_runner, route):
+    status, _headers, body = get(bets_port, route)
     assert status == 200
     assert json.loads(body) == RUNNER_BODY
-    assert stub_runner.paths_seen == ["/scenarios.json"]
-
-
-def test_teasers_json_passes_the_runner_body_through(bets_port, stub_runner):
-    status, _headers, body = get(bets_port, "/teasers.json")
-    assert status == 200
-    assert json.loads(body) == RUNNER_BODY
-    assert stub_runner.paths_seen == ["/teasers.json"]
+    assert stub_runner.paths_seen == [route]
 
 
 def test_attach_json_passes_the_query_on_and_the_runner_404_back(bets_port, stub_runner):

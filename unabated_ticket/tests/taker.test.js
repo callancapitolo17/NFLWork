@@ -48,7 +48,7 @@ function decide(state, key, quote, extra = {}) {
   return taker.decideRow({
     row, contract: taker.resolveKalshiContract(row, state), quote,
     priceIndex: pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: taker.MAX_LINE_AGE_MS }),
-    sizing: { matches: [], ladderOf: () => null, teasers: [] }, ...extra,
+    sizing: { matches: [], ladderOf: () => null, teasers: [], shrink: 1, minShrunkEdgePct: 1 }, ...extra,
   });
 }
 
@@ -335,7 +335,7 @@ function decideHolding(key, records) {
   for (const [league, list] of Object.entries(edgeRows.feedTeamsByLeague(state))) teams.registerTeams(league, list);
   const flags = betsLib.annotateRows([row], betsLib.resolveTeamKeys(records, []), { lines: edgeRows.boardLines(state) });
   const ladderOf = edgeRows.createLadderReaders(state)(row.eventId);
-  return decide(state, key, { ask: 0.57, depth: 100000 }, { sizing: { matches: flags[0].matches, ladderOf, teasers: [] } });
+  return decide(state, key, { ask: 0.57, depth: 100000 }, { sizing: { matches: flags[0].matches, ladderOf, teasers: [], shrink: 1, minShrunkEdgePct: 1 } });
 }
 
 test("a held bet on the row's axis the sizing math could not price refuses the stake; a held total on a spread row does not", () => {
@@ -439,4 +439,36 @@ test("a moneyline's Kalshi market is the one of two on its event whose title nam
   assert.match(taker.kalshiMoneylineFromMarkets(row, [duq, { ...wsu, yes_sub_title: "Somebody" }], event).detail, /do not name/);
   // A market of another event in the list is not counted.
   assert.equal(taker.kalshiMoneylineFromMarkets(row, [duq, wsu, { ...wsu, event_ticker: "KXNCAAFGAME-X" }], event).ticker, `${event}-WSU`);
+});
+
+test("the Min shrunk edge floor (issue #208): the shrunk live edge gates the row, the stake stays Kelly on the raw live edge; no shrink refuses the row", () => {
+  const state = boardWithEdge(WSU_ALT_KEY, 0.05);
+  const sizing = (extra) => ({ sizing: { matches: [], ladderOf: () => null, teasers: [], shrink: 1, minShrunkEdgePct: 1, ...extra } });
+  const full = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"));
+  const half = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: 0.5 }));
+  assert.equal(full.reason, "bet");
+  assert.equal(half.reason, "bet");
+  assert.deepEqual([full.shrink, half.shrink], [1, 0.5]);
+  assert.ok(Math.abs(half.shrunkEdge - full.liveEdge / 2) < 1e-6);
+  // Half the shrink, the SAME stake and contracts: the stake is on the raw live edge (Cal 2026-10-23).
+  assert.deepEqual([half.stake, half.contracts, half.liveEdge], [full.stake, full.contracts, full.liveEdge]);
+  assert.equal(full.contracts, 60);
+  // 5% x 0.15 = 0.75% shrunk: under the 1% floor, edge_short; the same row passes a 0.5% floor at the full stake.
+  const deep = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: 0.15 }));
+  assert.equal(deep.reason, "edge_short");
+  assert.match(deep.detail, /shrunk live edge 0\.7\d% under 1% \(shrink 0\.150\)/);
+  assert.ok(Math.abs(deep.shrunkEdge - full.liveEdge * 0.15) < 1e-6);
+  const lowFloor = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: 0.15, minShrunkEdgePct: 0.5 }));
+  assert.deepEqual([lowFloor.reason, lowFloor.contracts], ["bet", 60]);
+  // A floor of 0 is off: every shrink passes.
+  assert.equal(decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: 0.01, minShrunkEdgePct: 0 })).reason, "bet");
+  // No shrink at all (tailflex found no fair for the row) refuses this row, not the pass, while the floor is on;
+  // a floor of 0 is off and bets the row on its raw edge; a shrink outside (0, 1] or a missing floor is a bug.
+  const none = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: null }));
+  assert.deepEqual([none.reason, none.detail], ["size_declined", "no tail-flex shrink for the row"]);
+  const unpricedOff = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: null, minShrunkEdgePct: 0 }));
+  assert.deepEqual([unpricedOff.reason, unpricedOff.shrink, unpricedOff.shrunkEdge], ["bet", null, null]);
+  assert.throws(() => decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), { sizing: { matches: [], ladderOf: () => null, teasers: [], minShrunkEdgePct: 1 } }), /sizing\.shrink in \(0, 1\]/);
+  assert.throws(() => decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: 1.5 })), /sizing\.shrink in \(0, 1\]/);
+  assert.throws(() => decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), { sizing: { matches: [], ladderOf: () => null, teasers: [], shrink: 1 } }), /minShrunkEdgePct/);
 });

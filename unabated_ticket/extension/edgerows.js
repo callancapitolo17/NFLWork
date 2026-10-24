@@ -53,6 +53,10 @@
   // minEdgePct 2.5 since 0.16.1 (user, 2026-10-02; was 1.0).
   const DEFAULT_EDGE_SETTINGS = {
     leagues: ALL_LEAGUE_IDS, periods: [1], betTypes: [1, 2, 3], bookIds: undefined, minEdgePct: 2.5, maxLineAgeHours: 168, sortBy: "edge",
+    // The floor on the SHRUNK edge (tailflex.js, issue #208; Cal 2026-10-23: his
+    // to set, like Min edge): a rung whose claimed edge does not survive its
+    // distance from the main number is not listed and the bot never looks at it.
+    minShrunkEdgePct: 1.0,
     minStake: 0,
     minLiquidityToWin: 100,
     includeAlts: false,
@@ -99,6 +103,7 @@
     if (Array.isArray(stored.bookIds)) base.bookIds = stored.bookIds.filter((id) => Number.isInteger(id));
     else if (stored.bookIds === null) base.bookIds = null;
     if (typeof stored.minEdgePct === "number" && stored.minEdgePct >= 0) base.minEdgePct = stored.minEdgePct;
+    if (typeof stored.minShrunkEdgePct === "number" && stored.minShrunkEdgePct >= 0) base.minShrunkEdgePct = stored.minShrunkEdgePct;
     if (typeof stored.minStake === "number" && stored.minStake >= 0) base.minStake = stored.minStake;
     if (typeof stored.maxLineAgeHours === "number" && stored.maxLineAgeHours > 0) base.maxLineAgeHours = stored.maxLineAgeHours;
     // The old altMinLiquidity was a stake floor, not a to-win one, so it does not carry over.
@@ -112,7 +117,7 @@
   // Edges settings the bets service stores under the panel's own names
   // (bets.duckdb::edge_settings); bookIds is carried by bookMode instead.
   const EDGE_SETTING_KEYS = [
-    "leagues", "periods", "betTypes", "minEdgePct", "minStake", "maxLineAgeHours", "minLiquidityToWin",
+    "leagues", "periods", "betTypes", "minEdgePct", "minShrunkEdgePct", "minStake", "maxLineAgeHours", "minLiquidityToWin",
     "includeAlts", "sortBy", "groupByMarket",
   ];
 
@@ -261,8 +266,33 @@
 
   // ---- sizing ----------------------------------------------------------------
 
-  // Quarter-Kelly with nothing held, never more than the line's resting
-  // liquidity: it sorts "by stake" and feeds the tail-flex rank score.
+  // A pregame row's shrunk edge in percent (tailflex.shrinkOfRow — Unabated's
+  // claimed edge, less the farther the line sits from the main number; issue
+  // #208): what the Min shrunk edge floor and the rank read, shown beside the
+  // stake. Null on a live row (its fair is in-game, not on the pregame ladder
+  // c and tau were measured on) and on a row the shrink cannot price.
+  function shrunkEdgePctOf(row, measurement) {
+    if (row.edgePct == null || row.live) return null;
+    const shrunk = tailflex.shrinkOfRow(row, measurement);
+    return shrunk ? shrunk.edgePct : null;
+  }
+
+  // A pregame row stays listed (and alerts, and the bot looks at it) only
+  // while its shrunk edge reaches the Min shrunk edge setting; with the floor
+  // on, a row the shrink cannot price fails closed. A floor of 0 is the
+  // setting's "off": every row lists, priced or not (no stake reads the
+  // shrink). Live rows are never gated here. A floor that is not a number 0
+  // or more is a bug (sanitizeEdgeSettings guarantees one).
+  function meetsShrunkFloor(shrunkEdgePct, minShrunkEdgePct) {
+    if (typeof minShrunkEdgePct !== "number" || !(minShrunkEdgePct >= 0)) {
+      throw new Error(`meetsShrunkFloor: expected minShrunkEdgePct, a number 0 or more, got ${minShrunkEdgePct}`);
+    }
+    if (minShrunkEdgePct === 0) return true;
+    return typeof shrunkEdgePct === "number" && shrunkEdgePct >= minShrunkEdgePct;
+  }
+
+  // Quarter-Kelly on Unabated's raw edge with nothing held, never more than
+  // the line's resting liquidity: it sorts "by stake" and feeds the rank score.
   function stakeFor(row, stakeSettings) {
     if (row.edgePct == null) return null;
     try {
@@ -273,14 +303,33 @@
     }
   }
 
-  // The standalone stake (sized on Unabated's raw edge, never on the flexed
-  // one) and the tail-flex rank score: EV dollars after flex, which picks a
-  // card's best line and orders the lines inside it. `measurement` is
-  // tailflex.measureTailFlex over the same feed state.
+  // The row with its shrink (`shrink`, `shrunkEdgePct`: what the Min shrunk
+  // edge floor and the rank read), its standalone stake on Unabated's raw
+  // edge (`edgePct`, which the Min edge floor reads too), and the rank
+  // score: the believed growth of that stake (tailflex.rankScoreOf), which
+  // picks a card's best line and orders the lines inside it. `measurement`
+  // is tailflex.measureTailFlex over the same feed state (with the pooled
+  // tau where the caller has one).
   function withStakeAndRank(row, measurement, stakeSettings) {
-    const sized = { ...row, stake: stakeFor(row, stakeSettings) };
-    const rank = tailflex.rankOfRow(sized, measurement);
-    return { ...sized, rankScore: rank ? rank.score : null };
+    const shrunk = tailflex.shrinkOfRow(row, measurement);
+    const sized = { ...row, shrink: shrunk ? shrunk.shrink : null, shrunkEdgePct: shrunk ? shrunk.edgePct : null, stake: stakeFor(row, stakeSettings) };
+    return { ...sized, rankScore: tailflex.rankScoreOf(sized, stakeSettings.bankroll) };
+  }
+
+  // The Ticket's line as the Edges row shape the tail flex reads (the
+  // period and bet type ids live on the ticket's `watch`, page.js; the
+  // league on the board's event; `isAlt` is the ticket's own flag, so a
+  // book's main line on a side Unabated has no main for is the main). The
+  // shrink falls back on both c and tau without a league; a live ticket has
+  // no shrunk edge (shrunkEdgePctOf).
+  function ticketSizingRow(ticket, line, event) {
+    const watch = ticket.watch || {};
+    return {
+      eventId: ticket.eventId ?? null, leagueId: event ? event.leagueId : null,
+      periodTypeId: watch.periodTypeId ?? null, betTypeId: watch.betTypeId ?? null,
+      sideIndex: ticket.sideIndex, points: line.points ?? ticket.points ?? null, price: line.price, edgePct: line.edgePct,
+      isAlt: ticket.isAlt ?? null, live: ticket.live ? true : undefined,
+    };
   }
 
   // One describeLine-shaped row per event on the board (main lines only):
@@ -361,7 +410,8 @@
     return minStake === 0 || betsView.suggestedBetAmount(row.bet.advice) >= minStake;
   }
 
-  // The selected lines at `minEdgePct` and up, each with its standalone
+  // The selected lines at `minEdgePct` and up whose shrunk edge reaches the
+  // settings' `minShrunkEdgePct` (meetsShrunkFloor), each with its standalone
   // `stake`, its `rankScore` and its `bet` flag, in selectEdges' order (edge,
   // then start).
   //   context  {edgeSettings, stakeSettings, effective (effectiveFilter), minEdgePct, measurement,
@@ -370,7 +420,9 @@
     if (!feedState) return [];
     const priceIndex = context.priceIndex || createPriceIndex(feedState, context.edgeSettings, context.now);
     const selected = feed.selectEdges(feedState, { ...edgeSelectionOptions(context.edgeSettings, context.effective, context.now), minEdge: context.minEdgePct / 100 })
-      .map((row) => withPriceCheck(withStakeAndRank(row, context.measurement, context.stakeSettings), priceIndex));
+      .map((row) => withStakeAndRank(row, context.measurement, context.stakeSettings))
+      .filter((row) => meetsShrunkFloor(row.shrunkEdgePct, context.edgeSettings.minShrunkEdgePct))
+      .map((row) => withPriceCheck(row, priceIndex));
     return withBetFlags(selected, context);
   }
 
@@ -411,8 +463,8 @@
   }
 
   // Cards: the best line of each (game, market, side) is always the highest
-  // tail-flex rank score (EV dollars after flex); the list's sort orders the
-  // cards through that line.
+  // tail-flex rank score (the believed growth of its stake); the list's sort
+  // orders the cards through that line.
   function groupEdgeRows(rows, sortBy) {
     const groups = feed.groupEdges(rows, (row) => row.rankScore);
     if (sortBy === "stake") groups.sort((a, b) => (b.best.stake ?? -1) - (a.best.stake ?? -1) || b.best.edgePct - a.best.edgePct);
@@ -422,9 +474,10 @@
     return groups;
   }
 
-  // "tail flex: NFL spr 6.2% · CFB 1H tot 10%": the c in use for every
-  // spread/total market on the list, in list order; a market too thin to
-  // measure shows the fallback. "" for an empty list.
+  // "tail flex: NFL spr c 6.2% τ 1.9% · CFB 1H tot c 10% τ 1.85%": the c and
+  // the tau in use for every spread/total market on the list, in list order;
+  // a market too thin to measure shows the fallback (a whole number for c,
+  // 1.85% for tau). "" for an empty list.
   function describeTailFlex(rows, measurement) {
     if (!rows.length) return "";
     const parts = new Map();
@@ -434,8 +487,10 @@
       if (parts.has(key)) continue;
       const c = tailflex.cOf(measurement, row);
       const cText = tailflex.isMeasured(measurement, row) ? `${(c * 100).toFixed(1)}%` : `${Math.round(c * 100)}%`;
+      const tau = tailflex.tauOf(measurement, row);
+      const tauText = tailflex.isTauMeasured(measurement, row) ? `${(tau * 100).toFixed(2)}%` : `${(tailflex.TAU_FALLBACK * 100).toFixed(2)}% (fallback)`;
       const period = row.period === "FG" ? "" : `${row.period} `;
-      parts.set(key, `${row.leagueLabel} ${period}${row.betTypeId === BET_TYPE_SPREAD ? "spr" : "tot"} ${cText}`);
+      parts.set(key, `${row.leagueLabel} ${period}${row.betTypeId === BET_TYPE_SPREAD ? "spr" : "tot"} c ${cText} τ ${tauText}`);
     }
     return parts.size ? `tail flex: ${Array.from(parts.values()).join(" · ")}` : "";
   }
@@ -558,7 +613,7 @@
     EDGE_SETTING_KEYS, sanitizeStakeSettings, sanitizeEdgeSettings, settingsFromService, serviceSettingsOf,
     feedTeamsByLeague, applyBetsPayload,
     liveBooks, defaultBookIds, effectiveFilter, edgeSelectionOptions,
-    stakeFor, withStakeAndRank, boardLines, createLadderReaders, withBetFlags, exposureDollars, meetsMinStake,
+    shrunkEdgePctOf, meetsShrunkFloor, stakeFor, withStakeAndRank, ticketSizingRow, boardLines, createLadderReaders, withBetFlags, exposureDollars, meetsMinStake,
     sizedEdgeRows, createPriceIndex, withPriceCheck, sortEdgeRows, listedEdgeRows, groupEdgeRows, describeTailFlex, edgeTier, fmtDollars, stakeRail,
     fmtAmerican, fmtFairEntry, fmtBetPrice, heldInThisDirection, tagReading, moveDetail, moveTag, moveWords,
   };

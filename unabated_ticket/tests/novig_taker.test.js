@@ -57,7 +57,7 @@ function bookWithAsk(ask, qty = 100000) {
   return { marketId: MARKET_ID, seq: 1, orders: { [DUQ_OUTCOME]: [{ orderId: "a", price: (1 - ask).toFixed(3), qty }, { orderId: "b", price: (1 - ask - 0.01).toFixed(3), qty: 5 }], [WSU_OUTCOME]: [] } };
 }
 
-function decide(state, quote, sizing = { matches: [], ladderOf: () => null, teasers: [] }) {
+function decide(state, quote, sizing = { matches: [], ladderOf: () => null, teasers: [], shrink: 1, minShrunkEdgePct: 1 }) {
   const row = novigRow(state);
   return taker.decideRow({
     row, contract: contractOf(row), quote, priceIndex: pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: taker.MAX_LINE_AGE_MS }),
@@ -90,6 +90,18 @@ test("a clean Novig row bets in 1c contracts with no fee pregame", () => {
   // contracts pay 1c: the stake buys stake x 100 / ask of them, never Kalshi's stake / ask.
   assert.equal(decision.contracts, Math.floor((decision.stake * 100) / 0.555));
   assert.ok(Math.abs(decision.cost - (decision.contracts * 0.555) / 100) < 1e-4);
+});
+
+test("a Novig row meets the Min shrunk edge floor too (issue #208): the shrunk live edge gates it, the stake stays on the raw live edge", () => {
+  const quote = taker.novigQuoteOf(bookWithAsk(0.555), { otherOutcomeId: DUQ_OUTCOME });
+  const full = decide(board(), quote);
+  const half = decide(board(), quote, { matches: [], ladderOf: () => null, teasers: [], shrink: 0.5, minShrunkEdgePct: 1 });
+  assert.deepEqual([full.reason, half.reason, full.shrink, half.shrink], ["bet", "bet", 1, 0.5]);
+  assert.ok(Math.abs(half.shrunkEdge - full.liveEdge / 2) < 1e-4, `${half.shrunkEdge} vs ${full.liveEdge}`);
+  assert.deepEqual([half.stake, half.contracts], [full.stake, full.contracts]);
+  const deep = decide(board(), quote, { matches: [], ladderOf: () => null, teasers: [], shrink: 0.1, minShrunkEdgePct: 1 });
+  assert.equal(deep.reason, "edge_short");
+  assert.match(deep.detail, /shrunk live edge .* under 1%/);
 });
 
 test("Novig's live price must be Unabated's: worse by over 0.1c or better by over 1c skips", () => {

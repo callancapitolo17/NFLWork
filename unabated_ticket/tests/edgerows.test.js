@@ -35,8 +35,11 @@ function sliceState() {
 // The slice's lines are days old by NOW (SouthPoint's main spread changed
 // 2026-08-29), so the age gate is opened and every live book allowed; the
 // list's floor is 1% so the slice's thinner lines are in it.
+// The Min shrunk edge floor is off here too: the slice's deep alts keep
+// under 1% shrunk, and the tests below are about the listing, not the floor
+// (which has its own test).
 function openSettings(overrides) {
-  return { ...edgeRows.DEFAULT_EDGE_SETTINGS, bookIds: null, maxLineAgeHours: 1e6, includeAlts: true, minEdgePct: 1, ...overrides };
+  return { ...edgeRows.DEFAULT_EDGE_SETTINGS, bookIds: null, maxLineAgeHours: 1e6, includeAlts: true, minEdgePct: 1, minShrunkEdgePct: 0, ...overrides };
 }
 
 function contextFor(state, edgeSettings, records, teasers) {
@@ -83,7 +86,7 @@ test("defaults are the panel's: $30,000 at quarter Kelly, 2.5% edge, 168 h, $100
   const defaults = edgeRows.DEFAULT_EDGE_SETTINGS;
   assert.deepEqual(defaults.leagues, Object.keys(feed.LEAGUES).map(Number));
   assert.deepEqual({ ...defaults, leagues: null }, {
-    leagues: null, periods: [1], betTypes: [1, 2, 3], bookIds: undefined, minEdgePct: 2.5, maxLineAgeHours: 168, sortBy: "edge",
+    leagues: null, periods: [1], betTypes: [1, 2, 3], bookIds: undefined, minEdgePct: 2.5, minShrunkEdgePct: 1.0, maxLineAgeHours: 168, sortBy: "edge",
     minStake: 0, minLiquidityToWin: 100, includeAlts: false, groupByMarket: true,
   });
   assert.equal(edgeRows.MAX_EDGE_ROWS, 200);
@@ -103,6 +106,8 @@ test("sanitizeEdgeSettings: unknown leagues and periods dropped, a stored null b
   assert.deepEqual(settings.periods, [1, 2]);
   assert.equal(settings.bookIds, null);
   assert.equal(settings.minEdgePct, 2.5);
+  assert.equal(edgeRows.sanitizeEdgeSettings({ minShrunkEdgePct: -1 }).minShrunkEdgePct, 1.0);
+  assert.equal(edgeRows.sanitizeEdgeSettings({ minShrunkEdgePct: 0 }).minShrunkEdgePct, 0);
   assert.equal(settings.sortBy, "edge");
   assert.equal(settings.includeAlts, true);
   assert.equal("altMaxDistance" in settings, false);
@@ -127,20 +132,82 @@ test("effectiveFilter: default books by name, your ticks, the Unabated selection
   assert.deepEqual(Array.from(edgeRows.edgeSelectionOptions(base, byDefault, NOW).leagueIds), base.leagues);
 });
 
-test("listedEdgeRows: nothing held, every row's stake is quarter Kelly off its edge, its rank score keep x edge x stake, edge order", () => {
+test("listedEdgeRows: nothing held, every row's stake is quarter Kelly off Unabated's RAW edge, its rank score the believed growth of that stake, edge order", () => {
   const state = sliceState();
   const rows = edgeRows.listedEdgeRows(state, contextFor(state, openSettings()));
   assert.equal(rows.length, 14);
   assert.deepEqual(rows.slice(0, 3).map((row) => row.key), [PANTHERS_ALT_NOVIG, PANTHERS_ALT_65_NOVIG, BEARS_SPREAD_SOUTHPOINT]);
   const measurement = tailflex.measureTailFlex(state, { now: NOW, maxLineAgeMs: 1e6 * 3600 * 1000 });
   for (const row of rows) {
+    // The shrink (tailflex.shrinkOfRow, issue #208) rides on the row for the floor and the rank; the stake never reads it (Cal 2026-10-23).
+    const shrunk = tailflex.shrinkOfRow(row, measurement);
+    assert.ok(row.shrink > 0 && row.shrink <= 1 && row.shrunkEdgePct === shrunk.edgePct && row.shrunkEdgePct <= row.edgePct, row.key);
     const standalone = kelly.kellyStakeFromEdge({ bookPrice: row.price, edgePct: row.edgePct, bankroll: 30000, multiplier: 0.25 }).stake;
     assert.equal(row.stake, standalone);
-    assert.equal(row.rankScore, tailflex.rankOfRow(row, measurement).score);
-    assert.ok(row.rankScore > 0 && row.rankScore < row.edgePct / 100 * row.stake);
+    // A moneyline sits on no ladder: nothing to shrink.
+    if (row.betTypeId === 1) assert.equal(row.shrink, 1);
+    assert.equal(row.rankScore, tailflex.rankScoreOf(row, 30000));
+    // The rank is the believed growth of that stake: stake x shrunk edge - stake^2 x b / (2 x bankroll).
+    const netOdds = kelly.americanToDecimal(row.price) - 1;
+    assert.ok(Math.abs(row.rankScore - (row.stake * (row.shrunkEdgePct / 100) - (row.stake * row.stake * netOdds) / (2 * 30000))) < 1e-9);
     assert.deepEqual([row.bet.tier, row.bet.advice.kind, row.bet.advice.bet], [null, "none", standalone]);
   }
+  // SouthPoint's Bears -2.5 at -110 (5.3%) sits half a point off Unabated's
+  // main: it keeps 83% of its edge for the rank (tau 1.85%) and still sizes
+  // the raw $437.25.
+  const main = rows.find((row) => row.key === BEARS_SPREAD_SOUTHPOINT);
+  assert.ok(Math.abs(main.shrink - 0.829) < 0.001, `main shrink ${main.shrink}`);
+  assert.equal(Math.round(main.stake * 100) / 100, 437.25);
+  // Novig's Panthers +2.5 at 34.5c (5.45%), 0.4 SD out at the fallback c: 21% for the rank, the raw $215.13 to bet.
+  const alt = rows.find((row) => row.key === PANTHERS_ALT_NOVIG);
+  assert.ok(Math.abs(alt.shrink - 0.209) < 0.001, `alt shrink ${alt.shrink}`);
+  assert.equal(Math.round(alt.stake * 100) / 100, 215.13);
   for (let i = 1; i < rows.length; i += 1) assert.ok(rows[i - 1].edgePct >= rows[i].edgePct);
+});
+
+test("listedEdgeRows: at a near-zero pooled tau every rung off Unabated's main number collapses and the 1% floor drops them all; a line at Unabated's own number keeps shrink 1 at any tau", () => {
+  // tau is sqrt(cov) with no significance floor (review 2026-10-24, note): a
+  // true-zero market can read a tiny measured tau. The consequence is pinned
+  // here, not hidden. Unabated's main is Bears -3 / Panthers +3 (book 49);
+  // Southpoint's own main at -2.5 sits off it like every alt.
+  const state = sliceState();
+  const spreadsFG = tailflex.marketKeyOf({ leagueId: 1, periodTypeId: 1, betTypeId: 2 });
+  const context = contextFor(state, openSettings({ minShrunkEdgePct: 0 }));
+  const measurement = tailflex.withPooledTau(context.measurement, { [spreadsFG]: { tau: 0.001, measured: true } });
+  const spreads = (edgeSettings) => edgeRows.listedEdgeRows(state, { ...context, edgeSettings, measurement }).filter((row) => tailflex.marketKeyOf(row) === spreadsFG);
+  const open = spreads(openSettings({ minShrunkEdgePct: 0 }));
+  assert.ok(open.length >= 5 && open.some((row) => row.isAlt === false), open.map((row) => row.key).join(", "));
+  assert.ok(open.every((row) => row.shrink < 0.02 && row.shrunkEdgePct < 0.1), open.map((row) => `${row.key} ${row.shrink}`).join(", "));
+  assert.deepEqual(spreads(openSettings({ minShrunkEdgePct: 1.0 })), []);
+  // A +110 line whose fair IS Unabated's main fair (its own number, a few points of edge): distance 0, nothing to shrink.
+  const main = measurement.mainFairs.get("125807:1:2:0");
+  const decimal = kelly.americanToDecimal(110);
+  const edgePct = (main.fairProb * decimal - 1) * 100;
+  assert.ok(edgePct > 1, `edge at the main ${edgePct}`);
+  const atMain = tailflex.shrinkOfRow({ eventId: 125807, leagueId: 1, periodTypeId: 1, betTypeId: 2, sideIndex: 0, points: main.points, price: 110, edgePct, isAlt: false }, measurement);
+  assert.ok(Math.abs(atMain.shrink - 1) < 1e-9, `shrink at the main ${atMain.shrink}`);
+});
+
+test("listedEdgeRows: the Min shrunk edge floor drops a rung whose shrunk edge is under it; 0 is off (an unpriced row lists); with the floor on an unpriced row fails closed", () => {
+  const state = sliceState();
+  const list = (overrides) => edgeRows.listedEdgeRows(state, contextFor(state, openSettings(overrides)));
+  const all = list({});
+  const floored = list({ minShrunkEdgePct: 1.0 });
+  assert.ok(floored.length < all.length && floored.length > 0, `${floored.length} of ${all.length}`);
+  assert.ok(floored.every((row) => row.shrunkEdgePct >= 1.0));
+  assert.deepEqual(floored.map((row) => row.key), all.filter((row) => row.shrunkEdgePct >= 1.0).map((row) => row.key));
+  // The Bears -2.5 (4.4% shrunk) stays, the Panthers +2.5 (1.1%) stays, the Panthers +6.5 (0.2%) goes.
+  const keys = floored.map((row) => row.key);
+  assert.ok(keys.includes(BEARS_SPREAD_SOUTHPOINT) && keys.includes(PANTHERS_ALT_NOVIG) && !keys.includes(PANTHERS_ALT_65_NOVIG));
+  assert.equal(list({ minShrunkEdgePct: 1.5 }).map((row) => row.key).includes(PANTHERS_ALT_NOVIG), false);
+  assert.equal(list({ minShrunkEdgePct: 0 }).length, all.length);
+  assert.equal(edgeRows.meetsShrunkFloor(null, 0), true);
+  assert.equal(edgeRows.meetsShrunkFloor(null, 1.0), false);
+  assert.equal(edgeRows.meetsShrunkFloor(1.0, 1.0), true);
+  assert.equal(edgeRows.meetsShrunkFloor(0.99, 1.0), false);
+  // A floor that is not a number 0 or more is a settings bug, never a gate silently off.
+  assert.throws(() => edgeRows.meetsShrunkFloor(1.0, undefined), /minShrunkEdgePct/);
+  assert.throws(() => edgeRows.meetsShrunkFloor(1.0, null), /minShrunkEdgePct/);
 });
 
 test("listedEdgeRows: the settings' gates — min edge, alts off, the default books, max line age, leagues", () => {
@@ -173,6 +240,7 @@ test("conditional Kelly: a held Bears -2.5 makes the same line an add, the other
   const rows = edgeRows.listedEdgeRows(state, contextFor(state, openSettings(), records));
   const byKey = new Map(rows.map((row) => [row.key, row]));
   const same = byKey.get(BEARS_SPREAD_SOUTHPOINT);
+  // $200 held on a line the raw edge sizes $437.25: add $237.25.
   assert.deepEqual([same.bet.tier, same.bet.advice.kind, same.bet.advice.verb, same.bet.advice.held, same.bet.advice.bet], ["same_line", "sized", "add", 200, 237.25]);
   assert.deepEqual(edgeRows.stakeRail(same), { text: "add $237.25", note: "$437.25 alone", atSize: false });
   const other = byKey.get(PANTHERS_ALT_NOVIG);
@@ -180,6 +248,11 @@ test("conditional Kelly: a held Bears -2.5 makes the same line an add, the other
   assert.deepEqual(edgeRows.stakeRail(other), { text: "bet $328.86", note: "$215.13 alone", atSize: false });
   const atSize = rows.filter((row) => row.bet.advice.bet === 0);
   assert.equal(atSize.length, 5);
+  // A live row has no shrunk edge: its fair is in-game, not on the ladder c and tau were measured on; its stake is the same raw-edge one.
+  const measurement = contextFor(state, openSettings(), records).measurement;
+  const liveRow = { ...other, live: true, shrunkEdgePct: undefined, shrink: undefined };
+  assert.equal(edgeRows.shrunkEdgePctOf(liveRow, measurement), null);
+  assert.equal(edgeRows.stakeFor(liveRow, edgeRows.DEFAULT_STAKE_SETTINGS), other.stake);
   assert.ok(atSize.every((row) => edgeRows.stakeRail(row).atSize));
   const gated = edgeRows.listedEdgeRows(state, contextFor(state, openSettings({ minStake: 1 }), records));
   assert.equal(gated.length, rows.length - 5);
@@ -208,32 +281,38 @@ test("open BFA teasers size the rows too: a Panthers +3.5 teaser puts the Panthe
   assert.equal(bearsUnsized.bet.advice.bet, bearsUnsized.stake);
 });
 
-test("groupEdgeRows: one card per (game, period, bet type, side), its best line the highest tail-flex rank score", () => {
+test("groupEdgeRows: one card per (game, period, bet type, side), its best line the highest rank score (the believed growth of its stake)", () => {
   const state = sliceState();
   const rows = edgeRows.listedEdgeRows(state, contextFor(state, openSettings()));
   const cards = edgeRows.groupEdgeRows(rows, "edge");
+  // The totals card: the 50.5 rung at 1.59% beats the 54.5 at 2.63% — the
+  // nearer rung keeps 44% of its edge, the deeper one 9% (issue #208; by the
+  // old keep the 54.5 won).
   assert.deepEqual(cards.map((card) => [card.key, card.rows.length, card.best.key]), [
     ["125807:pt1:bt2:si1", 4, PANTHERS_ALT_NOVIG],
     ["125807:pt1:bt2:si0", 5, BEARS_SPREAD_SOUTHPOINT],
     ["125807:pt1:bt1:si0", 3, BEARS_ML_BETMGM],
-    ["125807:pt1:bt3:si0", 2, "289357345:ms89:si0:tid6:alt54.5"],
+    ["125807:pt1:bt3:si0", 2, "289357345:ms89:si0:tid6:alt50.5"],
   ]);
   for (const card of cards) {
     for (let i = 1; i < card.rows.length; i += 1) assert.ok(card.rows[i - 1].rankScore >= card.rows[i].rankScore);
   }
-  // The Bears card: SouthPoint's main -2.5 at $437 ranks far above Novig's
-  // deep alts, though the -13.5 alt is within a point of its edge.
+  // The Bears card: SouthPoint's main -2.5 at $363 ranks four orders above
+  // Novig's deep alts, though the -13.5 alt is within a point of its edge.
   const bearsCard = cards[1];
-  assert.ok(bearsCard.rows[0].rankScore > 100 * bearsCard.rows[bearsCard.rows.length - 1].rankScore);
-  assert.deepEqual(edgeRows.groupEdgeRows(rows, "stake").map((card) => card.best.key), [BEARS_SPREAD_SOUTHPOINT, BEARS_ML_BETMGM, PANTHERS_ALT_NOVIG, "289357345:ms89:si0:tid6:alt54.5"]);
+  assert.ok(bearsCard.rows[0].rankScore > 1000 * bearsCard.rows[bearsCard.rows.length - 1].rankScore);
+  assert.deepEqual(edgeRows.groupEdgeRows(rows, "stake").map((card) => card.best.key), [BEARS_SPREAD_SOUTHPOINT, BEARS_ML_BETMGM, PANTHERS_ALT_NOVIG, "289357345:ms89:si0:tid6:alt50.5"]);
   assert.equal(edgeRows.groupEdgeRows(rows, "start").length, 4);
 });
 
-test("describeTailFlex: the c per spread / total market on the list, the fallback when too thin to measure; empty list, empty text", () => {
+test("describeTailFlex: the c and tau per spread / total market on the list, the fallbacks when too thin to measure; empty list, empty text", () => {
   const state = sliceState();
   const context = contextFor(state, openSettings());
   const rows = edgeRows.listedEdgeRows(state, context);
-  assert.equal(edgeRows.describeTailFlex(rows, context.measurement), "tail flex: NFL spr 10% · NFL tot 10%");
+  assert.equal(edgeRows.describeTailFlex(rows, context.measurement), "tail flex: NFL spr c 10% τ 1.85% (fallback) · NFL tot c 10% τ 1.85% (fallback)");
+  // A pooled tau (tailflex.withPooledTau) shows measured, to two decimals.
+  const pooled = tailflex.withPooledTau(context.measurement, { [tailflex.marketKeyOf(rows[0])]: { tau: 0.0212, measured: true, rungCount: 500, covariance: 0.0212 ** 2 } });
+  assert.equal(edgeRows.describeTailFlex(rows, pooled), "tail flex: NFL spr c 10% τ 2.12% · NFL tot c 10% τ 1.85% (fallback)");
   assert.equal(edgeRows.describeTailFlex(rows.filter((row) => row.betTypeId === 1), context.measurement), "");
   assert.equal(edgeRows.describeTailFlex([], context.measurement), "");
 });
@@ -315,4 +394,24 @@ test("createLadderReaders: a bounded reader marks every ladder it builds, the de
   const eventId = Number(Object.values(state.lines)[0].eventId);
   assert.equal(edgeRows.createLadderReaders(state)(eventId)("FG", "total").bounded, false);
   assert.equal(edgeRows.createLadderReaders(state, { bounded: true })(eventId)("FG", "total").bounded, true);
+});
+
+test("ticketSizingRow: the Ticket's period and bet type come off its watch (page.js), its league off the board's event; without them the shrink cannot find the market", () => {
+  const state = sliceState();
+  const event = state.events[125807];
+  const ticket = { eventId: 125807, sideIndex: 0, points: -2.5, live: null, watch: { periodTypeId: 1, betTypeId: 2, altPoints: null } };
+  const row = edgeRows.ticketSizingRow(ticket, { points: -2.5, price: -110, edgePct: 4.7 }, event);
+  assert.deepEqual(row, { eventId: 125807, leagueId: 1, periodTypeId: 1, betTypeId: 2, sideIndex: 0, points: -2.5, price: -110, edgePct: 4.7, isAlt: null, live: undefined });
+  assert.equal(edgeRows.ticketSizingRow({ ...ticket, isAlt: false }, { points: -2.5, price: -110, edgePct: 4.7 }, event).isAlt, false);
+  assert.equal(tailflex.marketKeyOf(row), "1:1:2");
+  // The same line as the Edges row: the Ticket's shrunk edge matches the listed Bears -2.5 (any book at -110 and 4.7%).
+  const measurement = tailflex.measureTailFlex(state, { now: NOW, maxLineAgeMs: 1e6 * 3600 * 1000 });
+  const listed = edgeRows.listedEdgeRows(state, contextFor(state, openSettings(), [])).find((listedRow) => listedRow.key === BEARS_SPREAD_SOUTHPOINT);
+  const ticketRow = edgeRows.ticketSizingRow(ticket, { points: listed.points, price: listed.price, edgePct: listed.edgePct }, event);
+  assert.equal(edgeRows.shrunkEdgePctOf(ticketRow, measurement), listed.shrunkEdgePct);
+  // A moneyline ticket keeps its whole edge; a live ticket has no shrunk edge; no event means no league (the fallbacks).
+  const moneyline = edgeRows.ticketSizingRow({ ...ticket, watch: { periodTypeId: 1, betTypeId: 1 } }, { points: null, price: -300, edgePct: 3 }, event);
+  assert.equal(tailflex.shrinkOfRow(moneyline, measurement).shrink, 1);
+  assert.equal(edgeRows.shrunkEdgePctOf(edgeRows.ticketSizingRow({ ...ticket, live: { eventPeriodTypeId: 3 } }, { points: -2.5, price: -110, edgePct: 4.7 }, event), measurement), null);
+  assert.deepEqual([edgeRows.ticketSizingRow(ticket, { price: -110, edgePct: 4.7 }, null).leagueId, edgeRows.ticketSizingRow({ eventId: 1, sideIndex: 0 }, { price: -110, edgePct: 4.7 }, null).betTypeId], [null, null]);
 });

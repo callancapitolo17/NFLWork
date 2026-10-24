@@ -19,7 +19,7 @@ const SERVICE_URL = "http://127.0.0.1:8094";
 const BEARS_SPREAD_SOUTHPOINT = "289357360:ms99:si0:tid6";
 const NOVIG_PANTHERS_ALT = "289357357:ms89:si1:tid5:alt-2.5";
 const sliceBody = fs.readFileSync(path.join(__dirname, "fixtures", "v2_slice.json"), "utf8");
-const OPEN_SETTINGS = { leagues: [1], bookMode: "all", bookIds: null, maxLineAgeHours: 1e6, includeAlts: true, minEdgePct: 1, groupByMarket: false };
+const OPEN_SETTINGS = { leagues: [1], bookMode: "all", bookIds: null, maxLineAgeHours: 1e6, includeAlts: true, minEdgePct: 1, minShrunkEdgePct: 0, groupByMarket: false };
 
 function response(status, body, headers = {}) {
   return { ok: status < 300, status, headers: { get: (name) => headers[name.toLowerCase()] ?? null }, json: async () => JSON.parse(body) };
@@ -82,6 +82,7 @@ test("the ticket for a held sportsbook line: add, its standalone size, no contra
   assert.equal(ticket.edge, "+5.30%");
   assert.match(ticket.start, / · in 1h 0m$/);
   const block = ticket.stakeBlock;
+  // $200 held on a line the raw edge sizes $437.25: add $237.25.
   assert.deepEqual([block.label, block.stake, block.noEdge, block.position, block.positionAgainst, block.contracts],
     ["Add to your position", "$237.25", false, "held $200 · $437.25 alone", false, null]);
   // -110: $237.25 wins $215.68 and pays $452.93.
@@ -170,10 +171,10 @@ test("banners: the page's failed reads, then what the runner reports, worst firs
 
 test("settings: defaults fill nulls, a save sends only what changed, books travel with their mode, reset sends null", () => {
   const nothing = { bankroll: null, multiplier: null, leagues: null, periods: null, betTypes: null, bookMode: null, bookIds: null, minEdgePct: null,
-    minStake: null, maxLineAgeHours: null, minLiquidityToWin: null, includeAlts: null, sortBy: null, groupByMarket: null };
+    minStake: null, maxLineAgeHours: null, minLiquidityToWin: null, includeAlts: null, sortBy: null, groupByMarket: null, minShrunkEdgePct: null };
   const effective = phoneView.effectiveSettings(nothing);
-  assert.deepEqual([effective.bankroll, effective.multiplier, effective.bookMode, effective.minEdgePct, effective.groupByMarket],
-    [edgeRows.DEFAULT_STAKE_SETTINGS.bankroll, edgeRows.DEFAULT_STAKE_SETTINGS.multiplier, "default", edgeRows.DEFAULT_EDGE_SETTINGS.minEdgePct, true]);
+  assert.deepEqual([effective.bankroll, effective.multiplier, effective.bookMode, effective.minEdgePct, effective.minShrunkEdgePct, effective.groupByMarket],
+    [edgeRows.DEFAULT_STAKE_SETTINGS.bankroll, edgeRows.DEFAULT_STAKE_SETTINGS.multiplier, "default", edgeRows.DEFAULT_EDGE_SETTINGS.minEdgePct, 1, true]);
   assert.deepEqual(Object.keys(phoneView.settingsDefaults()).sort(), Object.keys(nothing).sort());
 
   // The form as it loads: nothing to send.
