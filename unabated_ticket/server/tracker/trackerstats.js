@@ -48,6 +48,8 @@
   const VENUE_NAMES = {
     kalshi: "Kalshi", novig: "Novig", betonline: "BetOnline", bfa: "BFA",
     wagerzon: "Wagerzon", polymarket_us: "Polymarket US", bet105: "Bet105", draftkings: "DraftKings",
+    // Balances tab rows only: each Novig subaccount is its own wallet (its bets keep venue "novig").
+    novig_place: "Novig · Place", novig_bot: "Novig · Bot",
   };
   const BET_TYPE_NAMES = { moneyline: "Moneyline", spread: "Spread", total: "Total", other: "Other" };
   // Markets of bets the sources leave as betType "other" (no game on the

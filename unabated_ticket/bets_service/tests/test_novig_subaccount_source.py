@@ -263,3 +263,26 @@ def test_an_order_with_no_context_grades_only_off_a_settlement_row():
 def test_an_unreadable_fill_fails_the_run():
     with pytest.raises(NovigError):
         NovigSubaccountSource("bot", FakeClient([{**fill(), "orderId": None}]), lambda: {}, now=lambda: NOW).fetch()
+
+
+class BalanceClient:
+    def __init__(self, reply):
+        self._reply = reply
+
+    def balance(self):
+        if isinstance(self._reply, Exception):
+            raise self._reply
+        return self._reply
+
+
+def test_balance_is_the_subaccounts_own_wallet_with_no_in_bets_split():
+    source = NovigSubaccountSource("place", BalanceClient(2446.0684), lambda: {})
+    assert source.balance() == {"cash": 2446.0684, "inBets": None, "available": 2446.0684, "creditLimit": None}
+
+
+def test_a_failed_balance_read_shows_unavailable_under_the_sources_name():
+    from unabated_ticket.bets_service.balances import BalanceBook, read_balance_once
+    book = BalanceBook()
+    read_balance_once(NovigSubaccountSource("bot", BalanceClient(NovigError("HTTP 401")), lambda: {}), book)
+    reading = book.snapshot()["novig_bot"]
+    assert reading["cash"] is None and "HTTP 401" in reading["error"]
