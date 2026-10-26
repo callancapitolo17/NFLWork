@@ -2797,7 +2797,10 @@ visible. Its one write is the Bets page's Remove / Restore.
   today's money; Cal, 2026-10-14): live cash, in bets and available per book
   from `GET /balances.json`, fetched only while the tab is open. Read after each
   poll for Kalshi (`/portfolio/balance`, cents), Novig
-  (`/portfolio/summary?currency=CASH`) and Polymarket US
+  (`/portfolio/summary?currency=CASH`), each Novig subaccount the service reads
+  (**Novig · Place**, **Novig · Bot**: `/v3/account/subaccounts/<key>/balance`
+  on its own trading key, one figure, no in-bets; a subaccount is a wallet of
+  its own that the app's balance leaves out, checked 2026-10-23) and Polymarket US
   (`/v1/account/balances`, no in-bets figure), each on the source's own login;
   fields seen in real responses 2026-10-13/16. Readings live in memory only
   (`bets_service/balances.py`): every book is read once at startup, before the first (slow) poll, a

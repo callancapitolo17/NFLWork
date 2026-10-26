@@ -62,6 +62,10 @@ Ids: "novig:<order id>:<name>", venue "novig" (bets.js joins a spread or total
 on venueIds.outcomeId and the side on its own fields). A Novig contract pays
 1c: qty 100 = $1; `contracts` here is dollars of payout like sources/novig.py.
 
+balance() reads the subaccount's own balance for the Balances tab:
+
+    GET /v3/account/subaccounts/<key>/balance   (signed) -> {"balance": "<dollars>"}
+
 Side effects: none on disk but `note_settled`'s, `adopt_order`'s and `confirm_order`'s, when given. Raises on any other failed read, so the service
 records a failed run and keeps the previous records.
 """
@@ -253,6 +257,15 @@ class NovigSubaccountSource:
             records.append(normalize_order(self._account, order_id, order_fills, context, fetched_at, grade))
         log.info("%s: %d fills -> %d bets", self.name, len(fills), len(records))
         return records
+
+    def balance(self) -> dict:
+        """This subaccount's balance for the tracker's Balances tab (balances.py).
+        A subaccount is a wallet of its own, outside the app account's summary
+        (2026-10-23: the app showed the main wallet's $11,893 alone, Place's
+        $2,446 apart). Novig gives one figure ("balance") and no money-in-bets
+        split, so inBets is None. Raises NovigError on a failed read."""
+        cash = self._client.balance()
+        return {"cash": cash, "inBets": None, "available": cash, "creditLimit": None}
 
     def _may_be_graded(self, context: dict | None, now: datetime) -> bool:
         """True for an order an earlier run may have graded: its position was seen
