@@ -810,6 +810,12 @@ function takerService(script) {
     if (init.method === "POST") {
       const body = JSON.parse(init.body);
       posts.push({ route, body });
+      if (route === "/novig_books.json") {
+        // No stream scripted = a bets service without the bot's Novig key.
+        const books = script["/novig_books.json"];
+        if (!books) return response({ status: 503, body: JSON.stringify({ error: "no bot Novig key is configured" }) });
+        return response({ body: JSON.stringify(books(body)) });
+      }
       if (route === "/taker/order.json") {
         if (Date.parse(body.eventStart) <= TAKER_NOW) return response({ body: JSON.stringify({ status: "started", detail: `the game started at ${body.eventStart}` }) });
         const unseen = (filledByEvent.get(body.eventId) || []).find((heldId) => !body.heldIds.includes(heldId));
@@ -942,8 +948,8 @@ test("taker: a market that is closed, or at another strike, is market_mismatch a
 });
 
 // ---- the Ticket's Place button: GET /kalshi_quote.json (places nothing) ----
-async function quoteRunner(markets = {}, extraDeps = {}, kalshiStart = WSU_UNABATED_START) {
-  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+async function quoteRunner(markets = {}, extraDeps = {}, kalshiStart = WSU_UNABATED_START, serviceScript = {}) {
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS, ...serviceScript });
   const kalshi = kalshiFetch(markets, kalshiStart);
   const runner = runnerLib.createRunner({
     fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
@@ -1029,6 +1035,28 @@ test("novig_quote: the board's Novig line gives its outcome, market, the other s
   });
   assert.ok(novig.calls.some((call) => call.url === `https://novig.test/v3/public/catalog/events/${NOVIG_EVENT}`), "the event is checked");
   assert.equal(service.posts.filter((post) => post.route.startsWith("/taker/")).length, 0);
+});
+
+test("novig_quote: the stream's live book prices the quote and Novig's public book is not read; without one the public book is read once", async () => {
+  const logs = [];
+  const novig = novigFetch();
+  const { runner, service } = await quoteRunner({}, { novigFetch: novig, novigBaseUrl: "https://novig.test", logInfo: (line) => logs.push(line) },
+    WSU_UNABATED_START, { "/novig_books.json": novigStreamBooks({ orders: { [NOVIG_DUQ_OUTCOME]: [{ order: "s1", price: "0.455", qty: 700 }] } }) });
+  const quote = await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  runner.stop();
+  assert.deepEqual([quote.ok, quote.price, quote.depth], [true, 0.545, 700]);
+  assert.ok(novig.calls.every((call) => !call.url.endsWith("/book")));
+  assert.deepEqual(service.posts.find((post) => post.route === "/novig_books.json").body.markets, [{ marketId: NOVIG_MARKET, eventId: NOVIG_EVENT }]);
+  assert.match(logs.at(-1), /book from stream\)/);
+  // No bot key on the bets service: the public book, named in the log.
+  const fallbackLogs = [];
+  const publicNovig = novigFetch();
+  const { runner: fallback } = await quoteRunner({}, { novigFetch: publicNovig, novigBaseUrl: "https://novig.test", logInfo: (line) => fallbackLogs.push(line) });
+  const publicQuote = await fallback.novigQuote(new URLSearchParams(WSU_36_LINE));
+  fallback.stop();
+  assert.deepEqual([publicQuote.ok, publicQuote.price], [true, 0.555]);
+  assert.equal(publicNovig.calls.filter((call) => call.url.endsWith(`/markets/${NOVIG_MARKET}/book`)).length, 1);
+  assert.match(fallbackLogs.at(-1), /book from public \(stream: Novig's stream books unread: HTTP 503/);
 });
 
 test("novig_quote: a main total its ladder has no rung for is found in the catalog off its siblings and checked like any other", async () => {
@@ -1411,8 +1439,23 @@ function novigTakerBetsBody(novigSources = {}) {
   return body;
 }
 
-function novigTakerService(betsBodyForTaker, deskReply = null) {
-  const service = takerService({ "/bets.json": betsBodyForTaker, "/settings.json": TAKER_SETTINGS });
+// The bets service's POST /novig_books.json (bets_service/novig_book_stream.py):
+// NOVIG_MARKET's live book as `view` leaves it (DUQ resting at 0.445 by default),
+// any other market unknown to the stream.
+function novigStreamBooks(view = {}) {
+  const book = {
+    status: "OPEN", started: false, seq: 9,
+    orders: { [NOVIG_DUQ_OUTCOME]: [{ order: "r1", price: "0.445", qty: 500000 }], [NOVIG_WSU_OUTCOME]: [] }, ...view,
+  };
+  return (body) => ({
+    stream: { connected: true, lastFrameAgeMs: 900, error: null },
+    books: Object.fromEntries(body.markets.map((market) => [market.marketId, market.marketId === NOVIG_MARKET
+      ? { eventId: market.eventId, ...book } : { error: `Novig's stream lists no market ${market.marketId}` }])),
+  });
+}
+
+function novigTakerService(betsBodyForTaker, deskReply = null, streamBooks = novigStreamBooks()) {
+  const service = takerService({ "/bets.json": betsBodyForTaker, "/settings.json": TAKER_SETTINGS, "/novig_books.json": streamBooks });
   const novigOrders = [];
   const impl = async (url, init = {}) => {
     if (url.endsWith("/taker/novig_order.json")) {
@@ -1456,7 +1499,35 @@ test("taker: a Novig edge at the live ask is sent to the Novig desk in 1c contra
   assert.ok(payload.decisions.some((row) => row.venue === "kalshi" && row.reason === "bet"));
   assert.ok(novig.calls.some((call) => call.url === `https://novig.test/v3/public/catalog/events/${NOVIG_EVENT}`), "the event is read before the order");
   assert.ok(novig.calls.every((call) => call.userAgent === "unabated-ticket-runner/1.0"));
+  // The book came off the bets service's stream, never Novig's public /book (its per-IP throttle is Place's too).
+  assert.ok(novig.calls.every((call) => !call.url.endsWith("/book")));
+  const asks = service.posts.filter((post) => post.route === "/novig_books.json");
+  assert.deepEqual(asks.map((ask) => ask.body), [{ markets: [{ marketId: NOVIG_MARKET, eventId: NOVIG_EVENT }], waitMs: 2000 }]);
   runner.stop();
+});
+
+test("taker: without a live stream book (no bot key, a resync, a market gone live or closed) Novig decides no_book, reads no public book and sends nothing", async () => {
+  for (const [streamBooks, expected] of [
+    [null, /Novig's stream books unread: HTTP 503/],
+    [novigStreamBooks({ error: "Novig market m's stream book is resyncing after a gap" }), /resyncing after a gap/],
+    [novigStreamBooks({ started: true }), /went live on the stream/],
+    [novigStreamBooks({ status: "CLOSED" }), /is CLOSED on the stream/],
+  ]) {
+    const novig = novigFetch();
+    const service = novigTakerService(novigTakerBetsBody(), null, streamBooks);
+    const runner = runnerLib.createRunner({
+      fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+      novigFetch: novig, novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+    });
+    await runner.start();
+    await runner.takerPass();
+    const decision = runner.takerPayload().decisions.find((row) => row.venue === "novig");
+    runner.stop();
+    assert.equal(decision.reason, "no_book");
+    assert.match(decision.detail, expected);
+    assert.equal(service.novigOrders.length, 0);
+    assert.ok(novig.calls.every((call) => !call.url.endsWith("/book")));
+  }
 });
 
 test("taker: Novig decides nothing while the bot subaccount or Cal's Novig read is stale, and Kalshi carries on", async () => {

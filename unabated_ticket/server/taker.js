@@ -861,6 +861,19 @@ function novigQuoteOf(book, contract) {
   return { ask: Math.round((1 - best) * 1000) / 1000, depth };
 }
 
+// One market's read off the bets service's POST /novig_books.json reply
+// (bets_service/novig_book_stream.py): {book} in novigQuoteOf's shape when the
+// stream holds the market in sync, OPEN and not started; else {error} naming why.
+function novigStreamBookRead(reply, marketId) {
+  const view = reply && reply.books && reply.books[marketId];
+  if (!view || typeof view !== "object") return { error: `Novig's stream answered nothing for market ${marketId}` };
+  if (view.error) return { error: view.error };
+  if (view.started) return { error: `Novig market ${marketId} went live on the stream` };
+  if (view.status !== "OPEN") return { error: `Novig market ${marketId} is ${view.status || "of no known status"} on the stream` };
+  if (!view.orders || typeof view.orders !== "object") return { error: `Novig's stream book of market ${marketId} has no orders` };
+  return { book: { orders: view.orders } };
+}
+
 // Novig records the outcome held; another open Novig bet on the same market,
 // on the other outcome, is the other side of this one (Cal's app account,
 // the bot's or Place's subaccount alike).
@@ -1010,6 +1023,6 @@ module.exports = {
   parseKalshiOrderbook, quoteOf, decideRow, decisionSignature, moneylineTeamMatches, marketMismatch, clientOrderIdOf,
   heldOtherSide, unpricedHolding, kalshiStartMsOf, earliestStartMs, eventTickerOf,
   novigMoneylineContract, kalshiMoneylineEventOf, kalshiMoneylineFromMarkets,
-  resolveNovigOutcome, novigOutcomeIndex, novigContractOf, novigQuoteOf, novigHeldOtherSide, novigMarketMismatch,
+  resolveNovigOutcome, novigOutcomeIndex, novigContractOf, novigQuoteOf, novigStreamBookRead, novigHeldOtherSide, novigMarketMismatch,
   novigClientIdOf, novigLineOf,
 };
