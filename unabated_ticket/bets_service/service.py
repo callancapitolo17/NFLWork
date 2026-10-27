@@ -143,14 +143,15 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     main account with the POLYMARKET_US_* key, real money —
                                     polymarket_place.py checks the live all-in price against the
                                     Ticket's first; 503 while that key is unset or refused)
-           POST /novig_books.json   body {markets: [{marketId, eventId}], waitMs} ->
-                                    {stream: {connected, lastFrameAgeMs, error, ...}, books:
-                                    {marketId: {eventId, status, started, seq, orders: {outcomeId:
-                                    [{order, price, qty}]}} | {error}}}: Novig's live books off the
-                                    bot key's websocket (novig_book_stream.py; reads only), each
-                                    event subscribed on first ask, waiting up to waitMs (max 3000)
-                                    for a new event's snapshot. Loopback only (the runner's book
-                                    reads and the Place quote); 503 {error} with no bot Novig key
+           POST /novig_books.json   body {marketIds: [..], waitMs, priority?} -> {stream:
+                                    {connected, lastFrameAgeMs, error, ...}, books: {marketId:
+                                    {status, started, seq, orders: {outcomeId: [{order, price,
+                                    qty}]}} | {error}}}: Novig's live books off the bot key's
+                                    websocket (novig_book_stream.py; reads only), each market
+                                    subscribed on first ask (priority: ahead of the rest, the
+                                    Place quote), waiting up to waitMs (capped at
+                                    novig_book_stream.MAX_WAIT_SEC) for a new market's snapshot.
+                                    Loopback only (the runner); 503 {error} with no bot Novig key
            PUT /settings.json       body {settings: {<any of those fields>: value or null}} ->
                                     {ok, settings, updatedAt}; a field left out keeps its value,
                                     null resets it to the default, an unknown field or a bad
@@ -1104,21 +1105,23 @@ def health_payload(store: BetsStore, started_at: float, source_names: list[str] 
     return payload
 
 
-def validate_novig_books_request(body: object) -> tuple[list[dict], float] | str:
-    """([{marketId, eventId}], wait seconds) or why the body is refused."""
+def validate_novig_books_request(body: object) -> tuple[list[str], float, bool] | str:
+    """(market ids, wait seconds, priority) or why the body is refused."""
     if not isinstance(body, dict):
         return "expected a JSON object body"
-    markets = body.get("markets")
-    if not isinstance(markets, list) or len(markets) > MAX_NOVIG_BOOK_MARKETS:
-        return f"markets must be a list of at most {MAX_NOVIG_BOOK_MARKETS} {{marketId, eventId}}"
-    for index, market in enumerate(markets):
-        if not isinstance(market, dict) or not _non_empty_string(market.get("marketId")) \
-                or not _non_empty_string(market.get("eventId")):
-            return f"markets[{index}] must be {{marketId, eventId}} with non-empty strings, got {market!r}"
+    market_ids = body.get("marketIds")
+    if not isinstance(market_ids, list) or len(market_ids) > MAX_NOVIG_BOOK_MARKETS:
+        return f"marketIds must be a list of at most {MAX_NOVIG_BOOK_MARKETS} market ids"
+    for index, market_id in enumerate(market_ids):
+        if not _non_empty_string(market_id):
+            return f"marketIds[{index}] must be a non-empty string, got {market_id!r}"
     wait_ms = body.get("waitMs", 0)
     if not _is_number(wait_ms) or wait_ms < 0:
         return f"waitMs must be a number >= 0, got {wait_ms!r}"
-    return [{"marketId": market["marketId"], "eventId": market["eventId"]} for market in markets], wait_ms / 1000
+    priority = body.get("priority", False)
+    if not isinstance(priority, bool):
+        return f"priority must be true or false, got {priority!r}"
+    return list(dict.fromkeys(market_ids)), wait_ms / 1000, priority
 
 
 def parse_days(query: str) -> int | str:
@@ -1491,8 +1494,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if isinstance(request, str):
                 self._send_json(400, {"error": request})
                 return
-            markets, wait_sec = request
-            self._send_json(200, novig_book_stream.books_for(markets, wait_sec))
+            market_ids, wait_sec, priority = request
+            self._send_json(200, novig_book_stream.books_for(market_ids, wait_sec, priority))
 
         def _push_bet105(self, body: object) -> None:
             push = bet105.validate_push(body)
@@ -1969,10 +1972,10 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                                 name=f"poll-{lane[0].name}" if len(lane) == 1 else "poll", daemon=True)
                for lane in poll_lanes(sources)]
     # The desk sweeps its own orders (resting cancels, final fills, settlement) whether or not the runner sends any.
-    desk_sweeps = [threading.Thread(target=desk.run_refresh_loop, args=(stop,), name=name, daemon=True)
+    background_threads = [threading.Thread(target=desk.run_refresh_loop, args=(stop,), name=name, daemon=True)
                    for desk, name in ((taker_desk, "taker-desk"), (novig_taker_desk, "novig-taker-desk")) if desk is not None]
     if novig_book_stream is not None:
-        desk_sweeps.append(threading.Thread(target=novig_book_stream.run, args=(stop,), name="novig-stream", daemon=True))
+        background_threads.append(threading.Thread(target=novig_book_stream.run, args=(stop,), name="novig-stream", daemon=True))
 
     def request_stop(_signum, _frame) -> None:
         log.info("stopping")
@@ -1983,8 +1986,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     signal.signal(signal.SIGTERM, request_stop)
     for poller in pollers:
         poller.start()
-    for desk_sweep in desk_sweeps:
-        desk_sweep.start()
+    for background_thread in background_threads:
+        background_thread.start()
     log.info("bets service on http://%s:%d (sources: %s); phone page at / with /edges.json from %s; "
              "extra allowed hosts: %s", host, port, ", ".join(source_names), config.RUNNER_URL,
              ", ".join(config.EXTRA_ALLOWED_HOSTS) or "none")
@@ -1995,8 +1998,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
         stop.set()
         for poller in pollers:
             poller.join(timeout=5)
-        for desk_sweep in desk_sweeps:
-            desk_sweep.join(timeout=5)
+        for background_thread in background_threads:
+            background_thread.join(timeout=5)
         store.close()
         if taker_store is not None:
             taker_store.close()

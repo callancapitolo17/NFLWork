@@ -863,13 +863,15 @@ function novigQuoteOf(book, contract) {
 
 // One market's read off the bets service's POST /novig_books.json reply
 // (bets_service/novig_book_stream.py): {book} in novigQuoteOf's shape when the
-// stream holds the market in sync, OPEN and not started; else {error} naming why.
+// stream holds the market in sync, OPEN and not started; else {error} naming
+// why, `final` when the stream itself saw the market go live or leave OPEN
+// (no other book read can make it tradable).
 function novigStreamBookRead(reply, marketId) {
   const view = reply && reply.books && reply.books[marketId];
   if (!view || typeof view !== "object") return { error: `Novig's stream answered nothing for market ${marketId}` };
   if (view.error) return { error: view.error };
-  if (view.started) return { error: `Novig market ${marketId} went live on the stream` };
-  if (view.status !== "OPEN") return { error: `Novig market ${marketId} is ${view.status || "of no known status"} on the stream` };
+  if (view.started) return { error: `Novig market ${marketId} went live on the stream`, final: true };
+  if (view.status !== "OPEN") return { error: `Novig market ${marketId} is ${view.status || "of no known status"} on the stream`, final: view.status != null };
   if (!view.orders || typeof view.orders !== "object") return { error: `Novig's stream book of market ${marketId} has no orders` };
   return { book: { orders: view.orders } };
 }

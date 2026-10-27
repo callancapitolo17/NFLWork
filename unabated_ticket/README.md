@@ -3128,15 +3128,22 @@ service keeps one websocket (`GET /v3/ws`, `book` channel) on the **bot's
 Novig key, for reads only** (Cal's pick; a read takes a stale phone location,
 so it runs from Argentina too). It runs whenever `NOVIG_TAKER_KEY_ID` is set,
 whether the bot desk is armed or stopped. The runner asks
-`POST /novig_books.json` (loopback only) for the markets it needs, each with
-its event. A new event is subscribed on first ask, and the ask waits up to
-2 s for its snapshot. An event nobody asked about for 10 min is unsubscribed.
-Subscribes are paced on Novig's `stream` throttle (512 tokens, 4/s, 16 per
-event). A book is served only while the line is up, heard from within 40 s,
-and its seq ran without a gap since its snapshot. A gap is healed with a
-snapshot of that market, and a drop reconnects with backoff. Anything else
-answers an error, never a stale book. `/health` carries `novigStream`
-(connected, last frame age, watched events, markets, last error).
+`POST /novig_books.json` (loopback only) for the market ids it needs. A new
+market is subscribed on first ask (Place's ahead of the bot's), and the ask
+waits up to 2 s for its snapshot. A market nobody asked about for 10 min is
+unsubscribed. Subscribes are paced on Novig's `stream` throttle (512 tokens,
+4/s, 16 per market; by market, not event, so the cost holds whichever way
+Novig's docs are read). A book is served only while the line is up, heard
+from within 25 s, and its seq ran without a gap since its snapshot. After a
+gap the deltas are buffered, a snapshot of that market is asked for, and the
+buffered deltas past it are replayed. A refused market is asked for again a
+minute later, and a drop reconnects with backoff. Anything else answers an
+error, never a stale book. The stream's "went live" is best effort (a
+snapshot reads `OPEN` in play); the event `OPEN_PREGAME` read before every
+order and quote is the guard. `/health` carries `novigStream` (connected,
+last frame age, subscribed and wanted markets, last error). Unverified until
+the first live run: Novig's frame shapes and the throttle costs (look for
+`RATE_LIMIT_EXCEEDED` or `refused` in the bets log).
 
 **Bets.** `sources/novig_subaccount.py` reads the sub-account's fills on the
 bot's key every 20 s (source `novig_bot`, ids `novig:<orderId>:bot`), kept
@@ -3269,9 +3276,10 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
    Kalshi's). The runner finds the line's outcome, its market and the other
    side's outcome on Novig's open pregame catalog, the live price (1 minus the
    best resting order on the other outcome, off the live book stream above;
-   only when the stream has no book for it, e.g. no bot key or the stream
-   down, one read of Novig's public `/book`, the runner's log line naming
-   which) and checks Novig's market and
+   a stream that saw the market go live or leave `OPEN` refuses it; only when
+   the stream has no book yet, e.g. no bot key, the stream down, still
+   subscribing or resyncing, one read of Novig's public `/book`, the runner's
+   log line naming which) and checks Novig's market and
    event the taker's way (`novigContractOf`, `novigQuoteOf`,
    `novigMarketMismatch`: open, pregame, no pregame fee, the row's type,
    number and side by the outcome's own name). A moneyline, which Unabated

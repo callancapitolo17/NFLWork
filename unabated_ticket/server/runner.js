@@ -192,8 +192,9 @@ const TAKER_PASS_MS = 30 * 1000;
 const KALSHI_BOOK_READS_AT_ONCE = 2;
 // How long a Novig book ask may wait for the stream's first snapshot of a game it was not watching.
 const NOVIG_STREAM_WAIT_MS = 2000;
-// That wait plus the bets service's answer.
-const NOVIG_STREAM_READ_TIMEOUT_MS = NOVIG_STREAM_WAIT_MS + 3000;
+// Time for the bets service to answer, on top of that wait.
+const NOVIG_STREAM_ANSWER_MS = 3000;
+const NOVIG_STREAM_READ_TIMEOUT_MS = NOVIG_STREAM_WAIT_MS + NOVIG_STREAM_ANSWER_MS;
 // The taker trades against Unabated's fair, which lags the market by a minute
 // or two already: every league re-downloads at least this often (the panel's
 // size tiers go up to 5 min), and a row whose league snapshot landed longer
@@ -1150,13 +1151,13 @@ function createRunner(deps) {
       if (catalogError) return { reason: "no_outcome", detail: `Novig's catalog unread: ${catalogError}` };
       return taker.novigContractOf(row, index);
     };
-    const markets = new Map();
+    const marketIds = new Set();
     for (const row of rows) {
       if (staleSnapshotReason(row.leagueId, pass.startedAt)) continue;
       const contract = resolve(row);
-      if (contract.marketId) markets.set(contract.marketId, index.get(contract.outcomeId).market.eventId);
+      if (contract.marketId) marketIds.add(contract.marketId);
     }
-    const books = await readStreamBooks(Array.from(markets, ([marketId, eventId]) => ({ marketId, eventId })));
+    const books = await readStreamBooks(Array.from(marketIds), false);
     return decideRows(pass, rows, taker.VENUE_NOVIG, resolve, (contract) => {
       const read = books.get(contract.marketId);
       if (!read) return null;
@@ -1170,20 +1171,21 @@ function createRunner(deps) {
   }
 
   // Novig's live books off the bets service's stream: marketId -> {book} |
-  // {error} for every {marketId, eventId}. The stream unreachable, off or
-  // down is an error on every market (never a stale book).
-  async function readStreamBooks(markets) {
+  // {error, final?} (taker.novigStreamBookRead) for every market id. The
+  // stream unreachable, off or down is an error on every market (never a
+  // stale book). `priority` (the Place quote) subscribes ahead of the bot's.
+  async function readStreamBooks(marketIds, priority) {
     const books = new Map();
-    if (!markets.length) return books;
+    if (!marketIds.length) return books;
     let reply;
     try {
       reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/novig_books.json`, "POST",
-        { markets, waitMs: NOVIG_STREAM_WAIT_MS }, NOVIG_STREAM_READ_TIMEOUT_MS);
+        { marketIds, waitMs: NOVIG_STREAM_WAIT_MS, priority }, NOVIG_STREAM_READ_TIMEOUT_MS);
     } catch (error) {
-      for (const market of markets) books.set(market.marketId, { error: `Novig's stream books unread: ${error.message}` });
+      for (const marketId of marketIds) books.set(marketId, { error: `Novig's stream books unread: ${error.message}` });
       return books;
     }
-    for (const market of markets) books.set(market.marketId, taker.novigStreamBookRead(reply, market.marketId));
+    for (const marketId of marketIds) books.set(marketId, taker.novigStreamBookRead(reply, marketId));
     return books;
   }
 
@@ -1354,19 +1356,20 @@ function createRunner(deps) {
     const listedEventId = catalog.index.get(contract.outcomeId).market.eventId;
     const readsStartedAt = now();
     const [streamRead, mismatch] = await Promise.all([
-      readStreamBooks([{ marketId: contract.marketId, eventId: listedEventId }]).then((books) => books.get(contract.marketId)),
+      readStreamBooks([contract.marketId], true).then((books) => books.get(contract.marketId)),
       readNovigMarketMismatch(row, contract, listedEventId),
     ]);
-    // Without a stream book (no bot key, the stream down, a market it does not list) Place reads the public book once.
-    const bookRead = streamRead.book ? streamRead
+    // Without a stream book (no bot key, the stream down or still subscribing) Place reads the public book once;
+    // the stream seeing the market live or not OPEN is final.
+    const bookRead = streamRead.book || streamRead.final ? streamRead
       : await getNovigJson(`${novigMarketUrl(contract.marketId)}/book`).then((book) => ({ book }), (error) => ({ error }));
     const timing = {
       reused: catalog.reused, readAt: catalog.readAt, readsMs: now() - readsStartedAt,
-      bookSource: streamRead.book ? "stream" : `public (stream: ${streamRead.error})`,
+      bookSource: streamRead.book || streamRead.final ? "stream" : `public (stream: ${streamRead.error})`,
     };
     let quote;
     try {
-      if (bookRead.error) throw bookRead.error;
+      if (bookRead.error) throw typeof bookRead.error === "string" ? new Error(bookRead.error) : bookRead.error;
       quote = taker.novigQuoteOf(bookRead.book, contract);
     } catch (error) {
       return { answer: { ok: false, ...position, reason: "no_book", detail: error.message }, catalog: timing };

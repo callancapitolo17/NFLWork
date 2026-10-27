@@ -1037,7 +1037,7 @@ test("novig_quote: the board's Novig line gives its outcome, market, the other s
   assert.equal(service.posts.filter((post) => post.route.startsWith("/taker/")).length, 0);
 });
 
-test("novig_quote: the stream's live book prices the quote and Novig's public book is not read; without one the public book is read once", async () => {
+test("novig_quote: the stream's live book prices the quote and Novig's public book is not read; a stream that saw it live or closed refuses; without one the public book is read once", async () => {
   const logs = [];
   const novig = novigFetch();
   const { runner, service } = await quoteRunner({}, { novigFetch: novig, novigBaseUrl: "https://novig.test", logInfo: (line) => logs.push(line) },
@@ -1046,8 +1046,19 @@ test("novig_quote: the stream's live book prices the quote and Novig's public bo
   runner.stop();
   assert.deepEqual([quote.ok, quote.price, quote.depth], [true, 0.545, 700]);
   assert.ok(novig.calls.every((call) => !call.url.endsWith("/book")));
-  assert.deepEqual(service.posts.find((post) => post.route === "/novig_books.json").body.markets, [{ marketId: NOVIG_MARKET, eventId: NOVIG_EVENT }]);
+  assert.deepEqual(service.posts.find((post) => post.route === "/novig_books.json").body, { marketIds: [NOVIG_MARKET], waitMs: 2000, priority: true });
   assert.match(logs.at(-1), /book from stream\)/);
+  // The stream saw the market go live or close: refused, no public read to second-guess it.
+  for (const [view, expected] of [[{ started: true }, /went live on the stream/], [{ status: "CLOSED" }, /is CLOSED on the stream/]]) {
+    const liveNovig = novigFetch();
+    const { runner: liveRunner } = await quoteRunner({}, { novigFetch: liveNovig, novigBaseUrl: "https://novig.test" },
+      WSU_UNABATED_START, { "/novig_books.json": novigStreamBooks(view) });
+    const refused = await liveRunner.novigQuote(new URLSearchParams(WSU_36_LINE));
+    liveRunner.stop();
+    assert.deepEqual([refused.ok, refused.reason], [false, "no_book"]);
+    assert.match(refused.detail, expected);
+    assert.ok(liveNovig.calls.every((call) => !call.url.endsWith("/book")));
+  }
   // No bot key on the bets service: the public book, named in the log.
   const fallbackLogs = [];
   const publicNovig = novigFetch();
@@ -1441,7 +1452,7 @@ function novigTakerBetsBody(novigSources = {}) {
 
 // The bets service's POST /novig_books.json (bets_service/novig_book_stream.py):
 // NOVIG_MARKET's live book as `view` leaves it (DUQ resting at 0.445 by default),
-// any other market unknown to the stream.
+// any other market refused by the stream.
 function novigStreamBooks(view = {}) {
   const book = {
     status: "OPEN", started: false, seq: 9,
@@ -1449,8 +1460,8 @@ function novigStreamBooks(view = {}) {
   };
   return (body) => ({
     stream: { connected: true, lastFrameAgeMs: 900, error: null },
-    books: Object.fromEntries(body.markets.map((market) => [market.marketId, market.marketId === NOVIG_MARKET
-      ? { eventId: market.eventId, ...book } : { error: `Novig's stream lists no market ${market.marketId}` }])),
+    books: Object.fromEntries(body.marketIds.map((marketId) => [marketId, marketId === NOVIG_MARKET
+      ? book : { error: `Novig refused the stream subscription to market ${marketId}` }])),
   });
 }
 
@@ -1502,7 +1513,7 @@ test("taker: a Novig edge at the live ask is sent to the Novig desk in 1c contra
   // The book came off the bets service's stream, never Novig's public /book (its per-IP throttle is Place's too).
   assert.ok(novig.calls.every((call) => !call.url.endsWith("/book")));
   const asks = service.posts.filter((post) => post.route === "/novig_books.json");
-  assert.deepEqual(asks.map((ask) => ask.body), [{ markets: [{ marketId: NOVIG_MARKET, eventId: NOVIG_EVENT }], waitMs: 2000 }]);
+  assert.deepEqual(asks.map((ask) => ask.body), [{ marketIds: [NOVIG_MARKET], waitMs: 2000, priority: false }]);
   runner.stop();
 });
 
