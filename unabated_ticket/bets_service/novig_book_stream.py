@@ -225,6 +225,8 @@ class _MarketBook:
         self.orders: dict[str, dict] = {}
         # (seq, deltas) received while out of sync, replayed on the next snapshot.
         self.buffered: list[tuple[int, list]] = []
+        # The last load's replay found a seq missing: a new gap, not a bad answer.
+        self.replay_gap = False
 
     def load(self, seq: int, orders_by_outcome: dict) -> None:
         self.orders = {}
@@ -233,10 +235,11 @@ class _MarketBook:
                 self.orders[str(order["order"])] = {"outcome": outcome_id, "price": order["price"], "qty": order["qty"]}
         self.seq = seq
         self.synced = True
+        self.replay_gap = False
         buffered, self.buffered = sorted(self.buffered, key=lambda item: item[0]), []
         for buffered_seq, deltas in buffered:
-            if buffered_seq > self.seq:
-                self.step(buffered_seq, deltas)
+            if buffered_seq > self.seq and self.step(buffered_seq, deltas):
+                self.replay_gap = True
 
     def step(self, seq: int, deltas: list) -> bool:
         """Apply one batch in sequence. A stale seq is ignored; a skipped one
@@ -288,6 +291,8 @@ class NovigBookStream:
         self._wanted: dict[str, float] = {}
         self._priority: set[str] = set()
         self._refused: dict[str, tuple[float, str]] = {}
+        # Markets of a batch Novig refused as a whole: sent one a frame, so one bad market refuses only itself.
+        self._solo: set[str] = set()
         self._reset_connection_state()
         self._connection: Connection | None = None
         self._connected_at: float | None = None
@@ -304,6 +309,8 @@ class NovigBookStream:
         # nonce -> (market ids, sent at) of a subscribe, and of a snapshot healing a gap.
         self._subscribes_in_flight: dict[int, tuple[list[str], float]] = {}
         self._snapshots_in_flight: dict[int, tuple[list[str], float]] = {}
+        # Every subscribe nonce sent on this connection: only a subscribe's answer subscribes a market.
+        self._subscribe_nonces: set[int] = set()
 
     # ---- what the HTTP route calls ----
 
@@ -456,7 +463,10 @@ class NovigBookStream:
             due = [market_id for market_id in self._wanted
                    if market_id not in self._subscribed and market_id not in in_flight and market_id not in self._refused]
             due.sort(key=lambda market_id: (market_id not in self._priority, market_id))
-            frames.extend(self._paced_frames("subscribe", due, self._subscribes_in_flight, now))
+            for market_id in [market_id for market_id in due if market_id in self._solo]:
+                frames.extend(self._paced_frames("subscribe", [market_id], self._subscribes_in_flight, now))
+            frames.extend(self._paced_frames("subscribe", [market_id for market_id in due if market_id not in self._solo],
+                                             self._subscribes_in_flight, now))
             healing = {market_id for markets, _sent_at in self._snapshots_in_flight.values() for market_id in markets}
             gaps = sorted(market_id for market_id, book in self._books.items()
                           if not book.synced and market_id not in healing and market_id not in self._refused)
@@ -488,6 +498,7 @@ class NovigBookStream:
             if market_id not in self._subscribed and market_id not in in_flight:
                 del self._wanted[market_id]
                 self._priority.discard(market_id)
+                self._solo.discard(market_id)
         return frames
 
     def _paced_frames(self, verb: str, market_ids: list[str], in_flight: dict, now: float) -> list[dict]:
@@ -500,6 +511,8 @@ class NovigBookStream:
             nonce = self._next_nonce()
             frames.append({"nonce": nonce, verb: {"markets": {market_id: BOOK_CHANNEL for market_id in batch}}})
             in_flight[nonce] = (batch, now)
+            if verb == "subscribe":
+                self._subscribe_nonces.add(nonce)
             market_ids = market_ids[len(batch):]
         return frames
 
@@ -512,32 +525,32 @@ class NovigBookStream:
         if isinstance(message.get("code"), str):
             self._handle_error(nonce, message["code"], str(message.get("message", "")))
             return
-        snapshot = message.get("snapshot") or {}
+        snapshot = {str(market_id): body for market_id, body in (message.get("snapshot") or {}).items()}
         subscribed = self._subscribes_in_flight.pop(nonce, None) if isinstance(nonce, int) else None
         healed = self._snapshots_in_flight.pop(nonce, None) if isinstance(nonce, int) else None
+        now = self._clock()
         if subscribed is not None:
-            now = self._clock()
             for market_id in subscribed[0]:
-                if market_id in snapshot:
-                    self._subscribed.add(market_id)
-                    self._books[market_id] = _MarketBook()
-                else:
+                if market_id not in snapshot:
                     self._refused[market_id] = (now, "the subscribe answer has no snapshot of it (no such market?)")
+        answers_a_subscribe = isinstance(nonce, int) and nonce in self._subscribe_nonces
         for market_id, body in snapshot.items():
-            market_id = str(market_id)
             if market_id not in self._books:
-                # An answer that came after its wait ran out: kept if still wanted, else unsubscribed.
+                # Only a subscribe's answer subscribes, a late one included: kept if still wanted, else unsubscribed.
+                if not answers_a_subscribe:
+                    continue
                 if market_id not in self._wanted:
                     self._stray.add(market_id)
                     continue
                 self._subscribed.add(market_id)
                 self._books[market_id] = _MarketBook()
             self._guarded(market_id, self._apply_snapshot, body)
-        if healed is not None:
-            for market_id in healed[0]:
-                book = self._books.get(market_id)
-                if book is not None and not book.synced and market_id not in snapshot:
-                    self._refused[market_id] = (self._clock(), "the gap snapshot's answer has no snapshot of it")
+        # An answer that leaves a book out of sync (no book in it, or one unreadable) is asked again a minute
+        # later; a book its replay found short is a new gap, healed at once.
+        for market_id in (subscribed or ([], 0))[0] + (healed or ([], 0))[0]:
+            book = self._books.get(market_id)
+            if book is not None and not book.synced and not book.replay_gap:
+                self._refused[market_id] = (now, "its snapshot answer left the book out of sync")
         for market_id, body in (message.get("delta") or {}).items():
             market_id = str(market_id)
             if market_id in self._books:
@@ -563,8 +576,12 @@ class NovigBookStream:
             if sent is None:
                 continue
             now = self._clock()
-            for market_id in sent[0]:
-                self._refused[market_id] = (now, reason)
+            if what == "subscribe" and len(sent[0]) > 1:
+                # Which market Novig refused is unknown: each goes again in a frame of its own.
+                self._solo.update(sent[0])
+            else:
+                for market_id in sent[0]:
+                    self._refused[market_id] = (now, reason)
             log.error("novig stream: %s of %d market(s) refused: %s", what, len(sent[0]), reason)
             return
         if code == "RATE_LIMIT_EXCEEDED" or nonce is None:
@@ -582,12 +599,13 @@ class NovigBookStream:
             book.load(int(book_body["seq"]), book_body.get("orders") or {})
 
     def _apply_delta(self, book: _MarketBook, body: dict) -> None:
-        book_body = body.get("book")
-        if isinstance(book_body, dict) and book.seq is not None:
-            book.step(int(book_body["seq"]), book_body.get("deltas") or [])
+        # The lifecycle first: a go-live arrives with its removes, and an unreadable remove must not lose it.
         lifecycle = body.get("lifecycle")
         if isinstance(lifecycle, dict):
             self._apply_lifecycle(book, lifecycle)
+        book_body = body.get("book")
+        if isinstance(book_body, dict) and book.seq is not None:
+            book.step(int(book_body["seq"]), book_body.get("deltas") or [])
 
     def _apply_lifecycle(self, book: _MarketBook, lifecycle: dict) -> None:
         transitions = [str(transition) for transition in lifecycle.get("deltas") or []]

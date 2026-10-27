@@ -396,3 +396,46 @@ def test_post_novig_books_is_503_without_the_bot_key(bets_store):
         server.shutdown()
         server.server_close()
     assert status == 503 and "NOVIG_TAKER_KEY_ID" in body["error"]
+
+
+def test_an_answer_that_leaves_a_book_out_of_sync_is_asked_again_a_minute_later_not_every_loop(made):
+    stream, _connection, clock, _client = made
+    for name, body in (("mk-lifecycle-only", {"eventId": EVENT, "lifecycle": {"seq": 1, "status": "OPEN"}}),
+                       ("mk-unreadable", {"eventId": EVENT, "book": {"seq": 1, "orders": {DUQ: [{"order": "x"}]}}})):
+        ask(stream, name)
+        handle(stream, answer(stream._outgoing_frames()[0]["nonce"], {name: body}))
+        assert "out of sync" in ask(stream, name)["error"]
+        assert stream._outgoing_frames() == [], f"{name}: no snapshot re-sent at once"
+    clock.now += nbs.REFUSED_RETRY_SEC + 1
+    stream.books_for(["mk-lifecycle-only", "mk-unreadable"], 0.0)
+    assert sorted(market for frame in stream._outgoing_frames() for market in frame["snapshot"]["markets"]) == [
+        "mk-lifecycle-only", "mk-unreadable"]
+
+
+def test_a_gap_snapshot_answer_never_subscribes_a_market_dropped_meanwhile(made):
+    stream, _connection, clock, _client = made
+    subscribe(stream)
+    handle(stream, book_delta(48125, []))
+    healing = stream._outgoing_frames()[0]["nonce"]
+    clock.now += nbs.WATCH_IDLE_SEC + 1
+    handle(stream, {"heartbeat": {}})
+    assert stream._outgoing_frames()[0]["unsubscribe"] == [f"market:{MARKET}"]
+    ask(stream)
+    handle(stream, answer(healing))
+    assert MARKET not in stream._books and MARKET not in stream._subscribed
+    assert [frame.get("subscribe") for frame in stream._outgoing_frames()] == [{"markets": {MARKET: "book"}}]
+
+
+def test_a_go_live_survives_an_unreadable_book_part_in_its_frame(made):
+    stream, _connection, _clock, _client = made
+    subscribe(stream)
+    handle(stream, book_delta(48121, [{"kind": "replace"}], lifecycle={"seq": 4, "deltas": ["GOLIVE"]}))
+    assert stream._books[MARKET].started is True
+
+
+def test_a_batch_refused_as_a_whole_goes_again_one_market_a_frame(made):
+    stream, _connection, _clock, _client = made
+    stream.books_for(["mk-a", "mk-b"], 0.0)
+    nonce = stream._outgoing_frames()[0]["nonce"]
+    handle(stream, {"nonce": nonce, "code": "MARKET_NOT_FOUND", "message": "mk-b"})
+    assert [frame["subscribe"] for frame in stream._outgoing_frames()] == [{"markets": {"mk-a": "book"}}, {"markets": {"mk-b": "book"}}]
