@@ -439,3 +439,24 @@ def test_a_batch_refused_as_a_whole_goes_again_one_market_a_frame(made):
     nonce = stream._outgoing_frames()[0]["nonce"]
     handle(stream, {"nonce": nonce, "code": "MARKET_NOT_FOUND", "message": "mk-b"})
     assert [frame["subscribe"] for frame in stream._outgoing_frames()] == [{"markets": {"mk-a": "book"}}, {"markets": {"mk-b": "book"}}]
+
+
+def test_an_order_id_named_order_id_as_in_the_rest_book_is_read_too(made):
+    stream, _connection, _clock, _client = made
+    ask(stream)
+    rest_named = {"orderId": "o1", "price": "0.445", "qty": 110}
+    handle(stream, answer(stream._outgoing_frames()[0]["nonce"], markets={MARKET: market_snapshot(orders={DUQ: [rest_named]})}))
+    assert ask(stream)["orders"] == {DUQ: [O1]}
+    handle(stream, book_delta(48121, [{"kind": "add", "orderId": "o2", "outcome": WSU, "price": "0.550", "qty": 40},
+                                      {"kind": "remove", "orderId": "o1", "reason": "fill"}]))
+    assert ask(stream)["orders"] == {WSU: [{"order": "o2", "price": "0.550", "qty": 40}]}
+
+
+def test_a_remove_naming_no_order_resyncs_the_market_and_logs_the_part(made, caplog):
+    stream, _connection, _clock, _client = made
+    subscribe(stream)
+    handle(stream, book_delta(48121, [{"kind": "remove", "reason": "fill"}]))
+    assert "resyncing" in ask(stream)["error"], "a remove that names no order must not leave the filled order showing"
+    warning = next(record.getMessage() for record in caplog.records if "unreadable frame part" in record.getMessage())
+    assert "expected an order id under order or orderId, got keys ['kind', 'reason']" in warning
+    assert '"reason": "fill"' in warning, "the part itself is logged so a new shape can be read off the log"
