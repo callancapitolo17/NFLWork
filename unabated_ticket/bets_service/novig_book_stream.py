@@ -291,8 +291,23 @@ class _MarketBook:
                 self.orders[order_id_of(delta)] = {"outcome": outcome_id_of(delta), "price": delta["price"], "qty": delta["qty"]}
             elif delta.get("kind") == "remove":
                 self.orders.pop(order_id_of(delta), None)
+            elif delta.get("kind") == "update":
+                self._update_remaining(order_id_of(delta), delta["remaining"])
             else:
-                raise ValueError(f"expected a book delta of kind add or remove, got {delta!r}")
+                raise ValueError(f"expected a book delta of kind add, remove or update, got {delta!r}")
+
+    def _update_remaining(self, order_id: str, remaining: object) -> None:
+        """A partial fill: Novig's `update` carries only the order and what is left of it (live
+        frames, 2026-10-28; not in the streaming docs). An order this book never saw means the
+        book is wrong, so it resyncs rather than guess."""
+        if order_id not in self.orders:
+            raise KeyError(f"update for order {order_id} this book does not hold")
+        if not isinstance(remaining, int) or isinstance(remaining, bool) or remaining < 0:
+            raise ValueError(f"expected a whole remaining qty >= 0, got {remaining!r}")
+        if remaining == 0:
+            del self.orders[order_id]
+        else:
+            self.orders[order_id]["qty"] = remaining
 
     def ladders(self) -> dict:
         """{outcomeId: [{order, price, qty}]}: the REST book's `orders` shape (taker.novigQuoteOf)."""

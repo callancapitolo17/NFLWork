@@ -460,3 +460,19 @@ def test_a_remove_naming_no_order_resyncs_the_market_and_logs_the_part(made, cap
     warning = next(record.getMessage() for record in caplog.records if "unreadable frame part" in record.getMessage())
     assert "expected an order id under order or orderId, got keys ['kind', 'reason']" in warning
     assert '"reason": "fill"' in warning, "the part itself is logged so a new shape can be read off the log"
+
+
+def test_an_update_delta_sets_what_is_left_of_an_order_and_zero_takes_it_off(made):
+    stream, _connection, _clock, _client = made
+    subscribe(stream)
+    handle(stream, book_delta(48121, [{"kind": "update", "orderId": "o1", "remaining": 57}]))
+    assert ask(stream)["orders"] == {DUQ: [{"order": "o1", "price": "0.445", "qty": 57}]}
+    handle(stream, book_delta(48122, [{"kind": "update", "orderId": "o1", "remaining": 0}]))
+    assert ask(stream)["orders"] == {}
+
+
+def test_an_update_for_an_order_the_book_never_saw_resyncs_the_market(made):
+    stream, _connection, _clock, _client = made
+    subscribe(stream)
+    handle(stream, book_delta(48121, [{"kind": "update", "orderId": "o-unknown", "remaining": 5}]))
+    assert "resyncing" in ask(stream)["error"]

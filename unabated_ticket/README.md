@@ -3145,7 +3145,9 @@ last frame age, subscribed and wanted markets, last error). The first live
 run (2026-10-28) connected with no throttle errors, but every market resynced:
 the frames name an add's ids `orderId` and `outcomeId` (the REST book's
 names), not the `order` and `outcome` Novig's streaming docs give. Either name
-is read. A
+is read. A partial fill arrives as a third, undocumented kind, `update`
+(`orderId` + `remaining`): the order's qty becomes what remains, 0 takes it off,
+and an update for an order the book never saw resyncs the market. A
 frame part the stream cannot read resyncs only that market, and the bets log
 prints it (`unreadable frame part ... part: {...}`, first 400 characters), so
 a new shape can be read off the log.
