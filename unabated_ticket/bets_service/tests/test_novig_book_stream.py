@@ -441,13 +441,13 @@ def test_a_batch_refused_as_a_whole_goes_again_one_market_a_frame(made):
     assert [frame["subscribe"] for frame in stream._outgoing_frames()] == [{"markets": {"mk-a": "book"}}, {"markets": {"mk-b": "book"}}]
 
 
-def test_an_order_id_named_order_id_as_in_the_rest_book_is_read_too(made):
+def test_ids_named_order_id_and_outcome_id_as_in_the_live_frames_are_read_too(made):
     stream, _connection, _clock, _client = made
     ask(stream)
     rest_named = {"orderId": "o1", "price": "0.445", "qty": 110}
     handle(stream, answer(stream._outgoing_frames()[0]["nonce"], markets={MARKET: market_snapshot(orders={DUQ: [rest_named]})}))
     assert ask(stream)["orders"] == {DUQ: [O1]}
-    handle(stream, book_delta(48121, [{"kind": "add", "orderId": "o2", "outcome": WSU, "price": "0.550", "qty": 40},
+    handle(stream, book_delta(48121, [{"kind": "add", "orderId": "o2", "outcomeId": WSU, "price": "0.550", "qty": 40},
                                       {"kind": "remove", "orderId": "o1", "reason": "fill"}]))
     assert ask(stream)["orders"] == {WSU: [{"order": "o2", "price": "0.550", "qty": 40}]}
 
@@ -460,3 +460,19 @@ def test_a_remove_naming_no_order_resyncs_the_market_and_logs_the_part(made, cap
     warning = next(record.getMessage() for record in caplog.records if "unreadable frame part" in record.getMessage())
     assert "expected an order id under order or orderId, got keys ['kind', 'reason']" in warning
     assert '"reason": "fill"' in warning, "the part itself is logged so a new shape can be read off the log"
+
+
+def test_an_update_delta_sets_what_is_left_of_an_order_and_zero_takes_it_off(made):
+    stream, _connection, _clock, _client = made
+    subscribe(stream)
+    handle(stream, book_delta(48121, [{"kind": "update", "orderId": "o1", "remaining": 57}]))
+    assert ask(stream)["orders"] == {DUQ: [{"order": "o1", "price": "0.445", "qty": 57}]}
+    handle(stream, book_delta(48122, [{"kind": "update", "orderId": "o1", "remaining": 0}]))
+    assert ask(stream)["orders"] == {}
+
+
+def test_an_update_for_an_order_the_book_never_saw_resyncs_the_market(made):
+    stream, _connection, _clock, _client = made
+    subscribe(stream)
+    handle(stream, book_delta(48121, [{"kind": "update", "orderId": "o-unknown", "remaining": 5}]))
+    assert "resyncing" in ask(stream)["error"]
