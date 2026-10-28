@@ -25,7 +25,7 @@ changes at Kalshi. Steps, each safe to re-run:
      for once (POST /account/api_usage_level/upgrade, granted when one of the
      account's last 100 orders came by API) and the create retried. A refusal
      for scope (a read-only key) stops instead, saying so;
-  2. the money: BOT_BANKROLL ($500) moved from the primary account, only while
+  2. the money: SETUP_FUNDING ($500) moved from the primary account, only while
      the subaccount holds $0, and checked to have landed (re-read for up to
      FUNDING_LAND_WAIT_SEC: Kalshi's balances lag a transfer by seconds). The
      transfer id is fixed per subaccount, so the setup funds a subaccount
@@ -57,7 +57,7 @@ from typing import TextIO
 
 from unabated_ticket.bets_service import config
 from unabated_ticket.bets_service.sources.kalshi import PRIMARY_SUBACCOUNT
-from unabated_ticket.bets_service.taker_orders import BOT_BANKROLL, KalshiOrderClient, key_lock_problem
+from unabated_ticket.bets_service.taker_orders import SETUP_FUNDING, KalshiOrderClient, key_lock_problem
 
 SUBACCOUNTS_PATH = "/portfolio/subaccounts"
 SUBACCOUNT_BALANCES_PATH = "/portfolio/subaccounts/balances"
@@ -198,7 +198,7 @@ def landed_balance(client: KalshiOrderClient, subaccount: int, sleep: Callable[[
     waited = 0.0
     while True:
         held = subaccount_balances(client).get(subaccount, 0.0)
-        if held >= BOT_BANKROLL - FUNDING_TOLERANCE_DOLLARS or waited >= FUNDING_LAND_WAIT_SEC:
+        if held >= SETUP_FUNDING - FUNDING_TOLERANCE_DOLLARS or waited >= FUNDING_LAND_WAIT_SEC:
             return held
         sleep(FUNDING_LAND_RETRY_SEC)
         waited += FUNDING_LAND_RETRY_SEC
@@ -206,24 +206,24 @@ def landed_balance(client: KalshiOrderClient, subaccount: int, sleep: Callable[[
 
 def fund_once(client: KalshiOrderClient, subaccount: int, out: TextIO,
               sleep: Callable[[float], None] = time.sleep) -> float:
-    """Moves BOT_BANKROLL from the primary account while the subaccount holds
+    """Moves SETUP_FUNDING from the primary account while the subaccount holds
     $0, and checks it landed; returns what the subaccount holds after."""
     held = subaccount_balances(client).get(subaccount, 0.0)
     if held > 0:
         out.write(f"Subaccount {subaccount} already holds ${held:,.2f}; no transfer.\n")
         return held
     body = {"client_transfer_id": funding_transfer_id(subaccount), "from_subaccount": PRIMARY_SUBACCOUNT,
-            "to_subaccount": subaccount, "amount_cents": int(round(BOT_BANKROLL * 100))}
+            "to_subaccount": subaccount, "amount_cents": int(round(SETUP_FUNDING * 100))}
     status, reply = _signed(client, "POST", TRANSFER_PATH, body)
     if status != 200:
-        raise SetupError(f"the ${BOT_BANKROLL:,.0f} transfer to subaccount {subaccount} was refused: HTTP {status} "
+        raise SetupError(f"the ${SETUP_FUNDING:,.0f} transfer to subaccount {subaccount} was refused: HTTP {status} "
                          f"{str(reply)[:300]} (the setup funds a subaccount once; a top-up is your own transfer)")
     held = landed_balance(client, subaccount, sleep)
-    if held < BOT_BANKROLL - FUNDING_TOLERANCE_DOLLARS:
-        raise SetupError(f"Kalshi answered 200 to the ${BOT_BANKROLL:,.0f} transfer but subaccount {subaccount} "
+    if held < SETUP_FUNDING - FUNDING_TOLERANCE_DOLLARS:
+        raise SetupError(f"Kalshi answered 200 to the ${SETUP_FUNDING:,.0f} transfer but subaccount {subaccount} "
                          f"holds ${held:,.2f} after {FUNDING_LAND_WAIT_SEC:.0f} s: "
                          f"check your Kalshi balances before running this again")
-    out.write(f"Moved ${BOT_BANKROLL:,.2f} from your primary account; subaccount {subaccount} holds ${held:,.2f}.\n")
+    out.write(f"Moved ${SETUP_FUNDING:,.2f} from your primary account; subaccount {subaccount} holds ${held:,.2f}.\n")
     return held
 
 

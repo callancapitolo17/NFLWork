@@ -219,8 +219,8 @@ POST /place_polymarket.json places a Polymarket US order on Cal's main account
 (polymarket_place.py).
 POST /taker/order.json places a bot order on Kalshi (money) on the bot's own
 key, locked to the bot's own Kalshi subaccount, when one is configured, and
-INSERTs / UPDATEs taker.duckdb::taker_orders (taker_orders.py: stop file, $500
-ceiling, limit at the ask, rest cancelled); the desk's own thread cancels bot
+INSERTs / UPDATEs taker.duckdb::taker_orders (taker_orders.py: stop file, open-cost
+ceiling at 20% of the Kelly bankroll, limit at the ask, rest cancelled); the desk's own thread cancels bot
 orders left resting on Kalshi, reads final fills and frees settled markets
 every 30 s, runner or no runner.
 POST /taker/novig_order.json places a bot order on Novig (money) on the bot's
