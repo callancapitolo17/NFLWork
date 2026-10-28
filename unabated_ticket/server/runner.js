@@ -62,7 +62,7 @@
 //       are the row's (public, no key; server/taker.js marketMismatch).
 //   POST <bets service>/taker/order.json — each "bet" decision, with the ids
 //       of the held bets its stake was sized on: the bets service's order
-//       desk places it on Kalshi on the bot's own key (MONEY; stop file, $500
+//       desk places it on Kalshi on the bot's own key (MONEY; stop file, open-cost
 //       ceiling and the unseen-fill rule there; bets_service/taker_orders.py).
 //   GET <Novig>/v3/public/catalog/markets?league=..&eventStatus=OPEN_PREGAME
 //       every 30 s while Novig Edges rows are up and the bets service reads

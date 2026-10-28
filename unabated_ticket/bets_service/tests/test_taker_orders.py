@@ -1,10 +1,12 @@
 """The bot's order desk (taker_orders.py) against a scripted Kalshi: the stop
-file, the $500 ceiling on open exposure, the row written before the send,
+file, the open-cost ceiling (20% of the Kelly bankroll), the row written before the send,
 limit-at-the-ask bodies, the cancel routed by market and verified on a 404,
 the fills read, the unseen-fill rule, lost-order recovery, the untracked
 resting sweep, the final re-read and settlement freeing the money. No network."""
+import re
 import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -151,7 +153,7 @@ def test_the_stop_file_sends_nothing(store, tmp_path):
 
 
 def test_the_ceiling_cuts_contracts_then_refuses(store, tmp_path, monkeypatch):
-    monkeypatch.setattr(taker_orders, "BOT_BANKROLL", 10.0)
+    monkeypatch.setattr(taker_orders, "MAX_OPEN_COST", 10.0)
     kalshi = ScriptedKalshi(filled=0)
     desk = desk_for(store, kalshi, tmp_path)
     first = desk.place(request(count=100))
@@ -161,6 +163,17 @@ def test_the_ceiling_cuts_contracts_then_refuses(store, tmp_path, monkeypatch):
     refused = desk.place(request(clientOrderId="ubot-" + "b" * 32, eventId=EVENT_ID + 1, ticker=THIRD_TICKER))
     assert refused["status"] == "ceiling"
     assert kalshi.methods().count("POST") == 1
+
+
+def test_the_ceiling_is_a_fifth_of_the_kelly_bankroll_taker_js_sizes_on():
+    # Cal, 2026-10-28: $5,000 Kelly bankroll, open cost capped at 20% of it. The runner's
+    # taker.js sizes every stake on its own KELLY_BANKROLL: the two must not drift apart.
+    assert taker_orders.KELLY_BANKROLL == 5000.0
+    assert taker_orders.MAX_OPEN_COST == pytest.approx(1000.0)
+    taker_js = (Path(__file__).resolve().parents[2] / "server" / "taker.js").read_text()
+    declared = re.search(r"^const KELLY_BANKROLL = (\d+);$", taker_js, re.MULTILINE)
+    assert declared, "taker.js no longer declares const KELLY_BANKROLL = <dollars>;"
+    assert float(declared.group(1)) == taker_orders.KELLY_BANKROLL
 
 
 def test_a_refused_order_holds_nothing(store, tmp_path):

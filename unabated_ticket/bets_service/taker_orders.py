@@ -1,6 +1,6 @@
 """The automated taker's order desk (automated_taker_plan.md): the only place a
 bot order is signed and sent. The server runner (server/runner.js) decides;
-this module checks the stop file and the $500 ceiling, sends one limit order
+this module checks the stop file and the open-cost ceiling, sends one limit order
 at the ask the decision was checked at, cancels whatever did not fill at
 once, and reads what filled.
 
@@ -33,7 +33,7 @@ Rules, in order, for every request:
      refused, "unseen_fill". Conditional Kelly is only right once it
      sees the earlier fill; until then an add would be sized as if alone;
   6. ceiling: contracts are cut so that open exposure + this order's cost
-     stays at or under BOT_BANKROLL; none left -> refused, "ceiling";
+     stays at or under MAX_OPEN_COST; none left -> refused, "ceiling";
   7. the order row is INSERTED (status "sending", full cost) BEFORE it is
      sent, so a crash mid-send still counts against the ceiling;
   8. one limit buy at the ask (never a market order), then a cancel of the
@@ -79,8 +79,14 @@ from unabated_ticket.bets_service.taker_store import TakerStore
 
 log = logging.getLogger(__name__)
 
-# The ceiling on the bot's open cost and what the setup funds its subaccount with; the Kelly bankroll is taker.js KELLY_BANKROLL.
-BOT_BANKROLL = 500.0
+# The Kalshi bot's Kelly bankroll (Cal, 2026-10-28: $5,000). taker.js KELLY_BANKROLL sizes the
+# stakes and must equal it (tests/test_taker_orders.py reads taker.js to check).
+KELLY_BANKROLL = 5000.0
+# The ceiling on the bot's open cost, a share of its Kelly bankroll (Cal, 2026-10-28: 20%, was a flat $500).
+MAX_OPEN_COST_FRACTION = 0.20
+MAX_OPEN_COST = KELLY_BANKROLL * MAX_OPEN_COST_FRACTION
+# What taker_subaccount_setup moves into a new subaccount, once; a top-up is Cal's own transfer.
+SETUP_FUNDING = 500.0
 # Kalshi's fill feed can trail the match by a moment; a read this long after
 # the confirmed cancel is taken as final. Until then the whole requested cost is held.
 FILLS_SETTLE_SEC = 60
@@ -477,10 +483,10 @@ class TakerDesk:
             unseen = self._unseen_fill(request)
             if unseen:
                 return {"status": "unseen_fill", "detail": unseen}
-            headroom = BOT_BANKROLL - self._store.open_exposure()
+            headroom = MAX_OPEN_COST - self._store.open_exposure()
             count = min(request["count"], math.floor((headroom - FEE_ROUNDING_SLACK) / request["all_in_price"]))
             if count < 1:
-                return {"status": "ceiling", "detail": f"${headroom:.2f} of ${BOT_BANKROLL:.0f} left"}
+                return {"status": "ceiling", "detail": f"${headroom:.2f} of ${MAX_OPEN_COST:.0f} left"}
             return self._send(request, count)
 
     def _refuse_unfit(self, request: dict) -> dict | None:
