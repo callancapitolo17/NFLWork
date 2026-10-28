@@ -212,6 +212,23 @@ class TokenBucket:
         self._tokens = min(self._tokens, 0.0)
 
 
+# Novig's streaming docs name an order's id `order`; its REST book names it `orderId`.
+# The first live run (2026-10-28) found frames with no `order`, so either name is read.
+ORDER_ID_KEYS = ("order", "orderId")
+LOGGED_PART_CHARS = 400
+
+
+def order_id_of(entry: dict) -> str:
+    """An order's id in a snapshot ladder entry or a book delta. A missing id raises:
+    a remove that cannot name its order would leave a filled order showing as liquidity."""
+    if not isinstance(entry, dict):
+        raise TypeError(f"expected an order object, got {str(entry)[:200]}")
+    for key in ORDER_ID_KEYS:
+        if entry.get(key) is not None:
+            return str(entry[key])
+    raise KeyError(f"expected an order id under {' or '.join(ORDER_ID_KEYS)}, got keys {sorted(entry)}")
+
+
 class _MarketBook:
     """One market's resting orders, as Novig's snapshot and deltas leave them.
     Out of sync after a gap until a snapshot loads it again."""
@@ -232,7 +249,7 @@ class _MarketBook:
         self.orders = {}
         for outcome_id, ladder in (orders_by_outcome or {}).items():
             for order in ladder or []:
-                self.orders[str(order["order"])] = {"outcome": outcome_id, "price": order["price"], "qty": order["qty"]}
+                self.orders[order_id_of(order)] = {"outcome": outcome_id, "price": order["price"], "qty": order["qty"]}
         self.seq = seq
         self.synced = True
         self.replay_gap = False
@@ -261,9 +278,9 @@ class _MarketBook:
     def _apply(self, deltas: list) -> None:
         for delta in deltas or []:
             if delta.get("kind") == "add":
-                self.orders[str(delta["order"])] = {"outcome": delta["outcome"], "price": delta["price"], "qty": delta["qty"]}
+                self.orders[order_id_of(delta)] = {"outcome": delta["outcome"], "price": delta["price"], "qty": delta["qty"]}
             elif delta.get("kind") == "remove":
-                self.orders.pop(str(delta.get("order")), None)
+                self.orders.pop(order_id_of(delta), None)
             else:
                 raise ValueError(f"expected a book delta of kind add or remove, got {delta!r}")
 
@@ -564,8 +581,8 @@ class NovigBookStream:
                 raise TypeError(f"expected an object, got {str(body)[:200]}")
             apply(book, body)
         except (KeyError, ValueError, TypeError) as error:
-            log.warning("novig stream: market %s: unreadable frame part (%s: %s); resyncing it",
-                        market_id, type(error).__name__, error)
+            log.warning("novig stream: market %s: unreadable frame part (%s: %s); resyncing it; part: %s",
+                        market_id, type(error).__name__, error, json.dumps(body, default=str)[:LOGGED_PART_CHARS])
             book.synced = False
             book.buffered = []
 
