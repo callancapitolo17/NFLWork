@@ -212,21 +212,31 @@ class TokenBucket:
         self._tokens = min(self._tokens, 0.0)
 
 
-# Novig's streaming docs name an order's id `order`; its REST book names it `orderId`.
-# The first live run (2026-10-28) found frames with no `order`, so either name is read.
+# Novig's streaming docs name an order's id `order` and an add's outcome `outcome`; the live
+# frames (2026-10-28) carry `orderId` and `outcomeId`, the REST book's names. Either is read.
 ORDER_ID_KEYS = ("order", "orderId")
+OUTCOME_ID_KEYS = ("outcome", "outcomeId")
 LOGGED_PART_CHARS = 400
+
+
+def _id_under(entry: dict, keys: tuple[str, ...], what: str) -> str:
+    if not isinstance(entry, dict):
+        raise TypeError(f"expected an order object, got {str(entry)[:200]}")
+    for key in keys:
+        if entry.get(key) is not None:
+            return str(entry[key])
+    raise KeyError(f"expected {what} under {' or '.join(keys)}, got keys {sorted(entry)}")
 
 
 def order_id_of(entry: dict) -> str:
     """An order's id in a snapshot ladder entry or a book delta. A missing id raises:
     a remove that cannot name its order would leave a filled order showing as liquidity."""
-    if not isinstance(entry, dict):
-        raise TypeError(f"expected an order object, got {str(entry)[:200]}")
-    for key in ORDER_ID_KEYS:
-        if entry.get(key) is not None:
-            return str(entry[key])
-    raise KeyError(f"expected an order id under {' or '.join(ORDER_ID_KEYS)}, got keys {sorted(entry)}")
+    return _id_under(entry, ORDER_ID_KEYS, "an order id")
+
+
+def outcome_id_of(delta: dict) -> str:
+    """The outcome an add delta rests on (snapshot ladders are keyed by outcome instead)."""
+    return _id_under(delta, OUTCOME_ID_KEYS, "an outcome id")
 
 
 class _MarketBook:
@@ -278,7 +288,7 @@ class _MarketBook:
     def _apply(self, deltas: list) -> None:
         for delta in deltas or []:
             if delta.get("kind") == "add":
-                self.orders[order_id_of(delta)] = {"outcome": delta["outcome"], "price": delta["price"], "qty": delta["qty"]}
+                self.orders[order_id_of(delta)] = {"outcome": outcome_id_of(delta), "price": delta["price"], "qty": delta["qty"]}
             elif delta.get("kind") == "remove":
                 self.orders.pop(order_id_of(delta), None)
             else:

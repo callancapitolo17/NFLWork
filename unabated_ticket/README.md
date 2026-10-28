@@ -3143,8 +3143,9 @@ snapshot reads `OPEN` in play); the event `OPEN_PREGAME` read before every
 order and quote is the guard. `/health` carries `novigStream` (connected,
 last frame age, subscribed and wanted markets, last error). The first live
 run (2026-10-28) connected with no throttle errors, but every market resynced:
-the frames carry no `order` field, the order id Novig's streaming docs name.
-An order id is now read as `order` or `orderId` (the REST book's name). A
+the frames name an add's ids `orderId` and `outcomeId` (the REST book's
+names), not the `order` and `outcome` Novig's streaming docs give. Either name
+is read. A
 frame part the stream cannot read resyncs only that market, and the bets log
 prints it (`unreadable frame part ... part: {...}`, first 400 characters), so
 a new shape can be read off the log.
