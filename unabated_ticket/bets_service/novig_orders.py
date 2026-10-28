@@ -237,20 +237,24 @@ class NovigOrderClient:
         self._transport = transport or requests_transport()
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
 
+    def signed_headers(self, method: str, path: str, raw_query: str = "", data: bytes = b"") -> dict:
+        """The NOVIG-V3 headers (key id, timestamp, signature) plus our User-Agent
+        for one request: also what signs the websocket upgrade (novig_book_stream.py)."""
+        timestamp_ms = self._clock_ms()
+        return {
+            KEY_ID_HEADER: self.key_id,
+            TIMESTAMP_HEADER: str(timestamp_ms),
+            SIGNATURE_HEADER: self._signer.sign(string_to_sign(timestamp_ms, method, path, raw_query, data)),
+            "User-Agent": USER_AGENT,
+        }
+
     def request(self, method: str, path: str, query: list[tuple[str, str]] | None = None,
                 body: dict | None = None) -> tuple[int, object]:
         """(status, parsed body or text). Raises OSError on no answer at all.
         The body is serialised once and those exact bytes are hashed and sent."""
         raw_query = urllib.parse.urlencode(query or [], quote_via=urllib.parse.quote, safe="-._~")
         data = json.dumps(body, separators=(",", ":")).encode() if body is not None else b""
-        timestamp_ms = self._clock_ms()
-        headers = {
-            KEY_ID_HEADER: self.key_id,
-            TIMESTAMP_HEADER: str(timestamp_ms),
-            SIGNATURE_HEADER: self._signer.sign(string_to_sign(timestamp_ms, method, path, raw_query, data)),
-            "Accept": "application/json",
-            "User-Agent": USER_AGENT,
-        }
+        headers = {**self.signed_headers(method, path, raw_query, data), "Accept": "application/json"}
         if body is not None:
             # Without a content type Novig hashes zero bytes instead of the body.
             headers["Content-Type"] = "application/json"

@@ -143,6 +143,15 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     main account with the POLYMARKET_US_* key, real money —
                                     polymarket_place.py checks the live all-in price against the
                                     Ticket's first; 503 while that key is unset or refused)
+           POST /novig_books.json   body {marketIds: [..], waitMs, priority?} -> {stream:
+                                    {connected, lastFrameAgeMs, error, ...}, books: {marketId:
+                                    {status, started, seq, orders: {outcomeId: [{order, price,
+                                    qty}]}} | {error}}}: Novig's live books off the bot key's
+                                    websocket (novig_book_stream.py; reads only), each market
+                                    subscribed on first ask (priority: ahead of the rest, the
+                                    Place quote), waiting up to waitMs (capped at
+                                    novig_book_stream.MAX_WAIT_SEC) for a new market's snapshot.
+                                    Loopback only (the runner); 503 {error} with no bot Novig key
            PUT /settings.json       body {settings: {<any of those fields>: value or null}} ->
                                     {ok, settings, updatedAt}; a field left out keeps its value,
                                     null resets it to the default, an unknown field or a bad
@@ -250,6 +259,7 @@ from unabated_ticket.bets_service.novig_place import (NOVIG_PLACE_READ_SOURCES, 
                                                       RUNNER_NOVIG_QUOTE_TIMEOUT_SEC, ManualNovigDesk,
                                                       validate_novig_place_request)
 from unabated_ticket.bets_service.normalize import parse_iso_ms, utc_now_iso
+from unabated_ticket.bets_service.novig_book_stream import NovigBookStream, stream_url
 from unabated_ticket.bets_service.novig_orders import NovigError, NovigOrderClient
 from unabated_ticket.bets_service.novig_taker_desk import NovigTakerDesk, account_problem, novig_unseen_fill
 from unabated_ticket.bets_service.novig_taker_desk import validate_order_request as validate_novig_order_request
@@ -329,6 +339,10 @@ SETTINGS_BOOK_MODES = ("default", "all", "custom")
 SETTINGS_SORT_KEYS = ("edge", "stake", "start", "exposure")
 # Why POST /place_polymarket.json answers 503 when no Polymarket US key is configured.
 POLYMARKET_PLACE_OFF_REASON = "no Polymarket US key is configured (POLYMARKET_US_KEY_ID / POLYMARKET_US_SECRET_KEY)"
+# POST /novig_books.json: the most markets one ask may name (a taker pass names its candidates).
+MAX_NOVIG_BOOK_MARKETS = 500
+# Why POST /novig_books.json answers 503 when no bot Novig key is configured.
+NOVIG_BOOK_STREAM_OFF_REASON = "no bot Novig key is configured (NOVIG_TAKER_KEY_ID / NOVIG_TAKER_PRIVATE_KEY_PATH)"
 # Why POST /place_novig.json answers 503 when no Place key is configured.
 NOVIG_PLACE_OFF_REASON = "no Place Novig key is configured (NOVIG_PLACE_KEY_ID / NOVIG_PLACE_PRIVATE_KEY_PATH)"
 
@@ -1082,9 +1096,32 @@ def fetch_runner_json(runner_url: str, path: str, timeout_sec: float, query: str
     return 502, json.dumps(error_body).encode()
 
 
-def health_payload(store: BetsStore, started_at: float, source_names: list[str] = ()) -> dict:
-    return {"ok": True, "generatedAt": _iso(_now()), "uptimeSec": int(time.monotonic() - started_at),
-            "sources": source_status(store, list(source_names))}
+def health_payload(store: BetsStore, started_at: float, source_names: list[str] = (),
+                   novig_book_stream: NovigBookStream | None = None) -> dict:
+    payload = {"ok": True, "generatedAt": _iso(_now()), "uptimeSec": int(time.monotonic() - started_at),
+               "sources": source_status(store, list(source_names))}
+    if novig_book_stream is not None:
+        payload["novigStream"] = novig_book_stream.status()
+    return payload
+
+
+def validate_novig_books_request(body: object) -> tuple[list[str], float, bool] | str:
+    """(market ids, wait seconds, priority) or why the body is refused."""
+    if not isinstance(body, dict):
+        return "expected a JSON object body"
+    market_ids = body.get("marketIds")
+    if not isinstance(market_ids, list) or len(market_ids) > MAX_NOVIG_BOOK_MARKETS:
+        return f"marketIds must be a list of at most {MAX_NOVIG_BOOK_MARKETS} market ids"
+    for index, market_id in enumerate(market_ids):
+        if not _non_empty_string(market_id):
+            return f"marketIds[{index}] must be a non-empty string, got {market_id!r}"
+    wait_ms = body.get("waitMs", 0)
+    if not _is_number(wait_ms) or wait_ms < 0:
+        return f"waitMs must be a number >= 0, got {wait_ms!r}"
+    priority = body.get("priority", False)
+    if not isinstance(priority, bool):
+        return f"priority must be true or false, got {priority!r}"
+    return list(dict.fromkeys(market_ids)), wait_ms / 1000, priority
 
 
 def parse_days(query: str) -> int | str:
@@ -1119,7 +1156,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  novig_place_desk: ManualNovigDesk | None = None,
                  novig_place_off_reason: str = NOVIG_PLACE_OFF_REASON,
                  polymarket_place_desk: ManualPolymarketDesk | None = None,
-                 polymarket_place_off_reason: str = POLYMARKET_PLACE_OFF_REASON) -> type[BaseHTTPRequestHandler]:
+                 polymarket_place_off_reason: str = POLYMARKET_PLACE_OFF_REASON,
+                 novig_book_stream: NovigBookStream | None = None) -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
     EXTRA_ALLOWED_HOSTS (the tests pass their own). `teaser_placer` is the
@@ -1133,7 +1171,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
     places Cal's Novig Place-button orders (None: POST /place_novig.json 503s
     with `novig_place_off_reason`). `polymarket_place_desk` places Cal's
     Polymarket US Place-button orders (None: POST /place_polymarket.json 503s
-    with `polymarket_place_off_reason`)."""
+    with `polymarket_place_off_reason`). `novig_book_stream` serves Novig's live
+    books (None: POST /novig_books.json 503s)."""
     names = list(source_names)
     proxied_host_names = tuple(extra_hosts) if extra_hosts is not None else config.EXTRA_ALLOWED_HOSTS
     edges_runner_url = (runner_url or config.RUNNER_URL).rstrip("/")
@@ -1145,7 +1184,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             url = urlparse(self.path)
             if url.path == "/health":
-                self._send_json(200, health_payload(store, started_at, names))
+                self._send_json(200, health_payload(store, started_at, names, novig_book_stream))
                 return
             if url.path == "/settings.json":
                 self._send_json(200, store.load_edge_settings())
@@ -1193,7 +1232,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
                                 "/draftkings.json", "/place_teaser.json", "/place_kalshi.json", "/place_novig.json",
                                 "/place_polymarket.json", "/taker_decisions.json",
-                                "/taker/order.json", "/taker/novig_order.json"):
+                                "/taker/order.json", "/taker/novig_order.json", "/novig_books.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
@@ -1252,8 +1291,11 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if url.path == "/place_polymarket.json":
                 self._place_polymarket(body)
                 return
-            if (url.path in ("/taker_decisions.json", "/taker/order.json", "/taker/novig_order.json")
+            if (url.path in ("/taker_decisions.json", "/taker/order.json", "/taker/novig_order.json", "/novig_books.json")
                     and self._refused_non_loopback()):
+                return
+            if url.path == "/novig_books.json":
+                self._novig_books(body)
                 return
             if url.path == "/taker_decisions.json":
                 self._log_taker_decisions(body)
@@ -1442,6 +1484,18 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 self._send_json(400, {"error": request})
                 return
             self._send_json(200, novig_taker_desk.place(request))
+
+        # POST /novig_books.json: Novig's live books for the runner (novig_book_stream.py).
+        def _novig_books(self, body: object) -> None:
+            if novig_book_stream is None:
+                self._send_json(503, {"error": NOVIG_BOOK_STREAM_OFF_REASON})
+                return
+            request = validate_novig_books_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            market_ids, wait_sec, priority = request
+            self._send_json(200, novig_book_stream.books_for(market_ids, wait_sec, priority))
 
         def _push_bet105(self, body: object) -> None:
             push = bet105.validate_push(body)
@@ -1772,6 +1826,16 @@ def novig_subaccount_sources(taker_store: TakerStore | None, store: BetsStore) -
     return sources
 
 
+def open_novig_book_stream() -> NovigBookStream | None:
+    """The live Novig book stream on the bot's Novig key, or None without one.
+    Reads only: it runs whether or not the bot desk is armed or stopped."""
+    client, reason = novig_trading_client(config.NOVIG_TAKER_KEY_ID, config.NOVIG_TAKER_PRIVATE_KEY_PATH, "bot")
+    if client is None:
+        log.info("novig stream: %s, no live Novig books (the runner reads none; Place reads the public book)", reason)
+        return None
+    return NovigBookStream(client, stream_url(config.NOVIG_API_URL))
+
+
 def kalshi_subaccounts_read(bot_subaccount: int | None) -> tuple[int, ...]:
     """The Kalshi subaccounts the Bets tab reads: the primary, plus the bot's
     when one is configured, so the bot's bets size Cal's and its own."""
@@ -1888,6 +1952,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     kalshi_place_desk, kalshi_place_off_reason = open_kalshi_place_desk(store)
     novig_place_desk, novig_place_off_reason = open_novig_place_desk(store, source_names)
     polymarket_place_desk, polymarket_place_off_reason = open_polymarket_place_desk(store, source_names)
+    novig_book_stream = open_novig_book_stream()
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
                                                             teaser_placer=teaser_placer_for(sources),
                                                             taker_store=taker_store, taker_desk=taker_desk,
@@ -1900,14 +1965,17 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                                                             novig_place_off_reason=novig_place_off_reason,
                                                             polymarket_place_desk=polymarket_place_desk,
                                                             polymarket_place_off_reason=polymarket_place_off_reason,
+                                                            novig_book_stream=novig_book_stream,
                                                             balance_book=balance_book))
     server.daemon_threads = True
     pollers = [threading.Thread(target=poll_loop, args=(lane, store, stop, balance_book),
                                 name=f"poll-{lane[0].name}" if len(lane) == 1 else "poll", daemon=True)
                for lane in poll_lanes(sources)]
     # The desk sweeps its own orders (resting cancels, final fills, settlement) whether or not the runner sends any.
-    desk_sweeps = [threading.Thread(target=desk.run_refresh_loop, args=(stop,), name=name, daemon=True)
+    background_threads = [threading.Thread(target=desk.run_refresh_loop, args=(stop,), name=name, daemon=True)
                    for desk, name in ((taker_desk, "taker-desk"), (novig_taker_desk, "novig-taker-desk")) if desk is not None]
+    if novig_book_stream is not None:
+        background_threads.append(threading.Thread(target=novig_book_stream.run, args=(stop,), name="novig-stream", daemon=True))
 
     def request_stop(_signum, _frame) -> None:
         log.info("stopping")
@@ -1918,8 +1986,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     signal.signal(signal.SIGTERM, request_stop)
     for poller in pollers:
         poller.start()
-    for desk_sweep in desk_sweeps:
-        desk_sweep.start()
+    for background_thread in background_threads:
+        background_thread.start()
     log.info("bets service on http://%s:%d (sources: %s); phone page at / with /edges.json from %s; "
              "extra allowed hosts: %s", host, port, ", ".join(source_names), config.RUNNER_URL,
              ", ".join(config.EXTRA_ALLOWED_HOSTS) or "none")
@@ -1930,8 +1998,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
         stop.set()
         for poller in pollers:
             poller.join(timeout=5)
-        for desk_sweep in desk_sweeps:
-            desk_sweep.join(timeout=5)
+        for background_thread in background_threads:
+            background_thread.join(timeout=5)
         store.close()
         if taker_store is not None:
             taker_store.close()

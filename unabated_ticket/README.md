@@ -3109,7 +3109,7 @@ The Kalshi rules above hold unless this table says otherwise.
 | Rule | Novig |
 |---|---|
 | Lines | spreads and totals whose rung carries a Novig outcome id; a main number whose rung Unabated's ladder leaves out takes the one open market in Novig's catalog on its siblings' event and market type at its strike, the outcome by its name (refused when the rungs disagree, or zero or two markets or outcomes fit; the bot and Novig Place alike, 2026-10-17); moneylines never trade (Unabated lists no Novig moneyline rung; only Novig Place finds them in the catalog) |
-| Price | buying an outcome crosses the best resting order on the other outcome at 1 − its price (`/v3/public/catalog/markets/<id>/book`); fee 0 pregame; a market whose fee is `ALWAYS` is refused (`market_mismatch`) |
+| Price | buying an outcome crosses the best resting order on the other outcome at 1 − its price, off the live book stream below (never Novig's public `/book`); no book in sync, a market gone live or not `OPEN` is `no_book`; fee 0 pregame; a market whose fee is `ALWAYS` is refused (`market_mismatch`) |
 | Size | a Novig contract pays 1c: qty = floor(stake × 100 / price), cut to the depth; Kelly bankroll `NOVIG_KELLY_BANKROLL` ($2,000 like Kalshi's, its own parameter, separate from the $500 cap) |
 | Ceiling | open bot cost on Novig never above $500 (`OPEN_COST_CEILING`), its own budget beside Kalshi's |
 | Market check | before every order the public market and event are read: market `OPEN`, event `OPEN_PREGAME`, the row's market type, strike (a spread's is the home side's) and outcome, and the outcome's own name must be the row's side (a spread's last word its handicap, a pick'em refused; a total's first word Over / O or Under / U; unreadable fails closed) |
@@ -3117,6 +3117,33 @@ The Kalshi rules above hold unless this table says otherwise.
 | Adds | `unseen_fill` across venues: a Novig order waits for any earlier bot fill on the game, Kalshi or Novig, to be held; a Kalshi order waits for an earlier Novig one the same way. One bets list sorted by live edge, so the better venue goes first |
 | Holdings | the pass needs the `kalshi`, `novig` and `novig_bot` polls under 5 min old (the stake is sized on every held bet); the desk re-checks `novig` and `novig_bot` (`stale_holdings`) |
 | Location | a 451 (`GEOLOCATION_EXPIRED`, Novig's 3-day phone location check) is `geo_blocked`: nothing placed, the runner shows it in `/taker.json`; open the Novig app on the phone in a legal state to clear it |
+
+**Live books (`bets_service/novig_book_stream.py`, 2026-10-27).** The runner
+used to poll Novig's public `GET /v3/public/catalog/markets/<id>/book` once per
+candidate market every 30 s. Novig limits those unkeyed public reads per IP
+(about 10 at once, then about 2 a second, measured by a third party, not in
+Novig's docs), so the bot used up the allowance the Place button's quote read
+from on the same VM, and Place got `HTTP 429` (Cal, 2026-10-27). Now the bets
+service keeps one websocket (`GET /v3/ws`, `book` channel) on the **bot's
+Novig key, for reads only** (Cal's pick; a read takes a stale phone location,
+so it runs from Argentina too). It runs whenever `NOVIG_TAKER_KEY_ID` is set,
+whether the bot desk is armed or stopped. The runner asks
+`POST /novig_books.json` (loopback only) for the market ids it needs. A new
+market is subscribed on first ask (Place's ahead of the bot's), and the ask
+waits up to 2 s for its snapshot. A market nobody asked about for 10 min is
+unsubscribed. Subscribes are paced on Novig's `stream` throttle (512 tokens,
+4/s, 16 per market; by market, not event, so the cost holds whichever way
+Novig's docs are read). A book is served only while the line is up, heard
+from within 25 s, and its seq ran without a gap since its snapshot. After a
+gap the deltas are buffered, a snapshot of that market is asked for, and the
+buffered deltas past it are replayed. A refused market is asked for again a
+minute later, and a drop reconnects with backoff. Anything else answers an
+error, never a stale book. The stream's "went live" is best effort (a
+snapshot reads `OPEN` in play); the event `OPEN_PREGAME` read before every
+order and quote is the guard. `/health` carries `novigStream` (connected,
+last frame age, subscribed and wanted markets, last error). Unverified until
+the first live run: Novig's frame shapes and the throttle costs (look for
+`RATE_LIMIT_EXCEEDED` or `refused` in the bets log).
 
 **Bets.** `sources/novig_subaccount.py` reads the sub-account's fills on the
 bot's key every 20 s (source `novig_bot`, ids `novig:<orderId>:bot`), kept
@@ -3248,7 +3275,11 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
 1. The bets service asks the runner `GET /novig_quote.json` (same query as
    Kalshi's). The runner finds the line's outcome, its market and the other
    side's outcome on Novig's open pregame catalog, the live price (1 minus the
-   best resting order on the other outcome) and checks Novig's market and
+   best resting order on the other outcome, off the live book stream above;
+   a stream that saw the market go live or leave `OPEN` refuses it; only when
+   the stream has no book yet, e.g. no bot key, the stream down, still
+   subscribing or resyncing, one read of Novig's public `/book`, the runner's
+   log line naming which) and checks Novig's market and
    event the taker's way (`novigContractOf`, `novigQuoteOf`,
    `novigMarketMismatch`: open, pregame, no pregame fee, the row's type,
    number and side by the outcome's own name). A moneyline, which Unabated
