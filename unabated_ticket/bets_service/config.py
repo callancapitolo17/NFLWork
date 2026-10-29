@@ -193,9 +193,13 @@ KALSHI_LOOKUP_GAP_SEC = 0.6
 # `python -m unabated_ticket.bets_service.sources.novig_auth connect` and
 # rewritten on rotation. The source registers only when the file exists.
 NOVIG_TOKEN_PATH = Path(_get("NOVIG_TOKEN_PATH", str(PKG_DIR / "novig_token.json")))
-# Every 20 s (2026-10-17): Novig publishes no limit and 403s bursts, and each poll
-# pages the whole active and settled portfolio, so it stays slower than Kalshi.
-NOVIG_POLL_SEC = float(_get("BETS_NOVIG_POLL_SEC", "20"))
+# Every 10 s (2026-10-29), on a poll thread of its own. Novig publishes no limit and
+# 403s bursts, so a poll reads the settled list only down to the first page it holds
+# unchanged (~5 GETs with the balance, ~0.5/s) and the whole list (1,285 settled cards
+# = 26 pages on 2026-10-29) once per NOVIG_FULL_READ_SEC: before this, every 20 s poll
+# read it all, ~0.8 GETs/s with no 403 seen.
+NOVIG_POLL_SEC = float(_get("BETS_NOVIG_POLL_SEC", "10"))
+NOVIG_FULL_READ_SEC = 3600.0
 # The app's own REST base (novig.com bundle, 2026-09-22); the Portfolio feed
 # lives under it. Its GraphQL is behind a query allowlist and is not used.
 NOVIG_REST_URL = _get("NOVIG_REST_URL", "https://api.novig.us/nbx/v1")
@@ -229,11 +233,12 @@ WAGERZON_HISTORY_WEEKS = 6
 
 # Polymarket US (2026-09-23): the CFTC app's own API key, created by Cal at
 # polymarket.us/developer and kept in bet_logger/.env (see sources/polymarket_us.py).
-# Every 20 s (2026-10-17; no published limit, so slower than Kalshi); activities are read back one day past
-# the retention window, and further while an open or just-settled position's fills are older.
+# Every 10 s (2026-10-29, on a poll thread of its own; no published limit): ~4 GETs a poll with the
+# balance, ~0.4/s. Activities are read back one day past the retention window, and further while an
+# open or just-settled position's fills are older.
 POLYMARKET_US_KEY_ID = _get("POLYMARKET_US_KEY_ID")
 POLYMARKET_US_SECRET_KEY = _get("POLYMARKET_US_SECRET_KEY")
-POLYMARKET_US_POLL_SEC = 20.0
+POLYMARKET_US_POLL_SEC = 10.0
 POLYMARKET_US_HISTORY_DAYS = RETENTION_DAYS + 1
 # The Ticket's Place button at Polymarket US (polymarket_place.py) signs with this
 # same key (Cal 2026-10-22: a polymarket.us key is not read-only).

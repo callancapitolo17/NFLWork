@@ -281,13 +281,16 @@ log = logging.getLogger(__name__)
 
 POLL_TICK_SEC = 1.0
 # After a failed poll a source waits at least this long before the next try: the
-# fast cadences (Kalshi 10 s, Novig and Polymarket US 20 s) must not hammer a venue
+# fast cadences (Kalshi, Novig and Polymarket US every 10 s) must not hammer a venue
 # that is down or refusing us. One success puts it back on its own cadence.
 FAILED_POLL_RETRY_SEC = 60.0
-# Sources polled on a thread of their own: Kalshi's first poll after a restart
-# is the slowest read in the service (throttled GETs per live market), and in
-# the shared loop every other venue waited behind it.
-OWN_THREAD_SOURCES = ("kalshi",)
+# Sources polled on a poll thread of their own, one lane per tuple: Kalshi's first
+# poll after a restart is the slowest read in the service (throttled GETs per live
+# market); Novig's and Polymarket US's 10 s cadences only hold when nothing else
+# runs between their polls (2026-10-29: in the shared loop BFA, BetOnline and
+# Wagerzon ran between them and every venue waited ~35 s). Novig's three sources
+# share a lane: each read is ~1 s or less, and one queue keeps their requests apart.
+OWN_LANES = (("kalshi",), ("novig", "novig_bot", "novig_place"), ("polymarket_us",))
 # A Place that may hold contracts reads its venue's sources before it answers
 # (Cal, 2026-10-29), so the panel's and phone's /bets.json read right after the
 # reply already counts it and the next Place on the game is not refused as
@@ -534,11 +537,13 @@ def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event,
 
 
 def poll_lanes(sources: list[Source]) -> list[list[Source]]:
-    """The sources grouped one list per poll thread: each OWN_THREAD_SOURCES
-    source alone, every other source together in one shared loop."""
-    lanes = [[source] for source in sources if source.name in OWN_THREAD_SOURCES]
-    shared = [source for source in sources if source.name not in OWN_THREAD_SOURCES]
-    return lanes + ([shared] if shared else [])
+    """The sources grouped one list per poll thread: each OWN_LANES lane with
+    any of its sources registered, then every other source together in one
+    shared loop."""
+    lanes = [[source for source in sources if source.name in lane_names] for lane_names in OWN_LANES]
+    own_names = {name for lane_names in OWN_LANES for name in lane_names}
+    shared = [source for source in sources if source.name not in own_names]
+    return [lane for lane in lanes if lane] + ([shared] if shared else [])
 
 
 # A registered source that has not finished a poll yet (the first Kalshi poll

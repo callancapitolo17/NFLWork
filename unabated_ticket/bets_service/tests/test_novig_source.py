@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from unabated_ticket.bets_service.sources import novig, novig_auth
-from unabated_ticket.bets_service.sources.novig import NovigSource, portfolio_url, source_if_connected
+from unabated_ticket.bets_service.sources.novig import NovigSource, portfolio_url, settled_card_key, source_if_connected
 from unabated_ticket.bets_service.sources.novig_auth import NovigAuth, NovigAuthError, code_from_redirect, jwt_subject
 
 
@@ -105,9 +105,14 @@ class FakePortfolio:
         return {self.items_key: page, "nextCursor": str(next_offset) if next_offset < len(rows) else None}
 
 
-def make_source(token_file, http_get):
+def make_source(token_file, http_get, clock=lambda: 0.0, full_read_sec=3600.0):
     auth = NovigAuth(token_file, request=FakeTokenEndpoint(rotate=False), clock=lambda: 0.0)
-    return NovigSource(auth=auth, http_get=http_get, poll_sec=1, base_url="https://api.example/nbx/v1/")
+    return NovigSource(auth=auth, http_get=http_get, poll_sec=1, base_url="https://api.example/nbx/v1/",
+                       full_read_sec=full_read_sec, clock=clock)
+
+
+def settled_pages_read(portfolio: FakePortfolio) -> int:
+    return sum(1 for url, _bearer in portfolio.calls if "/portfolio/settled?" in url)
 
 
 def test_fetch_pages_both_lists_to_the_end_and_returns_normalised_records(token_file, novig_fixture):
@@ -121,6 +126,65 @@ def test_fetch_pages_both_lists_to_the_end_and_returns_normalised_records(token_
     assert urls[1] == "https://api.example/nbx/v1/portfolio/active?currency=CASH&sort=active_recency&limit=50&cursor=3"
     assert [u.rsplit("/", 1)[1].split("?")[0] for u in urls] == ["active", "active", "settled", "settled", "settled", "settled"]  # 4 and 11 cards, pages of 3
     assert all(bearer == fake_jwt("auth0|user1") for _url, bearer in portfolio.calls)
+
+
+def test_between_whole_reads_the_settled_list_is_read_down_to_its_first_unchanged_page(token_file, novig_fixture):
+    portfolio = FakePortfolio(novig_fixture["active"], novig_fixture["settled"])
+    source = make_source(token_file, portfolio)
+    whole = source.fetch()
+    assert settled_pages_read(portfolio) == 4  # 11 cards, pages of 3
+    portfolio.calls.clear()
+    assert source.fetch() == whole
+    assert settled_pages_read(portfolio) == 1
+    assert sum(1 for url, _bearer in portfolio.calls if "/portfolio/active?" in url) == 2  # active: always whole
+
+
+def test_a_newly_settled_card_is_read_and_paging_stops_past_it(token_file, novig_fixture):
+    active, settled = novig_fixture["active"], novig_fixture["settled"]
+    portfolio = FakePortfolio(active[1:], settled)
+    source = make_source(token_file, portfolio)
+    source.fetch()
+    # active[0] settles: it leaves the active list and lands on top of the settled list,
+    # pushing one card of page 1 onto page 2 (and so on).
+    portfolio.lists = {"active": active[1:], "settled": [active[0], *settled]}
+    portfolio.calls.clear()
+    short = source.fetch()
+    assert settled_pages_read(portfolio) == 2  # page 1 holds the new card, page 2 is all held
+    portfolio.calls.clear()
+    whole = make_source(token_file, portfolio).fetch()
+    assert sorted(short, key=lambda r: r["id"]) == sorted(whole, key=lambda r: r["id"])
+
+
+def test_a_change_below_the_first_unchanged_page_waits_for_the_next_whole_read(token_file, novig_fixture):
+    settled = [dict(card) for card in novig_fixture["settled"]]
+    portfolio = FakePortfolio(novig_fixture["active"], settled)
+    now = [0.0]
+    source = make_source(token_file, portfolio, clock=lambda: now[0], full_read_sec=3600.0)
+    source.fetch()
+    portfolio.lists["settled"] = [*settled[:-1], {**settled[-1], "sortAt": "2026-09-30T00:00:00.000Z"}]
+    now[0] = 3599.0
+    short = source.fetch()
+    assert all(r["raw"].get("sortAt") != "2026-09-30T00:00:00.000Z" for r in short)
+    portfolio.calls.clear()
+    now[0] = 3600.0
+    source.fetch()
+    assert settled_pages_read(portfolio) == 4
+
+
+def test_settled_cards_sharing_a_key_keep_every_poll_a_whole_read(token_file, novig_fixture):
+    settled = novig_fixture["settled"]
+    portfolio = FakePortfolio(novig_fixture["active"], [*settled, settled[0]])
+    source = make_source(token_file, portfolio)
+    source.fetch()
+    portfolio.calls.clear()
+    source.fetch()
+    assert settled_pages_read(portfolio) == 4
+
+
+def test_settled_card_key_tells_two_orders_on_one_market_apart():
+    first = {"type": "straight", "cardId": "market-1", "orderId": "order-1"}
+    assert settled_card_key(first) != settled_card_key({**first, "orderId": "order-2"})
+    assert settled_card_key(first) == settled_card_key(dict(first))
 
 
 def test_portfolio_url():
