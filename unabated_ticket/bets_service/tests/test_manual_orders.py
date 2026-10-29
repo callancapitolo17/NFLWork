@@ -280,3 +280,65 @@ def test_place_is_off_without_its_own_trade_key(monkeypatch, store):
     monkeypatch.setattr(service.config, "KALSHI_API_KEY_ID", "read-only-id")
     desk, reason = service.open_kalshi_place_desk(store)
     assert desk is None and "KALSHI_PLACE_API_KEY_ID" in reason
+
+
+# ---- a Place reads its venue before it answers ----
+class CountingSource:
+    poll_sec = 60
+
+    def __init__(self, name):
+        self.name = name
+        self.fetches = 0
+
+    def fetch(self):
+        self.fetches += 1
+        return []
+
+
+class StatusDesk:
+    def __init__(self, status):
+        self.status = status
+
+    def place(self, placed):
+        return {"status": self.status, "message": self.status}
+
+
+def serve_reading(store, desk, sources):
+    reader = service.SourceReader(sources, store)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), service.make_handler(
+        store, 0.0, [source.name for source in sources], kalshi_place_desk=desk, source_reader=reader))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+@pytest.mark.parametrize("status, reads", [("filled", 1), ("partial", 1), ("unknown", 1),
+                                           ("unfilled", 0), ("refused", 0), ("rejected", 0)])
+def test_a_kalshi_place_that_may_hold_contracts_reads_kalshi_before_the_reply(store, status, reads):
+    kalshi, novig = CountingSource("kalshi"), CountingSource("novig")
+    server, url = serve_reading(store, StatusDesk(status), [kalshi, novig])
+    try:
+        assert post_place(url, BODY)[0] == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert (kalshi.fetches, novig.fetches) == (reads, 0)  # only the venue traded at
+    if reads:
+        assert store.source_status()["kalshi"]["ok"] is True  # the read the next stake counts
+
+
+def test_read_now_reads_each_named_source_and_skips_one_not_registered(store):
+    novig, place = CountingSource("novig"), CountingSource("novig_place")
+    reader = service.SourceReader([novig, place], store)
+    assert reader.read_now(service.PLACE_READ_SOURCES["novig"], 1.0) == []  # no novig_bot source: skipped
+    assert (novig.fetches, place.fetches) == (1, 1)
+
+
+def test_read_now_gives_up_on_a_source_whose_read_is_still_running(store):
+    novig = CountingSource("novig")
+    reader = service.SourceReader([novig], store)
+    reader._locks["novig"].acquire()  # the poll lane is mid-read
+    try:
+        assert reader.read_now(("novig",), 0.05) == ["novig"]
+    finally:
+        reader._locks["novig"].release()
+    assert novig.fetches == 0

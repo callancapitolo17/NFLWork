@@ -3409,6 +3409,22 @@ SELECT placed_at, label, ticker AS slug, contract_side, ticket_all_in, ask_price
 FROM manual_orders WHERE venue = 'polymarket_us' ORDER BY placed_at DESC;
 ```
 
+### A Place reads its venue before it answers (`bets_service/service.py`, 2026-10-29)
+
+Each of the three Place routes, once its order may hold contracts (`filled`,
+`partial`, `unknown`; on Novig `unfilled` too), polls that venue's sources at
+once and only then replies: Kalshi `kalshi`; Novig `novig`, `novig_place` and
+`novig_bot` (out of turn, never behind BFA, BetOnline or Wagerzon in the shared
+lane); Polymarket US `polymarket_us`. The panel's and phone's `/bets.json` read
+after the reply then already holds the fill, so the next Place on the game is
+not refused as unseen, and the runner (bot included) has it on its next 10 s
+read. `SourceReader` holds one lock per source, so a lane's poll and a Place's
+read never run the same source at once; a read already running is waited for
+at most 10 s in all (`PLACE_READ_LOCK_WAIT_SEC`), after which the reply goes and the
+next scheduled poll counts the fill, as before. A failed read is logged and
+never fails the Place. Like every poll, it trusts that a read started after the
+order's fill reply contains that fill.
+
 ## Tests
 
 One command runs everything and exits non-zero if any part fails:
