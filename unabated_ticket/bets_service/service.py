@@ -288,6 +288,25 @@ FAILED_POLL_RETRY_SEC = 60.0
 # is the slowest read in the service (throttled GETs per live market), and in
 # the shared loop every other venue waited behind it.
 OWN_THREAD_SOURCES = ("kalshi",)
+# A Place that may hold contracts reads its venue's sources before it answers
+# (Cal, 2026-10-29), so the panel's and phone's /bets.json read right after the
+# reply already counts it and the next Place on the game is not refused as
+# unseen (manual_orders.unseen_manual_fill compares the Place time with the
+# venue's read). Novig's three accounts are read out of turn, never behind
+# BFA, BetOnline or Wagerzon in the shared lane.
+PLACE_READ_SOURCES = {
+    "kalshi": ("kalshi",),
+    "novig": ("novig", "novig_place", "novig_bot"),
+    "polymarket_us": ("polymarket_us",),
+}
+# Statuses after which an order may hold contracts (store._SELECT_MANUAL_MAYBE_FILLED;
+# Novig's "unfilled" too, which the store still counts until Novig's own read).
+PLACE_READ_STATUSES = ("filled", "partial", "unknown")
+NOVIG_PLACE_READ_STATUSES = PLACE_READ_STATUSES + ("unfilled",)
+# Reads already running are waited for at most this long in all; past it the
+# reply goes and the next scheduled poll counts the fill, as before.
+# The phone waits 90 s for a Place, and a Novig click can take ~72 s itself.
+PLACE_READ_LOCK_WAIT_SEC = 10.0
 MAX_DAYS = 3650
 # A crosswalk POST is a few rows per poll; anything near this is not the panel.
 MAX_BODY_BYTES = 1024 * 1024
@@ -446,13 +465,53 @@ def next_poll_delay(poll_sec: float, succeeded: bool) -> float:
     return max(poll_sec, FAILED_POLL_RETRY_SEC)
 
 
+class SourceReader:
+    """Runs each source's poll under that source's own lock, so no source is
+    ever read by two threads at once: its poll lane on the cadence, and a Place
+    that reads its venue out of turn (read_now)."""
+
+    def __init__(self, sources: list[Source], store: BetsStore):
+        self._sources = {source.name: source for source in sources}
+        self._locks = {source.name: threading.Lock() for source in sources}
+        self._store = store
+
+    def run(self, source: Source) -> bool:
+        """One poll of `source` (run_source_once), waiting for a read already running."""
+        with self._locks[source.name]:
+            return run_source_once(source, self._store)
+
+    def read_now(self, names: tuple[str, ...], lock_wait_sec: float) -> list[str]:
+        """Poll each registered source in `names` now, in order, waiting at
+        most `lock_wait_sec` IN ALL for reads of them already running (a first
+        Kalshi poll after a restart takes minutes; one budget so Novig's three
+        cannot stack three waits onto a click). Returns the names NOT read, so
+        the caller can say why; a name no source has is skipped silently (a
+        venue whose sub-account is not read)."""
+        missed = []
+        deadline = time.monotonic() + lock_wait_sec
+        for name in names:
+            source = self._sources.get(name)
+            if source is None:
+                continue
+            if not self._locks[name].acquire(timeout=max(0.0, deadline - time.monotonic())):
+                missed.append(name)
+                continue
+            try:
+                if not run_source_once(source, self._store):
+                    missed.append(name)
+            finally:
+                self._locks[name].release()
+        return missed
+
+
 def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event,
-              balance_book: BalanceBook | None = None) -> None:
+              balance_book: BalanceBook | None = None, reader: SourceReader | None = None) -> None:
     """Run each source on its own cadence until `stop` (backed off to
     FAILED_POLL_RETRY_SEC after a failure). A store write that
     raises (disk full, a locked file) is logged and retried next poll — the
     thread must outlive it, or the HTTP side would serve ageing data with no
     failed run to show for it."""
+    reader = reader or SourceReader(sources, store)
     next_due = {source.name: 0.0 for source in sources}
     # Balances first: a first Kalshi poll takes minutes and the loop is serial, so
     # reading them only after each fetch left the Balances tab empty after a restart.
@@ -464,7 +523,7 @@ def poll_loop(sources: list[Source], store: BetsStore, stop: threading.Event,
         for source in sources:
             if now >= next_due[source.name]:
                 try:
-                    succeeded = run_source_once(source, store)
+                    succeeded = reader.run(source)
                 except Exception:  # noqa: BLE001 — the poll thread is the service's heartbeat
                     log.exception("store write failed for source %s; retrying next poll", source.name)
                     succeeded = False
@@ -1157,7 +1216,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  novig_place_off_reason: str = NOVIG_PLACE_OFF_REASON,
                  polymarket_place_desk: ManualPolymarketDesk | None = None,
                  polymarket_place_off_reason: str = POLYMARKET_PLACE_OFF_REASON,
-                 novig_book_stream: NovigBookStream | None = None) -> type[BaseHTTPRequestHandler]:
+                 novig_book_stream: NovigBookStream | None = None,
+                 source_reader: SourceReader | None = None) -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
     EXTRA_ALLOWED_HOSTS (the tests pass their own). `teaser_placer` is the
@@ -1172,7 +1232,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
     with `novig_place_off_reason`). `polymarket_place_desk` places Cal's
     Polymarket US Place-button orders (None: POST /place_polymarket.json 503s
     with `polymarket_place_off_reason`). `novig_book_stream` serves Novig's live
-    books (None: POST /novig_books.json 503s)."""
+    books (None: POST /novig_books.json 503s). `source_reader` reads a
+    Place's venue before its reply (None: the reply goes at once and the next
+    scheduled poll counts the fill)."""
     names = list(source_names)
     proxied_host_names = tuple(extra_hosts) if extra_hosts is not None else config.EXTRA_ALLOWED_HOSTS
     edges_runner_url = (runner_url or config.RUNNER_URL).rstrip("/")
@@ -1585,6 +1647,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 log.exception("kalshi place: failed")
                 result = {"status": "unknown", "message": f"The order failed on this server ({type(error).__name__}: "
                                                           f"{error}). Check Kalshi before placing again."}
+            if result["status"] in PLACE_READ_STATUSES:
+                self._read_place_venue("kalshi")
             self._send_json(200, {"ok": result["status"] in ("filled", "partial"), **result})
 
         # POST /place_novig.json: one order from Place's Novig sub-account
@@ -1603,6 +1667,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 log.exception("novig place: failed")
                 result = {"status": "unknown", "message": f"The order failed on this server ({type(error).__name__}: "
                                                           f"{error}). Check Novig before placing again."}
+            if result["status"] in NOVIG_PLACE_READ_STATUSES:
+                self._read_place_venue("novig")
             self._send_json(200, {"ok": result["status"] in ("filled", "partial"), **result})
 
         # POST /place_polymarket.json: one order on Cal's main Polymarket US
@@ -1622,7 +1688,23 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 log.exception("polymarket place: failed")
                 result = {"status": "unknown", "message": f"The order failed on this server ({type(error).__name__}: "
                                                           f"{error}). Check Polymarket US before placing again."}
+            if result["status"] in PLACE_READ_STATUSES:
+                self._read_place_venue("polymarket_us")
             self._send_json(200, {"ok": result["status"] in ("filled", "partial"), **result})
+
+        def _read_place_venue(self, venue: str) -> None:
+            """Read the venue a Place just traded at (PLACE_READ_SOURCES) before
+            the reply goes. Never raises: the order already stands."""
+            if source_reader is None:
+                return
+            try:
+                missed = source_reader.read_now(PLACE_READ_SOURCES[venue], PLACE_READ_LOCK_WAIT_SEC)
+            except Exception:  # noqa: BLE001 — the next scheduled poll counts the fill
+                log.exception("place read: reading %s after a Place failed", venue)
+                return
+            if missed:
+                log.warning("place read: %s not read after a Place (busy or failed); "
+                            "the next scheduled poll counts it", ", ".join(missed))
 
         def _store_bfa_open_bets(self, open_wagers: list[dict]) -> None:
             try:
@@ -1953,6 +2035,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     novig_place_desk, novig_place_off_reason = open_novig_place_desk(store, source_names)
     polymarket_place_desk, polymarket_place_off_reason = open_polymarket_place_desk(store, source_names)
     novig_book_stream = open_novig_book_stream()
+    source_reader = SourceReader(sources, store)
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
                                                             teaser_placer=teaser_placer_for(sources),
                                                             taker_store=taker_store, taker_desk=taker_desk,
@@ -1966,9 +2049,10 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                                                             polymarket_place_desk=polymarket_place_desk,
                                                             polymarket_place_off_reason=polymarket_place_off_reason,
                                                             novig_book_stream=novig_book_stream,
-                                                            balance_book=balance_book))
+                                                            balance_book=balance_book,
+                                                            source_reader=source_reader))
     server.daemon_threads = True
-    pollers = [threading.Thread(target=poll_loop, args=(lane, store, stop, balance_book),
+    pollers = [threading.Thread(target=poll_loop, args=(lane, store, stop, balance_book, source_reader),
                                 name=f"poll-{lane[0].name}" if len(lane) == 1 else "poll", daemon=True)
                for lane in poll_lanes(sources)]
     # The desk sweeps its own orders (resting cancels, final fills, settlement) whether or not the runner sends any.
