@@ -84,7 +84,7 @@ log = logging.getLogger(__name__)
 NAMES = ("bot", "place")
 SOURCE_PREFIX = "novig_"
 VENUE = "novig"
-POLL_SEC = 20.0  # the app source's NOVIG_POLL_SEC cadence
+POLL_SEC = 10.0  # the app source's NOVIG_POLL_SEC cadence (same poll thread)
 # Fills on events that started within this many days are read every poll (the store keeps older ones).
 HISTORY_DAYS = 14
 REASON_NO_CONTEXT = "no board line on record for this Novig order (placed outside the bot's desk)"

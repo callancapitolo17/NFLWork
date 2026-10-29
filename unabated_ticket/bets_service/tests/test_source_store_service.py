@@ -623,10 +623,14 @@ def test_load_kalshi_final_tickers_needs_every_stored_side_final_and_complete(st
     assert store.load_kalshi_final_tickers(1) == {"KXD-4": "2026-09-11T19:00:00Z"}
 
 
-def test_kalshi_polls_on_its_own_thread():
-    kalshi, novig, bfa = (ScriptedSource([[]], name=name) for name in ("kalshi", "novig", "bfa"))
-    assert service.poll_lanes([kalshi, novig, bfa]) == [[kalshi], [novig, bfa]]
-    assert service.poll_lanes([novig]) == [[novig]]
+def test_kalshi_novig_and_polymarket_each_poll_on_a_thread_of_their_own():
+    names = ("kalshi", "novig", "bfa", "polymarket_us", "novig_bot", "wagerzon", "novig_place")
+    kalshi, novig, bfa, polymarket, novig_bot, wagerzon, novig_place = (
+        ScriptedSource([[]], name=name) for name in names)
+    assert service.poll_lanes([kalshi, novig, bfa, polymarket, novig_bot, wagerzon, novig_place]) == [
+        [kalshi], [novig, novig_bot, novig_place], [polymarket], [bfa, wagerzon]]
+    assert service.poll_lanes([novig_bot, bfa]) == [[novig_bot], [bfa]]
+    assert service.poll_lanes([bfa]) == [[bfa]]
     assert service.poll_lanes([kalshi]) == [[kalshi]]
 
 

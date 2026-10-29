@@ -438,4 +438,4 @@ def test_source_if_configured_needs_both_keys(monkeypatch):
     monkeypatch.setattr(polymarket_us.config, "POLYMARKET_US_SECRET_KEY", make_secret()[0])
     source = polymarket_us.source_if_configured()
     assert isinstance(source, PolymarketUSSource)
-    assert (source.name, source.poll_sec) == ("polymarket_us", 20.0)
+    assert (source.name, source.poll_sec) == ("polymarket_us", 10.0)

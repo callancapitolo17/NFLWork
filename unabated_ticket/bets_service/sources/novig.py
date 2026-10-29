@@ -13,7 +13,14 @@ no allowlist in the path.
         ?currency=CASH&sort={active|settled}_recency&limit=N[&cursor=...]
         Authorization: Bearer <access token>        (NovigAuth)
         novig-client-capabilities: card_stack,player_props   (what the app sends)
-    -> {"items": [card, ...], "nextCursor": str | null}   cursor-paged to the end
+    -> {"items": [card, ...], "nextCursor": str | null}   cursor-paged
+
+The active list is paged to the end every poll. The settled list (1,285 cards on
+2026-10-29, 26 pages, ~14 s) is paged to the end once per NOVIG_FULL_READ_SEC; the
+polls between page it newest-settled first and stop at the first page whose cards
+are all already held unchanged, then answer the held cards updated by what they
+read. The store only upserts, so a card the short read misses is never lost, only
+late: the next full read brings it.
 
 Cards (the app's *PortfolioCardDTO shapes, live-captured 2026-09-22 and
 pinned in tests/fixtures/bets/novig_portfolio.json):
@@ -63,6 +70,7 @@ the service records a failed run and keeps the previous records.
 """
 import logging
 import re
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,6 +90,8 @@ EASTERN = ZoneInfo("America/New_York")
 PORTFOLIO_TABS = (("active", "active_recency"), ("settled", "settled_recency"))
 PAGE_LIMIT = 50
 MAX_PAGES = 200
+# The tab the short read pages: newest settled first, so a new or changed card is near the top.
+SETTLED_TAB = "settled"
 CLIENT_CAPABILITIES_HEADER = ("novig-client-capabilities", "card_stack,player_props")
 
 # Novig eventHeader.league -> the feed.LEAGUES path the scanner uses.
@@ -535,6 +545,12 @@ def balance_of_novig_summary(body: object) -> dict:
     return {"cash": cash, "inBets": in_bets, "available": cash, "creditLimit": None}
 
 
+def settled_card_key(card: dict) -> str:
+    """A settled card's identity across reads: its type and cardId, plus its orderId
+    (a straight card's cardId is its market, which two orders can share)."""
+    return f"{card.get('type')}|{card.get('cardId')}|{card.get('orderId')}"
+
+
 def portfolio_url(base_url: str, tab: str, sort: str, limit: int, cursor: str | None) -> str:
     url = f"{base_url}/portfolio/{tab}?currency=CASH&sort={sort}&limit={limit}"
     return f"{url}&cursor={cursor}" if cursor else url
@@ -550,12 +566,19 @@ class NovigSource:
     name = "novig"
 
     def __init__(self, auth: NovigAuth | None = None, http_get: HttpGet | None = None,
-                 poll_sec: float | None = None, base_url: str | None = None):
+                 poll_sec: float | None = None, base_url: str | None = None,
+                 full_read_sec: float | None = None, clock: Callable[[], float] = time.monotonic):
         self.poll_sec = poll_sec if poll_sec is not None else config.NOVIG_POLL_SEC
         self._base_url = (base_url or config.NOVIG_REST_URL).rstrip("/")
         self._auth = auth or NovigAuth(config.NOVIG_TOKEN_PATH)
         self._http_get = http_get or self._get_json
         self._session = None
+        self._full_read_sec = full_read_sec if full_read_sec is not None else config.NOVIG_FULL_READ_SEC
+        self._clock = clock
+        # The settled list as of the last read, keyed by settled_card_key, and when it was
+        # last read whole; None until a full read (and after one whose keys collide).
+        self._settled_cards: dict[str, dict] | None = None
+        self._settled_full_read_at: float | None = None
 
     def _get_json(self, url: str, bearer: str) -> dict:
         if self._session is None:
@@ -581,6 +604,48 @@ class NovigSource:
                 return cards
         raise RuntimeError(f"novig portfolio/{tab} did not end within {MAX_PAGES} pages; refusing a partial pull")
 
+    def _settled_full_read_due(self) -> bool:
+        if self._settled_cards is None or self._settled_full_read_at is None:
+            return True
+        return self._clock() - self._settled_full_read_at >= self._full_read_sec
+
+    def _read_settled_whole(self, sort: str, bearer: str) -> list[dict]:
+        """The whole settled list; keeps it for the short reads when every card has its own key."""
+        cards = self._page_to_end(SETTLED_TAB, sort, bearer)
+        keyed = {settled_card_key(card): card for card in cards}
+        if len(keyed) == len(cards):
+            self._settled_cards = keyed
+            self._settled_full_read_at = self._clock()
+        else:
+            log.warning("novig: %d settled cards share a key with another; every poll reads the whole list",
+                        len(cards) - len(keyed))
+            self._settled_cards = None
+        return cards
+
+    def _read_settled_newest(self, sort: str, bearer: str) -> tuple[list[dict], int]:
+        """The newest settled pages, down to the first whose cards are all held unchanged,
+        followed by the held cards they did not include, in the held order: the order a
+        whole read gives, which normalize_novig's "the later line wins" depends on.
+        Returns (cards, pages read)."""
+        held = self._settled_cards
+        newest: list[dict] = []
+        cursor = None
+        for page_number in range(1, MAX_PAGES + 1):
+            body = self._http_get(portfolio_url(self._base_url, SETTLED_TAB, sort, PAGE_LIMIT, cursor), bearer)
+            items = body.get("items") if isinstance(body, dict) else None
+            if not isinstance(items, list):
+                raise RuntimeError(f"novig portfolio/{SETTLED_TAB}: expected an `items` list, got {type(items).__name__}")
+            newest.extend(items)
+            cursor = body.get("nextCursor")
+            if not cursor or all(held.get(settled_card_key(card)) == card for card in items):
+                break
+        else:
+            raise RuntimeError(f"novig portfolio/{SETTLED_TAB} did not end within {MAX_PAGES} pages; refusing a partial pull")
+        newest_keys = {settled_card_key(card) for card in newest}
+        cards = newest + [card for key, card in held.items() if key not in newest_keys]
+        self._settled_cards = {settled_card_key(card): card for card in cards}
+        return cards, page_number
+
     def fetch(self) -> list[dict]:
         try:
             access = self._auth.token()
@@ -588,12 +653,20 @@ class NovigSource:
             raise RuntimeError(f"novig auth: {error}") from error
         cards: list[dict] = []
         counts = {}
+        settled_note = "whole list"
         for tab, sort in PORTFOLIO_TABS:
-            tab_cards = self._page_to_end(tab, sort, access.token)
+            if tab != SETTLED_TAB:
+                tab_cards = self._page_to_end(tab, sort, access.token)
+            elif self._settled_full_read_due():
+                tab_cards = self._read_settled_whole(sort, access.token)
+            else:
+                tab_cards, pages = self._read_settled_newest(sort, access.token)
+                settled_note = f"{pages} newest page(s)"
             counts[tab] = len(tab_cards)
             cards.extend(tab_cards)
         records = normalize_novig(cards, utc_now_iso())
-        log.info("novig: %d active + %d settled cards -> %d records", counts["active"], counts["settled"], len(records))
+        log.info("novig: %d active + %d settled cards (%s) -> %d records",
+                 counts["active"], counts[SETTLED_TAB], settled_note, len(records))
         return records
 
     def balance(self) -> dict:
