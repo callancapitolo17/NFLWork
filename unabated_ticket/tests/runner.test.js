@@ -816,6 +816,12 @@ function takerService(script) {
         if (!books) return response({ status: 503, body: JSON.stringify({ error: "no bot Novig key is configured" }) });
         return response({ body: JSON.stringify(books(body)) });
       }
+      if (route === "/novig_read.json") {
+        // No reads scripted = a bets service without the bot's Novig key.
+        const read = script["/novig_read.json"];
+        if (!read) return response({ status: 503, body: JSON.stringify({ error: "no bot Novig key is configured" }) });
+        return response({ body: JSON.stringify(await read(body)) });
+      }
       if (route === "/taker/order.json") {
         if (Date.parse(body.eventStart) <= TAKER_NOW) return response({ body: JSON.stringify({ status: "started", detail: `the game started at ${body.eventStart}` }) });
         const unseen = (filledByEvent.get(body.eventId) || []).find((heldId) => !body.heldIds.includes(heldId));
@@ -1018,7 +1024,7 @@ test("kalshi_quote: a closed market, a number the board lacks and bad params are
 // the WSU -35.5 outcome on a two-outcome SPREAD market, DUQ resting at 0.445.
 function novigQuoteRunner(marketFields = {}) {
   const novig = novigFetch(marketFields);
-  return quoteRunner({}, { novigFetch: novig, novigBaseUrl: "https://novig.test" }).then((made) => ({ ...made, novig }));
+  return quoteRunner({}, { novigRead: keyedNovigRead(novig), novigBaseUrl: "https://novig.test" }).then((made) => ({ ...made, novig }));
 }
 
 test("novig_quote: the board's Novig line gives its outcome, market, the other side's, the live ask and the line; nothing is sent", async () => {
@@ -1033,14 +1039,14 @@ test("novig_quote: the board's Novig line gives its outcome, market, the other s
     league: "cfb", betType: "spread", period: "FG", side: "home", points: -35.5,
     awayTeam: quote.line.awayTeam, homeTeam: quote.line.homeTeam, awayTeamId: quote.line.awayTeamId, homeTeamId: "717",
   });
-  assert.ok(novig.calls.some((call) => call.url === `https://novig.test/v3/public/catalog/events/${NOVIG_EVENT}`), "the event is checked");
+  assert.ok(novig.calls.some((call) => call.url === `https://novig.test/v3/catalog/events/${NOVIG_EVENT}`), "the event is checked");
   assert.equal(service.posts.filter((post) => post.route.startsWith("/taker/")).length, 0);
 });
 
-test("novig_quote: the stream's live book prices the quote and Novig's public book is not read; a stream that saw it live or closed refuses; without one the public book is read once", async () => {
+test("novig_quote: the stream's live book prices the quote and Novig's REST book is not read; a stream that saw it live or closed refuses; without one the keyed REST book is read once", async () => {
   const logs = [];
   const novig = novigFetch();
-  const { runner, service } = await quoteRunner({}, { novigFetch: novig, novigBaseUrl: "https://novig.test", logInfo: (line) => logs.push(line) },
+  const { runner, service } = await quoteRunner({}, { novigRead: keyedNovigRead(novig), novigBaseUrl: "https://novig.test", logInfo: (line) => logs.push(line) },
     WSU_UNABATED_START, { "/novig_books.json": novigStreamBooks({ orders: { [NOVIG_DUQ_OUTCOME]: [{ order: "s1", price: "0.455", qty: 700 }] } }) });
   const quote = await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
   runner.stop();
@@ -1048,10 +1054,10 @@ test("novig_quote: the stream's live book prices the quote and Novig's public bo
   assert.ok(novig.calls.every((call) => !call.url.endsWith("/book")));
   assert.deepEqual(service.posts.find((post) => post.route === "/novig_books.json").body, { marketIds: [NOVIG_MARKET], waitMs: 2000, priority: true });
   assert.match(logs.at(-1), /book from stream\)/);
-  // The stream saw the market go live or close: refused, no public read to second-guess it.
+  // The stream saw the market go live or close: refused, no REST read to second-guess it.
   for (const [view, expected] of [[{ started: true }, /went live on the stream/], [{ status: "CLOSED" }, /is CLOSED on the stream/]]) {
     const liveNovig = novigFetch();
-    const { runner: liveRunner } = await quoteRunner({}, { novigFetch: liveNovig, novigBaseUrl: "https://novig.test" },
+    const { runner: liveRunner } = await quoteRunner({}, { novigRead: keyedNovigRead(liveNovig), novigBaseUrl: "https://novig.test" },
       WSU_UNABATED_START, { "/novig_books.json": novigStreamBooks(view) });
     const refused = await liveRunner.novigQuote(new URLSearchParams(WSU_36_LINE));
     liveRunner.stop();
@@ -1059,15 +1065,15 @@ test("novig_quote: the stream's live book prices the quote and Novig's public bo
     assert.match(refused.detail, expected);
     assert.ok(liveNovig.calls.every((call) => !call.url.endsWith("/book")));
   }
-  // No bot key on the bets service: the public book, named in the log.
+  // The stream down: the keyed REST book, named in the log.
   const fallbackLogs = [];
   const publicNovig = novigFetch();
-  const { runner: fallback } = await quoteRunner({}, { novigFetch: publicNovig, novigBaseUrl: "https://novig.test", logInfo: (line) => fallbackLogs.push(line) });
+  const { runner: fallback } = await quoteRunner({}, { novigRead: keyedNovigRead(publicNovig), novigBaseUrl: "https://novig.test", logInfo: (line) => fallbackLogs.push(line) });
   const publicQuote = await fallback.novigQuote(new URLSearchParams(WSU_36_LINE));
   fallback.stop();
   assert.deepEqual([publicQuote.ok, publicQuote.price], [true, 0.555]);
   assert.equal(publicNovig.calls.filter((call) => call.url.endsWith(`/markets/${NOVIG_MARKET}/book`)).length, 1);
-  assert.match(fallbackLogs.at(-1), /book from public \(stream: Novig's stream books unread: HTTP 503/);
+  assert.match(fallbackLogs.at(-1), /book from keyed REST \(stream: Novig's stream books unread: HTTP 503/);
 });
 
 test("novig_quote: a main total its ladder has no rung for is found in the catalog off its siblings and checked like any other", async () => {
@@ -1082,14 +1088,14 @@ test("novig_quote: a main total its ladder has no rung for is found in the catal
   const base = novigFetch();
   const impl = async (url, init) => {
     const bare = url.split("?")[0];
-    if (bare === "https://novig.test/v3/public/catalog/markets") return response({ body: JSON.stringify({ items: [sibling, main] }) });
-    if (bare === `https://novig.test/v3/public/catalog/markets/${mainId}/book`) {
+    if (bare === "https://novig.test/v3/catalog/markets") return response({ body: JSON.stringify({ items: [sibling, main] }) });
+    if (bare === `https://novig.test/v3/catalog/markets/${mainId}/book`) {
       return response({ body: JSON.stringify({ marketId: mainId, seq: 3, orders: { "0d0d-over": [{ orderId: "o1", price: "0.48", qty: 2000 }], "0d0d-under": [] } }) });
     }
-    if (bare === `https://novig.test/v3/public/catalog/markets/${mainId}`) return response({ body: JSON.stringify(main) });
+    if (bare === `https://novig.test/v3/catalog/markets/${mainId}`) return response({ body: JSON.stringify(main) });
     return base(url, init);
   };
-  const { runner } = await quoteRunner({}, { novigFetch: impl, novigBaseUrl: "https://novig.test" });
+  const { runner } = await quoteRunner({}, { novigRead: keyedNovigRead(impl), novigBaseUrl: "https://novig.test" });
   const quote = await runner.novigQuote(new URLSearchParams({ eventId: "123742", periodTypeId: "1", betTypeId: "3", sideIndex: "1", points: "52.5" }));
   runner.stop();
   assert.deepEqual(
@@ -1112,7 +1118,7 @@ test("novig_quote: a market charging a pregame fee, a closed market and a number
   // The catalog down, nothing resting on the other side, a market with one outcome: each refused, nothing thrown.
   const down = novigFetch();
   const downImpl = async (url, init) => (url.includes("/catalog/markets?") ? response({ status: 503, body: "down" }) : down(url, init));
-  const noCatalog = await quoteRunner({}, { novigFetch: downImpl, novigBaseUrl: "https://novig.test" });
+  const noCatalog = await quoteRunner({}, { novigRead: keyedNovigRead(downImpl), novigBaseUrl: "https://novig.test" });
   const noCatalogQuote = await noCatalog.runner.novigQuote(new URLSearchParams(WSU_36_LINE));
   noCatalog.runner.stop();
   assert.deepEqual([noCatalogQuote.ok, noCatalogQuote.reason], [false, "no_outcome"]);
@@ -1120,18 +1126,41 @@ test("novig_quote: a market charging a pregame fee, a closed market and a number
   const empty = novigFetch();
   const emptyImpl = async (url, init) => (url.endsWith("/book")
     ? response({ body: JSON.stringify({ marketId: NOVIG_MARKET, seq: 1, orders: { [NOVIG_DUQ_OUTCOME]: [], [NOVIG_WSU_OUTCOME]: [] } }) }) : empty(url, init));
-  const noBook = await quoteRunner({}, { novigFetch: emptyImpl, novigBaseUrl: "https://novig.test" });
+  const noBook = await quoteRunner({}, { novigRead: keyedNovigRead(emptyImpl), novigBaseUrl: "https://novig.test" });
   const noBookQuote = await noBook.runner.novigQuote(new URLSearchParams(WSU_36_LINE));
   noBook.runner.stop();
   assert.deepEqual([noBookQuote.ok, noBookQuote.reason, noBookQuote.outcomeId], [false, "no_book", NOVIG_WSU_OUTCOME]);
   assert.match(noBookQuote.detail, /nothing rests/);
 });
 
+test("novig_quote: every Novig catalog read goes to the bets service's keyed /novig_read.json; a 429 there refuses the quote naming itself", async () => {
+  const fixture = keyedNovigRead(novigFetch());
+  const rateLimited = (body) => (body.path.startsWith("/v3/catalog/events/")
+    ? { status: 429, body: { code: "RATE_LIMIT_EXCEEDED", message: "Rate limit exceeded." } } : fixture(body.path, body.query));
+  const logs = [];
+  const { runner, service } = await quoteRunner({}, { novigBaseUrl: "https://novig.test", logInfo: (line) => logs.push(line) },
+    WSU_UNABATED_START, { "/novig_books.json": novigStreamBooks(), "/novig_read.json": rateLimited });
+  const quote = await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  runner.stop();
+  const reads = service.posts.filter((post) => post.route === "/novig_read.json").map((post) => post.body);
+  assert.deepEqual(reads.map((read) => read.path).sort(),
+    ["/v3/catalog/events/" + NOVIG_EVENT, "/v3/catalog/markets", `/v3/catalog/markets/${NOVIG_MARKET}`].sort());
+  assert.deepEqual(reads.find((read) => read.path === "/v3/catalog/markets").query, { league: "NCAAF", eventStatus: "OPEN_PREGAME", limit: "5000" });
+  assert.deepEqual([quote.ok, quote.reason], [false, "market_mismatch"]);
+  assert.match(quote.detail, /unread: HTTP 429 RATE_LIMIT_EXCEEDED from Novig's keyed catalog GET \/v3\/catalog\/events\//);
+  assert.match(logs.at(-1), /market_mismatch \(Novig market .* unread: HTTP 429 RATE_LIMIT_EXCEEDED/, "the log names the cause, not just the reason");
+  const { runner: keyless } = await quoteRunner({}, { novigBaseUrl: "https://novig.test" }, WSU_UNABATED_START, { "/novig_books.json": novigStreamBooks() });
+  const refused = await keyless.novigQuote(new URLSearchParams(WSU_36_LINE));
+  keyless.stop();
+  assert.deepEqual([refused.ok, refused.reason], [false, "no_outcome"], "no bot key: no catalog, so nothing is quoted");
+  assert.match(refused.detail, /HTTP 503 from POST .*\/novig_read.json: no bot Novig key/);
+});
+
 test("novig_quote: a catalog under a minute old is reused, the market, event and book still read live; a missing outcome reads it fresh", async () => {
   let clock = TAKER_NOW;
   const logs = [];
   const novig = novigFetch();
-  const { runner } = await quoteRunner({}, { novigFetch: novig, novigBaseUrl: "https://novig.test", now: () => clock, logInfo: (line) => logs.push(line) });
+  const { runner } = await quoteRunner({}, { novigRead: keyedNovigRead(novig), novigBaseUrl: "https://novig.test", now: () => clock, logInfo: (line) => logs.push(line) });
   const catalogReads = () => novig.calls.filter((call) => call.url.includes("/catalog/markets?")).length;
   const first = await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
   clock += 59 * 1000;
@@ -1149,7 +1178,7 @@ test("novig_quote: a catalog under a minute old is reused, the market, event and
   const late = novigFetch();
   const lateImpl = async (url, init) => (url.includes("/catalog/markets?") && !listed
     ? response({ body: JSON.stringify({ items: [] }) }) : late(url, init));
-  const { runner: lateRunner } = await quoteRunner({}, { novigFetch: lateImpl, novigBaseUrl: "https://novig.test" });
+  const { runner: lateRunner } = await quoteRunner({}, { novigRead: keyedNovigRead(lateImpl), novigBaseUrl: "https://novig.test" });
   const missing = await lateRunner.novigQuote(new URLSearchParams(WSU_36_LINE));
   listed = true;
   const found = await lateRunner.novigQuote(new URLSearchParams(WSU_36_LINE));
@@ -1159,7 +1188,7 @@ test("novig_quote: a catalog under a minute old is reused, the market, event and
 
 test("novig_quote: an event the catalog lists that is not the market's is refused", async () => {
   const novig = novigFetch({ eventId: "another-event" });
-  const { runner } = await quoteRunner({}, { novigFetch: novig, novigBaseUrl: "https://novig.test" });
+  const { runner } = await quoteRunner({}, { novigRead: keyedNovigRead(novig), novigBaseUrl: "https://novig.test" });
   const quote = await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
   runner.stop();
   assert.deepEqual([quote.ok, quote.reason], [false, "market_mismatch"]);
@@ -1191,14 +1220,14 @@ test("novig_quote: a moneyline is found in Novig's catalog off the game's spread
   };
   const impl = async (url, init) => {
     const bare = url.split("?")[0];
-    if (bare === "https://novig.test/v3/public/catalog/markets") return response({ body: JSON.stringify({ items: [spreadMarket, money] }) });
-    if (bare === `https://novig.test/v3/public/catalog/markets/${moneyId}/book`) {
+    if (bare === "https://novig.test/v3/catalog/markets") return response({ body: JSON.stringify({ items: [spreadMarket, money] }) });
+    if (bare === `https://novig.test/v3/catalog/markets/${moneyId}/book`) {
       return response({ body: JSON.stringify({ marketId: moneyId, seq: 2, orders: { "money-wsu": [{ orderId: "w", price: "0.62", qty: 3000 }], "money-duq": [] } }) });
     }
-    if (bare === `https://novig.test/v3/public/catalog/markets/${moneyId}`) return response({ body: JSON.stringify(money) });
+    if (bare === `https://novig.test/v3/catalog/markets/${moneyId}`) return response({ body: JSON.stringify(money) });
     return spread(url, init);
   };
-  const { runner } = await quoteRunner({}, { fetchImpl: moneylineUnabatedFetch(), novigFetch: impl, novigBaseUrl: "https://novig.test" });
+  const { runner } = await quoteRunner({}, { fetchImpl: moneylineUnabatedFetch(), novigRead: keyedNovigRead(impl), novigBaseUrl: "https://novig.test" });
   const quote = await runner.novigQuote(new URLSearchParams({ eventId: "123742", periodTypeId: "1", betTypeId: "1", sideIndex: "0" }));
   runner.stop();
   assert.deepEqual(
@@ -1419,6 +1448,16 @@ function novigTakerUnabatedFetch() {
   };
 }
 
+// The bets service's POST /novig_read.json (bets_service/novig_catalog_reads.py)
+// over a Novig fixture: the keyed catalog GET it would sign, as {status, body}.
+function keyedNovigRead(novig) {
+  return async (path, query) => {
+    const search = query ? `?${new URLSearchParams(query)}` : "";
+    const reply = await novig(`https://novig.test${path}${search}`);
+    return { status: reply.status, body: await reply.json().catch(() => null) };
+  };
+}
+
 function novigFetch(marketFields = {}) {
   const calls = [];
   const market = {
@@ -1430,12 +1469,12 @@ function novigFetch(marketFields = {}) {
   const impl = async (url, init = {}) => {
     calls.push({ url, userAgent: init.headers && init.headers["User-Agent"] });
     const bare = url.split("?")[0];
-    if (bare === "https://novig.test/v3/public/catalog/markets") return response({ body: JSON.stringify({ items: [market] }) });
-    if (bare === `https://novig.test/v3/public/catalog/markets/${NOVIG_MARKET}/book`) {
+    if (bare === "https://novig.test/v3/catalog/markets") return response({ body: JSON.stringify({ items: [market] }) });
+    if (bare === `https://novig.test/v3/catalog/markets/${NOVIG_MARKET}/book`) {
       return response({ body: JSON.stringify({ marketId: NOVIG_MARKET, seq: 9, orders: { [NOVIG_DUQ_OUTCOME]: [{ orderId: "r1", price: "0.445", qty: 500000 }], [NOVIG_WSU_OUTCOME]: [] } }) });
     }
-    if (bare === `https://novig.test/v3/public/catalog/markets/${NOVIG_MARKET}`) return response({ body: JSON.stringify(market) });
-    if (bare === `https://novig.test/v3/public/catalog/events/${NOVIG_EVENT}`) return response({ body: JSON.stringify({ eventId: NOVIG_EVENT, status: "OPEN_PREGAME" }) });
+    if (bare === `https://novig.test/v3/catalog/markets/${NOVIG_MARKET}`) return response({ body: JSON.stringify(market) });
+    if (bare === `https://novig.test/v3/catalog/events/${NOVIG_EVENT}`) return response({ body: JSON.stringify({ eventId: NOVIG_EVENT, status: "OPEN_PREGAME" }) });
     return response({ status: 404, body: "{}" });
   };
   impl.calls = calls;
@@ -1487,7 +1526,7 @@ test("taker: a Novig edge at the live ask is sent to the Novig desk in 1c contra
   const service = novigTakerService(novigTakerBetsBody());
   const runner = runnerLib.createRunner({
     fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
-    novigFetch: novig, novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+    novigRead: keyedNovigRead(novig), novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
   });
   await runner.start();
   await runner.takerPass();
@@ -1508,8 +1547,7 @@ test("taker: a Novig edge at the live ask is sent to the Novig desk in 1c contra
     { league: "cfb", side: "home", points: -35.5, homeTeamId: "717" });
   // Kalshi's rows still decided and sent in the same pass, on the same list.
   assert.ok(payload.decisions.some((row) => row.venue === "kalshi" && row.reason === "bet"));
-  assert.ok(novig.calls.some((call) => call.url === `https://novig.test/v3/public/catalog/events/${NOVIG_EVENT}`), "the event is read before the order");
-  assert.ok(novig.calls.every((call) => call.userAgent === "unabated-ticket-runner/1.0"));
+  assert.ok(novig.calls.some((call) => call.url === `https://novig.test/v3/catalog/events/${NOVIG_EVENT}`), "the event is read before the order");
   // The book came off the bets service's stream, never Novig's public /book (its per-IP throttle is Place's too).
   assert.ok(novig.calls.every((call) => !call.url.endsWith("/book")));
   const asks = service.posts.filter((post) => post.route === "/novig_books.json");
@@ -1528,7 +1566,7 @@ test("taker: without a live stream book (no bot key, a resync, a market gone liv
     const service = novigTakerService(novigTakerBetsBody(), null, streamBooks);
     const runner = runnerLib.createRunner({
       fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
-      novigFetch: novig, novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+      novigRead: keyedNovigRead(novig), novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
     });
     await runner.start();
     await runner.takerPass();
@@ -1550,7 +1588,7 @@ test("taker: Novig decides nothing while the bot subaccount or Cal's Novig read 
     const service = novigTakerService(novigTakerBetsBody(sources));
     const runner = runnerLib.createRunner({
       fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
-      novigFetch: novig, novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+      novigRead: keyedNovigRead(novig), novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
     });
     await runner.start();
     await runner.takerPass();
@@ -1568,7 +1606,7 @@ test("taker: a Novig market charging a pregame fee is market_mismatch and nothin
   const service = novigTakerService(novigTakerBetsBody());
   const runner = runnerLib.createRunner({
     fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
-    novigFetch: novigFetch({ fee: { charged: "ALWAYS" } }), novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL,
+    novigRead: keyedNovigRead(novigFetch({ fee: { charged: "ALWAYS" } })), novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL,
     now: () => TAKER_NOW, timers: noTimers, ...quiet,
   });
   await runner.start();
@@ -1589,7 +1627,7 @@ test("taker: /taker.json says what the Novig desk answered: off, stopped or out 
     const service = novigTakerService(novigTakerBetsBody(), deskReply);
     const runner = runnerLib.createRunner({
       fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
-      novigFetch: novigFetch(), novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+      novigRead: keyedNovigRead(novigFetch()), novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
     });
     await runner.start();
     await runner.takerPass();
@@ -1607,7 +1645,7 @@ test("taker: a stale Kalshi poll stops the Novig side too (its stake is sized on
   const service = novigTakerService(body);
   const runner = runnerLib.createRunner({
     fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
-    novigFetch: novig, novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+    novigRead: keyedNovigRead(novig), novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
   });
   await runner.start();
   await runner.takerPass();
