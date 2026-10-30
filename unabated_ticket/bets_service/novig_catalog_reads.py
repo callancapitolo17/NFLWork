@@ -30,15 +30,18 @@ from unabated_ticket.bets_service.novig_orders import (
 CATALOG_MARKETS_PATH = "/v3/catalog/markets"
 # Novig's ids are UUIDs; anything else never reaches the signer.
 _ID = r"[0-9A-Za-z-]{1,64}"
-_MARKET_PATH = re.compile(rf"^/v3/catalog/markets/{_ID}$")
-_BOOK_PATH = re.compile(rf"^/v3/catalog/markets/{_ID}/book$")
-_EVENT_PATH = re.compile(rf"^/v3/catalog/events/{_ID}$")
+_MARKET_PATH = re.compile(rf"/v3/catalog/markets/{_ID}")
+_BOOK_PATH = re.compile(rf"/v3/catalog/markets/{_ID}/book")
+_EVENT_PATH = re.compile(rf"/v3/catalog/events/{_ID}")
 # The market list's filters the runner sends (runner.js readNovigMarkets).
 MARKET_LIST_QUERY_KEYS = frozenset({"league", "eventStatus", "limit", "after"})
 MAX_QUERY_VALUE_CHARS = 200
 # Concurrent reads (a Place quote's market and event go at once, while a taker
 # pass may be reading the list): each takes its own HTTP session.
 SESSIONS = 4
+# A read waiting longer than this for a free session is refused (502): the runner
+# gives up at 12 s anyway, and a late read would only spend the key's tokens.
+SESSION_WAIT_SEC = 5.0
 
 
 def validate_read_request(body: object) -> tuple[str, list[tuple[str, str]]] | str:
@@ -53,7 +56,7 @@ def validate_read_request(body: object) -> tuple[str, list[tuple[str, str]]] | s
     if not isinstance(query, dict):
         return f"query must be an object, got {query!r}"
     if path != CATALOG_MARKETS_PATH:
-        if not (_MARKET_PATH.match(path) or _BOOK_PATH.match(path) or _EVENT_PATH.match(path)):
+        if not (_MARKET_PATH.fullmatch(path) or _BOOK_PATH.fullmatch(path) or _EVENT_PATH.fullmatch(path)):
             return f"path must be {CATALOG_MARKETS_PATH}, a market, its book or an event under /v3/catalog, got {path!r}"
         if query:
             return f"only {CATALOG_MARKETS_PATH} takes a query, got {sorted(query)} on {path}"
@@ -68,15 +71,19 @@ def validate_read_request(body: object) -> tuple[str, list[tuple[str, str]]] | s
     return path, pairs
 
 
-def pooled_transport(make_transport: Callable[[], Transport] = requests_transport, size: int = SESSIONS) -> Transport:
+def pooled_transport(make_transport: Callable[[], Transport] = requests_transport, size: int = SESSIONS,
+                     wait_sec: float = SESSION_WAIT_SEC) -> Transport:
     """A transport that runs each request on one of `size` sessions (requests'
-    Session is not made for concurrent use), waiting for a free one."""
+    Session is not made for concurrent use), waiting up to wait_sec for a free one."""
     free: queue.Queue = queue.Queue()
     for _ in range(size):
         free.put(make_transport())
 
     def send(method: str, url: str, headers: dict, body: bytes | None) -> tuple[int, bytes]:
-        transport = free.get()
+        try:
+            transport = free.get(timeout=wait_sec)
+        except queue.Empty:
+            raise OSError(f"all {size} Novig read sessions busy for {wait_sec:g} s") from None
         try:
             return transport(method, url, headers, body)
         finally:

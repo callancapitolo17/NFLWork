@@ -41,6 +41,9 @@ def test_the_four_catalog_reads_pass(body, expected):
     ({"path": f"/v3/catalog/markets/{MARKET}/../../orders"}, "path must be"),
     ({"path": f"/v3/public/catalog/markets/{MARKET}"}, "path must be"),
     ({"path": "/v3/catalog/markets/a?b"}, "path must be"),
+    ({"path": f"/v3/catalog/events/{EVENT}\n"}, "path must be"),
+    ({"path": "/v3/catalog/markets/a%2Fb"}, "path must be"),
+    ({"path": "/v3/catalog/markets/.."}, "path must be"),
     ({"path": f"/v3/catalog/markets/{MARKET}", "query": {"league": "NBA"}}, "only /v3/catalog/markets takes a query"),
     ({"path": "/v3/catalog/markets", "query": {"account": "x"}}, "is not one of"),
     ({"path": "/v3/catalog/markets", "query": {"league": 5}}, "non-empty string"),
@@ -96,6 +99,26 @@ def test_the_pooled_transport_runs_reads_at_once_on_separate_sessions():
     for thread in threads:
         thread.join(5)
     assert sorted(inside) == [0, 1], "two reads at once went to two sessions"
+
+
+def test_a_read_with_every_session_busy_is_refused_after_the_wait():
+    release = threading.Event()
+
+    def make_transport():
+        def send(method, url, headers, body):
+            release.wait(5)
+            return 200, b"{}"
+        return send
+
+    send = pooled_transport(make_transport, size=1, wait_sec=0.05)
+    busy = threading.Thread(target=send, args=("GET", "u", {}, None))
+    busy.start()
+    try:
+        with pytest.raises(OSError, match="all 1 Novig read sessions busy for 0.05 s"):
+            send("GET", "u", {}, None)
+    finally:
+        release.set()
+        busy.join(5)
 
 
 def _serve(handler):

@@ -820,7 +820,9 @@ function takerService(script) {
         // No reads scripted = a bets service without the bot's Novig key.
         const read = script["/novig_read.json"];
         if (!read) return response({ status: 503, body: JSON.stringify({ error: "no bot Novig key is configured" }) });
-        return response({ body: JSON.stringify(await read(body)) });
+        const answer = await read(body);
+        if (answer instanceof Error) return response({ status: 502, body: JSON.stringify({ error: answer.message }) });
+        return response({ body: JSON.stringify(answer) });
       }
       if (route === "/taker/order.json") {
         if (Date.parse(body.eventStart) <= TAKER_NOW) return response({ body: JSON.stringify({ status: "started", detail: `the game started at ${body.eventStart}` }) });
@@ -1504,8 +1506,9 @@ function novigStreamBooks(view = {}) {
   });
 }
 
-function novigTakerService(betsBodyForTaker, deskReply = null, streamBooks = novigStreamBooks()) {
-  const service = takerService({ "/bets.json": betsBodyForTaker, "/settings.json": TAKER_SETTINGS, "/novig_books.json": streamBooks });
+function novigTakerService(betsBodyForTaker, deskReply = null, streamBooks = novigStreamBooks(), novigReads = undefined) {
+  const service = takerService({ "/bets.json": betsBodyForTaker, "/settings.json": TAKER_SETTINGS, "/novig_books.json": streamBooks,
+    "/novig_read.json": novigReads });
   const novigOrders = [];
   const impl = async (url, init = {}) => {
     if (url.endsWith("/taker/novig_order.json")) {
@@ -1520,6 +1523,23 @@ function novigTakerService(betsBodyForTaker, deskReply = null, streamBooks = nov
   impl.posts = service.posts;
   return impl;
 }
+
+test("taker: a 502 from the bets service's keyed market read sends no Novig order; the decision names it", async () => {
+  const fixture = keyedNovigRead(novigFetch());
+  const reads = (body) => (body.path === `/v3/catalog/markets/${NOVIG_MARKET}` ? new Error("Novig did not answer GET: ConnectTimeout") : fixture(body.path, body.query));
+  const service = novigTakerService(novigTakerBetsBody(), null, novigStreamBooks(), reads);
+  const runner = runnerLib.createRunner({
+    fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  runner.stop();
+  const decision = runner.takerPayload().decisions.find((row) => row.venue === "novig");
+  assert.equal(decision.reason, "market_mismatch");
+  assert.equal(decision.detail, `Novig market ${NOVIG_MARKET} unread: HTTP 502 from POST ${SERVICE_URL}/novig_read.json: Novig did not answer GET: ConnectTimeout`);
+  assert.equal(service.novigOrders.length, 0, "no order on an unread market");
+});
 
 test("taker: a Novig edge at the live ask is sent to the Novig desk in 1c contracts, with the board line, after its market is read", async () => {
   const novig = novigFetch();

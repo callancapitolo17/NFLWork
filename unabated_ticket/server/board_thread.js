@@ -245,7 +245,7 @@ function runBoardThread(port, config) {
   const runnerLib = require("./runner.js");
   const runner = runnerLib.createRunner({
     fetchImpl: runnerLib.nodeFetch, serviceFetch: fetch, kalshiFetch: fetch, kalshiBaseUrl: config.kalshiBaseUrl, betsServiceUrl: config.betsServiceUrl,
-    novigFetch: fetch, novigBaseUrl: config.novigBaseUrl,
+    novigBaseUrl: config.novigBaseUrl,
   });
   serveBoardCalls(port, runner, runnerLib.logError);
   const postHealth = () => port.postMessage({ type: "health", health: runner.health() });
