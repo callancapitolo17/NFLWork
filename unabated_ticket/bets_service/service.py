@@ -152,6 +152,15 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     Place quote), waiting up to waitMs (capped at
                                     novig_book_stream.MAX_WAIT_SEC) for a new market's snapshot.
                                     Loopback only (the runner); 503 {error} with no bot Novig key
+           POST /novig_read.json    body {path, query?} -> {status, body}: one GET of Novig's
+                                    keyed catalog (/v3/catalog/markets[?league,eventStatus,
+                                    limit,after], /markets/<id>, /markets/<id>/book,
+                                    /events/<id>) signed with the bot's Novig key, Novig's
+                                    status and body passed back as they came (a 429 too), so
+                                    the runner's checks never touch the per-IP public throttle
+                                    (novig_catalog_reads.py). Loopback only (the runner); 400
+                                    on any other path or query, 502 when Novig did not answer,
+                                    503 {error} with no bot Novig key
            PUT /settings.json       body {settings: {<any of those fields>: value or null}} ->
                                     {ok, settings, updatedAt}; a field left out keeps its value,
                                     null resets it to the default, an unknown field or a bad
@@ -260,6 +269,7 @@ from unabated_ticket.bets_service.novig_place import (NOVIG_PLACE_READ_SOURCES, 
                                                       validate_novig_place_request)
 from unabated_ticket.bets_service.normalize import parse_iso_ms, utc_now_iso
 from unabated_ticket.bets_service.novig_book_stream import NovigBookStream, stream_url
+from unabated_ticket.bets_service.novig_catalog_reads import NovigCatalogReads, pooled_transport, validate_read_request
 from unabated_ticket.bets_service.novig_orders import NovigError, NovigOrderClient
 from unabated_ticket.bets_service.novig_taker_desk import NovigTakerDesk, account_problem, novig_unseen_fill
 from unabated_ticket.bets_service.novig_taker_desk import validate_order_request as validate_novig_order_request
@@ -365,6 +375,8 @@ POLYMARKET_PLACE_OFF_REASON = "no Polymarket US key is configured (POLYMARKET_US
 MAX_NOVIG_BOOK_MARKETS = 500
 # Why POST /novig_books.json answers 503 when no bot Novig key is configured.
 NOVIG_BOOK_STREAM_OFF_REASON = "no bot Novig key is configured (NOVIG_TAKER_KEY_ID / NOVIG_TAKER_PRIVATE_KEY_PATH)"
+# Why POST /novig_read.json answers 503: its reads are signed with the same key.
+NOVIG_CATALOG_READS_OFF_REASON = NOVIG_BOOK_STREAM_OFF_REASON
 # Why POST /place_novig.json answers 503 when no Place key is configured.
 NOVIG_PLACE_OFF_REASON = "no Place Novig key is configured (NOVIG_PLACE_KEY_ID / NOVIG_PLACE_PRIVATE_KEY_PATH)"
 
@@ -1222,6 +1234,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  polymarket_place_desk: ManualPolymarketDesk | None = None,
                  polymarket_place_off_reason: str = POLYMARKET_PLACE_OFF_REASON,
                  novig_book_stream: NovigBookStream | None = None,
+                 novig_catalog_reads: NovigCatalogReads | None = None,
                  source_reader: SourceReader | None = None) -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
@@ -1237,7 +1250,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
     with `novig_place_off_reason`). `polymarket_place_desk` places Cal's
     Polymarket US Place-button orders (None: POST /place_polymarket.json 503s
     with `polymarket_place_off_reason`). `novig_book_stream` serves Novig's live
-    books (None: POST /novig_books.json 503s). `source_reader` reads a
+    books (None: POST /novig_books.json 503s), `novig_catalog_reads` the keyed
+    catalog reads on the same key (None: POST /novig_read.json 503s). `source_reader` reads a
     Place's venue before its reply (None: the reply goes at once and the next
     scheduled poll counts the fill)."""
     names = list(source_names)
@@ -1299,7 +1313,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
                                 "/draftkings.json", "/place_teaser.json", "/place_kalshi.json", "/place_novig.json",
                                 "/place_polymarket.json", "/taker_decisions.json",
-                                "/taker/order.json", "/taker/novig_order.json", "/novig_books.json"):
+                                "/taker/order.json", "/taker/novig_order.json", "/novig_books.json", "/novig_read.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
@@ -1358,11 +1372,15 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if url.path == "/place_polymarket.json":
                 self._place_polymarket(body)
                 return
-            if (url.path in ("/taker_decisions.json", "/taker/order.json", "/taker/novig_order.json", "/novig_books.json")
+            if (url.path in ("/taker_decisions.json", "/taker/order.json", "/taker/novig_order.json", "/novig_books.json",
+                             "/novig_read.json")
                     and self._refused_non_loopback()):
                 return
             if url.path == "/novig_books.json":
                 self._novig_books(body)
+                return
+            if url.path == "/novig_read.json":
+                self._novig_read(body)
                 return
             if url.path == "/taker_decisions.json":
                 self._log_taker_decisions(body)
@@ -1563,6 +1581,23 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             market_ids, wait_sec, priority = request
             self._send_json(200, novig_book_stream.books_for(market_ids, wait_sec, priority))
+
+        # POST /novig_read.json: one keyed Novig catalog GET for the runner (novig_catalog_reads.py).
+        def _novig_read(self, body: object) -> None:
+            if novig_catalog_reads is None:
+                self._send_json(503, {"error": NOVIG_CATALOG_READS_OFF_REASON})
+                return
+            request = validate_read_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            path, query = request
+            try:
+                reply = novig_catalog_reads.read(path, query)
+            except OSError as error:
+                self._send_json(502, {"error": f"Novig did not answer GET {path}: {error}"})
+                return
+            self._send_json(200, reply)
 
         def _push_bet105(self, body: object) -> None:
             push = bet105.validate_push(body)
@@ -1918,9 +1953,26 @@ def open_novig_book_stream() -> NovigBookStream | None:
     Reads only: it runs whether or not the bot desk is armed or stopped."""
     client, reason = novig_trading_client(config.NOVIG_TAKER_KEY_ID, config.NOVIG_TAKER_PRIVATE_KEY_PATH, "bot")
     if client is None:
-        log.info("novig stream: %s, no live Novig books (the runner reads none; Place reads the public book)", reason)
+        log.info("novig stream: %s, no live Novig books and no keyed catalog reads (the runner's Novig checks fail closed)", reason)
         return None
     return NovigBookStream(client, stream_url(config.NOVIG_API_URL))
+
+
+def open_novig_catalog_reads() -> NovigCatalogReads | None:
+    """The runner's keyed Novig catalog reads on the bot's Novig key (its own
+    client and sessions, apart from the desk's), or None without that key."""
+    if not config.NOVIG_TAKER_KEY_ID or not config.NOVIG_TAKER_PRIVATE_KEY_PATH:
+        log.info("novig reads: no bot Novig key is configured, the runner reads no Novig catalog")
+        return None
+    try:
+        client = NovigOrderClient(config.NOVIG_TAKER_KEY_ID, config.NOVIG_TAKER_PRIVATE_KEY_PATH, config.NOVIG_API_URL,
+                                  transport=pooled_transport())
+    except (OSError, ValueError, NovigError) as error:
+        log.error("novig reads: the bot Novig key %s could not be read (%s), the runner reads no Novig catalog",
+                  config.NOVIG_TAKER_PRIVATE_KEY_PATH, type(error).__name__)
+        return None
+    log.info("novig reads: keyed catalog reads on the bot's key %s", config.NOVIG_TAKER_KEY_ID[:8])
+    return NovigCatalogReads(client)
 
 
 def kalshi_subaccounts_read(bot_subaccount: int | None) -> tuple[int, ...]:
@@ -2040,6 +2092,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     novig_place_desk, novig_place_off_reason = open_novig_place_desk(store, source_names)
     polymarket_place_desk, polymarket_place_off_reason = open_polymarket_place_desk(store, source_names)
     novig_book_stream = open_novig_book_stream()
+    novig_catalog_reads = open_novig_catalog_reads()
     source_reader = SourceReader(sources, store)
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
                                                             teaser_placer=teaser_placer_for(sources),
@@ -2054,6 +2107,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                                                             polymarket_place_desk=polymarket_place_desk,
                                                             polymarket_place_off_reason=polymarket_place_off_reason,
                                                             novig_book_stream=novig_book_stream,
+                                                            novig_catalog_reads=novig_catalog_reads,
                                                             balance_book=balance_book,
                                                             source_reader=source_reader))
     server.daemon_threads = True

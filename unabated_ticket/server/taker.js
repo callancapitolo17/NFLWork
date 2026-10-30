@@ -577,8 +577,8 @@ function resolveNovigOutcome(row) {
   return { outcomeId };
 }
 
-// outcome id -> {market} over Novig's public catalog listing of open
-// pregame markets (GET /v3/public/catalog/markets?eventStatus=OPEN_PREGAME
+// outcome id -> {market} over Novig's catalog listing of open
+// pregame markets (GET /v3/catalog/markets?eventStatus=OPEN_PREGAME
 // pages, each market with its outcomes).
 //   markets  [Novig market]
 function novigOutcomeIndex(markets) {
@@ -846,7 +846,7 @@ function kalshiMoneylineFromMarkets(row, markets, eventTicker) {
   return { ticker: named[0].ticker, side: "yes", sourceKey: null, derived: true };
 }
 
-// Novig's book (GET /v3/public/catalog/markets/<id>/book): {orders: {outcomeId:
+// Novig's book (GET /v3/catalog/markets/<id>/book, or the stream): {orders: {outcomeId:
 // [{orderId, price, qty}] best first}}. Every resting order BUYS its outcome,
 // so buying one outcome crosses the best resting order on the other, at 1 -
 // its price; the depth is every order resting at that best price, in 1c contracts.
@@ -894,7 +894,7 @@ function novigHeldOtherSide(matches, contract) {
 // outcome on it, its type the row's market (the bare type is the full
 // game's), and its strike the row's number (a spread's strike is the home
 // side's handicap; a total's is the total). Read before every order.
-//   market  GET /v3/public/catalog/markets/<id>; event  GET .../events/<id>
+//   market  GET /v3/catalog/markets/<id>; event  GET .../events/<id>
 function novigMarketMismatch(market, event, row, contract) {
   if (!market || typeof market !== "object") return "no market object";
   if (market.marketId !== contract.marketId) return `Novig answered market ${market.marketId} for ${contract.marketId}`;

@@ -64,17 +64,20 @@
 //       of the held bets its stake was sized on: the bets service's order
 //       desk places it on Kalshi on the bot's own key (MONEY; stop file, open-cost
 //       ceiling and the unseen-fill rule there; bets_service/taker_orders.py).
-//   GET <Novig>/v3/public/catalog/markets?league=..&eventStatus=OPEN_PREGAME
-//       every 30 s while Novig Edges rows are up and the bets service reads
-//       the bot's Novig subaccount; /v3/public/catalog/markets/<id> and
-//       /events/<id> before every Novig order (public, no key;
-//       taker.novigMarketMismatch).
+//   POST <bets service>/novig_read.json — Novig's catalog, signed with the
+//       bot's Novig key on Novig's keyed routes (bets_service/
+//       novig_catalog_reads.py): /v3/catalog/markets?league=..&eventStatus=
+//       OPEN_PREGAME every 30 s while Novig Edges rows are up, and
+//       /v3/catalog/markets/<id> and /events/<id> before every Novig order and
+//       Place quote (taker.novigMarketMismatch). The unkeyed /v3/public routes
+//       share one small per-IP throttle, and Place quotes 429'd on them
+//       (2026-10-28, 10-30); the key's own read bucket is 64 at once, 16 a second.
 //   POST <bets service>/novig_books.json — the books of those rows' Novig
 //       markets (and of a Place quote's), off the bets service's websocket on
 //       the bot's Novig key (bets_service/novig_book_stream.py). Polling the
 //       public /book per market shared Novig's per-IP public throttle with
 //       Place and got Place HTTP 429 (2026-10-27). A Place quote reads the
-//       public /book only when the stream has no book for it.
+//       keyed /book (novig_read.json) only when the stream has no book for it.
 //   POST <bets service>/taker/novig_order.json — each Novig "bet" decision
 //       (MONEY, on the bot's own Novig subaccount; bets_service/novig_taker_desk.py).
 //   POST <bets service>/taker_decisions.json — each taker decision that
@@ -172,10 +175,11 @@ const DEFAULT_KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2";
 const DEFAULT_NOVIG_BASE_URL = "https://api.novig.com";
 // Polymarket US's public gateway (no key): events, markets and order books.
 const DEFAULT_POLYMARKET_GATEWAY_URL = "https://gateway.polymarket.us";
-// Novig's CloudFront refused an unnamed client once (2026-10-10): every Novig read names itself.
-const NOVIG_USER_AGENT = "unabated-ticket-runner/1.0";
-// Novig's public catalog: one page holds up to 5000 markets; a slate is a few hundred.
+// Novig's catalog: one page holds up to 5000 markets; a slate is a few hundred.
 const NOVIG_MARKETS_PAGE_LIMIT = 5000;
+const NOVIG_CATALOG_MARKETS_PATH = "/v3/catalog/markets";
+// One keyed catalog read through the bets service: Novig's own 10 s timeout there, plus the hop.
+const NOVIG_READ_TIMEOUT_MS = 12 * 1000;
 const NOVIG_MARKETS_MAX_PAGES = 10;
 // A Place quote reuses Novig's catalog when it is at most this old: an outcome
 // never moves to another market, and the quote still reads the market, its
@@ -346,7 +350,8 @@ async function sendServiceJson(fetchImpl, url, method, body, timeoutMs = SERVICE
 // The scan loop, the bets poll and the settings poll, held in memory.
 //   deps  {fetchImpl (Unabated snapshots), serviceFetch (the bets service),
 //          kalshiFetch (Kalshi's orderbooks, default serviceFetch), kalshiBaseUrl,
-//          novigFetch (Novig's public catalog, default serviceFetch), novigBaseUrl,
+//          novigRead (path, query) -> {status, body} (Novig's keyed catalog,
+//          default POST <bets service>/novig_read.json), novigBaseUrl,
 //          polymarketFetch (Polymarket US's public gateway, default serviceFetch), polymarketGatewayUrl,
 //          betsServiceUrl, now, timers {setInterval, clearInterval},
 //          logInfo / logWarning (message) -> void, default stdout / stderr}
@@ -360,7 +365,8 @@ function createRunner(deps) {
   const serviceFetch = deps.serviceFetch || deps.fetchImpl;
   const kalshiFetch = deps.kalshiFetch || serviceFetch;
   const kalshiBaseUrl = deps.kalshiBaseUrl || DEFAULT_KALSHI_BASE_URL;
-  const novigFetch = deps.novigFetch || serviceFetch;
+  const novigRead = deps.novigRead || ((path, query) => sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/novig_read.json`, "POST",
+    { path, query }, NOVIG_READ_TIMEOUT_MS));
   const novigBaseUrl = deps.novigBaseUrl || DEFAULT_NOVIG_BASE_URL;
   const polymarketFetch = deps.polymarketFetch || serviceFetch;
   const polymarketGatewayUrl = deps.polymarketGatewayUrl || DEFAULT_POLYMARKET_GATEWAY_URL;
@@ -1189,9 +1195,13 @@ function createRunner(deps) {
     return books;
   }
 
-  // One public Novig GET as JSON; throws naming the URL and status.
-  function getNovigJson(url) {
-    return getServiceJson(novigFetch, url, { headers: { Accept: "application/json", "User-Agent": NOVIG_USER_AGENT } });
+  // One keyed Novig catalog GET (through the bets service) as JSON; throws
+  // naming the path, Novig's status and its error code (a 429 reads as one).
+  async function getNovigJson(path, query = null) {
+    const { status, body } = await novigRead(path, query);
+    if (status === 200) return body;
+    const code = body && typeof body === "object" && body.code ? ` ${body.code}` : "";
+    throw new Error(`HTTP ${status}${code} from Novig's keyed catalog GET ${path}`);
   }
 
   // Novig's outcome index for the rows' leagues: the last catalog read when it
@@ -1216,9 +1226,9 @@ function createRunner(deps) {
     const markets = [];
     let after = null;
     for (let page = 0; page < NOVIG_MARKETS_MAX_PAGES; page += 1) {
-      const query = new URLSearchParams({ league: leagues.join(","), eventStatus: taker.NOVIG_EVENT_PREGAME, limit: String(NOVIG_MARKETS_PAGE_LIMIT) });
-      if (after) query.set("after", after);
-      const body = await getNovigJson(`${novigBaseUrl}/v3/public/catalog/markets?${query}`);
+      const query = { league: leagues.join(","), eventStatus: taker.NOVIG_EVENT_PREGAME, limit: String(NOVIG_MARKETS_PAGE_LIMIT) };
+      if (after) query.after = after;
+      const body = await getNovigJson(NOVIG_CATALOG_MARKETS_PATH, query);
       if (!body || !Array.isArray(body.items)) throw new Error("Novig markets: no items list");
       markets.push(...body.items);
       after = body.next || null;
@@ -1303,7 +1313,7 @@ function createRunner(deps) {
     const stalledMs = Math.round(loopDelay.max / 1e6);
     loopDelay.reset();
     logInfo(`novig quote ${spec.eventId} ${answer.label || `bet type ${spec.betTypeId} side ${spec.sideIndex} ${spec.points}`}: `
-      + `${answer.ok ? `ok @ ${answer.price}` : answer.reason} in ${now() - startedAt} ms`
+      + `${answer.ok ? `ok @ ${answer.price}` : `${answer.reason} (${answer.detail})`} in ${now() - startedAt} ms`
       + (catalog ? ` (catalog ${catalog.reused ? `reused, ${Math.round((startedAt - catalog.readAt) / 1000)}s old` : "read"}, `
         + `market reads ${catalog.readsMs} ms, book from ${catalog.bookSource})` : "")
       + `; event loop stalled up to ${stalledMs} ms since the last quote`);
@@ -1359,13 +1369,13 @@ function createRunner(deps) {
       readStreamBooks([contract.marketId], true).then((books) => books.get(contract.marketId)),
       readNovigMarketMismatch(row, contract, listedEventId),
     ]);
-    // Without a stream book (no bot key, the stream down or still subscribing) Place reads the public book once;
+    // Without a stream book (the stream down or still subscribing) Place reads the book once over keyed REST;
     // the stream seeing the market live or not OPEN is final.
     const bookRead = streamRead.book || streamRead.final ? streamRead
-      : await getNovigJson(`${novigMarketUrl(contract.marketId)}/book`).then((book) => ({ book }), (error) => ({ error }));
+      : await getNovigJson(`${novigMarketPath(contract.marketId)}/book`).then((book) => ({ book }), (error) => ({ error }));
     const timing = {
       reused: catalog.reused, readAt: catalog.readAt, readsMs: now() - readsStartedAt,
-      bookSource: streamRead.book || streamRead.final ? "stream" : `public (stream: ${streamRead.error})`,
+      bookSource: streamRead.book || streamRead.final ? "stream" : `keyed REST (stream: ${streamRead.error})`,
     };
     let quote;
     try {
@@ -1514,8 +1524,8 @@ function createRunner(deps) {
     }
   }
 
-  function novigMarketUrl(marketId) {
-    return `${novigBaseUrl}/v3/public/catalog/markets/${encodeURIComponent(marketId)}`;
+  function novigMarketPath(marketId) {
+    return `${NOVIG_CATALOG_MARKETS_PATH}/${encodeURIComponent(marketId)}`;
   }
 
   // Why Novig's market and its event, read now, are not the row's or do not
@@ -1525,15 +1535,15 @@ function createRunner(deps) {
   //   listedEventId  the event the catalog listed the market under, when known:
   //                  then the market and the event are read at once
   async function readNovigMarketMismatch(row, contract, listedEventId = null) {
-    const eventUrl = (eventId) => `${novigBaseUrl}/v3/public/catalog/events/${encodeURIComponent(eventId)}`;
+    const eventPath = (eventId) => `/v3/catalog/events/${encodeURIComponent(eventId)}`;
     let market;
     let event;
     try {
       if (typeof listedEventId === "string" && listedEventId) {
-        [market, event] = await Promise.all([getNovigJson(novigMarketUrl(contract.marketId)), getNovigJson(eventUrl(listedEventId))]);
+        [market, event] = await Promise.all([getNovigJson(novigMarketPath(contract.marketId)), getNovigJson(eventPath(listedEventId))]);
       } else {
-        market = await getNovigJson(novigMarketUrl(contract.marketId));
-        event = await getNovigJson(eventUrl(market.eventId));
+        market = await getNovigJson(novigMarketPath(contract.marketId));
+        event = await getNovigJson(eventPath(market.eventId));
       }
     } catch (error) {
       return `Novig market ${contract.marketId} unread: ${error.message}`;
