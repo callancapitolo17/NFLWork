@@ -564,28 +564,29 @@ def balance_of_polymarket_us(body: dict, positions: dict[str, dict]) -> dict:
 
     `currentBalance` is NOT the account's worth: it counts each open contract at its full $1
     margin (2026-10-31 live read: currentBalance 2956.30 = buyingPower 773.30 + marginRequirement
-    2183, the contracts held). So cash is `buyingPower` and in bets is the sum of the positions'
-    own `cashValue` (each position marked at the current price, the app's total)."""
+    2183, the contracts held). So cash is `buyingPower` and in bets is what the open positions
+    cost, fees included (`cost`). Not `cashValue`: on 2026-10-31 it tracked the price on some
+    positions and sat exactly at the stake on another, so Cal judged it unreliable."""
     entries = body.get("balances")
     if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
         raise RuntimeError(f"Polymarket US balances: expected exactly one balance entry, got {entries!r:.200}")
     buying_power = entries[0].get("buyingPower")
     if isinstance(buying_power, bool) or not isinstance(buying_power, (int, float)):
         raise RuntimeError(f"Polymarket US balances: expected a number at buyingPower, got {buying_power!r}")
-    in_bets = sum(position_cash_value(slug, position) for slug, position in positions.items())
+    in_bets = sum(position_cost(slug, position) for slug, position in positions.items())
     return {"cash": buying_power, "inBets": round(in_bets, 2), "available": buying_power, "creditLimit": None}
 
 
-def position_cash_value(slug: str, position: dict) -> float:
-    """A position's `cashValue.value` ("333.3050") as dollars; raises when it is missing, so a
+def position_cost(slug: str, position: dict) -> float:
+    """A position's `cost.value` ("231.7850", fees included) as dollars; raises when it is missing, so a
     position never silently counts as $0."""
-    raw = (position.get("cashValue") or {}).get("value") if isinstance(position, dict) else None
+    raw = (position.get("cost") or {}).get("value") if isinstance(position, dict) else None
     try:
         value = float(raw)
     except (TypeError, ValueError):
-        raise RuntimeError(f"Polymarket US position {slug}: expected a decimal cashValue.value, got {raw!r}") from None
+        raise RuntimeError(f"Polymarket US position {slug}: expected a decimal cost.value, got {raw!r}") from None
     if not math.isfinite(value):
-        raise RuntimeError(f"Polymarket US position {slug}: cashValue.value is not finite: {raw!r}")
+        raise RuntimeError(f"Polymarket US position {slug}: cost.value is not finite: {raw!r}")
     return value
 
 

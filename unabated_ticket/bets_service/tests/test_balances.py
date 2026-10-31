@@ -62,22 +62,24 @@ def test_novig_source_balance_asks_for_the_cash_summary():
     assert urls == ["https://x/nbx/v1/portfolio/summary?currency=CASH"]
 
 
-def test_polymarket_us_balance_is_buying_power_plus_positions_marked():
+def test_polymarket_us_balance_is_buying_power_plus_positions_cost():
     # Live shape of 2026-10-31: currentBalance = buyingPower + $1 margin per contract held.
     body = {"balances": [{"currentBalance": 2956.30191, "buyingPower": 773.30191, "marginRequirement": 2183,
                           "balanceReservation": 773.30191}]}
-    positions = {"a": {"netPositionDecimal": "-749.0000", "cashValue": {"value": "333.3050", "currency": "USD"}},
-                 "b": {"netPositionDecimal": "-350.0000", "cashValue": {"value": "119.0000", "currency": "USD"}}}
+    positions = {"a": {"netPositionDecimal": "-749.0000", "cost": {"value": "231.7850", "currency": "USD"},
+                       "cashValue": {"value": "333.3050", "currency": "USD"}},
+                 "b": {"netPositionDecimal": "-350.0000", "cost": {"value": "124.4600", "currency": "USD"},
+                       "cashValue": {"value": "119.0000", "currency": "USD"}}}
     assert balance_of_polymarket_us(body, positions) == {
-        "cash": 773.30191, "inBets": 452.31, "available": 773.30191, "creditLimit": None}
+        "cash": 773.30191, "inBets": 356.25, "available": 773.30191, "creditLimit": None}
 
 
 def test_polymarket_us_balance_with_no_positions_has_zero_in_bets():
     assert balance_of_polymarket_us({"balances": [{"buyingPower": 10.0}]}, {})["inBets"] == 0
 
 
-def test_polymarket_us_balance_refuses_a_position_without_cash_value():
-    with pytest.raises(RuntimeError, match="cashValue"):
+def test_polymarket_us_balance_refuses_a_position_without_cost():
+    with pytest.raises(RuntimeError, match="cost"):
         balance_of_polymarket_us({"balances": [{"buyingPower": 10.0}]}, {"a": {"netPositionDecimal": "-5"}})
 
 
