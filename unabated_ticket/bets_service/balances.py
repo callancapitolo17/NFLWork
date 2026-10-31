@@ -6,7 +6,9 @@ A source that can read its account balance defines `balance() -> dict` with
     available  dollars the book lets you bet now (credit included), or None
     creditLimit dollars of credit, or None
 and raises on any failure. The poll loop calls it for every source at startup,
-then after each fetch().
+then after each fetch(). A source holding several wallets (Kalshi's primary
+and the bot's subaccount) instead defines `balance_reads() -> {venue: read}`,
+one balance() per wallet, each recorded (and failing) on its own.
 
 Inputs:  the sources' own sessions (no new logins).
 Outputs: GET /balances.json -> {generatedAt, balances: {venue: reading}}.
@@ -16,6 +18,7 @@ Side effects: none on disk. Readings live in memory only (a restart re-reads
 """
 import logging
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
@@ -66,16 +69,24 @@ class BalanceBook:
             return {venue: dict(reading) for venue, reading in self._by_venue.items()}
 
 
-def read_balance_once(source: object, book: BalanceBook) -> None:
-    """One balance read for a source that has balance(); never raises."""
+def balance_reads_of(source: object) -> dict[str, Callable[[], dict]]:
+    """{venue: read} for a source: its balance_reads() when it has one, else
+    {source.name: balance} when it has balance(), else nothing."""
+    reads = getattr(source, "balance_reads", None)
+    if reads is not None:
+        return reads()
     read = getattr(source, "balance", None)
-    if read is None:
-        return
-    try:
-        book.record_success(source.name, validate_reading(read()))
-    except Exception as error:  # noqa: BLE001 — a failed balance is shown, never fatal
-        log.warning("balance %s failed: %s: %s", source.name, type(error).__name__, error)
-        book.record_failure(source.name, f"{type(error).__name__}: {error}")
+    return {source.name: read} if read is not None else {}
+
+
+def read_balance_once(source: object, book: BalanceBook) -> None:
+    """One read of each of the source's balances; never raises."""
+    for venue, read in balance_reads_of(source).items():
+        try:
+            book.record_success(venue, validate_reading(read()))
+        except Exception as error:  # noqa: BLE001 — a failed balance is shown, never fatal
+            log.warning("balance %s failed: %s: %s", venue, type(error).__name__, error)
+            book.record_failure(venue, f"{type(error).__name__}: {error}")
 
 
 def balances_payload(book: BalanceBook) -> dict:

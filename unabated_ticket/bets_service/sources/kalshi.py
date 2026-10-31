@@ -48,6 +48,7 @@ skipped market is read again once it shows an open position or a fill newer
 than its stored `raw.lastFillAt` (a re-entry while the service was down
 included).
 """
+import functools
 import logging
 import threading
 import time
@@ -475,6 +476,16 @@ ApiCall = Callable[[str, str], tuple[int, object, dict]]
 BALANCE_PATH = "/portfolio/balance"
 
 
+def balance_venue_of(subaccount: int, subaccounts: tuple[int, ...]) -> str:
+    """The Balances row a subaccount shows as: "kalshi" for the primary,
+    "kalshi_bot" when the bot's is the only numbered subaccount read (the
+    service reads no other), "kalshi_s<N>" when there are several."""
+    if subaccount == PRIMARY_SUBACCOUNT:
+        return "kalshi"
+    numbered = [number for number in subaccounts if number != PRIMARY_SUBACCOUNT]
+    return "kalshi_bot" if numbered == [subaccount] else f"kalshi_s{subaccount}"
+
+
 def balance_of_kalshi(body: dict) -> dict:
     cash_cents = body.get("balance")
     positions_cents = body.get("portfolio_value")
@@ -787,9 +798,16 @@ class KalshiSource:
                      len(positions[subaccount]), len(subaccount_records))
         return records
 
-    def balance(self) -> dict:
-        """The account balance for the tracker's Balance by book card (balances.py)."""
-        status, body, _headers = self._api("GET", BALANCE_PATH)
+    def balance(self, subaccount: int = PRIMARY_SUBACCOUNT) -> dict:
+        """One subaccount's balance (the primary by default) for the Balances views (balances.py)."""
+        path = BALANCE_PATH if subaccount == PRIMARY_SUBACCOUNT else f"{BALANCE_PATH}?subaccount={subaccount}"
+        status, body, _headers = self._api("GET", path)
         if status != 200 or not isinstance(body, dict):
-            raise RuntimeError(f"GET {BALANCE_PATH} expected 200 with a JSON body, got {status}")
+            raise RuntimeError(f"GET {path} expected 200 with a JSON body, got {status}")
         return balance_of_kalshi(body)
+
+    def balance_reads(self) -> dict[str, Callable[[], dict]]:
+        """{venue: read}: the primary as "kalshi", each numbered subaccount the
+        service reads (the taker bot's, 2026-10-31) as balance_venue_of(N)."""
+        return {balance_venue_of(subaccount, self._subaccounts): functools.partial(self.balance, subaccount)
+                for subaccount in self._subaccounts}

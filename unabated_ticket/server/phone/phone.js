@@ -42,6 +42,7 @@
   const betsLib = globalThis.UnabatedBets;
   const betsView = globalThis.UnabatedBetsView;
   const teaserView = globalThis.UnabatedTeaserView;
+  const balancesView = globalThis.UnabatedBalancesView;
   const venuePlace = globalThis.UnabatedPlace;
 
   const FETCH_TIMEOUT_MS = 10 * 1000;
@@ -115,6 +116,9 @@
     edges: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
     teasers: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
     bets: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
+    // The last /balances.json body and the last fetch's failure (the Edges tab's Balances strip).
+    balances: null,
+    balancesError: null,
     held: { records: [], crosswalk: [], pins: [], fillFairs: [] },
     // The shared Dismiss marks (bet ids) /bets.json or a Dismiss reply last
     // carried; null from a service that has none.
@@ -240,6 +244,20 @@
     renderAll();
   }
 
+  // Each book's balance for the Edges tab's strip, on the bets poll's cadence;
+  // a failure keeps the last numbers and says why.
+  async function pollBalances() {
+    try {
+      const body = await requestJson("GET", "/balances.json");
+      if (!body || typeof body.balances !== "object" || body.balances === null) throw new Error("balances.json has no balances");
+      state.balances = body;
+      state.balancesError = null;
+    } catch (error) {
+      state.balancesError = error.message;
+    }
+    balancesView.fillStrip(el("edges-balances"), balancesView.viewOf(state.balances, state.balancesError, Date.now()));
+  }
+
   // After a write: the bets now, then both lists on bets the runner read now.
   async function refreshAfterWrite() {
     await pollBets();
@@ -259,6 +277,7 @@
     pollEdges();
     pollTeasers();
     pollBets();
+    pollBalances();
   }
 
   // Polls only while the page is in view; coming back refreshes at once.
@@ -269,7 +288,7 @@
     refreshNow();
     timers = [
       setInterval(pollEdges, phoneView.EDGES_POLL_MS), setInterval(pollTeasers, phoneView.EDGES_POLL_MS),
-      setInterval(pollBets, phoneView.BETS_POLL_MS),
+      setInterval(pollBets, phoneView.BETS_POLL_MS), setInterval(pollBalances, phoneView.BETS_POLL_MS),
     ];
   }
 

@@ -190,3 +190,39 @@ def test_poll_loop_reads_every_balance_before_the_first_fetch():
     service.poll_loop([Slow(), Quick()], Store(), stop, book)
     assert order[:3] == ["slow balance", "quick balance", "slow fetch"]
     assert book.snapshot()["quick"]["cash"] == 2.0
+
+
+def test_kalshi_reads_the_primary_and_the_bot_subaccount_as_two_rows():
+    paths = []
+
+    def api(method, path):
+        paths.append(path)
+        cents = 76525 if path.endswith("subaccount=1") else 421018
+        return 200, {"balance": cents, "portfolio_value": 100}, {}
+
+    source = KalshiSource(api=api, configure_auth=False, subaccounts=(0, 1))
+    book = BalanceBook()
+    read_balance_once(source, book)
+    snapshot = book.snapshot()
+    assert paths == ["/portfolio/balance", "/portfolio/balance?subaccount=1"]
+    assert snapshot["kalshi"]["cash"] == 4210.18
+    assert snapshot["kalshi_bot"]["cash"] == 765.25
+
+
+def test_a_failed_subaccount_read_leaves_the_primary_row_alone():
+    def api(method, path):
+        if path.endswith("subaccount=1"):
+            return 429, {"error": "slow down"}, {}
+        return 200, {"balance": 100, "portfolio_value": 0}, {}
+
+    source = KalshiSource(api=api, configure_auth=False, subaccounts=(0, 1))
+    book = BalanceBook()
+    read_balance_once(source, book)
+    snapshot = book.snapshot()
+    assert snapshot["kalshi"]["cash"] == 1.0 and snapshot["kalshi"]["error"] is None
+    assert snapshot["kalshi_bot"]["cash"] is None and "429" in snapshot["kalshi_bot"]["error"]
+
+
+def test_kalshi_names_several_numbered_subaccounts_by_number():
+    source = KalshiSource(api=lambda method, path: (200, {}, {}), configure_auth=False, subaccounts=(0, 1, 2))
+    assert sorted(source.balance_reads()) == ["kalshi", "kalshi_s1", "kalshi_s2"]
