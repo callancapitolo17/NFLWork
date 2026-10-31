@@ -44,6 +44,7 @@
   const live = globalThis.UnabatedLive;
   const teaserLib = globalThis.UnabatedTeaser;
   const teaserView = globalThis.UnabatedTeaserView;
+  const balancesView = globalThis.UnabatedBalancesView;
   const bet105 = globalThis.UnabatedBet105;
   const draftkings = globalThis.UnabatedDraftKings;
   // Bets service poll cadence while the panel is visible (plan § Storage).
@@ -2425,6 +2426,25 @@
 
   let betsPollBusy = false;
   let betsPollTimer = null;
+  // The last /balances.json body and the last fetch's failure (the Edges tab's Balances strip).
+  let balancesPayload = null;
+  let balancesError = null;
+
+  // One GET of /balances.json, on the bets poll's cadence; a failure keeps the
+  // last numbers and says why in the strip.
+  async function pollBalances() {
+    try {
+      const response = await fetch(`${state.betsSettings.serviceUrl}/balances.json`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const body = await response.json();
+      if (!body || typeof body.balances !== "object" || body.balances === null) throw new Error("balances.json has no balances");
+      balancesPayload = body;
+      balancesError = null;
+    } catch (error) {
+      balancesError = error.message;
+    }
+    balancesView.fillStrip(el("edges-balances"), balancesView.viewOf(balancesPayload, balancesError, Date.now()));
+  }
 
   // One GET of /bets.json. Success replaces the source status and merges the
   // records (bets.js dedupe on native id, team keys, retention prune); failure
@@ -2469,6 +2489,7 @@
     renderBetsFlags();
     learnCrosswalk().catch((error) => console.error("[unabated-ticket] crosswalk learn failed", error));
     captureFillFairs().catch((error) => console.error("[unabated-ticket] fill fair capture failed", error));
+    pollBalances().catch((error) => console.error("[unabated-ticket] balances poll failed", error));
     pollBet105().catch((error) => console.error("[unabated-ticket] bet105 poll failed", error));
     pollDraftKings().catch((error) => console.error("[unabated-ticket] draftkings poll failed", error));
     if (state.betsService.error == null) {

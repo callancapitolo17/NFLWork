@@ -2819,7 +2819,17 @@ visible. Its one write is the Bets page's Remove / Restore.
   fields seen in real responses 2026-10-13/16. Readings live in memory only
   (`bets_service/balances.py`): every book is read once at startup, before the first (slow) poll, a
   failed read keeps the last numbers with how old they are, and a book never
-  read shows "unavailable", never $0, and stays out of the total.
+  read shows "unavailable", never $0, and stays out of the total. Kalshi's
+  bot subaccount (the taker's, `KALSHI_TAKER_SUBACCOUNT`) is its own row,
+  **Kalshi · Bot** (`/portfolio/balance?subaccount=N` on the source's read key,
+  2026-10-31); each wallet's read fails on its own (`balance_reads()`).
+- **Balances strip on Edges** (panel and phone, extension 0.34.0, Cal
+  2026-10-31): the same `/balances.json`, fetched with every bets poll (30 s),
+  laid out by `extension/balancesview.js` (shared by both pages). Collapsed it
+  shows Kalshi, Novig and Polymarket US's available money; opened, every
+  account (Kalshi · Bot, Novig · Place, Novig · Bot too) with available, in
+  bets and the total. Only those books show, by Cal's pick; a failed or
+  5-min-old read is amber with its age, a never-read one "unavailable".
 - **Open bets** (Open page) are split into **Upcoming** and, when any
   exist, **No start time** (BetOnline's report carries no game time, Kalshi
   NFL/CFB tickers only a date; futures and Kalshi combos none), each with
