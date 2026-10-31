@@ -74,6 +74,7 @@ homeKey stay None — the extension resolves them through teams.js.
 """
 import base64
 import logging
+import math
 import re
 import time
 from collections.abc import Callable
@@ -558,17 +559,35 @@ def json_or_raise(response: object, what: str) -> dict:
     return body
 
 
-def balance_of_polymarket_us(body: dict) -> dict:
-    """GET /v1/account/balances -> the balances.py reading (inBets None: not reported)."""
+def balance_of_polymarket_us(body: dict, positions: dict[str, dict]) -> dict:
+    """GET /v1/account/balances + every open position -> the balances.py reading.
+
+    `currentBalance` is NOT the account's worth: it counts each open contract at its full $1
+    margin (2026-10-31 live read: currentBalance 2956.30 = buyingPower 773.30 + marginRequirement
+    2183, the contracts held). So cash is `buyingPower` and in bets is what the open positions
+    cost, fees included (`cost`). Not `cashValue`: on 2026-10-31 it tracked the price on some
+    positions and sat exactly at the stake on another, so Cal judged it unreliable."""
     entries = body.get("balances")
     if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
         raise RuntimeError(f"Polymarket US balances: expected exactly one balance entry, got {entries!r:.200}")
-    entry = entries[0]
-    for field in ("currentBalance", "buyingPower"):
-        value = entry.get(field)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise RuntimeError(f"Polymarket US balances: expected a number at {field}, got {value!r}")
-    return {"cash": entry["currentBalance"], "inBets": None, "available": entry["buyingPower"], "creditLimit": None}
+    buying_power = entries[0].get("buyingPower")
+    if isinstance(buying_power, bool) or not isinstance(buying_power, (int, float)):
+        raise RuntimeError(f"Polymarket US balances: expected a number at buyingPower, got {buying_power!r}")
+    in_bets = sum(position_cost(slug, position) for slug, position in positions.items())
+    return {"cash": buying_power, "inBets": round(in_bets, 2), "available": buying_power, "creditLimit": None}
+
+
+def position_cost(slug: str, position: dict) -> float:
+    """A position's `cost.value` ("231.7850", fees included) as dollars; raises when it is missing, so a
+    position never silently counts as $0."""
+    raw = (position.get("cost") or {}).get("value") if isinstance(position, dict) else None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise RuntimeError(f"Polymarket US position {slug}: expected a decimal cost.value, got {raw!r}") from None
+    if not math.isfinite(value):
+        raise RuntimeError(f"Polymarket US position {slug}: cost.value is not finite: {raw!r}")
+    return value
 
 
 class PolymarketUSSource:
@@ -709,7 +728,8 @@ class PolymarketUSSource:
     def balance(self) -> dict:
         response = self._session.get(f"{API_BASE_URL}{BALANCES_PATH}", headers=self._signed_headers(BALANCES_PATH),
                                      timeout=HTTP_TIMEOUT_SEC)
-        return balance_of_polymarket_us(json_or_raise(response, f"GET {BALANCES_PATH}"))
+        balances = json_or_raise(response, f"GET {BALANCES_PATH}")
+        return balance_of_polymarket_us(balances, self._fetch_positions())
 
 
 def source_if_configured() -> PolymarketUSSource | None:

@@ -2811,7 +2811,11 @@ visible. Its one write is the Bets page's Remove / Restore.
   (**Novig · Place**, **Novig · Bot**: `/v3/account/subaccounts/<key>/balance`
   on its own trading key, one figure, no in-bets; a subaccount is a wallet of
   its own that the app's balance leaves out, checked 2026-10-23) and Polymarket US
-  (`/v1/account/balances`, no in-bets figure), each on the source's own login;
+  (cash = `/v1/account/balances` `buyingPower`, in bets = the sum of
+  `/v1/portfolio/positions` `cost`, what the open positions cost with fees —
+  not `cashValue`, which Cal judged unreliable; its `currentBalance` counts every
+  open contract at its full $1 margin, so it is never shown, checked 2026-10-31),
+  each on the source's own login;
   fields seen in real responses 2026-10-13/16. Readings live in memory only
   (`bets_service/balances.py`): every book is read once at startup, before the first (slow) poll, a
   failed read keeps the last numbers with how old they are, and a book never
