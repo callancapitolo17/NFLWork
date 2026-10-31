@@ -317,6 +317,13 @@ ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;
 -- fee; the board-line columns above are kept for the log. Polymarket US
 -- takes no client order id: this row is the only guard against a resend.
 ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS polymarket_order_id VARCHAR;
+-- ProphetX Place (prophetx_place.py): `ticker` is the ProphetX strike id,
+-- `contract_side` 'buy' (ProphetX orders only buy), `ask_price` =
+-- `all_in_price` the live implied probability of the American price sent
+-- (ProphetX's fee is account-set and unpublished; the fill's `fee` lands in
+-- `cost_filled`), `count_requested` the stake in whole cents (a ProphetX
+-- order's quantity is dollars). `external_id` is the client order id.
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS prophetx_order_id VARCHAR;
 CREATE TABLE IF NOT EXISTS tau_samples (
     sample_key      VARCHAR PRIMARY KEY,   -- '<bookId>|<eventId>:<period>:<betType>:<side>:<points>|<sideIndex>'
     market_key      VARCHAR NOT NULL,      -- '<leagueId>:<periodTypeId>:<betTypeId>' (tailflex.marketKeyOf)
@@ -335,8 +342,8 @@ MANUAL_ORDER_NOVIG_LINE_COLUMNS = (
     "market_id", "event_start", "league", "bet_type", "period", "side", "points", "away_team", "home_team",
     "away_team_id", "home_team_id",
 )
-MANUAL_ORDER_UPDATE_COLUMNS = ("status", "kalshi_order_id", "novig_order_id", "polymarket_order_id", "count_filled",
-                               "cost_filled", "error")
+MANUAL_ORDER_UPDATE_COLUMNS = ("status", "kalshi_order_id", "novig_order_id", "polymarket_order_id",
+                               "prophetx_order_id", "count_filled", "cost_filled", "error")
 _INSERT_MANUAL_ORDER_COLUMNS = MANUAL_ORDER_INSERT_COLUMNS + MANUAL_ORDER_NOVIG_LINE_COLUMNS
 _INSERT_MANUAL_ORDER = (f"INSERT INTO manual_orders ({', '.join(_INSERT_MANUAL_ORDER_COLUMNS)}) "
                         f"VALUES ({', '.join(['?'] * len(_INSERT_MANUAL_ORDER_COLUMNS))})")
@@ -656,6 +663,10 @@ _SELECT_KALSHI_IDS = """
 SELECT id FROM bets WHERE venue = 'kalshi'
 """
 
+_SELECT_RECORDS_OF_VENUE = """
+SELECT id, record FROM bets WHERE venue = ?
+"""
+
 _SELECT_KALSHI_IDS_STATUSES_RECORDS = """
 SELECT id, status, record FROM bets WHERE venue = 'kalshi'
 """
@@ -934,6 +945,14 @@ class BetsStore:
                 continue
             last_fill_by_ticker[ticker] = max(last_fill_at, last_fill_by_ticker.get(ticker, ""))
         return {ticker: last_fill_at for ticker, last_fill_at in last_fill_by_ticker.items() if ticker not in not_final}
+
+    def load_records_of_venue(self, venue: str) -> dict[str, dict]:
+        """{record id: the stored record} of every bet of `venue`, whatever its
+        age. The ProphetX source reuses a stored record's game fields when
+        ProphetX no longer lists the game (it drops ended events)."""
+        with self._lock:
+            rows = self._con.execute(_SELECT_RECORDS_OF_VENUE, [venue]).fetchall()
+        return {record_id: json.loads(record_json) for record_id, record_json in rows}
 
     def load_bets(self, days: int, now: datetime) -> list[dict]:
         """Records in the retention window: open, or closed within `days` of

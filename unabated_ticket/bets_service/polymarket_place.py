@@ -109,14 +109,15 @@ def validate_polymarket_place_request(body: object) -> dict | str:
         return ("polymarketReadAt must be the ISO time of the Polymarket US read the stake was sized on, "
                 f"got {body.get('polymarketReadAt')!r}")
     read_ats = {}
-    for field in ("kalshiReadAt", "novigReadAt"):
+    for field in ("kalshiReadAt", "novigReadAt", "prophetxReadAt"):
         read_at = optional_read_at(body, field)
         if isinstance(read_at, str):
             return read_at
         read_ats[field] = read_at
     return {"click_id": click_id, **whole, "points": None if points is None else float(points),
             "stake": float(stake), "ticket_all_in": float(ticket_all_in), "polymarket_read_at": polymarket_read_at,
-            "kalshi_read_at": read_ats["kalshiReadAt"], "novig_read_at": read_ats["novigReadAt"]}
+            "kalshi_read_at": read_ats["kalshiReadAt"], "novig_read_at": read_ats["novigReadAt"],
+            "prophetx_read_at": read_ats["prophetxReadAt"]}
 
 
 def held_id_of(slug: str, contract_side: str) -> str:
@@ -205,7 +206,7 @@ class ManualPolymarketDesk:
         if stale:
             return stale
         if unseen_manual_fill(self._store, request["eventId"], request["kalshi_read_at"], request["novig_read_at"],
-                              request["polymarket_read_at"]):
+                              request["polymarket_read_at"], request["prophetx_read_at"]):
             return ("your last Place on this game is not on the Bets tab yet, so this stake does not count it. "
                     "Wait for the next read (up to a minute) and place again.")
         return None

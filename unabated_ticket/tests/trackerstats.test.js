@@ -431,6 +431,8 @@ test("leagueOf reads the league a venue names on a bet the source left unplaced"
     [unplaced("draftkings", { leagueId: 88808 }), "nfl"],
     [unplaced("polymarket_us", { eventSlug: "nhl-pit-was-2026-10-07" }), "nhl"],
     [unplaced("polymarket_us", { slug: "crossd-71057c8273d820c0" }), null],
+    [unplaced("prophetx", { league: "nfl" }), "nfl"],
+    [unplaced("prophetx", { league: null }), null],
     [unplaced("wagerzon", { headerDesc: "NFL Week 6 - Specials", sportCode: "PROP" }), "nfl"],
     [unplaced("wagerzon", { headerDesc: "DST Straight|ID:396861071", sportCode: "RBL" }), null],
     [unplaced("bfa", { description: "[308950] PRAIRIE VIEW -16-110" },

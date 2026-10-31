@@ -1148,7 +1148,7 @@ Two kinds of source feed the flags:
 | Polymarket US (the CFTC app) | `bets_service/sources/polymarket_us.py` (local service, the account's own API key from `bet_logger/.env`, Ed25519-signed; 2026-09-23) | every 10 s on a poll thread of its own (60 s after a failed poll) |
 | Bet105 | the panel itself (`extension/bet105.js`, your own login at app.bet105.ag in this Chrome — Cloudflare challenges anything else) → `POST /bet105.json`, parsed by `bets_service/sources/bet105.py`; open bets 2026-09-29, graded bets 2026-10-07 | every 5 min while the panel is open; open bets plus every graded wager with its result and settle time |
 | DraftKings | the panel itself (`extension/draftkings.js`, your own login at sportsbook.draftkings.com in this Chrome — Akamai's bot checks and a login code stop anything else) → `POST /draftkings.json`, parsed by `bets_service/sources/draftkings.py`; 2026-10-10 | every 5 min while the panel is open; every open bet plus the last 31 days of settled bets with their result |
-| ProphetX | — (#117) | shows "no source configured" |
+| ProphetX | `bets_service/sources/prophetx.py` (local service, the account's own Trading API key pair `PROPHETX_ACCESS_KEY` / `PROPHETX_SECRET_KEY` in `bets_service/.env`; 2026-10-31) | every 30 s while the service runs; orders and fills back 31 days |
 
 Start the service (next section), keep the panel open. Every 30 s while the
 panel is visible it fetches `http://127.0.0.1:8094/bets.json` (never from
@@ -3450,13 +3450,70 @@ SELECT placed_at, label, ticker AS slug, contract_side, ticket_all_in, ask_price
 FROM manual_orders WHERE venue = 'polymarket_us' ORDER BY placed_at DESC;
 ```
 
+### ProphetX source and Place (`bets_service/sources/prophetx.py`, `prophetx_place.py`, `server/prophetx.js`, 2026-10-31)
+
+Cal, 2026-10-31 (option A): ProphetX's bets are read and its lines placed on
+ONE Trading API key pair on his **main** account, the way Polymarket US is.
+Make it on prophetx.co (menu, **API Integration**, **Create a new token**; any
+KYC-approved account, no application; the secret shows once) and put both in
+`bets_service/.env` as `PROPHETX_ACCESS_KEY` / `PROPHETX_SECRET_KEY`. Unset =
+no ProphetX source and `POST /place_prophetx.json` answers 503. The source
+replaces the unmerged #117 content-script branch
+(`feature/unabated-prophetx-bets`, 2026-09-16) and keeps its money rules.
+**Every ProphetX shape here is from docs.prophetx.co (v4 schemas), not a live
+capture**: the first poll and the first click verify them, and anything that
+does not read fails closed with the reason.
+
+- **Session** (`prophetx_client.py`): `POST /auth/login {access_key,
+  secret_key}` gives a 10-minute bearer token; the client logs in again a
+  minute before it runs out, and once more on a 401. The source and Place share
+  the client and its token.
+- **Bets** (`sources/prophetx.py`): order history and fills (`get_order_history`,
+  `get_trades`) back `min(31, 60)` days; each game's sport event and markets
+  once (`prophetx_markets.py` reads a strike as a board line: the market's
+  `type`, the period off its name, the side by the offer's competitor and its
+  home/away `side`, the number off the offer's signed `display_strike`; a
+  spread whose two sides are not one number each way does not read). Only the
+  **matched** dollars are a bet (`prophetx:<order_id>`), priced off its fills
+  (a fill can beat the limit); a resting remainder is a separate unmatchable
+  `prophetx:<order_id>:order`. `void` / `invalid` void it; settled orders grade
+  off `winning_status` (profit won, loss lost, push / draw push, no_result
+  void). ProphetX drops ended games from its lists, so a settled order keeps
+  the game fields its stored record had (`store.load_records_of_venue`). The
+  Balances tab reads `get_balance` (`balance` as cash, `matched_order_balance`
+  in bets; field meanings unverified). The tracker labels the venue ProphetX.
+- **Place** (book 66, **Bet $X at ProphetX**): the runner's `GET
+  /prophetx_quote.json` returns the board line and the ProphetX strike ids
+  Unabated's alt rungs carry for the game (`sourceData`, 32 hex; the line's own
+  first). ProphetX needs the key for every read, so the bets service finds the
+  game (`get_strikes` on those ids, else its listed games by both teams and a
+  start within 30 min), checks ProphetX's away / home are the board's (swapped
+  or unknown refuses), finds the one strike that reads as the line, and takes
+  its best offer (the highest American price on that side's ladder). It
+  refuses, sending nothing, on a started or unlisted game, a half moneyline
+  (tie rule unchecked), an implied price more than **0.1c worse** than the
+  Ticket's, the other side of the line held, a `prophetx` read failing or over
+  5 min old, an earlier Place on the game the stake has not seen, or a repeat
+  click. Then ONE `fillOrKill` buy at that price for the stake in dollars,
+  `external_id` = row `xman-<clickId>` inserted before the send; read until
+  nothing rests (ProphetX cancels a fill-or-kill's remainder about 2 s after
+  its last fill), one cancel if it still rests after 8 s. **Fee:** ProphetX
+  sets it per account and publishes no rate, so the price check uses
+  Unabated's number as is (Cal, 2026-10-31); each fill's `fee` is stored.
+
+```sql
+SELECT placed_at, label, ticker AS strike_id, ticket_all_in, ask_price, stake, count_filled / 100.0 AS filled_dollars,
+       cost_filled, prophetx_order_id, status, error
+FROM manual_orders WHERE venue = 'prophetx' ORDER BY placed_at DESC;
+```
+
 ### A Place reads its venue before it answers (`bets_service/service.py`, 2026-10-29)
 
-Each of the three Place routes, once its order may hold contracts (`filled`,
+Each of the four Place routes, once its order may hold contracts (`filled`,
 `partial`, `unknown`; on Novig `unfilled` too), polls that venue's sources at
 once and only then replies: Kalshi `kalshi`; Novig `novig`, `novig_place` and
 `novig_bot` (out of turn, never behind BFA, BetOnline or Wagerzon in the shared
-lane); Polymarket US `polymarket_us`. The panel's and phone's `/bets.json` read
+lane); Polymarket US `polymarket_us`; ProphetX `prophetx`. The panel's and phone's `/bets.json` read
 after the reply then already holds the fill, so the next Place on the game is
 not refused as unseen, and the runner (bot included) has it on its next 10 s
 read. `SourceReader` holds one lock per source, so a lane's poll and a Place's

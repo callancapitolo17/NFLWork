@@ -47,7 +47,7 @@
 
   const VENUE_NAMES = {
     kalshi: "Kalshi", novig: "Novig", betonline: "BetOnline", bfa: "BFA",
-    wagerzon: "Wagerzon", polymarket_us: "Polymarket US", bet105: "Bet105", draftkings: "DraftKings",
+    wagerzon: "Wagerzon", polymarket_us: "Polymarket US", bet105: "Bet105", draftkings: "DraftKings", prophetx: "ProphetX",
     // Balances rows only: each Novig and Kalshi subaccount is its own wallet (its bets keep the venue).
     novig_place: "Novig · Place", novig_bot: "Novig · Bot", kalshi_bot: "Kalshi · Bot",
   };
@@ -270,6 +270,9 @@
         const slugLeague = /^([a-z]+)-/.exec(String(raw.eventSlug || ""));
         return slugLeague && POLYMARKET_LEAGUES.has(slugLeague[1]) ? slugLeague[1] : null;
       }
+      case "prophetx":
+        // raw.league: the board's league path of a game ProphetX lists, kept on a market that does not read.
+        return raw.league || null;
       case "wagerzon": {
         // Specials: headerDesc "NFL Week 6 - Specials". RBL props name no league.
         const header = /^(NFL|NBA|MLB|NHL|WNBA)\b/.exec(String(raw.headerDesc || ""));

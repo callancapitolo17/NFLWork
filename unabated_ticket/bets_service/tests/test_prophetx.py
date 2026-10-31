@@ -1,0 +1,386 @@
+"""ProphetX (2026-10-31): how a game's markets read as board lines
+(prophetx_markets.py), the bet source's records (sources/prophetx.py), the
+client's session and order body (prophetx_client.py), and the Ticket's Place
+desk (prophetx_place.py) against a scripted client and runner quote. Shapes are
+built from the docs' v4 schemas (no live capture yet). No network."""
+import json
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from unabated_ticket.bets_service import prophetx_markets
+from unabated_ticket.bets_service.prophetx_client import ProphetXClient, ProphetXError, fill_or_kill_body
+from unabated_ticket.bets_service.prophetx_place import (ManualProphetXDesk, names_agree,
+                                                         validate_prophetx_place_request)
+from unabated_ticket.bets_service.sources.prophetx import ProphetXSource, normalize_prophetx
+from unabated_ticket.bets_service.store import BetsStore
+
+NOW = datetime(2026, 11, 1, 15, 0, tzinfo=timezone.utc)
+PX_EVENT_ID = 5501
+EVENT = {"event_id": PX_EVENT_ID, "name": "Buffalo Bills at Kansas City Chiefs", "scheduled": "2026-11-01T21:25:00Z",
+         "status": "not_started", "tournament_id": 31, "tournament_name": "NFL",
+         "competitors": [{"id": 11, "name": "Kansas City Chiefs", "side": "home"},
+                         {"id": 12, "name": "Buffalo Bills", "side": "away"}]}
+
+
+def offer(strike_id, price, quantity, competitor_id=None, name="", strike=None, display_strike=None, outcome_id=1):
+    return {"outcome_id": outcome_id, "competitor_id": competitor_id, "name": name, "price": price, "strike": strike,
+            "display_strike": display_strike, "strike_id": strike_id, "quantity": quantity}
+
+
+MONEYLINE = {"id": 900, "name": "Moneyline", "type": "moneyline", "selections": [
+    [offer("a" * 32, 150, 300, competitor_id=12, name="Buffalo Bills")],
+    [offer("b" * 32, -160, 500, competitor_id=11, name="Kansas City Chiefs")],
+]}
+SPREAD = {"id": 901, "name": "Spread", "type": "spread", "selections": [
+    [offer("c" * 32, -110, 200, 12, "Buffalo Bills", 3.5, "+3.5"), offer("c" * 32, -115, 900, 12, "Buffalo Bills", 3.5, "+3.5")],
+    [offer("d" * 32, -108, 400, 11, "Kansas City Chiefs", -3.5, "-3.5")],
+], "market_strikes": [{"id": 902, "name": "Spread", "type": "spread", "selections": [
+    [offer("e" * 32, 120, 50, 12, "Buffalo Bills", 2.5, "+2.5")],
+    [offer("f" * 32, -140, 50, 11, "Kansas City Chiefs", -2.5, "-2.5")],
+]}]}
+TOTAL = {"id": 903, "name": "Total Points", "type": "total", "selections": [
+    [offer("g" * 32, -105, 100, None, "Over 47.5", 47.5)],
+    [offer("h" * 32, -115, 100, None, "Under 47.5", 47.5)],
+]}
+FIRST_HALF_SPREAD = {"id": 904, "name": "1st Half Spread", "type": "spread", "selections": [
+    [offer("i" * 32, -110, 100, 12, "Buffalo Bills", 1.5, "+1.5")],
+    [offer("j" * 32, -110, 100, 11, "Kansas City Chiefs", -1.5, "-1.5")],
+]}
+QUARTER = {"id": 905, "name": "1st Quarter Spread", "type": "spread", "selections": MONEYLINE["selections"]}
+MARKETS = [MONEYLINE, SPREAD, TOTAL, FIRST_HALF_SPREAD, QUARTER]
+
+
+# ---- markets ---------------------------------------------------------------------------
+
+
+def test_every_game_market_side_reads_as_a_board_line():
+    lines = prophetx_markets.lines_of_event(EVENT, MARKETS)
+    by_strike = {line["strike_id"]: (line["betType"], line["period"], line["side"], line["points"]) for line in lines}
+    assert by_strike == {
+        "a" * 32: ("moneyline", "FG", "away", None), "b" * 32: ("moneyline", "FG", "home", None),
+        "c" * 32: ("spread", "FG", "away", 3.5), "d" * 32: ("spread", "FG", "home", -3.5),
+        "e" * 32: ("spread", "FG", "away", 2.5), "f" * 32: ("spread", "FG", "home", -2.5),
+        "g" * 32: ("total", "FG", "over", 47.5), "h" * 32: ("total", "FG", "under", 47.5),
+        "i" * 32: ("spread", "1H", "away", 1.5), "j" * 32: ("spread", "1H", "home", -1.5),
+    }, "the quarter market is left out, never read as a full game"
+    assert {line["awayTeam"] for line in lines} == {"Buffalo Bills"}
+
+
+def test_a_main_number_listed_again_under_its_alt_numbers_is_one_line():
+    repeated = {**SPREAD, "market_strikes": SPREAD["market_strikes"] + [{**SPREAD, "market_strikes": None}]}
+    strikes = [line["strike_id"] for line in prophetx_markets.lines_of_event(EVENT, [repeated])]
+    assert sorted(strikes) == ["c" * 32, "d" * 32, "e" * 32, "f" * 32]
+
+
+def test_a_spread_whose_sides_carry_one_unsigned_number_does_not_read():
+    one_number = {"id": 1, "name": "Spread", "type": "spread", "selections": [
+        [offer("x" * 32, -110, 10, 12, "Buffalo Bills", 3.5)], [offer("y" * 32, -110, 10, 11, "Kansas City Chiefs", 3.5)]]}
+    assert prophetx_markets.lines_of_event(EVENT, [one_number]) == []
+
+
+def test_a_game_without_home_and_away_or_in_another_league_is_named():
+    assert "home and away" in prophetx_markets.lines_of_event(
+        {**EVENT, "competitors": [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}]}, MARKETS)
+    assert "league not supported" in prophetx_markets.lines_of_event(
+        {**EVENT, "tournament_id": 7, "tournament_name": "Bundesliga"}, MARKETS)
+
+
+def test_the_best_offer_is_the_highest_price_with_the_money_resting_at_it():
+    assert prophetx_markets.best_offer_of(SPREAD["selections"][0]) == {"price": -110, "depth": 200}
+    assert prophetx_markets.best_offer_of([offer("z", -110, 0)]) is None
+    assert prophetx_markets.american_to_probability(-110) == pytest.approx(0.5238095)
+    assert prophetx_markets.american_of(100, 90.91) == -110 and prophetx_markets.american_of(100, 150) == 150
+
+
+# ---- bet source ------------------------------------------------------------------------
+
+
+def order(order_id, strike_id, filled, status="open", winning="tbd", open_quantity=0.0, price=-110, **extra):
+    return {"order_id": order_id, "external_id": f"ext-{order_id}", "sport_event_id": PX_EVENT_ID, "market_id": 901,
+            "strike_id": strike_id, "price": price, "quantity": filled + open_quantity,
+            "original_quantity": filled + open_quantity, "filled_quantity": filled, "open_quantity": open_quantity,
+            "status": status, "matching_status": "fully_matched" if not open_quantity else "partially_matched",
+            "winning_status": winning, "created_at": "2026-11-01T14:00:00Z", "updated_at": "2026-11-01T14:00:05Z",
+            "settled_at": None, **extra}
+
+
+def normalized(orders, trades=(), known=None):
+    lines = {PX_EVENT_ID: prophetx_markets.lines_of_event(EVENT, MARKETS)}
+    return {record["id"]: record for record in normalize_prophetx(list(orders), list(trades), {PX_EVENT_ID: EVENT},
+                                                                  lines, known or {}, "2026-11-01T15:00:00Z")}
+
+
+def test_a_matched_order_is_a_bet_on_its_line_priced_off_its_fills():
+    trades = [{"order_id": "o1", "price": -110, "quantity": 110, "fee": 0.5},
+              {"order_id": "o1", "price": 100, "quantity": 100, "fee": 0.5}]
+    record = normalized([order("o1", "c" * 32, 210)], trades)["prophetx:o1"]
+    assert (record["venue"], record["league"], record["betType"], record["period"], record["side"], record["points"]) == \
+        ("prophetx", "nfl", "spread", "FG", "away", 3.5)
+    assert (record["awayTeam"], record["homeTeam"], record["eventDate"]) == ("Buffalo Bills", "Kansas City Chiefs", "2026-11-01")
+    # $110 at -110 wins $100, $100 at +100 wins $100: $210 to win $200.
+    assert (record["stake"], record["toWin"], record["price"], record["status"]) == (210, 200, -105, "open")
+    assert record["raw"]["fees"] == 1.0 and record["unmatchable"] is None
+
+
+def test_a_resting_remainder_is_its_own_unmatchable_record():
+    records = normalized([order("o2", "g" * 32, 40, open_quantity=60, price=-105)])
+    assert records["prophetx:o2"]["stake"] == 40 and records["prophetx:o2"]["toWin"] == pytest.approx(38.1)
+    resting = records["prophetx:o2:order"]
+    assert (resting["stake"], resting["status"], resting["approx"]) == (60, "open", ["prophetx_unmatched_order"])
+    assert resting["unmatchable"] == "unmatched order (resting $60.0 at -105)"
+
+
+@pytest.mark.parametrize("status, winning, expected", [
+    ("closed", "profit", "won"), ("closed", "loss", "lost"), ("settled", "push", "push"),
+    ("manually_settled", "manually_lost", "lost"), ("closed", "no_result", "void"), ("closed", "tbd", "unknown"),
+    ("canceled", "tbd", "open"), ("wiped", "loss", "lost"), ("void", "profit", "void"), ("invalid", "tbd", "void"),
+])
+def test_status_grades_the_matched_part(status, winning, expected):
+    assert normalized([order("o3", "d" * 32, 50, status=status, winning=winning)])["prophetx:o3"]["status"] == expected
+
+
+def test_an_order_with_nothing_matched_and_nothing_resting_is_no_record():
+    assert normalized([order("o4", "d" * 32, 0, status="canceled")]) == {}
+
+
+def test_a_game_prophetx_no_longer_lists_keeps_its_stored_line():
+    stored = normalized([order("o5", "h" * 32, 30)])["prophetx:o5"]
+    settled = order("o5", "h" * 32, 30, status="closed", winning="loss", settled_at="2026-11-02T01:00:00Z")
+    records = {r["id"]: r for r in normalize_prophetx([settled], [], {}, {}, {"prophetx:o5": stored}, None)}
+    assert (records["prophetx:o5"]["side"], records["prophetx:o5"]["points"], records["prophetx:o5"]["status"]) == \
+        ("under", 47.5, "lost")
+    assert records["prophetx:o5"]["closedAt"] == "2026-11-02T01:00:00Z"
+    unknown = normalize_prophetx([settled], [], {}, {}, {}, None)[0]
+    assert unknown["unmatchable"] == f"ProphetX does not list game {PX_EVENT_ID} any more"
+
+
+class ScriptedReads:
+    def __init__(self):
+        self.event_reads = []
+
+    def order_history(self, start, end):
+        assert end - start == 31 * 86400
+        return [order("o6", "b" * 32, 80, price=-160)]
+
+    def trades(self, start, end):
+        return []
+
+    def sport_events(self, event_ids=None):
+        self.event_reads.append(event_ids)
+        return [EVENT]
+
+    def markets(self, event_id):
+        return MARKETS
+
+    def balance(self):
+        return 200, {"data": {"balance": 412.5, "matched_order_balance": 80.0}}
+
+
+def test_the_source_reads_each_game_once_and_reads_the_balance():
+    client = ScriptedReads()
+    source = ProphetXSource(client, dict, history_days=31, clock=lambda: NOW.timestamp())
+    [first] = source.fetch()
+    source.fetch()
+    assert first["id"] == "prophetx:o6" and first["side"] == "home" and first["betType"] == "moneyline"
+    assert client.event_reads == [[PX_EVENT_ID]]
+    assert source.balance() == {"cash": 412.5, "inBets": 80.0, "available": 412.5, "creditLimit": None}
+
+
+# ---- client ----------------------------------------------------------------------------
+
+
+def test_the_client_logs_in_once_per_token_and_again_after_a_401():
+    sent = []
+    answers = [(200, {"data": {"access_token": "t1"}}), (401, {}), (200, {"data": {"access_token": "t2"}}),
+               (200, {"data": {"balance": 1}})]
+
+    def transport(method, url, headers, body):
+        sent.append((method, url, headers.get("Authorization"), json.loads(body) if body else None))
+        status, reply = answers.pop(0)
+        return status, json.dumps(reply).encode()
+
+    client = ProphetXClient("ak", "sk", "https://px.test/partner", transport=transport, clock=lambda: 1000.0)
+    assert client.balance() == (200, {"data": {"balance": 1}})
+    assert [(method, url, auth) for method, url, auth, _ in sent] == [
+        ("POST", "https://px.test/partner/auth/login", None), ("GET", "https://px.test/partner/v4/mm/get_balance", "Bearer t1"),
+        ("POST", "https://px.test/partner/auth/login", None), ("GET", "https://px.test/partner/v4/mm/get_balance", "Bearer t2")]
+    assert sent[0][3] == {"access_key": "ak", "secret_key": "sk"}
+
+
+def test_a_refused_login_raises_with_what_came_back():
+    client = ProphetXClient("ak", "sk", transport=lambda *_: (401, b'{"message":"bad key"}'))
+    with pytest.raises(ProphetXError, match="login refused: HTTP 401"):
+        client.balance()
+
+
+def test_the_order_body_is_one_fill_or_kill_buy_in_dollars():
+    assert fill_or_kill_body("c" * 32, -110, 25.456, "xman-1") == {
+        "strike_id": "c" * 32, "price": -110, "quantity": 25.46, "external_id": "xman-1", "order_strategy": "fillOrKill"}
+    with pytest.raises(ValueError):
+        fill_or_kill_body("c" * 32, -99, 10, "x")
+
+
+# ---- Place desk ------------------------------------------------------------------------
+
+EVENT_ID = 123742
+LINE = {"league": "nfl", "betType": "spread", "period": "FG", "side": "away", "points": 3.5,
+        "awayTeam": "Buffalo Bills", "homeTeam": "Kansas City Chiefs", "awayTeamId": "1", "homeTeamId": "2"}
+QUOTE = {"ok": True, "eventId": EVENT_ID, "eventStart": "2026-11-01T21:25:00.000Z", "label": "Bills +3.5 FG",
+         "price": -110, "line": LINE, "lineStrikeId": None, "strikeIds": ["e" * 32]}
+BODY = {"clickId": "abc12345-0001", "eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 0,
+        "points": 3.5, "stake": 50, "ticketAllIn": 0.5238, "prophetxReadAt": "2026-11-01T14:59:40Z",
+        "kalshiReadAt": None, "novigReadAt": None, "polymarketReadAt": None}
+
+
+class ScriptedProphetX:
+    """ProphetXClient's calls, scripted: the order is taken and reads fully matched."""
+
+    def __init__(self, submit=None, order_reads=None, events=None, markets=None):
+        self.submits = []
+        self.cancels = []
+        self.submit = submit
+        self.order_reads = list(order_reads or [])
+        self.events = [EVENT] if events is None else events
+        self.markets_list = MARKETS if markets is None else markets
+
+    def strikes(self, strike_ids):
+        return [{"event_id": PX_EVENT_ID, "strike_id": strike_id} for strike_id in strike_ids]
+
+    def sport_events(self, event_ids=None):
+        return self.events
+
+    def markets(self, event_id):
+        return self.markets_list
+
+    def submit_fill_or_kill(self, strike_id, price, stake, external_id):
+        self.submits.append((strike_id, price, stake, external_id))
+        if isinstance(self.submit, Exception):
+            raise self.submit
+        return self.submit or (200, {"data": {"success": True, "order": {
+            "order_id": "px-1", "status": "open", "filled_quantity": 0, "open_quantity": stake}}})
+
+    def get_order(self, order_id):
+        if self.order_reads:
+            return self.order_reads.pop(0)
+        stake = self.submits[-1][2]
+        return 200, {"data": {"order_id": order_id, "status": "open", "filled_quantity": stake, "open_quantity": 0,
+                              "fee": 0.25}}
+
+    def cancel_order(self, order_id, external_id):
+        self.cancels.append(order_id)
+        return 200, {"data": {"success": True}}
+
+
+@pytest.fixture
+def store(tmp_path):
+    held = BetsStore(tmp_path / "bets.duckdb", 0)
+    held.log_source_run("prophetx", NOW - timedelta(seconds=40), NOW - timedelta(seconds=30), True, None, 3)
+    yield held
+    held.close()
+
+
+def desk_with(store, client, quote=None, now=NOW):
+    return ManualProphetXDesk(client, store, lambda _line: dict(QUOTE if quote is None else quote), now=lambda: now,
+                              sleep=lambda _sec: None, clock=iter(range(0, 1000)).__next__)
+
+
+def request(**changes):
+    return validate_prophetx_place_request({**BODY, **changes})
+
+
+def test_validate_names_what_is_wrong():
+    assert validate_prophetx_place_request({**BODY, "prophetxReadAt": None}).startswith("prophetxReadAt")
+    assert validate_prophetx_place_request({**BODY, "stake": 0.5}).startswith("stake")
+    assert validate_prophetx_place_request({**BODY, "betTypeId": 1})["points"] is None
+    assert validate_prophetx_place_request({**BODY, "novigReadAt": "soon"}).startswith("novigReadAt")
+    assert request()["stake"] == 50 and request()["kalshi_read_at"] is None
+
+
+def test_a_click_finds_the_strike_by_the_games_ids_and_sends_one_fill_or_kill_at_the_best_price(store):
+    client = ScriptedProphetX()
+    result = desk_with(store, client).place(request())
+    assert client.submits == [("c" * 32, -110, 50, "xman-abc12345-0001")]
+    assert result["status"] == "filled" and result["fee"] == 0.25
+    assert result["message"] == "Bet $50.00 at -110 on ProphetX (fee $0.25)."
+
+
+def test_without_strike_ids_the_game_is_found_by_its_teams_and_start(store):
+    client = ScriptedProphetX(events=[EVENT, {**EVENT, "event_id": 1, "scheduled": "2026-11-02T21:25:00Z"}])
+    assert desk_with(store, client, {**QUOTE, "strikeIds": []}).place(request())["status"] == "filled"
+    assert client.submits[0][0] == "c" * 32
+
+
+def test_the_same_click_is_never_sent_twice(store):
+    client = ScriptedProphetX()
+    desk_with(store, client).place(request())
+    again = desk_with(store, client).place(request(prophetxReadAt="2026-11-01T15:30:00Z"))
+    assert again["status"] == "refused" and "already sent" in again["message"]
+    assert len(client.submits) == 1
+
+
+@pytest.mark.parametrize("quote_changes, client_changes, words", [
+    ({"eventStart": "2026-11-01T14:00:00Z"}, {}, "has started"),
+    ({}, {"events": [{**EVENT, "status": "live"}]}, "has started"),
+    ({}, {"events": []}, "no longer lists"),
+    ({"line": {**LINE, "awayTeam": "Kansas City Chiefs", "homeTeam": "Buffalo Bills"}}, {}, "other way round"),
+    ({"line": {**LINE, "points": 4.5}}, {}, "0 ProphetX strikes"),
+    ({"lineStrikeId": "e" * 32}, {}, "is not the one"),
+    ({"line": {**LINE, "betType": "moneyline", "period": "1H", "points": None}}, {}, "tied period"),
+    ({"ok": False, "detail": "the board holds 0 ProphetX lines"}, {}, "the board holds 0"),
+    ({}, {"markets": [{**SPREAD, "selections": [[offer("c" * 32, -110, 0, 12, "Buffalo Bills", 3.5, "+3.5")],
+                                                SPREAD["selections"][1]]}]}, "nothing rests"),
+])
+def test_refusals_send_nothing(store, quote_changes, client_changes, words):
+    client = ScriptedProphetX(**client_changes)
+    result = desk_with(store, client, {**QUOTE, **quote_changes}).place(request())
+    assert result["status"] == "refused" and words in result["message"], result["message"]
+    assert client.submits == []
+
+
+def test_a_price_more_than_a_tenth_of_a_cent_worse_refuses(store):
+    client = ScriptedProphetX()
+    result = desk_with(store, client).place(request(ticketAllIn=0.51))
+    assert result["status"] == "refused" and "-110 now" in result["message"]
+
+
+def test_holding_the_other_side_refuses(store):
+    store.upsert_bets([{"id": "prophetx:held", "venue": "prophetx", "source": "prophetx_api", "status": "open",
+                        "unmatchable": None, "venueIds": {"strikeId": "d" * 32}, "placedAt": "2026-11-01T12:00:00Z"}], NOW)
+    result = desk_with(store, ScriptedProphetX()).place(request())
+    assert result["status"] == "refused" and "other side" in result["message"]
+
+
+def test_a_stale_or_failing_prophetx_read_refuses(store):
+    store.log_source_run("prophetx", NOW - timedelta(seconds=5), NOW, False, "HTTP 500", 0)
+    result = desk_with(store, ScriptedProphetX()).place(request())
+    assert result["status"] == "refused" and "read is failing" in result["message"]
+
+
+def test_a_part_fill_reads_partial_and_nothing_filled_reads_unfilled(store):
+    partial = ScriptedProphetX(order_reads=[(200, {"data": {"status": "canceled", "filled_quantity": 20, "open_quantity": 0}})])
+    assert desk_with(store, partial).place(request())["status"] == "partial"
+    none = ScriptedProphetX(order_reads=[(200, {"data": {"status": "canceled", "filled_quantity": 0, "open_quantity": 0}})])
+    result = desk_with(store, none).place(request(clickId="abc12345-0002", prophetxReadAt="2026-11-01T15:00:01Z"))
+    assert result["status"] == "unfilled" and "Nothing rests" in result["message"]
+
+
+def test_an_order_still_resting_after_the_window_gets_one_cancel(store):
+    resting = (200, {"data": {"status": "open", "filled_quantity": 0, "open_quantity": 50}})
+    client = ScriptedProphetX(order_reads=[resting] * 10)
+    result = desk_with(store, client).place(request())
+    assert result["status"] == "unknown" and client.cancels == ["px-1"]
+
+
+def test_a_refusal_or_no_answer_is_named(store):
+    refused = ScriptedProphetX(submit=(400, {"message": "invalid_price"}))
+    result = desk_with(store, refused).place(request())
+    assert result["status"] == "rejected" and "invalid_price" in result["message"]
+    silent = ScriptedProphetX(submit=OSError("timed out"))
+    result = desk_with(store, silent).place(request(clickId="abc12345-0003", prophetxReadAt="2026-11-01T15:00:00Z"))
+    assert result["status"] == "unknown" and "did not answer" in result["message"]
+
+
+def test_team_names_agree_on_words_not_spelling():
+    assert names_agree("Kansas City Chiefs", "Chiefs") and names_agree("Miami (OH)", "Miami OH")
+    assert not names_agree("Miami Dolphins", "Miami (OH)") and not names_agree("", "Chiefs")
