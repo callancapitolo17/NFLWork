@@ -116,7 +116,7 @@
     edges: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
     teasers: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
     bets: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
-    // The last /balances.json body and the last fetch's failure (the Edges tab's Balances strip).
+    // The last /balances.json body and the last fetch's failure (the Edges tab's Balances line).
     balances: null,
     balancesError: null,
     held: { records: [], crosswalk: [], pins: [], fillFairs: [] },
@@ -244,7 +244,7 @@
     renderAll();
   }
 
-  // Each book's balance for the Edges tab's strip, on the bets poll's cadence;
+  // Each book's balance for the Edges tab's Balances line, on the bets poll's cadence;
   // a failure keeps the last numbers and says why.
   async function pollBalances() {
     try {
@@ -255,7 +255,7 @@
     } catch (error) {
       state.balancesError = error.message;
     }
-    balancesView.fillStrip(el("edges-balances"), balancesView.viewOf(state.balances, state.balancesError, Date.now()));
+    balancesView.fillLine(el("edges-balances"), balancesView.viewOf(state.balances, state.balancesError, Date.now()));
   }
 
   // After a write: the bets now, then both lists on bets the runner read now.

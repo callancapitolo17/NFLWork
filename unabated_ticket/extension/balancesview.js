@@ -1,96 +1,67 @@
-// The Balances strip on the Edges tab, shared by the panel (panel.js) and the
+// The Balances line on the Edges tab, shared by the panel (panel.js) and the
 // phone page (server/phone/phone.js) so both read the same. No fetch, no
-// chrome.*; viewOf is pure, fillStrip touches only the <details> it is handed.
+// chrome.*; viewOf is pure, fillLine touches only the element it is handed.
 // Loaded as a plain <script> (exposes globalThis.UnabatedBalancesView) and via
 // require() in tests/balancesview.test.js. Nothing here writes anywhere.
 //
 // Input: the bets service's GET /balances.json body (bets_service/balances.py):
 //   {generatedAt, balances: {venue: {cash, inBets, available, creditLimit, fetchedAt, error, failedAt?}}}
 // with dollars or null; a venue never read has cash null.
-// Output: viewOf() -> {loaded, summary, rows, totalAvailableText, notes}, the
-// strip's text; fillStrip(details, view) lays it out (both pages' markup:
-// <details class="balances-strip"><summary></summary><div class="balances-body"></div></details>). Cal 2026-10-31: Kalshi, Novig and Polymarket US with their
-// sub-accounts only; collapsed it shows the three main accounts.
+// Output: viewOf() -> {loaded, items: [{label, text, stale, why}], error}; fillLine
+// lays it out as one line: "Available  Kalshi $4,872  Novig $24  Place $1,018  Poly $980".
+// Cal 2026-10-31: money he can bet now only (no in-bets, no total, no bot
+// accounts); Novig's Place sub-account as its own item, labelled just "Place".
 
 (function (root) {
   "use strict";
 
-  // Row order and words. A venue the service sends that is not listed here is
-  // not shown (Cal picked these books; a new one is added here on purpose).
-  const BALANCE_ROWS = [
-    { venue: "kalshi", label: "Kalshi", summaryLabel: "Kalshi", isSubaccount: false },
-    { venue: "kalshi_bot", label: "Kalshi · Bot", summaryLabel: null, isSubaccount: true },
-    { venue: "novig", label: "Novig", summaryLabel: "Novig", isSubaccount: false },
-    { venue: "novig_place", label: "Novig · Place", summaryLabel: null, isSubaccount: true },
-    { venue: "novig_bot", label: "Novig · Bot", summaryLabel: null, isSubaccount: true },
-    { venue: "polymarket_us", label: "Polymarket US", summaryLabel: "Poly", isSubaccount: false },
+  // The line's items, in order. A venue the service sends that is not listed
+  // here is not shown (the bots' wallets live on the tracker's Balances tab).
+  const BALANCE_ITEMS = [
+    { venue: "kalshi", label: "Kalshi" },
+    { venue: "novig", label: "Novig" },
+    { venue: "novig_place", label: "Place" },
+    { venue: "polymarket_us", label: "Poly" },
   ];
-  // A reading older than this, or one whose last read failed, is flagged.
+  // A reading older than this, or one whose last read failed, is amber.
   const STALE_AFTER_MS = 5 * 60 * 1000;
 
-  function fmtDollars(value, wholeDollars) {
-    const digits = wholeDollars ? 0 : 2;
+  function fmtWholeDollars(value) {
     const text = Math.abs(value).toLocaleString("en-US", {
-      style: "currency", currency: "USD", minimumFractionDigits: digits, maximumFractionDigits: digits,
+      style: "currency", currency: "USD", minimumFractionDigits: 0, maximumFractionDigits: 0,
     });
     return value < 0 ? `-${text}` : text;
   }
 
   function fmtAge(fetchedAt, nowMs) {
     const minutes = Math.max(0, Math.round((nowMs - Date.parse(fetchedAt)) / 60000));
-    if (minutes < 60) return `${minutes} min ago`;
-    return `${Math.round(minutes / 60)} h ago`;
+    return minutes < 60 ? `${minutes} min ago` : `${Math.round(minutes / 60)} h ago`;
   }
 
-  /** What a book can bet now: `available` when the service reports it, else cash. */
-  function availableOf(reading) {
-    return reading.available ?? reading.cash;
-  }
-
-  function rowOf(spec, reading, nowMs) {
+  /** One book's item; `why` (the tooltip) says what is wrong with an amber one. */
+  function itemOf(spec, reading, nowMs) {
     if (!reading || reading.cash === null || reading.cash === undefined) {
-      return { ...spec, read: false, available: null, inBets: null, availableText: "unavailable", inBetsText: "",
-        why: reading && reading.error ? reading.error : "no reading yet" };
+      return { label: spec.label, text: "—", stale: true, why: reading && reading.error ? reading.error : "no reading yet" };
     }
-    const available = availableOf(reading);
+    const available = reading.available ?? reading.cash;
     const ageMs = reading.fetchedAt ? nowMs - Date.parse(reading.fetchedAt) : Infinity;
-    const stale = Boolean(reading.error) || ageMs > STALE_AFTER_MS;
-    return {
-      ...spec, read: true, available, inBets: reading.inBets,
-      availableText: fmtDollars(available, false),
-      inBetsText: reading.inBets === null ? "—" : fmtDollars(reading.inBets, false),
-      stale, why: reading.error || null,
-      ageText: reading.fetchedAt ? fmtAge(reading.fetchedAt, nowMs) : "never",
-    };
+    const age = reading.fetchedAt ? fmtAge(reading.fetchedAt, nowMs) : "never";
+    let why = null;
+    if (reading.error) why = `last read failed (${reading.error}); this is from ${age}`;
+    else if (ageMs > STALE_AFTER_MS) why = `read ${age}`;
+    return { label: spec.label, text: fmtWholeDollars(available), stale: why !== null, why };
   }
 
   /**
-   * The strip's text from a /balances.json body (null while none has loaded).
+   * The line's text from a /balances.json body (null while none has loaded).
    * `error` is the last fetch's failure message, or null.
    */
   function viewOf(payload, error, nowMs) {
     const balances = (payload && payload.balances) || {};
-    const rows = BALANCE_ROWS
+    const items = BALANCE_ITEMS
       .filter((spec) => spec.venue in balances)
-      .map((spec) => rowOf(spec, balances[spec.venue], nowMs));
-    const read = rows.filter((row) => row.read);
-    const summary = rows
-      .filter((row) => row.summaryLabel !== null)
-      .map((row) => ({ label: row.summaryLabel, text: row.read ? fmtDollars(row.available, true) : "—", stale: !row.read || row.stale }));
-    const notes = [];
-    for (const row of rows) {
-      if (!row.read) notes.push(`${row.label} unavailable: ${row.why}`);
-      else if (row.stale) notes.push(`${row.label} read ${row.ageText}${row.why ? " (last read failed)" : ""}`);
-    }
-    if (read.length < rows.length) notes.push("The total leaves out books shown as unavailable.");
-    if (error) notes.unshift(`Could not load balances: ${error}`);
-    return {
-      loaded: payload !== null,
-      summary,
-      rows,
-      totalAvailableText: fmtDollars(read.reduce((total, row) => total + row.available, 0), true),
-      notes,
-    };
+      .map((spec) => itemOf(spec, balances[spec.venue], nowMs));
+    return { loaded: payload !== null, items, error: error || null };
   }
 
   function make(doc, tag, className, text) {
@@ -101,43 +72,25 @@
   }
 
   /**
-   * Lays `view` out in the strip. Collapsed: the main accounts' available
-   * money; open: every account with available and in bets, then the notes.
-   * The <details> keeps its open state across refreshes. Hidden until the
-   * first /balances.json has loaded or failed.
+   * Lays `view` out in the line element. Hidden until the first
+   * /balances.json has loaded or failed; a failed fetch keeps the last
+   * numbers and turns the label amber with the reason as its tooltip.
    */
-  function fillStrip(details, view) {
-    const doc = details.ownerDocument;
-    const summary = details.querySelector("summary");
-    const body = details.querySelector(".balances-body");
-    details.hidden = !view.loaded && view.notes.length === 0;
-    summary.replaceChildren(make(doc, "span", "balances-label", "Balances"));
-    for (const item of view.summary) {
+  function fillLine(line, view) {
+    const doc = line.ownerDocument;
+    line.hidden = !view.loaded && view.error === null;
+    const label = make(doc, "span", view.error ? "balances-label stale" : "balances-label", "Available");
+    if (view.error) label.title = `Could not load balances: ${view.error}`;
+    const items = view.items.map((item) => {
       const part = make(doc, "span", item.stale ? "balances-item stale" : "balances-item", `${item.label} `);
       part.append(make(doc, "b", null, item.text));
-      summary.append(part);
-    }
-    if (view.notes.length) summary.append(make(doc, "span", "balances-warn", "!"));
-
-    const rows = view.rows.map((row) => {
-      const tr = make(doc, "tr", row.isSubaccount ? "sub" : null);
-      tr.append(make(doc, "td", null, row.label));
-      tr.append(make(doc, "td", row.read ? (row.stale ? "num stale" : "num") : "num stale", row.availableText));
-      tr.append(make(doc, "td", "num muted", row.inBetsText));
-      if (row.why) tr.title = row.why;
-      return tr;
+      if (item.why) part.title = item.why;
+      return part;
     });
-    const head = make(doc, "tr");
-    for (const text of ["Book", "Available", "In bets"]) head.append(make(doc, "th", null, text));
-    const total = make(doc, "tr", "total");
-    total.append(make(doc, "td", null, "Total"), make(doc, "td", "num", view.totalAvailableText), make(doc, "td"));
-    const table = make(doc, "table", "balances-table");
-    table.append(head, ...rows, total);
-    const notes = view.notes.map((text) => make(doc, "div", "balances-note", text));
-    body.replaceChildren(table, ...notes);
+    line.replaceChildren(label, ...items);
   }
 
-  const api = { BALANCE_ROWS, STALE_AFTER_MS, viewOf, fillStrip, fmtDollars };
+  const api = { BALANCE_ITEMS, STALE_AFTER_MS, viewOf, fillLine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.UnabatedBalancesView = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
