@@ -2426,12 +2426,12 @@
 
   let betsPollBusy = false;
   let betsPollTimer = null;
-  // The last /balances.json body and the last fetch's failure (the Edges tab's Balances strip).
+  // The last /balances.json body and the last fetch's failure (the Edges tab's Balances line).
   let balancesPayload = null;
   let balancesError = null;
 
   // One GET of /balances.json, on the bets poll's cadence; a failure keeps the
-  // last numbers and says why in the strip.
+  // last numbers and says why in the line.
   async function pollBalances() {
     try {
       const response = await fetch(`${state.betsSettings.serviceUrl}/balances.json`, { cache: "no-store" });
@@ -2443,7 +2443,7 @@
     } catch (error) {
       balancesError = error.message;
     }
-    balancesView.fillStrip(el("edges-balances"), balancesView.viewOf(balancesPayload, balancesError, Date.now()));
+    balancesView.fillLine(el("edges-balances"), balancesView.viewOf(balancesPayload, balancesError, Date.now()));
   }
 
   // One GET of /bets.json. Success replaces the source status and merges the

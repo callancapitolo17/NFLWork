@@ -2823,13 +2823,13 @@ visible. Its one write is the Bets page's Remove / Restore.
   bot subaccount (the taker's, `KALSHI_TAKER_SUBACCOUNT`) is its own row,
   **Kalshi · Bot** (`/portfolio/balance?subaccount=N` on the source's read key,
   2026-10-31); each wallet's read fails on its own (`balance_reads()`).
-- **Balances strip on Edges** (panel and phone, extension 0.34.0, Cal
-  2026-10-31): the same `/balances.json`, fetched with every bets poll (30 s),
-  laid out by `extension/balancesview.js` (shared by both pages). Collapsed it
-  shows Kalshi, Novig and Polymarket US's available money; opened, every
-  account (Kalshi · Bot, Novig · Place, Novig · Bot too) with available, in
-  bets and the total. Only those books show, by Cal's pick; a failed or
-  5-min-old read is amber with its age, a never-read one "unavailable".
+- **Balances line on Edges** (panel and phone; extension 0.34.0, one line since
+  0.35.0, Cal 2026-10-31): the same `/balances.json`, fetched with every bets
+  poll (30 s), laid out by `extension/balancesview.js` (shared by both pages)
+  as one line of what each book can bet now: Kalshi, Novig, Place (Novig's
+  Place sub-account) and Poly. No in-bets, no total, no bot wallets (those stay
+  on the tracker's Balances tab). A failed or 5-min-old read is amber with its
+  age as the tooltip; a never-read book shows "—".
 - **Open bets** (Open page) are split into **Upcoming** and, when any
   exist, **No start time** (BetOnline's report carries no game time, Kalshi
   NFL/CFB tickers only a date; futures and Kalshi combos none), each with

@@ -519,22 +519,8 @@ button, select, input { font: inherit; color: inherit; }
 .crosswalk-actions { display: flex; align-items: center; gap: 10px; padding: 4px 0 8px; }
 .reset-btn.armed { border-color: var(--against-fg); color: var(--against-fg); }
 
-/* Balances strip on Edges (extension/balancesview.js lays it out; Cal 2026-10-31). */
-.balances-strip { margin: 6px 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); font: 12px system-ui, sans-serif; }
-.balances-strip summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 6px 9px; cursor: pointer; color: var(--ink-2); list-style: none; }
-.balances-strip summary::-webkit-details-marker { display: none; }
-.balances-strip summary::after { content: "\25BE"; margin-left: auto; color: var(--muted); }
-.balances-strip[open] summary::after { content: "\25B4"; }
-.balances-strip .balances-label { color: var(--muted); }
-.balances-strip .balances-item b { font-family: var(--figure); color: var(--ink); font-weight: 600; }
-.balances-strip .balances-item.stale b, .balances-strip .balances-warn { color: var(--warn-fg); }
-.balances-table { width: 100%; border-collapse: collapse; border-top: 1px solid var(--border-soft); }
-.balances-table th { font-weight: 500; color: var(--muted); text-align: right; padding: 4px 9px; font-size: 11px; }
-.balances-table th:first-child { text-align: left; }
-.balances-table td { padding: 4px 9px; border-top: 1px solid var(--border-soft); color: var(--ink); }
-.balances-table td.num { text-align: right; font-family: var(--figure); }
-.balances-table td.muted { color: var(--muted); }
-.balances-table td.stale { color: var(--warn-fg); }
-.balances-table tr.sub td:first-child { color: var(--muted); }
-.balances-table tr.total td { font-weight: 600; }
-.balances-note { padding: 4px 9px 6px; color: var(--warn-fg); font-size: 11px; }
+/* Balances line on Edges: money each book can bet now (extension/balancesview.js; Cal 2026-10-31). */
+.balances-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; margin: 6px 0 8px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); font: 12px system-ui, sans-serif; color: var(--ink-2); }
+.balances-line .balances-label { color: var(--muted); }
+.balances-line .balances-item b { font: 600 12.5px var(--figure); color: var(--ink); }
+.balances-line .stale, .balances-line .balances-item.stale b { color: var(--warn-fg); }
