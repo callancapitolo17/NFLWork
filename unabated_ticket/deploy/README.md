@@ -168,7 +168,9 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
     key. State: `curl -s 127.0.0.1:8095/taker.json`.
 12. **The Ticket's Place key** (2026-10-16, Cal: its own key, "Unabated Place").
     At kalshi.com > Account & security > API keys, make an RSA key on the MAIN
-    account (no subaccount) with read + trade, and save its .pem. From the Mac:
+    account (no subaccount) with read + trade + transfer (transfer since
+    2026-11-02: Place moves cash into a basketball market's Kalshi pot
+    before ordering, `bets_service/kalshi_shards.py`), and save its .pem. From the Mac:
     `scp -i ~/.ssh/oracle_mlb.key ~/Downloads/<file>.pem
     ubuntu@100.66.14.98:unabated-data/kalshi_place.pem`, then on the VM `chmod
     600 ~/unabated-data/kalshi_place.pem`, add `KALSHI_PLACE_API_KEY_ID=<its id>`
