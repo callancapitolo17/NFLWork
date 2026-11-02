@@ -248,27 +248,26 @@ test("the decision signature changes with the ask, not with the clock", () => {
   assert.notEqual(taker.decisionSignature(skipped), taker.decisionSignature({ ...skipped, unabatedPrice: -150 }));
 });
 
-test("a derived moneyline trades only when Kalshi's market names the row's team and not the other", () => {
-  const state = boardWithEdge(ML_WSU_KEY, 0.05, { price: -400 });
-  const row = rowOf(state, ML_WSU_KEY);
-  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Washington St." }, row), true);
-  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Duquesne" }, row), false);
-  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "" }, row), false);
-  assert.equal(taker.moneylineTeamMatches(null, row), false);
-  // A shared first word names neither side for sure.
-  const sameCity = { ...row, awayTeam: "Los Angeles Chargers", homeTeam: "Los Angeles Rams" };
-  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Los Angeles R" }, sameCity), false);
-  // Kalshi's apostrophes, okinas and accents read as Unabated's plain spelling; the other team still fails.
-  const hawaii = { ...row, awayTeam: "Hawaii", homeTeam: "Northern Illinois", sideIndex: 0 };
-  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Hawai'i" }, hawaii), true);
-  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Hawai\u02bbi" }, hawaii), true);
-  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Hawai\u2019i" }, hawaii), true);
-  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "Northern Illinois" }, hawaii), false);
-  const sanJose = { ...row, awayTeam: "San Jose State", homeTeam: "Fresno State", sideIndex: 0 };
-  assert.equal(taker.moneylineTeamMatches({ yes_sub_title: "San Jos\u00e9 St." }, sanJose), true);
+test("Kalshi's YES team is read off its ticker codes: away first, home second, never the team names", () => {
+  assert.deepEqual(taker.kalshiYesTeamSide("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36"), { side: 1 });
+  assert.deepEqual(taker.kalshiYesTeamSide("KXNCAAFSPREAD-26SEP19DUQWSU-DUQ3"), { side: 0 });
+  assert.deepEqual(taker.kalshiYesTeamSide("KXNCAAFGAME-26SEP19DUQWSU-WSU"), { side: 1 });
+  // The South Dakota State -15.5 Place refused on 2026-10-31: both names start "South".
+  assert.deepEqual(taker.kalshiYesTeamSide("KXNCAAFSPREAD-26OCT31SDAKSDST-SDST16"), { side: 1 });
+  assert.deepEqual(taker.kalshiYesTeamSide("KXNCAAFGAME-26OCT31SDAKSDST-SDAK"), { side: 0 });
+  // A time in the event part is skipped.
+  assert.deepEqual(taker.kalshiYesTeamSide("KXMLBGAME-26JUL011905NYYBOS-NYY"), { side: 0 });
+  // A code that is neither, or both, of the pair refuses; so does anything unreadable.
+  assert.match(taker.kalshiYesTeamSide("KXNCAAFSPREAD-26SEP19DUQWSU-HAW17").reason, /neither/);
+  assert.match(taker.kalshiYesTeamSide("KXNCAAFGAME-26SEP19ABAB-AB").reason, /both/);
+  assert.match(taker.kalshiYesTeamSide("KXNCAAFGAME-26SEP19DUQWSU-DUQWSU").reason, /neither/);
+  assert.match(taker.kalshiYesTeamSide("KXNCAAFGAME-26SEP19DUQWSU-TIE").reason, /neither/);
+  assert.match(taker.kalshiYesTeamSide("KXNCAAFGAME-DUQWSU").reason, /series-event-market/);
+  assert.match(taker.kalshiYesTeamSide("").reason, /series-event-market/);
+  assert.match(taker.kalshiYesTeamSide("KXNCAAFGAME-DUQWSU-WSU").reason, /no readable team codes/);
 });
 
-test("the market check: active, the row's strike, the series' period, the side's sign, and the YES title's team", () => {
+test("the market check: active, the row's strike, the series' period, the side's sign, and the YES team code", () => {
   const state = boardWithEdge(WSU_ALT_KEY, 0.05);
   const wsuRow = rowOf(state, WSU_ALT_KEY);
   const ticker = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36";
@@ -290,14 +289,21 @@ test("the market check: active, the row's strike, the series' period, the side's
   const duqRow = rowOf(duqState, DUQ_ALT_KEY);
   assert.equal(taker.marketMismatch(spread, duqRow, no), null);
   assert.match(taker.marketMismatch(spread, duqRow, yes), /YES of a wins-by-over market for a 35.5 row/);
-  // The Duquesne +35.5 row buys NO of the same market: YES must still name Washington State.
-  assert.match(taker.marketMismatch({ ...spread, yes_sub_title: "Duquesne wins by over 35.5 points" }, duqRow, no), /does not name side 1/);
-  // The Hawai'i -16.5 Place Kalshi refused on 2026-10-21: YES names Hawai'i, Unabated says Hawaii.
-  const hawTicker = "KXNCAAFSPREAD-26OCT24HAWNIU-HAW17";
-  const hawRow = { ...wsuRow, awayTeam: "Hawaii", homeTeam: "Northern Illinois", sideIndex: 0, points: -16.5 };
-  const hawSpread = { ticker: hawTicker, status: "active", floor_strike: 16.5, yes_sub_title: "Hawai'i wins by over 16.5 points" };
-  assert.equal(taker.marketMismatch(hawSpread, hawRow, { side: "yes", ticker: hawTicker }), null);
-  assert.match(taker.marketMismatch({ ...hawSpread, yes_sub_title: "Northern Illinois wins by over 16.5 points" }, hawRow, { side: "yes", ticker: hawTicker }), /does not name side 0/);
+  // The Duquesne +35.5 row buys NO of the same market: YES must still be Washington State, the home code.
+  const duqTicker = "KXNCAAFSPREAD-26SEP19DUQWSU-DUQ36";
+  assert.match(taker.marketMismatch({ ...spread, ticker: duqTicker }, duqRow, { side: "no", ticker: duqTicker }), /YES of KXNCAAFSPREAD-26SEP19DUQWSU-DUQ36 is Kalshi's away team, not/);
+  // The title is never read: a wrong title on the right code passes, the code decides.
+  assert.equal(taker.marketMismatch({ ...spread, yes_sub_title: "Duquesne wins by over 35.5 points" }, duqRow, no), null);
+  // The South Dakota State -15.5 Place refused on 2026-10-31 ("South" is in both names).
+  const sdTicker = "KXNCAAFSPREAD-26OCT31SDAKSDST-SDST16";
+  const sdRow = { ...wsuRow, awayTeam: "South Dakota", homeTeam: "South Dakota State", sideIndex: 1, points: -15.5 };
+  const sdSpread = { ticker: sdTicker, status: "active", floor_strike: 15.5, yes_sub_title: "South Dakota St. wins by over 15.5 points" };
+  assert.equal(taker.marketMismatch(sdSpread, sdRow, { side: "yes", ticker: sdTicker }), null);
+  // Unabated filing that ladder under the other team (the Purdue@Gonzaga flip) still refuses.
+  assert.match(taker.marketMismatch(sdSpread, { ...sdRow, sideIndex: 0 }, { side: "yes", ticker: sdTicker }), /is Kalshi's home team, not South Dakota$/);
+  // A neutral site where Unabated calls the other team home refuses too.
+  const flipped = { ...sdRow, awayTeam: "South Dakota State", homeTeam: "South Dakota", sideIndex: 0 };
+  assert.match(taker.marketMismatch(sdSpread, flipped, { side: "yes", ticker: sdTicker }), /is Kalshi's home team, not South Dakota State/);
   // A total: YES is Over, NO is Under, at the row's strike.
   const totalTicker = "KXNCAAFTOTAL-26SEP19DUQWSU-60";
   const total = { ticker: totalTicker, status: "active", floor_strike: 59.5, yes_sub_title: "Over 59.5 points scored" };
@@ -313,7 +319,8 @@ test("the market check: active, the row's strike, the series' period, the side's
   const mlRow = rowOf(mlState, ML_WSU_KEY);
   const mlTicker = "KXNCAAFGAME-26SEP19DUQWSU-WSU";
   assert.equal(taker.marketMismatch({ ticker: mlTicker, status: "active", yes_sub_title: "Washington St." }, mlRow, { side: "yes", ticker: mlTicker }), null);
-  assert.match(taker.marketMismatch({ ticker: mlTicker, status: "active", yes_sub_title: "Duquesne" }, mlRow, { side: "yes", ticker: mlTicker }), /is not/);
+  const duqMl = "KXNCAAFGAME-26SEP19DUQWSU-DUQ";
+  assert.match(taker.marketMismatch({ ticker: duqMl, status: "active", yes_sub_title: "Duquesne" }, mlRow, { side: "yes", ticker: duqMl }), /is Kalshi's away team/);
 });
 
 // An open Kalshi bet of Cal's on the slice's game, as /bets.json lists it.
@@ -438,7 +445,8 @@ test("a moneyline's Kalshi market is the one of two on its event whose title nam
   const tie = { ticker: `${event}-TIE`, event_ticker: event, yes_sub_title: "Tie" };
   assert.match(taker.kalshiMoneylineFromMarkets(row, [duq, wsu, tie], event).detail, /lists 3 markets/);
   assert.match(taker.kalshiMoneylineFromMarkets(row, [], event).detail, /lists 0 markets/);
-  assert.match(taker.kalshiMoneylineFromMarkets(row, [duq, { ...wsu, yes_sub_title: "Somebody" }], event).detail, /do not name/);
+  assert.match(taker.kalshiMoneylineFromMarkets(row, [duq, { ...wsu, ticker: `${event}-XYZ` }], event).detail, /do not name/);
+  assert.match(taker.kalshiMoneylineFromMarkets(row, [duq, { ...wsu, ticker: `${event}-DUQ` }], event).detail, /do not name/);
   // A market of another event in the list is not counted.
   assert.equal(taker.kalshiMoneylineFromMarkets(row, [duq, wsu, { ...wsu, event_ticker: "KXNCAAFGAME-X" }], event).ticker, `${event}-WSU`);
 });
