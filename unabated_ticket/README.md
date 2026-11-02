@@ -2980,7 +2980,7 @@ subaccount. No shadow mode (Cal, 2026-10-14).
 | Holdings | the pass runs only when the bets service's Kalshi poll succeeded within the last 5 min (conditional Kelly is sized on it); otherwise it decides nothing |
 | Min shrunk edge | the live edge × the row's tail-flex shrink (#208, the pooled tau the runner measures; Tail flex above) must reach the settings' **Min shrunk edge** (the Edges list's own floor, 1% default), else `edge_short` with the shrunk edge and the shrink in the detail; the stake is Kelly on the raw live edge; with the floor on, a row with no shrink is `size_declined`, never sized at full; a floor of 0 turns the gate off |
 | Size | floor(stake / all-in), cut to the depth at the ask |
-| Market check | before every order Kalshi's market is read: it must be `active`, its series the row's period, a spread's or total's `floor_strike` the row's number, YES the favorite's side of a spread and the Over of a total, a spread's or moneyline's YES title the team YES is on; else `market_mismatch`, nothing sent |
+| Market check | before every order Kalshi's market is read: it must be `active`, its series the row's period, a spread's or total's `floor_strike` the row's number, YES the favorite's side of a spread and the Over of a total, a spread's or moneyline's YES team code the team YES is on (Kalshi's tickers list away then home, `26OCT31SDAKSDST-SDST16` = YES on home; team names are never compared, so "South Dakota St." can't be confused with South Dakota; a neutral-site game whose home team Kalshi and Unabated disagree on refuses); else `market_mismatch`, nothing sent |
 | Order | **immediate-or-cancel** limit buy at that ask: what does not fill at once Kalshi cancels in the same request (`remaining_count` 0), so a bot order never rests. A reply without that count, or with contracts left open, is cancelled **by market** (a bare cancel routes to exchange shard 0 and 404s while an order rests), a 404 checked against Kalshi's resting list; the desk's own 30 s sweep retries an unconfirmed cancel and cancels any `ubot-` order resting that no row knows |
 | Adds | a second order on a game goes only once the bot's earlier fill on it is among the held bets the stake was sized on (`unseen_fill` until the Kalshi poll has it): conditional Kelly must see the fill first |
 | Tag | every order's `client_order_id` starts `ubot-` (`taker.duckdb::taker_orders`) |
@@ -3278,9 +3278,11 @@ from wherever the phone reaches the VM over Tailscale.
    markets often list one team only) is found in Kalshi's own market list
    (2026-10-19, 0.30.0): every Kalshi spread or total rung on the game names
    one league and event (`kalshiMoneylineEventOf`), `KX<league>GAME` must list
-   exactly two markets on that event, and the one whose title names the row's
-   team is bought YES (`kalshiMoneylineFromMarkets`); a tie market, a third
-   market or a title naming neither team refuses. Place only, never the bot.
+   exactly two markets on that event, and the one whose ticker code is the
+   row's team (away code first in the event part, home second;
+   `kalshiYesTeamSide`) is bought YES (`kalshiMoneylineFromMarkets`); a tie
+   market, a third market or a code naming neither team refuses. Place only,
+   never the bot.
    A half's moneyline refuses at both venues: whether a two-way half winner
    voids a tie or pays it as a loss is unchecked, and bought at Unabated's
    tie-no-bet fair a contract that loses the tie overpays by about P(tie).

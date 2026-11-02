@@ -493,11 +493,11 @@ function axisOfBetType(betType) {
   return null;
 }
 
-// Words of a team name, lowercase, without the filler Kalshi and Unabated
+// Words of a team name, lowercase, without the filler venues and Unabated
 // spell differently ("Washington St." / "Washington State Cougars").
 // Apostrophes and okinas are dropped, not split on, and accents are folded:
-// Kalshi writes "Hawai'i" and "San José St" where Unabated writes "Hawaii"
-// and "San Jose State".
+// "Hawai'i" and "San José St" read as Unabated's "Hawaii" and "San Jose
+// State". Novig's moneyline sides only; Kalshi's team is read off its codes.
 const TEAM_FILLER_WORDS = new Set(["st", "state", "university", "univ", "the", "of", "u"]);
 const ACCENT_MARKS_RE = /[\u0300-\u036f]/g;
 const APOSTROPHES_RE = /['\u2018\u2019\u02bb\u02bc`]/g;
@@ -506,31 +506,49 @@ function teamWords(name) {
   return folded.split(/[^a-z0-9]+/).filter((word) => word && !TEAM_FILLER_WORDS.has(word));
 }
 
-// Does Kalshi's market's YES title name the row's game's team on `sideIndex`?
-// Its first word must be a word of that team and not of the other team
-// ("Los Angeles R" against "Los Angeles C" fails: neither side is sure).
-//   market  Kalshi's GET /markets/<ticker> `market` object (yes_sub_title)
-function titleNamesSide(market, row, sideIndex) {
-  const title = market && (market.yes_sub_title || market.title);
-  const first = teamWords(title)[0];
-  if (!first) return false;
-  const named = sideIndex === 0 ? row.awayTeam : row.homeTeam;
-  const other = sideIndex === 0 ? row.homeTeam : row.awayTeam;
-  return teamWords(named).includes(first) && !teamWords(other).includes(first);
+// Which Unabated side (0 away, 1 home) Kalshi's market's YES team is, read
+// off Kalshi's own ticker codes, never a team name: the event part lists the
+// away code then the home code ("26OCT31SDAKSDST" = SDAK at SDST), and the
+// market part starts with YES's code ("SDST16" on a spread, "SDST" on a
+// moneyline). Names failed here: "South Dakota St." against South Dakota /
+// South Dakota State (2026-10-31). A code that is both the start and the end
+// of the pair, or neither, refuses, as does a neutral-site game whose home
+// team Kalshi and Unabated disagree on (the safe way to be wrong).
+//   ticker  "KXNCAAFSPREAD-26OCT31SDAKSDST-SDST16"
+//   {side} or {reason}
+const KALSHI_EVENT_TEAMS_RE = /^\d{2}[A-Z]{3}\d{2}\d*([A-Z]+)$/;
+const KALSHI_MARKET_TEAM_RE = /^([A-Z]+)\d*$/;
+function kalshiYesTeamSide(ticker) {
+  const parts = String(ticker || "").split("-");
+  if (parts.length !== 3) return { reason: `ticker ${ticker} is not series-event-market` };
+  const pair = KALSHI_EVENT_TEAMS_RE.exec(parts[1]);
+  const yes = KALSHI_MARKET_TEAM_RE.exec(parts[2]);
+  if (!pair || !yes) return { reason: `ticker ${ticker} has no readable team codes` };
+  const codes = pair[1];
+  const code = yes[1];
+  const isAway = codes.length > code.length && codes.startsWith(code);
+  const isHome = codes.length > code.length && codes.endsWith(code);
+  if (isAway === isHome) return { reason: `${code} is ${isAway ? "both" : "neither"} of ${codes}'s teams on ${ticker}` };
+  return { side: isAway ? 0 : 1 };
 }
 
-// Does Kalshi's market for a derived moneyline name the row's team?
-function moneylineTeamMatches(market, row) {
-  return titleNamesSide(market, row, row.sideIndex);
+// Null when Kalshi's codes put YES on the row's `sideIndex` team, else why not.
+function yesTeamMismatch(ticker, row, sideIndex) {
+  const read = kalshiYesTeamSide(ticker);
+  if (read.reason) return read.reason;
+  if (read.side === sideIndex) return null;
+  const kalshiTeam = read.side === 0 ? "away" : "home";
+  const unabatedTeam = sideIndex === 0 ? row.awayTeam : row.homeTeam;
+  return `YES of ${ticker} is Kalshi's ${kalshiTeam} team, not ${unabatedTeam || `side ${sideIndex}`}`;
 }
 
 // Why Kalshi's market is not the one the row prices, or null when it is:
 // the market must be active; a spread's or total's floor_strike must be the
 // row's number ("wins by over 35.5" for -35.5, "Over 59.5" for 59.5); a
-// spread's or moneyline's YES title must name the team YES is on (the row's
-// own on a Y- contract, the other on an N- one). Read before every order so
-// a ticker that drifted from the row (a re-keyed rung, a closed market) is
-// never paid for.
+// spread's or moneyline's YES team code must be the team YES is on (the
+// row's own on a Y- contract, the other on an N- one; yesTeamMismatch). Read
+// before every order so a ticker that drifted from the row (a re-keyed rung,
+// a closed market) is never paid for.
 //   market    Kalshi's GET /markets/<ticker> `market` object
 //   contract  resolveKalshiContract's {side, ticker}
 function marketMismatch(market, row, contract) {
@@ -541,16 +559,16 @@ function marketMismatch(market, row, contract) {
   if (FULL_GAME_SERIES_RE.test(series) !== (row.periodTypeId === PERIOD_FULL_GAME)) {
     return `series ${series} is not the row's period (periodTypeId ${row.periodTypeId})`;
   }
-  if (row.betTypeId === BET_TYPE_MONEYLINE) {
-    return titleNamesSide(market, row, row.sideIndex) ? null : `"${market.yes_sub_title}" is not ${row.sideLabel}`;
-  }
+  const ticker = market.ticker || contract.ticker;
+  if (row.betTypeId === BET_TYPE_MONEYLINE) return yesTeamMismatch(ticker, row, row.sideIndex);
   const strike = Number(market.floor_strike);
   if (!Number.isFinite(strike) || strike !== Math.abs(row.points)) return `floor_strike ${market.floor_strike}, row is ${row.points}`;
   if (row.betTypeId === BET_TYPE_SPREAD) {
     // YES is "<team> wins by over X": the favorite's side, a negative number on the row.
     if ((contract.side === "yes") !== (row.points < 0)) return `${contract.side.toUpperCase()} of a wins-by-over market for a ${row.points} row`;
     const yesSide = contract.side === "yes" ? row.sideIndex : 1 - row.sideIndex;
-    if (!titleNamesSide(market, row, yesSide)) return `"${market.yes_sub_title}" does not name side ${yesSide}'s team`;
+    const teamMismatch = yesTeamMismatch(ticker, row, yesSide);
+    if (teamMismatch) return teamMismatch;
   } else if (row.betTypeId === BET_TYPE_TOTAL) {
     // YES is "Over X": the row's Over side.
     if ((contract.side === "yes") !== (row.sideIndex === SIDE_AWAY_OR_OVER)) return `${contract.side.toUpperCase()} of an Over market for the ${row.sideLabel} row`;
@@ -830,18 +848,18 @@ function kalshiMoneylineEventOf(row) {
 
 // The moneyline's market among Kalshi's markets of that event (GET
 // /markets?event_ticker=...): exactly two markets (a tie market makes it
-// 3-way, refused), one whose YES title names each team (titleNamesSide);
-// YES on the row's team's. marketMismatch re-checks the title before any order.
+// 3-way, refused), one whose ticker code is each team (kalshiYesTeamSide);
+// YES on the row's team's. marketMismatch re-checks the code before any order.
 //   {ticker, side: "yes", sourceKey: null, derived: true} or {reason: "no_ticker", detail}
 function kalshiMoneylineFromMarkets(row, markets, eventTicker) {
   const listed = (Array.isArray(markets) ? markets : []).filter((market) => market && market.event_ticker === eventTicker);
   if (listed.length !== 2) {
     return { reason: "no_ticker", detail: `Kalshi lists ${listed.length} markets on ${eventTicker}, expected 2 (one per team)` };
   }
-  const named = listed.filter((market) => titleNamesSide(market, row, row.sideIndex));
-  const other = listed.filter((market) => titleNamesSide(market, row, 1 - row.sideIndex));
+  const named = listed.filter((market) => kalshiYesTeamSide(market.ticker).side === row.sideIndex);
+  const other = listed.filter((market) => kalshiYesTeamSide(market.ticker).side === 1 - row.sideIndex);
   if (named.length !== 1 || other.length !== 1 || named[0] === other[0]) {
-    return { reason: "no_ticker", detail: `${eventTicker}'s markets (${listed.map((market) => `"${market.yes_sub_title}"`).join(", ")}) do not name ${row.awayTeam} and ${row.homeTeam} one each` };
+    return { reason: "no_ticker", detail: `${eventTicker}'s markets (${listed.map((market) => market.ticker).join(", ")}) do not name ${row.awayTeam} and ${row.homeTeam} one each by team code` };
   }
   return { ticker: named[0].ticker, side: "yes", sourceKey: null, derived: true };
 }
@@ -1023,7 +1041,7 @@ module.exports = {
   MAX_LINE_AGE_MS, KALSHI_TAKER_FEE_RATE, REASONS,
   kalshiAllInPrice, probToAmerican, unabatedAllInOf, candidateRows,
   contractFromRungs, derivedMainNumberContract, spreadTeamCodes, derivedMoneylineContract, resolveKalshiContract,
-  parseKalshiOrderbook, quoteOf, decideRow, decisionSignature, moneylineTeamMatches, marketMismatch, clientOrderIdOf,
+  parseKalshiOrderbook, quoteOf, decideRow, decisionSignature, kalshiYesTeamSide, marketMismatch, clientOrderIdOf,
   heldOtherSide, unpricedHolding, kalshiStartMsOf, earliestStartMs, eventTickerOf,
   novigMoneylineContract, kalshiMoneylineEventOf, kalshiMoneylineFromMarkets,
   resolveNovigOutcome, novigOutcomeIndex, novigContractOf, novigQuoteOf, novigStreamBookRead, novigHeldOtherSide, novigMarketMismatch,
