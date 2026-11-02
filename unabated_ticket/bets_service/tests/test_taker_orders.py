@@ -1,5 +1,5 @@
 """The bot's order desk (taker_orders.py) against a scripted Kalshi: the stop
-file, the open-cost ceiling (20% of the Kelly bankroll), the row written before the send,
+file, the open-cost ceiling (40% of the Kelly bankroll), the row written before the send,
 limit-at-the-ask bodies, the cancel routed by market and verified on a 404,
 the fills read, the unseen-fill rule, lost-order recovery, the untracked
 resting sweep, the final re-read and settlement freeing the money. No network."""
@@ -165,11 +165,11 @@ def test_the_ceiling_cuts_contracts_then_refuses(store, tmp_path, monkeypatch):
     assert kalshi.methods().count("POST") == 1
 
 
-def test_the_ceiling_is_a_fifth_of_the_kelly_bankroll_taker_js_sizes_on():
-    # Cal, 2026-10-28: $5,000 Kelly bankroll, open cost capped at 20% of it. The runner's
+def test_the_ceiling_is_two_fifths_of_the_kelly_bankroll_taker_js_sizes_on():
+    # Cal: $5,000 Kelly bankroll (2026-10-28), open cost capped at 40% of it (2026-11-02). The runner's
     # taker.js sizes every stake on its own KELLY_BANKROLL: the two must not drift apart.
     assert taker_orders.KELLY_BANKROLL == 5000.0
-    assert taker_orders.MAX_OPEN_COST == pytest.approx(1000.0)
+    assert taker_orders.MAX_OPEN_COST == pytest.approx(2000.0)
     taker_js = (Path(__file__).resolve().parents[2] / "server" / "taker.js").read_text()
     declared = re.search(r"^const KELLY_BANKROLL = (\d+);$", taker_js, re.MULTILINE)
     assert declared, "taker.js no longer declares const KELLY_BANKROLL = <dollars>;"

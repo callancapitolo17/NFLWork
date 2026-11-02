@@ -2971,7 +2971,7 @@ subaccount. No shadow mode (Cal, 2026-10-14).
 | Rule | Value |
 |---|---|
 | Bankroll / Kelly | $5,000 at 0.25 (Cal, 2026-10-28; $2,000 from 2026-10-16), `KELLY_BANKROLL` in both `server/taker.js` and `taker_orders.py` (a test holds them equal), conditional on every open bet (the panel's sizing; bot fills reach it through the Kalshi source). What Kelly divides by, not the money at risk: the Ceiling row caps that |
-| Ceiling | open bot cost (unsettled markets) never above 20% of the Kelly bankroll, $1,000 (`MAX_OPEN_COST_FRACTION`, Cal 2026-10-28; a flat $500 before); contracts cut to fit, else refused. The setup still funds a new subaccount $500 once (`SETUP_FUNDING`); the subaccount must hold the ceiling or Kalshi refuses the order |
+| Ceiling | open bot cost (unsettled markets) never above 40% of the Kelly bankroll, $2,000 (`MAX_OPEN_COST_FRACTION`, Cal 2026-11-02; 20% = $1,000 from 2026-10-28, a flat $500 before); contracts cut to fit, else refused. The setup still funds a new subaccount $500 once (`SETUP_FUNDING`); the subaccount must hold the ceiling or Kalshi refuses the order |
 | Price | Kalshi's live ask + 7% fee no more than 0.1c worse than Unabated's shown price, and no more than 1c better (a price that ran away from Unabated's snapshot is news its fair has not caught up with) |
 | Edge | 3% to 20% at that live price (fair read off Unabated's cheaper of its two prices) |
 | Best price | no live book beats it at the number (one is enough to skip, a thin one under $30 too; ties trade); outliers and Skips trade |

@@ -82,8 +82,9 @@ log = logging.getLogger(__name__)
 # The Kalshi bot's Kelly bankroll (Cal, 2026-10-28: $5,000). taker.js KELLY_BANKROLL sizes the
 # stakes and must equal it (tests/test_taker_orders.py reads taker.js to check).
 KELLY_BANKROLL = 5000.0
-# The ceiling on the bot's open cost, a share of its Kelly bankroll (Cal, 2026-10-28: 20%, was a flat $500).
-MAX_OPEN_COST_FRACTION = 0.20
+# The ceiling on the bot's open cost, a share of its Kelly bankroll (Cal, 2026-11-02: 40% = $2,000, so the
+# subaccount's idle cash is used at the same stakes; 20% from 2026-10-28, a flat $500 before).
+MAX_OPEN_COST_FRACTION = 0.40
 MAX_OPEN_COST = KELLY_BANKROLL * MAX_OPEN_COST_FRACTION
 # What taker_subaccount_setup moves into a new subaccount, once; a top-up is Cal's own transfer.
 SETUP_FUNDING = 500.0
