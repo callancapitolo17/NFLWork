@@ -16,7 +16,8 @@
 //   /health  from the health the board thread posts every HEALTH_POST_MS, plus
 //       the board thread's own state (running, restarting, restarts); ok is
 //       false while it restarts or has posted nothing for HEALTH_STALE_MS.
-//   /attach.json, /kalshi_quote.json, /novig_quote.json  one message to the
+//   /attach.json and the Place quotes (/kalshi_quote.json, /novig_quote.json,
+//   /polymarket_quote.json, /prophetx_quote.json, /bfa_quote.json)  one message to the
 //       board thread, answered when it is free (after the work in progress).
 // If the board thread dies, every waiting request answers 503, the copies are
 // dropped and a new board thread starts after BOARD_RESTART_DELAY_MS (doubling
@@ -205,6 +206,8 @@ function createBoardClient(options) {
     kalshiQuote: (params) => call("kalshiQuote", [params.toString()]).then((text) => new RawJson(text)),
     novigQuote: (params) => call("novigQuote", [params.toString()]).then((text) => new RawJson(text)),
     polymarketQuote: (params) => call("polymarketQuote", [params.toString()]).then((text) => new RawJson(text)),
+    prophetxQuote: (params) => call("prophetxQuote", [params.toString()]).then((text) => new RawJson(text)),
+    bfaQuote: (params) => call("bfaQuote", [params.toString()]).then((text) => new RawJson(text)),
   };
 }
 
@@ -223,6 +226,8 @@ function serveBoardCalls(port, runner, logWarning) {
     kalshiQuote: (search) => runner.kalshiQuote(new URLSearchParams(search)),
     novigQuote: (search) => runner.novigQuote(new URLSearchParams(search)),
     polymarketQuote: (search) => runner.polymarketQuote(new URLSearchParams(search)),
+    prophetxQuote: (search) => runner.prophetxQuote(new URLSearchParams(search)),
+    bfaQuote: (search) => runner.bfaQuote(new URLSearchParams(search)),
   };
   port.on("message", async (message) => {
     if (message.type !== "call") return;

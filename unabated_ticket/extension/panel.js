@@ -627,7 +627,7 @@
     return {
       bookId: ticket.book.id, live: ticket.live || null, eventId: ticket.eventId, periodTypeId: ticket.watch ? ticket.watch.periodTypeId : null,
       betTypeId: ticket.watch ? ticket.watch.betTypeId : null, sideIndex: ticket.sideIndex, points: line.points ?? null,
-      price: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice,
+      price: line.price, sourceFormat: line.sourceFormat, sourcePrice: line.sourcePrice, isAlt: ticket.isAlt === true,
     };
   }
 
@@ -642,7 +642,7 @@
     // ...and holds still once Place is pressed: what the confirm names is what is sent.
     const settled = placeState.phase === "confirm" || placeState.phase === "placing";
     if (!placeState.edited && !settled && document.activeElement !== view.venuePlaceStake) {
-      view.venuePlaceStake.value = venuePlace.stakeText(acted);
+      view.venuePlaceStake.value = venuePlace.stakeText(acted, ticket.book.id);
     }
     renderPlaceControls();
   }

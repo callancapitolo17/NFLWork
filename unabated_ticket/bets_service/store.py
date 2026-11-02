@@ -91,12 +91,13 @@ writer). Tables:
                UPSERTed whole on every write. Each column is an override; NULL
                means "the panel's default", and the defaults live only in
                extension/edgerows.js, never here. Never pruned (one row).
-  manual_orders  one row per Kalshi, Novig or Polymarket US order Cal placed
-               from the Ticket's Place button (manual_orders.py, novig_place.py,
-               polymarket_place.py): INSERTED
+  manual_orders  one row per Kalshi, Novig, Polymarket US, ProphetX or BFA order
+               Cal placed from the Ticket's Place button (manual_orders.py,
+               novig_place.py, polymarket_place.py, prophetx_place.py,
+               bfa_place.py): INSERTED
                before it is sent (status 'sending'), UPDATED with what the
-               venue answered and what filled. The client_order_id ('uman-',
-               'nman-' or 'pman-' + the click's id) is the key, so one click can never send
+               venue answered and what filled. The client_order_id ('uman-', 'nman-',
+               'pman-', 'xman-' or 'bman-' + the click's id) is the key, so one click can never send
                twice. Never pruned (a few a day); the bet itself reaches `bets`
                through the venue's poll.
   tau_samples  one row per (exchange, rung, side) the server runner's tail

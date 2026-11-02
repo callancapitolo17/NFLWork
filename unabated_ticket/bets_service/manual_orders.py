@@ -85,8 +85,8 @@ def validate_place_request(body: object) -> dict | str:
     {clickId, eventId, periodTypeId, betTypeId, sideIndex, points (null on a
     moneyline), stake (dollars), ticketAllIn (the Ticket's price, all-in, as a
     probability), kalshiReadAt (the Kalshi read the stake was sized on, ISO),
-    novigReadAt / polymarketReadAt / prophetxReadAt (the Novig / Polymarket US /
-    ProphetX read, ISO, or null when that venue was never read)}"""
+    novigReadAt / polymarketReadAt / prophetxReadAt / bfaReadAt (the Novig /
+    Polymarket US / ProphetX / BFA read, ISO, or null when that venue was never read)}"""
     if not isinstance(body, dict):
         return f"body must be an object, got {type(body).__name__}"
     click_id = body.get("clickId")
@@ -119,10 +119,13 @@ def validate_place_request(body: object) -> dict | str:
     prophetx_read_at = optional_read_at(body, "prophetxReadAt")
     if isinstance(prophetx_read_at, str):
         return prophetx_read_at
+    bfa_read_at = optional_read_at(body, "bfaReadAt")
+    if isinstance(bfa_read_at, str):
+        return bfa_read_at
     return {"click_id": click_id, **whole, "points": None if points is None else float(points),
             "stake": float(stake), "ticket_all_in": float(ticket_all_in), "kalshi_read_at": kalshi_read_at,
             "novig_read_at": novig_read_at, "polymarket_read_at": polymarket_read_at,
-            "prophetx_read_at": prophetx_read_at}
+            "prophetx_read_at": prophetx_read_at, "bfa_read_at": bfa_read_at}
 
 
 def optional_read_at(body: dict, field: str) -> datetime | None | str:
@@ -142,18 +145,21 @@ VENUE_KALSHI = "kalshi"
 VENUE_NOVIG = "novig"
 VENUE_POLYMARKET = "polymarket_us"
 VENUE_PROPHETX = "prophetx"
+# A BFA straight bet from the Ticket (bfa_place.py): BFA books it whole or not at all.
+VENUE_BFA = "bfa"
 
 
 def unseen_manual_fill(store: BetsStore, event_id: int, kalshi_read_at: datetime | None,
                        novig_read_at: datetime | None, polymarket_read_at: datetime | None,
-                       prophetx_read_at: datetime | None) -> bool:
+                       prophetx_read_at: datetime | None, bfa_read_at: datetime | None) -> bool:
     """Whether an earlier Place on this game, at any venue, may hold
     contracts the stake's reads missed: a Kalshi Place after the Kalshi read, a
     Novig Place after the Novig read, a Polymarket US Place after the
-    Polymarket US read, a venue never read counting every Place there
-    (store.manual_orders_maybe_filled_since says what counts)."""
+    Polymarket US read, a BFA straight after the BFA read, a venue never read
+    counting every Place there (store.manual_orders_maybe_filled_since says
+    what counts)."""
     reads = ((VENUE_KALSHI, kalshi_read_at), (VENUE_NOVIG, novig_read_at), (VENUE_POLYMARKET, polymarket_read_at),
-             (VENUE_PROPHETX, prophetx_read_at))
+             (VENUE_PROPHETX, prophetx_read_at), (VENUE_BFA, bfa_read_at))
     return any(store.manual_orders_maybe_filled_since(event_id, read_at or NEVER_READ, venue=venue)
                for venue, read_at in reads)
 
@@ -323,7 +329,8 @@ class ManualKalshiDesk:
         if self._store.bet_is_open(held_id_of(quote["ticker"], other_side, PRIMARY_SUBACCOUNT)):
             return f"you hold the {other_side.upper()} side of {quote['ticker']}; buying {quote['side'].upper()} would sell it."
         if unseen_manual_fill(self._store, request["eventId"], request["kalshi_read_at"], request["novig_read_at"],
-                              request["polymarket_read_at"], request["prophetx_read_at"]):
+                              request["polymarket_read_at"], request["prophetx_read_at"],
+                              request["bfa_read_at"]):
             return ("your last Place on this game is not on the Bets tab yet, so this stake does not count it. "
                     "Wait for the next read (up to a minute) and place again.")
         return None

@@ -131,6 +131,12 @@
 //                    and the ProphetX strike ids the feed carries for its game
 //                    (prophetx.js); ProphetX itself is read by the bets service
 //                    on its key. Places nothing.
+//   GET /bfa_quote.json?eventId=..&periodTypeId=..&betTypeId=..&sideIndex=..&points=..
+//                    the same for BFA Place (bets_service/bfa_place.py): the
+//                    board's one Buckeye (book 59) line, its side's rotation
+//                    (BFA's rotations are Unabated's own), whether it is an
+//                    alt, and the line as a bet record names it. BFA's board
+//                    is read by the bets service on its login. Places nothing.
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
@@ -177,6 +183,8 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8095;
 // A moneyline has no number: the Place button's line matches on side alone.
 const MONEYLINE_BET_TYPE_ID = 1;
+// Unabated's book id for Buckeye, which is BFA (teaser.js BUCKEYE_BOOK_ID).
+const BUCKEYE_BOOK_ID = 59;
 const DEFAULT_BETS_SERVICE_URL = "http://127.0.0.1:8094";
 const DEFAULT_KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2";
 const DEFAULT_NOVIG_BASE_URL = "https://api.novig.com";
@@ -1500,6 +1508,36 @@ function createRunner(deps) {
     };
   }
 
+  // The Ticket's Place button at BFA (bets_service/bfa_place.py asks): the
+  // board's one Buckeye line with these fields, its side's rotation and the
+  // line as a bet record names it. BFA is read by the bets service on its own
+  // login, so the game and the live price are found there. Places nothing.
+  //   params  URLSearchParams {eventId, periodTypeId, betTypeId, sideIndex, points?}
+  function bfaQuoteNow(params) {
+    const spec = kalshiLineSpecOf(params);
+    const answer = bfaQuoteOfSpec(spec);
+    logInfo(`bfa quote ${spec.eventId} ${answer.label || `bet type ${spec.betTypeId} side ${spec.sideIndex} ${spec.points}`}: `
+      + `${answer.ok ? `ok, rotation ${answer.rotation} at ${answer.price}` : `${answer.reason}: ${answer.detail}`}`);
+    return answer;
+  }
+
+  function bfaQuoteOfSpec(spec) {
+    const board = feedState;
+    if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
+    const found = linesOfEvent(board, spec.eventId).filter((line) => line.bookId === BUCKEYE_BOOK_ID
+      && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
+      && line.sideIndex === spec.sideIndex && (spec.betTypeId === MONEYLINE_BET_TYPE_ID || (line.points ?? null) === spec.points));
+    if (found.length !== 1) {
+      return { ok: false, reason: "no_line", detail: `the board holds ${found.length} BFA lines for game ${spec.eventId} at that market, side and number` };
+    }
+    const row = feedLib.describeLine(found[0], board);
+    return {
+      ok: true, eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(),
+      eventName: row.eventName, price: found[0].price, isAlt: row.isAlt, rotation: row.rotation ?? null,
+      awayRotation: row.awayRotation ?? null, homeRotation: row.homeRotation ?? null, line: taker.novigLineOf(row),
+    };
+  }
+
   // Kalshi's start for an event as epoch ms, or null when it lists none or
   // the read failed (never throws: option B trades on Unabated's start then).
   async function kalshiStartOf(eventTicker) {
@@ -1909,7 +1947,7 @@ function createRunner(deps) {
   return {
     start, stop, pollBets, pollSettings, postClosingFairs, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions,
     edgesPayload: edgesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow, tauPayload: tauPayloadNow,
-    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, prophetxQuote: prophetxQuoteNow, health, scanner,
+    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, prophetxQuote: prophetxQuoteNow, bfaQuote: bfaQuoteNow, health, scanner,
     boardLines,
   };
 }
@@ -1957,7 +1995,7 @@ function sendJson(response, status, body) {
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /tau.json, /kalshi_quote.json, /novig_quote.json, /polymarket_quote.json, /prophetx_quote.json and /health, the Host allowlist first on
+// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /tau.json, /kalshi_quote.json, /novig_quote.json, /polymarket_quote.json, /prophetx_quote.json, /bfa_quote.json and /health, the Host allowlist first on
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
@@ -1988,6 +2026,7 @@ function createHttpServer(runner, { host }) {
       if (path === "/novig_quote.json") return sendJson(response, 200, await runner.novigQuote(url.searchParams));
       if (path === "/polymarket_quote.json") return sendJson(response, 200, await runner.polymarketQuote(url.searchParams));
       if (path === "/prophetx_quote.json") return sendJson(response, 200, runner.prophetxQuote(url.searchParams));
+      if (path === "/bfa_quote.json") return sendJson(response, 200, runner.bfaQuote(url.searchParams));
       if (path === "/health") return sendJson(response, 200, await runner.health());
     } catch (error) {
       if (error.status) return sendJson(response, error.status, { error: error.message });

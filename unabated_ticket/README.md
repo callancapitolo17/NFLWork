@@ -3524,13 +3524,52 @@ SELECT placed_at, label, ticker AS strike_id, ticket_all_in, ask_price, stake, c
 FROM manual_orders WHERE venue = 'prophetx' ORDER BY placed_at DESC;
 ```
 
+### Place on BFA from the Ticket (`extension/place.js`, `bets_service/bfa_place.py`, 2026-11-02)
+
+Cal, 2026-11-02: the Ticket's Place button on a Buckeye line (book 59; BFA is
+Buckeye), **Bet $X at BFA**, places ONE straight bet on his BFA account on the
+`bfa` source's own login, the way the Teasers tab's Place sends a teaser. Only
+**main full-game** spreads, totals and moneylines get the button (BFA's popular
+board lists no alts or period lines); NFL, CFB, NBA, CBB and NHL boards are read
+(MLB is left out: its moneyline's listed-pitcher rule is unchecked). BFA takes
+**whole dollars**, so the amount box starts at the stake rounded down.
+
+- The runner's `GET /bfa_quote.json` names the board line and its side's
+  rotation (BFA's rotations are Unabated's own). The bets service reads the
+  account's straight type for the sport off its metadata (`wagerTypes 0`, one
+  team; its `maxRisk` is the limit) and BFA's board, and refuses, sending
+  nothing, on: a game it cannot find by rotation within 12 h of the board's
+  start, a started game, a team BFA lists on the other side, a closed market,
+  another number, a price more than **0.1c worse** than the Ticket's, the other
+  side held at BFA, a `bfa` read failing or over 5 min old, an earlier Place on
+  the game the stake has not seen, or a repeat click.
+- The wager is the recorded teaser POST with one pick, `WagerType 0`,
+  `IdWagerType` the straight type and `TeaserPoints 0`, `AcceptChanges 0` (BFA
+  refuses a moved price or number). **A straight bet has not been recorded off
+  the site**: the shape is the teaser's with the straight codes the metadata
+  names, so the first click is the live check. A 4xx is `rejected`; anything
+  else is confirmed off the open bets (a new `STRAIGHT BET` on the game within
+  20 s is `filled`, else `unknown`: check BFA before placing again). The placed
+  ticket is read back (rotation, market, side, number, price, risk, to-win) and
+  any difference is said in the reply, never hidden.
+- Row `bman-<clickId>` in `manual_orders` (venue `bfa`, `ticker` = BFA's game
+  id) is inserted before the POST. The open bets read at confirmation are
+  stored at once and the `bfa` source is read before the reply. Every Place
+  request now sends `bfaReadAt`, so a Place at any venue on a game counts a BFA
+  straight placed after the BFA read the stake was sized on.
+
+```sql
+SELECT placed_at, label, ticker AS bfa_game_id, ticket_all_in, ask_price, stake, status, error
+FROM manual_orders WHERE venue = 'bfa' ORDER BY placed_at DESC;
+```
+
 ### A Place reads its venue before it answers (`bets_service/service.py`, 2026-10-29)
 
-Each of the four Place routes, once its order may hold contracts (`filled`,
+Each of the Ticket's Place routes, once its order may hold contracts (`filled`,
 `partial`, `unknown`; on Novig `unfilled` too), polls that venue's sources at
 once and only then replies: Kalshi `kalshi`; Novig `novig`, `novig_place` and
 `novig_bot` (out of turn, never behind BFA, BetOnline or Wagerzon in the shared
-lane); Polymarket US `polymarket_us`; ProphetX `prophetx`. The panel's and phone's `/bets.json` read
+lane); Polymarket US `polymarket_us`; ProphetX `prophetx`; BFA `bfa`. The panel's and phone's `/bets.json` read
 after the reply then already holds the fill, so the next Place on the game is
 not refused as unseen, and the runner (bot included) has it on its next 10 s
 read. `SourceReader` holds one lock per source, so a lane's poll and a Place's
