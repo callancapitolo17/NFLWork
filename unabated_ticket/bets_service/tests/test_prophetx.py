@@ -90,7 +90,6 @@ def test_the_best_offer_is_the_highest_price_with_the_money_resting_at_it():
     assert prophetx_markets.best_offer_of(SPREAD["selections"][0]) == {"price": -110, "depth": 200}
     assert prophetx_markets.best_offer_of([offer("z", -110, 0)]) is None
     assert prophetx_markets.american_to_probability(-110) == pytest.approx(0.5238095)
-    assert prophetx_markets.american_of(100, 90.91) == -110 and prophetx_markets.american_of(100, 150) == 150
 
 
 # ---- bet source ------------------------------------------------------------------------
@@ -118,8 +117,8 @@ def test_a_matched_order_is_a_bet_on_its_line_priced_off_its_fills():
     assert (record["venue"], record["league"], record["betType"], record["period"], record["side"], record["points"]) == \
         ("prophetx", "nfl", "spread", "FG", "away", 3.5)
     assert (record["awayTeam"], record["homeTeam"], record["eventDate"]) == ("Buffalo Bills", "Kansas City Chiefs", "2026-11-01")
-    # $110 at -110 wins $100, $100 at +100 wins $100: $210 to win $200.
-    assert (record["stake"], record["toWin"], record["price"], record["status"]) == (210, 200, -105, "open")
+    # $110 at -110 wins $100, $100 at +100 wins $100: $210 to win $200, and $1 of fees: $211 to net $199.
+    assert (record["stake"], record["toWin"], record["price"], record["status"]) == (211, 199, -106, "open")
     assert record["raw"]["fees"] == 1.0 and record["unmatchable"] is None
 
 
@@ -155,22 +154,37 @@ def test_a_game_prophetx_no_longer_lists_keeps_its_stored_line():
     assert unknown["unmatchable"] == f"ProphetX does not list game {PX_EVENT_ID} any more"
 
 
+def test_a_remainder_that_stops_resting_closes_its_stored_open_copy_as_void():
+    stored = normalized([order("o7", "g" * 32, 40, open_quantity=60, price=-105)])
+    matched_all = order("o7", "g" * 32, 100, status="closed", winning="tbd", updated_at="2026-11-01T14:30:00Z")
+    records = normalized([matched_all], known=stored)
+    ended = records["prophetx:o7:order"]
+    assert (ended["status"], ended["stake"], ended["toWin"], ended["closedAt"]) == ("void", 0.0, 0.0, "2026-11-01T14:30:00Z")
+    assert records["prophetx:o7"]["stake"] == 100
+    # Once closed, it is not sent again.
+    assert "prophetx:o7:order" not in normalized([matched_all], known=records)
+
+
 class ScriptedReads:
-    def __init__(self):
+    def __init__(self, orders=None, listed=True):
         self.event_reads = []
+        self.market_reads = []
+        self.orders = orders if orders is not None else [order("o6", "b" * 32, 80, price=-160)]
+        self.listed = listed
 
     def order_history(self, start, end):
         assert end - start == 31 * 86400
-        return [order("o6", "b" * 32, 80, price=-160)]
+        return self.orders
 
     def trades(self, start, end):
         return []
 
     def sport_events(self, event_ids=None):
         self.event_reads.append(event_ids)
-        return [EVENT]
+        return [EVENT] if self.listed else []
 
     def markets(self, event_id):
+        self.market_reads.append(event_id)
         return MARKETS
 
     def balance(self):
@@ -185,6 +199,32 @@ def test_the_source_reads_each_game_once_and_reads_the_balance():
     assert first["id"] == "prophetx:o6" and first["side"] == "home" and first["betType"] == "moneyline"
     assert client.event_reads == [[PX_EVENT_ID]]
     assert source.balance() == {"cash": 412.5, "inBets": 80.0, "available": 412.5, "creditLimit": None}
+
+
+def test_markets_are_read_again_only_for_a_strike_they_lack_after_the_ttl():
+    now = [NOW.timestamp()]
+    client = ScriptedReads()
+    source = ProphetXSource(client, dict, history_days=31, clock=lambda: now[0])
+    source.fetch()
+    now[0] += 3600
+    source.fetch()
+    assert client.market_reads == [PX_EVENT_ID]
+    client.orders = client.orders + [order("o8", "z" * 32, 10)]
+    source.fetch()
+    assert client.market_reads == [PX_EVENT_ID, PX_EVENT_ID]
+
+
+def test_a_game_prophetx_no_longer_lists_is_asked_for_again_only_hourly():
+    now = [NOW.timestamp()]
+    client = ScriptedReads(listed=False)
+    source = ProphetXSource(client, dict, history_days=31, clock=lambda: now[0])
+    source.fetch()
+    now[0] += 60
+    source.fetch()
+    assert client.event_reads == [[PX_EVENT_ID]] and client.market_reads == []
+    now[0] += 3600
+    source.fetch()
+    assert client.event_reads == [[PX_EVENT_ID], [PX_EVENT_ID]]
 
 
 # ---- client ----------------------------------------------------------------------------
@@ -302,7 +342,10 @@ def test_a_click_finds_the_strike_by_the_games_ids_and_sends_one_fill_or_kill_at
     result = desk_with(store, client).place(request())
     assert client.submits == [("c" * 32, -110, 50, "xman-abc12345-0001")]
     assert result["status"] == "filled" and result["fee"] == 0.25
-    assert result["message"] == "Bet $50.00 at -110 on ProphetX (fee $0.25)."
+    assert result["message"] == "Bet $50.25 on Bills +3.5 at -111 to win $45.20 (limit -110 on ProphetX, fee $0.25)."
+    row = store._con.execute("SELECT status, prophetx_order_id, count_filled, cost_filled, ticker FROM manual_orders "
+                             "WHERE client_order_id = 'xman-abc12345-0001'").fetchone()
+    assert row == ("filled", row[1], 5000, 50.25, "c" * 32) and row[1]
 
 
 def test_without_strike_ids_the_game_is_found_by_its_teams_and_start(store):
@@ -325,6 +368,8 @@ def test_the_same_click_is_never_sent_twice(store):
     ({}, {"events": []}, "no longer lists"),
     ({"line": {**LINE, "awayTeam": "Kansas City Chiefs", "homeTeam": "Buffalo Bills"}}, {}, "other way round"),
     ({"line": {**LINE, "points": 4.5}}, {}, "0 ProphetX strikes"),
+    ({"line": {**LINE, "betType": "total", "side": "over", "points": 47.5, "awayTeam": "Miami Dolphins"}}, {},
+     "does not read as"),
     ({"lineStrikeId": "e" * 32}, {}, "is not the one"),
     ({"line": {**LINE, "betType": "moneyline", "period": "1H", "points": None}}, {}, "tied period"),
     ({"ok": False, "detail": "the board holds 0 ProphetX lines"}, {}, "the board holds 0"),
@@ -349,6 +394,14 @@ def test_holding_the_other_side_refuses(store):
                         "unmatchable": None, "venueIds": {"strikeId": "d" * 32}, "placedAt": "2026-11-01T12:00:00Z"}], NOW)
     result = desk_with(store, ScriptedProphetX()).place(request())
     assert result["status"] == "refused" and "other side" in result["message"]
+
+
+def test_an_open_order_matching_has_not_reached_is_read_again_not_called_unfilled(store):
+    unreached = (200, {"data": {"success": True, "order": {
+        "order_id": "px-1", "status": "open", "filled_quantity": 0, "open_quantity": 0}}})
+    client = ScriptedProphetX(submit=unreached)
+    result = desk_with(store, client).place(request())
+    assert result["status"] == "filled" and result["filled"] == 50 and client.cancels == []
 
 
 def test_a_stale_or_failing_prophetx_read_refuses(store):

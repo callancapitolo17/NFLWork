@@ -191,6 +191,56 @@ def _cents(probability: float) -> str:
     return f"{probability * 100:.1f}¢"
 
 
+# Unabated's period tag for a full game; a fill message names any other period.
+FULL_GAME_PERIOD_SUFFIX = " FG"
+
+
+def _bet_name(label: str | None) -> str:
+    """The bet as the board names it ("Stonehill College -14.5"), "your line"
+    when the quote carried no label."""
+    if not label:
+        return "your line"
+    return label[:-len(FULL_GAME_PERIOD_SUFFIX)] if label.endswith(FULL_GAME_PERIOD_SUFFIX) else label
+
+
+def _american_odds(paid: float, payout: float) -> str | None:
+    """The American odds a fill actually got: what it pays back against what it
+    cost, fees included. None when it pays back no more than it cost."""
+    if paid <= 0 or payout <= paid:
+        return None
+    decimal = payout / paid
+    if decimal >= 2:
+        return f"+{round((decimal - 1) * 100)}"
+    return f"-{round(100 / (decimal - 1))}"
+
+
+def filled_bet_message(label: str | None, paid: float, payout: float, detail: str) -> str:
+    """A fill in the bet's own terms, from what filled, not from the quote:
+    "Bet $231.78 on Stonehill College -14.5 at +223 to win $517.22 (detail)".
+    The venue's side (YES/NO) never shows: on a one-market game, the team Cal
+    bet is often the market's NO side."""
+    odds = _american_odds(paid, payout)
+    at_odds = f" at {odds}" if odds else ""
+    return f"Bet ${paid:,.2f} on {_bet_name(label)}{at_odds} to win ${payout - paid:,.2f} ({detail})"
+
+
+def contracts_filled(filled: float, count: int) -> str:
+    """"749 contracts", or "60 of 100 contracts" on a partial fill."""
+    return f"{filled:,.0f} contracts" if filled >= count else f"{filled:,.0f} of {count:,} contracts"
+
+
+def contracts_detail(filled: float, count: int, paid: float) -> str:
+    """"749 contracts, 30.9¢ each with fee", or "60 of 100 contracts, ..." on a partial fill."""
+    return f"{contracts_filled(filled, count)}, {_cents(paid / filled)} each with fee"
+
+
+def unpriced_fill_message(venue: str, label: str | None, filled: float, count: int, quoted_all_in: float,
+                          rest: str) -> str:
+    """A fill whose cost the venue has not given: what filled, at the quoted price."""
+    return (f"Bought {contracts_filled(filled, count)} on {_bet_name(label)} at {_cents(quoted_all_in)} quoted; "
+            f"{venue} has not said yet what they cost{rest}")
+
+
 class ManualKalshiDesk:
     """Sends Cal's Place-button orders on his own Kalshi key, one per click."""
 
@@ -357,10 +407,12 @@ def _kalshi_error_text(reply: object) -> str:
 
 
 def _outcome_message(outcome: str, quote: dict, count: int, filled: float, cost: float | None) -> str:
+    """A Kalshi contract pays $1, so a fill pays back `filled` dollars. Without
+    the cost (the fills feed lags) it says what filled, at the quoted price."""
     price = _cents(quote["allIn"])
-    paid = f" for ${cost:,.2f}" if cost is not None else ""
-    if outcome == STATUS_FILLED:
-        return f"Bought {filled:,.0f} contracts at {price} all-in{paid}."
-    if outcome == STATUS_PARTIAL:
-        return f"Bought {filled:,.0f} of {count:,} contracts at {price} all-in{paid}; the rest was not there. Nothing rests."
-    return f"Nothing filled at {price}: the price was gone. Nothing rests."
+    if outcome not in (STATUS_FILLED, STATUS_PARTIAL):
+        return f"Nothing filled at {price}: the price was gone. Nothing rests."
+    rest = "." if outcome == STATUS_FILLED else "; the rest was not there. Nothing rests."
+    if cost is None:
+        return unpriced_fill_message("Kalshi", quote.get("label"), filled, count, quote["allIn"], rest)
+    return filled_bet_message(quote.get("label"), cost, filled, contracts_detail(filled, count, cost)) + rest

@@ -7,7 +7,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from unabated_ticket.bets_service.manual_orders import ManualKalshiDesk, validate_place_request
+from unabated_ticket.bets_service.manual_orders import (ManualKalshiDesk, contracts_detail, filled_bet_message,
+                                                       unpriced_fill_message, validate_place_request)
 from unabated_ticket.bets_service.store import BetsStore
 
 NOW = datetime(2026, 10, 16, 21, 0, tzinfo=timezone.utc)
@@ -102,7 +103,8 @@ def test_a_click_sends_one_ioc_buy_at_the_live_ask_and_reads_what_filled(store):
     assert "subaccount" not in body  # Cal's primary account, never the bot's
     assert result["status"] == "filled"
     assert result["cost"] == pytest.approx(170 * 0.57 + 2.92)
-    assert result["message"].startswith("Bought 170 contracts at 58.7")
+    assert result["message"] == ("Bet $99.82 on Washington St -35.5 full game at -142 to win $70.18 "
+                                 "(170 contracts, 58.7¢ each with fee).")
 
 
 def test_the_same_click_is_never_sent_twice(store):
@@ -228,7 +230,7 @@ class StubDesk:
 
     def place(self, placed):
         self.requests.append(placed)
-        return {"status": "filled", "message": "Bought 170 contracts at 58.7¢ all-in for $99.82."}
+        return {"status": "filled", "message": "Bet $99.82 on Washington St -35.5 at -142 to win $70.18."}
 
 
 @pytest.fixture
@@ -342,3 +344,16 @@ def test_read_now_gives_up_on_a_source_whose_read_is_still_running(store):
     finally:
         reader._locks["novig"].release()
     assert novig.fetches == 0
+
+
+def test_fill_message_speaks_in_the_bets_terms():
+    # Cal's 2026-10-31 Polymarket US fill: Stonehill -14.5 was the market's NO side.
+    message = filled_bet_message("Stonehill College -14.5 FG", 231.78, 749, contracts_detail(749, 749, 231.78))
+    assert message == "Bet $231.78 on Stonehill College -14.5 at +223 to win $517.22 (749 contracts, 30.9¢ each with fee)"
+    assert contracts_detail(60, 100, 18.0) == "60 of 100 contracts, 30.0¢ each with fee"
+    assert filled_bet_message("Over 44.5 1H", 50.0, 100.0, "x").startswith("Bet $50.00 on Over 44.5 1H at +100 ")
+    assert filled_bet_message(None, 60.0, 100.0, "x").startswith("Bet $60.00 on your line at -150 ")
+    assert unpriced_fill_message("Kalshi", "A +1.5 FG", 170, 170, 0.587, ".") == (
+        "Bought 170 contracts on A +1.5 at 58.7¢ quoted; Kalshi has not said yet what they cost.")
+    # A fill that pays back no more than it cost has no odds to show.
+    assert filled_bet_message("A +1.5 FG", 10.0, 10.0, "x") == "Bet $10.00 on A +1.5 to win $0.00 (x)"

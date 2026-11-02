@@ -1148,7 +1148,7 @@ Two kinds of source feed the flags:
 | Polymarket US (the CFTC app) | `bets_service/sources/polymarket_us.py` (local service, the account's own API key from `bet_logger/.env`, Ed25519-signed; 2026-09-23) | every 10 s on a poll thread of its own (60 s after a failed poll) |
 | Bet105 | the panel itself (`extension/bet105.js`, your own login at app.bet105.ag in this Chrome — Cloudflare challenges anything else) → `POST /bet105.json`, parsed by `bets_service/sources/bet105.py`; open bets 2026-09-29, graded bets 2026-10-07 | every 5 min while the panel is open; open bets plus every graded wager with its result and settle time |
 | DraftKings | the panel itself (`extension/draftkings.js`, your own login at sportsbook.draftkings.com in this Chrome — Akamai's bot checks and a login code stop anything else) → `POST /draftkings.json`, parsed by `bets_service/sources/draftkings.py`; 2026-10-10 | every 5 min while the panel is open; every open bet plus the last 31 days of settled bets with their result |
-| ProphetX | `bets_service/sources/prophetx.py` (local service, the account's own Trading API key pair `PROPHETX_ACCESS_KEY` / `PROPHETX_SECRET_KEY` in `bets_service/.env`; 2026-10-31) | every 30 s while the service runs; orders and fills back 31 days |
+| ProphetX | `bets_service/sources/prophetx.py` (local service, the account's own Trading API key pair `PROPHETX_ACCESS_KEY` / `PROPHETX_SECRET_KEY` in `bets_service/.env`; 2026-10-31) | every 30 s while the service runs; orders and fills back 60 days (ProphetX's window) |
 
 Start the service (next section), keep the panel open. Every 30 s while the
 panel is visible it fetches `http://127.0.0.1:8094/bets.json` (never from
@@ -2971,7 +2971,7 @@ subaccount. No shadow mode (Cal, 2026-10-14).
 | Rule | Value |
 |---|---|
 | Bankroll / Kelly | $5,000 at 0.25 (Cal, 2026-10-28; $2,000 from 2026-10-16), `KELLY_BANKROLL` in both `server/taker.js` and `taker_orders.py` (a test holds them equal), conditional on every open bet (the panel's sizing; bot fills reach it through the Kalshi source). What Kelly divides by, not the money at risk: the Ceiling row caps that |
-| Ceiling | open bot cost (unsettled markets) never above 20% of the Kelly bankroll, $1,000 (`MAX_OPEN_COST_FRACTION`, Cal 2026-10-28; a flat $500 before); contracts cut to fit, else refused. The setup still funds a new subaccount $500 once (`SETUP_FUNDING`); the subaccount must hold the ceiling or Kalshi refuses the order |
+| Ceiling | open bot cost (unsettled markets) never above 40% of the Kelly bankroll, $2,000 (`MAX_OPEN_COST_FRACTION`, Cal 2026-11-02; 20% = $1,000 from 2026-10-28, a flat $500 before); contracts cut to fit, else refused. The setup still funds a new subaccount $500 once (`SETUP_FUNDING`); the subaccount must hold the ceiling or Kalshi refuses the order |
 | Price | Kalshi's live ask + 7% fee no more than 0.1c worse than Unabated's shown price, and no more than 1c better (a price that ran away from Unabated's snapshot is news its fair has not caught up with) |
 | Edge | 3% to 20% at that live price (fair read off Unabated's cheaper of its two prices) |
 | Best price | no live book beats it at the number (one is enough to skip, a thin one under $30 too; ties trade); outliers and Skips trade |
@@ -2980,7 +2980,7 @@ subaccount. No shadow mode (Cal, 2026-10-14).
 | Holdings | the pass runs only when the bets service's Kalshi poll succeeded within the last 5 min (conditional Kelly is sized on it); otherwise it decides nothing |
 | Min shrunk edge | the live edge × the row's tail-flex shrink (#208, the pooled tau the runner measures; Tail flex above) must reach the settings' **Min shrunk edge** (the Edges list's own floor, 1% default), else `edge_short` with the shrunk edge and the shrink in the detail; the stake is Kelly on the raw live edge; with the floor on, a row with no shrink is `size_declined`, never sized at full; a floor of 0 turns the gate off |
 | Size | floor(stake / all-in), cut to the depth at the ask |
-| Market check | before every order Kalshi's market is read: it must be `active`, its series the row's period, a spread's or total's `floor_strike` the row's number, YES the favorite's side of a spread and the Over of a total, a spread's or moneyline's YES title the team YES is on; else `market_mismatch`, nothing sent |
+| Market check | before every order Kalshi's market is read: it must be `active`, its series the row's period, a spread's or total's `floor_strike` the row's number, YES the favorite's side of a spread and the Over of a total, a spread's or moneyline's YES team code the team YES is on (Kalshi's tickers list away then home, `26OCT31SDAKSDST-SDST16` = YES on home; team names are never compared, so "South Dakota St." can't be confused with South Dakota; a neutral-site game whose home team Kalshi and Unabated disagree on refuses); else `market_mismatch`, nothing sent |
 | Order | **immediate-or-cancel** limit buy at that ask: what does not fill at once Kalshi cancels in the same request (`remaining_count` 0), so a bot order never rests. A reply without that count, or with contracts left open, is cancelled **by market** (a bare cancel routes to exchange shard 0 and 404s while an order rests), a 404 checked against Kalshi's resting list; the desk's own 30 s sweep retries an unconfirmed cancel and cancels any `ubot-` order resting that no row knows |
 | Adds | a second order on a game goes only once the bot's earlier fill on it is among the held bets the stake was sized on (`unseen_fill` until the Kalshi poll has it): conditional Kelly must see the fill first |
 | Tag | every order's `client_order_id` starts `ubot-` (`taker.duckdb::taker_orders`) |
@@ -3278,9 +3278,11 @@ from wherever the phone reaches the VM over Tailscale.
    markets often list one team only) is found in Kalshi's own market list
    (2026-10-19, 0.30.0): every Kalshi spread or total rung on the game names
    one league and event (`kalshiMoneylineEventOf`), `KX<league>GAME` must list
-   exactly two markets on that event, and the one whose title names the row's
-   team is bought YES (`kalshiMoneylineFromMarkets`); a tie market, a third
-   market or a title naming neither team refuses. Place only, never the bot.
+   exactly two markets on that event, and the one whose ticker code is the
+   row's team (away code first in the event part, home second;
+   `kalshiYesTeamSide`) is bought YES (`kalshiMoneylineFromMarkets`); a tie
+   market, a third market or a code naming neither team refuses. Place only,
+   never the bot.
    A half's moneyline refuses at both venues: whether a two-way half winner
    voids a tie or pays it as a loss is unchecked, and bought at Unabated's
    tie-no-bet fair a contract that loses the tie overpays by about P(tie).

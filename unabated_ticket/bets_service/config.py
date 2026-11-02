@@ -255,7 +255,7 @@ PROPHETX_BASE_URL = _get("PROPHETX_BASE_URL", "https://cash.api.prophetx.co/part
 # day) and a sport-event / market read per game not yet cached.
 PROPHETX_POLL_SEC = 30.0
 # ProphetX's order history allows at most a 60-day creation window per read.
-PROPHETX_HISTORY_DAYS = min(RETENTION_DAYS + 1, 60)
+PROPHETX_HISTORY_DAYS = 60
 
 # Bet105 (2026-09-29): no credentials and no poll here. Cloudflare challenges any
 # request that is not the browser session's own, so the extension reads the account

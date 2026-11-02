@@ -10,7 +10,7 @@ separate unmatchable record, and a settled order grades off winning_status.
 Two halves, like sources/polymarket_us.py:
   normalize_prophetx(...)  pure: orders + their fills + the games and markets
                            they name -> records. Pinned by
-                           tests/test_prophetx_source.py.
+                           tests/test_prophetx.py.
   ProphetXSource           the network half (Source protocol): every poll reads
                            the order history and fills back PROPHETX_HISTORY_DAYS
                            (at most 60 days, ProphetX's window), and once per game
@@ -24,8 +24,9 @@ Wire grammar (docs.prophetx.co v4 schemas, 2026-10-31; not a live capture):
   trade   {order_id, strike_id, price, quantity (dollars matched), profit,
           fee, matched_at, status, winning_status}: one per fill. A fill can be
           at a better price than the order's limit, so the record's price is
-          the fills' own: stake = the matched dollars, toWin = what they win at
-          each fill's price, price = the American price of that ratio.
+          the fills' own: stake = the matched dollars plus fees, toWin = what
+          they win at each fill's price less fees, price = the American price
+          of that ratio. A voided or invalid fill matched nothing.
   status  void (voided by ProphetX) and invalid (never accepted) void the order;
           canceled / wiped end a resting remainder but keep what matched;
           settled / closed / manually_settled grade off winning_status
@@ -50,7 +51,8 @@ from datetime import datetime, timezone
 from unabated_ticket.bets_service import config
 from unabated_ticket.bets_service.normalize import EASTERN, json_clean, round_cents, utc_now_iso
 from unabated_ticket.bets_service.prophetx_client import ProphetXClient, ProphetXError
-from unabated_ticket.bets_service.prophetx_markets import american_of, league_of, lines_of_event, profit_at
+from unabated_ticket.bets_service.prophetx_markets import league_of, lines_of_event, number_of, profit_at
+from unabated_ticket.bets_service.sources.betonline import american_from_payout
 
 log = logging.getLogger(__name__)
 
@@ -66,15 +68,8 @@ GRADES = {"profit": "won", "manually_won": "won", "loss": "lost", "manually_lost
 GAME_FIELDS = ("league", "eventStart", "eventDate", "awayTeam", "homeTeam", "betType", "period", "side", "points")
 # A game's markets are read again after this long (its alt numbers change; the ones an order bought do not).
 MARKETS_TTL_SEC = 600.0
-
-
-def _number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            return None
-    return float(value)
+# A game ProphetX's event list no longer returns (it drops ended games) is asked for again after this long.
+UNLISTED_RETRY_SEC = 3600.0
 
 
 def iso_utc_of(value: object) -> str | None:
@@ -101,22 +96,24 @@ def eastern_date_of(iso: str | None) -> str | None:
 def matched_of(order: dict, fills: list[dict]) -> tuple[float, float | None, float]:
     """(matched dollars, what they win or None, fees) of one order: off its
     fills when it has any, else off filled_quantity at the order's price."""
-    fees = sum(_number(fill.get("fee")) or 0.0 for fill in fills)
+    # A fill ProphetX voided or never accepted matched nothing.
+    fills = [fill for fill in fills if str(fill.get("status") or "").lower() not in VOID_STATUSES]
+    fees = sum(number_of(fill.get("fee")) or 0.0 for fill in fills)
     if fills:
         stake = 0.0
         to_win = 0.0
         for fill in fills:
-            quantity = _number(fill.get("quantity")) or 0.0
-            price = _number(fill.get("price"))
+            quantity = number_of(fill.get("quantity")) or 0.0
+            price = number_of(fill.get("price"))
             if quantity <= 0:
                 continue
             if price is None or abs(price) < 100:
-                return round_cents(sum(_number(f.get("quantity")) or 0.0 for f in fills)), None, fees
+                return round_cents(sum(number_of(f.get("quantity")) or 0.0 for f in fills)), None, fees
             stake += quantity
             to_win += profit_at(quantity, price)
         return round_cents(stake), round_cents(to_win), fees
-    filled = _number(order.get("filled_quantity")) or 0.0
-    price = _number(order.get("price"))
+    filled = number_of(order.get("filled_quantity")) or 0.0
+    price = number_of(order.get("price"))
     if filled <= 0:
         return 0.0, 0.0, fees
     return round_cents(filled), None if price is None or abs(price) < 100 else round_cents(profit_at(filled, price)), fees
@@ -139,7 +136,7 @@ def resting_of(order: dict) -> float:
     """Dollars still resting on the book, while the order is."""
     if str(order.get("status") or "").lower() not in RESTING_STATUSES:
         return 0.0
-    return round_cents(max(_number(order.get("open_quantity")) or 0.0, 0.0))
+    return round_cents(max(number_of(order.get("open_quantity")) or 0.0, 0.0))
 
 
 def game_fields_of(order: dict, event: dict | None, lines: list[dict] | str | None) -> dict | str:
@@ -198,7 +195,7 @@ def normalize_prophetx(orders: list[dict], trades: list[dict], events: dict[int,
         raw = {"orderId": order_id, "externalId": order.get("external_id"), "sportEventId": event_id,
                "league": league_of(event) if event else None,
                "marketId": order.get("market_id"), "strikeId": order.get("strike_id"), "strike": order.get("strike"),
-               "limitPrice": order.get("price"), "requestedStake": _number(order.get("original_quantity") or order.get("quantity")),
+               "limitPrice": order.get("price"), "requestedStake": number_of(order.get("original_quantity") or order.get("quantity")),
                "matchedStake": matched, "restingStake": resting, "fees": round(fees, 4), "fillCount": len(fills),
                "orderStatus": order.get("status"), "matchingStatus": order.get("matching_status"),
                "winningStatus": order.get("winning_status")}
@@ -208,12 +205,16 @@ def normalize_prophetx(orders: list[dict], trades: list[dict], events: dict[int,
                 "raw": raw}
         if matched > 0:
             status = status_of(order, matched)
-            record = {"id": f"{VENUE}:{order_id}", **base, "price": american_of(matched, to_win) if to_win else None,
-                      "stake": matched, "toWin": to_win, "status": status, "approx": [], "unmatchable": None,
+            # Fees count in the money like Polymarket US's: stake is what the bet cost, toWin what it nets.
+            stake = round_cents(matched + fees)
+            net_to_win = round_cents(to_win - fees) if to_win is not None else None
+            record = {"id": f"{VENUE}:{order_id}", **base,
+                      "price": american_from_payout(stake, net_to_win) if net_to_win else None,
+                      "stake": stake, "toWin": net_to_win, "status": status, "approx": [], "unmatchable": None,
                       "closedAt": None if status == "open" else iso_utc_of(order.get("settled_at")) or iso_utc_of(order.get("updated_at"))}
             records.append(json_clean(_with_game(record, game, known_records)))
         if resting > 0:
-            price = _number(order.get("price"))
+            price = number_of(order.get("price"))
             record = {"id": f"{VENUE}:{order_id}:order", **base, "price": int(price) if price else None,
                       "stake": resting, "toWin": round_cents(profit_at(resting, price)) if price and abs(price) >= 100 else None,
                       "status": "open", "closedAt": None, "approx": [APPROX_ORDER]}
@@ -221,7 +222,18 @@ def normalize_prophetx(orders: list[dict], trades: list[dict], events: dict[int,
             label = f" at {'+' if price and price > 0 else ''}{int(price)}" if price else ""
             record["unmatchable"] = record.get("unmatchable") or f"unmatched order (resting ${resting}{label})"
             records.append(json_clean(record))
+        elif _was_resting(known_records.get(f"{VENUE}:{order_id}:order")):
+            # The remainder stopped resting (matched, cancelled or wiped): its
+            # stored open copy is closed as void, never left open.
+            ended = dict(known_records[f"{VENUE}:{order_id}:order"])
+            ended.update({"status": "void", "stake": 0.0, "toWin": 0.0, "sourceFetchedAt": fetched_at,
+                          "closedAt": iso_utc_of(order.get("updated_at")) or fetched_at, "raw": raw})
+            records.append(json_clean(ended))
     return records
+
+
+def _was_resting(stored: dict | None) -> bool:
+    return isinstance(stored, dict) and stored.get("status") == "open"
 
 
 def _with_game(record: dict, game: dict | str, known_records: dict[str, dict]) -> dict:
@@ -235,6 +247,11 @@ def _with_game(record: dict, game: dict | str, known_records: dict[str, dict]) -
         record["unmatchable"] = None
         return record
     return _unmatchable(record, game)
+
+
+def _has_strikes(lines: list[dict] | str, strikes: set[str]) -> bool:
+    """Every strike an order bought is among a game's cached lines."""
+    return isinstance(lines, list) and strikes <= {line.get("strike_id") for line in lines}
 
 
 # ---- network half -----------------------------------------------------------------
@@ -256,28 +273,40 @@ class ProphetXSource:
         self._clock = clock
         self._events: dict[int, dict] = {}
         self._lines: dict[int, tuple[float, list[dict] | str]] = {}
+        self._unlisted: dict[int, float] = {}
 
     @property
     def client(self) -> ProphetXClient:
         """The source's client: the Place desk trades on the same key pair and session."""
         return self._client
 
-    def _read_games(self, event_ids: set[int]) -> None:
-        """Read the games not yet cached (one event-list read, then one market
-        read per game). A failed read leaves those games unresolved this poll."""
-        missing = sorted(event_id for event_id in event_ids if event_id not in self._events)
+    def _read_games(self, strikes_by_event: dict[int, set[str]]) -> None:
+        """Read the games not yet cached (one event-list read), and a game's
+        markets when none are cached or an order's strike is not among them
+        (a new alt number), at most once per MARKETS_TTL_SEC. A game ProphetX
+        no longer lists is not asked for again for UNLISTED_RETRY_SEC. Caches
+        keep only this poll's games. A failed read leaves a game unresolved."""
+        now = self._clock()
+        event_ids = set(strikes_by_event)
+        for cache in (self._events, self._lines, self._unlisted):
+            for event_id in [key for key in cache if key not in event_ids]:
+                del cache[event_id]
+        missing = sorted(event_id for event_id in event_ids if event_id not in self._events
+                         and now - self._unlisted.get(event_id, -UNLISTED_RETRY_SEC) >= UNLISTED_RETRY_SEC)
         if missing:
             try:
                 for event in self._client.sport_events(missing):
                     if event.get("event_id") is not None:
                         self._events[event["event_id"]] = event
+                for event_id in missing:
+                    if event_id not in self._events:
+                        self._unlisted[event_id] = now
             except (OSError, ProphetXError) as error:
                 log.warning("prophetx: sport events %s unread: %s", missing[:5], error)
-        now = self._clock()
-        for event_id in event_ids:
+        for event_id, strikes in strikes_by_event.items():
             event = self._events.get(event_id)
             cached = self._lines.get(event_id)
-            if event is None or (cached and now - cached[0] < MARKETS_TTL_SEC):
+            if event is None or (cached and (now - cached[0] < MARKETS_TTL_SEC or _has_strikes(cached[1], strikes))):
                 continue
             try:
                 self._lines[event_id] = (now, lines_of_event(event, self._client.markets(event_id)))
@@ -289,8 +318,13 @@ class ProphetXSource:
         start = now - self._history_days * 86400
         orders = self._client.order_history(start, now)
         trades = self._client.trades(start, now)
-        event_ids = {order["sport_event_id"] for order in orders if isinstance(order.get("sport_event_id"), int)}
-        self._read_games(event_ids)
+        strikes_by_event: dict[int, set[str]] = {}
+        for order in orders:
+            if isinstance(order.get("sport_event_id"), int):
+                strikes = strikes_by_event.setdefault(order["sport_event_id"], set())
+                if order.get("strike_id"):
+                    strikes.add(str(order["strike_id"]))
+        self._read_games(strikes_by_event)
         lines = {event_id: entry[1] for event_id, entry in self._lines.items()}
         return normalize_prophetx(orders, trades, self._events, lines, self._known_records(), utc_now_iso())
 

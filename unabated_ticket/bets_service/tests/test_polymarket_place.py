@@ -127,7 +127,8 @@ def test_a_click_sends_one_ioc_buy_counted_at_the_all_in_price(store):
     assert result["status"] == "filled"
     # 77 NO contracts at YES avgPx 0.37 cost 77 x 0.63 = 48.51, plus 0.44 commission.
     assert result["cost"] == pytest.approx(48.95)
-    assert result["message"] == "Bought 77 NO contracts at 64.4¢ all-in for $48.95."
+    # The team Cal bet, never the market's NO side, at what filled (63.6¢ with fee), not the 64.4¢ quote.
+    assert result["message"] == "Bet $48.95 on Washington State -35.5 at -175 to win $28.05 (77 contracts, 63.6¢ each with fee)."
 
 
 def test_the_row_is_held_before_the_send_and_the_same_click_is_never_sent_twice(store):
@@ -283,7 +284,7 @@ class StubDesk:
 
     def place(self, placed):
         self.requests.append(placed)
-        return {"status": "filled", "message": "Bought 77 NO contracts at 64.4¢ all-in for $48.95."}
+        return {"status": "filled", "message": "Bet $48.95 on Washington State -35.5 at -175 to win $28.05."}
 
 
 def post_place(store, desk):

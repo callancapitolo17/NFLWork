@@ -49,14 +49,14 @@ from datetime import datetime, timedelta, timezone
 
 from unabated_ticket.bets_service.manual_orders import (
     CLICK_ID_PATTERN, PRICE_TOLERANCE, STATUS_FILLED, STATUS_PARTIAL, STATUS_REFUSED, STATUS_REJECTED,
-    STATUS_UNFILLED, STATUS_UNKNOWN, VENUE_PROPHETX, _cents, _is_number, _iso_time, optional_read_at,
+    STATUS_UNFILLED, STATUS_UNKNOWN, VENUE_PROPHETX, _cents, _is_number, _iso_time, filled_bet_message, optional_read_at,
     unseen_manual_fill,
 )
 from unabated_ticket.bets_service.prophetx_client import (
     FINAL_ORDER_STATUSES, MAX_STRIKES_PER_READ, ProphetXClient, ProphetXError,
 )
 from unabated_ticket.bets_service.prophetx_markets import (
-    american_to_probability, best_offer_of, league_of, lines_of_event, team_name_of, teams_of,
+    american_to_probability, best_offer_of, league_of, lines_of_event, number_of, profit_at, team_name_of, teams_of,
 )
 from unabated_ticket.bets_service.sources.prophetx import VENUE, iso_utc_of
 from unabated_ticket.bets_service.store import BetsStore
@@ -140,6 +140,11 @@ def names_agree(prophetx_name: object, board_name: object) -> bool:
     return any(long[start:start + len(short)] == short for start in range(len(long) - len(short) + 1))
 
 
+# A fill within a cent of the stake is all of it (ProphetX rounds dollars to the cent).
+FULL_FILL_TOLERANCE_DOLLARS = 0.01
+REVERSED_TEAMS_WORDS = "home and away the other way round from the board"
+
+
 def teams_mismatch(event: dict, line: dict) -> str | None:
     """Why ProphetX's away / home are not the board's, or None."""
     teams = teams_of(event)
@@ -149,7 +154,7 @@ def teams_mismatch(event: dict, line: dict) -> str | None:
     if names_agree(px_away, line.get("awayTeam")) and names_agree(px_home, line.get("homeTeam")):
         return None
     if names_agree(px_away, line.get("homeTeam")) and names_agree(px_home, line.get("awayTeam")):
-        return f"ProphetX lists {px_away} @ {px_home}, home and away the other way round from the board"
+        return f"ProphetX lists {px_away} @ {px_home}, {REVERSED_TEAMS_WORDS}"
     return f"ProphetX's {px_away} @ {px_home} does not read as the board's {line.get('awayTeam')} @ {line.get('homeTeam')}"
 
 
@@ -161,12 +166,6 @@ def board_line_of(line: dict) -> dict:
 
 def matching_lines(lines: list[dict], wanted: dict) -> list[dict]:
     return [line for line in lines if all(line[key] == wanted[key] for key in ("betType", "period", "side", "points"))]
-
-
-def other_side_of(lines: list[dict], line: dict) -> dict | None:
-    """The other side of the same (sub-)market."""
-    others = [other for other in lines if other["marketId"] == line["marketId"] and other["strike_id"] != line["strike_id"]]
-    return others[0] if len(others) == 1 else None
 
 
 class ManualProphetXDesk:
@@ -201,6 +200,7 @@ class ManualProphetXDesk:
         if refusal:
             return {"status": STATUS_REFUSED, "message": f"Not placed: {refusal}"}
         line = quote["line"]
+        target["label"] = quote.get("label")
         probability = target["probability"]
         inserted = self._store.insert_manual_order({
             "client_order_id": client_order_id, "placed_at": self._now(), "venue": VENUE_PROPHETX,
@@ -236,7 +236,8 @@ class ManualProphetXDesk:
             if isinstance(event, str):
                 return event
             mismatch = teams_mismatch(event, line)
-            if mismatch and line.get("betType") != "total":
+            # A total is the same bet with home and away swapped; any other mismatch refuses.
+            if mismatch and not (line.get("betType") == "total" and mismatch.endswith(REVERSED_TEAMS_WORDS)):
                 return f"{mismatch}."
             lines = lines_of_event(event, self._client.markets(event["event_id"]))
         except (OSError, ProphetXError) as error:
@@ -257,11 +258,10 @@ class ManualProphetXDesk:
         px_start = _prophetx_time(event.get("scheduled"))
         board_start = _iso_time(quote.get("eventStart"))
         starts = [start for start in (px_start, board_start) if start is not None]
-        other = other_side_of(lines, target)
         return {"strike_id": target["strike_id"], "price": offer["price"], "depth": offer["depth"],
                 "probability": round(american_to_probability(offer["price"]), 6), "marketId": target["marketId"],
                 "eventStart": min(starts) if starts else None, "eventStatus": event.get("status"),
-                "otherStrikeId": other["strike_id"] if other else None, "prophetxEventId": event["event_id"]}
+                "otherStrikeId": target["otherStrikeId"], "prophetxEventId": event["event_id"]}
 
     def _event_of(self, quote: dict, line: dict) -> dict | str:
         """ProphetX's one listed game the board line is on, or why there is none."""
@@ -302,7 +302,7 @@ class ManualProphetXDesk:
         if target["probability"] > request["ticket_all_in"] + PRICE_TOLERANCE:
             return (f"ProphetX is at {target['price']:+d} now ({_cents(target['probability'])}), more than 0.1¢ worse "
                     f"than the Ticket's {_cents(request['ticket_all_in'])}.")
-        if target["otherStrikeId"] and self._holds_strike(target["otherStrikeId"]):
+        if self._holds_strike(target["otherStrikeId"]):
             return "you hold the other side of this line on ProphetX."
         stale = self._stale_read()
         if stale:
@@ -359,7 +359,7 @@ class ManualProphetXDesk:
         then what filled. One still resting past the window gets one cancel."""
         deadline = self._clock() + PLACE_FINAL_READ_WINDOW_SEC
         for attempt in range(PLACE_FINAL_READ_ATTEMPTS):
-            if _done(order):
+            if _done(order, stake):
                 return self._record(client_order_id, order, target, stake)
             if self._clock() >= deadline:
                 break
@@ -372,7 +372,7 @@ class ManualProphetXDesk:
             read = reply.get("data") if status == 200 and isinstance(reply, dict) else None
             if isinstance(read, dict):
                 order = read
-        if _done(order):
+        if _done(order, stake):
             return self._record(client_order_id, order, target, stake)
         return self._cancel_resting(client_order_id, order_id, order)
 
@@ -383,23 +383,24 @@ class ManualProphetXDesk:
             status, reply = self._client.cancel_order(order_id, client_order_id)
         except (OSError, ProphetXError) as error:
             status, reply = None, f"no answer: {error}"
-        self._update(client_order_id, {"status": STATUS_UNKNOWN, "count_filled": _number(order.get("filled_quantity")),
+        filled = number_of(order.get("filled_quantity"))
+        self._update(client_order_id, {"status": STATUS_UNKNOWN, "count_filled": None if filled is None else round(filled * 100),
                                        "error": f"rested after fill-or-kill; cancel answered {status} {str(reply)[:200]}"})
         rest = "A cancel was sent" if status == 200 else "The cancel was NOT confirmed: cancel it on ProphetX"
         return {"status": STATUS_UNKNOWN, "message": f"ProphetX left the order resting. {rest}. "
                                                      "Check ProphetX before placing again."}
 
     def _record(self, client_order_id: str, order: dict, target: dict, stake: float) -> dict:
-        filled = _number(order.get("filled_quantity"))
+        filled = number_of(order.get("filled_quantity"))
         if filled is None:
             self._update(client_order_id, {"status": STATUS_UNKNOWN, "error": f"final but unreadable: {str(order)[:300]}"})
             return {"status": STATUS_UNKNOWN, "message": "ProphetX finished the order but did not say what filled. "
                                                          "Check ProphetX before placing again."}
-        fee = _number(order.get("fee")) or 0.0
+        fee = number_of(order.get("fee")) or 0.0
         if filled <= 0 and str(order.get("status")).lower() == "invalid":
             outcome = STATUS_REJECTED
         else:
-            outcome = STATUS_UNFILLED if filled <= 0 else STATUS_FILLED if filled >= stake - 0.01 else STATUS_PARTIAL
+            outcome = STATUS_UNFILLED if filled <= 0 else STATUS_FILLED if filled >= stake - FULL_FILL_TOLERANCE_DOLLARS else STATUS_PARTIAL
         self._update(client_order_id, {"status": outcome, "count_filled": round(filled * 100),
                                        "cost_filled": round(filled + fee, 4),
                                        "error": None if outcome != STATUS_REJECTED else f"invalid: {str(order)[:300]}"})
@@ -416,18 +417,16 @@ def _prophetx_time(value: object) -> datetime | None:
     return _iso_time(iso_utc_of(value))
 
 
-def _number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        return None
-    return float(value)
-
-
-def _done(order: dict) -> bool:
-    """Nothing of the order rests: ProphetX finished it, or all of it matched."""
+def _done(order: dict, stake: float) -> bool:
+    """Nothing of the order can still fill: ProphetX finished it, or all of
+    the stake matched. An open order reading 0 open and less than the stake
+    filled may be one matching has not reached yet (a fill-or-kill rests ~2 s),
+    so it is not done."""
     status = str(order.get("status") or "").lower()
-    open_quantity = _number(order.get("open_quantity"))
-    return status in FINAL_ORDER_STATUSES or (open_quantity is not None and open_quantity <= 0
-                                               and _number(order.get("filled_quantity")) is not None)
+    if status in FINAL_ORDER_STATUSES or str(order.get("matching_status") or "").lower() == "fully_matched":
+        return True
+    filled = number_of(order.get("filled_quantity"))
+    return filled is not None and filled >= stake - FULL_FILL_TOLERANCE_DOLLARS
 
 
 def _error_text(reply: object) -> str:
@@ -441,12 +440,16 @@ def _error_text(reply: object) -> str:
 
 
 def _outcome_message(outcome: str, target: dict, stake: float, filled: float, fee: float) -> str:
+    """A fill in the bet's own terms, like the other venues' Place messages. The
+    to-win is at the order's limit price: ProphetX's order read names no fill
+    price in the docs, and a fill-or-kill buy fills at that price or better."""
     price = f"{target['price']:+d}"
-    fee_words = f" (fee ${fee:,.2f})" if fee else ""
-    if outcome == STATUS_FILLED:
-        return f"Bet ${filled:,.2f} at {price} on ProphetX{fee_words}."
-    if outcome == STATUS_PARTIAL:
-        return f"Bet ${filled:,.2f} of ${stake:,.2f} at {price}{fee_words}; the rest was not there. Nothing rests."
     if outcome == STATUS_REJECTED:
         return "ProphetX rejected the order (invalid, often the balance). Nothing was placed."
-    return f"Nothing filled at {price}: the price was gone. Nothing rests."
+    if outcome not in (STATUS_FILLED, STATUS_PARTIAL):
+        return f"Nothing filled at {price}: the price was gone. Nothing rests."
+    rest = "." if outcome == STATUS_FILLED else "; the rest was not there. Nothing rests."
+    payout = filled + profit_at(filled, target["price"])
+    matched = "" if outcome == STATUS_FILLED else f"${filled:,.2f} of ${stake:,.2f} matched, "
+    detail = f"{matched}limit {price} on ProphetX" + (f", fee ${fee:,.2f}" if fee else "")
+    return filled_bet_message(target.get("label"), filled + fee, payout, detail) + rest

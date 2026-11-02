@@ -45,8 +45,8 @@ from datetime import datetime, timedelta, timezone
 
 from unabated_ticket.bets_service.manual_orders import (
     CLICK_ID_PATTERN, PRICE_TOLERANCE, STATUS_FILLED, STATUS_PARTIAL, STATUS_REFUSED, STATUS_REJECTED,
-    STATUS_UNFILLED, STATUS_UNKNOWN, VENUE_POLYMARKET, _cents, _is_number, _iso_time, optional_read_at,
-    unseen_manual_fill,
+    STATUS_UNFILLED, STATUS_UNKNOWN, VENUE_POLYMARKET, _cents, _is_number, _iso_time, contracts_detail, filled_bet_message,
+    optional_read_at, unpriced_fill_message, unseen_manual_fill,
 )
 from unabated_ticket.bets_service.polymarket_orders import (
     FINAL_ORDER_STATES, MAX_PRICE, MIN_PRICE, RESTING_ORDER_STATES, PolymarketError, PolymarketOrderClient,
@@ -323,13 +323,14 @@ def _error_text(reply: object) -> str:
 
 
 def _outcome_message(outcome: str, quote: dict, count: int, filled: float, paid: float | None) -> str:
+    """A Polymarket US contract pays $1, so a fill pays back `filled` dollars.
+    Without the cost it says what filled, at the quoted price."""
     price = _cents(quote["allIn"])
-    cost = f" for ${paid:,.2f}" if paid is not None else ""
-    if outcome == STATUS_FILLED:
-        return f"Bought {filled:,.0f} {quote['side'].upper()} contracts at {price} all-in{cost}."
-    if outcome == STATUS_PARTIAL:
-        return (f"Bought {filled:,.0f} of {count:,} {quote['side'].upper()} contracts at {price} all-in{cost}; "
-                "the rest was not there. Nothing rests.")
     if outcome == STATUS_REJECTED:
         return "Polymarket US rejected the order. Nothing was placed."
-    return f"Nothing filled at {price}: the price was gone. Nothing rests."
+    if outcome not in (STATUS_FILLED, STATUS_PARTIAL):
+        return f"Nothing filled at {price}: the price was gone. Nothing rests."
+    rest = "." if outcome == STATUS_FILLED else "; the rest was not there. Nothing rests."
+    if paid is None:
+        return unpriced_fill_message("Polymarket US", quote.get("label"), filled, count, quote["allIn"], rest)
+    return filled_bet_message(quote.get("label"), paid, filled, contracts_detail(filled, count, paid)) + rest

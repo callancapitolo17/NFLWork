@@ -50,7 +50,10 @@ def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def _number(value: object) -> float | None:
+def number_of(value: object) -> float | None:
+    """A finite number off a ProphetX field (number or numeric text, "+150"
+    included), else None. Shared by the source and the Place desk so both read
+    a field the same way."""
     if isinstance(value, bool) or value is None or value == "":
         return None
     try:
@@ -124,8 +127,8 @@ def _signed_points(offer: dict) -> float | None:
     """The offer's own number: display_strike when it carries a sign, else strike."""
     display = _text(offer.get("display_strike"))
     if display[:1] in ("+", "-"):
-        return _number(display)
-    return _number(offer.get("strike"))
+        return number_of(display)
+    return number_of(offer.get("strike"))
 
 
 def _team_slot(offer: dict, teams: dict) -> str | None:
@@ -158,7 +161,7 @@ def sides_of_market(market: dict, bet_type: str, teams: dict) -> list[dict] | st
         if bet_type == "total":
             word = (_text(head.get("name")) or _text(head.get("display_name"))).lower()
             side = "over" if word.startswith("over") else "under" if word.startswith("under") else None
-            points = _number(head.get("strike"))
+            points = number_of(head.get("strike"))
             if side is None or points is None or points <= 0:
                 return f"total market {market.get('id')} has a side that reads as neither Over nor Under at a number"
         else:
@@ -181,8 +184,8 @@ def sides_of_market(market: dict, bet_type: str, teams: dict) -> list[dict] | st
 
 def lines_of_event(event: dict, markets: list[dict]) -> list[dict] | str:
     """Every side of every game market of one game as a board line: [{league,
-    betType, period, side, points, strike_id, marketId, ladder, awayTeam,
-    homeTeam}], or what made the game unreadable. Markets whose period or
+    betType, period, side, points, strike_id, otherStrikeId (the same pair's
+    other side), marketId, ladder, awayTeam, homeTeam}], or what made the game unreadable. Markets whose period or
     sides do not read are left out, never guessed."""
     league = league_of(event)
     if league is None:
@@ -203,13 +206,14 @@ def lines_of_event(event: dict, markets: list[dict]) -> list[dict] | str:
             sides = sides_of_market(sub, bet_type, teams)
             if isinstance(sides, str):
                 continue
-            for side in sides:
+            for side, other in zip(sides, reversed(sides)):
                 # A main number listed again under market_strikes is one line, not two.
                 if side["strike_id"] in seen_strikes:
                     continue
                 seen_strikes.add(side["strike_id"])
                 lines.append({"league": league, "betType": bet_type, "period": period, "side": side["side"],
-                              "points": side["points"], "strike_id": side["strike_id"], "marketId": sub.get("id"),
+                              "points": side["points"], "strike_id": side["strike_id"], "otherStrikeId": other["strike_id"],
+                              "marketId": sub.get("id"),
                               "marketName": _text(market.get("name")), "ladder": side["ladder"],
                               "awayTeam": team_name_of(teams["away"]), "homeTeam": team_name_of(teams["home"])})
     return lines
@@ -218,7 +222,7 @@ def lines_of_event(event: dict, markets: list[dict]) -> list[dict] | str:
 def best_offer_of(ladder: list[dict]) -> dict | None:
     """{price, depth}: the best (highest) American price a buyer takes off a
     side's ladder and the money resting at it, or None when nothing rests."""
-    offers = [(offer.get("price"), _number(offer.get("quantity"))) for offer in ladder]
+    offers = [(offer.get("price"), number_of(offer.get("quantity"))) for offer in ladder]
     offers = [(price, depth) for price, depth in offers
               if isinstance(price, (int, float)) and not isinstance(price, bool) and abs(price) >= 100
               and depth is not None and depth > 0]
@@ -236,11 +240,3 @@ def american_to_probability(american: float) -> float:
 def profit_at(stake: float, american: float) -> float:
     """What `stake` wins at an American price."""
     return stake * american / 100 if american > 0 else stake * 100 / -american
-
-
-def american_of(stake: float, to_win: float) -> int | None:
-    """The American price that pays `to_win` on `stake`, or None."""
-    if stake <= 0 or to_win <= 0:
-        return None
-    ratio = to_win / stake
-    return int(round(ratio * 100)) if ratio >= 1 else -int(round(100 / ratio))
