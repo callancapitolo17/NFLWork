@@ -61,7 +61,7 @@ from datetime import datetime, timedelta, timezone
 
 from unabated_ticket.bets_service.manual_orders import (
     PRICE_TOLERANCE, STATUS_FILLED, STATUS_PARTIAL, STATUS_REFUSED, STATUS_REJECTED, STATUS_UNKNOWN,
-    VENUE_NOVIG, _cents, _is_number, _iso_time, optional_read_at, unseen_manual_fill,
+    VENUE_NOVIG, _cents, _is_number, _iso_time, filled_bet_message, optional_read_at, unseen_manual_fill,
 )
 from unabated_ticket.bets_service.novig_orders import (FINAL_ORDER_STATUSES, GEO_STATUS, QTY_PER_DOLLAR, STATUS_OPEN,
                                                        NovigError, NovigOrderClient, error_code_of, fill_outcome,
@@ -356,12 +356,13 @@ class ManualNovigDesk:
 
 
 def _outcome_message(outcome: str, quote: dict, quantity: int, filled: int, paid: float) -> str:
+    """Novig's quantity is in 1¢ units, so a fill pays back filled / QTY_PER_DOLLAR dollars."""
     price = _cents(quote["price"])
-    to_win = filled / QTY_PER_DOLLAR - paid
+    if outcome not in (STATUS_FILLED, STATUS_PARTIAL):
+        return f"Nothing filled at {price}: the price was gone. Nothing rests."
+    payout = filled / QTY_PER_DOLLAR
     if outcome == STATUS_FILLED:
-        return f"Bet ${paid:,.2f} at {price} on Novig to win ${to_win:,.2f}."
-    if outcome == STATUS_PARTIAL:
-        asked = quantity * quote["price"] / QTY_PER_DOLLAR
-        return (f"Bet ${paid:,.2f} of ${asked:,.2f} at {price} on Novig to win ${to_win:,.2f}; "
-                "the rest was not there. Nothing rests.")
-    return f"Nothing filled at {price}: the price was gone. Nothing rests."
+        return filled_bet_message(quote.get("label"), paid, payout, f"{price} on Novig") + "."
+    asked = quantity * quote["price"] / QTY_PER_DOLLAR
+    return (filled_bet_message(quote.get("label"), paid, payout, f"{price} on Novig, ${asked:,.2f} asked")
+            + "; the rest was not there. Nothing rests.")

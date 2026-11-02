@@ -130,7 +130,7 @@ def test_a_click_sends_one_ioc_buy_at_the_live_price_in_1c_contracts(store):
     assert novig.calls == [(OUTCOME, 0.675, 7407, CLICK_ID)]
     assert result["status"] == "filled"
     assert result["cost"] == pytest.approx(49.99725)
-    assert result["message"] == "Bet $50.00 at 67.5¢ on Novig to win $24.07."
+    assert result["message"] == "Bet $50.00 on Washington St -35.5 full game at -208 to win $24.07 (67.5¢ on Novig)."
 
 
 def test_a_moneyline_click_asks_the_runner_with_no_number(store):
@@ -265,7 +265,8 @@ def test_an_add_waits_until_the_last_place_on_the_game_was_read_at_either_venue(
      "has not said what filled"),
     (ScriptedNovig(order_reads=[(200, {"status": "REJECTED"})], fills=[]), "unfilled", "price was gone"),
     (ScriptedNovig(order_reads=[(200, {"status": "CANCELED"})], fills=[{"fillId": "f1", "qty": 4000, "cost": "27.00000"}]),
-     "partial", "Bet $27.00 of $50.00"),
+     "partial", "Bet $27.00 on Washington St -35.5 full game at -208 to win $13.00 (67.5¢ on Novig, $50.00 asked); "
+     "the rest was not there"),
     (ScriptedNovig(fills=[{"fillId": "f1", "qty": 100}]), "unknown", "fills could not be read"),
 ])
 def test_what_each_answer_reads_as(store, novig, status, words):
