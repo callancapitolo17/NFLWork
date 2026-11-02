@@ -983,6 +983,15 @@ test("kalshi_quote: the board's Kalshi line gives its contract, live ask, all-in
   assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 0);
 });
 
+test("kalshi_quote: carries the market's exchange_index (its cash pot), null when Kalshi omits it", async () => {
+  const sharded = await quoteRunner({ WSU36: { exchange_index: 3 } });
+  assert.equal((await sharded.runner.kalshiQuote(new URLSearchParams(WSU_36_LINE))).exchangeIndex, 3);
+  sharded.runner.stop();
+  const plain = await quoteRunner();
+  assert.equal((await plain.runner.kalshiQuote(new URLSearchParams(WSU_36_LINE))).exchangeIndex, null);
+  plain.runner.stop();
+});
+
 test("kalshi_quote: while a scan restart is still downloading, the quote reads the board the list still shows", async () => {
   const unabated = takerUnabatedFetch();
   let hold = false;

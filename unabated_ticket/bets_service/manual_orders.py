@@ -1,6 +1,6 @@
 """The Ticket's Place button on Kalshi (manual_place_plan.md): Cal clicks, and
-this desk sends ONE order on his own Kalshi key (KALSHI_API_KEY_ID, the key
-the Kalshi source reads with). Nothing here runs on a timer: every order is
+this desk sends ONE order on Place's own Kalshi key (KALSHI_PLACE_API_KEY_ID,
+read + trade + transfer, on his main account). Nothing here runs on a timer: every order is
 one POST /place_kalshi.json from the panel or the phone page.
 
 Rules, in order, for every request (validate_place_request's shape):
@@ -23,25 +23,32 @@ Rules, in order, for every request (validate_place_request's shape):
      not know about it (the bot's unseen-fill rule, on time instead of ids;
      `unseen_manual_fill`, shared with Novig and Polymarket US Place);
   7. contracts = floor(stake / live all-in), at least one;
-  8. one immediate-or-cancel limit buy at the live ask
+  8. the market's Kalshi cash pot (its exchange_index) holds the order's
+     cost, else the shortfall is moved in from the main pot and Place waits
+     for Kalshi to finish moving it (kalshi_shards.top_up_shard);
+  9. one immediate-or-cancel limit buy at the live ask
      (taker_orders.order_body: nothing rests), then the order's fills read.
 
 Side effects: a Kalshi order on Cal's own key, his primary account (no
-subaccount named; the bot trades its own numbered one) (money); INSERT / UPDATE
-bets.duckdb::manual_orders. Network: GET <runner>/kalshi_quote.json, then
-Kalshi REST signed with Cal's key (the order, and its fills).
+subaccount named; the bot trades its own numbered one) (money); when the
+market's pot is short, a transfer between his own Kalshi pots (money, never
+out of the account); INSERT / UPDATE bets.duckdb::manual_orders. Network: GET
+<runner>/kalshi_quote.json, then Kalshi REST signed with Cal's key (the pot's
+balance, a top-up, the order, and its fills).
 """
 import json
 import logging
 import math
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
+from unabated_ticket.bets_service.kalshi_shards import order_cost_bound, top_up_shard
 from unabated_ticket.bets_service.sources.kalshi import PRIMARY_SUBACCOUNT
 from unabated_ticket.bets_service.store import BetsStore
 from unabated_ticket.bets_service.taker_orders import (
@@ -238,11 +245,14 @@ class ManualKalshiDesk:
     """Sends Cal's Place-button orders on his own Kalshi key, one per click."""
 
     def __init__(self, client: KalshiOrderClient, store: BetsStore, quote_reader: Callable[[dict], dict],
-                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)):
+                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+                 sleep: Callable[[float], None] = time.sleep, monotonic: Callable[[], float] = time.monotonic):
         self._client = client
         self._store = store
         self._quote_reader = quote_reader
         self._now = now
+        self._sleep = sleep
+        self._monotonic = monotonic
         # One click at a time (panel and phone can click at once): the checks
         # read the orders already sent, so they must see each other's.
         self._lock = threading.Lock()
@@ -265,6 +275,10 @@ class ManualKalshiDesk:
         if count < 1:
             return {"status": STATUS_REFUSED,
                     "message": f"Not placed: ${request['stake']:.2f} buys no contract at {_cents(quote['allIn'])}."}
+        top_up = top_up_shard(self._client, quote.get("exchangeIndex"), order_cost_bound(count, quote["allIn"]),
+                              self._sleep, self._monotonic)
+        if top_up.refusal:
+            return {"status": STATUS_REFUSED, "message": f"Not placed: {top_up.refusal}"}
         inserted = self._store.insert_manual_order({
             "client_order_id": client_order_id, "placed_at": self._now(), "venue": "kalshi", "event_id": request["eventId"],
             "ticker": quote["ticker"], "contract_side": quote["side"], "label": quote.get("label"),
@@ -275,7 +289,10 @@ class ManualKalshiDesk:
             return {"status": STATUS_REFUSED, "message": "Not placed: this click was already sent."}
         log.info("manual order %s: %s %s x%d @ %s (Ticket %s)", client_order_id, quote["ticker"], quote["side"],
                  count, quote["ask"], request["ticket_all_in"])
-        return self._send(client_order_id, quote, count)
+        result = self._send(client_order_id, quote, count)
+        if top_up.note:
+            result["message"] = f"{result['message']} ({top_up.note[0].upper()}{top_up.note[1:]}.)"
+        return result
 
     def _refusal(self, request: dict, quote: dict) -> str | None:
         """Why this click must not become an order, in words, or None."""

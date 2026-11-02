@@ -357,3 +357,130 @@ def test_fill_message_speaks_in_the_bets_terms():
         "Bought 170 contracts on A +1.5 at 58.7¢ quoted; Kalshi has not said yet what they cost.")
     # A fill that pays back no more than it cost has no odds to show.
     assert filled_bet_message("A +1.5 FG", 10.0, 10.0, "x") == "Bet $10.00 on A +1.5 to win $0.00 (x)"
+
+
+# ---- Kalshi cash pots: a market on a short pot is topped up from the main pot first ----
+class PottedKalshi(ScriptedKalshi):
+    """ScriptedKalshi plus Kalshi's per-pot balance and pot-to-pot transfers."""
+
+    def __init__(self, pot_cents=11386, transfer_status=200, transfer_reply=None, completes_after=1,
+                 balance_statuses=(200,), **kwargs):
+        super().__init__(**kwargs)
+        self.pot_cents = pot_cents
+        self.transfer_status = transfer_status
+        self.transfer_reply = transfer_reply
+        self.completes_after = completes_after
+        self.balance_statuses = list(balance_statuses)
+        self.status_reads = 0
+
+    def request(self, method, path, body=None):
+        if path.startswith("/portfolio/balance"):
+            self.calls.append((method, path, body))
+            status = self.balance_statuses.pop(0) if self.balance_statuses else 200
+            return status, ({"balance": self.pot_cents} if status == 200 else {"error": {"code": "too_many_requests"}})
+        if path == "/portfolio/intra_exchange_instance_transfer":
+            self.calls.append((method, path, body))
+            if self.transfer_reply is not None:
+                return self.transfer_status, self.transfer_reply
+            return self.transfer_status, {"transfer_id": "t-1"}
+        if path.startswith("/portfolio/intra_exchange_instance_transfers/"):
+            self.calls.append((method, path, body))
+            self.status_reads += 1
+            done = self.status_reads >= self.completes_after
+            return 200, {"transfer": {"transfer_id": "t-1", "status": "complete" if done else "pending"}}
+        return super().request(method, path, body)
+
+    def transfers(self):
+        return [call for call in self.calls if call[1] == "/portfolio/intra_exchange_instance_transfer"]
+
+    def orders(self):
+        return [call for call in self.posts() if call[1] == "/portfolio/events/orders"]
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+    def monotonic(self):
+        return self.now
+
+
+def potted_desk(store, kalshi, quote_changes, clock=None):
+    clock = clock or FakeClock()
+    return ManualKalshiDesk(kalshi, store, lambda line: {**QUOTE, **quote_changes}, now=lambda: NOW,
+                            sleep=clock.sleep, monotonic=clock.monotonic)
+
+
+def test_the_shortfall_is_moved_in_centicents_and_the_order_waits_for_complete(store):
+    kalshi = PottedKalshi(pot_cents=5000, completes_after=2)
+    result = potted_desk(store, kalshi, {"exchangeIndex": 3}).place(request())
+    [(_, _, transfer)] = kalshi.transfers()
+    # cost bound = ceil(170 x 0.587157 = 99.8167) = $99.82 + $0.01 = $99.83; pot $50.00 -> move $49.83.
+    assert transfer == {**transfer, "source": "event_contract", "destination": "event_contract",
+                        "source_exchange_shard": 0, "destination_exchange_shard": 3, "amount": 498300}
+    assert transfer["client_transfer_id"]
+    assert kalshi.status_reads == 2
+    order_index = kalshi.calls.index(kalshi.orders()[0])
+    assert order_index > kalshi.calls.index(kalshi.transfers()[0]), "the order goes after the top-up"
+    assert result["status"] == "filled"
+    assert result["message"].endswith("(Moved $49.83 into the basketball/baseball/tennis pot first.)")
+
+
+def test_a_pot_that_covers_the_cost_moves_nothing(store):
+    kalshi = PottedKalshi(pot_cents=9983)
+    assert potted_desk(store, kalshi, {"exchangeIndex": 3}).place(request())["status"] == "filled"
+    assert kalshi.transfers() == []
+
+
+@pytest.mark.parametrize("quote_changes", [{"exchangeIndex": 0}, {"exchangeIndex": None}, {}])
+def test_a_main_pot_or_unknown_pot_market_reads_and_moves_nothing(store, quote_changes):
+    kalshi = PottedKalshi(pot_cents=0)
+    assert potted_desk(store, kalshi, quote_changes).place(request())["status"] == "filled"
+    assert [call[1] for call in kalshi.calls if call[1].startswith("/portfolio/balance")] == []
+    assert kalshi.transfers() == []
+
+
+def test_a_rate_limited_balance_read_retries_once(store):
+    kalshi = PottedKalshi(pot_cents=5000, balance_statuses=(429, 200))
+    assert potted_desk(store, kalshi, {"exchangeIndex": 3}).place(request())["status"] == "filled"
+    assert len(kalshi.transfers()) == 1, "the retry read the pot"
+
+
+def test_a_pot_kalshi_will_not_report_orders_unchecked(store):
+    unread = PottedKalshi(pot_cents=5000, balance_statuses=(429, 429))
+    result = potted_desk(store, unread, {"exchangeIndex": 3}).place(request())
+    assert unread.transfers() == [] and len(unread.orders()) == 1 and result["status"] == "filled"
+
+
+def test_a_transfer_kalshi_refuses_sends_no_order(store):
+    kalshi = PottedKalshi(pot_cents=5000, transfer_status=400,
+                          transfer_reply={"error": {"code": "insufficient_balance", "message": "insufficient balance"}})
+    result = potted_desk(store, kalshi, {"exchangeIndex": 3}).place(request())
+    assert result["status"] == "refused" and kalshi.orders() == []
+    assert "pot has $50.00" in result["message"] and "insufficient balance" in result["message"]
+    assert desk_never_recorded(store)
+
+
+def test_a_key_without_transfer_permission_says_so(store):
+    kalshi = PottedKalshi(pot_cents=5000, transfer_status=403,
+                          transfer_reply={"error": {"code": "insufficient_scope", "message": "insufficient scope"}})
+    result = potted_desk(store, kalshi, {"exchangeIndex": 3}).place(request())
+    assert result["status"] == "refused" and "transfer permission" in result["message"]
+    assert kalshi.orders() == []
+
+
+def test_a_transfer_that_does_not_complete_in_time_sends_no_order_and_the_click_can_retry(store):
+    kalshi = PottedKalshi(pot_cents=5000, completes_after=10_000)
+    result = potted_desk(store, kalshi, {"exchangeIndex": 3}).place(request())
+    assert result["status"] == "refused" and "place again in a few seconds" in result["message"]
+    assert kalshi.orders() == []
+    # The same click, once the money landed, places (nothing was recorded for it).
+    kalshi.pot_cents = 9983
+    assert potted_desk(store, kalshi, {"exchangeIndex": 3}).place(request())["status"] == "filled"
+
+
+def desk_never_recorded(store):
+    return not store.manual_orders_maybe_filled_since(EVENT_ID, NOW - timedelta(days=1), venue="kalshi")

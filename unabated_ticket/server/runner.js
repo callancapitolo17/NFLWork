@@ -1274,9 +1274,11 @@ function createRunner(deps) {
     Object.assign(position, startFields(row.eventStart, kalshiStartMs));
     const quote = taker.quoteOf(book, contract.side);
     if (!quote) return { ok: false, ...position, reason: "no_book", detail: `nothing rests on the ${contract.side} side of ${contract.ticker}` };
+    // exchangeIndex: the Kalshi cash pot (shard) the market draws on, so the
+    // bets service can top that pot up before ordering (null when Kalshi omits it).
     return {
       ok: true, ...position, ask: quote.ask, allIn: Math.round(taker.kalshiAllInPrice(quote.ask) * 1e6) / 1e6, depth: quote.depth,
-      kalshiBaseUrl,
+      exchangeIndex: Number.isInteger(market.exchange_index) ? market.exchange_index : null, kalshiBaseUrl,
     };
   }
 

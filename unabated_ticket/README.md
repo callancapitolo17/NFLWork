@@ -3297,7 +3297,22 @@ from wherever the phone reaches the VM over Tailscale.
    was sized on, since 2026-10-19;
    `novigReadAt`, or every Novig Place when Novig was never read); the click
    id was already sent.
-3. It sends one immediate-or-cancel limit at the live ask for
+3. **Kalshi cash pots** (2026-11-02, `bets_service/kalshi_shards.py`): Kalshi
+   keeps cash per matching engine ("exchange shard"): 0 main (football and
+   the rest), 1 combos, 2 crypto/commodities, 3 basketball/baseball/tennis,
+   and an order uses only its market's pot. The website moves cash between
+   pots by itself; API orders do not, so a basketball Place with $5k in pot 0
+   and $114 in pot 3 was refused `insufficient_balance`. The runner's quote
+   carries the market's `exchangeIndex` (GET /markets); for a pot other than
+   0 the desk reads that pot's balance (`GET /portfolio/balance?exchange_index=N`)
+   and, when it is short of contracts x all-in + 1c, moves exactly the
+   shortfall from pot 0 (`POST /portfolio/intra_exchange_instance_transfer`)
+   and waits up to 5 s for Kalshi to report it `complete`, then orders.
+   Nothing moves back. A failed or unfinished top-up refuses the click
+   (nothing recorded, so the same click can retry); a balance Kalshi will not
+   report (429 twice, no answer) sends the order unchecked. Needs the Place
+   key to have **transfer** permission (`deploy/README.md` step 12).
+4. It sends one immediate-or-cancel limit at the live ask for
    `floor(stake / all-in)` contracts, `client_order_id` `uman-<clickId>`, so
    nothing rests; the reply reads filled, partial, unfilled (the price was
    gone), rejected (Kalshi's words) or unknown (no definite answer: check
