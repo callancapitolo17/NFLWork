@@ -125,6 +125,12 @@
 //                    side found in Polymarket US's own event list (polymarket.js),
 //                    its live ask, the all-in price with the taker fee and the
 //                    line as a bet record names it; places nothing.
+//   GET /prophetx_quote.json?eventId=..&periodTypeId=..&betTypeId=..&sideIndex=..&points=..
+//                    the same for ProphetX Place (bets_service/prophetx_place.py):
+//                    the board's ProphetX line, the line as a bet record names it
+//                    and the ProphetX strike ids the feed carries for its game
+//                    (prophetx.js); ProphetX itself is read by the bets service
+//                    on its key. Places nothing.
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
@@ -163,6 +169,7 @@ const attachLib = require("../extension/attach.js");
 const pricecheck = require("../extension/pricecheck.js");
 const taker = require("./taker.js");
 const polymarket = require("./polymarket.js");
+const prophetx = require("./prophetx.js");
 const feedLib = require("../extension/feed.js");
 const boardThread = require("./board_thread.js");
 
@@ -1462,6 +1469,37 @@ function createRunner(deps) {
     };
   }
 
+  // The Ticket's Place button at ProphetX (bets_service/prophetx_place.py
+  // asks): the board's one ProphetX line with these fields, the line as a bet
+  // record names it, and the ProphetX strike ids Unabated carries for its game
+  // (prophetx.js). ProphetX's API needs the bets service's key for every read,
+  // so the strike and its price are found there. Places nothing.
+  //   params  URLSearchParams {eventId, periodTypeId, betTypeId, sideIndex, points?}
+  function prophetxQuoteNow(params) {
+    const spec = kalshiLineSpecOf(params);
+    const answer = prophetxQuoteOfSpec(spec);
+    logInfo(`prophetx quote ${spec.eventId} ${answer.label || `bet type ${spec.betTypeId} side ${spec.sideIndex} ${spec.points}`}: `
+      + `${answer.ok ? `ok, ${answer.strikeIds.length} strike ids${answer.lineStrikeId ? " (the line's own)" : ""}` : `${answer.reason}: ${answer.detail}`}`);
+    return answer;
+  }
+
+  function prophetxQuoteOfSpec(spec) {
+    const board = feedState;
+    if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
+    const gameLines = linesOfEvent(board, spec.eventId);
+    const found = gameLines.filter((line) => line.bookId === prophetx.PROPHETX_BOOK_ID
+      && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
+      && line.sideIndex === spec.sideIndex && (spec.betTypeId === MONEYLINE_BET_TYPE_ID || (line.points ?? null) === spec.points));
+    if (found.length !== 1) {
+      return { ok: false, reason: "no_line", detail: `the board holds ${found.length} ProphetX lines for game ${spec.eventId} at that market, side and number` };
+    }
+    const row = feedLib.describeLine(found[0], board);
+    return {
+      ok: true, eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(),
+      eventName: row.eventName, price: found[0].price, line: taker.novigLineOf(row), ...prophetx.strikeIdsOf(found[0], gameLines),
+    };
+  }
+
   // Kalshi's start for an event as epoch ms, or null when it lists none or
   // the read failed (never throws: option B trades on Unabated's start then).
   async function kalshiStartOf(eventTicker) {
@@ -1871,7 +1909,7 @@ function createRunner(deps) {
   return {
     start, stop, pollBets, pollSettings, postClosingFairs, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions,
     edgesPayload: edgesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow, tauPayload: tauPayloadNow,
-    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, health, scanner,
+    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, prophetxQuote: prophetxQuoteNow, health, scanner,
     boardLines,
   };
 }
@@ -1919,7 +1957,7 @@ function sendJson(response, status, body) {
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /tau.json, /kalshi_quote.json, /novig_quote.json, /polymarket_quote.json and /health, the Host allowlist first on
+// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /tau.json, /kalshi_quote.json, /novig_quote.json, /polymarket_quote.json, /prophetx_quote.json and /health, the Host allowlist first on
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
@@ -1949,6 +1987,7 @@ function createHttpServer(runner, { host }) {
       if (path === "/kalshi_quote.json") return sendJson(response, 200, await runner.kalshiQuote(url.searchParams));
       if (path === "/novig_quote.json") return sendJson(response, 200, await runner.novigQuote(url.searchParams));
       if (path === "/polymarket_quote.json") return sendJson(response, 200, await runner.polymarketQuote(url.searchParams));
+      if (path === "/prophetx_quote.json") return sendJson(response, 200, runner.prophetxQuote(url.searchParams));
       if (path === "/health") return sendJson(response, 200, await runner.health());
     } catch (error) {
       if (error.status) return sendJson(response, error.status, { error: error.message });

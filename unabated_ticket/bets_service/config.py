@@ -243,6 +243,20 @@ POLYMARKET_US_HISTORY_DAYS = RETENTION_DAYS + 1
 # The Ticket's Place button at Polymarket US (polymarket_place.py) signs with this
 # same key (Cal 2026-10-22: a polymarket.us key is not read-only).
 
+# ProphetX (2026-10-31): the account's own Trading API key pair, made by Cal on
+# prophetx.co (menu -> API Integration -> Create a new token; the secret is shown
+# once). One key reads the account's orders (sources/prophetx.py) and places the
+# Ticket's ProphetX Place orders (prophetx_place.py), on his main account. Unset =
+# no ProphetX source and no ProphetX Place button.
+PROPHETX_ACCESS_KEY = _get("PROPHETX_ACCESS_KEY")
+PROPHETX_SECRET_KEY = _get("PROPHETX_SECRET_KEY")
+PROPHETX_BASE_URL = _get("PROPHETX_BASE_URL", "https://cash.api.prophetx.co/partner")
+# Every 30 s: a login every ~9 min, order history + trades (a page each on a normal
+# day) and a sport-event / market read per game not yet cached.
+PROPHETX_POLL_SEC = 30.0
+# ProphetX's order history allows at most a 60-day creation window per read.
+PROPHETX_HISTORY_DAYS = 60
+
 # Bet105 (2026-09-29): no credentials and no poll here. Cloudflare challenges any
 # request that is not the browser session's own, so the extension reads the account
 # from Cal's logged-in Chrome (extension/bet105.js, every 5 min while the panel is

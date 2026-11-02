@@ -143,6 +143,13 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     main account with the POLYMARKET_US_* key, real money —
                                     polymarket_place.py checks the live all-in price against the
                                     Ticket's first; 503 while that key is unset or refused)
+           POST /place_prophetx.json  body {clickId, eventId, periodTypeId, betTypeId, sideIndex,
+                                    points, stake, ticketAllIn, prophetxReadAt, kalshiReadAt,
+                                    novigReadAt, polymarketReadAt} -> {ok, status, message, ...}
+                                    (the Ticket's Place button at ProphetX: ONE fill-or-kill order
+                                    on Cal's main account with the PROPHETX_* key pair, real money —
+                                    prophetx_place.py checks the live price against the Ticket's
+                                    first; 503 while that key pair is unset or refused)
            POST /novig_books.json   body {marketIds: [..], waitMs, priority?} -> {stream:
                                     {connected, lastFrameAgeMs, error, ...}, books: {marketId:
                                     {status, started, seq, orders: {outcomeId: [{order, price,
@@ -226,6 +233,8 @@ and INSERTs / UPDATEs bets.duckdb::manual_orders, venue 'novig' (novig_place.py)
 POST /place_polymarket.json places a Polymarket US order on Cal's main account
 (money) and INSERTs / UPDATEs bets.duckdb::manual_orders, venue 'polymarket_us'
 (polymarket_place.py).
+POST /place_prophetx.json places a ProphetX order on Cal's main account (money)
+and INSERTs / UPDATEs bets.duckdb::manual_orders, venue 'prophetx' (prophetx_place.py).
 POST /taker/order.json places a bot order on Kalshi (money) on the bot's own
 key, locked to the bot's own Kalshi subaccount, when one is configured, and
 INSERTs / UPDATEs taker.duckdb::taker_orders (taker_orders.py: stop file, open-cost
@@ -264,6 +273,9 @@ from unabated_ticket.bets_service.polymarket_orders import PolymarketError, Poly
 from unabated_ticket.bets_service.polymarket_place import (RUNNER_POLYMARKET_QUOTE_PATH,
                                                            RUNNER_POLYMARKET_QUOTE_TIMEOUT_SEC,
                                                            ManualPolymarketDesk, validate_polymarket_place_request)
+from unabated_ticket.bets_service.prophetx_client import ProphetXClient, ProphetXError
+from unabated_ticket.bets_service.prophetx_place import (RUNNER_PROPHETX_QUOTE_PATH, RUNNER_PROPHETX_QUOTE_TIMEOUT_SEC,
+                                                         ManualProphetXDesk, validate_prophetx_place_request)
 from unabated_ticket.bets_service.novig_place import (NOVIG_PLACE_READ_SOURCES, RUNNER_NOVIG_QUOTE_PATH,
                                                       RUNNER_NOVIG_QUOTE_TIMEOUT_SEC, ManualNovigDesk,
                                                       validate_novig_place_request)
@@ -281,6 +293,8 @@ from unabated_ticket.bets_service.sources.kalshi import PRIMARY_SUBACCOUNT, Kals
 from unabated_ticket.bets_service.sources.novig import source_if_connected as novig_source_if_connected
 from unabated_ticket.bets_service.sources.novig_subaccount import NovigSubaccountSource
 from unabated_ticket.bets_service.sources.polymarket_us import source_if_configured as polymarket_us_source_if_configured
+from unabated_ticket.bets_service.sources.prophetx import ProphetXSource
+from unabated_ticket.bets_service.sources.prophetx import source_if_configured as prophetx_source_if_configured
 from unabated_ticket.bets_service.sources.wagerzon import source_if_configured as wagerzon_source_if_configured
 from unabated_ticket.bets_service.store import EDGE_SETTINGS_FIELDS, BetsStore
 from unabated_ticket.bets_service.taker_orders import (KalshiOrderClient, TakerDesk, key_lock_problem,
@@ -311,6 +325,7 @@ PLACE_READ_SOURCES = {
     "kalshi": ("kalshi",),
     "novig": ("novig", "novig_place", "novig_bot"),
     "polymarket_us": ("polymarket_us",),
+    "prophetx": ("prophetx",),
 }
 # Statuses after which an order may hold contracts (store._SELECT_MANUAL_MAYBE_FILLED;
 # Novig's "unfilled" too, which the store still counts until Novig's own read).
@@ -369,6 +384,8 @@ SETTINGS_PERIOD_IDS = range(1, 8)
 SETTINGS_BET_TYPE_IDS = (1, 2, 3)
 SETTINGS_BOOK_MODES = ("default", "all", "custom")
 SETTINGS_SORT_KEYS = ("edge", "stake", "start", "exposure")
+# Why POST /place_prophetx.json answers 503 when no ProphetX key pair is configured.
+PROPHETX_PLACE_OFF_REASON = "no ProphetX key pair is configured (PROPHETX_ACCESS_KEY / PROPHETX_SECRET_KEY)"
 # Why POST /place_polymarket.json answers 503 when no Polymarket US key is configured.
 POLYMARKET_PLACE_OFF_REASON = "no Polymarket US key is configured (POLYMARKET_US_KEY_ID / POLYMARKET_US_SECRET_KEY)"
 # POST /novig_books.json: the most markets one ask may name (a taker pass names its candidates).
@@ -1234,6 +1251,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  novig_place_off_reason: str = NOVIG_PLACE_OFF_REASON,
                  polymarket_place_desk: ManualPolymarketDesk | None = None,
                  polymarket_place_off_reason: str = POLYMARKET_PLACE_OFF_REASON,
+                 prophetx_place_desk: ManualProphetXDesk | None = None,
+                 prophetx_place_off_reason: str = PROPHETX_PLACE_OFF_REASON,
                  novig_book_stream: NovigBookStream | None = None,
                  novig_catalog_reads: NovigCatalogReads | None = None,
                  source_reader: SourceReader | None = None) -> type[BaseHTTPRequestHandler]:
@@ -1250,7 +1269,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
     places Cal's Novig Place-button orders (None: POST /place_novig.json 503s
     with `novig_place_off_reason`). `polymarket_place_desk` places Cal's
     Polymarket US Place-button orders (None: POST /place_polymarket.json 503s
-    with `polymarket_place_off_reason`). `novig_book_stream` serves Novig's live
+    with `polymarket_place_off_reason`). `prophetx_place_desk` places Cal's
+    ProphetX Place-button orders (None: POST /place_prophetx.json 503s with
+    `prophetx_place_off_reason`). `novig_book_stream` serves Novig's live
     books (None: POST /novig_books.json 503s), `novig_catalog_reads` the keyed
     catalog reads on the same key (None: POST /novig_read.json 503s). `source_reader` reads a
     Place's venue before its reply (None: the reply goes at once and the next
@@ -1313,7 +1334,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                                 "/fill_snapshots.json", "/close_snapshots.json", "/tau_samples.json",
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
                                 "/draftkings.json", "/place_teaser.json", "/place_kalshi.json", "/place_novig.json",
-                                "/place_polymarket.json", "/taker_decisions.json",
+                                "/place_polymarket.json", "/place_prophetx.json", "/taker_decisions.json",
                                 "/taker/order.json", "/taker/novig_order.json", "/novig_books.json", "/novig_read.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
@@ -1372,6 +1393,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/place_polymarket.json":
                 self._place_polymarket(body)
+                return
+            if url.path == "/place_prophetx.json":
+                self._place_prophetx(body)
                 return
             if (url.path in ("/taker_decisions.json", "/taker/order.json", "/taker/novig_order.json", "/novig_books.json",
                              "/novig_read.json")
@@ -1733,6 +1757,26 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 self._read_place_venue("polymarket_us")
             self._send_json(200, {"ok": result["status"] in ("filled", "partial"), **result})
 
+        # POST /place_prophetx.json: one order on Cal's main ProphetX account on
+        # the PROPHETX_* key pair the prophetx source reads with (prophetx_place.py).
+        def _place_prophetx(self, body: object) -> None:
+            if prophetx_place_desk is None:
+                self._send_json(503, {"error": prophetx_place_off_reason})
+                return
+            request = validate_prophetx_place_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            try:
+                result = prophetx_place_desk.place(request)
+            except Exception as error:  # noqa: BLE001 — logged; the row (if any) says how far it got
+                log.exception("prophetx place: failed")
+                result = {"status": "unknown", "message": f"The order failed on this server ({type(error).__name__}: "
+                                                          f"{error}). Check ProphetX before placing again."}
+            if result["status"] in PLACE_READ_STATUSES:
+                self._read_place_venue("prophetx")
+            self._send_json(200, {"ok": result["status"] in ("filled", "partial"), **result})
+
         def _read_place_venue(self, venue: str) -> None:
             """Read the venue a Place just traded at (PLACE_READ_SOURCES) before
             the reply goes. Never raises: the order already stands."""
@@ -2065,6 +2109,32 @@ def open_polymarket_place_desk(store: BetsStore, source_names: list[str],
                                                                RUNNER_POLYMARKET_QUOTE_TIMEOUT_SEC)), ""
 
 
+def open_prophetx_place_desk(store: BetsStore, sources: list[Source]) -> tuple[ManualProphetXDesk | None, str]:
+    """(the Place button's ProphetX desk on Cal's main account, "") or (None, why).
+    It trades on the prophetx source's own client (one key pair, one session),
+    proven to log in by one balance read; the stake counts that source's read,
+    so the source must be registered."""
+    source = next((source for source in sources if isinstance(source, ProphetXSource)), None)
+    if source is None:
+        log.info("prophetx place: %s, the ProphetX Place button is off", PROPHETX_PLACE_OFF_REASON)
+        return None, PROPHETX_PLACE_OFF_REASON
+    client: ProphetXClient = source.client
+    try:
+        status, reply = client.balance()
+    except (OSError, ProphetXError) as error:
+        reason = f"the PROPHETX_* key pair could not be used: {error}"
+        log.error("prophetx place: %s, the ProphetX Place button is off", reason)
+        return None, reason
+    if status != 200:
+        reason = f"ProphetX refused the key's balance read: HTTP {status} {str(reply)[:200]}"
+        log.error("prophetx place: %s, the ProphetX Place button is off", reason)
+        return None, reason
+    log.info("prophetx place: on, trading with access key %s on the main account", client.access_key[:8])
+    return ManualProphetXDesk(client, store,
+                              lambda line: read_runner_quote(config.RUNNER_URL, line, RUNNER_PROPHETX_QUOTE_PATH,
+                                                             RUNNER_PROPHETX_QUOTE_TIMEOUT_SEC)), ""
+
+
 def open_taker_store(db_path: Path) -> TakerStore | None:
     """The taker's decision log, or None (logged) when its file cannot be
     opened: the log is the bot's, so a bad path must not take Cal's bets down
@@ -2092,6 +2162,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     kalshi_place_desk, kalshi_place_off_reason = open_kalshi_place_desk(store)
     novig_place_desk, novig_place_off_reason = open_novig_place_desk(store, source_names)
     polymarket_place_desk, polymarket_place_off_reason = open_polymarket_place_desk(store, source_names)
+    prophetx_place_desk, prophetx_place_off_reason = open_prophetx_place_desk(store, sources)
     novig_book_stream = open_novig_book_stream()
     novig_catalog_reads = open_novig_catalog_reads()
     source_reader = SourceReader(sources, store)
@@ -2107,6 +2178,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                                                             novig_place_off_reason=novig_place_off_reason,
                                                             polymarket_place_desk=polymarket_place_desk,
                                                             polymarket_place_off_reason=polymarket_place_off_reason,
+                                                            prophetx_place_desk=prophetx_place_desk,
+                                                            prophetx_place_off_reason=prophetx_place_off_reason,
                                                             novig_book_stream=novig_book_stream,
                                                             novig_catalog_reads=novig_catalog_reads,
                                                             balance_book=balance_book,
@@ -2158,6 +2231,7 @@ OPTIONAL_SOURCE_FACTORIES: tuple[tuple[str, Callable[[], Source | None]], ...] =
     ("bfa", bfa_source_if_configured),
     ("wagerzon", wagerzon_source_if_configured),
     ("polymarket_us", polymarket_us_source_if_configured),
+    ("prophetx", prophetx_source_if_configured),
 )
 
 
@@ -2167,8 +2241,9 @@ def main() -> None:
     sources: list[Source] = [KalshiSource(known_tickers=store.load_kalshi_tickers,
                                           final_tickers=store.load_kalshi_final_tickers,
                                           subaccounts=kalshi_subaccounts_read(config.KALSHI_TAKER_SUBACCOUNT))]
-    for _venue, factory in OPTIONAL_SOURCE_FACTORIES:
-        optional = factory()
+    for venue, factory in OPTIONAL_SOURCE_FACTORIES:
+        # ProphetX drops ended games from its lists, so its source reuses the stored records' game fields.
+        optional = factory(lambda: store.load_records_of_venue("prophetx")) if venue == "prophetx" else factory()
         if optional is not None:
             sources.append(optional)
     taker_store = open_taker_store(config.TAKER_DB_PATH)

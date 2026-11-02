@@ -141,9 +141,13 @@ def validate_novig_place_request(body: object) -> dict | str:
     polymarket_read_at = optional_read_at(body, "polymarketReadAt")
     if isinstance(polymarket_read_at, str):
         return polymarket_read_at
+    prophetx_read_at = optional_read_at(body, "prophetxReadAt")
+    if isinstance(prophetx_read_at, str):
+        return prophetx_read_at
     return {"click_id": click_id, **whole, "points": None if points is None else float(points),
             "stake": float(stake), "ticket_all_in": float(ticket_all_in), "novig_read_at": novig_read_at,
-            "kalshi_read_at": kalshi_read_at, "polymarket_read_at": polymarket_read_at}
+            "kalshi_read_at": kalshi_read_at, "polymarket_read_at": polymarket_read_at,
+            "prophetx_read_at": prophetx_read_at}
 
 
 class ManualNovigDesk:
@@ -228,7 +232,7 @@ class ManualNovigDesk:
         if stale:
             return stale
         if unseen_manual_fill(self._store, request["eventId"], request["kalshi_read_at"], request["novig_read_at"],
-                              request["polymarket_read_at"]):
+                              request["polymarket_read_at"], request["prophetx_read_at"]):
             return ("your last Place on this game is not on the Bets tab yet, so this stake does not count it. "
                     "Wait for the next read (up to a minute) and place again.")
         return None
