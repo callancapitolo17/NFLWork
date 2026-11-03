@@ -295,7 +295,12 @@ class ProphetXSource:
                          and now - self._unlisted.get(event_id, -UNLISTED_RETRY_SEC) >= UNLISTED_RETRY_SEC)
         if missing:
             try:
-                for event in self._client.sport_events(missing):
+                events = self._client.sport_events(missing)
+                if not events and len(missing) > 1:
+                    # Whether one ended game makes the whole list 404 is unverified:
+                    # ask each alone (each answer is then remembered for an hour).
+                    events = [event for event_id in missing for event in self._client.sport_events([event_id])]
+                for event in events:
                     if event.get("event_id") is not None:
                         self._events[event["event_id"]] = event
                 for event_id in missing:

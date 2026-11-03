@@ -3507,7 +3507,7 @@ does not read fails closed with the reason.
   /auth/refresh`, logging in afresh only when that is refused. Every login is a
   session and a key holds at most 20 at once (`session_num_exceed`, 403),
   freed only as they expire, so re-logging in every 10 minutes would lock the
-  key out within hours. Rate limit: 50 requests/s (`rate_limit_reached`, 429).
+  key out within hours. Rate limit: the docs say 50 requests/s, but the live API answers 429 "please send only 1 requests/second" per key (2026-11-03), so the client spaces every send 1.1 s apart (the poll and Place share it) and sends a 429'd read once more after 2 s; an order is never re-sent.
   The source and Place share the client and its token.
 - **Refusals back off** (2026-11-03): a CloudFront 403 page ("Request blocked",
   not the API's JSON) or a refused login stops EVERY call on the client for an
@@ -3529,7 +3529,7 @@ does not read fails closed with the reason.
   (a fill can beat the limit); a resting remainder is a separate unmatchable
   `prophetx:<order_id>:order`. `void` / `invalid` void it; settled orders grade
   off `winning_status` (profit won, loss lost, push / draw push, no_result
-  void). ProphetX drops ended games from its lists, so a settled order keeps
+  void). ProphetX drops ended games from its lists (`get_sport_events` answers 404 `data_not_found` for them, read as not listed and asked again hourly; a batch that lists nothing is asked game by game), so a settled order keeps
   the game fields its stored record had (`store.load_records_of_venue`). The
   Balances tab reads `get_balance` (`balance` as cash, `matched_order_balance`
   in bets; field meanings unverified). The tracker labels the venue ProphetX.
