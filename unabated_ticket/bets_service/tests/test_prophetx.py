@@ -166,17 +166,30 @@ def test_a_remainder_that_stops_resting_closes_its_stored_open_copy_as_void():
 
 
 class ScriptedReads:
-    def __init__(self, orders=None, listed=True):
+    """`orders` answer the polled window (the one ending now); `older[k]` the k-th
+    slice before it (k = 1 the newest), every other slice none."""
+    def __init__(self, orders=None, listed=True, older=None, window_days=31):
         self.event_reads = []
         self.market_reads = []
         self.orders = orders if orders is not None else [order("o6", "b" * 32, 80, price=-160)]
         self.listed = listed
+        self.older = older or {}
+        self.window_sec = window_days * 86400
+        self.history_reads = []
+        self.trade_reads = []
+
+    def _slice(self, start, end):
+        # 0 = the polled window; k = the k-th older slice.
+        return round((NOW.timestamp() - end) / self.window_sec)
 
     def order_history(self, start, end):
-        assert end - start == 31 * 86400
-        return self.orders
+        assert end - start <= self.window_sec
+        self.history_reads.append(self._slice(start, end))
+        k = self._slice(start, end)
+        return self.orders if k == 0 else self.older.get(k, [])
 
     def trades(self, start, end):
+        self.trade_reads.append(self._slice(start, end))
         return []
 
     def sport_events(self, event_ids=None):
@@ -199,6 +212,18 @@ def test_the_source_reads_each_game_once_and_reads_the_balance():
     assert first["id"] == "prophetx:o6" and first["side"] == "home" and first["betType"] == "moneyline"
     assert client.event_reads == [[PX_EVENT_ID]]
     assert source.balance() == {"cash": 412.5, "inBets": 80.0, "available": 412.5, "creditLimit": None}
+
+
+def test_orders_older_than_the_window_are_read_once_per_boot_back_to_the_account_start():
+    old = order("o1", "c" * 32, 9)
+    client = ScriptedReads(older={1: [], 2: [old]})
+    source = ProphetXSource(client, dict, history_days=31, clock=lambda: NOW.timestamp())
+    first = {record["id"] for record in source.fetch()}
+    # Slices 1 (empty), 2 (an order), then 3 and 4 empty in a row end the walk.
+    assert client.history_reads == [1, 2, 3, 4, 0] and client.trade_reads == [1, 2, 3, 4, 0]
+    second = {record["id"] for record in source.fetch()}
+    assert first == second == {"prophetx:o6", "prophetx:o1"}
+    assert client.history_reads == [1, 2, 3, 4, 0, 0]
 
 
 def test_markets_are_read_again_only_for_a_strike_they_lack_after_the_ttl():

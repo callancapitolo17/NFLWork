@@ -1148,7 +1148,7 @@ Two kinds of source feed the flags:
 | Polymarket US (the CFTC app) | `bets_service/sources/polymarket_us.py` (local service, the account's own API key from `bet_logger/.env`, Ed25519-signed; 2026-09-23) | every 10 s on a poll thread of its own (60 s after a failed poll) |
 | Bet105 | the panel itself (`extension/bet105.js`, your own login at app.bet105.ag in this Chrome — Cloudflare challenges anything else) → `POST /bet105.json`, parsed by `bets_service/sources/bet105.py`; open bets 2026-09-29, graded bets 2026-10-07 | every 5 min while the panel is open; open bets plus every graded wager with its result and settle time |
 | DraftKings | the panel itself (`extension/draftkings.js`, your own login at sportsbook.draftkings.com in this Chrome — Akamai's bot checks and a login code stop anything else) → `POST /draftkings.json`, parsed by `bets_service/sources/draftkings.py`; 2026-10-10 | every 5 min while the panel is open; every open bet plus the last 31 days of settled bets with their result |
-| ProphetX | `bets_service/sources/prophetx.py` (local service, the account's own Trading API key pair `PROPHETX_ACCESS_KEY` / `PROPHETX_SECRET_KEY` in `bets_service/.env`; 2026-10-31) | every 30 s while the service runs; orders and fills back 60 days (ProphetX's window) |
+| ProphetX | `bets_service/sources/prophetx.py` (local service, the account's own Trading API key pair `PROPHETX_ACCESS_KEY` / `PROPHETX_SECRET_KEY` in `bets_service/.env`; 2026-10-31) | every 30 s while the service runs; orders and fills back 60 days (ProphetX's window); older ones once per boot |
 
 Start the service (next section), keep the panel open. Every 30 s while the
 panel is visible it fetches `http://127.0.0.1:8094/bets.json` (never from
@@ -3520,7 +3520,9 @@ does not read fails closed with the reason.
   key is fine) and refuses each click with the block; a refused login at
   startup keeps Place off.
 - **Bets** (`sources/prophetx.py`): order history and fills (`get_order_history`,
-  `get_trades`) back 60 days (ProphetX's window); each game's sport event and markets
+  `get_trades`) back 60 days (ProphetX's window), and once per boot every older
+  order in 60-day slices back until two slices in a row are empty (capped ~3
+  years; 2026-11-03, the Aug-Sep bets were missing); each game's sport event and markets
   once (`prophetx_markets.py` reads a strike as a board line: the market's
   `type`, the period off its name, the side by the offer's competitor and its
   home/away `side`, the number off the offer's signed `display_strike`; a
