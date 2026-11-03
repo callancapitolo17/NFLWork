@@ -378,6 +378,7 @@ class ScriptedProphetX:
         self.submits = []
         self.submit = submit
         self.order_reads = list(order_reads or [])
+        self.history_windows = []
         self.events = [EVENT] if events is None else events
         self.markets_list = MARKETS if markets is None else markets
 
@@ -397,12 +398,21 @@ class ScriptedProphetX:
         return self.submit or (200, {"data": {"success": True, "order": {
             "order_id": "px-1", "status": "open", "filled_quantity": 0, "open_quantity": stake}}})
 
-    def get_order(self, order_id):
+    def order_history(self, created_from, created_to, max_pages=50):
+        """Place's order reads: each scripted read is a list of history rows,
+        or (200, {"data": order}) for the one order px-1, or an exception."""
+        self.history_windows.append((created_from, created_to))
         if self.order_reads:
-            return self.order_reads.pop(0)
+            read = self.order_reads.pop(0)
+            if isinstance(read, Exception):
+                raise read
+            if isinstance(read, tuple):
+                return [{"order_id": "px-1", **read[1]["data"]}]
+            return read
         stake = self.submits[-1][2]
-        return 200, {"data": {"order_id": order_id, "status": "open", "filled_quantity": stake, "open_quantity": 0,
-                              "fee": 0.25}}
+        return [{"order_id": "px-0", "status": "settled", "filled_quantity": 9, "open_quantity": 0},
+                {"order_id": "px-1", "status": "open", "matching_status": "fully_matched", "filled_quantity": stake,
+                 "open_quantity": 0, "fee": 0.25}]
 
 
 @pytest.fixture
@@ -591,6 +601,16 @@ def test_each_source_poll_hands_its_order_history_to_the_place_settler():
     source._older = ([], [])
     source.fetch()
     assert seen == [([HISTORY_FILLED], [])]
+
+
+def test_place_reads_its_order_off_the_order_history_until_it_is_listed(store):
+    # 2026-11-03: get_order 404'd for 8 s+ after a send; the history listed the order within 3 s.
+    client = ScriptedProphetX(order_reads=[[], OSError("timed out")])
+    result = desk_with(store, client).place(request())
+    assert result["status"] == "filled" and result["filled"] == 50 and result["message"].startswith("Bet $50.25")
+    assert len(client.history_windows) == 3
+    start, end = client.history_windows[0]
+    assert start <= NOW.timestamp() - 60 and end >= NOW.timestamp()
 
 
 def test_a_refusal_or_no_answer_is_named(store):

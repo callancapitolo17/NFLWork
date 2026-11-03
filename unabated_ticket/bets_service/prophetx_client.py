@@ -34,10 +34,13 @@ was not reachable from the cloud container, so nothing here is a live capture):
   * POST /v4/mm/submit_order {strike_id, price, quantity, external_id,
     order_strategy}: `fillOrKill` fills what it can at the price or better and
     cancels the rest about 2 s after the last activity (it rests that long).
-  * GET /v4/mm/get_order/<order_id> -> {data: order}; order status open /
+  * GET /v4/mm/get_order_history rows (the order shape): order status open /
     inactive / invalid / canceled / void / wiped / settled / closed /
     manually_settled, matching_status unmatched / partially_matched /
     fully_matched, filled_quantity / open_quantity in dollars, `fee`.
+    GET /v4/mm/get_order/<order_id> is not used: live, it answers 404
+    data_not_found for 8 s+ after a send (2026-11-03) while the history
+    already lists the order.
 
 Side effects: ProphetX orders on the configured key (money) through
 submit_fill_or_kill; everything else is a read. Nothing here cancels: a
@@ -65,7 +68,6 @@ MARKETS_PATH = "/v4/mm/get_markets"
 STRIKES_PATH = "/v4/mm/get_strikes"
 ORDER_HISTORY_PATH = "/v4/mm/get_order_history"
 TRADES_PATH = "/v4/mm/get_trades"
-ORDER_PATH = "/v4/mm/get_order"
 SUBMIT_ORDER_PATH = "/v4/mm/submit_order"
 BALANCE_PATH = "/v4/mm/get_balance"
 # An access token lasts 10 minutes; a new login goes out this long before that.
@@ -356,9 +358,6 @@ class ProphetXClient:
         """Every fill matched in [matched_from, matched_to] (unix seconds):
         {order_id, price, quantity, profit, fee, matched_at, ...}."""
         return self._pages(TRADES_PATH, {"from": matched_from, "to": matched_to, "limit": 100}, "trades", max_pages)
-
-    def get_order(self, order_id: str) -> tuple[int, object]:
-        return self.request("GET", f"{ORDER_PATH}/{order_id}")
 
     def balance(self) -> tuple[int, object]:
         """GET /v4/mm/get_balance: proves the key logs in (the desk's start check)."""
