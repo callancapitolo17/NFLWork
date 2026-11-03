@@ -14,8 +14,11 @@ Rules, in order, for every request (validate_prophetx_place_request's shape):
      ids (GET /v4/mm/get_strikes names their game), else by the two teams and
      the start among ProphetX's listed games, refusing on zero or two;
   3. the game is listed and not started (the earlier of Unabated's and
-     ProphetX's start), and its away and home teams are the board's
-     (a swapped or unknown team refuses: the side would be wrong);
+     ProphetX's start), and its away and home teams are the board's: ProphetX's
+     two names resolve to Unabated team ids through the runner (GET
+     /team_keys.json, teams.js + the crosswalk, as bet matching does) and equal
+     the board line's ids (a swapped or unresolved team refuses: the side
+     would be wrong);
   4. the one strike among the game's markets that reads as the board line
      (prophetx_markets.lines_of_event; the line's own strike id when Unabated
      names one), and its best offer now;
@@ -37,11 +40,10 @@ Rules, in order, for every request (validate_prophetx_place_request's shape):
 Order statuses (manual_orders.status on a 'prophetx' row): as Kalshi Place's.
 Side effects: a ProphetX order on Cal's main account (money); INSERT / UPDATE
 bets.duckdb::manual_orders (venue 'prophetx'). Network: GET
-<runner>/prophetx_quote.json, then ProphetX's Trading API on the key pair.
+<runner>/prophetx_quote.json and /team_keys.json, then ProphetX's Trading API on the key pair.
 """
 import logging
 import math
-import re
 import threading
 import time
 from collections.abc import Callable
@@ -79,7 +81,6 @@ START_TOLERANCE = timedelta(minutes=30)
 # A stake ProphetX takes: whole cents, at least a dollar (its minimum is unpublished).
 MIN_STAKE_DOLLARS = 1.0
 PROPHETX_EVENT_NOT_STARTED = "not_started"
-_NAME_WORDS = re.compile(r"[a-z0-9]+")
 
 
 def validate_prophetx_place_request(body: object) -> dict | str:
@@ -126,34 +127,53 @@ def validate_prophetx_place_request(body: object) -> dict | str:
             "polymarket_read_at": read_ats["polymarketReadAt"], "bfa_read_at": read_ats["bfaReadAt"]}
 
 
-def name_words(name: object) -> tuple[str, ...]:
-    return tuple(_NAME_WORDS.findall(name.lower())) if isinstance(name, str) else ()
-
-
-def names_agree(prophetx_name: object, board_name: object) -> bool:
-    """Whether two spellings name one team: the same words, or one's words a
-    run of the other's ("Kansas City Chiefs" / "Chiefs")."""
-    a, b = name_words(prophetx_name), name_words(board_name)
-    if not a or not b:
-        return False
-    short, long = (a, b) if len(a) <= len(b) else (b, a)
-    return any(long[start:start + len(short)] == short for start in range(len(long) - len(short) + 1))
-
-
 # A fill within a cent of the stake is all of it (ProphetX rounds dollars to the cent).
 FULL_FILL_TOLERANCE_DOLLARS = 0.01
 REVERSED_TEAMS_WORDS = "home and away the other way round from the board"
 
 
-def teams_mismatch(event: dict, line: dict) -> str | None:
-    """Why ProphetX's away / home are not the board's, or None."""
+class TeamKeysUnread(Exception):
+    """The runner could not resolve ProphetX's team names: the Place refuses, naming why."""
+
+
+# (league, away name, home name) -> the runner's /team_keys.json answer
+# {ok, awayKey, homeKey} (manual_orders.read_runner_team_keys).
+TeamKeysReader = Callable[[str, str, str], dict]
+
+
+def board_team_keys(line: dict) -> tuple[str, str] | str:
+    """The board line's away and home as Unabated team keys ("<league>:<id>",
+    teams.js keyOf), or why it names none."""
+    league, away_id, home_id = line.get("league"), line.get("awayTeamId"), line.get("homeTeamId")
+    if not league or away_id in (None, "") or home_id in (None, ""):
+        return f"the board line names no team ids ({league} {away_id} @ {home_id})"
+    return f"{league}:{away_id}", f"{league}:{home_id}"
+
+
+def teams_mismatch(event: dict, line: dict, team_keys_of: TeamKeysReader) -> str | None:
+    """Why ProphetX's away / home are not the board's, or None. ProphetX's
+    names resolve to Unabated team ids through the runner (teams.js + the
+    crosswalk, as every bet record does), compared with the board line's ids:
+    "Sam Houston State" and the board's "Sam Houston St" are one team, and a
+    name nothing resolves refuses. Raises TeamKeysUnread when the runner could
+    not answer."""
     teams = teams_of(event)
     if isinstance(teams, str):
         return teams
+    board = board_team_keys(line)
+    if isinstance(board, str):
+        return board
     px_away, px_home = team_name_of(teams["away"]), team_name_of(teams["home"])
-    if names_agree(px_away, line.get("awayTeam")) and names_agree(px_home, line.get("homeTeam")):
+    answer = team_keys_of(line["league"], px_away, px_home)
+    if not answer.get("ok"):
+        raise TeamKeysUnread(answer.get("detail") or answer.get("error") or "the runner named no team keys")
+    keys = (answer.get("awayKey"), answer.get("homeKey"))
+    unresolved = [name for name, key in zip((px_away, px_home), keys) if not key]
+    if unresolved:
+        return f"ProphetX's {' and '.join(unresolved)} resolves to no {line['league']} team on Unabated's board"
+    if keys == board:
         return None
-    if names_agree(px_away, line.get("homeTeam")) and names_agree(px_home, line.get("awayTeam")):
+    if keys == board[::-1]:
         return f"ProphetX lists {px_away} @ {px_home}, {REVERSED_TEAMS_WORDS}"
     return f"ProphetX's {px_away} @ {px_home} does not read as the board's {line.get('awayTeam')} @ {line.get('homeTeam')}"
 
@@ -172,11 +192,12 @@ class ManualProphetXDesk:
     """Sends Cal's ProphetX Place-button orders on his main account, one per click."""
 
     def __init__(self, client: ProphetXClient, store: BetsStore, quote_reader: Callable[[dict], dict],
-                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+                 team_keys_reader: TeamKeysReader, now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
                  sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic):
         self._client = client
         self._store = store
         self._quote_reader = quote_reader
+        self._team_keys_reader = team_keys_reader
         self._now = now
         self._sleep = sleep
         self._clock = clock
@@ -235,11 +256,13 @@ class ManualProphetXDesk:
             event = self._event_of(quote, line)
             if isinstance(event, str):
                 return event
-            mismatch = teams_mismatch(event, line)
+            mismatch = teams_mismatch(event, line, self._team_keys_reader)
             # A total is the same bet with home and away swapped; any other mismatch refuses.
             if mismatch and not (line.get("betType") == "total" and mismatch.endswith(REVERSED_TEAMS_WORDS)):
                 return f"{mismatch}."
             lines = lines_of_event(event, self._client.markets(event["event_id"]))
+        except TeamKeysUnread as error:
+            return f"ProphetX's teams could not be checked against the board's ({error})."
         except (OSError, ProphetXError) as error:
             return f"ProphetX could not be read ({error})."
         if isinstance(lines, str):
@@ -283,7 +306,7 @@ class ManualProphetXDesk:
             start = _prophetx_time(event.get("scheduled"))
             if league_of(event) != line.get("league") or start is None or abs(start - board_start) > START_TOLERANCE:
                 continue
-            if teams_mismatch(event, line) is None:
+            if teams_mismatch(event, line, self._team_keys_reader) is None:
                 found.append(event)
         if len(found) != 1:
             return (f"{len(found)} of ProphetX's listed games are {line.get('awayTeam')} @ {line.get('homeTeam')} "

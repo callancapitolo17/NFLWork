@@ -1508,6 +1508,24 @@ function createRunner(deps) {
     };
   }
 
+  // A venue's two team names as Unabated team keys ("<league>:<team id>"),
+  // through the same resolver every bet record goes through (teams.js + the
+  // held crosswalk, bets.resolveTeamKeys), so a Place check reads a team the
+  // way bet matching does. ProphetX Place asks (bets_service/prophetx_place.py):
+  // its game's names, to compare with the board line's team ids. A key is
+  // null when nothing resolves the name. Reads nothing.
+  //   params  URLSearchParams {venue, league, away, home}
+  function teamKeysNow(params) {
+    const text = (name) => {
+      const value = params.get(name);
+      if (typeof value !== "string" || value.trim() === "") throw httpError(400, `${name} must be a non-empty string, got ${JSON.stringify(value)}`);
+      return value;
+    };
+    const record = { venue: text("venue"), league: text("league"), awayTeam: text("away"), homeTeam: text("home") };
+    const resolved = betsLib.resolveTeamKeys([record], held.crosswalk)[0];
+    return { ok: true, ...record, awayKey: resolved.awayKey ?? null, homeKey: resolved.homeKey ?? null };
+  }
+
   // The Ticket's Place button at BFA (bets_service/bfa_place.py asks): the
   // board's one Buckeye line with these fields, its side's rotation and the
   // line as a bet record names it. BFA is read by the bets service on its own
@@ -1949,7 +1967,7 @@ function createRunner(deps) {
   return {
     start, stop, pollBets, pollSettings, postClosingFairs, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions,
     edgesPayload: edgesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow, tauPayload: tauPayloadNow,
-    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, prophetxQuote: prophetxQuoteNow, bfaQuote: bfaQuoteNow, health, scanner,
+    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, prophetxQuote: prophetxQuoteNow, bfaQuote: bfaQuoteNow, teamKeys: teamKeysNow, health, scanner,
     boardLines,
   };
 }
@@ -1997,7 +2015,7 @@ function sendJson(response, status, body) {
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /tau.json, /kalshi_quote.json, /novig_quote.json, /polymarket_quote.json, /prophetx_quote.json, /bfa_quote.json and /health, the Host allowlist first on
+// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /tau.json, /kalshi_quote.json, /novig_quote.json, /polymarket_quote.json, /prophetx_quote.json, /bfa_quote.json, /team_keys.json and /health, the Host allowlist first on
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
@@ -2029,6 +2047,7 @@ function createHttpServer(runner, { host }) {
       if (path === "/polymarket_quote.json") return sendJson(response, 200, await runner.polymarketQuote(url.searchParams));
       if (path === "/prophetx_quote.json") return sendJson(response, 200, await runner.prophetxQuote(url.searchParams));
       if (path === "/bfa_quote.json") return sendJson(response, 200, await runner.bfaQuote(url.searchParams));
+      if (path === "/team_keys.json") return sendJson(response, 200, await runner.teamKeys(url.searchParams));
       if (path === "/health") return sendJson(response, 200, await runner.health());
     } catch (error) {
       if (error.status) return sendJson(response, error.status, { error: error.message });
