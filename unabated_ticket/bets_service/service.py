@@ -279,7 +279,7 @@ from urllib.parse import parse_qs, urlparse
 from unabated_ticket.bets_service import bfa_place, bfa_teaser, config
 from unabated_ticket.bets_service.balances import BalanceBook, balances_payload, read_balance_once
 from unabated_ticket.bets_service.log_setup import setup_logging
-from unabated_ticket.bets_service.manual_orders import ManualKalshiDesk, read_runner_quote
+from unabated_ticket.bets_service.manual_orders import ManualKalshiDesk, read_runner_quote, read_runner_team_keys
 from unabated_ticket.bets_service.manual_orders import validate_place_request as validate_kalshi_place_request
 from unabated_ticket.bets_service.polymarket_orders import PolymarketError, PolymarketOrderClient
 from unabated_ticket.bets_service.polymarket_place import (RUNNER_POLYMARKET_QUOTE_PATH,
@@ -305,6 +305,7 @@ from unabated_ticket.bets_service.sources.kalshi import PRIMARY_SUBACCOUNT, Kals
 from unabated_ticket.bets_service.sources.novig import source_if_connected as novig_source_if_connected
 from unabated_ticket.bets_service.sources.novig_subaccount import NovigSubaccountSource
 from unabated_ticket.bets_service.sources.polymarket_us import source_if_configured as polymarket_us_source_if_configured
+from unabated_ticket.bets_service.sources.prophetx import VENUE as PROPHETX_VENUE
 from unabated_ticket.bets_service.sources.prophetx import ProphetXSource
 from unabated_ticket.bets_service.sources.prophetx import source_if_configured as prophetx_source_if_configured
 from unabated_ticket.bets_service.sources.wagerzon import source_if_configured as wagerzon_source_if_configured
@@ -2197,7 +2198,9 @@ def open_prophetx_place_desk(store: BetsStore, sources: list[Source]) -> tuple[M
 def _prophetx_desk(client: ProphetXClient, store: BetsStore) -> ManualProphetXDesk:
     return ManualProphetXDesk(client, store,
                               lambda line: read_runner_quote(config.RUNNER_URL, line, RUNNER_PROPHETX_QUOTE_PATH,
-                                                             RUNNER_PROPHETX_QUOTE_TIMEOUT_SEC))
+                                                             RUNNER_PROPHETX_QUOTE_TIMEOUT_SEC),
+                              lambda league, away, home: read_runner_team_keys(config.RUNNER_URL, PROPHETX_VENUE, league,
+                                                                               away, home))
 
 
 def open_taker_store(db_path: Path) -> TakerStore | None:

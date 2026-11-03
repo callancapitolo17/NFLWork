@@ -3540,8 +3540,11 @@ does not read fails closed with the reason.
   Unabated's alt rungs carry for the game (`sourceData`, 32 hex; the line's own
   first). ProphetX needs the key for every read, so the bets service finds the
   game (`get_strikes` on those ids, else its listed games by both teams and a
-  start within 30 min), checks ProphetX's away / home are the board's (swapped
-  or unknown refuses), finds the one strike that reads as the line, and takes
+  start within 30 min), checks ProphetX's away / home are the board's by
+  Unabated team id — the runner's `GET /team_keys.json?venue=prophetx&league=..&away=..&home=..`
+  resolves ProphetX's two names through teams.js and the crosswalk, as every
+  bet record is, so "Sam Houston State" is the board's "Sam Houston St"
+  (2026-11-03); swapped, or a name nothing resolves, refuses — finds the one strike that reads as the line, and takes
   its best offer (the highest American price on that side's ladder). It
   refuses, sending nothing, on a started or unlisted game, a half moneyline
   (tie rule unchecked), an implied price more than **0.1c worse** than the

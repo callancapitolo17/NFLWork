@@ -208,6 +208,7 @@ function createBoardClient(options) {
     polymarketQuote: (params) => call("polymarketQuote", [params.toString()]).then((text) => new RawJson(text)),
     prophetxQuote: (params) => call("prophetxQuote", [params.toString()]).then((text) => new RawJson(text)),
     bfaQuote: (params) => call("bfaQuote", [params.toString()]).then((text) => new RawJson(text)),
+    teamKeys: (params) => call("teamKeys", [params.toString()]).then((text) => new RawJson(text)),
   };
 }
 
@@ -228,6 +229,7 @@ function serveBoardCalls(port, runner, logWarning) {
     polymarketQuote: (search) => runner.polymarketQuote(new URLSearchParams(search)),
     prophetxQuote: (search) => runner.prophetxQuote(new URLSearchParams(search)),
     bfaQuote: (search) => runner.bfaQuote(new URLSearchParams(search)),
+    teamKeys: (search) => runner.teamKeys(new URLSearchParams(search)),
   };
   port.on("message", async (message) => {
     if (message.type !== "call") return;

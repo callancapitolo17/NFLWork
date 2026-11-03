@@ -2037,3 +2037,42 @@ test("board thread: the ProphetX and BFA Place quotes reach the board thread lik
   assert.deepEqual(JSON.parse((await client.bfaQuote(new URLSearchParams("eventId=4"))).text), { ok: false, venue: "bfa", eventId: 4 });
   client.stop();
 });
+
+test("team_keys: a venue's names resolve through teams.js and the crosswalk, as bet records do; an unknown name is null", async () => {
+  const crosswalk = [{ venue: "prophetx", league: "nfl", venueTeamKey: "Da Bears", venueTeamName: "Da Bears", unabatedTeamId: "999" }];
+  const { runner } = await startedRunner({ "/bets.json": { ...betsBody([BEARS_HELD]), crosswalk }, "/settings.json": { settings: OPEN_SETTINGS, updatedAt: null } });
+  const ask = (away, home, venue = "prophetx") => runner.teamKeys(new URLSearchParams({ venue, league: "nfl", away, home }));
+  const plain = ask("Chicago Bears", "Carolina Panthers");
+  const viaBets = betsLib.resolveTeamKeys([{ venue: "prophetx", league: "nfl", awayTeam: "Chicago Bears", homeTeam: "Carolina Panthers" }], [])[0];
+  const learned = ask("Da Bears", "Carolina Panthers");
+  const otherVenue = ask("Da Bears", "Nowhere FC", "kalshi");
+  runner.stop();
+  assert.ok(/^nfl:\d+$/.test(plain.awayKey) && /^nfl:\d+$/.test(plain.homeKey) && plain.awayKey !== plain.homeKey, JSON.stringify(plain));
+  assert.deepEqual([plain.awayKey, plain.homeKey], [viaBets.awayKey, viaBets.homeKey]);
+  assert.deepEqual([learned.awayKey, learned.homeKey], ["nfl:999", plain.homeKey], "a crosswalk row names the team");
+  assert.deepEqual([otherVenue.ok, otherVenue.awayKey, otherVenue.homeKey], [true, null, null], "the row is that venue's only");
+  assert.throws(() => runner.teamKeys(new URLSearchParams({ venue: "prophetx", league: "nfl", away: "", home: "x" })), /away must be a non-empty string/);
+});
+
+test("board thread: team_keys reaches the board thread and its HTTP route", async () => {
+  const runner = countingRunner();
+  runner.teamKeys = (params) => ({ ok: true, away: params.get("away") });
+  const { client } = boardClient([runner], { now: NOW });
+  const server = runnerLib.createHttpServer(client, { host: "127.0.0.1" });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const reply = await new Promise((resolve, reject) => {
+      const request = require("node:http").request({ host: "127.0.0.1", port: server.address().port, path: "/team_keys.json?away=Alabama", method: "GET" }, (answer) => {
+        let body = "";
+        answer.on("data", (chunk) => { body += chunk; });
+        answer.on("end", () => resolve(JSON.parse(body)));
+      });
+      request.on("error", reject);
+      request.end();
+    });
+    assert.deepEqual(reply, { ok: true, away: "Alabama" });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    client.stop();
+  }
+});
