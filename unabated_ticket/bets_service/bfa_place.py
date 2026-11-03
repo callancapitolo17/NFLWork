@@ -6,7 +6,8 @@ panel or the phone page.
 The wager is the teaser's POST (bfa_teaser.py documents the recorded shape) with one pick and
 the straight type: WagerType 0 and IdWagerType the account's own straight type for the sport,
 both read off the account metadata, whose betType rows give a teaser wagerTypes 2 (the recorded
-teaser's WagerType) and a straight wagerTypes 0. The pick sends TeaserPoints 0. A straight bet has
+teaser's WagerType) and a straight wagerTypes 0. The pick sends TeaserPoints 0, and its Amount is
+BFA's base amount: the risk on a plus price, the to-win on a minus one (base_amount_of). A straight bet has
 not been recorded off the site, so the placed ticket is read back and checked against what was
 sent (rotation, market, side, number, price, risk and to-win); a difference is said loudly.
 
@@ -219,8 +220,18 @@ def match_straight(games: list[dict], line: dict, rotation: int, event_start: da
     return {"game": game, "fixture": fixture, "market": market, "odds": odds}
 
 
+def base_amount_of(stake: int, american: float) -> float:
+    """The pick's Amount that makes BFA's ticket risk `stake`. BFA reads Amount as the smaller
+    of risk and to-win (seen 2026-11-03, ticket 358850696: Amount 17 at -110 booked risk 18.70 to
+    win 17.00), so on a minus price it is the to-win, rounded to the cent like BFA's tickets."""
+    if american >= 0:
+        return float(stake)
+    return round(profit_at(stake, american), 2)
+
+
 def straight_pick_of(match: dict, stake: int) -> dict:
-    """The one Picks[] entry: the teaser's pick (bfa_teaser.pick_of) with no points bought."""
+    """The one Picks[] entry: the teaser's pick (bfa_teaser.pick_of) with no points bought,
+    sized so the ticket risks `stake` (base_amount_of)."""
     odds = match["odds"]
     return {
         "EventId": match["game"]["id"],
@@ -233,7 +244,7 @@ def straight_pick_of(match: dict, stake: int) -> dict:
         "Line": odds.get("line"),
         "TeaserPoints": 0.0,
         "Price": odds["price"],
-        "Amount": float(stake),
+        "Amount": base_amount_of(stake, odds["price"]),
         "PointsPurchased": 0.0,
         "PitcherAction": 0,
         "RoundRobinCombinations": 0,
@@ -245,7 +256,8 @@ def straight_pick_of(match: dict, stake: int) -> dict:
 
 
 def straight_wager_body(transaction_id: str, player_id: str, wager_type_id: int, pick: dict) -> list[dict]:
-    """The POST body: one straight wager risking the pick's Amount, no line changes accepted."""
+    """The POST body: one straight wager on the pick (its Amount is base_amount_of the stake),
+    no line changes accepted."""
     return [{
         "IdTransaction": transaction_id,
         "IdPlayer": int(player_id),
@@ -310,8 +322,9 @@ def straight_mismatches(wager: dict, want: dict, stake: int) -> list[str]:
         problems.append(f"BFA has {one_line(text)}")
     risk, to_win = wager.get("riskAmount"), wager.get("winAmount")
     expected_win = profit_at(stake, want["price"])
-    # BFA rounds the to-win to the cent.
-    if (not is_number(risk) or not is_number(to_win) or abs(risk - stake) > MONEY_TOLERANCE
+    # BFA rounds to the cent, and on a minus price the risk is worked back from a to-win that
+    # was itself rounded (base_amount_of), so either may land a cent off.
+    if (not is_number(risk) or not is_number(to_win) or abs(risk - stake) > 0.01 + MONEY_TOLERANCE
             or abs(to_win - expected_win) > 0.01 + MONEY_TOLERANCE):
         problems.append(f"BFA's ticket risks {risk} to win {to_win}, ${stake} to win ${expected_win:.2f} was sent")
     return problems

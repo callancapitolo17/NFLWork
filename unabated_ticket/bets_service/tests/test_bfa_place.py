@@ -156,12 +156,30 @@ def test_a_placed_straight_sends_the_teasers_shape_with_one_pick_and_reads_fille
         "IdTransaction": "tx-1", "IdPlayer": 315172, "FillIdWager": -1, "WagerType": 0, "OpenSpots": 0,
         "Picks": [{"EventId": 3167690, "FixtureId": 18443763, "MarketType": 2, "PeriodNumber": 0, "Side": 1,
                    "Index": 0, "ContestantId": 64424829, "Line": 2.5, "TeaserPoints": 0.0, "Price": -110,
-                   "Amount": 100.0, "PointsPurchased": 0.0, "PitcherAction": 0, "RoundRobinCombinations": 0,
+                   "Amount": 90.91, "PointsPurchased": 0.0, "PitcherAction": 0, "RoundRobinCombinations": 0,
                    "UseFreePlay": False, "RiskOrWinType": 1, "IdGameType": 1, "IdSport": "NFL"}],
         "RiskWin": 1, "AcceptChanges": 0, "IdWagerType": STRAIGHT_TYPE, "IsLive": False, "PhoneLine": None,
         "UserId": None}]]
     assert manual_rows(store) == [("bman-click-0001", "bfa", "filled", 100.0, str(GAME_ID), "home", None)]
     assert result["openWagers"] == [GIANTS_PLACED]
+
+
+def test_the_amount_sent_is_the_to_win_on_a_minus_price_and_the_risk_on_a_plus_one():
+    from unabated_ticket.bets_service.bfa_place import base_amount_of
+    # Ticket 358850696: Amount 17 at -110 booked risk 18.70 to win 17.00.
+    assert base_amount_of(17, -110) == 15.45
+    assert base_amount_of(100, -110) == 90.91
+    assert base_amount_of(100, 120) == 100.0
+    assert base_amount_of(100, 100) == 100.0
+
+
+def test_a_risk_a_cent_off_from_the_rounded_to_win_still_reads_back_as_sent():
+    kansas = open_straight(3, GAME_ID, " [258] NEW YORK GIANTS +2½-110 [Sport:Football][League:NFL]",
+                           risk=16.99, to_win=15.45)
+    want = {"rotations": {258}, "betType": "spread", "side": "home", "points": 2.5, "price": -110}
+    assert straight_mismatches(kansas, want, 17) == []
+    # The ticket that booked the wrong size reads as different.
+    assert straight_mismatches({**kansas, "riskAmount": 18.7, "winAmount": 17.0}, want, 17) != []
 
 
 def test_the_same_click_twice_sends_once(store):
