@@ -33,13 +33,23 @@ Rules, in order, for every request (validate_prophetx_place_request's shape):
      read of its venue the stake was sized on (manual_orders.unseen_manual_fill);
   9. the row is INSERTED (status 'sending') BEFORE the send;
  10. ONE fill-or-kill buy at that best price for the stake (prophetx_client),
-     never re-sent; then the order is read until nothing of it rests. ProphetX
-     cancels a fill-or-kill's remainder about 2 s after its last fill; one
-     still resting after PLACE_FINAL_READ_WINDOW_SEC gets one cancel.
+     never re-sent and never cancelled: ProphetX kills a fill-or-kill's
+     remainder itself about 2 s after its last fill. The order is read for up
+     to PLACE_FINAL_READ_WINDOW_SEC; one not yet read finished is left
+     'unknown' and Place says ProphetX is still matching it.
+ 11. The account's order history is the record (Cal 2026-11-03, option A): every
+     ProphetX source poll hands its orders and fills to
+     settle_unconfirmed_place_orders, which settles each 'unknown' ProphetX
+     Place row (by its order id, else its external_id = client order id) once
+     ProphetX shows the order finished. On 2026-11-03 two orders read
+     "inactive, money open" for the whole window while ProphetX had already
+     matched them in full, and the cancel that followed answered
+     order_already_filled: one look is not the record.
 
 Order statuses (manual_orders.status on a 'prophetx' row): as Kalshi Place's.
 Side effects: a ProphetX order on Cal's main account (money); INSERT / UPDATE
-bets.duckdb::manual_orders (venue 'prophetx'). Network: GET
+bets.duckdb::manual_orders (venue 'prophetx'); settle_unconfirmed_place_orders
+UPDATEs 'unknown' prophetx rows from the order history (no network). Network: GET
 <runner>/prophetx_quote.json and /team_keys.json, then ProphetX's Trading API on the key pair.
 """
 import logging
@@ -60,7 +70,7 @@ from unabated_ticket.bets_service.prophetx_client import (
 from unabated_ticket.bets_service.prophetx_markets import (
     american_to_probability, best_offer_of, league_of, lines_of_event, number_of, profit_at, team_name_of, teams_of,
 )
-from unabated_ticket.bets_service.sources.prophetx import VENUE, iso_utc_of
+from unabated_ticket.bets_service.sources.prophetx import VENUE, iso_utc_of, matched_of
 from unabated_ticket.bets_service.store import BetsStore
 from unabated_ticket.bets_service.taker_orders import DEFINITE_REJECTION_STATUSES
 
@@ -379,8 +389,9 @@ class ManualProphetXDesk:
         return self._follow_order(client_order_id, order_id, order, target, stake)
 
     def _follow_order(self, client_order_id: str, order_id: str, order: dict, target: dict, stake: float) -> dict:
-        """Read the order until nothing of it rests (final, or fully matched),
-        then what filled. One still resting past the window gets one cancel."""
+        """Read the order until nothing of it can still fill (final, or fully
+        matched), then what filled. One not read finished within the window is
+        left 'unknown' for the order history to settle; it is never cancelled."""
         deadline = self._clock() + PLACE_FINAL_READ_WINDOW_SEC
         for attempt in range(PLACE_FINAL_READ_ATTEMPTS):
             if _done(order, stake):
@@ -394,25 +405,24 @@ class ManualProphetXDesk:
                 log.warning("prophetx place %s: order read %d failed: %s", client_order_id, attempt + 1, error)
                 continue
             read = reply.get("data") if status == 200 and isinstance(reply, dict) else None
-            if isinstance(read, dict):
-                order = read
+            if not isinstance(read, dict):
+                log.warning("prophetx place %s: order read %d: HTTP %s %s", client_order_id, attempt + 1, status,
+                            str(reply)[:300])
+                continue
+            order = read
+            log.info("prophetx place %s: order read %d: %s", client_order_id, attempt + 1, _order_state(order))
         if _done(order, stake):
             return self._record(client_order_id, order, target, stake)
-        return self._cancel_resting(client_order_id, order_id, order)
+        return self._still_matching(client_order_id, order_id, order)
 
-    def _cancel_resting(self, client_order_id: str, order_id: str, order: dict) -> dict:
-        log.error("prophetx place %s: order %s still rests (%s, %s open) after a fill-or-kill; cancelling",
-                  client_order_id, order_id, order.get("status"), order.get("open_quantity"))
-        try:
-            status, reply = self._client.cancel_order(order_id, client_order_id)
-        except (OSError, ProphetXError) as error:
-            status, reply = None, f"no answer: {error}"
-        filled = number_of(order.get("filled_quantity"))
-        self._update(client_order_id, {"status": STATUS_UNKNOWN, "count_filled": None if filled is None else round(filled * 100),
-                                       "error": f"rested after fill-or-kill; cancel answered {status} {str(reply)[:200]}"})
-        rest = "A cancel was sent" if status == 200 else "The cancel was NOT confirmed: cancel it on ProphetX"
-        return {"status": STATUS_UNKNOWN, "message": f"ProphetX left the order resting. {rest}. "
-                                                     "Check ProphetX before placing again."}
+    def _still_matching(self, client_order_id: str, order_id: str, order: dict) -> dict:
+        log.warning("prophetx place %s: order %s not read finished in %.0f s (%s); the order history settles it",
+                    client_order_id, order_id, PLACE_FINAL_READ_WINDOW_SEC, _order_state(order))
+        self._update(client_order_id, {"status": STATUS_UNKNOWN,
+                                       "error": f"not read finished in the window: {_order_state(order)}"})
+        return {"status": STATUS_UNKNOWN,
+                "message": "Sent. ProphetX was still matching it when Place stopped reading; what filled shows "
+                           "in Bets in a few seconds. Check Bets before placing again."}
 
     def _record(self, client_order_id: str, order: dict, target: dict, stake: float) -> dict:
         filled = number_of(order.get("filled_quantity"))
@@ -421,10 +431,7 @@ class ManualProphetXDesk:
             return {"status": STATUS_UNKNOWN, "message": "ProphetX finished the order but did not say what filled. "
                                                          "Check ProphetX before placing again."}
         fee = number_of(order.get("fee")) or 0.0
-        if filled <= 0 and str(order.get("status")).lower() == "invalid":
-            outcome = STATUS_REJECTED
-        else:
-            outcome = STATUS_UNFILLED if filled <= 0 else STATUS_FILLED if filled >= stake - FULL_FILL_TOLERANCE_DOLLARS else STATUS_PARTIAL
+        outcome = _outcome_of(order, filled, stake)
         self._update(client_order_id, {"status": outcome, "count_filled": round(filled * 100),
                                        "cost_filled": round(filled + fee, 4),
                                        "error": None if outcome != STATUS_REJECTED else f"invalid: {str(order)[:300]}"})
@@ -451,6 +458,54 @@ def _done(order: dict, stake: float) -> bool:
         return True
     filled = number_of(order.get("filled_quantity"))
     return filled is not None and filled >= stake - FULL_FILL_TOLERANCE_DOLLARS
+
+
+def _outcome_of(order: dict, filled: float, stake: float) -> str:
+    """A finished order's manual_orders status from the dollars it matched."""
+    if filled <= 0 and str(order.get("status")).lower() == "invalid":
+        return STATUS_REJECTED
+    if filled <= 0:
+        return STATUS_UNFILLED
+    return STATUS_FILLED if filled >= stake - FULL_FILL_TOLERANCE_DOLLARS else STATUS_PARTIAL
+
+
+def _order_state(order: dict) -> str:
+    """An order read in a log line: what decides whether it is done."""
+    return (f"status {order.get('status')}, matching {order.get('matching_status')}, "
+            f"filled {order.get('filled_quantity')}, open {order.get('open_quantity')}")
+
+
+def settle_unconfirmed_place_orders(store: BetsStore, orders: list[dict], trades: list[dict], now: datetime) -> None:
+    """Settle every 'unknown' ProphetX Place row from the order history the
+    ProphetX source just read (no network): found by its ProphetX order id,
+    else by its external_id (a click whose submit answer was lost), and
+    settled once ProphetX shows the order finished, at the dollars its fills
+    matched plus their fees. An order the history does not hold, or still
+    matching, stays 'unknown' and is looked for again next poll, for
+    store.UNCONFIRMED_PROPHETX_PLACE_WINDOW. Side effect: UPDATE bets.duckdb::manual_orders."""
+    unconfirmed = store.unconfirmed_prophetx_place_orders(now)
+    if not unconfirmed:
+        return
+    by_order_id = {str(order["order_id"]): order for order in orders if order.get("order_id")}
+    by_external_id = {str(order["external_id"]): order for order in orders if order.get("external_id")}
+    fills_by_order: dict[str, list[dict]] = {}
+    for trade in trades:
+        if trade.get("order_id"):
+            fills_by_order.setdefault(str(trade["order_id"]), []).append(trade)
+    for row in unconfirmed:
+        client_order_id = row["client_order_id"]
+        order = by_order_id.get(row["prophetx_order_id"] or "") or by_external_id.get(client_order_id)
+        stake = row["count_requested"] / 100
+        if order is None or not _done(order, stake):
+            continue
+        order_id = str(order["order_id"])
+        filled, _to_win, fee = matched_of(order, fills_by_order.get(order_id, []))
+        outcome = _outcome_of(order, filled, stake)
+        store.update_manual_order(client_order_id, {
+            "status": outcome, "prophetx_order_id": order_id, "count_filled": round(filled * 100),
+            "cost_filled": round(filled + fee, 4), "error": f"settled from the order history: {_order_state(order)}"}, now)
+        log.info("prophetx place %s: settled from the order history: %s, $%.2f of $%.2f (fee %s)",
+                 client_order_id, outcome, filled, stake, fee)
 
 
 def _error_text(reply: object) -> str:

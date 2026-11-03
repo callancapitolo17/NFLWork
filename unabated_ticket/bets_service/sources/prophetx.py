@@ -40,7 +40,9 @@ stored record already had (`known_records`, read from bets.duckdb); one never
 resolved is unmatchable with the reason.
 
 Outputs: records (id "prophetx:<order_id>", resting part
-"prophetx:<order_id>:order"). Side effects: none on disk; network reads only.
+"prophetx:<order_id>:order"). Side effects: network reads only; each poll hands
+its orders and fills to `settle_place_orders`, which UPDATEs the Place desk's
+unconfirmed bets.duckdb::manual_orders rows (prophetx_place.py).
 Raises on a failed order-history or trades read (the service keeps the previous
 records); a failed game or market read only leaves that game unresolved for one poll.
 """
@@ -262,6 +264,8 @@ def _has_strikes(lines: list[dict] | str, strikes: set[str]) -> bool:
 
 # ---- network half -----------------------------------------------------------------
 
+SettlePlaceOrders = Callable[[list[dict], list[dict]], None]
+
 
 class ProphetXSource:
     """Polls the account's ProphetX orders on its Trading API key."""
@@ -270,8 +274,12 @@ class ProphetXSource:
 
     def __init__(self, client: ProphetXClient, known_records: Callable[[], dict[str, dict]],
                  poll_sec: float = config.PROPHETX_POLL_SEC, history_days: int = config.PROPHETX_HISTORY_DAYS,
-                 clock: Callable[[], float] = time.time):
-        """`known_records`: the stored ProphetX records by id (store.load_records_of_venue)."""
+                 clock: Callable[[], float] = time.time, settle_place_orders: SettlePlaceOrders | None = None):
+        """`known_records`: the stored ProphetX records by id (store.load_records_of_venue).
+        `settle_place_orders(orders, trades)`: given every poll's order history
+        and fills, settles the Place desk's unconfirmed orders
+        (prophetx_place.settle_unconfirmed_place_orders)."""
+        self._settle_place_orders = settle_place_orders
         self.poll_sec = poll_sec
         self._client = client
         self._known_records = known_records
@@ -333,6 +341,12 @@ class ProphetXSource:
             self._older = self._backfill_older(start)
         orders = self._client.order_history(start, now) + self._older[0]
         trades = self._client.trades(start, now) + self._older[1]
+        if self._settle_place_orders is not None:
+            try:
+                self._settle_place_orders(orders, trades)
+            except Exception:
+                # A store failure here must not fail the bet read Place's freshness check relies on.
+                log.exception("prophetx: settling Place orders from the order history failed; rows stay unknown")
         strikes_by_event: dict[int, set[str]] = {}
         for order in orders:
             if isinstance(order.get("sport_event_id"), int):
@@ -383,11 +397,15 @@ class ProphetXSource:
         return {"cash": float(cash), "inBets": in_bets, "available": float(cash), "creditLimit": None}
 
 
-def source_if_configured(known_records: Callable[[], dict[str, dict]] = dict) -> ProphetXSource | None:
+def source_if_configured(known_records: Callable[[], dict[str, dict]] = dict,
+                         settle_place_orders: SettlePlaceOrders | None = None) -> ProphetXSource | None:
     """The source when the key pair is set (the Polymarket US pattern). The
-    service passes the store's stored ProphetX records; check_sources none."""
+    service passes the store's stored ProphetX records and the Place desk's
+    settler; check_sources neither."""
     client = client_if_configured()
-    return ProphetXSource(client, known_records) if client is not None else None
+    if client is None:
+        return None
+    return ProphetXSource(client, known_records, settle_place_orders=settle_place_orders)
 
 
 def client_if_configured() -> ProphetXClient | None:

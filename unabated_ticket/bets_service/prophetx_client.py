@@ -39,8 +39,9 @@ was not reachable from the cloud container, so nothing here is a live capture):
     manually_settled, matching_status unmatched / partially_matched /
     fully_matched, filled_quantity / open_quantity in dollars, `fee`.
 
-Side effects: ProphetX orders and cancels on the configured key (money) through
-submit_fill_or_kill / cancel_order; everything else is a read.
+Side effects: ProphetX orders on the configured key (money) through
+submit_fill_or_kill; everything else is a read. Nothing here cancels: a
+fill-or-kill kills its own remainder.
 """
 import json
 import logging
@@ -66,7 +67,6 @@ ORDER_HISTORY_PATH = "/v4/mm/get_order_history"
 TRADES_PATH = "/v4/mm/get_trades"
 ORDER_PATH = "/v4/mm/get_order"
 SUBMIT_ORDER_PATH = "/v4/mm/submit_order"
-CANCEL_ORDER_PATH = "/v4/mm/cancel_order"
 BALANCE_PATH = "/v4/mm/get_balance"
 # An access token lasts 10 minutes; a new login goes out this long before that.
 ACCESS_TOKEN_LIFETIME_SEC = 600
@@ -372,6 +372,3 @@ class ProphetXClient:
         sent again, inside request()."""
         return self.request("POST", SUBMIT_ORDER_PATH,
                             body=fill_or_kill_body(strike_id, american_price, stake_dollars, external_id))
-
-    def cancel_order(self, order_id: str, external_id: str) -> tuple[int, object]:
-        return self.request("POST", CANCEL_ORDER_PATH, body={"order_id": order_id, "external_id": external_id})

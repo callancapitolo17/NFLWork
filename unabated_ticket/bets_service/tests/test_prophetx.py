@@ -10,7 +10,8 @@ import pytest
 
 from unabated_ticket.bets_service import prophetx_markets
 from unabated_ticket.bets_service.prophetx_client import ProphetXBlocked, ProphetXClient, ProphetXError, fill_or_kill_body
-from unabated_ticket.bets_service.prophetx_place import (ManualProphetXDesk, teams_mismatch,
+from unabated_ticket.bets_service.prophetx_place import (ManualProphetXDesk, settle_unconfirmed_place_orders,
+                                                         teams_mismatch,
                                                          validate_prophetx_place_request)
 from unabated_ticket.bets_service.sources.prophetx import ProphetXSource, normalize_prophetx
 from unabated_ticket.bets_service.store import BetsStore
@@ -375,7 +376,6 @@ class ScriptedProphetX:
 
     def __init__(self, submit=None, order_reads=None, events=None, markets=None):
         self.submits = []
-        self.cancels = []
         self.submit = submit
         self.order_reads = list(order_reads or [])
         self.events = [EVENT] if events is None else events
@@ -403,10 +403,6 @@ class ScriptedProphetX:
         stake = self.submits[-1][2]
         return 200, {"data": {"order_id": order_id, "status": "open", "filled_quantity": stake, "open_quantity": 0,
                               "fee": 0.25}}
-
-    def cancel_order(self, order_id, external_id):
-        self.cancels.append(order_id)
-        return 200, {"data": {"success": True}}
 
 
 @pytest.fixture
@@ -513,7 +509,7 @@ def test_an_open_order_matching_has_not_reached_is_read_again_not_called_unfille
         "order_id": "px-1", "status": "open", "filled_quantity": 0, "open_quantity": 0}}})
     client = ScriptedProphetX(submit=unreached)
     result = desk_with(store, client).place(request())
-    assert result["status"] == "filled" and result["filled"] == 50 and client.cancels == []
+    assert result["status"] == "filled" and result["filled"] == 50
 
 
 def test_a_stale_or_failing_prophetx_read_refuses(store):
@@ -530,11 +526,71 @@ def test_a_part_fill_reads_partial_and_nothing_filled_reads_unfilled(store):
     assert result["status"] == "unfilled" and "Nothing rests" in result["message"]
 
 
-def test_an_order_still_resting_after_the_window_gets_one_cancel(store):
-    resting = (200, {"data": {"status": "open", "filled_quantity": 0, "open_quantity": 50}})
-    client = ScriptedProphetX(order_reads=[resting] * 10)
+# 2026-11-03: two orders read "inactive" with money open for the whole window
+# while ProphetX had matched them in full (its cancel answered order_already_filled).
+STILL_MATCHING = (200, {"data": {"order_id": "px-1", "status": "inactive", "matching_status": "unmatched",
+                                 "filled_quantity": 0, "open_quantity": 50}})
+HISTORY_FILLED = {"order_id": "px-1", "external_id": "xman-abc12345-0001", "status": "open",
+                  "matching_status": "fully_matched", "filled_quantity": 50, "open_quantity": 0, "price": -110}
+
+
+def manual_row(store, click="xman-abc12345-0001"):
+    return store._con.execute("SELECT status, prophetx_order_id, count_filled, cost_filled FROM manual_orders "
+                              "WHERE client_order_id = ?", [click]).fetchone()
+
+
+def test_an_order_not_read_finished_is_left_unknown_never_cancelled_and_says_so(store):
+    client = ScriptedProphetX(order_reads=[STILL_MATCHING] * 10)
     result = desk_with(store, client).place(request())
-    assert result["status"] == "unknown" and client.cancels == ["px-1"]
+    assert result["status"] == "unknown" and "still matching" in result["message"]
+    assert "resting" not in result["message"] and not hasattr(client, "cancel_order")
+    assert manual_row(store)[:2] == ("unknown", "px-1")
+
+
+def test_the_order_history_settles_an_unknown_place_order_at_its_fills(store):
+    desk_with(store, ScriptedProphetX(order_reads=[STILL_MATCHING] * 10)).place(request())
+    trades = [{"order_id": "px-1", "quantity": 50, "price": -105, "fee": 0.25, "status": "open"}]
+    settle_unconfirmed_place_orders(store, [HISTORY_FILLED], trades, NOW + timedelta(seconds=30))
+    assert manual_row(store) == ("filled", "px-1", 5000, 50.25)
+    # Settled rows are not looked for again.
+    assert store.unconfirmed_prophetx_place_orders(NOW + timedelta(minutes=1)) == []
+
+
+def test_the_history_leaves_an_order_still_matching_or_unlisted_unknown(store):
+    desk_with(store, ScriptedProphetX(order_reads=[STILL_MATCHING] * 10)).place(request())
+    settle_unconfirmed_place_orders(store, [], [], NOW + timedelta(seconds=30))
+    settle_unconfirmed_place_orders(store, [STILL_MATCHING[1]["data"]], [], NOW + timedelta(seconds=30))
+    assert manual_row(store)[0] == "unknown"
+    # A day on, the row is no longer looked for.
+    assert store.unconfirmed_prophetx_place_orders(NOW + timedelta(hours=25)) == []
+
+
+def test_a_lost_submit_answer_is_settled_by_its_external_id(store):
+    desk_with(store, ScriptedProphetX(submit=OSError("timed out"))).place(request())
+    assert manual_row(store)[:2] == ("unknown", None)
+    killed = {**HISTORY_FILLED, "status": "canceled", "matching_status": "partially_matched", "filled_quantity": 20,
+              "open_quantity": 0}
+    settle_unconfirmed_place_orders(store, [killed], [], NOW + timedelta(seconds=30))
+    assert manual_row(store) == ("partial", "px-1", 2000, 20.0)
+
+
+def test_each_source_poll_hands_its_order_history_to_the_place_settler():
+    class History:
+        def order_history(self, start, end):
+            return [HISTORY_FILLED]
+
+        def trades(self, start, end):
+            return []
+
+        def sport_events(self, event_ids=None):
+            return []
+
+    seen = []
+    source = ProphetXSource(History(), dict, clock=lambda: NOW.timestamp(),
+                            settle_place_orders=lambda orders, trades: seen.append((orders, trades)))
+    source._older = ([], [])
+    source.fetch()
+    assert seen == [([HISTORY_FILLED], [])]
 
 
 def test_a_refusal_or_no_answer_is_named(store):
