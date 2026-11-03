@@ -1978,3 +1978,44 @@ test("polymarket_quote: a closed market or an empty bid side is refused, and the
   assert.deepEqual([failed.ok, failed.reason], [false, "no_market"]);
   assert.match(failed.detail, /HTTP 503/);
 });
+
+// ---- BFA Place's quote (bets_service/bfa_place.py reads BFA itself) ----
+
+function bfaUnabatedFetch() {
+  const json = JSON.parse(takerVenueSlice());
+  json.marketSources.push({ ...json.marketSources[0], id: 59, name: "Buckeye", sortOrder: 59 });
+  const spreadRow = json.odds["lg2:pt1:pregame"].find((row) => row.key === "pt1:pregame:bt2:e123742");
+  spreadRow.sides["si1:tid717"].ms59 = {
+    ...spreadRow.sides["si1:tid717"].ms89, americanPrice: -110, price: -110, sourceFormat: 1, sourcePrice: -110, statusId: 1,
+    sequenceNumber: TAKER_NOW - 60000, alternateLines: [],
+  };
+  const body = JSON.stringify(json);
+  return async (url) => {
+    if (url.split("?")[0] === SNAPSHOT_BASE_URL(2)) return response({ body, headers: { "content-length": "1000", "last-modified": new Date(TAKER_NOW - 20000).toUTCString() } });
+    return response({ status: 404, body: "not found" });
+  };
+}
+
+test("bfa_quote: the board's Buckeye line with its side's rotation and the line as a bet record names it; another number is no_line", async () => {
+  const { runner, service } = await quoteRunner({}, { fetchImpl: bfaUnabatedFetch() });
+  const quote = await runner.bfaQuote(new URLSearchParams(WSU_36_LINE));
+  const other = await runner.bfaQuote(new URLSearchParams({ ...WSU_36_LINE, points: "-38.5" }));
+  runner.stop();
+  assert.deepEqual({ ok: quote.ok, price: quote.price, isAlt: quote.isAlt, eventId: quote.eventId, eventStart: quote.eventStart },
+    { ok: true, price: -110, isAlt: false, eventId: 123742, eventStart: WSU_UNABATED_START });
+  assert.ok(Number.isInteger(quote.rotation) && quote.rotation !== quote.awayRotation, `rotation ${quote.rotation}`);
+  assert.equal(quote.rotation, quote.homeRotation, "the home side's rotation");
+  assert.deepEqual([quote.line.league, quote.line.betType, quote.line.period, quote.line.side, quote.line.points], ["cfb", "spread", "FG", "home", -35.5]);
+  assert.deepEqual([other.ok, other.reason], [false, "no_line"]);
+  assert.equal(service.posts.length, 0, "nothing is sent");
+});
+
+test("board thread: the ProphetX and BFA Place quotes reach the board thread like the others", async () => {
+  const runner = countingRunner();
+  runner.prophetxQuote = (params) => ({ ok: false, venue: "prophetx", eventId: Number(params.get("eventId")) });
+  runner.bfaQuote = (params) => ({ ok: false, venue: "bfa", eventId: Number(params.get("eventId")) });
+  const { client } = boardClient([runner], { now: NOW });
+  assert.deepEqual(JSON.parse((await client.prophetxQuote(new URLSearchParams("eventId=3"))).text), { ok: false, venue: "prophetx", eventId: 3 });
+  assert.deepEqual(JSON.parse((await client.bfaQuote(new URLSearchParams("eventId=4"))).text), { ok: false, venue: "bfa", eventId: 4 });
+  client.stop();
+});

@@ -671,6 +671,7 @@
     return {
       bookId: row.book ? row.book.id : null, live: null, eventId: row.eventId, periodTypeId: row.periodTypeId, betTypeId: row.betTypeId,
       sideIndex: row.sideIndex, points: row.points ?? null, price: row.price, sourceFormat: row.sourceFormat, sourcePrice: row.sourcePrice,
+      isAlt: row.isAlt === true,
     };
   }
 
@@ -683,7 +684,7 @@
     }
     view.ticketVenueRow.hidden = false;
     view.ticketVenuePlace.hidden = !onList || !venuePlace.canPlace(venuePlaceLine(row));
-    // The foot says nothing here places a bet: true everywhere but a Place-able (Kalshi, Novig, Polymarket US) ticket.
+    // The foot says nothing here places a bet: true everywhere but a Place-able ticket (place.js VENUES).
     view.ticketFoot.hidden = !view.ticketVenuePlace.hidden;
     if (view.ticketVenuePlace.hidden) return;
     if (placeState.rowKey !== row.key) {
@@ -694,7 +695,7 @@
     // The box follows the stake until Cal types in it, and holds still once Place is pressed.
     const settled = placeState.phase === "confirm" || placeState.phase === "placing";
     if (!placeState.edited && !settled && document.activeElement !== view.ticketVenueStake) {
-      view.ticketVenueStake.value = venuePlace.stakeText(acted);
+      view.ticketVenueStake.value = venuePlace.stakeText(acted, row.book ? row.book.id : null);
       placeState.sizedOn = state.edges.payload && state.edges.payload.betsService ? state.edges.payload.betsService.sources : null;
     }
     renderPlaceControls();

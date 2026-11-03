@@ -80,7 +80,7 @@ def validate_polymarket_place_request(body: object) -> dict | str:
     {clickId, eventId, periodTypeId, betTypeId (1|2|3), sideIndex, points (null on
     a moneyline), stake (dollars), ticketAllIn (the Ticket's Polymarket US price as
     a probability), polymarketReadAt (the polymarket_us read the stake was sized
-    on, ISO), kalshiReadAt / novigReadAt (ISO, or null when never read)}"""
+    on, ISO), kalshiReadAt / novigReadAt / prophetxReadAt / bfaReadAt (ISO, or null when never read)}"""
     if not isinstance(body, dict):
         return f"body must be an object, got {type(body).__name__}"
     click_id = body.get("clickId")
@@ -109,7 +109,7 @@ def validate_polymarket_place_request(body: object) -> dict | str:
         return ("polymarketReadAt must be the ISO time of the Polymarket US read the stake was sized on, "
                 f"got {body.get('polymarketReadAt')!r}")
     read_ats = {}
-    for field in ("kalshiReadAt", "novigReadAt", "prophetxReadAt"):
+    for field in ("kalshiReadAt", "novigReadAt", "prophetxReadAt", "bfaReadAt"):
         read_at = optional_read_at(body, field)
         if isinstance(read_at, str):
             return read_at
@@ -117,7 +117,7 @@ def validate_polymarket_place_request(body: object) -> dict | str:
     return {"click_id": click_id, **whole, "points": None if points is None else float(points),
             "stake": float(stake), "ticket_all_in": float(ticket_all_in), "polymarket_read_at": polymarket_read_at,
             "kalshi_read_at": read_ats["kalshiReadAt"], "novig_read_at": read_ats["novigReadAt"],
-            "prophetx_read_at": read_ats["prophetxReadAt"]}
+            "prophetx_read_at": read_ats["prophetxReadAt"], "bfa_read_at": read_ats["bfaReadAt"]}
 
 
 def held_id_of(slug: str, contract_side: str) -> str:
@@ -206,7 +206,8 @@ class ManualPolymarketDesk:
         if stale:
             return stale
         if unseen_manual_fill(self._store, request["eventId"], request["kalshi_read_at"], request["novig_read_at"],
-                              request["polymarket_read_at"], request["prophetx_read_at"]):
+                              request["polymarket_read_at"], request["prophetx_read_at"],
+                              request["bfa_read_at"]):
             return ("your last Place on this game is not on the Bets tab yet, so this stake does not count it. "
                     "Wait for the next read (up to a minute) and place again.")
         return None

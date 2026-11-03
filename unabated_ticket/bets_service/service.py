@@ -150,6 +150,15 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     on Cal's main account with the PROPHETX_* key pair, real money —
                                     prophetx_place.py checks the live price against the Ticket's
                                     first; 503 while that key pair is unset or refused)
+           POST /place_bfa.json     body {clickId, eventId, periodTypeId, betTypeId, sideIndex,
+                                    points, stake (whole dollars), ticketAllIn, bfaReadAt,
+                                    kalshiReadAt, novigReadAt, polymarketReadAt, prophetxReadAt}
+                                    -> {ok, status: filled | refused | rejected | unknown, message,
+                                    ticket?, legsMatch?} (the Ticket's Place button at BFA: ONE
+                                    straight bet on Cal's BFA account on the bfa source's login,
+                                    real money — bfa_place.py checks BFA's board and price against
+                                    the Ticket's first and confirms off the open bets; 503 when no
+                                    BFA account is read)
            POST /novig_books.json   body {marketIds: [..], waitMs, priority?} -> {stream:
                                     {connected, lastFrameAgeMs, error, ...}, books: {marketId:
                                     {status, started, seq, orders: {outcomeId: [{order, price,
@@ -235,6 +244,9 @@ POST /place_polymarket.json places a Polymarket US order on Cal's main account
 (polymarket_place.py).
 POST /place_prophetx.json places a ProphetX order on Cal's main account (money)
 and INSERTs / UPDATEs bets.duckdb::manual_orders, venue 'prophetx' (prophetx_place.py).
+POST /place_bfa.json places a straight bet at BFA on Cal's account (money), INSERTs /
+UPDATEs bets.duckdb::manual_orders, venue 'bfa' (bfa_place.py), and UPSERTs the BFA open
+bets read at confirmation into bets.duckdb::bets.
 POST /taker/order.json places a bot order on Kalshi (money) on the bot's own
 key, locked to the bot's own Kalshi subaccount, when one is configured, and
 INSERTs / UPDATEs taker.duckdb::taker_orders (taker_orders.py: stop file, open-cost
@@ -264,7 +276,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from unabated_ticket.bets_service import bfa_teaser, config
+from unabated_ticket.bets_service import bfa_place, bfa_teaser, config
 from unabated_ticket.bets_service.balances import BalanceBook, balances_payload, read_balance_once
 from unabated_ticket.bets_service.log_setup import setup_logging
 from unabated_ticket.bets_service.manual_orders import ManualKalshiDesk, read_runner_quote
@@ -326,6 +338,7 @@ PLACE_READ_SOURCES = {
     "novig": ("novig", "novig_place", "novig_bot"),
     "polymarket_us": ("polymarket_us",),
     "prophetx": ("prophetx",),
+    "bfa": ("bfa",),
 }
 # Statuses after which an order may hold contracts (store._SELECT_MANUAL_MAYBE_FILLED;
 # Novig's "unfilled" too, which the store still counts until Novig's own read).
@@ -1253,6 +1266,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  polymarket_place_off_reason: str = POLYMARKET_PLACE_OFF_REASON,
                  prophetx_place_desk: ManualProphetXDesk | None = None,
                  prophetx_place_off_reason: str = PROPHETX_PLACE_OFF_REASON,
+                 bfa_placer: bfa_place.BFAStraightPlacer | None = None,
                  novig_book_stream: NovigBookStream | None = None,
                  novig_catalog_reads: NovigCatalogReads | None = None,
                  source_reader: SourceReader | None = None) -> type[BaseHTTPRequestHandler]:
@@ -1271,7 +1285,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
     Polymarket US Place-button orders (None: POST /place_polymarket.json 503s
     with `polymarket_place_off_reason`). `prophetx_place_desk` places Cal's
     ProphetX Place-button orders (None: POST /place_prophetx.json 503s with
-    `prophetx_place_off_reason`). `novig_book_stream` serves Novig's live
+    `prophetx_place_off_reason`). `bfa_placer` places Cal's BFA Place-button
+    straight bets (None: no BFA account is read, POST /place_bfa.json 503s). `novig_book_stream` serves Novig's live
     books (None: POST /novig_books.json 503s), `novig_catalog_reads` the keyed
     catalog reads on the same key (None: POST /novig_read.json 503s). `source_reader` reads a
     Place's venue before its reply (None: the reply goes at once and the next
@@ -1334,7 +1349,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                                 "/fill_snapshots.json", "/close_snapshots.json", "/tau_samples.json",
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
                                 "/draftkings.json", "/place_teaser.json", "/place_kalshi.json", "/place_novig.json",
-                                "/place_polymarket.json", "/place_prophetx.json", "/taker_decisions.json",
+                                "/place_polymarket.json", "/place_prophetx.json", "/place_bfa.json", "/taker_decisions.json",
                                 "/taker/order.json", "/taker/novig_order.json", "/novig_books.json", "/novig_read.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
@@ -1396,6 +1411,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/place_prophetx.json":
                 self._place_prophetx(body)
+                return
+            if url.path == "/place_bfa.json":
+                self._place_bfa(body)
                 return
             if (url.path in ("/taker_decisions.json", "/taker/order.json", "/taker/novig_order.json", "/novig_books.json",
                              "/novig_read.json")
@@ -1777,6 +1795,29 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 self._read_place_venue("prophetx")
             self._send_json(200, {"ok": result["status"] in ("filled", "partial"), **result})
 
+        # POST /place_bfa.json: one straight bet at BFA on the bfa source's login
+        # (bfa_place.py). The open bets read while confirming are stored at once and
+        # the BFA source is read before the reply, so the next stake counts the bet.
+        def _place_bfa(self, body: object) -> None:
+            if bfa_placer is None:
+                self._send_json(503, {"error": "no BFA account is read: set BFA_USERNAME and BFA_PASSWORD"})
+                return
+            request = bfa_place.validate_bfa_place_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            try:
+                result = bfa_placer.place(request)
+            except Exception as error:  # noqa: BLE001 — place() answers for itself once its row is inserted
+                log.exception("bfa place: failed before the wager went out")
+                result = {"status": bfa_place.STATUS_REFUSED, "message": f"Not placed: {type(error).__name__}: {error}"}
+            open_wagers = result.pop("openWagers", None)
+            if open_wagers:
+                self._store_bfa_open_bets(open_wagers)
+            if result["status"] in PLACE_READ_STATUSES:
+                self._read_place_venue("bfa")
+            self._send_json(200, {"ok": result["status"] == bfa_place.STATUS_FILLED, **result})
+
         def _read_place_venue(self, venue: str) -> None:
             """Read the venue a Place just traded at (PLACE_READ_SOURCES) before
             the reply goes. Never raises: the order already stands."""
@@ -1795,7 +1836,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             try:
                 store.upsert_bets(normalize_open_bets(open_wagers, utc_now_iso()), _now())
             except Exception:  # noqa: BLE001 — the ticket stands; the next BFA poll stores it
-                log.exception("bfa teaser: storing the open bets read at confirmation failed")
+                log.exception("bfa: storing the open bets read at confirmation failed")
 
         def do_DELETE(self) -> None:  # noqa: N802 — http.server's name
             if self._refused_foreign_host():
@@ -1885,6 +1926,17 @@ def teaser_placer_for(sources: list[Source]) -> bfa_teaser.BFATeaserPlacer | Non
     """The Place button's placer on the BFA source's session, or None when BFA is not read."""
     bfa_source = next((source for source in sources if isinstance(source, BFASource)), None)
     return bfa_teaser.BFATeaserPlacer(bfa_source) if bfa_source is not None else None
+
+
+def bfa_placer_for(sources: list[Source], store: BetsStore) -> bfa_place.BFAStraightPlacer | None:
+    """The BFA Place button's placer on the BFA source's session, or None when BFA is not read."""
+    bfa_source = next((source for source in sources if isinstance(source, BFASource)), None)
+    if bfa_source is None:
+        log.info("bfa place: no BFA account is read, the BFA Place button is off")
+        return None
+    return bfa_place.BFAStraightPlacer(
+        bfa_source, store, lambda line: read_runner_quote(config.RUNNER_URL, line, bfa_place.RUNNER_BFA_QUOTE_PATH,
+                                                          bfa_place.RUNNER_BFA_QUOTE_TIMEOUT_SEC))
 
 
 def open_taker_desk(store: TakerStore | None,
@@ -2180,6 +2232,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                                                             polymarket_place_off_reason=polymarket_place_off_reason,
                                                             prophetx_place_desk=prophetx_place_desk,
                                                             prophetx_place_off_reason=prophetx_place_off_reason,
+                                                            bfa_placer=bfa_placer_for(sources, store),
                                                             novig_book_stream=novig_book_stream,
                                                             novig_catalog_reads=novig_catalog_reads,
                                                             balance_book=balance_book,

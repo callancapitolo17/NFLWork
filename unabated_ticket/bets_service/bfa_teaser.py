@@ -128,7 +128,7 @@ STATUS_UNCONFIRMED = "unconfirmed"
 
 # ---- the panel's request ------------------------------------------------------------
 
-def _is_number(value: object) -> bool:
+def is_number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and value == value
 
 
@@ -147,9 +147,9 @@ def _leg_error(index: int, raw: object) -> str | None:
     rotation = raw.get("rotation")
     if not isinstance(rotation, int) or isinstance(rotation, bool) or not 0 < rotation < MAX_ROTATION:
         return f"legs[{index}].rotation must be a positive whole number, got {rotation!r}"
-    if not _is_number(raw.get("points")):
+    if not is_number(raw.get("points")):
         return f"legs[{index}].points must be a number (Buckeye's number before the teaser), got {raw.get('points')!r}"
-    if _parse_iso(raw.get("eventStart")) is None:
+    if parse_iso(raw.get("eventStart")) is None:
         return f"legs[{index}].eventStart must be an ISO time with a zone, got {raw.get('eventStart')!r}"
     label = raw.get("label")
     if not isinstance(label, str) or not label or len(label) > MAX_LABEL_CHARS:
@@ -157,7 +157,7 @@ def _leg_error(index: int, raw: object) -> str | None:
     return None
 
 
-def _parse_iso(value: object) -> datetime | None:
+def parse_iso(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
@@ -231,7 +231,7 @@ def teaser_type_of(metadata: dict, sport_codes: set[str]) -> dict | str:
     if entry["payouts"] != {TICKET_PAYOUT_AMERICAN}:
         return (f"BFA's {LEGS_PER_TICKET}-team teaser (type {type_id}) pays {sorted(entry['payouts'])}, "
                 f"the Teasers tab prices +{TICKET_PAYOUT_AMERICAN}")
-    limits = [limit for limit in entry["maxRisk"] if _is_number(limit) and limit > 0]
+    limits = [limit for limit in entry["maxRisk"] if is_number(limit) and limit > 0]
     return {"wagerTypeId": type_id, "maxRisk": min(limits) if limits else None}
 
 
@@ -246,14 +246,14 @@ def _number_text(bet_type: str, points: float) -> str:
     return _signed(points) if bet_type == "spread" else f"{points:g}"
 
 
-def _contestant_with_rotation(fixture: dict, rotation: int) -> dict | None:
+def contestant_with_rotation(fixture: dict, rotation: int) -> dict | None:
     for contestant in fixture.get("contestants") or []:
         if contestant.get("rotNum") == rotation:
             return contestant
     return None
 
 
-def _games_with_rotation(games: list[dict], rotation: int) -> list[tuple[dict, dict, dict]]:
+def games_with_rotation(games: list[dict], rotation: int) -> list[tuple[dict, dict, dict]]:
     """(game, main fixture, contestant) for every game listing a team at `rotation`."""
     found = []
     for game in games:
@@ -262,13 +262,13 @@ def _games_with_rotation(games: list[dict], rotation: int) -> list[tuple[dict, d
         for fixture in game.get("fixtures") or []:
             if not fixture.get("isMain"):
                 continue
-            contestant = _contestant_with_rotation(fixture, rotation)
+            contestant = contestant_with_rotation(fixture, rotation)
             if contestant is not None:
                 found.append((game, fixture, contestant))
     return found
 
 
-def _main_market(game: dict, fixture: dict, market_type: int) -> dict | None:
+def main_market(game: dict, fixture: dict, market_type: int) -> dict | None:
     for market in game.get("markets") or []:
         if (market.get("fixtureId") == fixture.get("id") and market.get("type") == market_type
                 and market.get("periodNumber") == FULL_GAME_PERIOD):
@@ -287,7 +287,7 @@ def _odds_row(market: dict, leg: dict, contestant: dict) -> dict | None:
     return None
 
 
-def _spread_side_problem(leg: dict, contestant: dict) -> str | None:
+def spread_side_problem(leg: dict, contestant: dict) -> str | None:
     """Why a spread leg's team is not on the side the list has it, or None. The rotation finds
     the team; BFA's own home/away for it must agree with the list's, so a rotation that points
     at another team (or a game the two feeds lay out differently) bets nothing. A total's
@@ -308,22 +308,22 @@ def match_leg(games: list[dict], leg: dict, now: datetime) -> dict | str:
     within START_WINDOW_SEC of the list's start and not yet started; the odds row is the main
     full-game line, open, at the very number the list was built on (AcceptChanges 0 would
     refuse any other, so the check here only says why first)."""
-    expected_start = _parse_iso(leg["eventStart"])
-    found = [item for item in _games_with_rotation(games, leg["rotation"])
-             if (start := _parse_iso(item[1].get("date"))) is not None
+    expected_start = parse_iso(leg["eventStart"])
+    found = [item for item in games_with_rotation(games, leg["rotation"])
+             if (start := parse_iso(item[1].get("date"))) is not None
              and abs((start - expected_start).total_seconds()) <= START_WINDOW_SEC]
     if not found:
         return f"{leg['label']}: BFA's board lists no game with rotation {leg['rotation']}"
     if len(found) > 1:
         return f"{leg['label']}: BFA's board lists {len(found)} games with rotation {leg['rotation']}"
     game, fixture, contestant = found[0]
-    start = _parse_iso(fixture.get("date"))
+    start = parse_iso(fixture.get("date"))
     if start is None or start <= now or fixture.get("isLive") or game.get("isLive"):
         return f"{leg['label']}: the game has started"
-    side_problem = _spread_side_problem(leg, contestant)
+    side_problem = spread_side_problem(leg, contestant)
     if side_problem:
         return side_problem
-    market = _main_market(game, fixture, BET_TYPE_MARKETS[leg["betType"]])
+    market = main_market(game, fixture, BET_TYPE_MARKETS[leg["betType"]])
     odds = _odds_row(market, leg, contestant) if market else None
     if market is None or odds is None:
         return f"{leg['label']}: BFA lists no full-game {leg['betType']} for {game.get('name')}"
@@ -333,12 +333,12 @@ def match_leg(games: list[dict], leg: dict, now: datetime) -> dict | str:
                 f"the {leg['side']} team's is {CONTESTANT_SIDES[leg['side']]}")
     if market.get("status") != MARKET_OPEN or odds.get("status") != ODDS_OPEN:
         return f"{leg['label']}: BFA has the {leg['betType']} closed"
-    if not _is_number(odds.get("line")) or odds["line"] != leg["points"]:
+    if not is_number(odds.get("line")) or odds["line"] != leg["points"]:
         return (f"{leg['label']}: BFA has {_number_text(leg['betType'], odds.get('line') or 0)} now, "
                 f"the list has {_number_text(leg['betType'], leg['points'])}")
     # dGmId is the game id the open bets carry: without it neither the already-open check
     # nor the confirmation could ever see this ticket.
-    if (not _is_number(odds.get("price")) or not odds.get("dSpId") or odds.get("dGtId") is None
+    if (not is_number(odds.get("price")) or not odds.get("dSpId") or odds.get("dGtId") is None
             or odds.get("dGmId") is None):
         return f"{leg['label']}: BFA's odds row carries no price, sport, game type or game id"
     return {"game": game, "fixture": fixture, "market": market, "odds": odds}
@@ -437,7 +437,7 @@ def expected_legs(legs: list[dict], matches: list[dict]) -> list[dict]:
             for leg, match in zip(legs, matches)]
 
 
-def _one_line(text: str) -> str:
+def one_line(text: str) -> str:
     """BFA's leg text on one line, its market-group prefix and sport suffix kept."""
     return re.sub(r"\s+", " ", re.sub(r"<br\s*/?>", " · ", text)).strip()
 
@@ -447,7 +447,7 @@ def ticket_of(wager: dict) -> dict:
             "toWin": wager.get("winAmount"), "placedDate": wager.get("placedDate")}
 
 
-def _short(text: str) -> str:
+def short_text(text: str) -> str:
     return text if len(text) <= MAX_ERROR_TEXT else f"{text[:MAX_ERROR_TEXT]}…"
 
 
@@ -456,7 +456,7 @@ def _leg_difference(want: dict, details: list[dict]) -> str | None:
     if len(details) != 1:
         return f"{want['label']}: BFA's ticket has {len(details)} legs on that game"
     text = str(details[0].get("detailDescription") or "")
-    shown = _one_line(text)
+    shown = one_line(text)
     got = parse_leg(text)
     if isinstance(got, str):
         return f"{want['label']}: BFA's leg could not be read ({got}): {shown}"
@@ -480,11 +480,41 @@ def leg_mismatches(wager: dict, expected: list[dict], stake: int) -> list[str]:
     if leg_count != len(expected):
         problems.append(f"BFA's ticket has {leg_count} legs, {len(expected)} were sent")
     risk, to_win = wager.get("riskAmount"), wager.get("winAmount")
-    if (not _is_number(risk) or not _is_number(to_win) or abs(risk - stake) > MONEY_TOLERANCE
+    if (not is_number(risk) or not is_number(to_win) or abs(risk - stake) > MONEY_TOLERANCE
             or abs(to_win - stake * TICKET_NET_ODDS) > MONEY_TOLERANCE):
         problems.append(f"BFA's ticket risks {risk} to win {to_win}, ${stake} to win "
                         f"${stake * TICKET_NET_ODDS:g} was sent")
     return problems
+
+
+# ---- BFA reads shared with the straight-bet placer (bfa_place.py) -------------------------
+
+def read_account_metadata(session: object, headers: dict, player_id: str) -> dict:
+    """The account's metadata (its bet types and limits): GET PLAYER_METADATA_URL. Raises on
+    anything but a 200 carrying an object."""
+    response = session.get(PLAYER_METADATA_URL, params={"playerId": player_id}, headers=headers,
+                           timeout=HTTP_TIMEOUT_SEC)
+    if response.status_code != 200:
+        raise RuntimeError(f"BFA account metadata: HTTP {response.status_code}")
+    body = response.json()
+    if not isinstance(body, dict):
+        raise RuntimeError(f"BFA account metadata: expected an object, got {type(body).__name__}")
+    return body
+
+
+def read_board(session: object, slug: str, league: str, headers: dict, player_id: str,
+               agent_id: object) -> list[dict]:
+    """One league's pregame board as the site reads it (GET BOARD_URL): its games list. Raises
+    on anything but a 200 carrying one."""
+    response = session.get(
+        BOARD_URL.format(slug=slug), headers=headers, timeout=HTTP_TIMEOUT_SEC,
+        params={"playerId": player_id, "agentId": agent_id or 0, "fixtureType": BOARD_FIXTURE_TYPE, "set": "Auto"})
+    if response.status_code != 200:
+        raise RuntimeError(f"BFA {league.upper()} board: HTTP {response.status_code}")
+    games = (response.json() or {}).get("games")
+    if not isinstance(games, list):
+        raise RuntimeError(f"BFA {league.upper()} board carries no games list")
+    return games
 
 
 # ---- the placer ------------------------------------------------------------------------
@@ -581,26 +611,12 @@ class BFATeaserPlacer:
     def _account_metadata(self, headers: dict, player_id: str) -> dict:
         if self._metadata is not None and self._clock() - self._metadata_at < METADATA_TTL_SEC:
             return self._metadata
-        response = self._session_factory().get(PLAYER_METADATA_URL, params={"playerId": player_id},
-                                               headers=headers, timeout=HTTP_TIMEOUT_SEC)
-        if response.status_code != 200:
-            raise RuntimeError(f"BFA account metadata: HTTP {response.status_code}")
-        body = response.json()
-        if not isinstance(body, dict):
-            raise RuntimeError(f"BFA account metadata: expected an object, got {type(body).__name__}")
+        body = read_account_metadata(self._session_factory(), headers, player_id)
         self._metadata, self._metadata_at = body, self._clock()
         return body
 
     def _board(self, league: str, headers: dict, player_id: str, agent_id: object) -> list[dict]:
-        response = self._session_factory().get(
-            BOARD_URL.format(slug=BOARD_SLUGS[league]), headers=headers, timeout=HTTP_TIMEOUT_SEC,
-            params={"playerId": player_id, "agentId": agent_id or 0, "fixtureType": BOARD_FIXTURE_TYPE, "set": "Auto"})
-        if response.status_code != 200:
-            raise RuntimeError(f"BFA {league.upper()} board: HTTP {response.status_code}")
-        games = (response.json() or {}).get("games")
-        if not isinstance(games, list):
-            raise RuntimeError(f"BFA {league.upper()} board carries no games list")
-        return games
+        return read_board(self._session_factory(), BOARD_SLUGS[league], league, headers, player_id, agent_id)
 
     def _match_legs(self, legs: list[dict], headers: dict, player_id: str, agent_id: object) -> list[dict] | str:
         boards = {league: self._board(league, headers, player_id, agent_id)
@@ -629,7 +645,7 @@ class BFATeaserPlacer:
             reply = response.json()
         except ValueError:
             pass
-        shown = _short(str(reply if reply is not None else response.text))
+        shown = short_text(str(reply if reply is not None else response.text))
         if HTTP_CLIENT_ERRORS[0] <= response.status_code <= HTTP_CLIENT_ERRORS[1]:
             return {"refused": f"BFA refused the wager: HTTP {response.status_code} {shown}", "note": None}
         if response.status_code == 200 and isinstance(reply, dict) and reply.get("state") == 0:
