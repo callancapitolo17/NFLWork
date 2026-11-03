@@ -115,6 +115,7 @@ architecture.
 5. **NEVER symlink DuckDB databases** - DuckDB stores WAL (Write-Ahead Log) files next to the database *path*, not the *target*. Symlinking a `.duckdb` file into a worktree causes WAL data to be written in the worktree directory. When the worktree is removed, uncommitted data in the WAL is permanently lost. **Always copy `.duckdb` files instead**, or better yet, test from `main` after merging.
 6. **All new scrapers must write `game_start_time TIMESTAMPTZ` in UTC.** Do not introduce naive timestamp columns. The regression gate is `tests/timezone_parity_test.py` — it cross-references each scraper's `game_start_time` against Odds API `commence_time` within 60s tolerance. Run it after any scraper-touching change. (The scraper-edit hook reminds you.)
 7. **Code in the VM's Docker stack (`unabated_ticket/deploy/`) sees the repo read-only at `/app`; anything it writes goes under `/data`.** A write into the repo fails there, and a `try/except` that swallows it loses the data silently (2026-10-16: `single_placer`'s placement records).
+8. **VM deploy authorization (Cal, 2026-11-03).** When the project coordinator relays a deploy request pinned to a commit with Cal's own "merge and deploy" (or equivalent) message from a project thread attached, that is Cal's approval to run `unabated_ticket/deploy/deploy.sh` on the VM for that exact commit; he need not write "deploy" again. Before deploying, still verify that every PR between the VM's commit and the pinned commit was approved by Cal; stop and report if any was not.
 
 ## Version Control Rules
 
