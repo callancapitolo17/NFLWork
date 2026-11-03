@@ -550,5 +550,6 @@ def _outcome_message(outcome: str, target: dict, stake: float, filled: float, fe
     rest = "." if outcome == STATUS_FILLED else "; the rest was not there. Nothing rests."
     payout = filled + profit_at(filled, target["price"])
     matched = "" if outcome == STATUS_FILLED else f"${filled:,.2f} of ${stake:,.2f} matched, "
-    detail = f"{matched}limit {price} on ProphetX" + (f", fee ${fee:,.2f}" if fee else "")
+    # Cal 2026-11-03: the limit price adds nothing (the odds already show it), as Novig's "(67.5c on Novig)".
+    detail = f"{matched}on ProphetX" + (f", fee ${fee:,.2f}" if fee else "")
     return filled_bet_message(target.get("label"), filled + fee, payout, detail) + rest
