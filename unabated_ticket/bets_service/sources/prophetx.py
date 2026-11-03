@@ -13,8 +13,9 @@ Two halves, like sources/polymarket_us.py:
                            tests/test_prophetx.py.
   ProphetXSource           the network half (Source protocol): every poll reads
                            the order history and fills back PROPHETX_HISTORY_DAYS
-                           (at most 60 days, ProphetX's window), and once per game
-                           its sport event and markets (cached in memory).
+                           (at most 60 days, ProphetX's window), older orders once
+                           per boot in 60-day slices, and once per game its sport
+                           event and markets (cached in memory).
 
 Wire grammar (docs.prophetx.co v4 schemas, 2026-10-31; not a live capture):
   order   {order_id, external_id, sport_event_id, market_id, outcome_id,
@@ -70,6 +71,11 @@ GAME_FIELDS = ("league", "eventStart", "eventDate", "awayTeam", "homeTeam", "bet
 MARKETS_TTL_SEC = 600.0
 # A game ProphetX's event list no longer returns (it drops ended games) is asked for again after this long.
 UNLISTED_RETRY_SEC = 3600.0
+# Once per boot, orders older than the polled window are read in 60-day slices back
+# until this many slices in a row hold no order (the account's start), capped at
+# BACKFILL_MAX_WINDOWS slices (~3 years).
+BACKFILL_EMPTY_WINDOWS_TO_STOP = 2
+BACKFILL_MAX_WINDOWS = 18
 
 
 def iso_utc_of(value: object) -> str | None:
@@ -274,6 +280,8 @@ class ProphetXSource:
         self._events: dict[int, dict] = {}
         self._lines: dict[int, tuple[float, list[dict] | str]] = {}
         self._unlisted: dict[int, float] = {}
+        # Orders older than the polled window, read once per boot (backfill_older).
+        self._older: tuple[list[dict], list[dict]] | None = None
 
     @property
     def client(self) -> ProphetXClient:
@@ -295,7 +303,12 @@ class ProphetXSource:
                          and now - self._unlisted.get(event_id, -UNLISTED_RETRY_SEC) >= UNLISTED_RETRY_SEC)
         if missing:
             try:
-                for event in self._client.sport_events(missing):
+                events = self._client.sport_events(missing)
+                if not events and len(missing) > 1:
+                    # Whether one ended game makes the whole list 404 is unverified:
+                    # ask each alone (each answer is then remembered for an hour).
+                    events = [event for event_id in missing for event in self._client.sport_events([event_id])]
+                for event in events:
                     if event.get("event_id") is not None:
                         self._events[event["event_id"]] = event
                 for event_id in missing:
@@ -316,8 +329,10 @@ class ProphetXSource:
     def fetch(self) -> list[dict]:
         now = int(self._clock())
         start = now - self._history_days * 86400
-        orders = self._client.order_history(start, now)
-        trades = self._client.trades(start, now)
+        if self._older is None:
+            self._older = self._backfill_older(start)
+        orders = self._client.order_history(start, now) + self._older[0]
+        trades = self._client.trades(start, now) + self._older[1]
         strikes_by_event: dict[int, set[str]] = {}
         for order in orders:
             if isinstance(order.get("sport_event_id"), int):
@@ -327,6 +342,32 @@ class ProphetXSource:
         self._read_games(strikes_by_event)
         lines = {event_id: entry[1] for event_id, entry in self._lines.items()}
         return normalize_prophetx(orders, trades, self._events, lines, self._known_records(), utc_now_iso())
+
+    def _backfill_older(self, window_end: int) -> tuple[list[dict], list[dict]]:
+        """Every order (and its fills) before the polled window, read once per boot in
+        ProphetX's 60-day slices back until BACKFILL_EMPTY_WINDOWS_TO_STOP slices in a
+        row hold no order, at most BACKFILL_MAX_WINDOWS. These are settled bets the
+        store already holds after the first boot; re-reading them each boot keeps
+        their stored copy current."""
+        orders: list[dict] = []
+        trades: list[dict] = []
+        empty_in_a_row = 0
+        for _ in range(BACKFILL_MAX_WINDOWS):
+            window_start = window_end - self._history_days * 86400
+            window_orders = self._client.order_history(window_start, window_end - 1)
+            # Trades are read by match time, and a fill can match a slice after its
+            # order was placed, so every slice scanned has its trades read too.
+            trades += self._client.trades(window_start, window_end - 1)
+            if window_orders:
+                orders += window_orders
+                empty_in_a_row = 0
+            else:
+                empty_in_a_row += 1
+                if empty_in_a_row >= BACKFILL_EMPTY_WINDOWS_TO_STOP:
+                    break
+            window_end = window_start
+        log.info("prophetx: backfilled %d order(s) older than %d days", len(orders), self._history_days)
+        return orders, trades
 
     def balance(self) -> dict:
         """The balances.py reading off GET /v4/mm/get_balance: `balance` is the

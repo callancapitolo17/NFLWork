@@ -16,7 +16,12 @@ was not reachable from the cloud container, so nothing here is a live capture):
     Every login opens a SESSION, and a key may hold only 20 at once
     (`session_num_exceed`, 403), freed only as they expire, so logging in
     every 10 minutes would lock the key out within hours.
-  * Rate limit 50 requests per second (`rate_limit_reached`, 429).
+  * Rate limit: the docs say 50 requests/s, but the live API answers 429
+    "please send only 1 requests/second" (2026-11-03), per KEY, so the source's
+    poll and Place share one budget. Every send on the client is spaced
+    MIN_SEND_INTERVAL_SEC apart; a read that still gets a 429 waits and is
+    sent once more (never an order: a 429 order was not taken, but the click
+    is the one decision to send it).
   * ProphetX's CloudFront refuses some IPs outright: a 403 HTML page ("Request
     blocked") before the API. This VM's IP got one from the old MLB maker's
     SGP scraping (2026-09); retrying once a minute keeps such a block alive,
@@ -53,6 +58,7 @@ DEFAULT_BASE_URL = "https://cash.api.prophetx.co/partner"
 REQUEST_TIMEOUT_SEC = 15
 LOGIN_PATH = "/auth/login"
 REFRESH_PATH = "/auth/refresh"
+NOT_FOUND_ERROR = "data_not_found"
 SPORT_EVENTS_PATH = "/mm/get_sport_events"
 MARKETS_PATH = "/v4/mm/get_markets"
 STRIKES_PATH = "/v4/mm/get_strikes"
@@ -69,6 +75,10 @@ ACCESS_TOKEN_MARGIN_SEC = 60
 # a bad key) nothing is sent for this long, doubling per refusal up to the max.
 BLOCKED_BACKOFF_START_SEC = 3600.0
 BLOCKED_BACKOFF_MAX_SEC = 86400.0
+# ProphetX takes 1 request per second per key; a little over that leaves room for clock drift.
+MIN_SEND_INTERVAL_SEC = 1.1
+# A read that still gets a 429 is sent once more after this long.
+RATE_LIMITED_WAIT_SEC = 2.0
 # get_strikes takes at most this many ids per read.
 MAX_STRIKES_PER_READ = 20
 ORDER_STRATEGY_FILL_OR_KILL = "fillOrKill"
@@ -152,7 +162,9 @@ class ProphetXClient:
     Place click share one client and one session token."""
 
     def __init__(self, access_key: str, secret_key: str, base_url: str = DEFAULT_BASE_URL,
-                 transport: Transport | None = None, clock: Callable[[], float] = time.time):
+                 transport: Transport | None = None, clock: Callable[[], float] = time.time,
+                 min_send_interval_sec: float = MIN_SEND_INTERVAL_SEC,
+                 monotonic: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep):
         if not access_key or not secret_key:
             raise ProphetXError("a ProphetX access key and secret key are both needed")
         self.access_key = access_key
@@ -164,6 +176,11 @@ class ProphetXClient:
         self._token_good_until = 0.0
         self._refresh_token: str | None = None
         self._token_lock = threading.Lock()
+        self._min_send_interval_sec = min_send_interval_sec
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self._send_lock = threading.Lock()
+        self._last_send_at = -math.inf
         self._blocked_until = 0.0
         self._blocked_reason = ""
         self._blocked_by_server = False
@@ -198,10 +215,16 @@ class ProphetXClient:
 
     def _send(self, method: str, path: str, headers: dict, body: dict | None) -> tuple[int, object]:
         raw = json.dumps(body).encode() if body is not None else None
-        try:
-            status, content = self._transport(method, f"{self.base_url}{path}", headers, raw)
-        except requests.RequestException as error:
-            raise OSError(str(error)) from error
+        with self._send_lock:
+            # One key, one budget: the poll thread and a Place click take turns.
+            wait = self._last_send_at + self._min_send_interval_sec - self._monotonic()
+            if wait > 0:
+                self._sleep(wait)
+            self._last_send_at = self._monotonic()
+            try:
+                status, content = self._transport(method, f"{self.base_url}{path}", headers, raw)
+            except requests.RequestException as error:
+                raise OSError(str(error)) from error
         reply = _parse(content)
         if is_cdn_block(status, reply):
             self._block(f"ProphetX's CloudFront refused this server (HTTP 403 on {path})", server_refused=True)
@@ -257,6 +280,10 @@ class ProphetXClient:
             headers = {"Authorization": f"Bearer {self._bearer(force_login=attempt > 0)}",
                        "Accept": "application/json", "Content-Type": "application/json"}
             status, reply = self._send(method, f"{path}{query}", headers, body)
+            if status == 429 and method == "GET":
+                log.warning("prophetx: 429 on GET %s; sending once more after %.1f s", path, RATE_LIMITED_WAIT_SEC)
+                self._sleep(RATE_LIMITED_WAIT_SEC)
+                status, reply = self._send(method, f"{path}{query}", headers, body)
             if status != 401:
                 self._got_through()
                 return status, reply
@@ -275,7 +302,14 @@ class ProphetXClient:
         """GET /mm/get_sport_events: the listed (not ended) games, all of them
         or the ones named. ProphetX drops a game from this list once it ends."""
         params = {"event_ids": ",".join(str(event_id) for event_id in event_ids)} if event_ids else None
-        data = self.get_data(SPORT_EVENTS_PATH, params)
+        status, reply = self.request("GET", SPORT_EVENTS_PATH, params)
+        if status == 404 and isinstance(reply, dict) and reply.get("error") == NOT_FOUND_ERROR:
+            # ProphetX answers 404 data_not_found when none of the named games is listed
+            # (seen live 2026-11-03 on ended games), not an empty list.
+            return []
+        if status != 200:
+            raise ProphetXError(f"GET {SPORT_EVENTS_PATH}: HTTP {status} {str(reply)[:200]}")
+        data = data_of(reply, f"GET {SPORT_EVENTS_PATH}")
         events = data.get("sport_events") if isinstance(data, dict) else None
         if not isinstance(events, list):
             raise ProphetXError(f"get_sport_events: no sport_events list in {str(data)[:200]}")
