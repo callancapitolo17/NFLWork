@@ -288,6 +288,8 @@ from unabated_ticket.bets_service.polymarket_place import (RUNNER_POLYMARKET_QUO
 from unabated_ticket.bets_service.prophetx_client import ProphetXBlocked, ProphetXClient, ProphetXError
 from unabated_ticket.bets_service.prophetx_place import (RUNNER_PROPHETX_QUOTE_PATH, RUNNER_PROPHETX_QUOTE_TIMEOUT_SEC,
                                                          ManualProphetXDesk, validate_prophetx_place_request)
+from unabated_ticket.bets_service.prophetx_place import \
+    settle_unconfirmed_place_orders as settle_prophetx_place_orders
 from unabated_ticket.bets_service.novig_place import (NOVIG_PLACE_READ_SOURCES, RUNNER_NOVIG_QUOTE_PATH,
                                                       RUNNER_NOVIG_QUOTE_TIMEOUT_SEC, ManualNovigDesk,
                                                       validate_novig_place_request)
@@ -2309,7 +2311,10 @@ def main() -> None:
                                           subaccounts=kalshi_subaccounts_read(config.KALSHI_TAKER_SUBACCOUNT))]
     for venue, factory in OPTIONAL_SOURCE_FACTORIES:
         # ProphetX drops ended games from its lists, so its source reuses the stored records' game fields.
-        optional = factory(lambda: store.load_records_of_venue("prophetx")) if venue == "prophetx" else factory()
+        # Its order history also settles Place's unconfirmed ProphetX orders.
+        optional = (factory(lambda: store.load_records_of_venue("prophetx"),
+                            lambda orders, trades: settle_prophetx_place_orders(store, orders, trades, _now()))
+                    if venue == "prophetx" else factory())
         if optional is not None:
             sources.append(optional)
     taker_store = open_taker_store(config.TAKER_DB_PATH)

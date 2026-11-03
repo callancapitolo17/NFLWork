@@ -3548,9 +3548,15 @@ does not read fails closed with the reason.
   Ticket's, the other side of the line held, a `prophetx` read failing or over
   5 min old, an earlier Place on the game the stake has not seen, or a repeat
   click. Then ONE `fillOrKill` buy at that price for the stake in dollars,
-  `external_id` = row `xman-<clickId>` inserted before the send; read until
-  nothing rests (ProphetX cancels a fill-or-kill's remainder about 2 s after
-  its last fill), one cancel if it still rests after 8 s. **Fee:** ProphetX
+  `external_id` = row `xman-<clickId>` inserted before the send, never
+  cancelled (ProphetX kills a fill-or-kill's remainder itself about 2 s after
+  its last fill); read for up to 8 s. One not read finished by then replies
+  "still matching" and stays `unknown` until the next `prophetx` poll, which
+  runs right after the click: the account's order history is the record, and
+  each poll settles every `unknown` ProphetX Place row (by order id, else
+  `external_id`) once ProphetX shows it finished, at its fills plus fees
+  (2026-11-03: two full fills read "inactive, money open" for all 8 s and were
+  reported as resting). **Fee:** ProphetX
   sets it per account and publishes no rate, so the price check uses
   Unabated's number as is (Cal, 2026-10-31); each fill's `fee` is stored.
 
