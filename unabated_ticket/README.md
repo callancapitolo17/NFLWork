@@ -3502,11 +3502,25 @@ capture**: the first poll and the first click verify them, and anything that
 does not read fails closed with the reason.
 
 - **Session** (`prophetx_client.py`): `POST /auth/login {access_key,
-  secret_key}` gives a 10-minute bearer token; the client logs in again a
-  minute before it runs out, and once more on a 401. The source and Place share
-  the client and its token.
+  secret_key}` gives a 10-minute bearer token and a refresh token; a minute
+  before the bearer runs out (and on a 401) the client calls `POST
+  /auth/refresh`, logging in afresh only when that is refused. Every login is a
+  session and a key holds at most 20 at once (`session_num_exceed`, 403),
+  freed only as they expire, so re-logging in every 10 minutes would lock the
+  key out within hours. Rate limit: 50 requests/s (`rate_limit_reached`, 429).
+  The source and Place share the client and its token.
+- **Refusals back off** (2026-11-03): a CloudFront 403 page ("Request blocked",
+  not the API's JSON) or a refused login stops EVERY call on the client for an
+  hour, doubling to a day, until one gets through; meanwhile the source's poll
+  and Place fail at once with the time it retries. The VM's old IP was
+  CloudFront-blocked this way: the old MLB maker on it scraped
+  `www.prophetx.co` 6k-42k times a day (see `kalshi_mlb_mm/README.md`
+  `SGP_BOOKS`), and the first deploy's once-a-minute login retries kept the
+  refusal going. A Place desk still opens while the server is refused (the
+  key is fine) and refuses each click with the block; a refused login at
+  startup keeps Place off.
 - **Bets** (`sources/prophetx.py`): order history and fills (`get_order_history`,
-  `get_trades`) back `min(31, 60)` days; each game's sport event and markets
+  `get_trades`) back 60 days (ProphetX's window); each game's sport event and markets
   once (`prophetx_markets.py` reads a strike as a board line: the market's
   `type`, the period off its name, the side by the offer's competitor and its
   home/away `side`, the number off the offer's signed `display_strike`; a

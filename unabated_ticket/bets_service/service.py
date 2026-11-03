@@ -285,7 +285,7 @@ from unabated_ticket.bets_service.polymarket_orders import PolymarketError, Poly
 from unabated_ticket.bets_service.polymarket_place import (RUNNER_POLYMARKET_QUOTE_PATH,
                                                            RUNNER_POLYMARKET_QUOTE_TIMEOUT_SEC,
                                                            ManualPolymarketDesk, validate_polymarket_place_request)
-from unabated_ticket.bets_service.prophetx_client import ProphetXClient, ProphetXError
+from unabated_ticket.bets_service.prophetx_client import ProphetXBlocked, ProphetXClient, ProphetXError
 from unabated_ticket.bets_service.prophetx_place import (RUNNER_PROPHETX_QUOTE_PATH, RUNNER_PROPHETX_QUOTE_TIMEOUT_SEC,
                                                          ManualProphetXDesk, validate_prophetx_place_request)
 from unabated_ticket.bets_service.novig_place import (NOVIG_PLACE_READ_SOURCES, RUNNER_NOVIG_QUOTE_PATH,
@@ -2173,6 +2173,15 @@ def open_prophetx_place_desk(store: BetsStore, sources: list[Source]) -> tuple[M
     client: ProphetXClient = source.client
     try:
         status, reply = client.balance()
+    except ProphetXBlocked as error:
+        if not error.server_refused:
+            reason = f"the PROPHETX_* key pair could not be used: {error}"
+            log.error("prophetx place: %s, the ProphetX Place button is off", reason)
+            return None, reason
+        # A server-level refusal says nothing about the key, and lifts on its own:
+        # the desk opens, and each click refuses with the block until it does.
+        log.warning("prophetx place: on, but ProphetX is refusing this server for now: %s", error)
+        return _prophetx_desk(client, store), ""
     except (OSError, ProphetXError) as error:
         reason = f"the PROPHETX_* key pair could not be used: {error}"
         log.error("prophetx place: %s, the ProphetX Place button is off", reason)
@@ -2182,9 +2191,13 @@ def open_prophetx_place_desk(store: BetsStore, sources: list[Source]) -> tuple[M
         log.error("prophetx place: %s, the ProphetX Place button is off", reason)
         return None, reason
     log.info("prophetx place: on, trading with access key %s on the main account", client.access_key[:8])
+    return _prophetx_desk(client, store), ""
+
+
+def _prophetx_desk(client: ProphetXClient, store: BetsStore) -> ManualProphetXDesk:
     return ManualProphetXDesk(client, store,
                               lambda line: read_runner_quote(config.RUNNER_URL, line, RUNNER_PROPHETX_QUOTE_PATH,
-                                                             RUNNER_PROPHETX_QUOTE_TIMEOUT_SEC)), ""
+                                                             RUNNER_PROPHETX_QUOTE_TIMEOUT_SEC))
 
 
 def open_taker_store(db_path: Path) -> TakerStore | None:
