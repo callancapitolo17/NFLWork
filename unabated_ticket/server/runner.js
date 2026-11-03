@@ -2027,8 +2027,8 @@ function createHttpServer(runner, { host }) {
       if (path === "/kalshi_quote.json") return sendJson(response, 200, await runner.kalshiQuote(url.searchParams));
       if (path === "/novig_quote.json") return sendJson(response, 200, await runner.novigQuote(url.searchParams));
       if (path === "/polymarket_quote.json") return sendJson(response, 200, await runner.polymarketQuote(url.searchParams));
-      if (path === "/prophetx_quote.json") return sendJson(response, 200, runner.prophetxQuote(url.searchParams));
-      if (path === "/bfa_quote.json") return sendJson(response, 200, runner.bfaQuote(url.searchParams));
+      if (path === "/prophetx_quote.json") return sendJson(response, 200, await runner.prophetxQuote(url.searchParams));
+      if (path === "/bfa_quote.json") return sendJson(response, 200, await runner.bfaQuote(url.searchParams));
       if (path === "/health") return sendJson(response, 200, await runner.health());
     } catch (error) {
       if (error.status) return sendJson(response, error.status, { error: error.message });

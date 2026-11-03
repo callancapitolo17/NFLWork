@@ -1784,6 +1784,9 @@ test("board thread: the HTTP routes answer exactly what the runner builds, throu
     const badQuote = await get("/kalshi_quote.json?eventId=x");
     assert.deepEqual([badQuote.status, badQuote.body.error], [400, 'eventId must be a whole number, got "x"']);
     assert.equal((await get("/novig_quote.json?eventId=1&periodTypeId=1&betTypeId=2&sideIndex=0&points=99")).body.reason, "no_line");
+    // The board client answers a promise: a route that forgot to await it served "{}" (BFA Place, 2026-11-03).
+    assert.equal((await get("/prophetx_quote.json?eventId=1&periodTypeId=1&betTypeId=2&sideIndex=0&points=99")).body.reason, "no_line");
+    assert.equal((await get("/bfa_quote.json?eventId=1&periodTypeId=1&betTypeId=2&sideIndex=0&points=99")).body.reason, "no_line");
   } finally {
     await new Promise((resolve) => server.close(resolve));
     client.stop();
