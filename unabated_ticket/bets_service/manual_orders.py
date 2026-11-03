@@ -187,7 +187,24 @@ def read_runner_quote(runner_url: str, request: dict, quote_path: str = RUNNER_Q
     query = {key: request[key] for key in ("eventId", "periodTypeId", "betTypeId", "sideIndex")}
     if request["points"] is not None:
         query["points"] = f"{request['points']:g}"
-    url = f"{runner_url.rstrip('/')}{quote_path}?{urlencode(query)}"
+    return _read_runner_json(runner_url, quote_path, query, timeout_sec)
+
+
+RUNNER_TEAM_KEYS_PATH = "/team_keys.json"
+
+
+def read_runner_team_keys(runner_url: str, venue: str, league: str, away_team: str, home_team: str,
+                          timeout_sec: float = RUNNER_TIMEOUT_SEC) -> dict:
+    """GET <runner>/team_keys.json: a venue's two team names as Unabated team
+    keys ("<league>:<team id>", null when nothing resolves the name), through
+    the runner's team index and crosswalk, the resolver bet matching uses.
+    {ok: True, awayKey, homeKey}, or {ok: False, reason: 'runner', detail}."""
+    query = {"venue": venue, "league": league, "away": away_team, "home": home_team}
+    return _read_runner_json(runner_url, RUNNER_TEAM_KEYS_PATH, query, timeout_sec)
+
+
+def _read_runner_json(runner_url: str, path: str, query: dict, timeout_sec: float) -> dict:
+    url = f"{runner_url.rstrip('/')}{path}?{urlencode(query)}"
     try:
         with _RUNNER_OPENER.open(url, timeout=timeout_sec) as response:
             answer = json.loads(response.read())

@@ -10,8 +10,8 @@ import pytest
 
 from unabated_ticket.bets_service import prophetx_markets
 from unabated_ticket.bets_service.prophetx_client import ProphetXBlocked, ProphetXClient, ProphetXError, fill_or_kill_body
-from unabated_ticket.bets_service.prophetx_place import (ManualProphetXDesk, names_agree,
-                                                         settle_unconfirmed_place_orders,
+from unabated_ticket.bets_service.prophetx_place import (ManualProphetXDesk, settle_unconfirmed_place_orders,
+                                                         teams_mismatch,
                                                          validate_prophetx_place_request)
 from unabated_ticket.bets_service.sources.prophetx import ProphetXSource, normalize_prophetx
 from unabated_ticket.bets_service.store import BetsStore
@@ -413,8 +413,21 @@ def store(tmp_path):
     held.close()
 
 
-def desk_with(store, client, quote=None, now=NOW):
-    return ManualProphetXDesk(client, store, lambda _line: dict(QUOTE if quote is None else quote), now=lambda: now,
+# The runner's team index as /team_keys.json resolves names: ProphetX's spelling -> Unabated key.
+TEAM_KEYS = {"Buffalo Bills": "nfl:1", "Kansas City Chiefs": "nfl:2", "Miami Dolphins": "nfl:3"}
+
+
+def team_keys_reader(keys=None):
+    keys = TEAM_KEYS if keys is None else keys
+
+    def read(league, away, home):
+        return {"ok": True, "awayKey": keys.get(away), "homeKey": keys.get(home)}
+    return read
+
+
+def desk_with(store, client, quote=None, now=NOW, team_keys=None):
+    return ManualProphetXDesk(client, store, lambda _line: dict(QUOTE if quote is None else quote),
+                              team_keys or team_keys_reader(), now=lambda: now,
                               sleep=lambda _sec: None, clock=iter(range(0, 1000)).__next__)
 
 
@@ -459,10 +472,12 @@ def test_the_same_click_is_never_sent_twice(store):
     ({"eventStart": "2026-11-01T14:00:00Z"}, {}, "has started"),
     ({}, {"events": [{**EVENT, "status": "live"}]}, "has started"),
     ({}, {"events": []}, "no longer lists"),
-    ({"line": {**LINE, "awayTeam": "Kansas City Chiefs", "homeTeam": "Buffalo Bills"}}, {}, "other way round"),
+    ({"line": {**LINE, "awayTeam": "Kansas City Chiefs", "homeTeam": "Buffalo Bills", "awayTeamId": "2", "homeTeamId": "1"}},
+     {}, "other way round"),
     ({"line": {**LINE, "points": 4.5}}, {}, "0 ProphetX strikes"),
-    ({"line": {**LINE, "betType": "total", "side": "over", "points": 47.5, "awayTeam": "Miami Dolphins"}}, {},
-     "does not read as"),
+    ({"line": {**LINE, "betType": "total", "side": "over", "points": 47.5, "awayTeam": "Miami Dolphins", "awayTeamId": "3"}},
+     {}, "does not read as"),
+    ({"line": {**LINE, "homeTeamId": None}}, {}, "names no team ids"),
     ({"lineStrikeId": "e" * 32}, {}, "is not the one"),
     ({"line": {**LINE, "betType": "moneyline", "period": "1H", "points": None}}, {}, "tied period"),
     ({"ok": False, "detail": "the board holds 0 ProphetX lines"}, {}, "the board holds 0"),
@@ -587,9 +602,39 @@ def test_a_refusal_or_no_answer_is_named(store):
     assert result["status"] == "unknown" and "did not answer" in result["message"]
 
 
-def test_team_names_agree_on_words_not_spelling():
-    assert names_agree("Kansas City Chiefs", "Chiefs") and names_agree("Miami (OH)", "Miami OH")
-    assert not names_agree("Miami Dolphins", "Miami (OH)") and not names_agree("", "Chiefs")
+def test_teams_match_by_unabated_id_not_spelling():
+    # Cal's 2026-11-03 refusal: ProphetX's "Sam Houston State" is the board's "Sam Houston St".
+    sam = {**EVENT, "competitors": [{"id": 21, "name": "Alabama", "side": "home"},
+                                    {"id": 22, "name": "Sam Houston State", "side": "away"}]}
+    line = {**LINE, "league": "cbb", "awayTeam": "Sam Houston St", "homeTeam": "Alabama", "awayTeamId": "7", "homeTeamId": "8"}
+    asked = []
+
+    def read(league, away, home):
+        asked.append((league, away, home))
+        return {"ok": True, "awayKey": "cbb:7", "homeKey": "cbb:8"}
+    assert teams_mismatch(sam, line, read) is None
+    assert asked == [("cbb", "Sam Houston State", "Alabama")]
+    assert teams_mismatch(sam, {**line, "awayTeamId": "8", "homeTeamId": "7"}, read).endswith("the other way round from the board")
+
+
+def test_without_strike_ids_a_differently_spelled_game_is_still_found(store):
+    spelled = {**EVENT, "competitors": [{"id": 11, "name": "KC Chiefs", "side": "home"},
+                                        {"id": 12, "name": "Buffalo Bills", "side": "away"}]}
+    client = ScriptedProphetX(events=[spelled])
+    keys = team_keys_reader({**TEAM_KEYS, "KC Chiefs": "nfl:2"})
+    assert desk_with(store, client, {**QUOTE, "strikeIds": []}, team_keys=keys).place(request())["status"] == "filled"
+
+
+def test_a_name_nothing_resolves_or_a_runner_that_cannot_answer_refuses(store):
+    unknown = desk_with(store, ScriptedProphetX(), team_keys=team_keys_reader({"Kansas City Chiefs": "nfl:2"})).place(request())
+    assert unknown["status"] == "refused" and "Buffalo Bills resolves to no nfl team" in unknown["message"]
+    down = desk_with(store, ScriptedProphetX(),
+                     team_keys=lambda *_names: {"ok": False, "reason": "runner", "detail": "runner timed out"}).place(request())
+    assert down["status"] == "refused" and "could not be checked" in down["message"] and "runner timed out" in down["message"]
+    found_by_teams = desk_with(store, ScriptedProphetX(), {**QUOTE, "strikeIds": []},
+                               team_keys=lambda *_names: {"ok": False, "detail": "runner timed out"}).place(request())
+    assert found_by_teams["status"] == "refused" and "runner timed out" in found_by_teams["message"]
+    assert store._con.execute("SELECT count(*) FROM manual_orders").fetchone() == (0,)
 
 
 def test_place_opens_while_the_server_is_blocked_and_off_on_a_bad_key(store):
