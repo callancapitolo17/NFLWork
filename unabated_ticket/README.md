@@ -2971,7 +2971,7 @@ subaccount. No shadow mode (Cal, 2026-10-14).
 | Rule | Value |
 |---|---|
 | Bankroll / Kelly | $5,000 at 0.25 (Cal, 2026-10-28; $2,000 from 2026-10-16), `KELLY_BANKROLL` in both `server/taker.js` and `taker_orders.py` (a test holds them equal), conditional on every open bet (the panel's sizing; bot fills reach it through the Kalshi source). What Kelly divides by, not the money at risk: the Ceiling row caps that |
-| Ceiling | open bot cost (unsettled markets) never above 40% of the Kelly bankroll, $2,000 (`MAX_OPEN_COST_FRACTION`, Cal 2026-11-02; 20% = $1,000 from 2026-10-28, a flat $500 before); contracts cut to fit, else refused. The setup still funds a new subaccount $500 once (`SETUP_FUNDING`); the subaccount must hold the ceiling or Kalshi refuses the order |
+| Ceiling | open bot cost (unsettled markets) never above 60% of the Kelly bankroll, $3,000 (`MAX_OPEN_COST_FRACTION`, Cal 2026-11-03; 40% = $2,000 from 2026-11-02, 20% = $1,000 from 2026-10-28, a flat $500 before); contracts cut to fit, else refused. The setup still funds a new subaccount $500 once (`SETUP_FUNDING`); the subaccount must hold the ceiling or Kalshi refuses the order |
 | Price | Kalshi's live ask + 7% fee no more than 0.1c worse than Unabated's shown price, and no more than 1c better (a price that ran away from Unabated's snapshot is news its fair has not caught up with) |
 | Edge | 3% to 20% at that live price (fair read off Unabated's cheaper of its two prices) |
 | Best price | no live book beats it at the number (one is enough to skip, a thin one under $30 too; ties trade); outliers and Skips trade |
@@ -3045,7 +3045,7 @@ transfer takes no idempotency id) and waits up to 5 s for Kalshi to finish it.
 A locked key's transfer can only name its own subaccount on both ends, so no
 money ever comes in from the primary account. Any doubt refuses the order as
 `pot_short` (no pot named, a pot the bot is not on, an unreadable balance, both
-pots together short, a failed or unfinished move). The $2,000 ceiling covers
+pots together short, a failed or unfinished move). The $3,000 ceiling covers
 both pots together. The key needs `write::transfer`, so the setup's key has
 scopes `read` + `write::trade` + `write::transfer`. `python -m unabated_ticket.bets_service.taker_subaccount_setup`
 (on the VM, `deploy/README.md` step 11, signed with a write-scoped key; a
