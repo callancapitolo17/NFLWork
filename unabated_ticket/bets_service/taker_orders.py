@@ -34,6 +34,12 @@ Rules, in order, for every request:
      sees the earlier fill; until then an add would be sized as if alone;
   6. ceiling: contracts are cut so that open exposure + this order's cost
      stays at or under MAX_OPEN_COST; none left -> refused, "ceiling";
+  6b. cash pot: Kalshi keeps cash per exchange shard and API orders get no
+     automatic move (football is pot 0, basketball pot 3). The market's pot
+     (the runner's exchangeIndex) must hold the order's cost; when short, the
+     bot's key moves exactly the shortfall from the subaccount's other pot in
+     BOT_SHARDS (kalshi_shards.top_up_bot_pot, Cal 2026-11-03: option A2).
+     Any doubt or a failed move -> refused, "pot_short";
   7. the order row is INSERTED (status "sending", full cost) BEFORE it is
      sent, so a crash mid-send still counts against the ceiling;
   8. one limit buy at the ask (never a market order), then a cancel of the
@@ -74,6 +80,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from unabated_ticket.bets_service.kalshi_shards import order_cost_bound, top_up_bot_pot
 from unabated_ticket.bets_service.sources.kalshi import MAX_SUBACCOUNT, PRIMARY_SUBACCOUNT, record_id_of
 from unabated_ticket.bets_service.taker_store import TakerStore
 
@@ -86,6 +93,9 @@ KELLY_BANKROLL = 5000.0
 # subaccount's idle cash is used at the same stakes; 20% from 2026-10-28, a flat $500 before).
 MAX_OPEN_COST_FRACTION = 0.40
 MAX_OPEN_COST = KELLY_BANKROLL * MAX_OPEN_COST_FRACTION
+# The Kalshi cash pots the bot's subaccount is set up on (taker_subaccount_setup provisions each):
+# 0 = football and the catch-all, 3 = basketball/baseball/tennis (Cal, 2026-11-03).
+BOT_SHARDS = (0, 3)
 # What taker_subaccount_setup moves into a new subaccount, once; a top-up is Cal's own transfer.
 SETUP_FUNDING = 500.0
 # Kalshi's fill feed can trail the match by a moment; a read this long after
@@ -387,13 +397,17 @@ def validate_order_request(body: object) -> dict | str:
     decided_at = _iso_time(body.get("decidedAt"))
     if decided_at is None:
         return f"decidedAt must be an ISO time, got {body.get('decidedAt')!r}"
+    exchange_index = body.get("exchangeIndex")
+    if exchange_index is not None and (isinstance(exchange_index, bool) or not isinstance(exchange_index, int)
+                                       or exchange_index < 0):
+        return f"exchangeIndex must be the market's Kalshi cash pot (an integer >= 0) or null, got {exchange_index!r}"
     kalshi_base_url = body.get("kalshiBaseUrl")
     if not isinstance(kalshi_base_url, str) or not kalshi_base_url.startswith("http"):
         return f"kalshiBaseUrl must be the Kalshi API the decision was priced on, got {kalshi_base_url!r}"
     return {"client_order_id": client_order_id, "ticker": body["ticker"], "row_key": body["rowKey"],
             "contract_side": body["side"], "ask_price": float(ask), "all_in_price": float(all_in), "count": count,
             "event_id": event_id, "held_ids": set(held_ids), "event_start": start, "decided_at": decided_at,
-            "kalshi_base_url": kalshi_base_url.rstrip("/")}
+            "kalshi_base_url": kalshi_base_url.rstrip("/"), "exchange_index": exchange_index}
 
 
 def _iso_time(value: object) -> datetime | None:
@@ -435,7 +449,8 @@ class TakerDesk:
 
     def __init__(self, client: KalshiOrderClient, store: TakerStore, stop_path: Path, subaccount: int,
                  now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-                 other_venue_unseen: Callable[[int, set[str]], str | None] | None = None):
+                 other_venue_unseen: Callable[[int, set[str]], str | None] | None = None,
+                 sleep: Callable[[float], None] = time.sleep):
         if isinstance(subaccount, bool) or not isinstance(subaccount, int) or not 1 <= subaccount <= MAX_SUBACCOUNT:
             raise ValueError(f"the bot trades only in a numbered subaccount 1-{MAX_SUBACCOUNT}, got {subaccount!r}")
         self._client = client
@@ -445,6 +460,7 @@ class TakerDesk:
         self._now = now
         # The Novig bot's orders on the same game (novig_taker_desk.novig_unseen_fill); None = Kalshi's alone.
         self._other_venue_unseen = other_venue_unseen
+        self._sleep = sleep
         self._lock = threading.Lock()
         self._last_refresh_at: datetime | None = None
         self._settlement_checked_at: dict[str, datetime] = {}
@@ -465,7 +481,7 @@ class TakerDesk:
 
     def place(self, request: dict) -> dict:
         """One order (validate_order_request's shape). Returns {status, ...}:
-        stopped | duplicate | unseen_fill | ceiling (nothing sent), or the
+        stopped | duplicate | unseen_fill | ceiling | pot_short (nothing sent), or the
         sent order's filled | partial | unfilled | resting | rejected | unknown."""
         with self._lock:
             if self._stop_path.exists():
@@ -488,6 +504,12 @@ class TakerDesk:
             count = min(request["count"], math.floor((headroom - FEE_ROUNDING_SLACK) / request["all_in_price"]))
             if count < 1:
                 return {"status": "ceiling", "detail": f"${headroom:.2f} of ${MAX_OPEN_COST:.0f} left"}
+            top_up = top_up_bot_pot(self._client, self._subaccount, request["exchange_index"],
+                                    order_cost_bound(count, request["all_in_price"]), BOT_SHARDS, self._sleep)
+            if top_up.refusal:
+                return {"status": "pot_short", "detail": top_up.refusal}
+            if top_up.note:
+                log.info("taker order %s %s: %s", request["client_order_id"], request["ticker"], top_up.note)
             return self._send(request, count)
 
     def _refuse_unfit(self, request: dict) -> dict | None:

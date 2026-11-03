@@ -1679,6 +1679,8 @@ function createRunner(deps) {
     if (mismatch === null) {
       // The order carries the earlier start; the desk refuses it once passed ("started").
       Object.assign(decision, startFields(decision.eventStart, await kalshiStartOf(taker.eventTickerOf(market, decision.ticker))));
+      // The market's Kalshi cash pot: the desk tops it up from the bot's other pot before ordering (null = Kalshi omits it).
+      decision.exchangeIndex = Number.isInteger(market.exchange_index) ? market.exchange_index : null;
       return true;
     }
     Object.assign(decision, { reason: "market_mismatch", detail: `${decision.ticker}: ${mismatch}` });
@@ -1692,7 +1694,7 @@ function createRunner(deps) {
       clientOrderId: taker.clientOrderIdOf(decision.ticker, decision.side, passStartedAt),
       ticker: decision.ticker, side: decision.side, ask: decision.liveAsk, allIn: decision.liveAllIn,
       count: decision.contracts, rowKey: decision.rowKey, eventId: decision.eventId, eventStart: decision.eventStart,
-      heldIds: decision.heldIds, decidedAt: decision.decidedAt, kalshiBaseUrl,
+      heldIds: decision.heldIds, decidedAt: decision.decidedAt, kalshiBaseUrl, exchangeIndex: decision.exchangeIndex ?? null,
     };
     try {
       const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/taker/order.json`, "POST", body, TAKER_ORDER_TIMEOUT_MS);

@@ -1,4 +1,4 @@
-"""Kalshi cash pots ("exchange shards") for the Ticket's Place button.
+"""Kalshi cash pots ("exchange shards") for the Ticket's Place button and the bot.
 
 Kalshi runs one matching engine per market group, and each keeps its own cash:
 an order on a basketball market can only use the basketball pot's cash, even
@@ -16,15 +16,26 @@ when short, ONE POST /portfolio/intra_exchange_instance_transfer from pot 0
 (money moves between Cal's own pots, never out of the account), then GETs of
 that transfer until Kalshi says it is complete. Needs a key with transfer
 permission. Writes no database.
+
+The bot (taker_orders.py, Cal 2026-11-03: option A2) does the same inside its
+own subaccount: before an order, a short pot is topped up by exactly the
+shortfall from the bot's other pot (top_up_bot_pot), with the bot's own key,
+which Kalshi lets move money only between that subaccount's own pots. No
+money ever comes in from the primary account.
 """
+from __future__ import annotations
+
 import logging
 import math
 import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from unabated_ticket.bets_service.taker_orders import KalshiOrderClient
+if TYPE_CHECKING:
+    # Type hints only: taker_orders imports this module for the bot's top-up.
+    from unabated_ticket.bets_service.taker_orders import KalshiOrderClient
 
 log = logging.getLogger(__name__)
 
@@ -86,15 +97,54 @@ def top_up_shard(client: KalshiOrderClient, shard: int | None, cost: float,
     shortfall_cents = math.ceil((cost - pot_cash) * 100 - 1e-9)
     if shortfall_cents <= 0:
         return TopUp()
-    return _transfer(client, shard, shortfall_cents, pot_cash, sleep, monotonic)
+    return _transfer(client, MAIN_SHARD, shard, shortfall_cents, pot_cash, sleep, monotonic)
 
 
-def _shard_cash(client: KalshiOrderClient, shard: int, sleep: Callable[[float], None]) -> float | None:
-    """Dollars available in the main account's pot `shard`, or None when Kalshi
-    does not say (logged)."""
+def top_up_bot_pot(client: KalshiOrderClient, subaccount: int, shard: int | None, cost: float,
+                   bot_shards: tuple[int, ...],
+                   sleep: Callable[[float], None] = time.sleep,
+                   monotonic: Callable[[], float] = time.monotonic) -> TopUp:
+    """Make sure the bot subaccount's pot `shard` holds `cost` dollars, moving
+    the shortfall from its other pot in `bot_shards` when it does not. Unlike
+    Place, every doubt refuses: a pot outside `bot_shards`, an unknown pot, an
+    unreadable balance, a source pot that cannot cover the whole shortfall
+    (a partial move would leave the order short anyway), or a move that fails
+    or does not complete in time."""
+    if shard is None:
+        return TopUp(refusal="Kalshi did not say which cash pot the market draws on")
+    if shard not in bot_shards:
+        return TopUp(refusal=f"the market draws on the {shard_name(shard)} pot, which the bot's subaccount "
+                             f"is not set up on (it has pots {list(bot_shards)})")
+    pot_cash = _shard_cash(client, shard, sleep, subaccount)
+    if pot_cash is None:
+        return TopUp(refusal=f"the bot's {shard_name(shard)} pot balance is unreadable")
+    shortfall_cents = math.ceil((cost - pot_cash) * 100 - 1e-9)
+    if shortfall_cents <= 0:
+        return TopUp()
+    sources = [other for other in bot_shards if other != shard]
+    if len(sources) != 1:
+        return TopUp(refusal=f"the bot's {shard_name(shard)} pot is ${shortfall_cents / 100:.2f} short and it has "
+                             f"{len(sources)} other pots to draw on, expected 1")
+    source = sources[0]
+    source_cash = _shard_cash(client, source, sleep, subaccount)
+    if source_cash is None:
+        return TopUp(refusal=f"the bot's {shard_name(source)} pot balance is unreadable")
+    if source_cash * 100 < shortfall_cents - 1e-9:
+        return TopUp(refusal=f"the bot's pots hold ${pot_cash:.2f} ({shard_name(shard)}) and ${source_cash:.2f} "
+                             f"({shard_name(source)}), short of the ${cost:.2f} order")
+    return _transfer(client, source, shard, shortfall_cents, pot_cash, sleep, monotonic, subaccount)
+
+
+def _shard_cash(client: KalshiOrderClient, shard: int, sleep: Callable[[float], None],
+                subaccount: int | None = None) -> float | None:
+    """Dollars available in pot `shard` of the main account (or of `subaccount`),
+    or None when Kalshi does not say (logged)."""
+    path = f"{BALANCE_PATH}?exchange_index={shard}"
+    if subaccount is not None:
+        path += f"&subaccount={subaccount}"
     for attempt in range(2):
         try:
-            status, reply = client.request("GET", f"{BALANCE_PATH}?exchange_index={shard}")
+            status, reply = client.request("GET", path)
         except OSError as error:
             log.warning("kalshi pots: balance of pot %d got no answer: %s", shard, error)
             return None
@@ -110,28 +160,44 @@ def _shard_cash(client: KalshiOrderClient, shard: int, sleep: Callable[[float], 
     return None
 
 
-def _transfer(client: KalshiOrderClient, shard: int, shortfall_cents: int, pot_cash: float,
-              sleep: Callable[[float], None], monotonic: Callable[[], float]) -> TopUp:
+def _transfer(client: KalshiOrderClient, source: int, shard: int, shortfall_cents: int, pot_cash: float,
+              sleep: Callable[[float], None], monotonic: Callable[[], float], subaccount: int | None = None) -> TopUp:
+    """ONE transfer of `shortfall_cents` from pot `source` to pot `shard`, then
+    a wait for Kalshi to finish it. Never re-sent: a subaccount's transfer
+    takes no client_transfer_id (Kalshi rejects it there), so a resend could
+    move the money twice."""
     name = shard_name(shard)
     amount = shortfall_cents / 100
     body = {"source": "event_contract", "destination": "event_contract",
-            "source_exchange_shard": MAIN_SHARD, "destination_exchange_shard": shard,
-            "amount": shortfall_cents * (CENTICENTS_PER_DOLLAR // 100), "client_transfer_id": str(uuid.uuid4())}
+            "source_exchange_shard": source, "destination_exchange_shard": shard,
+            "amount": shortfall_cents * (CENTICENTS_PER_DOLLAR // 100)}
+    if subaccount is None:
+        body["client_transfer_id"] = str(uuid.uuid4())
+    else:
+        # A subaccount-locked key must name its own subaccount on both ends.
+        body["source_subaccount"] = subaccount
+        body["destination_subaccount"] = subaccount
+    whose = "" if subaccount is None else f"subaccount {subaccount} "
     try:
         status, reply = client.request("POST", TRANSFER_PATH, body)
     except OSError as error:
-        log.error("kalshi pots: top-up of $%.2f to pot %d got no answer: %s", amount, shard, error)
+        log.error("kalshi pots: %stop-up of $%.2f to pot %d got no answer: %s", whose, amount, shard, error)
         return TopUp(refusal=f"moving ${amount:.2f} into the {name} pot got no answer from Kalshi; "
                              f"check the pot before placing again.")
     transfer_id = reply.get("transfer_id") if isinstance(reply, dict) else None
     if status != 200 or not isinstance(transfer_id, str):
-        log.warning("kalshi pots: top-up of $%.2f to pot %d refused: HTTP %s %s", amount, shard, status, str(reply)[:300])
+        log.warning("kalshi pots: %stop-up of $%.2f to pot %d refused: HTTP %s %s", whose, amount, shard, status,
+                    str(reply)[:300])
         if _error_code(reply).startswith(INSUFFICIENT_SCOPE_CODE_PREFIX):
+            if subaccount is not None:
+                return TopUp(refusal=f"the {name} pot has ${pot_cash:.2f} and the bot's key may not move money "
+                                     f"between its pots: re-run taker_subaccount_setup for a key with transfer permission.")
             return TopUp(refusal=f"the {name} pot has ${pot_cash:.2f} and the Place key may not move money between "
                                  f"pots: make a Place key with transfer permission (deploy/README.md step 12).")
-        return TopUp(refusal=f"the {name} pot has ${pot_cash:.2f} and moving ${amount:.2f} into it from the main pot "
-                             f"failed (HTTP {status}{': ' + _error_text(reply) if _error_text(reply) else ''}).")
-    log.info("kalshi pots: moving $%.2f from pot 0 to pot %d (transfer %s)", amount, shard, transfer_id)
+        return TopUp(refusal=f"the {name} pot has ${pot_cash:.2f} and moving ${amount:.2f} into it from the "
+                             f"{shard_name(source)} pot failed "
+                             f"(HTTP {status}{': ' + _error_text(reply) if _error_text(reply) else ''}).")
+    log.info("kalshi pots: %smoving $%.2f from pot %d to pot %d (transfer %s)", whose, amount, source, shard, transfer_id)
     deadline = monotonic() + TRANSFER_WAIT_SEC
     while True:
         if _transfer_complete(client, transfer_id):

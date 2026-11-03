@@ -3027,14 +3027,34 @@ flag).
 **Its own subaccount (2026-10-16).** Kalshi keeps a separate balance and
 positions per subaccount (0 = Cal's primary, 1-63 numbered; API only, not in
 Kalshi's app or website yet), and an API key can be locked to one: it reads
-and trades only there and cannot move money or make subaccounts. The bot
+and trades only there and cannot make subaccounts or move money out of it. The bot
 trades only from `KALSHI_TAKER_SUBACCOUNT` on a key locked to it, so the money
 in that subaccount is all it can lose; topping it up or taking money back is
-a transfer Cal makes. `python -m unabated_ticket.bets_service.taker_subaccount_setup`
+a transfer Cal makes.
+
+**Its cash pots (2026-11-03, Cal: option A2).** Kalshi keeps cash per exchange
+shard ("pot": 0 = football and the catch-all, 3 = basketball/baseball/tennis),
+per subaccount, and API orders get no automatic move between pots: until this,
+every bot basketball order was refused `PERMISSION_DENIED_FOR_SUBTRADER`. The
+subaccount is set up on both pots (`taker_orders.BOT_SHARDS`), and before each
+order the desk reads the market's pot (the runner's `exchangeIndex`, off the
+market read it makes anyway) in the bot's subaccount; when short, the bot's
+own key moves exactly the shortfall from the subaccount's other pot
+(`kalshi_shards.top_up_bot_pot`, ONE transfer, never re-sent: a subaccount
+transfer takes no idempotency id) and waits up to 5 s for Kalshi to finish it.
+A locked key's transfer can only name its own subaccount on both ends, so no
+money ever comes in from the primary account. Any doubt refuses the order as
+`pot_short` (no pot named, a pot the bot is not on, an unreadable balance, both
+pots together short, a failed or unfinished move). The $2,000 ceiling covers
+both pots together. The key needs `write::transfer`, so the setup's key has
+scopes `read` + `write::trade` + `write::transfer`. `python -m unabated_ticket.bets_service.taker_subaccount_setup`
 (on the VM, `deploy/README.md` step 11, signed with a write-scoped key; a
 read-only one stops before anything changes at Kalshi) puts the stop file in place first,
-makes the subaccount, moves $500 into it once (and checks it landed), mints
-the locked key (scopes `read` + `write::trade`) straight into the key file,
+makes the subaccount, sets it up on each pot in `BOT_SHARDS` (POST
+/portfolio/subaccounts with `exchange_index`; a reply naming another subaccount
+number stops the run before any key is made), moves $500 into it once (and
+checks it landed), mints the locked key (scopes `read` + `write::trade` +
+`write::transfer`) straight into the key file,
 never printing it, then proves the lock two ways before it keeps the file:
 Kalshi's own key listing must show the key on that subaccount with exactly
 those scopes, and the key must read the subaccount's balance and be refused
