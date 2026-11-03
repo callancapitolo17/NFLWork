@@ -2,7 +2,10 @@
 
 The bot trades only from a Kalshi subaccount holding its money, on a key
 locked to that subaccount: the money in it is all the bot can lose, and the
-key cannot move money or touch Cal's primary account. Kalshi's website and app
+key cannot touch Cal's primary account. Since 2026-11-03 (Cal, option A2) the
+key may also move money between the subaccount's own cash pots (Kalshi keeps
+cash per exchange shard: 0 football, 3 basketball), which is all a locked key
+can transfer; the desk tops up a short pot before an order. Kalshi's website and app
 cannot make subaccounts yet; this does, through the API.
 
 Run on the VM inside the bets container (it reads the same config as the
@@ -25,24 +28,31 @@ changes at Kalshi. Steps, each safe to re-run:
      for once (POST /account/api_usage_level/upgrade, granted when one of the
      account's last 100 orders came by API) and the create retried. A refusal
      for scope (a read-only key) stops instead, saying so;
+  1b. its cash pots: the subaccount is set up on every pot in
+     taker_orders.BOT_SHARDS (POST /portfolio/subaccounts with exchange_index
+     for a pot Kalshi lists no balance row for). Kalshi's docs do not say
+     whether that adds the pot to the same subaccount number; a reply naming
+     another number stops the run before any key is made;
   2. the money: SETUP_FUNDING ($500) moved from the primary account, only while
      the subaccount holds $0, and checked to have landed (re-read for up to
      FUNDING_LAND_WAIT_SEC: Kalshi's balances lag a transfer by seconds). The
      transfer id is fixed per subaccount, so the setup funds a subaccount
      once at most; a later top-up is Cal's own transfer;
   3. the bot's key: POST /api_keys/generate locked to the subaccount, scopes
-     read + write::trade (no transfer). Its private key is written to
+     read + write::trade + write::transfer (a locked key's transfer reaches
+     only its own subaccount's pots). A key minted before 2026-11-03 lacks
+     the transfer scope, so a re-run replaces it. Its private key is written to
      KALSHI_TAKER_PRIVATE_KEY_PATH at mode 0600, replacing the file there,
      and is never printed. Skipped when KALSHI_TAKER_SUBACCOUNT already names
      this subaccount and the configured key passes step 4;
   4. two checks of the lock: Kalshi's own listing of the key (GET /api_keys on
-     the main key: `subaccount` = N, scopes exactly read + write::trade, no
+     the main key: `subaccount` = N, scopes exactly BOT_KEY_SCOPES, no
      FCM binding), then the check the desk runs before it arms
      (taker_orders.key_lock_problem) on the new key itself. A key that fails
      either is deleted from disk and named for revoking.
 It prints the key id and the .env lines to set; it edits no .env.
 
-Side effects: on Kalshi, a subaccount, one transfer of money and one API key;
+Side effects: on Kalshi, a subaccount (on each bot pot), one transfer of money and one API key;
 on disk, the bot's key file and the stop file. Reads and writes no DuckDB.
 """
 import argparse
@@ -57,7 +67,8 @@ from typing import TextIO
 
 from unabated_ticket.bets_service import config
 from unabated_ticket.bets_service.sources.kalshi import PRIMARY_SUBACCOUNT
-from unabated_ticket.bets_service.taker_orders import SETUP_FUNDING, KalshiOrderClient, key_lock_problem
+from unabated_ticket.bets_service.kalshi_shards import shard_name
+from unabated_ticket.bets_service.taker_orders import BOT_SHARDS, SETUP_FUNDING, KalshiOrderClient, key_lock_problem
 
 SUBACCOUNTS_PATH = "/portfolio/subaccounts"
 SUBACCOUNT_BALANCES_PATH = "/portfolio/subaccounts/balances"
@@ -65,8 +76,9 @@ TRANSFER_PATH = "/portfolio/subaccounts/transfer"
 UPGRADE_PATH = "/account/api_usage_level/upgrade"
 GENERATE_KEY_PATH = "/api_keys/generate"
 API_KEYS_PATH = "/api_keys"
-# Read and trade in its own subaccount; never write::transfer.
-BOT_KEY_SCOPES = ("read", "write::trade")
+# Read and trade in its own subaccount, and move money between that subaccount's own pots
+# (Kalshi: a subaccount-restricted key's transfer must name its own subaccount on both ends).
+BOT_KEY_SCOPES = ("read", "write::trade", "write::transfer")
 # The setup's transfer id is uuid5 of this and the subaccount: one funding per subaccount, ever.
 FUNDING_ID_NAMESPACE = uuid.UUID("6f1d2b7e-3c4a-4e59-9d0b-6a2f5c8e1b37")
 # Kalshi reports dollars to the cent; a landed transfer may show a hair under.
@@ -135,21 +147,30 @@ def is_scope_refusal(status: int, reply: object) -> bool:
 
 def subaccount_balances(client: KalshiOrderClient) -> dict[int, float]:
     """Dollars per subaccount number (summed over exchange shards), the primary included."""
+    balances: dict[int, float] = {}
+    for (number, _shard), dollars in subaccount_pot_balances(client).items():
+        balances[number] = balances.get(number, 0.0) + dollars
+    return balances
+
+
+def subaccount_pot_balances(client: KalshiOrderClient) -> dict[tuple[int, int], float]:
+    """Dollars per (subaccount number, exchange shard) Kalshi lists, the primary included."""
     status, reply = _signed(client, "GET", SUBACCOUNT_BALANCES_PATH)
     rows = reply.get("subaccount_balances") if isinstance(reply, dict) else None
     if status != 200 or not isinstance(rows, list):
         raise SetupError(f"GET {SUBACCOUNT_BALANCES_PATH}: expected 200 with subaccount_balances, "
                          f"got HTTP {status} {str(reply)[:300]}")
-    balances: dict[int, float] = {}
+    balances: dict[tuple[int, int], float] = {}
     for row in rows:
         number = row.get("subaccount_number") if isinstance(row, dict) else None
-        if isinstance(number, bool) or not isinstance(number, int):
+        shard = row.get("exchange_index") if isinstance(row, dict) else None
+        if isinstance(number, bool) or not isinstance(number, int) or isinstance(shard, bool) or not isinstance(shard, int):
             raise SetupError(f"unreadable subaccount balance row {row!r}")
         try:
             dollars = float(row.get("balance"))
         except (TypeError, ValueError) as error:
             raise SetupError(f"unreadable balance on subaccount {number}: {row.get('balance')!r}") from error
-        balances[number] = balances.get(number, 0.0) + dollars
+        balances[(number, shard)] = balances.get((number, shard), 0.0) + dollars
     return balances
 
 
@@ -188,6 +209,28 @@ def choose_subaccount(client: KalshiOrderClient, wanted: int | None, out: TextIO
         out.write(f"Using the account's subaccount {numbered[0]}.\n")
         return numbered[0]
     return create_subaccount(client, out)
+
+
+# ---- step 1b: the subaccount's cash pots ---------------------------------------------
+
+def ensure_pots(client: KalshiOrderClient, subaccount: int, out: TextIO) -> None:
+    """The subaccount set up on every pot in BOT_SHARDS. A pot Kalshi lists no
+    balance row for is asked for (POST /portfolio/subaccounts with its
+    exchange_index); a reply naming another subaccount number stops."""
+    listed = {shard for number, shard in subaccount_pot_balances(client) if number == subaccount}
+    for shard in BOT_SHARDS:
+        if shard in listed:
+            continue
+        status, reply = _signed(client, "POST", SUBACCOUNTS_PATH, {"exchange_index": shard})
+        number = reply.get("subaccount_number") if isinstance(reply, dict) else None
+        if status != 201 or isinstance(number, bool) or not isinstance(number, int):
+            raise SetupError(f"setting subaccount {subaccount} up on the {shard_name(shard)} pot (exchange_index "
+                             f"{shard}) was refused: HTTP {status} {str(reply)[:300]}. No key was made")
+        if number != subaccount:
+            raise SetupError(f"asked to add the {shard_name(shard)} pot (exchange_index {shard}) to subaccount "
+                             f"{subaccount}, Kalshi made subaccount {number} there instead (it holds $0). "
+                             f"No key was made; the bot keeps its current key and pot")
+        out.write(f"Set subaccount {subaccount} up on the {shard_name(shard)} pot (exchange_index {shard}).\n")
 
 
 # ---- step 2: the money -------------------------------------------------------------
@@ -255,7 +298,8 @@ def mint_locked_key(client: KalshiOrderClient, subaccount: int, key_path: Path, 
             "scopes": list(BOT_KEY_SCOPES), "subaccount": subaccount}
     status, reply = _signed(client, "POST", GENERATE_KEY_PATH, body)
     if status != 201:
-        raise SetupError(f"POST {GENERATE_KEY_PATH} was refused: HTTP {status} {str(reply)[:300]}")
+        raise SetupError(f"POST {GENERATE_KEY_PATH} (scopes {list(BOT_KEY_SCOPES)}, locked to subaccount "
+                         f"{subaccount}) was refused: HTTP {status} {str(reply)[:300]}. The bot keeps its current key")
     key_id = reply.get("api_key_id") if isinstance(reply, dict) else None
     pem = reply.get("private_key") if isinstance(reply, dict) else None
     if not isinstance(key_id, str) or not key_id or not isinstance(pem, str):
@@ -336,6 +380,7 @@ def run_setup(main_client: KalshiOrderClient, make_bot_client: Callable[[str, Pa
         ensure_stopped(stop_path, out)
         ensure_key_dir_writable(key_path)
         subaccount = choose_subaccount(main_client, wanted_subaccount, out)
+        ensure_pots(main_client, subaccount, out)
         held = fund_once(main_client, subaccount, out, sleep)
         if _configured_key_stands(main_client, make_bot_client, configured_key_id, key_path, configured_subaccount,
                                   subaccount, sleep):
@@ -355,7 +400,8 @@ def run_setup(main_client: KalshiOrderClient, make_bot_client: Callable[[str, Pa
         out.write(f"STOPPED: {error}\n")
         return 1
     out.write(
-        f"\nDone. Subaccount {subaccount} holds ${held:,.2f}; key {key_id} trades only there and cannot move money.\n"
+        f"\nDone. Subaccount {subaccount} holds ${held:,.2f} on pots {list(BOT_SHARDS)}; key {key_id} trades only "
+        f"there and moves money only between those pots.\n"
         f"Set these in unabated_ticket/bets_service/.env on the host, then restart the bets service:\n"
         f"  KALSHI_TAKER_API_KEY_ID={key_id}\n"
         f"  KALSHI_TAKER_SUBACCOUNT={subaccount}\n"

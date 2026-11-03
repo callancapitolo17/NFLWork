@@ -148,16 +148,23 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
     run too, and on a VM where the bot already trades it pauses the bot. Then
     it makes subaccount 1 (asking for Kalshi's Advanced API tier if needed),
     moves $500 into it once and checks it landed (waiting up to 30 s for
-    Kalshi's balance to show it), mints a key locked to it
-    with no transfer permission, writes it to `/data/kalshi_taker.pem` (mode
-    0600, replacing the old bot key file; never printed) and proves the lock:
-    Kalshi's key listing must show it on subaccount 1 with only `read` and
-    `write::trade`, and it must read that balance and be refused the primary's.
+    Kalshi's balance to show it), sets it up on Kalshi's basketball cash pot
+    too (exchange_index 3; stops if Kalshi names another subaccount), mints a
+    key locked to it with `read`, `write::trade` and `write::transfer` (a
+    locked key moves money only between its own subaccount's pots), writes it
+    to `/data/kalshi_taker.pem` (mode 0600, replacing the old bot key file;
+    never printed) and proves the lock: Kalshi's key listing must show it on
+    subaccount 1 with exactly those scopes, and it must read that balance and
+    be refused the primary's.
     A key that fails is deleted from disk and the output names it for
     revoking. Re-running it is safe (it reuses the subaccount, transfers
     nothing while the subaccount holds money, and keeps a key that still
     passes); the one case it stops on is a subaccount back at $0 after the
-    $500 went in, which is a top-up you make yourself as a transfer. Then set
+    $500 went in, which is a top-up you make yourself as a transfer.
+    **2026-11-03 re-run (basketball):** a bot set up before then has no
+    basketball pot and a key without transfer; re-running the same command
+    adds the pot and mints the new key (the old one fails the scope check).
+    If Kalshi refuses either, the run stops and the bot keeps its key. Then set
     the two lines it prints in `~/NFLWork/unabated_ticket/bets_service/.env`
     (`KALSHI_TAKER_API_KEY_ID=<new id>`, `KALSHI_TAKER_SUBACCOUNT=1`) and:
     ```bash

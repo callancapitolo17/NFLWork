@@ -1,7 +1,7 @@
 """The taker's one-time subaccount setup (taker_subaccount_setup.py) against a
 scripted Kalshi: it puts the stop file in place, makes or reuses the
-subaccount, funds it once and checks the money landed, mints a key locked to
-it with no transfer scope, saves the private key at 0600 without ever
+subaccount, sets it up on the bot's cash pots, funds it once and checks the
+money landed, mints a key locked to it (transfer only between its own pots), saves the private key at 0600 without ever
 printing it, and proves the lock two ways (Kalshi's key listing, then the
 desk's own balance check). No network."""
 import io
@@ -15,7 +15,9 @@ from unabated_ticket.bets_service import taker_subaccount_setup as setup
 
 NOW = datetime(2026, 10, 16, 20, 0, tzinfo=timezone.utc)
 NEW_KEY_ID = "new-key-0001"
-LOCKED_RECORD = {"api_key_id": NEW_KEY_ID, "name": "bot", "scopes": ["read", "write::trade"], "subaccount": 1}
+LOCKED_RECORD = {"api_key_id": NEW_KEY_ID, "name": "bot", "scopes": ["read", "write::trade", "write::transfer"],
+                 "subaccount": 1}
+BASKETBALL_POT = 3
 
 
 def rsa_pem() -> str:
@@ -35,8 +37,13 @@ class MainKalshi:
     call. `listed` is what GET /api_keys carries (None: the minted key, locked)."""
 
     def __init__(self, balances, create=(201,), upgrade=201, transfer=200, generate=201, generated=None,
-                 listed=None, transfer_lands=True, land_after_reads=0, create_error="forbidden"):
+                 listed=None, transfer_lands=True, land_after_reads=0, create_error="forbidden",
+                 on_basketball_pot=(), pot_create=None):
         self.balances = dict(balances)
+        # Subaccounts Kalshi already lists a balance row for on the basketball pot (exchange_index 3).
+        self.on_basketball_pot = set(on_basketball_pot)
+        # (status, subaccount_number) a pot create answers; None = 201 naming the highest subaccount.
+        self.pot_create = pot_create
         self.create = list(create)
         self.upgrade = upgrade
         self.transfer = transfer
@@ -63,10 +70,18 @@ class MainKalshi:
                     self.pending = {}
             return 200, {"subaccount_balances": [
                 {"subaccount_number": number, "exchange_index": 0, "balance": f"{dollars:.4f}", "updated_ts": 1}
-                for number, dollars in self.balances.items()]}
+                for number, dollars in self.balances.items()] + [
+                {"subaccount_number": number, "exchange_index": BASKETBALL_POT, "balance": "0.0000", "updated_ts": 1}
+                for number in sorted(self.on_basketball_pot)]}
         if (method, path) == ("GET", setup.API_KEYS_PATH):
             listed = self.listed if self.listed is not None else [dict(LOCKED_RECORD, subaccount=self.minted_in())]
             return 200, {"api_keys": listed}
+        if (method, path) == ("POST", setup.SUBACCOUNTS_PATH) and body.get("exchange_index"):
+            status, number = self.pot_create or (201, max(self.balances))
+            if status != 201:
+                return status, {"error": {"code": "refused", "message": "no"}}
+            self.on_basketball_pot.add(number)
+            return 201, {"subaccount_number": number}
         if (method, path) == ("POST", setup.SUBACCOUNTS_PATH):
             status = self.create.pop(0)
             if status != 201:
@@ -134,7 +149,10 @@ def test_a_fresh_account_gets_a_subaccount_500_and_a_locked_key_saved_unprinted(
                         "amount_cents": 50000}
     [generate] = main.posts(setup.GENERATE_KEY_PATH)
     assert generate == {"name": "unabated-taker-subaccount-1-20261016", "key_type": "rsa",
-                        "scopes": ["read", "write::trade"], "subaccount": 1}
+                        "scopes": ["read", "write::trade", "write::transfer"], "subaccount": 1}
+    # The new subaccount was set up on the basketball pot too, before any money moved.
+    assert main.posts(setup.SUBACCOUNTS_PATH) == [{}, {"exchange_index": BASKETBALL_POT}]
+    assert main.on_basketball_pot == {1}
     key_file = tmp_path / "kalshi_taker.pem"
     assert key_file.read_text() == PEM
     assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
@@ -206,7 +224,8 @@ def test_the_one_existing_subaccount_is_reused_and_a_funded_one_gets_no_transfer
     main = MainKalshi({0: 2000.0, 1: 480.0})
     code, output, _made = run(main, tmp_path)
     assert code == 0, output
-    assert main.posts(setup.SUBACCOUNTS_PATH) == [] and main.posts(setup.TRANSFER_PATH) == []
+    assert main.posts(setup.SUBACCOUNTS_PATH) == [{"exchange_index": BASKETBALL_POT}]
+    assert main.posts(setup.TRANSFER_PATH) == []
     assert "already holds $480.00; no transfer" in output
 
 
@@ -274,7 +293,7 @@ def test_a_configured_key_kalshi_no_longer_lists_is_replaced(tmp_path):
     (dict(LOCKED_RECORD, subaccount=None), "with subaccount None, not 1"),
     (dict(LOCKED_RECORD, subaccount=2), "with subaccount 2, not 1"),
     (dict(LOCKED_RECORD, scopes=["read", "write"]), "with scopes ['read', 'write']"),
-    (dict(LOCKED_RECORD, scopes=["read", "write::trade", "write::transfer"]), "write::transfer"),
+    (dict(LOCKED_RECORD, scopes=["read", "write::trade"]), "with scopes ['read', 'write::trade']"),
     (dict(LOCKED_RECORD, fcm_subtrader_id="fcm-1"), "bound to an FCM subtrader"),
     (dict(LOCKED_RECORD, api_key_id="someone-else"), "listing does not carry new-key-0001"),
 ])
@@ -308,3 +327,47 @@ def test_an_unusable_private_key_is_never_written(tmp_path):
     assert code == 1 and "could not be saved" in output and "revoke new-key-0001 at kalshi.com" in output
     assert not (tmp_path / "kalshi_taker.pem").exists()
     assert "not a key" not in output
+
+
+def test_a_subaccount_already_on_both_pots_is_not_asked_again(tmp_path):
+    main = MainKalshi({0: 2000.0, 1: 480.0}, on_basketball_pot={1})
+    code, output, _made = run(main, tmp_path)
+    assert code == 0, output
+    assert main.posts(setup.SUBACCOUNTS_PATH) == []
+
+
+def test_the_live_bots_key_without_transfer_is_replaced_on_a_re_run(tmp_path):
+    # Its pre-2026-11-03 key: locked to subaccount 1, read + trade only.
+    key_file = tmp_path / "kalshi_taker.pem"
+    key_file.write_text("old pem")
+    old = dict(LOCKED_RECORD, api_key_id="key-live", scopes=["read", "write::trade"])
+    main = MainKalshi({0: 1500.0, 1: 500.0}, listed=[old, LOCKED_RECORD])
+    code, output, made = run(main, tmp_path, configured_key_id="key-live", configured_subaccount=1)
+    assert code == 0, output
+    assert main.posts(setup.SUBACCOUNTS_PATH) == [{"exchange_index": BASKETBALL_POT}]
+    assert [body["scopes"] for body in main.posts(setup.GENERATE_KEY_PATH)] == [list(setup.BOT_KEY_SCOPES)]
+    assert key_file.read_text() == PEM and made == [(NEW_KEY_ID, key_file)]  # the old key fails on its listing
+    assert "moves money only between those pots" in output
+
+
+@pytest.mark.parametrize("pot_create, words", [
+    ((201, 2), "Kalshi made subaccount 2 there instead"),
+    ((400, None), "was refused: HTTP 400"),
+])
+def test_a_pot_kalshi_will_not_add_to_the_bots_subaccount_stops_before_money_or_keys(tmp_path, pot_create, words):
+    key_file = tmp_path / "kalshi_taker.pem"
+    key_file.write_text("old pem")
+    main = MainKalshi({0: 1500.0, 1: 500.0}, pot_create=pot_create)
+    code, output, _made = run(main, tmp_path, configured_key_id="key-live", configured_subaccount=1)
+    assert code == 1 and words in output, output
+    assert main.posts(setup.TRANSFER_PATH) == [] and main.posts(setup.GENERATE_KEY_PATH) == []
+    assert key_file.read_text() == "old pem", "the bot keeps its key"
+
+
+def test_a_refused_transfer_scope_keeps_the_bots_key(tmp_path):
+    key_file = tmp_path / "kalshi_taker.pem"
+    key_file.write_text("old pem")
+    main = MainKalshi({0: 1500.0, 1: 500.0}, on_basketball_pot={1}, generate=403)
+    code, output, _made = run(main, tmp_path, configured_key_id="key-live", configured_subaccount=1)
+    assert code == 1 and "write::transfer" in output and "The bot keeps its current key" in output
+    assert key_file.read_text() == "old pem"

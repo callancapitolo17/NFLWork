@@ -983,6 +983,21 @@ test("kalshi_quote: the board's Kalshi line gives its contract, live ask, all-in
   assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 0);
 });
 
+test("taker: each order carries its market's Kalshi cash pot (exchange_index), null when Kalshi omits it", async () => {
+  const kalshi = kalshiFetch({ WSU42: { exchange_index: 3 } });
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  const orders = service.posts.filter((post) => post.route === "/taker/order.json").map((post) => post.body);
+  const byTicker = Object.fromEntries(orders.map((order) => [order.ticker, order.exchangeIndex]));
+  assert.deepEqual(byTicker, { "KXNCAAFSPREAD-26SEP19DUQWSU-WSU42": 3, [TAKER_TICKER]: null });
+  runner.stop();
+});
+
 test("kalshi_quote: carries the market's exchange_index (its cash pot), null when Kalshi omits it", async () => {
   const sharded = await quoteRunner({ WSU36: { exchange_index: 3 } });
   assert.equal((await sharded.runner.kalshiQuote(new URLSearchParams(WSU_36_LINE))).exchangeIndex, 3);

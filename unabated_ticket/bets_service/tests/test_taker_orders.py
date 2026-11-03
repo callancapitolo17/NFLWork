@@ -23,7 +23,8 @@ BOT_SUBACCOUNT = 1
 REQUEST_BODY = {"clientOrderId": "ubot-" + "a" * 32, "ticker": TICKER, "side": "yes", "ask": 0.57,
                 "allIn": 0.587157, "count": 10, "rowKey": "420942308:ms105:si1:tid717:alt-35.5",
                 "eventId": EVENT_ID, "heldIds": [], "eventStart": "2026-10-15T19:30:00.000Z",
-                "decidedAt": "2026-10-14T11:59:50.000Z", "kalshiBaseUrl": "https://kalshi.test/trade-api/v2/"}
+                "decidedAt": "2026-10-14T11:59:50.000Z", "kalshiBaseUrl": "https://kalshi.test/trade-api/v2/",
+                "exchangeIndex": 0}
 # The bot's fills are held in its own subaccount: the Kalshi source's id carries :s<N>.
 HELD_FIRST = f"kalshi:{TICKER}:yes:s{BOT_SUBACCOUNT}"
 
@@ -37,7 +38,7 @@ class ScriptedKalshi:
 
     def __init__(self, filled: float = 10, market_status: str = "active", post_status: int = 201,
                  delete_status: int = 200, resting=(), listed=(), exchange_index=None, fills_pages=None,
-                 remaining_count="0.00"):
+                 remaining_count="0.00", pot_cash=None, transfer_status="complete", transfer_reply_status=200):
         self.calls = []
         self.filled = filled
         # What the create reply says is still open; None leaves the field out (an older reply shape).
@@ -50,8 +51,31 @@ class ScriptedKalshi:
         self.resting = list(resting) if resting is not None else None
         self.listed = list(listed) if listed is not None else None
         self.exchange_index = exchange_index
+        # The bot subaccount's cash per pot (GET /portfolio/balance?exchange_index=K&subaccount=N);
+        # its reads and the pot-to-pot transfers are kept apart from `calls`, which the order tests count.
+        self.pot_cash = {0: 1000.0, 3: 0.0} if pot_cash is None else dict(pot_cash)
+        self.balance_reads = []
+        self.transfers = []
+        self.transfer_status = transfer_status
+        self.transfer_reply_status = transfer_reply_status
 
     def request(self, method, path, body=None):
+        if path.startswith("/portfolio/balance?"):
+            self.balance_reads.append(path)
+            shard = int(re.search(r"exchange_index=(\d+)", path).group(1))
+            if shard not in self.pot_cash:
+                return 403, {"error": {"code": "permission_denied"}}
+            return 200, {"balance": int(round(self.pot_cash[shard] * 100))}
+        if path == "/portfolio/intra_exchange_instance_transfer":
+            self.transfers.append(body)
+            if self.transfer_reply_status != 200:
+                return self.transfer_reply_status, {"error": {"code": "insufficient_scope", "message": "write::transfer"}}
+            cents = body["amount"] // 100
+            self.pot_cash[body["source_exchange_shard"]] -= cents / 100
+            self.pot_cash[body["destination_exchange_shard"]] += cents / 100
+            return 200, {"transfer_id": "t-1"}
+        if path.startswith("/portfolio/intra_exchange_instance_transfers/"):
+            return 200, {"transfer": {"status": self.transfer_status}}
         self.calls.append((method, path, body))
         if method == "POST":
             if self.post_status != 201:
@@ -90,7 +114,7 @@ def store(tmp_path):
 
 
 def desk_for(store, kalshi, tmp_path, clock=lambda: NOW):
-    return TakerDesk(kalshi, store, tmp_path / "taker.stop", BOT_SUBACCOUNT, now=clock)
+    return TakerDesk(kalshi, store, tmp_path / "taker.stop", BOT_SUBACCOUNT, now=clock, sleep=lambda _seconds: None)
 
 
 def request(**overrides):
@@ -726,3 +750,65 @@ def test_a_novig_bot_order_on_the_game_blocks_a_kalshi_add_until_it_is_held(stor
     assert desk.place(request())["status"] == "unseen_fill"
     assert "POST" not in kalshi.methods()
     assert desk.place(request(heldIds=["novig:nv-1:bot"]))["status"] == "filled"
+
+
+# ---- cash pots (Cal, 2026-11-03: option A2) -------------------------------------------
+
+def test_a_pot_that_covers_the_order_moves_nothing(store, tmp_path):
+    kalshi = ScriptedKalshi()
+    assert desk_for(store, kalshi, tmp_path).place(request())["status"] == "filled"
+    # The market's pot (0) is read in the bot's own subaccount; nothing moves.
+    assert kalshi.balance_reads == ["/portfolio/balance?exchange_index=0&subaccount=1"]
+    assert kalshi.transfers == []
+
+
+def test_a_short_basketball_pot_gets_exactly_the_shortfall_from_the_bots_football_pot(store, tmp_path):
+    kalshi = ScriptedKalshi(pot_cash={0: 1000.0, 3: 1.25})
+    result = desk_for(store, kalshi, tmp_path).place(request(exchangeIndex=3))
+    assert result["status"] == "filled"
+    # 10 contracts at 0.587157 all-in cost at most $5.88 (+1c fee rounding) = $5.89; the pot holds $1.25.
+    assert kalshi.transfers == [{"source": "event_contract", "destination": "event_contract",
+                                 "source_exchange_shard": 0, "destination_exchange_shard": 3, "amount": 46_400,
+                                 "source_subaccount": BOT_SUBACCOUNT, "destination_subaccount": BOT_SUBACCOUNT}]
+    assert kalshi.pot_cash == {0: pytest.approx(995.36), 3: pytest.approx(5.89)}
+    assert kalshi.methods()[0] == "POST" and kalshi.calls[0][1] == taker_orders.ORDERS_PATH
+
+
+def test_a_short_football_pot_draws_on_the_basketball_pot(store, tmp_path):
+    kalshi = ScriptedKalshi(pot_cash={0: 2.0, 3: 500.0})
+    assert desk_for(store, kalshi, tmp_path).place(request())["status"] == "filled"
+    assert [(move["source_exchange_shard"], move["destination_exchange_shard"]) for move in kalshi.transfers] == [(3, 0)]
+
+
+@pytest.mark.parametrize("pot_cash, exchange_index, words", [
+    ({0: 2.0, 3: 1.0}, 0, "short of the $5.89 order"),            # both pots together cannot cover it: nothing moves
+    ({0: 1000.0}, 3, "pot balance is unreadable"),                # the subaccount is not set up on pot 3
+    ({0: 1000.0, 3: 0.0}, 2, "is not set up on"),                 # a pot the bot does not use
+    ({0: 1000.0, 3: 0.0}, None, "did not say which cash pot"),    # Kalshi's market carried no exchange_index
+])
+def test_any_doubt_about_the_pots_refuses_before_anything_is_sent(store, tmp_path, pot_cash, exchange_index, words):
+    kalshi = ScriptedKalshi(pot_cash=pot_cash)
+    result = desk_for(store, kalshi, tmp_path).place(request(exchangeIndex=exchange_index))
+    assert result["status"] == "pot_short" and words in result["detail"], result
+    assert kalshi.transfers == [] and "POST" not in kalshi.methods()
+    assert not store.has_order(REQUEST_BODY["clientOrderId"])
+
+
+@pytest.mark.parametrize("transfer_reply_status, transfer_status, words", [
+    (403, "complete", "may not move money between its pots"),
+    (200, "pending", "has not finished moving it"),
+])
+def test_a_move_that_fails_or_does_not_finish_refuses_the_order(store, tmp_path, transfer_reply_status,
+                                                                 transfer_status, words):
+    kalshi = ScriptedKalshi(pot_cash={0: 1000.0, 3: 0.0}, transfer_reply_status=transfer_reply_status,
+                            transfer_status=transfer_status)
+    result = desk_for(store, kalshi, tmp_path).place(request(exchangeIndex=3))
+    assert result["status"] == "pot_short" and words in result["detail"], result
+    assert len(kalshi.transfers) == 1, "a move is never re-sent"
+    assert "POST" not in kalshi.methods()
+
+
+def test_exchange_index_must_be_a_pot_number_or_null():
+    assert isinstance(validate_order_request({**REQUEST_BODY, "exchangeIndex": -1}), str)
+    assert isinstance(validate_order_request({**REQUEST_BODY, "exchangeIndex": True}), str)
+    assert validate_order_request({**REQUEST_BODY, "exchangeIndex": None})["exchange_index"] is None
