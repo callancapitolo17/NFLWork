@@ -10,8 +10,18 @@ was not reachable from the cloud container, so nothing here is a live capture):
   * POST /auth/login {access_key, secret_key} -> {data: {access_token,
     access_expire_time, refresh_token, refresh_expire_time}}; every other call
     sends `Authorization: Bearer <access_token>`. An access token lasts 10
-    minutes, so the client logs in again a minute before it runs out (a fresh
-    login, never /auth/refresh, whose body the docs leave unstated).
+    minutes; a minute before it runs out the client calls POST /auth/refresh
+    {refresh_token} -> {data: {access_token, access_expire_time}}, and logs in
+    afresh only when it holds no refresh token or the refresh is refused.
+    Every login opens a SESSION, and a key may hold only 20 at once
+    (`session_num_exceed`, 403), freed only as they expire, so logging in
+    every 10 minutes would lock the key out within hours.
+  * Rate limit 50 requests per second (`rate_limit_reached`, 429).
+  * ProphetX's CloudFront refuses some IPs outright: a 403 HTML page ("Request
+    blocked") before the API. This VM's IP got one from the old MLB maker's
+    SGP scraping (2026-09); retrying once a minute keeps such a block alive,
+    so a refusal stops EVERY call on the client for BLOCKED_BACKOFF_START_SEC,
+    doubling to BLOCKED_BACKOFF_MAX_SEC, until a call gets through.
   * Prices are AMERICAN odds and must sit on ProphetX's price ladder
     (GET /v4/mm/get_price_ladder). An order's `quantity` is the stake in
     dollars ("random $1 orders" send quantity 1.0).
@@ -42,6 +52,7 @@ log = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "https://cash.api.prophetx.co/partner"
 REQUEST_TIMEOUT_SEC = 15
 LOGIN_PATH = "/auth/login"
+REFRESH_PATH = "/auth/refresh"
 SPORT_EVENTS_PATH = "/mm/get_sport_events"
 MARKETS_PATH = "/v4/mm/get_markets"
 STRIKES_PATH = "/v4/mm/get_strikes"
@@ -54,6 +65,10 @@ BALANCE_PATH = "/v4/mm/get_balance"
 # An access token lasts 10 minutes; a new login goes out this long before that.
 ACCESS_TOKEN_LIFETIME_SEC = 600
 ACCESS_TOKEN_MARGIN_SEC = 60
+# After a refusal (CloudFront block, or a refused login: a 403 session cap or
+# a bad key) nothing is sent for this long, doubling per refusal up to the max.
+BLOCKED_BACKOFF_START_SEC = 3600.0
+BLOCKED_BACKOFF_MAX_SEC = 86400.0
 # get_strikes takes at most this many ids per read.
 MAX_STRIKES_PER_READ = 20
 ORDER_STRATEGY_FILL_OR_KILL = "fillOrKill"
@@ -68,6 +83,23 @@ Transport = Callable[[str, str, dict, bytes | None], tuple[int, bytes]]
 
 class ProphetXError(RuntimeError):
     """A ProphetX answer that is not what the call expects."""
+
+
+class ProphetXBlocked(ProphetXError):
+    """ProphetX refused this server (or the key's login) and the client is
+    sending nothing until `until` (unix seconds)."""
+
+    def __init__(self, message: str, until: float, server_refused: bool):
+        super().__init__(message)
+        self.until = until
+        # True for CloudFront refusing this server (says nothing about the key);
+        # False for a refused login (the key, or its session cap).
+        self.server_refused = server_refused
+
+
+def is_cdn_block(status: int, reply: object) -> bool:
+    """A 403 that is CloudFront's HTML page, not the API's JSON error."""
+    return status == 403 and not isinstance(reply, dict)
 
 
 def requests_transport() -> Transport:
@@ -130,7 +162,37 @@ class ProphetXClient:
         self._clock = clock
         self._token: str | None = None
         self._token_good_until = 0.0
+        self._refresh_token: str | None = None
         self._token_lock = threading.Lock()
+        self._blocked_until = 0.0
+        self._blocked_reason = ""
+        self._blocked_by_server = False
+        self._next_backoff_sec = BLOCKED_BACKOFF_START_SEC
+
+    # ---- refusals --------------------------------------------------------------
+
+    @property
+    def blocked_until(self) -> float:
+        """Unix seconds until which nothing is sent (0 when not blocked)."""
+        return self._blocked_until if self._clock() < self._blocked_until else 0.0
+
+    def _raise_if_blocked(self) -> None:
+        if self._clock() < self._blocked_until:
+            raise ProphetXBlocked(f"{self._blocked_reason}; not retrying until "
+                                  f"{time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(self._blocked_until))}",
+                                  self._blocked_until, self._blocked_by_server)
+
+    def _block(self, reason: str, server_refused: bool) -> None:
+        """Stop every call for the current backoff, and double the next one."""
+        self._blocked_until = self._clock() + self._next_backoff_sec
+        self._blocked_reason = reason
+        self._blocked_by_server = server_refused
+        log.error("prophetx: %s; sending nothing for %.0f min", reason, self._next_backoff_sec / 60)
+        self._next_backoff_sec = min(self._next_backoff_sec * 2, BLOCKED_BACKOFF_MAX_SEC)
+        self._raise_if_blocked()
+
+    def _got_through(self) -> None:
+        self._next_backoff_sec = BLOCKED_BACKOFF_START_SEC
 
     # ---- session -----------------------------------------------------------------
 
@@ -140,36 +202,63 @@ class ProphetXClient:
             status, content = self._transport(method, f"{self.base_url}{path}", headers, raw)
         except requests.RequestException as error:
             raise OSError(str(error)) from error
-        return status, _parse(content)
+        reply = _parse(content)
+        if is_cdn_block(status, reply):
+            self._block(f"ProphetX's CloudFront refused this server (HTTP 403 on {path})", server_refused=True)
+        return status, reply
+
+    def _take_token(self, data: object, what: str) -> None:
+        token = data.get("access_token") if isinstance(data, dict) else None
+        if not isinstance(token, str) or not token:
+            raise ProphetXError(f"{what} answered no access_token: {str(data)[:200]}")
+        self._token = token
+        self._token_good_until = self._clock() + ACCESS_TOKEN_LIFETIME_SEC - ACCESS_TOKEN_MARGIN_SEC
+        refresh = data.get("refresh_token")
+        if isinstance(refresh, str) and refresh:
+            self._refresh_token = refresh
 
     def _login(self) -> None:
         status, reply = self._send("POST", LOGIN_PATH, {"Content-Type": "application/json", "Accept": "application/json"},
                                    {"access_key": self.access_key, "secret_key": self._secret_key})
         if status != 200:
-            raise ProphetXError(f"ProphetX login refused: HTTP {status} {str(reply)[:200]}")
-        data = data_of(reply, "ProphetX login")
-        token = data.get("access_token") if isinstance(data, dict) else None
-        if not isinstance(token, str) or not token:
-            raise ProphetXError(f"ProphetX login answered no access_token: {str(reply)[:200]}")
-        self._token = token
-        self._token_good_until = self._clock() + ACCESS_TOKEN_LIFETIME_SEC - ACCESS_TOKEN_MARGIN_SEC
+            # A refused login (403 session cap, 401 bad key) only gets worse retried each minute.
+            self._block(f"ProphetX login refused: HTTP {status} {str(reply)[:200]}", server_refused=False)
+        self._take_token(data_of(reply, "ProphetX login"), "ProphetX login")
+        log.info("prophetx: logged in (a new session)")
+
+    def _refresh(self) -> bool:
+        """A new access token on the held refresh token, without a new session.
+        False when ProphetX refuses it (then the caller logs in)."""
+        status, reply = self._send("POST", REFRESH_PATH, {"Content-Type": "application/json", "Accept": "application/json"},
+                                   {"refresh_token": self._refresh_token})
+        if status != 200:
+            log.warning("prophetx: token refresh refused (HTTP %s %s); logging in again", status, str(reply)[:200])
+            self._refresh_token = None
+            return False
+        self._take_token(data_of(reply, "ProphetX refresh"), "ProphetX refresh")
+        return True
 
     def _bearer(self, force_login: bool = False) -> str:
         with self._token_lock:
-            if force_login or self._token is None or self._clock() >= self._token_good_until:
-                self._login()
+            self._raise_if_blocked()
+            expired = self._token is None or self._clock() >= self._token_good_until
+            if force_login or expired:
+                if not (self._refresh_token and self._refresh()):
+                    self._login()
             return self._token
 
     def request(self, method: str, path: str, params: dict | None = None, body: dict | None = None) -> tuple[int, object]:
         """One call with a live token: (HTTP status, parsed JSON or a text
-        snippet). A 401 logs in again and sends once more: a 401 is a request
-        ProphetX did not take. Raises OSError when nothing came back."""
+        snippet). A 401 gets a new token and sends once more: a 401 is a
+        request ProphetX did not take. Raises OSError when nothing came back,
+        ProphetXBlocked while the client is backing off a refusal."""
         query = f"?{urlencode(params, doseq=False)}" if params else ""
         for attempt in range(2):
             headers = {"Authorization": f"Bearer {self._bearer(force_login=attempt > 0)}",
                        "Accept": "application/json", "Content-Type": "application/json"}
             status, reply = self._send(method, f"{path}{query}", headers, body)
             if status != 401:
+                self._got_through()
                 return status, reply
         return status, reply
 
