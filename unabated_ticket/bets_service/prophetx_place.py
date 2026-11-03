@@ -34,9 +34,11 @@ Rules, in order, for every request (validate_prophetx_place_request's shape):
   9. the row is INSERTED (status 'sending') BEFORE the send;
  10. ONE fill-or-kill buy at that best price for the stake (prophetx_client),
      never re-sent and never cancelled: ProphetX kills a fill-or-kill's
-     remainder itself about 2 s after its last fill. The order is read for up
-     to PLACE_FINAL_READ_WINDOW_SEC; one not yet read finished is left
-     'unknown' and Place says ProphetX is still matching it.
+     remainder itself about 2 s after its last fill. The order is read off the
+     account's order history (the last HISTORY_READ_LOOKBACK_SEC of orders;
+     the single-order read lags 8 s+ after a send) for up to
+     PLACE_FINAL_READ_WINDOW_SEC; one not yet read finished is left 'unknown'
+     and Place says ProphetX is still matching it.
  11. The account's order history is the record (Cal 2026-11-03, option A): every
      ProphetX source poll hands its orders and fills to
      settle_unconfirmed_place_orders, which settles each 'unknown' ProphetX
@@ -82,6 +84,11 @@ RUNNER_PROPHETX_QUOTE_TIMEOUT_SEC = 10
 PLACE_FINAL_READ_ATTEMPTS = 6
 PLACE_FINAL_READ_SLEEP_SEC = 1.0
 PLACE_FINAL_READ_WINDOW_SEC = 8.0
+# The order-history window Place reads its order from: orders created this
+# long before now, to this long after (room for ProphetX's clock running ahead).
+HISTORY_READ_LOOKBACK_SEC = 120
+HISTORY_READ_LOOKAHEAD_SEC = 60
+HISTORY_READ_MAX_PAGES = 2
 PROPHETX_READ_SOURCE = VENUE
 PROPHETX_READ_MAX_AGE = timedelta(minutes=5)
 BET_TYPE_MONEYLINE = 1
@@ -389,9 +396,13 @@ class ManualProphetXDesk:
         return self._follow_order(client_order_id, order_id, order, target, stake)
 
     def _follow_order(self, client_order_id: str, order_id: str, order: dict, target: dict, stake: float) -> dict:
-        """Read the order until nothing of it can still fill (final, or fully
-        matched), then what filled. One not read finished within the window is
-        left 'unknown' for the order history to settle; it is never cancelled."""
+        """Read the order off the account's order history until nothing of it
+        can still fill (final, or fully matched), then what filled. ProphetX's
+        single-order read (GET get_order/<id>) answers 404 data_not_found for
+        8 s and more after a send (2026-11-03, while the order had filled in
+        about 1 s) and the history held it within 3 s, so the history is read.
+        One not read finished within the window is left 'unknown' for the
+        source's next order-history poll to settle; it is never cancelled."""
         deadline = self._clock() + PLACE_FINAL_READ_WINDOW_SEC
         for attempt in range(PLACE_FINAL_READ_ATTEMPTS):
             if _done(order, stake):
@@ -399,21 +410,30 @@ class ManualProphetXDesk:
             if self._clock() >= deadline:
                 break
             self._sleep(PLACE_FINAL_READ_SLEEP_SEC)
-            try:
-                status, reply = self._client.get_order(order_id)
-            except (OSError, ProphetXError) as error:
-                log.warning("prophetx place %s: order read %d failed: %s", client_order_id, attempt + 1, error)
-                continue
-            read = reply.get("data") if status == 200 and isinstance(reply, dict) else None
-            if not isinstance(read, dict):
-                log.warning("prophetx place %s: order read %d: HTTP %s %s", client_order_id, attempt + 1, status,
-                            str(reply)[:300])
-                continue
-            order = read
-            log.info("prophetx place %s: order read %d: %s", client_order_id, attempt + 1, _order_state(order))
+            read = self._history_read(client_order_id, order_id, attempt + 1)
+            if read is not None:
+                order = read
         if _done(order, stake):
             return self._record(client_order_id, order, target, stake)
         return self._still_matching(client_order_id, order_id, order)
+
+    def _history_read(self, client_order_id: str, order_id: str, attempt: int) -> dict | None:
+        """The order as the order history shows it now, or None when the read
+        fails or does not hold it yet."""
+        now = int(self._now().timestamp())
+        try:
+            orders = self._client.order_history(now - HISTORY_READ_LOOKBACK_SEC, now + HISTORY_READ_LOOKAHEAD_SEC,
+                                                max_pages=HISTORY_READ_MAX_PAGES)
+        except (OSError, ProphetXError) as error:
+            log.warning("prophetx place %s: order history read %d failed: %s", client_order_id, attempt, error)
+            return None
+        order = next((row for row in orders if str(row.get("order_id")) == order_id), None)
+        if order is None:
+            log.warning("prophetx place %s: order history read %d: order %s not listed yet (%d orders)",
+                        client_order_id, attempt, order_id, len(orders))
+            return None
+        log.info("prophetx place %s: order history read %d: %s", client_order_id, attempt, _order_state(order))
+        return order
 
     def _still_matching(self, client_order_id: str, order_id: str, order: dict) -> dict:
         log.warning("prophetx place %s: order %s not read finished in %.0f s (%s); the order history settles it",

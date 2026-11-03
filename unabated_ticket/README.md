@@ -3553,7 +3553,9 @@ does not read fails closed with the reason.
   click. Then ONE `fillOrKill` buy at that price for the stake in dollars,
   `external_id` = row `xman-<clickId>` inserted before the send, never
   cancelled (ProphetX kills a fill-or-kill's remainder itself about 2 s after
-  its last fill); read for up to 8 s. One not read finished by then replies
+  its last fill); read off the account's order history (the last 2 min of
+  orders; ProphetX's single-order read answers 404 for 8 s+ after a send) for
+  up to 8 s. One not read finished by then replies
   "still matching" and stays `unknown` until the next `prophetx` poll, which
   runs right after the click: the account's order history is the record, and
   each poll settles every `unknown` ProphetX Place row (by order id, else
