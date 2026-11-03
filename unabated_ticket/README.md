@@ -3583,7 +3583,11 @@ board lists no alts or period lines); NFL, CFB, NBA, CBB and NHL boards are read
   `IdWagerType` the straight type and `TeaserPoints 0`, `AcceptChanges 0` (BFA
   refuses a moved price or number). **A straight bet has not been recorded off
   the site**: the shape is the teaser's with the straight codes the metadata
-  names, so the first click is the live check. A 4xx is `rejected`; anything
+  names. The first live click (2026-11-03, ticket 358850696) showed BFA reads
+  the pick's `Amount` as the **base amount**, the smaller of risk and to-win:
+  $17 at -110 booked risk $18.70 to win $17. So on a minus price the pick sends
+  the to-win that risks the stake ($15.45 for $17 at -110), on a plus price the
+  stake; the read-back allows a cent off on the risk. A 4xx is `rejected`; anything
   else is confirmed off the open bets (a new `STRAIGHT BET` on the game within
   20 s is `filled`, else `unknown`: check BFA before placing again). The placed
   ticket is read back (rotation, market, side, number, price, risk, to-win) and
