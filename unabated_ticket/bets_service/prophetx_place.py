@@ -88,6 +88,9 @@ PLACE_FINAL_READ_ATTEMPTS = 20
 PLACE_FINAL_READ_SLEEP_SEC = 1.0
 # How long one wait on the order stream lasts before the window is checked again.
 STREAM_WAIT_SEC = 1.0
+# While the stream is live the history is still read this often: a pushed
+# update Place does not recognise (its shape is unverified live) cannot stall it.
+HISTORY_READ_WHILE_STREAMING_SEC = 5.0
 # The order-history window Place reads its order from: orders created this
 # long before now, to this long after (room for ProphetX's clock running ahead).
 HISTORY_READ_LOOKBACK_SEC = 120
@@ -416,8 +419,10 @@ class ManualProphetXDesk:
         deadline = self._clock() + PLACE_FINAL_READ_WINDOW_SEC
         stream_version = 0
         history_reads = 0
+        next_history_read_at = self._clock() + HISTORY_READ_WHILE_STREAMING_SEC
         while not _done(order, stake) and self._clock() < deadline:
-            if self._order_stream is not None and self._order_stream.is_live():
+            streaming = self._order_stream is not None and self._order_stream.is_live()
+            if streaming and self._clock() < next_history_read_at:
                 pushed, stream_version = self._order_stream.wait_for_order(order_id, stream_version, STREAM_WAIT_SEC)
                 if pushed is not None:
                     log.info("prophetx place %s: pushed: %s", client_order_id, _order_state(pushed))
@@ -425,7 +430,10 @@ class ManualProphetXDesk:
                 continue
             if history_reads >= PLACE_FINAL_READ_ATTEMPTS:
                 break
-            self._sleep(PLACE_FINAL_READ_SLEEP_SEC)
+            if streaming:
+                next_history_read_at = self._clock() + HISTORY_READ_WHILE_STREAMING_SEC
+            else:
+                self._sleep(PLACE_FINAL_READ_SLEEP_SEC)
             history_reads += 1
             read = self._history_read(client_order_id, order_id, history_reads)
             if read is not None:

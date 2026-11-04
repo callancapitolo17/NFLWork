@@ -435,10 +435,11 @@ def team_keys_reader(keys=None):
     return read
 
 
-def desk_with(store, client, quote=None, now=NOW, team_keys=None, order_stream=None):
+def desk_with(store, client, quote=None, now=NOW, team_keys=None, order_stream=None, clock=None):
     return ManualProphetXDesk(client, store, lambda _line: dict(QUOTE if quote is None else quote),
                               team_keys or team_keys_reader(), now=lambda: now,
-                              sleep=lambda _sec: None, clock=iter(range(0, 1000)).__next__, order_stream=order_stream)
+                              sleep=lambda _sec: None, clock=clock or iter(range(0, 1000)).__next__,
+                              order_stream=order_stream)
 
 
 class FakeOrderStream:
@@ -650,7 +651,8 @@ def test_while_the_stream_is_live_place_waits_on_the_pushed_fill_not_the_history
                               {"order_id": "px-1", "status": "open", "matching_status": "fully_matched",
                                "filled_quantity": 50, "open_quantity": 0, "fee": 0.25}])
     client = ScriptedProphetX(order_reads=[STILL_MATCHING] * 30)
-    result = desk_with(store, client, order_stream=stream).place(request())
+    slow_clock = (tick / 10 for tick in range(0, 10000)).__next__
+    result = desk_with(store, client, order_stream=stream, clock=slow_clock).place(request())
     assert result["status"] == "filled" and result["filled"] == 50 and client.history_windows == []
     assert [version for _id, version in stream.waits] == [0, 0, 1]
 
@@ -660,6 +662,14 @@ def test_a_stream_that_drops_mid_wait_falls_back_to_the_history(store):
     client = ScriptedProphetX(order_reads=[STILL_MATCHING])
     result = desk_with(store, client, order_stream=stream).place(request())
     assert result["status"] == "filled" and len(client.history_windows) == 2
+
+
+def test_a_live_stream_that_never_names_the_order_still_reads_the_history(store):
+    # The stream's payload shape is unverified live: a push Place cannot read must not stall it.
+    stream = FakeOrderStream([None] * 30)
+    client = ScriptedProphetX(order_reads=[])
+    result = desk_with(store, client, order_stream=stream).place(request())
+    assert result["status"] == "filled" and len(client.history_windows) == 1 and 0 < len(stream.waits) < 10
 
 
 def test_a_refusal_or_no_answer_is_named(store):
