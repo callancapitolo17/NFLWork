@@ -29,7 +29,7 @@ Tables:
                2026-10-16, novig_taker_desk.py), keyed by its `client_id` (a
                UUID; Novig does not dedupe it, so the desk never re-sends).
                INSERTED before the send, then UPDATED as Novig answers, its
-               fills are read, and its market settles. Its own $500 ceiling is
+               fills are read, and its market settles. Its own $850 ceiling is
                the sum of `open_cost` over rows not yet settled. The row also
                keeps the board line the bot priced (league, teams, market,
                side, number), which the bot's subaccount read

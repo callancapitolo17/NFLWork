@@ -86,10 +86,10 @@ from unabated_ticket.bets_service.taker_store import TakerStore
 
 log = logging.getLogger(__name__)
 
-# The Kalshi bot's Kelly bankroll (Cal, 2026-10-28: $5,000). taker.js KELLY_BANKROLL sizes the
+# The Kalshi bot's Kelly bankroll (Cal, 2026-11-04: $7,500; $5,000 from 2026-10-28). taker.js KELLY_BANKROLL sizes the
 # stakes and must equal it (tests/test_taker_orders.py reads taker.js to check).
-KELLY_BANKROLL = 5000.0
-# The ceiling on the bot's open cost, a share of its Kelly bankroll (Cal, 2026-11-03: 60% = $3,000, the
+KELLY_BANKROLL = 7500.0
+# The ceiling on the bot's open cost, a share of its Kelly bankroll (Cal, 2026-11-03: 60%, $4,500 on the 2026-11-04 bankroll; the
 # 40% cap was full with edges still listed; 40% from 2026-11-02, 20% from 2026-10-28, a flat $500 before).
 MAX_OPEN_COST_FRACTION = 0.60
 MAX_OPEN_COST = KELLY_BANKROLL * MAX_OPEN_COST_FRACTION

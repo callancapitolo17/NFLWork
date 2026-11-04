@@ -1,5 +1,5 @@
 """novig_taker_desk.py on a fake Novig client: the stop files, freshness of
-the held Novig bets, the cross-venue unseen-fill rule, the $500 ceiling in 1c
+the held Novig bets, the cross-venue unseen-fill rule, the $850 ceiling in 1c
 contracts, insert-before-send, one IOC send never retried, the read to final
 and its fills, lost sends looked up by clientId, and settlement."""
 from datetime import datetime, timedelta, timezone
@@ -151,10 +151,10 @@ def test_a_kalshi_bot_order_on_the_game_blocks_a_novig_add(setup):
 def test_the_ceiling_cuts_qty_in_one_cent_contracts(setup):
     desk, client, store, *_ = setup
     client.fill_items = [{"fillId": "f1", "qty": 100, "cost": "0.46500", "taker": True}]
-    # $500 at 0.465 is 107526 contracts; ask for more.
-    desk.place(request(qty=200000))
-    assert client.placed[0][2] == 107526
-    assert store.novig_open_exposure() == pytest.approx(107526 * 0.465 / 100, abs=1e-6)
+    # $850 at 0.465 is 182795 contracts; ask for more.
+    desk.place(request(qty=300000))
+    assert client.placed[0][2] == 182795
+    assert store.novig_open_exposure() == pytest.approx(182795 * 0.465 / 100, abs=1e-6)
     client.placed.clear()
     assert desk.place(request(clientId="2b3f5f20-9c1b-4d6e-8f3a-5c2d1e7b4a92", eventId=7,
                               heldIds=[held_id_of(ORDER_ID)]))["status"] == "ceiling"
