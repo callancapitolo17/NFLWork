@@ -3559,7 +3559,8 @@ does not read fails closed with the reason.
   the same key pair, Pusher protocol, `GET /websocket/connection-config` +
   `POST /v4/mm/websocket` per connect, the account's private channel; every
   `orders` event is logged until its shape is confirmed live; `/health`
-  `prophetxStream`); otherwise it reads the order history once a second (the
+  `prophetxStream`; the history is still read every 5 s, so a push Place
+  cannot read never stalls it); otherwise it reads the order history once a second (the
   last 2 min of orders; ProphetX's single-order read answers 404 for 8 s+
   after a send). One not seen finished replies "still matching" and stays
   `unknown`. The account's order history is the record: each `prophetx` poll
