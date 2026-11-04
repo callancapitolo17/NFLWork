@@ -2,7 +2,7 @@
 // (plan: automated_taker_plan.md). Every decision ends in a reason; a "bet"
 // decision is sent by the runner to the bets service's order desk
 // (bets_service/taker_orders.py), which holds the bot's Kalshi key, the stop
-// file and the open-cost ceiling (40% of the Kelly bankroll). Live from merge (Cal, 2026-10-14: no shadow run).
+// file and the open-cost ceiling (60% of the Kelly bankroll). Live from merge (Cal, 2026-10-14: no shadow run).
 //
 // Cal's rules (2026-10-01 and 2026-10-14), each a named constant below:
 //   - Kalshi rows Unabated shows an edge on, every league and market the
@@ -84,7 +84,7 @@ const pricecheck = require("../extension/pricecheck.js");
 const KALSHI_BOOK_ID = 105;
 const NOVIG_BOOK_ID = 89;
 // What Kalshi's Kelly divides by (Cal, 2026-10-28: $5,000, was $2,000); the money at risk is the
-// order desk's ceiling, 40% of it (taker_orders.MAX_OPEN_COST). taker_orders.KELLY_BANKROLL must match.
+// order desk's ceiling, 60% of it (taker_orders.MAX_OPEN_COST). taker_orders.KELLY_BANKROLL must match.
 const KELLY_BANKROLL = 5000;
 // Novig's Kelly bankroll (Cal, 2026-10-16: $2,000, Kalshi's then), its own parameter, apart from the Novig desk's $500 cap.
 const NOVIG_KELLY_BANKROLL = 2000;
