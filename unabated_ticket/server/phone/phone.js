@@ -516,8 +516,8 @@
     li.append(mainEl(row, now, skipped), railEl(row, true));
     const related = relatedBlock(row);
     if (related) li.append(related);
-    if (card && card.lineCount > 1) {
-      li.append(makeEl("div", "card-more", `${card.bookCount} book${card.bookCount === 1 ? "" : "s"} · ${card.lineCount} lines · tap for the others`));
+    if (card && card.others && card.others.length) {
+      li.append(makeEl("div", "card-more", phoneView.cardMoreText(card)));
     }
     return li;
   }
