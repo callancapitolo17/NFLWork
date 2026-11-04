@@ -137,9 +137,13 @@
     return `${row.book.name} ${fmtPriceBoth(row.price, row.sourceFormat, row.sourcePrice)}`;
   }
 
-  // "line 4m old · liq $1,200"
+  // "line 4m old · liq $1,200". An exchange line priced off its live book
+  // (liveCheck "live", extension/liveprices.js) reads "live price": Unabated's
+  // change time says nothing about it. One the runner has not read yet keeps
+  // Unabated's price and says so ("unchecked").
   function lineAgeText(row, now) {
-    return [fmtLineAge(row.modifiedMs, now), fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ");
+    const age = row.liveCheck === "live" ? "live price" : fmtLineAge(row.modifiedMs, now);
+    return [age, row.liveCheck === "unchecked" ? "unchecked" : null, fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ");
   }
 
   // ---- the ticket sheet --------------------------------------------------------

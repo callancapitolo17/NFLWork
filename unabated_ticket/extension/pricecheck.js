@@ -117,13 +117,18 @@
   // rung key -> Map(bookId -> {bookId, bookName, price, liquidity}), every book's best
   // price at each number (a book can sit on a number twice: main and alt).
   // Build once per feed update.
-  //   options  {now, maxLineAgeMs (null = no age gate)}
+  //   options  {now, maxLineAgeMs (null = no age gate), lineView (liveprices.createLineView,
+  //            optional: an exchange line counts at its live price, a gone one not at all)}
   function buildPriceIndex(state, options) {
     const index = new Map();
     if (!state) return index;
     const now = options.now;
     const maxLineAgeMs = typeof options.maxLineAgeMs === "number" && options.maxLineAgeMs > 0 ? options.maxLineAgeMs : null;
-    for (const line of Object.values(state.lines)) {
+    const lineView = typeof options.lineView === "function" ? options.lineView : null;
+    for (const boardLine of Object.values(state.lines)) {
+      const view = lineView ? lineView(boardLine) : { line: boardLine };
+      if (!view) continue;
+      const line = view.line;
       if (!countsAsPrice(line, state, now, maxLineAgeMs)) continue;
       const key = rungKeyOf(line);
       if (!index.has(key)) index.set(key, new Map());

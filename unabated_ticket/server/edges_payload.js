@@ -79,6 +79,8 @@ function rowView(row, moveContext) {
     book: { id: row.book.id, name: row.book.name }, price: row.price, sourceFormat: row.sourceFormat, sourcePrice: row.sourcePrice,
     bookProb: bookProbOrNull(row), fair: row.fair, edgePct: row.edgePct, edgeTier: edgeRows.edgeTier(row.edgePct),
     liquidity: row.liquidity, modifiedMs: row.modifiedMs, isBlurred: row.isBlurred,
+    // "live" (the exchange's own book, read liveReadAtMs), "unchecked" (an exchange line not yet read) or null (liveprices.js).
+    liveCheck: row.liveCheck ?? null, liveReadAtMs: row.liveReadAtMs ?? null,
     openerPrice: row.openerPrice, openerPoints: row.openerPoints,
     stake: row.stake, rankScore: row.rankScore, shrink: row.shrink ?? null, shrunkEdgePct: row.shrunkEdgePct ?? null,
     advice: {
@@ -145,7 +147,8 @@ function unmatchedView(betRecords, boardLines, knownStarts, now, dismissedIds) {
 //           stakeSettings, edgeSettings, settingsStatus {source, error, okAt, updatedAt},
 //           betsStatus {okAt, error, unreachableSince, generatedAt, sources},
 //           boardLines, ladderReaderOf, teasers (teaser.openTeasers),
-//           measurement (tailflex.measureTailFlex over feedState; null with no feed), now}
+//           measurement (tailflex.measureTailFlex over feedState; null with no feed), now,
+//           lineView (liveprices.createLineView over the runner's live reads; null: Unabated's prices as-is)}
 function buildEdgesPayload(input) {
   const { feedState, edgeSettings, stakeSettings, now } = input;
   // No Unabated tab on a server, so "follow Unabated" is every live book.
@@ -154,7 +157,7 @@ function buildEdgesPayload(input) {
   const { listed: rows, skipped: skippedRows } = pricecheck.splitSkipped(edgeRows.listedEdgeRows(feedState, {
     edgeSettings, stakeSettings, effective, records: input.betRecords,
     boardLines: input.boardLines, ladderReaderOf: input.ladderReaderOf, teasers: input.teasers,
-    measurement: input.measurement, now,
+    measurement: input.measurement, now, lineView: input.lineView || null,
   }), skips, now);
   const grouped = edgeSettings.groupByMarket;
   const items = grouped ? edgeRows.groupEdgeRows(rows, edgeSettings.sortBy) : rows;

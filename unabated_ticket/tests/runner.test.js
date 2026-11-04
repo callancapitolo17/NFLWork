@@ -1898,13 +1898,14 @@ test("board thread: the real worker boots board_thread.js with runner.js and pos
 // whose YES is Duquesne, so WSU -35.5 is that market's NO.
 const POLY_GATEWAY = "https://poly.test";
 const POLY_SLUG = "asc-cfb-duq-wst-2026-09-19-pos-35pt5";
-function polymarketUnabatedFetch() {
+//   lineFields  more fields on the Polymarket US line (an edge for the live price tests)
+function polymarketUnabatedFetch(lineFields = {}) {
   const json = JSON.parse(takerVenueSlice());
   json.marketSources.push({ ...json.marketSources[0], id: 111, name: "Polymarket US", sortOrder: 111 });
   const spreadRow = json.odds["lg2:pt1:pregame"].find((row) => row.key === "pt1:pregame:bt2:e123742");
   spreadRow.sides["si1:tid717"].ms111 = {
     ...spreadRow.sides["si1:tid717"].ms89, americanPrice: -179, price: -179, sourceFormat: 1, sourcePrice: -179, statusId: 1,
-    sequenceNumber: TAKER_NOW - 60000, alternateLines: [],
+    sequenceNumber: TAKER_NOW - 60000, alternateLines: [], ...lineFields,
   };
   const body = JSON.stringify(json);
   return async (url) => {
@@ -2107,4 +2108,106 @@ test("board thread: team_keys reaches the board thread and its HTTP route", asyn
     await new Promise((resolve) => server.close(resolve));
     client.stop();
   }
+});
+
+// ---- the live price overlay (livePricePass, extension/liveprices.js) ----
+
+// No Min liq to win: Kalshi's $23 resting at 58.7c wins under the $100 default.
+const LIVE_SETTINGS = {
+  settings: { leagues: [2], periods: [1], includeAlts: true, bookMode: "all", bookIds: null, maxLineAgeHours: 1e6, minEdgePct: 1, minShrunkEdgePct: 0, minLiquidityToWin: 0, minStake: 0 },
+  updatedAt: null,
+};
+const WSU36_KALSHI_KEY_RE = /:ms105:si1:tid717:alt-35\.5$/;
+
+function liveRunner({ kalshi = kalshiFetch(), novig = novigFetch(), streamBooks = novigStreamBooks() } = {}) {
+  const service = takerService({ "/bets.json": novigTakerBetsBody(), "/settings.json": LIVE_SETTINGS, "/novig_books.json": streamBooks });
+  const runner = runnerLib.createRunner({
+    fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    novigRead: keyedNovigRead(novig), novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  return { runner, service, kalshi };
+}
+
+function edgeRowsOf(payload) {
+  return payload.items.flatMap((item) => (item.best ? [item.best, ...item.others] : [item]));
+}
+
+test("live prices: Kalshi and Novig lines on edges.json are priced off the exchanges' own books once their markets check out", async () => {
+  const { runner, service } = liveRunner();
+  await runner.start();
+  await runner.livePricePass();
+  const served = runner.livePricesPayload();
+  assert.deepEqual(served.bookIds.filter((id) => id === 89 || id === 105), [89, 105]);
+  const [kalshiKey, kalshiRead] = Object.entries(served.reads).find(([key]) => WSU36_KALSHI_KEY_RE.test(key));
+  // 57c ask plus Kalshi's 7% x p x (1 - p) taker fee, $40 x that resting.
+  assert.deepEqual(kalshiRead, { venue: "kalshi", points: -35.5, allIn: 0.587157, depthDollars: Math.round(40 * 0.587157 * 100) / 100, readAtMs: TAKER_NOW });
+  const rows = edgeRowsOf(runner.edgesPayload());
+  const kalshiRow = rows.find((row) => row.key === kalshiKey);
+  assert.equal(kalshiRow.liveCheck, "live");
+  assert.equal(kalshiRow.sourcePrice, 0.587157);
+  assert.equal(kalshiRow.liquidity, kalshiRead.depthDollars);
+  const novigRow = rows.find((row) => row.book.id === 89);
+  assert.equal(novigRow.liveCheck, "live");
+  assert.equal(novigRow.sourcePrice, 0.555);
+  // 500000 1c contracts resting at 44.5c on DUQ: $2,775 to buy WSU at 55.5c.
+  assert.equal(novigRow.liquidity, 2775);
+  // The stream was asked behind the bot's markets, with no wait.
+  const asks = service.posts.filter((post) => post.route === "/novig_books.json").map((post) => post.body);
+  assert.deepEqual(asks, [{ marketIds: [NOVIG_MARKET], waitMs: 0, priority: false, background: true }]);
+  assert.equal(runner.health().livePrices.byVenue.kalshi.live >= 1, true);
+  runner.stop();
+});
+
+test("live prices: an empty book takes the line off edges.json; a market that is not the row's leaves it unchecked and reads no book", async () => {
+  const kalshi = kalshiFetch({ WSU36: { floor_strike: 34.5 } });
+  const { runner } = liveRunner({ kalshi, streamBooks: novigStreamBooks({ orders: { [NOVIG_DUQ_OUTCOME]: [], [NOVIG_WSU_OUTCOME]: [] } }) });
+  await runner.start();
+  await runner.livePricePass();
+  const rows = edgeRowsOf(runner.edgesPayload());
+  assert.equal(rows.some((row) => row.book.id === 89), false, "nothing rests on Novig: the line is gone");
+  const kalshiRow = rows.find((row) => WSU36_KALSHI_KEY_RE.test(row.key));
+  assert.equal(kalshiRow.liveCheck, "unchecked");
+  assert.equal(kalshi.calls.some((url) => url.endsWith(`/markets/${TAKER_TICKER}/orderbook`)), false, "no book read for a market that failed its check");
+  runner.stop();
+});
+
+test("live prices: the taker's own reads count, so a line it just read is not read again; the bot decides as before", async () => {
+  const { runner, kalshi } = liveRunner();
+  await runner.start();
+  const bookReads = () => kalshi.calls.filter((url) => url.endsWith(`/markets/${TAKER_TICKER}/orderbook`)).length;
+  await runner.takerPass();
+  await runner.livePricePass();
+  // The first pass has no market check cached when the taker reads, so the live pass reads the book itself.
+  assert.equal(bookReads(), 2);
+  await runner.takerPass();
+  await runner.livePricePass();
+  assert.equal(bookReads(), 3, "the second live pass reuses the taker's read");
+  const decision = runner.takerPayload().decisions.find((row) => row.ticker === TAKER_TICKER);
+  assert.equal(decision.unabatedPrice < 0, true, "the taker still sees Unabated's own price");
+  runner.stop();
+});
+
+test("live prices: a Polymarket US line is priced off its own book with the taker fee; the game's event list is read once and reused", async () => {
+  const poly = polymarketFetch();
+  const clock = { now: TAKER_NOW };
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": LIVE_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: polymarketUnabatedFetch({ ge: 0.05, bacr: -160 }), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    polymarketFetch: poly, polymarketGatewayUrl: POLY_GATEWAY, betsServiceUrl: SERVICE_URL, now: () => clock.now, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.livePricePass();
+  const allIn = Math.round((0.63 + 0.06 * 0.63 * 0.37) * 1e6) / 1e6;
+  const [key, read] = Object.entries(runner.livePricesPayload().reads).find(([, entry]) => entry.venue === "polymarket_us");
+  assert.deepEqual(read, { venue: "polymarket_us", points: -35.5, allIn, depthDollars: Math.round(500 * allIn * 100) / 100, readAtMs: TAKER_NOW });
+  const row = edgeRowsOf(runner.edgesPayload()).find((entry) => entry.key === key);
+  assert.equal(row.liveCheck, "live");
+  assert.equal(row.sourcePrice, allIn);
+  // A pass 25 s later reads the book again and reuses the game's event list.
+  clock.now += 25 * 1000;
+  await runner.livePricePass();
+  assert.equal(poly.calls.filter((url) => url.startsWith(`${POLY_GATEWAY}/v1/events`)).length, 1);
+  assert.equal(poly.calls.filter((url) => url === `${POLY_GATEWAY}/v1/markets/${POLY_SLUG}/book`).length, 2);
+  assert.equal(runner.livePricesPayload().reads[key].readAtMs, clock.now);
+  runner.stop();
 });

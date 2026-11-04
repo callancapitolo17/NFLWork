@@ -159,13 +159,14 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     real money — bfa_place.py checks BFA's board and price against
                                     the Ticket's first and confirms off the open bets; 503 when no
                                     BFA account is read)
-           POST /novig_books.json   body {marketIds: [..], waitMs, priority?} -> {stream:
+           POST /novig_books.json   body {marketIds: [..], waitMs, priority?, background?} -> {stream:
                                     {connected, lastFrameAgeMs, error, ...}, books: {marketId:
                                     {status, started, seq, orders: {outcomeId: [{order, price,
                                     qty}]}} | {error}}}: Novig's live books off the bot key's
                                     websocket (novig_book_stream.py; reads only), each market
                                     subscribed on first ask (priority: ahead of the rest, the
-                                    Place quote), waiting up to waitMs (capped at
+                                    Place quote; background: behind the rest, the runner's
+                                    live price pass), waiting up to waitMs (capped at
                                     novig_book_stream.MAX_WAIT_SEC) for a new market's snapshot.
                                     Loopback only (the runner); 503 {error} with no bot Novig key
            POST /novig_read.json    body {path, query?} -> {status, body}: one GET of Novig's
@@ -208,6 +209,9 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     bet and a search; step 2: the plan and the /pins.json
                                     body), query string passed on; the runner's own 400/404
                                     (no such open bet, a game gone) passes through as it came
+           GET /tau.json, /live_prices.json  the server runner's pooled tail-flex tau and
+                                    its live exchange price reads (extension/liveprices.js),
+                                    passed through the same way for the panel
            GET / and the phone page's files   STATIC_FILES, a fixed map of URL path ->
                                     file (server/phone/ and the extension's pure modules
                                     the page loads under /ext/; the Bet Tracker,
@@ -1187,7 +1191,7 @@ def validate_settings_update(body: object, held: dict) -> dict | str:
 
 
 # The runner's JSON routes the bets service passes through (one origin for the pages).
-RUNNER_ROUTES = ("/edges.json", "/scenarios.json", "/teasers.json", "/attach.json", "/tau.json")
+RUNNER_ROUTES = ("/edges.json", "/scenarios.json", "/teasers.json", "/attach.json", "/tau.json", "/live_prices.json")
 # The runner's own answer about the request (no such open bet, a game gone
 # from the board) passes through as it came; any other failure is a 502.
 RUNNER_PASSTHROUGH_ERRORS = (400, 404)
@@ -1225,8 +1229,10 @@ def health_payload(store: BetsStore, started_at: float, source_names: list[str] 
     return payload
 
 
-def validate_novig_books_request(body: object) -> tuple[list[str], float, bool] | str:
-    """(market ids, wait seconds, priority) or why the body is refused."""
+def validate_novig_books_request(body: object) -> tuple[list[str], float, bool, bool] | str:
+    """(market ids, wait seconds, priority, background) or why the body is refused.
+    priority (the Place quote) and background (the runner's live price pass)
+    are exclusive: a market is subscribed ahead of the rest or behind them."""
     if not isinstance(body, dict):
         return "expected a JSON object body"
     market_ids = body.get("marketIds")
@@ -1241,7 +1247,12 @@ def validate_novig_books_request(body: object) -> tuple[list[str], float, bool] 
     priority = body.get("priority", False)
     if not isinstance(priority, bool):
         return f"priority must be true or false, got {priority!r}"
-    return list(dict.fromkeys(market_ids)), wait_ms / 1000, priority
+    background = body.get("background", False)
+    if not isinstance(background, bool):
+        return f"background must be true or false, got {background!r}"
+    if priority and background:
+        return "priority and background cannot both be true"
+    return list(dict.fromkeys(market_ids)), wait_ms / 1000, priority, background
 
 
 def parse_days(query: str) -> int | str:
@@ -1655,8 +1666,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if isinstance(request, str):
                 self._send_json(400, {"error": request})
                 return
-            market_ids, wait_sec, priority = request
-            self._send_json(200, novig_book_stream.books_for(market_ids, wait_sec, priority))
+            market_ids, wait_sec, priority, background = request
+            self._send_json(200, novig_book_stream.books_for(market_ids, wait_sec, priority, background))
 
         # POST /novig_read.json: one keyed Novig catalog GET for the runner (novig_catalog_reads.py).
         def _novig_read(self, body: object) -> None:

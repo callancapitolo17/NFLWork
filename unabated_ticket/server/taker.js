@@ -920,6 +920,17 @@ function novigMarketMismatch(market, event, row, contract) {
   if (!event || event.eventId !== market.eventId) return `no event ${market.eventId} read`;
   if (event.status !== NOVIG_EVENT_PREGAME) return `event status "${event.status}"`;
   if (!market.fee || market.fee.charged === NOVIG_FEE_ALWAYS) return `the market charges a taker fee pregame (${market.fee && market.fee.charged})`;
+  return novigSideMismatch(market, row, contract);
+}
+
+// Why Novig's market is not the row's line (the outcome on it, its type the
+// row's market and period, its strike the row's number, the outcome's own
+// name the row's side), or null when it is. The part of novigMarketMismatch
+// that a catalog listing alone can answer: the live price overlay
+// (runner.js livePricePass) shows a Novig book only for a market that passes,
+// so a rung Unabated filed under the wrong outcome never paints its price on the row.
+function novigSideMismatch(market, row, contract) {
+  if (!market || typeof market !== "object") return "no market object";
   if (!(market.outcomes || []).some((outcome) => outcome.outcomeId === contract.outcomeId)) return `outcome ${contract.outcomeId} is not on the market`;
   const bareType = NOVIG_MARKET_TYPE_OF_BET_TYPE[row.betTypeId];
   if (!bareType || typeof market.marketType !== "string" || !market.marketType.startsWith(bareType)) return `market type ${market.marketType} is not the row's ${row.betType}`;
@@ -1037,13 +1048,13 @@ function decisionSignature(decision) {
 }
 
 module.exports = {
-  KALSHI_BOOK_ID, NOVIG_BOOK_ID, VENUE_KALSHI, VENUE_NOVIG, NOVIG_EVENT_PREGAME, KELLY_BANKROLL, NOVIG_KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
+  KALSHI_BOOK_ID, NOVIG_BOOK_ID, VENUE_KALSHI, VENUE_NOVIG, NOVIG_EVENT_PREGAME, NOVIG_MARKET_OPEN, NOVIG_QTY_PER_DOLLAR, KELLY_BANKROLL, NOVIG_KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
   MAX_LINE_AGE_MS, KALSHI_TAKER_FEE_RATE, REASONS,
   kalshiAllInPrice, probToAmerican, unabatedAllInOf, candidateRows,
   contractFromRungs, derivedMainNumberContract, spreadTeamCodes, derivedMoneylineContract, resolveKalshiContract,
   parseKalshiOrderbook, quoteOf, decideRow, decisionSignature, kalshiYesTeamSide, marketMismatch, clientOrderIdOf,
   heldOtherSide, unpricedHolding, kalshiStartMsOf, earliestStartMs, eventTickerOf,
   novigMoneylineContract, kalshiMoneylineEventOf, kalshiMoneylineFromMarkets,
-  resolveNovigOutcome, novigOutcomeIndex, novigContractOf, novigQuoteOf, novigStreamBookRead, novigHeldOtherSide, novigMarketMismatch,
+  resolveNovigOutcome, novigOutcomeIndex, novigContractOf, novigQuoteOf, novigStreamBookRead, novigHeldOtherSide, novigMarketMismatch, novigSideMismatch,
   novigClientIdOf, novigLineOf,
 };
