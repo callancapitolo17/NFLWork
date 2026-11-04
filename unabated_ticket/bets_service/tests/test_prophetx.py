@@ -435,10 +435,28 @@ def team_keys_reader(keys=None):
     return read
 
 
-def desk_with(store, client, quote=None, now=NOW, team_keys=None):
+def desk_with(store, client, quote=None, now=NOW, team_keys=None, order_stream=None):
     return ManualProphetXDesk(client, store, lambda _line: dict(QUOTE if quote is None else quote),
                               team_keys or team_keys_reader(), now=lambda: now,
-                              sleep=lambda _sec: None, clock=iter(range(0, 1000)).__next__)
+                              sleep=lambda _sec: None, clock=iter(range(0, 1000)).__next__, order_stream=order_stream)
+
+
+class FakeOrderStream:
+    """prophetx_order_stream's Place-facing calls: each wait hands over the
+    next scripted state (None: nothing pushed in that wait); live while any remain."""
+
+    def __init__(self, states, live=True):
+        self.states = list(states)
+        self.live = live
+        self.waits = []
+
+    def is_live(self):
+        return self.live and bool(self.states)
+
+    def wait_for_order(self, order_id, after_version, timeout_sec):
+        self.waits.append((order_id, after_version))
+        state = self.states.pop(0)
+        return (None, after_version) if state is None else (state, after_version + 1)
 
 
 def request(**changes):
@@ -550,7 +568,7 @@ def manual_row(store, click="xman-abc12345-0001"):
 
 
 def test_an_order_not_read_finished_is_left_unknown_never_cancelled_and_says_so(store):
-    client = ScriptedProphetX(order_reads=[STILL_MATCHING] * 10)
+    client = ScriptedProphetX(order_reads=[STILL_MATCHING] * 30)
     result = desk_with(store, client).place(request())
     assert result["status"] == "unknown" and "still matching" in result["message"]
     assert "resting" not in result["message"] and not hasattr(client, "cancel_order")
@@ -558,16 +576,29 @@ def test_an_order_not_read_finished_is_left_unknown_never_cancelled_and_says_so(
 
 
 def test_the_order_history_settles_an_unknown_place_order_at_its_fills(store):
-    desk_with(store, ScriptedProphetX(order_reads=[STILL_MATCHING] * 10)).place(request())
+    desk_with(store, ScriptedProphetX(order_reads=[STILL_MATCHING] * 30)).place(request())
     trades = [{"order_id": "px-1", "quantity": 50, "price": -105, "fee": 0.25, "status": "open"}]
     settle_unconfirmed_place_orders(store, [HISTORY_FILLED], trades, NOW + timedelta(seconds=30))
     assert manual_row(store) == ("filled", "px-1", 5000, 50.25)
-    # Settled rows are not looked for again.
-    assert store.unconfirmed_prophetx_place_orders(NOW + timedelta(minutes=1)) == []
+    # A row that already says what the history says is not written again.
+    updated = store._con.execute("SELECT CAST(updated_at AS VARCHAR) FROM manual_orders").fetchone()
+    settle_unconfirmed_place_orders(store, [HISTORY_FILLED], trades, NOW + timedelta(minutes=1))
+    assert store._con.execute("SELECT CAST(updated_at AS VARCHAR) FROM manual_orders").fetchone() == updated
+
+
+def test_the_order_history_corrects_a_fill_recorded_off_the_stream(store):
+    # The stream's fields are unverified: a fill Place recorded off it is checked against the history.
+    stream = FakeOrderStream([{"order_id": "px-1", "status": "open", "matching_status": "fully_matched",
+                               "filled_quantity": 50, "open_quantity": 0}])
+    client = ScriptedProphetX(order_reads=[STILL_MATCHING] * 30)
+    assert desk_with(store, client, order_stream=stream).place(request())["status"] == "filled"
+    killed = {**HISTORY_FILLED, "status": "canceled", "matching_status": "partially_matched", "filled_quantity": 30}
+    settle_unconfirmed_place_orders(store, [killed], [], NOW + timedelta(seconds=30))
+    assert manual_row(store) == ("partial", "px-1", 3000, 30.0)
 
 
 def test_the_history_leaves_an_order_still_matching_or_unlisted_unknown(store):
-    desk_with(store, ScriptedProphetX(order_reads=[STILL_MATCHING] * 10)).place(request())
+    desk_with(store, ScriptedProphetX(order_reads=[STILL_MATCHING] * 30)).place(request())
     settle_unconfirmed_place_orders(store, [], [], NOW + timedelta(seconds=30))
     settle_unconfirmed_place_orders(store, [STILL_MATCHING[1]["data"]], [], NOW + timedelta(seconds=30))
     assert manual_row(store)[0] == "unknown"
@@ -611,6 +642,24 @@ def test_place_reads_its_order_off_the_order_history_until_it_is_listed(store):
     assert len(client.history_windows) == 3
     start, end = client.history_windows[0]
     assert start <= NOW.timestamp() - 60 and end >= NOW.timestamp()
+
+
+def test_while_the_stream_is_live_place_waits_on_the_pushed_fill_not_the_history(store):
+    stream = FakeOrderStream([None, {"order_id": "px-1", "status": "open", "matching_status": "partially_matched",
+                                     "filled_quantity": 20, "open_quantity": 30},
+                              {"order_id": "px-1", "status": "open", "matching_status": "fully_matched",
+                               "filled_quantity": 50, "open_quantity": 0, "fee": 0.25}])
+    client = ScriptedProphetX(order_reads=[STILL_MATCHING] * 30)
+    result = desk_with(store, client, order_stream=stream).place(request())
+    assert result["status"] == "filled" and result["filled"] == 50 and client.history_windows == []
+    assert [version for _id, version in stream.waits] == [0, 0, 1]
+
+
+def test_a_stream_that_drops_mid_wait_falls_back_to_the_history(store):
+    stream = FakeOrderStream([None, None])
+    client = ScriptedProphetX(order_reads=[STILL_MATCHING])
+    result = desk_with(store, client, order_stream=stream).place(request())
+    assert result["status"] == "filled" and len(client.history_windows) == 2
 
 
 def test_a_refusal_or_no_answer_is_named(store):

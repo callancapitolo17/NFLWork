@@ -69,6 +69,10 @@ STRIKES_PATH = "/v4/mm/get_strikes"
 ORDER_HISTORY_PATH = "/v4/mm/get_order_history"
 TRADES_PATH = "/v4/mm/get_trades"
 SUBMIT_ORDER_PATH = "/v4/mm/submit_order"
+WEBSOCKET_CONFIG_PATH = "/websocket/connection-config"
+WEBSOCKET_REGISTER_PATH = "/v4/mm/websocket"
+# The docs' websocket guide: v2 (CFTC-vocabulary) messages, the only ones whose `orders` events carry `fee`.
+CFTC_TERMINOLOGY_HEADER = {"X-CFTC-Terminology": "true"}
 BALANCE_PATH = "/v4/mm/get_balance"
 # An access token lasts 10 minutes; a new login goes out this long before that.
 ACCESS_TOKEN_LIFETIME_SEC = 600
@@ -272,7 +276,8 @@ class ProphetXClient:
                     self._login()
             return self._token
 
-    def request(self, method: str, path: str, params: dict | None = None, body: dict | None = None) -> tuple[int, object]:
+    def request(self, method: str, path: str, params: dict | None = None, body: dict | None = None,
+                extra_headers: dict | None = None) -> tuple[int, object]:
         """One call with a live token: (HTTP status, parsed JSON or a text
         snippet). A 401 gets a new token and sends once more: a 401 is a
         request ProphetX did not take. Raises OSError when nothing came back,
@@ -280,7 +285,7 @@ class ProphetXClient:
         query = f"?{urlencode(params, doseq=False)}" if params else ""
         for attempt in range(2):
             headers = {"Authorization": f"Bearer {self._bearer(force_login=attempt > 0)}",
-                       "Accept": "application/json", "Content-Type": "application/json"}
+                       "Accept": "application/json", "Content-Type": "application/json", **(extra_headers or {})}
             status, reply = self._send(method, f"{path}{query}", headers, body)
             if status == 429 and method == "GET":
                 log.warning("prophetx: 429 on GET %s; sending once more after %.1f s", path, RATE_LIMITED_WAIT_SEC)
@@ -358,6 +363,26 @@ class ProphetXClient:
         """Every fill matched in [matched_from, matched_to] (unix seconds):
         {order_id, price, quantity, profit, fee, matched_at, ...}."""
         return self._pages(TRADES_PATH, {"from": matched_from, "to": matched_to, "limit": 100}, "trades", max_pages)
+
+    def websocket_config(self) -> dict:
+        """GET /websocket/connection-config: {app_id, cluster, key, service, ws_host}
+        for the order stream (prophetx_order_stream.py)."""
+        data = self.get_data(WEBSOCKET_CONFIG_PATH)
+        if not isinstance(data, dict) or not data.get("key"):
+            raise ProphetXError(f"websocket connection-config: no key in {str(data)[:200]}")
+        return data
+
+    def register_websocket(self, socket_id: str, service: str | None) -> dict:
+        """POST /v4/mm/websocket: registers one socket for the account's private
+        channel (no public subscriptions). Returns `data`: {authenticated:
+        {auth, user_data}, authorized_channel: [{channel_name, auth, ...}], ...}."""
+        body = {"socket_id": socket_id, "subscriptions": []}
+        if service:
+            body["service"] = service
+        status, reply = self.request("POST", WEBSOCKET_REGISTER_PATH, body=body, extra_headers=CFTC_TERMINOLOGY_HEADER)
+        if status != 200:
+            raise ProphetXError(f"websocket register: HTTP {status} {str(reply)[:300]}")
+        return data_of(reply, "websocket register")
 
     def balance(self) -> tuple[int, object]:
         """GET /v4/mm/get_balance: proves the key logs in (the desk's start check)."""

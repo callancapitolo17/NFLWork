@@ -288,6 +288,7 @@ from unabated_ticket.bets_service.polymarket_place import (RUNNER_POLYMARKET_QUO
 from unabated_ticket.bets_service.prophetx_client import ProphetXBlocked, ProphetXClient, ProphetXError
 from unabated_ticket.bets_service.prophetx_place import (RUNNER_PROPHETX_QUOTE_PATH, RUNNER_PROPHETX_QUOTE_TIMEOUT_SEC,
                                                          ManualProphetXDesk, validate_prophetx_place_request)
+from unabated_ticket.bets_service.prophetx_order_stream import ProphetXOrderStream
 from unabated_ticket.bets_service.prophetx_place import \
     settle_unconfirmed_place_orders as settle_prophetx_place_orders
 from unabated_ticket.bets_service.novig_place import (NOVIG_PLACE_READ_SOURCES, RUNNER_NOVIG_QUOTE_PATH,
@@ -1207,11 +1208,14 @@ def fetch_runner_json(runner_url: str, path: str, timeout_sec: float, query: str
 
 
 def health_payload(store: BetsStore, started_at: float, source_names: list[str] = (),
-                   novig_book_stream: NovigBookStream | None = None) -> dict:
+                   novig_book_stream: NovigBookStream | None = None,
+                   prophetx_order_stream: ProphetXOrderStream | None = None) -> dict:
     payload = {"ok": True, "generatedAt": _iso(_now()), "uptimeSec": int(time.monotonic() - started_at),
                "sources": source_status(store, list(source_names))}
     if novig_book_stream is not None:
         payload["novigStream"] = novig_book_stream.status()
+    if prophetx_order_stream is not None:
+        payload["prophetxStream"] = prophetx_order_stream.status()
     return payload
 
 
@@ -1272,6 +1276,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  bfa_placer: bfa_place.BFAStraightPlacer | None = None,
                  novig_book_stream: NovigBookStream | None = None,
                  novig_catalog_reads: NovigCatalogReads | None = None,
+                 prophetx_order_stream: ProphetXOrderStream | None = None,
                  source_reader: SourceReader | None = None) -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
@@ -1305,7 +1310,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             url = urlparse(self.path)
             if url.path == "/health":
-                self._send_json(200, health_payload(store, started_at, names, novig_book_stream))
+                self._send_json(200, health_payload(store, started_at, names, novig_book_stream,
+                                                             prophetx_order_stream))
                 return
             if url.path == "/settings.json":
                 self._send_json(200, store.load_edge_settings())
@@ -2164,7 +2170,15 @@ def open_polymarket_place_desk(store: BetsStore, source_names: list[str],
                                                                RUNNER_POLYMARKET_QUOTE_TIMEOUT_SEC)), ""
 
 
-def open_prophetx_place_desk(store: BetsStore, sources: list[Source]) -> tuple[ManualProphetXDesk | None, str]:
+def open_prophetx_order_stream(sources: list[Source]) -> ProphetXOrderStream | None:
+    """The account's pushed ProphetX order updates on the prophetx source's own
+    client (one key pair, one session, one request pacer), or None without it."""
+    source = next((source for source in sources if isinstance(source, ProphetXSource)), None)
+    return ProphetXOrderStream(source.client) if source is not None else None
+
+
+def open_prophetx_place_desk(store: BetsStore, sources: list[Source],
+                             order_stream: ProphetXOrderStream | None = None) -> tuple[ManualProphetXDesk | None, str]:
     """(the Place button's ProphetX desk on Cal's main account, "") or (None, why).
     It trades on the prophetx source's own client (one key pair, one session),
     proven to log in by one balance read; the stake counts that source's read,
@@ -2184,7 +2198,7 @@ def open_prophetx_place_desk(store: BetsStore, sources: list[Source]) -> tuple[M
         # A server-level refusal says nothing about the key, and lifts on its own:
         # the desk opens, and each click refuses with the block until it does.
         log.warning("prophetx place: on, but ProphetX is refusing this server for now: %s", error)
-        return _prophetx_desk(client, store), ""
+        return _prophetx_desk(client, store, order_stream), ""
     except (OSError, ProphetXError) as error:
         reason = f"the PROPHETX_* key pair could not be used: {error}"
         log.error("prophetx place: %s, the ProphetX Place button is off", reason)
@@ -2194,15 +2208,17 @@ def open_prophetx_place_desk(store: BetsStore, sources: list[Source]) -> tuple[M
         log.error("prophetx place: %s, the ProphetX Place button is off", reason)
         return None, reason
     log.info("prophetx place: on, trading with access key %s on the main account", client.access_key[:8])
-    return _prophetx_desk(client, store), ""
+    return _prophetx_desk(client, store, order_stream), ""
 
 
-def _prophetx_desk(client: ProphetXClient, store: BetsStore) -> ManualProphetXDesk:
+def _prophetx_desk(client: ProphetXClient, store: BetsStore,
+                   order_stream: ProphetXOrderStream | None = None) -> ManualProphetXDesk:
     return ManualProphetXDesk(client, store,
                               lambda line: read_runner_quote(config.RUNNER_URL, line, RUNNER_PROPHETX_QUOTE_PATH,
                                                              RUNNER_PROPHETX_QUOTE_TIMEOUT_SEC),
                               lambda league, away, home: read_runner_team_keys(config.RUNNER_URL, PROPHETX_VENUE, league,
-                                                                               away, home))
+                                                                               away, home),
+                              order_stream=order_stream)
 
 
 def open_taker_store(db_path: Path) -> TakerStore | None:
@@ -2232,7 +2248,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     kalshi_place_desk, kalshi_place_off_reason = open_kalshi_place_desk(store)
     novig_place_desk, novig_place_off_reason = open_novig_place_desk(store, source_names)
     polymarket_place_desk, polymarket_place_off_reason = open_polymarket_place_desk(store, source_names)
-    prophetx_place_desk, prophetx_place_off_reason = open_prophetx_place_desk(store, sources)
+    prophetx_order_stream = open_prophetx_order_stream(sources)
+    prophetx_place_desk, prophetx_place_off_reason = open_prophetx_place_desk(store, sources, prophetx_order_stream)
     novig_book_stream = open_novig_book_stream()
     novig_catalog_reads = open_novig_catalog_reads()
     source_reader = SourceReader(sources, store)
@@ -2253,6 +2270,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                                                             bfa_placer=bfa_placer_for(sources, store),
                                                             novig_book_stream=novig_book_stream,
                                                             novig_catalog_reads=novig_catalog_reads,
+                                                            prophetx_order_stream=prophetx_order_stream,
                                                             balance_book=balance_book,
                                                             source_reader=source_reader))
     server.daemon_threads = True
@@ -2264,6 +2282,10 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                    for desk, name in ((taker_desk, "taker-desk"), (novig_taker_desk, "novig-taker-desk")) if desk is not None]
     if novig_book_stream is not None:
         background_threads.append(threading.Thread(target=novig_book_stream.run, args=(stop,), name="novig-stream", daemon=True))
+    # Only Place reads the ProphetX stream, so it runs only when the desk is on.
+    if prophetx_order_stream is not None and prophetx_place_desk is not None:
+        background_threads.append(threading.Thread(target=prophetx_order_stream.run, args=(stop,), name="prophetx-stream",
+                                                   daemon=True))
 
     def request_stop(_signum, _frame) -> None:
         log.info("stopping")
