@@ -163,6 +163,16 @@ def data_of(reply: object, what: str) -> object:
     return reply["data"]
 
 
+def data_or_flat(reply: object) -> object:
+    """A reply's `data` when it wraps one, else the reply itself. The websocket
+    endpoints answer flat (2026-11-04 live: connection-config is
+    {app_id, cluster, key, service, ws_host} with no `data` wrapper), unlike
+    the rest of the API."""
+    if isinstance(reply, dict) and isinstance(reply.get("data"), dict):
+        return reply["data"]
+    return reply
+
+
 class ProphetXClient:
     """Calls on one ProphetX key pair. Thread-safe: the bet source's poll and a
     Place click share one client and one session token."""
@@ -367,7 +377,10 @@ class ProphetXClient:
     def websocket_config(self) -> dict:
         """GET /websocket/connection-config: {app_id, cluster, key, service, ws_host}
         for the order stream (prophetx_order_stream.py)."""
-        data = self.get_data(WEBSOCKET_CONFIG_PATH)
+        status, reply = self.request("GET", WEBSOCKET_CONFIG_PATH)
+        if status != 200:
+            raise ProphetXError(f"GET {WEBSOCKET_CONFIG_PATH}: HTTP {status} {str(reply)[:200]}")
+        data = data_or_flat(reply)
         if not isinstance(data, dict) or not data.get("key"):
             raise ProphetXError(f"websocket connection-config: no key in {str(data)[:200]}")
         return data
@@ -382,7 +395,10 @@ class ProphetXClient:
         status, reply = self.request("POST", WEBSOCKET_REGISTER_PATH, body=body, extra_headers=CFTC_TERMINOLOGY_HEADER)
         if status != 200:
             raise ProphetXError(f"websocket register: HTTP {status} {str(reply)[:300]}")
-        return data_of(reply, "websocket register")
+        data = data_or_flat(reply)
+        if not isinstance(data, dict):
+            raise ProphetXError(f"websocket register: expected an object, got {str(reply)[:300]}")
+        return data
 
     def balance(self) -> tuple[int, object]:
         """GET /v4/mm/get_balance: proves the key logs in (the desk's start check)."""

@@ -140,3 +140,12 @@ def test_a_register_without_a_private_channel_fails_the_connect():
                                                             "authorized_channel": [{"channel_name": "public"}]}
     with pytest.raises(ValueError, match="no private user channel"):
         stream._open()
+
+
+def test_the_websocket_endpoints_answer_flat_or_wrapped():
+    # 2026-11-04 live: connection-config came back with no `data` wrapper.
+    from unabated_ticket.bets_service.prophetx_client import data_or_flat
+    flat = {"app_id": "1810913", "cluster": "mt1", "key": "k", "service": "pusher", "ws_host": "ws.prophetx.co"}
+    assert data_or_flat(flat) == flat
+    assert data_or_flat({"data": flat}) == flat
+    assert pusher_url(flat).startswith("wss://ws.prophetx.co/app/k?protocol=7")
