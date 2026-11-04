@@ -116,8 +116,9 @@ class _WebsocketClientConnection:
     """websocket-client underneath. Its frame reader keeps a partial frame
     across a timeout, so short recv timeouts on one thread are safe."""
 
-    def __init__(self, ws):
+    def __init__(self, ws, peer: str = "Novig"):
         self._ws = ws
+        self._peer = peer
 
     def send(self, text: str) -> None:
         import websocket
@@ -137,7 +138,7 @@ class _WebsocketClientConnection:
         except websocket.WebSocketException as error:
             raise ConnectionError(f"{type(error).__name__}: {error}") from error
         if opcode == websocket.ABNF.OPCODE_CLOSE:
-            raise ConnectionError(f"Novig closed the stream ({close_reason(frame.data)})")
+            raise ConnectionError(f"{self._peer} closed the stream ({close_reason(frame.data)})")
         if opcode in (websocket.ABNF.OPCODE_TEXT, websocket.ABNF.OPCODE_BINARY):
             return frame.data.decode(errors="replace") if isinstance(frame.data, bytes) else str(frame.data)
         return ""
@@ -158,15 +159,16 @@ def close_reason(data: bytes | None) -> str:
     return f"code {int.from_bytes(data[:2], 'big')}, {data[2:].decode(errors='replace')!r}"
 
 
-def websocket_client_connect(url: str, headers: dict) -> Connection:
-    """The real connection (websocket-client): answers Novig's pings itself."""
+def websocket_client_connect(url: str, headers: dict, peer: str = "Novig") -> Connection:
+    """The real connection (websocket-client): answers websocket-level pings itself.
+    `peer` names the server in a close error (the ProphetX order stream shares this)."""
     import websocket
     try:
         ws = websocket.create_connection(url, header=[f"{name}: {value}" for name, value in headers.items()],
                                          timeout=CONNECT_TIMEOUT_SEC)
     except websocket.WebSocketException as error:
         raise ConnectionError(f"{type(error).__name__}: {error}") from error
-    return _WebsocketClientConnection(ws)
+    return _WebsocketClientConnection(ws, peer)
 
 
 def stream_url(api_url: str) -> str:

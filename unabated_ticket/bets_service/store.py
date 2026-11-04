@@ -391,15 +391,17 @@ ORDER BY placed_at
 # Novig never shows final must not slow every novig_place poll for good).
 UNCONFIRMED_NOVIG_PLACE_WINDOW = timedelta(hours=24)
 
-# ProphetX Place orders the desk never read finished, or whose process died
-# mid-send ('sending' past PROPHETX_SENDING_ABANDONED_AFTER): settled from the
-# ProphetX source's order history (prophetx_place.settle_unconfirmed_place_orders),
-# looked for until UNCONFIRMED_PROPHETX_PLACE_WINDOW after the click.
+# ProphetX Place orders the order history still checks: every finished,
+# unknown, or mid-send-abandoned ('sending' past PROPHETX_SENDING_ABANDONED_AFTER)
+# row placed within UNCONFIRMED_PROPHETX_PLACE_WINDOW. The history is the record:
+# prophetx_place.settle_unconfirmed_place_orders settles an unknown row and
+# corrects a finished one whose numbers the history does not bear out (Place
+# may have recorded it off the order stream's pushed update).
 _SELECT_UNCONFIRMED_PROPHETX_PLACE = """
-SELECT client_order_id, prophetx_order_id, count_requested
+SELECT client_order_id, prophetx_order_id, count_requested, status, count_filled, cost_filled
 FROM manual_orders
 WHERE venue = 'prophetx' AND placed_at >= ?
-  AND (status = 'unknown' OR (status = 'sending' AND placed_at <= ?))
+  AND (status IN ('unknown', 'filled', 'partial', 'unfilled') OR (status = 'sending' AND placed_at <= ?))
 ORDER BY placed_at
 """
 UNCONFIRMED_PROPHETX_PLACE_WINDOW = timedelta(hours=24)
@@ -1424,14 +1426,15 @@ class BetsStore:
                 for client_order_id, novig_order_id, outcome_id, count_requested in rows]
 
     def unconfirmed_prophetx_place_orders(self, now: datetime) -> list[dict]:
-        """ProphetX Place orders not yet settled (_SELECT_UNCONFIRMED_PROPHETX_PLACE):
-        [{client_order_id, prophetx_order_id, count_requested}]."""
+        """ProphetX Place orders the order history still checks (_SELECT_UNCONFIRMED_PROPHETX_PLACE):
+        [{client_order_id, prophetx_order_id, count_requested, status, count_filled, cost_filled}]."""
         with self._lock:
             rows = self._con.execute(_SELECT_UNCONFIRMED_PROPHETX_PLACE,
                                      [now - UNCONFIRMED_PROPHETX_PLACE_WINDOW,
                                       now - PROPHETX_SENDING_ABANDONED_AFTER]).fetchall()
-        return [{"client_order_id": client_order_id, "prophetx_order_id": order_id, "count_requested": count_requested}
-                for client_order_id, order_id, count_requested in rows]
+        return [{"client_order_id": client_order_id, "prophetx_order_id": order_id, "count_requested": count_requested,
+                 "status": status, "count_filled": count_filled, "cost_filled": cost_filled}
+                for client_order_id, order_id, count_requested, status, count_filled, cost_filled in rows]
 
     def confirm_novig_place_order(self, client_order_id: str, status: str, filled: int, paid: float,
                                   at: datetime) -> None:

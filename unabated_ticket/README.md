@@ -3553,15 +3553,21 @@ does not read fails closed with the reason.
   click. Then ONE `fillOrKill` buy at that price for the stake in dollars,
   `external_id` = row `xman-<clickId>` inserted before the send, never
   cancelled (ProphetX kills a fill-or-kill's remainder itself about 2 s after
-  its last fill); read off the account's order history (the last 2 min of
-  orders; ProphetX's single-order read answers 404 for 8 s+ after a send) for
-  up to 8 s. One not read finished by then replies
-  "still matching" and stays `unknown` until the next `prophetx` poll, which
-  runs right after the click: the account's order history is the record, and
-  each poll settles every `unknown` ProphetX Place row (by order id, else
-  `external_id`) once ProphetX shows it finished, at its fills plus fees
-  (2026-11-03: two full fills read "inactive, money open" for all 8 s and were
-  reported as resting). **Fee:** ProphetX
+  its last fill). Then followed for up to 20 s: while the **order stream**
+  is live, Place waits on ProphetX's pushed `orders` event and replies the
+  moment it matches (`prophetx_order_stream.py`, 2026-11-04: one websocket on
+  the same key pair, Pusher protocol, `GET /websocket/connection-config` +
+  `POST /v4/mm/websocket` per connect, the account's private channel; every
+  `orders` event is logged until its shape is confirmed live; `/health`
+  `prophetxStream`; the history is still read every 5 s, so a push Place
+  cannot read never stalls it); otherwise it reads the order history once a second (the
+  last 2 min of orders; ProphetX's single-order read answers 404 for 8 s+
+  after a send). One not seen finished replies "still matching" and stays
+  `unknown`. The account's order history is the record: each `prophetx` poll
+  (one runs right after the click) settles an `unknown` ProphetX Place row,
+  and corrects a finished one whose numbers it does not bear out, for 24 h
+  (by order id, else `external_id`, at its fills plus fees). Matches seen
+  live took 1-15 s (2026-11-03). **Fee:** ProphetX
   sets it per account and publishes no rate, so the price check uses
   Unabated's number as is (Cal, 2026-10-31); each fill's `fee` is stored.
 

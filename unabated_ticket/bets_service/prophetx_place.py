@@ -72,6 +72,7 @@ from unabated_ticket.bets_service.prophetx_client import (
 from unabated_ticket.bets_service.prophetx_markets import (
     american_to_probability, best_offer_of, league_of, lines_of_event, number_of, profit_at, team_name_of, teams_of,
 )
+from unabated_ticket.bets_service.prophetx_order_stream import ProphetXOrderStream
 from unabated_ticket.bets_service.sources.prophetx import VENUE, iso_utc_of, matched_of
 from unabated_ticket.bets_service.store import BetsStore
 from unabated_ticket.bets_service.taker_orders import DEFINITE_REJECTION_STATUSES
@@ -81,9 +82,15 @@ log = logging.getLogger(__name__)
 PROPHETX_ORDER_ID_PREFIX = "xman-"
 RUNNER_PROPHETX_QUOTE_PATH = "/prophetx_quote.json"
 RUNNER_PROPHETX_QUOTE_TIMEOUT_SEC = 10
-PLACE_FINAL_READ_ATTEMPTS = 6
+# Matches seen live took 1-15 s (2026-11-03), so Place follows an order this long.
+PLACE_FINAL_READ_WINDOW_SEC = 20.0
+PLACE_FINAL_READ_ATTEMPTS = 20
 PLACE_FINAL_READ_SLEEP_SEC = 1.0
-PLACE_FINAL_READ_WINDOW_SEC = 8.0
+# How long one wait on the order stream lasts before the window is checked again.
+STREAM_WAIT_SEC = 1.0
+# While the stream is live the history is still read this often: a pushed
+# update Place does not recognise (its shape is unverified live) cannot stall it.
+HISTORY_READ_WHILE_STREAMING_SEC = 5.0
 # The order-history window Place reads its order from: orders created this
 # long before now, to this long after (room for ProphetX's clock running ahead).
 HISTORY_READ_LOOKBACK_SEC = 120
@@ -210,7 +217,11 @@ class ManualProphetXDesk:
 
     def __init__(self, client: ProphetXClient, store: BetsStore, quote_reader: Callable[[dict], dict],
                  team_keys_reader: TeamKeysReader, now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-                 sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic):
+                 sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
+                 order_stream: ProphetXOrderStream | None = None):
+        """`order_stream`: the account's pushed order updates (prophetx_order_stream.py);
+        while it is live Place waits on it, else it reads the order history."""
+        self._order_stream = order_stream
         self._client = client
         self._store = store
         self._quote_reader = quote_reader
@@ -396,21 +407,35 @@ class ManualProphetXDesk:
         return self._follow_order(client_order_id, order_id, order, target, stake)
 
     def _follow_order(self, client_order_id: str, order_id: str, order: dict, target: dict, stake: float) -> dict:
-        """Read the order off the account's order history until nothing of it
-        can still fill (final, or fully matched), then what filled. ProphetX's
-        single-order read (GET get_order/<id>) answers 404 data_not_found for
-        8 s and more after a send (2026-11-03, while the order had filled in
-        about 1 s) and the history held it within 3 s, so the history is read.
-        One not read finished within the window is left 'unknown' for the
-        source's next order-history poll to settle; it is never cancelled."""
+        """Follow the order until nothing of it can still fill (final, or fully
+        matched), then what filled. While the order stream is live, Place waits
+        on ProphetX's pushed update (it arrives the moment ProphetX matches);
+        otherwise it reads the account's order history once a second. ProphetX's
+        single-order read (GET get_order/<id>) is not used: it answers 404
+        data_not_found for 8 s and more after a send (2026-11-03) while the
+        history already lists the order. One not seen finished within the
+        window is left 'unknown' for the source's next order-history poll to
+        settle; it is never cancelled."""
         deadline = self._clock() + PLACE_FINAL_READ_WINDOW_SEC
-        for attempt in range(PLACE_FINAL_READ_ATTEMPTS):
-            if _done(order, stake):
-                return self._record(client_order_id, order, target, stake)
-            if self._clock() >= deadline:
+        stream_version = 0
+        history_reads = 0
+        next_history_read_at = self._clock() + HISTORY_READ_WHILE_STREAMING_SEC
+        while not _done(order, stake) and self._clock() < deadline:
+            streaming = self._order_stream is not None and self._order_stream.is_live()
+            if streaming and self._clock() < next_history_read_at:
+                pushed, stream_version = self._order_stream.wait_for_order(order_id, stream_version, STREAM_WAIT_SEC)
+                if pushed is not None:
+                    log.info("prophetx place %s: pushed: %s", client_order_id, _order_state(pushed))
+                    order = pushed
+                continue
+            if history_reads >= PLACE_FINAL_READ_ATTEMPTS:
                 break
-            self._sleep(PLACE_FINAL_READ_SLEEP_SEC)
-            read = self._history_read(client_order_id, order_id, attempt + 1)
+            if streaming:
+                next_history_read_at = self._clock() + HISTORY_READ_WHILE_STREAMING_SEC
+            else:
+                self._sleep(PLACE_FINAL_READ_SLEEP_SEC)
+            history_reads += 1
+            read = self._history_read(client_order_id, order_id, history_reads)
             if read is not None:
                 order = read
         if _done(order, stake):
@@ -496,15 +521,17 @@ def _order_state(order: dict) -> str:
 
 
 def settle_unconfirmed_place_orders(store: BetsStore, orders: list[dict], trades: list[dict], now: datetime) -> None:
-    """Settle every 'unknown' ProphetX Place row from the order history the
-    ProphetX source just read (no network): found by its ProphetX order id,
-    else by its external_id (a click whose submit answer was lost), and
-    settled once ProphetX shows the order finished, at the dollars its fills
-    matched plus their fees. An order the history does not hold, or still
-    matching, stays 'unknown' and is looked for again next poll, for
-    store.UNCONFIRMED_PROPHETX_PLACE_WINDOW. Side effect: UPDATE bets.duckdb::manual_orders."""
-    unconfirmed = store.unconfirmed_prophetx_place_orders(now)
-    if not unconfirmed:
+    """The order history the ProphetX source just read is the record for every
+    ProphetX Place row of the last store.UNCONFIRMED_PROPHETX_PLACE_WINDOW (no
+    network): each row's order is found by its ProphetX order id, else by its
+    external_id (a click whose submit answer was lost), and once ProphetX
+    shows it finished, an 'unknown' row is settled and a finished row whose
+    numbers differ is corrected, at the dollars its fills matched plus their
+    fees. An order the history does not hold, or still matching, is looked for
+    again next poll. Side effect: UPDATE bets.duckdb::manual_orders, only
+    where a row changes."""
+    rows = store.unconfirmed_prophetx_place_orders(now)
+    if not rows:
         return
     by_order_id = {str(order["order_id"]): order for order in orders if order.get("order_id")}
     by_external_id = {str(order["external_id"]): order for order in orders if order.get("external_id")}
@@ -512,7 +539,7 @@ def settle_unconfirmed_place_orders(store: BetsStore, orders: list[dict], trades
     for trade in trades:
         if trade.get("order_id"):
             fills_by_order.setdefault(str(trade["order_id"]), []).append(trade)
-    for row in unconfirmed:
+    for row in rows:
         client_order_id = row["client_order_id"]
         order = by_order_id.get(row["prophetx_order_id"] or "") or by_external_id.get(client_order_id)
         stake = row["count_requested"] / 100
@@ -521,11 +548,23 @@ def settle_unconfirmed_place_orders(store: BetsStore, orders: list[dict], trades
         order_id = str(order["order_id"])
         filled, _to_win, fee = matched_of(order, fills_by_order.get(order_id, []))
         outcome = _outcome_of(order, filled, stake)
+        count_filled = round(filled * 100)
+        cost_filled = round(filled + fee, 4)
+        if _row_matches(row, order_id, outcome, count_filled, cost_filled):
+            continue
+        verb = "settled" if row["status"] in (STATUS_UNKNOWN, "sending") else "corrected"
         store.update_manual_order(client_order_id, {
-            "status": outcome, "prophetx_order_id": order_id, "count_filled": round(filled * 100),
-            "cost_filled": round(filled + fee, 4), "error": f"settled from the order history: {_order_state(order)}"}, now)
-        log.info("prophetx place %s: settled from the order history: %s, $%.2f of $%.2f (fee %s)",
-                 client_order_id, outcome, filled, stake, fee)
+            "status": outcome, "prophetx_order_id": order_id, "count_filled": count_filled,
+            "cost_filled": cost_filled, "error": f"{verb} from the order history: {_order_state(order)}"}, now)
+        log.info("prophetx place %s: %s from the order history: %s, $%.2f of $%.2f (fee %s)",
+                 client_order_id, verb, outcome, filled, stake, fee)
+
+
+def _row_matches(row: dict, order_id: str, outcome: str, count_filled: int, cost_filled: float) -> bool:
+    """The stored row already says what the history says (no write needed)."""
+    stored_cost = row["cost_filled"]
+    return (row["status"] == outcome and row["prophetx_order_id"] == order_id and row["count_filled"] == count_filled
+            and stored_cost is not None and abs(stored_cost - cost_filled) < 0.005)
 
 
 def _error_text(reply: object) -> str:
