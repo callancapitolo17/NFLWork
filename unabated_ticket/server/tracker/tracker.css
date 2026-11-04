@@ -285,3 +285,30 @@ tr.drill:hover td { background: #161c25; }
 .tbl tr.total td { border-top: 1px solid var(--line); font-weight: 600; }
 .balance-notes { display: flex; flex-direction: column; gap: 4px; padding: 10px 22px 16px; font-size: 12px; color: var(--faint); }
 .pill-warn { font: 11px var(--sans); padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--warn); }
+
+/* Bot tab: one status card per automated taker */
+.bot-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+.bot-card { padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; }
+.bot-card .top-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.bot-card h2 { margin: 0; font-size: 17px; font-weight: 600; }
+.bot-card .why { font-size: 13px; color: var(--muted); }
+.bot-card .why.warn { color: var(--warn); }
+.status-pill { display: inline-flex; align-items: center; gap: 8px; border-radius: 999px; padding: 4px 12px; font-weight: 600; font-size: 13px; background: var(--chip); }
+.status-pill.running { background: rgba(61, 214, 140, .12); color: var(--pos); }
+.status-pill.warn { background: rgba(245, 183, 79, .12); color: var(--warn); }
+.status-pill.stopped { background: rgba(255, 107, 107, .12); color: var(--neg); }
+.status-pill .dot.running { background: var(--pos); }
+.status-pill .dot.warn { background: var(--warn); }
+.status-pill .dot.stopped { background: var(--neg); }
+.meter-line { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.meter { height: 10px; background: var(--chip); border-radius: 5px; overflow: hidden; }
+.meter div { height: 100%; background: var(--exp-line); }
+.meter div.full { background: var(--warn); }
+.bot-figs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.bot-figs .fig { font: 600 18px var(--mono); font-variant-numeric: tabular-nums; }
+.reason-rows { display: grid; grid-template-columns: minmax(120px, 190px) minmax(0, 1fr) 56px; gap: 8px 12px; align-items: center; font-size: 13px; }
+.reason-rows .meter div { background: var(--faint); }
+.reason-rows .meter div.bet { background: var(--pos); }
+.reason-rows .meter div.warn { background: var(--warn); }
+.reason-rows .warn { color: var(--warn); }
+.reason-rows .n { font-family: var(--mono); text-align: right; }

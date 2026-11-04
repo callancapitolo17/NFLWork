@@ -25,6 +25,7 @@
         <button type="button" data-view="analysis">Analysis</button>
         <button type="button" data-view="bets">Bets</button>
         <button type="button" data-view="balances">Balances</button>
+        <button type="button" data-view="bot">Bot</button>
       </nav>
       <div class="spacer"></div>
       <div class="controls">
@@ -220,6 +221,52 @@
       <section class="panel balances-panel" aria-label="Balance by book">
         <div class="head"><span class="lbl">Balance by book</span></div>
         <div id="bal-table"></div>
+      </section>
+    </section>
+
+    <section id="view-bot" class="stack" aria-label="Bot" hidden>
+      <div class="title-row"><h1>Bots</h1><span class="note" id="bot-caption"></span></div>
+      <div class="bot-cards" id="bot-cards"></div>
+      <section class="panel stack flush" aria-label="Bot activity">
+        <div class="head">
+          <div class="stack tight">
+            <span class="lbl">Activity</span>
+            <span class="note" id="bot-activity-caption"></span>
+          </div>
+          <div class="controls">
+            <div class="seg" id="bot-ranges" role="group" aria-label="Activity range"></div>
+            <div class="custom-range" id="bot-custom-range" hidden>
+              <label>From <input id="bot-custom-first" type="date"></label>
+              <label>To <input id="bot-custom-last" type="date"></label>
+            </div>
+          </div>
+        </div>
+        <div class="scroll" id="bot-activity"></div>
+      </section>
+      <div class="row">
+        <section class="panel stack flush grow" aria-label="Bot results">
+          <div class="head">
+            <div class="stack tight">
+              <span class="lbl">Results, settled bot bets</span>
+              <span class="note" id="bot-results-caption"></span>
+            </div>
+          </div>
+          <div class="scroll" id="bot-results"></div>
+        </section>
+        <section class="panel stack flush side" aria-label="Why the bot didn't bet">
+          <div class="head">
+            <div class="stack tight">
+              <span class="lbl">Why it didn't bet</span>
+              <span class="note">Lines that reached each decision in the activity range. Amber is something you may want to act on.</span>
+            </div>
+            <div class="seg" id="bot-reason-venue" role="group" aria-label="Bot"></div>
+          </div>
+          <div class="pad" id="bot-reasons"></div>
+        </section>
+      </div>
+      <section class="panel stack flush" aria-label="Recent bot orders">
+        <div class="head"><span class="lbl">Recent orders</span><span class="note">Newest 25, either bot</span></div>
+        <div class="scroll" id="bot-orders"></div>
       </section>
     </section>
   </main>

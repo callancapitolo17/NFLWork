@@ -1901,7 +1901,15 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   bet not at BFA or Wagerzon is a 400, an unknown id a 404. `/bets.json` also
   serves `exclusions` (all of them). `GET /balances.json` → `{generatedAt,
   balances: {venue: {cash, inBets, available, creditLimit, fetchedAt, error}}}`
-  (dollars or null; in memory only) — the tracker's Balances tab. `POST
+  (dollars or null; in memory only) — the tracker's Balances tab. `GET
+  /bot.json?start=<ISO>&end=<ISO>` (both optional; `bets_service/bot_report.py`,
+  read only) → `{generatedAt, error, window, runner: {finishedAt, rows, error},
+  bots: [{venue, label, status: off|stopped|running, detail, capDollars,
+  openCost, kellyBankroll, skipped, runnerDesk, openOrders, lastOrderAt,
+  activity: {orders, filledOrders, contractsRequested, contractsFilled,
+  fillRate, staked, avgEdgeAtFill, reasons: [{reason, orderStatus, lines}]}}],
+  recentOrders}` — the tracker's Bot tab, from `taker.duckdb` plus one GET of
+  the runner's `/taker.json` for its last pass. `POST
   /bet105.json` with `{fetchedAt, feeds: {prematch: [betGroup], live:
   [betGroup]}, settled: [wager]}` (both feeds, at most 2000 groups, and the
   wager list) → `{ok, count, settled, closed, skipped}`, or `{error}` → `{ok,
@@ -2814,6 +2822,24 @@ visible. Its one write is the Bets page's Remove / Restore.
 - **Header**: range (Today, Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days), $ / units with the unit size
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
+- **Bot** (own tab, Cal 2026-11-04): one card per automated taker (Kalshi
+  bot, Novig bot) with its status — **Off** with the service's reason (no key,
+  key not proven locked), **Stopped** (a stop file), else **Running**, amber
+  when the runner's last pass is over 2 min old, skipped for that venue, or
+  Novig's location lapsed — money at risk (the desk's open cost against its
+  ceiling, $4,500 / $850), cash in its subaccount (`/balances.json`), open
+  orders and Kelly bankroll. **Activity** has its own range (Today, 7D, 30D,
+  All, Custom; it includes today, since these are orders, not results): orders
+  sent, filled, fill rate (over orders whose fills are read), staked and the
+  cost-weighted live edge at fill, one row per bot (a Kalshi contract pays $1,
+  a Novig one 1c). **Results** are the bots' settled bets in the header range
+  (Bot origin, never the MLB bots' combos), the Overview math. **Why it didn't
+  bet** counts distinct lines per decision in the activity range — the log
+  holds a decision only when it changes, so it counts lines, not passes — with
+  a bet split by the desk's answer (the money cap, the stop file, ... in
+  amber). **Recent orders**: the newest 25 on either venue, the line named by
+  the decision that sent it. All from `GET /bot.json`, fetched only while the
+  tab is open.
 - **Balances** (own tab, last in the nav, so a glance at Overview never shows
   today's money; Cal, 2026-10-14): live cash, in bets and available per book
   from `GET /balances.json`, fetched only while the tab is open. Read after each

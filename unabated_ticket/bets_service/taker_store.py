@@ -288,3 +288,117 @@ class TakerStore:
                 context[column] = _utc_from_ms(context[column])
             contexts[row[0]] = context
         return contexts
+
+    # ---- the tracker's Bot tab (bot_report.py); read only ----
+
+    def bot_activity(self, window_start: datetime | None, window_end: datetime | None) -> dict[str, dict]:
+        """Per venue ("kalshi", "novig"): the bot's orders placed in [window_start,
+        window_end) (either bound None = open) and, from the decision log, how
+        many distinct lines took each decision then. A decision is logged only
+        when it changes (taker.js decisionSignature), so `reasons` counts lines
+        that reached that decision in the window, not how many passes saw it.
+        A bet decision carries the desk's answer (`order.status`): one the
+        desk refused (the ceiling, the stop file, ...) is counted under it."""
+        # Only bet decisions carry an order, so the joins read the JSON of those rows alone: the
+        # lock is the order desks' too, and a long read would hold up an order.
+        with self._lock:
+            return {
+                "kalshi": {**self._order_totals("taker_orders", "client_order_id", "$.order.clientOrderId",
+                                                "count_requested", "count_filled", window_start, window_end),
+                           "reasons": self._decision_reasons("kalshi", window_start, window_end)},
+                "novig": {**self._order_totals("novig_taker_orders", "client_id", "$.order.clientId",
+                                               "qty_requested", "qty_filled", window_start, window_end),
+                          "reasons": self._decision_reasons("novig", window_start, window_end)},
+            }
+
+    def _order_totals(self, table: str, id_column: str, decision_id_path: str, requested_column: str,
+                      filled_column: str, window_start: datetime | None, window_end: datetime | None) -> dict:
+        # Table and column names are this module's own literals, never caller text.
+        where, params = _window_clause("o.placed_at", window_start, window_end)
+        row = self._con.execute(
+            f"SELECT count(*), count(*) FILTER (WHERE o.{filled_column} > 0), "
+            f"coalesce(sum(o.{requested_column}), 0), coalesce(sum(o.{requested_column}) FILTER (WHERE o.{filled_column} IS NOT NULL), 0), "
+            f"coalesce(sum(o.{filled_column}), 0), coalesce(sum(o.cost_filled), 0), "
+            f"sum(o.cost_filled * d.live_edge) FILTER (WHERE o.cost_filled > 0 AND d.live_edge IS NOT NULL), "
+            f"sum(o.cost_filled) FILTER (WHERE o.cost_filled > 0 AND d.live_edge IS NOT NULL) "
+            f"FROM {table} o LEFT JOIN ("
+            f"  SELECT json_extract_string(decision, '{decision_id_path}') AS order_id, any_value(live_edge) AS live_edge "
+            f"  FROM taker_decisions WHERE reason = 'bet' AND json_extract_string(decision, '{decision_id_path}') IS NOT NULL GROUP BY 1"
+            f") d ON d.order_id = o.{id_column} WHERE {where}", params).fetchone()
+        orders, filled_orders, requested, requested_read, filled, cost, edge_dollars, edge_cost = row
+        return {
+            "orders": orders, "filledOrders": filled_orders,
+            "contractsRequested": float(requested), "contractsFilled": float(filled),
+            # Fill rate over the orders whose fills have been read (a NULL fill is not yet known, never 0).
+            "fillRate": float(filled) / float(requested_read) if requested_read else None,
+            "staked": float(cost),
+            "avgEdgeAtFill": float(edge_dollars) / float(edge_cost) if edge_cost else None,
+        }
+
+    def _decision_reasons(self, venue: str, window_start: datetime | None, window_end: datetime | None) -> list[dict]:
+        where, params = _window_clause("decided_at", window_start, window_end)
+        # Decisions logged before the Novig taker (2026-10-16) carry no venue: they are all Kalshi's.
+        rows = self._con.execute(
+            "SELECT reason, json_extract_string(decision, '$.order.status') AS order_status, count(DISTINCT row_key) "
+            "FROM taker_decisions WHERE coalesce(json_extract_string(decision, '$.venue'), 'kalshi') = ? "
+            f"AND {where} GROUP BY 1, 2 ORDER BY 3 DESC", [venue, *params]).fetchall()
+        return [{"reason": reason, "orderStatus": order_status, "lines": lines} for reason, order_status, lines in rows]
+
+    def bot_open_orders(self) -> dict[str, dict]:
+        """Per venue: orders whose market is not yet seen settled and still hold
+        cost against the ceiling (open_cost > 0), and when the bot last placed one."""
+        with self._lock:
+            out = {}
+            for venue, table in (("kalshi", "taker_orders"), ("novig", "novig_taker_orders")):
+                count, last_ms = self._con.execute(
+                    f"SELECT count(*) FILTER (WHERE settled_at IS NULL AND open_cost > 0), epoch_ms(max(placed_at)) "
+                    f"FROM {table}").fetchone()
+                out[venue] = {"openOrders": count, "lastOrderAt": _utc_from_ms(last_ms)}
+            return out
+
+    def recent_bot_orders(self, limit: int) -> list[dict]:
+        """The newest `limit` bot orders on either venue, with the line the
+        decision that sent it named (eventName, period, betType, sideLabel,
+        points; null when that decision is not in the log)."""
+        with self._lock:
+            rows = self._con.execute(
+                "WITH lines AS ("
+                "  SELECT coalesce(json_extract_string(decision, '$.order.clientOrderId'), "
+                "                  json_extract_string(decision, '$.order.clientId')) AS order_id, "
+                "         any_value(decision) AS decision, any_value(live_edge) AS live_edge "
+                "  FROM taker_decisions WHERE reason = 'bet' AND json_extract_string(decision, '$.order') IS NOT NULL GROUP BY 1"
+                "), orders AS ("
+                "  SELECT 'kalshi' AS venue, client_order_id AS order_id, placed_at, ticker AS contract, "
+                "         all_in_price AS price, count_requested AS requested, count_filled AS filled, cost_filled, status, error "
+                "  FROM taker_orders "
+                "  UNION ALL "
+                "  SELECT 'novig', client_id, placed_at, outcome_id, price, qty_requested, qty_filled, cost_filled, status, error "
+                "  FROM novig_taker_orders"
+                ") "
+                "SELECT o.venue, o.order_id, epoch_ms(o.placed_at), o.contract, o.price, o.requested, o.filled, o.cost_filled, "
+                "       o.status, o.error, l.live_edge, json_extract_string(l.decision, '$.eventName'), "
+                "       json_extract_string(l.decision, '$.league'), json_extract_string(l.decision, '$.period'), "
+                "       json_extract_string(l.decision, '$.betType'), json_extract_string(l.decision, '$.sideLabel'), "
+                "       TRY_CAST(json_extract(l.decision, '$.points') AS DOUBLE) "
+                "FROM orders o LEFT JOIN lines l ON l.order_id = o.order_id ORDER BY o.placed_at DESC LIMIT ?",
+                [limit]).fetchall()
+        keys = ("venue", "orderId", "placedAt", "contract", "price", "requested", "filled", "cost", "status", "error",
+                "liveEdge", "eventName", "league", "period", "betType", "sideLabel", "points")
+        orders = []
+        for row in rows:
+            order = dict(zip(keys, row))
+            order["placedAt"] = _utc_from_ms(order["placedAt"])
+            orders.append(order)
+        return orders
+
+
+def _window_clause(column: str, window_start: datetime | None, window_end: datetime | None) -> tuple[str, list]:
+    """A SQL condition on `column` (this module's own name) for [start, end), and its parameters."""
+    parts, params = ["TRUE"], []
+    if window_start is not None:
+        parts.append(f"{column} >= ?")
+        params.append(window_start)
+    if window_end is not None:
+        parts.append(f"{column} < ?")
+        params.append(window_end)
+    return " AND ".join(parts), params

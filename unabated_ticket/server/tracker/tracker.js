@@ -1,7 +1,7 @@
 // Bet Tracker page: fetches the bets service's /bets.json (all history),
 // /balances.json (each book's live balance, only while the Balances tab is open) and /scenarios.json (the server
 // runner's live game cards, passed through by the bets service), builds tickets with trackerstats.js and renders the
-// Overview, Live, Open, Analysis, Bets and Balances views. Its one write is the Bets view's Remove / Restore: POST
+// Overview, Live, Open, Analysis, Bets, Balances and Bot views (Bot reads /bot.json, only while that tab is open). Its one write is the Bets view's Remove / Restore: POST
 // /exclusions.json, which marks a BFA or Wagerzon bet as not Cal's
 // (bets.duckdb::bet_exclusions; the bet itself stays) and takes it out of
 // every number here. Otherwise it keeps only the viewer's own display choices
@@ -23,7 +23,13 @@
   // a midnight snapshot (2026-10-13); since a live balance shows today's swings,
   // it lives on its own Balances tab and is fetched only while that tab is open (2026-10-14).
   const BALANCES_URL = "/balances.json";
-  const VIEWS = ["overview", "live", "open", "analysis", "bets", "balances"];
+  // The automated takers' status, activity and orders (bets service bot_report.py),
+  // fetched only while the Bot tab is open.
+  const BOT_URL = "/bot.json";
+  // The runner's taker pass runs every 30 s (runner.js TAKER_PASS_MS): a pass older than this reads as late.
+  const BOT_PASS_LATE_MS = 2 * 60 * 1000;
+  const BOT_VENUES = [{ key: "kalshi", label: "Kalshi" }, { key: "novig", label: "Novig" }];
+  const VIEWS = ["overview", "live", "open", "analysis", "bets", "balances", "bot"];
   // Cal's ask (2026-10-05): only these books carry bets that are not his (service.EXCLUDABLE_VENUES).
   const REMOVABLE_VENUES = ["BFA", "Wagerzon"];
   const BET_FILTERS = ["All", "Counted", "Removed"];
@@ -87,6 +93,8 @@
     // Per table: {col: column index, dir: "asc" | "desc"}; absent = the table's own order.
     sorts: {},
     settledLimit: LOG_PAGE,
+    // Bot tab: its own Activity range (Today / 7D / 30D / All / Custom, Cal 2026-11-04) and the reasons panel's bot.
+    botRange: "Today", botCustomFirst: null, botCustomLast: null, botReasonVenue: "kalshi",
     // A calendar-day click (Cal, 2026-10-07): { day, anchor, range, customFirst,
     // customLast } so a second click restores the range it replaced and the
     // calendar keeps its weeks instead of jumping to end on the picked day.
@@ -103,6 +111,8 @@
   let scenariosError = null;
   let balances = null;
   let balancesError = null;
+  let bot = null;
+  let botError = null;
   let allTickets = [];
   let tickets = [];
 
@@ -613,6 +623,181 @@
     if (read.length < rows.length) notes.push("The total leaves out books shown as unavailable.");
     fill("bal-table", el("div", { className: "scroll" }, [tbl]),
       el("div", { className: "balance-notes" }, notes.map((text) => el("span", { text }))));
+  }
+
+  // ---- bot -------------------------------------------------------------------
+
+  function botWindow() {
+    return stats.botActivityWindow(state.botRange, stats.pacificDay(Date.now()),
+      { first: state.botCustomFirst, last: state.botCustomLast });
+  }
+
+  /**
+   * The Bot tab (Cal, 2026-11-04): a status card per automated taker, its
+   * activity in the tab's own range, settled results in the header range,
+   * why it passed on lines, and its newest orders. A card's money at risk is
+   * the desk's own open cost against its ceiling; cash is the bot's
+   * subaccount balance from /balances.json.
+   */
+  function renderBot() {
+    setText("bot-caption", botError ? "Could not load: " + botError : bot ? "updated " + ago(bot.generatedAt) : "Loading…");
+    renderBotRangeControls();
+    if (!bot) {
+      for (const id of ["bot-cards", "bot-activity", "bot-reasons", "bot-orders"]) fill(id, emptyNote(botError ? "Could not load the bots." : "Loading…"));
+      renderBotResults();
+      return;
+    }
+    if (bot.error) {
+      fill("bot-cards", emptyNote(bot.error));
+    } else {
+      fill("bot-cards", ...bot.bots.map(botCard));
+    }
+    renderBotActivity();
+    renderBotResults();
+    renderBotReasons();
+    renderBotOrders();
+  }
+
+  /** {tone, label, why}: the desk's own status, then the runner's view of a running bot. */
+  function botHealth(entry) {
+    if (entry.status === "off") return { tone: "warn", label: "Off", why: entry.detail };
+    if (entry.status === "stopped") return { tone: "stopped", label: "Stopped", why: entry.detail };
+    const runner = bot.runner || {};
+    if (runner.error) return { tone: "warn", label: "Runner down", why: runner.error };
+    const passMs = Date.parse(runner.finishedAt);
+    if (!Number.isFinite(passMs)) return { tone: "warn", label: "No pass yet", why: "the runner has not finished a taker pass since it started" };
+    if (Date.now() - passMs > BOT_PASS_LATE_MS) return { tone: "warn", label: "Late", why: "last pass " + ago(runner.finishedAt) };
+    if (entry.skipped) return { tone: "warn", label: "Paused", why: entry.skipped };
+    if (typeof entry.runnerDesk === "string" && entry.runnerDesk.startsWith("geo_blocked")) return { tone: "warn", label: "Paused", why: entry.runnerDesk };
+    return { tone: "running", label: "Running", why: "last pass " + ago(runner.finishedAt) + (entry.lastOrderAt ? " · last order " + startLabel(entry.lastOrderAt) : " · no orders yet") };
+  }
+
+  function botCard(entry) {
+    const health = botHealth(entry);
+    const share = entry.capDollars > 0 ? Math.min(1, entry.openCost / entry.capDollars) : 0;
+    const balance = balances && balances.balances ? balances.balances[entry.venue + "_bot"] : null;
+    const cash = balance && Number.isFinite(balance.cash) ? balanceMoney(balance.cash) : "n/a";
+    const bar = el("div", { className: share >= 0.95 ? "full" : "", style: { width: (share * 100).toFixed(1) + "%" } });
+    const fig = (label, value) => el("div", null, [el("div", { className: "lbl", text: label }), el("div", { className: "fig", text: value })]);
+    return el("section", { className: "panel bot-card", attrs: { "aria-label": entry.label } }, [
+      el("div", { className: "top-line" }, [
+        el("h2", { text: entry.label }),
+        el("span", { className: "status-pill " + health.tone }, [el("span", { className: "dot " + health.tone }), document.createTextNode(health.label)]),
+      ]),
+      el("div", { className: "why" + (health.tone === "running" ? "" : " warn"), text: health.why || "" }),
+      el("div", { className: "stack tight" }, [
+        el("div", { className: "meter-line" }, [el("span", { className: "muted", text: "Money at risk" }),
+          el("span", { className: "num", text: "$" + Math.round(entry.openCost).toLocaleString("en-US") + " of $" + Math.round(entry.capDollars).toLocaleString("en-US") + " cap" })]),
+        el("div", { className: "meter", attrs: { role: "img", "aria-label": pct(share) + " of the cap in use" } }, [bar]),
+      ]),
+      el("div", { className: "bot-figs" }, [
+        fig("Cash in sub", cash),
+        fig("Open orders", String(entry.openOrders)),
+        fig("Kelly roll", Number.isFinite(entry.kellyBankroll) ? "$" + entry.kellyBankroll.toLocaleString("en-US") : "—"),
+      ]),
+    ]);
+  }
+
+  function renderBotRangeControls() {
+    segButtons("bot-ranges", stats.BOT_ACTIVITY_RANGES, (r) => r === state.botRange, pickBotRange);
+    segButtons("bot-reason-venue", BOT_VENUES, (v) => v.key === state.botReasonVenue, (v) => { state.botReasonVenue = v.key; render(); });
+    const custom = state.botRange === "Custom";
+    document.getElementById("bot-custom-range").hidden = !custom;
+    const win = botWindow();
+    setText("bot-activity-caption", win.first === null ? "All time" : (win.first === win.last ? dayLabel(win.first) : dayLabel(win.first) + " to " + dayLabel(win.last)) + " · Pacific time");
+    if (!custom) return;
+    const today = stats.pacificDay(Date.now());
+    for (const [id, value] of [["bot-custom-first", win.first], ["bot-custom-last", win.last]]) {
+      const input = document.getElementById(id);
+      input.max = today;
+      if (document.activeElement !== input) input.value = value;
+    }
+  }
+
+  /** Picking Custom starts from the window on screen (All starts it at today). */
+  function pickBotRange(range) {
+    if (range === "Custom" && state.botRange !== "Custom") {
+      const win = botWindow();
+      const today = stats.pacificDay(Date.now());
+      state.botCustomFirst = win.first || today; state.botCustomLast = win.last || today;
+    }
+    state.botRange = range;
+    render();
+    refreshBot().then(render);
+  }
+
+  // Contracts differ per venue (a Kalshi contract pays $1, a Novig one 1c), so each bot is its own row.
+  function renderBotActivity() {
+    if (bot.error) { fill("bot-activity", emptyNote(bot.error)); return; }
+    const columns = [
+      { label: "Bot", cell: (b) => b.label },
+      { label: "Orders sent", right: true, num: true, cell: (b) => String(b.activity.orders) },
+      { label: "Filled", right: true, num: true, cell: (b) => String(b.activity.filledOrders) },
+      { label: "Fill rate", right: true, num: true, cell: (b) => pct(b.activity.fillRate) },
+      { label: "Staked", right: true, num: true, cell: (b) => "$" + b.activity.staked.toLocaleString("en-US", { maximumFractionDigits: 0 }) },
+      { label: "Avg edge at fill", right: true, num: true, className: (b) => b.activity.avgEdgeAtFill === null ? "muted" : toneClass(b.activity.avgEdgeAtFill),
+        cell: (b) => pct(b.activity.avgEdgeAtFill, true) },
+    ];
+    fill("bot-activity", table(columns, bot.bots));
+  }
+
+  // Settled results follow the header range, the same math as Overview.
+  function renderBotResults() {
+    if (!payload) { fill("bot-results", emptyNote("Loading…")); return; }
+    const { first, last } = rangeDays();
+    setText("bot-results-caption", rangeCaption(first, last) + " (the header range) · Expected uses the Unabated fair at fill");
+    const byVenue = stats.botTicketsByVenue(stats.inDayRange(tickets, first, last));
+    const rows = BOT_VENUES.map((v) => ({ label: v.label, total: stats.summarize(byVenue[v.key]) }));
+    rows.push({ label: "Both", total: stats.summarize(byVenue.kalshi.concat(byVenue.novig)), isTotal: true });
+    const columns = [
+      { label: "Bot", cell: (r) => r.label },
+      { label: "Bets", right: true, num: true, cell: (r) => String(r.total.bets) },
+      { label: "Risked", right: true, num: true, cell: (r) => money(r.total.handle) },
+      { label: "P&L", right: true, num: true, className: (r) => toneClass(r.total.pnl), cell: (r) => money(r.total.pnl, true) },
+      { label: "Expected", right: true, num: true, className: () => "exp", cell: (r) => (r.total.withFair ? money(r.total.expected, true) : "—") },
+      { label: "ROI", right: true, num: true, cell: (r) => (r.total.handle ? pct(r.total.roi, true) : "—") },
+      { label: "CLV", right: true, num: true, className: (r) => (r.total.clvRoi === null ? "muted" : toneClass(r.total.clvRoi)), cell: (r) => pct(r.total.clvRoi, true) },
+    ];
+    fill("bot-results", table(columns, rows, { rowClass: (r) => (r.isTotal ? "total" : "") }));
+  }
+
+  function renderBotReasons() {
+    const entry = bot.bots.find((b) => b.venue === state.botReasonVenue);
+    const rows = entry ? stats.botReasonRows(entry.activity.reasons) : [];
+    if (!rows.length) { fill("bot-reasons", emptyNote("No decisions logged in this range.")); return; }
+    const most = rows[0].lines;
+    const cells = [];
+    for (const row of rows) {
+      const tone = row.tone === "plain" ? "" : row.tone;
+      cells.push(el("span", { className: tone === "warn" ? "warn" : "", text: row.label }));
+      cells.push(el("div", { className: "meter" }, [el("div", { className: tone, style: { width: Math.max(1, (row.lines / most) * 100).toFixed(1) + "%" } })]));
+      cells.push(el("span", { className: "n", text: row.lines.toLocaleString("en-US") }));
+    }
+    fill("bot-reasons", el("div", { className: "reason-rows" }, cells));
+  }
+
+  /** "Bills @ Dolphins · Bills −3.5 FG", or the contract id when the decision that sent it is not in the log. */
+  function botOrderLine(order) {
+    if (!order.eventName) return order.contract;
+    const points = Number.isFinite(order.points) && order.betType !== "moneyline" ? " " + (order.points > 0 ? "+" : order.points < 0 ? "−" : "") + Math.abs(order.points) : "";
+    return order.eventName + " · " + (order.sideLabel || "") + points + (order.period ? " " + order.period : "");
+  }
+
+  function renderBotOrders() {
+    if (!bot.recentOrders.length) { fill("bot-orders", emptyNote("No bot orders yet.")); return; }
+    const venueLabel = Object.fromEntries(BOT_VENUES.map((v) => [v.key, v.label]));
+    const columns = [
+      { label: "Placed", className: () => "muted", cell: (o) => startLabel(o.placedAt) },
+      { label: "Bot", cell: (o) => venueLabel[o.venue] || o.venue },
+      { label: "Line", className: () => "wrap", cell: botOrderLine },
+      { label: "Price", right: true, num: true, cell: (o) => (Number.isFinite(o.price) ? (o.price * 100).toFixed(1) + "¢" : "—") },
+      { label: "Edge", right: true, num: true, cell: (o) => pct(o.liveEdge, true) },
+      { label: "Asked", right: true, num: true, cell: (o) => String(o.requested) },
+      { label: "Filled", right: true, num: true, cell: (o) => (o.filled === null ? "—" : String(o.filled)) },
+      { label: "Cost", right: true, num: true, cell: (o) => (o.cost === null ? "—" : "$" + o.cost.toFixed(2)) },
+      { label: "Status", className: (o) => (o.error ? "warn" : ""), cell: (o) => el("span", { text: o.status, title: o.error || "" }) },
+    ];
+    fill("bot-orders", table(columns, bot.recentOrders));
   }
 
   /** A balance can be negative (a credit book you owe); its sign always shows. */
@@ -1358,6 +1543,7 @@
     window.scrollTo(0, 0);
     render();
     if (view === "balances") refreshBalances().then(render);
+    if (view === "bot") Promise.all([refreshBot(), refreshBalances()]).then(render);
   }
 
   function renderHeader() {
@@ -1437,6 +1623,7 @@
     renderSync();
     renderUntyped();
     if (state.view === "balances") { renderBalances(); return; }
+    if (state.view === "bot") { renderBot(); return; }
     if (!payload) return;
     if (state.view === "overview") renderOverview();
     else if (state.view === "live") renderLiveView();
@@ -1492,9 +1679,24 @@
     }
   }
 
+  // The Bot tab's read; a failure keeps the last one and says why.
+  async function refreshBot() {
+    try {
+      const response = await fetch(BOT_URL + botWindow().query, { cache: "no-store" });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error((body && body.error) || "the bets service answered HTTP " + response.status);
+      if (!body || !Array.isArray(body.bots) || !Array.isArray(body.recentOrders)) throw new Error("bot.json has no bots list");
+      bot = body;
+      botError = null;
+    } catch (error) {
+      botError = error.message;
+    }
+  }
+
   async function refresh() {
     const scenariosRead = refreshScenarios();
-    const balancesRead = state.view === "balances" ? refreshBalances() : null;
+    const balancesRead = state.view === "balances" || state.view === "bot" ? refreshBalances() : null;
+    const botRead = state.view === "bot" ? refreshBot() : null;
     try {
       const response = await fetch(BETS_URL, { cache: "no-store" });
       if (!response.ok) throw new Error("the bets service answered HTTP " + response.status);
@@ -1504,7 +1706,7 @@
     } catch (error) {
       showBanner("Could not load bets: " + error.message + (payload ? ". Showing the last load." : "."));
     }
-    await Promise.all([scenariosRead, balancesRead]);
+    await Promise.all([scenariosRead, balancesRead, botRead]);
     render();
   }
 
@@ -1533,6 +1735,14 @@
         state[key] = event.target.value; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; savePrefs(); render();
       });
     }
+    for (const [id, key] of [["bot-custom-first", "botCustomFirst"], ["bot-custom-last", "botCustomLast"]]) {
+      document.getElementById(id).addEventListener("change", (event) => {
+        if (!stats.isDayKey(event.target.value)) return;
+        state[key] = event.target.value;
+        render();
+        refreshBot().then(render);
+      });
+    }
     document.getElementById("log-search").addEventListener("input", (event) => {
       state.query = event.target.value; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; render();
     });
@@ -1545,6 +1755,7 @@
       state.view = viewOfHash();
       render();
       if (state.view === "balances") refreshBalances().then(render);
+      if (state.view === "bot") Promise.all([refreshBot(), refreshBalances()]).then(render);
     });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
     setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
