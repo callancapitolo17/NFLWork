@@ -458,7 +458,7 @@ def test_a_click_finds_the_strike_by_the_games_ids_and_sends_one_fill_or_kill_at
     result = desk_with(store, client).place(request())
     assert client.submits == [("c" * 32, -110, 50, "xman-abc12345-0001")]
     assert result["status"] == "filled" and result["fee"] == 0.25
-    assert result["message"] == "Bet $50.25 on Bills +3.5 at -111 to win $45.20 (limit -110 on ProphetX, fee $0.25)."
+    assert result["message"] == "Bet $50.25 on Bills +3.5 at -111 to win $45.20 (on ProphetX, fee $0.25)."
     row = store._con.execute("SELECT status, prophetx_order_id, count_filled, cost_filled, ticker FROM manual_orders "
                              "WHERE client_order_id = 'xman-abc12345-0001'").fetchone()
     assert row == ("filled", row[1], 5000, 50.25, "c" * 32) and row[1]
